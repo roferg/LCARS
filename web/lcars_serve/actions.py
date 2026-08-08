@@ -1042,6 +1042,52 @@ def _program_room(sidecar, name):
     return new
 
 
+# ── S172 fix round 1 (D1): a room that can be TOLD APART from the one it was
+# copied from ───────────────────────────────────────────────────────────────
+# `_slug` caps a room at `_SLUG_MAX`, and that cap is not a label — it is the
+# PERMANENT identity of every room already on the captain's disk, so it cannot
+# be raised for one feature. But every program he actually has is named with his
+# whole idea sentence, which reaches the cap: so a differentiator written into
+# the DISPLAY NAME and then slugged ("X (copy 2)") lands on the FAR SIDE of the
+# cut and disappears. Measured on his real program: 500 candidate names, ONE
+# distinct room, and that room was the source's own.
+#
+# So a duplicate's room is BUILT rather than derived — the name is trimmed to
+# leave the marker room, and the marker is appended AFTER the cut where nothing
+# can eat it. Short names are unaffected: "Command palette" gives
+# `command-palette-copy` either way, which is what every room made before this
+# fix is called.
+def _trim_slug(s, cap):
+    """An ALREADY-SLUGGED string cut to `cap`, by `_slug`'s own rule.
+
+    Same word-boundary preference and same "too short a stump is worse than a
+    truncated word" fallback (FL-005), at a cap the caller chooses. `_slug`
+    itself is deliberately left alone: it names every existing room, and this
+    round is not the place to re-derive those.
+    """
+    if cap < 1:
+        return "program"
+    if len(s) <= cap:
+        return s
+    cut = s[:cap]
+    if s[cap] != "-":
+        at = cut.rfind("-")
+        if at >= cap // 2:
+            cut = cut[:at]
+    return cut.strip("-") or "program"
+
+
+def _room_with_marker(name, marker):
+    """The room for `name` with `-<marker>` appended, still inside `_SLUG_MAX`."""
+    tail = "-%s" % marker
+    return _trim_slug(_slug(name), _SLUG_MAX - len(tail)) + tail
+
+
+def _duplicate_room(name, n):
+    """The room the `n`th copy of a program called `name` lives in."""
+    return _room_with_marker(name, "copy" if n <= 1 else "copy-%d" % n)
+
+
 # ── S126: the program's own record, on disk ─────────────────────────────────
 # THE ROOM IS THE ARCHIVE. S124 already gave every program a room at
 # `<sidecar>/<slug>/` and S125 already committed it once per turn; what was
@@ -1133,6 +1179,96 @@ def _parse_sent(text):
         return None
     return {"missionId": (m.group(1) or "").strip(),
             "at": (m.group(2) or "").strip()}
+
+
+# ── S172: the DUPLICATE's lineage, in the SAME one durable home ─────────────
+# A sent program is locked forever, and the way on is a DUPLICATE that carries
+# the chat — a NEW program continuing an old design. The two facts it must never
+# lose are WHICH program it came from and WHICH mission that program was filed
+# as, so a room can still say what it came from long after the daemon that made
+# it is gone.
+#
+# It goes exactly where the engine (fix round 5) and the hand-off (S127) went,
+# for exactly the reason those went there: `transcript.md`'s header is the ONE
+# durable home a program's identity already has, and a second place to look is
+# how a value comes to arrive from three sources with a different winner per
+# path. HEADER ONLY on the way back, for the same reason `_parse_sent` is: a
+# reply that quotes this line is the model being quoted at, and taking it as the
+# program's own state would let a turn invent its own ancestry.
+#
+# EVERY FIELD IS BACKTICK-DELIMITED so the parse cannot be confused by prose. A
+# backtick inside a program NAME would break that, so the writer replaces it —
+# the name of record is the `# ` heading, and this line is lineage.
+_ORIGIN_LINE = re.compile(
+    r"^_Duplicated from `([^`\n]*)` · program `([^`\n]*)` · mission "
+    r"`([^`\n]*)` · at `([^`\n]*)`_.*$", re.MULTILINE)
+
+
+def _no_ticks(text):
+    return str(text or "").replace("`", "'")
+
+
+def _origin_header_line(room, program, mission_id, when):
+    return ("_Duplicated from `%s` · program `%s` · mission `%s` · at `%s`_ — "
+            "this is a NEW program carrying that one's conversation, so it is "
+            "possible to see why the design looks the way it does. NOTHING IN "
+            "THAT RECORD IS BINDING. The original is untouched and stays "
+            "exactly as it was handed over.\n\n"
+            % (room, _no_ticks(program), _no_ticks(mission_id), when))
+
+
+def _parse_origin(text):
+    """`{"room":…, "program":…, "missionId":…, "at":…}` if this program's record
+    says it is a DUPLICATE of another one, else None."""
+    text = (text or "").replace("\r\n", "\n")
+    head = re.split(r"^## ", text, maxsplit=1, flags=re.MULTILINE)[0]
+    m = _ORIGIN_LINE.search(head)
+    if not m:
+        return None
+    return {"room": (m.group(1) or "").strip(),
+            "program": (m.group(2) or "").strip(),
+            "missionId": (m.group(3) or "").strip(),
+            "at": (m.group(4) or "").strip()}
+
+
+# ── S172, TRAP 2: the inherited grounding says so IN THE FILE ───────────────
+# `basis.md` is stale BY CONSTRUCTION on a duplicate, and worse here than
+# anywhere: the captain duplicates a program precisely because its mission has
+# landed, which is exactly when the app it was read from has MOVED.
+#
+# The ruling taken is CARRY IT AND MARK IT. Re-grounding would be a live worker
+# spawn on a click — money on a gesture the captain reads as "copy this" — and
+# dropping it would throw away the one document that makes a design correctable.
+# So the grounding comes over whole, with a banner at the top of the file the
+# captain and the worker both read, and the payload the deck renders says the
+# same thing in the same words.
+_BASIS_INHERITED_HEAD = "> ⚠ INHERITED GROUNDING — POSSIBLY STALE"
+
+
+def _basis_inherited_banner(program, when):
+    return ("%s\n>\n"
+            "> This is NOT a fresh look at the project. It is the grounding "
+            "LCARS read for “%s” (last written %s), copied over when "
+            "that program was duplicated. If that design has been built since, "
+            "the app has moved and the tokens, spacing and component shapes "
+            "below describe what it USED to be.\n"
+            "> Treat it as history: check anything you build on it against the "
+            "project as it is now.\n\n"
+            % (_BASIS_INHERITED_HEAD, program or "the original program", when))
+
+
+def _basis_with_inherited_mark(text, program, when):
+    """The basis, banner-first. Idempotent by re-marking, never by stacking.
+
+    A duplicate OF a duplicate would otherwise carry two banners, the older one
+    naming a program two generations back — a file that says the same thing
+    twice about different things is a file nobody reads.
+    """
+    body = (text or "").replace("\r\n", "\n").lstrip("\n")
+    if body.startswith(_BASIS_INHERITED_HEAD):
+        parts = body.split("\n\n", 1)
+        body = parts[1] if len(parts) == 2 else ""
+    return _basis_inherited_banner(program, when) + body
 
 
 def _transcript_header(program, engine=None):
@@ -5860,9 +5996,10 @@ class Actions(LogFacts):
             409, "%s was sent to Align as %s, so this program is locked. It is "
             "the exact design that mission was briefed on, and changing it now "
             "would leave the workers building to something you can no longer "
-            "see. ⧉ DUPLICATE TO KEEP DESIGNING is the way on — it is not "
-            "built yet, so for now start a new program under a different name; "
-            "this one stays exactly as it was handed over."
+            "see. ⧉ DUPLICATE on this program's card is the way on: it opens a "
+            "NEW program carrying this one's mockup, concept doc and whole "
+            "conversation, editable from the first turn — and this one stays "
+            "exactly as it was handed over."
             % (sess.program or "This program", named))
 
     def _handoff_files(self, program_dir):
@@ -7028,6 +7165,484 @@ class Actions(LogFacts):
                 "commits": self._sidecar_commit_count(sidecar),
                 "message": message}
 
+    # ══ S172 — DUPLICATE: a NEW program carrying an old one's history ═══════
+    #
+    # A SENT program is locked forever (`_refuse_if_sent`) — it is the record of
+    # what a mission was actually briefed on, and it must stay that. So the way
+    # on is a duplicate, and the captain's ruling is that it BRINGS THE CHAT
+    # OVER: "bring the original chat over for history when you duplicate it".
+    # The duplicate is a CONTINUATION, not a clean copy of the outputs — a
+    # worker in the new room knows WHY the mockup looks the way it does.
+    #
+    # It rides the roads S126 already built and adds no second copy mechanism:
+    # `_existing_sidecar` + `_room_dir` resolve and police the source room, the
+    # sidecar git repo records the new one exactly as `delete` records a removal,
+    # and the room is then handed to `holodeck_open` — the warm-restart road,
+    # whose `_replay_clause` is what puts the transcript in front of a fresh
+    # worker. Nothing here mints a session or replays a transcript itself.
+
+    # WHAT DOES NOT COME OVER. A DENY-LIST, deliberately: an allow-list of the
+    # five named files would silently drop a second asset a worker wrote beside
+    # the mockup, and the captain would never learn it was gone. (S124's
+    # `--allowedTools` finding, one surface over: an allow-list is not a fence.)
+    #
+    # `handoff-changes.json` is the ONE thing that must not travel. It is a
+    # derivation of the OLD draft against the captain's repo AS IT WAS at filing
+    # time; the S170/S171 fingerprint would have to be wrong about the room for
+    # it to ever be read back, so carrying it buys nothing and risks a change
+    # list describing an app that has since moved. The duplicate starts with NO
+    # derivation, the gate reads `none`, and it offers to generate one.
+    def _duplicate_skips(self, name):
+        if name.startswith("."):        # `.git` and friends are not the program
+            return True
+        return name in (self._HANDOFF_DERIVE_FILE,
+                        self._HANDOFF_DERIVE_FILE + ".tmp")
+
+    # `(copy)` / `(copy 2)` — stripped before deriving the next one, so
+    # duplicating a duplicate gives `X (copy 2)` rather than `X (copy) (copy)`.
+    _DUPLICATE_SUFFIX = re.compile(r"\s*\(copy(?:\s+\d+)?\)\s*$", re.IGNORECASE)
+
+    def _claim_room(self, sidecar, room):
+        """CREATE the room, and say whether this request is the one that got it.
+
+        FIX ROUND 1 (D6). Asking `isdir` and then calling `makedirs` are two
+        steps, and a second duplicate landing in the gap between them won the
+        room while this one still believed it was free — which surfaced as a
+        raw `FileExistsError` inside the 502 "could not create the new
+        program's room", plumbing reported at the captain for an ordinary
+        collision the naming loop already knows how to walk past. So the
+        creation IS the claim: whoever's `makedirs` returns owns the room, and
+        everybody else takes the next name.
+        """
+        try:
+            os.makedirs(os.path.join(sidecar, room))
+            return True
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            raise ActionError(
+                502, "could not create the new program's room in the holodeck "
+                "sidecar: %s" % exc)
+
+    def _room_program_name(self, sidecar, room):
+        """The NAME of the program living in `room`, or "" if none does.
+
+        Read out of the one durable home `_disk_program` reads it from, so a
+        room the captain sees called "Command palette" is the same string this
+        compares against.
+        """
+        try:
+            with open(os.path.join(sidecar, room, _TRANSCRIPT)) as fh:
+                return (_parse_transcript(fh.read())[0] or "").strip()
+        except (OSError, ValueError):
+            return ""
+
+    def _named_program_room(self, sidecar, wanted):
+        """The room a program ALREADY called `wanted` lives in, or "".
+
+        FIX ROUND 2 (N1). The name guard used to ask `_program_room(wanted)` and
+        look in that ONE room — which was true while every room was slugged out
+        of its program's name, and stopped being true the moment fix round 1
+        made a duplicate's room BUILT (`_duplicate_room`: trim, then append the
+        marker where the `_SLUG_MAX` cut cannot eat it). On the whole-sentence
+        names every program the captain actually has is called, the two
+        disagree, so the guard was looking in a room the copy is not in and
+        finding nothing: he could type back the very name the deck was showing
+        him and get a second card reading it, while the refusal it skipped
+        promises "two cards with one name is a pair you cannot tell apart".
+
+        So the question is asked of the ARCHIVE rather than of the slug: every
+        program room in the sidecar, by the name in its own record, the same
+        string `_disk_program` puts on the card. `_program_room`'s answer is
+        still tried FIRST — it is the room the name belongs in, so the common
+        case still costs one read.
+
+        The scan is a READ, and it is not atomic with the room claim that
+        follows it: two duplicates typing one name in the same instant can both
+        pass here, because neither has written its record yet. That race is left
+        open deliberately (see `holodeck_duplicate`) — the ROOM claim below is
+        atomic, so the two land in two rooms and neither is overwritten.
+        """
+        want = (wanted or "").strip().lower()
+        if not want:
+            return ""
+        first = _program_room(sidecar, wanted)
+        try:
+            rest = [n for n in sorted(os.listdir(sidecar)) if n != first]
+        except OSError:
+            rest = []
+        for room in [first] + rest:
+            if room.startswith("."):     # `.git` and friends are not programs
+                continue
+            path = os.path.join(sidecar, room)
+            if not os.path.isdir(path) or not self._is_program_room(path):
+                continue
+            if self._room_program_name(sidecar, room).lower() == want:
+                return room
+        return ""
+
+    def _claim_duplicate_room(self, sidecar, source_name):
+        """A (name, room) THIS REQUEST NOW OWNS, derived from the one copied.
+
+        S172, TRAP 4, cured for real in fix round 1. Keyed off the ROOM and not
+        the name, because the room is the identity — but the room is now BUILT
+        (`_duplicate_room`) rather than slugged out of "X (copy N)", so the
+        marker survives the `_SLUG_MAX` cut on the long, whole-sentence names
+        every program the captain actually has is called. Before that, every
+        candidate for such a name came back as the SOURCE room, all 500 of them,
+        and the road the dialog recommends could not copy anything at all.
+
+        FIX ROUND 2 (N1, one road over): a free room is not a free NAME. The
+        walk counts ROOMS, so a copy the captain named "X (copy)" HIMSELF —
+        which the `_SLUG_MAX` cut can put in a room this walk never visits —
+        left the blank road free to hand the same name out again. That is the
+        pair the 409 next door refuses, arrived at by the road the dialog
+        RECOMMENDS, with no race and one captain. So each candidate name is
+        checked against the archive before its room is claimed.
+        """
+        base = self._DUPLICATE_SUFFIX.sub("", str(source_name or "").strip())
+        base = base or "Program"
+        n = 1
+        while n <= 500:
+            name = "%s (copy)" % base if n == 1 else "%s (copy %d)" % (base, n)
+            if self._named_program_room(sidecar, name):
+                n += 1                  # that name is already a card on the deck
+                continue
+            if self._claim_room(sidecar, _duplicate_room(base, n)):
+                return name, _duplicate_room(base, n)
+            n += 1
+        raise ActionError(
+            409, "there are already hundreds of copies of %r in this "
+            "holodeck's archive, so LCARS has run out of free names to give "
+            "this one. Duplicate it under a name of your own." % base)
+
+    def _claim_named_room(self, sidecar, wanted):
+        """The room for a name THE CAPTAIN TYPED — his name, kept exactly.
+
+        Two different names can land in one room: the ledgered unicode legacy
+        collapses anything with no ASCII in it to the shared `program` room, and
+        the `_SLUG_MAX` cut collapses any two long names that agree for their
+        first 48 characters — which, on a duplicate, is nearly every name he
+        could sensibly type, because the obvious one is the source's with a word
+        added. Refusing those told him to "duplicate it under a different name"
+        about a name that WAS different.
+
+        So a taken room is walked past, not refused: his name is kept and the
+        room gets a number. The ONE refusal left is a name that is already a
+        program's name — a card he could not tell from the one beside it — and
+        nothing is ever written into a room that is not this request's own.
+
+        FIX ROUND 2 (N1): "already a program's name" is asked of the ARCHIVE
+        (`_named_program_room`), not of the room the name slugs to. A duplicate
+        does not live in that room, so the guard was blind to every copy on the
+        deck — including the one the captain is looking at when he types its
+        name in.
+        """
+        taken = self._named_program_room(sidecar, wanted)
+        if taken:
+            raise ActionError(
+                409, "there is already a program called %r in this holodeck, "
+                "in the room %r. Two cards with one name is a pair you cannot "
+                "tell apart, so nothing has been copied and the original is "
+                "untouched. Duplicate it under a different name — or leave the "
+                "name blank and LCARS will give it a free one."
+                % (wanted, taken))
+        first = _program_room(sidecar, wanted)
+        n = 1
+        while n <= 500:
+            room = first if n == 1 else _room_with_marker(wanted, "%d" % n)
+            if self._claim_room(sidecar, room):
+                return room
+            n += 1
+        raise ActionError(
+            409, "there are already hundreds of rooms in this holodeck whose "
+            "names land beside %r, so LCARS has run out of free ones to put "
+            "this copy in. Duplicate it under a different name." % wanted)
+
+    def holodeck_duplicate(self, room=None, program=None, engine=None):
+        """POST /api/holodeck/duplicate — keep designing from a locked program.
+
+        A NEW room in the same sidecar, in `draft` state and fully editable,
+        carrying `mockup.html`, `concept.md`, `basis.md`, `attachments/` and —
+        the captain's ruling — `transcript.md`. The original is NEVER mutated:
+        it stays `sent`, locked, with its missionId, because it is the record of
+        what was actually filed.
+
+        The duplicate reads `draft` because it HAS NO SENT RECORD, not because
+        anything special-cased it: `_write_duplicate_record` takes the hand-off
+        line out of the copied header, and `_handoff_state` — the same one
+        function every card's lifecycle comes from — then answers `draft` on its
+        own.
+        """
+        sidecar = self._existing_sidecar()
+        src_dir = self._room_dir(sidecar, room)
+        src_room = os.path.basename(src_dir)
+        src_name = ""
+        try:
+            with open(os.path.join(src_dir, _TRANSCRIPT)) as fh:
+                src_name = _parse_transcript(fh.read())[0]
+        except (OSError, ValueError):
+            src_name = ""
+        src_name = src_name or src_room.replace("-", " ").strip() or src_room
+        mission = (self._sent_record(src_dir) or {}).get("missionId") or ""
+
+        # A TURN IN FLIGHT IS A ROOM BEING WRITTEN INTO, and copying it would
+        # take half a mockup. The same guard `delete` takes, for the same
+        # reason — and read under the same lock the turn claim uses.
+        want = os.path.realpath(src_dir)
+        with self._holodeck_lock:
+            busy = any(os.path.realpath(s.program_dir) == want and s.busy
+                       for s in self._holodeck.values())
+        if busy:
+            raise ActionError(
+                409, "that program has a turn running right now, and copying a "
+                "room while a worker is writing into it would take half a "
+                "mockup. Wait for the turn to come back, then duplicate it.")
+
+        # THE ROOM IS CLAIMED, NOT MERELY CHOSEN — creating it is how this
+        # request comes to own it, so nothing can be written into a room that
+        # belongs to somebody else (fix round 1, D1 + D6).
+        #
+        # THE NAME IS CHECKED, NOT CLAIMED, and that difference is deliberate
+        # (fix round 2, N1). A program's name is only on disk once its record is
+        # written, at the far end of a whole-room copy, so making the name check
+        # atomic would mean holding a lock across that copy and serialising
+        # every duplicate in the daemon. Measured cost of leaving it: N requests
+        # typing ONE name in the same instant produce N identically-named cards
+        # — which needs concurrent POSTs, not a captain in a dialog. Measured
+        # cost of the collision itself: none. The ROOM claim below IS atomic, so
+        # they land in N rooms, nothing is overwritten, and the `⌂ room` chip on
+        # the card tells them apart.
+        wanted = (program or "").strip()
+        if wanted:
+            new_name = wanted
+            new_room = self._claim_named_room(sidecar, new_name)
+        else:
+            new_name, new_room = self._claim_duplicate_room(sidecar, src_name)
+        new_dir = os.path.join(sidecar, new_room)
+        try:
+            for name in sorted(os.listdir(src_dir)):
+                if self._duplicate_skips(name):
+                    continue
+                src = os.path.join(src_dir, name)
+                dst = os.path.join(new_dir, name)
+                if name in (_TRANSCRIPT, _BASIS) and os.path.islink(src):
+                    # …WITH ONE EXCEPTION, and it is not a policy: these are the
+                    # two files this road REWRITES. `_write_duplicate_record`
+                    # gives the copy its own name and lineage, and
+                    # `_mark_basis_inherited` banners the grounding. Carried as
+                    # a link, either write would go straight through it and edit
+                    # whatever it points at — the SOURCE's record, or a file
+                    # outside the room entirely, which is the one thing every
+                    # other line in this loop is careful not to do. So they are
+                    # materialised as bytes, which is the same content the
+                    # source itself reads through the link.
+                    shutil.copy2(src, dst, follow_symlinks=True)
+                elif os.path.islink(src):
+                    # A LINK IS COPIED AS A LINK (fix round 1, D4). It used to
+                    # be dropped here, on the reasoning that copying it "would
+                    # put that same escape in a second room" — but the escape is
+                    # refused at READ time by `_room_file_path`, in the copy
+                    # exactly as in the source, so nothing was bought; and the
+                    # rule was not even applied one directory down, where
+                    # `copytree(symlinks=False)` FOLLOWED the link and wrote the
+                    # bytes from outside the room into the duplicate as a real
+                    # file the jail then served. So the copy was at once more
+                    # permissive than its source and more lossy than it — a
+                    # top-level linked asset silently vanished from a room the
+                    # dialog promises carries "anything you pasted in".
+                    #
+                    # A DUPLICATE BEHAVES EXACTLY AS ITS SOURCE DOES. Rooms all
+                    # sit at one depth in the sidecar, so a relative link
+                    # resolves to the same place from either of them.
+                    os.symlink(os.readlink(src), dst)
+                elif os.path.isdir(src):
+                    shutil.copytree(src, dst, symlinks=True,
+                                    ignore=shutil.ignore_patterns(".*"))
+                else:
+                    shutil.copy2(src, dst)
+        except (OSError, shutil.Error) as exc:
+            # NOTHING HALF-COPIED IS LEFT ON THE DECK. A partial room would list
+            # as a program (it has a transcript) with somebody else's mockup in
+            # it and no way to tell.
+            shutil.rmtree(new_dir, ignore_errors=True)
+            raise ActionError(
+                502, "LCARS could not copy this program into its new room, so "
+                "nothing was duplicated and the original is untouched: %s"
+                % exc)
+        when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if not self._write_duplicate_record(new_dir, new_name, src_room,
+                                            src_name, mission, when):
+            shutil.rmtree(new_dir, ignore_errors=True)
+            raise ActionError(
+                502, "the copy was made but LCARS could not write the new "
+                "program's own record into it — so it would not know its own "
+                "name, and it would still read as the one that was sent to "
+                "Align. Nothing has been left behind and the original is "
+                "untouched. Check %s is writable, then duplicate it again."
+                % sidecar)
+        self._mark_basis_inherited(new_dir, src_name)
+        committed = True
+        with self._sidecar_git_lock(sidecar):
+            try:
+                # ONLY THIS ROOM IS STAGED — the captain's own files in the
+                # archive are his (the rule `delete` follows for the same
+                # reason: leaning on `git add -A` is how a commit "succeeds"
+                # over a room git has never heard of).
+                self._git(sidecar, ["add", "-A", "--", new_room],
+                          "record the duplicated program")
+                self._git(sidecar,
+                          ["commit", "-q", "--no-gpg-sign", "-m",
+                           "holodeck(%s): duplicated from %s — a new program "
+                           "carrying its history" % (new_name, src_room)],
+                          "record the duplicated program")
+            except ActionError:
+                committed = False
+        # AND ONTO THE EXISTING ROAD. `holodeck_open` mints the fresh session
+        # and hands the whole transcript to a fresh worker via `_replay_clause`
+        # — which reads this room's own origin record and says, in its own
+        # sentence, that none of that history is binding.
+        meta = self.holodeck_open(room=new_room, engine=engine)
+        # ONE VOICE. The warm-restart message is the account of a program being
+        # PICKED BACK UP, and this is not that; the duplicate's own message says
+        # everything that one said (a fresh worker, handed the whole transcript)
+        # plus the two facts only this road knows.
+        meta.pop("warmRestart", None)
+        meta["committed"] = committed
+        meta["duplicated"] = {
+            "kind": "duplicated",
+            "from": src_room, "fromProgram": src_name, "missionId": mission,
+            "committed": committed,
+            "message": (
+                "Duplicated %s into a new program, %s (room %s). It carries the "
+                "mockup, the concept doc%s and the WHOLE conversation — the %s "
+                "answering your next turn is a fresh one, handed that "
+                "transcript as context, and nothing in it is binding: this is a "
+                "new program, so change whatever you like. %s%s"
+                % (src_name, new_name, new_room,
+                   ", the grounding"
+                   if self._basis_file_in(new_dir) else "",
+                   os.path.basename(meta.get("engine")
+                                    or self.worker_bin or "worker"),
+                   ("%s stays exactly as it was handed over to mission %s and "
+                    "is untouched." % (src_name, mission)) if mission
+                   else ("%s is untouched." % src_name),
+                   "" if committed else
+                   " Git could not commit the new room to the archive, so it is "
+                   "on disk but not yet in the sidecar's history.")),
+        }
+        return meta
+
+    @staticmethod
+    def _write_duplicate_record(program_dir, new_name, src_room, src_program,
+                                mission_id, when):
+        """Make the COPIED transcript this program's own record. True on success.
+
+        Three edits, all inside the header block LCARS itself authored when the
+        original was named — not one line a model wrote is rewritten or moved:
+
+          • the `# ` heading becomes THIS program's name;
+          • the hand-off line GOES. It is the fact that a mission was briefed on
+            those exact files, and it belongs to the program that was actually
+            filed. Left in place it would lock the duplicate on arrival, which
+            is the one thing this whole road exists to undo;
+          • an older duplicate's lineage line goes too, and is replaced with
+            this one — a duplicate points at ITS parent, not at its grandparent.
+        """
+        path = os.path.join(program_dir, _TRANSCRIPT)
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            return False
+        text = text.replace("\r\n", "\n")
+        parts = re.split(r"(?m)^(## )", text, maxsplit=1)
+        head = parts[0]
+        rest = "".join(parts[1:])
+        lines = head.split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("# "):
+                lines[i] = "# %s" % new_name
+                break
+        else:
+            lines.insert(0, "# %s" % new_name)
+        head = "\n".join(lines)
+        head = _SENT_LINE.sub("", head)
+        head = _ORIGIN_LINE.sub("", head)
+        head = re.sub(r"\n{3,}", "\n\n", head).rstrip("\n") + "\n\n"
+        head += _origin_header_line(src_room, src_program, mission_id, when)
+        try:
+            with open(path, "w") as fh:
+                fh.write(head + rest)
+        except OSError:
+            return False
+        return True
+
+    def _mark_basis_inherited(self, program_dir, src_program):
+        """TRAP 2's ruling, applied to the file itself: the grounding comes over
+        WHOLE and says at the top that it may no longer be true.
+
+        Best-effort and never fatal — a duplicate whose basis could not be
+        re-marked is still a duplicate, and the payload's `basisInherited` is
+        derived from the LINEAGE RECORD rather than from this write, so the deck
+        says it either way.
+        """
+        name = self._basis_file_in(program_dir)
+        if not name:
+            return False
+        path = os.path.join(program_dir, name)
+        try:
+            when = time.strftime("%Y-%m-%d",
+                                 time.localtime(os.path.getmtime(path)))
+            with open(path) as fh:
+                body = fh.read()
+            with open(path, "w") as fh:
+                fh.write(_basis_with_inherited_mark(body, src_program, when))
+        except OSError:
+            return False
+        return True
+
+    def _origin_record(self, program_dir):
+        """This program's DUPLICATE lineage, read off disk, or None. The same
+        road `_sent_record` takes, reading the same one durable home."""
+        try:
+            with open(os.path.join(program_dir, _TRANSCRIPT)) as fh:
+                return _parse_origin(fh.read())
+        except (OSError, ValueError):
+            return None
+
+    def _origin_fields(self, program_dir):
+        """The S172 keys, for BOTH payload shapes, from ONE function.
+
+        The live `_holodeck_meta` and the on-disk listing both call this, for
+        the reason `_handoff_state` and `_busy_fields` are each one function:
+        two copies of the rule is exactly how a live card and a restarted one
+        start disagreeing about what a program came from.
+
+        ADDITIVE BY CONSTRUCTION. An ordinary program gets an EMPTY DICT, so
+        its payload is byte-identical to the one every S124–S171 test pins —
+        and a surface reading the absence of `basisInherited` reads it
+        correctly, because absence is the honest answer for a grounding that
+        really was read for this program.
+        """
+        rec = self._origin_record(program_dir)
+        if not rec:
+            return {}
+        out = {"duplicatedFrom": rec}
+        # THE ROOM MUST SAY IT (trap 2), in the payload the deck renders as well
+        # as in the file. Keyed off the LINEAGE, not off the write that marked
+        # the file: a basis whose re-marking failed is still an inherited one.
+        if self._basis_file_in(program_dir):
+            out["basisInherited"] = True
+            out["basisNotice"] = (
+                "This program's basis.md came over with the duplicate: it is "
+                "what LCARS read out of the project for “%s”, not a fresh look "
+                "at it. If that design has been built since, the app has moved "
+                "and the basis may be stale — check anything you build on it "
+                "against the project as it is now."
+                % (rec.get("program") or "the original program"))
+        return out
+
     # ── the seam itself ────────────────────────────────────────────────────
     @staticmethod
     def _switch_to_design(sess):
@@ -7233,6 +7848,9 @@ class Actions(LogFacts):
                 "openedAt": sess.opened_at,
                 "lastTouched": sess.last_touched}
         meta.update(self._handoff_state(sess.program_dir))
+        # S172 — WHAT THIS PROGRAM WAS DUPLICATED FROM, when it was. Empty for
+        # every ordinary program; see `_origin_fields`.
+        meta.update(self._origin_fields(sess.program_dir))
         # S128 (FL-002) — IS A TURN IN FLIGHT RIGHT NOW, and since when. Empty
         # for an idle program, so the shape above is untouched the rest of the
         # time. See `_busy_fields`.
@@ -7380,6 +7998,10 @@ class Actions(LogFacts):
         # function reading the same file. Two copies of this is exactly how a
         # restarted card and a live one start disagreeing about a lock.
         out.update(self._handoff_state(program_dir))
+        # S172 — and the SAME lineage rule, from the same function reading the
+        # same file, so a card read off disk and a live one cannot disagree
+        # about what a program came from.
+        out.update(self._origin_fields(program_dir))
         # S128 (FL-002) — and the SAME rule for the in-flight fact, asked of the
         # same function. A room on disk is not a conversation, so the honest
         # answer is always "no keys" — but it is the one function that decides
@@ -8955,6 +9577,10 @@ class Actions(LogFacts):
         """
         if not sess.restarted:
             return ""
+        # S172 — WHICH ROAD THIS ROOM CAME IN ON. A duplicate is handed the
+        # same transcript by the same mechanism, and must be told something
+        # completely different about it; see `_duplicate_replay_clause`.
+        origin = self._origin_record(sess.program_dir)
         path = os.path.join(sess.program_dir, _TRANSCRIPT)
         try:
             with open(path) as fh:
@@ -8962,6 +9588,8 @@ class Actions(LogFacts):
         except OSError:
             body = ""
         if not body.strip():
+            if origin:
+                return self._duplicate_replay_clause(sess, origin, "", "")
             return ("\n\nYOU ARE PICKING THIS PROGRAM BACK UP. It already has a "
                     "room on disk (the files beside you) but no transcript, so "
                     "there is no conversation to read — look at what is there "
@@ -8974,12 +9602,56 @@ class Actions(LogFacts):
             cut = ("\n\n(Only the most recent part of the transcript is quoted "
                    "here — read `transcript.md` in your working directory for "
                    "all of it.)")
+        if origin:
+            return self._duplicate_replay_clause(sess, origin, body, cut)
         return ("\n\nWHAT HAS HAPPENED SO FAR — you are picking this program "
                 "back up, and you are a FRESH session: none of this is in your "
                 "memory, so read it. The whole record is `transcript.md` in "
                 "your working directory, and every file it mentions is already "
                 "on disk beside you. Carry on from where it stops; do not start "
                 "the mockup over.%s\n\n%s" % (cut, body.strip()))
+
+    def _duplicate_replay_clause(self, sess, origin, body, cut):
+        """S172, TRAP 3 — a DUPLICATE's history is CONTEXT, never a contract.
+
+        `_replay_clause`'s reopen sentence — "carry on from where it stops; do
+        not start the mockup over" — is exactly right for a program being picked
+        back up and ACTIVELY WRONG here. The captain duplicated this design
+        because he wants to change something about it, and a worker handed the
+        old conversation with the reopen framing will treat what is in it as
+        settled and argue with him out of his own transcript.
+
+        So the duplicate gets its own sentence, and it says the three things
+        only this road knows: this is a NEW program, nothing in the record binds
+        it, and the original is untouched.
+
+        IT DOES NOT SPEAK ABOUT `basis.md` (fix round 1, D2). It used to, at the
+        tail of this paragraph — and `_basis_clause` was up at the top of the
+        same prompt telling the worker the opposite in the imperative. The
+        inherited-grounding caution belongs in the slot that talks about the
+        grounding, and it is said there, once.
+        """
+        mission = (origin.get("missionId") or "").strip()
+        filed = ("It was filed as mission `%s`, so it is already being built "
+                 "somewhere else." % mission) if mission else \
+                "It was never filed."
+        record = ("\n\n%s" % body.strip()) if body.strip() else (
+            "\n\n(There is no conversation in the record — look at the files "
+            "beside you instead.)")
+        return ("\n\nTHIS IS A NEW PROGRAM CONTINUING AN OLD DESIGN. It was "
+                "duplicated from the program “%s” (room `%s`). %s That program "
+                "is UNTOUCHED and stays exactly as it was handed over — nothing "
+                "you do here changes it.\n\nWhat follows is THAT program's "
+                "conversation, carried over so you can see why the design looks "
+                "the way it does. You are a FRESH session and none of it is in "
+                "your memory, so read it — but NOTHING IN IT IS BINDING. The "
+                "captain duplicated this design precisely because he wants to "
+                "change something, so where what he asks for now contradicts a "
+                "decision in the history, WHAT HE ASKS FOR NOW WINS: do not "
+                "argue from the record and do not tell him something was "
+                "already settled.%s%s"
+                % (origin.get("program") or "the original",
+                   origin.get("room") or "", filed, cut, record))
 
     @staticmethod
     def _replay_cap():
@@ -8995,8 +9667,35 @@ class Actions(LogFacts):
         project buys nothing, because it happened in a session this one never
         resumes. The basis is on disk in the room; the prompt points at it by
         name rather than inlining it, so a long basis costs one Read, not one
-        prompt the size of a stylesheet."""
-        if not (sess.grounded and self._basis_file(sess)):
+        prompt the size of a stylesheet.
+
+        FIX ROUND 1 (D2) — AND ON A DUPLICATE THIS SLOT SAID THE OPPOSITE. The
+        clause below is an imperative claim about the captain's project AS IT
+        IS; a duplicate's basis is a record of the project as it WAS, because he
+        duplicates a design once its mission has landed — exactly when the app
+        it was read from has moved. The room, the deck and the file itself all
+        said so, and this — the FIRST and loudest thing the worker read about
+        `basis.md` — did not; the caution that followed a thousand characters
+        later lost the argument on position. So a duplicated room gets this
+        slot, and there is ONE voice in it.
+        """
+        if not self._basis_file(sess):
+            return ""
+        origin = self._origin_record(sess.program_dir)
+        if origin:
+            return ("\n\nABOUT THE GROUNDING: `basis.md`, in your working "
+                    "directory, is INHERITED and MAY BE STALE. It is what "
+                    "LCARS read out of the captain's real project for “%s”, "
+                    "the program this one was duplicated from — NOT a fresh "
+                    "look at that project. If that design has been built "
+                    "since, the app has moved and the colour tokens, type "
+                    "scale, spacing and component shapes in it describe what "
+                    "it USED to be. Read it for what this design was built to, "
+                    "and treat it as history: check anything you build on it "
+                    "against the project as it is now, and say what you "
+                    "assumed rather than asserting a token is still there."
+                    % (origin.get("program") or "the original program"))
+        if not sess.grounded:
             return ""
         return ("\n\nSTART FROM THE GROUNDING: `basis.md`, in your working "
                 "directory, is what LCARS read out of the captain's real "

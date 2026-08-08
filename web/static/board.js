@@ -8655,12 +8655,38 @@ function holoProgramsPane() {
     if (life === "sent" && p.missionId) {
       prow.appendChild(el("span", "pmission", "▦ " + p.missionId));
     }
+    /* S172 — WHERE A DUPLICATE CAME FROM, on the card. "Which one was that"
+       is the question the program list exists to answer, and a duplicate's
+       whole point is that it continues an earlier design — so the lineage the
+       daemon records has to be visible where a captain is choosing between
+       two cards that look alike. The mission the parent was filed as is in the
+       title rather than on the face: it is the parent's number, not this
+       program's, and printing it beside a `draft` chip would read as this
+       one's. */
+    if (p.duplicatedFrom && p.duplicatedFrom.room) {
+      var dup = el("span", "pdup", "⧉ from " + (p.duplicatedFrom.program
+                                                || p.duplicatedFrom.room));
+      dup.title = "Duplicated from " + p.duplicatedFrom.room
+        + (p.duplicatedFrom.missionId
+           ? ", which was filed as mission " + p.duplicatedFrom.missionId : "");
+      prow.appendChild(dup);
+    }
     if (onDisk) {
       // Said on the card, not only in a class: this program is in the archive
       // and nothing is talking to it right now.
       prow.appendChild(el("span", "pdisk", "⌾ in the archive"));
     }
     prow.appendChild(el("span", "grow"));
+    /* S172 — ⧉ DUPLICATE, on EVERY card INCLUDING A LOCKED ONE. That is the
+       state it exists for: a sent program is read-only for ever (the daemon
+       409s every turn on it, because it is the exact design a mission was
+       briefed on), and duplicating it is the only way to keep designing from a
+       design that already shipped. Rendering it on drafts only would hide the
+       control in precisely the case it was built for. */
+    prow.appendChild(applyWriteState(holoBtn("⧉ Duplicate", "small",
+                                             function () {
+      holoConfirmDuplicate(p);
+    })));
     /* DELETE IS A GIT OPERATION, and the confirmation says so. The room is
        `git rm`'d and committed, so the honest word for this is "removed from
        the deck", not "deleted forever". */
@@ -8785,13 +8811,21 @@ function holoRepoName() {
    say when it is not: `basisFile` is the daemon saying the file really exists,
    so the link can never 404, and without it the control stays visibly off with
    the reason rather than pointing into thin air. */
+/* S172 — AND WHOSE GROUNDING IT IS. On a DUPLICATE the basis came over with the
+   copy: it is what LCARS read for the ORIGINAL program, not a fresh look at
+   this project. By the time a captain duplicates a design its mission has
+   usually landed, so the app has MOVED and the basis describes what it used to
+   be. `basisInherited` is the daemon's own answer and `basisNotice` is its own
+   sentence for why — this side adds not one word, it only stops asserting the
+   grounding is this project's current one. */
 function holoBasisNode(p, label, cls) {
   if (p.basisFile) {
     var link = el("a", cls, label);
     link.setAttribute("href", holoPreviewPath(p, p.basisFile));
     link.setAttribute("target", "_blank");
     link.setAttribute("rel", "noopener noreferrer");
-    link.title = "read basis.md — what the holodeck found in " + holoRepoName();
+    link.title = p.basisInherited ? p.basisNotice
+      : "read basis.md — what the holodeck found in " + holoRepoName();
     link.setAttribute("data-ctl", label);
     link.setAttribute("data-wired", "1");
     return link;
@@ -8811,8 +8845,36 @@ function holoChatPane(p) {
   head.appendChild(holoDrawerToggle());
   head.appendChild(el("div", "ct", p.program || "Program"));
   if (p.grounded || p.mode === "grounding") {
-    head.appendChild(holoBasisNode(p, "▣ grounded in " + holoRepoName(),
-                                   "ground-chip"));
+    /* S172 — the chip must not keep saying "grounded in <repo>" over a basis
+       that came over with a duplicate. The words carry the fact, not a class:
+       a new class needs a stylesheet rule to reach the screen, and text always
+       does. */
+    head.appendChild(holoBasisNode(
+      p,
+      p.basisInherited ? "▣ inherited grounding — may be stale"
+        : "▣ grounded in " + holoRepoName(),
+      "ground-chip"));
+  }
+  /* FIX ROUND 1 (D7) — AND WHOSE CONVERSATION IS IN THIS PANE. A duplicate
+     opens with the PARENT'S whole chat replayed into it, and the only thing
+     that ever said so was the banner — which is transient. One refresh later
+     the header named this program, the turns below it were somebody else's,
+     and nothing on the screen joined the two up; the card's ⧉ from chip is in
+     the other pane and gone the moment the drawer shuts. The header is where a
+     captain looks to know WHAT HE IS READING, so the fact lives here too. It
+     states the lineage and nothing more — that the history is not binding is
+     the worker's instruction and the banner's sentence, and repeating it here
+     would be the second voice this deck keeps having to remove. */
+  if (p.duplicatedFrom && p.duplicatedFrom.room) {
+    var cont = el("span", "cont-chip",
+                  "⧉ continuing " + (p.duplicatedFrom.program
+                                     || p.duplicatedFrom.room));
+    cont.title = "The conversation below came over from " + p.duplicatedFrom.room
+      + (p.duplicatedFrom.missionId
+         ? ", which was filed as mission " + p.duplicatedFrom.missionId : "")
+      + ". This is a new program — nothing in that history is binding, and the "
+      + "one it came from is untouched.";
+    head.appendChild(cont);
   }
   head.appendChild(el("span", "grow"));
   /* FIX ROUND 2 — "WARM" IS A FACT THE DAEMON MEASURES, NOT A DECORATION.
@@ -9615,6 +9677,20 @@ function holoPreviewEmpty(p) {
     none.appendChild(el("p", null,
       "The preview shows the mockup file itself, straight from the program's "
       + "room in the sidecar. Ask for a screen and it will appear here."));
+    return none;
+  }
+  /* S172 — a DUPLICATE never ran a pass; its basis came over with the copy.
+     "This program read <repo>" is a claim about work that did not happen here,
+     and on a duplicate it is usually a claim about a project that has since
+     moved. */
+  if (p.basisInherited) {
+    none.appendChild(el("div", "t", "Nothing on the holodeck yet"));
+    none.appendChild(el("p", null, p.basisNotice
+      || "This program's grounding came over with the duplicate."));
+    none.appendChild(holoBasisNode(p, "▣ Read basis.md", "basis-link"));
+    none.appendChild(el("p", "next",
+      "Describe a screen, a component or a whole flow in the chat and it will "
+      + "be built here."));
     return none;
   }
   none.appendChild(el("div", "t", "Grounding pass complete"));
@@ -10707,6 +10783,81 @@ function holoOpen(room, engine) {
   });
 }
 
+/* ── S172: duplicating a program, carrying its history ────────────────────
+   The captain's ruling is that a duplicate BRINGS THE CHAT OVER, so the dialog
+   says that before the button: what he gets is not a copy of the files, it is a
+   NEW program that remembers the conversation and is editable from the first
+   turn. It also states the two things that would otherwise be a surprise later
+   — the original stays exactly as it was handed over, and the change list does
+   NOT come over, because that list describes his project as it was when this
+   design was filed.
+
+   THE NAME FIELD IS EMPTY ON PURPOSE. The daemon owns room naming: it is the
+   only side that can see which rooms are taken, and a duplicate is the one
+   place in the product where a collision is likely (the obvious name is derived
+   from one that already exists). Blank is the road that cannot collide; typing
+   a name is the override, and a name whose room is taken is REFUSED there
+   rather than written over. */
+function holoConfirmDuplicate(p) {
+  var room = p.room || holoBase(p.programDir);
+  var sent = holoLifecycle(p) === "sent";
+  var m = modal("⧉ Duplicate program", { headClass: "teal" });
+  m.body.appendChild(el("p", null,
+    "Duplicate " + (p.program || room) + " (" + room + ") into a new program?"));
+  m.body.appendChild(el("p", null,
+    "The copy carries the mockup, the concept doc, the grounding, anything you "
+    + "pasted in — and the WHOLE conversation, so the holodeck can see why the "
+    + "design looks the way it does. It opens as a draft you can type into "
+    + "straight away, and nothing in that history is binding."));
+  m.body.appendChild(el("p", null,
+    (sent
+      ? "This program stays locked and exactly as it was handed over"
+        + (p.missionId ? " to mission " + p.missionId : "") + " — nothing here "
+        + "touches it. "
+      : "This program is left exactly as it is. ")
+    + "The change list does not come over: it describes your project as it was "
+    + "when this design was drafted, so the copy starts without one and offers "
+    + "to work out a fresh one when you send it."));
+  var f = el("div", "field");
+  f.appendChild(label("Name for the copy"));
+  var name = el("input");
+  name.type = "text";
+  name.placeholder = "leave blank and LCARS gives it a free name";
+  name.setAttribute("data-holo", "duplicate-name");
+  f.appendChild(name);
+  m.body.appendChild(f);
+  var err = el("div", "errline"); err.hidden = true;
+  m.body.appendChild(err);
+  var go = applyWriteState(holoBtn("⧉ Duplicate Program", "go", function () {
+    go.disabled = true;
+    go.textContent = "Duplicating…";
+    var body = { room: room };
+    if ((name.value || "").trim()) body.program = name.value.trim();
+    postWrite("/api/holodeck/duplicate", body, function (state) {
+      closeOverlay();
+      /* STRAIGHT INTO THE NEW ROOM. The whole point of the gesture is to keep
+         designing, and the daemon has already opened it (a fresh session, the
+         transcript replayed) — leaving him on the locked card he clicked from
+         would be the one place he cannot type. */
+      HOLO.activeId = state.sessionId;
+      HOLO.banner = null;
+      if (state.duplicated && state.duplicated.message) {
+        holoSetBanner("duplicated", { message: state.duplicated.message });
+      }
+      holoRefresh();
+    }, function (msg) {
+      go.disabled = false;
+      go.textContent = "⧉ Duplicate Program";
+      showErr(err, msg);
+    });
+  }));
+  m.foot.appendChild(el("span", "grow"));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  return m;
+}
+
 /* ── S126: deleting a program, without deleting the work ──────────────────
    `git rm` + a commit, so the answer to "I removed the wrong one" is a
    checkout. The dialog says that BEFORE the button, because a confirmation
@@ -10807,6 +10958,10 @@ var HOLO_BANNERS = {
      is a fresh one carrying the transcript. The daemon's message says exactly
      that; the title must not undo it. */
   restart:    ["note",   "Picked up where you left off"],
+  /* S172 — a NEW program carrying an old one's history. NOT titled "copied":
+     the chat came over too, which is the whole ruling, and the daemon's message
+     is the account of what that means. */
+  duplicated: ["note",   "Duplicated — a new program, carrying the chat"],
   removed:    ["note",   "Program removed — the archive kept it"],
 };
 

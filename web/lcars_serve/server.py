@@ -481,6 +481,15 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                                              engine=body.get("engine"))
             if path == "/api/holodeck/delete":
                 return actions.holodeck_delete(room=body.get("room"))
+            # S172 — DUPLICATE a program, carrying its history. Keyed by ROOM
+            # for the same reason `open` and `delete` are: the program it is
+            # reached from is normally a LOCKED, sent one this daemon may never
+            # have held. `program` is an optional name for the copy — omitted,
+            # the daemon picks one whose room is free.
+            if path == "/api/holodeck/duplicate":
+                return actions.holodeck_duplicate(room=body.get("room"),
+                                                  program=body.get("program"),
+                                                  engine=body.get("engine"))
             if path.startswith("/api/holodeck/"):
                 rest = path[len("/api/holodeck/"):]
                 parts = [p for p in rest.split("/") if p != ""]

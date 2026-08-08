@@ -1354,6 +1354,19 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .ground-chip{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.04em;
   padding:2px 8px;border-radius:9px;background:rgba(153,119,255,.10);
   border:1px solid rgba(153,119,255,.4);color:#b7a2ff;white-space:nowrap}
+/* FIX ROUND 1 (D7) — WHOSE CONVERSATION IS IN THIS PANE. A duplicated room
+   opens with the PARENT'S whole chat in it, and the only thing that ever said
+   so was the transient banner: one refresh later the history reads as this
+   program's own work. Same shape and same selector depth as `.ground-chip`
+   beside it so neither can lose to the other on specificity or source order,
+   in the deck's own accent rather than the grounding's violet — it is where
+   this room came from, not a warning. It WRAPS, for the reason `.pdup` does:
+   the parent is named with the captain's whole idea sentence and a chip that
+   ellipsises it answers "which one was that" with nothing. */
+.cont-chip{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.04em;
+  padding:2px 8px;border-radius:9px;background:rgba(45,227,199,.08);
+  border:1px solid var(--holo-line);color:var(--holo-grid);
+  max-width:100%;overflow-wrap:anywhere}
 .transcript{flex:1 1 auto;overflow-y:auto;padding:16px 18px;display:flex;
   flex-direction:column;gap:14px;min-height:0}
 .turn{max-width:62ch}
@@ -1804,6 +1817,25 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   background:rgba(45,227,199,.10)}
 .prog .prow .pmission{font-family:var(--font-mono);font-size:9px;
   letter-spacing:.06em;color:var(--holo-grid);white-space:nowrap}
+/* S172 — WHERE A DUPLICATE CAME FROM. Same weight and selector depth as the
+   two chips beside it (`.pdisk`, `.pmission`), so it cannot lose on
+   specificity or source order to either of them — S162's amber warning
+   rendered as muted metadata for exactly that reason. Dim, like `.pdisk`: it
+   is provenance, not a state the captain has to act on.
+
+   FIX ROUND 1 (D3) — AND IT HAS TO BE READABLE. It shipped clipped to 14ch:
+   measured in Chrome, 76px shown against 109px needed for "⧉ from Tile editor"
+   and 76 against 151 for "⧉ from Tile editor (copy)", so BOTH painted as
+   "⧉ from Tile…" — the same string on two cards with different parents, and
+   "⧉ from Give…" on the captain's real room. A chip that answers "which one
+   was that" with the same six characters for every parent answers nothing.
+   So no cap and no ellipsis: `.prow` is already `flex-wrap:wrap`, so a chip
+   too wide for the space left drops to its own line instead of pushing the
+   card open, and `overflow-wrap:anywhere` (the rule `.pm .proom` already uses
+   for room names) breaks a parent name too long even for that. */
+.prog .prow .pdup{font-family:var(--font-mono);font-size:9px;
+  letter-spacing:.06em;color:var(--lcars-text-dim);
+  max-width:100%;overflow-wrap:anywhere}
 
 /* The hand-off dialog's own two blocks. `.rides` names WHAT travels; the
    guidance block is shown VERBATIM (it is `<pre>`) because it is the exact

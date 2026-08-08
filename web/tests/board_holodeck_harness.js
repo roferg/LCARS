@@ -502,6 +502,11 @@ switch (cfg.act) {
       meta: txt(one(n, ".pm")),
       onDisk: n.classList.contains("ondisk"),
       controls: controlsIn(n).map((c) => c.label),
+      /* S172 — the chip row's own text and the lineage chip's title, so a
+       * test can read what a captain reads off the card rather than
+       * re-reading the payload it was handed. */
+      prow: txt(one(n, ".prow")),
+      dupTitle: one(n, ".pdup") ? (one(n, ".pdup").title || "") : null,
     }));
     const intent = one(deck(), ".pvt-b.intent");
     out.intentTag = intent ? intent.tag : null;
@@ -533,6 +538,16 @@ switch (cfg.act) {
     out.groundChipTag = chip ? chip.tag : null;
     out.groundChipHref = chip ? chip.getAttribute("href") : null;
     out.groundChipReason = chip ? (chip.getAttribute("data-reason") || "") : "";
+    /* S172 — WHAT THE CHIP SAYS, not just whether it is a link. An inherited
+     * basis must not be labelled as this project's own grounding. */
+    out.groundChipText = chip ? txt(chip) : null;
+    out.groundChipTitle = chip ? (chip.title || "") : "";
+    /* FIX ROUND 1 (D7) — the chat header's LINEAGE chip: whose conversation is
+     * in the pane. A class of its own, so neither this nor the grounding chip
+     * can be read for the other. */
+    const cont = one(deck(), ".cont-chip");
+    out.contChipText = cont ? txt(cont) : null;
+    out.contChipTitle = cont ? (cont.title || "") : "";
     const bodies = many(deck(), ".turn.holo .body");
     const last = bodies.length ? bodies[bodies.length - 1] : null;
     /* THE READABLE REPLY vs THE FOLDED TRACE, kept apart (fix round 2). The
@@ -1016,6 +1031,42 @@ switch (cfg.act) {
       const go = many(REGISTRY.overlay, "[data-ctl]")
         .concat(many(docRoot, "[data-ctl]"))
         .filter((n) => /delete program/i.test(n.getAttribute("data-ctl") || ""));
+      if (go.length) go[go.length - 1].click();
+    }
+    const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
+    out.path = post ? post.url : null;
+    out.body = post ? JSON.parse(post.opts.body) : null;
+    break;
+  }
+  /* S172 — ⧉ DUPLICATE, driven for real: find the control on the card, click
+   * it, read the confirmation, optionally type a name, then click the dialog's
+   * own button and report the POST it made. */
+  case "duplicateProgram": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    FETCHES.length = 0;
+    const rows = many(deck(), ".prog");
+    const row = rows.find(
+      (n) => !cfg.room || txt(one(n, ".pm")).indexOf(cfg.room) !== -1)
+      || rows[0];
+    const dup = row && many(row, "[data-ctl]")
+      .find((c) => /duplicate/i.test(c.getAttribute("data-ctl") || ""));
+    out.hasControl = !!dup;
+    if (dup) dup.click();
+    out.confirmText = txt(REGISTRY.overlayBody);
+    const field = one(REGISTRY.overlayBody, "[data-holo=duplicate-name]");
+    out.hasNameField = !!field;
+    // the property, because that is what board.js sets on an <input> (the
+    // house idiom `openNewProgram` uses) — not an attribute.
+    out.namePlaceholder = field
+      ? (field.placeholder || field.getAttribute("placeholder") || "") : null;
+    if (field && cfg.name) field.value = cfg.name;
+    if (!cfg.stopAtConfirm) {
+      const go = many(REGISTRY.overlay, "[data-ctl]")
+        .concat(many(docRoot, "[data-ctl]"))
+        .filter((n) => /duplicate program/i.test(
+          n.getAttribute("data-ctl") || ""));
       if (go.length) go[go.length - 1].click();
     }
     const post = FETCHES.find((f) => (f.opts.method || "") === "POST");

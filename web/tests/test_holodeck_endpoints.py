@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 
@@ -50,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import _fixtures as fx  # noqa: E402
 from lcars_serve.local_adapter import LocalAdapter  # noqa: E402
 from lcars_serve.server import make_server  # noqa: E402
-from lcars_serve.actions import Actions  # noqa: E402
+from lcars_serve.actions import Actions, _program_room, _SLUG_MAX  # noqa: E402
 
 
 # ── the recording worker stub ────────────────────────────────────────────────
@@ -4116,7 +4117,15 @@ class HandoffLifecycleTest(HandoffBase):
         self.assertEqual(st, 409, body)
         msg = body["error"]
         self.assertIn(self.mint, msg)
-        self.assertIn("DUPLICATE TO KEEP DESIGNING", msg)
+        # S172 — the refusal NAMES THE WAY ON, by the label of the control that
+        # does it. It used to name a road that did not exist ("⧉ DUPLICATE TO
+        # KEEP DESIGNING … is not built yet, so for now start a new program
+        # under a different name"); it is built now, so this pins the control's
+        # own words and the fact that the refusal points somewhere real.
+        self.assertIn("⧉ DUPLICATE", msg)
+        self.assertIn("way on", msg)
+        self.assertIn("stays exactly as it was handed over", msg)
+        self.assertNotIn("not built", msg.lower())
         for jargon in ("traceback", "409", "actionerror"):
             self.assertNotIn(jargon, msg.lower(), jargon)
         # and no worker was spawned for the refused turn.
@@ -8830,6 +8839,889 @@ class S169FalseStillOpenTest(HandoffBase):
         # SAID to a model, and saying them is the opposite of matching them.
         self.assertIn("unchanged", _HANDOFF_DERIVE_PROMPT)
         self.assertIn("kept", _HANDOFF_DERIVE_PROMPT)
+
+
+# ══ S172 — DUPLICATE A PROGRAM, CARRYING ITS HISTORY ════════════════════════
+#
+# A SENT program is locked forever (`_refuse_if_sent`), and duplicate-to-keep-
+# designing was ruled in S123 and never built. The captain's ruling for this
+# round is that the duplicate BRINGS THE CHAT OVER: it is a CONTINUATION of an
+# old design, not a clean copy of its outputs, so a worker in the new room knows
+# WHY the mockup looks the way it does.
+#
+# Everything here rides S126's existing roads — `_ensure_sidecar`, the room, the
+# sidecar git repo, and `holodeck_open`'s warm-restart replay. There is no
+# second copy mechanism, and these suites are written to fail if one appears.
+class DuplicateBase(HandoffBase):
+    """A program with a REAL room: mockup, concept doc, basis and an
+    attachment, all written by a real TURN rather than planted behind the
+    daemon's back (HandoffBase's rule, for the same reason)."""
+
+    BASIS = ("# What the project already looks like\n\n"
+             "- amber is `--lcars-amber: #ff9c00`\n")
+    SHOT = "PNG-BYTES-STAND-IN"
+
+    def _drafted(self, program="Command palette"):
+        self._set_turns({"stdout": "Built the palette.",
+                         "writes": [{"path": "mockup.html",
+                                     "content": self.MOCKUP},
+                                    {"path": "concept.md",
+                                     "content": self.CONCEPT},
+                                    {"path": "basis.md",
+                                     "content": self.BASIS},
+                                    {"path": "attachments/shot.png",
+                                     "content": self.SHOT}]})
+        sid, _state = self._start(program=program)
+        st, body = self._post("/api/holodeck/%s/say" % sid,
+                              {"text": "draft the palette"})
+        self.assertEqual(st, 200, body)
+        return sid
+
+    def _sent(self, program="Command palette"):
+        """…and then FILED, by the product's own road, so the room carries a
+        real sent record and a real `handoff-changes.json`."""
+        sid = self._drafted(program)
+        self._seed_changes(sid, ["- the palette replaces the ⌘ button"])
+        _st, body = self._post("/api/park", {"idea": "go", "holodeck": sid})
+        self.assertEqual(body["state"]["holodeck"]["status"], "sent", body)
+        return sid
+
+    def _dup(self, room="command-palette", **body):
+        return self._post_raw("/api/holodeck/duplicate",
+                              dict(room=room, **body))
+
+    def _rooms(self):
+        return sorted(n for n in os.listdir(self._sidecar())
+                      if not n.startswith(".")
+                      and os.path.isdir(os.path.join(self._sidecar(), n)))
+
+    def _snapshot(self, room):
+        """Every byte in a room, keyed by relative path."""
+        out = {}
+        base = self._room(room)
+        for r, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for f in files:
+                p = os.path.join(r, f)
+                with open(p, "rb") as fh:
+                    out[os.path.relpath(p, base)] = fh.read()
+        return out
+
+    def _entry(self, room):
+        for p in self._list()["programs"]:
+            if p["room"] == room:
+                return p
+        raise AssertionError("no program in room %r: %s"
+                             % (room, [p["room"]
+                                       for p in self._list()["programs"]]))
+
+
+class DuplicateCarriesTheProgramTest(DuplicateBase):
+    def test_it_makes_a_NEW_room_carrying_the_artifacts_and_the_chat(self):
+        self._sent()
+        st, body = self._dup()
+        self.assertEqual(st, 200, body)
+        room = body["state"]["room"]
+        self.assertNotEqual(room, "command-palette")
+        self.assertIn(room, self._rooms())
+        got = self._snapshot(room)
+        # the OUTPUTS, byte-identical.
+        self.assertEqual(got["mockup.html"].decode(), self.MOCKUP)
+        self.assertEqual(got["concept.md"].decode(), self.CONCEPT)
+        self.assertEqual(got[os.path.join("attachments", "shot.png")].decode(),
+                         self.SHOT)
+        # THE CHAT (the captain's ruling): the conversation comes over, so a
+        # worker in the new room knows why the mockup looks like this.
+        chat = got["transcript.md"].decode()
+        self.assertIn("draft the palette", chat)
+        self.assertIn("Built the palette.", chat)
+
+    def test_the_ORIGINAL_is_not_touched_by_any_of_it(self):
+        self._sent()
+        before = self._snapshot("command-palette")
+        st, _b = self._dup()
+        self.assertEqual(st, 200)
+        self.assertEqual(self._snapshot("command-palette"), before)
+        # …and it is still the locked record of what was actually filed.
+        orig = self._entry("command-palette")
+        self.assertEqual(orig["lifecycle"], "sent")
+        self.assertEqual(orig["missionId"], self.mint)
+
+    def test_the_duplicate_reads_DRAFT_and_can_be_typed_into(self):
+        self._sent()
+        _st, body = self._dup()
+        room = body["state"]["room"]
+        entry = self._entry(room)
+        # `draft` because it HAS NO SENT RECORD — not because anything
+        # special-cased it. `_handoff_state` is the one function that decides.
+        self.assertEqual(entry["lifecycle"], "draft")
+        self.assertEqual(entry["missionId"], "")
+        self._set_turns({"stdout": "Widened it."})
+        st, said = self._post("/api/holodeck/%s/say" % body["state"]["sessionId"],
+                              {"text": "make it wider"})
+        self.assertEqual(st, 200, said)
+
+    def test_the_duplicate_and_its_lineage_survive_a_daemon_restart(self):
+        self._sent()
+        _st, body = self._dup()
+        room = body["state"]["room"]
+        self._restart_daemon()
+        entry = self._entry(room)
+        self.assertEqual(entry["lifecycle"], "draft")
+        self.assertEqual(entry["duplicatedFrom"]["room"], "command-palette")
+        self.assertEqual(entry["duplicatedFrom"]["missionId"], self.mint)
+        # ONE DURABLE HOME. No second metadata file appeared beside the record.
+        self.assertNotIn("duplicate.json", self._snapshot(room))
+
+    def test_the_duplicate_is_RECORDED_in_the_archive_like_every_room_op(self):
+        self._sent()
+        before = len(self._log())
+        _st, body = self._dup()
+        self.assertTrue(body["state"]["committed"], body)
+        log = self._log()
+        self.assertEqual(len(log) - before, 1, log)
+        self.assertIn("duplicat", log[0].lower())
+        self.assertIn("command-palette", log[0])
+
+    def test_a_room_that_is_not_a_program_is_refused_by_the_SAME_door(self):
+        self._sent()
+        os.makedirs(os.path.join(self._sidecar(), "screenshots-i-saved"))
+        st, body = self._dup(room="screenshots-i-saved")
+        self.assertEqual(st, 403, body)
+        st, body = self._dup(room="../../etc")
+        self.assertEqual(st, 403, body)
+        st, body = self._dup(room="no-such-room")
+        self.assertEqual(st, 404, body)
+
+
+class DuplicateDropsTheDerivationTest(DuplicateBase):
+    """TRAP 1. `handoff-changes.json` is a derivation of the OLD draft against
+    the repo AS IT WAS at filing time. Carrying it would need the S170/S171
+    fingerprint to be wrong for it to ever be read back — so the duplicate
+    starts with NO derivation and the gate offers to generate one."""
+
+    # the pass is SWITCHED ON here, so `none` is the daemon saying "there is no
+    # derivation for this program" rather than "the pass is disabled". `promote`
+    # only ever PEEKS (S171), so nothing spawns.
+    handoff_check = "1"
+
+    def test_the_derivation_does_NOT_come_over(self):
+        self._sent()
+        self.assertIn("handoff-changes.json",
+                      self._snapshot("command-palette"))
+        _st, body = self._dup()
+        self.assertNotIn("handoff-changes.json",
+                         self._snapshot(body["state"]["room"]))
+
+    def test_the_gate_on_the_duplicate_reads_NONE(self):
+        self._sent()
+        _st, body = self._dup()
+        sid = body["state"]["sessionId"]
+        st, promoted = self._promote(sid)
+        self.assertEqual(st, 200, promoted)
+        draft = promoted["state"]
+        self.assertEqual(draft["derive"]["state"], "none", draft["derive"])
+        self.assertEqual(draft["changes"], [])
+
+
+class DuplicateSaysTheBasisIsInheritedTest(DuplicateBase):
+    """TRAP 2. `basis.md` is stale BY CONSTRUCTION here: duplicate after the
+    mission merged and the app has moved, so the basis describes what the
+    project used to be. The ruling taken is CARRY IT AND SAY SO — in the room,
+    in the payload the deck renders, and in what the worker is told."""
+
+    def test_the_copied_basis_carries_the_warning_and_names_where_it_came_from(self):
+        self._sent()
+        _st, body = self._dup()
+        text = self._snapshot(body["state"]["room"])["basis.md"].decode()
+        self.assertIn("INHERITED", text.upper())
+        self.assertIn("STALE", text.upper())
+        self.assertIn("Command palette", text)
+        # the grounding itself is still all there — marked, not truncated.
+        self.assertIn("--lcars-amber: #ff9c00", text)
+
+    def test_the_ORIGINAL_basis_is_left_exactly_as_it_was(self):
+        self._sent()
+        self._dup()
+        self.assertEqual(
+            self._snapshot("command-palette")["basis.md"].decode(), self.BASIS)
+
+    def test_the_payload_the_deck_renders_says_it(self):
+        self._sent()
+        _st, body = self._dup()
+        entry = self._entry(body["state"]["room"])
+        self.assertTrue(entry["basisInherited"], entry)
+        self.assertIn("Command palette", entry["basisNotice"])
+        self.assertIn("stale", entry["basisNotice"].lower())
+        # …and an ordinary grounded program says nothing of the kind.
+        self.assertNotIn("basisInherited", self._entry("command-palette"))
+
+    def test_a_duplicate_with_no_basis_claims_no_inherited_grounding(self):
+        self._sent()
+        os.unlink(os.path.join(self._room("command-palette"), "basis.md"))
+        _st, body = self._dup()
+        entry = self._entry(body["state"]["room"])
+        self.assertNotIn("basisInherited", entry)
+        self.assertNotIn("basisNotice", entry)
+
+
+class DuplicateHistoryIsNotBindingTest(DuplicateBase):
+    """TRAP 3. The inherited transcript must not read as SETTLED — he is
+    duplicating precisely because he wants to change something. `_replay_clause`
+    tells a REOPENED program to "carry on from where it stops; do not start the
+    mockup over", which is right for a reopen and actively wrong here."""
+
+    def _first_prompt_after_duplicate(self):
+        self._sent()
+        _st, body = self._dup()
+        self._set_turns({"stdout": "Widened it."})
+        st, said = self._post(
+            "/api/holodeck/%s/say" % body["state"]["sessionId"],
+            {"text": "make it wider"})
+        self.assertEqual(st, 200, said)
+        return self._prompts()[-1]
+
+    def test_the_worker_is_told_this_is_a_NEW_program_and_nothing_binds_it(self):
+        prompt = self._first_prompt_after_duplicate()
+        self.assertIn("NEW PROGRAM", prompt.upper())
+        self.assertIn("nothing in", prompt.lower())
+        self.assertIn("binding", prompt.lower())
+        # the reopen sentence is exactly the wrong one here.
+        self.assertNotIn("do not start the mockup over", prompt)
+
+    def test_the_history_is_still_HANDED_OVER_in_full(self):
+        prompt = self._first_prompt_after_duplicate()
+        self.assertIn("draft the palette", prompt)
+        self.assertIn("Built the palette.", prompt)
+
+    def test_it_says_the_ORIGINAL_is_untouched_and_names_its_mission(self):
+        prompt = self._first_prompt_after_duplicate()
+        # NOT "the mission id appears somewhere in the prompt" — the duplicated
+        # transcript carries its OWN lineage line, so the plain reopen clause
+        # would satisfy that while saying none of this. These are the words
+        # only the duplicate's framing writes.
+        self.assertIn("filed as mission `%s`" % self.mint, prompt)
+        self.assertIn("UNTOUCHED and stays exactly as it was handed over",
+                      prompt)
+
+    def test_it_warns_the_worker_the_inherited_basis_may_be_stale(self):
+        prompt = self._first_prompt_after_duplicate()
+        self.assertIn("basis.md", prompt)
+        self.assertIn("stale", prompt.lower())
+
+    def test_a_PLAIN_REOPEN_still_says_carry_on_where_it_stops(self):
+        """The regression guard on the branch above: the reopen road is
+        untouched, and its sentence is the one it always had."""
+        self._drafted()
+        self._restart_daemon()
+        _st, body = self._post("/api/holodeck/open",
+                               {"room": "command-palette"})
+        self._set_turns({"stdout": "Widened it."})
+        self._post("/api/holodeck/%s/say" % body["state"]["sessionId"],
+                   {"text": "make it wider"})
+        prompt = self._prompts()[-1]
+        self.assertIn("do not start the mockup over", prompt)
+        self.assertNotIn("binding", prompt.lower())
+
+
+class DuplicateNamingTest(DuplicateBase):
+    """TRAP 4. Names slug into DIRECTORY names, and a duplicate makes a
+    collision likelier than anywhere else in the product: the obvious default
+    name is derived from one that already exists. Two duplicates must land in
+    two rooms, and an occupied room must be REFUSED, never overwritten."""
+
+    def test_duplicating_TWICE_lands_in_two_different_rooms(self):
+        self._sent()
+        _st, first = self._dup()
+        _st, second = self._dup()
+        a, b = first["state"]["room"], second["state"]["room"]
+        self.assertNotEqual(a, b)
+        for room in (a, b):
+            self.assertIn("transcript.md", self._snapshot(room))
+        self.assertEqual(len(self._rooms()), 3, self._rooms())
+
+    def test_the_second_duplicate_did_not_overwrite_the_first(self):
+        self._sent()
+        _st, first = self._dup()
+        room = first["state"]["room"]
+        sid = first["state"]["sessionId"]
+        self._set_turns({"stdout": "Widened it.",
+                         "writes": [{"path": "mockup.html",
+                                     "content": "<h1>widened"}]})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "make it wider"})
+        kept = self._snapshot(room)
+        self._dup()
+        self.assertEqual(self._snapshot(room), kept)
+
+    def test_an_EXPLICIT_name_that_is_ALREADY_A_PROGRAMS_NAME_is_refused(self):
+        """The one refusal left on the named road (fix round 1). A room being
+        taken is walked past — two different names landing in one room is the
+        `_SLUG_MAX` cut, not a clash, and refusing it told the captain to pick a
+        different name about a name that already was one. A name that is
+        ALREADY a program's name is a different thing: two cards he could not
+        tell apart. Nothing is written over either way."""
+        self._sent()
+        before = self._snapshot("command-palette")
+        st, body = self._dup(program="Command palette")
+        self.assertEqual(st, 409, body)
+        msg = body["error"]
+        self.assertIn("command-palette", msg)
+        self.assertIn("Command palette", msg)
+        for jargon in ("traceback", "errno", "oserror", "409"):
+            self.assertNotIn(jargon, msg.lower(), jargon)
+        # NOTHING was written over, and no room was left behind by the refusal.
+        self.assertEqual(self._snapshot("command-palette"), before)
+        self.assertEqual(self._rooms(), ["command-palette"])
+
+    def test_names_that_COLLAPSE_to_one_room_get_TWO_rooms_not_one(self):
+        """The ledgered legacy: a name with no ASCII in it slugs to the shared
+        `program` room. That is not cured here — but a duplicate must never land
+        two programs in ONE room, so the second gets a room of its own and the
+        first is left exactly as it was."""
+        self._sent()
+        st, first = self._dup(program="日本語")
+        self.assertEqual(st, 200, first)
+        room = first["state"]["room"]
+        kept = self._snapshot(room)
+        st, second = self._dup(program="中文")
+        self.assertEqual(st, 200, second)
+        self.assertNotEqual(second["state"]["room"], room)
+        self.assertEqual(second["state"]["program"], "中文")
+        # the first program is untouched, and each is a whole program.
+        self.assertEqual(self._snapshot(room), kept)
+        self.assertIn("mockup.html", self._snapshot(second["state"]["room"]))
+
+    def test_the_chosen_name_is_the_programs_own_and_is_in_its_record(self):
+        self._sent()
+        _st, body = self._dup(program="Command palette, mark II")
+        self.assertEqual(body["state"]["program"], "Command palette, mark II")
+        chat = self._snapshot(body["state"]["room"])["transcript.md"].decode()
+        self.assertTrue(chat.startswith("# Command palette, mark II"), chat[:80])
+
+
+class DuplicateLineageTest(DuplicateBase):
+    def test_the_duplicate_records_WHICH_program_and_WHICH_mission(self):
+        self._sent()
+        _st, body = self._dup()
+        got = body["state"]["duplicatedFrom"]
+        self.assertEqual(got["room"], "command-palette")
+        self.assertEqual(got["program"], "Command palette")
+        self.assertEqual(got["missionId"], self.mint)
+
+    def test_a_duplicate_of_a_DRAFT_records_no_mission_rather_than_guessing(self):
+        self._drafted()
+        _st, body = self._dup()
+        self.assertEqual(body["state"]["duplicatedFrom"]["missionId"], "")
+
+    def test_an_ordinary_program_carries_no_lineage_key_at_all(self):
+        self._sent()
+        self.assertNotIn("duplicatedFrom", self._entry("command-palette"))
+
+    def test_the_duplicate_of_a_duplicate_points_at_its_OWN_parent(self):
+        self._sent()
+        _st, first = self._dup()
+        _st, second = self._dup(room=first["state"]["room"])
+        self.assertEqual(second["state"]["duplicatedFrom"]["room"],
+                         first["state"]["room"])
+
+
+class LockedRefusalNamesTheBuiltRoadTest(DuplicateBase):
+    def test_the_lock_no_longer_says_duplicate_is_unbuilt(self):
+        """S127's refusal said "⧉ DUPLICATE TO KEEP DESIGNING … is not built
+        yet, so for now start a new program under a different name". It is
+        built now, and a product that describes its own road as missing is the
+        one-voice defect this round would otherwise ship."""
+        sid = self._sent()
+        st, body = self._post_raw("/api/holodeck/%s/say" % sid,
+                                  {"text": "make it wider"})
+        self.assertEqual(st, 409, body)
+        msg = body["error"]
+        self.assertIn("DUPLICATE", msg.upper())
+        self.assertNotIn("not built", msg.lower())
+        self.assertNotIn("for now", msg.lower())
+
+
+# ══ FIX ROUND 1 ═════════════════════════════════════════════════════════════
+class DuplicateOfARealLengthNameTest(DuplicateBase):
+    """D1 — THE ROOM IS THE THING THAT HAS TO BE DIFFERENTIATED.
+
+    `_slug` caps a room at `_SLUG_MAX` (48) characters, and every program the
+    captain actually has is named with his whole idea sentence — so a "(copy N)"
+    differentiator that lives only in the DISPLAY NAME falls off the far side of
+    the cut and every candidate room collapses back onto the SOURCE room. On his
+    real program the measured result was: 500 tries, one distinct room, and that
+    room was the source's. The blank-name road — the one the dialog itself
+    recommends — spun 500 stats and reported "there are already hundreds of
+    copies" with ZERO copies in existence.
+
+    `DuplicateNamingTest` above could never see it: it names every program
+    "Command palette" (15 characters), nowhere near the cap. So this suite uses
+    the captain's REAL program name and nothing shorter.
+
+    FIX ROUND 2 (F1) — AND IT NOW REALLY IS HIS. Fix round 1 wrote that
+    sentence over a 51-character stand-in: past the 48-character cap, so D1 was
+    genuinely exercised, but barely half the length of the name he actually has.
+    A fixture that under-measures while its own docstring says it is the real
+    thing is the ticked-but-false class this round keeps producing, so the
+    string below is copied verbatim out of his archive
+    (`groutwork-holodeck/give-the-tile-editor-a-more-modern-ui-look-and`) — 114
+    characters. It is what turned up N1: the name guard is blind to a
+    duplicate's room, and it is blind only once the room has to be TRIMMED to
+    fit the marker, which a 51-character name never reaches.
+    """
+
+    # His actual program, verbatim, in room
+    # `give-the-tile-editor-a-more-modern-ui-look-and`.
+    LONG = ("Give the tile editor a more modern UI look and add a light/dark "
+            "mode. I don't want to touch the tile canvas at all")
+
+    def _src(self, sid):
+        return os.path.basename(self.actions._holodeck[sid].program_dir)
+
+    def test_two_duplicates_land_in_two_rooms_NEITHER_of_them_the_sources(self):
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        # the premise: the name really is at the cap, so this is the case the
+        # short-name suite cannot reach.
+        self.assertEqual(len(src), _SLUG_MAX - 2, src)
+        kept = self._snapshot(src)
+        st, first = self._dup(room=src)
+        self.assertEqual(st, 200, first)
+        st, second = self._dup(room=src)
+        self.assertEqual(st, 200, second)
+        a, b = first["state"]["room"], second["state"]["room"]
+        self.assertNotEqual(a, src)
+        self.assertNotEqual(b, src)
+        self.assertNotEqual(a, b)
+        self.assertEqual(sorted(self._rooms()), sorted([src, a, b]))
+        # each copy is a whole program in its own right…
+        for room in (a, b):
+            self.assertIn("transcript.md", self._snapshot(room))
+            self.assertIn("mockup.html", self._snapshot(room))
+            # …its room still says which program it is a copy OF, and says it
+            # is a copy, and stays inside the cap every other room obeys.
+            self.assertLessEqual(len(room), _SLUG_MAX, room)
+            self.assertIn("copy", room)
+            self.assertTrue(room.startswith("give-the-tile-editor"), room)
+        # and nothing was written into the one that was filed.
+        self.assertEqual(self._snapshot(src), kept)
+
+    def test_the_two_copies_are_told_apart_by_NAME_as_well_as_by_room(self):
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        _st, first = self._dup(room=src)
+        _st, second = self._dup(room=src)
+        names = [first["state"]["program"], second["state"]["program"]]
+        self.assertNotEqual(names[0], names[1])
+        for name in names:
+            self.assertTrue(name.startswith(self.LONG), name)
+            self.assertIn("copy", name.lower())
+
+    def test_the_default_road_does_not_claim_it_ran_out_of_names(self):
+        """The blank-name path is the one the dialog recommends, and on his real
+        program it was the one that could not work at all."""
+        sid = self._sent(program=self.LONG)
+        st, body = self._dup(room=self._src(sid))
+        self.assertEqual(st, 200, body)
+        self.assertNotIn("run out of free names", json.dumps(body).lower())
+
+    def test_an_EXPLICIT_long_name_that_only_COLLIDES_BY_TRUNCATION_is_kept(self):
+        """A genuinely different name that happens to slug onto an occupied room
+        is not a name clash — it is the 48-character cut. Refusing it told the
+        captain to "duplicate it under a different name" about a name that WAS
+        different."""
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        wanted = self.LONG + " version two"
+        st, body = self._dup(room=src, program=wanted)
+        self.assertEqual(st, 200, body)
+        self.assertEqual(body["state"]["program"], wanted)
+        self.assertNotEqual(body["state"]["room"], src)
+        chat = self._snapshot(body["state"]["room"])["transcript.md"].decode()
+        self.assertTrue(chat.startswith("# " + wanted), chat[:100])
+
+    def test_the_lineage_chip_still_names_the_parent_it_came_from(self):
+        sid = self._sent(program=self.LONG)
+        _st, body = self._dup(room=self._src(sid))
+        entry = self._entry(body["state"]["room"])
+        self.assertEqual(entry["duplicatedFrom"]["room"], self._src(sid))
+        self.assertEqual(entry["duplicatedFrom"]["program"], self.LONG)
+
+
+class DuplicateBehavesEXACTLYAsItsSourceDoesTest(DuplicateBase):
+    """D4 — a duplicate LAUNDERED a symlink through the preview jail.
+
+    The copy loop skipped TOP-LEVEL symlinks (its comment: copying one "would
+    put that same escape in a second room") and then handed subdirectories to
+    `shutil.copytree(..., symlinks=False)`, which DEREFERENCES them. So the copy
+    was BOTH more permissive and more lossy than the thing it copied, in the two
+    directions at once:
+
+      • a nested symlink out of the room became a REAL FILE in the duplicate —
+        the original's preview correctly refused it and the duplicate served
+        the bytes;
+      • a top-level symlinked asset silently VANISHED from a copy the dialog
+        promised carries "anything you pasted in".
+
+    The rule is one sentence: A DUPLICATE BEHAVES EXACTLY AS ITS SOURCE DOES.
+    Both directions are tested, because a cure for either one alone is the same
+    defect facing the other way.
+    """
+
+    def _raw(self, path):
+        """(status, body-bytes) — the preview route serves FILES, not JSON."""
+        url = "http://127.0.0.1:%d%s" % (self.port, path)
+        try:
+            with urllib.request.urlopen(url, timeout=20) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    def _preview(self, sid, rel):
+        return self._raw("/api/holodeck/%s/preview/%s" % (sid, rel))
+
+    def test_an_ESCAPING_symlink_is_refused_by_the_copy_as_by_the_source(self):
+        src_sid = self._sent()
+        outside = os.path.join(self.holo_root, "not-yours.html")
+        with open(outside, "w") as fh:
+            fh.write("<b>NOT YOURS</b>")
+        os.symlink(outside, os.path.join(self._room("command-palette"),
+                                         "attachments", "leak.html"))
+        _st, body = self._dup()
+        dup_sid, room = body["state"]["sessionId"], body["state"]["room"]
+        # the SOURCE refuses it — that is the behaviour being matched.
+        st, got = self._preview(src_sid, "attachments/leak.html")
+        self.assertEqual(st, 403, got)
+        self.assertNotIn(b"NOT YOURS", got)
+        # …and so does the copy.
+        st, got = self._preview(dup_sid, "attachments/leak.html")
+        self.assertNotEqual(st, 200, got)
+        self.assertNotIn(b"NOT YOURS", got)
+        # it is still a LINK in the copy, not a laundered regular file.
+        self.assertTrue(os.path.islink(
+            os.path.join(self._room(room), "attachments", "leak.html")))
+
+    def test_a_symlinked_ASSET_still_reaches_the_copy(self):
+        """The same rule facing the other way: the dialog promises the copy
+        carries "anything you pasted in", so an asset that is a link in the
+        source must be there — and readable — in the copy."""
+        src_sid = self._sent()
+        os.symlink("mockup.html",
+                   os.path.join(self._room("command-palette"), "shot.html"))
+        st, want = self._preview(src_sid, "shot.html")
+        self.assertEqual(st, 200, want)
+        _st, body = self._dup()
+        dup_sid, room = body["state"]["sessionId"], body["state"]["room"]
+        st, got = self._preview(dup_sid, "shot.html")
+        self.assertEqual(st, 200, got)
+        self.assertEqual(got, want)
+        # and it resolves to the COPY's own file, not back into the source.
+        link = os.path.join(self._room(room), "shot.html")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.path.realpath(link),
+                         os.path.realpath(os.path.join(self._room(room),
+                                                       "mockup.html")))
+
+    def test_a_symlinked_DIRECTORY_out_of_the_room_is_not_laundered_either(self):
+        src_sid = self._sent()
+        outside = os.path.join(self.holo_root, "elsewhere")
+        os.makedirs(outside)
+        with open(os.path.join(outside, "x.html"), "w") as fh:
+            fh.write("<b>NOT YOURS</b>")
+        os.symlink(outside, os.path.join(self._room("command-palette"), "away"))
+        st, got = self._preview(src_sid, "away/x.html")
+        self.assertEqual(st, 403, got)
+        _st, body = self._dup()
+        st, got = self._preview(body["state"]["sessionId"], "away/x.html")
+        self.assertNotEqual(st, 200, got)
+        self.assertNotIn(b"NOT YOURS", got)
+
+    def _rewritten_file_is_not_a_link(self, name):
+        """The files the duplicate road EDITS must arrive as bytes, not links.
+
+        Carried as a link, the write would go straight through it and edit
+        whatever it points at — the source's own copy, or a file outside the
+        room entirely, which is the one thing every other line in the copy loop
+        is careful not to do.
+        """
+        self._sent()
+        room = self._room("command-palette")
+        elsewhere = os.path.join(self.holo_root, "not-in-any-room-" + name)
+        os.rename(os.path.join(room, name), elsewhere)
+        os.symlink(elsewhere, os.path.join(room, name))
+        with open(elsewhere) as fh:
+            before = fh.read()
+        _st, body = self._dup()
+        copy = os.path.join(self._room(body["state"]["room"]), name)
+        self.assertFalse(os.path.islink(copy), name)
+        with open(elsewhere) as fh:
+            self.assertEqual(fh.read(), before, name)
+
+    def test_the_RECORD_is_never_carried_as_a_link(self):
+        """`_write_duplicate_record` gives the copy its own name and lineage."""
+        self._rewritten_file_is_not_a_link("transcript.md")
+
+    def test_the_BASIS_is_never_carried_as_a_link(self):
+        """`_mark_basis_inherited` banners the copied grounding."""
+        self._rewritten_file_is_not_a_link("basis.md")
+
+    def test_an_ORDINARY_room_still_copies_as_real_bytes(self):
+        """The control: nothing here turns the ordinary copy into links."""
+        self._sent()
+        _st, body = self._dup()
+        room = self._room(body["state"]["room"])
+        for rel in ("mockup.html", "concept.md",
+                    os.path.join("attachments", "shot.png")):
+            path = os.path.join(room, rel)
+            self.assertTrue(os.path.isfile(path), rel)
+            self.assertFalse(os.path.islink(path), rel)
+
+
+class DuplicateSpeaksWithONEVoiceAboutTheBasisTest(DuplicateBase):
+    """D2 — the prompt told the worker the OPPOSITE of trap 2, first and louder.
+
+    S172 cured the deck three ways for the inherited basis and never touched
+    `_basis_clause`, which still fired on a duplicate. In ONE prompt the worker
+    read, in this order:
+
+        START FROM THE GROUNDING: `basis.md` … is what LCARS read out of the
+        captain's real project … READ IT FIRST and build to it
+
+    and then, about a thousand characters later at the tail of a long
+    paragraph, "One caution about the files: `basis.md` … may be STALE." Two
+    voices, the wrong one first and in the imperative — and on a duplicate the
+    first one is a claim about a project that has since moved.
+    """
+
+    def _dup_prompt(self):
+        self._sent()
+        _st, body = self._dup()
+        self._set_turns({"stdout": "Widened it."})
+        st, said = self._post(
+            "/api/holodeck/%s/say" % body["state"]["sessionId"],
+            {"text": "make it wider"})
+        self.assertEqual(st, 200, said)
+        return self._prompts()[-1]
+
+    def test_the_duplicate_is_NOT_told_to_start_from_the_grounding(self):
+        prompt = self._dup_prompt()
+        self.assertNotIn("START FROM THE GROUNDING", prompt)
+        self.assertNotIn("READ IT FIRST and build to it", prompt)
+
+    def test_the_basis_is_called_INHERITED_and_STALE_exactly_once(self):
+        prompt = self._dup_prompt()
+        self.assertIn("INHERITED", prompt.upper())
+        self.assertIn("stale", prompt.lower())
+        # ONE voice: the caution is stated once, not once per clause.
+        self.assertEqual(prompt.lower().count("may be stale"), 1, prompt)
+
+    def test_the_worker_is_still_told_the_basis_is_THERE_and_worth_reading(self):
+        """Not cured by deletion: the grounding is the one document that makes a
+        design correctable, so the prompt must still point at it."""
+        prompt = self._dup_prompt()
+        self.assertIn("basis.md", prompt)
+
+    def test_an_ORDINARY_grounded_program_gets_the_SAME_clause_it_always_had(self):
+        """The regression guard on the branch above."""
+        self._drafted()
+        self._restart_daemon()
+        _st, body = self._post("/api/holodeck/open",
+                               {"room": "command-palette"})
+        self._set_turns({"stdout": "Widened it."})
+        self._post("/api/holodeck/%s/say" % body["state"]["sessionId"],
+                   {"text": "make it wider"})
+        prompt = self._prompts()[-1]
+        self.assertIn("START FROM THE GROUNDING", prompt)
+        self.assertIn("READ IT FIRST and build to it", prompt)
+        self.assertNotIn("INHERITED", prompt.upper())
+        self.assertNotIn("stale", prompt.lower())
+
+
+class DuplicateRoomIsCLAIMEDNotJustCheckedTest(DuplicateBase):
+    """D6 — two duplicates racing for one free room.
+
+    Picking a free room and then creating it are two steps, and between them
+    another request can win the same name. That surfaced as `FileExistsError`
+    inside the makedirs guard and came out as a 502 "could not create the new
+    program's room" — a plumbing failure reported for an ordinary collision the
+    naming loop already knows how to walk past.
+
+    The race is reproduced exactly, and deterministically, by making the room
+    exist between the check and the create.
+    """
+
+    def _racing_makedirs(self, times=1):
+        """`os.makedirs` that loses the room to a rival the first `times` calls
+        — which is what a second duplicate landing in the gap looks like."""
+        real = os.makedirs
+        state = {"n": 0}
+
+        def fake(path, *a, **kw):
+            if state["n"] < times and os.path.dirname(path) == self._sidecar():
+                state["n"] += 1
+                real(path, *a, **kw)          # the rival wins it, for real
+                raise FileExistsError(17, "File exists", path)
+            return real(path, *a, **kw)
+        return fake, state
+
+    def test_a_lost_race_takes_the_NEXT_free_name_not_a_502(self):
+        self._sent()
+        fake, state = self._racing_makedirs()
+        with unittest.mock.patch("os.makedirs", fake):
+            st, body = self._dup()
+        self.assertEqual(state["n"], 1)         # the race really happened
+        self.assertEqual(st, 200, body)
+        room = body["state"]["room"]
+        self.assertNotEqual(room, "command-palette")
+        self.assertIn("transcript.md", self._snapshot(room))
+
+    def test_a_lost_race_on_an_EXPLICIT_name_keeps_the_NAME_and_moves_the_room(self):
+        """The captain's name is his — a lost race moves the ROOM, never the
+        name, and never reports plumbing at him."""
+        self._sent()
+        fake, state = self._racing_makedirs()
+        with unittest.mock.patch("os.makedirs", fake):
+            st, body = self._dup(program="Command palette, mark II")
+        self.assertEqual(state["n"], 1)
+        self.assertEqual(st, 200, body)
+        self.assertEqual(body["state"]["program"], "Command palette, mark II")
+        self.assertNotEqual(body["state"]["room"], "command-palette-mark-ii")
+        self.assertIn("transcript.md", self._snapshot(body["state"]["room"]))
+
+    def test_a_room_LOST_to_a_rival_is_never_written_into(self):
+        """The whole point of claiming by creation: the loser must not put its
+        mockup in the winner's room."""
+        self._sent()
+        fake, _state = self._racing_makedirs()
+        with unittest.mock.patch("os.makedirs", fake):
+            st, body = self._dup()
+        self.assertEqual(st, 200, body)
+        # the rival's room really exists and is still EMPTY — nothing was
+        # copied into it on the way past.
+        rival = os.path.join(self._sidecar(), "command-palette-copy")
+        self.assertTrue(os.path.isdir(rival))
+        self.assertEqual(os.listdir(rival), [])
+        self.assertNotEqual(body["state"]["room"], "command-palette-copy")
+
+
+# ══ FIX ROUND 2 ═════════════════════════════════════════════════════════════
+class DuplicateNameGuardSeesTheCopysRoomTest(DuplicateBase):
+    """N1 — the fix loop made the name guard blind to every duplicate's room.
+
+    Fix round 1's D1 cure BUILDS a duplicate's room (trim the slug, then append
+    the marker where the cut cannot eat it) while `_program_room` still SLUGS
+    one — so on a name long enough to need trimming the two disagree, and the
+    name guard was only ever looking in `_program_room(wanted)`. It therefore
+    never looked in the room a duplicate actually lives in.
+
+    The road is one the captain walks by hand: he copies the name the deck is
+    showing him and types it into the dialog. Measured on his real program:
+    HTTP 200, a second room, and a second card reading the same name as the
+    first — while the guard's own message promises "Two cards with one name is a
+    pair you cannot tell apart, so nothing has been copied."
+
+    Driven on `DuplicateOfARealLengthNameTest`'s fixture — his real program
+    name, the one string this is visible at. At "Command palette" the defect
+    does not exist at all: nothing is trimmed, so `_program_room` and
+    `_duplicate_room` agree and the guard looks in the right room by accident.
+    """
+
+    LONG = DuplicateOfARealLengthNameTest.LONG
+
+    def _src(self, sid):
+        return os.path.basename(self.actions._holodeck[sid].program_dir)
+
+    def _dup_named(self, room, name):
+        return self._dup(room=room, program=name)
+
+    def test_the_name_the_deck_is_SHOWING_him_is_refused_not_duplicated(self):
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        _st, first = self._dup(room=src)
+        shown = first["state"]["program"]        # what the card now reads
+        copy_room = first["state"]["room"]
+        # the premise: the copy's room is NOT the one its name slugs to, which
+        # is the whole reason the guard could not see it.
+        self.assertNotEqual(copy_room, _program_room(self._sidecar(), shown))
+        rooms = self._rooms()
+        st, body = self._dup_named(src, shown)
+        self.assertEqual(st, 409, body)
+        # …and it says WHERE the name already lives — the copy's room, not the
+        # source's, which is the sentence that was wrong.
+        self.assertIn(copy_room, body["error"])
+        self.assertIn(shown, body["error"])
+        # nothing was copied and no room was left behind by the refusal.
+        self.assertEqual(self._rooms(), rooms)
+
+    def test_no_two_cards_on_the_deck_can_end_up_reading_the_same_name(self):
+        """The property the 409 exists for, asserted over the DECK rather than
+        over the message: whatever the road, the program list never holds two
+        names a captain cannot tell apart."""
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        _st, first = self._dup(room=src)
+        shown = first["state"]["program"]
+        self._dup_named(src, shown)              # refused, or not — either way
+        self._dup_named(src, shown.upper())      # …and case is not a difference
+        names = [p["program"] for p in self._list()["programs"]]
+        self.assertEqual(len(names), len(set(n.lower() for n in names)), names)
+
+    def test_the_BLANK_road_never_lands_on_a_name_he_typed_himself(self):
+        """The same blindness one road over, and reachable without a race.
+
+        `_claim_duplicate_room` walks free ROOMS and names each candidate
+        "X (copy N)" — so if he has already typed that name onto a copy, and the
+        `_SLUG_MAX` cut put it in some OTHER room, the blank road hands out a
+        name that is already on the deck. Two cards, one name, one captain, no
+        concurrency: exactly what the 409 beside it exists to prevent.
+        """
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        st, typed = self._dup_named(src, self.LONG + " (copy)")
+        self.assertEqual(st, 200, typed)
+        st, blank = self._dup(room=src)
+        self.assertEqual(st, 200, blank)
+        self.assertNotEqual(blank["state"]["program"], typed["state"]["program"])
+        names = [p["program"] for p in self._list()["programs"]]
+        self.assertEqual(len(names), len(set(names)), names)
+
+    def test_the_SOURCES_own_name_is_still_refused_from_its_own_room(self):
+        """The case fix round 1 did catch, kept: a long name's own room is
+        found by `_program_room` and must go on being refused."""
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        st, body = self._dup_named(src, self.LONG)
+        self.assertEqual(st, 409, body)
+        self.assertIn(src, body["error"])
+
+    def test_a_name_that_is_NOBODYS_is_still_kept_exactly_as_typed(self):
+        """The guard widened, not tightened: the only refusal is a name that is
+        ALREADY a program's. A different name that merely collides on the
+        48-character cut is still walked past and still kept verbatim."""
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        self._dup(room=src)
+        wanted = self.LONG + " version two"
+        st, body = self._dup_named(src, wanted)
+        self.assertEqual(st, 200, body)
+        self.assertEqual(body["state"]["program"], wanted)
+
+    def test_the_guard_reads_a_ROOM_it_cannot_slug_its_way_to(self):
+        """Directly on the helper: a program sitting in a room whose name has
+        nothing to do with its own (the copy case, and every legacy room) is
+        still found by name. `_program_room` alone can never reach it."""
+        sid = self._sent(program=self.LONG)
+        src = self._src(sid)
+        _st, first = self._dup(room=src)
+        sidecar = self._sidecar()
+        self.assertEqual(
+            self.actions._named_program_room(sidecar,
+                                             first["state"]["program"]),
+            first["state"]["room"])
+        self.assertEqual(self.actions._named_program_room(sidecar, self.LONG),
+                         src)
+        self.assertEqual(
+            self.actions._named_program_room(sidecar, "nobody's program"), "")
 
 
 if __name__ == "__main__":

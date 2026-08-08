@@ -596,6 +596,95 @@ had grown and the first thing on screen was the middle of it. Cured in
 a board that painted and a deck that opened, and borrowing either of their codes
 would make smoke.sh print the wrong accusation.
 
+## The sixth rig: `duplicate.sh` (S172 fix round 1)
+
+```
+bash tests/drives/browser/duplicate.sh              # the product
+bash tests/drives/browser/duplicate.sh --calibrate  # the RED CONTROLS (9)
+bash tests/drives/browser/duplicate.sh --all        # both
+```
+
+**⧉ Duplicate a program**, driven end to end: the band control → a locked
+program's card → the confirmation dialog → the new room, twice. Self-contained
+(it owns its own daemon, its own headed Chrome and its own planted sidecar
+rather than riding `smoke.sh`), so it adds no seam to the shared rig.
+
+**Why it exists.** S172 shipped ⧉ Duplicate with 33 new headless tests, 852
+existing ones green, and a feature that could not duplicate **either of the
+captain's two real programs**. Two of the seven defects a tester found in real
+Chrome were structurally invisible to every one of those tests:
+
+- **D1 (blocker)** — a room name is `_slug`'d and capped at 48 characters, and
+  every program the captain actually has is named with his whole idea sentence.
+  The `(copy N)` differentiator lived only in the **display** name, so it fell
+  off the far side of the cut and all 500 candidate rooms came back as the
+  **source's own**. The headless suite named every program "Command palette" —
+  15 characters — so it never once reached the cap. **The fixture here is the
+  captain's actual program name — 114 characters, verbatim out of his archive —
+  and it must not be shortened**: that is the only reason this rig can see the
+  defect at all. (Fix round 1 wrote that sentence over a 51-character stand-in.
+  It cleared the 48-character cap, so D1 was genuinely exercised, but it
+  under-measured D3 by half — a 43px lineage chip where his real name paints
+  72px — and it was too short to reach N1 at all.)
+- **D3** — the lineage chip was `max-width:14ch`, so `⧉ from Tile editor` and
+  `⧉ from Tile editor (copy)` both painted as `⧉ from Tile…`: the same six
+  characters for every possible parent, on a chip whose whole job is to answer
+  "which one was that". The rule resolves perfectly; it simply does not fit —
+  the `css-rule-tests-green-never-reaches-screen` class, which no node DOM
+  harness under `web/tests/` can see, because none of them has CSS or layout.
+
+Nine checks, each named in `duplicate-check.json` and each owned by exactly one
+red control (a variant that fails on somebody *else's* check is reported
+inconclusive, never green):
+
+| check | red control |
+|---|---|
+| `DUP-CONTROL-ON-LOCKED-CARD` | `no-duplicate-control` |
+| `DUP-BLANK-NAME-WORKS` | `room-not-differentiated` — **D1 verbatim** |
+| `DUP-TWO-DISTINCT-ROOMS` | `second-copy-overwrites` |
+| `COPY-CARRIES-THE-SOURCES-FILES` | `copy-drops-the-design` — **round-2 probe A** |
+| `NO-TWO-CARDS-ONE-NAME` | `copy-keeps-the-parents-name` — **round-2 probe B** |
+| `SOURCE-STAYS-SENT` | `source-loses-its-lock` |
+| `LINEAGE-CHIP-READABLE` | `chip-clipped` — **D3 verbatim** |
+| `INHERITED-GROUNDING-SAID-ON-SCREEN` | `chip-says-grounded` |
+| `CONTINUING-CHIP-ON-SCREEN` | `no-continuing-chip` |
+
+**The last two checks are fix round 2's**, and they are here because the
+round-2 tester broke the product twice in ways nothing looked at and this rig
+answered `PROVEN`, 7/7 green, exit 0 both times: a copy that arrived carrying
+`basis.md` and `transcript.md` and *nothing else* (the dialog promises it
+"carries the mockup, the concept doc, anything you pasted in"), and three cards
+on one deck all reading the same name (the exact pair the daemon's 409 exists to
+prevent). `DUP-BLANK-NAME-WORKS` asserted only that the dialog closed without an
+error — it never asked whether a room appeared or whether anything was in it —
+and `SOURCE-STAYS-SENT` name-checks the *source* row, so no check had ever
+looked at a copy's name.
+
+Calibrated 2026-08-08 (fix round 2, on his real 114-character name): all nine
+went red on their own check. `chip-clipped` measured 76×14px shown against
+164×72px needed — the tester's own reading, reproduced by the committed rig.
+
+`second-copy-overwrites` was **re-anchored** in fix round 2, and the move is
+itself a finding. It used to break `_claim_room` alone ("the room is taken and
+it says yes"); once the N1 cure put a name walk in front of that claim, the
+broken claim was never reached on the blank road and the variant came back 9/9
+**green on a product whose room claim was a lie**. It now breaks the road
+itself — the blank road hands back the first copy's room every time — so the
+check is proven against its own claim (two duplicates, two rooms) rather than
+against one implementation detail of it. The claim-by-creation race stays
+covered deterministically by `DuplicateRoomIsCLAIMEDNotJustCheckedTest`; a
+browser is not where a race is proven.
+
+A **stylesheet precondition** runs before any of it: if `--lcars-amber` and
+`--holo-grid` do not both resolve on the live page, the run exits 77 and proves
+nothing rather than measuring boxes off an unstyled phantom. It earned its keep
+immediately — the first calibration served every variant without `docs/lcars.css`
+and all six controls would otherwise have "gone red" on a page with no CSS at
+all.
+
+Zero tokens: the only `claude`/`copilot` on `PATH` are logging shims that exit
+1, the journey never takes a turn, and a non-empty shim log fails the run.
+
 ## Exit codes
 
 | code | meaning |

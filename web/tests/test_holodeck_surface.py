@@ -814,8 +814,10 @@ class ReadOnlyDaemonTest(SurfaceBase):
     read_only = True
 
     def test_no_holodeck_write_is_possible_and_the_reads_are_absent(self):
+        # S172 — `duplicate` is a WRITE like its siblings and must be refused
+        # by the SAME door, not by a second rule of its own.
         for path in ("/api/holodeck/start", "/api/holodeck/x/say",
-                     "/api/holodeck/x/end"):
+                     "/api/holodeck/x/end", "/api/holodeck/duplicate"):
             status, body = self._post(path, {"program": "p", "text": "t"})
             self.assertEqual(status, 403, path)
             self.assertFalse(body["ok"])
@@ -4480,6 +4482,192 @@ class HandoffCheckCssTest(unittest.TestCase):
         # …and it is still visually distinct from the answered state.
         base = self._decls(".modal-foot.handoff-foot.btn.qcue")
         self.assertNotEqual(base.get("border-left"), d.get("border-left"))
+
+
+# ── S172: ⧉ DUPLICATE on the deck ───────────────────────────────────────────
+# The control has to be reachable from a LOCKED card — that is the state it was
+# built for. A sent program refuses every turn (it is the exact design a mission
+# was briefed on), so duplicating it is the only way to keep designing from a
+# design that already shipped; a control rendered on drafts only would be absent
+# in precisely the case it exists for.
+SENT_PROG = dict(DISK_PROG, program="Command palette", room="command-palette",
+                 programDir="/tmp/x/command-palette", status="sent",
+                 lifecycle="sent", missionId="m-777")
+
+DUPED_PROG = dict(DISK_PROG, sessionId="s2", onDisk=False,
+                  program="Command palette (copy)",
+                  room="command-palette-copy",
+                  programDir="/tmp/x/command-palette-copy",
+                  grounded=True, basisFile="basis.md",
+                  basisInherited=True,
+                  basisNotice=("This program's basis.md came over with the "
+                               "duplicate: it is what LCARS read out of the "
+                               "project for “Command palette”, not a fresh "
+                               "look at it."),
+                  duplicatedFrom={"room": "command-palette",
+                                  "program": "Command palette",
+                                  "missionId": "m-777", "at": "now"})
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class DuplicateControlTest(unittest.TestCase):
+    def test_a_LOCKED_card_carries_the_duplicate_control(self):
+        out = _harness({"act": "deck", "programs": [SENT_PROG],
+                        "activeId": None})
+        row = out["listRows"][0]
+        self.assertTrue(any("Duplicate" in c for c in row["controls"]),
+                        row["controls"])
+
+    def test_the_confirmation_says_the_chat_comes_over_before_the_button(self):
+        out = _harness({"act": "duplicateProgram", "programs": [SENT_PROG],
+                        "room": "command-palette", "stopAtConfirm": True})
+        self.assertTrue(out["hasControl"])
+        text = out["confirmText"]
+        low = text.lower()
+        self.assertIn("command-palette", text)
+        # the RULING, said before he commits to it.
+        self.assertIn("conversation", low, text)
+        # and the two things that would otherwise surprise him later.
+        self.assertIn("m-777", text)
+        self.assertIn("change list", low, text)
+
+    def test_nothing_is_duplicated_until_the_confirmation_is_taken(self):
+        out = _harness({"act": "duplicateProgram", "programs": [SENT_PROG],
+                        "room": "command-palette", "stopAtConfirm": True})
+        # the control was really clicked and a dialog really opened — otherwise
+        # "no POST" is a claim about a button that is not there.
+        self.assertTrue(out["hasControl"])
+        self.assertTrue(out["confirmText"])
+        self.assertIsNone(out["path"])
+
+    def test_a_blank_name_posts_the_ROOM_alone_and_lets_the_daemon_name_it(self):
+        """The daemon is the only side that can see which rooms are taken, and
+        a duplicate is where a collision is likeliest — the obvious name is
+        derived from one that already exists. Blank is the road that cannot
+        collide, and the field says so."""
+        out = _harness({"act": "duplicateProgram", "programs": [SENT_PROG],
+                        "room": "command-palette"})
+        self.assertTrue(out["hasNameField"])
+        self.assertIn("blank", (out["namePlaceholder"] or "").lower())
+        self.assertEqual(out["path"], "/api/holodeck/duplicate")
+        self.assertEqual(out["body"], {"room": "command-palette"})
+
+    def test_a_typed_name_is_posted_as_the_copys_own(self):
+        out = _harness({"act": "duplicateProgram", "programs": [SENT_PROG],
+                        "room": "command-palette", "name": "Palette mark II"})
+        self.assertEqual(out["body"], {"room": "command-palette",
+                                       "program": "Palette mark II"})
+
+    def test_the_card_says_WHAT_a_duplicate_came_from(self):
+        """"Which one was that" is the question the program list exists to
+        answer, and two cards that look alike is exactly what duplicating
+        produces."""
+        out = _harness({"act": "deck", "programs": [DUPED_PROG, SENT_PROG],
+                        "activeId": "s2"})
+        rows = {r["name"]: r for r in out["listRows"]}
+        dup = rows["Command palette (copy)"]
+        self.assertIn("Command palette", dup["prow"])
+        # the PARENT's mission is in the title, not on the face of a card whose
+        # own chip reads `draft` — it is the parent's number, not this one's.
+        self.assertNotIn("m-777", dup["prow"])
+        self.assertIn("m-777", dup["dupTitle"])
+        self.assertIn("command-palette", dup["dupTitle"])
+        # …and an ordinary program grows no such chip.
+        self.assertIsNone(rows["Command palette"]["dupTitle"])
+
+
+class DuplicateChipReachesTheScreenTest(unittest.TestCase):
+    """A class with no rule behind it renders as unstyled default text, and a
+    rule that loses on specificity or source order never reaches the screen at
+    all (S162's amber warning). The node harness sees no CSS, so the rule is
+    asserted here — and the pixels are `tests/drives/browser/holodeck.sh`."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+
+    def _decls(self, selector):
+        out = {}
+        for r in self.rules:
+            if r.selector.replace(" ", "") == selector:
+                for p, v, _imp in r.decls:
+                    out[p] = v
+        return out
+
+    def test_the_chat_headers_lineage_chip_has_a_rule_of_its_own(self):
+        """FIX ROUND 1 (D7). A class with no rule behind it is unstyled default
+        text, and this one sits beside `.ground-chip` — same selector depth, so
+        neither can lose to the other on specificity or source order."""
+        mine = self._decls(".cont-chip")
+        self.assertTrue(mine, "the .cont-chip rule is missing entirely")
+        self.assertTrue(self._decls(".ground-chip"))
+        self.assertIn("color", mine, mine)
+        self.assertIn("border", mine, mine)
+        # it WRAPS: the parent is named with a whole idea sentence, and a chip
+        # that ellipsises that answers "which one was that" with nothing.
+        self.assertNotEqual(mine.get("white-space"), "nowrap", mine)
+
+    def test_the_lineage_chip_has_a_rule_at_the_same_depth_as_its_neighbours(self):
+        mine = self._decls(".prog.prow.pdup")
+        self.assertTrue(mine, "the .pdup rule is missing entirely")
+        # the same selector depth as the chips it sits between, so it cannot
+        # lose to either of them on specificity or source order.
+        for neighbour in (".prog.prow.pdisk", ".prog.prow.pmission"):
+            self.assertTrue(self._decls(neighbour), neighbour)
+        self.assertIn("color", mine, mine)
+        self.assertIn("font-size", mine, mine)
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class InheritedBasisIsNotThisProjectsGroundingTest(unittest.TestCase):
+    """TRAP 2 on the surface. The chip asserted "▣ grounded in <repo>" off
+    `grounded` alone, and on a duplicate that is a claim about a pass that never
+    ran here — usually over a project that has moved since."""
+
+    def test_the_chip_says_the_grounding_was_INHERITED(self):
+        out = _harness({"act": "deck", "programs": [DUPED_PROG],
+                        "activeId": "s2"})
+        text = (out["groundChipText"] or "").lower()
+        self.assertIn("inherited", text, out["groundChipText"])
+        self.assertIn("stale", text, out["groundChipText"])
+        self.assertNotIn("grounded in", text, out["groundChipText"])
+        # ONE VOICE: the explanation is the daemon's own sentence, verbatim.
+        self.assertEqual(out["groundChipTitle"], DUPED_PROG["basisNotice"])
+        # …and it is still a LINK, so the inherited basis stays readable.
+        self.assertEqual(out["groundChipTag"], "a")
+
+    def test_the_chat_header_says_WHOSE_conversation_is_in_the_pane(self):
+        """FIX ROUND 1 (D7). The duplicate's pane opens holding the PARENT's
+        whole chat, and the only thing that ever said so was the banner — which
+        is transient. After one refresh the header named this program, the turns
+        under it were somebody else's, and nothing joined the two up."""
+        out = _harness({"act": "deck", "programs": [DUPED_PROG],
+                        "activeId": "s2"})
+        self.assertIsNotNone(out["contChipText"],
+                             "no lineage chip in the chat header")
+        self.assertIn("Command palette", out["contChipText"])
+        # the parent's MISSION is in the title, not on the face of a header
+        # belonging to a program that was never filed.
+        self.assertNotIn("m-777", out["contChipText"])
+        self.assertIn("m-777", out["contChipTitle"])
+        self.assertIn("command-palette", out["contChipTitle"])
+        # ONE VOICE: it states the lineage. "Nothing is binding" is the
+        # banner's sentence and the worker's instruction, not a third copy.
+        self.assertNotIn("inherited grounding", out["contChipText"].lower())
+
+    def test_an_ordinary_program_grows_no_lineage_chip_in_its_header(self):
+        prog = dict(DUPED_PROG)
+        prog.pop("duplicatedFrom", None)
+        out = _harness({"act": "deck", "programs": [prog], "activeId": "s2"})
+        self.assertIsNone(out["contChipText"])
+
+    def test_an_ordinary_grounded_program_still_names_the_project(self):
+        prog = dict(DUPED_PROG)
+        for key in ("basisInherited", "basisNotice", "duplicatedFrom"):
+            prog.pop(key, None)
+        out = _harness({"act": "deck", "programs": [prog], "activeId": "s2"})
+        self.assertIn("grounded in", (out["groundChipText"] or "").lower())
+        self.assertIn("basis.md", out["groundChipTitle"])
 
 
 if __name__ == "__main__":
