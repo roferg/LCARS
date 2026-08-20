@@ -6,7 +6,43 @@ counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
 ## 2026.8.4 — 2026-08-20
 
-**The viewscreen stops paying for work you already finished.** The board got
+**The viewscreen stops paying for work you already finished.** Sessions 176–177.
+Session 176 made the board BUILD cheap; session 177 found the 2.3 seconds that
+176's own benchmark could not see, because it timed the adapter in isolation
+instead of the daemon over HTTP.
+
+### Session 177 — the Mission-Log overlay stops rebuilding the whole repo
+
+The captain reported the board still lagging on a card click after 176 shipped.
+Instrumented, ONE `/api/board` request was making **784 full mission-detail
+builds** — 56 missions × 14 scans. Two causes:
+
+- **`LogFacts._linked_children` built a full mission detail for every mission in
+  the repo to test one key.** It called `reader.mission(name)` first and only
+  then read `parentMission` off `state.json` — the cheap test it already knew how
+  to do, run after the expensive work it gates. The test now comes first.
+- **The scan ran once per parent, fourteen times per request.**
+  `_waiting_counts → _waiting_children → _log_dispatch_is_stale →
+  _batch_short_of_its_gate → _waiting_children` is mutually recursive and every
+  arm re-walked the missions dir. A read request now opens a **thread-local**
+  scope in which the dir is walked ONCE and grouped by parent (thread-local
+  because the daemon serves boards concurrently; outside a scope there is no memo
+  at all, so every write path behaves exactly as before). The recursion's LOGIC
+  is untouched — it is a correct reading of a subtle state (S163 round 7 D3); it
+  is only made cheap.
+- **`mission()` now answers through the same done-card memo the board uses.** It
+  called `_card` directly, so 176's memo never reached the DETAIL path — which is
+  the path the overlay hits once per linked child, on every render.
+
+Measured over HTTP against a real 56-mission repo with 8 log parents and 44
+linked children: **`/api/board` 2400 ms → 50 ms (48×)**, **`/api/mission/<parent>`
+2285 ms → 30 ms (76×)**, detail builds per render **784 → 44**. This path is only
+reached when a Mission-Log parent has linked bug children, which is why it went
+unnoticed: a repo that never ran `lcars log` never paid it.
+
+### Session 176 — the board build itself
+
+**The board stops paying for finished missions.** The board got
 slower with every mission you completed and never gave the memory back — on a
 56-mission repo (51 of them Done) it rebuilt every card from disk and tore down
 and repainted the whole DOM four times a minute, whether or not anything had

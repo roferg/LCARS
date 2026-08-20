@@ -536,7 +536,13 @@ class LocalAdapter(object):
         d = os.path.join(self.missions_dir, mid)
         if not os.path.isdir(d):
             return None
-        card = self._card(d)
+        # S177: through the SAME memo the board uses. `mission()` used to call
+        # `_card` directly, so S176's done-card memo never reached the DETAIL
+        # path — and the Mission-Log overlay asks for one full detail per linked
+        # child on every render (44 of them on DX-Scorecard, most already done).
+        # `_done_card` hands back a shallow copy, so the detail-only keys added
+        # below decorate the copy and can never leak onto a board card.
+        card = self._done_card(d)
         if card is None:
             return None
         card.pop("_created", None)

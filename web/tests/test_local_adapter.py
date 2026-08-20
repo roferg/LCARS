@@ -1563,6 +1563,48 @@ class DoneCardMemoTest(unittest.TestCase):
         self.assertEqual(builds["m-x"], 2)
         self.assertEqual([m["id"] for m in boards[-1]["columns"]["align"]], ["m-x"])
 
+    def test_the_detail_path_reuses_the_done_card_memo(self):
+        # S177: `mission()` called `_card` directly, so the memo S176 built for
+        # the board never helped the DETAIL path — and the Mission-Log overlay
+        # asks for one full detail per linked child on every render (44 of them
+        # on DX-Scorecard, most of them done). Route it through the same memo.
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        builds = {}
+        real = self.adapter._card
+
+        def counting(d):
+            builds[os.path.basename(d)] = builds.get(os.path.basename(d), 0) + 1
+            return real(d)
+
+        self.adapter._card = counting
+        try:
+            self.adapter.board()                    # warms the memo
+            first = self.adapter.mission("m-done")
+            second = self.adapter.mission("m-done")
+        finally:
+            self.adapter._card = real
+        self.assertEqual(builds["m-done"], 1,
+                         "mission() must answer a done card from the memo")
+        # ...and the detail is still a DETAIL, not a bare card.
+        for detail in (first, second):
+            self.assertIn("activity", detail)
+            self.assertIn("prd", detail)
+            self.assertIn("criteria", detail)
+            self.assertNotIn("_created", detail)
+        self.assertEqual(first["id"], "m-done")
+
+    def test_the_detail_path_does_not_poison_the_memo(self):
+        # mission() decorates the card it gets with activity/adrs/criteria/prd.
+        # If it were handed the CACHED dict rather than a copy, those detail-only
+        # keys would leak onto the board card on the next render.
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        self.adapter.board()
+        self.adapter.mission("m-done")
+        card = self.adapter.board()["columns"]["done"][0]
+        for leaked in ("activity", "prd", "criteria", "adrs"):
+            self.assertNotIn(leaked, card,
+                             "a detail-only key must never reach a board card")
+
     def test_the_whole_done_column_survives_the_memo(self):
         # The captain held back capping the Done column as a PRODUCT decision.
         # Making done cards cheap must not quietly make them fewer.
