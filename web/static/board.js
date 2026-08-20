@@ -2502,15 +2502,58 @@ function setIdleStatus(t) {
    Two lessons, both cheap to keep: a comment goes ABOVE the line it explains,
    never in place of it; and `tests/test_board_boot_paints.py` now boots this
    file the way a browser does and fails if this chain is broken anywhere. */
+/* ── S176: the board stops rebuilding itself over nothing ────────────────────
+   `connect()` installs setInterval(refresh, LIVE_POLL_MS) and render() opens
+   with `root.innerHTML = ""` and rebuilds EVERY card in EVERY column. There was
+   no diff and no change check, so the board tore itself down and rebuilt four
+   times a minute whether or not a byte had moved. Measured on a 56-mission repo
+   (DX-Scorecard, 51 of them done) that is a full teardown + rebuild of 56 cards
+   landing on the main thread while the captain is trying to click one. The
+   comment below used to call the redundant path "a no-op re-render"; it never
+   was one.
+
+   WHY THE PAYLOAD AND NOT `fingerprint()` — read this before "optimising" it.
+   The obvious version polls the daemon's fingerprint and skips the FETCH. That
+   is wrong and it fails silently: fingerprint() is a DISK signature (mission
+   files, main/launch.json, config.json, the detection-marker digest), but
+   `meta.holodeck` is assembled from IN-MEMORY daemon session state
+   (actions.py `_holodeck`). A holodeck program that starts or stops working
+   changes this payload with the fingerprint sitting perfectly still, and the
+   unconditional poll is the only thing that has ever surfaced it. Comparing
+   what actually came back cannot miss that — or `meta.version`, or any future
+   meta contributor — because the thing compared IS the thing drawn.
+
+   The check lives HERE and not inside render() on purpose: repaintBoard() calls
+   render(LAST_BOARD) deliberately, with an unchanged payload, to reflect a
+   client-side transient. Gating render() itself would turn that into a no-op.
+
+   Fetch-gating is still available later, but it needs a token the daemon
+   computes over every meta contributor. That is a bigger change than this, and
+   worthless until the board build itself is cheap (S176 part A). */
+var LAST_BOARD_SIG = null;
+
 function refresh() {
   return fetch("/api/board").then(function (r) { return r.json(); })
-    .then(render)
+    .then(function (board) {
+      var sig = JSON.stringify(board);
+      // Unchanged since the last board we actually DREW → leave the DOM alone.
+      if (sig === LAST_BOARD_SIG) return;
+      LAST_BOARD_SIG = sig;
+      render(board);
+    })
     // Deliberately setStatus, NOT setVerdict (round 5). This is the READ path
     // failing: an ambient condition, not an action's outcome. It must be
     // replaceable by the next successful render (which writes through
     // setIdleStatus), or a board that came back would keep reporting itself
     // unavailable for ever — the same lie this round exists to kill, inverted.
-    .catch(function () { setStatus("board unavailable"); });
+    .catch(function () {
+      // S176: and INVALIDATE the comparison. Without this, a board that failed
+      // to arrive is followed by an identical payload that gets skipped as
+      // "unchanged" — stranding an unpainted board and a status line stuck on
+      // "board unavailable" after the daemon has already come back.
+      LAST_BOARD_SIG = null;
+      setStatus("board unavailable");
+    });
 }
 
 /* ════════════════ OVERLAY HOST ════════════════ */

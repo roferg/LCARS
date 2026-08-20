@@ -69,10 +69,12 @@ _DETECT_MARKER_GLOBS = ("*.gemspec", "*.csproj", "*.sln", "*.slnx")
 # SUPERSET over nested *.csproj. A superset can only cause one extra re-verdict
 # (the shell-out then returns the same answer); it can never leave the board
 # stale, which is the direction the S146 D2 contract cares about.
-_DETECT_MARKER_RGLOBS = tuple(
-    os.path.join(*(["*"] * d + ["*.csproj"]))
-    for d in (1, 2)
-)
+# S176: this was a tuple of `*/*.csproj` + `*/*/*.csproj` glob patterns whose
+# results were then filtered through _DETECT_MARKER_PRUNE — which meant globbing
+# the whole of node_modules on every sweep and throwing it away. It is now a
+# DEPTH, walked with the prune applied during the descent (_nested_marker_files).
+# Same reach, same file set; it just stops enumerating what it discards.
+_DETECT_MARKER_RDEPTH = 2
 _DETECT_MARKER_PRUNE = ("bin", "obj", ".git", "node_modules")
 # spec/ + test/ dir EXISTENCE is ruby runner evidence (detect_test_cmd S145).
 _DETECT_MARKER_DIRS = ("spec", "test")
@@ -87,6 +89,57 @@ _HOSTNAME_RE = re.compile(
 # The "not asked yet" sentinel for the gh_host memo. Distinct from "" because ""
 # is a real, cacheable answer (github.com) — the common one, in fact.
 _UNRESOLVED = object()
+
+
+def _pruned_child_dirs(parent):
+    """Immediate sub-directories of `parent`, minus the pruned + hidden ones.
+
+    The prune list mirrors the shell's (`bin`/`obj`/`.git`/`node_modules`); the
+    dot-prefix skip mirrors `glob`, whose `*` has never matched a hidden name —
+    so the walk that replaced the globs keeps their exact reach.
+    """
+    out = []
+    try:
+        with os.scandir(parent) as entries:
+            for e in entries:
+                if e.name.startswith(".") or e.name in _DETECT_MARKER_PRUNE:
+                    continue
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        out.append(e.path)
+                except OSError:
+                    pass
+    except OSError:
+        return []
+    return out
+
+
+def _nested_marker_files(root):
+    """[(relpath, abspath)] for *.csproj one and two directories under `root`.
+
+    The pruning replacement for the old `*/*.csproj` + `*/*/*.csproj` globs — see
+    `_DETECT_MARKER_RDEPTH` for why they went. Sorted, so the signature tuple's
+    order is stable exactly as `sorted(glob.glob(...))` was.
+    """
+    found = []
+    level = _pruned_child_dirs(root)
+    for _ in range(_DETECT_MARKER_RDEPTH):   # depths 1..N, mirroring the globs
+        for d in level:
+            try:
+                with os.scandir(d) as entries:
+                    for e in entries:
+                        if e.name.startswith(".") or not e.name.endswith(".csproj"):
+                            continue
+                        try:
+                            if e.is_file(follow_symlinks=False):
+                                found.append(
+                                    (os.path.relpath(e.path, root), e.path))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        level = [c for d in level for c in _pruned_child_dirs(d)]
+    return sorted(found)
 
 
 class LocalAdapter(object):
@@ -136,6 +189,20 @@ class LocalAdapter(object):
         # on every render forever.
         self._host_adapter_script = host_adapter_script
         self._gh_host_memo = _UNRESOLVED
+        # S176 part A: per-mission-dir card memo, populated ONLY for a mission
+        # whose card came back `done`. A done mission is immutable by
+        # construction — terminal stage, no driver lock, no worker, no writer —
+        # so its card is a pure function of files that are finished. On
+        # DX-Scorecard (56 missions, 51 of them done) rebuilding those 51 cards
+        # from disk on every render was ~80% of a 205 ms board(), four times a
+        # minute, for ever. {dir: (signature, card)} — see _dir_signature for
+        # what "changed" means and _done_card for why the caller gets a copy.
+        self._card_memo = {}
+        # S176 part C: repo identity SHELLS git for the origin url. Resolved ONCE
+        # for the daemon's life, on exactly the reasoning `_gh_host_memo` above
+        # already carries — the origin remote does not change under a running
+        # daemon, and `_meta()` runs on every board build.
+        self._repo_identity_memo = _UNRESOLVED
 
     # -- the public surface ---------------------------------------------------
     def _model_aliases(self):
@@ -167,7 +234,7 @@ class LocalAdapter(object):
         return aliases
 
     def board(self):
-        cards = [self._card(d) for d in self._mission_dirs()]
+        cards = [self._done_card(d) for d in self._mission_dirs()]
         cards = [c for c in cards if c is not None]
         # newest-first by created (string ISO sorts correctly); ties on id.
         cards.sort(key=lambda c: (c.get("_created") or "", c["id"]), reverse=True)
@@ -176,8 +243,11 @@ class LocalAdapter(object):
         return board.assemble(cards, meta=self._meta())
 
     def _meta(self):
+        if self._repo_identity_memo is _UNRESOLVED:
+            self._repo_identity_memo = _repo_identity(
+                self.repo_root, self._git_url_reader)
         meta = {
-            "repo": _repo_identity(self.repo_root, self._git_url_reader),
+            "repo": self._repo_identity_memo,
             "adapter": "local",
             "mode": "read-only" if self.read_only else "read-write",
         }
@@ -369,15 +439,19 @@ class LocalAdapter(object):
                     sig.append((os.path.basename(p), os.path.getmtime(p)))
                 except OSError:
                     pass
-        for pat in _DETECT_MARKER_RGLOBS:
-            for p in sorted(glob.glob(os.path.join(glob.escape(root), pat))):
-                rel = os.path.relpath(p, root)
-                if any(seg in _DETECT_MARKER_PRUNE for seg in rel.split(os.sep)):
-                    continue
-                try:
-                    sig.append((rel, os.path.getmtime(p)))
-                except OSError:
-                    pass
+        # S176: walk to the nested *.csproj with the prune applied DURING the
+        # descent instead of after it. `glob("*/*/*.csproj")` expands every
+        # directory two levels down and only THEN drops the pruned segments —
+        # so on any JS repo it enumerated the whole of node_modules, every time.
+        # Measured on DX-Scorecard: 38 ms and 228 glob calls per sweep, and
+        # fingerprint() folds this in, so the SSE channel paid it at 1 Hz for as
+        # long as a board was open. Same file set, same order, same tuple shape;
+        # it just stops walking into directories whose contents it throws away.
+        for rel, p in _nested_marker_files(root):
+            try:
+                sig.append((rel, os.path.getmtime(p)))
+            except OSError:
+                pass
         for d in _DETECT_MARKER_DIRS:
             sig.append((d + "/", os.path.isdir(os.path.join(root, d))))
         return tuple(sig)
@@ -462,7 +536,13 @@ class LocalAdapter(object):
         d = os.path.join(self.missions_dir, mid)
         if not os.path.isdir(d):
             return None
-        card = self._card(d)
+        # S177: through the SAME memo the board uses. `mission()` used to call
+        # `_card` directly, so S176's done-card memo never reached the DETAIL
+        # path — and the Mission-Log overlay asks for one full detail per linked
+        # child on every render (44 of them on DX-Scorecard, most already done).
+        # `_done_card` hands back a shallow copy, so the detail-only keys added
+        # below decorate the copy and can never leak onto a board card.
+        card = self._done_card(d)
         if card is None:
             return None
         card.pop("_created", None)
@@ -544,6 +624,79 @@ class LocalAdapter(object):
             if os.path.isfile(os.path.join(d, "state.json")):
                 out.append(d)
         return out
+
+    def _dir_signature(self, d):
+        """A cheap "has anything in this mission changed?" signature.
+
+        (directory mtime, max file mtime, entry count). Max-mtime ALONE cannot
+        see a DELETION — removing the newest artifact makes the max go *down*,
+        and an older max only compares unequal by luck — so the directory's own
+        mtime (which the kernel moves on any create/unlink) and the entry count
+        ride along. One scandir per mission per render; the same walk shape
+        `fingerprint()` already trusts for the whole board.
+
+        Returns None when the directory cannot be read, which callers treat as
+        "never memoize" rather than as a signature that happens to match.
+        """
+        try:
+            dir_mtime = os.path.getmtime(d)
+        except OSError:
+            return None
+        latest = 0.0
+        count = 0
+        try:
+            with os.scandir(d) as entries:
+                for e in entries:
+                    count += 1
+                    try:
+                        latest = max(latest, e.stat().st_mtime)
+                    except OSError:
+                        return None
+        except OSError:
+            return None
+        return (dir_mtime, latest, count)
+
+    def _config_mtime(self):
+        """config.json's mtime, or None. Part of the done-card memo key: `_card`
+        resolves the displayed model mix through `_model_aliases()`, so a
+        `modelAliases` edit legitimately changes a DONE card. Key on the mission
+        dir alone and the memo would serve a stale mix for ever."""
+        try:
+            return os.path.getmtime(
+                os.path.join(self.repo_root, ".git", "lcars", "config.json"))
+        except OSError:
+            return None
+
+    def _done_card(self, d):
+        """`_card`, memoized for missions that have finished.
+
+        S176 part A. ONLY a card that came back `done` is cached: an in-flight
+        mission carries live fields (`liveness`, `activeSecondsAt`, the
+        events-derived in-flight stage) that must be recomputed every render,
+        and there are only ever a handful of those. The whole win is in the
+        tail of finished work, which is also the part that grows without bound.
+
+        The caller gets a SHALLOW COPY, never the cached dict itself. `board()`
+        pops the private `_created` sort key off every card (destructive) and
+        `assemble()` writes `c["stage"]` (idempotent for a done card); both act
+        on top-level keys only, and no nested value is ever mutated downstream.
+        A shallow copy costs microseconds where a deepcopy of 51 cards would eat
+        the render time this memo exists to buy back.
+        """
+        key = (self._dir_signature(d), self._config_mtime())
+        if key[0] is not None:
+            hit = self._card_memo.get(d)
+            if hit is not None and hit[0] == key:
+                return dict(hit[1])
+        card = self._card(d)
+        # Cache only a finished mission — and DROP a stale entry when a mission
+        # leaves `done` (an `lcars feedback` send-back does exactly that), so an
+        # entry can never outlive the card that earned it.
+        if key[0] is not None and isinstance(card, dict) and card.get("stage") == "done":
+            self._card_memo[d] = (key, dict(card))
+        else:
+            self._card_memo.pop(d, None)
+        return card
 
     def _card(self, d):
         state = _load_json(os.path.join(d, "state.json"))

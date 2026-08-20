@@ -4,6 +4,81 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.4 — 2026-08-20
+
+**The viewscreen stops paying for work you already finished.** Sessions 176–177.
+Session 176 made the board BUILD cheap; session 177 found the 2.3 seconds that
+176's own benchmark could not see, because it timed the adapter in isolation
+instead of the daemon over HTTP.
+
+### Session 177 — the Mission-Log overlay stops rebuilding the whole repo
+
+The captain reported the board still lagging on a card click after 176 shipped.
+Instrumented, ONE `/api/board` request was making **784 full mission-detail
+builds** — 56 missions × 14 scans. Two causes:
+
+- **`LogFacts._linked_children` built a full mission detail for every mission in
+  the repo to test one key.** It called `reader.mission(name)` first and only
+  then read `parentMission` off `state.json` — the cheap test it already knew how
+  to do, run after the expensive work it gates. The test now comes first.
+- **The scan ran once per parent, fourteen times per request.**
+  `_waiting_counts → _waiting_children → _log_dispatch_is_stale →
+  _batch_short_of_its_gate → _waiting_children` is mutually recursive and every
+  arm re-walked the missions dir. A read request now opens a **thread-local**
+  scope in which the dir is walked ONCE and grouped by parent (thread-local
+  because the daemon serves boards concurrently; outside a scope there is no memo
+  at all, so every write path behaves exactly as before). The recursion's LOGIC
+  is untouched — it is a correct reading of a subtle state (S163 round 7 D3); it
+  is only made cheap.
+- **`mission()` now answers through the same done-card memo the board uses.** It
+  called `_card` directly, so 176's memo never reached the DETAIL path — which is
+  the path the overlay hits once per linked child, on every render.
+
+Measured over HTTP against a real 56-mission repo with 8 log parents and 44
+linked children: **`/api/board` 2400 ms → 50 ms (48×)**, **`/api/mission/<parent>`
+2285 ms → 30 ms (76×)**, detail builds per render **784 → 44**. This path is only
+reached when a Mission-Log parent has linked bug children, which is why it went
+unnoticed: a repo that never ran `lcars log` never paid it.
+
+### Session 176 — the board build itself
+
+**The board stops paying for finished missions.** The board got
+slower with every mission you completed and never gave the memory back — on a
+56-mission repo (51 of them Done) it rebuilt every card from disk and tore down
+and repainted the whole DOM four times a minute, whether or not anything had
+changed. Session 176.
+
+- **A finished mission's card is computed once.** A `done` Mission is immutable
+  by construction — terminal Stage, no driver lock, no worker — so its card is
+  memoized on a cheap directory signature (dir mtime + max file mtime + entry
+  count, so a DELETED artifact is caught as well as a written one, plus
+  `config.json`'s mtime because a `modelAliases` edit legitimately changes a
+  done card's model mix). In-flight Missions are never memoized: they carry live
+  fields, and there are only ever a handful of them.
+- **The board stops rebuilding itself over nothing.** The 4-second safety poll
+  now compares what came back against what is already drawn, and leaves the DOM
+  alone when they match. The comparison is on the PAYLOAD, deliberately not on
+  `fingerprint()`: the fingerprint is a disk signature, but `meta.holodeck` is
+  in-memory daemon state, so a fingerprint gate would have silently stopped the
+  ⬡ HOLODECK band from lighting up. A failed fetch invalidates the comparison,
+  so a recovered daemon always repaints. The poll still carries every step of a
+  reconcile write-burst — the reason it exists.
+- **Repo identity resolves once per daemon**, exactly as `gh_host` already did,
+  removing a `git` subprocess spawn from every single render.
+- **The detection sweep stops walking `node_modules`.** `_detect_signature`
+  applied its prune list to the glob RESULTS, so `*/*/*.csproj` enumerated every
+  package before discarding it — on a path `fingerprint()` reaches, which the SSE
+  channel polls once a second. It now prunes during the descent: same file set,
+  same order, and detection stays IMMEDIATE (a TTL memo was tried first and
+  correctly rejected by `test_readiness.py`, which encodes that contract).
+
+Measured on a real 56-mission repo, `main` vs branch in one process: `board()`
+**192.9 ms → 19.2 ms** (10.0×), file opens per render **805 → 106**,
+`fingerprint()` **24.2 ms → 9.4 ms**, `_detect_signature()` **15.3 ms → 2.5 ms**.
+The `/api/board` payload is **byte-identical** to before (433 270 bytes, verified
+mechanically) — the same board, for a tenth of the money. Capping the Done column
+remains deliberately unbuilt; it is a product decision, not an optimisation.
+
 ## 2026.8.3 — 2026-08-08
 
 **The Holodeck — design it in conversation, then hand the drawing to a Mission.**

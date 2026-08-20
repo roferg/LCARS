@@ -31,6 +31,7 @@ import signal
 import struct
 import subprocess
 import tempfile
+import contextlib
 import threading
 import time
 import unicodedata
@@ -4041,7 +4042,78 @@ class LogFacts(object):
         (CLAUDE.md). The one place the path is spelled out."""
         return os.path.join(self.repo_root, ".git", "lcars", "missions")
 
+    # ── S177: one repo scan per read request, not fourteen ──────────────────
+    # `_waiting_counts → _waiting_children → _log_dispatch_is_stale →
+    # _batch_short_of_its_gate → _waiting_children` is MUTUALLY RECURSIVE, and
+    # every arm re-walks the missions dir. `_log_parent_ids`'s docstring shows
+    # the quadratic was already foreseen ("…is itself a full scan, so asking it
+    # about every mission on the board would be quadratic for no reason") and
+    # guarded at the OUTER loop; the inner recursion went on re-walking. That is
+    # 14 scans per board render.
+    #
+    # The recursion itself is a correct reading of a subtle state (S163 round 7
+    # D3 — a resolver that died mid-batch must leave its bugs visible), so it is
+    # not being rewritten. It is being made CHEAP: a read request opens a scope,
+    # every `_linked_children` inside it answers from ONE snapshot, and the scope
+    # closes on the way out.
+    #
+    # THREAD-LOCAL, and that is load-bearing, not caution. The daemon is a
+    # ThreadingHTTPServer: two boards can render at once, and a memo kept on the
+    # instance would let one request serve another request's snapshot — a defect
+    # that would surface as a board that is briefly, inexplicably wrong, and
+    # would be near-impossible to reproduce.
+    #
+    # OUTSIDE a scope there is NO memo at all (`_log_scan_memo()` → None), so
+    # every write path calling `_linked_children` behaves exactly as it always
+    # has: a fresh read of disk, no staleness window.
+    _log_scan_state = threading.local()
+
+    def _log_scan_memo(self):
+        """The active request's snapshot dict, or None when no scope is open."""
+        return getattr(LogFacts._log_scan_state, "memo", None)
+
+    @contextlib.contextmanager
+    def _log_scan_scope(self):
+        """Open a read-request scope in which the missions dir is scanned once.
+
+        Re-entrant: a nested scope joins the outer one rather than shadowing it,
+        so an overlay that calls another overlay still scans once. Always
+        restores the previous value — including on an exception, or a daemon
+        that raised once would serve a frozen board for the rest of its life.
+        """
+        state = LogFacts._log_scan_state
+        previous = getattr(state, "memo", None)
+        if previous is None:
+            state.memo = {}
+        try:
+            yield state.memo
+        finally:
+            state.memo = previous
+
     def _linked_children(self, parent):
+        """Every logged-bug child of `parent`, as review-panel rows.
+
+        S177 — THE ORDER OF THE TWO TESTS IS THE WHOLE PERFORMANCE STORY. This
+        used to build `self._reader.mission(name)` — a FULL mission detail — for
+        every mission in the repo, and only then read `parentMission` off
+        state.json to decide whether it wanted it. The cheap test was already
+        here; it just ran after the expensive work it gates. On a repo with 56
+        missions and 4 children that is 52 detail builds thrown away, and this
+        scan is reached ~14 times per board render through the
+        `_waiting_children` ⇄ `_log_dispatch_is_stale` recursion, so it cost
+        784 builds and 2.3 SECONDS per request. Test the key first; pay for the
+        card only for a child. Same list out, element for element.
+        """
+        memo = self._log_scan_memo()
+        if memo is not None:
+            # Inside a read-request scope the dir is walked ONCE, for EVERY
+            # parent at the same time — see `_children_by_parent`. Keying the
+            # memo per parent instead would still cost one full walk per parent,
+            # and a real repo has several (DX-Scorecard: 8 parents, 56 missions
+            # = 448 state.json loads a render).
+            if "byParent" not in memo:
+                memo["byParent"] = self._children_by_parent()
+            return memo["byParent"].get(parent, [])
         out = []
         missions_dir = self._missions_dir()
         if not os.path.isdir(missions_dir):
@@ -4050,38 +4122,74 @@ class LogFacts(object):
             sp = os.path.join(missions_dir, name, "state.json")
             if not os.path.isfile(sp):
                 continue
-            card = self._reader.mission(name)
-            if card is None:
-                continue
             # read parentMission straight off disk (not part of the card shape).
-            pm = _read_json_key(sp, "parentMission")
-            if pm == parent:
-                # S74: a logged bug is a Mission whose estimate is computed from
-                # its bug PRD — surface the SAME estimator readout the board card
-                # and Launch panel show (ONE cost pill, TWO difficulty pills, the
-                # per-stage model mix) so the Mission-Log review panel can render
-                # each bug with its suggested model + cost/difficulty, REUSING the
-                # card shape (card already carries `pills`/`modelMix` off the
-                # child's estimate.json via the LocalAdapter). Plus the persisted
-                # captain override so the panel can pre-fill its steer field.
-                child = {"id": card["id"], "issue": card.get("issue"),
-                         "title": card.get("title"), "stage": card.get("stage"),
-                         "type": card.get("type"),
-                         "pills": card.get("pills"),
-                         "modelMix": card.get("modelMix"),
-                         # S163 fix round 3: the two signals a DRIVER produces,
-                         # carried so `_waiting_children` can tell a bug nothing
-                         # has started from one resolve-logs already scheduled.
-                         # (`dispatched` is deliberately NOT here — it is the
-                         # ESTIMATOR's footprint and is true from birth; see
-                         # `_mark_log_dispatched`.)
-                         "queued": bool(card.get("queued")),
-                         "running": bool(card.get("running"))}
-                ov = _read_json_key(sp, "modelOverride")
-                if isinstance(ov, dict) and ov.get("scope") and ov.get("tier"):
-                    child["override"] = "%s:%s" % (ov["scope"], ov["tier"])
+            # FIRST: it is one small json load, against a whole detail build.
+            if _read_json_key(sp, "parentMission") != parent:
+                continue
+            child = self._child_row(name, sp)
+            if child is not None:
                 out.append(child)
         return out
+
+    def _children_by_parent(self):
+        """{parent id -> [child row]} from ONE walk of the missions dir.
+
+        S177. The scoped half of `_linked_children`: the same rows, grouped, so
+        a render that asks about eight parents pays for one walk rather than
+        eight. Order within a parent is `sorted(listdir)`, exactly as the
+        per-parent path produces it.
+        """
+        out = {}
+        missions_dir = self._missions_dir()
+        if not os.path.isdir(missions_dir):
+            return out
+        for name in sorted(os.listdir(missions_dir)):
+            sp = os.path.join(missions_dir, name, "state.json")
+            if not os.path.isfile(sp):
+                continue
+            pm = _read_json_key(sp, "parentMission")
+            if not pm:
+                continue
+            child = self._child_row(name, sp)
+            if child is not None:
+                out.setdefault(pm, []).append(child)
+        return out
+
+    def _child_row(self, name, sp):
+        """One logged-bug child as the review panel wants it, or None.
+
+        Lifted out of `_linked_children` unchanged (S177) so the per-parent and
+        the one-walk paths cannot drift into producing different rows.
+        """
+        # The `card is None` guard predates S177 and stays: a child whose detail
+        # cannot be built has to drop out, not crash the overlay.
+        card = self._reader.mission(name)
+        if card is None:
+            return None
+        # S74: a logged bug is a Mission whose estimate is computed from its bug
+        # PRD — surface the SAME estimator readout the board card and Launch
+        # panel show (ONE cost pill, TWO difficulty pills, the per-stage model
+        # mix) so the Mission-Log review panel can render each bug with its
+        # suggested model + cost/difficulty, REUSING the card shape (card already
+        # carries `pills`/`modelMix` off the child's estimate.json via the
+        # LocalAdapter). Plus the persisted captain override so the panel can
+        # pre-fill its steer field.
+        child = {"id": card["id"], "issue": card.get("issue"),
+                 "title": card.get("title"), "stage": card.get("stage"),
+                 "type": card.get("type"),
+                 "pills": card.get("pills"),
+                 "modelMix": card.get("modelMix"),
+                 # S163 fix round 3: the two signals a DRIVER produces, carried
+                 # so `_waiting_children` can tell a bug nothing has started from
+                 # one resolve-logs already scheduled. (`dispatched` is
+                 # deliberately NOT here — it is the ESTIMATOR's footprint and is
+                 # true from birth; see `_mark_log_dispatched`.)
+                 "queued": bool(card.get("queued")),
+                 "running": bool(card.get("running"))}
+        ov = _read_json_key(sp, "modelOverride")
+        if isinstance(ov, dict) and ov.get("scope") and ov.get("tier"):
+            child["override"] = "%s:%s" % (ov["scope"], ov["tier"])
+        return child
 
     # ── S163 fix round 3 — "show me everything that will run" ────────────────
     #
@@ -4435,6 +4543,17 @@ class LogFacts(object):
         return out
 
     def log_overlay(self, board):
+        """S177: open the ONE repo-scan scope, then do the real work.
+    
+        Every `_linked_children` beneath this call — including the ones
+        reached through the `_waiting_children` recursion — answers from a
+        single snapshot instead of re-walking the missions dir. Purely a
+        cost change: the facts published are identical.
+        """
+        with self._log_scan_scope():
+            return self._log_overlay_body(board)
+
+    def _log_overlay_body(self, board):
         """Stamp the DURABLE `logFiling`/`logDispatch` facts onto board cards.
 
         Same additive contract as the write board's overlay: with nothing on
@@ -4476,6 +4595,17 @@ class LogFacts(object):
         return board
 
     def log_overlay_mission(self, mission):
+        """S177: open the ONE repo-scan scope, then do the real work.
+    
+        Every `_linked_children` beneath this call — including the ones
+        reached through the `_waiting_children` recursion — answers from a
+        single snapshot instead of re-walking the missions dir. Purely a
+        cost change: the facts published are identical.
+        """
+        with self._log_scan_scope():
+            return self._log_overlay_mission_body(mission)
+
+    def _log_overlay_mission_body(self, mission):
         """The same two stamps on a mission DETAIL dict — because the detail
         never runs through the board overlay (the `align_overlay_mission`
         lesson), and a card and its detail disagreeing is the very defect."""
@@ -11559,6 +11689,17 @@ class Actions(LogFacts):
         return out
 
     def log_overlay(self, board):
+        """S177: open the ONE repo-scan scope, then do the real work.
+    
+        Every `_linked_children` beneath this call — including the ones
+        reached through the `_waiting_children` recursion — answers from a
+        single snapshot instead of re-walking the missions dir. Purely a
+        cost change: the facts published are identical.
+        """
+        with self._log_scan_scope():
+            return self._log_overlay_body(board)
+
+    def _log_overlay_body(self, board):
         """Additively stamp `logFiling` on the parent card of a live log session.
 
         The `align_overlay` shape, for the Mission-Log half: so a filing survives a
@@ -11614,6 +11755,17 @@ class Actions(LogFacts):
         return board
 
     def log_overlay_mission(self, mission):
+        """S177: open the ONE repo-scan scope, then do the real work.
+    
+        Every `_linked_children` beneath this call — including the ones
+        reached through the `_waiting_children` recursion — answers from a
+        single snapshot instead of re-walking the missions dir. Purely a
+        cost change: the facts published are identical.
+        """
+        with self._log_scan_scope():
+            return self._log_overlay_mission_body(mission)
+
+    def _log_overlay_mission_body(self, mission):
         """Stamp `logFiling` onto a SINGLE mission-DETAIL dict.
 
         The detail payload must mirror the board card (the `align_overlay_mission`

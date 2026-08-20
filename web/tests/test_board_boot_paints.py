@@ -51,11 +51,11 @@ def _board(missions, stage="verify"):
     }
 
 
-def _boot(board, mode="boot", board2=None):
+def _boot(board, mode="boot", board2=None, board3=None):
     fd, path = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     with open(path, "w") as fh:
-        json.dump({"board": board, "board2": board2}, fh)
+        json.dump({"board": board, "board2": board2, "board3": board3}, fh)
     try:
         out = subprocess.check_output([NODE, HARNESS, path, mode],
                                       stderr=subprocess.STDOUT)
@@ -174,6 +174,123 @@ class BootHarnessIsHonestTest(unittest.TestCase):
         with_none = _cards(_boot(_board([])))
         self.assertEqual(1, len(with_one))
         self.assertEqual(0, len(with_none))
+
+
+@unittest.skipIf(NODE is None, "node not available")
+class UnchangedBoardIsNotRepaintedTest(unittest.TestCase):
+    """S176 part B — the board stops rebuilding itself over nothing.
+
+    `connect()` installs setInterval(refresh, 4000) and `render()` opens with
+    `root.innerHTML = ""` and rebuilds EVERY card in EVERY column. There was no
+    diff and no change check, so a 56-card board tore itself down and rebuilt on
+    the main thread four times a minute for ever, whether or not a single byte
+    had moved. That is what the captain felt as "laggy when I click on a card".
+
+    THE CHECK IS ON THE PAYLOAD, NOT ON `fingerprint()` — and that is the whole
+    design. `fingerprint()` is a DISK signature, but `meta.holodeck` is built
+    from in-memory daemon session state (actions.py `_holodeck`), so a holodeck
+    program starting or stopping changes the board with the fingerprint sitting
+    perfectly still. Gate the fetch on the fingerprint and the ⬡ HOLODECK band
+    silently stops lighting up. Comparing what actually came back cannot miss
+    it, because the thing compared IS the thing drawn.
+    """
+
+    def _b(self, missions, meta=None):
+        b = _board(missions)
+        if meta:
+            b["meta"].update(meta)
+        return b
+
+    def test_an_identical_payload_does_not_repaint(self):
+        one = self._b([_mission("m-1", 41, "Ship the thing")])
+        out = _boot(one, mode="pollsame")
+        self.assertEqual("", out["bootError"])
+        # Two board fetches (boot + poll), ONE paint.
+        self.assertEqual(2, out["boardFetches"])
+        self.assertEqual(1, out["boardPaints"])
+        # ...and the board is still on screen, not blanked by the skip.
+        self.assertEqual(1, len(_cards(out)))
+
+    def test_a_changed_payload_still_repaints(self):
+        one = self._b([_mission("m-1", 41, "Ship the thing")])
+        two = self._b([_mission("m-1", 41, "Ship the thing"),
+                       _mission("m-2", 42, "And the other thing")])
+        out = _boot(one, mode="poll", board2=two)
+        self.assertEqual("", out["bootError"])
+        self.assertEqual(2, out["boardPaints"])
+        self.assertEqual(2, len(_cards(out)))
+
+    def test_the_poll_repaints_through_a_write_burst(self):
+        # The reconcile case the safety poll EXISTS for: SSE is debounced and
+        # only emits once writes stop, so the poll must carry each intermediate
+        # state. A change check that only proves "identical skips" has proved
+        # half of it — this is the other half.
+        one = self._b([_mission("m-1", 41, "merging")])
+        two = self._b([_mission("m-1", 41, "retesting")])
+        three = self._b([_mission("m-1", 41, "awaiting reapprove")])
+        out = _boot(one, mode="burst", board2=two, board3=three)
+        self.assertEqual("", out["bootError"])
+        self.assertEqual(3, out["boardPaints"])
+        self.assertIn("awaiting reapprove", _all_text(out))
+
+    def test_an_in_memory_only_meta_change_still_repaints(self):
+        # THE TRAP, as an executable assertion. `meta.holodeck` never touches
+        # disk, so fingerprint() cannot see this change. Payload comparison can.
+        one = self._b([_mission("m-1", 41, "Ship the thing")])
+        two = self._b([_mission("m-1", 41, "Ship the thing")],
+                      meta={"holodeck": {"count": 1, "working": [
+                          {"sessionId": "h1", "program": "p", "room": "r"}],
+                          "message": "drawing"}})
+        out = _boot(one, mode="poll", board2=two)
+        self.assertEqual("", out["bootError"])
+        self.assertEqual(2, out["boardPaints"],
+                         "a holodeck change is invisible to fingerprint() — the "
+                         "payload check must still catch it")
+
+    def test_the_sse_push_is_unaffected(self):
+        one = self._b([_mission("m-1", 41, "Ship the thing")])
+        two = self._b([_mission("m-1", 41, "Ship the thing"),
+                       _mission("m-2", 42, "New arrival")])
+        out = _boot(one, mode="sse", board2=two)
+        self.assertEqual("", out["bootError"])
+        self.assertEqual(2, out["boardPaints"])
+        self.assertEqual(2, len(_cards(out)))
+
+    def test_a_recovered_fetch_repaints_even_when_nothing_changed(self):
+        # The edge the change check CREATES. A failed fetch leaves the board
+        # unpainted and #status on "board unavailable". If the next successful
+        # fetch is compared against the payload we never drew, "unchanged" would
+        # skip the paint and strand the captain on an error that has passed. The
+        # failure path must therefore invalidate the comparison, not just report.
+        one = self._b([_mission("m-1", 41, "Ship the thing")])
+        out = _boot(one, mode="failthenpoll")
+        self.assertEqual("", out["bootError"])
+        self.assertEqual(1, out["boardPaints"])
+        self.assertEqual(1, len(_cards(out)))
+        self.assertNotIn("unavailable", out["status"])
+
+    def test_the_skip_leaves_the_status_line_alone(self):
+        # Skipping a render is only safe if nothing that matters was riding on
+        # the render happening. The status line is the visible one.
+        one = self._b([_mission("m-1", 41, "Ship the thing")])
+        painted = _boot(one, mode="boot")
+        skipped = _boot(one, mode="pollsame")
+        self.assertEqual(painted["status"], skipped["status"])
+        self.assertTrue(skipped["status"])
+
+
+@unittest.skipIf(NODE is None, "node not available")
+class PaintCounterIsHonestTest(unittest.TestCase):
+    """Positive control for the S176 counter, in the spirit of the one above.
+
+    A paint counter stuck at 1 would make the skip test pass no matter what the
+    product did. Prove it can count to two."""
+
+    def test_the_counter_can_reach_two(self):
+        one = _board([_mission("m-1", 41, "Ship the thing")])
+        two = _board([_mission("m-2", 42, "Different mission")])
+        self.assertEqual(1, _boot(one, mode="boot")["boardPaints"])
+        self.assertEqual(2, _boot(one, mode="poll", board2=two)["boardPaints"])
 
 
 if __name__ == "__main__":

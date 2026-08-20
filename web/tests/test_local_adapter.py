@@ -1437,5 +1437,282 @@ class WaveIsolationReasonTest(unittest.TestCase):
         self.assertNotIn("establishes shared", blob)
 
 
+class DoneCardMemoTest(unittest.TestCase):
+    """S176 part A — a DONE mission's card is computed once, not every render.
+
+    A done mission is immutable by construction: terminal stage, no driver lock,
+    no worker, no writer. Its card is a pure function of its files, so anything
+    recomputed from it on a later render is waste. On DX-Scorecard (56 missions,
+    51 done) that waste was ~80% of a 205 ms board().
+
+    The memo is only as good as its invalidator, so most of these cases are
+    about LETTING GO, not about hitting.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.adapter = LocalAdapter(self.tmp)
+
+    def _count_card_builds(self, n=2):
+        """Run board() n times, returning the per-mission _card() build counts."""
+        builds = {}
+        real = self.adapter._card
+
+        def counting(d):
+            builds[os.path.basename(d)] = builds.get(os.path.basename(d), 0) + 1
+            return real(d)
+
+        self.adapter._card = counting
+        try:
+            boards = [self.adapter.board() for _ in range(n)]
+        finally:
+            self.adapter._card = real
+        return builds, boards
+
+    def _bump(self, path):
+        """Move a path's mtime forward past the filesystem's resolution."""
+        stamp = os.path.getmtime(path) + 5
+        os.utime(path, (stamp, stamp))
+
+    def test_done_mission_card_is_built_once_across_renders(self):
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        builds, boards = self._count_card_builds(n=3)
+        self.assertEqual(builds["m-done"], 1)
+        # ...and every render still carries the card, identically.
+        for b in boards:
+            self.assertEqual([m["id"] for m in b["columns"]["done"]], ["m-done"])
+
+    def test_in_flight_mission_is_never_memoized(self):
+        # An in-flight card has live fields (liveness, activeSecondsAt, the
+        # in-flight stage derivation). It must be recomputed every render — and
+        # there are only ever a handful of them, so there is nothing to win.
+        fx.plant_simple(self.tmp, "m-live", stage="implement")
+        builds, _ = self._count_card_builds(n=3)
+        self.assertEqual(builds["m-live"], 3)
+
+    def test_a_touched_file_reopens_the_done_card(self):
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        d = fx.mission_dir(self.tmp, "m-done")
+        self.adapter.board()
+        self._bump(os.path.join(d, "state.json"))
+        builds, _ = self._count_card_builds(n=1)
+        self.assertEqual(builds["m-done"], 1)
+
+    def test_a_deleted_file_reopens_the_done_card(self):
+        # Max-mtime alone CANNOT see a deletion (removing the newest file makes
+        # the max go DOWN, and an older max still compares unequal only by luck).
+        # The signature folds in the dir's own mtime and the entry count so a
+        # vanished artifact is caught.
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        d = fx.mission_dir(self.tmp, "m-done")
+        os.remove(os.path.join(d, "estimate.json"))
+        # Pin every survivor's mtime to a fixed past value so the ONLY thing that
+        # can distinguish the two renders is the deletion itself.
+        first = self.adapter.board()
+        for fn in os.listdir(d):
+            os.utime(os.path.join(d, fn), (1000000, 1000000))
+        builds, _ = self._count_card_builds(n=1)
+        self.assertEqual(builds["m-done"], 1)
+        self.assertTrue(first["columns"]["done"])
+
+    def test_a_modelaliases_edit_reopens_the_done_card(self):
+        # _card() reads self._model_aliases() (config.json), so a modelAliases
+        # edit legitimately changes a DONE card's displayed model mix. Key on the
+        # mission dir alone and the memo serves a stale mix for ever.
+        fx.plant_simple(self.tmp, "m-done", stage="done", worker_bin="copilot")
+        cfg = os.path.join(self.tmp, ".git", "lcars", "config.json")
+        # The alias must CLASSIFY to a different tier — effective_tier() maps the
+        # alias string back to opus/sonnet/haiku, so two unrecognised strings
+        # would both fall through to the estimate's own tier and prove nothing.
+        fx.write_json(cfg, {"modelAliases": {"copilot": {"opus": "claude-opus-4"}}})
+        before = self.adapter.board()["columns"]["done"][0]
+        fx.write_json(cfg, {"modelAliases": {"copilot": {"opus": "claude-sonnet-4"}}})
+        self._bump(cfg)
+        builds, _ = self._count_card_builds(n=1)
+        self.assertEqual(builds["m-done"], 1)
+        after = self.adapter.board()["columns"]["done"][0]
+        self.assertNotEqual(
+            json.dumps(before.get("modelMix")), json.dumps(after.get("modelMix")),
+            "a modelAliases edit must reach a done card's model mix")
+
+    def test_a_memoized_card_survives_the_callers_mutations(self):
+        # board() POPS "_created" off every card and assemble() writes
+        # c["stage"]. The first is destructive, so the caller must never get the
+        # cached dict itself. Two renders must be equal, and neither may leak
+        # the private sort key.
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        first = self.adapter.board()
+        second = self.adapter.board()
+        self.assertEqual(json.dumps(first, sort_keys=True),
+                         json.dumps(second, sort_keys=True))
+        for b in (first, second):
+            self.assertNotIn("_created", b["columns"]["done"][0])
+            self.assertEqual(b["columns"]["done"][0]["stage"], "done")
+
+    def test_a_mission_leaving_done_stops_being_memoized(self):
+        # Defensive: `lcars feedback` sends a mission back out of a terminal
+        # stage. The entry must not outlive the card that earned it.
+        fx.plant_simple(self.tmp, "m-x", stage="done")
+        self.adapter.board()
+        d = fx.mission_dir(self.tmp, "m-x")
+        state = json.load(open(os.path.join(d, "state.json")))
+        state["stage"] = "align"
+        fx.write_json(os.path.join(d, "state.json"), state)
+        self._bump(os.path.join(d, "state.json"))
+        builds, boards = self._count_card_builds(n=2)
+        self.assertEqual(builds["m-x"], 2)
+        self.assertEqual([m["id"] for m in boards[-1]["columns"]["align"]], ["m-x"])
+
+    def test_the_detail_path_reuses_the_done_card_memo(self):
+        # S177: `mission()` called `_card` directly, so the memo S176 built for
+        # the board never helped the DETAIL path — and the Mission-Log overlay
+        # asks for one full detail per linked child on every render (44 of them
+        # on DX-Scorecard, most of them done). Route it through the same memo.
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        builds = {}
+        real = self.adapter._card
+
+        def counting(d):
+            builds[os.path.basename(d)] = builds.get(os.path.basename(d), 0) + 1
+            return real(d)
+
+        self.adapter._card = counting
+        try:
+            self.adapter.board()                    # warms the memo
+            first = self.adapter.mission("m-done")
+            second = self.adapter.mission("m-done")
+        finally:
+            self.adapter._card = real
+        self.assertEqual(builds["m-done"], 1,
+                         "mission() must answer a done card from the memo")
+        # ...and the detail is still a DETAIL, not a bare card.
+        for detail in (first, second):
+            self.assertIn("activity", detail)
+            self.assertIn("prd", detail)
+            self.assertIn("criteria", detail)
+            self.assertNotIn("_created", detail)
+        self.assertEqual(first["id"], "m-done")
+
+    def test_the_detail_path_does_not_poison_the_memo(self):
+        # mission() decorates the card it gets with activity/adrs/criteria/prd.
+        # If it were handed the CACHED dict rather than a copy, those detail-only
+        # keys would leak onto the board card on the next render.
+        fx.plant_simple(self.tmp, "m-done", stage="done")
+        self.adapter.board()
+        self.adapter.mission("m-done")
+        card = self.adapter.board()["columns"]["done"][0]
+        for leaked in ("activity", "prd", "criteria", "adrs"):
+            self.assertNotIn(leaked, card,
+                             "a detail-only key must never reach a board card")
+
+    def test_the_whole_done_column_survives_the_memo(self):
+        # The captain held back capping the Done column as a PRODUCT decision.
+        # Making done cards cheap must not quietly make them fewer.
+        for i in range(12):
+            fx.plant_simple(self.tmp, "m-%02d" % i, stage="done",
+                            created="2026-06-%02dT10:00:00Z" % (i + 1))
+        first = self.adapter.board()
+        second = self.adapter.board()
+        self.assertEqual(len(first["columns"]["done"]), 12)
+        self.assertEqual(len(second["columns"]["done"]), 12)
+        self.assertEqual([m["id"] for m in first["columns"]["done"]],
+                         [m["id"] for m in second["columns"]["done"]])
+
+
+class FixedFactMemoTest(unittest.TestCase):
+    """S176 part C — two fixed facts stop being re-derived on every render.
+
+    `_git_origin_url` SHELLS git (25 ms + a subprocess, every 4 s) for a value
+    that cannot change while the daemon runs. `_detect_signature` runs depth-3
+    globs (38 ms) and is reached from fingerprint() too, which the SSE channel
+    polls at 1 Hz — a background disk scan of the captain's repo for as long as
+    the board is open.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmp, ".git", "lcars"), exist_ok=True)
+
+    def test_repo_identity_shells_git_once_for_the_daemons_life(self):
+        calls = []
+
+        def reader(root):
+            calls.append(root)
+            return "https://github.com/roferg/LCARS.git"
+
+        adapter = LocalAdapter(self.tmp, git_url_reader=reader)
+        metas = [adapter.board()["meta"] for _ in range(5)]
+        self.assertEqual(len(calls), 1, "repo identity must resolve once")
+        # ...and every render still reports the same identity.
+        for m in metas:
+            self.assertEqual(m["repo"], metas[0]["repo"])
+        self.assertTrue(metas[0]["repo"])
+
+    def test_the_detection_sweep_never_descends_into_pruned_dirs(self):
+        # THE 38 ms. `glob("*/*/*.csproj")` expands every directory two levels
+        # down and only THEN drops the pruned segments, so on any JS repo the
+        # sweep enumerated the whole of node_modules — and fingerprint() folds
+        # the sweep in, so the SSE channel paid for it at 1 Hz.
+        deep = os.path.join(self.tmp, "node_modules", "pkg", "nested")
+        os.makedirs(deep)
+        fx.write(os.path.join(deep, "decoy.csproj"), "<Project/>\n")
+        adapter = LocalAdapter(self.tmp)
+
+        visited = []
+        real_scandir = os.scandir
+
+        def watching(path="."):
+            visited.append(str(path))
+            return real_scandir(path)
+
+        os.scandir = watching
+        try:
+            sig = adapter._detect_signature()
+        finally:
+            os.scandir = real_scandir
+
+        self.assertFalse(
+            [v for v in visited if "node_modules" in v],
+            "the sweep must prune during the walk, not after it")
+        self.assertNotIn("decoy.csproj", repr(sig))
+
+    def test_the_detection_sweep_still_sees_a_nested_csproj(self):
+        # Pruning must not narrow the sweep's REACH: the CLI counts a project
+        # one directory down (`dotnet new xunit -o MyApp.Tests`), so the board
+        # has to see it too or its verdict goes stale against the CLI's.
+        nested = os.path.join(self.tmp, "MyApp.Tests")
+        os.makedirs(nested)
+        fx.write(os.path.join(nested, "MyApp.Tests.csproj"), "<Project/>\n")
+        deeper = os.path.join(self.tmp, "src", "Inner")
+        os.makedirs(deeper)
+        fx.write(os.path.join(deeper, "Inner.csproj"), "<Project/>\n")
+        sig = repr(LocalAdapter(self.tmp)._detect_signature())
+        self.assertIn("MyApp.Tests.csproj", sig)
+        self.assertIn("Inner.csproj", sig)
+
+    def test_a_marker_still_moves_the_fingerprint_immediately(self):
+        # No TTL, no memo: the sweep got CHEAPER, it did not get LAZIER. A
+        # marker landing must still move the fingerprint on the very next call,
+        # which is what makes SSE push the re-verdict to passive browsers.
+        fx.write_json(os.path.join(self.tmp, ".git", "lcars", "config.json"), {})
+        adapter = LocalAdapter(self.tmp)
+        before = adapter.fingerprint()
+        nested = os.path.join(self.tmp, "Later.Tests")
+        os.makedirs(nested)
+        fx.write(os.path.join(nested, "Later.Tests.csproj"), "<Project/>\n")
+        self.assertNotEqual(adapter.fingerprint(), before)
+
+    def test_fingerprint_still_moves_when_a_mission_file_moves(self):
+        # fingerprint()'s contract is unchanged by part C: it stays the disk
+        # signature the SSE channel polls.
+        adapter = LocalAdapter(self.tmp)
+        fx.plant_simple(self.tmp, "m-001", stage="implement")
+        first = adapter.fingerprint()
+        state = os.path.join(fx.mission_dir(self.tmp, "m-001"), "state.json")
+        stamp = os.path.getmtime(state) + 5
+        os.utime(state, (stamp, stamp))
+        self.assertNotEqual(adapter.fingerprint(), first)
+
+
 if __name__ == "__main__":
     unittest.main()
