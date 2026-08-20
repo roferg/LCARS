@@ -42,7 +42,16 @@
  *          "boot" (default) load board.js and let ITS boot paint the board;
  *          "poll"           boot, swap in board2, fire the safety-poll callback;
  *          "sse"            boot, swap in board2, fire the SSE `update` listener;
- *          "fail"           boot with a fetch that REJECTS (the .catch path).
+ *          "fail"           boot with a fetch that REJECTS (the .catch path);
+ *          "pollsame"       boot, fire the safety poll with the SAME payload
+ *                           (S176: nothing changed — the board must not repaint);
+ *          "burst"          boot, then poll board2 then board3 (S176: the
+ *                           reconcile write-burst the safety poll exists for —
+ *                           every DIFFERENT payload must still repaint);
+ *          "failthenpoll"   boot with a REJECTING fetch, then recover and poll
+ *                           the SAME payload (S176: the skip must not strand a
+ *                           board that never painted, or a status line stuck on
+ *                           "board unavailable").
  */
 const fs = require("fs");
 const path = require("path");
@@ -76,7 +85,16 @@ function stubEl(tag) {
   });
   Object.defineProperty(node, "innerHTML", {
     get() { return node._html || ""; },
-    set(v) { node._html = v; if (v === "") node.children = []; },
+    // S176: count the teardown writes. render() opens with `root.innerHTML = ""`
+    // and rebuilds every column, so on the #board node this counter IS the
+    // number of full board repaints — the thing the change check exists to stop
+    // doing for nothing. Counting it here (rather than wrapping render) keeps
+    // the harness's rule intact: it never calls a render function by hand.
+    set(v) {
+      node._htmlWrites = (node._htmlWrites || 0) + 1;
+      node._html = v;
+      if (v === "") node.children = [];
+    },
   });
   return node;
 }
@@ -109,7 +127,8 @@ const mode = process.argv[3] || "boot";
 // ── the seams this harness watches ──────────────────────────────────────────
 const FETCHED = [];          // every URL the page asked for, in order
 let SERVE = payloads.board;  // what /api/board answers with right now
-let FETCH_FAILS = mode === "fail";
+// "failthenpoll" starts broken too — it recovers below, after boot has failed.
+let FETCH_FAILS = mode === "fail" || mode === "failthenpoll";
 const INTERVALS = [];        // [fn, ms] the page installed
 const SSE = { url: null, listeners: Object.create(null) };
 
@@ -178,16 +197,44 @@ function settle() {
     .then(function () { return new Promise(function (r) { setImmediate(r); }); });
 }
 
+function firePoll() {
+  INTERVALS.forEach(function (pair) {
+    if (typeof pair[0] === "function") pair[0]();
+  });
+}
+
 settle().then(function () {
+  if (mode === "failthenpoll") {
+    // The daemon comes back. The payload is byte-identical to the one that
+    // never arrived — so "unchanged" must NOT mean "nothing to do" here.
+    FETCH_FAILS = false;
+    firePoll();
+    return settle();
+  }
+  if (mode === "pollsame") {
+    // NOTHING changed on the server. SERVE is left exactly as it was.
+    firePoll();
+    return settle();
+  }
+  if (mode === "burst") {
+    // A mission reconciling through several rapid state writes — the case the
+    // safety poll was added for (SSE is debounced and only emits once writes
+    // STOP). Each payload genuinely differs, so each must repaint.
+    SERVE = payloads.board2 || payloads.board;
+    firePoll();
+    return settle().then(function () {
+      SERVE = payloads.board3 || payloads.board2 || payloads.board;
+      firePoll();
+      return settle();
+    });
+  }
   if (mode === "poll" || mode === "sse") {
     // Something on the board changed. Only the live wiring can show it.
     SERVE = payloads.board2 || payloads.board;
     if (mode === "poll") {
       // The safety poll's callback, exactly as the browser's timer would fire
       // it. `connect()` installs it as setInterval(refresh, LIVE_POLL_MS).
-      INTERVALS.forEach(function (pair) {
-        if (typeof pair[0] === "function") pair[0]();
-      });
+      firePoll();
     } else {
       const fn = SSE.listeners.update;
       if (typeof fn === "function") fn({ data: "" });
@@ -202,6 +249,8 @@ settle().then(function () {
       return u.indexOf("/api/board") === 0;
     }).length,
     board: project(REGISTRY.board),
+    // S176: how many times render() tore the board down and rebuilt it.
+    boardPaints: REGISTRY.board._htmlWrites || 0,
     status: REGISTRY.status._text || "",
     statusClass: REGISTRY.status._cls || "",
     intervals: INTERVALS.map(function (p) { return p[1]; }),

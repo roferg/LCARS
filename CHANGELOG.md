@@ -4,6 +4,45 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.4 — 2026-08-20
+
+**The viewscreen stops paying for work you already finished.** The board got
+slower with every mission you completed and never gave the memory back — on a
+56-mission repo (51 of them Done) it rebuilt every card from disk and tore down
+and repainted the whole DOM four times a minute, whether or not anything had
+changed. Session 176.
+
+- **A finished mission's card is computed once.** A `done` Mission is immutable
+  by construction — terminal Stage, no driver lock, no worker — so its card is
+  memoized on a cheap directory signature (dir mtime + max file mtime + entry
+  count, so a DELETED artifact is caught as well as a written one, plus
+  `config.json`'s mtime because a `modelAliases` edit legitimately changes a
+  done card's model mix). In-flight Missions are never memoized: they carry live
+  fields, and there are only ever a handful of them.
+- **The board stops rebuilding itself over nothing.** The 4-second safety poll
+  now compares what came back against what is already drawn, and leaves the DOM
+  alone when they match. The comparison is on the PAYLOAD, deliberately not on
+  `fingerprint()`: the fingerprint is a disk signature, but `meta.holodeck` is
+  in-memory daemon state, so a fingerprint gate would have silently stopped the
+  ⬡ HOLODECK band from lighting up. A failed fetch invalidates the comparison,
+  so a recovered daemon always repaints. The poll still carries every step of a
+  reconcile write-burst — the reason it exists.
+- **Repo identity resolves once per daemon**, exactly as `gh_host` already did,
+  removing a `git` subprocess spawn from every single render.
+- **The detection sweep stops walking `node_modules`.** `_detect_signature`
+  applied its prune list to the glob RESULTS, so `*/*/*.csproj` enumerated every
+  package before discarding it — on a path `fingerprint()` reaches, which the SSE
+  channel polls once a second. It now prunes during the descent: same file set,
+  same order, and detection stays IMMEDIATE (a TTL memo was tried first and
+  correctly rejected by `test_readiness.py`, which encodes that contract).
+
+Measured on a real 56-mission repo, `main` vs branch in one process: `board()`
+**192.9 ms → 19.2 ms** (10.0×), file opens per render **805 → 106**,
+`fingerprint()` **24.2 ms → 9.4 ms**, `_detect_signature()` **15.3 ms → 2.5 ms**.
+The `/api/board` payload is **byte-identical** to before (433 270 bytes, verified
+mechanically) — the same board, for a tenth of the money. Capping the Done column
+remains deliberately unbuilt; it is a product decision, not an optimisation.
+
 ## 2026.8.3 — 2026-08-08
 
 **The Holodeck — design it in conversation, then hand the drawing to a Mission.**
