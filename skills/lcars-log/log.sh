@@ -59,7 +59,8 @@ host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 # --- shared helpers: the attachment wording (S128 / FL-010) -----------------
 # A logged bug's prd.md is its GitHub issue body, and a bug filed against a
 # holodeck-born Mission can carry the very `mockup.html` the parent was built
-# from. The heading over that list is NOT spelled here — it comes from the one
+# from — since S174 it INHERITS it (see file_one_bug). The heading over that
+# list is NOT spelled here — it comes from the one
 # shared rule in lcars-common.sh that `lcars file` and the cold-Stage prompt
 # block also derive from, so an HTML mockup is never called an image on any
 # surface. Sourced the same way `lcars file` sources it.
@@ -345,6 +346,35 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   # and collect the relative paths for state.json below. No attachments ⇒
   # nothing written (byte-identical).
   local attach_srcs=()
+  # --- S174: a bug logged against a DRAWING inherits the drawing -------------
+  # The comment at the top of this file has said since S128 that "a bug filed
+  # against a holodeck-born Mission can carry the very mockup.html the parent was
+  # built from". Nothing wired it up, and the cost was measured: all NINE bugs
+  # logged against lcars-20260814-001 carry `attachments: None`, so a fix ticket
+  # told to "reproduce #screen-start" was worked by a worker that could not OPEN
+  # #screen-start. It restored the structure and lost the specifics — the next-up
+  # card's accent border, the full month name — because the only description of
+  # the drawing it ever saw was the captain's prose.
+  #
+  # ONLY a MOCKUP is inherited. A screenshot attached to the parent is a picture
+  # of the parent's own bug, not context for a different one; the drawing is the
+  # thing the fix is still being judged against.
+  #
+  # It goes FIRST in the set so it lands as attachment-01.<ext> the way it
+  # usually did on the parent, and the captain's own --attach screenshots ride
+  # ALONGSIDE it (below) — this is a UNION with what he passed, never a
+  # replacement. Best-effort: no parent, no mockup, or no shared classifier ⇒
+  # nothing is added and the bug is filed exactly as before.
+  if [ -n "$PARENT_ID" ] \
+     && [ -d "$MISSIONS_DIR/$PARENT_ID/attachments" ] \
+     && command -v lcars_attach_kind >/dev/null 2>&1; then
+    local pmock
+    for pmock in "$MISSIONS_DIR/$PARENT_ID/attachments"/*; do
+      [ -f "$pmock" ] || continue
+      [ "$(lcars_attach_kind "$pmock")" = mockup ] || continue
+      attach_srcs+=("$pmock")
+    done
+  fi
   if [ "${#GLOBAL_ATTACH[@]}" -gt 0 ]; then
     local ga
     for ga in "${GLOBAL_ATTACH[@]}"; do [ -n "$ga" ] && attach_srcs+=("$ga"); done

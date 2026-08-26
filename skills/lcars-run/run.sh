@@ -645,9 +645,39 @@ $(lcars_attach_mockup_note)"
 # guard). Nothing below reads a ticket to decide what it IS. The PLANNER
 # declares `changesScreenAppearance` — it is the one party that knows, because
 # it is writing the ticket — and the harness only checks that the declaration is
-# present, is a boolean, and, when true, is BACKED by a criterion that contains
-# the mockup's own filename. String containment on a name LCARS itself assigned.
-# There is nothing to reword around.
+# present and is a boolean.
+#
+# S174 EXTENDED THE SAME PRINCIPLE, one level down — and then spent three
+# designs learning what a declaration check can and cannot do. The whole history
+# is here so nobody re-litigates it by trying a fourth wording.
+#
+#   ROUND 1  the criterion SENTENCE had to name the mockup file plus an anchor
+#            abutting it. KILLED by one sed: append "(attachment-01.html's
+#            screen)" to all 38 criteria of the real plan. It also matched
+#            "NOT DRAWN:" anywhere, so burying that marker at the END of an
+#            invention both passed AND laundered the invention onto the captain's
+#            Verify list as a one-word entry.
+#   ROUND 2  provenance moved OUT of the sentence into its own FIELD — drawnAt /
+#            notDrawn / notVisual, exactly one per criterion. KILLED by one jq:
+#            map({text: ., drawnAt: "the builder screen"}). 38 criteria, one
+#            constant anchor, invention byte-intact, Verify list empty.
+#   ROUND 3  the anchor had to CITE an element id the drawing really has, with
+#            the twelve legal ids published to the planner. KILLED by a
+#            nine-character edit of the round-2 line: "the builder screen" ->
+#            "#screen-builder". A real id is still a constant.
+#
+# WHAT THAT BOUGHT, and it is not nothing: the STRING-SUBSTITUTION family is
+# genuinely dead — a marker cannot be buried mid-text, phrasing games and word
+# order are irrelevant, and a fake declaration sed'd into a plain string is not
+# read as one, because none of those touch a field. The DEGENERATE-VALUE family
+# is dead too: null, true, 0, "\t", [], {} and a whitespace string are all
+# refused as anchors. Every one of those kills is pinned by a test.
+#
+# WHAT IT DID NOT BUY: a CONSTANT citation defeats every version of this, and no
+# syntactic check on a SELF-DECLARED field can make that field honest. Whether
+# the citation is TRUE — and whether the built screen matches the drawing at all
+# — is not decidable here. See the limitations at validate_plan_json and the
+# handoff at plan_mockup_contract_block.
 
 # mission_mockup_names -> the basenames of this Mission's HTML mockups, space
 # separated; EMPTY when it carries none. Classification comes from the ONE
@@ -671,6 +701,121 @@ mission_mockup_names() {
   done
   printf '%s' "$names"
 }
+
+# === S174 round 3: the drawing's PLACE NAMES ===============================
+#
+# WHAT WAS MEASURED. Round 2 moved the per-criterion declaration out of the
+# sentence and into a FIELD, on the reasoning that a slot cannot be filled by a
+# paste. It can. ONE jq line —
+#
+#   jq 'map(if .changesScreenAppearance then .acceptanceCriteria |=
+#           map({text: ., drawnAt: "the builder screen"}) else . end)'
+#
+# — passed the whole real 13-ticket plan with t-012's invention byte-unchanged
+# and the captain's Verify list EMPTY. 38 criteria, ONE distinct anchor. That is
+# round 1's outcome relocated, not cured: a free-text slot is a free-text
+# sentence with extra steps.
+#
+# So the anchor has to name a place WE ACTUALLY DREW. The mockup is not an
+# arbitrary file — the holodeck generates it, and it carries real element ids.
+# The real one carries 12: automateBtn bulkBar collect-list continueBtn
+# modal-discard modal-lock modal-unlock pullBar screen-builder screen-collect
+# screen-start themeBtn.
+#
+# ⚠ AND THAT DID NOT HOLD EITHER — measured by a third tester and reproduced by
+# the captain, on the same plan. Changing the round-2 line by nine characters,
+# "the builder screen" -> "#screen-builder", passes the whole plan again:
+# invention intact, Verify list empty. A real id is still a constant, and the
+# twelve legal ids are printed to the planner in the contract block and reprinted
+# under every rejection, so finding one costs less than a grep.
+#
+# THIS CODE STAYS ANYWAY, as PLUMBING with a smaller claim. It kills the
+# string-substitution family and the degenerate-value family outright (see the
+# history above validate_plan_json and the limitations inside it), it gives the
+# reviewer and the captain a structured field to read instead of prose, and the
+# schema is what the build-gate round will hang a real check on. What it does
+# NOT do is make a self-declared field honest. Do not add a fourth syntactic
+# wording; the residual is a build problem, not a parsing problem.
+#
+# DERIVED FROM THE DRAWING, not published by the holodeck (captain's ruling):
+# deriving works on every mockup that already exists, including the measured
+# one, where a holodeck change would only help future drawings and adds a second
+# moving part. Surveyed on this machine: 4 mockups, 11–23 ids each.
+#
+# THE VOCABULARY IS PUBLISHED. plan_mockup_contract_block LISTS these names to
+# the planner and every rejection message lists them again. Round 1's closed
+# vocabulary was hated because it was undocumented and unguessable; this one is
+# handed over up front, and `drawnAt` may say anything it likes AROUND the name.
+#
+# mission_mockup_place_names -> space-separated, sorted, deduped element ids of
+# every mockup this Mission carries; EMPTY when it carries none, or when the
+# drawings carry no ids at all (see the fallback in validate_plan_json).
+# Memoised: run.sh is re-entered per Stage, but within one process the Plan
+# prompt, the validator and the Verify note all ask for this.
+LCARS_PLACE_NAMES_CACHE=""
+LCARS_PLACE_NAMES_DONE=""
+mission_mockup_place_names() {
+  if [ -n "$LCARS_PLACE_NAMES_DONE" ]; then
+    printf '%s' "$LCARS_PLACE_NAMES_CACHE"; return 0
+  fi
+  LCARS_PLACE_NAMES_DONE=1
+  local d="$MISSION_DIR/attachments" f names=""
+  [ -d "$d" ] || return 0
+  if ! command -v lcars_attach_kind >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v lcars_attach_kind >/dev/null 2>&1 || return 0
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    [ "$(lcars_attach_kind "$f")" = mockup ] || continue
+    # Both quote styles; an id must look like an id (no spaces, starts with a
+    # letter) or it is markup noise, not a place a person can be pointed at.
+    # grep -o, not sed: a line legitimately carries SEVERAL ids
+    # (<section id="a"><div id="b">), and a greedy sed capture keeps only the
+    # LAST one — which silently shrinks the vocabulary and rejects honest
+    # anchors. Both quote styles. An id must look like an id (no spaces, starts
+    # with a letter) or it is markup noise, not a place a person can be pointed
+    # at.
+    names="$names
+$(grep -oE "[[:space:]]id=[\"'][^\"']*[\"']" "$f" \
+   | sed -E "s/.*id=[\"']//; s/[\"']\$//" \
+   | grep -E "^[A-Za-z][A-Za-z0-9_:.-]*$")"
+  done
+  LCARS_PLACE_NAMES_CACHE="$(printf '%s' "$names" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  printf '%s' "$LCARS_PLACE_NAMES_CACHE"
+}
+
+# ===========================================================================
+# HANDOFF TO THE BUILD-GATE ROUND — read this before extending anything below.
+#
+# S174 shipped the DECLARATION layer: a screen-changing ticket declares, per
+# criterion, where in the drawing that surface lives (`drawnAt`), that it is
+# visible and absent from the drawing (`notDrawn`, which the captain then sees
+# listed at Verify), or that it makes no visual claim (`notVisual`). Three
+# rounds of syntactic hardening are recorded above validate_plan_json, together
+# with the one-line transform that killed each. The residual is NOT another
+# wording:
+#
+#     • is the citation TRUE — does the drawing at that id show what the
+#       criterion describes?
+#     • does the BUILT screen match the drawing at all?
+#
+# Neither is decidable from plan.json, and both are exactly what the build-gate
+# round owns — the rendered-DOM-against-built-CSS check, which needs a real
+# build to survive Tailwind / CSS Modules / styled-components. THIS ROUND IS A
+# DECLARED UPSTREAM CONSUMER of that build: `drawnAt` already names the element
+# id to look at, so a gate that renders the screen has a per-criterion target
+# handed to it rather than a whole page to diff. The under-build failure that
+# started all of this (a ticket that emitted eleven class names and wrote zero
+# CSS, and passed every gate) is that round's to catch, not this one's.
+#
+# The three adversarial rigs in tests/drives/s174-*.sh are the durable output
+# here: each carries the transform that beat the previous design, and the third
+# asserts that those kills still kill. Run them before changing anything in this
+# area — they are cheap, zero-spend and self-skipping.
+# ===========================================================================
 
 # plan_mockup_contract_block -> the Plan prompt's mockup contract, or NOTHING
 # when this Mission carries no mockup. A mission without one — which is every
@@ -708,13 +853,70 @@ You are the one party that knows, because you are writing the ticket. Declare it
 on EVERY ticket. The harness rejects a plan that omits it or gives it anything
 other than a bare `true`/`false`.
 
-### Carry it — every `true` ticket needs a criterion that NAMES the mockup
+### Carry it — EVERY criterion DECLARES where it came from
 
-A ticket with `changesScreenAppearance: true` MUST have at least one entry in
-its `acceptanceCriteria` containing the literal string `%s`. The harness
-checks this deterministically and REJECTS the whole plan otherwise. Naming it in
-the `description` does not count — the description is not what the work is
+On a ticket with `changesScreenAppearance: true`, an `acceptanceCriteria` entry
+is no longer a bare string. It is an OBJECT carrying its text and EXACTLY ONE
+declaration:
+
+    "acceptanceCriteria": [
+      {"text": "The value cell renders every sub-reading with its own delta arrow",
+       "drawnAt": "#screen-builder, the cohort value cell of a multi-value KPI row"},
+      {"text": "An unmatched SubReading label renders no arrow",
+       "notVisual": true},
+      {"text": "A manual cohort commits the whole SubReading[] as one MetricValue",
+       "notDrawn": "the drawing shows a cohort value as read-only text; there is no editor for it"}
+    ],
+
+  **`"drawnAt": "<where>"`** — this criterion'"'"'s surface IS in the drawing, and
+  this is where: the screen id, the section, the row. Your own words; there is no
+  list of allowed anchors and nothing parses the file to check that it resolves.
+  Write what a person would need in order to find it — "#screen-start, the
+  next-up start-card" — not "the mockup".
+
+  **`"notDrawn": "<why>"`** — this criterion introduces something VISIBLE that
+  the drawing does not contain.
+
+  **`"notVisual": true`** — this criterion makes no visual claim at all: a
+  persistence rule, an error path, a derivation, "the existing tests stay green".
+
+The harness REJECTS the plan when a criterion carries none of the three, more
+than one, or an empty one — naming every offending ticket and criterion in one
+message. A plain string is still correct everywhere else: on every
+`changesScreenAppearance: false` ticket, and on every Mission with no mockup.
+
+At least one criterion on the ticket must be `drawnAt`. A ticket that says it
+changes what a screen looks like is drawn SOMEWHERE in %s, and naming it
+in the `description` does not count — the description is not what the work is
 judged against.
+
+### `notDrawn` is not a loophole, and `notVisual` is not a shrug
+
+A mission legitimately needs behaviour the drawing does not show: an error path,
+a persistence rule, an empty state nobody drew, a keyboard affordance. Declaring
+it is FINE. Every `notDrawn` criterion is collected and shown to the captain at
+Verify as its own list — "built but not in your drawing" — so he reviews what was
+invented instead of discovering it by clicking. That is the whole point of the
+field: an un-drawn affordance DECLARED is fine, an un-drawn affordance SMUGGLED
+IN beside a compliant sibling is what this rule exists to stop.
+
+That is measured, not theorised: a ticket whose first criterion correctly named
+the drawing used its third to specify a sub-value editor — a toggle, a stack of
+label+value input pairs, a Remove per row, an Add button — that the drawing does
+not contain anywhere. It shipped, fully styled, past every gate, and no existence
+check could ever have caught it, because it EXISTS.
+
+`notVisual` exists so the captain'"'"'s list stays readable: on that same plan, 19
+of 23 declarations would have been persistence and test-hygiene trivia, drowning
+the ONE real invention. So use `notVisual` for what truly has no visual claim —
+and DO NOT use it to launder a control you are adding. A control is visible.
+That is one of the things this schema cannot catch — so is a `drawnAt` that
+cites a real id and then describes something else, and so is declaring the whole
+ticket `changesScreenAppearance: false`. All three are measured, all three are
+the reviewer'"'"'s to hunt, and all three are the fastest way to have your plan
+bounced.
+
+Neither field is for skipping the lookup. Open the drawing first; then declare.
 
 Write a SPECIFIC criterion, not a general one. "Matches the mockup" is worth
 nothing: an Implementer can claim it without opening the file, and the generic
@@ -722,11 +924,16 @@ losing to the specific is exactly how the look gets lost. Name WHAT about the
 mockup THIS ticket'"'"'s surface must match, so the claim can be checked against the
 drawing:
 
-    BAD   "The sidebar matches the mockup"
-    GOOD  "The sidebar nav reproduces %s'"'"'s nav list: the three items in
-           that file'"'"'s order, each with its icon to the left of its label, the
-           active item carrying the filled accent pill across the item'"'"'s full
-           width, and the count badge right-aligned inside it"
+    BAD   {"text": "The sidebar matches the mockup", "drawnAt": "the sidebar"}
+    GOOD  {"text": "The sidebar nav shows the three items in that order, each
+                    with its icon to the left of its label, the active item
+                    carrying the filled accent pill across the item'"'"'s full
+                    width, and the count badge right-aligned inside it",
+           "drawnAt": "the nav list in the left sidebar"}
+
+The text says WHAT the surface must be; `drawnAt` says WHERE in the drawing to
+check it. Neither one carries the other'"'"'s job, and neither is worth anything
+vague: an Implementer can claim "matches the mockup" without opening the file.
 
 So: open the mockup and read the surface each ticket owns BEFORE you write that
 ticket'"'"'s criteria. The specifics come from the drawing, not from the brief.
@@ -761,7 +968,133 @@ is part of the work, and the work is judged where it is built.
     "rationale": "…"
 
 The mockups this Mission carries:
-%s' "$names" "$first" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
+%s' "$names" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
+
+  # ROUND 3 — THE VOCABULARY, PUBLISHED. `drawnAt` must CITE a place the drawing
+  # actually has, and the only fair way to demand that is to hand the planner the
+  # list. Round 1 shipped a closed vocabulary that was undocumented and
+  # unguessable and it was rightly hated; this one is stated up front and
+  # repeated in every rejection message.
+  local places; places="$(mission_mockup_place_names)"
+  if [ -n "$places" ]; then
+    printf '
+
+### The anchor must name a place the drawing HAS
+
+`drawnAt` is not free text. It must CITE one of the element ids below — the
+places this drawing actually contains — and it may say anything you like around
+that name:
+
+    GOOD  "drawnAt": "#screen-builder, the cohort value cell of a KPI row"
+    GOOD  "drawnAt": "the cohort row in screen-builder, right column"
+    BAD   "drawnAt": "the builder screen"      <- names no id
+    BAD   "drawnAt": "x"                       <- names nothing at all
+
+The places in %s:
+
+%s
+
+A bare name and a `#`-prefixed one both count. What is checked is that the name
+is THERE; nothing checks that the surface you describe is really at that place —
+that is the reviewer'"'"'s job, and it is why a citation you have not opened the
+drawing to verify is a wasted round.' "$first" "$(printf '%s' "$places" | tr '"'"' '"'"' '"'"'\n'"'"' | sed 's/^/  - /')"
+  else
+    printf '
+
+### This drawing carries no element ids — the anchors go UNFENCED
+
+Every `drawnAt` on this Mission is checked only for being a non-empty string:
+the drawing has no ids to cite, so nothing can tell a real place from an
+invented one. That makes your anchor the ONLY record of where a surface lives.
+Write it as if the next person has to find that spot with your words alone, and
+expect the reviewer to hold you to it.'
+  fi
+}
+
+# plan_review_mockup_block -> the Plan Review prompt's mockup instruction, or
+# NOTHING when this Mission carries no mockup (S174).
+#
+# WHAT WAS MEASURED. Plan Review is the ONE Stage whose entire job is auditing
+# the ticket set, and it was the ONE Stage that could not open the drawing those
+# tickets claim to reproduce: cmd_plan_review took context_extra_block and NOT
+# attachments_extra_block. So a criterion inventing a control the drawing does
+# not contain read, to the reviewer, exactly like a criterion reproducing one.
+#
+# The deterministic per-criterion check (see validate_plan_json) catches a
+# criterion that traces to NOTHING. Measured, it does NOT catch: a criterion
+# citing a real id it then describes wrongly; a screen no ticket owns; a
+# `notVisual` on something plainly visible; or a ticket exempting itself with
+# `changesScreenAppearance: false`. Those need eyes on the picture, which is what
+# this block asks for. It is PROSE, not a gate — it adds no deterministic check
+# and changes no verdict.
+#
+# The reviewer's blindness to prd.md / validated-plan.md is PRESERVED (see
+# cmd_plan_review): it reviews TICKETS. The mockup is not a brief — it is the
+# drawing the tickets say they reproduce, so checking a ticket against it is
+# still checking the ticket, not smuggling the requirements back in.
+plan_review_mockup_block() {
+  local names; names="$(mission_mockup_names)"
+  [ -n "$names" ] || return 0
+  local first="${names%% *}"
+  printf '
+
+## This Mission carries a MOCKUP — audit the tickets AGAINST it
+
+One of the attachments listed above is the drawing of the screens this work must
+produce: %s. Open it. The tickets you are reviewing claim to reproduce
+it, and you are the only Stage that sees both.
+
+### You have no brief in this Stage — read this first
+
+The attachment note above is shared with the Stages that DO get a brief, so it
+carries the brief-vs-mockup tie-break. Ignore that sentence here: this Stage is
+deliberately handed no `prd.md` and no `validated-plan.md`, and there is no brief
+to defer to. Your inputs are the TICKETS and the DRAWING. Nothing else.
+
+### What the harness already did, and the four things it cannot do
+
+Every ticket declaring `changesScreenAppearance: true` carries its acceptance
+criteria as OBJECTS, each with exactly one of `drawnAt` (where in the drawing
+this surface is), `notDrawn` (why this visible thing is not in the drawing) or
+`notVisual` (makes no visual claim). The harness rejected the plan if any
+criterion had none, more than one, or an empty one, so do not re-run that check.
+It never opened the drawing. These are yours:
+
+1. **A `drawnAt` that is not true.** Open the anchor. The harness checks that
+   the anchor CITES an element id the drawing really has — so a criterion that
+   got this far names a real place. It does NOT check that the surface the
+   criterion describes is at that place, or that it is anything like what was
+   drawn there. A real place name is not proof the description matches it. Open
+   the id, read the criterion beside it, and object when they disagree. This is measured: a ticket named the drawing correctly in its
+   first criterion and used its third to specify a sub-value editor — a toggle,
+   a stack of label+value input pairs, a Remove per row, an Add button — where
+   the drawing shows read-only text and one compact inline input. It shipped
+   fully styled.
+2. **A `notVisual` that is plainly visual.** The schema cannot see this one,
+   and you are the only thing that can. A control, a badge, a
+   layout, a state chip, an added button is VISIBLE — it belongs in `drawnAt`
+   (it is drawn) or `notDrawn` (it is not). `notVisual` is for a persistence
+   rule, an error path, a derivation, "the existing tests stay green". A
+   mislabelled criterion is invisible to the harness AND absent from the
+   captain'"'"'s Verify list, which is exactly where an invention would hide now.
+3. **A screen nobody owns.** Walk the drawing'"'"'s screens and its DECLARED FLOW.
+   If a screen is named there and NO ticket owns what it LOOKS like, say so.
+   That is also measured: the screen the drawing never showed, that no ticket
+   owned, is exactly the screen that shipped scrambled.
+4. **A ticket that says it changes NO screen.** `changesScreenAppearance: false`
+   exempts a ticket from every rule above — its criteria are plain strings and
+   declare nothing. On a Mission that shipped a drawing OF THE SCREENS, that is
+   the cheapest place for an invention to sit, and the harness cannot see it:
+   deciding whether a ticket is really non-visual from its prose is exactly the
+   guesswork this design exists to avoid. So it is yours. Read every `false`
+   ticket'"'"'s title and criteria and ask whether a person using the product would
+   SEE the result. A new control, a badge, a state chip, a layout, a rendered
+   value, an added button is visible; a migration, an endpoint, a build step or
+   a pure derivation is not. A wrongly-exempted ticket is an objection.
+
+All four are objections you may bounce the plan for. None is a matter of taste —
+you are not judging whether a screen looks good (that is the captain'"'"'s call at
+Verify), only whether the tickets and the drawing describe the same product.' "$first"
 }
 
 # The branch that anchors this Mission's code. For a full Mission it is the base
@@ -1332,6 +1665,130 @@ cmd_validate_advance() {
 # other readers in this file.
 
 # --- validate the ticket list ----------------------------------------------
+LCARS_AWK_CRIT="$(cat <<'LCARS_AWK_CRIT_EOF'
+# WARNING - THIS HEREDOC BODY MUST CONTAIN NO APOSTROPHES AND NO BACKTICKS.
+# It is a quoted heredoc nested inside a command substitution, and bash counts
+# quotes in the body while it hunts for the closing paren: ONE unpaired
+# apostrophe (or one backtick pair) makes the whole file fail to parse 150
+# lines further down, pointing at an innocent line. Reword instead.
+# === THE ACCEPTANCE-CRITERIA NORMALIZER (S174 round 2) =====================
+# ONE definition of "what is the text of a criterion", injected into EVERY awk
+# program in this file that reads acceptanceCriteria. Nothing may parse that
+# array by hand again.
+#
+# WHY IT EXISTS. Since S174 an entry may be EITHER a plain string (as it always
+# was, and still the preferred form everywhere else) OR an object carrying the
+# planner per-criterion declaration:
+#
+#     "acceptanceCriteria": [{"text": "…", "drawnAt": "#screen-start card"}, …]
+#
+# Every consumer that renders criteria TEXT — the inlined ticket spec of the Implementer
+# spec, the GitHub sub-issue body, the plan/verify issue comments, the infra
+# backstop text of the infra classifier, the slice-pressure count — read the array by
+# splitting the line on double quotes and taking every other field. Fed an
+# object, that yields text | A manual cohort is edited… | drawnAt | #screen…:
+# the KEYS render as criteria and the spec the Implementer builds against is
+# mangled, silently, with every gate still green. That is the whole risk of the
+# schema change, so there is exactly one parser and every consumer calls it.
+#
+# lcars_crit_entries(t, ctext, cdecl, cval, ctype) -> N, and fills, per ENTRY i:
+#   ctext[i]  the text of the criterion ("" for an object with no "text")
+#   cdecl[i]  space-joined names of the declarations present on it
+#             (drawnAt / notDrawn / notVisual), "" for a plain string
+#   cval[i]   the raw value of the LAST declaration
+#   ctype[i]  the JSON TYPE of that value: "s" quoted string, "b" bare token
+#             (null/true/false/number), "x" nested object or array
+# It walks bytes honouring backslash escapes, because a criterion legitimately
+# contains \" (the measured plan has data-theme=\"dark\" in three of them) and a
+# naive split tears it in half — mis-numbering every later criterion.
+#
+# THE TYPE IS NOT DECORATION (round 3). A byte-level blank check reads the JSON
+# null, true, 0 and "\t" as content, so all four passed as anchors. The
+# validator refuses anything that is not a non-empty string, and it can only do
+# that if the parser tells it what the value WAS.
+function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
+  n = length(t); inq = 0; esc = 0; cur = ""; k = 0; depth = 0; pend = ""
+  for (i = 1; i <= n; i++) {
+    ch = substr(t, i, 1)
+    if (inq) {
+      if (esc)             { cur = cur ch; esc = 0 }
+      else if (ch == "\\") { cur = cur ch; esc = 1 }
+      else if (ch == "\"") {
+        inq = 0
+        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = "" }
+        else if (pend == "") { pend = cur }          # this string is a KEY
+        else {                                        # …the VALUE of that key
+          if (pend == "text") ctext[k] = cur
+          else if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
+            cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
+            cval[k] = cur; ctype[k] = "s"
+          }
+          pend = ""
+        }
+      }
+      else cur = cur ch
+      continue
+    }
+    if (ch == "\"") { inq = 1; cur = "" }
+    else if (ch == "{" && depth == 0) {
+      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""
+    }
+    else if ((ch == "{" || ch == "[") && depth > 0) {
+      # A NESTED object/array as a value ({"drawnAt": {"screen": "b"}} or []).
+      # Consume it whole — it must never open a new criterion — and record it as
+      # a value of type "x" so the validator can refuse it by TYPE.
+      d2 = 0; q2 = 0; e2 = 0
+      for (j = i; j <= n; j++) {
+        ch = substr(t, j, 1)
+        if (q2) {
+          if (e2) e2 = 0
+          else if (ch == "\\") e2 = 1
+          else if (ch == "\"") q2 = 0
+          continue
+        }
+        if (ch == "\"") q2 = 1
+        else if (ch == "{" || ch == "[") d2++
+        else if (ch == "}" || ch == "]") { d2--; if (d2 == 0) break }
+      }
+      if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
+        cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
+        cval[k] = substr(t, i, 1) "…" ; ctype[k] = "x"
+      }
+      pend = ""; i = j
+    }
+    else if (ch == "}" && depth == 1) { depth = 0; pend = "" }
+    else if (ch == "]" && depth == 0) break
+    else if (depth > 0 && pend != "" && ch != ":" && ch != " " && ch != "\t" && ch != "\n" && ch != "\r") {
+      # a BARE value — "notVisual": true, or JSON null / 0. Read to the next
+      # , or }.
+      bare = ""
+      while (i <= n) {
+        ch = substr(t, i, 1)
+        if (ch == "," || ch == "}") break
+        bare = bare ch; i++
+      }
+      gsub(/[[:space:]]/, "", bare)
+      if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
+        cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
+        cval[k] = bare; ctype[k] = "b"
+      }
+      pend = ""
+      i--                                   # let the loop see the , or }
+    }
+  }
+  return k
+}
+# lcars_crit_texts(t, out) -> N, out[1..N] = the criteria TEXTS, empties skipped
+# (matching what every pre-S174 consumer did with if (a[i] != "")). This is
+# the function a renderer wants; the validator wants the entries above.
+function lcars_crit_texts(t, out,   e_t, e_d, e_v, e_y, i, m, k) {
+  m = lcars_crit_entries(t, e_t, e_d, e_v, e_y); k = 0
+  for (i = 1; i <= m; i++) if (e_t[i] != "") out[++k] = e_t[i]
+  return k
+}
+LCARS_AWK_CRIT_EOF
+)"
+
 # Enforces the plan.json contract so we never advance on a half-formed plan,
 # mirroring how `save` guards research responses and `validate-advance` guards
 # the synthesis. Pure awk over the canonical one-field-per-line shape (inline
@@ -1347,23 +1804,141 @@ cmd_validate_advance() {
 # non-empty, three further DECLARATION checks apply; none of them reads a
 # ticket's prose to decide anything (see the design note above
 # plan_mockup_contract_block).
-validate_plan_json() { # file [mockup-basenames]
-  awk -v mock="${2:-}" '
-    function fail(msg) { printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
-    # Does the accumulated acceptance-criteria TEXT of this ticket name one of
-    # the Mission mockups? Plain string containment on a filename LCARS itself
-    # assigned — no regex, no semantics, nothing to reword around.
-    function names_mockup(t,   i) {
-      for (i = 1; i <= nmock; i++) if (index(t, mockname[i]) > 0) return 1
+validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
+  awk -v mock="${2:-}" -v places="${3:-}" "$LCARS_AWK_CRIT"'
+    function fail(msg) { failed=1; printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
+    # --- S174: EVERY criterion DECLARES where it came from --------------------
+    # S169 closed "no criterion names the drawing" and left "at least one does".
+    # MEASURED on lcars-20260814-001: t-012 named attachment-01.html in criterion
+    # 1 (satisfying the whole S169 rule) and then INVENTED, in criterion 3, a
+    # sub-value CRUD editor the drawing does not contain. It shipped fully styled
+    # — no existence check can catch it, because it EXISTS.
+    #
+    # ROUND 1 TRIED A STRING RULE and a tester beat it three ways in half an hour:
+    # appending "(attachment-01.html'"'"'s screen)" to all 38 criteria of the real
+    # plan passed the whole thing with the invention intact; "NOT DRAWN:" matched
+    # ANYWHERE, so burying it mid-sentence both passed AND laundered the invention
+    # into a one-word entry on the captain'"'"'s Verify list; and the "free text"
+    # anchor was really a word-order rule that rejected 5 of 7 honest phrasings.
+    # One root cause: a text search cannot tell a planner who opened the drawing
+    # from one who pasted a filename.
+    #
+    # SO THE DECLARATION LIVES OUTSIDE THE SENTENCE. On a changesScreenAppearance:
+    # true ticket of a mockup Mission, each acceptanceCriteria entry is an OBJECT
+    # carrying its text and EXACTLY ONE of:
+    #     "drawnAt":   "<where in the drawing>"   this surface IS drawn
+    #     "notDrawn":  "<why it is not drawn>"    visible, and NOT in the drawing
+    #     "notVisual": true                       makes no visual claim at all
+    # That killed the string games — a marker cannot be buried mid-text because
+    # it is not in the text. `notVisual` is what keeps the Verify list readable:
+    # on the real plan ~19 of 23 markers were persistence/test/plumbing trivia
+    # drowning the ONE invention.
+    #
+    # SCOPE BOUND, deliberate: a plain string stays legal (and preferred) on every
+    # false ticket, on every ticket of a Mission with NO mockup, and everywhere
+    # else in the tree. Only this one case requires the object form.
+    #
+    # WHAT THIS ACTUALLY STOPS, and what it does not. Written after three
+    # designs were each killed by a one-line transform (the full history is in
+    # the comment block above this function). Read it before adding a rule.
+    #
+    # DEAD, and pinned by tests: the string-substitution family — a marker
+    # buried mid-sentence, a suffix pasted onto every criterion, phrasing and
+    # word order, a fake declaration sed'"'"'d into a plain string. None of them
+    # touches a field. Dead too: the degenerate-value family — null, true, 0,
+    # "\t", [], {} and whitespace-only strings are refused as anchors.
+    #
+    # ALIVE, all measured on the real 13-ticket plan, all one jq line:
+    #
+    #   1. THE CONSTANT CITATION. map({text: ., drawnAt: "#screen-builder"})
+    #      passes every criterion of every ticket. The id is real, so the fence
+    #      is satisfied; the plan advances with the invention byte-intact and the
+    #      Verify list empty. Every version of this check has died to a constant,
+    #      and no syntactic check on a self-declared field can survive one.
+    #
+    #   2. THE FALSE EXEMPTION — THE CHEAPEST BYPASS IN THE DESIGN, and it needs
+    #      no anchor at all:
+    #        jq '"'"'map(.changesScreenAppearance=(.id=="t-001"))'"'"'
+    #      Twelve of thirteen tickets then carry plain-string criteria with NO
+    #      declaration of any kind, on a Mission that shipped a drawing of the
+    #      screens, and the plan is accepted. The ONLY guard is the plan-wide
+    #      "at least one ticket declares true" count in END — which one honest
+    #      ticket satisfies. This is not fixable here without reading a ticket to
+    #      decide what it IS, which is the classifier this whole design replaced.
+    #      Plan Review is told to hunt it (see plan_review_mockup_block).
+    #
+    #   3. THE notVisual SWEEP. One drawnAt per ticket and notVisual on every
+    #      other criterion passes, and keeps the Verify list empty. notVisual is
+    #      a claim about what a criterion IS; refusing it is the same classifier.
+    #
+    # A CONSEQUENCE WORTH KNOWING, because it pushes toward (1) and (2): a ticket
+    # that genuinely changes a screen the drawing does NOT show has no legal
+    # honest move. Every criterion notDrawn is refused by the >=1-drawnAt rule,
+    # which fires first; so the planner must either fabricate a drawnAt or
+    # declare the ticket false. The schema pressures toward the two lies it
+    # cannot catch. If that shows up in practice, it is an argument for changing
+    # the >=1-drawnAt rule, not for another anchor format.
+    #
+    # NOT CHECKED, by design: whether an anchor RESOLVES to the surface the
+    # criterion describes. Presence, not resolution — a validator that parses the
+    # mockup is a validator that breaks on the next mockup. Plan Review, which
+    # now sees the drawing, is what reads the claim; and the residual — is the
+    # citation true, does the BUILT screen match the drawing — is handed to the
+    # build-gate round (see the handoff at plan_mockup_contract_block).
+    function excerpt(c) { return (length(c) > 110 ? substr(c, 1, 110) "…" : c) }
+    # jsonblank(v) — a STRING whose content is whitespace is not a declaration.
+    # It decodes the whitespace ESCAPES too: round 2 checked bytes, so a JSON
+    # "\t" read as content and passed as an anchor.
+    function jsonblank(v) {
+      gsub(/\\[tnrfb]/, "", v); gsub(/\\u0020/, "", v)
+      gsub(/[[:space:]]/, "", v); return (v == "")
+    }
+    # typedesc(i) — what the planner actually wrote, for the message.
+    function typedesc(i) {
+      if (ctype[i] == "s") return "the string \"" excerpt(cval[i]) "\""
+      if (ctype[i] == "x") return "a nested " (cval[i] ~ /^\[/ ? "array" : "object")
+      return cval[i]
+    }
+    # istok(c) — a character that can be part of an element id. A place name
+    # matches only when it is bounded by NON-id characters on both sides, so
+    # "collect-list" never satisfies a citation of "screen-collect", and
+    # "screen-start" is not found inside "screen-starter".
+    function istok(c) { return (c ~ /^[A-Za-z0-9_.:-]$/) }
+    # place_ok(v) — does this anchor CITE a place we actually drew? The names are
+    # the element ids of the mockup itself (see mission_mockup_place_names).
+    # Free text may surround the name: "#screen-builder, the cohort value cell",
+    # "the cohort row in screen-builder" and "screen-builder — right column" all
+    # pass; "the builder screen" and "x" do not. A leading # is part of the
+    # citation, not of the name.
+    function place_ok(v,   p, i, rest, before, after) {
+      for (p = 1; p <= nplace; p++) {
+        rest = v
+        while ((i = index(rest, placename[p])) > 0) {
+          before = (i == 1 ? "" : substr(rest, i - 1, 1))
+          after  = substr(rest, i + length(placename[p]), 1)
+          if (!istok(before) && !istok(after)) return 1
+          rest = substr(rest, i + 1)
+        }
+      }
       return 0
     }
-    BEGIN { nmock = (mock == "" ? 0 : split(mock, mockname, " ")) }
-    # object boundaries — canonical format puts { and } on their own lines, and
-    # the only braces in the file are object delimiters (arrays are inline).
-    /^[[:space:]]*\{[[:space:]]*$/ {
-      inobj=1; delete have; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""; next
+    BEGIN { nmock  = (mock   == "" ? 0 : split(mock,   mockname,  " "))
+            # ZERO ids ⇒ nplace 0 ⇒ the membership rule is INERT and the round-2
+            # form-only check stands. A drawing we cannot read is not a drawing
+            # we may fail a mission over; the prompt and the Verify readout both
+            # say the anchors went unfenced (see plan_mockup_contract_block and
+            # verify_unfenced_note).
+            nplace = (places == "" ? 0 : split(places, placename, " ")) }
+    # object boundaries — canonical format puts { and } on their own lines.
+    # S174: `&& !in_ac` is load-bearing. A pretty-printed plan puts EACH
+    # criterion object on its own lines, so a bare `{` inside the criteria array
+    # would otherwise read as the start of a NEW TICKET and the whole plan would
+    # be parsed as rubble. (Found by tests/drives/s174-mockup-fidelity-drive.sh,
+    # which writes its plans with json.dump(indent=2).)
+    /^[[:space:]]*\{[[:space:]]*$/ && !in_ac {
+      inobj=1; delete have; delete crit; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""; next
     }
-    /^[[:space:]]*\}[,]?[[:space:]]*$/ {
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac {
       if (!inobj) next
       tickets++
       for (k=1; k<=9; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
@@ -1379,8 +1954,61 @@ validate_plan_json() { # file [mockup-basenames]
           fail("ticket " tickets " (" id ") has a non-boolean \"changesScreenAppearance\": " visual " — use true or false.")
         if (visual == "true") {
           nvisual++
-          if (!names_mockup(actext))
-            fail("ticket " tickets " (" id ") declares changesScreenAppearance:true but NO acceptance criterion references the mockup (" mock "). Add a criterion naming that file and saying what about it this ticket'"'"'s surface must match — the look is built here, not judged at Verify. Naming it in the description does not count.")
+          # S174 — the three-way declaration, one per criterion, and (round 3)
+          # an anchor that names a place we ACTUALLY DREW.
+          #
+          # ACCUMULATED, NOT FAIL-FAST (D4). The old code failed on the first
+          # offending TICKET. On the real 13-ticket plan 12 of 12 screen-changing
+          # tickets offend, so the planner saw t-001 alone, fixed it, and bounced
+          # again — and MAX_WORKER_TRIES is 3, so the Plan Stage DEADLOCKS at
+          # "failed validation after 3 attempt(s)". A plan is rewritten in one
+          # pass; this is the wrong axis to fail fast on. Every offending ticket
+          # and criterion goes into ONE message, emitted from END.
+          delete ctext; delete cdecl; delete cval; delete ctype
+          ncrit = lcars_crit_entries(actext, ctext, cdecl, cval, ctype)
+          tbad = ""
+          ndrawn = 0
+          for (ci = 1; ci <= ncrit; ci++) {
+            ndecl = (cdecl[ci] == "" ? 0 : split(cdecl[ci], dnames, " "))
+            why = ""
+            if (ndecl == 0)
+              why = "no declaration — add \"drawnAt\", \"notDrawn\" or \"notVisual\""
+            else if (ndecl > 1)
+              why = "carries " ndecl " declarations (" cdecl[ci] ") — exactly one"
+            else if (dnames[1] == "notVisual") {
+              if (ctype[ci] != "b" || cval[ci] != "true")
+                why = "\"notVisual\": " typedesc(ci) " — it must be the bare value true"
+            }
+            # ROUND 3 — a JSON TYPE check, not a byte check. `blank()` was a
+            # gsub over bytes, so JSON null, true, 0 and "\t" all read as
+            # content and all four passed as anchors. An anchor is a non-empty
+            # STRING or it is not an anchor.
+            else if (ctype[ci] != "s")
+              why = "\"" dnames[1] "\": " typedesc(ci) " — it must be a quoted string"
+            else if (jsonblank(cval[ci]))
+              why = "\"" dnames[1] "\" is blank — say WHERE in the drawing, or WHY it is not there"
+            # ROUND 3 — and the WHERE must be a place we actually drew. One jq
+            # line put the SAME free-text anchor on all 38 criteria of the real
+            # plan and passed it whole, invention intact, Verify list empty. A
+            # free-text slot is a free-text sentence with extra steps.
+            else if (dnames[1] == "drawnAt" && nplace > 0 && !place_ok(cval[ci]))
+              why = "\"drawnAt\": \"" excerpt(cval[ci]) "\" names no place in the drawing — cite one of the ids listed below (any wording around it is yours)"
+            if (why == "" && ctext[ci] == "")
+              why = "has no \"text\" — the Implementer builds against that text"
+            if (why != "") {
+              tbad = tbad "\n    criterion " ci " — " why
+              if (ctext[ci] != "") tbad = tbad "\n        \"" excerpt(ctext[ci]) "\""
+            }
+            else if (dnames[1] == "drawnAt") ndrawn++
+          }
+          # The S169 rule survives the schema change, restated in it: a ticket
+          # that says it changes a screen must point INTO the drawing at least
+          # once. Without this, every criterion could be notVisual/notDrawn and
+          # the whole screen declared away. Naming it in the description does not
+          # count — the description is not what the work is judged against.
+          if (tbad == "" && ndrawn == 0)
+            tbad = "\n    NO acceptance criterion references the mockup with a \"drawnAt\" anchor — this ticket says it changes what a screen looks like, so at least one of its criteria is drawn somewhere in " mockname[1] ". Naming it in the description does not count."
+          if (tbad != "") s174bad = s174bad "\n  ticket " tickets " (" id "):" tbad
         }
       }
       ids[id]=1
@@ -1395,7 +2023,7 @@ validate_plan_json() { # file [mockup-basenames]
       m=split($0, b, "\"")
       for (i=2; i<m; i+=2) if (b[i] != "") acok=1
       actext = actext " " $0   # S169 — see the note on the inline branch below
-      if ($0 ~ /\]/) in_ac=0
+      if ($0 ~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=0
       next
     }
     inobj {
@@ -1418,7 +2046,10 @@ validate_plan_json() { # file [mockup-basenames]
         # is nothing to be gained by being cleverer.
         v=$0; sub(/.*"acceptanceCriteria"[[:space:]]*:[[:space:]]*/, "", v)
         actext = actext " " v
-        if ($0 !~ /\]/) in_ac=1     # array opens here, closes on a later line
+        # …and it OPENS a multi-line array unless this same line already ended
+        # it. Keyed on the line ENDING in `]`, because a criterion legitimately
+        # contains one ("the whole SubReading[] as one MetricValue").
+        if ($0 !~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=1
       }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
       # S156: `establishesSharedInfrastructure` is OPTIONAL — absent must stay
@@ -1463,6 +2094,19 @@ validate_plan_json() { # file [mockup-basenames]
       # theatre. This is a check on the DECLARATIONS, not on any ticket'"'"'s prose:
       # the captain drew screens and attached them, so a plan in which nothing
       # changes a screen contradicts the Mission'"'"'s own premise.
+      # S174 — every undeclared criterion in the whole plan, in ONE message (see
+      # the note at the check). Skipped when an unrelated rule already failed, so
+      # a missing-field error is not buried under a page of declaration advice.
+      # ROUND 3 — a rejection ALWAYS shows the legal answers. Round 1 shipped a
+      # closed vocabulary that was undocumented and unguessable, and it was
+      # rightly hated. This one is published to the planner up front AND repeated
+      # in every rejection: never refuse an anchor without listing the names that
+      # would have been accepted.
+      vocab = (nplace > 0 \
+        ? "\n  The places this drawing actually has (cite one, and say whatever you like around it):\n    " places "\n" \
+        : "\n  This drawing carries NO element ids, so nothing can check WHICH place an anchor names — \"drawnAt\" only has to be a non-empty string here, and it is on you to make it point somewhere real.\n")
+      if (s174bad != "" && !failed)
+        fail("this plan'"'"'s screen-changing tickets do not declare where their criteria come from. This Mission carries a mockup (" mock "), so on every ticket with \"changesScreenAppearance\": true, EVERY entry of \"acceptanceCriteria\" must be an object — {\"text\": \"…\", …} — carrying EXACTLY ONE of:\n    \"drawnAt\":   \"<the screen id / section / row of " mockname[1] " this criterion'"'"'s surface appears in>\"\n    \"notDrawn\":  \"<why this VISIBLE thing is not in the drawing>\"   (legitimate — and the captain sees every one at Verify)\n    \"notVisual\": true                                          (this criterion makes no visual claim at all)\n" s174bad "\n" vocab "  A plain string stays fine on a changesScreenAppearance:false ticket, and on every Mission without a mockup. Open the drawing, then declare each criterion once.")
       if (nmock > 0 && nvisual == 0)
         fail("no ticket in this plan declares changesScreenAppearance:true, but the Mission carries a mockup (" mock ") — a drawing of the screens the work must produce. Declare the tickets that change what a screen looks like and give each one a criterion naming that file.")
     }
@@ -1479,7 +2123,7 @@ cmd_plan_save() {
   # S169: the second argument is this Mission's HTML mockup basenames, or EMPTY.
   # Empty leaves the validator behaving exactly as it did before — which is the
   # case for every mission that did not come from the holodeck.
-  validate_plan_json "$PLAN" "$(mission_mockup_names)" || exit 1
+  validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" || exit 1
 
   cp "$PLAN" "$MISSION_DIR/plan.json"
 
@@ -1665,13 +2309,33 @@ cmd_review_save() {
 #                ("true"/"false"), or EMPTY when the ticket does not declare it.
 #                Empty is the signal to fall back to the heuristic backstop.
 parse_plan_table() { # file
-  awk '
-    function flush() {
+  awk "$LCARS_AWK_CRIT"'
+    function flush(   m, i) {
       if (id=="") return
+      # S174: through the ONE normalizer — an entry may be a plain string OR a
+      # {"text": …, "drawnAt"|"notDrawn"|"notVisual": …} object, and splitting
+      # the line on quotes would render the KEYS as criteria into the Implementer
+      # prompt, the sub-issue body and the Verify checklist.
+      delete ctx; m=lcars_crit_texts(actext, ctx); crit=""
+      for (i=1;i<=m;i++) crit=(crit==""?ctx[i]:crit" | "ctx[i])
       printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, title, desc, crit, deps, rat, infra
     }
-    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; desc=""; crit=""; deps=""; rat=""; infra=""; next }
-    /^[[:space:]]*\}[,]?[[:space:]]*$/ { if (inobj) flush(); inobj=0; next }
+    # S174: `&& !in_ac` is load-bearing, twice over. A pretty-printed plan puts
+    # each criterion — a plain string OR a {"text": …} object — on its own lines,
+    # and a bare `{` inside the array would otherwise read as a NEW TICKET: the
+    # id and title reset mid-ticket and the row flushed here is rubble. Measured
+    # on a json.dump(indent=2) plan, which produced an EMPTY row.
+    /^[[:space:]]*\{[[:space:]]*$/ && !in_ac { inobj=1; id=""; title=""; desc=""; actext=""; crit=""; deps=""; rat=""; infra=""; next }
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac { if (inobj) flush(); inobj=0; next }
+    # Inside a MULTI-LINE criteria array: accumulate the raw text and let the
+    # normalizer read it at the object close. The array ENDS on a line ENDING in
+    # `]` — never on a `]` inside a criterion ("the whole SubReading[] as one
+    # MetricValue" closed it three lines early).
+    inobj && in_ac {
+      actext = actext " " $0
+      if ($0 ~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=0
+      next
+    }
     inobj {
       n=split($0, a, "\"")             # inside-quote contents land at even indices
       if (n < 2) next
@@ -1680,7 +2344,15 @@ parse_plan_table() { # file
       else if (key=="title") title=a[4]
       else if (key=="description") desc=a[4]
       else if (key=="rationale") rat=a[4]
-      else if (key=="acceptanceCriteria") { c=""; for (i=4;i<n;i+=2) if (a[i]!="") c=(c==""?a[i]:c" | "a[i]); crit=c }
+      # S174: through the ONE normalizer — an entry may be a plain string OR a
+      # {"text": …, "drawnAt"|"notDrawn"|"notVisual": …} object, and splitting
+      # the line on quotes would render the KEYS as criteria into the
+      # Implementer prompt, the sub-issue body and the Verify checklist.
+      else if (key=="acceptanceCriteria") {
+        v=$0; sub(/.*"acceptanceCriteria"[[:space:]]*:[[:space:]]*/, "", v)
+        actext = actext " " v
+        if ($0 !~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=1   # opens multi-line
+      }
       else if (key=="dependencies")       { d=""; for (i=4;i<n;i+=2) if (a[i]!="") d=(d==""?a[i]:d" "a[i]); deps=d }
       # A BARE boolean has no quoted value, so read the raw token after the
       # colon (and tolerate a quoted "true"/"false" from a sloppy worker).
@@ -2669,15 +3341,19 @@ slice_pressure() { # nCriteria nFiles nDirs newLoc budget -> "<level>\t<reason>"
 # jq-free awk over the canonical one-field-per-line plan.json shape (inline OR
 # multi-line acceptanceCriteria), mirroring validate_plan_json's object parse.
 slice_pressure_rows() { # plan.json
-  awk '
-    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; nc=0; newloc=0; in_ac=0; next }
-    /^[[:space:]]*\}[,]?[[:space:]]*$/ {
-      if (inobj) printf "%s\t%s\t%d\t%d\n", id, title, nc, newloc
+  awk "$LCARS_AWK_CRIT"'
+    /^[[:space:]]*\{[[:space:]]*$/ && !in_ac { inobj=1; id=""; title=""; actext=""; newloc=0; in_ac=0; next }
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac {
+      # S174: count through the ONE normalizer. Counting quoted strings would
+      # count an object criterion three or four times over (text, drawnAt, …)
+      # and inflate every slice-pressure row on a mockup Mission.
+      if (inobj) { delete ctx; nc=lcars_crit_texts(actext, ctx)
+                   printf "%s\t%s\t%d\t%d\n", id, title, nc, newloc }
       inobj=0; next
     }
     inobj && in_ac {
-      m=split($0, b, "\""); for (i=2;i<m;i+=2) if (b[i] != "") nc++
-      if ($0 ~ /\]/) in_ac=0
+      actext = actext " " $0
+      if ($0 ~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=0
       next
     }
     inobj {
@@ -2686,8 +3362,9 @@ slice_pressure_rows() { # plan.json
       if (key=="id") id=a[4]
       else if (key=="title") title=a[4]
       else if (key=="acceptanceCriteria") {
-        if (n >= 4) { for (i=4;i<n;i+=2) if (a[i] != "") nc++ }  # inline items
-        if ($0 !~ /\]/) in_ac=1                                   # opens multi-line
+        v=$0; sub(/.*"acceptanceCriteria"[[:space:]]*:[[:space:]]*/, "", v)
+        actext = actext " " v
+        if ($0 !~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=1        # opens multi-line
       }
       else if (key=="estimatedNewLoc") { v=a[3]; gsub(/[^0-9]/, "", v); newloc=v+0 }
     }
@@ -7147,6 +7824,78 @@ sys.stdout.write("\n".join(out) + "\n")
 PYEOF
 }
 
+# S174 — BUILT BUT NOT IN YOUR DRAWING. Every criterion in the approved plan
+# that the planner DECLARED with `notDrawn`, collected into one short list with
+# its own text and the stated reason. `notDrawn` is how a screen-changing ticket
+# says "this is visible and the mockup does not contain it" (see
+# plan_mockup_contract_block); this is where that declaration is CASHED IN — the
+# captain reviews what was invented as a list, instead of discovering it by
+# clicking.
+#
+# THE CRITERION TEXT LEADS, the reason follows. Round 1 printed the reason alone
+# and a tester smuggled an invention in as "⊘ t-001 · minor" — the entry named
+# the excuse and hid the thing. What was built is the text.
+#
+# `notVisual` criteria are deliberately ABSENT: on the plan that produced this
+# round, 19 of 23 declarations were persistence and test-hygiene trivia, and a
+# list that long is one the captain scrolls past. Prints NOTHING when no ticket
+# declared a notDrawn — which is every plan written before this round and every
+# mission with no mockup, so their Verify readout is byte-identical to before.
+verify_not_drawn_readout() { # plan.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f: plan = json.load(f)
+except Exception:
+    sys.exit(0)
+if not isinstance(plan, list): sys.exit(0)
+rows = []
+for t in plan:
+    if not isinstance(t, dict): continue
+    tid = t.get("id") or "?"
+    for c in (t.get("acceptanceCriteria") or []):
+        if not isinstance(c, dict): continue          # a plain string declares nothing
+        if "notDrawn" not in c: continue
+        reason = " ".join(str(c.get("notDrawn") or "").split())
+        text = " ".join(str(c.get("text") or "").split())
+        if not text and not reason: continue
+        rows.append((tid, text, reason))
+if not rows: sys.exit(0)
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "\u2026"
+out = ["  BUILT BUT NOT IN YOUR DRAWING — open these FIRST:"]
+for tid, text, reason in rows:
+    out.append("    \u2298 %s \u00b7 %s" % (tid, clip(text or "(no text)", 150)))
+    if reason:
+        out.append("        not drawn because: %s" % clip(reason, 150))
+out.append("      NOBODY JUDGED THESE AGAINST A PICTURE. The planner declared each one")
+out.append("      absent from the mockup, so neither the plan gate nor the reviewer could")
+out.append("      check it, and you are the first person to see it. The un-drawn surface is")
+out.append("      not a footnote — it is where the bug was last time: the two screens that")
+out.append("      drawing never showed were built by fiat, one of them from an open question")
+out.append("      that shipped unanswered, and that is exactly where the value cell came out")
+out.append("      scrambled. Everything else can be compared to the drawing. This cannot.")
+sys.stdout.write("\n".join(out) + "\n")
+PYEOF
+}
+
+# S174 round 3 — GRACEFUL DEGRADATION, SAID OUT LOUD. When a Mission carries a
+# mockup that yields NO element ids, the membership rule cannot run: every
+# drawnAt was accepted on form alone. That is the right call (a drawing we cannot
+# read is not a drawing we may fail a mission over) but it must never be silent,
+# because the captain would otherwise read the same green as a fenced mission.
+# Prints NOTHING for a mission with no mockup, and nothing when the drawing has
+# ids — so both of those readouts stay byte-identical.
+verify_unfenced_note() {
+  local names; names="$(mission_mockup_names)"
+  [ -n "$names" ] || return 0
+  [ -z "$(mission_mockup_place_names)" ] || return 0
+  printf '  NOTE: %s carries no element ids, so each ticket'"'"'s "drawnAt" anchor was\n' "${names%% *}"
+  printf '        checked only for being non-empty — nothing could verify it names a real\n'
+  printf '        place in the drawing. Treat the anchors as claims, not as checked facts.\n'
+}
+
 cmd_verify_summary() {
   locate_mission "$MISSION_ID"
   require_stage verify
@@ -7184,6 +7933,11 @@ EOF
   # byte-identical to before this round.
   # shellcheck disable=SC2086
   verify_contract_readout $ordered_ids
+
+  # S174: what the tickets declared they were building WITHOUT a drawing to build
+  # it from. Absent entirely when there is none.
+  verify_not_drawn_readout "$MISSION_DIR/plan.json"
+  verify_unfenced_note
 
   # S113: show the ACTUAL cost beside the ESTIMATE (display-only — actuals are
   # captured by S112 into usage.json; the estimate is never touched). Present
@@ -10213,6 +10967,14 @@ acceptable — do not raise it."
   # The reviewer still sees ONLY the tickets (never prd.md / validated-plan.md) —
   # we add nothing but the declarative repo-facts context source, by PATH only.
   extra="$extra$(context_extra_block)"
+  # S174 — and the captain's own attachments, by ABSOLUTE path. This is the one
+  # Stage whose whole job is auditing the ticket set, and it was the one Stage
+  # that could not open the drawing the tickets claim to reproduce. EMPTY for a
+  # mission with no attachments, so the overwhelming majority of reviewer prompts
+  # are byte-identical. It does NOT breach the independence above: an attachment
+  # is the captain's artifact, not the Mission's derived reasoning.
+  extra="$extra$(attachments_extra_block)"
+  extra="$extra$(plan_review_mockup_block)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
@@ -12565,6 +13327,32 @@ FSG_EOF
   plan-mockup-block-test)
     MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
     plan_mockup_contract_block
+    exit 0 ;;
+  # S174 test hook — THE CONSUMER CONTRACT. Runs every consumer of
+  # acceptanceCriteria that renders its TEXT over $LCARS_CONSUMER_PLAN and prints
+  # what each produced. The point is EQUIVALENCE: the same criteria written as
+  # plain strings and as {"text": …, "drawnAt": …} objects must come out of this
+  # byte-identically, because a consumer that renders `text | drawnAt | …` hands
+  # the Implementer a mangled spec that passes every gate.
+  #
+  # `plan-table` is the whole choke point for the renderers that are not called
+  # directly here: create_issue (the GitHub sub-issue body) and comment-mirror's
+  # cm_render_plan / cm_render_verify all take `cut -f4` of exactly this line.
+  # S174 round 3 test hook: the DRAWING'S PLACE NAMES, extracted in isolation.
+  place-names-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    mission_mockup_place_names
+    printf '\n'
+    exit 0 ;;
+  consumer-probe-test)
+    _cp="${LCARS_CONSUMER_PLAN:-}"
+    [ -f "$_cp" ] || exit 0
+    printf 'plan-table: %s\n' "$(parse_plan_table "$_cp" | head -1)"
+    printf 'ticket-spec: %s\n' "$(ticket_spec_block "$_cp" t-001)"
+    printf 'infra-backstop: %s\n' \
+      "$(ticket_declared_text "$(parse_plan_table "$_cp" | head -1)")"
+    printf 'slice-rows: %s\n' "$(slice_pressure_rows "$_cp")"
+    printf 'slice-hint: %s\n' "$(build_slice_pressure_hint "$_cp" "" 1200)"
     exit 0 ;;
   # S100 test hook: pure slice_pressure scalar — inputs via env (nCriteria /
   # nFiles / nDirs / newLoc / budget), echoes "<level>\t<reason>". Reads no CLI

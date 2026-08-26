@@ -1,0 +1,15 @@
+[
+  {
+    "id": "t-012",
+    "title": "Render multi-value cohort KPIs with per-source 'vs last MBR' deltas",
+    "description": "Render multi-value (SubReading[]) KPIs as a cohort-list like the Default view — every sub-reading, no averaging or collapsing — each with its own 'vs last MBR' sub-delta arrow and a 'change vs last MBR' caption. Match each source row's arrow to its counterpart in the latest locked snapshot by SubReading label; an unmatched label renders no arrow. Manual cohorts are edited via the ManualValueEditor label+value-row pattern committing the whole SubReading[] as one MetricValue; auto cohorts are collected wholesale as one reading.",
+    "acceptanceCriteria": [{"text": "A multi-value KPI renders every sub-reading as a cohort-list (dt label, dd value) with a per-source sub-delta arrow (up/down/flat) and a 'change vs last MBR' cohort-caption, reproducing attachment-01.html's cohort value cell — with no averaging or collapsing", "drawnAt": "#screen-builder, the cohort value cell of a multi-value KPI row"}, {"text": "Each source row's 'vs last MBR' arrow matches its counterpart in the latest locked snapshot by SubReading label; an unmatched label renders no arrow", "notVisual": true}, {"text": "A manual cohort is edited via the ManualValueEditor label+value-row pattern committing the whole SubReading[] as one MetricValue, while an auto cohort is collected wholesale as one reading", "drawnAt": null}],
+    "estimatedReadLoc": 560,
+    "estimatedTestLoc": 240,
+    "estimatedNewLoc": 220,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "changesScreenAppearance": true,
+    "rationale": "Cohort KPIs give per-source trend rather than one blended number, so every sub-reading is shown (like the Default view's cohort-list) and each carries its own delta. Matching by label is the only stable key SubReading offers. This slice builds on the scalar value cell, manual editor and collect cycle it reuses per-cohort."
+  }
+]
