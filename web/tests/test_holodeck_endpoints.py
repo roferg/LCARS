@@ -9724,5 +9724,204 @@ class DuplicateNameGuardSeesTheCopysRoomTest(DuplicateBase):
             self.actions._named_program_room(sidecar, "nobody's program"), "")
 
 
+# ── S175: THE DESIGN DECLARES WHAT IT ASSUMES OF THE REPO ───────────────────
+#
+# MEASURED on lcars-20260814-001. The mockup draws an MBR builder in which 11 of
+# 14 KPIs are collected AUTOMATICALLY — an amber "Update all automatically"
+# sweep box, an AUTO tag per KPI, a per-KPI Collect → Collecting… → Updated
+# cycle, an "as of <date>" stamp. DX-Scorecard's `data/config.json` carries 19
+# KPIs and ZERO with a non-empty `aiUpdateInstructions`; every one is manual, an
+# invariant its own ADR-002 and `src/config.ai-instructions.test.ts` enforce ON
+# PURPOSE. Three tickets and most of a fourth built surfaces that repo can never
+# display. Every gate green. The captain, clicking through, could not tell a
+# broken build from a screen this repo cannot render — and neither could the
+# session that studied it, until it opened the config.
+#
+# The cure is the same shape D4 already chose for flows and S174 chose for
+# criteria: DECLARE IT, never infer it. The model that drew the picture is the
+# only party that knows what the picture assumes, and it knows at the moment it
+# draws; nothing downstream can reverse-engineer it out of the markup.
+class S175DataPreconditionsContractTests(unittest.TestCase):
+    """Part A — `_CONCEPT_CONTRACT` carries the DATA PRECONDITIONS section."""
+
+    def contract(self):
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        return _CONCEPT_CONTRACT
+
+    def test_the_contract_names_the_section(self):
+        self.assertIn("## DATA PRECONDITIONS", self.contract())
+
+    def test_it_is_STATED_never_inferred(self):
+        """The FLOW section already earned this lesson and says so; the data
+        section is worded the same way."""
+        c = self.contract()
+        self.assertIn("never inferred", c.lower())
+
+    def test_an_unreachable_screen_is_named_as_the_cost(self):
+        """Not "the screen is wrong" — UNREACHABLE. That distinction is the
+        whole reason the captain could not diagnose it by clicking."""
+        self.assertIn("UNREACHABLE", self.contract().upper())
+
+    def test_each_precondition_is_ONE_CHECKABLE_SENTENCE(self):
+        self.assertIn("ONE CHECKABLE SENTENCE", self.contract())
+
+    def test_an_uncheckable_sentence_is_reported_back_UNCHECKED(self):
+        self.assertIn("UNCHECKED", self.contract())
+
+    def test_an_EMPTY_section_is_still_ALLOWED(self):
+        """An empty section must stay legal — behaviour 1 requires Validate to
+        be untouched by one, so the contract must never push a model into
+        inventing preconditions it does not have.
+
+        FIX ROUND 2 changed the WORDING this pins. It used to read "AN EMPTY
+        SECTION IS CORRECT AND COMMON", last and emphatic, and a live turn took
+        it on a design whose own header strip draws "18 of 27 On automatic".
+        Permission survives; the advertisement that empty is the NORMAL case
+        does not, and a disqualifier now sits in front of it."""
+        c = self.contract()
+        self.assertIn("EMPTY IS ALLOWED", c)
+        self.assertNotIn("CORRECT AND COMMON", c)
+
+    def test_an_empty_section_is_the_HEADING_AND_NOTHING(self):
+        """The contract's own empty-bucket rule, restated here rather than
+        assumed: never a bullet explaining why it is empty."""
+        c = self.contract()
+        low = c.lower()
+        i = low.index("data preconditions")
+        tail = c[i:]
+        self.assertIn("NOTHING under it", tail)
+
+    def test_it_carries_a_worked_example_of_a_precondition(self):
+        """A section with no example is a section a model fills with prose."""
+        self.assertIn("automated collection instruction", self.contract())
+
+
+
+# ── S175 FIX ROUND 2: WHAT A LIVE HOLODECK ACTUALLY WROTE ──────────────────
+#
+# Four real turns on `claude-opus-4.8`, through a real daemon, grounded on the
+# real DX-Scorecard (2026-08-26). Their concept.md files are fixtures at
+# tests/fixtures/s175-live/. Three of the four sections were WRONG in a way the
+# contract invited:
+#
+#   A  assumes repo data — wrote the heading and NOTHING. It had just written
+#      four bucket-2 questions that are literally data assumptions ("the header
+#      strip's counts … assume this data is queryable live"), on a design whose
+#      own header draws "18 of 27 On automatic / 9 Still manual / 67%". It took
+#      "AN EMPTY SECTION IS CORRECT AND COMMON" at its word.
+#   C  wrote three good PLAIN SENTENCES, because the prose said "ONE CHECKABLE
+#      SENTENCE EACH" while the form was shown only by backticked example.
+#   A+C+D all stated SHAPE assumptions (a field exists) and NOT ONE stated the
+#      assumption the screen is actually built on: that a substantial number of
+#      KPIs are CURRENTLY on automatic. In a repo that HAS the fields and has
+#      none populated, every one of their lines comes back TRUE and the
+#      unreachable screen ships — the original failure, with the feature on.
+class S175FixRound2ContractTests(unittest.TestCase):
+    """The contract states the FORM as a rule, disqualifies a lazy empty, keeps
+    its own hands off bucket 2, and asks for VALUES as well as fields."""
+
+    def contract(self):
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        return _CONCEPT_CONTRACT
+
+    def section(self):
+        c = self.contract()
+        return c[c.index("## DATA PRECONDITIONS"):]
+
+    # 2a — the form is a RULE, not an example the prose contradicts
+    def test_the_form_is_stated_as_a_rule(self):
+        self.assertIn("MARKDOWN BULLET", self.section())
+
+    def test_the_rule_is_shown_in_the_form_it_asks_for(self):
+        """A worked example that IS a bullet, so the shape and the words agree."""
+        self.assertIn("- most KPIs carry an automated collection instruction",
+                      self.section())
+
+    def test_one_checkable_sentence_each_survives_as_the_content_rule(self):
+        self.assertIn("ONE CHECKABLE SENTENCE", self.section())
+
+    # 2b — empty is allowed, but no longer advertised as the common case
+    def test_empty_is_no_longer_called_COMMON(self):
+        """'CORRECT AND COMMON' was last, emphatic, and granted permission —
+        and the live turn A took it on a data-dependent design."""
+        self.assertNotIn("CORRECT AND COMMON", self.section())
+
+    def test_empty_is_still_ALLOWED(self):
+        self.assertIn("EMPTY IS ALLOWED", self.section())
+
+    def test_the_disqualifier_is_stated(self):
+        sec = self.section()
+        self.assertIn("count", sec.lower())
+        self.assertIn("THIS SECTION IS NOT EMPTY", sec)
+
+    def test_the_disqualifier_comes_BEFORE_the_permission_to_be_empty(self):
+        """Turn A read the permission last. Order is the fix."""
+        sec = self.section()
+        self.assertLess(sec.index("THIS SECTION IS NOT EMPTY"),
+                        sec.index("EMPTY IS ALLOWED"))
+
+    # 2c — the bucket-2 boundary, said out loud
+    def test_it_says_which_way_the_bucket_2_split_goes(self):
+        sec = self.section()
+        self.assertIn("bucket 2", sec)
+        self.assertIn("ONE-HOME-EACH", sec)
+
+    def test_a_repo_data_assumption_belongs_here_even_if_also_asked(self):
+        self.assertIn("even if you also asked about it", self.section())
+
+    # 2d — a promise became an instruction
+    def test_it_asks_the_model_to_NAME_the_field_or_file(self):
+        sec = self.section()
+        self.assertIn("NAME THE FIELD OR THE FILE YOU EXPECT", sec)
+
+    def test_it_still_warns_that_an_uncheckable_line_comes_back_UNCHECKED(self):
+        self.assertIn("UNCHECKED", self.section())
+
+    # 3 — the gap every live turn shared
+    def test_it_asks_for_the_VALUES_assumption_not_only_the_fields(self):
+        sec = self.section()
+        self.assertIn("THE VALUES", sec)
+        self.assertIn("NOT ONLY THE FIELDS", sec)
+
+    def test_it_names_the_populated_but_empty_repo_as_the_reason(self):
+        """A repo can have every field named and none of them filled in."""
+        self.assertIn("none of them filled in", self.section())
+
+    def test_it_gives_the_worked_VALUES_example_from_the_measurement(self):
+        self.assertIn("CURRENTLY on automatic", self.section())
+
+    # what must not regress from round 1
+    def test_it_still_says_STATED_never_inferred(self):
+        self.assertIn("never inferred", self.contract().lower())
+
+    def test_it_still_names_UNREACHABLE_as_the_cost(self):
+        self.assertIn("UNREACHABLE", self.contract().upper())
+
+    def test_the_declaration_principle_survives_the_trim(self):
+        """FIX ROUND 3 cut the two rationale paragraphs — argument aimed at a
+        source reader, sitting in the tail position turn A demonstrably weights
+        most. The PRINCIPLE stays, in one line instead of four: a model can act
+        on "write it down", not on an explanation of why the pipeline needs it."""
+        self.assertIn("STATED, never inferred", self.section())
+
+    def test_an_empty_section_is_still_the_heading_and_NOTHING(self):
+        self.assertIn("NOTHING under it", self.section())
+
+    def test_the_bucket_stays_short(self):
+        """FIX ROUND 3 trimmed it 37 -> 24 lines. It was the longest bucket in
+        the contract, and VALUES — the instruction all four live turns dropped —
+        was last, longest and most abstract. Length is the failure mode."""
+        self.assertLessEqual(len(self.section().rstrip("\n").split("\n")), 26)
+
+    def test_the_numbered_sub_items_are_gone(self):
+        """The 1./2. numbering inside a bucket that had just demanded markdown
+        bullets is what invited a live model to express the split as `### Shape`
+        / `### Values` sub-headings — which the parser then shipped to the
+        Validator as preconditions (D-C)."""
+        sec = self.section()
+        self.assertNotIn("1. THE SHAPE", sec)
+        self.assertNotIn("2. THE VALUES", sec)
+
+
 if __name__ == "__main__":
     unittest.main()

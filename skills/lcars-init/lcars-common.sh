@@ -2757,3 +2757,258 @@ lcars_config_set_or_add_string() {
   done <"$config" >"$tmp"
   mv "$tmp" "$config"
 }
+
+# === S175: THE BRIEF'S OWN OPEN QUESTIONS SURVIVE THE ALIGN → PRD BOUNDARY ===
+#
+# WHAT WAS MEASURED (lcars-20260814-001). Its `prd.md` has exactly two headings:
+# `# Mission:` and `## Attached files`. The concept doc it was filed from carried
+# ~14 unsettled items, and NOT ONE survived as a question. The PRD simply ASSERTS
+# answers — it states the Carried-pill rule flatly, though "what makes a KPI
+# carried?" was open in the brief. Known-unknowns became silent certainties, and
+# the captain met each decision for the first time as a shipped screen.
+# `attachment-02.md:140` asked what "Preview" and "View" actually do; it shipped
+# unanswered, a preview screen was built by fiat, and that screen is where the
+# composite-KPI cell came out scrambled. The un-drawn surface and the unanswered
+# question were the same hole from two sides.
+#
+# THE GATE IS DETERMINISTIC AND IT COUNTS, IT DOES NOT JUDGE. Every bullet under
+# the concept doc's `## Open questions` must be findable in the PRD. It does NOT
+# read whether the PRD answered it well, whether the wording is right, or whether
+# a resolution is correct — that is the captain's, at Align. This project has
+# lost whole sessions to classifiers (S156 14/14 → 5/14 on a reworded corpus,
+# S147 four generations of a source parser); the decision moves to a DECLARATION
+# and the harness only checks the declaration is there.
+#
+# ALIGN MAY RESOLVE ONE — that is the ideal path, and a PRD that records the
+# question with its answer passes exactly as one that records it still-open does.
+# What it may NOT do is drop it, which is the only thing this refuses.
+#
+# THE EMPTY-BUCKET RULE APPLIES BOTH WAYS. A brief with ZERO open questions must
+# produce NO section — the captain reads a heading as a list of things he has to
+# deal with, and one with nothing behind it is a line of his brief spent on
+# nothing. So an invented section is refused too.
+LCARS_PRD_QUESTIONS_HEADING='Open questions from the design session'
+
+# lcars_concept_open_questions <path…> -> one open question per line.
+# Reads `## Open questions` off any DOC attachment (the concept doc the holodeck
+# files beside the mockup). EMPTY for every mission without one, which makes the
+# gate below a total no-op — a mission with no design session is untouched.
+lcars_concept_open_questions() {
+  [ "$#" -gt 0 ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$@" <<'S175_PY'
+import os, re, sys
+HEAD = "Open questions"
+
+
+def section(text, head):
+    want = re.sub(r"[^a-z0-9]+", " ", head.lower()).strip()
+    out, lvl = [], None
+    for ln in text.replace("\r\n", "\n").split("\n"):
+        m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+        if m:
+            name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+            if lvl is None:
+                if name == want or name.startswith(want + " "):
+                    lvl = len(m.group(1))
+                continue
+            if len(m.group(1)) <= lvl:
+                break
+            out.append(ln)      # a DEEPER heading is part of this section's body
+            continue
+        if lvl is not None:
+            out.append(ln)
+    return "\n".join(out)
+
+
+BULLET = re.compile(r"^([-*+]|\d+[.)])\s+")
+
+
+def items(body):
+    """Bullets, with their CONTINUATION LINES joined back on.
+
+    Measured on the real brief: every one of its questions wraps across two
+    physical lines. Counting lines instead of bullets turns two questions into
+    four half-sentences, and then no PRD on earth can contain them verbatim.
+    """
+    got, cur = [], None
+    for ln in body.split("\n"):
+        t = ln.strip()
+        if not t:
+            continue
+        m = BULLET.match(t)
+        if m:
+            if cur:
+                got.append(" ".join(cur.split()))
+            cur = t[m.end():]
+        elif cur is not None:
+            cur = cur + " " + t
+    if cur:
+        got.append(" ".join(cur.split()))
+    return got
+
+
+seen, out = set(), []
+for p in sys.argv[1:]:
+    if os.path.splitext(p)[1].lower() not in (".md", ".markdown", ".txt", ".rst"):
+        continue
+    try:
+        with open(p) as fh:
+            text = fh.read()
+    except OSError:
+        continue
+    # BOTH homes the contract gives an unsettled thing, because `_CONCEPT_CONTRACT`
+    # splits them ON PURPOSE (ONE HOME EACH) and the captain must not read the
+    # same thing twice: `## Open questions`, and bucket 2 of `## WHAT IT MUST DO`
+    # — "Implied by the mockup, not yet settled … Write each as a QUESTION".
+    # MEASURED on lcars-20260814-001: 2 in the first, 12 in the second. Reading
+    # only the first would carry 2 of its 14 unsettled items and call it done.
+    bodies = [section(text, HEAD)]
+    must = section(text, "WHAT IT MUST DO")
+    if must:
+        bodies.append(section(must, "2. Implied by the mockup"))
+        bodies.append(section(must, "Implied by the mockup"))
+    for body in bodies:
+        for it in items(body):
+            if it not in seen:
+                seen.add(it)
+                out.append(it)
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S175_PY
+}
+
+# lcars_prd_questions_gate <prd> <attachment…> -> 0 when the PRD accounts for
+# every open question the brief left unsettled, non-zero with a message on
+# stderr naming exactly which ones evaporated (or which section was invented).
+#
+# ── FIX ROUND 1 / D3: THE GATE WAS BYPASSED BY THE FAILURE IT EXISTS TO STOP ──
+# The first cut asked two separate questions — does the heading exist, and does
+# each question's text appear ANYWHERE in the PRD — and never that the two were
+# related. So a PRD whose open-questions section read "None outstanding — all
+# settled during the grill." PASSED, because the questions appeared in a quoted
+# `## Background from the design session` block higher up, followed by
+# "**Decision:** month-only." Quoting the brief in a context block is a NORMAL
+# thing for an Align worker to do, so this was not an exotic bypass: it is the
+# most likely shape of the exact evaporation the gate was built to catch. The
+# questions must now be found INSIDE the section.
+#
+# ── FIX ROUND 1 / D7: A RESOLVED QUESTION MAY BE REPHRASED ────────────────
+# Verbatim-only matching was enforced with a hard refusal, so an Align worker
+# that GENUINELY resolved a question with the captain and wrote the resolution
+# in its own words killed the filing outright. Resolving is the ideal path; the
+# gate must not punish it. So a section entry marked RESOLVED that matches no
+# question verbatim ACCOUNTS FOR one unmatched question — the count is what is
+# checked, not the prose.
+#
+# WHAT THAT DOES NOT BUY, said out loud: a worker could write N bogus
+# "RESOLVED: …" entries and satisfy the count. That is an explicit lie ("settled
+# with the captain") rather than the silent evaporation this round targets, and
+# no syntactic check on a self-declared field makes the field honest — S174
+# spent three rounds proving that. This is a floor.
+lcars_prd_questions_gate() {
+  local prd="$1"; shift
+  [ -f "$prd" ] || return 0
+  local qf; qf="$(mktemp)"
+  lcars_concept_open_questions "$@" > "$qf"
+  local rc=0
+  "${LCARS_PYTHON_BIN:-python3}" - "$prd" "$LCARS_PRD_QUESTIONS_HEADING" "$qf" <<'S175_PY' || rc=$?
+import re, sys
+prd_path, heading, qfile = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(qfile) as fh:
+    qs = [ln.strip() for ln in fh if ln.strip()]
+with open(prd_path) as fh:
+    prd = fh.read()
+want = re.sub(r"[^a-z0-9]+", " ", heading.lower()).strip()
+
+section, lvl, found = [], None, False
+for ln in prd.replace("\r\n", "\n").split("\n"):
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m:
+        name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+        if lvl is None:
+            if name.startswith(want):
+                lvl, found = len(m.group(1)), True
+            continue
+        if len(m.group(1)) <= lvl:
+            lvl = None
+            continue
+        section.append(ln)
+        continue
+    if lvl is not None:
+        section.append(ln)
+has_section = found
+
+if not qs:
+    if has_section:
+        sys.stderr.write(
+            "PRD carries a '%s' section, but the design brief left NO question "
+            "open. An empty bucket is a heading the captain reads as a list of "
+            "things he has to deal with; delete the section.\n" % heading)
+        sys.exit(1)
+    sys.exit(0)
+if not has_section:
+    sys.stderr.write(
+        "PRD is missing the '%s' section. The design brief left %d question(s) "
+        "unsettled, and a PRD that does not carry them forward turns every one "
+        "into an assertion nobody was asked about — measured on "
+        "lcars-20260814-001, where ~14 unsettled items became silent certainties "
+        "and the captain met each as a shipped screen. Carry each one AS WHAT IT "
+        "IS: still open, or resolved with the captain and recorded as resolved. "
+        "Missing:\n%s\n"
+        % (heading, len(qs), "\n".join("  - " + q for q in qs)))
+    sys.exit(1)
+
+BULLET = re.compile(r"^([-*+]|\d+[.)])\s+")
+entries, cur = [], None
+for ln in section:
+    t = ln.strip()
+    if not t:
+        continue
+    m = BULLET.match(t)
+    if m:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = t[m.end():]
+    elif cur is not None:
+        cur = cur + " " + t
+    else:
+        entries.append(" ".join(t.split()))
+if cur:
+    entries.append(" ".join(cur.split()))
+
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+# D3: matched INSIDE the section, never anywhere in the file.
+section_text = norm(" \n ".join(entries))
+missing = [q for q in qs if norm(q) not in section_text]
+
+# D7: a RESOLVED entry that matched nothing verbatim accounts for one of them.
+EMPH = re.compile(r"^[*_`]+|[*_`]+$")
+RESOLVED = re.compile(r"(?i)^resolved\b")
+spare = 0
+for e in entries:
+    lead = EMPH.sub("", e).lstrip()
+    if not RESOLVED.match(lead):
+        continue
+    if any(norm(q) in norm(e) for q in qs):
+        continue          # it already matched verbatim; it is not spare
+    spare += 1
+
+if len(missing) > spare:
+    unaccounted = missing[spare:] if spare else missing
+    sys.stderr.write(
+        "PRD drops %d of the design brief's %d open question(s) from its '%s' "
+        "section. Each must be carried forward there as a question — still open, "
+        "or resolved with the captain and recorded as resolved. It may NOT "
+        "quietly become an assertion, and quoting it elsewhere in the PRD does "
+        "not count: the section is what the captain and the Plan Stage read. "
+        "Missing:\n%s\n"
+        % (len(unaccounted), len(qs), heading,
+           "\n".join("  - " + q for q in unaccounted)))
+    sys.exit(1)
+S175_PY
+  rm -f "$qf"
+  return "$rc"
+}

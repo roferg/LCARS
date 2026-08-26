@@ -1097,6 +1097,902 @@ you are not judging whether a screen looks good (that is the captain'"'"'s call 
 Verify), only whether the tickets and the drawing describe the same product.' "$first"
 }
 
+# === S175: THE DESIGN'S DATA PRECONDITIONS =================================
+#
+# WHAT WAS MEASURED (lcars-20260814-001). The mockup drew an MBR builder in which
+# 11 of 14 KPIs collect AUTOMATICALLY — an amber "Update all automatically" sweep
+# box, an AUTO tag per KPI, a per-KPI Collect → Collecting… → Updated cycle, an
+# "as of <date>" stamp. The target repo's `data/config.json` carries 19 KPIs and
+# ZERO with a non-empty `aiUpdateInstructions`; every one is manual, an invariant
+# its own ADR-002 and `src/config.ai-instructions.test.ts` enforce ON PURPOSE.
+# Three tickets and most of a fourth built surfaces that repo can never display.
+# Every gate green. Clicking through, the captain saw a builder with no amber
+# box, no AUTO tags and no collect controls, and could not tell a broken build
+# from a screen this repo cannot render.
+#
+# THE SHAPE OF THE CURE is the one D4 chose for flows and S174 chose for criteria:
+# the DESIGN DECLARES (`## DATA PRECONDITIONS` in the concept doc — see
+# `_CONCEPT_CONTRACT` in web/lcars_serve/actions.py), and a deterministic gate
+# here CASHES THE DECLARATION IN. No inference: nothing in this file reads the
+# mockup and guesses what it assumes.
+#
+# THE SPLIT IS DELIBERATE. Checking "most KPIs have an automated collection
+# instruction" against a real repo needs a reader — that is the Validate worker's
+# job, and it rides the prompt block below. COMPOSING THE QUESTION is NOT the
+# worker's job: the round takes no position on which of the three answers is
+# right, so the wording is built HERE, byte-deterministic, where no model can
+# phrase it so one answer reads as correct.
+#
+# AND ONE RULE GUARDS THE WHOLE THING: A VERDICT WITHOUT EVIDENCE IS NOT A
+# VERDICT — it is UNCHECKED. A `satisfied` with no file named is exactly the
+# fabricated pass this round exists to prevent, and an `unsatisfied` with no file
+# named is a question the captain cannot act on without opening the repo himself.
+# Both are downgraded, both are reported, neither is silently assumed true.
+
+# mission_data_preconditions -> one declared precondition per line, or NOTHING.
+# Read off the concept doc riding as an attachment (`## DATA PRECONDITIONS`).
+# EMPTY — which is every mission filed before this round, every mission with no
+# mockup, and most missions that have one — makes every function below a no-op,
+# so their Validate prompt and artifacts are byte-identical to before S175.
+mission_data_preconditions() {
+  local dir="$MISSION_DIR/attachments"
+  [ -d "$dir" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$dir" <<'S175_PY'
+import os, re, sys
+d = sys.argv[1]
+HEAD = "DATA PRECONDITIONS"
+
+
+def section(text):
+    # FIX ROUND 3 / D-E: a BOM on the heading line made the heading unmatchable,
+    # so the whole section went silently missing — the exact silent-disengage
+    # this round exists to stop, and free to fix.
+    lines = text.lstrip("\ufeff").replace("\r\n", "\n").split("\n")
+    want = re.sub(r"[^a-z0-9]+", " ", HEAD.lower()).strip()
+    out, lvl = [], None
+    for ln in lines:
+        m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+        if m:
+            name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+            if lvl is None:
+                if name == want or name.startswith(want + " "):
+                    lvl = len(m.group(1))
+                continue
+            if len(m.group(1)) <= lvl:
+                break
+            out.append(ln)      # a DEEPER heading is part of this section's body
+            continue
+        if lvl is not None:
+            out.append(ln)
+    return "\n".join(out)
+
+
+# ── FIX ROUND 2 / CURE 1: A BARE SENTENCE IS AN ITEM ──────────────────────
+#
+# MEASURED on a LIVE `claude-opus-4.8` holodeck, four real turns through a real
+# daemon against the real DX-Scorecard (2026-08-26). Run through the extractor
+# as it stood, its four `## DATA PRECONDITIONS` sections yielded A:0 B:0 C:0 D:3
+# — the feature reached Validate on ONE TURN IN THREE of the ones that needed it.
+#
+# TURN C IS THE DEFECT. It wrote three good sentences:
+#     Each KPI carries a collection mode (automatic vs manual) so the two
+#     cohorts can be counted and the list filtered to the automatic set.
+#     …
+# and the old rule opened an item ONLY on a bullet marker or a backtick, so all
+# three were dropped SILENTLY. A human reading that concept.md sees a full
+# section; Validate saw an empty one and the whole gate stayed inert. And C was
+# obeying the contract: the prose said "ONE CHECKABLE SENTENCE EACH" while the
+# FORM was shown only by backticked example. Prose is what a model writes when
+# you ask it for sentences.
+#
+# THE RULE NOW, IN THE ORDER IT IS APPLIED:
+#   • a line beginning with a BULLET MARKER or a BACKTICK opens a new item,
+#     wherever it sits — the contract's own worked example is indented seven
+#     spaces, and a model that copies that indentation must not have every one
+#     of its items glued into a single sentence;
+#   • otherwise a line at COLUMN 0 opens a new item, so bare prose (turn C) is
+#     read instead of dropped;
+#   • otherwise — an INDENTED line that carries no marker — it CONTINUES the
+#     item above it, which is what a wrapped bullet looks like.
+# That keeps D4 cured (a wrapped bullet indents its continuation, so it is still
+# ONE item) while accepting every shape the live drive produced. The contract is
+# fixed in the same round to ASK for bullets — belt and braces: tell it the
+# shape, and accept the other shapes anyway.
+#
+# AND A LINE WITH NO LETTER OR DIGIT IN IT IS NOT AN ITEM. A `---` rule or a
+# stray pair of backticks is markdown furniture, not a checkable sentence, and
+# reading one as a precondition would send the Validator to check "---" against
+# the repo. This is a literal test, not a judgement about meaning.
+#
+# The failure this trades for is visible instead of silent: a bare sentence
+# wrapped WITHOUT indentation splits into two items. Both halves then reach the
+# captain and the Validator as preconditions — ugly, and he can see it. A
+# dropped section is invisible, and invisible is what this whole round is about.
+# FIX ROUND 3 / D-B: the marker set. `_CONCEPT_CONTRACT` uses `•` as its OWN
+# bullet character 52 times, so `•` is heavily modelled in the very prompt the
+# model reads — and the marker-anywhere rule covered only ASCII markers, so
+# three indented `•` lines came out as ONE run-on item. En and em dashes are
+# accepted for the same reason. The marker is STRIPPED from the stored text; at
+# column 0 they used to separate but ship a literal "• " to the Validator.
+#
+# FIX ROUND 3 / D-E: the ordered-list marker is capped at TWO digits. `\d+[.)]`
+# ate the "1990." of "1990. the year field exists…" and shipped the rest. A real
+# ordered list is 1.–99.; a four-digit number at the head of a sentence is
+# content. Literal rule, no judgement about meaning.
+BULLET_MARK = re.compile(r"^([-*+•–—]|\d{1,2}[.)])\s+")
+HEADING_LINE = re.compile(r"^#{1,6}\s")
+FENCE_LINE = re.compile(r"^(```|~~~)")
+
+
+def is_furniture(t):
+    """A line with no letter or digit in it is markdown furniture, not content.
+
+    FIX ROUND 3 / D-D: this used to be tested at FLUSH time, on the whole
+    assembled item, so an INDENTED furniture line was absorbed as a
+    continuation before the test could ever see it —
+    `- most KPIs carry an automated instruction` + `  ---` came out as
+    "most KPIs carry an automated instruction ---". Tested PER LINE now,
+    before absorption.
+    """
+    return not re.search(r"[A-Za-z0-9]", t)
+
+
+def items(body):
+    """One precondition per ITEM, with wrapped lines joined back on."""
+    got, cur, in_fence = [], None, False
+
+    def flush(v):
+        v = " ".join((v or "").split()).strip()
+        # FIX ROUND 3 / D-E: unwrap backticks only when the WHOLE item is
+        # wrapped in them (turn D's shape). A leading INLINE code span —
+        # "`aiUpdateInstructions` is non-empty on most KPIs" — used to lose its
+        # opening backtick and keep the closing one.
+        if len(v) > 1 and v.startswith("`") and v.endswith("`"):
+            v = v.strip("`").strip()
+        if v and not is_furniture(v):
+            got.append(v)
+
+    for ln in body.split("\n"):
+        t = ln.strip()
+        # FIX ROUND 3 / D-D: a fenced block is not a precondition. Its opener
+        # carries a language tag ("```json") which has letters in it, so the
+        # furniture rule alone cannot see it.
+        if FENCE_LINE.match(t):
+            flush(cur); cur = None; in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        # FIX ROUND 3 / D-E: a BLANK LINE CLOSES the item. It used to be skipped
+        # with the item left open, so a bullet and a later indented line merged
+        # two distinct preconditions into one.
+        if not t:
+            flush(cur); cur = None
+            continue
+        # FIX ROUND 3 / D-C: a HEADING closes the item and is never content.
+        # The sibling parser `_md_items` has done this since S128 (its D5 fix);
+        # this regressed the lesson next door. Sub-headings were being shipped
+        # to the Validator to check "### Shape" against the repo — and the
+        # contract's own SHAPE/VALUES split invites exactly that habit.
+        if HEADING_LINE.match(t):
+            flush(cur); cur = None
+            continue
+        if is_furniture(t):
+            flush(cur); cur = None
+            continue
+        # A MARKER opens an item wherever it sits — the contract's own worked
+        # example is indented, and a model copying that indentation must not get
+        # everything glued into one sentence. Otherwise column 0 opens, and an
+        # indented line CONTINUES the item above it (a wrapped bullet).
+        opens = bool(BULLET_MARK.match(t)) or t.startswith("`") \
+            or not ln[:1].isspace()
+        if not opens and cur is not None:
+            cur = cur + " " + t
+            continue
+        flush(cur)
+        cur = BULLET_MARK.sub("", t)
+    flush(cur)
+    return got
+
+
+# ── FIX ROUND 1 / D10: THE EMPTY-BUCKET RULE, ENFORCED ────────────────────
+# `_CONCEPT_CONTRACT` states it twice and forbids it explicitly: an empty
+# section is the heading and NOTHING under it, never a bullet explaining why.
+# A doc that writes `- None — this design assumes nothing of the repo.` anyway
+# had that line parsed as a real precondition and shipped to the Validator to
+# go and check against the repo — a worker spawn, a report and a row in the
+# captain's readout, all spent on a sentence that means "there are none".
+#
+# This is a LITERAL check on the one forbidden FORM, not a classifier: the
+# item's first word is a none-word and nothing checkable follows it. It DROPS
+# the entry rather than refusing the mission — dropping lands exactly where the
+# contract wanted the doc to be (an empty section, machinery inert) — but it
+# says so on stderr, because a mechanism that disengages silently is the
+# failure family this round exists to stop.
+NONE_WORD = re.compile(r"(?i)^(none|nothing|n/?a|not applicable)\b")
+
+
+def is_none_declaration(item):
+    if not NONE_WORD.match(item):
+        return False
+    rest = NONE_WORD.sub("", item, count=1)
+    # "none of the KPIs have targets" is a REAL precondition; "None — assumes
+    # nothing" is the forbidden bullet. The separator is what tells them apart:
+    # a forbidden one continues with punctuation or nothing, never with a word.
+    return not re.match(r"^\s+[A-Za-z0-9]", rest)
+
+
+seen, out, dropped, rubble = set(), [], [], []
+for name in sorted(os.listdir(d)):
+    if os.path.splitext(name)[1].lower() not in (".md", ".markdown", ".txt", ".rst"):
+        continue
+    try:
+        with open(os.path.join(d, name)) as fh:
+            text = fh.read()
+    except OSError:
+        continue
+    body = section(text)
+    got = items(body)
+    kept = 0
+    for it in got:
+        if is_none_declaration(it):
+            dropped.append(it)
+            continue
+        kept += 1
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    # ── FIX ROUND 2 / CURE 1b: FAIL LOUD, NEVER A SILENT ZERO ─────────────
+    # The rule already built for open questions (fix round 1, D5), applied
+    # here. An EMPTY section is legitimately empty and says nothing — the live
+    # turns A and B both wrote heading + EOF and must stay silent. But a
+    # section with CONTENT that yields NOTHING is the shape that hid turn C for
+    # a whole round: a human sees a full section, the harness sees none, and
+    # nothing anywhere says so. An all-none-declaration section is not this —
+    # it warns above and is a legitimately-empty section written wrongly.
+    if body.strip() and not got:
+        rubble.append(name)
+for it in dropped:
+    sys.stderr.write(
+        'lcars: ignoring "%s" under ## DATA PRECONDITIONS — an empty section is '
+        "the heading and nothing under it, never a bullet saying there are none "
+        "(see the concept contract). Delete the line.\n" % it)
+if rubble:
+    sys.stderr.write(
+        "lcars: %s has a '## DATA PRECONDITIONS' section with content in it, and "
+        "NOT ONE line of it could be read as a precondition. Write each one as a "
+        "markdown bullet, one checkable sentence:\n"
+        "    - most KPIs carry an automated collection instruction\n"
+        "An empty section is legal — the heading and nothing under it — but a "
+        "section that LOOKS full and reads as empty is how a design's assumptions "
+        "go unchecked without anyone noticing.\n" % ", ".join(rubble))
+    sys.exit(1)
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S175_PY
+}
+
+# validate_preconditions_block -> the Validate prompt's precondition contract, or
+# NOTHING when this Mission's design declared none. It asks the worker for
+# EVIDENCE, not for a verdict it is trusted on, and it names the downgrade rule
+# out loud so a model that cannot check one has a correct move available to it.
+validate_preconditions_block() {
+  # FIX ROUND 2 (cure 1b): `mission_data_preconditions` REFUSES (rc 1, message
+  # on stderr) when the section has content that reads as nothing. Propagate it
+  # rather than swallowing it into an empty block — swallowing is the exact
+  # silent-disengage the live drive caught.
+  local pre rc=0; pre="$(mission_data_preconditions)" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$pre" ] || return 0
+  printf '
+
+## This design DECLARES DATA PRECONDITIONS — go and check each one
+
+The design this Mission carries states what it ASSUMES is already true of THIS
+repository'"'"'s data or config. These are not requirements of the work; they are
+claims ABOUT THE REPOSITORY, written by the model that drew the screens, and each
+one that is FALSE makes part of the design UNREACHABLE — built, green, invisible.
+
+'
+  local n=0 line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n=$((n + 1))
+    printf '  %d. %s\n' "$n" "$line"
+  done <<S175_LIST
+$pre
+S175_LIST
+  printf '
+For EACH one, OPEN THE REPOSITORY AND LOOK. Then create `preconditions.json` in
+your scratch output directory, alongside your other outputs:
+
+    {"preconditions": [
+      {"text": "<the precondition, copied verbatim from the list above>",
+       "status": "satisfied" | "unsatisfied" | "unchecked",
+       "evidence": "<the file you opened and the number you found>"}
+    ]}
+
+  • `evidence` NAMES THE FILE AND THE COUNT — "data/config.json: 0 of 19 KPIs
+    have a non-empty aiUpdateInstructions". Not "checked the config", not "this
+    looks fine". The captain reads your evidence and decides from it; a sentence
+    he cannot act on without opening the repo himself is worth nothing to him.
+  • `unchecked` IS A CORRECT ANSWER and costs you nothing. Some preconditions
+    cannot be settled by reading files at all — anything about what a person
+    will do, what a live system will return, or what the data will look like
+    next month. Say `unchecked`, and say why in `evidence`.
+  • A VERDICT WITHOUT EVIDENCE IS NOT A VERDICT. A `satisfied` or `unsatisfied`
+    with no file named is downgraded to `unchecked` by the harness. NEVER guess
+    a `satisfied` to keep the Mission moving — a fabricated pass is the single
+    worst outcome here, because it is the one nobody downstream can detect.
+  • Copy EVERY precondition across, including the ones you could not check. One
+    you leave out is treated as UNCHECKED, never as satisfied.
+
+This is SEPARATE from `scope.txt` and does not replace it. Do NOT raise a
+precondition in `scope.txt` — the harness composes that question itself, in
+fixed wording, and will do it for you. Write the evidence and nothing more.'
+}
+
+# precond_canonicalize <worker-json> <declared-file> <out-json>
+# The whole trust boundary, in one place. Every DECLARED precondition appears in
+# the output exactly once, in declaration order; the worker's report can only
+# supply a status and evidence for one, never add or remove one. Downgrades:
+#   • a precondition the worker did not report at all       -> unchecked
+#   • a status that is not one of the three                 -> unchecked
+#   • a `satisfied` / `unsatisfied` with no evidence        -> unchecked
+# Always writes the file, even when the worker wrote nothing at all.
+precond_canonicalize() { # worker-json declared-file out-json
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "$3" <<'S175_PY'
+import json, re, sys
+src, declf, out = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(declf) as fh:
+    declared = [" ".join(ln.split()) for ln in fh if ln.strip()]
+
+# ── FIX ROUND 1 / D1: WHAT COUNTS AS EVIDENCE ──────────────────────────────
+# The first cut tested Python truthiness after a whitespace collapse, so every
+# one of these supported a verdict and produced a green, silent pass on the
+# measured DX-Scorecard case: "ok", ".", a bare 19, {"checked": true},
+# ["a","b"], and "reviewed the KPI configuration; automation is in place".
+# Only "", whitespace, null, 0 and false were refused — and 0/false only by the
+# ACCIDENT of being falsy, while 19 sailed through.
+#
+# THE RULE NOW: to support a `satisfied` or `unsatisfied`, the evidence must be
+# a STRING that NAMES SOMETHING CHECKABLE — a file path or a number. That is
+# exactly what the prompt already demands ("data/config.json: 0 of 19 KPIs have
+# a non-empty aiUpdateInstructions"), so an honest worker is unaffected.
+#
+# BE HONEST ABOUT WHAT THIS BUYS. It stops the LAZY worker — the one that types
+# "ok" or "automation is in place" because a verdict was cheaper than a look. It
+# does NOT stop a worker that fabricates a plausible path and a plausible number:
+# "data/config.json: 18 of 19 KPIs carry aiUpdateInstructions" passes this and
+# always will. That residual is the human's, and S174's lesson is the reason it
+# is written down rather than papered over: no syntactic check on a
+# self-declared field makes that field honest. This is a floor, not a fence.
+PATHY = re.compile(r"[\w.\-]*[\w\-]/[\w.\-/]+|\b[\w\-]+\.[A-Za-z][\w]{0,7}\b")
+NUMBER = re.compile(r"\d")
+
+
+def evidence_verdict(raw):
+    """(evidence_text, reason_it_is_not_evidence_or_None)."""
+    if raw is None:
+        # ABSENT, not mistyped. A missing key and a JSON null both mean the
+        # worker said nothing, and the captain should read that plainly rather
+        # than a complaint about NoneType.
+        return "", "no evidence was given at all"
+    if not isinstance(raw, str):
+        # D12: a dict/list/number was previously str()-ed, so a Python repr
+        # ({'checked': True}) landed in preconditions.json AND counted as
+        # evidence. A non-string is not evidence and its repr is never stored.
+        return "", ("the Validator reported evidence that is not a string (a %s) "
+                    "— evidence must be text naming a file and a count"
+                    % type(raw).__name__)
+    text = " ".join(raw.split())
+    if not text:
+        return "", "no evidence was given at all"
+    if not (PATHY.search(text) or NUMBER.search(text)):
+        return text, ('the evidence given ("%s") names no file and no count, so '
+                      'nothing in it can be checked' % text)
+    return text, None
+
+
+rows_by_text = {}
+try:
+    with open(src) as fh:
+        data = json.load(fh)
+    reported = data.get("preconditions") if isinstance(data, dict) else data
+    for r in (reported or []):
+        if not isinstance(r, dict):
+            continue
+        t = " ".join(str(r.get("text") or "").split())
+        if t:
+            rows_by_text.setdefault(t, []).append(r)
+except Exception:
+    rows_by_text = {}
+
+
+def resolve(reports):
+    """One (status, evidence) for a precondition, from every row about it.
+
+    ── FIX ROUND 1 / D2: DUPLICATE ROWS, LAST WINS ────────────────────────
+    The first cut kept the FINAL occurrence, so an honest `unsatisfied` with
+    real evidence followed by `{"status": "satisfied", "evidence": "looked
+    again, fine"}` came out satisfied, discarded the real evidence, and raised
+    no escalation. A worker only has to say it twice.
+
+    FAIL CLOSED. A conflict never resolves to the favourable verdict:
+    `unsatisfied` wins if any row says so, otherwise a disagreement is
+    `unchecked`. Identical duplicates are not a conflict.
+    """
+    if not reports:
+        return "unchecked", "the Validator did not report on this one"
+    seen = []
+    for r in reports:
+        status = str(r.get("status") or "").strip().lower()
+        ev, why = evidence_verdict(r.get("evidence"))
+        if status not in ("satisfied", "unsatisfied", "unchecked"):
+            seen.append(("unchecked",
+                         "the Validator reported no usable status for this one"))
+        elif status in ("satisfied", "unsatisfied") and why:
+            # A VERDICT WITHOUT EVIDENCE IS NOT A VERDICT.
+            seen.append(("unchecked",
+                         'reported "%s" but %s' % (status, why)))
+        else:
+            seen.append((status, ev))
+    for status, ev in seen:
+        if status == "unsatisfied":
+            return status, ev
+    verdicts = {s for s, _ in seen}
+    if len(verdicts) > 1:
+        return "unchecked", (
+            "the Validator reported conflicting verdicts for this precondition "
+            "(%s) — a disagreement is never resolved in favour of the pass"
+            % ", ".join(sorted(verdicts)))
+    return seen[0]
+
+
+# ── FIX ROUND 1 / D6: THE CAPTAIN'S ANSWER IS DURABLE ──────────────────────
+# This file is rebuilt from the worker report on every Validate pass, and the
+# first cut wrote only text/status/evidence — destroying the `answer` field a
+# prior pass had absorbed. `validate-advance` then deletes answers.json, so a
+# `lcars feedback` send-back re-entered Validate with the answer gone from BOTH
+# places and re-asked a question the captain had already settled. Answered once
+# means answered forever: carry any prior answer across the rebuild.
+prior = {}
+try:
+    with open(out) as fh:
+        old = json.load(fh)
+    for r in (old.get("preconditions") or []):
+        t = " ".join(str(r.get("text") or "").split())
+        a = str(r.get("answer") or "").strip()
+        if t and a:
+            prior[t] = a
+except Exception:
+    prior = {}
+
+rows = []
+for text in declared:
+    status, evidence = resolve(rows_by_text.get(text))
+    row = {"text": text, "status": status, "evidence": evidence}
+    if prior.get(text):
+        row["answer"] = prior[text]
+    rows.append(row)
+with open(out, "w") as fh:
+    json.dump({"preconditions": rows}, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+S175_PY
+}
+
+# precond_absorb_answers <preconditions.json> <answers.json>
+# `lcars respond` records ONE free-form answer beside the questions it answered.
+# Fold it onto the precondition whose text appears in one of those questions, so
+# the re-run neither re-asks it (precond_scope_lines skips an answered row) nor
+# forgets it (the Verify readout prints what he chose). No-op without an
+# answers.json — every mission that never paused.
+precond_absorb_answers() { # preconditions.json answers.json
+  [ -f "$1" ] || return 0
+  [ -f "$2" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" <<'S175_PY'
+import json, sys
+pf, af = sys.argv[1], sys.argv[2]
+try:
+    with open(pf) as fh:
+        pre = json.load(fh)
+    with open(af) as fh:
+        ans = json.load(fh)
+except Exception:
+    sys.exit(0)
+answer = " ".join(str(ans.get("answer") or "").split())
+asked = [q for q in (ans.get("questions") or []) if isinstance(q, str)]
+if not answer or not asked:
+    sys.exit(0)
+# ── FIX ROUND 1 / D9: MATCH THE QUESTION, NOT A SUBSTRING OF IT ───────────
+# The first cut asked whether the precondition TEXT appeared anywhere in an
+# answered question. With "KPIs have targets" and "KPIs have targets and
+# owners" declared together, answering only the LONGER marked BOTH answered:
+# the shorter one was never asked, and Verify attributed to the captain an
+# answer he never gave. The question is built by precond_scope_lines with the
+# text in a fixed, delimited slot, so match THAT slot exactly.
+changed = False
+for row in (pre.get("preconditions") or []):
+    if str(row.get("answer") or "").strip():
+        continue
+    text = " ".join(str(row.get("text") or "").split())
+    if not text:
+        continue
+    slot = 'This design assumes: "%s".' % text
+    if any(slot in q for q in asked):
+        row["answer"] = answer
+        changed = True
+if changed:
+    with open(pf, "w") as fh:
+        json.dump(pre, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+S175_PY
+}
+
+# precond_scope_lines <preconditions.json> -> one escalation question per
+# UNSATISFIED, UNANSWERED precondition, one per line (the scope.txt shape).
+# NOTHING for a satisfied one; NOTHING for an unchecked one (reported, never
+# escalated — a gate on a question nobody could check is a gate spent on
+# nothing); NOTHING for one the captain has already answered.
+#
+# THE WORDING IS FIXED HERE AND NOWHERE ELSE, because the round takes no
+# position on which of the three answers is right and a model composing this
+# would inevitably lean. None is recommended and none is phrased as the safe one.
+#
+# ── FIX ROUND 1: TWO THINGS THE FIRST DRAFT GOT WRONG ─────────────────────
+#
+# 1. IT OVERPROMISED. It presented (a)/(b)/(c) as though the harness acted on
+#    the letter. NOTHING DOWNSTREAM READS THE ANSWER: Plan is never told which
+#    one he picked, nothing is cut, no data changes, and the Verify readout
+#    lists every unsatisfied precondition whichever he chose. The sole
+#    mechanical effect of ANY answer — including "asdfgh" — is that the gate
+#    stops asking. A surface that implies otherwise is a lying surface, the
+#    same family as S174's empty invention list, so it now says plainly that
+#    the answer is RECORDED and carried forward as GUIDANCE and that the
+#    harness itself changes nothing. (Whether it SHOULD act on the letter is
+#    the captain's call and is raised at readout, not decided here.)
+#
+# 2. IT BURIED THE ONE THING WORTH READING. The second-order cost was 130 of
+#    the question's 225 words, in a single unbroken 1,274-character line that
+#    `lcars respond` prints as `echo "  • $q"` with no wrapping — sixteen solid
+#    rows at 80 columns with the actionable instruction at the very bottom. And
+#    it was repeated VERBATIM for every unsatisfied precondition: three of them
+#    meant the identical anecdote three times. The ask now leads, each question
+#    is short, and the SHARED consequence is stated ONCE per escalation (on the
+#    first question) instead of once per precondition.
+precond_scope_lines() { # preconditions.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        pre = json.load(fh)
+except Exception:
+    sys.exit(0)
+
+ASK = (
+    'DECISION NEEDED — reply (a), (b) or (c), and say what the reachable path '
+    'should do. This design assumes: "%s". This repo does not: %s. '
+    '(a) BUILD IT ANYWAY — those parts get built, you will not see them here, '
+    'and Verify lists them again as unreachable. '
+    '(b) CUT the parts that depend on it. '
+    "(c) CHANGE THE REPO'S DATA FIRST, then build it as drawn. "
+    'Your answer is recorded and carried to the later stages as guidance; the '
+    'harness does not itself cut anything, change any data, or decide what gets '
+    'built.')
+
+# Said ONCE per escalation, on the first question, because it is the same
+# consequence for every precondition in it. MEASURED on the mission that
+# produced this check.
+SHARED = (
+    ' ALSO, AND IT IS NOT "you will not see it": the path this repo CAN reach '
+    'was drawn as the minority case, so it is under-specified. Last time the '
+    'reachable path shipped with no comparison against the previous period at '
+    'all, and a screen reported "N values pulled" for values that can never be '
+    'pulled — both reachable, both under-designed.')
+
+out = []
+for row in (pre.get("preconditions") or []):
+    if row.get("status") != "unsatisfied":
+        continue
+    if str(row.get("answer") or "").strip():
+        continue
+    text = " ".join(str(row.get("text") or "").split())
+    ev = " ".join(str(row.get("evidence") or "").split())
+    line = ASK % (text, ev)
+    if not out:
+        line += SHARED
+    out.append(line)
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S175_PY
+}
+
+# precond_report <preconditions.json> -> the Validate stdout lines for what was
+# checked. Printed for a mission that declared preconditions and NOTHING for one
+# that did not, so a pre-S175 mission's Validate output is byte-identical.
+precond_report() { # preconditions.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        pre = json.load(fh)
+except Exception:
+    sys.exit(0)
+rows = pre.get("preconditions") or []
+if not rows:
+    sys.exit(0)
+mark = {"satisfied": "✓", "unsatisfied": "✗", "unchecked": "?"}
+out = ["  Data preconditions declared by the design:"]
+for r in rows:
+    out.append("    %s %s — %s" % (mark.get(r.get("status"), "?"),
+                                   r.get("text") or "", r.get("status")))
+    ev = " ".join(str(r.get("evidence") or "").split())
+    if ev:
+        out.append("        %s" % ev)
+n_un = sum(1 for r in rows if r.get("status") == "unchecked")
+if n_un:
+    out.append("    %d could NOT be checked mechanically and were NOT assumed "
+               "true — nobody has verified them." % n_un)
+sys.stdout.write("\n".join(out) + "\n")
+S175_PY
+}
+
+# verify_preconditions_readout <preconditions.json> -> Part C. THE LIMIT STAYS
+# VISIBLE. An unsatisfied precondition the captain chose to build anyway rides
+# all the way to the Verify summary, so he reads "these parts are unreachable
+# with this repo's current data" instead of re-learning it by clicking. Prints
+# NOTHING for a mission that declared none, and nothing when every one came back
+# satisfied — so those readouts stay byte-identical.
+verify_preconditions_readout() { # preconditions.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        pre = json.load(fh)
+except Exception:
+    sys.exit(0)
+rows = pre.get("preconditions") or []
+bad = [r for r in rows if r.get("status") == "unsatisfied"]
+unk = [r for r in rows if r.get("status") == "unchecked"]
+if not bad and not unk:
+    sys.exit(0)
+out = []
+if bad:
+    out.append("  UNREACHABLE WITH THIS REPO'S CURRENT DATA:")
+    for r in bad:
+        out.append("    ⊘ the design assumes: %s" % (r.get("text") or ""))
+        ev = " ".join(str(r.get("evidence") or "").split())
+        if ev:
+            out.append("        the repo says: %s" % ev)
+        ans = " ".join(str(r.get("answer") or "").split())
+        if ans:
+            out.append("        you answered: %s" % ans)
+    out.append("      The parts of the design that depend on these were built to a")
+    out.append("      drawing of a world this repo is not in. You will not see them")
+    out.append("      here — and the path you CAN see was drawn as the minority case,")
+    out.append("      so look at the reachable path first, and hardest.")
+if unk:
+    out.append("  NOT CHECKED — the design assumed these and nobody verified them:")
+    for r in unk:
+        out.append("    ? %s" % (r.get("text") or ""))
+        ev = " ".join(str(r.get("evidence") or "").split())
+        if ev:
+            out.append("        %s" % ev)
+sys.stdout.write("\n".join(out) + "\n")
+S175_PY
+}
+
+# === S175 part D: AN OPEN QUESTION THAT REACHES PLAN UNRESOLVED ============
+#
+# It rides the SAME machinery S174 built for un-drawn work, for the same reason:
+# a decision nobody asked the captain about is fine when it is small and VISIBLE,
+# and expensive only when it is invisible. `notDrawn` says "this is visible and
+# the drawing does not contain it"; `decides` says "this settles a question the
+# brief left open, and here is what I settled it as". Both are DECLARED by the
+# planner and both are cashed in at Verify.
+#
+# MEASURED, and the two halves are the same hole from opposite sides:
+# `attachment-02.md:140` asked what "Preview" and "View" actually do. It shipped
+# unanswered, a preview screen was built by fiat — the un-drawn surface — and
+# that screen is where the composite-KPI cell came out scrambled.
+#
+# NO CLASSIFIER, again. Nothing here reads a question and decides whether it is
+# settled: the PRD DECLARES it, with the `STILL OPEN:` / `RESOLVED` prefixes the
+# Align contract prescribes (see skills/lcars-file/SKILL.md), and this counts.
+
+# mission_open_questions -> one STILL-OPEN question per line, or NOTHING.
+# Read off prd.md's `## Open questions from the design session` — the section
+# S175's PRD gate requires when the design brief left anything unsettled. EMPTY
+# for every mission without that section, which makes the block below print
+# nothing and the Plan prompt byte-identical to before.
+mission_open_questions() {
+  [ -f "$MISSION_DIR/prd.md" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$MISSION_DIR/prd.md" <<'S175_PY'
+import re, sys
+try:
+    with open(sys.argv[1]) as fh:
+        text = fh.read()
+except OSError:
+    sys.exit(0)
+want = "open questions from the design session"
+body, lvl = [], None
+for ln in text.replace("\r\n", "\n").split("\n"):
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m:
+        name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+        if lvl is None:
+            if name.startswith(want):
+                lvl = len(m.group(1))
+            continue
+        if len(m.group(1)) <= lvl:
+            break
+        body.append(ln)
+        continue
+    if lvl is not None:
+        body.append(ln)
+
+# ── FIX ROUND 1 / D4: JOIN THE WRAP ───────────────────────────────────────
+# The same defect that was cured in the two OTHER parsers and missed here: a
+# PRD wraps at ~78 columns exactly like a brief does, so a two-line
+# `- STILL OPEN: …` bullet reached the Plan prompt truncated at the line break.
+# That is the COMMON case, not an edge one.
+BULLET = re.compile(r"^([-*+]|\d+[.)])\s+")
+entries, cur = [], None
+for ln in body:
+    t = ln.strip()
+    if not t:
+        continue
+    m = BULLET.match(t)
+    if m:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = t[m.end():]
+    elif cur is not None:
+        cur = cur + " " + t
+    else:
+        entries.append(" ".join(t.split()))
+if cur:
+    entries.append(" ".join(cur.split()))
+
+# ── FIX ROUND 1 / D5: THE PREFIX CONTRACT, IN THE FORMS A MODEL WRITES ────
+# `- STILL OPEN: …` parsed. `- **STILL OPEN:** …` — what a model writing
+# markdown does by DEFAULT — yielded zero, silently, and the Plan prompt was
+# then told nothing at all. So: strip surrounding emphasis markers, and treat
+# the colon as optional. DECLARED, not inferred: only a bullet the PRD MARKED
+# still-open is open; nothing here reads a question and guesses.
+EMPH = re.compile(r"^[*_`]+|[*_`]+$")
+STILL = re.compile(r"(?i)^still\s+open\b[\s:\-—]*")
+RESOLVED = re.compile(r"(?i)^resolved\b")
+out, unparsed = [], []
+for e in entries:
+    lead = EMPH.sub("", e).lstrip()
+    # `**STILL OPEN:**` leaves a trailing `**` on the marker, not the sentence,
+    # so strip emphasis again once the marker has been removed.
+    m = STILL.match(lead)
+    if m:
+        rest = EMPH.sub("", lead[m.end():].strip()).strip()
+        rest = re.sub(r"^[\s:\-—]+", "", rest)
+        if rest:
+            out.append(" ".join(rest.split()))
+        continue
+    if RESOLVED.match(lead):
+        continue
+    unparsed.append(e)
+
+# FAIL LOUD, NEVER A SILENT ZERO. If the section exists and has content but
+# nothing in it declares itself, that is a refusal — the whole subject of this
+# round is mechanisms that disengage without saying so.
+if lvl is not None and unparsed and not out:
+    sys.stderr.write(
+        "lcars: prd.md has an '## Open questions from the design session' "
+        "section with %d entr%s, and NOT ONE of them declares itself. Each must "
+        "start with `STILL OPEN:` (still unsettled) or `RESOLVED` (settled with "
+        "the captain during Align) — see skills/lcars-file/SKILL.md. Without "
+        "that the Plan Stage is told nothing and every one of these becomes a "
+        "decision nobody was asked about. Could not read:\n%s\n"
+        % (len(unparsed), "y" if len(unparsed) == 1 else "ies",
+           "\n".join("  - " + u for u in unparsed)))
+    sys.exit(1)
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S175_PY
+}
+
+# plan_open_questions_block -> the Plan prompt's open-question contract, or
+# NOTHING when the brief left nothing open (which is every mission filed before
+# S175). The planner may still decide one — that is allowed and often right —
+# but it must SAY SO on the criterion that embodies the decision.
+plan_open_questions_block() {
+  # D5: `mission_open_questions` REFUSES (rc 1, message on stderr) when the PRD
+  # section exists with content that declares nothing. Propagate that — the
+  # first cut would have swallowed it into an empty block and told Plan nothing,
+  # which is the exact silent-disengage this round is about.
+  local qs rc=0; qs="$(mission_open_questions)" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$qs" ] || return 0
+  printf '
+
+## The brief left these questions OPEN — decide them OUT LOUD or not at all
+
+These reached this Stage unresolved. The captain was never asked, so nothing
+downstream knows the answer, and a ticket that quietly picks one hands him a
+shipped screen instead of a decision:
+
+'
+  local n=0 line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n=$((n + 1))
+    printf '  %d. %s\n' "$n" "$line"
+  done <<S175_QLIST
+$qs
+S175_QLIST
+  printf '
+You MAY decide one. Deciding is often the right move — most of these are small,
+and stopping the Mission to ask about every one of them is worse. What you may
+NOT do is decide one SILENTLY. The ticket that settles a question carries the
+declaration on the acceptance criterion that embodies it:
+
+    {"text": "…", "drawnAt": "#screen-builder, the value cell",
+     "decides": "<the question, as the brief asked it> → <what you decided, and why>"}
+
+`decides` sits BESIDE the drawnAt / notDrawn / notVisual declaration; it does not
+replace it and it is not one of the three. Every one is collected into the
+captain'"'"'s Verify list, so a decision he never made is at least a decision he
+can see. Leave a question alone entirely and it simply stays open — that is fine.
+What is not fine is a ticket whose spec answers it while saying nothing.
+
+MEASURED, and it is the same hole as an un-drawn screen seen from the other
+side: the brief asked what "Preview" and "View" actually do. It shipped
+unanswered, a preview screen was built by fiat, and that screen is exactly where
+the composite value cell came out scrambled.'
+}
+
+# verify_decided_readout <plan.json> — S175 part D at the Verify gate. Every
+# criterion the planner DECLARED with `decides`, collected with the question it
+# settled. Prints NOTHING when no ticket declared one — which is every plan
+# written before this round — so those readouts stay byte-identical.
+verify_decided_readout() { # plan.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        plan = json.load(f)
+except Exception:
+    sys.exit(0)
+if not isinstance(plan, list):
+    sys.exit(0)
+rows = []
+for t in plan:
+    if not isinstance(t, dict):
+        continue
+    tid = t.get("id") or "?"
+    for c in (t.get("acceptanceCriteria") or []):
+        if not isinstance(c, dict) or "decides" not in c:
+            continue
+        d = " ".join(str(c.get("decides") or "").split())
+        if d:
+            rows.append((tid, d))
+if not rows:
+    sys.exit(0)
+
+
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+out = ["  DECIDED FOR YOU — the brief left these open and a ticket settled them:"]
+for tid, d in rows:
+    out.append("    ⚇ %s · %s" % (tid, clip(d, 200)))
+out.append("      YOU WERE NEVER ASKED THESE. The design session raised each one and")
+out.append("      nothing settled it before the plan was written, so a ticket picked an")
+out.append("      answer and built it. Each is small on its own; each is also the first")
+out.append("      time you are seeing it. Last time one shipped unasked, the screen it")
+out.append("      produced is where the value cell came out scrambled.")
+sys.stdout.write("\n".join(out) + "\n")
+S175_PY
+}
+
 # The branch that anchors this Mission's code. For a full Mission it is the base
 # branch the work builds on (recorded at File time); for a logged bug it equals
 # the parent's delivered branch (the code the fix targets). The four read-only
@@ -7937,7 +8833,13 @@ EOF
   # S174: what the tickets declared they were building WITHOUT a drawing to build
   # it from. Absent entirely when there is none.
   verify_not_drawn_readout "$MISSION_DIR/plan.json"
+  verify_decided_readout "$MISSION_DIR/plan.json"
   verify_unfenced_note
+
+  # S175 part C: what the design ASSUMED of this repo and the repo did not have.
+  # Absent entirely on a mission that declared no preconditions, and on one where
+  # every declared precondition came back satisfied.
+  verify_preconditions_readout "$MISSION_DIR/preconditions.json"
 
   # S113: show the ACTUAL cost beside the ESTIMATE (display-only — actuals are
   # captured by S112 into usage.json; the estimate is never touched). Present
@@ -10005,6 +10907,13 @@ cmd_validate() {
   extra="$extra$(context_extra_block)"
   # The captain's durable image attachments (S92) — ABSOLUTE paths, read as input.
   extra="$extra$(attachments_extra_block)"
+  # S175 — what the DESIGN declared it assumes of this repo's data. EMPTY (and
+  # therefore byte-identical to before this round) on every mission whose concept
+  # doc has no `## DATA PRECONDITIONS` entries, which is most of them.
+  local precond_declared="" _pcrc=0
+  precond_declared="$(mission_data_preconditions)" || _pcrc=$?
+  [ "$_pcrc" -eq 0 ] || die "the design's '## DATA PRECONDITIONS' section could not be read — see the message above; fix the concept doc and re-run."
+  [ -n "$precond_declared" ] && extra="$extra$(validate_preconditions_block)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
@@ -10019,6 +10928,23 @@ cmd_validate() {
       prior_no_file=no-file
     else
       prior_no_file=""
+    fi
+
+    # S175 — CASH IN THE DECLARATION. The worker gathered evidence; the question
+    # is composed here, in fixed wording, because the round takes no position on
+    # which of the three answers is right. Canonicalize FIRST (a verdict without
+    # evidence is not a verdict; a precondition the worker skipped is UNCHECKED,
+    # never satisfied), then fold in any answer `lcars respond` recorded so a
+    # re-run does not re-ask, then append one question per still-unsatisfied,
+    # still-unanswered precondition to whatever the worker put in scope.txt.
+    if [ -n "$precond_declared" ]; then
+      local pdecl="$odir/declared-preconditions.txt"
+      printf '%s\n' "$precond_declared" > "$pdecl"
+      precond_canonicalize "$odir/preconditions.json" "$pdecl" "$MISSION_DIR/preconditions.json"
+      precond_absorb_answers "$MISSION_DIR/preconditions.json" "$MISSION_DIR/answers.json"
+      precond_report "$MISSION_DIR/preconditions.json"
+      local plines; plines="$(precond_scope_lines "$MISSION_DIR/preconditions.json")"
+      [ -n "$plines" ] && printf '%s\n' "$plines" >> "$odir/scope.txt"
     fi
 
     if [ -f "$odir/scope.txt" ] && grep -qve '^[[:space:]]*$' "$odir/scope.txt"; then
@@ -10902,6 +11828,12 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # the drawing, and why the look is not deferred to Verify. EMPTY for a Mission
   # without a mockup, so every other Plan prompt is byte-identical.
   extra="$extra$(plan_mockup_contract_block)"
+  # S175 — the questions the brief left open, and the contract for deciding one
+  # OUT LOUD. Nothing at all when the brief left none, so a pre-S175 Mission's
+  # Plan prompt is byte-identical.
+  local _oqb _oqrc=0; _oqb="$(plan_open_questions_block)" || _oqrc=$?
+  [ "$_oqrc" -eq 0 ] || die "prd.md's open-questions section declares nothing readable — see the message above; fix the PRD and re-run."
+  extra="$extra$_oqb"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
@@ -13327,6 +14259,54 @@ FSG_EOF
   plan-mockup-block-test)
     MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
     plan_mockup_contract_block
+    exit 0 ;;
+  # S175 test hooks, the same shape: exercise the DATA PRECONDITION machinery in
+  # ISOLATION over $LCARS_ATT_TEST_DIR — no locate_mission, no worker spawn, zero
+  # tokens. `preconditions-declared-test` prints what the design declared;
+  # `preconditions-block-test` prints what the Validator is actually told;
+  # `preconditions-gate-test` runs the trust boundary over a stubbed worker
+  # report ($LCARS_PRECOND_SRC) and prints the canonical file, the report and the
+  # escalation question(s) the captain would see; `preconditions-verify-test`
+  # prints the Verify readout.
+  preconditions-declared-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    # FIX ROUND 2: the refusal is the POINT — propagate it (see cure 1b).
+    mission_data_preconditions
+    exit $? ;;
+  preconditions-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    validate_preconditions_block
+    exit $? ;;
+  preconditions-gate-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    __s175_decl="$(mission_data_preconditions)"
+    if [ -z "$__s175_decl" ]; then exit 0; fi
+    __s175_df="$(mktemp)"; printf '%s\n' "$__s175_decl" > "$__s175_df"
+    precond_canonicalize "${LCARS_PRECOND_SRC:-/nonexistent}" "$__s175_df" \
+      "$MISSION_DIR/preconditions.json"
+    precond_absorb_answers "$MISSION_DIR/preconditions.json" "$MISSION_DIR/answers.json"
+    rm -f "$__s175_df"
+    echo "--- CANONICAL ---"; cat "$MISSION_DIR/preconditions.json"
+    echo "--- REPORT ---";    precond_report "$MISSION_DIR/preconditions.json"
+    echo "--- SCOPE ---";     precond_scope_lines "$MISSION_DIR/preconditions.json"
+    exit 0 ;;
+  preconditions-verify-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    verify_preconditions_readout "$MISSION_DIR/preconditions.json"
+    exit 0 ;;
+  # S175 part D hooks, same shape and same zero-token guarantee.
+  open-questions-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    # D5: the refusal is the POINT — propagate it instead of swallowing it.
+    mission_open_questions
+    exit $? ;;
+  plan-open-questions-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_open_questions_block
+    exit 0 ;;
+  verify-decided-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    verify_decided_readout "$MISSION_DIR/plan.json"
     exit 0 ;;
   # S174 test hook — THE CONSUMER CONTRACT. Runs every consumer of
   # acceptanceCriteria that renders its TEXT over $LCARS_CONSUMER_PLAN and prints

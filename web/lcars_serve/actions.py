@@ -1467,6 +1467,30 @@ Sections:
        `board` → click `.card` → `detail` → Esc → `board`, scroll preserved
      A screen the mockup has but this section does not name is invisible to
      everything downstream, so declare every one.
+  ## DATA PRECONDITIONS — what this drawing ASSUMES is already TRUE of the
+     target repo's data or config. Write each as a MARKDOWN BULLET, and make it
+     ONE CHECKABLE SENTENCE EACH:
+       - most KPIs carry an automated collection instruction
+       - at least one prior month has already been published
+     IF YOU DREW A COUNT, A PROPORTION, A LIST LENGTH, A STATUS OR A TIMESTAMP
+     THAT COMES FROM THE REPO, THIS SECTION IS NOT EMPTY. EMPTY IS ALLOWED, but
+     it is rarely right: only a design that touches no repo data at all — a
+     restyle, a spacing pass, a palette — leaves it as the heading, and NOTHING under it.
+     Never a bullet saying there are none, never a line explaining why.
+     THIS IS NOT bucket 2, and the ONE-HOME-EACH rule does not send it there. An
+     assumption about BEHAVIOUR NOBODY HAS STATED is a bucket-2 question; an
+     assumption about WHAT IS ALREADY IN THE REPO'S DATA is a precondition and
+     belongs HERE, even if you also asked about it up there.
+     STATED, never inferred — nothing downstream can recover an assumption you
+     did not write down.
+     NAME THE FIELD OR THE FILE YOU EXPECT (`aiUpdateInstructions`,
+     `data/config.json`, `accents.ts`) so the check knows what to look for. A
+     sentence naming nothing checkable comes back marked UNCHECKED, not answered.
+     AND SAY WHAT IT ASSUMES ABOUT THE VALUES, NOT ONLY THE FIELDS — how many,
+     how much, how full: "most KPIs are CURRENTLY on automatic collection", not
+     merely "each KPI has a collection mode". A repo can carry every field you
+     named and have none of them filled in, and the screen you drew is still
+     UNREACHABLE. This is the one everybody forgets.
 """
 
 # ── S169 (FL-015): NOT EVERY TURN IS A BUILD TURN ──────────────────────────

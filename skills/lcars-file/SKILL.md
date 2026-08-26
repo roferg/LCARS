@@ -325,6 +325,37 @@ a real decision went into the PRD without a captain exchange, alignment is
 - <tech stack, perf requirements, etc.>
 ```
 
+### When the Mission carries a design brief, its OPEN QUESTIONS come with it
+
+If an attachment is a design brief from the holodeck (a `concept.md` filed beside
+a mockup) and it has a `## Open questions` section with anything under it, the
+PRD **must** carry one more section, and `file.sh` refuses a PRD that drops it:
+
+```markdown
+## Open questions from the design session
+
+- STILL OPEN: <the question, as the brief wrote it>
+- RESOLVED with the captain: <the question> — <the answer he gave>
+```
+
+Every bullet the brief left open appears here, **as what it is**. Resolving one
+with the captain during the grill is the *ideal* outcome — record the answer and
+say it was resolved. What you may **never** do is quietly convert one into an
+assertion elsewhere in the PRD.
+
+This is measured, not theoretical. `lcars-20260814-001`'s `prd.md` has exactly
+two headings, `# Mission:` and `## Attached files`. Its brief left ~14 items
+unsettled and **not one survived as a question** — the PRD stated the Carried-pill
+rule flatly, though "what makes a KPI carried?" was open, and it left no trace
+the question had ever existed. `attachment-02.md:140` asked what "Preview" and
+"View" actually do; that shipped unanswered, a preview screen was built by fiat,
+and that screen is where the composite-KPI cell came out scrambled. Known-unknowns
+became silent certainties and the captain met each decision as a shipped screen.
+
+A brief that left **nothing** open gets **no section at all** — the empty-bucket
+rule; a heading with nothing behind it is a line of his brief spent on nothing,
+and `file.sh` refuses that too.
+
 The `# Mission:` title and `**Type:**` value are the source of truth — the
 script reads the mission title and type straight from the PRD, so get them
 right. Use `lcars:feature` / `lcars:bug` vocabulary consistently.

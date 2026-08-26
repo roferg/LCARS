@@ -265,7 +265,7 @@ _make_branch() {
 
 # _validate_prd <prd-path> — every required section present (same gates as
 # grill-first, :121+). Dies on the first missing one, writing NOTHING.
-_validate_prd() {
+_validate_prd() { # prd-path [attachment-path…]
   local p="$1"
   grep -q '^# Mission:'                  "$p" || die "PRD is missing the 'Mission title' section — Align must produce it before filing."
   grep -q '\*\*Type:\*\*'                "$p" || die "PRD is missing the 'Type' section — Align must produce it before filing."
@@ -273,6 +273,16 @@ _validate_prd() {
   grep -q '\*\*Acceptance Criteria:\*\*' "$p" || die "PRD is missing the 'Acceptance Criteria' section — Align must produce it before filing."
   grep -q '\*\*Out of Scope:\*\*'        "$p" || die "PRD is missing the 'Out of Scope' section — Align must produce it before filing."
   grep -q '\*\*Constraints:\*\*'         "$p" || die "PRD is missing the 'Constraints' section — Align must produce it before filing."
+  # S175 — the design brief's OWN open questions must not evaporate here. Every
+  # bullet under the concept doc's `## Open questions` is carried forward as a
+  # question (still open, or resolved with the captain and recorded as resolved),
+  # never quietly turned into an assertion. A no-op for every mission with no
+  # concept doc, and for one whose brief left nothing open. See
+  # lcars_prd_questions_gate in lcars-init/lcars-common.sh for the measurement.
+  local qmsg
+  if ! qmsg="$(lcars_prd_questions_gate "$p" "${@:2}" 2>&1)"; then
+    die "$qmsg"
+  fi
 }
 
 # _validate_adr <adr-path> — shape-check (same gates as grill-first).
@@ -790,6 +800,15 @@ require_section "Goal"               '\*\*Goal:\*\*'
 require_section "Acceptance Criteria" '\*\*Acceptance Criteria:\*\*'
 require_section "Out of Scope"       '\*\*Out of Scope:\*\*'
 require_section "Constraints"        '\*\*Constraints:\*\*'
+
+# S175 — and the design brief's own OPEN QUESTIONS must survive this boundary.
+# Same gate as the --complete lane (_validate_prd), reading the SOURCE attachment
+# paths since nothing is staged yet. A no-op for every mission with no concept
+# doc and for one whose brief left nothing open, so their filing is untouched.
+if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+  QGATE_MSG="$(lcars_prd_questions_gate "$PRD_SRC" "${ATTACHMENTS[@]}" 2>&1)" \
+    || die "$QGATE_MSG"
+fi
 
 # --- when an ADR set is provided, shape-check it ---------------------------
 # SHAPE validation only — NOT depth policy. Whether a Mission is complex enough
