@@ -1177,6 +1177,70 @@ hook_out preconditions-declared-test "$DCW"
 assert_eq "KNOWN LIMIT: column-0 wrapped prose splits (indent it, or one line)" \
   "$(printf '%s' "$OUT" | grep -c .)" "2"
 
+echo "== 10. Part E — the PROMPT and the GATE read the SAME brief sections =="
+
+# ANTI-DRIFT (S176). MEASURED: skills/lcars-file/SKILL.md told the Align agent
+# the brief has "a `## Open questions` section" — SINGULAR — while
+# `lcars_concept_open_questions` reads TWO homes: `## Open questions` AND bucket
+# 2 of `## WHAT IT MUST DO` ("Implied by the mockup, not yet settled"). So an
+# agent OBEYING our own prompt carried 2 questions and the gate demanded 14.
+# The agent could not pass by following our instructions.
+#
+# This already happened once: an earlier round taught the PARSER to read both
+# and never updated the PROMPT. So the section names below are not typed here —
+# they are EXTRACTED FROM THE GATE'S OWN SOURCE. Teach the gate a third home and
+# this test fails until SKILL.md names it too; rename one and it fails the same
+# way. A "keep these in sync" comment is what we had, and it did not hold.
+QGATE_SRC="$REPO_ROOT/skills/lcars-init/lcars-common.sh"
+SKILL_MD="$REPO_ROOT/skills/lcars-file/SKILL.md"
+
+QSECTIONS="$(python3 - "$QGATE_SRC" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+# the body of lcars_concept_open_questions, and only that
+body = src.split("lcars_concept_open_questions() {", 1)[1].split("\nS175_PY\n", 1)[0]
+names = []
+m = re.search(r'^HEAD\s*=\s*"([^"]+)"', body, re.M)
+if m:
+    names.append(m.group(1))
+names += re.findall(r'section\(\s*\w+\s*,\s*"([^"]+)"\s*\)', body)
+out, seen = [], set()
+for n in names:
+    n = re.sub(r"^\d+[.)]\s*", "", n).strip()   # "2. Implied by…" -> "Implied by…"
+    if n.lower() in seen:
+        continue
+    seen.add(n.lower())
+    out.append(n)
+sys.stdout.write("\n".join(out))
+PY
+)"
+
+QCOUNT="$(printf '%s\n' "$QSECTIONS" | grep -c .)"
+# A parse that found nothing would pass every assertion below vacuously.
+if [ "$QCOUNT" -ge 2 ]; then
+  ok "the gate's own source names $QCOUNT brief section(s) it reads"
+else
+  bad "could not extract the gate's section names from lcars-common.sh (got $QCOUNT)"
+fi
+
+while IFS= read -r QS; do
+  [ -n "$QS" ] || continue
+  if grep -qF "$QS" "$SKILL_MD"; then
+    ok "SKILL.md names '$QS' — the prompt and the gate agree"
+  else
+    bad "DRIFT: the gate reads '$QS' but skills/lcars-file/SKILL.md never names it — an agent obeying the prompt cannot pass the gate"
+  fi
+done <<EOF
+$QSECTIONS
+EOF
+
+# …and the prompt must not still describe the brief as having ONE such section.
+if grep -q 'it has a `## Open questions` section with anything under it' "$SKILL_MD"; then
+  bad "SKILL.md still describes a SINGLE open-questions section (the measured drift)"
+else
+  ok "SKILL.md no longer describes a single open-questions section"
+fi
+
 echo
 echo "  passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]

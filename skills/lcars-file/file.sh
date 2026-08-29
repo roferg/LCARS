@@ -267,12 +267,16 @@ _make_branch() {
 # grill-first, :121+). Dies on the first missing one, writing NOTHING.
 _validate_prd() { # prd-path [attachment-path…]
   local p="$1"
-  grep -q '^# Mission:'                  "$p" || die "PRD is missing the 'Mission title' section — Align must produce it before filing."
-  grep -q '\*\*Type:\*\*'                "$p" || die "PRD is missing the 'Type' section — Align must produce it before filing."
-  grep -q '\*\*Goal:\*\*'                "$p" || die "PRD is missing the 'Goal' section — Align must produce it before filing."
-  grep -q '\*\*Acceptance Criteria:\*\*' "$p" || die "PRD is missing the 'Acceptance Criteria' section — Align must produce it before filing."
-  grep -q '\*\*Out of Scope:\*\*'        "$p" || die "PRD is missing the 'Out of Scope' section — Align must produce it before filing."
-  grep -q '\*\*Constraints:\*\*'         "$p" || die "PRD is missing the 'Constraints' section — Align must produce it before filing."
+  # S176 — BOTH shapes: the bold inline label AND the markdown-heading form the
+  # captain's Align drifted to. lcars_prd_has_field (lcars-init/lcars-common.sh)
+  # is the SAME function the title/type extraction below reads through, so
+  # validation and extraction can never disagree about what a PRD says.
+  lcars_prd_has_field "$p" 'Mission'             || die "PRD is missing the 'Mission title' section — Align must produce it before filing."
+  lcars_prd_has_field "$p" 'Type'                || die "PRD is missing the 'Type' section — Align must produce it before filing."
+  lcars_prd_has_field "$p" 'Goal'                || die "PRD is missing the 'Goal' section — Align must produce it before filing."
+  lcars_prd_has_field "$p" 'Acceptance Criteria' || die "PRD is missing the 'Acceptance Criteria' section — Align must produce it before filing."
+  lcars_prd_has_field "$p" 'Out of Scope'        || die "PRD is missing the 'Out of Scope' section — Align must produce it before filing."
+  lcars_prd_has_field "$p" 'Constraints'         || die "PRD is missing the 'Constraints' section — Align must produce it before filing."
   # S175 — the design brief's OWN open questions must not evaporate here. Every
   # bullet under the concept doc's `## Open questions` is carried forward as a
   # question (still open, or resolved with the captain and recorded as resolved),
@@ -473,7 +477,27 @@ do_complete() {
 
   # Validate the PRD (and ADR when given) BEFORE any write — a bad PRD leaves the
   # mission untouched: no prd.md, prdPending still true (nothing partial).
-  _validate_prd "$PRD_SRC"
+  # S176 — the S175 open-questions gate needs the mission's DESIGN BRIEF to
+  # measure the PRD against, and this call passed NONE: `_validate_prd` forwards
+  # `"${@:2}"` to lcars_prd_questions_gate, so with no attachments the gate saw
+  # no brief, found no open questions, and returned 0 for EVERY PRD — the gate
+  # was silently disabled on the whole park→grill→--complete lane (the one the
+  # holodeck hand-off uses). MEASURED: the captain's real PRD returned clean
+  # here, and refused correctly — naming 12 dropped questions — the moment the
+  # staged brief was handed over. On THIS lane the brief is MISSION-RELATIVE:
+  # park already copied it into attachments/, so the source path is long gone.
+  local QATTACH=()
+  if [ -d "$MISSION_DIR/attachments" ]; then
+    shopt -s nullglob
+    local qa
+    for qa in "$MISSION_DIR/attachments"/attachment-*; do QATTACH+=("$qa"); done
+    shopt -u nullglob
+  fi
+  if [ "${#QATTACH[@]}" -gt 0 ]; then
+    _validate_prd "$PRD_SRC" "${QATTACH[@]}"
+  else
+    _validate_prd "$PRD_SRC"
+  fi
   if [ -n "$ADR_SRC" ]; then
     [ -f "$ADR_SRC" ] || die "ADR file not found: $ADR_SRC"
     _validate_adr "$ADR_SRC"
@@ -481,9 +505,9 @@ do_complete() {
 
   # Derive title + type from the PRD (source of truth), same as grill-first.
   local TITLE TYPE
-  TITLE="$(sed -n 's/^# Mission:[[:space:]]*//p' "$PRD_SRC" | head -1)"
+  TITLE="$(lcars_prd_field "$PRD_SRC" 'Mission' | head -1)"
   [ -n "$TITLE" ] || die "could not read the Mission title from the PRD."
-  TYPE="$(sed -n 's/.*\*\*Type:\*\*[[:space:]]*//p' "$PRD_SRC" | head -1 | tr 'A-Z' 'a-z' | tr -cd 'a-z')"
+  TYPE="$(lcars_prd_field "$PRD_SRC" 'Type' | head -1 | tr 'A-Z' 'a-z' | tr -cd 'a-z')"
   case "$TYPE" in feature|bug) : ;; *) die "PRD Type must be 'feature' or 'bug' (got: '${TYPE:-empty}')." ;; esac
 
   # Preserve the parked mission's durable fields so the final state.json is
@@ -790,16 +814,18 @@ CONFIG="$LCARS_DIR/config.json"
 mkdir -p "$MISSIONS_DIR"
 
 # --- validate the PRD has every required section --------------------------
-# Each entry is "human label|grep pattern".
+# Each entry is "human label" + the PRD label to look for.
+# S176 — accepted in BOTH shapes (bold inline label OR markdown heading), by
+# the SAME reader the extraction below uses. See lcars_prd_has_field.
 require_section() {
-  grep -q "$2" "$PRD_SRC" || die "PRD is missing the '$1' section — Align must produce it before filing."
+  lcars_prd_has_field "$PRD_SRC" "$2" || die "PRD is missing the '$1' section — Align must produce it before filing."
 }
-require_section "Mission title"      '^# Mission:'
-require_section "Type"               '\*\*Type:\*\*'
-require_section "Goal"               '\*\*Goal:\*\*'
-require_section "Acceptance Criteria" '\*\*Acceptance Criteria:\*\*'
-require_section "Out of Scope"       '\*\*Out of Scope:\*\*'
-require_section "Constraints"        '\*\*Constraints:\*\*'
+require_section "Mission title"      'Mission'
+require_section "Type"               'Type'
+require_section "Goal"               'Goal'
+require_section "Acceptance Criteria" 'Acceptance Criteria'
+require_section "Out of Scope"       'Out of Scope'
+require_section "Constraints"        'Constraints'
 
 # S175 — and the design brief's own OPEN QUESTIONS must survive this boundary.
 # Same gate as the --complete lane (_validate_prd), reading the SOURCE attachment
@@ -827,10 +853,10 @@ if [ -n "$ADR_SRC" ]; then
 fi
 
 # --- derive title + type from the PRD -------------------------------------
-TITLE="$(sed -n 's/^# Mission:[[:space:]]*//p' "$PRD_SRC" | head -1)"
+TITLE="$(lcars_prd_field "$PRD_SRC" 'Mission' | head -1)"
 [ -n "$TITLE" ] || die "could not read the Mission title from the PRD."
 
-TYPE="$(sed -n 's/.*\*\*Type:\*\*[[:space:]]*//p' "$PRD_SRC" | head -1 \
+TYPE="$(lcars_prd_field "$PRD_SRC" 'Type' | head -1 \
         | tr 'A-Z' 'a-z' | tr -cd 'a-z')"
 case "$TYPE" in
   feature|bug) : ;;

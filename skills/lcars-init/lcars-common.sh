@@ -2758,6 +2758,118 @@ lcars_config_set_or_add_string() {
   mv "$tmp" "$config"
 }
 
+# === S176: THE PRD's REQUIRED FIELDS, IN EITHER SHAPE ======================
+#
+# WHAT WAS MEASURED (DX-Scorecard, lcars-20260827-001). The captain designed in
+# the holodeck, completed a FULL Align grill, sent it for costing — and file.sh
+# refused, because the Align agent wrote the PRD with MARKDOWN HEADINGS
+# (`Mission: …` on a bare line, then `Type` / `Goal` / `Acceptance Criteria` /
+# `Out of Scope` / `Constraints` as headings with their values beneath) instead
+# of the bold inline labels the greps demanded. The heading form failed ALL SIX.
+# He lost two completed grill sessions to it.
+#
+# A PRD is what it SAYS, not which of two ordinary markdown spellings it says it
+# in. So both are accepted here, in ONE place, and — this is the whole risk of
+# the change — VALIDATION AND EXTRACTION READ THE SAME FUNCTION. Accepting a
+# heading-form PRD and then deriving an EMPTY title or type would replace a loud
+# failure with a silent one, which is strictly worse than the refusal it
+# replaces. There is no second parser to drift from this one.
+#
+#   SHAPE 1 (bold inline, unchanged):  **Type:** feature
+#   SHAPE 2 (heading):                 ## Type        |  # Mission: <title>
+#                                      feature
+#
+# Shape 2 is deliberately TIGHT: the label must OWN its line — optional #'s,
+# optional emphasis, the label, and then either end-of-line or a colon. Prose
+# that merely BEGINS with the word ("Constraints on the build are…") is not a
+# section, and is not matched.
+
+# THE SIX SECTIONS every PRD must declare, in the order file.sh checks them.
+# ONE list: the reader below stops a heading-form value scan at any of them, so
+# a labelled-but-EMPTY section can never silently absorb the next section's
+# heading as its value. (SKILL.md's template spells the same six.)
+LCARS_PRD_LABELS='Mission|Type|Goal|Acceptance Criteria|Out of Scope|Constraints'
+
+# _lcars_prd_read <prd-path> <label> <has|value>
+#   has   -> exit 0 when the PRD declares the label in EITHER shape
+#   value -> print the label's value ("" when it has none)
+_lcars_prd_read() {
+  LCARS_PRD_LABELS="$LCARS_PRD_LABELS" \
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "$3" <<'S176_PY'
+import os, re, sys
+path, label, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(path) as fh:
+        text = fh.read()
+except OSError:
+    sys.exit(1)
+lines = text.replace("\r\n", "\n").split("\n")
+lab = re.escape(label)
+
+# SHAPE 1 — the bold inline label, matched where the old greps matched it
+# (anywhere on the line), so every PRD that filed yesterday files today.
+BOLD = re.compile(r".*\*\*[ \t]*" + lab + r"[ \t]*:[ \t]*\*\*[ \t]*(.*)$", re.I)
+# SHAPE 2 — the label OWNS the line: an optional markdown heading marker (the
+# ONLY thing that may be indented), optional emphasis, the label, then either
+# end-of-line or a colon with an optional value. Prose that merely BEGINS with
+# the word ("Constraints on the build are…") is not a section and is not
+# matched, and neither is a bullet's indented continuation.
+HEAD = re.compile(
+    r"^(?:[ \t]{0,3}#{1,6}[ \t]*)?[*_]{0,3}" + lab +
+    r"[ \t]*[*_]{0,3}[ \t]*(?::[ \t]*(.*?))?[ \t]*$", re.I)
+# Lines that are themselves a label/heading — never another label's value.
+STOP = [x for x in os.environ.get("LCARS_PRD_LABELS", "").split("|") if x]
+NEXT_LABEL = re.compile(
+    r"^[ \t]{0,3}(?:#{1,6}[ \t]|\*\*[^*]+:\*\*)"
+    + (r"|^(?:[ \t]{0,3}#{1,6}[ \t]*)?[*_]{0,3}(?:"
+       + "|".join(re.escape(x) for x in STOP)
+       + r")[ \t]*[*_]{0,3}[ \t]*(?::.*)?$" if STOP else ""), re.I)
+
+
+def clean(v):
+    return re.sub(r"^[*_`]+|[*_`]+$", "", (v or "").strip()).strip()
+
+
+for ln in lines:
+    m = BOLD.match(ln)
+    if m:
+        if mode == "has":
+            sys.exit(0)
+        sys.stdout.write(clean(m.group(1)))
+        sys.exit(0)
+
+for i, ln in enumerate(lines):
+    m = HEAD.match(ln)
+    if not m:
+        continue
+    if mode == "has":
+        sys.exit(0)
+    v = clean(m.group(1))
+    if v:
+        sys.stdout.write(v)
+        sys.exit(0)
+    # No value on the label's own line — take the first non-blank line under it,
+    # unless that line is itself a label (an empty section stays EMPTY, and its
+    # caller dies loudly, rather than swallowing the next heading as a value).
+    for nxt in lines[i + 1:]:
+        if not nxt.strip():
+            continue
+        if NEXT_LABEL.match(nxt):
+            break
+        sys.stdout.write(clean(nxt))
+        break
+    sys.exit(0)
+
+sys.exit(1 if mode == "has" else 0)
+S176_PY
+}
+
+# lcars_prd_has_field <prd-path> <label> -> 0 when the PRD declares it.
+lcars_prd_has_field() { _lcars_prd_read "$1" "$2" has; }
+
+# lcars_prd_field <prd-path> <label> -> the label's value on stdout.
+lcars_prd_field() { _lcars_prd_read "$1" "$2" value; }
+
 # === S175: THE BRIEF'S OWN OPEN QUESTIONS SURVIVE THE ALIGN → PRD BOUNDARY ===
 #
 # WHAT WAS MEASURED (lcars-20260814-001). Its `prd.md` has exactly two headings:

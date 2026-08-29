@@ -327,9 +327,24 @@ a real decision went into the PRD without a captain exchange, alignment is
 
 ### When the Mission carries a design brief, its OPEN QUESTIONS come with it
 
-If an attachment is a design brief from the holodeck (a `concept.md` filed beside
-a mockup) and it has a `## Open questions` section with anything under it, the
-PRD **must** carry one more section, and `file.sh` refuses a PRD that drops it:
+A design brief from the holodeck (a `concept.md` filed beside a mockup) leaves
+its unsettled items in **TWO** sections, and the gate in `file.sh` reads **BOTH**
+of them. Read both. Carry every bullet from both:
+
+1. **`## Open questions`** — what the design session left undecided outright.
+2. **`## WHAT IT MUST DO` → bucket 2, `Implied by the mockup`, not yet
+   settled** — behaviour the mockup suggests that was never confirmed, each
+   already written as a question.
+
+The holodeck's brief contract splits them **on purpose, one home each**, so the
+captain never reads the same thing twice — which means neither list is a superset
+of the other and reading only the first is not "most of them". **Measured** on
+`lcars-20260814-001`'s brief: 2 questions in `## Open questions`, 12 in bucket 2
+of `## WHAT IT MUST DO`. An Align agent that reads only `## Open questions`
+carries 2 of 14, and `file.sh` refuses the PRD naming the 12 it dropped.
+
+If **either** section has anything under it, the PRD **must** carry one more
+section, and `file.sh` refuses a PRD that drops any of them:
 
 ```markdown
 ## Open questions from the design session
@@ -368,6 +383,41 @@ prd=$(mktemp); cat > "$prd" <<'PRD'
 ...
 PRD
 ```
+
+### If `file.sh` refuses the PRD — FIX THE PRD, **NEVER RE-GRILL**
+
+A refusal from `file.sh` is a rejection of the **PRD text you already hold** —
+its formatting, or a gate it did not satisfy. It is **never** a verdict on the
+alignment. The script refuses cleanly and writes **nothing**, so the Mission is
+exactly as it was and the grill you just finished is still completely valid.
+
+**Do not restart the interview. Do not re-open the grill. Do not go back to the
+captain.** Repair the PRD file in place and re-run the *same* command with the
+fixed file (`--prd "$prd"`, or `--complete <id> --prd "$prd"`). Restarting the
+grill throws away a completed alignment the captain already paid for — measured:
+he lost **two** completed grill sessions to exactly this, both times because the
+PRD needed a five-second edit.
+
+The two refusals you will actually see, and what each one wants:
+
+1. **`PRD is missing the '<X>' section — Align must produce it before filing.`**
+   One of the six required sections is absent or spelled in a shape the script
+   does not read. **Reformat the six labels** into the template above
+   (`# Mission:`, `**Type:**`, `**Goal:**`, `**Acceptance Criteria:**`,
+   `**Out of Scope:**`, `**Constraints:**`) and re-run. Nothing about the
+   content changes — this is a formatting edit, not a re-alignment.
+
+2. **`PRD drops N of the design brief's M open question(s) …`** (or `PRD is
+   missing the 'Open questions from the design session' section`). The refusal
+   **lists every question it wants, verbatim**. Add each listed question to the
+   `## Open questions from the design session` section as a
+   `- STILL OPEN: <the question>` entry, and re-run.
+
+   **The gate wants the questions to SURVIVE, not to be answered.** A
+   `STILL OPEN:` entry satisfies it completely and permanently — you do **not**
+   need the captain, you do **not** need an answer, and you must **not** re-open
+   the grill to get one. Carrying a question forward unanswered is a correct,
+   complete, expected outcome; that is the entire point of the section.
 
 ## STEP 3–5 — Persist, open the issue, confirm
 

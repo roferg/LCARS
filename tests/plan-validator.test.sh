@@ -212,14 +212,123 @@ run_plan_save "$repo" "$FX/capstone-declared-no-criterion.json"
   && ok "M3. declared-visual with no naming criterion is REJECTED" \
   || bad "M3. declared-visual with no naming criterion is REJECTED (rc=$RC: $OUT)"
 
-# --- M4: the trivial escape — declare every ticket false → REJECTED ---------
-# This fixture KEEPS the mockup-naming criteria and only flips the declarations,
-# so it also proves the check keys off the DECLARATION, not off the string.
+# --- M4: an all-false plan for a mockup Mission → ACCEPTED ------------------
+#
+# ⚠⚠ THIS FIXTURE'S VERDICT IS FLIPPED, ON PURPOSE, IN S175. READ THIS BEFORE
+# YOU "FIX" IT BACK. `capstone-all-false.json` was written in S169 to prove the
+# plan-wide rule "a Mission carrying a mockup must have ≥1 changesScreenAppearance
+# :true ticket". That rule is DELETED (see the S175 note in validate_plan_json).
+# Its premise was falsified by S174 Part D: a logged bug INHERITS its parent's
+# mockup, so the captain's React-StrictMode bug — a lifecycle fix that changes NO
+# screen — hit a DEADLOCK. Declaring false was refused by this rule; declaring
+# true was refused by the per-criterion rule unless the planner FABRICATED a
+# drawing citation. The Plan Stage stopped after 3 attempts with no honest plan
+# available.
+#
+# The fixture is kept BYTE-IDENTICAL and only its expectation moved, so the plan
+# the S169 round called "the trivial escape" is on record as what it actually is:
+# a NORMAL, honest plan. Wrongly-exempted tickets are hunted by Plan Review
+# (plan_review_mockup_block objection 4), which is where judgement belongs.
 repo="$(new_mission "$MOCK")"
 run_plan_save "$repo" "$FX/capstone-all-false.json"
-{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "no ticket"; } \
-  && ok "M4. an all-false plan for a mockup Mission is REJECTED" \
-  || bad "M4. an all-false plan for a mockup Mission is REJECTED (rc=$RC: $OUT)"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "M4. an all-false plan for a mockup Mission ADVANCES (S175: rule deleted)" \
+  || bad "M4. an all-false plan for a mockup Mission ADVANCES (rc=$RC: $OUT)"
+
+# --- M4b: THE MEASURED DEADLOCK — the captain's exact case (S175) -----------
+# A logged bug inherits its parent Mission's mockup. The bug is a React
+# StrictMode lifecycle defect: the effect's cleanup cancels the data pull, so the
+# pull never starts. The fix changes NO screen, and the planner honestly declared
+# every ticket false with plain-string criteria. MEASURED on the captain's repo
+# 2026-08-25: rejected 3× → "the Plan worker produced a plan.json that failed
+# validation after 3 attempt(s) — Stage stopped, no advance."
+repo="$(new_mission "$MOCK")"; pf="$repo/nonvisual-bug.json"
+cat > "$pf" <<'JSON'
+[
+  {
+    "id": "t-001",
+    "title": "Guard the data pull against StrictMode double-invoke",
+    "description": "The effect cleanup aborts the in-flight pull, so under StrictMode the pull never starts.",
+    "acceptanceCriteria": ["the pull survives a StrictMode mount/unmount/mount cycle and resolves once"],
+    "estimatedReadLoc": 40,
+    "estimatedTestLoc": 30,
+    "estimatedNewLoc": 20,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "changesScreenAppearance": false,
+    "rationale": "The lifecycle is the bug; nothing on screen moves."
+  },
+  {
+    "id": "t-002",
+    "title": "Drop the abort from the cleanup path",
+    "description": "Cleanup should release the subscription, not cancel the request.",
+    "acceptanceCriteria": ["unmounting mid-flight leaves the request running", "no AbortError reaches the console"],
+    "estimatedReadLoc": 20,
+    "estimatedTestLoc": 20,
+    "estimatedNewLoc": 10,
+    "dependencies": ["t-001"],
+    "establishesSharedInfrastructure": false,
+    "changesScreenAppearance": false,
+    "rationale": "Same defect, second half."
+  }
+]
+JSON
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "M4b. a non-visual bug plan on a mockup Mission ADVANCES (no deadlock)" \
+  || bad "M4b. a non-visual bug plan on a mockup Mission ADVANCES (rc=$RC: $OUT)"
+[ -f "$repo/.git/lcars/missions/test-001/plan.json" ] \
+  && ok "M4b. …and the plan is persisted" \
+  || bad "M4b. …and the plan is persisted"
+
+# --- M4c: the MIX is unchanged — true still owes its declarations ----------
+# One true ticket (fully declared) beside a false one (plain strings). Neither
+# rule may have moved for it.
+repo="$(new_mission "$MOCK")"; pf="$repo/mix175.json"
+cat > "$pf" <<'JSON'
+[
+  {
+    "id": "t-001",
+    "title": "Reskin the sidebar",
+    "description": "Redraw the sidebar nav.",
+    "acceptanceCriteria": [{"text": "the nav shows three items, each with its icon left of the label", "drawnAt": "#screen-builder, the nav list"}],
+    "estimatedReadLoc": 10,
+    "estimatedTestLoc": 10,
+    "estimatedNewLoc": 10,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "changesScreenAppearance": true,
+    "rationale": "The nav is the frame."
+  },
+  {
+    "id": "t-002",
+    "title": "Guard the pull",
+    "description": "Lifecycle only.",
+    "acceptanceCriteria": ["the pull resolves once under StrictMode"],
+    "estimatedReadLoc": 10,
+    "estimatedTestLoc": 10,
+    "estimatedNewLoc": 10,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "changesScreenAppearance": false,
+    "rationale": "No screen moves."
+  }
+]
+JSON
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "M4c. a MIXED plan is unchanged — true declared, false plain" \
+  || bad "M4c. a MIXED plan is unchanged (rc=$RC: $OUT)"
+
+# --- M4d: S174's per-criterion rule is INTACT ------------------------------
+# The SAME mix, with the true ticket's criteria left as plain strings. Deleting
+# the plan-wide rule must not have loosened this by one byte.
+repo="$(new_mission "$MOCK")"; pf="$repo/mix175bad.json"
+mticket 'true' '["the nav shows three items, each with its icon left of the label"]' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qF "drawnAt"; } \
+  && ok "M4d. a true ticket with undeclared criteria is STILL REJECTED" \
+  || bad "M4d. a true ticket with undeclared criteria is STILL REJECTED (rc=$RC: $OUT)"
 
 # --- M5: the field left OFF entirely, mockup present → REJECTED ------------
 repo="$(new_mission "$MOCK")"; pf="$repo/undeclared.json"

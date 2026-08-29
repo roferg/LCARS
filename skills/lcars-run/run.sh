@@ -2757,11 +2757,14 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
     #        jq '"'"'map(.changesScreenAppearance=(.id=="t-001"))'"'"'
     #      Twelve of thirteen tickets then carry plain-string criteria with NO
     #      declaration of any kind, on a Mission that shipped a drawing of the
-    #      screens, and the plan is accepted. The ONLY guard is the plan-wide
-    #      "at least one ticket declares true" count in END — which one honest
-    #      ticket satisfies. This is not fixable here without reading a ticket to
-    #      decide what it IS, which is the classifier this whole design replaced.
-    #      Plan Review is told to hunt it (see plan_review_mockup_block).
+    #      screens, and the plan is accepted. S169 answered this with a plan-wide
+    #      "at least one ticket declares true" count in END; ONE honest ticket
+    #      satisfied it, so it never stopped the bypass — and S175 DELETED it
+    #      because it deadlocked every non-visual bug logged against a mockup-born
+    #      Mission (see the note at that deletion). This is not fixable here
+    #      without reading a ticket to decide what it IS, which is the classifier
+    #      this whole design replaced. Plan Review OWNS it and is told to hunt it
+    #      (see plan_review_mockup_block, objection 4).
     #
     #   3. THE notVisual SWEEP. One drawnAt per ticket and notVisual on every
     #      other criterion passes, and keeps the Verify list empty. notVisual is
@@ -2849,7 +2852,8 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
         if (visual != "true" && visual != "false")
           fail("ticket " tickets " (" id ") has a non-boolean \"changesScreenAppearance\": " visual " — use true or false.")
         if (visual == "true") {
-          nvisual++
+          # (S175 deleted the plan-wide "at least one true ticket" rule that
+          # this counter fed — see the note in END. Nothing counts tickets now.)
           # S174 — the three-way declaration, one per criterion, and (round 3)
           # an anchor that names a place we ACTUALLY DREW.
           #
@@ -2985,11 +2989,39 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
       for (r=1; r<=drefs; r++)
         if (!(depof[r] in ids))
           fail("ticket " depticket[r] " depends on \"" depof[r] "\", which is not a ticket id in this plan.")
-      # S169 — close the one-word escape. Without this, a plan satisfies the
-      # per-ticket rule above by declaring every ticket false, and the gate is
-      # theatre. This is a check on the DECLARATIONS, not on any ticket'"'"'s prose:
-      # the captain drew screens and attached them, so a plan in which nothing
-      # changes a screen contradicts the Mission'"'"'s own premise.
+      # S175 — THE PLAN-WIDE RULE IS DELETED. DO NOT RE-ADD IT. S169 required
+      # that a Mission carrying a mockup have AT LEAST ONE ticket declaring
+      # `changesScreenAppearance: true`, on the premise that "the captain drew
+      # screens, so something must change a screen." S174 Part D falsified that
+      # premise: a logged bug INHERITS its parent Mission'"'"'s mockup, and most bugs
+      # change no screen. MEASURED on the captain'"'"'s repo 2026-08-25 — a React
+      # StrictMode lifecycle fix (the effect cleanup cancels the data pull) was
+      # planned honestly as all-false, rejected by this rule 3× in a row, and the
+      # Plan Stage STOPPED: "failed validation after 3 attempt(s)".
+      #
+      # It was a DEADLOCK, not a bounce. There was NO honest plan that passed:
+      # declare false and this rule refused it; declare true and the per-criterion
+      # rule below demanded a drawnAt/notDrawn/notVisual on every criterion, with
+      # an all-notVisual ticket refused by the ≥1-drawnAt rule — so the only way
+      # through was to FABRICATE a drawing citation for work that touches no
+      # screen. Every non-visual bug logged against a mockup-born Mission was
+      # unplannable.
+      #
+      # Deleting it opens NO new hole. The bypass it guarded — a planner dodging
+      # the contract by declaring everything non-visual — is owned by Plan Review,
+      # whose prompt (plan_review_mockup_block, objection 4) explicitly tells the
+      # reviewer to hunt a wrongly-exempted `changesScreenAppearance: false`
+      # ticket. That is a JUDGEMENT call and it belongs with a reader who can open
+      # the drawing, not with an awk counter. What the validator still enforces is
+      # the mechanical half, untouched below: a ticket that DOES declare true must
+      # trace EVERY criterion into the drawing.
+      #
+      # And do not try to "narrow" it (e.g. skip it for bug Missions). This
+      # function reads plan.json, which carries no mission type — and a FEATURE
+      # Mission can equally have a wholly non-visual plan. Narrowing rebuilds the
+      # same trap one step along. A mockup Mission with zero visual tickets is a
+      # NORMAL state.
+      #
       # S174 — every undeclared criterion in the whole plan, in ONE message (see
       # the note at the check). Skipped when an unrelated rule already failed, so
       # a missing-field error is not buried under a page of declaration advice.
@@ -3003,8 +3035,6 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
         : "\n  This drawing carries NO element ids, so nothing can check WHICH place an anchor names — \"drawnAt\" only has to be a non-empty string here, and it is on you to make it point somewhere real.\n")
       if (s174bad != "" && !failed)
         fail("this plan'"'"'s screen-changing tickets do not declare where their criteria come from. This Mission carries a mockup (" mock "), so on every ticket with \"changesScreenAppearance\": true, EVERY entry of \"acceptanceCriteria\" must be an object — {\"text\": \"…\", …} — carrying EXACTLY ONE of:\n    \"drawnAt\":   \"<the screen id / section / row of " mockname[1] " this criterion'"'"'s surface appears in>\"\n    \"notDrawn\":  \"<why this VISIBLE thing is not in the drawing>\"   (legitimate — and the captain sees every one at Verify)\n    \"notVisual\": true                                          (this criterion makes no visual claim at all)\n" s174bad "\n" vocab "  A plain string stays fine on a changesScreenAppearance:false ticket, and on every Mission without a mockup. Open the drawing, then declare each criterion once.")
-      if (nmock > 0 && nvisual == 0)
-        fail("no ticket in this plan declares changesScreenAppearance:true, but the Mission carries a mockup (" mock ") — a drawing of the screens the work must produce. Declare the tickets that change what a screen looks like and give each one a criterion naming that file.")
     }
   ' "$1"
 }

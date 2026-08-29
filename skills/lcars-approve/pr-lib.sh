@@ -23,6 +23,16 @@ pr_title() {
   local t=""
   [ -f "$MISSION_DIR/prd.md" ] \
     && t="$(sed -n 's/^# Mission:[[:space:]]*//p' "$MISSION_DIR/prd.md" | head -1)"
+  # S176 — a HEADING-FORM PRD (accepted since S176: a bare `Mission: <title>`
+  # line, or `## Type` with the value beneath) has no `# Mission:` line for the
+  # sed above. Fall back to the SAME both-shapes reader file.sh validates and
+  # derives through, so the PR body cannot go quietly blank on a PRD file.sh
+  # accepted. Purely additive: a bold-form PRD never reaches this line, so its
+  # byte-for-byte PR body is unchanged.
+  if [ -z "$t" ] && [ -f "$MISSION_DIR/prd.md" ] \
+     && command -v lcars_prd_field >/dev/null 2>&1; then
+    t="$(lcars_prd_field "$MISSION_DIR/prd.md" 'Mission' | head -1)"
+  fi
   [ -n "$t" ] || t="$(json_str "$STATE" title)"
   printf '%s' "${t:-$MISSION_ID}"
 }
@@ -38,6 +48,19 @@ user_summary() {
     grab && /^\*\*[^*]*:\*\*/       { grab=0 }
     grab && /^-[[:space:]]/         { print }
   ' "$prd")"
+  # S176 — same additive fallback as pr_title, for the two fields this summary
+  # reads. A bold-form PRD satisfies both greps above and never gets here.
+  if [ -z "$goal" ] && command -v lcars_prd_field >/dev/null 2>&1; then
+    goal="$(lcars_prd_field "$prd" 'Goal' | head -1)"
+  fi
+  if [ -z "$crit" ]; then
+    crit="$(awk '
+      /^([ \t]{0,3}#{1,6}[ \t]*)?[*_]{0,3}[Aa]cceptance [Cc]riteria[*_]{0,3}[ \t]*:?[ \t]*$/ { grab=1; next }
+      grab && /^([ \t]{0,3}#{1,6}[ \t])/ { grab=0 }
+      grab && /^[*_]{0,2}(Mission|Type|Goal|Out of Scope|Constraints)[*_]{0,2}[ \t]*:?/ { grab=0 }
+      grab && /^-[[:space:]]/ { print }
+    ' "$prd")"
+  fi
   [ -n "$goal" ] || [ -n "$crit" ] || return 0
   printf '## User-facing summary\n\n'
   [ -n "$goal" ] && printf '%s\n' "$goal"
