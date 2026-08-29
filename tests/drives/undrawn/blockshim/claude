@@ -1,0 +1,6 @@
+#!/bin/bash
+# S179 ZERO-CLAUDE FENCE. Refuses, loudly, and counts. Never execs anything.
+LOG="${LCARS_BLOCK_LOG:-/tmp/lcars-s179-claude-block.log}"
+{ printf 'TIME: %s\nARGV: %s\nCWD:  %s\n---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" "$PWD"; } >> "$LOG" 2>/dev/null
+echo "S179 FENCE: a claude spawn was attempted and REFUSED (copilot-only leg)." >&2
+exit 127

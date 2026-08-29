@@ -1028,6 +1028,17 @@ expect the reviewer to hold you to it.'
 # this block asks for. It is PROSE, not a gate — it adds no deterministic check
 # and changes no verdict.
 #
+# S179 adds a FIFTH, and it is the mirror of the other four: they all catch a
+# ticket that says too much (an invention), and this one catches a ticket set
+# that says too little. Two independent variations on one row make a grid; the
+# drawing fills some cells and not others; and a plan can state a rule per axis,
+# pass every gate, and leave the intersection with no owner at all. MEASURED on
+# the same drawing: 3 manual rows, 11 multi-source rows, ZERO that were both,
+# and the built cohort row wore a "Manual" tag over a list nobody could edit.
+# ALSO PROSE, deliberately — deciding that two rules intersect is a judgement
+# about meaning, and a matcher for it is exactly the classifier S156/S147/S157
+# lost whole sessions to.
+#
 # The reviewer's blindness to prd.md / validated-plan.md is PRESERVED (see
 # cmd_plan_review): it reviews TICKETS. The mockup is not a brief — it is the
 # drawing the tickets say they reproduce, so checking a ticket against it is
@@ -1051,7 +1062,7 @@ carries the brief-vs-mockup tie-break. Ignore that sentence here: this Stage is
 deliberately handed no `prd.md` and no `validated-plan.md`, and there is no brief
 to defer to. Your inputs are the TICKETS and the DRAWING. Nothing else.
 
-### What the harness already did, and the four things it cannot do
+### What the harness already did, and the five things it cannot do
 
 Every ticket declaring `changesScreenAppearance: true` carries its acceptance
 criteria as OBJECTS, each with exactly one of `drawnAt` (where in the drawing
@@ -1092,7 +1103,19 @@ It never opened the drawing. These are yours:
    value, an added button is visible; a migration, an endpoint, a build step or
    a pure derivation is not. A wrongly-exempted ticket is an objection.
 
-All four are objections you may bounce the plan for. None is a matter of taste —
+5. **A combination the drawing never shows, and no ticket owns.** A design with
+   two independent variations — a row that differs by MODE and also by SHAPE —
+   makes a grid, and a drawing almost never fills it. When the tickets state a
+   rule for one axis (a row is EDITABLE when it is manual) and a rule for
+   another (a multi-source row is READ-ONLY), ask what happens where the two meet,
+   and whether the drawing settles it. If it does not, and no criterion names
+   that case, object. Measured: a drawing with 3 manual rows, 11
+   multi-source rows and not one that was both. Nothing was invented and no
+   gate went red — the case simply had no owner, and it shipped as a "Manual"
+   tag on a read-only list with nothing to type into. You are NOT to decide
+   what it should do; the objection is that nobody has.
+
+All five are objections you may bounce the plan for. None is a matter of taste —
 you are not judging whether a screen looks good (that is the captain'"'"'s call at
 Verify), only whether the tickets and the drawing describe the same product.' "$first"
 }
@@ -9312,6 +9335,234 @@ sys.stdout.write("\n".join(out) + "\n")
 PYEOF
 }
 
+# === S179: THE COMBINATION NOBODY DREW ======================================
+#
+# THE MIRROR OF verify_not_drawn_readout, and the reason it has to exist.
+# That readout lists what a ticket BUILT WITHOUT A DRAWING — an invention, made
+# visible. S174 made those refusable. It cannot see the other half of the same
+# hole: the case the drawing never covered and NO ticket picked up at all.
+#
+# MEASURED (lcars-20260814-001). Two independent axes on one KPI row —
+# collection (automatic|manual) and shape (scalar|cohort). The drawing has 3
+# `tag-manual` rows and 11 `cohort` rows and ZERO that are both; the brief
+# asserts each axis on its own and never their intersection. The build resolved
+# it by accident (a cohort row is read-only whether automatic or manual, while
+# still rendering the word "Manual"), and the captain got a Manual tag on a
+# read-only list with nothing to type into. The PREVIOUS mission on this same
+# drawing had FILLED that hole by fiat with an invented sub-value editor; S174
+# now correctly refuses that invention; and refusing it without surfacing the
+# gap just moves the failure from visible-and-wrong to invisible-and-absent.
+#
+# NO CLASSIFIER, and this is the whole design. Nothing here reads a question and
+# decides whether it is about a combination, and nothing decides whether a ticket
+# answered it. Two DECLARATIONS and two exact matches:
+#   1. the design worker OPENS the bullet with `UNDRAWN COMBINATION`
+#      (see `_CONCEPT_CONTRACT` in web/lcars_serve/actions.py). It rides the road
+#      S175 already built — `## Open questions` → the PRD gate → prd.md → Plan.
+#   2. the PRD marks it `STILL OPEN:` or `RESOLVED`, the prefix contract
+#      skills/lcars-file/SKILL.md already prescribes and `mission_open_questions`
+#      already reads. THE PREFIX IS REQUIRED HERE TOO (fix round 2 / D2): an
+#      undeclared bullet is one `mission_open_questions` silently drops, and two
+#      readers of one section may not disagree about what a declaration is.
+#   3. a ticket that settled one declares it on the criterion with `decides`,
+#      quoting the question — the shape `plan_open_questions_block` already asks
+#      for. The match is NORMALISED SUBSTRING CONTAINMENT, the identical test
+#      `lcars_prd_questions_gate` (skills/lcars-init/lcars-common.sh) uses; not
+#      similarity, not keywords.
+#
+# ── FIX ROUND 2 / D1: ONE STRING, DISPLAYED AND LOAD-BEARING ───────────────
+# The first cut MATCHED on the bullet with its `UNDRAWN COMBINATION:` marker
+# still attached and DISPLAYED it with the marker stripped. So a planner who
+# quoted the question exactly as the captain reads it was not credited, and this
+# readout printed "no ticket quoted it" four lines under `verify_decided_readout`
+# printing that very ticket's decision — two readouts contradicting each other on
+# one screen about one question, which is the failure this round exists to stop.
+# The marker is now removed ONCE, at parse time, and nothing downstream keys off
+# it: the string the captain sees IS the string a `decides` must contain.
+#
+# AND IT SAYS WHAT IT CANNOT KNOW. "Nobody decided it" here means exactly two
+# facts — the PRD's open-questions section still marks the bullet STILL OPEN, and
+# no `decides` quotes it — and the readout prints that limit rather than implying
+# a verdict on the built product. It does NOT read the PRD's prose for an answer
+# and does not claim to. A self-declared field cannot be validated into honesty
+# (S174, three rounds); stating the floor is the only honest move left.
+#
+# FAILS OPEN AND SILENT. No mockup, no prd.md, no section, no marker, an
+# unreadable plan.json: NOTHING is printed, rc 0, never a stage-stop. It is a
+# readout.
+verify_undrawn_readout() { # prd.md plan.json
+  [ -f "$1" ] || return 0
+  # FIX ROUND 2 / D6: guarded on the Mission actually CARRYING a drawing, the
+  # same guard `verify_unfenced_note` and `plan_review_mockup_block` already
+  # carry. Without it a mission with no attachment at all could be told about
+  # "combinations your drawing never showed" — naming a drawing that is not there.
+  [ -n "$(mission_mockup_names)" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" <<'S179_PY'
+import json, re, sys
+
+try:
+    with open(sys.argv[1]) as fh:
+        prd = fh.read()
+except Exception:
+    sys.exit(0)
+
+# ── the PRD section, read exactly as mission_open_questions reads it ────────
+# FIX ROUND 2 / D2: …except that a FENCED region is not prose. The contract's
+# own template shape, quoted in a ``` block (which is exactly how a PRD shows a
+# worker the shape it must write), was collected as a real bullet and printed to
+# the captain as a row of literal placeholders. Fence state is tracked over the
+# WHOLE scan, so a `# heading` inside a block cannot close the section either.
+want = "open questions from the design session"
+FENCE = re.compile(r"^\s*(```|~~~)")
+body, lvl, fenced = [], None, False
+for ln in prd.replace("\r\n", "\n").split("\n"):
+    if FENCE.match(ln):
+        fenced = not fenced
+        continue
+    if fenced:
+        continue
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m:
+        name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+        if lvl is None:
+            if name.startswith(want):
+                lvl = len(m.group(1))
+            continue
+        if len(m.group(1)) <= lvl:
+            break
+        body.append(ln)
+        continue
+    if lvl is not None:
+        body.append(ln)
+
+# Bullets, with their CONTINUATION LINES joined back on. A PRD wraps at ~78
+# columns and every one of the real brief's questions spans two physical lines;
+# counting lines would hand the captain half a sentence.
+BULLET = re.compile(r"^([-*+]|\d+[.)])\s+")
+entries, cur = [], None
+for ln in body:
+    t = ln.strip()
+    if not t:
+        continue
+    m = BULLET.match(t)
+    if m:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = t[m.end():]
+    elif cur is not None:
+        cur = cur + " " + t
+    else:
+        entries.append(" ".join(t.split()))
+if cur:
+    entries.append(" ".join(cur.split()))
+
+EMPH = re.compile(r"^[*_`]+|[*_`]+$")
+STILL = re.compile(r"(?i)^still\s+open\b[\s:\-\u2014]*")
+RESOLVED = re.compile(r"(?i)^resolved\b")
+MARK = re.compile(r"(?i)^undrawn\s+combination\b")
+MARKSTRIP = re.compile(r"(?i)^undrawn\s+combination\b[\s:\-\u2014]*")
+LEAD = re.compile(r"^[\s:\-\u2014]+")
+
+
+def unmark(s):
+    """The routing marker taken off, ONCE. D4: `**UNDRAWN COMBINATION:**` — what
+    a model writing markdown does by default — left a literal `**` leading the
+    line, because the strip stopped at the `*`. So re-strip emphasis after the
+    marker comes off, exactly as `mission_open_questions` re-strips after
+    `STILL OPEN`."""
+    t = MARKSTRIP.sub("", s.strip())
+    t = EMPH.sub("", t.strip()).strip()
+    return " ".join(LEAD.sub("", t).split())
+
+
+open_combos = []
+for e in entries:
+    lead = EMPH.sub("", e).lstrip()
+    if RESOLVED.match(lead):
+        continue                      # settled with the captain during Align
+    m = STILL.match(lead)
+    if not m:
+        continue                      # D2: undeclared — dropped, as Plan drops it
+    lead = EMPH.sub("", lead[m.end():].strip()).strip()
+    lead = LEAD.sub("", lead)
+    if not MARK.match(lead):
+        continue                      # not declared a combination — not ours
+    # D1: ONE string from here on. The heading already says what these are, so
+    # the marker leaves the line — and the line that is left is the line a
+    # `decides` has to quote. A bullet that is NOTHING but the marker keeps its
+    # own text, so displayed and load-bearing stay the same string there too.
+    q = unmark(lead) or " ".join(lead.split())
+    if q and q not in open_combos:    # identical bullets are ONE row, not two
+        open_combos.append(q)
+
+if not open_combos:
+    sys.exit(0)
+
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+# ── which ones a ticket DECLARED it settled ────────────────────────────────
+decides = []
+try:
+    with open(sys.argv[2]) as fh:
+        plan = json.load(fh)
+    if isinstance(plan, list):
+        for t in plan:
+            if not isinstance(t, dict):
+                continue
+            for c in (t.get("acceptanceCriteria") or []):
+                if isinstance(c, dict) and c.get("decides"):
+                    # The marker comes off here for the same reason it comes off
+                    # the bullet: a planner quoting the question WITH it and one
+                    # quoting it without are saying the same thing.
+                    decides.append(
+                        norm(MARKSTRIP.sub("", str(c["decides"]).strip())))
+except Exception:
+    decides = []                      # unreadable plan — nothing was cited
+
+
+def cited(q):
+    """FIX ROUND 2 / D5: a ticket QUOTED the question AND said something past it.
+    The contract shape is `"<question> → <what you decided, and why>"`, and the
+    first cut inspected only the first half — so the cheapest way to silence this
+    warning was to paste the question and decide nothing. No arrow is parsed (a
+    planner writes it five ways); the test is that removing the quoted question
+    leaves something behind."""
+    nq = norm(q)
+    if not nq:
+        return False
+    for d in decides:
+        if nq in d and d.replace(nq, " ", 1).strip():
+            return True
+    return False
+
+
+rows = [q for q in open_combos if not cited(q)]
+if not rows:
+    sys.exit(0)
+
+
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "\u2026"
+
+
+out = ["  NOBODY DECIDED THIS ON THE RECORD \u2014 combinations your drawing never showed:"]
+for q in rows:
+    out.append("    \u2299 %s" % clip(q, 220))
+out.append("      The design session flagged each of these as a case the drawing does not")
+out.append("      cover. WHAT WAS CHECKED HERE IS NARROW, and it is all of it: the PRD's")
+out.append("      open-questions section still marks it STILL OPEN, and no ticket quoted it")
+out.append("      in a `decides` declaration. Nothing here read the PRD's prose for an")
+out.append("      answer. Nobody judged whether the built product handles the case — it")
+out.append("      may work, it may be missing, or it may render a control that does")
+out.append("      nothing. Last time one went unasked, a multi-source row shipped read-only")
+out.append("      wearing a \"Manual\" tag with nothing to type into.")
+sys.stdout.write("\n".join(out) + "\n")
+S179_PY
+}
+
 # S174 round 3 — GRACEFUL DEGRADATION, SAID OUT LOUD. When a Mission carries a
 # mockup that yields NO element ids, the membership rule cannot run: every
 # drawnAt was accepted on form alone. That is the right call (a drawing we cannot
@@ -9371,6 +9622,11 @@ EOF
   verify_not_drawn_readout "$MISSION_DIR/plan.json"
   verify_decided_readout "$MISSION_DIR/plan.json"
   verify_unfenced_note
+
+  # S179: the mirror of the readout above — a combination the DESIGN said it did
+  # not draw and that no ticket resolved. Absent entirely when the brief declared
+  # none, which is every mission filed before this round.
+  verify_undrawn_readout "$MISSION_DIR/prd.md" "$MISSION_DIR/plan.json"
 
   # S175 part C: what the design ASSUMED of this repo and the repo did not have.
   # Absent entirely on a mission that declared no preconditions, and on one where
@@ -14887,6 +15143,14 @@ FSG_EOF
     MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
     plan_mockup_contract_block
     exit 0 ;;
+  # S179 test hook, the same shape and the same zero-token guarantee: print the
+  # PLAN REVIEW mockup block in isolation, so a focused test can assert both the
+  # objection the auditor is handed and that a Mission with NO mockup is handed
+  # nothing at all.
+  plan-review-mockup-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_review_mockup_block
+    exit 0 ;;
   # S178 test hook: the Schedule wave-shape line ALONE, over explicit numbers, so
   # the "peak 0 means UNKNOWN, not serial" branch can be driven without
   # constructing a wavemap that fails to parse.
@@ -14956,6 +15220,11 @@ FSG_EOF
   verify-decided-test)
     MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
     verify_decided_readout "$MISSION_DIR/plan.json"
+    exit 0 ;;
+  # S179 hook, same shape and same zero-token guarantee.
+  verify-undrawn-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    verify_undrawn_readout "$MISSION_DIR/prd.md" "$MISSION_DIR/plan.json"
     exit 0 ;;
   # S174 test hook — THE CONSUMER CONTRACT. Runs every consumer of
   # acceptanceCriteria that renders its TEXT over $LCARS_CONSUMER_PLAN and prints

@@ -1443,6 +1443,21 @@ Sections:
      ANSWERED, so a settled entry left sitting in it costs the captain a
      question he has already answered — a real interruption, spent on nothing.
      An empty `## Open questions` is a correct and common state; say so.
+     A VARIATION YOU ONLY PARTLY DREW BELONGS HERE, and the one-home-each rule
+     does NOT send it to bucket 2. When a row, card or screen differs by state,
+     source, shape or mode, cross those differences: two axes make a grid and a
+     drawing rarely fills it. NAME THE AXES THIS DESIGN VARIES BY, IN THE WORDS
+     OF THIS DESIGN — read them off the captain's brief and your own mockup.
+     Write every cell you did NOT draw as a bullet opening with this marker,
+     every slot filled from YOUR design:
+       - UNDRAWN COMBINATION: <first axis> (<its values>) x <second axis>
+         (<its values>) — DREW: <the cells drawn>. NOT DRAWN: <the missing
+         cell>. <the question the captain has to answer>?
+     WHY, ON A DIFFERENT PROGRAM WHOSE WORDS ARE NOT YOURS: a scorecard drawn
+     with 3 manual rows, 11 cohort rows and ZERO that were both. Nobody said
+     so; the build made every cohort read-only whether manual or not, and the
+     captain got a "Manual" tag on a list he could not type into. Do not answer
+     it yourself, and do not draw the missing cell to make it go away — ASK.
   ## WHAT IT MUST DO — BEHAVIOUR ONLY (visual choices live in the mockup).
      Three buckets, kept apart:
        1. Requirements — stated behaviour, numbered, in the captain's OWN WORDS,
