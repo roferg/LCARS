@@ -1300,11 +1300,40 @@ def _progress(waves, events):
     wt = waves_total or "?"
     tt = tickets_total or "?"
     label = "WAVE %s/%s · TICKET %s/%s" % (cur_wave or "?", wt, tickets_done, tt)
+    # S178 — the wave SHAPE, derived from the waves this function already reads.
+    # MEASURED 2026-08-28: one Plan Review objection made the planner serialise a
+    # 14-ticket plan, Schedule honoured the graph into 14 waves of one ticket
+    # each, and nothing on the board said so — wavesTotal and ticketsTotal were
+    # both already here, and the captain still had to open waves.json. This is a
+    # READOUT, never a gate; a genuinely serial plan says the same thing honestly.
+    peak = 0
+    if isinstance(waves, list):
+        for w in waves:
+            if isinstance(w, dict):
+                peak = max(peak, len(w.get("tickets") or []))
+    shape = None
+    if waves_total and tickets_total:
+        if tickets_total == 1:
+            # This is the CLI's own phrase, upper-cased for the board's pill
+            # style: run.sh's wave_shape_line prints "Wave shape: a single ticket
+            # — nothing to parallelise." Two surfaces describing the same plan
+            # must not disagree, so tests/replan-overcorrection.test.sh DERIVES
+            # this string from that one rather than comparing two hand-copied
+            # literals — drift fails the suite instead of reaching the captain.
+            shape = "A SINGLE TICKET — NOTHING TO PARALLELISE"
+        elif waves_total == 1:
+            shape = "1 WAVE · ALL %d IN PARALLEL" % tickets_total
+        elif peak <= 1:
+            shape = "%d WAVES · 1 TICKET EACH — NO PARALLELISM" % waves_total
+        else:
+            shape = "%d WAVES · UP TO %d IN PARALLEL" % (waves_total, peak)
     return {
         "wave": cur_wave,
         "wavesTotal": waves_total,
         "ticketsDone": tickets_done,
         "ticketsTotal": tickets_total,
+        "peakParallel": peak,
+        "shape": shape,
         "label": label,
     }
 

@@ -315,6 +315,47 @@ now at **Plan Review**. (On a Plan Review loop-back, this same driver re-runs; t
 fresh Planner worker reads the latest `plan-review-<round>.json` objections
 itself — see Plan Review below.)
 
+### A revision is a PATCH (S178)
+
+When Plan Review bounces a plan back, `review_fail` writes
+**`plan-under-review.json`** — a snapshot of the exact tickets the reviewer read.
+That file is the *evidence* that a revision was requested, and everything below
+keys off it and off nothing else:
+
+- the Plan prompt lists it as an input and adds a contract saying plainly that
+  this is a REVISION: apply what the objections ask and change nothing else,
+  keeping every ticket's `dependencies` exactly as they were unless an objection
+  names that ticket;
+- `plan-save` **compares the two dependency graphs** before overwriting
+  `plan.json`, then **consumes the snapshot**.
+
+It is a one-shot token, never an archive, and it is deliberately not inferred
+from the presence of `plan-review-*.json`: `lcars feedback` (the Verify
+send-back) keeps every artifact, so a re-plan against a corrected PRD would
+otherwise be diffed against the plan the captain had just rejected.
+
+Edges the revision ADDED are refused when no objection names either end — the
+SOURCE ticket (named anywhere in an objection) or the TARGET ticket (an
+objection's own `ticketId`, since "every row ticket must depend on t-004" asks
+for inbound edges without naming the rows). The rejection names each edge, is
+threaded into the next worker's prompt, and the retry rides the Plan Stage's
+existing `MAX_WORKER_TRIES` budget — no new stage, no new label, no new gate.
+
+**It never kills a plan.** When the check cannot be trusted — no snapshot, an
+unreadable plan, a renumbered or resized ticket set, an objection that names no
+ticket in the plan, or the check itself crashing — it prints `⚠ REVISION
+UNCHECKED`, says why, and passes the plan through. And on the worker's LAST
+attempt the guard is advisory: a plan that passes `validate_plan_json` is saved
+with an `⚠ OVER-CORRECTION UNRESOLVED` note and handed to Plan Review, which has
+its own rounds and its own escalation, rather than deadlocking the Stage.
+Removed edges are reported and never bounced on.
+
+This exists because one objection asking for a single edge (`t-010` →
+`t-012`) came back as a 14-ticket single-file chain and 14 waves of one ticket
+each. It cannot catch over-correction on a FIRST plan (nothing to diff), and a
+planner that renumbers its tickets defeats the comparison — both are stated in
+the code and both are Plan Review's judgement to make.
+
 ## The Plan Review stage
 
 Runs when `state.json.stage` is `plan-review` and `awaitingHuman` is not `true`
@@ -433,9 +474,23 @@ On success it prints:
 ```
 SCHEDULE: advanced
   Grouped 4 ticket(s) into 2 wave(s); opened 4 sub-issue(s).
+  Wave shape: 2 waves, up to 3 ticket(s) in parallel.
   Wrote waves.json.
   Stage:  implement
 ```
+
+The **wave shape** line (S178) accompanies the count whenever the shape is
+actually known — it is deliberately omitted, rather than guessed, when the wave
+map could not be read. The wave COUNT alone does not say whether the plan can be
+worked in parallel; the shape does, and a plan whose graph collapsed into a queue
+says so in as many words:
+
+```
+  Wave shape: 14 waves, 1 ticket each — NO parallelism. Every ticket waits for the one before it. If that is not genuinely true, the dependency graph is a queue and this run is as slow as it can possibly be.
+```
+
+The same signal rides the board card, under the `WAVE x/y · TICKET n/m` strip,
+and a compacted form rides `lcars run`'s per-Stage line and `events.jsonl`.
 
 …and, when a wave was isolated, names it and why — stating whether the ticket
 DECLARED the flag or the backstop inferred it:
@@ -443,6 +498,7 @@ DECLARED the flag or the backstop inferred it:
 ```
 SCHEDULE: advanced
   Grouped 12 ticket(s) into 8 wave(s); opened 12 sub-issue(s).
+  Wave shape: 8 waves, up to 3 ticket(s) in parallel.
   Isolated 1 infrastructure ticket into a wave of its own:
     wave 1 — t-001 declares establishesSharedInfrastructure: true — isolated into a wave of its own so later tickets build against it
   Wrote waves.json.
@@ -743,6 +799,7 @@ trust the board to show exactly where every Mission is.
   plan.json             ← the Planner's ticket list, each ticket carrying its rationale (Plan → Plan Review)
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
+  plan-under-review.json ← S178 one-shot revision token: the plan the reviewer reviewed. Written by review_fail on a loop-back, consumed by plan-save when the revision lands.
   waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
                           an ISOLATED wave also carries "reason" (additive; absent otherwise)
   tickets/

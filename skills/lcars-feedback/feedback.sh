@@ -158,6 +158,12 @@ if [ "$TYPE" = "bug" ] && [ -n "$PARENT" ]; then
   # rebuilds tickets/. Best-effort. Do NOT delete prd.md (just amended) or
   # feedback.md.
   rm -f  "$MISSION_DIR/plan.json"          2>/dev/null || true
+  # S178: plan-under-review.json is a PENDING REQUEST, not an artifact — it says
+  # "Plan Review asked for a revision and has not got one". The captain's
+  # correction supersedes that request, and plan.json (the plan it snapshots) is
+  # deleted on the line above, so leaving it would have the next plan diffed
+  # against a graph nobody is asking about any more.
+  rm -f  "$MISSION_DIR/plan-under-review.json" 2>/dev/null || true
   rm -f  "$MISSION_DIR/approved-plan.json" 2>/dev/null || true
   rm -f  "$MISSION_DIR/waves.json"         2>/dev/null || true
   rm -rf "$MISSION_DIR/tickets"            2>/dev/null || true
@@ -174,6 +180,16 @@ if [ "$TYPE" = "bug" ] && [ -n "$PARENT" ]; then
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
 fi
+
+# S178: the ordinary send-back KEEPS every artifact on purpose ("The prior PRD
+# and artifacts are kept"), and that is right — but plan-under-review.json is a
+# PENDING REQUEST, not an artifact. It means "Plan Review asked for a revision
+# and has not got one", and the captain's correction supersedes that request:
+# the Mission re-plans from a corrected PRD, so the next plan must not be diffed
+# against, or told to patch, a plan the captain has just sent back. Normally
+# already absent (a send-back comes from Verify, long after the revision landed
+# and consumed it); this closes the window where it is not.
+rm -f "$MISSION_DIR/plan-under-review.json" 2>/dev/null || true
 
 # 1b. Close any open PR (S75) and clear the recorded PR/review markers, so the
 # in-review PR does not linger and a re-entry to Verify opens a fresh one.

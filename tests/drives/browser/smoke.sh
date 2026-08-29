@@ -322,6 +322,36 @@ EOF
   note "fixture:   + a logged-bug child card (its badge links to the parent issue)"
 fi
 
+# S178: the WAVE SHAPE on a card. Only when asked for — it plants a waves.json
+# on the in-flight (implement) mission, which is what makes the board's progress
+# strip carry `shape` at all. Two shapes so one screenshot shows both: the
+# serialised 14x1 plan (the measured regression, rendered amber) and an honestly
+# parallel one. Off by default, so every other caller's fixture is unchanged.
+if [ "${LCARS_BROWSER_WAVESHAPE:-}" = "1" ]; then
+  W1="$FIXTURE/.git/lcars/missions/lcars-20260802-001/waves.json"
+  "$PY_BIN" - "$W1" <<'WAVEPY'
+import json, sys
+waves = [{"wave": i + 1, "tickets": [{"id": "t-%03d" % (i + 1), "issue": 4200 + i}]}
+         for i in range(14)]
+json.dump(waves, open(sys.argv[1], "w"))
+WAVEPY
+  W2="$FIXTURE/.git/lcars/missions/lcars-20260802-002/waves.json"
+  mkdir -p "$(dirname "$W2")"
+  "$PY_BIN" - "$W2" <<'WAVEPY'
+import json, sys
+waves = [{"wave": 1, "tickets": [{"id": "t-001", "issue": 4300}]},
+         {"wave": 2, "tickets": [{"id": "t-00%d" % i, "issue": 4300 + i} for i in range(2, 7)]},
+         {"wave": 3, "tickets": [{"id": "t-007", "issue": 4307}]}]
+json.dump(waves, open(sys.argv[1], "w"))
+WAVEPY
+  # …and the second mission has to be AT implement for the progress strip to
+  # render at all (the shape rides `progress`, which is Implement-only).
+  sed -i.bak 's/"stage": "verify"/"stage": "implement"/' \
+    "$FIXTURE/.git/lcars/missions/lcars-20260802-002/state.json"
+  rm -f "$FIXTURE/.git/lcars/missions/lcars-20260802-002/state.json.bak"
+  note "fixture:   + wave shapes on both cards (14x1 serial, and 3 waves x5 parallel)"
+fi
+
 # ── S164: a STUB base-freshness reporter, when one is asked for ─────────────
 # The daemon shells the SHARED reporter (skills/lcars-init/base-freshness.sh)
 # for GET /api/base-freshness and resolves it injected → LCARS_BASE_FRESHNESS_

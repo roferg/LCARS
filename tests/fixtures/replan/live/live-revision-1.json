@@ -1,0 +1,98 @@
+[
+  {
+    "id": "t-001",
+    "title": "Extract a reusable SettingsRow element from renderPanel",
+    "description": "Pull the inline row-building loop in renderPanel into a single reusable SettingsRow factory that returns one row element (class 'row') containing a '.row-label' with the setting key and a value element with the stringified value. renderPanel must build its rows by calling this factory so every later control mounts into one row shape. Behavior is unchanged for the caller: one row per setting, key on the left, value on the right.",
+    "acceptanceCriteria": ["renderPanel(settings) returns an element with className 'panel' containing exactly one child with className 'row' per entry in settings", "each row contains a child with className 'row-label' whose textContent is the setting key", "each row contains an element whose textContent is String(value) for that setting", "a SettingsRow factory is exported from src/panel.js and returns an element with className 'row' when given a key and value"],
+    "estimatedReadLoc": 80,
+    "estimatedTestLoc": 60,
+    "estimatedNewLoc": 45,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "rationale": "The row factory is the seam every later control (toggle, keyboard nav) mounts into; extracting it first without changing observable output keeps each later slice small and lets it build against one row shape instead of forking markup."
+  },
+  {
+    "id": "t-002",
+    "title": "Persist settings to localStorage and load them on boot",
+    "description": "Make src/store.js persist settings to localStorage under a fixed key and read them back on load, merging over DEFAULTS so missing keys fall back to defaults. loadSettings returns persisted values when present and a fresh copy of DEFAULTS otherwise; a saveSettings(settings) function writes the current settings to localStorage. This is independent of the row foundation.",
+    "acceptanceCriteria": ["saveSettings(settings) followed by loadSettings() returns the saved values", "loadSettings() returns a copy of DEFAULTS when localStorage holds no persisted settings", "loadSettings() merges persisted values over DEFAULTS so keys absent from storage retain their default value", "saveSettings writes to localStorage under a single fixed key"],
+    "estimatedReadLoc": 60,
+    "estimatedTestLoc": 70,
+    "estimatedNewLoc": 55,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "rationale": "Persistence is orthogonal to the DOM and is the data backbone the reset button and unsaved-changes banner both compare against; isolating it lets those slices depend on a settled load/save contract."
+  },
+  {
+    "id": "t-003",
+    "title": "Add a Reset to defaults button to the panel header",
+    "description": "Add a panel header containing a 'Reset to defaults' button (id 'reset-defaults'). Activating it restores the in-memory settings to DEFAULTS, persists them via saveSettings, and re-renders the rows to reflect the defaults. Uses the persistence contract from t-002 and the panel structure from t-001. The confirmation gate is a later slice; this ticket resets immediately on click.",
+    "acceptanceCriteria": ["renderPanel output contains a header element with a button whose id is 'reset-defaults' and whose textContent includes 'Reset'", "clicking the reset button sets the rendered setting values back to DEFAULTS", "clicking the reset button calls saveSettings so the persisted settings equal DEFAULTS afterward"],
+    "estimatedReadLoc": 120,
+    "estimatedTestLoc": 60,
+    "estimatedNewLoc": 45,
+    "dependencies": ["t-001", "t-002"],
+    "establishesSharedInfrastructure": false,
+    "rationale": "Reset is one user-observable behavior that needs both the row foundation to re-render into and the persistence contract to write defaults through; it stays a plain immediate reset so the confirmation modal can gate it later without re-slicing this."
+  },
+  {
+    "id": "t-004",
+    "title": "Add overlay/modal CSS primitives and a Modal helper",
+    "description": "Add the '.overlay', '.modal' and '.modal-foot' rules to src/styles.css (the repo has none today) and a small Modal helper module (src/modal.js) that opens a centered modal over a dimmed full-viewport backdrop and closes/removes it. The overlay must dim the backdrop (semi-transparent, opacity < 1) and the modal must be centered. Visual polish is judged at Verify; the objective residue is the class names, the backdrop dimming, and open/close behavior.",
+    "acceptanceCriteria": ["src/styles.css defines rules for '.overlay', '.modal' and '.modal-foot'", "the '.overlay' rule sets a background color with opacity < 1 (semi-transparent dimmed backdrop)", "src/modal.js exports a Modal helper that, when opened, attaches an element with className 'overlay' containing an element with className 'modal' to the document", "closing the modal removes the '.overlay' element from the document"],
+    "estimatedReadLoc": 60,
+    "estimatedTestLoc": 70,
+    "estimatedNewLoc": 90,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "rationale": "The confirmation modal renders unstyled without these primitives; building the CSS and helper as one cohesive slice gives that later ticket a real overlay/modal to mount into. It is a production module, so ordering is carried by an explicit dependency edge, not the shared-infra flag."
+  },
+  {
+    "id": "t-005",
+    "title": "Add a toggle control for boolean settings",
+    "description": "For settings whose value is a boolean, render an interactive toggle control inside the SettingsRow instead of the plain 'true'/'false' text. Toggling flips the in-memory value and updates the control's reflected state. Non-boolean settings keep their existing value display. Mounts into the row foundation from t-001.",
+    "acceptanceCriteria": ["a boolean setting renders a toggle control (an element with role or class identifying it as a toggle) inside its row rather than a text node reading 'true' or 'false'", "activating the toggle flips the setting's in-memory value from true to false and back", "the toggle's reflected on/off state matches the current boolean value", "a non-boolean setting still renders its value as text"],
+    "estimatedReadLoc": 120,
+    "estimatedTestLoc": 70,
+    "estimatedNewLoc": 60,
+    "dependencies": ["t-001"],
+    "establishesSharedInfrastructure": false,
+    "rationale": "The toggle is one cohesive control that swaps text for interactivity on boolean rows; it only needs the row seam, so it depends on t-001 alone and stays independent of persistence and its sibling controls."
+  },
+  {
+    "id": "t-006",
+    "title": "Gate the reset action behind a confirmation modal",
+    "description": "Before the reset actually discards the user's settings, show a confirmation modal built on the Modal helper and overlay/modal CSS from t-004. The modal presents a Discard action (id 'modal-discard', styled as a red/danger action) and a cancel path. Confirming performs the reset (restore defaults + persist); cancelling closes the modal and leaves settings unchanged. Wraps the reset button from t-003.",
+    "acceptanceCriteria": ["clicking the reset button no longer resets immediately; it opens an element with className 'overlay' containing a '.modal'", "the modal contains an action element with id 'modal-discard'", "activating '#modal-discard' restores settings to DEFAULTS and persists them, then closes the modal", "the cancel path closes the modal (removes the '.overlay') and leaves the rendered settings unchanged"],
+    "estimatedReadLoc": 180,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 70,
+    "dependencies": ["t-003", "t-004"],
+    "establishesSharedInfrastructure": false,
+    "rationale": "The confirmation is one behavior that sits between the reset button (t-003) and the destructive reset; it needs the overlay/modal CSS and Modal helper from t-004 to render styled (per the review objection) and t-003's reset to gate, so both edges are explicit."
+  },
+  {
+    "id": "t-007",
+    "title": "Show an unsaved-changes banner when in-memory settings differ from persisted",
+    "description": "Render a banner in the panel when the current in-memory settings differ from what is persisted (via the t-002 load/save contract), and hide it when they match. The banner appears after a setting is changed but before it is saved, and disappears once the settings are saved or reverted to the persisted state.",
+    "acceptanceCriteria": ["the banner is absent from renderPanel output when in-memory settings equal the persisted settings", "the banner (an element identifiable as the unsaved-changes banner, e.g. class 'unsaved-banner') is present when in-memory settings differ from the persisted settings", "after saveSettings makes persisted equal to in-memory, the banner is absent"],
+    "estimatedReadLoc": 140,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 65,
+    "dependencies": ["t-001", "t-002"],
+    "establishesSharedInfrastructure": false,
+    "rationale": "The banner is one observable behavior driven by comparing in-memory against persisted state, so it needs both the panel/row foundation (t-001) to mount into and the persistence contract (t-002) to compare against."
+  },
+  {
+    "id": "t-008",
+    "title": "Add keyboard navigation across settings rows",
+    "description": "Make the settings rows keyboard-navigable: arrow keys (Up/Down) move focus between rows and Enter activates the focused row's control. Rows must be focusable and expose which row is currently focused. Mounts into the row foundation from t-001.",
+    "acceptanceCriteria": ["each rendered row is focusable (e.g. has a tabindex attribute)", "dispatching an ArrowDown key event moves focus from the current row to the next row, and ArrowUp moves it to the previous row", "focus does not move past the first row on ArrowUp or past the last row on ArrowDown", "dispatching an Enter key event on a focused row activates that row's control"],
+    "estimatedReadLoc": 120,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 70,
+    "dependencies": ["t-001"],
+    "establishesSharedInfrastructure": false,
+    "rationale": "Keyboard navigation is one cohesive interaction layered over the rows; it only needs the row seam from t-001 and stays independent of the specific controls each row holds."
+  }
+]

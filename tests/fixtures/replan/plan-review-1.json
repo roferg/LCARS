@@ -1,0 +1,9 @@
+{
+  "passed": false,
+  "issues": [
+    {
+      "ticketId": "t-012",
+      "objection": "Missing dependency: t-012's modal criterion ('centered modal over a dimmed backdrop', red Discard action, #modal-discard) relies on the overlay/modal/modal-foot CSS that ONLY t-010 ports (the app's src/styles.css has no .overlay/.modal today — only docs/mocks does). t-012 declares dependencies [t-003] but not t-010, so Schedule could place it in the same wave as t-010 (which also needs only t-003) and its modal would render unstyled. Add t-010 to t-012's dependencies, exactly as t-011 already does."
+    }
+  ]
+}

@@ -1947,6 +1947,77 @@ unanswered, a preview screen was built by fiat, and that screen is exactly where
 the composite value cell came out scrambled.'
 }
 
+# === S178: a review objection is a PATCH, not a licence to serialise =========
+#
+# THE MEASUREMENT (DX-Scorecard lcars-20260827-001, live Copilot, 2026-08-28).
+# A 14-ticket plan with a genuine dependency graph drew exactly ONE Plan Review
+# objection: add one edge, t-010 -> t-012. The Mission bounced to Plan, a FRESH
+# planner ran, and it returned a plan whose graph was a perfect 14-deep chain
+# (t-001 <- t-002 <- ... <- t-014). Schedule honoured it and produced 14 waves of
+# one ticket each. Asked for one edge, the planner rewrote the whole graph into a
+# queue and destroyed every opportunity for parallel work.
+#
+# The root cause is in the prompt, not the model's judgement: on a re-plan
+# cmd_plan fed prd.md + validated-plan.md + the objections, and NOT the plan being
+# objected to. So the worker was never revising — it was planning from zero with
+# a complaint attached, and "leave the rest of the graph alone" was not something
+# it could obey, because it could not see what the rest of the graph was. This
+# block tells it that it is patching, and cmd_plan now hands it its own prior
+# plan.json to patch.
+#
+# plan_revision_contract_block -> the PATCH contract, or NOTHING at all when no
+# reviewer objections are on disk. A FIRST plan therefore gets a byte-identical
+# prompt to the one it got before this round — which is every Mission that never
+# fails review.
+plan_revision_contract_block() {
+  # THE SAME TOKEN the guard reads, and that is the point: the prompt and the
+  # check can no longer come apart. Keyed on the mere existence of
+  # plan-review-*.json (the first cut), this block fired on the logged-bug
+  # feedback path — which DELETES plan.json but KEEPS plan-review-*.json — and
+  # told the worker "your own prior plan.json is listed above" when no such file
+  # was listed. That is an instruction referencing an input that does not exist,
+  # which is exactly the class S175 was built to stop.
+  [ -f "$MISSION_DIR/plan-under-review.json" ] || return 0
+  printf '%s' '
+
+## THIS IS A REVISION, NOT A RE-PLAN — a correction is a PATCH
+
+`plan-under-review.json` is listed above: it is the exact ticket list Plan Review
+read, and it is your STARTING POINT. The reviewer objected to PART of it. Apply
+what the objections ask, and change NOTHING ELSE.
+
+- Start from that file, not from a blank page. Keep every ticket'"'"'s id, its
+  slice, its criteria and its `dependencies` EXACTLY as they are, unless an
+  objection names that ticket.
+- Change only what an objection actually asks for. If an objection says "add
+  t-010 to t-012'"'"'s dependencies", the correct revision adds t-010 to t-012'"'"'s
+  dependencies and touches no other ticket'"'"'s.
+- The harness COMPARES your revision'"'"'s dependency graph against that file
+  before the reviewer ever sees it. Edges you added between tickets no objection
+  names are rejected and you will be asked again.
+
+MEASURED, on the captain'"'"'s own repo, 2026-08-28. A 14-ticket plan with a real
+dependency graph drew ONE objection: add one edge, t-010 -> t-012. The revision
+came back with all fourteen tickets in a single-file chain — t-001 <- t-002 <-
+... <- t-014 — and Schedule honoured it into 14 waves of one ticket each. A
+correction that asked for one edge destroyed all fourteen tickets'"'"' parallelism.
+
+### What a dependency IS
+
+`dependencies` names what a ticket GENUINELY needs BUILT FIRST — code, a file, a
+scaffold, a stylesheet, a table it reads — such that starting it before that
+exists is impossible. It is NOT authoring order, narrative order, or ticket-number
+order. "Comes after" is not a dependency. Two tickets that both add something into
+the same shell, and do not read each other'"'"'s work, are SIBLINGS: they declare
+the shell and not each other, and they belong in the same wave.
+
+This is NOT an instruction to declare FEWER dependencies. The objection you are
+answering may well be a MISSING one, and a missing dependency is a real defect —
+the reviewer caught this one correctly, by reading the app'"'"'s actual stylesheet.
+Declare every edge that is real. Add the ones the objections ask for. Leave the
+rest of the graph exactly as you left it.'
+}
+
 # verify_decided_readout <plan.json> — S175 part D at the Verify gate. Every
 # criterion the planner DECLARED with `decides`, collected with the question it
 # settled. Prints NOTHING when no ticket declared one — which is every plan
@@ -3039,6 +3110,284 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
   ' "$1"
 }
 
+# --- S178: the over-correction guard ---------------------------------------
+# Compares the plan the reviewer ACTUALLY REVIEWED against the revision that
+# answered it, and rejects edges that were ADDED on tickets no objection names.
+# See the long note at plan_revision_contract_block for the measurement this
+# exists for, and the note in review_fail for why it works off a written token
+# rather than off whatever files happen to be lying in the mission dir.
+#
+# WHAT IT COMPARES. `plan-under-review.json`, written by review_fail at the exact
+# moment a revision is requested and consumed by cmd_plan_save the moment one is
+# accepted. NO token ⇒ no revision was asked for ⇒ nothing runs. There is
+# deliberately NO fallback to ambient plan.json: the fallback IS the hole.
+#
+# WHAT LICENSES AN EDGE — asymmetrically, and the asymmetry is load-bearing:
+#   * the SOURCE (the ticket whose `dependencies` grew) is licensed by an
+#     objection naming it ANYWHERE — its `ticketId` or its id in the prose.
+#   * the TARGET (the ticket newly depended UPON) is licensed ONLY by being an
+#     objection's `ticketId` — the ticket the objection is ABOUT. Measured
+#     shape: "t-004 ports the stylesheet every later row-rendering ticket relies
+#     on; the tickets that render rows must depend on it" names only t-004, and
+#     the correct revision adds edges on t-005 and t-006. Nobody NAMED them; the
+#     objection unambiguously ASKED.
+#     It is NOT extended to prose mentions: the live objection's prose says
+#     "t-006 declares dependencies [t-001] but not t-004", naming t-001 only to
+#     describe the current state, and licensing t-001 as a target would license
+#     `t-007 now depends on t-001` — the one edge that catches live run 3.
+# Ids are matched after normalising case and surrounding whitespace, and a bare
+# number (`"ticketId": 5`) is matched against `t-005`/`t-5`-style ids — but that
+# parsing is a convenience, never the safety net. The safety net is the next
+# paragraph.
+#
+# FAIL OPEN, AND SAY SO. This never bounces when it cannot be trusted:
+#   * no revision token (no revision was requested — or a `lcars feedback`
+#     send-back re-planned the Mission from a corrected PRD),
+#   * either plan unreadable, or a ticket set that was renumbered or resized,
+#   * NO objection resolves to any ticket id in the plan, so the licence map is
+#     empty and every added edge would look unlicensed. That is precisely the
+#     state in which the map is known to be wrong, and it is the state a reviewer
+#     produces by writing `"ticketId": 5` or `"T-005"` or `" t-005 "`.
+# In every one of those it reports UNCHECKED and passes the revision through. A
+# false bounce on an honest re-plan is worse than a missed over-correction.
+#
+# WHAT IT CANNOT CATCH — plainly, so nobody reads more into a green than is here:
+#   * Over-correction on the FIRST plan. There is no prior graph to diff, so a
+#     planner that writes a needless queue the first time through is invisible to
+#     this and is owned entirely by Plan Review's judgement.
+#   * A planner that RENUMBERS the tickets (or adds/drops one) on the revision.
+#     That makes the graphs uncomparable, and the fail-open rule above then lets
+#     it straight through — marked UNCHECKED, but through. Defeating this guard
+#     costs one rename. It is a check on a careless rewrite, not a fence against
+#     a determined one.
+#   * Edges that were REMOVED. They are REPORTED (see drop_note) and never
+#     bounced on: dropping an edge is UNDER-declaration, which is the failure
+#     Plan Review correctly catches — and it caught the one that opened this
+#     round — so this guard deliberately does not compete with it. Measured on
+#     the live baseline: all three real revisions also deleted an edge nobody
+#     asked about, and all three are caught on their ADDED edges alone.
+#
+# Exit status: 0 = checked and clean · 1 = over-correction (stdout is the
+# rejection, which becomes the next worker's prompt) · 3 = UNCHECKED. NOTHING
+# ELSE IS TRUSTED — see the caller, which treats any other status as UNCHECKED.
+replan_overcorrection_check() { # under-review.json  new-plan.json  mission-dir
+  # PYTHONIOENCODING is pinned because this block PRINTS `⚠` and `—`, and a
+  # caller with an ascii stdout encoding (measured: PYTHONIOENCODING=ascii) makes
+  # `sys.stdout.write` raise — which exited 1 and turned the FAIL-OPEN branch
+  # into a rejection of a well-formed plan. The unicode is the readout's, so the
+  # encoding is pinned here rather than the words dulled.
+  PYTHONIOENCODING=utf-8 "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "$3" <<'S178_PY'
+import glob
+import json
+import os
+import re
+import sys
+
+under_review_path, new_path, mission_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def load_list(path):
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    return doc if isinstance(doc, list) else None
+
+
+def graph(plan):
+    """{id: set(deps)} — or None when the plan is not a shape we can trust."""
+    if not plan:
+        return None
+    out = {}
+    for t in plan:
+        if not isinstance(t, dict):
+            return None
+        tid = t.get("id")
+        if not isinstance(tid, str) or not tid or tid in out:
+            return None
+        deps = t.get("dependencies")
+        if deps is None:
+            deps = []
+        if not isinstance(deps, list):
+            return None
+        out[tid] = set(d for d in deps if isinstance(d, str) and d)
+    return out
+
+
+def unchecked(reason):
+    sys.stdout.write(
+        "  ⚠ REVISION UNCHECKED — the over-correction guard could not compare this\n"
+        "    plan against the one Plan Review reviewed: %s.\n"
+        "    Passing it through unchecked: a check that cannot be trusted must not\n"
+        "    bounce an honest plan. Plan Review still sees this plan.\n" % reason)
+    sys.exit(3)
+
+
+# --- was a revision actually REQUESTED? ---------------------------------------
+# The token, not an inference. review_fail writes it when it bounces a Mission
+# back to Plan; cmd_plan_save deletes it when a revision is accepted.
+if not os.path.exists(under_review_path):
+    sys.exit(4)   # not a revision at all — the caller prints nothing
+
+# --- what the reviewer objected to, across every round on disk ----------------
+objections = []
+for rf in sorted(glob.glob(os.path.join(mission_dir, "plan-review-*.json"))):
+    try:
+        with open(rf) as fh:
+            verdict = json.load(fh)
+    except Exception:
+        continue
+    if not isinstance(verdict, dict):
+        continue
+    for iss in (verdict.get("issues") or []):
+        if not isinstance(iss, dict):
+            continue
+        objections.append((iss.get("ticketId"), str(iss.get("objection") or "")))
+
+if not objections:
+    unchecked("a revision was requested, but the review rounds on disk name no "
+              "objections we can read")
+
+prior = graph(load_list(under_review_path))
+new = graph(load_list(new_path))
+
+if prior is None:
+    unchecked("the plan Plan Review reviewed is not a readable list of tickets "
+              "with ids and dependencies")
+if new is None:
+    unchecked("the revised plan is not a readable list of tickets with ids and "
+              "dependencies")
+
+if set(prior) != set(new):
+    added = sorted(set(new) - set(prior))
+    gone = sorted(set(prior) - set(new))
+    bits = []
+    if added:
+        bits.append("%d ticket id(s) appear that the reviewed plan did not have (%s)"
+                    % (len(added), ", ".join(added[:6])))
+    if gone:
+        bits.append("%d ticket id(s) from the reviewed plan are missing (%s)"
+                    % (len(gone), ", ".join(gone[:6])))
+    unchecked("the ticket set changed — " + "; ".join(bits))
+
+# --- which tickets the objections LICENSE -------------------------------------
+# A convenience normaliser, NOT the safety net: lower-cased, stripped, and with a
+# bare number ("ticketId": 5) matched against a zero-padded id. When it resolves
+# NOTHING the licence map is known-wrong and the whole check fails open below.
+ids = set(new)
+
+
+def keys_for(tid):
+    k = {tid.strip().lower()}
+    m = re.match(r"^[a-z]+-0*(\d+)$", tid.strip().lower())
+    if m:
+        k.add(m.group(1))          # "t-005" also answers to "5"
+        k.add(m.group(1).lstrip("0") or "0")
+    return k
+
+
+by_key = {}
+for i in ids:
+    for k in keys_for(i):
+        by_key.setdefault(k, set()).add(i)
+
+# TWO licences, and the asymmetry is the whole point.
+#   licensed_src — the ticket whose `dependencies` may grow. Named anywhere in
+#     an objection: its `ticketId`, or its id in the prose.
+#   licensed_tgt — the ticket that others may newly depend UPON. ONLY an
+#     objection's `ticketId`, i.e. the ticket the objection is ABOUT.
+# A dependency objection routinely reads "t-004 ports the stylesheet every later
+# row-rendering ticket relies on; the tickets that render rows must depend on
+# it" — it names only t-004 and unambiguously asks for inbound edges, so the
+# revision that adds t-005 -> t-004 and t-006 -> t-004 is obeying it.
+# The target side is NOT extended to prose mentions, and that restraint is
+# measured: the live objection's prose says "t-006 declares dependencies
+# [t-001] but not t-004", mentioning t-001 only to describe the CURRENT state.
+# Licensing t-001 as a target would license `t-007 now depends on t-001` — the
+# single edge that catches live run 3, and the invariant across all three live
+# runs. Prose mention means "this ticket may gain edges", never "everything may
+# now point at this ticket".
+licensed_src = set()
+licensed_tgt = set()
+for tid, text in objections:
+    if tid is not None:
+        for i in by_key.get(str(tid).strip().lower(), ()):
+            licensed_src.add(i)
+            licensed_tgt.add(i)
+    low = text.lower()
+    for i in ids:
+        # Whole-token match on the id itself, so "t-01" cannot license "t-012".
+        if re.search(r"(?<![0-9A-Za-z_-])%s(?![0-9A-Za-z_-])" % re.escape(i.lower()), low):
+            licensed_src.add(i)
+
+if not licensed_src:
+    unchecked("no objection names any ticket id in this plan (%d objection(s) "
+              "read), so there is no way to tell an asked-for edge from an "
+              "unasked one" % len(objections))
+
+added_edges = []
+removed_edges = []
+for tid in sorted(new):
+    for dep in sorted(new[tid] - prior[tid]):
+        added_edges.append((tid, dep))
+    for dep in sorted(prior[tid] - new[tid]):
+        removed_edges.append((tid, dep))
+# An edge is licensed when its SOURCE is a ticket an objection names, or its
+# TARGET is a ticket an objection is ABOUT. See the two-licence note above.
+unlicensed = [(a, b) for (a, b) in added_edges
+              if a not in licensed_src and b not in licensed_tgt]
+dropped = [(a, b) for (a, b) in removed_edges
+           if a not in licensed_src and b not in licensed_tgt]
+drop_note = ""
+if dropped:
+    drop_note = ("  Note (not a rejection): %d dependency edge(s) were REMOVED from ticket(s) "
+                 "no objection names — %s. Under-declaration is Plan Review's call, not this "
+                 "guard's; it is reported, never bounced on.\n"
+                 % (len(dropped), ", ".join("%s no longer depends on %s" % e for e in dropped)))
+
+named = ", ".join(sorted(licensed_src))
+
+if not unlicensed:
+    if added_edges:
+        sys.stdout.write(
+            "  Revision checked against %d objection(s): %d dependency edge(s) added, "
+            "every one on or into a ticket the objections name (%s).\n"
+            % (len(objections), len(added_edges), named))
+    else:
+        sys.stdout.write(
+            "  Revision checked against %d objection(s): no dependency edges added.\n"
+            % len(objections))
+    sys.stdout.write(drop_note)
+    sys.exit(0)
+
+lines = []
+lines.append("OVER-CORRECTION — this revision was REJECTED before the reviewer saw it.")
+lines.append("")
+lines.append("Plan Review raised %d objection(s), naming these ticket(s): %s."
+             % (len(objections), named))
+lines.append("Your revision ADDED %d dependency edge(s), and %d of them touch no ticket"
+             % (len(added_edges), len(unlicensed)))
+lines.append("any objection names, at either end:")
+for a, b in unlicensed:
+    lines.append("    %s now depends on %s — nobody asked for that edge" % (a, b))
+lines.append("")
+lines.append("A correction is a PATCH. Take the plan you were given, apply exactly what")
+lines.append("the objections ask, and leave every other ticket's `dependencies` byte-for-")
+lines.append("byte as it was. Do NOT re-derive the graph. Do NOT order tickets by their")
+lines.append("number: a dependency is what a ticket GENUINELY needs BUILT FIRST, never")
+lines.append("authoring order, and \"comes after\" is not a dependency. Tickets that add")
+lines.append("separate things into the same shell are SIBLINGS and belong in the same wave.")
+lines.append("")
+lines.append("This is not a request for FEWER dependencies. Declare every edge that is")
+lines.append("real, add the ones the objections ask for — and change nothing else.")
+sys.stdout.write("\n".join(lines) + "\n")
+if drop_note:
+    sys.stdout.write("\n" + drop_note.strip() + "\n")
+sys.exit(1)
+S178_PY
+}
+
 # --- subcommand: plan-save -------------------------------------------------
 cmd_plan_save() {
   locate_mission "$MISSION_ID"
@@ -3051,7 +3400,73 @@ cmd_plan_save() {
   # case for every mission that did not come from the holodeck.
   validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" || exit 1
 
+  # S178 — the over-correction guard. It runs off the REVISION TOKEN
+  # (plan-under-review.json, written by review_fail; see the long note there),
+  # never off ambient files, and it never runs at all when no revision was
+  # requested — so a first plan, and a plan re-made after a `lcars feedback`
+  # send-back, are both untouched and byte-identical to before this round.
+  local OVERCORRECTION_NOTE="" _s178tok="$MISSION_DIR/plan-under-review.json"
+  if [ -f "$_s178tok" ]; then
+    local _s178out _s178rc=0
+    _s178out="$(replan_overcorrection_check "$_s178tok" "$PLAN" "$MISSION_DIR")" || _s178rc=$?
+    case "$_s178rc" in
+      0|3) OVERCORRECTION_NOTE="$_s178out" ;;   # clean · UNCHECKED — both pass
+      4)   OVERCORRECTION_NOTE="" ;;            # not a revision (token vanished)
+      1)
+        # OVER-CORRECTION. Rejected — UNLESS this is the worker's last attempt.
+        #
+        # ADVISORY AT THE LAST ATTEMPT, and this is not a softening. The Plan
+        # Stage's `die` after MAX_WORKER_TRIES existed only for plans that FAILED
+        # validate_plan_json. This guard can refuse a plan that validates
+        # perfectly, so left fatal it would turn a bounce into a permanent
+        # DEADLOCK — a Mission stuck at `plan` with no gate, no label and no
+        # state change, needing manual file surgery, under a message that lies
+        # about a plan that validated fine. So the last attempt SAVES, and says
+        # loudly that the over-correction is unresolved. That is exactly "it
+        # rides the EXISTING Plan Review loop and its existing budget": the
+        # reviewer gets the plan, can object again, and has its own three rounds
+        # and its own human escalation. No new gate, no new label, no new
+        # escalation, and it can never deadlock.
+        if [ "${FINAL_ATTEMPT:-0}" = "1" ]; then
+          # No attempt COUNT here on purpose: --final-attempt is accepted from
+          # any caller, and cmd_plan is only one of them, so interpolating
+          # $MAX_WORKER_TRIES printed "asked 3 time(s)" after a single hand-run
+          # attempt. Say what is true on every path instead.
+          OVERCORRECTION_NOTE="  ⚠ OVER-CORRECTION UNRESOLVED — the planner's last attempt was asked to
+    revise without rewriting the dependency graph, and did not. The plan is
+    VALID, so it is saved and handed to Plan Review UNRESOLVED rather than
+    deadlocking the Mission here. The reviewer can object again on its own
+    rounds. What the guard objected to:
+$_s178out"
+        else
+          # REJECT. Leave the reason beside the plan file the worker wrote, which
+          # is the worker's own scratch outdir — cmd_plan's retry loop reads it
+          # there and threads it into the NEXT worker's prompt. Without that the
+          # only retry feedback channel is "you produced no file", and the bounce
+          # would silently burn the budget re-emitting the same plan.
+          printf '%s\n' "$_s178out" > "$(dirname "$PLAN")/.plan-reject-note" 2>/dev/null || true
+          printf '%s\n' "$_s178out" >&2
+          exit 1
+        fi ;;
+      *)
+        # ONLY 0/1/3/4 are trusted. Anything else is the CHECK failing, not the
+        # plan: a python crash, a missing interpreter (127), a signal. Measured:
+        # PYTHONIOENCODING=ascii made the block raise on its own `⚠`, exit 1, and
+        # DISCARD a well-formed plan — the fail-open branch itself failing closed.
+        # A check that broke is UNCHECKED, and it says so out loud rather than
+        # passing silently (127 used to do exactly that).
+        OVERCORRECTION_NOTE="  ⚠ REVISION UNCHECKED — the over-correction guard itself failed to run (exit $_s178rc).
+    That is the CHECK breaking, not the plan: the plan is saved and passed to
+    Plan Review. Nothing about its dependency graph has been verified."
+        ;;
+    esac
+  fi
+
   cp "$PLAN" "$MISSION_DIR/plan.json"
+  # S178: the revision has been delivered — consume the token. Anything later
+  # (another Plan Review round, a `lcars feedback` send-back and re-plan) must
+  # write its own or be treated as no revision at all.
+  rm -f "$_s178tok" 2>/dev/null || :
 
   # Session 41: the Plan worker ALSO emits one context manifest per ticket into a
   # `manifests/` dir alongside plan.json in its scratch output. Persist them into
@@ -3073,6 +3488,9 @@ cmd_plan_save() {
 
   echo "PLAN: advanced"
   echo "  Wrote plan.json."
+  # S178: what the over-correction guard did — including, loudly, when it could
+  # not check at all. EMPTY (and so byte-identical) on a first plan.
+  [ -n "$OVERCORRECTION_NOTE" ] && printf '%s\n' "$OVERCORRECTION_NOTE"
   # S156: say it at the EARLIEST point a human or Plan Review can act on it. A
   # plan that declares `establishesSharedInfrastructure` on NO ticket leaves
   # Schedule reading ticket text instead, which only catches a ticket that names
@@ -3114,6 +3532,11 @@ cmd_plan_save() {
 review_pass() {
   [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json to approve — has Plan run?"
   cp "$MISSION_DIR/plan.json" "$MISSION_DIR/approved-plan.json"
+  # S178: no revision is outstanding any more. Clearing the token here is belt
+  # and braces — cmd_plan_save already consumes it on the save that answered the
+  # objections — but a token that outlives the revision it asked for is exactly
+  # how a later, unrelated re-plan would get diffed against ancient history.
+  rm -f "$MISSION_DIR/plan-under-review.json" 2>/dev/null || :
 
   set_stage "schedule"
   gh_relabel "lcars:schedule" "lcars:plan-review"
@@ -3165,6 +3588,44 @@ review_fail() {
     echo "  Override (proceed to Schedule) or redirect — answer with \`lcars respond $MISSION_ID\`."
     [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
     exit 0
+  fi
+
+  # S178 — THE REVISION TOKEN, and it is the whole cure for the false bounce.
+  #
+  # This is the ONE place in the system that actually requests a revision, so it
+  # is the only place that can say so with EVIDENCE. Snapshot the plan the
+  # reviewer just reviewed: the over-correction guard diffs the next plan.json
+  # against THIS file and against nothing else. That is the only plan the
+  # objections are even about.
+  #
+  # WHY NOT infer it from ambient files. The first cut of this round decided "a
+  # revision was requested" from the mere existence of plan-review-*.json and
+  # diffed against whatever plan.json was lying in the mission dir. Both are
+  # wrong on the most ordinary path in the pipeline: `lcars feedback` (the Verify
+  # send-back) resets the Mission to `align` and DELIBERATELY KEEPS every
+  # artifact — its own output says "The prior PRD and artifacts are kept" — so
+  # plan.json AND plan-review-*.json both survive. The Mission then re-runs
+  # align → research → validate → plan, and a brand-new honest plan for a
+  # CORRECTED PRD was being diffed against the plan from before the captain's
+  # send-back, licensed by objections belonging to a plan two stages of history
+  # ago. Measured: a 6-edge false bounce on a plan nobody had objected to.
+  #
+  # WHY NOT per-round, and why it is CONSUMED. It is a one-shot token, not an
+  # archive: written when a revision is asked for, deleted by cmd_plan_save the
+  # moment a revision is accepted (and by review_pass, above). So after the
+  # normal cycle — objection, revision, save — there is no token, and a later
+  # feedback send-back finds none and passes through UNCHECKED by construction.
+  # It is deliberately NOT keyed on planReviewRound: feedback.sh never resets
+  # that counter (a pre-existing bug, ledgered), so anything keyed on it inherits
+  # a stale number.
+  #
+  # NOT written on the round-3 escalation branch above: that parks the Mission at
+  # plan-review awaiting the captain and does NOT ask Plan for anything, so a
+  # token there would linger and poison a much later re-plan.
+  if [ -f "$MISSION_DIR/plan.json" ]; then
+    cp "$MISSION_DIR/plan.json" "$MISSION_DIR/plan-under-review.json"
+  else
+    rm -f "$MISSION_DIR/plan-under-review.json" 2>/dev/null || :
   fi
 
   # Still have rounds left — bounce the Mission back to Plan to revise.
@@ -3645,6 +4106,38 @@ compute_waves() { # table-file [infra-ids]
   ' "$1"
 }
 
+# --- S178 Part C: say the wave SHAPE, not just the wave COUNT ---------------
+# The readout already said "Grouped 14 ticket(s) into 14 wave(s)". That is the
+# count, and the count is not the signal — the captain had to open waves.json to
+# discover that all fourteen waves held ONE ticket, i.e. that the plan is a queue
+# and every scrap of parallel work is gone. This is a READOUT and never a gate:
+# Schedule is correct, it honours the graph it is given, and a genuinely serial
+# plan is a legitimate thing to print.
+wave_shape_line() { # ntickets nwaves peak-parallel  → the line, or NOTHING
+  local nt="${1:-0}" nw="${2:-0}" peak="${3:-0}"
+  if [ "$nw" -le 0 ] || [ "$nt" -le 0 ]; then
+    printf 'Wave shape: nothing scheduled.'
+  elif [ "$nt" -eq 1 ]; then
+    # This exact phrase, upper-cased, IS the board's shape string for a one-ticket
+    # plan (local_adapter._progress). tests/replan-overcorrection.test.sh derives
+    # one from the other rather than asserting two hand-copied literals, so the
+    # two surfaces cannot drift apart unnoticed.
+    printf 'Wave shape: a single ticket — nothing to parallelise.'
+  elif [ "$peak" -le 0 ]; then
+    # peak 0 means the wavemap could not be read — UNKNOWN, not serial. Saying
+    # nothing beats saying something false: `nt=4 nw=2 peak=0` used to print
+    # "2 waves, 1 ticket each", which is arithmetically impossible. The caller
+    # prints nothing at all when this is empty.
+    :
+  elif [ "$nw" -eq 1 ]; then
+    printf 'Wave shape: 1 wave of %s ticket(s) — fully parallel, nothing waits.' "$nt"
+  elif [ "$peak" -le 1 ]; then
+    printf 'Wave shape: %s waves, 1 ticket each — NO parallelism. Every ticket waits for the one before it. If that is not genuinely true, the dependency graph is a queue and this run is as slow as it can possibly be.' "$nw"
+  else
+    printf 'Wave shape: %s waves, up to %s ticket(s) in parallel.' "$nw" "$peak"
+  fi
+}
+
 # --- create one GitHub sub-issue for a ticket; echo its new issue number -----
 # Best-effort, same spirit as gh_relabel: if gh is missing or the create fails,
 # leave a note and echo nothing (the wave entry records a null issue). gh prints
@@ -3935,10 +4428,23 @@ cmd_schedule() {
   contradictions="$(awk -F'\t' '$2=="declared-false" && $3!="" {
       printf "  %s declares establishesSharedInfrastructure: false, overriding a config-file match (%s) — the plan'"'"'s call wins, so it shares its wave.\n", $1, $3 }' "$scan")"
 
+  # S178 Part C — the wave SHAPE, read off the wavemap BEFORE it is deleted.
+  # "Grouped 14 ticket(s) into 14 wave(s)" was already printed here; the COUNT
+  # existed and the SIGNAL did not. "14 waves, 1 ticket each" is the thing the
+  # captain can act on, and until now he had to open waves.json to see it. Each
+  # wavemap line is "<wave> <id> <id> …", so the widest wave is max(NF-1).
+  local peak_parallel
+  peak_parallel="$(awk 'NF > 1 { n = NF - 1; if (n > m) m = n } END { print m + 0 }' "$wavemap" 2>/dev/null)"
+  peak_parallel="${peak_parallel:-0}"
+
   rm -f "$table" "$wavemap" "$assign" "$scan"
 
   echo "SCHEDULE: advanced"
   echo "  Grouped $ntickets ticket(s) into $nwaves wave(s); opened $nissues sub-issue(s)."
+  local shape_line; shape_line="$(wave_shape_line "$ntickets" "$nwaves" "$peak_parallel")"
+  # EMPTY when the shape is unknown (an unreadable wavemap) — print nothing at
+  # all rather than a shape we cannot stand behind.
+  [ -n "$shape_line" ] && printf '  %s\n' "$shape_line"
   if [ "$n_declared" -eq 0 ]; then
     echo "  ⚠ NO ticket declared establishesSharedInfrastructure — the harness fell back to reading ticket text, which only catches a ticket that NAMES a build/test config file. An infrastructure ticket phrased any other way did NOT get a wave of its own. Ask Plan to declare the field."
   elif [ "$n_declared" -eq "$ticket_count" ]; then
@@ -10522,8 +11028,8 @@ isolated_line() { # stage  worker-count
 # are captured to scratch for debugging only. The scratch dir path is also handed
 # to the worker via $LCARS_WORK_OUT so a CLI adapter (or a test stub) can find it
 # without re-parsing the prompt.
-spawn_worker() { # role  template  toolset  outdir  extra  [prior_no_file]
-  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5" prior_no_file="${6:-}"
+spawn_worker() { # role  template  toolset  outdir  extra  [prior_no_file] [prior_reject]
+  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5" prior_no_file="${6:-}" prior_reject="${7:-}"
   mkdir -p "$outdir"
   # Lever 2 — behaviour-keyed retry escalation. When a PRIOR attempt of THIS
   # single-worker stage produced NO file (the procrastination failure mode), the
@@ -10544,6 +11050,24 @@ create the required output file in the scratch output directory — in a single
 write, with its COMPLETE final content (do NOT create an empty or placeholder file
 intending to fill it in later; your file-creation tool may not support overwriting
 an existing file). Describing the task is NOT doing it."
+  fi
+  # S178 — the OTHER retry channel. Until this round the only thing a retrying
+  # worker was ever told was "a prior attempt produced no file", so a stage that
+  # rejected a well-formed artifact on its CONTENT (the over-correction guard)
+  # would have burned its whole budget while the worker re-emitted the same thing,
+  # never once being told what was wrong. The caller passes the rejection VERBATIM
+  # and it goes at the very end of the prompt, after the output instructions.
+  # Empty on a first attempt, so that prompt stays byte-for-byte unchanged.
+  local prior_reject_block=""
+  if [ -n "$prior_reject" ]; then
+    prior_reject_block="
+
+## YOUR PREVIOUS ATTEMPT WAS REJECTED — read this FIRST
+A prior attempt at this exact task produced its output file, and the harness
+REFUSED it for the reason below. Read it, fix exactly that, and change nothing
+else about your answer.
+
+$prior_reject"
   fi
   local prompt
   prompt="$(cat "$template")
@@ -10566,7 +11090,7 @@ file(s) exist on disk in the scratch output directory.
 The harness reads ONLY the files you create in that scratch output directory; it
 NEVER reads your reply. Do NOT put your answer in your reply / chat — a
 reply-only answer counts as no output and FAILS the stage. Create the file(s)
-exactly as specified above, in the scratch output directory, and nowhere else.$prior_fail_block"
+exactly as specified above, in the scratch output directory, and nowhere else.$prior_fail_block$prior_reject_block"
   # The env role the worker sees IS this Stage's role; the toolset is selected by
   # $toolset. They coincide for every Stage spawn (only the context-pack path
   # differs, and that goes through generate_context_pack, not here), so pre-export
@@ -11844,6 +12368,18 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     [ -f "$rv" ] && extra="$extra
 - $rv   (reviewer objections to resolve in this revision)"
   done
+  # S178 — and the plan those objections are AGAINST, when a revision was
+  # actually requested (the token review_fail writes; see the note there).
+  # Without it the worker could not obey "leave the rest of the graph alone" even
+  # in principle: it was handed a complaint about a plan it had never seen, so it
+  # planned from zero every time. MEASURED cost of that omission: one objection
+  # asking for a single edge came back as a 14-deep single-file chain. Gated on
+  # the token, so a first plan — and a re-plan after a `lcars feedback` send-back
+  # — get a byte-identical prompt to before this round.
+  if [ -f "$MISSION_DIR/plan-under-review.json" ]; then
+    extra="$extra
+- $MISSION_DIR/plan-under-review.json   (THE PLAN UNDER REVIEW — the exact tickets the objections are against; this revision is a PATCH of it)"
+  fi
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts this Stage may read, by PATH only. Absent on a trivial
   # Mission, in which case this is skipped.
@@ -11864,10 +12400,14 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   local _oqb _oqrc=0; _oqb="$(plan_open_questions_block)" || _oqrc=$?
   [ "$_oqrc" -eq 0 ] || die "prd.md's open-questions section declares nothing readable — see the message above; fix the PRD and re-run."
   extra="$extra$_oqb"
+  # S178 — a correction is a PATCH, not a licence to rewrite the graph. NOTHING
+  # at all when there are no reviewer objections on disk, so a first plan's
+  # prompt is byte-identical to what it was before this round.
+  extra="$extra$(plan_revision_contract_block)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
-  local tries=0 prior_no_file=""
+  local tries=0 prior_no_file="" prior_reject=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
@@ -11876,13 +12416,28 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     # writes into an existing dir (some file-creation tools cannot mkdir). CLI-
     # neutral: Claude is unaffected. plan-save reads from "$odir/manifests".
     mkdir -p "$odir/manifests"
-    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra" "$prior_no_file"
-    if [ -f "$odir/plan.json" ]; then prior_no_file=""; else prior_no_file=no-file; fi
+    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra" "$prior_no_file" "$prior_reject"
+    # S178: BOTH retry channels are keyed on THIS attempt's behaviour. Clearing
+    # prior_no_file but not prior_reject let attempt 3 carry attempt 1's
+    # rejection under "YOUR PREVIOUS ATTEMPT WAS REJECTED" while attempt 2 had
+    # actually produced no file at all — a heading about the wrong attempt.
+    if [ -f "$odir/plan.json" ]; then prior_no_file=""; else prior_no_file=no-file; prior_reject=""; fi
     if [ -f "$odir/plan.json" ]; then
-      local rc=0
+      local rc=0 final_flag=""
+      # S178: on the LAST attempt the over-correction guard goes advisory — a
+      # valid plan must never deadlock the Stage on this guard. See cmd_plan_save.
+      [ "$tries" -ge "$MAX_WORKER_TRIES" ] && final_flag="--final-attempt"
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
-        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" || rc=$?
+        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" $final_flag || rc=$?
       if [ "$rc" -eq 0 ]; then isolated_line plan 1; rm -rf "$odir"; exit 0; fi
+      # S178: plan-save left its REASON for rejecting beside the plan file. Carry
+      # it into the next attempt's prompt — a bounce whose reason never reaches
+      # the retrying worker just burns the budget re-emitting the same plan.
+      if [ -f "$odir/.plan-reject-note" ]; then
+        prior_reject="$(cat "$odir/.plan-reject-note")"
+      else
+        prior_reject=""
+      fi
     fi
     rm -rf "$odir"
   done
@@ -13050,14 +13605,51 @@ drive_detail() { # stage  stage-output
         *)                  echo "research complete" ;;
       esac ;;
     validate)    echo "no scope changes" ;;
-    plan)        local n; n="$(grep -c '"id"' "$MISSION_DIR/plan.json" 2>/dev/null)"; echo "${n:-?} ticket(s)" ;;
+    plan)
+      # S178 — the guard's verdict, ON THE PATH THE CAPTAIN ACTUALLY RUNS. Both
+      # notes are printed by plan-save, and cmd_drive captures a Stage's stdout
+      # and re-emits only this one synthesized line, so `lcars run` showed a plan
+      # handed to Plan Review UNRESOLVED as indistinguishable from a clean one.
+      # That is precisely the class drive_tree_marker's note below already names.
+      # This detail string is ALSO what emit_event stage_done records, so the
+      # marker survives into events.jsonl, `lcars status` and the board — not
+      # just terminal scrollback.
+      #
+      # NO SENTENCE ⇒ NO MARKER, the same rule the tree marker keeps: a Stage
+      # that said neither thing gets a byte-identical line to before.
+      local n mark=""
+      n="$(grep -c '"id"' "$MISSION_DIR/plan.json" 2>/dev/null)"
+      case "$2" in
+        *"OVER-CORRECTION UNRESOLVED"*) mark=" — ⚠ over-correction unresolved, passed to Plan Review" ;;
+        *"REVISION UNCHECKED"*)         mark=" — ⚠ revision unchecked" ;;
+      esac
+      echo "${n:-?} ticket(s)$mark" ;;
     plan-review)
       case "$2" in
         *"passed"*) echo "passed review" ;;
         *"revise"*) printf '%s' "$2" | sed -n 's/.*revise — round \([0-9]*\).*/revise (round \1) → plan/p' | head -1 ;;
         *)          echo "reviewed" ;;
       esac ;;
-    schedule)    printf '%s' "$2" | sed -n 's/.*into \([0-9]*\) wave(s).*/\1 wave(s)/p' | head -1 ;;
+    schedule)
+      # S178 — the wave COUNT was already here; the SHAPE is the signal, and Part
+      # C's whole point is that the captain sees it without opening a file. The
+      # board card carries it and the Schedule CLI prints it; this is the path he
+      # actually runs. Compacted to fit one drive line, and it rides
+      # emit_event stage_done into events.jsonl with everything else.
+      #
+      # NO SENTENCE ⇒ NO MARKER: Schedule deliberately prints no shape line when
+      # the wavemap could not be read (peak unknown), and a driver that invented
+      # one would be asserting what it never measured.
+      local nw shape=""
+      nw="$(printf '%s' "$2" | sed -n 's/.*into \([0-9]*\) wave(s).*/\1 wave(s)/p' | head -1)"
+      case "$2" in
+        *"NO parallelism"*) shape=" — ⚠ 1 ticket each, no parallelism" ;;
+        *"Wave shape: a single ticket"*) shape="" ;;
+        *"Wave shape:"*)
+          shape="$(printf '%s' "$2" | sed -n 's/.*Wave shape: .*up to \([0-9]*\) ticket(s) in parallel.*/ — up to \1 in parallel/p' | head -1)"
+          [ -n "$shape" ] || shape="$(printf '%s' "$2" | sed -n 's/.*Wave shape: 1 wave of \([0-9]*\) ticket(s).*/ — 1 wave, all \1 in parallel/p' | head -1)" ;;
+      esac
+      printf '%s%s' "${nw}" "$shape" ;;
     implement)
       local total=0 g=0 w id
       while IFS=$'\t' read -r w id; do
@@ -13929,6 +14521,7 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; SETUP=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
+FINAL_ATTEMPT=0   # S178: plan-save --final-attempt (guard goes advisory)
 RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -13943,6 +14536,10 @@ while [ $# -gt 0 ]; do
     --responses=*) RESPONSES="${1#--responses=}"; shift ;;
     --plan)        PLAN="${2:-}"; shift 2 ;;
     --plan=*)      PLAN="${1#--plan=}"; shift ;;
+    # S178: this is the Plan worker's LAST attempt, so the over-correction guard
+    # must be advisory rather than fatal (see cmd_plan_save). Set by cmd_plan
+    # only; a hand-run plan-save never passes it.
+    --final-attempt) FINAL_ATTEMPT=1; shift ;;
     --manifests)   MANIFESTS="${2:-}"; shift 2 ;;
     --manifests=*) MANIFESTS="${1#--manifests=}"; shift ;;
     --verdict)     VERDICT="${2:-}"; shift 2 ;;
@@ -14290,6 +14887,28 @@ FSG_EOF
     MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
     plan_mockup_contract_block
     exit 0 ;;
+  # S178 test hook: the Schedule wave-shape line ALONE, over explicit numbers, so
+  # the "peak 0 means UNKNOWN, not serial" branch can be driven without
+  # constructing a wavemap that fails to parse.
+  wave-shape-line-test)
+    wave_shape_line "${LCARS_WS_NT:-0}" "${LCARS_WS_NW:-0}" "${LCARS_WS_PEAK:-0}"
+    printf '\n'
+    exit 0 ;;
+  # S178 test hook, the same shape and the same zero-token guarantee: print the
+  # Plan prompt's REVISION contract in isolation over $LCARS_ATT_TEST_DIR, so a
+  # focused test can assert both what a revising planner is told and that a
+  # Mission with no reviewer objections is told nothing at all.
+  plan-revision-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_revision_contract_block
+    exit 0 ;;
+  # S178 test hook: the over-correction guard ALONE, over three explicit paths —
+  # prior plan, revised plan, and the mission dir holding the review rounds. The
+  # exit status IS the verdict (0 clean · 1 over-correction · 3 UNCHECKED).
+  overcorrection-check-test)
+    replan_overcorrection_check "${LCARS_PRIOR_PLAN:-/nonexistent}" \
+      "${LCARS_NEW_PLAN:-/nonexistent}" "${LCARS_ATT_TEST_DIR:-}"
+    exit $? ;;
   # S175 test hooks, the same shape: exercise the DATA PRECONDITION machinery in
   # ISOLATION over $LCARS_ATT_TEST_DIR — no locate_mission, no worker spawn, zero
   # tokens. `preconditions-declared-test` prints what the design declared;
