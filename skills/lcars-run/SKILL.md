@@ -187,7 +187,7 @@ after one Stage — run it blocking and report what it printed.
 
 | Halt | Why | What the driver does |
 |---|---|---|
-| `awaitingHuman === true` | a Stage escalated (Research >20 Qs, Validate scope change, Plan Review round-3, Implement 5-attempt cap) | prints the pending question(s) + the runnable `respond.sh answer --mission <id>` hint, **fires the notification** |
+| `awaitingHuman === true` | a Stage escalated (Research >20 Qs, Validate scope change, Plan Review round-3, Implement 3-worker-session cap) | prints the pending question(s) + the runnable `respond.sh answer --mission <id>` hint, **fires the notification** |
 | `stage === "verify"` | the human review gate — never auto-passed | prints the ship-or-send-back next moves, **fires the notification** |
 | `stage === "align"` **with** `feedback.md` | a Verify feedback re-entry needs an interactive Align re-grill | stops and tells you to re-grill (see below) — **no notification** |
 | `stage === "done"` | terminal — the PR is open | reports it is shipped |
@@ -612,8 +612,12 @@ driver. **Do not write tests or implement anything yourself** — the driver
 spawns ONE cold **unified TDD worker** (fed the ticket from
 `approved-plan.json`): it writes failing tests AND the code that satisfies them,
 in any order, authored **in-tree at the repo's own test convention**, iterating
-freely (its `attempts` count is honest and uncapped), and reports `result.json`
-v2 (`{ ticketId, passed, attempts, summary, newTests[], testEdits[], flipFlop }`).
+freely (its `attempts` count — the worker's OWN internal iteration count — is
+honest and uncapped; it gates nothing and is forensic only, so no captain-facing
+surface quotes it), and reports `result.json` v2 (`{ ticketId, passed, attempts,
+summary, newTests[], testEdits[], flipFlop }`). On the wire that number rides
+event data as **`iterations`**; the count the captain is shown is **`sessions`**
+— how many times LCARS had to hire a fresh worker.
 
 ```bash
 bash ~/.claude/skills/lcars-run/run.sh implement-ticket --mission <id> --ticket <ticket-id>
@@ -700,14 +704,16 @@ bash ~/.claude/skills/lcars-run/run.sh verify-summary --mission <id>
 ```
 
 `verify-summary` is read-only. It prints the mission title, every completed
-ticket with its result (✓ + attempt count, read from each
-`tickets/<id>/result.json`), the overall test tally (e.g. `4/4 ticket(s) green
+ticket with its result (✓ + how many WORKER SESSIONS it took, counted from the
+mission's `ticket_attempt` events — a ticket that landed on its first hire says
+nothing at all), the overall test tally (e.g. `4/4 ticket(s) green
 across 2 wave(s)`), and the two next moves:
 
 ```
 VERIFY: <title>
   All tickets completed:
-    ✓ t-001 — passed in 2 attempt(s)
+    ✓ t-001 — green
+    ✓ t-002 — green after 2 worker sessions
     …
   Test results: 4/4 ticket(s) green across 2 wave(s).
   Review the changes and run the app if needed.
@@ -802,7 +808,7 @@ the Stage `lcars run` will execute next:
   issue label is what moves `lcars:schedule` → `lcars:implement`.
 - When Implement finishes (every ticket green across every wave), both move to
   **`verify`** together — the card lands in the Verify column. While a ticket is
-  flagged for the human (it exhausted its 5 attempts), the stage stays
+  flagged for the human (it exhausted its 3 worker sessions), the stage stays
   `implement` and the additive `lcars:awaiting-human` label overlays it — the
   card stays in the Implement column, flagged as awaiting input, until the
   captain resolves it.

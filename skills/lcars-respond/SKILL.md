@@ -1,6 +1,6 @@
 ---
 name: lcars-respond
-description: Answer an LCARS Mission's awaiting-human gate, walk-away style. When a stage escalates — Research over its 20-question cap, Validate on a scope change, Plan Review after three failed rounds, or Implement after a ticket's five attempts — it parks the Mission with `lcars:awaiting-human` and a pending question. `lcars respond` (no id) lists every Mission awaiting the captain and its question(s); `lcars respond <id>` shows that Mission's pending question(s), captures the captain's free-form answer, records it next to the question in answers.json, clears the awaiting-human gate (the stage is unchanged — the Mission stays at the stage that escalated), and removes the `lcars:awaiting-human` label so a plain `lcars run <id>` resumes that same stage and consumes the answer instead of re-asking. Use when the captain runs `lcars respond`, asks what's waiting on them / what needs an answer, or wants to answer a paused / escalated / blocked Mission.
+description: Answer an LCARS Mission's awaiting-human gate, walk-away style. When a stage escalates — Research over its 20-question cap, Validate on a scope change, Plan Review after three failed rounds, or Implement after a ticket's three worker sessions — it parks the Mission with `lcars:awaiting-human` and a pending question. `lcars respond` (no id) lists every Mission awaiting the captain and its question(s); `lcars respond <id>` shows that Mission's pending question(s), captures the captain's free-form answer, records it next to the question in answers.json, clears the awaiting-human gate (the stage is unchanged — the Mission stays at the stage that escalated), and removes the `lcars:awaiting-human` label so a plain `lcars run <id>` resumes that same stage and consumes the answer instead of re-asking. Use when the captain runs `lcars respond`, asks what's waiting on them / what needs an answer, or wants to answer a paused / escalated / blocked Mission.
 ---
 
 # lcars respond
@@ -8,7 +8,8 @@ description: Answer an LCARS Mission's awaiting-human gate, walk-away style. Whe
 `lcars respond` is the **async human gate** (vision.md → "Respond to a pending
 question"). Stages escalate to the captain — Research over its 20-question cap,
 Validate on a scope change, Plan Review after three failed rounds, Implement
-after a ticket's five attempts. Each escalation parks the Mission behind an
+after a ticket's three worker sessions (the hire cap — a gate rejection bounces
+the session and costs a hire). Each escalation parks the Mission behind an
 **awaiting-human gate**: `awaitingHuman: true` in `state.json`, the question(s)
 in `pending.json`, and the `lcars:awaiting-human` label on the issue. This skill
 is how the captain answers that gate — and because the answer is persisted, the

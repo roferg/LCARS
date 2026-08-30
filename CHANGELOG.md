@@ -4,6 +4,83 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.6 — 2026-08-30
+
+**Count the hires, not the swings.** Session 173. Every Implement surface used
+the word "attempt" for two different quantities, and gave the headline to the one
+that governs nothing. A ticket going green read `green in 4 attempt(s)` — the
+worker's OWN internal iteration count, uncapped and informational since S133 —
+while the number that actually decides whether the captain is interrupted (how
+many times LCARS cold-spawned a fresh worker, capped at 3, exhaustion parks the
+ticket awaiting-human) was folded into a chip wearing the same word. A clean
+first-try ticket read as though it had been retried three times.
+
+Found live on a DX-Scorecard Mission: the wave band said `↻ 1 attempt` while the
+ticket line said `green in 4 attempt(s)`. Both correct, counting different things.
+
+### One word per quantity
+
+**HIRE / worker session** — one worker dispatch, capped at `MAX_WORKER_TRIES`.
+**BOUNCE** — a gate rejection that costs a hire. **ITERATION** — the worker's own
+`result.json.attempts`, forensic only, on no healthy-path surface. **"attempt" is
+retired from every captain-facing string.**
+
+A ticket green on its first hire now reads `ticket t-001 green` — no number at
+all. One that struggled reads `green after 2 worker sessions`. Silence when
+nothing went wrong; signal when it did. The same vocabulary lands on the Verify
+roll-up, the terminal echo, the comment mirror and `lcars status`.
+
+### The board shows the number that governs
+
+The wave band gained a red **bounce** chip — the "something went wrong" signal,
+previously invisible — and now OMITS the session chip at ≤1 hire, so a wave where
+every ticket landed first try wears no counter. `lcars status` gained glyphs and
+indentation for `ticket_gate_bounce`, the `flip_flop_*` family,
+`ticket_postcommit_ok` and `ticket_test_edits`, which previously rendered
+flush-left and unmarked; its pace line now carries `· hire N · N bounces`.
+
+### One key, one quantity — and one derivation
+
+The colliding `attempts` event-data key is split into `sessions=` (hires),
+`iterations=` (the worker's count) and `emptyOutputTries=` (empty-output retries,
+which are REFUNDED against the cap and so are not hires). A repo-wide grep proved
+no consumer read the old key — a free rename, no deprecated alias. Nine emit
+sites were reclassified, not four: `ticket_env_unprovisioned`,
+`ticket_locked_test_tampered`, `ticket_postcommit_red` and `ticket_postcommit_ok`
+were all carrying the ambiguous key too.
+
+Three surfaces derived "hires" three different ways and disagreed on the same
+ticket. `ticket_hire_count()` filtered `phase=tdd` and then FLOORED AT 1 — so
+every pre-S133 ticket counted zero hires and the floor rewrote the zero as one,
+a function asserting a number it had not counted. The mirror and `lcars status`
+took the MAX `attempt` VALUE, wrong in both directions (two dispatches both
+stamped `attempt=1` under-count 2→1; a gapped `1,3` over-counts 2→3). All four
+surfaces now share ONE rule: **hires = the count of `ticket_attempt` events, any
+phase; zero events means UNKNOWN, and the surface stays silent** — never a
+fabricated count, never a floored one.
+
+The board's counters also now span a resumed Implement stage. `stage_start` is
+not deduped, so a resume splits the timeline and the hires landed on both sides
+of the split — the band read 2 where every other surface read 3. The split itself
+is deliberately kept (and pinned by a test); only the number crosses it.
+
+### The retired cap stops being documented as live
+
+`MAX_ATTEMPTS=5` was retired in S133 and replaced by a 3-worker-session cap, but
+four docs still taught the old number — including `lcars-respond`'s frontmatter
+`description:`, which is model-facing routing text, i.e. wrong guidance rather
+than a stale comment.
+
+**Not changed:** the escalation machinery itself — `MAX_WORKER_TRIES`, the gate
+set, the bounce-and-rehire loop, the awaiting-human park. This round changes what
+the captain is TOLD, not what LCARS DOES. Event TYPE names and the `attempt` wire
+key are unchanged, so historical `events.jsonl` files render correctly; the board
+keys on event type, never on detail text, which is asserted by mangling every
+detail string and confirming the tallies are byte-identical.
+
+Proven on fixtures and REAL HEADED CHROME (rig committed at
+`tests/drives/browser/s173-{fixture.sh,hires.sh,drive.js}`), zero worker spend.
+
 ## 2026.8.5 — 2026-08-30
 
 **The harness stops asking what it already knows.** Session 180. A complex

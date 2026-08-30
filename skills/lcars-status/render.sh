@@ -87,6 +87,29 @@ render_human() {
       printf '    ✓ %s' "$detail" ;;
     ticket_flagged)
       printf '    ⚑ %s' "$detail" ;;
+    # S173 FIX ROUND — the S133 proof-gate family. Without these arms every one
+    # of them hit the `*)` default and printed with NO glyph and NO indent,
+    # flush-left among the indented ticket lines, indistinguishable from noise:
+    # `lcars status` literally could not show the captain a BOUNCE. Glyphs match
+    # the board's proof accents (⊕ accept, ⊗ reject, ⊘ waived, ⤫ bounce).
+    ticket_gate_bounce)
+      printf '    ⤫ %s' "$detail" ;;
+    flip_flop_pass)
+      printf '    ⊕ %s' "$detail" ;;
+    flip_flop_fail|flip_flop_inconclusive)
+      printf '    ⊗ %s' "$detail" ;;
+    flip_flop_skipped)
+      printf '    ⊘ %s' "$detail" ;;
+    # S173 FIX ROUND 2 (N3): the last two survivors of the `*)` default. Once
+    # the arms above landed, these were the ONLY ticket-level lines still
+    # flush-left — sandwiched between indented neighbours they read as a
+    # rendering fault mid-timeline rather than as a category. Same glyph family:
+    # ⊕ verified-on-branch (a pass, like flip_flop_pass), ⊜ contract amendment
+    # (the declarations reconciled against the diff).
+    ticket_postcommit_ok)
+      printf '    ⊕ %s' "$detail" ;;
+    ticket_test_edits)
+      printf '    ⊜ %s' "$detail" ;;
     base_stale)
       # S159 — this drive began against a base that was behind origin. It gets
       # the same ⟳ the guard prints on the CLI, so the timeline reads the way the
@@ -182,16 +205,28 @@ liveness_tail() {
 
 # --- compute_progress — read $EVENTS, print the one progress/pace line -------
 # Format (exact substrings asserted by the tests):
-#   Wave <cur>/<tot> · ticket <id> (<k>/<n>) · attempt <a> · ~<avg>s avg/ticket · elapsed <…>
+#   Wave <cur>/<tot> · ticket <id> (<k>/<n>)[ · hire <a>][ · <b> bounces] · ~<avg>s avg/ticket · elapsed <…>
+# S173: <a> is the HIRE count for the CURRENT ticket — how many times LCARS
+# cold-spawned a worker for it — and <b> the bounce count, present only when a
+# gate actually rejected a hire (silence when nothing went wrong, the same rule
+# the board chip and the comment mirror use).
+# S173 FIX ROUND: <a> is derived by the ONE shared rule — the NUMBER of
+# ticket_attempt events for the ticket, ANY phase (run.sh ticket_hire_count,
+# comment-mirror cm_ticket_sessions, board.js sessionCount all agree). It used
+# to be the max `attempt` VALUE, which is NOT the same number: a pre-S133
+# standoff stream numbers its dispatches per phase (two events, both attempt=1)
+# and any gap in the indices makes the max over-count.
 compute_progress() {
   [ -f "$EVENTS" ] || return 0
 
-  local first_ts="" cur_wave="" cur_ticket="" cur_attempt="" total_waves_ev=""
-  local greens=0 sum=0
+  local first_ts="" cur_wave="" cur_ticket="" total_waves_ev=""
+  local greens=0 sum=0 bounces=0
   local tickets_ev=0 seen_waves=" "
   local st_ids=() st_ts=()
+  # per-ticket HIRE tallies, parallel arrays (bash 3.2: no associative arrays).
+  local hr_ids=() hr_n=()
 
-  local line type ticket ts wave attempt
+  local line type ticket ts wave
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     type="$(ev_str "$line" type)"
@@ -212,11 +247,21 @@ compute_progress() {
       ticket_start)
         ticket="$(ev_str "$line" ticket)"
         [ -n "$ticket" ] && cur_ticket="$ticket"
-        cur_attempt=""
         st_ids+=("$ticket"); st_ts+=("$ts")
         ;;
       ticket_attempt)
-        attempt="$(ev_num "$line" attempt)"; [ -n "$attempt" ] && cur_attempt="$attempt"
+        # ONE hire per ticket_attempt EVENT, any phase — tallied per ticket id so
+        # a re-entered ticket keeps counting up instead of restarting, and a
+        # second ticket_start never resets it.
+        local at j found=0
+        at="$(ev_str "$line" ticket)"; [ -n "$at" ] || at="$cur_ticket"
+        for (( j=0; j<${#hr_ids[@]}; j++ )); do
+          if [ "${hr_ids[$j]}" = "$at" ]; then hr_n[$j]=$(( ${hr_n[$j]} + 1 )); found=1; break; fi
+        done
+        [ "$found" -eq 0 ] && { hr_ids+=("$at"); hr_n+=(1); }
+        ;;
+      ticket_gate_bounce)
+        bounces=$(( bounces + 1 ))
         ;;
       ticket_green)
         ticket="$(ev_str "$line" ticket)"
@@ -242,7 +287,25 @@ compute_progress() {
   [ -n "$tot_tickets" ] || tot_tickets="?"
   [ -n "$cur_wave" ] || cur_wave="?"
   [ -n "$cur_ticket" ] || cur_ticket="-"
-  [ -n "$cur_attempt" ] || cur_attempt="1"
+
+  # The current ticket's HIRE count, by the shared rule. ZERO means the stream
+  # records no dispatch for it, so the count is UNKNOWN and the field is OMITTED
+  # — never floored to a number nobody counted. (In a live run the dispatch
+  # event is written before the worker starts, so this is only ever pre-dispatch
+  # or a pre-S134 stream.)
+  local cur_hires=0 k
+  for (( k=0; k<${#hr_ids[@]}; k++ )); do
+    if [ "${hr_ids[$k]}" = "$cur_ticket" ]; then cur_hires="${hr_n[$k]}"; break; fi
+  done
+  local hire_field=""
+  [ "$cur_hires" -gt 0 ] && hire_field=" · hire $cur_hires"
+
+  # SILENCE when nothing went wrong: the bounce field appears only when a gate
+  # actually rejected a hire.
+  local bounce_field=""
+  if [ "$bounces" -eq 1 ]; then bounce_field=" · 1 bounce"
+  elif [ "$bounces" -gt 1 ]; then bounce_field=" · $bounces bounces"
+  fi
 
   local avg_field
   if [ "$greens" -gt 0 ]; then
@@ -265,9 +328,9 @@ compute_progress() {
   local live_suffix=""
   [ -n "$live_tail" ] && live_suffix=" · ◇ $live_tail"
 
-  printf 'Wave %s/%s · ticket %s (%s/%s) · attempt %s · %s · %s%s\n' \
+  printf 'Wave %s/%s · ticket %s (%s/%s)%s%s · %s · %s%s\n' \
     "$cur_wave" "$tot_waves" "$cur_ticket" "$greens" "$tot_tickets" \
-    "$cur_attempt" "$avg_field" "$elapsed_field" "$live_suffix"
+    "$hire_field" "$bounce_field" "$avg_field" "$elapsed_field" "$live_suffix"
 }
 
 # --- is_terminal <line> — does this event end the watch? --------------------

@@ -224,6 +224,26 @@ grep -q '"type":"ticket_green"' "$ev" \
   && ok "1j. proof-tests.sha256 recorded at gate-pass time" \
   || bad "1j. proof-tests.sha256 missing"
 
+# S173 — the ticket-green line stops quoting the worker's homework. ONE hire, so
+# the captain is told nothing about a count; the worker's own iteration count
+# (result.json.attempts = 2 for the `good` stub) rides event DATA only.
+gline="$(grep '"type":"ticket_green"' "$ev" | tail -1)"
+printf '%s' "$gline" | grep -q '"detail":"ticket t-001 green"' \
+  && ok "1k. first-hire ticket_green detail is bare 'green' (no count at all)" \
+  || bad "1k. ticket_green detail carries a count: $gline"
+printf '%s' "$gline" | grep -qi 'attempt' \
+  && bad "1l. the retired word 'attempt' is still in the ticket_green line: $gline" \
+  || ok "1l. no 'attempt' anywhere in the ticket_green event"
+printf '%s' "$gline" | grep -q '"sessions":1' \
+  && ok "1m. data carries sessions=1 (the HIRE count, derived from events)" \
+  || bad "1m. no sessions=1 in the ticket_green data: $gline"
+printf '%s' "$gline" | grep -q '"iterations":2' \
+  && ok "1n. data carries iterations=2 (the worker's own count, forensic)" \
+  || bad "1n. no iterations=2 in the ticket_green data: $gline"
+printf '%s' "$OUT" | grep -q 't-001 passed\. Saved result.json\.' \
+  && ok "1o. the terminal echo is silent about counts on a first-hire green" \
+  || bad "1o. terminal echo still quotes a count: $(printf '%s' "$OUT" | grep -i 'passed' | head -2)"
+
 # ==========================================================================
 echo "== 2. cheating stub bounces once, compliant retry goes green =="
 repo="$(new_repo)"; sd="$(new_stub_dir cheat fix-good)"
@@ -248,6 +268,20 @@ grep -q '"type":"ticket_green"' "$(EV "$repo")" \
 [ ! -f "$(TD "$repo")/gate-signal.txt" ] \
   && ok "2f. gate-signal.txt cleared on the green path" \
   || bad "2f. stale gate-signal.txt left after green"
+
+# S173 — two hires, so the count that GOVERNS is named, in the hire vocabulary.
+gline2="$(grep '"type":"ticket_green"' "$(EV "$repo")" | tail -1)"
+printf '%s' "$gline2" | grep -q '"detail":"ticket t-001 green after 2 worker sessions"' \
+  && ok "2g. a 2-hire green reads 'green after 2 worker sessions'" \
+  || bad "2g. wrong 2-hire green detail: $gline2"
+printf '%s' "$gline2" | grep -q '"sessions":2' \
+  && ok "2h. data carries sessions=2" || bad "2h. no sessions=2: $gline2"
+printf '%s' "$gline2" | grep -q '"iterations":1' \
+  && ok "2i. the fix-good worker's OWN count (1) rides iterations, not sessions" \
+  || bad "2i. no iterations=1: $gline2"
+printf '%s' "$gline2" | grep -qi 'attempt' \
+  && bad "2j. 'attempt' survives in the 2-hire green line: $gline2" \
+  || ok "2j. no 'attempt' in the 2-hire ticket_green event"
 
 # ==========================================================================
 echo "== 3. persistent-fail stub → 3 sessions → PARK (never die) → resume =="
@@ -374,6 +408,109 @@ else
 fi
 
 # ==========================================================================
+# S173 — the hire count is derived from events.jsonl, so it SURVIVES a fresh
+# process re-entering a half-built ticket. Session 1 runs under a 1-session cap
+# and is bounced (parks); a SECOND, independent process then re-enters and goes
+# green — its green must read "after 2 worker sessions", NOT restart at 1.
+echo "== 8. the hire count survives a fresh process re-entering the ticket =="
+repo="$(new_repo)"; sd1="$(new_stub_dir lazy)"
+run_ticket "$repo" "$sd1" LCARS_WORKER_TRIES=1
+[ "$(cat "$sd1/n")" = 1 ] && ok "8a. process 1 ran exactly ONE hire (cap 1) and parked" \
+                          || bad "8a. process 1 hire count $(cat "$sd1/n") (wanted 1)"
+[ "$(grep -c '"type":"ticket_attempt"' "$(EV "$repo")")" = 1 ] \
+  && ok "8b. exactly one ticket_attempt on disk after process 1" \
+  || bad "8b. ticket_attempt count $(grep -c '"type":"ticket_attempt"' "$(EV "$repo")")"
+# clear the gate exactly as `lcars respond` does, then re-enter in a NEW process.
+st8="$(MD "$repo")/state.json"
+python3 - "$st8" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); d.pop("awaitingHuman",None); d.pop("pendingQuestion",None)
+json.dump(d,open(sys.argv[1],'w'),indent=2)
+PY
+rm -f "$(MD "$repo")/pending.json"
+sd2="$(new_stub_dir good)"
+run_ticket "$repo" "$sd2"
+[ "$RC" -eq 0 ] && grep -q '"type":"ticket_green"' "$(EV "$repo")" \
+  && ok "8c. the re-entering process goes green" \
+  || bad "8c. re-entry failed (rc=$RC: $(printf '%s' "$OUT" | tail -8))"
+gline8="$(grep '"type":"ticket_green"' "$(EV "$repo")" | tail -1)"
+printf '%s' "$gline8" | grep -q '"detail":"ticket t-001 green after 2 worker sessions"' \
+  && ok "8d. the count did NOT restart at 1 across the process boundary" \
+  || bad "8d. re-entry count restarted: $gline8"
+printf '%s' "$gline8" | grep -q '"sessions":2' \
+  && ok "8e. data sessions=2 after re-entry" || bad "8e. wrong sessions after re-entry: $gline8"
+
+# ==========================================================================
+# S173 — ticket_flagged is emitted from TWO paths carrying TWO quantities. A
+# consumer reading DATA ALONE must be able to tell them apart.
+echo "== 9. ticket_flagged from both paths is distinguishable by data alone =="
+# Path A: the worker itself reports not-green (impl-save-result, direct entry).
+repoA="$(new_repo)"
+cat > "$TMPROOT/notgreen.json" <<'JSON'
+{ "ticketId": "t-001", "passed": false, "attempts": 6, "summary": "could not get it green",
+  "newTests": [], "testEdits": [], "flipFlop": "not-applicable",
+  "flipFlopReason": "nothing new was proven" }
+JSON
+OUTA="$( cd "$repoA" && env LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+         bash "$SCRIPT" impl-save-result --mission m1 --ticket t-001 \
+         --result "$TMPROOT/notgreen.json" 2>&1 )"
+flagA="$(grep '"type":"ticket_flagged"' "$(EV "$repoA")" | tail -1)"
+printf '%s' "$flagA" | grep -q '"iterations":6' \
+  && ok "9a. worker-self-report flag carries iterations=6" \
+  || bad "9a. no iterations=6 on the self-report flag: $flagA"
+printf '%s' "$flagA" | grep -q '"sessions":' \
+  && bad "9b. the self-report flag also claims a hire count: $flagA" \
+  || ok "9b. the self-report flag carries NO sessions key (unambiguous)"
+# Path B: the proof gates exhausted the hire cap.
+repoB="$(new_repo)"; sdB="$(new_stub_dir lazy lazy lazy)"
+run_ticket "$repoB" "$sdB"
+flagB="$(grep '"type":"ticket_flagged"' "$(EV "$repoB")" | tail -1)"
+printf '%s' "$flagB" | grep -q '"sessions":3' \
+  && ok "9c. cap-exhaustion flag carries sessions=3 (hires)" \
+  || bad "9c. no sessions=3 on the exhaustion flag: $flagB"
+printf '%s' "$flagB" | grep -q '"iterations":' \
+  && bad "9d. the exhaustion flag also claims an iteration count: $flagB" \
+  || ok "9d. the exhaustion flag carries NO iterations key (unambiguous)"
+printf '%s%s' "$flagA" "$flagB" | grep -q '"attempts":' \
+  && bad "9e. the colliding 'attempts' data key survives on a ticket_flagged" \
+  || ok "9e. neither flag path still emits the colliding 'attempts' key"
+
+# ==========================================================================
+# 10. S173 FIX ROUND — the retired word is gone from the CAPTAIN-FACING strings
+# that name the HIRE CAP, and there is ONE derivation rule for the hire count.
+# Source-level, so it is cheap and cannot be faked by a stub.
+# ==========================================================================
+echo "== 10. no captain-facing string names the hire cap an 'attempt' =="
+
+grep -n 'never turned green within the attempt cap' "$SCRIPT" >/dev/null \
+  && bad "10a. classify_impl_failure still calls the HIRE cap an 'attempt cap'" \
+  || ok "10a. genuine-red-exhausted names the hire cap correctly"
+grep -q 'never turned green within the hire cap' "$SCRIPT" \
+  && ok "10a. …and says 'hire cap' explicitly" \
+  || bad "10a. the genuine-red-exhausted wording is missing"
+
+grep -n 'The ticket FAILS this attempt' "$SCRIPT" >/dev/null \
+  && bad "10b. the POST-COMMIT GATE detail still says 'FAILS this attempt'" \
+  || ok "10b. the POST-COMMIT GATE detail names the worker session"
+grep -q 'The ticket FAILS this worker session' "$SCRIPT" \
+  && ok "10b. …in the round's vocabulary" \
+  || bad "10b. the POST-COMMIT GATE replacement wording is missing"
+
+grep -n 'no valid estimate.json after %s attempt' "$SCRIPT" >/dev/null \
+  && bad "10c. the estimator still counts MAX_WORKER_TRIES in 'attempt(s)'" \
+  || ok "10c. the estimator's bounded retry names worker sessions"
+grep -q 'no valid estimate.json after %s worker session' "$SCRIPT" \
+  && ok "10c. …and each try IS a spawn_worker dispatch, so that is the honest word" \
+  || bad "10c. the estimator replacement wording is missing"
+
+# The DERIVATION RULE itself is proven behaviourally at each of its four
+# surfaces rather than by poking the function: run.sh through the Verify
+# roll-up (verify-summary-contract §7/§8 — a pre-S133 two-phase ticket counts
+# TWO hires, and a stream with no dispatch on file stays silent rather than
+# being floored to 1) and through §8 above (a re-entered process keeps
+# counting), comment-mirror through lcars-comment T15, lcars-status through
+# W15, and board.js through web/tests/test_activity_sections.HireDerivationTest.
+
 echo
 printf 'unified-implementer: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

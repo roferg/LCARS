@@ -926,9 +926,12 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   color:var(--lcars-text-dim)}
 .band-chip.chip-tickets{color:var(--lcars-teal);
   border-color:rgba(0,204,170,.4);background:rgba(0,204,170,.10)}
-.band-chip.chip-attempts{color:var(--lcars-amber);
+.band-chip.chip-sessions{color:var(--lcars-amber);
   border-color:rgba(255,170,0,.4);background:rgba(255,170,0,.12)}
-.band-chip.chip-attempts.flagged{color:#ff8a96;
+.band-chip.chip-sessions.flagged{color:#ff8a96;
+  border-color:rgba(255,51,68,.5);background:rgba(255,51,68,.14)}
+/* S173: gate bounces — always red; the "something went wrong" signal. */
+.band-chip.chip-bounces{color:#ff8a96;
   border-color:rgba(255,51,68,.5);background:rgba(255,51,68,.14)}
 .band-chip.chip-duration{color:var(--lcars-text-dim)}
 .band-chip.chip-status{color:var(--lcars-text-dim)}

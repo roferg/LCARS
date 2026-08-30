@@ -3,13 +3,18 @@
  * with minimal browser stubs (same pattern as board_sections_harness.js), then
  * exercises the DOM builders that render the unified-implementer surfaces:
  *   • renderEvent(ev)        — one activity event → an `.evt` node
+ *   • renderStream(acts)     — S173 fix round 2: a whole ORDERED stream, grouped
+ *                              through groupActivityIntoSections FIRST (the only
+ *                              path the product ever takes to renderEvent) and
+ *                              then rendered event by event → an array of nodes.
  *   • buildSummary(mi)       — the Verify "what was built" ticket list
  *   • contractAmendments(mi) — the CONTRACT AMENDMENTS block (or null)
  * The produced DOM is projected to plain JSON (className + textContent + html +
  * recursive children) so a Python test can assert on it without a browser.
  *
- * argv[2] = mode ("renderEvent" | "buildSummary" | "contract")
- * argv[3] = a JSON file: an event (renderEvent) or a mission (buildSummary/contract)
+ * argv[2] = mode ("renderEvent" | "renderStream" | "buildSummary" | "contract")
+ * argv[3] = a JSON file: an event (renderEvent), an event ARRAY (renderStream),
+ *           or a mission (buildSummary/contract)
  */
 const fs = require("fs");
 const path = require("path");
@@ -82,6 +87,14 @@ var out;
 if (mode === "renderEvent") {
   need("renderEvent");
   out = project(sandbox.renderEvent(input));
+} else if (mode === "renderStream") {
+  // S173 FIX ROUND 2: the product renders events only AFTER grouping, and the
+  // grouping pass is what derives a ticket_attempt's per-ticket hire index. A
+  // harness that skipped it was rendering a shape the board never produces.
+  need("renderEvent");
+  need("groupActivityIntoSections");
+  sandbox.groupActivityIntoSections(input);
+  out = input.map(function (ev) { return project(sandbox.renderEvent(ev)); });
 } else if (mode === "buildSummary") {
   need("buildSummary");
   out = project(sandbox.buildSummary(input));

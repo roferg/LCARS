@@ -193,6 +193,96 @@ check "4. NO 'Proof of work' text at all" "! grep -qi 'Proof of work' '$OUT'"
 check "4. NO 'flip-flop' text at all" "! grep -qi 'flip-flop' '$OUT'"
 check "4. still prints the test tally (2/2 green)" "grep -q '2/2' '$OUT'"
 
+# ── 6. S173: the Verify roll-up counts HIRES, not the worker's own swings ────
+# The result.json `attempts` field (t-001: 2, t-002: 1) is the WORKER's internal
+# iteration count — forensic, and never a headline. The number the captain reads
+# is how many times LCARS had to hire, counted from ticket_attempt events.
+repo6="$(new_repo proof)"; m6="$repo6/.git/lcars/missions/$MID"
+cat >"$m6/events.jsonl" <<EOF
+{"ts":1000,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1001,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":1}}
+{"ts":1002,"mission":"$MID","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-002 bounced by the flip-flop gate (FAIL) — session 1","data":{"ticket":"t-002","gate":"flip-flop","attempt":1}}
+{"ts":1003,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 2 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":2}}
+EOF
+make_gh_stub "$repo6/gh"; run_summary "$repo6"
+check "6. exits 0" "[ '$RC' -eq 0 ]"
+check "6. a FIRST-HIRE ticket says only 'green' (silence when nothing went wrong)" \
+  "grep -qF '✓ t-001 — green' '$OUT' && ! grep -E '✓ t-001' '$OUT' | grep -q 'session'"
+check "6. a RE-HIRED ticket names the hire count" \
+  "grep -qF '✓ t-002 — green after 2 worker sessions' '$OUT'"
+check "6. the worker's own iteration count (2) is nowhere on the ✓ lines" \
+  "! grep -E '^ +✓' '$OUT' | grep -qE '\\b2 attempt'"
+check "6. the retired word 'attempt' is gone from the Verify roll-up" \
+  "! grep -qi 'attempt' '$OUT'"
+
+# ── 7. S173 back-compat: a mission with NO events.jsonl still reads sanely ────
+repo7="$(new_repo proof)"; make_gh_stub "$repo7/gh"; run_summary "$repo7"
+check "7. no events.jsonl → every ticket reads as a clean first-hire green" \
+  "grep -qF '✓ t-001 — green' '$OUT' && grep -qF '✓ t-002 — green' '$OUT'"
+check "7. no '?' placeholder and no phantom hire count leaks in" \
+  "! grep -E '^ +✓' '$OUT' | grep -qE '[?]|worker session'"
+
+# ── 8. S173 FIX ROUND: ONE derivation rule — ticket_attempt events, ANY phase ─
+# A PRE-S133 standoff mission's stream numbers its dispatches PER PHASE, so
+# t-001 carries two ticket_attempt events BOTH wearing attempt=1. The max
+# `attempt` VALUE says 1 and hides a re-hire; the EVENT COUNT says 2, which is
+# how many workers LCARS actually had to spawn. Same rule as the board chip,
+# the comment mirror and the `lcars status` pace line.
+repo8="$(new_repo proof)"; m8="$repo8/.git/lcars/missions/$MID"
+cat >"$m8/events.jsonl" <<EOF
+{"ts":1000,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"test-writer try 1 for t-001","data":{"ticket":"t-001","phase":"test-writer","attempt":1}}
+{"ts":1001,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"implementer try 1 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":1}}
+{"ts":1002,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":1}}
+EOF
+make_gh_stub "$repo8/gh"; run_summary "$repo8"
+check "8. exits 0" "[ '$RC' -eq 0 ]"
+check "8. a pre-S133 two-phase ticket counts TWO hires (events, not the max index 1)" \
+  "grep -qF '✓ t-001 — green after 2 worker sessions' '$OUT'"
+check "8. a single-dispatch ticket in the SAME stream still reads as a clean green" \
+  "grep -qF '✓ t-002 — green' '$OUT' && ! grep -E '✓ t-002' '$OUT' | grep -q 'session'"
+# S173 FIX ROUND 2 (N4): honestly relabelled. This check holds on BOTH sides of
+# the fix-round-1 diff — the word was retired by the round's FIRST commit, and
+# §8's own cure (counting ticket_attempt EVENTS instead of the max index) cannot
+# make it fail. It is a REGRESSION GUARD carrying §8's historical stream into
+# the vocabulary contract, not a proof of §8's cure; §8's cure proofs are the
+# two checks above it, both of which fail on the pre-fix roll-up.
+check "8. REGRESSION GUARD: the retired word 'attempt' stays gone on a historical stream" \
+  "! grep -qi 'attempt' '$OUT'"
+
+# ── 9. S173 FIX ROUND 2 (N1): CROSS-SURFACE AGREEMENT on the measured shape ──
+# One ticket, THREE hires and TWO bounces, with a real `stage_start` RE-ENTRY
+# after hire 2 (respond→run resume / manual retry / the auto-advance driver
+# re-running Implement). `wave_start` is deduped against events.jsonl;
+# `stage_start` is not — so the board's per-section derivation used to split the
+# wave and report 2 while these shell surfaces reported 3.
+#
+# HONEST LABEL: for the Verify roll-up this is a REGRESSION GUARD, not a cure
+# proof — ticket_hire_count() already read the WHOLE stream, so it says 3 on
+# both sides of fix round 2. The cure lands in board.js, and its cure proof is
+# ResumeSplitHireCountTest in web/tests/test_activity_sections.py. What this
+# check adds is the AGREEMENT: the number the board now shows is THIS number,
+# proven against the same event stream.
+repo9="$(new_repo proof)"; m9="$repo9/.git/lcars/missions/$MID"
+cat >"$m9/events.jsonl" <<EOF
+{"ts":1000,"mission":"$MID","stage":"implement","type":"stage_start","detail":"implement starting"}
+{"ts":1001,"mission":"$MID","stage":"implement","type":"wave_start","detail":"wave 1","data":{"wave":1}}
+{"ts":1002,"mission":"$MID","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1004,"mission":"$MID","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-001 bounced by the flip-flop gate (FAIL) — session 1","data":{"ticket":"t-001","gate":"flip-flop","attempt":1}}
+{"ts":1005,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 2 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":2}}
+{"ts":1006,"mission":"$MID","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-001 bounced by the declared-edits gate (FAIL) — session 2","data":{"ticket":"t-001","gate":"declared-edits","attempt":2}}
+{"ts":1007,"mission":"$MID","stage":"implement","type":"stage_start","detail":"implement resuming"}
+{"ts":1008,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 3 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":3}}
+EOF
+make_gh_stub "$repo9/gh"; run_summary "$repo9"
+check "9. exits 0" "[ '$RC' -eq 0 ]"
+check "9. REGRESSION GUARD: the roll-up counts 3 hires ACROSS the stage_start re-entry" \
+  "grep -qF '✓ t-001 — green after 3 worker sessions' '$OUT'"
+check "9. the re-entry does not inflate the count either (not 4, not 6)" \
+  "! grep -E '✓ t-001' '$OUT' | grep -qE '(4|5|6) worker sessions'"
+check "9. a ticket with NO hire events in the same stream still reads clean" \
+  "grep -qF '✓ t-002 — green' '$OUT' && ! grep -E '✓ t-002' '$OUT' | grep -q 'session'"
+
 echo
 echo "verify-summary-contract: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

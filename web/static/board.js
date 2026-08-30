@@ -6068,14 +6068,80 @@ function renderEvent(ev) {
    dropped: every input event lands in exactly one section, in order.
 
    Each section carries derived summary data: ticketCount (ticket_start events),
-   greenCount / flaggedCount, attemptCount (ticket_attempt events when present,
-   else green+flagged outcomes), a `flagged` marker (any ticket flagged), the
-   first/last ts and their durationSec, and `active` (the LAST section — the
-   in-flight / most-recent one, which renders OPEN). */
+   greenCount / flaggedCount, sessionCount, bounceCount (ticket_gate_bounce
+   events — a gate rejection that cost a hire), a `flagged` marker (any ticket
+   flagged), the first/last ts and their durationSec, and `active` (the LAST
+   section — the in-flight / most-recent one, which renders OPEN).
+
+   sessionCount is THE HIRE COUNT, and there is exactly ONE derivation rule for
+   it, shared with run.sh's ticket_hire_count(), comment-mirror's
+   cm_ticket_sessions() and lcars-status's pace line: the NUMBER of
+   ticket_attempt events FOR A TICKET, ANY phase. Every ticket_attempt is one
+   real worker DISPATCH — on a current mission they are all phase=tdd; on a
+   pre-S133 standoff mission the test-writer and implementer events were each a
+   dispatch too, so counting them is honest there as well. It is NOT the max
+   `attempt` VALUE (pre-S133 streams number per phase, so the max under-counts)
+   and it is NOT derived from anything else.
+
+   S173 FIX ROUND 2 (N1) — the counters are PER TICKET OVER THE WHOLE STREAM,
+   not per section. `wave_start` is durably deduped against events.jsonl but
+   `stage_start` is NOT, so every real re-entry (respond→run resume, a manual
+   retry, the auto-advance driver re-running Implement) appends a second
+   stage_start and this grouper opens a second section on it — splitting one
+   wave's hires across two bands, so a ticket that took 3 hires rendered "↻ 2
+   worker sessions" while the other three surfaces all said 3. A band therefore
+   reports, for each ticket it shows a hire (or bounce) for, that ticket's TOTAL
+   over the entire stream. bounceCount had the identical scope bug and is cured
+   on the identical rule.
+   THE SECTIONING ITSELF IS DELIBERATELY UNCHANGED (the captain chose the narrow
+   fix): the timeline still visibly splits at a resume, stage_start is still not
+   deduped, sections are never merged. Only the NUMBER changed.
+   An event with no `data.ticket` (a malformed or very old row) cannot be
+   attributed, so it is counted once, locally, where it sits — never dropped.
+
+   NO ticket_attempt events ⇒ sessionCount is null: the hire count is UNKNOWN,
+   the chip is omitted, and NOTHING is substituted for it. (Until this fix an
+   outcome fallback — greens + flaggeds — was rendered under the word
+   "sessions", so a wave where every ticket landed first try wore "↻ 3
+   sessions", and a ticket that struggled through 5 worker iterations with no
+   ticket_attempt on file wore nothing.)
+   Every count keys off the event TYPE, never off detail text, so a historical
+   or MIXED-vocabulary stream tallies identically to a fresh one. */
 function groupActivityIntoSections(acts) {
   var sections = [];
   var cur = null;
   var waveOrdinal = 0;
+
+  // S173 FIX ROUND 2 (N1+N2). ONE ordered pre-pass over the WHOLE stream, before
+  // any sectioning, producing:
+  //   streamHires/streamBounces — per-ticket TOTALS, so a band can report a
+  //     ticket's real count wherever those events sit in the timeline; and
+  //   ev.hireIndex — each ticket_attempt's position in ITS OWN ticket's hire
+  //     sequence (1st, 2nd, 3rd …), which is what the headline shows. The wire's
+  //     `attempt` value is NOT that sequence on a historical stream (a pre-S133
+  //     standoff numbers per PHASE, so two dispatches both carry attempt=1; a
+  //     gapped stream jumps 1→3), so a wire-indexed headline contradicted the
+  //     chip above it. Count and index now come off the same series.
+  // The pre-pass reads only event TYPE and `data.ticket`; it changes nothing
+  // about how events are GROUPED.
+  var streamHires = {}, streamBounces = {}, hireSeq = {};
+  (acts || []).forEach(function (ev) {
+    if (!ev || typeof ev !== "object") return;
+    var tid = ticketOf(ev);
+    if (ev.type === "ticket_attempt") {
+      if (tid) {
+        streamHires[tid] = (streamHires[tid] || 0) + 1;
+        hireSeq[tid] = (hireSeq[tid] || 0) + 1;
+        ev.hireIndex = hireSeq[tid];
+      } else {
+        // unattributable: it still happened, it just cannot be pooled with a
+        // ticket's other hires — and it gets NO index rather than a wrong one.
+        delete ev.hireIndex;
+      }
+    } else if (ev.type === "ticket_gate_bounce" && tid) {
+      streamBounces[tid] = (streamBounces[tid] || 0) + 1;
+    }
+  });
 
   function tally(sec, ev) {
     sec.events.push(ev);
@@ -6084,11 +6150,19 @@ function groupActivityIntoSections(acts) {
       if (sec.startTs == null) sec.startTs = t;
       sec.endTs = t;
     }
+    var tid;
     switch (ev.type) {
       case "ticket_start": sec.ticketCount++; break;
-      case "ticket_green": sec.greenCount++; sec._outcomes++; break;
-      case "ticket_flagged": sec.flaggedCount++; sec._outcomes++; sec.flagged = true; break;
-      case "ticket_attempt": sec._attempts++; break;
+      case "ticket_green": sec.greenCount++; break;
+      case "ticket_flagged": sec.flaggedCount++; sec.flagged = true; break;
+      case "ticket_attempt":
+        tid = ticketOf(ev);
+        if (tid) sec._hireTickets[tid] = 1; else sec._looseHires++;
+        break;
+      case "ticket_gate_bounce":
+        tid = ticketOf(ev);
+        if (tid) sec._bounceTickets[tid] = 1; else sec._looseBounces++;
+        break;
     }
   }
   function open(kind, stage, wave) {
@@ -6096,7 +6170,10 @@ function groupActivityIntoSections(acts) {
       kind: kind, stage: normStage(stage), wave: wave || null,
       events: [], startTs: null, endTs: null,
       ticketCount: 0, greenCount: 0, flaggedCount: 0, flagged: false,
-      _attempts: 0, _outcomes: 0,
+      bounceCount: 0,
+      // the TICKETS this section showed a hire / bounce for; the whole-stream
+      // totals for those tickets are summed in the finalize pass below.
+      _hireTickets: {}, _bounceTickets: {}, _looseHires: 0, _looseBounces: 0,
     };
     sections.push(sec);
     cur = sec;
@@ -6140,10 +6217,33 @@ function groupActivityIntoSections(acts) {
     sec.active = (i === sections.length - 1);
     sec.durationSec = (sec.startTs != null && sec.endTs != null)
       ? Math.max(0, Math.round(sec.endTs - sec.startTs)) : null;
-    sec.attemptCount = sec._attempts > 0 ? sec._attempts : sec._outcomes;
-    delete sec._attempts; delete sec._outcomes;
+    // BACK-COMPAT: a pre-S134 stream has no ticket_attempt events at all. The
+    // hire count is then genuinely UNKNOWN — null, so every surface omits it.
+    // An outcome count is NOT a hire count and is never substituted for one.
+    // Never NaN, never a fabricated number, on any stream.
+    var hires = sumStreamTotals(sec._hireTickets, streamHires) + sec._looseHires;
+    sec.sessionCount = hires > 0 ? hires : null;
+    sec.bounceCount = sumStreamTotals(sec._bounceTickets, streamBounces)
+      + sec._looseBounces;
+    delete sec._hireTickets; delete sec._bounceTickets;
+    delete sec._looseHires; delete sec._looseBounces;
   });
   return sections;
+}
+
+/* S173 FIX ROUND 2: the ticket an event belongs to, or null when the stream does
+   not say. Reads the structured `data.ticket` the adapter passes through — never
+   detail text, which is prose and disagrees across vocabularies on purpose. */
+function ticketOf(ev) {
+  var t = ev && ev.data && ev.data.ticket;
+  return (typeof t === "string" && t) ? t : null;
+}
+
+/* S173 FIX ROUND 2: sum a ticket-id SET's whole-stream totals. */
+function sumStreamTotals(idSet, totals) {
+  var n = 0;
+  Object.keys(idSet || {}).forEach(function (id) { n += (totals[id] || 0); });
+  return n;
 }
 
 /* S115: ts → whole seconds (epoch). Mirrors fmtTs's tolerance of epoch-seconds,
@@ -6164,7 +6264,8 @@ function sectionTitle(sec) {
 }
 
 /* S115: the one-line Star-Trek-voiced summary shown on a collapsed band. Wave
-   bands read "N tickets · M attempts · <dur>"; stage bands read a stage-flavoured
+   bands read "N tickets · M worker sessions · K bounces · <dur>" (the hire and
+   bounce counters silent when there is nothing to report); stage bands read a stage-flavoured
    line with the duration. Duration is omitted when unknown. Kept as the plain-
    text fallback; the band now renders sectionSummaryChips (graphic stat chips)
    with the SAME singular/plural + omit-when-zero rules. */
@@ -6172,8 +6273,14 @@ function sectionSummary(sec) {
   var bits = [];
   if (sec.kind === "wave") {
     bits.push(sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s"));
-    if (sec.attemptCount) {
-      bits.push(sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s"));
+    // S173: silence when nothing went wrong — a wave whose every ticket landed
+    // on its FIRST hire wears no counter at all. Only > 1 is worth saying.
+    if (sec.sessionCount > 1) {
+      bits.push(sec.sessionCount + " worker session"
+        + (sec.sessionCount === 1 ? "" : "s"));
+    }
+    if (sec.bounceCount > 0) {
+      bits.push(sec.bounceCount + " bounce" + (sec.bounceCount === 1 ? "" : "s"));
     }
   } else {
     bits.push(sec.active ? "in progress" : "complete");
@@ -6186,20 +6293,30 @@ function sectionSummary(sec) {
    icon-led LCARS stat chips instead of one run-together line. Returns an ARRAY
    of chip spans (each its own class) so sectionNode can drop them into the band.
    Same omit/singular-plural rules as sectionSummary:
-     WAVE  → ⬢ tickets (teal) · ↻ attempts (amber, RED when any flagged) · ◷ dur
+     WAVE  → ⬢ tickets (teal) · ↻ worker sessions (amber, RED when any flagged)
+             · ⤫ gate bounces (RED, the "something went wrong" signal) · ◷ dur
      STAGE → in-progress (pulsing dot) / complete chip · ◷ dur
-   A chip whose value is 0/absent is omitted (no attempt chip at 0 attempts, no
-   duration chip when unknown) exactly as the text summary omits it. */
+   A chip whose value is nothing-to-report is omitted exactly as the text summary
+   omits it: NO session chip at ≤ 1 hire (a first-try wave wears no counter), no
+   bounce chip at 0 bounces, no duration chip when unknown. */
 function sectionSummaryChips(sec) {
   var chips = [];
   if (sec.kind === "wave") {
     chips.push(el("span", "band-chip chip-tickets",
       "⬢ " + sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s")));
-    if (sec.attemptCount) {
+    if (sec.sessionCount > 1) {
       // RED tint when this wave carries a flagged ticket, amber otherwise.
       chips.push(el("span",
-        "band-chip chip-attempts" + (sec.flaggedCount > 0 ? " flagged" : ""),
-        "↻ " + sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s")));
+        "band-chip chip-sessions" + (sec.flaggedCount > 0 ? " flagged" : ""),
+        "↻ " + sec.sessionCount + " worker session"
+          + (sec.sessionCount === 1 ? "" : "s")));
+    }
+    if (sec.bounceCount > 0) {
+      // The signal that something WENT WRONG — a gate rejected a hire and LCARS
+      // had to re-spawn. Always red; a wave with 0 and a wave with 2 are now
+      // distinguishable at a glance, without opening either.
+      chips.push(el("span", "band-chip chip-bounces",
+        "⤫ " + sec.bounceCount + " bounce" + (sec.bounceCount === 1 ? "" : "s")));
     }
   } else {
     // STAGE: an in-progress (pulsing dot via CSS ::before) / complete chip.
@@ -6426,13 +6543,13 @@ function fmtDuration(secs) {
 var EVENT_HEADS = {
   stage_start: "Stage started", stage_done: "Stage complete",
   wave_start: "Wave started", ticket_start: "Ticket started",
-  ticket_attempt: "Ticket attempt", ticket_green: "Ticket green",
+  ticket_attempt: "Worker session", ticket_green: "Ticket green",
   ticket_flagged: "Ticket flagged", gate: "Gate raised", error: "Error",
   // S134 — the S133 unified-implementer proof-gate vocabulary, in Trek console
   // voice. There is NO per-event role chip anymore: with one unified worker the
   // old Test-Writer / Implementer distinction is retired. The visible sub-
   // structure is the PROOF GATE outcome (below) and the worker-session marker
-  // (headlineFor, for ticket_attempt phase=tdd).
+  // (headlineFor, for any indexed ticket_attempt).
   flip_flop_pass: "PROOF ACCEPTED",
   flip_flop_fail: "PROOF REJECTED",
   flip_flop_inconclusive: "PROOF INCONCLUSIVE",
@@ -6458,10 +6575,27 @@ function headlineFor(ev) {
   // up to 3 sessions) each unified-TDD session emits a ticket_attempt with
   // phase=tdd + attempt=N. Surface that session number so multiple worker passes
   // on one ticket are legible — the meaningful sub-structure that replaces the
-  // retired role distinction (there is no role/"TDD" chip anywhere).
+  // retired role distinction (there is no role/"TDD" chip anywhere). NO
+  // captain-facing headline says "attempt", on any stream.
   if (ev.type === "ticket_attempt") {
-    var d = ev.data || {};
-    if (d.phase === "tdd" && d.attempt != null) return "Worker session " + d.attempt;
+    // S173 FIX ROUND: ANY phase, not just tdd. A pre-S133 standoff stream
+    // carries phase=test-writer / phase=implementer, and each of those events
+    // was a real worker dispatch too — they used to fall through to the literal
+    // "Ticket attempt", which is how the retired word survived on every
+    // historical mission's timeline.
+    //
+    // S173 FIX ROUND 2 (N2): the index is the event's position in ITS TICKET's
+    // own hire sequence (`hireIndex`, derived by groupActivityIntoSections from
+    // the same series the band counts), NOT the wire's `attempt` value. Fix
+    // round 1 surfaced the wire value for every phase, and on a historical
+    // stream the two series are unrelated: a pre-S133 ticket's two dispatches
+    // BOTH carry attempt=1, so a band reading "↻ 2 worker sessions" opened onto
+    // "Worker session 1" twice; a gapped stream showed 1 and 3 under a chip
+    // saying 2. A headline must never contradict the band above it.
+    // No derived index (an unattributable event, or headlineFor called on an
+    // ungrouped event) ⇒ DROP the number rather than show an untrustworthy one;
+    // EVENT_HEADS then supplies the phase-neutral "Worker session".
+    if (ev.hireIndex != null) return "Worker session " + ev.hireIndex;
   }
   return EVENT_HEADS[ev.type] || (ev.type || "Event").replace(/_/g, " ");
 }

@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:dcb27e725983863551009a8bedf443306ac8d8b92567170e7d378596aacb0b8d -->
-<!-- lcars-docs-src: vision.md sha256:5ef889fd618244807b6efabcc983382bfadbfad6bf327efd0d3cb9e21ce1decc -->
+<!-- lcars-docs-src: README.md sha256:1d414dfae3a96364e7acb794840621a54286526273addbdd23a529b87097da85 -->
+<!-- lcars-docs-src: vision.md sha256:d447de84c72da30a6552d66b0e75b38f71e5a0c2575f3a83b5eb3a5035a84616 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -741,7 +741,8 @@ flowchart LR
           <div class="control-desc">The read-only terminal board: every active
           Mission, its Stage, and anything awaiting you. Add <code>--watch</code>
           to follow a running Mission <strong>live</strong> — a streaming event view
-          with a pace line (wave, ticket, attempt, avg/ticket, elapsed).</div>
+          with a pace line (wave, ticket, tickets green, hire count, any bounces,
+          avg/ticket, elapsed).</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars init</div>
@@ -1236,14 +1237,15 @@ An inline run must never masquerade as isolated.</div>
           <p>The driver keeps a per-Mission append-only <strong>event log</strong>
           (<code>events.jsonl</code>) as it goes — every Stage start and finish,
           every gate, and fine-grained Implement progress: each wave, each ticket,
-          each attempt, and every green or flag. It prints each Stage line the
+          each worker session, and every green or flag. It prints each Stage line the
           moment it happens instead of only summarizing at halt. When you launch
           a run from <code>lcars</code> / <code>lcars run</code>, that same
           session relays a compact progress digest every ~60s (configurable via
           <code>LCARS_WATCH_INTERVAL</code> or <code>--interval</code>) until it
           halts — so you watch the run where you started it, without a second
           window. <code>lcars status --watch</code> tails the same log into a
-          live view with a pace/position line on that same interval. The events are emitted by the bash harness
+          live view with a pace/position line on that same interval; the bounce counter
+          is absent when nothing has bounced. The events are emitted by the bash harness
           <em>around</em> the worker calls — never by the worker — so the stream
           and the live view behave identically whatever CLI runs underneath. The
           <strong>same shared renderer</strong> also publishes progress to each
@@ -1257,7 +1259,7 @@ An inline run must never masquerade as isolated.</div>
           heartbeat. Idempotent (a stored comment-id map → a re-run edits, never
           double-posts) and best-effort — a missing or failing <code>gh</code>
           never breaks the run.</p>
-          <div class="lcars-readout">Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s</div>
+          <div class="lcars-readout">Wave 3/6 · ticket t-004 (5/14) · hire 2 · 1 bounce · ~12s avg/ticket · elapsed 4m12s</div>
         </div>
       </div>
     </section>
