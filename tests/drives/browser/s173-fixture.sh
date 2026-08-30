@@ -18,6 +18,9 @@
 #   wave 5 (e)  t-006  MIXED: old-vocabulary detail text beside new-vocabulary
 #   wave 6 (f)  t-007  TRULY HISTORICAL: ticket_attempt phase=test-writer /
 #                      phase=implementer, the pre-S133 standoff shape
+#   wave 7 (g)  t-008  THE RESUME SPLIT (fix round 2, N1): 3 hires + 2 bounces
+#                      with a `stage_start` RE-ENTRY after hire 2, so the wave's
+#                      hires straddle two timeline sections
 # ============================================================================
 set -euo pipefail
 FIX="${1:?usage: s173-fixture.sh <fixture-root>}"
@@ -103,6 +106,15 @@ cat >"$D/waves.json" <<'J'
         "issue": 5107
       }
     ]
+  },
+  {
+    "wave": 7,
+    "tickets": [
+      {
+        "id": "t-008",
+        "issue": 5108
+      }
+    ]
   }
 ]
 J
@@ -116,6 +128,7 @@ tickets = [
   ("t-005", "Pre-S134 flagged",         ["t-003"]),
   ("t-006", "Mixed vocabulary",         ["t-004"]),
   ("t-007", "Pre-S133 standoff stream", ["t-006"]),
+  ("t-008", "Resumed mid-wave",          ["t-007"]),
 ]
 plan = {"tickets": [
   {"id": i, "title": t, "description": "S173 fixture ticket " + i,
@@ -147,7 +160,7 @@ def ev(typ, detail, stage="implement", **data):
 ev("stage_start", "implement stage starting")
 
 # ── wave (a): ONE hire, no bounces, green. result.json.attempts = 7 (LOUD).
-ev("wave_start", "wave 1 starting (1 ticket(s))", wave=1, ticketCount=1, totalWaves=6)
+ev("wave_start", "wave 1 starting (1 ticket(s))", wave=1, ticketCount=1, totalWaves=7)
 ev("ticket_start", "ticket t-001 starting", ticket="t-001", wave=1)
 ev("ticket_attempt", "tdd session 1 for t-001", ticket="t-001", phase="tdd", attempt=1)
 ev("flip_flop_pass", "flip-flop proven for t-001", ticket="t-001")
@@ -156,7 +169,7 @@ ev("ticket_postcommit_ok", "ticket t-001 verified green on the committed branch"
 ev("ticket_green", "ticket t-001 green", ticket="t-001", sessions=1, iterations=7)
 
 # ── wave (b): THREE hires, TWO bounces, green.
-ev("wave_start", "wave 2 starting (1 ticket(s))", wave=2, ticketCount=1, totalWaves=6)
+ev("wave_start", "wave 2 starting (1 ticket(s))", wave=2, ticketCount=1, totalWaves=7)
 ev("ticket_start", "ticket t-002 starting", ticket="t-002", wave=2)
 ev("ticket_attempt", "tdd session 1 for t-002", ticket="t-002", phase="tdd", attempt=1)
 ev("flip_flop_fail", "the tests passed on the parent commit too", ticket="t-002")
@@ -174,7 +187,7 @@ ev("ticket_green", "ticket t-002 green after 3 worker sessions",
    ticket="t-002", sessions=3, iterations=2)
 
 # ── wave (c): THREE hires, hire cap EXHAUSTED, flagged awaiting-human.
-ev("wave_start", "wave 3 starting (1 ticket(s))", wave=3, ticketCount=1, totalWaves=6)
+ev("wave_start", "wave 3 starting (1 ticket(s))", wave=3, ticketCount=1, totalWaves=7)
 ev("ticket_start", "ticket t-003 starting", ticket="t-003", wave=3)
 for i in (1, 2, 3):
     ev("ticket_attempt", "tdd session %d for t-003" % i, ticket="t-003", phase="tdd", attempt=i)
@@ -187,14 +200,14 @@ ev("ticket_flagged", "ticket t-003 flagged after 3 worker session(s) - last gate
 ev("gate", "t-003 is blocked after 3 worker sessions - answer with lcars respond")
 
 # ── wave (d): PRE-S134 stream - NO ticket_attempt events at all, old detail text.
-ev("wave_start", "wave 4 starting (2 ticket(s))", wave=4, ticketCount=2, totalWaves=6)
+ev("wave_start", "wave 4 starting (2 ticket(s))", wave=4, ticketCount=2, totalWaves=7)
 ev("ticket_start", "ticket t-004 starting", ticket="t-004", wave=4)
 ev("ticket_green", "ticket t-004 green in 2 attempt(s)", ticket="t-004")
 ev("ticket_start", "ticket t-005 starting", ticket="t-005", wave=4)
 ev("ticket_flagged", "ticket t-005 flagged after 5 attempt(s)", ticket="t-005")
 
 # ── wave (e): MIXED - old-vocabulary detail text beside new-vocabulary details.
-ev("wave_start", "wave 5 starting (1 ticket(s))", wave=5, ticketCount=1, totalWaves=6)
+ev("wave_start", "wave 5 starting (1 ticket(s))", wave=5, ticketCount=1, totalWaves=7)
 ev("ticket_start", "ticket t-006 starting", ticket="t-006", wave=5)
 ev("ticket_attempt", "attempt 1 for t-006", ticket="t-006", phase="tdd", attempt=1)
 ev("ticket_gate_bounce", "ticket t-006 bounced by the quality gate (thin) - attempt 1",
@@ -203,13 +216,38 @@ ev("ticket_attempt", "tdd session 2 for t-006", ticket="t-006", phase="tdd", att
 ev("ticket_green", "ticket t-006 green in 4 attempt(s)", ticket="t-006", sessions=2, iterations=4)
 
 # ── wave (f): TRULY HISTORICAL - the pre-S133 Test-Writer / Implementer standoff.
-ev("wave_start", "wave 6 starting (1 ticket(s))", wave=6, ticketCount=1, totalWaves=6)
+ev("wave_start", "wave 6 starting (1 ticket(s))", wave=6, ticketCount=1, totalWaves=7)
 ev("ticket_start", "ticket t-007 starting", ticket="t-007", wave=6)
 ev("ticket_attempt", "test-writer try 1 for t-007", ticket="t-007",
    phase="test-writer", attempt=1)
 ev("ticket_attempt", "implementer try 1 for t-007", ticket="t-007",
    phase="implementer", attempt=1)
 ev("ticket_green", "ticket t-007 green in 3 attempt(s)", ticket="t-007", attempts=3)
+
+# wave (g): THE RESUME SPLIT. Three hires, two bounces, and a real `stage_start`
+# re-entry after hire 2 - the shape a respond->run resume / manual retry / the
+# auto-advance driver re-running Implement leaves on disk. `wave_start` is
+# deduped against events.jsonl; `stage_start` is not, so the board opens a NEW
+# section mid-wave and the wave's hires straddle it. The TIMELINE still splits
+# here (deliberately unchanged); the wave band's COUNT must read 3, agreeing
+# with ticket_hire_count / the comment mirror / the Verify roll-up.
+ev("wave_start", "wave 7 starting (1 ticket(s))", wave=7, ticketCount=1, totalWaves=7)
+ev("ticket_start", "ticket t-008 starting", ticket="t-008", wave=7)
+ev("ticket_attempt", "tdd session 1 for t-008", ticket="t-008", phase="tdd", attempt=1)
+ev("ticket_gate_bounce", "ticket t-008 bounced by the flip-flop gate (tests pass on parent)"
+   " - session 1; re-spawning a fresh worker with the verdict",
+   ticket="t-008", gate="flip-flop", attempt=1)
+ev("ticket_attempt", "tdd session 2 for t-008", ticket="t-008", phase="tdd", attempt=2)
+ev("ticket_gate_bounce", "ticket t-008 bounced by the declared-edits gate (undeclared edit)"
+   " - session 2; re-spawning a fresh worker with the verdict",
+   ticket="t-008", gate="declared-edits", attempt=2)
+ev("stage_start", "implement stage resuming after the human answered")
+ev("ticket_attempt", "tdd session 3 for t-008", ticket="t-008", phase="tdd", attempt=3)
+ev("flip_flop_pass", "flip-flop proven for t-008", ticket="t-008")
+ev("ticket_postcommit_ok", "ticket t-008 verified green on the committed branch",
+   ticket="t-008", iterations=4)
+ev("ticket_green", "ticket t-008 green after 3 worker sessions",
+   ticket="t-008", sessions=3, iterations=4)
 out.close()
 PY
 echo "fixture: $FIX  mission: $MID"

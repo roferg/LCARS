@@ -834,6 +834,38 @@ check "W16. …and OMITS the hire field rather than fabricating 'hire 1'" \
 check "W16. the worker's own iteration count (4) never reaches the pace line" \
   "! grep '^Wave ' '$repoW16/out.txt' | grep -qE '(^| )4( |\$)'"
 
+# --- Behaviour W17 (S173 FIX ROUND 2, N3): the LAST two flush-left events ----
+# `ticket_postcommit_ok` and `ticket_test_edits` still fell through to the `*)`
+# default — no glyph, no indent. That used to be one of SIX flush-left line
+# types and read as a category; W14 gave glyph+indent to the other four, so
+# these two were left stranded mid-timeline BETWEEN indented lines, reading as a
+# rendering fault. Same glyph family: ⊕ verified-on-branch, ⊜ contract amendment.
+repoW17="$(new_init_repo)"
+write_mission "$repoW17" "lcars-20260601-017" "implement" "47" \
+  "2026-06-01T10:00:00Z" "Stranded"
+write_events "$repoW17" "lcars-20260601-017" \
+'{"ts":1000,"mission":"lcars-20260601-017","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
+{"ts":1001,"mission":"lcars-20260601-017","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1002,"mission":"lcars-20260601-017","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1003,"mission":"lcars-20260601-017","stage":"implement","type":"ticket_test_edits","detail":"ticket t-001 test-edit declarations verified against the diff vs abc123 (1 declared path(s)) — recorded to test-edits.json","data":{"ticket":"t-001"}}
+{"ts":1004,"mission":"lcars-20260601-017","stage":"implement","type":"flip_flop_pass","detail":"flip-flop proven for t-001","data":{"ticket":"t-001"}}
+{"ts":1005,"mission":"lcars-20260601-017","stage":"implement","type":"ticket_postcommit_ok","detail":"ticket t-001 verified green on the committed branch","data":{"ticket":"t-001","iterations":3}}
+{"ts":1006,"mission":"lcars-20260601-017","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","sessions":1,"iterations":3}}'
+write_waves "$repoW17" "lcars-20260601-017" "$WAVES_3"
+( cd "$repoW17" && LCARS_NOW=2000 bash "$SCRIPT" --once lcars-20260601-017 >out.txt 2>&1 )
+check "W17. the post-commit verification carries a glyph AND the ticket indent" \
+  "grep -qE '^    ⊕ ticket t-001 verified green on the committed branch' '$repoW17/out.txt'"
+check "W17. it is no longer flush-left (the \`*)\` default)" \
+  "! grep -qE '^ticket t-001 verified green' '$repoW17/out.txt'"
+check "W17. the contract amendment carries a glyph AND the ticket indent" \
+  "grep -qE '^    ⊜ ticket t-001 test-edit declarations verified' '$repoW17/out.txt'"
+check "W17. it is no longer flush-left either" \
+  "! grep -qE '^ticket t-001 test-edit declarations' '$repoW17/out.txt'"
+check "W17. NO implement ticket-level line is left flush-left mid-timeline" \
+  "! grep -qE '^ticket t-001 ' '$repoW17/out.txt'"
+check "W17. the two cured lines sit between their indented neighbours" \
+  "grep -E '^    (⊕|⊗|⊜|⤫|✓|↻|⚑) ' '$repoW17/out.txt' | grep -c . | grep -qE '^(5|6|7)$'"
+
 # ==========================================================================
 echo
 printf 'lcars status: %d passed, %d failed\n' "$pass" "$fail"

@@ -232,14 +232,37 @@ class ProofEventRenderTest(unittest.TestCase):
 @unittest.skipUnless(NODE, "node is required to exercise the board.js DOM builders")
 class WorkerSessionMarkerTest(unittest.TestCase):
     def test_session_marker_across_a_two_session_bounce(self):
-        s1 = _run("renderEvent", {"stage": "implement", "type": "ticket_attempt",
-                                  "detail": "tdd session 1 for t-001",
-                                  "data": {"ticket": "t-001", "phase": "tdd", "attempt": 1}})
-        s2 = _run("renderEvent", {"stage": "implement", "type": "ticket_attempt",
-                                  "detail": "tdd session 2 for t-001",
-                                  "data": {"ticket": "t-001", "phase": "tdd", "attempt": 2}})
-        self.assertIn("Worker session 1", _flat_text(s1))
-        self.assertIn("Worker session 2", _flat_text(s2))
+        # S173 FIX ROUND 2 (N2): rendered as ONE STREAM, which is the only way
+        # the board ever renders — the session INDEX is now the event's position
+        # in its ticket's own hire sequence (derived by the grouping pass the
+        # product always runs) rather than the wire's `attempt`, so it can never
+        # contradict the hire count on the band above it. Two dispatches for
+        # t-001 ⇒ "Worker session 1" then "Worker session 2".
+        nodes = _run("renderStream", [
+            {"stage": "implement", "type": "ticket_attempt",
+             "detail": "tdd session 1 for t-001",
+             "data": {"ticket": "t-001", "phase": "tdd", "attempt": 1}},
+            {"stage": "implement", "type": "ticket_attempt",
+             "detail": "tdd session 2 for t-001",
+             "data": {"ticket": "t-001", "phase": "tdd", "attempt": 2}},
+        ])
+        self.assertIn("Worker session 1", _flat_text(nodes[0]))
+        self.assertIn("Worker session 2", _flat_text(nodes[1]))
+
+    def test_a_pre_s133_stream_numbers_its_two_dispatches_1_then_2(self):
+        # BOTH wire indices are 1 (the old loops numbered PER PHASE). The old
+        # wire-indexed headline rendered "Worker session 1" twice under a band
+        # that said 2.
+        nodes = _run("renderStream", [
+            {"stage": "implement", "type": "ticket_attempt",
+             "detail": "test-writer try 1 for t-007",
+             "data": {"ticket": "t-007", "phase": "test-writer", "attempt": 1}},
+            {"stage": "implement", "type": "ticket_attempt",
+             "detail": "implementer try 1 for t-007",
+             "data": {"ticket": "t-007", "phase": "implementer", "attempt": 1}},
+        ])
+        self.assertIn("Worker session 1", _flat_text(nodes[0]))
+        self.assertIn("Worker session 2", _flat_text(nodes[1]))
 
     def test_no_role_or_tdd_chip_anywhere(self):
         # The retired Test-Writer / Implementer distinction — and a "TDD" chip —

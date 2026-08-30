@@ -750,6 +750,46 @@ check "T15. a pre-S133 two-phase ticket counts TWO hires (events, not the max in
 check "T15. a GAPPED index stream counts TWO hires (events, not the max index 3)" \
   "printf '%s' \"\$IBODY17\" | qgrep -qE '\\- \\[ \\].*t-002.*in progress, hire 2 of 3'"
 
+# --- T16 (S173 FIX ROUND 2, N1): CROSS-SURFACE AGREEMENT on the measured shape.
+# One ticket, THREE hires and TWO bounces, with a `stage_start` RE-ENTRY after
+# hire 2. HONEST LABEL: a REGRESSION GUARD for the mirror — cm_ticket_sessions()
+# already read the WHOLE events file, so it says 3 on both sides of fix round 2.
+# The cure is in board.js (whose per-SECTION derivation said 2); this pins the
+# number the board must now agree with, on the same stream.
+r18="$(new_repo implement)"; make_gh_stub "$r18/gh"; gh_env "$r18"
+m18="$(mdir "$r18")"
+cat >"$m18/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 611
+      }
+    ]
+  }
+]
+EOF
+cat >"$m18/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"implement starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (1 ticket(s))","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-001 bounced by the flip-flop gate (FAIL)","data":{"ticket":"t-001","gate":"flip-flop","attempt":1}}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 2 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":2}}
+{"ts":1006,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-001 bounced by the declared-edits gate (FAIL)","data":{"ticket":"t-001","gate":"declared-edits","attempt":2}}
+{"ts":1007,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"implement resuming"}
+{"ts":1008,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 3 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":3}}
+{"ts":1009,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-001 flagged","data":{"ticket":"t-001","sessions":3}}
+EOF
+run_mirror "$r18" 1101
+IBODY18="$(stage_body "$m18" implement)"
+check "T16. REGRESSION GUARD: the mirror counts 3 hires ACROSS a stage_start re-entry" \
+  "printf '%s' \"\$IBODY18\" | qgrep -qE 't-001.*flagged after 3 worker sessions'"
+check "T16. …and 2 bounces, both counted wherever they sit in the stream" \
+  "printf '%s' \"\$IBODY18\" | qgrep -q '2 bounces'"
+
 # ==========================================================================
 echo
 printf 'lcars comment-mirror: %d passed, %d failed\n' "$pass" "$fail"

@@ -325,6 +325,50 @@ def _gapped_index_wave():
     ]
 
 
+def _resumed_wave_three_hires_two_bounces():
+    """S173 FIX ROUND 2 (N1) — the EXACT measured shape: one ticket taking THREE
+    hires and TWO bounces, with a real re-entry (`stage_start`) after hire 2.
+
+    `wave_start` is durably deduped against events.jsonl, but `stage_start` is
+    NOT, so every respond→run resume / manual retry / auto-advance re-run of
+    Implement appends a second `stage_start` — and the board opens a NEW section
+    on one. The wave's hires therefore SPLIT across two sections, and the wave
+    band used to count only the two that happened to sit above the split while
+    run.sh's ticket_hire_count(), comment-mirror's cm_ticket_sessions() and the
+    Verify roll-up all said 3.
+
+    The sectioning itself is NOT changed (the captain's ruling): the timeline
+    still visibly splits here. Only the NUMBER on the band changes.
+    """
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "implement starting"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001",
+         "data": {"ticket": "t-001", "wave": 1}},
+        {"ts": 1003, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 1 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 1}},
+        {"ts": 1004, "stage": "implement", "type": "ticket_gate_bounce",
+         "detail": "ticket t-001 bounced by the flip-flop gate (FAIL) \u2014 session 1",
+         "data": {"ticket": "t-001", "gate": "flip-flop", "attempt": 1}},
+        {"ts": 1005, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 2 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 2}},
+        {"ts": 1006, "stage": "implement", "type": "ticket_gate_bounce",
+         "detail": "ticket t-001 bounced by the declared-edits gate (FAIL) \u2014 session 2",
+         "data": {"ticket": "t-001", "gate": "declared-edits", "attempt": 2}},
+        # ── THE RE-ENTRY. A fresh `lcars run` after a respond; no wave_start
+        #    (that one IS deduped), so the board opens a new STAGE section here.
+        {"ts": 1007, "stage": "implement", "type": "stage_start", "detail": "implement resuming"},
+        {"ts": 1008, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 3 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 3}},
+        {"ts": 1012, "stage": "implement", "type": "ticket_green",
+         "detail": "ticket t-001 green after 3 worker sessions",
+         "data": {"ticket": "t-001", "sessions": 3, "iterations": 5}},
+    ]
+
+
 def _hired_gamify_events():
     """_big_gamify_events, but with a real HIRE RECORD: one ticket_attempt per
     ticket, plus a SECOND for wave 1's t-002 and wave 2's flagged t-005 — so
@@ -527,8 +571,11 @@ class BoardJsVocabularyTest(unittest.TestCase):
         # S173 FIX ROUND (D5): (greens + flaggeds) may never stand in for hires.
         self.assertNotIn("_outcomes", self.js)
 
-    def test_session_chip_pluralises_off_the_count(self):
-        # …rather than being incidentally safe because it is gated at > 1.
+    def test_the_counter_noun_is_worker_session_not_a_bare_session(self):
+        # SOURCE-STRING REGRESSION GUARD (not a cure proof — it holds on both
+        # sides of the fix). It pins the NOUN only: the pre-S173 chip said
+        # "sessions" with no qualifier. What the chip actually RENDERS is proved
+        # behaviourally by HireAndBounceChipsTest / SessionChipSilenceTest.
         self.assertNotIn('" sessions"', self.js)
         self.assertIn('" worker session"', self.js)
 
@@ -721,6 +768,185 @@ class CardsUntouchedTest(unittest.TestCase):
     def test_card_tickets_present(self):
         self.assertIn("function cardTickets(tickets)", self.js)
         self.assertIn('tk.appendChild(ticketMore("and " + hiddenAfter + " more…"));', self.js)
+
+
+@unittest.skipUnless(NODE, "node is required to exercise the pure JS helper")
+class ResumeSplitHireCountTest(unittest.TestCase):
+    """S173 FIX ROUND 2 (N1) — a wave band's hire/bounce counters are PER TICKET
+    OVER THE WHOLE STREAM, matching run.sh's ticket_hire_count(), the comment
+    mirror and the Verify roll-up. A `stage_start` re-entry still SPLITS the
+    timeline (the sectioning is deliberately untouched) — it no longer splits
+    the NUMBER."""
+
+    def _chips(self, acts):
+        return _run_harness(acts, mode="chips")
+
+    def _wave(self, secs):
+        waves = [s for s in secs if s["kind"] == "wave"]
+        self.assertTrue(waves, "the fixture must produce a wave band")
+        return waves[0]
+
+    def test_the_resume_still_splits_the_timeline(self):
+        # The captain's ruling: do NOT restructure the grouping. Two sections is
+        # the ACCEPTED shape here, and this test pins it so a later round cannot
+        # quietly "fix" it by merging sections instead.
+        secs = self._chips(_resumed_wave_three_hires_two_bounces())
+        self.assertEqual(len(secs), 2, "stage_start still opens a second section")
+        self.assertEqual([s["kind"] for s in secs], ["wave", "stage"])
+
+    def test_wave_band_counts_all_three_hires_across_the_split(self):
+        wave = self._wave(self._chips(_resumed_wave_three_hires_two_bounces()))
+        self.assertEqual(wave["sessionCount"], 3)
+        self.assertIn("\u21bb 3 worker sessions", wave["chipTexts"])
+        self.assertNotIn("\u21bb 2 worker sessions", wave["chipTexts"])
+
+    def test_wave_band_counts_all_bounces_across_the_split(self):
+        # The bounce counter had the SAME per-section scope bug; it is cured on
+        # the same rule. (Both bounces happen to sit above the split in this
+        # fixture, so the next test moves one below it.)
+        wave = self._wave(self._chips(_resumed_wave_three_hires_two_bounces()))
+        self.assertEqual(wave["bounceCount"], 2)
+        self.assertIn("\u292b 2 bounces", wave["chipTexts"])
+
+    def test_a_bounce_below_the_split_still_reaches_the_wave_band(self):
+        acts = _resumed_wave_three_hires_two_bounces()
+        # move the SECOND bounce below the re-entry: the wave band must still
+        # report 2, because it counts its tickets' bounces wherever they sit.
+        second = [e for e in acts if e["type"] == "ticket_gate_bounce"][1]
+        acts.remove(second)
+        acts.insert(acts.index([e for e in acts if e["type"] == "ticket_green"][0]), second)
+        wave = self._wave(self._chips(acts))
+        self.assertEqual(wave["bounceCount"], 2)
+        self.assertEqual(wave["sessionCount"], 3)
+
+    def test_a_ticket_with_no_hire_events_anywhere_stays_silent(self):
+        # the zero-events rule survives the whole-stream widening: no
+        # ticket_attempt anywhere ⇒ UNKNOWN ⇒ null ⇒ no chip, nothing invented.
+        acts = [e for e in _resumed_wave_three_hires_two_bounces()
+                if e["type"] != "ticket_attempt"]
+        wave = self._wave(self._chips(acts))
+        self.assertIsNone(wave["sessionCount"])
+        self.assertNotIn("chip-sessions", " ".join(wave["chipClasses"]))
+
+    def test_an_unsplit_wave_is_unchanged(self):
+        # the widening must not double-count the ordinary (single-section) case.
+        sec = self._chips(_two_hire_one_bounce_wave())[0]
+        self.assertEqual(sec["sessionCount"], 2)
+        self.assertEqual(sec["bounceCount"], 1)
+
+
+@unittest.skipUnless(NODE, "node is required to exercise headlineFor")
+class HeadlineIndexAgreesWithTheBandTest(unittest.TestCase):
+    """S173 FIX ROUND 2 (N2) — a `Worker session N` headline can never contradict
+    the hire chip above it. The COUNT comes from the ticket's ticket_attempt
+    events; the INDEX now comes from the SAME sequence (1st, 2nd, 3rd for that
+    ticket) instead of off the wire, where on historical streams the two series
+    are unrelated."""
+
+    def _heads(self, acts):
+        return _run_harness(acts, mode="headlines")["headlines"]
+
+    def _session_heads(self, acts):
+        return [h for h in self._heads(acts) if h.startswith("Worker session")]
+
+    def test_pre_s133_two_phase_dispatches_are_numbered_1_then_2(self):
+        # BOTH events carry attempt=1 on the wire; the band says 2 hires, so the
+        # headlines must read 1 and 2 — never "Worker session 1" twice.
+        heads = self._session_heads(_pre_s133_standoff_wave())
+        self.assertEqual(heads, ["Worker session 1", "Worker session 2"])
+
+    def test_gapped_wire_indices_are_renumbered_to_the_hire_sequence(self):
+        # wire indices 1 and 3, chip says 2 hires → headlines 1 and 2.
+        heads = self._session_heads(_gapped_index_wave())
+        self.assertEqual(heads, ["Worker session 1", "Worker session 2"])
+
+    def test_no_headline_index_exceeds_the_bands_hire_count(self):
+        for acts in (_pre_s133_standoff_wave(), _gapped_index_wave(),
+                     _mixed_vocabulary_stream(), _two_hire_one_bounce_wave(),
+                     _resumed_wave_three_hires_two_bounces(),
+                     _hired_gamify_events()):
+            secs = _run_harness(acts, mode="chips")
+            cap = max([s["sessionCount"] or 0 for s in secs] + [0])
+            for h in self._session_heads(acts):
+                bits = h.split()
+                if len(bits) == 3:
+                    self.assertLessEqual(int(bits[2]), cap, "%s > %d" % (h, cap))
+
+    def test_headline_indexes_are_per_ticket_not_per_stream(self):
+        # two tickets in one wave: each restarts at 1 (the count is per ticket).
+        heads = self._session_heads(_mixed_vocabulary_stream())
+        self.assertEqual(heads, ["Worker session 1", "Worker session 2",
+                                 "Worker session 1"])
+
+    def test_the_index_survives_a_stage_start_re_entry(self):
+        heads = self._session_heads(_resumed_wave_three_hires_two_bounces())
+        self.assertEqual(heads, ["Worker session 1", "Worker session 2",
+                                 "Worker session 3"])
+
+    def test_still_no_headline_says_attempt(self):
+        for acts in (_pre_s133_standoff_wave(), _gapped_index_wave(),
+                     _resumed_wave_three_hires_two_bounces()):
+            for h in self._heads(acts):
+                self.assertNotIn("attempt", h.lower(), h)
+
+
+@unittest.skipUnless(NODE, "node is required to exercise the chip DOM builders")
+class SessionChipSilenceTest(unittest.TestCase):
+    """S173 FIX ROUND 2 (N4) — what the hire chip ACTUALLY does, rendered, not
+    grepped out of the source.
+
+    The old `test_session_chip_pluralises_off_the_count` claimed the chip
+    "pluralises off the count" while only grepping board.js for a string, and
+    the claim was false either way: the chip is gated `sessionCount > 1`, so the
+    singular "1 worker session" is UNREACHABLE BY DESIGN — that is the round's
+    silence-at-one rule (a wave where nothing had to be re-hired wears no
+    counter at all), not an accident to be fixed by adding a rendering path.
+
+    So this proves the true invariant instead: SILENT at 0 and 1, PLURAL at 2+,
+    and the singular form never renders on any stream.
+
+    This is a BEHAVIOURAL CHARACTERISATION, not a cure proof — the behaviour is
+    the same before and after fix round 2. It replaces a test that proved
+    nothing with one that proves what is true."""
+
+    def _chips(self, acts):
+        return _run_harness(acts, mode="chips")
+
+    def _texts(self, sec):
+        return " ".join(sec["chipTexts"])
+
+    def test_unknown_hire_count_renders_no_counter(self):
+        for sec in self._chips(_big_gamify_events()):     # no ticket_attempt at all
+            self.assertIsNone(sec["sessionCount"])
+            self.assertNotIn("worker session", self._texts(sec))
+
+    def test_exactly_one_hire_renders_no_counter(self):
+        sec = self._chips(_one_hire_clean_wave())[0]
+        self.assertEqual(sec["sessionCount"], 1)
+        self.assertNotIn("worker session", self._texts(sec))
+
+    def test_two_hires_render_the_plural_counter(self):
+        sec = self._chips(_two_hire_one_bounce_wave())[0]
+        self.assertEqual(sec["sessionCount"], 2)
+        self.assertIn("\u21bb 2 worker sessions", sec["chipTexts"])
+
+    def test_the_singular_form_never_renders_on_any_stream(self):
+        for acts in (_one_hire_clean_wave(), _two_hire_one_bounce_wave(),
+                     _zero_attempt_wave(), _big_gamify_events(),
+                     _hired_gamify_events(), _mixed_vocabulary_stream(),
+                     _pre_s133_standoff_wave(), _gapped_index_wave(),
+                     _resumed_wave_three_hires_two_bounces()):
+            for sec in self._chips(acts):
+                self.assertNotIn("1 worker session", self._texts(sec))
+
+    def test_the_bounce_chip_by_contrast_does_pluralise_off_its_count(self):
+        # the bounce chip is gated at > 0, so BOTH of its forms are reachable —
+        # which is why the pluralisation claim belongs here and not on hires.
+        one = self._chips(_two_hire_one_bounce_wave())[0]
+        self.assertIn("\u292b 1 bounce", one["chipTexts"])
+        two = self._chips(_resumed_wave_three_hires_two_bounces())
+        wave = [s for s in two if s["kind"] == "wave"][0]
+        self.assertIn("\u292b 2 bounces", wave["chipTexts"])
 
 
 if __name__ == "__main__":

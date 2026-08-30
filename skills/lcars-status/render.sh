@@ -100,6 +100,16 @@ render_human() {
       printf '    ⊗ %s' "$detail" ;;
     flip_flop_skipped)
       printf '    ⊘ %s' "$detail" ;;
+    # S173 FIX ROUND 2 (N3): the last two survivors of the `*)` default. Once
+    # the arms above landed, these were the ONLY ticket-level lines still
+    # flush-left — sandwiched between indented neighbours they read as a
+    # rendering fault mid-timeline rather than as a category. Same glyph family:
+    # ⊕ verified-on-branch (a pass, like flip_flop_pass), ⊜ contract amendment
+    # (the declarations reconciled against the diff).
+    ticket_postcommit_ok)
+      printf '    ⊕ %s' "$detail" ;;
+    ticket_test_edits)
+      printf '    ⊜ %s' "$detail" ;;
     base_stale)
       # S159 — this drive began against a base that was behind origin. It gets
       # the same ⟳ the guard prints on the CLI, so the timeline reads the way the
