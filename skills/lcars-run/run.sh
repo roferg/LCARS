@@ -2197,25 +2197,41 @@ make.'
 #     is the goal; a check that argues is worse than no check.
 #
 # TUNED AGAINST THE REAL CORPUS, not against intuition. Swept over all 144
-# research findings in all 58 Missions of the captain's own repo, the rule below
+# research findings in all 58 Missions of the captain's own repo, B1's rule
 # yields EXACTLY ONE candidate — the fabrication above. The other 16 sentences a
-# crude negative-existence regex flags are all rejected by it, unread. B2 swept
-# over the same 58 Missions' `## Decisions` sections yields FOUR candidates,
-# three of which the tickets already carry (silent) and one of which is the
-# measured drop.
+# crude negative-existence regex flags are all rejected by it, unread.
+#
+# B2'S NOISE BUDGET IS NOT B1'S, AND SHARING ONE RULE COST A SECOND MISS. B2 was
+# first tuned to the ONE sentence the first broken run wrote ("no `X`, no new
+# boolean flag") and inherited B1's reduction with it. On a LIVE re-run of the
+# same Mission (2026-08-30) the Validator wrote the SAME decision in its own
+# words — "do not grow a hardcoded id list and do not conflate with `X`" — the
+# name went validated-plan.md 3 → plan.json 0, and B2 SAID NOTHING, because
+# "conflate with" is a content word and the reduction refused the candidate
+# unread. So the two modes are decoupled: B1 sweeps FREE PROSE and must stay
+# strict; B2 reads only a DECLARED `## Decisions` section, where a negation cue
+# plus a code-shaped name in one clause IS the shape, and nothing more is asked.
+# Re-measured over the same 58 Missions' `## Decisions` sections: 4 → 26
+# candidates, of which the check actually BOUNCES 1 → 3 plans (two genuine
+# prohibitions, one "No component/JSX/className changes are required" that costs
+# a single Plan retry the planner clears by naming it). Reading BACKWARDS from
+# the cue as well was measured too — 5 more candidates, all noise, one more plan
+# wrongly bounced, no new true positive — so the clause cut stays.
 
 # claim_identifier_scan <mode> <path…> -> one `path<TAB>identifier<TAB>sentence`
-# per candidate, or NOTHING. Both checks share this one reader so they can never
-# drift apart on what "a named identifier" or "a negated phrase" means.
+# per candidate, or NOTHING. Both checks share this one reader for what "a named
+# identifier" and "a negated phrase" MEAN — never for how strict to be.
 #
 #   mode=absent-claim  each path is a research finding JSON; the assertions read
 #                      are `recommendation` + `supporting_points` (the finding's
 #                      OWN claims). The `question` is the harness's, not a claim.
-#                      REPO-WIDE scope is REQUIRED.
+#                      REPO-WIDE scope is REQUIRED, and the negated phrase must
+#                      REDUCE to the identifier alone — free prose gets no
+#                      benefit of the doubt.
 #   mode=prohibition   each path is a markdown artifact; only its `## Decisions`
-#                      section is read. Scope is NOT required (a decision does not
-#                      say "in the repo"), but the negated phrase must still
-#                      reduce to the identifier alone.
+#                      section is read. Neither is required: a decision does not
+#                      say "in the repo", and a declared decision has already
+#                      earned the right to be read as one.
 claim_identifier_scan() { # mode path…
   local mode="$1"; shift
   [ "$#" -gt 0 ] || return 0
@@ -2289,7 +2305,7 @@ def phrases(text):
             yield (rest[:tm.start()] if tm else rest), " ".join(sent.split())
 
 
-def named(phrase, need_scope):
+def named(phrase, need_scope, reduce_to_identifier):
     ids = []
     for m in TOKEN.finditer(phrase):
         t = code_shaped(m.group(1) or m.group(2))
@@ -2300,6 +2316,8 @@ def named(phrase, need_scope):
     words = [w.lower() for w in WORD.findall(phrase)]
     if need_scope and not (set(words) & SCOPE):
         return []
+    if not reduce_to_identifier:
+        return ids             # a DECLARED decision — the words are its own.
     low = {i.lower() for i in ids}
     for w in words:
         if w not in low and w not in EXIST and w not in STOP and w not in SCOPE:
@@ -2352,6 +2370,7 @@ def decisions(text):
 
 mode = sys.argv[1]
 need_scope = (mode == "absent-claim")
+reduce_to_identifier = (mode == "absent-claim")
 for path in sys.argv[2:]:
     try:
         raw = open(path, encoding="utf-8", errors="replace").read()
@@ -2376,7 +2395,7 @@ for path in sys.argv[2:]:
     seen = set()
     for b in blobs:
         for phrase, sent in phrases(b):
-            for t in named(phrase, need_scope):
+            for t in named(phrase, need_scope, reduce_to_identifier):
                 if t in seen:
                     continue
                 seen.add(t)

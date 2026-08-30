@@ -345,6 +345,135 @@ assert_eq "5n a Mission with NO validated-plan.md is untouched" \
           "$(prohrc /nonexistent "$FIX/budget-plan-dropped.json")" "0"
 
 # ===========================================================================
+section "5B — B2 reads the DECISION, not one phrasing of it"
+# ===========================================================================
+# MEASURED AGAIN, on a LIVE capstone run (2026-08-30). B2 shipped tuned to the
+# one sentence the first broken run happened to write — "no \`X\`, no new boolean
+# flag" — and a live Validator, handed the same job, wrote the same decision in
+# its own words:
+#
+#     "…do not grow a hardcoded id list and do not conflate with \`X\`."
+#
+# The name went validated-plan.md 3 → plan.json 0 → approved-plan.json 0, the
+# decision evaporated exactly as before, and B2 SAID NOTHING. It was silent
+# because it inherited B1's reduction: the negated phrase had to reduce to the
+# identifier alone past a fixed vocabulary, and "conflate with" is a content
+# word, so the candidate was refused unread.
+#
+# THE TWO CHECKS HAVE DIFFERENT NOISE BUDGETS AND MUST NOT SHARE ONE RULE.
+#   B1 sweeps FREE PROSE across every research finding — 126 candidate sentences
+#      over the captain's 58 Missions. Its strictness is what keeps it silent,
+#      and section 2 above holds it to that, unchanged.
+#   B2 reads only a DECLARED `## Decisions` section. Over the same 58 Missions
+#      that is 26 candidate lines, of which the check actually BOUNCES 3 plans —
+#      up from 1. A declared decision has already earned the right to be read as
+#      one; a negation cue plus a code-shaped name in the same clause IS the
+#      shape, and nothing beyond it is asked for.
+#
+# The clause-boundary cut is DELIBERATELY KEPT. Reading backwards from the cue
+# as well ("`X` must not be reused") was measured on the same corpus: 5 further
+# candidates, EVERY ONE of them noise (an identifier in a neighbouring clause
+# dragged in by a stray "no"), and one further plan wrongly bounced. It buys no
+# true positive, so it is not done.
+pscan() { scan prohibition "$1"; }
+
+# --- THE REGRESSION THAT MATTERS: the real live sentence, verbatim ------------
+# tests/fixtures/claims/measured-validated-plan-live.md is that run's whole
+# `## Decisions` section, copied VERBATIM off disk — 22 decisions, most of them
+# negative ("Stop calling…", "no note field", "never re-seeding").
+SL="$(pscan "$FIX/measured-validated-plan-live.md")"
+assert_eq  "5o the live run's 22 real decisions yield exactly ONE candidate" \
+           "$(printf '%s\n' "$SL" | grep -c .)" "1"
+assert_eq  "5p …and it is the name that evaporated" "$(ids "$SL")" "WIRED_METRIC_IDS"
+assert_has "5q …carrying the Validator's OWN words, which B2 used to refuse" \
+           'do not grow a hardcoded id list and do not conflate with `WIRED_METRIC_IDS`.' "$SL"
+assert_eq  "5r …and the plan that dropped it is BOUNCED" \
+           "$(prohrc "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-dropped.json")" "1"
+assert_has "5s …by name" 'PROHIBITS the name `WIRED_METRIC_IDS`' \
+           "$(proh "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-dropped.json")"
+assert_eq  "5t …and ONE named criterion still clears it" \
+           "$(prohrc "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-carried.json")" "0"
+assert_eq  "5u …silently" \
+           "$(proh "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-carried.json")" ""
+
+# The unrelated fixture, same shapes, sharing not one noun.
+SLB="$(pscan "$FIX/budget-validated-plan-live.md")"
+assert_eq  "5v the unrelated plan yields ONE candidate too" \
+           "$(printf '%s\n' "$SLB" | grep -c .)" "1"
+assert_eq  "5w …and it is ITS name"  "$(ids "$SLB")" "SYNCED_LINE_IDS"
+assert_no  "5x …and nothing of the other fixture" "WIRED" "$SLB"
+assert_eq  "5y …its dropped plan is bounced" \
+           "$(prohrc "$FIX/budget-validated-plan-live.md" "$FIX/budget-plan-dropped.json")" "1"
+assert_eq  "5z …and its carried plan is silent" \
+           "$(prohrc "$FIX/budget-validated-plan-live.md" "$FIX/budget-plan-carried.json")" "0"
+
+# --- the phrasings, each one lifted off a REAL validated plan -----------------
+DEC() { printf '# P\n\n## Synthesis\n\nx\n\n## Decisions\n\n- %s\n\n## Rationale\n\nx\n' "$1"; }
+pfires() { # label decision-line wanted-ids
+  local f; f="$(mktemp "$TMPROOT/dec.XXXX")"
+  DEC "$2" > "$f"
+  assert_eq "$1" "$(ids "$(pscan "$f")")" "$3"
+}
+psilent() { # label decision-line
+  local f; f="$(mktemp "$TMPROOT/dec.XXXX")"
+  DEC "$2" > "$f"
+  local out; out="$(pscan "$f")"
+  if [ -z "$out" ]; then ok "$1"; else bad "$1 (fired: $(ids "$out"))"; fi
+}
+# The shape B2 was built for MUST still fire — this is the no-regression half.
+pfires "5aa the original shape still fires" \
+       'Classify by the trimmed field; no `PULL_RECIPE_IDS`, no new boolean flag.' \
+       "PULL_RECIPE_IDS"
+pfires "5ab …and the plainest one" \
+       'Do not introduce `PULL_RECIPE_IDS`.' "PULL_RECIPE_IDS"
+# lcars-20260829-002 (live, 2026-08-30) — the measured miss.
+pfires "5ac a prohibition qualified by a VERB PHRASE fires (the measured miss)" \
+       'Populate that per-line field to make lines tracked; do not grow a hardcoded id list and do not conflate with `PULL_RECIPE_IDS`.' \
+       "PULL_RECIPE_IDS"
+# lcars-20260731-009 — "do not add an `X`/`Y` field".
+pfires "5ad …as does a prohibition on ADDING a named field" \
+       'Do not touch anything under the reference folder, and do not add a `pullRecipeIds` field — the existing predicate stays.' \
+       "pullRecipeIds"
+# lcars-20260729-001 — "NO `X` field in config.json".
+pfires "5ae …and a bare NO before a named field" \
+       'App-side fixed palette keyed by row id, applied as a custom property; NO `pullRecipeIds` field in the config file.' \
+       "pullRecipeIds"
+# lcars-20260731-003 — "Never read the … `X` … as the signal".
+pfires "5af …and a NEVER-read prohibition" \
+       "Never read the draft's embedded \`pullRecipeIds\` as the automatability signal." \
+       "pullRecipeIds"
+# lcars-20260817-009 — one decision freezing a whole named set.
+pfires "5ag …and a decision freezing SEVERAL named helpers at once" \
+       'Do NOT add a new helper or change `deriveDelta`/`parseMeasure`/`deltaText`; reuse them as-is.' \
+       "deltaText,deriveDelta,parseMeasure"
+
+# --- and the near-silence is still REAL --------------------------------------
+psilent "5ah a decision that prohibits no NAMED thing stays silent" \
+        'Do not add new routed views; keep one screen-state enum.'
+psilent "5ai a lone lowercase word is still not an identifier" \
+        'Do not add a `shape` field to the stored row.'
+psilent "5aj a lone PascalCase word is still not an identifier" \
+        'Do not introduce `SubReading` anywhere in the write path.'
+psilent "5ak a decision with NO negation is not a prohibition" \
+        'Reuse `pullRecipeIds` as the single source of truth.'
+psilent "5al an identifier past a CLAUSE BOUNDARY is not the negated one" \
+        'Do not add new routed views, but keep `refreshAll` exactly as it is.'
+psilent "5am …and past a dash either" \
+        'Do not add a second bridge — extend `syncBridge`, which already exists.'
+
+# --- THE DECOUPLING, asserted in the other direction -------------------------
+# The SAME sentences, put to B1 as a research finding's own claim, must STILL be
+# refused. B1's 126-sentence corpus above proves it in bulk; these prove it on
+# the exact phrasings B2 was just widened to accept, so a future edit cannot
+# widen one by widening the other.
+probe "5an B1 still refuses the live phrasing" \
+      "$(J '"Populate the field; do not grow a hardcoded id list and do not conflate with `PULL_RECIPE_IDS`."')"
+probe "5ao B1 still refuses a prohibition on ADDING a named field" \
+      "$(J '"Do not add a `pullRecipeIds` field anywhere in the repo — the existing predicate stays."')"
+probe "5ap B1 still refuses a NEVER-read prohibition" \
+      "$(J '"Never read the codebase draft'"'"'s embedded `pullRecipeIds` as the automatability signal."')"
+
+# ===========================================================================
 section "6 — B2 rides the EXISTING Plan retry channel, and can never deadlock"
 # ===========================================================================
 plan_repo() { # validated-plan  -> repo with a mission at stage plan
@@ -413,6 +542,14 @@ if [ -s "$BASE_SH" ]; then
   repo3="$(plan_repo "$NOP")"; run_plan_save "$repo3" "$FIX/budget-plan-dropped.json"; A="$PSOUT"
   repo4="$(plan_repo "$NOP")"; run_plan_save "$repo4" "$FIX/budget-plan-dropped.json" "" "$BASE_SH"; B="$PSOUT"
   assert_eq "6m a plan with no named prohibition is BYTE-IDENTICAL too" "$A" "$B"
+  # …and so is the WIDENED path when the prohibition is carried: the previous
+  # commit was silent because it never saw the decision, this one because the
+  # ticket names it. Same bytes either way — nothing was added to the clean path.
+  repo5="$(plan_repo "$FIX/budget-validated-plan-live.md")"
+  run_plan_save "$repo5" "$FIX/budget-plan-carried.json"; A="$PSOUT"
+  repo6="$(plan_repo "$FIX/budget-validated-plan-live.md")"
+  run_plan_save "$repo6" "$FIX/budget-plan-carried.json" "" "$BASE_SH"; B="$PSOUT"
+  assert_eq "6n a CARRIED prohibition in the new phrasing is BYTE-IDENTICAL too" "$A" "$B"
 else
   bad "6l could not read the byte-identity baseline"
 fi
