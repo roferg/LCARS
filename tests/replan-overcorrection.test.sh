@@ -909,3 +909,26 @@ fi
 printf '\n────────────────────────────────────────────\n'
 printf 'replan-overcorrection: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
+
+# ── 2026-08-30 — THE CAPTAIN'S ANSWER REACHES THE PLANNER ──────────────────
+# Measured on his own MBR mission: he answered a plan-review escalation, the
+# REVIEWER was given answers.json and honoured it, and cmd_plan — the Stage that
+# rewrites the tickets — was not, so it re-emitted the contradicted criterion and
+# the Mission escalated again on a settled question. An infinite babysit loop.
+section "the captain's answer reaches the PLANNER, not just the reviewer"
+
+PLAN_FN="$(awk '/^cmd_plan\(\)/,/^cmd_[a-z_]*\(\)$/' "$REPO_ROOT/skills/lcars-run/run.sh" | head -200)"
+case "$PLAN_FN" in
+  *'$MISSION_DIR/answers.json'*) ok "cmd_plan lists answers.json among its inputs" ;;
+  *) bad "cmd_plan does NOT feed answers.json — a settled question will be re-raised" ;;
+esac
+case "$PLAN_FN" in
+  *"treat it as DECIDED"*) ok "…and tells the planner to treat it as DECIDED" ;;
+  *) bad "cmd_plan feeds the file without saying it is binding" ;;
+esac
+# the guard must stay conditional: a mission that never escalated has no
+# answers.json and its plan prompt must be unchanged.
+case "$PLAN_FN" in
+  *'[ -f "$MISSION_DIR/answers.json" ]'*) ok "…only when an answer exists (no drift for a clean mission)" ;;
+  *) bad "answers.json is fed unconditionally" ;;
+esac

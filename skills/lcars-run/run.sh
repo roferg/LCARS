@@ -12660,6 +12660,18 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # at all when there are no reviewer objections on disk, so a first plan's
   # prompt is byte-identical to what it was before this round.
   extra="$extra$(plan_revision_contract_block)"
+  # THE CAPTAIN'S ANSWER REACHES THE THING THAT WRITES THE TICKETS. Measured
+  # 2026-08-30 on the captain's own MBR mission: he answered a plan-review
+  # escalation (lock permissively), `cmd_plan_review` was given answers.json and
+  # honoured it, and `cmd_plan` — the Stage that actually re-emits the tickets —
+  # was NOT, so the planner rewrote the SAME gated criterion, the reviewer
+  # objected again quoting answers.json back at it, and the Mission escalated to
+  # him a second time on a question he had already settled. That is an infinite
+  # babysitting loop, not a hard question: the only Stage that could act on his
+  # decision was the one Stage blind to it. Same wording as validate/plan-review
+  # so the three Stages cannot drift.
+  [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
+- $MISSION_DIR/answers.json   (the captain's resolution of a prior escalation — treat it as DECIDED, fold it into the tickets, and never re-emit a criterion that contradicts it)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
