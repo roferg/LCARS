@@ -1201,4 +1201,199 @@ check "17g. …explicitly: do not go back to the captain for an answer" \
   "grep -q 'you do \*\*not\*\* need an answer' '$SKILL_MD'"
 
 # ==========================================================================
+# 18. THE EXIT-CODE CONTRACT — 3 MEANS "THE PRD IS WRONG AND A REDRAFT COULD
+#     FIX IT"; 1 STAYS "THE ENVIRONMENT IS WRONG"
+#
+# The live blocker: the viewscreen's Align console dispatched
+# `file.sh --complete` on the closing turn, file.sh REFUSED the PRD (correctly —
+# it had dropped 5 of the brief's 14 open questions), and the daemon had no way
+# to tell that refusal apart from `gh` being unauthenticated. So it did the only
+# thing it could: die. The captain — who did not write that PRD, a worker did —
+# was left with no way forward.
+#
+# The daemon now SELF-HEALS a redraftable PRD by handing the refusal back to the
+# warm Align worker. It must never do that for an environment failure (retrying
+# a missing mission or a dead `gh` just burns tokens), so the two classes are
+# split at the EXIT STATUS — never at the wording of the message (S165: key the
+# filter off exit status, not the refusal wording).
+#
+#   exit 3 → the PRD/ADR artifact itself is wrong: a missing section, an
+#            unreadable title/type, dropped design-brief questions, malformed ADR.
+#   exit 1 → everything else: bad argv, no such mission, unreadable file, git.
+#   exit 0 → unchanged.
+#
+# The gate's JUDGEMENT is untouched by all of this — only the number it exits with.
+
+# --- 18a-e: the --complete lane (the one that actually broke) --------------
+repoX="$(new_repo)"; make_gh_stub "$repoX/gh"
+export GH_LOG="$repoX/gh.log"; : >"$GH_LOG"
+briefX="$repoX/concept.md"; printf '%s' "$BRIEF_2SEC" >"$briefX"
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --park "rebuild the MBR builder" --attach "$briefX" >outX0.txt 2>&1
+)
+MX="$repoX/.git/lcars/missions/lcars-20260530-001"
+
+prdXdrop="$repoX/prd-drop.md"; write_prd "$prdXdrop"
+rcX1=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXdrop" >outX1.txt 2>&1
+) || rcX1=$?
+check "18a. --complete dropping the brief's questions exits 3 (redraftable)" \
+  "[ '$rcX1' -eq 3 ]"
+check "18b. …still naming the dropped question, and still writing nothing" \
+  "grep -q 'What makes a KPI' '$repoX/outX1.txt' && [ ! -f '$MX/prd.md' ]"
+
+prdXsec="$repoX/prd-nosec.md"
+cat >"$prdXsec" <<'EOF'
+# Mission: A mission with no constraints at all
+
+**Type:** feature
+**Goal:** Do a thing.
+**Acceptance Criteria:**
+- it works
+**Out of Scope:**
+- everything else
+EOF
+rcX2=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXsec" >outX2.txt 2>&1
+) || rcX2=$?
+check "18c. --complete with a missing PRD section exits 3 too" \
+  "[ '$rcX2' -eq 3 ] && grep -q \"missing the 'Constraints' section\" '$repoX/outX2.txt'"
+
+# …and the ENVIRONMENT failures on the SAME lane stay 1. Retrying these with a
+# fresh PRD cannot possibly help, so they must never reach the heal.
+rcX3=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-999 --prd "$prdXdrop" >outX3.txt 2>&1
+) || rcX3=$?
+check "18d. --complete of a mission that does not exist stays exit 1" \
+  "[ '$rcX3' -eq 1 ] && grep -q 'no mission' '$repoX/outX3.txt'"
+
+rcX4=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$repoX/nope.md" >outX4.txt 2>&1
+) || rcX4=$?
+check "18e. …and an unreadable --prd path stays exit 1" \
+  "[ '$rcX4' -eq 1 ] && grep -q 'PRD file not found' '$repoX/outX4.txt'"
+
+rcX5=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXdrop" \
+      --model-override "nonsense" >outX5.txt 2>&1
+) || rcX5=$?
+check "18f. …and a malformed --model-override stays exit 1 (bad argv, not a bad PRD)" \
+  "[ '$rcX5' -eq 1 ]"
+
+# --- 18g-k: the grill-first (--prd) lane carries the SAME contract ---------
+repoY="$(new_repo)"; make_gh_stub "$repoY/gh"
+export GH_LOG="$repoY/gh.log"; : >"$GH_LOG"
+briefY="$repoY/concept.md"; printf '%s' "$BRIEF_2SEC" >"$briefY"
+prdYdrop="$repoY/prd-drop.md"; write_prd "$prdYdrop"
+rcY1=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYdrop" --attach "$briefY" >outY1.txt 2>&1
+) || rcY1=$?
+check "18g. grill-first dropping the brief's questions exits 3" "[ '$rcY1' -eq 3 ]"
+
+prdYsec="$repoY/prd-nosec.md"; cp "$prdXsec" "$prdYsec"
+rcY2=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYsec" >outY2.txt 2>&1
+) || rcY2=$?
+check "18h. grill-first with a missing PRD section exits 3" \
+  "[ '$rcY2' -eq 3 ] && grep -q \"missing the 'Constraints' section\" '$repoY/outY2.txt'"
+
+prdYt="$repoY/prd-title.md"
+cat >"$prdYt" <<'EOF'
+# Mission:
+
+**Type:** feature
+**Goal:** Do a thing.
+**Acceptance Criteria:**
+- it works
+**Out of Scope:**
+- everything else
+**Constraints:**
+- none
+EOF
+rcY3=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYt" >outY3.txt 2>&1
+) || rcY3=$?
+check "18i. an unreadable Mission title exits 3 — the PRD is what is wrong" \
+  "[ '$rcY3' -eq 3 ] && grep -q 'could not read the Mission title' '$repoY/outY3.txt'"
+
+prdYty="$repoY/prd-type.md"
+cat >"$prdYty" <<'EOF'
+# Mission: Something
+
+**Type:** enhancement
+**Goal:** Do a thing.
+**Acceptance Criteria:**
+- it works
+**Out of Scope:**
+- everything else
+**Constraints:**
+- none
+EOF
+rcY4=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYty" >outY4.txt 2>&1
+) || rcY4=$?
+check "18j. a Type that is neither feature nor bug exits 3" "[ '$rcY4' -eq 3 ]"
+
+adrY="$repoY/adr-bad.md"; printf '**Context:** x\n' >"$adrY"
+prdYok="$repoY/prd-ok.md"; write_prd "$prdYok"
+rcY5=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYok" --adr "$adrY" >outY5.txt 2>&1
+) || rcY5=$?
+check "18k. a malformed ADR (the same worker's other artifact) exits 3" \
+  "[ '$rcY5' -eq 3 ]"
+
+rcY6=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYok" --adr "$repoY/no-such-adr.md" >outY6.txt 2>&1
+) || rcY6=$?
+check "18l. …but an ADR path that does not EXIST stays exit 1" "[ '$rcY6' -eq 1 ]"
+
+# --- 18m: a clean filing is untouched -------------------------------------
+repoZ="$(new_repo)"; make_gh_stub "$repoZ/gh"
+export GH_LOG="$repoZ/gh.log"; : >"$GH_LOG"
+prdZ="$repoZ/prd.md"; write_prd "$prdZ"
+rcZ=0
+(
+  cd "$repoZ"
+  LCARS_GH_BIN="$repoZ/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdZ" >outZ.txt 2>&1
+) || rcZ=$?
+check "18m. a clean filing still exits 0 and writes prd.md" \
+  "[ '$rcZ' -eq 0 ] && [ -f '$repoZ/.git/lcars/missions/lcars-20260530-001/prd.md' ]"
+
+# ==========================================================================
 [ "$fail" -eq 0 ]

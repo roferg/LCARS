@@ -477,11 +477,18 @@ assert_has "the captain's Verify readout carries the undrawn combination" \
 assert_has "…with the question itself" "manual cohort" "$OUT"
 
 # BEHAVIOUR 5 — a Mission with NO mockup and no design questions is BYTE-IDENTICAL
-# end to end. Compared against the run.sh at HEAD, staged beside a symlink to
-# lcars-init so its `$SKILL_DIR/../lcars-init` resolution still works.
+# end to end. Compared against the run.sh from BEFORE this session — pinned to a
+# SHA, never `HEAD`. A moving baseline made this suite's own control test go red
+# the moment S179 was committed: it asserts the pre-S179 code printed NOTHING for
+# an undrawn combination, which is only true of the commit BEFORE the feature.
+# `HEAD` stopped being that commit at 5dab519, so the test could pass only in the
+# window before its own commit — and a permanently-red test teaches everyone to
+# ignore red. Staged beside a symlink to lcars-init so its
+# `$SKILL_DIR/../lcars-init` resolution still works.
+S179_PARENT="${LCARS_PRE_S179_SHA:-dd9268a}"
 HEADDIR="$TMPROOT/head/skills"
 mkdir -p "$HEADDIR/lcars-run"
-git -C "$REPO_ROOT" show HEAD:skills/lcars-run/run.sh > "$HEADDIR/lcars-run/run.sh"
+git -C "$REPO_ROOT" show "$S179_PARENT":skills/lcars-run/run.sh > "$HEADDIR/lcars-run/run.sh"
 ln -s "$REPO_ROOT/skills/lcars-init" "$HEADDIR/lcars-init"
 chmod +x "$HEADDIR/lcars-run/run.sh"
 
@@ -490,9 +497,9 @@ NOW_OUT="$(cd "$R2" && bash "$SCRIPT" verify-summary --mission "$MID" 2>&1)"
 R3="$(new_repo)"
 HEAD_OUT="$(cd "$R3" && bash "$HEADDIR/lcars-run/run.sh" verify-summary --mission "$MID" 2>&1)"
 if [ "$NOW_OUT" = "$HEAD_OUT" ]; then
-  ok "a Mission with no mockup and no design questions: BYTE-IDENTICAL to HEAD"
+  ok "a Mission with no mockup and no design questions: BYTE-IDENTICAL to pre-S179"
 else
-  bad "a Mission with no mockup drifted from HEAD"
+  bad "a Mission with no mockup drifted from pre-S179"
   diff <(printf '%s\n' "$HEAD_OUT") <(printf '%s\n' "$NOW_OUT") | head -20
 fi
 
@@ -501,9 +508,9 @@ fi
 R4="$(new_repo "- STILL OPEN: $QTEXT" yes)"
 HEAD_Q="$(cd "$R4" && bash "$HEADDIR/lcars-run/run.sh" verify-summary --mission "$MID" 2>&1)"
 if [ "$HEAD_Q" = "$HEAD_OUT" ]; then
-  ok "HEAD printed nothing for it — this section is genuinely new"
+  ok "pre-S179 printed nothing for it — this section is genuinely new"
 else
-  bad "HEAD already printed something for an undrawn combination"
+  bad "pre-S179 already printed something for an undrawn combination"
 fi
 
 # D1, ON THE SURFACE THE CAPTAIN ACTUALLY READS. `verify_decided_readout` and

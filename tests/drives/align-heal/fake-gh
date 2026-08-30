@@ -1,0 +1,8 @@
+#!/bin/bash
+# fake gh — the drive must not touch real GitHub
+case "$1" in
+  issue) echo "https://github.test/x/y/issues/999";;
+  api) echo "{}";;
+  *) echo ok;;
+esac
+exit 0
