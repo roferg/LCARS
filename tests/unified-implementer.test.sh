@@ -476,6 +476,41 @@ printf '%s%s' "$flagA" "$flagB" | grep -q '"attempts":' \
   || ok "9e. neither flag path still emits the colliding 'attempts' key"
 
 # ==========================================================================
+# 10. S173 FIX ROUND — the retired word is gone from the CAPTAIN-FACING strings
+# that name the HIRE CAP, and there is ONE derivation rule for the hire count.
+# Source-level, so it is cheap and cannot be faked by a stub.
+# ==========================================================================
+echo "== 10. no captain-facing string names the hire cap an 'attempt' =="
+
+grep -n 'never turned green within the attempt cap' "$SCRIPT" >/dev/null \
+  && bad "10a. classify_impl_failure still calls the HIRE cap an 'attempt cap'" \
+  || ok "10a. genuine-red-exhausted names the hire cap correctly"
+grep -q 'never turned green within the hire cap' "$SCRIPT" \
+  && ok "10a. …and says 'hire cap' explicitly" \
+  || bad "10a. the genuine-red-exhausted wording is missing"
+
+grep -n 'The ticket FAILS this attempt' "$SCRIPT" >/dev/null \
+  && bad "10b. the POST-COMMIT GATE detail still says 'FAILS this attempt'" \
+  || ok "10b. the POST-COMMIT GATE detail names the worker session"
+grep -q 'The ticket FAILS this worker session' "$SCRIPT" \
+  && ok "10b. …in the round's vocabulary" \
+  || bad "10b. the POST-COMMIT GATE replacement wording is missing"
+
+grep -n 'no valid estimate.json after %s attempt' "$SCRIPT" >/dev/null \
+  && bad "10c. the estimator still counts MAX_WORKER_TRIES in 'attempt(s)'" \
+  || ok "10c. the estimator's bounded retry names worker sessions"
+grep -q 'no valid estimate.json after %s worker session' "$SCRIPT" \
+  && ok "10c. …and each try IS a spawn_worker dispatch, so that is the honest word" \
+  || bad "10c. the estimator replacement wording is missing"
+
+# The DERIVATION RULE itself is proven behaviourally at each of its four
+# surfaces rather than by poking the function: run.sh through the Verify
+# roll-up (verify-summary-contract §7/§8 — a pre-S133 two-phase ticket counts
+# TWO hires, and a stream with no dispatch on file stays silent rather than
+# being floored to 1) and through §8 above (a re-entered process keeps
+# counting), comment-mirror through lcars-comment T15, lcars-status through
+# W15, and board.js through web/tests/test_activity_sections.HireDerivationTest.
+
 echo
 printf 'unified-implementer: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

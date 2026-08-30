@@ -66,7 +66,19 @@ const acts = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const sections = sandbox.groupActivityIntoSections(acts);
 const mode = process.argv[3] || "";
 
-if (mode === "chips") {
+if (mode === "headlines") {
+  // S173 fix-round: the captain-facing EVENT HEADLINE for each input event, as
+  // produced by the SHIPPING headlineFor(), plus the raw EVENT_HEADS map — so a
+  // test can prove no headline says "attempt" on ANY stream shape.
+  if (typeof sandbox.headlineFor !== "function") {
+    process.stderr.write("headlineFor is not defined\n");
+    process.exit(2);
+  }
+  process.stdout.write(JSON.stringify({
+    headlines: acts.map(function (ev) { return sandbox.headlineFor(ev); }),
+    heads: sandbox.EVENT_HEADS || {},
+  }));
+} else if (mode === "chips") {
   // VISUAL POLISH: exercise the graphic chip + health-bar DOM builders against
   // the SHIPPING board.js, projecting the produced DOM to inspectable JSON.
   if (typeof sandbox.sectionSummaryChips !== "function"

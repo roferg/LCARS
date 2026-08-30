@@ -410,16 +410,30 @@ event_count() { # type data-fragment-regex
   fi
 }
 # S173: ticket_hire_count <ticket-id> → how many times LCARS COLD-SPAWNED a
-# fresh worker for this ticket (the HIRE count). One ticket_attempt/phase=tdd
-# event per real dispatch, so reading events.jsonl — never a process-local —
-# keeps the number right after a fresh process re-enters a half-built ticket.
-# DISTINCT from result.json.attempts, the worker's OWN internal iteration count
-# (S133: informational, uncapped, gates nothing). Floors at 1: a direct
-# impl-save-result invocation with no dispatch on file is still one hire.
+# fresh worker for this ticket (the HIRE count). Reads events.jsonl — never a
+# process-local — so the number is still right after a fresh process re-enters a
+# half-built ticket. DISTINCT from result.json.attempts, the worker's OWN
+# internal iteration count (S133: informational, uncapped, gates nothing).
+#
+# S173 FIX ROUND — ONE derivation rule, shared verbatim by board.js's
+# sessionCount, comment-mirror's cm_ticket_sessions and lcars-status's pace
+# line: the NUMBER of ticket_attempt events for this ticket, ANY phase. Every
+# ticket_attempt is one real worker DISPATCH. On a current mission they are all
+# phase=tdd, so nothing changes; on a pre-S133 standoff mission the
+# phase=test-writer and phase=implementer events were each a dispatch too, and
+# the old phase=tdd filter silently reported ZERO hires for those tickets.
+#
+# ZERO ticket_attempt events ⇒ the hire count is UNKNOWN, and this returns 0.
+# It no longer FLOORS AT 1. The floor was there so a direct impl-save-result
+# invocation with no dispatch on file still read as "one hire" — but BOTH
+# callers below speak only above 1, so an unknown and a single hire render
+# identically ("✓ t-001 — green"): the Verify roll-up's silence-at-1 rule is
+# untouched, and the function stops asserting a number it did not count.
+# NOTE: this is NOT the `awtry` DISPATCH NUMBERING inside the escalation loop —
+# that is deliberately phase=tdd-filtered and is what LCARS DOES, not display.
 ticket_hire_count() { # ticket-id
-  local n; n="$(event_count ticket_attempt "\"ticket\":\"$1\".*\"phase\":\"tdd\"")"
+  local n; n="$(event_count ticket_attempt "\"ticket\":\"$1\"")"
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  [ "$n" -lt 1 ] && n=1
   printf '%s' "$n"
 }
 state_del() { # key   — drop the field's line if present (no-op otherwise)
@@ -6946,7 +6960,7 @@ impl_failure_category_phrase() { # category → phrase
     empty-worker-output)        printf 'empty worker output (the worker produced no file and no output — likely a transient CLI failure, not a code problem)' ;;
     suite-hang)                 printf 'suite hang (the suite never settled under the hard timeout — likely an awaited / thenable mock or an infinite async init)' ;;
     env-failure|runner-startup) printf 'environment failure (the test runner could not start — the worktree is not provisioned; NOT a code problem)' ;;
-    genuine-red-exhausted)      printf 'genuine red exhausted (the tests went red but never turned green within the attempt cap)' ;;
+    genuine-red-exhausted)      printf 'genuine red exhausted (the tests went red but never turned green within the hire cap)' ;;
     *)                          printf '%s' "$1" ;;
   esac
 }
@@ -8884,7 +8898,7 @@ PC_RELS_EOF
     return 3
   fi
 
-  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this attempt — it must land its change on the committed branch to pass. Command run: $cmd."
+  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass. Command run: $cmd."
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$detail" >"$POST_COMMIT_SIGNAL"
   return 1
@@ -12644,7 +12658,12 @@ estimatorModel = \"$est_tier\" — echo this verbatim into the estimate.json fie
   # Degradation parity with gh-missing: no estimate.json, but do NOT crash the
   # caller's filing. lcars-file treats a non-zero exit as "no estimate" and files
   # the mission anyway; every stage then falls back to its legacy model.
-  printf '  ⚠ estimator produced no valid estimate.json after %s attempt(s) — mission keeps default models.\n' "$MAX_WORKER_TRIES" >&2
+  # S173 FIX ROUND: every iteration of the loop above is a spawn_worker
+  # dispatch bounded by MAX_WORKER_TRIES — the same constant, and the same
+  # quantity, as the Implement hire cap. So it takes the round's word, unlike
+  # the Research/Validate/Plan/Plan-Review stage-retry strings, whose count is
+  # a stage re-run with no second quantity to be confused with.
+  printf '  ⚠ estimator produced no valid estimate.json after %s worker session(s) — mission keeps default models.\n' "$MAX_WORKER_TRIES" >&2
   exit 1
 }
 

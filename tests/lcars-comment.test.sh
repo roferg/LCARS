@@ -540,7 +540,8 @@ cat >"$m13/events.jsonl" <<'EOF'
 {"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
 {"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green in 1 attempt(s)","data":{"ticket":"t-001","attempts":1}}
 {"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-002 starting","data":{"ticket":"t-002","wave":1}}
-{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 2 for t-002","data":{"ticket":"t-002","phase":"implementer","attempt":2}}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 1 for t-002","data":{"ticket":"t-002","phase":"implementer","attempt":1}}
+{"ts":1006,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 2 for t-002","data":{"ticket":"t-002","phase":"implementer","attempt":2}}
 EOF
 run_mirror "$r13" 1100
 IBODY13="$(stage_body "$m13" implement)"
@@ -580,8 +581,12 @@ cat >"$m14/events.jsonl" <<'EOF'
 {"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
 {"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (2 ticket(s))","data":{"wave":1,"ticketCount":2,"totalWaves":1}}
 {"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
-{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 5 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":5}}
-{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-001 flagged after 5 attempt(s)","data":{"ticket":"t-001","attempts":5}}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 1 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":1}}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 2 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":2}}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 3 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":3}}
+{"ts":1006,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 4 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":4}}
+{"ts":1007,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 5 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":5}}
+{"ts":1008,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-001 flagged after 5 attempt(s)","data":{"ticket":"t-001","attempts":5}}
 EOF
 run_mirror "$r14" 1100
 IBODY14="$(stage_body "$m14" implement)"
@@ -641,6 +646,109 @@ check "T13. the superseded earlier start (t-001) is NOT in progress" \
   "! printf '%s' \"\$IBODY15\" | qgrep -qE 't-001.*in progress'"
 check "T13. the current (t-002) IS the in-progress ticket" \
   "printf '%s' \"\$IBODY15\" | qgrep -qE 't-002.*in progress'"
+
+# --- T14 (S173 FIX ROUND, D3): a DONE ticket line is no longer byte-identical
+# whether it took 1 hire or 3 hires + 2 bounces. Hires AND bounces are readable
+# off the mirror WITHOUT opening a ticket — and a clean ticket wears no counter,
+# the same silence rule as the board chip. ----------------------------------
+r16="$(new_repo implement)"; make_gh_stub "$r16/gh"; gh_env "$r16"
+m16="$(mdir "$r16")"
+cat >"$m16/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 501
+      },
+      {
+        "id": "t-002",
+        "issue": 502
+      },
+      {
+        "id": "t-003",
+        "issue": 503
+      }
+    ]
+  }
+]
+EOF
+cat >"$m16/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (3 ticket(s))","data":{"wave":1,"ticketCount":3,"totalWaves":1}}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","sessions":1,"iterations":6}}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-002 starting","data":{"ticket":"t-002","wave":1}}
+{"ts":1006,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":1}}
+{"ts":1007,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-002 bounced by the flip-flop gate (FAIL) — session 1; re-spawning a fresh worker with the verdict","data":{"ticket":"t-002","gate":"flip-flop","attempt":1}}
+{"ts":1008,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 2 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":2}}
+{"ts":1009,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-002 bounced by the declared-edits gate (FAIL) — session 2; re-spawning a fresh worker with the verdict","data":{"ticket":"t-002","gate":"declared-edits","attempt":2}}
+{"ts":1010,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 3 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":3}}
+{"ts":1011,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-002 green after 3 worker sessions","data":{"ticket":"t-002","sessions":3,"iterations":2}}
+{"ts":1012,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-003 starting","data":{"ticket":"t-003","wave":1}}
+EOF
+run_mirror "$r16" 1100
+IBODY16="$(stage_body "$m16" implement)"
+DONE1_16="$(printf '%s\n' "$IBODY16" | grep 't-001' | head -1)"
+DONE2_16="$(printf '%s\n' "$IBODY16" | grep 't-002' | head -1)"
+check "T14. a CLEAN done ticket wears no counter at all" \
+  "printf '%s' \"\$DONE1_16\" | qgrep -qE '^\\- \\[x\\] #501 . t-001$'"
+check "T14. a 3-hire / 2-bounce done ticket names BOTH, in the round's vocabulary" \
+  "printf '%s' \"\$DONE2_16\" | qgrep -qF '3 worker sessions, 2 bounces'"
+# compares only the SUFFIX past the ticket id, so the ids themselves cannot
+# make two structurally identical lines look different.
+check "T14. the done-line SUFFIXES are no longer byte-identical" \
+  "[ \"\${DONE1_16#*t-001}\" != \"\${DONE2_16#*t-002}\" ]"
+check "T14. the word 'bounce' now appears in the mirror" \
+  "printf '%s' \"\$IBODY16\" | qgrep -q 'bounce'"
+check "T14. neither done line says 'attempt'" \
+  "! printf '%s' \"\$DONE1_16\$DONE2_16\" | qgrep -qi 'attempt'"
+check "T14. the worker's own iteration count (6) never reaches the mirror" \
+  "! printf '%s' \"\$DONE1_16\" | qgrep -q '6'"
+
+# --- T15 (S173 FIX ROUND, D2): ONE derivation rule — the hire count is the
+# NUMBER of ticket_attempt events, ANY phase; never the max `attempt` VALUE. --
+r17="$(new_repo implement)"; make_gh_stub "$r17/gh"; gh_env "$r17"
+m17="$(mdir "$r17")"
+cat >"$m17/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 601
+      },
+      {
+        "id": "t-002",
+        "issue": 602
+      }
+    ]
+  }
+]
+EOF
+# t-001: the PRE-S133 standoff shape — two dispatches, both numbered attempt=1
+# (the old loops numbered PER PHASE). Max VALUE = 1; EVENT COUNT = 2.
+# t-002: a GAP in the indices (1 then 3). Max VALUE = 3; EVENT COUNT = 2.
+cat >"$m17/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (2 ticket(s))","data":{"wave":1,"ticketCount":2,"totalWaves":1}}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"test-writer try 1 for t-001","data":{"ticket":"t-001","phase":"test-writer","attempt":1}}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 1 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":1}}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-001 flagged","data":{"ticket":"t-001","sessions":2}}
+{"ts":1006,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-002 starting","data":{"ticket":"t-002","wave":1}}
+{"ts":1007,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":1}}
+{"ts":1008,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"tdd session 3 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":3}}
+EOF
+run_mirror "$r17" 1100
+IBODY17="$(stage_body "$m17" implement)"
+check "T15. a pre-S133 two-phase ticket counts TWO hires (events, not the max index 1)" \
+  "printf '%s' \"\$IBODY17\" | qgrep -qE '\\- \\[ \\].*t-001.*flagged after 2 worker sessions'"
+check "T15. a GAPPED index stream counts TWO hires (events, not the max index 3)" \
+  "printf '%s' \"\$IBODY17\" | qgrep -qE '\\- \\[ \\].*t-002.*in progress, hire 2 of 3'"
 
 # ==========================================================================
 echo

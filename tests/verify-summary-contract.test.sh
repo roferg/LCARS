@@ -222,6 +222,27 @@ check "7. no events.jsonl → every ticket reads as a clean first-hire green" \
 check "7. no '?' placeholder and no phantom hire count leaks in" \
   "! grep -E '^ +✓' '$OUT' | grep -qE '[?]|worker session'"
 
+# ── 8. S173 FIX ROUND: ONE derivation rule — ticket_attempt events, ANY phase ─
+# A PRE-S133 standoff mission's stream numbers its dispatches PER PHASE, so
+# t-001 carries two ticket_attempt events BOTH wearing attempt=1. The max
+# `attempt` VALUE says 1 and hides a re-hire; the EVENT COUNT says 2, which is
+# how many workers LCARS actually had to spawn. Same rule as the board chip,
+# the comment mirror and the `lcars status` pace line.
+repo8="$(new_repo proof)"; m8="$repo8/.git/lcars/missions/$MID"
+cat >"$m8/events.jsonl" <<EOF
+{"ts":1000,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"test-writer try 1 for t-001","data":{"ticket":"t-001","phase":"test-writer","attempt":1}}
+{"ts":1001,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"implementer try 1 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":1}}
+{"ts":1002,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":1}}
+EOF
+make_gh_stub "$repo8/gh"; run_summary "$repo8"
+check "8. exits 0" "[ '$RC' -eq 0 ]"
+check "8. a pre-S133 two-phase ticket counts TWO hires (events, not the max index 1)" \
+  "grep -qF '✓ t-001 — green after 2 worker sessions' '$OUT'"
+check "8. a single-dispatch ticket in the SAME stream still reads as a clean green" \
+  "grep -qF '✓ t-002 — green' '$OUT' && ! grep -E '✓ t-002' '$OUT' | grep -q 'session'"
+check "8. the retired word 'attempt' is still gone on a historical stream" \
+  "! grep -qi 'attempt' '$OUT'"
+
 echo
 echo "verify-summary-contract: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

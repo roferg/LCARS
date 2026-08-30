@@ -6068,12 +6068,26 @@ function renderEvent(ev) {
    dropped: every input event lands in exactly one section, in order.
 
    Each section carries derived summary data: ticketCount (ticket_start events),
-   greenCount / flaggedCount, sessionCount (S173: the HIRE count — ticket_attempt
-   events, one per worker DISPATCH, when present; else the pre-S134 green+flagged
-   outcome fallback), bounceCount (ticket_gate_bounce events — a gate rejection
-   that cost a hire), a `flagged` marker (any ticket flagged), the first/last ts
-   and their durationSec, and `active` (the LAST section — the in-flight /
-   most-recent one, which renders OPEN).
+   greenCount / flaggedCount, sessionCount, bounceCount (ticket_gate_bounce
+   events — a gate rejection that cost a hire), a `flagged` marker (any ticket
+   flagged), the first/last ts and their durationSec, and `active` (the LAST
+   section — the in-flight / most-recent one, which renders OPEN).
+
+   sessionCount is THE HIRE COUNT, and there is exactly ONE derivation rule for
+   it, shared with run.sh's ticket_hire_count(), comment-mirror's
+   cm_ticket_sessions() and lcars-status's pace line: the NUMBER of
+   ticket_attempt events in the section, ANY phase. Every ticket_attempt is one
+   real worker DISPATCH — on a current mission they are all phase=tdd; on a
+   pre-S133 standoff mission the test-writer and implementer events were each a
+   dispatch too, so counting them is honest there as well. It is NOT the max
+   `attempt` VALUE (pre-S133 streams number per phase, so the max under-counts)
+   and it is NOT derived from anything else.
+   NO ticket_attempt events ⇒ sessionCount is null: the hire count is UNKNOWN,
+   the chip is omitted, and NOTHING is substituted for it. (Until this fix an
+   outcome fallback — greens + flaggeds — was rendered under the word
+   "sessions", so a wave where every ticket landed first try wore "↻ 3
+   sessions", and a ticket that struggled through 5 worker iterations with no
+   ticket_attempt on file wore nothing.)
    Every count keys off the event TYPE, never off detail text, so a historical
    or MIXED-vocabulary stream tallies identically to a fresh one. */
 function groupActivityIntoSections(acts) {
@@ -6090,8 +6104,8 @@ function groupActivityIntoSections(acts) {
     }
     switch (ev.type) {
       case "ticket_start": sec.ticketCount++; break;
-      case "ticket_green": sec.greenCount++; sec._outcomes++; break;
-      case "ticket_flagged": sec.flaggedCount++; sec._outcomes++; sec.flagged = true; break;
+      case "ticket_green": sec.greenCount++; break;
+      case "ticket_flagged": sec.flaggedCount++; sec.flagged = true; break;
       case "ticket_attempt": sec._sessions++; break;
       case "ticket_gate_bounce": sec.bounceCount++; break;
     }
@@ -6101,7 +6115,7 @@ function groupActivityIntoSections(acts) {
       kind: kind, stage: normStage(stage), wave: wave || null,
       events: [], startTs: null, endTs: null,
       ticketCount: 0, greenCount: 0, flaggedCount: 0, flagged: false,
-      bounceCount: 0, _sessions: 0, _outcomes: 0,
+      bounceCount: 0, _sessions: 0,
     };
     sections.push(sec);
     cur = sec;
@@ -6145,11 +6159,12 @@ function groupActivityIntoSections(acts) {
     sec.active = (i === sections.length - 1);
     sec.durationSec = (sec.startTs != null && sec.endTs != null)
       ? Math.max(0, Math.round(sec.endTs - sec.startTs)) : null;
-    // BACK-COMPAT: a pre-S134 stream has no ticket_attempt events at all, so
-    // fall back to counting outcomes — an old mission renders a sane number
-    // rather than nothing. Never NaN, never a wrong count, on any stream.
-    sec.sessionCount = sec._sessions > 0 ? sec._sessions : sec._outcomes;
-    delete sec._sessions; delete sec._outcomes;
+    // BACK-COMPAT: a pre-S134 stream has no ticket_attempt events at all. The
+    // hire count is then genuinely UNKNOWN — null, so every surface omits it.
+    // An outcome count is NOT a hire count and is never substituted for one.
+    // Never NaN, never a fabricated number, on any stream.
+    sec.sessionCount = sec._sessions > 0 ? sec._sessions : null;
+    delete sec._sessions;
   });
   return sections;
 }
@@ -6172,7 +6187,8 @@ function sectionTitle(sec) {
 }
 
 /* S115: the one-line Star-Trek-voiced summary shown on a collapsed band. Wave
-   bands read "N tickets · M worker sessions · K bounces · <dur>"; stage bands read a stage-flavoured
+   bands read "N tickets · M worker sessions · K bounces · <dur>" (the hire and
+   bounce counters silent when there is nothing to report); stage bands read a stage-flavoured
    line with the duration. Duration is omitted when unknown. Kept as the plain-
    text fallback; the band now renders sectionSummaryChips (graphic stat chips)
    with the SAME singular/plural + omit-when-zero rules. */
@@ -6183,7 +6199,8 @@ function sectionSummary(sec) {
     // S173: silence when nothing went wrong — a wave whose every ticket landed
     // on its FIRST hire wears no counter at all. Only > 1 is worth saying.
     if (sec.sessionCount > 1) {
-      bits.push(sec.sessionCount + " worker sessions");
+      bits.push(sec.sessionCount + " worker session"
+        + (sec.sessionCount === 1 ? "" : "s"));
     }
     if (sec.bounceCount > 0) {
       bits.push(sec.bounceCount + " bounce" + (sec.bounceCount === 1 ? "" : "s"));
@@ -6214,7 +6231,8 @@ function sectionSummaryChips(sec) {
       // RED tint when this wave carries a flagged ticket, amber otherwise.
       chips.push(el("span",
         "band-chip chip-sessions" + (sec.flaggedCount > 0 ? " flagged" : ""),
-        "↻ " + sec.sessionCount + " sessions"));
+        "↻ " + sec.sessionCount + " worker session"
+          + (sec.sessionCount === 1 ? "" : "s")));
     }
     if (sec.bounceCount > 0) {
       // The signal that something WENT WRONG — a gate rejected a hire and LCARS
@@ -6448,13 +6466,13 @@ function fmtDuration(secs) {
 var EVENT_HEADS = {
   stage_start: "Stage started", stage_done: "Stage complete",
   wave_start: "Wave started", ticket_start: "Ticket started",
-  ticket_attempt: "Ticket attempt", ticket_green: "Ticket green",
+  ticket_attempt: "Worker session", ticket_green: "Ticket green",
   ticket_flagged: "Ticket flagged", gate: "Gate raised", error: "Error",
   // S134 — the S133 unified-implementer proof-gate vocabulary, in Trek console
   // voice. There is NO per-event role chip anymore: with one unified worker the
   // old Test-Writer / Implementer distinction is retired. The visible sub-
   // structure is the PROOF GATE outcome (below) and the worker-session marker
-  // (headlineFor, for ticket_attempt phase=tdd).
+  // (headlineFor, for any indexed ticket_attempt).
   flip_flop_pass: "PROOF ACCEPTED",
   flip_flop_fail: "PROOF REJECTED",
   flip_flop_inconclusive: "PROOF INCONCLUSIVE",
@@ -6480,10 +6498,17 @@ function headlineFor(ev) {
   // up to 3 sessions) each unified-TDD session emits a ticket_attempt with
   // phase=tdd + attempt=N. Surface that session number so multiple worker passes
   // on one ticket are legible — the meaningful sub-structure that replaces the
-  // retired role distinction (there is no role/"TDD" chip anywhere).
+  // retired role distinction (there is no role/"TDD" chip anywhere). NO
+  // captain-facing headline says "attempt", on any stream.
   if (ev.type === "ticket_attempt") {
     var d = ev.data || {};
-    if (d.phase === "tdd" && d.attempt != null) return "Worker session " + d.attempt;
+    // S173 FIX ROUND: ANY phase, not just tdd. A pre-S133 standoff stream
+    // carries phase=test-writer / phase=implementer, and each of those events
+    // was a real worker dispatch too — they used to fall through to the literal
+    // "Ticket attempt", which is how the retired word survived on every
+    // historical mission's timeline. With no index on the wire, EVENT_HEADS
+    // supplies the phase-neutral "Worker session".
+    if (d.attempt != null) return "Worker session " + d.attempt;
   }
   return EVENT_HEADS[ev.type] || (ev.type || "Event").replace(/_/g, " ");
 }

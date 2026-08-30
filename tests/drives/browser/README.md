@@ -685,6 +685,62 @@ all.
 Zero tokens: the only `claude`/`copilot` on `PATH` are logging shims that exit
 1, the journey never takes a turn, and a non-empty shim log fails the run.
 
+## The seventh rig: `s173-hires.sh` (S173 fix round 1)
+
+```
+bash tests/drives/browser/s173-hires.sh                  # headless
+LCARS_BROWSER_HEADED=1 bash tests/drives/browser/s173-hires.sh
+```
+
+Three files, written by the S173 tester and kept because rebuilding them is the
+expensive part:
+
+| file | what it is |
+|---|---|
+| `s173-fixture.sh` | plants a SIX-WAVE Implement mission on disk in the exact on-disk formats the harness writes (compact one-line events, `waves.json`, a `parse_plan_table`-readable `plan.json`) |
+| `s173-hires.sh` | boots the SHIPPING daemon on that fixture in real Chrome, with both engines shimmed to refuse |
+| `s173-drive.js` | a CDP driver that opens a mission DETAIL, expands every activity band, and reads back the band chips, every event headline, and **every visible leaf node whose text says "attempt"** |
+
+`smoke.sh` stops at the board; this is the only rig that opens a mission's
+detail modal and reads the activity feed, which is where the whole Implement
+vocabulary lives.
+
+**Each wave isolates one case:**
+
+| wave | shape | what it must render |
+|---|---|---|
+| 1 | 1 hire, 0 bounces, green, `result.json.attempts = 7` | **no counter at all**, and no `7` anywhere |
+| 2 | 3 hires, 2 bounces, green | `↻ 3 worker sessions` + `⤫ 2 bounces` |
+| 3 | 3 hires, 3 bounces, hire cap exhausted → flagged | the same, red-tinted, `⚠ FLAGGED` |
+| 4 | **pre-S134**: NO `ticket_attempt` events at all | **no session chip** — the hire count is UNKNOWN |
+| 5 | MIXED: pre-S173 detail text beside post-S173 events | counts tally off event TYPE, never off the text |
+| 6 | **pre-S133 standoff**: `phase=test-writer` + `phase=implementer`, both `attempt=1` | `↻ 2 worker sessions` and headlines reading `Worker session 1` |
+
+**Why waves 4 and 6 are the load-bearing ones.** They are the two shapes that
+exist only in HISTORY, and both defects the fix round cured were invisible
+without them:
+
+- Wave 4 caught the fabrication. `sec.sessionCount = sec._sessions > 0 ?
+  sec._sessions : sec._outcomes` substituted (greens + flaggeds) and rendered it
+  under the word "sessions", so a wave where every ticket landed first try wore
+  `↻ 2 sessions` — a clean wave carrying a hire count nobody counted. Every
+  headless fixture had `ticket_attempt` events, so none of them ever took the
+  fallback branch.
+- Wave 6 caught the surviving headline. `headlineFor` returned `Worker session N`
+  only for `phase === "tdd"`; every other phase fell through to the literal
+  `"Ticket attempt"` — which is every ticket of every pre-S133 mission on disk.
+
+**Reading it.** The drive prints the band chips as JSON (with computed colour, so
+a chip that resolves but does not paint is visible), then the headline list, then
+the `attempt` leaf-node list. That last list is **not expected to be empty**: the
+round does not rewrite recorded event `detail` text, so a historical stream's own
+`green in 4 attempt(s)` still renders verbatim. What must be empty of the word is
+the **headlines and the chips** — the strings LCARS composes now.
+
+Zero tokens: `claude` and `copilot` on `PATH` are logging shims that exit 1, and
+the run prints its shim-invocation count (expected 0). It kills only the daemon
+and Chrome PIDs it started itself.
+
 ## Exit codes
 
 | code | meaning |

@@ -302,6 +302,7 @@ write_events "$repoW1" "lcars-20260601-001" \
 {"ts":1001,"mission":"lcars-20260601-001","stage":"research","type":"stage_done","detail":"asked 3 questions, all answered"}
 {"ts":1002,"mission":"lcars-20260601-001","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
 {"ts":1003,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 1 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":1}}
 {"ts":1004,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 2 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":2}}
 {"ts":1010,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","attempts":2}}
 {"ts":1011,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-002 flagged after 5 attempt(s)","data":{"ticket":"t-002","attempts":5}}
@@ -318,8 +319,8 @@ check "W1. renders ticket_attempt line" "grep -qiE 'try|session' '$repoW1/out.tx
 # historical event DETAILS in this fixture keep their own (pre-S173) wording on
 # purpose — nothing rewrites recorded text — so the vocabulary assertion is
 # scoped to the line the harness itself composes.
-check "W1. the progress line reads 'session <n>' (the HIRE count)" \
-  "grep '^Wave ' '$repoW1/out.txt' | grep -qE 'session 2'"
+check "W1. the progress line reads 'hire <n>' (the HIRE count)" \
+  "grep '^Wave ' '$repoW1/out.txt' | grep -qE 'hire 2'"
 check "W1. the progress line no longer says 'attempt'" \
   "! grep '^Wave ' '$repoW1/out.txt' | grep -qi 'attempt'"
 check "W1. renders ticket_green line"   "grep -qi 'green' '$repoW1/out.txt' && grep -q 't-001' '$repoW1/out.txt'"
@@ -758,6 +759,80 @@ done
 check "D1. SIGTERM terminates the backgrounded no-TTY watch (no orphan)" \
   "! kill -0 '$wpid' 2>/dev/null"
 kill -KILL "$wpid" 2>/dev/null || true   # belt-and-braces cleanup
+
+# --- Behaviour W14 (S173 FIX ROUND, D4): `lcars status` can show a BOUNCE ----
+# ticket_gate_bounce and the flip_flop_* family used to fall through to the
+# `*)` default: no glyph, no indent, flush-left among indented ticket lines and
+# visually indistinguishable from noise. And the pace line could not report a
+# bounce at all.
+repoW14="$(new_init_repo)"
+write_mission "$repoW14" "lcars-20260601-014" "implement" "44" \
+  "2026-06-01T10:00:00Z" "Bounces"
+write_events "$repoW14" "lcars-20260601-014" \
+'{"ts":1000,"mission":"lcars-20260601-014","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
+{"ts":1001,"mission":"lcars-20260601-014","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1002,"mission":"lcars-20260601-014","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1003,"mission":"lcars-20260601-014","stage":"implement","type":"flip_flop_fail","detail":"flip-flop REJECTED for t-001 — the tests pass on the parent commit too","data":{"ticket":"t-001"}}
+{"ts":1004,"mission":"lcars-20260601-014","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-001 bounced by the flip-flop gate (tests pass on parent) — session 1; re-spawning a fresh worker with the verdict","data":{"ticket":"t-001","gate":"flip-flop","attempt":1}}
+{"ts":1005,"mission":"lcars-20260601-014","stage":"implement","type":"ticket_attempt","detail":"tdd session 2 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":2}}
+{"ts":1006,"mission":"lcars-20260601-014","stage":"implement","type":"flip_flop_pass","detail":"flip-flop proven for t-001","data":{"ticket":"t-001"}}'
+write_waves "$repoW14" "lcars-20260601-014" "$WAVES_3"
+( cd "$repoW14" && LCARS_NOW=2000 bash "$SCRIPT" --once lcars-20260601-014 >out.txt 2>&1 )
+check "W14. the bounce line carries a glyph AND the ticket-level indent" \
+  "grep -qE '^    ⤫ ticket t-001 bounced' '$repoW14/out.txt'"
+check "W14. no bounce line is left flush-left (the \`*)\` default)" \
+  "! grep -qE '^ticket t-001 bounced' '$repoW14/out.txt'"
+check "W14. a flip-flop REJECT is glyphed and indented too" \
+  "grep -qE '^    ⊗ flip-flop REJECTED' '$repoW14/out.txt'"
+check "W14. a flip-flop ACCEPT is glyphed and indented too" \
+  "grep -qE '^    ⊕ flip-flop proven' '$repoW14/out.txt'"
+check "W14. every proof/bounce line is indented (none flush-left)" \
+  "! grep -qE '^flip-flop' '$repoW14/out.txt'"
+check "W14. the pace line names the BOUNCE count beside the hire count" \
+  "grep '^Wave ' '$repoW14/out.txt' | grep -qE 'hire 2 · 1 bounce'"
+check "W14. the pace line still says nothing about 'attempt'" \
+  "! grep '^Wave ' '$repoW14/out.txt' | grep -qi 'attempt'"
+
+# --- Behaviour W15 (S173 FIX ROUND, D2): the pace line's hire count is the
+# EVENT COUNT, any phase — never the max `attempt` VALUE. --------------------
+repoW15="$(new_init_repo)"
+write_mission "$repoW15" "lcars-20260601-015" "implement" "45" \
+  "2026-06-01T10:00:00Z" "Gaps"
+# t-001: indices 1 then 3 → max VALUE 3, EVENT COUNT 2. And a pre-S133 phase
+# split on the SAME ticket would likewise be under-counted by the max.
+write_events "$repoW15" "lcars-20260601-015" \
+'{"ts":1000,"mission":"lcars-20260601-015","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
+{"ts":1001,"mission":"lcars-20260601-015","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1002,"mission":"lcars-20260601-015","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1003,"mission":"lcars-20260601-015","stage":"implement","type":"ticket_attempt","detail":"tdd session 3 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":3}}'
+write_waves "$repoW15" "lcars-20260601-015" "$WAVES_3"
+( cd "$repoW15" && LCARS_NOW=2000 bash "$SCRIPT" --once lcars-20260601-015 >out.txt 2>&1 )
+check "W15. a GAPPED index stream reports 2 hires (events), not 3 (max index)" \
+  "grep '^Wave ' '$repoW15/out.txt' | grep -qE 'hire 2( |\$)'"
+check "W15. the max index 3 is not shown as a hire count" \
+  "! grep '^Wave ' '$repoW15/out.txt' | grep -qE 'hire 3'"
+check "W15. a wave with no bounces wears no bounce counter (silence rule)" \
+  "! grep '^Wave ' '$repoW15/out.txt' | grep -qi 'bounce'"
+
+# --- Behaviour W16 (S173 FIX ROUND, D5): a stream with NO ticket_attempt event
+# has an UNKNOWN hire count, and the pace line OMITS the field rather than
+# flooring it to a number nobody counted. -----------------------------------
+repoW16="$(new_init_repo)"
+write_mission "$repoW16" "lcars-20260601-016" "implement" "46" \
+  "2026-06-01T10:00:00Z" "Pre-S134"
+write_events "$repoW16" "lcars-20260601-016" \
+'{"ts":1000,"mission":"lcars-20260601-016","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
+{"ts":1001,"mission":"lcars-20260601-016","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1002,"mission":"lcars-20260601-016","stage":"implement","type":"ticket_green","detail":"ticket t-001 green in 4 attempt(s)","data":{"ticket":"t-001","attempts":4}}
+{"ts":1003,"mission":"lcars-20260601-016","stage":"implement","type":"ticket_start","detail":"ticket t-002 starting","data":{"ticket":"t-002","wave":1}}'
+write_waves "$repoW16" "lcars-20260601-016" "$WAVES_3"
+( cd "$repoW16" && LCARS_NOW=2000 bash "$SCRIPT" --once lcars-20260601-016 >out.txt 2>&1 )
+check "W16. the pace line still renders on a pre-S134 stream" \
+  "grep -qE '^Wave 1/3 . ticket t-002' '$repoW16/out.txt'"
+check "W16. …and OMITS the hire field rather than fabricating 'hire 1'" \
+  "! grep '^Wave ' '$repoW16/out.txt' | grep -qi 'hire'"
+check "W16. the worker's own iteration count (4) never reaches the pace line" \
+  "! grep '^Wave ' '$repoW16/out.txt' | grep -qE '(^| )4( |\$)'"
 
 # ==========================================================================
 echo

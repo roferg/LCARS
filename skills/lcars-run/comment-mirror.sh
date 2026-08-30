@@ -42,7 +42,7 @@
 #   {
 #     "research": 101,
 #     "implement": 104,
-#     "gate:5attempts-t002": 109
+#     "gate:3hires-t002": 109
 #   }
 # Stage keys map a stage to its living comment id. "gate:<key>" entries mark a
 # one-time ping already posted (so a re-run never re-pings the same gate).
@@ -311,7 +311,8 @@ cm_render_implement() {
 # One wave's ticket checklist. A fully-green wave that is NOT the current wave is
 # folded into <details>; otherwise shown inline. <cur_ticket> is the single
 # in-progress ticket (the last non-green/non-flagged ticket_start) — only IT
-# renders "(in progress, attempt N)".
+# renders "(in progress, hire N of 3)". A DONE ticket wears its hire and bounce
+# counts only when there is something to say (S173 fix round).
 cm_render_wave_checklist() { # wave waves events cur_wave cur_ticket
   local wave="$1" waves="$2" ev="$3" cur="$4" cur_ticket="$5"
   # Gather this wave's tickets as "id<TAB>issue" pairs.
@@ -341,7 +342,15 @@ cm_render_wave_checklist() { # wave waves events cur_wave cur_ticket
     if [ "$issue" = "null" ] || [ -z "$issue" ]; then link="$id"; else link="#$issue · $id"; fi
     local suffix=""
     case "$state" in
-      done) ;;
+      done)
+        # S173 FIX ROUND: a DONE ticket used to render byte-identically whether
+        # it took one hire or three hires and two bounces, so the mirror could
+        # not answer "how many times did LCARS have to hire, and did anything
+        # bounce?" without opening the ticket. It now carries both — and stays
+        # SILENT on a clean ticket, so a counter always means something.
+        local dw; dw="$(cm_wear "$(cm_ticket_sessions "$id" "$ev")" "$(cm_ticket_bounces "$id" "$ev")")"
+        [ -n "$dw" ] && suffix=" _($dw)_"
+        ;;
       in-progress)
         # S173: this counter has always counted HIRES (ticket_attempt events =
         # worker dispatches). It now says so. The cap is the hire cap, so the
@@ -356,10 +365,17 @@ cm_render_wave_checklist() { # wave waves events cur_wave cur_ticket
         fi
         ;;
       flagged)
-        local a; a="$(cm_ticket_sessions "$id" "$ev")"
-        if [ "$a" -le 0 ]; then suffix=" _(flagged)_"
-        elif [ "$a" -eq 1 ]; then suffix=" _(flagged after 1 worker session)_"
-        else suffix=" _(flagged after $a worker sessions)_"
+        local a b btail=""
+        a="$(cm_ticket_sessions "$id" "$ev")"
+        # S173 FIX ROUND: a flagged ticket is the "something went wrong" case,
+        # and the bounce count is WHY. Same silence rule — nothing at 0.
+        b="$(cm_ticket_bounces "$id" "$ev")"
+        if [ "$b" -eq 1 ]; then btail=", 1 bounce"
+        elif [ "$b" -gt 1 ]; then btail=", $b bounces"
+        fi
+        if [ "$a" -le 0 ]; then suffix=" _(flagged${btail})_"
+        elif [ "$a" -eq 1 ]; then suffix=" _(flagged after 1 worker session${btail})_"
+        else suffix=" _(flagged after $a worker sessions${btail})_"
         fi
         ;;
       pending) ;;
@@ -435,16 +451,46 @@ cm_ticket_state() { # id events [cur_ticket]
   printf 'pending'
 }
 
-# cm_ticket_sessions <id> <events.jsonl> → the highest WORKER-SESSION (hire)
-# index seen for the ticket, 0 if none. S173: renamed to match what it has
-# always counted — ticket_attempt events are worker DISPATCHES, one per hire.
+# cm_ticket_sessions <id> <events.jsonl> → the HIRE COUNT for the ticket, 0 if
+# the stream records none. ONE derivation rule, shared with run.sh's
+# ticket_hire_count(), board.js's sessionCount and lcars-status's pace line:
+# the NUMBER of ticket_attempt events for the ticket, ANY phase. Every
+# ticket_attempt is one real worker DISPATCH.
+# S173 FIX ROUND: this used to take the highest `attempt` VALUE, which is NOT
+# equivalent — a pre-S133 standoff stream numbers its dispatches PER PHASE, so
+# a test-writer + implementer ticket has two events both wearing attempt=1 and
+# the max under-counts it as one hire; and any gap in the indices (1, then 3)
+# makes the max OVER-count. Counting the events is right on every stream.
 # The event TYPE and its `attempt` data key are the WIRE and are unchanged.
 cm_ticket_sessions() { # id events
   local id="$1" ev="$2" n=0
   [ -f "$ev" ] || { printf '0'; return 0; }
-  n="$(grep -E "\"type\":\"ticket_attempt\".*\"ticket\":\"$id\"|\"ticket\":\"$id\".*\"type\":\"ticket_attempt\"" "$ev" 2>/dev/null \
-        | sed -n 's/.*"attempt":\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1)"
-  printf '%s' "${n:-0}"
+  n="$(grep -cE "\"type\":\"ticket_attempt\".*\"ticket\":\"$id\"|\"ticket\":\"$id\".*\"type\":\"ticket_attempt\"" "$ev" 2>/dev/null || true)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# cm_ticket_bounces <id> <events.jsonl> → how many times a proof GATE rejected a
+# hire for this ticket and LCARS re-spawned (ticket_gate_bounce events), 0 if
+# none. The "something went wrong" signal, counted the same way as the hires.
+cm_ticket_bounces() { # id events
+  local id="$1" ev="$2" n=0
+  [ -f "$ev" ] || { printf '0'; return 0; }
+  n="$(grep -cE "\"type\":\"ticket_gate_bounce\".*\"ticket\":\"$id\"|\"ticket\":\"$id\".*\"type\":\"ticket_gate_bounce\"" "$ev" 2>/dev/null || true)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# cm_wear <hires> <bounces> → the parenthesised counter a ticket line WEARS, or
+# nothing at all when nothing went wrong. Same silence rule as the board chip:
+# a clean ticket carries no counter, so a counter always MEANS something.
+cm_wear() { # hires bounces
+  local a="${1:-0}" b="${2:-0}" out=""
+  [ "$a" -gt 1 ] && out="$a worker sessions"
+  if [ "$b" -gt 0 ]; then
+    if [ "$b" -eq 1 ]; then out="${out:+$out, }1 bounce"; else out="${out:+$out, }$b bounces"; fi
+  fi
+  printf '%s' "$out"
 }
 
 # cm_render_verify → the Verify comment body.

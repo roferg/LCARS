@@ -282,6 +282,145 @@ def _mixed_vocabulary_stream():
     ]
 
 
+def _pre_s133_standoff_wave():
+    """S173 FIX ROUND: the PRE-S133 adversarial-standoff shape, still on disk in
+    every historical mission — ticket_attempt events carrying phase=test-writer /
+    phase=implementer, each numbered PER PHASE, so the max `attempt` VALUE (1)
+    under-counts the TWO real worker dispatches."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-007",
+         "data": {"ticket": "t-007"}},
+        {"ts": 1003, "stage": "implement", "type": "ticket_attempt",
+         "detail": "test-writer try 1 for t-007",
+         "data": {"ticket": "t-007", "phase": "test-writer", "attempt": 1}},
+        {"ts": 1004, "stage": "implement", "type": "ticket_attempt",
+         "detail": "implementer try 1 for t-007",
+         "data": {"ticket": "t-007", "phase": "implementer", "attempt": 1}},
+        {"ts": 1010, "stage": "implement", "type": "ticket_green",
+         "detail": "ticket t-007 green in 3 attempt(s)",
+         "data": {"ticket": "t-007", "attempts": 3}},
+    ]
+
+
+def _gapped_index_wave():
+    """S173 FIX ROUND: a stream with a GAP in the attempt indices (1, then 3).
+    The event COUNT is 2; the max `attempt` VALUE is 3. Proves the two
+    derivations are NOT equivalent, and that the board counts events."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001",
+         "data": {"ticket": "t-001"}},
+        {"ts": 1003, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 1 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 1}},
+        {"ts": 1005, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 3 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 3}},
+        {"ts": 1010, "stage": "implement", "type": "ticket_green",
+         "detail": "ticket t-001 green after 2 worker sessions",
+         "data": {"ticket": "t-001", "sessions": 2, "iterations": 4}},
+    ]
+
+
+def _hired_gamify_events():
+    """_big_gamify_events, but with a real HIRE RECORD: one ticket_attempt per
+    ticket, plus a SECOND for wave 1's t-002 and wave 2's flagged t-005 — so
+    waves 1 and 2 carry a hire count > 1 and therefore wear the session chip."""
+    out = []
+    for ev in _big_gamify_events():
+        out.append(ev)
+        if ev["type"] == "ticket_start":
+            tid = ev["detail"].split()[0]
+            n = 2 if tid in ("t-002", "t-005") else 1
+            for i in range(1, n + 1):
+                out.append({"ts": ev["ts"], "stage": "implement",
+                            "type": "ticket_attempt",
+                            "detail": "tdd session %d for %s" % (i, tid),
+                            "data": {"ticket": tid, "phase": "tdd", "attempt": i}})
+    return out
+
+
+@unittest.skipUnless(NODE, "node is required to exercise the pure JS helper")
+class HireDerivationTest(unittest.TestCase):
+    """S173 FIX ROUND (D2 + D5) — ONE derivation rule for the hire count:
+    the NUMBER of ticket_attempt events for the section, ANY phase. Zero
+    ticket_attempt events means the hire count is UNKNOWN — the chip is omitted
+    and outcomes are NEVER substituted for hires."""
+
+    def _chips(self, acts):
+        return _run_harness(acts, mode="chips")
+
+    def test_any_phase_ticket_attempt_counts_as_a_hire(self):
+        # pre-S133 standoff: two dispatches, each numbered `attempt: 1`.
+        sec = self._chips(_pre_s133_standoff_wave())[0]
+        self.assertEqual(sec["sessionCount"], 2)
+        self.assertIn("↻ 2 worker sessions", sec["chipTexts"])
+
+    def test_gapped_indices_count_events_not_the_max_value(self):
+        # indices 1 and 3 → TWO events. The max VALUE (3) must not be shown.
+        sec = self._chips(_gapped_index_wave())[0]
+        self.assertEqual(sec["sessionCount"], 2)
+        self.assertIn("↻ 2 worker sessions", sec["chipTexts"])
+        self.assertNotIn("↻ 3 worker sessions", sec["chipTexts"])
+
+    def test_zero_ticket_attempt_stream_reports_an_UNKNOWN_hire_count(self):
+        # THE FABRICATION: (greens + flaggeds) used to be rendered under the
+        # word "sessions". A count nobody counted is not a hire count.
+        secs = self._chips(_big_gamify_events())
+        for sec in secs:
+            self.assertIsNone(sec["sessionCount"],
+                              "no ticket_attempt ⇒ hires are UNKNOWN, not derived")
+            self.assertNotIn("chip-sessions", " ".join(sec["chipClasses"]))
+            blob = " ".join(sec["chipTexts"])
+            self.assertNotIn("↻", blob)
+            self.assertNotIn("NaN", blob)
+            self.assertNotIn("undefined", blob)
+            self.assertNotIn("null", blob)
+
+    def test_a_clean_wave_never_wears_a_fabricated_counter(self):
+        # 3 tickets, all green first try, NO ticket_attempt events → the round's
+        # own contradiction: "↻ 3 sessions" on a wave where nothing was re-hired.
+        secs = self._chips(_big_gamify_events())
+        self.assertEqual(secs[0]["greenCount"], 3)
+        self.assertNotIn("3 session", " ".join(secs[0]["chipTexts"]))
+        self.assertNotIn("3 worker session", " ".join(secs[0]["chipTexts"]))
+
+
+@unittest.skipUnless(NODE, "node is required to exercise headlineFor")
+class EventHeadlineVocabularyTest(unittest.TestCase):
+    """S173 FIX ROUND (D1) — no captain-facing event HEADLINE says "attempt", on
+    ANY stream. `Worker session N` whenever the wire carries an index, whatever
+    the phase; a phase-neutral label otherwise."""
+
+    def _heads(self, acts):
+        return _run_harness(acts, mode="headlines")
+
+    def test_pre_s133_phase_events_read_as_worker_sessions(self):
+        heads = self._heads(_pre_s133_standoff_wave())["headlines"]
+        self.assertIn("Worker session 1", heads)
+        for h in heads:
+            self.assertNotIn("attempt", h.lower(), h)
+
+    def test_indexless_ticket_attempt_gets_a_phase_neutral_label(self):
+        out = self._heads([{"ts": 1, "stage": "implement", "type": "ticket_attempt",
+                            "detail": "d", "data": {}}])
+        self.assertEqual(out["headlines"], ["Worker session"])
+
+    def test_no_event_head_in_the_whole_map_says_attempt(self):
+        out = self._heads([])
+        for k, v in out["heads"].items():
+            self.assertNotIn("attempt", str(v).lower(), "%s → %s" % (k, v))
+
+    def test_every_headline_of_every_fixture_stream_is_attempt_free(self):
+        for acts in (_pre_s133_standoff_wave(), _mixed_vocabulary_stream(),
+                     _two_hire_one_bounce_wave(), _big_gamify_events()):
+            for h in self._heads(acts)["headlines"]:
+                self.assertNotIn("attempt", h.lower(), h)
+
+
 @unittest.skipUnless(NODE, "node is required to exercise the chip DOM builders")
 class HireAndBounceChipsTest(unittest.TestCase):
     """S173 — the board shows the number that GOVERNS (hires) and the signal that
@@ -310,7 +449,7 @@ class HireAndBounceChipsTest(unittest.TestCase):
         cls = self._classes(sec)
         self.assertIn("chip-sessions", cls)
         self.assertIn("chip-bounces", cls)
-        self.assertIn("↻ 2 sessions", sec["chipTexts"])
+        self.assertIn("↻ 2 worker sessions", sec["chipTexts"])
         self.assertIn("⤫ 1 bounce", sec["chipTexts"])
         self.assertEqual(sec["sessionCount"], 2)
         self.assertEqual(sec["bounceCount"], 1)
@@ -334,16 +473,20 @@ class HireAndBounceChipsTest(unittest.TestCase):
         self.assertNotIn("7", " ".join(sec["chipTexts"]))
 
     def test_pre_s134_stream_still_renders_a_sane_band(self):
-        # no ticket_attempt events at all → the outcome fallback holds; a real
-        # integer, never NaN/undefined, and the band still reads.
+        # S173 FIX ROUND retarget (was: `sessionCount == 3` / "↻ 3 sessions",
+        # the greens+flaggeds fallback rendered under the word "sessions"). No
+        # ticket_attempt events means the hire count is UNKNOWN: the band still
+        # renders every OTHER chip, and simply stays silent about hires.
         secs = self._chips(_big_gamify_events())
         for sec in secs:
-            self.assertIsInstance(sec["sessionCount"], int)
+            self.assertIsNone(sec["sessionCount"])
             self.assertIsInstance(sec["bounceCount"], int)
             self.assertNotIn("NaN", " ".join(sec["chipTexts"]))
             self.assertNotIn("undefined", " ".join(sec["chipTexts"]))
-        self.assertEqual(secs[0]["sessionCount"], 3)   # 3 greens → 3 outcomes
-        self.assertIn("↻ 3 sessions", secs[0]["chipTexts"])
+        # the band is still a band — tickets and duration read normally.
+        self.assertIn("⬢ 3 tickets", secs[0]["chipTexts"])
+        self.assertIn("chip-duration", " ".join(secs[0]["chipClasses"]))
+        self.assertNotIn("chip-sessions", " ".join(secs[0]["chipClasses"]))
 
     def test_mixed_old_and_new_stream_counts_off_event_type_only(self):
         secs = self._chips(_mixed_vocabulary_stream())
@@ -352,7 +495,7 @@ class HireAndBounceChipsTest(unittest.TestCase):
         # counted off TYPE, not off the detail text, which disagrees on purpose.
         self.assertEqual(sec["sessionCount"], 3)
         self.assertEqual(sec["bounceCount"], 1)
-        self.assertIn("↻ 3 sessions", sec["chipTexts"])
+        self.assertIn("↻ 3 worker sessions", sec["chipTexts"])
         self.assertIn("⤫ 1 bounce", sec["chipTexts"])
         self.assertEqual(sec["ticketCount"], 2)
         self.assertEqual(sec["greenCount"], 2)
@@ -380,6 +523,15 @@ class BoardJsVocabularyTest(unittest.TestCase):
         self.assertIn("bounceCount", self.js)
         self.assertNotIn("attemptCount", self.js)
 
+    def test_no_outcome_fallback_survives(self):
+        # S173 FIX ROUND (D5): (greens + flaggeds) may never stand in for hires.
+        self.assertNotIn("_outcomes", self.js)
+
+    def test_session_chip_pluralises_off_the_count(self):
+        # …rather than being incidentally safe because it is gated at > 1.
+        self.assertNotIn('" sessions"', self.js)
+        self.assertIn('" worker session"', self.js)
+
     def test_event_type_name_is_unchanged(self):
         # the WIRE does not change — only the display.
         self.assertIn('case "ticket_attempt":', self.js)
@@ -398,7 +550,9 @@ class SectionChipsTest(unittest.TestCase):
         return " ".join(sec["chipClasses"])
 
     def test_wave_chip_classes_present(self):
-        secs = self._chips(_big_gamify_events())
+        # S173 FIX ROUND retarget: the session chip exists only where hires were
+        # RECORDED, so this uses the hire-bearing variant of the same stream.
+        secs = self._chips(_hired_gamify_events())
         cls0 = self._classes(secs[0])
         # a wave band gets ticket + worker-session + duration chips.
         self.assertIn("chip-tickets", cls0)
@@ -417,7 +571,9 @@ class SectionChipsTest(unittest.TestCase):
         # governs is the HIRE count, and a wave where nothing had to be re-hired
         # wears no counter at all — so 1 is SILENT and >1 is spelled out.
         self.assertNotIn("chip-sessions", self._classes(one[0]))
-        self.assertIn("↻ 3 sessions", secs[0]["chipTexts"])
+        # …and >1 is spelled out, on a stream that actually recorded its hires.
+        hired = self._chips(_hired_gamify_events())
+        self.assertIn("↻ 4 worker sessions", hired[0]["chipTexts"])
 
     def test_zero_attempts_chip_omitted(self):
         secs = self._chips(_zero_attempt_wave())
@@ -457,7 +613,12 @@ class SectionChipsTest(unittest.TestCase):
     def test_flagged_badge_class(self):
         # a flagged wave still emits the band-flag badge (built in sectionNode);
         # the chip cluster carries the flagged-tinted worker-sessions chip.
-        secs = self._chips(_big_gamify_events())
+        # S173 FIX ROUND retarget: the session chip exists only where hires were
+        # RECORDED, so the flagged-tint assertion moves to the hire-bearing
+        # variant of the same stream. The flagged MARKER itself is unchanged and
+        # is still asserted on the original (hire-free) stream.
+        self.assertTrue(self._chips(_big_gamify_events())[1]["flagged"])
+        secs = self._chips(_hired_gamify_events())
         self.assertTrue(secs[1]["flagged"])
         self.assertIn("chip-sessions flagged", self._classes(secs[1]))
 
