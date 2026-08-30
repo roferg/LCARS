@@ -1,0 +1,9 @@
+{
+  "question": "In the MBR builder, how should a KPI with no defined target (the mockup shows \"no target yet\" for a brand-new KPI) be handled in the \"This month\" value column and in any target-derived delta or status seeding?",
+  "recommendation": "Treat a no-target KPI as a fully empty, manually-editable row: seed its \"This month\" value as an empty string (blank input, no carried-over badge, no placeholder number), and skip ALL target-derived delta/status computation entirely — seed status to the existing neutral default rather than deriving pass/fail or a delta from a target. Render the absent target as the same em-dash \"—\" empty marker used elsewhere. This keeps target free-text and optional, matching how reconcileRoster and Scorecard already handle new/targetless KPIs.",
+  "supporting_points": [
+    "The codebase already models this exact case: `reconcileRoster` (src/lib/reconcile.ts) seeds a KPI new to the roster with `value: ''`, `status: 'neutral'`, `insight: ''` and NO carried-over marker, and `EditRosterView` creates new KPIs with `target: ''`. Reusing that path means a no-target/new KPI simply renders as a blank, editable \"This month\" cell.",
+    "`target` is deliberately free-text (`Kpi.target: string`, e.g. \"<= 1 day\", \"Monitor\", \"WIP\") and status is a manually-chosen `MetricStatus` enum — nowhere in the code is status or a delta computed from the target string. So there is no target-derived delta/status seeding to run; a missing target should short-circuit any such logic to the neutral default rather than fabricating a comparison.",
+    "The rendering convention for an absent target already exists: Scorecard.tsx trims the target and, when empty, applies `target-cell--empty` and shows an em-dash `—`. The MBR builder should mirror this (\"no target yet\" → \"—\"/empty state) so an untargeted KPI stays visually consistent, non-blocking, and editable until a target and value are entered."
+  ]
+}

@@ -32,7 +32,7 @@ answer.
 
 ## With an id — answer the gate
 
-When the captain runs `lcars respond <id>`:
+When the captain asks to answer a specific Mission's gate:
 
 1. **Show the pending question(s).** Run `show` and read them to the captain:
 
@@ -57,22 +57,45 @@ When the captain runs `lcars respond <id>`:
 
 `respond.sh answer`:
 
-- **Persists the answer next to the question** in `answers.json` (stage +
-  questions + the captain's free-form answer), so the resuming stage consumes it.
+- **Appends the answer next to the question** in `answers.json` — an
+  APPEND-ONLY ledger (`answers`: an ordered list, one entry per answer, each
+  carrying its stage and the exact questions it answered), with the top-level
+  `stage` / `answer` / `questions` slot mirroring the newest entry for the cheap
+  readers. Nothing is ever overwritten: three successive answers to one question
+  used to erase each other (S180).
 - **Clears the awaiting-human gate** — drops `awaitingHuman` and
   `pendingQuestion` from `state.json`. **The stage is unchanged**: the Mission
   stays parked at the stage that escalated.
 - **Removes the `lcars:awaiting-human` label** via `gh` (best-effort; `gh`
   tolerates removing a label that isn't applied, so it never pre-queries).
-- **Prints** the resume hint: `lcars run <id>` re-enters that stage.
+- **Resumes the Mission itself** — it runs `run.sh drive --mission <id>` as a
+  child, so the stage that escalated re-enters immediately instead of waiting for
+  a second command. The driver's exit code is deliberately NOT respond's: a
+  non-zero `respond` means "your answer was not recorded" to every caller, and by
+  then it is. A logged-bug child is exempt (its resume is the parent's
+  `resolve-logs` batch, which it names instead). Set `LCARS_RESPOND_RESUME=0` to
+  suppress the resume and just print the command — the viewscreen does, because
+  it dispatches its own detached driver.
+- **On a Plan Review gate, resets the round budget** (`planReviewRound` → 0) and
+  counts the escalation (`planReviewEscalations`), capped at 3 — see the note in
+  `respond.sh`.
 
 ## The resume contract
 
-After `lcars respond`, a plain `lcars run <id>` **re-enters the same stage**,
-**consumes the persisted answer** (it does not re-ask), and continues. The
-resuming stage deletes `answers.json` once it has folded the answer in — so the
-answer is one-shot. When you resume a stage and find an `answers.json`, **read
-it and fold the captain's answer into that stage's work** before carrying on.
+Answering **re-enters the same stage** on the spot, **consumes the persisted
+answers** (it does not re-ask), and continues. `answers.json` is a LEDGER, not a
+mailbox: every answer the captain has given on the Mission is in it, oldest
+first, and where two answer the same question the LATER one stands. Two stage
+boundaries still clear it (`validate-advance` and `impl-advance`) so a Mission
+that has moved on does not carry an old gate's answer forward. When you resume a
+stage and find an `answers.json`, **read every entry and fold the captain's
+answers into that stage's work** before carrying on.
+
+To resume by hand instead:
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh drive --mission <id>
+```
 
 ## Guards & failure modes
 
@@ -86,7 +109,8 @@ it and fold the captain's answer into that stage's work** before carrying on.
 ## Report
 
 Tell the captain their answer is recorded, that the gate is cleared (the Mission
-is still at its escalated stage), and that `lcars run <id>` resumes it without
+is still at its escalated stage), and that the driver has been re-entered on it
+(or, with `LCARS_RESPOND_RESUME=0`, the exact command that resumes it) — without
 re-asking.
 
 ## Implementation

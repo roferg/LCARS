@@ -1,0 +1,9 @@
+{
+  "question": "In the MBR builder, how is a KPI classified as \"Auto\" (wired ingestion source, gets the Collect/Re-collect cycle) versus \"Manual\" (seeded from the default view, edited inline) — via the existing WIRED_METRIC_IDS list, an aiUpdateInstructions presence check, or a new per-KPI flag — given the mockup shows 11 of 14 KPIs as automatable?",
+  "recommendation": "Classify a KPI as Auto vs Manual by an aiUpdateInstructions presence check — a KPI is automatable iff its aiUpdateInstructions is non-empty after trimming (per ADR-002). Do NOT introduce a WIRED_METRIC_IDS list (none exists in the code) or a separate per-KPI boolean flag; the free-text instructions field IS the flag. To make 11 of 14 KPIs automatable, populate aiUpdateInstructions on those 11 and leave the other 3 blank.",
+  "supporting_points": [
+    "The existing automatable predicate is already this presence check: DefaultView.automatableGate.test.tsx asserts data-automatable='false' and hides the Collect action for undefined/null/''/whitespace-only aiUpdateInstructions, while '  go  ' (non-empty post-trim) renders Collect and calls collectKpi — proving the rule is trim-strict and null-safe.",
+    "There is no WIRED_METRIC_IDS symbol anywhere in the repo (grep returns zero matches), and config.ai-instructions.test.ts states outright: 'a KPI is automatable iff its aiUpdateInstructions is non-empty (ADR-002)'; the seed keeps every roster KPI Manual by setting aiUpdateInstructions to exactly '', so authoring instructions is what promotes a KPI to Auto.",
+    "The Collect/Re-collect cycle is driven by the same field: dev-write-plugin.ts and the collect scripts guard with parsedBody.aiUpdateInstructions.trim() === '' → collectFailure('KPI has no aiUpdateInstructions; nothing to collect'), and bulk 'update automatically' collects only the non-empty-instructions partition — so a single per-KPI flag would duplicate state the instructions string already encodes."
+  ]
+}

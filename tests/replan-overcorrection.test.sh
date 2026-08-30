@@ -922,8 +922,11 @@ case "$PLAN_FN" in
   *'$MISSION_DIR/answers.json'*) ok "cmd_plan lists answers.json among its inputs" ;;
   *) bad "cmd_plan does NOT feed answers.json — a settled question will be re-raised" ;;
 esac
+# S180 turned answers.json into an append-only LEDGER, so the annotation reads
+# "treat them as DECIDED" (plural) rather than "it". Match the binding claim, not
+# the grammatical number, so the shape can change again without a false failure.
 case "$PLAN_FN" in
-  *"treat it as DECIDED"*) ok "…and tells the planner to treat it as DECIDED" ;;
+  *"as DECIDED"*) ok "…and tells the planner to treat the answer(s) as DECIDED" ;;
   *) bad "cmd_plan feeds the file without saying it is binding" ;;
 esac
 # the guard must stay conditional: a mission that never escalated has no

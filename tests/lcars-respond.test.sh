@@ -36,6 +36,15 @@
 
 set -uo pipefail
 
+# S180 — respond.sh now HANDS BACK TO THE DRIVER when it clears a gate (the
+# captain had to type a second command for every answer he gave). This suite
+# exercises respond.sh itself, not the pipeline, so it opts out: without this
+# every `answer` here would launch a real `run.sh drive` in a fixture repo,
+# mutating the state the assertions below read and — with a worker binary on the
+# box — spending real money. The resume itself is covered, with a stubbed driver,
+# in tests/settled-decisions.test.sh.
+export LCARS_RESPOND_RESUME=0
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_RESPOND_SCRIPT:-$REPO_ROOT/skills/lcars-respond/respond.sh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
@@ -250,8 +259,13 @@ check "4. leaves the stage UNCHANGED (still validate)" \
 # 5. removes lcars:awaiting-human via gh
 check "5. removes the lcars:awaiting-human label via gh" \
   "grep -q 'remove-label lcars:awaiting-human' '$repo3/gh.log'"
-check "5. tells the captain lcars run resumes the stage" \
-  "grep -qi 'lcars run' '$repo3/out.txt' && grep -qi 'validate' '$repo3/out.txt'"
+# S180: the hint must be a command that RUNS. `lcars` is not on PATH (install.sh
+# links skills, and only the viewscreen gets a launcher), so the old
+# `lcars run <id>` text was "command not found" to a captain who pasted it.
+check "5. tells the captain the RUNNABLE command that resumes the stage" \
+  "grep -q 'run.sh drive --mission' '$repo3/out.txt' && grep -qi 'validate' '$repo3/out.txt'"
+check "5. …and never the form the CLI rejects" \
+  "! grep -q 'lcars run ' '$repo3/out.txt'"
 
 # 5 (tolerant): a gh that fails the edit must NOT fail respond or leave the gate
 repo5="$(new_repo_with_paused_mission)"; make_gh_stub_failing "$repo5/gh"

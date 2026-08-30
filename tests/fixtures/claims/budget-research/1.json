@@ -1,0 +1,9 @@
+{
+  "question": "How is a Budget Line classified as tracked-automatically versus entered-by-hand — via an existing wired-source list, a presence check on the pull recipe, or a new per-line flag?",
+  "recommendation": "Classify a line by a presence check on its pull recipe: a line is tracked automatically iff its `pullRecipe` is non-empty after trimming. Do NOT introduce a SYNCED_LINE_IDS list or a separate per-line boolean; the free-text recipe field IS the flag.",
+  "supporting_points": [
+    "There is no SYNCED_LINE_IDS symbol anywhere in the repo (grep returns zero matches), and the feed tests state outright that a line is tracked iff its pull recipe is non-empty.",
+    "The existing predicate is already this presence check: the Synced tag and the re-sync control are both hidden for an undefined, null, empty or whitespace-only recipe.",
+    "A grep for a per-line boolean tied to the quarterly roll-up returns no matches, so a second flag would duplicate state the recipe string already encodes."
+  ]
+}

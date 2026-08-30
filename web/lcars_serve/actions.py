@@ -10608,7 +10608,14 @@ class Actions(LogFacts):
         answer = (answer or "").strip()
         if not answer:
             raise ActionError(400, "missing required field: answer")
-        self._run("respond", ["answer", "--mission", mid, "--answer", answer])
+        # S180: respond.sh now re-enters the driver itself when it clears a gate
+        # (the CLI captain had to type a second command for every answer). This
+        # call is BLOCKING, and the board dispatches its own DETACHED driver a few
+        # lines below, so letting the script resume here would hang the HTTP
+        # handler for the length of a whole run AND race that spawn. Suppress it;
+        # the "& Resume" half of this endpoint is unchanged.
+        self._run("respond", ["answer", "--mission", mid, "--answer", answer],
+                  env_extra={"LCARS_RESPOND_RESUME": "0"})
         # the gate is now cleared on disk; drop the stale pending.json so the
         # board stops rendering the answered question.
         self._clear_pending(mid)

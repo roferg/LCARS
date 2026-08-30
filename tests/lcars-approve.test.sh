@@ -21,6 +21,15 @@
 
 set -uo pipefail
 
+# S180 — respond.sh now HANDS BACK TO THE DRIVER when it clears a gate (the
+# captain had to type a second command for every answer he gave). This suite
+# exercises respond.sh itself, not the pipeline, so it opts out: without this
+# every `answer` here would launch a real `run.sh drive` in a fixture repo,
+# mutating the state the assertions below read and — with a worker binary on the
+# box — spending real money. The resume itself is covered, with a stubbed driver,
+# in tests/settled-decisions.test.sh.
+export LCARS_RESPOND_RESUME=0
+
 # qgrep: drain stdin fully before grepping (see host-adapter.test.sh for why).
 qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
 
