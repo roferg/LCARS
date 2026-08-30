@@ -363,7 +363,7 @@ for f in "$REPO_ROOT"/skills/lcars-run/*; do
   ln -s "$f" "$BASE_DIR/$(basename "$f")"
 done
 BASE_SH="$BASE_DIR/run.sh"
-if ( cd "$REPO_ROOT" && git show "HEAD:skills/lcars-run/run.sh" > "$BASE_SH" ) 2>/dev/null && [ -s "$BASE_SH" ]; then
+if ( cd "$REPO_ROOT" && git show "${LCARS_BASE_REF:-HEAD}:skills/lcars-run/run.sh" > "$BASE_SH" ) 2>/dev/null && [ -s "$BASE_SH" ]; then
   repo2="$(e2e_repo)"
   run_plan_stage "$repo2" "$FIX/pre-review-plan.json" "$BASE_SH"
   BASE_PROMPT="$TMPROOT/prompt.base"; cp "$PROMPT_FILE" "$BASE_PROMPT"
@@ -380,7 +380,7 @@ if ( cd "$REPO_ROOT" && git show "HEAD:skills/lcars-run/run.sh" > "$BASE_SH" ) 2
     sed -n '1,40p' "$TMPROOT/prompt.diff" | sed 's/^/       /'
   fi
 else
-  bad "8b could not read HEAD:skills/lcars-run/run.sh for the byte-identity baseline"
+  bad "8b could not read ${LCARS_BASE_REF:-HEAD}:skills/lcars-run/run.sh for the byte-identity baseline"
 fi
 assert_no "8c …and carries no revision contract" "THIS IS A REVISION" "$(cat "$NEW_PROMPT")"
 
@@ -904,6 +904,239 @@ PY
   assert_no "13c a card with no shape renders no shape node" '"shape"' "$NOSHAPE_OUT"
 else
   bad "13a node not on PATH — the card render was NOT checked"
+fi
+
+# ===========================================================================
+section "S180 — a HARNESS bounce arms the SAME patch channel Plan Review uses"
+# ===========================================================================
+# MEASURED, live Copilot, 2026-08-30 (tests/drives/align-heal/runs/replan-1).
+# S180's B2 guard bounced a FIRST plan in cmd_plan_save for one un-carried
+# decision. The retry carried it CORRECTLY — and re-planned everything else: 10
+# tickets came back as 9, 8 of 10 dependency entries changed, ids were reused for
+# entirely different work, and a standalone ticket vanished into a sibling.
+#
+# The root cause is the one S178 already cured for Plan Review, arriving through
+# a second door. Both halves of the patch contract — the prose block and the
+# over-correction edge diff — are gated on `plan-under-review.json`, and that
+# file had exactly ONE producer: review_fail. A B2 bounce wrote neither, so the
+# retry prompt said "fix exactly that and change nothing else" while never
+# showing the worker its own answer. Verified on the live run: attempt 2's 28KB
+# argv held prd.md, validated-plan.md, adr.md and attachments — and zero hits for
+# the revision contract.
+
+# --- the contract block, over a token with NO objections beside it -----------
+md="$TMPROOT/blk-harness"; mkdir -p "$md"
+cp "$FIX/pre-review-plan.json" "$md/plan-under-review.json"
+H="$(block "$md")"
+assert_has "S1a a token with NO objections still gets a PATCH contract" \
+           "THIS IS A REVISION, NOT A RE-PLAN" "$H"
+assert_has "S1b …naming the artifact it was actually handed" "plan-under-review.json" "$H"
+assert_has "S1c …and change NOTHING ELSE"  "change NOTHING ELSE" "$H"
+assert_has "S1d …the SAME tickets must come back" \
+           "same count, same ids, same order" "$H"
+assert_has "S1e …with the measured cost of not doing so" \
+           "ten tickets came back as nine" "$H"
+assert_has "S1f …and the positive dependency rule"  "GENUINELY needs BUILT FIRST" "$H"
+assert_has "S1g …never asking for fewer edges" \
+           "This is NOT an instruction to declare
+FEWER dependencies" "$H"
+# THE S175 CLASS this must not re-open: no sentence may reference an input that
+# is not there. On this path there IS no reviewer and there ARE no objections.
+assert_no  "S1h …and it never claims an objection it was not given" "objection" "$H"
+assert_no  "S1i …nor a reviewer that never ran"                     "reviewer" "$H"
+assert_no  "S1j …nor Plan Review"                                   "Plan Review" "$H"
+
+# THE GENERICITY FENCE (this round's standing rule). S179 measured a filled-in
+# worked example copied verbatim onto an unrelated screen by 3 of 3 live turns.
+for w in KPI insight cohort MBR month wired metric automatable budget quarter \
+         "cost centre" currency spend recipe silhouette delta track untrack; do
+  if printf '%s\n' "$H" | grep -qiE "(^|[^A-Za-z])$w([^A-Za-z]|$)"; then
+    bad "S1k the harness-bounce contract carries no domain vocabulary (found: $w)"
+  else
+    ok "S1k the harness-bounce contract carries no domain vocabulary ($w)"
+  fi
+done
+
+# --- BYTE-IDENTITY: the REVIEWER-bounce contract has not moved a byte --------
+md="$TMPROOT/blk-rev-base"; mkdir -p "$md"
+cp "$FIX/plan-review-1.json"   "$md/plan-review-1.json"
+cp "$FIX/pre-review-plan.json" "$md/plan-under-review.json"
+NOWB="$(block "$md")"
+if [ -s "$BASE_SH" ]; then
+  BASEB="$(LCARS_ATT_TEST_DIR="$md" bash "$BASE_SH" plan-revision-block-test 2>&1)"
+  assert_eq "S2a the REVIEWER-bounce contract is BYTE-IDENTICAL to the baseline" \
+            "$NOWB" "$BASEB"
+else
+  bad "S2a could not read the byte-identity baseline"
+fi
+
+# ===========================================================================
+section "S180 — END TO END: the B2 retry is handed its own plan to patch"
+# ===========================================================================
+# A stepped adapter: same recording as the one above, but the plan it returns is
+# chosen per spawn, so attempt 1 can be bounced and attempt 2 observed.
+make_step_adapter() { # path
+  cat >"$1" <<'STEPEOF'
+#!/usr/bin/env bash
+sub="$1"; role="${LCARS_WORKER_ROLE:-$3}"; outdir="$4"; prompt="$5"
+[ "$sub" = "spawn" ] || exit 0
+{ printf '=== ROLE %s ===\n' "$role"; printf '%s\n' "$prompt"; } >>"$PROMPTS"
+if [ "$role" = "plan" ]; then
+  n=$(( $(cat "$COUNTER" 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "$n" > "$COUNTER"
+  eval "src=\${STUB_PLAN_$n:-none}"
+  [ "$src" = "none" ] || cp "$src" "$outdir/plan.json"
+fi
+exit 0
+STEPEOF
+  chmod +x "$1"
+}
+# The Mission's validated plan PROHIBITS a named identifier — the shape B2 fires
+# on, and the shape the live drive carried. The identifier is a parameter so the
+# same machinery proves it on two unrelated fixtures.
+b2_repo() { # identifier -> repo dir
+  local repo; repo="$(e2e_repo)"; local d; d="$(mdir "$repo")"
+  cat > "$d/validated-plan.md" <<MD
+# Validated Plan
+
+## Synthesis
+
+Elided.
+
+## Decisions
+
+- Classify by the trimmed field; no \`$1\`, no new boolean flag.
+
+## Rationale
+
+Elided.
+MD
+  make_step_adapter "$repo.stepadapter"
+  echo "$repo"
+}
+carried_plan() { # identifier outfile — the same 14 tickets, one criterion added
+  "${LCARS_PYTHON_BIN:-python3}" - "$FIX/pre-review-plan.json" "$1" "$2" <<'CARRYPY'
+import json, sys
+plan = json.load(open(sys.argv[1]))
+plan[0]["acceptanceCriteria"].append(
+    "No `%s` is introduced or used anywhere in this slice." % sys.argv[2])
+open(sys.argv[3], "w").write(json.dumps(plan, indent=2) + "\n")
+CARRYPY
+}
+run_b2_stage() { # repo plan1 plan2 [run.sh]
+  : >"$1.prompts"; : >"$1.counter"
+  OUT="$( cd "$1" && env \
+      LCARS_GH_BIN="$1.gh" LCARS_WORKER_BIN="$1.worker" \
+      LCARS_WORKER_ADAPTER="$1.stepadapter" LCARS_WORKER_HANG_SECS=0 \
+      PROMPTS="$1.prompts" COUNTER="$1.counter" \
+      STUB_PLAN_1="$2" STUB_PLAN_2="$3" \
+      bash "${4:-$SCRIPT}" plan --mission test-001 2>&1 )"
+  RC=$?
+  PROMPT_FILE="$1.prompts"
+}
+nth_prompt() { awk -v n="$2" '/^=== ROLE /{c++} c==n' "$1"; }
+
+# Two unrelated fixtures, per this round's standing genericity rule.
+n=0
+for ident in PULL_RECIPE_IDS ROLLED_LINE_KEYS; do
+  n=$((n + 1))
+  repo="$(b2_repo "$ident")"; d="$(mdir "$repo")"
+  CAR="$TMPROOT/carried-$n.json"; carried_plan "$ident" "$CAR"
+  run_b2_stage "$repo" "$FIX/pre-review-plan.json" "$CAR"
+  assert_eq  "S3${n}a the Stage advances after the bounce"  "$RC" "0"
+  P1="$(nth_prompt "$PROMPT_FILE" 1)"; P2="$(nth_prompt "$PROMPT_FILE" 2)"
+  assert_no  "S3${n}b the FIRST attempt is a plain first plan (no contract)" \
+             "THIS IS A REVISION" "$P1"
+  assert_no  "S3${n}c …and names no plan it was not given" "plan-under-review.json" "$P1"
+  assert_has "S3${n}d the RETRY is handed the plan it must patch, by path" \
+             "plan-under-review.json   (YOUR OWN PREVIOUS PLAN" "$P2"
+  assert_has "S3${n}e …and carries the patch contract"  "THIS IS A REVISION, NOT A RE-PLAN" "$P2"
+  assert_has "S3${n}f …and the reason it was bounced"   "REACHED NO TICKET" "$P2"
+  assert_has "S3${n}g …naming ITS identifier"           "$ident" "$P2"
+  assert_no  "S3${n}h …and nothing of the other fixture" \
+             "$([ "$n" = 1 ] && echo ROLLED_LINE_KEYS || echo PULL_RECIPE_IDS)" "$P2"
+done
+
+# The token's CONTENT on disk: exactly the ticket list that was rejected.
+repo="$(b2_repo PULL_RECIPE_IDS)"; d="$(mdir "$repo")"
+run_b2_stage "$repo" "$FIX/pre-review-plan.json" none
+assert_eq "S4a the Stage STOPS when the retry produces nothing" "$RC" "1"
+if cmp -s "$d/plan-under-review.json" "$FIX/pre-review-plan.json"; then
+  ok "S4b …and the token on disk IS the rejected ticket list, byte for byte"
+else
+  bad "S4b …and the token on disk IS the rejected ticket list, byte for byte"
+fi
+
+# --- the S178 guard is ARMED on the retry, and says what it could verify -----
+# rc 4 means "not a revision at all — the guard never ran". Anything else means
+# it ran. On a FIRST plan there are no objections, so the honest verdict is
+# UNCHECKED (3): the guard is armed, and it says out loud that it verified
+# nothing rather than reporting a review failure that never happened.
+oc() { LCARS_PRIOR_PLAN="$1" LCARS_NEW_PLAN="$2" LCARS_ATT_TEST_DIR="$3" \
+         bash "$SCRIPT" overcorrection-check-test 2>&1; }
+ocrc() { oc "$@" >/dev/null 2>&1; echo $?; }
+md="$TMPROOT/oc-harness"; mkdir -p "$md"
+cp "$FIX/pre-review-plan.json" "$md/plan-under-review.json"
+assert_eq  "S5a with the token armed the guard RUNS (not 'no revision')" \
+           "$(ocrc "$md/plan-under-review.json" "$FIX/over-corrected-plan.json" "$md")" "3"
+OCO="$(oc "$md/plan-under-review.json" "$FIX/over-corrected-plan.json" "$md")"
+assert_has "S5b …reporting honestly who asked for the revision" \
+           "the HARNESS asked for this revision, not Plan" "$OCO"
+assert_no  "S5c …and never inventing a review round that never happened" \
+           "the review rounds on disk name" "$OCO"
+assert_has "S5d …and saying plainly that it verified nothing" \
+           "nothing here has verified that it did" "$OCO"
+# …while a token with UNREADABLE rounds beside it keeps the wording it had.
+md="$TMPROOT/oc-broken"; mkdir -p "$md"
+cp "$FIX/pre-review-plan.json" "$md/plan-under-review.json"
+printf 'not json\n' > "$md/plan-review-1.json"
+assert_has "S5e a real check failure keeps its own wording" \
+           "the review rounds on disk name no objections" \
+           "$(oc "$md/plan-under-review.json" "$FIX/over-corrected-plan.json" "$md")"
+# …and with NO token the guard still never runs at all.
+md="$TMPROOT/oc-none"; mkdir -p "$md"
+assert_eq  "S5f with no token the guard still does not run"  \
+           "$(ocrc "$md/plan-under-review.json" "$FIX/over-corrected-plan.json" "$md")" "4"
+
+# --- LIFECYCLE: a B2 token cannot reach an unrelated later re-plan ----------
+# The one state where a token outlives its loop is a Stage STOP (the retry
+# produced no file at all). From there the dangerous transition is `lcars
+# feedback`: it resets to align, KEEPS every artifact, and the Mission re-plans
+# against a CORRECTED PRD — the exact poisoning S178's own note warns about.
+repo="$(b2_repo PULL_RECIPE_IDS)"; d="$(mdir "$repo")"
+run_b2_stage "$repo" "$FIX/pre-review-plan.json" none
+[ -f "$d/plan-under-review.json" ] || bad "S6 (setup) the stopped Stage left a token"
+( cd "$repo" && LCARS_GH_BIN=true bash "$FEEDBACK_SH" --mission test-001 \
+    --feedback "the layout is wrong" ) >/dev/null 2>&1
+if [ -f "$d/plan-under-review.json" ]; then
+  bad "S6a a send-back clears a B2-written token"
+else
+  ok "S6a a send-back clears a B2-written token"
+fi
+assert_eq "S6b …so the next plan carries no patch contract at all" "$(block "$d")" ""
+
+# --- BYTE-IDENTITY: the ordinary Plan Review revision prompt has not moved ---
+if [ -s "$BASE_SH" ]; then
+  bnorm() { sed -e 's#Your scratch output directory is: .*#Your scratch output directory is: <ODIR>#' \
+                -e "s#$TMPROOT/e2e\.[A-Za-z0-9]*#<REPO>#g" \
+                -e 's#/var/folders/[^ ]*#<TMP>#g' -e 's#^/tmp/[^ ]*#<TMP>#g' "$1"; }
+  repo="$(e2e_repo)"; d="$(mdir "$repo")"
+  revision_pending "$d" "$FIX/pre-review-plan.json" "$FIX/plan-review-1.json"
+  run_plan_stage "$repo" "$FIX/patched-plan.json"
+  cp "$PROMPT_FILE" "$TMPROOT/revprompt.new"
+  repo2="$(e2e_repo)"; d2="$(mdir "$repo2")"
+  revision_pending "$d2" "$FIX/pre-review-plan.json" "$FIX/plan-review-1.json"
+  run_plan_stage "$repo2" "$FIX/patched-plan.json" "$BASE_SH"
+  cp "$PROMPT_FILE" "$TMPROOT/revprompt.base"
+  if diff <(bnorm "$TMPROOT/revprompt.new") <(bnorm "$TMPROOT/revprompt.base") \
+       >"$TMPROOT/revprompt.diff" 2>&1; then
+    ok "S7a a NORMAL Plan Review revision prompt is BYTE-IDENTICAL to the baseline"
+  else
+    bad "S7a a NORMAL Plan Review revision prompt is BYTE-IDENTICAL to the baseline"
+    sed -n '1,40p' "$TMPROOT/revprompt.diff" | sed 's/^/       /'
+  fi
+else
+  bad "S7a could not read the byte-identity baseline"
 fi
 
 printf '\n────────────────────────────────────────────\n'

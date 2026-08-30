@@ -278,7 +278,7 @@ for f in "$REPO_ROOT"/skills/lcars-run/*; do
   ln -s "$f" "$BASE_DIR/$(basename "$f")" 2>/dev/null || :
 done
 BASE_SH="$BASE_DIR/run.sh"
-if ( cd "$REPO_ROOT" && git show "HEAD:skills/lcars-run/run.sh" > "$BASE_SH" ) 2>/dev/null && [ -s "$BASE_SH" ]; then
+if ( cd "$REPO_ROOT" && git show "${LCARS_BASE_REF:-HEAD}:skills/lcars-run/run.sh" > "$BASE_SH" ) 2>/dev/null && [ -s "$BASE_SH" ]; then
   repo2="$(save_repo "$FIX/swept-research" ANYTHING)"
   run_save "$repo2" "$BASE_SH"
   if [ "$NOCLAIM_OUT" = "$SAVEOUT" ]; then
@@ -288,7 +288,7 @@ if ( cd "$REPO_ROOT" && git show "HEAD:skills/lcars-run/run.sh" > "$BASE_SH" ) 2
     diff <(printf '%s\n' "$NOCLAIM_OUT") <(printf '%s\n' "$SAVEOUT") | sed 's/^/       /'
   fi
 else
-  bad "4r could not read HEAD:skills/lcars-run/run.sh for the byte-identity baseline"
+  bad "4r could not read ${LCARS_BASE_REF:-HEAD}:skills/lcars-run/run.sh for the byte-identity baseline"
 fi
 
 # ===========================================================================
@@ -675,6 +675,154 @@ if [ -f "$ED/research/1.json" ] && grep -q SYNCED_LINE_IDS "$ED/research/1.json"
   ok "8i …and Research still saved the finding and moved on"
 else
   bad "8i …and Research still saved the finding and moved on"
+fi
+
+# ===========================================================================
+section "9 — a B2 bounce ARMS THE PATCH CHANNEL, so the retry is a patch"
+# ===========================================================================
+# MEASURED, live Copilot, 2026-08-30 (tests/drives/align-heal/runs/replan-1).
+# B2 bounced a FIRST plan for one un-carried decision. The retry carried the
+# decision CORRECTLY and re-planned everything else: 10 tickets came back as 9,
+# 8 of 10 dependency entries changed, ids were reused for different work, and a
+# standalone ticket vanished into a sibling. The retry prompt already said "fix
+# exactly that and change nothing else" — and the worker's 28KB argv held
+# prd.md, validated-plan.md and adr.md but NOT the plan it had itself just
+# written. It was told to change nothing else about an answer it was never
+# shown, which is unobeyable in principle.
+#
+# S178 already built the channel for exactly this: `plan-under-review.json`, the
+# one file that gates BOTH the patch-contract prose in the Plan prompt and the
+# over-correction edge diff. It had ONE producer — review_fail — so a B2 bounce
+# armed neither. It does now.
+tok() { printf '%s/plan-under-review.json' "$1"; }
+
+# --- fixture B (unrelated): the bounce writes the rejected list --------------
+repo="$(plan_repo "$FIX/budget-validated-plan.md")"
+run_plan_save "$repo" "$FIX/budget-plan-dropped.json"
+PSD="$repo/.git/lcars/missions/test-001"
+assert_eq "9a fixture B: a B2 bounce is still a rejection" "$PSRC" "1"
+if [ -f "$(tok "$PSD")" ]; then
+  ok "9b …and it WRITES plan-under-review.json"
+else
+  bad "9b …and it WRITES plan-under-review.json"
+fi
+if cmp -s "$(tok "$PSD")" "$repo.odir/plan.json"; then
+  ok "9c …containing the exact ticket list that was rejected"
+else
+  bad "9c …containing the exact ticket list that was rejected"
+fi
+
+# --- fixture A (the measured Mission): identical behaviour -------------------
+repoA="$(plan_repo "$FIX/measured-validated-plan.md")"
+run_plan_save "$repoA" "$FIX/measured-plan-dropped.json"
+PSDA="$repoA/.git/lcars/missions/test-001"
+assert_eq "9d fixture A: the measured plan is bounced too" "$PSRC" "1"
+if cmp -s "$(tok "$PSDA")" "$repoA.odir/plan.json"; then
+  ok "9e …and its 13 tickets are the patch target the retry is handed"
+else
+  bad "9e …and its 13 tickets are the patch target the retry is handed"
+fi
+
+# --- WRITE-IF-ABSENT, both halves -------------------------------------------
+# A second bounce in the same retry loop must not re-point the patch target at
+# the newest rejected attempt: the anchor stays put, so it cannot drift attempt
+# by attempt. This attempt's own reason travels in .plan-reject-note.
+repoB="$(plan_repo "$FIX/measured-validated-plan.md")"
+run_plan_save "$repoB" "$FIX/measured-plan-dropped.json"
+PSDB="$repoB/.git/lcars/missions/test-001"
+cp "$FIX/budget-plan-dropped.json" "$repoB.odir/plan.json"
+PSOUT="$( cd "$repoB" && env LCARS_GH_BIN="$repoB.gh" bash "$SCRIPT" plan-save \
+    --mission test-001 --plan "$repoB.odir/plan.json" 2>&1 )"; PSRC=$?
+assert_eq "9g a SECOND bounce is still a rejection" "$PSRC" "1"
+if cmp -s "$(tok "$PSDB")" "$FIX/measured-plan-dropped.json"; then
+  ok "9h …and the patch anchor is the FIRST rejected attempt, not the newest"
+else
+  bad "9h …and the patch anchor is the FIRST rejected attempt, not the newest"
+fi
+
+# …and a token review_fail already wrote — the plan the OBJECTIONS are about —
+# is never clobbered by a B2 bounce. Redefining "the plan under review" mid-loop
+# would silently change what the over-correction guard diffs against.
+repoC="$(plan_repo "$FIX/budget-validated-plan.md")"
+PSDC="$repoC/.git/lcars/missions/test-001"
+cp "$FIX/measured-plan-carried.json" "$(tok "$PSDC")"
+run_plan_save "$repoC" "$FIX/budget-plan-dropped.json"
+assert_eq "9i a B2 bounce during a review round still rejects" "$PSRC" "1"
+if cmp -s "$(tok "$PSDC")" "$FIX/measured-plan-carried.json"; then
+  ok "9j …and leaves Plan Review's own token exactly as it found it"
+else
+  bad "9j …and leaves Plan Review's own token exactly as it found it"
+fi
+
+# --- LIFECYCLE: the token cannot outlive the revision it asked for -----------
+repo="$(plan_repo "$FIX/budget-validated-plan.md")"
+PSD="$repo/.git/lcars/missions/test-001"
+run_plan_save "$repo" "$FIX/budget-plan-dropped.json"     # bounce: token armed
+[ -f "$(tok "$PSD")" ] || bad "9k (setup) the bounce armed the token"
+run_plan_save "$repo" "$FIX/budget-plan-carried.json"     # the retry, carrying it
+assert_eq "9k the retry that carries the decision SAVES" "$PSRC" "0"
+if [ -f "$(tok "$PSD")" ]; then
+  bad "9l …and the token is CONSUMED on that save"
+else
+  ok "9l …and the token is CONSUMED on that save"
+fi
+
+# --final-attempt: still saves, still says UNRESOLVED, still consumes the token.
+# A guard that can refuse a VALID plan must never deadlock the Stage, and the
+# token must not survive the save that ends the loop.
+repo="$(plan_repo "$FIX/budget-validated-plan.md")"
+PSD="$repo/.git/lcars/missions/test-001"
+run_plan_save "$repo" "$FIX/budget-plan-dropped.json"
+run_plan_save "$repo" "$FIX/budget-plan-dropped.json" --final-attempt
+assert_eq  "9m --final-attempt still SAVES rather than deadlocking" "$PSRC" "0"
+assert_has "9n …still saying UNRESOLVED"  "DECISION NOT CARRIED — UNRESOLVED" "$PSOUT"
+assert_eq  "9o …still advancing to Plan Review" \
+           "$(sed -n 's/.*"stage"[^"]*"\([^"]*\)".*/\1/p' "$PSD/state.json" | head -1)" "plan-review"
+if [ -f "$(tok "$PSD")" ]; then
+  bad "9p …and the token does not survive the advance"
+else
+  ok "9p …and the token does not survive the advance"
+fi
+
+# --- THE S178 GUARD IS ARMED on the retry -----------------------------------
+# The armed token is what makes the over-correction guard run at all. On a first
+# plan there are no objections, so it can only report UNCHECKED — and it must say
+# so HONESTLY (the harness asked, not Plan Review), never claim a review failure
+# that never happened.
+repo="$(plan_repo "$FIX/measured-validated-plan.md")"
+PSD="$repo/.git/lcars/missions/test-001"
+run_plan_save "$repo" "$FIX/measured-plan-dropped.json"
+run_plan_save "$repo" "$FIX/measured-plan-carried.json"
+assert_eq  "9q the retry saves" "$PSRC" "0"
+assert_has "9r …with the over-correction guard ARMED and reporting" \
+           "REVISION UNCHECKED" "$PSOUT"
+assert_has "9s …honestly naming who asked for the revision" \
+           "the HARNESS asked for this revision, not Plan" "$PSOUT"
+assert_no  "9t …and never inventing a review round that never happened" \
+           "the review rounds on disk name" "$PSOUT"
+
+# --- BYTE-IDENTITY: nothing that did not bounce may move --------------------
+# A plan with no prohibition, and a plan that carries it, both untouched: no
+# token written, and the same bytes the previous commit printed.
+if [ -s "$BASE_SH" ]; then
+  repo="$(plan_repo "$NOP")"
+  PSD="$repo/.git/lcars/missions/test-001"
+  run_plan_save "$repo" "$FIX/budget-plan-dropped.json"
+  if [ -f "$(tok "$PSD")" ]; then
+    bad "9u a plan with NO prohibition writes no token"
+  else
+    ok "9u a plan with NO prohibition writes no token"
+  fi
+  repo="$(plan_repo "$FIX/budget-validated-plan.md")"
+  PSD="$repo/.git/lcars/missions/test-001"
+  run_plan_save "$repo" "$FIX/budget-plan-carried.json"
+  if [ -f "$(tok "$PSD")" ]; then
+    bad "9v …and neither does a plan that CARRIES it"
+  else
+    ok "9v …and neither does a plan that CARRIES it"
+  fi
+else
+  bad "9u could not read the byte-identity baseline"
 fi
 
 printf '\n────────────────────────────────────────────\n'

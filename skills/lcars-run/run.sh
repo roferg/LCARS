@@ -2598,6 +2598,21 @@ the composite value cell came out scrambled.'
 # reviewer objections are on disk. A FIRST plan therefore gets a byte-identical
 # prompt to the one it got before this round — which is every Mission that never
 # fails review.
+# S180: TRUE when reviewer objections are on disk for this Mission. The revision
+# token now has TWO producers — review_fail (PLAN REVIEW asked for the revision)
+# and cmd_plan_save's own guard bounce (THE HARNESS asked for it, before any
+# reviewer ever saw the plan) — and only the first has objections to point at.
+# Every sentence below that says "the objections" is therefore gated on this, for
+# the reason in the note above: an instruction referencing an input that does not
+# exist is exactly the class S175 was built to stop.
+plan_revision_has_objections() {
+  local _rv
+  for _rv in "$MISSION_DIR"/plan-review-*.json; do
+    [ -f "$_rv" ] && return 0
+  done
+  return 1
+}
+
 plan_revision_contract_block() {
   # THE SAME TOKEN the guard reads, and that is the point: the prompt and the
   # check can no longer come apart. Keyed on the mere existence of
@@ -2607,6 +2622,51 @@ plan_revision_contract_block() {
   # was listed. That is an instruction referencing an input that does not exist,
   # which is exactly the class S175 was built to stop.
   [ -f "$MISSION_DIR/plan-under-review.json" ] || return 0
+  # S180 — THE HARNESS-BOUNCE VARIANT. A guard in cmd_plan_save can reject a plan
+  # on the FIRST pass, before Plan Review exists: there are no objections, so the
+  # block below cannot be used as written. MEASURED, live Copilot, 2026-08-30
+  # (tests/drives/align-heal/runs/replan-1): a first plan was bounced by B2 for
+  # one un-carried decision, the retry carried it CORRECTLY — and re-planned
+  # everything else from zero. Ten tickets came back as nine, 8 of 10 dependency
+  # entries changed, ids were reused for different work, and one standalone
+  # ticket vanished into a sibling. The retry prompt told it "change nothing else"
+  # while never showing it its own answer, so that was unobeyable in principle.
+  if ! plan_revision_has_objections; then
+    printf '%s' '
+
+## THIS IS A REVISION, NOT A RE-PLAN — a correction is a PATCH
+
+`plan-under-review.json` is listed above: it is the plan YOU produced on an
+earlier attempt of this same Stage, exactly as you wrote it, and it is your
+STARTING POINT. The harness rejected ONE thing about it — quoted above under
+YOUR PREVIOUS ATTEMPT WAS REJECTED. Fix that, and change NOTHING ELSE.
+
+- Start from that file, not from a blank page. Keep every ticket'"'"'s id, its
+  slice, its criteria and its `dependencies` EXACTLY as they are, except where
+  the rejection above actually requires a change.
+- Return the SAME tickets: same count, same ids, same order, each id still
+  naming the same piece of work. Do not renumber, do not merge two tickets into
+  one, do not drop one, do not re-derive the dependency graph.
+- The rejection names what is missing. The correct revision adds it to the
+  ticket that already owns that behaviour and touches nothing else.
+
+MEASURED, live, 2026-08-30. A plan was bounced for ONE missing thing and the
+retry re-planned from zero. The one thing the harness asked for was carried
+correctly — and ten tickets came back as nine, eight of ten dependency entries
+changed, ticket ids were reused for entirely different work, and a standalone
+ticket disappeared into a sibling. Everything the plan had already got right was
+thrown away to fix one line.
+
+### What a dependency IS
+
+`dependencies` names what a ticket GENUINELY needs BUILT FIRST — code, a file, a
+scaffold, a stylesheet, a table it reads — such that starting it before that
+exists is impossible. It is NOT authoring order, narrative order, or ticket-number
+order. "Comes after" is not a dependency. This is NOT an instruction to declare
+FEWER dependencies: declare every edge that is real, and leave the graph you
+already wrote exactly as you left it.'
+    return 0
+  fi
   printf '%s' '
 
 ## THIS IS A REVISION, NOT A RE-PLAN — a correction is a PATCH
@@ -3948,8 +4008,28 @@ for rf in sorted(glob.glob(os.path.join(mission_dir, "plan-review-*.json"))):
         objections.append((iss.get("ticketId"), str(iss.get("objection") or "")))
 
 if not objections:
-    unchecked("a revision was requested, but the review rounds on disk name no "
-              "objections we can read")
+    # S180 — the token has TWO producers now. review_fail writes it with the
+    # round's verdict beside it; cmd_plan_save's own guard bounce writes it on a
+    # FIRST plan that no reviewer has ever seen, where there are no objections
+    # because none were ever raised. This guard's entire verdict is "which added
+    # edges did an objection ask for", so on that path the question has no
+    # meaning — there is nothing to license anything against. Say THAT, rather
+    # than reporting a review failure that never happened. The patch contract
+    # still reaches the worker here; it reaches it through the prompt (the file
+    # is listed, and plan_revision_contract_block tells it what to do with it),
+    # not through this edge diff.
+    if glob.glob(os.path.join(mission_dir, "plan-review-*.json")):
+        # Rounds ARE on disk and we could read nothing out of them. That is the
+        # check failing, and it keeps the wording it has always had.
+        unchecked("a revision was requested, but the review rounds on disk name "
+                  "no objections we can read")
+    sys.stdout.write(
+        "  ⚠ REVISION UNCHECKED — the HARNESS asked for this revision, not Plan\n"
+        "    Review, so there are no objections and no way to tell an asked-for\n"
+        "    dependency edge from an unasked one. The plan is passed through and\n"
+        "    Plan Review sees it for the first time. What the retry was told to\n"
+        "    patch is in the prompt; nothing here has verified that it did.\n")
+    sys.exit(3)
 
 prior = graph(load_list(under_review_path))
 new = graph(load_list(new_path))
@@ -4185,6 +4265,39 @@ $_s178out"
     deadlocking the Mission here. What the guard objected to:
 $_b2out"
       else
+        # S180 — ARM THE PATCH CHANNEL, the same one Plan Review uses.
+        #
+        # MEASURED, live Copilot, 2026-08-30 (the drive under
+        # tests/drives/align-heal/runs/replan-1). B2 bounced a FIRST plan for one
+        # un-carried decision. The retry carried it correctly and RE-PLANNED
+        # EVERYTHING ELSE: 10 tickets became 9, 8 of 10 dependency entries
+        # changed, ids were reused for different work, and a standalone ticket
+        # vanished into a sibling. The retry prompt already said "fix exactly
+        # that and change nothing else" — and the worker's 28KB argv contained
+        # prd.md, validated-plan.md and adr.md but NOT the plan it had just
+        # written. It was told to change nothing else about an answer it was
+        # never shown, which is unobeyable in principle, not a model failing.
+        #
+        # So write the rejected plan where the retry can read it. That one file
+        # arms BOTH halves of S178's patch contract at once —
+        # plan_revision_contract_block (the prose, and cmd_plan LISTS the file)
+        # and replan_overcorrection_check (the edge diff) — because both are
+        # gated on this exact path and nothing else.
+        #
+        # WRITE-IF-ABSENT, and that is deliberate. When review_fail has already
+        # written a token, THAT file is the plan the objections are about and the
+        # thing the guard must diff against; clobbering it with a rejected
+        # attempt would silently redefine what "the plan under review" means. A
+        # second B2 bounce in the same retry loop likewise leaves the first
+        # attempt standing as the anchor, so the patch target cannot drift
+        # attempt by attempt. This attempt's own reason travels separately, in
+        # .plan-reject-note.
+        #
+        # LIFECYCLE: consumed on the save below (and by review_pass), and cleared
+        # by feedback.sh on a send-back — the one transition that could carry it
+        # into an unrelated re-plan. A pure B2 loop always ends in a save, because
+        # the last attempt is advisory.
+        [ -f "$_s178tok" ] || cp "$PLAN" "$_s178tok" 2>/dev/null || :
         printf '%s\n' "$_b2out" > "$(dirname "$PLAN")/.plan-reject-note" 2>/dev/null || true
         printf '%s\n' "$_b2out" >&2
         exit 1
@@ -13323,6 +13436,17 @@ cmd_plan() {
   # cap — see validate_plan_json's design note. Read it from config, default 1200.
   local budget; budget="$(json_raw "$LCARS_CFG" comprehensionBudget)"; budget="${budget:-1200}"
 
+  local tries=0 prior_no_file="" prior_reject=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+  # S180 — ASSEMBLED PER ATTEMPT, NOT ONCE. Two of the inputs below are written
+  # DURING this loop: cmd_plan_save arms `plan-under-review.json` when a guard
+  # bounces a plan, so a prompt built before the first spawn can never list it.
+  # MEASURED on the fix's own first cut: the token was written correctly and the
+  # retry prompt still had zero hits for the revision contract — the same silence
+  # the live drive showed. Attempt 1 is unaffected (nothing has been written yet)
+  # and a Plan Review revision is unaffected (review_fail wrote the token before
+  # the Stage started), so both prompts stay byte-identical.
   local extra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/prd.md
 - $MISSION_DIR/validated-plan.md
@@ -13351,9 +13475,17 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # asking for a single edge came back as a 14-deep single-file chain. Gated on
   # the token, so a first plan — and a re-plan after a `lcars feedback` send-back
   # — get a byte-identical prompt to before this round.
+  # S180: the token now also gets armed by a HARNESS guard bounce on a first
+  # plan, where there are no objections and no reviewer — so the label must not
+  # claim any. Same file, same patch contract, honest about who asked.
   if [ -f "$MISSION_DIR/plan-under-review.json" ]; then
-    extra="$extra
+    if plan_revision_has_objections; then
+      extra="$extra
 - $MISSION_DIR/plan-under-review.json   (THE PLAN UNDER REVIEW — the exact tickets the objections are against; this revision is a PATCH of it)"
+    else
+      extra="$extra
+- $MISSION_DIR/plan-under-review.json   (YOUR OWN PREVIOUS PLAN, the one the harness bounced — the exact tickets you wrote; this attempt is a PATCH of it)"
+    fi
   fi
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts this Stage may read, by PATH only. Absent on a trivial
@@ -13393,10 +13525,6 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
 - $MISSION_DIR/answers.json   (EVERY answer the captain has given on this Mission, oldest first, each with the question(s) it answered — treat them as DECIDED, fold them into the tickets, and never re-emit a criterion that contradicts one; where two answer the same question the LATER one stands)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
-
-  local tries=0 prior_no_file="" prior_reject=""
-  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
-    tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
     # Cold workers only CREATE FILES; the harness owns DIRECTORY scaffolding.
     # Pre-create the manifests/ subdir so the worker's `create manifests/<id>.md`
