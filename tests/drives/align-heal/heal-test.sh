@@ -3,11 +3,12 @@
 # gate, exit codes, heal loop, draft handling are all REAL.
 #   bash heal-test.sh <label> <drop> <heals_ok>
 set -u
-SP="$(cd "$(dirname "$0")/.." && pwd)"
+SD="$(cd "$(dirname "$0")" && pwd)"
+SP="$(cd "$SD/.." && pwd)"
 REPO="${LCARS_DRIVE_REPO:-/Users/roganferguson/Projects/LCARS}"
 LABEL="${1:?}"; DROP="${2:-5}"; HEALS_OK="${3:-1}"
 SRC="$HOME/Projects/DX-Scorecard/.git/lcars/missions/lcars-20260829-002"
-OUT="$SP/align/runs/$LABEL"; rm -rf "$OUT"; mkdir -p "$OUT"
+OUT="$SD/runs/$LABEL"; rm -rf "$OUT"; mkdir -p "$OUT"
 TARGET="$OUT/target"; mkdir -p "$TARGET"
 ( cd "$TARGET" && git init -q . && git config user.email t@t && git config user.name t \
   && echo "# t" > README.md && git add -A && git commit -qm init \
@@ -19,9 +20,9 @@ printf '{"id":"%s","title":"MBR Builder","stage":"align","prdPending":true,"mode
 
 export FI_STATE="$OUT/fi.count" FI_DROP="$DROP" FI_HEALS_OK="$HEALS_OK"
 export FI_BRIEF="$MD/attachments/attachment-02.md" FI_REPO="$REPO"
-export PATH="$SP/align/faultinj:$SP/blockshim:$PATH"
-export LCARS_WORKER_BIN="$SP/align/faultinj/copilot"
-export LCARS_GH_BIN="$SP/align/fake-gh" LCARS_BLOCK_LOG="$OUT/claude-attempts.log"
+export PATH="$SD/faultinj:$SP/undrawn/blockshim:$PATH"
+export LCARS_WORKER_BIN="$SD/faultinj/copilot"
+export LCARS_GH_BIN="$SD/fake-gh" LCARS_BLOCK_LOG="$OUT/claude-attempts.log"
 export LCARS_FILE_SCRIPT="$REPO/skills/lcars-file/file.sh"
 export LCARS_VERSION_CHECK_BIN="$REPO/skills/lcars-version/check.sh"
 export LCARS_SERVE_HOST=127.0.0.1 LCARS_SERVE_ADAPTER=local LCARS_SERVE_REPO_ROOT="$TARGET"
