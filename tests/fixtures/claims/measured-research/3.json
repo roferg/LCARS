@@ -1,0 +1,9 @@
+{
+  "question": "In the MBR builder \"Pull data & start\" flow, does clicking it issue a single POST /__mbr/refresh that builds the entire draft, with the per-bucket \"Queued → Collecting… → values pulled\" progress being a client-side animation over that one call, or must collection actually run staged per-bucket against the backend?",
+  "recommendation": "Model it as a single POST /__mbr/refresh that atomically rebuilds the ENTIRE draft in one call; any per-bucket \"Queued → Collecting… → values pulled\" progress must be a purely client-side animation over that one round trip, because the backend has no per-bucket staged collection endpoint.",
+  "supporting_points": [
+    "The client helper refreshMbr() (src/lib/devWrite.ts) fires exactly one POST /__mbr/refresh with body {} for a full refresh (or {metricId} for a single KPI) and awaits the whole rebuilt draft snapshot back in one response — there is no per-bucket request loop, and MbrBuilderView's refreshAll() calls it once and swaps in the returned snapshot.",
+    "Server-side, dispatchMbrRefresh (scripts/dev-write-plugin.ts) delegates to refreshSnapshot → buildSnapshot (scripts/build-snapshot.ts), which runs the roster-filter + carry-forward merge across ALL buckets in-process and writes the entire data/snapshots/<YYYY-MM>.json draft atomically; the API has no notion of a bucket, so it cannot report or run staged per-bucket collection.",
+    "The only genuinely staged, backend-executed collection is the SEPARATE per-KPI path POST /__collect/:kpiId (a ~2.5-min Copilot CLI spawn per KPI, ADR-001/002) — it is keyed per KPI, not per bucket, and is not what the refresh/'Pull data' button invokes, so real staged progress would require driving that endpoint per KPI rather than the single atomic /__mbr/refresh call."
+  ]
+}

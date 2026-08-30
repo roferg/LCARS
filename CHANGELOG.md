@@ -4,6 +4,62 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.5 — 2026-08-30
+
+**The harness stops asking what it already knows.** Session 180. A complex
+holodeck Mission reached Verify green but raised **four human gates, all on ONE
+ticket, all about ONE question the captain had already answered TWICE**. Plan
+Review called it "an UNSETTLED open question with no captain resolution"; the PRD
+had recorded it RESOLVED since Align.
+
+Measured on a live Copilot capstone of that same Mission, hands-off Align →
+Verify: **4 human gates → 0**, Plan Review 6 rounds → 1 (none failed),
+**$407.89 → $165.03**. A separate plain non-holodeck drive also ran hands-off to
+Verify in ~6 minutes / $2.78.
+
+### The reviewer can see what the captain decided
+
+`cmd_plan_review` is deliberately never handed `prd.md` (S174's independence
+design, which stands). It is now handed a **decisions digest** — the resolved
+open-questions entries and nothing else — plus a precedence rule: a recorded
+answer OUTRANKS the drawing on BEHAVIOUR, the drawing remains the authority on
+LOOK, and declaring a decided question "unsettled" is not an objection. A Mission
+that decided nothing produces a byte-identical reviewer prompt.
+
+### Decisions stop vanishing, and the loop stops costing money
+
+- **`answers.json` is an append-only ledger.** It was a single slot: three
+  successive answers to one question each erased the last.
+- **The round budget resets on an answer**, under a separate escalation cap — past
+  round 3 every failure had been a human gate at ~$6–10 a cycle.
+- **The driver auto-resumes** after an answered gate instead of exiting. Proven
+  live: one `respond` ran a plain Mission all the way back to Verify unaided.
+- **The hints it prints are commands that run.** `lcars` is not on `PATH` and
+  never was; 19 printed hints and 14 SKILL.md lines said otherwise.
+
+### A negative-existence claim is checked, not believed
+
+A Research worker wrote *"There is no `WIRED_METRIC_IDS` symbol anywhere in the
+repo (grep returns zero matches)"*. It exists three times, in the file the
+Mission was about to rewrite. Nobody ran that grep. The harness now runs it: a
+claim that a named, code-shaped identifier is absent repo-wide is verified
+against the Mission's own branch, and a refuted claim parks the Mission with the
+matching lines. Swept over 126 real negative-existence sentences from 58
+Missions, it fires on none of them.
+
+### Pulled: the prohibition-carry check
+
+A companion check — "a prohibition in the validated plan must reach a ticket" —
+was **removed** after three rounds, each of which traded one failure for another.
+Its noise floor had been measured on 56 Missions from one repo, all holodeck-
+style; the first plain Mission driven through it produced a false positive,
+reading a test-coverage bullet as a prohibition. The defect it found is real and
+**reproduces** — two independent live Planners dropped the same decision from
+`validated-plan.md` to zero mentions in `plan.json` — so the evidence is
+preserved under `tests/drives/align-heal/runs/` and the false positive is kept as
+a regression test the next attempt must clear. Test counts fell accordingly
+(claim-check 161 → 93, replan-overcorrection 222 → 166).
+
 ## 2026.8.4 — 2026-08-20
 
 **The viewscreen stops paying for work you already finished.** Sessions 176–177.

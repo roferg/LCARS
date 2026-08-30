@@ -33,6 +33,8 @@ missionCard:
         "implementation": { "level": "low"|"medium"|"high", "label": "IMPL …" } | None
       },
       "progress": { "wave":1, "wavesTotal":3, "ticketsDone":4, "ticketsTotal":7,
+                    "peakParallel":4,                    # widest wave (S178)
+                    "shape": "3 WAVES · UP TO 4 IN PARALLEL" | None,
                     "label": "WAVE 1/3 · TICKET 4/7" } | None,
       "tickets": [ { "id":"t-001", "issue":201|None, "title":"…",
                      "state":"done"|"in-progress"|"flagged"|"pending" } ]

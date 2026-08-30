@@ -3,7 +3,7 @@
 # lcars run — advance a Mission one Stage. This build implements the Research,
 # Validate, and Plan stages (align → validate → plan → plan-review).
 #
-# `lcars run <id>` dispatches on state.json.stage. A mission filed by
+# `run.sh drive --mission <id>` dispatches on state.json.stage. A mission filed by
 # `lcars file` sits at stage "align" (Align already happened conversationally),
 # so the next Stage to execute is Research. Research has two halves:
 #
@@ -127,6 +127,21 @@ RELABEL_NOTE=""
 SEP="─────────────────────────────────────────────"
 
 die() { printf 'lcars run: %s\n' "$1" >&2; exit 1; }
+
+# === S180: A HINT MUST BE A COMMAND THAT RUNS ==============================
+# Every gate in this file used to point the captain at `lcars respond` or
+# `lcars run` with a mission id. NEITHER COMMAND EXISTS. `lcars` is not a binary
+# and install.sh never makes one: it symlinks the SKILLS (which a CLI dispatches
+# from natural language) and drops exactly one launcher — `lcars-viewscreen` — into
+# ~/.local/bin. Typed at a shell, both forms are "command not found", so a
+# captain who read the banner literally got nothing. These print the invocation
+# that DOES run, resolved against THIS checkout, so a pasted hint works from any
+# repo. The frontmatter `description:` of each skill still says "lcars respond" —
+# that is the phrase the captain SAYS to his CLI, and it is correct.
+RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.sh}"
+respond_hint() { printf 'bash %s answer --mission %s --answer "<your answer>"' \
+                   "$RESPOND_SCRIPT" "$MISSION_ID"; }
+drive_hint()   { printf 'bash %s drive --mission %s' "$SELF" "$MISSION_ID"; }
 
 # --- tiny JSON readers (no jq; same style as file.sh / status.sh) ----------
 json_str() { # file key  → first matching "key": "value"
@@ -645,9 +660,39 @@ $(lcars_attach_mockup_note)"
 # guard). Nothing below reads a ticket to decide what it IS. The PLANNER
 # declares `changesScreenAppearance` — it is the one party that knows, because
 # it is writing the ticket — and the harness only checks that the declaration is
-# present, is a boolean, and, when true, is BACKED by a criterion that contains
-# the mockup's own filename. String containment on a name LCARS itself assigned.
-# There is nothing to reword around.
+# present and is a boolean.
+#
+# S174 EXTENDED THE SAME PRINCIPLE, one level down — and then spent three
+# designs learning what a declaration check can and cannot do. The whole history
+# is here so nobody re-litigates it by trying a fourth wording.
+#
+#   ROUND 1  the criterion SENTENCE had to name the mockup file plus an anchor
+#            abutting it. KILLED by one sed: append "(attachment-01.html's
+#            screen)" to all 38 criteria of the real plan. It also matched
+#            "NOT DRAWN:" anywhere, so burying that marker at the END of an
+#            invention both passed AND laundered the invention onto the captain's
+#            Verify list as a one-word entry.
+#   ROUND 2  provenance moved OUT of the sentence into its own FIELD — drawnAt /
+#            notDrawn / notVisual, exactly one per criterion. KILLED by one jq:
+#            map({text: ., drawnAt: "the builder screen"}). 38 criteria, one
+#            constant anchor, invention byte-intact, Verify list empty.
+#   ROUND 3  the anchor had to CITE an element id the drawing really has, with
+#            the twelve legal ids published to the planner. KILLED by a
+#            nine-character edit of the round-2 line: "the builder screen" ->
+#            "#screen-builder". A real id is still a constant.
+#
+# WHAT THAT BOUGHT, and it is not nothing: the STRING-SUBSTITUTION family is
+# genuinely dead — a marker cannot be buried mid-text, phrasing games and word
+# order are irrelevant, and a fake declaration sed'd into a plain string is not
+# read as one, because none of those touch a field. The DEGENERATE-VALUE family
+# is dead too: null, true, 0, "\t", [], {} and a whitespace string are all
+# refused as anchors. Every one of those kills is pinned by a test.
+#
+# WHAT IT DID NOT BUY: a CONSTANT citation defeats every version of this, and no
+# syntactic check on a SELF-DECLARED field can make that field honest. Whether
+# the citation is TRUE — and whether the built screen matches the drawing at all
+# — is not decidable here. See the limitations at validate_plan_json and the
+# handoff at plan_mockup_contract_block.
 
 # mission_mockup_names -> the basenames of this Mission's HTML mockups, space
 # separated; EMPTY when it carries none. Classification comes from the ONE
@@ -671,6 +716,121 @@ mission_mockup_names() {
   done
   printf '%s' "$names"
 }
+
+# === S174 round 3: the drawing's PLACE NAMES ===============================
+#
+# WHAT WAS MEASURED. Round 2 moved the per-criterion declaration out of the
+# sentence and into a FIELD, on the reasoning that a slot cannot be filled by a
+# paste. It can. ONE jq line —
+#
+#   jq 'map(if .changesScreenAppearance then .acceptanceCriteria |=
+#           map({text: ., drawnAt: "the builder screen"}) else . end)'
+#
+# — passed the whole real 13-ticket plan with t-012's invention byte-unchanged
+# and the captain's Verify list EMPTY. 38 criteria, ONE distinct anchor. That is
+# round 1's outcome relocated, not cured: a free-text slot is a free-text
+# sentence with extra steps.
+#
+# So the anchor has to name a place WE ACTUALLY DREW. The mockup is not an
+# arbitrary file — the holodeck generates it, and it carries real element ids.
+# The real one carries 12: automateBtn bulkBar collect-list continueBtn
+# modal-discard modal-lock modal-unlock pullBar screen-builder screen-collect
+# screen-start themeBtn.
+#
+# ⚠ AND THAT DID NOT HOLD EITHER — measured by a third tester and reproduced by
+# the captain, on the same plan. Changing the round-2 line by nine characters,
+# "the builder screen" -> "#screen-builder", passes the whole plan again:
+# invention intact, Verify list empty. A real id is still a constant, and the
+# twelve legal ids are printed to the planner in the contract block and reprinted
+# under every rejection, so finding one costs less than a grep.
+#
+# THIS CODE STAYS ANYWAY, as PLUMBING with a smaller claim. It kills the
+# string-substitution family and the degenerate-value family outright (see the
+# history above validate_plan_json and the limitations inside it), it gives the
+# reviewer and the captain a structured field to read instead of prose, and the
+# schema is what the build-gate round will hang a real check on. What it does
+# NOT do is make a self-declared field honest. Do not add a fourth syntactic
+# wording; the residual is a build problem, not a parsing problem.
+#
+# DERIVED FROM THE DRAWING, not published by the holodeck (captain's ruling):
+# deriving works on every mockup that already exists, including the measured
+# one, where a holodeck change would only help future drawings and adds a second
+# moving part. Surveyed on this machine: 4 mockups, 11–23 ids each.
+#
+# THE VOCABULARY IS PUBLISHED. plan_mockup_contract_block LISTS these names to
+# the planner and every rejection message lists them again. Round 1's closed
+# vocabulary was hated because it was undocumented and unguessable; this one is
+# handed over up front, and `drawnAt` may say anything it likes AROUND the name.
+#
+# mission_mockup_place_names -> space-separated, sorted, deduped element ids of
+# every mockup this Mission carries; EMPTY when it carries none, or when the
+# drawings carry no ids at all (see the fallback in validate_plan_json).
+# Memoised: run.sh is re-entered per Stage, but within one process the Plan
+# prompt, the validator and the Verify note all ask for this.
+LCARS_PLACE_NAMES_CACHE=""
+LCARS_PLACE_NAMES_DONE=""
+mission_mockup_place_names() {
+  if [ -n "$LCARS_PLACE_NAMES_DONE" ]; then
+    printf '%s' "$LCARS_PLACE_NAMES_CACHE"; return 0
+  fi
+  LCARS_PLACE_NAMES_DONE=1
+  local d="$MISSION_DIR/attachments" f names=""
+  [ -d "$d" ] || return 0
+  if ! command -v lcars_attach_kind >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v lcars_attach_kind >/dev/null 2>&1 || return 0
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    [ "$(lcars_attach_kind "$f")" = mockup ] || continue
+    # Both quote styles; an id must look like an id (no spaces, starts with a
+    # letter) or it is markup noise, not a place a person can be pointed at.
+    # grep -o, not sed: a line legitimately carries SEVERAL ids
+    # (<section id="a"><div id="b">), and a greedy sed capture keeps only the
+    # LAST one — which silently shrinks the vocabulary and rejects honest
+    # anchors. Both quote styles. An id must look like an id (no spaces, starts
+    # with a letter) or it is markup noise, not a place a person can be pointed
+    # at.
+    names="$names
+$(grep -oE "[[:space:]]id=[\"'][^\"']*[\"']" "$f" \
+   | sed -E "s/.*id=[\"']//; s/[\"']\$//" \
+   | grep -E "^[A-Za-z][A-Za-z0-9_:.-]*$")"
+  done
+  LCARS_PLACE_NAMES_CACHE="$(printf '%s' "$names" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  printf '%s' "$LCARS_PLACE_NAMES_CACHE"
+}
+
+# ===========================================================================
+# HANDOFF TO THE BUILD-GATE ROUND — read this before extending anything below.
+#
+# S174 shipped the DECLARATION layer: a screen-changing ticket declares, per
+# criterion, where in the drawing that surface lives (`drawnAt`), that it is
+# visible and absent from the drawing (`notDrawn`, which the captain then sees
+# listed at Verify), or that it makes no visual claim (`notVisual`). Three
+# rounds of syntactic hardening are recorded above validate_plan_json, together
+# with the one-line transform that killed each. The residual is NOT another
+# wording:
+#
+#     • is the citation TRUE — does the drawing at that id show what the
+#       criterion describes?
+#     • does the BUILT screen match the drawing at all?
+#
+# Neither is decidable from plan.json, and both are exactly what the build-gate
+# round owns — the rendered-DOM-against-built-CSS check, which needs a real
+# build to survive Tailwind / CSS Modules / styled-components. THIS ROUND IS A
+# DECLARED UPSTREAM CONSUMER of that build: `drawnAt` already names the element
+# id to look at, so a gate that renders the screen has a per-criterion target
+# handed to it rather than a whole page to diff. The under-build failure that
+# started all of this (a ticket that emitted eleven class names and wrote zero
+# CSS, and passed every gate) is that round's to catch, not this one's.
+#
+# The three adversarial rigs in tests/drives/s174-*.sh are the durable output
+# here: each carries the transform that beat the previous design, and the third
+# asserts that those kills still kill. Run them before changing anything in this
+# area — they are cheap, zero-spend and self-skipping.
+# ===========================================================================
 
 # plan_mockup_contract_block -> the Plan prompt's mockup contract, or NOTHING
 # when this Mission carries no mockup. A mission without one — which is every
@@ -708,13 +868,70 @@ You are the one party that knows, because you are writing the ticket. Declare it
 on EVERY ticket. The harness rejects a plan that omits it or gives it anything
 other than a bare `true`/`false`.
 
-### Carry it — every `true` ticket needs a criterion that NAMES the mockup
+### Carry it — EVERY criterion DECLARES where it came from
 
-A ticket with `changesScreenAppearance: true` MUST have at least one entry in
-its `acceptanceCriteria` containing the literal string `%s`. The harness
-checks this deterministically and REJECTS the whole plan otherwise. Naming it in
-the `description` does not count — the description is not what the work is
+On a ticket with `changesScreenAppearance: true`, an `acceptanceCriteria` entry
+is no longer a bare string. It is an OBJECT carrying its text and EXACTLY ONE
+declaration:
+
+    "acceptanceCriteria": [
+      {"text": "The value cell renders every sub-reading with its own delta arrow",
+       "drawnAt": "#screen-builder, the cohort value cell of a multi-value KPI row"},
+      {"text": "An unmatched SubReading label renders no arrow",
+       "notVisual": true},
+      {"text": "A manual cohort commits the whole SubReading[] as one MetricValue",
+       "notDrawn": "the drawing shows a cohort value as read-only text; there is no editor for it"}
+    ],
+
+  **`"drawnAt": "<where>"`** — this criterion'"'"'s surface IS in the drawing, and
+  this is where: the screen id, the section, the row. Your own words; there is no
+  list of allowed anchors and nothing parses the file to check that it resolves.
+  Write what a person would need in order to find it — "#screen-start, the
+  next-up start-card" — not "the mockup".
+
+  **`"notDrawn": "<why>"`** — this criterion introduces something VISIBLE that
+  the drawing does not contain.
+
+  **`"notVisual": true`** — this criterion makes no visual claim at all: a
+  persistence rule, an error path, a derivation, "the existing tests stay green".
+
+The harness REJECTS the plan when a criterion carries none of the three, more
+than one, or an empty one — naming every offending ticket and criterion in one
+message. A plain string is still correct everywhere else: on every
+`changesScreenAppearance: false` ticket, and on every Mission with no mockup.
+
+At least one criterion on the ticket must be `drawnAt`. A ticket that says it
+changes what a screen looks like is drawn SOMEWHERE in %s, and naming it
+in the `description` does not count — the description is not what the work is
 judged against.
+
+### `notDrawn` is not a loophole, and `notVisual` is not a shrug
+
+A mission legitimately needs behaviour the drawing does not show: an error path,
+a persistence rule, an empty state nobody drew, a keyboard affordance. Declaring
+it is FINE. Every `notDrawn` criterion is collected and shown to the captain at
+Verify as its own list — "built but not in your drawing" — so he reviews what was
+invented instead of discovering it by clicking. That is the whole point of the
+field: an un-drawn affordance DECLARED is fine, an un-drawn affordance SMUGGLED
+IN beside a compliant sibling is what this rule exists to stop.
+
+That is measured, not theorised: a ticket whose first criterion correctly named
+the drawing used its third to specify a sub-value editor — a toggle, a stack of
+label+value input pairs, a Remove per row, an Add button — that the drawing does
+not contain anywhere. It shipped, fully styled, past every gate, and no existence
+check could ever have caught it, because it EXISTS.
+
+`notVisual` exists so the captain'"'"'s list stays readable: on that same plan, 19
+of 23 declarations would have been persistence and test-hygiene trivia, drowning
+the ONE real invention. So use `notVisual` for what truly has no visual claim —
+and DO NOT use it to launder a control you are adding. A control is visible.
+That is one of the things this schema cannot catch — so is a `drawnAt` that
+cites a real id and then describes something else, and so is declaring the whole
+ticket `changesScreenAppearance: false`. All three are measured, all three are
+the reviewer'"'"'s to hunt, and all three are the fastest way to have your plan
+bounced.
+
+Neither field is for skipping the lookup. Open the drawing first; then declare.
 
 Write a SPECIFIC criterion, not a general one. "Matches the mockup" is worth
 nothing: an Implementer can claim it without opening the file, and the generic
@@ -722,11 +939,16 @@ losing to the specific is exactly how the look gets lost. Name WHAT about the
 mockup THIS ticket'"'"'s surface must match, so the claim can be checked against the
 drawing:
 
-    BAD   "The sidebar matches the mockup"
-    GOOD  "The sidebar nav reproduces %s'"'"'s nav list: the three items in
-           that file'"'"'s order, each with its icon to the left of its label, the
-           active item carrying the filled accent pill across the item'"'"'s full
-           width, and the count badge right-aligned inside it"
+    BAD   {"text": "The sidebar matches the mockup", "drawnAt": "the sidebar"}
+    GOOD  {"text": "The sidebar nav shows the three items in that order, each
+                    with its icon to the left of its label, the active item
+                    carrying the filled accent pill across the item'"'"'s full
+                    width, and the count badge right-aligned inside it",
+           "drawnAt": "the nav list in the left sidebar"}
+
+The text says WHAT the surface must be; `drawnAt` says WHERE in the drawing to
+check it. Neither one carries the other'"'"'s job, and neither is worth anything
+vague: an Implementer can claim "matches the mockup" without opening the file.
 
 So: open the mockup and read the surface each ticket owns BEFORE you write that
 ticket'"'"'s criteria. The specifics come from the drawing, not from the brief.
@@ -761,7 +983,1606 @@ is part of the work, and the work is judged where it is built.
     "rationale": "…"
 
 The mockups this Mission carries:
-%s' "$names" "$first" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
+%s' "$names" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
+
+  # ROUND 3 — THE VOCABULARY, PUBLISHED. `drawnAt` must CITE a place the drawing
+  # actually has, and the only fair way to demand that is to hand the planner the
+  # list. Round 1 shipped a closed vocabulary that was undocumented and
+  # unguessable and it was rightly hated; this one is stated up front and
+  # repeated in every rejection message.
+  local places; places="$(mission_mockup_place_names)"
+  if [ -n "$places" ]; then
+    printf '
+
+### The anchor must name a place the drawing HAS
+
+`drawnAt` is not free text. It must CITE one of the element ids below — the
+places this drawing actually contains — and it may say anything you like around
+that name:
+
+    GOOD  "drawnAt": "#screen-builder, the cohort value cell of a KPI row"
+    GOOD  "drawnAt": "the cohort row in screen-builder, right column"
+    BAD   "drawnAt": "the builder screen"      <- names no id
+    BAD   "drawnAt": "x"                       <- names nothing at all
+
+The places in %s:
+
+%s
+
+A bare name and a `#`-prefixed one both count. What is checked is that the name
+is THERE; nothing checks that the surface you describe is really at that place —
+that is the reviewer'"'"'s job, and it is why a citation you have not opened the
+drawing to verify is a wasted round.' "$first" "$(printf '%s' "$places" | tr '"'"' '"'"' '"'"'\n'"'"' | sed 's/^/  - /')"
+  else
+    printf '
+
+### This drawing carries no element ids — the anchors go UNFENCED
+
+Every `drawnAt` on this Mission is checked only for being a non-empty string:
+the drawing has no ids to cite, so nothing can tell a real place from an
+invented one. That makes your anchor the ONLY record of where a surface lives.
+Write it as if the next person has to find that spot with your words alone, and
+expect the reviewer to hold you to it.'
+  fi
+}
+
+# plan_review_mockup_block -> the Plan Review prompt's mockup instruction, or
+# NOTHING when this Mission carries no mockup (S174).
+#
+# WHAT WAS MEASURED. Plan Review is the ONE Stage whose entire job is auditing
+# the ticket set, and it was the ONE Stage that could not open the drawing those
+# tickets claim to reproduce: cmd_plan_review took context_extra_block and NOT
+# attachments_extra_block. So a criterion inventing a control the drawing does
+# not contain read, to the reviewer, exactly like a criterion reproducing one.
+#
+# The deterministic per-criterion check (see validate_plan_json) catches a
+# criterion that traces to NOTHING. Measured, it does NOT catch: a criterion
+# citing a real id it then describes wrongly; a screen no ticket owns; a
+# `notVisual` on something plainly visible; or a ticket exempting itself with
+# `changesScreenAppearance: false`. Those need eyes on the picture, which is what
+# this block asks for. It is PROSE, not a gate — it adds no deterministic check
+# and changes no verdict.
+#
+# S179 adds a FIFTH, and it is the mirror of the other four: they all catch a
+# ticket that says too much (an invention), and this one catches a ticket set
+# that says too little. Two independent variations on one row make a grid; the
+# drawing fills some cells and not others; and a plan can state a rule per axis,
+# pass every gate, and leave the intersection with no owner at all. MEASURED on
+# the same drawing: 3 manual rows, 11 multi-source rows, ZERO that were both,
+# and the built cohort row wore a "Manual" tag over a list nobody could edit.
+# ALSO PROSE, deliberately — deciding that two rules intersect is a judgement
+# about meaning, and a matcher for it is exactly the classifier S156/S147/S157
+# lost whole sessions to.
+#
+# The reviewer's blindness to prd.md / validated-plan.md is PRESERVED (see
+# cmd_plan_review): it reviews TICKETS. The mockup is not a brief — it is the
+# drawing the tickets say they reproduce, so checking a ticket against it is
+# still checking the ticket, not smuggling the requirements back in.
+plan_review_mockup_block() {
+  local names; names="$(mission_mockup_names)"
+  [ -n "$names" ] || return 0
+  local first="${names%% *}"
+  printf '
+
+## This Mission carries a MOCKUP — audit the tickets AGAINST it
+
+One of the attachments listed above is the drawing of the screens this work must
+produce: %s. Open it. The tickets you are reviewing claim to reproduce
+it, and you are the only Stage that sees both.
+
+### You have no brief in this Stage — read this first
+
+The attachment note above is shared with the Stages that DO get a brief, so it
+carries the brief-vs-mockup tie-break. Ignore that sentence here: this Stage is
+deliberately handed no `prd.md` and no `validated-plan.md`, and there is no brief
+to defer to. Your inputs are the TICKETS and the DRAWING. Nothing else.
+
+### What the harness already did, and the five things it cannot do
+
+Every ticket declaring `changesScreenAppearance: true` carries its acceptance
+criteria as OBJECTS, each with exactly one of `drawnAt` (where in the drawing
+this surface is), `notDrawn` (why this visible thing is not in the drawing) or
+`notVisual` (makes no visual claim). The harness rejected the plan if any
+criterion had none, more than one, or an empty one, so do not re-run that check.
+It never opened the drawing. These are yours:
+
+1. **A `drawnAt` that is not true.** Open the anchor. The harness checks that
+   the anchor CITES an element id the drawing really has — so a criterion that
+   got this far names a real place. It does NOT check that the surface the
+   criterion describes is at that place, or that it is anything like what was
+   drawn there. A real place name is not proof the description matches it. Open
+   the id, read the criterion beside it, and object when they disagree. This is measured: a ticket named the drawing correctly in its
+   first criterion and used its third to specify a sub-value editor — a toggle,
+   a stack of label+value input pairs, a Remove per row, an Add button — where
+   the drawing shows read-only text and one compact inline input. It shipped
+   fully styled.
+2. **A `notVisual` that is plainly visual.** The schema cannot see this one,
+   and you are the only thing that can. A control, a badge, a
+   layout, a state chip, an added button is VISIBLE — it belongs in `drawnAt`
+   (it is drawn) or `notDrawn` (it is not). `notVisual` is for a persistence
+   rule, an error path, a derivation, "the existing tests stay green". A
+   mislabelled criterion is invisible to the harness AND absent from the
+   captain'"'"'s Verify list, which is exactly where an invention would hide now.
+3. **A screen nobody owns.** Walk the drawing'"'"'s screens and its DECLARED FLOW.
+   If a screen is named there and NO ticket owns what it LOOKS like, say so.
+   That is also measured: the screen the drawing never showed, that no ticket
+   owned, is exactly the screen that shipped scrambled.
+4. **A ticket that says it changes NO screen.** `changesScreenAppearance: false`
+   exempts a ticket from every rule above — its criteria are plain strings and
+   declare nothing. On a Mission that shipped a drawing OF THE SCREENS, that is
+   the cheapest place for an invention to sit, and the harness cannot see it:
+   deciding whether a ticket is really non-visual from its prose is exactly the
+   guesswork this design exists to avoid. So it is yours. Read every `false`
+   ticket'"'"'s title and criteria and ask whether a person using the product would
+   SEE the result. A new control, a badge, a state chip, a layout, a rendered
+   value, an added button is visible; a migration, an endpoint, a build step or
+   a pure derivation is not. A wrongly-exempted ticket is an objection.
+
+5. **A combination the drawing never shows, and no ticket owns.** A design with
+   two independent variations — a row that differs by MODE and also by SHAPE —
+   makes a grid, and a drawing almost never fills it. When the tickets state a
+   rule for one axis (a row is EDITABLE when it is manual) and a rule for
+   another (a multi-source row is READ-ONLY), ask what happens where the two meet,
+   and whether the drawing settles it. If it does not, and no criterion names
+   that case, object. Measured: a drawing with 3 manual rows, 11
+   multi-source rows and not one that was both. Nothing was invented and no
+   gate went red — the case simply had no owner, and it shipped as a "Manual"
+   tag on a read-only list with nothing to type into. You are NOT to decide
+   what it should do; the objection is that nobody has.
+
+All five are objections you may bounce the plan for. None is a matter of taste —
+you are not judging whether a screen looks good (that is the captain'"'"'s call at
+Verify), only whether the tickets and the drawing describe the same product.' "$first"
+}
+
+# === S175: THE DESIGN'S DATA PRECONDITIONS =================================
+#
+# WHAT WAS MEASURED (lcars-20260814-001). The mockup drew an MBR builder in which
+# 11 of 14 KPIs collect AUTOMATICALLY — an amber "Update all automatically" sweep
+# box, an AUTO tag per KPI, a per-KPI Collect → Collecting… → Updated cycle, an
+# "as of <date>" stamp. The target repo's `data/config.json` carries 19 KPIs and
+# ZERO with a non-empty `aiUpdateInstructions`; every one is manual, an invariant
+# its own ADR-002 and `src/config.ai-instructions.test.ts` enforce ON PURPOSE.
+# Three tickets and most of a fourth built surfaces that repo can never display.
+# Every gate green. Clicking through, the captain saw a builder with no amber
+# box, no AUTO tags and no collect controls, and could not tell a broken build
+# from a screen this repo cannot render.
+#
+# THE SHAPE OF THE CURE is the one D4 chose for flows and S174 chose for criteria:
+# the DESIGN DECLARES (`## DATA PRECONDITIONS` in the concept doc — see
+# `_CONCEPT_CONTRACT` in web/lcars_serve/actions.py), and a deterministic gate
+# here CASHES THE DECLARATION IN. No inference: nothing in this file reads the
+# mockup and guesses what it assumes.
+#
+# THE SPLIT IS DELIBERATE. Checking "most KPIs have an automated collection
+# instruction" against a real repo needs a reader — that is the Validate worker's
+# job, and it rides the prompt block below. COMPOSING THE QUESTION is NOT the
+# worker's job: the round takes no position on which of the three answers is
+# right, so the wording is built HERE, byte-deterministic, where no model can
+# phrase it so one answer reads as correct.
+#
+# AND ONE RULE GUARDS THE WHOLE THING: A VERDICT WITHOUT EVIDENCE IS NOT A
+# VERDICT — it is UNCHECKED. A `satisfied` with no file named is exactly the
+# fabricated pass this round exists to prevent, and an `unsatisfied` with no file
+# named is a question the captain cannot act on without opening the repo himself.
+# Both are downgraded, both are reported, neither is silently assumed true.
+
+# mission_data_preconditions -> one declared precondition per line, or NOTHING.
+# Read off the concept doc riding as an attachment (`## DATA PRECONDITIONS`).
+# EMPTY — which is every mission filed before this round, every mission with no
+# mockup, and most missions that have one — makes every function below a no-op,
+# so their Validate prompt and artifacts are byte-identical to before S175.
+mission_data_preconditions() {
+  local dir="$MISSION_DIR/attachments"
+  [ -d "$dir" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$dir" <<'S175_PY'
+import os, re, sys
+d = sys.argv[1]
+HEAD = "DATA PRECONDITIONS"
+
+
+def section(text):
+    # FIX ROUND 3 / D-E: a BOM on the heading line made the heading unmatchable,
+    # so the whole section went silently missing — the exact silent-disengage
+    # this round exists to stop, and free to fix.
+    lines = text.lstrip("\ufeff").replace("\r\n", "\n").split("\n")
+    want = re.sub(r"[^a-z0-9]+", " ", HEAD.lower()).strip()
+    out, lvl = [], None
+    for ln in lines:
+        m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+        if m:
+            name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+            if lvl is None:
+                if name == want or name.startswith(want + " "):
+                    lvl = len(m.group(1))
+                continue
+            if len(m.group(1)) <= lvl:
+                break
+            out.append(ln)      # a DEEPER heading is part of this section's body
+            continue
+        if lvl is not None:
+            out.append(ln)
+    return "\n".join(out)
+
+
+# ── FIX ROUND 2 / CURE 1: A BARE SENTENCE IS AN ITEM ──────────────────────
+#
+# MEASURED on a LIVE `claude-opus-4.8` holodeck, four real turns through a real
+# daemon against the real DX-Scorecard (2026-08-26). Run through the extractor
+# as it stood, its four `## DATA PRECONDITIONS` sections yielded A:0 B:0 C:0 D:3
+# — the feature reached Validate on ONE TURN IN THREE of the ones that needed it.
+#
+# TURN C IS THE DEFECT. It wrote three good sentences:
+#     Each KPI carries a collection mode (automatic vs manual) so the two
+#     cohorts can be counted and the list filtered to the automatic set.
+#     …
+# and the old rule opened an item ONLY on a bullet marker or a backtick, so all
+# three were dropped SILENTLY. A human reading that concept.md sees a full
+# section; Validate saw an empty one and the whole gate stayed inert. And C was
+# obeying the contract: the prose said "ONE CHECKABLE SENTENCE EACH" while the
+# FORM was shown only by backticked example. Prose is what a model writes when
+# you ask it for sentences.
+#
+# THE RULE NOW, IN THE ORDER IT IS APPLIED:
+#   • a line beginning with a BULLET MARKER or a BACKTICK opens a new item,
+#     wherever it sits — the contract's own worked example is indented seven
+#     spaces, and a model that copies that indentation must not have every one
+#     of its items glued into a single sentence;
+#   • otherwise a line at COLUMN 0 opens a new item, so bare prose (turn C) is
+#     read instead of dropped;
+#   • otherwise — an INDENTED line that carries no marker — it CONTINUES the
+#     item above it, which is what a wrapped bullet looks like.
+# That keeps D4 cured (a wrapped bullet indents its continuation, so it is still
+# ONE item) while accepting every shape the live drive produced. The contract is
+# fixed in the same round to ASK for bullets — belt and braces: tell it the
+# shape, and accept the other shapes anyway.
+#
+# AND A LINE WITH NO LETTER OR DIGIT IN IT IS NOT AN ITEM. A `---` rule or a
+# stray pair of backticks is markdown furniture, not a checkable sentence, and
+# reading one as a precondition would send the Validator to check "---" against
+# the repo. This is a literal test, not a judgement about meaning.
+#
+# The failure this trades for is visible instead of silent: a bare sentence
+# wrapped WITHOUT indentation splits into two items. Both halves then reach the
+# captain and the Validator as preconditions — ugly, and he can see it. A
+# dropped section is invisible, and invisible is what this whole round is about.
+# FIX ROUND 3 / D-B: the marker set. `_CONCEPT_CONTRACT` uses `•` as its OWN
+# bullet character 52 times, so `•` is heavily modelled in the very prompt the
+# model reads — and the marker-anywhere rule covered only ASCII markers, so
+# three indented `•` lines came out as ONE run-on item. En and em dashes are
+# accepted for the same reason. The marker is STRIPPED from the stored text; at
+# column 0 they used to separate but ship a literal "• " to the Validator.
+#
+# FIX ROUND 3 / D-E: the ordered-list marker is capped at TWO digits. `\d+[.)]`
+# ate the "1990." of "1990. the year field exists…" and shipped the rest. A real
+# ordered list is 1.–99.; a four-digit number at the head of a sentence is
+# content. Literal rule, no judgement about meaning.
+BULLET_MARK = re.compile(r"^([-*+•–—]|\d{1,2}[.)])\s+")
+HEADING_LINE = re.compile(r"^#{1,6}\s")
+FENCE_LINE = re.compile(r"^(```|~~~)")
+
+
+def is_furniture(t):
+    """A line with no letter or digit in it is markdown furniture, not content.
+
+    FIX ROUND 3 / D-D: this used to be tested at FLUSH time, on the whole
+    assembled item, so an INDENTED furniture line was absorbed as a
+    continuation before the test could ever see it —
+    `- most KPIs carry an automated instruction` + `  ---` came out as
+    "most KPIs carry an automated instruction ---". Tested PER LINE now,
+    before absorption.
+    """
+    return not re.search(r"[A-Za-z0-9]", t)
+
+
+def items(body):
+    """One precondition per ITEM, with wrapped lines joined back on."""
+    got, cur, in_fence = [], None, False
+
+    def flush(v):
+        v = " ".join((v or "").split()).strip()
+        # FIX ROUND 3 / D-E: unwrap backticks only when the WHOLE item is
+        # wrapped in them (turn D's shape). A leading INLINE code span —
+        # "`aiUpdateInstructions` is non-empty on most KPIs" — used to lose its
+        # opening backtick and keep the closing one.
+        if len(v) > 1 and v.startswith("`") and v.endswith("`"):
+            v = v.strip("`").strip()
+        if v and not is_furniture(v):
+            got.append(v)
+
+    for ln in body.split("\n"):
+        t = ln.strip()
+        # FIX ROUND 3 / D-D: a fenced block is not a precondition. Its opener
+        # carries a language tag ("```json") which has letters in it, so the
+        # furniture rule alone cannot see it.
+        if FENCE_LINE.match(t):
+            flush(cur); cur = None; in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        # FIX ROUND 3 / D-E: a BLANK LINE CLOSES the item. It used to be skipped
+        # with the item left open, so a bullet and a later indented line merged
+        # two distinct preconditions into one.
+        if not t:
+            flush(cur); cur = None
+            continue
+        # FIX ROUND 3 / D-C: a HEADING closes the item and is never content.
+        # The sibling parser `_md_items` has done this since S128 (its D5 fix);
+        # this regressed the lesson next door. Sub-headings were being shipped
+        # to the Validator to check "### Shape" against the repo — and the
+        # contract's own SHAPE/VALUES split invites exactly that habit.
+        if HEADING_LINE.match(t):
+            flush(cur); cur = None
+            continue
+        if is_furniture(t):
+            flush(cur); cur = None
+            continue
+        # A MARKER opens an item wherever it sits — the contract's own worked
+        # example is indented, and a model copying that indentation must not get
+        # everything glued into one sentence. Otherwise column 0 opens, and an
+        # indented line CONTINUES the item above it (a wrapped bullet).
+        opens = bool(BULLET_MARK.match(t)) or t.startswith("`") \
+            or not ln[:1].isspace()
+        if not opens and cur is not None:
+            cur = cur + " " + t
+            continue
+        flush(cur)
+        cur = BULLET_MARK.sub("", t)
+    flush(cur)
+    return got
+
+
+# ── FIX ROUND 1 / D10: THE EMPTY-BUCKET RULE, ENFORCED ────────────────────
+# `_CONCEPT_CONTRACT` states it twice and forbids it explicitly: an empty
+# section is the heading and NOTHING under it, never a bullet explaining why.
+# A doc that writes `- None — this design assumes nothing of the repo.` anyway
+# had that line parsed as a real precondition and shipped to the Validator to
+# go and check against the repo — a worker spawn, a report and a row in the
+# captain's readout, all spent on a sentence that means "there are none".
+#
+# This is a LITERAL check on the one forbidden FORM, not a classifier: the
+# item's first word is a none-word and nothing checkable follows it. It DROPS
+# the entry rather than refusing the mission — dropping lands exactly where the
+# contract wanted the doc to be (an empty section, machinery inert) — but it
+# says so on stderr, because a mechanism that disengages silently is the
+# failure family this round exists to stop.
+NONE_WORD = re.compile(r"(?i)^(none|nothing|n/?a|not applicable)\b")
+
+
+def is_none_declaration(item):
+    if not NONE_WORD.match(item):
+        return False
+    rest = NONE_WORD.sub("", item, count=1)
+    # "none of the KPIs have targets" is a REAL precondition; "None — assumes
+    # nothing" is the forbidden bullet. The separator is what tells them apart:
+    # a forbidden one continues with punctuation or nothing, never with a word.
+    return not re.match(r"^\s+[A-Za-z0-9]", rest)
+
+
+seen, out, dropped, rubble = set(), [], [], []
+for name in sorted(os.listdir(d)):
+    if os.path.splitext(name)[1].lower() not in (".md", ".markdown", ".txt", ".rst"):
+        continue
+    try:
+        with open(os.path.join(d, name)) as fh:
+            text = fh.read()
+    except OSError:
+        continue
+    body = section(text)
+    got = items(body)
+    kept = 0
+    for it in got:
+        if is_none_declaration(it):
+            dropped.append(it)
+            continue
+        kept += 1
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    # ── FIX ROUND 2 / CURE 1b: FAIL LOUD, NEVER A SILENT ZERO ─────────────
+    # The rule already built for open questions (fix round 1, D5), applied
+    # here. An EMPTY section is legitimately empty and says nothing — the live
+    # turns A and B both wrote heading + EOF and must stay silent. But a
+    # section with CONTENT that yields NOTHING is the shape that hid turn C for
+    # a whole round: a human sees a full section, the harness sees none, and
+    # nothing anywhere says so. An all-none-declaration section is not this —
+    # it warns above and is a legitimately-empty section written wrongly.
+    if body.strip() and not got:
+        rubble.append(name)
+for it in dropped:
+    sys.stderr.write(
+        'lcars: ignoring "%s" under ## DATA PRECONDITIONS — an empty section is '
+        "the heading and nothing under it, never a bullet saying there are none "
+        "(see the concept contract). Delete the line.\n" % it)
+if rubble:
+    sys.stderr.write(
+        "lcars: %s has a '## DATA PRECONDITIONS' section with content in it, and "
+        "NOT ONE line of it could be read as a precondition. Write each one as a "
+        "markdown bullet, one checkable sentence:\n"
+        "    - most KPIs carry an automated collection instruction\n"
+        "An empty section is legal — the heading and nothing under it — but a "
+        "section that LOOKS full and reads as empty is how a design's assumptions "
+        "go unchecked without anyone noticing.\n" % ", ".join(rubble))
+    sys.exit(1)
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S175_PY
+}
+
+# validate_preconditions_block -> the Validate prompt's precondition contract, or
+# NOTHING when this Mission's design declared none. It asks the worker for
+# EVIDENCE, not for a verdict it is trusted on, and it names the downgrade rule
+# out loud so a model that cannot check one has a correct move available to it.
+validate_preconditions_block() {
+  # FIX ROUND 2 (cure 1b): `mission_data_preconditions` REFUSES (rc 1, message
+  # on stderr) when the section has content that reads as nothing. Propagate it
+  # rather than swallowing it into an empty block — swallowing is the exact
+  # silent-disengage the live drive caught.
+  local pre rc=0; pre="$(mission_data_preconditions)" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$pre" ] || return 0
+  printf '
+
+## This design DECLARES DATA PRECONDITIONS — go and check each one
+
+The design this Mission carries states what it ASSUMES is already true of THIS
+repository'"'"'s data or config. These are not requirements of the work; they are
+claims ABOUT THE REPOSITORY, written by the model that drew the screens, and each
+one that is FALSE makes part of the design UNREACHABLE — built, green, invisible.
+
+'
+  local n=0 line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n=$((n + 1))
+    printf '  %d. %s\n' "$n" "$line"
+  done <<S175_LIST
+$pre
+S175_LIST
+  printf '
+For EACH one, OPEN THE REPOSITORY AND LOOK. Then create `preconditions.json` in
+your scratch output directory, alongside your other outputs:
+
+    {"preconditions": [
+      {"text": "<the precondition, copied verbatim from the list above>",
+       "status": "satisfied" | "unsatisfied" | "unchecked",
+       "evidence": "<the file you opened and the number you found>"}
+    ]}
+
+  • `evidence` NAMES THE FILE AND THE COUNT — "data/config.json: 0 of 19 KPIs
+    have a non-empty aiUpdateInstructions". Not "checked the config", not "this
+    looks fine". The captain reads your evidence and decides from it; a sentence
+    he cannot act on without opening the repo himself is worth nothing to him.
+  • `unchecked` IS A CORRECT ANSWER and costs you nothing. Some preconditions
+    cannot be settled by reading files at all — anything about what a person
+    will do, what a live system will return, or what the data will look like
+    next month. Say `unchecked`, and say why in `evidence`.
+  • A VERDICT WITHOUT EVIDENCE IS NOT A VERDICT. A `satisfied` or `unsatisfied`
+    with no file named is downgraded to `unchecked` by the harness. NEVER guess
+    a `satisfied` to keep the Mission moving — a fabricated pass is the single
+    worst outcome here, because it is the one nobody downstream can detect.
+  • Copy EVERY precondition across, including the ones you could not check. One
+    you leave out is treated as UNCHECKED, never as satisfied.
+
+This is SEPARATE from `scope.txt` and does not replace it. Do NOT raise a
+precondition in `scope.txt` — the harness composes that question itself, in
+fixed wording, and will do it for you. Write the evidence and nothing more.'
+}
+
+# precond_canonicalize <worker-json> <declared-file> <out-json>
+# The whole trust boundary, in one place. Every DECLARED precondition appears in
+# the output exactly once, in declaration order; the worker's report can only
+# supply a status and evidence for one, never add or remove one. Downgrades:
+#   • a precondition the worker did not report at all       -> unchecked
+#   • a status that is not one of the three                 -> unchecked
+#   • a `satisfied` / `unsatisfied` with no evidence        -> unchecked
+# Always writes the file, even when the worker wrote nothing at all.
+precond_canonicalize() { # worker-json declared-file out-json
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "$3" <<'S175_PY'
+import json, re, sys
+src, declf, out = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(declf) as fh:
+    declared = [" ".join(ln.split()) for ln in fh if ln.strip()]
+
+# ── FIX ROUND 1 / D1: WHAT COUNTS AS EVIDENCE ──────────────────────────────
+# The first cut tested Python truthiness after a whitespace collapse, so every
+# one of these supported a verdict and produced a green, silent pass on the
+# measured DX-Scorecard case: "ok", ".", a bare 19, {"checked": true},
+# ["a","b"], and "reviewed the KPI configuration; automation is in place".
+# Only "", whitespace, null, 0 and false were refused — and 0/false only by the
+# ACCIDENT of being falsy, while 19 sailed through.
+#
+# THE RULE NOW: to support a `satisfied` or `unsatisfied`, the evidence must be
+# a STRING that NAMES SOMETHING CHECKABLE — a file path or a number. That is
+# exactly what the prompt already demands ("data/config.json: 0 of 19 KPIs have
+# a non-empty aiUpdateInstructions"), so an honest worker is unaffected.
+#
+# BE HONEST ABOUT WHAT THIS BUYS. It stops the LAZY worker — the one that types
+# "ok" or "automation is in place" because a verdict was cheaper than a look. It
+# does NOT stop a worker that fabricates a plausible path and a plausible number:
+# "data/config.json: 18 of 19 KPIs carry aiUpdateInstructions" passes this and
+# always will. That residual is the human's, and S174's lesson is the reason it
+# is written down rather than papered over: no syntactic check on a
+# self-declared field makes that field honest. This is a floor, not a fence.
+PATHY = re.compile(r"[\w.\-]*[\w\-]/[\w.\-/]+|\b[\w\-]+\.[A-Za-z][\w]{0,7}\b")
+NUMBER = re.compile(r"\d")
+
+
+def evidence_verdict(raw):
+    """(evidence_text, reason_it_is_not_evidence_or_None)."""
+    if raw is None:
+        # ABSENT, not mistyped. A missing key and a JSON null both mean the
+        # worker said nothing, and the captain should read that plainly rather
+        # than a complaint about NoneType.
+        return "", "no evidence was given at all"
+    if not isinstance(raw, str):
+        # D12: a dict/list/number was previously str()-ed, so a Python repr
+        # ({'checked': True}) landed in preconditions.json AND counted as
+        # evidence. A non-string is not evidence and its repr is never stored.
+        return "", ("the Validator reported evidence that is not a string (a %s) "
+                    "— evidence must be text naming a file and a count"
+                    % type(raw).__name__)
+    text = " ".join(raw.split())
+    if not text:
+        return "", "no evidence was given at all"
+    if not (PATHY.search(text) or NUMBER.search(text)):
+        return text, ('the evidence given ("%s") names no file and no count, so '
+                      'nothing in it can be checked' % text)
+    return text, None
+
+
+rows_by_text = {}
+try:
+    with open(src) as fh:
+        data = json.load(fh)
+    reported = data.get("preconditions") if isinstance(data, dict) else data
+    for r in (reported or []):
+        if not isinstance(r, dict):
+            continue
+        t = " ".join(str(r.get("text") or "").split())
+        if t:
+            rows_by_text.setdefault(t, []).append(r)
+except Exception:
+    rows_by_text = {}
+
+
+def resolve(reports):
+    """One (status, evidence) for a precondition, from every row about it.
+
+    ── FIX ROUND 1 / D2: DUPLICATE ROWS, LAST WINS ────────────────────────
+    The first cut kept the FINAL occurrence, so an honest `unsatisfied` with
+    real evidence followed by `{"status": "satisfied", "evidence": "looked
+    again, fine"}` came out satisfied, discarded the real evidence, and raised
+    no escalation. A worker only has to say it twice.
+
+    FAIL CLOSED. A conflict never resolves to the favourable verdict:
+    `unsatisfied` wins if any row says so, otherwise a disagreement is
+    `unchecked`. Identical duplicates are not a conflict.
+    """
+    if not reports:
+        return "unchecked", "the Validator did not report on this one"
+    seen = []
+    for r in reports:
+        status = str(r.get("status") or "").strip().lower()
+        ev, why = evidence_verdict(r.get("evidence"))
+        if status not in ("satisfied", "unsatisfied", "unchecked"):
+            seen.append(("unchecked",
+                         "the Validator reported no usable status for this one"))
+        elif status in ("satisfied", "unsatisfied") and why:
+            # A VERDICT WITHOUT EVIDENCE IS NOT A VERDICT.
+            seen.append(("unchecked",
+                         'reported "%s" but %s' % (status, why)))
+        else:
+            seen.append((status, ev))
+    for status, ev in seen:
+        if status == "unsatisfied":
+            return status, ev
+    verdicts = {s for s, _ in seen}
+    if len(verdicts) > 1:
+        return "unchecked", (
+            "the Validator reported conflicting verdicts for this precondition "
+            "(%s) — a disagreement is never resolved in favour of the pass"
+            % ", ".join(sorted(verdicts)))
+    return seen[0]
+
+
+# ── FIX ROUND 1 / D6: THE CAPTAIN'S ANSWER IS DURABLE ──────────────────────
+# This file is rebuilt from the worker report on every Validate pass, and the
+# first cut wrote only text/status/evidence — destroying the `answer` field a
+# prior pass had absorbed. `validate-advance` then deletes answers.json, so a
+# `lcars feedback` send-back re-entered Validate with the answer gone from BOTH
+# places and re-asked a question the captain had already settled. Answered once
+# means answered forever: carry any prior answer across the rebuild.
+prior = {}
+try:
+    with open(out) as fh:
+        old = json.load(fh)
+    for r in (old.get("preconditions") or []):
+        t = " ".join(str(r.get("text") or "").split())
+        a = str(r.get("answer") or "").strip()
+        if t and a:
+            prior[t] = a
+except Exception:
+    prior = {}
+
+rows = []
+for text in declared:
+    status, evidence = resolve(rows_by_text.get(text))
+    row = {"text": text, "status": status, "evidence": evidence}
+    if prior.get(text):
+        row["answer"] = prior[text]
+    rows.append(row)
+with open(out, "w") as fh:
+    json.dump({"preconditions": rows}, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+S175_PY
+}
+
+# precond_absorb_answers <preconditions.json> <answers.json>
+# `lcars respond` records ONE free-form answer beside the questions it answered.
+# Fold it onto the precondition whose text appears in one of those questions, so
+# the re-run neither re-asks it (precond_scope_lines skips an answered row) nor
+# forgets it (the Verify readout prints what he chose). No-op without an
+# answers.json — every mission that never paused.
+precond_absorb_answers() { # preconditions.json answers.json
+  [ -f "$1" ] || return 0
+  [ -f "$2" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" <<'S175_PY'
+import json, sys
+pf, af = sys.argv[1], sys.argv[2]
+try:
+    with open(pf) as fh:
+        pre = json.load(fh)
+    with open(af) as fh:
+        ans = json.load(fh)
+except Exception:
+    sys.exit(0)
+# ── S180: READ THE WHOLE LEDGER, NOT JUST THE NEWEST ──────────────────────
+# answers.json is append-only now: `answers` is an ordered list, one entry per
+# answer the captain has given, and the top-level slot mirrors only the NEWEST.
+# Reading that slot alone means an EARLIER answer — to a DIFFERENT precondition,
+# in the same escalation cycle — is never folded in, and Verify reports it as a
+# question he was never asked. So walk every entry, oldest first, and let a later
+# answer to the same precondition win. A pre-S180 single-slot file has no list
+# and is read as one entry, exactly as before.
+pairs = []
+xs = ans.get("answers") if isinstance(ans, dict) else None
+if isinstance(xs, list) and xs:
+    for x in xs:
+        if not isinstance(x, dict):
+            continue
+        a = " ".join(str(x.get("answer") or "").split())
+        qs = [q for q in (x.get("questions") or []) if isinstance(q, str)]
+        if a and qs:
+            pairs.append((a, qs))
+else:
+    a = " ".join(str(ans.get("answer") or "").split())
+    qs = [q for q in (ans.get("questions") or []) if isinstance(q, str)]
+    if a and qs:
+        pairs.append((a, qs))
+if not pairs:
+    sys.exit(0)
+# ── FIX ROUND 1 / D9: MATCH THE QUESTION, NOT A SUBSTRING OF IT ───────────
+# The first cut asked whether the precondition TEXT appeared anywhere in an
+# answered question. With "KPIs have targets" and "KPIs have targets and
+# owners" declared together, answering only the LONGER marked BOTH answered:
+# the shorter one was never asked, and Verify attributed to the captain an
+# answer he never gave. The question is built by precond_scope_lines with the
+# text in a fixed, delimited slot, so match THAT slot exactly.
+changed = False
+for row in (pre.get("preconditions") or []):
+    if str(row.get("answer") or "").strip():
+        continue
+    text = " ".join(str(row.get("text") or "").split())
+    if not text:
+        continue
+    slot = 'This design assumes: "%s".' % text
+    for answer, asked in pairs:
+        if any(slot in q for q in asked):
+            row["answer"] = answer
+            changed = True
+if changed:
+    with open(pf, "w") as fh:
+        json.dump(pre, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+S175_PY
+}
+
+# precond_scope_lines <preconditions.json> -> one escalation question per
+# UNSATISFIED, UNANSWERED precondition, one per line (the scope.txt shape).
+# NOTHING for a satisfied one; NOTHING for an unchecked one (reported, never
+# escalated — a gate on a question nobody could check is a gate spent on
+# nothing); NOTHING for one the captain has already answered.
+#
+# THE WORDING IS FIXED HERE AND NOWHERE ELSE, because the round takes no
+# position on which of the three answers is right and a model composing this
+# would inevitably lean. None is recommended and none is phrased as the safe one.
+#
+# ── FIX ROUND 1: TWO THINGS THE FIRST DRAFT GOT WRONG ─────────────────────
+#
+# 1. IT OVERPROMISED. It presented (a)/(b)/(c) as though the harness acted on
+#    the letter. NOTHING DOWNSTREAM READS THE ANSWER: Plan is never told which
+#    one he picked, nothing is cut, no data changes, and the Verify readout
+#    lists every unsatisfied precondition whichever he chose. The sole
+#    mechanical effect of ANY answer — including "asdfgh" — is that the gate
+#    stops asking. A surface that implies otherwise is a lying surface, the
+#    same family as S174's empty invention list, so it now says plainly that
+#    the answer is RECORDED and carried forward as GUIDANCE and that the
+#    harness itself changes nothing. (Whether it SHOULD act on the letter is
+#    the captain's call and is raised at readout, not decided here.)
+#
+# 2. IT BURIED THE ONE THING WORTH READING. The second-order cost was 130 of
+#    the question's 225 words, in a single unbroken 1,274-character line that
+#    `lcars respond` prints as `echo "  • $q"` with no wrapping — sixteen solid
+#    rows at 80 columns with the actionable instruction at the very bottom. And
+#    it was repeated VERBATIM for every unsatisfied precondition: three of them
+#    meant the identical anecdote three times. The ask now leads, each question
+#    is short, and the SHARED consequence is stated ONCE per escalation (on the
+#    first question) instead of once per precondition.
+precond_scope_lines() { # preconditions.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        pre = json.load(fh)
+except Exception:
+    sys.exit(0)
+
+ASK = (
+    'DECISION NEEDED — reply (a), (b) or (c), and say what the reachable path '
+    'should do. This design assumes: "%s". This repo does not: %s. '
+    '(a) BUILD IT ANYWAY — those parts get built, you will not see them here, '
+    'and Verify lists them again as unreachable. '
+    '(b) CUT the parts that depend on it. '
+    "(c) CHANGE THE REPO'S DATA FIRST, then build it as drawn. "
+    'Your answer is recorded and carried to the later stages as guidance; the '
+    'harness does not itself cut anything, change any data, or decide what gets '
+    'built.')
+
+# Said ONCE per escalation, on the first question, because it is the same
+# consequence for every precondition in it. MEASURED on the mission that
+# produced this check.
+SHARED = (
+    ' ALSO, AND IT IS NOT "you will not see it": the path this repo CAN reach '
+    'was drawn as the minority case, so it is under-specified. Last time the '
+    'reachable path shipped with no comparison against the previous period at '
+    'all, and a screen reported "N values pulled" for values that can never be '
+    'pulled — both reachable, both under-designed.')
+
+out = []
+for row in (pre.get("preconditions") or []):
+    if row.get("status") != "unsatisfied":
+        continue
+    if str(row.get("answer") or "").strip():
+        continue
+    text = " ".join(str(row.get("text") or "").split())
+    ev = " ".join(str(row.get("evidence") or "").split())
+    line = ASK % (text, ev)
+    if not out:
+        line += SHARED
+    out.append(line)
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S175_PY
+}
+
+# precond_report <preconditions.json> -> the Validate stdout lines for what was
+# checked. Printed for a mission that declared preconditions and NOTHING for one
+# that did not, so a pre-S175 mission's Validate output is byte-identical.
+precond_report() { # preconditions.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        pre = json.load(fh)
+except Exception:
+    sys.exit(0)
+rows = pre.get("preconditions") or []
+if not rows:
+    sys.exit(0)
+mark = {"satisfied": "✓", "unsatisfied": "✗", "unchecked": "?"}
+out = ["  Data preconditions declared by the design:"]
+for r in rows:
+    out.append("    %s %s — %s" % (mark.get(r.get("status"), "?"),
+                                   r.get("text") or "", r.get("status")))
+    ev = " ".join(str(r.get("evidence") or "").split())
+    if ev:
+        out.append("        %s" % ev)
+n_un = sum(1 for r in rows if r.get("status") == "unchecked")
+if n_un:
+    out.append("    %d could NOT be checked mechanically and were NOT assumed "
+               "true — nobody has verified them." % n_un)
+sys.stdout.write("\n".join(out) + "\n")
+S175_PY
+}
+
+# verify_preconditions_readout <preconditions.json> -> Part C. THE LIMIT STAYS
+# VISIBLE. An unsatisfied precondition the captain chose to build anyway rides
+# all the way to the Verify summary, so he reads "these parts are unreachable
+# with this repo's current data" instead of re-learning it by clicking. Prints
+# NOTHING for a mission that declared none, and nothing when every one came back
+# satisfied — so those readouts stay byte-identical.
+verify_preconditions_readout() { # preconditions.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        pre = json.load(fh)
+except Exception:
+    sys.exit(0)
+rows = pre.get("preconditions") or []
+bad = [r for r in rows if r.get("status") == "unsatisfied"]
+unk = [r for r in rows if r.get("status") == "unchecked"]
+if not bad and not unk:
+    sys.exit(0)
+out = []
+if bad:
+    out.append("  UNREACHABLE WITH THIS REPO'S CURRENT DATA:")
+    for r in bad:
+        out.append("    ⊘ the design assumes: %s" % (r.get("text") or ""))
+        ev = " ".join(str(r.get("evidence") or "").split())
+        if ev:
+            out.append("        the repo says: %s" % ev)
+        ans = " ".join(str(r.get("answer") or "").split())
+        if ans:
+            out.append("        you answered: %s" % ans)
+    out.append("      The parts of the design that depend on these were built to a")
+    out.append("      drawing of a world this repo is not in. You will not see them")
+    out.append("      here — and the path you CAN see was drawn as the minority case,")
+    out.append("      so look at the reachable path first, and hardest.")
+if unk:
+    out.append("  NOT CHECKED — the design assumed these and nobody verified them:")
+    for r in unk:
+        out.append("    ? %s" % (r.get("text") or ""))
+        ev = " ".join(str(r.get("evidence") or "").split())
+        if ev:
+            out.append("        %s" % ev)
+sys.stdout.write("\n".join(out) + "\n")
+S175_PY
+}
+
+# === S175 part D: AN OPEN QUESTION THAT REACHES PLAN UNRESOLVED ============
+#
+# It rides the SAME machinery S174 built for un-drawn work, for the same reason:
+# a decision nobody asked the captain about is fine when it is small and VISIBLE,
+# and expensive only when it is invisible. `notDrawn` says "this is visible and
+# the drawing does not contain it"; `decides` says "this settles a question the
+# brief left open, and here is what I settled it as". Both are DECLARED by the
+# planner and both are cashed in at Verify.
+#
+# MEASURED, and the two halves are the same hole from opposite sides:
+# `attachment-02.md:140` asked what "Preview" and "View" actually do. It shipped
+# unanswered, a preview screen was built by fiat — the un-drawn surface — and
+# that screen is where the composite-KPI cell came out scrambled.
+#
+# NO CLASSIFIER, again. Nothing here reads a question and decides whether it is
+# settled: the PRD DECLARES it, with the `STILL OPEN:` / `RESOLVED` prefixes the
+# Align contract prescribes (see skills/lcars-file/SKILL.md), and this counts.
+
+# mission_open_questions -> one STILL-OPEN question per line, or NOTHING.
+# Read off prd.md's `## Open questions from the design session` — the section
+# S175's PRD gate requires when the design brief left anything unsettled. EMPTY
+# for every mission without that section, which makes the block below print
+# nothing and the Plan prompt byte-identical to before.
+mission_open_questions() {
+  [ -f "$MISSION_DIR/prd.md" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$MISSION_DIR/prd.md" <<'S175_PY'
+import re, sys
+try:
+    with open(sys.argv[1]) as fh:
+        text = fh.read()
+except OSError:
+    sys.exit(0)
+want = "open questions from the design session"
+body, lvl = [], None
+for ln in text.replace("\r\n", "\n").split("\n"):
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m:
+        name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+        if lvl is None:
+            if name.startswith(want):
+                lvl = len(m.group(1))
+            continue
+        if len(m.group(1)) <= lvl:
+            break
+        body.append(ln)
+        continue
+    if lvl is not None:
+        body.append(ln)
+
+# ── FIX ROUND 1 / D4: JOIN THE WRAP ───────────────────────────────────────
+# The same defect that was cured in the two OTHER parsers and missed here: a
+# PRD wraps at ~78 columns exactly like a brief does, so a two-line
+# `- STILL OPEN: …` bullet reached the Plan prompt truncated at the line break.
+# That is the COMMON case, not an edge one.
+BULLET = re.compile(r"^([-*+]|\d+[.)])\s+")
+entries, cur = [], None
+for ln in body:
+    t = ln.strip()
+    if not t:
+        continue
+    m = BULLET.match(t)
+    if m:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = t[m.end():]
+    elif cur is not None:
+        cur = cur + " " + t
+    else:
+        entries.append(" ".join(t.split()))
+if cur:
+    entries.append(" ".join(cur.split()))
+
+# ── FIX ROUND 1 / D5: THE PREFIX CONTRACT, IN THE FORMS A MODEL WRITES ────
+# `- STILL OPEN: …` parsed. `- **STILL OPEN:** …` — what a model writing
+# markdown does by DEFAULT — yielded zero, silently, and the Plan prompt was
+# then told nothing at all. So: strip surrounding emphasis markers, and treat
+# the colon as optional. DECLARED, not inferred: only a bullet the PRD MARKED
+# still-open is open; nothing here reads a question and guesses.
+EMPH = re.compile(r"^[*_`]+|[*_`]+$")
+STILL = re.compile(r"(?i)^still\s+open\b[\s:\-—]*")
+RESOLVED = re.compile(r"(?i)^resolved\b")
+out, unparsed = [], []
+for e in entries:
+    lead = EMPH.sub("", e).lstrip()
+    # `**STILL OPEN:**` leaves a trailing `**` on the marker, not the sentence,
+    # so strip emphasis again once the marker has been removed.
+    m = STILL.match(lead)
+    if m:
+        rest = EMPH.sub("", lead[m.end():].strip()).strip()
+        rest = re.sub(r"^[\s:\-—]+", "", rest)
+        if rest:
+            out.append(" ".join(rest.split()))
+        continue
+    if RESOLVED.match(lead):
+        continue
+    unparsed.append(e)
+
+# FAIL LOUD, NEVER A SILENT ZERO. If the section exists and has content but
+# nothing in it declares itself, that is a refusal — the whole subject of this
+# round is mechanisms that disengage without saying so.
+if lvl is not None and unparsed and not out:
+    sys.stderr.write(
+        "lcars: prd.md has an '## Open questions from the design session' "
+        "section with %d entr%s, and NOT ONE of them declares itself. Each must "
+        "start with `STILL OPEN:` (still unsettled) or `RESOLVED` (settled with "
+        "the captain during Align) — see skills/lcars-file/SKILL.md. Without "
+        "that the Plan Stage is told nothing and every one of these becomes a "
+        "decision nobody was asked about. Could not read:\n%s\n"
+        % (len(unparsed), "y" if len(unparsed) == 1 else "ies",
+           "\n".join("  - " + u for u in unparsed)))
+    sys.exit(1)
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S175_PY
+}
+
+# === S180: A QUESTION THE CAPTAIN ANSWERED IS NOT AN OPEN QUESTION =========
+#
+# WHAT WAS MEASURED (lcars-20260829-002, 2026-08-29/30). The Mission reached
+# Verify green having raised FOUR human gates, all on ONE ticket, all about ONE
+# question the captain had already answered TWICE. Plan Review's objection, in
+# its own words: "the brief lists '<question>' as an UNSETTLED open question with
+# no captain resolution."
+#
+# That was FALSE, and had been false since Align: prd.md's `## Open questions
+# from the design session` section recorded `RESOLVED with the captain:
+# <question> — <answer>` for it. The reviewer could not know, because
+# `cmd_plan_review` is deliberately handed the TICKETS and never the brief (S174:
+# the session that planned the work must not also grade it, and the reviewer must
+# audit tickets against the DRAWING rather than against the prose that produced
+# them). That design is correct and is untouched here. What was wrong is that a
+# Stage blind to every decision the captain has made was left free to declare
+# those decisions unmade.
+#
+# THE CURE IS A DIGEST, NOT THE BRIEF. Only the DECLARED-RESOLVED entries cross
+# the boundary — one line each, question and answer — so the reviewer gains the
+# captain's rulings and gains nothing else. prd.md is still not an input, and an
+# entry the brief did NOT mark resolved is still genuinely unsettled and is
+# deliberately NOT in the digest.
+#
+# NO CLASSIFIER, exactly as S175. Nothing here reads a question and decides
+# whether it looks settled: the PRD DECLARES it with the prefix the Align
+# contract prescribes (skills/lcars-file/SKILL.md), and this counts.
+
+# mission_resolved_decisions -> one `<question> — <answer>` per line for every
+# entry prd.md's open-questions section marked RESOLVED, or NOTHING.
+#
+# TOLERANT WHERE ITS SIBLING IS STRICT, on purpose. `mission_open_questions`
+# REFUSES a section whose entries declare nothing, because Plan is entitled to
+# insist the brief say what is open. This reader is consumed by PLAN REVIEW,
+# which today cannot fail for any reason to do with the PRD at all — giving it a
+# brand-new way to die over a file it is not even shown would be a worse bug than
+# the one being fixed. Plan already refuses that PRD, upstream, before the
+# reviewer ever runs. So: an undeclared entry is simply not a decision.
+mission_resolved_decisions() {
+  [ -f "$MISSION_DIR/prd.md" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$MISSION_DIR/prd.md" <<'S180_PY'
+import re, sys
+try:
+    with open(sys.argv[1]) as fh:
+        text = fh.read()
+except OSError:
+    sys.exit(0)
+
+# The section, read EXACTLY as mission_open_questions reads it — same heading
+# match, same nesting rule. Two readers of one section that disagree about where
+# it starts is its own defect class.
+want = "open questions from the design session"
+body, lvl = [], None
+for ln in text.replace("\r\n", "\n").split("\n"):
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m:
+        name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+        if lvl is None:
+            if name.startswith(want):
+                lvl = len(m.group(1))
+            continue
+        if len(m.group(1)) <= lvl:
+            break
+        body.append(ln)
+        continue
+    if lvl is not None:
+        body.append(ln)
+
+# JOIN THE WRAP. A PRD wraps at ~78 columns, and a resolved entry carries a
+# question AND an answer, so it is MORE likely to wrap than an open one. A
+# truncated decision is worse than no decision: it reaches the reviewer as a
+# question with its answer cut off.
+BULLET = re.compile(r"^([-*+]|\d+[.)])\s+")
+entries, cur = [], None
+for ln in body:
+    t = ln.strip()
+    if not t:
+        continue
+    m = BULLET.match(t)
+    if m:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = t[m.end():]
+    elif cur is not None:
+        cur = cur + " " + t
+    else:
+        entries.append(" ".join(t.split()))
+if cur:
+    entries.append(" ".join(cur.split()))
+
+EMPH = re.compile(r"^[*_`]+|[*_`]+$")
+RESOLVED = re.compile(r"(?i)^resolved\b")
+# The marker is often followed by a phrase naming WHO settled it, ending in the
+# colon that introduces the question ("RESOLVED with the captain: …"). Strip that
+# phrase — but ONLY when the character straight after the marker is not already a
+# separator, so `RESOLVED: In the header: what shows?` keeps its whole question
+# instead of losing the first clause to a greedy colon.
+CONNECTIVE = re.compile(r"(?i)^(with|by|during|in|at|from)\s+[^:]{0,40}:\s*")
+SEPARATORS = (":", "-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015")
+LEADPUNCT = re.compile(r"^[\s:\-\u2010-\u2015]+")
+out = []
+for e in entries:
+    lead = EMPH.sub("", e).lstrip()
+    m = RESOLVED.match(lead)
+    if not m:
+        continue                      # STILL OPEN, or undeclared: not a decision.
+    rest = lead[m.end():].lstrip()
+    if rest[:1] not in SEPARATORS:
+        rest = CONNECTIVE.sub("", rest, count=1)
+    rest = LEADPUNCT.sub("", rest)
+    rest = EMPH.sub("", rest.strip()).strip()
+    rest = LEADPUNCT.sub("", rest)
+    if rest:
+        out.append(" ".join(rest.split()))
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+S180_PY
+}
+
+# plan_review_decisions_block -> the reviewer's copy of the captain's rulings and
+# the precedence rule that goes with them, or NOTHING AT ALL when the brief
+# recorded none. Nothing is the overwhelming majority: every Mission filed before
+# S175 and every brief that settled nothing during Align. Their reviewer prompt
+# is therefore byte-identical to what it was before this round (asserted by
+# diffing the assembled prompt against the previous commit's, in
+# tests/settled-decisions.test.sh).
+plan_review_decisions_block() {
+  local ds; ds="$(mission_resolved_decisions)"
+  [ -n "$ds" ] || return 0
+  printf '%s' '
+
+## These questions were ASKED and ANSWERED — they are DECIDED, not open
+
+The brief this Mission was written from recorded a resolution for each question
+below, agreed with the captain at the design session. You are deliberately not
+handed that brief, so this list is the only place those resolutions reach you.
+Each line is one question and the answer it was given, in the order the brief
+records them:
+
+'
+  local n=0 line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n=$((n + 1))
+    printf '  %d. %s\n' "$n" "$line"
+  done <<S180_DLIST
+$ds
+S180_DLIST
+  printf '%s' '
+### What that means for your verdict
+
+A recorded answer OUTRANKS every other input on BEHAVIOUR. Where an answer above
+and anything else in front of you describe different behaviour, the answer is
+what the product does, and a ticket that builds it that way is CORRECT.
+
+A ticket that CONTRADICTS one of these is a real objection. Raise it, and quote
+the answer it contradicts.
+
+Declaring one of these unresolved is NOT an objection, and it is the one move you
+must not make here. "unsettled", "open", "unresolved", "no resolution on record",
+"nobody has decided this" — every one of them is false of every line above. It
+was asked, and it was answered. If an answer strikes you as incomplete, that is
+for the captain to weigh at his own review; it is not a reason to send the
+tickets back, and it is not a question to raise again.
+
+MEASURED, and this is the whole reason the list is here: a reviewer that could
+not see these called one of them an unsettled question with no resolution on
+record. It had been answered twice. The Mission raised four human gates over it,
+all on one ticket, and every one of them was spent re-answering something that
+was already answered.'
+  # THE LOOK-VS-BEHAVIOUR HALF ONLY WHEN A DRAWING ACTUALLY ARRIVED. A rule about
+  # "the drawing" on a Mission that shipped none is an instruction referencing an
+  # input that does not exist — the exact class the S178 revision block was
+  # re-keyed to avoid.
+  local names; names="$(mission_mockup_names)"
+  [ -n "$names" ] || return 0
+  printf '%s' '
+
+### The drawing and the answers are authorities over DIFFERENT things
+
+The drawing above is the authority on the LOOK. An answer above is the authority
+on the BEHAVIOUR. They are not in competition, and where they disagree the answer
+WINS.
+
+So when an answer above removed, replaced or reinterpreted something the drawing
+shows, the affordance drawn for it is deliberately NOT built. A ticket that
+leaves it out is obeying a decision, not omitting part of the design: that
+absence is not an omission to object to. Objecting to it re-opens a settled
+question in a different set of words, which is the move you were just told not to
+make.'
+}
+
+# === S180/B: A NEGATIVE-EXISTENCE CLAIM IS CHECKED, NOT BELIEVED ===========
+#
+# WHAT WAS MEASURED (lcars-20260829-002, 2026-08-29/30). A Research worker wrote,
+# as a supporting point in research/6.json:
+#
+#     "There is no WIRED_METRIC_IDS symbol anywhere in the repo (grep returns
+#      zero matches)"
+#
+# `git show main:<the one file the Mission was about to rewrite> | grep -n
+# WIRED_METRIC_IDS` returns THREE hits. Nobody ran that grep. The worker reported
+# having searched and had not; the sentence was fabricated, and every Stage after
+# it took the fabrication as the state of the repository.
+#
+# Then it PROPAGATED and then it EVAPORATED. Occurrences of that name, measured
+# on the Mission's own artifacts: validated-plan.md 2 (stating a prohibition ON
+# THE FALSE PREMISE that none exists) · adr.md 2 · plan.json 0 ·
+# approved-plan.json 0. The decision built at Validate reached NOT ONE ticket, so
+# the implementer left the existing list in place, added the new rule beside it,
+# and the delivered screen gates one control on BOTH — twenty lines apart in one
+# file. The captain asked for one control and got two.
+#
+# TWO INDEPENDENT HOLES. ONE CHECK SHIPS:
+#
+#   B1  research_claim_check   — the harness runs the search the worker claimed to
+#                                have run. A worker's report of having searched is
+#                                never the evidence. DETERMINISTIC, and living HERE
+#                                rather than in a prompt.
+#
+# THE SECOND HOLE — a `## Decisions` prohibition that reaches no ticket — was
+# ALSO built this round, as `plan_prohibition_check` (B2), and the captain PULLED
+# it. It took three rounds and each fix traded one failure for another: built too
+# strict it missed the real live phrasing entirely; widened, it read a plain
+# mission's test-coverage bullet ("check that `getRecent()` returns a defensive
+# copy … does not affect subsequent calls") as a prohibition of `getRecent` and
+# bounced an honest plan. That is the S147/S156/S157 shape exactly — a prose
+# classifier past three rounds is cured by DELETION, not by the next patch — so
+# it is gone, with its evidence kept (the live drives under
+# tests/drives/align-heal/runs/, and the code + corpus in git at 8c5d5a2). It
+# comes back in its own session, against a MIXED corpus that holds the false
+# positive as a fixture. Nothing below reads the validated plan.
+#
+# ⛔ THIS MUST NEVER BECOME A CLASSIFIER. S147, S156 and S157 each spent a session
+# on a text classifier and each was cured by DELETING it. So the rule below reads
+# SHAPE, never meaning, and the VERDICT is a literal search — not a judgement:
+#
+#   • FIRE only on a NAMED, CODE-SHAPED identifier (SCREAMING_SNAKE_CASE,
+#     snake_case, or camelCase — never a plain English word, never a lone
+#     PascalCase word, which is what an ordinary noun looks like in these
+#     artifacts).
+#   • Only when the claim is REPO-WIDE and UNQUALIFIED. "no export of fields",
+#     "DefaultView.tsx contains no X button", "no `copilot` invocation tied to
+#     <a subject>" are SCOPED claims and frequently true; auto-failing them is
+#     exactly the classifier this must not be. So the negated phrase must name a
+#     repository-wide scope AND must contain nothing beyond the identifier and a
+#     fixed vocabulary of existence words — any surviving content word means the
+#     claim was QUALIFIED, and a qualified claim is left alone.
+#   • FALSE NEGATIVES ARE PREFERRED. A check that fires rarely and is always right
+#     is the goal; a check that argues is worse than no check.
+#
+# TUNED AGAINST THE REAL CORPUS, not against intuition. Swept over all 144
+# research findings in all 58 Missions of the captain's own repo, B1's rule
+# yields EXACTLY ONE candidate — the fabrication above. The other 16 sentences a
+# crude negative-existence regex flags are all rejected by it, unread.
+
+# claim_identifier_scan <mode> <path…> -> one `path<TAB>identifier<TAB>sentence`
+# per candidate, or NOTHING.
+#
+#   mode=absent-claim  each path is a research finding JSON; the assertions read
+#                      are `recommendation` + `supporting_points` (the finding's
+#                      OWN claims). The `question` is the harness's, not a claim.
+#                      REPO-WIDE scope is REQUIRED, and the negated phrase must
+#                      REDUCE to the identifier alone — free prose gets no
+#                      benefit of the doubt.
+#
+# ONE MODE TODAY. The mode argument is kept because the reader is the anchor for
+# what "a named identifier" and "a negated phrase" MEAN, and B2 will want it back
+# — but nothing else is implemented, and a widening here widens B1, which sweeps
+# FREE PROSE and must stay strict.
+claim_identifier_scan() { # mode path…
+  local mode="$1"; shift
+  [ "$#" -gt 0 ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$mode" "$@" <<'S180B_PY'
+import json, re, sys
+
+# A NEGATED PHRASE opens at one of these and runs to the first clause boundary.
+# The boundary set is deliberately greedy: a comma, a bracket, a dash or a
+# subordinating conjunction all END the phrase, because everything past one of
+# them is a DIFFERENT assertion. Measured: without the colon, "No such validation
+# currently exists: `buildSnapshot` … assigns …" put a name that plainly EXISTS
+# inside the negated phrase and the check would have fired on a true sentence.
+NEG_CUE = re.compile(
+    r"(?i)(?:\b(?:no|never|without)\b"
+    r"|\b(?:do|does|must|should|will|shall|can|could|would)\s+not\b"
+    r"|\bn't\b)")
+TERM = re.compile(
+    r"(?i)(?:,|[;:()\[\]{}–—]"
+    r"|\s+(?:but|while|whereas|however|although|though|because|since|unless)\s+"
+    r"|\.\s|$)")
+
+TOKEN = re.compile(r"`([^`\n]{1,80})`|([A-Za-z_$][A-Za-z0-9_$]*)")
+WORD = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+
+# CODE-SHAPED, and nothing else. A lone lowercase word (`shape`, `id`, `status`)
+# and a lone PascalCase word (`SubReading`, `StatusMeta`) are what ordinary nouns
+# look like in these artifacts, and a literal search for one hits everywhere; a
+# check that fires on those is a check that always fires.
+SCREAM = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
+SNAKE = re.compile(r"^[a-z$_][a-z0-9$]*(?:_[a-z0-9$]+)+$")
+CAMEL = re.compile(r"^[a-z$][a-z0-9$]*[A-Z][A-Za-z0-9$]*$")
+
+# The words a repository-wide absence claim is made of. ANYTHING ELSE surviving
+# in the negated phrase means the claim was QUALIFIED — scoped to a file, a
+# subject, a call site — and a qualified claim is none of this check's business.
+SCOPE = {"repo", "repos", "repository", "repositories", "codebase", "code",
+         "source", "sources", "tree", "project", "anywhere"}
+EXIST = {"symbol", "symbols", "constant", "constants", "list", "lists", "array",
+         "arrays", "field", "fields", "function", "functions", "helper",
+         "helpers", "variable", "variables", "module", "modules", "export",
+         "exports", "type", "types", "identifier", "identifiers", "name",
+         "names", "reference", "references", "definition", "definitions",
+         "declaration", "declarations", "token", "tokens", "flag", "flags",
+         "enum", "enums", "interface", "interfaces", "class", "classes",
+         "method", "methods", "property", "properties", "key", "keys", "entry",
+         "entries", "file", "files", "match", "matches", "hit", "hits",
+         "occurrence", "occurrences", "usage", "usages", "mention", "mentions",
+         "import", "imports", "base"}
+STOP = {"a", "an", "the", "of", "in", "at", "on", "to", "for", "any", "such",
+        "named", "called", "is", "are", "was", "were", "be", "exists", "exist",
+        "existing", "present", "defined", "found", "and", "or", "with", "else",
+        "whatsoever", "all", "currently", "today", "yet", "still", "this",
+        "that", "it", "there", "new", "separate"}
+
+
+def code_shaped(raw):
+    t = raw.strip().strip("`'\"")
+    if t.endswith("()"):
+        t = t[:-2]
+    t = t.rstrip("().,;:!?").rstrip("[]")
+    if not t or not re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", t):
+        return None
+    return t if (SCREAM.match(t) or SNAKE.match(t) or CAMEL.match(t)) else None
+
+
+def phrases(text):
+    for sent in re.split(r"(?<=[.!?])\s+", text):
+        for cm in NEG_CUE.finditer(sent):
+            rest = sent[cm.end():]
+            tm = TERM.search(rest)
+            yield (rest[:tm.start()] if tm else rest), " ".join(sent.split())
+
+
+def named(phrase, need_scope):
+    ids = []
+    for m in TOKEN.finditer(phrase):
+        t = code_shaped(m.group(1) or m.group(2))
+        if t and t not in ids:
+            ids.append(t)
+    if not ids:
+        return []
+    words = [w.lower() for w in WORD.findall(phrase)]
+    if need_scope and not (set(words) & SCOPE):
+        return []
+    low = {i.lower() for i in ids}
+    for w in words:
+        if w not in low and w not in EXIST and w not in STOP and w not in SCOPE:
+            return []          # QUALIFIED — leave it alone.
+    return ids
+
+
+mode = sys.argv[1]
+need_scope = (mode == "absent-claim")
+if mode != "absent-claim":
+    sys.exit(0)                # one mode today — see the note above the function.
+for path in sys.argv[2:]:
+    try:
+        raw = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        continue
+    try:
+        d = json.loads(raw)
+    except Exception:
+        continue
+    if not isinstance(d, dict):
+        continue
+    blobs = []
+    rec = d.get("recommendation")
+    if isinstance(rec, str):
+        blobs.append(rec)
+    sp = d.get("supporting_points")
+    if isinstance(sp, list):
+        blobs += [x for x in sp if isinstance(x, str)]
+    seen = set()
+    for b in blobs:
+        for phrase, sent in phrases(b):
+            for t in named(phrase, need_scope):
+                if t in seen:
+                    continue
+                seen.add(t)
+                sys.stdout.write("%s\t%s\t%s\n" % (path, t, sent))
+S180B_PY
+}
+
+# --- B1: research_claim_check <research-dir> -------------------------------
+# THE HARNESS RUNS THE SEARCH. For every repo-wide absence claim the findings
+# make about a named identifier, `git grep` that exact name on the Mission's own
+# code. Silence when the name is genuinely absent — which is the overwhelming
+# majority, and is the whole point.
+#
+# Exit status IS the verdict, S178-style:
+#   0  nothing to check, or every claim held        (stdout empty)
+#   1  at least one claim was REFUTED by the repo   (stdout: one question a line)
+#   3  UNCHECKED — the check itself could not run   (stdout: one note)
+#
+# UNCHECKED IS SAID OUT LOUD, never assumed clean (S175's rule, and S178 measured
+# a fail-open branch that itself failed closed). A repo with no readable ref, a
+# missing interpreter, a git that errors — all report, none pretends.
+research_claim_check() { # research-dir  [ref]
+  local dir="$1" ref="${2:-}"
+  [ -d "$dir" ] || return 0
+  local files=""; local f
+  for f in "$dir"/*.json; do [ -f "$f" ] && files="$files $f"; done
+  [ -n "$files" ] || return 0
+
+  # The Mission's OWN code, exactly as mission_branch_block names it — never the
+  # ambient checkout. A detached front-half worktree shares the object store, so
+  # `git grep <branch>` resolves the same tree from inside one.
+  if [ -z "$ref" ]; then
+    ref="$(json_str "$STATE" branch 2>/dev/null)"
+    "$GIT_BIN" -C "$REPO_ROOT" rev-parse --verify --quiet "$ref" >/dev/null 2>&1 || ref=""
+    [ -n "$ref" ] || ref="HEAD"
+  fi
+  if ! "$GIT_BIN" -C "$REPO_ROOT" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+    printf '  ⚠ CLAIM CHECK UNCHECKED — no readable ref (%s) to search in %s. No finding'"'"'s claim that a name is absent from this repository has been verified.\n' \
+      "$ref" "$REPO_ROOT"
+    return 3
+  fi
+
+  local scan rc=0
+  scan="$(claim_identifier_scan absent-claim $files 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '  ⚠ CLAIM CHECK UNCHECKED — the scanner itself failed (exit %s). No finding'"'"'s claim that a name is absent from this repository has been verified.\n' "$rc"
+    return 3
+  fi
+  [ -n "$scan" ] || return 0
+
+  local found=0 path id sent hits n first3
+  while IFS=$'\t' read -r path id sent; do
+    [ -n "$id" ] || continue
+    hits="$("$GIT_BIN" -C "$REPO_ROOT" grep -F -w -n -e "$id" "$ref" 2>/dev/null)" || hits=""
+    [ -n "$hits" ] || continue          # genuinely absent — stay silent.
+    n="$(printf '%s\n' "$hits" | grep -c .)"
+    # `<ref>:<path>:<line>:<text>` → `<path>:<line>`; the text is the worker's to
+    # read, not the gate's to quote.
+    first3="$(printf '%s\n' "$hits" | head -3 | awk -v r="$ref:" '
+      { if (index($0, r) == 1) $0 = substr($0, length(r) + 1)
+        i = index($0, ":"); f = substr($0, 1, i - 1); rest = substr($0, i + 1)
+        j = index(rest, ":")
+        printf "%s%s:%s", (NR > 1 ? ", " : ""), f, substr(rest, 1, j - 1) }')"
+    found=$((found + 1))
+    printf 'A finding claims the name `%s` does not exist in this repository. IT DOES: a literal search of `%s` returns %s line(s) — %s%s. The finding (%s) reads: "%s". Nothing downstream has acted on it yet. Say what the plan should do now that this name is known to exist; your answer is treated as DECIDED by every later Stage.\n' \
+      "$id" "$ref" "$n" "$first3" "$( [ "$n" -gt 3 ] && printf ', …')" \
+      "$(basename "$path")" "$sent"
+  done <<S180B_SCAN
+$scan
+S180B_SCAN
+  [ "$found" -eq 0 ] && return 0
+  return 1
+}
+
+# plan_open_questions_block -> the Plan prompt's open-question contract, or
+
+# NOTHING when the brief left nothing open (which is every mission filed before
+# S175). The planner may still decide one — that is allowed and often right —
+# but it must SAY SO on the criterion that embodies the decision.
+plan_open_questions_block() {
+  # D5: `mission_open_questions` REFUSES (rc 1, message on stderr) when the PRD
+  # section exists with content that declares nothing. Propagate that — the
+  # first cut would have swallowed it into an empty block and told Plan nothing,
+  # which is the exact silent-disengage this round is about.
+  local qs rc=0; qs="$(mission_open_questions)" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$qs" ] || return 0
+  printf '
+
+## The brief left these questions OPEN — decide them OUT LOUD or not at all
+
+These reached this Stage unresolved. The captain was never asked, so nothing
+downstream knows the answer, and a ticket that quietly picks one hands him a
+shipped screen instead of a decision:
+
+'
+  local n=0 line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n=$((n + 1))
+    printf '  %d. %s\n' "$n" "$line"
+  done <<S175_QLIST
+$qs
+S175_QLIST
+  printf '
+You MAY decide one. Deciding is often the right move — most of these are small,
+and stopping the Mission to ask about every one of them is worse. What you may
+NOT do is decide one SILENTLY. The ticket that settles a question carries the
+declaration on the acceptance criterion that embodies it:
+
+    {"text": "…", "drawnAt": "#screen-builder, the value cell",
+     "decides": "<the question, as the brief asked it> → <what you decided, and why>"}
+
+`decides` sits BESIDE the drawnAt / notDrawn / notVisual declaration; it does not
+replace it and it is not one of the three. Every one is collected into the
+captain'"'"'s Verify list, so a decision he never made is at least a decision he
+can see. Leave a question alone entirely and it simply stays open — that is fine.
+What is not fine is a ticket whose spec answers it while saying nothing.
+
+MEASURED, and it is the same hole as an un-drawn screen seen from the other
+side: the brief asked what "Preview" and "View" actually do. It shipped
+unanswered, a preview screen was built by fiat, and that screen is exactly where
+the composite value cell came out scrambled.'
+}
+
+# === S178: a review objection is a PATCH, not a licence to serialise =========
+#
+# THE MEASUREMENT (DX-Scorecard lcars-20260827-001, live Copilot, 2026-08-28).
+# A 14-ticket plan with a genuine dependency graph drew exactly ONE Plan Review
+# objection: add one edge, t-010 -> t-012. The Mission bounced to Plan, a FRESH
+# planner ran, and it returned a plan whose graph was a perfect 14-deep chain
+# (t-001 <- t-002 <- ... <- t-014). Schedule honoured it and produced 14 waves of
+# one ticket each. Asked for one edge, the planner rewrote the whole graph into a
+# queue and destroyed every opportunity for parallel work.
+#
+# The root cause is in the prompt, not the model's judgement: on a re-plan
+# cmd_plan fed prd.md + validated-plan.md + the objections, and NOT the plan being
+# objected to. So the worker was never revising — it was planning from zero with
+# a complaint attached, and "leave the rest of the graph alone" was not something
+# it could obey, because it could not see what the rest of the graph was. This
+# block tells it that it is patching, and cmd_plan now hands it its own prior
+# plan.json to patch.
+#
+# plan_revision_contract_block -> the PATCH contract, or NOTHING at all when no
+# reviewer objections are on disk. A FIRST plan therefore gets a byte-identical
+# prompt to the one it got before this round — which is every Mission that never
+# fails review.
+plan_revision_contract_block() {
+  # THE SAME TOKEN the guard reads, and that is the point: the prompt and the
+  # check can no longer come apart. Keyed on the mere existence of
+  # plan-review-*.json (the first cut), this block fired on the logged-bug
+  # feedback path — which DELETES plan.json but KEEPS plan-review-*.json — and
+  # told the worker "your own prior plan.json is listed above" when no such file
+  # was listed. That is an instruction referencing an input that does not exist,
+  # which is exactly the class S175 was built to stop.
+  [ -f "$MISSION_DIR/plan-under-review.json" ] || return 0
+  printf '%s' '
+
+## THIS IS A REVISION, NOT A RE-PLAN — a correction is a PATCH
+
+`plan-under-review.json` is listed above: it is the exact ticket list Plan Review
+read, and it is your STARTING POINT. The reviewer objected to PART of it. Apply
+what the objections ask, and change NOTHING ELSE.
+
+- Start from that file, not from a blank page. Keep every ticket'"'"'s id, its
+  slice, its criteria and its `dependencies` EXACTLY as they are, unless an
+  objection names that ticket.
+- Change only what an objection actually asks for. If an objection says "add
+  t-010 to t-012'"'"'s dependencies", the correct revision adds t-010 to t-012'"'"'s
+  dependencies and touches no other ticket'"'"'s.
+- The harness COMPARES your revision'"'"'s dependency graph against that file
+  before the reviewer ever sees it. Edges you added between tickets no objection
+  names are rejected and you will be asked again.
+
+MEASURED, on the captain'"'"'s own repo, 2026-08-28. A 14-ticket plan with a real
+dependency graph drew ONE objection: add one edge, t-010 -> t-012. The revision
+came back with all fourteen tickets in a single-file chain — t-001 <- t-002 <-
+... <- t-014 — and Schedule honoured it into 14 waves of one ticket each. A
+correction that asked for one edge destroyed all fourteen tickets'"'"' parallelism.
+
+### What a dependency IS
+
+`dependencies` names what a ticket GENUINELY needs BUILT FIRST — code, a file, a
+scaffold, a stylesheet, a table it reads — such that starting it before that
+exists is impossible. It is NOT authoring order, narrative order, or ticket-number
+order. "Comes after" is not a dependency. Two tickets that both add something into
+the same shell, and do not read each other'"'"'s work, are SIBLINGS: they declare
+the shell and not each other, and they belong in the same wave.
+
+This is NOT an instruction to declare FEWER dependencies. The objection you are
+answering may well be a MISSING one, and a missing dependency is a real defect —
+the reviewer caught this one correctly, by reading the app'"'"'s actual stylesheet.
+Declare every edge that is real. Add the ones the objections ask for. Leave the
+rest of the graph exactly as you left it.'
+}
+
+# verify_decided_readout <plan.json> — S175 part D at the Verify gate. Every
+# criterion the planner DECLARED with `decides`, collected with the question it
+# settled. Prints NOTHING when no ticket declared one — which is every plan
+# written before this round — so those readouts stay byte-identical.
+verify_decided_readout() { # plan.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S175_PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        plan = json.load(f)
+except Exception:
+    sys.exit(0)
+if not isinstance(plan, list):
+    sys.exit(0)
+rows = []
+for t in plan:
+    if not isinstance(t, dict):
+        continue
+    tid = t.get("id") or "?"
+    for c in (t.get("acceptanceCriteria") or []):
+        if not isinstance(c, dict) or "decides" not in c:
+            continue
+        d = " ".join(str(c.get("decides") or "").split())
+        if d:
+            rows.append((tid, d))
+if not rows:
+    sys.exit(0)
+
+
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+out = ["  DECIDED FOR YOU — the brief left these open and a ticket settled them:"]
+for tid, d in rows:
+    out.append("    ⚇ %s · %s" % (tid, clip(d, 200)))
+out.append("      YOU WERE NEVER ASKED THESE. The design session raised each one and")
+out.append("      nothing settled it before the plan was written, so a ticket picked an")
+out.append("      answer and built it. Each is small on its own; each is also the first")
+out.append("      time you are seeing it. Last time one shipped unasked, the screen it")
+out.append("      produced is where the value cell came out scrambled.")
+sys.stdout.write("\n".join(out) + "\n")
+S175_PY
 }
 
 # The branch that anchors this Mission's code. For a full Mission it is the base
@@ -1153,7 +2974,7 @@ cmd_gate() {
     echo "    • override         — run all $n research agents anyway"
     echo "    • return-to-align  — re-run \`lcars file\` with this context appended"
     echo "                         so the PRD can be sharpened"
-    echo "  Answer with \`lcars respond $MISSION_ID\`."
+    echo "  Answer with:  $(respond_hint)"
     [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
     exit 3
   fi
@@ -1190,9 +3011,65 @@ cmd_save() {
 
   [ "$n" -gt 0 ] || die "no *.json responses in $RESPONSES — nothing to save."
 
+  # S180/B1 — THE HARNESS RUNS THE SEARCH THE WORKER SAID IT RAN. See
+  # research_claim_check. Runs AFTER the responses are on disk, so whatever it
+  # finds the captain can read the finding that made the claim; and it can only
+  # ever fire on a finding that names a code-shaped identifier and says that name
+  # is absent from the repository as a whole. Every other Research save — which,
+  # swept over the captain's 58 Missions, is every single one but this — takes the
+  # `advance` path below byte-identically to before this round.
+  local claim_q claim_rc=0
+  claim_q="$(mktemp)"
+  research_claim_check "$research_dir" >"$claim_q" || claim_rc=$?
+
+  if [ "$claim_rc" -eq 1 ]; then
+    # PARK, DO NOT ARGUE. The findings are saved and the Mission moves to Validate
+    # — the Stage that would otherwise synthesise the fabrication into the plan —
+    # but parks there awaiting the captain, exactly like cmd_validate_pause. Two
+    # reasons it parks HERE rather than back at Research: the fan-out has already
+    # been paid for (re-running Research would re-spend it and could fabricate
+    # again), and Validate is where the refuted claim was about to do its damage.
+    # His answer lands in answers.json, which cmd_validate already feeds the
+    # Validator as DECIDED — so the correction arrives at the exact Stage that
+    # needs it, through machinery that already exists. No new gate, no new label.
+    set_stage "validate"
+    write_pending "$claim_q" "validate"
+    local cq_n cq_first
+    cq_n="$(grep -cve '^[[:space:]]*$' "$claim_q")"
+    cq_first="$(grep -ve '^[[:space:]]*$' "$claim_q" | head -1)"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "$cq_first"
+    # The durable record, deliberately OUTSIDE research/: it is not a finding, and
+    # cmd_validate lists research/*.json to the Validator as findings.
+    cp "$claim_q" "$MISSION_DIR/claim-check.txt"
+    gh_relabel "lcars:validate lcars:awaiting-human" "lcars:align lcars:research"
+    emit_event gate research "a finding's negative-existence claim was refuted by the repository"
+    echo "SAVE: $n responses"
+    echo "  Saved $n research response(s) to research/."
+    echo "  REFUTED: $cq_n finding claim(s) that a name is absent from this repository"
+    echo "  are contradicted by a literal search of the Mission's own code:"
+    while IFS= read -r cq; do
+      [ -n "$cq" ] && echo "    • $cq"
+    done < <(grep -ve '^[[:space:]]*$' "$claim_q")
+    echo "  Stage:  validate (awaiting-human)"
+    echo "  Answer with:  $(respond_hint)"
+    [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+    rm -f "$claim_q"
+    # 0, NOT an error: the save SUCCEEDED and the Mission is parked at a gate.
+    # cmd_research reads a non-zero `save` as "malformed findings" and would die
+    # with a message that is simply false here; the driver halts on awaitingHuman.
+    exit 0
+  fi
+
+  # UNCHECKED IS SAID OUT LOUD, and never blocks (S175/S178 doctrine).
+  local CLAIM_NOTE=""
+  [ "$claim_rc" -eq 3 ] && CLAIM_NOTE="$(cat "$claim_q")"
+  rm -f "$claim_q"
+
   advance
   echo "SAVE: $n responses"
   echo "  Saved $n research response(s) to research/."
+  [ -n "$CLAIM_NOTE" ] && printf '%s\n' "$CLAIM_NOTE"
   echo "  Stage:  validate"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
@@ -1272,7 +3149,7 @@ cmd_validate_pause() {
     [ -n "$q" ] && echo "    • $q"
   done < <(grep -ve '^[[:space:]]*$' "$QFILE")
   echo "  Stage:  validate (awaiting-human)"
-  echo "  Answer with \`lcars respond $MISSION_ID\`."
+  echo "  Answer with:  $(respond_hint)"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
 }
@@ -1303,6 +3180,23 @@ cmd_validate_advance() {
   # all no-ops on the straight-through path. Folding the answer into the
   # synthesis is Claude's job (per SKILL.md); deleting answers.json here is what
   # makes the resume one-shot, so the stage never re-asks.
+  #
+  # S180 ASKED WHETHER THIS DELETION IS STILL RIGHT now that answers.json is an
+  # append-only ledger, and the answer is YES, deliberately. The measured defect
+  # lives INSIDE one Stage's escalation cycle (three answers to one Plan Review
+  # question overwriting each other), and nothing on that path deletes the file:
+  # review_fail bounces plan-review -> plan, cmd_plan_save goes plan ->
+  # plan-review, and neither touches it. So append-only cures the measurement
+  # with this line intact.
+  #
+  # Removing it, on the other hand, has a specific cost: cmd_reconcile falls back
+  # to `json_str answers.json answer` when there is no dedicated
+  # reconcile-answer.txt (BUG-043 put the dedicated store there precisely because
+  # a generic answer could be mistaken for a reconcile decision). Keeping a
+  # Validate-era answer on disk for the rest of the Mission hands that fallback a
+  # stale sentence it would treat as the captain's merge decision. Widening the
+  # ledger's lifetime is therefore its own round, with its own gate on that
+  # fallback — not a side effect of this one.
   state_del awaitingHuman
   state_del pendingQuestion
   rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
@@ -1332,6 +3226,130 @@ cmd_validate_advance() {
 # other readers in this file.
 
 # --- validate the ticket list ----------------------------------------------
+LCARS_AWK_CRIT="$(cat <<'LCARS_AWK_CRIT_EOF'
+# WARNING - THIS HEREDOC BODY MUST CONTAIN NO APOSTROPHES AND NO BACKTICKS.
+# It is a quoted heredoc nested inside a command substitution, and bash counts
+# quotes in the body while it hunts for the closing paren: ONE unpaired
+# apostrophe (or one backtick pair) makes the whole file fail to parse 150
+# lines further down, pointing at an innocent line. Reword instead.
+# === THE ACCEPTANCE-CRITERIA NORMALIZER (S174 round 2) =====================
+# ONE definition of "what is the text of a criterion", injected into EVERY awk
+# program in this file that reads acceptanceCriteria. Nothing may parse that
+# array by hand again.
+#
+# WHY IT EXISTS. Since S174 an entry may be EITHER a plain string (as it always
+# was, and still the preferred form everywhere else) OR an object carrying the
+# planner per-criterion declaration:
+#
+#     "acceptanceCriteria": [{"text": "…", "drawnAt": "#screen-start card"}, …]
+#
+# Every consumer that renders criteria TEXT — the inlined ticket spec of the Implementer
+# spec, the GitHub sub-issue body, the plan/verify issue comments, the infra
+# backstop text of the infra classifier, the slice-pressure count — read the array by
+# splitting the line on double quotes and taking every other field. Fed an
+# object, that yields text | A manual cohort is edited… | drawnAt | #screen…:
+# the KEYS render as criteria and the spec the Implementer builds against is
+# mangled, silently, with every gate still green. That is the whole risk of the
+# schema change, so there is exactly one parser and every consumer calls it.
+#
+# lcars_crit_entries(t, ctext, cdecl, cval, ctype) -> N, and fills, per ENTRY i:
+#   ctext[i]  the text of the criterion ("" for an object with no "text")
+#   cdecl[i]  space-joined names of the declarations present on it
+#             (drawnAt / notDrawn / notVisual), "" for a plain string
+#   cval[i]   the raw value of the LAST declaration
+#   ctype[i]  the JSON TYPE of that value: "s" quoted string, "b" bare token
+#             (null/true/false/number), "x" nested object or array
+# It walks bytes honouring backslash escapes, because a criterion legitimately
+# contains \" (the measured plan has data-theme=\"dark\" in three of them) and a
+# naive split tears it in half — mis-numbering every later criterion.
+#
+# THE TYPE IS NOT DECORATION (round 3). A byte-level blank check reads the JSON
+# null, true, 0 and "\t" as content, so all four passed as anchors. The
+# validator refuses anything that is not a non-empty string, and it can only do
+# that if the parser tells it what the value WAS.
+function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
+  n = length(t); inq = 0; esc = 0; cur = ""; k = 0; depth = 0; pend = ""
+  for (i = 1; i <= n; i++) {
+    ch = substr(t, i, 1)
+    if (inq) {
+      if (esc)             { cur = cur ch; esc = 0 }
+      else if (ch == "\\") { cur = cur ch; esc = 1 }
+      else if (ch == "\"") {
+        inq = 0
+        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = "" }
+        else if (pend == "") { pend = cur }          # this string is a KEY
+        else {                                        # …the VALUE of that key
+          if (pend == "text") ctext[k] = cur
+          else if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
+            cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
+            cval[k] = cur; ctype[k] = "s"
+          }
+          pend = ""
+        }
+      }
+      else cur = cur ch
+      continue
+    }
+    if (ch == "\"") { inq = 1; cur = "" }
+    else if (ch == "{" && depth == 0) {
+      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""
+    }
+    else if ((ch == "{" || ch == "[") && depth > 0) {
+      # A NESTED object/array as a value ({"drawnAt": {"screen": "b"}} or []).
+      # Consume it whole — it must never open a new criterion — and record it as
+      # a value of type "x" so the validator can refuse it by TYPE.
+      d2 = 0; q2 = 0; e2 = 0
+      for (j = i; j <= n; j++) {
+        ch = substr(t, j, 1)
+        if (q2) {
+          if (e2) e2 = 0
+          else if (ch == "\\") e2 = 1
+          else if (ch == "\"") q2 = 0
+          continue
+        }
+        if (ch == "\"") q2 = 1
+        else if (ch == "{" || ch == "[") d2++
+        else if (ch == "}" || ch == "]") { d2--; if (d2 == 0) break }
+      }
+      if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
+        cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
+        cval[k] = substr(t, i, 1) "…" ; ctype[k] = "x"
+      }
+      pend = ""; i = j
+    }
+    else if (ch == "}" && depth == 1) { depth = 0; pend = "" }
+    else if (ch == "]" && depth == 0) break
+    else if (depth > 0 && pend != "" && ch != ":" && ch != " " && ch != "\t" && ch != "\n" && ch != "\r") {
+      # a BARE value — "notVisual": true, or JSON null / 0. Read to the next
+      # , or }.
+      bare = ""
+      while (i <= n) {
+        ch = substr(t, i, 1)
+        if (ch == "," || ch == "}") break
+        bare = bare ch; i++
+      }
+      gsub(/[[:space:]]/, "", bare)
+      if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
+        cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
+        cval[k] = bare; ctype[k] = "b"
+      }
+      pend = ""
+      i--                                   # let the loop see the , or }
+    }
+  }
+  return k
+}
+# lcars_crit_texts(t, out) -> N, out[1..N] = the criteria TEXTS, empties skipped
+# (matching what every pre-S174 consumer did with if (a[i] != "")). This is
+# the function a renderer wants; the validator wants the entries above.
+function lcars_crit_texts(t, out,   e_t, e_d, e_v, e_y, i, m, k) {
+  m = lcars_crit_entries(t, e_t, e_d, e_v, e_y); k = 0
+  for (i = 1; i <= m; i++) if (e_t[i] != "") out[++k] = e_t[i]
+  return k
+}
+LCARS_AWK_CRIT_EOF
+)"
+
 # Enforces the plan.json contract so we never advance on a half-formed plan,
 # mirroring how `save` guards research responses and `validate-advance` guards
 # the synthesis. Pure awk over the canonical one-field-per-line shape (inline
@@ -1347,23 +3365,144 @@ cmd_validate_advance() {
 # non-empty, three further DECLARATION checks apply; none of them reads a
 # ticket's prose to decide anything (see the design note above
 # plan_mockup_contract_block).
-validate_plan_json() { # file [mockup-basenames]
-  awk -v mock="${2:-}" '
-    function fail(msg) { printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
-    # Does the accumulated acceptance-criteria TEXT of this ticket name one of
-    # the Mission mockups? Plain string containment on a filename LCARS itself
-    # assigned — no regex, no semantics, nothing to reword around.
-    function names_mockup(t,   i) {
-      for (i = 1; i <= nmock; i++) if (index(t, mockname[i]) > 0) return 1
+validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
+  awk -v mock="${2:-}" -v places="${3:-}" "$LCARS_AWK_CRIT"'
+    function fail(msg) { failed=1; printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
+    # --- S174: EVERY criterion DECLARES where it came from --------------------
+    # S169 closed "no criterion names the drawing" and left "at least one does".
+    # MEASURED on lcars-20260814-001: t-012 named attachment-01.html in criterion
+    # 1 (satisfying the whole S169 rule) and then INVENTED, in criterion 3, a
+    # sub-value CRUD editor the drawing does not contain. It shipped fully styled
+    # — no existence check can catch it, because it EXISTS.
+    #
+    # ROUND 1 TRIED A STRING RULE and a tester beat it three ways in half an hour:
+    # appending "(attachment-01.html'"'"'s screen)" to all 38 criteria of the real
+    # plan passed the whole thing with the invention intact; "NOT DRAWN:" matched
+    # ANYWHERE, so burying it mid-sentence both passed AND laundered the invention
+    # into a one-word entry on the captain'"'"'s Verify list; and the "free text"
+    # anchor was really a word-order rule that rejected 5 of 7 honest phrasings.
+    # One root cause: a text search cannot tell a planner who opened the drawing
+    # from one who pasted a filename.
+    #
+    # SO THE DECLARATION LIVES OUTSIDE THE SENTENCE. On a changesScreenAppearance:
+    # true ticket of a mockup Mission, each acceptanceCriteria entry is an OBJECT
+    # carrying its text and EXACTLY ONE of:
+    #     "drawnAt":   "<where in the drawing>"   this surface IS drawn
+    #     "notDrawn":  "<why it is not drawn>"    visible, and NOT in the drawing
+    #     "notVisual": true                       makes no visual claim at all
+    # That killed the string games — a marker cannot be buried mid-text because
+    # it is not in the text. `notVisual` is what keeps the Verify list readable:
+    # on the real plan ~19 of 23 markers were persistence/test/plumbing trivia
+    # drowning the ONE invention.
+    #
+    # SCOPE BOUND, deliberate: a plain string stays legal (and preferred) on every
+    # false ticket, on every ticket of a Mission with NO mockup, and everywhere
+    # else in the tree. Only this one case requires the object form.
+    #
+    # WHAT THIS ACTUALLY STOPS, and what it does not. Written after three
+    # designs were each killed by a one-line transform (the full history is in
+    # the comment block above this function). Read it before adding a rule.
+    #
+    # DEAD, and pinned by tests: the string-substitution family — a marker
+    # buried mid-sentence, a suffix pasted onto every criterion, phrasing and
+    # word order, a fake declaration sed'"'"'d into a plain string. None of them
+    # touches a field. Dead too: the degenerate-value family — null, true, 0,
+    # "\t", [], {} and whitespace-only strings are refused as anchors.
+    #
+    # ALIVE, all measured on the real 13-ticket plan, all one jq line:
+    #
+    #   1. THE CONSTANT CITATION. map({text: ., drawnAt: "#screen-builder"})
+    #      passes every criterion of every ticket. The id is real, so the fence
+    #      is satisfied; the plan advances with the invention byte-intact and the
+    #      Verify list empty. Every version of this check has died to a constant,
+    #      and no syntactic check on a self-declared field can survive one.
+    #
+    #   2. THE FALSE EXEMPTION — THE CHEAPEST BYPASS IN THE DESIGN, and it needs
+    #      no anchor at all:
+    #        jq '"'"'map(.changesScreenAppearance=(.id=="t-001"))'"'"'
+    #      Twelve of thirteen tickets then carry plain-string criteria with NO
+    #      declaration of any kind, on a Mission that shipped a drawing of the
+    #      screens, and the plan is accepted. S169 answered this with a plan-wide
+    #      "at least one ticket declares true" count in END; ONE honest ticket
+    #      satisfied it, so it never stopped the bypass — and S175 DELETED it
+    #      because it deadlocked every non-visual bug logged against a mockup-born
+    #      Mission (see the note at that deletion). This is not fixable here
+    #      without reading a ticket to decide what it IS, which is the classifier
+    #      this whole design replaced. Plan Review OWNS it and is told to hunt it
+    #      (see plan_review_mockup_block, objection 4).
+    #
+    #   3. THE notVisual SWEEP. One drawnAt per ticket and notVisual on every
+    #      other criterion passes, and keeps the Verify list empty. notVisual is
+    #      a claim about what a criterion IS; refusing it is the same classifier.
+    #
+    # A CONSEQUENCE WORTH KNOWING, because it pushes toward (1) and (2): a ticket
+    # that genuinely changes a screen the drawing does NOT show has no legal
+    # honest move. Every criterion notDrawn is refused by the >=1-drawnAt rule,
+    # which fires first; so the planner must either fabricate a drawnAt or
+    # declare the ticket false. The schema pressures toward the two lies it
+    # cannot catch. If that shows up in practice, it is an argument for changing
+    # the >=1-drawnAt rule, not for another anchor format.
+    #
+    # NOT CHECKED, by design: whether an anchor RESOLVES to the surface the
+    # criterion describes. Presence, not resolution — a validator that parses the
+    # mockup is a validator that breaks on the next mockup. Plan Review, which
+    # now sees the drawing, is what reads the claim; and the residual — is the
+    # citation true, does the BUILT screen match the drawing — is handed to the
+    # build-gate round (see the handoff at plan_mockup_contract_block).
+    function excerpt(c) { return (length(c) > 110 ? substr(c, 1, 110) "…" : c) }
+    # jsonblank(v) — a STRING whose content is whitespace is not a declaration.
+    # It decodes the whitespace ESCAPES too: round 2 checked bytes, so a JSON
+    # "\t" read as content and passed as an anchor.
+    function jsonblank(v) {
+      gsub(/\\[tnrfb]/, "", v); gsub(/\\u0020/, "", v)
+      gsub(/[[:space:]]/, "", v); return (v == "")
+    }
+    # typedesc(i) — what the planner actually wrote, for the message.
+    function typedesc(i) {
+      if (ctype[i] == "s") return "the string \"" excerpt(cval[i]) "\""
+      if (ctype[i] == "x") return "a nested " (cval[i] ~ /^\[/ ? "array" : "object")
+      return cval[i]
+    }
+    # istok(c) — a character that can be part of an element id. A place name
+    # matches only when it is bounded by NON-id characters on both sides, so
+    # "collect-list" never satisfies a citation of "screen-collect", and
+    # "screen-start" is not found inside "screen-starter".
+    function istok(c) { return (c ~ /^[A-Za-z0-9_.:-]$/) }
+    # place_ok(v) — does this anchor CITE a place we actually drew? The names are
+    # the element ids of the mockup itself (see mission_mockup_place_names).
+    # Free text may surround the name: "#screen-builder, the cohort value cell",
+    # "the cohort row in screen-builder" and "screen-builder — right column" all
+    # pass; "the builder screen" and "x" do not. A leading # is part of the
+    # citation, not of the name.
+    function place_ok(v,   p, i, rest, before, after) {
+      for (p = 1; p <= nplace; p++) {
+        rest = v
+        while ((i = index(rest, placename[p])) > 0) {
+          before = (i == 1 ? "" : substr(rest, i - 1, 1))
+          after  = substr(rest, i + length(placename[p]), 1)
+          if (!istok(before) && !istok(after)) return 1
+          rest = substr(rest, i + 1)
+        }
+      }
       return 0
     }
-    BEGIN { nmock = (mock == "" ? 0 : split(mock, mockname, " ")) }
-    # object boundaries — canonical format puts { and } on their own lines, and
-    # the only braces in the file are object delimiters (arrays are inline).
-    /^[[:space:]]*\{[[:space:]]*$/ {
-      inobj=1; delete have; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""; next
+    BEGIN { nmock  = (mock   == "" ? 0 : split(mock,   mockname,  " "))
+            # ZERO ids ⇒ nplace 0 ⇒ the membership rule is INERT and the round-2
+            # form-only check stands. A drawing we cannot read is not a drawing
+            # we may fail a mission over; the prompt and the Verify readout both
+            # say the anchors went unfenced (see plan_mockup_contract_block and
+            # verify_unfenced_note).
+            nplace = (places == "" ? 0 : split(places, placename, " ")) }
+    # object boundaries — canonical format puts { and } on their own lines.
+    # S174: `&& !in_ac` is load-bearing. A pretty-printed plan puts EACH
+    # criterion object on its own lines, so a bare `{` inside the criteria array
+    # would otherwise read as the start of a NEW TICKET and the whole plan would
+    # be parsed as rubble. (Found by tests/drives/s174-mockup-fidelity-drive.sh,
+    # which writes its plans with json.dump(indent=2).)
+    /^[[:space:]]*\{[[:space:]]*$/ && !in_ac {
+      inobj=1; delete have; delete crit; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""; next
     }
-    /^[[:space:]]*\}[,]?[[:space:]]*$/ {
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac {
       if (!inobj) next
       tickets++
       for (k=1; k<=9; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
@@ -1378,9 +3517,63 @@ validate_plan_json() { # file [mockup-basenames]
         if (visual != "true" && visual != "false")
           fail("ticket " tickets " (" id ") has a non-boolean \"changesScreenAppearance\": " visual " — use true or false.")
         if (visual == "true") {
-          nvisual++
-          if (!names_mockup(actext))
-            fail("ticket " tickets " (" id ") declares changesScreenAppearance:true but NO acceptance criterion references the mockup (" mock "). Add a criterion naming that file and saying what about it this ticket'"'"'s surface must match — the look is built here, not judged at Verify. Naming it in the description does not count.")
+          # (S175 deleted the plan-wide "at least one true ticket" rule that
+          # this counter fed — see the note in END. Nothing counts tickets now.)
+          # S174 — the three-way declaration, one per criterion, and (round 3)
+          # an anchor that names a place we ACTUALLY DREW.
+          #
+          # ACCUMULATED, NOT FAIL-FAST (D4). The old code failed on the first
+          # offending TICKET. On the real 13-ticket plan 12 of 12 screen-changing
+          # tickets offend, so the planner saw t-001 alone, fixed it, and bounced
+          # again — and MAX_WORKER_TRIES is 3, so the Plan Stage DEADLOCKS at
+          # "failed validation after 3 attempt(s)". A plan is rewritten in one
+          # pass; this is the wrong axis to fail fast on. Every offending ticket
+          # and criterion goes into ONE message, emitted from END.
+          delete ctext; delete cdecl; delete cval; delete ctype
+          ncrit = lcars_crit_entries(actext, ctext, cdecl, cval, ctype)
+          tbad = ""
+          ndrawn = 0
+          for (ci = 1; ci <= ncrit; ci++) {
+            ndecl = (cdecl[ci] == "" ? 0 : split(cdecl[ci], dnames, " "))
+            why = ""
+            if (ndecl == 0)
+              why = "no declaration — add \"drawnAt\", \"notDrawn\" or \"notVisual\""
+            else if (ndecl > 1)
+              why = "carries " ndecl " declarations (" cdecl[ci] ") — exactly one"
+            else if (dnames[1] == "notVisual") {
+              if (ctype[ci] != "b" || cval[ci] != "true")
+                why = "\"notVisual\": " typedesc(ci) " — it must be the bare value true"
+            }
+            # ROUND 3 — a JSON TYPE check, not a byte check. `blank()` was a
+            # gsub over bytes, so JSON null, true, 0 and "\t" all read as
+            # content and all four passed as anchors. An anchor is a non-empty
+            # STRING or it is not an anchor.
+            else if (ctype[ci] != "s")
+              why = "\"" dnames[1] "\": " typedesc(ci) " — it must be a quoted string"
+            else if (jsonblank(cval[ci]))
+              why = "\"" dnames[1] "\" is blank — say WHERE in the drawing, or WHY it is not there"
+            # ROUND 3 — and the WHERE must be a place we actually drew. One jq
+            # line put the SAME free-text anchor on all 38 criteria of the real
+            # plan and passed it whole, invention intact, Verify list empty. A
+            # free-text slot is a free-text sentence with extra steps.
+            else if (dnames[1] == "drawnAt" && nplace > 0 && !place_ok(cval[ci]))
+              why = "\"drawnAt\": \"" excerpt(cval[ci]) "\" names no place in the drawing — cite one of the ids listed below (any wording around it is yours)"
+            if (why == "" && ctext[ci] == "")
+              why = "has no \"text\" — the Implementer builds against that text"
+            if (why != "") {
+              tbad = tbad "\n    criterion " ci " — " why
+              if (ctext[ci] != "") tbad = tbad "\n        \"" excerpt(ctext[ci]) "\""
+            }
+            else if (dnames[1] == "drawnAt") ndrawn++
+          }
+          # The S169 rule survives the schema change, restated in it: a ticket
+          # that says it changes a screen must point INTO the drawing at least
+          # once. Without this, every criterion could be notVisual/notDrawn and
+          # the whole screen declared away. Naming it in the description does not
+          # count — the description is not what the work is judged against.
+          if (tbad == "" && ndrawn == 0)
+            tbad = "\n    NO acceptance criterion references the mockup with a \"drawnAt\" anchor — this ticket says it changes what a screen looks like, so at least one of its criteria is drawn somewhere in " mockname[1] ". Naming it in the description does not count."
+          if (tbad != "") s174bad = s174bad "\n  ticket " tickets " (" id "):" tbad
         }
       }
       ids[id]=1
@@ -1395,7 +3588,7 @@ validate_plan_json() { # file [mockup-basenames]
       m=split($0, b, "\"")
       for (i=2; i<m; i+=2) if (b[i] != "") acok=1
       actext = actext " " $0   # S169 — see the note on the inline branch below
-      if ($0 ~ /\]/) in_ac=0
+      if ($0 ~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=0
       next
     }
     inobj {
@@ -1418,7 +3611,10 @@ validate_plan_json() { # file [mockup-basenames]
         # is nothing to be gained by being cleverer.
         v=$0; sub(/.*"acceptanceCriteria"[[:space:]]*:[[:space:]]*/, "", v)
         actext = actext " " v
-        if ($0 !~ /\]/) in_ac=1     # array opens here, closes on a later line
+        # …and it OPENS a multi-line array unless this same line already ended
+        # it. Keyed on the line ENDING in `]`, because a criterion legitimately
+        # contains one ("the whole SubReading[] as one MetricValue").
+        if ($0 !~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=1
       }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
       # S156: `establishesSharedInfrastructure` is OPTIONAL — absent must stay
@@ -1458,15 +3654,332 @@ validate_plan_json() { # file [mockup-basenames]
       for (r=1; r<=drefs; r++)
         if (!(depof[r] in ids))
           fail("ticket " depticket[r] " depends on \"" depof[r] "\", which is not a ticket id in this plan.")
-      # S169 — close the one-word escape. Without this, a plan satisfies the
-      # per-ticket rule above by declaring every ticket false, and the gate is
-      # theatre. This is a check on the DECLARATIONS, not on any ticket'"'"'s prose:
-      # the captain drew screens and attached them, so a plan in which nothing
-      # changes a screen contradicts the Mission'"'"'s own premise.
-      if (nmock > 0 && nvisual == 0)
-        fail("no ticket in this plan declares changesScreenAppearance:true, but the Mission carries a mockup (" mock ") — a drawing of the screens the work must produce. Declare the tickets that change what a screen looks like and give each one a criterion naming that file.")
+      # S175 — THE PLAN-WIDE RULE IS DELETED. DO NOT RE-ADD IT. S169 required
+      # that a Mission carrying a mockup have AT LEAST ONE ticket declaring
+      # `changesScreenAppearance: true`, on the premise that "the captain drew
+      # screens, so something must change a screen." S174 Part D falsified that
+      # premise: a logged bug INHERITS its parent Mission'"'"'s mockup, and most bugs
+      # change no screen. MEASURED on the captain'"'"'s repo 2026-08-25 — a React
+      # StrictMode lifecycle fix (the effect cleanup cancels the data pull) was
+      # planned honestly as all-false, rejected by this rule 3× in a row, and the
+      # Plan Stage STOPPED: "failed validation after 3 attempt(s)".
+      #
+      # It was a DEADLOCK, not a bounce. There was NO honest plan that passed:
+      # declare false and this rule refused it; declare true and the per-criterion
+      # rule below demanded a drawnAt/notDrawn/notVisual on every criterion, with
+      # an all-notVisual ticket refused by the ≥1-drawnAt rule — so the only way
+      # through was to FABRICATE a drawing citation for work that touches no
+      # screen. Every non-visual bug logged against a mockup-born Mission was
+      # unplannable.
+      #
+      # Deleting it opens NO new hole. The bypass it guarded — a planner dodging
+      # the contract by declaring everything non-visual — is owned by Plan Review,
+      # whose prompt (plan_review_mockup_block, objection 4) explicitly tells the
+      # reviewer to hunt a wrongly-exempted `changesScreenAppearance: false`
+      # ticket. That is a JUDGEMENT call and it belongs with a reader who can open
+      # the drawing, not with an awk counter. What the validator still enforces is
+      # the mechanical half, untouched below: a ticket that DOES declare true must
+      # trace EVERY criterion into the drawing.
+      #
+      # And do not try to "narrow" it (e.g. skip it for bug Missions). This
+      # function reads plan.json, which carries no mission type — and a FEATURE
+      # Mission can equally have a wholly non-visual plan. Narrowing rebuilds the
+      # same trap one step along. A mockup Mission with zero visual tickets is a
+      # NORMAL state.
+      #
+      # S174 — every undeclared criterion in the whole plan, in ONE message (see
+      # the note at the check). Skipped when an unrelated rule already failed, so
+      # a missing-field error is not buried under a page of declaration advice.
+      # ROUND 3 — a rejection ALWAYS shows the legal answers. Round 1 shipped a
+      # closed vocabulary that was undocumented and unguessable, and it was
+      # rightly hated. This one is published to the planner up front AND repeated
+      # in every rejection: never refuse an anchor without listing the names that
+      # would have been accepted.
+      vocab = (nplace > 0 \
+        ? "\n  The places this drawing actually has (cite one, and say whatever you like around it):\n    " places "\n" \
+        : "\n  This drawing carries NO element ids, so nothing can check WHICH place an anchor names — \"drawnAt\" only has to be a non-empty string here, and it is on you to make it point somewhere real.\n")
+      if (s174bad != "" && !failed)
+        fail("this plan'"'"'s screen-changing tickets do not declare where their criteria come from. This Mission carries a mockup (" mock "), so on every ticket with \"changesScreenAppearance\": true, EVERY entry of \"acceptanceCriteria\" must be an object — {\"text\": \"…\", …} — carrying EXACTLY ONE of:\n    \"drawnAt\":   \"<the screen id / section / row of " mockname[1] " this criterion'"'"'s surface appears in>\"\n    \"notDrawn\":  \"<why this VISIBLE thing is not in the drawing>\"   (legitimate — and the captain sees every one at Verify)\n    \"notVisual\": true                                          (this criterion makes no visual claim at all)\n" s174bad "\n" vocab "  A plain string stays fine on a changesScreenAppearance:false ticket, and on every Mission without a mockup. Open the drawing, then declare each criterion once.")
     }
   ' "$1"
+}
+
+# --- S178: the over-correction guard ---------------------------------------
+# Compares the plan the reviewer ACTUALLY REVIEWED against the revision that
+# answered it, and rejects edges that were ADDED on tickets no objection names.
+# See the long note at plan_revision_contract_block for the measurement this
+# exists for, and the note in review_fail for why it works off a written token
+# rather than off whatever files happen to be lying in the mission dir.
+#
+# WHAT IT COMPARES. `plan-under-review.json`, written by review_fail at the exact
+# moment a revision is requested and consumed by cmd_plan_save the moment one is
+# accepted. NO token ⇒ no revision was asked for ⇒ nothing runs. There is
+# deliberately NO fallback to ambient plan.json: the fallback IS the hole.
+#
+# WHAT LICENSES AN EDGE — asymmetrically, and the asymmetry is load-bearing:
+#   * the SOURCE (the ticket whose `dependencies` grew) is licensed by an
+#     objection naming it ANYWHERE — its `ticketId` or its id in the prose.
+#   * the TARGET (the ticket newly depended UPON) is licensed ONLY by being an
+#     objection's `ticketId` — the ticket the objection is ABOUT. Measured
+#     shape: "t-004 ports the stylesheet every later row-rendering ticket relies
+#     on; the tickets that render rows must depend on it" names only t-004, and
+#     the correct revision adds edges on t-005 and t-006. Nobody NAMED them; the
+#     objection unambiguously ASKED.
+#     It is NOT extended to prose mentions: the live objection's prose says
+#     "t-006 declares dependencies [t-001] but not t-004", naming t-001 only to
+#     describe the current state, and licensing t-001 as a target would license
+#     `t-007 now depends on t-001` — the one edge that catches live run 3.
+# Ids are matched after normalising case and surrounding whitespace, and a bare
+# number (`"ticketId": 5`) is matched against `t-005`/`t-5`-style ids — but that
+# parsing is a convenience, never the safety net. The safety net is the next
+# paragraph.
+#
+# FAIL OPEN, AND SAY SO. This never bounces when it cannot be trusted:
+#   * no revision token (no revision was requested — or a `lcars feedback`
+#     send-back re-planned the Mission from a corrected PRD),
+#   * either plan unreadable, or a ticket set that was renumbered or resized,
+#   * NO objection resolves to any ticket id in the plan, so the licence map is
+#     empty and every added edge would look unlicensed. That is precisely the
+#     state in which the map is known to be wrong, and it is the state a reviewer
+#     produces by writing `"ticketId": 5` or `"T-005"` or `" t-005 "`.
+# In every one of those it reports UNCHECKED and passes the revision through. A
+# false bounce on an honest re-plan is worse than a missed over-correction.
+#
+# WHAT IT CANNOT CATCH — plainly, so nobody reads more into a green than is here:
+#   * Over-correction on the FIRST plan. There is no prior graph to diff, so a
+#     planner that writes a needless queue the first time through is invisible to
+#     this and is owned entirely by Plan Review's judgement.
+#   * A planner that RENUMBERS the tickets (or adds/drops one) on the revision.
+#     That makes the graphs uncomparable, and the fail-open rule above then lets
+#     it straight through — marked UNCHECKED, but through. Defeating this guard
+#     costs one rename. It is a check on a careless rewrite, not a fence against
+#     a determined one.
+#   * Edges that were REMOVED. They are REPORTED (see drop_note) and never
+#     bounced on: dropping an edge is UNDER-declaration, which is the failure
+#     Plan Review correctly catches — and it caught the one that opened this
+#     round — so this guard deliberately does not compete with it. Measured on
+#     the live baseline: all three real revisions also deleted an edge nobody
+#     asked about, and all three are caught on their ADDED edges alone.
+#
+# Exit status: 0 = checked and clean · 1 = over-correction (stdout is the
+# rejection, which becomes the next worker's prompt) · 3 = UNCHECKED. NOTHING
+# ELSE IS TRUSTED — see the caller, which treats any other status as UNCHECKED.
+replan_overcorrection_check() { # under-review.json  new-plan.json  mission-dir
+  # PYTHONIOENCODING is pinned because this block PRINTS `⚠` and `—`, and a
+  # caller with an ascii stdout encoding (measured: PYTHONIOENCODING=ascii) makes
+  # `sys.stdout.write` raise — which exited 1 and turned the FAIL-OPEN branch
+  # into a rejection of a well-formed plan. The unicode is the readout's, so the
+  # encoding is pinned here rather than the words dulled.
+  PYTHONIOENCODING=utf-8 "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "$3" <<'S178_PY'
+import glob
+import json
+import os
+import re
+import sys
+
+under_review_path, new_path, mission_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def load_list(path):
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    return doc if isinstance(doc, list) else None
+
+
+def graph(plan):
+    """{id: set(deps)} — or None when the plan is not a shape we can trust."""
+    if not plan:
+        return None
+    out = {}
+    for t in plan:
+        if not isinstance(t, dict):
+            return None
+        tid = t.get("id")
+        if not isinstance(tid, str) or not tid or tid in out:
+            return None
+        deps = t.get("dependencies")
+        if deps is None:
+            deps = []
+        if not isinstance(deps, list):
+            return None
+        out[tid] = set(d for d in deps if isinstance(d, str) and d)
+    return out
+
+
+def unchecked(reason):
+    sys.stdout.write(
+        "  ⚠ REVISION UNCHECKED — the over-correction guard could not compare this\n"
+        "    plan against the one Plan Review reviewed: %s.\n"
+        "    Passing it through unchecked: a check that cannot be trusted must not\n"
+        "    bounce an honest plan. Plan Review still sees this plan.\n" % reason)
+    sys.exit(3)
+
+
+# --- was a revision actually REQUESTED? ---------------------------------------
+# The token, not an inference. review_fail writes it when it bounces a Mission
+# back to Plan; cmd_plan_save deletes it when a revision is accepted.
+if not os.path.exists(under_review_path):
+    sys.exit(4)   # not a revision at all — the caller prints nothing
+
+# --- what the reviewer objected to, across every round on disk ----------------
+objections = []
+for rf in sorted(glob.glob(os.path.join(mission_dir, "plan-review-*.json"))):
+    try:
+        with open(rf) as fh:
+            verdict = json.load(fh)
+    except Exception:
+        continue
+    if not isinstance(verdict, dict):
+        continue
+    for iss in (verdict.get("issues") or []):
+        if not isinstance(iss, dict):
+            continue
+        objections.append((iss.get("ticketId"), str(iss.get("objection") or "")))
+
+if not objections:
+    unchecked("a revision was requested, but the review rounds on disk name no "
+              "objections we can read")
+
+prior = graph(load_list(under_review_path))
+new = graph(load_list(new_path))
+
+if prior is None:
+    unchecked("the plan Plan Review reviewed is not a readable list of tickets "
+              "with ids and dependencies")
+if new is None:
+    unchecked("the revised plan is not a readable list of tickets with ids and "
+              "dependencies")
+
+if set(prior) != set(new):
+    added = sorted(set(new) - set(prior))
+    gone = sorted(set(prior) - set(new))
+    bits = []
+    if added:
+        bits.append("%d ticket id(s) appear that the reviewed plan did not have (%s)"
+                    % (len(added), ", ".join(added[:6])))
+    if gone:
+        bits.append("%d ticket id(s) from the reviewed plan are missing (%s)"
+                    % (len(gone), ", ".join(gone[:6])))
+    unchecked("the ticket set changed — " + "; ".join(bits))
+
+# --- which tickets the objections LICENSE -------------------------------------
+# A convenience normaliser, NOT the safety net: lower-cased, stripped, and with a
+# bare number ("ticketId": 5) matched against a zero-padded id. When it resolves
+# NOTHING the licence map is known-wrong and the whole check fails open below.
+ids = set(new)
+
+
+def keys_for(tid):
+    k = {tid.strip().lower()}
+    m = re.match(r"^[a-z]+-0*(\d+)$", tid.strip().lower())
+    if m:
+        k.add(m.group(1))          # "t-005" also answers to "5"
+        k.add(m.group(1).lstrip("0") or "0")
+    return k
+
+
+by_key = {}
+for i in ids:
+    for k in keys_for(i):
+        by_key.setdefault(k, set()).add(i)
+
+# TWO licences, and the asymmetry is the whole point.
+#   licensed_src — the ticket whose `dependencies` may grow. Named anywhere in
+#     an objection: its `ticketId`, or its id in the prose.
+#   licensed_tgt — the ticket that others may newly depend UPON. ONLY an
+#     objection's `ticketId`, i.e. the ticket the objection is ABOUT.
+# A dependency objection routinely reads "t-004 ports the stylesheet every later
+# row-rendering ticket relies on; the tickets that render rows must depend on
+# it" — it names only t-004 and unambiguously asks for inbound edges, so the
+# revision that adds t-005 -> t-004 and t-006 -> t-004 is obeying it.
+# The target side is NOT extended to prose mentions, and that restraint is
+# measured: the live objection's prose says "t-006 declares dependencies
+# [t-001] but not t-004", mentioning t-001 only to describe the CURRENT state.
+# Licensing t-001 as a target would license `t-007 now depends on t-001` — the
+# single edge that catches live run 3, and the invariant across all three live
+# runs. Prose mention means "this ticket may gain edges", never "everything may
+# now point at this ticket".
+licensed_src = set()
+licensed_tgt = set()
+for tid, text in objections:
+    if tid is not None:
+        for i in by_key.get(str(tid).strip().lower(), ()):
+            licensed_src.add(i)
+            licensed_tgt.add(i)
+    low = text.lower()
+    for i in ids:
+        # Whole-token match on the id itself, so "t-01" cannot license "t-012".
+        if re.search(r"(?<![0-9A-Za-z_-])%s(?![0-9A-Za-z_-])" % re.escape(i.lower()), low):
+            licensed_src.add(i)
+
+if not licensed_src:
+    unchecked("no objection names any ticket id in this plan (%d objection(s) "
+              "read), so there is no way to tell an asked-for edge from an "
+              "unasked one" % len(objections))
+
+added_edges = []
+removed_edges = []
+for tid in sorted(new):
+    for dep in sorted(new[tid] - prior[tid]):
+        added_edges.append((tid, dep))
+    for dep in sorted(prior[tid] - new[tid]):
+        removed_edges.append((tid, dep))
+# An edge is licensed when its SOURCE is a ticket an objection names, or its
+# TARGET is a ticket an objection is ABOUT. See the two-licence note above.
+unlicensed = [(a, b) for (a, b) in added_edges
+              if a not in licensed_src and b not in licensed_tgt]
+dropped = [(a, b) for (a, b) in removed_edges
+           if a not in licensed_src and b not in licensed_tgt]
+drop_note = ""
+if dropped:
+    drop_note = ("  Note (not a rejection): %d dependency edge(s) were REMOVED from ticket(s) "
+                 "no objection names — %s. Under-declaration is Plan Review's call, not this "
+                 "guard's; it is reported, never bounced on.\n"
+                 % (len(dropped), ", ".join("%s no longer depends on %s" % e for e in dropped)))
+
+named = ", ".join(sorted(licensed_src))
+
+if not unlicensed:
+    if added_edges:
+        sys.stdout.write(
+            "  Revision checked against %d objection(s): %d dependency edge(s) added, "
+            "every one on or into a ticket the objections name (%s).\n"
+            % (len(objections), len(added_edges), named))
+    else:
+        sys.stdout.write(
+            "  Revision checked against %d objection(s): no dependency edges added.\n"
+            % len(objections))
+    sys.stdout.write(drop_note)
+    sys.exit(0)
+
+lines = []
+lines.append("OVER-CORRECTION — this revision was REJECTED before the reviewer saw it.")
+lines.append("")
+lines.append("Plan Review raised %d objection(s), naming these ticket(s): %s."
+             % (len(objections), named))
+lines.append("Your revision ADDED %d dependency edge(s), and %d of them touch no ticket"
+             % (len(added_edges), len(unlicensed)))
+lines.append("any objection names, at either end:")
+for a, b in unlicensed:
+    lines.append("    %s now depends on %s — nobody asked for that edge" % (a, b))
+lines.append("")
+lines.append("A correction is a PATCH. Take the plan you were given, apply exactly what")
+lines.append("the objections ask, and leave every other ticket's `dependencies` byte-for-")
+lines.append("byte as it was. Do NOT re-derive the graph. Do NOT order tickets by their")
+lines.append("number: a dependency is what a ticket GENUINELY needs BUILT FIRST, never")
+lines.append("authoring order, and \"comes after\" is not a dependency. Tickets that add")
+lines.append("separate things into the same shell are SIBLINGS and belong in the same wave.")
+lines.append("")
+lines.append("This is not a request for FEWER dependencies. Declare every edge that is")
+lines.append("real, add the ones the objections ask for — and change nothing else.")
+sys.stdout.write("\n".join(lines) + "\n")
+if drop_note:
+    sys.stdout.write("\n" + drop_note.strip() + "\n")
+sys.exit(1)
+S178_PY
 }
 
 # --- subcommand: plan-save -------------------------------------------------
@@ -1479,9 +3992,75 @@ cmd_plan_save() {
   # S169: the second argument is this Mission's HTML mockup basenames, or EMPTY.
   # Empty leaves the validator behaving exactly as it did before — which is the
   # case for every mission that did not come from the holodeck.
-  validate_plan_json "$PLAN" "$(mission_mockup_names)" || exit 1
+  validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" || exit 1
+
+  # S178 — the over-correction guard. It runs off the REVISION TOKEN
+  # (plan-under-review.json, written by review_fail; see the long note there),
+  # never off ambient files, and it never runs at all when no revision was
+  # requested — so a first plan, and a plan re-made after a `lcars feedback`
+  # send-back, are both untouched and byte-identical to before this round.
+  local OVERCORRECTION_NOTE="" _s178tok="$MISSION_DIR/plan-under-review.json"
+  if [ -f "$_s178tok" ]; then
+    local _s178out _s178rc=0
+    _s178out="$(replan_overcorrection_check "$_s178tok" "$PLAN" "$MISSION_DIR")" || _s178rc=$?
+    case "$_s178rc" in
+      0|3) OVERCORRECTION_NOTE="$_s178out" ;;   # clean · UNCHECKED — both pass
+      4)   OVERCORRECTION_NOTE="" ;;            # not a revision (token vanished)
+      1)
+        # OVER-CORRECTION. Rejected — UNLESS this is the worker's last attempt.
+        #
+        # ADVISORY AT THE LAST ATTEMPT, and this is not a softening. The Plan
+        # Stage's `die` after MAX_WORKER_TRIES existed only for plans that FAILED
+        # validate_plan_json. This guard can refuse a plan that validates
+        # perfectly, so left fatal it would turn a bounce into a permanent
+        # DEADLOCK — a Mission stuck at `plan` with no gate, no label and no
+        # state change, needing manual file surgery, under a message that lies
+        # about a plan that validated fine. So the last attempt SAVES, and says
+        # loudly that the over-correction is unresolved. That is exactly "it
+        # rides the EXISTING Plan Review loop and its existing budget": the
+        # reviewer gets the plan, can object again, and has its own three rounds
+        # and its own human escalation. No new gate, no new label, no new
+        # escalation, and it can never deadlock.
+        if [ "${FINAL_ATTEMPT:-0}" = "1" ]; then
+          # No attempt COUNT here on purpose: --final-attempt is accepted from
+          # any caller, and cmd_plan is only one of them, so interpolating
+          # $MAX_WORKER_TRIES printed "asked 3 time(s)" after a single hand-run
+          # attempt. Say what is true on every path instead.
+          OVERCORRECTION_NOTE="  ⚠ OVER-CORRECTION UNRESOLVED — the planner's last attempt was asked to
+    revise without rewriting the dependency graph, and did not. The plan is
+    VALID, so it is saved and handed to Plan Review UNRESOLVED rather than
+    deadlocking the Mission here. The reviewer can object again on its own
+    rounds. What the guard objected to:
+$_s178out"
+        else
+          # REJECT. Leave the reason beside the plan file the worker wrote, which
+          # is the worker's own scratch outdir — cmd_plan's retry loop reads it
+          # there and threads it into the NEXT worker's prompt. Without that the
+          # only retry feedback channel is "you produced no file", and the bounce
+          # would silently burn the budget re-emitting the same plan.
+          printf '%s\n' "$_s178out" > "$(dirname "$PLAN")/.plan-reject-note" 2>/dev/null || true
+          printf '%s\n' "$_s178out" >&2
+          exit 1
+        fi ;;
+      *)
+        # ONLY 0/1/3/4 are trusted. Anything else is the CHECK failing, not the
+        # plan: a python crash, a missing interpreter (127), a signal. Measured:
+        # PYTHONIOENCODING=ascii made the block raise on its own `⚠`, exit 1, and
+        # DISCARD a well-formed plan — the fail-open branch itself failing closed.
+        # A check that broke is UNCHECKED, and it says so out loud rather than
+        # passing silently (127 used to do exactly that).
+        OVERCORRECTION_NOTE="  ⚠ REVISION UNCHECKED — the over-correction guard itself failed to run (exit $_s178rc).
+    That is the CHECK breaking, not the plan: the plan is saved and passed to
+    Plan Review. Nothing about its dependency graph has been verified."
+        ;;
+    esac
+  fi
 
   cp "$PLAN" "$MISSION_DIR/plan.json"
+  # S178: the revision has been delivered — consume the token. Anything later
+  # (another Plan Review round, a `lcars feedback` send-back and re-plan) must
+  # write its own or be treated as no revision at all.
+  rm -f "$_s178tok" 2>/dev/null || :
 
   # Session 41: the Plan worker ALSO emits one context manifest per ticket into a
   # `manifests/` dir alongside plan.json in its scratch output. Persist them into
@@ -1503,6 +4082,9 @@ cmd_plan_save() {
 
   echo "PLAN: advanced"
   echo "  Wrote plan.json."
+  # S178: what the over-correction guard did — including, loudly, when it could
+  # not check at all. EMPTY (and so byte-identical) on a first plan.
+  [ -n "$OVERCORRECTION_NOTE" ] && printf '%s\n' "$OVERCORRECTION_NOTE"
   # S156: say it at the EARLIEST point a human or Plan Review can act on it. A
   # plan that declares `establishesSharedInfrastructure` on NO ticket leaves
   # Schedule reading ticket text instead, which only catches a ticket that names
@@ -1544,6 +4126,11 @@ cmd_plan_save() {
 review_pass() {
   [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json to approve — has Plan run?"
   cp "$MISSION_DIR/plan.json" "$MISSION_DIR/approved-plan.json"
+  # S178: no revision is outstanding any more. Clearing the token here is belt
+  # and braces — cmd_plan_save already consumes it on the save that answered the
+  # objections — but a token that outlives the revision it asked for is exactly
+  # how a later, unrelated re-plan would get diffed against ancient history.
+  rm -f "$MISSION_DIR/plan-under-review.json" 2>/dev/null || :
 
   set_stage "schedule"
   gh_relabel "lcars:schedule" "lcars:plan-review"
@@ -1592,9 +4179,48 @@ review_fail() {
     echo "  Plan Review could not reach a clean plan after $round rounds. Unresolved:"
     print_objections "$VERDICT" "    • "
     echo "  Stage:  plan-review (awaiting-human)"
-    echo "  Override (proceed to Schedule) or redirect — answer with \`lcars respond $MISSION_ID\`."
+    echo "  Override (proceed to Schedule) or redirect — answer with:"
+    echo "    $(respond_hint)"
     [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
     exit 0
+  fi
+
+  # S178 — THE REVISION TOKEN, and it is the whole cure for the false bounce.
+  #
+  # This is the ONE place in the system that actually requests a revision, so it
+  # is the only place that can say so with EVIDENCE. Snapshot the plan the
+  # reviewer just reviewed: the over-correction guard diffs the next plan.json
+  # against THIS file and against nothing else. That is the only plan the
+  # objections are even about.
+  #
+  # WHY NOT infer it from ambient files. The first cut of this round decided "a
+  # revision was requested" from the mere existence of plan-review-*.json and
+  # diffed against whatever plan.json was lying in the mission dir. Both are
+  # wrong on the most ordinary path in the pipeline: `lcars feedback` (the Verify
+  # send-back) resets the Mission to `align` and DELIBERATELY KEEPS every
+  # artifact — its own output says "The prior PRD and artifacts are kept" — so
+  # plan.json AND plan-review-*.json both survive. The Mission then re-runs
+  # align → research → validate → plan, and a brand-new honest plan for a
+  # CORRECTED PRD was being diffed against the plan from before the captain's
+  # send-back, licensed by objections belonging to a plan two stages of history
+  # ago. Measured: a 6-edge false bounce on a plan nobody had objected to.
+  #
+  # WHY NOT per-round, and why it is CONSUMED. It is a one-shot token, not an
+  # archive: written when a revision is asked for, deleted by cmd_plan_save the
+  # moment a revision is accepted (and by review_pass, above). So after the
+  # normal cycle — objection, revision, save — there is no token, and a later
+  # feedback send-back finds none and passes through UNCHECKED by construction.
+  # It is deliberately NOT keyed on planReviewRound: feedback.sh never resets
+  # that counter (a pre-existing bug, ledgered), so anything keyed on it inherits
+  # a stale number.
+  #
+  # NOT written on the round-3 escalation branch above: that parks the Mission at
+  # plan-review awaiting the captain and does NOT ask Plan for anything, so a
+  # token there would linger and poison a much later re-plan.
+  if [ -f "$MISSION_DIR/plan.json" ]; then
+    cp "$MISSION_DIR/plan.json" "$MISSION_DIR/plan-under-review.json"
+  else
+    rm -f "$MISSION_DIR/plan-under-review.json" 2>/dev/null || :
   fi
 
   # Still have rounds left — bounce the Mission back to Plan to revise.
@@ -1665,13 +4291,33 @@ cmd_review_save() {
 #                ("true"/"false"), or EMPTY when the ticket does not declare it.
 #                Empty is the signal to fall back to the heuristic backstop.
 parse_plan_table() { # file
-  awk '
-    function flush() {
+  awk "$LCARS_AWK_CRIT"'
+    function flush(   m, i) {
       if (id=="") return
+      # S174: through the ONE normalizer — an entry may be a plain string OR a
+      # {"text": …, "drawnAt"|"notDrawn"|"notVisual": …} object, and splitting
+      # the line on quotes would render the KEYS as criteria into the Implementer
+      # prompt, the sub-issue body and the Verify checklist.
+      delete ctx; m=lcars_crit_texts(actext, ctx); crit=""
+      for (i=1;i<=m;i++) crit=(crit==""?ctx[i]:crit" | "ctx[i])
       printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, title, desc, crit, deps, rat, infra
     }
-    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; desc=""; crit=""; deps=""; rat=""; infra=""; next }
-    /^[[:space:]]*\}[,]?[[:space:]]*$/ { if (inobj) flush(); inobj=0; next }
+    # S174: `&& !in_ac` is load-bearing, twice over. A pretty-printed plan puts
+    # each criterion — a plain string OR a {"text": …} object — on its own lines,
+    # and a bare `{` inside the array would otherwise read as a NEW TICKET: the
+    # id and title reset mid-ticket and the row flushed here is rubble. Measured
+    # on a json.dump(indent=2) plan, which produced an EMPTY row.
+    /^[[:space:]]*\{[[:space:]]*$/ && !in_ac { inobj=1; id=""; title=""; desc=""; actext=""; crit=""; deps=""; rat=""; infra=""; next }
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac { if (inobj) flush(); inobj=0; next }
+    # Inside a MULTI-LINE criteria array: accumulate the raw text and let the
+    # normalizer read it at the object close. The array ENDS on a line ENDING in
+    # `]` — never on a `]` inside a criterion ("the whole SubReading[] as one
+    # MetricValue" closed it three lines early).
+    inobj && in_ac {
+      actext = actext " " $0
+      if ($0 ~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=0
+      next
+    }
     inobj {
       n=split($0, a, "\"")             # inside-quote contents land at even indices
       if (n < 2) next
@@ -1680,7 +4326,15 @@ parse_plan_table() { # file
       else if (key=="title") title=a[4]
       else if (key=="description") desc=a[4]
       else if (key=="rationale") rat=a[4]
-      else if (key=="acceptanceCriteria") { c=""; for (i=4;i<n;i+=2) if (a[i]!="") c=(c==""?a[i]:c" | "a[i]); crit=c }
+      # S174: through the ONE normalizer — an entry may be a plain string OR a
+      # {"text": …, "drawnAt"|"notDrawn"|"notVisual": …} object, and splitting
+      # the line on quotes would render the KEYS as criteria into the
+      # Implementer prompt, the sub-issue body and the Verify checklist.
+      else if (key=="acceptanceCriteria") {
+        v=$0; sub(/.*"acceptanceCriteria"[[:space:]]*:[[:space:]]*/, "", v)
+        actext = actext " " v
+        if ($0 !~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=1   # opens multi-line
+      }
       else if (key=="dependencies")       { d=""; for (i=4;i<n;i+=2) if (a[i]!="") d=(d==""?a[i]:d" "a[i]); deps=d }
       # A BARE boolean has no quoted value, so read the raw token after the
       # colon (and tolerate a quoted "true"/"false" from a sloppy worker).
@@ -2047,6 +4701,38 @@ compute_waves() { # table-file [infra-ids]
   ' "$1"
 }
 
+# --- S178 Part C: say the wave SHAPE, not just the wave COUNT ---------------
+# The readout already said "Grouped 14 ticket(s) into 14 wave(s)". That is the
+# count, and the count is not the signal — the captain had to open waves.json to
+# discover that all fourteen waves held ONE ticket, i.e. that the plan is a queue
+# and every scrap of parallel work is gone. This is a READOUT and never a gate:
+# Schedule is correct, it honours the graph it is given, and a genuinely serial
+# plan is a legitimate thing to print.
+wave_shape_line() { # ntickets nwaves peak-parallel  → the line, or NOTHING
+  local nt="${1:-0}" nw="${2:-0}" peak="${3:-0}"
+  if [ "$nw" -le 0 ] || [ "$nt" -le 0 ]; then
+    printf 'Wave shape: nothing scheduled.'
+  elif [ "$nt" -eq 1 ]; then
+    # This exact phrase, upper-cased, IS the board's shape string for a one-ticket
+    # plan (local_adapter._progress). tests/replan-overcorrection.test.sh derives
+    # one from the other rather than asserting two hand-copied literals, so the
+    # two surfaces cannot drift apart unnoticed.
+    printf 'Wave shape: a single ticket — nothing to parallelise.'
+  elif [ "$peak" -le 0 ]; then
+    # peak 0 means the wavemap could not be read — UNKNOWN, not serial. Saying
+    # nothing beats saying something false: `nt=4 nw=2 peak=0` used to print
+    # "2 waves, 1 ticket each", which is arithmetically impossible. The caller
+    # prints nothing at all when this is empty.
+    :
+  elif [ "$nw" -eq 1 ]; then
+    printf 'Wave shape: 1 wave of %s ticket(s) — fully parallel, nothing waits.' "$nt"
+  elif [ "$peak" -le 1 ]; then
+    printf 'Wave shape: %s waves, 1 ticket each — NO parallelism. Every ticket waits for the one before it. If that is not genuinely true, the dependency graph is a queue and this run is as slow as it can possibly be.' "$nw"
+  else
+    printf 'Wave shape: %s waves, up to %s ticket(s) in parallel.' "$nw" "$peak"
+  fi
+}
+
 # --- create one GitHub sub-issue for a ticket; echo its new issue number -----
 # Best-effort, same spirit as gh_relabel: if gh is missing or the create fails,
 # leave a note and echo nothing (the wave entry records a null issue). gh prints
@@ -2337,10 +5023,23 @@ cmd_schedule() {
   contradictions="$(awk -F'\t' '$2=="declared-false" && $3!="" {
       printf "  %s declares establishesSharedInfrastructure: false, overriding a config-file match (%s) — the plan'"'"'s call wins, so it shares its wave.\n", $1, $3 }' "$scan")"
 
+  # S178 Part C — the wave SHAPE, read off the wavemap BEFORE it is deleted.
+  # "Grouped 14 ticket(s) into 14 wave(s)" was already printed here; the COUNT
+  # existed and the SIGNAL did not. "14 waves, 1 ticket each" is the thing the
+  # captain can act on, and until now he had to open waves.json to see it. Each
+  # wavemap line is "<wave> <id> <id> …", so the widest wave is max(NF-1).
+  local peak_parallel
+  peak_parallel="$(awk 'NF > 1 { n = NF - 1; if (n > m) m = n } END { print m + 0 }' "$wavemap" 2>/dev/null)"
+  peak_parallel="${peak_parallel:-0}"
+
   rm -f "$table" "$wavemap" "$assign" "$scan"
 
   echo "SCHEDULE: advanced"
   echo "  Grouped $ntickets ticket(s) into $nwaves wave(s); opened $nissues sub-issue(s)."
+  local shape_line; shape_line="$(wave_shape_line "$ntickets" "$nwaves" "$peak_parallel")"
+  # EMPTY when the shape is unknown (an unreadable wavemap) — print nothing at
+  # all rather than a shape we cannot stand behind.
+  [ -n "$shape_line" ] && printf '  %s\n' "$shape_line"
   if [ "$n_declared" -eq 0 ]; then
     echo "  ⚠ NO ticket declared establishesSharedInfrastructure — the harness fell back to reading ticket text, which only catches a ticket that NAMES a build/test config file. An infrastructure ticket phrased any other way did NOT get a wave of its own. Ask Plan to declare the field."
   elif [ "$n_declared" -eq "$ticket_count" ]; then
@@ -2669,15 +5368,19 @@ slice_pressure() { # nCriteria nFiles nDirs newLoc budget -> "<level>\t<reason>"
 # jq-free awk over the canonical one-field-per-line plan.json shape (inline OR
 # multi-line acceptanceCriteria), mirroring validate_plan_json's object parse.
 slice_pressure_rows() { # plan.json
-  awk '
-    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; nc=0; newloc=0; in_ac=0; next }
-    /^[[:space:]]*\}[,]?[[:space:]]*$/ {
-      if (inobj) printf "%s\t%s\t%d\t%d\n", id, title, nc, newloc
+  awk "$LCARS_AWK_CRIT"'
+    /^[[:space:]]*\{[[:space:]]*$/ && !in_ac { inobj=1; id=""; title=""; actext=""; newloc=0; in_ac=0; next }
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac {
+      # S174: count through the ONE normalizer. Counting quoted strings would
+      # count an object criterion three or four times over (text, drawnAt, …)
+      # and inflate every slice-pressure row on a mockup Mission.
+      if (inobj) { delete ctx; nc=lcars_crit_texts(actext, ctx)
+                   printf "%s\t%s\t%d\t%d\n", id, title, nc, newloc }
       inobj=0; next
     }
     inobj && in_ac {
-      m=split($0, b, "\""); for (i=2;i<m;i+=2) if (b[i] != "") nc++
-      if ($0 ~ /\]/) in_ac=0
+      actext = actext " " $0
+      if ($0 ~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=0
       next
     }
     inobj {
@@ -2686,8 +5389,9 @@ slice_pressure_rows() { # plan.json
       if (key=="id") id=a[4]
       else if (key=="title") title=a[4]
       else if (key=="acceptanceCriteria") {
-        if (n >= 4) { for (i=4;i<n;i+=2) if (a[i] != "") nc++ }  # inline items
-        if ($0 !~ /\]/) in_ac=1                                   # opens multi-line
+        v=$0; sub(/.*"acceptanceCriteria"[[:space:]]*:[[:space:]]*/, "", v)
+        actext = actext " " v
+        if ($0 !~ /\][[:space:]]*,?[[:space:]]*$/) in_ac=1        # opens multi-line
       }
       else if (key=="estimatedNewLoc") { v=a[3]; gsub(/[^0-9]/, "", v); newloc=v+0 }
     }
@@ -4400,7 +7104,7 @@ impl_park_env_cannot_test() { # ticket  reason-text
     "ticket=$t" "category=env-cannot-test"
   echo "IMPLEMENT: environment cannot run tests — $t parked (awaiting-human)."
   echo "  No Test-Writer retry can conjure a test runner; this needs a human call."
-  echo "  Resolve with \`lcars respond $MISSION_ID\`."
+  echo "  Resolve with:  $(respond_hint)"
   exit 0
 }
 
@@ -6214,7 +8918,7 @@ cmd_impl_save_result() {
     echo "IMPLEMENT: ticket flagged — $TICKET"
     echo "  $TICKET is still not green (the worker reported $attempts iteration(s))."
     echo "  Flagged the human. Stage: implement (awaiting-human)."
-    echo "  Resolve with \`lcars respond $MISSION_ID\`."
+    echo "  Resolve with:  $(respond_hint)"
     [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
     exit 0
   fi
@@ -6373,7 +9077,7 @@ EOF
   if [ -z "$cur" ]; then
     echo "IMPLEMENT: complete"
     echo "  Every ticket in every wave is green — ready to advance to Verify."
-    echo "  Run \`lcars run $MISSION_ID\` (or impl-advance) to move to Verify."
+    echo "  Run '$(drive_hint)' (or impl-advance) to move to Verify."
     exit 0
   fi
 
@@ -6833,7 +9537,7 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
 
   echo "IMPLEMENT: $what, flagged the human"
   printf '%s\n' "$summary"
-  echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
+  echo "  Stage: implement (awaiting-human). Resolve with:  $(respond_hint)"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
 }
 
@@ -6982,7 +9686,7 @@ cmd_impl_advance() {
   while IFS=$'\t' read -r w id; do
     [ -n "$id" ] || continue
     ticket_green "$id" \
-      || die "ticket $id (wave $w) is not green yet — every ticket must pass before Verify. Run \`lcars run $MISSION_ID\` to finish the open waves."
+      || die "ticket $id (wave $w) is not green yet — every ticket must pass before Verify. Run '$(drive_hint)' to finish the open waves."
     ordered="${ordered:+$ordered }$id"
   done <<EOF
 $table
@@ -7026,6 +9730,8 @@ EOF
 
   # All green — clear any awaiting-human gate (defensive, like validate-advance)
   # and advance the Mission to Verify, keeping stage and label in step.
+  # S180: the answers.json deletion here is kept for the same reason as
+  # validate-advance's — see the note there.
   state_del awaitingHuman
   state_del pendingQuestion
   rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
@@ -7147,6 +9853,306 @@ sys.stdout.write("\n".join(out) + "\n")
 PYEOF
 }
 
+# S174 — BUILT BUT NOT IN YOUR DRAWING. Every criterion in the approved plan
+# that the planner DECLARED with `notDrawn`, collected into one short list with
+# its own text and the stated reason. `notDrawn` is how a screen-changing ticket
+# says "this is visible and the mockup does not contain it" (see
+# plan_mockup_contract_block); this is where that declaration is CASHED IN — the
+# captain reviews what was invented as a list, instead of discovering it by
+# clicking.
+#
+# THE CRITERION TEXT LEADS, the reason follows. Round 1 printed the reason alone
+# and a tester smuggled an invention in as "⊘ t-001 · minor" — the entry named
+# the excuse and hid the thing. What was built is the text.
+#
+# `notVisual` criteria are deliberately ABSENT: on the plan that produced this
+# round, 19 of 23 declarations were persistence and test-hygiene trivia, and a
+# list that long is one the captain scrolls past. Prints NOTHING when no ticket
+# declared a notDrawn — which is every plan written before this round and every
+# mission with no mockup, so their Verify readout is byte-identical to before.
+verify_not_drawn_readout() { # plan.json
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f: plan = json.load(f)
+except Exception:
+    sys.exit(0)
+if not isinstance(plan, list): sys.exit(0)
+rows = []
+for t in plan:
+    if not isinstance(t, dict): continue
+    tid = t.get("id") or "?"
+    for c in (t.get("acceptanceCriteria") or []):
+        if not isinstance(c, dict): continue          # a plain string declares nothing
+        if "notDrawn" not in c: continue
+        reason = " ".join(str(c.get("notDrawn") or "").split())
+        text = " ".join(str(c.get("text") or "").split())
+        if not text and not reason: continue
+        rows.append((tid, text, reason))
+if not rows: sys.exit(0)
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "\u2026"
+out = ["  BUILT BUT NOT IN YOUR DRAWING — open these FIRST:"]
+for tid, text, reason in rows:
+    out.append("    \u2298 %s \u00b7 %s" % (tid, clip(text or "(no text)", 150)))
+    if reason:
+        out.append("        not drawn because: %s" % clip(reason, 150))
+out.append("      NOBODY JUDGED THESE AGAINST A PICTURE. The planner declared each one")
+out.append("      absent from the mockup, so neither the plan gate nor the reviewer could")
+out.append("      check it, and you are the first person to see it. The un-drawn surface is")
+out.append("      not a footnote — it is where the bug was last time: the two screens that")
+out.append("      drawing never showed were built by fiat, one of them from an open question")
+out.append("      that shipped unanswered, and that is exactly where the value cell came out")
+out.append("      scrambled. Everything else can be compared to the drawing. This cannot.")
+sys.stdout.write("\n".join(out) + "\n")
+PYEOF
+}
+
+# === S179: THE COMBINATION NOBODY DREW ======================================
+#
+# THE MIRROR OF verify_not_drawn_readout, and the reason it has to exist.
+# That readout lists what a ticket BUILT WITHOUT A DRAWING — an invention, made
+# visible. S174 made those refusable. It cannot see the other half of the same
+# hole: the case the drawing never covered and NO ticket picked up at all.
+#
+# MEASURED (lcars-20260814-001). Two independent axes on one KPI row —
+# collection (automatic|manual) and shape (scalar|cohort). The drawing has 3
+# `tag-manual` rows and 11 `cohort` rows and ZERO that are both; the brief
+# asserts each axis on its own and never their intersection. The build resolved
+# it by accident (a cohort row is read-only whether automatic or manual, while
+# still rendering the word "Manual"), and the captain got a Manual tag on a
+# read-only list with nothing to type into. The PREVIOUS mission on this same
+# drawing had FILLED that hole by fiat with an invented sub-value editor; S174
+# now correctly refuses that invention; and refusing it without surfacing the
+# gap just moves the failure from visible-and-wrong to invisible-and-absent.
+#
+# NO CLASSIFIER, and this is the whole design. Nothing here reads a question and
+# decides whether it is about a combination, and nothing decides whether a ticket
+# answered it. Two DECLARATIONS and two exact matches:
+#   1. the design worker OPENS the bullet with `UNDRAWN COMBINATION`
+#      (see `_CONCEPT_CONTRACT` in web/lcars_serve/actions.py). It rides the road
+#      S175 already built — `## Open questions` → the PRD gate → prd.md → Plan.
+#   2. the PRD marks it `STILL OPEN:` or `RESOLVED`, the prefix contract
+#      skills/lcars-file/SKILL.md already prescribes and `mission_open_questions`
+#      already reads. THE PREFIX IS REQUIRED HERE TOO (fix round 2 / D2): an
+#      undeclared bullet is one `mission_open_questions` silently drops, and two
+#      readers of one section may not disagree about what a declaration is.
+#   3. a ticket that settled one declares it on the criterion with `decides`,
+#      quoting the question — the shape `plan_open_questions_block` already asks
+#      for. The match is NORMALISED SUBSTRING CONTAINMENT, the identical test
+#      `lcars_prd_questions_gate` (skills/lcars-init/lcars-common.sh) uses; not
+#      similarity, not keywords.
+#
+# ── FIX ROUND 2 / D1: ONE STRING, DISPLAYED AND LOAD-BEARING ───────────────
+# The first cut MATCHED on the bullet with its `UNDRAWN COMBINATION:` marker
+# still attached and DISPLAYED it with the marker stripped. So a planner who
+# quoted the question exactly as the captain reads it was not credited, and this
+# readout printed "no ticket quoted it" four lines under `verify_decided_readout`
+# printing that very ticket's decision — two readouts contradicting each other on
+# one screen about one question, which is the failure this round exists to stop.
+# The marker is now removed ONCE, at parse time, and nothing downstream keys off
+# it: the string the captain sees IS the string a `decides` must contain.
+#
+# AND IT SAYS WHAT IT CANNOT KNOW. "Nobody decided it" here means exactly two
+# facts — the PRD's open-questions section still marks the bullet STILL OPEN, and
+# no `decides` quotes it — and the readout prints that limit rather than implying
+# a verdict on the built product. It does NOT read the PRD's prose for an answer
+# and does not claim to. A self-declared field cannot be validated into honesty
+# (S174, three rounds); stating the floor is the only honest move left.
+#
+# FAILS OPEN AND SILENT. No mockup, no prd.md, no section, no marker, an
+# unreadable plan.json: NOTHING is printed, rc 0, never a stage-stop. It is a
+# readout.
+verify_undrawn_readout() { # prd.md plan.json
+  [ -f "$1" ] || return 0
+  # FIX ROUND 2 / D6: guarded on the Mission actually CARRYING a drawing, the
+  # same guard `verify_unfenced_note` and `plan_review_mockup_block` already
+  # carry. Without it a mission with no attachment at all could be told about
+  # "combinations your drawing never showed" — naming a drawing that is not there.
+  [ -n "$(mission_mockup_names)" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" <<'S179_PY'
+import json, re, sys
+
+try:
+    with open(sys.argv[1]) as fh:
+        prd = fh.read()
+except Exception:
+    sys.exit(0)
+
+# ── the PRD section, read exactly as mission_open_questions reads it ────────
+# FIX ROUND 2 / D2: …except that a FENCED region is not prose. The contract's
+# own template shape, quoted in a ``` block (which is exactly how a PRD shows a
+# worker the shape it must write), was collected as a real bullet and printed to
+# the captain as a row of literal placeholders. Fence state is tracked over the
+# WHOLE scan, so a `# heading` inside a block cannot close the section either.
+want = "open questions from the design session"
+FENCE = re.compile(r"^\s*(```|~~~)")
+body, lvl, fenced = [], None, False
+for ln in prd.replace("\r\n", "\n").split("\n"):
+    if FENCE.match(ln):
+        fenced = not fenced
+        continue
+    if fenced:
+        continue
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m:
+        name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+        if lvl is None:
+            if name.startswith(want):
+                lvl = len(m.group(1))
+            continue
+        if len(m.group(1)) <= lvl:
+            break
+        body.append(ln)
+        continue
+    if lvl is not None:
+        body.append(ln)
+
+# Bullets, with their CONTINUATION LINES joined back on. A PRD wraps at ~78
+# columns and every one of the real brief's questions spans two physical lines;
+# counting lines would hand the captain half a sentence.
+BULLET = re.compile(r"^([-*+]|\d+[.)])\s+")
+entries, cur = [], None
+for ln in body:
+    t = ln.strip()
+    if not t:
+        continue
+    m = BULLET.match(t)
+    if m:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = t[m.end():]
+    elif cur is not None:
+        cur = cur + " " + t
+    else:
+        entries.append(" ".join(t.split()))
+if cur:
+    entries.append(" ".join(cur.split()))
+
+EMPH = re.compile(r"^[*_`]+|[*_`]+$")
+STILL = re.compile(r"(?i)^still\s+open\b[\s:\-\u2014]*")
+RESOLVED = re.compile(r"(?i)^resolved\b")
+MARK = re.compile(r"(?i)^undrawn\s+combination\b")
+MARKSTRIP = re.compile(r"(?i)^undrawn\s+combination\b[\s:\-\u2014]*")
+LEAD = re.compile(r"^[\s:\-\u2014]+")
+
+
+def unmark(s):
+    """The routing marker taken off, ONCE. D4: `**UNDRAWN COMBINATION:**` — what
+    a model writing markdown does by default — left a literal `**` leading the
+    line, because the strip stopped at the `*`. So re-strip emphasis after the
+    marker comes off, exactly as `mission_open_questions` re-strips after
+    `STILL OPEN`."""
+    t = MARKSTRIP.sub("", s.strip())
+    t = EMPH.sub("", t.strip()).strip()
+    return " ".join(LEAD.sub("", t).split())
+
+
+open_combos = []
+for e in entries:
+    lead = EMPH.sub("", e).lstrip()
+    if RESOLVED.match(lead):
+        continue                      # settled with the captain during Align
+    m = STILL.match(lead)
+    if not m:
+        continue                      # D2: undeclared — dropped, as Plan drops it
+    lead = EMPH.sub("", lead[m.end():].strip()).strip()
+    lead = LEAD.sub("", lead)
+    if not MARK.match(lead):
+        continue                      # not declared a combination — not ours
+    # D1: ONE string from here on. The heading already says what these are, so
+    # the marker leaves the line — and the line that is left is the line a
+    # `decides` has to quote. A bullet that is NOTHING but the marker keeps its
+    # own text, so displayed and load-bearing stay the same string there too.
+    q = unmark(lead) or " ".join(lead.split())
+    if q and q not in open_combos:    # identical bullets are ONE row, not two
+        open_combos.append(q)
+
+if not open_combos:
+    sys.exit(0)
+
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+# ── which ones a ticket DECLARED it settled ────────────────────────────────
+decides = []
+try:
+    with open(sys.argv[2]) as fh:
+        plan = json.load(fh)
+    if isinstance(plan, list):
+        for t in plan:
+            if not isinstance(t, dict):
+                continue
+            for c in (t.get("acceptanceCriteria") or []):
+                if isinstance(c, dict) and c.get("decides"):
+                    # The marker comes off here for the same reason it comes off
+                    # the bullet: a planner quoting the question WITH it and one
+                    # quoting it without are saying the same thing.
+                    decides.append(
+                        norm(MARKSTRIP.sub("", str(c["decides"]).strip())))
+except Exception:
+    decides = []                      # unreadable plan — nothing was cited
+
+
+def cited(q):
+    """FIX ROUND 2 / D5: a ticket QUOTED the question AND said something past it.
+    The contract shape is `"<question> → <what you decided, and why>"`, and the
+    first cut inspected only the first half — so the cheapest way to silence this
+    warning was to paste the question and decide nothing. No arrow is parsed (a
+    planner writes it five ways); the test is that removing the quoted question
+    leaves something behind."""
+    nq = norm(q)
+    if not nq:
+        return False
+    for d in decides:
+        if nq in d and d.replace(nq, " ", 1).strip():
+            return True
+    return False
+
+
+rows = [q for q in open_combos if not cited(q)]
+if not rows:
+    sys.exit(0)
+
+
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "\u2026"
+
+
+out = ["  NOBODY DECIDED THIS ON THE RECORD \u2014 combinations your drawing never showed:"]
+for q in rows:
+    out.append("    \u2299 %s" % clip(q, 220))
+out.append("      The design session flagged each of these as a case the drawing does not")
+out.append("      cover. WHAT WAS CHECKED HERE IS NARROW, and it is all of it: the PRD's")
+out.append("      open-questions section still marks it STILL OPEN, and no ticket quoted it")
+out.append("      in a `decides` declaration. Nothing here read the PRD's prose for an")
+out.append("      answer. Nobody judged whether the built product handles the case — it")
+out.append("      may work, it may be missing, or it may render a control that does")
+out.append("      nothing. Last time one went unasked, a multi-source row shipped read-only")
+out.append("      wearing a \"Manual\" tag with nothing to type into.")
+sys.stdout.write("\n".join(out) + "\n")
+S179_PY
+}
+
+# S174 round 3 — GRACEFUL DEGRADATION, SAID OUT LOUD. When a Mission carries a
+# mockup that yields NO element ids, the membership rule cannot run: every
+# drawnAt was accepted on form alone. That is the right call (a drawing we cannot
+# read is not a drawing we may fail a mission over) but it must never be silent,
+# because the captain would otherwise read the same green as a fenced mission.
+# Prints NOTHING for a mission with no mockup, and nothing when the drawing has
+# ids — so both of those readouts stay byte-identical.
+verify_unfenced_note() {
+  local names; names="$(mission_mockup_names)"
+  [ -n "$names" ] || return 0
+  [ -z "$(mission_mockup_place_names)" ] || return 0
+  printf '  NOTE: %s carries no element ids, so each ticket'"'"'s "drawnAt" anchor was\n' "${names%% *}"
+  printf '        checked only for being non-empty — nothing could verify it names a real\n'
+  printf '        place in the drawing. Treat the anchors as claims, not as checked facts.\n'
+}
+
 cmd_verify_summary() {
   locate_mission "$MISSION_ID"
   require_stage verify
@@ -7184,6 +10190,22 @@ EOF
   # byte-identical to before this round.
   # shellcheck disable=SC2086
   verify_contract_readout $ordered_ids
+
+  # S174: what the tickets declared they were building WITHOUT a drawing to build
+  # it from. Absent entirely when there is none.
+  verify_not_drawn_readout "$MISSION_DIR/plan.json"
+  verify_decided_readout "$MISSION_DIR/plan.json"
+  verify_unfenced_note
+
+  # S179: the mirror of the readout above — a combination the DESIGN said it did
+  # not draw and that no ticket resolved. Absent entirely when the brief declared
+  # none, which is every mission filed before this round.
+  verify_undrawn_readout "$MISSION_DIR/prd.md" "$MISSION_DIR/plan.json"
+
+  # S175 part C: what the design ASSUMED of this repo and the repo did not have.
+  # Absent entirely on a mission that declared no preconditions, and on one where
+  # every declared precondition came back satisfied.
+  verify_preconditions_readout "$MISSION_DIR/preconditions.json"
 
   # S113: show the ACTUAL cost beside the ESTIMATE (display-only — actuals are
   # captured by S112 into usage.json; the estimate is never touched). Present
@@ -8836,8 +11858,8 @@ isolated_line() { # stage  worker-count
 # are captured to scratch for debugging only. The scratch dir path is also handed
 # to the worker via $LCARS_WORK_OUT so a CLI adapter (or a test stub) can find it
 # without re-parsing the prompt.
-spawn_worker() { # role  template  toolset  outdir  extra  [prior_no_file]
-  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5" prior_no_file="${6:-}"
+spawn_worker() { # role  template  toolset  outdir  extra  [prior_no_file] [prior_reject]
+  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5" prior_no_file="${6:-}" prior_reject="${7:-}"
   mkdir -p "$outdir"
   # Lever 2 — behaviour-keyed retry escalation. When a PRIOR attempt of THIS
   # single-worker stage produced NO file (the procrastination failure mode), the
@@ -8858,6 +11880,24 @@ create the required output file in the scratch output directory — in a single
 write, with its COMPLETE final content (do NOT create an empty or placeholder file
 intending to fill it in later; your file-creation tool may not support overwriting
 an existing file). Describing the task is NOT doing it."
+  fi
+  # S178 — the OTHER retry channel. Until this round the only thing a retrying
+  # worker was ever told was "a prior attempt produced no file", so a stage that
+  # rejected a well-formed artifact on its CONTENT (the over-correction guard)
+  # would have burned its whole budget while the worker re-emitted the same thing,
+  # never once being told what was wrong. The caller passes the rejection VERBATIM
+  # and it goes at the very end of the prompt, after the output instructions.
+  # Empty on a first attempt, so that prompt stays byte-for-byte unchanged.
+  local prior_reject_block=""
+  if [ -n "$prior_reject" ]; then
+    prior_reject_block="
+
+## YOUR PREVIOUS ATTEMPT WAS REJECTED — read this FIRST
+A prior attempt at this exact task produced its output file, and the harness
+REFUSED it for the reason below. Read it, fix exactly that, and change nothing
+else about your answer.
+
+$prior_reject"
   fi
   local prompt
   prompt="$(cat "$template")
@@ -8880,7 +11920,7 @@ file(s) exist on disk in the scratch output directory.
 The harness reads ONLY the files you create in that scratch output directory; it
 NEVER reads your reply. Do NOT put your answer in your reply / chat — a
 reply-only answer counts as no output and FAILS the stage. Create the file(s)
-exactly as specified above, in the scratch output directory, and nowhere else.$prior_fail_block"
+exactly as specified above, in the scratch output directory, and nowhere else.$prior_fail_block$prior_reject_block"
   # The env role the worker sees IS this Stage's role; the toolset is selected by
   # $toolset. They coincide for every Stage spawn (only the context-pack path
   # differs, and that goes through generate_context_pack, not here), so pre-export
@@ -9200,7 +12240,7 @@ cmd_validate() {
   require_stage validate
   require_worker
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
-    && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the Validator does not re-run until the gate clears."
+    && die "mission is awaiting a human answer — run '$(respond_hint)' first; the Validator does not re-run until the gate clears."
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
 
   # S166 — make the branch pin STRUCTURAL, and do it BEFORE `extra` is assembled.
@@ -9239,7 +12279,7 @@ cmd_validate() {
   # prior scope question. Feed it so the fresh Validator FOLDS IT IN and does not
   # re-raise the same question — otherwise the awaiting-human gate loops forever.
   [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
-- $MISSION_DIR/answers.json   (the captain's answer resolving the prior scope question — treat it as DECIDED and fold it in; do not re-raise it)"
+- $MISSION_DIR/answers.json   (EVERY answer the captain has given on this Mission, oldest first, each with the question(s) it answered — treat them as DECIDED and fold them in; where two answer the same question the LATER one stands; do not re-raise any of them)"
   # The engineering ADRs Align seeded for a complex Mission (Context / Decision /
   # Alternatives / Consequences). Align SEEDS them; Validate may REFINE them when
   # a research finding changes a decision (option B) — so feed the path when it
@@ -9251,6 +12291,13 @@ cmd_validate() {
   extra="$extra$(context_extra_block)"
   # The captain's durable image attachments (S92) — ABSOLUTE paths, read as input.
   extra="$extra$(attachments_extra_block)"
+  # S175 — what the DESIGN declared it assumes of this repo's data. EMPTY (and
+  # therefore byte-identical to before this round) on every mission whose concept
+  # doc has no `## DATA PRECONDITIONS` entries, which is most of them.
+  local precond_declared="" _pcrc=0
+  precond_declared="$(mission_data_preconditions)" || _pcrc=$?
+  [ "$_pcrc" -eq 0 ] || die "the design's '## DATA PRECONDITIONS' section could not be read — see the message above; fix the concept doc and re-run."
+  [ -n "$precond_declared" ] && extra="$extra$(validate_preconditions_block)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
@@ -9265,6 +12312,23 @@ cmd_validate() {
       prior_no_file=no-file
     else
       prior_no_file=""
+    fi
+
+    # S175 — CASH IN THE DECLARATION. The worker gathered evidence; the question
+    # is composed here, in fixed wording, because the round takes no position on
+    # which of the three answers is right. Canonicalize FIRST (a verdict without
+    # evidence is not a verdict; a precondition the worker skipped is UNCHECKED,
+    # never satisfied), then fold in any answer `lcars respond` recorded so a
+    # re-run does not re-ask, then append one question per still-unsatisfied,
+    # still-unanswered precondition to whatever the worker put in scope.txt.
+    if [ -n "$precond_declared" ]; then
+      local pdecl="$odir/declared-preconditions.txt"
+      printf '%s\n' "$precond_declared" > "$pdecl"
+      precond_canonicalize "$odir/preconditions.json" "$pdecl" "$MISSION_DIR/preconditions.json"
+      precond_absorb_answers "$MISSION_DIR/preconditions.json" "$MISSION_DIR/answers.json"
+      precond_report "$MISSION_DIR/preconditions.json"
+      local plines; plines="$(precond_scope_lines "$MISSION_DIR/preconditions.json")"
+      [ -n "$plines" ] && printf '%s\n' "$plines" >> "$odir/scope.txt"
     fi
 
     if [ -f "$odir/scope.txt" ] && grep -qve '^[[:space:]]*$' "$odir/scope.txt"; then
@@ -10134,6 +13198,18 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     [ -f "$rv" ] && extra="$extra
 - $rv   (reviewer objections to resolve in this revision)"
   done
+  # S178 — and the plan those objections are AGAINST, when a revision was
+  # actually requested (the token review_fail writes; see the note there).
+  # Without it the worker could not obey "leave the rest of the graph alone" even
+  # in principle: it was handed a complaint about a plan it had never seen, so it
+  # planned from zero every time. MEASURED cost of that omission: one objection
+  # asking for a single edge came back as a 14-deep single-file chain. Gated on
+  # the token, so a first plan — and a re-plan after a `lcars feedback` send-back
+  # — get a byte-identical prompt to before this round.
+  if [ -f "$MISSION_DIR/plan-under-review.json" ]; then
+    extra="$extra
+- $MISSION_DIR/plan-under-review.json   (THE PLAN UNDER REVIEW — the exact tickets the objections are against; this revision is a PATCH of it)"
+  fi
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts this Stage may read, by PATH only. Absent on a trivial
   # Mission, in which case this is skipped.
@@ -10148,10 +13224,32 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # the drawing, and why the look is not deferred to Verify. EMPTY for a Mission
   # without a mockup, so every other Plan prompt is byte-identical.
   extra="$extra$(plan_mockup_contract_block)"
+  # S175 — the questions the brief left open, and the contract for deciding one
+  # OUT LOUD. Nothing at all when the brief left none, so a pre-S175 Mission's
+  # Plan prompt is byte-identical.
+  local _oqb _oqrc=0; _oqb="$(plan_open_questions_block)" || _oqrc=$?
+  [ "$_oqrc" -eq 0 ] || die "prd.md's open-questions section declares nothing readable — see the message above; fix the PRD and re-run."
+  extra="$extra$_oqb"
+  # S178 — a correction is a PATCH, not a licence to rewrite the graph. NOTHING
+  # at all when there are no reviewer objections on disk, so a first plan's
+  # prompt is byte-identical to what it was before this round.
+  extra="$extra$(plan_revision_contract_block)"
+  # THE CAPTAIN'S ANSWER REACHES THE THING THAT WRITES THE TICKETS. Measured
+  # 2026-08-30 on the captain's own MBR mission: he answered a plan-review
+  # escalation (lock permissively), `cmd_plan_review` was given answers.json and
+  # honoured it, and `cmd_plan` — the Stage that actually re-emits the tickets —
+  # was NOT, so the planner rewrote the SAME gated criterion, the reviewer
+  # objected again quoting answers.json back at it, and the Mission escalated to
+  # him a second time on a question he had already settled. That is an infinite
+  # babysitting loop, not a hard question: the only Stage that could act on his
+  # decision was the one Stage blind to it. Same wording as validate/plan-review
+  # so the three Stages cannot drift.
+  [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
+- $MISSION_DIR/answers.json   (EVERY answer the captain has given on this Mission, oldest first, each with the question(s) it answered — treat them as DECIDED, fold them into the tickets, and never re-emit a criterion that contradicts one; where two answer the same question the LATER one stands)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
-  local tries=0 prior_no_file=""
+  local tries=0 prior_no_file="" prior_reject=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
@@ -10160,13 +13258,28 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     # writes into an existing dir (some file-creation tools cannot mkdir). CLI-
     # neutral: Claude is unaffected. plan-save reads from "$odir/manifests".
     mkdir -p "$odir/manifests"
-    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra" "$prior_no_file"
-    if [ -f "$odir/plan.json" ]; then prior_no_file=""; else prior_no_file=no-file; fi
+    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra" "$prior_no_file" "$prior_reject"
+    # S178: BOTH retry channels are keyed on THIS attempt's behaviour. Clearing
+    # prior_no_file but not prior_reject let attempt 3 carry attempt 1's
+    # rejection under "YOUR PREVIOUS ATTEMPT WAS REJECTED" while attempt 2 had
+    # actually produced no file at all — a heading about the wrong attempt.
+    if [ -f "$odir/plan.json" ]; then prior_no_file=""; else prior_no_file=no-file; prior_reject=""; fi
     if [ -f "$odir/plan.json" ]; then
-      local rc=0
+      local rc=0 final_flag=""
+      # S178: on the LAST attempt the over-correction guard goes advisory — a
+      # valid plan must never deadlock the Stage on this guard. See cmd_plan_save.
+      [ "$tries" -ge "$MAX_WORKER_TRIES" ] && final_flag="--final-attempt"
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
-        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" || rc=$?
+        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" $final_flag || rc=$?
       if [ "$rc" -eq 0 ]; then isolated_line plan 1; rm -rf "$odir"; exit 0; fi
+      # S178: plan-save left its REASON for rejecting beside the plan file. Carry
+      # it into the next attempt's prompt — a bounce whose reason never reaches
+      # the retrying worker just burns the budget re-emitting the same plan.
+      if [ -f "$odir/.plan-reject-note" ]; then
+        prior_reject="$(cat "$odir/.plan-reject-note")"
+      else
+        prior_reject=""
+      fi
     fi
     rm -rf "$odir"
   done
@@ -10181,7 +13294,7 @@ cmd_plan_review() {
   require_stage plan-review
   require_worker
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
-    && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the reviewer does not re-run until the gate clears."
+    && die "mission is awaiting a human answer — run '$(respond_hint)' first; the reviewer does not re-run until the gate clears."
   [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json — Plan has not run."
 
   # S166 — structural pin, before `extra` (see cmd_validate for the ordering
@@ -10209,10 +13322,26 @@ acceptable — do not raise it."
   # redirect) resolves the standoff. Feed it so the reviewer honours that
   # decision instead of re-escalating the same objections forever.
   [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
-- $MISSION_DIR/answers.json   (the captain's resolution of the prior escalation — treat it as DECIDED; do not re-raise it)"
+- $MISSION_DIR/answers.json   (EVERY answer the captain has given on this Mission, oldest first, each with the question(s) it answered — treat them as DECIDED and do not re-raise any of them; where two answer the same question the LATER one stands)"
   # The reviewer still sees ONLY the tickets (never prd.md / validated-plan.md) —
   # we add nothing but the declarative repo-facts context source, by PATH only.
   extra="$extra$(context_extra_block)"
+  # S174 — and the captain's own attachments, by ABSOLUTE path. This is the one
+  # Stage whose whole job is auditing the ticket set, and it was the one Stage
+  # that could not open the drawing the tickets claim to reproduce. EMPTY for a
+  # mission with no attachments, so the overwhelming majority of reviewer prompts
+  # are byte-identical. It does NOT breach the independence above: an attachment
+  # is the captain's artifact, not the Mission's derived reasoning.
+  extra="$extra$(attachments_extra_block)"
+  extra="$extra$(plan_review_mockup_block)"
+  # S180 — THE CAPTAIN'S RULINGS, AND ONLY THOSE. The digest of prd.md's
+  # DECLARED-RESOLVED open questions, plus the precedence rule that goes with
+  # them. prd.md itself is STILL not an input and never becomes one: this is one
+  # line per settled question, nothing else crosses. EMPTY for every Mission
+  # whose brief recorded no resolution, so their reviewer prompt is byte-
+  # identical to before this round. Sited AFTER the mockup block because its
+  # second half refers to the drawing that block introduces.
+  extra="$extra$(plan_review_decisions_block)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
@@ -10445,7 +13574,7 @@ $tspecblock"
   # the same wall.
   local ansblock=""
   [ -f "$MISSION_DIR/answers.json" ] && ansblock="
-- $MISSION_DIR/answers.json   (the captain's answer resolving the prior block on this ticket — treat it as DECIDED)"
+- $MISSION_DIR/answers.json   (EVERY answer the captain has given on this Mission, oldest first, each with the question(s) it answered — treat them as DECIDED; where two answer the same question the LATER one stands)"
   # SELF-HEAL feedback (BUG-029): when the full-suite gate found this ticket's
   # change REGRESSED an earlier ticket's test, cmd_impl_advance re-runs this
   # ticket with $LCARS_SELFHEAL_FEEDBACK carrying the harness-authored reconcile
@@ -10706,7 +13835,7 @@ $(cat "$tdir/flip-flop.json" 2>/dev/null)"
   echo "IMPLEMENT: ticket flagged — $TICKET"
   echo "  $TICKET was bounced by the proof gates $sessions time(s) (the $MAX_WORKER_TRIES-session cap)."
   echo "  Last gate verdict: ${last_verdict:-unknown}"
-  echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
+  echo "  Stage: implement (awaiting-human). Resolve with:  $(respond_hint)"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
 }
@@ -11286,7 +14415,7 @@ cleanup_ticket_worktrees() { # base-dir
 }
 
 # === The auto-advance driver ===============================================
-# `lcars run <id>` defaults to AUTO mode: a thin, token-free loop that sequences
+# `run.sh drive --mission <id>` defaults to AUTO mode: a thin, token-free loop that sequences
 # the per-Stage advances above — each spawned as a cold isolated worker — back to
 # back until a halt condition, then returns to the human. `--step` runs exactly
 # ONE Stage and stops (the previous one-stage-per-invocation behaviour, kept for
@@ -11326,14 +14455,51 @@ drive_detail() { # stage  stage-output
         *)                  echo "research complete" ;;
       esac ;;
     validate)    echo "no scope changes" ;;
-    plan)        local n; n="$(grep -c '"id"' "$MISSION_DIR/plan.json" 2>/dev/null)"; echo "${n:-?} ticket(s)" ;;
+    plan)
+      # S178 — the guard's verdict, ON THE PATH THE CAPTAIN ACTUALLY RUNS. Both
+      # notes are printed by plan-save, and cmd_drive captures a Stage's stdout
+      # and re-emits only this one synthesized line, so `lcars run` showed a plan
+      # handed to Plan Review UNRESOLVED as indistinguishable from a clean one.
+      # That is precisely the class drive_tree_marker's note below already names.
+      # This detail string is ALSO what emit_event stage_done records, so the
+      # marker survives into events.jsonl, `lcars status` and the board — not
+      # just terminal scrollback.
+      #
+      # NO SENTENCE ⇒ NO MARKER, the same rule the tree marker keeps: a Stage
+      # that said neither thing gets a byte-identical line to before.
+      local n mark=""
+      n="$(grep -c '"id"' "$MISSION_DIR/plan.json" 2>/dev/null)"
+      case "$2" in
+        *"OVER-CORRECTION UNRESOLVED"*) mark=" — ⚠ over-correction unresolved, passed to Plan Review" ;;
+        *"REVISION UNCHECKED"*)         mark=" — ⚠ revision unchecked" ;;
+      esac
+      echo "${n:-?} ticket(s)$mark" ;;
     plan-review)
       case "$2" in
         *"passed"*) echo "passed review" ;;
         *"revise"*) printf '%s' "$2" | sed -n 's/.*revise — round \([0-9]*\).*/revise (round \1) → plan/p' | head -1 ;;
         *)          echo "reviewed" ;;
       esac ;;
-    schedule)    printf '%s' "$2" | sed -n 's/.*into \([0-9]*\) wave(s).*/\1 wave(s)/p' | head -1 ;;
+    schedule)
+      # S178 — the wave COUNT was already here; the SHAPE is the signal, and Part
+      # C's whole point is that the captain sees it without opening a file. The
+      # board card carries it and the Schedule CLI prints it; this is the path he
+      # actually runs. Compacted to fit one drive line, and it rides
+      # emit_event stage_done into events.jsonl with everything else.
+      #
+      # NO SENTENCE ⇒ NO MARKER: Schedule deliberately prints no shape line when
+      # the wavemap could not be read (peak unknown), and a driver that invented
+      # one would be asserting what it never measured.
+      local nw shape=""
+      nw="$(printf '%s' "$2" | sed -n 's/.*into \([0-9]*\) wave(s).*/\1 wave(s)/p' | head -1)"
+      case "$2" in
+        *"NO parallelism"*) shape=" — ⚠ 1 ticket each, no parallelism" ;;
+        *"Wave shape: a single ticket"*) shape="" ;;
+        *"Wave shape:"*)
+          shape="$(printf '%s' "$2" | sed -n 's/.*Wave shape: .*up to \([0-9]*\) ticket(s) in parallel.*/ — up to \1 in parallel/p' | head -1)"
+          [ -n "$shape" ] || shape="$(printf '%s' "$2" | sed -n 's/.*Wave shape: 1 wave of \([0-9]*\) ticket(s).*/ — 1 wave, all \1 in parallel/p' | head -1)" ;;
+      esac
+      printf '%s%s' "${nw}" "$shape" ;;
     implement)
       local total=0 g=0 w id
       while IFS=$'\t' read -r w id; do
@@ -11590,7 +14756,7 @@ drive_verify() { # accumulated-summary
             printf 'verify       ◐  reconciling with %s — re-verifying the merged branch\n' "$(json_str "$STATE" base)"
             printf '%s\n' "$rcout"
             printf '⏹ stopped at: verify  (reconciling with the updated base — self-heal in flight)\n'
-            printf 'It will re-merge & re-verify on the next `lcars run %s` pass.\n' "$MISSION_ID"
+            printf 'It will re-merge & re-verify on the next drive pass:\n  %s\n' "$(drive_hint)"
             return 0 ;;
         20) # escalated — awaiting-human; reconcile_escalate already fired the gate.
             mirror_comments || true
@@ -11637,7 +14803,7 @@ drive_verify() { # accumulated-summary
        drive_print_summary "$summary"
        printf '⏹ stopped at: verify  (could not open the PR)\n'
        printf '%s\n' "$out"
-       printf 'Fix the cause (push/auth/gh), then `lcars run %s` to retry the open.\n' "$MISSION_ID"
+       printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
        if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
          notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
          state_set_str verifyDegradedNotified "1"
@@ -11675,9 +14841,9 @@ drive_halt_awaiting() { # stage
       [ -n "$q" ] && printf '  • %s\n' "$q"
     done < <(drive_pending_questions "$pj")
   fi
-  printf 'Answer with `lcars respond %s`.\n' "$MISSION_ID"
+  printf 'Answer with:\n  %s\n' "$(respond_hint)"
   local first; first="$(json_str "$STATE" pendingQuestion)"
-  notify_gate awaiting-human "Needs your answer — ${first:-see \`lcars respond $MISSION_ID\`}"
+  notify_gate awaiting-human "Needs your answer — ${first:-answer it with: $(respond_hint)}"
 }
 
 drive_halt_paused() { # stage
@@ -12132,7 +15298,7 @@ cmd_drive() {
       local wd_stage wd_await
       wd_stage="$(json_str "$STATE" stage)"; wd_await="$(json_raw "$STATE" awaitingHuman)"
       if [ "$wd_stage" = "$stage" ] && [ "$wd_await" != "true" ]; then
-        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run \`lcars run $MISSION_ID\` to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
+        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run '$(drive_hint)' to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
         local wq; wq="$(mktemp)"; printf '%s\n' "$wdq" >"$wq"
         write_pending "$wq" "$stage"; rm -f "$wq"
         state_set_raw awaitingHuman true
@@ -12140,7 +15306,7 @@ cmd_drive() {
         gh_relabel "lcars:awaiting-human" ""
         emit_event error "$stage" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
         drive_print_summary "$summary"
-        printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with `lcars respond %s`).\n' "$action" "$MISSION_ID"
+        printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
         return 0
       fi
@@ -12180,7 +15346,7 @@ cmd_drive() {
         else
           drive_print_summary "$summary"
           printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"
-          printf 'Run `lcars run %s` to continue (or add `--step` for one more).\n' "$MISSION_ID"
+          printf 'Run `%s` to continue (or add `--step` for one more).\n' "$(drive_hint)"
         fi
         return 0
       fi
@@ -12205,6 +15371,7 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; SETUP=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
+FINAL_ATTEMPT=0   # S178: plan-save --final-attempt (guard goes advisory)
 RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -12219,6 +15386,10 @@ while [ $# -gt 0 ]; do
     --responses=*) RESPONSES="${1#--responses=}"; shift ;;
     --plan)        PLAN="${2:-}"; shift 2 ;;
     --plan=*)      PLAN="${1#--plan=}"; shift ;;
+    # S178: this is the Plan worker's LAST attempt, so the over-correction guard
+    # must be advisory rather than fatal (see cmd_plan_save). Set by cmd_plan
+    # only; a hand-run plan-save never passes it.
+    --final-attempt) FINAL_ATTEMPT=1; shift ;;
     --manifests)   MANIFESTS="${2:-}"; shift 2 ;;
     --manifests=*) MANIFESTS="${1#--manifests=}"; shift ;;
     --verdict)     VERDICT="${2:-}"; shift 2 ;;
@@ -12565,6 +15736,155 @@ FSG_EOF
   plan-mockup-block-test)
     MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
     plan_mockup_contract_block
+    exit 0 ;;
+  # S179 test hook, the same shape and the same zero-token guarantee: print the
+  # PLAN REVIEW mockup block in isolation, so a focused test can assert both the
+  # objection the auditor is handed and that a Mission with NO mockup is handed
+  # nothing at all.
+  plan-review-mockup-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_review_mockup_block
+    exit 0 ;;
+  # S180 hooks, same shape and same zero-token guarantee: the DECISIONS DIGEST
+  # alone (what was extracted from the brief), and the plan-review block built
+  # from it (what the reviewer is actually told), both over $LCARS_ATT_TEST_DIR.
+  resolved-decisions-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    mission_resolved_decisions
+    exit $? ;;
+  plan-review-decisions-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_review_decisions_block
+    exit 0 ;;
+  # S180/B hooks, same shape and the same zero-token guarantee. The SCAN alone
+  # (what shape-reading extracted, and — far more important — what it REFUSED to
+  # extract), and the check itself over explicit paths, with its exit status AS
+  # the verdict.
+  claim-scan-test)
+    # The paths ride $LCARS_CLAIM_FILES (space-separated): this script's own
+    # argument parser has already consumed "$@" by the time dispatch runs.
+    claim_identifier_scan "${LCARS_CLAIM_MODE:-absent-claim}" ${LCARS_CLAIM_FILES:-}
+    exit $? ;;
+  claim-check-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    STATE="$MISSION_DIR/state.json"
+    REPO_ROOT="${LCARS_CLAIM_REPO:-$PWD}"
+    research_claim_check "$MISSION_DIR/research" "${LCARS_CLAIM_REF:-}"
+    exit $? ;;
+  # S180 hook: the precondition absorber over an on-disk answers.json, so the
+  # append-only shape can be proven to reach EVERY declared precondition and not
+  # just the newest answer.
+  precond-absorb-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    precond_absorb_answers "$MISSION_DIR/preconditions.json" "$MISSION_DIR/answers.json"
+    exit 0 ;;
+  # S180 hook: what run.sh's OWN reader gets out of answers.json — the reconcile
+  # path (cmd_reconcile) takes exactly this, and under an append-only file it must
+  # return the LATEST answer, never the oldest.
+  answers-latest-test)
+    locate_mission "$MISSION_ID"
+    json_str "$MISSION_DIR/answers.json" answer
+    exit 0 ;;
+  # S178 test hook: the Schedule wave-shape line ALONE, over explicit numbers, so
+  # the "peak 0 means UNKNOWN, not serial" branch can be driven without
+  # constructing a wavemap that fails to parse.
+  wave-shape-line-test)
+    wave_shape_line "${LCARS_WS_NT:-0}" "${LCARS_WS_NW:-0}" "${LCARS_WS_PEAK:-0}"
+    printf '\n'
+    exit 0 ;;
+  # S178 test hook, the same shape and the same zero-token guarantee: print the
+  # Plan prompt's REVISION contract in isolation over $LCARS_ATT_TEST_DIR, so a
+  # focused test can assert both what a revising planner is told and that a
+  # Mission with no reviewer objections is told nothing at all.
+  plan-revision-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_revision_contract_block
+    exit 0 ;;
+  # S178 test hook: the over-correction guard ALONE, over three explicit paths —
+  # prior plan, revised plan, and the mission dir holding the review rounds. The
+  # exit status IS the verdict (0 clean · 1 over-correction · 3 UNCHECKED).
+  overcorrection-check-test)
+    replan_overcorrection_check "${LCARS_PRIOR_PLAN:-/nonexistent}" \
+      "${LCARS_NEW_PLAN:-/nonexistent}" "${LCARS_ATT_TEST_DIR:-}"
+    exit $? ;;
+  # S175 test hooks, the same shape: exercise the DATA PRECONDITION machinery in
+  # ISOLATION over $LCARS_ATT_TEST_DIR — no locate_mission, no worker spawn, zero
+  # tokens. `preconditions-declared-test` prints what the design declared;
+  # `preconditions-block-test` prints what the Validator is actually told;
+  # `preconditions-gate-test` runs the trust boundary over a stubbed worker
+  # report ($LCARS_PRECOND_SRC) and prints the canonical file, the report and the
+  # escalation question(s) the captain would see; `preconditions-verify-test`
+  # prints the Verify readout.
+  preconditions-declared-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    # FIX ROUND 2: the refusal is the POINT — propagate it (see cure 1b).
+    mission_data_preconditions
+    exit $? ;;
+  preconditions-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    validate_preconditions_block
+    exit $? ;;
+  preconditions-gate-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    __s175_decl="$(mission_data_preconditions)"
+    if [ -z "$__s175_decl" ]; then exit 0; fi
+    __s175_df="$(mktemp)"; printf '%s\n' "$__s175_decl" > "$__s175_df"
+    precond_canonicalize "${LCARS_PRECOND_SRC:-/nonexistent}" "$__s175_df" \
+      "$MISSION_DIR/preconditions.json"
+    precond_absorb_answers "$MISSION_DIR/preconditions.json" "$MISSION_DIR/answers.json"
+    rm -f "$__s175_df"
+    echo "--- CANONICAL ---"; cat "$MISSION_DIR/preconditions.json"
+    echo "--- REPORT ---";    precond_report "$MISSION_DIR/preconditions.json"
+    echo "--- SCOPE ---";     precond_scope_lines "$MISSION_DIR/preconditions.json"
+    exit 0 ;;
+  preconditions-verify-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    verify_preconditions_readout "$MISSION_DIR/preconditions.json"
+    exit 0 ;;
+  # S175 part D hooks, same shape and same zero-token guarantee.
+  open-questions-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    # D5: the refusal is the POINT — propagate it instead of swallowing it.
+    mission_open_questions
+    exit $? ;;
+  plan-open-questions-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_open_questions_block
+    exit 0 ;;
+  verify-decided-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    verify_decided_readout "$MISSION_DIR/plan.json"
+    exit 0 ;;
+  # S179 hook, same shape and same zero-token guarantee.
+  verify-undrawn-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    verify_undrawn_readout "$MISSION_DIR/prd.md" "$MISSION_DIR/plan.json"
+    exit 0 ;;
+  # S174 test hook — THE CONSUMER CONTRACT. Runs every consumer of
+  # acceptanceCriteria that renders its TEXT over $LCARS_CONSUMER_PLAN and prints
+  # what each produced. The point is EQUIVALENCE: the same criteria written as
+  # plain strings and as {"text": …, "drawnAt": …} objects must come out of this
+  # byte-identically, because a consumer that renders `text | drawnAt | …` hands
+  # the Implementer a mangled spec that passes every gate.
+  #
+  # `plan-table` is the whole choke point for the renderers that are not called
+  # directly here: create_issue (the GitHub sub-issue body) and comment-mirror's
+  # cm_render_plan / cm_render_verify all take `cut -f4` of exactly this line.
+  # S174 round 3 test hook: the DRAWING'S PLACE NAMES, extracted in isolation.
+  place-names-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    mission_mockup_place_names
+    printf '\n'
+    exit 0 ;;
+  consumer-probe-test)
+    _cp="${LCARS_CONSUMER_PLAN:-}"
+    [ -f "$_cp" ] || exit 0
+    printf 'plan-table: %s\n' "$(parse_plan_table "$_cp" | head -1)"
+    printf 'ticket-spec: %s\n' "$(ticket_spec_block "$_cp" t-001)"
+    printf 'infra-backstop: %s\n' \
+      "$(ticket_declared_text "$(parse_plan_table "$_cp" | head -1)")"
+    printf 'slice-rows: %s\n' "$(slice_pressure_rows "$_cp")"
+    printf 'slice-hint: %s\n' "$(build_slice_pressure_hint "$_cp" "" 1200)"
     exit 0 ;;
   # S100 test hook: pure slice_pressure scalar — inputs via env (nCriteria /
   # nFiles / nDirs / newLoc / budget), echoes "<level>\t<reason>". Reads no CLI

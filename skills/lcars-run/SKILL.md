@@ -187,7 +187,7 @@ after one Stage — run it blocking and report what it printed.
 
 | Halt | Why | What the driver does |
 |---|---|---|
-| `awaitingHuman === true` | a Stage escalated (Research >20 Qs, Validate scope change, Plan Review round-3, Implement 5-attempt cap) | prints the pending question(s) + the `lcars respond <id>` hint, **fires the notification** |
+| `awaitingHuman === true` | a Stage escalated (Research >20 Qs, Validate scope change, Plan Review round-3, Implement 5-attempt cap) | prints the pending question(s) + the runnable `respond.sh answer --mission <id>` hint, **fires the notification** |
 | `stage === "verify"` | the human review gate — never auto-passed | prints the ship-or-send-back next moves, **fires the notification** |
 | `stage === "align"` **with** `feedback.md` | a Verify feedback re-entry needs an interactive Align re-grill | stops and tells you to re-grill (see below) — **no notification** |
 | `stage === "done"` | terminal — the PR is open | reports it is shipped |
@@ -230,7 +230,8 @@ Stage lands on a gate). The per-Stage sections below document what each composed
 step does and remain the reference for `--step` and for debugging; the driver
 simply runs them in sequence. **A paused Stage never re-runs on its own:** when
 `awaitingHuman` is `true`, the underlying Stage driver refuses until
-`lcars respond <id>` clears the gate — auto mode and `--step` both inherit that.
+`respond.sh answer --mission <id> --answer "…"` clears the gate — auto mode and
+`--step` both inherit that.
 
 ## The Research stage
 
@@ -251,11 +252,33 @@ The driver prints the gate decision plus a `⊘ isolated` marker:
 |---|---|---|
 | `GATE: skip` then `⊘ isolated` | 0 questions — the PRD was unambiguous. The mission has **already** advanced (stage + label → `validate`). | Report it. **Done.** |
 | `GATE: dispatch N` … `SAVE: N responses` … `⊘ isolated` | N research workers ran in parallel and their findings were saved; the mission advanced to `validate`. | Report how many ran and that it is ready for **Validate**. |
-| `GATE: too-many N` (exit 3) | More than 20 questions — the driver escalated to the **awaiting-human** gate (card moved to the Research column, `lcars:awaiting-human` overlaid). | Surface the two options — **override** (re-run `research` to proceed) or **return-to-align** (re-run `lcars file` with the context to sharpen the PRD). The captain answers with `lcars respond <id>`. |
+| `GATE: too-many N` (exit 3) | More than 20 questions — the driver escalated to the **awaiting-human** gate (card moved to the Research column, `lcars:awaiting-human` overlaid). | Surface the two options — **override** (re-run `research` to proceed) or **return-to-align** (re-run `lcars file` with the context to sharpen the PRD). The captain answers with `respond.sh answer --mission <id> --answer "…"`. |
 
 If the driver prints `⚠ NOT ISOLATED` and refuses, there is no worker binary —
 tell the captain to set `$LCARS_WORKER_BIN` (e.g. `claude`); do **not** try to do
 the Stage inline.
+
+### A negative-existence claim is CHECKED, not believed (S180)
+
+When a finding asserts that a **specific named, code-shaped identifier** is
+absent from the repository *as a whole*, `save` runs that search itself — a
+literal `git grep` of the Mission's own branch. **A worker's report of having
+searched is never the evidence.** Measured: a finding said a name did not exist
+"anywhere in the repo (grep returns zero matches)"; it was defined and used three
+times in the one file the Mission was about to rewrite, and every later Stage
+took the fabrication as fact.
+
+The check is deterministic and deliberately narrow, so it fires rarely and is
+always right: only an **unqualified, repository-wide** claim about a
+`SCREAMING_SNAKE_CASE` / `snake_case` / `camelCase` name counts. A claim scoped to
+one file, one call site or one subject, and any claim about a concept rather than
+a name, is left alone — swept over 144 real findings it yields one candidate.
+
+`SAVE: … / REFUTED:` means the repository contradicted a finding. The findings are
+still saved, the Mission moves to **Validate** and parks there **awaiting-human**
+with the identifier, the ref searched and the matching lines. Surface that to the
+captain; his answer reaches the Validator as a decided input. `save` still exits
+0 — a park is a gate, not an error.
 
 ## The Validate stage
 
@@ -275,15 +298,16 @@ bash ~/.claude/skills/lcars-run/run.sh validate --mission <id>
 | Driver output | Meaning | What you do |
 |---|---|---|
 | `VALIDATE: advanced` … `⊘ isolated` | No scope question. The worker's `validated-plan.md` is saved and the mission advanced to `plan`. | Report that it is at **Plan**. |
-| `VALIDATE: paused` … | A scope question. The driver wrote `pending.json`, set the awaiting-human gate, and kept the card in Validate. | Surface the question(s); the captain answers with `lcars respond <id>`. **Stop.** |
+| `VALIDATE: paused` … | A scope question. The driver wrote `pending.json`, set the awaiting-human gate, and kept the card in Validate. | Surface the question(s); the captain answers with `respond.sh answer --mission <id> --answer "…"`. **Stop.** |
 
 A worker whose plan is malformed (e.g. it drops the `## Rationale`) is rejected
 and re-dispatched; if it never produces a valid plan the driver stops the Stage
 without advancing.
 
-**Resume after the human answers:** once `lcars respond <id>` records the answers
-and clears `awaitingHuman`, the next `lcars run <id>` falls through to Validate
-again and re-runs the driver. The fresh Validator worker reads the recorded
+**Resume after the human answers:** once `respond.sh answer --mission <id>`
+records the answers and clears `awaitingHuman`, it hands straight back to
+`run.sh drive --mission <id>` itself, which falls through to Validate again and
+re-runs the driver. The fresh Validator worker reads the recorded
 answers alongside the PRD and findings, folds them in, and — assuming no new
 scope question — advances to Plan, clearing the gate.
 
@@ -315,6 +339,47 @@ now at **Plan Review**. (On a Plan Review loop-back, this same driver re-runs; t
 fresh Planner worker reads the latest `plan-review-<round>.json` objections
 itself — see Plan Review below.)
 
+### A revision is a PATCH (S178)
+
+When Plan Review bounces a plan back, `review_fail` writes
+**`plan-under-review.json`** — a snapshot of the exact tickets the reviewer read.
+That file is the *evidence* that a revision was requested, and everything below
+keys off it and off nothing else:
+
+- the Plan prompt lists it as an input and adds a contract saying plainly that
+  this is a REVISION: apply what the objections ask and change nothing else,
+  keeping every ticket's `dependencies` exactly as they were unless an objection
+  names that ticket;
+- `plan-save` **compares the two dependency graphs** before overwriting
+  `plan.json`, then **consumes the snapshot**.
+
+It is a one-shot token, never an archive, and it is deliberately not inferred
+from the presence of `plan-review-*.json`: `lcars feedback` (the Verify
+send-back) keeps every artifact, so a re-plan against a corrected PRD would
+otherwise be diffed against the plan the captain had just rejected.
+
+Edges the revision ADDED are refused when no objection names either end — the
+SOURCE ticket (named anywhere in an objection) or the TARGET ticket (an
+objection's own `ticketId`, since "every row ticket must depend on t-004" asks
+for inbound edges without naming the rows). The rejection names each edge, is
+threaded into the next worker's prompt, and the retry rides the Plan Stage's
+existing `MAX_WORKER_TRIES` budget — no new stage, no new label, no new gate.
+
+**It never kills a plan.** When the check cannot be trusted — no snapshot, an
+unreadable plan, a renumbered or resized ticket set, an objection that names no
+ticket in the plan, or the check itself crashing — it prints `⚠ REVISION
+UNCHECKED`, says why, and passes the plan through. And on the worker's LAST
+attempt the guard is advisory: a plan that passes `validate_plan_json` is saved
+with an `⚠ OVER-CORRECTION UNRESOLVED` note and handed to Plan Review, which has
+its own rounds and its own escalation, rather than deadlocking the Stage.
+Removed edges are reported and never bounced on.
+
+This exists because one objection asking for a single edge (`t-010` →
+`t-012`) came back as a 14-ticket single-file chain and 14 waves of one ticket
+each. It cannot catch over-correction on a FIRST plan (nothing to diff), and a
+planner that renumbers its tickets defeats the comparison — both are stated in
+the code and both are Plan Review's judgement to make.
+
 ## The Plan Review stage
 
 Runs when `state.json.stage` is `plan-review` and `awaitingHuman` is not `true`
@@ -333,11 +398,14 @@ bash ~/.claude/skills/lcars-run/run.sh plan-review --mission <id>
 | Driver output | Meaning | What you do |
 |---|---|---|
 | `PLAN-REVIEW: passed` … `⊘ isolated` | Every ticket cleared review. `approved-plan.json` written; advanced to `schedule`. | Report it is at **Schedule**. |
-| `PLAN-REVIEW: revise — round N` | The verdict failed (rounds 1–2). Objections logged to `plan-review-<round>.json`; looped back to `plan`. | Surface the objections; the next `lcars run <id>` re-runs **Plan**, whose worker reads the objections and revises. |
-| `PLAN-REVIEW: escalated` | The 3rd failed round. The driver wrote the unresolved objections to `pending.json`, set the awaiting-human gate, and kept the card in Plan Review. | Surface them; the captain overrides (proceed) or redirects via `lcars respond <id>`. **Stop.** |
+| `PLAN-REVIEW: revise — round N` | The verdict failed (rounds 1–2). Objections logged to `plan-review-<round>.json`; looped back to `plan`. | Surface the objections; the next `run.sh drive --mission <id>` re-runs **Plan**, whose worker reads the objections and revises. |
+| `PLAN-REVIEW: escalated` | The 3rd failed round. The driver wrote the unresolved objections to `pending.json`, set the awaiting-human gate, and kept the card in Plan Review. | Surface them; the captain overrides (proceed) or redirects via `respond.sh answer --mission <id> --answer "…"`. **Stop.** |
 
 `planReviewRound` persists across the loop, so the third failure escalates rather
-than looping forever. A `passed:false` verdict with no issues is malformed — the
+than looping forever. **An answered escalation RESETS it** (S180): the captain's
+answer is information the reviewer has never seen, so it buys a fresh three
+rounds — bounded by `planReviewEscalations`, which caps how many times that may
+happen (3) so the loop still cannot run forever. A `passed:false` verdict with no issues is malformed — the
 driver re-dispatches the reviewer and ultimately stops rather than moving on a
 verdict that names nothing.
 
@@ -433,9 +501,23 @@ On success it prints:
 ```
 SCHEDULE: advanced
   Grouped 4 ticket(s) into 2 wave(s); opened 4 sub-issue(s).
+  Wave shape: 2 waves, up to 3 ticket(s) in parallel.
   Wrote waves.json.
   Stage:  implement
 ```
+
+The **wave shape** line (S178) accompanies the count whenever the shape is
+actually known — it is deliberately omitted, rather than guessed, when the wave
+map could not be read. The wave COUNT alone does not say whether the plan can be
+worked in parallel; the shape does, and a plan whose graph collapsed into a queue
+says so in as many words:
+
+```
+  Wave shape: 14 waves, 1 ticket each — NO parallelism. Every ticket waits for the one before it. If that is not genuinely true, the dependency graph is a queue and this run is as slow as it can possibly be.
+```
+
+The same signal rides the board card, under the `WAVE x/y · TICKET n/m` strip,
+and a compacted form rides `lcars run`'s per-Stage line and `events.jsonl`.
 
 …and, when a wave was isolated, names it and why — stating whether the ticket
 DECLARED the flag or the backstop inferred it:
@@ -443,6 +525,7 @@ DECLARED the flag or the backstop inferred it:
 ```
 SCHEDULE: advanced
   Grouped 12 ticket(s) into 8 wave(s); opened 12 sub-issue(s).
+  Wave shape: 8 waves, up to 3 ticket(s) in parallel.
   Isolated 1 infrastructure ticket into a wave of its own:
     wave 1 — t-001 declares establishesSharedInfrastructure: true — isolated into a wave of its own so later tickets build against it
   Wrote waves.json.
@@ -570,7 +653,8 @@ re-verifies against the committed state (post-commit gate), and prints
 written to `tickets/<id>/gate-signal.txt` and a FRESH worker is spawned carrying
 that signal, up to `LCARS_WORKER_TRIES` (default 3) total sessions. Exhaustion
 **parks the Mission awaiting-human** with the last gate verdict quoted — the
-ticket then needs `lcars respond <id>`; do not re-run it until answered.
+ticket then needs `respond.sh answer --mission <id> --answer "…"`; do not re-run it
+until answered.
 
 Run `implement-ticket` for **every** pending ticket the current wave lists (they
 are independent within the wave), then loop back to STEP 1, which reveals the
@@ -600,7 +684,7 @@ names the first blocker — a half-built Mission can never slip into Verify.
 Tell the captain that every ticket passed across all waves, where the per-ticket
 tests and results live (`tickets/<id>/tests/`, `tickets/<id>/result.json`), and
 that the Mission is now at **Verify** — or, if a ticket flagged the human, which
-ticket failed and how to resolve it (`lcars respond <id>`).
+ticket failed and how to resolve it (`respond.sh answer --mission <id> --answer "…"`).
 
 ## The Verify stage
 
@@ -743,6 +827,7 @@ trust the board to show exactly where every Mission is.
   plan.json             ← the Planner's ticket list, each ticket carrying its rationale (Plan → Plan Review)
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
+  plan-under-review.json ← S178 one-shot revision token: the plan the reviewer reviewed. Written by review_fail on a loop-back, consumed by plan-save when the revision lands.
   waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
                           an ISOLATED wave also carries "reason" (additive; absent otherwise)
   tickets/

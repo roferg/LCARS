@@ -441,6 +441,11 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .progress .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--lcars-teal),var(--lcars-blue,#4499ff))}
 /* UX-23: brighten the WAVE x/y · TICKET n/m progress line (was too dark). */
 .progress .lab{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-bright);margin-top:3px;letter-spacing:.06em}
+/* S178: the wave SHAPE line under the WAVE x/y · TICKET n/m label. A plan with
+   no parallelism left is the case worth seeing from across the room, so it is
+   the one that goes amber; every other shape reads as calm metadata. */
+.progress .shape{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-dim,#9aa4c0);margin-top:2px;letter-spacing:.06em}
+.progress .shape.serial{color:var(--lcars-amber);font-weight:700}
 /* UX-39: the card ticket strip is COMPACT — JS shows only the active ticket + a
    small window and an "and N more…" affordance. As a belt-and-braces guard the
    area is also height-capped with overflow so the card can never grow unbounded

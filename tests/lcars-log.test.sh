@@ -912,6 +912,194 @@ check "24. child base falls back to lcars/<parent-id>" \
 check "24. child base is NOT the checked-out branch (fallback case)" \
   "! grep -q '\"base\": *\"some-other-branch\"' '$B30/state.json'"
 
+# --- Behaviour 25 (S174): a bug logged against a DRAWING inherits the drawing --
+#
+# MEASURED 2026-08-17: all NINE bugs logged against the holodeck-born mission
+# lcars-20260814-001 carry `attachments: None`. Not one could open the drawing it
+# was being told to reproduce, and the first fix round restored #screen-start's
+# structure while losing its specifics — because the only description of the
+# drawing that worker ever saw was the captain's prose.
+#
+# Inheritance is a UNION with whatever the captain passed, never a replacement,
+# and ONLY a mockup is inherited: a screenshot of the parent's own bug is not
+# context for a different bug.
+
+# A parent Mission carrying attachments of the given basenames.
+parent_with_attachments() { # repo  basename…
+  local pdir="$1/.git/lcars/missions/lcars-20260530-001/attachments"
+  mkdir -p "$pdir"
+  shift
+  local a
+  for a in "$@"; do
+    case "$a" in
+      *.html) printf '<!doctype html><div id="screen-start">PARENT DRAWING</div>' >"$pdir/$a" ;;
+      *)      printf 'PARENT-PNG' >"$pdir/$a" ;;
+    esac
+  done
+}
+
+# 25a. parent carries a mockup, captain passes NOTHING ⇒ the child inherits it.
+repo31="$(new_repo_with_parent)"
+make_gh_stub "$repo31/gh"
+export GH_LOG="$repo31/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+parent_with_attachments "$repo31" attachment-01.html
+bug31="$repo31/b.md"; write_bug_prd "$bug31" "Next-up card lost its accent border" "The blue accent border is gone."
+rc31=0
+(
+  cd "$repo31"
+  LCARS_GH_BIN="$repo31/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug31" >out31.txt 2>&1
+) || rc31=$?
+B31="$repo31/.git/lcars/missions/lcars-20260530-002"
+check "25a. logging against a mockup-born parent succeeds" "[ '$rc31' -eq 0 ]"
+check "25a. the child carries the parent's MOCKUP on disk" \
+  "[ -f '$B31/attachments/attachment-01.html' ]"
+check "25a. the inherited mockup is the parent's actual file, byte for byte" \
+  "grep -q 'PARENT DRAWING' '$B31/attachments/attachment-01.html'"
+check "25a. the child's prd.md references it (relative, like the parent's)" \
+  "grep -q '^- attachments/attachment-01.html\$' '$B31/prd.md'"
+check "25a. the child's prd.md heads it as a FILE, never an image" \
+  "grep -q '## Attached files' '$B31/prd.md'"
+check "25a. the child's prd.md carries the LOOK AND FLOW declaration" \
+  "grep -q 'LOOK AND FLOW' '$B31/prd.md'"
+check "25a. the child's state.json records it (NOT attachments: None)" \
+  "grep -q '\"attachments\": *\\[ *\"attachments/attachment-01.html\"' '$B31/state.json'"
+
+# 25b. THE UNION. The captain's own --attach screenshot rides ALONGSIDE the
+# inherited drawing — inheritance never replaces what he passed.
+repo32="$(new_repo_with_parent)"
+make_gh_stub "$repo32/gh"
+export GH_LOG="$repo32/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+parent_with_attachments "$repo32" attachment-01.html
+shot32="$repo32/shot.png"; printf 'CAPTAIN-SHOT' >"$shot32"
+bug32="$repo32/b.md"; write_bug_prd "$bug32" "Scrambled value cell" "Here is what I see."
+rc32=0
+(
+  cd "$repo32"
+  LCARS_GH_BIN="$repo32/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$shot32" --prd "$bug32" >out32.txt 2>&1
+) || rc32=$?
+B32="$repo32/.git/lcars/missions/lcars-20260530-002"
+check "25b. logging with BOTH succeeds" "[ '$rc32' -eq 0 ]"
+check "25b. the inherited drawing is there" \
+  "[ -f '$B32/attachments/attachment-01.html' ]"
+check "25b. the captain's screenshot is STILL there beside it" \
+  "grep -rq 'CAPTAIN-SHOT' '$B32/attachments/'"
+check "25b. both are listed in the child's prd.md" \
+  "grep -q 'attachment-01.html' '$B32/prd.md' && grep -q '.png' '$B32/prd.md'"
+check "25b. both are recorded in state.json" \
+  "grep -q 'attachment-01.html' '$B32/state.json' && grep -q '.png' '$B32/state.json'"
+
+# 25c. ONLY a mockup is inherited. A screenshot on the parent is a picture of the
+# parent's own bug; it is not context for a different one.
+repo33="$(new_repo_with_parent)"
+make_gh_stub "$repo33/gh"
+export GH_LOG="$repo33/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+parent_with_attachments "$repo33" attachment-01.png attachment-02.md
+bug33="$repo33/b.md"; write_bug_prd "$bug33" "Unrelated bug" "Nothing to do with that screenshot."
+rc33=0
+(
+  cd "$repo33"
+  LCARS_GH_BIN="$repo33/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug33" >out33.txt 2>&1
+) || rc33=$?
+B33="$repo33/.git/lcars/missions/lcars-20260530-002"
+check "25c. logging against a screenshots-only parent succeeds" "[ '$rc33' -eq 0 ]"
+check "25c. a parent SCREENSHOT is NOT inherited" "[ ! -d '$B33/attachments' ]"
+check "25c. a parent DOC is NOT inherited either" \
+  "! grep -q 'attachments' '$B33/state.json'"
+
+# 25d. a parent with NO attachments at all ⇒ byte-identical to today.
+repo34="$(new_repo_with_parent)"
+make_gh_stub "$repo34/gh"
+export GH_LOG="$repo34/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug34="$repo34/b.md"; write_bug_prd "$bug34" "Plain bug" "No drawing anywhere."
+rc34=0
+(
+  cd "$repo34"
+  LCARS_GH_BIN="$repo34/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug34" >out34.txt 2>&1
+) || rc34=$?
+B34="$repo34/.git/lcars/missions/lcars-20260530-002"
+check "25d. a no-mockup parent still files a bug" "[ '$rc34' -eq 0 ]"
+check "25d. no attachments/ dir (unchanged)" "[ ! -d '$B34/attachments' ]"
+check "25d. no prd.md attachments section (unchanged)" \
+  "! grep -q '## Attached' '$B34/prd.md'"
+check "25d. no state.json attachments key (unchanged)" \
+  "! grep -q 'attachments' '$B34/state.json'"
+
+# 25e. THE MEASURED CASE. Several bugs filed in ONE invocation against the
+# mockup-born parent: EVERY child carries the drawing. Nine of nine read
+# `attachments: None` before this round.
+repo35="$(new_repo_with_parent)"
+make_gh_stub "$repo35/gh"
+export GH_LOG="$repo35/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+parent_with_attachments "$repo35" attachment-01.html
+b35a="$repo35/a.md"; write_bug_prd "$b35a" "Bug one" "One."
+b35b="$repo35/b.md"; write_bug_prd "$b35b" "Bug two" "Two."
+b35c="$repo35/c.md"; write_bug_prd "$b35c" "Bug three" "Three."
+rc35=0
+(
+  cd "$repo35"
+  LCARS_GH_BIN="$repo35/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$b35a" --prd "$b35b" --prd "$b35c" >out35.txt 2>&1
+) || rc35=$?
+check "25e. a multi-bug filing succeeds" "[ '$rc35' -eq 0 ]"
+M35="$repo35/.git/lcars/missions"
+for n in 002 003 004; do
+  check "25e. bug lcars-20260530-$n can OPEN the drawing" \
+    "[ -f '$M35/lcars-20260530-$n/attachments/attachment-01.html' ]"
+  check "25e. bug lcars-20260530-$n does NOT read attachments: None" \
+    "grep -q 'attachment-01.html' '$M35/lcars-20260530-$n/state.json'"
+done
+
+# 25f. …and because the child now CARRIES a mockup, the bug's own tickets are
+# held to the same anchored-criterion contract as a feature's. A bug Mission goes
+# through Plan like any other, and Plan keys the contract off the Mission's own
+# attachments — so this is the inheritance paying for itself, not a second rule.
+RUN_SH="$REPO_ROOT/skills/lcars-run/run.sh"
+BLOCK35="$(LCARS_ATT_TEST_DIR="$M35/lcars-20260530-002" bash "$RUN_SH" plan-mockup-block-test 2>/dev/null)"
+check "25f. the bug's Plan prompt carries the mockup contract" \
+  "printf '%s' \"\$BLOCK35\" | grep -q 'changesScreenAppearance'"
+check "25f. …naming the INHERITED drawing" \
+  "printf '%s' \"\$BLOCK35\" | grep -q 'attachment-01.html'"
+check "25f. …and the per-criterion declaration contract" \
+  "printf '%s' \"\$BLOCK35\" | grep -q 'notDrawn'"
+
+# The deterministic gate itself: a bug ticket that changes a screen's appearance
+# and carries a criterion tracing to nothing is REJECTED, exactly like a feature's.
+BUGPLAN="$repo35/bugplan.json"
+cat >"$BUGPLAN" <<'JSON'
+[
+  {
+    "id": "t-001",
+    "title": "Restore the next-up card accent border",
+    "description": "Put the accent border back.",
+    "acceptanceCriteria": [{"text": "The next-up card carries its accent border again", "drawnAt": "#screen-start, the next-up start-card"}, {"text": "A manual override toggle is added beside it"}],
+    "estimatedReadLoc": 40,
+    "estimatedTestLoc": 20,
+    "estimatedNewLoc": 20,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "changesScreenAppearance": true,
+    "rationale": "It is the reported defect."
+  }
+]
+JSON
+python3 - "$M35/lcars-20260530-002/state.json" <<'PY'
+import re, sys
+p = sys.argv[1]
+t = open(p).read()
+open(p, 'w').write(re.sub(r'"stage":\s*"[^"]*"', '"stage": "plan"', t, count=1))
+PY
+OUT35="$( cd "$repo35" && LCARS_GH_BIN="$repo35/gh" LCARS_GIT_BIN="$(command -v git)" \
+  bash "$RUN_SH" plan-save --mission lcars-20260530-002 --plan "$BUGPLAN" 2>&1 )"
+RC35=$?
+check "25f. a bug ticket inventing an undrawn control is REJECTED" "[ '$RC35' -ne 0 ]"
+check "25f. …naming the offending criterion" \
+  "printf '%s' \"\$OUT35\" | grep -q 'criterion 2'"
+
 # ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"

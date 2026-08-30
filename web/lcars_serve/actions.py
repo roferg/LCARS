@@ -50,6 +50,21 @@ class ActionError(Exception):
     happened (the one live user is `sessionReset`; see `_poisoned_note`).
     """
 
+    # S178 — THE SKILL'S OWN EXIT CODE, when this refusal came from one.
+    # `_run` stamps it; the Align finalize branches on it to tell "the PRD you
+    # just wrote is wrong" (3, redraftable) from "the environment is wrong" (1,
+    # retrying burns tokens). A CLASS-LEVEL default, so every ActionError ever
+    # constructed already answers the question — and answers it `None`, which is
+    # "this did not come from a skill" rather than a number to be guessed at.
+    #
+    # It is deliberately NOT in `data`: `data` is merged into the HTTP body by
+    # `server._write_error`, and a new key there would change the payload of
+    # every existing write error. This is daemon-internal.
+    skill_exit = None
+    # …and WHERE THE DRAFTED PRD SURVIVED, when a dispatch persisted one before
+    # failing (S178 cure 1). Empty when there is nothing to point at.
+    draft_path = ""
+
     def __init__(self, status, message, data=None):
         super().__init__(message)
         self.status = status
@@ -208,6 +223,73 @@ the numbers, do NOT try to match image content. Rules:
 # treats it as the captain's affirmative, not as a new requirement.
 _PROCEED_ANSWER = ("(no additional input — accept your recommendation and "
                    "proceed)")
+
+
+# S178 — `file.sh`'s "the PRD ITSELF is wrong and a redraft could fix it" exit
+# code (skills/lcars-file/file.sh `die_prd`). Every other refusal from file.sh
+# stays 1 and means the ENVIRONMENT is wrong — no mission, no `gh`, no repo —
+# which no amount of redrafting can clear, so it must never reach the heal.
+#
+# THIS NUMBER IS THE WHOLE CLASSIFIER. There is no message matching anywhere on
+# this road: S165's ruling is that the filter keys off EXIT STATUS, because the
+# refusal text is prose written for a human and prose drifts.
+_PRD_REDRAFTABLE_EXIT = 3
+
+# How many repair turns the Align finalize will spend before it stops and hands
+# the captain the gate's message. Two, because the warm session already holds
+# the whole grill so each is cheap — and because a worker that cannot satisfy
+# the gate twice in a row is not going to on the third.
+_ALIGN_HEAL_CAP = 2
+
+# The synthetic ANSWER a repair turn feeds the warm grill. It rides the EXISTING
+# continuation road (`_build_align_prompt(opening=False)` reads
+# `sess.transcript[-1]["answer"]`), so there is no second prompt channel and no
+# second worker posture — the same warm session, one more turn.
+#
+# It says three things and no more: the PRD was refused (not the captain's
+# answers), here is the refusal VERBATIM (only the gate knows what it wants),
+# and re-emit the whole corrected PRD rather than asking anybody anything. The
+# last clause matters: SKILL.md's own rule for this situation is FIX THE PRD,
+# NEVER RE-GRILL — a completed alignment must not be thrown away over a heading.
+# S178 CURE 6 — AND IT IS SURGICAL, because the refusal already is.
+#
+# `lcars_prd_questions_gate` does not say "you dropped 5 of 14" and stop: it
+# prints `Missing:` followed by EVERY question it wants, verbatim, one per line.
+# Handing the worker a summary of that would throw away the only part of the
+# message that is actionable and turn the repair back into the recall test that
+# lost the tail in the first place. So the refusal rides in WHOLE, and the
+# instruction points at its list.
+#
+# This is not a new procedure. `skills/lcars-file/SKILL.md` (§"If `file.sh`
+# refuses the PRD — FIX THE PRD, NEVER RE-GRILL") already prescribes exactly
+# this repair for the CLI lane, down to the `- STILL OPEN: <the question>`
+# entry and the ruling that the gate wants the questions to SURVIVE rather than
+# be answered. The daemon lane simply could not reach it — the console had no
+# way to hand a refusal back to the grill. The wording below mirrors that
+# section on purpose; if one changes, the other should.
+_ALIGN_HEAL_ANSWER = (
+    "SYSTEM — YOUR PRD WAS REFUSED BY `lcars file`. The mission was NOT filed. "
+    "This is a fault in the PRD document you just emitted, not in anything the "
+    "captain told you, and he is not being asked about it.\n\n"
+    "The refusal, verbatim:\n\n%s\n\n"
+    "FIX THE PRD — do NOT re-grill, do NOT restart the interview, and do NOT "
+    "ask another question. The alignment is complete and the captain has "
+    "already confirmed it.\n\n"
+    "If the refusal lists questions under `Missing:`, it has listed EVERY "
+    "question it wants, verbatim. Add each one — all of them, including the "
+    "last — to the PRD's `## Open questions from the design session` section "
+    "as its own `- STILL OPEN: <the question>` entry, copying the question "
+    "text as given. A `STILL OPEN:` entry satisfies the gate completely and "
+    "permanently: you do NOT need the captain, you do NOT need an answer, and "
+    "carrying a question forward unanswered is the correct and expected "
+    "outcome. Use `- RESOLVED with the captain: <what was decided>` only where "
+    "this grill genuinely settled it. Then COUNT your section's entries "
+    "against the number the refusal names.\n\n"
+    "If the refusal names a MISSING SECTION instead, reformat the PRD so that "
+    "label is present — that is an edit to the document, not to its content.\n\n"
+    "Re-emit the COMPLETE corrected PRD now as a single JSON object with "
+    "status \"done\" and the full `prd` field — the same output contract as "
+    "every other turn.")
 
 
 # The keys that mark a parsed object as a WORKER TURN rather than incidental
@@ -602,7 +684,7 @@ class _AlignSession(object):
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
                  "worker_sid", "started", "image_paths", "mission_id",
                  "last_question", "holodeck",
-                 "turn_started", "finalize_started")
+                 "turn_started", "finalize_started", "heal_attempts")
 
     def __init__(self, idea, engine, mission_id=None, holodeck=None):
         # S171 — `holodeck_missing` is gone with `_handoff_missing`; the block
@@ -659,6 +741,12 @@ class _AlignSession(object):
         # reads parked and clickable again, which is the honest answer, because
         # that finalize is gone.
         self.finalize_started = None
+        # S178 — how many PRD REPAIR turns the finalize currently running has
+        # spent. Reset at the top of every finalize (so a session the captain
+        # resumes gets a full cap, not a spent one) and read by
+        # `_align_finalizing_fields`, which is what makes a heal something the
+        # captain can SEE happening rather than a silent extra minute.
+        self.heal_attempts = 0
         # S91 — every image the captain has pasted across this grill's turns,
         # staged on disk under repo_root. Accumulated (not reset per turn) so
         # claude can Read an earlier turn's image if a later turn references it;
@@ -1443,6 +1531,21 @@ Sections:
      ANSWERED, so a settled entry left sitting in it costs the captain a
      question he has already answered — a real interruption, spent on nothing.
      An empty `## Open questions` is a correct and common state; say so.
+     A VARIATION YOU ONLY PARTLY DREW BELONGS HERE, and the one-home-each rule
+     does NOT send it to bucket 2. When a row, card or screen differs by state,
+     source, shape or mode, cross those differences: two axes make a grid and a
+     drawing rarely fills it. NAME THE AXES THIS DESIGN VARIES BY, IN THE WORDS
+     OF THIS DESIGN — read them off the captain's brief and your own mockup.
+     Write every cell you did NOT draw as a bullet opening with this marker,
+     every slot filled from YOUR design:
+       - UNDRAWN COMBINATION: <first axis> (<its values>) x <second axis>
+         (<its values>) — DREW: <the cells drawn>. NOT DRAWN: <the missing
+         cell>. <the question the captain has to answer>?
+     WHY, ON A DIFFERENT PROGRAM WHOSE WORDS ARE NOT YOURS: a scorecard drawn
+     with 3 manual rows, 11 cohort rows and ZERO that were both. Nobody said
+     so; the build made every cohort read-only whether manual or not, and the
+     captain got a "Manual" tag on a list he could not type into. Do not answer
+     it yourself, and do not draw the missing cell to make it go away — ASK.
   ## WHAT IT MUST DO — BEHAVIOUR ONLY (visual choices live in the mockup).
      Three buckets, kept apart:
        1. Requirements — stated behaviour, numbered, in the captain's OWN WORDS,
@@ -1467,6 +1570,30 @@ Sections:
        `board` → click `.card` → `detail` → Esc → `board`, scroll preserved
      A screen the mockup has but this section does not name is invisible to
      everything downstream, so declare every one.
+  ## DATA PRECONDITIONS — what this drawing ASSUMES is already TRUE of the
+     target repo's data or config. Write each as a MARKDOWN BULLET, and make it
+     ONE CHECKABLE SENTENCE EACH:
+       - most KPIs carry an automated collection instruction
+       - at least one prior month has already been published
+     IF YOU DREW A COUNT, A PROPORTION, A LIST LENGTH, A STATUS OR A TIMESTAMP
+     THAT COMES FROM THE REPO, THIS SECTION IS NOT EMPTY. EMPTY IS ALLOWED, but
+     it is rarely right: only a design that touches no repo data at all — a
+     restyle, a spacing pass, a palette — leaves it as the heading, and NOTHING under it.
+     Never a bullet saying there are none, never a line explaining why.
+     THIS IS NOT bucket 2, and the ONE-HOME-EACH rule does not send it there. An
+     assumption about BEHAVIOUR NOBODY HAS STATED is a bucket-2 question; an
+     assumption about WHAT IS ALREADY IN THE REPO'S DATA is a precondition and
+     belongs HERE, even if you also asked about it up there.
+     STATED, never inferred — nothing downstream can recover an assumption you
+     did not write down.
+     NAME THE FIELD OR THE FILE YOU EXPECT (`aiUpdateInstructions`,
+     `data/config.json`, `accents.ts`) so the check knows what to look for. A
+     sentence naming nothing checkable comes back marked UNCHECKED, not answered.
+     AND SAY WHAT IT ASSUMES ABOUT THE VALUES, NOT ONLY THE FIELDS — how many,
+     how much, how full: "most KPIs are CURRENTLY on automatic collection", not
+     merely "each KPI has a collection mode". A repo can carry every field you
+     named and have none of them filled in, and the screen you drew is still
+     UNREACHABLE. This is the one everybody forgets.
 """
 
 # ── S169 (FL-015): NOT EVERY TURN IS A BUILD TURN ──────────────────────────
@@ -2136,6 +2263,92 @@ def _handoff_bucket_items(body):
     return [i for i in _md_items(body) if not _ASIDE_ONLY.match(i.strip())]
 
 
+# ══ S178 CURE 5 — A CHECKLIST WITH A COUNT, NOT A RECALL TEST ═══════════════
+#
+# THE MEASUREMENT. On lcars-20260829-002 the worker carried 9 of 14 unsettled
+# items into the PRD. The 5 it lost were items 10–14 — the CONTIGUOUS TAIL of
+# the list, not a section and not a semantic category. It carried both `## Open
+# questions` and the first 7 implied ones, then stopped. (Dropping bucket 2
+# wholesale would have lost 12, so this is not a misread heading.)
+#
+# Tail truncation over fourteen wrapped, near-identical bullets is the failure
+# mode already on record (S175 measured a model dropping the last instruction).
+# The defence is not more prose about carefulness: it is A NUMBER THE WORKER CAN
+# CHECK ITSELF AGAINST. The hand-off already knows all 14 verbatim, so asking it
+# to RECONSTRUCT them from two headings with different framings is the expensive
+# way to get the same list.
+#
+# WHAT THIS IS NOT: a second copy of the questions. ONE HOME EACH still holds —
+# bucket 1 has its own block with its own answer boxes, bucket 2 has its section
+# in the brief, and nothing here reprints either. This is an instruction and a
+# count, which is the cheap half.
+#
+# THE COUNT MUST BE THE GATE'S COUNT. `_handoff_unsettled` reads the same two
+# homes `lcars_concept_open_questions` reads, in the same order, with the same
+# exact-text dedup — and the agreement is MEASURED against the shipped bash on
+# real doc shapes rather than asserted here, because two implementations in two
+# languages absolutely can drift (see `ClaudePromptNamesWhatRidesTest`).
+
+
+def _handoff_unsettled(concept_text):
+    """Every item the design session left UNSETTLED, in the gate's own terms.
+
+    Bucket 1 (`## Open questions`) then bucket 2 (`## WHAT IT MUST DO` →
+    "Implied by the mockup, not yet settled"), deduped on exact text, document
+    order preserved — which is precisely what `lcars_concept_open_questions`
+    (skills/lcars-init/lcars-common.sh) does and therefore precisely what
+    `lcars_prd_questions_gate` will demand of the PRD.
+
+    NOT the daemon's own carry/dedup rule (`_handoff_parts`), which drops a
+    bucket-2 item CONTAINED IN something already on screen so the captain does
+    not read it twice. That rule is right for a dialog and wrong for a count:
+    the gate does not do containment, so a count taken through it would tell the
+    worker a smaller number than the gate is about to enforce — a checklist that
+    is short by one is worse than none at all.
+    """
+    out, seen = [], set()
+    for text in ([q["text"] for q in _handoff_questions(concept_text)]
+                 + list(_handoff_implied(concept_text))):
+        t = (text or "").strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _handoff_carry_forward_block(concept_text):
+    """The count-and-checklist instruction, or "" when nothing is unsettled.
+
+    "" is the whole no-op case: a program whose design session settled
+    everything (and every mission with no design session at all) gets a brief
+    byte-identical to the one before this existed — which is also exactly when
+    `lcars_prd_questions_gate` is itself a no-op.
+    """
+    items = _handoff_unsettled(concept_text)
+    n = len(items)
+    if not n:
+        return ""
+    n1 = len(_handoff_questions(concept_text))
+    n2 = n - n1
+    return (
+        "## Carry all %d unsettled items into the PRD — filing checks this\n\n"
+        "The design session left %d item(s) unsettled: %d under the concept "
+        "doc's `## Open questions`, and %d under `## WHAT IT MUST DO` → "
+        "\"Implied by the mockup, not yet settled\". BOTH sections count, and "
+        "EVERY item in them must appear in your PRD's `## Open questions from "
+        "the design session` section — as `- STILL OPEN: <the item>` while it "
+        "is unsettled, or `- RESOLVED with the captain: <what was decided>` "
+        "once the grill settles it.\n\n"
+        "A `STILL OPEN:` entry satisfies the check completely and permanently. "
+        "You do NOT need an answer from the captain to carry an item forward, "
+        "and you must not re-open the grill to get one — carrying a question "
+        "forward unanswered is the correct, expected outcome.\n\n"
+        "COUNT THE ENTRIES IN THAT SECTION AGAINST %d BEFORE YOU FILE. The "
+        "items that go missing are the LAST ones in a long list — measured: a "
+        "PRD carried 9 of 14 and lost items 10 through 14 — and `lcars file` "
+        "refuses a PRD that drops any of them." % (n, n, n1, n2, n))
+
+
 def _handoff_out_of_scope(concept_text):
     """Bucket 3 — what this work must NOT touch, in the captain's own doc.
 
@@ -2352,9 +2565,38 @@ _HANDOFF_CHANGE_NOTE = (
     "built: where a line here disagrees with the picture, the picture wins. "
     "Correct or delete anything that is wrong.")
 _HANDOFF_IMPLIED_TITLE = "## Implied by the mockup — NOT things you said"
+# S178 CURE 4 — THE BRIEF STOPPED AUTHORISING THE DELETION THE GATE FORBIDS.
+#
+# MEASURED on lcars-20260829-002. This note used to end "answer them, correct
+# them, or delete them", and it is the text the Align worker actually reads:
+# it sits in the filed `idea.md` (line 36 of his real one) directly above the
+# 12 items bucket 2 carried. `lcars_prd_questions_gate` then REFUSES a PRD that
+# drops any of them. So the brief offered, in writing, the one move the gate
+# treats as fatal — and the mission died on the closing turn with 9 of 14
+# carried. A worker obeying this prompt perfectly could still fail the gate.
+#
+# That is the S175 defect shape exactly: the harness refusing the prose its own
+# prompt asked for. The cure is the prompt's, not the gate's.
+#
+# WHAT DID NOT CHANGE, deliberately. The "NOT things you said / marked as
+# IMPLIED, never as your words" framing is the entire reason this section
+# exists (FL-011: an implied item laundered into his words arrives silent and
+# authoritative), and the title is untouched. Bucket 2 is NOT folded into
+# bucket 1 — S169/FL-011 keeps those apart on purpose, one home each, so the
+# captain never reads the same sentence twice.
+#
+# The captain can still ANSWER or CORRECT an item — those are edits to the
+# line. What he cannot do is make it vanish, because the gate measures the PRD
+# against the CONCEPT DOC, not against his edited brief: deleting a line here
+# does not delete the question there, it only guarantees the filing is refused.
 _HANDOFF_IMPLIED_NOTE = (
     "The mockup implies these; nobody has settled them. They travel marked as "
-    "IMPLIED, never as your words — answer them, correct them, or delete them.")
+    "IMPLIED, never as your words — answer them or correct them. Do NOT delete "
+    "one: every item here has to reach the Mission's PRD under "
+    "`## Open questions from the design session`, carried as "
+    "`- STILL OPEN: <the item>` while it is unsettled or "
+    "`- RESOLVED with the captain: <what was decided>` once the Align grill "
+    "settles it. Filing REFUSES a PRD that drops any of them.")
 _HANDOFF_SCOPE_TITLE = "## Out of scope — do not touch these"
 _HANDOFF_SCOPE_NOTE = (
     "Settled as out of scope while you were drawing. A diff cannot produce "
@@ -5100,14 +5342,27 @@ class Actions(LogFacts):
             # it off the live session with no second store.
             sess.finalize_started = time.time()
             try:
-                if sess.mission_id:
-                    board = self._complete_from_align(
-                        sess.mission_id, turn, engine=sess.engine,
-                        image_paths=list(sess.image_paths) + handoff)
-                else:
-                    board = self._file_from_align(
-                        turn, engine=sess.engine,
-                        image_paths=list(sess.image_paths) + handoff)
+                board, turn = self._finalize_with_heal(
+                    sess, turn, list(sess.image_paths) + handoff)
+            except Exception:
+                # S178 CURE 2 — A FAILED FINALIZE MUST LEAVE THE GRILL
+                # RESUMABLE. `sess.done` was set above, BEFORE the dispatch, and
+                # the only thing that used to clear it was the pop further down
+                # — which a raise skips. So the session survived STRANDED: still
+                # in `self._align`, still `done=True`, and therefore invisible to
+                # `align_session_sid` (which requires `not sess.done`). The card
+                # lost ▹ RESUME ALIGN and offered START ALIGNMENT instead, which
+                # would re-grill the captain from question 1 over a PRD fault he
+                # did not cause. Measured live on issue 177.
+                #
+                # `last_question` is untouched by the done branch, and it is the
+                # CLOSING "anything else before I file?" question — so putting
+                # `done` back is the whole restore: RESUME lands him exactly
+                # where he was, and answering again re-files. The draft is on
+                # disk (cure 1) and the refusal reaches the console (below), so
+                # nothing about the failure is silent.
+                sess.done = False
+                raise
             finally:
                 sess.finalize_started = None
             self._reap_session_images(sess)
@@ -5115,6 +5370,12 @@ class Actions(LogFacts):
                 self._align.pop(sid, None)
             resp = {"sessionId": sid, "status": "done",
                     "prd": turn.get("prd", sess.prd)}
+            # S178 — the filing succeeded, but not on the first try. Say so, for
+            # `_align_finalizing_fields`' reason: a repair that leaves no trace
+            # is a minute of the captain's life he cannot account for. Absent on
+            # a clean filing, so that payload is unchanged.
+            if sess.heal_attempts:
+                resp["healed"] = sess.heal_attempts
             if turn.get("adr"):
                 resp["adr"] = turn["adr"]
             resp["board"] = board
@@ -5159,6 +5420,132 @@ class Actions(LogFacts):
         return {"sessionId": sid, "status": "question",
                 "question": q, "prd": sess.prd}
 
+    # ── S178: the finalize self-heals a REDRAFTABLE PRD ─────────────────────
+    # THE INCIDENT. `file.sh --complete` refused the closing turn's PRD — for a
+    # correct reason: it had dropped 5 of the design brief's 14 open questions,
+    # and those questions are exactly what the Plan Stage reads. The gate was
+    # right. What was wrong is that the harness treated a document fault as an
+    # unrecoverable one, and handed it to the captain — who did not write that
+    # PRD, a worker did. His words: "I don't know how to fix this as the user.
+    # This should be handled by harness for me."
+    #
+    # The standing rule is older than this bug: EVERY GATE SELF-HEALS FIRST, the
+    # human is the backstop. So a refusal the worker can act on goes back to the
+    # worker, on the WARM session that already holds the whole grill — one more
+    # continuation turn, no new prompt channel, no new stage, no new gate.
+    #
+    # WHAT MAKES A REFUSAL ACTIONABLE IS ITS EXIT CODE, and nothing else. See
+    # `_PRD_REDRAFTABLE_EXIT`.
+
+    def _finalize_with_heal(self, sess, turn, attach):
+        """Dispatch the filing, repairing a REDRAFTABLE PRD up to the cap.
+
+        Returns `(board, turn)` — the turn is returned because a heal replaces
+        the PRD in it, and the response must show the captain the document that
+        was actually filed rather than the one that was refused.
+
+        Raises on exhaustion or on any non-redraftable failure; the caller
+        (`_align_turn`) is what restores the session's resumability, because
+        that is true of EVERY failed finalize and not just of an exhausted heal.
+        """
+        # A full cap per finalize. A session the captain resumes and re-files
+        # must not inherit a spent one — he is back in the loop by then, which
+        # is the only thing that makes another two turns legitimate.
+        sess.heal_attempts = 0
+        while True:
+            try:
+                if sess.mission_id:
+                    board = self._complete_from_align(
+                        sess.mission_id, turn, engine=sess.engine,
+                        image_paths=attach)
+                else:
+                    board = self._file_from_align(
+                        turn, engine=sess.engine, image_paths=attach)
+                return board, turn
+            except ActionError as exc:
+                if exc.skill_exit != _PRD_REDRAFTABLE_EXIT:
+                    # An ENVIRONMENT failure — no mission, `gh` unauthenticated,
+                    # a repo that is not a repo. A redraft cannot clear any of
+                    # those, so healing one only burns tokens to fail again.
+                    raise
+                if sess.heal_attempts >= _ALIGN_HEAL_CAP:
+                    raise self._heal_exhausted(sess, exc)
+                sess.heal_attempts += 1
+                prev_draft = exc.draft_path
+                turn = self._align_repair_turn(sess, turn, exc)
+                # The repair SUPERSEDED that draft, so on the fresh-filing lane
+                # — where every dispatch mints its own scratch file — drop the
+                # older one rather than leaving a heal's worth of near-identical
+                # PRDs behind. Only AFTER the repair turn has actually produced
+                # something: until then that file is the only copy there is. The
+                # `--complete` lane rewrites ONE `prd-draft.md` in place and so
+                # never accumulates; deleting it here would just open a window
+                # with no draft on disk at all.
+                if prev_draft and not sess.mission_id:
+                    self._discard_align_draft(prev_draft)
+
+    def _align_repair_turn(self, sess, turn, exc):
+        """ONE repair turn on the warm grill: hand back the refusal, take the
+        redrafted PRD, and return the turn to re-dispatch.
+
+        The refusal rides in as a synthetic ANSWER on the existing continuation
+        road — `_build_align_prompt(sess, opening=False)` builds its prompt from
+        `sess.transcript[-1]["answer"]` — so this is the same warm session, the
+        same argv shape and the same output contract as every other turn.
+
+        Only the PRD (and an ADR, if it re-emitted one) is taken from the reply.
+        Everything else about the turn — the model override, the status — is
+        carried forward from the turn being repaired, so a repair cannot quietly
+        change the mission's contract while fixing its wording.
+        """
+        answer = _ALIGN_HEAL_ANSWER % exc.message
+        if sess.transcript and sess.transcript[-1].get("answer") is None:
+            sess.transcript[-1]["answer"] = answer
+        else:
+            sess.transcript.append(
+                {"question": "(lcars file refused the PRD)", "answer": answer})
+        out = self._worker_turn(self._build_align_prompt(sess, opening=False),
+                                engine=sess.engine,
+                                session_id=sess.worker_sid, opening=False)
+        repaired = _extract_json(out)
+        if not isinstance(repaired, dict) or not (repaired.get("prd") or "").strip():
+            # The repair turn produced nothing usable. Stop here rather than
+            # spending the rest of the cap on a worker that is not answering —
+            # and report the GATE's refusal, which is the thing the captain
+            # needs to see, not "the repair turn was unreadable".
+            raise self._heal_exhausted(sess, exc)
+        sess.prd = repaired["prd"]
+        merged = dict(turn)
+        merged["status"] = "done"
+        merged["prd"] = repaired["prd"]
+        if (repaired.get("adr") or "").strip():
+            merged["adr"] = repaired["adr"]
+        return merged
+
+    @staticmethod
+    def _heal_exhausted(sess, exc):
+        """The refusal the captain finally sees — built, not raised, so the
+        caller's `raise` keeps the traceback honest.
+
+        It must carry THREE things, because between them they are the difference
+        between a dead end and a next move: what is still unresolved (the gate's
+        own message — only the gate knows which questions were dropped), that
+        the drafted PRD is NOT lost and where it is, and that the grill is still
+        open behind it. NEVER a silent failure, and never an endless retry.
+        """
+        msg = ("the Align worker could not produce a PRD `lcars file` will "
+               "accept. %d repair turn(s) were tried and this is still "
+               "unresolved:\n\n%s" % (sess.heal_attempts, exc.message))
+        if exc.draft_path:
+            msg += ("\n\nNothing is lost — the drafted PRD is on disk at %s, "
+                    "and the alignment is still open: reopen it with ▹ RESUME "
+                    "ALIGN, answer the closing question again, and it re-files."
+                    % exc.draft_path)
+        out = ActionError(502, msg)
+        out.skill_exit = exc.skill_exit
+        out.draft_path = exc.draft_path
+        return out
+
     def _file_from_align(self, turn, engine=None, image_paths=None):
         """Persist a finished Align turn via file.sh (ADR-002 dispatch).
 
@@ -5195,9 +5582,22 @@ class Actions(LogFacts):
         eng = (engine or "").strip()
         if eng:
             env_extra["LCARS_WORKER_BIN"] = eng
+        # S178 CURE 1 (the fresh-filing half). This lane has NO mission dir to
+        # persist a draft into — `file.sh --prd` is what MINTS the mission — so
+        # the best it can do is stop destroying what it already wrote. The
+        # unlink used to sit in a `finally`, which runs on FAILURE too, so a
+        # refused PRD was deleted on its way out and the only copy left was in
+        # daemon memory. Now the scratch file SURVIVES a failure (it lives under
+        # `.git/lcars/tmp/`, where git cannot see it) and the refusal names it,
+        # so the draft is recoverable BY PATH. On success it is cleaned up
+        # exactly as before — file.sh has written the real prd.md by then.
         try:
             self._run("file", args, env_extra=env_extra)
-        finally:
+        except ActionError as exc:
+            if not exc.draft_path:
+                exc.draft_path = prd_path
+            raise
+        else:
             for p in (prd_path, adr_path):
                 if p:
                     try:
@@ -5226,6 +5626,14 @@ class Actions(LogFacts):
         adr = (turn.get("adr") or "").strip()
         if adr and adr.lower() != "null":
             adr_path = self._tmp_prd(adr + "\n")
+        # S178 CURE 1 — THE DRAFT GOES ON DISK BEFORE THE DISPATCH CAN REFUSE
+        # IT. On this lane the mission dir already exists, so the PRD the worker
+        # just spent ten of the captain's answers producing is written there as
+        # `prd-draft.md` and removed only when file.sh has written the real
+        # `prd.md`. Measured live (issue 177): a refused filing left the mission
+        # dir holding idea.md, state.json, attachments/ and NO PRD at all — the
+        # only copy died in daemon memory when the request unwound.
+        draft_path = self._persist_align_draft(mid, prd + "\n")
         args = ["--complete", mid, "--prd", prd_path]
         if adr_path:
             args += ["--adr", adr_path]
@@ -5241,6 +5649,14 @@ class Actions(LogFacts):
             env_extra["LCARS_WORKER_BIN"] = eng
         try:
             self._run("file", args, env_extra=env_extra)
+        except ActionError as exc:
+            if draft_path and not exc.draft_path:
+                exc.draft_path = draft_path
+            raise
+        else:
+            # The filing landed: `prd.md` is the real document now, so the draft
+            # would only be a stale second copy of it.
+            self._discard_align_draft(draft_path)
         finally:
             for p in (prd_path, adr_path):
                 if p:
@@ -5249,6 +5665,42 @@ class Actions(LogFacts):
                     except OSError:
                         pass
         return self._reader.board()
+
+    def _persist_align_draft(self, mid, text):
+        """S178 CURE 1 — write the Align draft PRD into the mission dir.
+
+        Returns the path, or "" when it could not be written (a mission dir that
+        is not there, a read-only disk). BEST EFFORT BY DESIGN: this exists to
+        make a failure survivable, so it must never be the thing that turns a
+        working filing into a failed one.
+
+        `.git/lcars/missions/<id>/prd-draft.md` — inside `.git/`, so the target
+        repo's working tree stays clean (CLAUDE.md), beside the artifacts it
+        belongs with, and named so it can never be mistaken for the filed
+        `prd.md` that only file.sh writes.
+        """
+        if not mid:
+            return ""
+        try:
+            d = os.path.join(self._missions_dir(), mid)
+            if not os.path.isdir(d):
+                return ""
+            path = os.path.join(d, "prd-draft.md")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            return path
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _discard_align_draft(path):
+        """Drop a draft the filing has superseded. Never raises."""
+        if not path:
+            return
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
     def _parked_idea(self, mid):
         """Park & Align (S137): the verbatim idea captured at park time (idea.md).
@@ -5411,7 +5863,16 @@ class Actions(LogFacts):
         if not started:
             return {}
         elapsed = max(0.0, time.time() - started)
-        return {"since": started, "for": round(elapsed, 1)}
+        out = {"since": started, "for": round(elapsed, 1)}
+        # S178 — …and, when the finalize is REPAIRING a refused PRD, how many
+        # repair turns it has spent. The heal has to be visible or the captain
+        # reads a long finalize as a hang; it goes HERE, on the fact the card
+        # already renders, rather than as a new band or a new gate. Additive by
+        # construction: absent when nothing has been healed, so an ordinary
+        # finalize is byte-identical to the one every earlier test pins.
+        if sess.heal_attempts:
+            out["heals"] = sess.heal_attempts
+        return out
 
     def _align_finalizing_for_mission(self, mission_id):
         """The in-flight `alignFinalizing` fact for a mission, or `{}` (S169).
@@ -6896,7 +7357,13 @@ class Actions(LogFacts):
         disk, so a crafted request cannot put a sentence in front of a worker.
         """
         parts = [idea]
-        for block in (cls._handoff_questions_block(concept_text, answers),):
+        # S178 CURE 5 — …and, after them, the CHECKLIST over both homes. It sits
+        # here rather than inside either bucket's own block for the reason the
+        # buckets are split at all: it is about BOTH of them, and neither one
+        # owns it. Empty (and so byte-identical to the pre-S178 idea) whenever
+        # the design session left nothing unsettled.
+        for block in (cls._handoff_questions_block(concept_text, answers),
+                      _handoff_carry_forward_block(concept_text)):
             if block:
                 parts.append(block.strip())
         parts.append(_handoff_guidance(scope))
@@ -10141,7 +10608,14 @@ class Actions(LogFacts):
         answer = (answer or "").strip()
         if not answer:
             raise ActionError(400, "missing required field: answer")
-        self._run("respond", ["answer", "--mission", mid, "--answer", answer])
+        # S180: respond.sh now re-enters the driver itself when it clears a gate
+        # (the CLI captain had to type a second command for every answer). This
+        # call is BLOCKING, and the board dispatches its own DETACHED driver a few
+        # lines below, so letting the script resume here would hang the HTTP
+        # handler for the length of a whole run AND race that spawn. Suppress it;
+        # the "& Resume" half of this endpoint is unchanged.
+        self._run("respond", ["answer", "--mission", mid, "--answer", answer],
+                  env_extra={"LCARS_RESPOND_RESUME": "0"})
         # the gate is now cleared on disk; drop the stale pending.json so the
         # board stops rendering the answered question.
         self._clear_pending(mid)
@@ -12068,8 +12542,15 @@ class Actions(LogFacts):
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if proc.returncode != 0:
             out = (proc.stdout or b"").decode("utf-8", "replace").strip()
-            raise ActionError(
+            # S178 — SAME status, SAME message, SAME raise. The only addition is
+            # that the caller can now read the skill's exit code off the error
+            # instead of having to match its prose (S165: key the filter off
+            # EXIT STATUS, not the refusal wording). Every existing caller that
+            # ignores the attribute is byte-identical.
+            err = ActionError(
                 502, "skill '%s' exited %d: %s" % (key, proc.returncode, out))
+            err.skill_exit = proc.returncode
+            raise err
         return proc
 
     def _spawn_log_path(self, key, args):

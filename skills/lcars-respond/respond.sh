@@ -20,9 +20,11 @@
 #                              question(s) in answers.json, clear the awaiting-
 #                              human gate in state.json (the STAGE IS UNCHANGED —
 #                              the Mission stays at the stage that escalated),
-#                              and remove the lcars:awaiting-human label. A plain
-#                              `lcars run <id>` then re-enters that same stage and
-#                              consumes the answer instead of re-asking.
+#                              and remove the lcars:awaiting-human label, then
+#                              hand straight back to the driver
+#                              (`run.sh drive --mission <the id>`), which
+#                              re-enters that same stage and consumes the answer
+#                              instead of re-asking.
 #
 # Dependencies are taken via env so tests can stub them:
 #   LCARS_GH_BIN   the gh binary           (default: gh)
@@ -41,6 +43,30 @@ RELABEL_NOTE=""
 # (ADR-002). Env-injected so tests can point at the real script / stub it.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SELF_DIR/../lcars-resolve-logs/resolve-logs.sh}"
+# S180 — the driver this script hands back to once the gate is cleared. Same
+# env-injection pattern as the resolve-logs delegate above, so a test can point a
+# stub at it and no drive is ever spawned in a suite.
+RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SELF_DIR/../lcars-run/run.sh}"
+
+# S180 — HOW MANY TIMES AN ANSWER MAY BUY A FRESH PLAN REVIEW BUDGET.
+#
+# `MAX_REVIEW_ROUNDS` (run.sh) is 3, and NOTHING used to reset `planReviewRound`
+# — not this script, not feedback.sh. So once a Mission had escalated once, every
+# subsequent failed review round was an immediate human gate: rounds 4, 5 and 6
+# all happened on lcars-20260829-002, at a full reviewer cycle each. A captain's
+# answer is NEW INFORMATION the reviewer has never seen, so it earns a fresh
+# loop.
+#
+# WHY 3, AND WHY A SEPARATE COUNTER. Resetting alone would remove the ceiling
+# entirely — answer, fail three rounds, answer, forever — so the escalations
+# themselves are counted and capped independently of the rounds. Three answered
+# escalations is at most 3x3 = 9 reviewer rounds, which bounds the spend at
+# roughly ten review cycles for one Mission; and by the third time a fresh answer
+# has failed to unstick the reviewer, the evidence is that the disagreement is
+# not about information the captain can supply, so buying a fourth loop spends
+# money to reach the same gate. Past the cap the budget is NOT reset and the very
+# next failure escalates, exactly as it does today.
+MAX_REVIEW_ESCALATIONS="${LCARS_MAX_REVIEW_ESCALATIONS:-3}"
 
 die() { printf 'lcars respond: %s\n' "$1" >&2; exit 1; }
 
@@ -112,6 +138,97 @@ read_questions() { # pending.json
   ' "$1"
 }
 
+# --- answers.json, APPEND-ONLY (S180) ---------------------------------------
+# Append ONE entry for this answer to $MISSION_DIR/answers.json and re-mirror the
+# legacy top-level slot onto the newest entry. See the design note at the call
+# site in cmd_answer.
+#
+# Written in python3 because merging JSON with awk is how a ledger quietly loses
+# an entry, and python3 is already a hard dependency of the pipeline this file
+# feeds (run.sh's Stage machinery and the viewscreen are both python3-only). If
+# it is somehow absent we fall back to EXACTLY the pre-S180 single-slot writer —
+# the captain never loses the answer he just typed to a missing interpreter; he
+# loses only the history, which is where he already was.
+answers_append() { # stage
+  local stage="$1" out="$MISSION_DIR/answers.json"
+  local qf; qf="$(mktemp)"
+  read_questions "$PENDING" >"$qf"
+  local py="${LCARS_PYTHON_BIN:-python3}"
+  if command -v "$py" >/dev/null 2>&1; then
+    if LCARS_A_STAGE="$stage" LCARS_A_AT="$NOW" LCARS_A_TEXT="$ANSWER" \
+       "$py" - "$out" "$qf" <<'S180_PY'
+import json, os, sys
+
+out, qfile = sys.argv[1], sys.argv[2]
+with open(qfile) as fh:
+    questions = [ln.rstrip("\n") for ln in fh if ln.strip()]
+
+entry = {
+    "stage": os.environ.get("LCARS_A_STAGE", ""),
+    "answeredAt": os.environ.get("LCARS_A_AT", ""),
+    "answer": os.environ.get("LCARS_A_TEXT", ""),
+    "questions": questions,
+}
+
+# WHAT IS ALREADY ON DISK. Three shapes are possible and all three must survive:
+# the append-only ledger (read the list), a pre-S180 single slot (migrate it into
+# the list as the first entry — it is a real answer the captain gave), and
+# anything unreadable (start clean rather than refuse; refusing here would lose
+# the answer he is giving RIGHT NOW to salvage one that is already corrupt).
+prior = []
+try:
+    with open(out) as fh:
+        old = json.load(fh)
+    if isinstance(old, dict):
+        xs = old.get("answers")
+        if isinstance(xs, list):
+            prior = [x for x in xs if isinstance(x, dict)]
+        elif old.get("answer"):
+            prior = [{
+                "stage": old.get("stage") or "",
+                "answeredAt": old.get("answeredAt") or "",
+                "answer": old.get("answer"),
+                "questions": [q for q in (old.get("questions") or [])
+                              if isinstance(q, str)],
+            }]
+except Exception:
+    prior = []
+
+answers = prior + [entry]
+doc = {
+    # The legacy single slot, mirroring the NEWEST answer — see the call site.
+    "stage": entry["stage"],
+    "answeredAt": entry["answeredAt"],
+    "answer": entry["answer"],
+    "questions": entry["questions"],
+    # The ledger. Oldest first; nothing is ever removed.
+    "answers": answers,
+}
+with open(out, "w") as fh:
+    json.dump(doc, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+S180_PY
+    then
+      rm -f "$qf"; return 0
+    fi
+  fi
+  # FALLBACK: the pre-S180 writer, byte for byte.
+  local esc; esc="$(json_escape "$ANSWER")"
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$stage"
+    printf '  "answeredAt": "%s",\n' "$NOW"
+    printf '  "answer": "%s",\n' "$esc"
+    echo '  "questions": ['
+    awk 'NF{ gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); q[++n]=$0 }
+         END{ for(i=1;i<=n;i++) printf "    \"%s\"%s\n", q[i], (i<n?",":"") }' \
+      "$qf"
+    echo '  ]'
+    echo '}'
+  } >"$out"
+  rm -f "$qf"
+}
+
 # --- locate .git/lcars/missions (mirrors run.sh / status.sh) ----------------
 locate_missions_dir() {
   local gitdir
@@ -135,6 +252,14 @@ locate_mission() { # id
 state_del() { # key — drop the field's line if present
   local tmp; tmp="$(mktemp)"
   grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+}
+# Add or replace a bare field (true/false/number). Same one-field-per-line
+# convention, and the same implementation, as run.sh's state_set_raw.
+state_set_raw() { # key token
+  state_del "$1"
+  local tmp; tmp="$(mktemp)"
+  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
+    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
 }
 
 # --- gh: remove the awaiting-human overlay, best-effort ---------------------
@@ -201,7 +326,8 @@ cmd_list() {
     exit 0
   fi
   echo
-  echo "Answer one with \`lcars respond <id>\`."
+  echo "Answer one with:"
+  echo "  bash $SELF_DIR/respond.sh answer --mission <id> --answer \"<your answer>\""
   exit 0
 }
 
@@ -221,7 +347,8 @@ cmd_show() {
   done < <(read_questions "$PENDING")
   [ "$any" -eq 1 ] || die "pending.json for '$MISSION_ID' lists no questions — its gate is malformed."
   echo
-  echo "Answer with \`lcars respond $MISSION_ID\` (or pass --answer \"…\")."
+  echo "Answer with:"
+  echo "  bash $SELF_DIR/respond.sh answer --mission $MISSION_ID --answer \"<your answer>\""
   exit 0
 }
 
@@ -239,22 +366,46 @@ cmd_answer() {
 
   local stage; stage="$(json_str "$PENDING" stage)"; stage="${stage:-unknown}"
 
-  # Persist the answer next to the question(s) so the resuming stage consumes
-  # it. answers.json mirrors pending.json's stage + questions and adds the
-  # captain's free-form answer; the resuming stage deletes it once used.
-  local esc; esc="$(json_escape "$ANSWER")"
-  {
-    echo '{'
-    printf '  "stage": "%s",\n' "$stage"
-    printf '  "answeredAt": "%s",\n' "$NOW"
-    printf '  "answer": "%s",\n' "$esc"
-    echo '  "questions": ['
-    awk 'NF{ gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); q[++n]=$0 }
-         END{ for(i=1;i<=n;i++) printf "    \"%s\"%s\n", q[i], (i<n?",":"") }' \
-      < <(read_questions "$PENDING")
-    echo '  ]'
-    echo '}'
-  } >"$MISSION_DIR/answers.json"
+  # Persist the answer next to the question(s) so the resuming stage consumes it.
+  #
+  # S180 — APPEND-ONLY. This used to be a SINGLE SLOT: `{stage, answeredAt,
+  # answer, questions}`, rewritten from scratch on every answer. MEASURED on
+  # lcars-20260829-002: the captain answered the same Plan Review escalation
+  # three times, and each answer ERASED the one before it. Every Stage that reads
+  # this file was therefore reading his most recent sentence with no idea two
+  # earlier ones existed — and a later answer that only REFINED an earlier one
+  # ("…and keep the rest as I said") silently destroyed the thing it referred to.
+  #
+  # So the file is now a LEDGER: `answers` is an ordered list, one entry per
+  # answer, each carrying the stage and the exact questions it was answering.
+  # Nothing is ever removed from it.
+  #
+  # THE LEGACY SLOT STAYS, mirroring the NEWEST entry. That is not decoration:
+  # several consumers read the top-level `answer` / `stage` / `questions` keys
+  # directly (run.sh's reconcile fallback via `json_str`, and every prompt that
+  # lists this file by path), and the operative answer is the latest one, so the
+  # cheap reader keeps getting the right value with no change. An OLD single-slot
+  # file already on disk — every Mission in flight — is migrated into the list on
+  # the next answer rather than discarded.
+  answers_append "$stage"
+
+  # === S180: A CAPTAIN'S ANSWER BUYS A FRESH PLAN REVIEW BUDGET ============
+  # See the MAX_REVIEW_ESCALATIONS note at the top for why, and why it is capped
+  # by a SEPARATE counter rather than by letting the rounds run. Only the
+  # plan-review gate is touched; every other gate leaves both fields alone.
+  REVIEW_NOTE=""
+  if [ "$stage" = "plan-review" ]; then
+    local escs; escs="$(json_raw "$STATE" planReviewEscalations)"
+    case "$escs" in ''|*[!0-9]*) escs=0 ;; esac
+    escs=$((escs + 1))
+    state_set_raw planReviewEscalations "$escs"
+    if [ "$escs" -le "$MAX_REVIEW_ESCALATIONS" ]; then
+      state_set_raw planReviewRound 0
+      REVIEW_NOTE="  Plan Review gets a fresh review round on your answer (answered escalation $escs of $MAX_REVIEW_ESCALATIONS)."
+    else
+      REVIEW_NOTE="  Plan Review budget NOT reset: $MAX_REVIEW_ESCALATIONS answered escalations is the cap, and this is $escs. The next failed round comes straight back to you — a fourth loop would spend a full review cycle to reach this same gate."
+    fi
+  fi
 
   # RECONCILE design gate (BUG-043/055): a reconcile design question marks the
   # mission with a dedicated marker file (reconcile-design-question.txt) so this
@@ -344,14 +495,55 @@ $FOLD_REFUSAL"
   fi
 
   echo "RESPOND: answered $MISSION_ID"
-  echo "  Recorded your answer in answers.json (stage unchanged)."
+  echo "  Recorded your answer in answers.json (appended — earlier answers kept; stage unchanged)."
   echo "  Stage:  $stage"
-  echo "  Run \`lcars run $MISSION_ID\` to resume $stage — it will consume your answer, not re-ask."
+  [ -n "$REVIEW_NOTE" ] && echo "$REVIEW_NOTE"
   [ -n "$RECONCILE_NOTE" ] && echo "$RECONCILE_NOTE"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   [ -n "$FOLD_NOTE" ] && echo "$FOLD_NOTE"
   # Warnings last and on stderr, after the readout they qualify.
   [ -n "$FOLD_WARN" ] && printf '%s\n' "$FOLD_WARN" >&2
+
+  # === S180: HAND BACK TO THE DRIVER ======================================
+  # The gate is clear and the Mission is sitting at the stage that escalated,
+  # able to run. It used to just SAY so and stop, which cost the captain three
+  # manual restarts on lcars-20260829-002 — every answer he gave needed a second
+  # command before anything happened. Re-enter the driver here instead: it is the
+  # same subprocess he would have typed, and `exec` means his terminal follows
+  # the run he just unblocked.
+  #
+  # NO LOOP IS POSSIBLE. The driver never calls this script; it halts at the next
+  # gate and returns. A Mission that is NOT drivable never reaches this line —
+  # cmd_answer refuses above unless awaitingHuman was true, and the gate has just
+  # been cleared, so the resume is always from a cleared gate.
+  #
+  # TWO CASES OPT OUT:
+  #   • a logged-bug CHILD (parentMission set). Its resume is the PARENT's
+  #     resolve-logs batch, not a standalone drive on the child — driving the
+  #     child alone is what the board deliberately avoids. Say what to run.
+  #   • LCARS_RESPOND_RESUME=0. The viewscreen sets it: its respond endpoint
+  #     calls this script BLOCKING and then spawns its own detached driver
+  #     (BUG-028), so resuming here would hang an HTTP handler for a whole run.
+  local parent; parent="$(json_str "$STATE" parentMission)"
+  if [ -n "$parent" ]; then
+    echo "  This is a logged bug against $parent — resume the batch with:"
+    echo "    bash $RESOLVE_LOGS_SCRIPT --parent $parent"
+    exit 0
+  fi
+  if [ "${LCARS_RESPOND_RESUME:-1}" = "0" ] || [ ! -f "$RUN_SCRIPT" ]; then
+    echo "  Resume $stage with:"
+    echo "    bash $RUN_SCRIPT drive --mission $MISSION_ID"
+    exit 0
+  fi
+  echo "  Resuming $stage now — it consumes your answer instead of re-asking."
+  # A CHILD, NOT AN `exec`, and the driver's exit code is deliberately NOT this
+  # script's. `respond` exiting non-zero has one meaning to every caller — "your
+  # answer was NOT recorded" — and the viewscreen's blocking dispatch raises on
+  # it. The answer IS recorded by the time we get here, so a Stage that then
+  # fails must surface as the driver's own error text (which streams to the same
+  # terminal), never as a false "your answer was rejected".
+  bash "$RUN_SCRIPT" drive --mission "$MISSION_ID" || \
+    echo "  ⚠ the resumed drive exited non-zero — your answer is recorded; re-run: bash $RUN_SCRIPT drive --mission $MISSION_ID" >&2
   exit 0
 }
 

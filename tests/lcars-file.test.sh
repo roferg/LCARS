@@ -891,4 +891,509 @@ check "14e. --engine claude beats LCARS_WORKER_BIN=copilot" \
   "[ -f '$MEN5' ] && cat '$MEN5' | qgrep -q '\"workerBin\": *\"claude\"'"
 
 # ==========================================================================
+# 15. THE PRD's REQUIRED SECTIONS IN BOTH SHAPES (S176)
+#
+# MEASURED on the captain's own repo (DX-Scorecard, `lcars-20260827-001`): he
+# designed in the holodeck, completed a FULL Align grill, sent it for costing —
+# and file.sh refused, because the Align agent wrote the PRD with MARKDOWN
+# HEADINGS instead of the bold inline labels. The heading form fails ALL SIX
+# checks. He lost two completed grill sessions to it. The refusal was right
+# about the shape and wrong about what a PRD is: the heading form says exactly
+# the same six things.
+#
+# THE TRAP THIS PINS: validation and EXTRACTION must agree. Accepting a
+# heading-form PRD and then deriving an EMPTY title or type would replace a loud
+# failure with a silent one — strictly worse. So every case below asserts the
+# DERIVED title and type, never merely that filing exited 0.
+
+# The captain's exact failing shape: a bare `Mission:` title line with no `#`,
+# then each label as a heading with its value on the following line.
+write_prd_headings() {
+  cat >"$1" <<'EOF'
+Mission: MBR builder — mockup-driven Reviews flow
+
+Type
+feature
+Goal
+Rebuild the MBR builder to match the mockup.
+Acceptance Criteria
+- Reviews screen replaces the direct-to-editor entry.
+Out of Scope
+- Per-bucket lock model.
+Constraints
+- Match the attached mockup.
+EOF
+}
+
+repoH1="$(new_repo)"; make_gh_stub "$repoH1/gh"
+export GH_LOG="$repoH1/gh.log"; : >"$GH_LOG"
+prdH1="$repoH1/prd-h.md"; write_prd_headings "$prdH1"
+(
+  cd "$repoH1"
+  LCARS_GH_BIN="$repoH1/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdH1" >outH1.txt 2>&1
+)
+MH1="$repoH1/.git/lcars/missions/lcars-20260530-001/state.json"
+check "15a. the captain's HEADING-FORM PRD files (was: refused on all six)" \
+  "[ -f '$MH1' ]"
+check "15b. …and the TITLE is EXTRACTED from the heading, not empty" \
+  "[ -f '$MH1' ] && cat '$MH1' | qgrep -q '\"title\": \"MBR builder — mockup-driven Reviews flow\"'"
+check "15c. …and the TYPE is EXTRACTED from the heading, not empty" \
+  "[ -f '$MH1' ] && cat '$MH1' | qgrep -q '\"type\": \"feature\"'"
+check "15d. …and the issue carries the derived title + lcars:feature label" \
+  "grep -q 'MBR builder' '$repoH1/gh.log' && grep -q 'lcars:feature' '$repoH1/gh.log'"
+check "15e. …and prd.md is the PRD verbatim" \
+  "grep -q '^Mission: MBR builder' '$repoH1/.git/lcars/missions/lcars-20260530-001/prd.md'"
+
+# 15f. The HASHED heading variant (`## Type`), same derivation.
+repoH2="$(new_repo)"; make_gh_stub "$repoH2/gh"
+export GH_LOG="$repoH2/gh.log"; : >"$GH_LOG"
+prdH2="$repoH2/prd-h2.md"
+cat >"$prdH2" <<'EOF'
+# Mission: Fix the broken /about route
+
+## Type
+
+bug
+
+## Goal
+
+The /about route should resolve to the About page.
+
+## Acceptance Criteria
+
+- GET /about returns HTTP 200
+
+## Out of Scope
+
+- Redesigning the About page
+
+## Constraints
+
+- Existing router
+EOF
+(
+  cd "$repoH2"
+  LCARS_GH_BIN="$repoH2/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdH2" >outH2.txt 2>&1
+)
+MH2="$repoH2/.git/lcars/missions/lcars-20260530-001/state.json"
+check "15f. the hashed-heading (## Type) form files too" "[ -f '$MH2' ]"
+check "15g. …with the title off the hashed Mission line" \
+  "[ -f '$MH2' ] && cat '$MH2' | qgrep -q '\"title\": \"Fix the broken /about route\"'"
+check "15h. …and type 'bug' read from the line UNDER the heading" \
+  "[ -f '$MH2' ] && cat '$MH2' | qgrep -q '\"type\": \"bug\"'"
+
+# 15i. The BOLD form keeps working EXACTLY as it did — both derivations too.
+repoH3="$(new_repo)"; make_gh_stub "$repoH3/gh"
+export GH_LOG="$repoH3/gh.log"; : >"$GH_LOG"
+prdH3="$repoH3/prd-b.md"; write_prd "$prdH3"
+(
+  cd "$repoH3"
+  LCARS_GH_BIN="$repoH3/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdH3" >outH3.txt 2>&1
+)
+MH3="$repoH3/.git/lcars/missions/lcars-20260530-001/state.json"
+check "15i. the BOLD form still derives its title" \
+  "[ -f '$MH3' ] && cat '$MH3' | qgrep -q '\"title\": \"Fix the broken /about route\"'"
+check "15j. …and its type" \
+  "[ -f '$MH3' ] && cat '$MH3' | qgrep -q '\"type\": \"bug\"'"
+
+# 15k/l. THE GATE IS STILL A GATE. A PRD genuinely missing a section is still
+# refused — accepting both shapes must not become accepting anything.
+repoH4="$(new_repo)"; make_gh_stub "$repoH4/gh"
+export GH_LOG="$repoH4/gh.log"; : >"$GH_LOG"
+prdH4="$repoH4/prd-x.md"
+cat >"$prdH4" <<'EOF'
+Mission: A mission with no constraints at all
+
+Type
+feature
+Goal
+Do a thing.
+Acceptance Criteria
+- it works
+Out of Scope
+- everything else
+EOF
+rcH4=0
+(
+  cd "$repoH4"
+  LCARS_GH_BIN="$repoH4/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdH4" >outH4.txt 2>&1
+) || rcH4=$?
+check "15k. a PRD with NO Constraints section is still REFUSED" "[ '$rcH4' -ne 0 ]"
+check "15l. …naming Constraints, and writing nothing" \
+  "grep -q \"missing the 'Constraints' section\" '$repoH4/outH4.txt' && [ ! -d '$repoH4/.git/lcars/missions/lcars-20260530-001' ]"
+
+# 15m/n. A heading-form PRD whose title line carries NO title fails LOUDLY at
+# extraction — never silently with an empty title. This is the whole risk of
+# accepting a second shape, so it is pinned.
+repoH5="$(new_repo)"; make_gh_stub "$repoH5/gh"
+export GH_LOG="$repoH5/gh.log"; : >"$GH_LOG"
+prdH5="$repoH5/prd-t.md"
+cat >"$prdH5" <<'EOF'
+Mission:
+
+Type
+feature
+Goal
+Do a thing.
+Acceptance Criteria
+- it works
+Out of Scope
+- everything else
+Constraints
+- none
+EOF
+rcH5=0
+(
+  cd "$repoH5"
+  LCARS_GH_BIN="$repoH5/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdH5" >outH5.txt 2>&1
+) || rcH5=$?
+check "15m. a titleless PRD is refused LOUDLY, not filed with an empty title" \
+  "[ '$rcH5' -ne 0 ] && [ ! -d '$repoH5/.git/lcars/missions/lcars-20260530-001' ]"
+check "15n. …with the extraction's own message" \
+  "grep -q 'could not read the Mission title' '$repoH5/outH5.txt'"
+
+# 15o/p. …and a heading-form PRD whose Type is not feature|bug is refused with
+# the real value, not "empty" — proof extraction ran on the heading shape.
+repoH6="$(new_repo)"; make_gh_stub "$repoH6/gh"
+export GH_LOG="$repoH6/gh.log"; : >"$GH_LOG"
+prdH6="$repoH6/prd-y.md"
+cat >"$prdH6" <<'EOF'
+Mission: A mission of the wrong type
+
+Type
+chore
+Goal
+Do a thing.
+Acceptance Criteria
+- it works
+Out of Scope
+- everything else
+Constraints
+- none
+EOF
+rcH6=0
+(
+  cd "$repoH6"
+  LCARS_GH_BIN="$repoH6/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdH6" >outH6.txt 2>&1
+) || rcH6=$?
+check "15o. a heading-form Type outside feature|bug is refused" "[ '$rcH6' -ne 0 ]"
+check "15p. …quoting the value it EXTRACTED ('chore'), not 'empty'" \
+  "grep -q \"got: 'chore'\" '$repoH6/outH6.txt'"
+
+# ==========================================================================
+# 16. THE S175 QUESTIONS GATE RUNS ON THE --complete LANE TOO (S176)
+#
+# MEASURED: `_validate_prd` forwards `"${@:2}"` to lcars_prd_questions_gate, and
+# do_complete called it with NO attachment arguments — so the gate saw no design
+# brief, found no open questions, and returned 0 for EVERY PRD. The whole
+# park→grill→--complete lane (the one the viewscreen's holodeck hand-off uses)
+# had the gate silently disabled. On the captain's real mission his PRD came
+# back clean here and refused correctly the moment the staged brief was handed
+# over. The brief is MISSION-RELATIVE on this lane — park already staged it.
+
+BRIEF_2SEC='# MBR builder
+
+## Open questions
+
+- What makes a KPI "carried"?
+
+## WHAT IT MUST DO — BEHAVIOUR ONLY
+
+### 1. Requirements
+
+1. (T1) Render the builder screen.
+
+### 2. Implied by the mockup, not yet settled
+
+- What do Preview and View actually do?
+'
+
+# Park a mission WITH the design brief staged as an attachment.
+repoQ="$(new_repo)"; make_gh_stub "$repoQ/gh"
+export GH_LOG="$repoQ/gh.log"; : >"$GH_LOG"
+briefQ="$repoQ/concept.md"; printf '%s' "$BRIEF_2SEC" >"$briefQ"
+(
+  cd "$repoQ"
+  LCARS_GH_BIN="$repoQ/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --park "rebuild the MBR builder" --attach "$briefQ" >outQ0.txt 2>&1
+)
+MQ="$repoQ/.git/lcars/missions/lcars-20260530-001"
+check "16a. the parked mission staged the brief" "[ -f '$MQ/attachments/attachment-01.md' ]"
+
+prdQdrop="$repoQ/prd-drop.md"; write_prd "$prdQdrop"
+rcQ1=0
+(
+  cd "$repoQ"
+  LCARS_GH_BIN="$repoQ/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdQdrop" >outQ1.txt 2>&1
+) || rcQ1=$?
+check "16b. --complete REFUSES a PRD that drops the staged brief's questions" \
+  "[ '$rcQ1' -ne 0 ]"
+check "16c. …naming a dropped question from ## Open questions" \
+  "grep -q 'What makes a KPI' '$repoQ/outQ1.txt'"
+check "16d. …AND one from bucket 2 of ## WHAT IT MUST DO" \
+  "grep -q 'What do Preview and View actually do' '$repoQ/outQ1.txt'"
+check "16e. …and the refusal writes NOTHING (mission still parked)" \
+  "[ ! -f '$MQ/prd.md' ] && cat '$MQ/state.json' | qgrep -q '\"prdPending\": true'"
+
+# The same lane, with the questions carried: it completes.
+prdQok="$repoQ/prd-ok.md"
+{ write_prd "$prdQok"; cat >>"$prdQok" <<'EOF'
+
+## Open questions from the design session
+
+- STILL OPEN: What makes a KPI "carried"?
+- STILL OPEN: What do Preview and View actually do?
+EOF
+}
+(
+  cd "$repoQ"
+  LCARS_GH_BIN="$repoQ/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdQok" >outQ2.txt 2>&1
+)
+check "16f. …and a PRD that CARRIES them completes the mission" \
+  "[ -f '$MQ/prd.md' ] && cat '$MQ/state.json' | qgrep -q '\"stage\": \"align\"' && ! cat '$MQ/state.json' | qgrep -q '\"prdPending\": true'"
+
+# 16g. A parked mission with NO brief is untouched — the gate stays a no-op.
+repoQ2="$(new_repo)"; make_gh_stub "$repoQ2/gh"
+export GH_LOG="$repoQ2/gh.log"; : >"$GH_LOG"
+(
+  cd "$repoQ2"
+  LCARS_GH_BIN="$repoQ2/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --park "just an idea" >outQ3.txt 2>&1
+)
+prdQ2="$repoQ2/prd.md"; write_prd "$prdQ2"
+(
+  cd "$repoQ2"
+  LCARS_GH_BIN="$repoQ2/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdQ2" >outQ4.txt 2>&1
+)
+check "16g. a parked mission with NO design brief completes untouched" \
+  "[ -f '$repoQ2/.git/lcars/missions/lcars-20260530-001/prd.md' ]"
+
+# ==========================================================================
+# 17. ON A VALIDATION FAILURE THE AGENT FIXES THE PRD — IT NEVER RE-GRILLS
+#
+# The cost the captain actually paid was not the refusal (file.sh refuses
+# cleanly and writes nothing — correct). It was the Align agent's RESPONSE:
+# it restarted the whole grill. A completed alignment thrown away over a
+# heading. SKILL.md must say so, in the shape the agent will actually meet.
+SKILL_MD="$REPO_ROOT/skills/lcars-file/SKILL.md"
+check "17a. SKILL.md forbids re-grilling on a validation failure" \
+  "grep -q 'NEVER RE-GRILL' '$SKILL_MD'"
+check "17b. …in words, not just a heading" \
+  "grep -q 'Do not restart the interview' '$SKILL_MD'"
+check "17c. …and says to re-run the SAME command with the repaired PRD" \
+  "grep -q 'Repair the' '$SKILL_MD' && grep -q -- '--complete <id> --prd' '$SKILL_MD'"
+check "17d. …naming failure shape 1: a missing/misformatted section" \
+  "grep -q \"PRD is missing the '<X>' section\" '$SKILL_MD'"
+check "17e. …naming failure shape 2: dropped open questions" \
+  "grep -q \"drops N of the design brief\" '$SKILL_MD'"
+check "17f. …and that a STILL OPEN entry SATISFIES the gate (no captain needed)" \
+  "grep -q 'wants the questions to SURVIVE, not to be answered' '$SKILL_MD'"
+check "17g. …explicitly: do not go back to the captain for an answer" \
+  "grep -q 'you do \*\*not\*\* need an answer' '$SKILL_MD'"
+
+# ==========================================================================
+# 18. THE EXIT-CODE CONTRACT — 3 MEANS "THE PRD IS WRONG AND A REDRAFT COULD
+#     FIX IT"; 1 STAYS "THE ENVIRONMENT IS WRONG"
+#
+# The live blocker: the viewscreen's Align console dispatched
+# `file.sh --complete` on the closing turn, file.sh REFUSED the PRD (correctly —
+# it had dropped 5 of the brief's 14 open questions), and the daemon had no way
+# to tell that refusal apart from `gh` being unauthenticated. So it did the only
+# thing it could: die. The captain — who did not write that PRD, a worker did —
+# was left with no way forward.
+#
+# The daemon now SELF-HEALS a redraftable PRD by handing the refusal back to the
+# warm Align worker. It must never do that for an environment failure (retrying
+# a missing mission or a dead `gh` just burns tokens), so the two classes are
+# split at the EXIT STATUS — never at the wording of the message (S165: key the
+# filter off exit status, not the refusal wording).
+#
+#   exit 3 → the PRD/ADR artifact itself is wrong: a missing section, an
+#            unreadable title/type, dropped design-brief questions, malformed ADR.
+#   exit 1 → everything else: bad argv, no such mission, unreadable file, git.
+#   exit 0 → unchanged.
+#
+# The gate's JUDGEMENT is untouched by all of this — only the number it exits with.
+
+# --- 18a-e: the --complete lane (the one that actually broke) --------------
+repoX="$(new_repo)"; make_gh_stub "$repoX/gh"
+export GH_LOG="$repoX/gh.log"; : >"$GH_LOG"
+briefX="$repoX/concept.md"; printf '%s' "$BRIEF_2SEC" >"$briefX"
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --park "rebuild the MBR builder" --attach "$briefX" >outX0.txt 2>&1
+)
+MX="$repoX/.git/lcars/missions/lcars-20260530-001"
+
+prdXdrop="$repoX/prd-drop.md"; write_prd "$prdXdrop"
+rcX1=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXdrop" >outX1.txt 2>&1
+) || rcX1=$?
+check "18a. --complete dropping the brief's questions exits 3 (redraftable)" \
+  "[ '$rcX1' -eq 3 ]"
+check "18b. …still naming the dropped question, and still writing nothing" \
+  "grep -q 'What makes a KPI' '$repoX/outX1.txt' && [ ! -f '$MX/prd.md' ]"
+
+prdXsec="$repoX/prd-nosec.md"
+cat >"$prdXsec" <<'EOF'
+# Mission: A mission with no constraints at all
+
+**Type:** feature
+**Goal:** Do a thing.
+**Acceptance Criteria:**
+- it works
+**Out of Scope:**
+- everything else
+EOF
+rcX2=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXsec" >outX2.txt 2>&1
+) || rcX2=$?
+check "18c. --complete with a missing PRD section exits 3 too" \
+  "[ '$rcX2' -eq 3 ] && grep -q \"missing the 'Constraints' section\" '$repoX/outX2.txt'"
+
+# …and the ENVIRONMENT failures on the SAME lane stay 1. Retrying these with a
+# fresh PRD cannot possibly help, so they must never reach the heal.
+rcX3=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-999 --prd "$prdXdrop" >outX3.txt 2>&1
+) || rcX3=$?
+check "18d. --complete of a mission that does not exist stays exit 1" \
+  "[ '$rcX3' -eq 1 ] && grep -q 'no mission' '$repoX/outX3.txt'"
+
+rcX4=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$repoX/nope.md" >outX4.txt 2>&1
+) || rcX4=$?
+check "18e. …and an unreadable --prd path stays exit 1" \
+  "[ '$rcX4' -eq 1 ] && grep -q 'PRD file not found' '$repoX/outX4.txt'"
+
+rcX5=0
+(
+  cd "$repoX"
+  LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXdrop" \
+      --model-override "nonsense" >outX5.txt 2>&1
+) || rcX5=$?
+check "18f. …and a malformed --model-override stays exit 1 (bad argv, not a bad PRD)" \
+  "[ '$rcX5' -eq 1 ]"
+
+# --- 18g-k: the grill-first (--prd) lane carries the SAME contract ---------
+repoY="$(new_repo)"; make_gh_stub "$repoY/gh"
+export GH_LOG="$repoY/gh.log"; : >"$GH_LOG"
+briefY="$repoY/concept.md"; printf '%s' "$BRIEF_2SEC" >"$briefY"
+prdYdrop="$repoY/prd-drop.md"; write_prd "$prdYdrop"
+rcY1=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYdrop" --attach "$briefY" >outY1.txt 2>&1
+) || rcY1=$?
+check "18g. grill-first dropping the brief's questions exits 3" "[ '$rcY1' -eq 3 ]"
+
+prdYsec="$repoY/prd-nosec.md"; cp "$prdXsec" "$prdYsec"
+rcY2=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYsec" >outY2.txt 2>&1
+) || rcY2=$?
+check "18h. grill-first with a missing PRD section exits 3" \
+  "[ '$rcY2' -eq 3 ] && grep -q \"missing the 'Constraints' section\" '$repoY/outY2.txt'"
+
+prdYt="$repoY/prd-title.md"
+cat >"$prdYt" <<'EOF'
+# Mission:
+
+**Type:** feature
+**Goal:** Do a thing.
+**Acceptance Criteria:**
+- it works
+**Out of Scope:**
+- everything else
+**Constraints:**
+- none
+EOF
+rcY3=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYt" >outY3.txt 2>&1
+) || rcY3=$?
+check "18i. an unreadable Mission title exits 3 — the PRD is what is wrong" \
+  "[ '$rcY3' -eq 3 ] && grep -q 'could not read the Mission title' '$repoY/outY3.txt'"
+
+prdYty="$repoY/prd-type.md"
+cat >"$prdYty" <<'EOF'
+# Mission: Something
+
+**Type:** enhancement
+**Goal:** Do a thing.
+**Acceptance Criteria:**
+- it works
+**Out of Scope:**
+- everything else
+**Constraints:**
+- none
+EOF
+rcY4=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYty" >outY4.txt 2>&1
+) || rcY4=$?
+check "18j. a Type that is neither feature nor bug exits 3" "[ '$rcY4' -eq 3 ]"
+
+adrY="$repoY/adr-bad.md"; printf '**Context:** x\n' >"$adrY"
+prdYok="$repoY/prd-ok.md"; write_prd "$prdYok"
+rcY5=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYok" --adr "$adrY" >outY5.txt 2>&1
+) || rcY5=$?
+check "18k. a malformed ADR (the same worker's other artifact) exits 3" \
+  "[ '$rcY5' -eq 3 ]"
+
+rcY6=0
+(
+  cd "$repoY"
+  LCARS_GH_BIN="$repoY/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdYok" --adr "$repoY/no-such-adr.md" >outY6.txt 2>&1
+) || rcY6=$?
+check "18l. …but an ADR path that does not EXIST stays exit 1" "[ '$rcY6' -eq 1 ]"
+
+# --- 18m: a clean filing is untouched -------------------------------------
+repoZ="$(new_repo)"; make_gh_stub "$repoZ/gh"
+export GH_LOG="$repoZ/gh.log"; : >"$GH_LOG"
+prdZ="$repoZ/prd.md"; write_prd "$prdZ"
+rcZ=0
+(
+  cd "$repoZ"
+  LCARS_GH_BIN="$repoZ/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdZ" >outZ.txt 2>&1
+) || rcZ=$?
+check "18m. a clean filing still exits 0 and writes prd.md" \
+  "[ '$rcZ' -eq 0 ] && [ -f '$repoZ/.git/lcars/missions/lcars-20260530-001/prd.md' ]"
+
+# ==========================================================================
 [ "$fail" -eq 0 ]

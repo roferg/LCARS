@@ -1,0 +1,12 @@
+{
+  "question": "Fixture: every negative-existence sentence the captain's 58 real Missions produced, EXCEPT the one fabrication. Verbatim. The check must stay silent on all of them.",
+  "recommendation": "This finding exists to be REFUSED. Nothing below may fire the claim check.",
+  "supporting_points": [
+    "First-ever-month (no locked snapshot; `latestLockedSnapshot === null`) and 'existed-but-unmeasurable' cases should degrade gracefully to an explicit non-delta marker ('—' / 'new' / 'no prior MBR'), avoiding misleading +100%/from-zero math; likewise cohort (SubReading[]) or non-numeric string values that can't be differenced should show 'changed'/'—' rather than a fabricated numeric delta, consistent with the MetricValue type being string | SubReading[].",
+    "Do NOT introduce a WIRED_METRIC_IDS list (none exists in the code) or a separate per-KPI boolean flag; the free-text instructions field IS the flag.",
+    "The Collect/Re-collect cycle is driven by the same field: dev-write-plugin.ts and the collect scripts guard with parsedBody.aiUpdateInstructions.trim() === '' → collectFailure('KPI has no aiUpdateInstructions; nothing to collect'), and bulk 'update automatically' collects only the non-empty-instructions partition — so a single per-KPI flag would duplicate state the instructions string already encodes.",
+    "The set/clear semantics already exist implicitly and map cleanly onto the enum: reconcileRoster's 'carry value/status/insight forward' branch (prior match) sets carried while a KPI new to the roster starts empty with NO carried marker; refreshOne/refreshAll clear it when a source reading lands (origin:'collected'); an unwired manual value edit via editKpi clears it (origin:'manual').",
+    "The model's existing `asOf?: string` field is documented as 'Absent on a carried-forward seed KPI; stamped when a collected {value, asOf} result is applied,' so asOf already encodes carried-vs-collected freshness; adding origin disambiguates the third case (manual edits, which have a fresh asOf but no source reading) that asOf alone cannot express, keeping the two fields complementary.",
+    "Existing UI already treats empty insight as the 'not done' state: the mocks render KPIs with no insight via an `insight-text empty` class showing the literal text \"No insight\" (docs/mocks/app.js, styles.css)."
+  ]
+}

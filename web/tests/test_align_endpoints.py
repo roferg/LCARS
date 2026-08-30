@@ -1935,5 +1935,747 @@ def _plant_bug(root, mid, *, parent, issue, stage="plan"):
     })
 
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# S178 LIVE BLOCKER — A GATE THAT FIRES MUST NOT BE A DEAD END
+#
+# MEASURED on the captain's own repo (mission lcars-20260829-002, issue 177):
+# he parked a mission, answered ten grill questions through the viewscreen's
+# Align console, and on the closing turn the console dispatched
+# `file.sh --complete`, which REFUSED the PRD — correctly: it had dropped 5 of
+# the design brief's 14 open questions, and those questions are what the Plan
+# Stage reads. The gate's judgement was right. Everything after it was wrong:
+#
+#   • the drafted PRD was written to a TEMP path and unlinked in a `finally`
+#     that runs on failure too, so the only copy died in daemon memory. The
+#     live mission dir held idea.md, state.json, attachments/ and NO PRD.
+#   • `sess.done` was set BEFORE the dispatch and only cleared by the pop that
+#     the raise skipped, so the session survived STRANDED: `align_session_sid`
+#     requires `not sess.done`, the card lost ▹ RESUME ALIGN and offered START
+#     ALIGNMENT — re-grilling him from question 1. (Card 177 had no
+#     `alignResume`; card 176, which did not fail, did.)
+#   • nothing tried to fix the PRD. The captain did not write it — a worker did
+#     — and he was left with no move at all.
+#
+# The standing rule is that every gate SELF-HEALS first and the human is the
+# backstop. So: the draft is persisted, a failed finalize leaves the grill
+# resumable, and a REDRAFTABLE refusal is handed back to the warm Align worker
+# for up to two repair turns. The classifier is the EXIT STATUS (file.sh exits 3
+# for "the PRD itself is wrong", 1 for everything else) and never the wording —
+# S165's ruling, because prose drifts and a message-matcher is the road that
+# loses.
+# ════════════════════════════════════════════════════════════════════════════
+_GATE_MSG = ("lcars file: PRD drops 5 of the design brief's 14 open question(s) "
+             "from its 'Open questions from the design session' section. "
+             "Missing: - Which model should the MBR builder use?")
+_ENV_MSG = "lcars file: gh: could not authenticate — run `gh auth login`."
+
+_EXIT_PLAN_STUB = r"""#!/usr/bin/env bash
+{
+  printf "ARGV: %s\n" "$*"
+  prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--prd" ] || [ "$prev" = "--adr" ]; then
+      printf "FILE[%s]:\n" "$prev"
+      cat "$a" 2>/dev/null
+      printf "\nENDFILE\n"
+    fi
+    prev="$a"
+  done
+} >> "REC"
+idx_file="PLAN.idx"
+i=0
+[ -f "$idx_file" ] && i=$(cat "$idx_file")
+echo $((i+1)) > "$idx_file"
+line="$(awk -v want="$i" 'NR==want+1{print}' "PLAN" 2>/dev/null)"
+code="${line%% *}"
+[ -n "$code" ] || code=0
+if [ "$code" != "0" ]; then
+  printf '%b\n' "${line#* }" >&2
+  exit "$code"
+fi
+exit 0
+"""
+
+
+def _file_exit_plan_stub(record_path, plan_path):
+    """file.sh, with a SCRIPTED exit code per invocation.
+
+    `plan_path` holds one `<code> <message>` line per call, consumed in order
+    (a missing/blank line means a clean exit 0). Records the same ARGV/FILE
+    blocks `_file_record_stub` does, so a test can read back the PRD each
+    dispatch actually carried — which is how the healed PRD is proven to be a
+    DIFFERENT document, not the same one re-sent.
+    """
+    fd, path = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    script = _EXIT_PLAN_STUB.replace("REC", record_path).replace("PLAN",
+                                                                 plan_path)
+    with open(path, "w") as fh:
+        fh.write(script)
+    os.chmod(path, 0o755)
+    return path
+
+
+class AlignFinalizeHealTest(AlignBase):
+    MID = "m-parked"
+
+    QUESTION = {"status": "question",
+                "question": {"text": "Anything else before I file?",
+                             "closing": True},
+                "prd": "# Mission: MBR builder\n\n**Type:** feature\n"}
+    BAD_PRD = "# Mission: MBR builder\n\n**Type:** feature\n\nDROPS THE QUESTIONS\n"
+    GOOD_PRD = ("# Mission: MBR builder\n\n**Type:** feature\n\n"
+                "## Open questions from the design session\n"
+                "- STILL OPEN: Which model should the MBR builder use?\n")
+
+    def setUp(self):
+        super().setUp()
+        fx.plant_parked(self.tmp, self.MID, issue=177,
+                        title="Rebuild the MBR builder")
+        self.plan_path = os.path.join(self.tmp, "file-exit-plan.txt")
+        self.scripts["file"] = _file_exit_plan_stub(self.records["file"],
+                                                    self.plan_path)
+        self.actions.scripts["file"] = self.scripts["file"]
+
+    # ── helpers ────────────────────────────────────────────────────────────
+    def _plan(self, *lines):
+        with open(self.plan_path, "w") as fh:
+            for ln in lines:
+                fh.write(ln + "\n")
+
+    def _done(self, prd):
+        return {"status": "done", "prd": prd}
+
+    def _drive_to_close(self):
+        """Start the parked grill and land on its closing question."""
+        status, body = self._post("/api/align/start", {"missionId": self.MID})
+        self.assertEqual(status, 200)
+        return body["state"]["sessionId"]
+
+    def _dispatch_count(self):
+        return self._record("file").count("ARGV: ")
+
+    def _dispatched_prds(self):
+        """The PRD text of every `--prd` file.sh was actually handed, in order."""
+        out = []
+        for chunk in self._record("file").split("FILE[--prd]:\n")[1:]:
+            out.append(chunk.split("\nENDFILE\n")[0])
+        return out
+
+    def _draft_path(self):
+        return os.path.join(self.tmp, ".git", "lcars", "missions", self.MID,
+                            "prd-draft.md")
+
+    def _card(self):
+        url = "http://127.0.0.1:%d/api/board" % self.port
+        with urllib.request.urlopen(url, timeout=10) as r:
+            board = json.loads(r.read())
+        for col in board.get("columns", {}).values():
+            for c in col:
+                if c.get("id") == self.MID:
+                    return c
+        self.fail("no card for %s on the board" % self.MID)
+
+    def _answer(self, sid):
+        return self._post("/api/align/%s/answer" % sid, {"answer": "go"})
+
+    # ── CURE 3: a REDRAFTABLE refusal is healed, once ──────────────────────
+    def test_an_exit_3_is_healed_by_one_repair_turn_and_then_files(self):
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.GOOD_PRD))
+        self._plan("3 " + _GATE_MSG, "0")
+        sid = self._drive_to_close()
+        status, body = self._answer(sid)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"]["status"], "done")
+        # TWO dispatches: the refused one, then the healed one.
+        self.assertEqual(self._dispatch_count(), 2, self._record("file"))
+        self.assertEqual([t.strip() for t in self._dispatched_prds()],
+                         [self.BAD_PRD.strip(), self.GOOD_PRD.strip()])
+        # exactly ONE repair turn on the WARM session (opening + closing + heal).
+        self.assertEqual(len(self._argvs()), 3, self._argvs())
+        self.assertIn("--resume", self._argvs()[2])
+
+    def test_the_repair_turn_hands_the_gates_own_message_to_the_worker(self):
+        """The worker is told WHAT was refused — verbatim. Nothing else in the
+        daemon knows which questions were dropped; only the gate does."""
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.GOOD_PRD))
+        self._plan("3 " + _GATE_MSG, "0")
+        self._answer(self._drive_to_close())
+        repair = self._prompt_turns()[2]
+        self.assertIn("Which model should the MBR builder use?", repair)
+        self.assertIn("Open questions from the design session", repair)
+
+    def test_the_repair_turn_carries_EVERY_missing_question_verbatim(self):
+        """CURE 6 — SURGICAL, because the refusal already is. The gate prints
+        `Missing:` followed by every question it wants, one per line; the tail
+        of that list is precisely what went missing the first time, so a
+        summary ("you dropped 5 of 14") would hand the worker back the same
+        recall test that lost them."""
+        missing = ["Q ten: does a locked value stay locked next month?",
+                   "Q eleven: what sorts the KPI list by default?",
+                   "Q twelve: is there an undo for Lock in value?",
+                   "Q thirteen: does the sidebar collapse on narrow screens?",
+                   "Q fourteen: what does the amber state on a tile mean?"]
+        gate = ("lcars file: PRD drops 5 of the design brief's 14 open "
+                "question(s) from its 'Open questions from the design "
+                "session' section. Missing:\\n"
+                + "\\n".join("  - " + q for q in missing))
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.GOOD_PRD))
+        self._plan("3 " + gate, "0")
+        status, _b = self._answer(self._drive_to_close())
+        self.assertEqual(status, 200)
+        repair = self._prompt_turns()[2]
+        for q in missing:
+            self.assertIn(q, repair, q)
+        self.assertIn("- STILL OPEN: <the question>", repair)
+        self.assertIn("Missing:", repair)
+
+    def test_a_healed_filing_settles_the_session_exactly_like_a_clean_one(self):
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.GOOD_PRD))
+        self._plan("3 " + _GATE_MSG, "0")
+        sid = self._drive_to_close()
+        self._answer(sid)
+        self.assertNotIn(sid, self.actions._align, "the session must be popped")
+        self.assertFalse(os.path.exists(self._draft_path()),
+                         "a filing that SUCCEEDED leaves no draft behind")
+
+    # ── CURE 3: the cap, and what the captain is left holding ──────────────
+    def test_two_failures_exhaust_the_cap_and_leave_it_resumable(self):
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.BAD_PRD), self._done(self.BAD_PRD))
+        self._plan("3 " + _GATE_MSG, "3 " + _GATE_MSG, "3 " + _GATE_MSG)
+        sid = self._drive_to_close()
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._answer(sid)
+        detail = cm.exception.read().decode()
+        # THREE dispatches — the original plus the two heals, and no more.
+        self.assertEqual(self._dispatch_count(), 3, self._record("file"))
+        # the gate's own message reaches the console: he sees WHAT is unresolved.
+        self.assertIn("Which model should the MBR builder use?", detail)
+        # …and the grill is still his to resume.
+        sess = self.actions._align.get(sid)
+        self.assertIsNotNone(sess, "the session must survive a failed finalize")
+        self.assertFalse(sess.done, "…and must not be stranded done=True")
+        self.assertTrue(sess.last_question,
+                        "…with the closing question intact, so RESUME lands "
+                        "him exactly where he was")
+        self.assertEqual(self.actions.align_session_sid(self.MID), sid)
+        self.assertIn("alignResume", self._card())
+        self.assertNotIn("alignFinalizing", self._card())
+
+    def test_the_drafted_prd_survives_on_disk(self):
+        """CURE 1. The captain did not write this PRD and cannot retype it."""
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.BAD_PRD), self._done(self.BAD_PRD))
+        self._plan("3 " + _GATE_MSG, "3 " + _GATE_MSG, "3 " + _GATE_MSG)
+        with self.assertRaises(urllib.error.HTTPError):
+            self._answer(self._drive_to_close())
+        self.assertTrue(os.path.exists(self._draft_path()), self._draft_path())
+        with open(self._draft_path(), encoding="utf-8") as fh:
+            self.assertIn("DROPS THE QUESTIONS", fh.read())
+
+    def test_the_exhaustion_message_says_where_the_draft_is(self):
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.BAD_PRD), self._done(self.BAD_PRD))
+        self._plan("3 " + _GATE_MSG, "3 " + _GATE_MSG, "3 " + _GATE_MSG)
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._answer(self._drive_to_close())
+        self.assertIn("prd-draft.md", cm.exception.read().decode())
+
+    # ── the EXIT STATUS is the classifier, not the wording ─────────────────
+    def test_an_environment_failure_triggers_NO_repair_turn(self):
+        """Exit 1 is `gh` being down, a missing mission, a dead git. Redrafting
+        the PRD cannot clear any of those — retrying just burns tokens."""
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.GOOD_PRD))
+        self._plan("1 " + _ENV_MSG)
+        sid = self._drive_to_close()
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._answer(sid)
+        self.assertIn("could not authenticate", cm.exception.read().decode())
+        self.assertEqual(self._dispatch_count(), 1)
+        self.assertEqual(len(self._argvs()), 2,
+                         "no repair turn may run for an environment failure")
+
+    def test_an_environment_failure_still_leaves_it_resumable_with_the_draft(self):
+        """CUREs 1 and 2 are NOT conditional on the heal — they are what makes
+        ANY failed finalize survivable."""
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD))
+        self._plan("1 " + _ENV_MSG)
+        sid = self._drive_to_close()
+        with self.assertRaises(urllib.error.HTTPError):
+            self._answer(sid)
+        sess = self.actions._align.get(sid)
+        self.assertIsNotNone(sess)
+        self.assertFalse(sess.done)
+        self.assertIn("alignResume", self._card())
+        self.assertTrue(os.path.exists(self._draft_path()))
+
+    # ── the heal is VISIBLE, on the surface that already exists ────────────
+    def test_a_running_heal_shows_on_the_finalizing_surface(self):
+        """Not a new band, not a new gate: the SAME `alignFinalizing` fact the
+        card already renders, carrying how many repairs have been tried."""
+        self._set_turns(self.QUESTION, self._done(self.BAD_PRD),
+                        self._done(self.GOOD_PRD))
+        self._plan("3 " + _GATE_MSG, "0")
+        sid = self._drive_to_close()
+        seen = {}
+        real = self.actions._worker_turn
+
+        def spy(prompt, *a, **kw):
+            if "REFUSED" in prompt:
+                seen["fin"] = self.actions._align_finalizing_for_mission(self.MID)
+            return real(prompt, *a, **kw)
+
+        self.actions._worker_turn = spy
+        self._answer(sid)
+        self.assertIn("fin", seen, "the repair turn never ran")
+        self.assertGreaterEqual(seen["fin"].get("heals", 0), 1,
+                                "a heal in flight must be readable off the card")
+
+    def test_an_ordinary_finalize_publishes_no_heal_count(self):
+        """Additive by construction: a filing with nothing to heal is
+        byte-identical to the board every earlier test pins."""
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id=self.MID)
+        sess.done = True
+        sess.finalize_started = time.time()
+        self.actions._align["s-fin"] = sess
+        self.assertNotIn("heals",
+                         self.actions._align_finalizing_for_mission(self.MID))
+
+    # ── a CLEAN filing is untouched ────────────────────────────────────────
+    def test_a_clean_filing_is_unchanged(self):
+        self._set_turns(self.QUESTION, self._done(self.GOOD_PRD))
+        self._plan("0")
+        sid = self._drive_to_close()
+        status, body = self._answer(sid)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"]["status"], "done")
+        self.assertIn("board", body["state"])
+        self.assertEqual(self._dispatch_count(), 1)
+        self.assertEqual(len(self._argvs()), 2, "no extra worker turn")
+        self.assertNotIn(sid, self.actions._align)
+        self.assertFalse(os.path.exists(self._draft_path()))
+        self.assertNotIn("healed", body["state"])
+
+    def test_a_clean_filing_leaves_no_scratch_prd_behind(self):
+        """The temp PRD is still cleaned up on the SUCCESS path — the change is
+        that a FAILURE stops destroying it, not that we started leaking."""
+        self._set_turns(self.QUESTION, self._done(self.GOOD_PRD))
+        self._plan("0")
+        self._answer(self._drive_to_close())
+        scratch = os.path.join(self.tmp, ".git", "lcars", "tmp")
+        left = glob.glob(os.path.join(scratch, "lcars-prd-*.md"))
+        self.assertEqual(left, [], left)
+
+
+class AlignFreshFilingDraftTest(AlignBase):
+    """The FRESH-FILING lane (`file.sh --prd`) has no mission dir to write a
+    draft into — file.sh is what MINTS the mission. So the best it can do is
+    STOP DESTROYING the temp PRD: on failure the scratch file under
+    `.git/lcars/tmp/` survives instead of being unlinked, and the refusal names
+    it. It is recoverable by path, not by mission id."""
+
+    BAD_PRD = "# Mission: Fresh\n\n**Type:** feature\n\nDROPS THE QUESTIONS\n"
+
+    def setUp(self):
+        super().setUp()
+        self.plan_path = os.path.join(self.tmp, "file-exit-plan.txt")
+        self.scripts["file"] = _file_exit_plan_stub(self.records["file"],
+                                                    self.plan_path)
+        self.actions.scripts["file"] = self.scripts["file"]
+
+    def _plan(self, *lines):
+        with open(self.plan_path, "w") as fh:
+            for ln in lines:
+                fh.write(ln + "\n")
+
+    def _scratch_prds(self):
+        return sorted(glob.glob(os.path.join(
+            self.tmp, ".git", "lcars", "tmp", "lcars-prd-*.md")))
+
+    def test_a_failed_fresh_filing_keeps_the_prd_in_scratch(self):
+        self._set_turns({"status": "question",
+                         "question": {"text": "Anything else?"},
+                         "prd": self.BAD_PRD},
+                        {"status": "done", "prd": self.BAD_PRD},
+                        {"status": "done", "prd": self.BAD_PRD},
+                        {"status": "done", "prd": self.BAD_PRD})
+        self._plan("3 " + _GATE_MSG, "3 " + _GATE_MSG, "3 " + _GATE_MSG)
+        _, body = self._post("/api/align/start", {"idea": "a fresh idea"})
+        sid = body["state"]["sessionId"]
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/align/%s/answer" % sid, {"answer": "go"})
+        detail = cm.exception.read().decode()
+        left = self._scratch_prds()
+        self.assertEqual(len(left), 1,
+                         "ONE surviving draft — the newest — not one per heal")
+        with open(left[0], encoding="utf-8") as fh:
+            self.assertIn("DROPS THE QUESTIONS", fh.read())
+        self.assertIn(left[0], detail,
+                      "the refusal must name where the draft survived")
+        sess = self.actions._align.get(sid)
+        self.assertIsNotNone(sess)
+        self.assertFalse(sess.done)
+
+    def test_a_clean_fresh_filing_still_cleans_up(self):
+        self._set_turns({"status": "question",
+                         "question": {"text": "Anything else?"},
+                         "prd": self.BAD_PRD},
+                        {"status": "done", "prd": self.BAD_PRD})
+        self._plan("0")
+        _, body = self._post("/api/align/start", {"idea": "a fresh idea"})
+        sid = body["state"]["sessionId"]
+        status, _out = self._post("/api/align/%s/answer" % sid, {"answer": "go"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self._scratch_prds(), [])
+        self.assertNotIn(sid, self.actions._align)
+
+
+class SkillExitCodeIsCarriedTest(AlignBase):
+    """`_run` must hand the caller the skill's OWN exit code. Without it the
+    daemon can only classify a refusal by matching its prose, which is the
+    road S165 already proved loses."""
+
+    def _stub(self, code, msg):
+        fd, path = tempfile.mkstemp(suffix=".sh")
+        os.close(fd)
+        with open(path, "w") as fh:
+            fh.write("#!/usr/bin/env bash\necho %r >&2\nexit %d\n" % (msg, code))
+        os.chmod(path, 0o755)
+        return path
+
+    def test_the_exit_code_reaches_the_caller(self):
+        from lcars_serve.actions import ActionError
+        self.actions.scripts["file"] = self._stub(3, "bad prd")
+        with self.assertRaises(ActionError) as cm:
+            self.actions._run("file", ["--prd", "/x"])
+        self.assertEqual(cm.exception.skill_exit, 3)
+        # …and the existing contract is untouched.
+        self.assertEqual(cm.exception.status, 502)
+        self.assertIn("exited 3", cm.exception.message)
+
+    def test_an_ordinary_failure_still_reads_1(self):
+        from lcars_serve.actions import ActionError
+        self.actions.scripts["file"] = self._stub(1, "gh is down")
+        with self.assertRaises(ActionError) as cm:
+            self.actions._run("file", ["--prd", "/x"])
+        self.assertEqual(cm.exception.skill_exit, 1)
+
+    def test_an_untouched_action_error_reads_none(self):
+        from lcars_serve.actions import ActionError
+        self.assertIsNone(ActionError(400, "x").skill_exit)
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S178 CURES 4 + 5 — WHY THE WORKER DROPPED THE 5 QUESTIONS
+#
+# Cures 1–3 are the net under the failure. These two are the failure's cause,
+# and they are PROMPT PROSE, so what follows can only prove the brief now SAYS
+# the right thing. It cannot prove a worker stops dropping the tail — that is a
+# live drive against the captain's real 14-question brief, and it is stated as
+# unproven rather than implied by a green suite.
+#
+# CAUSE 1 (cure 4). `_HANDOFF_IMPLIED_NOTE` ended "answer them, correct them,
+# or delete them" — read verbatim by the Align worker out of the filed idea.md,
+# directly above bucket 2's items — while `lcars_prd_questions_gate` refuses a
+# PRD that drops any of them. The brief authorised the one move the gate treats
+# as fatal.
+#
+# CAUSE 2 (cure 5). The 5 lost items were 10–14: the contiguous TAIL of the
+# 14-item list, not a section and not a category. The mitigation is a COUNT the
+# worker can check itself against, over both homes, taken through the same read
+# the gate uses.
+# ════════════════════════════════════════════════════════════════════════════
+
+# The captain's real doc shape: 2 in `## Open questions`, 12 in bucket 2.
+_CONCEPT_2_PLUS_12 = """# MBR builder
+
+## Open questions
+
+- What makes a KPI "carried" from one month to the
+  next when the source sheet changes?
+- Which model should the MBR builder use?
+
+## WHAT IT MUST DO — BEHAVIOUR ONLY
+
+### 1. Requirements (captain's words)
+
+1. (T1) Render the builder screen.
+2. (T2) Save a draft.
+
+### 2. Implied by the mockup, not yet settled
+
+- What do Preview and View actually do?
+- Does the Lock in value button commit immediately?
+- Is the KPI list scrollable or paged?
+- What happens to a KPI with no source row?
+- Does the header show the month or the quarter?
+- Can two people edit the same MBR at once?
+- Is the export PDF or XLSX?
+- Does a locked value stay locked next month?
+- What sorts the KPI list by default?
+- Is there an undo for Lock in value?
+- Does the sidebar collapse on narrow screens?
+- What does the amber state on a tile mean?
+
+### 3. Out of scope
+
+- Redesigning the login screen
+"""
+
+_CONCEPT_NO_IMPLIED = """# Tile picker
+
+## Open questions
+
+- Should the picker remember the last tile?
+
+## WHAT IT MUST DO — BEHAVIOUR ONLY
+
+### 1. Requirements (captain's words)
+
+1. (T1) Show the tiles.
+
+### 3. Out of scope
+
+- The login screen
+"""
+
+_CONCEPT_NOTHING_UNSETTLED = """# Quiet program
+
+## WHAT IT MUST DO — BEHAVIOUR ONLY
+
+### 1. Requirements (captain's words)
+
+1. (T1) Show the tiles.
+
+### 3. Out of scope
+
+- The login screen
+"""
+
+
+class HandoffImpliedNoteTest(unittest.TestCase):
+    """CURE 4 — the brief may no longer authorise the deletion the gate
+    forbids. Prose assertions: they pin what the worker READS, not what it
+    does."""
+
+    def test_the_note_no_longer_offers_deletion(self):
+        from lcars_serve.actions import _HANDOFF_IMPLIED_NOTE
+        low = _HANDOFF_IMPLIED_NOTE.lower()
+        self.assertNotIn("or delete them", low)
+        self.assertIn("do not delete", low)
+
+    def test_the_note_says_where_every_item_must_END_UP(self):
+        """A prohibition on its own leaves the worker nowhere to put the item.
+        The note has to name the destination the gate actually measures."""
+        from lcars_serve.actions import _HANDOFF_IMPLIED_NOTE
+        self.assertIn("Open questions from the design session",
+                      _HANDOFF_IMPLIED_NOTE)
+        self.assertIn("STILL OPEN", _HANDOFF_IMPLIED_NOTE)
+        self.assertIn("RESOLVED with the captain", _HANDOFF_IMPLIED_NOTE)
+
+    def test_the_destination_it_names_is_the_gates_own_heading(self):
+        """THE DRIFT CATCHER. The section this note sends items to is spelled
+        in the shipped bash as `LCARS_PRD_QUESTIONS_HEADING`. Two homes, two
+        languages — pin them together or they drift."""
+        common = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))),
+            "skills", "lcars-init", "lcars-common.sh")
+        proc = subprocess.run(
+            ["bash", "-c",
+             '. "$1"; printf %s "$LCARS_PRD_QUESTIONS_HEADING"', "_", common],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        heading = proc.stdout.decode().strip()
+        self.assertTrue(heading, "could not read the heading out of the skill")
+        from lcars_serve.actions import _HANDOFF_IMPLIED_NOTE
+        self.assertIn(heading, _HANDOFF_IMPLIED_NOTE)
+
+    def test_the_NOT_YOUR_WORDS_framing_is_untouched(self):
+        """FL-011's whole point, and it was NOT the bug. Bucket 2 stays marked
+        and stays its own bucket."""
+        from lcars_serve.actions import (_HANDOFF_IMPLIED_NOTE,
+                                         _HANDOFF_IMPLIED_TITLE)
+        self.assertEqual(_HANDOFF_IMPLIED_TITLE,
+                         "## Implied by the mockup — NOT things you said")
+        self.assertIn("never as your words", _HANDOFF_IMPLIED_NOTE)
+        self.assertIn("IMPLIED", _HANDOFF_IMPLIED_NOTE)
+
+    def test_a_brief_with_NO_implied_items_is_byte_identical(self):
+        """The note has exactly one entry point — `_handoff_section`, which
+        returns "" for an empty bucket. So a program whose design session
+        implied nothing gets a brief this change cannot have touched, pinned
+        here as a whole string rather than asserted in a comment."""
+        from lcars_serve.actions import (_handoff_brief, _handoff_section,
+                                         _handoff_titled, _HANDOFF_CHANGE_TITLE,
+                                         _HANDOFF_CHANGE_NOTE,
+                                         _HANDOFF_SCOPE_TITLE,
+                                         _HANDOFF_SCOPE_NOTE,
+                                         _HANDOFF_IMPLIED_TITLE,
+                                         _HANDOFF_IMPLIED_NOTE)
+        brief = _handoff_brief(_CONCEPT_NO_IMPLIED, "the picker",
+                               ["The rail moves left"], [])
+        expected = _handoff_titled("\n\n".join([
+            _handoff_section(_HANDOFF_CHANGE_TITLE, _HANDOFF_CHANGE_NOTE,
+                             ["The rail moves left"]),
+            _handoff_section(_HANDOFF_SCOPE_TITLE, _HANDOFF_SCOPE_NOTE,
+                             ["The login screen"])]), "the picker")
+        self.assertEqual(brief, expected)
+        self.assertNotIn(_HANDOFF_IMPLIED_TITLE, brief)
+        self.assertNotIn(_HANDOFF_IMPLIED_NOTE, brief)
+
+    def test_a_brief_WITH_implied_items_carries_the_new_note(self):
+        from lcars_serve.actions import _handoff_brief, _HANDOFF_IMPLIED_NOTE
+        brief = _handoff_brief(_CONCEPT_2_PLUS_12, "the MBR builder", [], [])
+        self.assertIn(_HANDOFF_IMPLIED_NOTE, brief)
+        self.assertIn("What does the amber state on a tile mean?", brief)
+
+
+class HandoffCarryForwardChecklistTest(unittest.TestCase):
+    """CURE 5 — the count, and that it is the GATE'S count."""
+
+    COMMON = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+        "skills", "lcars-init", "lcars-common.sh")
+
+    def _bash_unsettled(self, text):
+        """What the SHIPPED gate reads out of the same doc — the authority."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "concept.md")
+        with open(p, "w") as fh:
+            fh.write(text)
+        proc = subprocess.run(
+            ["bash", "-c", '. "$1"; lcars_concept_open_questions "$2"', "_",
+             self.COMMON, p],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        out = proc.stdout.decode()
+        return [ln for ln in out.split("\n") if ln.strip()]
+
+    def test_the_count_matches_the_captains_real_2_plus_12_shape(self):
+        from lcars_serve.actions import _handoff_unsettled
+        self.assertEqual(len(_handoff_unsettled(_CONCEPT_2_PLUS_12)), 14)
+
+    def test_the_daemons_read_agrees_with_the_shipped_gate(self):
+        """THE DRIFT CATCHER, and the reason a count is safe to print at all.
+        A checklist that is short by one is worse than no checklist: it tells
+        the worker it is finished while the gate is about to refuse."""
+        from lcars_serve.actions import _handoff_unsettled
+        for doc in (_CONCEPT_2_PLUS_12, _CONCEPT_NO_IMPLIED,
+                    _CONCEPT_NOTHING_UNSETTLED):
+            self.assertEqual(_handoff_unsettled(doc), self._bash_unsettled(doc),
+                             doc.splitlines()[0])
+
+    def test_the_block_names_the_total_and_both_homes(self):
+        from lcars_serve.actions import _handoff_carry_forward_block
+        blk = _handoff_carry_forward_block(_CONCEPT_2_PLUS_12)
+        self.assertIn("all 14 unsettled items", blk)
+        self.assertIn("2 under the concept doc's `## Open questions`", blk)
+        self.assertIn("12 under `## WHAT IT MUST DO`", blk)
+        self.assertIn("AGAINST 14 BEFORE YOU FILE", blk)
+
+    def test_the_block_names_the_destination_and_the_two_entry_shapes(self):
+        from lcars_serve.actions import _handoff_carry_forward_block
+        blk = _handoff_carry_forward_block(_CONCEPT_2_PLUS_12)
+        self.assertIn("Open questions from the design session", blk)
+        self.assertIn("- STILL OPEN: <the item>", blk)
+        self.assertIn("- RESOLVED with the captain: <what was decided>", blk)
+        # …and that carrying one forward UNANSWERED is complete. The gate wants
+        # the questions to survive, not to be answered (SKILL.md's ruling).
+        self.assertIn("do NOT need an answer", blk)
+
+    def test_it_does_NOT_reprint_the_questions(self):
+        """ONE HOME EACH still holds. This is an instruction and a count — a
+        second copy of fourteen bullets is exactly the over-long box that gets
+        skimmed."""
+        from lcars_serve.actions import _handoff_carry_forward_block
+        blk = _handoff_carry_forward_block(_CONCEPT_2_PLUS_12)
+        self.assertNotIn("What do Preview and View actually do?", blk)
+        self.assertNotIn("Which model should the MBR builder use?", blk)
+
+    def test_a_doc_with_NOTHING_unsettled_produces_NOTHING(self):
+        from lcars_serve.actions import _handoff_carry_forward_block
+        self.assertEqual(
+            _handoff_carry_forward_block(_CONCEPT_NOTHING_UNSETTLED), "")
+        self.assertEqual(_handoff_carry_forward_block(""), "")
+
+    def test_the_mission_idea_carries_it_after_the_questions_block(self):
+        from lcars_serve.actions import Actions
+        idea = Actions._handoff_idea("HIS WORDS", "look+behaviour", _CONCEPT_2_PLUS_12,
+                                     {})
+        self.assertIn("all 14 unsettled items", idea)
+        self.assertLess(idea.index("Open questions from the design session"),
+                        idea.index("all 14 unsettled items"))
+
+    def test_an_idea_with_nothing_unsettled_is_byte_identical(self):
+        """The no-op case, pinned as a whole string: his words, then the
+        guidance, and nothing this session added in between."""
+        from lcars_serve.actions import Actions, _handoff_guidance
+        idea = Actions._handoff_idea("HIS WORDS", "look+behaviour",
+                                     _CONCEPT_NOTHING_UNSETTLED, {})
+        self.assertEqual(idea, "HIS WORDS\n\n" + _handoff_guidance("look+behaviour"))
+
+
+class AlignHealAnswerIsSurgicalTest(unittest.TestCase):
+    """CURE 6 — the repair turn hands over the gate's OWN list, and mirrors the
+    repair `skills/lcars-file/SKILL.md` already prescribes for the CLI lane."""
+
+    SKILL = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+        "skills", "lcars-file", "SKILL.md")
+
+    def test_it_asks_for_a_STILL_OPEN_entry_per_named_question(self):
+        from lcars_serve.actions import _ALIGN_HEAL_ANSWER
+        self.assertIn("Missing:", _ALIGN_HEAL_ANSWER)
+        self.assertIn("- STILL OPEN: <the question>", _ALIGN_HEAL_ANSWER)
+        self.assertIn("Open questions from the design session",
+                      _ALIGN_HEAL_ANSWER)
+        self.assertIn("all of them, including the last", _ALIGN_HEAL_ANSWER)
+
+    def test_it_forbids_a_re_grill(self):
+        """The cost the captain actually paid twice: a completed alignment
+        thrown away over a heading."""
+        from lcars_serve.actions import _ALIGN_HEAL_ANSWER
+        low = _ALIGN_HEAL_ANSWER.lower()
+        self.assertIn("do not re-grill", low)
+        self.assertIn("do not restart the interview", low)
+        self.assertIn("do not ask another question", low)
+
+    def test_it_says_a_STILL_OPEN_entry_needs_no_answer(self):
+        from lcars_serve.actions import _ALIGN_HEAL_ANSWER
+        self.assertIn("do NOT need the captain", _ALIGN_HEAL_ANSWER)
+        self.assertIn("do NOT need an answer", _ALIGN_HEAL_ANSWER)
+
+    def test_it_carries_the_refusal_VERBATIM_not_a_summary(self):
+        from lcars_serve.actions import _ALIGN_HEAL_ANSWER
+        gate = ("PRD drops 5 of the design brief's 14 open question(s) …\n"
+                "Missing:\n  - Q ten\n  - Q eleven\n  - Q twelve\n"
+                "  - Q thirteen\n  - Q fourteen")
+        built = _ALIGN_HEAL_ANSWER % gate
+        for q in ("Q ten", "Q eleven", "Q twelve", "Q thirteen", "Q fourteen"):
+            self.assertIn(q, built)
+
+    def test_it_mirrors_the_repair_SKILL_MD_already_prescribes(self):
+        """The daemon lane and the CLI lane must not describe two different
+        repairs for one refusal."""
+        with open(self.SKILL, encoding="utf-8") as fh:
+            skill = fh.read()
+        from lcars_serve.actions import _ALIGN_HEAL_ANSWER
+        self.assertIn("- STILL OPEN: <the question>", skill)
+        self.assertIn("NEVER RE-GRILL", skill)
+        for phrase in ("STILL OPEN", "Open questions from the design session"):
+            self.assertIn(phrase, skill)
+            self.assertIn(phrase, _ALIGN_HEAL_ANSWER)
+
+
 if __name__ == "__main__":
     unittest.main()

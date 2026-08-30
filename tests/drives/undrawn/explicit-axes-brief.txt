@@ -1,0 +1,13 @@
+I want to design a "Team Roster" screen for our internal tool.
+
+Every row on the roster is one PERSON, and a row varies along two independent
+things:
+
+  - EMPLOYMENT: a person is either PERMANENT staff or a CONTRACTOR.
+  - CAPACITY: a person is either on a SINGLE fixed allocation (one number, e.g.
+    "40h/week"), or SPLIT across several projects (a little list — project name,
+    hours, and a percentage each).
+
+Draw me the roster. Show permanent people, show contractors, and show what a
+split allocation looks like. Make it clean and dense — this is an admin screen,
+not a marketing page.

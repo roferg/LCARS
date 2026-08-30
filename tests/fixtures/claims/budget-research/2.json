@@ -1,0 +1,10 @@
+{
+  "question": "Where does the quarter-close control live?",
+  "recommendation": "Keep the close control on the header. There is no admin gating anywhere in this product and none should be added; the merge trail is the audit.",
+  "supporting_points": [
+    "BudgetLinesView.tsx contains no 'Close quarter' button and does not reference import.meta.env.DEV or probeCloseEndpoint.",
+    "A search for CSV/JSON/download/blob export of cost centres returns no matches, so there is no field list to emit.",
+    "Codebase search shows no `spawn`/child_process invocation tied to budget lines: the only executable spawn is the screenshot script.",
+    "There is no rolledUp[] array anywhere in the data (a grep for 'roll' finds only descriptive copy), so the roll-up is conceptual, not stored."
+  ]
+}

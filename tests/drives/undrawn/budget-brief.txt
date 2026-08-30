@@ -1,0 +1,14 @@
+I want a "Budget Lines" screen for our finance tool. Each line is one budget item
+for the quarter.
+
+Some lines are tracked automatically — we pull the spend from the accounting feed
+each night, and those show the pulled figure with a "Synced" tag and the time of
+the last sync. Other lines are entered by hand: those render an inline input with
+the currency symbol, a "From last quarter · edit to override" hint and a "Manual"
+tag, and they autosave as you type.
+
+Separately, some lines are a single total, and some are rolled up from several
+cost centres. A rolled-up line lists each cost centre's name, its amount and its
+share of the line, with a "vs last quarter" caption underneath.
+
+Draw me the screen. Dense and businesslike.

@@ -1308,6 +1308,15 @@ function cardNode(m) {
     var fill = el("i"); fill.style.width = pct + "%"; bar.appendChild(fill);
     prog.appendChild(bar);
     prog.appendChild(el("div", "lab", m.progress.label || ""));
+    // S178: the wave SHAPE beside the wave COUNT. "14 WAVES · 1 TICKET EACH —
+    // NO PARALLELISM" is a signal the captain can act on; "WAVE 1/14" is not.
+    // Additive and condition-gated — a payload with no `shape` (every pre-S178
+    // adapter, and the GitHub adapter, which serves no progress at all) renders
+    // byte-identically to before.
+    if (m.progress.shape) {
+      var shapeCls = "shape" + (/NO PARALLELISM/.test(m.progress.shape) ? " serial" : "");
+      prog.appendChild(el("div", shapeCls, m.progress.shape));
+    }
     card.appendChild(prog);
   }
 
