@@ -464,7 +464,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars viewscreen` | **The recommended surface — the Kanban web board** (alias `lcars serve`). A Python-3-stdlib-only daemon — no pip/npm/build — serving every active Mission as a card in its Stage column, with a cost pill + reasoning/implementation difficulty pills, awaiting-you / paused states, nested ticket rows, and live Implement progress over SSE. Drive the whole idea→PR loop from the browser (File, the live Align console, Start with a plain-language model override, Respond, Verify, Pause/Resume, Mission Log) — a viewport over the same harness the CLI drives. It launches via the real on-PATH command `lcars-viewscreen --open` (alias `lcars-serve`), which you run in any plain terminal — no Claude Code or Copilot session needed — booting on a free port and opening it in your browser. |
 | `lcars` | **The one CLI entry point.** Infers the right action from state and announces it first: nothing filed → runs the `lcars file` flow; work in flight & nothing pending → drives the active Mission (auto-advance); a decision waiting → opens the inbox. Never makes you remember a verb or paste an id. |
 | `lcars answer` | **The inbox** — every pending decision across *all* Missions in one list: scope escalations, plan-review stand-offs, blocked tickets, and the Verify gate. **approve** and **send back** are actions on a Verify card here, not separate commands. (The viewscreen surfaces the same gates on the cards themselves.) |
-| `lcars status` | The read-only **terminal board**: every active Mission, its Stage, and anything awaiting you. Add `--watch` to follow a running Mission **live** — a streaming event view with a pace line (wave, ticket, worker session, avg/ticket, elapsed). |
+| `lcars status` | The read-only **terminal board**: every active Mission, its Stage, and anything awaiting you. Add `--watch` to follow a running Mission **live** — a streaming event view with a pace line (wave, ticket, tickets green, hire count, any bounces, avg/ticket, elapsed). |
 | `lcars init` | One-time per-repo setup (local config + GitHub labels). Safe to re-run — it **preserves** your config customizations, only filling in anything missing. |
 | `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`, and re-stamps the repo's `lcarsVersion`. A clean no-op when nothing's changed. |
 | `lcars version` | Show the version picture — the **running** version (this LCARS clone's `VERSION`), the source clone's path + git state, and, inside an initialized repo, its stamped `lcarsVersion` with a verdict (**current** / **needs `lcars update`** / unknown). Read-only, no network fetch. |
@@ -777,8 +777,9 @@ Two deliberate properties make this robust:
   via `LCARS_WATCH_INTERVAL` or `--interval`) until it halts — so you watch the
   run where you started it, without a second window. `lcars status --watch`
   tails the same log into a live view with a pace/position line —
-  `Wave 3/6 · ticket t-004 · session 1 · ~12s avg/ticket · elapsed 4m12s` — on
-  that same interval. The
+  `Wave 3/6 · ticket t-004 (5/14) · hire 2 · 1 bounce · ~12s avg/ticket · elapsed
+  4m12s` — on that same interval; the bounce counter is absent when nothing
+  has bounced. The
   events are emitted by the bash harness *around* the worker calls — never by the
   worker — so the stream and the live view behave identically whatever CLI runs
   underneath. The **same shared renderer** also publishes progress to each
