@@ -6068,10 +6068,14 @@ function renderEvent(ev) {
    dropped: every input event lands in exactly one section, in order.
 
    Each section carries derived summary data: ticketCount (ticket_start events),
-   greenCount / flaggedCount, attemptCount (ticket_attempt events when present,
-   else green+flagged outcomes), a `flagged` marker (any ticket flagged), the
-   first/last ts and their durationSec, and `active` (the LAST section — the
-   in-flight / most-recent one, which renders OPEN). */
+   greenCount / flaggedCount, sessionCount (S173: the HIRE count — ticket_attempt
+   events, one per worker DISPATCH, when present; else the pre-S134 green+flagged
+   outcome fallback), bounceCount (ticket_gate_bounce events — a gate rejection
+   that cost a hire), a `flagged` marker (any ticket flagged), the first/last ts
+   and their durationSec, and `active` (the LAST section — the in-flight /
+   most-recent one, which renders OPEN).
+   Every count keys off the event TYPE, never off detail text, so a historical
+   or MIXED-vocabulary stream tallies identically to a fresh one. */
 function groupActivityIntoSections(acts) {
   var sections = [];
   var cur = null;
@@ -6088,7 +6092,8 @@ function groupActivityIntoSections(acts) {
       case "ticket_start": sec.ticketCount++; break;
       case "ticket_green": sec.greenCount++; sec._outcomes++; break;
       case "ticket_flagged": sec.flaggedCount++; sec._outcomes++; sec.flagged = true; break;
-      case "ticket_attempt": sec._attempts++; break;
+      case "ticket_attempt": sec._sessions++; break;
+      case "ticket_gate_bounce": sec.bounceCount++; break;
     }
   }
   function open(kind, stage, wave) {
@@ -6096,7 +6101,7 @@ function groupActivityIntoSections(acts) {
       kind: kind, stage: normStage(stage), wave: wave || null,
       events: [], startTs: null, endTs: null,
       ticketCount: 0, greenCount: 0, flaggedCount: 0, flagged: false,
-      _attempts: 0, _outcomes: 0,
+      bounceCount: 0, _sessions: 0, _outcomes: 0,
     };
     sections.push(sec);
     cur = sec;
@@ -6140,8 +6145,11 @@ function groupActivityIntoSections(acts) {
     sec.active = (i === sections.length - 1);
     sec.durationSec = (sec.startTs != null && sec.endTs != null)
       ? Math.max(0, Math.round(sec.endTs - sec.startTs)) : null;
-    sec.attemptCount = sec._attempts > 0 ? sec._attempts : sec._outcomes;
-    delete sec._attempts; delete sec._outcomes;
+    // BACK-COMPAT: a pre-S134 stream has no ticket_attempt events at all, so
+    // fall back to counting outcomes — an old mission renders a sane number
+    // rather than nothing. Never NaN, never a wrong count, on any stream.
+    sec.sessionCount = sec._sessions > 0 ? sec._sessions : sec._outcomes;
+    delete sec._sessions; delete sec._outcomes;
   });
   return sections;
 }
@@ -6164,7 +6172,7 @@ function sectionTitle(sec) {
 }
 
 /* S115: the one-line Star-Trek-voiced summary shown on a collapsed band. Wave
-   bands read "N tickets · M attempts · <dur>"; stage bands read a stage-flavoured
+   bands read "N tickets · M worker sessions · K bounces · <dur>"; stage bands read a stage-flavoured
    line with the duration. Duration is omitted when unknown. Kept as the plain-
    text fallback; the band now renders sectionSummaryChips (graphic stat chips)
    with the SAME singular/plural + omit-when-zero rules. */
@@ -6172,8 +6180,13 @@ function sectionSummary(sec) {
   var bits = [];
   if (sec.kind === "wave") {
     bits.push(sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s"));
-    if (sec.attemptCount) {
-      bits.push(sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s"));
+    // S173: silence when nothing went wrong — a wave whose every ticket landed
+    // on its FIRST hire wears no counter at all. Only > 1 is worth saying.
+    if (sec.sessionCount > 1) {
+      bits.push(sec.sessionCount + " worker sessions");
+    }
+    if (sec.bounceCount > 0) {
+      bits.push(sec.bounceCount + " bounce" + (sec.bounceCount === 1 ? "" : "s"));
     }
   } else {
     bits.push(sec.active ? "in progress" : "complete");
@@ -6186,20 +6199,29 @@ function sectionSummary(sec) {
    icon-led LCARS stat chips instead of one run-together line. Returns an ARRAY
    of chip spans (each its own class) so sectionNode can drop them into the band.
    Same omit/singular-plural rules as sectionSummary:
-     WAVE  → ⬢ tickets (teal) · ↻ attempts (amber, RED when any flagged) · ◷ dur
+     WAVE  → ⬢ tickets (teal) · ↻ worker sessions (amber, RED when any flagged)
+             · ⤫ gate bounces (RED, the "something went wrong" signal) · ◷ dur
      STAGE → in-progress (pulsing dot) / complete chip · ◷ dur
-   A chip whose value is 0/absent is omitted (no attempt chip at 0 attempts, no
-   duration chip when unknown) exactly as the text summary omits it. */
+   A chip whose value is nothing-to-report is omitted exactly as the text summary
+   omits it: NO session chip at ≤ 1 hire (a first-try wave wears no counter), no
+   bounce chip at 0 bounces, no duration chip when unknown. */
 function sectionSummaryChips(sec) {
   var chips = [];
   if (sec.kind === "wave") {
     chips.push(el("span", "band-chip chip-tickets",
       "⬢ " + sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s")));
-    if (sec.attemptCount) {
+    if (sec.sessionCount > 1) {
       // RED tint when this wave carries a flagged ticket, amber otherwise.
       chips.push(el("span",
-        "band-chip chip-attempts" + (sec.flaggedCount > 0 ? " flagged" : ""),
-        "↻ " + sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s")));
+        "band-chip chip-sessions" + (sec.flaggedCount > 0 ? " flagged" : ""),
+        "↻ " + sec.sessionCount + " sessions"));
+    }
+    if (sec.bounceCount > 0) {
+      // The signal that something WENT WRONG — a gate rejected a hire and LCARS
+      // had to re-spawn. Always red; a wave with 0 and a wave with 2 are now
+      // distinguishable at a glance, without opening either.
+      chips.push(el("span", "band-chip chip-bounces",
+        "⤫ " + sec.bounceCount + " bounce" + (sec.bounceCount === 1 ? "" : "s")));
     }
   } else {
     // STAGE: an in-progress (pulsing dot via CSS ::before) / complete chip.

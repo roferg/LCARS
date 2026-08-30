@@ -409,6 +409,19 @@ event_count() { # type data-fragment-regex
     echo 0
   fi
 }
+# S173: ticket_hire_count <ticket-id> → how many times LCARS COLD-SPAWNED a
+# fresh worker for this ticket (the HIRE count). One ticket_attempt/phase=tdd
+# event per real dispatch, so reading events.jsonl — never a process-local —
+# keeps the number right after a fresh process re-enters a half-built ticket.
+# DISTINCT from result.json.attempts, the worker's OWN internal iteration count
+# (S133: informational, uncapped, gates nothing). Floors at 1: a direct
+# impl-save-result invocation with no dispatch on file is still one hire.
+ticket_hire_count() { # ticket-id
+  local n; n="$(event_count ticket_attempt "\"ticket\":\"$1\".*\"phase\":\"tdd\"")"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  [ "$n" -lt 1 ] && n=1
+  printf '%s' "$n"
+}
 state_del() { # key   — drop the field's line if present (no-op otherwise)
   local tmp; tmp="$(mktemp)"
   grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
@@ -7083,7 +7096,7 @@ repo_tests_elsewhere() { # target-pkg-rel → 0 if tests provably run elsewhere
 }
 
 # Park the mission awaiting-human because the test environment cannot run ANY
-# test for this ticket — the same gate shape as the 5-attempt flag (pending.json
+# test for this ticket — the same gate shape as the retired 5-attempt flag (pending.json
 # + awaitingHuman + label overlay), with the BUG-027 structured fields so the
 # viewscreen renders a legible card. EXITS 0: the parent driver routes the park
 # via the awaitingHuman flag exactly like a flagged ticket.
@@ -8913,7 +8926,7 @@ cmd_impl_save_result() {
     rm -f "$q"
 
     emit_event ticket_flagged implement "ticket $TICKET flagged (worker reported not green after $attempts iteration(s))" \
-      "ticket=$TICKET" "attempts=$attempts"
+      "ticket=$TICKET" "iterations=$attempts"
 
     echo "IMPLEMENT: ticket flagged — $TICKET"
     echo "  $TICKET is still not green (the worker reported $attempts iteration(s))."
@@ -8949,7 +8962,7 @@ $(cat "$pcsig")"
         # ($why now carries the worktreeSetupCommand wording). The attempt STILL fails.
         emit_event ticket_env_unprovisioned implement \
           "ticket $TICKET — environment not provisioned (the test runner could not start in the gate worktree); set worktreeSetupCommand in .git/lcars/config.json" \
-          "ticket=$TICKET" "attempts=$attempts"
+          "ticket=$TICKET" "iterations=$attempts"
         die "ticket $TICKET could not be re-verified — the test runner could not start in the gate worktree (environment not provisioned); this is NOT a missing implementation. Set worktreeSetupCommand in .git/lcars/config.json.$why"
         ;;
       4)
@@ -8960,7 +8973,7 @@ $(cat "$pcsig")"
         # declares it with a reason.
         emit_event ticket_locked_test_tampered implement \
           "ticket $TICKET — committed test no longer matches the proof-time snapshot and no ticket declared the edit (undeclared drift across the commit boundary)" \
-          "ticket=$TICKET" "attempts=$attempts"
+          "ticket=$TICKET" "iterations=$attempts"
         die "ticket $TICKET — UNDECLARED TEST DRIFT: a COMMITTED test file no longer matches its proof-time snapshot and no ticket declared that edit. Green must be earned by implementing; a test edit must be declared with a reason. Rejected by the cross-boundary drift guardrail.$why"
         ;;
       *)
@@ -8970,7 +8983,7 @@ $(cat "$pcsig")"
         local stray; stray="$(stray_edit_note)"
         emit_event ticket_postcommit_red implement \
           "ticket $TICKET failed the post-commit check — implementation not present on the committed branch${stray:+ (wrong-tree suspect: uncommitted edits found in the main checkout)}" \
-          "ticket=$TICKET" "attempts=$attempts"
+          "ticket=$TICKET" "iterations=$attempts"
         die "ticket $TICKET reported green but its suite is RED against the COMMITTED branch state — the implementation is not present on the committed branch (worktree-only green or out-of-scope commit). Result rejected by the post-commit guardrail.$why$stray"
         ;;
     esac
@@ -8981,7 +8994,7 @@ $(cat "$pcsig")"
   # successful post-commit verification so the stream / `--watch` view show it.
   emit_event ticket_postcommit_ok implement \
     "ticket $TICKET verified green on the committed branch" \
-    "ticket=$TICKET" "attempts=$attempts"
+    "ticket=$TICKET" "iterations=$attempts"
 
   # S111 3′: a declared test setup that carried this ticket all the way to a
   # post-commit-verified green is now a PROVEN fact — record it to the repo's
@@ -8992,8 +9005,21 @@ $(cat "$pcsig")"
   # shape/attempts validation (both `die` earlier on rejection) AND commit_ticket.
   # A guardrail-rejected save has already exited non-zero above, so it can never
   # reach this line: a rejected ticket never emits green.
-  emit_event ticket_green implement "ticket $TICKET green in $attempts attempt(s)" \
-    "ticket=$TICKET" "attempts=$attempts"
+  # S173: the HEADLINE is the number that GOVERNS — how many times LCARS had to
+  # hire. Silent on a first-hire ticket (nothing went wrong, so nothing is said);
+  # explicit once a bounce forced a re-hire. The worker's own iteration count is
+  # forensic: it rides `iterations` in the data and appears on no healthy-path
+  # surface. `sessions` is derived from events.jsonl (never a local), so it is
+  # still right when a fresh process re-entered this ticket.
+  local hires green_detail
+  hires="$(ticket_hire_count "$TICKET")"
+  if [ "$hires" -gt 1 ]; then
+    green_detail="ticket $TICKET green after $hires worker sessions"
+  else
+    green_detail="ticket $TICKET green"
+  fi
+  emit_event ticket_green implement "$green_detail" \
+    "ticket=$TICKET" "sessions=$hires" "iterations=$attempts"
 
   # RULE A (issue-close lifecycle): the ticket is green AND committed, so close
   # its per-ticket sub-issue — relabel lcars:implement → lcars:done, then close.
@@ -9039,7 +9065,11 @@ $(cat "$pcsig")"
   esac
 
   echo "IMPLEMENT: result saved — $TICKET"
-  echo "  $TICKET passed in $attempts attempt(s). Saved result.json."
+  if [ "$hires" -gt 1 ]; then
+    echo "  $TICKET passed after $hires worker sessions. Saved result.json."
+  else
+    echo "  $TICKET passed. Saved result.json."
+  fi
   [ -n "$COMMIT_NOTE" ] && echo "$COMMIT_NOTE"
   [ -n "$CLOSE_NOTE" ] && echo "$CLOSE_NOTE"
   exit 0
@@ -9628,7 +9658,7 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # A flagged ticket (its own session cap) set awaitingHuman in shared state —
     # the per-ticket cap already handled it; stop self-healing here.
     if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
-      emit_event selfheal implement "self-heal round $round flagged the ticket's own attempt cap — stopping self-heal" \
+      emit_event selfheal implement "self-heal round $round flagged the ticket's own worker-session cap — stopping self-heal" \
         "ticket=$regressor" "round=$round"
       return 1
     fi
@@ -10166,7 +10196,7 @@ cmd_verify_summary() {
 
   echo "VERIFY: $title"
   echo "  All tickets completed:"
-  local total=0 green=0 nwaves=0 w id rf attempts ordered_ids=""
+  local total=0 green=0 nwaves=0 w id rf hires ordered_ids=""
   while IFS=$'\t' read -r w id; do
     [ -n "$id" ] || continue
     total=$((total + 1))
@@ -10174,8 +10204,14 @@ cmd_verify_summary() {
     [ "$w" -gt "$nwaves" ] && nwaves="$w"
     rf="$(ticket_dir "$id")/result.json"
     if [ -f "$rf" ] && [ "$(json_raw "$rf" passed)" = "true" ]; then
-      green=$((green + 1)); attempts="$(json_raw "$rf" attempts)"
-      printf '    ✓ %s — passed in %s attempt(s)\n' "$id" "${attempts:-?}"
+      # S173: the Verify roll-up names HIRES, not the worker's own iterations —
+      # and says nothing at all about a ticket that landed on its first hire.
+      green=$((green + 1)); hires="$(ticket_hire_count "$id")"
+      if [ "$hires" -gt 1 ]; then
+        printf '    ✓ %s — green after %s worker sessions\n' "$id" "$hires"
+      else
+        printf '    ✓ %s — green\n' "$id"
+      fi
     else
       printf '    ✗ %s — no passing result on file\n' "$id"
     fi
@@ -13710,7 +13746,7 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
         local ew_phrase; ew_phrase="$(impl_failure_category_phrase empty-worker-output)"
         emit_event ticket_implementer_failed implement \
           "ticket $TICKET stopped: $ew_phrase" \
-          "ticket=$TICKET" "phase=tdd" "category=empty-worker-output" "attempts=$empty_tries"
+          "ticket=$TICKET" "phase=tdd" "category=empty-worker-output" "emptyOutputTries=$empty_tries"
         if [ -n "${MISSION_DIR:-}" ]; then
           printf '%s\tticket=%s\t%s: %s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$TICKET" \
@@ -13747,7 +13783,7 @@ $(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
             "declared setup rejected: $SETUP_NOTE" "ticket=$TICKET"
         fi
       else
-        printf '  ⚠ a test-setup.json was provided WITHOUT an observed infra gap — ignored (setup is invited only after the harness itself hits the failure; attempt 1 always runs naked)\n' >&2
+        printf '  ⚠ a test-setup.json was provided WITHOUT an observed infra gap — ignored (setup is invited only after the harness itself hits the failure; the FIRST worker session always runs naked)\n' >&2
       fi
     fi
 
@@ -13830,8 +13866,8 @@ $(cat "$tdir/flip-flop.json" 2>/dev/null)"
   state_set_str pendingQuestion "Ticket $TICKET failed its proof gates after $sessions session(s) — needs a human."
   gh_relabel "lcars:awaiting-human" ""
   emit_event ticket_flagged implement \
-    "ticket $TICKET flagged after $sessions TDD session(s) — last gate verdict: ${last_verdict:-unknown}" \
-    "ticket=$TICKET" "attempts=$sessions"
+    "ticket $TICKET flagged after $sessions worker session(s) — last gate verdict: ${last_verdict:-unknown}" \
+    "ticket=$TICKET" "sessions=$sessions"
   echo "IMPLEMENT: ticket flagged — $TICKET"
   echo "  $TICKET was bounced by the proof gates $sessions time(s) (the $MAX_WORKER_TRIES-session cap)."
   echo "  Last gate verdict: ${last_verdict:-unknown}"
@@ -14015,7 +14051,7 @@ cmd_implement() {
       # exactly like the old serial path. Disjoint waves never conflict → stay fully
       # concurrent; a fully-overlapping wave degrades gracefully toward serial.
       #
-      # hard_fail = a worker hard failure (no result); a flagged ticket (5-attempt
+      # hard_fail = a worker hard failure (no result); a flagged ticket (the hire-
       # cap) instead set awaitingHuman in shared state and wrote NO .commit-sha, so
       # it simply has nothing to replay — escalate is decided from that flag AFTER
       # the loop, so a green sibling EARLIER in plan order still commits first (its
@@ -14358,7 +14394,7 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
   LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
   LCARS_TICKET_WT_BASE="$base" LCARS_TICKET_BRANCH="$branch" \
     bash "$SELF" implement-ticket --mission "$MISSION_ID" --ticket "$t" || irc=$?
-  # A flag (5-attempt cap) set awaitingHuman in shared state — let the caller route
+  # A flag (the 3-worker-session hire cap) set awaitingHuman in shared state — let the caller route
   # it to the gate. A hard failure (no result) returns non-zero with no .commit-sha.
   [ "$irc" -eq 0 ] || return 1
   local sha; sha="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"

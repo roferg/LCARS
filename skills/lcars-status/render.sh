@@ -182,16 +182,20 @@ liveness_tail() {
 
 # --- compute_progress — read $EVENTS, print the one progress/pace line -------
 # Format (exact substrings asserted by the tests):
-#   Wave <cur>/<tot> · ticket <id> (<k>/<n>) · attempt <a> · ~<avg>s avg/ticket · elapsed <…>
+#   Wave <cur>/<tot> · ticket <id> (<k>/<n>) · session <a> · ~<avg>s avg/ticket · elapsed <…>
+# S173: <a> is the HIRE count — the ticket_attempt index, i.e. how many times
+# LCARS cold-spawned a worker for this ticket. It has always been that number;
+# it is no longer called an "attempt", which also named the worker's own
+# internal iteration count.
 compute_progress() {
   [ -f "$EVENTS" ] || return 0
 
-  local first_ts="" cur_wave="" cur_ticket="" cur_attempt="" total_waves_ev=""
+  local first_ts="" cur_wave="" cur_ticket="" cur_session="" total_waves_ev=""
   local greens=0 sum=0
   local tickets_ev=0 seen_waves=" "
   local st_ids=() st_ts=()
 
-  local line type ticket ts wave attempt
+  local line type ticket ts wave session
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     type="$(ev_str "$line" type)"
@@ -212,11 +216,11 @@ compute_progress() {
       ticket_start)
         ticket="$(ev_str "$line" ticket)"
         [ -n "$ticket" ] && cur_ticket="$ticket"
-        cur_attempt=""
+        cur_session=""
         st_ids+=("$ticket"); st_ts+=("$ts")
         ;;
       ticket_attempt)
-        attempt="$(ev_num "$line" attempt)"; [ -n "$attempt" ] && cur_attempt="$attempt"
+        session="$(ev_num "$line" attempt)"; [ -n "$session" ] && cur_session="$session"
         ;;
       ticket_green)
         ticket="$(ev_str "$line" ticket)"
@@ -242,7 +246,7 @@ compute_progress() {
   [ -n "$tot_tickets" ] || tot_tickets="?"
   [ -n "$cur_wave" ] || cur_wave="?"
   [ -n "$cur_ticket" ] || cur_ticket="-"
-  [ -n "$cur_attempt" ] || cur_attempt="1"
+  [ -n "$cur_session" ] || cur_session="1"
 
   local avg_field
   if [ "$greens" -gt 0 ]; then
@@ -265,9 +269,9 @@ compute_progress() {
   local live_suffix=""
   [ -n "$live_tail" ] && live_suffix=" · ◇ $live_tail"
 
-  printf 'Wave %s/%s · ticket %s (%s/%s) · attempt %s · %s · %s%s\n' \
+  printf 'Wave %s/%s · ticket %s (%s/%s) · session %s · %s · %s%s\n' \
     "$cur_wave" "$tot_waves" "$cur_ticket" "$greens" "$tot_tickets" \
-    "$cur_attempt" "$avg_field" "$elapsed_field" "$live_suffix"
+    "$cur_session" "$avg_field" "$elapsed_field" "$live_suffix"
 }
 
 # --- is_terminal <line> — does this event end the watch? --------------------

@@ -182,7 +182,7 @@ def _one_ticket_wave():
 
 
 def _zero_attempt_wave():
-    """A wave whose ticket has no outcome/attempt yet → 0 attempts (chip omitted)."""
+    """A wave whose ticket has no outcome/hire yet → 0 sessions (chip omitted)."""
     return [
         {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
         {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
@@ -210,6 +210,182 @@ def _red_health_wave():
     ]
 
 
+def _one_hire_clean_wave():
+    """S173: ONE ticket, ONE hire, ZERO bounces — the clean case. The worker's
+    own iteration count (7) rides `iterations` in the green event's data and
+    must never reach a captain-facing chip."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001",
+         "data": {"ticket": "t-001"}},
+        {"ts": 1003, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 1 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 1}},
+        {"ts": 1008, "stage": "implement", "type": "ticket_green",
+         "detail": "ticket t-001 green",
+         "data": {"ticket": "t-001", "sessions": 1, "iterations": 7}},
+    ]
+
+
+def _two_hire_one_bounce_wave():
+    """S173: ONE ticket, TWO hires, ONE gate bounce, green on the second hire."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001",
+         "data": {"ticket": "t-001"}},
+        {"ts": 1003, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 1 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 1}},
+        {"ts": 1004, "stage": "implement", "type": "ticket_gate_bounce",
+         "detail": "ticket t-001 bounced by the flip-flop gate (FAIL) — session 1",
+         "data": {"ticket": "t-001", "gate": "flip-flop", "attempt": 1}},
+        {"ts": 1005, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 2 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 2}},
+        {"ts": 1012, "stage": "implement", "type": "ticket_green",
+         "detail": "ticket t-001 green after 2 worker sessions",
+         "data": {"ticket": "t-001", "sessions": 2, "iterations": 3}},
+    ]
+
+
+def _mixed_vocabulary_stream():
+    """S173 back-compat: ONE file holding PRE-S173 detail text (`green in 4
+    attempt(s)`, data key `attempts`) alongside POST-S173 events. Nothing parses
+    detail text, so both must tally identically off the event TYPE."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        # --- old (pre-S173) ticket, old wording, old data key ---
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001"},
+        {"ts": 1003, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 1 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 1}},
+        {"ts": 1004, "stage": "implement", "type": "ticket_gate_bounce",
+         "detail": "ticket t-001 bounced by the quality-floor gate (FAIL) — session 1",
+         "data": {"ticket": "t-001", "gate": "quality-floor", "attempt": 1}},
+        {"ts": 1005, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 2 for t-001",
+         "data": {"ticket": "t-001", "phase": "tdd", "attempt": 2}},
+        {"ts": 1006, "stage": "implement", "type": "ticket_green",
+         "detail": "ticket t-001 green in 4 attempt(s)",
+         "data": {"ticket": "t-001", "attempts": 4}},
+        # --- new (post-S173) ticket in the SAME file ---
+        {"ts": 1007, "stage": "implement", "type": "ticket_start", "detail": "t-002"},
+        {"ts": 1008, "stage": "implement", "type": "ticket_attempt",
+         "detail": "tdd session 3 for t-002",
+         "data": {"ticket": "t-002", "phase": "tdd", "attempt": 1}},
+        {"ts": 1009, "stage": "implement", "type": "ticket_green",
+         "detail": "ticket t-002 green",
+         "data": {"ticket": "t-002", "sessions": 1, "iterations": 2}},
+    ]
+
+
+@unittest.skipUnless(NODE, "node is required to exercise the chip DOM builders")
+class HireAndBounceChipsTest(unittest.TestCase):
+    """S173 — the board shows the number that GOVERNS (hires) and the signal that
+    something went wrong (gate bounces), and never the worker's own iteration
+    count. `attempt` is retired from every captain-facing chip."""
+
+    def _chips(self, acts):
+        return _run_harness(acts, mode="chips")
+
+    def _classes(self, sec):
+        return " ".join(sec["chipClasses"])
+
+    def test_clean_wave_wears_no_session_and_no_bounce_chip(self):
+        sec = self._chips(_one_hire_clean_wave())[0]
+        # PRESENCE first — the chip cluster was really built for this wave.
+        self.assertIn("chip-tickets", self._classes(sec))
+        self.assertIn("⬢ 1 ticket", sec["chipTexts"])
+        # …and then the two counters are absent, because nothing went wrong.
+        self.assertNotIn("chip-sessions", self._classes(sec))
+        self.assertNotIn("chip-bounces", self._classes(sec))
+        self.assertEqual(sec["sessionCount"], 1)
+        self.assertEqual(sec["bounceCount"], 0)
+
+    def test_bounced_wave_wears_both_chips_with_their_text(self):
+        sec = self._chips(_two_hire_one_bounce_wave())[0]
+        cls = self._classes(sec)
+        self.assertIn("chip-sessions", cls)
+        self.assertIn("chip-bounces", cls)
+        self.assertIn("↻ 2 sessions", sec["chipTexts"])
+        self.assertIn("⤫ 1 bounce", sec["chipTexts"])
+        self.assertEqual(sec["sessionCount"], 2)
+        self.assertEqual(sec["bounceCount"], 1)
+
+    def test_clean_and_bounced_waves_are_distinguishable_at_a_glance(self):
+        clean = self._chips(_one_hire_clean_wave())[0]
+        bounced = self._chips(_two_hire_one_bounce_wave())[0]
+        self.assertNotEqual(clean["chipClasses"], bounced["chipClasses"])
+        self.assertNotEqual(clean["chipTexts"], bounced["chipTexts"])
+
+    def test_no_chip_ever_says_attempt(self):
+        for acts in (_one_hire_clean_wave(), _two_hire_one_bounce_wave(),
+                     _big_gamify_events(), _mixed_vocabulary_stream()):
+            for sec in self._chips(acts):
+                blob = " ".join(sec["chipTexts"] + sec["chipClasses"]).lower()
+                self.assertNotIn("attempt", blob, blob)
+
+    def test_worker_iteration_count_never_reaches_a_chip(self):
+        # the green event carries iterations=7; no chip may quote it.
+        sec = self._chips(_one_hire_clean_wave())[0]
+        self.assertNotIn("7", " ".join(sec["chipTexts"]))
+
+    def test_pre_s134_stream_still_renders_a_sane_band(self):
+        # no ticket_attempt events at all → the outcome fallback holds; a real
+        # integer, never NaN/undefined, and the band still reads.
+        secs = self._chips(_big_gamify_events())
+        for sec in secs:
+            self.assertIsInstance(sec["sessionCount"], int)
+            self.assertIsInstance(sec["bounceCount"], int)
+            self.assertNotIn("NaN", " ".join(sec["chipTexts"]))
+            self.assertNotIn("undefined", " ".join(sec["chipTexts"]))
+        self.assertEqual(secs[0]["sessionCount"], 3)   # 3 greens → 3 outcomes
+        self.assertIn("↻ 3 sessions", secs[0]["chipTexts"])
+
+    def test_mixed_old_and_new_stream_counts_off_event_type_only(self):
+        secs = self._chips(_mixed_vocabulary_stream())
+        sec = secs[0]
+        # 3 ticket_attempt events (2 old-ticket + 1 new-ticket) and 1 bounce —
+        # counted off TYPE, not off the detail text, which disagrees on purpose.
+        self.assertEqual(sec["sessionCount"], 3)
+        self.assertEqual(sec["bounceCount"], 1)
+        self.assertIn("↻ 3 sessions", sec["chipTexts"])
+        self.assertIn("⤫ 1 bounce", sec["chipTexts"])
+        self.assertEqual(sec["ticketCount"], 2)
+        self.assertEqual(sec["greenCount"], 2)
+
+    def test_bounce_chip_plural(self):
+        acts = _two_hire_one_bounce_wave()
+        acts.insert(-1, {"ts": 1010, "stage": "implement", "type": "ticket_gate_bounce",
+                         "detail": "ticket t-001 bounced by the declared-edits gate (FAIL) — session 2",
+                         "data": {"ticket": "t-001", "gate": "declared-edits", "attempt": 2}})
+        sec = self._chips(acts)[0]
+        self.assertIn("⤫ 2 bounces", sec["chipTexts"])
+
+
+class BoardJsVocabularyTest(unittest.TestCase):
+    """S173 — `attempt` is retired from board.js's captain-facing strings and from
+    the derived-count field names, while the event TYPE keeps its name."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(STATIC, "board.js"), encoding="utf-8") as f:
+            cls.js = f.read()
+
+    def test_derived_fields_renamed(self):
+        self.assertIn("sessionCount", self.js)
+        self.assertIn("bounceCount", self.js)
+        self.assertNotIn("attemptCount", self.js)
+
+    def test_event_type_name_is_unchanged(self):
+        # the WIRE does not change — only the display.
+        self.assertIn('case "ticket_attempt":', self.js)
+        self.assertIn('"ticket_gate_bounce"', self.js)
+
+
 @unittest.skipUnless(NODE, "node is required to exercise the chip DOM builders")
 class SectionChipsTest(unittest.TestCase):
     """VISUAL POLISH: the graphic stat chips + wave-health micro-bar produced by
@@ -224,25 +400,29 @@ class SectionChipsTest(unittest.TestCase):
     def test_wave_chip_classes_present(self):
         secs = self._chips(_big_gamify_events())
         cls0 = self._classes(secs[0])
-        # a wave band gets ticket + attempt + duration chips.
+        # a wave band gets ticket + worker-session + duration chips.
         self.assertIn("chip-tickets", cls0)
-        self.assertIn("chip-attempts", cls0)
+        self.assertIn("chip-sessions", cls0)
         self.assertIn("chip-duration", cls0)
-        # clean wave 1 → attempts NOT flagged-tinted; flagged wave 2 → flagged.
+        # clean wave 1 → sessions NOT flagged-tinted; flagged wave 2 → flagged.
         self.assertNotIn("flagged", self._classes(secs[0]))
-        self.assertIn("chip-attempts flagged", self._classes(secs[1]))
+        self.assertIn("chip-sessions flagged", self._classes(secs[1]))
 
     def test_plural_and_singular(self):
         secs = self._chips(_big_gamify_events())
         self.assertEqual(secs[0]["chipTexts"][0], "⬢ 3 tickets")  # plural
         one = self._chips(_one_ticket_wave())
         self.assertEqual(one[0]["chipTexts"][0], "⬢ 1 ticket")     # singular
-        self.assertIn("↻ 1 attempt", one[0]["chipTexts"])          # singular attempt
+        # S173 retarget (was: `assertIn("↻ 1 attempt", ...)`). The counter that
+        # governs is the HIRE count, and a wave where nothing had to be re-hired
+        # wears no counter at all — so 1 is SILENT and >1 is spelled out.
+        self.assertNotIn("chip-sessions", self._classes(one[0]))
+        self.assertIn("↻ 3 sessions", secs[0]["chipTexts"])
 
     def test_zero_attempts_chip_omitted(self):
         secs = self._chips(_zero_attempt_wave())
         self.assertIn("chip-tickets", self._classes(secs[0]))
-        self.assertNotIn("chip-attempts", self._classes(secs[0]))
+        self.assertNotIn("chip-sessions", self._classes(secs[0]))
 
     def test_stage_chip_status(self):
         secs = self._chips(_multistage_events())
@@ -276,10 +456,10 @@ class SectionChipsTest(unittest.TestCase):
 
     def test_flagged_badge_class(self):
         # a flagged wave still emits the band-flag badge (built in sectionNode);
-        # the chip cluster carries the flagged-tinted attempts chip.
+        # the chip cluster carries the flagged-tinted worker-sessions chip.
         secs = self._chips(_big_gamify_events())
         self.assertTrue(secs[1]["flagged"])
-        self.assertIn("chip-attempts flagged", self._classes(secs[1]))
+        self.assertIn("chip-sessions flagged", self._classes(secs[1]))
 
 
 class BoardJsWiringTest(unittest.TestCase):
@@ -336,8 +516,9 @@ class BoardCssMotionTest(unittest.TestCase):
             cls.css = f.read()
 
     def test_chip_and_health_styles_present(self):
-        for sel in (".band-chip", ".band-chip.chip-tickets", ".band-chip.chip-attempts",
-                    ".band-chip.chip-attempts.flagged", ".band-chip.chip-duration",
+        for sel in (".band-chip", ".band-chip.chip-tickets", ".band-chip.chip-sessions",
+                    ".band-chip.chip-sessions.flagged", ".band-chip.chip-bounces",
+                    ".band-chip.chip-duration",
                     ".band-chip.chip-status", ".band-health"):
             self.assertIn(sel, self.css, sel)
 

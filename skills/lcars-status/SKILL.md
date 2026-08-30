@@ -78,7 +78,7 @@ Each event renders to a concise human line (reusing the event's own `detail`),
 followed by the **pace line**:
 
 ```
-Wave <cur>/<total> · ticket <id> (<k>/<n>) · attempt <a> · ~<avg>s avg/ticket · elapsed <Hh Mm Ss>
+Wave <cur>/<total> · ticket <id> (<k>/<n>) · session <a> · ~<avg>s avg/ticket · elapsed <Hh Mm Ss>
 ```
 
 - `Wave cur/total` — current wave from the latest `wave_start`; total from
@@ -88,7 +88,10 @@ Wave <cur>/<total> · ticket <id> (<k>/<n>) · attempt <a> · ~<avg>s avg/ticket
   tickets so far, `n` = total tickets across all waves in `waves.json`, falling
   back to the sum of `wave_start.ticketCount` over distinct waves before
   `waves.json` exists (so the denominator degrades to a best-effort count, not `?`).
-- `attempt <a>` — the latest `ticket_attempt.attempt` for the current ticket.
+- `session <a>` — the latest `ticket_attempt.attempt` for the current ticket: the
+  HIRE count, i.e. how many times LCARS cold-spawned a worker for it (capped at
+  3). NOT the worker's own internal iteration count, which is forensic and shown
+  nowhere.
 - `~<avg>s avg/ticket` — mean of completed durations (`ticket_green.ts` minus its
   matching `ticket_start.ts`); shows an em-dash `—s` before any ticket is green.
 - `elapsed` — `now` (or `$LCARS_NOW`) minus the first event's timestamp.

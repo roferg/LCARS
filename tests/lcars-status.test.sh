@@ -313,7 +313,15 @@ check "W1. renders stage_start line"    "grep -qi 'research' '$repoW1/out.txt' &
 check "W1. renders stage_done summary"  "grep -qF 'asked 3 questions, all answered' '$repoW1/out.txt'"
 check "W1. renders wave_start line"     "grep -qiE 'wave 1' '$repoW1/out.txt'"
 check "W1. renders ticket_start line"   "grep -qi 'ticket t-001' '$repoW1/out.txt'"
-check "W1. renders ticket_attempt line" "grep -qiE 'attempt|try' '$repoW1/out.txt' && grep -q 't-001' '$repoW1/out.txt'"
+check "W1. renders ticket_attempt line" "grep -qiE 'try|session' '$repoW1/out.txt' && grep -q 't-001' '$repoW1/out.txt'"
+# S173: the progress line names the HIRE count in the hire vocabulary. The
+# historical event DETAILS in this fixture keep their own (pre-S173) wording on
+# purpose — nothing rewrites recorded text — so the vocabulary assertion is
+# scoped to the line the harness itself composes.
+check "W1. the progress line reads 'session <n>' (the HIRE count)" \
+  "grep '^Wave ' '$repoW1/out.txt' | grep -qE 'session 2'"
+check "W1. the progress line no longer says 'attempt'" \
+  "! grep '^Wave ' '$repoW1/out.txt' | grep -qi 'attempt'"
 check "W1. renders ticket_green line"   "grep -qi 'green' '$repoW1/out.txt' && grep -q 't-001' '$repoW1/out.txt'"
 check "W1. renders ticket_flagged line" "grep -qi 'flag' '$repoW1/out.txt' && grep -q 't-002' '$repoW1/out.txt'"
 check "W1. renders gate line"           "grep -qF 'human review required' '$repoW1/out.txt'"

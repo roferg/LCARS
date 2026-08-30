@@ -3,7 +3,7 @@
 # lcars respond — answer a Mission's awaiting-human gate, walk-away style.
 #
 # When a stage escalates (Research >20 questions, Validate scope change, Plan
-# Review's 3-round limit, Implement's 5-attempt cap) it parks the Mission behind
+# Review's 3-round limit, Implement's 3-worker-session cap) it parks the Mission behind
 # an awaiting-human gate: awaitingHuman=true in state.json, the question(s) in
 # pending.json, and the lcars:awaiting-human label on the issue. This is the
 # command the captain uses to answer that gate. It has three subcommands:

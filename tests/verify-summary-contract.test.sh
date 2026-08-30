@@ -193,6 +193,35 @@ check "4. NO 'Proof of work' text at all" "! grep -qi 'Proof of work' '$OUT'"
 check "4. NO 'flip-flop' text at all" "! grep -qi 'flip-flop' '$OUT'"
 check "4. still prints the test tally (2/2 green)" "grep -q '2/2' '$OUT'"
 
+# ── 6. S173: the Verify roll-up counts HIRES, not the worker's own swings ────
+# The result.json `attempts` field (t-001: 2, t-002: 1) is the WORKER's internal
+# iteration count — forensic, and never a headline. The number the captain reads
+# is how many times LCARS had to hire, counted from ticket_attempt events.
+repo6="$(new_repo proof)"; m6="$repo6/.git/lcars/missions/$MID"
+cat >"$m6/events.jsonl" <<EOF
+{"ts":1000,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-001","data":{"ticket":"t-001","phase":"tdd","attempt":1}}
+{"ts":1001,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 1 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":1}}
+{"ts":1002,"mission":"$MID","stage":"implement","type":"ticket_gate_bounce","detail":"ticket t-002 bounced by the flip-flop gate (FAIL) — session 1","data":{"ticket":"t-002","gate":"flip-flop","attempt":1}}
+{"ts":1003,"mission":"$MID","stage":"implement","type":"ticket_attempt","detail":"tdd session 2 for t-002","data":{"ticket":"t-002","phase":"tdd","attempt":2}}
+EOF
+make_gh_stub "$repo6/gh"; run_summary "$repo6"
+check "6. exits 0" "[ '$RC' -eq 0 ]"
+check "6. a FIRST-HIRE ticket says only 'green' (silence when nothing went wrong)" \
+  "grep -qF '✓ t-001 — green' '$OUT' && ! grep -E '✓ t-001' '$OUT' | grep -q 'session'"
+check "6. a RE-HIRED ticket names the hire count" \
+  "grep -qF '✓ t-002 — green after 2 worker sessions' '$OUT'"
+check "6. the worker's own iteration count (2) is nowhere on the ✓ lines" \
+  "! grep -E '^ +✓' '$OUT' | grep -qE '\\b2 attempt'"
+check "6. the retired word 'attempt' is gone from the Verify roll-up" \
+  "! grep -qi 'attempt' '$OUT'"
+
+# ── 7. S173 back-compat: a mission with NO events.jsonl still reads sanely ────
+repo7="$(new_repo proof)"; make_gh_stub "$repo7/gh"; run_summary "$repo7"
+check "7. no events.jsonl → every ticket reads as a clean first-hire green" \
+  "grep -qF '✓ t-001 — green' '$OUT' && grep -qF '✓ t-002 — green' '$OUT'"
+check "7. no '?' placeholder and no phantom hire count leaks in" \
+  "! grep -E '^ +✓' '$OUT' | grep -qE '[?]|worker session'"
+
 echo
 echo "verify-summary-contract: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -256,7 +256,7 @@ cm_render_schedule() {
 
 # cm_render_implement → the LIVE WAVE DASHBOARD body.
 # Heading + the shared compute_progress line + a ticket checklist (#-linked,
-# done/in-progress/pending, attempt count on the in-progress ticket), completed
+# done/in-progress/pending, hire count on the in-progress ticket), completed
 # waves folded into <details>, and an auto-refresh footer. Rendered from the
 # SHARED renderer (compute_progress) + waves.json + ticket events.
 cm_render_implement() {
@@ -343,12 +343,24 @@ cm_render_wave_checklist() { # wave waves events cur_wave cur_ticket
     case "$state" in
       done) ;;
       in-progress)
-        local a; a="$(cm_ticket_attempts "$id" "$ev")"
-        [ "$a" -gt 0 ] && suffix=" _(in progress, attempt $a)_" || suffix=" _(in progress)_"
+        # S173: this counter has always counted HIRES (ticket_attempt events =
+        # worker dispatches). It now says so. The cap is the hire cap, so the
+        # captain can read "how close is this to needing me?" off the suffix —
+        # and a historical stream whose index ran past the current cap drops the
+        # "of N" rather than printing a nonsense ratio.
+        local a; a="$(cm_ticket_sessions "$id" "$ev")"
+        local cap="${MAX_WORKER_TRIES:-3}"
+        if [ "$a" -le 0 ]; then suffix=" _(in progress)_"
+        elif [ "$a" -le "$cap" ]; then suffix=" _(in progress, hire $a of $cap)_"
+        else suffix=" _(in progress, hire $a)_"
+        fi
         ;;
       flagged)
-        local a; a="$(cm_ticket_attempts "$id" "$ev")"
-        [ "$a" -gt 0 ] && suffix=" _(flagged after $a attempts)_" || suffix=" _(flagged)_"
+        local a; a="$(cm_ticket_sessions "$id" "$ev")"
+        if [ "$a" -le 0 ]; then suffix=" _(flagged)_"
+        elif [ "$a" -eq 1 ]; then suffix=" _(flagged after 1 worker session)_"
+        else suffix=" _(flagged after $a worker sessions)_"
+        fi
         ;;
       pending) ;;
     esac
@@ -423,8 +435,11 @@ cm_ticket_state() { # id events [cur_ticket]
   printf 'pending'
 }
 
-# cm_ticket_attempts <id> <events.jsonl> → highest attempt number seen (0 if none)
-cm_ticket_attempts() { # id events
+# cm_ticket_sessions <id> <events.jsonl> → the highest WORKER-SESSION (hire)
+# index seen for the ticket, 0 if none. S173: renamed to match what it has
+# always counted — ticket_attempt events are worker DISPATCHES, one per hire.
+# The event TYPE and its `attempt` data key are the WIRE and are unchanged.
+cm_ticket_sessions() { # id events
   local id="$1" ev="$2" n=0
   [ -f "$ev" ] || { printf '0'; return 0; }
   n="$(grep -E "\"type\":\"ticket_attempt\".*\"ticket\":\"$id\"|\"ticket\":\"$id\".*\"type\":\"ticket_attempt\"" "$ev" 2>/dev/null \

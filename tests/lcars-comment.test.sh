@@ -546,8 +546,10 @@ run_mirror "$r13" 1100
 IBODY13="$(stage_body "$m13" implement)"
 check "T10. t-001 is DONE (checked)" \
   "printf '%s' \"\$IBODY13\" | qgrep -q '\\- \\[x\\].*t-001'"
-check "T10. t-002 is in progress, attempt 2" \
-  "printf '%s' \"\$IBODY13\" | qgrep -qE '\\- \\[ \\].*t-002.*in progress, attempt 2'"
+check "T10. t-002 is in progress on its 2nd hire (S173 hire vocabulary)" \
+  "printf '%s' \"\$IBODY13\" | qgrep -qE '\\- \\[ \\].*t-002.*in progress, hire 2 of 3'"
+check "T10b. the retired word 'attempt' is gone from the ticket checklist" \
+  "! printf '%s' \"\$IBODY13\" | qgrep -qiE '\\- \\[.\\].*attempt'"
 check "T10. t-003 is pending (unchecked, no in-progress)" \
   "printf '%s' \"\$IBODY13\" | qgrep -qE '\\- \\[ \\].*t-003' && ! printf '%s' \"\$IBODY13\" | qgrep -qE 't-003.*in progress'"
 NIP13="$(printf '%s\n' "$IBODY13" | grep -c 'in progress')"
@@ -583,8 +585,10 @@ cat >"$m14/events.jsonl" <<'EOF'
 EOF
 run_mirror "$r14" 1100
 IBODY14="$(stage_body "$m14" implement)"
-check "T11. flagged ticket renders '(flagged after 5 attempts)'" \
-  "printf '%s' \"\$IBODY14\" | qgrep -qE '\\- \\[ \\].*t-001.*flagged after 5 attempts'"
+check "T11. flagged ticket renders '(flagged after 5 worker sessions)'" \
+  "printf '%s' \"\$IBODY14\" | qgrep -qE '\\- \\[ \\].*t-001.*flagged after 5 worker sessions'"
+check "T11b. the flagged suffix does NOT say 'attempt'" \
+  "! printf '%s' \"\$IBODY14\" | qgrep -qiE '\\- \\[.\\].*t-001.*attempt'"
 check "T11. flagged ticket is NOT marked 'in progress'" \
   "! printf '%s' \"\$IBODY14\" | qgrep -qE 't-001.*in progress'"
 NIP14="$(printf '%s\n' "$IBODY14" | grep -c 'in progress')"
