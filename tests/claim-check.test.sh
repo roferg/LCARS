@@ -15,11 +15,20 @@
 # ticket, the implementer left the existing list in place and added the new rule
 # beside it, and one control shipped gated on BOTH.
 #
-# Two holes, two checks, both deterministic:
+# Two holes. ONE deterministic check ships:
 #   B1  the harness runs the search itself (`git grep`), and parks the Mission
 #       when the repository contradicts the finding.
-#   B2  a name the validated plan's `## Decisions` section PROHIBITS must be
-#       named by a ticket, or the plan is bounced with the reason.
+#
+# THE SECOND — B2, `plan_prohibition_check`: a name the validated plan's
+# `## Decisions` section PROHIBITS must be named by a ticket — was built, took
+# three rounds, and was PULLED by the captain. Each fix traded one failure for
+# another; the last one false-positived on a plain mission, reading a
+# test-coverage bullet ("check that `getRecent()` returns a defensive copy …
+# does not affect subsequent calls") as a prohibition of `getRecent`. That is
+# the S147/S156/S157 shape: a prose classifier past three rounds is cured by
+# DELETION. Its code, tests and fixtures are in git at 8c5d5a2 and its live
+# drives under tests/drives/align-heal/runs/; it returns in its own session
+# against a MIXED corpus that holds that false positive as a fixture.
 #
 # ⛔ THE ANTI-CLASSIFIER PROOF IS THE POINT OF THIS FILE. S147/S156/S157 each
 # spent a session on a text classifier and each was cured by DELETING it. So the
@@ -137,6 +146,17 @@ probe_fires "2k an UNQUALIFIED repo-wide claim about a named identifier fires" \
 probe_fires "2l …and on a camelCase name too" \
             "$(J '"No pullRecipeIds constant exists anywhere in the codebase."')" \
             "pullRecipeIds"
+# THE PROHIBITION SHAPES, put to B1 as a finding's own claim, must STILL be
+# refused. These three sentences are real prohibition phrasings lifted off live
+# validated plans — the shapes B2 (pulled; see the header) was widened to accept.
+# B1 sweeps FREE PROSE and must stay strict, so a future widening of the shared
+# reader cannot quietly loosen it.
+probe "2m B1 refuses a prohibition qualified by a verb phrase" \
+      "$(J '"Populate the field; do not grow a hardcoded id list and do not conflate with `PULL_RECIPE_IDS`."')"
+probe "2n B1 refuses a prohibition on ADDING a named field" \
+      "$(J '"Do not add a `pullRecipeIds` field anywhere in the repo — the existing predicate stays."')"
+probe "2o B1 refuses a NEVER-read prohibition" \
+      "$(J '"Never read the codebase draft'"'"'s embedded `pullRecipeIds` as the automatability signal."')"
 
 # ===========================================================================
 section "3 — the VERDICT is a literal search the harness runs"
@@ -292,190 +312,24 @@ else
 fi
 
 # ===========================================================================
-section "5 — B2: a PROHIBITION in the validated plan must reach a ticket"
+section "5 — THE FALSE POSITIVE THAT PULLED B2, kept as a FENCE"
 # ===========================================================================
-proh() { LCARS_VP="$1" LCARS_PJ="$2" bash "$SCRIPT" prohibition-check-test 2>&1; }
-prohrc() { proh "$1" "$2" >/dev/null 2>&1; echo $?; }
-
-assert_eq  "5a fixture A: the measured plan.json DROPS it"  \
-           "$(prohrc "$FIX/measured-validated-plan.md" "$FIX/measured-plan-dropped.json")" "1"
-PDA="$(proh "$FIX/measured-validated-plan.md" "$FIX/measured-plan-dropped.json")"
-assert_has "5b …naming the prohibited identifier" 'PROHIBITS the name `WIRED_METRIC_IDS`' "$PDA"
-assert_has "5c …quoting the decision verbatim"    "no \`WIRED_METRIC_IDS\`, no new boolean flag." "$PDA"
-assert_has "5d …and saying how to carry it"       "CARRY IT" "$PDA"
-assert_eq  "5e …and ONE named criterion clears it" \
-           "$(prohrc "$FIX/measured-validated-plan.md" "$FIX/measured-plan-carried.json")" "0"
-assert_eq  "5f …silently"  "$(proh "$FIX/measured-validated-plan.md" "$FIX/measured-plan-carried.json")" ""
-
-assert_eq  "5g fixture B: dropped is caught"  \
-           "$(prohrc "$FIX/budget-validated-plan.md" "$FIX/budget-plan-dropped.json")" "1"
-PDB="$(proh "$FIX/budget-validated-plan.md" "$FIX/budget-plan-dropped.json")"
-assert_has "5h …naming ITS identifier" 'PROHIBITS the name `SYNCED_LINE_IDS`' "$PDB"
-assert_no  "5i …and nothing of the other fixture" "WIRED" "$PDB"
-assert_eq  "5j …and carried is silent"  \
-           "$(prohrc "$FIX/budget-validated-plan.md" "$FIX/budget-plan-carried.json")" "0"
-
-# The decisions BOTH fixtures record that prohibit no NAMED identifier — "do not
-# add new routed views", "no new partial write path", "do not touch docs/mocks/"
-# — must produce nothing. A check that demanded every sentence reach a ticket
-# would be pure noise.
-PS="$(scan prohibition "$FIX/budget-validated-plan.md")"
-assert_eq  "5k an unrelated plan's five decisions yield ONE candidate, not five" \
-           "$(printf '%s\n' "$PS" | grep -c .)" "1"
-NOP="$TMPROOT/no-prohibition.md"
-cat > "$NOP" <<'MD'
-# Validated Plan
-
-## Synthesis
-x
-
-## Decisions
-
-- Do not add new routed views; keep one screen-state enum.
-- No new partial write path — reuse the whole-document save.
-- Never blank a cell when the upstream feed misses a night.
-
-## Rationale
-x
-MD
-assert_eq "5l a plan whose prohibitions name NO identifier is untouched" \
-          "$(prohrc "$NOP" "$FIX/budget-plan-dropped.json")" "0"
-assert_eq "5m …and silent"  "$(proh "$NOP" "$FIX/budget-plan-dropped.json")" ""
-assert_eq "5n a Mission with NO validated-plan.md is untouched" \
-          "$(prohrc /nonexistent "$FIX/budget-plan-dropped.json")" "0"
-
-# ===========================================================================
-section "5B — B2 reads the DECISION, not one phrasing of it"
-# ===========================================================================
-# MEASURED AGAIN, on a LIVE capstone run (2026-08-30). B2 shipped tuned to the
-# one sentence the first broken run happened to write — "no \`X\`, no new boolean
-# flag" — and a live Validator, handed the same job, wrote the same decision in
-# its own words:
+# B2 (plan_prohibition_check) is GONE — three rounds, each fix trading one
+# failure for another. The last one, MEASURED on a live plain mission
+# (tests/drives/align-heal/runs/plain-1), read a TEST-COVERAGE bullet in the
+# validated plan's `## Decisions` section —
 #
-#     "…do not grow a hardcoded id list and do not conflate with \`X\`."
+#   "…and that `getRecent()` returns a defensive copy (mutating the returned
+#    array does not affect subsequent `getRecent()` calls)"
 #
-# The name went validated-plan.md 3 → plan.json 0 → approved-plan.json 0, the
-# decision evaporated exactly as before, and B2 SAID NOTHING. It was silent
-# because it inherited B1's reduction: the negated phrase had to reduce to the
-# identifier alone past a fixed vocabulary, and "conflate with" is a content
-# word, so the candidate was refused unread.
+# — as a PROHIBITION of `getRecent`, and bounced an honest, complete plan for
+# not "carrying" it. The sentence prohibits nothing; it describes a test.
 #
-# THE TWO CHECKS HAVE DIFFERENT NOISE BUDGETS AND MUST NOT SHARE ONE RULE.
-#   B1 sweeps FREE PROSE across every research finding — 126 candidate sentences
-#      over the captain's 58 Missions. Its strictness is what keeps it silent,
-#      and section 2 above holds it to that, unchanged.
-#   B2 reads only a DECLARED `## Decisions` section. Over the same 58 Missions
-#      that is 26 candidate lines, of which the check actually BOUNCES 3 plans —
-#      up from 1. A declared decision has already earned the right to be read as
-#      one; a negation cue plus a code-shaped name in the same clause IS the
-#      shape, and nothing beyond it is asked for.
-#
-# The clause-boundary cut is DELIBERATELY KEPT. Reading backwards from the cue
-# as well ("`X` must not be reused") was measured on the same corpus: 5 further
-# candidates, EVERY ONE of them noise (an identifier in a neighbouring clause
-# dragged in by a stray "no"), and one further plan wrongly bounced. It buys no
-# true positive, so it is not done.
-pscan() { scan prohibition "$1"; }
-
-# --- THE REGRESSION THAT MATTERS: the real live sentence, verbatim ------------
-# tests/fixtures/claims/measured-validated-plan-live.md is that run's whole
-# `## Decisions` section, copied VERBATIM off disk — 22 decisions, most of them
-# negative ("Stop calling…", "no note field", "never re-seeding").
-SL="$(pscan "$FIX/measured-validated-plan-live.md")"
-assert_eq  "5o the live run's 22 real decisions yield exactly ONE candidate" \
-           "$(printf '%s\n' "$SL" | grep -c .)" "1"
-assert_eq  "5p …and it is the name that evaporated" "$(ids "$SL")" "WIRED_METRIC_IDS"
-assert_has "5q …carrying the Validator's OWN words, which B2 used to refuse" \
-           'do not grow a hardcoded id list and do not conflate with `WIRED_METRIC_IDS`.' "$SL"
-assert_eq  "5r …and the plan that dropped it is BOUNCED" \
-           "$(prohrc "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-dropped.json")" "1"
-assert_has "5s …by name" 'PROHIBITS the name `WIRED_METRIC_IDS`' \
-           "$(proh "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-dropped.json")"
-assert_eq  "5t …and ONE named criterion still clears it" \
-           "$(prohrc "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-carried.json")" "0"
-assert_eq  "5u …silently" \
-           "$(proh "$FIX/measured-validated-plan-live.md" "$FIX/measured-plan-carried.json")" ""
-
-# The unrelated fixture, same shapes, sharing not one noun.
-SLB="$(pscan "$FIX/budget-validated-plan-live.md")"
-assert_eq  "5v the unrelated plan yields ONE candidate too" \
-           "$(printf '%s\n' "$SLB" | grep -c .)" "1"
-assert_eq  "5w …and it is ITS name"  "$(ids "$SLB")" "SYNCED_LINE_IDS"
-assert_no  "5x …and nothing of the other fixture" "WIRED" "$SLB"
-assert_eq  "5y …its dropped plan is bounced" \
-           "$(prohrc "$FIX/budget-validated-plan-live.md" "$FIX/budget-plan-dropped.json")" "1"
-assert_eq  "5z …and its carried plan is silent" \
-           "$(prohrc "$FIX/budget-validated-plan-live.md" "$FIX/budget-plan-carried.json")" "0"
-
-# --- the phrasings, each one lifted off a REAL validated plan -----------------
-DEC() { printf '# P\n\n## Synthesis\n\nx\n\n## Decisions\n\n- %s\n\n## Rationale\n\nx\n' "$1"; }
-pfires() { # label decision-line wanted-ids
-  local f; f="$(mktemp "$TMPROOT/dec.XXXX")"
-  DEC "$2" > "$f"
-  assert_eq "$1" "$(ids "$(pscan "$f")")" "$3"
-}
-psilent() { # label decision-line
-  local f; f="$(mktemp "$TMPROOT/dec.XXXX")"
-  DEC "$2" > "$f"
-  local out; out="$(pscan "$f")"
-  if [ -z "$out" ]; then ok "$1"; else bad "$1 (fired: $(ids "$out"))"; fi
-}
-# The shape B2 was built for MUST still fire — this is the no-regression half.
-pfires "5aa the original shape still fires" \
-       'Classify by the trimmed field; no `PULL_RECIPE_IDS`, no new boolean flag.' \
-       "PULL_RECIPE_IDS"
-pfires "5ab …and the plainest one" \
-       'Do not introduce `PULL_RECIPE_IDS`.' "PULL_RECIPE_IDS"
-# lcars-20260829-002 (live, 2026-08-30) — the measured miss.
-pfires "5ac a prohibition qualified by a VERB PHRASE fires (the measured miss)" \
-       'Populate that per-line field to make lines tracked; do not grow a hardcoded id list and do not conflate with `PULL_RECIPE_IDS`.' \
-       "PULL_RECIPE_IDS"
-# lcars-20260731-009 — "do not add an `X`/`Y` field".
-pfires "5ad …as does a prohibition on ADDING a named field" \
-       'Do not touch anything under the reference folder, and do not add a `pullRecipeIds` field — the existing predicate stays.' \
-       "pullRecipeIds"
-# lcars-20260729-001 — "NO `X` field in config.json".
-pfires "5ae …and a bare NO before a named field" \
-       'App-side fixed palette keyed by row id, applied as a custom property; NO `pullRecipeIds` field in the config file.' \
-       "pullRecipeIds"
-# lcars-20260731-003 — "Never read the … `X` … as the signal".
-pfires "5af …and a NEVER-read prohibition" \
-       "Never read the draft's embedded \`pullRecipeIds\` as the automatability signal." \
-       "pullRecipeIds"
-# lcars-20260817-009 — one decision freezing a whole named set.
-pfires "5ag …and a decision freezing SEVERAL named helpers at once" \
-       'Do NOT add a new helper or change `deriveDelta`/`parseMeasure`/`deltaText`; reuse them as-is.' \
-       "deltaText,deriveDelta,parseMeasure"
-
-# --- and the near-silence is still REAL --------------------------------------
-psilent "5ah a decision that prohibits no NAMED thing stays silent" \
-        'Do not add new routed views; keep one screen-state enum.'
-psilent "5ai a lone lowercase word is still not an identifier" \
-        'Do not add a `shape` field to the stored row.'
-psilent "5aj a lone PascalCase word is still not an identifier" \
-        'Do not introduce `SubReading` anywhere in the write path.'
-psilent "5ak a decision with NO negation is not a prohibition" \
-        'Reuse `pullRecipeIds` as the single source of truth.'
-psilent "5al an identifier past a CLAUSE BOUNDARY is not the negated one" \
-        'Do not add new routed views, but keep `refreshAll` exactly as it is.'
-psilent "5am …and past a dash either" \
-        'Do not add a second bridge — extend `syncBridge`, which already exists.'
-
-# --- THE DECOUPLING, asserted in the other direction -------------------------
-# The SAME sentences, put to B1 as a research finding's own claim, must STILL be
-# refused. B1's 126-sentence corpus above proves it in bulk; these prove it on
-# the exact phrasings B2 was just widened to accept, so a future edit cannot
-# widen one by widening the other.
-probe "5an B1 still refuses the live phrasing" \
-      "$(J '"Populate the field; do not grow a hardcoded id list and do not conflate with `PULL_RECIPE_IDS`."')"
-probe "5ao B1 still refuses a prohibition on ADDING a named field" \
-      "$(J '"Do not add a `pullRecipeIds` field anywhere in the repo — the existing predicate stays."')"
-probe "5ap B1 still refuses a NEVER-read prohibition" \
-      "$(J '"Never read the codebase draft'"'"'s embedded `pullRecipeIds` as the automatability signal."')"
-
-# ===========================================================================
-section "6 — B2 rides the EXISTING Plan retry channel, and can never deadlock"
-# ===========================================================================
+# This is not a test of the deleted code. It is the FENCE the next B2 must clear,
+# driven through the REAL `plan-save` path over the drive's own artifacts: this
+# exact pair must SAVE, silently. Nothing in the removal makes it pass by
+# accident — the same pair is what bounced.
+REPRO="$REPO_ROOT/tests/drives/align-heal/runs/plain-1"
 plan_repo() { # validated-plan  -> repo with a mission at stage plan
   local repo; repo="$(mktemp -d "$TMPROOT/pl.XXXX")"
   ( cd "$repo" && git init -q -b main && git config user.email t@t && git config user.name t \
@@ -500,58 +354,27 @@ run_plan_save() { # repo plan-json [--final-attempt] [run.sh-override]
   PSD="$repo/.git/lcars/missions/test-001"
 }
 
-repo="$(plan_repo "$FIX/budget-validated-plan.md")"
-run_plan_save "$repo" "$FIX/budget-plan-dropped.json"
-assert_eq  "6a a plan that drops the prohibition is REJECTED" "$PSRC" "1"
-assert_has "6b …with the reason on stderr"  "REACHED NO TICKET" "$PSOUT"
-if [ -f "$repo.odir/.plan-reject-note" ] && grep -q SYNCED_LINE_IDS "$repo.odir/.plan-reject-note"; then
-  ok "6c …left beside the plan file, where cmd_plan's retry loop reads it into the next prompt"
-else
-  bad "6c …left beside the plan file, where cmd_plan's retry loop reads it into the next prompt"
-fi
-assert_eq  "6d …and the Mission has NOT advanced" \
-           "$(sed -n 's/.*"stage"[^"]*"\([^"]*\)".*/\1/p' "$PSD/state.json" | head -1)" "plan"
-if [ -f "$PSD/plan.json" ]; then bad "6e …and no plan.json was installed"; else ok "6e …and no plan.json was installed"; fi
-
-# THE LAST ATTEMPT SAVES. A guard that can refuse a VALID plan must never be able
-# to deadlock the Stage — S178 settled this doctrine; B2 obeys it.
-repo="$(plan_repo "$FIX/budget-validated-plan.md")"
-run_plan_save "$repo" "$FIX/budget-plan-dropped.json" --final-attempt
-assert_eq  "6f the LAST attempt SAVES rather than deadlocking" "$PSRC" "0"
-assert_has "6g …saying loudly that it is unresolved" "UNRESOLVED" "$PSOUT"
-assert_has "6h …and what was dropped"  "SYNCED_LINE_IDS" "$PSOUT"
-assert_eq  "6i …and hands it to Plan Review anyway" \
-           "$(sed -n 's/.*"stage"[^"]*"\([^"]*\)".*/\1/p' "$PSD/state.json" | head -1)" "plan-review"
-
-# --- the CARRIED plan saves clean, byte-identically to the previous commit ----
-repo="$(plan_repo "$FIX/budget-validated-plan.md")"
-run_plan_save "$repo" "$FIX/budget-plan-carried.json"
-CARRIED_OUT="$PSOUT"
-assert_eq "6j a plan that carries it saves clean" "$PSRC" "0"
-assert_no "6k …with nothing added to the output"  "REACHED NO TICKET" "$PSOUT"
-if [ -s "$BASE_SH" ]; then
-  repo2="$(plan_repo "$FIX/budget-validated-plan.md")"
-  run_plan_save "$repo2" "$FIX/budget-plan-carried.json" "" "$BASE_SH"
-  if [ "$CARRIED_OUT" = "$PSOUT" ]; then
-    ok "6l …and BYTE-IDENTICAL to what the previous commit printed"
+if [ -f "$REPRO/mission-final-snapshot/validated-plan.md" ] \
+   && [ -f "$REPRO/b2-falsepositive-repro-plan.json" ]; then
+  # The bullet really is in there, verbatim — otherwise this fence proves nothing.
+  assert_has "5a the live plain mission's decisions really do carry the bullet" \
+             'does not affect subsequent `getRecent()` calls' \
+             "$(cat "$REPRO/mission-final-snapshot/validated-plan.md")"
+  repo="$(plan_repo "$REPRO/mission-final-snapshot/validated-plan.md")"
+  run_plan_save "$repo" "$REPRO/b2-falsepositive-repro-plan.json"
+  assert_eq "5b …and the plan that bounced on it now SAVES" "$PSRC" "0"
+  assert_no "5c …with nothing said about a decision reaching no ticket" \
+            "REACHED NO TICKET" "$PSOUT"
+  assert_no "5d …and no carry-through verdict of any kind" "DECISION" "$PSOUT"
+  if [ -f "$repo.odir/.plan-reject-note" ]; then
+    bad "5e …and no rejection note is left for the retry loop"
   else
-    bad "6l …and BYTE-IDENTICAL to what the previous commit printed"
-    diff <(printf '%s\n' "$CARRIED_OUT") <(printf '%s\n' "$PSOUT") | sed 's/^/       /'
+    ok "5e …and no rejection note is left for the retry loop"
   fi
-  # …and so is a plan whose validated plan prohibits no name at all.
-  repo3="$(plan_repo "$NOP")"; run_plan_save "$repo3" "$FIX/budget-plan-dropped.json"; A="$PSOUT"
-  repo4="$(plan_repo "$NOP")"; run_plan_save "$repo4" "$FIX/budget-plan-dropped.json" "" "$BASE_SH"; B="$PSOUT"
-  assert_eq "6m a plan with no named prohibition is BYTE-IDENTICAL too" "$A" "$B"
-  # …and so is the WIDENED path when the prohibition is carried: the previous
-  # commit was silent because it never saw the decision, this one because the
-  # ticket names it. Same bytes either way — nothing was added to the clean path.
-  repo5="$(plan_repo "$FIX/budget-validated-plan-live.md")"
-  run_plan_save "$repo5" "$FIX/budget-plan-carried.json"; A="$PSOUT"
-  repo6="$(plan_repo "$FIX/budget-validated-plan-live.md")"
-  run_plan_save "$repo6" "$FIX/budget-plan-carried.json" "" "$BASE_SH"; B="$PSOUT"
-  assert_eq "6n a CARRIED prohibition in the new phrasing is BYTE-IDENTICAL too" "$A" "$B"
+  assert_eq "5f …and the Mission advances to Plan Review" \
+            "$(sed -n 's/.*"stage"[^"]*"\([^"]*\)".*/\1/p' "$PSD/state.json" | head -1)" "plan-review"
 else
-  bad "6l could not read the byte-identity baseline"
+  bad "5a the plain-mission repro artifacts are missing — the fence is NOT checked"
 fi
 
 # ===========================================================================
@@ -560,22 +383,17 @@ section "7 — THE GENERICITY FENCE"
 # S179 measured a FILLED-IN worked example in a prompt being copied verbatim onto
 # an unrelated screen by 3 of 3 live turns. Nothing this round adds may carry one
 # screen's nouns. Checked over EVERY string this round emits to a worker or a
-# human: the refutation question, the reject note, and the operator output.
-GEN="$(printf '%s\n%s\n%s\n' "$PDA" "$PDB" "$(proh "$FIX/measured-validated-plan.md" "$FIX/measured-plan-dropped.json")")"
-# Strip the QUOTED artifact lines — those are the Mission's own words, by design.
+# human: the refutation question and the operator output.
 # The QUOTED artifact lines and the SUBSTITUTED identifier are the Mission's own
 # words, not vocabulary this round authored — normalise them out and check what
 # is left, which is every word run.sh actually wrote.
-prose_only() { printf '%s\n' "$1" | grep -v '^      "' \
-  | sed -e 's/WIRED_METRIC_IDS/<ID>/g' -e 's/SYNCED_LINE_IDS/<ID>/g'; }
-GP="$(prose_only "$GEN")"
 repo="$(save_repo "$FIX/measured-research" WIRED_METRIC_IDS)"; run_save "$repo"; SAVE_A="$SAVEOUT"
 repo="$(save_repo "$FIX/budget-research" SYNCED_LINE_IDS)"; run_save "$repo"; SAVE_B="$SAVEOUT"
 SP="$(printf '%s\n%s\n' "$SAVE_A" "$SAVE_B" | grep -v '^    • ' \
   | sed -e 's/WIRED_METRIC_IDS/<ID>/g' -e 's/SYNCED_LINE_IDS/<ID>/g')"
 for w in KPI insight cohort collect MBR month lock unlock wired metric automatable \
          budget quarter "cost centre" sync currency spend recipe; do
-  if printf '%s\n%s\n' "$GP" "$SP" | grep -qiE "(^|[^A-Za-z])$w([^A-Za-z]|$)"; then
+  if printf '%s\n' "$SP" | grep -qiE "(^|[^A-Za-z])$w([^A-Za-z]|$)"; then
     bad "7a the round's PROSE must carry no domain vocabulary (found: $w)"
   else
     ok "7a the round's PROSE carries no domain vocabulary ($w)"
@@ -675,154 +493,6 @@ if [ -f "$ED/research/1.json" ] && grep -q SYNCED_LINE_IDS "$ED/research/1.json"
   ok "8i …and Research still saved the finding and moved on"
 else
   bad "8i …and Research still saved the finding and moved on"
-fi
-
-# ===========================================================================
-section "9 — a B2 bounce ARMS THE PATCH CHANNEL, so the retry is a patch"
-# ===========================================================================
-# MEASURED, live Copilot, 2026-08-30 (tests/drives/align-heal/runs/replan-1).
-# B2 bounced a FIRST plan for one un-carried decision. The retry carried the
-# decision CORRECTLY and re-planned everything else: 10 tickets came back as 9,
-# 8 of 10 dependency entries changed, ids were reused for different work, and a
-# standalone ticket vanished into a sibling. The retry prompt already said "fix
-# exactly that and change nothing else" — and the worker's 28KB argv held
-# prd.md, validated-plan.md and adr.md but NOT the plan it had itself just
-# written. It was told to change nothing else about an answer it was never
-# shown, which is unobeyable in principle.
-#
-# S178 already built the channel for exactly this: `plan-under-review.json`, the
-# one file that gates BOTH the patch-contract prose in the Plan prompt and the
-# over-correction edge diff. It had ONE producer — review_fail — so a B2 bounce
-# armed neither. It does now.
-tok() { printf '%s/plan-under-review.json' "$1"; }
-
-# --- fixture B (unrelated): the bounce writes the rejected list --------------
-repo="$(plan_repo "$FIX/budget-validated-plan.md")"
-run_plan_save "$repo" "$FIX/budget-plan-dropped.json"
-PSD="$repo/.git/lcars/missions/test-001"
-assert_eq "9a fixture B: a B2 bounce is still a rejection" "$PSRC" "1"
-if [ -f "$(tok "$PSD")" ]; then
-  ok "9b …and it WRITES plan-under-review.json"
-else
-  bad "9b …and it WRITES plan-under-review.json"
-fi
-if cmp -s "$(tok "$PSD")" "$repo.odir/plan.json"; then
-  ok "9c …containing the exact ticket list that was rejected"
-else
-  bad "9c …containing the exact ticket list that was rejected"
-fi
-
-# --- fixture A (the measured Mission): identical behaviour -------------------
-repoA="$(plan_repo "$FIX/measured-validated-plan.md")"
-run_plan_save "$repoA" "$FIX/measured-plan-dropped.json"
-PSDA="$repoA/.git/lcars/missions/test-001"
-assert_eq "9d fixture A: the measured plan is bounced too" "$PSRC" "1"
-if cmp -s "$(tok "$PSDA")" "$repoA.odir/plan.json"; then
-  ok "9e …and its 13 tickets are the patch target the retry is handed"
-else
-  bad "9e …and its 13 tickets are the patch target the retry is handed"
-fi
-
-# --- WRITE-IF-ABSENT, both halves -------------------------------------------
-# A second bounce in the same retry loop must not re-point the patch target at
-# the newest rejected attempt: the anchor stays put, so it cannot drift attempt
-# by attempt. This attempt's own reason travels in .plan-reject-note.
-repoB="$(plan_repo "$FIX/measured-validated-plan.md")"
-run_plan_save "$repoB" "$FIX/measured-plan-dropped.json"
-PSDB="$repoB/.git/lcars/missions/test-001"
-cp "$FIX/budget-plan-dropped.json" "$repoB.odir/plan.json"
-PSOUT="$( cd "$repoB" && env LCARS_GH_BIN="$repoB.gh" bash "$SCRIPT" plan-save \
-    --mission test-001 --plan "$repoB.odir/plan.json" 2>&1 )"; PSRC=$?
-assert_eq "9g a SECOND bounce is still a rejection" "$PSRC" "1"
-if cmp -s "$(tok "$PSDB")" "$FIX/measured-plan-dropped.json"; then
-  ok "9h …and the patch anchor is the FIRST rejected attempt, not the newest"
-else
-  bad "9h …and the patch anchor is the FIRST rejected attempt, not the newest"
-fi
-
-# …and a token review_fail already wrote — the plan the OBJECTIONS are about —
-# is never clobbered by a B2 bounce. Redefining "the plan under review" mid-loop
-# would silently change what the over-correction guard diffs against.
-repoC="$(plan_repo "$FIX/budget-validated-plan.md")"
-PSDC="$repoC/.git/lcars/missions/test-001"
-cp "$FIX/measured-plan-carried.json" "$(tok "$PSDC")"
-run_plan_save "$repoC" "$FIX/budget-plan-dropped.json"
-assert_eq "9i a B2 bounce during a review round still rejects" "$PSRC" "1"
-if cmp -s "$(tok "$PSDC")" "$FIX/measured-plan-carried.json"; then
-  ok "9j …and leaves Plan Review's own token exactly as it found it"
-else
-  bad "9j …and leaves Plan Review's own token exactly as it found it"
-fi
-
-# --- LIFECYCLE: the token cannot outlive the revision it asked for -----------
-repo="$(plan_repo "$FIX/budget-validated-plan.md")"
-PSD="$repo/.git/lcars/missions/test-001"
-run_plan_save "$repo" "$FIX/budget-plan-dropped.json"     # bounce: token armed
-[ -f "$(tok "$PSD")" ] || bad "9k (setup) the bounce armed the token"
-run_plan_save "$repo" "$FIX/budget-plan-carried.json"     # the retry, carrying it
-assert_eq "9k the retry that carries the decision SAVES" "$PSRC" "0"
-if [ -f "$(tok "$PSD")" ]; then
-  bad "9l …and the token is CONSUMED on that save"
-else
-  ok "9l …and the token is CONSUMED on that save"
-fi
-
-# --final-attempt: still saves, still says UNRESOLVED, still consumes the token.
-# A guard that can refuse a VALID plan must never deadlock the Stage, and the
-# token must not survive the save that ends the loop.
-repo="$(plan_repo "$FIX/budget-validated-plan.md")"
-PSD="$repo/.git/lcars/missions/test-001"
-run_plan_save "$repo" "$FIX/budget-plan-dropped.json"
-run_plan_save "$repo" "$FIX/budget-plan-dropped.json" --final-attempt
-assert_eq  "9m --final-attempt still SAVES rather than deadlocking" "$PSRC" "0"
-assert_has "9n …still saying UNRESOLVED"  "DECISION NOT CARRIED — UNRESOLVED" "$PSOUT"
-assert_eq  "9o …still advancing to Plan Review" \
-           "$(sed -n 's/.*"stage"[^"]*"\([^"]*\)".*/\1/p' "$PSD/state.json" | head -1)" "plan-review"
-if [ -f "$(tok "$PSD")" ]; then
-  bad "9p …and the token does not survive the advance"
-else
-  ok "9p …and the token does not survive the advance"
-fi
-
-# --- THE S178 GUARD IS ARMED on the retry -----------------------------------
-# The armed token is what makes the over-correction guard run at all. On a first
-# plan there are no objections, so it can only report UNCHECKED — and it must say
-# so HONESTLY (the harness asked, not Plan Review), never claim a review failure
-# that never happened.
-repo="$(plan_repo "$FIX/measured-validated-plan.md")"
-PSD="$repo/.git/lcars/missions/test-001"
-run_plan_save "$repo" "$FIX/measured-plan-dropped.json"
-run_plan_save "$repo" "$FIX/measured-plan-carried.json"
-assert_eq  "9q the retry saves" "$PSRC" "0"
-assert_has "9r …with the over-correction guard ARMED and reporting" \
-           "REVISION UNCHECKED" "$PSOUT"
-assert_has "9s …honestly naming who asked for the revision" \
-           "the HARNESS asked for this revision, not Plan" "$PSOUT"
-assert_no  "9t …and never inventing a review round that never happened" \
-           "the review rounds on disk name" "$PSOUT"
-
-# --- BYTE-IDENTITY: nothing that did not bounce may move --------------------
-# A plan with no prohibition, and a plan that carries it, both untouched: no
-# token written, and the same bytes the previous commit printed.
-if [ -s "$BASE_SH" ]; then
-  repo="$(plan_repo "$NOP")"
-  PSD="$repo/.git/lcars/missions/test-001"
-  run_plan_save "$repo" "$FIX/budget-plan-dropped.json"
-  if [ -f "$(tok "$PSD")" ]; then
-    bad "9u a plan with NO prohibition writes no token"
-  else
-    ok "9u a plan with NO prohibition writes no token"
-  fi
-  repo="$(plan_repo "$FIX/budget-validated-plan.md")"
-  PSD="$repo/.git/lcars/missions/test-001"
-  run_plan_save "$repo" "$FIX/budget-plan-carried.json"
-  if [ -f "$(tok "$PSD")" ]; then
-    bad "9v …and neither does a plan that CARRIES it"
-  else
-    ok "9v …and neither does a plan that CARRIES it"
-  fi
-else
-  bad "9u could not read the byte-identity baseline"
 fi
 
 printf '\n────────────────────────────────────────────\n'

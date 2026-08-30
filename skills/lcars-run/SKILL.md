@@ -339,24 +339,6 @@ now at **Plan Review**. (On a Plan Review loop-back, this same driver re-runs; t
 fresh Planner worker reads the latest `plan-review-<round>.json` objections
 itself — see Plan Review below.)
 
-### A decision LOG is not a change LIST (S180)
-
-`plan-save` also checks that a decision the validated plan **records** actually
-**reaches a ticket**. Only the sharpest, declared case is checked: a
-`## Decisions` entry that PROHIBITS a named, code-shaped identifier. A prohibition
-no ticket carries is guaranteed to be unenforced — the worker that writes the code
-never sees it, no gate can test it, and the thing the plan ruled out ships beside
-the thing it ruled in. Measured: a prohibition appeared twice in
-`validated-plan.md` and twice in `adr.md`, and **zero** times in `plan.json`.
-
-The planner satisfies it by NAMING that identifier on the ticket that owns the
-behaviour — one acceptance criterion. That single act is both "the decision was
-carried" and "the drop was explicit"; there is no way to satisfy it silently. The
-rejection rides the existing retry channel (the reason reaches the next Planner
-worker's prompt) and goes **advisory on the last attempt**, so a valid plan can
-never deadlock the Stage. A validated plan that prohibits no named identifier —
-which is nearly all of them — is untouched.
-
 ### A revision is a PATCH (S178)
 
 When Plan Review bounces a plan back, `review_fail` writes
@@ -370,22 +352,6 @@ keys off it and off nothing else:
   names that ticket;
 - `plan-save` **compares the two dependency graphs** before overwriting
   `plan.json`, then **consumes the snapshot**.
-
-**S180 added a second producer.** A `plan-save` guard can bounce a plan on the
-FIRST pass, before any reviewer exists (today: B2, a validated-plan decision that
-reached no ticket). That is a revision request too, so the guard writes the
-rejected ticket list to the same file — write-if-absent, so a snapshot Plan
-Review already took is never redefined. Both producers arm the same two things,
-and the prompt says honestly which one asked. MEASURED, live, 2026-08-30: without
-it a B2 bounce carried its decision correctly and re-planned everything else — 10
-tickets became 9, 8 of 10 dependency entries changed, ids were reused for
-different work, and a standalone ticket vanished into a sibling. On the
-harness-bounce path there are no objections to license an edge against, so the
-graph diff can only report `⚠ REVISION UNCHECKED` and say so out loud; the patch
-contract there is carried by the prompt and by handing the worker its own answer
-back. The Plan prompt is assembled **per attempt** for exactly this reason: the
-token is written during the retry loop, so a prompt built once before the first
-spawn could never list it.
 
 It is a one-shot token, never an archive, and it is deliberately not inferred
 from the presence of `plan-review-*.json`: `lcars feedback` (the Verify
@@ -861,7 +827,7 @@ trust the board to show exactly where every Mission is.
   plan.json             ← the Planner's ticket list, each ticket carrying its rationale (Plan → Plan Review)
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
-  plan-under-review.json ← S178 one-shot revision token: the ticket list the revision must PATCH. Written by review_fail on a loop-back, and (S180, write-if-absent) by a plan-save guard bounce. Consumed by plan-save when the revision lands, by review_pass, and by `lcars feedback`.
+  plan-under-review.json ← S178 one-shot revision token: the plan the reviewer reviewed. Written by review_fail on a loop-back, consumed by plan-save when the revision lands.
   waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
                           an ISOLATED wave also carries "reason" (additive; absent otherwise)
   tickets/

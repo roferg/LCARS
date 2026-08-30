@@ -2169,14 +2169,25 @@ make.'
 # and the delivered screen gates one control on BOTH — twenty lines apart in one
 # file. The captain asked for one control and got two.
 #
-# TWO INDEPENDENT HOLES, so two independent checks, both of them DETERMINISTIC
-# and both of them living HERE rather than in a prompt:
+# TWO INDEPENDENT HOLES. ONE CHECK SHIPS:
 #
 #   B1  research_claim_check   — the harness runs the search the worker claimed to
 #                                have run. A worker's report of having searched is
-#                                never the evidence.
-#   B2  plan_prohibition_check — a name the validated plan PROHIBITS must be named
-#                                by a ticket, or the prohibition is unenforced.
+#                                never the evidence. DETERMINISTIC, and living HERE
+#                                rather than in a prompt.
+#
+# THE SECOND HOLE — a `## Decisions` prohibition that reaches no ticket — was
+# ALSO built this round, as `plan_prohibition_check` (B2), and the captain PULLED
+# it. It took three rounds and each fix traded one failure for another: built too
+# strict it missed the real live phrasing entirely; widened, it read a plain
+# mission's test-coverage bullet ("check that `getRecent()` returns a defensive
+# copy … does not affect subsequent calls") as a prohibition of `getRecent` and
+# bounced an honest plan. That is the S147/S156/S157 shape exactly — a prose
+# classifier past three rounds is cured by DELETION, not by the next patch — so
+# it is gone, with its evidence kept (the live drives under
+# tests/drives/align-heal/runs/, and the code + corpus in git at 8c5d5a2). It
+# comes back in its own session, against a MIXED corpus that holds the false
+# positive as a fixture. Nothing below reads the validated plan.
 #
 # ⛔ THIS MUST NEVER BECOME A CLASSIFIER. S147, S156 and S157 each spent a session
 # on a text classifier and each was cured by DELETING it. So the rule below reads
@@ -2200,27 +2211,9 @@ make.'
 # research findings in all 58 Missions of the captain's own repo, B1's rule
 # yields EXACTLY ONE candidate — the fabrication above. The other 16 sentences a
 # crude negative-existence regex flags are all rejected by it, unread.
-#
-# B2'S NOISE BUDGET IS NOT B1'S, AND SHARING ONE RULE COST A SECOND MISS. B2 was
-# first tuned to the ONE sentence the first broken run wrote ("no `X`, no new
-# boolean flag") and inherited B1's reduction with it. On a LIVE re-run of the
-# same Mission (2026-08-30) the Validator wrote the SAME decision in its own
-# words — "do not grow a hardcoded id list and do not conflate with `X`" — the
-# name went validated-plan.md 3 → plan.json 0, and B2 SAID NOTHING, because
-# "conflate with" is a content word and the reduction refused the candidate
-# unread. So the two modes are decoupled: B1 sweeps FREE PROSE and must stay
-# strict; B2 reads only a DECLARED `## Decisions` section, where a negation cue
-# plus a code-shaped name in one clause IS the shape, and nothing more is asked.
-# Re-measured over the same 58 Missions' `## Decisions` sections: 4 → 26
-# candidates, of which the check actually BOUNCES 1 → 3 plans (two genuine
-# prohibitions, one "No component/JSX/className changes are required" that costs
-# a single Plan retry the planner clears by naming it). Reading BACKWARDS from
-# the cue as well was measured too — 5 more candidates, all noise, one more plan
-# wrongly bounced, no new true positive — so the clause cut stays.
 
 # claim_identifier_scan <mode> <path…> -> one `path<TAB>identifier<TAB>sentence`
-# per candidate, or NOTHING. Both checks share this one reader for what "a named
-# identifier" and "a negated phrase" MEAN — never for how strict to be.
+# per candidate, or NOTHING.
 #
 #   mode=absent-claim  each path is a research finding JSON; the assertions read
 #                      are `recommendation` + `supporting_points` (the finding's
@@ -2228,10 +2221,11 @@ make.'
 #                      REPO-WIDE scope is REQUIRED, and the negated phrase must
 #                      REDUCE to the identifier alone — free prose gets no
 #                      benefit of the doubt.
-#   mode=prohibition   each path is a markdown artifact; only its `## Decisions`
-#                      section is read. Neither is required: a decision does not
-#                      say "in the repo", and a declared decision has already
-#                      earned the right to be read as one.
+#
+# ONE MODE TODAY. The mode argument is kept because the reader is the anchor for
+# what "a named identifier" and "a negated phrase" MEAN, and B2 will want it back
+# — but nothing else is implemented, and a widening here widens B1, which sweeps
+# FREE PROSE and must stay strict.
 claim_identifier_scan() { # mode path…
   local mode="$1"; shift
   [ "$#" -gt 0 ] || return 0
@@ -2305,7 +2299,7 @@ def phrases(text):
             yield (rest[:tm.start()] if tm else rest), " ".join(sent.split())
 
 
-def named(phrase, need_scope, reduce_to_identifier):
+def named(phrase, need_scope):
     ids = []
     for m in TOKEN.finditer(phrase):
         t = code_shaped(m.group(1) or m.group(2))
@@ -2316,8 +2310,6 @@ def named(phrase, need_scope, reduce_to_identifier):
     words = [w.lower() for w in WORD.findall(phrase)]
     if need_scope and not (set(words) & SCOPE):
         return []
-    if not reduce_to_identifier:
-        return ids             # a DECLARED decision — the words are its own.
     low = {i.lower() for i in ids}
     for w in words:
         if w not in low and w not in EXIST and w not in STOP and w not in SCOPE:
@@ -2325,77 +2317,32 @@ def named(phrase, need_scope, reduce_to_identifier):
     return ids
 
 
-HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
-BULLET = re.compile(r"^([-*+•–—]|\d{1,2}[.)])\s+")
-
-
-def decisions(text):
-    """The `## Decisions` section's entries, wrapped lines joined. Same heading
-    rule as mission_resolved_decisions / mission_data_preconditions — three
-    readers of a declared section that disagree about where it starts is its own
-    defect class."""
-    body, lvl = [], None
-    for ln in text.lstrip("﻿").replace("\r\n", "\n").split("\n"):
-        m = HEADING.match(ln)
-        if m:
-            name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
-            if lvl is None:
-                if name.startswith("decisions"):
-                    lvl = len(m.group(1))
-                continue
-            if len(m.group(1)) <= lvl:
-                break
-            body.append(ln)
-            continue
-        if lvl is not None:
-            body.append(ln)
-    out, cur = [], None
-    for ln in body:
-        t = ln.strip()
-        if not t:
-            continue
-        m = BULLET.match(t)
-        if m:
-            if cur:
-                out.append(" ".join(cur.split()))
-            cur = t[m.end():]
-        elif cur is not None:
-            cur = cur + " " + t
-        else:
-            out.append(" ".join(t.split()))
-    if cur:
-        out.append(" ".join(cur.split()))
-    return out
-
-
 mode = sys.argv[1]
 need_scope = (mode == "absent-claim")
-reduce_to_identifier = (mode == "absent-claim")
+if mode != "absent-claim":
+    sys.exit(0)                # one mode today — see the note above the function.
 for path in sys.argv[2:]:
     try:
         raw = open(path, encoding="utf-8", errors="replace").read()
     except OSError:
         continue
-    if mode == "absent-claim":
-        try:
-            d = json.loads(raw)
-        except Exception:
-            continue
-        if not isinstance(d, dict):
-            continue
-        blobs = []
-        rec = d.get("recommendation")
-        if isinstance(rec, str):
-            blobs.append(rec)
-        sp = d.get("supporting_points")
-        if isinstance(sp, list):
-            blobs += [x for x in sp if isinstance(x, str)]
-    else:
-        blobs = decisions(raw)
+    try:
+        d = json.loads(raw)
+    except Exception:
+        continue
+    if not isinstance(d, dict):
+        continue
+    blobs = []
+    rec = d.get("recommendation")
+    if isinstance(rec, str):
+        blobs.append(rec)
+    sp = d.get("supporting_points")
+    if isinstance(sp, list):
+        blobs += [x for x in sp if isinstance(x, str)]
     seen = set()
     for b in blobs:
         for phrase, sent in phrases(b):
-            for t in named(phrase, need_scope, reduce_to_identifier):
+            for t in named(phrase, need_scope):
                 if t in seen:
                     continue
                 seen.add(t)
@@ -2467,61 +2414,6 @@ research_claim_check() { # research-dir  [ref]
 $scan
 S180B_SCAN
   [ "$found" -eq 0 ] && return 0
-  return 1
-}
-
-# --- B2: plan_prohibition_check <validated-plan> <plan.json> ---------------
-# A DECISION LOG IS NOT A CHANGE LIST (S170's lesson, measured again). The
-# validated plan's `## Decisions` section is a DECLARED, structural anchor — the
-# same declaration cmd_validate_advance already refuses a plan for omitting — so
-# nothing here reads prose sentiment or guesses which sentences matter.
-#
-# The sharpest case, and the only one checked: a decision that PROHIBITS a named
-# identifier. A prohibition that reaches no ticket is GUARANTEED to be unenforced
-# — the implementer never sees it, no gate can test it, and the thing the plan
-# ruled out ships beside the thing it ruled in, which is exactly what happened.
-#
-# THE ESCAPE HATCH IS THE CHECK ITSELF: a planner satisfies it by NAMING the
-# identifier on the ticket that owns the behaviour. That single act is both "the
-# decision was carried" and "the drop was explicit" — there is no second
-# declaration field to forget, and no way to satisfy it silently.
-#
-# Exit status IS the verdict:
-#   0  nothing prohibited, or every prohibition is named by a ticket
-#   1  a prohibited name appears in NO ticket        (stdout: the reject note)
-#   3  UNCHECKED — the scan itself could not run
-plan_prohibition_check() { # validated-plan  plan-json
-  local vp="$1" pj="$2"
-  [ -f "$vp" ] && [ -f "$pj" ] || return 0
-  local scan rc=0
-  scan="$(claim_identifier_scan prohibition "$vp" 2>/dev/null)" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    printf '  ⚠ DECISION CARRY-THROUGH UNCHECKED — the scanner itself failed (exit %s). Whether the validated plan'"'"'s prohibitions reached the tickets is unknown.\n' "$rc"
-    return 3
-  fi
-  [ -n "$scan" ] || return 0
-
-  local dropped=0 path id sent
-  while IFS=$'\t' read -r path id sent; do
-    [ -n "$id" ] || continue
-    grep -Fq -- "$id" "$pj" && continue     # a ticket names it — carried.
-    dropped=$((dropped + 1))
-    printf '  ⚠ A DECISION IN THE VALIDATED PLAN REACHED NO TICKET.\n'
-    printf '    Its `## Decisions` section PROHIBITS the name `%s`:\n' "$id"
-    printf '      "%s"\n' "$sent"
-    printf '    NO ticket in this plan mentions `%s` anywhere — not in a title, a\n' "$id"
-    printf '    description, or an acceptance criterion. A prohibition no ticket carries\n'
-    printf '    is a prohibition nothing enforces: the worker that writes the code never\n'
-    printf '    sees it, no gate can test it, and the thing the plan ruled OUT ships\n'
-    printf '    beside the thing it ruled IN.\n'
-    printf '    CARRY IT: name `%s` on the ticket that owns the behaviour this decision\n' "$id"
-    printf '    is about, as an acceptance criterion saying it is not introduced or used.\n'
-    printf '    If the decision has genuinely been superseded, say THAT on that ticket in\n'
-    printf '    the same words. What is not acceptable is silence.\n'
-  done <<S180B_PROH
-$scan
-S180B_PROH
-  [ "$dropped" -eq 0 ] && return 0
   return 1
 }
 
@@ -2598,21 +2490,6 @@ the composite value cell came out scrambled.'
 # reviewer objections are on disk. A FIRST plan therefore gets a byte-identical
 # prompt to the one it got before this round — which is every Mission that never
 # fails review.
-# S180: TRUE when reviewer objections are on disk for this Mission. The revision
-# token now has TWO producers — review_fail (PLAN REVIEW asked for the revision)
-# and cmd_plan_save's own guard bounce (THE HARNESS asked for it, before any
-# reviewer ever saw the plan) — and only the first has objections to point at.
-# Every sentence below that says "the objections" is therefore gated on this, for
-# the reason in the note above: an instruction referencing an input that does not
-# exist is exactly the class S175 was built to stop.
-plan_revision_has_objections() {
-  local _rv
-  for _rv in "$MISSION_DIR"/plan-review-*.json; do
-    [ -f "$_rv" ] && return 0
-  done
-  return 1
-}
-
 plan_revision_contract_block() {
   # THE SAME TOKEN the guard reads, and that is the point: the prompt and the
   # check can no longer come apart. Keyed on the mere existence of
@@ -2622,51 +2499,6 @@ plan_revision_contract_block() {
   # was listed. That is an instruction referencing an input that does not exist,
   # which is exactly the class S175 was built to stop.
   [ -f "$MISSION_DIR/plan-under-review.json" ] || return 0
-  # S180 — THE HARNESS-BOUNCE VARIANT. A guard in cmd_plan_save can reject a plan
-  # on the FIRST pass, before Plan Review exists: there are no objections, so the
-  # block below cannot be used as written. MEASURED, live Copilot, 2026-08-30
-  # (tests/drives/align-heal/runs/replan-1): a first plan was bounced by B2 for
-  # one un-carried decision, the retry carried it CORRECTLY — and re-planned
-  # everything else from zero. Ten tickets came back as nine, 8 of 10 dependency
-  # entries changed, ids were reused for different work, and one standalone
-  # ticket vanished into a sibling. The retry prompt told it "change nothing else"
-  # while never showing it its own answer, so that was unobeyable in principle.
-  if ! plan_revision_has_objections; then
-    printf '%s' '
-
-## THIS IS A REVISION, NOT A RE-PLAN — a correction is a PATCH
-
-`plan-under-review.json` is listed above: it is the plan YOU produced on an
-earlier attempt of this same Stage, exactly as you wrote it, and it is your
-STARTING POINT. The harness rejected ONE thing about it — quoted above under
-YOUR PREVIOUS ATTEMPT WAS REJECTED. Fix that, and change NOTHING ELSE.
-
-- Start from that file, not from a blank page. Keep every ticket'"'"'s id, its
-  slice, its criteria and its `dependencies` EXACTLY as they are, except where
-  the rejection above actually requires a change.
-- Return the SAME tickets: same count, same ids, same order, each id still
-  naming the same piece of work. Do not renumber, do not merge two tickets into
-  one, do not drop one, do not re-derive the dependency graph.
-- The rejection names what is missing. The correct revision adds it to the
-  ticket that already owns that behaviour and touches nothing else.
-
-MEASURED, live, 2026-08-30. A plan was bounced for ONE missing thing and the
-retry re-planned from zero. The one thing the harness asked for was carried
-correctly — and ten tickets came back as nine, eight of ten dependency entries
-changed, ticket ids were reused for entirely different work, and a standalone
-ticket disappeared into a sibling. Everything the plan had already got right was
-thrown away to fix one line.
-
-### What a dependency IS
-
-`dependencies` names what a ticket GENUINELY needs BUILT FIRST — code, a file, a
-scaffold, a stylesheet, a table it reads — such that starting it before that
-exists is impossible. It is NOT authoring order, narrative order, or ticket-number
-order. "Comes after" is not a dependency. This is NOT an instruction to declare
-FEWER dependencies: declare every edge that is real, and leave the graph you
-already wrote exactly as you left it.'
-    return 0
-  fi
   printf '%s' '
 
 ## THIS IS A REVISION, NOT A RE-PLAN — a correction is a PATCH
@@ -4008,28 +3840,8 @@ for rf in sorted(glob.glob(os.path.join(mission_dir, "plan-review-*.json"))):
         objections.append((iss.get("ticketId"), str(iss.get("objection") or "")))
 
 if not objections:
-    # S180 — the token has TWO producers now. review_fail writes it with the
-    # round's verdict beside it; cmd_plan_save's own guard bounce writes it on a
-    # FIRST plan that no reviewer has ever seen, where there are no objections
-    # because none were ever raised. This guard's entire verdict is "which added
-    # edges did an objection ask for", so on that path the question has no
-    # meaning — there is nothing to license anything against. Say THAT, rather
-    # than reporting a review failure that never happened. The patch contract
-    # still reaches the worker here; it reaches it through the prompt (the file
-    # is listed, and plan_revision_contract_block tells it what to do with it),
-    # not through this edge diff.
-    if glob.glob(os.path.join(mission_dir, "plan-review-*.json")):
-        # Rounds ARE on disk and we could read nothing out of them. That is the
-        # check failing, and it keeps the wording it has always had.
-        unchecked("a revision was requested, but the review rounds on disk name "
-                  "no objections we can read")
-    sys.stdout.write(
-        "  ⚠ REVISION UNCHECKED — the HARNESS asked for this revision, not Plan\n"
-        "    Review, so there are no objections and no way to tell an asked-for\n"
-        "    dependency edge from an unasked one. The plan is passed through and\n"
-        "    Plan Review sees it for the first time. What the retry was told to\n"
-        "    patch is in the prompt; nothing here has verified that it did.\n")
-    sys.exit(3)
+    unchecked("a revision was requested, but the review rounds on disk name no "
+              "objections we can read")
 
 prior = graph(load_list(under_review_path))
 new = graph(load_list(new_path))
@@ -4244,72 +4056,6 @@ $_s178out"
     esac
   fi
 
-  # S180/B2 — A DECISION LOG IS NOT A CHANGE LIST. See plan_prohibition_check.
-  # It reads the validated plan's DECLARED `## Decisions` section only, and only
-  # for a PROHIBITION naming a code-shaped identifier; a plan whose decisions
-  # prohibit no such name is untouched and byte-identical to before this round.
-  # Its rejection rides the SAME retry channel S178 built (.plan-reject-note →
-  # the next worker's prompt) and goes ADVISORY on the last attempt for the SAME
-  # reason: a guard that can refuse a VALID plan must never be able to deadlock
-  # the Stage. See the long note in the over-correction branch above.
-  local PROHIBITION_NOTE="" _b2out _b2rc=0
-  _b2out="$(plan_prohibition_check "$MISSION_DIR/validated-plan.md" "$PLAN")" || _b2rc=$?
-  case "$_b2rc" in
-    0) : ;;
-    3) PROHIBITION_NOTE="$_b2out" ;;
-    1)
-      if [ "${FINAL_ATTEMPT:-0}" = "1" ]; then
-        PROHIBITION_NOTE="  ⚠ DECISION NOT CARRIED — UNRESOLVED. The planner's last attempt was asked
-    to carry a decision the validated plan records, and did not. The plan is
-    VALID, so it is saved and handed to Plan Review UNRESOLVED rather than
-    deadlocking the Mission here. What the guard objected to:
-$_b2out"
-      else
-        # S180 — ARM THE PATCH CHANNEL, the same one Plan Review uses.
-        #
-        # MEASURED, live Copilot, 2026-08-30 (the drive under
-        # tests/drives/align-heal/runs/replan-1). B2 bounced a FIRST plan for one
-        # un-carried decision. The retry carried it correctly and RE-PLANNED
-        # EVERYTHING ELSE: 10 tickets became 9, 8 of 10 dependency entries
-        # changed, ids were reused for different work, and a standalone ticket
-        # vanished into a sibling. The retry prompt already said "fix exactly
-        # that and change nothing else" — and the worker's 28KB argv contained
-        # prd.md, validated-plan.md and adr.md but NOT the plan it had just
-        # written. It was told to change nothing else about an answer it was
-        # never shown, which is unobeyable in principle, not a model failing.
-        #
-        # So write the rejected plan where the retry can read it. That one file
-        # arms BOTH halves of S178's patch contract at once —
-        # plan_revision_contract_block (the prose, and cmd_plan LISTS the file)
-        # and replan_overcorrection_check (the edge diff) — because both are
-        # gated on this exact path and nothing else.
-        #
-        # WRITE-IF-ABSENT, and that is deliberate. When review_fail has already
-        # written a token, THAT file is the plan the objections are about and the
-        # thing the guard must diff against; clobbering it with a rejected
-        # attempt would silently redefine what "the plan under review" means. A
-        # second B2 bounce in the same retry loop likewise leaves the first
-        # attempt standing as the anchor, so the patch target cannot drift
-        # attempt by attempt. This attempt's own reason travels separately, in
-        # .plan-reject-note.
-        #
-        # LIFECYCLE: consumed on the save below (and by review_pass), and cleared
-        # by feedback.sh on a send-back — the one transition that could carry it
-        # into an unrelated re-plan. A pure B2 loop always ends in a save, because
-        # the last attempt is advisory.
-        [ -f "$_s178tok" ] || cp "$PLAN" "$_s178tok" 2>/dev/null || :
-        printf '%s\n' "$_b2out" > "$(dirname "$PLAN")/.plan-reject-note" 2>/dev/null || true
-        printf '%s\n' "$_b2out" >&2
-        exit 1
-      fi ;;
-    *)
-      PROHIBITION_NOTE="  ⚠ DECISION CARRY-THROUGH UNCHECKED — the guard itself failed to run (exit $_b2rc).
-    That is the CHECK breaking, not the plan: the plan is saved and passed to
-    Plan Review. Whether the validated plan's decisions reached the tickets has
-    not been verified."
-      ;;
-  esac
-
   cp "$PLAN" "$MISSION_DIR/plan.json"
   # S178: the revision has been delivered — consume the token. Anything later
   # (another Plan Review round, a `lcars feedback` send-back and re-plan) must
@@ -4339,10 +4085,6 @@ $_b2out"
   # S178: what the over-correction guard did — including, loudly, when it could
   # not check at all. EMPTY (and so byte-identical) on a first plan.
   [ -n "$OVERCORRECTION_NOTE" ] && printf '%s\n' "$OVERCORRECTION_NOTE"
-  # S180/B2: what the decision carry-through guard did — including, loudly, when
-  # it could not check. EMPTY (and so byte-identical) on every plan whose
-  # validated plan prohibits no named identifier.
-  [ -n "$PROHIBITION_NOTE" ] && printf '%s\n' "$PROHIBITION_NOTE"
   # S156: say it at the EARLIEST point a human or Plan Review can act on it. A
   # plan that declares `establishesSharedInfrastructure` on NO ticket leaves
   # Schedule reading ticket text instead, which only catches a ticket that names
@@ -13436,17 +13178,6 @@ cmd_plan() {
   # cap — see validate_plan_json's design note. Read it from config, default 1200.
   local budget; budget="$(json_raw "$LCARS_CFG" comprehensionBudget)"; budget="${budget:-1200}"
 
-  local tries=0 prior_no_file="" prior_reject=""
-  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
-    tries=$((tries + 1))
-  # S180 — ASSEMBLED PER ATTEMPT, NOT ONCE. Two of the inputs below are written
-  # DURING this loop: cmd_plan_save arms `plan-under-review.json` when a guard
-  # bounces a plan, so a prompt built before the first spawn can never list it.
-  # MEASURED on the fix's own first cut: the token was written correctly and the
-  # retry prompt still had zero hits for the revision contract — the same silence
-  # the live drive showed. Attempt 1 is unaffected (nothing has been written yet)
-  # and a Plan Review revision is unaffected (review_fail wrote the token before
-  # the Stage started), so both prompts stay byte-identical.
   local extra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/prd.md
 - $MISSION_DIR/validated-plan.md
@@ -13475,17 +13206,9 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # asking for a single edge came back as a 14-deep single-file chain. Gated on
   # the token, so a first plan — and a re-plan after a `lcars feedback` send-back
   # — get a byte-identical prompt to before this round.
-  # S180: the token now also gets armed by a HARNESS guard bounce on a first
-  # plan, where there are no objections and no reviewer — so the label must not
-  # claim any. Same file, same patch contract, honest about who asked.
   if [ -f "$MISSION_DIR/plan-under-review.json" ]; then
-    if plan_revision_has_objections; then
-      extra="$extra
+    extra="$extra
 - $MISSION_DIR/plan-under-review.json   (THE PLAN UNDER REVIEW — the exact tickets the objections are against; this revision is a PATCH of it)"
-    else
-      extra="$extra
-- $MISSION_DIR/plan-under-review.json   (YOUR OWN PREVIOUS PLAN, the one the harness bounced — the exact tickets you wrote; this attempt is a PATCH of it)"
-    fi
   fi
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts this Stage may read, by PATH only. Absent on a trivial
@@ -13525,6 +13248,10 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
 - $MISSION_DIR/answers.json   (EVERY answer the captain has given on this Mission, oldest first, each with the question(s) it answered — treat them as DECIDED, fold them into the tickets, and never re-emit a criterion that contradicts one; where two answer the same question the LATER one stands)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
+
+  local tries=0 prior_no_file="" prior_reject=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
     # Cold workers only CREATE FILES; the harness owns DIRECTORY scaffolding.
     # Pre-create the manifests/ subdir so the worker's `create manifests/<id>.md`
@@ -16031,8 +15758,8 @@ FSG_EOF
     exit 0 ;;
   # S180/B hooks, same shape and the same zero-token guarantee. The SCAN alone
   # (what shape-reading extracted, and — far more important — what it REFUSED to
-  # extract), and each of the two checks over explicit paths, with their exit
-  # status AS the verdict.
+  # extract), and the check itself over explicit paths, with its exit status AS
+  # the verdict.
   claim-scan-test)
     # The paths ride $LCARS_CLAIM_FILES (space-separated): this script's own
     # argument parser has already consumed "$@" by the time dispatch runs.
@@ -16043,9 +15770,6 @@ FSG_EOF
     STATE="$MISSION_DIR/state.json"
     REPO_ROOT="${LCARS_CLAIM_REPO:-$PWD}"
     research_claim_check "$MISSION_DIR/research" "${LCARS_CLAIM_REF:-}"
-    exit $? ;;
-  prohibition-check-test)
-    plan_prohibition_check "${LCARS_VP:-/nonexistent}" "${LCARS_PJ:-/nonexistent}"
     exit $? ;;
   # S180 hook: the precondition absorber over an on-disk answers.json, so the
   # append-only shape can be proven to reach EVERY declared precondition and not
