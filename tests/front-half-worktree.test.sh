@@ -360,8 +360,13 @@ check "research: the Stage says which tree it read, out loud" \
   'printf "%s" "$OUT" | grep -q "mission tree"'
 check "research: the printed line names the mission branch" \
   'printf "%s" "$OUT" | grep -q "$MBRANCH"'
-check "research: out-of-worktree inputs are granted (.git/lcars)" \
-  '[ "$(rec "$r1" input_dirs)" = "$r1/.git/lcars" ]'
+# S168 — the grant is THIS Mission's read-set, not the whole `.git/lcars` store.
+# It used to be the store root, which reached every other mission's state (and on
+# copilot `--add-dir` grants WRITE, not read).
+check "research: out-of-worktree inputs are granted (this Mission's dir)" \
+  '[ "$(rec "$r1" input_dirs)" = "$r1/.git/lcars/missions/$MID" ]'
+check "research: the grant does NOT reach the whole .git/lcars store" \
+  '[ "$(rec "$r1" input_dirs)" != "$r1/.git/lcars" ]'
 check "research: no real CLI was ever spawned" 'no_spend'
 
 # ============================================================================

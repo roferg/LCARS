@@ -34,11 +34,14 @@
 #       repo-read      → Read,Grep,Glob,Write
 #       repo-read-web  → Read,Grep,Glob,Write,WebSearch,WebFetch
 #       repo-write     → Read,Grep,Glob,Write,Edit,Bash
-#       launch         → Read,Grep,Glob,Bash  (inspect + shell to DISCOVER how to
-#                        run an app; NO Write/Edit — must not touch the checkout)
+#       launch         → Read,Grep,Glob,Write  (inspect to DISCOVER how to run an
+#                        app, then AUTHOR its one discovery artifact; NO shell —
+#                        S168 swapped the shell for a pen, see adapter_deny)
 #       default        → Read              (explicit sentinel for the old `*` case)
 # An unknown <cli> or unknown <role> exits NON-ZERO with a message on stderr —
-# never a silent empty argv / silent inline run.
+# never a silent empty argv / silent inline run. The SAME is true of the DENY
+# table (`adapter_deny`): a role that has tools but no deny entry is a HARD
+# ERROR, never a silent empty `--disallowedTools`.
 #
 # The cli binary to actually exec is taken from $LCARS_WORKER_BIN (so it matches
 # run.sh's resolution and so tests can point it at a recording stub). It defaults
@@ -57,7 +60,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read)     printf 'Read,Grep,Glob,Write' ;;
         repo-read-web) printf 'Read,Grep,Glob,Write,WebSearch,WebFetch' ;;
         repo-write)    printf 'Read,Grep,Glob,Write,Edit,Bash' ;;
-        launch)        printf 'Read,Grep,Glob,Bash' ;;
+        launch)        printf 'Read,Grep,Glob,Write' ;;
         default)       printf 'Read' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -75,8 +78,72 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read)     printf 'view,grep,glob,create' ;;
         repo-read-web) printf 'view,grep,glob,create,web_fetch,web_search' ;;
         repo-write)    printf 'view,grep,glob,create,edit,bash' ;;
-        launch)        printf 'view,grep,glob,bash' ;;
+        launch)        printf 'view,grep,glob,create' ;;
         default)       printf 'view' ;;
+        *) die "unknown worker role '$role' for cli '$cli'" ;;
+      esac
+      ;;
+    *) die "unknown worker cli '$cli' — no adapter for this CLI" ;;
+  esac
+}
+
+# Map a TOOLSET role → that cli's DENY list (S168). CLAUDE ONLY: `--allowedTools`
+# is a PRE-APPROVAL list, not a restriction, and `--dangerously-skip-permissions`
+# waives whatever is left to ask about — MEASURED at S124: `--allowedTools
+# Read,Grep,Glob --dangerously-skip-permissions` still CREATED A FILE. The flag
+# that actually REFUSES is `--disallowedTools`, and its refusal survives the
+# worker delegating to a subagent. So every claude posture carries BOTH lists:
+# the allow list says what it may reach for, the deny list is the part that stops
+# it. copilot has no such flag and needs none — its `--available-tools` IS a
+# restriction (the engine's own preamble lists everything else as *Disabled*).
+#
+# Each entry is the COMPLEMENT of what the role above is documented to hold:
+#   repo-read      keeps Write — the answer artifact IS its whole output — and
+#                  loses editing, the shell, notebooks and the network.
+#   repo-read-web  the same, minus the network denial (it is a research role).
+#   repo-write     ⚠ HONESTY NOTE — READ THIS BEFORE TRUSTING THIS ROW. repo-write
+#                  holds `Bash`. A role with a shell has EVERY capability: it can
+#                  write, edit, fetch and run anything, so NO tool list can fence
+#                  it and this row is NOT a fence. `NotebookEdit` is denied only
+#                  because nothing in LCARS is a notebook; the entry exists so the
+#                  table has no silent hole, not because it contains anything.
+#                  repo-write's containment is ELSEWHERE and it is real: the
+#                  isolated per-ticket worktree, the declared-edits contract, the
+#                  post-commit scope check and the flip-flop gate. Do not read
+#                  this row as a promise those four do not make.
+#   launch         S168 SWAPPED ITS SHELL FOR A PEN. It used to hold Bash and no
+#                  Write, so it authored launch-discovery.json through a SHELL
+#                  inside a checkout of the captain's code while its own prompt
+#                  said "do NOT modify any file in the checkout — inspection
+#                  only". It now holds Write (it can author its one artifact) and
+#                  has no general-purpose execution channel at all. The checkout
+#                  is additionally CHECKED clean after the turn (launch.sh), so
+#                  "inspection only" is verified instead of trusted.
+#   default        the read-only sentinel: everything but Read/Grep/Glob is gone.
+#
+# An unknown cli or role exits NON-ZERO, exactly like adapter_tools — and a
+# claude role with tools but NO deny entry is a HARD ERROR at the call site in
+# adapter_argv, never a silent empty `--disallowedTools`.
+adapter_deny() { # cli role → deny list (stdout); non-zero on unknown cli/role
+  local cli="$1" role="$2"
+  case "$cli" in
+    claude)
+      case "$role" in
+        repo-read)     printf 'Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
+        repo-read-web) printf 'Edit,Bash,NotebookEdit' ;;
+        repo-write)    printf 'NotebookEdit' ;;
+        launch)        printf 'Edit,Bash,NotebookEdit' ;;
+        default)       printf 'Write,Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
+        *) die "unknown worker role '$role' for cli '$cli'" ;;
+      esac
+      ;;
+    copilot)
+      # copilot has NO --disallowedTools: `--available-tools` already refuses
+      # everything it does not name, so the deny list is legitimately EMPTY here
+      # and no flag is emitted. The role is still VALIDATED so an unknown role
+      # exits non-zero from BOTH tables, never just one.
+      case "$role" in
+        repo-read|repo-read-web|repo-write|launch|default) : ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
       ;;
@@ -121,15 +188,31 @@ adapter_argv() { # cli role outdir
   case "$cli" in
     claude)
       # claude has no per-path sandbox — input dirs are irrelevant; argv unchanged.
-      # --dangerously-skip-permissions: a cold `-p` worker is already fenced by
-      # --allowedTools and runs headless with NO human to approve interactive
-      # permission prompts, so it must skip that gate (the claude equivalent of
-      # the copilot branch's `--allow-all-tools --no-ask-user`). Without it, the
-      # Implementer's writes into the mission's per-ticket worktree under `.git/`
-      # are DECLINED (claude treats `.git/`-segment paths as protected) and the
-      # ticket flags with everything read but nothing written.
-      printf '%s\n' '-p' '--allowedTools' "$tools" '--output-format' 'text' \
-        '--dangerously-skip-permissions'
+      #
+      # WHAT THESE THREE FLAGS ACTUALLY DELIVER (measured, S124 — the sentence
+      # that used to stand here claimed a guarantee they do not deliver):
+      #   --allowedTools               PRE-APPROVES. It does not restrict. A role
+      #                                whose list omits Write can still write.
+      #   --dangerously-skip-permissions
+      #                                waives whatever is left to ask about. It
+      #                                is LOAD-BEARING and stays: a headless `-p`
+      #                                worker has no human to approve prompts, and
+      #                                without it the Implementer's writes into
+      #                                its per-ticket worktree under `.git/` are
+      #                                DECLINED and the ticket flags with
+      #                                everything read and nothing written.
+      #   --disallowedTools            the ONLY one of the three that REFUSES —
+      #                                and its refusal survives the worker
+      #                                delegating to a subagent. This is the fence.
+      # So the cure for the skip flag is to ADD the deny list beside it, never to
+      # remove the skip.
+      local deny
+      deny="$(adapter_deny "$cli" "$role")" || exit 1
+      # A role with tools but NO deny entry is a HARD ERROR — a silent empty
+      # `--disallowedTools` would ship a role unfenced while LOOKING fenced.
+      [ -n "$deny" ] || die "no deny list for cli '$cli' role '$role' — refusing to spawn an unfenced worker"
+      printf '%s\n' '-p' '--allowedTools' "$tools" '--disallowedTools' "$deny" \
+        '--output-format' 'text' '--dangerously-skip-permissions'
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
       # USAGE CAPTURE (session 112): pin the minted correlation session-id ONLY
       # when the caller enabled capture (LCARS_WORKER_SESSION_ID non-empty). Off ⇒
@@ -147,6 +230,10 @@ adapter_argv() { # cli role outdir
       #   --no-custom-instructions ignore user-global instruction files
       #   --add-dir <outdir>       the answer channel — worker writes its artifact here
       #   --model <m>              ONLY when LCARS_WORKER_MODEL is non-empty
+      # NO --disallowedTools: copilot has no such flag and needs none. The role is
+      # still run through adapter_deny so an unknown role exits non-zero from BOTH
+      # tables; it emits nothing, so this argv stays BYTE-FOR-BYTE pre-S168.
+      adapter_deny "$cli" "$role" >/dev/null || exit 1
       printf '%s\n' \
         '-p' \
         '-s' \
@@ -183,6 +270,26 @@ adapter_spawn() { # cli role outdir prompt
   [ "${#flags[@]}" -gt 0 ] || die "no argv produced for cli '$cli' role '$role'"
   # The first flag MUST be the `-p` placeholder; inject the prompt right after it.
   [ "${flags[0]}" = "-p" ] || die "adapter argv for '$cli' did not start with -p"
+  # S168 — REFUSE an unfenced claude spawn, at the ONE place every cold worker
+  # passes through. Promoted from the holodeck's `_assert_no_bash` (web/
+  # lcars_serve/actions.py), including its keying: off the ENGINE (copilot is
+  # exempt because `--available-tools` IS a restriction there and the CLI has no
+  # `--disallowedTools` to carry), NEVER off the presence of `--allowedTools`.
+  # Keyed off that flag instead, a later session dropping `--allowedTools` from
+  # the claude argv for an unrelated reason would retire the requirement
+  # SILENTLY — the guard would stop guarding with nobody editing it.
+  # What this cannot prove: that the CLI honours the flag. That was measured by
+  # hand (S124); no argv check can see it.
+  case "$cli" in
+    copilot) : ;;
+    *)
+      local f seen_deny=0
+      for f in "${flags[@]}"; do
+        [ "$f" = "--disallowedTools" ] && seen_deny=1
+      done
+      [ "$seen_deny" -eq 1 ] || die "refusing to spawn a '$cli' worker whose argv carries no --disallowedTools — on claude \`--allowedTools\` only PRE-APPROVES and \`--dangerously-skip-permissions\` waives the rest, so the deny list is the only thing that actually takes a tool away"
+      ;;
+  esac
   local rest=("${flags[@]:1}")
   mkdir -p "$outdir"
   LCARS_WORK_OUT="$outdir" LCARS_WORKER_ROLE="${LCARS_WORKER_ROLE:-$role}" \
@@ -195,6 +302,10 @@ case "$cmd" in
   argv)
     [ "$#" -ge 3 ] || die "usage: worker-adapter.sh argv <cli> <role> <outdir>"
     adapter_argv "$1" "$2" "$3"
+    ;;
+  deny)
+    [ "$#" -ge 2 ] || die "usage: worker-adapter.sh deny <cli> <role>"
+    adapter_deny "$1" "$2"
     ;;
   spawn)
     [ "$#" -ge 4 ] || die "usage: worker-adapter.sh spawn <cli> <role> <outdir> <prompt>"

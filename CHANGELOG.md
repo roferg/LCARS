@@ -4,6 +4,47 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.7 — the role fences are real
+
+**The worker fence (session 168).** Every cold worker LCARS spawns is described
+in code and prompts as locked to a role. On claude none of it was true:
+`--allowedTools` only PRE-APPROVES, and `--dangerously-skip-permissions` waives
+what is left to ask about, so the `launch` inspector documented as having "NO
+Write/Edit" held both, and a Research worker held Edit and Bash.
+
+- **Deny lists (claude).** Every role now carries `--disallowedTools`, the flag
+  that actually refuses. MEASURED live with a negative control: at the `default`
+  role the worker reported the Write tool disabled and no shell to substitute,
+  and wrote nothing, while the same argv with the deny list stripped wrote the
+  file. Bash denial proven at `launch` and `repo-read` on both engines.
+  The copilot argv is byte-for-byte unchanged (`--available-tools` is already a
+  real restriction there) apart from the one intended `launch` change below.
+- **`launch` swapped its shell for a pen.** It held `Bash` and no `Write`, so it
+  wrote its one artifact via a shell inside a checkout of your code while its own
+  prompt said "inspection only". It now holds `Write` and no shell, on both
+  engines. Discovery still works — proven live.
+- **A narrowed grant.** Cold workers were handed `--add-dir` on the whole
+  `.git/lcars` store — every mission's state, including the state that judges
+  them. They now get their own mission dir and the context pack. A worker on
+  mission A cannot reach mission B.
+- **A post-turn audit**, because on claude no flag can fence a role that must
+  hold a pen: `Write` is not directory-scoped, so a `repo-read` worker with a
+  legitimate pen can write anywhere — measured, it did. The judge-critical
+  mission state is hashed before and after every non-`repo-write` turn, and the
+  front-half worktree's `git status --porcelain` is diffed against a baseline
+  taken just before the turn. A change is a `worker_fence_breach`: named files,
+  stage stopped, never silently repaired.
+- **False fence comments deleted**, in `worker-adapter.sh` and `run.sh`. A
+  comment asserting a guarantee the flags do not deliver is how this survived a
+  year.
+
+**Named, not fixed** (`tests/drives/s168-runs/LEDGERED.md`): copilot's path
+sandbox does not cover `$TMPDIR`, where worker scratch dirs live (5 of 6 wrote
+there without a grant; 0 of 5 elsewhere); the Research fan-out agents run
+mission-less and are unaudited; and `repo-write` keeps a shell and is not
+fenceable by any tool list — its containment is the isolated worktree,
+declared-edits and the post-commit scope check.
+
 ## 2026.8.6 — 2026-08-30
 
 **Count the hires, not the swings.** Session 173. Every Implement surface used

@@ -724,6 +724,30 @@ EOF
 # engine + the DISCOVERY target so both the adapter and the worker resolve them.
 # (The env var keeps its historical name — test stubs write to it — but it now
 # points at the worker's PRIVATE discovery file, never the shared launch.json.)
+#
+# S168 — THE INSPECTOR SWAPPED ITS SHELL FOR A PEN. The `launch` role used to
+# hold Bash and no Write, so it authored launch-discovery.json through a SHELL
+# standing in a checkout of the captain's code, while the prompt above told it
+# "do NOT modify any file in the checkout — inspection only". It now holds Write
+# and no shell (see adapter_deny in worker-adapter.sh). Two consequences here:
+#
+#   1. $WT must be GRANTED. The checkout lives outside this process's cwd, and
+#      without a shell to reach it a path-sandboxed engine (copilot) could read
+#      nothing it is meant to inspect. The grant is the same CLI-agnostic seam
+#      the Stages use; claude ignores it.
+#   2. the checkout is CHECKED clean after the turn, below — "inspection only"
+#      stops being a sentence the worker is trusted to obey.
+#
+# The clean-checkout BASELINE for (2) is taken HERE, immediately before the turn
+# — never assumed to be empty. `provision_worktree` has already run the repo's
+# `worktreeSetupCommand` in this tree (it can touch a lockfile), and a re-launch
+# REUSES an existing worktree that an earlier app run may have left dirty. The
+# audit compares before-vs-after, so it names exactly what THIS turn changed and
+# nothing else — which is what keeps it silent on every honest inspection.
+LAUNCH_WT_BEFORE=""
+[ -d "$WT" ] && LAUNCH_WT_BEFORE="$("$GIT_BIN" -C "$WT" status --porcelain 2>/dev/null)"
+
+LCARS_WORKER_INPUT_DIRS="$WT" \
 LCARS_LAUNCH_JSON="$LAUNCH_DISCOVERY" LCARS_WORKER_BIN="$WORKER_BIN" \
   bash "$WORKER_ADAPTER" spawn "$CLI" launch "$OUTDIR" "$PROMPT" || true
 
@@ -750,6 +774,25 @@ write_failed() { # message  → persist a status=failed record (no pid)
     printf '}\n'
   } | commit_launch_json
 }
+
+# --- the launch fence audit (S168) -----------------------------------------
+# The inspector was told the checkout is read-only. Verify it. A dirty tree is a
+# BREACH, not something to tidy: the discovery answer came from a worker that
+# edited the code it was reasoning about, so it is not trustworthy and the
+# launch stops LOUDLY with the files named. Nothing is reverted or repaired.
+# It is a DIFF against the baseline taken just before the spawn, not an
+# is-it-empty check, so provisioning's own footprint and a reused worktree's
+# leftovers can never be blamed on the inspector — and an honest turn changes
+# nothing, so this is silent (the worker's answer file lives outside the tree).
+if [ -d "$WT" ]; then
+  LAUNCH_WT_AFTER="$("$GIT_BIN" -C "$WT" status --porcelain 2>/dev/null)"
+  LAUNCH_DIRT="$(printf '%s\n' "$LAUNCH_WT_AFTER" | grep -vxF -f <(printf '%s\n' "$LAUNCH_WT_BEFORE") 2>/dev/null | grep -v '^$')"
+  if [ -n "$LAUNCH_DIRT" ]; then
+    LAUNCH_DIRT_FILES="$(printf '%s\n' "$LAUNCH_DIRT" | awk '{$1=$1; print}' | cut -d' ' -f2- | tr '\n' ' ')"
+    write_failed "the launch inspector MODIFIED the checkout it was told to only inspect ($LAUNCH_DIRT_FILES) — refusing to run an app discovered by a worker that edited the code it was reading. Nothing has been reverted; inspect $WT."
+    die "launch fence breach — the inspector wrote into $WT: $LAUNCH_DIRT_FILES"
+  fi
+fi
 
 TARGET=""; CMD=""; CWD=""; URL=""; HOWSTOP=""; DSTATUS=""; WMSG=""
 # SILENT-WORKER detection — back to the simple original semantic: the worker
