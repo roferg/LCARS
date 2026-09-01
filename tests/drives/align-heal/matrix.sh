@@ -110,7 +110,13 @@ git init -q --bare "$ORIGIN" || { echo "could not init $ORIGIN"; exit 1; }
 
 MID=""
 if [ "$LANE" = plain ]; then
-  IDEA="$SD/plain-idea.md"
+  # $LCARS_DRIVE_IDEA overrides the plain lane's idea file. The default
+  # `plain-idea.md` is a docs-site idea and does NOT fit every target repo — pair
+  # it with the wrong target and Align correctly refuses to proceed, which reads
+  # like a harness failure and is not one (MEASURED 2026-09-01: claude held the
+  # gate asking which repo the Mission was for; copilot did not notice and
+  # carried on, which is the worse of the two).
+  IDEA="${LCARS_DRIVE_IDEA:-$SD/plain-idea.md}"
 else
   # THE CAPTAIN'S ACTUAL LANE: a PARKED mission whose attachments live on disk,
   # aligned in place. file.sh --complete re-lists them, so the gate sees the
@@ -192,7 +198,7 @@ echo "=== CELL ==="
 echo "  label      : $LABEL"
 echo "  mode       : $MODE   (lane=$LANE, pipeline=$PIPELINE)"
 echo "  ENGINE     : $ENGINE   (grill + cold pipeline workers)"
-echo "  stand-in   : ${LCARS_STANDIN_BIN:-copilot} / ${LCARS_STANDIN_MODEL:-claude-sonnet-4.5}  (never the cell's engine — free, and not under test)"
+echo "  stand-in   : ${LCARS_STANDIN_BIN:-copilot} / ${LCARS_STANDIN_MODEL:-claude-sonnet-4.6}  (never the cell's engine — free, and not under test)"
 echo "  claude shim: $SHIM_KIND"
 echo "  claude spawns must be: $CLAUDE_EXPECT"
 echo "  target     : $TARGET"
@@ -205,19 +211,49 @@ echo "  record     : $SRC"
 # makes every turn a NO-MATCH BY CONSTRUCTION — the run fails at Align and the
 # pipeline never spends. Say so loudly rather than letting a 30-minute drive
 # discover it.
-if [ "$LANE" = plain ] && ! grep -qi 'recently viewed' "$SRC/idea.md" 2>/dev/null; then
+# Compare the IDEA ACTUALLY BEING DRIVEN against the record's own idea, byte for
+# byte. The first version of this check hardcoded the phrase "recently viewed",
+# so it went on firing after $LCARS_DRIVE_IDEA pointed the lane at a different
+# idea entirely — a warning that cries wolf on every correct run is worse than no
+# warning, because it trains you to scroll past the one that matters.
+if [ "$LANE" = plain ] && ! cmp -s "$IDEA" "$SRC/idea.md" 2>/dev/null; then
   echo
   echo "  ⚠ THE PLAIN LANE AND THIS RECORD DO NOT MATCH."
-  echo "    $SD/plain-idea.md is a different subject from $SRC/idea.md, and the"
+  echo "    $IDEA is a different subject from $SRC/idea.md, and the"
   echo "    stand-in may only POINT at a decision already on the record — so every"
   echo "    turn will be NO-MATCH and the run will fail at Align."
   [ "$PIPELINE" = 1 ] && echo "    Point LCARS_DRIVE_RECORD_DIR at a mission whose idea.md IS this idea."
   echo
 fi
 
+# MATCHER PREFLIGHT — one call, before the daemon, before any spend.
+# A matcher that cannot answer is indistinguishable in the turn log from a
+# stand-in that finds nothing on the record: both read "no parseable JSON" and
+# the drive reports "FAILED at Align" as though the RECORD were wrong. That
+# happened for real on 2026-09-01, when copilot rotated `claude-sonnet-4.5` out
+# from under us mid-session and 30 turns died silently. One call up front turns
+# a wasted drive and a wrong conclusion into a one-line abort.
+#
+# IT MUST SIT OUTSIDE THE DRY-RUN BRANCH. The first version of this block was
+# pasted INSIDE `if [ "$DRYRUN" = 1 ]` while itself testing for NOT-dry-run, so
+# it was unreachable in both modes — dead code that read like a safeguard. It was
+# caught only because the abort was actually exercised against a known-bad model
+# and did not fire.
+if [ "$DRYRUN" != 1 ]; then
+  if ! PF="$(python3 "$SD/standin.py" preflight 2>&1)"; then
+    echo
+    echo "  ! $PF"
+    echo "    The stand-in cannot answer anything, so this drive would fail at Align"
+    echo "    for a reason that has NOTHING to do with the harness under test."
+    echo "    Set LCARS_STANDIN_MODEL to a model \`copilot --model\` accepts."
+    exit 3
+  fi
+  echo "  $PF"
+fi
+
 if [ "$DRYRUN" = 1 ]; then
   echo
-  echo "=== DRY RUN — no daemon, no grill, no worker, no spend ==="
+echo "=== DRY RUN — no daemon, no grill, no worker, no spend ==="
   echo "  would start : python3 -m lcars_serve  (cwd $REPO/web)"
   echo "  would drive : python3 $SD/drive.py <port> $IDEA $OUT '${MID:-<filed-id>}' $SRC"
   [ "$PIPELINE" = 1 ] && \

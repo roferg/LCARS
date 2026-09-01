@@ -34,7 +34,14 @@ DEFAULT_RECORD_DIR = os.path.expanduser(
     "~/Projects/DX-Scorecard/.git/lcars/missions/lcars-20260829-002")
 
 COPILOT_BIN = os.environ.get("LCARS_STANDIN_BIN", "copilot")
-COPILOT_MODEL = os.environ.get("LCARS_STANDIN_MODEL", "claude-sonnet-4.5")
+# MEASURED 2026-09-01, mid-session: `claude-sonnet-4.5` worked at 23:00 and was
+# GONE by 01:00 — `Error: Model "claude-sonnet-4.5" from --model flag is not
+# available.` copilot rotates its model list, and a stale string here does not
+# fail loudly: every matcher call returns no parseable JSON, every turn logs
+# ERROR, the stand-in answers nothing, and a 30-turn drive reports "FAILED at
+# Align" as though the RECORD were at fault. That cost a whole drive and very
+# nearly a wrong conclusion about the harness. Hence `preflight_matcher()` below.
+COPILOT_MODEL = os.environ.get("LCARS_STANDIN_MODEL", "claude-sonnet-4.6")
 COPILOT_TIMEOUT = int(os.environ.get("LCARS_STANDIN_TIMEOUT", "300"))
 
 # ── the record ──────────────────────────────────────────────────────────────
@@ -166,14 +173,45 @@ Reply with ONE json object and nothing else. Exactly one of these shapes:
 """
 
 
+# STDERR IS NOT NOISE — it is where the only useful failure lives. This used to
+# pass stderr=DEVNULL, so `Error: Model "claude-sonnet-4.5" from --model flag is
+# not available.` was discarded and the caller saw nothing but empty stdout. The
+# turn then logged "matcher returned no parseable JSON", the stand-in answered
+# nothing, and 30 turns later the drive blamed the RECORD. Keep it captured.
+_LAST_STDERR = ""
+
+
 def _copilot(prompt):
+    global _LAST_STDERR
     p = subprocess.run(
         [COPILOT_BIN, "-p", prompt, "--available-tools=", "--no-ask-user",
          "--disable-builtin-mcps", "--no-custom-instructions",
          "--model", COPILOT_MODEL],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL, timeout=COPILOT_TIMEOUT)
+    _LAST_STDERR = p.stderr.decode("utf-8", "replace").strip()
     return p.stdout.decode("utf-8", "replace")
+
+
+def preflight_matcher():
+    """One trivial call. Returns (ok, detail).
+
+    A matcher that cannot answer is not a stand-in that finds nothing recorded —
+    it is a BROKEN RIG, and the two look identical in the turn log. Run this
+    BEFORE a drive so an unusable model costs one call instead of a whole run
+    and a wrong conclusion.
+    """
+    try:
+        out = _copilot('Reply with exactly {"ok":1} and nothing else.')
+    except Exception as e:                                  # noqa: BLE001
+        return False, "matcher call raised: %s" % e
+    if _extract_json(out) is None:
+        detail = "matcher returned no parseable JSON"
+        if _LAST_STDERR:
+            detail += " — %s says: %s" % (COPILOT_BIN, _LAST_STDERR.splitlines()[0])
+        detail += " (model=%s)" % COPILOT_MODEL
+        return False, detail
+    return True, "matcher OK (model=%s)" % COPILOT_MODEL
 
 
 def _extract_json(text):
@@ -390,7 +428,17 @@ def main(argv):
     if sub == "record":
         print(json.dumps(rec["entries"], indent=2))
         return 0
+    if sub == "preflight":
+        ok, detail = preflight_matcher()
+        print(("PREFLIGHT OK — " if ok else "PREFLIGHT FAILED — ") + detail)
+        return 0 if ok else 3
     if sub == "smoke":
+        ok, detail = preflight_matcher()
+        if not ok:
+            print("PREFLIGHT FAILED — " + detail, file=sys.stderr)
+            print("  Every smoke failure below would be this one cause; not running them.",
+                  file=sys.stderr)
+            return 3
         return _smoke(rec)
     if sub == "match":
         q = argv[argv.index("--question") + 1]
