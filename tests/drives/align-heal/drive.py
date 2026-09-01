@@ -90,12 +90,31 @@ while status == "question" and n < MAX_TURNS:
             break
         send = NOT_IN_RECORD
 
-    try:
-        r = unwrap(post("/api/align/%s/answer" % sid, {"answer": send}))
-    except urllib.error.HTTPError as e:
-        err = e.read().decode("utf-8", "replace")
-        print("  TURN %d HTTP %s" % (n, e.code))
-        print("  %s" % err[:400])
+    # RETRY THE RECOVERABLE ONE. LCARS itself distinguishes these: when the Align
+    # worker's reply cannot be parsed as a question it says so AND says "answer
+    # again to retry" — the grill is explicitly UNCHANGED, so re-sending the same
+    # answer costs one turn and usually lands. MEASURED 2026-09-01: a drive whose
+    # record answered 5 of 5 questions with ZERO human answers died on this, and
+    # reported "FAILED at Align" as though the record were at fault. A model's
+    # reply SHAPE is a lottery; treating one bad roll as terminal throws away a
+    # run that was working. Every other error still breaks immediately.
+    RETRYABLE = "could not be read as a question"
+    r = None
+    for attempt in range(3):
+        try:
+            r = unwrap(post("/api/align/%s/answer" % sid, {"answer": send}))
+            err = None
+            break
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", "replace")
+            if RETRYABLE in err and attempt < 2:
+                print("  TURN %d — unparseable worker reply, retrying (%d/2)"
+                      % (n, attempt + 1))
+                continue
+            print("  TURN %d HTTP %s" % (n, e.code))
+            print("  %s" % err[:400])
+            break
+    if r is None:
         break
     status = r.get("status")
 
