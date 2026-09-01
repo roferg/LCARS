@@ -344,7 +344,12 @@ class Log:
                                         or "(empty — proceed)"))
 
     def counts(self):
-        c = {"recorded": 0, "quoted": 0, "nomatch": 0, "closing": 0, "error": 0}
+        c = {"recorded": 0, "quoted": 0, "nomatch": 0, "closing": 0, "error": 0,
+             # DEFER mode only (drive.py): the record was silent and the stand-in
+             # declined to overrule the grill's own recommendation. NOT a human
+             # answer — nothing was invented — but NOT "from the record" either,
+             # so it is counted on its own and must be reported on its own.
+             "deferred": 0}
         for r in self.rows:
             c[r["class"]] = c.get(r["class"], 0) + 1
         c["turns"] = len(self.rows)
