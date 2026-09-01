@@ -1,8 +1,35 @@
 #!/bin/bash
-# fake gh — the drive must not touch real GitHub
+# fake gh — the drive must not touch real GitHub.
+#
+# Issues were always faked. The PR lifecycle is faked here too (S180 part D), so
+# the capstone can run Verify's auto-open → `lcars approve` → merge without a
+# network, a token, or a real repo. The PR's merge STATE is a file so `pr view`
+# can honestly answer OPEN before the merge and MERGED after it — a fake that
+# always said MERGED would let drive_verify mark the Mission Done on its own and
+# the stand-in's approve would never be exercised at all.
+#
+#   LCARS_FAKE_GH_STATE   where the faked PR state lives (default: a temp file)
+#   LCARS_FAKE_PR_URL     the URL `pr create` returns
+STATE="${LCARS_FAKE_GH_STATE:-${TMPDIR:-/tmp}/lcars-fake-gh-pr.state}"
+PR_URL="${LCARS_FAKE_PR_URL:-https://github.test/x/y/pull/4242}"
+
 case "$1" in
   issue) echo "https://github.test/x/y/issues/999";;
-  api) echo "{}";;
+  api)   echo "{}";;
+  pr)
+    case "${2:-}" in
+      create) echo "$PR_URL";;
+      merge)  printf 'MERGED\n' > "$STATE"; echo "ok";;
+      close)  printf 'CLOSED\n' > "$STATE"; echo "ok";;
+      view)
+        st="$(cat "$STATE" 2>/dev/null)"; st="${st:-OPEN}"
+        if [ "$st" = MERGED ]; then
+          echo '{"state":"MERGED","mergedAt":"2026-08-31T00:00:00Z"}'
+        else
+          echo "{\"state\":\"$st\",\"mergedAt\":null}"
+        fi;;
+      *) echo ok;;
+    esac;;
   *) echo ok;;
 esac
 exit 0

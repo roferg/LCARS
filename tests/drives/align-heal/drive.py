@@ -47,10 +47,16 @@ rec = standin.load_record(record_dir)
 log = standin.Log(out)
 print("record: %d recorded decisions from %s"
       % (len(rec["entries"]), record_dir))
+print("engine: %s (grill) · stand-in matcher: %s (always, never the cell engine)"
+      % (os.environ.get("LCARS_DRIVE_ENGINE", "copilot"), standin.COPILOT_BIN))
 if not rec["entries"]:
     print("!! NO RECORD — every turn will be NO-MATCH. Check the record dir.")
 
-body = {"idea": open(idea_path).read(), "engine": "copilot"}
+# THE CELL'S ENGINE runs the grill AND the pipeline — never split (the
+# captain's standing constraint). Default copilot, so an unset knob is
+# byte-identical to every invocation before the knob existed.
+ENGINE = os.environ.get("LCARS_DRIVE_ENGINE", "copilot")
+body = {"idea": open(idea_path).read(), "engine": ENGINE}
 if mid:
     body["missionId"] = mid
 
@@ -98,6 +104,7 @@ result = {
     "sid": sid, "turns": n, "status": status, "stopped": stopped,
     "healed": (r or {}).get("healed"), "error": err,
     "recordDir": record_dir, "recordedDecisions": len(rec["entries"]),
+    "engine": ENGINE,
     "counts": c,
     "humanAnswersRequired": c["humanAnswers"],
     "unrecordedQuestions": log.nomatch_questions(),

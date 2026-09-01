@@ -9,10 +9,15 @@
 bash tests/drives/align-heal/heal-test.sh heal-A 5 1   # drops 5, fixes itself -> FILES
 bash tests/drives/align-heal/heal-test.sh heal-B 5 0   # never fixes -> caps, keeps draft, RESUMABLE
 
-# live — one real copilot grill, driven to FILED
+# live — one real grill, driven to FILED
 bash tests/drives/align-heal/matrix.sh run-1 holo      # the captain's 14-question brief
 bash tests/drives/align-heal/matrix.sh run-1 plain     # a hand-typed idea, no attachments
 LCARS_DRIVE_REPO=/path/to/worktree bash …              # run a DIFFERENT checkout (baselines)
+
+# free — prove the rig itself before spending a token
+bash tests/drives/align-heal/matrix.sh x holo --dry-run   # engine/pins/shim, no daemon
+bash tests/drives/align-heal/capstone-smoke.sh            # the 5 plumbing scenarios
+python3 tests/drives/align-heal/standin.py smoke          # the matcher (copilot, free)
 ```
 
 ## What happened (2026-08-29), and why both rigs exist
@@ -63,14 +68,51 @@ must be absent after a SUCCESS and present after an exhausted cap.
 python3 tests/drives/align-heal/standin.py smoke
 bash    tests/drives/align-heal/capstone-smoke.sh     # the gate loop's shape, no workers
 
-# 2. the real thing: Align + Research → Validate → Plan → Plan Review → Schedule
-LCARS_DRIVE_TARGET_SRC="$HOME/Projects/DX-Scorecard" \
-  bash tests/drives/align-heal/matrix.sh cap-1 capstone
+# 2. the real thing — FOUR CELLS, each Align → … → Implement → the VERIFY gate.
+#    LCARS_DRIVE_ENGINE picks the engine; the mode picks the lane.
+export LCARS_DRIVE_TARGET_SRC="$HOME/Projects/DX-Scorecard"
+                                bash …/matrix.sh cap-cop-holo  capstone        # copilot · holo
+                                bash …/matrix.sh cap-cop-plain capstone-plain  # copilot · plain
+LCARS_DRIVE_ENGINE=claude       bash …/matrix.sh cap-cla-holo  capstone        # claude  · holo
+LCARS_DRIVE_ENGINE=claude       bash …/matrix.sh cap-cla-plain capstone-plain  # claude  · plain
 ```
 
-`capstone` is `holo` plus everything after FILED. It mints the captain's parked
-mission, runs a live copilot Align, and then hands the filed mission to the REAL
-driver (`run.sh drive --mission <id>`) until it stops.
+`capstone` is `holo` plus everything after FILED; `capstone-plain` is the same
+for the `plain` lane (its mission id is only knowable after filing, so the rig
+reads it off disk). **`capstone-plain` needs its own record**: `plain-idea.md`
+is a docs-site strip and the default record is the MBR-Builder mission, so
+pairing them makes every turn a NO-MATCH by construction and the run dies at
+Align before spending. Point `LCARS_DRIVE_RECORD_DIR` at a mission whose
+`idea.md` IS that idea. The rig says so before it starts (and in `--dry-run`). Both mint the mission, run a live Align, and then hand the
+filed mission to the REAL driver (`run.sh drive --mission <id>`) through
+Research → Validate → Plan → Plan Review → Schedule → Implement to Verify,
+where the stand-in approves and the (faked) PR merges.
+
+### The engine knob — and how to check WHICH engine actually ran
+
+`LCARS_DRIVE_ENGINE=copilot|claude` (default **copilot**, so an invocation
+written before the knob existed is byte-identical). One cell is one engine end
+to end: the Align grill AND the cold pipeline workers. They are never split.
+**The stand-in matcher is always copilot** — it is free, and it is not the thing
+under test.
+
+A persisted `state.json.workerBin` has been measured BEATING the env var (the
+daemon reads it and feeds it back in as `$LCARS_WORKER_BIN`, so "env last" does
+not save you — this is the money-bug family). So the parked mission's pin is
+written as the cell's engine too, and the readout prints **three independent
+readings that must agree**:
+
+1. the requested `LCARS_DRIVE_ENGINE`,
+2. the mission's persisted `state.json.workerBin` after the run,
+3. the claude-spawn count through the PATH shim.
+
+The shim is the one that cannot be fooled by a config file. On a **copilot**
+cell it is `tests/drives/undrawn/blockshim` — every claude spawn is REFUSED and
+counted, and the count must be **0**. On a **claude** cell it is
+`tests/drives/align-heal/countshim` — the same log format, but it `exec`s the
+real binary (resolved into `$LCARS_REAL_CLAUDE` before the shim goes on PATH),
+and the assertion **inverts**: the count must be **non-zero**. `run.sh usage`
+under the readout is the fourth reading, and the expensive one to get wrong.
 
 **The stand-in never writes an answer — it only ever points at one.** A live
 `copilot -p` call picks the INDEX of one decision the captain already recorded,
@@ -85,13 +127,37 @@ the capstone pass by fabricating, which is the exact failure this rig exists to
 detect. **NO-MATCH is a first-class, reachable outcome** — three negative
 controls in `standin.py smoke` prove it fires — and it is what FAILS a run.
 
-### The two stop conditions are not the same either side of Schedule
+### The stop conditions are not the same either side of Schedule
 
 | | up to and including Schedule | past Schedule |
 |---|---|---|
 | a gate the record settles | answered from the record, counted, reported | — |
 | a gate the record cannot settle | **run FAILS**, named in the readout | left parked, never answered |
-| intervention | only ever from the record | none |
+| intervention | only ever from the record | **only the Verify approve** |
+
+Past Schedule the stand-in may do exactly ONE thing: at the **Verify ship gate**
+(the driver's "in review — PR open" halt, which is not an awaiting-human gate) it
+runs the real `lcars approve`. That is not an answer — it invents nothing and
+reads nothing off the record; it is the captain's one mechanical ship signal. An
+awaiting-human gate past Schedule (a blocked Implement ticket, a reconcile
+escalation) is still left parked and reported, never answered.
+
+The forge is FAKED end to end: `fake-gh` answers `pr create` / `pr view` /
+`pr merge` (with the merge state on disk, so `pr view` honestly says OPEN before
+the merge and MERGED after — a fake that always said MERGED would let the driver
+mark the Mission Done on its own and the approve would never be exercised), and
+the target's `origin` is re-pointed at a **throwaway bare repo inside the run
+dir**. `git clone --local` points origin at the captain's REAL repo and Verify's
+PR-open does `git push -u origin <mission branch>`; without the re-point, a
+capstone writes a mission branch into his working repo.
+
+`LCARS_CAPSTONE_MAX_ROUNDS` stays at **12**. A round is one `run.sh drive`
+invocation, and that driver has its own internal stage loop — the 2026-08-30
+`runs/cap-1` drive went align → research → validate → plan → plan-review →
+schedule → implement → verify in ONE round. Implement's wave loop lives inside
+`cmd_implement`, so it consumes no extra rounds either, and the Verify approve
+plus its confirming re-drive are deliberately not counted. Rounds are spent only
+on pre-Schedule gates, so 12 is still far more than the lane can use.
 
 ### Reading the result
 
@@ -107,6 +173,9 @@ first turn must never be able to report `0`.
 ### Knobs
 
 ```
+LCARS_DRIVE_ENGINE=copilot|claude
+                                the cell's engine — grill AND pipeline workers
+                                (default copilot). NOT the stand-in matcher.
 LCARS_DRIVE_TARGET_SRC=<repo>   clone this as the mission target (local clone, no
                                 network). WITHOUT it the target is an empty
                                 throwaway repo — fine for Align, but Research and
@@ -118,7 +187,20 @@ LCARS_STANDIN_ON_NOMATCH=stop   bail on the first unrecorded question
                       the run is failed either way and the pipeline is not run)
 LCARS_STANDIN_MODEL=…           matcher model (default claude-sonnet-4.5)
 LCARS_CAPSTONE_MAX_ROUNDS=12    driver rounds before the rig gives up
+LCARS_REAL_CLAUDE=<path>        the binary the countshim execs (auto-detected)
+LCARS_FAKE_PR_URL=<url>         the PR url fake-gh's `pr create` returns
 ```
+
+### Proving the rig itself, for free
+
+`matrix.sh <label> <mode> --dry-run` (or `LCARS_DRIVE_DRYRUN=1`) assembles the
+WHOLE cell — target clone, throwaway origin, parked mission with its engine pin,
+the skill pins, the shim choice — asserts the pins exist, prints what it would
+run, and stops before the daemon. No worker, no grill, no spend.
+`capstone-smoke.sh` then drives `capstone.py` through five scripted scenarios:
+a pre-Schedule gate the record settles, one it cannot, the Verify approve (real
+`approve.sh`, real `git push` into a throwaway bare origin, faked forge), an
+Implement gate left alone past Schedule, and both engine cells via `--dry-run`.
 
 ### Daemon safety
 
