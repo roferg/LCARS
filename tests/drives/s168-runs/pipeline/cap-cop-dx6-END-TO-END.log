@@ -1,0 +1,88 @@
+########## 14:05:32  cap-cop-dx6 — DEFER mode, to Verify ##########
+cloning /Users/roganferguson/Projects/DX-Scorecard → /Users/roganferguson/Projects/LCARS/tests/drives/align-heal/runs/cap-cop-dx6/target (local, no network)…
+  seeded node_modules -> /Users/roganferguson/Projects/DX-Scorecard/node_modules
+=== SKILL PINS (trap 1: every skill must come from THIS checkout) ===
+  LCARS_FILE_SCRIPT          /Users/roganferguson/Projects/LCARS/skills/lcars-file/file.sh
+  LCARS_RUN_SCRIPT           /Users/roganferguson/Projects/LCARS/skills/lcars-run/run.sh
+  LCARS_VERSION_CHECK_BIN    /Users/roganferguson/Projects/LCARS/skills/lcars-version/check.sh
+  LCARS_RESPOND_SCRIPT       /Users/roganferguson/Projects/LCARS/skills/lcars-respond/respond.sh
+  LCARS_APPROVE_SCRIPT       /Users/roganferguson/Projects/LCARS/skills/lcars-approve/approve.sh
+  pinned run.sh sha        4b73af1c92823a45fe1de552548fcc2e3e296a90
+  ~/.claude run.sh sha     4b73af1c92823a45fe1de552548fcc2e3e296a90   → SAME checkout (pin is inert here)
+=== CELL ===
+  label      : cap-cop-dx6
+  mode       : capstone-plain   (lane=plain, pipeline=1)
+  ENGINE     : copilot   (grill + cold pipeline workers)
+  stand-in   : copilot / claude-sonnet-4.6  (never the cell's engine — free, and not under test)
+  claude shim: blockshim (refuses every claude spawn)
+  claude spawns must be: 0
+  target     : /Users/roganferguson/Projects/LCARS/tests/drives/align-heal/runs/cap-cop-dx6/target
+  origin     : /Users/roganferguson/Projects/LCARS/tests/drives/align-heal/runs/cap-cop-dx6/origin.git   (throwaway bare — the captain's repo is never pushed to)
+  record     : /Users/roganferguson/Projects/LCARS/tests/drives/align-heal/dx-record
+  PREFLIGHT OK — matcher OK (model=claude-sonnet-4.6)
+record: 14 recorded decisions from /Users/roganferguson/Projects/LCARS/tests/drives/align-heal/dx-record
+engine: copilot (grill) · stand-in matcher: copilot (always, never the cell engine)
+sid= 81ab4670bcba
+  turn 1  RECORDED For the relative-age label, I'd recommend deriving it from the snapshot's calendar date (t
+  turn 2  RECORDED Where should the age label live, and against which date? I'd recommend: render it inline r
+  turn 3  RECORDED Two boundary decisions I want to confirm, since they set exactly what the label reads at t
+  turn 4  CLOSING  Perfect — the complete PRD is on the right. That covers the buckets, inline placement, qui
+
+ALIGN FINAL: status=done turns=4 healed=None
+  from the record : 3 recorded + 0 quoted
+  closing turns   : 1
+  HUMAN ANSWERS   : 0   <-- must be 0
+=== FILED? ===
+   lcars-20260901-001 stage= align prdPending= None
+   MISSIONS ON BOARD: 1
+=== leftovers ===
+  prd.md: /Users/roganferguson/Projects/LCARS/tests/drives/align-heal/runs/cap-cop-dx6/target/.git/lcars/missions/lcars-20260901-001/prd.md
+=== heals: 0
+0 · claude spawns: 0 ===
+=== filed mission: lcars-20260901-001 ===
+
+=== POST-ALIGN DRIVE ===
+
+── round 1 · stage=align ──
+   driver rc=0 → stage=verify awaitingHuman=False
+   ⚑ VERIFY gate — standing in for the captain's SHIP signal (lcars approve; forge is faked).
+   ✓ approved → merged (faked) → stage=done
+
+POST-ALIGN: stage=done gates=1 fromRecord=0 humanAnswers=0 verifyApproved=True
+
+==============================================================
+CAPSTONE READOUT — lcars-20260901-001
+==============================================================
+  VERDICT                : PASS through VERIFY — approved at the gate, PR merged (faked); zero human answers
+  cell                   : mode=capstone-plain  ENGINE=copilot
+  stage reached          : done
+  HUMAN ANSWERS REQUIRED : 0      <-- the headline; must be 0
+  align turns            : 4  (3 from a recorded decision, 0 from a verified quote, 1 closing)
+  align healed           : None
+  driver rounds          : 1
+  Verify approve         : approved → merged (faked) → stage=done
+  stopped because        : SHIPPED — approved at Verify, PR merged (faked); stage=done
+
+  WHICH ENGINE ACTUALLY RAN (three independent readings):
+    1. requested (LCARS_DRIVE_ENGINE) : copilot
+    2. persisted state.json workerBin : copilot   <-- the field measured BEATING the env var
+    3. claude spawns through the shim : 0   (blockshim (refuses every claude spawn); expected 0)
+    → all three agree — the engine that ran IS copilot
+    4. per-engine spend below (run.sh usage) is the fourth, and it costs money to be wrong.
+
+  AWAITING-HUMAN GATES HIT: 1
+    · round 1 · stage verify · approved → merged (faked) → stage=done
+
+  WORKER USAGE (run.sh usage):
+    USAGE mission=lcars-20260901-001
+    STAGE  records=1 inputTokens=109843 outputTokens=3265 costUsd=0.63084 premiumRequests=15
+    STAGE research records=1 inputTokens=161895 outputTokens=4932 costUsd=0.932775 premiumRequests=15
+    STAGE validate records=1 inputTokens=82411 outputTokens=7989 costUsd=0.61178 premiumRequests=15
+    STAGE plan records=1 inputTokens=124522 outputTokens=4824 costUsd=0.74321 premiumRequests=15
+    STAGE planReview records=1 inputTokens=76281 outputTokens=2354 costUsd=0.440255 premiumRequests=15
+    STAGE implement records=1 inputTokens=323406 outputTokens=10537 costUsd=1.88045 premiumRequests=15
+    TOTAL records=6 inputTokens=878358 outputTokens=33901 costUsd=5.23931 premiumRequests=90
+
+  evidence: /Users/roganferguson/Projects/LCARS/tests/drives/align-heal/runs/cap-cop-dx6/standin-log.txt   (every turn, every match, every reply)
+==============================================================
+EXIT(cap-cop-dx6)=0

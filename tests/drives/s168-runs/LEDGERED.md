@@ -69,3 +69,51 @@ Closing it means exporting the mission context into the child, which switches on
 the `events.jsonl` half of the audit for many concurrent processes and creates
 exactly the false-fire risk Part C was careful to avoid. That is a design pass,
 not a patch, and it belongs to whoever owns the audit next.
+
+---
+
+## L3. A plan with NO declared dependencies serialized completely (12 waves of 1)
+
+**Measured 2026-09-01** on the holodeck end-to-end drive (`cap-cop-holo3`,
+mission `lcars-20260901-002`, a 12-ticket MBR-Builder rebuild).
+
+Schedule laid the 12 tickets out as **twelve sequential waves, one ticket each**
+— every ticket waiting on the one before it. **Not one of the 12 tickets
+declares a dependency on any other.** With nothing declared, the dependency
+graph became a queue.
+
+LCARS itself flagged it, which is the point — the warning is already there and
+already correct:
+
+```
+schedule     ✓  12 wave(s) — ⚠ 1 ticket each, no parallelism
+```
+
+`wave_shape` (run.sh ~:4846) prints exactly this when `peak <= 1`: *"If that is
+not genuinely true, the dependency graph is a queue and this run is as slow as
+it can possibly be."* It was true here.
+
+**Some serialization IS warranted.** These tickets pile onto the same few files
+(the builder view, `styles.css`), and two siblings editing one file blind to each
+other is precisely the failure the wave-isolation round (S156–157) was built to
+stop — it went undetected for eleven tickets last time. The likely cause is that
+round's infra-isolation backstop classifying broadly and isolating everything.
+
+**But twelve-of-twelve is over-conservative.** t-001 (Reviews landing screen) and
+t-002 (Pulling-data screen) are separate surfaces with no overlap with the
+builder chain; they could have run alongside t-003. Realistically this was 4–5
+waves of work. The parallel cap already exists (`LCARS_MAX_PARALLEL`, default 4)
+and went unused. Cost: roughly 2–3x the wall clock, on a stage that is already
+the longest in the pipeline.
+
+**Captain's call 2026-09-01: note it, circle back after this round passes.**
+Deliberately NOT touched here — it is not this round's code, and rewriting wave
+scheduling on the strength of a single mission is how you re-create the bug S156
+cured. The question worth a round of its own:
+
+> Why does a plan with **no declared dependencies** serialize completely, and
+> what is the smallest change that keeps S156's anti-blindness guarantee while
+> letting genuinely independent tickets share a wave?
+
+Evidence: `pipeline/cap-cop-holo3.*`, and `plan.json` in that run's mission dir
+(every ticket's `dependsOn` empty).
