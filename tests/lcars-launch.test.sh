@@ -272,13 +272,22 @@ for eng in claude copilot; do
   stub="$TMPROOT/$eng"          # basename == the cli id → routes the adapter column
   make_rec_worker "$stub" "$argvf"
   ( cd "$Re" && LCARS_WORKER_BIN="$stub" bash "$LAUNCH_SH" "mE_$eng" "the marketing website" >/dev/null 2>&1 )
+  # S168 — the inspector SWAPPED ITS SHELL FOR A PEN: Write (to author its one
+  # discovery artifact) and no general-purpose execution channel, on both engines.
   if [ "$eng" = claude ]; then
-    check "2a. claude launch argv fences to Read,Grep,Glob,Bash" \
-      "grep -qxF 'Read,Grep,Glob,Bash' \"$argvf\""
+    check "2a. claude launch argv fences to Read,Grep,Glob,Write" \
+      "grep -qxF 'Read,Grep,Glob,Write' \"$argvf\""
+    check "2a2. claude launch argv DENIES the shell (--disallowedTools value)" \
+      "grep -qxF 'Edit,Bash,NotebookEdit' \"$argvf\""
+    check "2a3. claude launch argv carries the --disallowedTools flag itself" \
+      "grep -qxF -- '--disallowedTools' \"$argvf\""
   else
-    check "2a. copilot launch argv fences to view,grep,glob,bash" \
-      "grep -qxF 'view,grep,glob,bash' \"$argvf\""
+    check "2a. copilot launch argv fences to view,grep,glob,create" \
+      "grep -qxF 'view,grep,glob,create' \"$argvf\""
   fi
+  # The checkout is GRANTED to the inspector now that it has no shell to reach it.
+  check "2c. $eng launch argv grants the disposable checkout for reading" \
+    "grep -q 'lcars-launch' \"$argvf\" || [ \"$eng\" = claude ]"
   check "2b. $eng launch prompt carries the captain's hint" \
     "grep -q 'the marketing website' \"$argvf\""
 done

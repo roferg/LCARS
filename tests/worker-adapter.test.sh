@@ -50,13 +50,19 @@ echo "worker-adapter — the one CLI-specific seam (session 18)"
 # --- 1. argv claude repo-read emits the exact 6 lines, order-sensitive --------
 d1="$(mktemp -d "$TMPROOT/d.XXXX")"
 A1="$(bash "$ADAPTER" argv claude repo-read "$d1")"
+# S168 — the argv now carries a `--disallowedTools` pair as well. On claude
+# `--allowedTools` only PRE-APPROVES and `--dangerously-skip-permissions` waives
+# the rest, so the deny list is the only flag that actually takes a tool away;
+# this lock moves with it rather than pinning the unfenced argv.
 EXPECT_1='-p
 --allowedTools
 Read,Grep,Glob,Write
+--disallowedTools
+Edit,Bash,NotebookEdit,WebSearch,WebFetch
 --output-format
 text
 --dangerously-skip-permissions'
-check "1. argv claude repo-read → exact 6 lines in order" \
+check "1. argv claude repo-read → exact 8 lines in order" \
   "[ \"\$A1\" = \"\$EXPECT_1\" ]"
 
 # --- 2. each role yields TODAY's Claude tool list (regression lock) ------------
@@ -71,8 +77,8 @@ check "2d. default       → Read (the old \`*\` case)" \
   "[ \"\$(tool_line default)\" = 'Read' ]"
 
 # argv never emits the prompt — purely flags.
-check "2e. argv emits exactly 6 lines (no prompt)" \
-  "[ \"\$(bash \"$ADAPTER\" argv claude repo-read \"$d1\" | wc -l | tr -d ' ')\" = '6' ]"
+check "2e. argv emits exactly 8 lines (no prompt)" \
+  "[ \"\$(bash \"$ADAPTER\" argv claude repo-read \"$d1\" | wc -l | tr -d ' ')\" = '8' ]"
 
 # --- 3. spawn runs the (stubbed) claude with -p <prompt> + flags, captures -----
 d3="$(mktemp -d "$TMPROOT/d.XXXX")"
@@ -85,6 +91,8 @@ EXPECT_ARGV='-p
 THE PROMPT BODY
 --allowedTools
 Read,Grep,Glob,Write
+--disallowedTools
+Edit,Bash,NotebookEdit,WebSearch,WebFetch
 --output-format
 text
 --dangerously-skip-permissions'
@@ -309,6 +317,8 @@ $IN2" bash "$ADAPTER" argv claude repo-write "$dI")"
 EXPECT_I2='-p
 --allowedTools
 Read,Grep,Glob,Write,Edit,Bash
+--disallowedTools
+NotebookEdit
 --output-format
 text
 --dangerously-skip-permissions'
@@ -342,21 +352,23 @@ check "I4c. spawn copilot grants input dir 2 --add-dir" \
   "[ -n \"\$(add_dirs <\"$dI4/argv.log\" | grep -xF \"$IN2\")\" ]"
 
 # ============================================================================
-# LAUNCH role (session 108) — the `lcars launch` app-inspector toolset. A launch
-# worker gets Read+shell to DISCOVER how to run an app, but NO Write/Edit so it
-# cannot mutate the disposable checkout. Both engines mirror the same semantics.
-# (Additive: existing role assertions above are untouched.)
+# LAUNCH role (session 108, RE-POSTURED at S168) — the `lcars launch`
+# app-inspector toolset. It used to hold a SHELL and no Write, so it authored
+# launch-discovery.json through bash inside a checkout of the captain's code
+# while its own prompt said "inspection only". S168 swapped the shell for a pen:
+# it now holds Write (to author its ONE artifact) and no general-purpose
+# execution channel, on BOTH engines — the two columns are meant to mirror.
 # ============================================================================
-echo "worker-adapter — launch role (session 108)"
+echo "worker-adapter — launch role (session 108, re-postured S168)"
 
-check "L1. claude launch → Read,Grep,Glob,Bash (read + shell, no Write/Edit)" \
-  "[ \"\$(tool_line launch)\" = 'Read,Grep,Glob,Bash' ]"
-check "L2. claude launch tool list has NO Write and NO Edit" \
-  "[ -z \"\$(tool_line launch | grep -oE 'Write|Edit')\" ]"
-check "L3. copilot launch → view,grep,glob,bash (view + shell, no create/edit)" \
-  "[ \"\$(cop_tools launch)\" = 'view,grep,glob,bash' ]"
-check "L4. copilot launch tool list has NO create and NO edit" \
-  "[ -z \"\$(cop_tools launch | grep -oE 'create|edit')\" ]"
+check "L1. claude launch → Read,Grep,Glob,Write (inspect + author, no shell)" \
+  "[ \"\$(tool_line launch)\" = 'Read,Grep,Glob,Write' ]"
+check "L2. claude launch is DENIED the shell (and Edit) by --disallowedTools" \
+  "[ \"\$(bash \"\$ADAPTER\" deny claude launch)\" = 'Edit,Bash,NotebookEdit' ]"
+check "L3. copilot launch → view,grep,glob,create (view + author, no shell)" \
+  "[ \"\$(cop_tools launch)\" = 'view,grep,glob,create' ]"
+check "L4. copilot launch tool list has NO bash and NO edit" \
+  "[ -z \"\$(cop_tools launch | grep -oE 'bash|edit')\" ]"
 
 echo "worker-adapter: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

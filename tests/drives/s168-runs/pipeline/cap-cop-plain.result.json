@@ -1,0 +1,25 @@
+{
+  "sid": "0fa7cbad4c06",
+  "turns": 5,
+  "status": "done",
+  "stopped": null,
+  "healed": null,
+  "error": null,
+  "recordDir": "/Users/roganferguson/Projects/LCARS/tests/drives/align-heal/plain-record",
+  "recordedDecisions": 0,
+  "engine": "copilot",
+  "counts": {
+    "recorded": 0,
+    "quoted": 2,
+    "nomatch": 2,
+    "closing": 1,
+    "error": 0,
+    "turns": 5,
+    "humanAnswers": 2
+  },
+  "humanAnswersRequired": 2,
+  "unrecordedQuestions": [
+    "For the \"how long ago\" timestamp \u2014 my recommendation: **compute it once when the strip renders** (e.g. \"3m ago\", \"2h ago\", \"yesterday\") and don't bother live-updating it while the page sits open. It's a convenience label; re-rendering on navigation is enough. Good, or do you want it ticking live? (offered choices: Compute on render, no live ticking (recommended); Live-update the timestamps periodically) (its recommendation: Compute on render, no live ticking (recommended))",
+    "Still need your call on this one before I move on \u2014 for the \"how long ago\" timestamp, my recommendation is to **compute it once when the strip renders** (\"3m ago\", \"2h ago\", \"yesterday\") and not live-update it while the page sits open. It's a convenience label, so re-rendering on each navigation is enough. Good with that, or do you want the timestamps ticking live? (offered choices: Compute on render, no live ticking (recommended); Live-update the timestamps periodically) (its recommendation: Compute on render, no live ticking (recommended))"
+  ]
+}

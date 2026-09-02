@@ -1,0 +1,22 @@
+{
+  "sid": "4700860cc8bf",
+  "turns": 11,
+  "status": "done",
+  "stopped": null,
+  "healed": 1,
+  "error": null,
+  "recordDir": "/Users/roganferguson/Projects/DX-Scorecard/.git/lcars/missions/lcars-20260829-002",
+  "recordedDecisions": 16,
+  "engine": "copilot",
+  "counts": {
+    "recorded": 9,
+    "quoted": 1,
+    "nomatch": 0,
+    "closing": 1,
+    "error": 0,
+    "turns": 11,
+    "humanAnswers": 0
+  },
+  "humanAnswersRequired": 0,
+  "unrecordedQuestions": []
+}

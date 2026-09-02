@@ -511,10 +511,19 @@ context_paths() {
 # Generate the pack via ONE cold worker. Mirrors spawn_worker exactly: the
 # worker writes to a `mktemp -d` SCRATCH file (its expanded absolute path baked
 # into the prompt as literal text — no $VAR for the headless worker to expand),
-# then BASH copies that scratch file into the durable pack path. The worker never
-# touches `.git/` (the Write tool auto-denies any `.git/` path in headless `-p`
-# mode) and never needs to resolve an env token. cwd stays at the repo root so
-# the worker's read-only repo access works. Stays CLI-agnostic.
+# then BASH copies that scratch file into the durable pack path. The worker is
+# never asked to touch `.git/` and never needs to resolve an env token. cwd stays
+# at the repo root so the worker's read-only repo access works. Stays
+# CLI-agnostic.
+#
+# S168 — the sentence that used to stand here said "the Write tool auto-denies
+# any `.git/` path in headless `-p` mode". That is NOT TRUE under
+# `--dangerously-skip-permissions`, which every cold worker carries: the skip
+# flag waives exactly that gate (it is why the Implementer can write into its
+# per-ticket worktree under `.git/` at all). Nothing STOPS this worker writing
+# to `.git/`; what is true is that the harness never asks it to, and its
+# `--disallowedTools` deny list plus the post-turn fence audit in worker_spawn
+# are what actually hold the line.
 generate_context_pack() { # pack-path
   local pack="$1" scratch out prompt
   mkdir -p "$(dirname "$pack")"
@@ -582,6 +591,13 @@ context_extra_block() {
   local src
   src="$(resolve_context_source 2>/dev/null)" || return 0
   [ -n "$src" ] || return 0
+  # S168 — GRANT WHAT WE HAND OVER. The pack can be generated lazily right here,
+  # AFTER the Stage exported its path grant, so a copilot worker would be given
+  # the pack's path with no sandbox grant to read it. Only a source UNDER the
+  # store needs one: a repo-root CONTEXT.md is already inside the worker's cwd.
+  case "$src" in
+    "$(dirname "${LCARS_CFG:-}")"/*) grant_input_dir "$src" ;;
+  esac
   printf '
 ## Repo context (declarative repo facts — read for grounding)
 - %s' "$src"
@@ -2711,6 +2727,78 @@ leave_mission_worktree() {
   return 0
 }
 
+# === THE COLD WORKER'S INPUT READ-SET (S168) ================================
+# `$LCARS_WORKER_INPUT_DIRS` is a GRANT: on copilot the adapter turns each line
+# into an `--add-dir`, which is a real path-sandbox grant — and on copilot
+# `--add-dir` grants WRITE, not merely read. Until S168 both call sites handed
+# the worker `$(dirname "$LCARS_CFG")` — the WHOLE `.git/lcars` store: every
+# mission's state, including the state that JUDGES the worker (its own
+# plan-review verdict, its waves, its events, the captain's answers, and every
+# UNRELATED mission's copy of all of that).
+#
+# This is the read-set a worker ACTUALLY needs, traced from the artifact paths
+# the stage drivers put in prompts (grep `$MISSION_DIR/` and
+# `context_extra_block` in this file):
+#
+#   $MISSION_DIR             prd.md, adr.md, answers.json, research/*, plan.json,
+#                            approved-plan.json, waves.json, manifests/,
+#                            repo-map.md, attachments/, per-ticket worktrees.
+#                            EVERY per-mission input lives here.
+#   the PARENT mission dir   ONLY for a Mission-Log bug child: the grounding
+#                            stage (cmd_research) names $parent_dir/prd.md,
+#                            validated-plan.md and plan.json by path. Without
+#                            this line, grounding on copilot reads nothing and
+#                            the whole point of the grounding round is lost. It
+#                            is granted ONLY when state.json records a
+#                            parentMission — a plain Mission gets no such line.
+#   the context pack FILE    .git/lcars/context-pack.md, when it is the resolved
+#                            context source. Granted as the FILE, not its dir —
+#                            its dir IS the store root, which is the whole thing
+#                            we are narrowing away. copilot accepts a file here:
+#                            its `addDirectory` only refuses a path that does not
+#                            EXIST (`stat().isDirectory()?"directory":"file"` —
+#                            both truthy), and `isPathWithinRoot(f, f)` is true,
+#                            so the grant reaches that one file and nothing else.
+#                            A repo with a root CONTEXT.md needs no grant at all:
+#                            that file is inside the worker's own cwd.
+#
+# NOT granted, having been checked: `config.json` (nothing hands a worker its
+# path — the harness reads it and passes VALUES) and `test-landscape/` (written
+# by the harness on ticket green, never read back into a prompt).
+worker_input_dirs() { # → one absolute path per line; empty when there is no mission
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  printf '%s\n' "$MISSION_DIR"
+  local store parent
+  store="$(dirname "${LCARS_CFG:-}")"
+  parent=""
+  [ -n "${STATE:-}" ] && [ -f "${STATE:-}" ] && parent="$(json_str "$STATE" parentMission)"
+  case "$parent" in
+    ''|null) : ;;
+    *) [ -d "$store/missions/$parent" ] && printf '%s\n' "$store/missions/$parent" ;;
+  esac
+  [ -f "$store/context-pack.md" ] && printf '%s\n' "$store/context-pack.md"
+  return 0
+}
+
+# Add ONE path to the already-exported grant, idempotently. The durable context
+# pack can be GENERATED lazily part-way through a Stage — after the grant was
+# exported and before the Stage's own worker spawns — so the one place that
+# hands a worker the pack's path (context_extra_block) also grants it. A no-op
+# when the grant is empty/unset (a spawn with no path sandbox in play), so those
+# argvs stay byte-for-byte unchanged.
+grant_input_dir() { # path
+  local d="$1"
+  [ -n "$d" ] || return 0
+  [ -n "${LCARS_WORKER_INPUT_DIRS:-}" ] || return 0
+  case "
+$LCARS_WORKER_INPUT_DIRS
+" in *"
+$d
+"*) return 0 ;; esac
+  export LCARS_WORKER_INPUT_DIRS="$LCARS_WORKER_INPUT_DIRS
+$d"
+}
+
 # Cut the worktree at <ref> and MOVE THIS PROCESS INTO IT, so every worker this
 # Stage spawns inherits it as cwd. <ref> is the branch the caller has already
 # resolved as "the Mission's code" — the same branch its prose block names, so
@@ -2760,8 +2848,9 @@ enter_mission_worktree() { # <ref> <stage-label>
   # artifact this Stage feeds its worker (prd.md, research/*.json, plan.json, the
   # context pack, attachments) lives under the shared .git/lcars, which is OUTSIDE
   # the worktree; a CLI with a hard path sandbox (copilot) could otherwise read
-  # none of them. READ-only, and a tidy superset — it widens nothing else.
-  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
+  # none of them. S168: this is THIS Mission's read-set, not the whole store —
+  # see worker_input_dirs() for what is granted and what was checked and refused.
+  export LCARS_WORKER_INPUT_DIRS="$(worker_input_dirs)"
   printf '  ⌂ mission tree — %s reads '"'"'%s'"'"' @ %s in an isolated worktree (your checkout is untouched)\n' \
     "${stage:-this Stage}" "$ref" "$("$GIT_BIN" -C "$wt" rev-parse --short HEAD 2>/dev/null)"
   return 0
@@ -11826,6 +11915,198 @@ usage_capture() { # env-role outdir stage-key cli session-id
   return 0
 }
 
+# === THE POST-TURN FENCE AUDIT (S168) ======================================
+# The ONLY fence that works on BOTH engines. Tool lists are per-CLI and, on
+# claude, were never a fence at all until this round; a path sandbox exists on
+# copilot and not on claude. What DOES work on both is checking, after the turn,
+# whether the worker changed something it was never supposed to touch.
+#
+# WHAT IS WATCHED — TWO THINGS:
+#
+#   1. the Mission's JUDGE-CRITICAL state — the artifacts that decide whether
+#      this worker's own output is accepted, and the record of what happened.
+#   2. THE CAPTAIN'S CODE, when the Stage is running in a front-half worktree
+#      ($FRONT_HALF_WT — the isolated checkout of the Mission's branch that
+#      Research / Validate / Plan / Plan Review read from, and the cwd every
+#      worker those Stages spawn inherits).
+#
+# A read role rewriting either is not a bug to repair, it is a BREACH: the stage
+# stops LOUDLY and NOTHING is silently fixed up.
+#
+# WHY (2) EXISTS — MEASURED LIVE, claude/sonnet, 2026-08-30, evidence in
+# tests/drives/s168-runs/. The `default` role's deny list includes Write and the
+# worker genuinely COULD NOT write (it said so, found no shell to substitute, and
+# the negative control with the deny list stripped DID write). But the front-half
+# roles (`repo-read`, `repo-read-web`) KEEP Write ON PURPOSE — writing its answer
+# file is how a Stage returns its result — and on claude the Write tool IS NOT
+# SCOPED TO A DIRECTORY. Granted at all, it writes anywhere on the filesystem: a
+# repo-read worker was measured writing a file at an ARBITRARY ABSOLUTE PATH
+# outside its scratch outdir, on an ordinary polite request. No tool list can fix
+# that, and denying Write would break how every front-half Stage answers. So the
+# post-turn audit is extended to the one place a stray write actually MATTERS —
+# the captain's code — mirroring the launch role's checkout-clean audit
+# (skills/lcars-launch/launch.sh, "the launch fence audit").
+#
+# THE LIMIT, STATED PLAINLY: a write to an unrelated place on the disk (say
+# ~/notes.txt) is still out of reach of this audit and is accepted as such. What
+# is fenced is the Mission's state and the Mission's code.
+#
+# IT IS A BASELINE DIFF, NEVER AN IS-IT-EMPTY CHECK. That is launch.sh's exact
+# lesson: provisioning legitimately leaves a tree dirty before the worker ever
+# runs, and an emptiness check would blame the worker for it. The porcelain is
+# captured immediately BEFORE the turn and again immediately after, so only what
+# THIS turn changed is named — which is what keeps it silent on honest Stages.
+#
+# WHO IS AUDITED: every toolset role EXCEPT `repo-write`. repo-write holds a
+# shell and legitimately writes — its containment is the isolated worktree, the
+# declared-edits contract, the post-commit scope check and the flip-flop gate
+# (see adapter_deny's honesty note). Auditing it here would fire on honest work.
+#
+# EVENTS.JSONL — the file the harness itself appends to. It is hashed WHOLE, and
+# the window is drawn so tightly that the harness cannot append inside it: the
+# snapshot is taken immediately before `run_worker_hang_guarded` and re-taken
+# immediately after it returns, BEFORE `usage_capture` (whose `worker_usage`
+# event is the first harness append after a turn). Nothing between those two
+# points emits an event — the hang guard writes only worker-liveness.json, which
+# is deliberately NOT on the watch list. Cross-process appends cannot race us
+# either. events.jsonl is PER-MISSION and the per-mission driver lock serialises
+# the drivers, and the only concurrent spawns LCARS makes are child processes
+# that are either mission-less (the Research fan-out re-enters this script with
+# no --mission, so MISSION_DIR is unset and the audit is inactive) or hold the
+# exempt repo-write role (a wave's ticket workers). The ONE audited spawn that
+# could once have run inside a parallel ticket subprocess was the lazy
+# context-pack generation, and cmd_implement now resolves the pack up front,
+# before the fan-out, precisely so that window cannot open. That is what makes
+# the honest-run case a true no-op: on a clean stage this function emits nothing
+# and the event stream is byte-identical to a run without it.
+WORKER_FENCE_WATCH="state.json
+plan.json
+plan-under-review.json
+approved-plan.json
+waves.json
+events.jsonl
+answers.json
+estimate.json
+preconditions.json
+validated-plan.md"
+
+# Cheap content fingerprint. shasum when present (every macOS/Linux box LCARS
+# targets has it); cksum — POSIX, always there — as the fallback.
+worker_fence_hash() { # file → fingerprint on stdout
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  else
+    cksum "$1" 2>/dev/null | awk '{print $1 "-" $2}'
+  fi
+}
+
+# Is this spawn audited? Needs a mission to have state, and a non-repo-write role.
+worker_fence_active() { # role
+  [ -n "${MISSION_DIR:-}" ] && [ -d "${MISSION_DIR:-}" ] || return 1
+  [ "${LCARS_WORKER_FENCE:-1}" != "0" ] || return 1
+  case "$1" in repo-write) return 1 ;; *) return 0 ;; esac
+}
+
+# The front-half worktree half of the snapshot: one `wt:<path><TAB><status-code>`
+# line per porcelain entry in $FRONT_HALF_WT. Emitted ONLY while this process is
+# actually standing in such a worktree (enter_mission_worktree sets the global;
+# leave_mission_worktree clears it), so a Stage with no worktree of its own —
+# and every non-front-half spawn — snapshots exactly what it did before.
+#
+# THE STATUS CODE IS PART OF THE VALUE, not just the path: a file that was
+# already `??` before the turn and is `??` after is the same line, but one the
+# worker STAGED or MODIFIED changes its code and is caught. Paths with unusual
+# characters arrive git-quoted ("a b.txt"); they compare fine as opaque strings.
+worker_fence_wt_snapshot() {
+  [ -n "${FRONT_HALF_WT:-}" ] && [ -d "${FRONT_HALF_WT:-}" ] || return 0
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf 'wt:%s\t%s\n' "${line:3}" "${line:0:2}"
+  done <<EOF
+$("$GIT_BIN" -C "$FRONT_HALF_WT" status --porcelain 2>/dev/null)
+EOF
+  return 0
+}
+
+# One `name<TAB>fingerprint` line per watched file; ABSENT for one not there, so
+# a worker CREATING a judge-critical artifact is caught as surely as a rewrite.
+# Then, when the Stage is standing in one, the front-half worktree's porcelain.
+worker_fence_snapshot() {
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ -f "$MISSION_DIR/$f" ]; then
+      printf '%s\t%s\n' "$f" "$(worker_fence_hash "$MISSION_DIR/$f")"
+    else
+      printf '%s\tABSENT\n' "$f"
+    fi
+  done <<EOF
+$WORKER_FENCE_WATCH
+EOF
+  worker_fence_wt_snapshot
+}
+
+# Compare a pre-turn snapshot with the tree now. Clean → 0 and NOT ONE BYTE
+# written anywhere. Dirty → name the files, emit `worker_fence_breach`, and die.
+#
+# Two passes, because the two halves fail in different directions. The watch list
+# is FIXED (an absent file still has an `ABSENT` line), so a forward pass over
+# `after` catches every state change. The worktree half is a LIST OF DIRT, so a
+# line can also DISAPPEAR — which is a worker reverting a change the tree already
+# carried. That is a write too, and the reverse pass catches it.
+worker_fence_check() { # role  before-snapshot  stage-key
+  local role="$1" before="$2" stage="${3:-}" after
+  after="$(worker_fence_snapshot)"
+  [ "$after" = "$before" ] && return 0
+  # Bucketed as newline lists while accumulating — never split on spaces later,
+  # because a git-quoted path ("a b.txt") would be torn in half by that.
+  local hit_state="" hit_code=""
+  local line name b a
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    name="${line%%	*}"
+    b="$(printf '%s\n' "$before" | awk -F'\t' -v n="$name" '$1==n{print $2; exit}')"
+    a="${line#*	}"
+    [ "$a" = "$b" ] && continue
+    case "$name" in
+      wt:*) hit_code="${hit_code}${hit_code:+
+}${name#wt:}" ;;
+      *)    hit_state="${hit_state}${hit_state:+
+}$name" ;;
+    esac
+  done <<EOF
+$after
+EOF
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    name="${line%%	*}"
+    case "$name" in wt:*) : ;; *) continue ;; esac
+    [ -n "$(printf '%s\n' "$after" | awk -F'\t' -v n="$name" '$1==n{print "y"; exit}')" ] && continue
+    hit_code="${hit_code}${hit_code:+
+}${name#wt:}"
+  done <<EOF
+$before
+EOF
+  local state_files code_files changed
+  state_files="$(printf '%s' "$hit_state" | tr '\n' ' ')"; state_files="${state_files% }"
+  code_files="$(printf '%s' "$hit_code" | tr '\n' ' ')";  code_files="${code_files% }"
+  changed="$state_files${state_files:+${code_files:+ }}$code_files"
+  [ -n "$changed" ] || return 0
+  # ONE breach event, worded for whichever fence was crossed (or both).
+  local what=""
+  [ -n "$state_files" ] && what="judge-critical mission state it must never write: $state_files"
+  [ -n "$code_files" ] && what="${what:+$what; and }the Mission's code checkout it was told to only read: $code_files"
+  emit_event worker_fence_breach "${stage:-}" \
+    "a $role worker changed $what" \
+    "role=$role" "files=$changed"
+  local msg="WORKER FENCE BREACH — the $role cold worker for this Stage changed things it is never allowed to write."
+  [ -n "$state_files" ] && msg="$msg MISSION STATE: $state_files — that state is what JUDGES this worker's own output."
+  [ -n "$code_files" ] && msg="$msg THE MISSION'S CODE, in its isolated checkout ${FRONT_HALF_WT:-}: $code_files — a front-half Stage READS the code, it never writes it, so this Stage's reasoning came from a worker that edited what it was reading."
+  msg="$msg The Stage is stopped and NOTHING has been repaired: inspect .git/lcars/missions/$MISSION_ID/ and the worker's scratch output before re-running."
+  die "$msg"
+}
+
 # --- delegate one cold-worker invocation to the CLI adapter -----------------
 # The driver passes a role keyword + outdir + prompt; the adapter (selected by the
 # cli id = basename WORKER_BIN) knows the flags and tool names. The worker binary
@@ -11866,11 +12147,19 @@ worker_spawn() { # role outdir prompt
   # $outdir/.worker.out/.err; a slow-but-working worker is left alone. Covers EVERY
   # cold worker (every Stage routes through here). LCARS_WORKER_HANG_SECS=0 disables.
   local spawn_rc=0
+  # S168 FENCE AUDIT — snapshot the judge-critical state IMMEDIATELY before the
+  # turn (see the block above for why the window has to be exactly this tight).
+  local fence_before=""
+  local fence_on=0
+  if worker_fence_active "$role"; then fence_on=1; fence_before="$(worker_fence_snapshot)"; fi
   LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
     LCARS_WORKER_SESSION_ID="$usage_sid" \
     LCARS_LIVENESS_STAGE="$stage_key" \
     run_worker_hang_guarded "$outdir" \
     bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt" || spawn_rc=$?
+  # …and re-check it the instant the turn ends, BEFORE usage_capture emits its
+  # own event. A breach dies here — never repaired, never downgraded to a retry.
+  [ "$fence_on" -eq 1 ] && worker_fence_check "$role" "$fence_before" "$stage_key"
   # Post-exit, side-channel usage read. Guarded so a capture bug can never break a
   # Stage: preserve the worker's own exit status ($spawn_rc), swallow capture errors.
   if [ -n "$usage_sid" ]; then
@@ -13476,7 +13765,12 @@ cmd_implement_ticket() {
   # WRITE access, so the worktree write-isolation, red gate, immutable tests, and
   # post-commit scope check are all untouched. Empty/unset for non-worktree spawns
   # ⇒ argv byte-for-byte as before.
-  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
+  #
+  # S168 — this grant is THIS Mission's read-set, not the whole `.git/lcars`
+  # store. On copilot `--add-dir` grants WRITE, so handing a ticket worker the
+  # store root handed it write access to every other mission's state, including
+  # the state that judges it. worker_input_dirs() documents the traced read-set.
+  export LCARS_WORKER_INPUT_DIRS="$(worker_input_dirs)"
 
   # Record the captain's pre-existing untracked files BEFORE any worker touches
   # the tree, so commit_ticket stages only the Implementer's NEW source — never
@@ -13929,6 +14223,18 @@ cmd_implement() {
   # ticket builds in a worktree off the correct base) and the in-tree fallback
   # never has to create it. Idempotent + best-effort; single-mission unaffected.
   ensure_mission_branch "$(json_str "$STATE" branch)"
+
+  # S168 — RESOLVE THE DURABLE CONTEXT SOURCE ONCE, HERE, BEFORE THE FAN-OUT.
+  # Every ticket's prompt carries it (context_extra_block in the implement extra),
+  # and until now the FIRST ticket to need it generated the pack lazily — inside a
+  # ticket subprocess, concurrently with up to $LCARS_MAX_PARALLEL siblings. That
+  # raced two ways: several tickets could each spawn their own pack worker onto
+  # the same path, and the pack worker's post-turn fence audit (worker_spawn)
+  # would see a SIBLING ticket's legitimate events.jsonl append inside its window
+  # and read an honest run as a breach. Resolving it up front, in the wave driver,
+  # where nothing else is running, removes both. Best-effort: a failure here just
+  # leaves the old lazy path to try again per ticket.
+  resolve_context_source >/dev/null 2>&1 || :
 
   # --- S65: the live Implement-dashboard heartbeat ----------------------------
   # Start a bounded, best-effort ~60s ticker that re-renders + PATCHes the
