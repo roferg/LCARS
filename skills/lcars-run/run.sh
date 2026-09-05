@@ -2640,6 +2640,56 @@ by reading the app'"'"'s actual stylesheet. Add the edges the objections ask for
 leave the rest of the graph exactly as you left it.'
 }
 
+# --- S181 fix round 2 (D-7): the REVIEWER reads the same definition ----------
+# THREE surfaces argue about what a dependency is — the first plan, the revision,
+# and Plan Review — and until this round only the two PLANNER surfaces held the
+# definition. The reviewer got the advisory queue signal and nothing else.
+#
+# MEASURED, live Copilot, builder draw 302. The reviewer objected about a shared
+# registry and offered the planner two routes verbatim: "either establish the
+# composed registry in one foundational ticket the section tickets depend on, or
+# chain the section tickets via dependencies, so concurrent blind appends to the
+# same array do not collide." That is the reviewer recommending the shared-file
+# serialization the planner has just been told is not an edge — pressure the
+# planner is now insulated from and the reviewer was not. It resolved well that
+# time (the planner took the first route), but only one of the two held the rule.
+#
+# So the SAME function feeds all three. What is added here is a FRAME, not a
+# variant: the block is written to the ticket AUTHOR, and a reviewer needs to be
+# told which way to apply it. THE RISK RUNS THE OTHER WAY — the reviewer's job
+# includes DEMANDING a missing edge, and the same drive measured it doing that job
+# well (two spurious infra flags caught on greenfield draw 331, a real acceptance-
+# criteria defect on builder 301). So the frame leads with both directions and
+# names the UNDER-declared edge as the worse defect, which is also what the block
+# itself says. Nothing here asks for a wider plan, sets a wave-count target, or
+# gives the reviewer any reason to wave a real edge through.
+plan_review_dependency_block() {
+  printf '%s' '
+
+## The dependency definition the planner was working to
+
+The tickets you are auditing were written against the definition below, and you
+are held to the same one. Apply it IN BOTH DIRECTIONS.
+
+A declared edge that records nothing but the order somebody happened to write the
+tickets in is an objection: name that edge and say what the two tickets do not
+share. An edge the plan LEAVES OUT is the more expensive defect — a real
+dependency left undeclared is the WORSE one, because a ticket built blind beside
+the thing it needed produces work that has to be redone — so wherever a ticket
+genuinely reads or needs what another ticket builds, demand that edge by id and
+say what it reads. Object either way on the merits of the SPECIFIC edge, never on
+how parallel or how serial the graph looks.
+
+One thing to check before you ask for tickets to be ordered so that concurrent
+edits to one file cannot collide: read the shared-file paragraph below first. The
+harness already composes that case, so file contention is not by itself a reason
+to ask for an edge.'
+  # THE ONE SOURCE. Not a reviewer-flavoured copy — a copied paragraph drifts, and
+  # drift between the surface that writes the edges and the surface that grades
+  # them is the whole defect.
+  dependency_semantics_block
+}
+
 # verify_decided_readout <plan.json> — S175 part D at the Verify gate. Every
 # criterion the planner DECLARED with `decides`, collected with the question it
 # settled. Prints NOTHING when no ticket declared one — which is every plan
@@ -4296,7 +4346,7 @@ $_s178out"
   # events.jsonl, so it is durable rather than terminal scrollback (S178 fix 2).
   local chain_n; chain_n="$(plan_chain_shape "$MISSION_DIR/plan.json")"
   if [ -n "$chain_n" ]; then
-    echo "  ⚠ DEPENDENCY-QUEUE SIGNAL — all $chain_n tickets form a single chain (each depends on exactly one predecessor), so Schedule will build $chain_n waves of ONE ticket: the slowest shape this plan can have. NOT a rejection — the plan is saved and will schedule exactly as written, and Plan Review is handed this signal to weigh. If every edge is real, this is a legitimately serial plan."
+    echo "  ⚠ DEPENDENCY-QUEUE SIGNAL — run through the scheduler's own wave computation, these dependencies admit ONE ticket at a time: all $chain_n tickets, $chain_n waves of ONE ticket, the slowest shape this plan can have. NOT a rejection — the plan is saved and will schedule exactly as written, and Plan Review is handed this signal to weigh. If every edge is real, this is a legitimately serial plan."
   fi
   echo "  Stage:  plan-review"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
@@ -4945,7 +4995,7 @@ compute_waves() { # table-file [infra-ids]
 # PLANNER CALIBRATION problem, a single dependency chain is a GRAPH problem. The
 # 4th argument carries what the caller MEASURED:
 #   infra:<nisolated>:<ndeclared-true>       every wave was an isolation barrier
-#   queue:<n>                                the declared graph is one chain of n
+#   queue:<n>                                the declared edges schedule n 1-wide waves
 #   both:<nisolated>:<ndeclared-true>:<n>    BOTH are present at once
 #   (empty)                                  neither — and then it SAYS SO. No
 #                                            cause is ever inferred from the shape.
@@ -4998,7 +5048,7 @@ infra_cause_clause() { # nisolated ndeclared-true
 # The dependency-graph half of the CAUSE sentence, in one place so the `both`
 # branch cannot drift from the `queue` branch.
 queue_cause_clause() { # chain length
-  printf 'the plan declares a dependency queue — all %s tickets form a single chain, each one depending on the ticket before it. If that chain is not genuinely true, this run is as slow as it can possibly be.' \
+  printf 'the plan declares a dependency queue — its edges admit ONE ticket at a time, so all %s tickets build one after another. If that order is not genuinely forced, this run is as slow as it can possibly be.' \
     "${1:-0}"
 }
 
@@ -5036,7 +5086,7 @@ wave_shape_line() { # ntickets nwaves peak-parallel [cause]  → the line, or NO
         infra_cause_clause "$_iso" "$_dec"
         printf ' (2) '
         queue_cause_clause "$_chain"
-        printf ' Repairing either one ALONE will not widen this plan: with the chain intact the isolation buys nothing, and with the flags cleared the chain still yields one ticket per wave. Both have to be honest for this shape to be honest.' ;;
+        printf ' Repairing either one ALONE will not widen this plan: with the dependency queue intact the isolation buys nothing, and with the flags cleared the queue still yields one ticket per wave. Both have to be honest for this shape to be honest.' ;;
       infra:*:*)
         local _iso _dec _rest
         _rest="${cause#infra:}"; _iso="${_rest%%:*}"; _dec="${_rest#*:}"
@@ -5049,7 +5099,7 @@ wave_shape_line() { # ntickets nwaves peak-parallel [cause]  → the line, or NO
         # NO CAUSE MEASURED ⇒ NO CAUSE NAMED. Saying which of the two mechanisms
         # did this without having checked is exactly the invented-fact class the
         # peak-0 branch above exists to refuse.
-        printf ' Every ticket waits for the one before it. If that is not genuinely true, the dependency graph is a queue and this run is as slow as it can possibly be. (The harness could not attribute this shape to declared infrastructure or to a single dependency chain.)' ;;
+        printf ' Every ticket waits for the one before it. If that is not genuinely true, the dependency graph is a queue and this run is as slow as it can possibly be. (The harness could not attribute this shape to declared infrastructure or to the declared dependency graph.)' ;;
     esac
   else
     printf 'Wave shape: %s waves, up to %s ticket(s) in parallel.' "$nw" "$peak"
@@ -5359,7 +5409,7 @@ cmd_schedule() {
   # can serialise a plan and they need different repairs, so the readout names
   # whichever one the data actually shows:
   #   * every wave was an isolation barrier  → the infrastructure flags did it;
-  #   * the declared graph is a single chain → the dependency graph did it.
+  #   * the declared edges alone schedule 1-wide waves → the graph did it.
   # Neither ⇒ EMPTY, and wave_shape_line then says it could not attribute the
   # shape rather than picking one. Read before the temp files are removed.
   # Computed ONLY on the serial shape, which is the only branch that reads it —
@@ -5804,12 +5854,11 @@ coupled or horizontal ticket."
 # the verdict. It never `die`s, never exits nonzero, and mechanical validation
 # (validate_plan_json) stays fail-closed on dangling ids and NOTHING ELSE.
 #
-# WHAT IT LOOKS FOR: the declared graph over >= 6 tickets being ONE PATH — exactly
-# one ticket with no dependencies, every other ticket with exactly one, nobody
-# depended on twice, and the walk from the root covering every ticket. That is a
-# queue: N tickets, N waves, one ticket each, the slowest shape the scheduler can
-# be handed. The threshold is 6 because a 3-ticket chain is an ordinary shape and
-# flagging it would be noise (S180: a signal measured on one repo is not a signal).
+# WHAT IT LOOKS FOR: over >= 6 tickets, a declared graph whose WAVE LAYOUT is one
+# ticket wide all the way down — N tickets, N waves, one ticket each, the slowest
+# shape the scheduler can be handed. The threshold is 6 because a 3-ticket chain is
+# an ordinary shape and flagging it would be noise (S180: a signal measured on one
+# repo is not a signal).
 #
 # WHAT IT IS NOT: evidence that any edge is WRONG. A legitimately serial plan is a
 # legitimate plan and must pass through untouched — so the hint says so, in those
@@ -5828,56 +5877,61 @@ coupled or horizontal ticket."
 # divergence; TWO READERS is the durable hazard, so the signal now reads the graph
 # through the SAME reader Schedule reads it with. If this says N waves, Schedule
 # builds N waves, by construction rather than by hand-syncing two parsers.
-plan_chain_shape() { # plan.json -> "<N>" when the graph is ONE chain over N>=6, else nothing
+#
+# S181 fix round 2 (D-8) — ONE COMPUTATION, which is where D-2's move was always
+# heading. The first cut hand-matched a graph SHAPE (`len(deps) != 1` for any
+# ticket ⇒ bail), so a queue with an INTEGRATOR TAIL was invisible to it: measured
+# on serial draw 322, a genuine 12-wave queue whose last ticket fanned in on all
+# eleven predecessors raised no signal at all and the serial warning fell through
+# to "could not attribute this shape", while draw 321 — same brief, same 12 waves,
+# a pure chain — was named correctly. A predicate that must be kept in step with
+# compute_waves by hand will drift again, so there is no predicate: the queue
+# condition IS compute_waves' own layout being one ticket wide over N >= 6. That
+# catches the integrator tail, catches every other 1-wide shape, and cannot
+# disagree with what Schedule builds. It also needs no python — parse_plan_table
+# and compute_waves are both awk.
+plan_chain_shape() { # plan.json -> "<N>" when the DECLARED graph schedules as N>=6 waves of ONE ticket, else nothing
   [ -f "$1" ] || return 0
-  # Fields 1 and 5 of the table Schedule itself feeds to compute_waves: the id and
-  # its space-separated dependencies.
-  parse_plan_table "$1" 2>/dev/null | awk -F'\t' '{ printf "%s\t%s\n", $1, $5 }' \
-    | "${LCARS_PYTHON_BIN:-python3}" -c '
-import sys
-ids, deps = [], {}
-for line in sys.stdin:
-    line = line.rstrip("\n")
-    if not line.strip():
-        continue
-    parts = line.split("\t")
-    tid = parts[0].strip()
-    # A row with no id is rubble, not a graph — say nothing.
-    if not tid or tid in deps:
-        sys.exit(0)
-    ids.append(tid)
-    deps[tid] = (parts[1].split() if len(parts) > 1 else [])
-n = len(ids)
-if n < 6:
-    sys.exit(0)
-# Every edge must land in-plan. A dangling id is validate_plan_json'"'"'s business
-# (it is fail-closed there); here it just means the graph cannot be trusted.
-for tid in ids:
-    for x in deps[tid]:
-        if x not in deps:
-            sys.exit(0)
-roots = [t for t in ids if not deps[t]]
-if len(roots) != 1:
-    sys.exit(0)
-if any(len(deps[t]) != 1 for t in ids if deps[t]):
-    sys.exit(0)
-# No ticket may be depended upon twice — that is a fork, not a path.
-succ = {}
-for tid in ids:
-    for x in deps[tid]:
-        if x in succ:
-            sys.exit(0)
-        succ[x] = tid
-seen, cur = set(), roots[0]
-while cur is not None:
-    if cur in seen:
-        sys.exit(0)
-    seen.add(cur)
-    cur = succ.get(cur)
-if len(seen) != n:
-    sys.exit(0)
-sys.stdout.write("%d\n" % n)
-' 2>/dev/null
+  local _tbl _wm _n _nw
+  _tbl="$(mktemp)" || return 0
+  _wm="$(mktemp)"  || { rm -f "$_tbl"; return 0; }
+  # The SAME table Schedule builds (parse_plan_table) — id in field 1, its
+  # space-separated dependencies in field 5.
+  parse_plan_table "$1" >"$_tbl" 2>/dev/null || :
+  # N is the ticket count Schedule would see. Below the threshold say nothing, and
+  # never pay for a wave computation nobody is going to read.
+  _n="$(awk -F'\t' 'NF && $1!=""{n++} END{print n+0}' "$_tbl" 2>/dev/null)"
+  if [ "${_n:-0}" -lt 6 ]; then rm -f "$_tbl" "$_wm"; return 0; fi
+  # RUBBLE, not a graph: a blank or repeated id, or an edge that lands outside the
+  # plan. validate_plan_json is the fail-CLOSED gate for those and stays so; here
+  # they only mean the shape cannot be trusted, so the signal goes quiet.
+  awk -F'\t' '
+    { if ($1=="" || ($1 in seen)) bad=1; seen[$1]=1; dp[++n]=$5 }
+    END { if (bad) exit 1
+          for (i=1;i<=n;i++) { m=split(dp[i], d, " ")
+            for (j=1;j<=m;j++) if (d[j]!="" && !(d[j] in seen)) exit 1 } }
+  ' "$_tbl" 2>/dev/null || { rm -f "$_tbl" "$_wm"; return 0; }
+  # THE ONE COMPUTATION. Not a second predicate over the graph — the wave layout
+  # itself, from the function Schedule calls, so "N waves of one ticket" is the
+  # answer Schedule will act on rather than a hand-matched shape that agrees with
+  # it until it does not. A cycle exits nonzero here (Schedule reports it; this is
+  # only a signal) and the signal stays quiet.
+  #
+  # The infra list is deliberately EMPTY. Infrastructure isolation is the OTHER
+  # mechanism that serialises a run, it is attributed separately (see
+  # wave_shape_line's `infra:`/`queue:`/`both:` causes), and passing it here would
+  # make an edgeless all-infra plan report itself as a dependency queue it does
+  # not have. Empty is also safe for the claim this signal makes: infra barriers
+  # only ever SPLIT waves further, so a graph that is already one ticket per wave
+  # schedules into exactly these N waves whatever the flags say.
+  if ! compute_waves "$_tbl" "" >"$_wm" 2>/dev/null; then
+    rm -f "$_tbl" "$_wm"; return 0
+  fi
+  _nw="$(awk 'NF{n++} END{print n+0}' "$_wm" 2>/dev/null)"
+  rm -f "$_tbl" "$_wm"
+  # N waves over N tickets can only mean one ticket in each.
+  [ "${_nw:-0}" -eq "$_n" ] && printf '%d\n' "$_n"
+  return 0
 }
 
 # --- build_chain_queue_hint: the ADVISORY block appended to the reviewer -----
@@ -5889,16 +5943,16 @@ build_chain_queue_hint() { # plan.json -> the hint block, or nothing
   printf '## Dependency-queue signal (mechanical — advisory only, NOT a verdict)
 
 NAMED SIGNAL: dependency-queue. Read mechanically off this plan'"'"'s `dependencies`
-and nothing else: all %s tickets form ONE CHAIN — exactly one ticket depends on
-nothing, every other ticket depends on exactly one predecessor, and the chain
-covers the whole plan.
+and nothing else: run through the scheduler'"'"'s own wave computation, those edges
+admit ONE TICKET AT A TIME — all %s tickets, %s waves, one ticket in each, with
+nothing ever built beside anything.
 
 ADVISORY ONLY. The harness has NOT rejected this plan and will schedule it
 exactly as written; this decides nothing, you do. A genuinely serial plan is a
 legitimate plan and must pass.
 
-Why you are being told: Schedule builds one wave at a time, so a chain of %s
-tickets is %s waves of ONE ticket — the slowest shape this plan can have. Weigh
+Why you are being told: Schedule builds one wave at a time, so this graph costs
+%s waves of ONE ticket — the slowest shape this plan can have. Weigh
 each edge on its own: does the later ticket actually READ or NEED what the
 earlier one builds, or does the edge only record the order somebody happened to
 write the tickets in? If an edge records nothing but authoring order, object to
@@ -14040,6 +14094,11 @@ acceptable — do not raise it."
   extra="$extra$(plan_review_decisions_block)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
+  # S181 fix round 2 (D-7): the definition of a dependency the PLANNER was given,
+  # from the one function that states it, framed for a reviewer. Sited before the
+  # two advisory hints below because the queue hint's whole argument — weigh each
+  # edge on its own merits — is an application of it.
+  extra="$extra$(plan_review_dependency_block)"
 
   # S100: APPEND the SOFT under-slice hint — a heuristic, ADVISORY-ONLY signal
   # computed from each ticket's own fields (see build_slice_pressure_hint). It is

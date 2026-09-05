@@ -554,6 +554,229 @@ assert_no  "7s …and still never says minimise"       "minimis"    "$BLOCK"
 assert_eq  "7t …and the prose is still in exactly ONE place in run.sh" \
            "$(grep -c '"Comes after" is not a dependency' "$SCRIPT")" "1"
 
+# ===========================================================================
+section "PART 8 — the REVIEWER reads the same definition as the planner (D-7)"
+# ===========================================================================
+# MEASURED, live Copilot, builder draw 302. The reviewer objected about a shared
+# `sections` registry and offered the planner two routes verbatim: "either
+# establish the composed registry in one foundational ticket the section tickets
+# depend on, OR CHAIN THE SECTION TICKETS VIA DEPENDENCIES, so concurrent blind
+# appends to the same array do not collide." That is the reviewer recommending
+# the shared-file serialization the PLANNER has just been told is not an edge —
+# and the planner is now insulated from that pressure while the reviewer is not.
+# `dependency_semantics_block` was fed at TWO of the three surfaces that argue
+# about edges. It is now fed at all three, from the one function.
+#
+# THE RISK RUNS THE OTHER WAY and these checks guard it: the reviewer's job
+# includes demanding a MISSING edge, and the same drive showed it doing that job
+# well. Nothing here may make it likelier to wave a real edge through.
+repo="$(new_repo plan-review)"
+cp "$FIX/pre-review-plan.json" "$(mdir "$repo")/plan.json"
+run_stage "$repo" plan-review "$FIX/pre-review-plan.json"
+RV_PROMPT="$PROMPT"
+assert_has "8a the reviewer's prompt carries the dependency framing" \
+           '"Comes after" is not a dependency' "$RV_PROMPT"
+assert_has "8b …including the SHARED-FILE paragraph its measured objection contradicted" \
+           "already composes" "$RV_PROMPT"
+assert_has "8c …and S178's balance reaches the reviewer intact" \
+           "This is NOT an instruction to declare FEWER dependencies" "$RV_PROMPT"
+assert_has "8d …and a ticket that CREATES substrate is still a REAL edge" \
+           "is a real edge and must be declared" "$RV_PROMPT"
+# A reviewer-specific FRAME, because the block is written to the ticket AUTHOR.
+# It must say out loud that the definition cuts BOTH ways.
+assert_has "8e …framed for a reviewer, cutting BOTH ways" \
+           "IN BOTH DIRECTIONS" "$RV_PROMPT"
+assert_has "8f …with a MISSING edge named as the worse defect to object to" \
+           "undeclared is the WORSE" "$RV_PROMPT"
+# ONE copy per prompt — the property 1k/1o pin on the planner's side.
+nrv="$(printf '%s\n' "$RV_PROMPT" | grep -c 'Comes after')"
+assert_eq  "8g …exactly once" "$nrv" "1"
+# NO NEW DE-SERIALIZING PRESSURE. The framing is not a queue verdict: a branching
+# plan's reviewer still hears no queue signal at all, and no wave-count target is
+# ever set for it.
+assert_no  "8h a branching plan's reviewer still hears no queue signal" \
+           "dependency-queue" "$RV_PROMPT"
+assert_no  "8i …and is never given a wave-count target" "wave count" "$RV_PROMPT"
+assert_no  "8j …and is never told to minimise anything" "minimis" "$RV_PROMPT"
+# The independence guarantee is untouched: still tickets only, never the brief.
+assert_no  "8k …and the reviewer still never receives the PRD" "/prd.md" "$RV_PROMPT"
+assert_has "8l …its blindness to the brief stated as before" \
+           "you carry no planning context" "$RV_PROMPT"
+# ONE SOURCE, now THREE call sites — still one copy of the prose in run.sh.
+assert_eq  "8m the prose is STILL in exactly ONE place in run.sh" \
+           "$(grep -c '"Comes after" is not a dependency' "$SCRIPT")" "1"
+
+# ===========================================================================
+section "PART 9 — the queue detector reads the waves SCHEDULE will build (D-8)"
+# ===========================================================================
+# MEASURED, serial draw 322. A genuine 12-wave queue whose t-012 (an orchestrator)
+# depended on ALL eleven predecessors raised NO signal, and the serial warning
+# fell through to "could not attribute this shape". Draw 321 — the SAME brief, the
+# same 12 waves, a pure chain — was named correctly. The old predicate bailed on
+# `len(deps) != 1` for any ticket, so a fan-in tail was invisible.
+#
+# The cure applies THIS session's own D-2 lesson. D-2 was a false claim caused by
+# the signal computing the shape with a DIFFERENT reader than Schedule used. The
+# queue condition is no longer a hand-matched graph shape at all: it is the wave
+# layout `compute_waves` itself produces from the declared dependencies — all one
+# ticket wide, over N >= 6. It catches the integrator tail, catches every other
+# 1-wide shape, and by construction cannot disagree with what Schedule builds.
+#
+# mk_graph writes an explicit graph in the SAME canonical inline-array shape
+# mk_plan uses (a pretty-printed array would read as NO dependencies — 6a–6d).
+mk_graph() { # file  '[["t-001",[]],["t-002",["t-001"]], …]'
+  "$PY" - "$1" "$2" <<'MKGRAPH'
+import json, sys
+path, spec = sys.argv[1], json.loads(sys.argv[2])
+rows = []
+for n, (tid, deps) in enumerate(spec, 1):
+    rows.append("  {\n" + ",\n".join([
+        '    "id": "%s"' % tid,
+        '    "title": "Ticket %d"' % n,
+        '    "description": "Do the %dth piece of work."' % n,
+        '    "acceptanceCriteria": %s' % json.dumps(["piece %d behaves" % n]),
+        '    "estimatedReadLoc": 10',
+        '    "estimatedTestLoc": 10',
+        '    "estimatedNewLoc": 10',
+        '    "dependencies": %s' % json.dumps(deps),
+        '    "establishesSharedInfrastructure": false',
+        '    "rationale": "slice %d"' % n,
+    ]) + "\n  }")
+open(path, "w").write("[\n" + ",\n".join(rows) + "\n]\n")
+MKGRAPH
+}
+
+# The measured shape: an 11-chain whose 12th ticket fans in on all eleven.
+INTEG12="$TMPROOT/integrator12.json"
+"$PY" -c '
+import json,sys
+n=12
+spec=[("t-001",[])]
+for i in range(2,n): spec.append(("t-%03d"%i,["t-%03d"%(i-1)]))
+spec.append(("t-%03d"%n,["t-%03d"%i for i in range(1,n)]))
+print(json.dumps(spec))' >"$TMPROOT/integ12.spec"
+mk_graph "$INTEG12" "$(cat "$TMPROOT/integ12.spec")"
+
+# The CONTROL that must stay wide: eleven independent tickets and one integrator.
+WIDE12="$TMPROOT/wide12.json"
+"$PY" -c '
+import json
+spec=[("t-%03d"%i,[]) for i in range(1,12)]
+spec.append(("t-012",["t-%03d"%i for i in range(1,12)]))
+print(json.dumps(spec))' >"$TMPROOT/wide12.spec"
+mk_graph "$WIDE12" "$(cat "$TMPROOT/wide12.spec")"
+
+# Below the threshold: a 4-chain with an integrator tail — 5 waves of one, N<6.
+INTEG5="$TMPROOT/integrator5.json"
+"$PY" -c '
+import json
+spec=[("t-001",[])]
+for i in range(2,5): spec.append(("t-%03d"%i,["t-%03d"%(i-1)]))
+spec.append(("t-005",["t-%03d"%i for i in range(1,5)]))
+print(json.dumps(spec))' >"$TMPROOT/integ5.spec"
+mk_graph "$INTEG5" "$(cat "$TMPROOT/integ5.spec")"
+
+# (i) THE DEFECT.
+assert_eq "9a an integrator tail on a chain IS a queue" "$(shape "$INTEG12")" "12"
+# (ii) THE PIN — the signal's number is the wave count Schedule really builds.
+assert_eq "9b …and Schedule builds exactly that many waves" "$(waves_for "$INTEG12")" "12"
+assert_eq "9c …the same number the signal predicted" \
+          "$(waves_for "$INTEG12")" "$(shape "$INTEG12")"
+# (iii) it reaches the surfaces that argue about it.
+repo="$(new_repo plan)"
+run_plan_save "$repo" "$INTEG12"
+assert_eq  "9d an integrator-tail queue still SAVES" "$RC" "0"
+assert_has "9e …and raises the named signal at plan-save" "DEPENDENCY-QUEUE SIGNAL" "$OUT"
+repo="$(new_repo plan-review)"
+cp "$INTEG12" "$(mdir "$repo")/plan.json"
+run_stage "$repo" plan-review "$INTEG12"
+assert_has "9f …and the reviewer is handed it" "dependency-queue" "$PROMPT"
+repo="$(new_repo schedule)"; cp "$INTEG12" "$(mdir "$repo")/approved-plan.json"
+run_schedule "$repo"
+assert_has "9g …and the serial warning NAMES the queue instead of giving up" \
+           "CAUSE: the plan declares a dependency queue" "$OUT"
+assert_no  "9h …no longer falling through to 'could not attribute'" \
+           "could not attribute" "$OUT"
+
+# (iv) THE CONTROLS — nothing genuinely parallel is newly flagged.
+assert_eq "9i eleven independent tickets + an integrator are NOT a queue" \
+          "$(shape "$WIDE12")" ""
+assert_eq "9j …and still schedule into 2 waves" "$(waves_for "$WIDE12")" "2"
+assert_eq "9k a 5-ticket integrator is below the N>=6 threshold" "$(shape "$INTEG5")" ""
+assert_eq "9l a real branching graph is still not a queue" \
+          "$(shape "$FIX/pre-review-plan.json")" ""
+assert_eq "9m twelve independent tickets are still not a queue" "$(shape "$FLAT12")" ""
+# INFRA isolation is NOT a dependency queue. The shape cause must stay separable
+# (6E/6F) — the detector reads the DECLARED GRAPH's wave layout, and an all-infra
+# plan with no edges has a one-wave graph.
+assert_eq "9n twelve infra-true tickets with NO edges are not a queue" \
+          "$(shape "$INFRA12")" ""
+
+# (v) FAIL-SILENT, ALWAYS. The round-1 tester proved this across malformed plans;
+# it is pinned here so the rewrite cannot lose it. A signal that can fail a plan
+# would not be a signal: every one of these must print NOTHING and exit 0.
+shape_rc() { LCARS_PYTHON_BIN="$PY" bash "$SCRIPT" chain-shape-test --plan "$1" >/dev/null 2>&1; echo $?; }
+CYCLE="$TMPROOT/cycle.json"
+"$PY" -c '
+import json
+spec=[("t-001",["t-002"]),("t-002",["t-001"])]
+for i in range(3,7): spec.append(("t-%03d"%i,["t-%03d"%(i-1)]))
+print(json.dumps(spec))' >"$TMPROOT/cycle.spec"
+mk_graph "$CYCLE" "$(cat "$TMPROOT/cycle.spec")"
+DANGLE="$TMPROOT/dangle.json"
+"$PY" -c '
+import json
+spec=[("t-001",["t-999"])]
+for i in range(2,7): spec.append(("t-%03d"%i,["t-%03d"%(i-1)]))
+print(json.dumps(spec))' >"$TMPROOT/dangle.spec"
+mk_graph "$DANGLE" "$(cat "$TMPROOT/dangle.spec")"
+DUPE="$TMPROOT/dupe.json"
+"$PY" -c '
+import json
+spec=[("t-001",[]),("t-002",["t-001"]),("t-003",["t-002"]),
+      ("t-003",["t-002"]),("t-005",["t-003"]),("t-006",["t-005"])]
+print(json.dumps(spec))' >"$TMPROOT/dupe.spec"
+mk_graph "$DUPE" "$(cat "$TMPROOT/dupe.spec")"
+STRDEP="$TMPROOT/strdep.json"
+"$PY" -c '
+import re,sys
+src=open(sys.argv[1]).read()
+open(sys.argv[2],"w").write(src.replace("\"dependencies\": [\"t-001\"]","\"dependencies\": \"t-001\""))' \
+  "$CHAIN12" "$STRDEP"
+WRAP="$TMPROOT/wrapped.json"
+"$PY" -c '
+import json,sys
+json.dump({"tickets": json.load(open(sys.argv[1]))}, open(sys.argv[2],"w"), indent=2)' \
+  "$CHAIN12" "$WRAP"
+EMPTY="$TMPROOT/empty.json"; : >"$EMPTY"
+GARBAGE="$TMPROOT/garbage.json"; printf 'not json at all {{{\n' >"$GARBAGE"
+MISSING="$TMPROOT/does-not-exist.json"
+
+for f in CYCLE DANGLE DUPE STRDEP EMPTY GARBAGE MISSING; do
+  eval "p=\$$f"
+  assert_eq "9o[$f] a malformed plan says NOTHING" "$(shape "$p")" ""
+  assert_eq "9p[$f] …and NEVER exits nonzero"      "$(shape_rc "$p")" "0"
+done
+# The WRAPPER object is the one that is NOT rubble: `{"tickets": [ … ]}` parses to
+# the SAME twelve tickets under parse_plan_table, which is the reader Schedule
+# uses, so the honest answer is the one Schedule would act on — not silence. The
+# only invariant here is the one that always holds: it never exits nonzero.
+assert_eq "9o[WRAP] a wrapped plan answers what SCHEDULE would read" \
+          "$(shape "$WRAP")" "$(waves_for "$WRAP")"
+assert_eq "9p[WRAP] …and NEVER exits nonzero" "$(shape_rc "$WRAP")" "0"
+# A cycle still stops SCHEDULE (fail-closed there) — the SIGNAL going quiet must
+# not have made the real gate quiet too.
+repo="$(new_repo schedule)"; cp "$CYCLE" "$(mdir "$repo")/approved-plan.json"
+run_schedule "$repo"
+assert_eq "9q a dependency cycle still fails Schedule" "$RC" "1"
+
+# (vi) NO python. The detector is now parse_plan_table + compute_waves, both awk,
+# so the "absent python3" degenerate case cannot even arise.
+NOPY="$(LCARS_PYTHON_BIN=/nonexistent/python3 bash "$SCRIPT" chain-shape-test --plan "$CHAIN12" 2>/dev/null)"
+assert_eq "9r the detector needs no python at all" "$NOPY" "12"
+NOPY2="$(LCARS_PYTHON_BIN=/nonexistent/python3 bash "$SCRIPT" chain-shape-test --plan "$INTEG12" 2>/dev/null)"
+assert_eq "9s …on the integrator tail too" "$NOPY2" "12"
+
 echo
 printf 'wave-serialization: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
