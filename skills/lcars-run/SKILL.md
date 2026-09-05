@@ -513,8 +513,20 @@ worked in parallel; the shape does, and a plan whose graph collapsed into a queu
 says so in as many words:
 
 ```
-  Wave shape: 14 waves, 1 ticket each — NO parallelism. Every ticket waits for the one before it. If that is not genuinely true, the dependency graph is a queue and this run is as slow as it can possibly be.
+  Wave shape: 14 waves, 1 ticket each — NO parallelism. CAUSE: the plan declares a dependency queue — all 14 tickets form a single chain, each one depending on the ticket before it. If that chain is not genuinely true, this run is as slow as it can possibly be.
 ```
+
+On the serial branch it also NAMES ITS CAUSE (S181), because the two mechanisms
+that serialise a plan need different repairs: `CAUSE: infrastructure isolation`
+when every wave was an `establishesSharedInfrastructure` barrier, `CAUSE: the
+plan declares a dependency queue` when the declared graph is one chain. When BOTH
+are present it names both and says outright that repairing one alone will not
+widen the plan (clearing every flag leaves the chain, and the chain alone still
+gives one ticket per wave). The infrastructure remedy is worded off what was
+measured: a DECLARED flag is repaired in the declaration, an INFERRED one has no
+flag to clear and is repaired in the ticket text. When neither mechanism is
+measurable it names NO cause and says the shape could not be attributed — a cause
+is never inferred from the shape alone.
 
 The same signal rides the board card, under the `WAVE x/y · TICKET n/m` strip,
 and a compacted form rides `lcars run`'s per-Stage line and `events.jsonl`.
