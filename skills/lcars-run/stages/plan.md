@@ -114,6 +114,40 @@ for a feature. Using the runner is not establishing it.
   extends one that already exists. Creating the helper is establishing shared
   test infrastructure even though no config file is touched.
 
+**The test, in the confident direction.** `true` is a CLAIM, and the strongest
+form of it is one you can state: name the thing this ticket ESTABLISHES, and name
+what later work builds ON TOP OF it. When you can state both, declare `true` and
+do not hesitate — a missed `true` is the expensive direction, and the list above
+is exactly the substrate other tickets consume.
+
+Not being able to name the later consumers is NOT, on its own, a `false`. On the
+first tickets of a new codebase the consumers are not written yet; the substrate
+is still substrate. A `false` is a POSITIVE reading, not an absence of one — you
+must be able to positively recognise the ticket as one of the shapes below.
+
+**The shapes that are `false`** — described as shapes so you can recognise yours,
+not as examples to copy onto it. Where a shape here and the `true` list above both
+seem to describe your ticket, the list above wins:
+
+- A ticket that adds ONE MORE of a thing the repo already has a place for — its
+  own view, route, screen, component, endpoint, page — into a shell that ALREADY
+  EXISTS. It CONSUMES the substrate; it does not establish it. That its file is
+  important, or central, or read by everyone, does not make it infrastructure.
+- SEVERAL tickets each adding an ordinary ENTRY to ONE ALREADY-EXISTING shared
+  file — a rule in a stylesheet, an export in a barrel/index, an entry in a route
+  table. That is textual overlap between siblings, which is the scheduler's story
+  and NOT this flag's; none of those tickets is ESTABLISHING something the others
+  build on. Flagging one `true` for it buys nothing and costs every later ticket
+  a wave. This bullet does NOT reach the files in the `true` list above — a build,
+  compiler, test-runner or manifest config is substrate whoever writes into it.
+- A ticket whose only claim to `true` is that it comes FIRST, or is the biggest,
+  or "sets the direction". Order and size are not substrate.
+
+**The tie-breaker, and it is general: serialise when unsure.** Where you have
+weighed it and genuinely cannot tell, the answer is `true`. A wasted wave is
+cheaper than the blind-sibling failure, every time. Reach for `false` when you can
+positively recognise one of the shapes above, not when you are merely unsure.
+
 **Why it matters.** Tickets in the same wave are built in parallel and are BLIND
 to each other. Schedule puts every `true` ticket ALONE in its wave and pushes
 every later ticket into a LATER wave, so they build AGAINST the infrastructure

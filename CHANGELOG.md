@@ -4,6 +4,88 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.1 — the plan stops lying about what waits for what
+
+**Wave serialization (session 181).** A 12-ticket mission was scheduled as
+**12 waves of one ticket** — about 130 of its 160 minutes spent in Implement,
+roughly 2–3x the honest wall clock. The scheduler was never at fault:
+`compute_waves` is a correct layered-Kahn, and empty dependencies with no
+infrastructure flags provably yield ONE wave. The inputs were dishonest.
+
+Measured live on unchanged `main` before anything was changed — 9 draws, 108
+tickets, three briefs (`tests/drives/s181/BEFORE.md`): the Plan worker authors a
+**linear dependency chain on its first pass**, reproduced 2 of 3 draws. The
+competing theory is dead — the planner set `establishesSharedInfrastructure:
+true` **zero times in 108 tickets**, so a blanket of trues cannot have caused it.
+An older ledger entry blamed a field named `dependsOn`, which appears **zero
+times** in LCARS; the schema key is `dependencies`, so that diagnosis was void.
+
+The planner said why it chained, in two different voices: *"preserving
+top-to-bottom order"* (page order mistaken for a dependency) and *"chained on
+t-004 for shared-file serialization"* (file contention mistaken for one).
+
+- **One definition of a dependency, on all three surfaces.** The "what a
+  dependency IS / two tickets adding into the same shell are SIBLINGS" framing
+  existed only on the revision path, behind a file-exists check, so a first pass
+  never saw a word of it. It is now one shared block fed to the first-pass Plan
+  prompt, the revision contract, and **Plan Review** — which was measured telling
+  a planner to *"chain the section tickets via dependencies"*, the exact edge the
+  planner had just been told not to declare.
+- **Shared-file safety is not a dependency, and now the prompt says why.** The
+  harness already composes same-file sibling edits: green tickets replay in plan
+  order and only a real collision rebuilds on the tip. Declaring the edge pays
+  full serial wall-clock up front for a guarantee already owned. The S156 line is
+  drawn explicitly — a ticket that CREATES what another builds ON TOP OF is still
+  a real edge.
+- **Calibrated infrastructure guidance**, with the `true` list winning wherever
+  the lists overlap and **"serialise when unsure"** stated as the general
+  tie-breaker.
+- **A dependency-queue signal** routed to Plan Review, with provenance and an
+  events marker. Soft by construction — never a rejection; a flagged plan still
+  saves, advances and schedules.
+- **The serial warning names its cause** — a declared queue, declared
+  infrastructure, both, or an honest "could not attribute" when it cannot tell.
+
+**A latent blind-sibling bug, found on the way and fixed by ruling.**
+`parse_plan_table` read `dependencies` only from the line the key sat on, so a
+pretty-printed array — what a default JSON dump produces — made Schedule
+**silently discard every dependency** and build every ticket in one blind wave.
+That is the failure class the wave-isolation round exists to prevent, inherited
+and reproducing on `main`. Fixed by mirroring the accumulator S174 already added
+one function above; `validate_plan_json` carried the identical defect on the same
+field and moved with it (it now sees ids it previously could not, so it can only
+reject more, never less).
+
+That also cured this round's own worst defect: the new signal parsed plans with
+`json.load` while Schedule parsed with awk, so on a pretty-printed plan it told
+the reviewer *"Schedule will build 12 waves"* while Schedule built **one**. Both
+now read through `parse_plan_table`, and the detector calls **`compute_waves`
+itself** — so the signal and the scheduler cannot disagree, and a queue with an
+integrator tail is no longer invisible.
+
+**Measured result** (`tests/drives/s181/AFTER.md`), same fixture, live:
+**2 of 3 draws chained → 0 of 7.** Controls held — an independent plan stayed
+wide, a genuinely serial pipeline stayed 12 waves, and a greenfield scaffold
+ticket kept its infrastructure flag 5/5. Best draw: challenged about a shared
+registry, the planner **invented one foundational ticket** and hung twelve
+siblings off it — 2 waves instead of 13.
+
+**The reviewer was checked for damage, not assumed safe.** Teaching it "siblings
+share a wave" could have made it soft on genuinely missing edges, so two plans
+with one planted defect each were fed to both builds: **8 of 8 caught**, and the
+new reviewer explains itself in the new terms — *"it READS the formatCurrency
+module"*. Not blunted; slightly sharper.
+
+Suites: wave-serialization **173/0** (new) · wave-isolation 131/0 ·
+plan-validator 130/0 · replan-overcorrection 166/0 · slice-pressure 10/0.
+
+Known blind spots, stated rather than papered over: every live draw was
+**Copilot**, so a live Claude planner is unproven; **Implement was never
+entered**, so the wall-clock saving is inferred from wave shape and not observed;
+and the rates are small samples of a defect measured to be a lottery. Open and
+unruled: whether a design-token stylesheet counts as shared infrastructure — the
+planner flags it both ways and the reviewer accepts both.
+
 ## 2026.8.7 — the role fences are real
 
 **The worker fence (session 168).** Every cold worker LCARS spawns is described

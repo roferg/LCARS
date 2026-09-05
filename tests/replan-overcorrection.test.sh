@@ -373,11 +373,34 @@ if ( cd "$REPO_ROOT" && git show "${LCARS_BASE_REF:-HEAD}:skills/lcars-run/run.s
   norm() { sed -e 's#Your scratch output directory is: .*#Your scratch output directory is: <ODIR>#' \
                -e "s#$TMPROOT/e2e\.[A-Za-z0-9]*#<REPO>#g" \
                -e 's#/var/folders/[^ ]*#<TMP>#g' -e 's#^/tmp/[^ ]*#<TMP>#g' "$1"; }
+  # S181 RE-SCOPED THIS, deliberately. It asserted BYTE-IDENTITY on the premise
+  # that "nothing about a first plan may move" — which S178 was entitled to,
+  # because S178 changed only the revision path. S181 changes the first pass ON
+  # PURPOSE: the "what a dependency IS" framing was revision-only, and a MEASURED
+  # first-pass 12-ticket plan came back as a queue having never read a word of it.
+  # So the guard now permits EXACTLY ONE difference — the lines of the shared
+  # dependency_semantics_block — and still fails on anything else, in either
+  # direction. Once this round is committed the two prompts are identical again
+  # and the first branch takes over; the check reads the same either way.
+  LICENCE="$TMPROOT/dep-semantics-block.txt"
+  bash "$SCRIPT" dependency-semantics-block-test >"$LICENCE" 2>/dev/null || : >"$LICENCE"
   if diff <(norm "$NEW_PROMPT") <(norm "$BASE_PROMPT") >"$TMPROOT/prompt.diff" 2>&1; then
-    ok "8b a first plan's prompt is BYTE-IDENTICAL to the previous commit's"
+    ok "8b a first plan's prompt moves ONLY by the shared dependency framing (identical)"
   else
-    bad "8b a first plan's prompt is BYTE-IDENTICAL to the previous commit's"
-    sed -n '1,40p' "$TMPROOT/prompt.diff" | sed 's/^/       /'
+    diff -u <(norm "$BASE_PROMPT") <(norm "$NEW_PROMPT") >"$TMPROOT/prompt.udiff" 2>&1
+    n_removed="$(grep '^-' "$TMPROOT/prompt.udiff" | grep -vc '^---')"
+    n_unlicensed=0
+    while IFS= read -r dl; do
+      dl="${dl#+}"
+      [ -n "$dl" ] || continue
+      grep -Fqx -- "$dl" "$LICENCE" || n_unlicensed=$((n_unlicensed + 1))
+    done < <(grep '^+' "$TMPROOT/prompt.udiff" | grep -v '^+++')
+    if [ -s "$LICENCE" ] && [ "$n_removed" -eq 0 ] && [ "$n_unlicensed" -eq 0 ]; then
+      ok "8b a first plan's prompt moves ONLY by the shared dependency framing"
+    else
+      bad "8b a first plan's prompt moves ONLY by the shared dependency framing ($n_removed removed, $n_unlicensed unlicensed added)"
+      sed -n '1,40p' "$TMPROOT/prompt.diff" | sed 's/^/       /'
+    fi
   fi
 else
   bad "8b could not read ${LCARS_BASE_REF:-HEAD}:skills/lcars-run/run.sh for the byte-identity baseline"
