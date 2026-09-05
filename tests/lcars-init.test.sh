@@ -1011,6 +1011,49 @@ WS_EOF
 check "S148 seed: EVERY seed literal ($ws_n) words out identically for a spaced and an unspaced scope" \
   "[ '$ws_bad' -eq 0 ]"
 
+# --- S182: an UNBORN HEAD gets an empty initial commit, announced ----------
+# LCARS proves every ticket against its PARENT COMMIT. A repo with no commits
+# has no parent, so Implement used to die on it mid-ticket — one `git commit`
+# standing between the captain and a working mission, discovered at the worst
+# possible moment. `lcars init` seeds it at setup, where it costs nothing.
+# It must be NON-DESTRUCTIVE: staged work stays staged, and a repo that already
+# has commits is not touched at all.
+ub="$(new_repo)"
+make_claude_stub "$ub/claude"; make_gh_stub "$ub/gh"
+export GH_LOG="$ub/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$ub/existing"; : >"$GH_EXISTING"
+printf 'staged\n' > "$ub/kept.txt"
+( cd "$ub" && git add kept.txt )
+check "S182: fixture really starts with an UNBORN head" \
+  "! ( cd '$ub' && git rev-parse --verify -q HEAD >/dev/null 2>&1 )"
+( cd "$ub" && LCARS_CLAUDE_BIN="$ub/claude" LCARS_GH_BIN="$ub/gh" bash "$SCRIPT" >out.txt 2>&1 )
+check "S182: init seeds an initial commit on a repo with no HEAD" \
+  "( cd '$ub' && git rev-parse --verify -q HEAD >/dev/null 2>&1 )"
+check "S182: the seeded commit is EMPTY (it commits nothing of the captain's)" \
+  "[ -z \"\$( cd '$ub' && git ls-tree -r --name-only HEAD )\" ]"
+check "S182: the captain's STAGED file is still staged, not swallowed by the seed" \
+  "( cd '$ub' && git diff --cached --name-only ) | qgrep -qx 'kept.txt'"
+check "S182: init ANNOUNCES the seeded commit in the readout" \
+  "qgrep -q 'seeded an empty initial commit' '$ub/out.txt'"
+check "S182: and says WHY (LCARS proves work against a parent)" \
+  "qgrep -qi 'proves work against a parent' '$ub/out.txt'"
+
+# A repo that ALREADY has commits must be left completely alone.
+hb="$(new_repo)"
+make_claude_stub "$hb/claude"; make_gh_stub "$hb/gh"
+export GH_LOG="$hb/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$hb/existing"; : >"$GH_EXISTING"
+( cd "$hb" && printf 'x\n' > a.txt && git add a.txt && git commit -qm real )
+HB_BEFORE="$( cd "$hb" && git rev-parse HEAD )"
+HB_COUNT_BEFORE="$( cd "$hb" && git rev-list --count HEAD )"
+( cd "$hb" && LCARS_CLAUDE_BIN="$hb/claude" LCARS_GH_BIN="$hb/gh" bash "$SCRIPT" >out.txt 2>&1 )
+check "S182: a repo that already has commits keeps the SAME HEAD" \
+  "[ \"\$( cd '$hb' && git rev-parse HEAD )\" = '$HB_BEFORE' ]"
+check "S182: and gains no extra commit" \
+  "[ \"\$( cd '$hb' && git rev-list --count HEAD )\" = '$HB_COUNT_BEFORE' ]"
+check "S182: and the seed line is NOT printed (nothing was seeded)" \
+  "! qgrep -q 'seeded an empty initial commit' '$hb/out.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"

@@ -62,6 +62,35 @@ if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
 fi
 CLAUDE_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null | head -1)"
 
+# --- S182: seed the first commit on an UNBORN HEAD ------------------------
+# LCARS proves every ticket against its PARENT COMMIT — the ticket's tests must
+# be RED on the parent and GREEN on the tip. A repo with no commits has no
+# parent, so Implement used to die on it mid-ticket: one `git commit` standing
+# between the captain and a working mission, discovered at the worst possible
+# moment (after the Mission was filed, researched, planned and scheduled).
+# Seed it HERE, at setup, where it costs nothing and can be announced.
+#
+# NON-DESTRUCTIVE BY CONSTRUCTION. This uses plumbing (empty tree → commit-tree
+# → update-ref) rather than `git commit --allow-empty`, because on an unborn
+# HEAD a captain may already have files STAGED and `git commit` would sweep them
+# into a commit LCARS invented. The plumbing path never reads or writes the
+# index or the working tree: the seeded commit is empty, and whatever the
+# captain had staged is still staged afterwards.
+#
+# Idempotent: a repo that already has a HEAD is not touched at all.
+SEEDED_INITIAL_COMMIT=0
+if ! git -C "$TOPLEVEL" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  SEED_TREE="$(git -C "$TOPLEVEL" hash-object -w -t tree /dev/null 2>/dev/null)"
+  SEED_COMMIT=""
+  [ -n "$SEED_TREE" ] && SEED_COMMIT="$(git -C "$TOPLEVEL" commit-tree "$SEED_TREE" \
+      -m "initial commit (seeded by lcars init)" 2>/dev/null)"
+  if [ -n "$SEED_COMMIT" ] && git -C "$TOPLEVEL" update-ref HEAD "$SEED_COMMIT" 2>/dev/null; then
+    SEEDED_INITIAL_COMMIT=1
+  else
+    SEEDED_INITIAL_COMMIT=2   # usually a missing user.name / user.email
+  fi
+fi
+
 # --- LOCAL: scaffold .git/lcars/ -----------------------------------------
 mkdir -p "$MISSIONS_DIR"
 
@@ -358,6 +387,10 @@ fi
 
 # --- OUTPUT: readiness summary --------------------------------------------
 echo "  ✓ .git/lcars/ created"
+case "$SEEDED_INITIAL_COMMIT" in
+  1) echo "  ✓ seeded an empty initial commit — LCARS proves work against a parent commit (tests red on the parent, green on the tip); your staged/untracked files were left exactly as they were" ;;
+  2) echo "  ⚠ this repo has no commits and one could not be seeded (is git user.name/user.email set?) — LCARS proves work against a parent commit, so make the first one yourself: git commit --allow-empty -m \"initial commit\"" ;;
+esac
 echo "  ✓ config.json written  (stack: $PERSISTED_STACK, model: $PERSISTED_MODEL, context: $PERSISTED_CONTEXT, tests: $PERSISTED_TESTCMD)"
 [ -n "${LCARS_CONFIG_ADDED_KEYS:-}" ] && echo "    keys seeded: $LCARS_CONFIG_ADDED_KEYS"
 echo "  ✓ Claude CLI verified  ($CLAUDE_VERSION)"

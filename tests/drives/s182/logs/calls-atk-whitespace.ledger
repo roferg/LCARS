@@ -1,0 +1,4 @@
+# invocation ledger: calls-atk-whitespace
+# SPAWN = a paid worker hire; PROBE = a --version capability check
+SPAWN	claude	-p # LCARS Context-Pack generator  You are a one-shot worker. Your single job is to read this repository and write a dur
+SPAWN	claude	-p # Implement — Unified TDD worker (cold worker)  You are the LCARS Implementer, a fresh stateless session that owns 

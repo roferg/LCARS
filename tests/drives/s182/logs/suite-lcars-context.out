@@ -1,0 +1,27 @@
+lcars context — the durable repo context source (session 44)
+  [32mPASS[0m 1. resolver prints the generated pack path
+  [32mPASS[0m 1. the pack file was actually created in .git/lcars/
+  [32mPASS[0m 1. the context-pack worker was invoked exactly once
+  [32mPASS[0m 1. NO CONTEXT.md was created in the working tree
+  [32mPASS[0m 1. working tree stays CLEAN (git status --porcelain unchanged)
+  [32mPASS[0m 1. the context worker runs read-only (no Bash/Edit)
+  [32mPASS[0m 2. resolver returns the existing pack path
+  [32mPASS[0m 2. the worker was NOT invoked (pack reused, not regenerated)
+  [32mPASS[0m 2. the pre-existing pack content is untouched
+  [32mPASS[0m 3. resolver returns the repo-root CONTEXT.md
+  [32mPASS[0m 3. NO pack was generated (worker never invoked)
+  [32mPASS[0m 3. no context-pack.md exists under .git/lcars/
+  [32mPASS[0m 3b. a CONTEXT.md added after init still wins (resolver returns it)
+  [32mPASS[0m 3b. no pack generated despite config contextFile=null
+  [32mPASS[0m 4. Validate worker prompt names the context source path
+  [32mPASS[0m 4. Plan worker prompt names the context source path
+  [32mPASS[0m 4. Plan-Review worker prompt names the context source path
+  [32mPASS[0m 4. Plan-Review prompt is NOT fed the prd.md PATH (independence preserved)
+  [32mPASS[0m 4. Plan-Review prompt is NOT fed the validated-plan.md PATH
+  [32mPASS[0m 4. unified TDD worker prompt names the context source path
+  [32mPASS[0m 4. PURITY: research-questions prompt does NOT name the pack path
+  [32mPASS[0m 4. PURITY: research-agent prompt does NOT name the pack path
+  [32mPASS[0m 4. PURITY: research-questions prompt has NO injected '## Repo context' block
+  [32mPASS[0m 4. PURITY: research-agent prompt has NO injected '## Repo context' block
+
+lcars context: 24 passed, 0 failed

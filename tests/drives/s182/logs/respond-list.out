@@ -1,0 +1,1 @@
+lcars respond: unknown subcommand ''. Usage: respond.sh list | show --mission <id> | answer --mission <id> --answer "<text>".

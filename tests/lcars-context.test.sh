@@ -341,7 +341,11 @@ state_at "$mrI" implement
 cat > "$mrI/waves.json" <<'JSON'
 [ { "wave": 1, "tickets": ["t-001"] } ]
 JSON
+# S182: this fixture is about the worker PROMPT, not about the no-runner wall —
+# give it a testCommand so it gets past the pre-worker guard (a repo with NO
+# test command now parks before any worker is hired, which is the point of S182).
 ( cd "$rI" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_TEST_CMD=true \
     bash "$SCRIPT" implement-ticket --mission lcars-20260530-001 --ticket t-001 >/dev/null 2>&1 )
 check "4. unified TDD worker prompt names the context source path" \
   "prompt_of '$WORKER_CALLS' implement-tdd | qgrep -qF '$(pack_path "$rI")'"

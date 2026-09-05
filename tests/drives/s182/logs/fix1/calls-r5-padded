@@ -1,0 +1,3 @@
+SPAWN	claude	-p # LCARS Context-Pack generator  You are a one-shot worker. Your single job is to read this repository and write a dur
+SPAWN	claude	-p # Implement — Unified TDD worker (cold worker)  You are the LCARS Implementer, a fresh stateless session that owns 
+SPAWN	claude	-p # Implement — Unified TDD worker (cold worker)  You are the LCARS Implementer, a fresh stateless session that owns 

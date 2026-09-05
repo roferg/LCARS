@@ -6316,6 +6316,23 @@ resolve_test_cmd() {
   printf '%s' "$c"
 }
 
+# --- is there NO test command at all? (S182 fix round 1) --------------------
+# The S182 wall asked `[ -z "$(resolve_test_cmd)" ]`, and a hand-edited
+# `"testCommand": "   "` is not empty — so the wall did not fire and the ENTIRE
+# pre-S182 burn reproduced exactly (workers hired against a repo that can never
+# prove them). `lcars update --test-command '   '` correctly refuses, so only a
+# hand-edited config.json reaches it; a wall with a hole in it is still a hole.
+#
+# Blankness is decided by DELETING every whitespace character (spaces, tabs,
+# newlines, CR/FF/VT — not just spaces) and asking whether anything is left.
+# This is ONLY a blankness TEST: the command itself is never rewritten, so a
+# real command carrying padding ("  npm test  ") is still RUN, verbatim, exactly
+# as before. Any command holding a single non-whitespace character survives.
+test_cmd_is_blank() { # → 0 when this repo has no runnable test command at all
+  case "$(resolve_test_cmd | tr -d '[:space:]')" in '') return 0 ;; esac
+  return 1
+}
+
 # --- S106: multi-stack isolation seam --------------------------------------
 # The Implement red gate proves the Test-Writer's suite FAILS-first, scoped to
 # ONLY the ticket's tests. The default (js/python) mechanism POINTS the runner at
@@ -7622,6 +7639,167 @@ impl_park_env_cannot_test() { # ticket  reason-text
   echo "  No Test-Writer retry can conjure a test runner; this needs a human call."
   echo "  Resolve with:  $(respond_hint)"
   exit 0
+}
+
+# --- impl_park_ticket_blocked: the PRE-WORKER honest wall (S182) ------------
+# Same gate shape as impl_park_env_cannot_test above (pending.json + the BUG-027
+# structured fields + awaitingHuman + the label overlay + exit 0), but the
+# headline, the summary, the question and the event category come from the
+# CALLER. That is the whole point of S182: the two facts LCARS already knows
+# before it hires anybody — "this repo has no test command" and "this repo has
+# no commits" — are DIFFERENT problems, and a park that recites the generic
+# environment-cannot-test text names neither of them. A park that describes the
+# wrong problem is what sent captains looking at worker quality while the real
+# answer was one config key away.
+#
+# S182 fix round 1 — the SUBJECT is now optional. These walls fire from TWO
+# places: inside a ticket (subject = that ticket's id) and, since the hoist, at
+# the top of the implement STAGE, before any ticket has been picked and before
+# the context-pack hire (subject = ""). An empty subject renders mission-level
+# wording rather than naming a ticket the wall never looked at.
+park_subject() { # subject-id → the sentence's subject
+  case "${1:-}" in '') printf 'This mission' ;; *) printf 'Ticket %s' "$1" ;; esac
+}
+impl_park_ticket_blocked() { # subject  reason  summary  question  headline  detail-line  category
+  local t="$1" reason="$2" summary="$3" question="$4" headline="$5" detail="$6" category="$7"
+  local q; q="$(mktemp)"
+  printf '%s\n' "$reason" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="$summary" \
+  LCARS_PENDING_ESCALATION_TYPE="cap" \
+  LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
+    write_pending "$q" "implement"
+  rm -f "$q"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "$question"
+  gh_relabel "lcars:awaiting-human" ""
+  # A stage-level park has no ticket, so it emits no `ticket=` field rather than
+  # an empty one — the events log never names a ticket this wall did not inspect.
+  local ev_subject="mission $MISSION_ID" label="mission $MISSION_ID"
+  local -a ev_fields=()
+  if [ -n "$t" ]; then
+    ev_subject="ticket $t"; label="$t"; ev_fields=("ticket=$t")
+  fi
+  emit_event ticket_blocked_preflight implement \
+    "$ev_subject parked before any worker was hired: $headline" \
+    ${ev_fields[@]+"${ev_fields[@]}"} "category=$category"
+  echo "IMPLEMENT: $headline — $label parked (awaiting-human)."
+  echo "  $detail"
+  echo "  Resolve with:  $(respond_hint)"
+  exit 0
+}
+
+# --- readiness_verdict: the SHARED test-readiness verdict, read lazily ------
+# `lcars init` / `lcars update` / `lcars status` / the viewscreen all speak ONE
+# test-readiness verdict (lcars_test_readiness in lcars-common.sh). When the
+# implement wall has to tell a captain WHY there is no runner it must speak that
+# same verdict rather than inventing a second opinion — "greenfield" has to mean
+# on the implement path exactly what it means in the init readout.
+#
+# Loaded LAZILY, the drive_load_base_lib / attachments_extra_block idiom: run.sh
+# is re-entered per Stage and per ticket, and this is consulted ONLY on the park
+# path, which spawns nothing and then exits. Sets, for the caller:
+#   READINESS_VERDICT  ready|missing|broken|unknown|ambiguous  ("" if unresolved)
+#   READINESS_LINE     the ONE human status line for that verdict ("" when ready)
+READINESS_VERDICT=""
+READINESS_LINE=""
+readiness_verdict() {
+  READINESS_VERDICT=""; READINESS_LINE=""
+  if ! command -v lcars_test_readiness >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v lcars_test_readiness >/dev/null 2>&1 || return 0
+  # detect_stack / detect_test_cmd read $TOPLEVEL; `local` is dynamically scoped
+  # in bash, so this reaches them without leaking into the rest of the driver.
+  local TOPLEVEL="${REPO_ROOT:-$PWD}"
+  lcars_test_readiness "${LCARS_CFG:-}" >/dev/null 2>&1 || return 0
+  READINESS_VERDICT="${LCARS_TESTREADY_STATUS:-}"
+  READINESS_LINE="$(lcars_readiness_line 2>/dev/null)"
+  return 0
+}
+
+# === S182/S183 SEAM — the NO-RUNNER decision ================================
+#
+# THE SEAM. Reached whenever `test_cmd_is_blank` holds — this repo has no test
+# command at all — from BOTH entry points: the top of the implement STAGE driver
+# (ahead of the context-pack hire, so the stage spends nothing) and the
+# implement-ticket preflight.
+#
+# WHY IT EXISTS. `runner_preflight_env_failure` returns 1 ("no env failure
+# detected") for an empty testCommand — a documented degradation everywhere
+# else, but on the implement path it meant the entire preflight escalation was
+# skipped and execution fell straight through to hiring a worker. The proof gates
+# then refused for want of a test command (rc 96), that refusal was read as
+# "the worker did bad work", and up to MAX_WORKER_TRIES fresh workers were hired
+# before the mission finally parked — talking about proof, not about the missing
+# runner. Three paid sessions to discover a fact that was true before the first
+# one started.
+#
+# THIS FUNCTION IS THE ONE PLACE THAT DECIDES. Today it has ONE arm: park,
+# honestly, having spawned nothing. SESSION 183 ADDS THE SECOND ARM HERE — on a
+# greenfield repo (readiness verdict `unknown`) INVITE the worker to establish a
+# test runner instead of parking. Add that branch inside this function; every
+# caller already routes through it, so nothing above needs to move.
+#
+# The flip-flop gate's rc 96 stays exactly as it is: with this wall in place it
+# is unreachable on the greenfield path, and it remains the honest backstop for
+# every path that is not this one. "Inconclusive is never a pass" is untouched.
+#
+# S182 fix round 1 — WHAT THIS MESSAGE MAY AND MAY NOT CLAIM. It used to READ
+# the `unknown` verdict as proof of a greenfield repo and advise "add a test
+# framework". `lcars_test_readiness` (lcars-common.sh) returns `unknown` whenever
+# `detect_test_cmd` finds no candidate REGARDLESS of how much code or how many
+# frameworks the repo holds — an npm-workspaces monorepo whose every package
+# runs tests, but whose ROOT has no `test` script, lands on `unknown` too. So the
+# verdict cannot carry the weight of "this repo has no test framework", and the
+# park told a repo with three of them to add one.
+#
+# The cure is the S156/S158 playbook: stop asserting the fact the signal cannot
+# support. The message now REPORTS the verdict, attributed, and offers BOTH next
+# steps — establish a runner, or point LCARS at one the repo already has — which
+# is correct whichever the repo turns out to be. `readiness_verdict` and
+# READINESS_VERDICT are untouched and still reached on every no-runner park:
+# S183 branches on greenfield-ness right here and needs them.
+impl_no_runner_decision() { # subject ("" at the stage level) → today ALWAYS parks
+  local t="$1"
+  readiness_verdict
+  local subject; subject="$(park_subject "$t")"
+  # Cite the shared verdict whenever there is one, so the implement wall and the
+  # init readout can never tell the captain two different stories — as a QUOTED
+  # verdict, never as LCARS's own conclusion about what this repo is.
+  local why=""
+  [ -n "$READINESS_LINE" ] && why="LCARS's test-readiness verdict for this repo: $READINESS_LINE"
+  impl_park_ticket_blocked "$t" \
+"$subject cannot start: no test command is configured for this repo, so LCARS has no way to prove any work — every ticket is proven by RUNNING its tests (red on the parent commit, green on the tip).${why:+
+$why}
+No worker was hired: LCARS stopped before spending anything, because a paid session here could not have been proven either way.
+What to do next — whichever fits this repo: establish a test runner here, or point LCARS at a runner this repo already has (that verdict is read at the REPO ROOT, so a monorepo whose packages test fine can still land on it). Either way, set the command with \`lcars update --test-command '<command>'\` (or \`lcars update --fix-tests\`, which walks you through it)." \
+"This repo has no test command configured, so LCARS cannot prove a ticket's work — and did not hire anyone to attempt it. Establish a test runner, or point LCARS at one with \`lcars update --test-command\`." \
+"$subject is blocked: no testCommand is configured for this repo, so LCARS cannot prove any work — needs a human (establish a test runner, or set testCommand with \`lcars update\`)." \
+"no test runner is configured" \
+"No worker was hired — no retry can conjure a test runner; this needs a human call." \
+"no-test-command"
+}
+
+# --- impl_park_no_parent_commit: the unborn-HEAD wall (S182) ----------------
+# The flip-flop gate proves fail-on-parent, and a repo with no commits has no
+# parent. That used to be a hard `die` mid-ticket — accurate, and useless: it
+# read as an LCARS crash rather than as one `git commit` standing between the
+# captain and a working mission. `lcars init` now seeds an empty initial commit
+# on a fresh repo, so this is the BACKSTOP for repos initialized before that.
+impl_park_no_parent_commit() { # subject ("" at the stage level) → parks (exits 0)
+  local t="$1"
+  local subject; subject="$(park_subject "$t")"
+  impl_park_ticket_blocked "$t" \
+"$subject cannot start: this repo has no commits, so there is no parent commit to prove work against — LCARS proves every ticket by showing its tests are RED on the parent commit and GREEN on the tip.
+No worker was hired: LCARS stopped before spending anything.
+What to do next: make the repository's first commit — \`git commit --allow-empty -m \"initial commit\"\` — and re-run this mission. (\`lcars init\` seeds this for you on a fresh repo.)" \
+"This repository has no commits yet, so LCARS has no parent commit to prove work against. Make the first commit (\`git commit --allow-empty -m \"initial commit\"\`) and re-run the mission." \
+"$subject is blocked: the repo has no commits, so LCARS has no parent commit to prove work against — needs a human (\`git commit --allow-empty -m \"initial commit\"\`, then re-run)." \
+"the repo has no parent commit" \
+"No worker was hired — proof needs a parent commit to be red against." \
+"no-parent-commit"
 }
 
 # === S111 Phase 3′: EVIDENCE-GATED DECLARED TEST SETUP ======================
@@ -14217,6 +14395,32 @@ cmd_implement_ticket() {
   local pf_pkg pf_dir
   pf_pkg="$(ticket_target_package "$TICKET")"
   pf_dir="$REPO_ROOT${pf_pkg:+/$pf_pkg}"
+  # --- S182: THE NO-RUNNER WALL (before ANY worker spend) -------------------
+  # This comes FIRST, ahead of the runner probe, because the probe cannot speak
+  # to it: `runner_preflight_env_failure` bails with "no env failure detected"
+  # when `resolve_test_cmd` is empty, so a repo with NO test command at all fell
+  # through this whole block and went shopping for workers. One clearly-named
+  # seam owns the decision — see impl_no_runner_decision (the S182/S183 seam).
+  #
+  # (The STAGE driver runs this same pair of walls before its context-pack hire,
+  # so on the `lcars run` path this is the second look, not the first. It stays
+  # because `implement-ticket` is its own entry point and must never be the hole.)
+  #
+  # test_cmd_is_blank, NOT `[ -z … ]`: a hand-edited "   " is not empty and slipped
+  # straight through the wall into the old burn.
+  if test_cmd_is_blank; then
+    impl_no_runner_decision "$TICKET"
+  fi
+
+  # --- S182: THE NO-PARENT-COMMIT WALL (before ANY worker spend) ------------
+  # Proof is fail-on-parent / pass-on-tip, so a repo with an UNBORN HEAD can
+  # never be proven. That was caught far downstream, by a `die` at the point the
+  # parent sha is first needed — AFTER the context-pack worker had already been
+  # paid for. Decide it here, with the other fact we already know.
+  if ! "$GIT_BIN" -C "$REPO_ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    impl_park_no_parent_commit "$TICKET"
+  fi
+
   # S133 SELF-HEAL: before escalating a dead runner to a human, re-apply the
   # captain's OWN declared worktreeSetupCommand ONCE and re-probe — a silent /
   # transient provisioning miss then clears itself instead of stranding a human
@@ -14331,8 +14535,12 @@ $tspecblock"
   # the last verdict quoted — NEVER a die. `lcars respond` + re-run resumes
   # (answers.json rides the next session's prompt).
   local parent_sha
+  # S182: an unborn HEAD is an ACTIONABLE park, not a die. `lcars init` seeds an
+  # empty initial commit on a fresh repo; this is the backstop for repos
+  # initialized before that, and it reaches the captain through the same gate
+  # every other blocked ticket does instead of looking like an LCARS crash.
   parent_sha="$("$GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" \
-    || die "no parent commit — the repo has no HEAD to prove fail-on-parent against (commit something first)."
+    || impl_park_no_parent_commit "$TICKET"
 
   local tdir; tdir="$(ticket_dir "$TICKET")"
   local sigfile="$tdir/gate-signal.txt"
@@ -14630,6 +14838,33 @@ cmd_implement() {
   locate_mission "$MISSION_ID"
   require_stage implement
   require_worker
+
+  # --- S182 fix round 1: THE WALLS RUN HERE, AHEAD OF THE FIRST HIRE ---------
+  # S182 put the no-runner / no-parent-commit walls in `implement-ticket`, which
+  # made "No worker was hired" true of THAT entry point and FALSE of the stage
+  # the captain actually runs: `lcars run` drives cmd_implement, and
+  # resolve_context_source below hires a Context-Pack worker BEFORE the wave loop
+  # reaches any ticket. Measured stage-level A/B on a greenfield repo: main 3
+  # paid hires, S182-as-shipped 1 — not the 0 the park claimed.
+  #
+  # Both facts are known RIGHT HERE, with nothing but locate_mission behind them:
+  # `resolve_test_cmd` reads $TEST_CMD_ENV + $LCARS_CFG (set by locate_mission),
+  # and the unborn-HEAD probe reads $REPO_ROOT (likewise). Neither consults a
+  # worker, a worktree, a wave or a ticket. So the walls move up to the first
+  # point they can be decided, ahead of ensure_mission_branch and ahead of the
+  # context-pack hire, and the stage genuinely spends ZERO.
+  #
+  # The subject is EMPTY because no ticket has been picked yet — the park speaks
+  # about the mission, and names no ticket it never looked at. A repo that HAS a
+  # runner and a HEAD does not enter either branch, so nothing about the normal
+  # path changes; the per-ticket walls stay where they are for the
+  # `implement-ticket` entry point.
+  if test_cmd_is_blank; then
+    impl_no_runner_decision ""
+  fi
+  if ! "$GIT_BIN" -C "$REPO_ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    impl_park_no_parent_commit ""
+  fi
 
   # (S133: the BUG-058 reconcile_tests pre-step for logged bugs is retired — the
   # unified TDD worker adapts a contradictory parent test itself, DECLARED in

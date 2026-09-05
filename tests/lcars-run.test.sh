@@ -53,6 +53,43 @@ ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
+# --- the fixture repo's TEST RUNNER (S182) ---------------------------------
+# Every repo LCARS drives through Implement has two facts true of it: it has a
+# parent commit, and it has a command LCARS can prove work with. `lcars init`
+# now seeds the first (an empty initial commit) and refuses to leave without the
+# second, and since S182 the Implement stage PARKS a repo missing either one
+# before it hires anybody. A fixture without them is therefore not a repo the
+# Implement path can ever see — the drive stops at the honest wall and the test
+# below it measures the wall, not its own subject.
+#
+# So the implement-stage fixtures carry both. The runner HONORS $LCARS_TESTS_DIR
+# — the runner-appropriate shape `lcars init` documents, and the shape the proof
+# gates need in order to scope a leg — and lives OUTSIDE every fixture repo, so
+# it can never be picked up as an untracked file by a ticket's commit. This is
+# the same runner shape as HONOR_RUNNER below, hoisted to the top of the file
+# because the fixtures that need it are defined (and called) long before that.
+FIXTURE_TEST_RUNNER="$TMPROOT/fixture-test-runner.sh"
+cat >"$FIXTURE_TEST_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Honors $LCARS_TESTS_DIR: green iff at least one quarantined file says EXPECT_GREEN.
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -gt 0 ] || { echo "quarantined tests dir empty" >&2; exit 1; }
+if grep -rq EXPECT_GREEN "$d"; then exit 0; fi
+echo "quarantined tests are RED (behaviour not built)" >&2
+exit 1
+EOF
+chmod +x "$FIXTURE_TEST_RUNNER"
+
+# Wire that runner in as the fixture repo's CONFIGURED testCommand — the fact
+# `lcars update --test-command` records. A drive that wants a different runner
+# still overrides it with LCARS_TEST_CMD, which wins over config.json.
+add_repo_test_command() { # repo
+  mkdir -p "$1/.git/lcars"
+  printf '{\n  "testCommand": "bash %s"\n}\n' "$FIXTURE_TEST_RUNNER" >"$1/.git/lcars/config.json"
+}
+
 # --- stubs ----------------------------------------------------------------
 # A fake `gh` that records every invocation to $GH_LOG and otherwise succeeds.
 make_gh_stub() {
@@ -87,7 +124,12 @@ set_state_title_json_escaped() { # repo raw-title
 # Echoes the repo path. Mission id is fixed: lcars-20260530-001, issue #42.
 new_repo_with_mission() {
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
-  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  # A SEEDED first commit, like every other repo fixture in this file. `lcars
+  # init` seeds an initial commit on a fresh repo, so an unborn HEAD is not a
+  # shape a filed mission can be sitting on; proof is fail-on-parent/pass-on-tip
+  # and there is no parent without one.
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && printf '# seed\n' > seed.md && git add seed.md && git commit -qm seed )
   local m="$repo/.git/lcars/missions/lcars-20260530-001"
   mkdir -p "$m"
   cat >"$m/prd.md" <<'EOF'
@@ -1234,6 +1276,10 @@ new_repo_with_implement_mission() {
   local m="$repo/.git/lcars/missions/$MID"
   write_approved_plan_json "$m/approved-plan.json"
   write_waves_json "$m/waves.json"
+  # A repo at Implement has a test command configured (S182 parks one that does
+  # not, before it hires anybody). Drives that need a different runner override
+  # it with LCARS_TEST_CMD, which beats config.json.
+  add_repo_test_command "$repo"
   echo "$repo"
 }
 
@@ -3165,6 +3211,9 @@ cat >"$mF2/state.json" <<EOF
   "githubIssue": 42
 }
 EOF
+# A repo at Implement has a test command configured — S182 parks one that does
+# not, before any worker is hired.
+add_repo_test_command "$repoF2"
 # All test infra lives OUTSIDE the repo tree so it never shows up as untracked.
 binF2="$TMPROOT/f2bin"; rm -rf "$binF2"; mkdir -p "$binF2"
 make_worker_stub_commit "$binF2/worker"; make_gh_stub "$binF2/gh"
@@ -3263,10 +3312,12 @@ new_repo_s30() { # [config-scratchGlobs-json-fragment]
 }
 EOF
   # config.json with optional extra scratchGlobs (Session 30 extensibility).
+  # testCommand is a REAL command: this is an implement-stage fixture, and since
+  # S182 a repo with none parks before any worker is hired.
   cat >"$repo/.git/lcars/config.json" <<EOF
 {
   "model": "claude-sonnet",
-  "testCommand": null,
+  "testCommand": "bash $FIXTURE_TEST_RUNNER",
   "comprehensionBudget": 1200${1:+,
   "scratchGlobs": $1}
 }
@@ -4357,6 +4408,10 @@ new_repo_par() { # echoes repo path
   "githubIssue": 42
 }
 EOF
+  # A repo at Implement has a test command configured — S182 parks one that
+  # does not, before any worker is hired, so a runner-less fixture would only
+  # ever measure that wall.
+  add_repo_test_command "$repo"
   echo "$repo"
 }
 
@@ -4677,6 +4732,10 @@ new_repo_samefile() { # echoes repo path
   "githubIssue": 42
 }
 EOF
+  # A repo at Implement has a test command configured — S182 parks one that
+  # does not, before any worker is hired, so a runner-less fixture would only
+  # ever measure that wall.
+  add_repo_test_command "$repo"
   echo "$repo"
 }
 
@@ -4888,6 +4947,10 @@ new_repo_bug15() { # echoes repo path
   "githubIssue": 42
 }
 EOF
+  # A repo at Implement has a test command configured — S182 parks one that
+  # does not, before any worker is hired, so a runner-less fixture would only
+  # ever measure that wall.
+  add_repo_test_command "$repo"
   echo "$repo"
 }
 
@@ -5049,6 +5112,10 @@ new_repo_bug16() { # echoes repo path
   "githubIssue": 42
 }
 EOF
+  # A repo at Implement has a test command configured — S182 parks one that
+  # does not, before any worker is hired, so a runner-less fixture would only
+  # ever measure that wall.
+  add_repo_test_command "$repo"
   echo "$repo"
 }
 
@@ -5170,6 +5237,11 @@ chmod +x "$FS_RUNNER"
 # expect the SAME built value v2 (so against built-state v2 BOTH are green).
 new_repo_fullsuite() { # builtValue
   local repo; repo="$(new_repo_with_implement_mission)"
+  # These drives run impl-advance, NOT implement/implement-ticket, so the S182
+  # no-runner wall never gates them — and each one supplies its own runner via
+  # LCARS_TEST_CMD. FS3's whole subject is the repo with NO runner at all, so
+  # drop the fixture's configured testCommand and let each drive decide.
+  rm -f "$repo/.git/lcars/config.json"
   printf '%s' "$1" >"$repo/built-state.txt"
   local m="$repo/.git/lcars/missions/$MID"
   local id
