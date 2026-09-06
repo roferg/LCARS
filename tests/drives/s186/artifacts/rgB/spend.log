@@ -1,0 +1,3 @@
+SPAWN	claude	billable=no	role=implement-tdd	ticket=?
+SPAWN	claude	billable=no	role=implement-tdd	ticket=?
+SPAWN	claude	billable=no	role=implement-tdd	ticket=?

@@ -328,6 +328,136 @@ ev_bullets() { # text → "- line" per non-empty line; "" when there are none
   done
 }
 
+# ---------------------------------------------------------------------------
+# S186 — PER-ARM FOUNDATION GUIDANCE
+# ---------------------------------------------------------------------------
+# The acceptance criterion below says "A TEST SYSTEM is installed and wired for
+# $STACK", which is true on every stack and useful on one. "Installed" is not
+# even the right verb outside JS: on Rust and Go there is nothing to install at
+# all, on .NET the runner is a PROJECT rather than a package, and on Ruby the
+# whole question is WHICH of two conventional frameworks — a decision an
+# initialization mission must MAKE, not leave open for a planner to discover
+# halfway down.
+#
+# So each arm gets a paragraph saying what ESTABLISHING A RUNNER MEANS there.
+#
+# ⚠ S179 DISCIPLINE, and it is the reason this text reads the way it does: these
+# are SLOT DESCRIPTIONS, and there is deliberately NOTHING COPYABLE in them. S179
+# exists because exemplars written as literal command lines were pasted verbatim
+# into the product by the model reading them — an example of a command becomes
+# THE command. Describe the slot to fill and let the implementer, who can see the
+# repo and the toolchain version, write the invocation.
+#
+# THE JS/TS ARM IS DELIBERATELY ABSENT. S184 shipped its PRD and S185 drove it;
+# adding a paragraph there would change the one path this round has already
+# proven, for no gain. `ev_stack_arm` returning "" is the normal, silent case.
+
+# ev_stack_arm — the captain's ACCEPTED STACK STRING is prose ("Vite + React +
+# Vitest", "Ruby on Rails"), not a classifier id, so the arm is read out of it by
+# the names a captain actually types. Order matters and is not alphabetical:
+# JS/TS is tested BEFORE the JVM because "JavaScript" contains "java", and the
+# word-boundary guard on `go` is there because "django", "mongo" and "logo" are
+# not the Go toolchain. Falls back to `detect_stack` on the tree, then to "" —
+# and "" simply means no paragraph, i.e. exactly the S184 template.
+ev_stack_arm() { # accepted-stack-string → a detect_stack id, or ""
+  local s; s="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  _m() { printf '%s' "$s" | grep -Eq "$1"; }
+  if _m '(^|[^a-z])(javascript|typescript|node|nodejs|deno|bun|js|ts)([^a-z]|$)' \
+     || _m '(react|vue|svelte|angular|next\.?js|nuxt|remix|vite|jest|vitest|express|nest)'; then
+    printf ''; return 0            # the js arm keeps S184's template verbatim
+  fi
+  if _m '(^|[^a-z])(\.net|dotnet|c#|csharp|asp\.net|blazor|maui|xunit|nunit|mstest)([^a-z]|$)'; then
+    printf 'dotnet'; return 0
+  fi
+  if _m '(^|[^a-z])(java|kotlin|scala|groovy|gradle|maven|spring|quarkus|micronaut|junit|testng)([^a-z]|$)'; then
+    printf 'jvm'; return 0
+  fi
+  if _m '(^|[^a-z])(rust|cargo|axum|actix|tokio|rocket)([^a-z]|$)'; then
+    printf 'rust'; return 0
+  fi
+  if _m '(^|[^a-z])(go|golang|gin|echo|chi|fiber)([^a-z]|$)'; then
+    printf 'go'; return 0
+  fi
+  if _m '(^|[^a-z])(ruby|rails|sinatra|hanami|rspec|minitest)([^a-z]|$)'; then
+    printf 'ruby'; return 0
+  fi
+  if _m '(^|[^a-z])(python|django|flask|fastapi|pytest|unittest|starlette)([^a-z]|$)'; then
+    printf 'python'; return 0
+  fi
+  local d; d="$(detect_stack 2>/dev/null)" || d=""
+  case "$d" in rust|go|python|ruby|dotnet|jvm) printf '%s' "$d" ;; *) printf '' ;; esac
+}
+
+ev_foundation_guidance() { # arm → the paragraph, or nothing at all
+  case "${1:-}" in
+    dotnet) cat <<'G'
+**Establishing the test system on this stack.** On .NET the runner is not a
+package you add to the project you already have — it is a SEPARATE TEST PROJECT,
+created from one of the SDK's own test templates, and then WIRED: referenced from
+the solution so the SDK's test driver discovers it, and referencing the project
+under test so it can see the code it is proving. State which template you are
+using and record the single command that runs the whole suite from the repo root.
+A test file with no project to live in, or a project the solution does not know
+about, is not an established test system.
+G
+      ;;
+    ruby) cat <<'G'
+**Establishing the test system on this stack.** On Ruby the runner is a CHOICE
+between two conventional frameworks — the RSpec one, and the one that ships in
+the standard library — and this mission must MAKE that choice and NAME WHICH. A
+foundation that names neither is not a foundation and will be sent back; there is
+no neutral answer here, because the directory layout, the file naming and the
+command that runs the suite all differ between them. Record the choice, the
+directory convention it implies, and the one command that runs the suite.
+Whichever is chosen, the runner has to be REACHABLE from a plain shell: a gem
+installed into a per-user gem directory whose bin directory is not on PATH is
+installed but not runnable, and a runner LCARS cannot invoke is not established.
+G
+      ;;
+    jvm) cat <<'G'
+**Establishing the test system on this stack.** On the JVM the runner comes from
+the BUILD TOOL, so the decision to state first is WHICH BUILD TOOL — the Gradle
+one or the Maven one — and the foundation is that tool's own generated project
+skeleton with its test source set, its test framework dependency and its test
+task already wired by the generator. Do not leave the build tool implicit for an
+implementer to guess, and do not hand-assemble what the tool's own initializer
+produces. Record the one command that runs the suite from the repo root.
+G
+      ;;
+    rust|go) cat <<'G'
+**Establishing the test system on this stack.** There is NOTHING TO INSTALL here:
+the test runner ships with the toolchain and is invoked by the toolchain's own
+test subcommand, which needs no dependency, no config file and no network.
+Establishing it therefore means seeding the project manifest (or module
+declaration) and the FIRST test in the layout the toolchain already discovers by
+convention, then recording the command that runs it. A declared install command
+on this stack is a sign the mission has misread its own ecosystem; a dev
+dependency is legitimate only when a specific test library is actually wanted,
+never to obtain a runner that is already there. One layout note that bites on
+this stack: where the ecosystem's usual habit is to keep unit tests INSIDE the
+source file, that file is still source, and test infrastructure declared to LCARS
+may never add source — so a test seeded that way belongs in the toolchain's own
+out-of-source test directory, which it discovers just as readily.
+G
+      ;;
+    python) cat <<'G'
+**Establishing the test system on this stack.** NAME the runner and say how it is
+REACHABLE — those are two separate facts and the second is the one that goes
+wrong. The standard library ships a test runner that needs no install at all and
+discovers tests by naming convention; it is the safe default, and on a managed
+interpreter it may be the only thing that works. A third-party runner is a
+perfectly good choice, but only if this mission also states WHERE it is installed
+from — a project virtual environment, or an isolated tool installer — and records
+a run command that reaches it from the repo root. If the interpreter refuses to
+install into itself because it is externally managed, that refusal is CORRECT and
+must be respected: switch to the standard library's runner or to a virtual
+environment. Never override the refusal — an interpreter broken to obtain a test
+runner is a worse outcome than the runner the interpreter already had.
+G
+      ;;
+  esac
+}
+
 # ev_prd — THE FENCE, BY CONSTRUCTION. The grill fills in the STACK, the REASONS
 # and the SLICE. It does not fill in the scope: Goal, Acceptance Criteria and
 # Out of Scope are this template's, so no amount of enthusiasm in the interview
@@ -340,6 +470,16 @@ ev_prd() {
   # this is an INITIALIZATION mission is carried by `missionType` in state.json,
   # which is what S185 keys off; the PRD's Type stays in the vocabulary every
   # other surface already speaks.
+  #
+  # S186 — the per-arm paragraph, or NOTHING. Composed here rather than inline in
+  # the template so that an empty result leaves the surrounding blank line
+  # untouched: on the js arm (and on any stack string LCARS cannot attribute) the
+  # PRD is byte-identical to the one S184 shipped and S185 drove.
+  local ev_g ev_block=""
+  ev_g="$(ev_foundation_guidance "$(ev_stack_arm "$STACK")")"
+  [ -n "$ev_g" ] && ev_block="
+$ev_g
+"
   cat <<PRD
 # Mission: $TITLE
 
@@ -374,7 +514,7 @@ screen or data model that is not the slice above.
 - The test system must be a REAL runner that a human can watch execute — the
   captain is at Verify precisely to see the suite run.
 - Existing code in this repo is not rewritten; the foundation is added alongside it.
-
+${ev_block}
 ## Context
 
 The project's vision — what this is eventually FOR, and every feature the

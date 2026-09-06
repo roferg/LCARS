@@ -2862,6 +2862,80 @@ $hit
 EV_PKG
   fi
 
+  # 3b. THE OTHER ECOSYSTEMS' MANIFESTS (S186). Step 3 reads package.json because
+  #     that is where a JS test system is declared; every other ecosystem declares
+  #     its own in its own build file, and NONE of them was being read. That is
+  #     not a cosmetic mislabel — the foundation gate HARD-REFUSES `untested`, so
+  #     a Gradle project with JUnit wired into its build, or a gem whose gemspec
+  #     declares a development dependency on a test framework, was being told to
+  #     Establish Vision on a project that already has a test system. This is the
+  #     worse of the two failures the header names, and these are the arms it hit.
+  #
+  #     POSITIVE EVIDENCE ONLY, as everywhere else here: each rule below names a
+  #     construct that appears when a test system is DECLARED, never the absence
+  #     of one. A build file with no test wiring produces no evidence and falls
+  #     through to the file-name and directory rules below, exactly as before.
+  #
+  #     NOT LISTED, deliberately: Cargo.toml `[dev-dependencies]` and go.mod. Both
+  #     were checked and both are already answered EARLIER, at step 2 — `_dtc_rust`
+  #     and `_dtc_go` yield `cargo test` / `go test ./...` from the manifest alone,
+  #     which names a runner and settles it. That is the same fact the rust/go
+  #     recipe rests on: the runner ships with the toolchain, so a crate or module
+  #     always has one. A rule here would be unreachable code.
+  #
+  #     .csproj test package references are likewise already covered, at step 4,
+  #     by `dotnet_csproj_is_test` (a Microsoft.NET.Test.Sdk reference, or the
+  #     *Tests*.csproj naming convention).
+  #
+  #     Gemfile / gemspec — a test GROUP, or a declared development dependency on
+  #     a test framework. `gem 'rspec'` at the top level of a Gemfile counts too:
+  #     a repo does not depend on a test framework by accident.
+  for f in Gemfile Gemfile.lock gems.rb; do
+    [ -f "$root/$f" ] || continue
+    if grep -Eq "group[[:space:]]*:?[[:space:]]*[:\"']?test" "$root/$f" 2>/dev/null \
+       || grep -Eq "gem[[:space:]]+[\"'](rspec|rspec-core|rspec-rails|minitest|test-unit|shoulda|cucumber)" "$root/$f" 2>/dev/null; then
+      printf 'a test group in %s' "$f"; return 0
+    fi
+  done
+  for f in "$root"/*.gemspec; do
+    [ -f "$f" ] || continue
+    if grep -Eq "add_(development_)?dependency[[:space:]]*[(]?[[:space:]]*[\"'](rspec|minitest|test-unit|cucumber|shoulda)" "$f" 2>/dev/null; then
+      printf 'a test framework in %s' "${f#$root/}"; return 0
+    fi
+  done
+
+  #     Gradle — a `testImplementation` / `testCompile` dependency, a JUnit
+  #     platform declaration, or a `test { … }` task block. Kotlin and Groovy DSL
+  #     spell all three the same way.
+  for f in build.gradle build.gradle.kts; do
+    [ -f "$root/$f" ] || continue
+    if grep -Eq '(testImplementation|testCompile|testRuntimeOnly|useJUnitPlatform|^[[:space:]]*(tasks\.named\(.test.\)|test[[:space:]]*\{))' "$root/$f" 2>/dev/null; then
+      printf 'test dependencies in %s' "$f"; return 0
+    fi
+  done
+
+  #     Maven — a test-scoped dependency, or the surefire/failsafe plugin that
+  #     runs one. `<scope>test</scope>` is the construct: it exists for no other
+  #     purpose than to put a dependency on the test classpath.
+  if [ -f "$root/pom.xml" ]; then
+    if grep -Eq '<scope>[[:space:]]*test[[:space:]]*</scope>|maven-(surefire|failsafe)-plugin' "$root/pom.xml" 2>/dev/null; then
+      printf 'a test-scoped dependency in pom.xml'; return 0
+    fi
+  fi
+
+  #     Python — the runner's own config table, a `test` extra, or setup.py's
+  #     tests_require. (pytest.ini / tox.ini / conftest.py are already step 1.)
+  if [ -f "$root/pyproject.toml" ]; then
+    if grep -Eq '^\[tool\.(pytest|tox|nox|hatch\.envs\.(test|default)\.scripts)' "$root/pyproject.toml" 2>/dev/null \
+       || grep -Eq '^[[:space:]]*(test|tests|testing|dev)[[:space:]]*=[[:space:]]*\[[^]]*(pytest|nose2|unittest|tox|hypothesis)' "$root/pyproject.toml" 2>/dev/null; then
+      printf 'a test configuration in pyproject.toml'; return 0
+    fi
+  fi
+  if [ -f "$root/setup.py" ] \
+     && grep -Eq 'tests_require|test_suite|(pytest|nose2)-runner' "$root/setup.py" 2>/dev/null; then
+    printf 'tests_require in setup.py'; return 0
+  fi
+
   # 4. dotnet test projects (the same detector `_dtc_dotnet` uses).
   if command -v detect_dotnet_test_projects >/dev/null 2>&1; then
     hit="$(detect_dotnet_test_projects 2>/dev/null | grep . | head -1)"

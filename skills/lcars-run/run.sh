@@ -8134,7 +8134,142 @@ What to do next: make the repository's first commit — \`git commit --allow-emp
 #   • evidence-gated — no observed env failure, no application (attempt-1 naked)
 #   • ADD-only — never overwrite an existing file, never anything under src/
 #   • bounded — ≤4 files, ≤20KB each, installCommand must be a package-manager
-#     invocation (pnpm/npm/yarn/bun; $LCARS_SETUP_INSTALL_ALLOW_RE overrides)
+#     invocation, per the PER-ARM TABLE below ($LCARS_SETUP_INSTALL_ALLOW_RE
+#     overrides the whole table)
+#
+# ---------------------------------------------------------------------------
+# S186 — THE INSTALL ALLOWLIST IS A TABLE, KEYED BY THE STACK
+# ---------------------------------------------------------------------------
+# S111 shipped ONE allowlist — `^(pnpm|npm|yarn|bun)[[:space:]]` — because the
+# only repo the declared-setup path ever ran on was a Node one. S185 pointed that
+# same path at the ROOT of the captain's repo on ANY stack, and a single JS
+# pattern is now wrong in both directions: too NARROW (a Rust or .NET
+# initialization mission cannot declare anything its own ecosystem needs, so the
+# arm is dead on arrival) and too WIDE (that mission could declare `npm install`,
+# and the root it would install into is the captain's).
+#
+# The cure is the S147 STAMP: one row per classifier arm, each admitting ONLY its
+# own ecosystem's package manager. The row keys are `detect_stack`'s vocabulary
+# and nothing else — a second stack taxonomy is how two detectors start
+# disagreeing about what a repo is.
+#
+# WHAT THIS DOES NOT CHANGE, and must not. The metacharacter guard further down
+# (S185 salvage DEFECT 5) is NOT per-arm and must never become per-arm: seven
+# patterns would be seven chances to reopen the hole `npm --version && touch
+# /tmp/PWNED` walked through, accepted AND executed. ADD-only, never `src/`, the
+# file-count and size caps, the workspace refusal and the probe-verified
+# `setup_ensure_runner` are equally untouched. This session widens the ALLOWLIST
+# and the TRIGGER; it never widens the mechanics.
+setup_install_allow_re() { # stack id → the ERE of installs admissible on that arm
+  case "${1:-}" in
+    # BYTE-IDENTICAL to the pre-S186 hardcoded pattern. The stamp ADDS rows; it
+    # does not edit the one that was already there and already driven.
+    js)     printf '^(pnpm|npm|yarn|bun)[[:space:]]' ;;
+    # rust / go — there is NOTHING TO INSTALL on these arms: `cargo test` and
+    # `go test` ship with the toolchain (measured on the build machine: a fresh
+    # `cargo init` and a fresh `go mod init` both run their tests with no install
+    # at all). The rows exist for the crate or module that genuinely wants a dev
+    # dependency (proptest, testify), never because the arm needs one to work.
+    rust)   printf '^(cargo|rustup)[[:space:]]' ;;
+    go)     printf '^go[[:space:]]+(get|mod|install|work)([[:space:]]|$)' ;;
+    # dotnet — establishing a runner here is a `dotnet new <template>` plus the
+    # references that make the SDK's test driver discover it, so `new`, `add`,
+    # `sln` and `restore` are all part of ONE recipe rather than an install.
+    dotnet) printf '^dotnet[[:space:]]+(new|add|sln|restore|tool)([[:space:]]|$)' ;;
+    ruby)   printf '^(bundle|gem)[[:space:]]' ;;
+    # python — pip / uv / poetry are PERMITTED here, which is a different
+    # question from what the initialization PRD RECOMMENDS. On a PEP-668
+    # externally-managed interpreter a bare `pip install` hard-refuses (measured
+    # on the build machine), which is exactly why the PRD's python guidance
+    # points at the standard library's own runner instead; plenty of machines
+    # have a virtualenv or a tool installer where these work fine, so the table
+    # keeps them. What LCARS must never do is escape the refusal — an interpreter
+    # broken to obtain a test runner is a worse outcome than no test runner.
+    python) printf '^(pip3?|uv|poetry|python3?[[:space:]]+-m[[:space:]]+pip)[[:space:]]' ;;
+    # jvm — the runner comes from the BUILD TOOL, so the admissible commands are
+    # the build tool's own. NOT EXECUTABLE on the build machine (no java, no
+    # gradle, no mvn): this row is proven as string logic and is ledgered
+    # transcript-only until a JDK is present.
+    jvm)    printf '^(\./)?(gradle|gradlew|mvn|mvnw)[[:space:]]' ;;
+    # NOTHING RESOLVED. A repo LCARS cannot attribute to an arm gets the UNION of
+    # the table, composed from the rows above so it can never drift from them.
+    # This errs the same way the foundation oracle does and for the same reason:
+    # refusing every install on an unattributable repo would strand the captain
+    # this whole round exists for, while a foreign-but-still-allowlisted install
+    # is one plain invocation, still metacharacter-guarded, still probe-verified,
+    # and still has to leave behind a runner LCARS can detect.
+    *)
+      local a out=""
+      for a in js rust go dotnet ruby python jvm; do
+        out="${out:+$out|}$(setup_install_allow_re "$a")"
+      done
+      printf '%s' "$out" ;;
+  esac
+}
+
+# _setup_stack_in — `detect_stack`'s answer for ONE directory, or "". The lib is
+# sourced on demand exactly as greenfield_detect_cmd does it, and $TOPLEVEL is
+# set with a `local` (dynamically scoped in bash) so the detector reads it
+# without anything leaking back out — the readiness_verdict idiom.
+_setup_stack_in() { # dir → the stack id, or ""
+  [ -n "${1:-}" ] && [ -d "$1" ] || return 0
+  if ! command -v detect_stack >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v detect_stack >/dev/null 2>&1 || return 0
+  local TOPLEVEL="$1"
+  detect_stack 2>/dev/null
+}
+
+# setup_stack_arm — WHICH ARM'S allowlist row governs this declaration. Three
+# sources, in the order of how much they know about the repo:
+#
+#   1. THE TREE, via `detect_stack` — the ground truth about what the project
+#      already is, and the only source on the evidence-gated package arm.
+#   2. THE DECLARATION ITSELF. On a genuinely blank repo — the day-zero case this
+#      round is for — the tree is silent, and the ONLY evidence of the ecosystem
+#      is the manifest the scaffold ticket is about to ADD. Read from the setup
+#      dir, which is `find`-able before a single file has been copied.
+#   3. THE REPO'S RECORDED STACK, seeded into config.json by `lcars init` from
+#      this same `detect_stack`. Last because a repo can be re-purposed and the
+#      tree is then more current than the record.
+#
+# Anything that does not land on a single known arm — `unknown`, or an
+# `ambiguous(a,b)` repo whose stack LCARS declines to guess — resolves to
+# `unknown`, whose row is the union. Refusing beats guessing everywhere in this
+# file EXCEPT here, where refusing means refusing a legitimate install.
+setup_stack_arm() { # setup-dir → one detect_stack id, or "unknown"
+  [ -n "${LCARS_SETUP_STACK:-}" ] && { printf '%s' "$LCARS_SETUP_STACK"; return 0; }
+  local s cfg
+  cfg="${REPO_ROOT:-$PWD}/.git/lcars/config.json"
+  for s in "$(_setup_stack_in "${REPO_ROOT:-$PWD}")" \
+           "$(_setup_stack_in "${1:-}")" \
+           "$([ -f "$cfg" ] && json_str "$cfg" stack)"; do
+    case "$s" in
+      rust|go|python|js|dotnet|jvm|ruby) printf '%s' "$s"; return 0 ;;
+    esac
+  done
+  printf 'unknown'
+}
+
+# setup_cmd_has_metachar — THE ONE DEFINITION of the S185 salvage DEFECT 5
+# guard, extracted here in S186 fix round 1 because there are TWO doors a
+# declared install walks through to `bash -c` — `apply_declared_setup` (the
+# manifest, first application) and `setup_reapply_in_worktree` (the RECORD,
+# re-applied in every gate worktree) — and only the first was checking. A
+# second copy of this character list is a second chance to reopen the hole
+# `npm --version && touch /tmp/PWNED` walked through, so there is one list and
+# both doors call it. The list itself is UNCHANGED, character for character.
+setup_cmd_has_metachar() { # command → 0 iff it carries a shell metacharacter
+  case "${1:-}" in
+    *';'*|*'&'*|*'|'*|*'<'*|*'>'*|*'`'*|*'$'*|*'('*|*')'*|*'{'*|*'}'*|*'\'*|*$'\n'*)
+      return 0 ;;
+  esac
+  return 1
+}
+
 SETUP_NOTE=""
 apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 rejected
   local mf="$1" sdir="$2" pkg="$3"
@@ -8162,9 +8297,13 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
     SETUP_NOTE="the manifest names package '$mpkg' but the observed gap is in '${pkg:-<repo root>}' — a declared setup must address the package the evidence is about"
     return 1
   fi
-  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-^(pnpm|npm|yarn|bun)[[:space:]]}"
+  # S186 — the allowlist is a TABLE keyed by the repo's stack (see
+  # setup_install_allow_re above): each arm admits ONLY its own ecosystem's
+  # package manager, and $LCARS_SETUP_INSTALL_ALLOW_RE still overrides the lot.
+  local arm; arm="$(setup_stack_arm "$sdir")"
+  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-$(setup_install_allow_re "$arm")}"
   if [ -n "$icmd" ] && ! printf '%s' "$icmd" | grep -Eq "$allow"; then
-    SETUP_NOTE="installCommand '$icmd' is not a plain package-manager invocation (must match: $allow)"
+    SETUP_NOTE="installCommand '$icmd' is not a plain package-manager invocation for this repo's stack ($arm) (must match: $allow)"
     return 1
   fi
   # S185 — ANCHOR THE ALLOWLIST AT THE OTHER END (salvage DEFECT 5, inherited
@@ -8181,12 +8320,9 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   # vitest`, `pnpm add -D jest`, `yarn add --dev mocha`) carry none of these;
   # chaining, substitution, redirection and subshells all do. Applied to BOTH
   # arms — the evidence-gated package path has exactly the same hole.
-  if [ -n "$icmd" ]; then
-    case "$icmd" in
-      *';'*|*'&'*|*'|'*|*'<'*|*'>'*|*'`'*|*'$'*|*'('*|*')'*|*'{'*|*'}'*|*'\'*|*$'\n'*)
-        SETUP_NOTE="installCommand '$icmd' contains a shell metacharacter — a declared install must be ONE plain package-manager invocation, never a chained, substituted, redirected or subshelled command"
-        return 1 ;;
-    esac
+  if [ -n "$icmd" ] && setup_cmd_has_metachar "$icmd"; then
+    SETUP_NOTE="installCommand '$icmd' contains a shell metacharacter — a declared install must be ONE plain package-manager invocation, never a chained, substituted, redirected or subshelled command"
+    return 1
   fi
   local dest="$REPO_ROOT${pkg:+/$pkg}"
   local n=0 f rel
@@ -8323,8 +8459,31 @@ setup_reapply_in_worktree() { # worktree-path
   pkg="$(json_str "$rec" package)"
   icmd="$(json_str "$rec" installCommand)"
   [ -n "$icmd" ] || return 0
-  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-^(pnpm|npm|yarn|bun)[[:space:]]}"
-  printf '%s' "$icmd" | grep -Eq "$allow" || return 0
+  # S186 fix round 1 — THE SAME TABLE, resolved for the tree being provisioned.
+  # This site carried its own copy of the pre-S186 hardcoded JS pattern, so every
+  # install-needing NON-JS arm (dotnet restore, bundle install, gradle) failed
+  # the match and the guard's `|| return 0` returned SUCCESS with the re-install
+  # silently skipped — a gate worktree with no runner, which is the exact failure
+  # this function exists to prevent. The arm is resolved from the GATE WORKTREE,
+  # because that is the tree being provisioned: $REPO_ROOT is overridden inside a
+  # command substitution (bash dynamic scoping, the _setup_stack_in idiom) so
+  # setup_stack_arm reads $wt and nothing leaks back out.
+  local arm allow
+  arm="$( REPO_ROOT="$wt"; setup_stack_arm "$wt" )"
+  allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-$(setup_install_allow_re "$arm")}"
+  # DEFENSE IN DEPTH, and SYMMETRIC with apply_declared_setup. What is re-read
+  # here is a RECORD on disk, not the manifest the apply path already judged, and
+  # it is handed to `bash -c` downstream — so it faces BOTH of that path's
+  # checks: the arm's allowlist and the one metacharacter definition above. A
+  # refusal is now SAID OUT LOUD (the old `|| return 0` left a human nothing to
+  # read) and still returns 0: this function is best-effort and must never abort
+  # a gate.
+  if ! printf '%s' "$icmd" | grep -Eq "$allow" || setup_cmd_has_metachar "$icmd"; then
+    emit_event test_setup_reapply_refused implement \
+      "the recorded declared-setup install '$icmd' was REFUSED in gate worktree $wt — it is not one plain package-manager invocation for this tree's stack ($arm); the gate runs against an UNPROVISIONED env" \
+      "ticket=${TICKET:-}" || :
+    return 0
+  fi
   local d="$wt${pkg:+/$pkg}"
   [ -d "$d" ] || return 0
   setup_ensure_runner "$d" "$wt" "$icmd" \
@@ -17679,6 +17838,35 @@ FSG_EOF
     printf 'DETECTED=%s\n' "$__gf_cmd"
     greenfield_record_cmd "$__gf_cmd"
     printf 'RECORD=%s\n' "$(greenfield_cmd_record)"
+    exit 0 ;;
+  # S186 test hooks — offline, free, inert for every real subcommand.
+  # The PER-ARM ALLOWLIST, resolved exactly as apply_declared_setup resolves it:
+  # which arm this repo (plus the declared setup dir in $SETUP) lands on, and the
+  # pattern that arm admits. Pure string logic — no mission, no worker, no
+  # install — which is what makes the 7x7 cross-arm refusal matrix cheap enough
+  # to assert exhaustively, and what lets the jvm arm be proven at all on a
+  # machine with no JDK.
+  setup-allow-re-test)
+    __sa_arm="$(setup_stack_arm "${SETUP:-}")"
+    printf 'ARM=%s\n' "$__sa_arm"
+    printf 'ALLOW=%s\n' "${LCARS_SETUP_INSTALL_ALLOW_RE:-$(setup_install_allow_re "$__sa_arm")}"
+    exit 0 ;;
+  # The REAL setup_reapply_in_worktree over a gate worktree given as the
+  # positional — the SECOND door the declared install goes through (post-commit /
+  # full-suite / reconcile), driven directly so what it re-applies (and what it
+  # refuses) is observable without standing up a gate. Offline: the only thing
+  # that runs is whatever the recorded installCommand names.
+  setup-reapply-test)
+    locate_mission "$MISSION_ID"
+    __sr_rc=0
+    setup_reapply_in_worktree "${POSARG:-}" || __sr_rc=$?
+    printf 'SRRC=%s\n' "$__sr_rc"
+    exit 0 ;;
+  # The REAL root detector on its own — `greenfield_detect_cmd`, the same one the
+  # scaffold arm gates on — with no mission needed. Behaviour 4 (rust/go need no
+  # install: detection alone gets ticket 2 a real gate) is exactly this call.
+  greenfield-detect-cmd-test)
+    printf 'DETECTED=%s\n' "$(greenfield_detect_cmd "${LCARS_GP_ROOT:-$PWD}")"
     exit 0 ;;
   # The mission's FIRST ticket, derived from the plan/wave ORDERING.
   init-first-ticket-test)

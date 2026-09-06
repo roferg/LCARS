@@ -1,0 +1,7 @@
+js: A R R R R R R
+rust: R A R R R R R
+go: R R A R R R R
+dotnet: R R R A R R R
+ruby: R R R R A R R
+python: R R R R R A R
+jvm: R R R R R R A
