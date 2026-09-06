@@ -186,6 +186,82 @@ if [ "$parked" -gt 0 ]; then
   exit 0
 fi
 
+# 3b. NO FOUNDATION AND NOTHING ON THE BOARD — the FRONT DOOR (S184).
+#
+# BOTH FRONT DOORS, ONE FLOW. Before this, `lcars` in a repo with no test system
+# walked the captain into `lcars file`, which refused him (S183, exit 4) and
+# printed instructions. That refusal is still there and still correct — it is the
+# BACKSTOP — but it is not what day zero should feel like. Here `lcars` STARTS
+# THE CONVERSATION instead: the same three screens the viewscreen renders, the
+# same facts, the same foundation brief, the same script filing the same
+# initialization mission. There is no second implementation of any of it.
+#
+# THE RULE IS NARROW, and deliberately so. It fires only when the verdict locks
+# AND this repo has nothing to put on a board — which is what `--facts`'
+# `frontDoor` answers. An initialized repo with a real board and a `untested`
+# verdict (measured: `Flappy-Bird`, two live missions) keeps its normal
+# behaviour, and S183's lock keeps applying to it exactly as today. Routes 1–3
+# above already exit on any pending/drivable/parked mission, so this is a
+# belt-and-braces agreement with the board, not the only guard.
+ESTABLISH_VISION="${LCARS_ESTABLISH_VISION_BIN:-$SKILL_DIR/../lcars-init/establish-vision.sh}"
+if [ -f "$ESTABLISH_VISION" ]; then
+  facts="$(bash "$ESTABLISH_VISION" --facts 2>/dev/null)" || facts=""
+  case "$facts" in
+    *'"frontDoor":true'*)
+      fnd="$(printf '%s' "$facts" | sed -n 's/.*"foundation"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+      label="$(printf '%s' "$facts" | sed -n 's/.*"stackLabel"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+      nsrc="$(printf '%s' "$facts" | sed -n 's/.*"sourceFiles"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')"
+      if [ "$fnd" = "untested" ]; then
+        # SCREEN 2 — it can SEE the code, so it does not ask what we are
+        # building. It REPORTS, and the first thing anyone pointing LCARS at
+        # real work wants to know is answered before they ask it.
+        cat <<SCREEN2
+◇ NO TEST SYSTEM
+
+  I can see the code. I can't prove a change.
+
+  Every LCARS ticket is proven by running its tests — red on the parent commit,
+  green on the tip. This project has no runner, so there is nothing to prove a
+  change with yet.
+
+  FOUND
+    Stack ........... ${label:-not recognised}
+    Source files .... ${nsrc:-0}
+    Test runner ..... none found
+    Proof ........... not possible yet
+
+  ▸ ESTABLISH TEST FOUNDATION — scope is the foundation only: a runner, a first
+    real test, and the wiring to run it. Your code is not touched.
+
+  Already have one? Point LCARS at it:
+    lcars update --test-command '<command>'
+SCREEN2
+      else
+        # SCREEN 1 — nothing is here, so nothing is withheld: one question.
+        cat <<SCREEN1
+◇ NEW PROJECT
+
+  What are we building?
+
+  Describe it however you like. LCARS will ask a few questions, recommend a
+  stack and say why, then build the foundation — a running skeleton with a
+  working test system — before any feature work starts.
+
+  ▸ ESTABLISH VISION — say what you want to build, and answer the grill.
+
+  Already have tests LCARS can't see? Point it at them:
+    lcars update --test-command '<command>'
+SCREEN1
+      fi
+      # The brief the grill runs under, printed so the captain and the model are
+      # reading the same contract (and so a CLI grill cannot quietly run under a
+      # different fence than the viewscreen's).
+      bash "$ESTABLISH_VISION" --brief 2>/dev/null
+      echo "ROUTE: vision"
+      exit 0 ;;
+  esac
+fi
+
 # 4. Nothing filed — enter the file flow (Claude runs the Align conversation).
 echo "No missions found — filing a new one."
 echo "ROUTE: file"

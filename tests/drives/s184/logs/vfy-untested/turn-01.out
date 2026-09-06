@@ -1,0 +1,15 @@
+● List repo files (shell)
+  │ cd /private/tmp/s184-untested && git ls-files | head -50 && echo "---" && ls -la
+  └ 13 lines…
+
+● Read source files (shell)
+  │ cd /private/tmp/s184-untested && cat README.md package.json && echo "=== app.js ===" && cat
+  │ src/app.js && echo "=== index.js ===" && cat src/index.js
+  └ 12 lines…
+
+✗ Check node version (shell)
+  │ cd /private/tmp/s184-untested && node --version
+  └ Permission denied and could not request permission from user
+
+{"status":"question","question":{"text":"You've got a tiny plain-Node CommonJS project (`total` + `categorise`) with a bare package.json and zero dependencies. For pinning your first behaviour, I'd recommend Node's **built-in test runner** — `node:test` + `node:assert`, run with `node --test`. Nothing to install, no config, no new toolchain; it just runs your existing `src/index.js` as-is. Does that suit you, or would you rather I wire up Vitest or Jest instead?","choices":["Node built-in (node:test) — zero install","Vitest","Jest"],"recommended":"Node built-in test runner (node:test + node:assert)"},"prd":""}
+

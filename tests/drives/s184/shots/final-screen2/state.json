@@ -1,0 +1,23 @@
+{
+ "frontDoorVisible": true,
+ "bodyClass": "lcars-serve on-front-door",
+ "columnsInDom": 0,
+ "visibleColumns": 0,
+ "cardsInDom": 0,
+ "visibleCards": 0,
+ "fileBtnPresent": true,
+ "fileBtnDisabled": true,
+ "frontDoorButtons": [
+  {
+   "label": "▸ Establish test foundation",
+   "disabled": false,
+   "visible": true
+  },
+  {
+   "label": "I have one — point LCARS at it",
+   "disabled": false,
+   "visible": true
+  }
+ ],
+ "frontDoorText": "◇ No test systemI can see the code.I can't prove a change.Every LCARS ticket is proven by running its tests — red on the parent commit, green on the tip. This project has no runner, so there's nothing to prove a change with yet.StackReact + ViteSource files5Test runnernone foundProofnot possible yet▸ Establish test foundationI have one — point LCARS at itScope is the foundation only: a runner, a first real test, and the wiring to run it. Your code is not touched."
+}

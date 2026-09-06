@@ -185,6 +185,12 @@ _branch_source_desc() {
 # re-grilling the PRD would loop forever.
 FOUNDATION_GATE="${LCARS_FOUNDATION_GATE_BIN:-$FILE_SKILL_DIR/../lcars-init/foundation-gate.sh}"
 _foundation_gate() {
+  # S184 — the INITIALIZATION mission is the ONE exemption, and it is the point
+  # of the exemption that it is narrow: this is the mission that ESTABLISHES the
+  # foundation, filed by Establish Vision, so gating it on the foundation
+  # existing would make the gate unsatisfiable. Every other filing on this repo
+  # — grill-first, --park, a hotkey, the board — still hits the wall.
+  [ "${INITIALIZATION:-0}" = "1" ] && return 0
   [ -f "$FOUNDATION_GATE" ] || return 0
   local out rc
   out="$(bash "$FOUNDATION_GATE" 2>/dev/null)"; rc=$?
@@ -777,12 +783,24 @@ ATTACHMENTS=()
 # filing lands. Absent both flags, this script is BYTE-IDENTICAL to grill-first.
 MODE=""            # "" (grill-first) | park | complete
 COMPLETE_ID=""     # the mission id for --complete
+INITIALIZATION=0   # --initialization (S184: the Establish Vision mission)
 IDEA_SRC=""        # --idea <file> (verbatim idea capture)
 ENGINE=""          # --engine claude|copilot (parked mission's workerBin)
 POSITIONAL=()      # bare args = the park idea text
 while [ $# -gt 0 ]; do
   case "$1" in
     --park)  MODE="park"; shift ;;
+    # S184 — the INITIALIZATION mission. `lcars file` is the ONE filer, so
+    # Establish Vision files through it rather than minting a mission of its
+    # own; this flag is the only thing that distinguishes the two. It does TWO
+    # things and nothing else: it EXEMPTS this filing from the S183 foundation
+    # gate (which exists to refuse NORMAL missions on a repo with no test
+    # system — refusing the mission that BUILDS the test system would be the
+    # gate eating its own purpose), and it stamps `missionType` into state.json
+    # so S185 can recognise the mission whose first ticket may take the audited
+    # scaffold waiver. Every other lane is untouched, and a mission filed
+    # without it carries no `missionType` key at all.
+    --initialization) INITIALIZATION=1; shift ;;
     --complete)   MODE="complete"; COMPLETE_ID="${2:-}"; shift 2 ;;
     --complete=*) MODE="complete"; COMPLETE_ID="${1#--complete=}"; shift ;;
     --idea)   IDEA_SRC="${2:-}"; shift 2 ;;
@@ -1076,6 +1094,10 @@ write_state() { # issue-json (a number or the literal `null`)
     printf '  "id": "%s",\n' "$ID"
     printf '  "type": "%s",\n' "$TYPE"
     printf '  "title": "%s",\n' "$title_json"
+    # S184 — the mission TYPE, present ONLY on an initialization mission, so
+    # every mission filed before this round (and every normal one after it)
+    # carries a byte-identical state.json.
+    [ "${INITIALIZATION:-0}" = "1" ] && printf '  "missionType": "initialization",\n'
     printf '  "stage": "align",\n'
     printf '  "created": "%s",\n' "$NOW"
     printf '  "model": "%s",\n' "$MODEL"

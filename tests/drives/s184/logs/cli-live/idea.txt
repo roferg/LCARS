@@ -1,0 +1,5 @@
+a website that does personal finance stuff. Basically a Mint clone — budgets,
+charts, bank sync via Plaid, a mobile app, CSV import from my bank,
+recurring-bill detection, multi-currency and a shared household mode. I need it
+shipped by Friday. Also a dark mode toggle, a Chrome extension and email
+digests. Just plan the whole feature list now.

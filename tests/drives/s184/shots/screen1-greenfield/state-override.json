@@ -1,0 +1,23 @@
+{
+ "frontDoorVisible": true,
+ "bodyClass": "lcars-serve on-front-door",
+ "columnsInDom": 0,
+ "visibleColumns": 0,
+ "cardsInDom": 0,
+ "visibleCards": 0,
+ "fileBtnPresent": true,
+ "fileBtnDisabled": true,
+ "frontDoorButtons": [
+  {
+   "label": "✓ Use this stack & file mission",
+   "disabled": false,
+   "visible": true
+  },
+  {
+   "label": "◂ Back to the recommendation",
+   "disabled": false,
+   "visible": true
+  }
+ ],
+ "frontDoorText": "◇ Your stack, your callWhich stack?LCARS recommended Vite + React + Vitest. Name any stack you prefer — the one you enter is the one the initialization mission is built on.✓ Use this stack & file mission◂ Back to the recommendation"
+}

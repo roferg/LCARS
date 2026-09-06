@@ -1,0 +1,17 @@
+◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+
+This repo is empty — there is no code and no test system here yet.
+
+Every LCARS ticket is proven by RUNNING its tests — red on the parent commit,
+green on the tip. With no test system there is no way to prove any work, so a
+mission filed here would burn its Research, Validate and Plan stages and then
+stop dead at Implement with nothing to show for it.
+
+WHAT TO DO INSTEAD — Establish Vision. Say what you want to build; LCARS grills
+you, recommends a stack with its reasons (yours to override), and files an
+INITIALIZATION mission whose whole job is the foundation: a running skeleton
+with a working test system, and you at Verify to watch the suite actually run.
+Normal missions unlock the moment that lands.
+
+If this repo DOES already have a test system and LCARS just cannot see it, point
+LCARS at it instead:  lcars update --test-command '<command>'

@@ -3473,6 +3473,16 @@ class EmptyPreviewIsLegibleTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+        # S184: the scrim's stops moved into `--holo-floor-mask`, one shared
+        # definition for every surface that stands on the deck floor. That prop
+        # lives on `body.lcars-serve` (ADR-007 — a surface-local prop, never a
+        # forked --lcars-* token) and `load_stylesheets` harvests only
+        # :root/html, so fold those in before resolving.
+        for r in cls.rules:
+            if r.selector == "body.lcars-serve":
+                for prop, value, _imp in r.decls:
+                    if prop.startswith("--"):
+                        cls.vars[prop] = value
 
     def _rule(self, selector):
         found = [r for r in self.rules if r.selector.replace(" ", "") == selector]
@@ -3480,9 +3490,12 @@ class EmptyPreviewIsLegibleTest(unittest.TestCase):
         return found[-1]
 
     def _decl(self, rule, prop):
+        """The value that reaches the screen, var()s expanded — so a rule that
+        reads a shared token is measured on the PIXELS it produces, not on the
+        spelling of its declaration."""
         for p, v, _imp in rule.decls:
             if p == prop:
-                return v
+                return css.resolve_value(v, self.vars)
         return None
 
     def test_the_body_copy_resolves_to_the_bright_text_not_the_dim_one(self):

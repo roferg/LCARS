@@ -147,7 +147,7 @@ class LocalAdapter(object):
 
     def __init__(self, repo_root, read_only=False, git_url_reader=None,
                  readiness_script=None, base_freshness_script=None,
-                 host_adapter_script=None):
+                 host_adapter_script=None, establish_vision_script=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -167,6 +167,12 @@ class LocalAdapter(object):
         self._readiness_script = readiness_script
         self._readiness_memo = None   # (config_mtime, payload-or-None)
         self._foundation_memo = None  # (detect-sig, locked-verdict-or-None)
+        # S184: ((detect-sig, mission-count), front-door-payload-or-None). The
+        # mission count is IN the key because the door must lift the moment the
+        # initialization mission lands — a signature keyed on files alone would
+        # keep serving the front door over a board that now has a card on it.
+        self._front_door_memo = None
+        self._establish_vision_script = establish_vision_script
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
         # S160: the shared base-freshness reporter
         # (skills/lcars-init/base-freshness.sh — the read-only sibling of
@@ -297,6 +303,24 @@ class LocalAdapter(object):
             f = self._foundation_only()
             if f is not None:
                 meta["foundation"] = f
+        # S184: THE FRONT DOOR. `meta.foundation` says the repo is locked;
+        # `meta.frontDoor` says the board is REPLACED by the Establish Vision
+        # screen — and those are NOT the same question. The front door takes over
+        # only when there is NOTHING TO PUT ON THE BOARD, which is the captain's
+        # own wording of the ruling. Measured on his machine: `Flappy-Bird` is an
+        # initialized repo whose verdict is `untested` and which carries TWO real
+        # missions; keying the front door off the verdict alone would have DELETED
+        # that board and hidden both missions behind "What are we building?".
+        #
+        # So the key is POSITIVE and narrow: present only when the helper says
+        # frontDoor:true (locked verdict AND zero missions). Absent ⇒ the board
+        # renders exactly as it does today, with S183's lock still in force on it.
+        # A repo that could file before this round carries no `frontDoor` key at
+        # all and its payload is byte-identical.
+        if meta.get("foundation"):
+            fd = self._front_door()
+            if fd is not None:
+                meta["frontDoor"] = fd
         # S168: the FORGE HOST this repo lives on, for the board's "view on
         # GitHub" links. Purely ADDITIVE and present ONLY on a non-github.com
         # host: `gh_hostname` returns EMPTY for github.com (and for a repo with
@@ -582,6 +606,68 @@ class LocalAdapter(object):
             verdict = None
         self._foundation_memo = (key, verdict)
         return verdict
+
+    def _front_door(self):
+        """The FRONT DOOR payload — the `untested` screen's FOUND panel, or None.
+
+        Shells `skills/lcars-init/establish-vision.sh --facts`, the ONE detector
+        behind both front doors (ADR-002 — the daemon dispatches, it never
+        reimplements the rule in Python), so the stack and the source-file count
+        the board prints are the same numbers `lcars` prints on the CLI.
+
+        None whenever the helper says the board should render — including the
+        `Flappy-Bird` case (a locked verdict WITH missions) — and whenever it is
+        missing, slow or unparseable: an absence of information never replaces a
+        captain's board. Memoized on the detection-marker signature plus the
+        mission count, so the door lifts the instant the initialization mission
+        lands and a re-render does not re-shell.
+        """
+        try:
+            n_missions = len(os.listdir(self.missions_dir)) \
+                if os.path.isdir(self.missions_dir) else 0
+        except OSError:
+            n_missions = 0
+        key = (self._detect_signature(), n_missions)
+        if self._front_door_memo is not None and self._front_door_memo[0] == key:
+            return self._front_door_memo[1]
+        payload = None
+        script = self._resolve_establish_vision_script()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--facts"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=10)
+            blk = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+            if isinstance(blk, dict) and blk.get("frontDoor") is True:
+                payload = {
+                    "foundation": blk.get("foundation"),
+                    "foundationWhy": blk.get("foundationWhy"),
+                    "stack": blk.get("stack"),
+                    "stackLabel": blk.get("stackLabel"),
+                    "sourceFiles": blk.get("sourceFiles"),
+                    "testRunner": blk.get("testRunner"),
+                }
+        except Exception:
+            payload = None
+        self._front_door_memo = (key, payload)
+        return payload
+
+    def _resolve_establish_vision_script(self):
+        """establish-vision.sh: injected → env → in-repo → installed. Mirrors
+        `_resolve_readiness_script` exactly, so a test can point both at a stub
+        with one override."""
+        if self._establish_vision_script:
+            return self._establish_vision_script
+        env = os.environ.get("LCARS_ESTABLISH_VISION_BIN")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "establish-vision.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        return os.path.join(os.path.expanduser("~"), ".claude", "skills",
+                            "lcars-init", "establish-vision.sh")
 
     def _main_launch(self):
         """The local main-deploy record → the additive meta.mainLaunch payload,

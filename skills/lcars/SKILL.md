@@ -57,6 +57,45 @@ the free-form idea, grill to a PRD, then persist via `file.sh` (see the
 `lcars-file` skill for the full procedure). After it's filed, a plain `lcars`
 auto-advances it.
 
+## When the route is `vision` — run the Establish Vision flow (S184)
+
+This repo has **no test foundation** and nothing on its board. The router has
+already printed the front door and the **foundation brief** — read them; they
+are the same screens and the same brief the viewscreen shows, and the brief is
+the contract you are running under.
+
+Do NOT tell the captain the repo is unusable and do NOT run `lcars file` — a
+normal mission is refused here (exit 4), correctly. Instead:
+
+1. **Grill him with the existing Align procedure** (the `lcars-file` skill's
+   grilling guidance), pointed at a **PROJECT** rather than a feature. On a
+   `greenfield` repo, start from what he wants to build. On an `untested` repo
+   **do not ask what he is building** — LCARS can see the code; ask only what it
+   cannot see (which runner suits this codebase, what one existing behaviour a
+   first test should pin).
+2. **Hold the scope fence.** The mission you are producing builds a running
+   skeleton, a working test system, and ONE thin vertical slice that proves
+   both. Every feature he names is **recorded and deferred**, never planned. A
+   vision that specifies twelve features has failed.
+3. **Recommend, don't decide.** End with ONE concrete stack ("Vite + React +
+   Vitest") and 2–4 reasons in HIS language about HIS idea. Say plainly that he
+   can override it, and if he does, **his choice is what gets filed**.
+4. **File it through the one machinery** — never assemble a PRD yourself:
+
+```bash
+bash ~/.claude/skills/lcars-init/establish-vision.sh --file \
+  --idea    <file with his idea, verbatim> \
+  --stack   '<the stack he ACCEPTED>' \
+  --reasons <file, one reason per line> \
+  --deferred <file, one deferred feature per line> \
+  --slice   '<the one thin vertical slice>'
+```
+
+That writes the durable project vision to `.git/lcars/vision.md`, assembles the
+foundation-scoped PRD, and files the **initialization mission** through
+`lcars file --initialization`. Read back the mission id it prints and tell him
+`lcars run <id>` takes it from here.
+
 ## When the route is `inbox`
 
 The router already delegated to `lcars answer list` and its output is shown.
