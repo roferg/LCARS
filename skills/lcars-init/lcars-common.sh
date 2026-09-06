@@ -2578,12 +2578,30 @@ lcars_test_readiness_status() {
   LCARS_TESTREADY_SUGGESTION=""
   LCARS_TESTREADY_STACKS=""
   LCARS_TESTREADY_CANDIDATES=""
+  LCARS_TESTREADY_BROKEN_WHY=""
 
   local tc=""
   [ -f "$config" ] && tc="$(lcars_config_get "$config" testCommand)"
 
   if [ -n "$tc" ]; then
     LCARS_TESTREADY_TESTCMD="$tc"
+    # S185 fix round 1 — A COMMAND NO SHELL CAN PARSE IS NOT "ready".
+    # The only check below is that the FIRST TOKEN resolves, so a testCommand
+    # that had been truncated mid-quote —
+    #   npx vitest run ${LCARS_TESTS_DIR:+\
+    # — still reported `ready` (and `foundation: ready`, which is what unlocks
+    # `lcars file` and the holodeck) purely because `npx` is on PATH. Every gate
+    # runs the command through `bash -c`, so `bash -n` asks exactly the question
+    # the gate will ask, and it stays CHEAP: it PARSES, it never executes.
+    #
+    # This is NOT a check that the runner is genuine — that question is retired
+    # by design (the captain at Verify is the proof). It only refuses to call a
+    # string a command when no shell can read it as one.
+    if ! bash -n -c "$tc" >/dev/null 2>&1; then
+      LCARS_TESTREADY_STATUS="broken"
+      LCARS_TESTREADY_BROKEN_WHY="unparseable"
+      return 0
+    fi
     # First token of the command (no glob expansion — `read` splits safely).
     local first rest
     read -r first rest <<EOF2
@@ -3076,6 +3094,14 @@ DN_ALT
 lcars_readiness_line() {
   case "${LCARS_TESTREADY_STATUS:-}" in
     broken)
+      # S185 fix round 1 — two shapes of `broken`, and naming the first token of
+      # a command that does not PARSE would blame the wrong thing ("runner npx
+      # not operational" about a perfectly good npx).
+      if [ "${LCARS_TESTREADY_BROKEN_WHY:-}" = unparseable ]; then
+        printf '⚠ TEST SYSTEMS OFFLINE — the configured testCommand is not a command any shell can parse (%s); missions cannot be proof-gated. Repair: lcars update --test-command '"'"'<command>'"'"'\n' \
+          "$LCARS_TESTREADY_TESTCMD"
+        return 0
+      fi
       printf '⚠ TEST SYSTEMS OFFLINE — testCommand runner "%s" not operational; missions cannot be proof-gated. Repair: lcars update --fix-tests\n' \
         "$(printf '%s' "$LCARS_TESTREADY_TESTCMD" | awk '{print $1}')"
       ;;

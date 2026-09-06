@@ -113,6 +113,86 @@ emit_event() { # type stage detail
     "$ts" "$mid" "$stage" "$type" "$detail" >>"$MISSION_DIR/events.jsonl"
 }
 
+# === S185: PROMOTION AT APPROVE ============================================
+# An INITIALIZATION mission (state.json `missionType: "initialization"`, stamped
+# by Establish Vision → file.sh) exists to build the repo's test foundation. Its
+# scaffold ticket ESTABLISHES a runner, and run.sh records that command
+# MISSION-LOCALLY at `<mission>/test-command.json` — deliberately NOT in the
+# repo's config.json, because the runner exists only on the mission BRANCH until
+# merge, and repo config is shared with every sibling mission.
+#
+# APPROVE IS NOT MID-MISSION. The PR has merged: the setup files are now on the
+# base branch, so the command is a fact about the REPO and belongs in repo
+# config. Writing it here is what unlocks everything downstream — the S183
+# foundation gate reads `testCommand` through `lcars_test_readiness`, so `lcars
+# file` and the holodeck stop refusing the moment this lands, and the board's
+# own foundation payload flips with it.
+#
+# Ordering is load-bearing: this runs ONLY after a SUCCESSFUL merge (inside
+# do_merge, past the merge gate), never on the merge-failed path.
+promote_test_command() {
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  [ "$(json_str "$STATE" missionType)" = "initialization" ] || return 0
+  local rec="$MISSION_DIR/test-command.json" cmd=""
+  # The SANCTIONED shared lib (lcars-common.sh) — the ONE home of BOTH halves of
+  # this promotion: the escape-aware reader `lcars_config_get` and the writer
+  # `lcars_config_set_or_add_string`. Located FIRST, because without it there is
+  # nothing here that can read the record honestly.
+  local lib="${LCARS_COMMON_LIB:-$SELF_DIR/../lcars-init/lcars-common.sh}"
+  if [ ! -f "$lib" ]; then
+    echo "  ⚠ NOTE — lcars-common.sh is not available, so this initialization mission's established test command was NOT promoted to .git/lcars/config.json. Point LCARS at the runner the mission built:  lcars update --test-command '<command>'" >&2
+    emit_event foundation_not_promoted done \
+      "initialization mission merged but lcars-common.sh was unavailable, so repo config was NOT written; the captain must set testCommand"
+    return 0
+  fi
+  # S185 FIX ROUND 1 — READ IT WITH THE ESCAPE-AWARE READER, NOT approve's own.
+  # approve's local json_str stops at the FIRST `\"`, and EVERY command the real
+  # detector emits embeds quotes (VITEST_RELATIVIZING_CMD, the jest/mocha/
+  # `npm test --` arms, pytest). Read through it, the record
+  #   "npx vitest run ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR#\"$PWD/\"}\"}"
+  # promoted as
+  #   npx vitest run ${LCARS_TESTS_DIR:+\
+  # — a fragment no shell can parse, promoted into repo config as the fact that
+  # unlocks `lcars file` and the holodeck. `lcars_config_get` is the reader
+  # run.sh's json_str mirrors; it is used here on the mission-local record for
+  # exactly the same reason it is used on config.json. Sourced in a SUBSHELL —
+  # see the write below: nothing the lib defines may reach do_merge's helpers.
+  [ -f "$rec" ] && cmd="$( . "$lib" >/dev/null 2>&1 \
+                           && command -v lcars_config_get >/dev/null 2>&1 \
+                           && lcars_config_get "$rec" testCommand )"
+  if [ -z "$cmd" ]; then
+    # The mission never recorded an established runner. Say so — silence here
+    # would leave the captain with a "done" initialization mission and a repo
+    # that still refuses to file a normal one, with nothing explaining why.
+    echo "  ⚠ NOTE — this initialization mission recorded no established test command, so nothing was promoted to .git/lcars/config.json. Point LCARS at the runner the mission built:  lcars update --test-command '<command>'" >&2
+    emit_event foundation_not_promoted done \
+      "initialization mission merged but recorded no established test command — repo config was NOT written; the captain must set testCommand"
+    return 0
+  fi
+  local gitdir; gitdir="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" || return 0
+  case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+  local cfg="$gitdir/lcars/config.json"
+  [ -f "$cfg" ] || { echo "  ⚠ NOTE — no .git/lcars/config.json to promote '$cmd' into." >&2; return 0; }
+  # The SANCTIONED writer (lcars-common.sh) — the same primitive
+  # `lcars update --test-command` uses, so there is exactly one way repo config
+  # ever gains a testCommand. Sourced in a SUBSHELL: this runs in the middle of
+  # do_merge, after the merge and before the stage flip, and approve.sh's own
+  # helpers (die / json_str / state_set_str / emit_event) must not be reachable
+  # by anything the lib might define. The subshell writes the file and exits;
+  # nothing it defines survives. ($lib was located and checked above.)
+  if ! ( . "$lib" >/dev/null 2>&1 \
+         && command -v lcars_config_set_or_add_string >/dev/null 2>&1 \
+         && lcars_config_set_or_add_string "$cfg" testCommand "$cmd" ); then
+    echo "  ⚠ NOTE — could not write testCommand into $cfg; set it with: lcars update --test-command '$cmd'" >&2
+    return 0
+  fi
+  emit_event foundation_promoted done \
+    "test foundation PROMOTED to repo config on merge — testCommand: $cmd. Normal missions and the holodeck are unlocked for this repo."
+  echo "  ◇ FOUNDATION ESTABLISHED — testCommand promoted to .git/lcars/config.json: $cmd"
+  echo "    Normal missions and the holodeck are unlocked for this repo."
+  return 0
+}
+
 # --- folded logged-bug children: close them out as part of the parent's ship --
 #
 # A Mission-Log bug child folds its fix onto the PARENT's branch and gets NO PR of
@@ -400,6 +480,11 @@ do_merge() {
   # only resolve an ACTIVE parent (its active_table skips done). Once set_stage
   # below runs, the fold is unreachable forever.
   fold_logged_children
+
+  # S185: the merge landed, so an INITIALIZATION mission's established runner is
+  # now a fact about the REPO — promote it to repo config (see
+  # promote_test_command). No-op for every normal mission.
+  promote_test_command
 
   # Then clear the reconcile gate state and flip the Mission to Done.
   state_del reconcileStatus

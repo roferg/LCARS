@@ -7046,7 +7046,31 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # own no-binary diagnostic (`npx vitest` in a package without vitest) —
       # anchored to npm's line-start prefix so an assertion QUOTING the phrase
       # mid-line can never match.
-      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' ;;
+      #
+      # S185 — THE ABSENT RUNNER ON THE PARENT LEG (the salvage's SEPARATE
+      # FINDING, measured on the stage path: tests/drives/s183/fix2-regress.sh
+      # G6). A parent commit that carries NO manifest makes `npm test` exit
+      # non-zero with npm's own ENOENT diagnostic, and NOT ONE arm of this
+      # pattern matched it — so proof_parent_red_kind fell through to
+      # `runner-red` and the flip-flop gate recorded a red that no test ever
+      # produced as PROOF. For an initialization mission that is the load-bearing
+      # failure mode: if ticket 1's setup never lands on the branch, ticket 2's
+      # parent has no runner, the ENOENT reads as "red = proof", and LCARS
+      # reports a flip-flop that never happened. Three anchored additions, all
+      # line-start on the tool's OWN diagnostic prefix so a quoted copy inside an
+      # assertion diff can never fire:
+      #   • `^npm (error|ERR!) code ENOENT`  — npm's machine code line.
+      #   • `^npm (error|ERR!) enoent`       — npm's `enoent Could not read
+      #                                        package.json` explanation line.
+      #   • the shell's own `<interp>: <path>: No such file or directory` form,
+      #     which is how bash/sh report a missing runner BINARY (`bash:
+      #     node_modules/.bin/vitest: No such file or directory`). The existing
+      #     `^env: …` arm already covered the `env`-launched shebang case; this
+      #     is the same diagnostic from the interpreter itself, end-anchored so
+      #     an assertion that merely QUOTES the phrase mid-line cannot match.
+      # This arm only ever REJECTS MORE reds (env failure ⇒ inconclusive, never
+      # a pass), so it cannot loosen any gate.
+      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' ;;
     assertion)
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
@@ -7792,22 +7816,289 @@ readiness_verdict() {
 # with three working runners that it is a greenfield repo. The park itself is
 # unchanged: it still REPORTS the verdict, attributed, and still offers both next
 # steps — this function did not need to learn anything new.
-impl_no_runner_decision() { # subject ("" at the stage level) → ALWAYS parks
+# === S185: THE INITIALIZATION MISSION ======================================
+# The captain's 2026-09-05 ruling retired the mission-time guessing game. A repo
+# with no test foundation can no longer file a NORMAL mission at all (S183's
+# foundation gate); Establish Vision (S184) files an INITIALIZATION mission
+# instead, and `file.sh` stamps `missionType: "initialization"` into its
+# state.json. THAT STAMP IS THE TRIGGER — not a readiness heuristic. The old
+# design keyed the greenfield door off `READINESS_VERDICT = unknown`, which is
+# true of an npm-workspaces monorepo whose three packages all test fine, and it
+# then had to prove mechanically that a runner a worker had just declared was
+# genuine. Three designs were built and beaten (`wip/s183-canary-salvage`
+# 04fee49). There is no such check here, deliberately: the captain is at Verify,
+# and the scaffold ticket's waiver is recorded and surfaced there.
+mission_type() { # → the mission's declared type ("" when the key is absent)
+  [ -n "${STATE:-}" ] && [ -f "${STATE:-}" ] || return 0
+  json_str "$STATE" missionType
+}
+mission_is_initialization() { [ "$(mission_type)" = "initialization" ]; }
+
+# THE FIRST TICKET — derived from the mission's PLAN/WAVE ORDERING, never from a
+# directory listing. `tickets/` is created lazily and enumerated by the
+# filesystem, so "the first entry" there is whichever ticket happened to run
+# first (or sort first) — a fact about mtimes, not about the plan. Schedule
+# writes waves.json in wave-then-plan order (emit_waves_json), and
+# parse_waves_table preserves exactly that order, so its FIRST row is the
+# mission's first ticket by construction. Before Schedule has run, the same
+# question is answered from the approved plan's own row order.
+#
+# PRECEDENCE BY EXISTENCE — NOT a fallback on failure, and that is deliberate.
+# S185 fix round 1 corrected this comment rather than the code. Once waves.json
+# is PRESENT it is the ONLY ordering consulted: if it cannot be parsed this
+# returns EMPTY, and `init_is_scaffold_ticket` then fails CLOSED — the waiver is
+# REFUSED. It does NOT drop back to plan order, because waves.json is
+# wave-then-plan order and can legitimately differ from the plan's row order, so
+# a plan-order answer on a mission that HAS been scheduled would be a GUESS at
+# which ticket is the scaffold one — and that guess is precisely what grants an
+# initialization mission's only waiver. Refusing beats guessing. The plan-order
+# branch answers the question only BEFORE Schedule has run, when there is no
+# wave ordering for it to disagree with.
+init_first_ticket() { # → the id of the mission's FIRST ticket ("" when unknown)
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local f
+  if [ -f "$MISSION_DIR/waves.json" ]; then
+    parse_waves_table "$MISSION_DIR/waves.json" 2>/dev/null \
+      | awk -F'\t' 'NF>=2 && $2!=""{print $2; exit}'
+    return 0
+  fi
+  for f in approved-plan.json plan.json; do
+    if [ -f "$MISSION_DIR/$f" ]; then
+      parse_plan_table "$MISSION_DIR/$f" 2>/dev/null \
+        | awk -F'\t' '$1!=""{print $1; exit}'
+      return 0
+    fi
+  done
+  return 0
+}
+# 0 iff $1 is the mission's FIRST ticket. Fail-CLOSED on an unknown ordering: an
+# undecidable "is this the scaffold ticket?" must never grant the waiver.
+init_is_scaffold_ticket() { # ticketId → 0 when it is the mission's first ticket
+  local t="${1:-}" f; f="$(init_first_ticket)"
+  [ -n "$t" ] && [ -n "$f" ] && [ "$t" = "$f" ]
+}
+
+# WORKSPACE MARKERS (salvage 04fee49, verified good there and taken unchanged).
+# Why it exists, in the salvage's own words: on an npm-workspaces monorepo the
+# workspace is marked by `pnpm-workspace.yaml` and a root `package.json` is
+# conventional, NOT required — so on one that has none, ADD-only had nothing to
+# refuse and LCARS INVENTED a root manifest, then "verified" it by collecting the
+# packages' PRE-EXISTING tests: credit for tests it did not create, on a repo it
+# does not understand. The markers are this repo's own (the ones `_dtc_js` /
+# `detect_stack` / `detect_workspace_runner` already key off) plus their siblings
+# in the other ecosystems. Echoes the marker it found, or nothing.
+greenfield_workspace_marker() { # root → the marker name, or ""
+  local r="$1"
+  [ -f "$r/pnpm-workspace.yaml" ] && { printf 'pnpm-workspace.yaml'; return 0; }
+  [ -f "$r/lerna.json" ]          && { printf 'lerna.json'; return 0; }
+  [ -f "$r/nx.json" ]             && { printf 'nx.json'; return 0; }
+  [ -f "$r/turbo.json" ]          && { printf 'turbo.json'; return 0; }
+  [ -f "$r/rush.json" ]           && { printf 'rush.json'; return 0; }
+  [ -f "$r/go.work" ]             && { printf 'go.work'; return 0; }
+  if [ -f "$r/package.json" ] && grep -q '"workspaces"[[:space:]]*:' "$r/package.json" 2>/dev/null; then
+    printf 'a "workspaces" key in package.json'; return 0
+  fi
+  if [ -f "$r/Cargo.toml" ] && grep -q '^\[workspace\]' "$r/Cargo.toml" 2>/dev/null; then
+    printf '[workspace] in Cargo.toml'; return 0
+  fi
+  printf ''
+}
+
+# The MISSION-LOCAL record of the runner this initialization mission established.
+# Deliberately NOT the repo's config.json: the runner exists only on the mission
+# branch until merge, and writing repo config mid-mission would hand a sibling
+# mission a command its own checkout cannot run. `lcars approve` PROMOTES it to
+# repo config when the mission MERGES — which is not mid-mission, and is what
+# retires all the mission-local carrying the old design needed.
+greenfield_cmd_record() { printf '%s/test-command.json' "${MISSION_DIR:-}"; }
+
+# Re-detect the repo's test command FROM THE TREE — the SAME detector `lcars
+# init` and the readiness verdict use, never a guess of our own. A scaffold
+# ticket must leave behind a runner LCARS can FIND at the root, or nothing
+# downstream could ever invoke it.
+greenfield_detect_cmd() { # root → the detected command, or ""
+  if ! command -v detect_test_cmd >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v detect_test_cmd >/dev/null 2>&1 || return 0
+  # detect_test_cmd reads $TOPLEVEL; `local` is dynamically scoped in bash, so
+  # this reaches it without leaking (the readiness_verdict idiom).
+  local TOPLEVEL="$1"
+  detect_test_cmd 2>/dev/null | head -1
+}
+
+# Record the established command mission-locally and adopt it for this process.
+greenfield_record_cmd() { # cmd
+  local cmd="$1" rec; rec="$(greenfield_cmd_record)"
+  [ -n "${MISSION_DIR:-}" ] && [ -n "$cmd" ] || return 0
+  {
+    echo '{'
+    printf '  "testCommand": "%s",\n' "$(json_escape "$cmd")"
+    printf '  "establishedBy": "%s",\n' "$(json_escape "${TICKET:-}")"
+    printf '  "establishedAt": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
+    echo '}'
+  } >"$rec"
+  export LCARS_TEST_CMD="$cmd"
+  TEST_CMD_ENV="$cmd"
+  emit_event test_system_established implement \
+    "test system ESTABLISHED at the repo root by the scaffold ticket (mission-local, NOT written to repo config — \`lcars approve\` promotes it at merge): $cmd" \
+    "ticket=${TICKET:-}"
+  return 0
+}
+
+# ADOPT a runner this mission already established, for THIS process
+# (TEST_CMD_ENV, which resolve_test_cmd reads first, plus the exported
+# $LCARS_TEST_CMD that carries it across every `bash "$SELF" …` boundary).
+# Ticket 2..n of the same mission therefore run against the runner ticket 1
+# built and are held to the REAL gate. Cheap-probed before it is trusted: a
+# recorded command whose first token does not resolve is not adopted, and the
+# mission falls through to the honest park rather than hiring against a dead
+# runner.
+impl_greenfield_adopt() { # → 0 adopted (caller must NOT park), 1 nothing to adopt
+  local rec; rec="$(greenfield_cmd_record)"
+  [ -n "${MISSION_DIR:-}" ] && [ -f "$rec" ] || return 1
+  local cmd; cmd="$(json_str "$rec" testCommand)"
+  [ -n "$cmd" ] || return 1
+  local first rest
+  read -r first rest <<GF_ADOPT_EOF
+$cmd
+GF_ADOPT_EOF
+  ( cd "${REPO_ROOT:-.}" 2>/dev/null && command -v "$first" >/dev/null 2>&1 ) || return 1
+  TEST_CMD_ENV="$cmd"
+  # THE PROCESS-BOUNDARY CARRY (salvage DEFECT 1). TEST_CMD_ENV is a plain shell
+  # variable, so it dies at every `bash "$SELF" …` boundary — and
+  # `impl-save-result` (commit_ticket + post_commit_gate) and the stage-level
+  # full-suite gate are exactly that. The child re-initialises TEST_CMD_ENV from
+  # $LCARS_TEST_CMD (run.sh top), so EXPORTING that sanctioned override is the
+  # whole carry: no new channel, and repo config still untouched.
+  export LCARS_TEST_CMD="$cmd"
+  # A second invitation would be a SECOND establishment: close the door behind us.
+  export LCARS_SETUP_EVIDENCE=""; export LCARS_SETUP_GREENFIELD=""
+  emit_event test_setup_adopted implement \
+    "using the test runner this mission established (mission-local, not written to repo config): $cmd" \
+    "ticket=${TICKET:-}"
+  return 0
+}
+
+# THE SCAFFOLD DOOR. Fires ONLY for the FIRST ticket of an INITIALIZATION
+# mission, only once per mission (the S111 latch file), and only while the
+# declared-setup mechanism is enabled. Everything else — a normal mission, a
+# later ticket of an initialization mission whose runner never got established —
+# still parks exactly as S182 shipped it.
+GREENFIELD_REFUSAL_NOTE=""
+impl_greenfield_invite() { # ticket ("" at the stage level) → 0 invited, 1 not this arm
+  local t="$1"
+  # S185 fix round 1 (D3) — cleared HERE, at the top, not just before the one
+  # branch that sets it: the note is now READ by the caller's park, so an early
+  # `return 1` on a second call must never leave a stale note from a first one
+  # standing in a message it is not about.
+  GREENFIELD_REFUSAL_NOTE=""
+  mission_is_initialization || return 1
+  [ "${LCARS_DECLARED_SETUP:-1}" != "0" ] || return 1
+  [ -n "${MISSION_DIR:-}" ] || return 1
+  # THE ONCE-PER-MISSION LATCH (unchanged, shared with the evidence-gated arm):
+  # one establishment attempt per mission, so an initialization mission can never
+  # loop hiring workers at a repo that still cannot run a test.
+  [ -f "$MISSION_DIR/test-setup-applied.json" ] && return 1
+  # At the STAGE level no ticket has been picked yet ($t empty): the stage must
+  # not park an initialization mission whose scaffold ticket has not run, so the
+  # door opens on the mission type alone and cmd_implement_ticket re-decides
+  # per-ticket with the id in hand.
+  if [ -n "$t" ] && ! init_is_scaffold_ticket "$t"; then return 1; fi
+  # A WORKSPACE ROOT with no root manifest is the one shape where ADD-only cannot
+  # backstop this arm (there is nothing to refuse), so refuse the arm itself,
+  # here, having hired NOBODY. A workspace WITH a root manifest keeps today's
+  # path: ADD-only refuses the reshape, loudly, and the second line of defence in
+  # apply_declared_setup catches a declaration that sidesteps the manifest.
+  local gf_ws; gf_ws="$(greenfield_workspace_marker "$REPO_ROOT")"
+  if [ -n "$gf_ws" ] && [ ! -f "$REPO_ROOT/package.json" ]; then
+    GREENFIELD_REFUSAL_NOTE="This repo is a WORKSPACE ROOT ($gf_ws) with no root manifest of its own. LCARS will not invent one: establishing a root test system here would reshape a repo whose packages very likely test fine already, and any tests it then \"verified\" would be theirs, not ones this mission created."
+    emit_event test_setup_invite_refused implement \
+      "initialization mission REFUSED the scaffold door: the repo root is a workspace ($gf_ws) with no root manifest — LCARS will not manufacture a root test system for a workspace it does not understand" \
+      "ticket=$t" "category=greenfield-workspace"
+    return 1
+  fi
+  export LCARS_SETUP_GREENFIELD=1
+  # NB: the quoted-verdict suffix and the ticket suffix are built OUTSIDE the
+  # strings below — macOS bash 3.2 mis-parses an APOSTROPHE inside a ${var:+…}
+  # expansion in a double-quoted string.
+  local gf_why=""
+  [ -n "${READINESS_LINE:-}" ] && gf_why="
+LCARS's test-readiness verdict for this repo: $READINESS_LINE"
+  local gf_sub=""
+  [ -n "$t" ] && gf_sub=" (ticket $t)"
+  export LCARS_SETUP_EVIDENCE="this repository has no test system LCARS can find: no testCommand is configured, and LCARS's own detector names no candidate runner at the repo root.$gf_why"
+  emit_event test_setup_invited implement \
+    "INITIALIZATION mission — inviting the scaffold ticket to ESTABLISH and declare this repo's first test system instead of parking$gf_sub" \
+    "ticket=$t" "category=initialization"
+  return 0
+}
+
+# The park an initialization mission takes when its scaffold ticket could not
+# establish a test system. Distinct from the plain no-runner park: a human was
+# ALREADY told the foundation is what this mission is for, so the question is
+# what went wrong, not "configure a runner".
+impl_park_greenfield_failed() { # ticket  note  runner-output → parks (exits 0)
+  local t="$1" note="$2" out="$3"
+  local subject; subject="$(park_subject "$t")"
+  local quoted=""
+  [ -n "$out" ] && quoted="
+The runner said:
+$(printf '%s' "$out" | tail -10)"
+  impl_park_ticket_blocked "$t" \
+"$subject could not establish this repo's test system, so there is still no way to prove any work.
+What the harness refused, and why: $note$quoted
+This mission's whole job is the foundation, so LCARS stops here rather than hiring another worker to hit the same wall.
+What to do next: establish a test runner in this repo yourself and point LCARS at it with \`lcars update --test-command '<command>'\`, then re-run this mission — or answer here with what the setup should be." \
+"The initialization mission could not establish a test system: $note" \
+"$subject is blocked: the initialization mission could not establish a test system ($note) — needs a human." \
+"the declared test setup was refused or did not work" \
+"No further worker was hired — a second session would hit the same wall." \
+"greenfield-setup-failed"
+}
+
+impl_no_runner_decision() { # subject ("" at the stage level) → parks, OR opens the S185 scaffold door
   local t="$1"
   readiness_verdict
+  # S185 ARM 0 — a runner this mission already ESTABLISHED. Ticket 2..n of an
+  # initialization mission adopt it and are held to the REAL gate against it.
+  if mission_is_initialization && impl_greenfield_adopt; then return 0; fi
+  # S185 ARM 1 — the scaffold ticket of an initialization mission is INVITED to
+  # establish the test system instead of parking. Every other caller falls
+  # through to the S182 park below, byte-identical.
+  if impl_greenfield_invite "$t"; then return 0; fi
   local subject; subject="$(park_subject "$t")"
   # Cite the shared verdict whenever there is one, so the implement wall and the
   # init readout can never tell the captain two different stories — as a QUOTED
   # verdict, never as LCARS's own conclusion about what this repo is.
   local why=""
   [ -n "$READINESS_LINE" ] && why="LCARS's test-readiness verdict for this repo: $READINESS_LINE"
+  # S185 fix round 1 (D3) — SURFACE THE REFUSAL. impl_greenfield_invite sets
+  # GREENFIELD_REFUSAL_NOTE when it refuses the scaffold door ON ITS OWN TERMS
+  # (today: a workspace root with no root manifest, where ADD-only has nothing to
+  # refuse and LCARS will not invent a root test system). That note was written
+  # to events.jsonl and NOWHERE ELSE, so the captain — who is running the
+  # initialization mission this park is about — got the generic S182 wall and
+  # its "start with Establish Vision" verdict line: circular advice to someone
+  # already there. The note is the actual answer, so it goes where they read it.
+  #
+  # ADDITIVE AND EMPTY BY DEFAULT: with no refusal note (every non-workspace
+  # caller — a normal mission, a repo with no runner) $gf_note is "" and all
+  # three strings below are byte-identical to what S182 shipped.
+  local gf_note=""
+  [ -n "${GREENFIELD_REFUSAL_NOTE:-}" ] && gf_note="
+Why this INITIALIZATION mission did not establish one itself: $GREENFIELD_REFUSAL_NOTE"
+  local gf_sum=""
+  [ -n "${GREENFIELD_REFUSAL_NOTE:-}" ] && gf_sum=" LCARS refused to establish one here: $GREENFIELD_REFUSAL_NOTE"
   impl_park_ticket_blocked "$t" \
 "$subject cannot start: no test command is configured for this repo, so LCARS has no way to prove any work — every ticket is proven by RUNNING its tests (red on the parent commit, green on the tip).${why:+
-$why}
+$why}$gf_note
 No worker was hired: LCARS stopped before spending anything, because a paid session here could not have been proven either way.
 What to do next — whichever fits this repo: establish a test runner here, or point LCARS at a runner this repo already has (that verdict is read at the REPO ROOT, so a monorepo whose packages test fine can still land on it). Either way, set the command with \`lcars update --test-command '<command>'\` (or \`lcars update --fix-tests\`, which walks you through it)." \
-"This repo has no test command configured, so LCARS cannot prove a ticket's work — and did not hire anyone to attempt it. Establish a test runner, or point LCARS at one with \`lcars update --test-command\`." \
-"$subject is blocked: no testCommand is configured for this repo, so LCARS cannot prove any work — needs a human (establish a test runner, or set testCommand with \`lcars update\`)." \
+"This repo has no test command configured, so LCARS cannot prove a ticket's work — and did not hire anyone to attempt it.$gf_sum Establish a test runner, or point LCARS at one with \`lcars update --test-command\`." \
+"$subject is blocked: no testCommand is configured for this repo, so LCARS cannot prove any work — needs a human (establish a test runner, or set testCommand with \`lcars update\`).$gf_sum" \
 "no test runner is configured" \
 "No worker was hired — no retry can conjure a test runner; this needs a human call." \
 "no-test-command"
@@ -7852,7 +8143,22 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   mpkg="$(json_str "$mf" package)"
   gap="$(json_str "$mf" gap)"
   icmd="$(json_str "$mf" installCommand)"
-  if [ "$mpkg" != "$pkg" ]; then
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+    # S185 SCAFFOLD ARM (salvage 04fee49, taken as-is) — the gap is the
+    # REPOSITORY ITSELF, not a package inside it, so the ONLY admissible
+    # destination is the repo ROOT. Accept the root's several spellings and
+    # REFUSE anything else: a scaffold declaration that aimed at a subdirectory
+    # would be establishing a test system somewhere LCARS never looks.
+    # Everything below this line — ADD-only, never src/, the file-count and size
+    # caps, the install allowlist, the probe-verified ensure — is UNCHANGED and
+    # applies to this arm identically.
+    case "$mpkg" in
+      ''|'.'|'./'|'/') pkg="" ;;
+      *)
+        SETUP_NOTE="the manifest names package '$mpkg', but this repo has no test system at all — a scaffold setup must be declared for the REPO ROOT (name it as the empty string)"
+        return 1 ;;
+    esac
+  elif [ "$mpkg" != "$pkg" ]; then
     SETUP_NOTE="the manifest names package '$mpkg' but the observed gap is in '${pkg:-<repo root>}' — a declared setup must address the package the evidence is about"
     return 1
   fi
@@ -7860,6 +8166,27 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   if [ -n "$icmd" ] && ! printf '%s' "$icmd" | grep -Eq "$allow"; then
     SETUP_NOTE="installCommand '$icmd' is not a plain package-manager invocation (must match: $allow)"
     return 1
+  fi
+  # S185 — ANCHOR THE ALLOWLIST AT THE OTHER END (salvage DEFECT 5, inherited
+  # from S111 and escalated here). The pattern above is a PREFIX match with no
+  # end anchor, and the command is handed to `bash -c`, so everything AFTER a
+  # matching prefix ran too: `npm --version && touch /tmp/PWNED` was accepted and
+  # EXECUTED (driven, S183 tester). S185 does not create that hole, but it moves
+  # the target from one package inside a working repo to the ROOT of the
+  # captain's repo.
+  #
+  # The fix is a TIGHTENING of the same mechanic, not a new one: a declared
+  # install must be ONE plain invocation, so no shell metacharacter may appear in
+  # it at all. Real installs (`npm install --no-audit --no-fund --save-dev
+  # vitest`, `pnpm add -D jest`, `yarn add --dev mocha`) carry none of these;
+  # chaining, substitution, redirection and subshells all do. Applied to BOTH
+  # arms — the evidence-gated package path has exactly the same hole.
+  if [ -n "$icmd" ]; then
+    case "$icmd" in
+      *';'*|*'&'*|*'|'*|*'<'*|*'>'*|*'`'*|*'$'*|*'('*|*')'*|*'{'*|*'}'*|*'\'*|*$'\n'*)
+        SETUP_NOTE="installCommand '$icmd' contains a shell metacharacter — a declared install must be ONE plain package-manager invocation, never a chained, substituted, redirected or subshelled command"
+        return 1 ;;
+    esac
   fi
   local dest="$REPO_ROOT${pkg:+/$pkg}"
   local n=0 f rel
@@ -7879,6 +8206,19 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
       fi
     done < <(find "$sdir" -type f 2>/dev/null)
   fi
+  # S185 — SECOND LINE OF DEFENCE ON A WORKSPACE ROOT (salvage DEFECT 4).
+  # ADD-only refuses a declaration that RESHAPES an existing root manifest, and
+  # that is what makes the scaffold arm safe on a monorepo. But a declaration can
+  # sidestep the manifest entirely (declare only a runner config, install the
+  # runner) and ADD-only sees nothing to refuse. Checked HERE, after the ADD-only
+  # loop, so the existing refusal keeps its precedence and its wording.
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+    local ws_marker; ws_marker="$(greenfield_workspace_marker "$REPO_ROOT")"
+    if [ -n "$ws_marker" ]; then
+      SETUP_NOTE="this repo root is a WORKSPACE ($ws_marker) — LCARS will not establish a root test system for a workspace it does not understand; its packages very likely test fine already, and any tests a root runner then collected would be theirs, not ones this mission created. Point LCARS at the runner this workspace already uses instead."
+      return 1
+    fi
+  fi
   # Validated — APPLY: copy the new files, then run the install command in the
   # package dir under a hard timeout. The applied files ride the ticket's commit
   # (they are new post-snapshot untracked files), so every downstream gate and
@@ -7889,6 +8229,23 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
       case "$rel" in */*) mkdir -p "$dest/${rel%/*}" 2>/dev/null || : ;; esac
       cp "$f" "$dest/$rel"
     done < <(find "$sdir" -type f 2>/dev/null)
+  fi
+  # S185 SCAFFOLD ARM — GIVE THE PROBE SOMETHING TO PROBE WITH. Every probe in
+  # this file goes through runner_preflight_env_failure, which returns "no env
+  # failure detected" when resolve_test_cmd is EMPTY — so on a repo with no test
+  # command the probe below would pass vacuously and call a dead runner alive.
+  # The command is re-detected FROM THE TREE THE SETUP JUST CREATED, with the
+  # SAME detector `lcars init` uses, and adopted for THIS PROCESS ONLY
+  # (TEST_CMD_ENV, which resolve_test_cmd reads first). Never written to the
+  # repo's config.json here: the runner exists only on the mission branch until
+  # merge — `lcars approve` promotes it when the mission MERGES.
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+    local gcmd; gcmd="$(greenfield_detect_cmd "$REPO_ROOT")"
+    if [ -z "$gcmd" ]; then
+      SETUP_NOTE="the declared setup leaves no test command LCARS can detect at the repo root — a runner nothing can invoke is not an established test system"
+      return 1
+    fi
+    TEST_CMD_ENV="$gcmd"
   fi
   local irc=0
   if [ -n "$icmd" ]; then
@@ -9289,14 +9646,73 @@ proof_validate_result() { # result-file [ticket] → 0 valid, 1 reject (reason o
       if [ -z "$ffr" ]; then
         printf 'proof-gate: result.json REJECTED — flipFlop is "not-applicable" but "flipFlopReason" is missing/empty. The reason IS the recorded fact; it is required.\n' >&2
         return 1
+      fi
+      # === S185: THE INITIALIZATION MISSION'S ONE WAIVER ====================
+      # The scaffold ticket CANNOT be proven by the usual flip-flop: there is no
+      # test runner on its parent commit, because it is the ticket that creates
+      # one. So it exits through THIS existing audited waiver — a recorded reason
+      # that already surfaces at Verify — and the captain, who is at Verify for
+      # exactly this mission, is the proof.
+      #
+      # EVERY LATER TICKET IS GATED FOR REAL, and that works because the setup
+      # files are COMMITTED WITH TICKET 1: they are present on the parent commit
+      # from ticket 2 onward, so the flip-flop is genuine. A later ticket
+      # claiming the waiver is therefore claiming a fact that is not true of it,
+      # and it is REJECTED.
+      #
+      # SCOPE, DELIBERATELY NARROW: this applies ONLY inside a mission whose
+      # state carries `missionType: "initialization"`. A NORMAL mission keeps
+      # today's waiver behaviour byte for byte — the comment-only refactor, the
+      # pure rename and the pure config change all still waive, and
+      # tests/proof-gates.test.sh pins them.
+      #
+      # `init_is_scaffold_ticket` derives "first" from the mission's PLAN/WAVE
+      # ORDERING (waves.json once Schedule has written it; the approved plan's row
+      # order before that), never from a directory listing, and fails CLOSED: if
+      # the ordering cannot be read, the waiver is refused rather than granted on a
+      # guess — a present-but-unreadable waves.json is refused, not second-guessed
+      # from plan order.
+      if [ -n "$t" ] && mission_is_initialization && ! init_is_scaffold_ticket "$t"; then
+        local ff_first; ff_first="$(init_first_ticket)"
+        # S185 fix round 1 — a REAL if/else, not `${v:+…}${v:-…}`. `${v:-…}`
+        # expands to $v ITSELF when $v is non-empty, so the two-expansion form
+        # appended the ticket id to its own sentence: "…the scaffold ticket is
+        # "t-001", not this one t-001." This is the one sentence the captain
+        # reads on a rejection.
+        local ff_which
+        if [ -n "$ff_first" ]; then
+          ff_which="the scaffold ticket is \"$ff_first\", not this one"
+        else
+          ff_which="the mission ordering could not be read, so no ticket can claim to be the scaffold ticket"
+        fi
+        printf 'proof-gate: result.json REJECTED — ticket "%s" declares flipFlop "not-applicable", but this is an INITIALIZATION mission and %s. Only the SCAFFOLD ticket may waive the flip-flop: it is the ticket that CREATES the test system, so its parent commit has no runner to be red against. Its setup is committed with it, so from that ticket onward the runner IS on the parent and the flip-flop is genuine — this ticket must prove it: red on the parent, green on the tip, flipFlop "expected". (Declared reason was: %s)\n' \
+          "$t" "$ff_which" "$ffr" >&2
+        return 1
       fi ;;
     *)
       printf 'proof-gate: result.json REJECTED — "flipFlop" must be "expected" or "not-applicable" (got "%s").\n' "$ffv" >&2
       return 1 ;;
   esac
+  # S185 — THE SCAFFOLD TICKET AUTHORS TESTS *AND* WAIVES, and both are honest.
+  # The struct check below rejects `not-applicable` beside a non-empty
+  # `newTests` on the premise that "a ticket that authors tests must expect them
+  # to flip". That premise is FALSE for exactly one ticket in the world: the
+  # scaffold ticket of an initialization mission, whose whole job is to create
+  # the test system, and whose PARENT COMMIT therefore has no runner for those
+  # tests to be red against. Its tests still have to be DECLARED — the
+  # declared-edits guard demands every test file in the diff be named, and
+  # without this the scaffold ticket is caught in a vice: declare its test and be
+  # rejected here, or leave it undeclared and be rejected there.
+  # NARROW BY CONSTRUCTION: initialization mission AND the first ticket AND a
+  # recorded reason (checked above). Every other ticket keeps today's rule.
+  local ff_scaffold=0
+  if [ "$ffv" = "not-applicable" ] && [ -n "$t" ] \
+     && mission_is_initialization && init_is_scaffold_ticket "$t"; then
+    ff_scaffold=1
+  fi
   local structerr
-  structerr="$("${LCARS_PYTHON_BIN:-python3}" -c '
-import json, sys
+  structerr="$(LCARS_FF_SCAFFOLD="$ff_scaffold" "${LCARS_PYTHON_BIN:-python3}" -c '
+import json, os, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception as e:
@@ -9304,7 +9720,11 @@ except Exception as e:
 nt = d.get("newTests"); te = d.get("testEdits")
 if not isinstance(nt, list) or any(not (isinstance(p, str) and p) for p in nt):
     print("proof-gate: result.json REJECTED — \"newTests\" must be an array of non-empty path strings."); sys.exit(1)
-if d.get("flipFlop") == "not-applicable" and nt:
+# S185: the ONE exemption — the scaffold ticket of an initialization mission
+# (decided in the shell above, where the mission state is readable) authors this
+# repo FIRST test AND waives, because its parent has no runner for that test to
+# be red against. Every other ticket keeps the original rule verbatim.
+if d.get("flipFlop") == "not-applicable" and nt and os.environ.get("LCARS_FF_SCAFFOLD") != "1":
     print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\", or drop the tests."); sys.exit(1)
 def bad(e):
     return not (isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]
@@ -9455,9 +9875,35 @@ stale_dep_env_reason() { # worktree → reason (empty ⇒ no evidence of stalene
 }
 
 POST_COMMIT_SIGNAL=""   # caller may point this at a file to capture the failure detail
+# S185 (salvage DEFECT 1(b)) — DID THE GATE ACTUALLY RUN? Several arms below
+# return 0 meaning "do not fail this repo", and rc 0 was then read by the caller
+# as "verified green on the committed branch": a claim about a check that never
+# happened. MEASURED on the salvage branch: a branch-less mission whose
+# implementation never reached any commit emitted `ticket_postcommit_ok` and
+# `ticket_green`. This flag is the FACT — set on every SKIP, cleared on every
+# real run — so the caller can tell a PASS from a NON-RESULT. Inconclusive is
+# never a pass, and it is never a green event either.
+POST_COMMIT_SKIPPED=""
+# WHY the gate did not run, because the kinds differ and the difference decides
+# what the caller may do:
+#   no-runner        we COULD NOT check (the harness has no command to check with)
+#   not-applicable   there is NOTHING to check (nothing was committed at all)
+# Neither may ever be reported as a pass.
+#
+# S185 FIXES THE SALVAGE'S KNOWN-BAD KINDING. On that branch a FAILED
+# `git worktree add` was kinded `not-applicable` — "nothing to check" — so a
+# ticket whose code never lands could pass green AND earn a durable verified
+# record in the repo's test landscape. A worktree that could not be cut is not
+# "nothing to check": it is the check ITSELF failing, on a ref that exists. It is
+# an ERROR, and it now FAILS the gate with its own return code (5) instead of
+# quietly returning 0.
+POST_COMMIT_SKIPPED_KIND=""
 post_commit_gate() { # ticket
   local t="$1" cmd; cmd="$(resolve_test_cmd)"
+  POST_COMMIT_SKIPPED=""; POST_COMMIT_SKIPPED_KIND=""
   if [ -z "$cmd" ]; then
+    POST_COMMIT_SKIPPED="no test command was resolvable in this process"
+    POST_COMMIT_SKIPPED_KIND="no-runner"
     # NO RUNNER: the same documented degradation as the red / full-suite gates.
     # We cannot re-run the suite against the committed branch, so we SKIP LOUD —
     # never a false pass, and never a false FAIL of a runner-less repo.
@@ -9476,14 +9922,26 @@ post_commit_gate() { # ticket
     [ -n "$ref" ] || ref="$("$GIT_BIN" -C "$LCARS_TICKET_WORKTREE" rev-parse HEAD 2>/dev/null || true)"
   else
     local branch; branch="$(json_str "$STATE" branch)"
-    # Branch-less / local-only mission → no committed branch to check. Keep the
-    # current behaviour (the gate does not apply) rather than crash.
-    [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" || return 0
+    # A BRANCH-LESS mission has NO committed state at all: commit_ticket refuses
+    # outright without a branch ("no mission branch on file — skipped commit"),
+    # so nothing was committed and there is nothing here to re-verify. The gate
+    # genuinely does not apply — but it must SAY so rather than claim a pass it
+    # never made.
+    if [ -z "$branch" ] || ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      POST_COMMIT_SKIPPED="this mission has no branch, so commit_ticket committed nothing and there is no committed state to re-verify"
+      POST_COMMIT_SKIPPED_KIND="not-applicable"
+      return 0
+    fi
     ref="$("$GIT_BIN" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
   fi
-  # Defensive: nothing resolvable to check (e.g. an unborn ref) — do not crash and
-  # do not invent a failure. Keep current behaviour.
-  [ -n "$ref" ] || return 0
+  # NOTHING RESOLVABLE TO CHECK (an unborn ref). We still do not crash and still
+  # do not invent a failure, but this is a NON-RESULT and is now recorded as one:
+  # rc 0 here no longer buys a "verified green" event.
+  if [ -z "$ref" ]; then
+    POST_COMMIT_SKIPPED="no commit-ish could be resolved for the committed state (an unborn ref?), so the suite was never re-run against it"
+    POST_COMMIT_SKIPPED_KIND="not-applicable"
+    return 0
+  fi
 
   # Cut a CLEAN detached worktree at the committed commit-ish — NEVER the
   # Implementer's scratch worktree (so uncommitted scratch-only files are invisible).
@@ -9498,10 +9956,20 @@ post_commit_gate() { # ticket
   [ -n "$wt" ] || wt="$MISSION_DIR/postcommit-${t}.$$"
   rm -rf "$wt"
   if ! "$GIT_BIN" worktree add -q --detach "$wt" "$ref" >/dev/null 2>&1; then
-    # Could not cut a worktree (defensive) — never false-fail; keep current behaviour.
+    # S185 — THE SALVAGE'S KNOWN-BAD KINDING, FIXED. This used to return 0 (and,
+    # on the salvage branch, be kinded `not-applicable`), so a ticket whose code
+    # never landed could pass green and earn a durable verified record. There IS
+    # a committed ref here and there IS a runner; the CHECK itself failed. That
+    # is an ERROR — the gate verified nothing and says so with its own code (5),
+    # which the call site routes to a distinct event and a hard refusal.
     # Remove ONLY this ticket's own worktree; never touch siblings.
+    local wtdetail="POST-COMMIT GATE — COULD NOT CUT THE GATE WORKTREE at $ref, so ticket $t's suite was NEVER re-run against the committed state. This is a harness/environment error, not a verdict about the ticket: nothing was verified, so nothing may be recorded as verified. Check \`git worktree list\` / disk space / permissions under $MISSION_DIR and re-run."
+    POST_COMMIT_SKIPPED=""
+    POST_COMMIT_SKIPPED_KIND="error"
+    printf '  ✗ %s\n' "$wtdetail" >&2
+    [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$wtdetail" >"$POST_COMMIT_SIGNAL"
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" 2>/dev/null || :
-    return 0
+    return 5
   fi
   # Session 81: provision the fresh post-commit worktree ONCE, before its testCommand
   # re-runs, so it evaluates in the same dependency-complete environment as the red /
@@ -9688,6 +10156,16 @@ $(cat "$pcsig")"
           "ticket=$TICKET" "iterations=$attempts"
         die "ticket $TICKET — UNDECLARED TEST DRIFT: a COMMITTED test file no longer matches its proof-time snapshot and no ticket declared that edit. Green must be earned by implementing; a test edit must be declared with a reason. Rejected by the cross-boundary drift guardrail.$why"
         ;;
+      5)
+        # S185: the gate could not cut its worktree at the committed ref — it
+        # verified NOTHING. Never a verdict about the ticket, and never a pass:
+        # a distinct event and a hard refusal, so no unverified green is ever
+        # recorded. (The salvage kinded this "not-applicable" and let it through.)
+        emit_event ticket_postcommit_error implement \
+          "ticket $TICKET — the post-commit gate could NOT run (a clean worktree could not be cut at the committed ref); nothing was verified and no green is claimed" \
+          "ticket=$TICKET" "iterations=$attempts"
+        die "ticket $TICKET could not be re-verified — the post-commit gate could not cut a clean worktree at the committed ref, so the suite never ran against the committed state. Nothing was verified; refusing to record a green.$why"
+        ;;
       *)
         # S111: before declaring the work missing, check whether it landed in the
         # WRONG tree (uncommitted edits in the shared clone root — the S110 002
@@ -9702,16 +10180,38 @@ $(cat "$pcsig")"
   fi
   rm -f "$pcsig"
 
-  # The change is confirmed present and GREEN on the committed branch — record the
-  # successful post-commit verification so the stream / `--watch` view show it.
-  emit_event ticket_postcommit_ok implement \
-    "ticket $TICKET verified green on the committed branch" \
-    "ticket=$TICKET" "iterations=$attempts"
+  # S185 (salvage DEFECT 1(b)) — NEVER CLAIM A VERIFICATION THAT DID NOT RUN.
+  # The gate returns 0 when it has NO RUNNER, and when there is no committed
+  # state at all. That rc 0 used to flow straight into `ticket_postcommit_ok`
+  # ("verified green on the committed branch") AND into `record_test_landscape`,
+  # which writes the setup into the repo's DURABLE test landscape as a VERIFIED
+  # capability — two claims about a check that never happened. A skip is a
+  # NON-RESULT: it is reported as a skip, and it earns neither.
+  if [ -n "${POST_COMMIT_SKIPPED:-}" ]; then
+    emit_event ticket_postcommit_skipped implement \
+      "ticket $TICKET was NOT re-verified on the committed branch — the post-commit gate could not run ($POST_COMMIT_SKIPPED); no verification is claimed for it" \
+      "ticket=$TICKET" "iterations=$attempts"
+    # A mission that ESTABLISHED its own runner has one by definition, so a gate
+    # that cannot resolve a command here means the harness LOST it between
+    # processes — a harness fault, not a runner-less repo. Refuse to pass the
+    # ticket on it rather than shipping an unverifiable green.
+    if [ "${POST_COMMIT_SKIPPED_KIND:-}" = no-runner ] \
+       && [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/test-command.json" ]; then
+      rm -f "$(ticket_dir "$TICKET")/result.json"
+      die "ticket $TICKET cannot be passed: this mission established its own test runner ($(json_str "$MISSION_DIR/test-command.json" testCommand)), but the post-commit gate resolved NO test command in this process and so re-verified nothing. That is a harness fault, not a fact about the ticket — refusing to record an unverified green."
+    fi
+  else
+    # The change is confirmed present and GREEN on the committed branch — record the
+    # successful post-commit verification so the stream / `--watch` view show it.
+    emit_event ticket_postcommit_ok implement \
+      "ticket $TICKET verified green on the committed branch" \
+      "ticket=$TICKET" "iterations=$attempts"
 
-  # S111 3′: a declared test setup that carried this ticket all the way to a
-  # post-commit-verified green is now a PROVEN fact — record it to the repo's
-  # test landscape (durable, human-visible, one file per package).
-  record_test_landscape
+    # S111 3′: a declared test setup that carried this ticket all the way to a
+    # post-commit-verified green is now a PROVEN fact — record it to the repo's
+    # test landscape (durable, human-visible, one file per package).
+    record_test_landscape
+  fi
 
   # ticket_green is emitted ONLY HERE — AFTER the immutable-tests check, the
   # shape/attempts validation (both `die` earlier on rejection) AND commit_ticket.
@@ -14416,6 +14916,15 @@ cmd_implement_ticket() {
   event_seen ticket_start "\"ticket\":\"$TICKET\"" \
     || emit_event ticket_start implement "ticket $TICKET starting" "ticket=$TICKET" "wave=${tw:-0}"
 
+  # S185: the SCAFFOLD DOOR is opened once, at the stage level, before any ticket
+  # is picked — so its env vars are inherited by EVERY ticket the stage spawns,
+  # including a sibling running in parallel with the scaffold ticket in wave 1.
+  # Only the scaffold ticket may establish anything, so close the door explicitly
+  # for every other ticket rather than relying on the stage having adopted first.
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ] && ! init_is_scaffold_ticket "$TICKET"; then
+    export LCARS_SETUP_GREENFIELD=""; export LCARS_SETUP_EVIDENCE=""
+  fi
+
   # --- S111 RUNNER PREFLIGHT (before ANY worker spend) -----------------------
   # Probe the configured testCommand in the ticket's target package. A runner
   # that cannot LAUNCH (a runner-less package — the S110 example-game 127 — or an
@@ -14655,7 +15164,81 @@ $(cat "$sigfile")"
     # detected convention — so a declared runner config collects them (the
     # include-vs-placement trap, caught live 2026-07-09).
     local setupblock=""
-    if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
+    if [ -n "${LCARS_SETUP_GREENFIELD:-}" ] && [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
+      # S185 — THE SCAFFOLD INVITATION (salvage 04fee49, taken with the
+      # canary-probe paragraph removed). Same mechanism as the evidence-gated
+      # arm, different fact: there is no runner ANYWHERE to compare against, so
+      # the destination is the REPO ROOT and establishing the system is part of
+      # THIS ticket rather than a repair of one package. Deliberately SLOT
+      # DESCRIPTIONS ONLY (S179): the worker is told what each field must
+      # contain, never given a sentence it can hand back verbatim as if it were
+      # its own finding — above all not the flip-flop reason, which is the one
+      # fact a human reads later.
+      local gf_conv gf_src gf_example
+      gf_src="$(ticket_target_src "$TICKET")"
+      # A scaffold ticket often has no manifest source to key off; without a
+      # stem, test_path_for renders a headless ".test.ts", which reads as a rule
+      # rather than an example. Fall back to a neutral illustrative source.
+      [ -n "$gf_src" ] || gf_src="src/index.ts"
+      gf_conv="$(detect_test_convention "$REPO_ROOT" "$gf_src")"
+      gf_example="$(test_path_for "$gf_conv" "$gf_src")"
+      setupblock="
+
+## ESTABLISH THE TEST SYSTEM — this repo has no way to run tests yet
+The harness checked BEFORE hiring you, and stopped short of proving anything.
+This is its own observation (the evidence):
+$LCARS_SETUP_EVIDENCE
+There is no runner here for any work to be proven against, so ESTABLISHING ONE
+IS PART OF THIS TICKET'S WORK — not optional, not a later ticket, and not
+something you install yourself. You DECLARE it; the HARNESS applies it and runs
+it.
+- Write the NEW files a test system needs into the \`setup/\` subdir of your
+  scratch output directory, at their REPO-ROOT-relative paths. ADD-only: never a
+  file that already exists, never anything under \`src/\`. Keep it minimal (at
+  most 4 small files). If a file you need is already in the repo, you cannot
+  reach it this way — say so in your summary and let the ticket park.
+- If the install you declare creates a dependency directory (node_modules and
+  its kind), the repo must already ignore it or your declared setup must add the
+  ignore file — otherwise every installed file arrives in this ticket's diff as
+  work you never declared, and the ticket is voided for it.
+- \`setup/\` is for CONFIGURATION ONLY — the manifest and runner config a test
+  system needs. Never put a TEST file there: the harness applies those files, so
+  a test among them arrives in the diff as work you did not declare and voids the
+  ticket. Author your tests in the repo tree yourself and declare them.
+- Create \`test-setup.json\` in the scratch output directory ROOT (NOT inside
+  \`setup/\`), in the harness's existing three-field shape:
+  {\"package\": <the directory the setup addresses — for this repo that is the
+      REPO ROOT, named as the empty string>,
+   \"gap\": <one line stating what is missing>,
+   \"installCommand\": <a plain package-manager invocation and nothing else, run
+      by the harness at the repo root. ONE command: no \`&&\`, no pipes, no
+      redirection, no substitution — a metacharacter anywhere in it is refused>}
+- Pick the runner this repo's own language and layout point at, at a version
+  that actually exists, and give it a way to be invoked that LCARS's detector
+  can find at the root afterwards.
+- PLACEMENT — where tests must LIVE to be collected: author them IN THE REPO TREE
+  at its own convention — detected here: $gf_conv — e.g. \`$gf_example\`. Do NOT
+  narrow the runner's \`include\` to something your tests fall outside of: a
+  config that collects ZERO tests is a system that does not work.
+- At least one real test must exist for the runner to collect.
+
+### THE FLIP-FLOP, STATED HONESTLY
+Every ticket is normally proven by its tests being RED on the parent commit and
+GREEN on yours. THIS ticket cannot be: the parent commit of this repo has no test
+system, because this ticket is the one that creates it. So this ticket — and ONLY
+this ticket — exits through the waiver: declare \`flipFlop\` as
+\`\"not-applicable\"\` and record \`flipFlopReason\` — a plain sentence, in your
+own words, saying why no flip could be shown here. That reason is the fact the
+captain reads at Verify, where they watch the suite actually run; a waiver
+without one is REJECTED. If you CAN honestly show a flip, declare
+\`flipFlop\` as \`\"expected\"\` instead and list your tests in \`newTests\` —
+that is strictly better, and a waiver is never a way past a flip you could not
+get to pass.
+Whatever you declare, it covers THIS ticket only: every later ticket in this
+mission runs against the test system you establish here, on a parent commit that
+CARRIES it, and is held to the full gate — a later ticket that claims this waiver
+is REJECTED. Build a system that will still hold."
+    elif [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
       local sb_src sb_conv sb_example sb_for
       sb_src="$(ticket_target_src "$TICKET")"
       sb_conv="$(detect_test_convention "$REPO_ROOT" "$sb_src")"
@@ -14738,7 +15321,37 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
     # S111 3′: apply a declared setup manifest when the worker emitted one AND
     # the evidence gate is open (no evidence → ignored; attempt 1 always naked).
     # An applied-but-still-dead runner is genuinely incurable → park (env idiom).
-    if [ -f "$odir/test-setup.json" ]; then
+    if [ -f "$odir/test-setup.json" ] && [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+      # S185 — THE ESTABLISHMENT. Same machinery, one different failure policy:
+      # a failed establishment PARKS instead of "continuing without it" — with no
+      # test command there is nothing to continue to, and bouncing fresh workers
+      # at a repo that still cannot run a test is exactly the burn S182 was built
+      # to stop.
+      #
+      # WHAT IS *NOT* HERE, DELIBERATELY: the salvage's canary probe. It planted
+      # a failing test beside the tree's own tests to prove mechanically that the
+      # declared runner was genuine. Three such designs were built and beaten
+      # (`wip/s183-canary-salvage` records each and how); the captain's ruling
+      # retires the question, because a human is at Verify to watch the suite
+      # run. What DOES stay is `setup_ensure_runner` (the runner must LAUNCH —
+      # exit codes are never trusted) and `greenfield_detect_cmd` (LCARS must be
+      # able to FIND the command at the root). Neither claims the runner is
+      # honest; both are facts the harness can establish without guessing.
+      if apply_declared_setup "$odir/test-setup.json" "$odir/setup" ""; then
+        greenfield_record_cmd "$(resolve_test_cmd)"
+        printf '  ✓ test system ESTABLISHED at the repo root: %s\n' "$(resolve_test_cmd)" >&2
+      else
+        local gf_note="$SETUP_NOTE"
+        printf '  ⚠ declared setup REJECTED: %s\n' "$gf_note" >&2
+        emit_event test_setup_rejected implement \
+          "initialization-mission declared setup rejected: $gf_note" "ticket=$TICKET"
+        # Close the once-per-mission latch so a second session cannot re-invite.
+        cp "$odir/test-setup.json" "$MISSION_DIR/test-setup-applied.json" 2>/dev/null \
+          || printf '{"package":"","gap":"rejected","installCommand":""}\n' >"$MISSION_DIR/test-setup-applied.json"
+        rm -rf "$odir"
+        impl_park_greenfield_failed "$TICKET" "$gf_note" ""
+      fi
+    elif [ -f "$odir/test-setup.json" ]; then
       if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
         if apply_declared_setup "$odir/test-setup.json" "$odir/setup" "$pf_pkg"; then
           [ -n "$SETUP_NOTE" ] && printf '  ⚠ declared setup applied with a note: %s\n' "$SETUP_NOTE" >&2
@@ -14758,6 +15371,17 @@ $(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
       else
         printf '  ⚠ a test-setup.json was provided WITHOUT an observed infra gap — ignored (setup is invited only after the harness itself hits the failure; the FIRST worker session always runs naked)\n' >&2
       fi
+    fi
+
+    # S185: INVITED AND DECLARED NOTHING. The worker was told establishing the
+    # test system is part of this ticket and emitted no manifest, so the repo
+    # still cannot run a test and the gates below have nothing to judge with.
+    # Park after ONE session rather than bouncing fresh workers at the same wall.
+    if [ -n "${LCARS_SETUP_GREENFIELD:-}" ] && [ ! -f "$(greenfield_cmd_record)" ]; then
+      printf '{"package":"","gap":"no declaration","installCommand":""}\n' >"$MISSION_DIR/test-setup-applied.json"
+      rm -rf "$odir"
+      impl_park_greenfield_failed "$TICKET" \
+        "the session produced no test-setup.json, so no test system was declared and none could be applied" ""
     fi
 
     # --- THE PROOF GATES (S132), in order ------------------------------------
@@ -14939,6 +15563,17 @@ cmd_implement() {
 
   local last_status="" last_wave=""
   while :; do
+    # S185 (salvage DEFECT 1(a)) — THE STAGE PROCESS MUST ADOPT TOO. The scaffold
+    # ticket establishes the runner in its OWN process; nothing an `export` does
+    # there can travel back up to this one. Without this, every child the stage
+    # spawns from here on — the next ticket, and above all `impl-advance`, which
+    # runs the STAGE-LEVEL FULL-SUITE GATE — inherits an EMPTY $LCARS_TEST_CMD
+    # and silently skips its gate for the whole mission. Re-read the
+    # mission-local record (cheap-probed before it is trusted) once it exists;
+    # `test_cmd_is_blank` makes this a no-op afterwards.
+    if test_cmd_is_blank && [ -f "$(greenfield_cmd_record)" ]; then
+      impl_greenfield_adopt || :
+    fi
     # User-initiated pause (ADR-005). This is the BETWEEN-WAVE/TICKET safe
     # boundary: re-read paused at the TOP of the loop, before impl-status decides
     # the next wave. A paused Mission stops cleanly here — it does NOT advance to
@@ -16746,6 +17381,9 @@ case "$SUB" in
     __pcg_rc=0
     POST_COMMIT_SIGNAL="$__pcg_sig" post_commit_gate "$TICKET" || __pcg_rc=$?
     printf 'PCRC=%s\n' "$__pcg_rc"
+    # S185: a gate that did not RUN must be distinguishable from one that PASSED.
+    printf 'PCSKIP=%s\n' "${POST_COMMIT_SKIPPED:-}"
+    printf 'PCKIND=%s\n' "${POST_COMMIT_SKIPPED_KIND:-}"
     exit 0 ;;
   # S84 test hook: drive the REAL full_suite_gate over the mission's scheduled
   # tickets (parsed from waves.json, exactly as cmd_impl_advance does) WITHOUT the
@@ -17016,8 +17654,51 @@ FSG_EOF
     __de_rc=0; declared_edits_guard "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __de_rc=$?
     printf 'DERC=%s\n' "$__de_rc"; exit 0 ;;
   proof-validate-result-test)
+    # S185: --mission is OPTIONAL. Without it nothing is located and the call is
+    # byte-identical to before (proof-gates drives it that way); WITH it, $STATE
+    # and $MISSION_DIR are set so the initialization-mission waiver rule can be
+    # driven against a real mission dir.
+    [ -n "$MISSION_ID" ] && locate_mission "$MISSION_ID"
     __pv_rc=0; proof_validate_result "$RESULT" "$TICKET" || __pv_rc=$?
     printf 'PVRC=%s\n' "$__pv_rc"; exit 0 ;;
+  # S185 test hooks — offline, free, inert for every real subcommand.
+  # The workspace/monorepo marker the scaffold arm refuses on.
+  greenfield-workspace-test)
+    printf '%s\n' "$(greenfield_workspace_marker "${LCARS_GP_ROOT:-$PWD}")"
+    exit 0 ;;
+  # THE REAL ESTABLISH CHAIN, END TO END AND PRODUCT-OWNED: the REAL detector
+  # (greenfield_detect_cmd → detect_test_cmd, the same one `lcars init` uses)
+  # feeding the REAL mission-local writer (greenfield_record_cmd, json_escape and
+  # all). S185 fix round 1 exists because the promotion was only ever tested
+  # against a HAND-WRITTEN record carrying a value with no embedded quotes —
+  # which is not a value the detector can produce. Nothing here may hand-write a
+  # command; the test asks the product what it detects and what it records.
+  greenfield-record-cmd-test)
+    locate_mission "$MISSION_ID"
+    __gf_cmd="$(greenfield_detect_cmd "${REPO_ROOT:-$PWD}")"
+    printf 'DETECTED=%s\n' "$__gf_cmd"
+    greenfield_record_cmd "$__gf_cmd"
+    printf 'RECORD=%s\n' "$(greenfield_cmd_record)"
+    exit 0 ;;
+  # The mission's FIRST ticket, derived from the plan/wave ORDERING.
+  init-first-ticket-test)
+    locate_mission "$MISSION_ID"
+    printf 'FIRST=%s\n' "$(init_first_ticket)"
+    printf 'TYPE=%s\n' "$(mission_type)"
+    if [ -n "$TICKET" ]; then
+      if init_is_scaffold_ticket "$TICKET"; then printf 'SCAFFOLD=yes\n'; else printf 'SCAFFOLD=no\n'; fi
+    fi
+    exit 0 ;;
+  # The REAL apply_declared_setup over a manifest ($RESULT) + setup dir ($SETUP)
+  # for package $POSARG — so the ADD-only / caps / allowlist / metacharacter
+  # guard / workspace refusal can be driven directly against the shipped code.
+  apply-declared-setup-test)
+    locate_mission "$MISSION_ID"
+    __as_rc=0
+    apply_declared_setup "$RESULT" "$SETUP" "${POSARG:-}" || __as_rc=$?
+    printf 'ASRC=%s\n' "$__as_rc"
+    printf 'ASNOTE=%s\n' "$SETUP_NOTE"
+    exit 0 ;;
   # Drives the REAL commit_ticket in WORKTREE mode ($LCARS_TICKET_WORKTREE set by
   # the caller), so the multi-session cumulative-commit contract can be exercised
   # offline + token-free: N sessions in one worktree must leave .commit-sha naming
