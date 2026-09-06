@@ -166,6 +166,7 @@ class LocalAdapter(object):
         # a board render costs one subprocess only when the config moved.
         self._readiness_script = readiness_script
         self._readiness_memo = None   # (config_mtime, payload-or-None)
+        self._foundation_memo = None  # (detect-sig, locked-verdict-or-None)
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
         # S160: the shared base-freshness reporter
         # (skills/lcars-init/base-freshness.sh — the read-only sibling of
@@ -269,6 +270,33 @@ class LocalAdapter(object):
         tr = self._test_readiness()
         if tr is not None:
             meta["testReadiness"] = tr
+            # S183: the board LOCKS filing and the holodeck on a repo with no
+            # test foundation, so the lock state rides meta as its own key —
+            # present ONLY on the two locked verdicts, so every repo that could
+            # file before this round carries no `foundation` key at all and its
+            # payload is byte-identical. A ready repo has no `testReadiness`
+            # block to hang it off in the first place, which is the point: no
+            # key ⇒ nothing locked.
+            if tr.get("foundation") in ("greenfield", "untested"):
+                meta["foundation"] = tr.get("foundation")
+        else:
+            # S183 FIX ROUND 3 (F2). `_test_readiness` reports NOTHING on a repo
+            # with no `.git/lcars/config.json` — an S146 rule, and a correct one:
+            # `testReadiness` describes an INITIALIZED repo's configured command,
+            # and everything that reads it depends on that meaning. The FOUNDATION
+            # is a different question ("does this repo have a test system at
+            # all?") and it needs no config file to answer — the CLI gate returns
+            # rc=20 on exactly this repo. Hanging the lock off the readiness
+            # payload therefore left the board UNLOCKED on the never-init'd repo a
+            # captain is most likely to open it against: both band controls
+            # enabled, ▦ FILE MISSION opening the idea box, and the refusal
+            # arriving only after he had typed one — the late refusal this whole
+            # round exists to remove. Asked here, and ONLY here (an initialized
+            # repo's verdict still rides `testReadiness` exactly as it did), so
+            # `testReadiness` means precisely what it meant before.
+            f = self._foundation_only()
+            if f is not None:
+                meta["foundation"] = f
         # S168: the FORGE HOST this repo lives on, for the board's "view on
         # GitHub" links. Purely ADDITIVE and present ONLY on a non-github.com
         # host: `gh_hostname` returns EMPTY for github.com (and for a repo with
@@ -510,10 +538,50 @@ class LocalAdapter(object):
                 if isinstance(blk.get("candidates"), list) and blk["candidates"]:
                     payload["candidates"] = [
                         c for c in blk["candidates"] if isinstance(c, str)]
+                # S183: the FOUNDATION axis — "does this repo HAVE a test system
+                # at all?", as opposed to "is a command configured?". Forwarded
+                # only when the helper set it, so a pre-S183 readiness.sh (or a
+                # stub in a test) yields a byte-identical payload.
+                if blk.get("foundation"):
+                    payload["foundation"] = blk.get("foundation")
+                if blk.get("foundationWhy"):
+                    payload["foundationWhy"] = blk.get("foundationWhy")
         except Exception:
             payload = None
         self._readiness_memo = (key, payload)
         return payload
+
+    def _foundation_only(self):
+        """The LOCKED foundation verdict for an UN-INITIALIZED repo, or None.
+
+        Shells the same ONE verdict `_test_readiness` does (ADR-002 — the daemon
+        dispatches, it never reimplements the rule in Python) and keeps ONLY the
+        two locking verdicts; anything else — `unconfigured`, `ready`, a repo
+        that HAS a config, a missing/slow/garbage helper — is None, i.e. nothing
+        added to meta and no behaviour changed. Memoized on the detection-marker
+        signature, so a board that re-renders does not re-shell.
+        """
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        if os.path.isfile(config):
+            return None  # initialized: the verdict rides testReadiness already
+        key = self._detect_signature()
+        if self._foundation_memo is not None and self._foundation_memo[0] == key:
+            return self._foundation_memo[1]
+        verdict = None
+        script = self._resolve_readiness_script()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--json"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=10)
+            blk = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+            if isinstance(blk, dict) \
+                    and blk.get("foundation") in ("greenfield", "untested"):
+                verdict = blk["foundation"]
+        except Exception:
+            verdict = None
+        self._foundation_memo = (key, verdict)
+        return verdict
 
     def _main_launch(self):
         """The local main-deploy record → the additive meta.mainLaunch payload,

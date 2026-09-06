@@ -72,7 +72,14 @@ new_repo() {
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
       && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
-  printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-01-01T00:00:00Z" }\n' \
+  # S183: a CONFIGURED test command, so this fixture is a repo with a test
+  # FOUNDATION. `lcars file` now refuses to open a normal mission on a repo that
+  # has none (greenfield/untested) and points at Establish Vision instead — so a
+  # suite that files missions has to file against a repo that can actually be
+  # filed against. `true` resolves via `command -v`, which is all the readiness
+  # verdict asks of a command. The gate itself is proven in
+  # tests/foundation-gate.test.sh, against real repos in all four states.
+  printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-01-01T00:00:00Z" }\n' \
     >"$repo/.git/lcars/config.json"
   # A repo-root CONTEXT.md so resolve_context_source never tries to spawn a pack
   # worker (the stub only knows how to emit estimate.json, not a context pack).
@@ -367,7 +374,9 @@ check "8e. typeless mission keeps all six stages (default = full pipeline)" \
 # 9. COPILOT legacy billing: a bug sums premiumRequests over ONLY the 4 stages.
 r9="$(new_repo)"
 # Pin legacy billing on this repo so the deterministic multiplier math applies.
-printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
+# S183: keeps new_repo's testCommand — this rewrite of the config would
+# otherwise strip the test foundation and `lcars file` would refuse.
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
   >"$r9/.git/lcars/config.json"
 e9="$(estimate_typed_mission "$r9" bug "$EST_COSTED" LCARS_WORKER_CLI=copilot COPILOT_RUN_APP=1)"
 check "9a. copilot bug estimate.json is VALID JSON" \
@@ -381,7 +390,9 @@ check "9d. copilot bug premiumRequests LESS than six-stage (162/324)" \
 
 # 9e. COPILOT legacy FEATURE keeps the full six-stage premiumRequests (162/324).
 r9b="$(new_repo)"
-printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
+# S183: keeps new_repo's testCommand — this rewrite of the config would
+# otherwise strip the test foundation and `lcars file` would refuse.
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
   >"$r9b/.git/lcars/config.json"
 e9b="$(estimate_typed_mission "$r9b" feature "$EST_COSTED" LCARS_WORKER_CLI=copilot COPILOT_RUN_APP=1)"
 check "9e. copilot feature premiumRequests == 162/324 (full six-stage)" \

@@ -116,8 +116,15 @@ new_repo() {
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
       && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
+  # S183: a CONFIGURED test command, so this fixture is a repo with a test
+  # FOUNDATION. `lcars file` now refuses to open a normal mission on a repo that
+  # has none (greenfield/untested) and points at Establish Vision instead — so a
+  # suite about the MECHANICS of filing has to file against a repo that can
+  # actually be filed against. `true` resolves via `command -v`, which is all the
+  # readiness verdict asks of a command. The gate itself is proven in
+  # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-05-30T00:00:00Z" }
+{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
 EOF
   echo "$repo"
 }
@@ -507,7 +514,9 @@ unset GH_BODY
 # 10f. Copilot active, LEGACY billing (config copilotBilling=legacy): the old
 # premium-request rendering returns UNCHANGED for grandfathered annual subscribers.
 repoL="$(new_repo)"; make_gh_stub "$repoL/gh"
-printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy" }\n' \
+# S183: keeps new_repo's testCommand — this rewrite of the config would
+# otherwise strip the repo's test foundation and `lcars file` would refuse.
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy" }\n' \
   >"$repoL/.git/lcars/config.json"
 export GH_LOG="$repoL/gh.log"; : >"$GH_LOG"
 export GH_BODY="$repoL/gh-body.txt"; : >"$GH_BODY"

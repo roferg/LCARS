@@ -601,10 +601,22 @@ if gsay "$repo" | grep -qi 'This reads as a greenfield repo'; then
 else
   ok "H3c. the park does not conclude greenfield in LCARS's own voice"
 fi
-if gsay "$repo" | grep -q 'test-readiness verdict' && gsay "$repo" | grep -q 'NO TEST SYSTEMS FOUND'; then
+# S183 UPDATED THIS LEG ON PURPOSE. S182 locked the CITATION here, and the
+# verdict it happened to cite on this repo was "◇ NO TEST SYSTEMS FOUND — a
+# greenfield repo" — the lie S183 was commissioned to cure. The citation
+# contract is unchanged and still asserted; what the verdict SAYS about a
+# monorepo with three working runners is now the truth (the foundation axis
+# reads it as `unconfigured`), so the assertion tracks the truth, not the string.
+if gsay "$repo" | grep -q 'test-readiness verdict' \
+   && gsay "$repo" | grep -q 'TEST SYSTEMS OFFLINE'; then
   ok "H3d. the readiness verdict is still CITED, attributed as a verdict (S183 keeps it)"
 else
   bad "H3d. the readiness verdict citation was lost: $(gsay "$repo" | tr -d '\n' | head -c 400)"
+fi
+if gsay "$repo" | grep -qi 'greenfield'; then
+  bad "H3d2. the monorepo is STILL being called greenfield in the park message"
+else
+  ok "H3d2. the monorepo is never called greenfield (S183 — the oracle's cure)"
 fi
 if gsay "$repo" | grep -qi 'point LCARS at' && gsay "$repo" | grep -qi 'establish a test runner'; then
   ok "H3e. and BOTH next steps are offered (establish one, or point LCARS at one it has)"

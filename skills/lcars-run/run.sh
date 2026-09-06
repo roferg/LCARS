@@ -7736,11 +7736,35 @@ readiness_verdict() {
 # runner. Three paid sessions to discover a fact that was true before the first
 # one started.
 #
-# THIS FUNCTION IS THE ONE PLACE THAT DECIDES. Today it has ONE arm: park,
-# honestly, having spawned nothing. SESSION 183 ADDS THE SECOND ARM HERE — on a
-# greenfield repo (readiness verdict `unknown`) INVITE the worker to establish a
-# test runner instead of parking. Add that branch inside this function; every
-# caller already routes through it, so nothing above needs to move.
+# THIS FUNCTION IS THE ONE PLACE THAT DECIDES, and it has exactly ONE arm: park,
+# honestly, having spawned nothing. IT STAYS THAT WAY.
+#
+# ⚠ THE PLAN THIS COMMENT USED TO DESCRIBE IS SHELVED — DO NOT REVIVE IT. It
+# said: "SESSION 183 ADDS THE SECOND ARM HERE — on a greenfield repo INVITE the
+# worker to establish a test runner instead of parking." That design was built
+# and beaten. Inviting a worker to establish a runner mid-mission forces the
+# HARNESS to verify, with no human present, that a runner the worker has just
+# declared is genuine; three different designs for that check were attacked and
+# beaten over two fix rounds (recorded on `wip/s183-canary-salvage` @ 04fee49,
+# shelved for cause).
+#
+# THE CAPTAIN'S RULING, 2026-09-05, replaces it:
+#
+#     The foundation is established BEFORE any normal mission runs, by an
+#     INITIALIZATION MISSION the captain launches from an Establish Vision flow
+#     — and the captain is at Verify to see the suite actually run.
+#
+# So there is no second arm to add here, and no harness-side check that a runner
+# is real — that is now an explicit invariant (lcars-dev/greenfield-dev.md →
+# *What we are NOT changing*, 2026-09-05). S183 instead put a FOUNDATION GATE at
+# FILING time (skills/lcars-init/foundation-gate.sh): a repo with no test system
+# cannot open a normal mission at all, on the CLI or on the board, and S184
+# replaces that refusal with the real Establish Vision flow.
+#
+# This wall is the BRACES to that gate's belt. It still fires for every repo that
+# reaches Implement with no runner — an `unconfigured` repo whose command was
+# never set, a runner deleted mid-mission — and it must keep spending nothing
+# when it does.
 #
 # The flip-flop gate's rc 96 stays exactly as it is: with this wall in place it
 # is unreachable on the greenfield path, and it remains the honest backstop for
@@ -7759,9 +7783,16 @@ readiness_verdict() {
 # support. The message now REPORTS the verdict, attributed, and offers BOTH next
 # steps — establish a runner, or point LCARS at one the repo already has — which
 # is correct whichever the repo turns out to be. `readiness_verdict` and
-# READINESS_VERDICT are untouched and still reached on every no-runner park:
-# S183 branches on greenfield-ness right here and needs them.
-impl_no_runner_decision() { # subject ("" at the stage level) → today ALWAYS parks
+# READINESS_VERDICT are untouched and still reached on every no-runner park.
+#
+# S183 UPDATE — THE VERDICT THIS QUOTES IS NOW HONEST. `lcars_test_readiness`
+# gained a SECOND AXIS (LCARS_TESTREADY_FOUNDATION: greenfield | untested |
+# unconfigured | ready), decided on positive evidence rather than on the absence
+# of a configured command, so the line this park cites no longer tells a monorepo
+# with three working runners that it is a greenfield repo. The park itself is
+# unchanged: it still REPORTS the verdict, attributed, and still offers both next
+# steps — this function did not need to learn anything new.
+impl_no_runner_decision() { # subject ("" at the stage level) → ALWAYS parks
   local t="$1"
   readiness_verdict
   local subject; subject="$(park_subject "$t")"

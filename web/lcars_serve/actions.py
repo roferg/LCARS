@@ -91,6 +91,12 @@ SCRIPT_ENV = {
     # readiness verbs (--test-command / --probe-tests / --fix-tests). The CLI
     # verbs stay the ONE sanctioned config writer; the daemon only dispatches.
     "update": "LCARS_UPDATE_SCRIPT",
+    # S183: the FOUNDATION GATE (skills/lcars-init/foundation-gate.sh) — the ONE
+    # seam that decides whether a repo may take a normal mission at all. The
+    # daemon SHELLS it exactly as it shells readiness.sh; it never reimplements
+    # the verdict in Python (ADR-002), so the board and the CLI can never
+    # disagree about whether this repo has a test foundation.
+    "foundation_gate": "LCARS_FOUNDATION_GATE_BIN",
 }
 
 
@@ -5068,6 +5074,70 @@ class Actions(LogFacts):
             pass
 
     # -- public action surface (one per endpoint) -------------------------------
+    # ── S183: THE FOUNDATION GATE on the board ────────────────────────────────
+    # The viewscreen is a VIEWPORT, never a reimplementation (the harness-parity
+    # principle): a repo the CLI refuses to file against must be refused here in
+    # the same words, decided by the same seam
+    # (skills/lcars-init/foundation-gate.sh), which SESSION 184 replaces with the
+    # real Establish Vision flow.
+    #
+    # WHY IT IS ALSO HERE, and not left to file.sh's own gate: `align_start` and
+    # `holodeck_start` HIRE A WORKER before file.sh is ever reached, and the whole
+    # point of the gate is that nothing is hired on a repo with no foundation.
+    #
+    # DEGRADES TO ALLOW on anything it cannot answer — script missing, bad JSON,
+    # non-zero exit, timeout — exactly like `_test_readiness`. It refuses only on
+    # a positive `allowed: false`, never on an absence of information.
+    def _resolve_foundation_gate(self):
+        """The gate helper path: wired script → env → in-repo → installed.
+
+        Mirrors LocalAdapter._resolve_readiness_script rung for rung."""
+        wired = self.scripts.get("foundation_gate")
+        if wired:
+            return wired
+        env = os.environ.get("LCARS_FOUNDATION_GATE_BIN")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "foundation-gate.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-init",
+                            "foundation-gate.sh")
+
+    def _foundation_verdict(self):
+        """{"foundation","allowed","message"} from the shared seam, or None."""
+        script = self._resolve_foundation_gate()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--json"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=20)
+            blk = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+            if isinstance(blk, dict) and "allowed" in blk:
+                return blk
+        except Exception:
+            return None
+        return None
+
+    def _require_foundation(self, what="file a mission"):
+        """Raise 409 with the seam's own words when this repo has no foundation.
+
+        409 CONFLICT, not 400: nothing about the captain's REQUEST is wrong —
+        the repo is in a state that cannot take one yet. `data.foundation` lets
+        the front end lock the affordance without re-asking."""
+        blk = self._foundation_verdict()
+        if not blk or blk.get("allowed") is not False:
+            return
+        msg = (blk.get("message") or "").strip() or (
+            "This repo has no test foundation yet, so LCARS cannot %s here. "
+            "Start with Establish Vision." % what)
+        raise ActionError(409, msg,
+                          {"foundation": blk.get("foundation") or "greenfield",
+                           "establishVision": True})
+
     def file_mission(self, idea, engine=None, mission_type="feature",
                      images=None, holodeck=None, holodeck_scope=None,
                      holodeck_answers=None):
@@ -5088,6 +5158,7 @@ class Actions(LogFacts):
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
+        self._require_foundation("file a mission")
         holo, handoff = self._handoff_attach(holodeck)
         mtype = "bug" if str(mission_type).strip().lower() == "bug" else "feature"
         # The TITLE comes from what the CAPTAIN wrote, before the guidance block
@@ -5143,6 +5214,7 @@ class Actions(LogFacts):
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
+        self._require_foundation("file a mission")
         # S127 — a holodeck hand-off travels this road too, and it is the one
         # the deck's ▦ FILE MISSION uses: the card lands on the board instantly
         # with the mockup and the concept doc already in its attachments/, and
@@ -5198,6 +5270,14 @@ class Actions(LogFacts):
         fresh filing). A normal (no mission_id) call is BYTE-IDENTICAL to today.
         """
         mid = (mission_id or "").strip() or None
+        # S183 — the Align console HIRES A WORKER on its very first turn, so the
+        # foundation gate has to fire before the session is opened, not after
+        # file.sh eventually refuses. Completing an ALREADY-PARKED mission (mid)
+        # is deliberately exempt: that mission was accepted before the gate and
+        # the captain is finishing work already begun, exactly as `file.sh
+        # --complete` is exempt on the CLI.
+        if not mid:
+            self._require_foundation("start an alignment")
         seed_paths = []
         if mid:
             # the parked mission must exist (404 otherwise) and still be parked.
@@ -6205,6 +6285,12 @@ class Actions(LogFacts):
               different tools AND different cwds, and resuming one warm session
               across that switch is a behaviour no spike has measured.
         """
+        # S183 — THE HOLODECK IS LOCKED UNTIL A FOUNDATION EXISTS (captain
+        # ruling, 2026-09-05). A mockup whose only road out is ▦ FILE MISSION is
+        # a dead end on a repo that cannot take a mission, and a `grounding` pass
+        # HIRES A WORKER to read a project that does not exist yet. The lock is
+        # lifted the moment an initialization mission lands (S185, at approve).
+        self._require_foundation("open the holodeck")
         if images:
             # STARTING a program from an image is not built: `start` opens the
             # room and (on `grounding`) reads the captain's project — there is
@@ -13235,6 +13321,10 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
             home, ".claude/skills/lcars-version/check.sh"),
         # S146: the update skill carries the sanctioned test-readiness verbs.
         "update": os.path.join(home, ".claude/skills/lcars-update/update.sh"),
+        # S183: the foundation gate — the ONE seam that decides whether this
+        # repo may take a normal mission (and open the holodeck) at all.
+        "foundation_gate": os.path.join(
+            home, ".claude/skills/lcars-init/foundation-gate.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():

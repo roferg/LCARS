@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import _fixtures as fx  # noqa: E402
 from lcars_serve.local_adapter import LocalAdapter  # noqa: E402
 from lcars_serve.server import make_server  # noqa: E402
-from lcars_serve.actions import Actions  # noqa: E402
+from lcars_serve.actions import Actions, ActionError  # noqa: E402
 
 _HARNESS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "board_readiness_harness.js")
@@ -69,6 +69,25 @@ READY = {"status": "ready", "suggestion": None, "testCommand": "make test"}
 # `candidates` carries the pickable commands so choosing costs ZERO tokens
 # (the old ⚡ FIX here dispatched a PAID discovery worker to choose, which is
 # exactly what the "LCARS will not choose for you" line promised it would not).
+# FIX ROUND 1 / D3 — the SECOND AXIS the board ignored. `readinessCopy`
+# branched on `status === "unknown"` alone and printed the greenfield bootstrap
+# line over a tested npm-workspaces monorepo, with ▦ FILE MISSION enabled
+# beside it. These three carry the same `unknown` status and three different
+# foundations, and each must read TRUE.
+UNKNOWN_UNCONFIGURED = {"status": "unknown", "suggestion": None,
+                        "testCommand": None, "foundation": "unconfigured",
+                        "foundationWhy": "a test framework in package.json"}
+UNKNOWN_UNTESTED = {"status": "unknown", "suggestion": None,
+                    "testCommand": None, "foundation": "untested",
+                    "foundationWhy": "this repo has code and no test system"}
+UNKNOWN_GREENFIELD = {"status": "unknown", "suggestion": None,
+                      "testCommand": None, "foundation": "greenfield",
+                      "foundationWhy": "this repo is empty"}
+# and the npm-default placeholder: a DETECTED candidate over no test system.
+MISSING_UNTESTED = {"status": "missing",
+                    "suggestion": 'npm test -- ${LCARS_TESTS_DIR:-}',
+                    "testCommand": None, "foundation": "untested",
+                    "foundationWhy": "this repo has code and no test system"}
 AMBIGUOUS = {"status": "ambiguous", "suggestion": None, "testCommand": None,
              "stacks": "rust,js",
              "candidates": ["cargo test", "npm test -- ${LCARS_TESTS_DIR:-}"]}
@@ -464,10 +483,11 @@ class TestConfigEndpointsReadOnly(unittest.TestCase):
                 self.assertEqual(e.code, 403, path)
 
 
-def _run_harness(mode, tr, readonly=False):
+def _run_harness(mode, tr, readonly=False, foundation=None, holodeck=None):
     fd, path = tempfile.mkstemp(suffix=".json")
     with os.fdopen(fd, "w") as fh:
-        json.dump({"tr": tr}, fh)
+        json.dump({"tr": tr, "foundation": foundation,
+                   "holodeck": holodeck}, fh)
     argv = ["node", _HARNESS, mode, path]
     if readonly:
         argv.append("readonly")
@@ -532,6 +552,39 @@ class TestBannerRender(unittest.TestCase):
         # the two voices must never blur.
         repair = _texts(_run_harness("banner", BROKEN)["banner"])
         self.assertNotEqual(txt, repair)
+
+    def test_unconfigured_repo_is_never_called_greenfield(self):
+        """FIX ROUND 1 / D3. MEASURED on a real npm-workspaces monorepo with
+        three tested packages: the board read "◇ NO TEST SYSTEMS FOUND … Start
+        it with Establish Vision" while ▦ FILE MISSION sat enabled beside it.
+        The CLI line was already cured; the board ignored the `foundation` in
+        the same payload."""
+        txt = _texts(_run_harness("banner", UNKNOWN_UNCONFIGURED)["banner"])
+        self.assertNotIn("NO TEST SYSTEMS FOUND", txt)
+        self.assertNotIn("engineering crew", txt)
+        self.assertNotIn("Establish Vision", txt)
+        self.assertIn("HAS a test system", txt)
+        self.assertIn("a test framework in package.json", txt)
+
+    def test_untested_repo_reads_as_code_without_tests(self):
+        """`untested` is not greenfield either — the repo already exists."""
+        txt = _texts(_run_harness("banner", UNKNOWN_UNTESTED)["banner"])
+        self.assertNotIn("NO TEST SYSTEMS FOUND", txt)
+        self.assertIn("code", txt)
+        self.assertIn("Establish Vision", txt)
+
+    def test_greenfield_keeps_the_shipped_bootstrap_voice(self):
+        txt = _texts(_run_harness("banner", UNKNOWN_GREENFIELD)["banner"])
+        self.assertIn("NO TEST SYSTEMS FOUND", txt)
+        self.assertIn("engineering crew", txt)
+
+    def test_a_placeholder_test_script_is_not_a_detected_candidate(self):
+        """The npm-default `"test": "echo … && exit 1"` produces a DETECTED
+        candidate over a repo with no test system. Offering it as one while the
+        band controls are locked tells the captain two different stories."""
+        txt = _texts(_run_harness("banner", MISSING_UNTESTED)["banner"])
+        self.assertNotIn("detected candidate", txt)
+        self.assertIn("code", txt)
 
     def test_ambiguous_is_never_the_greenfield_bootstrap_voice(self):
         # S147: the defect this closes — an ambiguous repo WITH test infra used
@@ -710,6 +763,214 @@ class TestFileConsole(unittest.TestCase):
         self.assertIn("TEST SYSTEMS OFFLINE", _texts(block))
         self.assertFalse(any(n["tag"] == "input" for n in flat))
         self.assertFalse(any(n["text"] == "⚡ FIX TEST SYSTEMS" for n in flat))
+
+
+# ── S183: THE FOUNDATION GATE on the viewscreen ────────────────────────
+# The board is a VIEWPORT, never a reimplementation: a repo the CLI refuses to
+# file against must be refused here too, in the same words, decided by the same
+# seam (skills/lcars-init/foundation-gate.sh). These run against REAL git repos
+# in real states — the verdict is a property of the working tree, so a faked one
+# would prove nothing about the thing under test.
+_GATE_SH = os.path.join(_REPO_ROOT, "skills", "lcars-init", "foundation-gate.sh")
+
+
+def _git_repo(tmp, testcmd="null"):
+    """A REAL initialized git repo with an LCARS config, at `tmp`."""
+    os.makedirs(tmp, exist_ok=True)
+    subprocess.run(["git", "init", "-q", tmp], check=True)
+    subprocess.run(["git", "-C", tmp, "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", tmp, "config", "user.name", "t"], check=True)
+    cfgdir = os.path.join(tmp, ".git", "lcars")
+    os.makedirs(os.path.join(cfgdir, "missions"), exist_ok=True)
+    with open(os.path.join(cfgdir, "config.json"), "w") as fh:
+        fh.write('{\n  "model": "claude-sonnet",\n  "projectName": "p",\n'
+                 '  "testCommand": %s\n}\n' % testcmd)
+    return tmp
+
+
+def _recording_stub(path, log):
+    with open(path, "w") as fh:
+        fh.write('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "' + log + '"\n'
+                 'exit 0\n')
+    os.chmod(path, 0o755)
+    return path
+
+
+class FoundationLockRenderTest(unittest.TestCase):
+    """S183 — the board's own lock: ▦ FILE MISSION and ⬡ HOLODECK are DISABLED
+    with the reason SAID, and the File console refuses instead of offering an
+    idea box. The button state is what a real browser is driven against, so it
+    is asserted here as state, and by the tester in a real browser."""
+
+    def test_greenfield_locks_both_band_controls_with_a_reason(self):
+        res = _run_harness("lock", None, foundation="greenfield")
+        for key in ("fileBtn", "holodeckBtn"):
+            self.assertTrue(res[key]["disabled"], "%s not locked" % key)
+            self.assertIn("Establish Vision", res[key]["reason"])
+            self.assertEqual(res[key]["title"], res[key]["reason"])
+
+    def test_untested_locks_too_and_names_the_real_state(self):
+        res = _run_harness("lock", None, foundation="untested")
+        self.assertTrue(res["fileBtn"]["disabled"])
+        self.assertIn("code but no test system", res["fileBtn"]["reason"])
+
+    def test_the_holodeck_stays_locked_after_its_own_painter_runs(self):
+        """FIX ROUND 1 / D2. MEASURED in real headed Chrome: #holodeckBtn
+        carried class="btn go foundation-locked" and disabled:false, opacity:1,
+        cursor:pointer — and CLICKING IT OPENED THE DECK. render() paints the
+        foundation lock (board.js:1655) and then renderHolodeckActivity
+        (:1659), whose holoPaintBandBtn set `disabled = (writesActive ===
+        false)` and removed data-reason unconditionally. Two painters own one
+        button; the button's state needs ONE owner that considers both."""
+        res = _run_harness("lock", None, foundation="greenfield")
+        b = res["holodeckBtn"]
+        self.assertTrue(b["disabled"], "the holodeck survived its own painter")
+        self.assertIn("Establish Vision", b["reason"])
+        self.assertEqual(b["title"], b["reason"])
+
+    def test_a_working_program_indicator_cannot_unlock_the_holodeck(self):
+        """…and neither can the activity indicator, which repaints the same
+        button off meta.holodeck on every SSE tick."""
+        res = _run_harness("lock", None, foundation="untested",
+                           holodeck={"count": 1, "message": "a program is working"})
+        b = res["holodeckBtn"]
+        self.assertTrue(b["disabled"])
+        self.assertIn("test system", b["reason"])
+        self.assertNotIn("a program is working", b["title"])
+
+    def test_the_lock_lifts_when_the_foundation_lands(self):
+        """The lock must LIFT as well as apply — an initialization mission
+        landing clears meta.foundation and the next render unlocks the deck."""
+        res = _run_harness("lock", None, foundation=None,
+                           holodeck={"count": 0})
+        self.assertFalse(res["holodeckBtn"]["disabled"])
+        self.assertEqual(res["holodeckBtn"]["reason"], "")
+
+    def test_a_repo_with_a_foundation_leaves_the_controls_alone(self):
+        res = _run_harness("lock", None, foundation=None)
+        self.assertFalse(res["fileBtn"]["disabled"])
+        self.assertEqual(res["fileBtn"]["reason"], "")
+
+    def test_the_file_console_refuses_instead_of_taking_an_idea(self):
+        res = _run_harness("lock", None, foundation="greenfield")
+        flat = _flatten(res["overlay"])
+        self.assertFalse(any(n["tag"] == "textarea" for n in flat),
+                         "a locked repo still offered an idea box")
+        self.assertIn("Establish Vision", _texts(res["overlay"]))
+
+
+class FoundationGateEndpointTest(unittest.TestCase):
+    """POST /api/mission, /api/park, /api/holodeck/start on a repo with no
+    foundation: REFUSED in the seam's own words, having dispatched NOTHING."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _git_repo(os.path.join(self.tmp, "repo"))
+        self.log = os.path.join(self.tmp, "dispatch.log")
+        stub = _recording_stub(os.path.join(self.tmp, "stub.sh"), self.log)
+        self.actions = Actions(repo_root=self.repo,
+                               scripts={"file": stub,
+                                        "foundation_gate": _GATE_SH})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _dispatches(self):
+        if not os.path.isfile(self.log):
+            return []
+        with open(self.log) as fh:
+            return [l for l in fh.read().splitlines() if l.strip()]
+
+    def test_file_endpoint_refuses_on_a_greenfield_repo(self):
+        with self.assertRaises(ActionError) as cm:
+            self.actions.file_mission("build me a thing")
+        self.assertEqual(cm.exception.status, 409)
+        self.assertIn("Establish Vision", cm.exception.message)
+        self.assertEqual(cm.exception.data.get("foundation"), "greenfield")
+        self.assertEqual(self._dispatches(), [],
+                         "a skill was dispatched on a refused filing")
+
+    def test_park_endpoint_refuses_with_the_same_shape(self):
+        with self.assertRaises(ActionError) as cm:
+            self.actions.park_mission("build me a thing")
+        self.assertEqual(cm.exception.status, 409)
+        self.assertIn("Establish Vision", cm.exception.message)
+        self.assertEqual(self._dispatches(), [])
+
+    def test_holodeck_entry_is_locked(self):
+        with self.assertRaises(ActionError) as cm:
+            self.actions.holodeck_start(program="a mockup")
+        self.assertEqual(cm.exception.status, 409)
+        self.assertIn("Establish Vision", cm.exception.message)
+
+    def test_untested_repo_is_refused_too(self):
+        os.makedirs(os.path.join(self.repo, "src"))
+        with open(os.path.join(self.repo, "src", "app.js"), "w") as fh:
+            fh.write("console.log(1);\n")
+        with self.assertRaises(ActionError) as cm:
+            self.actions.file_mission("build me a thing")
+        self.assertEqual(cm.exception.data.get("foundation"), "untested")
+
+    def test_board_meta_carries_the_lock(self):
+        meta = LocalAdapter(self.repo).board()["meta"]
+        self.assertEqual(meta.get("foundation"), "greenfield")
+        self.assertEqual(meta["testReadiness"].get("foundation"), "greenfield")
+
+    def test_board_meta_locks_a_repo_that_was_never_init(self):
+        """FIX ROUND 3 (F2). The lock must not depend on `lcars init` having
+        been run. A pristine repo carries no `.git/lcars/config.json`, and
+        `_test_readiness` reports NOTHING on one by design (S146) — S183 hung
+        `meta.foundation` off that same payload, so on the repo a captain is
+        MOST likely to open the board against, both band controls rendered
+        enabled and ▦ FILE MISSION opened the idea box. The CLI gate answers
+        rc=20 on this very repo, so the verdict never needed a config file."""
+        never = os.path.join(self.tmp, "never-init")
+        os.makedirs(os.path.join(never, "src"))
+        subprocess.run(["git", "init", "-q", never], check=True)
+        with open(os.path.join(never, "src", "app.js"), "w") as fh:
+            fh.write("console.log(1);\n")
+        meta = LocalAdapter(never).board()["meta"]
+        self.assertEqual(meta.get("foundation"), "untested")
+        # …and `testReadiness` keeps its S146 meaning EXACTLY: no config file
+        # ⇒ no block, so nothing that already reads it changes behaviour.
+        self.assertNotIn("testReadiness", meta)
+
+    def test_a_never_init_repo_that_HAS_tests_is_not_locked(self):
+        """The same path must not become a wall: a repo with a real test
+        system is `unconfigured`, which was never a locked verdict."""
+        never = os.path.join(self.tmp, "never-init-tested")
+        os.makedirs(os.path.join(never, "src"))
+        subprocess.run(["git", "init", "-q", never], check=True)
+        with open(os.path.join(never, "package.json"), "w") as fh:
+            fh.write('{"name":"a","devDependencies":{"vitest":"^2.0.0"}}\n')
+        with open(os.path.join(never, "src", "app.test.js"), "w") as fh:
+            fh.write("test('x', () => {});\n")
+        meta = LocalAdapter(never).board()["meta"]
+        self.assertIsNone(meta.get("foundation"))
+
+    def test_a_repo_with_a_foundation_files_exactly_as_before(self):
+        ready = _git_repo(os.path.join(self.tmp, "ready"), testcmd='"true"')
+        log = os.path.join(self.tmp, "ready.log")
+        actions = Actions(repo_root=ready,
+                          scripts={"file": _recording_stub(
+                              os.path.join(self.tmp, "ready-stub.sh"), log),
+                              "foundation_gate": _GATE_SH})
+        actions.file_mission("build me a thing")
+        with open(log) as fh:
+            self.assertIn("--prd", fh.read())
+        self.assertIsNone(LocalAdapter(ready).board()["meta"].get("foundation"))
+
+    def test_gate_degrades_to_allow_when_it_cannot_answer(self):
+        """A missing helper must never become a wall (no verdict => allowed)."""
+        log = os.path.join(self.tmp, "degraded.log")
+        actions = Actions(repo_root=self.repo,
+                          scripts={"file": _recording_stub(
+                              os.path.join(self.tmp, "deg-stub.sh"), log),
+                              "foundation_gate": os.path.join(
+                                  self.tmp, "no-such-gate.sh")})
+        actions.file_mission("build me a thing")
+        with open(log) as fh:
+            self.assertIn("--prd", fh.read())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,98 @@
+lcars file --park / --complete
+  [32mPASS[0m 1. parks the mission dir
+  [32mPASS[0m 1. writes idea.md verbatim
+  [32mPASS[0m 1. state.json marks prdPending true
+  [32mPASS[0m 1. state.json stage is align
+  [32mPASS[0m 1. state.json has NO type field yet
+  [32mPASS[0m 1. state.json is valid JSON
+  [32mPASS[0m 1. NO prd.md is written when parking
+  [32mPASS[0m 1. NO estimate.json when parking
+  [32mPASS[0m 1. issue create labels align+mission
+  [32mPASS[0m 1. issue create adds NO type label
+  [32mPASS[0m 1. issue body carries the idea
+  [32mPASS[0m 1. issue body carries a STANDBY note
+  [32mPASS[0m 1. readout names the mission id
+  [32mPASS[0m 1. readout says how to align
+  [32mPASS[0m 1. records the issue number
+  [32mPASS[0m 1b. --idea <file> captures the idea verbatim
+  [32mPASS[0m 1b. issue title is the first idea line (truncated)
+  [32mPASS[0m 2. --engine copilot persists workerBin=copilot
+  [32mPASS[0m 2. state.json still valid JSON with engine
+  [32mPASS[0m 2b. no --engine ⇒ no workerBin field
+  [32mPASS[0m 2c. a bogus --engine ⇒ non-zero exit
+  [32mPASS[0m 2c. a bogus --engine ⇒ no mission written
+  [32mPASS[0m 3. lcars run on a parked mission exits non-zero
+  [32mPASS[0m 3. run refusal says 'parked awaiting alignment'
+  [32mPASS[0m 3. run refusal names the align command
+  [32mPASS[0m 3. run refusal is not a stack trace
+  [32mPASS[0m 3. research stage on a parked mission refuses
+  [32mPASS[0m 3. bare lcars does NOT auto-drive a parked mission
+  [32mPASS[0m 3. bare lcars offers the parked mission for alignment
+  [32mPASS[0m 3. bare lcars names the align command in the offer
+  [32mPASS[0m 3. resolver active scope excludes the parked mission
+  [32mPASS[0m 3. resolver parked scope lists the parked mission
+  [32mPASS[0m 4a. complete with a bad PRD exits non-zero
+  [32mPASS[0m 4a. bad PRD ⇒ NO prd.md written
+  [32mPASS[0m 4a. bad PRD ⇒ prdPending still true
+  [32mPASS[0m 4b. complete writes prd.md
+  [32mPASS[0m 4b. prd.md has the PRD content
+  [32mPASS[0m 4b. prdPending cleared from state.json
+  [32mPASS[0m 4b. state.json now carries the type
+  [32mPASS[0m 4b. state.json title is the PRD title
+  [32mPASS[0m 4b. state.json still valid JSON
+  [32mPASS[0m 4b. estimator was invoked (estimate --mission)
+  [32mPASS[0m 4b. estimate.json now exists
+  [32mPASS[0m 4b. issue is edited IN PLACE (issue edit 42)
+  [32mPASS[0m 4b. issue edit retitles to the PRD title
+  [32mPASS[0m 4b. issue edit adds the type label lcars:bug
+  [32mPASS[0m 4b. issue body replaced with the PRD
+  [32mPASS[0m 4b. readout announces the alignment
+  [32mPASS[0m 4b. completed mission is now runnable (resolver active)
+  [32mPASS[0m 4c. completed state.json is byte-identical to grill-first
+  [32mPASS[0m 4c. completed prd.md is byte-identical to grill-first
+  [32mPASS[0m 4c. idea.md is the ONLY extra artifact vs grill-first
+  [32mPASS[0m 4d. completing an aligned mission exits non-zero
+  [32mPASS[0m 4d. message says 'already aligned'
+  [32mPASS[0m 7. complete exits non-zero when gh issue edit fails
+  [32mPASS[0m 7. gh-edit failure leaves prdPending true (still parked)
+  [32mPASS[0m 7. gh-edit failure leaves NO type field in state.json
+  [32mPASS[0m 7. gh-edit failure makes NO drift 'aligned' claim
+  [32mPASS[0m 7. gh-edit failure names the re-run --complete command
+  [32mPASS[0m 7. state.json is still valid JSON after a failed complete
+  [32mPASS[0m 7. re-run after fixing gh completes (Mission aligned)
+  [32mPASS[0m 7. re-run clears prdPending
+  [32mPASS[0m 7. re-run now carries the type
+  [32mPASS[0m 7. re-run RETRIES the issue edit (issue edit 42 logged)
+  [32mPASS[0m 7. retried state.json is byte-identical to grill-first
+  [32mPASS[0m 7. retried prd.md is byte-identical to grill-first
+  [32mPASS[0m 5. status exits 0 on a parked mission
+  [32mPASS[0m 5. status shows the standby glyph ◇
+  [32mPASS[0m 5. status labels the row 'awaiting alignment'
+  [32mPASS[0m 5. stage cell does not glue the glyph (no overflow)
+  [32mPASS[0m 5. status still shows the mission id
+  [32mPASS[0m 5. a parked mission has no events.jsonl (mirror no-op)
+  [32mPASS[0m 6. grill-first filing writes prd.md
+  [32mPASS[0m 6. grill-first state has NO prdPending
+  [32mPASS[0m 6. grill-first writes NO idea.md
+  [32mPASS[0m 6. grill-first labels align+type+mission
+  [32mPASS[0m 6. grill-first rejects a bare positional idea
+  [32mPASS[0m 8a. bogus --engine on --complete ⇒ non-zero exit
+  [32mPASS[0m 8a. bogus --engine on --complete ⇒ names the engine
+  [32mPASS[0m 8a. bogus --engine on --complete ⇒ mission LEFT PARKED (nothing partial)
+  [32mPASS[0m 8a. bogus --engine on --complete ⇒ no prd.md written
+  [32mPASS[0m 8b. --complete --engine copilot persists workerBin=copilot
+  [32mPASS[0m 8c. (precondition) parked mission recorded workerBin=claude
+  [32mPASS[0m 8c. an explicit picker engine BEATS the parked engine on --complete
+  [32mPASS[0m 8d. --engine beats $LCARS_WORKER_BIN on --complete
+  [32mPASS[0m 8e. no explicit engine ⇒ the parked engine is preserved
+  [32mPASS[0m 8f. no engine anywhere ⇒ completed state.json has no workerBin key
+  [32mPASS[0m 9a. --complete wrote prd.md
+  [32mPASS[0m 9a. --complete does NOT call an HTML mockup an image
+  [32mPASS[0m 9a. --complete heading names what actually arrived
+  [32mPASS[0m 9a. --complete declares the mockup LOOK AND FLOW only
+  [32mPASS[0m 9a. the daemon's precedence sentence is readable
+  [32mPASS[0m 9a. --complete carries the precedence rule VERBATIM
+  [32mPASS[0m 9a. --complete still lists both by RELATIVE path
+  [32mPASS[0m 9b. image-only --complete section is BYTE-IDENTICAL to the pre-S128 string
+
+park-file: 95 passed, 0 failed

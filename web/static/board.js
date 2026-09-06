@@ -1649,6 +1649,10 @@ function render(board) {
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
   renderTestReadiness(board.meta && board.meta.testReadiness);
+  /* S183: the FOUNDATION LOCK. On EVERY render, so it lifts as well as locks —
+     an initialization mission landing (S185) clears meta.foundation and the
+     board unlocks itself on the next SSE push, with nothing to reload. */
+  paintFoundationLock(board.meta && board.meta.foundation);
   /* S128 (FL-002): the ⬡ HOLODECK band control's activity indicator, from the
      daemon's own `meta.holodeck`. On EVERY render, so it clears as well as
      lights — and off the board payload, because the board is the surface a
@@ -1913,18 +1917,60 @@ function renderVersionBanner(version) {
    Two voices, never blurred (captain ruling):
      repair    (broken/missing) — "⚠ TEST SYSTEMS OFFLINE" + the ⚡ FIX action;
      bootstrap (unknown)        — a greenfield repo reads as calm STATUS
-                                  ("the first mission's engineering crew will
-                                  establish them"), never an action item.
+                                  (S183: an INITIALIZATION mission's engineering
+                                  crew will establish them), never an alarm.
    The fix is ONE POST (/api/config/fix-tests → update.sh --fix-tests:
    suggest-or-discover → set → probe → verdict). Filing/parking are NEVER
    blocked by any readiness state. */
 function readinessCopy(tr) {
+  /* S183 FIX ROUND 1 (D3) — READ THE FOUNDATION, which rides in the SAME
+     payload. This function branched on `status === "unknown"` alone, and
+     `unknown` is three different repos: a `git init`, a repo full of code with
+     no test system, and — MEASURED — an npm-workspaces monorepo whose three
+     packages all run vitest, which the board told "◇ NO TEST SYSTEMS FOUND …
+     Start it with Establish Vision" while ▦ FILE MISSION sat enabled beside it.
+     The CLI readiness line was already cured on this axis; the board was not.
+
+     The foundation is consulted FIRST because it is the honest axis and because
+     it is what the band controls are locked on: a repo whose ▦ FILE MISSION is
+     disabled must not also be offered a "detected candidate" (the npm-default
+     `"test": "echo … && exit 1"` placeholder reads `missing` + `untested`, and
+     saying both is telling the captain two different stories about one repo).
+     `unconfigured` from `broken` / `missing` / `ambiguous` keeps its own
+     shipped voice below — those states were never wrong. */
+  var fnd = tr && tr.foundation;
+  if (fnd === "untested") {
+    return {
+      voice: "bootstrap",
+      line: "◇ NO TEST SYSTEM FOUND — this repo has code, and nothing to prove "
+          + "a change with.",
+      sub: "Start with Establish Vision — normal missions unlock when the "
+         + "foundation lands.",
+    };
+  }
+  if (tr && tr.status === "unknown" && fnd === "unconfigured") {
+    /* The repo HAS a test system; LCARS just has no command for it. That is the
+       `lcars update --test-command` case — the repair voice, worded the way the
+       CLI line words it, never the bootstrap one. */
+    return {
+      voice: "repair",
+      line: "⚠ TEST SYSTEMS OFFLINE — this repo HAS a test system but no test "
+          + "command is configured; missions cannot be proof-gated.",
+      sub: tr.foundationWhy ? "found: " + tr.foundationWhy : "",
+    };
+  }
   if (tr && tr.status === "unknown") {
     return {
       voice: "bootstrap",
-      line: "◇ NO TEST SYSTEMS FOUND — the first mission's engineering crew "
-          + "will establish them.",
-      sub: "",
+      /* S183: the same calm bootstrap voice, with the promise it can actually
+         keep. A normal Mission is refused on this repo (the foundation gate);
+         what establishes the test systems is an INITIALIZATION mission's crew,
+         launched from Establish Vision. */
+      line: "◇ NO TEST SYSTEMS FOUND — the first mission here is an "
+          + "initialization mission, and its engineering crew will establish "
+          + "them.",
+      sub: "Start it with Establish Vision — normal missions unlock when it "
+         + "lands.",
     };
   }
   /* S147: AMBIGUOUS is its own voice — a THIRD state, never blurred into the
@@ -1959,6 +2005,82 @@ function readinessCopy(tr) {
     line: "⚠ TEST SYSTEMS OFFLINE — missions cannot be proof-gated.",
     sub: sub,
   };
+}
+
+/* ── S183: THE FOUNDATION LOCK ────────────────────────────────────────────
+   `meta.foundation` is present ONLY when this repo has no test foundation
+   (greenfield = nothing here; untested = code with no test system). In that
+   state a normal Mission cannot be filed and the holodeck is locked (captain
+   ruling, 2026-09-05): the foundation is established first, by an
+   initialization mission from Establish Vision, with the captain at Verify.
+
+   THE BUTTON STATE IS THE PRODUCT HERE. The daemon refuses these POSTs with a
+   409 either way, but a captain who can click ▦ FILE MISSION, type an idea and
+   only then be told the repo cannot take one has been misled by the board —
+   so the controls are disabled, and the REASON is said (the read-only idiom:
+   `data-reason` + `title`, never a silently greyed button). */
+var FOUNDATION_LOCK_REASON = {
+  greenfield:
+    "This repo is empty — there is no code and no test system yet, so a "
+    + "Mission has no way to prove any work. Start with Establish Vision: say "
+    + "what you want to build and LCARS files an initialization mission that "
+    + "lays the foundation.",
+  untested:
+    "This repo has code but no test system, so a Mission has no way to prove "
+    + "any work. Start with Establish Vision: LCARS recommends a stack and "
+    + "files an initialization mission that lays the foundation.",
+};
+
+function foundationLocked(f) {
+  return f === "greenfield" || f === "untested";
+}
+
+/* THE LOCK STATE, held in ONE place (S183 fix round 1, D2).
+   `paintFoundationLock` used to write #holodeckBtn's disabled/title/data-reason
+   itself, and so does `holoPaintBandBtn` — which render() calls immediately
+   AFTER it (board.js: paintFoundationLock, then renderHolodeckActivity). The
+   second painter unconditionally set `disabled = (writesActive === false)`,
+   rewrote the title and REMOVED data-reason, so the shipped board carried
+   class="btn go foundation-locked" with disabled:false, opacity:1,
+   cursor:pointer — MEASURED in real headed Chrome, and clicking it opened the
+   deck. The captain got all the way in and typed a brief before the daemon's
+   409 refused him.
+
+   Two painters over one control is the defect, not their order: hand-ordering
+   them would only work until the next call site. So the fact lives here and
+   holoPaintBandBtn — the ONE owner of that button — reads it alongside
+   read-only mode and the working-program indicator. */
+var foundationLockReason = "";
+
+function paintFoundationLock(foundation) {
+  var locked = foundationLocked(foundation);
+  var reason = locked
+    ? (FOUNDATION_LOCK_REASON[foundation] || FOUNDATION_LOCK_REASON.greenfield)
+    : "";
+  foundationLockReason = reason;
+  var b = document.getElementById("fileBtn");
+  if (b) {
+    if (locked) {
+      b.disabled = true;
+      b.title = reason;
+      b.setAttribute("data-reason", reason);
+      if (b.classList) b.classList.add("foundation-locked");
+    } else {
+      /* Only ever UNDO our own lock — read-only mode paints these same
+         attributes, and stomping them here would re-enable a control a
+         view-only board must never offer. */
+      if (b.classList && b.classList.contains("foundation-locked")) {
+        b.classList.remove("foundation-locked");
+        b.disabled = writesActive === false;
+        b.removeAttribute("data-reason");
+        b.title = "";
+      }
+    }
+  }
+  /* ⬡ HOLODECK is painted by its own single owner, which now considers the
+     lock. Calling it here means the lock APPLIES and LIFTS through exactly the
+     same path the SSE tick uses. */
+  holoPaintBandBtn();
 }
 
 /* The band-level strip: its OWN row below the top band (the version-banner
@@ -3397,6 +3519,24 @@ function attachImagePaster(textarea, onError, store) {
 
 /* ════════════════ SCREEN: FILE A MISSION (#file) ════════════════ */
 function openFile() {
+  /* S183 — the FOUNDATION LOCK, said rather than implied. `paintFoundationLock`
+     disables ▦ FILE MISSION, but a hotkey (`f`) and the empty-board prompt both
+     reach this function directly, so the console itself refuses: it opens with
+     the reason and the way forward, and NO idea box to type into. Establish
+     Vision replaces this in S184 — see skills/lcars-init/foundation-gate.sh. */
+  var f0 = LAST_BOARD && LAST_BOARD.meta && LAST_BOARD.meta.foundation;
+  if (foundationLocked(f0)) {
+    var lm = modal("◇ No Test Foundation");
+    lm.body.appendChild(el("div", "note",
+      FOUNDATION_LOCK_REASON[f0] || FOUNDATION_LOCK_REASON.greenfield));
+    lm.body.appendChild(el("div", "note",
+      "Every LCARS ticket is proven by RUNNING its tests — red on the parent "
+      + "commit, green on the tip. If this repo DOES have a test system and "
+      + "LCARS just cannot see it, point LCARS at it with "
+      + "`lcars update --test-command '<command>'`."));
+    showOverlay(lm.wrap);
+    return lm;
+  }
   var m = modal("▦ File New Mission");
   // S146: when the repo's test systems are unready, the console opens with the
   // readiness warning ABOVE the idea box — one themed line, the one-click
@@ -8050,13 +8190,26 @@ function holoPaintBandBtn() {
   var b = document.getElementById("holodeckBtn");
   if (!b) return;
   var ro = writesActive === false;
-  b.disabled = ro;
+  /* S183 fix round 1 (D2): the FOURTH independent fact this one button carries
+     — the foundation lock (captain ruling: the holodeck is locked until the
+     repo has a test foundation). It is read here rather than painted by
+     paintFoundationLock, because THIS function is the button's single owner and
+     the previous split let it silently unlock a locked deck. Read-only still
+     OUTRANKS everything; a lock outranks the activity dot, which must never
+     claim a program is running on a deck nobody can open. */
+  var lock = (!ro && foundationLockReason) ? foundationLockReason : "";
+  var blocked = ro || !!lock;
+  b.disabled = blocked;
   b.textContent = HOLO.on ? "▦ Board" : "⬡ Holodeck";
   if (b.classList) b.classList.toggle("holo-on", HOLO.on);
+  /* No CSS of its own: `.btn[disabled]` already dims to .4 and shows
+     `cursor: not-allowed` (the treatment ▦ FILE MISSION was measured wearing).
+     The class is a marker for paintFoundationLock's undo, not a style. */
+  if (b.classList) b.classList.toggle("foundation-locked", !!lock);
   /* The dot is the OFF-DECK signal. On the deck the working turn is already
      visible in the chat pane, and a second indicator two inches away is a
      second voice about one fact. */
-  var w = (!ro && !HOLO.on && HOLO.working && HOLO.working.count)
+  var w = (!blocked && !HOLO.on && HOLO.working && HOLO.working.count)
     ? HOLO.working : null;
   if (b.classList) b.classList.toggle("working", !!w);
   if (w) {
@@ -8065,10 +8218,11 @@ function holoPaintBandBtn() {
     b.appendChild(dot);
   }
   b.title = ro ? HOLO_RO_REASON
+    : (lock ? lock
     : (w ? String(w.message || "")
          : (HOLO.on ? "back to the mission board"
-                    : "the holodeck — design a mockup in chat"));
-  if (ro) b.setAttribute("data-reason", HOLO_RO_REASON);
+                    : "the holodeck — design a mockup in chat")));
+  if (blocked) b.setAttribute("data-reason", ro ? HOLO_RO_REASON : lock);
   else b.removeAttribute("data-reason");
   /* A DOT IS NOTHING TO A SCREEN READER. The daemon's sentence — which names
      the program and how long it has been going — is what is announced, and it
@@ -8087,6 +8241,11 @@ function renderHolodeckActivity(h) {
 
 function toggleHolodeck() {
   if (writesActive === false) return;   // view-only: the control is disabled
+  /* S183 fix round 1 (D2): the foundation lock, in the same idiom — ENTERING is
+     refused, LEAVING never is (a captain already on the deck must always be
+     able to get back to the board). The disabled button is the first line; this
+     is the second, for any path that reaches the deck without it. */
+  if (!HOLO.on && foundationLockReason) return;
   holoSetMode(!HOLO.on);
 }
 

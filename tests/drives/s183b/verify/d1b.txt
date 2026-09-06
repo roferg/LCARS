@@ -1,0 +1,52 @@
+############ D1b — captain's ruling WINS on the npm-default repo
+    ✓ testCommand set: true
+    ✓ TEST SYSTEMS ONLINE — missions will be proof-gated with: true
+  update rc=0
+  readiness: {"status":"ready","suggestion":null,"testCommand":"true","stacks":null,"candidates":null,"foundation":"ready","foundationWhy":"a test command is configured and its runner resolves"}
+  gate rc = 0 (0=allow)
+  file|   ⚠ gh issue create failed — mission filed locally; re-run after fixing gh.
+  file|   ⚠ estimator unavailable — mission filed with default per-stage models.
+  file|   Mission filed: lcars-20260905-001
+  file|   GitHub issue:  (none — file locally only)
+  file|   Branch:        lcars/lcars-20260905-001 (off main)
+  file|   Stage:         align
+  file|   Next:          run `lcars run lcars-20260905-001` to continue
+  file rc=0
+  missions: lcars-20260905-001 
+
+############ D1c — LCARS_TEST_CMD env on a fresh npm-default repo
+    ⚠ testCommand "true" does not reference $LCARS_TESTS_DIR.
+      The Implement red gate runs it with $LCARS_TESTS_DIR pointing at the
+      quarantined fail-first tests; if the command ignores that var it will run
+      the repo's EXISTING suite instead, and the red gate will reject every
+      quarantined suite (a green-on-nothing result proves nothing). Edit
+      testCommand in .git/lcars/config.json to run ONLY "$LCARS_TESTS_DIR" when
+      it is set (e.g. pytest "${LCARS_TESTS_DIR:-.}").
+    ✓ .git/lcars/ created
+    ✓ config.json written  (stack: js, model: claude-sonnet, context: none, tests: true)
+      keys seeded: model projectName contextFile stack testCommand worktreeSetupCommand comprehensionBudget lcarsVersion created
+    ✓ Claude CLI verified  (0.0.0-s183-fake (counting shim))
+    ✓ 16 labels created
+    … probing test systems (true)
+    ✓ PROBE COMPLETE — test systems responding: the suite ran and passed.
+    ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: true
+    LCARS ready — run `lcars file` to start your first Mission.
+  config testCommand:   "testCommand": "true",
+
+############ D1d — a REAL vitest repo still gets its runner seeded by init
+    ✓ .git/lcars/ created
+    ✓ config.json written  (stack: js, model: claude-sonnet, context: none, tests: npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"})
+      keys seeded: model projectName contextFile stack testCommand worktreeSetupCommand comprehensionBudget lcarsVersion created
+    ✓ Claude CLI verified  (0.0.0-s183-fake (counting shim))
+    ✓ 16 labels created
+    LCARS ready — run `lcars file` to start your first Mission.
+  config testCommand:   "testCommand": "npx vitest run ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR#\"$PWD/\"}\"}",
+  gate rc = 0 (0=allow)
+
+############ D1e — make/pytest/cargo repos still get seeded
+  inv-makefile         testCommand="make test"
+  inv-python           testCommand="pytest \"${LCARS_TESTS_DIR:-.}\""
+  inv-rust             testCommand="cargo test"
+  inv-go               testCommand="go test ./..."
+  inv-tests-runsh      testCommand="bash tests/run.sh \"${LCARS_TESTS_DIR:-tests}\""
+SPAWNS=4 PROBES=7

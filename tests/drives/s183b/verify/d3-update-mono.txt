@@ -1,0 +1,10 @@
+== init mono
+════════════════ lcars update --fix-tests @ mono
+  ▸ dispatching a discovery crew to survey the test systems…
+  ✗ REPAIR INCOMPLETE — this repo HAS a test system (a test framework in package.json)
+    but neither detection nor discovery could name the command that runs it: the discovery crew reported nothing back.
+    Config untouched. Set it yourself with:
+    lcars update --test-command '<cmd>'
+--- rc=1
+--- gate AFTER: {"foundation":"unconfigured","foundationWhy":"a test framework in package.json","allowed":true,"message":null}
+SPAWNS=0 PROBES=0

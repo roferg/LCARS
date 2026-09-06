@@ -163,6 +163,36 @@ _branch_source_desc() {
   printf '%s' "$BASE"
 }
 
+# --- THE FOUNDATION GATE (S183) --------------------------------------------
+# A normal mission cannot be filed against a repo with no test foundation. The
+# decision, the verdict and the wording ALL live in ONE seam —
+# skills/lcars-init/foundation-gate.sh — which SESSION 184 replaces with the
+# real Establish Vision flow; nothing about the refusal is duplicated here.
+#
+# It runs BEFORE any worker is hired (`lcars file`'s only paid step is the
+# end-of-Align estimator, dispatched much further down) and before anything at
+# all is written, so a refused filing leaves the repo untouched.
+#
+# ALLOWED, deliberately: `unconfigured` — a repo that HAS a test system LCARS
+# simply has no command for. That is the `lcars update --test-command` case and
+# it keeps working exactly as it did. The gate DEGRADES TO ALLOW whenever it
+# cannot get a verdict (helper missing, not an LCARS repo): it refuses only on a
+# positive greenfield/untested, never on an absence of information.
+#
+# The refusal exits 4 — its own number, NOT `die`'s 1 and NOT `die_prd`'s 3. A
+# redraft cannot clear it (so it is not 3), and the viewscreen's Align console
+# keys its heal off exit status (S165) — healing a foundation refusal by
+# re-grilling the PRD would loop forever.
+FOUNDATION_GATE="${LCARS_FOUNDATION_GATE_BIN:-$FILE_SKILL_DIR/../lcars-init/foundation-gate.sh}"
+_foundation_gate() {
+  [ -f "$FOUNDATION_GATE" ] || return 0
+  local out rc
+  out="$(bash "$FOUNDATION_GATE" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 20 ] || return 0
+  printf '%s\n' "$out" >&2
+  exit 4
+}
+
 # ==========================================================================
 # Park & Align helpers (S136). Defined here so the --park / --complete dispatch
 # below can call them. None runs at source time.
@@ -329,6 +359,10 @@ _validate_adr() {
 # do_park — file a mission from just the idea (no grill, no PRD, no estimate).
 # --------------------------------------------------------------------------
 do_park() {
+  # S183 — the park lane is the OTHER way a normal mission is filed (the board's
+  # ◇ File to Backlog), so it carries the same gate. `--complete` deliberately
+  # does NOT: it finishes a mission that was already accepted and grilled.
+  _foundation_gate
   # Resolve the idea text: --idea <file> wins, else the positional text.
   local idea=""
   if [ -n "$IDEA_SRC" ]; then
@@ -838,6 +872,14 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
+
+# S183 — no foundation, no normal mission. Checked before the PRD is even read,
+# so the captain hears about the repo rather than about his PRD — and, fix round
+# 1 (D7), BEFORE `mkdir -p "$MISSIONS_DIR"`. Creating the missions directory
+# first meant a REFUSED filing left `.git/lcars/missions/` behind in a repo that
+# had none, contradicting the gate header's own promise that a refusal leaves the
+# repo untouched.
+_foundation_gate
 mkdir -p "$MISSIONS_DIR"
 
 # --- validate the PRD has every required section --------------------------

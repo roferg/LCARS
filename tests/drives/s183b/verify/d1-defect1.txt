@@ -1,0 +1,41 @@
+--- BEFORE init
+{"status":"missing","suggestion":"npm test -- ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR}\"}","testCommand":null,"stacks":null,"candidates":null,"foundation":"untested","foundationWhy":"this repo has code and no test system"}
+gate rc = 20
+--- lcars init
+    ⚠ a `test` script is present but there is no test system behind it — no testCommand seeded.
+      LCARS found no test files, no test framework and no runner in this repo, so the
+      detected command would prove nothing. Establish Vision lays the foundation; if
+      this repo DOES have a test system LCARS cannot see, name it yourself:
+      lcars update --test-command '<command>'
+    ✓ .git/lcars/ created
+    ✓ config.json written  (stack: js, model: claude-sonnet, context: none, tests: none)
+      keys seeded: model projectName contextFile stack testCommand worktreeSetupCommand comprehensionBudget lcarsVersion created
+    ✓ Claude CLI verified  (0.0.0-s183-fake (counting shim))
+    ✓ 16 labels created
+    ◇ NO TEST SYSTEM FOUND — this repo has code and nothing to prove it with (the `test` script here names no test runner); LCARS establishes the foundation before a normal mission runs (see Establish Vision).
+    LCARS ready — this repo has no test foundation yet, so start with Establish Vision;
+    normal missions (`lcars file`) unlock the moment the initialization mission lands.
+--- AFTER init
+{"status":"missing","suggestion":"npm test -- ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR}\"}","testCommand":null,"stacks":null,"candidates":null,"foundation":"untested","foundationWhy":"this repo has code and no test system"}
+config testCommand:   "testCommand": null,
+gate rc = 20  (0 = FILING ALLOWED)
+--- lcars file
+  ◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+  
+  This repo has code, but no test system — nothing here can prove that a change works.
+  
+  Every LCARS ticket is proven by RUNNING its tests — red on the parent commit,
+  green on the tip. With no test system there is no way to prove any work, so a
+  mission filed here would burn its Research, Validate and Plan stages and then
+  stop dead at Implement with nothing to show for it.
+  
+  WHAT TO DO INSTEAD — Establish Vision. Say what you want to build; LCARS grills
+  you, recommends a stack with its reasons (yours to override), and files an
+  INITIALIZATION mission whose whole job is the foundation: a running skeleton
+  with a working test system, and you at Verify to watch the suite actually run.
+  Normal missions unlock the moment that lands.
+  
+  If this repo DOES already have a test system and LCARS just cannot see it, point
+  LCARS at it instead:  lcars update --test-command '<command>'
+file rc=4
+SPAWNS=0 PROBES=1

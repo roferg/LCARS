@@ -2571,7 +2571,7 @@ report_probe() {
 #   LCARS_TESTREADY_CANDIDATES  one candidate COMMAND per line, so the captain
 #                               can PICK instead of hiring a discovery worker
 #                               ("" unless status=ambiguous)
-lcars_test_readiness() {
+lcars_test_readiness_status() {
   local config="$1"
   LCARS_TESTREADY_STATUS=""
   LCARS_TESTREADY_TESTCMD=""
@@ -2646,6 +2646,377 @@ EOF2
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# THE FOUNDATION AXIS (S183) — "does this repo HAVE a test system at all?"
+# ---------------------------------------------------------------------------
+# `lcars_test_readiness_status` (above) answers ONE question: *is a test command
+# configured, or detectable?* It has always answered `unknown` when the answer is
+# no — REGARDLESS of how much code or how many frameworks the repo holds. So a
+# `git init` on an empty directory and an npm-workspaces monorepo whose three
+# packages all run vitest produce the SAME verdict, and the readiness line told
+# both of them "◇ NO TEST SYSTEMS FOUND — a greenfield repo".
+#
+# That is a lie on the monorepo, and S183's gate cannot be built on it. This is
+# the ADDITIVE SECOND AXIS — a separate variable, decided on POSITIVE EVIDENCE
+# (test files, framework manifests / dev-dependencies, per-package runners in a
+# workspace, a declared runner the repo's own tooling names), NEVER on the
+# absence of a configured command:
+#
+#   LCARS_TESTREADY_FOUNDATION
+#     greenfield    nothing is there — no code, no tests, no test system
+#     untested      code exists, and there is no test system to prove it
+#     unconfigured  a test system EXISTS; LCARS just has no command for it
+#                   (the `lcars update --test-command` / `--fix-tests` case)
+#     ready         a test command is configured and its runner resolves
+#   LCARS_TESTREADY_FOUNDATION_WHY   the evidence, in one phrase, for the readout
+#
+# `LCARS_TESTREADY_STATUS` and its five values are UNTOUCHED — init, update,
+# status, the viewscreen and run.sh's readiness_verdict all keep branching on
+# exactly what they branched on before. Consumers that need to know whether the
+# repo has a FOUNDATION (the S183 filing gate, S184's Establish Vision) read the
+# new variable instead of re-deriving it.
+#
+# WHICH WAY THIS ERRS. `unconfigured` is the permissive answer and `untested` /
+# `greenfield` are the ones that refuse a filing, so every rule below is written
+# to reach `unconfigured` on ANY genuine sign of a test system. Refusing a repo
+# that has one is a worse failure than letting a repo through that does not:
+# the second is caught by S182's wall at Implement, the first strands a captain.
+#
+# ⚠ WHAT THIS IS NOT. It is NOT a mechanical check that a runner is genuine —
+# that question was attacked three ways and beaten (see greenfield-dev.md, *What
+# we are NOT changing*, 2026-09-05). It classifies a repo the CAPTAIN then acts
+# on; it never certifies a runner a worker declared.
+
+# _lcars_fnd_find <root> <maxdepth> <predicate…> — a bounded, pruned `find` over
+# the working tree. The prune list is the usual build/vendor noise plus `.git`,
+# so a repo's own dependencies (whose node_modules is FULL of other people's test
+# files) can never be mistaken for this repo's test system.
+_lcars_fnd_find() {
+  local root="$1" depth="$2"; shift 2
+  find "$root" -maxdepth "$depth" \
+    \( -name .git -o -name node_modules -o -name vendor -o -name target \
+       -o -name dist -o -name build -o -name .venv -o -name venv \
+       -o -name .next -o -name .tox -o -name .cache -o -name coverage \
+       -o -name Pods -o -name .gradle \) -prune \
+    -o "$@" 2>/dev/null
+}
+
+# lcars_foundation_workspace_marker <root> — the monorepo marker this repo
+# carries, or "". LIFTED VERBATIM (bar its name) from the shelved S183 salvage
+# branch `wip/s183-canary-salvage` @ 04fee49, where it was verified: these are
+# the markers `_dtc_js` / `detect_stack` / `detect_workspace_runner` already key
+# off, plus their siblings in the other ecosystems. A pnpm workspace is marked by
+# `pnpm-workspace.yaml` and a root `package.json` is conventional, NOT required —
+# which is exactly the shape that read as greenfield.
+lcars_foundation_workspace_marker() { # root → the marker name, or ""
+  local r="${1:-${TOPLEVEL:-.}}"
+  [ -f "$r/pnpm-workspace.yaml" ] && { printf 'pnpm-workspace.yaml'; return 0; }
+  [ -f "$r/lerna.json" ]          && { printf 'lerna.json'; return 0; }
+  [ -f "$r/nx.json" ]             && { printf 'nx.json'; return 0; }
+  [ -f "$r/turbo.json" ]          && { printf 'turbo.json'; return 0; }
+  [ -f "$r/rush.json" ]           && { printf 'rush.json'; return 0; }
+  [ -f "$r/go.work" ]             && { printf 'go.work'; return 0; }
+  if [ -f "$r/package.json" ] && grep -q '"workspaces"[[:space:]]*:' "$r/package.json" 2>/dev/null; then
+    printf 'a "workspaces" key in package.json'; return 0
+  fi
+  if [ -f "$r/Cargo.toml" ] && grep -q '^\[workspace\]' "$r/Cargo.toml" 2>/dev/null; then
+    printf '[workspace] in Cargo.toml'; return 0
+  fi
+  printf ''
+}
+
+# The RUNNER vocabulary — the names of actual test runners, as they appear in a
+# command line. Used to tell a real `test` script from the two impostors that
+# defeated earlier attempts at this: npm's default `echo "Error: no test
+# specified" && exit 1`, and a script literally named `test` that tests nothing.
+# Neither NAMES a runner, so neither matches.
+LCARS_TEST_RUNNER_TOKENS='vitest|jest|mocha|jasmine|karma|qunit|cypress|playwright|ava|tape|uvu|node --test|node:test|deno test|bun test|nyc|c8|pytest|py\.test|unittest|nose2|tox|cargo test|go test|gotestsum|rspec|minitest|rake test|dotnet test|xunit|nunit|mstest|make test|bats|shunit2|phpunit|pest|gradle test|mvn test|mvn verify|swift test|ctest|mix test|scalatest|junit|testng|rustest|behave|robot|cucumber'
+
+# The DEPENDENCY vocabulary — package.json keys that only appear when a JS test
+# system is actually installed (or declared). A dev-dependency is positive
+# evidence even when the runner is not installed on this machine: the repo HAS a
+# test system, LCARS simply has no command for it.
+LCARS_TEST_DEP_KEYS='vitest|jest|mocha|jasmine|jasmine-core|karma|qunit|cypress|playwright|@playwright/[a-z-]+|ava|tape|uvu|tap|node-tap|c8|nyc|chai|sinon|supertest|@testing-library/[a-z-]+|@jest/globals|ts-jest|babel-jest|jest-environment-[a-z-]+|@vitest/[a-z-]+|enzyme|testcafe|nightwatch|@types/jest|@types/mocha|@swc/jest|jsdom'
+
+# _lcars_ev_balanced — 0 when the quoting in <string> is evenly paired and the
+# string does not end mid-expansion. The FOUNDATION evidence phrase is
+# captain-facing PROSE (the CLI prints it; the board renders it in its
+# `found: …` chip), so anything that ends a quote it never opened reads as a
+# corrupted sentence rather than as a report.
+_lcars_ev_balanced() {
+  local s="$1" c n pair a b
+  for c in '"' "'" '`'; do
+    n="$(printf '%s' "$s" | tr -dc "$c" | wc -c | tr -d ' ')"
+    [ $(( n % 2 )) -eq 0 ] || return 1
+  done
+  for pair in '{}' '()' '[]'; do
+    a="$(printf '%s' "$s" | tr -dc "$(printf '%s' "$pair" | cut -c1)" | wc -c | tr -d ' ')"
+    b="$(printf '%s' "$s" | tr -dc "$(printf '%s' "$pair" | cut -c2)" | wc -c | tr -d ' ')"
+    [ "$a" = "$b" ] || return 1
+  done
+  case "$s" in *'$') return 1 ;; esac
+  case "$s" in *'\') return 1 ;; esac
+  return 0
+}
+
+# _lcars_ev_short_cmd — a detected command, shortened for that prose. WHOLE
+# WORDS only, then backed off further until the quoting balances, with an
+# ellipsis marking the cut. The predecessor was `cut -c1-60`, which severs a
+# command at whatever character sits at column 60 — on the very command LCARS
+# itself seeds it landed inside a nested parameter expansion and printed
+#   this repo already runs `npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"`
+# to a captain who only ever needed to know it found vitest.
+_lcars_ev_short_cmd() {
+  local s="$1" max="${2:-60}" out="" cand w
+  [ "${#s}" -le "$max" ] && { printf '%s' "$s"; return 0; }
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    if [ -z "$out" ]; then cand="$w"; else cand="$out $w"; fi
+    [ "${#cand}" -le "$max" ] || break
+    out="$cand"
+  done <<EV_WORDS
+$(printf '%s' "$s" | tr '\t' ' ' | tr ' ' '\n')
+EV_WORDS
+  while [ -n "$out" ] && ! _lcars_ev_balanced "$out"; do
+    case "$out" in
+      *' '*) out="${out% *}" ;;
+      *)     out="" ;;
+    esac
+  done
+  # Nothing survived (a single enormous or unbalanced first token): fall back to
+  # the leading token with every character that could dangle removed, so the
+  # sentence is still readable even in the shape we have never seen.
+  if [ -z "$out" ]; then
+    out="$(printf '%s' "$s" | cut -c1-"$max" | tr -d '"'"'"'`${}()[]\\')"
+    out="${out%% *}"
+  fi
+  printf '%s …' "$out"
+}
+
+# lcars_test_system_evidence — POSITIVE evidence that this repo has a test
+# system. Echoes the evidence in one phrase and returns 0; returns 1 (silent)
+# when there is none. Reads $TOPLEVEL like every other detector here.
+lcars_test_system_evidence() {
+  local root="${TOPLEVEL:-.}" f hit cand marker
+
+  # 1. A declared runner the repo's OWN tooling names — the markers
+  #    `detect_test_cmd`'s generic arm and the framework configs key off.
+  if [ -f "$root/Makefile" ] && grep -q '^test:' "$root/Makefile" 2>/dev/null; then
+    printf 'a Makefile `test:` target'; return 0
+  fi
+  [ -f "$root/tests/run.sh" ] && { printf 'tests/run.sh'; return 0; }
+  for f in pytest.ini tox.ini conftest.py .rspec phpunit.xml phpunit.xml.dist \
+           karma.conf.js jest.config.js jest.config.ts jest.config.mjs \
+           jest.config.cjs jest.config.json vitest.config.js vitest.config.ts \
+           vitest.config.mjs vitest.workspace.ts playwright.config.ts \
+           playwright.config.js cypress.config.js cypress.config.ts \
+           .mocharc.json .mocharc.yml .mocharc.js codecept.conf.js; do
+    [ -f "$root/$f" ] && { printf '%s' "$f"; return 0; }
+  done
+
+  # 2. The command LCARS itself would seed, when it NAMES a runner. This is the
+  #    impostor filter: `_dtc_js` claims any package.json carrying a "test" key
+  #    and falls back to a bare `npm test --`, so npm's default "no test
+  #    specified" script and an `echo`-only script both produce a candidate that
+  #    names no runner at all — and neither is evidence of anything.
+  cand="$(detect_test_cmd 2>/dev/null)"
+  if [ -n "$cand" ] && printf '%s' "$cand" | grep -qE "$LCARS_TEST_RUNNER_TOKENS"; then
+    printf 'this repo already runs `%s`' "$(_lcars_ev_short_cmd "$cand" 60)"
+    return 0
+  fi
+
+  # 3. Any package.json in the tree — root OR a workspace package — that
+  #    installs a test framework, or whose `test` script names a runner. ONE
+  #    tested package in a workspace is enough: the repo HAS a test system.
+  hit="$(_lcars_fnd_find "$root" 4 -name package.json -type f -print | head -40)"
+  if [ -n "$hit" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if grep -qE "\"($LCARS_TEST_DEP_KEYS)\"[[:space:]]*:" "$f" 2>/dev/null; then
+        printf 'a test framework in %s' "${f#$root/}"; return 0
+      fi
+      if grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null \
+          | grep -qE "$LCARS_TEST_RUNNER_TOKENS"; then
+        printf 'a test script in %s' "${f#$root/}"; return 0
+      fi
+    done <<EV_PKG
+$hit
+EV_PKG
+  fi
+
+  # 4. dotnet test projects (the same detector `_dtc_dotnet` uses).
+  if command -v detect_dotnet_test_projects >/dev/null 2>&1; then
+    hit="$(detect_dotnet_test_projects 2>/dev/null | grep . | head -1)"
+    [ -n "$hit" ] && { printf 'the test project %s' "$hit"; return 0; }
+  fi
+
+  # 5. TEST FILES, by the naming conventions every ecosystem shares. Note this
+  #    is a FILE-NAME test, never a directory test: a `test/` directory holding
+  #    nothing but notes is not a test system, and saying it was is how an
+  #    earlier attempt at this let an untested repo through.
+  #
+  #    The Swift / Scala / PHP / Perl names were MISSING, and their absence did
+  #    not merely mislabel those repos — it HARD-REFUSED them at the filing
+  #    gate. A real SwiftPM package (Package.swift + Tests/AppTests/
+  #    AppTests.swift) read `untested` and was told to Establish Vision on a
+  #    project that already exists. LCARS claims these ecosystems (`swift test`
+  #    is in LCARS_TEST_RUNNER_TOKENS, `Package.swift` in
+  #    LCARS_MANIFEST_FILES), so it must be able to see their tests.
+  hit="$(_lcars_fnd_find "$root" 6 -type f \( \
+        -name '*.test.js' -o -name '*.test.ts' -o -name '*.test.jsx' \
+        -o -name '*.test.tsx' -o -name '*.test.mjs' -o -name '*.test.cjs' \
+        -o -name '*.spec.js' -o -name '*.spec.ts' -o -name '*.spec.jsx' \
+        -o -name '*.spec.tsx' -o -name '*.spec.mjs' \
+        -o -name 'test_*.py' -o -name '*_test.py' \
+        -o -name '*_test.go' -o -name '*_test.rs' \
+        -o -name '*_test.rb' -o -name '*_spec.rb' \
+        -o -name '*Test.java' -o -name '*Tests.java' -o -name '*Test.kt' \
+        -o -name '*Test.cs' -o -name '*Tests.cs' \
+        -o -name '*_test.exs' -o -name '*_test.sh' -o -name '*.test.sh' \
+        -o -name '*.bats' -o -name '*.feature' \
+        -o -name '*Test.swift' -o -name '*Tests.swift' -o -name '*Spec.swift' \
+        -o -name '*Test.scala' -o -name '*Spec.scala' \
+        -o -name '*Test.php' -o -name '*Tests.php' -o -name '*_test.php' \
+        \) -print | head -1)"
+  [ -n "$hit" ] && { printf 'test files (%s)' "${hit#$root/}"; return 0; }
+
+  #    PERL, and Perl ONLY BY ITS DIRECTORY. Every name above is a CONVENTION —
+  #    `foo.test.js`, `test_foo.py`, `FooTest.java` — a shape nothing but a test
+  #    file wears. `.t` is not: on its own it is a template, a tuple dump, a
+  #    stray script. Perl's convention is the DIRECTORY, `t/*.t`, and the
+  #    extension alone claimed a root-level `CHANGELOG.t` in an untested JS repo
+  #    as that repo's test system — evidence enough to OPEN the foundation gate
+  #    and tell the captain his changelog proves his changes. So the parent must
+  #    be a `t/` directory, which is what a Perl suite actually looks like.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "${f#$root/}" in
+      t/*|*/t/*) printf 'test files (%s)' "${f#$root/}"; return 0 ;;
+    esac
+  done <<EV_PERL
+$(_lcars_fnd_find "$root" 6 -type f -name '*.t' -print | head -40)
+EV_PERL
+
+  # 6. A conventional test directory whose FILES actually call a test API. This
+  #    catches the repo whose tests are real but whose runner was never
+  #    installed and whose files are named `test/foo.js` — a test system LCARS
+  #    has no command for, which is `unconfigured`, not `untested`.
+  #
+  #    CASE. This list used to be lowercase-only and was compared with
+  #    `[ -d "$root/tests" ]`, which asks the FILESYSTEM whether the directory
+  #    exists — so `Tests/` (the SwiftPM convention) was found on a Mac, where
+  #    APFS folds case, and missed entirely on a case-sensitive volume. The
+  #    directory names are now read off the tree and matched case-insensitively
+  #    in the shell, so the answer no longer depends on which disk the repo is
+  #    on, and the phrase names the directory that ACTUALLY exists.
+  local d base low
+  for d in "$root"/* "$root"/src/*; do
+    [ -d "$d" ] || continue
+    base="${d##*/}"
+    low="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+    case "$low" in
+      test|tests|spec|specs|__tests__|t) : ;;
+      *) continue ;;
+    esac
+    hit="$(_lcars_fnd_find "$d" 3 -type f -print | head -40)"
+    [ -n "$hit" ] || continue
+    #    The API vocabulary is per-ecosystem, and a lowercase-only one answered
+    #    for none of the languages whose test APIs are capitalised: `assert`
+    #    does not match `XCTAssertEqual`, and nothing here matched
+    #    `func testAdd()` or Perl's `Test::More` / `is(…)`. LCARS claims both
+    #    ecosystems (`swift test` is a runner token, `Package.swift` a
+    #    manifest), so reading their tests as absent HARD-REFUSED a project
+    #    that already exists — the worse of the two failures.
+    if printf '%s\n' "$hit" | tr '\n' '\0' \
+        | xargs -0 grep -lE '(describe|it|test|context)[[:space:]]*\(|assert|unittest|#\[test\]|@Test|expect\(|XCTAssert|func[[:space:]]+[Tt]est|Test::(More|Simple|Deep|Exception)|is_deeply|(^|[^[:alnum:]_])(ok|is|isnt|cmp_ok|done_testing)[[:space:]]*\(|should[[:space:]]*[\(\{"]|@pytest|TestCase' 2>/dev/null \
+        | head -1 | grep -q .; then
+      printf 'tests under %s/' "${d#$root/}"; return 0
+    fi
+  done
+
+  return 1
+}
+
+# lcars_repo_has_code — 0 when this repo actually holds SOURCE. The line between
+# `greenfield` (nothing there) and `untested` (code, and nothing to prove it).
+#
+# POSITIVE evidence again, deliberately: a recognised source extension or a
+# recognised build manifest, never "any file that is not a README". The denylist
+# shape was tried first and it is unstable — it counts a stray `.log`, an
+# editor backup or a shell stub as a codebase, and the answer then depends on
+# whatever else happens to be lying in the directory. A README describing an
+# idea is NOT code: that is the captain's day-zero repo and it is greenfield by
+# design.
+#
+# NOTE the two verdicts this separates are refused IDENTICALLY by the foundation
+# gate — the distinction buys WORDING (what LCARS tells the captain it found),
+# not a different decision, so erring toward `greenfield` on an odd repo costs
+# nothing but a slightly less specific sentence.
+LCARS_SOURCE_EXTS='js|jsx|mjs|cjs|ts|tsx|vue|svelte|py|rb|go|rs|java|kt|kts|scala|cs|fs|vb|c|h|cc|cpp|hpp|m|mm|swift|php|ex|exs|erl|hs|clj|cljs|lua|dart|r|jl|pl|pm|sh|bash|zsh|sql|html|htm|css|scss|sass|less|tf|proto|graphql|gql|ipynb'
+LCARS_MANIFEST_FILES='package.json|Cargo.toml|go.mod|pyproject.toml|setup.py|requirements.txt|Pipfile|Gemfile|.*\.gemspec|pom.xml|build.gradle|build.gradle.kts|.*\.csproj|.*\.sln|.*\.slnx|composer.json|mix.exs|Package.swift|CMakeLists.txt|Makefile|Dockerfile|.*\.podspec|deno.json|bun.lockb'
+lcars_repo_has_code() {
+  local root="${TOPLEVEL:-.}" f
+  f="$(_lcars_fnd_find "$root" 4 -type f -print \
+        | grep -vE '/\.git(/|$)' \
+        | grep -E "\.($LCARS_SOURCE_EXTS)\$|/($LCARS_MANIFEST_FILES)\$" \
+        | head -1)"
+  [ -n "$f" ]
+}
+
+# lcars_test_foundation — set LCARS_TESTREADY_FOUNDATION from the status axis
+# plus the evidence above. Called by lcars_test_readiness; safe to call alone
+# once LCARS_TESTREADY_STATUS is set.
+lcars_test_foundation() {
+  LCARS_TESTREADY_FOUNDATION=""
+  LCARS_TESTREADY_FOUNDATION_WHY=""
+  case "${LCARS_TESTREADY_STATUS:-}" in
+    ready)
+      LCARS_TESTREADY_FOUNDATION="ready"
+      LCARS_TESTREADY_FOUNDATION_WHY="a test command is configured and its runner resolves"
+      return 0 ;;
+    broken)
+      # The captain configured a command; the FOUNDATION was declared and it is
+      # the runner that is offline. That is today's repair case (⚡ --fix-tests),
+      # not a repo without a foundation — and it must keep behaving exactly as
+      # it does today.
+      LCARS_TESTREADY_FOUNDATION="unconfigured"
+      LCARS_TESTREADY_FOUNDATION_WHY="a test command is configured (its runner is not operational)"
+      return 0 ;;
+    ambiguous)
+      # S147's own words: this repo HAS test systems — several of them.
+      LCARS_TESTREADY_FOUNDATION="unconfigured"
+      LCARS_TESTREADY_FOUNDATION_WHY="several test systems are present"
+      return 0 ;;
+  esac
+  # `missing` and `unknown` both land here, and BOTH are re-decided on evidence.
+  # `missing` is not a free pass: it is exactly what a repo carrying npm's
+  # default `"test": "echo \"Error: no test specified\" && exit 1"` reads as.
+  local why
+  if why="$(lcars_test_system_evidence)"; then
+    LCARS_TESTREADY_FOUNDATION="unconfigured"
+    LCARS_TESTREADY_FOUNDATION_WHY="$why"
+  elif lcars_repo_has_code; then
+    LCARS_TESTREADY_FOUNDATION="untested"
+    LCARS_TESTREADY_FOUNDATION_WHY="this repo has code and no test system"
+  else
+    LCARS_TESTREADY_FOUNDATION="greenfield"
+    LCARS_TESTREADY_FOUNDATION_WHY="this repo is empty"
+  fi
+  return 0
+}
+
+# lcars_test_readiness — the ONE entry point every surface calls. Runs the
+# status axis (unchanged) and then the foundation axis, so a caller that only
+# ever read LCARS_TESTREADY_STATUS is byte-identical and a caller that needs the
+# foundation gets it without a second pass over the repo.
+lcars_test_readiness() {
+  LCARS_TESTREADY_FOUNDATION=""
+  LCARS_TESTREADY_FOUNDATION_WHY=""
+  lcars_test_readiness_status "$@"
+  lcars_test_foundation
+  return 0
+}
+
 # stack_uses_native_isolation <stack> — 0 when this stack's Implement gate legs
 # are scoped by the RUNNER's own flags rather than by pointing it at an external
 # $LCARS_TESTS_DIR quarantine (`cargo test --test <stem>`, `go test -run`, an
@@ -2709,11 +3080,50 @@ lcars_readiness_line() {
         "$(printf '%s' "$LCARS_TESTREADY_TESTCMD" | awk '{print $1}')"
       ;;
     missing)
+      # S183 fix round 1 (D3, the CLI half). `missing` means DETECTION has a
+      # candidate — and `_dtc_js` claims any package.json carrying a "test" key,
+      # so npm's default `echo "Error: no test specified" && exit 1` produces
+      # one over a repo with no test system at all. Offering that placeholder as
+      # "the detected candidate" with a ⚡ --fix-tests repair, on a repo whose
+      # ▦ FILE MISSION the board has LOCKED and whose next line says to start
+      # with Establish Vision, is one repo told two different stories. The
+      # foundation is the honest axis, so it decides here too.
+      case "${LCARS_TESTREADY_FOUNDATION:-}" in
+        untested)
+          printf '◇ NO TEST SYSTEM FOUND — this repo has code and nothing to prove it with (the `test` script here names no test runner); LCARS establishes the foundation before a normal mission runs (see Establish Vision).\n'
+          return 0 ;;
+        greenfield)
+          printf '◇ NO TEST SYSTEMS FOUND — a greenfield repo; the first mission here is an initialization mission, and its engineering crew will establish them. Start it with Establish Vision.\n'
+          return 0 ;;
+      esac
       printf '⚠ TEST SYSTEMS OFFLINE — no test command configured (detected candidate: %s); missions cannot be proof-gated. Repair: lcars update --fix-tests\n' \
         "$LCARS_TESTREADY_SUGGESTION"
       ;;
     unknown)
-      printf '◇ NO TEST SYSTEMS FOUND — a greenfield repo; the first mission%s engineering crew will establish them.\n' "'s"
+      # S183 — the `unknown` STATUS is three different repos, and until now all
+      # three were told they were greenfield. The FOUNDATION axis is what tells
+      # them apart, so it is what this line branches on. The greenfield wording
+      # is UNCHANGED and still shipped — for the repo it is actually true of.
+      case "${LCARS_TESTREADY_FOUNDATION:-greenfield}" in
+        unconfigured)
+          printf '⚠ TEST SYSTEMS OFFLINE — this repo HAS a test system (%s) but no test command is configured; missions cannot be proof-gated. Repair: lcars update --test-command '"'"'<command>'"'"'\n' \
+            "${LCARS_TESTREADY_FOUNDATION_WHY:-detected}"
+          ;;
+        untested)
+          printf '◇ NO TEST SYSTEM FOUND — this repo has code and nothing to prove it with; LCARS establishes the foundation before a normal mission runs (see Establish Vision).\n'
+          ;;
+        *)
+          # S183 KEPT THE VOICE AND FIXED THE PROMISE. The old line ended "the
+          # first mission's engineering crew will establish them" — the promise
+          # nothing downstream kept, and one `lcars file` now refuses outright.
+          # It is still the calm BOOTSTRAP voice (a greenfield repo is expected,
+          # not an alarm) and it still names the crew that establishes the test
+          # systems; it just names the RIGHT first mission — an INITIALIZATION
+          # mission, launched from Establish Vision, which is the only kind this
+          # repo can take until the foundation lands.
+          printf '◇ NO TEST SYSTEMS FOUND — a greenfield repo; the first mission here is an initialization mission, and its engineering crew will establish them. Start it with Establish Vision.\n'
+          ;;
+      esac
       ;;
     # LEDGERED (recorded, not fixed): `$LCARS_TESTREADY_STACKS` is a list of
     # STACK IDS for a multi-stack repo — "(rust,js)" reads perfectly — but a list

@@ -1,0 +1,60 @@
+
+[1m== 1. the rig passes on a healthy board[0m
+  [32mPASS[0m  smoke.sh exited 0
+  [32mPASS[0m  found the fixture's 2 cards in the real DOM
+
+[1m== 4. the run leaves a screenshot to look at[0m
+  [32mPASS[0m  screenshot at the announced path (60312 bytes)
+
+[1m== 5. no orphan daemon, Chrome, or held port[0m
+  [32mPASS[0m  the passing run left no daemon (pid 53696)
+  [32mPASS[0m  the passing run left no Chrome (pid 53717)
+  [32mPASS[0m  the passing run released its port (61042)
+
+[1m== 2. calibration — .then(render) removed makes the rig FAIL[0m
+  [31mFAIL[0m  calibrate.sh confirms the rig can go red
+     exit 1; see /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T//lcars-browser-selftest.uxNPri/calib.log
+[1mCALIBRATION — can the rig see a blank board?[0m
+calibration artifacts: /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T//lcars-browser-calib.49qgl0
+[31mCALIBRATION CANNOT RUN[0m — expected exactly one `.then(render)` line in
+  web/static/board.js, found 0. The refresh() chain has been restructured;
+  update this script to cut whatever now carries payload → render.
+
+[1m== 5b. the failing run cleans up too[0m
+  [31mFAIL[0m  the failing run recorded its pids
+     no pids.json under '/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T//lcars-browser-calib.49qgl0/run'
+
+[1m== 3. no Chrome ⇒ loud skip that names why[0m
+  [32mPASS[0m  exited 77 (skip), not 0
+  [32mPASS[0m  the skip names the missing binary
+
+[1m== 6. two consecutive runs do not collide on a port[0m
+  [32mPASS[0m  the second run also exited 0
+  [32mPASS[0m  each run took its own free port (61042 then 61077)
+  [32mPASS[0m  the second run left no daemon (pid 54579)
+  [32mPASS[0m  the second run left no Chrome (pid 54736)
+  [32mPASS[0m  the second run released its port (61077)
+
+[1m== 7. a web/ copy through the calibration seam is served FULLY STYLED[0m
+  [32mPASS[0m  the seam run exited 0
+  [32mPASS[0m  every same-origin stylesheet loaded (no /lcars.css 404)
+  [32mPASS[0m  the shared --lcars-* tokens reached :root (#ffaa00)
+
+[1m== 7b. a seam that DOES lose the shared stylesheet fails LOUDLY[0m
+  [32mPASS[0m  an unstyled app exits 3, not 0
+  [32mPASS[0m  it says so in words, on stdout
+
+[1m== 8. a harness/infrastructure failure exits 77 and does NOT accuse the board[0m
+  [32mPASS[0m  a nonsense timeout skips (77), not 1
+  [32mPASS[0m  it does not blame the board
+  [32mPASS[0m  an unreachable devtools endpoint exits 77, not 1
+
+[1m== 8b. a STALE DevToolsActivePort is not believed[0m
+  [32mPASS[0m  the run ignored the stale port and drove the real one
+
+[1m== 9. an unexpected page error is SURFACED on a green run[0m
+  [32mPASS[0m  a clean run reports its two known-benign errors and 0 unexpected
+  [32mPASS[0m  an injected error does not turn the run red
+  [32mPASS[0m  the injected error is named on stdout of the GREEN run
+
+[31mSELFTEST RED[0m — 2 check(s) failed.

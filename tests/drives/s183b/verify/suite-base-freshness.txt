@@ -1,0 +1,457 @@
+base freshness (S158)
+  [32mPASS[0m 0. lcars-common.sh defines ensure_base_current
+  [32mPASS[0m 0. lcars-common.sh defines lcars_base_state_line
+  [32mPASS[0m 1. fixture really is 19 behind (stale tip != origin tip)
+  [32mPASS[0m 1. the origin-only file is genuinely absent before filing
+  [32mPASS[0m 1. filing succeeded (exit 0)
+  [32mPASS[0m 1. mission dir exists
+  [32mPASS[0m 1. local main was fast-forwarded to the origin tip
+  [32mPASS[0m 1. lcars/<id> is cut from the NEW tip, not the stale one
+  [32mPASS[0m 1. the origin-only file is now in the tree a worker would read
+  [32mPASS[0m 1. verdict is 'updated'
+  [32mPASS[0m 1. behindBy records the PRE-pull distance (19)
+  [32mPASS[0m 1. baseSha is the post-pull base sha
+  [32mPASS[0m 1. checkedAt is recorded
+  [32mPASS[0m 1. readout names the fast-forward
+  [32mPASS[0m 1. state.json is valid JSON
+  [32mPASS[0m 1. the mission-branch claim is made (branch really was cut fresh)
+  [32mPASS[0m 1. missionBranchAtBase is true
+  [32mPASS[0m 1. the fetch announces itself before it runs
+  [32mPASS[0m 2. filing STILL succeeds on a dirty tree
+  [32mPASS[0m 2. mission was filed
+  [32mPASS[0m 2. verdict is 'stale' (behind, and LCARS could not fix it)
+  [32mPASS[0m 2. …and the reason names the DIRTY TREE as the blocker
+  [32mPASS[0m 2. …and it is flagged LOUD
+  [32mPASS[0m 2. …with the stash command recorded in fix
+  [32mPASS[0m 2. local main was NOT moved
+  [32mPASS[0m 2. the staleness was MEASURED anyway (behindBy 3)
+  [32mPASS[0m 2. the warning names the real number, not a vague 'might be behind'
+  [32mPASS[0m 2. the measurement was a read-only fetch (remote-tracking ref moved)
+  [32mPASS[0m 2. the dirty file is byte-identical afterwards
+  [32mPASS[0m 2. the working tree status is byte-identical afterwards
+  [32mPASS[0m 2. the untracked scratch file survives
+  [32mPASS[0m 2. a loud BASE FRESHNESS block is printed
+  [32mPASS[0m 2. the warning names the dirt
+  [32mPASS[0m 2. the warning names a fix command
+  [32mPASS[0m 3. filing STILL succeeds on a diverged base
+  [32mPASS[0m 3. verdict is 'stale'
+  [32mPASS[0m 3. …and the reason names the DIVERGENCE, not just 'behind'
+  [32mPASS[0m 3. …and it is flagged LOUD
+  [32mPASS[0m 3. local main was NOT moved
+  [32mPASS[0m 3. behindBy still counts what origin has (4)
+  [32mPASS[0m 3. a loud BASE FRESHNESS block is printed
+  [32mPASS[0m 3. the refusal names the divergence
+  [32mPASS[0m 3. the refusal names a fix command
+  [32mPASS[0m 4. filing succeeds with no remote
+  [32mPASS[0m 4. verdict is 'unknown' (nothing to measure against)
+  [32mPASS[0m 4. …and the reason names the missing remote
+  [32mPASS[0m 4. …and it is NOT loud (this is the everyday local-only repo)
+  [32mPASS[0m 4. …and there is no fix to offer
+  [32mPASS[0m 4. NO warning block is printed (quiet)
+  [32mPASS[0m 4. no stray freshness chatter at all
+  [32mPASS[0m 4. the readout is the normal filing readout
+  [32mPASS[0m 5. filing succeeds against an unreachable origin
+  [32mPASS[0m 5. verdict is 'unknown' (freshness could not be determined)
+  [32mPASS[0m 5. …and the reason names the failed fetch
+  [32mPASS[0m 5. …and THIS unknown is loud, unlike the no-remote one
+  [32mPASS[0m 5. a loud BASE FRESHNESS block is printed
+  [32mPASS[0m 5. the reason names the unreachable origin
+  [32mPASS[0m 5. the mission branch was still cut
+  [32mPASS[0m 6. filing succeeds
+  [32mPASS[0m 6. verdict is 'current'
+  [32mPASS[0m 6. …and the reason says it matches origin exactly
+  [32mPASS[0m 6. …and it is not loud
+  [32mPASS[0m 6. behindBy is 0
+  [32mPASS[0m 6. main is unmoved
+  [32mPASS[0m 6. NO warning block (no noise)
+  [32mPASS[0m 6. NO fast-forward chatter
+  [32mPASS[0m 7. --park filing succeeds
+  [32mPASS[0m 7. --park pulled the base
+  [32mPASS[0m 7. --park cut lcars/<id> from the NEW tip
+  [32mPASS[0m 7. --park records verdict 'updated'
+  [32mPASS[0m 7. --park records behindBy 6
+  [32mPASS[0m 7. parked state.json is valid JSON
+  [32mPASS[0m 7. --complete RE-CHECKS rather than copying the park-time verdict
+  [32mPASS[0m 7. --complete records the freshly measured behindBy (0)
+  [32mPASS[0m 7. completed state.json is valid JSON
+  [32mPASS[0m 8. updated: baseFreshness has exactly the eleven documented keys
+  [32mPASS[0m 8. updated: fix is one pasteable command, or empty
+  [32mPASS[0m 8. updated: the verdict is one of the four
+  [32mPASS[0m 8. updated: loud is a real boolean, not a string or a number
+  [32mPASS[0m 8. updated: a non-empty reason is always recorded
+  [32mPASS[0m 8. updated: behindBy is a MEASURED int
+  [32mPASS[0m 8. updated: checkedAt is the pinned ISO stamp
+  [32mPASS[0m 8. stale(dirty): baseFreshness has exactly the eleven documented keys
+  [32mPASS[0m 8. stale(dirty): fix is one pasteable command, or empty
+  [32mPASS[0m 8. stale(dirty): the verdict is one of the four
+  [32mPASS[0m 8. stale(dirty): loud is a real boolean, not a string or a number
+  [32mPASS[0m 8. stale(dirty): a non-empty reason is always recorded
+  [32mPASS[0m 8. stale(dirty): behindBy is a MEASURED int
+  [32mPASS[0m 8. stale(dirty): checkedAt is the pinned ISO stamp
+  [32mPASS[0m 8. stale(diverged): baseFreshness has exactly the eleven documented keys
+  [32mPASS[0m 8. stale(diverged): fix is one pasteable command, or empty
+  [32mPASS[0m 8. stale(diverged): the verdict is one of the four
+  [32mPASS[0m 8. stale(diverged): loud is a real boolean, not a string or a number
+  [32mPASS[0m 8. stale(diverged): a non-empty reason is always recorded
+  [32mPASS[0m 8. stale(diverged): behindBy is a MEASURED int
+  [32mPASS[0m 8. stale(diverged): checkedAt is the pinned ISO stamp
+  [32mPASS[0m 8. unknown(no-remote): baseFreshness has exactly the eleven documented keys
+  [32mPASS[0m 8. unknown(no-remote): fix is one pasteable command, or empty
+  [32mPASS[0m 8. unknown(no-remote): the verdict is one of the four
+  [32mPASS[0m 8. unknown(no-remote): loud is a real boolean, not a string or a number
+  [32mPASS[0m 8. unknown(no-remote): a non-empty reason is always recorded
+  [32mPASS[0m 8. unknown(no-remote): behindBy is null (it was never measured)
+  [32mPASS[0m 8. unknown(no-remote): checkedAt is the pinned ISO stamp
+  [32mPASS[0m 8. unknown(unreachable): baseFreshness has exactly the eleven documented keys
+  [32mPASS[0m 8. unknown(unreachable): fix is one pasteable command, or empty
+  [32mPASS[0m 8. unknown(unreachable): the verdict is one of the four
+  [32mPASS[0m 8. unknown(unreachable): loud is a real boolean, not a string or a number
+  [32mPASS[0m 8. unknown(unreachable): a non-empty reason is always recorded
+  [32mPASS[0m 8. unknown(unreachable): behindBy is null (it was never measured)
+  [32mPASS[0m 8. unknown(unreachable): checkedAt is the pinned ISO stamp
+  [32mPASS[0m 8. current: baseFreshness has exactly the eleven documented keys
+  [32mPASS[0m 8. current: fix is one pasteable command, or empty
+  [32mPASS[0m 8. current: the verdict is one of the four
+  [32mPASS[0m 8. current: loud is a real boolean, not a string or a number
+  [32mPASS[0m 8. current: a non-empty reason is always recorded
+  [32mPASS[0m 8. current: behindBy is a MEASURED int
+  [32mPASS[0m 8. current: checkedAt is the pinned ISO stamp
+  [32mPASS[0m 8. current: baseFreshness has exactly the eleven documented keys
+  [32mPASS[0m 8. current: fix is one pasteable command, or empty
+  [32mPASS[0m 8. current: the verdict is one of the four
+  [32mPASS[0m 8. current: loud is a real boolean, not a string or a number
+  [32mPASS[0m 8. current: a non-empty reason is always recorded
+  [32mPASS[0m 8. current: behindBy is a MEASURED int
+  [32mPASS[0m 8. current: checkedAt is the pinned ISO stamp
+  [32mPASS[0m 9. an empty repo still files
+  [32mPASS[0m 9. the existing no-commits warning still fires
+  [32mPASS[0m 9. state.json is valid JSON
+  [32mPASS[0m 9. a verdict is still recorded
+  [32mPASS[0m 10. filing from an unpushed branch succeeds
+  [32mPASS[0m 10. verdict is 'current'
+  [32mPASS[0m 10. …and the reason says WHY it is current: no such branch on origin, and it already has the trunk
+  [32mPASS[0m 10. …and it is not loud
+  [32mPASS[0m 10. NO false-alarm warning block
+  [32mPASS[0m 10. the quiet verdict is a MEASURED zero, not an unmeasured one
+  [32mPASS[0m 10. the base recorded is the feature branch
+  [32mPASS[0m 11. ensure_base_current returns 0 on the happy path
+  [32mPASS[0m 11. ensure_base_current returns 0 on a dirty tree
+  [32mPASS[0m 11. ensure_base_current returns 0 outside a git repo
+  [32mPASS[0m 11. the extracted function body is non-trivial
+  [32mPASS[0m 11. some git verbs were actually found (the extraction works)
+  [32mPASS[0m 11. the helper never invokes 'git reset'
+  [32mPASS[0m 11. the helper never invokes 'git checkout'
+  [32mPASS[0m 11. the helper never invokes 'git switch'
+  [32mPASS[0m 11. the helper never invokes 'git stash'
+  [32mPASS[0m 11. the helper never invokes 'git clean'
+  [32mPASS[0m 11. the helper never invokes 'git push'
+  [32mPASS[0m 11. the helper never invokes 'git rebase'
+  [32mPASS[0m 11. the helper never invokes 'git commit'
+  [32mPASS[0m 11. 'merge-base' is still matched exactly, never as 'merge'
+  [32mPASS[0m 11. every 'git merge' invocation is fast-forward-only (never a bare merge)
+  [32mPASS[0m 11. every 'git branch' invocation is the forced fast-forward, never a bare one
+  [32mPASS[0m 11. the ONLY ref-moving verbs are merge and branch
+  [32mPASS[0m 11. …and both shapes are really present (the guard is not vacuous)
+  [32mPASS[0m 11. the fast-forward is never run through the bounded (killable) runner
+  [32mPASS[0m 12. filing from an unpushed topic branch succeeds
+  [32mPASS[0m 12. verdict is 'stale' (NOT a silent 'current')
+  [32mPASS[0m 12. …and the reason says it was measured against origin's TRUNK
+  [32mPASS[0m 12. …and that LCARS refuses to merge a trunk into a topic branch
+  [32mPASS[0m 12. …and it is loud
+  [32mPASS[0m 12. behindBy carries the REAL number (4)
+  [32mPASS[0m 12. the captain is told OUT LOUD
+  [32mPASS[0m 12. the warning names origin's trunk
+  [32mPASS[0m 12. the warning names the distance
+  [32mPASS[0m 12. the topic branch was NOT moved
+  [32mPASS[0m 12. the trunk was NOT merged into the topic branch (no merge, ever)
+  [32mPASS[0m 12. the origin-only file is still absent (nothing was pulled in)
+  [32mPASS[0m 12b. filing from a linked worktree succeeds
+  [32mPASS[0m 12b. verdict is 'stale' there too
+  [32mPASS[0m 12b. …measured against the trunk, in the worktree too
+  [32mPASS[0m 12b. behindBy is 4 in the worktree
+  [32mPASS[0m 12b. the captain is told OUT LOUD in the worktree
+  [32mPASS[0m 13. filing succeeds when the trunk is unresolvable
+  [32mPASS[0m 13. verdict is 'unknown'
+  [32mPASS[0m 13. …and the reason names the unresolvable trunk, not some other unknown
+  [32mPASS[0m 13. behindBy is null (nothing could be measured)
+  [32mPASS[0m 13. the unknown is stated out loud, not swallowed
+  [32mPASS[0m 13. it says staleness is UNKNOWN
+  [32mPASS[0m 13. no announcement is ever captured INSIDE another one
+  [32mPASS[0m 13. every ⟳ line carries exactly one ⟳
+  [32mPASS[0m 14. a blackholed fetch does not hang filing (bounded)
+  [32mPASS[0m 14. the very FIRST thing printed is the fetch announcement
+  [32mPASS[0m 14. the announcement names the bound
+  [32mPASS[0m 14. verdict is 'unknown' — nothing was measured
+  [32mPASS[0m 14. the reason says origin ANSWERED and the fetch was just slow
+  [32mPASS[0m 14. …and does NOT claim origin failed to answer
+  [32mPASS[0m 14. the reason says it TIMED OUT (not a vague failure)
+  [32mPASS[0m 14. GIT_TERMINAL_PROMPT=0 is set for the fetch (no credential prompt)
+  [32mPASS[0m 14. an askpass is pinned so no GUI/tty prompt can appear
+  [32mPASS[0m 14. ssh is put in BatchMode
+  [32mPASS[0m 14. a remote that answers NOTHING is also 'unknown'…
+  [32mPASS[0m 14. …but its reason is the OPPOSITE one — origin never answered
+  [32mPASS[0m 14. …and says so: it did not answer a ref listing either
+  [32mPASS[0m 14. filing still succeeds against a blackholed remote
+  [32mPASS[0m 14. filing is not held hostage by the network
+  [32mPASS[0m 14. the mission was filed
+  [32mPASS[0m 15. park recorded a verdict
+  [32mPASS[0m 15. --complete re-checks: the verdict is the FRESH one
+  [32mPASS[0m 15. --complete records the freshly measured distance (5)
+  [32mPASS[0m 15. checkedAt is the COMPLETE-time stamp, not the park-time one
+  [32mPASS[0m 15. the base really was brought up to date at complete time
+  [32mPASS[0m 15. the already-cut mission branch was NOT re-cut or moved
+  [32mPASS[0m 15. the branch's lag is stated OUT LOUD
+  [32mPASS[0m 15. …naming how far behind it is
+  [32mPASS[0m 15. …with the exact command that fixes it
+  [32mPASS[0m 15. missionBranchAtBase is honestly false
+  [32mPASS[0m 15. completed state.json is valid JSON
+  [32mPASS[0m 16. the trap is real: git status reads CLEAN
+  [32mPASS[0m 16. filing still succeeds
+  [32mPASS[0m 16. verdict is 'stale'
+  [32mPASS[0m 16. …and the reason names the CLOBBER as the blocker, not a dirty tree
+  [32mPASS[0m 16. the captain's gitignored file is byte-identical
+  [32mPASS[0m 16. NO pull happened (main unmoved)
+  [32mPASS[0m 16. the refusal NAMES the colliding path
+  [32mPASS[0m 16. the refusal is loud and legible
+  [32mPASS[0m 16. behindBy was still measured (1)
+  [32mPASS[0m 17. filing succeeds
+  [32mPASS[0m 17. the leftover branch was reused, not moved
+  [32mPASS[0m 17. the readout still says it was reused
+  [32mPASS[0m 17. it makes NO claim, in any wording, that this mission is on the current tree
+  [32mPASS[0m 17. the contradiction is replaced by the truth
+  [32mPASS[0m 17. …naming the lag
+  [32mPASS[0m 17. …and the exact command to fix it
+  [32mPASS[0m 17. missionBranchAtBase is false, so baseSha cannot be misread
+  [32mPASS[0m 18. filing succeeds on a detached HEAD
+  [32mPASS[0m 18. verdict is 'stale'
+  [32mPASS[0m 18. …and the reason names the un-checked-out base as the blocker
+  [32mPASS[0m 18. it never prints the tautology "HEAD is on 'HEAD'"
+  [32mPASS[0m 18. it says HEAD is on a detached commit
+  [32mPASS[0m 19. filing succeeds
+  [32mPASS[0m 19. verdict is 'unknown'
+  [32mPASS[0m 19. …and the reason names the missing local base, not some other unknown
+  [32mPASS[0m 19. it does NOT claim a LOCAL main it just said does not exist
+  [32mPASS[0m 19. the Means line is true of THIS verdict
+  [32mPASS[0m 19. behindBy is null (nothing was measurable)
+  [32mPASS[0m 20. verdict is 'unknown'
+  [32mPASS[0m 20. …and the reason names the kill switch, so it is not mistaken for a failure
+  [32mPASS[0m 20. …and it is silent (a switched-off guard must not shout)
+  [32mPASS[0m 20. baseSha is recorded, not left empty
+  [32mPASS[0m 20. behindBy is null (nothing was measured)
+  [32mPASS[0m 20. the kill switch really made no network call
+  [32mPASS[0m 21. filing succeeds with an absurdly low pull bound
+  [32mPASS[0m 21. the ref-moving step is NOT bounded — verdict is 'updated'
+  [32mPASS[0m 21. the base really did move to the origin tip
+  [32mPASS[0m 21. NOT ONE untracked file was written into the captain's tree
+  [32mPASS[0m 21. the working tree status is exactly what it was before filing
+  [32mPASS[0m 21. it never claims 'nothing was pulled' while having written files
+  [32mPASS[0m 21. a follow-up pull is a clean no-op (the repo is not left wedged)
+  [32mPASS[0m 22. stdout+stderr contain no 'Terminated' report
+  [32mPASS[0m 22. …no mention of the internal perl runner
+  [32mPASS[0m 22. …and no 'lcars-common.sh: line N' crash-looking prefix
+  [32mPASS[0m 22. the captain DOES still see the ⟳ announcement
+  [32mPASS[0m 22. …and the warning block
+  [32mPASS[0m 23. a claimed 3s bound really returns within ~3s (not 5s+)
+  [32mPASS[0m 23. the announcement states the bound it actually honours
+  [32mPASS[0m 23. every bounded network call announces itself (not just the first)
+  [32mPASS[0m 24. a slow-but-alive origin is NOT reported as unreachable
+  [32mPASS[0m 24. the copy says origin ANSWERED, it was just too slow
+  [32mPASS[0m 24. the REASON distinguishes a timeout from a dead remote
+  [32mPASS[0m 24. a genuinely dead origin still says it could not be reached
+  [32mPASS[0m 25. filing succeeds
+  [32mPASS[0m 25. verdict is 'unknown' — nothing was measured
+  [32mPASS[0m 25. …and behindBy is null, matching that claim
+  [32mPASS[0m 25. …and the reason still names the dirty tree
+  [32mPASS[0m 25. …and names the unreachable origin as the reason nothing was measured
+  [32mPASS[0m 25. the fix names the connectivity problem FIRST, not just a stash
+  [32mPASS[0m 25. it does not present a bare pull as a working fix
+  [32mPASS[0m 26. verdict is 'stale' — dirty AND measured
+  [32mPASS[0m 26. …and behindBy really was measured (2)
+  [32mPASS[0m 26. the block names the dirt as UNTRACKED, not vaguely 'uncommitted'
+  [32mPASS[0m 26. the suggested stash is the one that actually moves untracked files
+  [32mPASS[0m 26. …and it does NOT suggest a plain `git stash` that would no-op
+  [32mPASS[0m 26. the printed fix RUNS clean
+  [32mPASS[0m 26. …and leaves the base where the copy promises
+  [32mPASS[0m 26b. a tracked edit is named as an unstaged change
+  [32mPASS[0m 27. filing succeeds on a detached HEAD
+  [32mPASS[0m 27. the mission branch really was cut from the detached commit
+  [32mPASS[0m 27. it does NOT claim the mission is filed against your LOCAL main
+  [32mPASS[0m 27. the readout does NOT say '(off main)' when it is not
+  [32mPASS[0m 27. the readout names where the branch really came from
+  [32mPASS[0m 27. the MISSION BRANCH block does NOT claim the branch pre-existed
+  [32mPASS[0m 27. …it says the branch was CUT from that commit by this filing
+  [32mPASS[0m 27. …and names the commit the mission branch is really on
+  [32mPASS[0m 27. any 'git branch -f' offered is labelled as a loss-free fast-forward
+  [32mPASS[0m 27. the printed branch fix RUNS clean
+  [32mPASS[0m 27b. the mission branch keeps its own commit
+  [32mPASS[0m 27b. NO destructive 'git branch -f' is suggested for a branch with work
+  [32mPASS[0m 27b. a safe route is offered instead
+  [32mPASS[0m 27b. …and the fix admits it leaves you ON the mission branch
+  [32mPASS[0m 27b. …and prints the way back to the branch you were on
+  [32mPASS[0m 27b. the printed rebase fix RUNS clean
+  [32mPASS[0m 27b. …the mission branch's own commit survives it
+  [32mPASS[0m 27b. …and the base tip is now contained in the mission branch
+  [32mPASS[0m 27b. …it really does leave HEAD on the mission branch, exactly as warned
+  [32mPASS[0m 27b. the printed way back RUNS clean and returns you to main
+  [32mPASS[0m 27b. re-filing after the fix succeeds
+  [32mPASS[0m 27b. …and there is no MISSION BRANCH lag left to warn about
+  [32mPASS[0m 28. filing still brought the base up to date
+  [32mPASS[0m 28. the remote-tracking ref count is UNCHANGED (no whole-remote fetch)
+  [32mPASS[0m 28. no tags were auto-followed into the captain's clone
+  [32mPASS[0m 28b. the distance behind the trunk is still measured (4) with a NARROW fetch
+  [32mPASS[0m 28b. …and the verdict is still stale, measured against the trunk
+  [32mPASS[0m 28b. the trunk fetch pulled in only the trunk, not 30 topic branches
+  [32mPASS[0m 28b. …and still no tags
+  [32mPASS[0m 29. the empty repo records baseSha as null, not an empty string
+  [32mPASS[0m 29. a known baseSha is still a string
+  [32mPASS[0m 30. a blank line separates the MISSION BRANCH block from the readout
+  [32mPASS[0m 30. the BASE FRESHNESS block keeps its blank line too
+  [32mPASS[0m 31. an identical ignored file does not trigger the clobber refusal
+  [32mPASS[0m 31. the base was brought up to date
+  [32mPASS[0m 31. the file's content is unchanged
+  [32mPASS[0m 31. a DIFFERENT ignored file still refuses (behaviour 16 still holds)
+  [32mPASS[0m 33. the trap is real: git status reads CLEAN
+  [32mPASS[0m 33. …and git really does C-quote those paths by default
+  [32mPASS[0m 33. filing still succeeds
+  [32mPASS[0m 33. the fast-forward is REFUSED (verdict stale), not waved through
+  [32mPASS[0m 33. …and the reason names the clobber
+  [32mPASS[0m 33. NO pull happened (main unmoved)
+  [32mPASS[0m 33. the refusal NAMES the colliding path (build/plain.txt)
+  [32mPASS[0m 33. the refusal NAMES the colliding path (build/café-résumé.txt)
+  [32mPASS[0m 33. the refusal NAMES the colliding path (build/日本語.txt)
+  [32mPASS[0m 33. the refusal NAMES the colliding path (build/with space.txt)
+  [32mPASS[0m 33. the refusal NAMES the colliding path (build/quo"te.txt)
+  [32mPASS[0m 33. the refusal NAMES the colliding path (build/back\slash.txt)
+  [32mPASS[0m 33. the accented file survives byte-identical
+  [32mPASS[0m 33. the CJK file survives byte-identical
+  [32mPASS[0m 33. the spaced file survives byte-identical
+  [32mPASS[0m 33. the quoted file survives byte-identical
+  [32mPASS[0m 33. the backslashed file survives byte-identical
+  [32mPASS[0m 33. the ASCII file survives byte-identical
+  [32mPASS[0m 33. no C-quoted escape sequence is ever shown to the captain
+  [32mPASS[0m 33. state.json survives quotes and backslashes in a path (valid JSON)
+  [32mPASS[0m 34. filing succeeds with an unpushed commit
+  [32mPASS[0m 34. verdict is 'current' — the base has everything origin has
+  [32mPASS[0m 34. …and it is SILENT
+  [32mPASS[0m 34. NO warning block is printed
+  [32mPASS[0m 34. the record does not contradict itself: behindBy 0 and not stale
+  [32mPASS[0m 34. aheadBy records the unpushed commit (1)
+  [32mPASS[0m 34. the unpushed commit is NOT touched (main unmoved)
+  [32mPASS[0m 34. nothing claims the base is out of date
+  [32mPASS[0m 34. no no-op fix is prescribed
+  [32mPASS[0m 35. a genuinely diverged base is 'stale'
+  [32mPASS[0m 35. …and loud
+  [32mPASS[0m 35. behindBy is the real distance (3)
+  [32mPASS[0m 35. aheadBy is the real distance (2)
+  [32mPASS[0m 35. the reason names the divergence
+  [32mPASS[0m 35. the printed fix is a real reconciliation command
+  [32mPASS[0m 35. the printed fix RUNS clean on the very fixture that produced it
+  [32mPASS[0m 35. …and re-filing afterwards is CLEAN, not the same warning again
+  [32mPASS[0m 35. …with no warning block at all
+  [32mPASS[0m 36. the retired 'set-head <name>' fix really does fail here
+  [32mPASS[0m 36. …and so does 'set-head --auto'
+  [32mPASS[0m 36. filing succeeds against an empty origin
+  [32mPASS[0m 36. verdict is 'unknown'
+  [32mPASS[0m 36. …and the reason names the unresolvable trunk
+  [32mPASS[0m 36. the unrunnable set-head command is NOT offered any more
+  [32mPASS[0m 36. the printed fix RUNS clean on the very fixture that produced it
+  [32mPASS[0m 36. …and re-filing afterwards gives a CLEAN verdict
+  [32mPASS[0m 36. …with no warning block at all
+  [32mPASS[0m 36. origin is asked what it has exactly ONCE
+  [32mPASS[0m 37. no local base ⇒ baseSha is null, not HEAD
+  [32mPASS[0m 37. …and it is certainly not HEAD's sha
+  [32mPASS[0m 37. a base that DOES exist still records its real sha
+  [32mPASS[0m 38. filing succeeds in a master-only repo on a detached HEAD
+  [32mPASS[0m 38. verdict is 'unknown'
+  [32mPASS[0m 38. the block does NOT talk about whether the invented 'main' is out of date
+  [32mPASS[0m 38. …it says outright that there is no such local branch
+  [32mPASS[0m 38. baseSha is null — there is no 'main' to have a sha
+  [32mPASS[0m 38. the reason still names the real situation
+  [32mPASS[0m 38. …and the honest header reaches behaviour 19's repo too
+  [32mPASS[0m 39. updated: aheadBy is a MEASURED int
+  [32mPASS[0m 39. stale(dirty): aheadBy is a MEASURED int
+  [32mPASS[0m 39. stale(diverged): aheadBy is a MEASURED int
+  [32mPASS[0m 39. unknown(no-remote): aheadBy is null (it was never measured)
+  [32mPASS[0m 39. unknown(unreachable): aheadBy is null (it was never measured)
+  [32mPASS[0m 39. current(unpushed): aheadBy is a MEASURED int
+  [32mPASS[0m 39. stale(behind-trunk): aheadBy is a MEASURED int
+  [32mPASS[0m 39. current(ahead-only): aheadBy is a MEASURED int
+  [32mPASS[0m 39. stale(diverged): aheadBy is a MEASURED int
+  [32mPASS[0m 39. a consumer can tell 0-behind/1-ahead from 3-behind/2-ahead
+  [32mPASS[0m 40. the fixture is genuinely unborn-on-master (the defect's precondition)
+  [32mPASS[0m 40. filing succeeds with no commits and an empty origin
+  [32mPASS[0m 40. no command is offered — none can succeed before the first commit
+  [32mPASS[0m 40. the advice names the branch git will really create
+  [32mPASS[0m 40. …and never the invented 'main', which cannot be pushed
+  [32mPASS[0m 40. the advice really does carry a push command to run
+  [32mPASS[0m 40. the printed fix RUNS clean on the very fixture that produced it
+  [32mPASS[0m 40. …and re-filing afterwards gives a CLEAN verdict
+  [32mPASS[0m 40. …with no warning block at all
+  [32mPASS[0m 40. the readout does not claim the branch was cut off a 'main' that does not exist
+  [32mPASS[0m 40. …it names the unborn branch HEAD is actually on
+  [32mPASS[0m 41. the trap is real: git status reads CLEAN
+  [32mPASS[0m 41. filing still succeeds
+  [32mPASS[0m 41. the fast-forward is REFUSED (verdict stale)
+  [32mPASS[0m 41. NO pull happened (main unmoved)
+  [32mPASS[0m 41. the control-char file survives byte-identical
+  [32mPASS[0m 41. the newline file survives byte-identical
+  [32mPASS[0m 41. state.json PARSES (python3 -m json.tool), control character and all
+  [32mPASS[0m 41. …and no raw control byte is embedded in the record at all
+  [32mPASS[0m 41. the refusal shows the control byte VISIBLY, not as an invisible glyph
+  [32mPASS[0m 41. …and the newline path is rendered, not flattened to a space
+  [32mPASS[0m 41. …so it can no longer be misread as a genuine space in the name
+  [32mPASS[0m 41. …and each colliding path is delimited, so a space in a name is unambiguous
+  [32mPASS[0m 41. the state-line escaper survives a raw control character (valid JSON)
+  [32mPASS[0m 41. …preserving the byte as an escape rather than dropping it, quotes and backslashes intact
+  [32mPASS[0m 41. …and the record is still exactly ONE line (run.sh's editors are line-oriented)
+  [32mPASS[0m 42. junk in LCARS_BASE_FETCH_TIMEOUT_SECS never reaches the captain's eyes
+  [32mPASS[0m 42. …the announcement states the real (sanitised) bound instead
+  [32mPASS[0m 42. …and the stated bound is the one actually honoured
+  [32mPASS[0m 42. a VALID bound is still announced verbatim (behaviour 14/23 unbroken)
+  [32mPASS[0m 43. the sacred-clone sentence was found at all
+  [32mPASS[0m 43. it no longer claims the guard never MERGES
+  [32mPASS[0m 43. …it lists 'rebases', exactly as CONTEXT.md does
+  [32mPASS[0m 43. …and names the one merge it does make as fast-forward-only
+  [32mPASS[0m 43. CONTEXT.md's honest verb list is what it is being aligned to
+  [32mPASS[0m 43. …while the source demonstrably DOES run a fast-forward-only merge
+  [32mPASS[0m 43. the true statement about topic branches is untouched
+  [32mPASS[0m 44. the trap is real: git status reads CLEAN
+  [32mPASS[0m 44. filing still succeeds
+  [32mPASS[0m 44. the fast-forward is REFUSED (verdict stale)
+  [32mPASS[0m 44. NO pull happened (main unmoved)
+  [32mPASS[0m 44. the apostrophe file survives byte-identical
+  [32mPASS[0m 44. the plain sibling survives byte-identical
+  [32mPASS[0m 44. state.json is still valid JSON
+  [32mPASS[0m 44. the delimiter inside the name is escaped for the captain
+  [32mPASS[0m 44. …so the bare, ambiguous rendering is gone
+  [32mPASS[0m 44. both colliding paths are still named in the refusal
+  [32mPASS[0m 44. the rendered list re-parses to EXACTLY the two original paths
+  [32mPASS[0m 44. …backslash / quote / space paths still re-parse verbatim (33 intact)
+  [32mPASS[0m 44. …and the backslash path is shown exactly as 'ls' shows it
+  [32mPASS[0m 44. …and the quoted path is shown exactly as 'ls' shows it
+  [32mPASS[0m 45. the only files mentioning baseFreshness are its writer, its readers and their docs
+  [32mPASS[0m 45. …and the drive-time reader (S159) really is one of them
+  [32mPASS[0m 45. …and the board badge (S160) really reads the record
+  [32mPASS[0m 45. …and the front end renders from that same key
+  [32mPASS[0m 45. …by SHELLING the shared reporter, never re-deciding in Python
+  [31mFAIL[0m 45. …and no Python file runs a git rev-list/merge-base of its own (! grep -rn -e 'rev-list' -e 'merge-base' '/Users/roganferguson/Projects/LCARS/web/lcars_serve' | grep -q .)
+  [32mPASS[0m 46. CONTEXT.md's verb list was found
+  [32mPASS[0m 46. SKILL.md's verb list was found
+  [32mPASS[0m 46. …and the two are now genuinely the SAME list, verb for verb
+  [32mPASS[0m 46. neither list was weakened — 'resets' is in both
+  [32mPASS[0m 46. neither list was weakened — 'forces' is in both
+  [32mPASS[0m 46. neither list was weakened — 'stashes' is in both
+  [32mPASS[0m 46. neither list was weakened — 'cleans' is in both
+  [32mPASS[0m 46. neither list was weakened — 'rebases' is in both
+  [32mPASS[0m 46. neither list was weakened — 'switches' is in both
+  [32mPASS[0m 32. every outcome really does go through _lcars_base_set
+  [32mPASS[0m 32. …and every verdict it can ever emit is one of the five
+  [32mPASS[0m 32. …and every one of them carries an EXPLICIT loudness (0 or 1)
+  [32mPASS[0m 32. all five verdicts are actually reachable (none is dead vocabulary)
+  [32mPASS[0m 32. 'unknown' is emitted both quietly and loudly
+  [32mPASS[0m 32. …and the product proves it: no-remote is quiet, unreachable is loud
+  [32mPASS[0m 32. the retired 15-name vocabulary is gone from the source entirely
+  [32mPASS[0m 32. the ⚠ block's consequence line is a single constant, not per-verdict prose
+  [32mPASS[0m 32. …and it is what the captain actually sees
+
+  453 passed, 1 failed

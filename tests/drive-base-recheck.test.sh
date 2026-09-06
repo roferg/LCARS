@@ -203,8 +203,16 @@ EOF
 scaffold_lcars() {
   local repo="$1"
   mkdir -p "$repo/.git/lcars/missions"
+  # S183: a CONFIGURED test command, so this fixture is a repo with a test
+  # FOUNDATION. `lcars file` now refuses to open a normal mission on a repo that
+  # has none (greenfield/untested) and points at Establish Vision instead — so a
+  # suite that files missions has to file against a repo that can actually be
+  # filed against. `true` resolves via `command -v`, which is all the readiness
+  # verdict asks of a command. The gate itself is proven in
+  # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<EOF
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
+  "testCommand": "true",
   "lcarsVersion": "$VERSION_STAMP", "created": "2026-05-30T00:00:00Z" }
 EOF
   printf '# Context pack\n\nA fixture repo.\n' >"$repo/.git/lcars/context-pack.md"

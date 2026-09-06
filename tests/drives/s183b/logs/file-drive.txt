@@ -1,0 +1,79 @@
+SHIM=/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T//s183shim.o5sUXk
+════════════════════════════════════ lcars file --prd @ blank
+◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+
+This repo is empty — there is no code and no test system here yet.
+
+Every LCARS ticket is proven by RUNNING its tests — red on the parent commit,
+green on the tip. With no test system there is no way to prove any work, so a
+mission filed here would burn its Research, Validate and Plan stages and then
+stop dead at Implement with nothing to show for it.
+
+WHAT TO DO INSTEAD — Establish Vision. Say what you want to build; LCARS grills
+you, recommends a stack with its reasons (yours to override), and files an
+INITIALIZATION mission whose whole job is the foundation: a running skeleton
+with a working test system, and you at Verify to watch the suite actually run.
+Normal missions unlock the moment that lands.
+
+If this repo DOES already have a test system and LCARS just cannot see it, point
+LCARS at it instead:  lcars update --test-command '<command>'
+--- file rc=4  hires-during=0
+════════════════════════════════════ lcars file --prd @ readme
+◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+
+This repo is empty — there is no code and no test system here yet.
+
+Every LCARS ticket is proven by RUNNING its tests — red on the parent commit,
+green on the tip. With no test system there is no way to prove any work, so a
+mission filed here would burn its Research, Validate and Plan stages and then
+stop dead at Implement with nothing to show for it.
+
+WHAT TO DO INSTEAD — Establish Vision. Say what you want to build; LCARS grills
+you, recommends a stack with its reasons (yours to override), and files an
+INITIALIZATION mission whose whole job is the foundation: a running skeleton
+with a working test system, and you at Verify to watch the suite actually run.
+Normal missions unlock the moment that lands.
+
+If this repo DOES already have a test system and LCARS just cannot see it, point
+LCARS at it instead:  lcars update --test-command '<command>'
+--- file rc=4  hires-during=0
+════════════════════════════════════ lcars file --prd @ untested
+◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+
+This repo has code, but no test system: this repo has code and no test system.
+
+Every LCARS ticket is proven by RUNNING its tests — red on the parent commit,
+green on the tip. With no test system there is no way to prove any work, so a
+mission filed here would burn its Research, Validate and Plan stages and then
+stop dead at Implement with nothing to show for it.
+
+WHAT TO DO INSTEAD — Establish Vision. Say what you want to build; LCARS grills
+you, recommends a stack with its reasons (yours to override), and files an
+INITIALIZATION mission whose whole job is the foundation: a running skeleton
+with a working test system, and you at Verify to watch the suite actually run.
+Normal missions unlock the moment that lands.
+
+If this repo DOES already have a test system and LCARS just cannot see it, point
+LCARS at it instead:  lcars update --test-command '<command>'
+--- file rc=4  hires-during=0
+════════════════════════════════════ lcars file --prd @ ready
+  ⚠ gh issue create failed — mission filed locally; re-run after fixing gh.
+  ⚠ estimator unavailable — mission filed with default per-stage models.
+  Mission filed: lcars-20260905-001
+  GitHub issue:  (none — file locally only)
+  Branch:        lcars/lcars-20260905-001 (off main)
+  Stage:         align
+  Next:          run `lcars run lcars-20260905-001` to continue
+--- file rc=0  hires-during=4
+════════════════════════════════════ lcars file --prd @ mono
+  ⚠ gh issue create failed — mission filed locally; re-run after fixing gh.
+  ⚠ estimator unavailable — mission filed with default per-stage models.
+  Mission filed: lcars-20260905-001
+  GitHub issue:  (none — file locally only)
+  Branch:        lcars/lcars-20260905-001 (off main)
+  Stage:         align
+  Next:          run `lcars run lcars-20260905-001` to continue
+--- file rc=0  hires-during=4
+TOTAL SPAWNS=8  PROBES=0
+
+[exited with code 0]

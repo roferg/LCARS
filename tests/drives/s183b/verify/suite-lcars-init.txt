@@ -1,0 +1,175 @@
+lcars init
+  [32mPASS[0m 1. creates .git/lcars/
+  [32mPASS[0m 1. creates missions/ subdir
+  [32mPASS[0m 2. creates config.json
+  [32mPASS[0m 2. config has model key
+  [32mPASS[0m 2. config has projectName key
+  [32mPASS[0m 2. config has contextFile key
+  [32mPASS[0m 2. config has created key
+  [32mPASS[0m 2. config has testCommand key
+  [32mPASS[0m 2. testCommand is null in a bare repo
+  [32mPASS[0m 2. config has comprehensionBudget key
+  [32mPASS[0m 2. comprehensionBudget defaults to 1200
+  [32mPASS[0m 2b. detects an npm test command from a package.json test script
+  [32mPASS[0m 2b. the detected testCommand HONOURS $LCARS_TESTS_DIR (red-gate-scopable)
+  [32mPASS[0m 2b. the pytest default honours $LCARS_TESTS_DIR
+  [32mPASS[0m 2b. an explicit LCARS_TEST_CMD is recorded in config
+  [32mPASS[0m 2b. a testCommand that IGNORES $LCARS_TESTS_DIR is FLAGGED LOUD (not silent)
+  [32mPASS[0m 2b. a $LCARS_TESTS_DIR-honouring explicit command is NOT flagged
+  [32mPASS[0m 2c. detects a bash tests/run.sh runner as the testCommand
+  [32mPASS[0m 2c. the bash-runner default HONOURS $LCARS_TESTS_DIR (red-gate-scopable)
+  [32mPASS[0m 2c. the bash-runner default is NOT flagged as dir-ignoring
+  [32mPASS[0m 2c. config.json is VALID JSON after a bash-runner init
+  [32mPASS[0m 2c. testCommand reads back as the FULL bash-runner command (incl. inner quotes)
+  [32mPASS[0m 2c. the read-back testCommand is gate-scopable (references $LCARS_TESTS_DIR)
+  [32mPASS[0m 3. records CONTEXT.md in config
+  [32mPASS[0m 3. contextFile is null when absent
+  [32mPASS[0m 4. exits non-zero when claude missing
+  [32mPASS[0m 4. prints a clear error about claude
+  [32mPASS[0m 5. creates the 14 missing labels
+  [32mPASS[0m 5. skips pre-existing lcars:align
+  [32mPASS[0m 5. skips pre-existing lcars:bug
+  [32mPASS[0m 5. creates lcars:done with stage colour
+  [32mPASS[0m 5. creates lcars:feature with type colour
+  [32mPASS[0m 5. creates lcars:paused with status colour
+  [32mPASS[0m 5. creates lcars:linked with rel colour
+  [32mPASS[0m 5. creates lcars:mission role label
+  [32mPASS[0m 5. creates lcars:ticket role label
+  [32mPASS[0m 5. creates all 16 labels when none exist
+  [32mPASS[0m 6. summary: .git/lcars created
+  [32mPASS[0m 6. summary: config.json written
+  [32mPASS[0m 6. summary: Claude CLI verified
+  [32mPASS[0m 6. summary: labels created line
+  [32mPASS[0m 6. summary: LCARS ready line
+  [32mPASS[0m 6. summary: points to lcars file
+  [32mPASS[0m S30 init: .git/info/exclude lists .lcars-* scratch glob
+  [32mPASS[0m S30 init: .git/info/exclude lists the .claude/ CLI scratch glob
+  [32mPASS[0m S30 init: .git/info/exclude lists the harness runner glob (.lcars-run-*)
+  [32mPASS[0m S30 init: the tracked .gitignore is UNTOUCHED
+  [32mPASS[0m idempotent: created timestamp preserved
+  [32mPASS[0m S30 init: exclude append is idempotent (no duplicate .lcars-* lines)
+  [32mPASS[0m S43 init: custom testCommand survives re-run (no clobber)
+  [32mPASS[0m S43 init: custom model survives re-run
+  [32mPASS[0m S43 init: custom comprehensionBudget survives re-run
+  [32mPASS[0m S43 init: custom created survives re-run
+  [32mPASS[0m S43 init: a MISSING key (comprehensionBudget) is filled with its default
+  [32mPASS[0m S43 init: the present custom model is preserved while filling a missing key
+  [32mPASS[0m S43 init: summary banner reflects the PERSISTED custom model
+  [32mPASS[0m S43 init: summary banner reflects the PERSISTED custom testCommand
+  [32mPASS[0m S43 init: summary banner does NOT show the detected default model on a re-run
+  [32mPASS[0m S82 init: config has worktreeSetupCommand key
+  [32mPASS[0m S82 init (pnpm): default resolves the main checkout via git-common-dir
+  [32mPASS[0m S82 init (pnpm): default symlinks node_modules
+  [32mPASS[0m S82 init (pnpm): default names a pnpm offline-install fallback
+  [32mPASS[0m S82 init (pnpm): config.json is VALID JSON after the worktree default
+  [32mPASS[0m S82 init (pnpm): worktreeSetupCommand reads back un-truncated (ends in 'fi')
+  [32mPASS[0m S111 init (pnpm): the node_modules find prunes the .git dir
+  [32mPASS[0m S82 init (npm): default names 'npm ci' as the install fallback
+  [32mPASS[0m S82 init (npm): default still symlinks node_modules first
+  [32mPASS[0m S82 init (npm): config.json is VALID JSON
+  [32mPASS[0m S82 init (bash): worktreeSetupCommand is null in a pure-bash repo (no provisioning)
+  [32mPASS[0m S43 init: a null persisted testCommand renders as 'none' in the banner
+  [32mPASS[0m S85 init (monorepo): testCommand is NOT a bare 'npm test' fan-out
+  [32mPASS[0m S85 init (monorepo): testCommand is NOT a 'pnpm -r' fan-out
+  [32mPASS[0m S85 init (monorepo): testCommand is scoped to the local runner (vitest)
+  [32mPASS[0m S85 init (monorepo): testCommand still honours $LCARS_TESTS_DIR (red-gate-scopable)
+  [32mPASS[0m S85 init (monorepo): config.json is VALID JSON
+  [32mPASS[0m S85 init (single-package npm): testCommand is the UNCHANGED 'npm test --' default (S148: scope quoted)
+  [32mPASS[0m S85 init: the local-dep case really has a NULL worktreeSetupCommand
+  [32mPASS[0m S85 init: a local-dep runner + NULL worktreeSetupCommand warns LOUD on stderr
+  [32mPASS[0m S85 init: the no-nag case really has a worktreeSetupCommand set
+  [32mPASS[0m S85 init: a local-dep runner WITH worktreeSetupCommand does NOT warn (no nag)
+  [32mPASS[0m S87 init (monorepo fan-out): NOT a 'pnpm -r' fan-out testCommand
+  [32mPASS[0m S87 init (monorepo fan-out): NOT a bare 'npm test' fan-out
+  [32mPASS[0m S87 init (monorepo fan-out): detects vitest from the sub-package and emits the RELATIVIZING command
+  [32mPASS[0m S87 init (monorepo fan-out): config.json is VALID JSON after the $/{/}/#/" round-trip
+  [32mPASS[0m S87 init (single-package vitest): testCommand is the RELATIVIZING form
+  [32mPASS[0m S87 init (single-package vitest): config.json is VALID JSON
+  [32mPASS[0m S87 init (monorepo vitest script): testCommand is the RELATIVIZING form
+  [32mPASS[0m S87 init (pytest unchanged): testCommand is the pytest default (S148: scope quoted)
+  [32mPASS[0m S87 init: .git/info/exclude ignores __lcarsq__ (dir form)
+  [32mPASS[0m S87 init: .git/info/exclude ignores nested */__lcarsq__
+  [32mPASS[0m S105 init (rust): stack is 'rust'
+  [32mPASS[0m S105 init (rust): testCommand is the byte-equivalent 'cargo test'
+  [32mPASS[0m S105 init (rust): worktreeSetupCommand is null (compiles deps in-tree)
+  [32mPASS[0m S105 init (rust): config.json is VALID JSON
+  [32mPASS[0m S105 init (go): stack is 'go'
+  [32mPASS[0m S105 init (go): testCommand is the byte-equivalent 'go test ./...'
+  [32mPASS[0m S105 init (python): stack is 'python'
+  [32mPASS[0m S105 init (python): testCommand still the pytest default (S148: scope quoted)
+  [32mPASS[0m S105 init (python/setup.py): stack is 'python'
+  [32mPASS[0m S105 init (js): stack is 'js'
+  [32mPASS[0m S105 init (dotnet): stack is 'dotnet'
+  [32mPASS[0m S105 init (dotnet): testCommand is null (no auto default for dotnet)
+  [32mPASS[0m S105 init (dotnet): config.json is VALID JSON
+  [32mPASS[0m S105 init (dotnet/.sln): stack is 'dotnet'
+  [32mPASS[0m S105 init (jvm/maven): stack is 'jvm'
+  [32mPASS[0m S105 init (jvm): testCommand is null (no auto default for jvm)
+  [32mPASS[0m S105 init (jvm/gradle): stack is 'jvm'
+  [32mPASS[0m S145 init (rspec): stack is 'ruby'
+  [32mPASS[0m S145 init (rspec): testCommand is 'bundle exec rspec'
+  [32mPASS[0m S145 init (rspec): config.json is VALID JSON
+  [32mPASS[0m S145 init (minitest): stack is 'ruby'
+  [32mPASS[0m S145 init (minitest): testCommand is 'bundle exec rake test'
+  [32mPASS[0m S145 init (gemfile-less minitest): stack is 'ruby'
+  [32mPASS[0m S145 init (gemfile-less minitest): testCommand is bare 'rake test' (no bundle exec)
+  [32mPASS[0m S145 init (gemspec-only): stack is 'ruby'
+  [32mPASS[0m S145 init (gemspec-only): testCommand is null (runner unresolved)
+  [32mPASS[0m S145 init (gemspec-only): warns naming BOTH rspec and minitest candidates
+  [32mPASS[0m S145 init (gemspec-only): config.json is VALID JSON
+  [32mPASS[0m S145 init (rspec+minitest ambiguous): stack is 'ruby'
+  [32mPASS[0m S145 init (rspec+minitest ambiguous): NO testCommand guessed (null)
+  [32mPASS[0m S145 init (ruby+js): stack is ambiguous(js,ruby)
+  [32mPASS[0m S145 init (ruby+js): NO testCommand (null, not a silent 'npm test')
+  [32mPASS[0m S145 init (ruby+js): the warning NAMES both js and ruby
+  [32mPASS[0m S105 init (ambiguous): stack records the ambiguous token naming both stacks
+  [32mPASS[0m S105 init (ambiguous): NO testCommand is guessed (null, not a silent 'npm test')
+  [32mPASS[0m S105 init (ambiguous): the warning NAMES both candidate stacks (rust AND js)
+  [32mPASS[0m S105 init (ambiguous): config.json is VALID JSON
+  [32mPASS[0m S105 init (unknown): does not crash (exit 0)
+  [32mPASS[0m S105 init (unknown): stack is 'unknown'
+  [32mPASS[0m S105 init (unknown): testCommand is null
+  [32mPASS[0m S146 init (unknown/greenfield): ONE calm bootstrap status — no ⚠ config lecture
+  [32mPASS[0m S105 init (bash-runner): stack is 'unknown' (no language marker)
+  [32mPASS[0m S105 init (bash-runner): testCommand PRESERVED as the bash runner (byte-equivalent, not suppressed)
+  [32mPASS[0m S105 init: the readiness banner reports the detected stack
+  [32mPASS[0m S148 seed (npm single-package): a SPACED scope survives as ONE argument
+  [32mPASS[0m S148 seed (npm single-package): a TABBED scope survives as ONE argument
+  [32mPASS[0m S148 seed (npm single-package): a NEWLINE in the scope survives as ONE argument
+  [32mPASS[0m S148 seed (npm single-package): an UNSET scope is byte-for-byte the pre-fix behaviour
+  [32mPASS[0m S148 seed (monorepo jest): the seeded command really is the jest arm
+  [32mPASS[0m S148 seed (monorepo jest): a SPACED scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo jest): a TABBED scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo jest): a NEWLINE in the scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo jest): an UNSET scope is byte-for-byte the pre-fix behaviour
+  [32mPASS[0m S148 seed (monorepo mocha): a SPACED scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo mocha): a TABBED scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo mocha): a NEWLINE in the scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo mocha): an UNSET scope is byte-for-byte the pre-fix behaviour
+  [32mPASS[0m S148 seed (monorepo fallback): a SPACED scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo fallback): a TABBED scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo fallback): a NEWLINE in the scope survives as ONE argument
+  [32mPASS[0m S148 seed (monorepo fallback): an UNSET scope is byte-for-byte the pre-fix behaviour
+  [32mPASS[0m S148 seed (pytest): a SPACED scope survives as ONE argument
+  [32mPASS[0m S148 seed (pytest): a TABBED scope survives as ONE argument
+  [32mPASS[0m S148 seed (pytest): a NEWLINE in the scope survives as ONE argument
+  [32mPASS[0m S148 seed (pytest): an UNSET scope is byte-for-byte the pre-fix behaviour
+  [32mPASS[0m S148 seed (pytest): an UNSET scope still defaults to exactly one '.' argument
+  [32mPASS[0m S148 seed (bash runner): the already-quoted model arm is unchanged
+  [32mPASS[0m S148 seed (bash runner): a SPACED scope survives as ONE argument
+  [32mPASS[0m S148 seed (bash runner): a TABBED scope survives as ONE argument
+  [32mPASS[0m S148 seed (bash runner): a NEWLINE in the scope survives as ONE argument
+  [32mPASS[0m S148 seed (bash runner): an UNSET scope is byte-for-byte the pre-fix behaviour
+  [32mPASS[0m S148 seed: the structural sweep actually found seed literals to check
+  [32mPASS[0m S148 seed: EVERY seed literal (6) words out identically for a spaced and an unspaced scope
+  [32mPASS[0m S182: fixture really starts with an UNBORN head
+  [32mPASS[0m S182: init seeds an initial commit on a repo with no HEAD
+  [32mPASS[0m S182: the seeded commit is EMPTY (it commits nothing of the captain's)
+  [32mPASS[0m S182: the captain's STAGED file is still staged, not swallowed by the seed
+  [32mPASS[0m S182: init ANNOUNCES the seeded commit in the readout
+  [32mPASS[0m S182: and says WHY (LCARS proves work against a parent)
+  [32mPASS[0m S182: a repo that already has commits keeps the SAME HEAD
+  [32mPASS[0m S182: and gains no extra commit
+  [32mPASS[0m S182: and the seed line is NOT printed (nothing was seeded)
+
+lcars init: 172 passed, 0 failed

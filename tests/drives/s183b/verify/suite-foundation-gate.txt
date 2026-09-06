@@ -1,0 +1,79 @@
+S183 foundation oracle + gate
+  [32mPASS[0m 1a. blank repo → greenfield
+  [32mPASS[0m 1b. README-only repo → greenfield
+  [32mPASS[0m 1c. code with no test system → untested
+  [32mPASS[0m 1d. test system present, no command → unconfigured
+  [32mPASS[0m 1e. configured runner → ready
+  [32mPASS[0m 1f. npm-workspaces monorepo with tested packages → NOT greenfield
+  [32mPASS[0m 1f. …and NOT untested either
+  [32mPASS[0m 1g. pnpm workspace with NO root manifest → NOT greenfield
+  [32mPASS[0m 1h. test files but no runner installed → unconfigured (never greenfield)
+  [32mPASS[0m 1i. a test/ dir containing no framework → untested
+  [32mPASS[0m 1j. workspace with ONE tested package → unconfigured
+  [32mPASS[0m 1k. npm default "no test specified" script → untested
+  [32mPASS[0m 1l. a "test" script that tests nothing → untested
+  [32mPASS[0m 2a. greenfield: lcars file REFUSES (non-zero exit)
+  [32mPASS[0m 2a. …no mission was written
+  [32mPASS[0m 2a. …the refusal names Establish Vision
+  [32mPASS[0m 2a. …and says the repo has no test foundation, in plain English
+  [32mPASS[0m 2b. untested: lcars file REFUSES
+  [32mPASS[0m 2b. …the refusal names Establish Vision
+  [32mPASS[0m 2b. …no mission was written
+  [32mPASS[0m 2c. ZERO workers were hired across every refusal
+  [32mPASS[0m 3a. unconfigured: lcars file SUCCEEDS (the --test-command case)
+  [32mPASS[0m 3a. …a mission was written
+  [32mPASS[0m 3b. ready: lcars file SUCCEEDS
+  [32mPASS[0m 3b. …a mission was written
+  [32mPASS[0m 3c. --park is gated too
+  [32mPASS[0m 3c. …still zero hires
+  [32mPASS[0m 3d. --park on a ready repo is unchanged
+  [32mPASS[0m 4a. the gate lives in ONE named seam
+  [32mPASS[0m 4a. …whose header tells session 184 it is the replacement point
+  [32mPASS[0m 4b. the seam answers --json for the daemon
+  [32mPASS[0m 4b. …and reports allowed=false on a greenfield repo
+  [32mPASS[0m 4b. …and allowed=true on a ready repo
+  [32mPASS[0m 5a. a genuinely greenfield repo still reads NO TEST SYSTEMS FOUND
+  [32mPASS[0m 5b. the monorepo is NO LONGER told it is a greenfield repo
+  [32mPASS[0m 5c. a ready repo is still silent
+  [32mPASS[0m 5d. the npm-default repo is not offered its placeholder as a candidate
+  [32mPASS[0m 5d. …it is told it has code and no test system
+  [32mPASS[0m 5e. a repo with a REAL detected candidate still gets the repair voice
+  [32mPASS[0m 6a. npm-default repo: refused BEFORE init
+  [32mPASS[0m 6a. …lcars init succeeds
+  [32mPASS[0m 6a. …and does NOT seed a testCommand it has no evidence for
+  [32mPASS[0m 6a. …the verdict is STILL untested after init
+  [32mPASS[0m 6a. …and the gate STILL refuses after init (no flip)
+  [32mPASS[0m 6a. …so filing is refused after init too
+  [32mPASS[0m 6b. a do-nothing test script is not seeded either
+  [32mPASS[0m 6b. …verdict STILL untested after init
+  [32mPASS[0m 6b. …gate STILL refuses after init
+  [32mPASS[0m 6c. a repo WITH a test system still gets its command seeded
+  [32mPASS[0m 6d. update --test-command is the captain's ruling → ready
+  [32mPASS[0m 6d. …and filing is allowed again
+  [32mPASS[0m 6e. ZERO workers were hired across the whole D1 section
+  [32mPASS[0m 7a. init on a refused repo does NOT end with 'run lcars file'
+  [32mPASS[0m 7a. …it points at Establish Vision instead
+  [32mPASS[0m 7b. init on a repo WITH a foundation still says run `lcars file`
+  [32mPASS[0m 8a. a genuinely tested SwiftPM package → unconfigured, never untested
+  [32mPASS[0m 8a. …so filing is ALLOWED
+  [32mPASS[0m 8b. a Perl distribution with t/*.t → unconfigured, never untested
+  [32mPASS[0m 8c. a CAPITAL Tests/ directory is found
+  [32mPASS[0m 8c. …and the evidence names the directory that actually exists
+  [32mPASS[0m 8d. the widened patterns did not let the notes-only test/ dir through
+  [32mPASS[0m 8d. …nor the npm default script
+  [32mPASS[0m 8d. …nor the do-nothing test script
+  [32mPASS[0m 9a. the untested refusal does not repeat itself
+  [32mPASS[0m 9a. …and still says, in one sentence, what it found
+  [32mPASS[0m 9a. …and still names Establish Vision
+  [32mPASS[0m 9b. a refused filing is refused
+  [32mPASS[0m 9b. …and creates NO missions directory in a repo that had none
+  [32mPASS[0m 9b. …and --park leaves it untouched too
+  [32mPASS[0m 9b. …with zero hires
+  [32mPASS[0m 10a. the tested monorepo is NOT told it is greenfield
+  [32mPASS[0m 10a. …nor sent to Establish Vision
+  [32mPASS[0m 10a. …it is told a test system EXISTS and needs a command
+  [32mPASS[0m 10b. a genuinely greenfield repo still gets the greenfield answer
+  [32mPASS[0m 10c. an UNTESTED repo is told it has code and no test system
+  [32mPASS[0m 10c. …and is NOT called greenfield
+
+  76 passed, 0 failed

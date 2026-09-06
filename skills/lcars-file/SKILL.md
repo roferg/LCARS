@@ -14,6 +14,34 @@ Run `lcars init` first if `.git/lcars/` does not exist — `file.sh` will create
 the `missions/` dir if needed, but a repo without the LCARS labels can't be
 issue-labelled properly.
 
+## STEP 0 — THE FOUNDATION GATE (run this BEFORE you say anything else)
+
+A Mission is proven by RUNNING its tests. A repo with no test system has no way
+to prove any work, so LCARS does not open a normal Mission against one — the
+foundation is established first, by an **initialization mission** the captain
+launches from **Establish Vision**, with the captain at Verify to watch the
+suite actually run (captain ruling, 2026-09-05).
+
+**Before the first interview question, run:**
+
+```bash
+bash ~/.claude/skills/lcars-init/foundation-gate.sh
+```
+
+* **exit 0** — this repo has a foundation. Carry on with the interview below.
+* **exit 20** — it prints the refusal. **Show it to the captain verbatim and
+  STOP.** Do not grill, do not draft a PRD, do not call `file.sh`. Hiring
+  anybody here is the exact spend the gate exists to prevent.
+
+`file.sh` enforces the same gate itself (both lanes), so a filing can never slip
+past it — but by then the captain has already answered a full interview for
+nothing, which is why you check first.
+
+The gate refuses only two states: `greenfield` (nothing here) and `untested`
+(code, no test system). A repo that HAS a test system LCARS simply has no
+command for (`unconfigured`) is **not** refused — that is
+`lcars update --test-command '<command>'`, and filing works exactly as ever.
+
 ## Two lanes: grill-first (default) and Park & Align
 
 There are two ways to file:
