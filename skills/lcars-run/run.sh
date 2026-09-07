@@ -8792,12 +8792,657 @@ proof_test_rels_in_diff() { # parent-sha worktree [existing|all] → relpaths
 # (S99, js/py phrasings) with the native runners' own zero phrasings LOCALLY —
 # the shared `zerotests` signature is classify-only for the LIVE path and must
 # stay byte-identical (this session touches no live verdict).
-proof_zero_collected() { # runner-output → 0 if zero tests were collected/ran
+#
+# S193 FIX 1 — the SECOND argument is the ticket's DECLARED TEST FILE(S), the
+# same `$rels` the flip-flop gate already computes, and it is what lets the cargo
+# arm below answer a question about THIS TICKET instead of about the whole run.
+# BOTH flip-flop legs pass it, and the gate has already refused the ticket when
+# it is empty, so the gate can never ask the unattributed question. It stays
+# OPTIONAL only for the callers that have no ticket to speak of — the per-stack
+# unit suites and the S193 attack rig — which ask the weaker whole-run question
+# deliberately and are documented as doing so.
+#
+# S193 FIX 2 — the THIRD argument is the CRATE ROOT (the worktree the leg ran
+# in). It exists so the cargo arm can read Cargo.toml's own `harness` DECLARATION
+# — see proof_cargo_collect_verdict's second block. It is OPTIONAL for the same
+# callers the second argument is optional for; when it is absent the manifest is
+# located from cargo's own `Compiling <pkg> vX (<dir>)` line instead, and when
+# neither finds a manifest the behaviour is exactly what it was.
+#
+# PROOF_ZERO_KIND is set on every call (cleared first) so a caller can say WHY it
+# is refusing without re-deriving it: "" for the ordinary green-on-nothing trap,
+# `harness-false` when the ticket's target opts out of cargo's test harness, and
+# `manifest-unreadable` when Cargo.toml declares `harness` and LCARS could not
+# read which target it belongs to.
+proof_zero_collected() { # runner-output [declared-test-relpaths] [crate-root] → 0 if zero tests ran
+  PROOF_ZERO_KIND=""
+  PROOF_ZERO_DETAIL=""
   suite_collected_zero_tests "$1" && return 0
+  # S193 (D1): CARGO reports PER TARGET, so a single `test result:` line is not
+  # the run — see proof_cargo_collect_verdict. Consulted BEFORE the local greps
+  # so the bare `test result: ok. 0 passed` string below can no longer speak for
+  # a multi-target cargo run; it still speaks for every non-cargo buffer, which
+  # is why it stays exactly where it was.
+  # The verdict token is line 1; lines 2+ are the fail-closed REASON. Split with
+  # parameter expansion, not `head`/`sed`: the fail-closed path is reached on
+  # machines that are MISSING TOOLS (that is half of what it is for), and a
+  # detector that needs coreutils to report "no python3" would lose the very
+  # refusal it exists to make — measured, as a lost zero-kind on a PATH carrying
+  # neither cargo nor python3.
+  local _pzv _pzk; _pzv="$(proof_cargo_collect_verdict "$1" "${2:-}" "${3:-}")"
+  _pzk="${_pzv%%$'\n'*}"
+  case "$_pzk" in
+    some) return 1 ;;
+    zero) return 0 ;;
+    zero-optout)     PROOF_ZERO_KIND=harness-false;        return 0 ;;
+    zero-unreadable) PROOF_ZERO_KIND=manifest-unreadable
+                     # S193 FIX 3: the WHY travels with the refusal so the gate
+                     # can name the manifest (or the missing tool) instead of
+                     # saying "Cargo.toml" and leaving the captain to guess.
+                     [ "$_pzk" != "$_pzv" ] && PROOF_ZERO_DETAIL="${_pzv#*$'\n'}"
+                     return 0 ;;
+  esac
   # S147: the dotnet pair rides the SHARED `zerotests` arm above (they are real
   # runner phrasings, useful to the live classifier too), so nothing extra is
   # needed here — go's/cargo's exit-0 forms stay local as before.
   printf '%s' "$1" | grep -Eq 'no tests to run|test result: ok\. 0 passed'
+}
+
+# S193 (D1) — DID THIS CARGO RUN COLLECT ANY TESTS? Echoes "" (this buffer is
+# not cargo's), "zero" (cargo ran and executed nothing) or "some" (cargo
+# executed at least one test).
+#
+# THE BUG. `cargo test` prints ONE SCOREBOARD PER TEST TARGET — the lib/bin
+# unit-test binary, each `tests/*.rs` integration binary, and finally the
+# `Doc-tests <crate>` block — and a target with nothing in it still prints a
+# FULL, EXIT-ZERO scoreboard:
+#
+#      Running unittests src/lib.rs (…)     <- a lib with no #[cfg(test)] mod
+#     running 0 tests
+#     test result: ok. 0 passed; …          <- an EMPTY target's scoreboard
+#      Running tests/add.rs (…)
+#     running 1 test
+#     test adds … ok
+#     test result: ok. 1 passed; …          <- the REAL one
+#        Doc-tests gfapp
+#     running 0 tests
+#     test result: ok. 0 passed; …          <- the EMPTY doc-test one
+#
+# The old check grepped for a single `test result: ok. 0 passed` ANYWHERE, so
+# BOTH empty targets sank a run whose tests demonstrably passed in the same
+# buffer: measured on the S186 rust arm, ticket 2 parked awaiting-human with
+# `1 passed` recorded three lines above the rejection. (The brief named only the
+# trailing Doc-tests block; the leading empty-unittests scoreboard is the same
+# defect and is present on EVERY library crate whose tests live in tests/, which
+# is the shape the greenfield rust arm scaffolds — curing one without the other
+# leaves the arm exactly as broken, so both are cured by one rule.)
+#
+# THE RULE IS CARGO-SHAPED AND POSITIVE — never positional. It is NOT "ignore
+# the last scoreboard" and NOT "ignore the Doc-tests section": either of those
+# would blind the green-on-nothing trap on any runner that prints its summary
+# last, and both would still be guessing from position. It reads cargo's OWN
+# grammar instead:
+#   • a buffer is cargo's only if it carries libtest's exact scoreboard line at
+#     COLUMN 0 (`test result: <word>. <N> passed; <M> failed;`) — the same
+#     anchoring discipline as every other detector in this family. No such line,
+#     and this function says nothing at all ("").
+#   • a scoreboard reports EXECUTION iff its passed or failed count is NON-ZERO.
+#     Ignored / measured / filtered-out counts deliberately do NOT count: an
+#     all-`#[ignore]`d crate prints `0 passed; 0 failed; 3 ignored` and stays
+#     ZERO, which is rust's member of the green-on-nothing family and is
+#     preserved exactly.
+#
+# ================ S193 FIX ROUND 1: WHICH TARGET IS BEING ASKED? ============
+# The first cut of this rule aggregated over the WHOLE RUN — the run collected
+# something iff ANY scoreboard was non-zero — and an adversarial tester beat it
+# twice with one lever, neither attack needing a forgery:
+#
+#   * `cargo test` runs EVERY target, so ticket 1's still-passing scaffold test
+#     speaks for ticket 2. MEASURED: ticket 2's only test was `#[ignore]`d, its
+#     own target reported `0 passed; 0 failed; 1 ignored`, tests/greet.rs
+#     reported `1 passed`, and the gate said PASS. By hand at the same tip,
+#     breaking the implementation left the suite exit-0. Nothing was proven.
+#   * the same masking let a forged scoreboard printed from ANY OTHER target
+#     unlock a pass — the first rule in this family where forging a column-0
+#     line made the gate MORE permissive rather than less.
+#
+# THE CURE IS ATTRIBUTION, and it needs no new honesty heuristic because cargo
+# already announces the owner of every scoreboard, indented, immediately above it:
+#
+#      Running unittests src/lib.rs (target/debug/deps/gfapp-6336…)   <- a target
+#      Running tests/add.rs (target/debug/deps/add-94b0…)             <- a target
+#        Doc-tests gfapp                                              <- a section
+#
+# So: a scoreboard belongs to the target announced above it, and THE RUN
+# COLLECTED SOMETHING IFF THE TARGET THAT OWNS THE TICKET'S DECLARED TEST FILE
+# reports a non-zero passed/failed. A sibling target passing is no longer enough.
+# `Doc-tests <crate>` names no path in the repo, so it can never be the owner of
+# a declared file — a passing doc-test is a real test, but it is not the
+# ticket's, and the gate's question is about the ticket's.
+#
+# FAIL CLOSED, in both directions, because the safe fallback is "zero":
+#   • declared files given but NO announced target matches one → ZERO. Not the
+#     aggregate. That covers a runner invocation whose paths cargo prints
+#     differently from the way the ticket declared them, a scope that never
+#     reached the ticket's file, and every unknown-unknown.
+#   • no declared files given at all (the unattributed callers) → the whole-run
+#     question, unchanged. The flip-flop gate never takes this path: it passes
+#     `$rels`, and it has already refused a ticket whose `$rels` is empty.
+#
+# PATH MATCHING is verbatim, with ONE deliberate allowance: cargo prints target
+# paths relative to the CRATE MANIFEST, while the ticket declares them relative
+# to the REPO ROOT, so a crate in a subdirectory announces `tests/add.rs` for a
+# declared `crates/app/tests/add.rs`. A declared path is therefore matched when
+# it EQUALS the announced path or ENDS WITH `/` + the announced path. Nothing
+# looser: no basename matching, no stem matching, no normalisation.
+#
+# WHAT THIS ALONE DOES NOT CLOSE — and what FIX ROUND 2 below closes: a target
+# declared `harness = false` in Cargo.toml is an ordinary binary, and cargo
+# announces it exactly like a libtest target, so a `println!` of this grammar
+# from inside the TICKET'S OWN declared file was still attributed to the ticket
+# and still read as executed tests (measured: tests/drives/s193/forge-drive.sh).
+# The cure is NOT a judgement about whether a runner is genuine — this codebase
+# refuses to make that mechanically, and three such designs were built and beaten
+# — it is reading cargo's own manifest declaration. See the next block.
+#
+# WHAT STAYS INCONCLUSIVE, the half that matters: a cargo run in which the
+# ticket's own target executed nothing — one target or ten, doc-tests or not,
+# siblings green or not — is still zero tests collected, and the gate refuses it.
+# Tests S2/S2b/S3a/S4b and T1/T2a/T3a-c hold that line.
+#
+# ============== S193 FIX ROUND 2: WHICH OUTPUT GRAMMAR APPLIES? ==============
+# The hole above was real and an adversarial tester walked through it: cargo lets
+# a target opt OUT of libtest with `harness = false` in Cargo.toml — a documented,
+# legitimate feature (criterion, libtest-mimic) — and such a target is an ORDINARY
+# BINARY. It can `println!` libtest's exact scoreboard grammar and exit 0, and
+# when the forge IS the ticket's own declared target the attribution above works
+# perfectly and reports "the ticket's target executed 2 tests" while nothing ran.
+#
+# CAPTAIN RULING 2026-09-06: reading cargo's own MANIFEST DECLARATION is
+# permitted. It is not the forbidden mechanism. "No harness-side auto-verification
+# that a test runner is genuine" (three designs built and beaten at
+# `wip/s183-canary-salvage` 04fee49) is about DECIDING WHETHER TESTS ARE REAL;
+# this decides WHICH OUTPUT GRAMMAR APPLIES, from a label the project wrote about
+# ITSELF, and it can only ever make LCARS more cautious. Nothing here judges
+# whether a test is meaningful.
+#
+# THE RULE: a target declared `harness = false` OWNS NO SCOREBOARD. Its output is
+# not libtest output and is never read as such — so:
+#   • if the target owning the ticket's DECLARED test file is `harness = false`
+#     there is nothing attributable at all → `zero-optout` → INCONCLUSIVE;
+#   • otherwise, its lines are simply DISCARDED before the whole-run question is
+#     answered, so a forged board from a sibling opt-out target cannot unlock a
+#     pass either.
+#
+# NO TOML PARSER, AND THE GATE DOES NOT DEPEND ON ONE. Three tiers, in order:
+#   1. NO `harness` key anywhere in the candidate manifests — the overwhelmingly
+#      common case — and nothing is parsed at all: the answer is byte-identical
+#      to fix round 1. Test U0 holds that line, in both directions.
+#   2. A `harness` key that IS confidently attributable to a target path (python3
+#      with tomllib) — apply the rule.
+#   3. A `harness` key whose attribution is UNCERTAIN — no python3, no tomllib
+#      (pre-3.11), an unparseable manifest, a stanza whose target path cannot be
+#      derived — FAIL CLOSED to `zero-unreadable`. Never a fall-through to
+#      permissive.
+#
+# THE COST, accepted by the captain and made LEGIBLE rather than hidden: a
+# legitimate Rust project whose ticket's tests live in a custom-harness target now
+# comes back UNPROVEN. flip_flop_gate says so in plain words — that the declared
+# test target opts out of cargo's standard test harness so its output cannot be
+# read as test results — never a bare "zero tests collected".
+# S193 FIX 3 — the verdict token is line 1; any further lines are the LEGIBLE
+# reason a fail-closed refusal carries, so the captain is told WHICH manifest or
+# WHICH call defeated attribution rather than a bare "Cargo.toml".
+proof_cargo_collect_verdict() { # runner-output [declared-test-relpaths] [crate-root] → (zero|some|zero-optout|zero-unreadable)[\n reason] | ""
+  local facts="" nh="" hp=""
+  # Is this a libtest-grammar buffer AT ALL? Asked first and cheaply, so a
+  # jest/pytest/go buffer never causes a manifest to be opened, let alone parsed.
+  if printf '%s\n' "$1" | grep -Eq '^test result: [A-Za-z]+\. [0-9]+ passed; [0-9]+ failed;'; then
+    facts="$(proof_cargo_harness_optouts "${3:-}" "${2:-}" "$1")"
+    case "$facts" in
+      UNCERTAIN*) printf 'zero-unreadable\n%s' "${facts#UNCERTAIN }"; return 0 ;;
+    esac
+    # ATTRIBUTED BY CARGO: the ticket's own declared file IS a target this
+    # project declared `harness = false`. Answered here rather than in awk
+    # because it needs no scoreboard to be true — the declaration alone settles
+    # that the target owns none. Round 2 re-derived this from manifest-relative
+    # paths matched equal-or-ends-with; fix round 3 does not, which is precisely
+    # what stops a workspace ROOT's opt-out speaking for a MEMBER's honest file.
+    case "$facts" in OPTOUT*) printf 'zero-optout'; return 0 ;; esac
+    nh="$(printf '%s\n' "$facts" | sed -n 's/^NH //p')"
+    hp="$(printf '%s\n' "$facts" | sed -n 's/^HP //p')"
+  fi
+  # The declared paths travel in the ENVIRONMENT, not through `awk -v`: -v runs
+  # its value through escape processing and cannot carry the newlines that
+  # separate the paths (measured — it aborts with "newline in string").
+  printf '%s\n' "$1" | LCARS_CARGO_DECLARED="${2:-}" LCARS_CARGO_OPTOUTS="$nh" \
+    LCARS_CARGO_HONEST="$hp" awk '
+    BEGIN {
+      nd = 0
+      n = split(ENVIRON["LCARS_CARGO_DECLARED"], R, "\n")
+      for (i = 1; i <= n; i++) {
+        p = R[i]
+        sub(/^[ \t]+/, "", p); sub(/[ \t]+$/, "", p)
+        if (p != "") { nd++; D[nd] = p }
+      }
+      # S193 FIX 3: the paths cargo ANNOUNCES for the targets this project
+      # declared `harness = false` — package-relative, exactly as cargo prints
+      # them. Their output is not libtest output, so their scoreboard lines are
+      # DISCARDED, never counted, in either question.
+      no = 0
+      n = split(ENVIRON["LCARS_CARGO_OPTOUTS"], X, "\n")
+      for (i = 1; i <= n; i++) {
+        p = X[i]
+        sub(/^[ \t]+/, "", p); sub(/[ \t]+$/, "", p)
+        if (p != "") { NH[p] = 1; no++ }
+      }
+      # ...and the paths cargo announces for the targets that DO own a
+      # scoreboard. Inside a workspace two packages really can both announce
+      # `tests/forge.rs` (measured), and nothing in the cargo output says which
+      # board is whose. Round 2 discarded on the collision and false-parked a
+      # member crate whose honest libtest test had genuinely just run; a board is
+      # now discarded only when EVERY target that could have printed it opts out.
+      # The residual is disclosed above the function.
+      n = split(ENVIRON["LCARS_CARGO_HONEST"], Y, "\n")
+      for (i = 1; i <= n; i++) {
+        p = Y[i]
+        sub(/^[ \t]+/, "", p); sub(/[ \t]+$/, "", p)
+        if (p != "") HP[p] = 1
+      }
+    }
+    # cargo ANNOUNCES each target, always indented, before the output of that
+    # target.
+    # `unittests ` prefixes the lib/bin target; the trailing ` (…)` is the
+    # compiled binary path. Column 0 is deliberately NOT matched: cargo indents.
+    /^[ \t]+Running / {
+      line = $0
+      sub(/^[ \t]+Running[ \t]+/, "", line)
+      sub(/^unittests[ \t]+/, "", line)
+      sub(/[ \t]+\(.*$/, "", line)
+      cur = line
+      next
+    }
+    # A doc-test section owns no file in the repo, so it owns no declared file.
+    /^[ \t]+Doc-tests[ \t]/ { cur = ""; next }
+    /^test result: [A-Za-z]+\. [0-9]+ passed; [0-9]+ failed;/ {
+      # `seen` is set by ANY column-0 scoreboard, INCLUDING a discarded one: the
+      # buffer is still a cargo buffer, and a crate whose only board is forged must
+      # answer "zero", not "not a cargo buffer" (which would fall through to the
+      # permissive plain grep in proof_zero_collected).
+      seen = 1
+      nz = (($4 + 0) > 0 || ($6 + 0) > 0)
+      if (no > 0 && cur != "") {
+        if (cur in NH) {
+          # A target that opts out owns NO scoreboard. When no honest target
+          # could have printed this board either, discard it outright.
+          if (!(cur in HP)) next
+          # When one could, cargo has announced BOTH targets under the same
+          # package-relative path and nothing in the buffer says which board is
+          # whose. Neither credulous nor blind: hold the board back and let END
+          # count this path only if EVERY board printed under it ran tests. One
+          # honest board and no opt-out board (a member crate whose sibling
+          # custom harness printed nothing) still counts; a forged board sitting
+          # next to the empty board of the target that really is the ticket does
+          # not. MEASURED both ways.
+          CB[cur]++
+          if (!nz) CZ[cur]++
+          next
+        }
+      }
+      if (nz) some = 1
+      if (cur != "") {
+        for (i = 1; i <= nd; i++) {
+          if (D[i] == cur || (length(D[i]) > length(cur) \
+              && substr(D[i], length(D[i]) - length(cur)) == "/" cur)) {
+            if (nz) mine = 1
+            break
+          }
+        }
+      }
+    }
+    END {
+      # The held-back collision paths, settled pessimistically: a path counts
+      # only when every board announced under it ran at least one test.
+      for (p in CB) {
+        if (CZ[p] > 0) continue
+        some = 1
+        for (i = 1; i <= nd; i++) {
+          if (D[i] == p || (length(D[i]) > length(p) \
+              && substr(D[i], length(D[i]) - length(p)) == "/" p)) { mine = 1; break }
+        }
+      }
+      if (!seen) { printf ""; exit }      # not a cargo buffer — say nothing
+      if (nd == 0) { printf (some ? "some" : "zero"); exit }
+      printf (mine ? "some" : "zero")     # fail closed: no owning target ⇒ zero
+    }'
+}
+
+# S193 FIX 3 — WHICH CRATE DIRECTORIES COULD SPEAK FOR THIS RUN? Echoes the
+# directories whose Cargo.toml is worth LOOKING AT, one per line. This is the
+# TRIGGER's candidate set and nothing more: it decides whether the word `harness`
+# appears anywhere in play, never which target owns what.
+#
+# Two sources, in strict order, and NEITHER is a guess about honesty:
+#   1. THE CRATE ROOT THE LEG RAN IN, which both flip-flop legs pass. Walking UP
+#      from each declared test file is what makes a crate in a subdirectory (a
+#      monorepo, `crates/app/tests/add.rs`) reach its OWN Cargo.toml.
+#   2. CARGO'S OWN `Compiling <pkg> vX.Y.Z (<dir>)` LINE, used when (1) found
+#      nothing — the unattributed callers (the per-stack unit suites, the S193
+#      attack rig) pass no root at all. Registry dependencies print no
+#      parenthesised path, so only LOCAL path packages are picked up.
+#
+# FIX ROUND 3 REMOVES THE `break`. Round 2 stopped at the FIRST Cargo.toml the
+# walk-up met, so a stray `[workspace]`-only Cargo.toml planted in `tests/`
+# shadowed the real crate manifest and the rule never engaged (a MEASURED hollow
+# pass). The walk now collects EVERY manifest on the chain. Collecting too many
+# is safe HERE — an extra candidate can only cause the word `harness` to be
+# noticed, and noticing it merely means "ask cargo".
+# Finding nothing is not an error: there is then no `harness` declaration to
+# read, and the verdict is exactly what fix round 1 gave.
+proof_cargo_manifest_dirs() { # crate-root declared-relpaths runner-output → dirs
+  local root="$1" rels="$2" out="$3" rel d found="" hops
+  # Trailing slashes would make the walk-up terminator below miss the root and
+  # keep climbing out of the worktree; strip them once, here.
+  while :; do case "$root" in ?*/) root="${root%/}" ;; *) break ;; esac; done
+  if [ -n "$root" ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      d="$root/$(dirname "$rel")"
+      hops=0
+      while [ "$hops" -lt 64 ]; do
+        hops=$((hops + 1))
+        [ -f "$d/Cargo.toml" ] && found="$found$d
+"
+        case "$d" in "$root"|"$root"/|/|.|..) break ;; esac
+        d="$(dirname "$d")"
+      done
+    done <<PCMD_RELS
+$rels
+PCMD_RELS
+    [ -f "$root/Cargo.toml" ] && found="$found$root
+"
+  fi
+  # ALWAYS, not only as a fallback (fix round 3). A SIBLING PACKAGE in the same
+  # workspace is never on the walk-up from the ticket's own test file, so a
+  # walk-up-only candidate set cannot notice that a sibling declares
+  # `harness = false` for a target with the same package-relative path — and a
+  # scoped `cargo test --test <stem>` selects that sibling target too. Cargo has
+  # already named every locally-built package in the buffer; using those lines
+  # here costs nothing and is the only handle on a sibling this function has.
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ -f "$d/Cargo.toml" ] && found="$found$d
+"
+  done <<PCMD_COMPILING
+$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]+Compiling [^ ]+ v[^ ]+ \((.+)\)$/\1/p')
+PCMD_COMPILING
+  printf '%s' "$found" | grep . | LC_ALL=C sort -u
+}
+
+# S193 FIX 3 — ASK CARGO. Echoes the facts the scoreboard reader needs, one per
+# line, and NOTHING at all when no manifest in play mentions `harness`:
+#
+#   OPTOUT                  the ticket's OWN declared test file belongs to a
+#                           target this project declared `harness = false`
+#   NH <package-rel path>   a target that owns NO libtest scoreboard
+#   HP <package-rel path>   a target that does
+#   UNCERTAIN <why>         attribution failed — the caller FAILS CLOSED
+#
+# WHY THIS IS A RESTRUCTURE AND NOT A PATCH. Round 2 re-implemented three things
+# cargo already owns, and a fresh adversarial tester beat all three in one pass:
+#   * WHERE a target's source lives. Round 2 derived `tests/<name>.rs`; cargo's
+#     standard DIRECTORY layout announces `tests/<name>/main.rs`, so the opt-out
+#     target was neither attributed nor discarded and its forged board was
+#     counted as the ticket's own.
+#   * WHICH manifest applies. The walk-up stopped at the first Cargo.toml, and a
+#     planted one hid the real declaration.
+#   * WHOSE opt-out it is. Round 2 UNIONED the opt-out paths across every
+#     candidate manifest and matched them ends-with, so a workspace ROOT's
+#     `[[test]] name="forge"` sank a MEMBER crate's genuinely-executed
+#     `crates/app/tests/forge.rs` — a FALSE PARK.
+# `cargo metadata --no-deps --format-version 1` answers all three authoritatively:
+# every target with its `kind`, its `name` and an ABSOLUTE `src_path`, and every
+# package with its `manifest_path`. The ticket's declared file is matched to a
+# target by PATH IDENTITY (both sides resolved to the same base — no basename
+# match, no ends-with heuristic), and the opt-out flag is then read from the ONE
+# manifest that owns that target. Deriving nothing means there is nothing left to
+# derive WRONG. Cargo does not report `harness`, so the flag still comes from the
+# manifest — but bound to the target cargo named, never pooled into a path set.
+#
+# THE TRIGGER STOPS BEING CLEVER. Round 2 gated everything behind
+# `grep -Eq '^[[:space:]]*harness[[:space:]]*='`, which MISSES four spellings
+# real cargo honours — a top-level inline-table array
+# (`test = [{ …, harness = false }]`), a quoted key (`"harness" = false`), a
+# dotted key (`lib.harness = false`) and an inline table (`lib = { harness =
+# false }`) — all four measured as hollow passes. tomllib always spelled them
+# correctly; only the grep in front of it lost them. The trigger is now an
+# UNANCHORED, CASE-INSENSITIVE match on the word `harness`. Over-broad is SAFE
+# here: firing merely means "ask cargo, then parse", and a manifest with no
+# actual opt-out comes back with no opt-out and behaviour is unchanged.
+#
+# THE DISCLOSED RESIDUAL, MEASURED not theorised: TOML lets a quoted key carry
+# unicode escapes, and `"\u0068arness" = false` is honoured by cargo 1.94 and
+# decoded correctly by tomllib while a case-insensitive grep for the word finds
+# NOTHING. That manifest still evades the trigger and its forged board is still
+# read as libtest output. It is accepted, and it is not the class of hole the
+# four spellings above were: those are ordinary forms a real project writes by
+# accident, whereas this one can only be produced deliberately. Closing it would
+# mean parsing EVERY Cargo.toml on EVERY rust gate, which costs the no-parse fast
+# path below — a trade that makes LCARS worse on the overwhelmingly common case
+# to buy nothing against an adversary who could equally well have declared no
+# target at all and printed the same board from a plain integration test.
+#
+# THE NO-PARSE FAST PATH IS THE CONSTRAINT THAT OUTRANKS THE FEATURE. When no
+# candidate manifest mentions `harness` — the overwhelmingly common case — cargo
+# is never invoked, python3 is never invoked, and the answer is byte-identical to
+# fix round 1. A machine without cargo on PATH or without python 3.11 must keep
+# passing ordinary rust tickets; turning every rust gate into
+# `manifest-unreadable` would be a far worse regression than the holes this
+# closes. The same fast path is applied AGAIN per-manifest inside the reader.
+proof_cargo_harness_optouts() { # crate-root declared-relpaths runner-output → facts
+  local dirs md fired="" mdir base
+  dirs="$(proof_cargo_manifest_dirs "$1" "$2" "$3")"
+  [ -n "$dirs" ] || { printf ''; return 0; }
+  while IFS= read -r md; do
+    [ -n "$md" ] || continue
+    if grep -qi 'harness' "$md/Cargo.toml" 2>/dev/null; then fired="$md/Cargo.toml"; break; fi
+  done <<PCHO_TRIGGER
+$dirs
+PCHO_TRIGGER
+  [ -n "$fired" ] || { printf ''; return 0; }
+  # WHERE TO ASK. The leg's own crate root when it has a manifest (a workspace
+  # root answers for its members too — that is the point of --no-deps returning
+  # every workspace package); otherwise the first candidate the Compiling lines
+  # produced, which is the unattributed callers' only handle on the run.
+  mdir=""
+  base="$1"
+  while :; do case "$base" in ?*/) base="${base%/}" ;; *) break ;; esac; done
+  if [ -n "$base" ] && [ -f "$base/Cargo.toml" ]; then
+    mdir="$base"
+  else
+    mdir="$(printf '%s\n' "$dirs" | sed -n '1p')"
+    base="$mdir"
+  fi
+  [ -n "$mdir" ] || { printf 'UNCERTAIN a Cargo.toml mentions `harness` but no crate directory could be located for this run'; return 0; }
+  # $fired is the manifest that actually mentions the word, which is not always
+  # $mdir's own (a workspace root carries no `harness` while its member does):
+  # naming the wrong file is exactly the "which Cargo.toml?" complaint fix
+  # round 3 was asked to cure, so the refusal names BOTH.
+  command -v cargo >/dev/null 2>&1 || {
+    printf 'UNCERTAIN %s mentions `harness` but there is no `cargo` on PATH to ask which target it belongs to (crate root %s)' "$fired" "$mdir"; return 0; }
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'UNCERTAIN %s mentions `harness` but there is no python3 on PATH to read `cargo metadata` with (crate root %s)' "$fired" "$mdir"; return 0; }
+  LCARS_CARGO_MDIR="$mdir" LCARS_CARGO_BASE="$base" LCARS_CARGO_RELS="${2:-}" \
+  LCARS_CARGO_MT="${LCARS_CARGO_METADATA_TIMEOUT_SECS:-120}" python3 -c '
+import json, os, posixpath, subprocess, sys
+
+def bail(msg):
+    sys.stdout.write("UNCERTAIN " + " ".join(str(msg).split()))
+    sys.exit(0)
+
+mdir = os.environ.get("LCARS_CARGO_MDIR", "")
+base = os.environ.get("LCARS_CARGO_BASE", "") or mdir
+rels = [r.strip() for r in os.environ.get("LCARS_CARGO_RELS", "").split("\n") if r.strip()]
+manifest = os.path.join(mdir, "Cargo.toml")
+try:
+    tmo = float(os.environ.get("LCARS_CARGO_MT", "120"))
+except Exception:
+    tmo = 120.0
+
+# tomllib landed in python 3.11. No tomllib, no reading of the flag, so the
+# caller fails CLOSED rather than guessing.
+try:
+    import tomllib
+except Exception:
+    bail("%s mentions `harness` but this python3 has no `tomllib` (it landed in python 3.11), so the declaration could not be read" % manifest)
+
+# THE BOUND. `cargo metadata` must never hang a gate: it is killed at the
+# timeout and the kill is reported, never silently absorbed.
+try:
+    proc = subprocess.run(["cargo", "metadata", "--no-deps", "--format-version", "1"],
+                          cwd=mdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=tmo)
+except subprocess.TimeoutExpired:
+    bail("`cargo metadata` did not finish within %ss in %s, so the targets this run declares could not be established" % (int(tmo), mdir))
+except Exception as exc:
+    bail("`cargo metadata` could not be run in %s (%s)" % (mdir, exc.__class__.__name__))
+if proc.returncode != 0:
+    tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+    tail = tail[0][:180] if tail else ""
+    bail("`cargo metadata` failed in %s (exit %d: %s)" % (mdir, proc.returncode, tail))
+try:
+    meta = json.loads(proc.stdout.decode("utf-8", "replace"))
+except Exception:
+    bail("`cargo metadata` in %s did not produce readable JSON" % mdir)
+
+def keyed(p):
+    # Resolve both sides of every comparison to the same base. The DIRECTORY is
+    # canonicalised (cargo reports a canonical package dir: /tmp resolves to
+    # /private/tmp on darwin) while the FINAL COMPONENT is left alone, because
+    # cargo does NOT follow a symlinked source file — measured. Pure path
+    # arithmetic otherwise; no basename matching, no ends-with.
+    p = os.path.abspath(p)
+    d, b = os.path.split(p)
+    try:
+        d = os.path.realpath(d)
+    except Exception:
+        pass
+    return os.path.join(d, b)
+
+targets = []
+for pkg in meta.get("packages", []) or []:
+    mp = pkg.get("manifest_path")
+    if not isinstance(mp, str) or not mp:
+        continue
+    pdir = os.path.dirname(mp)
+    for t in pkg.get("targets", []) or []:
+        sp = t.get("src_path")
+        if not isinstance(sp, str) or not sp:
+            continue
+        kinds = [k for k in (t.get("kind") or []) if isinstance(k, str)]
+        nm = t.get("name") if isinstance(t.get("name"), str) else None
+        targets.append({"mp": mp, "pdir": pdir, "kinds": kinds, "name": nm,
+                        "src": sp, "key": keyed(sp)})
+
+# THE FLAG, read from ONE manifest at a time and bound to the target it names —
+# never pooled across manifests (that pooling is what false-parked a member
+# crates own honest test in round 2). The per-manifest no-parse fast path is
+# repeated here so a workspace of fifty crates parses only the ones that mention
+# the word.
+_cache = {}
+def optouts_of(mp):
+    if mp in _cache:
+        return _cache[mp]
+    try:
+        with open(mp, "rb") as fh:
+            raw = fh.read()
+    except Exception:
+        bail("%s could not be opened to read its `harness` declaration" % mp)
+    if b"harness" not in raw.lower():
+        _cache[mp] = []
+        return _cache[mp]
+    try:
+        man = tomllib.loads(raw.decode("utf-8"))
+    except Exception:
+        bail("%s mentions `harness` but does not parse as TOML, so LCARS cannot tell which target opts out" % mp)
+    if not isinstance(man, dict):
+        bail("%s does not parse as a TOML table" % mp)
+    found = []
+    pdir = os.path.dirname(mp)
+    def consider(kind, tbl):
+        if not isinstance(tbl, dict):
+            bail("%s: the %s entry is not a table" % (mp, kind))
+        if "harness" not in tbl:
+            return
+        h = tbl["harness"]
+        if not isinstance(h, bool):
+            bail("%s: `harness` is not a boolean, so the declaration cannot be read" % mp)
+        if h:
+            return
+        nm = tbl.get("name")
+        pth = tbl.get("path")
+        found.append((kind,
+                      nm if isinstance(nm, str) and nm else None,
+                      keyed(os.path.join(pdir, pth)) if isinstance(pth, str) and pth else None))
+    lib = man.get("lib")
+    if lib is not None:
+        consider("lib", lib)
+    for kind in ("bin", "test", "bench", "example"):
+        v = man.get(kind)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            bail("%s: [[%s]] is not an array of tables" % (mp, kind))
+        for entry in v:
+            consider(kind, entry)
+    _cache[mp] = found
+    return found
+
+def is_optout(t):
+    for kind, nm, kp in optouts_of(t["mp"]):
+        if kind not in t["kinds"]:
+            continue
+        if nm is not None:
+            if nm == t["name"]:
+                return True
+            continue
+        if kp is not None:
+            if kp == t["key"]:
+                return True
+            continue
+        # A stanza with neither a name nor a path can only be [lib], of which a
+        # package has exactly one; cargo refuses the manifest in every other case.
+        return True
+    return False
+
+ticket_optout = False
+matched = 0
+for r in rels:
+    rk = keyed(os.path.join(base, r))
+    hits = [t for t in targets if t["key"] == rk]
+    if not hits:
+        continue
+    matched += 1
+    for t in hits:
+        if is_optout(t):
+            ticket_optout = True
+if rels and matched == 0:
+    bail("a Cargo.toml in play declares `harness`, but no cargo target announced by `cargo metadata` in %s owns the ticket declared test file(s) [%s], so LCARS cannot tell whose scoreboard this is"
+         % (mdir, ", ".join(rels)))
+
+out = []
+if ticket_optout:
+    out.append("OPTOUT")
+for t in targets:
+    # What cargo ANNOUNCES for a target is its source path relative to its own
+    # PACKAGE directory — measured, including inside a workspace, where two
+    # packages really can both announce `tests/forge.rs`.
+    try:
+        ann = posixpath.normpath(os.path.relpath(t["src"], t["pdir"]).replace(os.sep, "/"))
+    except Exception:
+        continue
+    out.append(("NH " if is_optout(t) else "HP ") + ann)
+sys.stdout.write("\n".join(out))
+'
 }
 
 # WHAT the leg was doing when the clock ran out (S147 DEFECT-4).
@@ -9078,13 +9723,139 @@ proof_prune_scratch() { # tip-worktree scratch
   "$GIT_BIN" -C "$1" worktree prune >/dev/null 2>&1 || :
 }
 
+# S193 (D2) — THE PYTHON FAIL-FIRST RED THAT LOOKED LIKE A DEAD RUNNER.
+#
+# THE BUG, MEASURED. `ModuleNotFoundError` / `No module named` sit in the env
+# arm of rg_signature, because they genuinely ARE how a missing venv or an
+# uninstalled runner announces itself. But they are ALSO how python announces a
+# CORRECT fail-first: on ticket 2's parent commit the module under test has not
+# been written yet — that is what fail-first MEANS — so the parent leg said
+# `ModuleNotFoundError: No module named 'add'`, the gate kinded it env-failure,
+# and "a dead runner is not a red" rendered the flip-flop inconclusive. Python
+# could therefore never pass ticket 2 of a greenfield mission.
+#
+# THIS FUNCTION LOOSENS A GATE, so it is built as a CONJUNCTION of four
+# independent facts, every one of them POSITIVE, and the phrase is not among
+# them. All four must hold, or the red stays an env failure:
+#
+#   1. THE PARENT/TIP FACTS ARE ACTUALLY PRESENT. Without a parent sha and the
+#      tip worktree there is nothing to decide on, so it fails CLOSED. That is
+#      why the plumbing is optional at the signature and mandatory here: a
+#      caller that cannot supply the facts gets today's behaviour, not a guess.
+#
+#   2. THE RUNNER DEMONSTRABLY STARTED AND COLLECTED. A genuine fail-first red
+#      still prints a runner scoreboard — stdlib unittest's `Ran 1 test in …`
+#      followed by `FAILED (errors=1)`, pytest's `= test session starts =`
+#      banner. A DEAD runner prints neither: `python3.14: No module named
+#      pytest` is the whole output. Both markers were CAPTURED from real runs on
+#      the build machine (python 3.14.6 / pytest 9.1.1); nothing here is written
+#      from memory of what a runner "probably" prints. This is the conjunct that
+#      kills the sharpest attack on the rule — a repo whose TEST RUNNER ITSELF
+#      is a module the ticket adds (`python3 -m gfrunner`, with gfrunner.py new
+#      on the tip). There facts 3 and 4 both hold and the runner is still dead;
+#      only this one refuses it (test S6).
+#
+#   3. EVERY MISSING MODULE IS A NON-TEST SOURCE FILE THIS TICKET ADDS. Not
+#      "any" — EVERY name in the buffer must map to a path in the ticket's
+#      changed non-test set that could BE that module, AND that path must be
+#      ABSENT at the parent and PRESENT at the tip. That last clause is a git
+#      fact, not an inference: it is what makes "the module THIS TICKET ADDS"
+#      literally true. A third-party import (`pytest`, `requests`) matches
+#      nothing the ticket wrote and is refused.
+#
+#      S193 FIX 1 (DEFECT 4) NARROWS THE MAPPING. The first cut compared BASENAME
+#      STEMS with the extension and the directory thrown away (`fb="${f##*/}";
+#      fb="${fb%.*}"`), so a ticket whose only changed non-test path was `add.md`
+#      — a README, a fixture, a `.txt` — "mapped" to missing module `add`, and a
+#      genuine env failure could be read as an honest fail-first red. The mapping
+#      is now python's OWN import rule, spelled out positively: module `a.b.c`
+#      is the file `a/b/c.py` or the package `a/b/c/__init__.py`, matched
+#      verbatim or under a package root (a leading `src/`, `lib/`, …), i.e. the
+#      changed path must EQUAL one of those or END WITH `/` + one of them. No
+#      stem matching, no extension-blind matching, no directory-blind matching.
+#      This only ever REJECTS reds the old comparison accepted.
+#
+#   4. NOTHING ELSE IN THE BUFFER IS AN ENV FAILURE. The two python tokens are
+#      blanked OUT OF THE TEXT (substring-wise, so every other character and
+#      every line-start anchor survives) and red_gate_env_failure is re-asked. A
+#      buffer that ALSO carries a shell diagnostic, an npm ENOENT, a missing
+#      node_modules or a dead venv is still an env failure. Re-asking the real
+#      detector rather than copying its pattern minus two alternatives means
+#      this can never drift out of step with the env arm.
+#
+# NOT COVERED, deliberately: pytest's fail-first red prints `collected 0 items /
+# 1 error`, which the SHARED `zerotests` arm catches one check earlier and
+# renders inconclusive before any kinding happens. That is an INHERITED
+# interaction, it errs toward inconclusive (never toward a pass), and narrowing
+# the zero-collect trap for pytest is a third loosening this session did not
+# earn. The greenfield python arm runs stdlib unittest, which is unaffected.
+proof_fail_first_missing_module() { # runner-out changed-src parent-sha tip-wt → 0 if fail-first
+  local out="$1" files="$2" parent="$3" wt="$4" m mpath cmod cpkg f hit mods rest
+  # 1. the facts must be present, or this question is not asked at all.
+  [ -n "$parent" ] && [ -n "$wt" ] || return 1
+  [ -n "$(printf '%s' "$files" | tr -d '[:space:]')" ] || return 1
+  # 2. runner-started evidence (captured from real python 3.14 / pytest 9.1 runs).
+  printf '%s\n' "$out" \
+    | grep -Eq '^Ran [1-9][0-9]* tests? in |^=+ test session starts =+$' || return 1
+  # 4. any OTHER env signature wins — ask the real detector, minus the 2 tokens.
+  rest="$(printf '%s\n' "$out" | sed -E 's/ModuleNotFoundError//g; s/No module named//g')"
+  red_gate_env_failure "$rest" && return 1
+  # 3. EVERY missing module must be a non-test file the ticket ADDS.
+  mods="$(proof_missing_python_modules "$out")"
+  [ -n "$mods" ] || return 1
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    # python's OWN import rule: `a.b.c` is a/b/c.py or a/b/c/__init__.py.
+    mpath="$(printf '%s' "$m" | tr '.' '/')"
+    cmod="$mpath.py"; cpkg="$mpath/__init__.py"
+    hit=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      # verbatim, or the same module under a package root (src/, lib/, …).
+      case "$f" in
+        "$cmod"|"$cpkg"|*/"$cmod"|*/"$cpkg") : ;;
+        *) continue ;;
+      esac
+      [ -f "$wt/$f" ] || continue         # present at the TIP
+      "$GIT_BIN" -C "$wt" cat-file -e "$parent:$f" 2>/dev/null && continue
+      hit=1; break                        # …and ABSENT at the parent
+    done <<FFM_FILES
+$files
+FFM_FILES
+    [ -n "$hit" ] || return 1
+  done <<FFM_MODS
+$mods
+FFM_MODS
+  return 0
+}
+
+# The module name(s) python could not import. Both forms are real and both are
+# emitted on this build machine: quoted (`ModuleNotFoundError: No module named
+# 'add'`, from an import inside a test module) and BARE (`…/python3.14: No
+# module named pytest`, from `python -m` with the runner absent).
+proof_missing_python_modules() { # runner-output → distinct module names, one per line
+  printf '%s\n' "$1" \
+    | grep -oE "No module named '?[A-Za-z_][A-Za-z0-9_.]*'?" \
+    | sed -E "s/^No module named '?//; s/'$//" \
+    | grep . | LC_ALL=C sort -u
+}
+
 # The parent-leg RED's KIND, for legibility — the same S96 detector arms
 # classify_impl_failure routes through, in the same precedence. A red caused by
 # the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; only an env
 # failure (the runner could not start in the scratch) is not proof at all.
-proof_parent_red_kind() { # runner-out files-written → kind token
-  local out="$1" files="$2"
-  if red_gate_env_failure "$out"; then printf 'env-failure'; return 0; fi
+proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] → kind token
+  local out="$1" files="$2" parent="${3:-}" wt="${4:-}"
+  if red_gate_env_failure "$out"; then
+    # S193 (D2): …unless this is the fail-first red the ticket EXISTS to produce.
+    # The parent/tip facts decide it, never the phrase — see the block comment on
+    # proof_fail_first_missing_module. With no facts plumbed through it is not
+    # asked, so the narrowing stays closed and this is env-failure as before.
+    if proof_fail_first_missing_module "$out" "$files" "$parent" "$wt"; then
+      printf 'missing-new-module'; return 0
+    fi
+    printf 'env-failure'; return 0
+  fi
   if red_gate_resolution_failure "$out"; then
     if unresolved_specifier_is_created "$out" "$files"; then
       printf 'missing-new-module'
@@ -9527,9 +10298,23 @@ flip_flop_gate() { # ticket parent-sha worktree
     [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipreason" "$rels"; return $?
   fi
-  if proof_zero_collected "$PROOF_LEG_OUT"; then
-    _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)" "$rels"
+  # S193 FIX 1: the ticket's DECLARED test file(s) decide which cargo target the
+  # zero-collect question is about — a sibling target passing is not the ticket.
+  # S193 FIX 2: `$wt` is the crate root, so the cargo arm can read Cargo.toml's
+  # own `harness` declaration — a label the project wrote about itself, deciding
+  # which OUTPUT GRAMMAR applies, never whether a test is genuine.
+  if proof_zero_collected "$PROOF_LEG_OUT" "$rels" "$wt"; then
+    local tipzero="the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)"
+    # THE REFUSAL MUST BE LEGIBLE. A custom-harness crate is a legitimate, working
+    # project, and telling its captain "zero tests collected" when the suite he
+    # just watched pass is a mystery park. Say what LCARS actually could not do.
+    case "$PROOF_ZERO_KIND" in
+      harness-false)
+        tipzero="the ticket's declared test file belongs to a cargo target that sets \`harness = false\` in Cargo.toml — that target opts out of cargo's standard test harness, so it is an ordinary program and whatever it prints is NOT libtest test results. LCARS has no scoreboard it is allowed to read, so it cannot tell whether a single test ran, and inconclusive is never a pass. To have LCARS prove tickets on this repo, put their tests in a target that uses cargo's standard harness (drop \`harness = false\`, or add an ordinary \`tests/*.rs\`); otherwise this ticket needs the captain's own eyes on the suite at Verify" ;;
+      manifest-unreadable)
+        tipzero="a Cargo.toml in play declares a \`harness\` key but LCARS could not establish WHICH cargo target it belongs to. A \`harness = false\` target opts out of cargo's standard test harness and its output is not libtest test results, so until the declaration can be read LCARS cannot tell whether this run's scoreboard is real — and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
+    esac
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero" "$rels"
     return $?
   fi
   # GUARD 2 (S147 round 3): did everything the staged file PROMISED actually
@@ -9622,9 +10407,21 @@ FF_STAGE_EOF
 NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's recorded \`cmd\` cd's into no longer exists — re-cut it first with \`git worktree add --detach <that path> $parent\`, then paste the command."
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$parreason" "$rels"; return $?
   fi
-  if proof_zero_collected "$par_out"; then
-    _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
+  # S193 FIX 2: the crate root passed here is the TIP worktree, deliberately —
+  # proof_prune_scratch has already removed the parent scratch, and the parent leg
+  # ran the TIP'S copy of the ticket's test file(s), so the tip manifest is the
+  # declaration that describes what was executed. The tip leg above has already
+  # refused when that manifest opts the ticket's target out, so this call can only
+  # ever make the parent leg MORE cautious, never less.
+  if proof_zero_collected "$par_out" "$rels" "$wt"; then
+    local parzero="the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass"
+    case "$PROOF_ZERO_KIND" in
+      harness-false)
+        parzero="the PARENT leg's output cannot be read as test results: the ticket's declared test file belongs to a cargo target that sets \`harness = false\` in Cargo.toml, so that target opts out of cargo's standard test harness and prints whatever it likes. Red-on-parent is therefore unproven, and inconclusive is never a pass" ;;
+      manifest-unreadable)
+        parzero="the PARENT leg ran against a Cargo.toml that declares a \`harness\` key LCARS could not attribute to a cargo target, so it cannot tell whether that leg's scoreboard is real libtest output — red-on-parent is unproven, and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
+    esac
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$parzero" "$rels"
     return $?
   fi
   # THE GREEN PARENT = NO PROOF. The wording states what was ACTUALLY proven, per
@@ -9654,7 +10451,10 @@ $FF_PAR_REFUSED"
     _ff_finish "$t" "$parent" "$ffj" fail "$greenreason" "$rels"
     return $?
   fi
-  FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src")"
+  # S193 (D2): the parent sha + tip worktree are passed so the kinding can ask a
+  # GIT question — is the module python could not import a file this ticket ADDS?
+  # — instead of deciding on the phrase. See proof_fail_first_missing_module.
+  FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src" "$parent" "$wt")"
   if [ "$FF_PAR_KIND" = env-failure ]; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
       "the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red" "$rels"
@@ -17820,6 +18620,41 @@ FSG_EOF
     [ -n "$MISSION_ID" ] && locate_mission "$MISSION_ID"
     __pv_rc=0; proof_validate_result "$RESULT" "$TICKET" || __pv_rc=$?
     printf 'PVRC=%s\n' "$__pv_rc"; exit 0 ;;
+  # S193 test hook: run the flip-flop gate's ZERO-COLLECT detector
+  # (proof_zero_collected) on stdin and exit with its return code (0 = the leg
+  # collected/ran ZERO tests, 1 = it did not). $LCARS_PZC_RELS carries the
+  # ticket's DECLARED test file(s), newline-separated, exactly as flip_flop_gate
+  # passes them; UNSET asks the weaker whole-run question the per-stack unit
+  # suites ask. $LCARS_PZC_ROOT carries the CRATE ROOT (S193 fix 2) so the cargo
+  # arm can read Cargo.toml's `harness` declaration; UNSET falls back to locating
+  # the manifest from cargo's own `Compiling … (<dir>)` line, which is what the
+  # attack rig exercises. $LCARS_PZC_SHOW_KIND=1 additionally prints `PZK=<kind>`. Inert for every real subcommand —
+  # reachable only by this explicit token, so the green-on-nothing trap's
+  # coverage is unit-testable against REAL runner output.
+  proof-zero-collected-test)
+    _pz_in="$(cat)"
+    _pz_rc=0
+    proof_zero_collected "$_pz_in" "${LCARS_PZC_RELS:-}" "${LCARS_PZC_ROOT:-}" || _pz_rc=$?
+    # The zero-KIND is printed only when asked for, so the rigs that read this
+    # hook's exit code alone see byte-identical output. $LCARS_PZC_SHOW_DETAIL
+    # additionally prints `PZD=<reason>` — the S193 fix-3 fail-closed reason,
+    # which names the manifest (or the missing tool) that defeated attribution.
+    [ -n "${LCARS_PZC_SHOW_KIND:-}" ] && printf 'PZK=%s\n' "$PROOF_ZERO_KIND"
+    [ -n "${LCARS_PZC_SHOW_DETAIL:-}" ] && printf 'PZD=%s\n' "${PROOF_ZERO_DETAIL:-}"
+    exit "$_pz_rc"
+    ;;
+  # S193 test hook: kind a PARENT-leg red (proof_parent_red_kind) and print the
+  # token. Runner output on stdin; the ticket's NON-TEST changed paths in
+  # $LCARS_PRK_FILES (newline-separated, as flip_flop_gate builds them); the
+  # parent sha via --sha and the tip worktree as the positional. The last two are
+  # OPTIONAL and, when absent, the fail-first narrowing stays CLOSED (a missing
+  # module is still an env failure) — which is what makes the plumbing's absence
+  # fail safe rather than fail open. Inert for every real subcommand.
+  proof-parent-red-kind-test)
+    _prk_in="$(cat)"
+    proof_parent_red_kind "$_prk_in" "${LCARS_PRK_FILES:-}" "${RC_SHA:-}" "${POSARG:-}"
+    printf '\n'
+    exit 0 ;;
   # S185 test hooks — offline, free, inert for every real subcommand.
   # The workspace/monorepo marker the scaffold arm refuses on.
   greenfield-workspace-test)
