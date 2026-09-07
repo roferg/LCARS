@@ -1625,7 +1625,20 @@ function render(board) {
   captureForgeIdentity(board.meta);
   var root = document.getElementById("board");
   root.innerHTML = "";
-  STAGE_META.forEach(function (meta) {
+  /* S184 — THE FRONT DOOR REPLACES THE BOARD. Decided before a single column is
+     built, so on a day-zero repo there are literally NO columns in the DOM: the
+     captain is not looking at a pipeline he cannot use. Re-decided on EVERY
+     render, so the door lifts by itself the moment the initialization mission
+     lands (an SSE tick, nothing to reload) — the same way S183's lock lifts. */
+  var onFrontDoor = frontDoorActive(board);
+  setFrontDoorMode(onFrontDoor);
+  if (onFrontDoor) {
+    renderFrontDoor(board.meta.frontDoor);
+  } else {
+    var fdHost = frontDoorHost();
+    if (fdHost) { fdHost.innerHTML = ""; fdHost.hidden = true; }
+  }
+  if (!onFrontDoor) STAGE_META.forEach(function (meta) {
     var key = meta[0], name = meta[1], colour = meta[2];
     var cards = (board.columns && board.columns[key]) || [];
     var col = el("div", "col");
@@ -1649,6 +1662,10 @@ function render(board) {
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
   renderTestReadiness(board.meta && board.meta.testReadiness);
+  /* S183: the FOUNDATION LOCK. On EVERY render, so it lifts as well as locks —
+     an initialization mission landing (S185) clears meta.foundation and the
+     board unlocks itself on the next SSE push, with nothing to reload. */
+  paintFoundationLock(board.meta && board.meta.foundation);
   /* S128 (FL-002): the ⬡ HOLODECK band control's activity indicator, from the
      daemon's own `meta.holodeck`. On EVERY render, so it clears as well as
      lights — and off the board payload, because the board is the surface a
@@ -1913,18 +1930,60 @@ function renderVersionBanner(version) {
    Two voices, never blurred (captain ruling):
      repair    (broken/missing) — "⚠ TEST SYSTEMS OFFLINE" + the ⚡ FIX action;
      bootstrap (unknown)        — a greenfield repo reads as calm STATUS
-                                  ("the first mission's engineering crew will
-                                  establish them"), never an action item.
+                                  (S183: an INITIALIZATION mission's engineering
+                                  crew will establish them), never an alarm.
    The fix is ONE POST (/api/config/fix-tests → update.sh --fix-tests:
    suggest-or-discover → set → probe → verdict). Filing/parking are NEVER
    blocked by any readiness state. */
 function readinessCopy(tr) {
+  /* S183 FIX ROUND 1 (D3) — READ THE FOUNDATION, which rides in the SAME
+     payload. This function branched on `status === "unknown"` alone, and
+     `unknown` is three different repos: a `git init`, a repo full of code with
+     no test system, and — MEASURED — an npm-workspaces monorepo whose three
+     packages all run vitest, which the board told "◇ NO TEST SYSTEMS FOUND …
+     Start it with Establish Vision" while ▦ FILE MISSION sat enabled beside it.
+     The CLI readiness line was already cured on this axis; the board was not.
+
+     The foundation is consulted FIRST because it is the honest axis and because
+     it is what the band controls are locked on: a repo whose ▦ FILE MISSION is
+     disabled must not also be offered a "detected candidate" (the npm-default
+     `"test": "echo … && exit 1"` placeholder reads `missing` + `untested`, and
+     saying both is telling the captain two different stories about one repo).
+     `unconfigured` from `broken` / `missing` / `ambiguous` keeps its own
+     shipped voice below — those states were never wrong. */
+  var fnd = tr && tr.foundation;
+  if (fnd === "untested") {
+    return {
+      voice: "bootstrap",
+      line: "◇ NO TEST SYSTEM FOUND — this repo has code, and nothing to prove "
+          + "a change with.",
+      sub: "Start with Establish Vision — normal missions unlock when the "
+         + "foundation lands.",
+    };
+  }
+  if (tr && tr.status === "unknown" && fnd === "unconfigured") {
+    /* The repo HAS a test system; LCARS just has no command for it. That is the
+       `lcars update --test-command` case — the repair voice, worded the way the
+       CLI line words it, never the bootstrap one. */
+    return {
+      voice: "repair",
+      line: "⚠ TEST SYSTEMS OFFLINE — this repo HAS a test system but no test "
+          + "command is configured; missions cannot be proof-gated.",
+      sub: tr.foundationWhy ? "found: " + tr.foundationWhy : "",
+    };
+  }
   if (tr && tr.status === "unknown") {
     return {
       voice: "bootstrap",
-      line: "◇ NO TEST SYSTEMS FOUND — the first mission's engineering crew "
-          + "will establish them.",
-      sub: "",
+      /* S183: the same calm bootstrap voice, with the promise it can actually
+         keep. A normal Mission is refused on this repo (the foundation gate);
+         what establishes the test systems is an INITIALIZATION mission's crew,
+         launched from Establish Vision. */
+      line: "◇ NO TEST SYSTEMS FOUND — the first mission here is an "
+          + "initialization mission, and its engineering crew will establish "
+          + "them.",
+      sub: "Start it with Establish Vision — normal missions unlock when it "
+         + "lands.",
     };
   }
   /* S147: AMBIGUOUS is its own voice — a THIRD state, never blurred into the
@@ -1959,6 +2018,725 @@ function readinessCopy(tr) {
     line: "⚠ TEST SYSTEMS OFFLINE — missions cannot be proof-gated.",
     sub: sub,
   };
+}
+
+/* ── S183: THE FOUNDATION LOCK ────────────────────────────────────────────
+   `meta.foundation` is present ONLY when this repo has no test foundation
+   (greenfield = nothing here; untested = code with no test system). In that
+   state a normal Mission cannot be filed and the holodeck is locked (captain
+   ruling, 2026-09-05): the foundation is established first, by an
+   initialization mission from Establish Vision, with the captain at Verify.
+
+   THE BUTTON STATE IS THE PRODUCT HERE. The daemon refuses these POSTs with a
+   409 either way, but a captain who can click ▦ FILE MISSION, type an idea and
+   only then be told the repo cannot take one has been misled by the board —
+   so the controls are disabled, and the REASON is said (the read-only idiom:
+   `data-reason` + `title`, never a silently greyed button). */
+var FOUNDATION_LOCK_REASON = {
+  greenfield:
+    "This repo is empty — there is no code and no test system yet, so a "
+    + "Mission has no way to prove any work. Start with Establish Vision: say "
+    + "what you want to build and LCARS files an initialization mission that "
+    + "lays the foundation.",
+  untested:
+    "This repo has code but no test system, so a Mission has no way to prove "
+    + "any work. Start with Establish Vision: LCARS recommends a stack and "
+    + "files an initialization mission that lays the foundation.",
+};
+
+function foundationLocked(f) {
+  return f === "greenfield" || f === "untested";
+}
+
+/* THE LOCK STATE, held in ONE place (S183 fix round 1, D2).
+   `paintFoundationLock` used to write #holodeckBtn's disabled/title/data-reason
+   itself, and so does `holoPaintBandBtn` — which render() calls immediately
+   AFTER it (board.js: paintFoundationLock, then renderHolodeckActivity). The
+   second painter unconditionally set `disabled = (writesActive === false)`,
+   rewrote the title and REMOVED data-reason, so the shipped board carried
+   class="btn go foundation-locked" with disabled:false, opacity:1,
+   cursor:pointer — MEASURED in real headed Chrome, and clicking it opened the
+   deck. The captain got all the way in and typed a brief before the daemon's
+   409 refused him.
+
+   Two painters over one control is the defect, not their order: hand-ordering
+   them would only work until the next call site. So the fact lives here and
+   holoPaintBandBtn — the ONE owner of that button — reads it alongside
+   read-only mode and the working-program indicator. */
+var foundationLockReason = "";
+
+function paintFoundationLock(foundation) {
+  var locked = foundationLocked(foundation);
+  var reason = locked
+    ? (FOUNDATION_LOCK_REASON[foundation] || FOUNDATION_LOCK_REASON.greenfield)
+    : "";
+  foundationLockReason = reason;
+  var b = document.getElementById("fileBtn");
+  if (b) {
+    if (locked) {
+      b.disabled = true;
+      b.title = reason;
+      b.setAttribute("data-reason", reason);
+      if (b.classList) b.classList.add("foundation-locked");
+    } else {
+      /* Only ever UNDO our own lock — read-only mode paints these same
+         attributes, and stomping them here would re-enable a control a
+         view-only board must never offer. */
+      if (b.classList && b.classList.contains("foundation-locked")) {
+        b.classList.remove("foundation-locked");
+        b.disabled = writesActive === false;
+        b.removeAttribute("data-reason");
+        b.title = "";
+      }
+    }
+  }
+  /* ⬡ HOLODECK is painted by its own single owner, which now considers the
+     lock. Calling it here means the lock APPLIES and LIFTS through exactly the
+     same path the SSE tick uses. */
+  holoPaintBandBtn();
+}
+
+/* ══════════════ S184 — ESTABLISH VISION: THE DAY-ZERO FRONT DOOR ══════════
+   THE FRONT DOOR REPLACES THE BOARD. S183 shipped the rule and the captain saw
+   it driven in real Chrome: seven empty columns, a warning banner, two greyed-
+   out controls, and the one thing you are meant to do written as small print
+   inside the banner. His verdict — "really clunky for getting in there and
+   initializing a new greenfield project" — is about the SHAPE, not the copy, so
+   bolting an ESTABLISH VISION button onto that locked board would keep the
+   wrong shape and merely label it. His ruling:
+
+       the board does not render until there is something to put on it.
+
+   THE RULE IS NARROW, AND THE NARROWNESS IS THE WHOLE SAFETY ARGUMENT.
+   `meta.frontDoor` is set by the daemon ONLY when the verdict locks AND the
+   repo has nothing to put on a board. Measured on the captain's machine before
+   this was written: `Flappy-Bird` is an initialized repo whose foundation
+   verdict is `untested` and which carries TWO real missions. A front door keyed
+   on `meta.foundation` alone — the obvious reading of the brief — would have
+   DELETED that board and hidden both missions behind "What are we building?".
+   So this reads the POSITIVE key the daemon computed, and it ALSO re-checks
+   locally that the board is empty: two independent guards over the one thing
+   this session must never do.
+
+   S183's lock is NOT deleted and NOT weakened. It still paints on every render,
+   and it is what protects every surface this door does not cover: the read-only
+   build, the GitHub adapter, and a foundationless repo that DOES have a board.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* The copy, per verdict. Two screens, and the difference between them is the
+   difference between not knowing and knowing: on `untested` LCARS can SEE the
+   code, so asking "what are we building?" would be the harness admitting it did
+   not look. (Captain ruling 2026-09-05: skip that grill on `untested`.) */
+var FRONT_DOOR_COPY = {
+  greenfield: {
+    cls: "greenfield",
+    kicker: "◇ New project",
+    grillKicker: "◇ Establishing vision",
+    ask: ["What are we building?"],
+    say: "Describe it however you like. LCARS will ask a few questions, "
+       + "recommend a stack and say why, then build the foundation — a running "
+       + "skeleton with a working test system — before any feature work starts.",
+    placeholder: "A website that does personal finance stuff…",
+    primary: "▸ Establish vision",
+    ghost: "Paste a spec instead",
+    escape: "Already have tests LCARS can't see? Point it at them: ",
+    escapeCode: "lcars update --test-command '<command>'",
+  },
+  untested: {
+    cls: "untested",
+    kicker: "◇ No test system",
+    grillKicker: "◇ Establishing the test foundation",
+    ask: ["I can see the code.", "I can't prove a change."],
+    say: "Every LCARS ticket is proven by running its tests — red on the parent "
+       + "commit, green on the tip. This project has no runner, so there's "
+       + "nothing to prove a change with yet.",
+    primary: "▸ Establish test foundation",
+    ghost: "I have one — point LCARS at it",
+    escape: "Scope is the foundation only: a runner, a first real test, and the "
+          + "wiring to run it. Your code is not touched.",
+  },
+};
+
+/* frontDoorActive — the ONE decision, in one place.
+   BOTH guards, deliberately:
+     • the daemon's positive `meta.frontDoor` key (locked verdict AND no
+       missions — computed by the same helper the CLI front door calls), and
+     • a local re-count of the cards, so a stale payload can never eat a board
+       that has since gained a mission.
+   Plus: LOCAL adapter only, and never on a view-only build — the front door is
+   an invitation to DO something, and a board that cannot write must not offer
+   one. Those two are exactly the surfaces item 8 keeps S183's lock alive for. */
+function frontDoorActive(board) {
+  var meta = (board && board.meta) || {};
+  if ((meta.adapter || "local") !== "local") return false;
+  if (writesActive === false) return false;
+  if (!meta.frontDoor || !foundationLocked(meta.frontDoor.foundation)) return false;
+  return boardCardCount(board) === 0;
+}
+
+function boardCardCount(board) {
+  var n = (board && board.missions && board.missions.length) || 0;
+  var cols = (board && board.columns) || {};
+  for (var k in cols) {
+    if (Object.prototype.hasOwnProperty.call(cols, k) && cols[k] && cols[k].length) {
+      n += cols[k].length;
+    }
+  }
+  return n;
+}
+
+/* The live front-door state. Kept OUT of the DOM so an SSE re-render repaints
+   the same screen the captain is on instead of throwing him back to screen 1
+   mid-sentence. `screen` ∈ ask | grill | recommend; `rec` is the recommendation
+   the grill produced. */
+var frontDoorState = { screen: "ask", sid: null, idea: "", busy: false,
+                       question: null, rec: null, error: "", note: "",
+                       /* S195 — the engine, held HERE for the same reason
+                          `screen` is: the door repaints on every SSE tick, so a
+                          pick kept in the DOM is a pick lost on the next one.
+                          Empty until the payload names one; `frontDoorEngine`
+                          resolves it against the daemon's preselection. */
+                       engine: "" };
+
+function frontDoorHost() { return document.getElementById("frontDoor"); }
+
+function setFrontDoorMode(on) {
+  var b = document.body;
+  if (b && b.classList) {
+    if (on) b.classList.add("on-front-door"); else b.classList.remove("on-front-door");
+  }
+  paintFrontDoorBand(on);
+}
+
+/* THE BAND IS PART OF THE SHAPE (S184 fix round 1, D1).
+   The front door said "nothing is being withheld from you" while ⬡ HOLODECK and
+   ▦ FILE MISSION sat six inches above it, greyed out — MEASURED in real headed
+   Chrome. That is the captain's original complaint about S183's board ("really
+   clunky"), still on screen: a day-zero page whose furniture is disabled
+   controls for a pipeline that does not exist yet. Brief item 1 says no dimmed
+   controls; the approved mockup's band carries the brand, the repo name and the
+   LOCAL / ● LIVE chips and nothing else.
+
+   So the board's controls are HIDDEN on the front door — presentation only, and
+   only here. Nothing is deleted, `paintFoundationLock` is untouched and still
+   runs, and the moment the door lifts every control comes back in exactly the
+   state its own painter left it in. `hidden` (not a class, not inline display)
+   because board.css's global `[hidden]{display:none !important}` beats
+   `renderMainDeploy`'s inline `style.display`, and because an attribute is
+   something a test can actually see.
+
+   ? HELP goes too: the console it opens is the BOARD's help — hotkeys for cards
+   and columns that are not on screen — so on day zero it is an offer to explain
+   a thing the captain cannot see. */
+var FRONT_DOOR_BAND_HIDDEN = ["deployMainBtn", "mainDeploy", "holodeckBtn",
+                              "fileBtn", "helpBtn"];
+function paintFrontDoorBand(on) {
+  FRONT_DOOR_BAND_HIDDEN.forEach(function (id) {
+    var n = document.getElementById(id);
+    if (n) n.hidden = !!on;
+  });
+}
+
+/* ── S195: WHICH CLI DRIVES THIS PROJECT ───────────────────────────────────
+   The captain's ruling: the choice is made ON THE FRONT DOOR, before the grill
+   starts, because that is where the decision naturally occurs — and it powers
+   BOTH the grill conversation AND every stage of the mission the door files.
+
+   THREE RULES, and each is a rule rather than a taste:
+
+     1. OFFER ONLY WHAT IS INSTALLED. `fd.engines` is the daemon's list, from
+        the one `command -v` detector `lcars init` already verifies claude
+        through (lcars-common.sh). The board never guesses: no engines key ⇒ no
+        control at all, and nothing added to the POST — an older daemon, the
+        GitHub adapter, or a `--facts` that could not answer must leave this
+        surface byte-identical to S184's.
+
+     2. ONE ENGINE IS NOT A CHOICE. With a single CLI installed there is no
+        picker — a one-option control is furniture. But the door still SAYS
+        which engine will run it, because a day-zero screen that silently picks
+        the thing that spends money is the surface this round exists to avoid.
+
+     3. IT IS GONE ONCE THE CONVERSATION STARTS. The grill session is warm on
+        the engine it opened with, so a picker on the grill screen would offer a
+        switch nothing could honour. */
+
+var ENGINE_LABELS = { claude: "Claude", copilot: "Copilot" };
+
+function engineLabel(e) {
+  return ENGINE_LABELS[String(e || "").toLowerCase()] || String(e || "");
+}
+
+function frontDoorEngines(fd) {
+  var list = (fd && fd.engines) || [];
+  return Object.prototype.toString.call(list) === "[object Array]" ? list : [];
+}
+
+/* The engine in force: the captain's pick when he has made one AND it is still
+   on offer, otherwise the daemon's preselection (repo config > the single
+   installed engine > claude). Re-derived on every render so a payload that
+   changes underneath the door can never leave a stale engine selected. */
+function frontDoorEngine(fd) {
+  var list = frontDoorEngines(fd);
+  var picked = String(frontDoorState.engine || "");
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i]) === picked) return picked;
+  }
+  var pre = String((fd && fd.engine) || "");
+  for (var j = 0; j < list.length; j++) {
+    if (String(list[j]) === pre) return pre;
+  }
+  return list.length ? String(list[0]) : "";
+}
+
+/* Paint the control into `host`, or nothing at all. Returns nothing — the
+   choice lives in `frontDoorState.engine`, never in the DOM. */
+function renderFrontDoorEngine(host, fd) {
+  var list = frontDoorEngines(fd);
+  if (!list.length) return;                       // rule 1: nothing to offer
+  var chosen = frontDoorEngine(fd);
+  frontDoorState.engine = chosen;
+  var wrap = el("div", "fd-engine");
+  if (list.length === 1) {
+    // rule 2: say it, do not offer it.
+    wrap.appendChild(el("div", "fd-engine-one",
+      "Engine · " + engineLabel(list[0]) + " will run this — the only "
+      + "LCARS-capable CLI installed on this machine."));
+    host.appendChild(wrap);
+    return;
+  }
+  wrap.appendChild(el("div", "fd-engine-h",
+    "Engine — which CLI drives this project?"));
+  var choice = el("div", "choice");
+  var nodes = [];
+  list.forEach(function (eng) {
+    var name = String(eng);
+    /* keyActivable, like the File console's picker: these are spans rendered as
+       controls, and a control you cannot Tab to is not a control. */
+    var opt = keyActivable(el("span", "opt", "⬡ " + engineLabel(name)));
+    opt.setAttribute("aria-pressed", name === chosen ? "true" : "false");
+    if (name === chosen) opt.classList.add("sel");
+    opt.addEventListener("click", function () {
+      frontDoorState.engine = name;
+      nodes.forEach(function (o) {
+        o.classList.remove("sel");
+        o.setAttribute("aria-pressed", "false");
+      });
+      opt.classList.add("sel");
+      opt.setAttribute("aria-pressed", "true");
+    });
+    nodes.push(opt);
+    choice.appendChild(opt);
+  });
+  wrap.appendChild(choice);
+  wrap.appendChild(el("div", "fd-engine-note",
+    "It runs the conversation AND every stage of the mission it files, and "
+    + "becomes this project's default."));
+  host.appendChild(wrap);
+}
+
+/* The body of the POST, with `engine` present ONLY when there is one. An
+   explicit empty string would be a pick, and there is none to make. */
+function frontDoorEngineBody(body) {
+  var e = String(frontDoorState.engine || "");
+  if (e) body.engine = e;
+  return body;
+}
+
+function renderFrontDoor(fd) {
+  var host = frontDoorHost();
+  if (!host) return;
+  var copy = FRONT_DOOR_COPY[fd && fd.foundation] || FRONT_DOOR_COPY.greenfield;
+  host.innerHTML = "";
+  host.hidden = false;
+  host.className = "front-door " + copy.cls;
+  /* ONE inner column, and every screen paints into it. The host is the
+     CENTERING frame (it owns the free vertical space); this is the measure. */
+  var body = el("div", "fd-inner");
+  host.appendChild(body);
+  host = body;
+  if (frontDoorState.screen === "recommend" && frontDoorState.rec) {
+    renderFrontDoorRecommendation(host, frontDoorState.rec);
+    return;
+  }
+  /* The override screen is a SCREEN, not a transient overlay — it has to
+     survive a repaint. It did not, at first: `frontDoorOverride` painted
+     straight into the host without recording where the captain was, so the very
+     next SSE tick (or the boot refresh) re-rendered the RECOMMENDATION over the
+     top of him mid-decision. Caught by the harness driving the real click chain
+     through a drain, which is exactly the class of bug a screenshot cannot
+     see. Every screen the captain can be on is now a value of
+     `frontDoorState.screen`. */
+  if (frontDoorState.screen === "override" && frontDoorState.rec) {
+    renderFrontDoorOverride(host, frontDoorState.rec);
+    return;
+  }
+  /* THE GRILL IS A SCREEN, AND IT GETS ITS OWN HEAD (fix round 2, D6).
+     It used to wear screen 1's — "◇ NEW PROJECT / WHAT ARE WE BUILDING? /
+     Describe it however you like…" — sitting above a completely different
+     question the model was actually asking. Nothing on the page said a
+     conversation was under way, so turn 6 looked exactly like turn 1. */
+  var onGrill = frontDoorState.screen === "grill";
+  if (onGrill) {
+    host.appendChild(el("div", "fd-kicker", copy.grillKicker));
+    var gask = el("div", "fd-ask");
+    gask.appendChild(el("span", null, "Let's talk it through."));
+    host.appendChild(gask);
+    host.appendChild(el("div", "fd-say",
+      "One question at a time. Answer in your own words, or pick one of the "
+      + "options. Nothing is filed until you have approved a recommendation "
+      + "you are free to refuse."));
+    renderFrontDoorQuestion(host, frontDoorState.question);
+  } else {
+    host.appendChild(el("div", "fd-kicker", copy.kicker));
+    var ask = el("div", "fd-ask");
+    copy.ask.forEach(function (line) { ask.appendChild(el("span", null, line)); });
+    host.appendChild(ask);
+    host.appendChild(el("div", "fd-say", copy.say));
+  }
+
+  /* SCREEN 2's FOUND PANEL. Every value is REAL detection handed over by
+     `establish-vision.sh --facts` — the same numbers `lcars` prints on the CLI.
+     A report that guesses is worse than no report: this is what a captain
+     pointing LCARS at real work reads to decide whether it understood his
+     repo. */
+  if (copy.cls === "untested" && !onGrill) {
+    var found = el("div", "fd-found");
+    found.appendChild(fdRow("Stack", fd.stackLabel || "not recognised"));
+    found.appendChild(fdRow("Source files",
+      (fd.sourceFiles === 0 || fd.sourceFiles) ? String(fd.sourceFiles) : "—"));
+    found.appendChild(fdRow("Test runner", "none found", true));
+    found.appendChild(fdRow("Proof", "not possible yet", true));
+    host.appendChild(found);
+  }
+
+  /* The free-text field: screen 1 asks for the idea; screen 2 does not ask what
+     we are building at all, and a grill turn asks for THIS answer. */
+  var box = null;
+  if (copy.cls !== "untested" || onGrill) {
+    box = el("textarea", "fd-field");
+    box.rows = 5;
+    box.placeholder = frontDoorState.screen === "grill"
+      ? "Your answer…" : (copy.placeholder || "");
+    if (frontDoorState.screen !== "grill") box.value = frontDoorState.idea || "";
+    host.appendChild(box);
+  }
+
+  /* S195 — the engine, on BOTH doors and ONLY on the ask screens. Below the
+     idea box and above the primary action: it is the last thing settled before
+     the conversation starts, and it must not shove the textarea down the page
+     mid-sentence the way the base-freshness block once did (S160 D4).
+
+     AND ONLY WHILE IT IS STILL A CHOICE. `busy` means the opening turn is in
+     flight and `sid` means a session already exists — in both cases the grill
+     is (or is about to be) warm on the engine it opened with, and a click that
+     changed `frontDoorState.engine` then would send the FILING to a different
+     CLI than the one that ran the interview. That split is the one thing
+     file.sh's engine header says must never happen, and it is invisible on
+     screen, so the control is withdrawn rather than left live and ignored. */
+  if (!onGrill && !frontDoorState.busy && !frontDoorState.sid) {
+    renderFrontDoorEngine(host, fd);
+  }
+
+  var actions = el("div", "fd-actions");
+  if (frontDoorState.busy) {
+    actions.appendChild(el("div", "fd-busy", "◐ THINKING…"));
+  } else {
+    var go = el("button", "btn go",
+                frontDoorState.screen === "grill" ? "▸ Continue" : copy.primary);
+    go.type = "button";
+    go.addEventListener("click", function () {
+      frontDoorSubmit(box ? (box.value || "") : "");
+    });
+    actions.appendChild(go);
+    var ghost = el("button", "btn ghost", copy.ghost);
+    ghost.type = "button";
+    ghost.addEventListener("click", function () { frontDoorGhost(copy.cls); });
+    actions.appendChild(ghost);
+  }
+  host.appendChild(actions);
+
+  var esc = el("div", "fd-escape");
+  esc.appendChild(el("span", null, copy.escape));
+  if (copy.escapeCode) esc.appendChild(el("code", null, copy.escapeCode));
+  host.appendChild(esc);
+  if (frontDoorState.error) host.appendChild(el("div", "fd-note err", frontDoorState.error));
+  else if (frontDoorState.note) host.appendChild(el("div", "fd-note", frontDoorState.note));
+}
+
+/* THE SLICE IS A NOUN PHRASE (S184 fix round 1, D3).
+   The template supplies the sentence — "One thin vertical slice that proves
+   both: <slice>." — so `slice` is the phrase that COMPLETES it, e.g. "importing
+   a CSV row and showing it". A live model's output shape is a lottery (S175),
+   and it will hand back a whole sentence that restates the label; measured
+   output before this cure:
+
+     "One thin vertical slice that proves both: A running app, a working test
+      system, and one thin slice that proves both — importing a CSV row and
+      showing it.."
+
+   — the label said twice and a doubled full stop. So the renderer is
+   DEFENSIVE rather than trusting: if the phrase restated the label, keep only
+   the tail after the dash or colon that followed it, and never let the caller's
+   trailing period double the template's. Same normalisation lives in
+   `establish-vision.sh` (ev_norm_slice) for the PRD and the vision doc, so the
+   screen and the filed mission cannot say different things. */
+function frontDoorSlice(v) {
+  var t = String(v == null ? "" : v).trim();
+  if (!t) return "";
+  var m = t.match(
+    /^[^—:]*\b(?:thin(?:\s+vertical)?\s+slice|proves?\s+both)\b[^—:]*[—:]\s*(\S.*)$/i);
+  if (m) t = m[1].trim();
+  return t.replace(/[.\s]+$/, "");
+}
+
+/* THE QUESTION IS AN OBJECT — {text, choices, recommended, closing} — and it
+   was appended to the DOM as one. `textContent = <object>` puts the literal
+   characters `[object Object]` on screen, which is what the captain read on
+   EVERY grill turn of both live runs, in real headed Chrome (fix round 2, D3).
+   A plain string is tolerated too: the worker's reply shape is not guaranteed,
+   and `_align_turn` itself already coerces a bare string into {text}. */
+function frontDoorQuestionText(q) {
+  if (q == null) return "";
+  if (typeof q === "string") return q;
+  return String(q.text || q.recommended || "");
+}
+
+/* …and the model's CHOICES were thrown away with it. It offered them on most
+   measured turns, so the captain was reading a question that had already
+   listed its own answers, above an empty free-text box. */
+function frontDoorQuestionChoices(q) {
+  if (!q || typeof q !== "object" || !q.choices || !q.choices.length) return [];
+  var out = [];
+  for (var i = 0; i < q.choices.length; i++) {
+    var c = q.choices[i];
+    var label = (c && typeof c === "object") ? (c.text || c.label || c.value) : c;
+    label = String(label == null ? "" : label).trim();
+    if (label) out.push(label);
+  }
+  return out;
+}
+
+function renderFrontDoorQuestion(host, q) {
+  var text = frontDoorQuestionText(q);
+  if (text) host.appendChild(el("div", "fd-q", text));
+  var choices = frontDoorQuestionChoices(q);
+  /* Busy = his answer is already in flight. Leaving the options live would let
+     him send a second one into the same turn. */
+  if (!choices.length || frontDoorState.busy) return;
+  var rec = (q && typeof q === "object") ? String(q.recommended || "").trim() : "";
+  var wrap = el("div", "fd-choices");
+  choices.forEach(function (label) {
+    var isRec = !!rec && label === rec;
+    var b = el("button", "btn ghost fd-choice" + (isRec ? " rec" : ""),
+               isRec ? label + "  · recommended" : label);
+    b.type = "button";
+    /* The CLEAN label is the answer — never the decorated one on the face. */
+    b.addEventListener("click", function () { frontDoorSubmit(label); });
+    wrap.appendChild(b);
+  });
+  host.appendChild(wrap);
+}
+
+function fdRow(k, v, warn) {
+  var row = el("div", "fd-row");
+  row.appendChild(el("div", "fd-k", k));
+  row.appendChild(el("div", "fd-v" + (warn ? " warn" : ""), v));
+  return row;
+}
+
+/* SCREEN 3 — THE RECOMMENDATION.
+   Three things are load-bearing here and each of them is a rule, not a taste:
+     1. the reasons are in the captain's language about HIS idea (the grill's
+        job; this only renders them), because a reason he cannot check is
+        marketing copy;
+     2. the SCOPE FENCE is ON SCREEN — what this first mission builds, and the
+        features that are being DEFERRED rather than quietly dropped;
+     3. "⇄ Choose a different stack" sits BESIDE "✓ Accept", never behind a
+        menu. A recommendation the captain cannot refuse is a decision, and the
+        stack is his call. The override is what lands in the PRD. */
+function renderFrontDoorRecommendation(host, rec) {
+  host.appendChild(el("div", "fd-kicker", "◇ Recommendation · foundation mission"));
+  var ask = el("div", "fd-ask");
+  ask.appendChild(el("span", null, rec.stack || "a stack"));
+  host.appendChild(ask);
+
+  var because = el("ul", "fd-because");
+  (rec.reasons || []).forEach(function (r) {
+    if (r) because.appendChild(el("li", null, r));
+  });
+  host.appendChild(because);
+
+  var fence = el("div", "fd-fence");
+  fence.appendChild(el("div", "fd-fence-h", "What this first mission builds"));
+  var ul = el("ul");
+  ul.appendChild(el("li", null, "A running skeleton — it boots and shows something."));
+  ul.appendChild(el("li", null, "A working test system for " + (rec.stack || "this stack")
+                                + " that you can watch run."));
+  ul.appendChild(el("li", null, "One thin vertical slice that proves both: "
+                                + (frontDoorSlice(rec.slice)
+                                   || "the skeleton renders and a real test covers it") + "."));
+  fence.appendChild(ul);
+  var deferred = (rec.deferred || []).filter(function (d) { return !!d; });
+  fence.appendChild(el("div", "fd-deferred",
+    (deferred.length ? deferred.join(", ") : "Everything else you described")
+    + " — recorded in your vision, and each becomes a normal mission once the "
+    + "foundation lands."));
+  host.appendChild(fence);
+
+  var actions = el("div", "fd-actions");
+  if (frontDoorState.busy) {
+    actions.appendChild(el("div", "fd-busy", "◐ FILING…"));
+  } else {
+    var accept = el("button", "btn go", "✓ Accept & file mission");
+    accept.type = "button";
+    accept.addEventListener("click", function () { frontDoorFile(rec); });
+    actions.appendChild(accept);
+    var other = el("button", "btn ghost", "⇄ Choose a different stack");
+    other.type = "button";
+    other.addEventListener("click", function () { frontDoorOverride(rec); });
+    actions.appendChild(other);
+  }
+  host.appendChild(actions);
+  if (frontDoorState.error) host.appendChild(el("div", "fd-note err", frontDoorState.error));
+}
+
+/* THE OVERRIDE. It is not a dialogue about whether he may — he may. It swaps the
+   stack line for an input, and whatever he types is what `--stack` carries into
+   the PRD and the vision doc. */
+function frontDoorOverride(rec) {
+  frontDoorState.screen = "override";
+  frontDoorState.rec = rec;
+  frontDoorRepaint();
+}
+
+function renderFrontDoorOverride(host, rec) {
+  host.innerHTML = "";
+  host.appendChild(el("div", "fd-kicker", "◇ Your stack, your call"));
+  var ask = el("div", "fd-ask");
+  ask.appendChild(el("span", null, "Which stack?"));
+  host.appendChild(ask);
+  host.appendChild(el("div", "fd-say",
+    "LCARS recommended " + (rec.stack || "a stack")
+    + ". Name any stack you prefer — the one you enter is the one the "
+    + "initialization mission is built on."));
+  var box = el("input", "fd-field");
+  box.value = rec.stack || "";
+  host.appendChild(box);
+  var actions = el("div", "fd-actions");
+  var go = el("button", "btn go", "✓ Use this stack & file mission");
+  go.type = "button";
+  go.addEventListener("click", function () {
+    var chosen = (box.value || "").trim() || rec.stack;
+    frontDoorFile({ stack: chosen, reasons: ["Chosen by the captain, overriding "
+                    + "the recommendation of " + (rec.stack || "the grill") + "."],
+                    slice: rec.slice, deferred: rec.deferred, idea: rec.idea });
+  });
+  actions.appendChild(go);
+  var back = el("button", "btn ghost", "◂ Back to the recommendation");
+  back.type = "button";
+  back.addEventListener("click", function () {
+    frontDoorState.screen = "recommend";
+    frontDoorRepaint();
+  });
+  actions.appendChild(back);
+  host.appendChild(actions);
+}
+
+/* The grill: the EXISTING Align console machinery with `vision:true`, never a
+   second interviewer (brief item 5). The daemon prepends the foundation brief —
+   the same text `establish-vision.sh --brief` prints on the CLI — so the fence
+   is stated in the grill's own words on both front doors. */
+function frontDoorSubmit(text) {
+  var t = (text || "").trim();
+  frontDoorState.error = "";
+  if (frontDoorState.screen === "grill" && frontDoorState.sid) {
+    if (!t) { frontDoorState.error = "Answer the question to continue."; return frontDoorRepaint(); }
+    frontDoorState.busy = true; frontDoorRepaint();
+    return postWrite("/api/align/" + frontDoorState.sid + "/answer", { answer: t },
+      frontDoorTurn, frontDoorFailed);
+  }
+  var fd = LAST_BOARD && LAST_BOARD.meta && LAST_BOARD.meta.frontDoor;
+  if ((fd && fd.foundation) !== "untested" && !t) {
+    frontDoorState.error = "Say what you want to build — a sentence is enough.";
+    return frontDoorRepaint();
+  }
+  frontDoorState.idea = t;
+  frontDoorState.busy = true; frontDoorRepaint();
+  return postWrite("/api/align/start",
+                   frontDoorEngineBody({ idea: t, vision: true }),
+                   frontDoorTurn, frontDoorFailed);
+}
+
+function frontDoorTurn(state) {
+  frontDoorState.busy = false;
+  var t = (state && state.turn) || state || {};
+  /* S184 FIX ROUND 2 (D1) — THE KEY THE DAEMON ACTUALLY SENDS.
+     This read `t.sid`. Every align turn returns `sessionId`
+     (`actions.py::_align_turn`), so `frontDoorState.sid` stayed null forever,
+     `frontDoorSubmit` never took its answer branch, and EVERY answer went back
+     to `POST /api/align/start` carrying the answer as a brand-new IDEA.
+     Measured live: 19 turns, 19 distinct `--session-id=<new uuid>`, ZERO
+     `--resume=`. The model re-asked "what are we building?" forever and forgot
+     a stack it had locked in one turn earlier. There is no server path that
+     sends `sid` on an align turn (`alignResume.sid` is a CARD stamp, a
+     different payload), so there is no alias to keep. */
+  frontDoorState.sid = t.sessionId || frontDoorState.sid;
+  if (t.recommendation) {
+    frontDoorState.rec = t.recommendation;
+    if (!frontDoorState.rec.idea) frontDoorState.rec.idea = frontDoorState.idea;
+    frontDoorState.screen = "recommend";
+  } else if (t.question) {
+    frontDoorState.question = t.question;
+    frontDoorState.screen = "grill";
+  }
+  frontDoorRepaint();
+}
+
+function frontDoorFailed(msg) {
+  frontDoorState.busy = false;
+  frontDoorState.error = msg || "That did not go through.";
+  frontDoorRepaint();
+}
+
+function frontDoorFile(rec) {
+  frontDoorState.busy = true; frontDoorState.error = ""; frontDoorState.rec = rec;
+  frontDoorRepaint();
+  postWrite("/api/vision/file", frontDoorEngineBody({
+    idea: rec.idea || frontDoorState.idea,
+    stack: rec.stack,
+    reasons: rec.reasons || [],
+    deferred: rec.deferred || [],
+    slice: rec.slice || "",
+  }), function () {
+    /* The mission has landed, so the repo now HAS something to put on a board
+       and the next render drops the door on its own. Reset so a later
+       foundationless repo opens on screen 1. */
+    frontDoorState = { screen: "ask", sid: null, idea: "", busy: false,
+                       question: null, rec: null, error: "", note: "",
+                       engine: "" };
+  }, frontDoorFailed);
+}
+
+function frontDoorGhost(kind) {
+  /* Both ghosts are real, and both are escape hatches rather than second
+     opinions: on a blank repo, paste a spec instead of being interviewed; on a
+     repo with code, tell LCARS about the runner it could not see. */
+  if (kind === "untested") {
+    frontDoorState.note = "";
+    var cmd = window.prompt && window.prompt(
+      "What command runs this project's tests?", "");
+    if (!cmd) return;
+    return postWrite("/api/config/test-command", { testCommand: cmd },
+      function () { frontDoorState.note = "Recorded — re-checking this repo."; },
+      frontDoorFailed);
+  }
+  frontDoorState.note = "Paste the whole spec into the box above — LCARS reads "
+                      + "it as your answer to the first question.";
+  frontDoorRepaint();
+}
+
+function frontDoorRepaint() {
+  renderFrontDoor(LAST_BOARD && LAST_BOARD.meta && LAST_BOARD.meta.frontDoor);
 }
 
 /* The band-level strip: its OWN row below the top band (the version-banner
@@ -3397,6 +4175,24 @@ function attachImagePaster(textarea, onError, store) {
 
 /* ════════════════ SCREEN: FILE A MISSION (#file) ════════════════ */
 function openFile() {
+  /* S183 — the FOUNDATION LOCK, said rather than implied. `paintFoundationLock`
+     disables ▦ FILE MISSION, but a hotkey (`f`) and the empty-board prompt both
+     reach this function directly, so the console itself refuses: it opens with
+     the reason and the way forward, and NO idea box to type into. Establish
+     Vision replaces this in S184 — see skills/lcars-init/foundation-gate.sh. */
+  var f0 = LAST_BOARD && LAST_BOARD.meta && LAST_BOARD.meta.foundation;
+  if (foundationLocked(f0)) {
+    var lm = modal("◇ No Test Foundation");
+    lm.body.appendChild(el("div", "note",
+      FOUNDATION_LOCK_REASON[f0] || FOUNDATION_LOCK_REASON.greenfield));
+    lm.body.appendChild(el("div", "note",
+      "Every LCARS ticket is proven by RUNNING its tests — red on the parent "
+      + "commit, green on the tip. If this repo DOES have a test system and "
+      + "LCARS just cannot see it, point LCARS at it with "
+      + "`lcars update --test-command '<command>'`."));
+    showOverlay(lm.wrap);
+    return lm;
+  }
   var m = modal("▦ File New Mission");
   // S146: when the repo's test systems are unready, the console opens with the
   // readiness warning ABOVE the idea box — one themed line, the one-click
@@ -8050,13 +8846,26 @@ function holoPaintBandBtn() {
   var b = document.getElementById("holodeckBtn");
   if (!b) return;
   var ro = writesActive === false;
-  b.disabled = ro;
+  /* S183 fix round 1 (D2): the FOURTH independent fact this one button carries
+     — the foundation lock (captain ruling: the holodeck is locked until the
+     repo has a test foundation). It is read here rather than painted by
+     paintFoundationLock, because THIS function is the button's single owner and
+     the previous split let it silently unlock a locked deck. Read-only still
+     OUTRANKS everything; a lock outranks the activity dot, which must never
+     claim a program is running on a deck nobody can open. */
+  var lock = (!ro && foundationLockReason) ? foundationLockReason : "";
+  var blocked = ro || !!lock;
+  b.disabled = blocked;
   b.textContent = HOLO.on ? "▦ Board" : "⬡ Holodeck";
   if (b.classList) b.classList.toggle("holo-on", HOLO.on);
+  /* No CSS of its own: `.btn[disabled]` already dims to .4 and shows
+     `cursor: not-allowed` (the treatment ▦ FILE MISSION was measured wearing).
+     The class is a marker for paintFoundationLock's undo, not a style. */
+  if (b.classList) b.classList.toggle("foundation-locked", !!lock);
   /* The dot is the OFF-DECK signal. On the deck the working turn is already
      visible in the chat pane, and a second indicator two inches away is a
      second voice about one fact. */
-  var w = (!ro && !HOLO.on && HOLO.working && HOLO.working.count)
+  var w = (!blocked && !HOLO.on && HOLO.working && HOLO.working.count)
     ? HOLO.working : null;
   if (b.classList) b.classList.toggle("working", !!w);
   if (w) {
@@ -8065,10 +8874,11 @@ function holoPaintBandBtn() {
     b.appendChild(dot);
   }
   b.title = ro ? HOLO_RO_REASON
+    : (lock ? lock
     : (w ? String(w.message || "")
          : (HOLO.on ? "back to the mission board"
-                    : "the holodeck — design a mockup in chat"));
-  if (ro) b.setAttribute("data-reason", HOLO_RO_REASON);
+                    : "the holodeck — design a mockup in chat")));
+  if (blocked) b.setAttribute("data-reason", ro ? HOLO_RO_REASON : lock);
   else b.removeAttribute("data-reason");
   /* A DOT IS NOTHING TO A SCREEN READER. The daemon's sentence — which names
      the program and how long it has been going — is what is announced, and it
@@ -8087,6 +8897,11 @@ function renderHolodeckActivity(h) {
 
 function toggleHolodeck() {
   if (writesActive === false) return;   // view-only: the control is disabled
+  /* S183 fix round 1 (D2): the foundation lock, in the same idiom — ENTERING is
+     refused, LEAVING never is (a captain already on the deck must always be
+     able to get back to the board). The disabled button is the first line; this
+     is the second, for any path that reaches the deck without it. */
+  if (!HOLO.on && foundationLockReason) return;
   holoSetMode(!HOLO.on);
 }
 

@@ -1,0 +1,11 @@
+  ⚠ gh issue create failed — mission filed locally; re-run after fixing gh.
+  ⚠ estimator unavailable — mission filed with default per-stage models.
+  ⚠ repo has no commits yet — branch lcars/lcars-20260906-001 not created; Implement will create it on first commit.
+  Mission filed: lcars-20260906-001
+  GitHub issue:  (none — file locally only)
+  Branch:        lcars/lcars-20260906-001 (off main — no commits yet)
+  Stage:         align
+  Next:          run `lcars run lcars-20260906-001` to continue
+MISSION_ID=lcars-20260906-001
+
+◇ VISION RECORDED — /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/lcars-s183b/s184-cli-live/.git/lcars/vision.md

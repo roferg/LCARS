@@ -1,0 +1,24 @@
+======== THE FOUR NAMED ATTACKS
+attack-npm-default           fnd=untested      gate=REFUSE  
+attack-testdir-notes         fnd=untested      gate=REFUSE  
+attack-script-named-test     fnd=untested      gate=REFUSE  
+a-docs-example               fnd=unconfigured  gate=ALLOW     <<< MISS (wanted REFUSE)
+======== THE OTHER ATTACK FIXTURES
+a-ci-only                    fnd=untested      gate=REFUSE  
+a-nodemodules                fnd=untested      gate=REFUSE  
+a-test-is-lint               fnd=untested      gate=REFUSE  
+a-testdir-assert-word        fnd=unconfigured  gate=ALLOW     <<< MISS (wanted REFUSE)
+untested                     fnd=untested      gate=REFUSE  
+readme                       fnd=greenfield    gate=REFUSE  
+blank                        fnd=greenfield    gate=REFUSE  
+nit-pristine                 fnd=untested      gate=REFUSE  
+======== FRESH ATTACKS (built now)
+x-docsonly                   fnd=greenfield    gate=REFUSE  
+x-test-dir-empty             fnd=untested      gate=REFUSE  
+x-test-dir-readme-it         fnd=untested      gate=REFUSE  
+x-t-changelog                fnd=unconfigured  gate=ALLOW     <<< MISS (wanted REFUSE)
+x-testscript-echo            fnd=untested      gate=REFUSE  
+x-readme-mentions-jest       fnd=untested      gate=REFUSE  
+======== FRESH INVERSE RISKS (must ALLOW)
+x-swift-real                 fnd=unconfigured  gate=ALLOW   
+x-perl-real                  fnd=unconfigured  gate=ALLOW   

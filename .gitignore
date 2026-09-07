@@ -1,1 +1,9 @@
 .dev/
+
+# Test-drive screenshots — rigs are committed, their PNG output is not (captain ruling 2026-09-06)
+tests/drives/*/shots/
+tests/drives/*/*/shots/
+tests/drives/*/logs/*/
+tests/drives/*/*/shots/*/
+# and any stray drive screenshot, wherever a rig puts it
+tests/drives/**/*.png

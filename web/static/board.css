@@ -1178,6 +1178,50 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    ════════════════════════════════════════════════════════════════════════ */
 body.lcars-serve{--holo-grid:#2de3c7;--holo-line:rgba(45,227,199,.30)}
 
+/* ── THE HOLODECK FLOOR — one definition, every surface that stands on it ──
+   The faint teal deck grid and the black radial mask that lifts the copy off
+   it. TWO surfaces wear it: the empty deck (`.holo-empty`, S128) and the
+   day-zero front door (`.front-door`, S184). The numbers live HERE and only
+   here — spacing, line colour, mask stops — so the two can never drift into
+   two subtly different floors, which is exactly what a copy-paste would have
+   guaranteed the first time either one was tuned.
+
+   The grid is ATMOSPHERE. It must never compete with the copy sitting on it,
+   so it is faint, wide-spaced, and faded out of the middle by the black radial
+   mask exactly where the text lives. The mask is a separate token because the
+   two surfaces apply it differently — the deck overlays it (`::before`, so it
+   can sit under a pane that was already painted), the front door stacks it as
+   the top BACKGROUND layer, which is immune to that column's own scroll. The
+   VALUES are the same either way.
+
+   The FADE CURVE — `--holo-floor-mask-stops` — is the one number set that has
+   to be shared: it is what makes the two surfaces read as the same room. The
+   ellipse EXTENT is per-box and cannot be, because a percentage is a fraction
+   of the box it is painted on and the two boxes are nothing like each other:
+   the deck's landing pane is a column inside a split, the front door is the
+   WHOLE frame. Measured at 1440x980 with the deck's own 62%/58% on the front
+   door, the recommendation screen's kicker and first two reasons sat past the
+   fade entirely and the grid ran at full strength through the copy — the exact
+   competition the comment above forbids. `--holo-floor-mask-wide` is that same
+   curve stretched to the frame: the copy column is covered on all three
+   screens, the four corners still show the grid, and nothing about the deck
+   moves. */
+body.lcars-serve{
+  --holo-floor-line:rgba(45,227,199,.13);
+  --holo-floor-step:48px;
+  --holo-floor:
+    linear-gradient(var(--holo-floor-line) 1px,transparent 1px)
+      0 0/var(--holo-floor-step) var(--holo-floor-step),
+    linear-gradient(90deg,var(--holo-floor-line) 1px,transparent 1px)
+      0 0/var(--holo-floor-step) var(--holo-floor-step),
+    var(--lcars-black);
+  --holo-floor-mask-stops:
+    rgba(3,6,8,.97) 0%,rgba(3,6,8,.85) 45%,rgba(3,6,8,0) 78%;
+  --holo-floor-mask:radial-gradient(ellipse 62% 58% at 50% 50%,
+    var(--holo-floor-mask-stops));
+  --holo-floor-mask-wide:radial-gradient(ellipse 92% 96% at 50% 50%,
+    var(--holo-floor-mask-stops))}
+
 /* D1 — the deck REPLACES the board content in the same frame. The elbow, the
    brand, the rail and the connection pill never move; only what is inside
    .frame-content swaps. Done in CSS off ONE class on <body> so it survives
@@ -1605,13 +1649,14 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
    IS the deck's identity. `position:relative` is what makes the `::before` hang
    off THIS box (on a static parent it escapes to the nearest positioned
    ancestor and scrims something else entirely), and the `z-index:1` rule is the
-   half without which the scrim paints over the words it exists to reveal. */
+   half without which the scrim paints over the words it exists to reveal.
+   S184: the scrim's numbers are now the shared `--holo-floor-mask` rather than
+   a third hand-copied set of stops. Same pixels, one place to tune them. */
 .pv-none{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:10px;text-align:center;padding:26px;
   position:relative;min-height:0}
 .pv-none::before{content:'';position:absolute;inset:0;pointer-events:none;
-  background:radial-gradient(ellipse 62% 58% at 50% 50%,
-    rgba(3,6,8,.97) 0%,rgba(3,6,8,.85) 45%,rgba(3,6,8,0) 78%)}
+  background:var(--holo-floor-mask)}
 .pv-none>*{position:relative;z-index:1}
 .pv-none .t{font-family:var(--font-display);font-size:13px;letter-spacing:.22em;
   text-transform:uppercase;color:var(--holo-grid)}
@@ -1683,19 +1728,16 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .pv-foot .grow{flex:1 1 auto}
 
 /* — the empty deck: the holodeck floor (mock screen 2) —
-   The grid is ATMOSPHERE. It must never compete with the copy sitting on it, so
-   it is faint, wide-spaced, and faded out of the middle by a black radial mask
-   exactly where the text lives. */
+   The floor itself is the shared `--holo-floor` / `--holo-floor-mask` pair
+   defined at the top of this section; only the LAYOUT is local to the deck.
+   Substituting those tokens produces the same declarations this rule carried
+   when the values were spelled out inline (S184). */
 .holo-empty{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:18px;text-align:center;padding:40px;
   position:relative;min-height:0;overflow:auto;
-  background:
-    linear-gradient(rgba(45,227,199,.13) 1px,transparent 1px) 0 0/48px 48px,
-    linear-gradient(90deg,rgba(45,227,199,.13) 1px,transparent 1px) 0 0/48px 48px,
-    var(--lcars-black)}
+  background:var(--holo-floor)}
 .holo-empty::before{content:'';position:absolute;inset:0;pointer-events:none;
-  background:radial-gradient(ellipse 62% 58% at 50% 50%,
-    rgba(3,6,8,.97) 0%,rgba(3,6,8,.85) 45%,rgba(3,6,8,0) 78%)}
+  background:var(--holo-floor-mask)}
 .holo-empty > *{position:relative;z-index:1}
 .holo-empty .arch{font-family:var(--font-display);font-size:34px;
   letter-spacing:.34em;text-transform:uppercase;color:var(--holo-grid);
@@ -2068,3 +2110,184 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   .holo-drawer-btn{display:inline-flex}
 }
 @media (prefers-reduced-motion:reduce){.programs{transition:none}}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S184 — ESTABLISH VISION: THE DAY-ZERO FRONT DOOR.
+
+   On a repo with no test foundation and nothing to put on a board, this
+   REPLACES the board inside the existing elbow frame. Nothing here forks a
+   token or invents a palette: the frame, the band and the rail are untouched,
+   and every colour below is a shared --lcars-* token with the board's own
+   fallback. What changes is the CONTENT of .frame-content — one calm column
+   with one question and one action, instead of seven empty columns and two
+   greyed-out controls.
+
+   `body.on-front-door` is the switch (a CLASS, because render() rebuilds this
+   area on every SSE tick and would wipe a JS `hidden` flag — the same reason
+   `body.on-deck` is a class).
+   ──────────────────────────────────────────────────────────────────────── */
+body.on-front-door .board-wrap,
+body.on-front-door .legend,
+body.on-front-door .board-empty{display:none}
+/* D1 — the band carries the brand, the repo name and the LOCAL / ● LIVE chips
+   on the front door, and nothing else. `paintFrontDoorBand` sets `hidden` on
+   the board's controls (which the global `[hidden]{display:none !important}`
+   above already honours, inline `style.display` included); this rule is the
+   belt to that braces, so a control can never flash into the band between a
+   painter writing `style.display` and the next `hidden` write. */
+body.on-front-door .frame-top #deployMainBtn,
+body.on-front-door .frame-top #mainDeploy,
+body.on-front-door .frame-top #holodeckBtn,
+body.on-front-door .frame-top #fileBtn,
+body.on-front-door .frame-top #helpBtn{display:none !important}
+
+/* COMPOSED, NOT TOP-ANCHORED (fix round 1, D2). Measured at 1440x980: the
+   content sat against the top of a full-viewport frame with ~40% of the screen
+   left as empty black below it, which reads as a page that did not finish
+   loading rather than one that was designed. `.frame-content` is already a flex
+   column, so the door takes the free space and centres inside it; it keeps its
+   OWN vertical scroll for the tall recommendation screen, so centring can never
+   push content out of reach on a short viewport. */
+.front-door{flex:1 1 auto;min-height:0;overflow-y:auto;
+  display:flex;flex-direction:column;
+  justify-content:center;   /* the column sits in the middle of the frame */
+  align-items:center;       /* …and the column itself is centred across it */
+  width:100%;box-sizing:border-box;padding:40px 32px;
+  /* THE HOLODECK FLOOR (S184). The same deck grid the empty holodeck stands
+     on, from the same `--holo-floor` / `--holo-floor-mask` tokens — not a
+     second copy of the numbers. It is stacked as BACKGROUND LAYERS rather than
+     an overlaid ::before because this column carries its own vertical scroll:
+     an absolutely-positioned overlay is laid out against the scrolled padding
+     box and would slide off the tall recommendation screen, flooding the copy
+     with grid the moment you scrolled. A background does not scroll with its
+     own contents, so the mask stays where the words are on all three screens.
+     Clipping is the frame's job — .frame-content is overflow:hidden with the
+     rounded inner corner, so the grid cannot bleed past the elbow. The mask is
+     the WIDE variant: same fade curve, stretched to a box that is the whole
+     frame rather than one pane of a split. */
+  background:var(--holo-floor-mask-wide),var(--holo-floor)}
+/* ONE measure, held by ONE element. Sizing the rows individually was tried
+   first and was visibly wrong within one screenshot: `.fd-say` has its own
+   60ch measure and `.fd-field` its own `width:100%`, both more specific than a
+   `>*` rule, so the rows centred at three different widths and the screen read
+   as a staircase. The wrapper ends that argument — every row is laid out
+   inside one 760px column and inherits its left edge, which is what makes the
+   mockup read as composed. */
+.front-door .fd-inner{flex:0 0 auto;width:100%;max-width:760px}
+.front-door .fd-kicker{
+  font-family:var(--font-display);font-size:14px;letter-spacing:.22em;
+  text-transform:uppercase;color:var(--lcars-teal,#2de3c7);margin-bottom:18px}
+.front-door.untested .fd-kicker{color:var(--lcars-amber,#ffdd44)}
+.front-door .fd-ask{
+  font-family:var(--font-display);font-size:44px;line-height:1.08;
+  letter-spacing:.02em;text-transform:uppercase;
+  color:var(--lcars-text,#c4d4ee);margin:0 0 20px}
+.front-door .fd-ask span{display:block}
+.front-door .fd-say{
+  font-size:15px;line-height:1.7;color:var(--lcars-dim,#7d94b5);
+  max-width:60ch;margin:0 0 28px}
+
+/* the free-text field — teal left border on the panel-2 ground, so the one
+   thing you are meant to touch is the one thing that is lit. */
+.front-door .fd-field{
+  width:100%;box-sizing:border-box;
+  background:var(--lcars-panel-2,#03131f);color:var(--lcars-text,#c4d4ee);
+  border:1px solid var(--lcars-rule,#1b2740);
+  border-left:3px solid var(--lcars-teal,#2de3c7);border-radius:0 6px 6px 0;
+  font-family:var(--font-body);font-size:15px;line-height:1.6;padding:14px 16px}
+.front-door .fd-field:focus{outline:none;border-color:var(--lcars-teal,#2de3c7);
+  border-left-color:var(--lcars-teal,#2de3c7)}
+/* THE BOX BELONGS TO THE TEXTAREA, NOT TO THE CLASS (fix round 2, D7). The
+   130px well and the drag handle were written for the idea/answer textarea and
+   are the measure of the first screen — but the OVERRIDE screen paints an
+   `<input class="fd-field">` holding a stack name, and it inherited both: one
+   line of text floating at the top of a huge empty box, with a resize grip on
+   a control that has nothing to resize. Everything the two share (the ground,
+   the lit teal edge, the type) stays on the class. */
+.front-door textarea.fd-field{min-height:132px;resize:vertical}
+.front-door input.fd-field{resize:none;padding:12px 16px}
+
+/* THE MODEL'S CHOICES (fix round 2, D3). A question that lists its own answers
+   must offer them: one column of real controls under the question, the
+   recommended one lit, the free-text box still there underneath for anyone who
+   wants to say something else. */
+.front-door .fd-choices{display:flex;flex-direction:column;
+  align-items:flex-start;gap:8px;margin:0 0 22px}
+.front-door .fd-choice{text-align:left;white-space:normal}
+.front-door .fd-choice.rec{color:var(--lcars-text,#c4d4ee);
+  border-color:var(--lcars-teal,#2de3c7)}
+
+/* S195 — THE ENGINE PICKER. It reuses the global `.choice .opt` control (the
+   File console's picker), so the two places a captain chooses a CLI look and
+   behave identically; only the surrounding measure and labelling are local.
+   With one engine installed there is no picker at all — `.fd-engine-one` is the
+   sentence that replaces it. */
+.front-door .fd-engine{margin:22px 0 0}
+.front-door .fd-engine-h{
+  font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
+  font-size:12px;color:var(--lcars-dim,#7d94b5);margin:0 0 10px}
+.front-door .fd-engine-note,.front-door .fd-engine-one{
+  margin-top:10px;font-size:13px;line-height:1.7;color:var(--lcars-dim,#7d94b5)}
+.front-door .fd-engine-one{margin-top:0}
+
+.front-door .fd-actions{display:flex;gap:14px;align-items:center;
+  flex-wrap:wrap;margin:24px 0 0}
+.front-door .fd-escape{
+  margin-top:26px;font-size:13px;line-height:1.7;color:var(--lcars-dim,#7d94b5)}
+.front-door .fd-escape code{
+  font-family:var(--font-mono);font-size:12.5px;
+  background:var(--lcars-panel,#070d1c);border:1px solid var(--lcars-rule,#1b2740);
+  border-radius:3px;padding:1px 6px;color:var(--lcars-text,#c4d4ee)}
+
+/* THE FOUND PANEL (screen 2) — a definition grid with 1px rules. Every value in
+   it comes from real detection; nothing here is decorative. */
+.front-door .fd-found{
+  background:var(--lcars-panel,#070d1c);border:1px solid var(--lcars-rule,#1b2740);
+  border-radius:4px;margin:8px 0 4px}
+.front-door .fd-found .fd-row{
+  display:grid;grid-template-columns:190px 1fr;gap:16px;
+  padding:11px 18px;border-top:1px solid var(--lcars-rule,#1b2740)}
+.front-door .fd-found .fd-row:first-child{border-top:0}
+.front-door .fd-found .fd-k{
+  font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
+  font-size:12.5px;color:var(--lcars-dim,#7d94b5);align-self:center}
+.front-door .fd-found .fd-v{font-size:14.5px;color:var(--lcars-text,#c4d4ee)}
+.front-door .fd-found .fd-v.warn{color:var(--lcars-amber,#ffdd44)}
+
+/* THE RECOMMENDATION (screen 3) — the "because" list and the SCOPE FENCE. */
+.front-door .fd-because{margin:4px 0 26px;padding:0;list-style:none}
+.front-door .fd-because li{
+  position:relative;padding:0 0 0 20px;margin:0 0 10px;
+  font-size:14.5px;line-height:1.65;color:var(--lcars-text,#c4d4ee)}
+.front-door .fd-because li::before{
+  content:"▸";position:absolute;left:0;color:var(--lcars-teal,#2de3c7)}
+.front-door .fd-fence{
+  background:var(--lcars-panel,#070d1c);
+  border:1px solid var(--lcars-rule,#1b2740);
+  border-left:3px solid var(--lcars-amber,#ffdd44);
+  border-radius:0 4px 4px 0;padding:18px 20px;margin:0 0 8px}
+.front-door .fd-fence .fd-fence-h{
+  font-family:var(--font-display);font-size:12.5px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--lcars-amber,#ffdd44);margin-bottom:12px}
+.front-door .fd-fence ul{margin:0;padding-left:20px}
+.front-door .fd-fence li{font-size:14.5px;line-height:1.7;
+  color:var(--lcars-text,#c4d4ee)}
+.front-door .fd-fence .fd-deferred{
+  margin-top:14px;padding-top:14px;border-top:1px solid var(--lcars-rule,#1b2740);
+  font-size:13.5px;line-height:1.7;color:var(--lcars-dim,#7d94b5)}
+
+/* the ghost action — a real control that reads as secondary, never a menu. */
+.front-door .btn.ghost,.front-door button.ghost{
+  background:transparent;color:var(--lcars-dim,#7d94b5);
+  border:1px solid var(--lcars-rule,#1b2740)}
+.front-door .btn.ghost:hover{color:var(--lcars-text,#c4d4ee);
+  border-color:var(--lcars-teal,#2de3c7)}
+.front-door .fd-note{margin-top:18px;font-size:13.5px;line-height:1.7}
+.front-door .fd-note.err{color:var(--lcars-red,#ff5f5f)}
+
+/* the grill turn — one question at a time, in the same column. */
+.front-door .fd-q{
+  font-size:17px;line-height:1.55;color:var(--lcars-text,#c4d4ee);margin:0 0 18px}
+.front-door .fd-busy{
+  font-family:var(--font-display);letter-spacing:.18em;text-transform:uppercase;
+  font-size:13px;color:var(--lcars-teal,#2de3c7)}

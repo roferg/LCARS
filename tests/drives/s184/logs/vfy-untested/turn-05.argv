@@ -1,0 +1,23 @@
+=== ARGV (05) ===
+--- arg
+-p
+--- arg
+The captain's answer: That's everything. Please file the foundation mission.
+
+Produce the next turn now, as a single JSON object (the same output contract as before).
+
+(ESTABLISH VISION mode: when you can name the stack, end with the {"status":"recommendation", "recommendation":{stack, reasons, slice, deferred}} object instead of status "done".)
+--- arg
+--resume=66e91c49-8c53-42ba-9db1-59223298c6d7
+--- arg
+--available-tools=
+--- arg
+--no-ask-user
+--- arg
+--disable-builtin-mcps
+--- arg
+--no-custom-instructions
+--- arg
+--model
+--- arg
+claude-opus-4.8

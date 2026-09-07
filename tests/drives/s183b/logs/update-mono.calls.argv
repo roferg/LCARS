@@ -1,0 +1,21 @@
+=== claude ===
+-p You are the LCARS test-systems engineer. The repo checkout is at:
+  /private/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/lcars-s183b/mono
+DISCOVER the exact shell command that runs this repo's test suite. Do NOT run
+the suite yourself beyond cheap inspection, and do NOT modify any file in the
+checkout — inspection only. Read package manifests / Makefiles / gemfiles /
+build files / READMEs as needed. Prefer a command that honours the
+LCARS_TESTS_DIR environment variable when set (run only that dir), falling back
+to the whole suite when unset.
+
+Then write a JSON object to EXACTLY this path (and print nothing):
+  /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/lcars-s183b/mono/.git/lcars/test-discovery.json
+with these fields:
+  "testCommand"  the exact shell command that runs the tests
+  "rationale"    one short sentence on why this is the right command
+  "status"       "ready"
+
+If this repo genuinely has NO test infrastructure at all, instead write
+"status": "failed" and a "message" field saying plainly that no test systems
+exist yet. Never guess a command you are unsure of.
+ --allowedTools Read,Grep,Glob,Write --disallowedTools Edit,Bash,NotebookEdit --output-format text --dangerously-skip-permissions

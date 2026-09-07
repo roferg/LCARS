@@ -3259,6 +3259,1095 @@ ffj="$(TD "$repo")/flip-flop.json"
   || bad "W3. src change did not withdraw the repair path (mode='$(ff_mode "$ffj")')"
 
 # ==========================================================================
+# S. S193 — TWO HONEST GATES THAT LIED ON TWO ARMS
+#
+# Both cures NARROW an honesty check, so every case below comes in PAIRS: the
+# honest signal the gate must now read correctly, AND the hollow pass that must
+# STILL fail. Fixtures are REAL repos driven by REAL cargo / REAL python3
+# through the REAL flip-flop gate; every embedded runner buffer is CAPTURED from
+# a run on this machine at test time, never hand-written (S185's blocker came
+# from a fixture string the real detector never emits).
+#
+# THE MEASURED PATH. `resolve_stack` is `unknown` on an initialization mission —
+# repo config.json is written at APPROVE, never mid-mission — so BOTH arms take
+# the js/py lane with the mission's own testCommand, and rust therefore runs a
+# PLAIN `cargo test`. (The native lane's `cargo test --test <stem>` emits no
+# Doc-tests block and never had the bug.) These fixtures reproduce that lane.
+# ==========================================================================
+echo "== S. S193: cargo doc-test scoreboards + python fail-first reds =="
+
+zero_collected() { # (runner output on stdin) → rc 0 = ZERO tests collected
+  env LCARS_GH_BIN=true LCARS_GIT_BIN=git bash "$SCRIPT" proof-zero-collected-test
+}
+prk() { # files-written [parent-sha] [tip-worktree]  (output on stdin) → kind token
+  local files="$1" parent="${2:-}" wt="${3:-}"
+  local a=()
+  [ -n "$parent" ] && a=("${a[@]+${a[@]}}" --sha "$parent")
+  [ -n "$wt" ]     && a=("${a[@]+${a[@]}}" "$wt")
+  env LCARS_GH_BIN=true LCARS_GIT_BIN=git LCARS_PRK_FILES="$files" \
+    bash "$SCRIPT" proof-parent-red-kind-test ${a[@]+"${a[@]}"}
+}
+
+# --- rust fixtures (real cargo) ---------------------------------------------
+# `target/` is git-ignored exactly as the S186 rust arm's scaffold ticket writes
+# it — without that, cargo's build output lands in the untracked half of
+# proof_diff_paths and the gate reads the harness's own artifacts as authorship.
+new_rust_repo() { # lib|bin  parent-source → echoes repo dir (parent committed)
+  local kind="$1" src="$2" repo
+  repo="$(mktemp -d "$TMPROOT/s193rs.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '[package]\nname = "gfapp"\nversion = "0.1.0"\nedition = "2021"\n' > "$repo/Cargo.toml"
+  printf 'target/\n' > "$repo/.gitignore"
+  mkdir -p "$repo/src" "$repo/tests"
+  if [ "$kind" = bin ]; then printf '%s' "$src" > "$repo/src/main.rs"
+  else                       printf '%s' "$src" > "$repo/src/lib.rs"; fi
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+
+if ! have cargo; then
+  skip "S193 RUST: cargo not installed — the doc-test scoreboard proofs did NOT run"
+else
+  # -- S1. LIBRARY crate, real cargo: ticket 2's gate PASSES -----------------
+  # The exact S186 shape: a lib crate whose real unit tests PASS and whose
+  # TRAILING `Doc-tests gfapp` scoreboard is an empty one. Before the cure the
+  # TIP leg read "ZERO tests collected" off that trailing scoreboard — with the
+  # passing tests recorded in the same file — and the ticket parked.
+  # BYTE-FOR-BYTE the S186 rust arm's shape: tests live in tests/, the lib has no
+  # `#[cfg(test)]` module, so `cargo test` prints an EMPTY `unittests src/lib.rs`
+  # scoreboard FIRST and an EMPTY `Doc-tests gfapp` scoreboard LAST, with the
+  # ticket's real passing target in between.
+  repo="$(new_rust_repo lib "$(printf 'pub fn greet() -> &%sstatic str { "hello" }\n' "'")")"
+  printf 'use gfapp::greet;\n#[test]\nfn greets() { assert_eq!(greet(), "hello"); }\n' > "$repo/tests/greet.rs"
+  ( cd "$repo" && git add -A && git commit -qm scaffold )
+  P="$(head_sha "$repo")"
+  printf 'use gfapp::add;\n#[test]\nfn adds() { assert_eq!(add(2, 2), 4); }\n' > "$repo/tests/add.rs"
+  printf 'pub fn greet() -> &%sstatic str { "hello" }\npub fn add(a: i32, b: i32) -> i32 { a + b }\n' "'" > "$repo/src/lib.rs"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='cargo test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" = 0 ]; then ok "S1a. rust LIBRARY crate: ticket 2 PASSES the flip-flop (real cargo)"
+  else bad "S1a. rust library ticket 2 not a pass (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+  if [ "$(ff_ran "$ffj")" = True ]; then ok "S1b. the PARENT leg actually RAN"
+  else bad "S1b. parent leg never ran (ran=$(ff_ran "$ffj")): $(ff_reason "$ffj")"; fi
+  if grep -q '"kind": "compile-failure"' "$ffj" 2>/dev/null; then
+    ok "S1c. parent red kinded compile-failure (the ticket's new symbol does not exist there)"
+  else bad "S1c. unexpected parent kind: $(tr -d '\n' < "$ffj" | cut -c1-400)"; fi
+  # S1a proves nothing unless the TIP buffer really carried the trailing empty
+  # doc-test scoreboard that used to sink it.
+  if python3 - "$ffj" <<'PY'
+import json, re, sys
+t = json.load(open(sys.argv[1]))["tip"]["tail"]
+sys.exit(0 if re.search(r'Doc-tests \S+', t)
+              and re.search(r'test result: ok\. 0 passed', t)
+              and re.search(r'test result: ok\. [1-9]', t) else 1)
+PY
+  then ok "S1d. the TIP buffer really carried an EMPTY scoreboard NEXT TO the passing one"
+  else bad "S1d. no empty scoreboard beside a passing one in the tip buffer — S1a proves nothing"; fi
+
+  # -- S2. a cargo run whose REAL scoreboards are ZERO stays INCONCLUSIVE ----
+  repo="$(new_rust_repo lib "$(printf 'pub fn greet() -> &%sstatic str { "hello" }\n' "'")")"
+  P="$(head_sha "$repo")"
+  printf '// the ticket declared a test file and wrote no test in it\n' > "$repo/tests/add.rs"
+  printf 'pub fn greet() -> &%sstatic str { "hello" }\npub fn add(a: i32, b: i32) -> i32 { a + b }\n' "'" > "$repo/src/lib.rs"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='cargo test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" != 0 ] && ff_reason "$ffj" | grep -q 'ZERO tests'; then
+    ok "S2. a cargo run whose only REAL scoreboards are zero → STILL INCONCLUSIVE"
+  else bad "S2. GREEN-ON-NOTHING GOT THROUGH (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+  # …and the SAME assertion-free ticket file is independently refused by the
+  # QUALITY FLOOR, which is the designed guard for "the ticket's test asserts
+  # nothing". Named here because the aggregate cargo rule deliberately stops the
+  # zero-collect trap from doubling as that guard by accident.
+  q_floor "$repo" "$P"
+  if [ "$QFRC" != 0 ]; then
+    ok "S2c. the quality floor independently refuses the assertion-free rust test file"
+  else bad "S2c. the quality floor passed a test file that asserts nothing (QFRC=$QFRC)"; fi
+
+  # -- S2b. a crate whose ONLY passing tests are DOC-tests ------------------
+  # Doc-tests are real tests, but they are not the ticket's declared test file:
+  # the run executed nothing the ticket wrote, so it proves nothing about it.
+  repo="$(new_rust_repo lib "$(printf 'pub fn greet() -> &%sstatic str { "hello" }\n' "'")")"
+  P="$(head_sha "$repo")"
+  printf '// no #[test] here — this crate is carried entirely by doc examples\n' > "$repo/tests/add.rs"
+  cat > "$repo/src/lib.rs" <<'RS'
+pub fn greet() -> &'static str { "hello" }
+
+/// Adds two numbers.
+///
+/// ```
+/// assert_eq!(gfapp::add(2, 2), 4);
+/// ```
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+RS
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='cargo test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" != 0 ] && ff_reason "$ffj" | grep -q 'ZERO tests'; then
+    ok "S2b. a crate carried ONLY by passing DOC-tests → STILL INCONCLUSIVE"
+  else bad "S2b. doc-tests-only crate got through (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+
+  # -- S3. BINARY crate: unchanged from today (regression, both directions) --
+  repo="$(new_rust_repo bin 'fn main() { println!("hello"); }
+')"
+  P="$(head_sha "$repo")"
+  printf '// no test declared\n' > "$repo/tests/add.rs"
+  printf 'fn main() { println!("hello"); }\nfn _unused() {}\n' > "$repo/src/main.rs"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='cargo test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" != 0 ] && ff_reason "$ffj" | grep -q 'ZERO tests'; then
+    ok "S3a. rust BINARY crate with no tests → INCONCLUSIVE (unchanged: no Doc-tests block)"
+  else bad "S3a. binary-crate zero-collect regressed (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+
+  repo="$(new_rust_repo bin "$(printf 'fn main() { println!("hello"); }\n')")"
+  P="$(head_sha "$repo")"
+  printf '#[test]\nfn adds() { assert_eq!(2 + 2, 4); }\n' > "$repo/tests/add.rs"
+  printf 'fn main() { println!("hello"); }\nfn _unused() {}\n' > "$repo/src/main.rs"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='cargo test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  # A bin crate ALSO prints an empty `unittests src/main.rs` scoreboard, so before
+  # the cure this run was called "zero tests collected" while its integration
+  # target reported `1 passed`. This IS a change, and the honest one: the run is
+  # now judged where it should be, on the PARENT leg. (The test asserts
+  # pre-existing arithmetic, so it passes on the parent too → green parent, no
+  # proof, REJECTED — the hollow pass still dies, now for the true reason.)
+  if [ "$FFRC" != 0 ] && ff_reason "$ffj" | grep -q 'PARENT'; then
+    ok "S3b. rust BINARY crate with a real test → judged on the PARENT leg, and still rejected"
+  else bad "S3b. binary crate with a real test: FFRC=$FFRC — $(ff_reason "$ffj")"; fi
+
+  # -- S4. UNIT: REAL cargo output through proof_zero_collected -------------
+  rsw="$(mktemp -d "$TMPROOT/s193cap.XXXX")"
+  ( cd "$rsw" && cargo init --lib -q --name capture >/dev/null 2>&1 )
+  cap_lib="$( cd "$rsw" && cargo test 2>&1 )"
+  if printf '%s' "$cap_lib" | zero_collected; then
+    bad "S4a. REAL cargo lib output (1 unit test PASSED + empty Doc-tests) still reads as zero-collect"
+  else ok "S4a. REAL cargo lib output with a PASSING unit test is NOT zero-collect"; fi
+  printf 'pub fn nothing() {}\n' > "$rsw/src/lib.rs"
+  cap_empty="$( cd "$rsw" && cargo test 2>&1 )"
+  if printf '%s' "$cap_empty" | zero_collected; then
+    ok "S4b. REAL cargo lib output whose only real scoreboard is ZERO → still zero-collect"
+  else bad "S4b. a cargo crate with NO tests stopped reading as zero-collect"; fi
+  # An app that PRINTS a fake `Doc-tests` banner must not hide the NEXT target's
+  # zero scoreboard — cargo's own `Running <target>` banner ends the doc section.
+  # The REAL multi-target shape, captured WHOLE (the flip-flop artifact keeps only
+  # a 20-line tail): an EMPTY unittests target, a PASSING integration target, an
+  # EMPTY doc-test block. Cargo's own scoreboards say tests ran.
+  mkdir -p "$rsw/tests"
+  printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$rsw/src/lib.rs"
+  printf 'use capture::add;\n#[test]\nfn adds() { assert_eq!(add(2, 2), 4); }\n' > "$rsw/tests/add.rs"
+  cap_multi="$( cd "$rsw" && cargo test 2>&1 )"
+  if printf '%s' "$cap_multi" | grep -q '^test result: ok\. 0 passed' \
+     && printf '%s' "$cap_multi" | grep -q '^test result: ok\. 1 passed'; then
+    if printf '%s' "$cap_multi" | zero_collected; then
+      bad "S4d. a REAL cargo run with an empty target AND a passing one still reads as zero-collect"
+    else ok "S4d. REAL multi-target cargo (empty + passing + empty doc) is NOT zero-collect"; fi
+  else bad "S4d. the captured cargo buffer is not the multi-target shape — S4d proves nothing"; fi
+  # An all-`#[ignore]`d crate is rust's own green-on-nothing member: cargo reports
+  # `0 passed; 0 failed; N ignored` and NOTHING executed. It must stay zero.
+  printf '#[test]\n#[ignore]\nfn adds() { assert_eq!(2 + 2, 4); }\n' > "$rsw/tests/add.rs"
+  cap_ign="$( cd "$rsw" && cargo test 2>&1 )"
+  if printf '%s' "$cap_ign" | zero_collected; then
+    ok "S4e. a cargo crate whose every test is #[ignore]d → still zero-collect"
+  else bad "S4e. an all-ignored cargo crate stopped reading as zero-collect: $(printf '%s' "$cap_ign" | grep '^test result' | tr '\n' ' ')"; fi
+
+  if printf '%s\n' "   Doc-tests forged
+     Running tests/x.rs (target/debug/deps/x-1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s" | zero_collected; then
+    ok "S4c. a forged Doc-tests banner buys nothing — the rule reads scoreboards, not sections"
+  else bad "S4c. a forged Doc-tests banner swallowed a real zero scoreboard"; fi
+fi
+
+# --- python (stdlib unittest — always available) ----------------------------
+new_py_repo() { # → echoes repo dir; parent = greet.py + test_greet.py
+  local repo; repo="$(mktemp -d "$TMPROOT/s193py.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '__pycache__/\n' > "$repo/.gitignore"
+  printf 'def greet():\n    return "hello"\n' > "$repo/greet.py"
+  printf 'import unittest\nfrom greet import greet\n\nclass T(unittest.TestCase):\n    def test_greet(self):\n        self.assertEqual(greet(), "hello")\n' > "$repo/test_greet.py"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+
+# -- S5. real stdlib unittest: ticket 2 PASSES, the parent red is NOT env ----
+repo="$(new_py_repo)"
+P="$(head_sha "$repo")"
+printf 'def add(a, b):\n    return a + b\n' > "$repo/add.py"
+printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$repo/test_add.py"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD='python3 -m unittest discover'
+ffj="$(TD "$repo")/flip-flop.json"
+if [ "$FFRC" = 0 ]; then ok "S5a. python stdlib unittest: ticket 2 PASSES the flip-flop (real python3)"
+else bad "S5a. python ticket 2 not a pass (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+if grep -q '"kind": "env-failure"' "$ffj" 2>/dev/null; then
+  bad "S5b. a correct fail-first red is STILL kinded env-failure"
+else ok "S5b. the fail-first red is NOT kinded env-failure"; fi
+if grep -q '"kind": "missing-new-module"' "$ffj" 2>/dev/null; then
+  ok "S5c. it is kinded missing-new-module — the module THIS TICKET ADDS"
+else bad "S5c. unexpected parent kind: $(tr -d '\n' < "$ffj" | cut -c1-400)"; fi
+
+# -- S6. the RUNNER ITSELF is the missing module → STILL env → inconclusive --
+# The sharpest attack on D2's cure: the missing module IS a non-test file the
+# ticket adds (present at the tip, absent at the parent — the parent/tip fact
+# matches perfectly), but python died before a single test was collected. Only
+# the "the runner demonstrably STARTED and collected" conjunct saves this.
+repo="$(mktemp -d "$TMPROOT/s193pyenv.XXXX")"
+( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+printf '__pycache__/\n' > "$repo/.gitignore"
+printf '# gf\n' > "$repo/README.md"
+( cd "$repo" && git add -A && git commit -qm parent )
+scaffold_mission "$repo"
+P="$(head_sha "$repo")"
+printf 'import unittest\n\nunittest.main(module=None, argv=["gfrunner", "discover"])\n' > "$repo/gfrunner.py"
+printf 'def add(a, b):\n    return a + b\n' > "$repo/add.py"
+printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$repo/test_add.py"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD='python3 -m gfrunner'
+ffj="$(TD "$repo")/flip-flop.json"
+if [ "$FFRC" != 0 ] && grep -q '"kind": "env-failure"' "$ffj" 2>/dev/null; then
+  ok "S6. the test RUNNER module missing on the parent → STILL env-failure → INCONCLUSIVE"
+else bad "S6. A DEAD RUNNER READ AS A RED (FFRC=$FFRC): $(tr -d '\n' < "$ffj" | cut -c1-400)"; fi
+
+# -- S7. UNIT: the phrase alone never decides -------------------------------
+# Every buffer below is REAL, captured from python 3.14 on this machine at test
+# time. The rule keys on the parent/tip fact plus runner-started evidence.
+pyw="$(mktemp -d "$TMPROOT/s193pyu.XXXX")"
+( cd "$pyw" && git init -q && git config user.email t@t && git config user.name t )
+printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$pyw/test_add.py"
+( cd "$pyw" && git add -A && git commit -qm parent )
+pyp="$( cd "$pyw" && git rev-parse HEAD )"
+cap_unittest="$( cd "$pyw" && python3 -m unittest discover 2>&1 )"   # No module named 'add'
+if python3 -c 'import pytest' >/dev/null 2>&1; then
+  cap_nopytest=""
+else
+  cap_nopytest="$( cd "$pyw" && python3 -m pytest 2>&1 )"            # No module named pytest
+fi
+# The ticket ADDS both files at the tip — so even the pytest name matches the
+# parent/tip fact, and only the runner-started conjunct can reject it.
+printf 'def add(a, b):\n    return a + b\n' > "$pyw/add.py"
+printf 'raise SystemExit("not a real pytest")\n' > "$pyw/pytest.py"
+
+k="$(printf '%s' "$cap_unittest" | prk 'add.py' "$pyp" "$pyw")"
+if [ "$k" = missing-new-module ]; then
+  ok "S7a. REAL unittest fail-first red + the module IS the ticket's new file → missing-new-module"
+else bad "S7a. expected missing-new-module, got '$k'"; fi
+k="$(printf '%s' "$cap_unittest" | prk 'other.py' "$pyp" "$pyw")"
+if [ "$k" = env-failure ]; then
+  ok "S7b. the SAME buffer, but the ticket adds no such module → still env-failure"
+else bad "S7b. the phrase alone decided it (got '$k')"; fi
+k="$(printf '%s' "$cap_unittest" | prk 'add.py')"
+if [ "$k" = env-failure ]; then
+  ok "S7c. with no parent/tip facts plumbed through, the narrowing stays CLOSED"
+else bad "S7c. the narrowing fired without the parent/tip fact (got '$k')"; fi
+# Conjunct 4: ANY other env signature in the buffer wins. The dead-runner line
+# below is captured from a real shell on this machine, not written by hand.
+cap_deadshell="$( bash -c 'lcars-s193-no-such-runner' 2>&1 || true )"
+k="$(printf '%s\n%s' "$cap_unittest" "$cap_deadshell" | prk 'add.py' "$pyp" "$pyw")"
+if [ "$k" = env-failure ]; then
+  ok "S7e. the same fail-first red PLUS a real dead-runner diagnostic → still env-failure"
+else bad "S7e. a buffer carrying a real env failure was read as a fail-first red (got '$k')"; fi
+
+if [ -z "$cap_nopytest" ]; then
+  skip "S7d. pytest IS installed here — the missing-third-party-runner case did NOT run"
+else
+  k="$(printf '%s' "$cap_nopytest" | prk "$(printf 'add.py\npytest.py\n')" "$pyp" "$pyw")"
+  if [ "$k" = env-failure ]; then
+    ok "S7d. a genuinely missing THIRD-PARTY runner (real: no pytest) → still env-failure"
+  else bad "S7d. a dead pytest was read as a fail-first red (got '$k')"; fi
+fi
+
+# ==========================================================================
+# T. S193 FIX ROUND 1 — THE VERDICT BELONGS TO THE TICKET'S OWN TARGET
+#
+# The S193 cure decided "did this cargo run collect anything?" by scanning EVERY
+# scoreboard in the buffer and answering yes if ANY of them was non-zero. An
+# adversarial tester beat it twice with the same lever, and neither attack needs
+# a forgery to work: `cargo test` runs EVERY target, so ONE passing sibling
+# target — ticket 1's scaffold test, still green — speaks for a ticket whose own
+# test never executed. Measured: a ticket whose only test is `#[ignore]`d PASSED
+# the gate while, by hand at the same tip, breaking the implementation left the
+# suite exit-0. The suite proved nothing and the gate said pass.
+#
+# The cure is ATTRIBUTION, not a new honesty heuristic: cargo announces each
+# target (`     Running tests/add.rs (…)`) before that target's scoreboard, so a
+# scoreboard belongs to a target, and the run collected something IFF THE TARGET
+# THAT OWNS THE TICKET'S DECLARED TEST FILE reports a non-zero passed/failed.
+# Fail-closed both ways — an unmatched declared file is ZERO, never the aggregate.
+# ==========================================================================
+echo "== T. S193 fix-1: per-target attribution + the python module-path narrowing =="
+
+zc_rels() { # declared-test-relpaths   (runner output on stdin) → rc 0 = ZERO collected
+  env LCARS_GH_BIN=true LCARS_GIT_BIN=git LCARS_PZC_RELS="$1" \
+    bash "$SCRIPT" proof-zero-collected-test
+}
+
+if ! have cargo; then
+  skip "S193-fix RUST: cargo not installed — the target-attribution proofs did NOT run"
+else
+  # -- T1. THE NO-FORGERY HOLLOW PASS, at the real gate ----------------------
+  # Ticket 1 leaves tests/greet.rs green. Ticket 2's own test is #[ignore]d, so
+  # it NEVER RUNS — but the run as a whole reports `1 passed` from greet.rs.
+  repo="$(new_rust_repo lib "$(printf 'pub fn greet() -> &%sstatic str { "hello" }\n' "'")")"
+  printf 'use gfapp::greet;\n#[test]\nfn greets() { assert_eq!(greet(), "hello"); }\n' > "$repo/tests/greet.rs"
+  ( cd "$repo" && git add -A && git commit -qm scaffold )
+  P="$(head_sha "$repo")"
+  printf 'use gfapp::add;\n#[test]\n#[ignore]\nfn adds() { assert_eq!(add(2, 2), 4); }\n' > "$repo/tests/add.rs"
+  printf 'pub fn greet() -> &%sstatic str { "hello" }\npub fn add(a: i32, b: i32) -> i32 { a + b }\n' "'" > "$repo/src/lib.rs"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='cargo test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" != 0 ] && ff_reason "$ffj" | grep -q 'ZERO tests'; then
+    ok "T1. the ticket's own test is #[ignore]d while a SIBLING target passes → INCONCLUSIVE"
+  else bad "T1. HOLLOW PASS — a passing sibling target spoke for the ticket (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+
+  # -- T2/T3. UNIT, on a REAL multi-target cargo buffer ----------------------
+  rsw2="$(mktemp -d "$TMPROOT/s193attr.XXXX")"
+  ( cd "$rsw2" && cargo init --lib -q --name capture >/dev/null 2>&1 )
+  printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\npub fn greet() -> &%sstatic str { "hi" }\n' "'" > "$rsw2/src/lib.rs"
+  mkdir -p "$rsw2/tests"
+  printf 'use capture::greet;\n#[test]\nfn greets() { assert_eq!(greet(), "hi"); }\n' > "$rsw2/tests/greet.rs"
+  printf 'use capture::add;\n#[test]\n#[ignore]\nfn adds() { assert_eq!(add(2, 2), 4); }\n' > "$rsw2/tests/add.rs"
+  cap_attr="$( cd "$rsw2" && cargo test 2>&1 )"
+  if printf '%s' "$cap_attr" | grep -q '^test result: ok\. 1 passed' \
+     && printf '%s' "$cap_attr" | grep -q '^test result: ok\. 0 passed; 0 failed; 1 ignored'; then
+    if printf '%s' "$cap_attr" | zc_rels 'tests/add.rs'; then
+      ok "T2a. REAL cargo: the DECLARED target ran nothing (all #[ignore]d) → ZERO, sibling notwithstanding"
+    else bad "T2a. a sibling target's passing scoreboard still speaks for tests/add.rs"; fi
+    if printf '%s' "$cap_attr" | zc_rels 'tests/greet.rs'; then
+      bad "T2b. the ticket's OWN passing target was read as zero-collect"
+    else ok "T2b. REAL cargo: the declared target reports 1 passed → NOT zero-collect"; fi
+    if printf '%s' "$cap_attr" | zc_rels "$(printf 'tests/add.rs\ntests/greet.rs\n')"; then
+      bad "T2c. a ticket declaring BOTH files was called zero though one target really ran"
+    else ok "T2c. several declared files: any one of their targets running is enough"; fi
+    if printf '%s' "$cap_attr" | zc_rels 'tests/nope.rs'; then
+      ok "T3a. FAIL CLOSED: no cargo target owns the declared file → ZERO, never the aggregate"
+    else bad "T3a. an unmatched declared file fell back to the permissive aggregate"; fi
+    if printf '%s' "$cap_attr" | zc_rels 'spec/add.rs'; then
+      ok "T3b. FAIL CLOSED: sharing only a BASENAME with a real target is not ownership → ZERO"
+    else bad "T3b. a declared path was matched on its basename alone"; fi
+  else bad "T2. the captured cargo buffer is not the ignored+passing shape — T2/T3 prove nothing"; fi
+
+  # -- T3c. DOC-tests are a section, never a declared file's target ----------
+  # `   Doc-tests <crate>` announces a target that owns no path in the repo, so
+  # a passing doc-test can never be attributed to the ticket's test file.
+  rsw3="$(mktemp -d "$TMPROOT/s193doc.XXXX")"
+  ( cd "$rsw3" && cargo init --lib -q --name capdoc >/dev/null 2>&1 )
+  mkdir -p "$rsw3/tests"
+  cat > "$rsw3/src/lib.rs" <<'RS'
+/// Adds two numbers.
+///
+/// ```
+/// assert_eq!(capdoc::add(2, 2), 4);
+/// ```
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+RS
+  printf '// the ticket declared this file and wrote no test in it\n' > "$rsw3/tests/add.rs"
+  cap_doc="$( cd "$rsw3" && cargo test 2>&1 )"
+  if printf '%s' "$cap_doc" | grep -q '^test result: ok\. 1 passed'; then
+    if printf '%s' "$cap_doc" | zc_rels 'tests/add.rs'; then
+      ok "T3c. a PASSING doc-test does not speak for the ticket's declared test file → ZERO"
+    else bad "T3c. the Doc-tests scoreboard was attributed to tests/add.rs"; fi
+  else bad "T3c. the captured doc-test buffer has no passing doc-test — it proves nothing"; fi
+
+  # -- T3d. the UNATTRIBUTED form is unchanged (A0-A3 preservation) ----------
+  # With no declared file the function answers the weaker, whole-run question it
+  # always answered. The gate NEVER calls it that way (see T5); the stack unit
+  # suites and the S193 attack rig do.
+  if printf '%s' "$cap_attr" | zero_collected; then
+    bad "T3d. the unattributed form changed verdict on a run that really executed a test"
+  else ok "T3d. the unattributed whole-run form is unchanged"; fi
+fi
+
+# -- T4. DEFECT 4: the changed path must plausibly BE the python module ------
+# Fact 3 compared BASENAME STEMS, extension and directory discarded, so a ticket
+# whose only changed non-test path was `add.md` "mapped" to missing module `add`
+# and its env failure read as an honest fail-first red. Pure narrowing.
+pyw2="$(mktemp -d "$TMPROOT/s193d4.XXXX")"
+( cd "$pyw2" && git init -q && git config user.email t@t && git config user.name t )
+printf '__pycache__/\n' > "$pyw2/.gitignore"
+printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$pyw2/test_add.py"
+( cd "$pyw2" && git add -A && git commit -qm parent )
+pyp2="$( cd "$pyw2" && git rev-parse HEAD )"
+cap_d4="$( cd "$pyw2" && python3 -m unittest discover 2>&1 )"     # No module named 'add'
+printf 'def add(a, b):\n    return a + b\n' > "$pyw2/add.py"
+printf '# how add works\n' > "$pyw2/add.md"
+if printf '%s' "$cap_d4" | grep -q "No module named 'add'"; then
+  k="$(printf '%s' "$cap_d4" | prk 'add.md' "$pyp2" "$pyw2")"
+  if [ "$k" = env-failure ]; then
+    ok "T4a. a changed NON-python path with a matching stem ('add.md') no longer maps to module 'add'"
+  else bad "T4a. add.md still 'maps' to the python module add (got '$k')"; fi
+  k="$(printf '%s' "$cap_d4" | prk 'add.py' "$pyp2" "$pyw2")"
+  if [ "$k" = missing-new-module ]; then
+    ok "T4b. the real .py module the ticket adds still reads as the honest fail-first red"
+  else bad "T4b. the honest fail-first red stopped being recognised (got '$k')"; fi
+else bad "T4a/b. the captured python buffer is not the fail-first shape — they prove nothing"; fi
+
+# A DOTTED module must correspond to the changed path's DIRECTORY too.
+pyw3="$(mktemp -d "$TMPROOT/s193d4b.XXXX")"
+( cd "$pyw3" && git init -q && git config user.email t@t && git config user.name t )
+printf '__pycache__/\n' > "$pyw3/.gitignore"
+mkdir -p "$pyw3/pkg"; : > "$pyw3/pkg/__init__.py"
+printf 'import unittest\nfrom pkg.add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$pyw3/test_add.py"
+( cd "$pyw3" && git add -A && git commit -qm parent )
+pyp3="$( cd "$pyw3" && git rev-parse HEAD )"
+cap_d4b="$( cd "$pyw3" && python3 -m unittest discover 2>&1 )"    # No module named 'pkg.add'
+printf 'def add(a, b):\n    return a + b\n' > "$pyw3/pkg/add.py"
+printf 'def add(a, b):\n    return a + b\n' > "$pyw3/add.py"
+if printf '%s' "$cap_d4b" | grep -q "No module named 'pkg.add'"; then
+  k="$(printf '%s' "$cap_d4b" | prk 'pkg/add.py' "$pyp3" "$pyw3")"
+  if [ "$k" = missing-new-module ]; then
+    ok "T4c. a DOTTED module maps to the matching package path (pkg.add → pkg/add.py)"
+  else bad "T4c. pkg/add.py no longer maps to module pkg.add (got '$k')"; fi
+  k="$(printf '%s' "$cap_d4b" | prk 'add.py' "$pyp3" "$pyw3")"
+  if [ "$k" = env-failure ]; then
+    ok "T4d. a top-level add.py does NOT map to module pkg.add — the directory must correspond"
+  else bad "T4d. the stem alone still decided a dotted module (got '$k')"; fi
+else bad "T4c/d. the captured buffer does not name pkg.add — they prove nothing"; fi
+
+# -- T5. THE PLUMBING ITSELF: the gate never asks the unattributed question --
+# Fail-closed is only worth anything if the call sites really pass the declared
+# files. This reads the product source: both flip-flop legs must hand
+# proof_zero_collected the ticket's $rels.
+if [ "$(grep -c 'proof_zero_collected "\$PROOF_LEG_OUT" "\$rels"' "$SCRIPT")" = 1 ] \
+   && [ "$(grep -c 'proof_zero_collected "\$par_out" "\$rels"' "$SCRIPT")" = 1 ]; then
+  ok "T5. both flip-flop legs plumb the ticket's declared test files into the zero-collect check"
+else bad "T5. a flip-flop leg still asks the UNATTRIBUTED zero-collect question"; fi
+
+# ==========================================================================
+# U. S193 FIX ROUND 2 — A `harness = false` TARGET OWNS NO SCOREBOARD
+#
+# Fix round 1 attributes each cargo scoreboard to the target that owns the
+# ticket's DECLARED test file. That works, and it is exactly why one hollow pass
+# survived it: cargo lets a target opt OUT of libtest with `harness = false` in
+# Cargo.toml (a documented feature — criterion, libtest-mimic), and such a target
+# is an ORDINARY BINARY. It can `println!` libtest's exact scoreboard grammar and
+# exit 0, and when the forge IS the ticket's own declared target, attribution
+# faithfully reports "the ticket's target executed 2 tests" while nothing ran.
+#
+# THE RULE (captain ruling 2026-09-06). Reading cargo's own MANIFEST DECLARATION
+# is permitted: it is a label the project wrote ABOUT ITSELF, not a mechanical
+# judgement of whether a runner is genuine, and it can only ever make LCARS more
+# cautious. It decides WHICH OUTPUT GRAMMAR APPLIES, never whether tests are real.
+# A target declared `harness = false` owns NO scoreboard, so there is nothing
+# attributable → FAIL CLOSED → zero → INCONCLUSIVE.
+#
+# THE CONSTRAINT THAT MATTERS MORE THAN THE FEATURE: the overwhelming majority of
+# Cargo.toml files carry no `harness` key at all, and for those the behaviour must
+# be BYTE-IDENTICAL to fix round 1. U0 is that proof and it runs first.
+# ==========================================================================
+echo
+echo "== U. S193 fix-2: a harness=false target owns no scoreboard =="
+
+zc_at() { # declared-test-relpaths  crate-root   (runner output on stdin) → rc 0 = ZERO
+  env LCARS_GH_BIN=true LCARS_GIT_BIN=git LCARS_PZC_RELS="$1" LCARS_PZC_ROOT="$2" \
+    bash "$SCRIPT" proof-zero-collected-test
+}
+zc_kind() { # declared-test-relpaths crate-root  (runner output on stdin) → the PZK token
+  env LCARS_GH_BIN=true LCARS_GIT_BIN=git LCARS_PZC_RELS="$1" LCARS_PZC_ROOT="$2" \
+      LCARS_PZC_SHOW_KIND=1 bash "$SCRIPT" proof-zero-collected-test \
+    | sed -n 's/^PZK=//p' | tail -1
+}
+v_of() { if "$@"; then echo ZERO; else echo NONZERO; fi; }
+
+if ! have cargo; then
+  skip "S193-fix2 RUST: cargo not installed — the harness=false proofs did NOT run"
+else
+  # -- U0. THE COMMON CASE IS BYTE-IDENTICAL --------------------------------
+  # A manifest with NO `harness` key anywhere must not change verdict in ANY
+  # direction, and must not change whether a crate root is supplied or not. This
+  # is what protects every currently-green test in this file and every arm rig.
+  ursw="$(mktemp -d "$TMPROOT/s193h0.XXXX")"
+  ( cd "$ursw" && cargo init --lib -q --name capture >/dev/null 2>&1 )
+  printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\npub fn greet() -> &%sstatic str { "hi" }\n' "'" > "$ursw/src/lib.rs"
+  mkdir -p "$ursw/tests"
+  printf 'use capture::greet;\n#[test]\nfn greets() { assert_eq!(greet(), "hi"); }\n' > "$ursw/tests/greet.rs"
+  printf 'use capture::add;\n#[test]\n#[ignore]\nfn adds() { assert_eq!(add(2, 2), 4); }\n' > "$ursw/tests/add.rs"
+  u_cap="$( cd "$ursw" && cargo test 2>&1 )"
+  if grep -Eq '^[[:space:]]*harness[[:space:]]*=' "$ursw/Cargo.toml"; then
+    bad "U0. the control manifest unexpectedly HAS a harness key — U0 proves nothing"
+  else
+    u_same=1
+    for r in 'tests/add.rs' 'tests/greet.rs' "$(printf 'tests/add.rs\ntests/greet.rs\n')" 'tests/nope.rs' ''; do
+      a="$(printf '%s' "$u_cap" | v_of zc_rels "$r")"
+      b="$(printf '%s' "$u_cap" | v_of zc_at "$r" "$ursw")"
+      [ "$a" = "$b" ] || { u_same=0; bad "U0. rels='$r': no-root=$a but with-root=$b — the common case MOVED"; }
+    done
+    [ "$u_same" = 1 ] && ok "U0. no \`harness\` key in Cargo.toml → verdicts byte-identical with and without a crate root"
+    if [ "$(printf '%s' "$u_cap" | zc_kind 'tests/greet.rs' "$ursw")" = "" ]; then
+      ok "U0b. a manifest with no harness key records NO special zero-kind"
+    else bad "U0b. a plain manifest produced a harness zero-kind"; fi
+  fi
+
+  # -- U1. THE FORGE, at the REAL gate --------------------------------------
+  # The exact shape tests/drives/s193/forge-drive.sh drives: the ticket's own
+  # declared test file IS the `harness = false` target, it names the new symbol
+  # (so the parent leg honestly fails to compile) and asserts nothing about it,
+  # printing libtest's grammar at column 0 instead. ZERO tests execute.
+  repo="$(new_rust_repo lib "$(printf 'pub fn greet() -> &%sstatic str { "hello" }\n' "'")")"
+  cat >> "$repo/Cargo.toml" <<'TOML'
+
+[[test]]
+name = "suite"
+path = "tests/suite.rs"
+harness = false
+TOML
+  cat > "$repo/tests/suite.rs" <<'RS'
+fn main() {
+    println!("running 1 test");
+    assert_eq!(gfapp::greet(), "hello");
+    println!("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s");
+}
+RS
+  ( cd "$repo" && git add -A && git commit -qm scaffold )
+  P="$(head_sha "$repo")"
+  printf 'pub fn greet() -> &%sstatic str { "hello" }\npub fn add(a: i32, b: i32) -> i32 { a + b }\n' "'" > "$repo/src/lib.rs"
+  cat > "$repo/tests/suite.rs" <<'RS'
+fn main() {
+    let _unused: fn(i32, i32) -> i32 = gfapp::add;
+    assert_eq!(2 + 2, 4);
+    println!("running 2 tests");
+    println!("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s");
+}
+RS
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='cargo test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" != 0 ]; then
+    ok "U1a. the ticket's declared target is harness=false → the gate REFUSES (no hollow pass)"
+  else bad "U1a. HOLLOW PASS — the harness=false forge got through the gate: $(ff_reason "$ffj")"; fi
+  # -- U1b. THE REFUSAL IS LEGIBLE, not a mystery park ----------------------
+  if ff_reason "$ffj" | grep -q 'harness = false' \
+     && ff_reason "$ffj" | grep -qi "opts out of cargo's standard test harness"; then
+    ok "U1b. the recorded reason NAMES the harness=false opt-out in plain words"
+  else bad "U1b. the refusal reads as a bare zero-collect: $(ff_reason "$ffj")"; fi
+
+  # -- U2. the DEFAULT path form (`[[test]] name = "add"`, no path key) ------
+  ursw2="$(mktemp -d "$TMPROOT/s193h2.XXXX")"
+  ( cd "$ursw2" && cargo init --lib -q --name capdef >/dev/null 2>&1 )
+  printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$ursw2/src/lib.rs"
+  mkdir -p "$ursw2/tests"
+  cat >> "$ursw2/Cargo.toml" <<'TOML'
+
+[[test]]
+name = "add"
+harness = false
+TOML
+  cat > "$ursw2/tests/add.rs" <<'RS'
+fn main() {
+    println!("test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s");
+}
+RS
+  u_cap2="$( cd "$ursw2" && cargo test 2>&1 )"
+  if printf '%s' "$u_cap2" | grep -q '^test result: ok\. 3 passed'; then
+    if printf '%s' "$u_cap2" | zc_at 'tests/add.rs' "$ursw2"; then
+      ok "U2. a [[test]] stanza with no path key defaults to tests/<name>.rs → ZERO"
+    else bad "U2. a default-path harness=false target still owned a scoreboard"; fi
+  else bad "U2. the captured buffer has no forged board — U2 proves nothing"; fi
+
+  # -- U3. A LEGITIMATE criterion-shaped project is UNTOUCHED ---------------
+  # `[[bench]] harness = false` is how every criterion user writes it. The
+  # ticket's own test target is an ordinary libtest one, so nothing changes.
+  ursw3="$(mktemp -d "$TMPROOT/s193h3.XXXX")"
+  ( cd "$ursw3" && cargo init --lib -q --name capben >/dev/null 2>&1 )
+  printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$ursw3/src/lib.rs"
+  mkdir -p "$ursw3/tests" "$ursw3/benches"
+  printf 'use capben::add;\n#[test]\nfn adds() { assert_eq!(add(2, 2), 4); }\n' > "$ursw3/tests/add.rs"
+  printf 'fn main() { println!("bench"); }\n' > "$ursw3/benches/speed.rs"
+  cat >> "$ursw3/Cargo.toml" <<'TOML'
+
+[[bench]]
+name = "speed"
+harness = false
+TOML
+  u_cap3="$( cd "$ursw3" && cargo test 2>&1 )"
+  if printf '%s' "$u_cap3" | grep -q '^test result: ok\. 1 passed'; then
+    if printf '%s' "$u_cap3" | zc_at 'tests/add.rs' "$ursw3"; then
+      bad "U3. a criterion-shaped harness=false BENCH sank an honest libtest target"
+    else ok "U3. harness=false on a target that is NOT the ticket's → the ticket is judged as before"; fi
+  else bad "U3. the captured criterion-shaped buffer has no passing test — U3 proves nothing"; fi
+
+  # -- U4. explicit `harness = true` is libtest and stays readable -----------
+  ursw4="$(mktemp -d "$TMPROOT/s193h4.XXXX")"
+  ( cd "$ursw4" && cargo init --lib -q --name capon >/dev/null 2>&1 )
+  printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$ursw4/src/lib.rs"
+  mkdir -p "$ursw4/tests"
+  printf 'use capon::add;\n#[test]\nfn adds() { assert_eq!(add(2, 2), 4); }\n' > "$ursw4/tests/add.rs"
+  cat >> "$ursw4/Cargo.toml" <<'TOML'
+
+[[test]]
+name = "add"
+harness = true
+TOML
+  u_cap4="$( cd "$ursw4" && cargo test 2>&1 )"
+  if printf '%s' "$u_cap4" | zc_at 'tests/add.rs' "$ursw4"; then
+    bad "U4. an explicit harness = true target was treated as an opt-out"
+  else ok "U4. an explicit \`harness = true\` target is libtest → unchanged"; fi
+
+  # -- U5. UNATTRIBUTED: the forged board is discarded, not aggregated -------
+  # attack-rust.sh's A4 asks the weaker whole-run question with NO declared file
+  # and NO crate root, so the manifest is located from cargo's own `Compiling
+  # <pkg> vX (<dir>)` line in the buffer.
+  ursw5="$(mktemp -d "$TMPROOT/s193h5.XXXX")"
+  mkdir -p "$ursw5/src" "$ursw5/tests"
+  printf '[package]\nname = "capa4"\nversion = "0.1.0"\nedition = "2021"\n\n[[test]]\nname = "forge"\npath = "tests/forge.rs"\nharness = false\n' > "$ursw5/Cargo.toml"
+  printf 'pub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$ursw5/src/lib.rs"
+  cat > "$ursw5/tests/forge.rs" <<'RS'
+fn main() {
+    println!("running 7 tests");
+    println!("test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s");
+}
+RS
+  u_cap5="$( cd "$ursw5" && cargo test 2>&1 )"
+  if printf '%s' "$u_cap5" | grep -q '^[[:space:]]*Compiling capa4 '; then
+    if printf '%s' "$u_cap5" | zero_collected; then
+      ok "U5a. A4's shape (no rels, no root): the manifest is found from cargo's Compiling line → ZERO"
+    else bad "U5a. the A4 forge still reads as a real run through the unattributed form"; fi
+  else bad "U5a. the captured buffer has no Compiling line — U5a proves nothing"; fi
+  if printf '%s' "$u_cap5" | zc_at '' "$ursw5"; then
+    ok "U5b. the same buffer with an explicit crate root → ZERO"
+  else bad "U5b. an explicit crate root did not discard the harness=false board"; fi
+
+  # -- U5c. a NON-CANONICAL `path =` in the manifest still resolves ---------
+  # cargo announces the CANONICAL relative path, so the declaration is read the
+  # same way — otherwise `path = "./tests/../tests/forge.rs"` would slip the rule.
+  ursw5b="$(mktemp -d "$TMPROOT/s193h5b.XXXX")"
+  cp -R "$ursw5/." "$ursw5b/"
+  rm -rf "$ursw5b/target"
+  printf '[package]\nname = "capa4"\nversion = "0.1.0"\nedition = "2021"\n\n[[test]]\nname = "forge"\npath = "./tests/../tests/forge.rs"\nharness = false\n' > "$ursw5b/Cargo.toml"
+  u_cap5b="$( cd "$ursw5b" && cargo test 2>&1 )"
+  if printf '%s' "$u_cap5b" | zc_at 'tests/forge.rs' "$ursw5b"; then
+    ok "U5c. a non-canonical path= in the manifest still names the target → ZERO"
+  else bad "U5c. './tests/../tests/forge.rs' escaped the harness=false rule"; fi
+
+  # -- U6. FAIL CLOSED when the declaration cannot be read ------------------
+  # A `harness` key is present but the manifest will not parse. LCARS must NOT
+  # fall through to permissive: it cannot tell which target opts out, so it
+  # cannot tell whether the scoreboard is libtest's.
+  ursw6="$(mktemp -d "$TMPROOT/s193h6.XXXX")"
+  cp -R "$ursw/." "$ursw6/"
+  printf '\n[[test]]\nname = "greet"\nharness = false\nthis is not toml at all ]]]\n' >> "$ursw6/Cargo.toml"
+  if printf '%s' "$u_cap" | zc_at 'tests/greet.rs' "$ursw6"; then
+    ok "U6a. a harness key in an UNPARSEABLE manifest → FAIL CLOSED to ZERO"
+  else bad "U6a. an unreadable harness declaration fell through to permissive"; fi
+  if [ "$(printf '%s' "$u_cap" | zc_kind 'tests/greet.rs' "$ursw6")" = manifest-unreadable ]; then
+    ok "U6b. the fail-closed refusal is recorded as manifest-unreadable, not a bare zero"
+  else bad "U6b. the unreadable-manifest refusal has no distinct kind"; fi
+
+  # -- U7. a NON-cargo buffer never triggers manifest reading ---------------
+  # A repo that happens to carry a Cargo.toml must not change how a jest/pytest
+  # buffer is read: this function says nothing at all about non-libtest output.
+  if printf 'Tests: 3 passed, 3 total\n' | zc_at 'tests/add.rs' "$ursw5"; then
+    bad "U7. a non-cargo buffer was judged by a Cargo.toml"
+  else ok "U7. a non-cargo buffer is untouched by the manifest rule"; fi
+fi
+
+# -- U8. THE PLUMBING: both flip-flop legs pass the crate root --------------
+# Fail-closed attribution is only worth anything if the call sites hand over the
+# facts. This reads the product source.
+if [ "$(grep -c 'proof_zero_collected "\$PROOF_LEG_OUT" "\$rels" "\$wt"' "$SCRIPT")" = 1 ] \
+   && [ "$(grep -c 'proof_zero_collected "\$par_out" "\$rels" "\$wt"' "$SCRIPT")" = 1 ]; then
+  ok "U8. both flip-flop legs plumb the ticket's declared files AND the crate root"
+else bad "U8. a flip-flop leg still asks the zero-collect question without a crate root"; fi
+
+# ==========================================================================
+# X. S193 FIX ROUND 3 — STOP RE-DERIVING CARGO'S RULES, ASK CARGO
+#
+# Fix round 2 re-implemented three things cargo already owns: WHERE a target's
+# source lives (`tests/<name>.rs`), HOW the opt-out may be SPELLED (an anchored
+# grep), and WHICH manifest applies (a walk-up that stopped at the first
+# Cargo.toml it met, and then a UNION across every candidate). A fresh
+# adversarial tester beat all three in one pass, and the union produced a FALSE
+# PARK on top. Round 3 removes the re-derivation: `cargo metadata --no-deps`
+# names every target with an ABSOLUTE `src_path`, so the ticket's declared test
+# file is matched to a target by PATH IDENTITY, and the opt-out flag is then read
+# from the ONE manifest that owns that target — never a union, never a derived
+# path, never a spelling guess (tomllib already spells every form correctly).
+#
+# X0 IS THE CONSTRAINT THAT OUTRANKS THE FEATURE and it runs first: a manifest
+# that never mentions `harness` must reach the same verdict WITHOUT cargo and
+# WITHOUT python3 on PATH. Turning every rust gate into `manifest-unreadable` on
+# a machine without python 3.11 would be a far worse regression than the holes
+# this section closes.
+# ==========================================================================
+echo
+echo "== X. S193 fix-3: attribution comes from cargo metadata =="
+
+if ! have cargo; then
+  skip "S193-fix3 RUST: cargo not installed — the cargo-metadata proofs did NOT run"
+else
+  V_PKG='[package]
+name = "gfapp"
+version = "0.1.0"
+edition = "2021"'
+  V_LIB='pub fn add(a:i32,b:i32)->i32{a+b}'
+  V_TEST='use gfapp::add;
+#[test]
+fn adds(){assert_eq!(add(2,2),4);}'
+  V_FORGE='fn main(){
+  println!("running 2 tests");
+  println!("test forged::a ... ok");
+  println!("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s");
+}'
+  v_mk() { # name → dir  (a plain library crate skeleton)
+    local d="$TMPROOT/$1"; rm -rf "$d"; mkdir -p "$d/src" "$d/tests"; printf '%s' "$d"
+  }
+  v_run() { ( cd "$1" && cargo test 2>&1 ); }
+
+  # -- X0. THE NO-PARSE FAST PATH: no `harness` word ⇒ no cargo, no python ----
+  v0="$(v_mk s193v0)"
+  printf '%s\n' "$V_PKG" > "$v0/Cargo.toml"
+  printf '%s\n' "$V_LIB" > "$v0/src/lib.rs"; printf '%s\n' "$V_TEST" > "$v0/tests/add.rs"
+  v0buf="$(v_run "$v0")"
+  # A PATH with neither cargo nor python3 on it — and DELIBERATELY WITHOUT
+  # `head`/`tail` either. The fail-closed path is reached precisely on machines
+  # that are missing tools, so a detector that needed coreutils to say "no
+  # python3 here" would lose the refusal it exists to make (measured: a `head -1`
+  # in the verdict splitter silently dropped the zero-kind on exactly this PATH).
+  V0BIN="$TMPROOT/s193v0bin"; mkdir -p "$V0BIN"
+  # (`tail` stays only because this test file's own zc_kind helper pipes through
+  # it; the PRODUCT path under test gets neither `head` nor cargo nor python3.)
+  for b in bash sh grep sed awk tr cat printf env dirname basename sort tail git uname date mkdir rm; do
+    p="$(command -v "$b" 2>/dev/null)" && ln -sf "$p" "$V0BIN/$b"
+  done
+  v0_verdict() { if printf '%s' "$v0buf" | zc_at 'tests/add.rs' "$v0"; then echo ZERO; else echo NONZERO; fi; }
+  v0_full="$(v0_verdict)"
+  v0_bare="$(PATH="$V0BIN" v0_verdict)"
+  if [ "$v0_full" = NONZERO ] && [ "$v0_bare" = NONZERO ]; then
+    ok "X0a. a manifest with no \`harness\` word reaches NONZERO with AND without cargo/python3 on PATH"
+  else bad "X0a. the no-parse fast path broke: with-tools=$v0_full without-tools=$v0_bare"; fi
+  if [ -z "$(printf '%s' "$v0buf" | PATH="$V0BIN" zc_kind 'tests/add.rs' "$v0")" ]; then
+    ok "X0b. and it records NO zero-kind (nothing was parsed at all)"
+  else bad "X0b. the fast path recorded a zero-kind, so it parsed something"; fi
+
+  # -- X1..X4. NEW-1: the four spellings the anchored trigger grep MISSED -----
+  # All four are honoured by real cargo. Each is a HOLLOW PASS on round 2.
+  v1="$(v_mk s193v1)"
+  { printf 'test = [{ name = "forge", path = "tests/forge.rs", harness = false }]\n\n'; printf '%s\n' "$V_PKG"; } > "$v1/Cargo.toml"
+  printf '%s\n' "$V_LIB" > "$v1/src/lib.rs"; printf '%s\n' "$V_FORGE" > "$v1/tests/forge.rs"
+  if printf '%s' "$(v_run "$v1")" | zc_at 'tests/forge.rs' "$v1"; then
+    ok "X1. top-level inline-table array \`test = [{ … harness = false }]\` → ZERO"
+  else bad "X1. HOLLOW PASS — an inline-table [[test]] opt-out was read as test results"; fi
+
+  v2="$(v_mk s193v2)"
+  { printf '%s\n' "$V_PKG"; printf '\n[[test]]\nname = "forge"\n"harness" = false\n'; } > "$v2/Cargo.toml"
+  printf '%s\n' "$V_LIB" > "$v2/src/lib.rs"; printf '%s\n' "$V_FORGE" > "$v2/tests/forge.rs"
+  if printf '%s' "$(v_run "$v2")" | zc_at 'tests/forge.rs' "$v2"; then
+    ok "X2. QUOTED key \`\"harness\" = false\` → ZERO"
+  else bad "X2. HOLLOW PASS — a quoted harness key escaped the rule"; fi
+
+  v3="$(v_mk s193v3)"
+  { printf 'lib.harness = false\n\n'; printf '%s\n' "$V_PKG"; } > "$v3/Cargo.toml"
+  cat > "$v3/src/lib.rs" <<'RS'
+pub fn add(a:i32,b:i32)->i32{a+b}
+fn main(){
+  println!("running 1 test");
+  println!("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s");
+}
+RS
+  if printf '%s' "$(v_run "$v3")" | zc_at 'src/lib.rs' "$v3"; then
+    ok "X3. DOTTED key \`lib.harness = false\` → ZERO"
+  else bad "X3. HOLLOW PASS — a dotted harness key escaped the rule"; fi
+
+  v4="$(v_mk s193v4)"
+  { printf 'lib = { harness = false }\n\n'; printf '%s\n' "$V_PKG"; } > "$v4/Cargo.toml"
+  cp "$v3/src/lib.rs" "$v4/src/lib.rs"
+  if printf '%s' "$(v_run "$v4")" | zc_at 'src/lib.rs' "$v4"; then
+    ok "X4. INLINE TABLE \`lib = { harness = false }\` → ZERO"
+  else bad "X4. HOLLOW PASS — an inline-table [lib] opt-out escaped the rule"; fi
+
+  # -- X5. NEW-2: cargo's DIRECTORY layout, tests/<name>/main.rs --------------
+  # Round 2 derived `tests/<name>.rs` and therefore neither attributed nor
+  # discarded the opt-out target cargo announces as `tests/forge/main.rs`.
+  v5="$(v_mk s193v5)"; mkdir -p "$v5/tests/forge"
+  { printf '%s\n' "$V_PKG"; printf '\n[[test]]\nname = "forge"\nharness = false\n'; } > "$v5/Cargo.toml"
+  printf '%s\n' "$V_LIB" > "$v5/src/lib.rs"; printf '%s\n' "$V_FORGE" > "$v5/tests/forge/main.rs"
+  if printf '%s' "$(v_run "$v5")" | zc_at 'tests/forge/main.rs' "$v5"; then
+    ok "X5. directory-style target tests/<name>/main.rs → ZERO (cargo's own src_path, not a derived one)"
+  else bad "X5. HOLLOW PASS — the directory-style opt-out target was read as test results"; fi
+
+  # -- X6. NEW-3: a stray Cargo.toml must not shadow the owning manifest ------
+  v6="$TMPROOT/s193v6"; rm -rf "$v6"; mkdir -p "$v6/crates/app/src" "$v6/crates/app/tests"
+  printf '[workspace]\nmembers = ["crates/app"]\nresolver = "2"\n' > "$v6/Cargo.toml"
+  { printf '%s\n' "$V_PKG"; printf '\n[[test]]\nname = "forge"\nharness = false\n'; } > "$v6/crates/app/Cargo.toml"
+  printf '%s\n' "$V_LIB" > "$v6/crates/app/src/lib.rs"
+  printf '%s\n' "$V_FORGE" > "$v6/crates/app/tests/forge.rs"
+  printf '# not a real package\n[workspace]\n' > "$v6/crates/app/tests/Cargo.toml"
+  v6buf="$( cd "$v6" && cargo test --workspace 2>&1 )"
+  if printf '%s' "$v6buf" | zc_at 'crates/app/tests/forge.rs' "$v6"; then
+    ok "X6. a stray tests/Cargo.toml does not shadow the manifest that owns the target → ZERO"
+  else bad "X6. HOLLOW PASS — a planted tests/Cargo.toml hid the opt-out declaration"; fi
+
+  # -- X7. NEW-4: no union across manifests (the FALSE PARK) -----------------
+  # A workspace ROOT declaring `[[test]] name="forge" harness=false` must NOT
+  # sink a MEMBER crate's genuinely-executed crates/app/tests/forge.rs.
+  v7="$TMPROOT/s193v7"; rm -rf "$v7"
+  mkdir -p "$v7/src" "$v7/tests" "$v7/crates/app/src" "$v7/crates/app/tests"
+  { printf '[workspace]\nmembers = ["crates/app"]\nresolver = "2"\n\n'
+    printf '[package]\nname = "wsroot"\nversion = "0.1.0"\nedition = "2021"\n\n'
+    printf '[[test]]\nname = "forge"\nharness = false\n'; } > "$v7/Cargo.toml"
+  printf 'pub fn r()->i32{1}\n' > "$v7/src/lib.rs"
+  printf 'fn main(){println!("root custom harness");}\n' > "$v7/tests/forge.rs"
+  printf '%s\n' "$V_PKG" > "$v7/crates/app/Cargo.toml"
+  printf '%s\n' "$V_LIB" > "$v7/crates/app/src/lib.rs"
+  printf 'use gfapp::add;\n#[test]\nfn forged(){assert_eq!(add(2,2),4);}\n' > "$v7/crates/app/tests/forge.rs"
+  v7buf="$( cd "$v7" && cargo test --workspace 2>&1 )"
+  if printf '%s' "$v7buf" | zc_at 'crates/app/tests/forge.rs' "$v7"; then
+    bad "X7. FALSE PARK — the workspace ROOT's opt-out sank an honest MEMBER test of the same name"
+  else ok "X7. a ROOT opt-out does not sink a MEMBER crate's honest libtest target → NONZERO"; fi
+
+  # -- X7b. ...and the same collision must not become a HOLLOW PASS ----------
+  # The mirror image of X7, and the price of un-sinking it. Two packages in one
+  # workspace announce the SAME package-relative path (`tests/forge.rs`) and
+  # cargo output says nothing about which board is whose. Here the ticket's OWN
+  # target is honest but collects NOTHING, while a SIBLING package opts out and
+  # forges a board. Counting the ambiguous path credulously would hand the ticket
+  # a pass on the forgery; the rule holds such a path back and counts it only if
+  # EVERY board announced under it ran tests.
+  v7b="$TMPROOT/s193v7b"; rm -rf "$v7b"
+  mkdir -p "$v7b/crates/app/src" "$v7b/crates/app/tests" "$v7b/crates/evil/src" "$v7b/crates/evil/tests"
+  printf '[workspace]\nmembers = ["crates/app","crates/evil"]\nresolver = "2"\n' > "$v7b/Cargo.toml"
+  printf '%s\n' "$V_PKG" > "$v7b/crates/app/Cargo.toml"
+  printf '%s\n' "$V_LIB" > "$v7b/crates/app/src/lib.rs"
+  printf '#[test]\n#[ignore]\nfn adds(){assert_eq!(gfapp::add(2,2),4);}\n' > "$v7b/crates/app/tests/forge.rs"
+  printf '[package]\nname = "evilpkg"\nversion = "0.1.0"\nedition = "2021"\n\n[[test]]\nname = "forge"\nharness = false\n' > "$v7b/crates/evil/Cargo.toml"
+  printf 'pub fn e()->i32{1}\n' > "$v7b/crates/evil/src/lib.rs"
+  printf '%s\n' "$V_FORGE" > "$v7b/crates/evil/tests/forge.rs"
+  v7bbuf="$( cd "$v7b" && cargo test --workspace 2>&1 )"
+  if printf '%s' "$v7bbuf" | zc_at 'crates/app/tests/forge.rs' "$v7b"; then
+    ok "X7b. a SIBLING package's opt-out forging a board at the same announced path → ZERO"
+  else bad "X7b. HOLLOW PASS — a sibling package's forged board was counted as the ticket's"; fi
+
+  # -- X8. FAIL CLOSED when cargo cannot be asked -----------------------------
+  # The manifest mentions `harness`, so attribution is REQUIRED — and there is no
+  # cargo to ask. Never a pass; a legible, named refusal.
+  v8k="$(printf '%s' "$(v_run "$v5")" | PATH="$V0BIN" zc_kind 'tests/forge/main.rs' "$v5")"
+  if [ "$v8k" = manifest-unreadable ]; then
+    ok "X8. cargo absent while the manifest declares \`harness\` → ZERO manifest-unreadable"
+  else bad "X8. cargo absent did not fail closed (kind='$v8k')"; fi
+
+  # -- X9. FAIL CLOSED when the declared file owns no cargo target ------------
+  v9buf="$(v_run "$v5")"
+  v9k="$(printf '%s' "$v9buf" | zc_kind 'tests/common/mod.rs' "$v5")"
+  if [ "$v9k" = manifest-unreadable ]; then
+    ok "X9. a declared file that matches NO cargo target → ZERO manifest-unreadable"
+  else bad "X9. an unattributable declared file did not fail closed (kind='$v9k')"; fi
+
+  # -- X10. the refusal NAMES the manifest it could not read ------------------
+  if printf '%s' "$v9buf" | env LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+       LCARS_PZC_RELS='tests/common/mod.rs' LCARS_PZC_ROOT="$v5" LCARS_PZC_SHOW_KIND=1 \
+       LCARS_PZC_SHOW_DETAIL=1 bash "$SCRIPT" proof-zero-collected-test \
+     | grep -q "$v5"; then
+    ok "X10. the fail-closed refusal names the crate/manifest path, not a bare 'Cargo.toml'"
+  else bad "X10. the refusal still says 'Cargo.toml' without naming which one"; fi
+fi
+
+# -- X11. the trigger comment no longer claims something false ---------------
+# Round 2's comment justified the anchored grep by saying it "fires on a
+# commented-out key too". It does not — `# harness = false` never matched an
+# anchored pattern — and a false justification in the source is how the next
+# round gets misled.
+if grep -q 'fires on a commented-out key too' "$SCRIPT"; then
+  bad "X11. the source still carries the false 'fires on a commented-out key too' justification"
+else ok "X11. the false trigger justification is gone from the source"; fi
+
+# ==========================================================================
+# Z. S192 — `make:` DIAGNOSTICS THAT MEAN THE RUNNER NEVER RAN
+#
+# THE DEFECT. Ledgered by S193 as L2, INHERITED (byte-identical at HEAD, not new
+# to that round) and ADOPTED INTO S192 by captain ruling 2026-09-06 because it
+# sits directly on the arm this capstone drives live: the greenfield PYTHON
+# foundation seeds `make test` as the mission's testCommand.
+#
+# On ticket 2's PARENT commit the Makefile — or its `test` target, or the venv
+# its recipe execs — does not exist yet. make prints its OWN diagnostic and
+# exits non-zero, NOT ONE arm of the env pattern matched it, and
+# proof_parent_red_kind fell through to `runner-red`, which the flip-flop gate
+# reads as PROOF that a genuine test ran and failed. A parent commit with no
+# runner manufactured a flip-flop that never happened.
+#
+# THE CRUX, and why every buffer here is CAPTURED from a real `make` run at test
+# time: make prints the SAME recipe-failed line whether its recipe could not be
+# EXECUTED at all or whether it ran a real test runner that failed an assertion.
+# MEASURED on this box — GNU Make 3.81 (macOS /usr/bin/make) reports a failed
+# exec as `Error 1`, the very line a genuine pytest red also produces; GNU Make
+# 4.4.1 reports the same failed exec as `Error 127`. So the exit-status line
+# cannot decide it in either direction, and the rule keys ONLY on make's own
+# runner-absent lines, anchored on its line-start `make:` / `gmake:` /
+# `make[1]:` prefix the way the npm and shell forms already are.
+#
+# Every case comes in PAIRS: the runner-absent diagnostic that must now be
+# INCONCLUSIVE, and the recipe-ran-and-failed red that must STILL be proof.
+# ==========================================================================
+echo "== Z. S192: make's runner-absent diagnostics never read as PROOF =="
+
+MKROOT="$(mktemp -d "$TMPROOT/s192mk.XXXX")"
+mk_run() { # make-bin case-name makefile-content ('' = no Makefile) → the REAL bytes
+  local mkbin="$1" name="$2" content="$3" d="$MKROOT/$2"
+  mkdir -p "$d"
+  [ -n "$content" ] && printf '%s' "$content" > "$d/Makefile"
+  ( cd "$d" && "$mkbin" test 2>&1 )
+}
+# A python that can `-m pytest`, or '' — the greenfield python foundation's real
+# runner. Overridable so a box without a system pytest can still prove this leg.
+py_pytest() {
+  local p
+  for p in "${LCARS_TEST_PYTEST_PY:-}" python3 python; do
+    [ -n "$p" ] || continue
+    command -v "$p" >/dev/null 2>&1 || continue
+    "$p" -c 'import pytest' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+zmake_kind_proofs() { # make-bin label
+  local mkbin="$1" L="$2" cap k
+  cap="$(mk_run "$mkbin" "$L-norule" '')"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z1 ($L). parent has NO Makefile → env-failure, not proof"
+  else bad "Z1 ($L). A PARENT WITH NO RUNNER READ AS A RED (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"; fi
+
+  cap="$(mk_run "$mkbin" "$L-notarget" "$(printf 'all:\n\t@echo hi\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z2 ($L). Makefile with NO test target → env-failure, not proof"
+  else bad "Z2 ($L). a missing test target read as a red (kind='$k')"; fi
+
+  cap="$(mk_run "$mkbin" "$L-nointerp" "$(printf 'test:\n\t.venv/bin/python -m pytest -q\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z3 ($L). the recipe's venv interpreter is absent → env-failure"
+  else bad "Z3 ($L). an absent interpreter read as a red (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"; fi
+
+  cap="$(mk_run "$mkbin" "$L-nobin" "$(printf 'test:\n\tlcars-s192-no-such-runner\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z4 ($L). the recipe's binary is absent (make execs directly) → env-failure"
+  else bad "Z4 ($L). an absent binary read as a red (kind='$k')"; fi
+
+  mkdir -p "$MKROOT/$L-submake/sub"
+  printf 'all:\n\t@echo hi\n' > "$MKROOT/$L-submake/sub/Makefile"
+  cap="$(mk_run "$mkbin" "$L-submake" "$(printf 'test:\n\t$(MAKE) -C sub test\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z5 ($L). the SUB-make prefix (make[1]:/gmake[1]:) → env-failure"
+  else bad "Z5 ($L). a sub-make no-rule read as a red (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"; fi
+
+  # --- THE PAIR: the recipe RAN a real runner and that runner FAILED ---------
+  if have python3; then
+    mkdir -p "$MKROOT/$L-genuine/tests"
+    printf 'import unittest\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1 + 1, 3)\n' \
+      > "$MKROOT/$L-genuine/tests/test_x.py"
+    cap="$(mk_run "$mkbin" "$L-genuine" "$(printf 'test:\n\tpython3 -m unittest discover -s tests\n')")"
+    k="$(printf '%s' "$cap" | prk 'add.py')"
+    if printf '%s' "$cap" | grep -q 'FAILED (failures=1)'; then
+      if [ "$k" = env-failure ]; then
+        bad "Z6 ($L). A GENUINE RED WAS SWALLOWED (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"
+      else ok "Z6 ($L). real unittest failed an assertion under make → kind '$k', still proof"; fi
+    else bad "Z6 ($L). the captured buffer is not a real unittest failure — Z6 proves nothing"; fi
+  else
+    skip "Z6 ($L). python3 absent — the genuine-red-under-make pair did NOT run"
+  fi
+
+  # …and the same pair with the foundation's REAL runner, pytest.
+  local pyp; pyp="$(py_pytest || true)"
+  if [ -n "$pyp" ]; then
+    mkdir -p "$MKROOT/$L-pytest/tests"
+    printf 'def test_add():\n    assert 1 + 1 == 3\n' > "$MKROOT/$L-pytest/tests/test_add.py"
+    cap="$(mk_run "$mkbin" "$L-pytest" "$(printf 'test:\n\t%s -m pytest -q\n' "$pyp")")"
+    k="$(printf '%s' "$cap" | prk 'add.py')"
+    if printf '%s' "$cap" | grep -q '1 failed'; then
+      if [ "$k" = env-failure ]; then
+        bad "Z7 ($L). A GENUINE PYTEST RED UNDER MAKE WAS SWALLOWED (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"
+      else ok "Z7 ($L). REAL pytest failed an assertion under make → kind '$k', still proof"; fi
+    else bad "Z7 ($L). the captured buffer is not a real pytest failure — Z7 proves nothing"; fi
+  else
+    skip "Z7 ($L). no importable pytest — the real pytest-under-make pair did NOT run (set LCARS_TEST_PYTEST_PY)"
+  fi
+}
+
+Z_MK="$(command -v make 2>/dev/null || true)"
+Z_GMK="$(command -v gmake 2>/dev/null || true)"
+if [ -n "$Z_MK" ]; then zmake_kind_proofs "$Z_MK" "make"
+else skip "Z. make not installed — the S192 make-arm kind proofs did NOT run"; fi
+if [ -n "$Z_GMK" ]; then zmake_kind_proofs "$Z_GMK" "gmake"
+else skip "Z. gmake not installed — the GNU-make-4.x prefix/quoting proofs did NOT run"; fi
+
+# --- Z8. the ANCHOR is load-bearing ----------------------------------------
+# S185 and S193 each shipped a defect that came from unanchored matching. These
+# strings are deliberately HAND-WRITTEN: they are not tool transcripts, they are
+# what a suite asserting ON make's error text looks like when it fails, and that
+# is a GENUINE red the gate must keep reading as proof.
+k="$(printf "AssertionError: expected 'ok' to equal \"make: *** No rule to make target 'test'.  Stop.\"\n" | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8a. an assertion QUOTING make's no-rule text mid-line was kinded env (got '$k')"
+else ok "Z8a. an assertion QUOTING make's no-rule text mid-line stays a genuine red ('$k')"; fi
+k="$(printf -- '-      expect(err).toBe("make: .venv/bin/python: No such file or directory")\n+      expect(err).toBe("ok")\n1 failed\n' | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8b. a DIFF quoting make's missing-interpreter line was kinded env (got '$k')"
+else ok "Z8b. a DIFF quoting make's missing-interpreter line stays a genuine red ('$k')"; fi
+k="$(printf 'No rule to make target %stest%s.  Stop.\n1 failed\n' "'" "'" | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8c. the bare phrase with NO make: prefix was kinded env (got '$k')"
+else ok "Z8c. the bare phrase with no make: prefix stays a genuine red — the prefix IS the anchor"; fi
+k="$(printf 'make: *** [Makefile:2: test] Error 1\n' | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8d. make's bare 'Error 1' status line alone was kinded env (got '$k')"
+else ok "Z8d. make's bare 'Error 1' status line alone is NOT an env failure"; fi
+
+# --- Z9/Z10. END TO END, at the real flip-flop gate, with `make test` --------
+# This is the defect's own shape: an initialization mission whose ticket 1 never
+# landed, so ticket 2's PARENT carries no Makefile at all.
+if [ -z "$Z_MK" ] || ! have python3; then
+  skip "Z9/Z10. make or python3 absent — the end-to-end 'make test' legs did NOT run"
+else
+  new_mk_repo() { # parent-files-fn → echoes repo dir with the parent committed
+    local repo; repo="$(mktemp -d "$TMPROOT/s192e2e.XXXX")"
+    ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+    printf '__pycache__/\n' > "$repo/.gitignore"
+    printf '# gf\n' > "$repo/README.md"
+    echo "$repo"
+  }
+
+  # Z9. PARENT HAS NO MAKEFILE. The tip is a perfectly good ticket; the parent
+  # simply has no runner. Before the cure this PASSED — `make: *** No rule to
+  # make target 'test'` was recorded as the red that proved the work.
+  repo="$(new_mk_repo)"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  printf 'test:\n\tpython3 -m unittest discover\n' > "$repo/Makefile"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/add.py"
+  printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$repo/test_add.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='make test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" != 0 ] && grep -q '"kind": "env-failure"' "$ffj" 2>/dev/null; then
+    ok "Z9. 'make test' on a parent with NO Makefile → INCONCLUSIVE (a dead runner is not a red)"
+  else bad "Z9. A PARENT WITH NO RUNNER MANUFACTURED A FLIP-FLOP (FFRC=$FFRC): $(tr -d '\n' < "$ffj" | cut -c1-400)"; fi
+
+  # Z10. THE INVARIANT: a repo that HAS a runner is untouched. Same `make test`,
+  # but the Makefile is already on the parent, so the recipe RUNS and produces
+  # the honest fail-first red (`No module named 'add'` — S193's D2 path) beside
+  # make's own `Error 1`. The new forms must not touch it.
+  repo="$(new_mk_repo)"
+  printf 'test:\n\tpython3 -m unittest discover\n' > "$repo/Makefile"
+  printf 'def greet():\n    return "hello"\n' > "$repo/greet.py"
+  printf 'import unittest\nfrom greet import greet\n\nclass T(unittest.TestCase):\n    def test_greet(self):\n        self.assertEqual(greet(), "hello")\n' > "$repo/test_greet.py"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/add.py"
+  printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$repo/test_add.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='make test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" = 0 ]; then ok "Z10a. a repo that HAS a make runner still PASSES ticket 2 (invariant held)"
+  else bad "Z10a. the flip-flop was weakened for a repo that HAS a runner (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+  if grep -q '"kind": "env-failure"' "$ffj" 2>/dev/null; then
+    bad "Z10b. make's own Error-1 line turned an honest fail-first red into an env failure"
+  else ok "Z10b. make's Error-1 line beside a real fail-first red is NOT an env failure"; fi
+fi
+
+# ==========================================================================
 echo
 printf 'proof-gates: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

@@ -1,0 +1,56 @@
+=== ESTABLISH VISION — THE FOUNDATION BRIEF (read this before anything else) ===
+
+THIS REPO IS EMPTY. Start by asking what we are building, in plain
+language, and keep asking until you could name a stack and defend it.
+
+WHAT YOU ARE PRODUCING is ONE initialization mission whose entire scope is THE
+FOUNDATION:
+
+  1. a running SKELETON — the project boots and shows something;
+  2. a working TEST SYSTEM — a real runner, wired, that a human can watch run;
+  3. ONE THIN VERTICAL SLICE that proves both are genuinely connected.
+
+That is the whole mission. You MUST NOT build the product. You must not plan
+its features, its screens, its data model or its schedule. Every feature the
+captain names is RECORDED and DEFERRED: it goes into the project vision doc and
+becomes a normal LCARS mission once the foundation lands. A vision that
+specifies twelve features has FAILED, not succeeded.
+
+YOU RECOMMEND, YOU DO NOT DECIDE. End by recommending ONE stack — named
+concretely, e.g. "Vite + React + Vitest" — with two to four reasons stated in
+the CAPTAIN'S OWN LANGUAGE, referencing the thing he actually said he wants
+rather than generic marketing copy. The choice is HIS: he may override the
+recommendation with any stack he likes, and the stack he accepts is the one
+that lands in the mission. Never present the recommendation as settled.
+
+WHAT TO HAND BACK when you are done:
+  stack     — the ONE recommended stack, as a short concrete name
+  reasons   — 2–4 reasons, one per line, in his language
+  slice     — the ONE thin vertical slice that proves skeleton + tests together,
+              as a NOUN PHRASE that completes the sentence "One thin vertical
+              slice that proves both: ______" — e.g. "importing a CSV row and
+              showing it". NOT a full sentence, and no trailing full stop.
+  deferred  — every feature he named, one per line, for the vision doc
+
+=== WHAT THE CAPTAIN SAID ===
+
+a website that does personal finance stuff. Basically a Mint clone — budgets,
+charts, bank sync via Plaid, a mobile app, CSV import from my bank,
+recurring-bill detection, multi-currency and a shared household mode. I need it
+shipped by Friday. Also a dark mode toggle, a Chrome extension and email
+digests. Just plan the whole feature list now.
+
+=== YOUR TASK ===
+You have interviewed the captain and he will answer nothing further; he has said
+'whatever you recommend is fine, just go'. Produce the four values the brief
+asks you to hand back, and NOTHING else, in exactly this shape:
+
+STACK: <one line>
+REASONS:
+- <line>
+- <line>
+SLICE: <one line, a noun phrase>
+DEFERRED:
+- <line>
+- <line>
+

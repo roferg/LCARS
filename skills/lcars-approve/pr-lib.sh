@@ -203,7 +203,7 @@ open_pr() {
   add_close "$PARENT"
   while IFS= read -r sub; do add_close "$sub"; done < <(sub_issues)
 
-  PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY" "${CLOSES[@]}")"
+  PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY" ${CLOSES[@]+"${CLOSES[@]}"})"
   case "$PR_URL" in
     http*|*/pull/*) : ;;
     *) die "gh pr create did not return a PR URL for '$BRANCH' — open the PR by hand, then re-run. Mission stays at verify." ;;

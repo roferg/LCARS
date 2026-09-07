@@ -1,0 +1,27 @@
+{
+  "before": {
+    "btnText": "⬡ Holodeck",
+    "btnDisabled": false,
+    "boardDisplay": "flex",
+    "cards": 2,
+    "holoVisible": false,
+    "head": "LCARS · PADD PROJECT ALIGNMENT & DEVELOPMENT DISPLAY — MONO LOCAL ▸ DEPLOY MAIN ⬡ HOLODECK ▦ FILE MISSION ? ● LIVE ⚠ TEST SYSTEMS OFFLINE — THIS REPO HAS A TEST SYSTEM BUT NO TEST "
+  },
+  "inside": {
+    "btnText": "▦ Board",
+    "btnDisabled": false,
+    "boardDisplay": "flex",
+    "cards": 2,
+    "holoVisible": false,
+    "head": "LCARS · PADD PROJECT ALIGNMENT & DEVELOPMENT DISPLAY — MONO LOCAL ▦ BOARD ? ● LIVE PROGRAMS ALL 0 DRAFT 0 SENT 0 DONE 0 No programs yet. Nothing has been run on this deck. ＋ NEW PR"
+  },
+  "back": {
+    "btnText": "⬡ Holodeck",
+    "btnDisabled": false,
+    "boardDisplay": "flex",
+    "cards": 2,
+    "holoVisible": false,
+    "head": "LCARS · PADD PROJECT ALIGNMENT & DEVELOPMENT DISPLAY — MONO LOCAL ▸ DEPLOY MAIN ⬡ HOLODECK ▦ FILE MISSION ? ● LIVE ⚠ TEST SYSTEMS OFFLINE — THIS REPO HAS A TEST SYSTEM BUT NO TEST "
+  },
+  "hash": ""
+}

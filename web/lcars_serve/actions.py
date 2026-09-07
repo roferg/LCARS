@@ -91,6 +91,17 @@ SCRIPT_ENV = {
     # readiness verbs (--test-command / --probe-tests / --fix-tests). The CLI
     # verbs stay the ONE sanctioned config writer; the daemon only dispatches.
     "update": "LCARS_UPDATE_SCRIPT",
+    # S183: the FOUNDATION GATE (skills/lcars-init/foundation-gate.sh) — the ONE
+    # seam that decides whether a repo may take a normal mission at all. The
+    # daemon SHELLS it exactly as it shells readiness.sh; it never reimplements
+    # the verdict in Python (ADR-002), so the board and the CLI can never
+    # disagree about whether this repo has a test foundation.
+    "foundation_gate": "LCARS_FOUNDATION_GATE_BIN",
+    # S184: ESTABLISH VISION (skills/lcars-init/establish-vision.sh) — the ONE
+    # machinery behind both front doors. The daemon shells it for the board's
+    # FOUND panel facts, for the grill's foundation brief, and to FILE the
+    # initialization mission; it assembles none of those itself.
+    "establish_vision": "LCARS_ESTABLISH_VISION_BIN",
 }
 
 
@@ -292,10 +303,163 @@ _ALIGN_HEAL_ANSWER = (
     "every other turn.")
 
 
+# ── S184 fix round 2 — ESTABLISH VISION's MODE OVERRIDE (D2 + D9) ─────────
+#
+# WHAT WAS BROKEN. The vision grill ran the ordinary Align envelope, whose
+# OUTPUT CONTRACT offers exactly two statuses: `question` and `done`. The
+# foundation brief (`establish-vision.sh --brief`) asks the model to hand back
+# stack / reasons / slice / deferred — four things with NO JSON SLOT anywhere in
+# that contract and no parser anywhere in this file. So screen 3 could not be
+# reached by any output a model could legally produce: measured, 0 of 19 live
+# turns, 0 missions filed from the viewscreen.
+#
+# AND the prompt carried TWO FENCES. `SKILL.md` is loaded whole, so its STEP 0
+# ("run foundation-gate.sh; on exit 20 show the refusal and STOP") rode into a
+# session whose entire purpose is to establish the foundation that gate is
+# checking for. Harmless while tools are denied — but two contradictory
+# instructions in one prompt is a coin toss waiting for a tools-granted day.
+#
+# ONE BLOCK CURES BOTH, and it is appended AFTER the skill so it is the last
+# word the model reads. It is added ONLY in vision mode: a normal mission's
+# prompt is byte-identical to what it was.
+_ALIGN_VISION_CONTRACT = """
+
+=== ESTABLISH VISION — MODE OVERRIDE (this session; it wins where it differs) ===
+
+You are running this interview in ESTABLISH VISION mode, against a repo with no
+test foundation. Two things differ from the skill text above.
+
+1. STEP 0 — THE FOUNDATION GATE — DOES NOT APPLY, and you must NOT run it.
+   THIS is the conversation that establishes the foundation, so a gate that
+   refuses work until a foundation exists is unsatisfiable here by construction.
+   The harness has already exempted this session (the filing goes through
+   `lcars file --initialization`, which the gate exempts). Do not run
+   `foundation-gate.sh`, do not print its refusal, and do not stop.
+
+2. THERE IS A THIRD STATUS, and it is how this interview ENDS. When you can
+   fill in the four things the FOUNDATION BRIEF asks you to hand back, do NOT
+   emit status "done" and do NOT author a PRD — the harness writes the PRD and
+   the project vision doc itself, from exactly these fields. Emit:
+
+   {"status":"recommendation",
+    "recommendation":{
+      "stack":"<the ONE recommended stack, a short concrete name>",
+      "reasons":["<a reason, in the captain's own language>", "..."],
+      "slice":"<the NOUN PHRASE completing 'proves both: ______'>",
+      "deferred":["<every feature he named>", "..."]}}
+
+   `stack` is the only required field; the captain accepts or overrides it on
+   his own screen, which is why you recommend rather than decide. Until you can
+   name a stack and defend it, keep emitting ordinary status "question" turns.
+"""
+
+# The one-line reminder a CONTINUATION turn carries. The warm session already
+# holds the block above; this exists because a model that has asked six
+# questions in a row drifts back to the two statuses it saw most recently, and
+# the whole interview is worthless if it cannot end.
+_ALIGN_VISION_REMINDER = (
+    "\n\n(ESTABLISH VISION mode: when you can name the stack, end with the "
+    "{\"status\":\"recommendation\", \"recommendation\":{stack, reasons, "
+    "slice, deferred}} object instead of status \"done\".)")
+
+
 # The keys that mark a parsed object as a WORKER TURN rather than incidental
 # JSON on stdout (a tool argument, a config blob a tool echoed, …). The Align
-# grill emits status/question/prd/adr; the Mission-Log split emits bugs.
-_TURN_KEYS = ("status", "question", "prd", "adr", "bugs")
+# grill emits status/question/prd/adr (and, in vision mode, recommendation); the
+# Mission-Log split emits bugs.
+_TURN_KEYS = ("status", "question", "prd", "adr", "bugs", "recommendation")
+
+
+# ── reading the RECOMMENDATION off a live model's reply ───────────────────
+# S175's ruling, applied: a model's output SHAPE is a lottery, and our own
+# parser has refused the prose our own prompt asked for before. So the reader
+# below accepts the honest shapes rather than only the ideal one — the object
+# under `recommendation`, the same object hung off the `question` wrapper, the
+# fields spread flat across a `status:"recommendation"` turn — and takes lists
+# OR newline-separated prose OR bulleted prose for the two list fields.
+_REC_BULLET = re.compile(r"^[-*\u2022\u2013]\s+")
+
+
+def _vision_text(v):
+    """A scalar field, however it arrived (a string, or a list a model split)."""
+    if isinstance(v, (list, tuple)):
+        v = " ".join(str(x) for x in v)
+    return str(v if v is not None else "").strip()
+
+
+def _vision_lines(v):
+    """A LIST field, however it arrived: a JSON array, a newline-separated
+    string, or either of those with `- ` bullets on the front. The brief asks
+    for these "one per line", which is prose wording — so prose is what a real
+    model hands back about as often as an array."""
+    if isinstance(v, (list, tuple)):
+        items = [str(x) for x in v]
+    else:
+        items = str(v if v is not None else "").splitlines()
+    out = []
+    for it in items:
+        it = _REC_BULLET.sub("", str(it).strip()).strip()
+        if it:
+            out.append(it)
+    return out
+
+
+# The SAME normalisation `establish-vision.sh`'s `ev_norm_slice` and board.js's
+# `frontDoorSlice` already apply — the phrase that completes "proves both: ___",
+# with any restated label and any trailing full stop removed. Three copies is
+# one too many already; a FOURTH opinion, formed in the daemon, would let the
+# screen and the filed mission say different things, which is the exact defect
+# fix round 1 cured on the other two.
+_REC_SLICE_LABEL = re.compile(
+    r"^[^\u2014:]*\b(?:thin(?:\s+vertical)?\s+slice|proves?\s+both)\b"
+    r"[^\u2014:]*[\u2014:]\s*(\S.*)$", re.I | re.S)
+
+
+def _vision_slice(v):
+    t = _vision_text(v)
+    m = _REC_SLICE_LABEL.match(t)
+    if m:
+        t = m.group(1).strip()
+    return t.rstrip(". \t")
+
+
+def _vision_recommendation(turn):
+    """The recommendation a VISION turn is handing back, or None.
+
+    None means "this is still an ordinary turn" — and the test for that is
+    `stack`, because the stack is the entire subject of the screen this unlocks.
+    A hand-back with no stack is a model still thinking out loud, and the grill
+    must go on rather than present the captain an empty decision.
+    """
+    if not isinstance(turn, dict):
+        return None
+    cands = []
+    if isinstance(turn.get("recommendation"), dict):
+        cands.append(turn["recommendation"])
+    q = turn.get("question")
+    if isinstance(q, dict) and isinstance(q.get("recommendation"), dict):
+        cands.append(q["recommendation"])
+    if str(turn.get("status") or "").strip().lower() in (
+            "recommendation", "recommend"):
+        cands.append(turn)
+    for c in cands:
+        stack = ""
+        for k in ("stack", "recommendedStack", "recommended_stack"):
+            stack = _vision_text(c.get(k))
+            if stack:
+                break
+        if not stack:
+            continue
+        return {
+            "stack": stack,
+            "reasons": _vision_lines(c.get("reasons") or c.get("why")),
+            "slice": _vision_slice(c.get("slice")
+                                   or c.get("verticalSlice")
+                                   or c.get("thinSlice")),
+            "deferred": _vision_lines(c.get("deferred")
+                                      or c.get("deferredFeatures")),
+        }
+    return None
 
 
 def _json_objects(text):
@@ -683,10 +847,11 @@ class _AlignSession(object):
 
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
                  "worker_sid", "started", "image_paths", "mission_id",
-                 "last_question", "holodeck",
+                 "last_question", "holodeck", "vision",
                  "turn_started", "finalize_started", "heal_attempts")
 
-    def __init__(self, idea, engine, mission_id=None, holodeck=None):
+    def __init__(self, idea, engine, mission_id=None, holodeck=None,
+                 vision=False):
         # S171 — `holodeck_missing` is gone with `_handoff_missing`; the block
         # above that constant says why, and what risk was accepted.
         self.idea = idea
@@ -701,6 +866,14 @@ class _AlignSession(object):
         # (grill-completion IN PLACE) instead of a fresh `--prd` filing. None ⇒ a
         # normal File-console grill that files a brand-new mission (unchanged).
         self.mission_id = mission_id
+        # S184 fix round 2 — IS THIS AN ESTABLISH VISION GRILL? Set once at
+        # `align_start` and read in three places, all of which used to be
+        # unable to tell the two apart: the prompt (which gains the mode
+        # override), the turn reader (which can then take a RECOMMENDATION off
+        # the reply), and the finalize (which must file through
+        # `--initialization` or be refused by the foundation gate this grill
+        # exists to satisfy). False ⇒ an ordinary mission, byte-identical.
+        self.vision = bool(vision)
         self.transcript = []   # list of {"question":..., "answer":...}
         self.prd = ""
         self.done = False
@@ -5068,6 +5241,171 @@ class Actions(LogFacts):
             pass
 
     # -- public action surface (one per endpoint) -------------------------------
+    # ── S183: THE FOUNDATION GATE on the board ────────────────────────────────
+    # The viewscreen is a VIEWPORT, never a reimplementation (the harness-parity
+    # principle): a repo the CLI refuses to file against must be refused here in
+    # the same words, decided by the same seam
+    # (skills/lcars-init/foundation-gate.sh), which SESSION 184 replaces with the
+    # real Establish Vision flow.
+    #
+    # WHY IT IS ALSO HERE, and not left to file.sh's own gate: `align_start` and
+    # `holodeck_start` HIRE A WORKER before file.sh is ever reached, and the whole
+    # point of the gate is that nothing is hired on a repo with no foundation.
+    #
+    # DEGRADES TO ALLOW on anything it cannot answer — script missing, bad JSON,
+    # non-zero exit, timeout — exactly like `_test_readiness`. It refuses only on
+    # a positive `allowed: false`, never on an absence of information.
+    def _resolve_foundation_gate(self):
+        """The gate helper path: wired script → env → in-repo → installed.
+
+        Mirrors LocalAdapter._resolve_readiness_script rung for rung."""
+        wired = self.scripts.get("foundation_gate")
+        if wired:
+            return wired
+        env = os.environ.get("LCARS_FOUNDATION_GATE_BIN")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "foundation-gate.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-init",
+                            "foundation-gate.sh")
+
+    def _resolve_establish_vision(self):
+        """establish-vision.sh — the ONE Establish Vision machinery, shared with
+        the CLI front door. Same resolution ladder as the foundation gate."""
+        wired = self.scripts.get("establish_vision")
+        if wired and os.path.isfile(wired):
+            return wired
+        env = os.environ.get("LCARS_ESTABLISH_VISION_BIN")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "establish-vision.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-init",
+                            "establish-vision.sh")
+
+    def _vision_brief(self):
+        """The foundation brief for THIS repo (ADR-002: shell it, never restate
+        it here — a second copy of the fence is a second fence to drift). Empty
+        string when the helper cannot be reached, which degrades the grill to a
+        normal Align rather than sinking the console."""
+        try:
+            proc = subprocess.run(
+                ["bash", self._resolve_establish_vision(), "--brief"],
+                cwd=self.repo_root, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
+            return (proc.stdout or b"").decode("utf-8", "replace").strip()
+        except Exception:
+            return ""
+
+    def vision_file(self, idea=None, stack=None, reasons=None, deferred=None,
+                    slice_=None, engine=None):
+        """POST /api/vision/file — file the INITIALIZATION mission.
+
+        The viewscreen's half of BOTH FRONT DOORS, ONE FLOW: it dispatches the
+        SAME `establish-vision.sh --file` the CLI runs, with the same four
+        inputs, so the same answers produce a byte-identical mission whichever
+        door the captain walked through. The daemon assembles no PRD and writes
+        no vision doc of its own — there is one implementation and this is not
+        it.
+
+        `stack` is whatever the captain ACCEPTED — the recommendation or his
+        override. That is the whole point of the override: it is what lands.
+
+        `engine` (S195) is the CLI he picked on the front door, and it rides as
+        a FLAG rather than as $LCARS_WORKER_BIN. That is not a style choice: the
+        env var is injected into EVERY dispatch by `_resolve_run` (the daemon's
+        own `worker_bin`), so an env-var pick would be indistinguishable from
+        the daemon's default and would lose to a persisted workerBin (S159). The
+        flag is the top of file.sh's one precedence, and establish-vision.sh
+        hands it straight down.
+        """
+        stack = (stack or "").strip()
+        if not stack:
+            raise ActionError(400, "missing required field: stack")
+        idea = (idea or "").strip()
+        tmp = []
+
+        def _tmpfile(text):
+            fd, path = tempfile.mkstemp(suffix=".txt")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(text)
+            tmp.append(path)
+            return path
+
+        def _lines(v):
+            if isinstance(v, (list, tuple)):
+                return "\n".join(str(x).strip() for x in v if str(x).strip())
+            return str(v or "").strip()
+
+        try:
+            args = ["--file", "--idea", _tmpfile(idea + "\n"), "--stack", stack]
+            eng = (engine or "").strip()
+            if eng:
+                args += ["--engine", eng]
+            r = _lines(reasons)
+            if r:
+                args += ["--reasons", _tmpfile(r + "\n")]
+            d = _lines(deferred)
+            if d:
+                args += ["--deferred", _tmpfile(d + "\n")]
+            sl = (slice_ or "").strip()
+            if sl:
+                args += ["--slice", sl]
+            # Dispatched through the SAME `_run` every other skill goes
+            # through (one env wiring, one failure shape), with the script
+            # resolved lazily so a daemon started before this round still finds
+            # it.
+            if not self.scripts.get("establish_vision"):
+                self.scripts["establish_vision"] = self._resolve_establish_vision()
+            self._run("establish_vision", args)
+        finally:
+            for p in tmp:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        return self._reader.board()
+
+    def _foundation_verdict(self):
+        """{"foundation","allowed","message"} from the shared seam, or None."""
+        script = self._resolve_foundation_gate()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--json"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=20)
+            blk = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+            if isinstance(blk, dict) and "allowed" in blk:
+                return blk
+        except Exception:
+            return None
+        return None
+
+    def _require_foundation(self, what="file a mission"):
+        """Raise 409 with the seam's own words when this repo has no foundation.
+
+        409 CONFLICT, not 400: nothing about the captain's REQUEST is wrong —
+        the repo is in a state that cannot take one yet. `data.foundation` lets
+        the front end lock the affordance without re-asking."""
+        blk = self._foundation_verdict()
+        if not blk or blk.get("allowed") is not False:
+            return
+        msg = (blk.get("message") or "").strip() or (
+            "This repo has no test foundation yet, so LCARS cannot %s here. "
+            "Start with Establish Vision." % what)
+        raise ActionError(409, msg,
+                          {"foundation": blk.get("foundation") or "greenfield",
+                           "establishVision": True})
+
     def file_mission(self, idea, engine=None, mission_type="feature",
                      images=None, holodeck=None, holodeck_scope=None,
                      holodeck_answers=None):
@@ -5088,6 +5426,7 @@ class Actions(LogFacts):
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
+        self._require_foundation("file a mission")
         holo, handoff = self._handoff_attach(holodeck)
         mtype = "bug" if str(mission_type).strip().lower() == "bug" else "feature"
         # The TITLE comes from what the CAPTAIN wrote, before the guidance block
@@ -5143,6 +5482,7 @@ class Actions(LogFacts):
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
+        self._require_foundation("file a mission")
         # S127 — a holodeck hand-off travels this road too, and it is the one
         # the deck's ▦ FILE MISSION uses: the card lands on the board instantly
         # with the mockup and the concept doc already in its attachments/, and
@@ -5179,7 +5519,8 @@ class Actions(LogFacts):
 
     # -- the interactive Align grilling console (S70-B) --------------------------
     def align_start(self, idea, engine=None, images=None, mission_id=None,
-                    holodeck=None, holodeck_scope=None, holodeck_answers=None):
+                    holodeck=None, holodeck_scope=None, holodeck_answers=None,
+                    vision=False):
         """POST /api/align/start — open a multi-turn Align session.
 
         OPENS ONE warm, resumable worker session (BUG-B) driving the existing
@@ -5198,6 +5539,20 @@ class Actions(LogFacts):
         fresh filing). A normal (no mission_id) call is BYTE-IDENTICAL to today.
         """
         mid = (mission_id or "").strip() or None
+        # S183 — the Align console HIRES A WORKER on its very first turn, so the
+        # foundation gate has to fire before the session is opened, not after
+        # file.sh eventually refuses. Completing an ALREADY-PARKED mission (mid)
+        # is deliberately exempt: that mission was accepted before the gate and
+        # the captain is finishing work already begun, exactly as `file.sh
+        # --complete` is exempt on the CLI.
+        # S184 — ESTABLISH VISION runs THIS grill, not a second interviewer
+        # (brief item 5): it is Align pointed at a PROJECT instead of a feature.
+        # So it is exempt from the gate for the same reason `file.sh
+        # --initialization` is: this is the conversation that ESTABLISHES the
+        # foundation, and gating it on the foundation existing would make the
+        # gate unsatisfiable. Every OTHER way into this console still hits it.
+        if not mid and not vision:
+            self._require_foundation("start an alignment")
         seed_paths = []
         if mid:
             # the parked mission must exist (404 otherwise) and still be parked.
@@ -5226,6 +5581,21 @@ class Actions(LogFacts):
             seed_paths = [p for p in self._parked_attachment_paths(mid)
                           if _is_image_path(p)]
         idea = (idea or "").strip()
+        if vision:
+            # THE SCOPE FENCE, IN THE GRILL'S OWN WORDS. The brief comes from
+            # `establish-vision.sh --brief` — the SAME text the CLI front door
+            # prints — so the model and the captain are reading one contract and
+            # a viewscreen grill cannot quietly run under a different fence than
+            # a CLI one. It is prepended to the idea exactly as the holodeck
+            # hand-off prepends its brief: the interview machinery below is
+            # untouched.
+            brief = self._vision_brief()
+            if not idea and brief:
+                # `untested`: the front door does NOT ask what we are building,
+                # so there is no idea to send. The brief IS the opening turn.
+                idea = brief
+            elif brief:
+                idea = brief + "\n\n=== WHAT THE CAPTAIN SAID ===\n\n" + idea
         if not idea:
             raise ActionError(400, "missing required field: idea")
         # S127 — the OTHER hand-off road: grill first, then file. The program is
@@ -5244,7 +5614,8 @@ class Actions(LogFacts):
                                       concept, holodeck_answers)
         sid = uuid.uuid4().hex[:12]
         sess = _AlignSession(idea=idea, engine=(engine or "").strip() or None,
-                             mission_id=mid, holodeck=holo_sid)
+                             mission_id=mid, holodeck=holo_sid,
+                             vision=bool(vision))
         with self._align_lock:
             self._align[sid] = sess
         # the captain may paste an image on the File idea box (this first turn);
@@ -5316,6 +5687,22 @@ class Actions(LogFacts):
         status = turn.get("status")
         if turn.get("prd"):
             sess.prd = turn["prd"]
+        # S184 fix round 2 (D2) — THE RECOMMENDATION IS AN ANSWER TO THE
+        # CAPTAIN, NOT A FILING. In vision mode the interview ends by handing
+        # back stack / reasons / slice / deferred; the harness does not author a
+        # PRD from it here — the captain accepts or overrides the stack on
+        # screen 3 and `/api/vision/file` runs `establish-vision.sh --file`,
+        # which is the ONE thing that writes the PRD and the vision doc.
+        #
+        # It is read BEFORE the done branch on purpose. A model that emits a
+        # recommendation AND `status:"done"` has decided the stack for the
+        # captain, and the brief's rule is "YOU RECOMMEND, YOU DO NOT DECIDE" —
+        # so the screen wins, and the session stays open behind it.
+        if sess.vision:
+            rec = _vision_recommendation(turn)
+            if rec:
+                return {"sessionId": sid, "status": "recommendation",
+                        "recommendation": rec, "prd": sess.prd}
         if status == "done":
             sess.done = True
             # S92 — the grill's accumulated staged images (sess.image_paths) become
@@ -5460,7 +5847,8 @@ class Actions(LogFacts):
                         image_paths=attach)
                 else:
                     board = self._file_from_align(
-                        turn, engine=sess.engine, image_paths=attach)
+                        turn, engine=sess.engine, image_paths=attach,
+                        initialization=sess.vision)
                 return board, turn
             except ActionError as exc:
                 if exc.skill_exit != _PRD_REDRAFTABLE_EXIT:
@@ -5546,8 +5934,18 @@ class Actions(LogFacts):
         out.draft_path = exc.draft_path
         return out
 
-    def _file_from_align(self, turn, engine=None, image_paths=None):
+    def _file_from_align(self, turn, engine=None, image_paths=None,
+                         initialization=False):
         """Persist a finished Align turn via file.sh (ADR-002 dispatch).
+
+        S184 fix round 2 (D4) — `initialization` carries the vision grill's ONE
+        exemption to file.sh. `lcars file` refuses a repo with no test
+        foundation (S183, exit 4) and exempts exactly one filing:
+        `--initialization`, the mission that BUILDS that foundation. Until this,
+        the only caller passing it was `establish-vision.sh --file`, so a
+        vision-mode grill that reached `status:"done"` finalized through the
+        ordinary lane and was refused by the gate it exists to satisfy. False on
+        every other road, which is every road but this one.
 
         `engine` is the per-session chosen engine: it is threaded to file.sh as
         $LCARS_WORKER_BIN so file.sh persists it as state.json.workerBin (S67),
@@ -5570,6 +5968,8 @@ class Actions(LogFacts):
         if adr and adr.lower() != "null":
             adr_path = self._tmp_prd(adr + "\n")
         args = ["--prd", prd_path]
+        if initialization:
+            args = ["--initialization"] + args
         if adr_path:
             args += ["--adr", adr_path]
         ov = (turn.get("modelOverride") or "").strip()
@@ -6042,13 +6442,22 @@ class Actions(LogFacts):
             if sess.transcript:
                 last = sess.transcript[-1]
                 answer = last.get("answer") or ""
-            return ("The captain's answer: %s\n\n"
-                    "Produce the next turn now, as a single JSON object "
-                    "(the same output contract as before)." % answer)
+            out = ("The captain's answer: %s\n\n"
+                   "Produce the next turn now, as a single JSON object "
+                   "(the same output contract as before)." % answer)
+            if getattr(sess, "vision", False):
+                out += _ALIGN_VISION_REMINDER
+            return out
         skill = _load_skill(_FILE_SKILL)
-        parts = [_ALIGN_ENVELOPE, skill,
-                 "\n=== the captain's idea ===\n", sess.idea,
-                 "\n\nAsk the FIRST question now, as a single JSON object."]
+        parts = [_ALIGN_ENVELOPE, skill]
+        # S184 fix round 2 (D2 + D9) — AFTER the skill, so it is the last word
+        # the model reads: it both cancels STEP 0 (unsatisfiable in this very
+        # conversation) and opens the third status the recommendation screen is
+        # reached through. Vision sessions only.
+        if getattr(sess, "vision", False):
+            parts.append(_ALIGN_VISION_CONTRACT)
+        parts += ["\n=== the captain's idea ===\n", sess.idea,
+                  "\n\nAsk the FIRST question now, as a single JSON object."]
         return "".join(parts)
 
     def _worker_turn(self, prompt, engine=None, outdir=None,
@@ -6205,6 +6614,12 @@ class Actions(LogFacts):
               different tools AND different cwds, and resuming one warm session
               across that switch is a behaviour no spike has measured.
         """
+        # S183 — THE HOLODECK IS LOCKED UNTIL A FOUNDATION EXISTS (captain
+        # ruling, 2026-09-05). A mockup whose only road out is ▦ FILE MISSION is
+        # a dead end on a repo that cannot take a mission, and a `grounding` pass
+        # HIRES A WORKER to read a project that does not exist yet. The lock is
+        # lifted the moment an initialization mission lands (S185, at approve).
+        self._require_foundation("open the holodeck")
         if images:
             # STARTING a program from an image is not built: `start` opens the
             # room and (on `grounding`) reads the captain's project — there is
@@ -13235,6 +13650,13 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
             home, ".claude/skills/lcars-version/check.sh"),
         # S146: the update skill carries the sanctioned test-readiness verbs.
         "update": os.path.join(home, ".claude/skills/lcars-update/update.sh"),
+        # S183: the foundation gate — the ONE seam that decides whether this
+        # repo may take a normal mission (and open the holodeck) at all.
+        "foundation_gate": os.path.join(
+            home, ".claude/skills/lcars-init/foundation-gate.sh"),
+        # S184 — Establish Vision, resolved like every other skill.
+        "establish_vision": os.path.join(
+            home, ".claude/skills/lcars-init/establish-vision.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():

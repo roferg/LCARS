@@ -1,0 +1,10 @@
+CLI gate: rc=20
+CLI readiness: {"status":"unknown","suggestion":null,"testCommand":null,"stacks":null,"candidates":null,"foundation":"untested","foundationWhy":"this repo has code and no test system"}
+daemon http://127.0.0.1:57859/
+board meta: {"repo": "uninit-untested", "adapter": "local", "mode": "read-write"}
+  file         409  body: {"ok": false, "error": "\u25c7 NO TEST FOUNDATION \u2014 this repo cannot run a normal mission yet.\n\nThis repo has code, but no test system \u2014 nothing here can prove that a change works.\n\nEver
+  park         409  body: {"ok": false, "error": "\u25c7 NO TEST FOUNDATION \u2014 this repo cannot run a normal mission yet.\n\nThis repo has code, but no test system \u2014 nothing here can prove that a change works.\n\nEver
+  holodeck     409  body: {"ok": false, "error": "\u25c7 NO TEST FOUNDATION \u2014 this repo cannot run a normal mission yet.\n\nThis repo has code, but no test system \u2014 nothing here can prove that a change works.\n\nEver
+missions on disk: 
+tests/drives/s183b/verify/uninit-http.sh: line 25: 11538 Terminated: 15          ( cd "$LCARS_SRC/web" && exec env -u LCARS_SERVE_PORT PATH="$SHIM:$PATH" LCARS_SERVE_NO_OPEN=1 LCARS_VERSION_CHECK=0 LCARS_WORKER_BIN="$SHIM/claude" LCARS_GH_BIN="$SHIM/claude" python3 -m lcars_serve --port 0 --repo-root "$p" ) > "$OUT/daemon.log" 2>&1
+SPAWNS=0

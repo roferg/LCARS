@@ -57,10 +57,44 @@ MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
 
 # --- verify the Claude CLI ------------------------------------------------
-if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+# S195 — through the SHARED detector (lcars-common.sh `lcars_engine_available`),
+# which is this exact `command -v "${LCARS_CLAUDE_BIN:-claude}"` check, named.
+# Same binary, same env seam, same message: what changes is that the front
+# door's engine picker and this check can no longer answer "is claude installed"
+# differently.
+if ! lcars_engine_available claude; then
   die "Claude CLI not found (looked for '$CLAUDE_BIN'). Install it from https://claude.com/claude-code and re-run."
 fi
 CLAUDE_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null | head -1)"
+
+# --- S182: seed the first commit on an UNBORN HEAD ------------------------
+# LCARS proves every ticket against its PARENT COMMIT — the ticket's tests must
+# be RED on the parent and GREEN on the tip. A repo with no commits has no
+# parent, so Implement used to die on it mid-ticket: one `git commit` standing
+# between the captain and a working mission, discovered at the worst possible
+# moment (after the Mission was filed, researched, planned and scheduled).
+# Seed it HERE, at setup, where it costs nothing and can be announced.
+#
+# NON-DESTRUCTIVE BY CONSTRUCTION. This uses plumbing (empty tree → commit-tree
+# → update-ref) rather than `git commit --allow-empty`, because on an unborn
+# HEAD a captain may already have files STAGED and `git commit` would sweep them
+# into a commit LCARS invented. The plumbing path never reads or writes the
+# index or the working tree: the seeded commit is empty, and whatever the
+# captain had staged is still staged afterwards.
+#
+# Idempotent: a repo that already has a HEAD is not touched at all.
+SEEDED_INITIAL_COMMIT=0
+if ! git -C "$TOPLEVEL" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  SEED_TREE="$(git -C "$TOPLEVEL" hash-object -w -t tree /dev/null 2>/dev/null)"
+  SEED_COMMIT=""
+  [ -n "$SEED_TREE" ] && SEED_COMMIT="$(git -C "$TOPLEVEL" commit-tree "$SEED_TREE" \
+      -m "initial commit (seeded by lcars init)" 2>/dev/null)"
+  if [ -n "$SEED_COMMIT" ] && git -C "$TOPLEVEL" update-ref HEAD "$SEED_COMMIT" 2>/dev/null; then
+    SEEDED_INITIAL_COMMIT=1
+  else
+    SEEDED_INITIAL_COMMIT=2   # usually a missing user.name / user.email
+  fi
+fi
 
 # --- LOCAL: scaffold .git/lcars/ -----------------------------------------
 mkdir -p "$MISSIONS_DIR"
@@ -127,6 +161,42 @@ case "$STACK" in
     TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
     ;;
 esac
+
+# S183 fix round 1 (D1) — DETECTION IS NOT A FOUNDATION.
+#
+# MEASURED: a repo whose only `test` script is npm's default
+# `echo "Error: no test specified" && exit 1` was refused by the foundation gate
+# BEFORE `lcars init` and ALLOWED after it. `_dtc_js` claims any package.json
+# carrying a "test" key and falls back to a bare `npm test --`, so init seeded
+# that placeholder into config; the readiness status axis then read `ready`
+# (the command's first token resolves), and the foundation axis followed it.
+# Init always precedes file, so the attack only ever failed in a repo no captain
+# is ever in — and init's OWN probe printed "✗ PROBE FAILED … Error: no test
+# specified" in the very run that flipped the verdict to ready.
+#
+# THE DISTINCTION IS PROVENANCE, NOT AUTHENTICITY. This is emphatically NOT a
+# mechanical check that a runner is genuine — that question was attacked three
+# ways and beaten (greenfield-dev.md, *What we are NOT changing*). It is one
+# line about who chose the command:
+#
+#   • `$LCARS_TEST_CMD` / `lcars update --test-command` — the CAPTAIN'S RULING.
+#     Honoured exactly as before, on any repo, with no evidence required.
+#   • a candidate LCARS DETECTED — a guess. A guess may configure a test system
+#     the repo already has; it may not MANUFACTURE one the evidence denies.
+#
+# So a detected candidate is dropped when, and only when, the repo carries no
+# positive evidence of a test system at all (lcars_test_system_evidence — the
+# same oracle the gate and the readiness line read, so they cannot disagree).
+# Every repo with real test infrastructure seeds exactly what it seeded before.
+if [ -n "$TEST_CMD" ] && [ -z "${LCARS_TEST_CMD:-}" ] \
+   && ! lcars_test_system_evidence >/dev/null 2>&1; then
+  printf '  ⚠ a `test` script is present but there is no test system behind it — no testCommand seeded.\n' >&2
+  printf '    LCARS found no test files, no test framework and no runner in this repo, so the\n' >&2
+  printf '    detected command would prove nothing. Establish Vision lays the foundation; if\n' >&2
+  printf '    this repo DOES have a test system LCARS cannot see, name it yourself:\n' >&2
+  printf '    lcars update --test-command '"'"'<command>'"'"'\n' >&2
+  TEST_CMD=""
+fi
 
 if [ -n "$TEST_CMD" ]; then
   TESTCMD_VALUE="\"$(lcars_json_escape "$TEST_CMD")\""; TESTCMD_HUMAN="$TEST_CMD"
@@ -358,6 +428,10 @@ fi
 
 # --- OUTPUT: readiness summary --------------------------------------------
 echo "  ✓ .git/lcars/ created"
+case "$SEEDED_INITIAL_COMMIT" in
+  1) echo "  ✓ seeded an empty initial commit — LCARS proves work against a parent commit (tests red on the parent, green on the tip); your staged/untracked files were left exactly as they were" ;;
+  2) echo "  ⚠ this repo has no commits and one could not be seeded (is git user.name/user.email set?) — LCARS proves work against a parent commit, so make the first one yourself: git commit --allow-empty -m \"initial commit\"" ;;
+esac
 echo "  ✓ config.json written  (stack: $PERSISTED_STACK, model: $PERSISTED_MODEL, context: $PERSISTED_CONTEXT, tests: $PERSISTED_TESTCMD)"
 [ -n "${LCARS_CONFIG_ADDED_KEYS:-}" ] && echo "    keys seeded: $LCARS_CONFIG_ADDED_KEYS"
 echo "  ✓ Claude CLI verified  ($CLAUDE_VERSION)"
@@ -406,4 +480,17 @@ if [ "${LCARS_TESTREADY_STATUS:-}" = "ready" ] && [ -z "${LCARS_INIT_SKIP_PROBE:
           echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes." ;;
   esac
 fi
-echo "  LCARS ready — run \`lcars file\` to start your first Mission."
+# THE LAST LINE IS THE CALL TO ACTION, so it has to be true (S183 fix round 1,
+# D5). It said "run `lcars file`" unconditionally — two lines after the readiness
+# line had said "Start it with Establish Vision", on a repo where `lcars file` is
+# now REFUSED by the foundation gate. Measured on blank, README-only and
+# code-without-tests repos. Same verdict the gate reads, so they cannot diverge.
+case "${LCARS_TESTREADY_FOUNDATION:-}" in
+  greenfield|untested)
+    echo "  LCARS ready — this repo has no test foundation yet, so start with Establish Vision;"
+    echo "  normal missions (\`lcars file\`) unlock the moment the initialization mission lands."
+    ;;
+  *)
+    echo "  LCARS ready — run \`lcars file\` to start your first Mission."
+    ;;
+esac

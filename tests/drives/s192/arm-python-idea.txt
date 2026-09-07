@@ -1,0 +1,5 @@
+I want a small Python command-line tool called `warmup` that reads a JSON file
+of exercises and prints a randomised warm-up routine of a requested duration,
+never repeating an exercise within the same routine and always ending with a
+stretch. `warmup 10` gives me ten minutes. Python, because I want to extend it
+easily.

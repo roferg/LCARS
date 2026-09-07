@@ -17,6 +17,7 @@ github/view-only daemon is built with `actions=None`, so the GET read/render
 path keeps working with the GitHub adapter ALONE and every write is declined
 with 403. Each write shells out to the matching `lcars` skill (ADR-002):
   POST /api/align/start                  open an Align grilling   → worker turn
+  POST /api/vision/file                  file the initialization mission (S184)
   POST /api/align/<sid>/answer           next interview turn      → worker turn
   POST /api/align/<sid>/cancel           reap the Align session   → no spend
                                          (on done → file.sh)
@@ -437,8 +438,22 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 return actions.set_test_command(body.get("testCommand"))
             if path == "/api/config/probe-tests":
                 return actions.probe_tests()
+            # POST /api/vision/file — S184: file the INITIALIZATION mission
+            # from the front door. A LOCAL-adapter write like the Align family
+            # (a read-only / github build has actions=None and already 403'd).
+            if path == "/api/vision/file":
+                return actions.vision_file(idea=body.get("idea"),
+                                           stack=body.get("stack"),
+                                           reasons=body.get("reasons"),
+                                           deferred=body.get("deferred"),
+                                           slice_=body.get("slice"),
+                                           # S195 — the front door's engine
+                                           # pick: it drives the mission it
+                                           # files and becomes the repo default.
+                                           engine=body.get("engine"))
             if path == "/api/align/start":
                 return actions.align_start(idea=body.get("idea"),
+                                           vision=bool(body.get("vision")),
                                            engine=body.get("engine"),
                                            images=self._images(body),
                                            mission_id=body.get("missionId"),

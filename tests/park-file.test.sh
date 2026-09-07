@@ -108,8 +108,15 @@ new_repo() {
       && GIT_AUTHOR_DATE="2026-05-30T00:00:00Z" GIT_COMMITTER_DATE="2026-05-30T00:00:00Z" \
          git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
+  # S183: a CONFIGURED test command, so this fixture is a repo with a test
+  # FOUNDATION. `lcars file` now refuses to open a normal mission on a repo that
+  # has none (greenfield/untested) and points at Establish Vision instead — so a
+  # suite about the MECHANICS of filing has to file against a repo that can
+  # actually be filed against. `true` resolves via `command -v`, which is all the
+  # readiness verdict asks of a command. The gate itself is proven in
+  # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-05-30T00:00:00Z" }
+{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
 EOF
   echo "$repo"
 }

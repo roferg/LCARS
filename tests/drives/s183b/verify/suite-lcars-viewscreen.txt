@@ -1,0 +1,41 @@
+lcars-viewscreen: launcher + Kanban daemon smoke (+ serve alias)
+  [32mPASS[0m serve.sh power-alias shim exists
+  [32mPASS[0m serve.sh shim execs viewscreen.sh
+  [32mPASS[0m SKILL.md exists
+  [32mPASS[0m SKILL.md has NO ~/.claude/skills/lcars-viewscreen path
+  [32mPASS[0m SKILL.md documents the on-PATH lcars-viewscreen command
+  [32mPASS[0m SKILL.md documents the lcars-serve alias
+  [32mPASS[0m AI-guard (claude): non-zero exit
+  [32mPASS[0m AI-guard (claude): did NOT reach the daemon
+  [32mPASS[0m AI-guard (claude): copy-paste cd + command
+  [32mPASS[0m AI-guard (claude): explains the why (sandbox)
+  [32mPASS[0m AI-guard (claude): tells you to open a Terminal
+  [32mPASS[0m AI-guard (copilot): non-zero exit
+  [32mPASS[0m AI-guard (copilot): copy-paste command
+  [32mPASS[0m AI-guard: LCARS_VIEWSCREEN_ALLOW_AI=1 bypasses → daemon reached
+  [32mPASS[0m no AI session → no guard, daemon reached
+  [32mPASS[0m daemon comes up and answers /api/board
+  [32mPASS[0m startup banner reads 'LCARS viewscreen'
+  [32mPASS[0m startup banner no longer says 'LCARS serve'
+  [32mPASS[0m /api/board is the board shape (has columns)
+  [32mPASS[0m /api/board places the mission in implement
+  [32mPASS[0m / serves the static board HTML
+  [32mPASS[0m shares the docs/lcars.css token set
+  [32mPASS[0m /api/mission/<id> has an activity feed
+  [32mPASS[0m view-only: write action declined (403)
+  [32mPASS[0m serve alias: launches the same daemon (answers /api/board)
+  [32mPASS[0m serve alias: same 'LCARS viewscreen' banner
+  [32mPASS[0m github adapter: viewscreen.sh derives --gh-repo from remote
+  [32mPASS[0m github adapter: explicit LCARS_SERVE_GH_REPO overrides derivation
+  [32mPASS[0m local adapter: no --gh-repo injected
+  [32mPASS[0m github adapter: missing gh degrades (launch still proceeds)
+  [32mPASS[0m read+write daemon comes up
+  [32mPASS[0m POST /pause accepted by write daemon
+  [32mPASS[0m pause dispatch reached the skill stub
+  [32mPASS[0m launcher forwards --open to the daemon
+  [32mPASS[0m cardControls resolves the queued state before the Start fallthrough
+  [32mPASS[0m queued card renders a DISABLED affordance, never a live Start
+  [32mPASS[0m renderLogPreview drives an images pill off each child's images
+  [32mPASS[0m renderLogPreview emits a themed 'pill img' chip
+
+lcars-viewscreen: ALL PASS (38)

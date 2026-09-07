@@ -1,0 +1,11 @@
+Budgets
+Charts
+Bank sync via Plaid
+Mobile app
+CSV import from bank (full feature)
+Recurring-bill detection
+Multi-currency
+Shared household mode
+Dark mode toggle
+Chrome extension
+Email digests

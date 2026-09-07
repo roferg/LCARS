@@ -423,8 +423,15 @@ check "4e. greenfield + nothing found: exits ZERO (expected, not an error)" \
   "[ '$rcF5' -eq 0 ]"
 check "4e. greenfield + nothing found: bootstrap voice as the OUTCOME" \
   "grep -qi 'engineering crew' '$repoF5/outF5.txt'"
-check "4e. greenfield + nothing found: filing named unaffected" \
-  "grep -qi 'filing' '$repoF5/outF5.txt'"
+# S183 CHANGED WHAT IS TRUE HERE. "filing is unaffected" was S146's honest
+# reading — a greenfield repo could still file a normal Mission. It cannot any
+# more: the foundation gate refuses one and points at Establish Vision. The
+# assertion now pins the CURRENT promise (an initialization mission's crew
+# establishes the test systems) rather than the retired one.
+check "4e. greenfield + nothing found: the outcome names what happens next" \
+  "grep -qi 'establish vision' '$repoF5/outF5.txt'"
+check "4e. greenfield + nothing found: never claims filing is unaffected" \
+  "! grep -qi 'filing is unaffected' '$repoF5/outF5.txt'"
 check "4e. greenfield + nothing found: config untouched" \
   "[ \"\$(md5f '$repoF5/.git/lcars/config.json')\" = '$cfgF5_before' ]"
 check "4e. greenfield + nothing found: NOT the repair-failure voice" \

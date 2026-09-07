@@ -1,0 +1,43 @@
+{
+ "frontDoorVisible": true,
+ "bodyClass": "lcars-serve on-front-door",
+ "columnsInDom": 0,
+ "visibleColumns": 0,
+ "cardsInDom": 0,
+ "visibleCards": 0,
+ "fileBtnPresent": true,
+ "fileBtnDisabled": true,
+ "frontDoorButtons": [
+  {
+   "label": "Budget/expense tracker (log & categorize spending) · recommended",
+   "disabled": false,
+   "visible": true
+  },
+  {
+   "label": "Investment / portfolio tracking",
+   "disabled": false,
+   "visible": true
+  },
+  {
+   "label": "Bill reminders & recurring payments",
+   "disabled": false,
+   "visible": true
+  },
+  {
+   "label": "Something else",
+   "disabled": false,
+   "visible": true
+  },
+  {
+   "label": "▸ Continue",
+   "disabled": false,
+   "visible": true
+  },
+  {
+   "label": "Paste a spec instead",
+   "disabled": false,
+   "visible": true
+  }
+ ],
+ "frontDoorText": "◇ Establishing visionLet's talk it through.One question at a time. Answer in your own words, or pick one of the options. Nothing is filed until you have approved a recommendation you are free to refuse.Let’s pin down what this actually is before we talk stack — my read is a budget/expense tracker: you log transactions, sort them into categories, and see where your money goes. Does that match what’s in your head?Budget/expense tracker (log & categorize spending) · recommendedInvestment / portfolio trackingBill reminders & recurring paymentsSomething else▸ ContinuePaste a spec insteadAlready have tests LCARS can't see? Point it at them: lcars update --test-command '<command>'"
+}

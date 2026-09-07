@@ -1,0 +1,4 @@
+It's a website for personal finance stuff, and this gets a React web app booting fast
+You want charts and budgets that feel snappy in the browser — Vite gives instant feedback while building
+Vitest is wired in from the start so the test system is real and watchable, not bolted on later
+One familiar JavaScript stack keeps the door open for the mobile app and Chrome extension you named, without deciding them now

@@ -1,0 +1,37 @@
+  ok   A1. npx 'npm error could not determine executable to run' → env failure
+  ok   A2. legacy 'npm ERR!' no-binary phrasing → env failure
+  ok   A3. quoted npx phrase inside an assertion does not match
+  ok   C1a. dead runner → mission parked awaiting-human (rc 0)
+  ok   C1b. pending question names the test-runner problem
+  ok   C1c. NO worker was spawned (preflight fired before Phase 1)
+  ok   C2. healthy runner → preflight passes and Phase 1 spawns the worker
+  ok   D1. stale worktree registration self-heals (prune + retry → real worktree)
+  ok   D2a. unrecoverable worktree-add failure exits non-zero (no silent fallback)
+  ok   D2b. the failure names the worktree cut
+  ok   D3. branch-less mission keeps the quiet empty fallback
+  ok   E1. dirty main tree → wrong-tree note names checkout + paths
+  ok   E2. clean main tree → no note
+  ok   E3. non-isolated run → no note (main tree edits are the build itself)
+  ok   F1a. replay lands the commit (REPLAY-OK)
+  ok   F1b. the commit is on the mission branch
+  ok   F1c. main checkout HEAD + working tree byte-identical (sovereignty)
+  ok   F1d. no landing worktree left behind
+  ok   F2a. captain-held branch → loud failure naming the holder
+  ok   F2b. the captain's checkout was left exactly where they put it
+  ok   G1a. no testCommand → mission parked awaiting-human (rc 0, not a die)
+  ok   G1b. ZERO worker invocations — the PATH-shimmed claude/copilot never ran
+  ok   G1c. the park names the real problem (no testCommand is configured)
+  ok   G1d. the park never says 'inconclusive' — it names the missing runner
+  ok   G1e. greenfield stack (readiness 'unknown') → the readiness verdict is CITED
+  ok   G1f. and it says what to do next (establish a runner / lcars update)
+  ok   G2a. non-greenfield repo with no testCommand also parks with ZERO spend
+  ok   G2b. plain no-runner wording — the greenfield verdict is NOT cited
+  ok   G2c. and it still names the missing testCommand + the way to set it
+  ok   G3a. a configured testCommand still reaches the worker (no new wall)
+  ok   G3b. and it is never given the no-runner park message
+  ok   G4a. a repo with NO commits parks awaiting-human instead of dying
+  ok   G4b. and the park names the real problem (the repo has no commits)
+  ok   G4c. and it hands the captain the exact command that unblocks it
+  ok   G4d. ZERO worker invocations on the unborn-HEAD path
+
+red-gate-preflight: 35 passed, 0 failed

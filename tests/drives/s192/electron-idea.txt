@@ -1,0 +1,4 @@
+This is Shiplog, an existing Electron desktop app with a React renderer. I am
+NOT asking you to build a feature. It has no test setup at all and I want a
+real test foundation put under it before I touch it again — one that actually
+exercises the code that runs in Electron, not just the browser-side React.

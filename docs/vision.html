@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: vision.md sha256:d447de84c72da30a6552d66b0e75b38f71e5a0c2575f3a83b5eb3a5035a84616 -->
+<!-- lcars-docs-src: vision.md sha256:e0e2044e80dafe673f09a35a765b04615646417f203f1414eac3e04bb463fb69 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -41,6 +41,7 @@
       <div class="nav-label">Overview</div>
       <a href="#what"><div class="dot"></div>What Is LCARS?</a>
       <a href="#mission"><div class="dot"></div>The Mission</a>
+      <a href="#day-zero"><div class="dot"></div>Day Zero <span class="nav-badge">no foundation</span></a>
       <a href="#holodeck"><div class="dot"></div>The Holodeck <span class="nav-badge">pre-mission</span></a>
       <a href="#pipeline"><div class="dot"></div>Pipeline Overview</a>
     </div>
@@ -111,6 +112,21 @@
         </ul>
       </div>
       <p>Missions can be active concurrently. Each is isolated on its own branch; merges happen sequentially when the human verifies and approves.</p>
+    </section>
+
+    <!-- DAY ZERO -->
+    <section id="day-zero">
+      <h2>Day Zero: A Project That Doesn't Exist Yet</h2>
+      <p>Every Stage of the pipeline proves its work the same way: the ticket's tests are <strong>red on the parent commit and green on the tip</strong>. That proof is the spine of the whole system — and a project with no test runner cannot produce it. On such a repo LCARS was, quite correctly, unable to prove anything at all.</p>
+      <p>So on a repo with no foundation, LCARS does not show you an empty Kanban board. It replaces the board with a door.</p>
+      <p><strong>Establish Vision</strong> is a short conversation, one question at a time. You describe what you want in a sentence; LCARS reads whatever is actually in the repo, asks a few questions, and then <strong>recommends a stack and says why</strong> — in terms of what you told it, not a generic template. Nothing is filed until you approve a recommendation you are free to refuse. Features you mention that are not the foundation are not discarded: they are recorded by name and deferred to normal Missions.</p>
+      <p>Accepting files an <strong>initialization Mission</strong>. It is a Mission like any other and runs the same pipeline, with one exception that exists precisely because the honesty rule cannot be waived twice: its <strong>first ticket</strong> — and only its first — may exit without a flip-flop, because it is the ticket that creates the runner there was none of. That waiver is recorded with a reason and surfaces at Verify. Every later ticket is held to the real gate, against the runner the first one established.</p>
+      <p>When you approve the Mission at Verify, the repo <strong>graduates</strong>: the test command it established is promoted into the repo's own config, normal Missions unlock, and the holodeck opens. Until that moment the foundation gate refuses to file ordinary work — not to be obstructive, but because a Mission filed on an unprovable repo is a Mission whose result nobody can trust.</p>
+      <p>The narrow rule matters: the door replaces the board only when the repo is foundationless <strong>and</strong> has nothing to put on the board. A repo with Missions in flight keeps its board.</p>
+      <p>The loop is proven end to end on JavaScript/TypeScript, Python, Rust, Go, Ruby and .NET. <strong>JVM is not proven</strong>: there is no JDK detection arm yet, so a Java or Kotlin project cannot establish a foundation this way.</p>
+
+      <h3>Which engine drives it</h3>
+      <p>The same screen asks which CLI you want: <strong>Claude Code</strong> or <strong>GitHub Copilot</strong>. Only engines actually installed on the machine are offered, and the choice runs both the conversation and every Stage of the Mission it files, then becomes that project's default so later Missions inherit it. It is asked once, at the moment the decision is actually being made, rather than buried in configuration.</p>
     </section>
 
     <!-- HOLODECK -->

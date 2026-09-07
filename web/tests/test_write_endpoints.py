@@ -78,7 +78,10 @@ class WriteEndpointBase(unittest.TestCase):
         self.records = {}
         self.scripts = {}
         for key in ("file", "run", "pause", "respond",
-                    "approve", "feedback", "log", "resolve", "launch"):
+                    "approve", "feedback", "log", "resolve", "launch",
+                    # S195 — the front door's filer. Additive: no existing test
+                    # invokes it, so every other record file is unchanged.
+                    "establish_vision"):
             rec = os.path.join(self.tmp, "rec-%s.txt" % key)
             self.records[key] = rec
             self.scripts[key] = _record_stub(rec)
@@ -2028,6 +2031,37 @@ class SpawnCaptureTest(WriteEndpointBase):
                       "the detached child's stdout was not captured to the log")
         self.assertIn("DIE-REASON-cherry-pick-failed-ERR", contents,
                       "the detached child's stderr was not captured to the log")
+
+
+class VisionFileEngineTest(WriteEndpointBase):
+    """S195 — `POST /api/vision/file` carries the front door's engine.
+
+    The endpoint is the viewscreen's half of BOTH FRONT DOORS, ONE FLOW, so the
+    engine has to survive the HTTP boundary and land on the argv of the ONE
+    sanctioned filer as `--engine` — the flag file.sh's own header calls the
+    strongest signal there is, and the one it records as having been "silently
+    ignored on the --prd lane". An env var would have lost to a persisted
+    workerBin (S159); the flag cannot.
+    """
+
+    BODY = {"idea": "a website that does personal finance stuff",
+            "stack": "Vite + React + Vitest",
+            "reasons": ["your dashboard is a browser UI"],
+            "deferred": ["budgets"],
+            "slice": "importing a CSV row and showing it"}
+
+    def test_the_chosen_engine_reaches_the_filer_as_a_FLAG(self):
+        body = dict(self.BODY, engine="copilot")
+        status, _ = self._post("/api/vision/file", body)
+        self.assertEqual(status, 200)
+        rec = self._record("establish_vision")
+        self.assertIn("--file", rec)
+        self.assertIn("--engine copilot", rec)
+
+    def test_no_engine_leaves_the_dispatch_byte_identical(self):
+        status, _ = self._post("/api/vision/file", dict(self.BODY))
+        self.assertEqual(status, 200)
+        self.assertNotIn("--engine", self._record("establish_vision"))
 
 
 if __name__ == "__main__":

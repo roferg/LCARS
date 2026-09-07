@@ -1,0 +1,75 @@
+{
+  "board": {
+    "fileBtn": {
+      "text": "▦ File Mission",
+      "disabledProp": true,
+      "ariaDisabled": null,
+      "classes": "btn go foundation-locked",
+      "title": "This repo has code but no test system, so a Mission has no way to prove any work. Start with Establish Vision: LCARS recommends a stack and files an initialization mission that lays the foundation.",
+      "dataReason": "This repo has code but no test system, so a Mission has no way to prove any work. Start with Establish Vision: LCARS recommends a stack and files an initialization mission that lays the foundation.",
+      "opacity": "0.4",
+      "cursor": "not-allowed",
+      "color": "rgb(3, 6, 8)",
+      "pointerEvents": "auto",
+      "box": {
+        "w": 91,
+        "h": 25
+      },
+      "visible": true
+    },
+    "holodeckBtn": {
+      "text": "⬡ Holodeck",
+      "disabledProp": true,
+      "ariaDisabled": null,
+      "classes": "btn go foundation-locked",
+      "title": "This repo has code but no test system, so a Mission has no way to prove any work. Start with Establish Vision: LCARS recommends a stack and files an initialization mission that lays the foundation.",
+      "dataReason": "This repo has code but no test system, so a Mission has no way to prove any work. Start with Establish Vision: LCARS recommends a stack and files an initialization mission that lays the foundation.",
+      "opacity": "0.4",
+      "cursor": "not-allowed",
+      "color": "rgb(3, 6, 8)",
+      "pointerEvents": "auto",
+      "box": {
+        "w": 76,
+        "h": 26
+      },
+      "visible": true
+    },
+    "readinessBanner": "◇ NO TEST SYSTEM FOUND — THIS REPO HAS CODE, AND NOTHING TO PROVE A CHANGE WITH. Start with Establish Vision — normal missions unlock when the foundation lands.",
+    "cards": 1,
+    "bodyText": "LCARS · PADD PROJECT ALIGNMENT & DEVELOPMENT DISPLAY — UNTESTED LOCAL ▸ DEPLOY MAIN ⬡ HOLODECK ▦ FILE MISSION ? ● LIVE ◇ NO TEST SYSTEM FOUND — THIS REPO HAS CODE, AND NOTHING TO PROVE A CHANGE WITH. Start with Establish Vision — normal missions unlock when the foundation lands. ALIGN 1 — · lcars:align S183b board probe ▶ START RESEARCH 0 VALIDATE 0 PLAN 0 PLAN REVIEW 0 SCHEDULE 0 IMPLEMENT 0 VERIFY 0 DONE 0 Awaiting you Child bug mission Ticket green 1 active mission"
+  },
+  "apiMeta": {
+    "repo": "untested",
+    "adapter": "local",
+    "mode": "read-write",
+    "testReadiness": {
+      "status": "unknown",
+      "suggestion": null,
+      "testCommand": null,
+      "foundation": "untested",
+      "foundationWhy": "this repo has code and no test system"
+    },
+    "foundation": "untested"
+  },
+  "clicked": {
+    "clicked": true,
+    "disabledAtClick": true
+  },
+  "overlay": {
+    "open": false,
+    "hiddenFlag": true
+  },
+  "hotkeyOverlay": {
+    "open": true,
+    "title": "◇ NO TEST FOUNDATION ✕",
+    "text": "◇ NO TEST FOUNDATION ✕ This repo has code but no test system, so a Mission has no way to prove any work. Start with Establish Vision: LCARS recommends a stack and files an initialization mission that lays the foundation. Every LCARS ticket is proven by RUNNING its tests — red on the parent commit, green on the tip. If this repo DOES have a test system and LCARS just cannot see it, point LCARS at it with `lcars update --test-command '<command>'`.",
+    "hasTextarea": false,
+    "textareaPlaceholder": ""
+  },
+  "afterHolo": {
+    "deckPresent": false,
+    "holodeckBtnText": "⬡ Holodeck",
+    "boardVisible": true,
+    "bodyText": "LCARS · PADD\nPROJECT ALIGNMENT & DEVELOPMENT DISPLAY\n—\nUNTESTED\nLOCAL\n▸ DEPLOY MAIN\n⬡ HOLODECK\n▦ FILE MISSION\n?\n● LIVE\n◇ NO TEST SYSTEM FOUND — THIS REPO HAS CODE, AND NOTHING TO PROVE A CHANGE WITH.\nStart with E tabli h Vi ion — normal mi ion  unlock when the foundation land .\nALIGN\n1\n— · lcar :ali"
+  }
+}

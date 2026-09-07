@@ -6316,6 +6316,23 @@ resolve_test_cmd() {
   printf '%s' "$c"
 }
 
+# --- is there NO test command at all? (S182 fix round 1) --------------------
+# The S182 wall asked `[ -z "$(resolve_test_cmd)" ]`, and a hand-edited
+# `"testCommand": "   "` is not empty — so the wall did not fire and the ENTIRE
+# pre-S182 burn reproduced exactly (workers hired against a repo that can never
+# prove them). `lcars update --test-command '   '` correctly refuses, so only a
+# hand-edited config.json reaches it; a wall with a hole in it is still a hole.
+#
+# Blankness is decided by DELETING every whitespace character (spaces, tabs,
+# newlines, CR/FF/VT — not just spaces) and asking whether anything is left.
+# This is ONLY a blankness TEST: the command itself is never rewritten, so a
+# real command carrying padding ("  npm test  ") is still RUN, verbatim, exactly
+# as before. Any command holding a single non-whitespace character survives.
+test_cmd_is_blank() { # → 0 when this repo has no runnable test command at all
+  case "$(resolve_test_cmd | tr -d '[:space:]')" in '') return 0 ;; esac
+  return 1
+}
+
 # --- S106: multi-stack isolation seam --------------------------------------
 # The Implement red gate proves the Test-Writer's suite FAILS-first, scoped to
 # ONLY the ticket's tests. The default (js/python) mechanism POINTS the runner at
@@ -7029,7 +7046,88 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # own no-binary diagnostic (`npx vitest` in a package without vitest) —
       # anchored to npm's line-start prefix so an assertion QUOTING the phrase
       # mid-line can never match.
-      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' ;;
+      #
+      # S185 — THE ABSENT RUNNER ON THE PARENT LEG (the salvage's SEPARATE
+      # FINDING, measured on the stage path: tests/drives/s183/fix2-regress.sh
+      # G6). A parent commit that carries NO manifest makes `npm test` exit
+      # non-zero with npm's own ENOENT diagnostic, and NOT ONE arm of this
+      # pattern matched it — so proof_parent_red_kind fell through to
+      # `runner-red` and the flip-flop gate recorded a red that no test ever
+      # produced as PROOF. For an initialization mission that is the load-bearing
+      # failure mode: if ticket 1's setup never lands on the branch, ticket 2's
+      # parent has no runner, the ENOENT reads as "red = proof", and LCARS
+      # reports a flip-flop that never happened. Three anchored additions, all
+      # line-start on the tool's OWN diagnostic prefix so a quoted copy inside an
+      # assertion diff can never fire:
+      #   • `^npm (error|ERR!) code ENOENT`  — npm's machine code line.
+      #   • `^npm (error|ERR!) enoent`       — npm's `enoent Could not read
+      #                                        package.json` explanation line.
+      #   • the shell's own `<interp>: <path>: No such file or directory` form,
+      #     which is how bash/sh report a missing runner BINARY (`bash:
+      #     node_modules/.bin/vitest: No such file or directory`). The existing
+      #     `^env: …` arm already covered the `env`-launched shebang case; this
+      #     is the same diagnostic from the interpreter itself, end-anchored so
+      #     an assertion that merely QUOTES the phrase mid-line cannot match.
+      # This arm only ever REJECTS MORE reds (env failure ⇒ inconclusive, never
+      # a pass), so it cannot loosen any gate.
+      #
+      # S192 — THE SAME ABSENT RUNNER, SPOKEN BY `make`. Ledgered by S193 as L2,
+      # INHERITED (byte-identical at HEAD), and adopted into the capstone by
+      # captain ruling 2026-09-06 because it sits on the arm S192 drives live:
+      # the greenfield PYTHON foundation seeds `make test` as the testCommand.
+      # On ticket 2's parent the Makefile — or its `test` target, or the venv its
+      # recipe execs — does not exist yet, and NOT ONE alternative above matched
+      # make's own diagnostics, so proof_parent_red_kind fell through to
+      # `runner-red` and the flip-flop gate read a red that no test ever produced
+      # as PROOF. Exactly npm's failure mode, one tool along.
+      #
+      # THE CRUX — WHAT IS *NOT* MATCHED. make prints the SAME recipe-failed
+      # status line whether its recipe could not be EXECUTED at all or whether it
+      # ran a real test runner that failed an assertion. MEASURED on this build
+      # machine, both makes, captured from real runs (never copied from a doc):
+      #   GNU Make 3.81 (macOS /usr/bin/make), missing binary, direct exec:
+      #     make: .venv/bin/python: No such file or directory
+      #     make: *** [test] Error 1          <- IDENTICAL to a genuine pytest red
+      #   GNU Make 4.4.1 (gmake), the same failure:
+      #     gmake: .venv/bin/python: No such file or directory
+      #     gmake: *** [Makefile:2: test] Error 127
+      #   GNU Make 3.81 AND 4.4.1, REAL pytest 9.1.1 failing an assertion:
+      #     1 failed in 0.04s
+      #     make: *** [test] Error 1
+      # So `Error 1` is emitted by BOTH a dead exec (3.81) and a genuine red
+      # (every make) and can never be matched; only make's own RUNNER-ABSENT
+      # lines discriminate. Three additions, every one line-start anchored on
+      # make's OWN program prefix (`make:`, `gmake:`, and the sub-make forms
+      # `make[1]:` / `gmake[2]:`), so an assertion diff that merely QUOTES one of
+      # these phrases mid-line can never fire — the same discipline the npm,
+      # shell and go/dotnet arms already keep, and the property S185 and S193
+      # each shipped a defect for want of:
+      #   • `^g?make(\[N\])?: \*\*\* No rule to make target ` — there is no
+      #     `test` target (or no Makefile at all). Stopped BEFORE the quote
+      #     because 3.81 writes ``target `test'`` and 4.x writes `target 'test'`.
+      #   • `^g?make(\[N\])?: \*\*\* No targets specified and no makefile found`
+      #     — a bare `make` with nothing to read.
+      #   • `^g?make(\[N\])?: .*: (No such file or directory|command not found)$`
+      #     — make's OWN exec-failure diagnostic, emitted when it runs the recipe
+      #     without a shell (no metacharacters) and the interpreter/binary is
+      #     absent; also how it reports an unreadable makefile. End-anchored, and
+      #     it is the ONLY form that fires on the greenfield venv case. (The
+      #     shell-mediated variant, `/bin/sh: …: command not found`, already
+      #     matched the shell alternative at the head of this pattern — verified,
+      #     not assumed. `command not found` is carried here for makes that
+      #     phrase it that way; GNU 3.81 and 4.4.1 measurably do not.)
+      #   • `^g?make(\[N\])?: \*\*\* \[.*\] Error 127$` — 127 is the shell's
+      #     universal command-not-found status, which 4.x propagates into make's
+      #     own line. Deliberately NOT `Error 1`/`Error 2`: those are what a
+      #     genuine failing suite returns. Kept even though 3.81 reports a dead
+      #     exec as `Error 1`, because on 4.x it is a positive, exit-code-true
+      #     signal and it cannot collide with a real runner's status.
+      # Like every alternative above it, these only ever REJECT MORE reds — the
+      # kind moves runner-red ⇒ env-failure, i.e. proof ⇒ INCONCLUSIVE, and
+      # `proof_fail_first_missing_module`'s conjunct 4 re-asks THIS detector, so
+      # a widened arm makes that narrowing refuse more too. No consumer of
+      # red_gate_env_failure turns an env verdict into a pass.
+      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate|^g?make(\[[0-9]+\])?: \*\*\* (No rule to make target |No targets specified and no makefile found)|^g?make(\[[0-9]+\])?: .*: (No such file or directory|command not found)$|^g?make(\[[0-9]+\])?: \*\*\* \[.*\] Error 127$' ;;
     assertion)
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
@@ -7624,6 +7722,529 @@ impl_park_env_cannot_test() { # ticket  reason-text
   exit 0
 }
 
+# --- impl_park_ticket_blocked: the PRE-WORKER honest wall (S182) ------------
+# Same gate shape as impl_park_env_cannot_test above (pending.json + the BUG-027
+# structured fields + awaitingHuman + the label overlay + exit 0), but the
+# headline, the summary, the question and the event category come from the
+# CALLER. That is the whole point of S182: the two facts LCARS already knows
+# before it hires anybody — "this repo has no test command" and "this repo has
+# no commits" — are DIFFERENT problems, and a park that recites the generic
+# environment-cannot-test text names neither of them. A park that describes the
+# wrong problem is what sent captains looking at worker quality while the real
+# answer was one config key away.
+#
+# S182 fix round 1 — the SUBJECT is now optional. These walls fire from TWO
+# places: inside a ticket (subject = that ticket's id) and, since the hoist, at
+# the top of the implement STAGE, before any ticket has been picked and before
+# the context-pack hire (subject = ""). An empty subject renders mission-level
+# wording rather than naming a ticket the wall never looked at.
+park_subject() { # subject-id → the sentence's subject
+  case "${1:-}" in '') printf 'This mission' ;; *) printf 'Ticket %s' "$1" ;; esac
+}
+impl_park_ticket_blocked() { # subject  reason  summary  question  headline  detail-line  category
+  local t="$1" reason="$2" summary="$3" question="$4" headline="$5" detail="$6" category="$7"
+  local q; q="$(mktemp)"
+  printf '%s\n' "$reason" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="$summary" \
+  LCARS_PENDING_ESCALATION_TYPE="cap" \
+  LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
+    write_pending "$q" "implement"
+  rm -f "$q"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "$question"
+  gh_relabel "lcars:awaiting-human" ""
+  # A stage-level park has no ticket, so it emits no `ticket=` field rather than
+  # an empty one — the events log never names a ticket this wall did not inspect.
+  local ev_subject="mission $MISSION_ID" label="mission $MISSION_ID"
+  local -a ev_fields=()
+  if [ -n "$t" ]; then
+    ev_subject="ticket $t"; label="$t"; ev_fields=("ticket=$t")
+  fi
+  emit_event ticket_blocked_preflight implement \
+    "$ev_subject parked before any worker was hired: $headline" \
+    ${ev_fields[@]+"${ev_fields[@]}"} "category=$category"
+  echo "IMPLEMENT: $headline — $label parked (awaiting-human)."
+  echo "  $detail"
+  echo "  Resolve with:  $(respond_hint)"
+  exit 0
+}
+
+# --- readiness_verdict: the SHARED test-readiness verdict, read lazily ------
+# `lcars init` / `lcars update` / `lcars status` / the viewscreen all speak ONE
+# test-readiness verdict (lcars_test_readiness in lcars-common.sh). When the
+# implement wall has to tell a captain WHY there is no runner it must speak that
+# same verdict rather than inventing a second opinion — "greenfield" has to mean
+# on the implement path exactly what it means in the init readout.
+#
+# Loaded LAZILY, the drive_load_base_lib / attachments_extra_block idiom: run.sh
+# is re-entered per Stage and per ticket, and this is consulted ONLY on the park
+# path, which spawns nothing and then exits. Sets, for the caller:
+#   READINESS_VERDICT  ready|missing|broken|unknown|ambiguous  ("" if unresolved)
+#   READINESS_LINE     the ONE human status line for that verdict ("" when ready)
+READINESS_VERDICT=""
+READINESS_LINE=""
+readiness_verdict() {
+  READINESS_VERDICT=""; READINESS_LINE=""
+  if ! command -v lcars_test_readiness >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v lcars_test_readiness >/dev/null 2>&1 || return 0
+  # detect_stack / detect_test_cmd read $TOPLEVEL; `local` is dynamically scoped
+  # in bash, so this reaches them without leaking into the rest of the driver.
+  local TOPLEVEL="${REPO_ROOT:-$PWD}"
+  lcars_test_readiness "${LCARS_CFG:-}" >/dev/null 2>&1 || return 0
+  READINESS_VERDICT="${LCARS_TESTREADY_STATUS:-}"
+  READINESS_LINE="$(lcars_readiness_line 2>/dev/null)"
+  return 0
+}
+
+# === S182/S183 SEAM — the NO-RUNNER decision ================================
+#
+# THE SEAM. Reached whenever `test_cmd_is_blank` holds — this repo has no test
+# command at all — from BOTH entry points: the top of the implement STAGE driver
+# (ahead of the context-pack hire, so the stage spends nothing) and the
+# implement-ticket preflight.
+#
+# WHY IT EXISTS. `runner_preflight_env_failure` returns 1 ("no env failure
+# detected") for an empty testCommand — a documented degradation everywhere
+# else, but on the implement path it meant the entire preflight escalation was
+# skipped and execution fell straight through to hiring a worker. The proof gates
+# then refused for want of a test command (rc 96), that refusal was read as
+# "the worker did bad work", and up to MAX_WORKER_TRIES fresh workers were hired
+# before the mission finally parked — talking about proof, not about the missing
+# runner. Three paid sessions to discover a fact that was true before the first
+# one started.
+#
+# THIS FUNCTION IS THE ONE PLACE THAT DECIDES, and it has exactly ONE arm: park,
+# honestly, having spawned nothing. IT STAYS THAT WAY.
+#
+# ⚠ THE PLAN THIS COMMENT USED TO DESCRIBE IS SHELVED — DO NOT REVIVE IT. It
+# said: "SESSION 183 ADDS THE SECOND ARM HERE — on a greenfield repo INVITE the
+# worker to establish a test runner instead of parking." That design was built
+# and beaten. Inviting a worker to establish a runner mid-mission forces the
+# HARNESS to verify, with no human present, that a runner the worker has just
+# declared is genuine; three different designs for that check were attacked and
+# beaten over two fix rounds (recorded on `wip/s183-canary-salvage` @ 04fee49,
+# shelved for cause).
+#
+# THE CAPTAIN'S RULING, 2026-09-05, replaces it:
+#
+#     The foundation is established BEFORE any normal mission runs, by an
+#     INITIALIZATION MISSION the captain launches from an Establish Vision flow
+#     — and the captain is at Verify to see the suite actually run.
+#
+# So there is no second arm to add here, and no harness-side check that a runner
+# is real — that is now an explicit invariant (lcars-dev/greenfield-dev.md →
+# *What we are NOT changing*, 2026-09-05). S183 instead put a FOUNDATION GATE at
+# FILING time (skills/lcars-init/foundation-gate.sh): a repo with no test system
+# cannot open a normal mission at all, on the CLI or on the board, and S184
+# replaces that refusal with the real Establish Vision flow.
+#
+# This wall is the BRACES to that gate's belt. It still fires for every repo that
+# reaches Implement with no runner — an `unconfigured` repo whose command was
+# never set, a runner deleted mid-mission — and it must keep spending nothing
+# when it does.
+#
+# The flip-flop gate's rc 96 stays exactly as it is: with this wall in place it
+# is unreachable on the greenfield path, and it remains the honest backstop for
+# every path that is not this one. "Inconclusive is never a pass" is untouched.
+#
+# S182 fix round 1 — WHAT THIS MESSAGE MAY AND MAY NOT CLAIM. It used to READ
+# the `unknown` verdict as proof of a greenfield repo and advise "add a test
+# framework". `lcars_test_readiness` (lcars-common.sh) returns `unknown` whenever
+# `detect_test_cmd` finds no candidate REGARDLESS of how much code or how many
+# frameworks the repo holds — an npm-workspaces monorepo whose every package
+# runs tests, but whose ROOT has no `test` script, lands on `unknown` too. So the
+# verdict cannot carry the weight of "this repo has no test framework", and the
+# park told a repo with three of them to add one.
+#
+# The cure is the S156/S158 playbook: stop asserting the fact the signal cannot
+# support. The message now REPORTS the verdict, attributed, and offers BOTH next
+# steps — establish a runner, or point LCARS at one the repo already has — which
+# is correct whichever the repo turns out to be. `readiness_verdict` and
+# READINESS_VERDICT are untouched and still reached on every no-runner park.
+#
+# S183 UPDATE — THE VERDICT THIS QUOTES IS NOW HONEST. `lcars_test_readiness`
+# gained a SECOND AXIS (LCARS_TESTREADY_FOUNDATION: greenfield | untested |
+# unconfigured | ready), decided on positive evidence rather than on the absence
+# of a configured command, so the line this park cites no longer tells a monorepo
+# with three working runners that it is a greenfield repo. The park itself is
+# unchanged: it still REPORTS the verdict, attributed, and still offers both next
+# steps — this function did not need to learn anything new.
+# === S185: THE INITIALIZATION MISSION ======================================
+# The captain's 2026-09-05 ruling retired the mission-time guessing game. A repo
+# with no test foundation can no longer file a NORMAL mission at all (S183's
+# foundation gate); Establish Vision (S184) files an INITIALIZATION mission
+# instead, and `file.sh` stamps `missionType: "initialization"` into its
+# state.json. THAT STAMP IS THE TRIGGER — not a readiness heuristic. The old
+# design keyed the greenfield door off `READINESS_VERDICT = unknown`, which is
+# true of an npm-workspaces monorepo whose three packages all test fine, and it
+# then had to prove mechanically that a runner a worker had just declared was
+# genuine. Three designs were built and beaten (`wip/s183-canary-salvage`
+# 04fee49). There is no such check here, deliberately: the captain is at Verify,
+# and the scaffold ticket's waiver is recorded and surfaced there.
+mission_type() { # → the mission's declared type ("" when the key is absent)
+  [ -n "${STATE:-}" ] && [ -f "${STATE:-}" ] || return 0
+  json_str "$STATE" missionType
+}
+mission_is_initialization() { [ "$(mission_type)" = "initialization" ]; }
+
+# THE FIRST TICKET — derived from the mission's PLAN/WAVE ORDERING, never from a
+# directory listing. `tickets/` is created lazily and enumerated by the
+# filesystem, so "the first entry" there is whichever ticket happened to run
+# first (or sort first) — a fact about mtimes, not about the plan. Schedule
+# writes waves.json in wave-then-plan order (emit_waves_json), and
+# parse_waves_table preserves exactly that order, so its FIRST row is the
+# mission's first ticket by construction. Before Schedule has run, the same
+# question is answered from the approved plan's own row order.
+#
+# PRECEDENCE BY EXISTENCE — NOT a fallback on failure, and that is deliberate.
+# S185 fix round 1 corrected this comment rather than the code. Once waves.json
+# is PRESENT it is the ONLY ordering consulted: if it cannot be parsed this
+# returns EMPTY, and `init_is_scaffold_ticket` then fails CLOSED — the waiver is
+# REFUSED. It does NOT drop back to plan order, because waves.json is
+# wave-then-plan order and can legitimately differ from the plan's row order, so
+# a plan-order answer on a mission that HAS been scheduled would be a GUESS at
+# which ticket is the scaffold one — and that guess is precisely what grants an
+# initialization mission's only waiver. Refusing beats guessing. The plan-order
+# branch answers the question only BEFORE Schedule has run, when there is no
+# wave ordering for it to disagree with.
+init_first_ticket() { # → the id of the mission's FIRST ticket ("" when unknown)
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local f
+  if [ -f "$MISSION_DIR/waves.json" ]; then
+    parse_waves_table "$MISSION_DIR/waves.json" 2>/dev/null \
+      | awk -F'\t' 'NF>=2 && $2!=""{print $2; exit}'
+    return 0
+  fi
+  for f in approved-plan.json plan.json; do
+    if [ -f "$MISSION_DIR/$f" ]; then
+      parse_plan_table "$MISSION_DIR/$f" 2>/dev/null \
+        | awk -F'\t' '$1!=""{print $1; exit}'
+      return 0
+    fi
+  done
+  return 0
+}
+# 0 iff $1 is the mission's FIRST ticket. Fail-CLOSED on an unknown ordering: an
+# undecidable "is this the scaffold ticket?" must never grant the waiver.
+init_is_scaffold_ticket() { # ticketId → 0 when it is the mission's first ticket
+  local t="${1:-}" f; f="$(init_first_ticket)"
+  [ -n "$t" ] && [ -n "$f" ] && [ "$t" = "$f" ]
+}
+
+# WORKSPACE MARKERS (salvage 04fee49, verified good there and taken unchanged).
+# Why it exists, in the salvage's own words: on an npm-workspaces monorepo the
+# workspace is marked by `pnpm-workspace.yaml` and a root `package.json` is
+# conventional, NOT required — so on one that has none, ADD-only had nothing to
+# refuse and LCARS INVENTED a root manifest, then "verified" it by collecting the
+# packages' PRE-EXISTING tests: credit for tests it did not create, on a repo it
+# does not understand. The markers are this repo's own (the ones `_dtc_js` /
+# `detect_stack` / `detect_workspace_runner` already key off) plus their siblings
+# in the other ecosystems. Echoes the marker it found, or nothing.
+greenfield_workspace_marker() { # root → the marker name, or ""
+  local r="$1"
+  [ -f "$r/pnpm-workspace.yaml" ] && { printf 'pnpm-workspace.yaml'; return 0; }
+  [ -f "$r/lerna.json" ]          && { printf 'lerna.json'; return 0; }
+  [ -f "$r/nx.json" ]             && { printf 'nx.json'; return 0; }
+  [ -f "$r/turbo.json" ]          && { printf 'turbo.json'; return 0; }
+  [ -f "$r/rush.json" ]           && { printf 'rush.json'; return 0; }
+  [ -f "$r/go.work" ]             && { printf 'go.work'; return 0; }
+  if [ -f "$r/package.json" ] && grep -q '"workspaces"[[:space:]]*:' "$r/package.json" 2>/dev/null; then
+    printf 'a "workspaces" key in package.json'; return 0
+  fi
+  if [ -f "$r/Cargo.toml" ] && grep -q '^\[workspace\]' "$r/Cargo.toml" 2>/dev/null; then
+    printf '[workspace] in Cargo.toml'; return 0
+  fi
+  printf ''
+}
+
+# The MISSION-LOCAL record of the runner this initialization mission established.
+# Deliberately NOT the repo's config.json: the runner exists only on the mission
+# branch until merge, and writing repo config mid-mission would hand a sibling
+# mission a command its own checkout cannot run. `lcars approve` PROMOTES it to
+# repo config when the mission MERGES — which is not mid-mission, and is what
+# retires all the mission-local carrying the old design needed.
+greenfield_cmd_record() { printf '%s/test-command.json' "${MISSION_DIR:-}"; }
+
+# S194 — THE DURABLE RECORD OF A SPENT ESTABLISHMENT BUDGET.
+# A refused establish attempt is now RETRYABLE (see cmd_implement_ticket), so the
+# only refusal that ends a mission is the one at the retry cap. That refusal has
+# to outlive the process: the captain's next `lcars run` is a NEW process, it
+# finds the once-per-mission latch closed, and without this it had nothing to say
+# but the generic S182 wall — which tells an initialization mission's captain to
+# go and start an initialization mission. Two lines: the last refusal reason, and
+# how many sessions were spent on it.
+greenfield_refusal_record() { printf '%s/test-setup-refused.txt' "${MISSION_DIR:-}"; }
+greenfield_record_refusal() { # note  sessions
+  local rec; rec="$(greenfield_refusal_record)"
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  # LINE 1 IS THE REASON, LINE 2 IS THE COUNT — so any newline inside the reason
+  # would silently become the count. Collapse it to one line on the way in.
+  { printf '%s\n' "$(printf '%s' "$1" | tr '\n' ' ')"; printf '%s\n' "${2:-}"; } \
+    >"$rec" 2>/dev/null || :
+  return 0
+}
+
+# Re-detect the repo's test command FROM THE TREE — the SAME detector `lcars
+# init` and the readiness verdict use, never a guess of our own. A scaffold
+# ticket must leave behind a runner LCARS can FIND at the root, or nothing
+# downstream could ever invoke it.
+greenfield_detect_cmd() { # root → the detected command, or ""
+  if ! command -v detect_test_cmd >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v detect_test_cmd >/dev/null 2>&1 || return 0
+  # detect_test_cmd reads $TOPLEVEL; `local` is dynamically scoped in bash, so
+  # this reaches it without leaking (the readiness_verdict idiom).
+  local TOPLEVEL="$1"
+  detect_test_cmd 2>/dev/null | head -1
+}
+
+# Record the established command mission-locally and adopt it for this process.
+greenfield_record_cmd() { # cmd
+  local cmd="$1" rec; rec="$(greenfield_cmd_record)"
+  [ -n "${MISSION_DIR:-}" ] && [ -n "$cmd" ] || return 0
+  {
+    echo '{'
+    printf '  "testCommand": "%s",\n' "$(json_escape "$cmd")"
+    printf '  "establishedBy": "%s",\n' "$(json_escape "${TICKET:-}")"
+    printf '  "establishedAt": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
+    echo '}'
+  } >"$rec"
+  export LCARS_TEST_CMD="$cmd"
+  TEST_CMD_ENV="$cmd"
+  # S194 — a later session GOT IT RIGHT, so the earlier refusal is history, not
+  # the mission's standing state. Clear it so no stale reason can be quoted at a
+  # captain whose runner now exists.
+  rm -f "$(greenfield_refusal_record)" 2>/dev/null || :
+  emit_event test_system_established implement \
+    "test system ESTABLISHED at the repo root by the scaffold ticket (mission-local, NOT written to repo config — \`lcars approve\` promotes it at merge): $cmd" \
+    "ticket=${TICKET:-}"
+  return 0
+}
+
+# ADOPT a runner this mission already established, for THIS process
+# (TEST_CMD_ENV, which resolve_test_cmd reads first, plus the exported
+# $LCARS_TEST_CMD that carries it across every `bash "$SELF" …` boundary).
+# Ticket 2..n of the same mission therefore run against the runner ticket 1
+# built and are held to the REAL gate. Cheap-probed before it is trusted: a
+# recorded command whose first token does not resolve is not adopted, and the
+# mission falls through to the honest park rather than hiring against a dead
+# runner.
+impl_greenfield_adopt() { # → 0 adopted (caller must NOT park), 1 nothing to adopt
+  local rec; rec="$(greenfield_cmd_record)"
+  [ -n "${MISSION_DIR:-}" ] && [ -f "$rec" ] || return 1
+  local cmd; cmd="$(json_str "$rec" testCommand)"
+  [ -n "$cmd" ] || return 1
+  local first rest
+  read -r first rest <<GF_ADOPT_EOF
+$cmd
+GF_ADOPT_EOF
+  ( cd "${REPO_ROOT:-.}" 2>/dev/null && command -v "$first" >/dev/null 2>&1 ) || return 1
+  TEST_CMD_ENV="$cmd"
+  # THE PROCESS-BOUNDARY CARRY (salvage DEFECT 1). TEST_CMD_ENV is a plain shell
+  # variable, so it dies at every `bash "$SELF" …` boundary — and
+  # `impl-save-result` (commit_ticket + post_commit_gate) and the stage-level
+  # full-suite gate are exactly that. The child re-initialises TEST_CMD_ENV from
+  # $LCARS_TEST_CMD (run.sh top), so EXPORTING that sanctioned override is the
+  # whole carry: no new channel, and repo config still untouched.
+  export LCARS_TEST_CMD="$cmd"
+  # A second invitation would be a SECOND establishment: close the door behind us.
+  export LCARS_SETUP_EVIDENCE=""; export LCARS_SETUP_GREENFIELD=""
+  emit_event test_setup_adopted implement \
+    "using the test runner this mission established (mission-local, not written to repo config): $cmd" \
+    "ticket=${TICKET:-}"
+  return 0
+}
+
+# THE SCAFFOLD DOOR. Fires ONLY for the FIRST ticket of an INITIALIZATION
+# mission, only once per mission (the S111 latch file), and only while the
+# declared-setup mechanism is enabled. Everything else — a normal mission, a
+# later ticket of an initialization mission whose runner never got established —
+# still parks exactly as S182 shipped it.
+GREENFIELD_REFUSAL_NOTE=""
+impl_greenfield_invite() { # ticket ("" at the stage level) → 0 invited, 1 not this arm
+  local t="$1"
+  # S185 fix round 1 (D3) — cleared HERE, at the top, not just before the one
+  # branch that sets it: the note is now READ by the caller's park, so an early
+  # `return 1` on a second call must never leave a stale note from a first one
+  # standing in a message it is not about.
+  GREENFIELD_REFUSAL_NOTE=""
+  mission_is_initialization || return 1
+  [ "${LCARS_DECLARED_SETUP:-1}" != "0" ] || return 1
+  [ -n "${MISSION_DIR:-}" ] || return 1
+  # THE ONCE-PER-MISSION LATCH (unchanged, shared with the evidence-gated arm):
+  # one establishment attempt per mission, so an initialization mission can never
+  # loop hiring workers at a repo that still cannot run a test.
+  if [ -f "$MISSION_DIR/test-setup-applied.json" ]; then
+    # S194 — THE OTHER REFUSAL PATH, and the one the captain actually hit. The
+    # latch is closed by a SPENT establishment budget (every retry refused), and
+    # this early `return 1` left GREENFIELD_REFUSAL_NOTE empty — so the caller's
+    # park fell back to the generic S182 wall and its readiness verdict, which
+    # ends "Start it with Establish Vision": circular advice to someone already
+    # inside that mission. MEASURED, twice, deterministic.
+    #
+    # The note is set ONLY when a refusal was actually RECORDED. A latch closed
+    # by a setup that was APPLIED (and is simply no longer adoptable) has no
+    # refusal to report, so that park stays byte-identical to S182's.
+    local gf_rec; gf_rec="$(greenfield_refusal_record)"
+    if [ -f "$gf_rec" ]; then
+      local gf_last gf_n
+      gf_last="$(head -1 "$gf_rec" 2>/dev/null)"
+      gf_n="$(sed -n '2p' "$gf_rec" 2>/dev/null)"
+      [ -n "$gf_n" ] || gf_n="several"
+      GREENFIELD_REFUSAL_NOTE="this mission's scaffold ticket ALREADY tried to establish a test system, in $gf_n worker session(s), and the harness refused every one — the last refusal was: $gf_last. Those retries are spent, so LCARS stopped rather than hiring again at the same wall. You are already IN the initialization mission this repo needs; it does not need starting again."
+      emit_event test_setup_invite_refused implement \
+        "initialization mission REFUSED the scaffold door: this mission's establishment budget is spent ($gf_n session(s)) — last refusal: $gf_last" \
+        "ticket=$t" "category=greenfield-retries-exhausted"
+    fi
+    return 1
+  fi
+  # At the STAGE level no ticket has been picked yet ($t empty): the stage must
+  # not park an initialization mission whose scaffold ticket has not run, so the
+  # door opens on the mission type alone and cmd_implement_ticket re-decides
+  # per-ticket with the id in hand.
+  if [ -n "$t" ] && ! init_is_scaffold_ticket "$t"; then return 1; fi
+  # A WORKSPACE ROOT with no root manifest is the one shape where ADD-only cannot
+  # backstop this arm (there is nothing to refuse), so refuse the arm itself,
+  # here, having hired NOBODY. A workspace WITH a root manifest keeps today's
+  # path: ADD-only refuses the reshape, loudly, and the second line of defence in
+  # apply_declared_setup catches a declaration that sidesteps the manifest.
+  local gf_ws; gf_ws="$(greenfield_workspace_marker "$REPO_ROOT")"
+  if [ -n "$gf_ws" ] && [ ! -f "$REPO_ROOT/package.json" ]; then
+    GREENFIELD_REFUSAL_NOTE="This repo is a WORKSPACE ROOT ($gf_ws) with no root manifest of its own. LCARS will not invent one: establishing a root test system here would reshape a repo whose packages very likely test fine already, and any tests it then \"verified\" would be theirs, not ones this mission created."
+    emit_event test_setup_invite_refused implement \
+      "initialization mission REFUSED the scaffold door: the repo root is a workspace ($gf_ws) with no root manifest — LCARS will not manufacture a root test system for a workspace it does not understand" \
+      "ticket=$t" "category=greenfield-workspace"
+    return 1
+  fi
+  export LCARS_SETUP_GREENFIELD=1
+  # NB: the quoted-verdict suffix and the ticket suffix are built OUTSIDE the
+  # strings below — macOS bash 3.2 mis-parses an APOSTROPHE inside a ${var:+…}
+  # expansion in a double-quoted string.
+  local gf_why=""
+  [ -n "${READINESS_LINE:-}" ] && gf_why="
+LCARS's test-readiness verdict for this repo: $READINESS_LINE"
+  local gf_sub=""
+  [ -n "$t" ] && gf_sub=" (ticket $t)"
+  export LCARS_SETUP_EVIDENCE="this repository has no test system LCARS can find: no testCommand is configured, and LCARS's own detector names no candidate runner at the repo root.$gf_why"
+  emit_event test_setup_invited implement \
+    "INITIALIZATION mission — inviting the scaffold ticket to ESTABLISH and declare this repo's first test system instead of parking$gf_sub" \
+    "ticket=$t" "category=initialization"
+  return 0
+}
+
+# The park an initialization mission takes when its scaffold ticket could not
+# establish a test system. Distinct from the plain no-runner park: a human was
+# ALREADY told the foundation is what this mission is for, so the question is
+# what went wrong, not "configure a runner".
+impl_park_greenfield_failed() { # ticket  note  runner-output  [sessions] → parks (exits 0)
+  local t="$1" note="$2" out="$3" tries="${4:-}"
+  local subject; subject="$(park_subject "$t")"
+  local quoted=""
+  [ -n "$out" ] && quoted="
+The runner said:
+$(printf '%s' "$out" | tail -10)"
+  # S194 — this park is now reachable ONLY after the retries are spent, so it
+  # says how many were spent. Built outside the string (bash 3.2 mis-parses an
+  # apostrophe inside a ${var:+…} expansion in a double-quoted string), and empty
+  # when a caller passes no count, so the old wording still stands on its own.
+  local spent=" LCARS stops here rather than hiring another worker to hit the same wall."
+  local spent_sum="No further worker was hired — a second session would hit the same wall."
+  if [ -n "$tries" ]; then
+    spent=" Each refusal was fed back to a FRESH session and the last one still could not get past it, so the $tries-session budget for establishing a test system here is spent — LCARS stops rather than hiring again at the same wall."
+    spent_sum="$tries fresh worker session(s) were given the refusal and could not clear it — the establishment budget is spent."
+  fi
+  impl_park_ticket_blocked "$t" \
+"$subject could not establish this repo's test system, so there is still no way to prove any work.
+What the harness refused, and why: $note$quoted
+This mission's whole job is the foundation.$spent
+What to do next: establish a test runner in this repo yourself and point LCARS at it with \`lcars update --test-command '<command>'\`, then re-run this mission — or answer here with what the setup should be." \
+"The initialization mission could not establish a test system: $note" \
+"$subject is blocked: the initialization mission could not establish a test system ($note) — needs a human." \
+"the declared test setup was refused or did not work" \
+"$spent_sum" \
+"greenfield-setup-failed"
+}
+
+impl_no_runner_decision() { # subject ("" at the stage level) → parks, OR opens the S185 scaffold door
+  local t="$1"
+  readiness_verdict
+  # S185 ARM 0 — a runner this mission already ESTABLISHED. Ticket 2..n of an
+  # initialization mission adopt it and are held to the REAL gate against it.
+  if mission_is_initialization && impl_greenfield_adopt; then return 0; fi
+  # S185 ARM 1 — the scaffold ticket of an initialization mission is INVITED to
+  # establish the test system instead of parking. Every other caller falls
+  # through to the S182 park below, byte-identical.
+  if impl_greenfield_invite "$t"; then return 0; fi
+  local subject; subject="$(park_subject "$t")"
+  # Cite the shared verdict whenever there is one, so the implement wall and the
+  # init readout can never tell the captain two different stories — as a QUOTED
+  # verdict, never as LCARS's own conclusion about what this repo is.
+  # S194 — …EXCEPT when this mission ALREADY tried. The greenfield verdict line
+  # ends "the first mission here is an initialization mission… Start it with
+  # Establish Vision", which is the right thing to tell a captain who has not
+  # started one and exactly the wrong thing to tell a captain standing inside
+  # one whose scaffold ticket just spent its retries. When there IS a refusal
+  # note, the note is the answer and the verdict line is the circle: drop it.
+  local why=""
+  if [ -n "$READINESS_LINE" ] && [ -z "${GREENFIELD_REFUSAL_NOTE:-}" ]; then
+    why="LCARS's test-readiness verdict for this repo: $READINESS_LINE"
+  fi
+  # S185 fix round 1 (D3) — SURFACE THE REFUSAL. impl_greenfield_invite sets
+  # GREENFIELD_REFUSAL_NOTE when it refuses the scaffold door ON ITS OWN TERMS
+  # (today: a workspace root with no root manifest, where ADD-only has nothing to
+  # refuse and LCARS will not invent a root test system). That note was written
+  # to events.jsonl and NOWHERE ELSE, so the captain — who is running the
+  # initialization mission this park is about — got the generic S182 wall and
+  # its "start with Establish Vision" verdict line: circular advice to someone
+  # already there. The note is the actual answer, so it goes where they read it.
+  #
+  # ADDITIVE AND EMPTY BY DEFAULT: with no refusal note (every non-workspace
+  # caller — a normal mission, a repo with no runner) $gf_note is "" and all
+  # three strings below are byte-identical to what S182 shipped.
+  local gf_note=""
+  [ -n "${GREENFIELD_REFUSAL_NOTE:-}" ] && gf_note="
+Why this INITIALIZATION mission did not establish one itself: $GREENFIELD_REFUSAL_NOTE"
+  local gf_sum=""
+  [ -n "${GREENFIELD_REFUSAL_NOTE:-}" ] && gf_sum=" LCARS refused to establish one here: $GREENFIELD_REFUSAL_NOTE"
+  impl_park_ticket_blocked "$t" \
+"$subject cannot start: no test command is configured for this repo, so LCARS has no way to prove any work — every ticket is proven by RUNNING its tests (red on the parent commit, green on the tip).${why:+
+$why}$gf_note
+No worker was hired: LCARS stopped before spending anything, because a paid session here could not have been proven either way.
+What to do next — whichever fits this repo: establish a test runner here, or point LCARS at a runner this repo already has (that verdict is read at the REPO ROOT, so a monorepo whose packages test fine can still land on it). Either way, set the command with \`lcars update --test-command '<command>'\` (or \`lcars update --fix-tests\`, which walks you through it)." \
+"This repo has no test command configured, so LCARS cannot prove a ticket's work — and did not hire anyone to attempt it.$gf_sum Establish a test runner, or point LCARS at one with \`lcars update --test-command\`." \
+"$subject is blocked: no testCommand is configured for this repo, so LCARS cannot prove any work — needs a human (establish a test runner, or set testCommand with \`lcars update\`).$gf_sum" \
+"no test runner is configured" \
+"No worker was hired — no retry can conjure a test runner; this needs a human call." \
+"no-test-command"
+}
+
+# --- impl_park_no_parent_commit: the unborn-HEAD wall (S182) ----------------
+# The flip-flop gate proves fail-on-parent, and a repo with no commits has no
+# parent. That used to be a hard `die` mid-ticket — accurate, and useless: it
+# read as an LCARS crash rather than as one `git commit` standing between the
+# captain and a working mission. `lcars init` now seeds an empty initial commit
+# on a fresh repo, so this is the BACKSTOP for repos initialized before that.
+impl_park_no_parent_commit() { # subject ("" at the stage level) → parks (exits 0)
+  local t="$1"
+  local subject; subject="$(park_subject "$t")"
+  impl_park_ticket_blocked "$t" \
+"$subject cannot start: this repo has no commits, so there is no parent commit to prove work against — LCARS proves every ticket by showing its tests are RED on the parent commit and GREEN on the tip.
+No worker was hired: LCARS stopped before spending anything.
+What to do next: make the repository's first commit — \`git commit --allow-empty -m \"initial commit\"\` — and re-run this mission. (\`lcars init\` seeds this for you on a fresh repo.)" \
+"This repository has no commits yet, so LCARS has no parent commit to prove work against. Make the first commit (\`git commit --allow-empty -m \"initial commit\"\`) and re-run the mission." \
+"$subject is blocked: the repo has no commits, so LCARS has no parent commit to prove work against — needs a human (\`git commit --allow-empty -m \"initial commit\"\`, then re-run)." \
+"the repo has no parent commit" \
+"No worker was hired — proof needs a parent commit to be red against." \
+"no-parent-commit"
+}
+
 # === S111 Phase 3′: EVIDENCE-GATED DECLARED TEST SETUP ======================
 # When the preflight proves the ticket's target package cannot run tests while
 # the repo root can, the Test Writer is INVITED to DECLARE the missing infra:
@@ -7634,7 +8255,157 @@ impl_park_env_cannot_test() { # ticket  reason-text
 #   • evidence-gated — no observed env failure, no application (attempt-1 naked)
 #   • ADD-only — never overwrite an existing file, never anything under src/
 #   • bounded — ≤4 files, ≤20KB each, installCommand must be a package-manager
-#     invocation (pnpm/npm/yarn/bun; $LCARS_SETUP_INSTALL_ALLOW_RE overrides)
+#     invocation, per the PER-ARM TABLE below ($LCARS_SETUP_INSTALL_ALLOW_RE
+#     overrides the whole table)
+#
+# ---------------------------------------------------------------------------
+# S186 — THE INSTALL ALLOWLIST IS A TABLE, KEYED BY THE STACK
+# ---------------------------------------------------------------------------
+# S111 shipped ONE allowlist — `^(pnpm|npm|yarn|bun)[[:space:]]` — because the
+# only repo the declared-setup path ever ran on was a Node one. S185 pointed that
+# same path at the ROOT of the captain's repo on ANY stack, and a single JS
+# pattern is now wrong in both directions: too NARROW (a Rust or .NET
+# initialization mission cannot declare anything its own ecosystem needs, so the
+# arm is dead on arrival) and too WIDE (that mission could declare `npm install`,
+# and the root it would install into is the captain's).
+#
+# The cure is the S147 STAMP: one row per classifier arm, each admitting ONLY its
+# own ecosystem's package manager. The row keys are `detect_stack`'s vocabulary
+# and nothing else — a second stack taxonomy is how two detectors start
+# disagreeing about what a repo is.
+#
+# WHAT THIS DOES NOT CHANGE, and must not. The metacharacter guard further down
+# (S185 salvage DEFECT 5) is NOT per-arm and must never become per-arm: seven
+# patterns would be seven chances to reopen the hole `npm --version && touch
+# /tmp/PWNED` walked through, accepted AND executed. ADD-only, never `src/`, the
+# file-count and size caps, the workspace refusal and the probe-verified
+# `setup_ensure_runner` are equally untouched. This session widens the ALLOWLIST
+# and the TRIGGER; it never widens the mechanics.
+setup_install_allow_re() { # stack id → the ERE of installs admissible on that arm
+  case "${1:-}" in
+    # BYTE-IDENTICAL to the pre-S186 hardcoded pattern. The stamp ADDS rows; it
+    # does not edit the one that was already there and already driven.
+    js)     printf '^(pnpm|npm|yarn|bun)[[:space:]]' ;;
+    # rust / go — there is NOTHING TO INSTALL on these arms: `cargo test` and
+    # `go test` ship with the toolchain (measured on the build machine: a fresh
+    # `cargo init` and a fresh `go mod init` both run their tests with no install
+    # at all). The rows exist for the crate or module that genuinely wants a dev
+    # dependency (proptest, testify), never because the arm needs one to work.
+    rust)   printf '^(cargo|rustup)[[:space:]]' ;;
+    go)     printf '^go[[:space:]]+(get|mod|install|work)([[:space:]]|$)' ;;
+    # dotnet — establishing a runner here is a `dotnet new <template>` plus the
+    # references that make the SDK's test driver discover it, so `new`, `add`,
+    # `sln` and `restore` are all part of ONE recipe rather than an install.
+    dotnet) printf '^dotnet[[:space:]]+(new|add|sln|restore|tool)([[:space:]]|$)' ;;
+    ruby)   printf '^(bundle|gem)[[:space:]]' ;;
+    # python — pip / uv / poetry are PERMITTED here, which is a different
+    # question from what the initialization PRD RECOMMENDS. On a PEP-668
+    # externally-managed interpreter a bare `pip install` hard-refuses (measured
+    # on the build machine), which is exactly why the PRD's python guidance
+    # points at the standard library's own runner instead; plenty of machines
+    # have a virtualenv or a tool installer where these work fine, so the table
+    # keeps them. What LCARS must never do is escape the refusal — an interpreter
+    # broken to obtain a test runner is a worse outcome than no test runner.
+    python) printf '^(pip3?|uv|poetry|python3?[[:space:]]+-m[[:space:]]+pip)[[:space:]]' ;;
+    # jvm — the runner comes from the BUILD TOOL, so the admissible commands are
+    # the build tool's own. NOT EXECUTABLE on the build machine (no java, no
+    # gradle, no mvn): this row is proven as string logic and is ledgered
+    # transcript-only until a JDK is present.
+    jvm)    printf '^(\./)?(gradle|gradlew|mvn|mvnw)[[:space:]]' ;;
+    # NOTHING RESOLVED. A repo LCARS cannot attribute to an arm gets the UNION of
+    # the table, composed from the rows above so it can never drift from them.
+    # This errs the same way the foundation oracle does and for the same reason:
+    # refusing every install on an unattributable repo would strand the captain
+    # this whole round exists for, while a foreign-but-still-allowlisted install
+    # is one plain invocation, still metacharacter-guarded, still probe-verified,
+    # and still has to leave behind a runner LCARS can detect.
+    *)
+      local a out=""
+      for a in js rust go dotnet ruby python jvm; do
+        out="${out:+$out|}$(setup_install_allow_re "$a")"
+      done
+      printf '%s' "$out" ;;
+  esac
+}
+
+# _setup_stack_in — `detect_stack`'s answer for ONE directory, or "". The lib is
+# sourced on demand exactly as greenfield_detect_cmd does it, and $TOPLEVEL is
+# set with a `local` (dynamically scoped in bash) so the detector reads it
+# without anything leaking back out — the readiness_verdict idiom.
+_setup_stack_in() { # dir → the stack id, or ""
+  [ -n "${1:-}" ] && [ -d "$1" ] || return 0
+  if ! command -v detect_stack >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v detect_stack >/dev/null 2>&1 || return 0
+  local TOPLEVEL="$1"
+  detect_stack 2>/dev/null
+}
+
+# setup_stack_arm — WHICH ARM'S allowlist row governs this declaration. Three
+# sources, in the order of how much they know about the repo:
+#
+#   1. THE TREE, via `detect_stack` — the ground truth about what the project
+#      already is, and the only source on the evidence-gated package arm.
+#   2. THE DECLARATION ITSELF. On a genuinely blank repo — the day-zero case this
+#      round is for — the tree is silent, and the ONLY evidence of the ecosystem
+#      is the manifest the scaffold ticket is about to ADD. Read from the setup
+#      dir, which is `find`-able before a single file has been copied.
+#   3. THE REPO'S RECORDED STACK, seeded into config.json by `lcars init` from
+#      this same `detect_stack`. Last because a repo can be re-purposed and the
+#      tree is then more current than the record.
+#
+# Anything that does not land on a single known arm — `unknown`, or an
+# `ambiguous(a,b)` repo whose stack LCARS declines to guess — resolves to
+# `unknown`, whose row is the union. Refusing beats guessing everywhere in this
+# file EXCEPT here, where refusing means refusing a legitimate install.
+setup_stack_arm() { # setup-dir → one detect_stack id, or "unknown"
+  [ -n "${LCARS_SETUP_STACK:-}" ] && { printf '%s' "$LCARS_SETUP_STACK"; return 0; }
+  local s cfg
+  cfg="${REPO_ROOT:-$PWD}/.git/lcars/config.json"
+  for s in "$(_setup_stack_in "${REPO_ROOT:-$PWD}")" \
+           "$(_setup_stack_in "${1:-}")" \
+           "$([ -f "$cfg" ] && json_str "$cfg" stack)"; do
+    case "$s" in
+      rust|go|python|js|dotnet|jvm|ruby) printf '%s' "$s"; return 0 ;;
+    esac
+  done
+  printf 'unknown'
+}
+
+# setup_cmd_has_metachar — THE ONE DEFINITION of the S185 salvage DEFECT 5
+# guard, extracted here in S186 fix round 1 because there are TWO doors a
+# declared install walks through to `bash -c` — `apply_declared_setup` (the
+# manifest, first application) and `setup_reapply_in_worktree` (the RECORD,
+# re-applied in every gate worktree) — and only the first was checking. A
+# second copy of this character list is a second chance to reopen the hole
+# `npm --version && touch /tmp/PWNED` walked through, so there is one list and
+# both doors call it. The list itself is UNCHANGED, character for character.
+setup_cmd_has_metachar() { # command → 0 iff it carries a shell metacharacter
+  case "${1:-}" in
+    *';'*|*'&'*|*'|'*|*'<'*|*'>'*|*'`'*|*'$'*|*'('*|*')'*|*'{'*|*'}'*|*'\'*|*$'\n'*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+# S194 — undo an APPLIED-then-REFUSED declaration. Only ever handed paths
+# ADD-only has already proven were absent, so this can never delete the repo's
+# own files; empty parent dirs the copy created are pruned with `rmdir`, which
+# refuses a non-empty directory.
+setup_rollback_copied() { # newline-separated absolute paths
+  local __c
+  [ -n "$1" ] || return 0
+  printf '%s' "$1" | while IFS= read -r __c; do
+    [ -n "$__c" ] || continue
+    rm -f "$__c" 2>/dev/null || :
+    rmdir "$(dirname "$__c")" 2>/dev/null || :
+  done
+  return 0
+}
+
 SETUP_NOTE=""
 apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 rejected
   local mf="$1" sdir="$2" pkg="$3"
@@ -7643,13 +8414,50 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   mpkg="$(json_str "$mf" package)"
   gap="$(json_str "$mf" gap)"
   icmd="$(json_str "$mf" installCommand)"
-  if [ "$mpkg" != "$pkg" ]; then
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+    # S185 SCAFFOLD ARM (salvage 04fee49, taken as-is) — the gap is the
+    # REPOSITORY ITSELF, not a package inside it, so the ONLY admissible
+    # destination is the repo ROOT. Accept the root's several spellings and
+    # REFUSE anything else: a scaffold declaration that aimed at a subdirectory
+    # would be establishing a test system somewhere LCARS never looks.
+    # Everything below this line — ADD-only, never src/, the file-count and size
+    # caps, the install allowlist, the probe-verified ensure — is UNCHANGED and
+    # applies to this arm identically.
+    case "$mpkg" in
+      ''|'.'|'./'|'/') pkg="" ;;
+      *)
+        SETUP_NOTE="the manifest names package '$mpkg', but this repo has no test system at all — a scaffold setup must be declared for the REPO ROOT (name it as the empty string)"
+        return 1 ;;
+    esac
+  elif [ "$mpkg" != "$pkg" ]; then
     SETUP_NOTE="the manifest names package '$mpkg' but the observed gap is in '${pkg:-<repo root>}' — a declared setup must address the package the evidence is about"
     return 1
   fi
-  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-^(pnpm|npm|yarn|bun)[[:space:]]}"
+  # S186 — the allowlist is a TABLE keyed by the repo's stack (see
+  # setup_install_allow_re above): each arm admits ONLY its own ecosystem's
+  # package manager, and $LCARS_SETUP_INSTALL_ALLOW_RE still overrides the lot.
+  local arm; arm="$(setup_stack_arm "$sdir")"
+  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-$(setup_install_allow_re "$arm")}"
   if [ -n "$icmd" ] && ! printf '%s' "$icmd" | grep -Eq "$allow"; then
-    SETUP_NOTE="installCommand '$icmd' is not a plain package-manager invocation (must match: $allow)"
+    SETUP_NOTE="installCommand '$icmd' is not a plain package-manager invocation for this repo's stack ($arm) (must match: $allow)"
+    return 1
+  fi
+  # S185 — ANCHOR THE ALLOWLIST AT THE OTHER END (salvage DEFECT 5, inherited
+  # from S111 and escalated here). The pattern above is a PREFIX match with no
+  # end anchor, and the command is handed to `bash -c`, so everything AFTER a
+  # matching prefix ran too: `npm --version && touch /tmp/PWNED` was accepted and
+  # EXECUTED (driven, S183 tester). S185 does not create that hole, but it moves
+  # the target from one package inside a working repo to the ROOT of the
+  # captain's repo.
+  #
+  # The fix is a TIGHTENING of the same mechanic, not a new one: a declared
+  # install must be ONE plain invocation, so no shell metacharacter may appear in
+  # it at all. Real installs (`npm install --no-audit --no-fund --save-dev
+  # vitest`, `pnpm add -D jest`, `yarn add --dev mocha`) carry none of these;
+  # chaining, substitution, redirection and subshells all do. Applied to BOTH
+  # arms — the evidence-gated package path has exactly the same hole.
+  if [ -n "$icmd" ] && setup_cmd_has_metachar "$icmd"; then
+    SETUP_NOTE="installCommand '$icmd' contains a shell metacharacter — a declared install must be ONE plain package-manager invocation, never a chained, substituted, redirected or subshelled command"
     return 1
   fi
   local dest="$REPO_ROOT${pkg:+/$pkg}"
@@ -7670,16 +8478,57 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
       fi
     done < <(find "$sdir" -type f 2>/dev/null)
   fi
+  # S185 — SECOND LINE OF DEFENCE ON A WORKSPACE ROOT (salvage DEFECT 4).
+  # ADD-only refuses a declaration that RESHAPES an existing root manifest, and
+  # that is what makes the scaffold arm safe on a monorepo. But a declaration can
+  # sidestep the manifest entirely (declare only a runner config, install the
+  # runner) and ADD-only sees nothing to refuse. Checked HERE, after the ADD-only
+  # loop, so the existing refusal keeps its precedence and its wording.
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+    local ws_marker; ws_marker="$(greenfield_workspace_marker "$REPO_ROOT")"
+    if [ -n "$ws_marker" ]; then
+      SETUP_NOTE="this repo root is a WORKSPACE ($ws_marker) — LCARS will not establish a root test system for a workspace it does not understand; its packages very likely test fine already, and any tests a root runner then collected would be theirs, not ones this mission created. Point LCARS at the runner this workspace already uses instead."
+      return 1
+    fi
+  fi
   # Validated — APPLY: copy the new files, then run the install command in the
   # package dir under a hard timeout. The applied files ride the ticket's commit
   # (they are new post-snapshot untracked files), so every downstream gate and
   # the PR see exactly what was provisioned.
+  # S194 — REMEMBER WHAT WE COPIED. Every refusal below this line happens AFTER
+  # the files are on disk, and a refused attempt is now RETRYABLE, so litter left
+  # here is litter the NEXT session's identical declaration trips over: ADD-only
+  # would refuse it for "already exists" — the harness refusing a worker for the
+  # harness's own leftovers, and a retry that could never converge. ADD-only
+  # guarantees each of these paths was absent before, so removing them restores
+  # the tree exactly.
+  local __as_copied=""
   if [ -d "$sdir" ]; then
     while IFS= read -r f; do
       rel="${f#"$sdir"/}"
       case "$rel" in */*) mkdir -p "$dest/${rel%/*}" 2>/dev/null || : ;; esac
       cp "$f" "$dest/$rel"
+      __as_copied="$__as_copied$dest/$rel
+"
     done < <(find "$sdir" -type f 2>/dev/null)
+  fi
+  # S185 SCAFFOLD ARM — GIVE THE PROBE SOMETHING TO PROBE WITH. Every probe in
+  # this file goes through runner_preflight_env_failure, which returns "no env
+  # failure detected" when resolve_test_cmd is EMPTY — so on a repo with no test
+  # command the probe below would pass vacuously and call a dead runner alive.
+  # The command is re-detected FROM THE TREE THE SETUP JUST CREATED, with the
+  # SAME detector `lcars init` uses, and adopted for THIS PROCESS ONLY
+  # (TEST_CMD_ENV, which resolve_test_cmd reads first). Never written to the
+  # repo's config.json here: the runner exists only on the mission branch until
+  # merge — `lcars approve` promotes it when the mission MERGES.
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+    local gcmd; gcmd="$(greenfield_detect_cmd "$REPO_ROOT")"
+    if [ -z "$gcmd" ]; then
+      SETUP_NOTE="the declared setup leaves no test command LCARS can detect at the repo root — a runner nothing can invoke is not an established test system"
+      setup_rollback_copied "$__as_copied"
+      return 1
+    fi
+    TEST_CMD_ENV="$gcmd"
   fi
   local irc=0
   if [ -n "$icmd" ]; then
@@ -7757,8 +8606,31 @@ setup_reapply_in_worktree() { # worktree-path
   pkg="$(json_str "$rec" package)"
   icmd="$(json_str "$rec" installCommand)"
   [ -n "$icmd" ] || return 0
-  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-^(pnpm|npm|yarn|bun)[[:space:]]}"
-  printf '%s' "$icmd" | grep -Eq "$allow" || return 0
+  # S186 fix round 1 — THE SAME TABLE, resolved for the tree being provisioned.
+  # This site carried its own copy of the pre-S186 hardcoded JS pattern, so every
+  # install-needing NON-JS arm (dotnet restore, bundle install, gradle) failed
+  # the match and the guard's `|| return 0` returned SUCCESS with the re-install
+  # silently skipped — a gate worktree with no runner, which is the exact failure
+  # this function exists to prevent. The arm is resolved from the GATE WORKTREE,
+  # because that is the tree being provisioned: $REPO_ROOT is overridden inside a
+  # command substitution (bash dynamic scoping, the _setup_stack_in idiom) so
+  # setup_stack_arm reads $wt and nothing leaks back out.
+  local arm allow
+  arm="$( REPO_ROOT="$wt"; setup_stack_arm "$wt" )"
+  allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-$(setup_install_allow_re "$arm")}"
+  # DEFENSE IN DEPTH, and SYMMETRIC with apply_declared_setup. What is re-read
+  # here is a RECORD on disk, not the manifest the apply path already judged, and
+  # it is handed to `bash -c` downstream — so it faces BOTH of that path's
+  # checks: the arm's allowlist and the one metacharacter definition above. A
+  # refusal is now SAID OUT LOUD (the old `|| return 0` left a human nothing to
+  # read) and still returns 0: this function is best-effort and must never abort
+  # a gate.
+  if ! printf '%s' "$icmd" | grep -Eq "$allow" || setup_cmd_has_metachar "$icmd"; then
+    emit_event test_setup_reapply_refused implement \
+      "the recorded declared-setup install '$icmd' was REFUSED in gate worktree $wt — it is not one plain package-manager invocation for this tree's stack ($arm); the gate runs against an UNPROVISIONED env" \
+      "ticket=${TICKET:-}" || :
+    return 0
+  fi
   local d="$wt${pkg:+/$pkg}"
   [ -d "$d" ] || return 0
   setup_ensure_runner "$d" "$wt" "$icmd" \
@@ -8067,12 +8939,657 @@ proof_test_rels_in_diff() { # parent-sha worktree [existing|all] → relpaths
 # (S99, js/py phrasings) with the native runners' own zero phrasings LOCALLY —
 # the shared `zerotests` signature is classify-only for the LIVE path and must
 # stay byte-identical (this session touches no live verdict).
-proof_zero_collected() { # runner-output → 0 if zero tests were collected/ran
+#
+# S193 FIX 1 — the SECOND argument is the ticket's DECLARED TEST FILE(S), the
+# same `$rels` the flip-flop gate already computes, and it is what lets the cargo
+# arm below answer a question about THIS TICKET instead of about the whole run.
+# BOTH flip-flop legs pass it, and the gate has already refused the ticket when
+# it is empty, so the gate can never ask the unattributed question. It stays
+# OPTIONAL only for the callers that have no ticket to speak of — the per-stack
+# unit suites and the S193 attack rig — which ask the weaker whole-run question
+# deliberately and are documented as doing so.
+#
+# S193 FIX 2 — the THIRD argument is the CRATE ROOT (the worktree the leg ran
+# in). It exists so the cargo arm can read Cargo.toml's own `harness` DECLARATION
+# — see proof_cargo_collect_verdict's second block. It is OPTIONAL for the same
+# callers the second argument is optional for; when it is absent the manifest is
+# located from cargo's own `Compiling <pkg> vX (<dir>)` line instead, and when
+# neither finds a manifest the behaviour is exactly what it was.
+#
+# PROOF_ZERO_KIND is set on every call (cleared first) so a caller can say WHY it
+# is refusing without re-deriving it: "" for the ordinary green-on-nothing trap,
+# `harness-false` when the ticket's target opts out of cargo's test harness, and
+# `manifest-unreadable` when Cargo.toml declares `harness` and LCARS could not
+# read which target it belongs to.
+proof_zero_collected() { # runner-output [declared-test-relpaths] [crate-root] → 0 if zero tests ran
+  PROOF_ZERO_KIND=""
+  PROOF_ZERO_DETAIL=""
   suite_collected_zero_tests "$1" && return 0
+  # S193 (D1): CARGO reports PER TARGET, so a single `test result:` line is not
+  # the run — see proof_cargo_collect_verdict. Consulted BEFORE the local greps
+  # so the bare `test result: ok. 0 passed` string below can no longer speak for
+  # a multi-target cargo run; it still speaks for every non-cargo buffer, which
+  # is why it stays exactly where it was.
+  # The verdict token is line 1; lines 2+ are the fail-closed REASON. Split with
+  # parameter expansion, not `head`/`sed`: the fail-closed path is reached on
+  # machines that are MISSING TOOLS (that is half of what it is for), and a
+  # detector that needs coreutils to report "no python3" would lose the very
+  # refusal it exists to make — measured, as a lost zero-kind on a PATH carrying
+  # neither cargo nor python3.
+  local _pzv _pzk; _pzv="$(proof_cargo_collect_verdict "$1" "${2:-}" "${3:-}")"
+  _pzk="${_pzv%%$'\n'*}"
+  case "$_pzk" in
+    some) return 1 ;;
+    zero) return 0 ;;
+    zero-optout)     PROOF_ZERO_KIND=harness-false;        return 0 ;;
+    zero-unreadable) PROOF_ZERO_KIND=manifest-unreadable
+                     # S193 FIX 3: the WHY travels with the refusal so the gate
+                     # can name the manifest (or the missing tool) instead of
+                     # saying "Cargo.toml" and leaving the captain to guess.
+                     [ "$_pzk" != "$_pzv" ] && PROOF_ZERO_DETAIL="${_pzv#*$'\n'}"
+                     return 0 ;;
+  esac
   # S147: the dotnet pair rides the SHARED `zerotests` arm above (they are real
   # runner phrasings, useful to the live classifier too), so nothing extra is
   # needed here — go's/cargo's exit-0 forms stay local as before.
   printf '%s' "$1" | grep -Eq 'no tests to run|test result: ok\. 0 passed'
+}
+
+# S193 (D1) — DID THIS CARGO RUN COLLECT ANY TESTS? Echoes "" (this buffer is
+# not cargo's), "zero" (cargo ran and executed nothing) or "some" (cargo
+# executed at least one test).
+#
+# THE BUG. `cargo test` prints ONE SCOREBOARD PER TEST TARGET — the lib/bin
+# unit-test binary, each `tests/*.rs` integration binary, and finally the
+# `Doc-tests <crate>` block — and a target with nothing in it still prints a
+# FULL, EXIT-ZERO scoreboard:
+#
+#      Running unittests src/lib.rs (…)     <- a lib with no #[cfg(test)] mod
+#     running 0 tests
+#     test result: ok. 0 passed; …          <- an EMPTY target's scoreboard
+#      Running tests/add.rs (…)
+#     running 1 test
+#     test adds … ok
+#     test result: ok. 1 passed; …          <- the REAL one
+#        Doc-tests gfapp
+#     running 0 tests
+#     test result: ok. 0 passed; …          <- the EMPTY doc-test one
+#
+# The old check grepped for a single `test result: ok. 0 passed` ANYWHERE, so
+# BOTH empty targets sank a run whose tests demonstrably passed in the same
+# buffer: measured on the S186 rust arm, ticket 2 parked awaiting-human with
+# `1 passed` recorded three lines above the rejection. (The brief named only the
+# trailing Doc-tests block; the leading empty-unittests scoreboard is the same
+# defect and is present on EVERY library crate whose tests live in tests/, which
+# is the shape the greenfield rust arm scaffolds — curing one without the other
+# leaves the arm exactly as broken, so both are cured by one rule.)
+#
+# THE RULE IS CARGO-SHAPED AND POSITIVE — never positional. It is NOT "ignore
+# the last scoreboard" and NOT "ignore the Doc-tests section": either of those
+# would blind the green-on-nothing trap on any runner that prints its summary
+# last, and both would still be guessing from position. It reads cargo's OWN
+# grammar instead:
+#   • a buffer is cargo's only if it carries libtest's exact scoreboard line at
+#     COLUMN 0 (`test result: <word>. <N> passed; <M> failed;`) — the same
+#     anchoring discipline as every other detector in this family. No such line,
+#     and this function says nothing at all ("").
+#   • a scoreboard reports EXECUTION iff its passed or failed count is NON-ZERO.
+#     Ignored / measured / filtered-out counts deliberately do NOT count: an
+#     all-`#[ignore]`d crate prints `0 passed; 0 failed; 3 ignored` and stays
+#     ZERO, which is rust's member of the green-on-nothing family and is
+#     preserved exactly.
+#
+# ================ S193 FIX ROUND 1: WHICH TARGET IS BEING ASKED? ============
+# The first cut of this rule aggregated over the WHOLE RUN — the run collected
+# something iff ANY scoreboard was non-zero — and an adversarial tester beat it
+# twice with one lever, neither attack needing a forgery:
+#
+#   * `cargo test` runs EVERY target, so ticket 1's still-passing scaffold test
+#     speaks for ticket 2. MEASURED: ticket 2's only test was `#[ignore]`d, its
+#     own target reported `0 passed; 0 failed; 1 ignored`, tests/greet.rs
+#     reported `1 passed`, and the gate said PASS. By hand at the same tip,
+#     breaking the implementation left the suite exit-0. Nothing was proven.
+#   * the same masking let a forged scoreboard printed from ANY OTHER target
+#     unlock a pass — the first rule in this family where forging a column-0
+#     line made the gate MORE permissive rather than less.
+#
+# THE CURE IS ATTRIBUTION, and it needs no new honesty heuristic because cargo
+# already announces the owner of every scoreboard, indented, immediately above it:
+#
+#      Running unittests src/lib.rs (target/debug/deps/gfapp-6336…)   <- a target
+#      Running tests/add.rs (target/debug/deps/add-94b0…)             <- a target
+#        Doc-tests gfapp                                              <- a section
+#
+# So: a scoreboard belongs to the target announced above it, and THE RUN
+# COLLECTED SOMETHING IFF THE TARGET THAT OWNS THE TICKET'S DECLARED TEST FILE
+# reports a non-zero passed/failed. A sibling target passing is no longer enough.
+# `Doc-tests <crate>` names no path in the repo, so it can never be the owner of
+# a declared file — a passing doc-test is a real test, but it is not the
+# ticket's, and the gate's question is about the ticket's.
+#
+# FAIL CLOSED, in both directions, because the safe fallback is "zero":
+#   • declared files given but NO announced target matches one → ZERO. Not the
+#     aggregate. That covers a runner invocation whose paths cargo prints
+#     differently from the way the ticket declared them, a scope that never
+#     reached the ticket's file, and every unknown-unknown.
+#   • no declared files given at all (the unattributed callers) → the whole-run
+#     question, unchanged. The flip-flop gate never takes this path: it passes
+#     `$rels`, and it has already refused a ticket whose `$rels` is empty.
+#
+# PATH MATCHING is verbatim, with ONE deliberate allowance: cargo prints target
+# paths relative to the CRATE MANIFEST, while the ticket declares them relative
+# to the REPO ROOT, so a crate in a subdirectory announces `tests/add.rs` for a
+# declared `crates/app/tests/add.rs`. A declared path is therefore matched when
+# it EQUALS the announced path or ENDS WITH `/` + the announced path. Nothing
+# looser: no basename matching, no stem matching, no normalisation.
+#
+# WHAT THIS ALONE DOES NOT CLOSE — and what FIX ROUND 2 below closes: a target
+# declared `harness = false` in Cargo.toml is an ordinary binary, and cargo
+# announces it exactly like a libtest target, so a `println!` of this grammar
+# from inside the TICKET'S OWN declared file was still attributed to the ticket
+# and still read as executed tests (measured: tests/drives/s193/forge-drive.sh).
+# The cure is NOT a judgement about whether a runner is genuine — this codebase
+# refuses to make that mechanically, and three such designs were built and beaten
+# — it is reading cargo's own manifest declaration. See the next block.
+#
+# WHAT STAYS INCONCLUSIVE, the half that matters: a cargo run in which the
+# ticket's own target executed nothing — one target or ten, doc-tests or not,
+# siblings green or not — is still zero tests collected, and the gate refuses it.
+# Tests S2/S2b/S3a/S4b and T1/T2a/T3a-c hold that line.
+#
+# ============== S193 FIX ROUND 2: WHICH OUTPUT GRAMMAR APPLIES? ==============
+# The hole above was real and an adversarial tester walked through it: cargo lets
+# a target opt OUT of libtest with `harness = false` in Cargo.toml — a documented,
+# legitimate feature (criterion, libtest-mimic) — and such a target is an ORDINARY
+# BINARY. It can `println!` libtest's exact scoreboard grammar and exit 0, and
+# when the forge IS the ticket's own declared target the attribution above works
+# perfectly and reports "the ticket's target executed 2 tests" while nothing ran.
+#
+# CAPTAIN RULING 2026-09-06: reading cargo's own MANIFEST DECLARATION is
+# permitted. It is not the forbidden mechanism. "No harness-side auto-verification
+# that a test runner is genuine" (three designs built and beaten at
+# `wip/s183-canary-salvage` 04fee49) is about DECIDING WHETHER TESTS ARE REAL;
+# this decides WHICH OUTPUT GRAMMAR APPLIES, from a label the project wrote about
+# ITSELF, and it can only ever make LCARS more cautious. Nothing here judges
+# whether a test is meaningful.
+#
+# THE RULE: a target declared `harness = false` OWNS NO SCOREBOARD. Its output is
+# not libtest output and is never read as such — so:
+#   • if the target owning the ticket's DECLARED test file is `harness = false`
+#     there is nothing attributable at all → `zero-optout` → INCONCLUSIVE;
+#   • otherwise, its lines are simply DISCARDED before the whole-run question is
+#     answered, so a forged board from a sibling opt-out target cannot unlock a
+#     pass either.
+#
+# NO TOML PARSER, AND THE GATE DOES NOT DEPEND ON ONE. Three tiers, in order:
+#   1. NO `harness` key anywhere in the candidate manifests — the overwhelmingly
+#      common case — and nothing is parsed at all: the answer is byte-identical
+#      to fix round 1. Test U0 holds that line, in both directions.
+#   2. A `harness` key that IS confidently attributable to a target path (python3
+#      with tomllib) — apply the rule.
+#   3. A `harness` key whose attribution is UNCERTAIN — no python3, no tomllib
+#      (pre-3.11), an unparseable manifest, a stanza whose target path cannot be
+#      derived — FAIL CLOSED to `zero-unreadable`. Never a fall-through to
+#      permissive.
+#
+# THE COST, accepted by the captain and made LEGIBLE rather than hidden: a
+# legitimate Rust project whose ticket's tests live in a custom-harness target now
+# comes back UNPROVEN. flip_flop_gate says so in plain words — that the declared
+# test target opts out of cargo's standard test harness so its output cannot be
+# read as test results — never a bare "zero tests collected".
+# S193 FIX 3 — the verdict token is line 1; any further lines are the LEGIBLE
+# reason a fail-closed refusal carries, so the captain is told WHICH manifest or
+# WHICH call defeated attribution rather than a bare "Cargo.toml".
+proof_cargo_collect_verdict() { # runner-output [declared-test-relpaths] [crate-root] → (zero|some|zero-optout|zero-unreadable)[\n reason] | ""
+  local facts="" nh="" hp=""
+  # Is this a libtest-grammar buffer AT ALL? Asked first and cheaply, so a
+  # jest/pytest/go buffer never causes a manifest to be opened, let alone parsed.
+  if printf '%s\n' "$1" | grep -Eq '^test result: [A-Za-z]+\. [0-9]+ passed; [0-9]+ failed;'; then
+    facts="$(proof_cargo_harness_optouts "${3:-}" "${2:-}" "$1")"
+    case "$facts" in
+      UNCERTAIN*) printf 'zero-unreadable\n%s' "${facts#UNCERTAIN }"; return 0 ;;
+    esac
+    # ATTRIBUTED BY CARGO: the ticket's own declared file IS a target this
+    # project declared `harness = false`. Answered here rather than in awk
+    # because it needs no scoreboard to be true — the declaration alone settles
+    # that the target owns none. Round 2 re-derived this from manifest-relative
+    # paths matched equal-or-ends-with; fix round 3 does not, which is precisely
+    # what stops a workspace ROOT's opt-out speaking for a MEMBER's honest file.
+    case "$facts" in OPTOUT*) printf 'zero-optout'; return 0 ;; esac
+    nh="$(printf '%s\n' "$facts" | sed -n 's/^NH //p')"
+    hp="$(printf '%s\n' "$facts" | sed -n 's/^HP //p')"
+  fi
+  # The declared paths travel in the ENVIRONMENT, not through `awk -v`: -v runs
+  # its value through escape processing and cannot carry the newlines that
+  # separate the paths (measured — it aborts with "newline in string").
+  printf '%s\n' "$1" | LCARS_CARGO_DECLARED="${2:-}" LCARS_CARGO_OPTOUTS="$nh" \
+    LCARS_CARGO_HONEST="$hp" awk '
+    BEGIN {
+      nd = 0
+      n = split(ENVIRON["LCARS_CARGO_DECLARED"], R, "\n")
+      for (i = 1; i <= n; i++) {
+        p = R[i]
+        sub(/^[ \t]+/, "", p); sub(/[ \t]+$/, "", p)
+        if (p != "") { nd++; D[nd] = p }
+      }
+      # S193 FIX 3: the paths cargo ANNOUNCES for the targets this project
+      # declared `harness = false` — package-relative, exactly as cargo prints
+      # them. Their output is not libtest output, so their scoreboard lines are
+      # DISCARDED, never counted, in either question.
+      no = 0
+      n = split(ENVIRON["LCARS_CARGO_OPTOUTS"], X, "\n")
+      for (i = 1; i <= n; i++) {
+        p = X[i]
+        sub(/^[ \t]+/, "", p); sub(/[ \t]+$/, "", p)
+        if (p != "") { NH[p] = 1; no++ }
+      }
+      # ...and the paths cargo announces for the targets that DO own a
+      # scoreboard. Inside a workspace two packages really can both announce
+      # `tests/forge.rs` (measured), and nothing in the cargo output says which
+      # board is whose. Round 2 discarded on the collision and false-parked a
+      # member crate whose honest libtest test had genuinely just run; a board is
+      # now discarded only when EVERY target that could have printed it opts out.
+      # The residual is disclosed above the function.
+      n = split(ENVIRON["LCARS_CARGO_HONEST"], Y, "\n")
+      for (i = 1; i <= n; i++) {
+        p = Y[i]
+        sub(/^[ \t]+/, "", p); sub(/[ \t]+$/, "", p)
+        if (p != "") HP[p] = 1
+      }
+    }
+    # cargo ANNOUNCES each target, always indented, before the output of that
+    # target.
+    # `unittests ` prefixes the lib/bin target; the trailing ` (…)` is the
+    # compiled binary path. Column 0 is deliberately NOT matched: cargo indents.
+    /^[ \t]+Running / {
+      line = $0
+      sub(/^[ \t]+Running[ \t]+/, "", line)
+      sub(/^unittests[ \t]+/, "", line)
+      sub(/[ \t]+\(.*$/, "", line)
+      cur = line
+      next
+    }
+    # A doc-test section owns no file in the repo, so it owns no declared file.
+    /^[ \t]+Doc-tests[ \t]/ { cur = ""; next }
+    /^test result: [A-Za-z]+\. [0-9]+ passed; [0-9]+ failed;/ {
+      # `seen` is set by ANY column-0 scoreboard, INCLUDING a discarded one: the
+      # buffer is still a cargo buffer, and a crate whose only board is forged must
+      # answer "zero", not "not a cargo buffer" (which would fall through to the
+      # permissive plain grep in proof_zero_collected).
+      seen = 1
+      nz = (($4 + 0) > 0 || ($6 + 0) > 0)
+      if (no > 0 && cur != "") {
+        if (cur in NH) {
+          # A target that opts out owns NO scoreboard. When no honest target
+          # could have printed this board either, discard it outright.
+          if (!(cur in HP)) next
+          # When one could, cargo has announced BOTH targets under the same
+          # package-relative path and nothing in the buffer says which board is
+          # whose. Neither credulous nor blind: hold the board back and let END
+          # count this path only if EVERY board printed under it ran tests. One
+          # honest board and no opt-out board (a member crate whose sibling
+          # custom harness printed nothing) still counts; a forged board sitting
+          # next to the empty board of the target that really is the ticket does
+          # not. MEASURED both ways.
+          CB[cur]++
+          if (!nz) CZ[cur]++
+          next
+        }
+      }
+      if (nz) some = 1
+      if (cur != "") {
+        for (i = 1; i <= nd; i++) {
+          if (D[i] == cur || (length(D[i]) > length(cur) \
+              && substr(D[i], length(D[i]) - length(cur)) == "/" cur)) {
+            if (nz) mine = 1
+            break
+          }
+        }
+      }
+    }
+    END {
+      # The held-back collision paths, settled pessimistically: a path counts
+      # only when every board announced under it ran at least one test.
+      for (p in CB) {
+        if (CZ[p] > 0) continue
+        some = 1
+        for (i = 1; i <= nd; i++) {
+          if (D[i] == p || (length(D[i]) > length(p) \
+              && substr(D[i], length(D[i]) - length(p)) == "/" p)) { mine = 1; break }
+        }
+      }
+      if (!seen) { printf ""; exit }      # not a cargo buffer — say nothing
+      if (nd == 0) { printf (some ? "some" : "zero"); exit }
+      printf (mine ? "some" : "zero")     # fail closed: no owning target ⇒ zero
+    }'
+}
+
+# S193 FIX 3 — WHICH CRATE DIRECTORIES COULD SPEAK FOR THIS RUN? Echoes the
+# directories whose Cargo.toml is worth LOOKING AT, one per line. This is the
+# TRIGGER's candidate set and nothing more: it decides whether the word `harness`
+# appears anywhere in play, never which target owns what.
+#
+# Two sources, in strict order, and NEITHER is a guess about honesty:
+#   1. THE CRATE ROOT THE LEG RAN IN, which both flip-flop legs pass. Walking UP
+#      from each declared test file is what makes a crate in a subdirectory (a
+#      monorepo, `crates/app/tests/add.rs`) reach its OWN Cargo.toml.
+#   2. CARGO'S OWN `Compiling <pkg> vX.Y.Z (<dir>)` LINE, used when (1) found
+#      nothing — the unattributed callers (the per-stack unit suites, the S193
+#      attack rig) pass no root at all. Registry dependencies print no
+#      parenthesised path, so only LOCAL path packages are picked up.
+#
+# FIX ROUND 3 REMOVES THE `break`. Round 2 stopped at the FIRST Cargo.toml the
+# walk-up met, so a stray `[workspace]`-only Cargo.toml planted in `tests/`
+# shadowed the real crate manifest and the rule never engaged (a MEASURED hollow
+# pass). The walk now collects EVERY manifest on the chain. Collecting too many
+# is safe HERE — an extra candidate can only cause the word `harness` to be
+# noticed, and noticing it merely means "ask cargo".
+# Finding nothing is not an error: there is then no `harness` declaration to
+# read, and the verdict is exactly what fix round 1 gave.
+proof_cargo_manifest_dirs() { # crate-root declared-relpaths runner-output → dirs
+  local root="$1" rels="$2" out="$3" rel d found="" hops
+  # Trailing slashes would make the walk-up terminator below miss the root and
+  # keep climbing out of the worktree; strip them once, here.
+  while :; do case "$root" in ?*/) root="${root%/}" ;; *) break ;; esac; done
+  if [ -n "$root" ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      d="$root/$(dirname "$rel")"
+      hops=0
+      while [ "$hops" -lt 64 ]; do
+        hops=$((hops + 1))
+        [ -f "$d/Cargo.toml" ] && found="$found$d
+"
+        case "$d" in "$root"|"$root"/|/|.|..) break ;; esac
+        d="$(dirname "$d")"
+      done
+    done <<PCMD_RELS
+$rels
+PCMD_RELS
+    [ -f "$root/Cargo.toml" ] && found="$found$root
+"
+  fi
+  # ALWAYS, not only as a fallback (fix round 3). A SIBLING PACKAGE in the same
+  # workspace is never on the walk-up from the ticket's own test file, so a
+  # walk-up-only candidate set cannot notice that a sibling declares
+  # `harness = false` for a target with the same package-relative path — and a
+  # scoped `cargo test --test <stem>` selects that sibling target too. Cargo has
+  # already named every locally-built package in the buffer; using those lines
+  # here costs nothing and is the only handle on a sibling this function has.
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ -f "$d/Cargo.toml" ] && found="$found$d
+"
+  done <<PCMD_COMPILING
+$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]+Compiling [^ ]+ v[^ ]+ \((.+)\)$/\1/p')
+PCMD_COMPILING
+  printf '%s' "$found" | grep . | LC_ALL=C sort -u
+}
+
+# S193 FIX 3 — ASK CARGO. Echoes the facts the scoreboard reader needs, one per
+# line, and NOTHING at all when no manifest in play mentions `harness`:
+#
+#   OPTOUT                  the ticket's OWN declared test file belongs to a
+#                           target this project declared `harness = false`
+#   NH <package-rel path>   a target that owns NO libtest scoreboard
+#   HP <package-rel path>   a target that does
+#   UNCERTAIN <why>         attribution failed — the caller FAILS CLOSED
+#
+# WHY THIS IS A RESTRUCTURE AND NOT A PATCH. Round 2 re-implemented three things
+# cargo already owns, and a fresh adversarial tester beat all three in one pass:
+#   * WHERE a target's source lives. Round 2 derived `tests/<name>.rs`; cargo's
+#     standard DIRECTORY layout announces `tests/<name>/main.rs`, so the opt-out
+#     target was neither attributed nor discarded and its forged board was
+#     counted as the ticket's own.
+#   * WHICH manifest applies. The walk-up stopped at the first Cargo.toml, and a
+#     planted one hid the real declaration.
+#   * WHOSE opt-out it is. Round 2 UNIONED the opt-out paths across every
+#     candidate manifest and matched them ends-with, so a workspace ROOT's
+#     `[[test]] name="forge"` sank a MEMBER crate's genuinely-executed
+#     `crates/app/tests/forge.rs` — a FALSE PARK.
+# `cargo metadata --no-deps --format-version 1` answers all three authoritatively:
+# every target with its `kind`, its `name` and an ABSOLUTE `src_path`, and every
+# package with its `manifest_path`. The ticket's declared file is matched to a
+# target by PATH IDENTITY (both sides resolved to the same base — no basename
+# match, no ends-with heuristic), and the opt-out flag is then read from the ONE
+# manifest that owns that target. Deriving nothing means there is nothing left to
+# derive WRONG. Cargo does not report `harness`, so the flag still comes from the
+# manifest — but bound to the target cargo named, never pooled into a path set.
+#
+# THE TRIGGER STOPS BEING CLEVER. Round 2 gated everything behind
+# `grep -Eq '^[[:space:]]*harness[[:space:]]*='`, which MISSES four spellings
+# real cargo honours — a top-level inline-table array
+# (`test = [{ …, harness = false }]`), a quoted key (`"harness" = false`), a
+# dotted key (`lib.harness = false`) and an inline table (`lib = { harness =
+# false }`) — all four measured as hollow passes. tomllib always spelled them
+# correctly; only the grep in front of it lost them. The trigger is now an
+# UNANCHORED, CASE-INSENSITIVE match on the word `harness`. Over-broad is SAFE
+# here: firing merely means "ask cargo, then parse", and a manifest with no
+# actual opt-out comes back with no opt-out and behaviour is unchanged.
+#
+# THE DISCLOSED RESIDUAL, MEASURED not theorised: TOML lets a quoted key carry
+# unicode escapes, and `"\u0068arness" = false` is honoured by cargo 1.94 and
+# decoded correctly by tomllib while a case-insensitive grep for the word finds
+# NOTHING. That manifest still evades the trigger and its forged board is still
+# read as libtest output. It is accepted, and it is not the class of hole the
+# four spellings above were: those are ordinary forms a real project writes by
+# accident, whereas this one can only be produced deliberately. Closing it would
+# mean parsing EVERY Cargo.toml on EVERY rust gate, which costs the no-parse fast
+# path below — a trade that makes LCARS worse on the overwhelmingly common case
+# to buy nothing against an adversary who could equally well have declared no
+# target at all and printed the same board from a plain integration test.
+#
+# THE NO-PARSE FAST PATH IS THE CONSTRAINT THAT OUTRANKS THE FEATURE. When no
+# candidate manifest mentions `harness` — the overwhelmingly common case — cargo
+# is never invoked, python3 is never invoked, and the answer is byte-identical to
+# fix round 1. A machine without cargo on PATH or without python 3.11 must keep
+# passing ordinary rust tickets; turning every rust gate into
+# `manifest-unreadable` would be a far worse regression than the holes this
+# closes. The same fast path is applied AGAIN per-manifest inside the reader.
+proof_cargo_harness_optouts() { # crate-root declared-relpaths runner-output → facts
+  local dirs md fired="" mdir base
+  dirs="$(proof_cargo_manifest_dirs "$1" "$2" "$3")"
+  [ -n "$dirs" ] || { printf ''; return 0; }
+  while IFS= read -r md; do
+    [ -n "$md" ] || continue
+    if grep -qi 'harness' "$md/Cargo.toml" 2>/dev/null; then fired="$md/Cargo.toml"; break; fi
+  done <<PCHO_TRIGGER
+$dirs
+PCHO_TRIGGER
+  [ -n "$fired" ] || { printf ''; return 0; }
+  # WHERE TO ASK. The leg's own crate root when it has a manifest (a workspace
+  # root answers for its members too — that is the point of --no-deps returning
+  # every workspace package); otherwise the first candidate the Compiling lines
+  # produced, which is the unattributed callers' only handle on the run.
+  mdir=""
+  base="$1"
+  while :; do case "$base" in ?*/) base="${base%/}" ;; *) break ;; esac; done
+  if [ -n "$base" ] && [ -f "$base/Cargo.toml" ]; then
+    mdir="$base"
+  else
+    mdir="$(printf '%s\n' "$dirs" | sed -n '1p')"
+    base="$mdir"
+  fi
+  [ -n "$mdir" ] || { printf 'UNCERTAIN a Cargo.toml mentions `harness` but no crate directory could be located for this run'; return 0; }
+  # $fired is the manifest that actually mentions the word, which is not always
+  # $mdir's own (a workspace root carries no `harness` while its member does):
+  # naming the wrong file is exactly the "which Cargo.toml?" complaint fix
+  # round 3 was asked to cure, so the refusal names BOTH.
+  command -v cargo >/dev/null 2>&1 || {
+    printf 'UNCERTAIN %s mentions `harness` but there is no `cargo` on PATH to ask which target it belongs to (crate root %s)' "$fired" "$mdir"; return 0; }
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'UNCERTAIN %s mentions `harness` but there is no python3 on PATH to read `cargo metadata` with (crate root %s)' "$fired" "$mdir"; return 0; }
+  LCARS_CARGO_MDIR="$mdir" LCARS_CARGO_BASE="$base" LCARS_CARGO_RELS="${2:-}" \
+  LCARS_CARGO_MT="${LCARS_CARGO_METADATA_TIMEOUT_SECS:-120}" python3 -c '
+import json, os, posixpath, subprocess, sys
+
+def bail(msg):
+    sys.stdout.write("UNCERTAIN " + " ".join(str(msg).split()))
+    sys.exit(0)
+
+mdir = os.environ.get("LCARS_CARGO_MDIR", "")
+base = os.environ.get("LCARS_CARGO_BASE", "") or mdir
+rels = [r.strip() for r in os.environ.get("LCARS_CARGO_RELS", "").split("\n") if r.strip()]
+manifest = os.path.join(mdir, "Cargo.toml")
+try:
+    tmo = float(os.environ.get("LCARS_CARGO_MT", "120"))
+except Exception:
+    tmo = 120.0
+
+# tomllib landed in python 3.11. No tomllib, no reading of the flag, so the
+# caller fails CLOSED rather than guessing.
+try:
+    import tomllib
+except Exception:
+    bail("%s mentions `harness` but this python3 has no `tomllib` (it landed in python 3.11), so the declaration could not be read" % manifest)
+
+# THE BOUND. `cargo metadata` must never hang a gate: it is killed at the
+# timeout and the kill is reported, never silently absorbed.
+try:
+    proc = subprocess.run(["cargo", "metadata", "--no-deps", "--format-version", "1"],
+                          cwd=mdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=tmo)
+except subprocess.TimeoutExpired:
+    bail("`cargo metadata` did not finish within %ss in %s, so the targets this run declares could not be established" % (int(tmo), mdir))
+except Exception as exc:
+    bail("`cargo metadata` could not be run in %s (%s)" % (mdir, exc.__class__.__name__))
+if proc.returncode != 0:
+    tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+    tail = tail[0][:180] if tail else ""
+    bail("`cargo metadata` failed in %s (exit %d: %s)" % (mdir, proc.returncode, tail))
+try:
+    meta = json.loads(proc.stdout.decode("utf-8", "replace"))
+except Exception:
+    bail("`cargo metadata` in %s did not produce readable JSON" % mdir)
+
+def keyed(p):
+    # Resolve both sides of every comparison to the same base. The DIRECTORY is
+    # canonicalised (cargo reports a canonical package dir: /tmp resolves to
+    # /private/tmp on darwin) while the FINAL COMPONENT is left alone, because
+    # cargo does NOT follow a symlinked source file — measured. Pure path
+    # arithmetic otherwise; no basename matching, no ends-with.
+    p = os.path.abspath(p)
+    d, b = os.path.split(p)
+    try:
+        d = os.path.realpath(d)
+    except Exception:
+        pass
+    return os.path.join(d, b)
+
+targets = []
+for pkg in meta.get("packages", []) or []:
+    mp = pkg.get("manifest_path")
+    if not isinstance(mp, str) or not mp:
+        continue
+    pdir = os.path.dirname(mp)
+    for t in pkg.get("targets", []) or []:
+        sp = t.get("src_path")
+        if not isinstance(sp, str) or not sp:
+            continue
+        kinds = [k for k in (t.get("kind") or []) if isinstance(k, str)]
+        nm = t.get("name") if isinstance(t.get("name"), str) else None
+        targets.append({"mp": mp, "pdir": pdir, "kinds": kinds, "name": nm,
+                        "src": sp, "key": keyed(sp)})
+
+# THE FLAG, read from ONE manifest at a time and bound to the target it names —
+# never pooled across manifests (that pooling is what false-parked a member
+# crates own honest test in round 2). The per-manifest no-parse fast path is
+# repeated here so a workspace of fifty crates parses only the ones that mention
+# the word.
+_cache = {}
+def optouts_of(mp):
+    if mp in _cache:
+        return _cache[mp]
+    try:
+        with open(mp, "rb") as fh:
+            raw = fh.read()
+    except Exception:
+        bail("%s could not be opened to read its `harness` declaration" % mp)
+    if b"harness" not in raw.lower():
+        _cache[mp] = []
+        return _cache[mp]
+    try:
+        man = tomllib.loads(raw.decode("utf-8"))
+    except Exception:
+        bail("%s mentions `harness` but does not parse as TOML, so LCARS cannot tell which target opts out" % mp)
+    if not isinstance(man, dict):
+        bail("%s does not parse as a TOML table" % mp)
+    found = []
+    pdir = os.path.dirname(mp)
+    def consider(kind, tbl):
+        if not isinstance(tbl, dict):
+            bail("%s: the %s entry is not a table" % (mp, kind))
+        if "harness" not in tbl:
+            return
+        h = tbl["harness"]
+        if not isinstance(h, bool):
+            bail("%s: `harness` is not a boolean, so the declaration cannot be read" % mp)
+        if h:
+            return
+        nm = tbl.get("name")
+        pth = tbl.get("path")
+        found.append((kind,
+                      nm if isinstance(nm, str) and nm else None,
+                      keyed(os.path.join(pdir, pth)) if isinstance(pth, str) and pth else None))
+    lib = man.get("lib")
+    if lib is not None:
+        consider("lib", lib)
+    for kind in ("bin", "test", "bench", "example"):
+        v = man.get(kind)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            bail("%s: [[%s]] is not an array of tables" % (mp, kind))
+        for entry in v:
+            consider(kind, entry)
+    _cache[mp] = found
+    return found
+
+def is_optout(t):
+    for kind, nm, kp in optouts_of(t["mp"]):
+        if kind not in t["kinds"]:
+            continue
+        if nm is not None:
+            if nm == t["name"]:
+                return True
+            continue
+        if kp is not None:
+            if kp == t["key"]:
+                return True
+            continue
+        # A stanza with neither a name nor a path can only be [lib], of which a
+        # package has exactly one; cargo refuses the manifest in every other case.
+        return True
+    return False
+
+ticket_optout = False
+matched = 0
+for r in rels:
+    rk = keyed(os.path.join(base, r))
+    hits = [t for t in targets if t["key"] == rk]
+    if not hits:
+        continue
+    matched += 1
+    for t in hits:
+        if is_optout(t):
+            ticket_optout = True
+if rels and matched == 0:
+    bail("a Cargo.toml in play declares `harness`, but no cargo target announced by `cargo metadata` in %s owns the ticket declared test file(s) [%s], so LCARS cannot tell whose scoreboard this is"
+         % (mdir, ", ".join(rels)))
+
+out = []
+if ticket_optout:
+    out.append("OPTOUT")
+for t in targets:
+    # What cargo ANNOUNCES for a target is its source path relative to its own
+    # PACKAGE directory — measured, including inside a workspace, where two
+    # packages really can both announce `tests/forge.rs`.
+    try:
+        ann = posixpath.normpath(os.path.relpath(t["src"], t["pdir"]).replace(os.sep, "/"))
+    except Exception:
+        continue
+    out.append(("NH " if is_optout(t) else "HP ") + ann)
+sys.stdout.write("\n".join(out))
+'
 }
 
 # WHAT the leg was doing when the clock ran out (S147 DEFECT-4).
@@ -8353,13 +9870,139 @@ proof_prune_scratch() { # tip-worktree scratch
   "$GIT_BIN" -C "$1" worktree prune >/dev/null 2>&1 || :
 }
 
+# S193 (D2) — THE PYTHON FAIL-FIRST RED THAT LOOKED LIKE A DEAD RUNNER.
+#
+# THE BUG, MEASURED. `ModuleNotFoundError` / `No module named` sit in the env
+# arm of rg_signature, because they genuinely ARE how a missing venv or an
+# uninstalled runner announces itself. But they are ALSO how python announces a
+# CORRECT fail-first: on ticket 2's parent commit the module under test has not
+# been written yet — that is what fail-first MEANS — so the parent leg said
+# `ModuleNotFoundError: No module named 'add'`, the gate kinded it env-failure,
+# and "a dead runner is not a red" rendered the flip-flop inconclusive. Python
+# could therefore never pass ticket 2 of a greenfield mission.
+#
+# THIS FUNCTION LOOSENS A GATE, so it is built as a CONJUNCTION of four
+# independent facts, every one of them POSITIVE, and the phrase is not among
+# them. All four must hold, or the red stays an env failure:
+#
+#   1. THE PARENT/TIP FACTS ARE ACTUALLY PRESENT. Without a parent sha and the
+#      tip worktree there is nothing to decide on, so it fails CLOSED. That is
+#      why the plumbing is optional at the signature and mandatory here: a
+#      caller that cannot supply the facts gets today's behaviour, not a guess.
+#
+#   2. THE RUNNER DEMONSTRABLY STARTED AND COLLECTED. A genuine fail-first red
+#      still prints a runner scoreboard — stdlib unittest's `Ran 1 test in …`
+#      followed by `FAILED (errors=1)`, pytest's `= test session starts =`
+#      banner. A DEAD runner prints neither: `python3.14: No module named
+#      pytest` is the whole output. Both markers were CAPTURED from real runs on
+#      the build machine (python 3.14.6 / pytest 9.1.1); nothing here is written
+#      from memory of what a runner "probably" prints. This is the conjunct that
+#      kills the sharpest attack on the rule — a repo whose TEST RUNNER ITSELF
+#      is a module the ticket adds (`python3 -m gfrunner`, with gfrunner.py new
+#      on the tip). There facts 3 and 4 both hold and the runner is still dead;
+#      only this one refuses it (test S6).
+#
+#   3. EVERY MISSING MODULE IS A NON-TEST SOURCE FILE THIS TICKET ADDS. Not
+#      "any" — EVERY name in the buffer must map to a path in the ticket's
+#      changed non-test set that could BE that module, AND that path must be
+#      ABSENT at the parent and PRESENT at the tip. That last clause is a git
+#      fact, not an inference: it is what makes "the module THIS TICKET ADDS"
+#      literally true. A third-party import (`pytest`, `requests`) matches
+#      nothing the ticket wrote and is refused.
+#
+#      S193 FIX 1 (DEFECT 4) NARROWS THE MAPPING. The first cut compared BASENAME
+#      STEMS with the extension and the directory thrown away (`fb="${f##*/}";
+#      fb="${fb%.*}"`), so a ticket whose only changed non-test path was `add.md`
+#      — a README, a fixture, a `.txt` — "mapped" to missing module `add`, and a
+#      genuine env failure could be read as an honest fail-first red. The mapping
+#      is now python's OWN import rule, spelled out positively: module `a.b.c`
+#      is the file `a/b/c.py` or the package `a/b/c/__init__.py`, matched
+#      verbatim or under a package root (a leading `src/`, `lib/`, …), i.e. the
+#      changed path must EQUAL one of those or END WITH `/` + one of them. No
+#      stem matching, no extension-blind matching, no directory-blind matching.
+#      This only ever REJECTS reds the old comparison accepted.
+#
+#   4. NOTHING ELSE IN THE BUFFER IS AN ENV FAILURE. The two python tokens are
+#      blanked OUT OF THE TEXT (substring-wise, so every other character and
+#      every line-start anchor survives) and red_gate_env_failure is re-asked. A
+#      buffer that ALSO carries a shell diagnostic, an npm ENOENT, a missing
+#      node_modules or a dead venv is still an env failure. Re-asking the real
+#      detector rather than copying its pattern minus two alternatives means
+#      this can never drift out of step with the env arm.
+#
+# NOT COVERED, deliberately: pytest's fail-first red prints `collected 0 items /
+# 1 error`, which the SHARED `zerotests` arm catches one check earlier and
+# renders inconclusive before any kinding happens. That is an INHERITED
+# interaction, it errs toward inconclusive (never toward a pass), and narrowing
+# the zero-collect trap for pytest is a third loosening this session did not
+# earn. The greenfield python arm runs stdlib unittest, which is unaffected.
+proof_fail_first_missing_module() { # runner-out changed-src parent-sha tip-wt → 0 if fail-first
+  local out="$1" files="$2" parent="$3" wt="$4" m mpath cmod cpkg f hit mods rest
+  # 1. the facts must be present, or this question is not asked at all.
+  [ -n "$parent" ] && [ -n "$wt" ] || return 1
+  [ -n "$(printf '%s' "$files" | tr -d '[:space:]')" ] || return 1
+  # 2. runner-started evidence (captured from real python 3.14 / pytest 9.1 runs).
+  printf '%s\n' "$out" \
+    | grep -Eq '^Ran [1-9][0-9]* tests? in |^=+ test session starts =+$' || return 1
+  # 4. any OTHER env signature wins — ask the real detector, minus the 2 tokens.
+  rest="$(printf '%s\n' "$out" | sed -E 's/ModuleNotFoundError//g; s/No module named//g')"
+  red_gate_env_failure "$rest" && return 1
+  # 3. EVERY missing module must be a non-test file the ticket ADDS.
+  mods="$(proof_missing_python_modules "$out")"
+  [ -n "$mods" ] || return 1
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    # python's OWN import rule: `a.b.c` is a/b/c.py or a/b/c/__init__.py.
+    mpath="$(printf '%s' "$m" | tr '.' '/')"
+    cmod="$mpath.py"; cpkg="$mpath/__init__.py"
+    hit=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      # verbatim, or the same module under a package root (src/, lib/, …).
+      case "$f" in
+        "$cmod"|"$cpkg"|*/"$cmod"|*/"$cpkg") : ;;
+        *) continue ;;
+      esac
+      [ -f "$wt/$f" ] || continue         # present at the TIP
+      "$GIT_BIN" -C "$wt" cat-file -e "$parent:$f" 2>/dev/null && continue
+      hit=1; break                        # …and ABSENT at the parent
+    done <<FFM_FILES
+$files
+FFM_FILES
+    [ -n "$hit" ] || return 1
+  done <<FFM_MODS
+$mods
+FFM_MODS
+  return 0
+}
+
+# The module name(s) python could not import. Both forms are real and both are
+# emitted on this build machine: quoted (`ModuleNotFoundError: No module named
+# 'add'`, from an import inside a test module) and BARE (`…/python3.14: No
+# module named pytest`, from `python -m` with the runner absent).
+proof_missing_python_modules() { # runner-output → distinct module names, one per line
+  printf '%s\n' "$1" \
+    | grep -oE "No module named '?[A-Za-z_][A-Za-z0-9_.]*'?" \
+    | sed -E "s/^No module named '?//; s/'$//" \
+    | grep . | LC_ALL=C sort -u
+}
+
 # The parent-leg RED's KIND, for legibility — the same S96 detector arms
 # classify_impl_failure routes through, in the same precedence. A red caused by
 # the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; only an env
 # failure (the runner could not start in the scratch) is not proof at all.
-proof_parent_red_kind() { # runner-out files-written → kind token
-  local out="$1" files="$2"
-  if red_gate_env_failure "$out"; then printf 'env-failure'; return 0; fi
+proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] → kind token
+  local out="$1" files="$2" parent="${3:-}" wt="${4:-}"
+  if red_gate_env_failure "$out"; then
+    # S193 (D2): …unless this is the fail-first red the ticket EXISTS to produce.
+    # The parent/tip facts decide it, never the phrase — see the block comment on
+    # proof_fail_first_missing_module. With no facts plumbed through it is not
+    # asked, so the narrowing stays closed and this is env-failure as before.
+    if proof_fail_first_missing_module "$out" "$files" "$parent" "$wt"; then
+      printf 'missing-new-module'; return 0
+    fi
+    printf 'env-failure'; return 0
+  fi
   if red_gate_resolution_failure "$out"; then
     if unresolved_specifier_is_created "$out" "$files"; then
       printf 'missing-new-module'
@@ -8802,9 +10445,23 @@ flip_flop_gate() { # ticket parent-sha worktree
     [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipreason" "$rels"; return $?
   fi
-  if proof_zero_collected "$PROOF_LEG_OUT"; then
-    _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)" "$rels"
+  # S193 FIX 1: the ticket's DECLARED test file(s) decide which cargo target the
+  # zero-collect question is about — a sibling target passing is not the ticket.
+  # S193 FIX 2: `$wt` is the crate root, so the cargo arm can read Cargo.toml's
+  # own `harness` declaration — a label the project wrote about itself, deciding
+  # which OUTPUT GRAMMAR applies, never whether a test is genuine.
+  if proof_zero_collected "$PROOF_LEG_OUT" "$rels" "$wt"; then
+    local tipzero="the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)"
+    # THE REFUSAL MUST BE LEGIBLE. A custom-harness crate is a legitimate, working
+    # project, and telling its captain "zero tests collected" when the suite he
+    # just watched pass is a mystery park. Say what LCARS actually could not do.
+    case "$PROOF_ZERO_KIND" in
+      harness-false)
+        tipzero="the ticket's declared test file belongs to a cargo target that sets \`harness = false\` in Cargo.toml — that target opts out of cargo's standard test harness, so it is an ordinary program and whatever it prints is NOT libtest test results. LCARS has no scoreboard it is allowed to read, so it cannot tell whether a single test ran, and inconclusive is never a pass. To have LCARS prove tickets on this repo, put their tests in a target that uses cargo's standard harness (drop \`harness = false\`, or add an ordinary \`tests/*.rs\`); otherwise this ticket needs the captain's own eyes on the suite at Verify" ;;
+      manifest-unreadable)
+        tipzero="a Cargo.toml in play declares a \`harness\` key but LCARS could not establish WHICH cargo target it belongs to. A \`harness = false\` target opts out of cargo's standard test harness and its output is not libtest test results, so until the declaration can be read LCARS cannot tell whether this run's scoreboard is real — and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
+    esac
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero" "$rels"
     return $?
   fi
   # GUARD 2 (S147 round 3): did everything the staged file PROMISED actually
@@ -8897,9 +10554,21 @@ FF_STAGE_EOF
 NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's recorded \`cmd\` cd's into no longer exists — re-cut it first with \`git worktree add --detach <that path> $parent\`, then paste the command."
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$parreason" "$rels"; return $?
   fi
-  if proof_zero_collected "$par_out"; then
-    _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
+  # S193 FIX 2: the crate root passed here is the TIP worktree, deliberately —
+  # proof_prune_scratch has already removed the parent scratch, and the parent leg
+  # ran the TIP'S copy of the ticket's test file(s), so the tip manifest is the
+  # declaration that describes what was executed. The tip leg above has already
+  # refused when that manifest opts the ticket's target out, so this call can only
+  # ever make the parent leg MORE cautious, never less.
+  if proof_zero_collected "$par_out" "$rels" "$wt"; then
+    local parzero="the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass"
+    case "$PROOF_ZERO_KIND" in
+      harness-false)
+        parzero="the PARENT leg's output cannot be read as test results: the ticket's declared test file belongs to a cargo target that sets \`harness = false\` in Cargo.toml, so that target opts out of cargo's standard test harness and prints whatever it likes. Red-on-parent is therefore unproven, and inconclusive is never a pass" ;;
+      manifest-unreadable)
+        parzero="the PARENT leg ran against a Cargo.toml that declares a \`harness\` key LCARS could not attribute to a cargo target, so it cannot tell whether that leg's scoreboard is real libtest output — red-on-parent is unproven, and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
+    esac
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$parzero" "$rels"
     return $?
   fi
   # THE GREEN PARENT = NO PROOF. The wording states what was ACTUALLY proven, per
@@ -8929,7 +10598,10 @@ $FF_PAR_REFUSED"
     _ff_finish "$t" "$parent" "$ffj" fail "$greenreason" "$rels"
     return $?
   fi
-  FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src")"
+  # S193 (D2): the parent sha + tip worktree are passed so the kinding can ask a
+  # GIT question — is the module python could not import a file this ticket ADDS?
+  # — instead of deciding on the phrase. See proof_fail_first_missing_module.
+  FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src" "$parent" "$wt")"
   if [ "$FF_PAR_KIND" = env-failure ]; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
       "the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red" "$rels"
@@ -9080,14 +10752,73 @@ proof_validate_result() { # result-file [ticket] → 0 valid, 1 reject (reason o
       if [ -z "$ffr" ]; then
         printf 'proof-gate: result.json REJECTED — flipFlop is "not-applicable" but "flipFlopReason" is missing/empty. The reason IS the recorded fact; it is required.\n' >&2
         return 1
+      fi
+      # === S185: THE INITIALIZATION MISSION'S ONE WAIVER ====================
+      # The scaffold ticket CANNOT be proven by the usual flip-flop: there is no
+      # test runner on its parent commit, because it is the ticket that creates
+      # one. So it exits through THIS existing audited waiver — a recorded reason
+      # that already surfaces at Verify — and the captain, who is at Verify for
+      # exactly this mission, is the proof.
+      #
+      # EVERY LATER TICKET IS GATED FOR REAL, and that works because the setup
+      # files are COMMITTED WITH TICKET 1: they are present on the parent commit
+      # from ticket 2 onward, so the flip-flop is genuine. A later ticket
+      # claiming the waiver is therefore claiming a fact that is not true of it,
+      # and it is REJECTED.
+      #
+      # SCOPE, DELIBERATELY NARROW: this applies ONLY inside a mission whose
+      # state carries `missionType: "initialization"`. A NORMAL mission keeps
+      # today's waiver behaviour byte for byte — the comment-only refactor, the
+      # pure rename and the pure config change all still waive, and
+      # tests/proof-gates.test.sh pins them.
+      #
+      # `init_is_scaffold_ticket` derives "first" from the mission's PLAN/WAVE
+      # ORDERING (waves.json once Schedule has written it; the approved plan's row
+      # order before that), never from a directory listing, and fails CLOSED: if
+      # the ordering cannot be read, the waiver is refused rather than granted on a
+      # guess — a present-but-unreadable waves.json is refused, not second-guessed
+      # from plan order.
+      if [ -n "$t" ] && mission_is_initialization && ! init_is_scaffold_ticket "$t"; then
+        local ff_first; ff_first="$(init_first_ticket)"
+        # S185 fix round 1 — a REAL if/else, not `${v:+…}${v:-…}`. `${v:-…}`
+        # expands to $v ITSELF when $v is non-empty, so the two-expansion form
+        # appended the ticket id to its own sentence: "…the scaffold ticket is
+        # "t-001", not this one t-001." This is the one sentence the captain
+        # reads on a rejection.
+        local ff_which
+        if [ -n "$ff_first" ]; then
+          ff_which="the scaffold ticket is \"$ff_first\", not this one"
+        else
+          ff_which="the mission ordering could not be read, so no ticket can claim to be the scaffold ticket"
+        fi
+        printf 'proof-gate: result.json REJECTED — ticket "%s" declares flipFlop "not-applicable", but this is an INITIALIZATION mission and %s. Only the SCAFFOLD ticket may waive the flip-flop: it is the ticket that CREATES the test system, so its parent commit has no runner to be red against. Its setup is committed with it, so from that ticket onward the runner IS on the parent and the flip-flop is genuine — this ticket must prove it: red on the parent, green on the tip, flipFlop "expected". (Declared reason was: %s)\n' \
+          "$t" "$ff_which" "$ffr" >&2
+        return 1
       fi ;;
     *)
       printf 'proof-gate: result.json REJECTED — "flipFlop" must be "expected" or "not-applicable" (got "%s").\n' "$ffv" >&2
       return 1 ;;
   esac
+  # S185 — THE SCAFFOLD TICKET AUTHORS TESTS *AND* WAIVES, and both are honest.
+  # The struct check below rejects `not-applicable` beside a non-empty
+  # `newTests` on the premise that "a ticket that authors tests must expect them
+  # to flip". That premise is FALSE for exactly one ticket in the world: the
+  # scaffold ticket of an initialization mission, whose whole job is to create
+  # the test system, and whose PARENT COMMIT therefore has no runner for those
+  # tests to be red against. Its tests still have to be DECLARED — the
+  # declared-edits guard demands every test file in the diff be named, and
+  # without this the scaffold ticket is caught in a vice: declare its test and be
+  # rejected here, or leave it undeclared and be rejected there.
+  # NARROW BY CONSTRUCTION: initialization mission AND the first ticket AND a
+  # recorded reason (checked above). Every other ticket keeps today's rule.
+  local ff_scaffold=0
+  if [ "$ffv" = "not-applicable" ] && [ -n "$t" ] \
+     && mission_is_initialization && init_is_scaffold_ticket "$t"; then
+    ff_scaffold=1
+  fi
   local structerr
-  structerr="$("${LCARS_PYTHON_BIN:-python3}" -c '
-import json, sys
+  structerr="$(LCARS_FF_SCAFFOLD="$ff_scaffold" "${LCARS_PYTHON_BIN:-python3}" -c '
+import json, os, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception as e:
@@ -9095,7 +10826,11 @@ except Exception as e:
 nt = d.get("newTests"); te = d.get("testEdits")
 if not isinstance(nt, list) or any(not (isinstance(p, str) and p) for p in nt):
     print("proof-gate: result.json REJECTED — \"newTests\" must be an array of non-empty path strings."); sys.exit(1)
-if d.get("flipFlop") == "not-applicable" and nt:
+# S185: the ONE exemption — the scaffold ticket of an initialization mission
+# (decided in the shell above, where the mission state is readable) authors this
+# repo FIRST test AND waives, because its parent has no runner for that test to
+# be red against. Every other ticket keeps the original rule verbatim.
+if d.get("flipFlop") == "not-applicable" and nt and os.environ.get("LCARS_FF_SCAFFOLD") != "1":
     print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\", or drop the tests."); sys.exit(1)
 def bad(e):
     return not (isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]
@@ -9246,9 +10981,35 @@ stale_dep_env_reason() { # worktree → reason (empty ⇒ no evidence of stalene
 }
 
 POST_COMMIT_SIGNAL=""   # caller may point this at a file to capture the failure detail
+# S185 (salvage DEFECT 1(b)) — DID THE GATE ACTUALLY RUN? Several arms below
+# return 0 meaning "do not fail this repo", and rc 0 was then read by the caller
+# as "verified green on the committed branch": a claim about a check that never
+# happened. MEASURED on the salvage branch: a branch-less mission whose
+# implementation never reached any commit emitted `ticket_postcommit_ok` and
+# `ticket_green`. This flag is the FACT — set on every SKIP, cleared on every
+# real run — so the caller can tell a PASS from a NON-RESULT. Inconclusive is
+# never a pass, and it is never a green event either.
+POST_COMMIT_SKIPPED=""
+# WHY the gate did not run, because the kinds differ and the difference decides
+# what the caller may do:
+#   no-runner        we COULD NOT check (the harness has no command to check with)
+#   not-applicable   there is NOTHING to check (nothing was committed at all)
+# Neither may ever be reported as a pass.
+#
+# S185 FIXES THE SALVAGE'S KNOWN-BAD KINDING. On that branch a FAILED
+# `git worktree add` was kinded `not-applicable` — "nothing to check" — so a
+# ticket whose code never lands could pass green AND earn a durable verified
+# record in the repo's test landscape. A worktree that could not be cut is not
+# "nothing to check": it is the check ITSELF failing, on a ref that exists. It is
+# an ERROR, and it now FAILS the gate with its own return code (5) instead of
+# quietly returning 0.
+POST_COMMIT_SKIPPED_KIND=""
 post_commit_gate() { # ticket
   local t="$1" cmd; cmd="$(resolve_test_cmd)"
+  POST_COMMIT_SKIPPED=""; POST_COMMIT_SKIPPED_KIND=""
   if [ -z "$cmd" ]; then
+    POST_COMMIT_SKIPPED="no test command was resolvable in this process"
+    POST_COMMIT_SKIPPED_KIND="no-runner"
     # NO RUNNER: the same documented degradation as the red / full-suite gates.
     # We cannot re-run the suite against the committed branch, so we SKIP LOUD —
     # never a false pass, and never a false FAIL of a runner-less repo.
@@ -9267,14 +11028,26 @@ post_commit_gate() { # ticket
     [ -n "$ref" ] || ref="$("$GIT_BIN" -C "$LCARS_TICKET_WORKTREE" rev-parse HEAD 2>/dev/null || true)"
   else
     local branch; branch="$(json_str "$STATE" branch)"
-    # Branch-less / local-only mission → no committed branch to check. Keep the
-    # current behaviour (the gate does not apply) rather than crash.
-    [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" || return 0
+    # A BRANCH-LESS mission has NO committed state at all: commit_ticket refuses
+    # outright without a branch ("no mission branch on file — skipped commit"),
+    # so nothing was committed and there is nothing here to re-verify. The gate
+    # genuinely does not apply — but it must SAY so rather than claim a pass it
+    # never made.
+    if [ -z "$branch" ] || ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      POST_COMMIT_SKIPPED="this mission has no branch, so commit_ticket committed nothing and there is no committed state to re-verify"
+      POST_COMMIT_SKIPPED_KIND="not-applicable"
+      return 0
+    fi
     ref="$("$GIT_BIN" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
   fi
-  # Defensive: nothing resolvable to check (e.g. an unborn ref) — do not crash and
-  # do not invent a failure. Keep current behaviour.
-  [ -n "$ref" ] || return 0
+  # NOTHING RESOLVABLE TO CHECK (an unborn ref). We still do not crash and still
+  # do not invent a failure, but this is a NON-RESULT and is now recorded as one:
+  # rc 0 here no longer buys a "verified green" event.
+  if [ -z "$ref" ]; then
+    POST_COMMIT_SKIPPED="no commit-ish could be resolved for the committed state (an unborn ref?), so the suite was never re-run against it"
+    POST_COMMIT_SKIPPED_KIND="not-applicable"
+    return 0
+  fi
 
   # Cut a CLEAN detached worktree at the committed commit-ish — NEVER the
   # Implementer's scratch worktree (so uncommitted scratch-only files are invisible).
@@ -9289,10 +11062,20 @@ post_commit_gate() { # ticket
   [ -n "$wt" ] || wt="$MISSION_DIR/postcommit-${t}.$$"
   rm -rf "$wt"
   if ! "$GIT_BIN" worktree add -q --detach "$wt" "$ref" >/dev/null 2>&1; then
-    # Could not cut a worktree (defensive) — never false-fail; keep current behaviour.
+    # S185 — THE SALVAGE'S KNOWN-BAD KINDING, FIXED. This used to return 0 (and,
+    # on the salvage branch, be kinded `not-applicable`), so a ticket whose code
+    # never landed could pass green and earn a durable verified record. There IS
+    # a committed ref here and there IS a runner; the CHECK itself failed. That
+    # is an ERROR — the gate verified nothing and says so with its own code (5),
+    # which the call site routes to a distinct event and a hard refusal.
     # Remove ONLY this ticket's own worktree; never touch siblings.
+    local wtdetail="POST-COMMIT GATE — COULD NOT CUT THE GATE WORKTREE at $ref, so ticket $t's suite was NEVER re-run against the committed state. This is a harness/environment error, not a verdict about the ticket: nothing was verified, so nothing may be recorded as verified. Check \`git worktree list\` / disk space / permissions under $MISSION_DIR and re-run."
+    POST_COMMIT_SKIPPED=""
+    POST_COMMIT_SKIPPED_KIND="error"
+    printf '  ✗ %s\n' "$wtdetail" >&2
+    [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$wtdetail" >"$POST_COMMIT_SIGNAL"
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" 2>/dev/null || :
-    return 0
+    return 5
   fi
   # Session 81: provision the fresh post-commit worktree ONCE, before its testCommand
   # re-runs, so it evaluates in the same dependency-complete environment as the red /
@@ -9479,6 +11262,16 @@ $(cat "$pcsig")"
           "ticket=$TICKET" "iterations=$attempts"
         die "ticket $TICKET — UNDECLARED TEST DRIFT: a COMMITTED test file no longer matches its proof-time snapshot and no ticket declared that edit. Green must be earned by implementing; a test edit must be declared with a reason. Rejected by the cross-boundary drift guardrail.$why"
         ;;
+      5)
+        # S185: the gate could not cut its worktree at the committed ref — it
+        # verified NOTHING. Never a verdict about the ticket, and never a pass:
+        # a distinct event and a hard refusal, so no unverified green is ever
+        # recorded. (The salvage kinded this "not-applicable" and let it through.)
+        emit_event ticket_postcommit_error implement \
+          "ticket $TICKET — the post-commit gate could NOT run (a clean worktree could not be cut at the committed ref); nothing was verified and no green is claimed" \
+          "ticket=$TICKET" "iterations=$attempts"
+        die "ticket $TICKET could not be re-verified — the post-commit gate could not cut a clean worktree at the committed ref, so the suite never ran against the committed state. Nothing was verified; refusing to record a green.$why"
+        ;;
       *)
         # S111: before declaring the work missing, check whether it landed in the
         # WRONG tree (uncommitted edits in the shared clone root — the S110 002
@@ -9493,16 +11286,38 @@ $(cat "$pcsig")"
   fi
   rm -f "$pcsig"
 
-  # The change is confirmed present and GREEN on the committed branch — record the
-  # successful post-commit verification so the stream / `--watch` view show it.
-  emit_event ticket_postcommit_ok implement \
-    "ticket $TICKET verified green on the committed branch" \
-    "ticket=$TICKET" "iterations=$attempts"
+  # S185 (salvage DEFECT 1(b)) — NEVER CLAIM A VERIFICATION THAT DID NOT RUN.
+  # The gate returns 0 when it has NO RUNNER, and when there is no committed
+  # state at all. That rc 0 used to flow straight into `ticket_postcommit_ok`
+  # ("verified green on the committed branch") AND into `record_test_landscape`,
+  # which writes the setup into the repo's DURABLE test landscape as a VERIFIED
+  # capability — two claims about a check that never happened. A skip is a
+  # NON-RESULT: it is reported as a skip, and it earns neither.
+  if [ -n "${POST_COMMIT_SKIPPED:-}" ]; then
+    emit_event ticket_postcommit_skipped implement \
+      "ticket $TICKET was NOT re-verified on the committed branch — the post-commit gate could not run ($POST_COMMIT_SKIPPED); no verification is claimed for it" \
+      "ticket=$TICKET" "iterations=$attempts"
+    # A mission that ESTABLISHED its own runner has one by definition, so a gate
+    # that cannot resolve a command here means the harness LOST it between
+    # processes — a harness fault, not a runner-less repo. Refuse to pass the
+    # ticket on it rather than shipping an unverifiable green.
+    if [ "${POST_COMMIT_SKIPPED_KIND:-}" = no-runner ] \
+       && [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/test-command.json" ]; then
+      rm -f "$(ticket_dir "$TICKET")/result.json"
+      die "ticket $TICKET cannot be passed: this mission established its own test runner ($(json_str "$MISSION_DIR/test-command.json" testCommand)), but the post-commit gate resolved NO test command in this process and so re-verified nothing. That is a harness fault, not a fact about the ticket — refusing to record an unverified green."
+    fi
+  else
+    # The change is confirmed present and GREEN on the committed branch — record the
+    # successful post-commit verification so the stream / `--watch` view show it.
+    emit_event ticket_postcommit_ok implement \
+      "ticket $TICKET verified green on the committed branch" \
+      "ticket=$TICKET" "iterations=$attempts"
 
-  # S111 3′: a declared test setup that carried this ticket all the way to a
-  # post-commit-verified green is now a PROVEN fact — record it to the repo's
-  # test landscape (durable, human-visible, one file per package).
-  record_test_landscape
+    # S111 3′: a declared test setup that carried this ticket all the way to a
+    # post-commit-verified green is now a PROVEN fact — record it to the repo's
+    # test landscape (durable, human-visible, one file per package).
+    record_test_landscape
+  fi
 
   # ticket_green is emitted ONLY HERE — AFTER the immutable-tests check, the
   # shape/attempts validation (both `die` earlier on rejection) AND commit_ticket.
@@ -11992,6 +13807,76 @@ effective_tier_for_cli() { # cli logical-tier → the tier that really runs
   esac
 }
 
+# === S194: THE WRITE-TOOL FLOOR =============================================
+# THE REQUIREMENT, and it is narrow: A COLD WORKER WHOSE CONTRACT IS TO WRITE A
+# FILE MUST RUN ON A MODEL THAT HAS A WRITE TOOL.
+#
+# MEASURED on the real copilot binary, every other flag byte-identical to what
+# worker_spawn actually sends (`--available-tools view,grep,glob,create
+# --disable-builtin-mcps --allow-all-tools --no-ask-user`):
+#     no --model                -> NO FILE ("no write-capable tool was available";
+#                                  the model reported it was offered only the
+#                                  read-only view/glob/rg tools)
+#     no --model + --add-dir    -> NO FILE   (--add-dir is NOT the variable)
+#     --model claude-opus-4.8   -> FILE WRITTEN
+# So `create` is a fine tool name ON A MODEL THAT OFFERS IT. This is a model
+# problem, not a fence problem: the toolset strings and the S168 fences are
+# untouched.
+#
+# WHY IT BIT context-pack SPECIFICALLY. `infra` is deliberately kept OFF the
+# estimate / captain-override / stages.<key> ladder (a cheap repo-fact pass must
+# never be escalated by a cost knob), so on copilot NOTHING could ever give it a
+# model — while the very same repo-read toolset SUCCEEDED for research-questions,
+# whose only argv difference was the `--model claude-opus-4.8` the stage ramp
+# gave it. The pack was never written, resolve_context_source died, and every
+# Copilot mission died at Implement.
+#
+# THE CURE IS A FLOOR, NOT AN ESCALATION. The ladder is unchanged — infra still
+# short-circuits past (a2)/(b)/(c), and the env pin (a) and global workerModel
+# (d) still win. Only at (e), where the ladder yields NOTHING, does a
+# write-contract stage take the active CLI's write-capable alias instead of the
+# CLI's default model.
+#
+# The alias comes from alias_for_tier, the ONE home S78 established for exactly
+# this class of copilot policy ("copilot's `create` cannot overwrite on a
+# non-opus tier"), so the floor stays config-overridable via
+# modelAliases.<cli>.opus and the two can never drift.
+
+# The model a write-contract worker needs on this CLI, or EMPTY when the CLI's
+# DEFAULT model already has a write tool. Claude is empty on purpose: its default
+# model has Write, the context-pack worker has always worked there with no
+# --model, and its argv must stay byte-for-byte the session-18 legacy lines.
+write_capable_alias() { # cli → flag string (stdout; may be empty)
+  case "$1" in
+    copilot) alias_for_tier "$1" opus ;;
+  esac
+}
+
+# Does this stage key's worker CONTRACT require a write tool? EVERY ONE OF THEM
+# DOES. A cold worker's whole output is a file it writes to its scratch dir —
+# questions.txt, estimate.json, the context pack, result.json. A worker that
+# cannot write has no way to succeed at anything, so it fails silently and
+# expensively: it is hired, it reasons, it reports what it "wrote", and the
+# harness finds nothing on disk.
+#
+# S194 first shipped this as `infra` only, because context-pack was the one spawn
+# ever measured with no model. That was TOO NARROW and the day-zero drive proved
+# it: a mission whose estimate.json is ABSENT resolves no model for ANY stage, so
+# the question-generator was handed copilot's default model, could not write
+# questions.txt, and burned all three of its attempts — the identical failure one
+# layer up from context-pack.
+#
+# MEASURED across every arm that completed (tests/drives/s192/shots/*/worker):
+# estimate, research-questions, research-agent, validate, plan, plan-review and
+# implement-tdd all carried `--model claude-opus-4.8` and all wrote their files;
+# context-pack was the ONLY spawn with no model, and the ONLY one that failed —
+# on every arm. The rule is therefore simply: never hand a copilot worker the
+# default model. Claude is unaffected — write_capable_alias is empty there, so
+# its argv stays byte-for-byte the session-18 legacy lines.
+stage_must_write() { # stage key → 0 when the worker's whole job is to write a file
+  return 0
+}
+
 # Is STAGE KEY inside the captain override's SCOPE? The two axes:
 #   reasoning      = research, validate, plan, planReview
 #   implementation = implement, verify
@@ -12042,8 +13927,10 @@ active_model_override() { # → "<scope>:<tier>" or empty
 #   e.  nothing ⇒ empty string (caller emits NO --model flag — byte-identical).
 # `infra` (context-pack) is a cheap repo-fact pass and is NEVER escalated by the
 # estimate/stage map OR the captain override: it short-circuits to the global/
-# legacy value (env pin > the global config workerModel > unset) so its argv stays
-# exactly as today.
+# legacy value (env pin > the global config workerModel > the S194 write floor).
+# S194 added that last step — and ONLY that step. The exclusion above is intact;
+# what changed is that "unset" is no longer the answer for a worker whose whole
+# contract is to WRITE A FILE on a CLI whose default model has no write tool.
 resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   local key="$1"
   # (a) global env pin — wins for every stage, verbatim.
@@ -12075,7 +13962,11 @@ resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
     && cfg_global="$(json_str "$LCARS_CFG" workerModel)"
   if [ -n "$cfg_global" ]; then printf '%s' "$cfg_global"; return 0; fi
-  # (e) nothing.
+  # (e) the ladder yielded nothing. A cold worker whose CONTRACT IS TO WRITE A
+  # FILE must run on a model that HAS a write tool (S194 — see write_capable_alias
+  # above for the measurement). Every other stage, and every CLI whose default
+  # model already writes, still gets the empty string ⇒ NO --model flag at all.
+  if stage_must_write "$key"; then write_capable_alias "$cli"; return 0; fi
   printf ''
 }
 
@@ -12527,8 +14418,11 @@ worker_spawn() { # role outdir prompt
   # global $WORKER_MODEL). When the resolver yields empty the adapter emits NO
   # --model flag (session-18 argv byte-for-byte) — the legacy no-source path. The
   # model flag NAME stays cli-specific in the adapter; run.sh resolves only the
-  # value here. `infra` (context-pack) is never escalated — resolve_stage_model
-  # short-circuits it to the global/legacy value, so it stays exactly as today.
+  # value here. `infra` (context-pack) is never ESCALATED — resolve_stage_model
+  # short-circuits it past the estimate/override ladder — but S194 gives it a
+  # write-tool FLOOR: the context-pack worker's whole contract is to write one
+  # file, and on a CLI whose default model offers no write tool it must be told
+  # which model to use or it writes nothing at all.
   local stage_key stage_model
   stage_key="$(stage_key_for_role "${LCARS_WORKER_ROLE:-$role}")"
   stage_model="$(resolve_stage_model "$stage_key")"
@@ -14207,6 +16101,15 @@ cmd_implement_ticket() {
   event_seen ticket_start "\"ticket\":\"$TICKET\"" \
     || emit_event ticket_start implement "ticket $TICKET starting" "ticket=$TICKET" "wave=${tw:-0}"
 
+  # S185: the SCAFFOLD DOOR is opened once, at the stage level, before any ticket
+  # is picked — so its env vars are inherited by EVERY ticket the stage spawns,
+  # including a sibling running in parallel with the scaffold ticket in wave 1.
+  # Only the scaffold ticket may establish anything, so close the door explicitly
+  # for every other ticket rather than relying on the stage having adopted first.
+  if [ -n "${LCARS_SETUP_GREENFIELD:-}" ] && ! init_is_scaffold_ticket "$TICKET"; then
+    export LCARS_SETUP_GREENFIELD=""; export LCARS_SETUP_EVIDENCE=""
+  fi
+
   # --- S111 RUNNER PREFLIGHT (before ANY worker spend) -----------------------
   # Probe the configured testCommand in the ticket's target package. A runner
   # that cannot LAUNCH (a runner-less package — the S110 example-game 127 — or an
@@ -14217,6 +16120,32 @@ cmd_implement_ticket() {
   local pf_pkg pf_dir
   pf_pkg="$(ticket_target_package "$TICKET")"
   pf_dir="$REPO_ROOT${pf_pkg:+/$pf_pkg}"
+  # --- S182: THE NO-RUNNER WALL (before ANY worker spend) -------------------
+  # This comes FIRST, ahead of the runner probe, because the probe cannot speak
+  # to it: `runner_preflight_env_failure` bails with "no env failure detected"
+  # when `resolve_test_cmd` is empty, so a repo with NO test command at all fell
+  # through this whole block and went shopping for workers. One clearly-named
+  # seam owns the decision — see impl_no_runner_decision (the S182/S183 seam).
+  #
+  # (The STAGE driver runs this same pair of walls before its context-pack hire,
+  # so on the `lcars run` path this is the second look, not the first. It stays
+  # because `implement-ticket` is its own entry point and must never be the hole.)
+  #
+  # test_cmd_is_blank, NOT `[ -z … ]`: a hand-edited "   " is not empty and slipped
+  # straight through the wall into the old burn.
+  if test_cmd_is_blank; then
+    impl_no_runner_decision "$TICKET"
+  fi
+
+  # --- S182: THE NO-PARENT-COMMIT WALL (before ANY worker spend) ------------
+  # Proof is fail-on-parent / pass-on-tip, so a repo with an UNBORN HEAD can
+  # never be proven. That was caught far downstream, by a `die` at the point the
+  # parent sha is first needed — AFTER the context-pack worker had already been
+  # paid for. Decide it here, with the other fact we already know.
+  if ! "$GIT_BIN" -C "$REPO_ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    impl_park_no_parent_commit "$TICKET"
+  fi
+
   # S133 SELF-HEAL: before escalating a dead runner to a human, re-apply the
   # captain's OWN declared worktreeSetupCommand ONCE and re-probe — a silent /
   # transient provisioning miss then clears itself instead of stranding a human
@@ -14331,8 +16260,12 @@ $tspecblock"
   # the last verdict quoted — NEVER a die. `lcars respond` + re-run resumes
   # (answers.json rides the next session's prompt).
   local parent_sha
+  # S182: an unborn HEAD is an ACTIONABLE park, not a die. `lcars init` seeds an
+  # empty initial commit on a fresh repo; this is the backstop for repos
+  # initialized before that, and it reaches the captain through the same gate
+  # every other blocked ticket does instead of looking like an LCARS crash.
   parent_sha="$("$GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" \
-    || die "no parent commit — the repo has no HEAD to prove fail-on-parent against (commit something first)."
+    || impl_park_no_parent_commit "$TICKET"
 
   local tdir; tdir="$(ticket_dir "$TICKET")"
   local sigfile="$tdir/gate-signal.txt"
@@ -14379,6 +16312,47 @@ $LCARS_SELFHEAL_FEEDBACK"
     rm -rf "$odir"
   }
 
+  # S194 — A REFUSED ESTABLISHMENT IS A BOUNCE, NOT A TERMINAL PARK.
+  # MEASURED on live Copilot: an initialization mission's scaffold ticket was
+  # refused on three arms for three DIFFERENT and entirely CORRECT reasons (no
+  # detectable command at the root; no test-setup.json at all; a setup file that
+  # already existed), and the mission went unrecoverable on the first one. The
+  # same repo, idea and answers, retried by hand, then SUCCEEDED — the js retry
+  # supplying exactly the `"test"` script its first attempt omitted. So the
+  # contract is satisfiable and the worker is simply inconsistent, which is the
+  # definition of the thing this loop already cures for every other gate.
+  #
+  # NO NEW MECHANISM: this is _tdd_reject, the same durable gate signal, riding
+  # the same "## GATE FEEDBACK" block into the same freshly-spawned worker, under
+  # the same MAX_WORKER_TRIES cap. The refusal REASON is what makes a retry worth
+  # paying for — all three measured reasons name precisely what to fix.
+  #
+  # AT THE CAP it still parks awaiting-human, through impl_park_greenfield_failed
+  # (the tailored initialization park), and only THEN closes the once-per-mission
+  # latch and records the refusal — so a later `lcars run` can say why instead of
+  # handing the captain the generic wall's circular advice.
+  # THE WAIVER IS UNTOUCHED: nothing here reaches init_is_scaffold_ticket or the
+  # not-applicable rule, and a bounced session commits nothing.
+  _gf_establish_refused() { # note → returns 0 to bounce; PARKS (exit 0) at the cap
+    local gfn="$1"
+    emit_event test_setup_rejected implement \
+      "initialization-mission declared setup rejected: $gfn" "ticket=$TICKET"
+    if [ "$sessions" -lt "$MAX_WORKER_TRIES" ]; then
+      _tdd_reject establish-test-system REFUSED \
+"This ticket is the one that ESTABLISHES this repo's test system, and the harness
+REFUSED what the last session declared. Nothing was committed and nothing was
+left behind — the repo is exactly as that session found it. The refusal is
+satisfiable: fix EXACTLY this and declare the setup again.
+$gfn"
+      return 0
+    fi
+    printf '{"package":"","gap":"refused","installCommand":""}\n' >"$MISSION_DIR/test-setup-applied.json"
+    greenfield_record_refusal "$gfn" "$sessions"
+    rm -f "$tdir/result.json"
+    rm -rf "$odir"
+    impl_park_greenfield_failed "$TICKET" "$gfn" "" "$sessions"
+  }
+
   while [ "$sessions" -lt "$MAX_WORKER_TRIES" ]; do
     sessions=$((sessions + 1))
     # attempt = 1 + (existing ticket_attempt lines for THIS ticket, phase=tdd) —
@@ -14416,7 +16390,81 @@ $(cat "$sigfile")"
     # detected convention — so a declared runner config collects them (the
     # include-vs-placement trap, caught live 2026-07-09).
     local setupblock=""
-    if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
+    if [ -n "${LCARS_SETUP_GREENFIELD:-}" ] && [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
+      # S185 — THE SCAFFOLD INVITATION (salvage 04fee49, taken with the
+      # canary-probe paragraph removed). Same mechanism as the evidence-gated
+      # arm, different fact: there is no runner ANYWHERE to compare against, so
+      # the destination is the REPO ROOT and establishing the system is part of
+      # THIS ticket rather than a repair of one package. Deliberately SLOT
+      # DESCRIPTIONS ONLY (S179): the worker is told what each field must
+      # contain, never given a sentence it can hand back verbatim as if it were
+      # its own finding — above all not the flip-flop reason, which is the one
+      # fact a human reads later.
+      local gf_conv gf_src gf_example
+      gf_src="$(ticket_target_src "$TICKET")"
+      # A scaffold ticket often has no manifest source to key off; without a
+      # stem, test_path_for renders a headless ".test.ts", which reads as a rule
+      # rather than an example. Fall back to a neutral illustrative source.
+      [ -n "$gf_src" ] || gf_src="src/index.ts"
+      gf_conv="$(detect_test_convention "$REPO_ROOT" "$gf_src")"
+      gf_example="$(test_path_for "$gf_conv" "$gf_src")"
+      setupblock="
+
+## ESTABLISH THE TEST SYSTEM — this repo has no way to run tests yet
+The harness checked BEFORE hiring you, and stopped short of proving anything.
+This is its own observation (the evidence):
+$LCARS_SETUP_EVIDENCE
+There is no runner here for any work to be proven against, so ESTABLISHING ONE
+IS PART OF THIS TICKET'S WORK — not optional, not a later ticket, and not
+something you install yourself. You DECLARE it; the HARNESS applies it and runs
+it.
+- Write the NEW files a test system needs into the \`setup/\` subdir of your
+  scratch output directory, at their REPO-ROOT-relative paths. ADD-only: never a
+  file that already exists, never anything under \`src/\`. Keep it minimal (at
+  most 4 small files). If a file you need is already in the repo, you cannot
+  reach it this way — say so in your summary and let the ticket park.
+- If the install you declare creates a dependency directory (node_modules and
+  its kind), the repo must already ignore it or your declared setup must add the
+  ignore file — otherwise every installed file arrives in this ticket's diff as
+  work you never declared, and the ticket is voided for it.
+- \`setup/\` is for CONFIGURATION ONLY — the manifest and runner config a test
+  system needs. Never put a TEST file there: the harness applies those files, so
+  a test among them arrives in the diff as work you did not declare and voids the
+  ticket. Author your tests in the repo tree yourself and declare them.
+- Create \`test-setup.json\` in the scratch output directory ROOT (NOT inside
+  \`setup/\`), in the harness's existing three-field shape:
+  {\"package\": <the directory the setup addresses — for this repo that is the
+      REPO ROOT, named as the empty string>,
+   \"gap\": <one line stating what is missing>,
+   \"installCommand\": <a plain package-manager invocation and nothing else, run
+      by the harness at the repo root. ONE command: no \`&&\`, no pipes, no
+      redirection, no substitution — a metacharacter anywhere in it is refused>}
+- Pick the runner this repo's own language and layout point at, at a version
+  that actually exists, and give it a way to be invoked that LCARS's detector
+  can find at the root afterwards.
+- PLACEMENT — where tests must LIVE to be collected: author them IN THE REPO TREE
+  at its own convention — detected here: $gf_conv — e.g. \`$gf_example\`. Do NOT
+  narrow the runner's \`include\` to something your tests fall outside of: a
+  config that collects ZERO tests is a system that does not work.
+- At least one real test must exist for the runner to collect.
+
+### THE FLIP-FLOP, STATED HONESTLY
+Every ticket is normally proven by its tests being RED on the parent commit and
+GREEN on yours. THIS ticket cannot be: the parent commit of this repo has no test
+system, because this ticket is the one that creates it. So this ticket — and ONLY
+this ticket — exits through the waiver: declare \`flipFlop\` as
+\`\"not-applicable\"\` and record \`flipFlopReason\` — a plain sentence, in your
+own words, saying why no flip could be shown here. That reason is the fact the
+captain reads at Verify, where they watch the suite actually run; a waiver
+without one is REJECTED. If you CAN honestly show a flip, declare
+\`flipFlop\` as \`\"expected\"\` instead and list your tests in \`newTests\` —
+that is strictly better, and a waiver is never a way past a flip you could not
+get to pass.
+Whatever you declare, it covers THIS ticket only: every later ticket in this
+mission runs against the test system you establish here, on a parent commit that
+CARRIES it, and is held to the full gate — a later ticket that claims this waiver
+is REJECTED. Build a system that will still hold."
+    elif [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
       local sb_src sb_conv sb_example sb_for
       sb_src="$(ticket_target_src "$TICKET")"
       sb_conv="$(detect_test_convention "$REPO_ROOT" "$sb_src")"
@@ -14499,7 +16547,38 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
     # S111 3′: apply a declared setup manifest when the worker emitted one AND
     # the evidence gate is open (no evidence → ignored; attempt 1 always naked).
     # An applied-but-still-dead runner is genuinely incurable → park (env idiom).
-    if [ -f "$odir/test-setup.json" ]; then
+    if [ -f "$odir/test-setup.json" ] && [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
+      # S185 — THE ESTABLISHMENT. Same machinery, one different failure policy: a
+      # failed establishment never "continues without it" — with no test command
+      # there is nothing to continue to.
+      # S194 CORRECTS THE OTHER HALF of that policy. S185 read "do not bounce
+      # fresh workers at a repo that still cannot run a test" as "park on the
+      # first refusal", and live measurement disproved the premise: the SAME repo
+      # and answers, retried, established a runner. A refusal is a rejection like
+      # any other, so it bounces WITH ITS REASON up to MAX_WORKER_TRIES — and only
+      # then parks. S182's burn was three blind hires at a wall nothing could
+      # move; this is a bounded retry at a wall a fresh worker demonstrably can.
+      #
+      # WHAT IS *NOT* HERE, DELIBERATELY: the salvage's canary probe. It planted
+      # a failing test beside the tree's own tests to prove mechanically that the
+      # declared runner was genuine. Three such designs were built and beaten
+      # (`wip/s183-canary-salvage` records each and how); the captain's ruling
+      # retires the question, because a human is at Verify to watch the suite
+      # run. What DOES stay is `setup_ensure_runner` (the runner must LAUNCH —
+      # exit codes are never trusted) and `greenfield_detect_cmd` (LCARS must be
+      # able to FIND the command at the root). Neither claims the runner is
+      # honest; both are facts the harness can establish without guessing.
+      if apply_declared_setup "$odir/test-setup.json" "$odir/setup" ""; then
+        greenfield_record_cmd "$(resolve_test_cmd)"
+        printf '  ✓ test system ESTABLISHED at the repo root: %s\n' "$(resolve_test_cmd)" >&2
+      else
+        local gf_note="$SETUP_NOTE"
+        printf '  ⚠ declared setup REJECTED: %s\n' "$gf_note" >&2
+        # S194: bounce to a FRESH worker carrying this reason; park only at the cap.
+        _gf_establish_refused "$gf_note"
+        continue
+      fi
+    elif [ -f "$odir/test-setup.json" ]; then
       if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
         if apply_declared_setup "$odir/test-setup.json" "$odir/setup" "$pf_pkg"; then
           [ -n "$SETUP_NOTE" ] && printf '  ⚠ declared setup applied with a note: %s\n' "$SETUP_NOTE" >&2
@@ -14519,6 +16598,19 @@ $(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
       else
         printf '  ⚠ a test-setup.json was provided WITHOUT an observed infra gap — ignored (setup is invited only after the harness itself hits the failure; the FIRST worker session always runs naked)\n' >&2
       fi
+    fi
+
+    # S185: INVITED AND DECLARED NOTHING. The worker was told establishing the
+    # test system is part of this ticket and emitted no manifest, so the repo
+    # still cannot run a test and the gates below have nothing to judge with.
+    # Park after ONE session rather than bouncing fresh workers at the same wall.
+    if [ -n "${LCARS_SETUP_GREENFIELD:-}" ] && [ ! -f "$(greenfield_cmd_record)" ]; then
+      # S194: the same bounce. A session that declared nothing is the single most
+      # retryable failure there is — the next one is told, in its prompt, that a
+      # manifest is what was missing.
+      _gf_establish_refused \
+        "the session produced no test-setup.json, so no test system was declared and none could be applied"
+      continue
     fi
 
     # --- THE PROOF GATES (S132), in order ------------------------------------
@@ -14631,6 +16723,33 @@ cmd_implement() {
   require_stage implement
   require_worker
 
+  # --- S182 fix round 1: THE WALLS RUN HERE, AHEAD OF THE FIRST HIRE ---------
+  # S182 put the no-runner / no-parent-commit walls in `implement-ticket`, which
+  # made "No worker was hired" true of THAT entry point and FALSE of the stage
+  # the captain actually runs: `lcars run` drives cmd_implement, and
+  # resolve_context_source below hires a Context-Pack worker BEFORE the wave loop
+  # reaches any ticket. Measured stage-level A/B on a greenfield repo: main 3
+  # paid hires, S182-as-shipped 1 — not the 0 the park claimed.
+  #
+  # Both facts are known RIGHT HERE, with nothing but locate_mission behind them:
+  # `resolve_test_cmd` reads $TEST_CMD_ENV + $LCARS_CFG (set by locate_mission),
+  # and the unborn-HEAD probe reads $REPO_ROOT (likewise). Neither consults a
+  # worker, a worktree, a wave or a ticket. So the walls move up to the first
+  # point they can be decided, ahead of ensure_mission_branch and ahead of the
+  # context-pack hire, and the stage genuinely spends ZERO.
+  #
+  # The subject is EMPTY because no ticket has been picked yet — the park speaks
+  # about the mission, and names no ticket it never looked at. A repo that HAS a
+  # runner and a HEAD does not enter either branch, so nothing about the normal
+  # path changes; the per-ticket walls stay where they are for the
+  # `implement-ticket` entry point.
+  if test_cmd_is_blank; then
+    impl_no_runner_decision ""
+  fi
+  if ! "$GIT_BIN" -C "$REPO_ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    impl_park_no_parent_commit ""
+  fi
+
   # (S133: the BUG-058 reconcile_tests pre-step for logged bugs is retired — the
   # unified TDD worker adapts a contradictory parent test itself, DECLARED in
   # result.json testEdits and enforced by declared_edits_guard.)
@@ -14655,7 +16774,28 @@ cmd_implement() {
   # and read an honest run as a breach. Resolving it up front, in the wave driver,
   # where nothing else is running, removes both. Best-effort: a failure here just
   # leaves the old lazy path to try again per ticket.
-  resolve_context_source >/dev/null 2>&1 || :
+  #
+  # S194 — IT HAS TO ACTUALLY BE BEST-EFFORT. The line above USED to read
+  # `resolve_context_source >/dev/null 2>&1 || :`, whose comment (still true, and
+  # still above) said one thing while the code did the opposite: the resolver ends
+  # in `die`, `die` is `printf >&2; exit 1`, and a redirection is NOT a subshell —
+  # so `|| :` never got the chance to run and the WHOLE STAGE exited rc=1. With
+  # `2>&1` swallowing the reason too, `run.sh implement` printed 52 bytes and a
+  # 696-line `bash -x` trace carried zero non-trace output.
+  #
+  # TWO changes, both narrow. (1) CONTAIN the exit in a subshell so `die`'s global
+  # behaviour is untouched — every other caller still gets a hard stop — while
+  # this call site genuinely tolerates failure. The pack is a FILE side effect, so
+  # a success still lands durably through the subshell; the per-ticket lazy path
+  # is unaffected either way. (2) KEEP THE REASON: it goes to this stage's stderr,
+  # which the driver captures into $out and turns into the BUG-051 err_tail — so
+  # the board event NAMES WHY instead of saying a bare "failed".
+  local ctx_err="" ctx_rc=0
+  ctx_err="$( ( resolve_context_source >/dev/null ) 2>&1 )" || ctx_rc=$?
+  if [ "$ctx_rc" -ne 0 ]; then
+    printf 'context source unresolved (continuing — each ticket will retry): %s\n' \
+      "${ctx_err:-no reason reported by the context-source resolver}" >&2
+  fi
 
   # --- S65: the live Implement-dashboard heartbeat ----------------------------
   # Start a bounded, best-effort ~60s ticker that re-renders + PATCHes the
@@ -14673,6 +16813,17 @@ cmd_implement() {
 
   local last_status="" last_wave=""
   while :; do
+    # S185 (salvage DEFECT 1(a)) — THE STAGE PROCESS MUST ADOPT TOO. The scaffold
+    # ticket establishes the runner in its OWN process; nothing an `export` does
+    # there can travel back up to this one. Without this, every child the stage
+    # spawns from here on — the next ticket, and above all `impl-advance`, which
+    # runs the STAGE-LEVEL FULL-SUITE GATE — inherits an EMPTY $LCARS_TEST_CMD
+    # and silently skips its gate for the whole mission. Re-read the
+    # mission-local record (cheap-probed before it is trusted) once it exists;
+    # `test_cmd_is_blank` makes this a no-op afterwards.
+    if test_cmd_is_blank && [ -f "$(greenfield_cmd_record)" ]; then
+      impl_greenfield_adopt || :
+    fi
     # User-initiated pause (ADR-005). This is the BETWEEN-WAVE/TICKET safe
     # boundary: re-read paused at the TOP of the loop, before impl-status decides
     # the next wave. A paused Mission stops cleanly here — it does NOT advance to
@@ -16480,6 +18631,9 @@ case "$SUB" in
     __pcg_rc=0
     POST_COMMIT_SIGNAL="$__pcg_sig" post_commit_gate "$TICKET" || __pcg_rc=$?
     printf 'PCRC=%s\n' "$__pcg_rc"
+    # S185: a gate that did not RUN must be distinguishable from one that PASSED.
+    printf 'PCSKIP=%s\n' "${POST_COMMIT_SKIPPED:-}"
+    printf 'PCKIND=%s\n' "${POST_COMMIT_SKIPPED_KIND:-}"
     exit 0 ;;
   # S84 test hook: drive the REAL full_suite_gate over the mission's scheduled
   # tickets (parsed from waves.json, exactly as cmd_impl_advance does) WITHOUT the
@@ -16750,8 +18904,115 @@ FSG_EOF
     __de_rc=0; declared_edits_guard "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __de_rc=$?
     printf 'DERC=%s\n' "$__de_rc"; exit 0 ;;
   proof-validate-result-test)
+    # S185: --mission is OPTIONAL. Without it nothing is located and the call is
+    # byte-identical to before (proof-gates drives it that way); WITH it, $STATE
+    # and $MISSION_DIR are set so the initialization-mission waiver rule can be
+    # driven against a real mission dir.
+    [ -n "$MISSION_ID" ] && locate_mission "$MISSION_ID"
     __pv_rc=0; proof_validate_result "$RESULT" "$TICKET" || __pv_rc=$?
     printf 'PVRC=%s\n' "$__pv_rc"; exit 0 ;;
+  # S193 test hook: run the flip-flop gate's ZERO-COLLECT detector
+  # (proof_zero_collected) on stdin and exit with its return code (0 = the leg
+  # collected/ran ZERO tests, 1 = it did not). $LCARS_PZC_RELS carries the
+  # ticket's DECLARED test file(s), newline-separated, exactly as flip_flop_gate
+  # passes them; UNSET asks the weaker whole-run question the per-stack unit
+  # suites ask. $LCARS_PZC_ROOT carries the CRATE ROOT (S193 fix 2) so the cargo
+  # arm can read Cargo.toml's `harness` declaration; UNSET falls back to locating
+  # the manifest from cargo's own `Compiling … (<dir>)` line, which is what the
+  # attack rig exercises. $LCARS_PZC_SHOW_KIND=1 additionally prints `PZK=<kind>`. Inert for every real subcommand —
+  # reachable only by this explicit token, so the green-on-nothing trap's
+  # coverage is unit-testable against REAL runner output.
+  proof-zero-collected-test)
+    _pz_in="$(cat)"
+    _pz_rc=0
+    proof_zero_collected "$_pz_in" "${LCARS_PZC_RELS:-}" "${LCARS_PZC_ROOT:-}" || _pz_rc=$?
+    # The zero-KIND is printed only when asked for, so the rigs that read this
+    # hook's exit code alone see byte-identical output. $LCARS_PZC_SHOW_DETAIL
+    # additionally prints `PZD=<reason>` — the S193 fix-3 fail-closed reason,
+    # which names the manifest (or the missing tool) that defeated attribution.
+    [ -n "${LCARS_PZC_SHOW_KIND:-}" ] && printf 'PZK=%s\n' "$PROOF_ZERO_KIND"
+    [ -n "${LCARS_PZC_SHOW_DETAIL:-}" ] && printf 'PZD=%s\n' "${PROOF_ZERO_DETAIL:-}"
+    exit "$_pz_rc"
+    ;;
+  # S193 test hook: kind a PARENT-leg red (proof_parent_red_kind) and print the
+  # token. Runner output on stdin; the ticket's NON-TEST changed paths in
+  # $LCARS_PRK_FILES (newline-separated, as flip_flop_gate builds them); the
+  # parent sha via --sha and the tip worktree as the positional. The last two are
+  # OPTIONAL and, when absent, the fail-first narrowing stays CLOSED (a missing
+  # module is still an env failure) — which is what makes the plumbing's absence
+  # fail safe rather than fail open. Inert for every real subcommand.
+  proof-parent-red-kind-test)
+    _prk_in="$(cat)"
+    proof_parent_red_kind "$_prk_in" "${LCARS_PRK_FILES:-}" "${RC_SHA:-}" "${POSARG:-}"
+    printf '\n'
+    exit 0 ;;
+  # S185 test hooks — offline, free, inert for every real subcommand.
+  # The workspace/monorepo marker the scaffold arm refuses on.
+  greenfield-workspace-test)
+    printf '%s\n' "$(greenfield_workspace_marker "${LCARS_GP_ROOT:-$PWD}")"
+    exit 0 ;;
+  # THE REAL ESTABLISH CHAIN, END TO END AND PRODUCT-OWNED: the REAL detector
+  # (greenfield_detect_cmd → detect_test_cmd, the same one `lcars init` uses)
+  # feeding the REAL mission-local writer (greenfield_record_cmd, json_escape and
+  # all). S185 fix round 1 exists because the promotion was only ever tested
+  # against a HAND-WRITTEN record carrying a value with no embedded quotes —
+  # which is not a value the detector can produce. Nothing here may hand-write a
+  # command; the test asks the product what it detects and what it records.
+  greenfield-record-cmd-test)
+    locate_mission "$MISSION_ID"
+    __gf_cmd="$(greenfield_detect_cmd "${REPO_ROOT:-$PWD}")"
+    printf 'DETECTED=%s\n' "$__gf_cmd"
+    greenfield_record_cmd "$__gf_cmd"
+    printf 'RECORD=%s\n' "$(greenfield_cmd_record)"
+    exit 0 ;;
+  # S186 test hooks — offline, free, inert for every real subcommand.
+  # The PER-ARM ALLOWLIST, resolved exactly as apply_declared_setup resolves it:
+  # which arm this repo (plus the declared setup dir in $SETUP) lands on, and the
+  # pattern that arm admits. Pure string logic — no mission, no worker, no
+  # install — which is what makes the 7x7 cross-arm refusal matrix cheap enough
+  # to assert exhaustively, and what lets the jvm arm be proven at all on a
+  # machine with no JDK.
+  setup-allow-re-test)
+    __sa_arm="$(setup_stack_arm "${SETUP:-}")"
+    printf 'ARM=%s\n' "$__sa_arm"
+    printf 'ALLOW=%s\n' "${LCARS_SETUP_INSTALL_ALLOW_RE:-$(setup_install_allow_re "$__sa_arm")}"
+    exit 0 ;;
+  # The REAL setup_reapply_in_worktree over a gate worktree given as the
+  # positional — the SECOND door the declared install goes through (post-commit /
+  # full-suite / reconcile), driven directly so what it re-applies (and what it
+  # refuses) is observable without standing up a gate. Offline: the only thing
+  # that runs is whatever the recorded installCommand names.
+  setup-reapply-test)
+    locate_mission "$MISSION_ID"
+    __sr_rc=0
+    setup_reapply_in_worktree "${POSARG:-}" || __sr_rc=$?
+    printf 'SRRC=%s\n' "$__sr_rc"
+    exit 0 ;;
+  # The REAL root detector on its own — `greenfield_detect_cmd`, the same one the
+  # scaffold arm gates on — with no mission needed. Behaviour 4 (rust/go need no
+  # install: detection alone gets ticket 2 a real gate) is exactly this call.
+  greenfield-detect-cmd-test)
+    printf 'DETECTED=%s\n' "$(greenfield_detect_cmd "${LCARS_GP_ROOT:-$PWD}")"
+    exit 0 ;;
+  # The mission's FIRST ticket, derived from the plan/wave ORDERING.
+  init-first-ticket-test)
+    locate_mission "$MISSION_ID"
+    printf 'FIRST=%s\n' "$(init_first_ticket)"
+    printf 'TYPE=%s\n' "$(mission_type)"
+    if [ -n "$TICKET" ]; then
+      if init_is_scaffold_ticket "$TICKET"; then printf 'SCAFFOLD=yes\n'; else printf 'SCAFFOLD=no\n'; fi
+    fi
+    exit 0 ;;
+  # The REAL apply_declared_setup over a manifest ($RESULT) + setup dir ($SETUP)
+  # for package $POSARG — so the ADD-only / caps / allowlist / metacharacter
+  # guard / workspace refusal can be driven directly against the shipped code.
+  apply-declared-setup-test)
+    locate_mission "$MISSION_ID"
+    __as_rc=0
+    apply_declared_setup "$RESULT" "$SETUP" "${POSARG:-}" || __as_rc=$?
+    printf 'ASRC=%s\n' "$__as_rc"
+    printf 'ASNOTE=%s\n' "$SETUP_NOTE"
+    exit 0 ;;
   # Drives the REAL commit_ticket in WORKTREE mode ($LCARS_TICKET_WORKTREE set by
   # the caller), so the multi-session cumulative-commit contract can be exercised
   # offline + token-free: N sessions in one worktree must leave .commit-sha naming

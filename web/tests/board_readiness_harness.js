@@ -56,7 +56,10 @@ function stubEl(tag) {
       if (i >= 0) node.children.splice(i, 1);
       return c;
     },
-    setAttribute() {}, removeAttribute() {},
+    _attrs: {},
+    setAttribute(k, v) { node._attrs[k] = v; },
+    removeAttribute(k) { delete node._attrs[k]; },
+    getAttribute(k) { return node._attrs[k]; },
     querySelector() { return null; }, querySelectorAll() { return []; },
     getAttribute() { return null; }, focus() {},
     children: [], _text: "", title: "", hidden: false, disabled: false,
@@ -82,7 +85,7 @@ function stubEl(tag) {
 
 // persistent registry so getElementById returns the SAME node across calls.
 const REGISTRY = {};
-["mainDeploy", "fileBtn", "conn", "repoMeta", "deployMainBtn",
+["mainDeploy", "fileBtn", "holodeckBtn", "conn", "repoMeta", "deployMainBtn",
  "versionBanner", "readinessBanner", "board", "status", "viewonly",
  "overlay", "overlayBody"]
   .forEach(function (id) { REGISTRY[id] = stubEl("div"); });
@@ -168,6 +171,8 @@ function project(n) {
     cls: n._cls || "",
     text: n._text || "",
     disabled: !!n.disabled,
+    reason: (n._attrs && n._attrs["data-reason"]) || "",
+    title: n.title || "",
     value: n.value || "",
     hidden: !!n.hidden,
     children: (n.children || []).map(project).filter(Boolean),
@@ -205,6 +210,33 @@ function boardWith(trBlock) {
 function out(obj) { process.stdout.write(JSON.stringify(obj)); }
 
 (async function main() {
+  /* S183 — the FOUNDATION LOCK. `input.foundation` is meta.foundation; the mode
+     paints the band controls and then opens the File console, so the test can
+     see BOTH the locked buttons and the refusal the console shows instead of an
+     idea box. (A node harness cannot prove the board renders — S163 — so the
+     tester drives the real browser for that; this pins the state machine.) */
+  if (mode === "lock") {
+    /* FIX ROUND 1 / D2 — MIRROR render()'s REAL ORDER. This mode used to call
+       paintFoundationLock ALONE, so it passed while the shipped board did not:
+       render() paints the lock (board.js:1655) and then calls
+       renderHolodeckActivity (:1659), whose holoPaintBandBtn unconditionally
+       rewrote #holodeckBtn's disabled/title/data-reason and unlocked it. Two
+       painters over one button is the defect; this harness must run BOTH, in
+       the order the board runs them, or it is testing a board that does not
+       exist. (A node harness still cannot prove the board RENDERS — S163 — the
+       tester drives real Chrome for that; this pins the state machine.) */
+    sandbox.paintFoundationLock(input.foundation || null);
+    sandbox.renderHolodeckActivity(input.holodeck || null);
+    sandbox.LAST_BOARD = { stages: [], columns: {}, missions: [],
+                           meta: input.foundation
+                             ? { foundation: input.foundation } : {} };
+    sandbox.openFile();
+    out({ fileBtn: project(REGISTRY.fileBtn),
+          holodeckBtn: project(REGISTRY.holodeckBtn),
+          overlay: project(REGISTRY.overlayBody) });
+    return;
+  }
+
   if (mode === "banner") {
     sandbox.renderTestReadiness(tr);
     out({ banner: project(REGISTRY.readinessBanner),

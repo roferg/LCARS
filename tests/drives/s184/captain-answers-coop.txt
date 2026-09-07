@@ -1,0 +1,6 @@
+A budget and expense tracker. I log or import transactions from my bank as CSV, they get categorised, and I see where my money goes. It's for me and my partner. Later I want budgets, charts and bank sync, but I know that's not this mission.
+Vite + React + Vitest sounds right. Go with that.
+The thin slice should be importing one CSV row and showing it on screen.
+That's everything. Please file the foundation mission.
+Yes, file it.
+Go ahead, accept your recommendation and proceed.

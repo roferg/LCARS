@@ -116,8 +116,15 @@ new_repo() {
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
       && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
+  # S183: a CONFIGURED test command, so this fixture is a repo with a test
+  # FOUNDATION. `lcars file` now refuses to open a normal mission on a repo that
+  # has none (greenfield/untested) and points at Establish Vision instead — so a
+  # suite about the MECHANICS of filing has to file against a repo that can
+  # actually be filed against. `true` resolves via `command -v`, which is all the
+  # readiness verdict asks of a command. The gate itself is proven in
+  # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-05-30T00:00:00Z" }
+{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
 EOF
   echo "$repo"
 }
@@ -507,7 +514,9 @@ unset GH_BODY
 # 10f. Copilot active, LEGACY billing (config copilotBilling=legacy): the old
 # premium-request rendering returns UNCHANGED for grandfathered annual subscribers.
 repoL="$(new_repo)"; make_gh_stub "$repoL/gh"
-printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy" }\n' \
+# S183: keeps new_repo's testCommand — this rewrite of the config would
+# otherwise strip the repo's test foundation and `lcars file` would refuse.
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy" }\n' \
   >"$repoL/.git/lcars/config.json"
 export GH_LOG="$repoL/gh.log"; : >"$GH_LOG"
 export GH_BODY="$repoL/gh-body.txt"; : >"$GH_BODY"
@@ -889,6 +898,86 @@ prdEN5="$repoEN5/prd.md"; write_prd "$prdEN5"
 MEN5="$repoEN5/.git/lcars/missions/lcars-20260530-001/state.json"
 check "14e. --engine claude beats LCARS_WORKER_BIN=copilot" \
   "[ -f '$MEN5' ] && cat '$MEN5' | qgrep -q '\"workerBin\": *\"claude\"'"
+
+# --- Behaviour 14f-14i: --engine on the FRONT DOOR's lane (S195) -----------
+# The Establish Vision front door files through `--initialization --prd`, which
+# is the SAME grill-first lane 14a-14e cover — and that lane is the one file.sh's
+# own header records as having "silently ignored" --engine once already. So the
+# combination the day-zero captain actually walks through is asserted HARD here:
+# a mission filed from the front door on the engine he picked, running on the
+# engine he picked, on a repo with NO test foundation (which is the only kind of
+# repo that door ever appears on).
+gf_repo() { # a repo with NO foundation — what the front door is for
+  local repo; repo="$(mktemp -d "$TMPROOT/gfrepo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init )
+  mkdir -p "$repo/.git/lcars/missions"
+  echo "$repo"
+}
+
+repoIN="$(gf_repo)"; make_gh_stub "$repoIN/gh"
+export GH_LOG="$repoIN/gh.log"; : >"$GH_LOG"
+prdIN="$repoIN/prd.md"; write_prd "$prdIN"
+rcIN=0
+(
+  cd "$repoIN"
+  unset LCARS_WORKER_BIN
+  LCARS_GH_BIN="$repoIN/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --initialization --prd "$prdIN" --engine copilot >outIN.txt 2>&1
+) || rcIN=$?
+MIN="$repoIN/.git/lcars/missions/lcars-20260530-001/state.json"
+check "14f. --initialization --prd --engine copilot exits clean" "[ '$rcIN' -eq 0 ]"
+check "14f. the FRONT DOOR's mission persists workerBin=copilot" \
+  "[ -f '$MIN' ] && cat '$MIN' | qgrep -q '\"workerBin\": *\"copilot\"'"
+check "14f. …and is still stamped missionType=initialization" \
+  "cat '$MIN' | qgrep -q '\"missionType\": *\"initialization\"'"
+check "14f. state.json is valid JSON (initialization + engine)" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MIN'"
+
+# 14g. …and it BEATS a threaded $LCARS_WORKER_BIN. The daemon injects its own
+# worker_bin into every dispatch (`_resolve_run`), so on the viewscreen road the
+# env var is ALWAYS set — if the flag lost to it, the captain's pick would be
+# silently replaced by whatever CLI the daemon happened to be launched from.
+repoIN2="$(gf_repo)"; make_gh_stub "$repoIN2/gh"
+export GH_LOG="$repoIN2/gh.log"; : >"$GH_LOG"
+prdIN2="$repoIN2/prd.md"; write_prd "$prdIN2"
+(
+  cd "$repoIN2"
+  LCARS_WORKER_BIN=claude LCARS_GH_BIN="$repoIN2/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --initialization --prd "$prdIN2" --engine copilot >outIN2.txt 2>&1
+)
+MIN2="$repoIN2/.git/lcars/missions/lcars-20260530-001/state.json"
+check "14g. --engine beats the daemon-threaded LCARS_WORKER_BIN on this lane" \
+  "[ -f '$MIN2' ] && cat '$MIN2' | qgrep -q '\"workerBin\": *\"copilot\"'"
+
+# 14h. a bogus engine dies on this lane too, before anything is written.
+repoIN3="$(gf_repo)"; make_gh_stub "$repoIN3/gh"
+export GH_LOG="$repoIN3/gh.log"; : >"$GH_LOG"
+prdIN3="$repoIN3/prd.md"; write_prd "$prdIN3"
+rcIN3=0
+(
+  cd "$repoIN3"
+  LCARS_GH_BIN="$repoIN3/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --initialization --prd "$prdIN3" --engine gpt5 >outIN3.txt 2>&1
+) || rcIN3=$?
+check "14h. bogus --engine on the initialization lane ⇒ non-zero exit" \
+  "[ '$rcIN3' -ne 0 ]"
+check "14h. …and nothing was written" \
+  "[ ! -d '$repoIN3/.git/lcars/missions/lcars-20260530-001' ]"
+
+# 14i. REGRESSION — an initialization filing with no engine is unchanged.
+repoIN4="$(gf_repo)"; make_gh_stub "$repoIN4/gh"
+export GH_LOG="$repoIN4/gh.log"; : >"$GH_LOG"
+prdIN4="$repoIN4/prd.md"; write_prd "$prdIN4"
+(
+  cd "$repoIN4"
+  unset LCARS_WORKER_BIN
+  LCARS_GH_BIN="$repoIN4/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --initialization --prd "$prdIN4" >outIN4.txt 2>&1
+)
+MIN4="$repoIN4/.git/lcars/missions/lcars-20260530-001/state.json"
+check "14i. no --engine on the initialization lane ⇒ no workerBin key" \
+  "[ -f '$MIN4' ] && ! cat '$MIN4' | qgrep -q 'workerBin'"
 
 # ==========================================================================
 # 15. THE PRD's REQUIRED SECTIONS IN BOTH SHAPES (S176)

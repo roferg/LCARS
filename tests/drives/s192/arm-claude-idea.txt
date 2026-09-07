@@ -1,0 +1,4 @@
+I want a small command-line tool called `sift` that watches a log file and
+prints only the lines matching a set of named filters I define in a config
+file, with each filter given its own colour so I can spot them at a glance.
+`sift --config filters.json app.log`. Node, because it needs to start fast.

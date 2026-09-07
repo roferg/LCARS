@@ -26,6 +26,28 @@ Missions can be active concurrently. Each is isolated on its own branch; merges 
 
 ---
 
+## Day Zero: A Project That Doesn't Exist Yet
+
+Every Stage of the pipeline proves its work the same way: the ticket's tests are **red on the parent commit and green on the tip**. That proof is the spine of the whole system — and a project with no test runner cannot produce it. On such a repo LCARS was, quite correctly, unable to prove anything at all.
+
+So on a repo with no foundation, LCARS does not show you an empty Kanban board. It replaces the board with a door.
+
+**Establish Vision** is a short conversation, one question at a time. You describe what you want in a sentence; LCARS reads whatever is actually in the repo, asks a few questions, and then **recommends a stack and says why** — in terms of what you told it, not a generic template. Nothing is filed until you approve a recommendation you are free to refuse. Features you mention that are not the foundation are not discarded: they are recorded by name and deferred to normal Missions.
+
+Accepting files an **initialization Mission**. It is a Mission like any other and runs the same pipeline, with one exception that exists precisely because the honesty rule cannot be waived twice: its **first ticket** — and only its first — may exit without a flip-flop, because it is the ticket that creates the runner there was none of. That waiver is recorded with a reason and surfaces at Verify. Every later ticket is held to the real gate, against the runner the first one established.
+
+When you approve the Mission at Verify, the repo **graduates**: the test command it established is promoted into the repo's own config, normal Missions unlock, and the holodeck opens. Until that moment the foundation gate refuses to file ordinary work — not to be obstructive, but because a Mission filed on an unprovable repo is a Mission whose result nobody can trust.
+
+The narrow rule matters: the door replaces the board only when the repo is foundationless **and** has nothing to put on the board. A repo with Missions in flight keeps its board.
+
+The loop is proven end to end on JavaScript/TypeScript, Python, Rust, Go, Ruby and .NET. **JVM is not proven**: there is no JDK detection arm yet, so a Java or Kotlin project cannot establish a foundation this way.
+
+### Which engine drives it
+
+The same screen asks which CLI you want: **Claude Code** or **GitHub Copilot**. Only engines actually installed on the machine are offered, and the choice runs both the conversation and every Stage of the Mission it files, then becomes that project's default so later Missions inherit it. It is asked once, at the moment the decision is actually being made, rather than buried in configuration.
+
+---
+
 ## Before the Mission: The Holodeck
 
 A Mission begins with a description. But some work is far easier to *draw* than to describe, and a description of a screen — handed to a builder who never saw the picture — is a lossy encoding of something that only ever existed in the human's head.

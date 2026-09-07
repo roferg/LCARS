@@ -1,0 +1,19 @@
+{
+ "screen": "grill",
+ "busy": true,
+ "error": "",
+ "sid": null,
+ "rec": null,
+ "question": {
+  "text": "Before we scope the build, the most load-bearing decision is what we actually stand up first. This repo is empty, so the very first mission isn't the Mint clone — it's the FOUNDATION: a booting skeleton, a real test runner a human can watch run, and one thin slice proving they're wired together. Every feature you named (Plaid sync, budgets, charts, mobile app, CSV import, recurring-bill detection, multi-currency, household mode) gets recorded in the vision doc and filed as its own mission right after. For the foundation stack, I'd recommend **Vite + React + TypeScript + Vitest** — it boots a web UI fast, Vitest gives you a watchable test run, and it's a natural base for the budgets-and-charts personal-finance app you're describing. Does a TypeScript web app sound right, or were you picturing something else (e.g. mobile-first native, or a Python/backend-first build)?",
+  "choices": [
+   "Vite + React + TypeScript + Vitest (recommended)",
+   "Mobile-first native (e.g. React Native / Expo)",
+   "Backend-first (e.g. Python/FastAPI or Node API)",
+   "Something else"
+  ],
+  "recommended": "Vite + React + TypeScript + Vitest"
+ },
+ "buttons": [],
+ "text": "◇ New projectWhat are we building?Describe it however you like. LCARS will ask a few questions, recommend a stack and say why, then build the foundation — a running skeleton with a working test system — before any feature work starts.[object Object]◐ THINKING…Already have tests LCARS can't see? Point it at them: lcars update --test-command '<command>'"
+}

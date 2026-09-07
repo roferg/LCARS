@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:1d414dfae3a96364e7acb794840621a54286526273addbdd23a529b87097da85 -->
-<!-- lcars-docs-src: vision.md sha256:d447de84c72da30a6552d66b0e75b38f71e5a0c2575f3a83b5eb3a5035a84616 -->
+<!-- lcars-docs-src: README.md sha256:f2b84465672ba15b4189c3a366890fcf8f2a70f3f9a8756f3673d59161233aed -->
+<!-- lcars-docs-src: vision.md sha256:e0e2044e80dafe673f09a35a765b04615646417f203f1414eac3e04bb463fb69 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -53,6 +53,7 @@
       <div class="nav-label">Operate</div>
       <a href="#install"><div class="dot"></div>Install</a>
       <a href="#quickstart"><div class="dot"></div>Quick start <span class="nav-badge">viewscreen</span></a>
+      <a href="#zero"><div class="dot"></div>Starting from zero <span class="nav-badge">day zero</span></a>
       <a href="#holodeck"><div class="dot"></div>The holodeck <span class="nav-badge">design</span></a>
       <a href="#cli"><div class="dot"></div>The CLI</a>
       <a href="#copilot"><div class="dot"></div>GitHub Copilot</a>
@@ -127,6 +128,13 @@
       mockup into existence with an AI, watch it render live, and then hand that
       drawing to a Mission that builds it — see
       <a href="#holodeck">The holodeck</a>.</p>
+
+      <p><strong>The project doesn't have to exist yet either.</strong> Point
+      LCARS at an empty folder and it replaces the board with a door: describe
+      what you want, answer a few questions, and it recommends a stack, builds a
+      running skeleton with a real test system, and proves one thin slice end to
+      end — before any feature work starts. See
+      <a href="#zero">Starting from zero</a>.</p>
 
       <div class="mission-card">
         <strong>The key idea — set it in motion and walk away:</strong>
@@ -452,6 +460,60 @@ lcars-viewscreen --open   # launch the board and open it in your browser</pre>
         one-click <strong>update button</strong> on the local build (blue while it
         runs, teal on success); view-only builds show the banner without the
         button.</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         STARTING FROM ZERO
+         ═══════════════════════════════════════════════════ -->
+    <section id="zero">
+      <h2>Starting from zero</h2>
+      <p>Every ticket in LCARS is proven the same way: its tests are
+      <strong>red on the parent commit and green on the tip</strong>. A repo with
+      no test runner can't produce that proof — so rather than show you an empty
+      board, LCARS shows you a door.</p>
+
+      <p>Open the viewscreen on a repo with no foundation and you get
+      <strong>Establish Vision</strong> instead of the board:</p>
+
+      <ol>
+        <li><strong>Say what you're building</strong> — a sentence is enough.
+        LCARS also reads whatever is already in the repo, so an existing codebase
+        with no tests gets a foundation-only conversation rather than a "what are
+        we building" one.</li>
+        <li><strong>Pick the engine</strong> — Claude Code or GitHub Copilot. Only
+        engines installed on your machine are offered. Your choice runs the
+        conversation <em>and</em> every stage of the mission it files, and becomes
+        the project's default.</li>
+        <li><strong>Answer a few questions</strong>, one at a time. It then
+        recommends a stack <strong>and says why</strong>, in terms of what you told
+        it. Anything you mentioned that isn't the foundation is recorded by name
+        and deferred to later missions. Nothing is filed until you accept.</li>
+        <li><strong>Accept</strong>, and it files an <em>initialization mission</em>
+        that runs the normal pipeline hands-off: a running skeleton, a real test
+        runner, and one thin vertical slice that proves both are wired
+        together.</li>
+        <li><strong>Approve it at Verify</strong> and the repo
+        <strong>graduates</strong> — the test command is promoted into the repo's
+        config, normal missions unlock, and the holodeck opens.</li>
+      </ol>
+
+      <p>The one waiver: the initialization mission's <strong>first ticket</strong>
+      may finish without a flip-flop, because it is the ticket that creates the
+      runner there wasn't one of. It records a reason and surfaces it at Verify.
+      Every later ticket is held to the real gate.</p>
+
+      <p>Until the foundation lands, filing ordinary missions is blocked — a
+      mission on a repo that can't prove anything is a mission whose result nobody
+      can trust.</p>
+
+      <div class="lcars-alert teal">
+        <div><strong>Engine support.</strong> Day zero is proven end to end on
+        <strong>JavaScript/TypeScript, Python, Rust, Go, Ruby and .NET</strong>.
+        <strong>JVM is not proven</strong> — there is no JDK detection arm yet, so
+        a Java/Kotlin project cannot currently establish a foundation this
+        way.</div>
       </div>
     </section>
 

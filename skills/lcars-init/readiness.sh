@@ -14,7 +14,9 @@
 #   readiness.sh --line     same as above, explicit
 #   readiness.sh --json     print {"status","suggestion","testCommand"} —
 #                           status ∈ ready|missing|broken|unknown; suggestion /
-#                           testCommand are null when absent. The daemon parses
+#                           testCommand are null when absent. S183 adds
+#                           `foundation` (greenfield|untested|unconfigured|
+#                           ready) + `foundationWhy` — the SECOND axis. The daemon parses
 #                           this and OMITS meta.testReadiness when ready.
 #
 # Exit 0 always (it is a report, never a gate).
@@ -34,7 +36,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" || GIT_DIR=""
 if [ -z "$GIT_DIR" ]; then
   # not a git repo — nothing to report on; stay silent (a report, not a gate).
-  [ "$MODE" = "json" ] && printf '{"status":"unknown","suggestion":null,"testCommand":null}\n'
+  # Not a repo — nothing to classify, and NOTHING is refused on this answer:
+  # `foundation` is null, which every consumer reads as "no verdict", never as
+  # "greenfield". (The gate's refusal requires a POSITIVE greenfield/untested.)
+  [ "$MODE" = "json" ] && printf '{"status":"unknown","suggestion":null,"testCommand":null,"foundation":null,"foundationWhy":null}\n'
   exit 0
 fi
 case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
@@ -70,8 +75,18 @@ $LCARS_TESTREADY_CANDIDATES
 CANDS
     cands="$cands]"
   fi
-  printf '{"status":"%s","suggestion":%s,"testCommand":%s,"stacks":%s,"candidates":%s}\n' \
-    "$LCARS_TESTREADY_STATUS" "$sug" "$tc" "$st" "$cands"
+  # S183: the FOUNDATION axis rides alongside the status one, ALWAYS present
+  # (unlike stacks/candidates, which are verdict-specific) so the board and the
+  # filing gate never have to re-derive it. Purely additive — every existing key
+  # keeps its exact meaning and shape.
+  fnd='null'
+  [ -n "${LCARS_TESTREADY_FOUNDATION:-}" ] \
+    && fnd="\"$(lcars_json_escape "$LCARS_TESTREADY_FOUNDATION")\""
+  fwhy='null'
+  [ -n "${LCARS_TESTREADY_FOUNDATION_WHY:-}" ] \
+    && fwhy="\"$(lcars_json_escape "$LCARS_TESTREADY_FOUNDATION_WHY")\""
+  printf '{"status":"%s","suggestion":%s,"testCommand":%s,"stacks":%s,"candidates":%s,"foundation":%s,"foundationWhy":%s}\n' \
+    "$LCARS_TESTREADY_STATUS" "$sug" "$tc" "$st" "$cands" "$fnd" "$fwhy"
 else
   lcars_readiness_line
 fi

@@ -1,0 +1,783 @@
+=== ARGV (02) ===
+--- arg
+-p
+--- arg
+You are running the LCARS **Align** stage as a HEADLESS, single-turn worker driving the interview defined by the lcars-file skill below. You produce EXACTLY ONE turn per invocation and then STOP — the harness feeds your output back to the captain, collects their answer, and re-invokes you with the full transcript for the next turn. Follow the Align grilling rules verbatim (one question at a time, lead with your recommended answer, scale PRD/ADR depth to complexity, capture a model override only if the captain asks).
+
+OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
+  • To ask the next question:
+    {"status":"question",
+     "question":{"text":"<the one question>",
+                 "choices":["<opt>", ...],          // optional
+                 "recommended":"<your lead answer>", // optional
+                 "closing":true},                    // ONLY on the final turn
+     "prd":"<the PARTIAL PRD markdown assembled so far>"}
+  • When alignment is reached (the captain has confirmed the load-bearing
+    decisions through the interview):
+    {"status":"done",
+     "prd":"<the FULL, well-formed PRD markdown>",
+     "adr":"<the ADR markdown, or null for a trivial mission>",
+     "modelOverride":"<scope:tier, or null>"}
+
+The CLOSING turn (per the skill): when you believe alignment is reached, your
+LAST question MUST be the explicit "anything else before I file?" check-in, and
+that question object MUST carry "closing":true so the captain's UI can show the
+"estimating & creating mission" phase when they confirm. Do NOT emit status:done
+until the captain has answered that closing question affirmatively.
+
+CLOSING-QUESTION BREVITY (UI parity, BUG-072): the captain's UI renders the
+assembled PRD LIVE in a panel beside the question from your "prd" field. So the
+closing question "text" must be ONLY the concise lead-in — e.g. "Perfect — the
+complete PRD is on the right. Anything else before I lock it?" — and must NOT
+restate or inline the PRD body (Type/Goal/Acceptance Criteria/Out of Scope/
+Constraints). Put the full PRD in the "prd" field as always; never duplicate it
+into the question text.
+
+The PRD/ADR shapes and the required sections are exactly as the skill specifies.
+=== lcars-file skill (the Align interview — follow it) ===
+---
+name: lcars-file
+description: File a new LCARS Mission. Captures a free-form idea from the captain, runs an Align session to produce a PRD, then persists the mission under .git/lcars/missions/ and opens a labelled GitHub issue at the align stage. Use when the user runs `lcars file`, asks to start / file / open a new LCARS mission, feature, or bug.
+---
+
+# lcars file
+
+`lcars file` is the **Entry Skill**: it turns a free-form human idea into a
+filed Mission sitting at the **Align** stage, ready for `lcars run` to pick up.
+You (Claude) run the conversation; the bundled `file.sh` does the mechanical
+persistence so it stays testable.
+
+Run `lcars init` first if `.git/lcars/` does not exist — `file.sh` will create
+the `missions/` dir if needed, but a repo without the LCARS labels can't be
+issue-labelled properly.
+
+## STEP 0 — THE FOUNDATION GATE (run this BEFORE you say anything else)
+
+A Mission is proven by RUNNING its tests. A repo with no test system has no way
+to prove any work, so LCARS does not open a normal Mission against one — the
+foundation is established first, by an **initialization mission** the captain
+launches from **Establish Vision**, with the captain at Verify to watch the
+suite actually run (captain ruling, 2026-09-05).
+
+**Before the first interview question, run:**
+
+```bash
+bash ~/.claude/skills/lcars-init/foundation-gate.sh
+```
+
+* **exit 0** — this repo has a foundation. Carry on with the interview below.
+* **exit 20** — it prints the refusal. **Show it to the captain verbatim and
+  STOP.** Do not grill, do not draft a PRD, do not call `file.sh`. Hiring
+  anybody here is the exact spend the gate exists to prevent.
+
+`file.sh` enforces the same gate itself (both lanes), so a filing can never slip
+past it — but by then the captain has already answered a full interview for
+nothing, which is why you check first.
+
+The gate refuses only two states: `greenfield` (nothing here) and `untested`
+(code, no test system). A repo that HAS a test system LCARS simply has no
+command for (`unconfigured`) is **not** refused — that is
+`lcars update --test-command '<command>'`, and filing works exactly as ever.
+
+## Two lanes: grill-first (default) and Park & Align
+
+There are two ways to file:
+
+1. **Grill-first (default).** The captain has time to think now: run the full
+   Align interview below (STEP 1–5), producing a PRD, then `file.sh --prd …`.
+   This is the flow the rest of this guide documents and it is unchanged.
+2. **Park & Align (fast capture).** The captain wants to dump an idea into the
+   backlog and grill it later. **Skip the interview entirely** and park it:
+
+   ```bash
+   bash ~/.claude/skills/lcars-file/file.sh --park "<the idea, verbatim>" [--engine claude|copilot]
+   ```
+
+   That mints the mission, writes `idea.md`, opens the GitHub issue at **Align**
+   with a `◇ STANDBY — awaiting alignment` note (labels `lcars:align` +
+   `lcars:mission` only — **no** type label yet, because the type comes from the
+   grill), and marks it `"prdPending": true` in `state.json`. **No PRD, no
+   estimate, no ADR.** A parked mission is **not runnable**: `lcars run` refuses
+   it and the bare-`lcars` driver offers it for alignment but never auto-drives
+   it. Attachments are allowed (`--attach <path>`, repeatable) and staged exactly
+   as at grill-first file time — a pasted screenshot is often the whole idea. The
+   idea may also come from a file with `--idea <path>`.
+
+### Resuming a parked mission — run the grill later
+
+When the captain is ready to align a parked mission, they run:
+
+```bash
+lcars file <mission-id>
+```
+
+This is the **resume path**. Detect it: if the argument resolves to a mission
+whose `state.json` has `"prdPending": true`, you (Claude):
+
+1. **Seed the grill from `idea.md`** (and any staged `attachments/`). Read
+   `.git/lcars/missions/<id>/idea.md` and treat it as the captured idea for STEP
+   1 — do **not** ask the captain to re-describe it.
+2. Run the **normal Align interview** (STEP 2 below) — the relentless
+   one-question-at-a-time grill, seeded with that idea. The warm-Align machinery
+   is reused as-is; the mission's persisted `workerBin` (from `--engine`) governs
+   the engine.
+3. On the captain's closing confirmation, instead of `--prd`, complete the parked
+   mission in place:
+
+   ```bash
+   bash ~/.claude/skills/lcars-file/file.sh --complete <id> --prd "$prd" [--adr "$adr"] [--model-override '<scope>:<tier>']
+   ```
+
+   `--complete` validates the PRD with the **same gates** as grill-first, writes
+   `prd.md`, derives the title + type, **updates the GitHub issue in place**
+   (retitle, replace the body with the PRD summary exactly as a grill-first issue
+   renders it, add the `lcars:<type>` label), runs the estimator, and clears
+   `prdPending` — landing byte-for-byte where a grill-first filing lands (the only
+   extra artifact is `idea.md`). It is idempotent: a partial failure (e.g. the
+   issue edit fails) leaves the mission parked so a re-run retries cleanly.
+
+If `lcars file <id>` names a mission that is **not** parked (already aligned),
+say so cleanly — "mission `<id>` is already aligned; run `lcars run <id>` to
+advance it" — and do not re-grill.
+
+## STEP 1 — Capture
+
+Ask the captain for a free-form description of the idea. One open prompt:
+
+> What do you want to build or fix?
+
+If it isn't obvious from their answer whether this is a **feature** or a
+**bug**, ask. Don't over-interrogate here — capture is just intake; the real
+sharpening happens in Align.
+
+## STEP 2 — Align
+
+**First, resolve the repo context source — once.** Before grilling, run the
+shared resolver so Align reads the same durable repo facts every later Stage
+will (architecture, conventions, how tests run, key interfaces / domain terms),
+instead of re-deriving them from the tree each session:
+
+```bash
+ctx=$(bash ~/.claude/skills/lcars-run/run.sh context-source)
+```
+
+It prints ONE path and you read it:
+
+- If a `CONTEXT.md` exists at the repo root, that is the source (no pack is
+  generated).
+- Otherwise it returns `.git/lcars/context-pack.md`, generating it lazily on
+  first use via a single cold worker (and reusing it thereafter). The pack lives
+  inside `.git/` — it never touches the working tree and is never committed.
+
+Read `$ctx` and treat it as the ground truth for repo facts during Align. Where
+this guide below says "the codebase or `CONTEXT.md`", it means `$ctx`.
+
+Align is a **relentless, one-question-at-a-time interview** in the style of the
+`grill-me` / `grill-with-docs` skills — not a fixed questionnaire, and **never a
+batch of questions fired off at once**.
+
+**The gate (non-skippable):** Align MUST conduct **at least one real
+question→answer exchange with the captain before the PRD is written.** Producing
+a PRD straight from the captured idea with **zero captain exchanges is a defect,
+not an efficiency** — no matter how fully specified the idea looks or how
+inferable the answers seem. The load-bearing decisions (defaults, limits, naming,
+tie-breaks, rendering/UX behaviour, qualification rules, scope boundaries) must
+be **surfaced to the captain for explicit confirmation** — lead-with-your-
+recommendation, one at a time. The captain confirming or redirecting your
+recommended decisions **IS** the alignment; it cannot be assumed on their behalf
+or silently resolved into the PRD. Run it like this:
+
+- **One question at a time.** Ask, then *wait* for the captain's answer before
+  asking the next. Do **not** present a multi-question form or pick-list to be
+  answered in one go — that short-circuits the whole point, which is to let each
+  answer steer the next question.
+- **A human gate is a HARD STOP with NO TIMEOUT. You must never assume on the
+  human's behalf here, and you must wait for them to respond.** After you ask the
+  captain a question, you **end your turn and wait for the captain's actual reply.** You do
+  not continue, you do not proceed to the next step, and you do not answer the
+  question yourself. **Silence, a pause, a delay, or the captain appearing to be
+  away is NEVER an answer** — it is not delegation, not approval, not "go ahead,"
+  and not permission to decide on their behalf. There is **no timeout**: wait as
+  long as it takes, indefinitely. If you are uncertain whether the captain has
+  actually answered, then they have **not** — keep waiting; only an explicit
+  reply from the captain advances the gate. This applies to **every** question in
+  the interview *and* to the final "is the PRD right?" confirmation: none of them
+  may be self-resolved by assuming the captain delegated.
+- **Walk the decision tree.** Every answer opens new branches and creates
+  dependencies between decisions; resolve them one by one. *How sleep gets
+  captured* changes *what the summary can show* — follow that thread rather than
+  pre-scripting a list.
+- **Always lead with your recommended answer.** Don't just interrogate —
+  propose the answer you'd pick and why, so the captain can confirm or push
+  back. This is what keeps a simple idea moving fast instead of stalling.
+- **Explore instead of asking — but only for *factual* questions.** Exploring
+  the codebase or `CONTEXT.md` substitutes ONLY for **factual** questions —
+  things the repo can answer (how tests run, what an interface is, an existing
+  convention). It **never** substitutes for a **decision** question: anything
+  that turns on the captain's preference, product judgment, scope boundary,
+  default value, limit, naming, or UX behaviour. Those must be put to the captain
+  with your recommendation — they may **not** be silently resolved into the PRD
+  or an ADR.
+- **Sharpen fuzzy language.** When the captain uses a vague or overloaded term,
+  propose a precise one. If `CONTEXT.md` defines it differently, surface the
+  conflict immediately.
+
+There is **no fixed number of questions** — let complexity set the depth. A
+one-line bug ("the /about link 404s") may converge after a single exchange; a
+broad feature may take many turns. Keep grilling until you and the captain share
+a clear picture of what's being built *and what isn't*, then stop. Don't
+manufacture ambiguity to pad the session, and don't cut it short while real
+branches are still unresolved.
+
+### Scale the PRD's depth to the Mission's complexity
+
+The *same judgment* that sets the interview length sets the PRD's depth — it is
+a JUDGMENT, not a rigid threshold. The required sections below are always
+present, but **how much each carries scales with complexity**:
+
+- **Trivial Mission** (a one-line bug, a copy tweak, a single obvious fix): keep
+  the PRD THIN. A one-sentence Goal, one or two crisp acceptance criteria, a
+  terse Out of Scope / Constraints. Do **not** over-specify small work — and
+  write **no `adr.md`** (see below). Padding a trivial Mission wastes downstream
+  comprehension budget.
+- **Complex Mission** (a broad feature, a cross-cutting change, anything with
+  real architectural choices): go DEEP. Spell out the acceptance criteria
+  exhaustively, name every out-of-scope boundary, and enumerate the real
+  Constraints — and additionally write an **engineering ADR set** (`adr.md`,
+  below) capturing the high-level architectural decisions the engine has no
+  out-of-the-box context for.
+
+Match the depth to the work in front of you: a thin PRD for thin work, a deep
+PRD for deep work. Use the same "don't pad / don't cut short" discipline you use
+for the interview length.
+
+### Engineering ADRs (complex Missions only)
+
+For a **complex** Mission, also write an **`adr.md`** — the high-level
+**Architecture Decision Records** the downstream stages have no out-of-the-box
+context for. ADRs are **declarative facts** every later worker may read (with one
+hard exception: **research agents never see them** — Research is
+context-free by design). They capture **engineering** decisions only:
+
+- **In scope for an ADR:** framework / library choice, the overall architecture
+  or module boundaries, key data shapes / schemas, and the load-bearing
+  constraints those impose.
+- **NOT in an ADR:** implementation detail or ticket-level decisions — those stay
+  with Plan and Implement. Keep the role separation; an ADR is the *frame*, not
+  the *build*.
+
+An ADR captures a decision the captain has been **walked through and confirmed**
+during the interview — never a unilateral architectural choice the model made and
+recorded on the captain's behalf.
+
+Each ADR **must** carry these four sections, in this exact shape — `file.sh`
+rejects an `adr.md` missing any of them:
+
+```markdown
+# Architecture Decision Records: <mission title>
+
+## ADR-001: <short decision title>
+
+**Context:** <the forces / situation that make a decision necessary>
+**Decision:** <the decision taken>
+**Alternatives considered:** <the options weighed and why they lost>
+**Consequences:** <the rationale + what this commits us to / rules out>
+```
+
+Add one `## ADR-NNN:` block per decision. For a **trivial** Mission, write **no
+`adr.md` at all** (at most a single one-liner ADR if there is genuinely one
+architectural fact worth pinning) — never burden small work with ceremony.
+
+When (and only when) the Mission is complex, write the ADRs to a temp file too:
+
+```bash
+adr=$(mktemp); cat > "$adr" <<'ADR'
+# Architecture Decision Records: ...
+...
+ADR
+```
+
+…and pass it with `--adr "$adr"` alongside `--prd` in the next step. For a
+trivial Mission, omit `--adr` entirely. **Align only SEEDS the ADRs** — the
+Validate stage may later REFINE them when research findings change a decision, so
+keep them high-level and revisable, not exhaustive.
+
+### Capturing a model override (optional)
+
+During Align the captain may, in free-form language, ask to **override the model
+choice** the estimator would otherwise make — usually to push quality up ("use
+Opus the whole way") or cost down ("keep it cheap"). Detect that intent and
+normalize it to a single structured **`modelOverride`** you pass to `file.sh` via
+`--model-override '<scope>:<tier>'`. Do **not** invent an override the captain did
+not ask for; the absence of any such request means **no** `--model-override` flag.
+
+The override has two axes and two tiers:
+
+- **scope** — `all` (every stage, whole run), `reasoning` (the Research, Validate,
+  Plan and Plan Review stages) or `implementation` (the Implement and Verify
+  stages).
+- **tier** — `opus` or `sonnet` (logical tiers; the harness translates them to the
+  active CLI's model string).
+
+Map the captain's natural language like so (lead with your reading and let them
+confirm — this is still a decision, so do not silently bake it in):
+
+| Captain says (examples)                              | `--model-override` value     |
+| --------------------------------------------------- | ---------------------------- |
+| "use Opus the whole way through" / "all Opus"        | `all:opus`                   |
+| "keep it cheap" / "all Sonnet" / "Sonnet everywhere" | `all:sonnet`                 |
+| "use Opus for implementation" / "Opus for the build" | `implementation:opus`        |
+| "keep implementation cheap" / "Sonnet for the build" | `implementation:sonnet`      |
+| "use Opus for the thinking/reasoning stages"         | `reasoning:opus`             |
+| "keep reasoning cheap" / "Sonnet for reasoning"      | `reasoning:sonnet`           |
+
+Then pass it alongside `--prd` (and `--adr` when complex):
+
+```bash
+bash ~/.claude/skills/lcars-file/file.sh --prd "$prd" --model-override 'all:opus'
+```
+
+`file.sh` validates the value (scope ∈ {all,reasoning,implementation}, tier ∈
+{sonnet,opus}) and rejects anything malformed, then records it in `state.json` as
+`"modelOverride": { "scope": …, "tier": … }`. The downstream stages honour it
+**above** the estimate's per-stage choice but **below** any `LCARS_WORKER_MODEL`
+global pin, and the rendered estimate (issue body + CLI readout) shows an
+`(override: …)` note so the captain can see the estimate's mix was overridden.
+A mid-flight override is also possible without re-filing via the
+`LCARS_MODEL_OVERRIDE='<scope>:<tier>'` env var on `lcars run` (the env path wins
+over the persisted one).
+
+### The closing turn — confirm before filing (NON-SKIPPABLE)
+
+Before you finalize the PRD and dispatch `file.sh`, you **must** make one
+explicit, final check-in with the captain. The grill does **not** get to decide
+on its own that it has heard enough and file silently — filing is an explicit,
+captain-confirmed act (cf. BUG-001, BUG-015). When you believe alignment is
+reached, end your turn with a closing question in this spirit:
+
+> I think I have what I need to file this. **Before I do — anything else?** Any
+> other questions, thoughts, topics, or corrections you want to fold in before I
+> lock the PRD and create the Mission?
+
+Then **stop and wait** — this is a HARD STOP with NO TIMEOUT, exactly like every
+other gate above. Silence/away is **never** a "go ahead."
+
+- If the captain raises anything (a new requirement, a tweak, a question),
+  resolve it — that may reopen the interview for one or more turns — then ask the
+  closing question again.
+- **Only on the captain's explicit confirmation** ("I'm good", "go ahead", "file
+  it", etc.) do you finalize the PRD and run `file.sh`. Until that confirmation
+  the Mission is **NOT** filed and nothing is written.
+
+When (and only when) the captain has confirmed, write the PRD. **"Alignment
+reached" REQUIRES that the captain has confirmed the load-bearing decisions
+through the interview** — not the model deciding them on the captain's behalf. If
+a real decision went into the PRD without a captain exchange, alignment is
+**not** reached. It **must** contain all of these sections, in this exact shape —
+`file.sh` rejects a PRD that is missing any of them:
+
+```markdown
+# Mission: <title>
+
+**Type:** feature | bug
+**Goal:** <one sentence>
+**Acceptance Criteria:**
+- <bullet>
+- <bullet>
+**Out of Scope:**
+- <anything explicitly excluded>
+**Constraints:**
+- <tech stack, perf requirements, etc.>
+```
+
+### When the Mission carries a design brief, its OPEN QUESTIONS come with it
+
+A design brief from the holodeck (a `concept.md` filed beside a mockup) leaves
+its unsettled items in **TWO** sections, and the gate in `file.sh` reads **BOTH**
+of them. Read both. Carry every bullet from both:
+
+1. **`## Open questions`** — what the design session left undecided outright.
+2. **`## WHAT IT MUST DO` → bucket 2, `Implied by the mockup`, not yet
+   settled** — behaviour the mockup suggests that was never confirmed, each
+   already written as a question.
+
+The holodeck's brief contract splits them **on purpose, one home each**, so the
+captain never reads the same thing twice — which means neither list is a superset
+of the other and reading only the first is not "most of them". **Measured** on
+`lcars-20260814-001`'s brief: 2 questions in `## Open questions`, 12 in bucket 2
+of `## WHAT IT MUST DO`. An Align agent that reads only `## Open questions`
+carries 2 of 14, and `file.sh` refuses the PRD naming the 12 it dropped.
+
+If **either** section has anything under it, the PRD **must** carry one more
+section, and `file.sh` refuses a PRD that drops any of them:
+
+```markdown
+## Open questions from the design session
+
+- STILL OPEN: <the question, as the brief wrote it>
+- RESOLVED with the captain: <the question> — <the answer he gave>
+```
+
+Every bullet the brief left open appears here, **as what it is**. Resolving one
+with the captain during the grill is the *ideal* outcome — record the answer and
+say it was resolved. What you may **never** do is quietly convert one into an
+assertion elsewhere in the PRD.
+
+This is measured, not theoretical. `lcars-20260814-001`'s `prd.md` has exactly
+two headings, `# Mission:` and `## Attached files`. Its brief left ~14 items
+unsettled and **not one survived as a question** — the PRD stated the Carried-pill
+rule flatly, though "what makes a KPI carried?" was open, and it left no trace
+the question had ever existed. `attachment-02.md:140` asked what "Preview" and
+"View" actually do; that shipped unanswered, a preview screen was built by fiat,
+and that screen is where the composite-KPI cell came out scrambled. Known-unknowns
+became silent certainties and the captain met each decision as a shipped screen.
+
+A brief that left **nothing** open gets **no section at all** — the empty-bucket
+rule; a heading with nothing behind it is a line of his brief spent on nothing,
+and `file.sh` refuses that too.
+
+The `# Mission:` title and `**Type:**` value are the source of truth — the
+script reads the mission title and type straight from the PRD, so get them
+right. Use `lcars:feature` / `lcars:bug` vocabulary consistently.
+
+When the captain is happy with the PRD, write it to a temp file, e.g.:
+
+```bash
+prd=$(mktemp); cat > "$prd" <<'PRD'
+# Mission: ...
+...
+PRD
+```
+
+### If `file.sh` refuses the PRD — FIX THE PRD, **NEVER RE-GRILL**
+
+A refusal from `file.sh` is a rejection of the **PRD text you already hold** —
+its formatting, or a gate it did not satisfy. It is **never** a verdict on the
+alignment. The script refuses cleanly and writes **nothing**, so the Mission is
+exactly as it was and the grill you just finished is still completely valid.
+
+**Do not restart the interview. Do not re-open the grill. Do not go back to the
+captain.** Repair the PRD file in place and re-run the *same* command with the
+fixed file (`--prd "$prd"`, or `--complete <id> --prd "$prd"`). Restarting the
+grill throws away a completed alignment the captain already paid for — measured:
+he lost **two** completed grill sessions to exactly this, both times because the
+PRD needed a five-second edit.
+
+The two refusals you will actually see, and what each one wants:
+
+1. **`PRD is missing the '<X>' section — Align must produce it before filing.`**
+   One of the six required sections is absent or spelled in a shape the script
+   does not read. **Reformat the six labels** into the template above
+   (`# Mission:`, `**Type:**`, `**Goal:**`, `**Acceptance Criteria:**`,
+   `**Out of Scope:**`, `**Constraints:**`) and re-run. Nothing about the
+   content changes — this is a formatting edit, not a re-alignment.
+
+2. **`PRD drops N of the design brief's M open question(s) …`** (or `PRD is
+   missing the 'Open questions from the design session' section`). The refusal
+   **lists every question it wants, verbatim**. Add each listed question to the
+   `## Open questions from the design session` section as a
+   `- STILL OPEN: <the question>` entry, and re-run.
+
+   **The gate wants the questions to SURVIVE, not to be answered.** A
+   `STILL OPEN:` entry satisfies it completely and permanently — you do **not**
+   need the captain, you do **not** need an answer, and you must **not** re-open
+   the grill to get one. Carrying a question forward unanswered is a correct,
+   complete, expected outcome; that is the entire point of the section.
+
+## STEP 3–5 — Persist, open the issue, confirm
+
+**Only run this step after the captain's explicit closing confirmation** (the
+closing turn in STEP 2). Do not dispatch `file.sh` on your own judgement that the
+grill is "done" — the captain's "go ahead" is what authorizes filing.
+
+Hand the PRD to the bundled script. It mints the mission ID
+(`lcars-YYYYMMDD-NNN`, sequenced per day), creates
+`.git/lcars/missions/<id>/{prd.md,state.json}`, **creates the Mission's own
+branch `lcars/<id>` off the current branch** (recording the branch and its base
+in `state.json`), opens the GitHub issue with the `lcars:align,lcars:<type>`
+labels, records the issue number, and prints the summary:
+
+```bash
+bash ~/.claude/skills/lcars-file/file.sh --prd "$prd"
+```
+
+For a **complex** Mission, also hand over the ADR set you wrote (the script
+shape-checks it the same way it checks the PRD, then persists it as `adr.md`):
+
+```bash
+bash ~/.claude/skills/lcars-file/file.sh --prd "$prd" --adr "$adr"
+```
+
+For a **trivial** Mission, pass `--prd` only — no `--adr`, and no `adr.md` is
+written.
+
+Show the captain its output verbatim:
+
+```
+  Mission filed: lcars-20260530-001
+  GitHub issue:  #42
+  Branch:        lcars/lcars-20260530-001 (off main)
+  Stage:         align
+  Next:          run `lcars run lcars-20260530-001` to continue
+```
+
+## What gets written
+
+```
+.git/lcars/missions/<id>/
+  prd.md        ← the PRD from Align (the GitHub issue body, too)
+  adr.md        ← the engineering ADRs (COMPLEX Missions only; absent for trivial work)
+  estimate.json ← the end-of-Align estimate (per-stage model map; OPTIONAL, see below)
+  state.json    ← { id, type, title, stage: "align", created, model, githubIssue, branch, base,
+                    baseFreshness{verdict, loud, reason, fix, fixNote, blocker,
+                    behindBy, aheadBy, baseSha, checkedAt,
+                    missionBranchAtBase}[, modelOverride] }
+```
+
+At the end of filing, `file.sh` runs the lcars-run estimator
+(`run.sh estimate`) once, which reasons over the finalized PRD + ADRs + repo and
+writes `estimate.json` — two criticality scores and a per-stage model assignment
+the downstream stages consume to spend Opus where the work warrants it. The
+estimator is **strictly optional**: if it is unavailable or produces nothing, the
+mission still files (a note is printed) and every stage falls back to its default
+model — exactly like the `gh`-missing degradation.
+
+Plus, in git itself: the branch `lcars/<id>` is created off the current branch
+(the `base` the PR will later target). The working tree is **not** switched to
+it — `lcars file` leaves the captain's checkout exactly as it was. Implement
+checks the branch out when it commits the first green ticket; `lcars approve`
+pushes it and opens the PR with `--head lcars/<id> --base <base>`.
+
+### Base freshness — the base is brought up to date BEFORE the branch is cut
+
+A Mission filed off a base branch that is behind `origin` makes every downstream
+Stage reason about a codebase that no longer exists — Research truthfully reports
+that a file "does not exist", and the Mission ships a confident fix into a decoy.
+So immediately before cutting `lcars/<id>`, both filing lanes call the shared
+`ensure_base_current` guard (`skills/lcars-init/lcars-common.sh`). It is
+**best-effort**: it declines to act in a dozen conditions, and in every one of
+them the Mission is still filed.
+
+**The verdict is one of four words**, recorded on the Mission as
+`state.json.baseFreshness`:
+
+| verdict | meaning |
+| --- | --- |
+| `current` | the base is up to date; nothing to do — **including a base that is merely AHEAD of origin** (an unpushed commit is not staleness) |
+| `updated` | LCARS brought it up to date; the mission is cut from the fresh tip |
+| `stale` | the base is behind and LCARS could **not** fix it |
+| `unknown` | LCARS could not determine freshness at all |
+
+The situation behind the verdict is **not** encoded in a name — it lives in
+`reason` (one honest sentence: which of dirty tree / diverged / would clobber an
+ignored file / not checked out / refused fast-forward / behind the trunk / no
+remote / unreachable / too slow / no resolvable trunk / no such local branch /
+switched off) and in `fix` (**ONE runnable command line, or nothing** — it is
+labelled `Fix:` on both surfaces, so it must survive being pasted into a shell;
+the alternative, the caveat and any manual step live beside it in `fixNote`,
+which nothing ever labels as a command). `blocker` names what actually stopped
+LCARS (`dirty-tree`, `diverged`, `not-checked-out`, `untracked-clobber`,
+`merge-refused`, `behind-trunk`, `unreachable`, `fetch-timeout`,
+`operation-in-progress`), and the board's badge headline is built from it — a
+headline derived from `behindBy` names the benign half of a base that is both
+dirty and behind. `unreachable` and `fetch-timeout` are deliberately separate:
+the first means origin failed on its merits (no command clears it from here),
+the second that origin answered instantly and LCARS gave up waiting on its own
+bounded fetch (the captain's unbounded run of it really can succeed, so that
+lane carries a `fix`).
+
+**The operation LCARS already ran is never the `fix`.** When the guard has
+ATTEMPTED something and captured its failure — git refusing the purely local
+fast-forward, for instance — that same operation is not offered back as the
+remedy: re-running it only reproduces the refusal. Those lanes carry an EMPTY
+`fix` and put the way forward in `fixNote`. (A bounded fetch LCARS killed at its
+own deadline is not one of these: the captain's unbounded run of it really can
+succeed.)
+
+**An unfinished git operation is the first fact, and it stops the check.** With a
+rebase / merge / cherry-pick / revert / `am` / bisect in progress — detected via
+`git rev-parse --git-path`, so a linked worktree's `.git/worktrees/<n>/` is seen
+too — the verdict is a LOUD `unknown` with `blocker: operation-in-progress`,
+`behindBy`/`aheadBy` `null`, and **`baseSha` `null`**: mid-operation the base ref
+is where the operation will move it FROM, and stamping it names a commit the
+Mission was not cut from — a permanent, wrong provenance record. Nothing is
+fetched and no ref is moved; filing is still never blocked.
+Whether an outcome **shouts** is carried separately in `loud`, never derived
+from the verdict — `unknown` covers both the silent everyday no-remote case and
+a loud unreachable origin, so a consumer deciding "badge or no badge" reads that
+one field.
+
+```json
+"baseFreshness": { "verdict": "stale", "loud": true,
+                   "reason": "the working tree has 1 unstaged change(s) and 1 untracked file(s) — LCARS never writes into a dirty tree, so your own uncommitted work was not touched and 'main' was left 3 commit(s) behind origin.",
+                   "fix": "git stash -u && git pull --ff-only origin main",
+                   "fixNote": "You can commit your work instead of stashing — either clears the block; 'git stash pop' brings a stash back afterwards.",
+                   "blocker": "dirty-tree",
+                   "behindBy": 3, "aheadBy": 0, "baseSha": "…", "checkedAt": "…",
+                   "missionBranchAtBase": true }
+```
+
+`behindBy` is measured PRE-pull and is `null` — never `0` — when it could not be
+measured at all. `aheadBy` (commits the base has that origin does not) follows the
+same doctrine, and is what lets a consumer tell "3 behind and 2 ahead, genuinely
+diverged, act now" from "0 behind, 1 unpushed commit, perfectly fine".
+`baseSha` is the BASE BRANCH's sha and is `null` — never `""`, and never HEAD's —
+when there is no such branch.
+`missionBranchAtBase` says what `baseSha` alone cannot, since a reused
+`lcars/<id>` may not be sitting on the base.
+
+- **`origin` is fetched and the base fast-forwarded** — but ONLY when the working
+  tree is clean, the base is the checked-out branch, the move is a genuine
+  fast-forward, and it would not overwrite a local file git is not tracking whose
+  content differs. That collision check enumerates paths NUL-separated, so git's
+  default path-quoting cannot hide a colliding name that holds a non-ASCII byte,
+  a `"` or a `\`. The work is split in two on purpose: a NARROW, bounded
+  `git fetch` of just that one branch (no tags, one remote-tracking ref — a
+  filing command has no business restructuring the captain's remote refs), then
+  an UNBOUNDED, purely LOCAL `git merge --ff-only` onto the sha already fetched.
+  That local fast-forward is the one and only ref-moving command it will ever
+  run, and it is never bounded — a kill landing mid-checkout is the only way this
+  guard could leave a half-written tree, so there is nothing left to kill.
+- **The captain's clone is sacred.** It never resets, forces, stashes, rebases,
+  cleans, switches or checks anything out — the same verb list `CONTEXT.md`
+  gives, verb for verb. The ONE merge it will ever run is the fast-forward-only
+  one above, which git refuses outright unless the move really is a
+  fast-forward, so it can never create a merge commit. And it never *writes*
+  into a dirty tree. It does *fetch* on a dirty tree — a fetch touches only `refs/remotes/`,
+  and without it the warning could only say "you might be behind" instead of
+  "you are 19 behind".
+- **The network can never hold filing hostage.** The fetch announces itself
+  before it runs, is hard-bounded (`LCARS_BASE_FETCH_TIMEOUT_SECS`, default 8s),
+  and runs with every interactive door shut (`GIT_TERMINAL_PROMPT=0`, a pinned
+  askpass, ssh `BatchMode=yes`) so it can never stop mid-filing to ask for
+  credentials. When a fetch runs out of its bound, origin is asked one bounded
+  read-only question (`ls-remote --symref`) to settle which actually happened —
+  a remote that answers instantly is slow, one that answers nothing is dead, and
+  the two get different `reason` sentences under the same `unknown` verdict.
+- **Filing is never blocked.** A loud outcome prints a block naming what was
+  skipped (`Why:`), the exact command that fixes it (`Fix:`), and one CONSTANT
+  consequence sentence (`Impact:`) — then the Mission files anyway. That
+  consequence line is deliberately invariant: the per-verdict prose it replaces
+  is exactly where the copy used to lie about a situation that was not the one
+  in front of the captain.
+- **A base with no counterpart on `origin`** (an unpushed topic branch, or a
+  linked worktree on one) is measured against origin's DEFAULT branch: quietly
+  `current` when it already contains the trunk, loudly `stale` with the real
+  distance when it does not (the trunk's objects are fetched just as narrowly).
+  LCARS never merges a trunk into a topic branch — that is a real merge, not a
+  fast-forward — so that case measures and warns only.
+- **The copy describes what actually happened.** A dirty tree is described by the
+  KIND of dirt (staged / unstaged / untracked) with a stash that would actually
+  move it; a fix that cannot work until origin comes back says so first; the
+  mission-branch block says whether `lcars/<id>` pre-existed or was cut by this
+  filing, and names the commit it is really on.
+- **The boring cases are silent.** A repo with no `origin`, an unpushed base that
+  is level with the trunk, an already-current base, or a base that is only
+  AHEAD of origin (unpushed local commits) prints no warning at all. Only
+  *behind* is staleness: a base that is ahead is missing nothing, and calling it
+  `stale` gave it a `git pull --rebase` fix that is a no-op, so re-filing
+  reproduced the same warning forever.
+- `--complete` **re-checks** rather than carrying the `--park` verdict forward: a
+  parked idea sits in the backlog precisely while origin moves on, so the
+  park-time verdict has expired by the time the pipeline starts. The mission
+  branch, cut at park time, is never re-cut — if it now lags the freshened base,
+  that is said out loud with the command that fixes it.
+- Kill switch: `LCARS_BASE_FRESHNESS=0` (zero network, verdict `unknown` with a
+  `reason` naming the switch, and silent).
+- **The record has consumers beyond the readout.** `lcars run` re-checks and
+  REWRITES it at drive time (S159), and the viewscreen reads it to decide whether
+  a Mission's card carries the ⚠ BASE badge (S160) — gating on the carried `loud`
+  field, never on the verdict name. Those surfaces DISPLAY this record's `reason`
+  and `fix`; they compose no sentence of their own about git state.
+- **Asking without answering.** `LCARS_BASE_CHECK_ONLY=1` runs every measurement
+  and declines the one step that writes (the local fast-forward), so the board's
+  File console can report freshness BEFORE the captain types a word without the
+  asking of it moving their refs. `skills/lcars-init/base-freshness.sh --json` is
+  that mode, read-only by construction — it sets the flag itself, so an inherited
+  environment cannot re-arm the ref move. It can never report `updated`: that
+  word means a ref moved, and nothing moved.
+
+## Notes & failure modes
+
+- **PRD missing a required section** → the script exits non-zero and writes
+  nothing. Finish Align — produce the missing section — and re-run.
+- **`--adr` given but an ADR is missing a required section** (Context / Decision
+  / Alternatives considered / Consequences) → the script exits non-zero and
+  writes nothing, same as a bad PRD. Fix the ADR shape and re-run. (`--adr` is
+  optional: omit it entirely for a trivial Mission — an absent `adr.md` is never
+  an error.)
+- **`gh` missing or issue creation fails** → the mission is still filed
+  locally; `githubIssue` is recorded as `null` and the summary says so. Re-run
+  after fixing `gh`, or open the issue by hand and record the number.
+- **Mission ID** is `lcars-<UTC date>-NNN`; `NNN` increments per day from the
+  existing missions in `.git/lcars/missions/`. Override the date in tests with
+  `LCARS_DATE=YYYYMMDD`.
+- **Model** is read from `.git/lcars/config.json` (written by `lcars init`),
+  falling back to `LCARS_MODEL` then `claude-sonnet`.
+- **Branch creation is best-effort.** In a repo with no commits there is nothing
+  to branch from, so `lcars file` records the intended branch name but warns and
+  leaves creation to Implement's first commit. An already-existing `lcars/<id>`
+  branch is reused. Stub the git binary in tests with `LCARS_GIT_BIN`.
+
+## Implementation
+
+The logic lives in `file.sh` next to this file so it can be exercised directly.
+Its behaviour is covered by `tests/lcars-file.test.sh` in the LCARS repo (run
+with `bash tests/run.sh`). The skill source lives in `skills/lcars-file/` in the
+repo and is symlinked into `~/.claude/skills/` by `./install.sh`; edit the repo
+copy, not `~/.claude`. If you change `file.sh`, keep those tests green.
+
+=== the captain's idea ===
+=== ESTABLISH VISION — THE FOUNDATION BRIEF (read this before anything else) ===
+
+THIS REPO IS EMPTY. Start by asking what we are building, in plain
+language, and keep asking until you could name a stack and defend it.
+
+WHAT YOU ARE PRODUCING is ONE initialization mission whose entire scope is THE
+FOUNDATION:
+
+  1. a running SKELETON — the project boots and shows something;
+  2. a working TEST SYSTEM — a real runner, wired, that a human can watch run;
+  3. ONE THIN VERTICAL SLICE that proves both are genuinely connected.
+
+That is the whole mission. You MUST NOT build the product. You must not plan
+its features, its screens, its data model or its schedule. Every feature the
+captain names is RECORDED and DEFERRED: it goes into the project vision doc and
+becomes a normal LCARS mission once the foundation lands. A vision that
+specifies twelve features has FAILED, not succeeded.
+
+YOU RECOMMEND, YOU DO NOT DECIDE. End by recommending ONE stack — named
+concretely, e.g. "Vite + React + Vitest" — with two to four reasons stated in
+the CAPTAIN'S OWN LANGUAGE, referencing the thing he actually said he wants
+rather than generic marketing copy. The choice is HIS: he may override the
+recommendation with any stack he likes, and the stack he accepts is the one
+that lands in the mission. Never present the recommendation as settled.
+
+WHAT TO HAND BACK when you are done:
+  stack     — the ONE recommended stack, as a short concrete name
+  reasons   — 2–4 reasons, one per line, in his language
+  slice     — the ONE thin vertical slice that proves skeleton + tests together,
+              as a NOUN PHRASE that completes the sentence "One thin vertical
+              slice that proves both: ______" — e.g. "importing a CSV row and
+              showing it". NOT a full sentence, and no trailing full stop.
+  deferred  — every feature he named, one per line, for the vision doc
+
+=== WHAT THE CAPTAIN SAID ===
+
+A budget and expense tracker. I log or import transactions from my bank as CSV, they get categorised, and I see where my money goes. It's for me and my partner. Later I want budgets, charts and bank sync, but I know that's not this mission.
+
+Ask the FIRST question now, as a single JSON object.
+--- arg
+--session-id=32fadd14-9a71-4d8d-b05d-eb7cfa14b69a
+--- arg
+--available-tools=
+--- arg
+--no-ask-user
+--- arg
+--disable-builtin-mcps
+--- arg
+--no-custom-instructions
+--- arg
+--model
+--- arg
+claude-opus-4.8

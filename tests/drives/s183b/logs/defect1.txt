@@ -1,0 +1,33 @@
+--- BEFORE init
+{"status":"missing","suggestion":"npm test -- ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR}\"}","testCommand":null,"stacks":null,"candidates":null,"foundation":"untested","foundationWhy":"this repo has code and no test system"}
+gate rc = 20
+--- lcars init
+    ✓ .git/lcars/ created
+    ✓ config.json written  (stack: js, model: claude-sonnet, context: none, tests: npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"})
+      keys seeded: model projectName contextFile stack testCommand worktreeSetupCommand comprehensionBudget lcarsVersion created
+    ✓ Claude CLI verified  (0.0.0-s183-fake (counting shim))
+    ✓ 16 labels created
+    … probing test systems (npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"})
+    ✗ PROBE FAILED — the suite ran but reported failures (exit 1).
+        
+        > defaulty@1.0.0 test
+        > echo "Error: no test specified" && exit 1
+        
+        Error: no test specified
+      Missions are proof-gated on this command, so fix it before relying on the
+      Implement gates: `lcars update --fix-tests` repairs the common causes.
+    LCARS ready — run `lcars file` to start your first Mission.
+--- AFTER init
+{"status":"ready","suggestion":null,"testCommand":"npm test -- ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR}\"}","stacks":null,"candidates":null,"foundation":"ready","foundationWhy":"a test command is configured and its runner resolves"}
+config testCommand:   "testCommand": "npm test -- ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR}\"}",
+gate rc = 0  (0 = FILING ALLOWED)
+--- lcars file
+    ⚠ gh issue create failed — mission filed locally; re-run after fixing gh.
+    ⚠ estimator unavailable — mission filed with default per-stage models.
+    Mission filed: lcars-20260905-001
+    GitHub issue:  (none — file locally only)
+    Branch:        lcars/lcars-20260905-001 (off main)
+    Stage:         align
+    Next:          run `lcars run lcars-20260905-001` to continue
+file rc=0
+SPAWNS=4 PROBES=1

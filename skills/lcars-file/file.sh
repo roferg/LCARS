@@ -163,6 +163,42 @@ _branch_source_desc() {
   printf '%s' "$BASE"
 }
 
+# --- THE FOUNDATION GATE (S183) --------------------------------------------
+# A normal mission cannot be filed against a repo with no test foundation. The
+# decision, the verdict and the wording ALL live in ONE seam —
+# skills/lcars-init/foundation-gate.sh — which SESSION 184 replaces with the
+# real Establish Vision flow; nothing about the refusal is duplicated here.
+#
+# It runs BEFORE any worker is hired (`lcars file`'s only paid step is the
+# end-of-Align estimator, dispatched much further down) and before anything at
+# all is written, so a refused filing leaves the repo untouched.
+#
+# ALLOWED, deliberately: `unconfigured` — a repo that HAS a test system LCARS
+# simply has no command for. That is the `lcars update --test-command` case and
+# it keeps working exactly as it did. The gate DEGRADES TO ALLOW whenever it
+# cannot get a verdict (helper missing, not an LCARS repo): it refuses only on a
+# positive greenfield/untested, never on an absence of information.
+#
+# The refusal exits 4 — its own number, NOT `die`'s 1 and NOT `die_prd`'s 3. A
+# redraft cannot clear it (so it is not 3), and the viewscreen's Align console
+# keys its heal off exit status (S165) — healing a foundation refusal by
+# re-grilling the PRD would loop forever.
+FOUNDATION_GATE="${LCARS_FOUNDATION_GATE_BIN:-$FILE_SKILL_DIR/../lcars-init/foundation-gate.sh}"
+_foundation_gate() {
+  # S184 — the INITIALIZATION mission is the ONE exemption, and it is the point
+  # of the exemption that it is narrow: this is the mission that ESTABLISHES the
+  # foundation, filed by Establish Vision, so gating it on the foundation
+  # existing would make the gate unsatisfiable. Every other filing on this repo
+  # — grill-first, --park, a hotkey, the board — still hits the wall.
+  [ "${INITIALIZATION:-0}" = "1" ] && return 0
+  [ -f "$FOUNDATION_GATE" ] || return 0
+  local out rc
+  out="$(bash "$FOUNDATION_GATE" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 20 ] || return 0
+  printf '%s\n' "$out" >&2
+  exit 4
+}
+
 # ==========================================================================
 # Park & Align helpers (S136). Defined here so the --park / --complete dispatch
 # below can call them. None runs at source time.
@@ -329,6 +365,10 @@ _validate_adr() {
 # do_park — file a mission from just the idea (no grill, no PRD, no estimate).
 # --------------------------------------------------------------------------
 do_park() {
+  # S183 — the park lane is the OTHER way a normal mission is filed (the board's
+  # ◇ File to Backlog), so it carries the same gate. `--complete` deliberately
+  # does NOT: it finishes a mission that was already accepted and grilled.
+  _foundation_gate
   # Resolve the idea text: --idea <file> wins, else the positional text.
   local idea=""
   if [ -n "$IDEA_SRC" ]; then
@@ -743,12 +783,24 @@ ATTACHMENTS=()
 # filing lands. Absent both flags, this script is BYTE-IDENTICAL to grill-first.
 MODE=""            # "" (grill-first) | park | complete
 COMPLETE_ID=""     # the mission id for --complete
+INITIALIZATION=0   # --initialization (S184: the Establish Vision mission)
 IDEA_SRC=""        # --idea <file> (verbatim idea capture)
 ENGINE=""          # --engine claude|copilot (parked mission's workerBin)
 POSITIONAL=()      # bare args = the park idea text
 while [ $# -gt 0 ]; do
   case "$1" in
     --park)  MODE="park"; shift ;;
+    # S184 — the INITIALIZATION mission. `lcars file` is the ONE filer, so
+    # Establish Vision files through it rather than minting a mission of its
+    # own; this flag is the only thing that distinguishes the two. It does TWO
+    # things and nothing else: it EXEMPTS this filing from the S183 foundation
+    # gate (which exists to refuse NORMAL missions on a repo with no test
+    # system — refusing the mission that BUILDS the test system would be the
+    # gate eating its own purpose), and it stamps `missionType` into state.json
+    # so S185 can recognise the mission whose first ticket may take the audited
+    # scaffold waiver. Every other lane is untouched, and a mission filed
+    # without it carries no `missionType` key at all.
+    --initialization) INITIALIZATION=1; shift ;;
     --complete)   MODE="complete"; COMPLETE_ID="${2:-}"; shift 2 ;;
     --complete=*) MODE="complete"; COMPLETE_ID="${1#--complete=}"; shift ;;
     --idea)   IDEA_SRC="${2:-}"; shift 2 ;;
@@ -838,6 +890,14 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
+
+# S183 — no foundation, no normal mission. Checked before the PRD is even read,
+# so the captain hears about the repo rather than about his PRD — and, fix round
+# 1 (D7), BEFORE `mkdir -p "$MISSIONS_DIR"`. Creating the missions directory
+# first meant a REFUSED filing left `.git/lcars/missions/` behind in a repo that
+# had none, contradicting the gate header's own promise that a refusal leaves the
+# repo untouched.
+_foundation_gate
 mkdir -p "$MISSIONS_DIR"
 
 # --- validate the PRD has every required section --------------------------
@@ -1034,6 +1094,10 @@ write_state() { # issue-json (a number or the literal `null`)
     printf '  "id": "%s",\n' "$ID"
     printf '  "type": "%s",\n' "$TYPE"
     printf '  "title": "%s",\n' "$title_json"
+    # S184 — the mission TYPE, present ONLY on an initialization mission, so
+    # every mission filed before this round (and every normal one after it)
+    # carries a byte-identical state.json.
+    [ "${INITIALIZATION:-0}" = "1" ] && printf '  "missionType": "initialization",\n'
     printf '  "stage": "align",\n'
     printf '  "created": "%s",\n' "$NOW"
     printf '  "model": "%s",\n' "$MODEL"

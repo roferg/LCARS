@@ -1,0 +1,56 @@
+
+DevTools listening on ws://127.0.0.1:64264/devtools/browser/fceda61f-75f3-4e7f-9e2c-10d4b1937119
+Trying to load the allocator multiple times. This is *not* supported.
+[17627:201392038:0905/211850.192203:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[17627:201392038:0905/211853.629352:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+Created TensorFlow Lite XNNPACK delegate for CPU.
+Created TensorFlow Lite XNNPACK delegate for CPU.
+[18473:201395225:0905/211906.547242:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake-all --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[18473:201395225:0905/211906.548063:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 1249917, parent pid: 17627
+[18473:201395225:0905/211906.550590:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/roganferguson/Library/Application Support/Google/GoogleUpdater): 600459972608B (559.222GiB) / 994662584320B (926.352GiB)
+[18473:201395225:0905/211906.550610:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/): 600459972608B (559.222GiB) / 994662584320B (926.352GiB)
+[18473:201395225:0905/211906.550683:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[18475:201395229:0905/211906.566883:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=152.0.7933.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[18475:201395229:0905/211906.567731:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 1249917, parent pid: 1
+[18475:201395229:0905/211906.570243:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/roganferguson/Library/Application Support/Google/GoogleUpdater): 600459968512B (559.222GiB) / 994662584320B (926.352GiB)
+[18475:201395229:0905/211906.570263:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/): 600459968512B (559.222GiB) / 994662584320B (926.352GiB)
+[18475:201395229:0905/211906.570350:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[18473:201395225:0905/211906.571261:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[18473:201395225:0905/211906.572303:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[18473:201395225:0905/211906.572447:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[18473:201395225:0905/211906.572572:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/roganferguson/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[18473:201395225:0905/211906.572620:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/roganferguson/Library/Application Support/Google/Chrome Cloud Enrollment/Crashpad/settings.dat: No such file or directory (2)
+[18473:201395225:0905/211906.572640:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[18473:201395237:0905/211906.572975:VERBOSE1:chrome/updater/app/app_wakeall.cc:58] Launching `/Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake`
+[18476:201395241:0905/211906.589600:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[18476:201395241:0905/211906.590430:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 1249918, parent pid: 18473
+[18476:201395241:0905/211906.593013:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/roganferguson/Library/Application Support/Google/GoogleUpdater): 600459956224B (559.222GiB) / 994662584320B (926.352GiB)
+[18476:201395241:0905/211906.593031:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/): 600459956224B (559.222GiB) / 994662584320B (926.352GiB)
+[18476:201395241:0905/211906.593101:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[18478:201395245:0905/211906.856933:VERBOSE1:chrome/updater/updater.cc:374] Version: 152.0.7933.0, opt, ARM_64, command line: /Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --crash-handler --database=/Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/Crashpad --url=https://clients2.google.com/cr/report --annotation=prod=Update4 --annotation=ver=152.0.7933.0 --handshake-fd=6 --enable-logging --vmodule=*/components/update_client/*=2,*/chrome/enterprise_companion/*=2,*/chrome/updater/*=2
+[18478:201395245:0905/211906.858091:VERBOSE1:chrome/updater/updater.cc:377] OS version: 26.6.2, arch: arm64, System uptime (seconds): 1249918, parent pid: 1
+[18478:201395245:0905/211906.860881:VERBOSE1:chrome/updater/updater.cc:382] Available disk space in install directory (/Users/roganferguson/Library/Application Support/Google/GoogleUpdater): 600459956224B (559.222GiB) / 994662584320B (926.352GiB)
+[18478:201395245:0905/211906.860901:VERBOSE1:chrome/updater/updater.cc:386] Available disk space in temporary directory (/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/): 600459956224B (559.222GiB) / 994662584320B (926.352GiB)
+[18478:201395245:0905/211906.860987:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS START event to the history log
+[18476:201395241:0905/211906.861746:VERBOSE1:chrome/updater/crash_reporter.cc:124] Crash handler launched and ready.
+[18476:201395241:0905/211906.863430:VERBOSE1:chrome/updater/crash_client.cc:108] Found 0 completed crash reports
+[18476:201395241:0905/211906.863588:VERBOSE1:chrome/updater/crash_client.cc:132] Found 0 pending crash reports
+[18476:201395241:0905/211906.863740:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/roganferguson/Library/Application Support/Google/RLZ/Crashpad/settings.dat: No such file or directory (2)
+[18476:201395241:0905/211906.863793:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /Users/roganferguson/Library/Application Support/Google/Chrome Cloud Enrollment/Crashpad/settings.dat: No such file or directory (2)
+[18476:201395241:0905/211906.863814:VERBOSE1:chrome/updater/updater.cc:105] Crash reporting initialized.
+[18476:201395241:0905/211906.863999:VERBOSE1:chrome/updater/ipc/update_service_internal_proxy_mojo.cc:61] Run
+[17627:201392038:0905/211913.674510:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[17627:201392038:0905/211914.010934:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[18476:201395241:0905/211924.381628:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[18476:201395241:0905/211924.381939:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[18476:201395241:0905/211924.381975:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake) returned 0.
+[18473:201395237:0905/211924.500140:VERBOSE1:chrome/updater/app/app_wakeall.cc:68] `/Users/roganferguson/Library/Application Support/Google/GoogleUpdater/152.0.7933.0/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --wake` exited 0
+[18473:201395225:0905/211924.500346:VERBOSE1:chrome/updater/app/app.cc:52] Shutdown: 0
+[18473:201395225:0905/211924.500817:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[18473:201395225:0905/211924.500846:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--wake-all) returned 0.
+[18478:201395245:0905/211934.462143:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[18478:201395245:0905/211934.462405:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[18475:201395229:0905/211934.476759:VERBOSE2:chrome/updater/event_history.cc:265] Emitted a UPDATER_PROCESS END event to the history log
+[18475:201395229:0905/211934.476857:VERBOSE1:chrome/updater/updater.cc:419] UpdaterMain (--crash-handler) returned 0.
+[17627:201392038:0905/211956.191563:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+[17627:201392038:0905/212009.908484:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT

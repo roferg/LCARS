@@ -4,6 +4,64 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.2 — greenfield supported: LCARS can start a project from day zero
+
+**You can now point LCARS at an empty folder.** Until this release the pipeline
+could only work on a repo that already had a test runner — every ticket is proven
+by showing its tests red on the parent commit and green on the tip, and a project
+with no runner cannot produce that proof. LCARS was correct to refuse, and
+useless to anyone starting something new.
+
+**Establish Vision (sessions 183–184).** On a repo with no foundation the
+viewscreen no longer shows an empty board; it shows a door. You describe what you
+want in a sentence, LCARS reads whatever is actually in the repo, asks a few
+questions one at a time, then recommends a stack **and says why** — in terms of
+what you told it. Features you mention that are not the foundation are recorded
+by name and deferred, not dropped. Nothing is filed until you accept a
+recommendation you were free to refuse. The rule is narrow on purpose: the door
+replaces the board only when the repo is foundationless **and** has nothing to
+put on the board, so a repo with missions in flight keeps its board.
+
+**The initialization mission (session 185).** Accepting files a Mission that runs
+the ordinary pipeline hands-off and builds a running skeleton, a real test runner,
+and one thin vertical slice proving both are wired together. Its **first ticket —
+and only its first** — may finish without a flip-flop, because it is the ticket
+that creates the runner there was none of; the waiver records a reason and
+surfaces at Verify, and is read from wave order so it fails closed. Every later
+ticket faces the real gate. At approve the repo **graduates**: the established
+test command is promoted into repo config, normal missions unlock, and the
+holodeck opens.
+
+**Every stack the classifier knows (sessions 186, 193).** Per-arm foundation
+recipes, and two honesty gates that were misreading true signals as false: a Rust
+library crate's empty doc-test scoreboards read as "zero tests collected", and a
+correct Python fail-first red read as a dead runner.
+
+**Choose your engine (session 195).** The same screen asks which CLI drives the
+project — Claude Code or GitHub Copilot. Only engines installed on your machine
+are offered; the choice runs the conversation *and* every stage of the Mission it
+files, and becomes the project's default.
+
+**Two bugs that made day zero impossible, both found by driving it (session 194).**
+Copilot's default model has no file-writing tool, and every cold worker's entire
+output is a file it writes — so any worker LCARS spawned without naming a model
+was hired, reasoned, reported what it "wrote", and left nothing on disk. LCARS now
+never hands a Copilot worker the default model. And the failure was silent: a
+best-effort guard could not catch `die`'s exit, so the Implement stage died having
+printed 52 bytes; the reason is now carried, so the board names *why*. A refused
+scaffold ticket also now retries with the refusal reason fed back instead of
+parking terminally with circular advice.
+
+Also: a greenfield Mission can open its own pull request (an empty array expanded
+under `set -u` on bash 3.2 crashed every one), and the vision panel names Electron
+instead of calling it "JavaScript / Node".
+
+**Proven live, not just unit-tested.** A `git init` folder with no commits and no
+context file reaches a working, tested app end to end on real workers, verified by
+hand outside LCARS and shown to be discriminating. **JVM is NOT proven** — there
+is no JDK detection arm, so a Java/Kotlin project cannot yet establish a
+foundation this way.
+
 ## 2026.9.1 — the plan stops lying about what waits for what
 
 **Wave serialization (session 181).** A 12-ticket mission was scheduled as

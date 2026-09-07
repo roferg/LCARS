@@ -1,0 +1,4 @@
+# invocation ledger: calls-init-safety
+# SPAWN = a paid worker hire; PROBE = a --version capability check
+PROBE	claude	--version
+PROBE	claude	--version

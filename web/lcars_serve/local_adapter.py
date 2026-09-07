@@ -147,7 +147,7 @@ class LocalAdapter(object):
 
     def __init__(self, repo_root, read_only=False, git_url_reader=None,
                  readiness_script=None, base_freshness_script=None,
-                 host_adapter_script=None):
+                 host_adapter_script=None, establish_vision_script=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -166,6 +166,13 @@ class LocalAdapter(object):
         # a board render costs one subprocess only when the config moved.
         self._readiness_script = readiness_script
         self._readiness_memo = None   # (config_mtime, payload-or-None)
+        self._foundation_memo = None  # (detect-sig, locked-verdict-or-None)
+        # S184: ((detect-sig, mission-count), front-door-payload-or-None). The
+        # mission count is IN the key because the door must lift the moment the
+        # initialization mission lands — a signature keyed on files alone would
+        # keep serving the front door over a board that now has a card on it.
+        self._front_door_memo = None
+        self._establish_vision_script = establish_vision_script
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
         # S160: the shared base-freshness reporter
         # (skills/lcars-init/base-freshness.sh — the read-only sibling of
@@ -269,6 +276,51 @@ class LocalAdapter(object):
         tr = self._test_readiness()
         if tr is not None:
             meta["testReadiness"] = tr
+            # S183: the board LOCKS filing and the holodeck on a repo with no
+            # test foundation, so the lock state rides meta as its own key —
+            # present ONLY on the two locked verdicts, so every repo that could
+            # file before this round carries no `foundation` key at all and its
+            # payload is byte-identical. A ready repo has no `testReadiness`
+            # block to hang it off in the first place, which is the point: no
+            # key ⇒ nothing locked.
+            if tr.get("foundation") in ("greenfield", "untested"):
+                meta["foundation"] = tr.get("foundation")
+        else:
+            # S183 FIX ROUND 3 (F2). `_test_readiness` reports NOTHING on a repo
+            # with no `.git/lcars/config.json` — an S146 rule, and a correct one:
+            # `testReadiness` describes an INITIALIZED repo's configured command,
+            # and everything that reads it depends on that meaning. The FOUNDATION
+            # is a different question ("does this repo have a test system at
+            # all?") and it needs no config file to answer — the CLI gate returns
+            # rc=20 on exactly this repo. Hanging the lock off the readiness
+            # payload therefore left the board UNLOCKED on the never-init'd repo a
+            # captain is most likely to open it against: both band controls
+            # enabled, ▦ FILE MISSION opening the idea box, and the refusal
+            # arriving only after he had typed one — the late refusal this whole
+            # round exists to remove. Asked here, and ONLY here (an initialized
+            # repo's verdict still rides `testReadiness` exactly as it did), so
+            # `testReadiness` means precisely what it meant before.
+            f = self._foundation_only()
+            if f is not None:
+                meta["foundation"] = f
+        # S184: THE FRONT DOOR. `meta.foundation` says the repo is locked;
+        # `meta.frontDoor` says the board is REPLACED by the Establish Vision
+        # screen — and those are NOT the same question. The front door takes over
+        # only when there is NOTHING TO PUT ON THE BOARD, which is the captain's
+        # own wording of the ruling. Measured on his machine: `Flappy-Bird` is an
+        # initialized repo whose verdict is `untested` and which carries TWO real
+        # missions; keying the front door off the verdict alone would have DELETED
+        # that board and hidden both missions behind "What are we building?".
+        #
+        # So the key is POSITIVE and narrow: present only when the helper says
+        # frontDoor:true (locked verdict AND zero missions). Absent ⇒ the board
+        # renders exactly as it does today, with S183's lock still in force on it.
+        # A repo that could file before this round carries no `frontDoor` key at
+        # all and its payload is byte-identical.
+        if meta.get("foundation"):
+            fd = self._front_door()
+            if fd is not None:
+                meta["frontDoor"] = fd
         # S168: the FORGE HOST this repo lives on, for the board's "view on
         # GitHub" links. Purely ADDITIVE and present ONLY on a non-github.com
         # host: `gh_hostname` returns EMPTY for github.com (and for a repo with
@@ -510,10 +562,121 @@ class LocalAdapter(object):
                 if isinstance(blk.get("candidates"), list) and blk["candidates"]:
                     payload["candidates"] = [
                         c for c in blk["candidates"] if isinstance(c, str)]
+                # S183: the FOUNDATION axis — "does this repo HAVE a test system
+                # at all?", as opposed to "is a command configured?". Forwarded
+                # only when the helper set it, so a pre-S183 readiness.sh (or a
+                # stub in a test) yields a byte-identical payload.
+                if blk.get("foundation"):
+                    payload["foundation"] = blk.get("foundation")
+                if blk.get("foundationWhy"):
+                    payload["foundationWhy"] = blk.get("foundationWhy")
         except Exception:
             payload = None
         self._readiness_memo = (key, payload)
         return payload
+
+    def _foundation_only(self):
+        """The LOCKED foundation verdict for an UN-INITIALIZED repo, or None.
+
+        Shells the same ONE verdict `_test_readiness` does (ADR-002 — the daemon
+        dispatches, it never reimplements the rule in Python) and keeps ONLY the
+        two locking verdicts; anything else — `unconfigured`, `ready`, a repo
+        that HAS a config, a missing/slow/garbage helper — is None, i.e. nothing
+        added to meta and no behaviour changed. Memoized on the detection-marker
+        signature, so a board that re-renders does not re-shell.
+        """
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        if os.path.isfile(config):
+            return None  # initialized: the verdict rides testReadiness already
+        key = self._detect_signature()
+        if self._foundation_memo is not None and self._foundation_memo[0] == key:
+            return self._foundation_memo[1]
+        verdict = None
+        script = self._resolve_readiness_script()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--json"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=10)
+            blk = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+            if isinstance(blk, dict) \
+                    and blk.get("foundation") in ("greenfield", "untested"):
+                verdict = blk["foundation"]
+        except Exception:
+            verdict = None
+        self._foundation_memo = (key, verdict)
+        return verdict
+
+    def _front_door(self):
+        """The FRONT DOOR payload — the `untested` screen's FOUND panel, or None.
+
+        Shells `skills/lcars-init/establish-vision.sh --facts`, the ONE detector
+        behind both front doors (ADR-002 — the daemon dispatches, it never
+        reimplements the rule in Python), so the stack and the source-file count
+        the board prints are the same numbers `lcars` prints on the CLI.
+
+        None whenever the helper says the board should render — including the
+        `Flappy-Bird` case (a locked verdict WITH missions) — and whenever it is
+        missing, slow or unparseable: an absence of information never replaces a
+        captain's board. Memoized on the detection-marker signature plus the
+        mission count, so the door lifts the instant the initialization mission
+        lands and a re-render does not re-shell.
+        """
+        try:
+            n_missions = len(os.listdir(self.missions_dir)) \
+                if os.path.isdir(self.missions_dir) else 0
+        except OSError:
+            n_missions = 0
+        key = (self._detect_signature(), n_missions)
+        if self._front_door_memo is not None and self._front_door_memo[0] == key:
+            return self._front_door_memo[1]
+        payload = None
+        script = self._resolve_establish_vision_script()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--facts"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=10)
+            blk = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+            if isinstance(blk, dict) and blk.get("frontDoor") is True:
+                payload = {
+                    "foundation": blk.get("foundation"),
+                    "foundationWhy": blk.get("foundationWhy"),
+                    "stack": blk.get("stack"),
+                    "stackLabel": blk.get("stackLabel"),
+                    "sourceFiles": blk.get("sourceFiles"),
+                    "testRunner": blk.get("testRunner"),
+                    # S195 — WHICH CLIs THIS MACHINE HAS, and which to
+                    # preselect. Same rule as every other value here: the
+                    # helper answers, the daemon relays. A build whose helper
+                    # predates this round returns neither key, and the front
+                    # end renders no engine control at all rather than
+                    # inventing a list — an absence of information is never a
+                    # reason to offer the captain a choice LCARS cannot honour.
+                    "engines": blk.get("engines") or [],
+                    "engine": blk.get("engine") or "",
+                }
+        except Exception:
+            payload = None
+        self._front_door_memo = (key, payload)
+        return payload
+
+    def _resolve_establish_vision_script(self):
+        """establish-vision.sh: injected → env → in-repo → installed. Mirrors
+        `_resolve_readiness_script` exactly, so a test can point both at a stub
+        with one override."""
+        if self._establish_vision_script:
+            return self._establish_vision_script
+        env = os.environ.get("LCARS_ESTABLISH_VISION_BIN")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "establish-vision.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        return os.path.join(os.path.expanduser("~"), ".claude", "skills",
+                            "lcars-init", "establish-vision.sh")
 
     def _main_launch(self):
         """The local main-deploy record → the additive meta.mainLaunch payload,

@@ -1,0 +1,6 @@
+I’m mapping the repository’s structure, build/test configuration, and public surfaces before writing the single context-pack artifact.
+
+The repository is a minimal CommonJS Node.js project with no test suite or external dependencies; I’m now writing the complete static pack to the required harness path.
+
+Unable to create the required context-pack file because this session exposed only read-only filesystem tools (`view`, `glob`, and `rg`) and no file-writing or patch tool.
+

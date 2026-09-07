@@ -93,6 +93,16 @@
          tick and would wipe a JS `hidden` flag). -->
     <div class="deck-host" id="deckHost" hidden></div>
 
+    <!-- S184 ESTABLISH VISION — the day-zero FRONT DOOR. Filled by board.js from
+         board.meta.frontDoor, which the daemon sets ONLY when this repo has no
+         test foundation AND has nothing to put on a board. When it is filled,
+         `body.on-front-door` hides the board, the legend and the empty-state
+         prompt: the front door REPLACES the board rather than sitting above a
+         locked one (captain ruling 2026-09-05 — "the board does not render until
+         there is something to put on it"). Hidden, and the board byte-identical
+         to its pre-S184 self, on every repo that has a foundation. -->
+    <div class="front-door" id="frontDoor" hidden></div>
+
     <div class="board-wrap">
       <div class="board" id="board"><!-- columns + cards injected by board.js --></div>
     </div>

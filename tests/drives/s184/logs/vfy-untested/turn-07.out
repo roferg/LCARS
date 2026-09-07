@@ -1,0 +1,8 @@
+I'll read the PRD and repo context first.
+
+Let me inspect the actual repo state.
+
+Wrote `estimate.json`.
+
+Foundation mission on a tiny CommonJS repo: scaffold Astro + node:test + one CSV vertical slice. Scored both criticalities **medium** — fixed stack and fenced scope, but the ESM/CJS seam and pattern-setting for later missions warrant care. Followed the default ramp exactly (Opus on research/validate/implement, Sonnet on plan/planReview/verify), no deviations. Implement is the dominant stage (~3-4 slice tickets × pair × retries).
+

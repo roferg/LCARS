@@ -341,7 +341,11 @@ state_at "$mrI" implement
 cat > "$mrI/waves.json" <<'JSON'
 [ { "wave": 1, "tickets": ["t-001"] } ]
 JSON
+# S182: this fixture is about the worker PROMPT, not about the no-runner wall —
+# give it a testCommand so it gets past the pre-worker guard (a repo with NO
+# test command now parks before any worker is hired, which is the point of S182).
 ( cd "$rI" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_TEST_CMD=true \
     bash "$SCRIPT" implement-ticket --mission lcars-20260530-001 --ticket t-001 >/dev/null 2>&1 )
 check "4. unified TDD worker prompt names the context source path" \
   "prompt_of '$WORKER_CALLS' implement-tdd | qgrep -qF '$(pack_path "$rI")'"
@@ -368,6 +372,72 @@ check "4. PURITY: research-questions prompt has NO injected '## Repo context' bl
   "! prompt_of '$WORKER_CALLS' research-questions | qgrep -qF '## Repo context'"
 check "4. PURITY: research-agent prompt has NO injected '## Repo context' block" \
   "! prompt_of '$WORKER_CALLS' research-agent | qgrep -qF '## Repo context'"
+
+# ==========================================================================
+# Behaviour 5 (S194) — THE BEST-EFFORT GUARD MUST ACTUALLY BE BEST-EFFORT.
+# cmd_implement resolves the durable context source ONCE, up front, behind a
+# comment that says "a failure here just leaves the old lazy path to try again
+# per ticket". It did the opposite: resolve_context_source ends in `die`, and
+# `die` is `printf >&2; exit 1` — so `resolve_context_source >/dev/null 2>&1 ||:`
+# could not catch it (a redirection is not a subshell) and the WHOLE STAGE
+# exited rc=1, with `2>&1` throwing the reason away. Measured on copilot: 52
+# bytes of output and a 696-line `bash -x` trace containing zero non-trace
+# output. Two requirements, both asserted here:
+#   a. the failure does NOT kill the stage — it reaches the wave driver;
+#   b. the REASON is not discarded — it reaches the caller (and therefore the
+#      BUG-051 err_tail the driver puts on the board event).
+# ==========================================================================
+
+# A worker stub that answers every OTHER role normally but writes NOTHING for
+# context-pack — exactly what copilot's default model did (only read tools were
+# offered, so `create` was never available and the pack was never created).
+make_dead_pack_worker() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="${2:-}"; shift 2 ;; *) shift ;; esac; done
+printf 'role=%s tools=\n' "$LCARS_WORKER_ROLE" >>"$WORKER_LOG"
+printf '%s' "$prompt" >"$WORKER_CALLS/$LCARS_WORKER_ROLE.$$.txt"
+# context-pack: reply only, create no file (the measured copilot failure).
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+r5="$(new_full_mission)"; arm "$r5"
+make_dead_pack_worker "$BIN/worker"
+m5="$r5/.git/lcars/missions/lcars-20260530-001"
+state_at "$m5" implement
+cat > "$m5/waves.json" <<'JSON'
+{
+  "waves": [
+    { "wave": 1,
+      "tickets": [
+        { "id": "t-001", "issue": null }
+      ] }
+  ]
+}
+JSON
+# A real branch is NOT created — the stage's serial in-tree fallback is enough,
+# and this leg is about the guard, not about building a ticket.
+OUT5="$( cd "$r5" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" \
+    LCARS_GIT_BIN="$(command -v git)" LCARS_TEST_CMD=true \
+    LCARS_WORKER_TRIES=1 LCARS_EMPTY_WORKER_TRIES=1 \
+    bash "$SCRIPT" implement --mission lcars-20260530-001 2>&1 )"
+
+check "5a. the context-pack worker WAS hired and produced no pack (the defect's shape)" \
+  "[ \"$(ctx_calls "$WORKER_LOG")\" -ge 1 ] && [ ! -f \"$r5/.git/lcars/context-pack.md\" ]"
+# THE STAGE SURVIVED: it reached the wave driver, which emits wave_start. Before
+# the cure the process was already dead at the resolve line and no such event
+# (nor anything else past it) was ever written.
+check "5b. the stage is NOT killed by the failure — it reaches the wave driver" \
+  "grep -q '\"type\": *\"wave_start\"' '$m5/events.jsonl' 2>/dev/null"
+# THE REASON SURVIVED: the caller can see WHY, so the driver's BUG-051 err_tail
+# names the cause instead of a bare 'failed'.
+check "5c. the REASON reaches the caller (not discarded by 2>&1 >/dev/null)" \
+  "printf '%s' \"\$OUT5\" | qgrep -qi 'context'"
+check "5d. and the reason names the context pack it could not produce" \
+  "printf '%s' \"\$OUT5\" | qgrep -qF 'context-pack.md'"
 
 # ==========================================================================
 echo

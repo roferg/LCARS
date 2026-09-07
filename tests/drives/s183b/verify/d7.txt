@@ -1,0 +1,49 @@
+════════ PRISTINE prd @ blank  (no lcars init)
+  before:   <no .git/lcars at all> 
+  rc=4  hires=0
+  first line: ◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+  AFTER:
+  <no .git/lcars at all>
+  missions dir exists? no
+  working tree dirty? 0 files
+════════ PRISTINE prd @ readme  (no lcars init)
+  before:   <no .git/lcars at all> 
+  rc=4  hires=0
+  first line: ◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+  AFTER:
+  <no .git/lcars at all>
+  missions dir exists? no
+  working tree dirty? 0 files
+════════ PRISTINE prd @ untested  (no lcars init)
+  before:   <no .git/lcars at all> 
+  rc=4  hires=0
+  first line: ◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+  AFTER:
+  <no .git/lcars at all>
+  missions dir exists? no
+  working tree dirty? 0 files
+════════ PRISTINE park @ blank  (no lcars init)
+  before:   <no .git/lcars at all> 
+  rc=4  hires=0
+  first line: ◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+  AFTER:
+  <no .git/lcars at all>
+  missions dir exists? no
+  working tree dirty? 0 files
+════════ PRISTINE park @ readme  (no lcars init)
+  before:   <no .git/lcars at all> 
+  rc=4  hires=0
+  first line: ◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+  AFTER:
+  <no .git/lcars at all>
+  missions dir exists? no
+  working tree dirty? 0 files
+════════ PRISTINE park @ untested  (no lcars init)
+  before:   <no .git/lcars at all> 
+  rc=4  hires=0
+  first line: ◇ NO TEST FOUNDATION — this repo cannot run a normal mission yet.
+  AFTER:
+  <no .git/lcars at all>
+  missions dir exists? no
+  working tree dirty? 0 files
+TOTAL SPAWNS=0 PROBES=0

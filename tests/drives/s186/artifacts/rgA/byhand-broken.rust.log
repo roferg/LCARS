@@ -1,0 +1,30 @@
+   Compiling gfapp v0.1.0 (/private/tmp/claude-501/-Users-roganferguson-Projects-lcars-dev/cfd101e8-57a6-4806-8037-75676973047b/scratchpad/rgA/byhand-rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (target/debug/deps/gfapp-6336ccf5e689446d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/greet.rs (target/debug/deps/greet-12d72c9d7dfcd375)
+
+running 1 test
+test greets ... FAILED
+
+failures:
+
+---- greets stdout ----
+
+thread 'greets' (205763514) panicked at tests/greet.rs:3:15:
+assertion `left == right` failed
+  left: "goodbye"
+ right: "hello"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    greets
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test greet`

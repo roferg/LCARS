@@ -1,0 +1,3 @@
+# invocation ledger: calls-init-blank
+# SPAWN = a paid worker hire; PROBE = a --version capability check
+claude --version

@@ -1,0 +1,12 @@
+{
+ "frontDoorVisible": false,
+ "bodyClass": "lcars-serve",
+ "columnsInDom": 9,
+ "visibleColumns": 9,
+ "cardsInDom": 5,
+ "visibleCards": 5,
+ "fileBtnPresent": true,
+ "fileBtnDisabled": false,
+ "frontDoorButtons": [],
+ "frontDoorText": ""
+}

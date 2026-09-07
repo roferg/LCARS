@@ -1,0 +1,19 @@
+{
+ "stack": "Next.js (TypeScript) + Prisma + PostgreSQL + Vitest + Playwright",
+ "reasons": [
+  "You and your partner both log in and share the same data, so it needs a real server-side database from the start — Next.js gives you the app and the API in one project, with Prisma/Postgres as the shared store",
+  "Your core flow is CSV in → categorised → 'where my money goes', which is import-parse-persist-render — exactly the full-stack path Next.js handles end to end",
+  "Vitest covers the parse/categorise logic fast, and Playwright can watch the real 'import one CSV row and see it on screen' slice run in a browser — a human can literally watch the test go green",
+  "It's one TypeScript codebase, so budgets, charts and bank sync later slot in without bolting a backend on afterwards"
+ ],
+ "slice": "importing one CSV row and showing it on screen",
+ "deferred": [
+  "Budgets against categories",
+  "Charts / spending visualisations",
+  "Bank sync",
+  "Real categorisation rules (beyond one hardcoded rule for the slice)",
+  "Multi-user auth and account management polish",
+  "CSV import of multiple rows / full statements"
+ ],
+ "idea": "a website that does personal finance stuff"
+}

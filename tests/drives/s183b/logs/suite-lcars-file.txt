@@ -1,0 +1,170 @@
+lcars file
+  [32mPASS[0m 1. creates mission dir named lcars-20260530-001
+  [32mPASS[0m 1. summary reports the mission ID
+  [32mPASS[0m 1. second mission increments to lcars-20260530-002
+  [32mPASS[0m 2. mission dir contains prd.md
+  [32mPASS[0m 2. mission dir contains state.json
+  [32mPASS[0m 3. prd.md has Mission title
+  [32mPASS[0m 3. prd.md has Type
+  [32mPASS[0m 3. prd.md has Goal
+  [32mPASS[0m 3. prd.md has Acceptance Criteria
+  [32mPASS[0m 3. prd.md has Out of Scope
+  [32mPASS[0m 3. prd.md has Constraints
+  [32mPASS[0m 3. rejects PRD missing required sections
+  [32mPASS[0m 3. no mission created from a bad PRD
+  [32mPASS[0m 4. state.json has id
+  [32mPASS[0m 4. state.json id matches
+  [32mPASS[0m 4. state.json type is bug
+  [32mPASS[0m 4. state.json stage is align
+  [32mPASS[0m 4. state.json has created
+  [32mPASS[0m 4. state.json has model
+  [32mPASS[0m 5. calls gh issue create
+  [32mPASS[0m 5. passes the align + type labels
+  [32mPASS[0m 5. tags the Mission issue lcars:mission (role)
+  [32mPASS[0m 5. never tags a Mission issue lcars:ticket
+  [32mPASS[0m 5. uses --body-file for the PRD
+  [32mPASS[0m 5. saves the issue number to state
+  [32mPASS[0m 5. still files the mission when gh is missing
+  [32mPASS[0m 5. records githubIssue null when gh missing
+  [32mPASS[0m 6. summary: Mission filed line
+  [32mPASS[0m 6. summary: GitHub issue line
+  [32mPASS[0m 6. summary: Stage align line
+  [32mPASS[0m 6. summary: Next lcars run line
+  [32mPASS[0m 7. creates the branch lcars/<mission-id>
+  [32mPASS[0m 7. does not switch the working tree off the base branch
+  [32mPASS[0m 7. records the branch in state.json
+  [32mPASS[0m 7. records the base in state.json
+  [32mPASS[0m 7. summary reports the branch
+  [32mPASS[0m 8a. trivial Mission (no --adr) files successfully
+  [32mPASS[0m 8a. no adr.md is written for a trivial Mission
+  [32mPASS[0m 8b. complex Mission with --adr files successfully
+  [32mPASS[0m 8b. adr.md is persisted into the mission dir
+  [32mPASS[0m 8b. adr.md carries its Context section
+  [32mPASS[0m 8b. adr.md carries its Decision section
+  [32mPASS[0m 8b. adr.md carries its Alternatives section
+  [32mPASS[0m 8b. adr.md carries its Consequences section
+  [32mPASS[0m 8c. rejects an adr.md missing required ADR sections
+  [32mPASS[0m 8c. no mission created from a bad adr.md
+  [32mPASS[0m 8c. error names the missing ADR section
+  [32mPASS[0m 9a. issue body contains the PRD content
+  [32mPASS[0m 9a. issue body contains the ADR content
+  [32mPASS[0m 9a. issue body has the --- separator
+  [32mPASS[0m 9a. PRD content appears before the ADR content in the body
+  [32mPASS[0m 9a. on-disk prd.md is unchanged (no ADR content leaked in)
+  [32mPASS[0m 9a. on-disk adr.md is unchanged (no PRD content leaked in)
+  [32mPASS[0m 9b. PRD-only body contains the PRD content
+  [32mPASS[0m 9b. PRD-only body has no ADR content
+  [32mPASS[0m 9b. PRD-only body has no --- separator
+  [32mPASS[0m 10a. issue body has an '## Estimate' section
+  [32mPASS[0m 10a. issue Estimate shows reasoning criticality (high)
+  [32mPASS[0m 10a. issue Estimate shows implementation criticality (medium)
+  [32mPASS[0m 10a. issue Estimate has a per-stage model table (Opus + Sonnet)
+  [32mPASS[0m 10a. issue Estimate names each stage (Implement)
+  [32mPASS[0m 10a. issue Estimate shows the $ cost range
+  [32mPASS[0m 10a. issue Estimate section comes AFTER the PRD content
+  [32mPASS[0m 10b. CLI readout has the Estimate summary line
+  [32mPASS[0m 10b. CLI readout shows both criticalities
+  [32mPASS[0m 10b. CLI readout shows the $ cost range
+  [32mPASS[0m 10c. mission still files when estimate.json is absent
+  [32mPASS[0m 10c. absent estimate ⇒ body has NO '## Estimate' section
+  [32mPASS[0m 10c. absent estimate ⇒ body still has the PRD content
+  [32mPASS[0m 10c. absent estimate ⇒ readout still prints the Mission filed line
+  [32mPASS[0m 10d. copilot DEFAULT issue body shows usage $ band (4.2/8.4)
+  [32mPASS[0m 10d. copilot DEFAULT issue body mentions GitHub AI Credits
+  [32mPASS[0m 10d. copilot DEFAULT issue body is NOT premium requests
+  [32mPASS[0m 10d. copilot DEFAULT CLI readout shows usage $ band
+  [32mPASS[0m 10f. copilot LEGACY issue body shows premium requests (270/540)
+  [32mPASS[0m 10f. copilot LEGACY issue body mentions premium requests
+  [32mPASS[0m 10f. copilot LEGACY CLI readout shows premium requests
+  [32mPASS[0m 10e. body order prd < adr < Estimate
+  [32mPASS[0m 10e. body has two '---' rules (prd|adr and adr|Estimate)
+  [32mPASS[0m 11a. state.json records modelOverride scope=all
+  [32mPASS[0m 11a. state.json records modelOverride tier=opus
+  [32mPASS[0m 11b. state.json records scope=implementation tier=sonnet
+  [32mPASS[0m 11c. no override ⇒ state.json has no modelOverride key
+  [32mPASS[0m 11d. bad scope ⇒ non-zero exit
+  [32mPASS[0m 11d. bad scope ⇒ no mission written
+  [32mPASS[0m 11e. bad tier ⇒ non-zero exit
+  [32mPASS[0m 11f. issue body shows the override note
+  [32mPASS[0m 11f. CLI readout shows the override note
+  [32mPASS[0m 12a. state.json persists workerBin=copilot
+  [32mPASS[0m 12a. state.json is valid JSON (engine set)
+  [32mPASS[0m 12b. no engine ⇒ state.json has no workerBin field
+  [32mPASS[0m 12b. state.json is valid JSON (engine unset)
+  [32mPASS[0m 13a. file with --attach succeeds
+  [32mPASS[0m 13a. attachments/attachment-01.png is staged
+  [32mPASS[0m 13a. staged bytes match the source image
+  [32mPASS[0m 13a. prd.md has the '## Attached images' section
+  [32mPASS[0m 13a. prd.md references the attachment by RELATIVE path
+  [32mPASS[0m 13a. state.json lists the attachment (relative path)
+  [32mPASS[0m 13a. state.json is valid JSON (attachment set)
+  [32mPASS[0m 13b. first attachment keeps its .png ext
+  [32mPASS[0m 13b. second attachment keeps its .jpg ext (order-numbered)
+  [32mPASS[0m 13b. state.json lists both attachments
+  [32mPASS[0m 13c. no --attach ⇒ no attachments/ dir
+  [32mPASS[0m 13c. no --attach ⇒ prd.md has no Attached images section
+  [32mPASS[0m 13c. no --attach ⇒ state.json has no attachments key
+  [32mPASS[0m 13d. missing attachment ⇒ non-zero exit
+  [32mPASS[0m 13d. missing attachment ⇒ no mission written
+  [32mPASS[0m 13e. file with a mockup + concept doc succeeds
+  [32mPASS[0m 13e. prd.md does NOT call an HTML mockup an image
+  [32mPASS[0m 13e. prd.md heading names what actually arrived
+  [32mPASS[0m 13e. prd.md counts the mockup
+  [32mPASS[0m 13e. prd.md counts the written document
+  [32mPASS[0m 13e. prd.md declares the mockup LOOK AND FLOW only
+  [32mPASS[0m 13e. the daemon's precedence sentence is readable
+  [32mPASS[0m 13e. prd.md carries the precedence rule VERBATIM
+  [32mPASS[0m 13e. prd.md still lists both by RELATIVE path
+  [32mPASS[0m 13f. image-only prd.md section is BYTE-IDENTICAL to the pre-S128 string
+  [32mPASS[0m 14a. --prd --engine copilot exits clean
+  [32mPASS[0m 14a. --prd --engine copilot persists workerBin=copilot
+  [32mPASS[0m 14a. state.json is valid JSON (--engine set)
+  [32mPASS[0m 14b. --engine copilot beats LCARS_WORKER_BIN=claude
+  [32mPASS[0m 14c. bogus --engine on --prd ⇒ non-zero exit
+  [32mPASS[0m 14c. bogus --engine on --prd ⇒ names the engine in the error
+  [32mPASS[0m 14c. bogus --engine on --prd ⇒ no mission written
+  [32mPASS[0m 14d. no engine at all ⇒ no workerBin key
+  [32mPASS[0m 14e. --engine claude beats LCARS_WORKER_BIN=copilot
+  [32mPASS[0m 15a. the captain's HEADING-FORM PRD files (was: refused on all six)
+  [32mPASS[0m 15b. …and the TITLE is EXTRACTED from the heading, not empty
+  [32mPASS[0m 15c. …and the TYPE is EXTRACTED from the heading, not empty
+  [32mPASS[0m 15d. …and the issue carries the derived title + lcars:feature label
+  [32mPASS[0m 15e. …and prd.md is the PRD verbatim
+  [32mPASS[0m 15f. the hashed-heading (## Type) form files too
+  [32mPASS[0m 15g. …with the title off the hashed Mission line
+  [32mPASS[0m 15h. …and type 'bug' read from the line UNDER the heading
+  [32mPASS[0m 15i. the BOLD form still derives its title
+  [32mPASS[0m 15j. …and its type
+  [32mPASS[0m 15k. a PRD with NO Constraints section is still REFUSED
+  [32mPASS[0m 15l. …naming Constraints, and writing nothing
+  [32mPASS[0m 15m. a titleless PRD is refused LOUDLY, not filed with an empty title
+  [32mPASS[0m 15n. …with the extraction's own message
+  [32mPASS[0m 15o. a heading-form Type outside feature|bug is refused
+  [32mPASS[0m 15p. …quoting the value it EXTRACTED ('chore'), not 'empty'
+  [32mPASS[0m 16a. the parked mission staged the brief
+  [32mPASS[0m 16b. --complete REFUSES a PRD that drops the staged brief's questions
+  [32mPASS[0m 16c. …naming a dropped question from ## Open questions
+  [32mPASS[0m 16d. …AND one from bucket 2 of ## WHAT IT MUST DO
+  [32mPASS[0m 16e. …and the refusal writes NOTHING (mission still parked)
+  [32mPASS[0m 16f. …and a PRD that CARRIES them completes the mission
+  [32mPASS[0m 16g. a parked mission with NO design brief completes untouched
+  [32mPASS[0m 17a. SKILL.md forbids re-grilling on a validation failure
+  [32mPASS[0m 17b. …in words, not just a heading
+  [32mPASS[0m 17c. …and says to re-run the SAME command with the repaired PRD
+  [32mPASS[0m 17d. …naming failure shape 1: a missing/misformatted section
+  [32mPASS[0m 17e. …naming failure shape 2: dropped open questions
+  [32mPASS[0m 17f. …and that a STILL OPEN entry SATISFIES the gate (no captain needed)
+  [32mPASS[0m 17g. …explicitly: do not go back to the captain for an answer
+  [32mPASS[0m 18a. --complete dropping the brief's questions exits 3 (redraftable)
+  [32mPASS[0m 18b. …still naming the dropped question, and still writing nothing
+  [32mPASS[0m 18c. --complete with a missing PRD section exits 3 too
+  [32mPASS[0m 18d. --complete of a mission that does not exist stays exit 1
+  [32mPASS[0m 18e. …and an unreadable --prd path stays exit 1
+  [32mPASS[0m 18f. …and a malformed --model-override stays exit 1 (bad argv, not a bad PRD)
+  [32mPASS[0m 18g. grill-first dropping the brief's questions exits 3
+  [32mPASS[0m 18h. grill-first with a missing PRD section exits 3
+  [32mPASS[0m 18i. an unreadable Mission title exits 3 — the PRD is what is wrong
+  [32mPASS[0m 18j. a Type that is neither feature nor bug exits 3
+  [32mPASS[0m 18k. a malformed ADR (the same worker's other artifact) exits 3
+  [32mPASS[0m 18l. …but an ADR path that does not EXIST stays exit 1
+  [32mPASS[0m 18m. a clean filing still exits 0 and writes prd.md

@@ -362,6 +362,9 @@ if [ -n "$VERB" ]; then
     fix)
       lcars_test_readiness "$CONFIG"
       ORIG_STATUS="$LCARS_TESTREADY_STATUS"
+      # S183 fix round 1 (D3): the SECOND axis, captured beside the first — the
+      # one that can tell a `git init` from a tested monorepo.
+      ORIG_FOUNDATION="${LCARS_TESTREADY_FOUNDATION:-}"
       if [ "$ORIG_STATUS" = "ready" ]; then
         echo "  ✓ TEST SYSTEMS ONLINE — nothing to repair (testCommand: $LCARS_TESTREADY_TESTCMD)."
         exit 0
@@ -420,14 +423,49 @@ AMB_EOF
       else
         echo "  ▸ dispatching a discovery crew to survey the test systems…"
         if ! run_discovery; then
-          if [ "$ORIG_STATUS" = "unknown" ]; then
-            # GREENFIELD (captain ruling): no infra found AND discovery honestly
-            # found nothing — this is EXPECTED status, not an error. Config
-            # untouched; filing missions is unaffected.
-            echo "  ◇ NO TEST SYSTEMS FOUND — discovery confirms a greenfield repo."
-            echo "    The first mission's engineering crew will establish them; filing is unaffected."
-            exit 0
-          fi
+          # S183 fix round 1 (D3): this branched on ORIG_STATUS = unknown, which
+          # is the axis that CANNOT tell a `git init` from an npm-workspaces
+          # monorepo whose three packages all run vitest — so a fully tested
+          # monorepo was told "discovery confirms a greenfield repo" and sent to
+          # Establish Vision, a flow that does not apply to it. S183 made the
+          # line WORSE than it found it (it now actively misdirects), so it is
+          # cured on the FOUNDATION axis, with copy that is true per verdict.
+          # SCOPED to the exact line that was wrong: `unknown` is the status
+          # that used to mean "greenfield" and now means three different repos.
+          # Every other status keeps its shipped REPAIR INCOMPLETE report,
+          # including the discovery crew's own message ($DISC_MSG).
+          case "${ORIG_STATUS}:${ORIG_FOUNDATION:-}" in
+            unknown:greenfield)
+              # GREENFIELD (captain ruling): no infra found AND discovery
+              # honestly found nothing — EXPECTED status, not an error. Config
+              # untouched. "Filing is unaffected" WAS true and is not any more:
+              # a normal mission is refused here (the foundation gate) and
+              # replaced by Establish Vision, whose initialization mission is
+              # the crew that establishes the test systems.
+              echo "  ◇ NO TEST SYSTEMS FOUND — discovery confirms a greenfield repo."
+              echo "    The first mission here is an initialization mission — its engineering crew will establish them."
+              echo "    Start it with Establish Vision; normal missions unlock when it lands."
+              exit 0 ;;
+            unknown:untested)
+              # Code, and nothing to prove it with. NOT greenfield — the project
+              # already exists — and there is nothing here for --fix-tests to
+              # repair, so it says what it found rather than inventing a repair.
+              echo "  ◇ NO TEST SYSTEM FOUND — this repo has code, and nothing to prove a change with."
+              echo "    There is no test system here to repair. The foundation is established by an"
+              echo "    initialization mission — start it with Establish Vision; normal missions"
+              echo "    unlock when it lands. If this repo DOES have a test system LCARS cannot see,"
+              echo "    name it yourself: lcars update --test-command '<command>'"
+              exit 0 ;;
+            unknown:unconfigured)
+              # This repo HAS a test system — LCARS just has no command for it,
+              # and discovery could not name one either. That is a repair that
+              # did not land, never a greenfield repo.
+              echo "  ✗ REPAIR INCOMPLETE — this repo HAS a test system (${LCARS_TESTREADY_FOUNDATION_WHY:-detected})"
+              echo "    but neither detection nor discovery could name the command that runs it: $DISC_MSG."
+              echo "    Config untouched. Set it yourself with:"
+              echo "    lcars update --test-command '<cmd>'"
+              exit 1 ;;
+          esac
           echo "  ✗ REPAIR INCOMPLETE — $DISC_MSG."
           echo "    Config untouched. Set the command yourself with:"
           echo "    lcars update --test-command '<cmd>'"
