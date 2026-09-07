@@ -355,7 +355,7 @@ boot_chrome() {
   local profile="${LCARS_DRIVE_PROFILE:-${TMPDIR:-/tmp}/lcars-s192-chrome/$LABEL}"
   rm -rf "$profile"; mkdir -p "$profile"
   "$CHROME" --remote-debugging-port=0 --user-data-dir="$profile" \
-    --no-first-run --no-default-browser-check --window-size=1440,1000 \
+    --no-first-run --no-default-browser-check --window-size="${S192_WINDOW:-1440,1000}" \
     --disable-features=Translate,MediaRouter about:blank \
     >>"$OUT/chrome.log" 2>&1 &
   CPID=$!

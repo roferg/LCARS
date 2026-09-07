@@ -118,6 +118,104 @@ run_in() { # repo  subcommand-and-args…
          bash "$RUN_SH" "$@" )
 }
 
+# S192 (I1) — a host-adapter WRAPPER that records the EXACT argv `pr-create`
+# is invoked with (the arg count, every `--closes` value in order, and a marker
+# for any EMPTY argv element), then hands off to the REAL adapter so nothing
+# else about the run changes. The empty-element marker is the point: the
+# bash-3.2-safe form must pass ZERO extra arguments when there is nothing to
+# close — `"${CLOSES[@]:-}"` would pass one empty string, which the real
+# host-adapter rejects with `pr-create: unknown argument:`.
+make_host_recorder() { # <path>
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "pr-create" ]; then
+  {
+    printf 'ARGC:%s\n' "\$#"
+    _prev=""
+    for _a in "\$@"; do
+      [ -n "\$_a" ] || printf 'EMPTY_ARG\n'
+      [ "\$_prev" = "--closes" ] && printf 'CLOSES:%s\n' "\$_a"
+      _prev="\$_a"
+    done
+  } >>"\$HOST_LOG"
+fi
+exec bash "$HOST_ADAPTER" "\$@"
+EOF
+  chmod +x "$1"
+}
+
+# run_in, but routed through the argv recorder above.
+run_in_rec() { # repo  subcommand-and-args…
+  local repo="$1"; shift
+  ( cd "$repo" \
+      && LCARS_GH_BIN="$repo/gh" LCARS_GIT_BIN="git" \
+         LCARS_HOST_ADAPTER="$repo/host" LCARS_PR_LIB="$PR_LIB" \
+         LCARS_NOTIFY="$repo/notify" NOTIFY_LOG="$repo/notify.log" \
+         GH_LOG="$repo/gh.log" HOST_LOG="$repo/host.log" \
+         GH_PR_STATE="${GH_PR_STATE:-OPEN}" \
+         LCARS_NOTIFY_NO_DESKTOP=1 \
+         bash "$RUN_SH" "$@" )
+}
+
+# The GREENFIELD shape: filed with NO githubIssue (LCARS Establish Vision files
+# day-zero missions with githubIssue: null) and NO sub-issues → CLOSES is EMPTY.
+new_repo_verify_no_issue() {
+  local repo; repo="$(new_repo_verify)"
+  local m="$repo/.git/lcars/missions/$MID"
+  sed 's/"githubIssue": 42,/"githubIssue": null,/' "$m/state.json" >"$m/state.tmp" \
+    && mv "$m/state.tmp" "$m/state.json"
+  # CANONICAL waves.json shape — exactly what emit_waves_json writes (one field
+  # per line). Schedule records "issue": null for every ticket when there is no
+  # forge issue behind it, which is the day-zero greenfield case.
+  cat >"$m/waves.json" <<'WAVES'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": null
+      }
+    ]
+  }
+]
+WAVES
+  echo "$repo"
+}
+
+# A parent issue PLUS sub-issues (101 listed twice, to pin the dedupe).
+new_repo_verify_subs() {
+  local repo; repo="$(new_repo_verify)"
+  local m="$repo/.git/lcars/missions/$MID"
+  cat >"$m/waves.json" <<'WAVES'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 101
+      },
+      {
+        "id": "t-002",
+        "issue": 101
+      }
+    ]
+  },
+  {
+    "wave": 2,
+    "tickets": [
+      {
+        "id": "t-003",
+        "issue": 102
+      }
+    ]
+  }
+]
+WAVES
+  echo "$repo"
+}
+
 # ==========================================================================
 echo "lcars verify-pr (S75)"
 
@@ -202,6 +300,74 @@ check "4. open-pr leaves the captain's checkout exactly where it was" \
   "[ '$head4_before' = '$head4_after' ]"
 check "4. open-pr still opened the PR without the checkout" \
   "grep -q 'pull/77' '$(state_of "$r4")'"
+
+# --- Behaviour 5 (S192 / ledger I1): a mission with NOTHING to close ---------
+# `CLOSES` is an EMPTY array whenever the mission has no githubIssue AND no
+# sub-issues — exactly what LCARS Establish Vision produces (greenfield missions
+# are filed with githubIssue: null). Under bash 3.2 + `set -u`, a bare
+# `"${CLOSES[@]}"` on an empty array raises `CLOSES[@]: unbound variable`, so
+# EVERY day-zero mission crashed at the Verify PR-open — and the crash landed
+# BEFORE the existing-PR detection, so "open the PR by hand, then re-run" could
+# never rescue it. The mission could not leave Verify.
+r5="$(new_repo_verify_no_issue)"; make_gh_stub "$r5/gh"; make_notify_stub "$r5/notify"
+make_host_recorder "$r5/host"
+: >"$r5/gh.log"; : >"$r5/notify.log"; : >"$r5/host.log"
+rc5=0; run_in_rec "$r5" open-pr --mission "$MID" >"$r5/out.txt" 2>&1 || rc5=$?
+s5="$(state_of "$r5")"
+check "5. open-pr does not crash on an empty CLOSES array (bash 3.2 set -u)" \
+  "! grep -q 'unbound variable' '$r5/out.txt'"
+check "5. open-pr exits 0 with no githubIssue and no sub-issues" "[ '$rc5' -eq 0 ]"
+check "5. pr-create is actually invoked" "grep -q '^ARGC:' '$r5/host.log'"
+check "5. pr-create gets NO empty/stray argv element" \
+  "! grep -q '^EMPTY_ARG$' '$r5/host.log'"
+check "5. pr-create gets EXACTLY pr-create+head+base+title+body (9 args, no closes)" \
+  "grep -q '^ARGC:9$' '$r5/host.log'"
+check "5. no --closes is passed when there is nothing to close" \
+  "! grep -q '^CLOSES:' '$r5/host.log'"
+check "5. the greenfield mission reaches in-review (prUrl recorded)" \
+  "grep -q 'pull/77' '$s5'"
+
+# --- Behaviour 6 (S192 regression): a mission WITH a githubIssue -------------
+# Byte-identical to today: the parent issue is still passed as --closes <n>.
+r6="$(new_repo_verify)"; make_gh_stub "$r6/gh"; make_notify_stub "$r6/notify"
+make_host_recorder "$r6/host"
+: >"$r6/gh.log"; : >"$r6/notify.log"; : >"$r6/host.log"
+# waves.json in the default fixture carries sub-issue 101; strip it so this case
+# isolates the parent-only shape.
+cat >"$r6/.git/lcars/missions/$MID/waves.json" <<'WAVES'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": null
+      }
+    ]
+  }
+]
+WAVES
+rc6=0; run_in_rec "$r6" open-pr --mission "$MID" >"$r6/out.txt" 2>&1 || rc6=$?
+check "6. open-pr exits 0 with a githubIssue" "[ '$rc6' -eq 0 ]"
+check "6. the parent issue is still passed as --closes 42" \
+  "grep -q '^CLOSES:42$' '$r6/host.log'"
+check "6. exactly one --closes (11 args)" "grep -q '^ARGC:11$' '$r6/host.log'"
+check "6. still no empty argv element" "! grep -q '^EMPTY_ARG$' '$r6/host.log'"
+check "6. gh pr create still carries the Closes directive in the body" \
+  "grep -q 'Closes #42' '$r6/gh.log'"
+
+# --- Behaviour 7 (S192 regression): githubIssue AND sub-issues --------------
+# Every issue still closed, in order (parent first), deduped exactly as today
+# (101 appears twice in waves.json and must be passed once).
+r7="$(new_repo_verify_subs)"; make_gh_stub "$r7/gh"; make_notify_stub "$r7/notify"
+make_host_recorder "$r7/host"
+: >"$r7/gh.log"; : >"$r7/notify.log"; : >"$r7/host.log"
+rc7=0; run_in_rec "$r7" open-pr --mission "$MID" >"$r7/out.txt" 2>&1 || rc7=$?
+check "7. open-pr exits 0 with a parent + sub-issues" "[ '$rc7' -eq 0 ]"
+check "7. closes the parent then each sub-issue, in order, deduped" \
+  "[ \"\$(grep '^CLOSES:' '$r7/host.log' | tr '\n' ' ')\" = 'CLOSES:42 CLOSES:101 CLOSES:102 ' ]"
+check "7. three --closes pairs (15 args)" "grep -q '^ARGC:15$' '$r7/host.log'"
+check "7. still no empty argv element" "! grep -q '^EMPTY_ARG$' '$r7/host.log'"
 
 # ==========================================================================
 echo

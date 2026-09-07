@@ -1,32 +1,33 @@
-# Mission: Show the imported total on the page
+# Mission: Print a routine of the requested length
 
-**Type:** feature
+## Type
 
-## Problem
+feature
 
-The foundation landed with a thin slice, but nothing on screen tells the
-captain how much money the imported rows add up to. He has to add them up
-himself, which is the one arithmetic a finance app should never leave to a
-human.
+## Goal
 
-## Scope
-
-ONE thin vertical slice on the foundation that the initialization mission
-established:
-
-- a pure function that sums the amounts of a list of imported rows
-- the running total rendered on the page beside the rows
-- one real test for the sum, written first and red before the code exists
-
-## Out of Scope
-
-Budgets, charts, bank sync, categories, currency handling, persistence, and
-every other feature recorded in the vision. This mission exists to prove that
-ORDINARY work now files and runs on the new foundation.
+`warmup 1` should print a real routine of at least the requested number of
+minutes, drawn from the exercises the foundation mission already ships, with no
+exercise repeated inside one routine. Today the duration argument is accepted
+and ignored — this mission makes it mean something. It exists to prove that
+ORDINARY work now files and runs on the foundation LCARS just built.
 
 ## Acceptance Criteria
 
-- the sum function returns 0 for an empty list
-- the sum function totals a list of rows correctly
-- the total is visible on the page
-- the project's own test command runs the new test and it passes
+- `warmup 1` prints a routine whose total duration is at least 1 minute
+- no exercise appears twice in a single routine
+- an invalid duration exits non-zero with a message on stderr
+- the project's own test command runs the new tests and they pass
+
+## Out of Scope
+
+Randomisation seeding, always ending with a stretch, config files, and every
+other feature recorded in the vision. One thin vertical slice only.
+
+## Constraints
+
+- Build on the existing foundation: `src/warmup/`, `data/exercises.json`, and
+  the pytest runner the initialization mission established. Do not replace them.
+- Tests are written first and must be red on the parent commit before the code
+  exists.
+- Python 3, standard library only — do not add dependencies.
