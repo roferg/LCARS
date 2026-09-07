@@ -5307,7 +5307,7 @@ class Actions(LogFacts):
             return ""
 
     def vision_file(self, idea=None, stack=None, reasons=None, deferred=None,
-                    slice_=None):
+                    slice_=None, engine=None):
         """POST /api/vision/file — file the INITIALIZATION mission.
 
         The viewscreen's half of BOTH FRONT DOORS, ONE FLOW: it dispatches the
@@ -5319,6 +5319,14 @@ class Actions(LogFacts):
 
         `stack` is whatever the captain ACCEPTED — the recommendation or his
         override. That is the whole point of the override: it is what lands.
+
+        `engine` (S195) is the CLI he picked on the front door, and it rides as
+        a FLAG rather than as $LCARS_WORKER_BIN. That is not a style choice: the
+        env var is injected into EVERY dispatch by `_resolve_run` (the daemon's
+        own `worker_bin`), so an env-var pick would be indistinguishable from
+        the daemon's default and would lose to a persisted workerBin (S159). The
+        flag is the top of file.sh's one precedence, and establish-vision.sh
+        hands it straight down.
         """
         stack = (stack or "").strip()
         if not stack:
@@ -5340,6 +5348,9 @@ class Actions(LogFacts):
 
         try:
             args = ["--file", "--idea", _tmpfile(idea + "\n"), "--stack", stack]
+            eng = (engine or "").strip()
+            if eng:
+                args += ["--engine", eng]
             r = _lines(reasons)
             if r:
                 args += ["--reasons", _tmpfile(r + "\n")]

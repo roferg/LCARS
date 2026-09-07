@@ -1940,6 +1940,92 @@ lcars_json_escape() {
         else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
 }
 
+# ---------------------------------------------------------------------------
+# S195 — WHICH WORKER CLIs THIS MACHINE ACTUALLY HAS
+# ---------------------------------------------------------------------------
+# THE ONE DETECTOR, and it is deliberately the one that already existed: `lcars
+# init` verifies the claude CLI with `command -v "${LCARS_CLAUDE_BIN:-claude}"`
+# (init.sh), and this is that check, named, with its copilot sibling beside it.
+# init.sh now calls it rather than open-coding the same line, so there is no
+# second answer to "is this engine installed" anywhere in LCARS.
+#
+# WHY IT LIVES HERE and not in the daemon: the front-door engine picker must
+# offer only engines that exist, and a picker that offers a CLI this machine
+# does not have is a way to file a mission that cannot run. The daemon publishes
+# the list through `establish-vision.sh --facts` — dispatch, never a second
+# implementation in Python (ADR-002).
+#
+# `command -v`, and nothing cleverer: no `--version` probe (that costs a process
+# spawn per engine on every board read), and no `~/.claude` / `~/.copilot`
+# directory sniffing — run.sh's own host detection explicitly refuses that
+# signal, and so does this.
+
+# The engines LCARS drives, in the order every surface offers them. Same pair
+# and same order as the daemon's `_HOLODECK_ENGINES` and the File console's
+# picker; this is the shell-side home of it.
+LCARS_ENGINES="claude copilot"
+
+# lcars_engine_bin <engine> — the binary name/path to look for. Both are env
+# seams so a test can pin what this machine "has" without touching $PATH (and
+# so a wrapper script can stand in for either CLI). Exit 1 on an unknown engine.
+lcars_engine_bin() {
+  case "${1:-}" in
+    claude)  printf '%s' "${LCARS_CLAUDE_BIN:-claude}" ;;
+    copilot) printf '%s' "${LCARS_COPILOT_BIN:-copilot}" ;;
+    *)       return 1 ;;
+  esac
+}
+
+# lcars_engine_available <engine> — 0 iff that CLI is on this machine.
+lcars_engine_available() {
+  local b; b="$(lcars_engine_bin "${1:-}")" || return 1
+  [ -n "$b" ] || return 1
+  command -v "$b" >/dev/null 2>&1
+}
+
+# lcars_available_engines — the installed engines, one per line, canonical order.
+# EMPTY output is a real and honest answer (neither CLI installed): the caller
+# offers nothing rather than naming an engine that is not there.
+lcars_available_engines() {
+  local e
+  for e in $LCARS_ENGINES; do
+    lcars_engine_available "$e" && printf '%s\n' "$e"
+  done
+  return 0
+}
+
+# lcars_default_engine [config.json] — which engine a surface should PRESELECT:
+#
+#     the repo's configured workerBin (when it is installed)
+#       >  the single installed engine
+#       >  claude, the historical default run.sh falls back to
+#
+# The repo's own pin comes first because a repo that already has an engine must
+# open on that engine, not on a default that would silently re-home it. A
+# configured engine that is NOT installed is skipped rather than preselected —
+# preselecting an engine the captain cannot run is worse than preselecting one
+# he can. Empty when nothing at all is installed.
+lcars_default_engine() { # [config]
+  local cfg="${1:-}" cfgbin="" avail
+  if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+    cfgbin="$(lcars_config_get "$cfg" workerBin)"
+  fi
+  if [ -n "$cfgbin" ] && lcars_engine_available "$cfgbin"; then
+    printf '%s' "$cfgbin"; return 0
+  fi
+  avail="$(lcars_available_engines)"
+  case "$avail" in
+    "") return 0 ;;
+  esac
+  if [ "$(printf '%s\n' "$avail" | grep -c .)" = "1" ]; then
+    printf '%s' "$avail"; return 0
+  fi
+  case " $(printf '%s' "$avail" | tr '\n' ' ') " in
+    *" claude "*) printf 'claude' ;;
+    *)            printf '%s' "$(printf '%s\n' "$avail" | head -1)" ;;
+  esac
+}
+
 # lcars_config_has_key — 0 if the config file has a top-level "key": present.
 lcars_config_has_key() {
   local config="$1" key="$2"

@@ -57,7 +57,12 @@ MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
 
 # --- verify the Claude CLI ------------------------------------------------
-if ! command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+# S195 — through the SHARED detector (lcars-common.sh `lcars_engine_available`),
+# which is this exact `command -v "${LCARS_CLAUDE_BIN:-claude}"` check, named.
+# Same binary, same env seam, same message: what changes is that the front
+# door's engine picker and this check can no longer answer "is claude installed"
+# differently.
+if ! lcars_engine_available claude; then
   die "Claude CLI not found (looked for '$CLAUDE_BIN'). Install it from https://claude.com/claude-code and re-run."
 fi
 CLAUDE_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null | head -1)"

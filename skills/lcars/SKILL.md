@@ -88,8 +88,17 @@ bash ~/.claude/skills/lcars-init/establish-vision.sh --file \
   --stack   '<the stack he ACCEPTED>' \
   --reasons <file, one reason per line> \
   --deferred <file, one deferred feature per line> \
-  --slice   '<the one thin vertical slice>'
+  --slice   '<the one thin vertical slice>' \
+  [--engine claude|copilot]
 ```
+
+`--engine` is OPTIONAL and is the captain's choice of the CLI that drives the
+mission — the viewscreen's front door offers it as a picker before the grill
+starts. On the CLI you are already running inside the engine he chose, so pass
+it only if he NAMES one; omit it and the mission is filed exactly as before.
+What it does when present: it pins the mission's `state.json.workerBin` AND
+records that engine as the repo's default in `.git/lcars/config.json`, so later
+missions inherit it.
 
 That writes the durable project vision to `.git/lcars/vision.md`, assembles the
 foundation-scoped PRD, and files the **initialization mission** through

@@ -53,10 +53,14 @@
 #   establish-vision.sh --write-vision …same args…
 #       Writes .git/lcars/vision.md (the durable project vision). Prints its path.
 #
-#   establish-vision.sh --file …same args…
+#   establish-vision.sh --file …same args… [--engine claude|copilot]
 #       --write-vision, then files the INITIALIZATION mission through the ONE
 #       sanctioned filer (`lcars file --prd --initialization`). Prints
-#       `MISSION_ID=<id>`.
+#       `MISSION_ID=<id>`. `--engine` is the captain's engine pick from the
+#       front door: it is threaded to file.sh as `--engine` (so it becomes the
+#       mission's `state.json.workerBin`) and written to repo config.json as the
+#       repo's DEFAULT engine, so later missions inherit it. See THE ENGINE, at
+#       the filing block below.
 #
 # Exit: 0 ok · 1 bad usage / a filing that failed.
 set -uo pipefail
@@ -71,6 +75,7 @@ die() { printf 'lcars establish-vision: %s\n' "$1" >&2; exit 1; }
 
 MODE=""
 IDEA_SRC=""; STACK=""; REASONS_SRC=""; DEFERRED_SRC=""; SLICE=""; TITLE=""
+ENGINE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --facts)        MODE="facts"; shift ;;
@@ -90,10 +95,19 @@ while [ $# -gt 0 ]; do
     --slice=*)   SLICE="${1#--slice=}"; shift ;;
     --title)     TITLE="${2:-}"; shift 2 ;;
     --title=*)   TITLE="${1#--title=}"; shift ;;
+    --engine)    ENGINE="${2:-}"; shift 2 ;;
+    --engine=*)  ENGINE="${1#--engine=}"; shift ;;
     *) die "unknown option \"$1\" — use --facts, --brief, --prd, --write-vision or --file." ;;
   esac
 done
 [ -n "$MODE" ] || die "no mode given — use --facts, --brief, --prd, --write-vision or --file."
+# THE SAME RULE file.sh states, applied HERE so it fires BEFORE any write. A
+# bogus engine must leave the repo exactly as it found it — no vision doc, no
+# mission — rather than being caught two writes later by the filer.
+case "$ENGINE" in
+  ""|claude|copilot) : ;;
+  *) die "unknown engine \"$ENGINE\" — use 'claude' or 'copilot'." ;;
+esac
 
 # --- resolve the repo (the SAME resolution readiness.sh / the gate use) -----
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" || GIT_DIR=""
@@ -244,9 +258,24 @@ if [ "$MODE" = "facts" ]; then
   # "no test system". It is present as a NAMED FACT because the screen states it
   # ("Test runner: none found") and a screen that states a fact must read it
   # from somewhere rather than assert it in markup.
-  printf '{"foundation":%s,"foundationWhy":%s,"stack":"%s","stackLabel":"%s","sourceFiles":%s,"testRunner":null,"missions":%s,"frontDoor":%s}\n' \
+  # S195 — THE ENGINES, from the ONE detector (lcars-common.sh). The front door
+  # picks the CLI that will drive the grill AND every stage of the mission it
+  # files, so it must offer only what this machine HAS: `engines` is the
+  # installed list in canonical order (possibly empty — an honest answer), and
+  # `engine` is what to preselect (repo config > the single installed one >
+  # claude). Computed here, not in JS and not in Python, for the same reason
+  # every other number on this payload is: one detector, two front doors.
+  engs=""; while IFS= read -r _e; do
+    [ -n "$_e" ] || continue
+    [ -n "$engs" ] && engs="$engs,"
+    engs="$engs\"$(lcars_json_escape "$_e")\""
+  done <<EOF
+$(lcars_available_engines)
+EOF
+  defeng="$(lcars_default_engine "${GIT_DIR:+$GIT_DIR/lcars/config.json}")"
+  printf '{"foundation":%s,"foundationWhy":%s,"stack":"%s","stackLabel":"%s","sourceFiles":%s,"testRunner":null,"missions":%s,"engines":[%s],"engine":"%s","frontDoor":%s}\n' \
     "$fnd" "$fwhy" "$(lcars_json_escape "$stack")" "$(lcars_json_escape "$label")" \
-    "$n" "$(ev_mission_count)" "$fd"
+    "$n" "$(ev_mission_count)" "$engs" "$(lcars_json_escape "$defeng")" "$fd"
   exit 0
 fi
 
@@ -602,7 +631,22 @@ PRD_TMP="$GIT_DIR/lcars/tmp/vision-prd.$$.md"
 mkdir -p "$(dirname "$PRD_TMP")"
 ev_prd >"$PRD_TMP"
 out=""; rc=0
-out="$(bash "$FILE_SH" --initialization --prd "$PRD_TMP" 2>&1)"; rc=$?
+# THE ENGINE, AS A FLAG AND NOT AN ENV VAR (S195).
+#
+# `--engine` is the strongest signal file.sh has: its ONE precedence is
+# `--engine > $LCARS_WORKER_BIN > fallback`, and that ordering exists because
+# the flag is the captain's explicit pick while the env var is whatever the
+# process happened to inherit. On the viewscreen road the env var is ALWAYS set
+# — the daemon injects its own `worker_bin` into every dispatch
+# (actions.py `_resolve_run`) — so passing the pick as an env var would have
+# handed the mission to whichever CLI the daemon was launched from, silently,
+# with the captain's choice sitting one variable away. That is the exact shape
+# of the bug file.sh's own header records ("--engine came to be silently ignored
+# on the --prd lane"), and this lane IS the --prd lane.
+ENGINE_ARGS=""
+[ -n "$ENGINE" ] && ENGINE_ARGS="--engine $ENGINE"
+# shellcheck disable=SC2086  # ENGINE is validated to one of two literals above.
+out="$(bash "$FILE_SH" --initialization $ENGINE_ARGS --prd "$PRD_TMP" 2>&1)"; rc=$?
 rm -f "$PRD_TMP"
 printf '%s\n' "$out"
 [ "$rc" -eq 0 ] || exit "$rc"
@@ -610,4 +654,32 @@ mid="$(printf '%s' "$out" | sed -n 's/.*Mission filed:[[:space:]]*\([A-Za-z0-9][
 [ -n "$mid" ] || mid="$(ls -t "$MISSIONS_DIR" 2>/dev/null | head -1)"
 printf 'MISSION_ID=%s\n' "$mid"
 printf '\n◇ VISION RECORDED — %s\n' "$VISION"
+
+# --- the repo's DEFAULT engine (S195) --------------------------------------
+# The captain chose this CLI for the PROJECT, not for one mission, so it is
+# recorded in repo config.json and later missions inherit it.
+#
+# THE INVARIANT THIS DOES NOT BREAK: "repo config.json is never written
+# mid-mission." This runs at the ONE moment a repo provably has no mission in
+# flight to poison — `ev_front_door` renders this door only when the verdict
+# locks AND `ev_mission_count` is ZERO, so the mission filed three lines above
+# is the FIRST mission this repo has ever had. (`lcars approve` writes
+# testCommand into the same file for the mirror-image reason: a merge is not
+# mid-mission either.)
+#
+# Written through the SANCTIONED primitive (lcars_config_set_or_add_string) —
+# the one `lcars update --test-command` and the approve-time testCommand
+# promotion both use — so there stays exactly one way repo config gains a key.
+# A repo with no config.json (never `lcars init`-ed) is TOLD SO rather than
+# silently skipped, exactly as approve.sh reports it on the same repo.
+if [ -n "$ENGINE" ]; then
+  ev_cfg="$GIT_DIR/lcars/config.json"
+  if [ ! -f "$ev_cfg" ]; then
+    printf '  ⚠ NOTE — there is no .git/lcars/config.json to record %s in as this repo default engine, so only the mission is pinned. `lcars init` creates it.\n' "$ENGINE"
+  elif lcars_config_set_or_add_string "$ev_cfg" workerBin "$ENGINE"; then
+    printf '◇ ENGINE PINNED — %s drives this mission, and is now this repo default engine.\n' "$ENGINE"
+  else
+    printf '  ⚠ NOTE — could not record %s as the default engine in %s; the mission itself is pinned to it.\n' "$ENGINE" "$ev_cfg"
+  fi
+fi
 exit 0

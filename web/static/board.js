@@ -2190,7 +2190,13 @@ function boardCardCount(board) {
    mid-sentence. `screen` ∈ ask | grill | recommend; `rec` is the recommendation
    the grill produced. */
 var frontDoorState = { screen: "ask", sid: null, idea: "", busy: false,
-                       question: null, rec: null, error: "", note: "" };
+                       question: null, rec: null, error: "", note: "",
+                       /* S195 — the engine, held HERE for the same reason
+                          `screen` is: the door repaints on every SSE tick, so a
+                          pick kept in the DOM is a pick lost on the next one.
+                          Empty until the payload names one; `frontDoorEngine`
+                          resolves it against the daemon's preselection. */
+                       engine: "" };
 
 function frontDoorHost() { return document.getElementById("frontDoor"); }
 
@@ -2229,6 +2235,111 @@ function paintFrontDoorBand(on) {
     var n = document.getElementById(id);
     if (n) n.hidden = !!on;
   });
+}
+
+/* ── S195: WHICH CLI DRIVES THIS PROJECT ───────────────────────────────────
+   The captain's ruling: the choice is made ON THE FRONT DOOR, before the grill
+   starts, because that is where the decision naturally occurs — and it powers
+   BOTH the grill conversation AND every stage of the mission the door files.
+
+   THREE RULES, and each is a rule rather than a taste:
+
+     1. OFFER ONLY WHAT IS INSTALLED. `fd.engines` is the daemon's list, from
+        the one `command -v` detector `lcars init` already verifies claude
+        through (lcars-common.sh). The board never guesses: no engines key ⇒ no
+        control at all, and nothing added to the POST — an older daemon, the
+        GitHub adapter, or a `--facts` that could not answer must leave this
+        surface byte-identical to S184's.
+
+     2. ONE ENGINE IS NOT A CHOICE. With a single CLI installed there is no
+        picker — a one-option control is furniture. But the door still SAYS
+        which engine will run it, because a day-zero screen that silently picks
+        the thing that spends money is the surface this round exists to avoid.
+
+     3. IT IS GONE ONCE THE CONVERSATION STARTS. The grill session is warm on
+        the engine it opened with, so a picker on the grill screen would offer a
+        switch nothing could honour. */
+
+var ENGINE_LABELS = { claude: "Claude", copilot: "Copilot" };
+
+function engineLabel(e) {
+  return ENGINE_LABELS[String(e || "").toLowerCase()] || String(e || "");
+}
+
+function frontDoorEngines(fd) {
+  var list = (fd && fd.engines) || [];
+  return Object.prototype.toString.call(list) === "[object Array]" ? list : [];
+}
+
+/* The engine in force: the captain's pick when he has made one AND it is still
+   on offer, otherwise the daemon's preselection (repo config > the single
+   installed engine > claude). Re-derived on every render so a payload that
+   changes underneath the door can never leave a stale engine selected. */
+function frontDoorEngine(fd) {
+  var list = frontDoorEngines(fd);
+  var picked = String(frontDoorState.engine || "");
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i]) === picked) return picked;
+  }
+  var pre = String((fd && fd.engine) || "");
+  for (var j = 0; j < list.length; j++) {
+    if (String(list[j]) === pre) return pre;
+  }
+  return list.length ? String(list[0]) : "";
+}
+
+/* Paint the control into `host`, or nothing at all. Returns nothing — the
+   choice lives in `frontDoorState.engine`, never in the DOM. */
+function renderFrontDoorEngine(host, fd) {
+  var list = frontDoorEngines(fd);
+  if (!list.length) return;                       // rule 1: nothing to offer
+  var chosen = frontDoorEngine(fd);
+  frontDoorState.engine = chosen;
+  var wrap = el("div", "fd-engine");
+  if (list.length === 1) {
+    // rule 2: say it, do not offer it.
+    wrap.appendChild(el("div", "fd-engine-one",
+      "Engine · " + engineLabel(list[0]) + " will run this — the only "
+      + "LCARS-capable CLI installed on this machine."));
+    host.appendChild(wrap);
+    return;
+  }
+  wrap.appendChild(el("div", "fd-engine-h",
+    "Engine — which CLI drives this project?"));
+  var choice = el("div", "choice");
+  var nodes = [];
+  list.forEach(function (eng) {
+    var name = String(eng);
+    /* keyActivable, like the File console's picker: these are spans rendered as
+       controls, and a control you cannot Tab to is not a control. */
+    var opt = keyActivable(el("span", "opt", "⬡ " + engineLabel(name)));
+    opt.setAttribute("aria-pressed", name === chosen ? "true" : "false");
+    if (name === chosen) opt.classList.add("sel");
+    opt.addEventListener("click", function () {
+      frontDoorState.engine = name;
+      nodes.forEach(function (o) {
+        o.classList.remove("sel");
+        o.setAttribute("aria-pressed", "false");
+      });
+      opt.classList.add("sel");
+      opt.setAttribute("aria-pressed", "true");
+    });
+    nodes.push(opt);
+    choice.appendChild(opt);
+  });
+  wrap.appendChild(choice);
+  wrap.appendChild(el("div", "fd-engine-note",
+    "It runs the conversation AND every stage of the mission it files, and "
+    + "becomes this project's default."));
+  host.appendChild(wrap);
+}
+
+/* The body of the POST, with `engine` present ONLY when there is one. An
+   explicit empty string would be a pick, and there is none to make. */
+function frontDoorEngineBody(body) {
+  var e = String(frontDoorState.engine || "");
+  if (e) body.engine = e;
+  return body;
 }
 
 function renderFrontDoor(fd) {
@@ -2308,6 +2419,22 @@ function renderFrontDoor(fd) {
       ? "Your answer…" : (copy.placeholder || "");
     if (frontDoorState.screen !== "grill") box.value = frontDoorState.idea || "";
     host.appendChild(box);
+  }
+
+  /* S195 — the engine, on BOTH doors and ONLY on the ask screens. Below the
+     idea box and above the primary action: it is the last thing settled before
+     the conversation starts, and it must not shove the textarea down the page
+     mid-sentence the way the base-freshness block once did (S160 D4).
+
+     AND ONLY WHILE IT IS STILL A CHOICE. `busy` means the opening turn is in
+     flight and `sid` means a session already exists — in both cases the grill
+     is (or is about to be) warm on the engine it opened with, and a click that
+     changed `frontDoorState.engine` then would send the FILING to a different
+     CLI than the one that ran the interview. That split is the one thing
+     file.sh's engine header says must never happen, and it is invisible on
+     screen, so the control is withdrawn rather than left live and ignored. */
+  if (!onGrill && !frontDoorState.busy && !frontDoorState.sid) {
+    renderFrontDoorEngine(host, fd);
   }
 
   var actions = el("div", "fd-actions");
@@ -2535,7 +2662,8 @@ function frontDoorSubmit(text) {
   }
   frontDoorState.idea = t;
   frontDoorState.busy = true; frontDoorRepaint();
-  return postWrite("/api/align/start", { idea: t, vision: true },
+  return postWrite("/api/align/start",
+                   frontDoorEngineBody({ idea: t, vision: true }),
                    frontDoorTurn, frontDoorFailed);
 }
 
@@ -2573,18 +2701,19 @@ function frontDoorFailed(msg) {
 function frontDoorFile(rec) {
   frontDoorState.busy = true; frontDoorState.error = ""; frontDoorState.rec = rec;
   frontDoorRepaint();
-  postWrite("/api/vision/file", {
+  postWrite("/api/vision/file", frontDoorEngineBody({
     idea: rec.idea || frontDoorState.idea,
     stack: rec.stack,
     reasons: rec.reasons || [],
     deferred: rec.deferred || [],
     slice: rec.slice || "",
-  }, function () {
+  }), function () {
     /* The mission has landed, so the repo now HAS something to put on a board
        and the next render drops the door on its own. Reset so a later
        foundationless repo opens on screen 1. */
     frontDoorState = { screen: "ask", sid: null, idea: "", busy: false,
-                       question: null, rec: null, error: "", note: "" };
+                       question: null, rec: null, error: "", note: "",
+                       engine: "" };
   }, frontDoorFailed);
 }
 

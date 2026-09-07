@@ -733,6 +733,46 @@ class AdapterFrontDoorTest(unittest.TestCase):
         meta = ad.board()["meta"]
         self.assertNotIn("frontDoor", meta)
 
+    # ── S195: the ENGINE facts ride the same payload ──────────────────────
+    def _with_bins(self, claude, copilot):
+        """Pin what this machine 'has', through the SAME env seams `lcars init`
+        verifies the claude CLI through — so the assertion is about the
+        detector, not about whichever CLIs happen to be installed here."""
+        old = {k: os.environ.get(k)
+               for k in ("LCARS_CLAUDE_BIN", "LCARS_COPILOT_BIN")}
+
+        def restore():
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(restore)
+        os.environ["LCARS_CLAUDE_BIN"] = claude
+        os.environ["LCARS_COPILOT_BIN"] = copilot
+
+    def _fake_bin(self, name):
+        p = os.path.join(self.tmp, "bin", name)
+        fx.write(p, "#!/bin/sh\nexit 0\n")
+        os.chmod(p, 0o755)
+        return p
+
+    def test_the_front_door_payload_carries_the_INSTALLED_engines(self):
+        root = _git_repo(os.path.join(self.tmp, "engines"))
+        self._with_bins(self._fake_bin("claude"), self._fake_bin("copilot"))
+        fd = self._adapter(root).board()["meta"]["frontDoor"]
+        self.assertEqual(fd["engines"], ["claude", "copilot"])
+        self.assertEqual(fd["engine"], "claude")
+
+    def test_an_engine_that_is_not_installed_is_left_out_of_the_payload(self):
+        root = _git_repo(os.path.join(self.tmp, "engines1"))
+        self._with_bins(os.path.join(self.tmp, "nope-claude"),
+                        self._fake_bin("copilot"))
+        fd = self._adapter(root).board()["meta"]["frontDoor"]
+        self.assertEqual(fd["engines"], ["copilot"])
+        self.assertEqual(fd["engine"], "copilot",
+                         "the one available engine is the preselection")
+
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1113,6 +1153,297 @@ class HolodeckFloorTest(unittest.TestCase):
             [r for r in self.rules if r.selector == ".front-door::before"],
             "the front door grew a ::before overlay — it will scroll off the "
             "recommendation screen")
+
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# S195 — THE ENGINE PICKER
+# ══════════════════════════════════════════════════════════════════════════
+def _with_engines(meta, engines=("claude", "copilot"), engine="claude"):
+    """A front-door payload carrying the daemon's engine facts."""
+    m = json.loads(json.dumps(meta))
+    m["frontDoor"]["engines"] = list(engines)
+    m["frontDoor"]["engine"] = engine
+    return m
+
+
+class EnginePickerTest(unittest.TestCase):
+    """S195 — the choice of CLI is made ON THE FRONT DOOR, before the grill.
+
+    Three rules, and each is a rule rather than a taste:
+
+      1. ONLY WHAT IS INSTALLED IS OFFERED. The list is the daemon's, computed
+         by the same `command -v` seam `lcars init` verifies the claude CLI
+         through — a picker offering a CLI this machine does not have is a way
+         to file a mission that cannot run.
+      2. ONE ENGINE IS NOT A CHOICE. With a single CLI installed there is no
+         picker; the door SAYS which engine will run it, because silence there
+         reads as "LCARS picked something and won't say what".
+      3. THE PICK RIDES EVERYTHING IT SHOULD. The grill's first turn, and the
+         filing — one choice, made once, in the place the decision occurs.
+    """
+
+    GF = FrontDoorRendersTest.GREENFIELD
+    UT = FrontDoorRendersTest.UNTESTED
+
+    def _opts(self, res):
+        return [n for n in _flatten(res["frontDoor"])
+                if "opt" in (n["cls"] or "").split()]
+
+    def _selected(self, res):
+        return [n["text"] for n in self._opts(res)
+                if "sel" in (n["cls"] or "").split()]
+
+    # ── 1. it is THERE, on BOTH doors ──────────────────────────────────────
+    def test_the_picker_renders_on_the_greenfield_door(self):
+        res = _render(_board(meta=_with_engines(self.GF)))
+        labels = [n["text"] for n in self._opts(res)]
+        self.assertEqual(len(labels), 2, "both installed engines must be offered")
+        self.assertTrue(any("Claude" in t for t in labels), labels)
+        self.assertTrue(any("Copilot" in t for t in labels), labels)
+        self.assertIn("Engine", _text(res["frontDoor"]))
+
+    def test_the_picker_renders_on_the_untested_door_too(self):
+        """The `untested` screen asks nothing about the product — but the
+        engine is not a question about the product, it is how the mission runs,
+        and that door files a mission exactly like the other one."""
+        res = _render(_board(meta=_with_engines(self.UT)))
+        labels = [n["text"] for n in self._opts(res)]
+        self.assertEqual(len(labels), 2, "the untested door needs it too")
+        self.assertIn("Engine", _text(res["frontDoor"]))
+
+    # ── 2. only what is installed, and no pointless picker ─────────────────
+    def test_an_engine_this_machine_does_not_have_is_NEVER_offered(self):
+        res = _render(_board(meta=_with_engines(self.GF, engines=("copilot",),
+                                                engine="copilot")))
+        txt = _text(res["frontDoor"])
+        self.assertNotIn("Claude", txt,
+                         "a CLI that is not installed must not be offered")
+
+    def test_one_engine_states_which_one_rather_than_offering_a_choice(self):
+        res = _render(_board(meta=_with_engines(self.GF, engines=("copilot",),
+                                                engine="copilot")))
+        self.assertEqual(self._opts(res), [],
+                         "a one-option picker is not a choice")
+        self.assertIn("Copilot", _text(res["frontDoor"]),
+                      "it must SAY which engine will run it")
+
+    def test_the_single_engine_is_still_what_gets_POSTed(self):
+        res = _render(_board(meta=_with_engines(self.GF, engines=("copilot",),
+                                                engine="copilot")),
+                      act="submit", text="a personal finance site")
+        body = json.loads([f for f in res["fetches"]
+                           if f["method"] == "POST"][0]["body"])
+        self.assertEqual(body["engine"], "copilot")
+
+    def test_no_engine_installed_offers_nothing_and_posts_nothing(self):
+        res = _render(_board(meta=_with_engines(self.GF, engines=(), engine="")),
+                      act="submit", text="a personal finance site")
+        self.assertEqual(self._opts(res), [])
+        body = json.loads([f for f in res["fetches"]
+                           if f["method"] == "POST"][0]["body"])
+        self.assertNotIn("engine", body,
+                         "with nothing to pick, the daemon's own default stands")
+
+    # ── the preselection ───────────────────────────────────────────────────
+    def test_the_repos_configured_engine_is_what_is_preselected(self):
+        res = _render(_board(meta=_with_engines(self.GF, engine="copilot")))
+        sel = self._selected(res)
+        self.assertEqual(len(sel), 1, "exactly one option is selected")
+        self.assertIn("Copilot", sel[0])
+
+    def test_the_default_preselection_is_the_daemons(self):
+        res = _render(_board(meta=_with_engines(self.GF, engine="claude")))
+        self.assertIn("Claude", self._selected(res)[0])
+
+    # ── 3. the pick rides the grill AND the filing ─────────────────────────
+    def test_the_chosen_engine_is_POSTed_to_align_start(self):
+        res = _render(_board(meta=_with_engines(self.GF)), act="submit",
+                      text="a website that does personal finance stuff")
+        post = [f for f in res["fetches"] if f["method"] == "POST"][0]
+        self.assertEqual(post["url"], "/api/align/start")
+        body = json.loads(post["body"])
+        self.assertTrue(body["vision"])
+        self.assertEqual(body["engine"], "claude")
+
+    def test_clicking_the_OTHER_engine_changes_what_the_grill_runs_on(self):
+        """The discriminating half: a picker that renders but never changes the
+        POST is a decoration."""
+        res = _render(_board(meta=_with_engines(self.GF)), pickEngine="Copilot",
+                      act="submit", text="a personal finance site")
+        body = json.loads([f for f in res["fetches"]
+                           if f["method"] == "POST"][0]["body"])
+        self.assertEqual(body["engine"], "copilot")
+
+    def test_the_choice_survives_a_repaint(self):
+        """SSE repaints the door constantly (`frontDoorRepaint`). A pick held in
+        the DOM instead of in `frontDoorState` is lost on the next tick — the
+        exact class of bug the override screen already had (D-override)."""
+        res = _render(_board(meta=_with_engines(self.GF)), pickEngine="Copilot")
+        self.assertIn("Copilot", self._selected(res)[0])
+
+    def test_the_engine_rides_the_FILING_too(self):
+        """It powers the grill AND every stage of the mission it files, so the
+        filing endpoint carries it as well — that is what becomes
+        `state.json.workerBin`."""
+        t = TurnsTheDaemonActuallySendsTest
+        res = _render(_board(meta=_with_engines(t.META)), act="grill",
+                      pickEngine="Copilot",
+                      turns=["a personal finance site", "yes"],
+                      responses=[t.Q1, t.REC, {"board": {}}],
+                      then="accept")
+        posts = [f for f in res["fetches"] if f["method"] == "POST"]
+        self.assertEqual(posts[-1]["url"], "/api/vision/file")
+        self.assertEqual(json.loads(posts[-1]["body"])["engine"], "copilot")
+
+    def test_the_picker_is_withdrawn_while_the_opening_turn_is_in_flight(self):
+        """A click during "◐ THINKING…" would change the engine the FILING uses
+        after the grill had already opened on another one — two engines on one
+        mission, which is exactly what file.sh's engine header forbids, and
+        nothing on screen would say so."""
+        res = _render(_board(meta=_with_engines(self.GF)), act="busy",
+                      text="a personal finance site")
+        self.assertEqual(self._opts(res), [])
+        self.assertIn("THINKING", _text(res["frontDoor"]))
+
+    def test_the_picker_is_gone_once_the_conversation_has_started(self):
+        """The choice is made BEFORE the grill. Showing it mid-interview would
+        offer a switch that cannot be honoured — the session is already warm on
+        the engine it opened with."""
+        t = TurnsTheDaemonActuallySendsTest
+        res = _render(_board(meta=_with_engines(t.META)), act="grill",
+                      turns=["a personal finance site"], responses=[t.Q1])
+        self.assertEqual(self._opts(res), [],
+                         "the picker must not follow the captain into the grill")
+
+    # ── REGRESSION: a board without the daemon's engine facts ──────────────
+    def test_a_payload_with_no_engine_facts_renders_exactly_as_before(self):
+        """An older daemon, a github/read-only build, or a `--facts` that could
+        not answer. Nothing is rendered and nothing is posted, so the surface is
+        byte-identical to S184's."""
+        res = _render(_board(meta=self.GF), act="submit", text="an idea")
+        self.assertEqual(self._opts(res), [])
+        self.assertNotIn("Engine", _text(res["frontDoor"]))
+        body = json.loads([f for f in res["fetches"]
+                           if f["method"] == "POST"][0]["body"])
+        self.assertNotIn("engine", body)
+
+    def test_a_healthy_board_never_grows_an_engine_picker(self):
+        res = _render(_board(meta={"adapter": "local"}, missions=[_card("m-1")]))
+        self.assertEqual(res["columns"], COLUMNS)
+        self.assertTrue(res["frontDoorHidden"])
+        self.assertEqual(self._opts(res), [])
+
+
+class VisionEngineDaemonTest(unittest.TestCase):
+    """S195 — the daemon half of the picker: ONE choice, made once, obeyed by
+    every worker the front door causes.
+
+    The engine reaches the daemon on `/api/align/start` and is held on the
+    session, so `/api/align/<sid>/answer` needs no engine field of its own — the
+    thing to prove is therefore not that the later endpoints CARRY it but that
+    the later TURNS RUN ON IT. Proven by which binary was invoked, not by a flag
+    in an argv: two recording stubs, one per engine, each with its own log.
+
+    Zero spend: both engines are bash scripts.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from tests import test_align_endpoints as ae
+        cls.ae = ae
+
+    def setUp(self):
+        import shutil
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        _git_repo(self.tmp)
+        self.turns = os.path.join(self.tmp, "turns.txt")
+        self.prompts = os.path.join(self.tmp, "prompts.txt")
+        # TWO engines, TWO argv logs — the only honest way to answer "which CLI
+        # actually ran". `default_argv` is the daemon's fallback: any line in it
+        # is the captain's choice having been dropped on the floor.
+        self.default_argv = os.path.join(self.tmp, "argv-default.txt")
+        self.copilot_argv = os.path.join(self.tmp, "argv-copilot.txt")
+        self.rec_file = os.path.join(self.tmp, "rec-file.txt")
+        self.rec_ev = os.path.join(self.tmp, "rec-ev.txt")
+        self.scripts = {"file": self.ae._file_record_stub(self.rec_file),
+                        "establish_vision": self.ae._file_record_stub(self.rec_ev)}
+        self.default_bin = self.ae._worker_stub(self.turns, self.prompts,
+                                                self.default_argv)
+        self.copilot_bin = self.ae._copilot_worker_stub(self.turns, self.prompts,
+                                                        self.copilot_argv)
+        from lcars_serve.actions import Actions
+        self.actions = Actions(repo_root=self.tmp, scripts=self.scripts,
+                               worker_bin=self.default_bin)
+
+    def _set_turns(self, *blobs):
+        with open(self.turns, "w") as fh:
+            for i, b in enumerate(blobs):
+                if i:
+                    fh.write("===TURN===\n")
+                fh.write(json.dumps(b) + "\n")
+
+    def _spawns(self, path):
+        if not os.path.exists(path):
+            return 0
+        with open(path) as fh:
+            return len([ln for ln in fh if ln.startswith("ARGV: ")])
+
+    def _ev_argv(self):
+        if not os.path.exists(self.rec_ev):
+            return ""
+        with open(self.rec_ev) as fh:
+            return fh.read()
+
+    Q = {"status": "question", "question": {"text": "Which stack?"},
+         "prd": "# Mission: Foundation\n\n**Type:** feature\n"}
+
+    def test_the_front_doors_engine_runs_the_FIRST_grill_turn(self):
+        self._set_turns(self.Q)
+        self.actions.align_start("a personal finance site", vision=True,
+                                 engine=self.copilot_bin)
+        self.assertEqual(self._spawns(self.copilot_argv), 1)
+        self.assertEqual(self._spawns(self.default_argv), 0,
+                         "the daemon default ran instead of the captain's pick")
+
+    def test_and_EVERY_LATER_TURN_runs_on_it_too(self):
+        """The `answer` endpoint takes no engine — the session holds it. So the
+        thing that must be true is that turns 2 and 3 hire the SAME CLI."""
+        self._set_turns(self.Q, self.Q, self.Q)
+        out = self.actions.align_start("a personal finance site", vision=True,
+                                       engine=self.copilot_bin)
+        sid = out["sessionId"]
+        self.actions.align_answer(sid, "vitest")
+        self.actions.align_answer(sid, "yes")
+        self.assertEqual(self._spawns(self.copilot_argv), 3)
+        self.assertEqual(self._spawns(self.default_argv), 0,
+                         "a later turn re-homed onto the daemon default")
+
+    def test_no_engine_still_runs_the_daemon_default(self):
+        """REGRESSION — a door with nothing to pick behaves as it did before."""
+        self._set_turns(self.Q)
+        self.actions.align_start("a personal finance site", vision=True)
+        self.assertEqual(self._spawns(self.default_argv), 1)
+        self.assertEqual(self._spawns(self.copilot_argv), 0)
+
+    # ── the filing ────────────────────────────────────────────────────────
+    def test_vision_file_PINS_the_chosen_engine_on_the_filed_mission(self):
+        """`--engine`, not `$LCARS_WORKER_BIN`: file.sh's own header records
+        that the flag is the strongest signal there is, and that it "came to be
+        silently ignored on the --prd lane" — which is the lane this files
+        through."""
+        self.actions.vision_file(idea="a personal finance site",
+                                 stack="Vite + React + Vitest",
+                                 engine="copilot")
+        argv = self._ev_argv()
+        self.assertIn("--file", argv)
+        self.assertIn("--engine copilot", argv)
+
+    def test_vision_file_without_an_engine_is_byte_identical(self):
+        self.actions.vision_file(idea="a personal finance site",
+                                 stack="Vite + React + Vitest")
+        self.assertNotIn("--engine", self._ev_argv())
 
 
 if __name__ == "__main__":

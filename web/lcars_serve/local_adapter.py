@@ -646,6 +646,15 @@ class LocalAdapter(object):
                     "stackLabel": blk.get("stackLabel"),
                     "sourceFiles": blk.get("sourceFiles"),
                     "testRunner": blk.get("testRunner"),
+                    # S195 — WHICH CLIs THIS MACHINE HAS, and which to
+                    # preselect. Same rule as every other value here: the
+                    # helper answers, the daemon relays. A build whose helper
+                    # predates this round returns neither key, and the front
+                    # end renders no engine control at all rather than
+                    # inventing a list — an absence of information is never a
+                    # reason to offer the captain a choice LCARS cannot honour.
+                    "engines": blk.get("engines") or [],
+                    "engine": blk.get("engine") or "",
                 }
         except Exception:
             payload = None

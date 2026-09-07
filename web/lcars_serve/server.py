@@ -446,7 +446,11 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                                            stack=body.get("stack"),
                                            reasons=body.get("reasons"),
                                            deferred=body.get("deferred"),
-                                           slice_=body.get("slice"))
+                                           slice_=body.get("slice"),
+                                           # S195 — the front door's engine
+                                           # pick: it drives the mission it
+                                           # files and becomes the repo default.
+                                           engine=body.get("engine"))
             if path == "/api/align/start":
                 return actions.align_start(idea=body.get("idea"),
                                            vision=bool(body.get("vision")),

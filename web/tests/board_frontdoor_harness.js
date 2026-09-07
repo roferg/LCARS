@@ -24,13 +24,35 @@ function stubEl(tag) {
   var node = {
     tag: tag || "",
     style: {},
+    /* S195 — classList is BACKED BY className, the way a real DOM's is. It was
+       a private `_s` map before, so `classList.add("sel")` was invisible to
+       `project()` (which reads `_cls`): a picker whose selection is expressed
+       that way — the File console's idiom, and now the front door's — projected
+       as unselected, and a test asserting the selection could only ever fail.
+       `board_hotkeys_harness.js` already keeps the two in sync; this is that,
+       here, so the two harnesses cannot disagree about what a node's classes
+       are. */
     classList: {
-      _s: {},
-      add(c) { this._s[c] = true; },
-      remove(c) { delete this._s[c]; },
-      toggle() { return false; },
-      contains(c) { return !!this._s[c]; },
-      list() { return Object.keys(this._s); },
+      add(c) {
+        if (!c) return;
+        var l = node._classes();
+        if (l.indexOf(c) < 0) { l.push(c); node._cls = l.join(" "); }
+      },
+      remove(c) {
+        var l = node._classes().filter(function (x) { return x !== c; });
+        node._cls = l.join(" ");
+      },
+      toggle(c, on) {
+        var has = node._classes().indexOf(c) >= 0;
+        var want = on === undefined ? !has : !!on;
+        if (want) this.add(c); else this.remove(c);
+        return want;
+      },
+      contains(c) { return node._classes().indexOf(c) >= 0; },
+      list() { return node._classes(); },
+    },
+    _classes() {
+      return String(node._cls || "").split(" ").filter(Boolean);
     },
     _listeners: {},
     addEventListener(type, fn) {
@@ -229,10 +251,35 @@ function fdButton(re) {
   });
 }
 
+/* S195 — the engine picker's options are SPANS rendered as controls (the File
+   console's `.choice > .opt` idiom), so `fdButton` cannot see them and a test
+   that wants a NON-default engine has to click one exactly as the captain
+   does. `input.pickEngine` is applied to the FIRST screen, before whatever
+   `act` follows, because that is where the choice is made. */
+function fdEngineOption(name) {
+  var re = new RegExp(name, "i");
+  return findNode(REGISTRY.frontDoor, function (n) {
+    return ((n._cls || "").split(" ").indexOf("opt") >= 0)
+           && re.test(n._text || "");
+  });
+}
+
 (async function main() {
   sandbox.render(input.board);
+  if (input.pickEngine) {
+    var eopt = fdEngineOption(input.pickEngine);
+    if (eopt) { click(eopt); await drain(); }
+  }
   /* Optional scripted interaction: drive the REAL grill/accept path so the test
      can prove what actually gets POSTed (the override, chiefly). */
+  /* S195 — the door DURING the opening turn: click the primary action and
+     render what the captain is looking at while the POST is still in flight
+     (`frontDoorState.busy`), without draining it. */
+  if (input.act === "busy") {
+    var bbox = fdBox();
+    if (bbox) bbox.value = input.text || "";
+    click(fdButton(/Establish/));
+  }
   if (input.act === "submit") {
     var box = findNode(REGISTRY.frontDoor, function (n) { return n.tag === "textarea"; });
     if (box) box.value = input.text || "";

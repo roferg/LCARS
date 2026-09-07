@@ -426,6 +426,124 @@ reg react_ts_nobuild '{"name":"a","dependencies":{"react":"^18"},"devDependencie
 check "G12 a repo with no package.json still reads 'not recognised'" \
   "[ \"\$(label \"\$(new_repo nopkg2)\")\" = 'not recognised' ]"
 
+echo "── S195 · G13 · THE ENGINE PICKER — availability, the pin, and the repo default ──"
+
+# ONE DETECTOR. Availability is `command -v` over the SAME per-engine binary
+# seams `lcars init` already verifies claude through (LCARS_CLAUDE_BIN, and its
+# copilot sibling), surfaced by --facts so neither front door has to guess. The
+# tests drive those seams rather than PATH so the result is the same on a
+# machine that has one CLI, both, or neither.
+ENGREPO="$(new_repo engines)"
+
+facts_eng() { # env-pairs… → the --facts JSON
+  ( cd "$ENGREPO" && env "$@" bash "$EV" --facts )
+}
+
+check "G13a --facts offers BOTH engines when both are installed" \
+  "[ \"\$(facts_eng LCARS_CLAUDE_BIN=$SHIM/claude LCARS_COPILOT_BIN=$SHIM/copilot | jget engines)\" = '[\"claude\", \"copilot\"]' ]"
+check "G13b an engine that is NOT on this machine is NOT offered" \
+  "[ \"\$(facts_eng LCARS_CLAUDE_BIN=$SHIM/claude LCARS_COPILOT_BIN=$TMPROOT/no-such-copilot | jget engines)\" = '[\"claude\"]' ]"
+check "G13c neither installed ⇒ an EMPTY list, never a guess" \
+  "[ \"\$(facts_eng LCARS_CLAUDE_BIN=$TMPROOT/no-claude LCARS_COPILOT_BIN=$TMPROOT/no-copilot | jget engines)\" = '[]' ]"
+check "G13d with both available and no repo config, the default is claude" \
+  "[ \"\$(facts_eng LCARS_CLAUDE_BIN=$SHIM/claude LCARS_COPILOT_BIN=$SHIM/copilot | jget engine)\" = claude ]"
+check "G13e with only ONE available, THAT one is preselected" \
+  "[ \"\$(facts_eng LCARS_CLAUDE_BIN=$TMPROOT/no-claude LCARS_COPILOT_BIN=$SHIM/copilot | jget engine)\" = copilot ]"
+
+# The repo's CONFIGURED engine wins the preselection — a repo that already has
+# an engine must open its front door on that engine, not on the default.
+CFGREPO="$(new_repo engcfg)"
+( cd "$CFGREPO" && LCARS_GH_BIN="$SHIM/nope" bash "$INIT_SH" >/dev/null 2>&1 )
+CFGJSON="$CFGREPO/.git/lcars/config.json"
+awk 'NR==1{print; print "  \"workerBin\": \"copilot\","; next} {print}' \
+  "$CFGJSON" > "$CFGJSON.new" && mv "$CFGJSON.new" "$CFGJSON"
+check "G13f the repo's CONFIGURED engine is what the door preselects" \
+  "[ \"\$( cd '$CFGREPO' && env LCARS_CLAUDE_BIN=$SHIM/claude LCARS_COPILOT_BIN=$SHIM/copilot bash '$EV' --facts | jget engine )\" = copilot ]"
+
+# --- the pin: the chosen engine reaches state.json, and becomes the default ---
+ENGIDEA="$TMPROOT/eng-idea.txt"; printf 'a small CLI that prints the time\n' >"$ENGIDEA"
+
+PICKED="$(new_repo picked)"
+( cd "$PICKED" && LCARS_GH_BIN="$SHIM/nope" bash "$INIT_SH" >/dev/null 2>&1 )
+POUT="$( cd "$PICKED" && LCARS_GH_BIN="$SHIM/nope" bash "$EV" --file --engine copilot \
+           --idea "$ENGIDEA" --stack 'Go + testing' --slice 'it prints the time' 2>&1 )"
+PMID="$(printf '%s' "$POUT" | sed -n 's/.*MISSION_ID=\([A-Za-z0-9_-]*\).*/\1/p' | head -1)"
+PSTATE="$PICKED/.git/lcars/missions/$PMID/state.json"
+check "G13g the CHOSEN engine is persisted as the mission's workerBin" \
+  "grep -q '\"workerBin\"[[:space:]]*:[[:space:]]*\"copilot\"' \"\$PSTATE\""
+check "G13h …and becomes the repo's DEFAULT engine in config.json" \
+  "grep -q '\"workerBin\"[[:space:]]*:[[:space:]]*\"copilot\"' '$PICKED/.git/lcars/config.json'"
+check "G13i the filing SAYS which engine it pinned" \
+  "printf '%s' \"\$POUT\" | grep -qi 'copilot'"
+
+# THE --prd LANE DRIFT GUARD. file.sh's own header records that `--engine` "came
+# to be silently ignored on the --prd lane"; the front door files through that
+# exact lane, so the captain's pick must beat an ambient $LCARS_WORKER_BIN
+# rather than lose to it.
+PINNED="$(new_repo pinned)"
+( cd "$PINNED" && LCARS_GH_BIN="$SHIM/nope" bash "$INIT_SH" >/dev/null 2>&1 )
+( cd "$PINNED" && LCARS_GH_BIN="$SHIM/nope" LCARS_WORKER_BIN=claude bash "$EV" --file \
+    --engine copilot --idea "$ENGIDEA" --stack 'Go + testing' --slice 'boots' >/dev/null 2>&1 )
+PIMID="$(ls "$PINNED/.git/lcars/missions" 2>/dev/null | head -1)"
+check "G13j --engine BEATS an ambient \$LCARS_WORKER_BIN (the --prd-lane drift guard)" \
+  "grep -q '\"workerBin\"[[:space:]]*:[[:space:]]*\"copilot\"' \"$PINNED/.git/lcars/missions/\$PIMID/state.json\""
+
+# REGRESSION — no --engine, nothing changes. A repo filed the way S184 filed is
+# byte-identical: no workerBin on the mission, and repo config untouched.
+NOENG="$(new_repo noengine)"
+( cd "$NOENG" && LCARS_GH_BIN="$SHIM/nope" bash "$INIT_SH" >/dev/null 2>&1 )
+cp "$NOENG/.git/lcars/config.json" "$TMPROOT/noeng-config.before"
+( cd "$NOENG" && LCARS_GH_BIN="$SHIM/nope" bash "$EV" --file --idea "$ENGIDEA" \
+    --stack 'Go + testing' --slice 'boots' >/dev/null 2>&1 )
+NMID="$(ls "$NOENG/.git/lcars/missions" 2>/dev/null | head -1)"
+check "G13k no --engine ⇒ the mission records NO workerBin (unchanged)" \
+  "! grep -q '\"workerBin\"' \"$NOENG/.git/lcars/missions/\$NMID/state.json\""
+check "G13l no --engine ⇒ repo config.json is byte-identical" \
+  "cmp -s '$TMPROOT/noeng-config.before' '$NOENG/.git/lcars/config.json'"
+
+# A BOGUS ENGINE STOPS BEFORE ANY WRITE — the same rule file.sh's
+# _validate_engine states, applied at the front door so a refusal leaves the
+# repo exactly as it found it.
+BOGUS="$(new_repo bogus)"
+BOGUS_OUT="$( cd "$BOGUS" && bash "$EV" --file --engine gpt5 --idea "$ENGIDEA" \
+                --stack x --slice y 2>&1 )"
+check "G13m …refused for being an unknown ENGINE, naming the two that work" \
+  "printf %s \"\$BOGUS_OUT\" | grep -q 'unknown engine' && printf %s \"\$BOGUS_OUT\" | grep -q claude && printf %s \"\$BOGUS_OUT\" | grep -q copilot"
+check "G13m an unknown engine is REFUSED (non-zero exit)" \
+  "( cd '$BOGUS' && bash '$EV' --file --engine gpt5 --idea '$ENGIDEA' --stack x --slice y >/dev/null 2>&1 ); [ \$? -ne 0 ]"
+check "G13n …and leaves NOTHING behind — no vision doc, no mission" \
+  "[ ! -f '$BOGUS/.git/lcars/vision.md' ] && [ -z \"\$(ls '$BOGUS/.git/lcars/missions' 2>/dev/null)\" ]"
+
+# A repo with no config.json (never `lcars init`-ed) still files — the default
+# simply has nowhere to go, exactly as `lcars approve`'s testCommand promotion
+# behaves on the same repo.
+NOCFG="$(new_repo nocfg)"
+NCOUT="$( cd "$NOCFG" && LCARS_GH_BIN="$SHIM/nope" bash "$EV" --file --engine claude \
+            --idea "$ENGIDEA" --stack 'Go + testing' --slice 'boots' 2>&1 )"
+NCMID="$(ls "$NOCFG/.git/lcars/missions" 2>/dev/null | head -1)"
+check "G13o a never-initialized repo still files, with the engine pinned on the mission" \
+  "[ -n \"\$NCMID\" ] && grep -q '\"workerBin\"[[:space:]]*:[[:space:]]*\"claude\"' \"$NOCFG/.git/lcars/missions/\$NCMID/state.json\""
+check "G13p …and says the repo default could not be written" \
+  "printf '%s' \"\$NCOUT\" | grep -qi 'config.json'"
+
+# THE SAFETY ARGUMENT FOR WRITING REPO CONFIG AT ALL, as a test.
+#
+# "Repo-level config.json is never written mid-mission" is an invariant, and its
+# stated reason is that an early write would poison a SIBLING mission. The
+# engine write is safe because the front door — the ONLY caller — renders only
+# while `ev_front_door` holds, and that requires ZERO missions. So at the moment
+# the write happens the mission just filed is the first this repo has ever had,
+# there is no sibling to poison, and the door is CLOSED before a second one
+# could exist. Pinned here because the whole argument rests on it.
+check "G13r the front door is open ONLY while the repo has zero missions" \
+  "[ \"\$( cd '$PICKED' && bash '$EV' --facts | jget missions )\" = 1 ] \
+   && ( cd '$PICKED' && bash '$EV' --facts | jget frontDoor | grep -q false )"
+check "G13s …and it WAS open before that mission existed (the door really closed)" \
+  "( cd '$(new_repo doorstate)' && bash '$EV' --facts | jget frontDoor | grep -q true )"
+
+check "G13q the whole engine section hired NOBODY off the counting fakes" \
+  "fuse '$SHIM'"
+
 echo
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
