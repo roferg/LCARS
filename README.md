@@ -27,6 +27,7 @@ web board — with the CLI available as the equivalent power path underneath.
 - [The pipeline](#the-pipeline)
 - [Install](#install)
 - [Quick start (the viewscreen)](#quick-start-the-viewscreen)
+- [Starting from zero](#starting-from-zero)
 - [The holodeck](#the-holodeck)
 - [The CLI (the power path)](#the-cli-the-power-path)
 - [Running under GitHub Copilot](#running-under-github-copilot)
@@ -59,6 +60,12 @@ is easier to *draw* than to describe, the **holodeck** is a room on the
 viewscreen where you talk a mockup into existence with an AI, watch it render
 live, and then hand that drawing to a Mission that builds it — see
 [The holodeck](#the-holodeck).
+
+**The project doesn't have to exist yet either.** Point LCARS at an empty folder
+and it replaces the board with a door: describe what you want, answer a few
+questions, and it recommends a stack, builds a running skeleton with a real test
+system, and proves one thin slice end to end — before any feature work starts.
+See [Starting from zero](#starting-from-zero).
 
 The key idea: **you set a Mission in motion and walk away.** The harness
 auto-advances it stage to stage on its own and stops only at a genuine human
@@ -241,6 +248,47 @@ drift. One adapter-neutral board shape backs two read adapters — a **local** o
 parsing `.git/lcars/missions/*` (the default, with the operator write endpoints)
 and a **GitHub** one reading issues + `lcars:*` labels (`--read-only`,
 view-only) — so a hosted, read-only board is a configuration away.
+
+---
+
+## Starting from zero
+
+Every ticket in LCARS is proven the same way: its tests are **red on the parent
+commit and green on the tip**. A repo with no test runner can't produce that
+proof — so rather than show you an empty board, LCARS shows you a door.
+
+Open the viewscreen on a repo with no foundation and you get **Establish Vision**
+instead of the board:
+
+1. **Say what you're building** — a sentence is enough. LCARS also reads whatever
+   is already in the repo, so an existing codebase with no tests gets a
+   foundation-only conversation rather than a "what are we building" one.
+2. **Pick the engine** — Claude Code or GitHub Copilot. Only engines installed on
+   your machine are offered. Your choice runs the conversation *and* every stage
+   of the mission it files, and becomes the project's default.
+3. **Answer a few questions**, one at a time. It then recommends a stack **and
+   says why**, in terms of what you told it. Anything you mentioned that isn't
+   the foundation is recorded by name and deferred to later missions. Nothing is
+   filed until you accept.
+4. **Accept**, and it files an *initialization mission* that runs the normal
+   pipeline hands-off: a running skeleton, a real test runner, and one thin
+   vertical slice that proves both are wired together.
+5. **Approve it at Verify** and the repo **graduates** — the test command is
+   promoted into the repo's config, normal missions unlock, and the holodeck
+   opens.
+
+The one waiver: the initialization mission's **first ticket** may finish without
+a flip-flop, because it is the ticket that creates the runner there wasn't one
+of. It records a reason and surfaces it at Verify. Every later ticket is held to
+the real gate.
+
+Until the foundation lands, filing ordinary missions is blocked — a mission on a
+repo that can't prove anything is a mission whose result nobody can trust.
+
+> **Engine support.** Day zero is proven end to end on **JavaScript/TypeScript,
+> Python, Rust, Go, Ruby and .NET**. **JVM is not proven** — there is no JDK
+> detection arm yet, so a Java/Kotlin project cannot currently establish a
+> foundation this way.
 
 ---
 
