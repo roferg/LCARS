@@ -1,0 +1,4 @@
+I want a small Ruby command-line tool called `mise` that reads a directory of
+recipe markdown files and builds a combined shopping list, merging duplicate
+ingredients and summing their quantities. `mise list <dir>` prints the merged
+list. Ruby, because it is the fastest thing for me to hack on.

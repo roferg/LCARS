@@ -1,0 +1,4 @@
+I want a small Go command-line tool called `hop` that reads a YAML file of named
+SSH shortcuts and prints the full ssh command for a given name, so I can stop
+remembering ports and usernames. `hop list` shows every shortcut, `hop show
+<name>` prints the command. Go, because I want to cross-compile it.

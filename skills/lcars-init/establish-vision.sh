@@ -150,6 +150,21 @@ ev_js_label() {
       break
     fi
   done
+  # ELECTRON — captain ruling 2026-09-06. Electron is a DEPENDENCY that WRAPS a
+  # renderer framework; it does not replace one. So it COMPOSES: an Electron app
+  # with a React renderer is "Electron + React", never one fact at the cost of
+  # the other. This doc's opening case is "a real React/Electron codebase with
+  # no test setup", and Electron's test story genuinely differs (the
+  # main/renderer split is why a naive seed runner can pass while testing
+  # nothing that runs in Electron) — so the panel must say it.
+  #
+  # The exact-quoted grep is LOAD-BEARING: it is what keeps "electron-builder",
+  # "electron-vite" and "electron-updater" — build tooling, not Electron — from
+  # matching. And it scans the WHOLE manifest, which is required: `electron`
+  # lives in devDependencies in essentially every real app.
+  if grep -q '"electron"[[:space:]]*:' "$pkg" 2>/dev/null; then
+    if [ -n "$fw" ]; then fw="Electron + $fw"; else fw="Electron"; fi
+  fi
   for f in vite webpack parcel rollup esbuild; do
     if grep -q "\"$f\"[[:space:]]*:" "$pkg" 2>/dev/null; then
       case "$f" in

@@ -345,6 +345,87 @@ check "G10e an EMPTY slice still yields a readable sentence" \
   "( cd '$BLANK' && bash '$EV' --prd --idea '$IDEA' --stack 'X + Y' --slice '' ) \
      | grep -qi 'the skeleton renders'"
 
+echo "── S192 · G11 · ELECTRON COMPOSES WITH THE RENDERER (captain ruling 2026-09-06) ──"
+# This doc's opening problem statement names the failing case as "a real
+# React/ELECTRON codebase with no test setup", and the FOUND panel — the one
+# panel whose whole job is to prove LCARS looked at the captain's code — was
+# silent about the one fact an Electron captain checks for first. Electron is a
+# DEPENDENCY that WRAPS a renderer framework, so it COMPOSES with it rather
+# than replacing it. Shape: "Electron + <renderer> + <bundler> · TypeScript",
+# joined with the SAME grammar the panel already used.
+
+ELR="$(mk_js elr '{"name":"a","dependencies":{"react":"^18"},"devDependencies":{"electron":"^30"}}')"
+check "G11a electron + react composes — the renderer is NOT lost" \
+  "[ \"\$(label '$ELR')\" = 'Electron + React' ]"
+
+ELV="$(mk_js elv '{"name":"a","dependencies":{"vue":"^3"},"devDependencies":{"electron":"^30"}}')"
+check "G11b electron + vue composes too (not a react-only special case)" \
+  "[ \"\$(label '$ELV')\" = 'Electron + Vue' ]"
+
+ELO="$(mk_js elo '{"name":"a","devDependencies":{"electron":"^30"}}')"
+check "G11c electron with no renderer framework reads Electron" \
+  "[ \"\$(label '$ELO')\" = 'Electron' ]"
+
+# `electron` normally lives in devDependencies, never dependencies. If the
+# detector only saw `dependencies` it would miss almost every real app.
+ELDEV="$(mk_js eldev '{"name":"a","dependencies":{},"devDependencies":{"electron":"^30","vite":"^5"}}')"
+check "G11d electron is seen in devDependencies — where it actually lives" \
+  "printf '%s' \"\$(label '$ELDEV')\" | grep -q '^Electron'"
+
+# The exact-quoted grep is load-bearing: electron-builder / electron-vite /
+# electron-updater are BUILD TOOLING, and a repo that has them without electron
+# itself is not an Electron app. Positive evidence only.
+EBLD="$(mk_js ebld '{"name":"a","dependencies":{"react":"^18"},"devDependencies":{"electron-builder":"^24"}}')"
+check "G11e electron-builder WITHOUT electron is NOT labelled Electron" \
+  "[ \"\$(label '$EBLD')\" = 'React' ]"
+
+EVIT="$(mk_js evit '{"name":"a","dependencies":{"react":"^18"},"devDependencies":{"electron-vite":"^2","electron-updater":"^6"}}')"
+check "G11f electron-vite / electron-updater alone do not false-positive either" \
+  "! printf '%s' \"\$(label '$EVIT')\" | grep -qi electron"
+
+# The captain's own measured case, whole: an Electron app with a React
+# renderer, Vite, and TypeScript.
+ELFULL="$(mk_js elfull '{"name":"a","dependencies":{"react":"^18"},"devDependencies":{"electron":"^30","electron-builder":"^24","vite":"^5","typescript":"^5"}}' ts)"
+check "G11g the captain's full case reads Electron + React + Vite · TypeScript" \
+  "[ \"\$(label '$ELFULL')\" = 'Electron + React + Vite · TypeScript' ]"
+
+check "G11h electron alone still composes with the bundler and TypeScript" \
+  "[ \"\$(label \"\$(mk_js elbt '{\"name\":\"a\",\"devDependencies\":{\"electron\":\"^30\",\"vite\":\"^5\"}}' ts)\")\" = 'Electron + Vite · TypeScript' ]"
+
+check "G11i the CLASSIFIER is untouched — an electron repo is still stack=js" \
+  "[ \"\$( cd '$ELFULL' && bash '$EV' --facts | jget stack )\" = js ]"
+
+echo "── S192 · G12 · REGRESSION — every pre-existing label is BYTE-IDENTICAL ──"
+# Captured by running ev_js_label against these exact fixtures at HEAD BEFORE
+# the Electron entry existed. A repo with no electron dependency must produce
+# the same bytes it produced before, to the character.
+
+reg() { check "G12 $1 ⇒ '$3'" "[ \"\$(label \"\$(mk_js '$1' '$2' ${4:-})\")\" = '$3' ]"; }
+
+reg react            '{"name":"a","dependencies":{"react":"^18"}}'                                              'React'
+reg react_vite_ts    '{"name":"a","dependencies":{"react":"^18"},"devDependencies":{"vite":"^5","typescript":"^5"}}' 'React + Vite · TypeScript' ts
+reg next             '{"name":"a","dependencies":{"next":"^14","react":"^18"}}'                                 'Next.js'
+reg nuxt             '{"name":"a","dependencies":{"nuxt":"^3","vue":"^3"}}'                                     'Nuxt'
+reg remix            '{"name":"a","dependencies":{"remix":"^2","react":"^18"}}'                                 'Remix'
+reg remixrun         '{"name":"a","dependencies":{"@remix-run/react":"^2","react":"^18"}}'                      'Remix'
+reg angular          '{"name":"a","dependencies":{"@angular/core":"^17"}}'                                      'Angular'
+reg svelte           '{"name":"a","dependencies":{"svelte":"^4"}}'                                              'Svelte'
+reg vue              '{"name":"a","dependencies":{"vue":"^3"}}'                                                 'Vue'
+reg vue_webpack      '{"name":"a","dependencies":{"vue":"^3"},"devDependencies":{"webpack":"^5"}}'              'Vue + Webpack'
+reg svelte_vite_ts   '{"name":"a","dependencies":{"svelte":"^4"},"devDependencies":{"vite":"^5"}}'              'Svelte + Vite · TypeScript' ts
+reg bundler_only     '{"name":"a","devDependencies":{"rollup":"^4"}}'                                           'Rollup'
+reg parcel_only      '{"name":"a","devDependencies":{"parcel":"^2"}}'                                           'Parcel'
+reg esbuild_only     '{"name":"a","devDependencies":{"esbuild":"^0.20"}}'                                       'esbuild'
+reg plain            '{"name":"a","dependencies":{"express":"^4"}}'                                             'JavaScript / Node'
+reg ts_only          '{"name":"a","dependencies":{"express":"^4"}}'                                             'Node · TypeScript' ts
+reg react_ts_nobuild '{"name":"a","dependencies":{"react":"^18"},"devDependencies":{"typescript":"^5"}}'        'React · TypeScript'
+
+# No package.json at all never even reaches ev_js_label — detect_stack answers
+# `unknown`, so the panel says so. Pinned because it is the byte-identical
+# pre-existing wording, not because it is this function's fallback.
+check "G12 a repo with no package.json still reads 'not recognised'" \
+  "[ \"\$(label \"\$(new_repo nopkg2)\")\" = 'not recognised' ]"
+
 echo
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

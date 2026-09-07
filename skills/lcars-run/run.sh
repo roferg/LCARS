@@ -7070,7 +7070,64 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       #     an assertion that merely QUOTES the phrase mid-line cannot match.
       # This arm only ever REJECTS MORE reds (env failure ⇒ inconclusive, never
       # a pass), so it cannot loosen any gate.
-      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' ;;
+      #
+      # S192 — THE SAME ABSENT RUNNER, SPOKEN BY `make`. Ledgered by S193 as L2,
+      # INHERITED (byte-identical at HEAD), and adopted into the capstone by
+      # captain ruling 2026-09-06 because it sits on the arm S192 drives live:
+      # the greenfield PYTHON foundation seeds `make test` as the testCommand.
+      # On ticket 2's parent the Makefile — or its `test` target, or the venv its
+      # recipe execs — does not exist yet, and NOT ONE alternative above matched
+      # make's own diagnostics, so proof_parent_red_kind fell through to
+      # `runner-red` and the flip-flop gate read a red that no test ever produced
+      # as PROOF. Exactly npm's failure mode, one tool along.
+      #
+      # THE CRUX — WHAT IS *NOT* MATCHED. make prints the SAME recipe-failed
+      # status line whether its recipe could not be EXECUTED at all or whether it
+      # ran a real test runner that failed an assertion. MEASURED on this build
+      # machine, both makes, captured from real runs (never copied from a doc):
+      #   GNU Make 3.81 (macOS /usr/bin/make), missing binary, direct exec:
+      #     make: .venv/bin/python: No such file or directory
+      #     make: *** [test] Error 1          <- IDENTICAL to a genuine pytest red
+      #   GNU Make 4.4.1 (gmake), the same failure:
+      #     gmake: .venv/bin/python: No such file or directory
+      #     gmake: *** [Makefile:2: test] Error 127
+      #   GNU Make 3.81 AND 4.4.1, REAL pytest 9.1.1 failing an assertion:
+      #     1 failed in 0.04s
+      #     make: *** [test] Error 1
+      # So `Error 1` is emitted by BOTH a dead exec (3.81) and a genuine red
+      # (every make) and can never be matched; only make's own RUNNER-ABSENT
+      # lines discriminate. Three additions, every one line-start anchored on
+      # make's OWN program prefix (`make:`, `gmake:`, and the sub-make forms
+      # `make[1]:` / `gmake[2]:`), so an assertion diff that merely QUOTES one of
+      # these phrases mid-line can never fire — the same discipline the npm,
+      # shell and go/dotnet arms already keep, and the property S185 and S193
+      # each shipped a defect for want of:
+      #   • `^g?make(\[N\])?: \*\*\* No rule to make target ` — there is no
+      #     `test` target (or no Makefile at all). Stopped BEFORE the quote
+      #     because 3.81 writes ``target `test'`` and 4.x writes `target 'test'`.
+      #   • `^g?make(\[N\])?: \*\*\* No targets specified and no makefile found`
+      #     — a bare `make` with nothing to read.
+      #   • `^g?make(\[N\])?: .*: (No such file or directory|command not found)$`
+      #     — make's OWN exec-failure diagnostic, emitted when it runs the recipe
+      #     without a shell (no metacharacters) and the interpreter/binary is
+      #     absent; also how it reports an unreadable makefile. End-anchored, and
+      #     it is the ONLY form that fires on the greenfield venv case. (The
+      #     shell-mediated variant, `/bin/sh: …: command not found`, already
+      #     matched the shell alternative at the head of this pattern — verified,
+      #     not assumed. `command not found` is carried here for makes that
+      #     phrase it that way; GNU 3.81 and 4.4.1 measurably do not.)
+      #   • `^g?make(\[N\])?: \*\*\* \[.*\] Error 127$` — 127 is the shell's
+      #     universal command-not-found status, which 4.x propagates into make's
+      #     own line. Deliberately NOT `Error 1`/`Error 2`: those are what a
+      #     genuine failing suite returns. Kept even though 3.81 reports a dead
+      #     exec as `Error 1`, because on 4.x it is a positive, exit-code-true
+      #     signal and it cannot collide with a real runner's status.
+      # Like every alternative above it, these only ever REJECT MORE reds — the
+      # kind moves runner-red ⇒ env-failure, i.e. proof ⇒ INCONCLUSIVE, and
+      # `proof_fail_first_missing_module`'s conjunct 4 re-asks THIS detector, so
+      # a widened arm makes that narrowing refuse more too. No consumer of
+      # red_gate_env_failure turns an env verdict into a pass.
+      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate|^g?make(\[[0-9]+\])?: \*\*\* (No rule to make target |No targets specified and no makefile found)|^g?make(\[[0-9]+\])?: .*: (No such file or directory|command not found)$|^g?make(\[[0-9]+\])?: \*\*\* \[.*\] Error 127$' ;;
     assertion)
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs

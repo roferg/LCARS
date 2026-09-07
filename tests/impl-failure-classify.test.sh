@@ -21,6 +21,7 @@ SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
 # classify runner_out [files_written] [worker_out] -> echoes the category
 classify() {
@@ -174,6 +175,147 @@ env_detect 'ModuleNotFoundError: No module named pytest' && ok "6. env: Python M
   || bad "6. env: Python ModuleNotFoundError matches"
 compile_detect 'IndentationError: unexpected indent' && ok "6. compile: Python IndentationError matches" \
   || bad "6. compile: Python IndentationError matches"
+
+# ==========================================================================
+# S192 — `make:` DIAGNOSTICS THAT MEAN THE RUNNER NEVER RAN
+#
+# THE DEFECT (ledgered by S193 as L2, INHERITED — byte-identical at HEAD —
+# and adopted into S192 because it sits on the arm the capstone drives live).
+# The greenfield python foundation seeds `make test` as the mission's
+# testCommand. On ticket 2's PARENT commit the Makefile (or its target, or the
+# venv the recipe execs) does not exist yet, so make prints its OWN diagnostic
+# and exits non-zero. NOT ONE arm of the env pattern matched those, so
+# proof_parent_red_kind fell through to `runner-red` — which the flip-flop gate
+# reads as PROOF that a genuine test ran and failed. A parent commit with no
+# runner manufactured a flip-flop that never happened.
+#
+# THE CRUX, and the reason every buffer below is CAPTURED from a real `make`
+# run at test time rather than typed from memory: make prints the SAME
+# recipe-failed line (`make: *** [test] Error 1`) whether its recipe could not
+# be EXECUTED at all or whether it ran a real test runner that failed an
+# assertion. Only make's own *runner-absent* lines discriminate, so those are
+# what the env arm matches — never the exit-status line, never `Error 1`.
+# MEASURED HERE: GNU Make 3.81 (macOS /usr/bin/make) reports a failed exec as
+# `Error 1`; GNU Make 4.4.1 reports the same failure as `Error 127`. An
+# exit-code rule would therefore be wrong on 3.81 in one direction and is
+# unnecessary on 4.4.1 in the other.
+#
+# Offline and free: `make` is a local binary, each capture is a few
+# milliseconds, and nothing here spawns a worker or touches the network.
+# ==========================================================================
+echo
+echo "S192 — make's own runner-absent diagnostics are ENV failures (REAL make, captured here)"
+
+MKROOT="$(mktemp -d)"
+trap 'rm -rf "$MKROOT"' EXIT
+
+mk_run() { # make-bin  case-name  makefile-content ('' = no Makefile) → REAL bytes
+  local mkbin="$1" name="$2" content="$3" d="$MKROOT/$2"
+  mkdir -p "$d"
+  [ -n "$content" ] && printf '%s' "$content" > "$d/Makefile"
+  ( cd "$d" && "$mkbin" test 2>&1 )
+}
+
+# One body of proofs, run against EVERY make on this box (`make` and, when
+# installed, `gmake` — GNU 3.81 and 4.x phrase and quote these differently:
+# 3.81 writes `No rule to make target \`test'` with a backtick, 4.x writes
+# `'test'`, and 4.x adds `[Makefile:2: test]` where 3.81 writes `[test]`).
+make_arm_proofs() { # make-bin  label
+  local mkbin="$1" L="$2" cap
+
+  cap="$(mk_run "$mkbin" "$L-norule" '')"
+  env_detect "$cap" \
+    && ok "M1 ($L). no Makefile at all → 'No rule to make target' is an env failure" \
+    || bad "M1 ($L). runner-absent 'No rule to make target' NOT kinded env: $(printf '%s' "$cap" | tr '\n' '|')"
+
+  cap="$(mk_run "$mkbin" "$L-notarget" "$(printf 'all:\n\t@echo hi\n')")"
+  env_detect "$cap" \
+    && ok "M2 ($L). Makefile present but NO test target → env failure" \
+    || bad "M2 ($L). missing test target NOT kinded env: $(printf '%s' "$cap" | tr '\n' '|')"
+
+  cap="$(mk_run "$mkbin" "$L-nointerp" "$(printf 'test:\n\t.venv/bin/python -m unittest discover\n')")"
+  env_detect "$cap" \
+    && ok "M3 ($L). recipe's interpreter is absent → env failure" \
+    || bad "M3 ($L). absent interpreter NOT kinded env: $(printf '%s' "$cap" | tr '\n' '|')"
+
+  cap="$(mk_run "$mkbin" "$L-nobin" "$(printf 'test:\n\tlcars-s192-no-such-runner\n')")"
+  env_detect "$cap" \
+    && ok "M4 ($L). recipe's binary is absent (make execs it directly) → env failure" \
+    || bad "M4 ($L). absent binary NOT kinded env: $(printf '%s' "$cap" | tr '\n' '|')"
+
+  cap="$(mk_run "$mkbin" "$L-shellcnf" "$(printf 'test:\n\tlcars-s192-no-such-runner && echo done\n')")"
+  env_detect "$cap" \
+    && ok "M5 ($L). recipe's binary absent via the SHELL (command not found) → env failure" \
+    || bad "M5 ($L). shell command-not-found NOT kinded env: $(printf '%s' "$cap" | tr '\n' '|')"
+
+  mkdir -p "$MKROOT/$L-submake/sub"
+  printf 'all:\n\t@echo hi\n' > "$MKROOT/$L-submake/sub/Makefile"
+  cap="$(mk_run "$mkbin" "$L-submake" "$(printf 'test:\n\t$(MAKE) -C sub test\n')")"
+  env_detect "$cap" \
+    && ok "M6 ($L). SUB-make prefix (make[1]:/gmake[1]:) → env failure" \
+    || bad "M6 ($L). sub-make prefix NOT kinded env: $(printf '%s' "$cap" | tr '\n' '|')"
+
+  # THE LOAD-BEARING NEGATIVE: make's recipe RAN a real test runner and that
+  # runner failed an assertion. make still prints `*** [test] Error 1`. This is
+  # a GENUINE red and the gate must keep reading it as proof.
+  if have python3; then
+    local d="$MKROOT/$L-genuine"
+    mkdir -p "$d/tests"
+    printf 'import unittest\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1 + 1, 3)\n' > "$d/tests/test_x.py"
+    cap="$(mk_run "$mkbin" "$L-genuine" "$(printf 'test:\n\tpython3 -m unittest discover -s tests\n')")"
+    if printf '%s' "$cap" | grep -q 'FAILED (failures=1)'; then
+      if env_detect "$cap"; then
+        bad "M7 ($L). A GENUINE RED WAS SWALLOWED AS AN ENV FAILURE: $(printf '%s' "$cap" | tr '\n' '|')"
+      else ok "M7 ($L). recipe RAN a real runner that failed an assertion → NOT env (still a genuine red)"; fi
+      expect_cat "M7b ($L). …and it classifies as a genuine assertion red" \
+        "genuine-red-exhausted" "$(classify "$cap" "$(printf 'tests/test_x.py\n')")"
+    else
+      bad "M7 ($L). the captured buffer is not a real unittest failure — M7 proves nothing"
+    fi
+  else
+    printf '  SKIP M7 (%s). python3 absent — the genuine-red-under-make negative did NOT run\n' "$L"
+  fi
+}
+
+MK_BIN="$(command -v make 2>/dev/null || true)"
+GMK_BIN="$(command -v gmake 2>/dev/null || true)"
+if [ -n "$MK_BIN" ]; then make_arm_proofs "$MK_BIN" "make"
+else printf '  SKIP make not installed — the S192 make-arm proofs did NOT run\n'; fi
+if [ -n "$GMK_BIN" ]; then make_arm_proofs "$GMK_BIN" "gmake"
+else printf '  SKIP gmake not installed — the gmake-prefix proofs did NOT run\n'; fi
+
+# --- the anchor is load-bearing: a QUOTED phrase mid-line must never fire ----
+# S185 and S193 both shipped defects that came from unanchored matching, so the
+# new forms are anchored on make's OWN line-start prefix exactly like the npm
+# and shell forms. These attack strings are deliberately HAND-WRITTEN: they are
+# not tool transcripts, they are what a test asserting ON make's error text
+# looks like when it fails, and the gate must still call that a genuine red.
+ATT1="AssertionError: expected 'ok' to equal \"make: *** No rule to make target 'test'.  Stop.\""
+env_detect "$ATT1" \
+  && bad "M8. an assertion QUOTING make's no-rule text mid-line matched the env arm" \
+  || ok "M8. an assertion QUOTING make's no-rule text mid-line does NOT match"
+ATT2="$(printf -- '-      expect(err).toBe("make: .venv/bin/python: No such file or directory")\n+      expect(err).toBe("ok")\n')"
+env_detect "$ATT2" \
+  && bad "M9. a DIFF quoting make's missing-interpreter line matched the env arm" \
+  || ok "M9. a DIFF quoting make's missing-interpreter line does NOT match"
+ATT3="$(printf 'No rule to make target %stest%s.  Stop.\n' "'" "'")"
+env_detect "$ATT3" \
+  && bad "M10. the bare phrase with NO make: prefix matched the env arm" \
+  || ok "M10. the bare phrase with no make: prefix does NOT match (the prefix is the anchor)"
+ATT4="$(printf 'FAIL: test_make_error (tests.test_msg.T)\nAssertionError: %smake: *** [test] Error 1%s != %sok%s\n' "'" "'" "'" "'")"
+env_detect "$ATT4" \
+  && bad "M11. an assertion quoting make's recipe-failed line matched the env arm" \
+  || ok "M11. an assertion quoting make's recipe-failed line does NOT match"
+
+# --- the exit-status line NEVER decides -------------------------------------
+# `Error 1` is what BOTH a dead exec (3.81) and a genuine assertion red (every
+# make) print, so it must not be matched on its own in either direction.
+env_detect "$(printf 'make: *** [Makefile:2: test] Error 1\n')" \
+  && bad "M12. make's bare 'Error 1' line was treated as an env failure" \
+  || ok "M12. make's bare 'Error 1' line alone is NOT an env failure"
+env_detect "$(printf 'make: *** [test] Error 2\n')" \
+  && bad "M13. make's bare 'Error 2' line was treated as an env failure" \
+  || ok "M13. make's bare 'Error 2' line alone is NOT an env failure"
 
 echo
 printf 'impl-failure-classify: %d passed, %d failed\n' "$PASS" "$FAIL"

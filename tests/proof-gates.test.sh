@@ -4158,6 +4158,196 @@ if grep -q 'fires on a commented-out key too' "$SCRIPT"; then
 else ok "X11. the false trigger justification is gone from the source"; fi
 
 # ==========================================================================
+# Z. S192 — `make:` DIAGNOSTICS THAT MEAN THE RUNNER NEVER RAN
+#
+# THE DEFECT. Ledgered by S193 as L2, INHERITED (byte-identical at HEAD, not new
+# to that round) and ADOPTED INTO S192 by captain ruling 2026-09-06 because it
+# sits directly on the arm this capstone drives live: the greenfield PYTHON
+# foundation seeds `make test` as the mission's testCommand.
+#
+# On ticket 2's PARENT commit the Makefile — or its `test` target, or the venv
+# its recipe execs — does not exist yet. make prints its OWN diagnostic and
+# exits non-zero, NOT ONE arm of the env pattern matched it, and
+# proof_parent_red_kind fell through to `runner-red`, which the flip-flop gate
+# reads as PROOF that a genuine test ran and failed. A parent commit with no
+# runner manufactured a flip-flop that never happened.
+#
+# THE CRUX, and why every buffer here is CAPTURED from a real `make` run at test
+# time: make prints the SAME recipe-failed line whether its recipe could not be
+# EXECUTED at all or whether it ran a real test runner that failed an assertion.
+# MEASURED on this box — GNU Make 3.81 (macOS /usr/bin/make) reports a failed
+# exec as `Error 1`, the very line a genuine pytest red also produces; GNU Make
+# 4.4.1 reports the same failed exec as `Error 127`. So the exit-status line
+# cannot decide it in either direction, and the rule keys ONLY on make's own
+# runner-absent lines, anchored on its line-start `make:` / `gmake:` /
+# `make[1]:` prefix the way the npm and shell forms already are.
+#
+# Every case comes in PAIRS: the runner-absent diagnostic that must now be
+# INCONCLUSIVE, and the recipe-ran-and-failed red that must STILL be proof.
+# ==========================================================================
+echo "== Z. S192: make's runner-absent diagnostics never read as PROOF =="
+
+MKROOT="$(mktemp -d "$TMPROOT/s192mk.XXXX")"
+mk_run() { # make-bin case-name makefile-content ('' = no Makefile) → the REAL bytes
+  local mkbin="$1" name="$2" content="$3" d="$MKROOT/$2"
+  mkdir -p "$d"
+  [ -n "$content" ] && printf '%s' "$content" > "$d/Makefile"
+  ( cd "$d" && "$mkbin" test 2>&1 )
+}
+# A python that can `-m pytest`, or '' — the greenfield python foundation's real
+# runner. Overridable so a box without a system pytest can still prove this leg.
+py_pytest() {
+  local p
+  for p in "${LCARS_TEST_PYTEST_PY:-}" python3 python; do
+    [ -n "$p" ] || continue
+    command -v "$p" >/dev/null 2>&1 || continue
+    "$p" -c 'import pytest' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+zmake_kind_proofs() { # make-bin label
+  local mkbin="$1" L="$2" cap k
+  cap="$(mk_run "$mkbin" "$L-norule" '')"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z1 ($L). parent has NO Makefile → env-failure, not proof"
+  else bad "Z1 ($L). A PARENT WITH NO RUNNER READ AS A RED (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"; fi
+
+  cap="$(mk_run "$mkbin" "$L-notarget" "$(printf 'all:\n\t@echo hi\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z2 ($L). Makefile with NO test target → env-failure, not proof"
+  else bad "Z2 ($L). a missing test target read as a red (kind='$k')"; fi
+
+  cap="$(mk_run "$mkbin" "$L-nointerp" "$(printf 'test:\n\t.venv/bin/python -m pytest -q\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z3 ($L). the recipe's venv interpreter is absent → env-failure"
+  else bad "Z3 ($L). an absent interpreter read as a red (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"; fi
+
+  cap="$(mk_run "$mkbin" "$L-nobin" "$(printf 'test:\n\tlcars-s192-no-such-runner\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z4 ($L). the recipe's binary is absent (make execs directly) → env-failure"
+  else bad "Z4 ($L). an absent binary read as a red (kind='$k')"; fi
+
+  mkdir -p "$MKROOT/$L-submake/sub"
+  printf 'all:\n\t@echo hi\n' > "$MKROOT/$L-submake/sub/Makefile"
+  cap="$(mk_run "$mkbin" "$L-submake" "$(printf 'test:\n\t$(MAKE) -C sub test\n')")"
+  k="$(printf '%s' "$cap" | prk 'add.py')"
+  if [ "$k" = env-failure ]; then ok "Z5 ($L). the SUB-make prefix (make[1]:/gmake[1]:) → env-failure"
+  else bad "Z5 ($L). a sub-make no-rule read as a red (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"; fi
+
+  # --- THE PAIR: the recipe RAN a real runner and that runner FAILED ---------
+  if have python3; then
+    mkdir -p "$MKROOT/$L-genuine/tests"
+    printf 'import unittest\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(1 + 1, 3)\n' \
+      > "$MKROOT/$L-genuine/tests/test_x.py"
+    cap="$(mk_run "$mkbin" "$L-genuine" "$(printf 'test:\n\tpython3 -m unittest discover -s tests\n')")"
+    k="$(printf '%s' "$cap" | prk 'add.py')"
+    if printf '%s' "$cap" | grep -q 'FAILED (failures=1)'; then
+      if [ "$k" = env-failure ]; then
+        bad "Z6 ($L). A GENUINE RED WAS SWALLOWED (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"
+      else ok "Z6 ($L). real unittest failed an assertion under make → kind '$k', still proof"; fi
+    else bad "Z6 ($L). the captured buffer is not a real unittest failure — Z6 proves nothing"; fi
+  else
+    skip "Z6 ($L). python3 absent — the genuine-red-under-make pair did NOT run"
+  fi
+
+  # …and the same pair with the foundation's REAL runner, pytest.
+  local pyp; pyp="$(py_pytest || true)"
+  if [ -n "$pyp" ]; then
+    mkdir -p "$MKROOT/$L-pytest/tests"
+    printf 'def test_add():\n    assert 1 + 1 == 3\n' > "$MKROOT/$L-pytest/tests/test_add.py"
+    cap="$(mk_run "$mkbin" "$L-pytest" "$(printf 'test:\n\t%s -m pytest -q\n' "$pyp")")"
+    k="$(printf '%s' "$cap" | prk 'add.py')"
+    if printf '%s' "$cap" | grep -q '1 failed'; then
+      if [ "$k" = env-failure ]; then
+        bad "Z7 ($L). A GENUINE PYTEST RED UNDER MAKE WAS SWALLOWED (kind='$k'): $(printf '%s' "$cap" | tr '\n' '|')"
+      else ok "Z7 ($L). REAL pytest failed an assertion under make → kind '$k', still proof"; fi
+    else bad "Z7 ($L). the captured buffer is not a real pytest failure — Z7 proves nothing"; fi
+  else
+    skip "Z7 ($L). no importable pytest — the real pytest-under-make pair did NOT run (set LCARS_TEST_PYTEST_PY)"
+  fi
+}
+
+Z_MK="$(command -v make 2>/dev/null || true)"
+Z_GMK="$(command -v gmake 2>/dev/null || true)"
+if [ -n "$Z_MK" ]; then zmake_kind_proofs "$Z_MK" "make"
+else skip "Z. make not installed — the S192 make-arm kind proofs did NOT run"; fi
+if [ -n "$Z_GMK" ]; then zmake_kind_proofs "$Z_GMK" "gmake"
+else skip "Z. gmake not installed — the GNU-make-4.x prefix/quoting proofs did NOT run"; fi
+
+# --- Z8. the ANCHOR is load-bearing ----------------------------------------
+# S185 and S193 each shipped a defect that came from unanchored matching. These
+# strings are deliberately HAND-WRITTEN: they are not tool transcripts, they are
+# what a suite asserting ON make's error text looks like when it fails, and that
+# is a GENUINE red the gate must keep reading as proof.
+k="$(printf "AssertionError: expected 'ok' to equal \"make: *** No rule to make target 'test'.  Stop.\"\n" | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8a. an assertion QUOTING make's no-rule text mid-line was kinded env (got '$k')"
+else ok "Z8a. an assertion QUOTING make's no-rule text mid-line stays a genuine red ('$k')"; fi
+k="$(printf -- '-      expect(err).toBe("make: .venv/bin/python: No such file or directory")\n+      expect(err).toBe("ok")\n1 failed\n' | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8b. a DIFF quoting make's missing-interpreter line was kinded env (got '$k')"
+else ok "Z8b. a DIFF quoting make's missing-interpreter line stays a genuine red ('$k')"; fi
+k="$(printf 'No rule to make target %stest%s.  Stop.\n1 failed\n' "'" "'" | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8c. the bare phrase with NO make: prefix was kinded env (got '$k')"
+else ok "Z8c. the bare phrase with no make: prefix stays a genuine red — the prefix IS the anchor"; fi
+k="$(printf 'make: *** [Makefile:2: test] Error 1\n' | prk 'add.py')"
+if [ "$k" = env-failure ]; then bad "Z8d. make's bare 'Error 1' status line alone was kinded env (got '$k')"
+else ok "Z8d. make's bare 'Error 1' status line alone is NOT an env failure"; fi
+
+# --- Z9/Z10. END TO END, at the real flip-flop gate, with `make test` --------
+# This is the defect's own shape: an initialization mission whose ticket 1 never
+# landed, so ticket 2's PARENT carries no Makefile at all.
+if [ -z "$Z_MK" ] || ! have python3; then
+  skip "Z9/Z10. make or python3 absent — the end-to-end 'make test' legs did NOT run"
+else
+  new_mk_repo() { # parent-files-fn → echoes repo dir with the parent committed
+    local repo; repo="$(mktemp -d "$TMPROOT/s192e2e.XXXX")"
+    ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+    printf '__pycache__/\n' > "$repo/.gitignore"
+    printf '# gf\n' > "$repo/README.md"
+    echo "$repo"
+  }
+
+  # Z9. PARENT HAS NO MAKEFILE. The tip is a perfectly good ticket; the parent
+  # simply has no runner. Before the cure this PASSED — `make: *** No rule to
+  # make target 'test'` was recorded as the red that proved the work.
+  repo="$(new_mk_repo)"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  printf 'test:\n\tpython3 -m unittest discover\n' > "$repo/Makefile"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/add.py"
+  printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$repo/test_add.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='make test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" != 0 ] && grep -q '"kind": "env-failure"' "$ffj" 2>/dev/null; then
+    ok "Z9. 'make test' on a parent with NO Makefile → INCONCLUSIVE (a dead runner is not a red)"
+  else bad "Z9. A PARENT WITH NO RUNNER MANUFACTURED A FLIP-FLOP (FFRC=$FFRC): $(tr -d '\n' < "$ffj" | cut -c1-400)"; fi
+
+  # Z10. THE INVARIANT: a repo that HAS a runner is untouched. Same `make test`,
+  # but the Makefile is already on the parent, so the recipe RUNS and produces
+  # the honest fail-first red (`No module named 'add'` — S193's D2 path) beside
+  # make's own `Error 1`. The new forms must not touch it.
+  repo="$(new_mk_repo)"
+  printf 'test:\n\tpython3 -m unittest discover\n' > "$repo/Makefile"
+  printf 'def greet():\n    return "hello"\n' > "$repo/greet.py"
+  printf 'import unittest\nfrom greet import greet\n\nclass T(unittest.TestCase):\n    def test_greet(self):\n        self.assertEqual(greet(), "hello")\n' > "$repo/test_greet.py"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/add.py"
+  printf 'import unittest\nfrom add import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 2), 4)\n' > "$repo/test_add.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD='make test'
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" = 0 ]; then ok "Z10a. a repo that HAS a make runner still PASSES ticket 2 (invariant held)"
+  else bad "Z10a. the flip-flop was weakened for a repo that HAS a runner (FFRC=$FFRC): $(ff_reason "$ffj")"; fi
+  if grep -q '"kind": "env-failure"' "$ffj" 2>/dev/null; then
+    bad "Z10b. make's own Error-1 line turned an honest fail-first red into an env failure"
+  else ok "Z10b. make's Error-1 line beside a real fail-first red is NOT an env failure"; fi
+fi
+
+# ==========================================================================
 echo
 printf 'proof-gates: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
