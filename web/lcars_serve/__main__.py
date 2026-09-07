@@ -27,7 +27,7 @@ import webbrowser
 
 from .local_adapter import LocalAdapter
 from .github_adapter import GitHubAdapter
-from .server import make_server
+from .server import make_server, PortInUseError
 from .actions import build_actions, LogFacts
 from .version_check import VersionChecker
 
@@ -169,10 +169,18 @@ def main(argv=None):
     log_facts = None if actions is not None else build_log_facts(args.adapter,
                                                                  args.repo_root)
 
-    httpd = make_server(adapter, host=args.host, port=args.port,
-                        poll_interval=args.poll_interval, actions=actions,
-                        version_provider=version_provider,
-                        log_facts=log_facts)
+    # S187: a busy port is an ordinary, expected situation (the default 8765 is
+    # fixed, so a second board hits it), not a crash. One plain line and a
+    # non-zero exit — no traceback for the operator to decode.
+    try:
+        httpd = make_server(adapter, host=args.host, port=args.port,
+                            poll_interval=args.poll_interval, actions=actions,
+                            version_provider=version_provider,
+                            log_facts=log_facts)
+    except PortInUseError as exc:
+        sys.stderr.write(exc.lcars_line() + "\n")
+        sys.stderr.flush()
+        return 2
     bound = httpd.server_address
     url = "http://%s:%d/" % (bound[0], bound[1])
     mode = "read-only" if actions is None else "read+write"

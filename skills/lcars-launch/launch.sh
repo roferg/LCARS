@@ -838,6 +838,72 @@ if [ ! -d "$LAUNCH_CWD" ]; then
   die "$msg"
 fi
 
+# --- S187: WHERE IS THE APP ACTUALLY LISTENING? ----------------------------
+# $URL above is a PREDICTION — the discovery worker read the repo's config and
+# guessed. It used to be written into the running record untouched and never
+# checked against reality. That is wrong often enough to matter: a dev server
+# whose configured port is already taken silently bumps to the next one, and the
+# record then points at whatever OTHER app holds the predicted port (measured
+# 2026-09-04: one repo's board handed the captain a different repo's app, because
+# the best-effort probe below "confirmed" the neighbour's server). So we OBSERVE
+# the truth rather than trust the guess: enumerate the launched process GROUP and
+# read its listening sockets.
+#
+# This adds OBSERVATION ONLY. The detached setsid spawn, PID == PGID, the group
+# kill on --stop, the liveness contract and idempotent re-launch are untouched.
+#
+# Darwin BSD userland, bash 3.2: `pgrep -g <pgid>` lists the group's pids and
+# `lsof -a -p <pids> -iTCP -sTCP:LISTEN -P -n` lists their LISTEN sockets. -P/-n
+# keep lsof's NAME column numeric (`127.0.0.1:5173`, `*:5173`, `[::1]:5173`), so
+# the port is simply the text after the last colon. Both tools are asserted by
+# the suite; if either is somehow missing we degrade to today's behaviour (the
+# prediction stands unverified) rather than refuse a launch that is fine.
+LSOF_BIN="$(command -v lsof 2>/dev/null || true)"
+[ -n "$LSOF_BIN" ] || { [ -x /usr/sbin/lsof ] && LSOF_BIN=/usr/sbin/lsof; }
+
+listen_ports_of_group() { # pgid -> ascending unique ports, one per line (may be empty)
+  local pgid="$1" pids
+  [ -n "$LSOF_BIN" ] || return 0
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pids="$(pgrep -g "$pgid" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+  [ -n "$pids" ] || return 0
+  "$LSOF_BIN" -a -p "$pids" -iTCP -sTCP:LISTEN -P -n 2>/dev/null \
+    | awk 'NR > 1 { n = split($9, a, ":"); p = a[n]; if (p ~ /^[0-9]+$/) print p }' \
+    | sort -n -u
+}
+
+url_port() { # url -> its explicit port, or empty
+  local rest="$1" hostport port
+  case "$rest" in *://*) rest="${rest#*://}" ;; esac
+  hostport="${rest%%/*}"
+  case "$hostport" in
+    \[*\]:*) port="${hostport##*]:}" ;;   # [::1]:5173
+    \[*\])   port="" ;;                   # [::1]
+    *:*)     port="${hostport##*:}" ;;
+    *)       port="" ;;
+  esac
+  case "$port" in ''|*[!0-9]*) port="" ;; esac
+  printf '%s\n' "$port"
+}
+
+url_with_port() { # url port -> the same url with that port (scheme/host/path kept)
+  local u="$1" p="$2" scheme rest hostport path host
+  case "$u" in
+    *://*) scheme="${u%%://*}"; rest="${u#*://}" ;;
+    *)     scheme="http";       rest="$u" ;;
+  esac
+  case "$rest" in
+    */*) hostport="${rest%%/*}"; path="/${rest#*/}" ;;
+    *)   hostport="$rest";       path="" ;;
+  esac
+  case "$hostport" in
+    \[*\]*) host="${hostport%%]*}]" ;;    # keep an IPv6 literal intact
+    *)      host="${hostport%%:*}" ;;
+  esac
+  [ -n "$host" ] || host="localhost"
+  printf '%s://%s:%s%s\n' "$scheme" "$host" "$p" "$path"
+}
+
 : > "$LOG"
 # macOS has no setsid(1): perl POSIX::setsid makes the child its own session &
 # process-group leader (PGID == PID), so the whole tree can be group-killed on
@@ -861,9 +927,17 @@ INTERVAL="$(awk -v w="$SETTLE" 'BEGIN{i=0.3; if(w+0<i)i=w+0; if(i<=0)i=0.05; pri
 ITERS="$(awk -v w="$SETTLE" -v i="$INTERVAL" 'BEGIN{n=(i>0)?int((w+0)/i+0.9999):1; if(n<1)n=1; print n}')"
 alive=1
 k=0
+# S187: the socket is looked for on EVERY tick of this same window, not sampled
+# once after the spawn — a real dev server reaches listen() a second or two in,
+# long after the first sample, and one sample would call every one of them
+# "nothing listening". FIRST bind wins: once the group is listening we stop
+# looking, but we NEVER shorten the liveness poll (only a process that survives
+# the WHOLE window is declared running — that contract is unchanged).
+LISTEN_PORTS=""
 while [ "$k" -lt "$ITERS" ]; do
   nap "$INTERVAL"
   if ! kill -0 "$PID" 2>/dev/null; then alive=0; break; fi
+  [ -n "$LISTEN_PORTS" ] || LISTEN_PORTS="$(listen_ports_of_group "$PGID")"
   k=$((k + 1))
 done
 if [ "$alive" -eq 0 ]; then
@@ -874,7 +948,50 @@ if [ "$alive" -eq 0 ]; then
   die "$msg"
 fi
 
+# --- S187: reconcile the PREDICTION against the socket we observed ----------
+# The prediction is never thrown away — it is demoted to `predictedUrl` so the
+# record is honest about both what was guessed and what is true.
+PREDICTED_URL="$URL"
+URL_NOTE=""
+if [ -n "$LISTEN_PORTS" ]; then
+  # WHICH port, when one group listens on several (an HMR socket, a debugger, an
+  # API sidecar beside the server)? Deterministic rule, in this order:
+  #   1. the PREDICTED port, if the group really is listening on it — that means
+  #      the guess was RIGHT, and the guess is the one thing here that knows
+  #      which of several sockets a human is meant to open;
+  #   2. otherwise the LOWEST port in the group — stable run to run (the list is
+  #      sorted numerically), and in practice the primary server, since sidecars
+  #      and debuggers bind higher.
+  # Many ports never crash it: the list is just longer.
+  PRED_PORT="$(url_port "$URL")"
+  if [ -n "$PRED_PORT" ] && printf '%s\n' "$LISTEN_PORTS" | grep -qx "$PRED_PORT"; then
+    ACTUAL_PORT="$PRED_PORT"
+  else
+    ACTUAL_PORT="$(printf '%s\n' "$LISTEN_PORTS" | head -1)"
+  fi
+  if [ -n "$URL" ]; then
+    URL="$(url_with_port "$URL" "$ACTUAL_PORT")"
+  else
+    # Nothing was predicted, but the app IS serving — say where, rather than
+    # leave the captain with a running app and no address.
+    URL="http://localhost:$ACTUAL_PORT"
+  fi
+  if [ -n "$PREDICTED_URL" ] && [ "$URL" != "$PREDICTED_URL" ]; then
+    # NOT a failure: the app is fine, the guess was wrong. Status stays running.
+    URL_NOTE="the launch inspector predicted $PREDICTED_URL, but the app is actually listening on $URL"
+  fi
+elif [ -n "$PREDICTED_URL" ]; then
+  # The process group is alive but holds no listening socket. Publishing the
+  # guess anyway is exactly how a board ends up linking someone else's app, so
+  # the url is emptied and the record says why in plain English.
+  URL=""
+  URL_NOTE="app is running but nothing in its process group is listening — predicted $PREDICTED_URL not verified"
+fi
+
 # Best-effort URL probe (never gates success): give a served URL a moment.
+# S187: this now probes the VERIFIED url. It used to probe the PREDICTION, which
+# is what made a colliding launch look "confirmed" — the 200 came from the other
+# repo's app. Still best-effort; it has never gated and still does not.
 if [ -n "$URL" ] && command -v curl >/dev/null 2>&1; then
   curl -sf -m 2 "$URL" >/dev/null 2>&1 || true
 fi
@@ -889,6 +1006,15 @@ fi
   fi
   printf '  "target": "%s",\n'    "$(json_esc "$TARGET")"
   printf '  "url": "%s",\n'       "$(json_esc "$URL")"
+  # S187: what the inspector GUESSED, kept beside what was VERIFIED. Additive —
+  # the board's launch payload names the fields it renders, so this is ignored
+  # there; it exists so the record can never quietly lose the prediction.
+  printf '  "predictedUrl": "%s",\n' "$(json_esc "$PREDICTED_URL")"
+  # Present ONLY when the observation disagreed with the guess (same shape as
+  # the "provisioning" note below), so an ordinary verified launch records
+  # nothing new to explain.
+  [ -n "$URL_NOTE" ] \
+    && printf '  "urlNote": "%s",\n' "$(json_esc "$URL_NOTE")"
   printf '  "howToStop": "%s",\n' "$(json_esc "$HOWSTOP")"
   printf '  "command": "%s",\n'   "$(json_esc "$CMD")"
   printf '  "cwd": "%s",\n'       "$(json_esc "$CWD")"
@@ -914,6 +1040,9 @@ else
   printf 'LCARS — mission app online. The %s is on the viewscreen.\n' "${TARGET:-app}"
 fi
 [ -n "$URL" ] && printf '  On screen:  %s\n' "$URL"
+# S187: the captain hears about a wrong guess (or an app that serves nothing) the
+# moment it happens, instead of discovering it by opening the wrong app.
+[ -n "$URL_NOTE" ] && printf '  ⚠ Heads up — %s.\n' "$URL_NOTE"
 if [ "$MAIN" -eq 1 ]; then
   # NB: keep this default apostrophe-free — an apostrophe in a ${VAR:-default}
   # default trips bash 3.2's parser (see the same guard in write_failed above).

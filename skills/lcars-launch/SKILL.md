@@ -93,7 +93,9 @@ Written to `.git/lcars/missions/<mission>/launch.json`:
 {
   "status":    "ready|running|failed|stopped",
   "target":    "example-game dev server",
-  "url":       "http://localhost:5173",
+  "url":       "http://localhost:5174",
+  "predictedUrl": "http://localhost:5173",
+  "urlNote":   "plain English, present only when the guess and the socket disagreed",
   "howToStop": "Ctrl-C in the window, or lcars launch <id> --stop",
   "command":   "npm run dev",
   "cwd":       "example-game",
@@ -112,6 +114,30 @@ augments it with `pid`, `pgid`, `log`, `startedAt`, `worktree` and flips
 `status` `ready → running` (or `→ failed` on instant death). The viewscreen
 daemon (a later session) reads `status`, `target`, `url`, and `message`, so those
 always persist.
+
+### `url` is VERIFIED, not predicted (S187)
+
+The worker's `url` is a **guess** read out of config. A dev server whose port is
+already taken silently binds the next one, and a record that published the guess
+pointed at whatever *other* app held that port — one repo's board handing the
+captain a different repo's app. So the skill **observes** instead: across the
+same liveness-poll window it enumerates the launched process group
+(`pgrep -g <pgid>`) and reads its LISTEN sockets (`lsof`), then
+
+- **rewrites `url`'s port** to the observed one, keeping the predicted scheme,
+  host and path (and synthesizing `http://localhost:<port>` when nothing was
+  predicted). Several ports in one group: the predicted port wins if the group
+  really holds it, else the lowest.
+- **keeps the guess as `predictedUrl`**, always — the record never loses it.
+- **empties `url`** when the group holds no listening socket at all, with a
+  `urlNote` saying the prediction went unverified. The app is still `running`;
+  `pid`/`pgid`, `--stop` and re-launch are unchanged.
+- **adds `urlNote`** whenever the observation disagreed with the guess, and says
+  the same thing in the readout. A wrong guess is never a failure.
+
+The best-effort curl probe targets the **verified** url (it still never gates).
+The viewscreen renders `url` as before; `predictedUrl`/`urlNote` are additive and
+the board's launch payload does not carry them.
 
 ## Where a deploy lives — beside the repo, never inside `.git/`
 
