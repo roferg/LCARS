@@ -896,6 +896,279 @@ else
 fi
 
 # ===========================================================================
+# J. A REFUSED ESTABLISH ATTEMPT IS RETRYABLE, NOT TERMINAL (S194)
+# ===========================================================================
+# MEASURED on live Copilot, 2026-09-06: an initialization mission's scaffold
+# ticket was INVITED to establish the repo's test system, the harness REFUSED
+# what it declared — three arms, three DIFFERENT and CORRECT reasons — and the
+# mission went TERMINAL on the first refusal. Retried by hand with the SAME
+# repo, the SAME idea file and the SAME answers, js and go BOTH SUCCEEDED. So
+# the contract is satisfiable and the worker is simply inconsistent: a refusal
+# is a bounce, exactly like every other proof-gate rejection, not a park.
+#
+# Reusing the EXISTING machinery: the implement loop already bounces a rejected
+# ticket to a FRESH worker up to MAX_WORKER_TRIES sessions and then parks
+# awaiting-human, feeding the harness's own verdict forward through
+# tickets/<id>/gate-signal.txt → the "## GATE FEEDBACK" block of the next
+# worker's prompt. Nothing new is invented here.
+#
+# ZERO SPEND: a scripted stub on $LCARS_WORKER_BIN, with the counting PATH shim
+# still underneath it so a slip lands on the fuse (G1) rather than on a bill.
+
+# A greenfield initialization mission: no test command anywhere, no workspace
+# marker, t-001 is the scaffold ticket by wave order.
+gf_repo() { # -> repo dir
+  local r; r="$(new_mission_repo initialization t-001 t-002)"
+  cat > "$r/.git/lcars/missions/m-001/approved-plan.json" <<'JSON'
+{ "tickets": [ { "id": "t-001", "title": "establish the test system",
+                 "description": "scaffold", "acceptanceCriteria": ["a runner exists"] },
+               { "id": "t-002", "title": "later", "description": "d",
+                 "acceptanceCriteria": ["x"] } ] }
+JSON
+  echo "$r"
+}
+
+# The scripted scaffold worker. $GF_MODE picks WHICH measured refusal it
+# reproduces; $GF_PROMPT_LOG captures every implement-tdd prompt VERBATIM, so
+# the assertions below read the ACTUAL prompt the next worker was handed.
+GFW="$TMPROOT/gf-worker.sh"
+cat > "$GFW" <<'SH'
+#!/usr/bin/env bash
+prompt="$2"          # claude adapter argv: -p <prompt> …
+out="${LCARS_WORK_OUT:-}"
+if [ "${LCARS_WORKER_ROLE:-}" = implement-tdd ] && [ -n "$out" ]; then
+  n=1
+  if [ -n "${GF_PROMPT_LOG:-}" ]; then
+    [ -f "$GF_PROMPT_LOG" ] || : > "$GF_PROMPT_LOG"
+    n=$(( $(grep -c '^=== GF SPAWN ' "$GF_PROMPT_LOG") + 1 ))
+    { printf '=== GF SPAWN %s ===\n' "$n"; printf '%s\n' "$prompt"; } >> "$GF_PROMPT_LOG"
+  fi
+  case "${GF_MODE:-undetectable}" in
+    none) : ;;   # declares NOTHING — the measured `go` refusal
+    undetectable)
+      # the measured `js` refusal: files land, but LCARS's own detector finds
+      # no test command at the root afterwards.
+      mkdir -p "$out/setup"; printf 'notes\n' > "$out/setup/NOTES.md"
+      printf '{ "package": "", "gap": "no runner", "installCommand": "" }\n' > "$out/test-setup.json" ;;
+    heal)
+      # refused once, then RIGHT — the retry the captain performed by hand.
+      mkdir -p "$out/setup"
+      if [ "$n" = 1 ]; then
+        printf 'notes\n' > "$out/setup/NOTES.md"
+      else
+        printf '{ "name": "gf", "private": true, "scripts": { "test": "node --test" } }\n' \
+          > "$out/setup/package.json"
+      fi
+      printf '{ "package": "", "gap": "no runner", "installCommand": "" }\n' > "$out/test-setup.json" ;;
+  esac
+  cat > "$out/result.json" <<'JSON'
+{ "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "scaffold",
+  "newTests": [], "testEdits": [], "flipFlop": "not-applicable",
+  "flipFlopReason": "this ticket creates the test system, so its parent has no runner" }
+JSON
+fi
+echo "gf stub done"
+exit 0
+SH
+chmod +x "$GFW"
+
+gf_ticket() { # repo mode tries -> GFRC + OUT (+ $GF_PROMPT_LOG filled)
+  local r="$1" mode="$2" tries="$3"
+  OUT="$( cd "$r" && env PATH="$SHIM:$PATH" \
+            LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+            LCARS_WORKER_BIN="$GFW" LCARS_WORKER_CLI=claude \
+            LCARS_EMPTY_WORKER_TRIES=1 LCARS_WORKER_TRIES="$tries" \
+            GF_MODE="$mode" GF_PROMPT_LOG="$GF_PROMPT_LOG" \
+            bash "$SCRIPT" implement-ticket --mission m-001 --ticket t-001 2>&1 )"
+  GFRC=$?
+}
+gf_spawns() { grep -c '^=== GF SPAWN ' "$GF_PROMPT_LOG" 2>/dev/null || echo 0; }
+gf_prompt() { # n -> that spawn's prompt text
+  awk -v n="$1" '/^=== GF SPAWN /{k=$4+0} k==n' "$GF_PROMPT_LOG" 2>/dev/null
+}
+gf_pending() { cat "$1/.git/lcars/missions/m-001/pending.json" 2>/dev/null; }
+
+# --- J1. THE BOUNCE ---------------------------------------------------------
+# The measured `js` refusal. Today this parks on refusal #1 with ONE hire.
+GF_PROMPT_LOG="$TMPROOT/gf-j1.log"; : > "$GF_PROMPT_LOG"
+j1repo="$(gf_repo)"
+gf_ticket "$j1repo" undetectable 3
+if [ "$(gf_spawns)" = 3 ]; then
+  ok "J1a. a REFUSED establish attempt bounces to a FRESH worker (3 sessions, not 1)"
+else
+  bad "J1a. refusal is still terminal — $(gf_spawns) worker session(s), expected 3 (rc=$GFRC): $(printf '%s' "$OUT" | tail -3)"
+fi
+if gf_prompt 2 | grep -q 'leaves no test command LCARS can detect at the repo root'; then
+  ok "J1b. the REFUSAL REASON reaches the next worker's prompt, verbatim"
+else
+  bad "J1b. session 2 was hired knowing nothing about the refusal: $(gf_prompt 2 | tail -3)"
+fi
+if gf_prompt 1 | grep -q 'leaves no test command LCARS can detect'; then
+  bad "J1c. the FIRST session's prompt already carried a refusal it never caused"
+else
+  ok "J1c. …and session 1's prompt is unchanged (no refusal block on a first hire)"
+fi
+
+# --- J2. THE CAP still parks awaiting-human, with the tailored park ---------
+if grep -q '"awaitingHuman": *true' "$j1repo/.git/lcars/missions/m-001/state.json"; then
+  ok "J2a. at the retry cap the mission PARKS awaiting-human (bounded, not a loop)"
+else
+  bad "J2a. no park after the cap (rc=$GFRC): $(printf '%s' "$OUT" | tail -4)"
+fi
+if gf_pending "$j1repo" | grep -q 'could not establish this repo.s test system'; then
+  ok "J2b. …through the INITIALIZATION park, not the generic gate-cap park"
+else
+  bad "J2b. the cap park is not the greenfield one: $(gf_pending "$j1repo" | tr -d '\n' | head -c 300)"
+fi
+if gf_pending "$j1repo" | grep -q 'leaves no test command LCARS can detect'; then
+  ok "J2c. …and it quotes the LAST refusal reason to the captain"
+else
+  bad "J2c. the park does not carry the refusal reason"
+fi
+if [ "$(cd "$j1repo" && git log --oneline 2>/dev/null | wc -l | tr -d ' ')" = 1 ]; then
+  ok "J2d. a refused attempt COMMITTED NOTHING (still just the initial commit)"
+else
+  bad "J2d. a refused establish attempt reached a commit"
+fi
+
+# --- J3. THE `go` REFUSAL (no manifest at all) bounces the same way ---------
+GF_PROMPT_LOG="$TMPROOT/gf-j3.log"; : > "$GF_PROMPT_LOG"
+j3repo="$(gf_repo)"
+gf_ticket "$j3repo" none 3
+if [ "$(gf_spawns)" = 3 ]; then
+  ok "J3a. a session that declared NOTHING also bounces to a fresh worker"
+else
+  bad "J3a. no-declaration refusal is still terminal — $(gf_spawns) session(s)"
+fi
+if gf_prompt 2 | grep -q 'no test-setup.json'; then
+  ok "J3b. …and the next worker is told exactly that"
+else
+  bad "J3b. the no-declaration reason did not reach session 2"
+fi
+
+# --- J4. THE CAP IS THE CAP ------------------------------------------------
+GF_PROMPT_LOG="$TMPROOT/gf-j4.log"; : > "$GF_PROMPT_LOG"
+j4repo="$(gf_repo)"
+gf_ticket "$j4repo" undetectable 1
+if [ "$(gf_spawns)" = 1 ] && grep -q '"awaitingHuman": *true' "$j4repo/.git/lcars/missions/m-001/state.json"; then
+  ok "J4. with a 1-session cap it hires ONCE and parks — the bound is honoured"
+else
+  bad "J4. cap not honoured: $(gf_spawns) session(s), rc=$GFRC"
+fi
+
+# --- J5. A REFUSED ATTEMPT LEAVES NO FILES BEHIND --------------------------
+# The `js` refusal fires AFTER the declared files are copied to the root. Left
+# there, the very next session's identical declaration is refused by ADD-only
+# instead — so the retry could never converge and the reason fed forward would
+# be about the harness's own litter. Discriminating assertion: the SECOND
+# refusal must still be the DETECT one.
+GF_PROMPT_LOG="$TMPROOT/gf-j5.log"; : > "$GF_PROMPT_LOG"
+j5repo="$(gf_repo)"
+gf_ticket "$j5repo" undetectable 3
+if [ ! -e "$j5repo/NOTES.md" ]; then
+  ok "J5a. a refused setup's files are ROLLED BACK off the repo root"
+else
+  bad "J5a. the refused setup left NOTES.md at the root"
+fi
+if gf_prompt 3 | grep -q 'leaves no test command LCARS can detect' \
+   && ! gf_prompt 3 | grep -q 'already exists in the package'; then
+  ok "J5b. …so session 3 is told the REAL refusal, not ADD-only on our own litter"
+else
+  bad "J5b. the retry now trips over the previous attempt's files"
+fi
+
+# --- J6. AND THE RETRY ACTUALLY FIXES IT (the measured live outcome) -------
+GF_PROMPT_LOG="$TMPROOT/gf-j6.log"; : > "$GF_PROMPT_LOG"
+j6repo="$(gf_repo)"
+gf_ticket "$j6repo" heal 3
+if [ -f "$j6repo/.git/lcars/missions/m-001/test-command.json" ]; then
+  ok "J6a. a second session that gets it right ESTABLISHES the runner"
+else
+  bad "J6a. the retry could not establish a runner (rc=$GFRC): $(printf '%s' "$OUT" | tail -4)"
+fi
+if [ -f "$j6repo/package.json" ]; then
+  ok "J6b. …and its declared setup landed at the repo root"
+else
+  bad "J6b. the healing setup was not applied"
+fi
+
+# ===========================================================================
+# K. THE CIRCULAR-ADVICE HOLE (S194 part 2)
+# ===========================================================================
+# MEASURED: re-running after a failed t-001 gave the captain the generic S182
+# wall — "This mission cannot start: no test command is configured…" plus the
+# readiness verdict "…the first mission here is an initialization mission…
+# Start it with Establish Vision." THIS MISSION IS THAT MISSION. S185 built
+# GREENFIELD_REFUSAL_NOTE for exactly this and covered only the workspace-root
+# refusal; the once-per-mission LATCH returns 1 with an EMPTY note, so a
+# post-refusal re-run got the circular advice with nothing attached.
+k_park() { OUT="$( cd "$1" && env PATH="$SHIM:$PATH" LCARS_GH_BIN=true \
+                     bash "$SCRIPT" implement --mission m-001 2>&1 )"; KRC=$?; }
+
+krepo="$(gf_repo)"
+kmd="$krepo/.git/lcars/missions/m-001"
+printf '{"package":"","gap":"refused","installCommand":""}\n' > "$kmd/test-setup-applied.json"
+printf '%s\n' "the declared setup leaves no test command LCARS can detect at the repo root" > "$kmd/test-setup-refused.txt"
+printf '3\n' >> "$kmd/test-setup-refused.txt"
+k_park "$krepo"
+if [ "$KRC" = 0 ] && grep -q '"awaitingHuman": *true' "$kmd/state.json"; then
+  ok "K1. a post-refusal re-run still parks (rc 0, not a die)"
+else
+  bad "K1. no park on the re-run (rc=$KRC): $(printf '%s' "$OUT" | tail -4)"
+fi
+if gf_pending "$krepo" | grep -q 'Why this INITIALIZATION mission did not establish one itself'; then
+  ok "K2. the park EXPLAINS why the initialization mission established nothing"
+else
+  bad "K2. gf_note is still EMPTY on the latch path: $(gf_pending "$krepo" | tr -d '\n' | head -c 400)"
+fi
+if gf_pending "$krepo" | grep -q 'leaves no test command LCARS can detect at the repo root'; then
+  ok "K3. …quoting the actual refusal that ended the attempts"
+else
+  bad "K3. the recorded refusal reason is not surfaced"
+fi
+if gf_pending "$krepo" | grep -q 'Start it with Establish Vision'; then
+  bad "K4. THE CIRCULAR ADVICE IS STILL THERE — told to start the mission they are in"
+else
+  ok "K4. the circular \"Start it with Establish Vision\" advice is GONE"
+fi
+if gf_pending "$krepo" | grep -qi 'retries are spent\|no further session'; then
+  ok "K5. …and it says the attempts are EXHAUSTED, so the park is reachable only after retries"
+else
+  bad "K5. the park does not say the establishment budget is spent"
+fi
+
+# --- K6/K7. REGRESSION: the addition is EMPTY BY DEFAULT --------------------
+# An initialization mission whose latch is closed but which recorded NO refusal
+# (the door was never refused — e.g. a setup applied and later adopted) keeps
+# the S182 park byte-for-byte, and so does a NORMAL mission.
+k6repo="$(gf_repo)"
+printf '{"package":"","gap":"g","installCommand":""}\n' \
+  > "$k6repo/.git/lcars/missions/m-001/test-setup-applied.json"
+k_park "$k6repo"
+if gf_pending "$k6repo" | grep -q 'no test command is configured for this repo' \
+   && ! gf_pending "$k6repo" | grep -q 'Why this INITIALIZATION mission'; then
+  ok "K6. a latch with NO recorded refusal keeps the exact S182 park"
+else
+  bad "K6. a note leaked into a park with no refusal behind it"
+fi
+k7repo="$(new_mission_repo "" t-one)"
+printf '{"package":"","gap":"g","installCommand":""}\n' \
+  > "$k7repo/.git/lcars/missions/m-001/test-setup-applied.json"
+printf 'some refusal\n1\n' > "$k7repo/.git/lcars/missions/m-001/test-setup-refused.txt"
+k_park "$k7repo"
+if gf_pending "$k7repo" | grep -q 'no test command is configured for this repo' \
+   && ! gf_pending "$k7repo" | grep -qi 'Why this INITIALIZATION mission\|refused to establish'; then
+  ok "K7. a NORMAL mission's park is byte-identical — never reads the init records"
+else
+  bad "K7. the S182 park changed for a normal mission: $(gf_pending "$k7repo" | tr -d '\n' | head -c 300)"
+fi
+if gf_pending "$k7repo" | grep -q 'Start it with Establish Vision'; then
+  ok "K8. …and a normal mission still gets the readiness verdict it always got"
+else
+  bad "K8. the readiness verdict was dropped from a park it belongs in"
+fi
+
+# ===========================================================================
 # G. ZERO SPEND
 # ===========================================================================
 n="$(spends)"

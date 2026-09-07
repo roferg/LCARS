@@ -7969,6 +7969,25 @@ greenfield_workspace_marker() { # root → the marker name, or ""
 # retires all the mission-local carrying the old design needed.
 greenfield_cmd_record() { printf '%s/test-command.json' "${MISSION_DIR:-}"; }
 
+# S194 — THE DURABLE RECORD OF A SPENT ESTABLISHMENT BUDGET.
+# A refused establish attempt is now RETRYABLE (see cmd_implement_ticket), so the
+# only refusal that ends a mission is the one at the retry cap. That refusal has
+# to outlive the process: the captain's next `lcars run` is a NEW process, it
+# finds the once-per-mission latch closed, and without this it had nothing to say
+# but the generic S182 wall — which tells an initialization mission's captain to
+# go and start an initialization mission. Two lines: the last refusal reason, and
+# how many sessions were spent on it.
+greenfield_refusal_record() { printf '%s/test-setup-refused.txt' "${MISSION_DIR:-}"; }
+greenfield_record_refusal() { # note  sessions
+  local rec; rec="$(greenfield_refusal_record)"
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  # LINE 1 IS THE REASON, LINE 2 IS THE COUNT — so any newline inside the reason
+  # would silently become the count. Collapse it to one line on the way in.
+  { printf '%s\n' "$(printf '%s' "$1" | tr '\n' ' ')"; printf '%s\n' "${2:-}"; } \
+    >"$rec" 2>/dev/null || :
+  return 0
+}
+
 # Re-detect the repo's test command FROM THE TREE — the SAME detector `lcars
 # init` and the readiness verdict use, never a guess of our own. A scaffold
 # ticket must leave behind a runner LCARS can FIND at the root, or nothing
@@ -7999,6 +8018,10 @@ greenfield_record_cmd() { # cmd
   } >"$rec"
   export LCARS_TEST_CMD="$cmd"
   TEST_CMD_ENV="$cmd"
+  # S194 — a later session GOT IT RIGHT, so the earlier refusal is history, not
+  # the mission's standing state. Clear it so no stale reason can be quoted at a
+  # captain whose runner now exists.
+  rm -f "$(greenfield_refusal_record)" 2>/dev/null || :
   emit_event test_system_established implement \
     "test system ESTABLISHED at the repo root by the scaffold ticket (mission-local, NOT written to repo config — \`lcars approve\` promotes it at merge): $cmd" \
     "ticket=${TICKET:-}"
@@ -8058,7 +8081,30 @@ impl_greenfield_invite() { # ticket ("" at the stage level) → 0 invited, 1 not
   # THE ONCE-PER-MISSION LATCH (unchanged, shared with the evidence-gated arm):
   # one establishment attempt per mission, so an initialization mission can never
   # loop hiring workers at a repo that still cannot run a test.
-  [ -f "$MISSION_DIR/test-setup-applied.json" ] && return 1
+  if [ -f "$MISSION_DIR/test-setup-applied.json" ]; then
+    # S194 — THE OTHER REFUSAL PATH, and the one the captain actually hit. The
+    # latch is closed by a SPENT establishment budget (every retry refused), and
+    # this early `return 1` left GREENFIELD_REFUSAL_NOTE empty — so the caller's
+    # park fell back to the generic S182 wall and its readiness verdict, which
+    # ends "Start it with Establish Vision": circular advice to someone already
+    # inside that mission. MEASURED, twice, deterministic.
+    #
+    # The note is set ONLY when a refusal was actually RECORDED. A latch closed
+    # by a setup that was APPLIED (and is simply no longer adoptable) has no
+    # refusal to report, so that park stays byte-identical to S182's.
+    local gf_rec; gf_rec="$(greenfield_refusal_record)"
+    if [ -f "$gf_rec" ]; then
+      local gf_last gf_n
+      gf_last="$(head -1 "$gf_rec" 2>/dev/null)"
+      gf_n="$(sed -n '2p' "$gf_rec" 2>/dev/null)"
+      [ -n "$gf_n" ] || gf_n="several"
+      GREENFIELD_REFUSAL_NOTE="this mission's scaffold ticket ALREADY tried to establish a test system, in $gf_n worker session(s), and the harness refused every one — the last refusal was: $gf_last. Those retries are spent, so LCARS stopped rather than hiring again at the same wall. You are already IN the initialization mission this repo needs; it does not need starting again."
+      emit_event test_setup_invite_refused implement \
+        "initialization mission REFUSED the scaffold door: this mission's establishment budget is spent ($gf_n session(s)) — last refusal: $gf_last" \
+        "ticket=$t" "category=greenfield-retries-exhausted"
+    fi
+    return 1
+  fi
   # At the STAGE level no ticket has been picked yet ($t empty): the stage must
   # not park an initialization mission whose scaffold ticket has not run, so the
   # door opens on the mission type alone and cmd_implement_ticket re-decides
@@ -8097,22 +8143,32 @@ LCARS's test-readiness verdict for this repo: $READINESS_LINE"
 # establish a test system. Distinct from the plain no-runner park: a human was
 # ALREADY told the foundation is what this mission is for, so the question is
 # what went wrong, not "configure a runner".
-impl_park_greenfield_failed() { # ticket  note  runner-output → parks (exits 0)
-  local t="$1" note="$2" out="$3"
+impl_park_greenfield_failed() { # ticket  note  runner-output  [sessions] → parks (exits 0)
+  local t="$1" note="$2" out="$3" tries="${4:-}"
   local subject; subject="$(park_subject "$t")"
   local quoted=""
   [ -n "$out" ] && quoted="
 The runner said:
 $(printf '%s' "$out" | tail -10)"
+  # S194 — this park is now reachable ONLY after the retries are spent, so it
+  # says how many were spent. Built outside the string (bash 3.2 mis-parses an
+  # apostrophe inside a ${var:+…} expansion in a double-quoted string), and empty
+  # when a caller passes no count, so the old wording still stands on its own.
+  local spent=" LCARS stops here rather than hiring another worker to hit the same wall."
+  local spent_sum="No further worker was hired — a second session would hit the same wall."
+  if [ -n "$tries" ]; then
+    spent=" Each refusal was fed back to a FRESH session and the last one still could not get past it, so the $tries-session budget for establishing a test system here is spent — LCARS stops rather than hiring again at the same wall."
+    spent_sum="$tries fresh worker session(s) were given the refusal and could not clear it — the establishment budget is spent."
+  fi
   impl_park_ticket_blocked "$t" \
 "$subject could not establish this repo's test system, so there is still no way to prove any work.
 What the harness refused, and why: $note$quoted
-This mission's whole job is the foundation, so LCARS stops here rather than hiring another worker to hit the same wall.
+This mission's whole job is the foundation.$spent
 What to do next: establish a test runner in this repo yourself and point LCARS at it with \`lcars update --test-command '<command>'\`, then re-run this mission — or answer here with what the setup should be." \
 "The initialization mission could not establish a test system: $note" \
 "$subject is blocked: the initialization mission could not establish a test system ($note) — needs a human." \
 "the declared test setup was refused or did not work" \
-"No further worker was hired — a second session would hit the same wall." \
+"$spent_sum" \
 "greenfield-setup-failed"
 }
 
@@ -8130,8 +8186,16 @@ impl_no_runner_decision() { # subject ("" at the stage level) → parks, OR open
   # Cite the shared verdict whenever there is one, so the implement wall and the
   # init readout can never tell the captain two different stories — as a QUOTED
   # verdict, never as LCARS's own conclusion about what this repo is.
+  # S194 — …EXCEPT when this mission ALREADY tried. The greenfield verdict line
+  # ends "the first mission here is an initialization mission… Start it with
+  # Establish Vision", which is the right thing to tell a captain who has not
+  # started one and exactly the wrong thing to tell a captain standing inside
+  # one whose scaffold ticket just spent its retries. When there IS a refusal
+  # note, the note is the answer and the verdict line is the circle: drop it.
   local why=""
-  [ -n "$READINESS_LINE" ] && why="LCARS's test-readiness verdict for this repo: $READINESS_LINE"
+  if [ -n "$READINESS_LINE" ] && [ -z "${GREENFIELD_REFUSAL_NOTE:-}" ]; then
+    why="LCARS's test-readiness verdict for this repo: $READINESS_LINE"
+  fi
   # S185 fix round 1 (D3) — SURFACE THE REFUSAL. impl_greenfield_invite sets
   # GREENFIELD_REFUSAL_NOTE when it refuses the scaffold door ON ITS OWN TERMS
   # (today: a workspace root with no root manifest, where ADD-only has nothing to
@@ -8327,6 +8391,21 @@ setup_cmd_has_metachar() { # command → 0 iff it carries a shell metacharacter
   return 1
 }
 
+# S194 — undo an APPLIED-then-REFUSED declaration. Only ever handed paths
+# ADD-only has already proven were absent, so this can never delete the repo's
+# own files; empty parent dirs the copy created are pruned with `rmdir`, which
+# refuses a non-empty directory.
+setup_rollback_copied() { # newline-separated absolute paths
+  local __c
+  [ -n "$1" ] || return 0
+  printf '%s' "$1" | while IFS= read -r __c; do
+    [ -n "$__c" ] || continue
+    rm -f "$__c" 2>/dev/null || :
+    rmdir "$(dirname "$__c")" 2>/dev/null || :
+  done
+  return 0
+}
+
 SETUP_NOTE=""
 apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 rejected
   local mf="$1" sdir="$2" pkg="$3"
@@ -8416,11 +8495,21 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   # package dir under a hard timeout. The applied files ride the ticket's commit
   # (they are new post-snapshot untracked files), so every downstream gate and
   # the PR see exactly what was provisioned.
+  # S194 — REMEMBER WHAT WE COPIED. Every refusal below this line happens AFTER
+  # the files are on disk, and a refused attempt is now RETRYABLE, so litter left
+  # here is litter the NEXT session's identical declaration trips over: ADD-only
+  # would refuse it for "already exists" — the harness refusing a worker for the
+  # harness's own leftovers, and a retry that could never converge. ADD-only
+  # guarantees each of these paths was absent before, so removing them restores
+  # the tree exactly.
+  local __as_copied=""
   if [ -d "$sdir" ]; then
     while IFS= read -r f; do
       rel="${f#"$sdir"/}"
       case "$rel" in */*) mkdir -p "$dest/${rel%/*}" 2>/dev/null || : ;; esac
       cp "$f" "$dest/$rel"
+      __as_copied="$__as_copied$dest/$rel
+"
     done < <(find "$sdir" -type f 2>/dev/null)
   fi
   # S185 SCAFFOLD ARM — GIVE THE PROBE SOMETHING TO PROBE WITH. Every probe in
@@ -8436,6 +8525,7 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
     local gcmd; gcmd="$(greenfield_detect_cmd "$REPO_ROOT")"
     if [ -z "$gcmd" ]; then
       SETUP_NOTE="the declared setup leaves no test command LCARS can detect at the repo root — a runner nothing can invoke is not an established test system"
+      setup_rollback_copied "$__as_copied"
       return 1
     fi
     TEST_CMD_ENV="$gcmd"
@@ -13717,6 +13807,76 @@ effective_tier_for_cli() { # cli logical-tier → the tier that really runs
   esac
 }
 
+# === S194: THE WRITE-TOOL FLOOR =============================================
+# THE REQUIREMENT, and it is narrow: A COLD WORKER WHOSE CONTRACT IS TO WRITE A
+# FILE MUST RUN ON A MODEL THAT HAS A WRITE TOOL.
+#
+# MEASURED on the real copilot binary, every other flag byte-identical to what
+# worker_spawn actually sends (`--available-tools view,grep,glob,create
+# --disable-builtin-mcps --allow-all-tools --no-ask-user`):
+#     no --model                -> NO FILE ("no write-capable tool was available";
+#                                  the model reported it was offered only the
+#                                  read-only view/glob/rg tools)
+#     no --model + --add-dir    -> NO FILE   (--add-dir is NOT the variable)
+#     --model claude-opus-4.8   -> FILE WRITTEN
+# So `create` is a fine tool name ON A MODEL THAT OFFERS IT. This is a model
+# problem, not a fence problem: the toolset strings and the S168 fences are
+# untouched.
+#
+# WHY IT BIT context-pack SPECIFICALLY. `infra` is deliberately kept OFF the
+# estimate / captain-override / stages.<key> ladder (a cheap repo-fact pass must
+# never be escalated by a cost knob), so on copilot NOTHING could ever give it a
+# model — while the very same repo-read toolset SUCCEEDED for research-questions,
+# whose only argv difference was the `--model claude-opus-4.8` the stage ramp
+# gave it. The pack was never written, resolve_context_source died, and every
+# Copilot mission died at Implement.
+#
+# THE CURE IS A FLOOR, NOT AN ESCALATION. The ladder is unchanged — infra still
+# short-circuits past (a2)/(b)/(c), and the env pin (a) and global workerModel
+# (d) still win. Only at (e), where the ladder yields NOTHING, does a
+# write-contract stage take the active CLI's write-capable alias instead of the
+# CLI's default model.
+#
+# The alias comes from alias_for_tier, the ONE home S78 established for exactly
+# this class of copilot policy ("copilot's `create` cannot overwrite on a
+# non-opus tier"), so the floor stays config-overridable via
+# modelAliases.<cli>.opus and the two can never drift.
+
+# The model a write-contract worker needs on this CLI, or EMPTY when the CLI's
+# DEFAULT model already has a write tool. Claude is empty on purpose: its default
+# model has Write, the context-pack worker has always worked there with no
+# --model, and its argv must stay byte-for-byte the session-18 legacy lines.
+write_capable_alias() { # cli → flag string (stdout; may be empty)
+  case "$1" in
+    copilot) alias_for_tier "$1" opus ;;
+  esac
+}
+
+# Does this stage key's worker CONTRACT require a write tool? EVERY ONE OF THEM
+# DOES. A cold worker's whole output is a file it writes to its scratch dir —
+# questions.txt, estimate.json, the context pack, result.json. A worker that
+# cannot write has no way to succeed at anything, so it fails silently and
+# expensively: it is hired, it reasons, it reports what it "wrote", and the
+# harness finds nothing on disk.
+#
+# S194 first shipped this as `infra` only, because context-pack was the one spawn
+# ever measured with no model. That was TOO NARROW and the day-zero drive proved
+# it: a mission whose estimate.json is ABSENT resolves no model for ANY stage, so
+# the question-generator was handed copilot's default model, could not write
+# questions.txt, and burned all three of its attempts — the identical failure one
+# layer up from context-pack.
+#
+# MEASURED across every arm that completed (tests/drives/s192/shots/*/worker):
+# estimate, research-questions, research-agent, validate, plan, plan-review and
+# implement-tdd all carried `--model claude-opus-4.8` and all wrote their files;
+# context-pack was the ONLY spawn with no model, and the ONLY one that failed —
+# on every arm. The rule is therefore simply: never hand a copilot worker the
+# default model. Claude is unaffected — write_capable_alias is empty there, so
+# its argv stays byte-for-byte the session-18 legacy lines.
+stage_must_write() { # stage key → 0 when the worker's whole job is to write a file
+  return 0
+}
+
 # Is STAGE KEY inside the captain override's SCOPE? The two axes:
 #   reasoning      = research, validate, plan, planReview
 #   implementation = implement, verify
@@ -13767,8 +13927,10 @@ active_model_override() { # → "<scope>:<tier>" or empty
 #   e.  nothing ⇒ empty string (caller emits NO --model flag — byte-identical).
 # `infra` (context-pack) is a cheap repo-fact pass and is NEVER escalated by the
 # estimate/stage map OR the captain override: it short-circuits to the global/
-# legacy value (env pin > the global config workerModel > unset) so its argv stays
-# exactly as today.
+# legacy value (env pin > the global config workerModel > the S194 write floor).
+# S194 added that last step — and ONLY that step. The exclusion above is intact;
+# what changed is that "unset" is no longer the answer for a worker whose whole
+# contract is to WRITE A FILE on a CLI whose default model has no write tool.
 resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   local key="$1"
   # (a) global env pin — wins for every stage, verbatim.
@@ -13800,7 +13962,11 @@ resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
     && cfg_global="$(json_str "$LCARS_CFG" workerModel)"
   if [ -n "$cfg_global" ]; then printf '%s' "$cfg_global"; return 0; fi
-  # (e) nothing.
+  # (e) the ladder yielded nothing. A cold worker whose CONTRACT IS TO WRITE A
+  # FILE must run on a model that HAS a write tool (S194 — see write_capable_alias
+  # above for the measurement). Every other stage, and every CLI whose default
+  # model already writes, still gets the empty string ⇒ NO --model flag at all.
+  if stage_must_write "$key"; then write_capable_alias "$cli"; return 0; fi
   printf ''
 }
 
@@ -14252,8 +14418,11 @@ worker_spawn() { # role outdir prompt
   # global $WORKER_MODEL). When the resolver yields empty the adapter emits NO
   # --model flag (session-18 argv byte-for-byte) — the legacy no-source path. The
   # model flag NAME stays cli-specific in the adapter; run.sh resolves only the
-  # value here. `infra` (context-pack) is never escalated — resolve_stage_model
-  # short-circuits it to the global/legacy value, so it stays exactly as today.
+  # value here. `infra` (context-pack) is never ESCALATED — resolve_stage_model
+  # short-circuits it past the estimate/override ladder — but S194 gives it a
+  # write-tool FLOOR: the context-pack worker's whole contract is to write one
+  # file, and on a CLI whose default model offers no write tool it must be told
+  # which model to use or it writes nothing at all.
   local stage_key stage_model
   stage_key="$(stage_key_for_role "${LCARS_WORKER_ROLE:-$role}")"
   stage_model="$(resolve_stage_model "$stage_key")"
@@ -16143,6 +16312,47 @@ $LCARS_SELFHEAL_FEEDBACK"
     rm -rf "$odir"
   }
 
+  # S194 — A REFUSED ESTABLISHMENT IS A BOUNCE, NOT A TERMINAL PARK.
+  # MEASURED on live Copilot: an initialization mission's scaffold ticket was
+  # refused on three arms for three DIFFERENT and entirely CORRECT reasons (no
+  # detectable command at the root; no test-setup.json at all; a setup file that
+  # already existed), and the mission went unrecoverable on the first one. The
+  # same repo, idea and answers, retried by hand, then SUCCEEDED — the js retry
+  # supplying exactly the `"test"` script its first attempt omitted. So the
+  # contract is satisfiable and the worker is simply inconsistent, which is the
+  # definition of the thing this loop already cures for every other gate.
+  #
+  # NO NEW MECHANISM: this is _tdd_reject, the same durable gate signal, riding
+  # the same "## GATE FEEDBACK" block into the same freshly-spawned worker, under
+  # the same MAX_WORKER_TRIES cap. The refusal REASON is what makes a retry worth
+  # paying for — all three measured reasons name precisely what to fix.
+  #
+  # AT THE CAP it still parks awaiting-human, through impl_park_greenfield_failed
+  # (the tailored initialization park), and only THEN closes the once-per-mission
+  # latch and records the refusal — so a later `lcars run` can say why instead of
+  # handing the captain the generic wall's circular advice.
+  # THE WAIVER IS UNTOUCHED: nothing here reaches init_is_scaffold_ticket or the
+  # not-applicable rule, and a bounced session commits nothing.
+  _gf_establish_refused() { # note → returns 0 to bounce; PARKS (exit 0) at the cap
+    local gfn="$1"
+    emit_event test_setup_rejected implement \
+      "initialization-mission declared setup rejected: $gfn" "ticket=$TICKET"
+    if [ "$sessions" -lt "$MAX_WORKER_TRIES" ]; then
+      _tdd_reject establish-test-system REFUSED \
+"This ticket is the one that ESTABLISHES this repo's test system, and the harness
+REFUSED what the last session declared. Nothing was committed and nothing was
+left behind — the repo is exactly as that session found it. The refusal is
+satisfiable: fix EXACTLY this and declare the setup again.
+$gfn"
+      return 0
+    fi
+    printf '{"package":"","gap":"refused","installCommand":""}\n' >"$MISSION_DIR/test-setup-applied.json"
+    greenfield_record_refusal "$gfn" "$sessions"
+    rm -f "$tdir/result.json"
+    rm -rf "$odir"
+    impl_park_greenfield_failed "$TICKET" "$gfn" "" "$sessions"
+  }
+
   while [ "$sessions" -lt "$MAX_WORKER_TRIES" ]; do
     sessions=$((sessions + 1))
     # attempt = 1 + (existing ticket_attempt lines for THIS ticket, phase=tdd) —
@@ -16338,11 +16548,16 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
     # the evidence gate is open (no evidence → ignored; attempt 1 always naked).
     # An applied-but-still-dead runner is genuinely incurable → park (env idiom).
     if [ -f "$odir/test-setup.json" ] && [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
-      # S185 — THE ESTABLISHMENT. Same machinery, one different failure policy:
-      # a failed establishment PARKS instead of "continuing without it" — with no
-      # test command there is nothing to continue to, and bouncing fresh workers
-      # at a repo that still cannot run a test is exactly the burn S182 was built
-      # to stop.
+      # S185 — THE ESTABLISHMENT. Same machinery, one different failure policy: a
+      # failed establishment never "continues without it" — with no test command
+      # there is nothing to continue to.
+      # S194 CORRECTS THE OTHER HALF of that policy. S185 read "do not bounce
+      # fresh workers at a repo that still cannot run a test" as "park on the
+      # first refusal", and live measurement disproved the premise: the SAME repo
+      # and answers, retried, established a runner. A refusal is a rejection like
+      # any other, so it bounces WITH ITS REASON up to MAX_WORKER_TRIES — and only
+      # then parks. S182's burn was three blind hires at a wall nothing could
+      # move; this is a bounded retry at a wall a fresh worker demonstrably can.
       #
       # WHAT IS *NOT* HERE, DELIBERATELY: the salvage's canary probe. It planted
       # a failing test beside the tree's own tests to prove mechanically that the
@@ -16359,13 +16574,9 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
       else
         local gf_note="$SETUP_NOTE"
         printf '  ⚠ declared setup REJECTED: %s\n' "$gf_note" >&2
-        emit_event test_setup_rejected implement \
-          "initialization-mission declared setup rejected: $gf_note" "ticket=$TICKET"
-        # Close the once-per-mission latch so a second session cannot re-invite.
-        cp "$odir/test-setup.json" "$MISSION_DIR/test-setup-applied.json" 2>/dev/null \
-          || printf '{"package":"","gap":"rejected","installCommand":""}\n' >"$MISSION_DIR/test-setup-applied.json"
-        rm -rf "$odir"
-        impl_park_greenfield_failed "$TICKET" "$gf_note" ""
+        # S194: bounce to a FRESH worker carrying this reason; park only at the cap.
+        _gf_establish_refused "$gf_note"
+        continue
       fi
     elif [ -f "$odir/test-setup.json" ]; then
       if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
@@ -16394,10 +16605,12 @@ $(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
     # still cannot run a test and the gates below have nothing to judge with.
     # Park after ONE session rather than bouncing fresh workers at the same wall.
     if [ -n "${LCARS_SETUP_GREENFIELD:-}" ] && [ ! -f "$(greenfield_cmd_record)" ]; then
-      printf '{"package":"","gap":"no declaration","installCommand":""}\n' >"$MISSION_DIR/test-setup-applied.json"
-      rm -rf "$odir"
-      impl_park_greenfield_failed "$TICKET" \
-        "the session produced no test-setup.json, so no test system was declared and none could be applied" ""
+      # S194: the same bounce. A session that declared nothing is the single most
+      # retryable failure there is — the next one is told, in its prompt, that a
+      # manifest is what was missing.
+      _gf_establish_refused \
+        "the session produced no test-setup.json, so no test system was declared and none could be applied"
+      continue
     fi
 
     # --- THE PROOF GATES (S132), in order ------------------------------------
@@ -16561,7 +16774,28 @@ cmd_implement() {
   # and read an honest run as a breach. Resolving it up front, in the wave driver,
   # where nothing else is running, removes both. Best-effort: a failure here just
   # leaves the old lazy path to try again per ticket.
-  resolve_context_source >/dev/null 2>&1 || :
+  #
+  # S194 — IT HAS TO ACTUALLY BE BEST-EFFORT. The line above USED to read
+  # `resolve_context_source >/dev/null 2>&1 || :`, whose comment (still true, and
+  # still above) said one thing while the code did the opposite: the resolver ends
+  # in `die`, `die` is `printf >&2; exit 1`, and a redirection is NOT a subshell —
+  # so `|| :` never got the chance to run and the WHOLE STAGE exited rc=1. With
+  # `2>&1` swallowing the reason too, `run.sh implement` printed 52 bytes and a
+  # 696-line `bash -x` trace carried zero non-trace output.
+  #
+  # TWO changes, both narrow. (1) CONTAIN the exit in a subshell so `die`'s global
+  # behaviour is untouched — every other caller still gets a hard stop — while
+  # this call site genuinely tolerates failure. The pack is a FILE side effect, so
+  # a success still lands durably through the subshell; the per-ticket lazy path
+  # is unaffected either way. (2) KEEP THE REASON: it goes to this stage's stderr,
+  # which the driver captures into $out and turns into the BUG-051 err_tail — so
+  # the board event NAMES WHY instead of saying a bare "failed".
+  local ctx_err="" ctx_rc=0
+  ctx_err="$( ( resolve_context_source >/dev/null ) 2>&1 )" || ctx_rc=$?
+  if [ "$ctx_rc" -ne 0 ]; then
+    printf 'context source unresolved (continuing — each ticket will retry): %s\n' \
+      "${ctx_err:-no reason reported by the context-source resolver}" >&2
+  fi
 
   # --- S65: the live Implement-dashboard heartbeat ----------------------------
   # Start a bounded, best-effort ~60s ticker that re-renders + PATCHes the

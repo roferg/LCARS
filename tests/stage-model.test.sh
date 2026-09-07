@@ -338,5 +338,45 @@ check "17.4a copilot all:sonnet override ⇒ claude-opus-4.8 (opus-safe of the t
 check "17.4b claude all:sonnet override ⇒ sonnet (per-engine alias of the tier)" \
   "[ \"\$(rsm \"$r17d\" implement CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
 
+# === Behavior 18 (S194): THE WRITE-TOOL FLOOR for a worker that MUST write =====
+# MEASURED on the real copilot binary (v1.0.60), every other flag identical to
+# what LCARS sends (`--available-tools view,grep,glob,create --allow-all-tools
+# --no-ask-user --disable-builtin-mcps`):
+#     no --model                 -> NO FILE ("no write-capable tool was available")
+#     no --model + --add-dir     -> NO FILE   (--add-dir is not the variable)
+#     --model claude-opus-4.8    -> FILE WRITTEN
+# The context-pack worker's ENTIRE contract is to write ONE file, and `infra` is
+# deliberately excluded from the estimate/override/stage ladder — so nothing
+# could ever give it a model and it silently produced nothing on copilot, which
+# killed `run.sh implement` at resolve_context_source. The cure is a FLOOR at
+# precedence (e): the ladder is UNCHANGED (7a/15/2.argv still hold), but where it
+# yields nothing a write-contract stage takes the active CLI's write-capable
+# alias. Empty for claude (its default model has Write) => argv byte-identical.
+r18="$(make_repo '{}')"   # bare config, NO estimate, NO override — the live case
+check "18a. copilot context-pack argv CARRIES --model claude-opus-4.8 (write floor)" \
+  "[ \"\$(spawn_argv_copilot \"$r18\" context-pack '' | model_of)\" = 'claude-opus-4.8' ]"
+check "18b. claude context-pack argv still carries NO --model (floor is empty there)" \
+  "[ -z \"\$(spawn_argv \"$r18\" context-pack CLAUDECODE=1 | grep -x -- --model)\" ]"
+# The floor is the SAME alias map S78 owns, so it stays config-overridable.
+r18b="$(make_repo '{"modelAliases":{"copilot":{"opus":"claude-opus-4.9"}}}')"
+check "18c. modelAliases.copilot.opus overrides the write floor" \
+  "[ \"\$(rsm \"$r18b\" infra COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.9' ]"
+# Precedence: the floor is the LAST resort — (a) env pin and (d) config
+# workerModel both still win, verbatim, exactly as before.
+r18c="$(make_repo '{"workerModel":"claude-sonnet-4.6"}')"
+check "18d. config workerModel (d) still beats the floor (e)" \
+  "[ \"\$(rsm \"$r18c\" infra COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-sonnet-4.6' ]"
+check "18e. env LCARS_WORKER_MODEL pin still beats the floor" \
+  "[ \"\$(rsm \"$r18\" infra COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_WORKER_MODEL=zzz | sm_model)\" = 'zzz' ]"
+# AND the exclusion itself is INTACT: the floor is not a back door onto the
+# escalation ladder. config stages.infra.model would resolve to claude-sonnet-4.6
+# if (c) applied to infra; it must not — infra still short-circuits, and the
+# floor (not the ladder) is what supplies the value.
+r18d="$(make_repo '{"stages":{"infra":{"model":"sonnet"}},"modelAliases":{"copilot":{"sonnet":"claude-sonnet-4.6"}}}' "$EST")"
+check "18f. stages.infra.model is STILL ignored (infra off the ladder; floor wins)" \
+  "[ \"\$(rsm \"$r18d\" infra COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "18g. and estimate.json still cannot escalate infra on claude (7a, restated)" \
+  "[ -z \"\$(rsm \"$r18d\" infra CLAUDECODE=1 | sm_model)\" ]"
+
 echo "stage-model: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
