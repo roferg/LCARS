@@ -792,6 +792,14 @@ and the dispatch tells them apart by whether `feedback.md` exists:
 This is what makes the Verify → Align loop pick up with the full context instead
 of starting cold.
 
+**Rewriting `prd.md` is not enough on its own — run the `research` driver.**
+Reaching Research is what tells LCARS the re-grill has finished, and that is one
+of the **two** moments the GitHub issue body is rebuilt from the current PRD (the
+other is Verify entry). Skip it and the issue keeps the OLD spec, so anyone
+picking the Mission up from GitHub — a reviewer, or another machine — builds the
+thing the captain just sent back. Bodies in between those two points are stale by
+design; see the header of `skills/lcars-run/issue-body.sh`.
+
 ## One source of truth: stage and label always agree
 
 A Mission's position is stored in two places — `state.json.stage` on disk and

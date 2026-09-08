@@ -33,6 +33,16 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
+# S188 — the living "## Verify feedback" comment. The comment mirror is SOURCED
+# (it only defines functions, exactly as run.sh sources it) so a send-back reuses
+# the EXACT S65 create-then-edit idiom — comments.json as the idempotency truth,
+# bodies over stdin — instead of growing a second, subtly different one here. It
+# leans on this script's own MISSION_DIR / STATE / json_raw / host, which carry
+# the same names run.sh gives them. Best-effort: a missing lib means no mirror,
+# never a failed send-back. $LCARS_COMMENT_MIRROR overrides the path for tests.
+COMMENT_MIRROR="${LCARS_COMMENT_MIRROR:-$SELF_DIR/../lcars-run/comment-mirror.sh}"
+[ -f "$COMMENT_MIRROR" ] && . "$COMMENT_MIRROR"
+
 die() { printf 'lcars feedback: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as run.sh / file.sh) -------------
@@ -133,6 +143,14 @@ PREV_STAGE="$(json_str "$STATE" stage)"
   printf '## Feedback — %s (from %s)\n\n' "$NOW" "${PREV_STAGE:-unknown}"
   printf '%s\n\n' "$FEEDBACK"
 } >>"$MISSION_DIR/feedback.md"
+
+# 1a. Mirror the accumulated history to the issue as ONE living comment (S188).
+# Done right after the append, so the comment always reflects the file — created
+# on the FIRST send-back, PATCHed in place on every one after. Both send-back
+# lanes below (ordinary → Align, logged bug → Plan) share this single call.
+if command -v cm_mirror_verify_feedback >/dev/null 2>&1; then
+  cm_mirror_verify_feedback >/dev/null 2>&1 || true
+fi
 
 # A logged bug (S76): type==bug AND a non-empty parentMission. It was fast-tracked
 # straight to Plan and has NO Align stage — its Align re-entry would be an

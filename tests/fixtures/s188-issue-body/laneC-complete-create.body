@@ -1,0 +1,31 @@
+# Mission: Fix the broken /about route
+
+**Type:** bug
+**Goal:** The /about route should resolve to the About page instead of 404ing.
+**Acceptance Criteria:**
+- GET /about returns HTTP 200
+- The About page renders its heading
+**Out of Scope:**
+- Redesigning the About page
+**Constraints:**
+- Existing router; no new dependencies
+
+
+---
+
+## Estimate
+
+**Criticality:** reasoning = LOW · implementation = HIGH
+
+**Per-stage model mix:**
+
+| Stage | Model |
+| --- | --- |
+| Research | Sonnet |
+| Validate | Sonnet |
+| Plan | Sonnet |
+| Plan Review | Sonnet |
+| Implement | Sonnet |
+| Verify | Sonnet |
+
+**Estimated cost:** $0.00–$0.00

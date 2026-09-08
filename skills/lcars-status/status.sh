@@ -155,6 +155,18 @@ STANDBY_GLYPH="◇"
 
 rows=()
 questions=()  # "id\tissue\tquestion" for the awaiting-human footer
+# S188 fix round 2. A refresh that cannot BUILD a part of the issue body (an
+# interrupted re-grill left a 0-byte prd.md; estimate.json went missing and
+# there is no record of the last pushed body to carry the section forward)
+# refuses the push and drops a breadcrumb in the mission dir. Both call sites
+# are `>/dev/null 2>&1 || true`, so that refusal reached NOBODY — the file had
+# zero readers anywhere in skills/ or web/, which is how an honest scope cut
+# could be refused at five consecutive transfer points in silence while the
+# issue quietly kept the old spec. This view is where the captain already looks
+# for "what is wrong with my missions", so it reads it. Cheap: one file read per
+# mission, no gh call, no new file.
+refusals=()   # "id\tissue\tpart\twhy\tfix"
+carried=()    # "id\tissue\tlabel\tfix" — parts a push CARRIED rather than rebuilt
 any_glyph=0   # did any rendered row carry a status glyph? gates the legend
 any_standby=0 # did any row carry the standby (parked / awaiting-alignment) glyph?
 for s in "${states[@]}"; do
@@ -208,6 +220,26 @@ for s in "${states[@]}"; do
   fi
   [ -n "$glyph" ] && any_glyph=1
 
+  # the issue-body refusal breadcrumb, if this mission has one standing
+  refused_file="$(dirname "$s")/.issue-body.refused"
+  if [ -s "$refused_file" ]; then
+    IFS=$'\t' read -r _rts _rissue rpart rwhy rfix <"$refused_file"
+    [ -n "${rpart:-}" ] && refusals+=("$id"$'\t'"$issue_disp"$'\t'"$rpart"$'\t'"${rwhy:-}"$'\t'"${rfix:-}")
+  fi
+
+  # the carry-forward breadcrumb: the issue IS current, but one of its parts was
+  # reused verbatim because its source had gone. Without this the captain got no
+  # signal at all that his board pills were a fossil rather than a rebuild — the
+  # carry path was completely silent while only the refusal path was loud.
+  # One line per carried part, so a body that carried two says so twice.
+  carried_file="$(dirname "$s")/.issue-body.carried"
+  if [ -s "$carried_file" ]; then
+    while IFS=$'\t' read -r _cts _cissue clabel cfix; do
+      [ -n "${clabel:-}" ] || continue
+      carried+=("$id"$'\t'"$issue_disp"$'\t'"$clabel"$'\t'"${cfix:-}")
+    done <"$carried_file"
+  fi
+
   rows+=("$created"$'\t'"$id"$'\t'"$id"$'\t'"$issue_disp"$'\t'"$stage"$'\t'"$glyph"$'\t'"$title")
 done
 
@@ -250,6 +282,37 @@ if [ "${#questions[@]}" -gt 0 ]; then
   done
   echo
   echo "Respond with \`lcars respond <id>\`."
+fi
+
+# --- issue-body refusals ---------------------------------------------------
+# One plain line per mission whose GitHub issue body is NOT current, naming the
+# part the composer could not build and what to do about it. Nothing here gates
+# anything: the pipeline ran, the mission advanced, only the issue body is
+# behind — and it heals itself at the next transfer point once the source is back.
+if [ "${#refusals[@]}" -gt 0 ]; then
+  echo
+  echo "Issue body NOT updated (the mission ran; its GitHub issue is behind):"
+  for rf in "${refusals[@]}"; do
+    IFS=$'\t' read -r fid fissue fpart fwhy ffix <<<"$rf"
+    printf '  %s (%s): could not build %s — %s\n' "$fid" "$fissue" "$fpart" "$fwhy"
+    [ -n "$ffix" ] && printf '      → %s\n' "$ffix"
+  done
+fi
+
+# --- issue-body carry-forwards ---------------------------------------------
+# The counterpart of the block above, and the quieter half of the same story:
+# the issue IS current, but a part of it could not be rebuilt and was reused
+# from the last body this repo pushed. Nothing is wrong and nothing is gated —
+# but the captain should know that (say) his board pills are the ones last
+# pushed rather than a fresh estimate, and how to make them a rebuild again.
+if [ "${#carried[@]}" -gt 0 ]; then
+  echo
+  echo "Issue body pushed with CARRIED-FORWARD parts (a source was missing, so the part the issue already carried was reused):"
+  for cf in "${carried[@]}"; do
+    IFS=$'\t' read -r cid cissue clabel cfix <<<"$cf"
+    printf '  %s (%s): %s\n' "$cid" "$cissue" "$clabel"
+    [ -n "$cfix" ] && printf '      → %s\n' "$cfix"
+  done
 fi
 
 exit 0

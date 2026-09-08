@@ -88,6 +88,24 @@ host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 # Sourcing only DEFINES functions — they are called later, after every helper
 # they lean on is defined. $LCARS_COMMENT_MIRROR overrides the path for tests.
 COMMENT_MIRROR="${LCARS_COMMENT_MIRROR:-$SKILL_DIR/comment-mirror.sh}"
+# The S188 issue-body composer + `lcars:handoff` envelope, shared with
+# `lcars file`. Loaded LAZILY (see load_issue_body_lib): only the TWO transfer
+# points need it, and run.sh is re-entered as a subprocess for every Stage and
+# every ticket. $LCARS_ISSUE_BODY_LIB overrides the path for tests.
+ISSUE_BODY_LIB="${LCARS_ISSUE_BODY_LIB:-$SKILL_DIR/issue-body.sh}"
+# load_issue_body_lib → 0 once lcars_issue_body_refresh is callable. Best-effort:
+# a missing lib leaves the body un-refreshed (exactly pre-S188 behaviour) rather
+# than failing a Stage.
+load_issue_body_lib() {
+  command -v lcars_issue_body_refresh >/dev/null 2>&1 && return 0
+  [ -f "$ISSUE_BODY_LIB" ] || return 1
+  # The composer renders the "## Estimate" section through run.sh itself; point
+  # it at THIS script so a stubbed/relocated run.sh stays the one renderer.
+  export LCARS_ISSUE_BODY_RUN_BIN="${LCARS_ISSUE_BODY_RUN_BIN:-$SELF}"
+  # shellcheck source=issue-body.sh
+  . "$ISSUE_BODY_LIB" || return 1
+  command -v lcars_issue_body_refresh >/dev/null 2>&1
+}
 # The SHARED renderer (ADR-004 "ONE rendering") — factored out of status.sh so
 # the kanban card, `lcars status --watch`, AND the issue-comment mirror render
 # the progress line / ticket data from the SAME primitives (compute_progress,
@@ -14625,6 +14643,25 @@ cmd_research() {
   require_worker
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD for '$MISSION_ID'."
 
+  # === S188 TRANSFER POINT 1 of 2: the ALIGN RE-ENTRY FINISHER ==============
+  # A `feedback.md` at stage `align` means this Mission was bounced back from
+  # Verify, and reaching Research is the ONE unambiguous signal that the
+  # interactive re-grill has COMPLETED: the driver refuses to auto-advance an
+  # un-regrilled feedback Mission (drive_halt_align), so `research` only runs
+  # here after the host CLI rewrote prd.md against the captain's notes.
+  #
+  # That rewritten PRD is the whole point. Without this push, a second laptop
+  # adopting the Mission from GitHub would build the OLD spec — the exact defect
+  # this session exists to close. Refresh happens HERE and at Verify entry, and
+  # NOWHERE else: mid-flight bodies go stale by design (see the composer header).
+  # Best-effort: a missing lib or a down gh never fails Research; the marker is
+  # written only on a successful push, so the Verify entry retries.
+  if [ -f "$MISSION_DIR/feedback.md" ]; then
+    if load_issue_body_lib; then
+      lcars_issue_body_refresh "$MISSION_DIR" >/dev/null 2>&1 || true
+    fi
+  fi
+
   # IN-FLIGHT STAGE LABEL (CLAUDE.md build item #11). Every other Stage gets its
   # board label from the transition INTO it, because its label matches the stage
   # POINTER. Research is the one Stage whose pointer never says "research" — it
@@ -17658,6 +17695,19 @@ drive_mark_done() {
 #                      ONCE, when the PR is first opened). Driver STOPS.
 drive_verify() { # accumulated-summary
   local summary="$1"
+
+  # === S188 TRANSFER POINT 2 of 2: VERIFY ENTRY =============================
+  # The other end of the pipeline. Whoever arrives at this issue now — a
+  # reviewer, or a second laptop adopting the Mission — must read the spec that
+  # was actually BUILT, plus a `lcars:handoff` envelope that matches state.json.
+  # Deliberately before the PR block so the body is current no matter which of
+  # drive_verify's paths this pass takes (bug-child fold, reconcile, open, poll).
+  # Re-entrant by design: the refresh skips an identical re-push, so a reconcile
+  # pass or a second drive pass edits nothing and posts nothing.
+  if load_issue_body_lib; then
+    lcars_issue_body_refresh "$MISSION_DIR" >/dev/null 2>&1 || true
+  fi
+
   local pr; pr="$(json_str "$STATE" prUrl)"
 
   # BUG-026: a Mission-Log bug child (parentMission set) FOLDS its fix onto the

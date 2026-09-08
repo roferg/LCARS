@@ -70,6 +70,19 @@ if [ -f "$LCARS_COMMON_LIB" ]; then
   . "$LCARS_COMMON_LIB"
 fi
 
+# --- shared helpers: the ONE issue-body composer (S188) --------------------
+# `lcars log` is the FIFTH filing lane. It files a Mission (lcars:mission) like
+# any other, so its issue body must carry the same machine-readable
+# `lcars:handoff` envelope a second laptop reads — without it, `lcars adopt`
+# finds nothing on a logged-bug issue. It lives beside the host adapter in the
+# sibling lcars-run skill dir, the same reach HOST_ADAPTER already makes.
+# $LCARS_ISSUE_BODY_LIB overrides the path for tests.
+LCARS_ISSUE_BODY_LIB="${LCARS_ISSUE_BODY_LIB:-$SKILL_DIR/../lcars-run/issue-body.sh}"
+if [ -f "$LCARS_ISSUE_BODY_LIB" ]; then
+  # shellcheck source=../lcars-run/issue-body.sh
+  . "$LCARS_ISSUE_BODY_LIB"
+fi
+
 die() { printf 'lcars log: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same decoding as resolve.sh / status.sh) -----
@@ -449,20 +462,46 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   local issue="" body
   if command -v "$GH_BIN" >/dev/null 2>&1; then
     body="$(mktemp)"
-    {
-      printf '> 🐞 Logged via `lcars log` against %s' "$PARENT_ID"
-      case "$PARENT_ISSUE" in ''|null) : ;; *) printf ' (#%s)' "$PARENT_ISSUE" ;; esac
-      printf '.\n\n'
-      cat "$mdir/prd.md"
-    } >"$body"
+    # LANE 5 (logged bug). ONE composer (skills/lcars-run/issue-body.sh) — the
+    # VISIBLE body is byte-for-byte what this lane built inline before S188 (the
+    # `> 🐞 Logged via …` lead-in, then prd.md), plus the appended envelope.
+    #
+    # Every value is passed as an OVERRIDE because state.json does not exist yet:
+    # it is written below, and it needs the issue number this call is about to
+    # mint. The provenance line comes out of origin/parentMission/parentIssue —
+    # the same three values the inline printf used — so a later Verify-entry
+    # refresh recomposes the identical lead-in instead of deleting it.
+    if command -v lcars_issue_body_compose >/dev/null 2>&1; then
+      lcars_issue_body_compose "$mdir" align "" \
+        "id=$id" "branch=$branch" "base=$BASE" "type=bug" \
+        "engine=${LCARS_WORKER_BIN:-}" "origin=log" "parentMission=$PARENT_ID" \
+        "parentIssue=$PARENT_ISSUE" "attachments=${#attach_rels[@]}" >"$body"
+    else
+      # The composer is missing (a stale install): degrade to exactly the
+      # pre-S188 inline body rather than filing nothing.
+      {
+        printf '> 🐞 Logged via `lcars log` against %s' "$PARENT_ID"
+        case "$PARENT_ISSUE" in ''|null) : ;; *) printf ' (#%s)' "$PARENT_ISSUE" ;; esac
+        printf '.\n\n'
+        cat "$mdir/prd.md"
+      } >"$body"
+    fi
     local url num
     url="$("$GH_BIN" issue create \
             --title "$title" \
             --body-file "$body" \
             --label "lcars:align,lcars:bug,lcars:linked,lcars:mission" 2>/dev/null)"
-    rm -f "$body"
     num="${url##*/}"
-    case "$num" in ''|*[!0-9]*) issue="" ;; *) issue="$num" ;; esac
+    case "$num" in
+      ''|*[!0-9]*) issue="" ;;
+      # Remember the body that actually reached GitHub — the S188 regression
+      # guard's baseline, so a later transfer point cannot delete a section of
+      # this issue (see skills/lcars-run/issue-body.sh).
+      *) issue="$num"
+         { command -v lcars_issue_body_record >/dev/null 2>&1 \
+           && lcars_issue_body_record "$mdir" "$body"; } || true ;;
+    esac
+    rm -f "$body"
   fi
 
   # NATIVELY nest the bug issue under the parent's issue — the SAME host-adapter

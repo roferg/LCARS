@@ -1484,5 +1484,91 @@ rcZ=0
 check "18m. a clean filing still exits 0 and writes prd.md" \
   "[ '$rcZ' -eq 0 ] && [ -f '$repoZ/.git/lcars/missions/lcars-20260530-001/prd.md' ]"
 
+# --- Behaviour 19 (S188): every lane composes through the ONE composer ------
+#
+# `lcars file` no longer builds an issue body inline. All four lanes call
+# `lcars_issue_body_compose` (skills/lcars-run/issue-body.sh), so this suite —
+# which owns the filing mechanics — asserts the two things the FILING side is
+# responsible for: the composer is genuinely the only body builder here, and
+# every body it ships carries a `lcars:handoff` envelope that agrees with the
+# state.json this same run wrote. Byte-for-byte parity against pre-S188 goldens,
+# the envelope's parse contract, and the two refresh transfer points are proven
+# in tests/handoff-payload.test.sh.
+
+# 19a-c. No inline body composition survives in file.sh. A future edit that
+# re-inlines "cat prd.md; separator; cat adr.md" into one of the lanes is the
+# exact drift the composer exists to prevent, so lock it structurally.
+check "19a. file.sh builds no issue body inline any more" \
+  "! grep -q 'cat \"\$MISSION_DIR/adr.md\"' '$SCRIPT'"
+check "19b. every filing lane goes through lcars_issue_body_compose" \
+  "[ \"\$(grep -c 'lcars_issue_body_compose \"\$MISSION_DIR\"' '$SCRIPT')\" = 3 ]"
+check "19c. file.sh refuses to file at all if the composer is missing" \
+  "grep -q 'the issue-body composer is missing' '$SCRIPT'"
+
+# 19d-i. The grill-first lane's recorded body, envelope and all.
+repoE="$(new_repo)"; make_gh_stub "$repoE/gh"
+export GH_LOG="$repoE/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoE/body.txt"
+prdE="$repoE/prd-in.md"; write_prd "$prdE"
+(
+  cd "$repoE"
+  LCARS_GH_BIN="$repoE/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdE" >outE.txt 2>&1
+)
+ME="$repoE/.git/lcars/missions/lcars-20260530-001"
+check "19d. the filed body carries exactly one lcars:handoff envelope" \
+  "[ \"\$(grep -c 'lcars:handoff' '$repoE/body.txt')\" = 1 ]"
+check "19e. the envelope is the LAST line of the body" \
+  "tail -1 '$repoE/body.txt' | grep -q '^<!-- lcars:handoff v1 .* -->\$'"
+check "19f. the PRD is still the top of the body, untouched" \
+  "head -1 '$repoE/body.txt' | grep -q '^# Mission:'"
+check "19g. the envelope's branch/base agree with state.json" \
+  "grep -q '\"branch\":\"lcars/lcars-20260530-001\",\"base\":\"main\"' '$repoE/body.txt'"
+check "19h. the envelope's type agrees with the PRD-derived type" \
+  "grep -q '\"type\":\"bug\"' '$repoE/body.txt'"
+check "19i. no issue-body temp file is left behind in the mission dir" \
+  "[ -z \"\$(ls -A '$ME' | grep '^\\.issue-body\\.[A-Za-z0-9]\\{6\\}\$')\" ]"
+check "19i. …but the regression-guard baseline IS kept (S188 fix round)" \
+  "[ -f '$ME/.issue-body.last' ]"
+check "19i. …and it is the body that actually reached GitHub" \
+  "cmp -s '$ME/.issue-body.last' '$repoE/body.txt'"
+
+# 19j-l. The PARK lane's envelope says "parked" — there is no PRD yet, and a
+# reader must be able to tell that from the machine-readable block alone.
+repoP="$(new_repo)"; make_gh_stub "$repoP/gh"
+export GH_LOG="$repoP/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoP/body.txt"
+(
+  cd "$repoP"
+  LCARS_GH_BIN="$repoP/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --park "Make the /about route work again" >outP.txt 2>&1
+)
+check "19j. a parked body's envelope carries parked:true" \
+  "grep -q '\"parked\":true' '$repoP/body.txt'"
+check "19k. a parked body's envelope carries no type (none is known yet)" \
+  "grep -q '\"type\":null' '$repoP/body.txt'"
+check "19l. the STANDBY note is still the visible body" \
+  "grep -q 'STANDBY — parked awaiting alignment' '$repoP/body.txt'"
+
+# 19m-o. --complete OVERRIDES the envelope from the values it has just
+# re-resolved, because it composes before state.json is finalised (prdPending is
+# cleared last, on purpose, so a gh failure leaves the mission parked). Reading
+# state.json there would ship a stale type/engine on that one lane.
+export GH_BODY="$repoP/body2.txt"
+prdP="$repoP/prd-in.md"; write_prd "$prdP"
+(
+  cd "$repoP"
+  LCARS_GH_BIN="$repoP/gh" LCARS_DATE="20260530" LCARS_WORKER_BIN="copilot" \
+    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdP" >outP2.txt 2>&1
+)
+MP="$repoP/.git/lcars/missions/lcars-20260530-001"
+check "19m. the aligned body's envelope is no longer marked parked" \
+  "! grep -q '\"parked\":true' '$repoP/body2.txt'"
+check "19n. the aligned envelope carries the PRD-derived type" \
+  "grep -q '\"type\":\"bug\"' '$repoP/body2.txt'"
+check "19o. the aligned envelope carries the RE-RESOLVED engine, not the parked one" \
+  "grep -q '\"engine\":\"copilot\"' '$repoP/body2.txt' \
+   && grep -q '\"workerBin\": *\"copilot\"' '$MP/state.json'"
+
 # ==========================================================================
 [ "$fail" -eq 0 ]

@@ -1101,6 +1101,104 @@ check "25f. …naming the offending criterion" \
   "printf '%s' \"\$OUT35\" | grep -q 'criterion 2'"
 
 # ==========================================================================
+# 26. THE FIFTH FILING LANE — `lcars log` composes through the ONE composer
+# ==========================================================================
+# S188 factored one `lcars_issue_body_compose` out of file.sh's four filing
+# lanes, but `lcars log` is the FIFTH: it filed a Mission (lcars:mission) whose
+# body was still composed inline, so it carried NO `lcars:handoff` envelope and
+# a second laptop adopting a logged bug from GitHub found nothing machine-
+# readable. The irony worth keeping: `parentIssue` is the one envelope field
+# that is ever non-null, and this is the ONLY lane that sets it.
+#
+# The visible body must stay BYTE-IDENTICAL modulo the appended envelope —
+# the same parity contract the other four lanes hold — and the
+# `> 🐞 Logged via …` provenance line is part of that visible body.
+echo "  -- 26. the log lane composes through lcars_issue_body_compose"
+
+IB_LIB26="$REPO_ROOT/skills/lcars-run/issue-body.sh"
+
+# A gh stub that records the BODY it was handed, byte for byte.
+repo26="$(new_repo_with_parent)"
+cat >"$repo26/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >>"$GH_LOG"
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--body-file" ] && cp "$a" "$GH_BODY"
+  prev="$a"
+done
+if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
+  echo "https://github.com/owner/repo/issues/45"
+fi
+exit 0
+EOF
+chmod +x "$repo26/gh"
+export GH_LOG="$repo26/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repo26/body.out"; : >"$GH_BODY"
+bug26="$repo26/bug.md"
+write_bug_prd "$bug26" "CSV export double-fires" "Two clicks must produce one download."
+( cd "$repo26"
+  LCARS_GH_BIN="$repo26/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug26" >"$repo26/out.txt" 2>&1 )
+B26="$repo26/.git/lcars/missions/lcars-20260530-002"
+
+check "26. the logged-bug body carries exactly one lcars:handoff envelope" \
+  "[ \"\$(grep -c 'lcars:handoff' '$GH_BODY')\" = 1 ]"
+check "26. the envelope is the LAST line of the body" \
+  "tail -1 '$GH_BODY' | grep -q '^<!-- lcars:handoff v1 .* -->\$'"
+
+# BYTE PARITY. The pre-S188 inline body was, exactly:
+#   "> 🐞 Logged via `lcars log` against <parent>[ (#n)].\n\n" + prd.md verbatim
+# Rebuild those bytes here and require the recorded body to START with them.
+EXPECT26="$TMPROOT/expect26.body"
+{ printf '> 🐞 Logged via `lcars log` against lcars-20260530-001 (#42).\n\n'
+  cat "$B26/prd.md"; } >"$EXPECT26"
+N26="$(wc -c <"$EXPECT26" | tr -d ' ')"
+check "26. the VISIBLE body is byte-identical to the pre-S188 inline body" \
+  "cmp -s <(head -c '$N26' '$GH_BODY') '$EXPECT26'"
+check "26. …and everything after it is nothing but the appended envelope" \
+  "[ \"\$(tail -c +\$(( $N26 + 1 )) '$GH_BODY' | grep -vc '^\$')\" = 1 ]"
+
+# The lane's own envelope values — this is the ONE lane with a real parentIssue.
+lf() { bash -c '. "$1"; lcars_handoff_field "$2" "$3"' _ "$IB_LIB26" "$GH_BODY" "$1"; }
+check "26. envelope id is the BUG mission's id, not the parent's" \
+  "[ \"\$(lf id)\" = 'lcars-20260530-002' ]"
+check "26. envelope type is bug" "[ \"\$(lf type)\" = 'bug' ]"
+check "26. envelope parentIssue carries the PARENT's issue number" \
+  "[ \"\$(lf parentIssue)\" = '42' ]"
+check "26. envelope branch matches the branch state.json recorded" \
+  "[ \"\$(lf branch)\" = \"\$(sed -n 's/.*\"branch\": *\"\\([^\"]*\\)\".*/\\1/p' '$B26/state.json' | head -1)\" ]"
+check "26. envelope base matches the base state.json recorded" \
+  "[ \"\$(lf base)\" = \"\$(sed -n 's/.*\"base\": *\"\\([^\"]*\\)\".*/\\1/p' '$B26/state.json' | head -1)\" ]"
+check "26. a logged bug is never marked parked" "[ -z \"\$(lf parked)\" ]"
+check "26. filing seeds the regression baseline for later refreshes" \
+  "[ -f '$B26/.issue-body.last' ]"
+check "26. that baseline is the body that was actually pushed" \
+  "cmp -s '$B26/.issue-body.last' '$GH_BODY'"
+
+# A parent with NO issue number: the "(#n)" half is omitted, exactly as before.
+repo26b="$(new_repo_with_parent)"
+python3 - "$repo26b/.git/lcars/missions/lcars-20260530-001/state.json" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(s.replace('"githubIssue": 42', '"githubIssue": null'))
+PY
+cp "$repo26/gh" "$repo26b/gh"
+export GH_LOG="$repo26b/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repo26b/body.out"; : >"$GH_BODY"
+bug26b="$repo26b/bug.md"
+write_bug_prd "$bug26b" "Another defect" "It should not happen."
+( cd "$repo26b"
+  LCARS_GH_BIN="$repo26b/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug26b" >"$repo26b/out.txt" 2>&1 )
+check "26. a parent with no issue number drops the '(#n)' half, as before" \
+  "head -1 '$GH_BODY' | grep -q 'against lcars-20260530-001\.\$'"
+check "26. …and that body still carries an envelope" \
+  "grep -q 'lcars:handoff' '$GH_BODY'"
+check "26. …whose parentIssue is null" \
+  "[ -z \"\$(bash -c '. \"\$1\"; lcars_handoff_field \"\$2\" parentIssue' _ '$IB_LIB26' '$GH_BODY')\" ]"
+
+# ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

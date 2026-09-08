@@ -33,6 +33,14 @@
 #                                                            stdin → no argv limit.
 #     issue-comment-edit <comment-id> (body on STDIN)     → PATCHes (edits in
 #                                                            place) that comment.
+#     issue-edit-body <n>           (body on STDIN)       → REPLACES an issue's
+#                                                            BODY in place (the
+#                                                            S188 handoff refresh
+#                                                            at the two transfer
+#                                                            points). Body via
+#                                                            stdin → no argv
+#                                                            limit, same as the
+#                                                            comment ops.
 #     issue-relabel <n> --add <labels> --remove <labels>  → relabels an issue
 #     issue-close   <n> [--comment <c>]                   → closes an issue
 #     link-subissue <parent> <child>                      → nests child under
@@ -215,6 +223,28 @@ github_issue_comment_edit() { # <comment-id>   (body on stdin)
   command -v "$GH_BIN" >/dev/null 2>&1 || return 1
   gh_api --method PATCH \
     "repos/{owner}/{repo}/issues/comments/$cid" -F body=@- >/dev/null 2>&1
+  return $?
+}
+
+# github_issue_edit_body <n>  — body on STDIN — REPLACE the issue's body.
+#
+# S188: the ONE op that pushes a recomposed issue body. It mirrors the filing
+# lanes' own `gh issue edit <n> --body-file <f>` argv — the same command, with
+# `-` for the file so the body arrives on stdin and can be arbitrarily large
+# (a PRD + ADR + Estimate section is well past a comfortable argv). Deliberately
+# `gh issue edit` and NOT `gh api`: `gh issue` resolves the forge host from the
+# repo's own remote, so this works on GitHub Enterprise with no host pinning and
+# stays byte-comparable to what file.sh has always sent.
+#
+# Best-effort like relabel/close: never `die` on a forge error, but PROPAGATE
+# gh's rc so the caller learns the push did not land (the refresh keys off that
+# to retry at the next transfer point rather than record a false "pushed").
+# gh absent → soft non-zero.
+github_issue_edit_body() { # <n>   (body on stdin)
+  local issue="${1:-}"
+  [ -n "$issue" ] || die "issue-edit-body: missing issue number"
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  "$GH_BIN" issue edit "$issue" --body-file - >/dev/null 2>&1
   return $?
 }
 
@@ -405,6 +435,7 @@ case "$OP" in
   issue-comment)        github_issue_comment "$@" ;;
   issue-comment-create) github_issue_comment_create "$@" ;;
   issue-comment-edit)   github_issue_comment_edit "$@" ;;
+  issue-edit-body)      github_issue_edit_body "$@" ;;
   issue-relabel) github_issue_relabel "$@" ;;
   issue-close)   github_issue_close   "$@" ;;
   link-subissue) github_link_subissue "$@" ;;

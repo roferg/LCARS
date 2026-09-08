@@ -43,6 +43,38 @@ Respond with `lcars respond <id>`.
 - Any Mission awaiting a human answer has its **pending question spelled out**
   below the table so the captain knows exactly what to respond to.
 - A Mission with no GitHub issue yet shows `-` in the ISSUE column.
+- **Issue body NOT updated.** The issue body is rebuilt from the mission dir at
+  exactly two transfer points. If a part of it could not be BUILT there — an
+  interrupted re-grill left a 0-byte `prd.md`; `estimate.json` went missing and
+  there is no local record of the last pushed body to carry the `## Estimate`
+  section (and its three board pills) forward — the refresh refuses the push
+  rather than delete content off GitHub that nothing can put back. That refusal
+  is footed here, naming the Mission, the part, and the fix:
+
+  ```
+  Issue body NOT updated (the mission ran; its GitHub issue is behind):
+    lcars-20260530-001 (#42): could not build the "## Estimate" section — estimate.json is gone …
+        → restore …/estimate.json (`lcars run lcars-20260530-001 --step` re-runs the estimator) …
+  ```
+
+  It **gates nothing** — the Mission ran and advanced normally; only its GitHub
+  issue is behind, and the next transfer point heals it (and clears the line)
+  once the source is back.
+- **Issue body pushed with CARRIED-FORWARD parts.** The quieter half of the same
+  story. When a part's source is gone but the composer's own record says what
+  the issue already carries, the refresh reuses that part VERBATIM and pushes —
+  nothing is lost and nothing is gated. But the captain should know that (say)
+  his board pills are the ones last pushed rather than a fresh estimate, so
+  every carried part is footed here with the act that changes it back:
+
+  ```
+  Issue body pushed with CARRIED-FORWARD parts (a source was missing, so the part the issue already carried was reused):
+    lcars-20260530-001 (#42): Estimate carried forward; estimate.json is missing …
+        → re-run the estimator (`lcars run lcars-20260530-001 --step`) to rebuild it from source
+  ```
+
+  A refresh that rebuilds every part from source clears the line, so this block
+  always describes the issue as it stands right now.
 
 ## Live view — `--watch` / `--once`
 
