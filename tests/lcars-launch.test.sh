@@ -204,6 +204,80 @@ EOF
   chmod +x "$1"
 }
 
+# --- S187: fixture apps that REALLY BIND a TCP port ---------------------------
+# Every fixture app above is a sleep loop that binds NOTHING — which is exactly
+# why a launch whose recorded url pointed at ANOTHER repo's app was invisible to
+# this suite. These two helpers are the committed rigging that closes that hole.
+
+# A free localhost TCP port, chosen by the OS and released immediately. Racy in
+# principle, fine here: nothing else in this suite is grabbing ports.
+free_port() {
+  python3 -c 'import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+# free_port that is guaranteed DIFFERENT from every port named in "$@".
+free_port_not() { # [port ...]
+  local p x i=0
+  while [ "$i" -lt 30 ]; do
+    p="$(free_port)"
+    for x in "$@"; do [ "$p" = "$x" ] && p=""; done
+    [ -n "$p" ] && { printf '%s\n' "$p"; return 0; }
+    i=$((i + 1))
+  done
+  printf '%s\n' "$p"
+}
+
+# A fake "app" that REALLY binds a TCP port. It:
+#   • optionally waits $3 seconds before binding (models a dev server that only
+#     reaches its listen() a second or two in — Vite/electron/pnpm layering),
+#   • binds 127.0.0.1:$2 and listens,
+#   • prints the Vite-style "  Local:   http://localhost:<port>/" line to $LOG,
+#   • answers every connection 200 OK naming its own port, and appends one line
+#     per request to $4 when given — so a test can prove WHICH app a probe
+#     actually reached (the two-repo regression).
+# `exec` keeps PID == PGID == the python listener, so the skill's process-group
+# enumeration sees the real socket.
+make_binding_app() { # path port [delay-seconds] [hits-file]
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+exec python3 -u -c '
+import socket, sys, time
+port = int(sys.argv[1]); delay = float(sys.argv[2]); hits = sys.argv[3]
+if delay > 0:
+    time.sleep(delay)
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(16)
+print("  Local:   http://localhost:%d/" % port)
+body = ("app on %d" % port).encode()
+while True:
+    try:
+        c, _ = s.accept()
+        try:
+            c.recv(4096)
+        except Exception:
+            pass
+        if hits:
+            f = open(hits, "a"); f.write("hit %d\n" % port); f.close()
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: "
+                  + str(len(body)).encode()
+                  + b"\r\nConnection: close\r\n\r\n" + body)
+        c.close()
+    except Exception:
+        pass
+' $2 ${3:-0} "${4:-}"
+EOF
+  chmod +x "$1"
+}
+
+# How many requests has a binding app answered? (0 when it has never been hit.)
+hit_count() { # hits-file
+  [ -f "$1" ] || { printf '0\n'; return 0; }
+  wc -l < "$1" | tr -d ' '
+}
+
 json_field() { sed -En "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" "$1" | head -1; }
 json_num()   { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
 
@@ -1203,6 +1277,165 @@ check "25m. but the persisted record's message is still ONE line, carrying both 
   "[ \"\$(printf '%s' \"\$MSG25\" | wc -l | tr -d ' ')\" = 0 ] \
    && printf '%s' \"\$MSG25\" | grep -q 'The app then failed' \
    && printf '%s' \"\$MSG25\" | grep -q 'treated as errors'"
+
+# =====================================================================
+# 26. S187 — THE URL IS VERIFIED, NOT PREDICTED.
+#     launch.json's `url` used to be whatever the discovery worker GUESSED,
+#     written into the running record untouched. The app's real bound port was
+#     never observed: liveness only proves the PROCESS is up, and the
+#     best-effort curl probe happily 200s against a DIFFERENT repo's app that
+#     already holds the predicted port. Measured 2026-09-04: repo A's Vite held
+#     5173, repo B predicted 5173 and silently bound 5174, and B's board linked
+#     A's app. The fix OBSERVES: enumerate the launched process group, read its
+#     LISTEN sockets, and make the record say where the app actually is.
+# =====================================================================
+
+# 26a. The toolchain the verification stands on (asserted, never spiked).
+check "26a. pgrep -g and lsof are available (the verification toolchain)" \
+  "command -v pgrep >/dev/null 2>&1 && { command -v lsof >/dev/null 2>&1 || [ -x /usr/sbin/lsof ]; }"
+
+# 26b-d. A CORRECT prediction must survive untouched — verification is not an
+#        excuse to rewrite a url that was already right.
+P26="$(free_port)"
+R26="$(make_repo m26)"
+APP26="$TMPROOT/app26.sh"; make_binding_app "$APP26" "$P26"
+W26="$(claude_stub_path)"
+make_ready_worker "$W26" "$APP26" "m26 dev server" "http://localhost:$P26" "stop"
+OUT26="$( cd "$R26" && LCARS_WORKER_BIN="$W26" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m26 2>&1 )"
+LJ26="$R26/.git/lcars/missions/m26/launch.json"
+PID26="$(json_num "$LJ26" pid)"; [ -n "$PID26" ] && LAUNCHED_PIDS+=("$PID26")
+check "26b. an app that binds exactly the predicted port keeps that url" \
+  "[ \"\$(json_field \"$LJ26\" url)\" = \"http://localhost:$P26\" ]"
+check "26c. and the prediction is recorded alongside it (predictedUrl)" \
+  "[ \"\$(json_field \"$LJ26\" predictedUrl)\" = \"http://localhost:$P26\" ]"
+check "26d. a right guess raises NO mismatch note anywhere" \
+  "! printf '%s' \"\$OUT26\" | grep -qi 'actually listening' \
+   && ! grep -q '\"urlNote\"' \"$LJ26\""
+( cd "$R26" && LCARS_WORKER_BIN="$W26" bash "$LAUNCH_SH" m26 --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 27. THE BUG: the prediction is wrong and the app bound somewhere else.
+#     (5173 predicted, 5174 actually bound — the exact demo failure, one repo.)
+# =====================================================================
+P27PRED="$(free_port)"
+P27REAL="$(free_port_not "$P27PRED")"
+R27="$(make_repo m27)"
+APP27="$TMPROOT/app27.sh"; make_binding_app "$APP27" "$P27REAL"
+W27="$(claude_stub_path)"
+make_ready_worker "$W27" "$APP27" "m27 dev server" "http://localhost:$P27PRED" "stop"
+OUT27="$( cd "$R27" && LCARS_WORKER_BIN="$W27" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m27 2>&1 )"
+LJ27="$R27/.git/lcars/missions/m27/launch.json"
+PID27="$(json_num "$LJ27" pid)"; [ -n "$PID27" ] && LAUNCHED_PIDS+=("$PID27")
+check "27a. the record's url names the port the app ACTUALLY bound" \
+  "[ \"\$(json_field \"$LJ27\" url)\" = \"http://localhost:$P27REAL\" ]"
+check "27b. the wrong guess is demoted to predictedUrl, not silently lost" \
+  "[ \"\$(json_field \"$LJ27\" predictedUrl)\" = \"http://localhost:$P27PRED\" ]"
+check "27c. the readout names the mismatch, and names both urls" \
+  "printf '%s' \"\$OUT27\" | grep -qi 'actually listening' \
+   && printf '%s' \"\$OUT27\" | grep -qF 'http://localhost:$P27PRED' \
+   && printf '%s' \"\$OUT27\" | grep -qF 'http://localhost:$P27REAL'"
+check "27d. a wrong guess is NOT a failure — the app is still running" \
+  "[ \"\$(json_field \"$LJ27\" status)\" = running ]"
+check "27e. the On screen line offers the VERIFIED url, never the guess" \
+  "printf '%s\n' \"\$OUT27\" | grep -qx '  On screen:  http://localhost:$P27REAL'"
+( cd "$R27" && LCARS_WORKER_BIN="$W27" bash "$LAUNCH_SH" m27 --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 28. THE MEASURED TWO-REPO FAILURE — the regression test.
+#     Repo A's app holds port P. Repo B's discovery ALSO predicts P, but B's app
+#     really binds Q. Before S187 B's record said P, and B's best-effort probe
+#     hit A's server and "confirmed" it. B's record must say Q, and the probe
+#     must land on B's app and never touch A's.
+# =====================================================================
+P28A="$(free_port)"
+P28B="$(free_port_not "$P28A")"
+HITS28A="$TMPROOT/hits28a"; HITS28B="$TMPROOT/hits28b"
+R28A="$(make_repo m28a)"; R28B="$(make_repo m28b)"
+APP28A="$TMPROOT/app28a.sh"; make_binding_app "$APP28A" "$P28A" 0 "$HITS28A"
+APP28B="$TMPROOT/app28b.sh"; make_binding_app "$APP28B" "$P28B" 0 "$HITS28B"
+W28A="$(claude_stub_path)"
+make_ready_worker "$W28A" "$APP28A" "repo A app" "http://localhost:$P28A" "stop"
+# repo B's inspector predicts repo A's port — the collision, scripted.
+W28B="$(claude_stub_path)"
+make_ready_worker "$W28B" "$APP28B" "repo B app" "http://localhost:$P28A" "stop"
+( cd "$R28A" && LCARS_WORKER_BIN="$W28A" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m28a >/dev/null 2>&1 )
+LJ28A="$R28A/.git/lcars/missions/m28a/launch.json"
+PID28A="$(json_num "$LJ28A" pid)"; [ -n "$PID28A" ] && LAUNCHED_PIDS+=("$PID28A")
+A_HITS_BEFORE="$(hit_count "$HITS28A")"
+OUT28B="$( cd "$R28B" && LCARS_WORKER_BIN="$W28B" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m28b 2>&1 )"
+LJ28B="$R28B/.git/lcars/missions/m28b/launch.json"
+PID28B="$(json_num "$LJ28B" pid)"; [ -n "$PID28B" ] && LAUNCHED_PIDS+=("$PID28B")
+nap 0.5
+check "28a. repo A's own launch is unaffected (its url is its real port)" \
+  "[ \"\$(json_field \"$LJ28A\" url)\" = \"http://localhost:$P28A\" ]"
+check "28b. repo B's record names B's OWN port, not the colliding prediction" \
+  "[ \"\$(json_field \"$LJ28B\" url)\" = \"http://localhost:$P28B\" ]"
+check "28c. and B's predictedUrl preserves the colliding guess" \
+  "[ \"\$(json_field \"$LJ28B\" predictedUrl)\" = \"http://localhost:$P28A\" ]"
+check "28d. B's readiness probe reached B's OWN app" \
+  "[ \"\$(hit_count \"$HITS28B\")\" -ge 1 ]"
+check "28e. and B's launch never touched repo A's app" \
+  "[ \"\$(hit_count \"$HITS28A\")\" = \"$A_HITS_BEFORE\" ]"
+( cd "$R28A" && LCARS_WORKER_BIN="$W28A" bash "$LAUNCH_SH" m28a --stop >/dev/null 2>&1 )
+( cd "$R28B" && LCARS_WORKER_BIN="$W28B" bash "$LAUNCH_SH" m28b --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 29. AN APP THAT BINDS NOTHING (the legacy sleep-loop fixture — a CLI tool, a
+#     worker, an app that died before listen()). A url we cannot verify must not
+#     be published as if it were checked: it is emptied, and the record says so
+#     in plain English. Everything else — status, pid/pgid, stop, re-launch —
+#     stays exactly as it was before S187.
+# =====================================================================
+P29="$(free_port)"
+R29="$(make_repo m29)"
+APP29="$TMPROOT/app29.sh"; make_app "$APP29"
+W29="$(claude_stub_path)"
+make_ready_worker "$W29" "$APP29" "m29 batch worker" "http://localhost:$P29" "lcars launch m29 --stop"
+OUT29="$( cd "$R29" && LCARS_WORKER_BIN="$W29" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m29 2>&1 )"
+LJ29="$R29/.git/lcars/missions/m29/launch.json"
+PID29="$(json_num "$LJ29" pid)"; PGID29="$(json_num "$LJ29" pgid)"
+[ -n "$PID29" ] && LAUNCHED_PIDS+=("$PID29")
+WT29="$(wt_path "$R29" m29)"
+check "29a. nothing listening in the group → the url is emptied, not guessed" \
+  "[ -z \"\$(json_field \"$LJ29\" url)\" ]"
+check "29b. and the record carries an honest note naming the unverified guess" \
+  "printf '%s' \"\$(json_field \"$LJ29\" urlNote)\" | grep -q 'nothing in its process group is listening' \
+   && printf '%s' \"\$(json_field \"$LJ29\" urlNote)\" | grep -qF 'http://localhost:$P29'"
+check "29c. the captain is told the same thing in the readout" \
+  "printf '%s' \"\$OUT29\" | grep -q 'nothing in its process group is listening'"
+check "29d. status is still running and pid == pgid (unchanged semantics)" \
+  "[ \"\$(json_field \"$LJ29\" status)\" = running ] && [ -n \"$PID29\" ] \
+   && [ \"$PID29\" = \"$PGID29\" ] && kill -0 \"$PID29\" 2>/dev/null"
+( cd "$R29" && LCARS_WORKER_BIN="$W29" bash "$LAUNCH_SH" m29 --stop >/dev/null 2>&1 )
+nap 0.4
+check "29e. --stop still group-kills it and prunes the worktree" \
+  "! kill -0 \"$PID29\" 2>/dev/null && [ ! -d \"$WT29\" ]"
+( cd "$R29" && LCARS_WORKER_BIN="$W29" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m29 >/dev/null 2>&1 )
+PID29b="$(json_num "$LJ29" pid)"; [ -n "$PID29b" ] && LAUNCHED_PIDS+=("$PID29b")
+check "29f. and a re-launch still works (idempotent, as before)" \
+  "[ \"\$(json_field \"$LJ29\" status)\" = running ] && kill -0 \"$PID29b\" 2>/dev/null"
+( cd "$R29" && LCARS_WORKER_BIN="$W29" bash "$LAUNCH_SH" m29 --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 30. THE LATE BINDER. Real dev servers reach listen() a second or two after the
+#     spawn. Sampling the socket ONCE right after the spawn would call every one
+#     of them "nothing listening"; the verification must keep looking across the
+#     same window the liveness poll already spans.
+# =====================================================================
+P30="$(free_port)"
+R30="$(make_repo m30)"
+APP30="$TMPROOT/app30.sh"; make_binding_app "$APP30" "$P30" 2
+W30="$(claude_stub_path)"
+make_ready_worker "$W30" "$APP30" "m30 slow dev server" "" "stop"
+OUT30="$( cd "$R30" && LCARS_WORKER_BIN="$W30" LCARS_LAUNCH_SETTLE=3.5 bash "$LAUNCH_SH" m30 2>&1 )"
+LJ30="$R30/.git/lcars/missions/m30/launch.json"
+PID30="$(json_num "$LJ30" pid)"; [ -n "$PID30" ] && LAUNCHED_PIDS+=("$PID30")
+check "30a. a server that binds ~2s in is still caught inside the window" \
+  "[ \"\$(json_field \"$LJ30\" url)\" = \"http://localhost:$P30\" ]"
+check "30b. with no prediction at all, the verified url is synthesized" \
+  "[ -z \"\$(json_field \"$LJ30\" predictedUrl)\" ] \
+   && printf '%s\n' \"\$OUT30\" | grep -qx '  On screen:  http://localhost:$P30'"
+( cd "$R30" && LCARS_WORKER_BIN="$W30" bash "$LAUNCH_SH" m30 --stop >/dev/null 2>&1 )
 
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

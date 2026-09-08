@@ -65,9 +65,12 @@ A write that changes `.git/lcars` moves the LocalAdapter fingerprint, so the
 existing /api/events SSE poll loop emits ONE coalesced `update` the board
 consumes — no second push path is needed.
 """
+import errno
 import json
 import os
 import posixpath
+import shutil
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -101,6 +104,62 @@ _CONTENT_TYPES = {
 #    entry of any other type is rejected → 415, before it can reach the worker.
 _MAX_BODY_BYTES = 12 * 1024 * 1024
 _ALLOWED_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+
+
+# --- S187: a CIVIL refusal when the port is already taken --------------------
+# Plain `lcars viewscreen` binds the fixed 8765 (only `--open` picks a free
+# port), so a second board on the same machine hit `_Server((host, port), ...)`
+# below and died on a raw `OSError: [Errno 48] Address already in use`
+# traceback — no message, no named fix, nothing an operator could act on.
+#
+# The guard lives at the BIND and is PORT-AGNOSTIC: 8765 is merely the common
+# case, and any occupied port (an explicit `--port`, LCARS_SERVE_PORT) deserves
+# the same sentence. Only EADDRINUSE is translated; every other OSError still
+# raises untouched, because a message that swallowed, say, a permission error
+# would be worse than the traceback it replaced.
+
+
+def port_holder(port, timeout=3.0):
+    """Best-effort command name of whatever is LISTENing on `port` ("" if
+    unknown). It runs `lsof` (darwin ships it at /usr/sbin/lsof, which is not on
+    every PATH), and every failure mode — no lsof, a timeout, no match, a
+    permission refusal — degrades to "". Naming the holder is a courtesy on top
+    of the refusal, never a precondition for it.
+    """
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"
+    if not os.path.exists(lsof):
+        return ""
+    try:
+        out = subprocess.run([lsof, "-nP", "-sTCP:LISTEN", "-iTCP:%d" % port],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             timeout=timeout).stdout.decode("utf-8", "replace")
+    except Exception:
+        return ""
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if parts:
+            return parts[0]
+    return ""
+
+
+class PortInUseError(OSError):
+    """The daemon's port is already bound. Carries the ONE line to print."""
+
+    def __init__(self, host, port, holder=""):
+        self.host = host
+        self.port = port
+        self.holder = holder
+        OSError.__init__(self, errno.EADDRINUSE, self.lcars_line())
+
+    def lcars_line(self):
+        """One line, in the LCARS voice: what is wrong, who is doing it, and
+        BOTH ways out. One line matters — a refusal an operator has to scroll
+        is the traceback again in nicer words."""
+        held = " (held by %s)" % self.holder if self.holder else ""
+        return ("LCARS \u2014 the viewscreen cannot take port %d%s; it is "
+                "already in use. Run `lcars viewscreen --open` for a free "
+                "port, or `lcars viewscreen --port N` to name another."
+                % (self.port, held))
 
 
 def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
@@ -141,7 +200,14 @@ def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
             self._lcars_stop.set()   # release any in-flight SSE poll loops
             ThreadingHTTPServer.shutdown(self)
 
-    httpd = _Server((host, port), handler)
+    try:
+        httpd = _Server((host, port), handler)
+    except OSError as exc:
+        # S187: only the "someone is already there" case is translated; anything
+        # else (EACCES on a privileged port, a bad host) still raises as it did.
+        if getattr(exc, "errno", None) != errno.EADDRINUSE:
+            raise
+        raise PortInUseError(host, port, port_holder(port)) from None
     return httpd
 
 

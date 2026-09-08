@@ -155,6 +155,14 @@ port.
 Open the printed URL (default `http://127.0.0.1:8765/`) in a browser. Stop with
 Ctrl-C.
 
+**If the port is already taken** (a second board, or anything else holding
+`8765`), the daemon refuses in ONE plain line — naming the port, naming the
+process holding it where `lsof` can tell, and giving both ways out (`lcars
+viewscreen --open` for a free port, or `--port N`) — and exits non-zero. No
+traceback. The guard is at the bind and is port-agnostic, so an explicit
+`--port` / `LCARS_SERVE_PORT` gets the same sentence; the `--open` free-port
+path never trips it.
+
 ## Two adapters, one shape (ADR-003)
 
 ONE adapter-neutral board shape backs two interchangeable read adapters; the

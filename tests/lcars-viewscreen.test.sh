@@ -377,6 +377,77 @@ check "renderLogPreview drives an images pill off each child's images" \
 check "renderLogPreview emits a themed 'pill img' chip" \
   "printf '%s' \"\$RENDERLOG\" | qgrep -q 'pill img'"
 
+# --- S187: a CIVIL refusal when the board's port is already taken -------------
+# Plain `lcars viewscreen` binds the fixed 8765 (only --open picks a free port),
+# so a second board on the same machine used to die inside the daemon on a raw
+# `OSError: [Errno 48] Address already in use` traceback — no message, no fix.
+# The guard is at the BIND and is port-agnostic, so this leg occupies a SCRATCH
+# port of its own: nothing here may touch 8765, which is very likely held by
+# something the operator is actually using.
+BUSY_PORT="$("$PY_BIN" - <<'PY'
+import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1]); s.close()
+PY
+)"
+"$PY_BIN" -c '
+import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(4)
+time.sleep(60)
+' "$BUSY_PORT" >/dev/null 2>&1 &
+BUSY_PID=$!
+nap_vs() { "$PY_BIN" -c 'import time,sys; time.sleep(float(sys.argv[1]))' "${1:-0.3}"; }
+nap_vs 0.6
+
+# LCARS_VERSION_CHECK_BIN is pointed at nothing so neither boot below can reach
+# the INTERACTIVE version check (`check.sh ask`), which blocks on a prompt — the
+# same guard the AI-session tests above already use.
+BUSYOUT="$(LCARS_WEB_DIR="$WEB_DIR" LCARS_SERVE_PORT="$BUSY_PORT" \
+  LCARS_SERVE_HOST="127.0.0.1" LCARS_VERSION_CHECK=0 \
+  LCARS_VERSION_CHECK_BIN=/nonexistent/x \
+  bash "$SERVE" --repo-root "$REPO" --read-only 2>&1)"; BUSYRC=$?
+BUSYLINES="$(printf '%s\n' "$BUSYOUT" | grep -c '[^[:space:]]')"
+
+check "occupied port: non-zero exit"                 "[ $BUSYRC -ne 0 ]"
+check "occupied port: NO python traceback"           "! printf '%s' \"\$BUSYOUT\" | qgrep -q 'Traceback'"
+check "occupied port: not a raw errno string either" "! printf '%s' \"\$BUSYOUT\" | qgrep -q 'Address already in use'"
+check "occupied port: exactly ONE line of output"    "[ \"$BUSYLINES\" = 1 ]"
+check "occupied port: speaks in the LCARS voice"     "printf '%s' \"\$BUSYOUT\" | qgrep -q 'LCARS'"
+check "occupied port: names the port"                "printf '%s' \"\$BUSYOUT\" | qgrep -q \"$BUSY_PORT\""
+check "occupied port: names the process holding it"  "printf '%s' \"\$BUSYOUT\" | qgrep -qi 'python'"
+check "occupied port: offers --open for a free port" "printf '%s' \"\$BUSYOUT\" | qgrep -q -- '--open'"
+check "occupied port: offers --port N as the other fix" "printf '%s' \"\$BUSYOUT\" | qgrep -q -- '--port'"
+
+# ...and the --open free-port path is untouched by the guard: with that same port
+# still occupied, `--open` (no --port, no LCARS_SERVE_PORT) must come up fine on
+# an OS-assigned port. LCARS_SERVE_NO_OPEN keeps the browser out of it.
+OPENLOG="$TMPROOT/open-freeport.log"
+( env -u LCARS_SERVE_PORT LCARS_WEB_DIR="$WEB_DIR" LCARS_SERVE_HOST="127.0.0.1" \
+    LCARS_SERVE_NO_OPEN=1 LCARS_VERSION_CHECK=0 \
+    LCARS_VERSION_CHECK_BIN=/nonexistent/x \
+    bash "$SERVE" --repo-root "$REPO" --read-only --open >"$OPENLOG" 2>&1 ) &
+OPEN_PID=$!
+OPEN_URL=""
+for _ in $(seq 1 50); do
+  OPEN_URL="$(sed -n 's|.*\(http://127\.0\.0\.1:[0-9]*\)/.*|\1|p' "$OPENLOG" 2>/dev/null | head -1)"
+  [ -n "$OPEN_URL" ] && break
+  nap_vs 0.1
+done
+OPEN_OK=0
+if [ -n "$OPEN_URL" ]; then
+  for _ in $(seq 1 50); do
+    if curl -fsS "$OPEN_URL/api/board" >/dev/null 2>&1; then OPEN_OK=1; break; fi
+    nap_vs 0.1
+  done
+fi
+check "--open still boots on a FREE port while that port is busy" "[ $OPEN_OK -eq 1 ]"
+check "--open never printed the busy-port refusal" \
+  "! qgrep -q 'already' < \"$OPENLOG\""
+kill "$OPEN_PID" 2>/dev/null; wait "$OPEN_PID" 2>/dev/null
+kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null
+
 echo
 [ "$fail" -eq 0 ] && echo "lcars-viewscreen: ALL PASS ($pass)" || echo "lcars-viewscreen: $fail FAILED"
 exit "$fail"
