@@ -4,6 +4,42 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.3 — the launch link tells the truth
+
+**When you click RUN, you get the app you asked for.** Until this release the
+URL on a Mission's card was a *guess*. The launch inspector predicted where your
+app would listen, LCARS wrote that prediction down, and nothing ever checked it.
+That is fine right up until you have two repos open — and then it is not. Run two
+viewscreens, deploy both apps, and the second dev server quietly takes the next
+port because the first one is holding 5173. LCARS still shows the number it
+guessed. It even "confirms" it, because something IS answering on that port: the
+*other* repo's app. Click through and you are looking at the wrong product, from
+a board whose data was correct the whole time.
+
+**LCARS now looks instead of guessing (session 187).** After your app starts,
+LCARS walks that launch's own process group, finds the socket it actually bound,
+and writes down where the app really is. Dev servers that bind late are caught —
+it watches across the whole startup window rather than glancing once. The
+original prediction is kept beside the verified answer rather than thrown away,
+so the record is honest about both, and when they disagree the readout says so
+plainly and carries on: the app is fine, the guess was wrong. If nothing in the
+group is listening at all, you get an empty link and a sentence explaining why,
+instead of a confident link to nowhere. The readiness probe now checks the
+verified address too — it was the probe hitting the neighbour's server that made
+the wrong answer look right.
+
+**A second viewscreen refuses politely.** Starting another plain `lcars
+viewscreen` while one already holds port 8765 used to end in a raw Python
+traceback. It now exits with one line naming the port, who is holding it, and
+the two ways forward — `lcars viewscreen --open` for a free port, or `--port N`
+to pick your own.
+
+**Why this hid for so long.** Every launch fixture in the test suite was a sleep
+loop that bound no port at all, so no test could tell a right URL from a wrong
+one. The suite now launches processes that really listen, and the exact two-repo
+failure is a permanent regression test: it watches the neighbouring app's request
+counter and fails if LCARS ever touches it again.
+
 ## 2026.9.2 — greenfield supported: LCARS can start a project from day zero
 
 **You can now point LCARS at an empty folder.** Until this release the pipeline
