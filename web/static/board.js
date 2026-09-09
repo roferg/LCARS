@@ -74,6 +74,167 @@ function captureForgeIdentity(meta) {
   // render, so a payload that stops carrying it reverts to github.com rather
   // than leaving a stale enterprise host on the page.
   boardGhHost = (meta && typeof meta.ghHost === "string") ? meta.ghHost : null;
+  /* S190: WHO THIS BOARD IS. Captured here for exactly the ordering reason the
+     block above records — cardNode() needs it BEFORE the first card is built, or
+     the very first paint of a fresh page decides "is this mine?" against a null
+     and renders every owned card unlocked until some later re-render happens by.
+     Reassigned on EVERY render, so a payload that stops carrying an identity
+     (auth expired, gh removed) reverts to "we do not know" and stops locking,
+     rather than leaving a stale login deciding whose work this is. */
+  var s = meta && meta.self;
+  selfLogin = (s && typeof s.login === "string" && s.login) ? s.login : null;
+}
+
+/* ════════════════ S190: OWNER, AVATAR, AND THE LIGHT LOCK ════════════════
+
+   The board's half of the solo protocol. The daemon publishes two facts —
+   `card.owner {login, avatarUrl}` and `meta.self {login}` — and this is the only
+   place that turns them into a verdict.
+
+   THE POSTURE IS lcars_owner_lock_reason's, MIRRORED EXACTLY (ownership.sh):
+
+     * an UNASSIGNED mission is NEVER locked — empty is "unowned", not an error;
+     * an UNRESOLVABLE identity NEVER locks anything — if we cannot say who we
+       are, we do not get to tell the captain he is someone else;
+     * only WRITE affordances are affected; every read (the card, the detail, the
+       activity feed, the ticket rows) stays wide open.
+
+   A false lock is strictly worse than the thing the lock prevents: it shuts the
+   captain out of his own work because a network hiccuped. So every uncertain
+   case answers "not locked".
+
+   AND THIS IS NOT THE LOCK. A disabled button is a courtesy — anyone can POST
+   straight past the DOM, and the tester will. The lock is the daemon's
+   server-side re-check (server._dispatch_verb → Actions.owner_lock_reason),
+   which re-asks the forge live and 403s with this same sentence. */
+
+/* The login LCARS is acting as (board.meta.self.login), or null when nothing
+   could say. Captured on every render beside detailRepo/boardGhHost. */
+var selfLogin = null;
+
+/* The owner's login when this mission is DEMONSTRABLY someone else's, else null.
+   The single predicate the whole lock is built on. */
+function ownerLockLogin(m) {
+  var owner = m && m.owner && m.owner.login;
+  if (!owner) return null;      // unassigned / never asked → never locked
+  if (!selfLogin) return null;  // we cannot say who we are → never locked
+  if (owner === selfLogin) return null;
+  return owner;
+}
+
+/* The refusal, in one sentence. It is byte-identical to the line
+   `lcars_owner_lock_reason` prints and the line the daemon's 403 carries — the
+   captain must not be told two different things by the tooltip and the refusal
+   that follows if he clicks past it. Pinned on both sides by tests. */
+function ownerLockLine(login) {
+  return "assigned to " + login +
+    " — reassign it to yourself on GitHub to take command";
+}
+
+/* Disable every write control under `host` when this mission is someone else's.
+
+   A SUBTREE SWEEP, deliberately, rather than a condition threaded through
+   cardControls' dozen branches. Those branches are the accumulated history of
+   this board — reapprove gates, merge-failed retries, queued cards, filing
+   windows, START ALIGNMENT — and any one of them added later would silently
+   miss a per-branch check. A sweep cannot miss a branch: whatever the card
+   decided to draw, if it is a button in the control row it is disabled and it
+   says why.
+
+   Note what is NOT swept: the ● APP LIVE stop control lives in the PILL row, not
+   here, so a launched app can still be stood down (S187 owns the launch
+   affordance and this session changes nothing about it). */
+function applyOwnerLock(host, m) {
+  var login = ownerLockLogin(m);
+  if (!host || !login) return host;
+  var line = ownerLockLine(login);
+  (function walk(n) {
+    if (!n) return;
+    var tag = String(n.tagName || n.tag || "").toUpperCase();
+    if (tag === "BUTTON") {
+      n.disabled = true;
+      n.title = line;
+    }
+    var kids = n.children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(host);
+  return host;
+}
+
+/* The Verify/Merge affordance for a mission held by someone else, or null.
+
+   WHY THE LOCK ALSO SITS INSIDE verifyAffordance. The sweep above stops at the
+   card. `verifyAffordance` is shared by the board card AND the DETAIL header —
+   that sharing is deliberate (BUG-049: both must gate identically during a
+   reconcile or a merge) — so calling this at the TOP of it covers the
+   Verify/Merge action on BOTH surfaces from one place. Without it, opening
+   someone else's mission would show a live ✓ Merge in the header, and the only
+   thing between a click and a merge would be the daemon's 403.
+
+   It outranks the busy / reapprove / merge-failed kinds on purpose: every one of
+   those describes work IN FLIGHT, and none of it is work THIS laptop may act on.
+
+   It is a FUNCTION rather than eight inline lines because verifyAffordance's
+   opening bytes are pinned by an existing regression guard (test_server's BUG-078
+   window check) — a long insertion there would break a test that has nothing to
+   do with this session. One call, two lines, guard intact. */
+function ownerLockOnVerify(m) {
+  var login = ownerLockLogin(m);
+  if (!login) return null;
+  return {
+    kind: "owned-by-other", label: "⊘ " + login + "'s mission",
+    cls: "warn", disabled: true, title: ownerLockLine(login),
+  };
+}
+
+/* The owner treatment: an LCARS pill — the avatar in a fully-rounded LEFT CAP,
+   the handle in uppercase display type on the colour block beside it.
+
+   THE DESIGN PROBLEM: a GitHub avatar is a PHOTOGRAPH, and LCARS has no
+   photographs — it is flat colour blocks, rounded caps and uppercase type. So
+   the photo is not dropped onto the console; it is FRAMED by it, inset inside a
+   solid cap that reads as part of the chrome, with the handle carrying the LCARS
+   voice beside it. All geometry, no new tokens (ADR-007).
+
+   THE DEAD-SRC DEGRADE is wired here rather than left to alt text: a broken
+   <img> keeps its box and its class (the S164 legend-swatch lesson), so an
+   avatar that fails would otherwise leave a hole in the cap that looks
+   deliberate. On error the image is REMOVED and the block is marked `.dead`, so
+   the stylesheet closes the cap and the handle stands alone — a complete,
+   intentional-looking pill, not a damaged one.
+
+   Returns null when there is no owner: a card with nothing to say about
+   ownership renders exactly as it did before this round. */
+function ownerNode(m) {
+  var o = m && m.owner;
+  if (!o || !o.login) return null;
+  var wrap = el("div", "owner");
+  var handle = el("span", "owner-handle", String(o.login).toUpperCase());
+  if (o.avatarUrl) {
+    var cap = el("span", "owner-av");
+    var img = document.createElement("img");
+    img.src = o.avatarUrl;
+    img.alt = o.login;
+    // Decorative-but-identifying: the handle beside it already carries the name
+    // in text, so a reader that never loads the image loses nothing.
+    img.setAttribute("loading", "lazy");
+    // github.com is a third party; send it no referrer from the captain's board.
+    img.setAttribute("referrerpolicy", "no-referrer");
+    img.addEventListener("error", function () {
+      if (cap.parentNode) cap.parentNode.removeChild(cap);
+      wrap.className = "owner dead";
+    });
+    cap.appendChild(img);
+    wrap.appendChild(cap);
+  } else {
+    wrap.className = "owner dead";
+  }
+  wrap.appendChild(handle);
+  // The whole pill carries the same sentence the locked controls do, so hovering
+  // the person explains the state without hunting for a disabled button.
+  var lock = ownerLockLogin(m);
+  wrap.title = lock ? ownerLockLine(lock) : (String(o.login) + " owns this mission");
+  return wrap;
 }
 
 /* THE one place the board builds a link to an issue. The scheme is pinned HERE,
@@ -1148,6 +1309,12 @@ function cardNode(m) {
   // carries the running tint. Gated on isInFlight so a paused/pausing card never
   // shows the running animation (UX-20). Optimistic-start counts (UX-17).
   if (isInFlight(m)) card.className += " running";
+  // S190: this mission is DEMONSTRABLY someone else's. A marker class only —
+  // the stylesheet dims the (already disabled) control row so the card reads as
+  // "you can watch this, you cannot drive it" from across the room. Absent for
+  // an unassigned mission, for my own, and whenever identity is unresolvable,
+  // so a board with no identity on it carries no new class at all.
+  if (ownerLockLogin(m)) card.className += " owned-by-other";
   // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
   // animation onto this card (showCardBusy).
   if (m.id != null) {
@@ -1180,6 +1347,13 @@ function cardNode(m) {
   // linking to the parent issue when the repo + parent issue resolve. Rendered
   // just under the title so the relationship reads at a glance on the pink card.
   if (isLogBug(m)) card.appendChild(logBugBadge(m));
+
+  // S190: WHOSE MISSION IS THIS — the avatar + handle pill, under the title and
+  // above the estimate pills, so "who" reads before "how much". Null (and so
+  // nothing appended) whenever the payload carries no owner, which is what keeps
+  // every card on an identity-free board byte-identical to before this round.
+  var own = ownerNode(m);
+  if (own) card.appendChild(own);
 
   var pills = el("div", "pills");
   // UX-29: a "QUEUED · WAITING" pill when scheduled-but-not-started in a
@@ -1350,7 +1524,9 @@ function cardNode(m) {
   if (logFilingState(m).filing) card.appendChild(filingPulse());
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
-  card.appendChild(cardControls(m));
+  // S190: …swept by the light lock AFTER they are built. See applyOwnerLock for
+  // why this is a sweep and not a check inside each of cardControls' branches.
+  card.appendChild(applyOwnerLock(cardControls(m), m));
 
   card.addEventListener("click", function () { openDetail(m.id); });
   return card;
@@ -8242,6 +8418,7 @@ function stageLabel(stage) {
    wire their own click handlers / dispatch styles). */
 function verifyAffordance(m) {
   if (!m) return null;
+  var owned = ownerLockOnVerify(m); if (owned) return owned; // S190
   // BUG-078: an OPTIMISTIC reapprove/retry-merge dispatch is in flight (isMerging,
   // kept sticky by clearMergingOnState until a terminal change). It must win over
   // the reapprove / merge-failed gate kinds below so the button stays the disabled

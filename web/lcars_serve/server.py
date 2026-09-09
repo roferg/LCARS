@@ -105,6 +105,20 @@ _CONTENT_TYPES = {
 _MAX_BODY_BYTES = 12 * 1024 * 1024
 _ALLOWED_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
+# S190 — the per-mission WRITE verbs the light lock refuses on a mission held by
+# someone else (see _owner_gate). An ALLOW-LIST, never a deny-list: a verb added
+# to this daemon later is UNLOCKED until somebody puts it here on purpose, which
+# is the failure direction a solo protocol can live with. The reverse — a
+# deny-list that silently locks a new verb — would refuse writes nobody meant to
+# refuse, and a false lock is the worse of the two errors.
+#
+# `launch` and `launch/stop` are deliberately ABSENT: the launch affordance is
+# S187's territory and this session changes nothing about it.
+_OWNER_LOCKED_VERBS = frozenset((
+    "start", "pause", "resume", "respond", "verify", "reapprove",
+    "log", "log/file", "log/run", "log/discard",
+))
+
 
 # --- S187: a CIVIL refusal when the port is already taken --------------------
 # Plain `lcars viewscreen` binds the fixed 8765 (only `--open` picks a free
@@ -628,7 +642,43 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                     return self._dispatch_verb(mid, verb, body)
             raise _ActionError(404, "no such write endpoint: %s" % path)
 
+        def _owner_gate(self, mid, verb):
+            """S190 — THE LIGHT LOCK, at the door. Raises 403, or returns.
+
+            The board disables these controls on a mission held by someone else,
+            but a disabled button is not a lock: anyone with the port can POST
+            straight past the DOM, and the tester will. This is where the refusal
+            actually happens — before a skill is dispatched, before a driver lock
+            is taken, before a branch moves.
+
+            The set is EXACTLY the set of verbs S189 already refuses at the CLI
+            (run / respond / approve / feedback / log). Two are here that S189
+            does not lock — `pause` and `resume` — deliberately: they are `run`'s
+            own lifecycle from this board's point of view, and offering a live
+            Pause on work driving on someone else's laptop would be a button that
+            promises something LCARS cannot do. Nothing else is annexed; in
+            particular `launch` / `launch/stop` stay out of it, because the launch
+            affordance is S187's territory and this session changes none of it.
+
+            The verdict comes from `Actions.owner_lock_reason`, which shells the
+            same ownership.sh the CLI consults — live, on every request, so a
+            reassignment made on GitHub takes effect on the next click. Every
+            uncertain case allows the write (see that method).
+            """
+            if verb not in _OWNER_LOCKED_VERBS:
+                return
+            reason = getattr(actions, "owner_lock_reason", None)
+            if not callable(reason):
+                return          # a writer wired without the ownership seam
+            try:
+                line = reason(mid)
+            except Exception:
+                return          # never let the guard itself refuse a write
+            if line:
+                raise _ActionError(403, line)
+
         def _dispatch_verb(self, mid, verb, body):
+            self._owner_gate(mid, verb)
             if verb == "start":
                 return actions.start(mid, override=body.get("override"))
             if verb == "pause":

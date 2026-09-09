@@ -86,8 +86,17 @@ _HOSTNAME_RE = re.compile(
     r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?"
     r"(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$")
 
+# S190 — a forge LOGIN and nothing else: alphanumerics and hyphens, ≤39 chars,
+# never leading-hyphen. The SAME rule ownership.sh's `_lcars_own_is_login`
+# applies, deliberately kept in step with it. Re-applied on this side because
+# the value crosses a file boundary on its way from the shell to a URL the
+# browser fetches, and a guard that only exists upstream is not a guard here.
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
+
 # The "not asked yet" sentinel for the gh_host memo. Distinct from "" because ""
-# is a real, cacheable answer (github.com) — the common one, in fact.
+# is a real, cacheable answer (github.com) — the common one, in fact. S190's
+# self-login memo uses it for exactly the same reason: "" (no identity) is a
+# real answer that must be cached, not re-asked on every render.
 _UNRESOLVED = object()
 
 
@@ -147,7 +156,8 @@ class LocalAdapter(object):
 
     def __init__(self, repo_root, read_only=False, git_url_reader=None,
                  readiness_script=None, base_freshness_script=None,
-                 host_adapter_script=None, establish_vision_script=None):
+                 host_adapter_script=None, establish_vision_script=None,
+                 ownership_script=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -210,6 +220,22 @@ class LocalAdapter(object):
         # already carries — the origin remote does not change under a running
         # daemon, and `_meta()` runs on every board build.
         self._repo_identity_memo = _UNRESOLVED
+        # S190: the shared OWNERSHIP library (skills/lcars-run/ownership.sh). The
+        # daemon SHELLS it and never re-derives identity or the light lock in
+        # Python — the same ADR-002 rule readiness.sh, the foundation gate and
+        # the host adapter already follow, and for the reason S168 recorded in
+        # blood: two implementations of one verdict drift, and then one surface
+        # is honest and the other is blind. Injectable for tests; None → env
+        # $LCARS_OWNERSHIP_SCRIPT → this clone's copy → the installed symlink.
+        #
+        # It is shelled for exactly ONE thing on the read path — "who am I?" —
+        # and that answer is memoized for the daemon's whole life (see
+        # self_login). WHO OWNS A MISSION is never shelled here: it is read off
+        # the published-owner files ownership.sh writes, because `_meta()` and
+        # `_card()` run on every board build and a board build does no network
+        # I/O (the rule `base_freshness` is kept out of this class for).
+        self._ownership_script = ownership_script
+        self._self_login_memo = _UNRESOLVED
 
     # -- the public surface ---------------------------------------------------
     def _model_aliases(self):
@@ -332,6 +358,17 @@ class LocalAdapter(object):
         gh = self.gh_host()
         if gh:
             meta["ghHost"] = gh
+        # S190: WHO THIS BOARD IS. `meta.self` is the login LCARS is acting as —
+        # the other half of a card's `owner`, and the only thing that lets the
+        # front end tell "mine" from "someone else's" without deciding policy of
+        # its own. Purely ADDITIVE and present ONLY when an identity RESOLVES: no
+        # gh, no auth, no network ⇒ no `self` key at all, so that board is
+        # byte-identical to before this round and NOTHING on it is ever locked.
+        # That absence is not a degradation to paper over — it is the posture
+        # `lcars_owner_lock_reason` already takes, mirrored here on purpose.
+        me = self.self_login()
+        if me:
+            meta["self"] = {"login": me}
         return meta
 
     def _resolve_host_adapter_script(self):
@@ -394,6 +431,240 @@ class LocalAdapter(object):
             host = ""
         self._gh_host_memo = host
         return host
+
+    # ── S190: identity and ownership ────────────────────────────────────────
+    def _resolve_ownership_script(self):
+        """The ownership library path: injected → env → in-repo → installed.
+
+        Mirrors _resolve_host_adapter_script exactly, and honours
+        $LCARS_OWNERSHIP_SCRIPT so a test (and an alternative install) can point
+        it somewhere harmless. NOTE the name: the SHELL callers already use
+        $LCARS_OWNERSHIP_LIB for the SOURCED path, and this is the EXECUTED one
+        — the same file, two different reaches, so they get two different names
+        rather than one that means two things.
+        """
+        if self._ownership_script:
+            return self._ownership_script
+        env = os.environ.get("LCARS_OWNERSHIP_SCRIPT")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-run", "ownership.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-run",
+                            "ownership.sh")
+
+    def _ownership_call(self, *args, **kw):
+        """One `bash ownership.sh <op> …` call. Returns stripped stdout, or "".
+
+        stdin CLOSED and a hard timeout, for the reason ownership.sh's own
+        `_lcars_own_host_call` documents: a gh that decides to prompt would
+        otherwise stall a daemon thread for ever with no output. ANY failure —
+        script missing, non-zero exit, a timeout — degrades to "", which is
+        always the "we do not know" answer, and "we do not know" never locks
+        anything.
+        """
+        timeout = kw.pop("timeout", 15)
+        script = self._resolve_ownership_script()
+        try:
+            proc = subprocess.run(
+                ["bash", script] + list(args), cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=timeout)
+        except Exception:
+            return ""
+        if proc.returncode != 0:
+            return ""
+        return (proc.stdout or b"").decode("utf-8", "replace").strip()
+
+    def self_login(self):
+        """The login this daemon is acting as, or "" when nothing can say.
+
+        A PURE READ — env pin, then the whoami file `lcars_whoami` publishes.
+        NO SUBPROCESS AND NO FORGE CALL, ever, and that is the point: this runs
+        inside `_meta()`, which runs on every board build, and a board build does
+        no network I/O. `warm_self()` below is the one place that asks.
+
+        Resolution order mirrors `lcars_whoami`'s own, minus the step that costs
+        a round trip:
+
+          1. $LCARS_GH_USER — the env pin. It wins over everything and costs
+             nothing, exactly as it does in the shell. This is how the suites and
+             a headless harness pin an identity.
+          2. `.git/lcars/cache/whoami-<host>` — the file S189's `lcars_whoami`
+             already writes on every resolution, host-scoped (a login read on one
+             forge must never be handed back on another), and honoured here under
+             the SAME $LCARS_WHOAMI_TTL. Every CLI verb refreshes it; so does the
+             daemon's own `warm_self()` and every pre-write ownership re-check.
+
+        MEMOIZED for the daemon's whole life, on the reasoning `gh_host` carries:
+        the captain does not become a different person under a running daemon.
+
+        "" is a first-class answer — no gh, no auth, cold cache. The board then
+        carries no `meta.self` at all and NOTHING is ever locked: if we cannot say
+        who we are, we do not get to tell the captain he is someone else.
+        """
+        if self._self_login_memo is not _UNRESOLVED:
+            return self._self_login_memo
+        pinned = os.environ.get("LCARS_GH_USER")
+        login = pinned.strip() if isinstance(pinned, str) else ""
+        if not login:
+            login = self._published_self()
+        if not _LOGIN_RE.match(login or ""):
+            login = ""
+        self._self_login_memo = login
+        return login
+
+    def _published_self(self):
+        """The login in the host-scoped whoami file, or "" (absent / stale)."""
+        cache = self._owner_cache_dir()
+        if not os.path.isdir(cache):
+            return ""          # nothing published — see _published_owner
+        host = self.gh_host() or "github.com"
+        path = os.path.join(cache, "whoami-%s" % host)
+        try:
+            ttl = int(os.environ.get("LCARS_WHOAMI_TTL") or 43200)
+        except ValueError:
+            ttl = 43200
+        try:
+            if ttl > 0 and (time.time() - os.path.getmtime(path)) >= ttl:
+                return ""
+            with open(path) as fh:
+                return (fh.readline() or "").strip()
+        except OSError:
+            return ""
+
+    def warm_self(self):
+        """Ask the forge who we are, ONCE, and publish it. Returns the login.
+
+        The ONE identity round trip in the daemon's life. Called from
+        `__main__.build_adapter` at startup — the same "pay for it before anyone
+        is waiting" move `gh_host()` makes there — so `self_login()` above can
+        stay a pure file read on the render path.
+
+        It goes through `ownership.sh whoami` rather than gh directly, so the
+        memo, the host pin and the cache write all stay in the one implementation
+        (ADR-002). The cache write is that call's own side effect; we clear our
+        memo first so the fresh answer is picked up rather than a cold "".
+
+        Idempotent once it has an answer, so the startup path can call it
+        synchronously (the first board must know who we are, or it shows every
+        card unlocked) and the background owner warm can call it again for free.
+        A warm that found NOTHING is retried, deliberately: gh may simply have
+        been slow to start.
+        """
+        if isinstance(self._self_login_memo, str) and self._self_login_memo:
+            return self._self_login_memo
+        self._ownership_call("whoami")
+        self._self_login_memo = _UNRESOLVED
+        return self.self_login()
+
+    def _owner_cache_dir(self):
+        return os.path.join(self.repo_root, ".git", "lcars", "cache")
+
+    def _published_owner(self, issue):
+        """The owner ownership.sh last PUBLISHED for this issue, or "".
+
+        A PURE DISK READ — no subprocess, no network, no lock. That is the whole
+        design: `_card()` runs once per mission on every board build, and a board
+        build must never touch the forge (the rule that keeps `base_freshness`,
+        with its bounded `git fetch`, out of this class entirely).
+
+        The file is host-scoped for the same reason the whoami cache is: the same
+        issue NUMBER exists on both forges and means different work there.
+
+        THREE STATES, and they are not two:
+          * file absent            → we have never asked. No owner key.
+          * file present, EMPTY    → the forge said "nobody". No owner key.
+          * file present with a login → that login.
+        The board locks on none of the first two; the distinction is kept because
+        "unowned" and "unknown" are different facts and a later surface (the
+        remote card, S191) will want to say so.
+
+        WHAT THIS IS NOT: authority. It is a display cache, and a reassignment
+        made on GitHub reaches it only when something asks the forge again (any
+        write verb, the daemon's own pre-write re-check, or a daemon restart).
+        Nothing authoritative is ever decided from it — every write is re-checked
+        LIVE against the forge before it is allowed through (see
+        Actions.owner_lock_reason). A stale card can therefore mislead for a
+        while; it can never let the wrong write happen, nor block the right one.
+        """
+        if not isinstance(issue, int):
+            return ""
+        # ASK NOTHING WHEN THERE IS NOTHING TO READ. Resolving the host key means
+        # `gh_host()`, and on a cold adapter that is a subprocess — so a repo
+        # where ownership has never been published (every pre-S190 repo, and
+        # every test fixture) must not pay for one just to learn there is no
+        # file. `_card` runs once per mission on every build; this guard is what
+        # keeps that free.
+        cache = self._owner_cache_dir()
+        if not os.path.isdir(cache):
+            return ""
+        host = self.gh_host() or "github.com"
+        path = os.path.join(cache, "owner-%s-%d" % (host, issue))
+        try:
+            with open(path) as fh:
+                login = (fh.readline() or "").strip()
+        except OSError:
+            return ""
+        # The publisher already validated it; validate again, because this value
+        # becomes a URL the browser fetches and a name in a refusal sentence.
+        return login if _LOGIN_RE.match(login) else ""
+
+    def refresh_owner(self, issue):
+        """Re-ask the forge who owns this issue, republishing the cache.
+
+        Shells `ownership.sh owner <n>`, whose own resolution writes the
+        published-owner file as a side effect. Called from paths where a
+        subprocess is honest — a write the daemon is about to allow or refuse,
+        and the startup warm — and NEVER from `board()`.
+
+        A FAILED CALL PUBLISHES NOTHING, and that is enforced in ownership.sh's
+        `mission_owner`, not here — one implementation of "who owns this", per
+        ADR-002. It matters at this seam because this method returns "" for BOTH
+        "the forge says nobody" and "the forge could not be reached", and round 1
+        shipped with the publisher unable to tell them apart either: a daemon
+        started with gh missing rewrote every owner file to zero bytes on boot.
+        The three states `_published_owner` documents are only three because the
+        publisher now stays silent when the forge did not answer.
+        """
+        if not isinstance(issue, int):
+            return ""
+        return self._ownership_call("owner", str(issue))
+
+    def warm_owners(self, limit=24):
+        """Ask the forge who owns each ACTIVE mission, once, at startup.
+
+        Runs in a background thread from `__main__.build_adapter` (the same
+        "pay for it before anyone is waiting" move `gh_host()` makes there), so
+        the daemon binds its port instantly and the first board a browser sees
+        already knows whose work is whose. There is no shared mutable state and
+        therefore no lock: each call writes a FILE, and `board()` reads files.
+
+        Bounded on purpose — active missions only, newest first, hard-capped —
+        because this is N forge round trips and the tail of finished work would
+        make it unbounded. A DONE mission's owner is not a question anyone acts
+        on, so it is not asked.
+
+        Best-effort throughout: every failure is already swallowed into "" by
+        `_ownership_call`, and a daemon whose forge is unreachable simply serves
+        the board it served before this round.
+        """
+        try:
+            # WHO WE ARE FIRST, and it is the more important of the two: without
+            # an identity nothing can be compared to an owner, so the board would
+            # show every avatar and lock nothing.
+            self.warm_self()
+            for card in self.board().get("missions", [])[:limit]:
+                issue = card.get("issue")
+                if isinstance(issue, int):
+                    self.refresh_owner(issue)
+        except Exception:
+            # A warm-up may never take the daemon down with it.
+            pass
 
     def _resolve_readiness_script(self):
         """The readiness helper path: injected → env → in-repo → installed."""
@@ -1217,6 +1488,18 @@ class LocalAdapter(object):
         bf = _base_freshness(state.get("baseFreshness"))
         if bf is not None:
             card["baseFreshness"] = bf
+        # S190: WHOSE MISSION IS THIS. The login comes off the published-owner
+        # file (a pure disk read — see _published_owner) and the avatar URL is
+        # CONSTRUCTED from it by the shared shape builder, so both adapters emit
+        # the identical block and the front end cannot tell them apart (ADR-003).
+        #
+        # ABSENT, not null, when there is no owner or none has been published —
+        # so a board with no identity on it is byte-identical to before this
+        # round, which is every other user's board and, on a machine with no gh,
+        # the captain's too.
+        owner = board.owner_block(self._published_owner(issue))
+        if owner is not None:
+            card["owner"] = owner
         return card
 
     def _activity(self, d):

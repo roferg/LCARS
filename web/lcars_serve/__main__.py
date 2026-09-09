@@ -66,6 +66,25 @@ def build_adapter(kind, repo_root, gh_bin, repo, read_only=False):
     # inside the adapter, so this is purely "pay for it before anyone is
     # waiting"; a failure is already swallowed into "" by gh_host itself.
     adapter.gh_host()
+    # S190: ask the forge who owns each ACTIVE mission, ONCE, so the first board
+    # a browser sees already knows whose work is whose.
+    #
+    # IN A BACKGROUND THREAD, and that is the whole reason it can exist at all: a
+    # board build does no network I/O, so owners must be learned somewhere else,
+    # and the daemon still has to bind its port instantly. There is no shared
+    # mutable state here and therefore no lock — each call writes a FILE and
+    # `board()` reads files, so the worst a half-finished warm can do is serve a
+    # board that knows about one fewer owner for another second.
+    #
+    # Bounded, best-effort, opt-out: LCARS_OWNER_WARM=0 turns it off outright (a
+    # harness, or a captain on a plane). Every failure inside is already
+    # swallowed, so nothing here can take the daemon down or slow its start.
+    if os.environ.get("LCARS_OWNER_WARM", "1") != "0":
+        # WHO WE ARE is resolved SYNCHRONOUSLY — one call, exactly like gh_host
+        # above. The very first board a browser paints has to know, or every card
+        # on it renders unlocked for as long as the warm takes.
+        adapter.warm_self()
+        threading.Thread(target=adapter.warm_owners, daemon=True).start()
     return adapter
 
 

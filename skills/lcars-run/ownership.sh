@@ -43,6 +43,30 @@
 #     do not get to tell the captain he is someone else;
 #   * LCARS_OWNER_ENFORCE=0 bypasses it entirely (harness debugging).
 #
+# --- S190: the two seams the VIEWSCREEN needs ---------------------------------
+# The board re-renders several times a minute, and the daemon has a standing rule
+# (see local_adapter._meta): A BOARD BUILD DOES NO NETWORK I/O. It also must not
+# grow a second Python implementation of "who owns this" (ADR-002, and the S168
+# scar: two implementations of one verdict drift apart, and then one surface is
+# honest and the other is blind). So this file grows two things and nothing else:
+#
+#   1. A PUBLISHED ANSWER. `mission_owner` WRITES what the forge told it to a
+#      host-scoped file under the cache dir; the daemon READS that file on the
+#      render path — pure disk, no subprocess, no network.
+#
+#      IT WRITES BUT NEVER READS. Reading it here would change S189's own
+#      freshness: a write verb's lock would start answering from a file, and a
+#      captain who had just reassigned a mission to himself on GitHub would stay
+#      locked out by a cache. The forge stays the CLI's only source of truth. The
+#      published file is a ONE-WAY publication for a read-only surface, and the
+#      daemon re-asks THIS library (live) before it lets any write through — so
+#      nothing authoritative is ever decided from the cache.
+#
+#   2. AN EXECUTABLE FACE (the dispatcher at the very bottom). SOURCED, this file
+#      behaves exactly as it did. EXECUTED, it answers three read ops so the
+#      daemon's server-side re-check runs the SAME lcars_owner_lock_reason the
+#      CLI runs — same posture, same sentence, one implementation.
+#
 # Env:
 #   LCARS_GH_USER        overrides the identity outright (the suites use this)
 #   LCARS_OWNER_ENFORCE  0 ⇒ the light lock never blocks
@@ -125,6 +149,38 @@ _lcars_own_cache_fresh() { # file
   [ $((now - mt)) -lt "$ttl" ]
 }
 
+# _lcars_own_publish_owner <issue> <login> — S190. PUBLISH one resolved owner
+# where the viewscreen daemon can read it without touching the network.
+#
+# The file is HOST-SCOPED for exactly the reason the whoami cache is: the same
+# issue NUMBER exists on both forges and means different work, so a key that did
+# not carry the host could hand a github.com answer back on the enterprise host.
+#
+# EMPTY CONTENT IS AN ANSWER, not a failure: it means the forge said "nobody".
+# An ABSENT file means "never asked". The board must be able to tell those apart
+# — it locks on neither, but a mission it has genuinely asked about and found
+# unowned is honestly unowned, and one it has never asked about is unknown.
+#
+# BEST-EFFORT, exactly like the whoami cache write: a read-only .git, a missing
+# directory, a full disk — none of them may fail a resolution the caller needs.
+# The write goes to a temp file and is MOVED into place so a daemon reading the
+# file concurrently never sees a half-written login.
+_lcars_own_publish_owner() { # <issue> <login-or-empty>
+  local issue="${1:-}" login="${2:-}" dir f tmp
+  case "$issue" in ''|null|*[!0-9]*) return 0 ;; esac
+  dir="$(_lcars_own_cache_dir)"
+  f="$dir/owner-$(_lcars_own_host)-$issue"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmp="$f.$$"
+  if [ -n "$login" ]; then
+    printf '%s\n' "$login" >"$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  else
+    : >"$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  fi
+  mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  return 0
+}
+
 # ===========================================================================
 # lcars_whoami — the login LCARS is acting as. Echoes it, or "" at non-zero.
 # ===========================================================================
@@ -198,9 +254,34 @@ mission_owner() { # <issue>
   key="_LCARS_OWNER_MEMO_$issue"
   eval "val=\"\${$key-__lcars_unset__}\""
   if [ "$val" = "__lcars_unset__" ]; then
-    val="$(_lcars_own_host_call issue-assignees "$issue" 2>/dev/null | head -1)"
+    # ANSWERED, or NOT ANSWERED AT ALL — and the difference is the RETURN CODE.
+    # The adapter is explicit about it: `issue-assignees` returns 1 when gh is
+    # missing or the call fails, and 0 PRINTING NOTHING when the issue is simply
+    # unassigned. So the rc is captured on its own line, BEFORE any pipeline: a
+    # `… | head -1` reports head's status, which is 0 whatever the forge did,
+    # and that dropped rc is what let a dead gh publish an empty owner over a
+    # real one (fix round 1, D1). The first line is then taken with parameter
+    # expansion rather than a second process.
+    local raw rc=0
+    raw="$(_lcars_own_host_call issue-assignees "$issue" 2>/dev/null)" || rc=$?
+    val="${raw%%$'\n'*}"
     _lcars_own_is_login "$val" || val=""
     eval "$key=\"\$val\""
+    # S190: PUBLISH what the forge just said, for the viewscreen. Inside the
+    # memo branch on purpose — one publication per process per issue, on the one
+    # pass that actually reached the forge. The publication is one-way: nothing
+    # here ever reads it back (see the header).
+    #
+    # ONLY WHEN THE FORGE ACTUALLY ANSWERED. `_published_owner`'s three states —
+    # absent (never asked), empty (the forge said nobody), a login — are only
+    # three if a FAILED call publishes nothing at all. Publishing on rc≠0 would
+    # write "nobody" every time gh was unreachable, erasing an owner LCARS had
+    # already been told about, so a captain on a plane would watch his board
+    # forget whose work is whose. Unanswered is not an answer: we leave whatever
+    # was published standing, and the caller still gets "" (which never locks).
+    if [ "$rc" -eq 0 ]; then
+      _lcars_own_publish_owner "$issue" "$val"
+    fi
   fi
   printf '%s' "$val"
   return 0
@@ -295,8 +376,62 @@ lcars_claim_mission() { # <issue>
   if err="$(_lcars_own_host_call issue-assign "$issue" "$me" 2>&1 >/dev/null)"; then
     # The memo is now stale — this process just changed the answer.
     eval "_LCARS_OWNER_MEMO_$issue=\"\$me\""
+    # S190: …and so is the published answer. The adapter's issue-assign READ IT
+    # BACK before returning 0, so this is a confirmed fact, not an optimistic
+    # one — the mission the captain just took reads as HIS on the board without
+    # waiting for the next forge read.
+    _lcars_own_publish_owner "$issue" "$me"
     return 0
   fi
   printf '  ⚠ could not assign #%s to %s on GitHub — assign it by hand to take command.' "$issue" "$me"
   return 1
 }
+
+# ===========================================================================
+# THE EXECUTABLE FACE (S190) — how a NON-BASH caller asks these questions.
+# ===========================================================================
+# Everything above is a library. This block runs ONLY when the file is EXECUTED
+# (`bash ownership.sh <op>`), never when it is sourced into `lcars file` /
+# `lcars run` / the other write verbs — a dispatcher that fired on `source`
+# would print, or exit, in the middle of somebody else's verb.
+#
+# WHY IT EXISTS. The viewscreen daemon must re-check ownership SERVER-SIDE
+# before it lets a write through: a disabled button is not a lock, and anyone can
+# POST straight past the DOM. That re-check has to be the SAME verdict the CLI
+# reaches — same posture (unassigned never locks, unresolvable never locks,
+# LCARS_OWNER_ENFORCE=0 bypasses) and the same sentence. So the daemon SHELLS
+# this (ADR-002) instead of reimplementing the rule in Python.
+#
+# READ OPS ONLY. There is deliberately no `assign` op here: claiming is a write
+# the CLI verbs own, and the daemon has no business minting one from a browser
+# request.
+#
+# The guard: when SOURCED, BASH_SOURCE[0] is this file while $0 is the sourcing
+# script — they differ. When EXECUTED they are the same string.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  case "${1:-}" in
+    # The login LCARS is acting as. Empty output + non-zero when gh cannot say.
+    whoami)
+      lcars_whoami
+      ;;
+    # The standing assignee of an issue, or nothing. ALWAYS rc=0 — "nobody" is
+    # an answer, and the caller reads the output, not the status.
+    owner)
+      mission_owner "${2:-}"
+      ;;
+    # THE LIGHT LOCK. rc=0 + one plain line ⇒ this mission belongs to someone
+    # else and the verb must refuse. rc=1 + silence ⇒ proceed.
+    lock-reason)
+      lcars_owner_lock_reason "${2:-}"
+      ;;
+    # An unknown op is a HARD, LOUD error. A silent 0 would be read by the
+    # daemon as "not locked", which is precisely the failure this file exists to
+    # prevent — so a typo must never look like permission.
+    *)
+      printf 'ownership.sh: unknown op: %s (want: whoami | owner <n> | lock-reason <n>)\n' \
+        "${1:-}" >&2
+      exit 2
+      ;;
+  esac
+  exit $?
+fi

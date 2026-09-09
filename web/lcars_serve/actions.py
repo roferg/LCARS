@@ -102,6 +102,12 @@ SCRIPT_ENV = {
     # FOUND panel facts, for the grill's foundation brief, and to FILE the
     # initialization mission; it assembles none of those itself.
     "establish_vision": "LCARS_ESTABLISH_VISION_BIN",
+    # S190: the OWNERSHIP library (skills/lcars-run/ownership.sh). The daemon
+    # shells its `lock-reason` op before it lets a mission write through, so the
+    # board's refusal is the SAME verdict, with the SAME posture and the SAME
+    # sentence, as the one `lcars run` / `respond` / `approve` / `feedback` /
+    # `log` already reach at the CLI. It never reimplements the rule (ADR-002).
+    "ownership": "LCARS_OWNERSHIP_SCRIPT",
 }
 
 
@@ -13028,6 +13034,65 @@ class Actions(LogFacts):
         if not (mid and os.path.isfile(os.path.join(d, "state.json"))):
             raise ActionError(404, "no such mission: %s" % mid)
 
+    # ── S190: THE LIGHT LOCK, SERVER-SIDE ───────────────────────────────────
+    def owner_lock_reason(self, mid):
+        """One plain line when this mission belongs to SOMEONE ELSE, else None.
+
+        THE POINT OF THIS EXISTING AT ALL. S189 already refuses at the CLI, and
+        every write here dispatches a skill — so why check twice? Because the
+        long verbs are dispatched DETACHED and fire-and-forget (see `_spawn`):
+        the child's refusal lands in a spawn log nobody is reading, seconds after
+        the board has already flipped the card to "starting" and the captain has
+        walked away. A refusal has to happen AT THE DOOR, with a status code, or
+        it is not a refusal the operator will ever see. And a disabled button is
+        not a lock: anyone with the port can POST straight past the DOM.
+
+        IT SHELLS, IT DOES NOT DECIDE. The verdict, the posture and the sentence
+        all come from `ownership.sh lock-reason` — the same code path
+        `lcars run` consults — so there is exactly one implementation of "whose
+        mission is this?" in LCARS (ADR-002; the S168 scar).
+
+        LIVE, EVERY TIME. It does NOT read the board's published-owner file: that
+        is a display cache, and a captain who has just reassigned a mission to
+        himself on GitHub must be able to act on his very next click. As a side
+        effect the shell-out republishes that cache, so the board catches up too.
+
+        EVERY UNCERTAIN CASE ANSWERS None (allowed):
+          * no `ownership` script wired            → the pre-S190 daemon
+          * the mission carries no forge issue     → nobody can own it
+          * gh absent, unauthenticated, unreachable→ ownership.sh exits non-zero
+          * an unassigned mission                  → "nobody" is not "somebody"
+          * an unresolvable identity               → we may not name the captain
+                                                     as someone else
+        A false lock is strictly worse than the thing the lock prevents.
+        """
+        script = self.scripts.get("ownership")
+        if not script:
+            return None
+        issue = _read_json_key(
+            os.path.join(self._missions_dir(), mid, "state.json"), "githubIssue")
+        if isinstance(issue, str) and issue.isdigit():
+            issue = int(issue)
+        if not isinstance(issue, int):
+            return None
+        env = dict(os.environ)
+        if self.gh_bin:
+            env["LCARS_GH_BIN"] = self.gh_bin
+        try:
+            proc = subprocess.run(
+                ["bash", script, "lock-reason", str(issue)],
+                cwd=self.repo_root, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=20)
+        except Exception:
+            # Script missing, un-runnable, or it hung past the bound. A forge we
+            # cannot reach must never stand between the captain and his own work.
+            return None
+        if proc.returncode != 0:
+            return None
+        line = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return line or None
+
     def _mission_state(self, mid):
         detail = self._reader.mission(mid)
         if detail is None:
@@ -13657,6 +13722,10 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         # S184 — Establish Vision, resolved like every other skill.
         "establish_vision": os.path.join(
             home, ".claude/skills/lcars-init/establish-vision.sh"),
+        # S190 — the ownership library's EXECUTABLE face, resolved like every
+        # other skill. It lives inside lcars-run beside host-adapter.sh.
+        "ownership": os.path.join(
+            home, ".claude/skills/lcars-run/ownership.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():

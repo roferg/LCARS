@@ -1,0 +1,414 @@
+{
+  "m-align": {
+    "children": [
+      {
+        "children": [],
+        "cls": "no",
+        "disabled": false,
+        "tag": "div",
+        "text": "#101 \u00b7 lcars:align"
+      },
+      {
+        "children": [],
+        "cls": "ttl",
+        "disabled": false,
+        "tag": "div",
+        "text": "Add Gamification to Course Site"
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "pill cost",
+            "disabled": false,
+            "tag": "span",
+            "text": "\u2b21 $4.20\u2013$6.40"
+          },
+          {
+            "children": [],
+            "cls": "pill med",
+            "disabled": false,
+            "tag": "span",
+            "text": "REASON \u25cf\u25cf\u25cb MEDIUM"
+          },
+          {
+            "children": [],
+            "cls": "pill high",
+            "disabled": false,
+            "tag": "span",
+            "text": "IMPL \u25cf\u25cf\u25cf HIGH"
+          }
+        ],
+        "cls": "pills",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "btn go",
+            "disabled": false,
+            "tag": "button",
+            "text": "\u25b6 Start"
+          }
+        ],
+        "cls": "card-ctrl",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      }
+    ],
+    "cls": "card",
+    "disabled": false,
+    "tag": "div",
+    "text": ""
+  },
+  "m-gated": {
+    "children": [
+      {
+        "children": [],
+        "cls": "no",
+        "disabled": false,
+        "tag": "div",
+        "text": "#104 \u00b7 lcars:research"
+      },
+      {
+        "children": [],
+        "cls": "ttl",
+        "disabled": false,
+        "tag": "div",
+        "text": "Gated mission"
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "pill await",
+            "disabled": false,
+            "tag": "span",
+            "text": "\u25cf AWAITING YOU"
+          },
+          {
+            "children": [],
+            "cls": "pill cost",
+            "disabled": false,
+            "tag": "span",
+            "text": "\u2b21 $4.20\u2013$6.40"
+          }
+        ],
+        "cls": "pills",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "btn danger",
+            "disabled": false,
+            "tag": "button",
+            "text": "Answer \u25b8"
+          }
+        ],
+        "cls": "card-ctrl",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      }
+    ],
+    "cls": "card awaiting",
+    "disabled": false,
+    "tag": "div",
+    "text": ""
+  },
+  "m-noissue": {
+    "children": [
+      {
+        "children": [],
+        "cls": "no",
+        "disabled": false,
+        "tag": "div",
+        "text": "\u2014 \u00b7 lcars:plan"
+      },
+      {
+        "children": [],
+        "cls": "ttl",
+        "disabled": false,
+        "tag": "div",
+        "text": "Add Gamification to Course Site"
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "pill cost",
+            "disabled": false,
+            "tag": "span",
+            "text": "\u2b21 $4.20\u2013$6.40"
+          },
+          {
+            "children": [],
+            "cls": "pill med",
+            "disabled": false,
+            "tag": "span",
+            "text": "REASON \u25cf\u25cf\u25cb MEDIUM"
+          },
+          {
+            "children": [],
+            "cls": "pill high",
+            "disabled": false,
+            "tag": "span",
+            "text": "IMPL \u25cf\u25cf\u25cf HIGH"
+          }
+        ],
+        "cls": "pills",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "btn go",
+            "disabled": false,
+            "tag": "button",
+            "text": "\u25b6 Start"
+          }
+        ],
+        "cls": "card-ctrl",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      }
+    ],
+    "cls": "card",
+    "disabled": false,
+    "tag": "div",
+    "text": ""
+  },
+  "m-parked": {
+    "children": [
+      {
+        "children": [],
+        "cls": "no",
+        "disabled": false,
+        "tag": "div",
+        "text": "#105 \u00b7 lcars:align"
+      },
+      {
+        "children": [],
+        "cls": "ttl",
+        "disabled": false,
+        "tag": "div",
+        "text": "Add a dark mode toggle"
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "pill standby",
+            "disabled": false,
+            "tag": "span",
+            "text": "\u25c7 STANDBY \u00b7 AWAITING ALIGNMENT"
+          }
+        ],
+        "cls": "pills",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "btn go",
+            "disabled": false,
+            "tag": "button",
+            "text": "\u25b9 START ALIGNMENT"
+          }
+        ],
+        "cls": "card-ctrl",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      }
+    ],
+    "cls": "card",
+    "disabled": false,
+    "tag": "div",
+    "text": ""
+  },
+  "m-paused": {
+    "children": [
+      {
+        "children": [],
+        "cls": "no",
+        "disabled": false,
+        "tag": "div",
+        "text": "#103 \u00b7 lcars:implement"
+      },
+      {
+        "children": [],
+        "cls": "ttl",
+        "disabled": false,
+        "tag": "div",
+        "text": "Paused mission"
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "pill cost",
+            "disabled": false,
+            "tag": "span",
+            "text": "\u2b21 $4.20\u2013$6.40"
+          },
+          {
+            "children": [],
+            "cls": "pill med",
+            "disabled": false,
+            "tag": "span",
+            "text": "REASON \u25cf\u25cf\u25cb MEDIUM"
+          },
+          {
+            "children": [],
+            "cls": "pill high",
+            "disabled": false,
+            "tag": "span",
+            "text": "IMPL \u25cf\u25cf\u25cf HIGH"
+          }
+        ],
+        "cls": "pills",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      },
+      {
+        "children": [],
+        "cls": "no pause-status",
+        "disabled": false,
+        "tag": "div",
+        "text": "\u23f8 paused"
+      },
+      {
+        "children": [
+          {
+            "children": [
+              {
+                "children": [],
+                "cls": "",
+                "disabled": false,
+                "tag": "i",
+                "text": ""
+              }
+            ],
+            "cls": "bar",
+            "disabled": false,
+            "tag": "div",
+            "text": ""
+          },
+          {
+            "children": [],
+            "cls": "lab",
+            "disabled": false,
+            "tag": "div",
+            "text": "WAVE ?/? \u00b7 TICKET 0/?"
+          }
+        ],
+        "cls": "progress",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "btn go pause-action",
+            "disabled": false,
+            "tag": "button",
+            "text": "\u25b6 Resume"
+          }
+        ],
+        "cls": "card-ctrl",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      }
+    ],
+    "cls": "card paused",
+    "disabled": false,
+    "tag": "div",
+    "text": ""
+  },
+  "m-verify": {
+    "children": [
+      {
+        "children": [],
+        "cls": "no",
+        "disabled": false,
+        "tag": "div",
+        "text": "#102 \u00b7 lcars:verify"
+      },
+      {
+        "children": [],
+        "cls": "ttl",
+        "disabled": false,
+        "tag": "div",
+        "text": "Add Gamification to Course Site"
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "pill cost",
+            "disabled": false,
+            "tag": "span",
+            "text": "\u2b21 $4.20\u2013$6.40"
+          },
+          {
+            "children": [],
+            "cls": "pill med",
+            "disabled": false,
+            "tag": "span",
+            "text": "REASON \u25cf\u25cf\u25cb MEDIUM"
+          },
+          {
+            "children": [],
+            "cls": "pill high",
+            "disabled": false,
+            "tag": "span",
+            "text": "IMPL \u25cf\u25cf\u25cf HIGH"
+          }
+        ],
+        "cls": "pills",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      },
+      {
+        "children": [
+          {
+            "children": [],
+            "cls": "btn go",
+            "disabled": false,
+            "tag": "button",
+            "text": "\u2713 Review PR \u25b8"
+          }
+        ],
+        "cls": "card-ctrl",
+        "disabled": false,
+        "tag": "div",
+        "text": ""
+      }
+    ],
+    "cls": "card",
+    "disabled": false,
+    "tag": "div",
+    "text": ""
+  }
+}

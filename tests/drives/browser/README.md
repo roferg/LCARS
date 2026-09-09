@@ -112,7 +112,8 @@ handed (a `--disallowedTools` naming `Write` means grounding), kills its first
 design turn the way a real engine dies at startup, and writes `mockup.html` into
 its cwd. **No engine is ever contacted and no token is ever spent**: the
 `claude`/`copilot` on PATH are smoke.sh's logging shims and the run reports 0
-invocations of them. The planted sidecar is a fixture: one room (`nav-rail`)
+invocations of them (forge reads go to a separate `gh` shim and a separate log —
+they are reads, not spend). The planted sidecar is a fixture: one room (`nav-rail`)
 with a `mockup.html` **and a `transcript.md`** — the record that makes a
 directory in the sidecar a *program* at all (fix round 2: the sidecar is the
 captain's own archive, so a folder he drops in it is not a program and is never
@@ -738,7 +739,8 @@ round does not rewrite recorded event `detail` text, so a historical stream's ow
 the **headlines and the chips** — the strings LCARS composes now.
 
 Zero tokens: `claude` and `copilot` on `PATH` are logging shims that exit 1, and
-the run prints its shim-invocation count (expected 0). It kills only the daemon
+the run prints its worker-shim count (expected 0) and, separately, its forge-read
+count (a startup owner-warm read per active mission — not spend). It kills only the daemon
 and Chrome PIDs it started itself.
 
 ## Exit codes
@@ -784,7 +786,8 @@ Each run gets its own directory (`mktemp -d`, or `LCARS_BROWSER_OUT`):
 | `daemon.log` | the daemon's stderr, including the URL it bound |
 | `chrome.log` | Chrome's stderr |
 | `pids.json` | daemon pid, Chrome pid, daemon port (teardown evidence) |
-| `worker-shim.log` | every `claude`/`copilot` invocation. **Should be empty.** |
+| `worker-shim.log` | every `claude`/`copilot` invocation — **spend**. **Should be empty**, and the run prints it in red if it is not. |
+| `gh-shim.log` | every forge call the daemon made (`$LCARS_GH_BIN`). **Reads, never spend** — a handful is normal, see below. |
 | `fixture/` | the throwaway `.git/lcars` board the daemon read |
 
 `result.json` reports every browser console error it saw, **with the URL**. Two
@@ -930,6 +933,22 @@ failure exits **77 and never accuses the board** — including that a stale
 - **Zero spend is pinned with a PATH shim**, both `claude` and `copilot`, never
   an env var: the daemon's align path can override `LCARS_WORKER_BIN` from a
   *request body*, so the environment is not a safe pin.
+- **The forge has its OWN shim and its own log** (`$OUT/shim/gh` →
+  `gh-shim.log`), and `$LCARS_GH_BIN` points at it. Reading the forge is not
+  spending: since S190 the daemon warms mission ownership at startup, so a
+  healthy run makes **one `gh issue view … --json assignees` read per active
+  mission** (bounded at 24) and `gh stub reads: 2` on this two-mission fixture
+  is **correct, not an alarm**. Before S190's fix round 1 those reads were
+  logged as *worker* invocations, so every green run printed
+  `worker shim invocations: 2 (expected 0 …)` — a false alarm on shared
+  equipment, which is how the next tester learns to ignore the real one. The
+  `gh` shim also **shadows any real `gh` on PATH**, so nothing inside this rig
+  can reach the captain's actual GitHub account.
+- **`LCARS_OWNER_WARM=0` turns the startup owner warm off entirely** — no forge
+  reads at all, and the board still paints. Use it when you want the daemon
+  boot to be provably silent; `selftest.sh` property 11 watches it actually do
+  that (the board paints, `gh-shim.log` stays empty), because a documented off
+  switch nobody has seen turn anything off is a comment, not a switch.
 - **Not in any automatic suite.** It is a drive rig, invoked deliberately, and it
   lives under `tests/drives/` where `tests/run.sh` (which globs `tests/*.test.sh`)
   cannot pick it up. It is not part of `python3 -m unittest discover -s tests`.

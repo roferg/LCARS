@@ -469,6 +469,118 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 /* inline card controls (mock #card .card-ctrl) */
 .card-ctrl{display:flex;gap:6px;margin-top:9px}
 
+/* ════════════════════════════════════════════════════════════════════════
+   S190 — THE OWNER PILL: whose mission is this.
+
+   THE DESIGN PROBLEM, stated plainly: a GitHub avatar is a PHOTOGRAPH, and
+   LCARS has no photographs. The console is flat colour blocks, fully-rounded
+   caps and uppercase display type; a circular portrait dropped onto it reads as
+   a browser widget that wandered onto a starship. So the photo is not placed on
+   the console — it is FRAMED BY it.
+
+   The treatment is the board's own `.pill` idiom at pill scale, with the pill's
+   geometry: a solid colour block with a FULLY-ROUNDED LEFT CAP holding the
+   avatar, and the handle in uppercase --font-display on the block beside it.
+   The portrait sits INSET in that cap with solid colour all around it, so the
+   frame is what you read first and the face is a detail within it — the way an
+   LCARS console frames a readout rather than displaying a picture.
+
+   The photo is also seated into the palette: a small desaturate + contrast lift
+   keeps a stranger's holiday snapshot from shouting over a two-colour board.
+   Restrained on purpose — enough to belong, not so much that the person stops
+   being recognisable, since recognising them at a glance is the whole point.
+
+   COLOUR CARRIES THE STATE, and there are only two:
+     amber (--lcars-amber, the iconic primary) — MINE; the card is fully live.
+     blue  (--lcars-blue,  a cool accent)      — SOMEONE ELSE'S; read-only here.
+   Blue, not red: this is not an alert and nothing is wrong. Someone is simply
+   working on it — and red is spoken for by AWAITING YOU.
+
+   ADR-007: geometry and layout only. Every colour is a shared --lcars-* token
+   read straight from docs/lcars.css; this sheet redefines none of them.
+   ════════════════════════════════════════════════════════════════════════ */
+.owner{
+  --owner-h:22px;                    /* cap height == pill height */
+  --owner-col:var(--lcars-amber);    /* the block colour; blue when locked */
+  display:inline-flex;align-items:stretch;max-width:100%;
+  margin:0 0 8px;vertical-align:middle}
+/* THE LEFT CAP. A half-circle (radius == half the height) is THE LCARS cap, and
+   it is what makes this read as console chrome rather than as a photo with a
+   caption beside it. Solid --owner-col all around the inset portrait. */
+.owner .owner-av{
+  display:inline-flex;align-items:center;justify-content:center;
+  flex:0 0 auto;box-sizing:border-box;
+  width:calc(var(--owner-h) + 6px);height:var(--owner-h);
+  padding:0 0 0 4px;
+  background:var(--owner-col);
+  border-radius:calc(var(--owner-h) / 2) 0 0 calc(var(--owner-h) / 2)}
+.owner .owner-av img{
+  display:block;box-sizing:border-box;
+  width:calc(var(--owner-h) - 5px);height:calc(var(--owner-h) - 5px);
+  border-radius:50%;object-fit:cover;
+  /* A dark ring between portrait and cap: the inset that makes the frame read
+     as a frame instead of as a coloured halo. */
+  border:1px solid var(--lcars-black,#030608);
+  background:var(--lcars-card-alt);
+  /* Seat the photograph in the palette (see the note above). */
+  filter:saturate(.72) contrast(1.06) brightness(.98)}
+/* THE HANDLE BLOCK. Same colour, butting flush against the cap, fully rounded
+   on its own right end, so the two together are ONE pill. */
+.owner .owner-handle{
+  display:inline-flex;align-items:center;
+  box-sizing:border-box;height:var(--owner-h);
+  padding:0 10px 0 6px;
+  background:var(--owner-col);color:var(--lcars-text-on-color);
+  border-radius:0 calc(var(--owner-h) / 2) calc(var(--owner-h) / 2) 0;
+  font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.13em;font-size:10px;font-weight:600;line-height:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+/* DEAD SRC → THE HANDLE ALONE. board.js removes the <img>'s whole cap on error
+   (a broken <img> keeps its box and its class — the S164 legend-swatch lesson —
+   so merely hiding it is not enough; it has to go). What is left must still be a
+   COMPLETE LCARS pill, not one with its nose cut off: the handle takes the full
+   rounding on both ends and the left padding the cap was carrying. */
+.owner.dead .owner-handle{
+  padding-left:11px;
+  border-radius:calc(var(--owner-h) / 2)}
+/* SOMEONE ELSE'S MISSION. The pill goes cool and the (already disabled)
+   controls dim, so the card reads as "watch, don't drive" from across the room. The
+   card BODY is untouched — a locked mission stays completely readable, which is
+   the entire point of a LIGHT lock. */
+.card.owned-by-other .owner{--owner-col:var(--lcars-blue,#4499ff)}
+/* ONE opacity, ON THE CONTROL ITSELF (fix round 1, D2). This was a row dim of
+   .55 with a `button[disabled]{opacity:1}` beneath it meant to keep the label
+   readable — and that second rule could never work: an `opacity` on the ROW
+   makes a COMPOSITING GROUP, so nothing inside it can paint brighter than the
+   group, whatever the cascade computes. Measured in real Chrome: the button's
+   computed opacity was 1 and it PAINTED at .55. A comment promising legibility
+   beside a rule that cannot deliver it is worse than no comment.
+   So the dim moved onto the disabled controls, where it composites once and the
+   number in this file is the number on the screen. The value is MEASURED, not
+   picked: at .7 the ⊘ owner label — amber block, 10px, the smallest type in the
+   row and the only place the reason for the lock is written — reads 5.6:1 ink to
+   paper off the actual pixels; the .55 it used to paint at read 3.85:1 and the
+   .4 every other disabled button takes would read 2.6:1. Dimmer than a live
+   card, still readable across the room. Proven by tests/drives/s190/
+   owner-paint.sh, which reads the contrast out of a screenshot — a rule-exists
+   or computed-style test is green on the broken version. */
+.card.owned-by-other .card-ctrl button[disabled]{opacity:.7}
+/* The board card is the compact scale. (Fix round 1, D3: a `.det-head .owner`
+   rule sat here too, and NOTHING EVER MATCHED IT — `ownerNode()` is called only
+   from `cardNode()`, so no owner pill is ever built in the detail header. The
+   header already names the owner, on the disabled `⊘ <login>'s mission` control.
+   Deleted rather than made true: adding a pill to the header is a treatment the
+   captain has not chosen, and dead CSS that describes a feature is how the next
+   reader concludes the feature exists.) */
+.card .owner{--owner-h:20px}
+/* THE PHOTOGRAPH'S ESCAPE HATCH, on a COLOUR feature (fix round 1, D6). The
+   `filter` above is a saturation/contrast treatment that seats a GitHub portrait
+   in the LCARS palette; a reader who has asked the OS for more contrast wants
+   the untouched image, so `prefers-contrast` is the preference that governs it.
+   It was gated on `prefers-reduced-motion` — nothing here animates, and a colour
+   treatment is not motion. */
+@media (prefers-contrast:more){.owner .owner-av img{filter:none}}
+
 .legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 28px;font-size:12px;color:var(--lcars-text-dim)}
 .legend span{display:flex;align-items:center;gap:6px}
 .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}

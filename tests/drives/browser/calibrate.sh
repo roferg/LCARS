@@ -10,10 +10,19 @@
 # rig does not get to CLAIM it would catch a blank board — it demonstrates it,
 # on demand, against the exact defect that started all this.
 #
-# It copies web/ to a scratch dir, deletes the `.then(render)` line from the
-# COPY's board.js (S163 fix round 5's mistake, verbatim: the line went along
-# with a comment someone was writing beside it), and runs the rig against that
-# copy. The rig must FAIL. This repo's own web/ is never touched.
+# It copies web/ to a scratch dir, deletes THE LINE THAT HANDS THE PAYLOAD TO
+# render() from the COPY's board.js (S163 fix round 5's mistake, verbatim: the
+# line went along with a comment someone was writing beside it), and runs the
+# rig against that copy. The rig must FAIL. This repo's own web/ is never
+# touched.
+#
+# THE CUT MOVES WHEN refresh() IS RESTRUCTURED, and this script says so out loud
+# rather than silently calibrating nothing. S176 folded the old bare
+# `.then(render)` into a `.then(function (board) { … render(board); })` that
+# skips an unchanged payload, so the line to cut became `render(board);` —
+# found on 2026-09-08 (S190 fix round 1) with the calibration DEAD: it had been
+# refusing to run, and the self-test's only red control with it, since S176.
+# If you get CALIBRATION CANNOT RUN, do what it says and re-point $CUT_RE.
 #
 # EXIT: 0 the rig correctly went red (calibration PASSED)
 #       1 the rig passed a broken board, or went red for the WRONG REASON — a
@@ -50,15 +59,19 @@ rm -rf "$BROKEN_WEB/lcars_serve/__pycache__"
 # 2. cut the exact line round 5 cut. Nothing else changes — the .catch and its
 #    comment stay, which is what made the original so easy to miss in review.
 BJS="$BROKEN_WEB/static/board.js"
-BEFORE=$(grep -c '^\s*\.then(render)$' "$BJS")
+# The one line in refresh() that hands the fetched payload to render(). Keep
+# this ANCHORED to the whole line: a loose match would also hit the S163 comment
+# that talks about it, and cutting a comment proves nothing.
+CUT_RE='^[[:space:]]*render\(board\);$'
+BEFORE=$(grep -cE "$CUT_RE" "$BJS")
 if [ "$BEFORE" -ne 1 ]; then
-  printf '\033[31mCALIBRATION CANNOT RUN\033[0m — expected exactly one `.then(render)` line in\n'
+  printf '\033[31mCALIBRATION CANNOT RUN\033[0m — expected exactly one `render(board);` line in\n'
   printf '  web/static/board.js, found %s. The refresh() chain has been restructured;\n' "$BEFORE"
-  printf '  update this script to cut whatever now carries payload → render.\n'
+  printf '  update $CUT_RE in this script to cut whatever now carries payload → render.\n'
   exit 1
 fi
-grep -v '^\s*\.then(render)$' "$BJS" >"$BJS.cut" && mv "$BJS.cut" "$BJS"
-printf '  removed `.then(render)` from the copy at %s\n' "$BJS"
+grep -vE "$CUT_RE" "$BJS" >"$BJS.cut" && mv "$BJS.cut" "$BJS"
+printf '  removed the `render(board);` call from the copy at %s\n' "$BJS"
 
 # 3. the rig, against the broken copy. It must NOT pass.
 LCARS_BROWSER_WEB_DIR="$BROKEN_WEB" LCARS_BROWSER_OUT="$WORK/run" \
@@ -88,7 +101,7 @@ case "$RC" in
     sed -n '1,40p' "$WORK/run.log"
     exit 1 ;;
   1)
-    printf '\033[32mCALIBRATION PASSED\033[0m — with `.then(render)` removed the rig exited %s.\n' "$RC"
+    printf '\033[32mCALIBRATION PASSED\033[0m — with the payload→render call removed the rig exited %s.\n' "$RC"
     grep -E 'THE BOARD DID NOT PAINT|expected >=|status line' "$WORK/run.log" | sed 's/^/  /'
     printf '  A blank board is visible to this rig. Screenshot of it: %s/run/board.png\n' "$WORK"
     exit 0 ;;
