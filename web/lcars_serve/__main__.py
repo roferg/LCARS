@@ -27,6 +27,7 @@ import webbrowser
 
 from .local_adapter import LocalAdapter
 from .github_adapter import GitHubAdapter
+from .remote import RemoteMissions
 from .server import make_server, PortInUseError
 from .actions import build_actions, LogFacts
 from .version_check import VersionChecker
@@ -53,13 +54,35 @@ def resolve_check_script(env=None):
     return os.path.join(home, ".claude", "skills", "lcars-version", "check.sh")
 
 
+def build_remote(kind, repo_root, gh_bin, repo):
+    """The S191 remote overlay reader, or None (github build).
+
+    Wired for the LOCAL adapter only, and for a plain reason: the github adapter
+    IS the forge view — overlaying it with a second forge read would be the same
+    issues twice. It is constructed unconditionally for the local build and
+    decides for ITSELF whether it has anything to do (see RemoteMissions.enabled:
+    no gh, or $LCARS_REMOTE_OVERLAY=0, and it adds nothing to the board at all).
+    Deciding here instead would put "is the overlay on?" in two places.
+    """
+    if kind != "local":
+        return None
+    return RemoteMissions(repo_root=repo_root, gh_bin=gh_bin, repo=repo)
+
+
 def build_adapter(kind, repo_root, gh_bin, repo, read_only=False):
     if kind == "github":
         # the github adapter is always view-only (meta.mode = read-only).
         return GitHubAdapter(gh_bin=gh_bin, repo=repo)
     # the local adapter is told whether the write layer is active so meta.mode
     # reflects the daemon's true read/write posture (S70-A).
-    adapter = LocalAdapter(repo_root, read_only=read_only)
+    #
+    # S191: …and handed the remote overlay reader, so a mission that exists on
+    # the forge and NOT in this clone still gets a card. NOT warmed at startup
+    # like the owner cache is, deliberately: the first board is allowed to arrive
+    # without it (a remote card appearing a moment later costs nothing), and the
+    # cadence floor means a warm would only move the same one call earlier.
+    adapter = LocalAdapter(repo_root, read_only=read_only,
+                           remote=build_remote(kind, repo_root, gh_bin, repo))
     # S168: resolve the forge host ONCE, HERE, at startup — not on a board build
     # and never on a poll tick (the server polls ~1/s). It is a subprocess, and
     # the origin remote cannot change under a running daemon. The call caches

@@ -187,6 +187,37 @@ lcars-viewscreen --adapter github
 LCARS_SERVE_ADAPTER=github lcars-viewscreen
 ```
 
+## Remote missions — the second laptop's board (S191)
+
+On the LOCAL adapter the board also shows missions that exist **on GitHub and
+not in this clone**, as read-only **REMOTE** cards, so a laptop with no
+`.git/lcars` for a mission can still watch it while another machine drives it.
+
+- What the card carries comes off the issue and nothing else: the Stage from
+  the `lcars:<stage>` **label** (never the handoff envelope, which is refreshed
+  at only two transfer points and is stale mid-pipeline by construction),
+  AWAITING-YOU from `lcars:awaiting-human`, the owner from the assignee, the
+  Estimate pills from the body, and — at Implement — closed/total over the
+  mission's `lcars:ticket` sub-issues.
+- **Local missions always win.** Once a mission is adopted here it is a local
+  mission and the issue never draws a second card.
+- **Read-only, and it says so.** Every write affordance is disabled with
+  *"driven from another machine — adopt at Align/Verify to act here"*. The one
+  live control is **▹ Adopt**, offered at exactly the two ENDS of the pipeline
+  (align / verify) — the v1 portability boundary; it dispatches `lcars adopt`.
+- **One slow, cached forge poll.** ONE `gh issue list` per cycle (default 30s,
+  `LCARS_REMOTE_POLL`, floored at 10s), reused by every remote card, and never
+  on the live channel. A forge that cannot be reached shows
+  `○ REMOTE DATA UNAVAILABLE` in the footer and leaves every local card alone.
+- **No `gh` ⇒ no overlay at all**, and the board is byte-identical to a
+  pre-S191 one. `LCARS_REMOTE_OVERLAY=0` turns it off explicitly.
+- **A refusal reads as a refusal.** A write POSTed straight at a remote
+  mission (past the disabled button) answers **409** with the same sentence the
+  card carries — not `404 no such mission`, which contradicted the card it came
+  from. An `adopt` the skill honestly refuses (wrong stage, no handoff envelope,
+  no `gh`) is **409** too, carrying `lcars adopt`'s own words; a genuine crash
+  still answers 502.
+
 ## Options (all via flag or env)
 
 - `--host` / `LCARS_SERVE_HOST` (default `127.0.0.1`)
@@ -196,6 +227,9 @@ LCARS_SERVE_ADAPTER=github lcars-viewscreen
   the local adapter reads (defaults to the repo `lcars viewscreen` is run in)
 - `--gh-bin` / `LCARS_GH_BIN` — the `gh` binary for the GitHub adapter
 - `--gh-repo` / `LCARS_SERVE_GH_REPO` — `owner/name` for the GitHub adapter
+- `LCARS_REMOTE_POLL` — seconds between remote-overlay forge polls
+  (default `30`, floored at `10`)
+- `LCARS_REMOTE_OVERLAY=0` — turn the remote-mission overlay off entirely
 
 ## Report
 

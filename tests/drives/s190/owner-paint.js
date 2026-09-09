@@ -18,6 +18,17 @@
  *   D6  Does a `prefers-reduced-motion` block touch the avatar's colour filter,
  *       and does asking the browser for reduced motion change that filter?
  *
+ * S191 fix round 1 adds a fourth, and it is the one the capstone sent back:
+ *
+ *   D4  CAN YOU TELL, AT A GLANCE, THAT A CONTROL IS LOCKED? The lock was
+ *       ENFORCED correctly and it did not READ as locked: a dim of .7 on
+ *       saturated LCARS teal is imperceptible, so a locked `▶ START` and a live
+ *       `▶ START` were the same button. Asked of the PAINT, on two cards that
+ *       differ in exactly one fact — the same stage, the same column, one mine
+ *       and one someone else's — by comparing the FILL each control paints. The
+ *       floor is 3:1, which is WCAG's own number for two UI states that must be
+ *       told apart. Measured before the cure: 1.84:1.
+ *
  * Exit: 0 all green · 1 a check failed · 77 infrastructure (never a pass).
  * =========================================================================== */
 const fs = require("fs");
@@ -126,6 +137,26 @@ function inkAndPaper(png) {
   return { dark, light, contrast: contrast(dark, light), samples: n };
 }
 
+/* THE FILL A CONTROL PAINTS, as one colour. The MEDIAN pixel, not the mean: a
+ * button is a slab of background with glyphs cut into it, so the middle of the
+ * sorted-by-luminance distribution is the slab and an average would be the slab
+ * pulled towards its own text. This is the number "does it look like the live
+ * one?" is actually about — fill is what the eye reads across a room, long
+ * before it reads a 10px label. */
+function fill(png) {
+  const n = png.w * png.h;
+  if (!n) throw new InfraError("sampled an empty patch");
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    const o = i * png.bpp;
+    rows.push([lum(png.px[o], png.px[o + 1], png.px[o + 2]),
+               png.px[o], png.px[o + 1], png.px[o + 2]]);
+  }
+  rows.sort((a, b) => a[0] - b[0]);
+  const m = rows[Math.floor(n / 2)];
+  return [m[1], m[2], m[3]];
+}
+
 /* ── a minimal CDP client over the global WebSocket ───────────────────────── */
 class CDP {
   constructor(ws) {
@@ -169,7 +200,9 @@ const READY = `(function () {
   var cards = document.querySelectorAll(".card");
   return { cards: cards.length,
            locked: document.querySelectorAll(".card.owned-by-other").length,
-           owners: document.querySelectorAll(".card .owner").length };
+           owners: document.querySelectorAll(".card .owner").length,
+           pair: !!(document.querySelector('.card[data-mid="m-align-mine"]') &&
+                    document.querySelector('.card[data-mid="m-align-theirs"]')) };
 })()`;
 
 /* D2. The locked card's control row, measured element by element.
@@ -255,6 +288,59 @@ const SHEET_PROBE = `(function () {
   return out;
 })()`;
 
+/* D4. THE PAIR. Two cards at the same stage whose ONLY difference is ownership,
+ * each reduced to its first control-row button: the label (does it wear the lock
+ * mark?), the box (so the pixels can be read), and the geometry of both cards
+ * together (so one screenshot frames them identically, which is how a captain
+ * actually compares them — side by side, not one at a time). */
+const PAIR_PROBE = `(function () {
+  function ctrl(mid) {
+    var card = document.querySelector('.card[data-mid="' + mid + '"]');
+    if (!card) return null;
+    var b = card.querySelector(".card-ctrl button");
+    if (!b) return null;
+    var r = b.getBoundingClientRect(), cr = card.getBoundingClientRect();
+    var s = getComputedStyle(b);
+    var all = Array.prototype.slice.call(card.querySelectorAll(".card-ctrl button"));
+    return {
+      text: (b.textContent || "").trim(),
+      labels: all.map(function (x) { return (x.textContent || "").trim(); }),
+      disabled: !!b.disabled,
+      bg: s.backgroundColor, color: s.color, borderColor: s.borderTopColor,
+      box: { x: r.x, y: r.y, w: r.width, h: r.height },
+      cardBox: { x: cr.x, y: cr.y, w: cr.width, h: cr.height }
+    };
+  }
+  var mine = ctrl("m-align-mine"), theirs = ctrl("m-align-theirs");
+  var pairBox = null;
+  if (mine && theirs) {
+    var x0 = Math.min(mine.cardBox.x, theirs.cardBox.x);
+    var y0 = Math.min(mine.cardBox.y, theirs.cardBox.y);
+    var x1 = Math.max(mine.cardBox.x + mine.cardBox.w,
+                      theirs.cardBox.x + theirs.cardBox.w);
+    var y1 = Math.max(mine.cardBox.y + mine.cardBox.h,
+                      theirs.cardBox.y + theirs.cardBox.h);
+    pairBox = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  return { mine: mine, theirs: theirs, pairBox: pairBox };
+})()`;
+
+/* EVERY locked control on the whole board, not just the first card's. The
+ * contrast floor is a promise about the treatment, and the treatment is applied
+ * by one rule to every stage's control row — so the weakest one on screen is the
+ * one that has to clear it, not whichever card happens to render first. */
+const ALL_LOCKED_PROBE = `(function () {
+  var out = [];
+  var btns = document.querySelectorAll(".card.owned-by-other .card-ctrl button");
+  for (var i = 0; i < btns.length; i++) {
+    var b = btns[i], r = b.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0)) continue;
+    out.push({ text: (b.textContent || "").trim(),
+               box: { x: r.x, y: r.y, w: r.width, h: r.height } });
+  }
+  return out;
+})()`;
+
 const DETAIL_PROBE = `(function () {
   var head = document.querySelector(".det-head");
   if (!head) return { open: false };
@@ -335,6 +421,7 @@ async function main() {
   if (!ready) throw new InfraError("the page was never probed before the deadline");
   if (!(ready.cards >= 2)) throw new InfraError("the board did not paint its 2 fixture cards (saw " + ready.cards + ")");
   if (!(ready.locked >= 1)) throw new InfraError("no .card.owned-by-other rendered — the fixture's lock never applied");
+  if (!ready.pair) throw new InfraError("the align pair (m-align-mine / m-align-theirs) never rendered — D4 cannot be measured");
   // The avatar is a real network image; give it a beat to arrive or to fail.
   await sleep(1500);
 
@@ -418,6 +505,95 @@ async function main() {
     bad("the locked control is READABLE in the actual pixels (>= 4.5:1)", detail);
   }
   await shoot(cdp, sessionId, lock.cardBox, "locked-card.png", 3, 8);
+
+  // ── D4 (S191 fix round 1) ─────────────────────────────────────────────
+  console.log("\nD4 — can you SEE that a control is locked?");
+  const pair = await evaluate(cdp, sessionId, PAIR_PROBE);
+  if (!pair || !pair.mine || !pair.theirs) {
+    throw new InfraError("the align pair did not both render a control button");
+  }
+  if (!pair.theirs.disabled) {
+    bad("the locked card's control is actually disabled",
+        "the fixture's lock never reached the control row — nothing below means anything");
+  }
+  // ONE FRAME, BOTH CARDS. This is the artefact a human looks at, and it is
+  // deliberately a single clip rather than two files pasted together: identical
+  // framing is not something the rig has to promise, it is a property of the
+  // screenshot.
+  await shoot(cdp, sessionId, pair.pairBox, "locked-vs-live.png", 3, 10);
+
+  // …and the measurement. Each control's own FILL, from its own pixels.
+  const liveFill = fill(pngPixels(
+    await shoot(cdp, sessionId, pair.mine.box, "live-control.png", 4, 0)));
+  const lockFill = fill(pngPixels(
+    await shoot(cdp, sessionId, pair.theirs.box, "locked-control-align.png", 4, 0)));
+  const sep = contrast(lockFill, liveFill);
+  const sepDetail = "locked fill rgb(" + lockFill.join(",") + ") vs live fill rgb(" +
+    liveFill.join(",") + ") → " + sep.toFixed(2) + ":1 " +
+    "(locked-vs-live.png — LOOK AT THIS ONE)";
+  // 3:1 is WCAG 1.4.11's threshold for non-text UI state, i.e. the standard's own
+  // answer to "are these two states distinguishable?". The shipped .7 dim scored
+  // 1.84:1 against it.
+  if (sep >= 3.0) {
+    ok("a locked control and a live one PAINT differently (>= 3:1)", sepDetail);
+  } else {
+    bad("a locked control and a live one PAINT differently (>= 3:1)", sepDetail);
+  }
+  // …and it must not be the WHOLE BOARD that went quiet. A cure that dimmed
+  // everything would score beautifully above and say nothing.
+  if (pair.mine.disabled) {
+    bad("my own card's control is still live", "the live control is disabled too");
+  } else {
+    ok("my own card's control is still live",
+       JSON.stringify(pair.mine.text) + " enabled, fill rgb(" + liveFill.join(",") + ")");
+  }
+  // THE LOCK MARK. `⊘` is already the glyph the Verify lock label wears and the
+  // one a tester read at 3x and called native. Every control in a locked row
+  // wears it, and no control in a live row does — a label that still opens with
+  // `▶` is a control claiming it will go.
+  const unmarked = (pair.theirs.labels || []).filter((t) => t.indexOf("⊘") !== 0);
+  if (unmarked.length === 0 && (pair.theirs.labels || []).length > 0) {
+    ok("every control in the locked row opens with the ⊘ lock mark",
+       JSON.stringify(pair.theirs.labels));
+  } else {
+    bad("every control in the locked row opens with the ⊘ lock mark",
+        "unmarked: " + JSON.stringify(unmarked));
+  }
+  const wronglyMarked = (pair.mine.labels || []).filter((t) => t.indexOf("⊘") === 0);
+  if (wronglyMarked.length === 0) {
+    ok("no control in the LIVE row wears the lock mark",
+       JSON.stringify(pair.mine.labels));
+  } else {
+    bad("no control in the LIVE row wears the lock mark",
+        JSON.stringify(wronglyMarked));
+  }
+
+  // …and the floor holds for EVERY locked control on the board, at every stage,
+  // not only the one D2 happened to sample. `⊘ picard's mission` at Verify is
+  // 34 characters of 10px display type; `⊘ Start` at Align is six. One rule
+  // paints both, and both have to be readable.
+  const allLocked = await evaluate(cdp, sessionId, ALL_LOCKED_PROBE) || [];
+  if (!allLocked.length) {
+    bad("every locked control on the board is legible (>= 4.5:1)",
+        "no locked control was laid out at all");
+  } else {
+    let worst = null;
+    for (let i = 0; i < allLocked.length; i++) {
+      const c = allLocked[i];
+      const m = inkAndPaper(pngPixels(
+        await shoot(cdp, sessionId, c.box, "locked-ctrl-" + i + ".png", 4, 0)));
+      if (!worst || m.contrast < worst.c) worst = { c: m.contrast, t: c.text, m: m };
+    }
+    const wd = allLocked.length + " locked control(s); worst is " +
+      JSON.stringify(worst.t) + " at " + worst.c.toFixed(2) + ":1 " +
+      "(ink rgb(" + worst.m.dark.join(",") + ") vs paper rgb(" +
+      worst.m.light.join(",") + "))";
+    if (worst.c >= 4.5) {
+      ok("every locked control on the board is legible (>= 4.5:1)", wd);
+    } else {
+      bad("every locked control on the board is legible (>= 4.5:1)", wd);
+    }
+  }
 
   // ── D3 ────────────────────────────────────────────────────────────────
   console.log("\nD3 — no rule for something that never renders");
@@ -506,11 +682,14 @@ async function main() {
   }
 
   fs.writeFileSync(path.join(OUT, "owner-paint.json"), JSON.stringify({
-    lock, sheets, detail: det, avatar: base, inkAndPaper: ip,
+    lock, pair, fills: { live: liveFill, locked: lockFill, separation: sep },
+    sheets, detail: det, avatar: base, inkAndPaper: ip,
     findings, pageErrors: cdp.pageErrors,
   }, null, 2) + "\n");
 
-  console.log("\nscreenshots: " + path.join(OUT, "locked-card.png") + "  (LOOK AT THIS ONE)");
+  console.log("\nscreenshots: " + path.join(OUT, "locked-vs-live.png") +
+              "  (LOOK AT THIS ONE — the pair, one frame)");
+  console.log("             " + path.join(OUT, "locked-card.png"));
   console.log("             " + path.join(OUT, "locked-control.png") +
               "  (the 4x clip the contrast was read from)");
   console.log("             " + path.join(OUT, "board.png"));

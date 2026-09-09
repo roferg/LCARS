@@ -131,6 +131,54 @@ function ownerLockLine(login) {
     " — reassign it to yourself on GitHub to take command";
 }
 
+/* THE LOCK MARK — the glyph half of "this control is locked".
+
+   S191's capstone (D4) found the light lock ENFORCED perfectly and INVISIBLE. A
+   locked `▶ Start` and a live `▶ Start` were the same button: same shape, same
+   saturated teal, distinguishable only by the owner pill's colour two rows up.
+   The .7 dim the previous round measured so carefully is imperceptible on that
+   fill. So the captain clicks something that looks live and gets a tooltip —
+   and a lock the eye cannot see is a lie the hand discovers.
+
+   TWO THINGS CARRY THE STATE, at the two distances a card is read from. The
+   stylesheet drains the FILL (a locked control goes hollow in the lock's own
+   blue — `.btn.danger`'s existing idiom, no new vocabulary), which is what you
+   see across the room. This carries the near reading: the leading ACTION glyph
+   is REPLACED with `⊘`, because `▶` on a control that will not go is the lie
+   stated a second time, in the one place the eye lands last.
+
+   `⊘` IS NOT A NEW GLYPH. It is the one the Verify lock label has worn since
+   S190, looked at by a tester at 3x and confirmed to sit at the same weight as
+   the board's ▶ ✓ ⊗ ⬡ ▦ family. Nothing outside that family is introduced here —
+   S190's D3 and this session's own `⇩` near-miss were both exactly that mistake. */
+var LOCK_GLYPH = "⊘";
+/* The leading glyphs a control wears to say what it will DO. A locked control
+   must wear none of them. */
+var LOCK_ACTION_GLYPHS = "▶▸▹✓⏸◐◷↻◆⊹";
+
+function markLocked(n) {
+  if (!n) return;
+  // THE STATE CLASS FIRST, and unconditionally — the fill is the half that
+  // reads across the room, so no control may miss it.
+  if ((" " + String(n.className || "") + " ").indexOf(" locked ") < 0) {
+    n.className = String(n.className || "") + " locked";
+  }
+  // THE LABEL, for TEXT-ONLY CONTROLS ONLY. A button carrying element children
+  // is left exactly as it is rather than flattened: `textContent =` would
+  // silently delete those children, which is the S163 shape (a node quietly
+  // removed) in new clothes. Every control cardControls builds is a plain
+  // `btn(label, …)`, so this covers the row; anything richer keeps its label
+  // and still gets the fill, the disable and the tooltip.
+  if (n.children && n.children.length) return;
+  var t = String(n.textContent == null ? "" : n.textContent).replace(/^\s+/, "");
+  if (!t) return;
+  if (t.charAt(0) === LOCK_GLYPH) return;   // already marked (the Verify label)
+  if (LOCK_ACTION_GLYPHS.indexOf(t.charAt(0)) >= 0) {
+    t = t.slice(1).replace(/^\s+/, "");
+  }
+  n.textContent = LOCK_GLYPH + " " + t;
+}
+
 /* Disable every write control under `host` when this mission is someone else's.
 
    A SUBTREE SWEEP, deliberately, rather than a condition threaded through
@@ -154,6 +202,10 @@ function applyOwnerLock(host, m) {
     if (tag === "BUTTON") {
       n.disabled = true;
       n.title = line;
+      // …and SAY SO on the label itself (D4). The sweep is the right place for
+      // it for the same reason it is the right place for the disable: whatever
+      // branch of cardControls drew this button, it is now marked.
+      markLocked(n);
     }
     var kids = n.children || [];
     for (var i = 0; i < kids.length; i++) walk(kids[i]);
@@ -235,6 +287,140 @@ function ownerNode(m) {
   var lock = ownerLockLogin(m);
   wrap.title = lock ? ownerLockLine(lock) : (String(o.login) + " owns this mission");
   return wrap;
+}
+
+/* ═══════════════ S191: THE REMOTE CARD (driven from another machine) ═══════
+
+   A laptop with no `.git/lcars` for a mission still SEES it: the daemon reads
+   the forge on a slow cached poll and adds a card carrying what the issue
+   actually knows — stage (from the STAGE LABEL), awaiting-human, owner, and
+   during Implement the closed/total ticket count. `card.remote === true` is the
+   whole contract; everything below keys off that one boolean.
+
+   IT IS READ-ONLY, AND THAT IS NOT A LIMITATION TO APOLOGISE FOR. The mission is
+   being driven by a `run` on ANOTHER machine, holding a driver lock this laptop
+   cannot see and writing artifacts this laptop does not have. A live Start here
+   would promise something LCARS genuinely cannot do. So every write affordance
+   is disabled and says why, in one sentence.
+
+   THE ONE THING IT DOES OFFER IS ADOPT, at exactly the two ENDS of the pipeline
+   (align / verify) — S189's v1 portability boundary. At align the spec IS the
+   issue body; at verify the branch and the PR are both on the forge; between
+   them the next stage reads local artifacts that were never synced, so an adopt
+   there would hand the captain a mission missing the files it is about to open.
+   The card offers what is honest and stays quiet about the rest. */
+
+/* The refusal, in one sentence — the tooltip on every disabled control. */
+var REMOTE_LINE =
+  "driven from another machine — adopt at Align/Verify to act here";
+
+function isRemote(m) { return !!(m && m.remote === true); }
+
+/* Disable every write control under `host` on a REMOTE mission.
+
+   A SUBTREE SWEEP, for the same reason S190's applyOwnerLock is one: cardControls
+   is a dozen accumulated branches and the detail header is a dozen more, and a
+   per-branch check is a check the next branch will forget. A sweep cannot miss a
+   branch — whatever the surface decided to draw, if it is a button it is
+   disabled and it says why.
+
+   TWO EXEMPTIONS, both by class and both deliberate: `detail-close` (a modal you
+   cannot close is a trap, and closing writes nothing) and `remote-adopt` (the one
+   action a remote card exists to offer). Exempting BY CLASS rather than by
+   build order means the sweep can be called at any point in either builder
+   without a comment about where it has to go. */
+function applyRemoteLock(host, m) {
+  if (!host || !isRemote(m)) return host;
+  (function walk(n) {
+    if (!n) return;
+    var tag = String(n.tagName || n.tag || "").toUpperCase();
+    var cls = " " + String(n.className || "") + " ";
+    if (tag === "BUTTON"
+        && cls.indexOf(" detail-close ") < 0
+        && cls.indexOf(" remote-adopt ") < 0) {
+      n.disabled = true;
+      n.title = REMOTE_LINE;
+    }
+    var kids = n.children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(host);
+  return host;
+}
+
+/* The REMOTE marker. A pill, in the pill row, in the existing LCARS vocabulary
+   (S190's idiom: no new visual language for a new fact) — the framed diamond is in the
+   product's own console-glyph family (the set test_help_console pins) and is used
+   nowhere else, so it reads as its own state rather than borrowing another's. First in the row on purpose: WHERE this mission is being driven
+   outranks what it will cost. */
+function remotePill() {
+  return el("span", "pill remote", "◈ REMOTE · DRIVEN ELSEWHERE");
+}
+
+/* ADOPT — take command of a remote mission on THIS laptop.
+
+   Offered ONLY where the daemon said it is honest (`m.adoptable`, derived from
+   the stage label), never wherever the front end feels like it: the boundary is
+   a product rule and it belongs on the one side that can also enforce it.
+
+   It POSTs the ISSUE NUMBER, because that is what a remote card IS — there is no
+   local mission id yet, and minting one is exactly what `lcars adopt` refuses to
+   do (the id already names the branch and the issue). On success the mission
+   becomes LOCAL, the overlay stops drawing a remote card for that issue, and the
+   local card takes its place on the next refresh. */
+function adoptControl(m) {
+  if (!isRemote(m) || !m.adoptable) return null;
+  var b = btn("▹ Adopt ▸", "go remote-adopt", function () {
+    if (b.disabled) return;
+    b.disabled = true;
+    b.textContent = "◐ Adopting…";
+    postWrite("/api/mission/" + enc(m.issue != null ? m.issue : m.id)
+              + "/adopt", {},
+      function () {
+        // The board refresh postWrite already fired swaps in the LOCAL card.
+        setVerdict("Adopted #" + m.issue + " — it is a local mission now.", "ok");
+      },
+      function (msg) {
+        b.disabled = false;
+        b.textContent = "▹ Adopt ▸";
+        // A VERDICT, not a silent re-enable: adopt.sh refuses for reasons the
+        // captain has to read (wrong stage, no handoff envelope, no gh), and a
+        // button that quietly came back would say none of them.
+        setVerdict(msg || "Adopt failed.", "err");
+      });
+  });
+  b.title = "Rebuild this mission on THIS machine from its GitHub issue";
+  return act("adopt", applyWriteState(b));
+}
+
+/* The control row of a remote card: swept read-only, then ADOPT added.
+
+   ORDER MATTERS ONLY FOR READABILITY — the sweep exempts the adopt button by
+   class, so this would be correct either way — but sweeping first and adding
+   second says plainly that adopt is the exception to a rule, not a survivor of
+   one. */
+function remoteControls(host, m) {
+  if (!isRemote(m)) return host;
+  applyRemoteLock(host, m);
+  var adopt = adoptControl(m);
+  if (adopt && host) host.appendChild(adopt);
+  return host;
+}
+
+/* THE FORGE DID NOT ANSWER. `meta.remote.status === "unavailable"` means the
+   daemon HAS gh and asked, and got nothing back — no auth, no network, not a
+   GitHub remote, rate-limited. It is worth ONE quiet line in the footer beside
+   the view-only marker, and nothing more: the local cards are all still there
+   and completely usable, so this is an ambient condition, never an alert.
+
+   ABSENT ⇒ HIDDEN. A board with no gh carries no `remote` key at all and this
+   never shows, which is what keeps it invisible to everybody who has one laptop. */
+function renderRemoteNote(remote) {
+  var host = document.getElementById("remoteNote");
+  if (!host) return;
+  var down = !!(remote && remote.status === "unavailable");
+  host.hidden = !down;
+  host.textContent = down
+    ? "○ REMOTE DATA UNAVAILABLE — showing local missions only" : "";
 }
 
 /* THE one place the board builds a link to an issue. The scheme is pinned HERE,
@@ -1315,6 +1501,10 @@ function cardNode(m) {
   // an unassigned mission, for my own, and whenever identity is unresolvable,
   // so a board with no identity on it carries no new class at all.
   if (ownerLockLogin(m)) card.className += " owned-by-other";
+  // S191: …and this one is not driven from here at all. A marker class only —
+  // the stylesheet gives the card its cool "somewhere else" chrome; the controls
+  // are disabled by remoteControls below, never by CSS.
+  if (isRemote(m)) card.className += " remote";
   // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
   // animation onto this card (showCardBusy).
   if (m.id != null) {
@@ -1356,6 +1546,9 @@ function cardNode(m) {
   if (own) card.appendChild(own);
 
   var pills = el("div", "pills");
+  // S191: WHERE is this being driven — first in the row, because a card you
+  // cannot act on has to say so before it says anything else.
+  if (isRemote(m)) pills.appendChild(remotePill());
   // UX-29: a "QUEUED · WAITING" pill when scheduled-but-not-started in a
   // resolve-logs batch — distinct from running/paused/awaiting, no running
   // pulse. awaiting still wins (a gate outranks the queue).
@@ -1526,7 +1719,12 @@ function cardNode(m) {
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   // S190: …swept by the light lock AFTER they are built. See applyOwnerLock for
   // why this is a sweep and not a check inside each of cardControls' branches.
-  card.appendChild(applyOwnerLock(cardControls(m), m));
+  // S191: …and then swept AGAIN for a REMOTE mission, which is a different fact
+  // from S190's lock and can be true when the lock is not: a mission I OWN,
+  // driving on my other laptop, passes ownerLockLogin (the owner IS me) and must
+  // still be read-only here. Two sweeps, two facts, neither one covering for the
+  // other. remoteControls also adds the one live control a remote card gets.
+  card.appendChild(remoteControls(applyOwnerLock(cardControls(m), m), m));
 
   card.addEventListener("click", function () { openDetail(m.id); });
   return card;
@@ -1837,6 +2035,7 @@ function render(board) {
   renderMeta(board.meta);
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
+  renderRemoteNote(board.meta && board.meta.remote);
   renderTestReadiness(board.meta && board.meta.testReadiness);
   /* S183: the FOUNDATION LOCK. On EVERY render, so it lifts as well as locks —
      an initialization mission landing (S185) clears meta.foundation and the
@@ -6863,6 +7062,11 @@ function renderDetail(mi) {
   clearFilingOnState(mi);
   var dFiling = logFilingControl(mi);
   if (dFiling) actions.appendChild(dFiling);
+  // S191: ADOPT rides the detail header too, on the same terms as the card —
+  // the captain who opened a remote mission to read it is exactly the one who
+  // decides to take command of it.
+  var dAdopt = adoptControl(mi);
+  if (dAdopt) actions.appendChild(dAdopt);
   row1.appendChild(actions);
   head.appendChild(row1);
 
@@ -6900,6 +7104,11 @@ function renderDetail(mi) {
   // the header row (after the actions) so it can never overlap the action
   // buttons at any width (item 6); .detail-close styling pins it to the header's
   // top-right with reserved gutter so the title/pills don't run under it.
+  // S191: the detail is the OTHER door onto a mission, built by a different
+  // function, so a control left out of the card's sweep goes live at exactly the
+  // moment the captain clicks in for a closer look. One sweep over the whole
+  // grid; ✕ and ADOPT are exempt by class (see applyRemoteLock).
+  applyRemoteLock(grid, mi);
   var close = btn("✕", "detail-close", closeOverlay);
   close.className = "detail-close";
   head.appendChild(close);

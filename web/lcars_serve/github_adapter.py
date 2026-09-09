@@ -112,6 +112,23 @@ class GitHubAdapter(object):
                     cards.append(c)
         return cards
 
+    def card_from_issue(self, issue, issues=()):
+        """ONE issue row → ONE adapter-neutral card. The public face of `_card`.
+
+        S191's remote overlay borrows exactly this mapping so a mission read off
+        the forge produces the SAME card shape whichever surface read it (ADR-003
+        — one implementation per fact). It is a named method rather than a reach
+        into `_card` so the seam is visible from both sides: change the mapping
+        and you can see who else depends on it.
+
+        The `_n` sort key `_card` carries for its own ordering is dropped here —
+        it is an internal of `board()`, not part of the shape.
+        """
+        card = self._card(issue, list(issues))
+        if card is not None:
+            card.pop("_n", None)
+        return card
+
     def _card(self, issue, issues):
         labels = _label_names(issue)
         stage = _stage_of(labels)

@@ -107,11 +107,25 @@ fx.plant_simple(root, "m-theirs", stage="verify", issue=102,
                 created="2026-06-02T10:00:00Z",
                 pr_url="https://github.com/acme/repo/pull/8", pr_number="8",
                 review="open")
+# S191 fix round 1 (D4): THE PAIR THE DEFECT IS ABOUT. Two missions at the SAME
+# stage, in the SAME column, differing in exactly one fact — who owns them — so
+# the two cards can be shot at identical framing and compared by eye and by
+# pixel. `align` is the stage whose control row is a plain live `▶ Start`, and
+# START was the button the capstone reported as reading fully actionable while
+# locked. The verify pair above stays: its ⊘ label is the smallest type in any
+# control row and is what the contrast floor is measured on.
+fx.plant_simple(root, "m-align-mine", stage="align", issue=103,
+                title="Mine — I can drive this",
+                created="2026-06-03T10:00:00Z")
+fx.plant_simple(root, "m-align-theirs", stage="align", issue=104,
+                title="Theirs — I cannot drive this",
+                created="2026-06-04T10:00:00Z")
 # The published-owner files ownership.sh writes. Planted, not fetched: the
 # daemon reads them off disk on the render path and this rig never needs a forge.
 cache = os.path.join(root, ".git", "lcars", "cache")
 os.makedirs(cache, exist_ok=True)
-for issue, login in ((101, "roferg"), (102, "picard")):
+for issue, login in ((101, "roferg"), (102, "picard"),
+                     (103, "roferg"), (104, "picard")):
     with open(os.path.join(cache, "owner-github.com-%d" % issue), "w") as fh:
         fh.write(login + "\n")
 PYEOF
@@ -234,7 +248,8 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
   printf '\n'
   say "CALIBRATION — can this drive see each defect it claims to?"
   i=0
-  for variant in dim-the-row dead-det-head-rule motion-gated-filter; do
+  for variant in dim-the-row dead-det-head-rule motion-gated-filter \
+                 lock-looks-live lock-wears-no-mark; do
     i=$((i + 1))
     BROKEN="$WORK/broken-$variant"
     mkdir -p "$BROKEN"
@@ -246,6 +261,8 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
       mkdir -p "$BROKEN/../docs" && cp "$REPO/docs/lcars.css" "$BROKEN/../docs/lcars.css"
     fi
     CSS="$BROKEN/static/board.css"
+    JS="$BROKEN/static/board.js"
+    PATCHED=1
     case "$variant" in
       # THE DEFECT, VERBATIM: dim the row and try to restore the button inside
       # it. This is what shipped, and the drive must call it out.
@@ -255,7 +272,27 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
         printf '\n.det-head .owner{margin:0}\n' >>"$CSS" ;;
       motion-gated-filter)
         printf '\n@media (prefers-reduced-motion:reduce){.owner .owner-av img{filter:none}}\n' >>"$CSS" ;;
+      # S191 fix round 1 (D4). THE DEFECT THE CAPSTONE SENT BACK, verbatim: put
+      # the locked control back on the live control's saturated fill with a dim
+      # over it. Every number round 1 measured stays true and the button becomes
+      # indistinguishable from a live one — which is the whole point of measuring
+      # the SEPARATION between two controls rather than either one alone.
+      lock-looks-live)
+        printf '\n.btn.locked{opacity:.7;background:var(--lcars-teal);color:var(--lcars-text-on-color);border-color:var(--lcars-teal);border-style:solid}\n' >>"$CSS" ;;
+      # …and the OTHER half. Neuter the label mark in board.js, so a locked
+      # `▶ Start` still says it will go. Patched with sed and then VERIFIED to
+      # have actually changed the file: tests/drives/browser/calibrate.sh sat
+      # dead for six sessions because its cut silently matched nothing, and a red
+      # control that cannot go red is worse than no red control at all.
+      lock-wears-no-mark)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/^      markLocked(n);$/      \/* markLocked(n); *\//' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
     esac
+    [ "$PATCHED" -eq 1 ] || continue
     run_against "$BROKEN" "calib-$variant"
     if [ "$RC" -eq 0 ]; then
       printf '  \033[31mFAIL\033[0m  control "%s" did NOT make the drive go red\n' "$variant"

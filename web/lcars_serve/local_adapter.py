@@ -157,7 +157,7 @@ class LocalAdapter(object):
     def __init__(self, repo_root, read_only=False, git_url_reader=None,
                  readiness_script=None, base_freshness_script=None,
                  host_adapter_script=None, establish_vision_script=None,
-                 ownership_script=None):
+                 ownership_script=None, remote=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -236,6 +236,19 @@ class LocalAdapter(object):
         # I/O (the rule `base_freshness` is kept out of this class for).
         self._ownership_script = ownership_script
         self._self_login_memo = _UNRESOLVED
+        # S191: the REMOTE OVERLAY reader (remote.RemoteMissions), or None.
+        #
+        # None is the pre-S191 daemon and it is the DEFAULT, deliberately: every
+        # existing construction of this class — six suites and the github build —
+        # keeps serving exactly the board it served before, with no `meta.remote`
+        # key and no forge call, because the overlay is a thing you are HANDED,
+        # never a thing this class goes looking for.
+        #
+        # It is asked in `board()` and in `mission()` and NOWHERE ELSE. In
+        # particular `fingerprint()` never touches it: the live channel polls that
+        # about once a second, and remote data is deliberately kept off the live
+        # channel this round (the slow poll updates it instead).
+        self._remote = remote
 
     # -- the public surface ---------------------------------------------------
     def _model_aliases(self):
@@ -273,7 +286,46 @@ class LocalAdapter(object):
         cards.sort(key=lambda c: (c.get("_created") or "", c["id"]), reverse=True)
         for c in cards:
             c.pop("_created", None)
-        return board.assemble(cards, meta=self._meta())
+        b = board.assemble(cards, meta=self._meta())
+        # S191: …and THEN the remote overlay, on top of the finished local board.
+        # The order is the whole design: the local board is built exactly as it
+        # was, and remote cards are ADDED to it. Nothing local is consulted, moved
+        # or recomputed because a remote card exists.
+        self._overlay_remote(b, cards)
+        return b
+
+    def _overlay_remote(self, b, local_cards):
+        """Add the forge's missions that have no local mission directory.
+
+        LOCAL WINS, and it wins by CONSTRUCTION rather than by comparison: the
+        issue numbers the local board already holds are handed to the reader,
+        which never builds a card for one of them. There is no later dedupe pass
+        that could be reached with the wrong list.
+
+        NEVER RAISES INTO A BOARD BUILD. The overlay is a courtesy on top of the
+        captain's own work; a forge that misbehaves must cost him the remote
+        cards and not the board. (The reader is already defensive; this is the
+        second wall, on the same reasoning `warm_owners` carries.)
+        """
+        if self._remote is None:
+            return
+        try:
+            cards, meta = self._remote.cards(
+                [c.get("issue") for c in local_cards])
+        except Exception:
+            return
+        # None ⇒ the overlay is OFF (no gh, or opted out) ⇒ NO `remote` key at
+        # all. Absent, never null — the rule that keeps a gh-less board
+        # byte-identical to the one it served before this round.
+        if meta is None:
+            return
+        b["meta"]["remote"] = meta
+        for c in cards:
+            stage = board.normalise_stage(c.get("stage"))
+            c["stage"] = stage
+            b["columns"][stage].append(c)
+            if stage != "done":
+                b["missions"].append(c)
 
     def _meta(self):
         if self._repo_identity_memo is _UNRESOLVED:
@@ -658,7 +710,15 @@ class LocalAdapter(object):
             # an identity nothing can be compared to an owner, so the board would
             # show every avatar and lock nothing.
             self.warm_self()
-            for card in self.board().get("missions", [])[:limit]:
+            # S191: LOCAL missions only, and FILTERED BEFORE THE CAP. A remote
+            # card's owner already came off the issue's own assignees in the
+            # listing the overlay took, so re-asking here would be N extra forge
+            # round trips at startup to learn what the board already knows — and
+            # slicing first would let those cards eat the budget meant for the
+            # local missions that genuinely need one.
+            local = [c for c in self.board().get("missions", [])
+                     if not c.get("remote")]
+            for card in local[:limit]:
                 issue = card.get("issue")
                 if isinstance(issue, int):
                     self.refresh_owner(issue)
@@ -969,7 +1029,11 @@ class LocalAdapter(object):
     def mission(self, mid):
         d = os.path.join(self.missions_dir, mid)
         if not os.path.isdir(d):
-            return None
+            # S191: not here — but it may be a REMOTE card the board is showing.
+            # Asked ONLY after the local lookup has failed, so a local mission can
+            # never be answered from the forge cache, and answered from the SAME
+            # cached listing the board was built from (no extra call).
+            return self._remote_mission(mid)
         # S177: through the SAME memo the board uses. `mission()` used to call
         # `_card` directly, so S176's done-card memo never reached the DETAIL
         # path — and the Mission-Log overlay asks for one full detail per linked
@@ -991,6 +1055,21 @@ class LocalAdapter(object):
         # absent (non-crashing). The github adapter omits it (no local files).
         card["prd"] = _read_text(os.path.join(d, "prd.md"))
         return card
+
+    def _remote_mission(self, mid):
+        """The DETAIL for a remote card, or None. Never raises.
+
+        Without this a remote card is a card that opens onto "no such mission" —
+        the board showing the captain something and then denying it exists. The
+        payload is the same one the card came from, with the three detail-only
+        fields the forge cannot answer set to their honest empty values.
+        """
+        if self._remote is None:
+            return None
+        try:
+            return self._remote.mission(mid)
+        except Exception:
+            return None
 
     def fingerprint(self):
         """A cheap state-change signature: max mtime over every mission file

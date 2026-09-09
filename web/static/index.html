@@ -119,6 +119,10 @@
       <span><i style="background:var(--lcars-teal)"></i> Ticket green</span>
       <span class="dim" id="status">loading…</span>
       <span class="dim viewonly" id="viewonly" hidden>● VIEW-ONLY — writes disabled</span>
+    <!-- S191: the forge could not be reached, so the board is showing LOCAL
+         missions only. Hidden unless the daemon says so (meta.remote.status);
+         a board with no gh never carries that key, so this never appears. -->
+    <span class="dim remote-note" id="remoteNote" hidden></span>
     </div>
   </div>
 

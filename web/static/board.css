@@ -544,27 +544,15 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   padding-left:11px;
   border-radius:calc(var(--owner-h) / 2)}
 /* SOMEONE ELSE'S MISSION. The pill goes cool and the (already disabled)
-   controls dim, so the card reads as "watch, don't drive" from across the room. The
-   card BODY is untouched — a locked mission stays completely readable, which is
-   the entire point of a LIGHT lock. */
+   controls go HOLLOW, so the card reads as "watch, don't drive" from across the
+   room. The card BODY is untouched — a locked mission stays completely readable,
+   which is the entire point of a LIGHT lock. */
 .card.owned-by-other .owner{--owner-col:var(--lcars-blue,#4499ff)}
-/* ONE opacity, ON THE CONTROL ITSELF (fix round 1, D2). This was a row dim of
-   .55 with a `button[disabled]{opacity:1}` beneath it meant to keep the label
-   readable — and that second rule could never work: an `opacity` on the ROW
-   makes a COMPOSITING GROUP, so nothing inside it can paint brighter than the
-   group, whatever the cascade computes. Measured in real Chrome: the button's
-   computed opacity was 1 and it PAINTED at .55. A comment promising legibility
-   beside a rule that cannot deliver it is worse than no comment.
-   So the dim moved onto the disabled controls, where it composites once and the
-   number in this file is the number on the screen. The value is MEASURED, not
-   picked: at .7 the ⊘ owner label — amber block, 10px, the smallest type in the
-   row and the only place the reason for the lock is written — reads 5.6:1 ink to
-   paper off the actual pixels; the .55 it used to paint at read 3.85:1 and the
-   .4 every other disabled button takes would read 2.6:1. Dimmer than a live
-   card, still readable across the room. Proven by tests/drives/s190/
-   owner-paint.sh, which reads the contrast out of a screenshot — a rule-exists
-   or computed-style test is green on the broken version. */
-.card.owned-by-other .card-ctrl button[disabled]{opacity:.7}
+/* THE LOCKED CONTROL ITSELF is `.btn.locked`, down in the .btn family where the
+   other button variants live — see the long note there (S191 fix round 1, D4).
+   NOTHING dims this row: an `opacity` on `.card-ctrl` makes a COMPOSITING GROUP
+   and nothing inside it can paint brighter than the group whatever the cascade
+   computes, which is the trap round 1 fell into and test_owner_board pins. */
 /* The board card is the compact scale. (Fix round 1, D3: a `.det-head .owner`
    rule sat here too, and NOTHING EVER MATCHED IT — `ownerNode()` is called only
    from `cardNode()`, so no owner pill is ever built in the detail header. The
@@ -573,6 +561,44 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    captain has not chosen, and dead CSS that describes a feature is how the next
    reader concludes the feature exists.) */
 .card .owner{--owner-h:20px}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S191 — THE REMOTE CARD. A mission being driven on another machine.
+
+   The design question is the same one S190 answered for the avatar: how do you
+   say a NEW fact in a vocabulary that already exists? So nothing new is
+   invented here. The marker is a `.pill`, with the pill row's geometry and the
+   hollow diamond the STANDBY pill already uses for "present, not active here".
+   The card takes the violet accent — the one accent in the palette not already
+   spoken for by a card state (amber = mine, blue = someone else's, red =
+   AWAITING YOU, teal = running) — on the same 6px left edge every other card
+   state uses.
+
+   ADR-007: geometry and layout only. Every colour is a shared --lcars-* token
+   read from docs/lcars.css; this sheet redefines none of them.
+   ════════════════════════════════════════════════════════════════════════ */
+.pill.remote{background:rgba(153,119,255,.16);
+  border-color:var(--lcars-violet,#9977ff);color:var(--lcars-violet,#9977ff)}
+/* The card edge. NOT dimmed as a whole: a remote card is completely readable —
+   watching it is the entire reason it is on the board. Only the controls, which
+   are the part that cannot be used, are quieted. */
+.card.remote{border-left-color:var(--lcars-violet,#9977ff)}
+/* ONE opacity, ON THE CONTROL ITSELF — S190 fix round 1 (D2) learned this the
+   hard way: an `opacity` on the ROW makes a compositing group, so nothing inside
+   it can paint brighter than the group whatever the cascade says, and a
+   `button[disabled]{opacity:1}` beneath it is inert. Same .7 as the owner lock's,
+   for the same reason: dimmer than a live card, still readable across the room. */
+.card.remote .card-ctrl button[disabled]{opacity:.7}
+/* ADOPT is the ONE live control on a remote card, so it must not read as part of
+   the dimmed row it sits in. It keeps the full-strength `.go` chrome (opacity is
+   not inherited into it because the rule above targets [disabled] only) and takes
+   the violet edge so it reads as belonging to the remote state rather than as a
+   stray green button. */
+.card.remote .card-ctrl .remote-adopt,
+.det-actions .remote-adopt{border-color:var(--lcars-violet,#9977ff)}
+/* The footer line, beside ● VIEW-ONLY. It inherits `.dim` from the markup, so
+   this is spacing and colour only — an ambient condition, never an alert. */
+.remote-note{margin-left:12px;color:var(--lcars-violet,#9977ff);opacity:.85}
 /* THE PHOTOGRAPH'S ESCAPE HATCH, on a COLOUR feature (fix round 1, D6). The
    `filter` above is a saturation/contrast treatment that seats a GitHub portrait
    in the LCARS palette; a reader who has asked the OS for more contrast wants
@@ -611,6 +637,57 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .btn.big{font-size:13px;padding:9px 20px}
 .btn[disabled]{opacity:.4;cursor:not-allowed}
 .btn[disabled]:hover{border-color:var(--lcars-border)}
+/* ════════════════════════════════════════════════════════════════════════
+   `.btn.locked` — A CONTROL THIS LAPTOP MAY NOT USE (S191 fix round 1, D4).
+   Applied by board.js's lock sweep (markLocked) to every control on a mission
+   held by someone else.
+
+   WHAT WAS WRONG. S190's round 1 moved the dim off the control ROW and onto the
+   control, and measured it honestly at .7 — computed .7, painted .700, 5.6:1 ink
+   to paper. Every one of those numbers was true and the treatment still failed,
+   because NONE OF THEM WAS THE QUESTION. The question is whether a locked
+   control looks different from a LIVE one, and .7 on saturated LCARS teal does
+   not: S191's capstone put the two cards side by side at identical framing and
+   measured the locked `▶ START` against the live `▶ START` at 1.84:1 — the same
+   button. The captain clicks something that looks live and gets a tooltip. That
+   is worse than no lock, because it teaches him the console lies.
+
+   THE CURE IS THE FILL, which is what the eye reads across a room long before it
+   reads a 10px label. A locked control stops being a live control wearing a
+   dimmer and becomes its own STATE: hollow, dashed, in the lock's own blue.
+   None of that is new vocabulary — `.btn.danger` above is already a hollow
+   outlined button, `.prog.ondisk` already uses a dashed edge to mean "present,
+   not live", and the blue is the same --lcars-blue the owner pill turns, so the
+   whole card says one thing in one colour. board.js does the other half: the
+   label's leading ACTION glyph (`▶`) is REPLACED with `⊘`.
+
+   A CLASS, NOT `.card.owned-by-other … button[disabled]`. The state belongs to
+   the control, not to a position in a tree — which is how every other state on
+   this board is expressed (.card.owned-by-other, .pill.remote, .tk.done) — and
+   a state class is also the only shape the filing-band colour resolver
+   (test_log_filing_band) can READ: it refuses attribute selectors, so a
+   `button[disabled]` rule carrying a `color` made its own honesty check go red.
+
+   SOURCE ORDER IS LOAD-BEARING. `.btn.locked` and `.btn[disabled]` have the
+   same specificity, so this MUST stay below them — `opacity:1` is what keeps
+   `.btn[disabled]{opacity:.4}` from painting the locked controls at 0.22, which
+   round 1 found the hard way. It is set on the CONTROL and it is 1, so it makes
+   no compositing group at all: the strongest form of that guarantee.
+
+   MEASURED, NOT PICKED, off pixels in real Chrome by
+   tests/drives/s190/owner-paint.sh: locked fill vs live fill 9.07:1 (floor 3:1,
+   WCAG 1.4.11's own number for two UI states that must be told apart — it was
+   1.84:1) and ink-to-paper 6.43:1 on the worst locked control on the board
+   (floor 4.5:1 — it was 5.26:1, so legibility went UP when the dim came off).
+   A rule-exists or computed-style test is green on the broken version.
+   ════════════════════════════════════════════════════════════════════════ */
+.btn.locked{
+  opacity:1;
+  background:transparent;
+  color:var(--lcars-blue,#4499ff);
+  border-color:var(--lcars-blue,#4499ff);
+  border-style:dashed}
+.btn.locked:hover{border-color:var(--lcars-blue,#4499ff)}
 
 /* ── overlay host: a single centered modal stage ── */
 [hidden]{display:none !important}

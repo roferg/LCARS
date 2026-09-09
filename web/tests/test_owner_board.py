@@ -375,6 +375,34 @@ class TheStylesheetMakesNoPROMISEItCannotKEEP(unittest.TestCase):
                              "a row-level opacity is back over the locked "
                              "controls; anything below it cannot escape it")
 
+    def test_a_locked_control_does_not_wear_the_LIVE_control_s_fill(self):
+        """S191 fix round 1, D4 — the cheap half of "does it LOOK locked?".
+
+        Round 1's `.7` was true in every number it reported and still failed,
+        because the question is not how the locked control paints — it is how it
+        paints COMPARED WITH A LIVE ONE, and that comparison only exists in a
+        browser with both cards on screen. `owner-paint.sh` measures it at 3:1
+        (WCAG 1.4.11). This is the tripwire between drive runs: the locked
+        control must be HOLLOW, and must not be handed a solid fill back.
+        """
+        rules = re.findall(r"\.btn\.locked\s*\{([^}]*)\}", self.css)
+        self.assertTrue(rules, "nothing styles `.btn.locked` any more")
+        body = " ".join(rules).replace(" ", "").replace("\n", "")
+        self.assertIn("background:transparent", body,
+                      "the locked control took a solid fill again — at .7 over "
+                      "--lcars-teal it measured 1.84:1 against the live button")
+        # …and the dim must not come back INSTEAD of the state treatment: `.7`
+        # was the shape that shipped and read as live.
+        self.assertNotRegex(body, r"opacity:\.\d",
+                            "a fractional opacity is back on the locked control")
+        # SOURCE ORDER. `.btn.locked` and `.btn[disabled]` tie on specificity, so
+        # `opacity:1` only wins from below — above it the locked controls paint
+        # at .4 and the cure is silently gone.
+        self.assertLess(self.css.index(".btn[disabled]"),
+                        self.css.index(".btn.locked"),
+                        "`.btn.locked` moved above `.btn[disabled]`; the tie now "
+                        "goes the other way and the controls paint at .4")
+
     def test_no_rule_styles_an_owner_pill_in_the_detail_header(self):
         # ownerNode() is called only from cardNode(); the detail header renders
         # no owner pill, and CSS describing one reads as a feature that exists.
@@ -699,6 +727,47 @@ class SomeoneElsesMissionIsLocked(unittest.TestCase):
         for b in btns:
             self.assertTrue(b["disabled"])
             self.assertEqual(self.LINE, b["title"])
+
+    def test_every_locked_control_opens_with_the_lock_mark(self):
+        # S191 fix round 1, D4. `▶ Start` on a mission you cannot start is the
+        # lie stated in the one place the eye lands last. The glyph is `⊘` —
+        # already worn by the Verify lock label since S190, and nothing new.
+        for stage in ("align", "implement", "verify"):
+            t = _render(self.card(stage=stage), self_login=ME)
+            btns = _ctrl_buttons(t)
+            self.assertTrue(btns, "stage %s rendered no control" % stage)
+            for b in btns:
+                self.assertTrue(b["text"].startswith("⊘ "),
+                                "%s control %r wears no lock mark"
+                                % (stage, b["text"]))
+
+    def test_the_action_glyph_is_REPLACED_never_merely_prefixed(self):
+        # `⊘ ▶ Start` would still show the go-arrow. One glyph, and it is the
+        # one that tells the truth.
+        t = _render(self.card(stage="align"), self_login=ME)
+        for b in _ctrl_buttons(t):
+            self.assertNotIn("▶", b["text"], b["text"])
+            self.assertEqual(1, b["text"].count("⊘"), b["text"])
+
+    def test_every_locked_control_carries_the_state_class(self):
+        # The fill half of D4 hangs entirely off this class; the glyph half is
+        # above. Both are asserted, because either alone still reads as live
+        # from one of the two distances a card is read at.
+        for stage in ("align", "implement", "verify"):
+            t = _render(self.card(stage=stage), self_login=ME)
+            for b in _ctrl_buttons(t):
+                self.assertIn("locked", (b.get("cls") or "").split(),
+                              "%s control %r carries no `locked` class"
+                              % (stage, b["text"]))
+
+    def test_MY_OWN_controls_wear_no_lock_mark(self):
+        # The negative control. A mark that fell on every card would pass the two
+        # tests above and mean nothing.
+        mine = self.card(stage="align")
+        mine["owner"] = {"login": ME,
+                         "avatarUrl": "https://github.com/%s.png?size=64" % ME}
+        for b in _ctrl_buttons(_render(mine, self_login=ME)):
+            self.assertNotIn("⊘", b["text"], b["text"])
 
     def test_the_card_is_marked_so_the_stylesheet_can_dim_it(self):
         t = _render(self.card(), self_login=ME)

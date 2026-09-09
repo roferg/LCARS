@@ -119,6 +119,19 @@ _OWNER_LOCKED_VERBS = frozenset((
     "log", "log/file", "log/run", "log/discard",
 ))
 
+# S191 fix round 1 (D6) — THE REMOTE REFUSAL, IN THE CARD'S OWN WORDS.
+#
+# A remote card's disabled controls carry this sentence as their tooltip
+# (board.js `REMOTE_LINE`). A direct POST past the DOM used to answer
+# `no such mission: <issue>` — because a remote mission genuinely has no local
+# mission directory — so the card and the daemon told the captain TWO DIFFERENT
+# STORIES about one thing: the card said "someone else is driving it", the server
+# said "it does not exist". S190 spent a session making its tooltip, its 403 body
+# and the CLI refusal ONE byte-identical sentence; this is the same rule applied
+# to the state S191 introduced. Pinned against board.js by test_remote_overlay.
+_REMOTE_LOCK_LINE = ("driven from another machine — adopt at Align/Verify to "
+                     "act here")
+
 
 # --- S187: a CIVIL refusal when the port is already taken --------------------
 # Plain `lcars viewscreen` binds the fixed 8765 (only `--open` picks a free
@@ -677,8 +690,51 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             if line:
                 raise _ActionError(403, line)
 
+        def _remote_gate(self, mid, verb):
+            """S191 fix round 1 (D6) — a write on a mission driven ELSEWHERE.
+
+            409, not 404. The mission is not missing — it is on the forge, it is
+            on this board, and the captain is looking at its card. What is
+            missing is this laptop's standing to write to it, and that is a
+            CONFLICT WITH CURRENT STATE. `no such mission` was not merely the
+            wrong number: it contradicted the very card the click came from.
+
+            The same verbs the owner lock covers, for the same reason it uses an
+            allow-list — and `adopt` is outside it on purpose, because adopting
+            is how a remote mission stops being remote.
+
+            THE VERDICT IS THE ADAPTER'S, not a second implementation of one.
+            `adapter.mission()` already answers "local, remote, or neither" with
+            local winning by construction, off the SAME cached forge listing the
+            board was built from (no extra `gh` call, so this cannot recreate the
+            S152 storm). A mission the adapter has never heard of falls through
+            untouched and still gets the honest 404 it deserves.
+            """
+            if verb not in _OWNER_LOCKED_VERBS:
+                return
+            reader = getattr(adapter, "mission", None)
+            if not callable(reader):
+                return
+            try:
+                card = reader(mid)
+            except Exception:
+                return          # never let the guard itself refuse a write
+            if isinstance(card, dict) and card.get("remote") is True:
+                raise _ActionError(409, _REMOTE_LOCK_LINE)
+
         def _dispatch_verb(self, mid, verb, body):
+            # REMOTE FIRST. "this mission is not driven from here" is the more
+            # specific truth, and asking the ownership seam about an issue number
+            # that has no local mission would only ever be able to shrug.
+            self._remote_gate(mid, verb)
             self._owner_gate(mid, verb)
+            # S191: ADOPT — rebuild a REMOTE mission on this laptop. `mid` here is
+            # the ISSUE NUMBER (a remote card has no local mission id yet), so it
+            # is matched FIRST, before any verb that would try to resolve a local
+            # mission dir. Deliberately NOT in _OWNER_LOCKED_VERBS: adopting is
+            # how the captain takes command here, and adopt.sh does the claiming.
+            if verb == "adopt":
+                return actions.adopt(mid)
             if verb == "start":
                 return actions.start(mid, override=body.get("override"))
             if verb == "pause":

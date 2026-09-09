@@ -72,6 +72,53 @@ class ActionError(Exception):
         self.data = dict(data or {})
 
 
+# S191 fix round 1 (D5) — ADOPT'S OWN REFUSAL CHANNEL.
+#
+# THE DEFECT. `lcars adopt` on a mission mid-pipeline answers with one of the
+# best sentences LCARS writes — it names the boundary, says why the middle of
+# the pipeline is not portable, and says "Nothing was created." The daemon
+# delivered it under HTTP 502. 502 means THE SERVER BROKE. Nothing broke: the
+# captain asked for something this mission's own state does not allow, and the
+# code for that is 409 CONFLICT. A refusal wearing a fault's status teaches the
+# operator to distrust the status line, and after that every real fault is noise.
+#
+# HOW A REFUSAL IS RECOGNISED, AND WHY IT IS NOT PROSE-MATCHING. adopt.sh has
+# exactly ONE way of saying no: `die()` at skills/lcars-adopt/adopt.sh:107 prints
+# `lcars adopt: <sentence>` and exits 1. That banner is the script's own
+# structured refusal channel — a marker it stamps on purpose, not wording a
+# reader has to interpret — so the test is (exit code == 1) AND (the banner is
+# there). S165's rule is kept: nothing here reads the SENTENCE to decide, only
+# the envelope around it.
+#
+# A CRASH IS STILL A FAULT, deliberately and in both directions. A different
+# exit status (127 for a missing binary, 2 for a bash syntax error, a signal) or
+# output that never went through `die()` — a traceback, a stray stderr line —
+# keeps its 502 untouched, because a broken server that answered 409 would be
+# the same lie pointing the other way.
+#
+# NARROW ON PURPOSE. `_run` is unchanged, so every other skill dispatch in this
+# daemon still maps exactly as it did. This is adopt's refusal, and adopt's only.
+_ADOPT_REFUSAL_BANNER = "lcars adopt: "
+
+
+def _adopt_refusal(exc):
+    """`exc` re-cast as a 409 when adopt.sh REFUSED, else `exc` untouched."""
+    if getattr(exc, "skill_exit", None) != 1:
+        return exc
+    msg = getattr(exc, "message", "") or ""
+    at = msg.find(_ADOPT_REFUSAL_BANNER)
+    if at < 0:
+        return exc
+    # Everything the script said after its banner, verbatim. The prose IS the
+    # refusal — the status code only stops it being read as a crash.
+    line = msg[at + len(_ADOPT_REFUSAL_BANNER):].strip()
+    if not line:
+        return exc
+    out = ActionError(409, line)
+    out.skill_exit = exc.skill_exit
+    return out
+
+
 # The env seam names the daemon resolves each skill path from (mirrors how
 # serve.sh env-injects). Used by the launcher/__main__ to build the script map.
 SCRIPT_ENV = {
@@ -108,6 +155,11 @@ SCRIPT_ENV = {
     # sentence, as the one `lcars run` / `respond` / `approve` / `feedback` /
     # `log` already reach at the CLI. It never reimplements the rule (ADR-002).
     "ownership": "LCARS_OWNERSHIP_SCRIPT",
+    # S191: `lcars adopt` (skills/lcars-adopt/adopt.sh) — rebuild a Mission on
+    # THIS laptop from its GitHub issue alone. The board's remote card offers it
+    # at the two ENDS of the pipeline; the daemon only DISPATCHES it, and every
+    # refusal (wrong stage, missing envelope, no gh) stays the skill's own.
+    "adopt": "LCARS_ADOPT_SCRIPT",
 }
 
 
@@ -13034,6 +13086,47 @@ class Actions(LogFacts):
         if not (mid and os.path.isfile(os.path.join(d, "state.json"))):
             raise ActionError(404, "no such mission: %s" % mid)
 
+    # ── S191: ADOPT A REMOTE MISSION ────────────────────────────────────────
+    def adopt(self, issue):
+        """Rebuild the mission on issue `issue` here — `lcars adopt <n>`.
+
+        DISPATCH ONLY. Every rule about WHEN an adopt is allowed lives in
+        adopt.sh: the stage gate (the two ENDS — align and verify), the handoff
+        envelope schema gate, the claim, the branch fetch, the PR resolution and
+        the four honest refusals. Re-deciding any of them here would be a second
+        implementation of the same verdict, which is the S168 scar this project
+        already paid for once (ADR-002).
+
+        NOT OWNER-LOCKED, deliberately, and this is the one write endpoint that
+        is not. Adopting is how a captain TAKES command of a mission on this
+        laptop; refusing it because he does not yet hold it would lock the door
+        from the inside. adopt.sh does the claiming, and every verb that follows
+        it (run / respond / approve / feedback) is locked as it was.
+
+        BLOCKING, like `file`: adopt reads the issue and fetches a branch, which
+        is seconds, and the answer the captain needs is whether it worked. A
+        fire-and-forget adopt would flip the card and then fail in a spawn log.
+
+        The argument is an ISSUE NUMBER, because that is what a remote card is
+        identified by (there is no local mission id yet — minting one is exactly
+        what adopt refuses to do). Validated here rather than trusted: it is
+        about to become a command-line argument.
+        """
+        n = str(issue if issue is not None else "").strip().lstrip("#")
+        if not n.isdigit():
+            raise ActionError(
+                400, "adopt needs the mission's GitHub issue NUMBER; got %r"
+                     % (issue,))
+        try:
+            proc = self._run("adopt", ["--issue", n])
+        except ActionError as exc:
+            raise _adopt_refusal(exc)
+        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        # The board refreshes itself off the next poll — the adopted mission is
+        # now a LOCAL mission dir, so the overlay stops drawing its remote card
+        # and the local card takes its place. Nothing to reconcile here.
+        return {"adopted": int(n), "output": out}
+
     # ── S190: THE LIGHT LOCK, SERVER-SIDE ───────────────────────────────────
     def owner_lock_reason(self, mid):
         """One plain line when this mission belongs to SOMEONE ELSE, else None.
@@ -13726,6 +13819,9 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         # other skill. It lives inside lcars-run beside host-adapter.sh.
         "ownership": os.path.join(
             home, ".claude/skills/lcars-run/ownership.sh"),
+        # S191 — `lcars adopt`, resolved like every other skill.
+        "adopt": os.path.join(
+            home, ".claude/skills/lcars-adopt/adopt.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():
