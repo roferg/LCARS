@@ -49,6 +49,34 @@ die() { printf 'lcars feedback: %s\n' "$1" >&2; exit 1; }
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
 
+
+# --- S189: solo ownership, the light lock ----------------------------------
+# A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
+# write verbs. `lcars feedback` BOUNCES a mission back a stage and rewrites its state, so it consults the lock; the READ verbs (status,
+# buddy, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
+# on GitHub — the solo protocol's premise is that the captain moves ownership
+# where both laptops can see it, and LCARS never takes a mission off anyone.
+#
+# The library lives in the sibling lcars-run skill dir (the same reach this
+# script already makes for the host adapter). A MISSING library leaves the verb
+# unenforced — exactly pre-S189 behaviour — rather than refusing blindly, and
+# LCARS_OWNER_ENFORCE=0 bypasses the lock for harness debugging.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SELF_DIR/../lcars-run/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
+
+# owner_lock_or_die <issue> — refuse with ONE plain line, or return.
+# lcars_owner_lock_reason returns 0 (and echoes the line) ONLY when someone else
+# demonstrably holds the mission: unassigned, an unreachable forge and an
+# unresolvable identity all fall through to "proceed", because a lock that fires
+# on uncertainty locks the captain out of his own work.
+owner_lock_or_die() { # <issue>
+  local r
+  command -v lcars_owner_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_owner_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # --- locate the mission (mirrors run.sh) -----------------------------------
 locate_mission() {
   local id="$1" gitdir
@@ -134,6 +162,10 @@ done
 [ -n "$FEEDBACK" ]   || die "no feedback — pass --feedback \"<text>\" with what to fix."
 
 locate_mission "$MISSION_ID"
+
+# S189: the light lock. BEFORE the feedback.md append — a refusal must leave
+# no trace on a mission that is not ours.
+owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
 
 # Record the stage we're bouncing back FROM so we can drop its label cleanly.
 PREV_STAGE="$(json_str "$STATE" stage)"

@@ -106,6 +106,39 @@ if ! command -v lcars_issue_body_compose >/dev/null 2>&1; then
   die "the issue-body composer is missing ($LCARS_ISSUE_BODY_LIB) — re-run ./install.sh from the LCARS checkout."
 fi
 
+# --- shared helpers: solo ownership (S189) ---------------------------------
+# The mission the captain files is HIS: filing assigns him on GitHub, which is
+# where BOTH laptops read ownership from (the second laptop has no .git/lcars at
+# all, so local state cannot answer "whose is this?"). Sourced from the sibling
+# lcars-run skill dir — the same reach the issue-body composer above makes.
+# $LCARS_OWNERSHIP_LIB overrides the path for tests.
+#
+# UNLIKE the composer, a MISSING library is NOT fatal here: ownership is a
+# best-effort overlay on filing, never a precondition for it.
+LCARS_OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$FILE_SKILL_DIR/../lcars-run/ownership.sh}"
+if [ -f "$LCARS_OWNERSHIP_LIB" ]; then
+  # shellcheck source=../lcars-run/ownership.sh
+  . "$LCARS_OWNERSHIP_LIB"
+fi
+
+# _claim_note <issue> — assign the new issue to the captain, BEST-EFFORT.
+#
+# A failed assign WARNS and returns 0. It must NEVER block filing: the same
+# posture notify.sh and the comment mirror already have, and for the same reason
+# — a forge that will not take an assignment is not a reason to lose the PRD the
+# captain just wrote. The adapter's issue-assign READS BACK before reporting
+# success, so a GitHub that accepts the request and silently drops it surfaces
+# here as this warning, instead of as a mission LCARS believes it owns and
+# GitHub says it does not.
+_claim_note() { # <issue>
+  local n="${1:-}" w
+  case "$n" in ''|null) return 0 ;; esac
+  command -v lcars_claim_mission >/dev/null 2>&1 || return 0
+  w="$(lcars_claim_mission "$n")" || true
+  [ -n "$w" ] && printf '%s\n' "$w"
+  return 0
+}
+
 if ! command -v lcars_base_current_branch >/dev/null 2>&1; then
   # The lib is missing, so filing degrades to exactly its pre-S158 behaviour —
   # including the base resolution, which is the pre-S158 lines verbatim.
@@ -512,6 +545,10 @@ do_park() {
   fi
   write_park_state "${ISSUE:-null}"
 
+  # S189: a parked mission is still the captain's — claim it now, so a laptop
+  # that adopts it later sees an owner rather than an orphan.
+  _claim_note "${ISSUE:-}"
+
   local issue_line="(none — parked locally only)"
   [ -n "$ISSUE" ] && issue_line="#$ISSUE"
   [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
@@ -777,6 +814,11 @@ do_complete() {
   if [ -f "$RUN_BIN" ] && [ -f "$MISSION_DIR/estimate.json" ]; then
     EST_CLI="$(bash "$RUN_BIN" render-estimate --mission "$ID" --surface cli 2>/dev/null)"
   fi
+
+  # S189: claim it. Idempotent — a mission parked (and claimed) earlier makes no
+  # forge write here, so completing an already-owned mission costs nothing; a
+  # park-time claim that FAILED gets a free retry at this second transfer point.
+  _claim_note "${ISSUE:-}"
 
   local issue_line="(none — recorded locally only)"
   [ -n "$ISSUE" ] && issue_line="#$ISSUE"
@@ -1223,6 +1265,9 @@ fi
 # locate_mission could resolve the mission). Now that gh has (maybe) created the
 # issue, rewrite it with the real number — or leave null when gh was missing/failed.
 write_state "${ISSUE:-null}"
+
+# S189: the grill-first lane's claim — the captain who filed it owns it.
+_claim_note "${ISSUE:-}"
 
 # --- render the estimate's compact summary for the CLI readout (S61) -------
 # Same render-estimate driver, the cli surface this time: a compact, two-space-

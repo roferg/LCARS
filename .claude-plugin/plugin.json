@@ -2,6 +2,7 @@
   "name": "lcars",
   "skills": [
     "./skills/lcars",
+    "./skills/lcars-adopt",
     "./skills/lcars-answer",
     "./skills/lcars-approve",
     "./skills/lcars-buddy",

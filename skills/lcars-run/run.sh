@@ -115,6 +115,15 @@ load_issue_body_lib() {
 RENDER_LIB="${LCARS_RENDER_LIB:-$SKILL_DIR/../lcars-status/render.sh}"
 [ -f "$RENDER_LIB" ] && . "$RENDER_LIB"
 [ -f "$COMMENT_MIRROR" ] && . "$COMMENT_MIRROR"
+# The S189 solo-ownership library — identity (lcars_whoami), the standing
+# assignee (mission_owner), the light lock (lcars_owner_lock_reason) and the
+# best-effort claim (lcars_claim_mission). SOURCED beside the mirror; sourcing
+# only DEFINES functions and makes no forge call, so it stays free across the
+# many per-stage / per-ticket re-entries of this script. A MISSING library leaves
+# ownership unenforced (exactly pre-S189 behaviour) rather than failing a drive.
+# $LCARS_OWNERSHIP_LIB overrides the path for tests.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SKILL_DIR/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
 # The cold-worker CLI adapter — the ONE place that knows a CLI's spawn flags and
 # tool NAMES. This script (the stage driver) stays CLI-agnostic: it speaks a role
 # keyword + a cli id (basename of WORKER_BIN) and delegates the actual one-shot to
@@ -18160,6 +18169,32 @@ cmd_drive() {
   # A parked mission (prdPending) is NOT drivable — the driver never runs a
   # PRD-less mission. Refuse before taking the lock, naming the align command.
   refuse_if_parked
+
+  # --- S189 THE LIGHT LOCK, then the claim --------------------------------
+  # Both checked HERE: before the driver lock, before the base re-check, before
+  # anything spawns or fetches. A mission assigned to someone ELSE is read-only
+  # to this laptop's write verbs — `lcars run` advances a mission, so it is a
+  # write verb — and refusing at the very top means we never take a lock or move
+  # a branch on work that is not ours. Reassignment is a human act on GitHub;
+  # LCARS never takes a mission off anyone.
+  #
+  # A mission NOBODY holds becomes ours on this first advance, best-effort: the
+  # claim's failure is a warning, never a halt (same posture as filing). Both
+  # are inert when the ownership library is absent.
+  # DECLARED then ASSIGNED, never `local x="$(…)"`: `local` supplies the
+  # statement's own exit status, so the command substitution's rc — which is the
+  # whole signal here — would be thrown away.
+  local drive_own_issue drive_own_lock drive_own_warn
+  drive_own_issue="$(json_raw "$STATE" githubIssue)"
+  if command -v lcars_owner_lock_reason >/dev/null 2>&1; then
+    if drive_own_lock="$(lcars_owner_lock_reason "$drive_own_issue")"; then
+      die "$drive_own_lock"
+    fi
+    if mission_unassigned "$drive_own_issue"; then
+      drive_own_warn="$(lcars_claim_mission "$drive_own_issue")" || true
+      [ -n "${drive_own_warn:-}" ] && printf '%s\n' "$drive_own_warn"
+    fi
+  fi
 
   # Single-instance guard (BUG-A). If a live driver already holds this mission's
   # lock, this invocation is a clean no-op — never a second concurrent driver.

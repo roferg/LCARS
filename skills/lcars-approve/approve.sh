@@ -43,6 +43,34 @@ die() { printf 'lcars approve: %s\n' "$1" >&2; exit 1; }
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
 
+
+# --- S189: solo ownership, the light lock ----------------------------------
+# A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
+# write verbs. `lcars approve` MERGES a pull request and marks a mission Done, so it consults the lock; the READ verbs (status,
+# buddy, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
+# on GitHub — the solo protocol's premise is that the captain moves ownership
+# where both laptops can see it, and LCARS never takes a mission off anyone.
+#
+# The library lives in the sibling lcars-run skill dir (the same reach this
+# script already makes for the host adapter). A MISSING library leaves the verb
+# unenforced — exactly pre-S189 behaviour — rather than refusing blindly, and
+# LCARS_OWNER_ENFORCE=0 bypasses the lock for harness debugging.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SELF_DIR/../lcars-run/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
+
+# owner_lock_or_die <issue> — refuse with ONE plain line, or return.
+# lcars_owner_lock_reason returns 0 (and echoes the line) ONLY when someone else
+# demonstrably holds the mission: unassigned, an unreachable forge and an
+# unresolvable identity all fall through to "proceed", because a lock that fires
+# on uncertainty locks the captain out of his own work.
+owner_lock_or_die() { # <issue>
+  local r
+  command -v lcars_owner_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_owner_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # --- locate the mission (mirrors run.sh) -----------------------------------
 locate_mission() {
   local id="$1" gitdir
@@ -323,6 +351,11 @@ done
 
 locate_mission "$MISSION_ID"
 require_stage verify
+
+# S189: the light lock. Checked BEFORE the merge gate does any work —
+# reconcile, push, `gh pr merge` — so a mission that is not ours is never
+# half-shipped before the refusal lands.
+owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
 
 BRANCH="$(json_str "$STATE" branch)"
 BASE="$(json_str "$STATE" base)"; BASE="${BASE:-main}"
