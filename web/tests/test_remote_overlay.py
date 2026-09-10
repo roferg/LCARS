@@ -925,11 +925,26 @@ class TheRenderedRemoteCard(unittest.TestCase):
         self.assertIn("pill", pills[0]["cls"])
 
     def test_every_write_affordance_is_disabled_and_says_why(self):
+        """S196 B3 INVERTED THIS, deliberately — read the reason.
+
+        S191 shipped a remote card whose dead controls stayed on screen,
+        disabled, carrying REMOTE_LINE as a tooltip. The captain's ruling (R8,
+        2026-09-09, after looking at one) is that nothing on a remote card is
+        actionable BY DEFINITION, so a dead `\u25b6 START` is noise that
+        competes with the ONE control that works. The card now renders no dead
+        control at all, and the stage label (`#201 \u00b7 lcars:implement`)
+        carries the state it was standing in for.
+
+        What the original assertion protected — "no control on a remote card is
+        ever live" — is STRONGER now, not weaker, and is asserted below: there
+        is nothing there to be live. The disabled-and-says-why contract itself
+        did not go away; it moved to the DETAIL surface, where the controls do
+        still render (a captain who opened a mission to read it is entitled to
+        see what it HAS), and it is pinned in RemoteDetailControlsReadAsLocked.
+        """
         card = self._cards([issue(201, stage="implement", assignee=ME)])["201"]
         dom = self._render(card)
-        btns = self._buttons(dom)
-        self.assertTrue(btns, "the card rendered no controls at all")
-        for b in btns:
+        for b in self._buttons(dom):
             self.assertTrue(b["disabled"], "a live control on a remote card")
             self.assertEqual(REMOTE_LINE, b["title"])
 
@@ -1076,6 +1091,421 @@ class TheEngineProvenanceOnACard(unittest.TestCase):
         card = self._plant("m-eng", engineSource="mission",
                            engineResolved="copilot")
         self.assertIn("#101 \u00b7 lcars:align", self._texts(self._render(card)))
+
+
+# --------------------------------------------------------------------------
+# 9. S196 HALF B — A REMOTE CARD YOU CAN READ
+#
+# GROUND TRUTH, measured in real Chrome by a fresh tester on 2026-09-09: on a
+# remote card the dead `▶ START` painted median rgb(64,141,122) and the live
+# `▹ ADOPT ▸` beside it rgb(85,193,161) — a separation of 1.79:1. They were
+# the same button. The SAME board's owned-by-other lock (S190/S191) measured
+# 8.39:1 against a live control, because it is HOLLOW where a live control is
+# SOLID. The house already had the right language; remote cards were left out.
+#
+# THREE CURES, and each one is a different kind of fix:
+#   B2  every control the remote sweep disables now wears `.btn.locked` and the
+#       `⊘` mark — the SAME treatment, not a second one.
+#   B3  the CARD stops drawing them at all (R8).
+#   B4  Adopt's leading glyph stops stuttering against its own `▸` suffix.
+#
+# THESE ARE DOM-SHAPE TRIPWIRES, NOT THE PROOF. What a rule paints is a question
+# only a browser can answer — the whole reason S190 round 1 shipped an
+# `opacity:1` that computed as 1 and painted at .55. The proof is
+# tests/drives/s190/owner-paint.sh, in real Chrome, off pixels, with red
+# controls. These are what stops the cured shape walking back in between runs.
+# --------------------------------------------------------------------------
+
+# The house glyph family (board.js LOCK_ACTION_GLYPHS + the lock mark + the
+# remote diamond). S190's D3 and S191's `⇩` near-miss were both a glyph from
+# outside it; nothing here may add another.
+HOUSE_GLYPHS = u"\u25b6\u25b8\u25b9\u2713\u23f8\u25d0\u25f7\u21bb\u25c6\u2739\u2298\u25c8"
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class ARemoteCardOffersOnlyWhatItCanDo(unittest.TestCase):
+    """B3 — R8: hide Verify, offer only Adopt."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+
+    def _card(self, **kw):
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [issue(201, **kw)], self.record))
+        return {c["id"]: c for c in adapter.board()["missions"]}["201"]
+
+    def _dom(self, card, whoami=ME):
+        fd, p = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, p)
+        with open(p, "w") as fh:
+            json.dump({"mission": card, "self": whoami}, fh)
+        return json.loads(subprocess.check_output([NODE, OWNER_HARNESS, p]))
+
+    @staticmethod
+    def _walk(node, out=None):
+        out = [] if out is None else out
+        out.append(node)
+        for kid in node.get("children", []):
+            ARemoteCardOffersOnlyWhatItCanDo._walk(kid, out)
+        return out
+
+    def _ctrl_buttons(self, dom):
+        rows = [n for n in self._walk(dom)
+                if "card-ctrl" in (n.get("cls") or "").split()]
+        self.assertEqual(1, len(rows), "expected exactly one control row")
+        return [n for n in self._walk(rows[0])
+                if (n.get("tag") or "").lower() == "button"]
+
+    def test_a_remote_card_carries_NO_dead_control(self):
+        """The headline. A dead `▶ START` measured 1.79:1 against the live
+        Adopt beside it; the cure is that there is nothing there to measure."""
+        for stage in ("research", "plan", "schedule", "implement", "verify",
+                      "align"):
+            dom = self._dom(self._card(stage=stage))
+            dead = [b for b in self._ctrl_buttons(dom) if b["disabled"]]
+            self.assertEqual([], [b.get("text") for b in dead],
+                             "a dead control survived on a remote %s card"
+                             % stage)
+
+    def test_a_remote_card_MID_PIPELINE_offers_nothing_at_all(self):
+        """The tester found exactly this card: `research`, offering ONLY a dead
+        `▶ START` and no Adopt. It must now offer nothing — and lose no
+        information, because `#201 · lcars:research` is still on the card."""
+        dom = self._dom(self._card(stage="research"))
+        self.assertEqual([], self._ctrl_buttons(dom))
+        stage_lines = [n.get("text") or "" for n in self._walk(dom)
+                       if (n.get("text") or "").startswith("#201")]
+        self.assertIn(u"#201 \u00b7 lcars:research", stage_lines)
+
+    def test_at_verify_the_ONLY_control_is_adopt_and_it_is_LIVE(self):
+        dom = self._dom(self._card(stage="verify"))
+        btns = self._ctrl_buttons(dom)
+        self.assertEqual(1, len(btns),
+                         [b.get("text") for b in btns])
+        self.assertIn("ADOPT", (btns[0].get("text") or "").upper())
+        self.assertFalse(btns[0]["disabled"])
+
+    def test_VERIFY_itself_is_HIDDEN_not_merely_disabled(self):
+        """R8, verbatim: on a remote card, hide Verify."""
+        texts = [b.get("text") or ""
+                 for b in self._ctrl_buttons(self._dom(self._card(stage="verify")))]
+        for t in texts:
+            self.assertNotIn("REVIEW PR", t.upper())
+            self.assertNotIn("MERGE", t.upper())
+            self.assertNotIn("VERIFY", t.upper())
+
+    def test_at_align_the_ONLY_control_is_adopt(self):
+        btns = self._ctrl_buttons(self._dom(self._card(stage="align")))
+        self.assertEqual(1, len(btns), [b.get("text") for b in btns])
+        self.assertIn("ADOPT", (btns[0].get("text") or "").upper())
+
+    def test_an_AWAITING_remote_card_still_offers_no_Answer_button(self):
+        """`● AWAITING YOU` on a remote card is somebody ELSE's gate."""
+        dom = self._dom(self._card(stage="verify",
+                                   labels=["lcars:awaiting-human"]))
+        texts = [b.get("text") or "" for b in self._ctrl_buttons(dom)]
+        self.assertFalse(any("ANSWER" in t.upper() for t in texts), texts)
+
+    def test_a_LOCAL_card_keeps_every_control_it_had(self):
+        """The negative control. The removal is keyed on `remote`, and a board
+        with no remote cards on it must render exactly as it did."""
+        fx.plant_simple(self.tmp, "m-local", stage="verify", issue=101,
+                        pr_url="https://github.com/acme/repo/pull/7",
+                        pr_number="7", review="open")
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [], self.record))
+        card = {c["id"]: c for c in adapter.board()["missions"]}["m-local"]
+        self.assertTrue(self._ctrl_buttons(self._dom(card)),
+                        "a LOCAL card lost its controls")
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class TheAdoptButtonDoesNotStutter(unittest.TestCase):
+    """B4 — `▹ Adopt ▸` is a hollow triangle beside a solid one.
+
+    `▸` is the SHARED dispatch suffix every dispatching button on this board
+    carries (`Go ▸`, `✓ Review PR ▸`), so the suffix is not the thing to
+    change. The leading glyph is. `◆` is in LOCK_ACTION_GLYPHS, and it differs
+    from the remote pill's `◈` by FILL — which is the same sentence the rest of
+    this session speaks: solid means it is yours to act on.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+
+    def _label(self):
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [issue(201, stage="verify")], self.record))
+        card = {c["id"]: c for c in adapter.board()["missions"]}["201"]
+        fd, p = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, p)
+        with open(p, "w") as fh:
+            json.dump({"mission": card, "self": ME}, fh)
+        dom = json.loads(subprocess.check_output([NODE, OWNER_HARNESS, p]))
+        out = []
+        def walk(n):
+            out.append(n)
+            for k in n.get("children", []):
+                walk(k)
+        walk(dom)
+        labels = [n.get("text") or "" for n in out
+                  if (n.get("tag") or "").lower() == "button"
+                  and "ADOPT" in (n.get("text") or "").upper()]
+        self.assertEqual(1, len(labels), labels)
+        return labels[0]
+
+    def test_the_leading_glyph_is_the_solid_diamond(self):
+        self.assertTrue(self._label().startswith(u"\u25c6 "), self._label())
+
+    def test_it_no_longer_opens_with_a_HOLLOW_TRIANGLE(self):
+        self.assertFalse(self._label().startswith(u"\u25b9"))
+
+    def test_it_keeps_the_shared_dispatch_suffix(self):
+        self.assertTrue(self._label().endswith(u" \u25b8"), self._label())
+
+    def test_the_label_carries_exactly_two_glyphs_and_both_are_house(self):
+        label = self._label()
+        glyphs = [c for c in label if c in HOUSE_GLYPHS]
+        self.assertEqual([u"\u25c6", u"\u25b8"], glyphs, label)
+
+    def test_no_glyph_in_the_label_is_OUTSIDE_the_house_family(self):
+        for ch in self._label():
+            if ord(ch) > 0x2000:
+                self.assertIn(ch, HOUSE_GLYPHS,
+                              "%r is outside the house family" % ch)
+
+    def test_the_RESTORED_label_after_a_failed_adopt_matches(self):
+        """board.js swaps the label to `◐ Adopting…` on click and puts it BACK
+        on failure. Two literals, and a session that changed one and not the
+        other would resurrect the stutter on exactly the unhappy path."""
+        with open(os.path.join(HERE, "..", "static", "board.js")) as fh:
+            src = fh.read()
+        self.assertEqual(2, src.count(u'"\u25c6 Adopt \u25b8"'),
+                         "the adopt label is not identical in both places")
+        self.assertEqual(0, src.count(u'"\u25b9 Adopt \u25b8"'))
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class RemoteDetailControlsReadAsLocked(unittest.TestCase):
+    """B2 — the remote sweep now speaks the house's lock language.
+
+    The DETAIL is where a remote mission's controls still render: the card hides
+    them (B3), but a captain who clicked in to READ the mission is entitled to
+    see what it has. Those controls were painting `opacity:.4` on a saturated
+    `.go` fill — the exact look S191's D4 condemned and cured on owned cards.
+    They now take `.btn.locked` (hollow, dashed) and the `⊘` mark, which is the
+    SAME treatment, applied by the SAME function (markLocked), not a second one.
+    """
+
+    DETAIL_HARNESS = os.path.join(HERE, "board_detail_harness.js")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+
+    def _detail(self, stage="verify"):
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [issue(201, stage=stage)], self.record))
+        mi = adapter.mission("201")
+        fd, p = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, p)
+        with open(p, "w") as fh:
+            json.dump(mi, fh)
+        out = json.loads(subprocess.check_output(
+            [NODE, self.DETAIL_HARNESS, p, "detail"]))
+        self.assertIsNotNone(out["overlay"], "the detail never rendered")
+        return out["overlay"]
+
+    @staticmethod
+    def _walk(node, out=None):
+        out = [] if out is None else out
+        out.append(node)
+        for kid in node.get("children", []):
+            RemoteDetailControlsReadAsLocked._walk(kid, out)
+        return out
+
+    def _buttons(self, dom):
+        return [n for n in self._walk(dom)
+                if (n.get("tag") or "").lower() == "button"]
+
+    def test_the_detail_STILL_renders_the_controls(self):
+        """The half of S191's contract that did NOT move. If this ever empties,
+        B3 has leaked onto the detail and B2 is measuring nothing."""
+        dead = [b for b in self._buttons(self._detail()) if b["disabled"]]
+        self.assertTrue(dead, "the remote detail rendered no disabled control")
+
+    def test_every_disabled_control_wears_the_state_class(self):
+        for b in self._buttons(self._detail()):
+            if not b["disabled"]:
+                continue
+            self.assertIn("locked", (b.get("cls") or "").split(),
+                          "%r is disabled and does not read as locked"
+                          % (b.get("text") or ""))
+
+    def test_every_disabled_control_opens_with_the_lock_mark(self):
+        for b in self._buttons(self._detail()):
+            if not b["disabled"]:
+                continue
+            text = (b.get("text") or "").strip()
+            if not text:
+                continue
+            self.assertTrue(text.startswith(u"\u2298"),
+                            "%r still claims it will go" % text)
+
+    def test_the_action_glyph_is_REPLACED_never_merely_prefixed(self):
+        """`⊘ ▶ Start` would be the lie stated twice."""
+        for b in self._buttons(self._detail()):
+            text = (b.get("text") or "").strip()
+            if not text.startswith(u"\u2298"):
+                continue
+            rest = text[1:].lstrip()
+            self.assertFalse(rest[:1] in HOUSE_GLYPHS and rest[:1] != u"",
+                             "%r keeps its action glyph behind the lock mark"
+                             % text)
+
+    def test_ADOPT_is_the_one_control_that_stays_LIVE_and_UNMARKED(self):
+        live = [b for b in self._buttons(self._detail()) if not b["disabled"]]
+        labels = [b.get("text") or "" for b in live]
+        self.assertTrue(any("ADOPT" in t.upper() for t in labels), labels)
+        for b in live:
+            self.assertNotIn("locked", (b.get("cls") or "").split())
+            self.assertFalse((b.get("text") or "").startswith(u"\u2298"))
+
+    def test_the_CLOSE_control_is_never_marked(self):
+        for b in self._buttons(self._detail()):
+            if "detail-close" in (b.get("cls") or "").split():
+                self.assertNotIn("locked", (b.get("cls") or "").split())
+                self.assertFalse(b["disabled"])
+
+
+class TheOwnerPillSurvivesGREYSCALE(unittest.TestCase):
+    """B1 — ownership was encoded in COLOUR ALONE.
+
+    amber = mine, blue = someone else's. Those two tokens differ by 1.52:1 in
+    luminance, which is what a greyscale screenshot and a red-green colourblind
+    reader both see. S191 established the better language one row down the same
+    card: `.btn.locked` is HOLLOW/dashed where a live control is SOLID, measured
+    at 9.07:1. This extends the SAME sentence to the owner pill — solid means
+    you can act, hollow means you cannot — rather than inventing a second one.
+
+    NOT THE PROOF, the tripwire: what a fill paints is a browser's answer.
+    tests/drives/s190/owner-paint.sh desaturates the real screenshot and measures
+    it, with a red control that puts the solid fill back.
+    """
+
+    CSS = os.path.normpath(os.path.join(HERE, "..", "static", "board.css"))
+
+    def setUp(self):
+        with open(self.CSS) as fh:
+            raw = fh.read()
+        # Comments stripped: this sheet quotes the broken shape it replaced in
+        # the paragraph above every cured rule.
+        import re as _re
+        self.css = _re.sub(r"/\*.*?\*/", " ", raw, flags=_re.S)
+        self.rules = _re.findall(
+            r"\.card\.owned-by-other\s+\.owner\s*\{([^}]*)\}", self.css)
+
+    def test_someone_elses_pill_is_HOLLOW(self):
+        self.assertTrue(self.rules, "nothing styles someone else's owner pill")
+        body = " ".join(self.rules).replace(" ", "").replace("\n", "")
+        self.assertIn("--owner-fill:transparent", body,
+                      "the pill went back to a solid fill — amber vs blue is "
+                      "1.52:1 in greyscale and reads as one pill")
+
+    def test_it_also_changes_its_EDGE(self):
+        body = " ".join(self.rules).replace(" ", "").replace("\n", "")
+        self.assertIn("--owner-edge:dashed", body)
+
+    def test_MY_pill_is_still_SOLID(self):
+        import re as _re
+        base = _re.findall(r"(?<![-.\w])\.owner\s*\{([^}]*)\}", self.css)
+        self.assertTrue(base, "the base .owner rule vanished")
+        body = " ".join(base).replace(" ", "").replace("\n", "")
+        self.assertIn("--owner-fill:var(--owner-col)", body)
+        self.assertIn("--owner-edge:solid", body)
+
+    def test_the_fill_and_the_edge_are_actually_CONSUMED(self):
+        """A token nothing reads is a promise nothing keeps — which is exactly
+        what `.det-head .owner` was (S190 D3)."""
+        for prop in ("var(--owner-fill)", "var(--owner-edge)"):
+            self.assertIn(prop, self.css,
+                          "%s is declared and never used" % prop)
+
+    def test_the_palette_is_NOT_forked(self):
+        """ADR-007: one shared --lcars-* token source. Every colour here is a
+        var() read, never a literal."""
+        import re as _re
+        for body in self.rules:
+            for literal in _re.findall(r"#[0-9a-fA-F]{3,8}", body):
+                self.assertRegex(
+                    body, r"var\(--lcars-[a-z-]+,\s*" + literal,
+                    "%s is a raw colour, not a token fallback" % literal)
+
+    def test_the_dead_pill_closes_its_own_left_edge(self):
+        """A pill whose avatar died keeps the handle ALONE (S164). Hollow, that
+        handle is the only thing carrying the outline, so its left border has to
+        come back or the pill paints with its nose cut off."""
+        import re as _re
+        rules = _re.findall(r"\.owner\.dead\s+\.owner-handle\s*\{([^}]*)\}",
+                            self.css)
+        self.assertTrue(rules)
+        body = " ".join(rules).replace(" ", "")
+        self.assertIn("border-left-width:1px", body)
+
+    def test_the_REMOTE_card_does_not_also_speak_through_the_pill(self):
+        """One channel, one fact. `remote` is carried by the ◈ pill, the violet
+        edge and a control row that offers only Adopt; making the owner pill
+        hollow for it too would make hollow mean two different things."""
+        import re as _re
+        self.assertFalse(
+            _re.search(r"\.card\.remote[^{,]*\.owner\s*\{", self.css),
+            "the remote card started restyling the owner pill")
+
+
+class TheRemoteControlRowIsNotDIMMED(unittest.TestCase):
+    """B2's cheap tripwire, and the S191 trap it is about.
+
+    `.card.remote .card-ctrl button[disabled]{opacity:.7}` OUT-SPECIFIES
+    `.btn.locked{opacity:1}` (0,4,1 against 0,2,0), so leaving it in place while
+    adding the lock class would have painted every locked remote control at .7
+    on a hollow fill and the cure would have been invisible — the same shape as
+    S190's compositing-group defect, arrived at from the other direction.
+
+    Deleting it is safe in exactly one direction and it is checked here:
+    `.btn.locked{opacity:1}` must still sit BELOW `.btn[disabled]{opacity:.4}`,
+    or the controls fall to .4 instead.
+    """
+
+    CSS = os.path.normpath(os.path.join(HERE, "..", "static", "board.css"))
+
+    def setUp(self):
+        import re as _re
+        with open(self.CSS) as fh:
+            self.css = _re.sub(r"/\*.*?\*/", " ", fh.read(), flags=_re.S)
+
+    def test_no_opacity_rule_out_specifies_the_lock_on_a_remote_card(self):
+        import re as _re
+        for sel, body in _re.findall(r"([^{}]*\.card\.remote[^{}]*)\{([^}]*)\}",
+                                     self.css):
+            if "opacity" in body:
+                self.fail("`%s` sets opacity and out-specifies .btn.locked"
+                          % sel.strip())
+
+    def test_the_lock_still_wins_its_tie_with_disabled(self):
+        self.assertLess(self.css.index(".btn[disabled]"),
+                        self.css.index(".btn.locked"))
 
 
 if __name__ == "__main__":

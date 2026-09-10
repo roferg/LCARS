@@ -340,6 +340,19 @@ function applyRemoteLock(host, m) {
         && cls.indexOf(" remote-adopt ") < 0) {
       n.disabled = true;
       n.title = REMOTE_LINE;
+      // S196 B2 — …AND IT HAS TO LOOK IT. Measured in real Chrome on 2026-09-09:
+      // a remote card's dead `▶ START` painted median rgb(64,141,122) and
+      // the live `▹ ADOPT ▸` beside it rgb(85,193,161) — 1.79:1
+      // apart, i.e. the same button. On the SAME board S191's owned-by-other
+      // lock measured 8.39:1, because it goes HOLLOW where a live control is
+      // SOLID. The house already had the right language; the remote sweep was
+      // simply not speaking it.
+      //
+      // markLocked, NOT a second treatment. "You cannot act on this" is ONE
+      // state and it must look like one state wherever it comes from — the WHY
+      // is carried by the tooltip above, which is the only thing that differs
+      // between this sweep and S190's.
+      markLocked(n);
     }
     var kids = n.children || [];
     for (var i = 0; i < kids.length; i++) walk(kids[i]);
@@ -369,7 +382,20 @@ function remotePill() {
    local card takes its place on the next refresh. */
 function adoptControl(m) {
   if (!isRemote(m) || !m.adoptable) return null;
-  var b = btn("▹ Adopt ▸", "go remote-adopt", function () {
+  // S196 B4 — THE LABEL READ AS TWO ICONS. `▹ Adopt ▸` is a HOLLOW
+  // triangle beside a SOLID one, and at 10px display type that is a stutter,
+  // not a pair. `▸` is not the half to change: it is the SHARED dispatch
+  // suffix every dispatching button on this board carries (`Go ▸`,
+  // `✓ Review PR ▸`), so dropping it here would make Adopt the one
+  // dispatch that does not say it dispatches.
+  //
+  // `◆` is the leading glyph, from LOCK_ACTION_GLYPHS — no glyph from
+  // outside the house family is introduced (S190's D3 and S191's `⇩`
+  // near-miss were both exactly that mistake). It is also the RIGHT one rather
+  // than merely an allowed one: the remote pill two rows up is `◈ REMOTE`,
+  // a FRAMED diamond, and this is the same shape FILLED — which is the
+  // sentence the whole of half B speaks (solid = yours, hollow = not).
+  var b = btn("◆ Adopt ▸", "go remote-adopt", function () {
     if (b.disabled) return;
     b.disabled = true;
     b.textContent = "◐ Adopting…";
@@ -399,7 +425,7 @@ function adoptControl(m) {
       },
       function (msg) {
         b.disabled = false;
-        b.textContent = "▹ Adopt ▸";
+        b.textContent = "◆ Adopt ▸";
         // A VERDICT, not a silent re-enable: adopt.sh refuses for reasons the
         // captain has to read (wrong stage, no handoff envelope, no gh), and a
         // button that quietly came back would say none of them.
@@ -419,6 +445,39 @@ function adoptControl(m) {
 function remoteControls(host, m) {
   if (!isRemote(m)) return host;
   applyRemoteLock(host, m);
+  // S196 B3 (captain ruling R8, 2026-09-09, taken after looking at one): ON A
+  // REMOTE CARD, HIDE VERIFY — OFFER ONLY ADOPT.
+  //
+  // NOTHING on a remote card is actionable BY DEFINITION: the mission is being
+  // driven by a `run` on another machine, holding a driver lock this laptop
+  // cannot see. S191 drew the dead controls anyway, disabled, and the tester
+  // found a remote card at `research` offering ONE control — a dead
+  // `▶ START` — and no Adopt at all. That card promised an action it
+  // could not perform and offered nothing it could.
+  //
+  // IT LOSES NO INFORMATION. `#201 · lcars:research` is on the card two
+  // rows up and is the thing the dead control was standing in for.
+  //
+  // WHY REMOVE RATHER THAN NOT BUILD. cardControls is a dozen accumulated
+  // branches; a "remote?" test threaded through them is a test the next branch
+  // forgets. This is the same argument that made applyRemoteLock a sweep, and
+  // the same shape: whatever the card decided to draw, if the sweep above
+  // DISABLED it, it is not drawn. Keying on `disabled` (not on tag alone) is
+  // what keeps the ONE live control — Adopt, exempted by class above and
+  // appended below — and any future exemption out of it automatically.
+  //
+  // THE DETAIL KEEPS THEM. applyRemoteLock still marks the detail header's
+  // controls locked (B2): a captain who clicked in to READ a mission is
+  // entitled to see what it has, and that surface has the room to say so.
+  if (host && host.children) {
+    var kids = host.children;
+    for (var i = kids.length - 1; i >= 0; i--) {
+      var k = kids[i];
+      if (String(k.tagName || k.tag || "").toUpperCase() !== "BUTTON") continue;
+      if (!k.disabled) continue;
+      if (host.removeChild) host.removeChild(k);
+    }
+  }
   var adopt = adoptControl(m);
   if (adopt && host) host.appendChild(adopt);
   return host;
@@ -2045,6 +2104,272 @@ function isRunningStage(stage) {
     .indexOf(stage) !== -1;
 }
 
+/* ════════════════ S196 B5 — FILTER THE BOARD BY OWNERSHIP ════════════════
+
+   Until this session the board could not be ASKED anything. A captain running
+   two laptops sees his own work, the other laptop's work, whatever GitHub has
+   assigned to somebody else and whatever is assigned to nobody, all in one wall
+   of cards — and the only way to find "the three that are actually mine" was to
+   read every card on the board.
+
+   FOUR FACETS, AND NOT ONE NEW NOTION OF IDENTITY. Half A of this session
+   existed to make ONE key mean ONE fact (adopt matching on the issue number
+   because that is remote.py's key, the estimate RECORDED rather than re-scanned).
+   A filter that invented a fifth answer to "whose is this?" would undo that in
+   the one place the captain actually looks. So every facet below is a question
+   the board can ALREADY answer, off the payload it ALREADY holds:
+
+     mine        card.owner.login === meta.self.login
+     theirs      ownerLockLogin(m) — the EXACT predicate the light lock is built
+                 on, called rather than re-derived, so a card the board will not
+                 let him drive and a card the filter calls "someone else's" can
+                 never disagree
+     unassigned  no owner at all — ownership.sh's own posture, where empty is
+                 "unowned" rather than an error, and is NEVER locked
+     remote      isRemote(m) — a CARD CLASS, NOT AN OWNER. A remote mission can
+                 be assigned to me, to somebody else, or to nobody.
+
+   BECAUSE `remote` IS A SECOND AXIS THE FACETS OVERLAP, so this is a SET of
+   toggles ORed together, not a radio group: a card shows if it matches ANY
+   selected facet, and nothing selected filters nothing. ANDing them would draw
+   an empty board for most pairs a captain would think to click.
+
+   IT COSTS NOTHING AT THE FORGE. This is the S152 constraint and it is
+   absolute: the remote overlay is ONE cached `gh issue list` per CYCLE, never
+   per render (S191 measured the whole board at exactly one invocation across 25
+   GETs). A chip therefore does not re-ask the daemon anything — it writes one
+   string to localStorage and calls repaintBoard(), the house's existing
+   client-only repaint, which re-renders LAST_BOARD with no fetch of any kind.
+
+   IDENTITY ABSENT CHANGES NOTHING — the S190 posture, unbroken. With no
+   `meta.self` the board cannot say what "mine" means, so it does not OFFER it;
+   `unassigned` and `remote` are facts about the card and stay. And a `mine`
+   remembered from a machine that DID have an identity can never blank the
+   board: see ownerFilterEffective. Every uncertain case shows MORE, never less. */
+
+var OWNER_FILTER_KEY = "lcars-owner-filter";
+
+/* `needsSelf` is redundant with the counts — with no identity `mine` and
+   `theirs` both count zero on their own — and it is stated anyway, because
+   "this question cannot be asked without knowing who we are" is the REASON the
+   chip is absent, and a reason that is only implied is a reason the next round
+   deletes by accident. */
+var OWNER_FILTERS = [
+  { id: "mine", label: "MINE", needsSelf: true,
+    title: "Only the missions assigned to me",
+    match: function (m) {
+      var o = m && m.owner && m.owner.login;
+      return !!(o && selfLogin && o === selfLogin);
+    } },
+  { id: "theirs", label: "THEIRS", needsSelf: true,
+    title: "Only the missions assigned to somebody else",
+    match: function (m) { return ownerLockLogin(m) !== null; } },
+  { id: "unassigned", label: "UNASSIGNED", needsSelf: false,
+    title: "Only the missions nobody has taken",
+    match: function (m) { return !(m && m.owner && m.owner.login); } },
+  { id: "remote", label: "REMOTE", needsSelf: false,
+    title: "Only the missions being driven from another machine",
+    match: function (m) { return isRemote(m); } },
+];
+
+function ownerFilterById(id) {
+  for (var i = 0; i < OWNER_FILTERS.length; i++) {
+    if (OWNER_FILTERS[i].id === id) return OWNER_FILTERS[i];
+  }
+  return null;
+}
+
+/* Every card ON SCREEN, in one flat list. Off `columns` and not off `missions`
+   deliberately: `missions` excludes done (it backs the "N active missions"
+   count), and a filter must count the cards it is actually going to draw. */
+function boardCards(board) {
+  var out = [];
+  var cols = (board && board.columns) || {};
+  Object.keys(cols).forEach(function (k) {
+    var v = cols[k];
+    if (v && v.length) for (var i = 0; i < v.length; i++) out.push(v[i]);
+  });
+  return out;
+}
+
+function ownerFilterCounts(cards) {
+  var counts = { all: (cards || []).length };
+  OWNER_FILTERS.forEach(function (f) {
+    var n = 0;
+    for (var i = 0; i < (cards || []).length; i++) if (f.match(cards[i])) n++;
+    counts[f.id] = n;
+  });
+  return counts;
+}
+
+/* The facets this board can actually be asked about. A facet with no cards is
+   NOT offered — B3's ruling applied to this strip: a chip that could only ever
+   empty the board is a dead control, and the same argument that stopped a
+   remote card drawing a `▶ START` it cannot honour stops this drawing a
+   `THEIRS` that selects nothing. */
+function ownerFilterOffered(counts) {
+  var out = [];
+  OWNER_FILTERS.forEach(function (f) {
+    if (f.needsSelf && !selfLogin) return;
+    if (!counts[f.id]) return;
+    out.push(f.id);
+  });
+  return out;
+}
+
+/* Storage is OPTIONAL and never fatal — Safari's private mode throws on read,
+   an embedded webview may not have it at all, and a board that cannot remember
+   a filter is still a board. Same helper shape as holoStore(), for the same
+   reason. */
+function ownerFilterStore() {
+  try {
+    return (typeof localStorage !== "undefined" && localStorage) || null;
+  } catch (e) { return null; }
+}
+
+/* THE CAPTAIN'S CHOICE, as he last left it. Lazily read once and cached, the
+   holoSplitGet() idiom. Anything that is not a known facet id is DROPPED rather
+   than trusted: what comes back off disk was written by an older build, or by
+   hand, or by a different tab, and an unreadable preference must degrade to "no
+   filter" — never to "no cards". */
+var OWNER_FILTER = null;
+function ownerFilterGet() {
+  if (OWNER_FILTER !== null) return OWNER_FILTER;
+  var raw = "";
+  try {
+    var s = ownerFilterStore();
+    if (s) raw = s.getItem(OWNER_FILTER_KEY) || "";
+  } catch (e) { raw = ""; }
+  var out = [];
+  String(raw).split(",").forEach(function (id) {
+    id = id.replace(/^\s+|\s+$/g, "");
+    if (ownerFilterById(id) && out.indexOf(id) < 0) out.push(id);
+  });
+  OWNER_FILTER = out;
+  return OWNER_FILTER;
+}
+
+function ownerFilterSet(ids) {
+  OWNER_FILTER = (ids || []).slice();
+  try {
+    var s = ownerFilterStore();
+    if (s) {
+      if (OWNER_FILTER.length) s.setItem(OWNER_FILTER_KEY, OWNER_FILTER.join(","));
+      else s.removeItem(OWNER_FILTER_KEY);
+    }
+  } catch (e) { /* a board that cannot remember is still a board */ }
+  /* THE REPAINT, AND THE WHOLE S152 STORY IN ONE LINE. repaintBoard() re-runs
+     render() over LAST_BOARD — the payload this page already has. No fetch, no
+     /api/board, and therefore no `gh issue list`: the forge cost of applying a
+     filter is exactly zero, however many times it is applied. */
+  repaintBoard();
+  return OWNER_FILTER;
+}
+
+/* THE CHOICE, MADE LEGAL FOR THE BOARD THAT IS ON SCREEN RIGHT NOW.
+
+   Kept apart from ownerFilterGet() on purpose, and for exactly the reason
+   holoSplitGet and holoSplitEffective are kept apart: `theirs` chosen yesterday
+   on a board that had somebody else's work is still the captain's preference
+   today, on a board that happens to have none — and applying it literally would
+   hand him an empty board with no explanation. So the STORED choice is left
+   alone and the EFFECTIVE one drops whatever this board cannot answer. When
+   that leaves nothing, nothing is filtered.
+
+   This is also what keeps the S190 posture: a `mine` remembered from a laptop
+   with a live gh is not answerable once the identity is gone, so it drops out
+   and the whole board comes back. */
+function ownerFilterEffective(offered) {
+  var chosen = ownerFilterGet(), out = [];
+  for (var i = 0; i < chosen.length; i++) {
+    if (offered.indexOf(chosen[i]) >= 0) out.push(chosen[i]);
+  }
+  return out;
+}
+
+/* ORed, and "no facets" means "no filter" — never "no cards". */
+function ownerFilterShows(m, active) {
+  if (!active || !active.length) return true;
+  for (var i = 0; i < active.length; i++) {
+    var f = ownerFilterById(active[i]);
+    if (f && f.match(m)) return true;
+  }
+  return false;
+}
+
+function ownerFilterToggle(id) {
+  var chosen = ownerFilterGet().slice();
+  var i = chosen.indexOf(id);
+  if (i >= 0) chosen.splice(i, 1); else chosen.push(id);
+  return ownerFilterSet(chosen);
+}
+
+/* The `o` key. ONE key, because the board's letters are nearly spent (f d s p v
+   l ? are taken) and four more would be four more chances to shadow something.
+   It walks the OFFERED facets in the order the strip prints them and then
+   returns to the whole board, so every stop on the cycle draws at least one
+   card and the captain is never one keystroke away from a blank screen.
+
+   A selection of TWO OR MORE (only reachable with the mouse) collapses to the
+   whole board on the next press rather than being guessed at. */
+function ownerFilterCycle() {
+  var offered = ownerFilterOffered(ownerFilterCounts(boardCards(LAST_BOARD)));
+  if (offered.length < 2) return false;   // nothing worth asking → not our key
+  var chosen = ownerFilterEffective(offered);
+  var next = [];
+  if (chosen.length === 1) {
+    var i = offered.indexOf(chosen[0]);
+    if (i >= 0 && i + 1 < offered.length) next = [offered[i + 1]];
+  } else if (chosen.length === 0) {
+    next = [offered[0]];
+  }
+  ownerFilterSet(next);
+  return true;
+}
+
+/* THE STRIP. Its own row above the board, the version-banner placement idiom —
+   never inside the yellow band, whose control order is pinned byte-for-byte by
+   test_help_console.
+
+   IT IS NOT A WRITE CONTROL. Filtering is a READ; it opens no endpoint and
+   POSTs nothing, so — like the `?` console — it stays live on a view-only
+   board. That is why the chips carry `of-chip` and NOT `.btn.go`, which is what
+   markViewOnly() disables.
+
+   SELECTED IS SOLID, UNSELECTED IS HOLLOW. The same sentence B1 just gave the
+   owner pill and S191 gave the locked control, said a third time about a third
+   thing, so the board has ONE visual language for "this is on / this is yours"
+   rather than three. */
+function renderOwnerFilter(counts, offered, active) {
+  var host = document.getElementById("ownerFilter");
+  if (!host) return;                       // a harness with no strip in its DOM
+  host.innerHTML = "";
+  /* Fewer than two answerable facets and there is nothing to ASK: every chip
+     would select the whole board. Hidden, and the page is byte-identical to its
+     pre-B5 self — which is every solo board this product has ever served. */
+  if (offered.length < 2) { host.hidden = true; return; }
+  host.hidden = false;
+  host.appendChild(el("span", "of-lbl", "OWNERSHIP"));
+  var chips = [{ id: "all", label: "ALL", title: "Every mission on the board" }];
+  offered.forEach(function (id) { chips.push(ownerFilterById(id)); });
+  chips.forEach(function (f) {
+    var on = f.id === "all" ? !active.length : active.indexOf(f.id) >= 0;
+    var b = btn(f.label + " · " + counts[f.id], "of-chip" + (on ? " sel" : ""),
+      function () {
+        if (f.id === "all") ownerFilterSet([]);
+        else ownerFilterToggle(f.id);
+      });
+    b.setAttribute("data-filter", f.id);
+    // The count the chip PRINTS, in machine-readable form beside it, so a test
+    // can hold the number on screen against the number of cards drawn without
+    // parsing display type.
+    b.setAttribute("data-count", String(counts[f.id]));
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.title = f.title;
+    host.appendChild(b);
+  });
+}
+
 function render(board) {
   // S140: a full rebuild would drop the keyboard focus — note which card has it.
   var keepFocus = focusedMissionId();
@@ -2069,12 +2394,27 @@ function render(board) {
     var fdHost = frontDoorHost();
     if (fdHost) { fdHost.innerHTML = ""; fdHost.hidden = true; }
   }
+  /* S196 B5 — THE OWNERSHIP FILTER, decided ONCE per render and before a single
+     column is built. Counted across the whole board (a per-column count could
+     not tell the strip how many cards `MINE` selects), and applied per column
+     below. captureForgeIdentity() ran above, so `selfLogin` is already settled
+     — the facets that need to know who we are are asking a question that has an
+     answer by the time they ask it. */
+  var counts = ownerFilterCounts(boardCards(board));
+  var offered = ownerFilterOffered(counts);
+  var active = ownerFilterEffective(offered);
+  renderOwnerFilter(counts, offered, active);
   if (!onFrontDoor) STAGE_META.forEach(function (meta) {
     var key = meta[0], name = meta[1], colour = meta[2];
-    var cards = (board.columns && board.columns[key]) || [];
+    var cards = ((board.columns && board.columns[key]) || [])
+      .filter(function (m) { return ownerFilterShows(m, active); });
     var col = el("div", "col");
     var head = el("div", "col-head " + colour);
     head.appendChild(el("span", null, name));
+    /* THE COUNT IS OF WHAT IS DRAWN. A head that kept counting the cards it is
+       no longer drawing would be the board disagreeing with itself in the one
+       place a captain checks a number. With no filter on, `cards` is the whole
+       column and this is byte-identical to every board before B5. */
     head.appendChild(el("span", "ct", String(cards.length)));
     col.appendChild(head);
     var body = el("div", "col-body");
@@ -2087,7 +2427,19 @@ function render(board) {
   // S163 fix round 5: the ROUTINE line. It describes the board, so it yields to
   // a verdict an action has just reported — this write is what erased a refusal
   // 33 ms after it appeared.
-  setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));
+  // S196 B5: …and it describes a FILTERED board honestly. A line reading "6
+  // active missions" over three drawn cards is the board lying about itself in
+  // the sentence whose whole job is to say what is on it. Byte-identical to the
+  // line above whenever nothing is filtered, which is every board before B5.
+  if (active.length) {
+    var shown = (board.missions || []).filter(function (m) {
+      return ownerFilterShows(m, active);
+    }).length;
+    setIdleStatus(shown + " of " + n + " mission" + (n === 1 ? "" : "s")
+      + " · filtered");
+  } else {
+    setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));
+  }
   renderEmptyState(n); // S141: a cold board teaches itself (the ? mention).
   renderMeta(board.meta);
   renderMainDeploy(board.meta);
@@ -4041,6 +4393,15 @@ var KEY_BINDINGS = [
   { id: "deploy", keys: ["d"], on: ["d"], scope: "global",
     label: "Open the main-deploy console",
     run: function () { return clickBandControl("deployMainBtn"); } },
+  // S196 B5 — ONE key for the ownership filter, not four. `o` is the only
+  // letter this binding claims, and it was free: f d s p v l ? are the whole of
+  // what the deck had spoken before tonight. It CYCLES rather than toggling a
+  // single facet, so one key reaches every question the strip offers, and
+  // ownerFilterCycle() returns false on a board with nothing worth asking —
+  // which leaves the keystroke to the browser instead of eating it.
+  { id: "owner-filter", keys: ["o"], on: ["o"], scope: "board",
+    label: "Cycle the ownership filter",
+    run: function () { return ownerFilterCycle(); } },
   { id: "nav-column", keys: ["↑", "↓"], on: ["arrowup", "arrowdown"],
     scope: "board", label: "Move between missions in a column",
     run: function (e) { return navColumn(e.key === "ArrowDown" ? 1 : -1); } },

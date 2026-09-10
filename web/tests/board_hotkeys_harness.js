@@ -293,6 +293,16 @@ TextNode.prototype.constructor = TextNode;
 
 /* ══════════════════ the page (index.html, minus the chrome we don't render) ══ */
 
+/* The spec is read HERE, before the DOM and before board.js boots, because
+   `spec.storage` seeds localStorage and a cold-boot-with-a-remembered-choice
+   test is exactly what "it survives a refresh" means. Everything downstream
+   still uses the same `spec` object. */
+const spec = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const STORE = Object.create(null);
+Object.keys(spec.storage || {}).forEach(function (k) {
+  STORE[k] = String(spec.storage[k]);
+});
+
 const root = new Element("html");
 const body = new Element("body");
 root.appendChild(body);
@@ -318,6 +328,11 @@ mk("div", "conn", "conn", topbar);
 const content = mk("div", null, "frame-content", frame);
 mk("div", "versionBanner", "version-banner", content);
 mk("div", "readinessBanner", "readiness-banner", content);
+/* S196 B5 — the ownership filter strip. Its own row in frame-content, above the
+   board, exactly where index.html puts it. Present-but-empty here, as it is on a
+   cold page: renderOwnerFilter fills it (or hides it) on every render. */
+const ownerFilterHost = mk("div", "ownerFilter", "owner-filter", content);
+ownerFilterHost.hidden = true;
 const boardWrap = mk("div", null, "board-wrap", content);
 mk("div", "board", "board", boardWrap);
 const legend = mk("div", null, "legend", content);
@@ -364,7 +379,13 @@ const sandbox = {
   document: documentStub,
   location: { href: "", search: "", pathname: "/" },
   navigator: { userAgent: "node" },
-  localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+  localStorage: {
+    getItem(k) {
+      return Object.prototype.hasOwnProperty.call(STORE, k) ? STORE[k] : null;
+    },
+    setItem(k, v) { STORE[String(k)] = String(v); },
+    removeItem(k) { delete STORE[String(k)]; },
+  },
   setInterval() { return 0; }, clearInterval() {},
   setTimeout() { return 0; }, clearTimeout() {},
   fetch: fetchStub,
@@ -396,7 +417,6 @@ try {
 
 /* ══════════════════ drive the spec ══════════════════ */
 
-const spec = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const runErrors = [];
 
 if (spec.readonly) sandbox.writesActive = false;
@@ -514,6 +534,16 @@ const prevented = [];
 (spec.keys || []).forEach(function (k) {
   // A `rerender` pseudo-key re-runs render() with a (possibly new) board, so a
   // test can prove focus survives a full board rebuild.
+  // A `click` pseudo-key clicks a real node by selector, so a mouse gesture and
+  // a keystroke can be interleaved in one ordered stream (the strip is driven
+  // both ways and the two must land on the same state).
+  if (k.click) {
+    const target = root.querySelector(k.click);
+    if (!target) { runErrors.push("click: no node matches " + k.click); }
+    else { try { target.click(); } catch (e) { runErrors.push("click " + k.click + ": " + (e && e.message ? e.message : e)); } }
+    prevented.push(null);
+    return;
+  }
   if (k.rerender) {
     try { sandbox.render(k.board || spec.board); }
     catch (e) { runErrors.push("rerender: " + (e && e.message ? e.message : e)); }
@@ -597,8 +627,24 @@ let firstCardStructure = null;
 const firstCard = root.querySelector(".board .card[data-mid]");
 if (firstCard) firstCardStructure = structure(firstCard);
 
+/* THE STRIP, as rendered. `hidden` is projected beside the chips because "the
+   board offers no filter at all" and "the board offers an empty filter" are
+   different products and only one of them is honest. */
+const ownerFilter = {
+  hidden: !!ownerFilterHost.hidden,
+  chips: ownerFilterHost.querySelectorAll("button").map(function (b) {
+    return { id: b.getAttribute("data-filter"), text: b.textContent,
+             count: b.getAttribute("data-count"),
+             cls: b.getAttribute("class") || "",
+             pressed: b.getAttribute("aria-pressed"),
+             title: b.title || "", disabled: !!b.disabled };
+  }),
+};
+
 process.stdout.write(JSON.stringify({
   bootErrors: bootErrors,
+  ownerFilter: ownerFilter,
+  storage: JSON.parse(JSON.stringify(STORE)),
   runErrors: runErrors,
   columns: columns,
   bindings: bindings,

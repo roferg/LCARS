@@ -18,6 +18,30 @@
  *   D6  Does a `prefers-reduced-motion` block touch the avatar's colour filter,
  *       and does asking the browser for reduced motion change that filter?
  *
+ * S196 half B adds three more, and the whole reason they are HERE and not in a
+ * second rig is that they are the same question about the same board:
+ *
+ *   B1  CAN YOU TELL WHOSE MISSION IT IS WITH THE COLOUR TAKEN AWAY? Ownership
+ *       was hue alone (amber/blue, 1.51:1 in luminance). Answered by applying
+ *       `grayscale(1)` in real Chrome and re-reading the pixels THROUGH it —
+ *       and by checking r == g == b, so a filter that silently failed to apply
+ *       cannot return a colour reading wearing a greyscale label.
+ *   B2  DOES A REMOTE CONTROL THAT CANNOT BE USED LOOK LIKE IT? Measured on the
+ *       DETAIL row, which is where a locked control and the live Adopt still
+ *       sit side by side — the card no longer draws one (B3), which is the only
+ *       reason its own 1.79:1 pair is gone.
+ *   B3  DOES A REMOTE CARD DRAW A CONTROL IT CANNOT HONOUR? Asked as a count of
+ *       disabled children, not as a property of one of them.
+ *   B5  CAN THE BOARD BE ASKED A QUESTION, AND DOES ASKING COST ANYTHING? The
+ *       ownership filter, driven the way a captain drives it — chips clicked,
+ *       `o` dispatched as a real key event, the page really reloaded — with the
+ *       verdict read off what the board DREW. And the constraint it lives
+ *       under, which is the reason this check is here rather than in a unit
+ *       test: fifty filter applications inside ONE synchronous JS turn, the
+ *       page's own fetch counter read either side of it, and the `gh` shim's
+ *       log counted either side of that. A unit harness calls render() itself
+ *       and can see neither.
+ *
  * S191 fix round 1 adds a fourth, and it is the one the capstone sent back:
  *
  *   D4  CAN YOU TELL, AT A GLANCE, THAT A CONTROL IS LOCKED? The lock was
@@ -228,7 +252,11 @@ const LOCK_PROBE = `(function () {
   var kids = ctrl ? Array.prototype.slice.call(ctrl.children) : [];
   // A card of MY OWN, in the same run: the positive control that says the dim
   // is a statement about ownership and not something the whole board caught.
-  var mine = document.querySelector(".card:not(.owned-by-other) .card-ctrl button");
+  // S196: …and NOT a remote one. The fixture now carries remote cards too, whose
+  // one live control is ADOPT; picking that as "my own live control" would
+  // measure the wrong button. This drive's D2/D4 subject is the LOCAL board.
+  var mine = document.querySelector(
+    ".card:not(.owned-by-other):not(.remote) .card-ctrl button");
   var cardBox = card.getBoundingClientRect();
   return {
     present: true,
@@ -348,6 +376,139 @@ const DETAIL_PROBE = `(function () {
     open: true,
     ownerNodes: head.querySelectorAll(".owner").length,
     text: (head.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 200)
+  };
+})()`;
+
+/* ─────────────── S196 HALF B ───────────────────────────────────────────── */
+
+/* B1. THE OWNER PILL, on the pair of cards that differ in exactly one fact.
+ * Ownership used to be carried by HUE ALONE (amber = mine, blue = theirs), and
+ * hue is the one channel a greyscale screenshot, a projector and a red-green
+ * colourblind reader all throw away. This reads the two pills' boxes so their
+ * PIXELS can be compared — in colour and again with the page desaturated — plus
+ * the computed background and border-style, which is the structural half:
+ * "solid vs hollow" is a claim about the cascade that the pixels then confirm. */
+const OWNER_PILL_PROBE = `(function () {
+  function pill(mid) {
+    var card = document.querySelector('.card[data-mid="' + mid + '"]');
+    if (!card) return null;
+    var p = card.querySelector(".owner");
+    if (!p) return null;
+    var handle = p.querySelector(".owner-handle");
+    var r = p.getBoundingClientRect();
+    var hs = handle ? getComputedStyle(handle) : null;
+    return {
+      box: { x: r.x, y: r.y, w: r.width, h: r.height },
+      text: (p.textContent || "").trim(),
+      bg: hs ? hs.backgroundColor : null,
+      color: hs ? hs.color : null,
+      borderStyle: hs ? hs.borderTopStyle : null,
+      borderColor: hs ? hs.borderTopColor : null
+    };
+  }
+  return { mine: pill("m-align-mine"), theirs: pill("m-align-theirs") };
+})()`;
+
+/* B3 + B4. EVERY REMOTE CARD's control row, child by child.
+ *
+ * The question B3 asks is not "does the dead control look right" — it is
+ * "is it there at all". So this reports every child of the row with its tag,
+ * its disabled state and its label, and the checks below assert an EMPTY set of
+ * disabled controls rather than a property of one. */
+const REMOTE_PROBE = `(function () {
+  var out = [];
+  var cards = document.querySelectorAll(".card.remote");
+  for (var i = 0; i < cards.length; i++) {
+    var c = cards[i];
+    var ctrl = c.querySelector(".card-ctrl");
+    var kids = ctrl ? Array.prototype.slice.call(ctrl.children) : [];
+    var cr = c.getBoundingClientRect();
+    out.push({
+      mid: c.getAttribute("data-mid"),
+      stage: (function () {
+        var n = c.querySelector(".no");
+        return n ? (n.textContent || "").trim() : "";
+      })(),
+      hasCtrlRow: !!ctrl,
+      cardBox: { x: cr.x, y: cr.y, w: cr.width, h: cr.height },
+      children: kids.map(function (k) {
+        var r = k.getBoundingClientRect();
+        var st = getComputedStyle(k);
+        return {
+          tag: k.tagName, cls: String(k.className || ""),
+          text: (k.textContent || "").trim(), disabled: !!k.disabled,
+          bg: st.backgroundColor, borderStyle: st.borderTopStyle,
+          box: { x: r.x, y: r.y, w: r.width, h: r.height }
+        };
+      })
+    });
+  }
+  return out;
+})()`;
+
+/* B2. The REMOTE DETAIL's action row — the surface that still renders a remote
+ * mission's controls (the card hides them; a captain who clicked in to READ the
+ * mission is entitled to see what it has). This is where the 1.79:1 pair now
+ * lives, and where it has to be closed. */
+const REMOTE_DETAIL_PROBE = `(function () {
+  var row = document.querySelector(".det-actions");
+  if (!row) return { present: false };
+  var btns = Array.prototype.slice.call(row.querySelectorAll("button"));
+  return {
+    present: true,
+    buttons: btns.map(function (b) {
+      var r = b.getBoundingClientRect();
+      var st = getComputedStyle(b);
+      return {
+        text: (b.textContent || "").trim(), disabled: !!b.disabled,
+        cls: String(b.className || ""), title: b.title || "",
+        bg: st.backgroundColor, color: st.color,
+        borderStyle: st.borderTopStyle, opacity: parseFloat(st.opacity || "1"),
+        box: { x: r.x, y: r.y, w: r.width, h: r.height }
+      };
+    })
+  };
+})()`;
+
+/* ── S196 B5 — THE OWNERSHIP FILTER ─────────────────────────────────────────
+ * The strip, the cards it left on screen, the counts it printed, and the
+ * column heads — read together in ONE probe, because "the chip says 3" and
+ * "the board drew 3" are only worth anything as the same observation. */
+const FILTER_PROBE = `(function () {
+  var host = document.getElementById("ownerFilter");
+  function box(n) {
+    var r = n.getBoundingClientRect();
+    return { x: r.x, y: r.y, w: r.width, h: r.height };
+  }
+  var chips = host
+    ? Array.prototype.slice.call(host.querySelectorAll("button")) : [];
+  return {
+    present: !!host,
+    hidden: host ? !!host.hidden : null,
+    strip: host && !host.hidden ? box(host) : null,
+    chips: chips.map(function (b) {
+      var st = getComputedStyle(b);
+      return {
+        id: b.getAttribute("data-filter"),
+        text: (b.textContent || "").trim(),
+        count: Number(b.getAttribute("data-count")),
+        pressed: b.getAttribute("aria-pressed"),
+        disabled: !!b.disabled, cls: String(b.className || ""),
+        bg: st.backgroundColor, borderStyle: st.borderTopStyle,
+        box: box(b)
+      };
+    }),
+    cards: Array.prototype.slice.call(
+      document.querySelectorAll(".board .card[data-mid]")
+    ).map(function (c) { return c.getAttribute("data-mid"); }),
+    heads: Array.prototype.slice.call(
+      document.querySelectorAll(".board .col")
+    ).map(function (c) {
+      var ct = c.querySelector(".col-head .ct");
+      return { ct: ct ? (ct.textContent || "").trim() : null,
+               drawn: c.querySelectorAll(".card[data-mid]").length };
+    }),
+    status: (document.getElementById("status") || { textContent: "" }).textContent
   };
 })()`;
 
@@ -595,6 +756,145 @@ async function main() {
     }
   }
 
+  // ── S196 B1 ───────────────────────────────────────────────────────────
+  // OWNERSHIP WITH THE COLOUR TAKEN AWAY. The two align cards differ in exactly
+  // one fact, so their two owner pills are the cleanest possible subject. Read
+  // twice: once in colour, and once with the whole page desaturated in Chrome —
+  // because "desaturate it and look" is the captain's own acceptance test and
+  // a number computed from the colour pixels is not the same evidence.
+  console.log("\nB1 — can you tell WHOSE mission it is in GREYSCALE?");
+  let greyDetail = null, colourSep = null, greySep = null;
+  const pills = await evaluate(cdp, sessionId, OWNER_PILL_PROBE);
+  if (!pills || !pills.mine || !pills.theirs) {
+    bad("both owner pills rendered", JSON.stringify(pills));
+  } else {
+    // The structural half first, because it NAMES the cure: the two states must
+    // differ in FILL and EDGE, not merely in hue.
+    const solid = /rgba?\(0,\s*0,\s*0,\s*0\)|transparent/.test(pills.mine.bg);
+    const hollow = /rgba?\(0,\s*0,\s*0,\s*0\)|transparent/.test(pills.theirs.bg);
+    if (!solid && hollow) {
+      ok("my pill is FILLED and theirs is HOLLOW",
+         "mine bg " + pills.mine.bg + " (" + pills.mine.borderStyle + ") · " +
+         "theirs bg " + pills.theirs.bg + " (" + pills.theirs.borderStyle + ")");
+    } else {
+      bad("my pill is FILLED and theirs is HOLLOW",
+          "mine bg " + pills.mine.bg + " · theirs bg " + pills.theirs.bg +
+          " — ownership is back on hue alone");
+    }
+    if (pills.mine.borderStyle !== pills.theirs.borderStyle) {
+      ok("the two pills differ in EDGE as well as fill",
+         pills.mine.borderStyle + " vs " + pills.theirs.borderStyle);
+    } else {
+      bad("the two pills differ in EDGE as well as fill",
+          "both " + pills.mine.borderStyle);
+    }
+
+    // …and the pixels. IN COLOUR first: this is the number the shipped board
+    // scored, and it is here so the greyscale number below has something to be
+    // compared against rather than being reported alone.
+    const mineFill = fill(pngPixels(
+      await shoot(cdp, sessionId, pills.mine.box, "owner-pill-mine.png", 4, 0)));
+    const theirsFill = fill(pngPixels(
+      await shoot(cdp, sessionId, pills.theirs.box, "owner-pill-theirs.png", 4, 0)));
+    colourSep = contrast(mineFill, theirsFill);
+    // ONE FRAME, BOTH CARDS, IN COLOUR — the artefact a human looks at.
+    if (pair && pair.pairBox) {
+      await shoot(cdp, sessionId, pair.pairBox, "owner-pair-colour.png", 3, 10);
+    }
+
+    // NOW TAKE THE COLOUR AWAY. A real filter, applied in real Chrome, and the
+    // screenshot re-taken through it — not a number computed off the colour
+    // pixels and called a greyscale reading.
+    await evaluate(cdp, sessionId,
+      `(function(){document.documentElement.style.filter="grayscale(1)";return 1})()`);
+    await sleep(300);
+    const gMine = fill(pngPixels(await shoot(
+      cdp, sessionId, pills.mine.box, "owner-pill-mine-greyscale.png", 4, 0)));
+    const gTheirs = fill(pngPixels(await shoot(
+      cdp, sessionId, pills.theirs.box, "owner-pill-theirs-greyscale.png", 4, 0)));
+    if (pair && pair.pairBox) {
+      await shoot(cdp, sessionId, pair.pairBox, "owner-pair-greyscale.png", 3, 10);
+    }
+    // …and PROVE THE FILTER ACTUALLY BIT, or the whole check is a colour reading
+    // wearing a greyscale label. A desaturated pixel has r == g == b.
+    const desaturated = (c) => Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]) <= 2;
+    await evaluate(cdp, sessionId,
+      `(function(){document.documentElement.style.filter="";return 1})()`);
+    await sleep(200);
+    greySep = contrast(gMine, gTheirs);
+    greyDetail = "MINE rgb(" + gMine.join(",") + ") vs THEIRS rgb(" +
+      gTheirs.join(",") + ") → " + greySep.toFixed(2) + ":1 " +
+      "(in colour it is " + colourSep.toFixed(2) + ":1) " +
+      "— owner-pair-greyscale.png, LOOK AT THIS ONE";
+    if (!desaturated(gMine) || !desaturated(gTheirs)) {
+      bad("the greyscale screenshot is actually greyscale",
+          "grayscale(1) did not take: " + greyDetail);
+    } else if (greySep >= 3.0) {
+      ok("ownership is legible with the COLOUR REMOVED (>= 3:1)", greyDetail);
+    } else {
+      bad("ownership is legible with the COLOUR REMOVED (>= 3:1)", greyDetail);
+    }
+  }
+
+  // ── S196 B3 + B4 ──────────────────────────────────────────────────────
+  console.log("\nB3/B4 — a remote card offers only what it can do");
+  const remotes = await evaluate(cdp, sessionId, REMOTE_PROBE) || [];
+  if (remotes.length < 2) {
+    throw new InfraError("the remote fixture did not paint 2 remote cards (saw "
+      + remotes.length + ") — the gh shim's listing never reached the board");
+  }
+  for (const rc of remotes) {
+    const dead = (rc.children || []).filter((k) => k.disabled);
+    if (dead.length === 0) {
+      ok("remote card " + JSON.stringify(rc.stage) + " carries NO dead control",
+         (rc.children || []).length + " control(s): " +
+         JSON.stringify((rc.children || []).map((k) => k.text)));
+    } else {
+      bad("remote card " + JSON.stringify(rc.stage) + " carries NO dead control",
+          "still drawing " + JSON.stringify(dead.map((k) => k.text)) +
+          " — a control that promises an action this laptop cannot perform");
+    }
+    await shoot(cdp, sessionId, rc.cardBox,
+                "remote-card-" + rc.mid + ".png", 3, 8);
+  }
+  const adoptable = remotes.filter(
+    (r) => (r.children || []).some((k) => /ADOPT/i.test(k.text)));
+  if (adoptable.length === 1) {
+    const row = adoptable[0].children;
+    if (row.length === 1) {
+      ok("the adoptable remote card offers EXACTLY ONE control", row[0].text);
+    } else {
+      bad("the adoptable remote card offers EXACTLY ONE control",
+          JSON.stringify(row.map((k) => k.text)));
+    }
+    // B4 — the glyph. `◆` leads, `▸` is the shared dispatch suffix, and
+    // nothing in the label may come from outside the house family.
+    const label = row.find((k) => /ADOPT/i.test(k.text)).text;
+    const FAMILY = "▶▸▹✓⏸◐◷↻◆⊹⊘◈";
+    const stray = Array.from(label).filter(
+      (ch) => ch.codePointAt(0) > 0x2000 && FAMILY.indexOf(ch) < 0);
+    if (label.indexOf("◆") === 0 && /▸$/.test(label) && stray.length === 0) {
+      ok("the adopt label leads with ◆ and keeps the ▸ dispatch suffix",
+         JSON.stringify(label) + " — no hollow triangle beside a solid one");
+    } else {
+      bad("the adopt label leads with ◆ and keeps the ▸ dispatch suffix",
+          JSON.stringify(label) + (stray.length
+            ? " — off-family glyph(s) " + JSON.stringify(stray) : ""));
+    }
+  } else {
+    bad("exactly one remote card offers Adopt",
+        adoptable.length + " did (the fixture is verify + research)");
+  }
+  const noAdopt = remotes.filter(
+    (r) => !(r.children || []).some((k) => /ADOPT/i.test(k.text)));
+  if (noAdopt.length === 1 && (noAdopt[0].children || []).length === 0) {
+    ok("the MID-PIPELINE remote card offers nothing at all",
+       JSON.stringify(noAdopt[0].stage) + " — the stage line carries the state");
+  } else {
+    bad("the MID-PIPELINE remote card offers nothing at all",
+        JSON.stringify(noAdopt.map((r) => (r.children || []).map((k) => k.text))));
+  }
+
   // ── D3 ────────────────────────────────────────────────────────────────
   console.log("\nD3 — no rule for something that never renders");
   const sheets = await evaluate(cdp, sessionId, SHEET_PROBE);
@@ -681,12 +981,424 @@ async function main() {
     }
   }
 
+  // ── S196 B2 ───────────────────────────────────────────────────────────
+  // THE 1.79:1 PAIR, WHEREVER IT STILL EXISTS. B3 removed it from the card by
+  // deleting the dead control; the DETAIL still renders one (a captain who
+  // opened a mission to read it is entitled to see what it has), and that is
+  // the one surface where a locked remote control and a live one still sit side
+  // by side in the same row — which is the only place the question can be asked.
+  console.log("\nB2 — a REMOTE control that cannot be used looks like it");
+  let remoteSep = null;
+  const remoteMid = (remotes.find(
+    (r) => (r.children || []).some((k) => /ADOPT/i.test(k.text))) || remotes[0]).mid;
+  await evaluate(cdp, sessionId,
+    `(function(){var c=document.querySelector('.card.remote[data-mid="` +
+    remoteMid + `"]');if(c)c.click();return 1})()`);
+  let rdet = null;
+  for (let i = 0; i < 60 && Date.now() < deadline; i++) {
+    rdet = await evaluate(cdp, sessionId, REMOTE_DETAIL_PROBE);
+    if (rdet && rdet.present && (rdet.buttons || []).length) break;
+    await sleep(200);
+  }
+  if (!rdet || !rdet.present) {
+    bad("the remote detail opens at all",
+        "clicking the remote card never rendered a .det-actions row — the one " +
+        "surface a remote mission's controls still live on");
+  } else {
+    const laid = (rdet.buttons || []).filter((b) => b.box.w > 0 && b.box.h > 0);
+    const locked = laid.filter((b) => b.disabled);
+    const live = laid.filter((b) => !b.disabled);
+    if (!locked.length) {
+      bad("the remote detail still renders the mission's controls",
+          "no disabled control — B3 has leaked onto the detail and B2 is " +
+          "measuring nothing");
+    } else if (!live.length) {
+      bad("ADOPT is live in the remote detail",
+          JSON.stringify(laid.map((b) => b.text)));
+    } else {
+      // THE LABEL. A locked control that still opens with `▶` is the lie
+      // stated twice; the glyph is REPLACED, not prefixed.
+      const unmarked = locked.filter((b) => b.text.indexOf("⊘") !== 0);
+      if (unmarked.length === 0) {
+        ok("every locked control in the remote detail wears the ⊘ mark",
+           JSON.stringify(locked.map((b) => b.text)));
+      } else {
+        bad("every locked control in the remote detail wears the ⊘ mark",
+            "unmarked: " + JSON.stringify(unmarked.map((b) => b.text)));
+      }
+      // …AND THE TOOLTIP still says WHY, which is the half that differs from
+      // S190's lock. One state, two reasons, and the reason must survive.
+      const mute = locked.filter((b) => !/another machine/.test(b.title));
+      if (mute.length === 0) {
+        ok("every locked remote control still says why in one sentence",
+           JSON.stringify(locked[0].title));
+      } else {
+        bad("every locked remote control still says why in one sentence",
+            JSON.stringify(mute.map((b) => b.text)));
+      }
+      // THE PIXELS. This is the number: 1.79:1 was the shipped separation
+      // between a dead control and the live Adopt beside it.
+      const lockShot = fill(pngPixels(await shoot(
+        cdp, sessionId, locked[0].box, "remote-locked-control.png", 4, 0)));
+      const liveShot = fill(pngPixels(await shoot(
+        cdp, sessionId, live[0].box, "remote-live-adopt.png", 4, 0)));
+      remoteSep = contrast(lockShot, liveShot);
+      const rdDetail = "locked " + JSON.stringify(locked[0].text) +
+        " fill rgb(" + lockShot.join(",") + ") vs live " +
+        JSON.stringify(live[0].text) + " fill rgb(" + liveShot.join(",") +
+        ") → " + remoteSep.toFixed(2) + ":1 (was 1.79:1)";
+      if (remoteSep >= 3.0) {
+        ok("a locked REMOTE control and the live Adopt PAINT differently (>= 3:1)",
+           rdDetail);
+      } else {
+        bad("a locked REMOTE control and the live Adopt PAINT differently (>= 3:1)",
+            rdDetail);
+      }
+      // …and it must still be READABLE. The cure for "looks live" must not be
+      // "vanishes": S190 round 1's dim scored 5.26:1 and this has to beat it.
+      let worstR = null;
+      for (let i = 0; i < locked.length; i++) {
+        const m = inkAndPaper(pngPixels(await shoot(
+          cdp, sessionId, locked[i].box, "remote-locked-" + i + ".png", 4, 0)));
+        if (!worstR || m.contrast < worstR.c) {
+          worstR = { c: m.contrast, t: locked[i].text, m: m };
+        }
+      }
+      const wr = locked.length + " locked control(s); worst is " +
+        JSON.stringify(worstR.t) + " at " + worstR.c.toFixed(2) + ":1 " +
+        "(ink rgb(" + worstR.m.dark.join(",") + ") vs paper rgb(" +
+        worstR.m.light.join(",") + "))";
+      if (worstR.c >= 4.5) {
+        ok("every locked control in the remote detail is READABLE (>= 4.5:1)", wr);
+      } else {
+        bad("every locked control in the remote detail is READABLE (>= 4.5:1)", wr);
+      }
+      // THE ROW, ONE FRAME. Identical framing is a property of the screenshot,
+      // not something the rig has to promise.
+      const xs = laid.map((b) => b.box.x), ys = laid.map((b) => b.box.y);
+      const x1 = Math.max.apply(null, laid.map((b) => b.box.x + b.box.w));
+      const y1 = Math.max.apply(null, laid.map((b) => b.box.y + b.box.h));
+      const x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
+      await shoot(cdp, sessionId, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
+                  "remote-detail-locked-vs-live.png", 3, 10);
+    }
+  }
+  await evaluate(cdp, sessionId,
+    `(function(){var o=document.querySelector(".overlay");if(o&&!o.hidden)o.click();return 1})()`);
+
+  // ── S196 B5 ───────────────────────────────────────────────────────────
+  // FILTER THE BOARD BY OWNERSHIP. Four questions the board can already
+  // answer, asked here of the REAL product in a REAL browser — because every
+  // harness in web/tests calls render() itself, and none of them can tell a
+  // working filter from a blank board.
+  //
+  // The fixture puts all four facets on screen at once: two missions assigned
+  // to `roferg` (MINE), two to `picard` (THEIRS), and the two REMOTE rows the
+  // gh shim serves — both unassigned, so they are UNASSIGNED as well. That
+  // overlap is deliberate: `remote` is a CARD CLASS, not an owner, and a filter
+  // that treated it as a fifth owner would put those two cards in the wrong
+  // bucket.
+  console.log("\nB5 — filter the board by ownership");
+
+  /* THE `gh` INVOCATION COUNT, read off the shim's own log. This is the S152
+     constraint and it is the reason this check exists at all: the remote
+     overlay is ONE cached `gh issue list` per CYCLE, and a filter that asked
+     the daemon to re-answer would put a forge call behind every chip. A count
+     is the only thing that can settle it — no number, no claim. */
+  function ghCalls() {
+    try {
+      return fs.readFileSync(path.join(OUT, "shim.log"), "utf8")
+        .split("\n").filter((l) => /^gh /.test(l)).length;
+    } catch (e) { return null; }
+  }
+
+  async function clickChip(id) {
+    return evaluate(cdp, sessionId,
+      "(function(){var b=document.querySelector('#ownerFilter button[data-filter=\"" +
+      id + "\"]');if(!b)return false;b.click();return true})()");
+  }
+
+  let fstate = await evaluate(cdp, sessionId, FILTER_PROBE);
+  if (!fstate || !fstate.present) {
+    bad("the board carries an ownership filter strip",
+        "#ownerFilter is not in the document at all");
+  } else if (fstate.hidden) {
+    bad("the strip is offered on a board with four kinds of ownership on it",
+        "#ownerFilter is hidden with " + fstate.cards.length + " cards on screen");
+  } else {
+    // The whole board, before a single filter is applied — the number every
+    // "it did not blank the board" check below is held against.
+    const wantAllCount = fstate.cards.length;
+    const ids = fstate.chips.map((c) => c.id);
+    const want = ["all", "mine", "theirs", "unassigned", "remote"];
+    if (want.every((w) => ids.indexOf(w) >= 0)) {
+      ok("the strip offers every facet this board can be asked about",
+         JSON.stringify(fstate.chips.map((c) => c.text)));
+    } else {
+      bad("the strip offers every facet this board can be asked about",
+          "offered " + JSON.stringify(ids));
+    }
+
+    /* ── THE PAINT. A chip that is ON and a chip that is OFF have to be told
+       apart, and by the SAME axis B1 and S191 used: SOLID vs HOLLOW. The floor
+       is 3:1, WCAG's own number for two UI states that must be distinguished —
+       and because contrast() is computed from relative LUMINANCE, a pair that
+       clears it clears it in greyscale too. That is the whole point of picking
+       fill rather than hue a third time. */
+    const on = fstate.chips.filter((c) => c.pressed === "true")[0];
+    const off = fstate.chips.filter((c) => c.pressed === "false")[0];
+    if (!on || !off) {
+      bad("the strip shows one chip selected and the rest not",
+          JSON.stringify(fstate.chips.map((c) => [c.id, c.pressed])));
+    } else {
+      const onFill = fill(pngPixels(await shoot(
+        cdp, sessionId, on.box, "filter-chip-on.png", 4, 0)));
+      const offFill = fill(pngPixels(await shoot(
+        cdp, sessionId, off.box, "filter-chip-off.png", 4, 0)));
+      const chipSep = contrast(onFill, offFill);
+      const cd = "selected " + JSON.stringify(on.text) + " fill rgb(" +
+        onFill.join(",") + ") vs unselected " + JSON.stringify(off.text) +
+        " fill rgb(" + offFill.join(",") + ") → " + chipSep.toFixed(2) +
+        ":1 (luminance, so it holds in greyscale)";
+      if (chipSep >= 3.0) {
+        ok("a selected chip and an unselected one PAINT differently (>= 3:1)", cd);
+      } else {
+        bad("a selected chip and an unselected one PAINT differently (>= 3:1)", cd);
+      }
+      await shoot(cdp, sessionId, fstate.strip, "owner-filter-strip.png", 3, 8);
+    }
+
+    /* ── IT MUST NOT ADD A FORGE ROUND TRIP (S152). Measured two ways, because
+       either one alone leaves a hole:
+
+         (a) EXACT, and immune to timing. `window.fetch` is counted and the
+             counter is read BEFORE and AFTER fifty filter applications INSIDE
+             ONE SYNCHRONOUS JS TURN — no timer, no SSE tick and no safety poll
+             can interleave with a synchronous block, so this delta is caused by
+             the clicks and by nothing else. Filtering reaches no endpoint,
+             therefore it reaches no `gh`.
+         (b) THE SUBPROCESS ITSELF. The gh shim's log, counted either side of
+             that same evaluate. This is what a page-level counter cannot see.
+             It CAN catch the daemon's own cache-expiry poll landing in the
+             window, which is not the filter's doing — so when (a) says the
+             clicks fetched nothing and the count still moved, the window is
+             re-taken rather than blamed. Three tries; still moving with zero
+             fetches is a real failure, not a flake. */
+    const EX = `(function () {
+      if (!window.__lcarsFetchN) {
+        window.__lcarsFetchN = 0;
+        var f = window.fetch;
+        window.fetch = function () { window.__lcarsFetchN++; return f.apply(this, arguments); };
+      }
+      var before = window.__lcarsFetchN, n = 0;
+      var ids = ["mine", "theirs", "unassigned", "remote", "all"];
+      for (var pass = 0; pass < 10; pass++) {
+        for (var i = 0; i < ids.length; i++) {
+          var b = document.querySelector('#ownerFilter button[data-filter="' + ids[i] + '"]');
+          if (b) { b.click(); n++; }
+        }
+      }
+      return { applications: n, fetches: window.__lcarsFetchN - before };
+    })()`;
+    let ex = null, ghDelta = null, ghBefore = null, ghAfter = null, tries = 0;
+    while (tries < 3) {
+      tries++;
+      ghBefore = ghCalls();
+      ex = await evaluate(cdp, sessionId, EX);
+      ghAfter = ghCalls();
+      if (ghBefore === null || ghAfter === null) break;
+      ghDelta = ghAfter - ghBefore;
+      if (ghDelta === 0 || !ex || ex.fetches !== 0) break;
+      // zero fetches from the page and gh still moved ⇒ the daemon's own cache
+      // expiry landed in the window. Not the filter's doing; take it again.
+      await sleep(400);
+    }
+    if (ghBefore === null) {
+      skip("filtering costs ZERO gh invocations",
+           "the shim log was unreadable at " + path.join(OUT, "shim.log") +
+           " — NOT a pass");
+    } else if (!ex || !ex.applications) {
+      bad("filtering costs ZERO gh invocations",
+          "the exercise applied no filters at all: " + JSON.stringify(ex));
+    } else {
+      const gd = ex.applications + " filter applications · page fetches " +
+        ex.fetches + " · gh invocations " + ghBefore + " → " + ghAfter +
+        " (delta " + ghDelta + ", " + tries + " window(s))";
+      if (ex.fetches === 0 && ghDelta === 0) {
+        ok("filtering costs ZERO fetches and ZERO gh invocations (S152)", gd);
+      } else {
+        bad("filtering costs ZERO fetches and ZERO gh invocations (S152)", gd);
+      }
+    }
+
+    /* ── EACH FILTER SELECTS THE RIGHT CARDS, AND THE COUNTS AGREE. Read off
+       the DOM of the running product: what the chip printed, what the board
+       drew, and what each column head still claims. A head that keeps counting
+       cards it is no longer drawing is the board disagreeing with itself in the
+       one place a captain checks a number. */
+    const base = {};
+    fstate.chips.forEach((c) => { base[c.id] = c; });
+    let mineCards = null;
+    for (const id of ["all", "mine", "theirs", "unassigned", "remote"]) {
+      if (!base[id]) continue;
+      await clickChip("all");
+      await clickChip(id);
+      const st = await evaluate(cdp, sessionId, FILTER_PROBE);
+      if (id === "mine") mineCards = st.cards.slice().sort();
+      const headsBad = st.heads.filter((h) => String(h.drawn) !== h.ct);
+      const d = "chip says " + base[id].count + ", board drew " +
+        st.cards.length + " " + JSON.stringify(st.cards.slice().sort());
+      if (st.cards.length !== base[id].count) {
+        bad("the " + id.toUpperCase() + " chip's count is what the board draws", d);
+      } else if (headsBad.length) {
+        bad("the " + id.toUpperCase() + " chip's count is what the board draws",
+            d + " — but column head(s) still claim " +
+            JSON.stringify(headsBad.map((h) => h.ct + " over " + h.drawn)));
+      } else if (st.cards.length === 0) {
+        bad("the " + id.toUpperCase() + " chip's count is what the board draws",
+            "it emptied the board — no facet on this fixture selects nothing");
+      } else {
+        ok("the " + id.toUpperCase() + " chip's count is what the board draws", d);
+      }
+    }
+    // …and the facets are DIFFERENT selections, not the same board five times.
+    await clickChip("all");
+    await clickChip("theirs");
+    const theirsCards = (await evaluate(cdp, sessionId, FILTER_PROBE)).cards;
+    if (mineCards && theirsCards.length &&
+        !theirsCards.some((c) => mineCards.indexOf(c) >= 0)) {
+      ok("MINE and THEIRS select disjoint sets of cards",
+         JSON.stringify(mineCards) + " vs " + JSON.stringify(theirsCards.sort()));
+    } else {
+      bad("MINE and THEIRS select disjoint sets of cards",
+          JSON.stringify(mineCards) + " vs " + JSON.stringify(theirsCards));
+    }
+
+    /* ── THE `o` KEY, DISPATCHED AT THE BROWSER. Not `.click()` on a chip: a
+       real key event through the real hotkey layer, past all four of its
+       guards, on the real page. A binding that shadowed an existing key would
+       show up here as the wrong thing happening. */
+    await clickChip("all");
+    for (const type of ["keyDown", "keyUp"]) {
+      await cdp.send("Input.dispatchKeyEvent", {
+        type, key: "o", code: "KeyO", text: type === "keyDown" ? "o" : undefined,
+        unmodifiedText: type === "keyDown" ? "o" : undefined,
+        windowsVirtualKeyCode: 79, nativeVirtualKeyCode: 79,
+      }, sessionId);
+    }
+    await sleep(150);
+    const afterKey = await evaluate(cdp, sessionId, FILTER_PROBE);
+    const keyed = afterKey.chips.filter((c) => c.pressed === "true")[0];
+    if (keyed && keyed.id === "mine" && afterKey.cards.length === base.mine.count) {
+      ok("the `o` key cycles the filter on the real page",
+         "ALL → " + keyed.text + ", " + afterKey.cards.length + " card(s) drawn");
+    } else {
+      bad("the `o` key cycles the filter on the real page",
+          "selected " + JSON.stringify(keyed && keyed.id) + ", " +
+          afterKey.cards.length + " card(s) drawn");
+    }
+    // …and the STATUS LINE says the board is filtered, rather than reporting a
+    // mission count it is no longer showing.
+    if (/filtered/i.test(afterKey.status) &&
+        afterKey.status.indexOf(String(afterKey.cards.length)) >= 0) {
+      ok("a filtered board says so in its own status line",
+         JSON.stringify(afterKey.status));
+    } else {
+      bad("a filtered board says so in its own status line",
+          JSON.stringify(afterKey.status));
+    }
+    await shoot(cdp, sessionId,
+      { x: 0, y: 0, w: fit.w, h: Math.min(fit.h, 900) },
+      "filtered-board.png", 1, 0);
+
+    /* ── IT SURVIVES A REFRESH. The real one: reload the page, boot board.js
+       from scratch, and find the question the captain asked still being asked —
+       out of the browser's own localStorage, not out of anything this drive
+       kept in a variable. */
+    const wantAfterReload = afterKey.cards.slice().sort();
+    await cdp.send("Page.reload", { ignoreCache: false }, sessionId);
+    let reloaded = null;
+    for (let i = 0; i < 80 && Date.now() < deadline; i++) {
+      await sleep(250);
+      try { reloaded = await evaluate(cdp, sessionId, FILTER_PROBE); }
+      catch (e) { reloaded = null; }
+      if (reloaded && reloaded.present && !reloaded.hidden && reloaded.cards.length) break;
+    }
+    if (!reloaded || !reloaded.present) {
+      bad("the filter survives a refresh", "the board never came back after reload");
+    } else {
+      const still = reloaded.chips.filter((c) => c.pressed === "true")[0];
+      const got = reloaded.cards.slice().sort();
+      const rd = "after reload: " + JSON.stringify(still && still.text) +
+        " selected, cards " + JSON.stringify(got);
+      if (still && still.id === "mine" &&
+          JSON.stringify(got) === JSON.stringify(wantAfterReload)) {
+        ok("the filter survives a refresh", rd);
+      } else {
+        bad("the filter survives a refresh",
+            rd + " (wanted MINE and " + JSON.stringify(wantAfterReload) + ")");
+      }
+      /* …AND IDENTITY ABSENT CHANGES NOTHING — the S190 posture, applied to a
+         REMEMBERED preference. He filters to THEIRS on a laptop with a live
+         `gh`; the auth expires and the payload stops carrying `meta.self`. The
+         board can no longer say what "somebody else" means, so it must not
+         offer the question — and the answer it can no longer give must not be
+         allowed to blank the board.
+
+         Driven through the product's own degrade path rather than by reaching
+         into it: `captureForgeIdentity` re-reads `meta.self` on EVERY render
+         precisely so a payload that stops carrying one reverts to "we do not
+         know", so dropping it from the board this page already holds and
+         repainting is exactly what an expired auth looks like from here. The
+         STORED choice is checked afterwards because a preference that got
+         silently rewritten by a network hiccup is the other way to fail this. */
+      await clickChip("all");
+      await clickChip("theirs");
+      const degraded = await evaluate(cdp, sessionId, `(function () {
+        if (LAST_BOARD && LAST_BOARD.meta) LAST_BOARD.meta.self = null;
+        repaintBoard();
+        var host = document.getElementById("ownerFilter");
+        var chips = host ? Array.prototype.slice.call(host.querySelectorAll("button")) : [];
+        return {
+          ids: chips.map(function (b) { return b.getAttribute("data-filter"); }),
+          cards: document.querySelectorAll(".board .card[data-mid]").length,
+          stored: (function () { try { return localStorage.getItem("lcars-owner-filter"); } catch (e) { return null; } })()
+        };
+      })()`);
+      const dd = "identity gone → chips " + JSON.stringify(degraded.ids) +
+        ", " + degraded.cards + " of " + wantAllCount +
+        " card(s) still drawn, stored choice kept as " +
+        JSON.stringify(degraded.stored);
+      if (degraded.cards === wantAllCount &&
+          degraded.ids.indexOf("mine") < 0 && degraded.ids.indexOf("theirs") < 0 &&
+          degraded.stored === "theirs") {
+        ok("with no identity the board shows EVERYTHING and offers no MINE", dd);
+      } else {
+        bad("with no identity the board shows EVERYTHING and offers no MINE",
+            dd + " (wanted " + wantAllCount + " cards, no mine/theirs chip, and " +
+            "the stored choice untouched)");
+      }
+    }
+  }
+
   fs.writeFileSync(path.join(OUT, "owner-paint.json"), JSON.stringify({
     lock, pair, fills: { live: liveFill, locked: lockFill, separation: sep },
     sheets, detail: det, avatar: base, inkAndPaper: ip,
+    s196: { pills: pills, ownerColourSeparation: colourSep,
+            ownerGreyscaleSeparation: greySep, remotes: remotes,
+            remoteDetail: rdet, remoteSeparation: remoteSep,
+            ownerFilter: fstate },
     findings, pageErrors: cdp.pageErrors,
   }, null, 2) + "\n");
 
+  console.log("\ns196: " + path.join(OUT, "owner-pair-greyscale.png") +
+              "  (B1 — the colour taken away)");
+  console.log("      " + path.join(OUT, "remote-detail-locked-vs-live.png") +
+              "  (B2 — the pair that measured 1.79:1)");
+  console.log("      " + path.join(OUT, "owner-filter-strip.png") +
+              "  (B5 — the strip, solid = asking, hollow = not)");
+  console.log("      " + path.join(OUT, "filtered-board.png") +
+              "  (B5 — the board with MINE applied)");
   console.log("\nscreenshots: " + path.join(OUT, "locked-vs-live.png") +
               "  (LOOK AT THIS ONE — the pair, one frame)");
   console.log("             " + path.join(OUT, "locked-card.png"));

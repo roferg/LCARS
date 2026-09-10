@@ -6,6 +6,37 @@
 #   bash tests/drives/s190/owner-paint.sh --calibrate   # the RED CONTROLS
 #   bash tests/drives/s190/owner-paint.sh --all
 #
+# S196 HALF B EXTENDED IT RATHER THAN BUILDING A SECOND RIG — the file keeps its
+# S190 name because it is the same drive asking the same question of more of the
+# board. Three defects were added to its subject, and one FIXTURE:
+#
+#   B1  OWNERSHIP WAS ENCODED IN COLOUR ALONE. amber = mine, blue = someone
+#       else's, 1.51:1 apart with the colour removed — the same pill to a
+#       greyscale screenshot, a projector, and a red-green colourblind reader.
+#       Proven by DESATURATING the page in real Chrome and re-reading the pixels
+#       through the filter (and by proving the filter bit: r == g == b).
+#   B2  A REMOTE mission's controls were `opacity:.4/.7` on a saturated fill —
+#       1.79:1 against the live Adopt beside them, i.e. the same button, which
+#       is S191's D4 verbatim on the one surface S191 left out because it needed
+#       a remote fixture. They now take the SAME `.btn.locked` treatment.
+#   B3  …and the CARD stops drawing them at all (captain ruling: hide Verify,
+#       offer only Adopt).
+#   B5  THERE WAS NO WAY TO FILTER THE BOARD BY OWNERSHIP. Four facets — mine /
+#       someone else's / unassigned / remote — proven ON THE REAL PAGE: the
+#       chips paint solid-vs-hollow (the same axis as B1 and the lock), each
+#       chip's count is what the board actually DRAWS, the `o` key is dispatched
+#       at the browser through the real hotkey layer, the choice survives a real
+#       `Page.reload` out of real localStorage, and a payload that stops
+#       carrying an identity shows the WHOLE board rather than none of it.
+#       And the constraint the whole thing lives under: 50 filter applications,
+#       0 page fetches, `gh` invocations 1 -> 1 — S152's one cached listing per
+#       cycle, never per render, counted off this rig's own shim log.
+#
+# THE REMOTE FIXTURE IS A `gh issue list` THAT ANSWERS. A remote card cannot be
+# planted on disk — being absent from disk is what makes it remote — so the gh
+# shim serves two rows from a file and every other gh call still exits 1. Still
+# zero spend: no network, no engine, one `cat`.
+#
 # WHY A BROWSER, AND WHY PIXELS. Round 1 returned three CSS defects that EVERY
 # suite in this repo is structurally blind to, and one of them is the purest
 # example the project has produced:
@@ -84,6 +115,51 @@ EOF
   done
   : >"$out/shim.log"
 
+  # ---- S196 (B2/B3/B4): THE REMOTE FIXTURE ------------------------------
+  # A remote card cannot be planted on disk — being ABSENT from disk is what
+  # makes it remote. It exists only as an OPEN issue the forge lists, so the
+  # only honest fixture is a `gh issue list` that answers. This drives the real
+  # remote.RemoteMissions → github_adapter.card_from_issue → board.js path end
+  # to end; nothing about the overlay is stubbed.
+  #
+  # TWO ROWS, and each is a different half of the defect:
+  #   #201 verify   — ADOPTABLE. The card the tester shot: a dead `▶ START`
+  #                   beside the live Adopt, 1.79:1 apart.
+  #   #202 research — NOT adoptable. The worse card: ONE control, dead, and no
+  #                   Adopt at all. After B3 it must offer nothing.
+  # BOTH UNASSIGNED on purpose — `.card.owned-by-other` must keep meaning the
+  # S190 lock and nothing else, so the S190/S191 checks above measure exactly
+  # the cards they were written for.
+  cat >"$out/remote-issues.json" <<'JSONEOF'
+[
+  {"number":201,"title":"Remote — driven on the other laptop","state":"OPEN",
+   "labels":[{"name":"lcars:mission"},{"name":"lcars:verify"}],
+   "body":"A mission being driven from another machine.",
+   "updatedAt":"2026-09-08T10:00:00Z","assignees":[],
+   "subIssuesSummary":{"completed":0,"total":0,"percentCompleted":0}},
+  {"number":202,"title":"Remote — mid-pipeline, nothing to offer","state":"OPEN",
+   "labels":[{"name":"lcars:mission"},{"name":"lcars:research"}],
+   "body":"A mission being driven from another machine.",
+   "updatedAt":"2026-09-08T09:00:00Z","assignees":[],
+   "subIssuesSummary":{"completed":0,"total":0,"percentCompleted":0}}
+]
+JSONEOF
+  # …and the ONE gh call the overlay makes, answered from that file. Every OTHER
+  # gh invocation still exits 1: the identity is pinned with $LCARS_GH_USER and
+  # the owners are planted on disk, so a gh that could also answer those would be
+  # faking a layer this drive is not about. Still ZERO SPEND — no network, no
+  # engine, one `cat`.
+  cat >"$out/shim/gh" <<EOF
+#!/usr/bin/env bash
+echo "gh \$*" >>"$out/shim.log"
+if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then
+  cat "$out/remote-issues.json"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$out/shim/gh"
+
   # ---- the fixture: two missions, one MINE, one SOMEBODY ELSE'S ----------
   # Planted with web/tests/_fixtures.py, the same planter every unit suite uses,
   # so the cards on screen are the cards those suites reason about. Both sit at
@@ -138,6 +214,7 @@ PYEOF
       PATH="$out/shim:$PATH" \
       LCARS_SERVE_NO_OPEN=1 LCARS_VERSION_CHECK=0 LCARS_OWNER_WARM=0 \
       LCARS_GH_USER=roferg LCARS_GH_BIN="$out/shim/gh" \
+      LCARS_REMOTE_OVERLAY=1 LCARS_REMOTE_POLL=10 \
       LCARS_WORKER_BIN="$out/shim/claude" \
       "$PY_BIN" -m lcars_serve --port 0 --repo-root "$fixture" ) \
     >"$out/daemon.log" 2>&1 &
@@ -249,7 +326,11 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
   say "CALIBRATION — can this drive see each defect it claims to?"
   i=0
   for variant in dim-the-row dead-det-head-rule motion-gated-filter \
-                 lock-looks-live lock-wears-no-mark; do
+                 lock-looks-live lock-wears-no-mark \
+                 owner-pill-colour-only remote-lock-looks-live \
+                 remote-keeps-dead-controls adopt-stutters \
+                 filter-draws-everything filter-counts-lie \
+                 filter-forgets-on-reload filter-refetches-the-board; do
     i=$((i + 1))
     BROKEN="$WORK/broken-$variant"
     mkdir -p "$BROKEN"
@@ -286,6 +367,89 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
       # control that cannot go red is worse than no red control at all.
       lock-wears-no-mark)
         "${LCARS_SED_BIN:-sed}" -i.bak 's/^      markLocked(n);$/      \/* markLocked(n); *\//' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # ── S196 B1. THE DEFECT, VERBATIM: ownership back in COLOUR ALONE. The
+      # pill keeps its hue change and loses the fill change, which is exactly
+      # what shipped — and is 1.52:1 in luminance, i.e. the same pill once the
+      # colour is gone. Appended AFTER the cured rule, same specificity, so
+      # source order hands it the win.
+      owner-pill-colour-only)
+        printf '\n.card.owned-by-other .owner{--owner-fill:var(--owner-col);--owner-ink:var(--lcars-text-on-color);--owner-edge:solid}\n' >>"$CSS" ;;
+      # ── S196 B2. Put the remote detail's locked controls back on the live
+      # control's saturated fill. Scoped to `.det-actions` so it hits the REMOTE
+      # measurement and leaves S191's own board-card pair alone: two red controls
+      # that both fire on one check prove less than two that fire on one each.
+      remote-lock-looks-live)
+        printf '\n.det-actions .btn.locked{background:var(--lcars-teal);color:var(--lcars-text-on-color);border-color:var(--lcars-teal);border-style:solid}\n' >>"$CSS" ;;
+      # ── S196 B3. Neuter the removal so the remote card keeps its dead
+      # controls. sed, and then VERIFIED to have bitten — tests/drives/browser/
+      # calibrate.sh sat DEAD FROM S176 TO S191 because its cut silently matched
+      # nothing (it cut a `.then(render)` line that S176 had folded away), and a
+      # red control that cannot go red is worse than none at all.
+      remote-keeps-dead-controls)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/^      if (!k\.disabled) continue;$/      if (k.disabled) continue;/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # ── S196 B4. Put the stutter back: a hollow triangle beside a solid one.
+      # Also sed, also verified.
+      adopt-stutters)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/"◆ Adopt ▸"/"▹ Adopt ▸"/g' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # ── S196 B5. FOUR CONTROLS, ONE PER PROMISE THE FILTER MAKES, because a
+      # check that cannot go red is decoration and one control that trips every
+      # check proves less than four that trip one each. Every one is a `sed`
+      # that is then VERIFIED to have bitten (cmp against the .bak):
+      # tests/drives/browser/calibrate.sh sat DEAD FROM S176 TO S191 because its
+      # cut silently matched nothing, and a red control that cannot go red is
+      # worse than no red control at all.
+      #
+      # 1. THE FILTER DOES NOT FILTER. The strip still paints, the chips still
+      #    count, the status line still says "filtered" — and the board draws
+      #    every card. This is the failure a rule-exists test cannot see and the
+      #    one a unit harness would also miss, because every harness in
+      #    web/tests calls render() itself.
+      filter-draws-everything)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/^      \.filter(function (m) { return ownerFilterShows(m, active); });$/      ;/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # 2. THE COUNT LIES. The chip prints one number and the board draws
+      #    another — the specific defect the "counts agree" checks exist for.
+      filter-counts-lie)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/String(counts\[f.id\])/String(counts[f.id] + 1)/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # 3. IT FORGETS. The choice is never written, so a refresh silently throws
+      #    away the question the captain asked. Nothing on screen says so.
+      filter-forgets-on-reload)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/s\.setItem(OWNER_FILTER_KEY, OWNER_FILTER\.join(","));/0;/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # 4. THE ONE THAT COSTS MONEY — the S152 constraint broken in the most
+      #    natural way there is: ask the daemon to re-answer. It looks correct,
+      #    it IS correct on screen, and it puts a forge round trip behind every
+      #    chip. This is the control the gh-invocation count exists for.
+      filter-refetches-the-board)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's|^  repaintBoard();$|  fetch("/api/board").then(function (r) { return r.json(); }).then(render);|' "$JS"
         if cmp -s "$JS" "$JS.bak"; then
           printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
           FAILED=1; PATCHED=0

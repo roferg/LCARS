@@ -508,6 +508,37 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .owner{
   --owner-h:22px;                    /* cap height == pill height */
   --owner-col:var(--lcars-amber);    /* the block colour; blue when locked */
+  /* S196 B1 — THE FOUR TOKENS THAT MAKE OWNERSHIP SURVIVE GREYSCALE.
+
+     WHAT WAS WRONG. Ownership was encoded in COLOUR ALONE: amber = mine, blue
+     = someone else's. Those two tokens are 1.52:1 apart in LUMINANCE, which is
+     what a greyscale screenshot, a projector, and a red-green colourblind
+     reader all see — so on the axis that survives, the two pills were the same
+     pill. Nothing else on the card said whose it was.
+
+     THE CURE IS ALREADY IN THE HOUSE. One row down, on the very same card,
+     `.btn.locked` says "solid = you can act, hollow = you cannot" and measures
+     9.07:1 doing it. This says the SAME sentence about the SAME fact rather
+     than inventing a second language for it: MY pill is a solid block, someone
+     else's is an outline. The hue still separates them for anyone who can see
+     it; the FILL is what carries it for everyone else.
+
+     WHY TOKENS AND NOT TWO COPIES OF THE GEOMETRY. The cap and the handle are
+     two elements that have to paint as ONE pill, so both need the fill, the ink
+     and the edge, and a state that set them in one place and not the other
+     would split the pill down the middle. Four custom properties, set once per
+     state, read by both.
+
+     A SOLID PILL CARRIES THE BORDER TOO — in its own fill colour, so it is
+     invisible. That is deliberate: both states then have identical geometry
+     (box-sizing:border-box, same height, same baseline), and the difference on
+     screen is the fill and nothing else.
+
+     ADR-007: no new colour is minted here. `--owner-col` is a shared --lcars-*
+     token in both states and these four read from it. */
+  --owner-fill:var(--owner-col);            /* MINE: a solid block */
+  --owner-ink:var(--lcars-text-on-color);
+  --owner-edge:solid;
   display:inline-flex;align-items:stretch;max-width:100%;
   margin:0 0 8px;vertical-align:middle}
 /* THE LEFT CAP. A half-circle (radius == half the height) is THE LCARS cap, and
@@ -518,7 +549,11 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   flex:0 0 auto;box-sizing:border-box;
   width:calc(var(--owner-h) + 6px);height:var(--owner-h);
   padding:0 0 0 4px;
-  background:var(--owner-col);
+  background:var(--owner-fill);
+  /* The cap owns the pill's LEFT half of the outline; the handle owns the
+     right. Neither draws the seam between them, so the two elements read as
+     one continuous edge in the hollow state and the solid state is unchanged. */
+  border:1px var(--owner-edge) var(--owner-col);border-right-width:0;
   border-radius:calc(var(--owner-h) / 2) 0 0 calc(var(--owner-h) / 2)}
 .owner .owner-av img{
   display:block;box-sizing:border-box;
@@ -536,7 +571,8 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   display:inline-flex;align-items:center;
   box-sizing:border-box;height:var(--owner-h);
   padding:0 10px 0 6px;
-  background:var(--owner-col);color:var(--lcars-text-on-color);
+  background:var(--owner-fill);color:var(--owner-ink);
+  border:1px var(--owner-edge) var(--owner-col);border-left-width:0;
   border-radius:0 calc(var(--owner-h) / 2) calc(var(--owner-h) / 2) 0;
   font-family:var(--font-display);text-transform:uppercase;
   letter-spacing:.13em;font-size:10px;font-weight:600;line-height:1;
@@ -548,12 +584,23 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    rounding on both ends and the left padding the cap was carrying. */
 .owner.dead .owner-handle{
   padding-left:11px;
+  /* …and it takes back the left edge the cap was carrying. On a SOLID pill that
+     border is the fill colour and invisible either way; on a HOLLOW one its
+     absence would paint a pill with its nose cut off. */
+  border-left-width:1px;
   border-radius:calc(var(--owner-h) / 2)}
 /* SOMEONE ELSE'S MISSION. The pill goes cool and the (already disabled)
    controls go HOLLOW, so the card reads as "watch, don't drive" from across the
    room. The card BODY is untouched — a locked mission stays completely readable,
    which is the entire point of a LIGHT lock. */
-.card.owned-by-other .owner{--owner-col:var(--lcars-blue,#4499ff)}
+/* SOMEONE ELSE'S PILL GOES HOLLOW (S196 B1). The hue change was already here
+   and was the ONLY thing carrying ownership; these three lines are what make it
+   survive a desaturated screenshot. Same idiom, same tokens, one row up from
+   the controls that already speak it. */
+.card.owned-by-other .owner{--owner-col:var(--lcars-blue,#4499ff);
+  --owner-fill:transparent;
+  --owner-ink:var(--lcars-blue,#4499ff);
+  --owner-edge:dashed}
 /* THE LOCKED CONTROL ITSELF is `.btn.locked`, down in the .btn family where the
    other button variants live — see the long note there (S191 fix round 1, D4).
    NOTHING dims this row: an `opacity` on `.card-ctrl` makes a COMPOSITING GROUP
@@ -589,16 +636,40 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    watching it is the entire reason it is on the board. Only the controls, which
    are the part that cannot be used, are quieted. */
 .card.remote{border-left-color:var(--lcars-violet,#9977ff)}
-/* ONE opacity, ON THE CONTROL ITSELF — S190 fix round 1 (D2) learned this the
-   hard way: an `opacity` on the ROW makes a compositing group, so nothing inside
-   it can paint brighter than the group whatever the cascade says, and a
-   `button[disabled]{opacity:1}` beneath it is inert. Same .7 as the owner lock's,
-   for the same reason: dimmer than a live card, still readable across the room. */
-.card.remote .card-ctrl button[disabled]{opacity:.7}
+/* THE DIM IS GONE, AND SO ARE THE CONTROLS IT DIMMED (S196 B2/B3).
+   `.card.remote .card-ctrl button[disabled]{opacity:.7}` used to live here. Two
+   separate reasons it had to go, and both are worth writing down:
+
+   1. IT WAS THE WRONG TREATMENT, measured. A .7 dim over a saturated `.go` fill
+      is imperceptible — the tester read the dead `▶ START` at median
+      rgb(64,141,122) against the live `▹ ADOPT ▸` at rgb(85,193,161): 1.79:1,
+      the same button. This is S191's D4 verbatim, on the one surface S191
+      deliberately left out because it needed a REMOTE fixture in the pixel rig.
+      Remote-disabled controls now take `.btn.locked` (hollow, dashed, `⊘`) —
+      the same state class, applied by the same markLocked, as the owner lock.
+
+   2. IT WOULD HAVE SILENTLY EATEN THE CURE. `.card.remote .card-ctrl
+      button[disabled]` is (0,4,1); `.btn.locked{opacity:1}` is (0,2,0). Leaving
+      it here while adding the class would have painted every locked remote
+      control at .7 on a hollow fill, with every rule-exists test green — the
+      same shape as S190's compositing-group defect, arrived at from the other
+      direction.
+
+   Nothing replaces it: `.btn.locked{opacity:1}` sits below `.btn[disabled]
+   {opacity:.4}` and wins the tie on source order (test_owner_board and
+   TheRemoteControlRowIsNotDIMMED both pin that ordering, because above it these
+   controls paint at .4 instead and the cure is gone). And after B3 the CARD's
+   row holds no disabled control at all — the rule would have been dead CSS
+   describing a treatment, which is exactly what S190's D3 was. */
 /* ADOPT is the ONE live control on a remote card, so it must not read as part of
    the dimmed row it sits in. It keeps the full-strength `.go` chrome (opacity is
    not inherited into it because the rule above targets [disabled] only) and takes
    the violet edge so it reads as belonging to the remote state rather than as a
+   stray green button. */
+/* ADOPT is the ONE live control on a remote card — on the card it is now the
+   only control at all (B3), and in the detail it is the one solid button in a
+   row of hollow ones. It keeps the full-strength `.go` chrome and takes the
+   violet edge so it reads as belonging to the remote state rather than as a
    stray green button. */
 .card.remote .card-ctrl .remote-adopt,
 .det-actions .remote-adopt{border-color:var(--lcars-violet,#9977ff)}
@@ -613,6 +684,57 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    treatment is not motion. */
 @media (prefers-contrast:more){.owner .owner-av img{filter:none}}
 
+/* ════════════════════════════════════════════════════════════════════════
+   S196 B5 — THE OWNERSHIP FILTER STRIP.
+
+   Its own row between the banners and the board, matching the version- and
+   readiness-banner gutter (28px) so the three read as one stack of console
+   furniture rather than three things that happen to be near each other. NOT in
+   the yellow band: that band's control order is pinned byte-for-byte by
+   test_help_console, and a filter is not a command.
+
+   SELECTED IS SOLID, UNSELECTED IS HOLLOW — the third and last thing this
+   session says it about. `.btn.locked` said it about a control you may not use
+   (9.07:1 measured); B1 said it about a pill that is or is not yours; this says
+   it about a question that is or is not being asked. One language for "on /
+   off / yours / not", so the board can be read at a glance in greyscale, on a
+   projector, and by a red-green colourblind captain — the same axis B1 was
+   fixed onto, extended rather than forked.
+
+   ADR-007: no colour is minted here. Amber is the board's own selection colour
+   (the focus ring, the legend's view-only note) and it is read from the shared
+   --lcars-* token in both states.
+
+   IT IS NOT A WRITE CONTROL, and it deliberately does not wear `.btn.go` —
+   which is exactly what markViewOnly() reaches for. Filtering opens no
+   endpoint, so it stays live on a view-only board, like the `?` console. */
+.owner-filter{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  padding:12px 28px 0}
+.owner-filter .of-lbl{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.16em;font-size:10px;color:var(--lcars-text-dim);
+  margin-right:4px}
+/* HOLLOW is the resting state: the board is not being filtered until it says
+   it is, so an untouched strip must not read as five active controls. */
+.owner-filter .of-chip{background:transparent;color:var(--lcars-amber);
+  border:1px dashed var(--lcars-amber)}
+.owner-filter .of-chip:hover{background:rgba(255,170,0,.12)}
+/* …and SOLID is the question being asked. Same geometry (box-sizing:border-box
+   is on .btn's padding/border pair already, and the border width does not
+   change), so selecting a chip shifts nothing on the row — only the fill. */
+.owner-filter .of-chip.sel{background:var(--lcars-amber);
+  color:var(--lcars-text-on-color);border-style:solid;
+  border-color:var(--lcars-amber)}
+.owner-filter .of-chip.sel:hover{background:var(--lcars-amber)}
+/* THE STRIP IS BOARD FURNITURE, SO IT LEAVES WITH THE BOARD. The holodeck and
+   the day-zero front door both REPLACE the board in this frame, and render()
+   keeps running underneath either of them (an SSE tick is enough) — so a strip
+   that only decided its own visibility from the card counts would float a set
+   of board filters over a surface that has no board on it. Its own rule rather
+   than an addition to theirs: `body.on-deck`'s list is S125's and
+   `body.on-front-door`'s is S184's, and neither should have to be edited for a
+   later round's furniture. */
+body.on-deck #ownerFilter,
+body.on-front-door #ownerFilter{display:none !important}
 .legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 28px;font-size:12px;color:var(--lcars-text-dim)}
 .legend span{display:flex;align-items:center;gap:6px}
 .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
