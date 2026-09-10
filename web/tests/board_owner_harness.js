@@ -30,8 +30,14 @@
  *                        readonly: bool, killAvatar: bool,
  *                        loadAvatar: bool,   // fire the <img>'s own load event
  *                        advanceMs: <int>,   // run the card's timers that far
- *                        rerender: bool}     // build the SAME card again after
+ *                        rerender: bool,     // build the SAME card again after
  *                                            // the above, and project THAT
+ *                        steps: [{...}],     // S196.1: a SEQUENCE of the four
+ *                                            // above, so several rebuilds can
+ *                                            // happen INSIDE one give-up
+ *                                            // window; replaces the flat keys
+ *                        emit: "full"}       // {tree, now, timers} instead of
+ *                                            // the bare projected tree
  */
 const fs = require("fs");
 const path = require("path");
@@ -108,7 +114,7 @@ const sandbox = {
   setInterval() { return 0; }, clearInterval() {},
   fetch() { const p = { then() { return p; }, catch() { return p; } }; return p; },
   EventSource: function () { this.addEventListener = function () {}; this.close = function () {}; },
-  console, JSON, Math, Date,
+  console, JSON, Math,
 };
 /* THE CLOCK. board.js's avatar give-up is a real `setTimeout`, and a stub that
    silently drops it would make the give-up path untestable AND make the "load
@@ -116,21 +122,49 @@ const sandbox = {
    on demand, so the 8s window is asserted in microseconds. */
 const TIMERS = [];
 let TIMER_ID = 0;
+/* THE VIRTUAL WALL CLOCK. `setTimeout` alone cannot answer the question S196.1
+   asks — "does a REBUILT node give up at the ORIGINAL deadline?" — because a
+   deadline is a point in time and a recorded duration is not. So the harness
+   owns `Date.now()` as well as the timer queue, and the two move together. */
+let NOW = 0;
 sandbox.setTimeout = function (fn, ms) {
-  TIMERS.push({ id: ++TIMER_ID, fn: fn, ms: Number(ms) || 0, dead: false });
+  const d = Number(ms) || 0;
+  TIMERS.push({ id: ++TIMER_ID, fn: fn, ms: d, at: NOW + d, dead: false });
   return TIMER_ID;
 };
 sandbox.clearTimeout = function (id) {
   for (const t of TIMERS) if (t.id === id) t.dead = true;
 };
+/* Advance the clock `ms`, firing every live timer whose DEADLINE falls inside
+   the step, EARLIEST FIRST, with NOW set to that deadline as it fires — so a
+   timer armed by a handler is armed against the same clock everything else
+   reads, and two timers inside one step run in the order a browser would run
+   them rather than in arming order. */
 function advanceTimers(fromIndex, ms) {
-  for (let i = fromIndex; i < TIMERS.length; i++) {
-    const t = TIMERS[i];
-    if (t.dead || t.ms > ms) continue;
-    t.dead = true;
-    try { t.fn(); } catch (e) { /* a stub-driven boot timer is not the subject */ }
+  const target = NOW + (Number(ms) || 0);
+  for (;;) {
+    let next = null;
+    for (let i = fromIndex; i < TIMERS.length; i++) {
+      const t = TIMERS[i];
+      if (t.dead || t.at > target) continue;
+      if (!next || t.at < next.at) next = t;
+    }
+    if (!next) break;
+    next.dead = true;
+    if (next.at > NOW) NOW = next.at;
+    try { next.fn(); } catch (e) { /* a stub-driven boot timer is not the subject */ }
   }
+  NOW = target;
 }
+/* `Date` on the virtual clock. board.js records the give-up DEADLINE as an
+   absolute `Date.now() + AVATAR_GIVE_UP_MS`; against the host clock that would
+   make the give-up untestable all over again — the very thing the recorded
+   timer queue exists to prevent. Everything else about Date is inherited. */
+class VirtualDate extends Date {
+  constructor(...a) { if (a.length === 0) super(NOW); else super(...a); }
+  static now() { return NOW; }
+}
+sandbox.Date = VirtualDate;
 
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
@@ -177,18 +211,17 @@ function walk(n, fn) {
 // THE PORTRAIT ARRIVES. Fired through the element's own `load`, the way the
 // network fires it — asserting the handler exists proves nothing about what it
 // does, and this is the event the whole beam hangs off.
-if (spec.loadAvatar) {
+function fireLoad(node) {
   let fired = 0;
-  walk(card, function (n) {
+  walk(node, function (n) {
     if (n.tag !== "img") return;
     (n._handlers.load || []).forEach(function (fn) { fired++; fn.call(n, {}); });
   });
   if (!fired) process.stderr.write("no image load handler was fired\n");
 }
-
-if (spec.killAvatar) {
-  var fired = 0;
-  walk(card, function (n) {
+function fireError(node) {
+  let fired = 0;
+  walk(node, function (n) {
     if (n.tag !== "img") return;
     (n._handlers.error || []).forEach(function (fn) { fired++; fn.call(n, {}); });
     if (typeof n.onerror === "function") { fired++; n.onerror.call(n, {}); }
@@ -196,13 +229,31 @@ if (spec.killAvatar) {
   if (!fired) process.stderr.write("no image error handler was fired\n");
 }
 
-// THE CLOCK MOVES. The give-up window is the only thing standing between a
-// portrait that never arrives and a pad that hums for ever.
-if (spec.advanceMs) advanceTimers(TIMER_MARK, Number(spec.advanceMs));
-
-// RE-RENDER. Same mission, same process, after whatever happened above — the
-// only way to see whether the beam replays on a card the board simply repainted.
-const subject = spec.rerender ? sandbox.cardNode(spec.mission) : card;
+let subject = card;
+if (Array.isArray(spec.steps)) {
+  /* THE SEQUENCE. One `advanceMs` and one `rerender` cannot express the defect
+     S196.1 cures: the board rebuilds the `.beam` node every 3.4–5.6s during a
+     mission, so the question is what happens to the give-up window across
+     SEVERAL rebuilds INSIDE one window. Each step may fire the portrait's own
+     events, move the clock, and then repaint — in that order, which is the
+     order a real tick takes them in. */
+  for (const st of spec.steps) {
+    if (st.loadAvatar) fireLoad(subject);
+    if (st.killAvatar) fireError(subject);
+    if (st.advanceMs) advanceTimers(TIMER_MARK, Number(st.advanceMs));
+    if (st.rerender) subject = sandbox.cardNode(spec.mission);
+  }
+} else {
+  if (spec.loadAvatar) fireLoad(card);
+  if (spec.killAvatar) fireError(card);
+  // THE CLOCK MOVES. The give-up window is the only thing standing between a
+  // portrait that never arrives and a pad that hums for ever.
+  if (spec.advanceMs) advanceTimers(TIMER_MARK, Number(spec.advanceMs));
+  // RE-RENDER. Same mission, same process, after whatever happened above — the
+  // only way to see whether the beam replays on a card the board simply
+  // repainted.
+  if (spec.rerender) subject = sandbox.cardNode(spec.mission);
+}
 
 function project(n) {
   if (!n || typeof n !== "object") return null;
@@ -217,4 +268,21 @@ function project(n) {
     children: (n.children || []).map(project).filter(Boolean),
   };
 }
-process.stdout.write(JSON.stringify(project(subject)));
+/* A TIMER LEDGER, because "the pad gave up on time" and "the board is not
+   quietly hoarding one abandoned 8s timer per repaint" are two different
+   promises and only one of them is visible in the DOM. */
+function timerStats() {
+  let armed = 0, live = 0;
+  for (let i = TIMER_MARK; i < TIMERS.length; i++) {
+    armed++;
+    if (!TIMERS[i].dead) live++;
+  }
+  return { armed: armed, live: live };
+}
+
+if (spec.emit === "full") {
+  process.stdout.write(JSON.stringify(
+    { tree: project(subject), now: NOW, timers: timerStats() }));
+} else {
+  process.stdout.write(JSON.stringify(project(subject)));
+}

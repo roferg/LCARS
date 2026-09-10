@@ -294,7 +294,7 @@ PYEOF
   [ -n "$DEV_PORT" ] || { teardown; skip "Chrome never opened a usable devtools port; see $out/chrome.log"; }
   note "chrome:    devtools :$DEV_PORT (pid $CHROME_PID)"
 
-  "$NODE_BIN" "$HERE/owner-paint.js" --devtools-port "$DEV_PORT" --url "$url" \
+  "$NODE_BIN" "$HERE/owner-paint.js" --devtools-port "$DEV_PORT" --url "$url" --timeout 75000 \
     --out "$out" 2>&1 | tee "$LOG"
   RC=${PIPESTATUS[0]}
   teardown
@@ -355,7 +355,8 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
                  filter-draws-everything filter-counts-lie \
                  filter-forgets-on-reload filter-refetches-the-board \
                  filter-footer-counts-active-only \
-                 beam-pending-is-a-hole beam-img-outranks-its-disc; do
+                 beam-pending-is-a-hole beam-img-outranks-its-disc \
+                 beam-window-restarts-on-repaint; do
     # ONE CONTROL AT A TIME, when that is what is being asked. The full set is
     # sixteen browser runs; `LCARS_S190_ONLY=beam-pending-is-a-hole,...` narrows
     # it while a control is being written, and an empty value means all of them.
@@ -519,7 +520,7 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
       #    which is exactly what shipped and exactly what no error handler and
       #    no unit harness can see. Every stylesheet rule stays correct.
       beam-pending-is-a-hole)
-        "${LCARS_SED_BIN:-sed}" -i.bak 's/^      beam\.className = "beam loading";$/      beam.className = "beam";/' "$JS"
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/^\( *\)beam\.className = "beam loading";$/\1beam.className = "beam";/' "$JS"
         if cmp -s "$JS" "$JS.bak"; then
           printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
           FAILED=1; PATCHED=0
@@ -540,6 +541,24 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
           FAILED=1; PATCHED=0
         fi
         rm -f "$CSS.bak" ;;
+      # ── S196.1 THE DEFECT, VERBATIM — the give-up window as a DURATION
+      #    again. Put back the shape that shipped: every rebuilt node arms a
+      #    fresh AVATAR_GIVE_UP_MS instead of the time REMAINING against the
+      #    deadline recorded on first sight. Nothing else changes — the memo
+      #    exists, the timer is armed, the pad is lit, the stylesheet is
+      #    correct. It simply never expires while the board keeps repainting,
+      #    which is most of a mission. Verified to have bitten (cmp against
+      #    the .bak): tests/drives/browser/calibrate.sh sat DEAD FROM S176 TO
+      #    S191 because its cut silently matched nothing, and a red control
+      #    that cannot go red is worse than no red control at all.
+      beam-window-restarts-on-repaint)
+        "${LCARS_SED_BIN:-sed}" -i.bak \
+          -e 's/^      var left = AVATAR_DEADLINE\[src\] - now;$/      var left = AVATAR_GIVE_UP_MS;/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
     esac
     [ "$PATCHED" -eq 1 ] || continue
     run_against "$BROKEN" "calib-$variant"

@@ -612,6 +612,28 @@ def _render(mission, self_login=None, readonly=False, kill_avatar=False,
     return json.loads(out.decode())
 
 
+def _drive(mission, self_login=None, readonly=False, steps=()):
+    """Run a SEQUENCE against one card in one process, on the harness clock.
+
+    `_render` above answers "what does the card look like after ONE thing
+    happened". This answers "what does it look like after the board has been
+    repainting for nine seconds", which is the only shape in which the S196.1
+    defect is visible at all — and it returns the clock and the timer ledger
+    beside the tree, because "no timers piled up" is not a fact about the DOM.
+    """
+    fd, p = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        with open(p, "w") as fh:
+            json.dump({"mission": mission, "self": self_login,
+                       "readonly": readonly, "steps": list(steps),
+                       "emit": "full"}, fh)
+        out = subprocess.check_output([NODE, HARNESS, p])
+    finally:
+        os.unlink(p)
+    return json.loads(out.decode())
+
+
 def _nodes(tree):
     yield tree
     for c in tree.get("children", []):
@@ -1034,6 +1056,199 @@ def board_avatar_give_up_ms():
     m = re.search(r"var\s+AVATAR_GIVE_UP_MS\s*=\s*(\d+)\s*;", src)
     assert m, "board.js declares no named AVATAR_GIVE_UP_MS constant"
     return int(m.group(1))
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class TheGiveUpWindowSURVIVESTheRepaint(unittest.TestCase):
+    """S196.1 — the give-up window never fired while the board was BUSY, which
+    is most of a mission.
+
+    THE DEFECT, measured live. `AVATAR_ARRIVED` correctly remembers the ARRIVAL
+    across repaints. The FAILURE side did not: the `giveUp` handle and the
+    `closed` flag were per-node closure state, and the SSE tick rebuilds the
+    `.beam` node every 3.4–5.6s during a mission. Every rebuild therefore armed
+    a FRESH eight-second window and dropped the previous one before it could
+    expire, so the deadline receded for as long as the board kept ticking. A
+    DNS-blackholed portrait — no `load`, no `error`, nothing to announce it —
+    was still `beam loading` with both pad animations running at 14s and 16s;
+    six `.beam` generations were counted in twenty seconds. On the SAME browser
+    with the board IDLE it collapsed at 8s. Board activity was the only
+    variable; timer throttling was ruled out (a control `setTimeout(…, 8000)` in
+    the same page fired at 8001ms, visible).
+
+    So the pad hummed for ever on a busy board — the exact thing `ownerNode`'s
+    own comment says the window exists to prevent.
+
+    THE RULE THIS CLASS PINS: **the give-up is a DEADLINE, not a duration.** A
+    rebuilt node inherits the time REMAINING; it never restarts the clock. And
+    the settled states are remembered on BOTH sides — a remembered failure is as
+    sticky as a remembered arrival, or a collapsed pill flickers back into a
+    humming pad on the next tick.
+    """
+
+    URL = "https://github.com/%s.png?size=64" % ME
+
+    def card(self):
+        return {"id": "m-1", "issue": 101, "title": "T", "type": "feature",
+                "stage": "align", "awaiting": False, "paused": False,
+                "running": False, "dispatched": False, "queued": False,
+                "linked": False, "pills": {}, "tickets": [],
+                "owner": {"login": ME, "avatarUrl": self.URL}}
+
+    def _dead(self, tree, why):
+        self.assertEqual([], _find(tree, lambda n: n["tag"] == "img"), why)
+        self.assertEqual([], _find(tree, lambda n: _cls(n, "beam")), why)
+        self.assertEqual([], _find(tree, lambda n: _cls(n, "owner-av")), why)
+        blocks = _find(tree, lambda n: _cls(n, "owner"))
+        self.assertEqual(1, len(blocks), why)
+        self.assertTrue(_cls(blocks[0], "dead"), why)
+        handles = _find(tree, lambda n: _cls(n, "owner-handle"))
+        self.assertEqual(ME.upper(), handles[0]["text"], why)
+
+    # ── THE HEADLINE ──────────────────────────────────────────────────────
+    def test_a_REPAINTED_portrait_gives_up_at_the_ORIGINAL_deadline(self):
+        """The defect in one assertion.
+
+        Nothing loads and nothing errors — the blackholed portrait. The node is
+        rebuilt three times inside the window, the way the SSE tick rebuilds it.
+        The pill must still collapse at the ORIGINAL deadline; a window that
+        restarts on each rebuild leaves a pad humming for as long as the board
+        is busy, which is for ever.
+        """
+        w = board_avatar_give_up_ms()
+        q = w // 4
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"advanceMs": q, "rerender": True},          # t = 2000
+            {"advanceMs": q, "rerender": True},          # t = 4000
+            {"advanceMs": q, "rerender": True},          # t = 6000
+            {"advanceMs": w - 3 * q + 1},                # t = 8001
+        ])
+        self.assertEqual(w + 1, r["now"], "the harness clock did not advance")
+        self._dead(r["tree"],
+                   "a portrait that never arrives kept its pad running past "
+                   "the give-up window because the board REPAINTED inside it — "
+                   "each rebuild armed a fresh window and threw the old one "
+                   "away, so the deadline recedes for as long as the board is "
+                   "busy and the pad hums for ever")
+
+    def test_the_REPAINTED_window_still_does_not_fire_EARLY(self):
+        """The negative control for the headline. A deadline computed wrong in
+        the other direction — or a rebuild that collapses on sight — would pass
+        the test above and kill every portrait on a slow connection."""
+        w = board_avatar_give_up_ms()
+        q = w // 4
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"advanceMs": q, "rerender": True},
+            {"advanceMs": q, "rerender": True},
+            {"advanceMs": w - 2 * q - 1},                # t = w - 1
+        ])
+        self.assertEqual(w - 1, r["now"])
+        self.assertEqual(1, len(_find(r["tree"], lambda n: n["tag"] == "img")),
+                         "the portrait was killed before its deadline")
+        beams = _find(r["tree"], lambda n: _cls(n, "beam"))
+        self.assertEqual(1, len(beams))
+        self.assertIn("loading", (beams[0].get("cls") or "").split(),
+                      "the pad stopped saying anything while still in transit")
+
+    # ── a remembered failure is STICKY ────────────────────────────────────
+    def test_a_GIVEN_UP_portrait_does_not_flicker_back_into_a_humming_pad(self):
+        """Once the pill has collapsed, the next tick must repaint it collapsed.
+
+        A failure held only in a node's closure is forgotten the instant the
+        node is replaced, so a board that has already given up would rebuild a
+        fresh transporter pad on the very next SSE tick and hum for another
+        eight seconds — for ever, once per tick.
+        """
+        w = board_avatar_give_up_ms()
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"advanceMs": w + 1},
+            {"rerender": True},
+            {"advanceMs": w * 3, "rerender": True},
+        ])
+        self._dead(r["tree"],
+                   "a repaint after the give-up brought the disc and the pad "
+                   "back — a collapsed pill must STAY collapsed")
+
+    def test_a_HARD_ERROR_is_remembered_across_the_repaint_too(self):
+        """Same rule, driven by the event rather than the clock."""
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"killAvatar": True},
+            {"rerender": True},
+        ])
+        self._dead(r["tree"],
+                   "a repaint after a 404 rebuilt the disc and started the pad "
+                   "again on a portrait already known to be missing")
+
+    def test_a_remembered_failure_arms_NO_further_timers(self):
+        """The sticky path must collapse on sight, not arm another window and
+        wait it out — that is a pad that hums for eight seconds per repaint."""
+        w = board_avatar_give_up_ms()
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"killAvatar": True},
+            {"rerender": True},
+            {"rerender": True},
+        ])
+        self.assertEqual(0, r["timers"]["live"],
+                         "a portrait already known to be missing armed a fresh "
+                         "give-up window on repaint")
+
+    def test_an_ARRIVAL_that_is_later_DISPROVED_does_not_shadow_the_failure(self):
+        """The error handler is armed on an already-arrived portrait too — a
+        cache can be evicted between two ticks. When it fires, the memo of the
+        arrival is stale and must not outrank the memo of the failure, or every
+        repaint rebuilds a disc around an image known to fail and collapses it
+        again: a pill that flickers once per tick for the rest of the session.
+        """
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"loadAvatar": True},
+            {"rerender": True},
+            {"killAvatar": True},
+            {"rerender": True},
+        ])
+        self._dead(r["tree"],
+                   "a portrait proved missing after it had once arrived came "
+                   "back as a disc on the next repaint")
+
+    # ── arrival must not regress ──────────────────────────────────────────
+    def test_ARRIVAL_still_wins_across_many_repaints(self):
+        w = board_avatar_give_up_ms()
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"loadAvatar": True},
+            {"advanceMs": w, "rerender": True},
+            {"advanceMs": w, "rerender": True},
+            {"advanceMs": w * 4},
+        ])
+        t = r["tree"]
+        self.assertEqual(1, len(_find(t, lambda n: n["tag"] == "img")),
+                         "an ARRIVED portrait was killed by a give-up window "
+                         "long after it materialised")
+        beams = _find(t, lambda n: _cls(n, "beam"))
+        self.assertEqual(1, len(beams))
+        cls = (beams[0].get("cls") or "").split()
+        self.assertIn("settled", cls)
+        self.assertNotIn("loading", cls, "a repaint restarted the pad")
+        self.assertNotIn("done", cls, "a repaint replayed the arrival")
+        blocks = _find(t, lambda n: _cls(n, "owner"))
+        self.assertFalse(_cls(blocks[0], "dead"))
+        self.assertEqual(0, r["timers"]["live"],
+                         "an arrived portrait left a give-up window running")
+
+    # ── the timers must not pile up ───────────────────────────────────────
+    def test_a_REPAINTING_board_does_not_hoard_one_timer_per_tick(self):
+        """Six `.beam` generations were counted in twenty seconds of one real
+        mission. Six abandoned eight-second timers is what that used to mean —
+        and every one of them still fires, on a node that is no longer in the
+        document, at a moment nothing else expects."""
+        r = _drive(self.card(), self_login=ME, steps=[
+            {"advanceMs": 900, "rerender": True} for _ in range(6)
+        ])
+        self.assertLessEqual(
+            r["timers"]["live"], 1,
+            "%d give-up timers are live after six repaints inside one window; "
+            "a rebuilt node must inherit the deadline, not arm another one"
+            % r["timers"]["live"])
+        # …and the one that survives is still the ORIGINAL deadline.
+        self.assertEqual(1, r["timers"]["live"])
 
 
 class TheTransporterPadKeepsItsPromises(unittest.TestCase):

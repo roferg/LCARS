@@ -629,6 +629,69 @@ const PENDING_TEARDOWN = `(function () {
   return out;
 })()`;
 
+/* ── S196.1: THE WINDOW MUST SURVIVE THE BOARD'S OWN REPAINT ───────────────
+ *
+ * The give-up above is asked of a node that is built ONCE and left alone. That
+ * is not the board. The SSE tick rebuilds every `.beam` node every 3.4–5.6s
+ * during a mission, and the failure side of the memo used to live in the node's
+ * closure — so each rebuild armed a fresh eight-second window and threw the
+ * previous one away. The deadline receded for as long as the board stayed busy.
+ *
+ * NO UNIT HARNESS FOUND THIS AND NO STYLESHEET RULE IS WRONG. It was measured
+ * here, live: a DNS-blackholed portrait still `beam loading` with both pad
+ * animations `infinite` at 14s and 16s, six `.beam` generations in twenty
+ * seconds — while the same portrait on an IDLE board collapsed at 8s. So the
+ * repaint is STAGED here, on the page's own `ownerNode()`, on a URL this drive
+ * is holding open, and the clock is the wall clock. */
+const REBUILD_SRC = "https://github.com/roferg.png?size=64&beam-rebuild-probe=1";
+const REBUILD_BUILD = `(function () {
+  if (typeof ownerNode !== "function") return { fn: false };
+  var host = document.getElementById("s196-rebuild-probe");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "s196-rebuild-probe";
+    host.className = "card";
+    host.style.cssText = "position:absolute;left:12px;top:120px;z-index:99999;" +
+                         "padding:12px;";
+    document.body.appendChild(host);
+  }
+  // THE REPAINT, exactly as render() does it: the old node is thrown away and a
+  // brand-new one is built from the same card.
+  while (host.firstChild) host.removeChild(host.firstChild);
+  var pill = ownerNode({ owner: { login: "rebuilt",
+    avatarUrl: ${JSON.stringify(REBUILD_SRC)} } });
+  if (!pill) return { fn: true, pill: false };
+  host.appendChild(pill);
+  var b = host.querySelector(".beam");
+  return { fn: true, pill: true, cls: b ? b.className : null,
+           window: (typeof AVATAR_GIVE_UP_MS === "number" ? AVATAR_GIVE_UP_MS : null) };
+})()`;
+
+const REBUILD_PROBE = `(function () {
+  var host = document.getElementById("s196-rebuild-probe");
+  var pill = host ? host.querySelector(".owner") : null;
+  var b = host ? host.querySelector(".beam") : null;
+  var pad = { afterName: "none", afterIter: "", beforeName: "none", beforeIter: "" };
+  if (b) {
+    var a = getComputedStyle(b, "::after"), f = getComputedStyle(b, "::before");
+    pad = { afterName: a.animationName, afterIter: a.animationIterationCount,
+            beforeName: f.animationName, beforeIter: f.animationIterationCount };
+  }
+  return { pill: !!pill,
+           dead: !!(pill && /(^| )dead( |$)/.test(pill.className || "")),
+           cls: b ? b.className : null,
+           caps: host ? host.querySelectorAll(".owner-av").length : -1,
+           imgs: host ? host.querySelectorAll("img").length : -1,
+           handle: pill ? (pill.textContent || "").trim() : "",
+           pad: pad };
+})()`;
+
+const REBUILD_TEARDOWN = `(function () {
+  var h = document.getElementById("s196-rebuild-probe");
+  if (h && h.parentNode) h.parentNode.removeChild(h);
+  return 1;
+})()`;
+
 /* ── the run ─────────────────────────────────────────────────────────────── */
 const findings = [];
 let failures = 0, skips = 0;
@@ -1224,6 +1287,63 @@ async function main() {
     } else {
       bad("a portrait that never comes collapses to the handle-ALONE pill",
           dd + " — wanted the cap removed, the pill .dead and the handle intact");
+    }
+  }
+
+  // (d) …AND THE WINDOW SURVIVES THE BOARD'S OWN REPAINT. S196.1: the defect
+  //     that only exists while the board is BUSY, which is most of a mission.
+  //     The portrait's GET is held (no load, no error — the blackhole), the
+  //     node is rebuilt three times INSIDE the window the way the SSE tick
+  //     rebuilds it, and the pill must still collapse at the ORIGINAL
+  //     deadline. A window that restarts on each rebuild would not expire
+  //     until t0 + 6s + 8s, so it is still humming when this reads it.
+  console.log("\nS196.1 — the give-up window survives the board's own repaint");
+  await cdp.send("Fetch.enable",
+    { patterns: [{ urlPattern: "*beam-rebuild-probe*", requestStage: "Request" }] },
+    sessionId);
+  const rb0 = await evaluate(cdp, sessionId, REBUILD_BUILD);
+  if (!rb0 || !rb0.fn || !rb0.pill) {
+    await cdp.send("Fetch.disable", {}, sessionId);
+    skip("a REPAINTED pending portrait gives up at the ORIGINAL deadline",
+         "the page's own ownerNode() could not be driven: " + JSON.stringify(rb0));
+  } else {
+    // The window is read off the SHIPPING constant, never duplicated here — a
+    // number copied into a rig is a second source of truth and the first thing
+    // to go stale.
+    const WIN = typeof rb0.window === "number" ? rb0.window : 8000;
+    const t0 = Date.now();
+    const gens = [rb0.cls];
+    const every = Math.max(1200, Math.floor(WIN / 4));
+    while (Date.now() - t0 < WIN - every) {
+      await sleep(every);
+      const g = await evaluate(cdp, sessionId, REBUILD_BUILD);
+      gens.push(g && g.cls);
+    }
+    // Past the ORIGINAL deadline, and only just.
+    while (Date.now() - t0 < WIN + 1500) await sleep(200);
+    const rb = await evaluate(cdp, sessionId, REBUILD_PROBE);
+    const elapsed = Date.now() - t0;
+    // Only now let the held requests go — failing them fires `error`, which
+    // would collapse the pill for the wrong reason.
+    for (const r of cdp.paused.filter(
+           (x) => /beam-rebuild-probe/.test((x.request || {}).url || ""))) {
+      try { await cdp.send("Fetch.failRequest",
+        { requestId: r.requestId, errorReason: "ConnectionRefused" }, sessionId); }
+      catch (e) { /* already gone */ }
+    }
+    await evaluate(cdp, sessionId, REBUILD_TEARDOWN);
+    await cdp.send("Fetch.disable", {}, sessionId);
+    const rd = JSON.stringify(rb) + " · " + gens.length + " generation(s) of .beam " +
+      "inside a " + WIN + "ms window · read at " + elapsed + "ms since first sight";
+    if (rb && rb.dead && rb.caps === 0 && rb.imgs === 0 &&
+        /REBUILT/.test(rb.handle || "")) {
+      ok("a REPAINTED pending portrait gives up at the ORIGINAL deadline", rd);
+    } else {
+      bad("a REPAINTED pending portrait gives up at the ORIGINAL deadline",
+          rd + " — every repaint re-armed the window and discarded the old " +
+          "one, so the deadline recedes for as long as the board is busy and " +
+          "the pad hums for ever: a spinner that lies, which is the exact " +
+          "thing ownerNode()'s own comment says the give-up prevents");
     }
   }
 

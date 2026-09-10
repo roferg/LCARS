@@ -307,6 +307,37 @@ var AVATAR_GIVE_UP_MS = 8000;
    portrait, and it arrives once. */
 var AVATAR_ARRIVED = {};
 
+/* …and the OTHER side of the same fact, which the memo above was missing.
+
+   S196.1. `AVATAR_ARRIVED` remembers the arrival across repaints; the FAILURE
+   side lived only in `ownerNode`'s closure — the `giveUp` handle and the
+   `closed` flag — and a closure dies with its node. THE SSE TICK REBUILDS THE
+   `.beam` NODE EVERY 3.4–5.6s DURING A MISSION, so every rebuild armed a fresh
+   eight-second window and dropped the previous one before it could expire. The
+   deadline receded for exactly as long as the board stayed busy, which is most
+   of a mission: a blackholed portrait was measured still humming at 14s and
+   16s, six `.beam` generations in twenty seconds, while the same portrait on
+   an IDLE board collapsed at 8s.
+
+   So the failure side gets memos of its own, in the same idiom, and the window
+   is recorded as a DEADLINE rather than a duration — a rebuilt node computes
+   the time REMAINING and never restarts the clock.
+
+     AVATAR_DEADLINE  when this portrait's window runs out (absolute ms).
+     AVATAR_FAILED    it is already known to be missing. STICKY, or a collapsed
+                      pill flickers back into a humming pad on the next tick.
+     AVATAR_TIMER     the ONE live give-up timer for this portrait, so a repaint
+                      replaces it instead of stacking another beside it.
+
+   BOUNDING: none, deliberately. All four are keyed by avatar src, so the set
+   is the DISTINCT PEOPLE with missions on this board — the same bound
+   `AVATAR_ARRIVED` already accepts, a handful of booleans for a fleet. The two
+   transient maps prune themselves the moment a portrait settles either way, so
+   only the two settled-state booleans persist for the life of the page. */
+var AVATAR_DEADLINE = {};
+var AVATAR_FAILED = {};
+var AVATAR_TIMER = {};
+
 function ownerNode(m) {
   var o = m && m.owner;
   if (!o || !o.login) return null;
@@ -332,13 +363,39 @@ function ownerNode(m) {
     img.setAttribute("referrerpolicy", "no-referrer");
 
     var closed = !!AVATAR_ARRIVED[src];   // has this portrait's fate been settled?
+    var gone = false;   // …and specifically: has the cap been given up on?
     var giveUp = null;
+
+    /* Drop the give-up window — this node's own handle AND the one the module
+       remembers for this src. Both, because a repaint builds a new node that
+       inherits nothing: without the second line each generation of the `.beam`
+       leaves its abandoned timer running (six of them in twenty seconds of a
+       real mission), every one of which later fires on a node that has long
+       since left the document. */
+    function disarm() {
+      if (giveUp !== null) { clearTimeout(giveUp); giveUp = null; }
+      if (AVATAR_TIMER[src]) { clearTimeout(AVATAR_TIMER[src]); }
+      delete AVATAR_TIMER[src];
+    }
 
     /* No portrait. Identical for a hard error and for one that never came,
        because they are the same fact about the pill. */
     function collapse() {
-      if (giveUp !== null) { clearTimeout(giveUp); giveUp = null; }
+      disarm();
       closed = true;
+      // REMEMBERED, not merely done. The next SSE tick rebuilds this node from
+      // nothing; without the memo it would paint a fresh transporter pad over
+      // a portrait already known to be missing, once per tick, for ever.
+      AVATAR_FAILED[src] = true;
+      gone = true;
+      delete AVATAR_DEADLINE[src];
+      // …and the memo of an ARRIVAL that has since been disproved. The error
+      // handler is armed on an already-arrived portrait too (a cache can be
+      // evicted between two ticks); without this line `AVATAR_ARRIVED` would
+      // keep shadowing `AVATAR_FAILED` and every repaint would rebuild a disc
+      // around an image known to fail, collapsing it again — a pill that
+      // flickers once per SSE tick for the rest of the session.
+      delete AVATAR_ARRIVED[src];
       if (cap.parentNode) cap.parentNode.removeChild(cap);
       wrap.className = "owner dead";
     }
@@ -350,25 +407,51 @@ function ownerNode(m) {
     if (AVATAR_ARRIVED[src]) {
       // AT REST. Visible, unanimated, exactly the pill this was before S196.
       beam.className = "beam settled";
+    } else if (AVATAR_FAILED[src]) {
+      // ALREADY GIVEN UP ON. Straight to the handle-alone pill, with no pad and
+      // no second window: a settled failure is as sticky as a settled arrival.
+      collapse();
     } else {
-      beam.className = "beam loading";
-      giveUp = setTimeout(function () {
-        giveUp = null;
-        if (!closed) collapse();
-      }, AVATAR_GIVE_UP_MS);
-      img.addEventListener("load", function () {
-        if (closed) return;
-        closed = true;
-        // CANCEL the window — do not merely out-race it, or every face on the
-        // board would vanish AVATAR_GIVE_UP_MS after it appeared.
-        if (giveUp !== null) { clearTimeout(giveUp); giveUp = null; }
-        AVATAR_ARRIVED[src] = true;
-        beam.className = "beam done";
-      });
+      // THE DEADLINE, not the duration. Recorded on FIRST SIGHT of this src and
+      // then honoured by every rebuild, which arms only the time REMAINING —
+      // otherwise a board that repaints faster than the window is a board on
+      // which the window never expires at all.
+      var now = Date.now();
+      if (!AVATAR_DEADLINE[src]) AVATAR_DEADLINE[src] = now + AVATAR_GIVE_UP_MS;
+      var left = AVATAR_DEADLINE[src] - now;
+      if (left <= 0) {
+        collapse();
+      } else {
+        beam.className = "beam loading";
+        disarm();   // whatever the previous generation of this node armed
+        giveUp = setTimeout(function () {
+          giveUp = null;
+          delete AVATAR_TIMER[src];
+          if (!closed) collapse();
+        }, left);
+        AVATAR_TIMER[src] = giveUp;
+        img.addEventListener("load", function () {
+          if (closed) return;
+          closed = true;
+          // CANCEL the window — do not merely out-race it, or every face on the
+          // board would vanish AVATAR_GIVE_UP_MS after it appeared.
+          disarm();
+          AVATAR_ARRIVED[src] = true;
+          delete AVATAR_DEADLINE[src];
+          beam.className = "beam done";
+        });
+      }
     }
-    beam.appendChild(img);
-    cap.appendChild(beam);
-    wrap.appendChild(cap);
+    // Only if the pill still HAS a cap. `collapse()` above runs before the cap
+    // is in the tree, so an unconditional append would put the empty disc back
+    // on a pill that had just decided it has no portrait to show. `gone`, NOT
+    // `closed`: an ARRIVED portrait is settled too, and it very much keeps its
+    // cap.
+    if (!gone) {
+      beam.appendChild(img);
+      cap.appendChild(beam);
+      wrap.appendChild(cap);
+    }
   } else {
     wrap.className = "owner dead";
   }
