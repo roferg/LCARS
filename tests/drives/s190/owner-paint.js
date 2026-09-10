@@ -1307,6 +1307,36 @@ async function main() {
       bad("a filtered board says so in its own status line",
           JSON.stringify(afterKey.status));
     }
+    /* …AND BOTH ITS NUMBERS COUNT THE BOARD THE CAPTAIN IS LOOKING AT. S196 B5
+       fix round 1, and the reason this fixture now carries a DONE card:
+       `board.missions` excludes done, `board.columns` does not, and the first
+       cut of this sentence took its numerator AND its denominator off
+       `missions` while the chip above it and the heads beside it counted
+       `columns`. On a board with one done mission that is `MINE · 3`, three
+       cards drawn, and a footer reading "2 of 6" — three numbers, two of them
+       wrong, in one glance. Read here off the DOM: the numerator against the
+       cards ACTUALLY drawn, the denominator against the ALL chip. The word
+       "active" is barred outright — the honest unfiltered line owns it, and
+       borrowing it for a sentence counting every card would re-tell the lie in
+       words instead of digits. */
+    const nOfM = /(-?\d+)\s+of\s+(-?\d+)/.exec(afterKey.status || "");
+    const allChip = afterKey.chips.filter((c) => c.id === "all")[0];
+    const sd = JSON.stringify(afterKey.status) + " over " +
+      afterKey.cards.length + " card(s) drawn of " +
+      (allChip ? allChip.count : "?") + " on the board" +
+      (nOfM ? "" : " (no `N of M` in it at all)");
+    if (!nOfM || !allChip) {
+      bad("the filtered status line counts the CARDS, done included", sd);
+    } else if (Number(nOfM[1]) !== afterKey.cards.length ||
+               Number(nOfM[2]) !== allChip.count) {
+      bad("the filtered status line counts the CARDS, done included",
+          sd + " — wanted " + afterKey.cards.length + " of " + allChip.count);
+    } else if (/active/i.test(afterKey.status)) {
+      bad("the filtered status line counts the CARDS, done included",
+          sd + " — it says `active` while counting every card, done included");
+    } else {
+      ok("the filtered status line counts the CARDS, done included", sd);
+    }
     await shoot(cdp, sessionId,
       { x: 0, y: 0, w: fit.w, h: Math.min(fit.h, 900) },
       "filtered-board.png", 1, 0);

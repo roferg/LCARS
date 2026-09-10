@@ -196,12 +196,25 @@ fx.plant_simple(root, "m-align-mine", stage="align", issue=103,
 fx.plant_simple(root, "m-align-theirs", stage="align", issue=104,
                 title="Theirs — I cannot drive this",
                 created="2026-06-04T10:00:00Z")
+# S196 B5 FIX ROUND 1 — THE DONE CARD, and it is the entire fixture for that
+# defect. `assemble()` (web/lcars_serve/board.py) puts EVERY card in its Stage
+# column, done included, but keeps done OUT of `board.missions`, because that
+# list backs the "N active missions" count. With no done card on the board the
+# two populations are IDENTICAL and a footer counting the wrong one reads
+# perfectly correct — which is why 53 unit tests and this drive both missed it.
+# With one: 7 cards on the board, 3 of them mine, 6 active. Assigned to ME on
+# purpose, so it moves the NUMERATOR as well; a done card owned by somebody
+# else would only have moved the denominator.
+fx.plant_simple(root, "m-done-mine", stage="done", issue=105,
+                title="Mine — finished, and still on the board",
+                created="2026-06-05T10:00:00Z")
 # The published-owner files ownership.sh writes. Planted, not fetched: the
 # daemon reads them off disk on the render path and this rig never needs a forge.
 cache = os.path.join(root, ".git", "lcars", "cache")
 os.makedirs(cache, exist_ok=True)
 for issue, login in ((101, "roferg"), (102, "picard"),
-                     (103, "roferg"), (104, "picard")):
+                     (103, "roferg"), (104, "picard"),
+                     (105, "roferg")):
     with open(os.path.join(cache, "owner-github.com-%d" % issue), "w") as fh:
         fh.write(login + "\n")
 PYEOF
@@ -330,7 +343,8 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
                  owner-pill-colour-only remote-lock-looks-live \
                  remote-keeps-dead-controls adopt-stutters \
                  filter-draws-everything filter-counts-lie \
-                 filter-forgets-on-reload filter-refetches-the-board; do
+                 filter-forgets-on-reload filter-refetches-the-board \
+                 filter-footer-counts-active-only; do
     i=$((i + 1))
     BROKEN="$WORK/broken-$variant"
     mkdir -p "$BROKEN"
@@ -450,6 +464,23 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
       #    chip. This is the control the gh-invocation count exists for.
       filter-refetches-the-board)
         "${LCARS_SED_BIN:-sed}" -i.bak 's|^  repaintBoard();$|  fetch("/api/board").then(function (r) { return r.json(); }).then(render);|' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # ── S196 B5 FIX ROUND 1. THE DEFECT, VERBATIM: the footer goes back to
+      #    counting `board.missions` — which EXCLUDES done — while the chips
+      #    and the column heads keep counting `board.columns`, which does not.
+      #    Nothing else on the page moves, which is precisely what made it hard
+      #    to see: the strip is right, the heads are right, the cards are
+      #    right, and one sentence at the bottom quietly says "2 of 6" over
+      #    three drawn cards under a chip reading 3. It can only go red at all
+      #    because the fixture now carries a done mission — with an all-active
+      #    board this patch is a no-op on screen, and a control that cannot go
+      #    red is worse than no control at all.
+      filter-footer-counts-active-only)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's#^    var total = allCards.length;$#    var total = (board.missions || []).length; allCards = board.missions || [];#' "$JS"
         if cmp -s "$JS" "$JS.bak"; then
           printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
           FAILED=1; PATCHED=0

@@ -2400,7 +2400,8 @@ function render(board) {
      below. captureForgeIdentity() ran above, so `selfLogin` is already settled
      — the facets that need to know who we are are asking a question that has an
      answer by the time they ask it. */
-  var counts = ownerFilterCounts(boardCards(board));
+  var allCards = boardCards(board);
+  var counts = ownerFilterCounts(allCards);
   var offered = ownerFilterOffered(counts);
   var active = ownerFilterEffective(offered);
   renderOwnerFilter(counts, offered, active);
@@ -2431,11 +2432,25 @@ function render(board) {
   // active missions" over three drawn cards is the board lying about itself in
   // the sentence whose whole job is to say what is on it. Byte-identical to the
   // line above whenever nothing is filtered, which is every board before B5.
+  //
+  // S196 B5 FIX ROUND 1 — AND IT COUNTS THE POPULATION IT IS DESCRIBING.
+  // `board.missions` EXCLUDES done (assemble(), lcars_serve/board.py); the
+  // chips and the column heads count `board.columns`, which includes it. The
+  // first cut of this line took its numerator AND its denominator off
+  // `missions`, so the moment one done card existed the footer disagreed with
+  // both the chip above it and the cards beside it — the exact failure the
+  // boardCards() comment was written to prevent, committed six lines below it.
+  // So the FILTERED sentence counts DRAWN CARDS, both halves, and it drops the
+  // word "active" precisely because it is no longer the active-only list: "4
+  // of 7 missions" is a claim about the board, and 7 cards are on the board.
+  // The UNFILTERED line below is untouched — `n` active missions, worded
+  // "active", byte-identical to every board before B5.
   if (active.length) {
-    var shown = (board.missions || []).filter(function (m) {
+    var total = allCards.length;
+    var shown = allCards.filter(function (m) {
       return ownerFilterShows(m, active);
     }).length;
-    setIdleStatus(shown + " of " + n + " mission" + (n === 1 ? "" : "s")
+    setIdleStatus(shown + " of " + total + " mission" + (total === 1 ? "" : "s")
       + " · filtered");
   } else {
     setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));

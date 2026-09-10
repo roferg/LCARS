@@ -125,6 +125,24 @@ def mixed_board(self_login=ME):
     }, self_login=self_login)
 
 
+# THE SAME BOARD WITH ONE DONE CARD ON IT — the board a fresh tester built in
+# real Chrome, and the one shape mixed_board() above quietly does not model.
+# `assemble()` (web/lcars_serve/board.py) puts every card in its Stage column
+# INCLUDING done, but keeps done OUT of `missions`, because `missions` backs the
+# "N active missions" count. So on any real board with a done card the two
+# populations DIFFER — and every count the filter prints has to say which one it
+# is talking about. Seven cards drawn, four of them mine (m1, m2, the remote r2
+# and the done d1); six ACTIVE.
+def done_board(self_login=ME):
+    brd = board({
+        "align": [mine("m1"), theirs("t1"), nobodys("u1")],
+        "verify": [mine("m2"), remote("r1"), remote("r2", owner=ME)],
+        "done": [mine("d1", stage="done")],
+    }, self_login=self_login)
+    brd["missions"] = [m for m in brd["missions"] if m["stage"] != "done"]
+    return brd
+
+
 class FilterBase(unittest.TestCase):
     def run_board(self, brd, **spec):
         spec["board"] = brd
@@ -302,6 +320,44 @@ class CountsAgreeTest(FilterBase):
 
     def test_an_unfiltered_status_line_is_byte_identical_to_before(self):
         out = self.run_board(mixed_board())
+        self.assertEqual(out["status"], "6 active missions")
+
+    # ── the done card: where the two populations come apart ──
+
+    def test_the_filtered_status_line_counts_what_the_chips_count(self):
+        """S196 B5 fix round 1. `MINE · 4` over four drawn cards under a line
+        reading `3 of 6` is the board contradicting itself in three places at
+        once. The chips and the column heads count `columns`; the status line
+        counted `missions`, which drops done — so with a done card present BOTH
+        of its numbers were wrong. One population, and it is the drawn one."""
+        out = self.run_board(done_board(), keys=[self.click("mine")])
+        chips = self.chips(out)
+        self.assertEqual(chips["all"]["count"], "7")
+        self.assertEqual(chips["mine"]["count"], "4")
+        self.assertEqual(out["status"], "4 of 7 missions · filtered")
+
+    def test_the_filtered_status_line_agrees_with_the_cards_drawn(self):
+        """The numerator is not a number in a sentence — it is a promise about
+        what is on the screen. Checked against the cards, not the chips."""
+        for fid in ("mine", "theirs", "unassigned", "remote"):
+            out = self.run_board(done_board(), keys=[self.click(fid)])
+            drawn = len(self.rendered(out))
+            self.assertTrue(out["status"].startswith(str(drawn) + " of 7 "),
+                            "filter %r draws %d card(s) under %r"
+                            % (fid, drawn, out["status"]))
+
+    def test_a_filtered_line_never_claims_to_be_counting_ACTIVE_missions(self):
+        """The inherited wording is honest because it says `active` and counts
+        the active-only list. The filtered wording counts every drawn card, so
+        it must NOT borrow that word — a `3 of 7 active missions` would be a
+        fresh lie the moment a done card exists."""
+        out = self.run_board(done_board(), keys=[self.click("mine")])
+        self.assertNotIn("active", out["status"])
+
+    def test_an_unfiltered_board_with_a_done_card_still_says_active(self):
+        """And the other half stays put: unfiltered wording is untouched, and
+        `6` there is the active count, not the seven cards on screen."""
+        out = self.run_board(done_board())
         self.assertEqual(out["status"], "6 active missions")
 
 
