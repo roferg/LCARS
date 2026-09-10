@@ -325,11 +325,27 @@ LCARS_HANDOFF_SCHEMA="v1"
 # *about LCARS*, so a PRD quoting an estimate — or a whole decoy envelope — is a
 # document this project has already been handed in anger. Recorded fields win.
 #
-# Only the three PILL facts travel, not the whole estimate: the per-stage token
-# and request tables are local working data (`.git/lcars/` stays the source of
-# richness — the round's standing invariant), and a partial estimate.json is
-# harmless downstream because resolve_stage_model reads `models`, finds none, and
-# emits the legacy no-`--model` argv.
+# WHAT TRAVELS: the three PILL facts AND the per-stage `models` map. The token
+# and request tables do NOT — those are local working data (`.git/lcars/` stays
+# the source of richness, the round's standing invariant) and nothing downstream
+# reads them.
+#
+# THE MODELS MAP WAS THE HALF THIS SHIPPED WITHOUT, and the comment that used to
+# stand here said losing it was "harmless downstream because resolve_stage_model
+# reads `models`, finds none, and emits the legacy no-`--model` argv". A tester
+# on two genuinely cold clones MEASURED that it is not harmless: the filing
+# laptop spawned `claude … --model sonnet` and the adopted clone spawned
+# `claude …` with no `--model` on any of its three invocations, so one mission
+# ran on two different model policies depending on which laptop held it — and
+# the board's `modelMix` went to `[]` on the one that adopted it.
+#
+# It rides as ONE FLAT STRING, `estModels`: `key=tier` pairs comma-joined in the
+# estimate's own stage order. Flat because every envelope field is read by the
+# same by-key SCALAR reader (`lcars_handoff_field`); a nested object would need a
+# second reader on both sides and would not survive that one. The consumer
+# rebuilds `models` from these RECORDED pairs and never recomputes tiers from the
+# criticalities — a recomputation is an inference, and it drifts from what the
+# filing laptop actually chose.
 #
 # Absent estimate.json, or a cost block in a shape these readers do not
 # understand, emits NOTHING — an absent fact stays absent rather than becoming a
@@ -395,11 +411,32 @@ lcars_ib_estimate_kv() {
     if [ -z "${low:-}" ] && [ -z "${high:-}" ]; then unit=""; fi
   fi
 
+  # The per-stage model map, flattened to `key=tier,key=tier…` IN THE ESTIMATE'S
+  # OWN ORDER (the order the estimator emitted, which is the order the board
+  # renders). Each pair is validated on the way out — a key that is not a bare
+  # identifier, or a tier that is not a bare alias token, is DROPPED rather than
+  # escaped into the envelope, so nothing a worker wrote can reshape the field.
+  local models mstr=""
+  models="$(lcars_ib_jscope "$blob" models)"
+  if [ -n "$models" ]; then
+    mstr="$(printf '%s' "$models" | awk '
+      { s = $0; out = ""; sep = ""
+        while (match(s, /"[A-Za-z][A-Za-z0-9_]*"[ \t]*:[ \t]*"[^"]*"/)) {
+          p = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+          k = p; sub(/^"/, "", k); sub(/".*$/, "", k)
+          v = p; sub(/^"[^"]*"[ \t]*:[ \t]*"/, "", v); sub(/"$/, "", v)
+          if (v !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) continue
+          out = out sep k "=" v; sep = ","
+        }
+        print out }')"
+  fi
+
   [ -n "$unit" ] && out="$out,\"estCostUnit\":$(lcars_ib_jstr "$unit")"
   [ -n "$unit" ] && [ -n "${low:-}" ]  && out="$out,\"estCostLow\":$low"
   [ -n "$unit" ] && [ -n "${high:-}" ] && out="$out,\"estCostHigh\":$high"
   [ -n "$reason" ] && out="$out,\"estReasoning\":$(lcars_ib_jstr "$reason")"
   [ -n "$impl" ]   && out="$out,\"estImpl\":$(lcars_ib_jstr "$impl")"
+  [ -n "$mstr" ]   && out="$out,\"estModels\":$(lcars_ib_jstr "$mstr")"
   printf '%s' "$out"
 }
 
@@ -449,10 +486,12 @@ lcars_handoff_envelope() {
   local parked=""
   [ "$o_parked" = "true" ] && parked=',"parked":true'
 
-  # S196 A5 — the three ESTIMATE pill facts, when the mission records them. They
-  # ride at the END so every byte before them is unchanged from S188's envelope,
-  # and they are ADDITIVE within v1: `lcars_handoff_field` reads by key, so an
-  # older LCARS parsing this envelope sees exactly what it saw before.
+  # S196 A5 — the ESTIMATE facts (the three pill values and the per-stage model
+  # map), when the mission records them. They ride at the END so every byte
+  # before them is unchanged from S188's envelope, and they are ADDITIVE within
+  # v1: `lcars_handoff_field` reads by key, so an older LCARS parsing this
+  # envelope sees exactly what it saw before, and a body from before this round
+  # simply carries none of them.
   local estkv; estkv="$(lcars_ib_estimate_kv "$mdir")"
 
   printf '<!-- lcars:handoff %s {"id":%s,"branch":%s,"base":%s,"type":%s,"engine":%s,"parentIssue":%s,"attachments":%s%s%s} -->' \
@@ -573,7 +612,7 @@ lcars_handoff_parse() {
   j="$(lcars_handoff_json "$f")"
   [ -n "$j" ] || return 0
   for k in id branch base type engine parentIssue attachments parked \
-           estCostUnit estCostLow estCostHigh estReasoning estImpl; do
+           estCostUnit estCostLow estCostHigh estReasoning estImpl estModels; do
     case "$j" in *"\"$k\":"*) : ;; *) continue ;; esac
     printf '%s\t%s\n' "$k" "$(lcars_handoff_field "$f" "$k")"
   done

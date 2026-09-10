@@ -29,7 +29,16 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 RELABEL_NOTE=""
 
-die() { printf 'lcars pause: %s\n' "$1" >&2; exit 1; }
+# One script, TWO verbs — so the name in front of the colon is a VARIABLE, set
+# from the subcommand at dispatch. It used to be hard-coded `lcars pause`, and
+# `lcars resume <id>` on someone else's mission answered `lcars pause: assigned
+# to …`: the sentence was right and the verb named was one the captain had not
+# typed. The SENTENCE itself is a shared contract (ownership.sh owns those bytes,
+# and tests/ownership.test.sh D17 compares eight verbs' refusals against it) and
+# is NOT touched here — only the prefix. `pause` stays the default so a failure
+# raised before the subcommand is known still has a name.
+DIE_VERB="pause"
+die() { printf 'lcars %s: %s\n' "$DIE_VERB" "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as run.sh / respond.sh) ----------
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
@@ -192,6 +201,9 @@ cmd_resume() {
 
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
+# Name the verb the captain typed BEFORE anything can die (the usage errors
+# below are raised by this script for that subcommand, not for its sibling).
+case "$SUB" in resume) DIE_VERB="resume" ;; esac
 MISSION_ID="${1:-}"; [ $# -gt 0 ] && shift
 [ $# -eq 0 ] || die "unexpected argument: $1"
 

@@ -875,11 +875,24 @@ fi
 # captain's prose, for the reason stated at the top of this file, and behaviour
 # P1 in the suite hands it a PRD quoting a decoy envelope to keep it honest.
 #
-# Only the PILL facts are rebuilt — the per-stage token/request tables stay on
-# the laptop that computed them (`.git/lcars/` is the local source of richness;
-# nothing here starts syncing internal artifacts). A partial estimate.json is
-# safe downstream: resolve_stage_model reads `models`, finds none, and emits the
-# legacy no-`--model` argv.
+# The PILL facts AND the per-stage MODEL MAP are rebuilt; the token/request
+# tables stay on the laptop that computed them (`.git/lcars/` is the local source
+# of richness — nothing here starts syncing internal artifacts, and nothing
+# downstream reads those tables).
+#
+# THE MODEL MAP IS WHY THIS BLOCK WAS ONLY HALF-RIGHT WHEN IT SHIPPED. The
+# comment that stood here called a `models`-less estimate.json "safe downstream:
+# resolve_stage_model reads `models`, finds none, and emits the legacy
+# no-`--model` argv". A tester on two genuinely cold clones measured that it is
+# not safe — it is a SILENT DIVERGENCE: the laptop that filed the mission spawned
+# `claude … --model sonnet` and this one spawned `claude …` with no `--model` at
+# all, and the board's `modelMix` was `[]` here and six rows there. Same mission,
+# two model policies.
+#
+# The tiers are READ OUT of the envelope's recorded `estModels` field and written
+# back verbatim. They are NEVER recomputed from the two criticalities: that is an
+# inference, and an inference at the adopting end drifts from what the filing
+# laptop's estimator actually chose. Same rule as the prose (R9), one layer down.
 #
 # A LOCAL estimate.json is never overwritten. Local artifacts survive a refresh
 # — the same rule feedback.md, research findings and events.jsonl live by — and
@@ -890,19 +903,47 @@ if [ ! -f "$MISSION_DIR/estimate.json" ]; then
   EST_HIGH="$(lcars_handoff_field "$BODY" estCostHigh)"
   EST_REASON="$(lcars_handoff_field "$BODY" estReasoning)"
   EST_IMPL="$(lcars_handoff_field "$BODY" estImpl)"
+  EST_MODELS="$(lcars_handoff_field "$BODY" estModels)"
   case "$EST_UNIT"   in usd|premiumRequests) : ;; *) EST_UNIT="" ;; esac
   case "$EST_REASON" in low|medium|high) : ;; *) EST_REASON="" ;; esac
   case "$EST_IMPL"   in low|medium|high) : ;; *) EST_IMPL="" ;; esac
   case "$EST_LOW"    in ''|*[!0-9.]*) EST_LOW="" ;; esac
   case "$EST_HIGH"   in ''|*[!0-9.]*) EST_HIGH="" ;; esac
   [ -n "$EST_LOW$EST_HIGH" ] || EST_UNIT=""
-  if [ -n "$EST_UNIT$EST_REASON$EST_IMPL" ]; then
+
+  # `estModels` is `key=tier,key=tier…` in the estimate's own stage order. Each
+  # pair is re-validated HERE too — the producer validates on the way out, and a
+  # consumer that trusts a field because the producer promised to is exactly how
+  # an issue body anyone can edit becomes an injection. A pair that fails is
+  # dropped; the surviving pairs still carry.
+  # One pair per line (a here-string, NOT a pipe: a `while` on the right of a
+  # pipe runs in a subshell and MODELS_JSON would come back empty), and the
+  # global IFS is never touched.
+  MODELS_JSON=""
+  if [ -n "$EST_MODELS" ]; then
+    _msep=""
+    while IFS= read -r _pair; do
+      case "$_pair" in *=*) : ;; *) continue ;; esac
+      _mk="${_pair%%=*}"; _mv="${_pair#*=}"
+      case "$_mk" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+      case "$_mv" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+      MODELS_JSON="$MODELS_JSON$_msep    \"$_mk\": \"$_mv\""
+      _msep=$',\n'
+    done <<<"$(printf '%s' "$EST_MODELS" | tr ',' '\n')"
+  fi
+
+  if [ -n "$EST_UNIT$EST_REASON$EST_IMPL$MODELS_JSON" ]; then
     {
       printf '{\n'
       printf '  "schemaVersion": 3,\n'
       printf '  "adoptedFrom": %s,\n' "$ISSUE"
       [ -n "$EST_REASON" ] && printf '  "reasoningCriticality": "%s",\n' "$EST_REASON"
       [ -n "$EST_IMPL" ]   && printf '  "implCriticality": "%s",\n' "$EST_IMPL"
+      # Same key name, same shape and same position as the canonical estimate.json
+      # run.sh writes, so resolve_stage_model's `models.<key>` read and the
+      # board's model_mix_from_estimate see no difference between an adopted
+      # estimate and a locally computed one.
+      [ -n "$MODELS_JSON" ] && printf '  "models": {\n%s\n  },\n' "$MODELS_JSON"
       if [ -n "$EST_UNIT" ]; then
         printf '  "cost": {\n'
         printf '    "unit": "%s",\n' "$EST_UNIT"

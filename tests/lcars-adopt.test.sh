@@ -1659,6 +1659,110 @@ check "G3. a re-adopt does NOT overwrite a local estimate.json" \
 check "G3. and it still PARSES" "json_ok '$EG1'"
 
 # ==========================================================================
+# S196 FIX D1 — AND THE PER-STAGE MODEL TIERS SURVIVE IT TOO.
+# ==========================================================================
+# A5 shipped HALF-CARRIED. The two difficulty pills and the cost pill survived
+# adoption; the per-stage MODEL MAP did not, because the envelope recorded the
+# criticalities and nothing else. A5's own comment reasoned that a `models`-less
+# estimate.json was "harmless downstream" — the tester MEASURED otherwise on two
+# genuinely cold clones: laptop A spawned `claude … --model sonnet`, and the
+# ADOPTED clone spawned `claude …` with NO `--model` on all three invocations.
+# Same mission, two different model policies, and the board's modelMix went to
+# `[]` on the laptop that adopted it.
+#
+# RECORDED, NEVER RE-DERIVED. The tiers ride the envelope as one flat
+# `estModels` field, `key=tier` in the estimate's own order. Adopt rebuilds
+# `models` FROM THAT — it does not recompute tiers from the criticalities and it
+# does not re-scan the "## Estimate" prose, both of which are inferences that
+# drift from what the filing laptop actually chose (R9; S147/S156/S188).
+est_full_envelope() { # id branch base type engine parent attach reason impl models
+  printf '<!-- lcars:handoff v1 {"id":"%s","branch":"%s","base":"%s","type":"%s","engine":"%s","parentIssue":%s,"attachments":%s,"estReasoning":"%s","estImpl":"%s","estModels":"%s"} -->' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
+}
+# models.<key> out of the rebuilt file (json_get is top-level only).
+est_model_of() { # <estimate.json> <stage-key>
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); m=d.get("models") or {}
+sys.stdout.write(str(m.get(sys.argv[2]) or ""))' "$1" "$2" 2>/dev/null
+}
+G4_MODELS='research=opus,validate=sonnet,plan=opus,planReview=sonnet,implement=opus,verify=sonnet'
+IFS="$TAB" read -r repoG4 originG4 <<<"$(new_repo)"
+FIXG4="$(new_fixture "$TMPROOT/fixG4")"
+mk_body "$FIXG4/issue-72.body" "$PRD_TEXT" \
+  "$(est_full_envelope "lcars-20260909-072" "lcars/lcars-20260909-072" main feature claude null 0 \
+       high medium "$G4_MODELS")"
+printf 'Model tiers carry over\n' >"$FIXG4/issue-72.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXG4/issue-72.labels"
+adopt_engine "$repoG4" "$FIXG4" 72 "$BOTH_PATH" </dev/null >/dev/null 2>&1
+MG4="$(mdir_of "$repoG4" "lcars-20260909-072")"
+EG4="$MG4/estimate.json"
+check "G4. adopt writes an estimate.json" "[ -f '$EG4' ]"
+check "G4. and it PARSES" "json_ok '$EG4'"
+check "G4. the RECORDED per-stage model map is rebuilt (plan)" \
+  "[ \"\$(est_model_of '$EG4' plan)\" = 'opus' ]"
+check "G4. …and it is the WHOLE map, in the estimate's own stage order" \
+  "[ \"\$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))[\"models\"]; sys.stdout.write(\",\".join(\"%s=%s\" % kv for kv in m.items()))' '$EG4')\" = '$G4_MODELS' ]"
+check "G4. …the tiers are the RECORDED ones, not one tier smeared over all six" \
+  "[ \"\$(est_model_of '$EG4' validate)\" = 'sonnet' ] && [ \"\$(est_model_of '$EG4' implement)\" = 'opus' ]"
+
+# THE BOARD. `modelMix` was `[]` on the adopted card while the same mission
+# showed six rows on the laptop that filed it — through the REAL shape function.
+mix_len_of() { # <estimate.json> <engine> → row count ("-" for None)
+  python3 - "$1" "$2" "$REPO_ROOT/web" <<'PY2'
+import json, sys
+sys.path.insert(0, sys.argv[3])
+from lcars_serve import board
+mix = board.model_mix_from_estimate(json.load(open(sys.argv[1])), sys.argv[2])
+sys.stdout.write("-" if mix is None else str(len(mix)))
+PY2
+}
+check "G4. THE BOARD'S MODEL MIX RENDERS on the adopted card (was [] / none)" \
+  "[ \"\$(mix_len_of '$EG4' claude)\" = '6' ]"
+
+# THE SPAWN — the measurement the tester made, re-armed. Same mission, same
+# stage: the adopted clone must hand the worker the tier the filing laptop chose.
+shim_reset
+spawn_with "$repoG4" "lcars-20260909-072" "$BOTH_PATH"
+check "G4. the adopted mission spawns the mission's engine ONCE" \
+  "[ \"\$(shim_count claude)\" = '1' ]"
+check "G4. THE ADOPTED MISSION NOW SPAWNS WITH --model (it carried none before)" \
+  "[ \"\$(shim_model_count claude)\" = '1' ]"
+check "G4. …on the RECORDED tier for that stage, not a default" \
+  "grep -q -- '--model opus' '$SHIMLOG/claude.log'"
+# And every stage key resolves to the tier the estimate recorded — one drive
+# through the real resolver, not a re-reading of the file we just wrote.
+G4_RESOLVED="$( cd "$repoG4" && env -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL \
+  -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+  PATH="$BOTH_PATH:$PY_DIR" bash -c '
+    for k in research validate plan planReview implement verify; do
+      bash "$1" resolve-stage-model --mission "$2" "$k" 2>/dev/null
+    done' _ "$RUN_SH" "lcars-20260909-072" | tr "\n" " " )"
+check "G4. every stage resolves to its RECORDED tier through resolve_stage_model" \
+  "[ \"\$G4_RESOLVED\" = 'STAGE-MODEL key=research model=opus STAGE-MODEL key=validate model=sonnet STAGE-MODEL key=plan model=opus STAGE-MODEL key=planReview model=sonnet STAGE-MODEL key=implement model=opus STAGE-MODEL key=verify model=sonnet ' ]"
+
+# G5. ADDITIVE WITHIN v1: a body filed BEFORE this fix — the five estimate keys
+# and no `estModels` — still adopts, still gets its pills, and carries NO model
+# map. An absent fact stays absent; adopt never invents a default tier.
+IFS="$TAB" read -r repoG5 originG5 <<<"$(new_repo)"
+FIXG5="$(new_fixture "$TMPROOT/fixG5")"
+mk_body "$FIXG5/issue-73.body" "$PRD_TEXT" \
+  "$(est_envelope "lcars-20260909-073" "lcars/lcars-20260909-073" main feature claude null 0 \
+       usd 1.25 4.5 high medium)"
+printf 'A pre-fix envelope\n' >"$FIXG5/issue-73.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXG5/issue-73.labels"
+rcG5=0
+adopt_engine "$repoG5" "$FIXG5" 73 "$BOTH_PATH" </dev/null >/dev/null 2>&1 || rcG5=$?
+EG5="$(mdir_of "$repoG5" "lcars-20260909-073")/estimate.json"
+check "G5. a PRE-FIX envelope (no estModels) still adopts cleanly" "[ '$rcG5' -eq 0 ]"
+check "G5. …its estimate.json PARSES" "json_ok '$EG5'"
+check "G5. …the pills still carry (the fix is additive, not a replacement)" \
+  "[ \"\$(json_get '$EG5' reasoningCriticality)\" = 'high' ]"
+check "G5. …and NO model map is invented for it" \
+  "! grep -q '\"models\"' '$EG5'"
+check "G5. …so the board shows its graceful note, not an empty table" \
+  "[ \"\$(mix_len_of '$EG5' claude)\" = '-' ]"
+
+# ==========================================================================
 echo
 printf 'lcars adopt: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

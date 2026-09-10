@@ -711,6 +711,15 @@ rcRe=0
 check "D11. \`lcars resume\` REFUSES a mission owned by someone else" "[ '$rcRe' -ne 0 ]"
 check "D11. …with the SAME plain line" \
   "grep -Fq 'assigned to someone-else — reassign it to yourself on GitHub to take command' '$repoRe/out.txt'"
+# S196 FIX D2. The SENTENCE was already right; the PREFIX named the sibling verb.
+# `lcars resume` refused with `lcars pause: …` because pause.sh's die() hard-codes
+# one verb for a script that answers to two, so the captain who typed `resume` was
+# told that `pause` had failed. The sentence itself is NOT touched — D17 below
+# re-proves it byte for byte — only the name in front of the colon.
+check "D11. …and the refusal names the verb the captain TYPED, not its sibling" \
+  "grep -Fxq 'lcars resume: assigned to someone-else — reassign it to yourself on GitHub to take command' '$repoRe/out.txt'"
+check "D11. …so nothing in resume's output claims to be \`lcars pause\`" \
+  "! grep -q '^lcars pause:' '$repoRe/out.txt'"
 check "D11. …the paused flag SURVIVES (their mission stays parked)" \
   "[ \"\$(cksum <'$sRe')\" = '$sumRe' ]"
 check "D11. …state.json still parses as JSON" "json_ok '$sRe'"
@@ -892,9 +901,10 @@ outEF="$( cd "$repoEF" && LCARS_GH_USER=capt LCARS_GH_BIN="$GH" \
 check "D17. the daemon's 403 body (ownership.sh lock-reason) is the same bytes" \
   "[ \"\$outEF\" = \"\$OWN_SENTENCE\" ]"
 
-# And now the SEVEN verbs, each refusing for real. `<script-prefix>|<file>`:
-# pause.sh prints `lcars pause:` for both of its subcommands (it is one script),
-# which is why resume shares the prefix.
+# And now the SEVEN verbs, each refusing for real. The prefix is stripped
+# GENERICALLY (`lcars <verb>:`) so this check stays about the SENTENCE: since
+# S196's D2 fix pause.sh names whichever subcommand was typed, and D11 above is
+# what pins that. Do not narrow this pattern to one verb.
 verb_refusal() { # <outfile> -> the refusal line, prefix stripped
   sed -n 's/^lcars [a-z-]*: \(assigned to .*\)$/\1/p' "$1" | head -1
 }

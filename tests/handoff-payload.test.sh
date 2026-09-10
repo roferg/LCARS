@@ -455,13 +455,14 @@ check "6. the schema version is stamped v1" \
   "[ \"\$(bash -c '. \"\$1\"; lcars_handoff_version \"\$2\"' _ '$IB_LIB' '$LANE4_BODY')\" = 'v1' ]"
 
 PARSED="$(bash -c '. "$1"; lcars_handoff_parse "$2"' _ "$IB_LIB" "$LANE4_BODY")"
-# S196 A5 — 7 identity keys + the ESTIMATE PILL FACTS the envelope now records.
-# This fixture's estimate.json carries the two criticalities and NO cost block,
-# so exactly `estReasoning` + `estImpl` ride along: 9. (Was 7 before this
-# session; the number moved because the contract did, not because the parser
-# drifted — see the additive-within-v1 note in lcars_handoff_envelope.)
+# S196 A5 — 7 identity keys + the ESTIMATE facts the envelope now records.
+# This fixture's estimate.json carries the two criticalities and a full per-stage
+# `models` map, and NO cost block — so exactly `estReasoning`, `estImpl` and
+# `estModels` ride along: 10. (Was 7 before this session; the number moves
+# because the contract does, not because the parser drifted — see the
+# additive-within-v1 note in lcars_handoff_envelope.)
 check "6. parse emits one key=value line per envelope key" \
-  "[ \"\$(printf '%s\n' \"\$PARSED\" | wc -l | tr -d ' ')\" = 9 ]"
+  "[ \"\$(printf '%s\n' \"\$PARSED\" | wc -l | tr -d ' ')\" = 10 ]"
 
 # WHY THE ESTIMATE IS IN THE ENVELOPE AT ALL. A REMOTE card's cost + difficulty
 # pills are scraped out of the human "## Estimate" section by the github board
@@ -474,6 +475,23 @@ check "6. round-trip: so is the implementation criticality" \
   "[ \"\$(env_probe x '$LANE4_BODY' estImpl)\" = 'high' ]"
 check "6. an estimate with no cost block records NO cost keys (absent, not zero)" \
   "[ -z \"\$(env_probe x '$LANE4_BODY' estCostUnit)\" ] && [ -z \"\$(env_probe x '$LANE4_BODY' estCostLow)\" ]"
+
+# S196 FIX D1 — AND SO IS THE PER-STAGE MODEL MAP.
+# The pills survived adoption; the MODEL TIERS did not, because the envelope
+# recorded the two criticalities and nothing else. Measured on real clones: the
+# filing laptop spawned `claude … --model sonnet` and the ADOPTING laptop spawned
+# `claude …` with no `--model` at all, on the same mission. The tiers must be
+# RECORDED, exactly like the criticalities — never recomputed at the adopting end
+# from the criticality values, which is an inference that drifts from what the
+# filing laptop actually chose (R9, and S147/S156/S188's scar tissue).
+#
+# One flat `estModels` string, `key=tier` comma-joined in the estimate's own
+# order, so it reads through the SAME by-key scalar reader every other envelope
+# field uses and stays additive within `lcars:handoff v1`.
+check "6. round-trip: the PER-STAGE MODEL MAP is a RECORDED field" \
+  "[ \"\$(env_probe x '$LANE4_BODY' estModels)\" = 'research=sonnet,validate=sonnet,plan=sonnet,planReview=sonnet,implement=sonnet,verify=sonnet' ]"
+check "6. a PARK body (no estimate at all) records no model map" \
+  "[ -z \"\$(env_probe x '$PARK_BODY' estModels)\" ]"
 check "6. a PARK body (no estimate at all) carries no estimate keys" \
   "[ -z \"\$(env_probe x '$PARK_BODY' estReasoning)\" ] && [ -z \"\$(env_probe x '$PARK_BODY' estImpl)\" ]"
 check "6. parse emits a null field as an EMPTY value, not a missing line" \
