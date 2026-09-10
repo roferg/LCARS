@@ -255,8 +255,58 @@ function ownerLockOnVerify(m) {
    the stylesheet closes the cap and the handle stands alone — a complete,
    intentional-looking pill, not a damaged one.
 
+   S196 — AND THE CASE THAT DEGRADE MISSED: A PORTRAIT THAT IS MERELY PENDING.
+   The paragraph above only ever described a portrait that FAILED. One that is
+   still in flight — or that `loading="lazy"` deferred and therefore never even
+   started — painted the exact hole the degrade exists to prevent, and the error
+   handler never fired because nothing errored. The captain hit it for real: a
+   whole capture run of cards wearing a black disc where his face goes.
+
+   THE CURE IS A TRANSPORTER MATERIALIZE, and it is three states with no hole in
+   any of them:
+
+     IN TRANSIT   the disc is a transporter pad — columns of light with a bright
+                  column cycling down through them, LOOPING for as long as the
+                  portrait is loading. The disc is saying something, which is
+                  the whole difference between waiting and broken.
+     ARRIVED      the light dies out and the portrait resolves in from
+                  over-bright and desaturated to its normal seated-in-the-
+                  palette look. The loop STOPS, and `AVATAR_ARRIVED` below makes
+                  sure it does not replay on the next repaint.
+     NEVER ARRIVES after AVATAR_GIVE_UP_MS the cap is removed and the pill takes
+                  the existing `.dead` shape — identical to a hard error,
+                  because a portrait that never comes is not a different kind of
+                  missing. A pad that hums for ever is a spinner that lies.
+
+   The pad is drawn entirely in CSS off `--owner-col`, so it beams amber on the
+   captain's own missions and blue on somebody else's without knowing that fact
+   exists. ADR-007: no new token.
+
    Returns null when there is no owner: a card with nothing to say about
    ownership renders exactly as it did before this round. */
+
+/* How long a portrait may stay in transit before the pill gives up on it.
+
+   A NAMED CONSTANT because the number is a judgement, not an implementation
+   detail: it is the point at which "still loading" stops being a true
+   description of what the captain is looking at. Eight seconds is long enough
+   that a slow connection still gets its faces and short enough that a card left
+   open does not hum at him indefinitely. `setTimeout(fn, 8000)` buried in a
+   render path is the shape nobody ever finds again. */
+var AVATAR_GIVE_UP_MS = 8000;
+
+/* Portraits that have already materialised in this page's lifetime, keyed by
+   src.
+
+   THE BOARD REPAINTS ON EVERY SSE TICK, and each repaint builds brand-new
+   nodes. Without this, a face that arrived once would beam in again on every
+   tick — every card on the board strobing in unison, which is worse than the
+   hole it replaced. The arrival is an event in the CAPTAIN'S session, not in
+   the lifetime of a DOM node, so the memory has to outlive the node. Keyed by
+   src rather than by mission: the same person owning three missions is one
+   portrait, and it arrives once. */
+var AVATAR_ARRIVED = {};
+
 function ownerNode(m) {
   var o = m && m.owner;
   if (!o || !o.login) return null;
@@ -264,19 +314,60 @@ function ownerNode(m) {
   var handle = el("span", "owner-handle", String(o.login).toUpperCase());
   if (o.avatarUrl) {
     var cap = el("span", "owner-av");
+    // THE DISC. It owns the ring and the dark ground the pad lights up; the
+    // portrait inside it is just a fill. (Before S196 the <img> itself carried
+    // the ring, which left nowhere for the pad to be drawn — see board.css.)
+    var beam = el("span", "beam");
     var img = document.createElement("img");
-    img.src = o.avatarUrl;
+    var src = String(o.avatarUrl);
+    img.src = src;
     img.alt = o.login;
-    // Decorative-but-identifying: the handle beside it already carries the name
-    // in text, so a reader that never loads the image loses nothing.
-    img.setAttribute("loading", "lazy");
+    // NO `loading="lazy"`. It was here as a decorative-image courtesy, and on a
+    // 17px avatar the saving is nil — but it interacts badly with the give-up
+    // window below: a DEFERRED image never starts, never loads and never
+    // errors, so it would sit on the pad until the window expired and then be
+    // declared missing. A card the captain has merely not scrolled to would
+    // report that the person has no face.
     // github.com is a third party; send it no referrer from the captain's board.
     img.setAttribute("referrerpolicy", "no-referrer");
-    img.addEventListener("error", function () {
+
+    var closed = !!AVATAR_ARRIVED[src];   // has this portrait's fate been settled?
+    var giveUp = null;
+
+    /* No portrait. Identical for a hard error and for one that never came,
+       because they are the same fact about the pill. */
+    function collapse() {
+      if (giveUp !== null) { clearTimeout(giveUp); giveUp = null; }
+      closed = true;
       if (cap.parentNode) cap.parentNode.removeChild(cap);
       wrap.className = "owner dead";
-    });
-    cap.appendChild(img);
+    }
+    // Always armed, including on a repaint of an already-arrived portrait: a
+    // cache can be evicted between two ticks, and this is the one path that
+    // must never leave an empty disc behind.
+    img.addEventListener("error", collapse);
+
+    if (AVATAR_ARRIVED[src]) {
+      // AT REST. Visible, unanimated, exactly the pill this was before S196.
+      beam.className = "beam settled";
+    } else {
+      beam.className = "beam loading";
+      giveUp = setTimeout(function () {
+        giveUp = null;
+        if (!closed) collapse();
+      }, AVATAR_GIVE_UP_MS);
+      img.addEventListener("load", function () {
+        if (closed) return;
+        closed = true;
+        // CANCEL the window — do not merely out-race it, or every face on the
+        // board would vanish AVATAR_GIVE_UP_MS after it appeared.
+        if (giveUp !== null) { clearTimeout(giveUp); giveUp = null; }
+        AVATAR_ARRIVED[src] = true;
+        beam.className = "beam done";
+      });
+    }
+    beam.appendChild(img);
+    cap.appendChild(beam);
     wrap.appendChild(cap);
   } else {
     wrap.className = "owner dead";

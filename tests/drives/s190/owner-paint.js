@@ -185,6 +185,11 @@ function fill(png) {
 class CDP {
   constructor(ws) {
     this.ws = ws; this.next = 1; this.pending = new Map(); this.pageErrors = [];
+    // S196: requests held by Fetch.enable. Pausing the avatar's own GET is the
+    // only honest way to put the board into the state this session is about —
+    // a portrait that is PENDING, which is neither loaded nor failed and is
+    // therefore the one state no event ever announces.
+    this.paused = [];
     ws.addEventListener("message", (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
       if (msg.id && this.pending.has(msg.id)) {
@@ -193,6 +198,9 @@ class CDP {
         if (msg.error) reject(new Error(msg.method + ": " + JSON.stringify(msg.error)));
         else resolve(msg.result);
         return;
+      }
+      if (msg.method === "Fetch.requestPaused") {
+        this.paused.push(msg.params || {});
       }
       if (msg.method === "Runtime.exceptionThrown") {
         const d = (msg.params && msg.params.exceptionDetails) || {};
@@ -520,6 +528,105 @@ const AVATAR_PROBE = `(function () {
   return { present: true, filter: s.filter,
            naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight,
            complete: !!img.complete };
+})()`;
+
+/* ─────────────── S196 — THE TRANSPORTER MATERIALIZE ────────────────────────
+
+   THE DEFECT. `ownerNode()` handled a portrait that FAILED and never one that
+   was merely PENDING, so an avatar still in flight — or deferred by its own
+   `loading="lazy"` and never started at all — painted a flat dark disc at rest.
+   The captain hit it for real: a whole capture run of cards wearing a black
+   circle where his face goes. Nothing errored, so nothing degraded.
+
+   WHY THIS NEEDS A BROWSER, and specifically needs CDP. "Pending" is the one
+   state that fires no event, and it is invisible to every harness in web/tests
+   for the same reason it was invisible to the product: there is nothing to
+   listen for. Here the avatar's own GET is HELD by `Fetch.enable`, so the real
+   board sits in the real pending state for as long as the drive wants, and the
+   disc can be read — and photographed — in it.
+
+   AND THE GEOMETRY, which is the half a stylesheet test structurally cannot
+   answer. `.owner .owner-av img` is (0,2,1); a bare `.beam img` is (0,1,1) and
+   loses, sizing the portrait at the old explicit 17px inside a 15px disc that
+   clips it — a visibly non-circular avatar with two fighting rings, from a
+   sheet in which every rule reads correct. Only rendered boxes can see that,
+   so the disc's content box and the portrait's border box are MEASURED and
+   required to be the same box. */
+const BEAM_PROBE = `(function (sel) {
+  function num(v) { return parseFloat(v) || 0; }
+  var disc = document.querySelector(sel);
+  if (!disc) return { present: false,
+                      caps: document.querySelectorAll(".owner .owner-av").length,
+                      dead: document.querySelectorAll(".owner.dead").length };
+  var img = disc.querySelector("img");
+  var d = disc.getBoundingClientRect();
+  var ds = getComputedStyle(disc);
+  var af = getComputedStyle(disc, "::after");
+  var bf = getComputedStyle(disc, "::before");
+  var i = img ? img.getBoundingClientRect() : null;
+  var is = img ? getComputedStyle(img) : null;
+  return {
+    present: true,
+    cls: String(disc.className || ""),
+    disc: {
+      w: d.width, h: d.height, x: d.x, y: d.y,
+      overflow: ds.overflow, position: ds.position, radius: ds.borderTopLeftRadius,
+      borderW: num(ds.borderTopWidth),
+      // the CONTENT box — what the portrait is allowed to fill
+      innerW: d.width - num(ds.borderLeftWidth) - num(ds.borderRightWidth)
+                      - num(ds.paddingLeft) - num(ds.paddingRight),
+      innerH: d.height - num(ds.borderTopWidth) - num(ds.borderBottomWidth)
+                       - num(ds.paddingTop) - num(ds.paddingBottom)
+    },
+    img: img ? { w: i.width, h: i.height, x: i.x, y: i.y,
+                 borderW: num(is.borderTopWidth), objectFit: is.objectFit,
+                 opacity: parseFloat(is.opacity || "1"),
+                 filter: is.filter, natural: img.naturalWidth,
+                 lazy: img.getAttribute("loading") } : null,
+    pad: { afterName: af.animationName, afterIter: af.animationIterationCount,
+           beforeName: bf.animationName, beforeIter: bf.animationIterationCount },
+    box: { x: d.x, y: d.y, w: d.width, h: d.height },
+    // the WHOLE pill, for the artefact a human looks at: cap + handle is the
+    // thing the captain recognises, and a disc on its own is not a pill.
+    pill: (function () {
+      var o = disc.closest ? disc.closest(".owner") : null;
+      if (!o) return null;
+      var r = o.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height };
+    })()
+  };
+})`;
+
+/* Build ONE extra owner pill through the page's own `ownerNode()`, on a URL the
+   drive is holding, and park it on the board where it can be measured and shot.
+   The page's real function, the page's real stylesheet — nothing is staged but
+   the URL. */
+const PENDING_BUILD = `(function () {
+  if (typeof ownerNode !== "function") return { fn: false };
+  var old = document.getElementById("s196-beam-probe");
+  if (old && old.parentNode) old.parentNode.removeChild(old);
+  var host = document.createElement("div");
+  host.id = "s196-beam-probe";
+  host.className = "card";
+  host.style.cssText = "position:absolute;left:12px;top:12px;z-index:99999;" +
+                       "padding:12px;";
+  var pill = ownerNode({ owner: { login: "intransit",
+    avatarUrl: "https://github.com/roferg.png?size=64&beam-probe=1" } });
+  if (!pill) return { fn: true, pill: false };
+  host.appendChild(pill);
+  document.body.appendChild(host);
+  return { fn: true, pill: true };
+})()`;
+
+const PENDING_TEARDOWN = `(function () {
+  var host = document.getElementById("s196-beam-probe");
+  var pill = host ? host.querySelector(".owner") : null;
+  var out = { deadPill: !!(pill && /(^| )dead( |$)/.test(pill.className || "")),
+              caps: host ? host.querySelectorAll(".owner-av").length : -1,
+              imgs: host ? host.querySelectorAll("img").length : -1,
+              handle: pill ? (pill.textContent || "").trim() : "" };
+  if (host && host.parentNode) host.parentNode.removeChild(host);
+  return out;
 })()`;
 
 /* ── the run ─────────────────────────────────────────────────────────────── */
@@ -981,6 +1088,145 @@ async function main() {
     }
   }
 
+  // ── S196 — THE TRANSPORTER MATERIALIZE ────────────────────────────────
+  console.log("\nS196 — a portrait that has NOT ARRIVED YET");
+  let beamSettled = null, beamPending = null, beamDead = null;
+
+  // (a) THE SETTLED PILL. "Once loaded it must look EXACTLY as it does today"
+  //     is a claim about rendered boxes, so it is measured as rendered boxes.
+  beamSettled = await evaluate(cdp, sessionId,
+    BEAM_PROBE + '(".card .owner .owner-av .beam")');
+  if (!beamSettled || !beamSettled.present) {
+    skip("the settled portrait fills its disc exactly",
+         "no .beam disc on the board — the cap is " +
+         ((beamSettled && beamSettled.caps) || 0) + " deep and " +
+         ((beamSettled && beamSettled.dead) || 0) + " pill(s) are .dead. NOT a pass.");
+  } else if (!beamSettled.img) {
+    skip("the settled portrait fills its disc exactly", "the disc holds no <img>");
+  } else {
+    const D = beamSettled.disc, I = beamSettled.img;
+    const geo = "disc " + D.w.toFixed(2) + "x" + D.h.toFixed(2) +
+      " (content " + D.innerW.toFixed(2) + "x" + D.innerH.toFixed(2) +
+      ", border " + D.borderW + "px, radius " + D.radius + ", " + D.overflow +
+      ") · portrait " + I.w.toFixed(2) + "x" + I.h.toFixed(2) +
+      " (border " + I.borderW + "px, object-fit " + I.objectFit + ")";
+    if (Math.abs(D.w - D.h) <= 0.5) {
+      ok("the disc is SQUARE, so `border-radius:50%` is a circle", geo);
+    } else {
+      bad("the disc is SQUARE, so `border-radius:50%` is a circle", geo);
+    }
+    // THE ANTI-CLIPPING GUARD. Image border box == disc content box. A portrait
+    // even a pixel larger is silently cropped by `overflow:hidden` and paints
+    // out of round; one smaller leaves a crescent of bare disc inside the ring.
+    const fits = Math.abs(I.w - D.innerW) <= 0.5 && Math.abs(I.h - D.innerH) <= 0.5;
+    if (fits) {
+      ok("the portrait EXACTLY fills the disc's content box", geo);
+    } else {
+      bad("the portrait EXACTLY fills the disc's content box",
+          geo + " — `.owner .owner-av img` (0,2,1) is outranking the beam's own " +
+          "rule, so the portrait keeps the old explicit size inside a smaller " +
+          "disc and is clipped out of round");
+    }
+    if (I.borderW === 0) {
+      ok("the portrait draws NO ring of its own (the disc owns it)", geo);
+    } else {
+      bad("the portrait draws NO ring of its own (the disc owns it)",
+          geo + " — two concentric black rings, which is what the mock did first");
+    }
+    // …and the settled pill still wears exactly the treatment it wore before.
+    if (/saturate\(0?\.72\)/.test(I.filter || "")) {
+      ok("the settled portrait still wears the seat-it-in-the-palette filter",
+         I.filter);
+    } else {
+      bad("the settled portrait still wears the seat-it-in-the-palette filter",
+          JSON.stringify(I.filter) + " — the pill does not look as it did before");
+    }
+    if (I.lazy === null) {
+      ok("the portrait is not `loading=\"lazy\"`",
+         "a deferred image never starts, never errors, and would trip the " +
+         "give-up window on a card merely scrolled off screen");
+    } else {
+      bad("the portrait is not `loading=\"lazy\"`", "loading=" + JSON.stringify(I.lazy));
+    }
+    await shoot(cdp, sessionId, beamSettled.pill || beamSettled.box,
+                "beam-settled-pill.png", beamSettled.pill ? 12 : 80, 0);
+    await shoot(cdp, sessionId, beamSettled.box, "beam-settled-disc.png", 80, 0);
+  }
+
+  // (b) THE PENDING PORTRAIT — the state the whole session exists for. The GET
+  //     is HELD by Fetch so the board really is waiting; nothing is staged.
+  await cdp.send("Fetch.enable",
+    { patterns: [{ urlPattern: "*beam-probe*", requestStage: "Request" }] }, sessionId);
+  const built = await evaluate(cdp, sessionId, PENDING_BUILD);
+  if (!built || !built.fn || !built.pill) {
+    await cdp.send("Fetch.disable", {}, sessionId);
+    skip("a PENDING portrait is never a resting empty disc",
+         "the page's own ownerNode() could not be driven: " + JSON.stringify(built));
+  } else {
+    await sleep(600);
+    beamPending = await evaluate(cdp, sessionId,
+      BEAM_PROBE + '("#s196-beam-probe .owner .owner-av .beam")');
+    const held = cdp.paused.filter((r) => /beam-probe/.test((r.request || {}).url || ""));
+    if (!beamPending || !beamPending.present) {
+      bad("a PENDING portrait is never a resting empty disc",
+          "the pill built no disc at all: " + JSON.stringify(beamPending));
+    } else {
+      const cls = beamPending.cls.split(/\s+/);
+      const pd = "class " + JSON.stringify(beamPending.cls) + " · pad ::after " +
+        beamPending.pad.afterName + "/" + beamPending.pad.afterIter +
+        " ::before " + beamPending.pad.beforeName + "/" + beamPending.pad.beforeIter +
+        " · " + held.length + " request(s) held";
+      // THE HEADLINE. The disc must be SAYING something.
+      const humming = beamPending.pad.afterName !== "none" &&
+                      beamPending.pad.beforeName !== "none";
+      const loops = /infinite/.test(beamPending.pad.afterIter) &&
+                    /infinite/.test(beamPending.pad.beforeIter);
+      if (cls.indexOf("loading") >= 0 && humming && loops) {
+        ok("a PENDING portrait is never a resting empty disc — the pad is LIT", pd);
+      } else {
+        bad("a PENDING portrait is never a resting empty disc — the pad is LIT",
+            pd + " — an avatar in flight paints a flat dark circle, which is " +
+            "the hole the .dead degrade exists to prevent and the one no event " +
+            "ever announces");
+      }
+      // The geometry has to hold in THIS state too: the pad is drawn on the
+      // disc, and a disc that is the wrong shape while waiting is a wrong-shaped
+      // hole with lights on it.
+      const P = beamPending;
+      if (Math.abs(P.disc.w - P.disc.h) <= 0.5 && P.img &&
+          Math.abs(P.img.w - P.disc.innerW) <= 0.5 && P.img.borderW === 0) {
+        ok("the disc keeps its geometry WHILE WAITING",
+           "disc " + P.disc.w.toFixed(2) + "x" + P.disc.h.toFixed(2) +
+           " · portrait " + P.img.w.toFixed(2) + "x" + P.img.h.toFixed(2));
+      } else {
+        bad("the disc keeps its geometry WHILE WAITING", JSON.stringify(P.disc) +
+            " vs " + JSON.stringify(P.img));
+      }
+      // THE ARTEFACT THE CAPTAIN LOOKS AT: the pad, mid-loop, at 80x.
+      await shoot(cdp, sessionId, beamPending.box, "beam-pad-mid-loop.png", 80, 0);
+    }
+    // (c) …AND IT GIVES UP. A pad that hums for ever is a spinner that lies, so
+    //     the held request is FAILED and the pill must land on the existing
+    //     complete `.dead` shape — the same place a portrait that never arrives
+    //     lands after AVATAR_GIVE_UP_MS.
+    for (const r of held.length ? held : cdp.paused) {
+      try { await cdp.send("Fetch.failRequest",
+        { requestId: r.requestId, errorReason: "ConnectionRefused" }, sessionId); }
+      catch (e) { /* already gone */ }
+    }
+    await sleep(400);
+    beamDead = await evaluate(cdp, sessionId, PENDING_TEARDOWN);
+    await cdp.send("Fetch.disable", {}, sessionId);
+    const dd = JSON.stringify(beamDead);
+    if (beamDead && beamDead.deadPill && beamDead.caps === 0 && beamDead.imgs === 0 &&
+        /INTRANSIT/.test(beamDead.handle || "")) {
+      ok("a portrait that never comes collapses to the handle-ALONE pill", dd);
+    } else {
+      bad("a portrait that never comes collapses to the handle-ALONE pill",
+          dd + " — wanted the cap removed, the pill .dead and the handle intact");
+    }
+  }
+
   // ── S196 B2 ───────────────────────────────────────────────────────────
   // THE 1.79:1 PAIR, WHEREVER IT STILL EXISTS. B3 removed it from the card by
   // deleting the dead control; the DETAIL still renders one (a captain who
@@ -1417,10 +1663,16 @@ async function main() {
     s196: { pills: pills, ownerColourSeparation: colourSep,
             ownerGreyscaleSeparation: greySep, remotes: remotes,
             remoteDetail: rdet, remoteSeparation: remoteSep,
-            ownerFilter: fstate },
+            ownerFilter: fstate,
+            beam: { settled: beamSettled, pending: beamPending,
+                    collapsed: beamDead } },
     findings, pageErrors: cdp.pageErrors,
   }, null, 2) + "\n");
 
+  console.log("\nbeam: " + path.join(OUT, "beam-pad-mid-loop.png") +
+              "  (S196 — the pad, mid-loop, with the portrait's GET held)");
+  console.log("      " + path.join(OUT, "beam-settled-pill.png") +
+              "  (S196 — the same pill once the portrait has arrived)");
   console.log("\ns196: " + path.join(OUT, "owner-pair-greyscale.png") +
               "  (B1 — the colour taken away)");
   console.log("      " + path.join(OUT, "remote-detail-locked-vs-live.png") +

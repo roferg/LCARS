@@ -596,13 +596,16 @@ class BothAdaptersEmitTheSameOwnerBlock(unittest.TestCase):
         self.assertEqual(ME, ad.board()["missions"][0]["owner"]["login"])
 
 
-def _render(mission, self_login=None, readonly=False, kill_avatar=False):
+def _render(mission, self_login=None, readonly=False, kill_avatar=False,
+            load_avatar=False, advance_ms=0, rerender=False):
     fd, p = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     try:
         with open(p, "w") as fh:
             json.dump({"mission": mission, "self": self_login,
-                       "readonly": readonly, "killAvatar": kill_avatar}, fh)
+                       "readonly": readonly, "killAvatar": kill_avatar,
+                       "loadAvatar": load_avatar, "advanceMs": advance_ms,
+                       "rerender": rerender}, fh)
         out = subprocess.check_output([NODE, HARNESS, p])
     finally:
         os.unlink(p)
@@ -858,6 +861,297 @@ class DeadAvatarDegradesToTheHandle(unittest.TestCase):
         blocks = _find(t, lambda n: _cls(n, "owner"))
         self.assertEqual(1, len(blocks))
         self.assertTrue(_cls(blocks[0], "dead"))
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class APendingPortraitIsNeverAHole(unittest.TestCase):
+    """S196 — THE MISSING CASE, and the reason the beam exists at all.
+
+    THE BUG. `ownerNode()` has always handled a portrait that FAILED: the cap is
+    removed, the pill goes `.dead`, and what is left is a complete handle-only
+    LCARS pill. It has never handled a portrait that is merely PENDING. An
+    avatar that is still in flight — or deferred by its own `loading="lazy"` and
+    therefore never even started — paints a 15px disc of `--lcars-card-alt` and
+    nothing else: precisely "a hole in the cap that looks deliberate", which is
+    the sentence the degrade above `ownerNode` says it exists to prevent. The
+    error handler never fires, because nothing errored. The captain hit this for
+    real — every card in a capture run wore a black circle where his face goes.
+
+    THE RULE THIS CLASS PINS: **a pending portrait degrades exactly as well as a
+    failed one.** No state of this pill is ever an empty disc at rest. Either
+    the disc is SAYING something (the transporter pad, while the portrait is in
+    transit), or the portrait is in it, or the cap is gone and the handle stands
+    alone. There is no fourth state.
+
+    The pixels are the tester's — tests/drives/s190/owner-paint.sh measures the
+    disc and the portrait inside real Chrome. This proves the WIRING.
+    """
+
+    URL = "https://github.com/%s.png?size=64" % ME
+
+    def card(self):
+        return {"id": "m-1", "issue": 101, "title": "T", "type": "feature",
+                "stage": "align", "awaiting": False, "paused": False,
+                "running": False, "dispatched": False, "queued": False,
+                "linked": False, "pills": {}, "tickets": [],
+                "owner": {"login": ME, "avatarUrl": self.URL}}
+
+    def _beam(self, tree):
+        beams = _find(tree, lambda n: _cls(n, "beam"))
+        self.assertEqual(1, len(beams), "expected exactly one .beam disc")
+        return beams[0]
+
+    # ── THE HEADLINE ──────────────────────────────────────────────────────
+    def test_a_PENDING_portrait_is_never_left_as_a_resting_empty_disc(self):
+        """The whole session in one assertion.
+
+        Nothing has loaded and nothing has failed — the ordinary case, the case
+        that was unhandled. The disc must be actively SAYING it is waiting.
+        """
+        t = _render(self.card(), self_login=ME)
+        beam = self._beam(t)
+        self.assertIn("loading", (beam.get("cls") or "").split(),
+                      "a portrait still in transit paints an empty disc — this "
+                      "is the hole the `.dead` degrade exists to prevent, and "
+                      "it is reachable without anything ever erroring")
+
+    def test_a_PENDING_portrait_degrades_AS_WELL_AS_a_FAILED_one(self):
+        """The two failures are the same failure, so they must end the same.
+
+        A portrait that never arrives is not a different kind of missing from
+        one that 404s; the only difference is that nothing announces it. After
+        the give-up window both land on the identical, complete pill.
+        """
+        failed = _render(self.card(), self_login=ME, kill_avatar=True)
+        never = _render(self.card(), self_login=ME,
+                        advance_ms=board_avatar_give_up_ms() + 1)
+        for name, t in (("failed", failed), ("never-arrived", never)):
+            self.assertEqual([], _find(t, lambda n: _cls(n, "owner-av")),
+                             "%s: the cap survived with nothing in it" % name)
+            blocks = _find(t, lambda n: _cls(n, "owner"))
+            self.assertEqual(1, len(blocks), name)
+            self.assertTrue(_cls(blocks[0], "dead"), name)
+            handles = _find(t, lambda n: _cls(n, "owner-handle"))
+            self.assertEqual(ME.upper(), handles[0]["text"], name)
+
+    # ── the three states ──────────────────────────────────────────────────
+    def test_IN_TRANSIT_the_pad_is_running_and_the_portrait_is_present(self):
+        t = _render(self.card(), self_login=ME)
+        beam = self._beam(t)
+        self.assertIn("loading", (beam.get("cls") or "").split())
+        self.assertNotIn("done", (beam.get("cls") or "").split())
+        imgs = _find(beam, lambda n: n["tag"] == "img")
+        self.assertEqual(1, len(imgs), "the portrait is not inside the disc")
+        self.assertEqual(self.URL, imgs[0]["attrs"].get("src"))
+
+    def test_ON_ARRIVAL_the_loop_stops_and_the_portrait_resolves_in(self):
+        t = _render(self.card(), self_login=ME, load_avatar=True)
+        beam = self._beam(t)
+        cls = (beam.get("cls") or "").split()
+        self.assertNotIn("loading", cls, "the pad kept humming after arrival — "
+                                         "a spinner that never stops is a lie")
+        self.assertIn("done", cls)
+
+    def test_the_BEAM_DOES_NOT_REPLAY_when_the_same_card_is_repainted(self):
+        """The board repaints on every SSE tick. A portrait that already
+        materialised must not beam in again each time — it would strobe."""
+        t = _render(self.card(), self_login=ME, load_avatar=True, rerender=True)
+        cls = (self._beam(t).get("cls") or "").split()
+        self.assertNotIn("loading", cls,
+                         "a repaint restarted the transporter loop")
+        self.assertNotIn("done", cls,
+                         "a repaint replayed the arrival animation")
+        self.assertIn("settled", cls,
+                      "an already-arrived portrait must render at rest, visible")
+
+    def test_NEVER_ARRIVES_the_pad_gives_up_rather_than_humming_for_ever(self):
+        t = _render(self.card(), self_login=ME,
+                    advance_ms=board_avatar_give_up_ms() + 1)
+        self.assertEqual([], _find(t, lambda n: n["tag"] == "img"))
+        blocks = _find(t, lambda n: _cls(n, "owner"))
+        self.assertTrue(_cls(blocks[0], "dead"))
+
+    def test_the_give_up_window_does_NOT_fire_early(self):
+        """A negative control. A timer that fired at 0ms would pass the test
+        above and would ALSO kill every portrait on a slow connection."""
+        t = _render(self.card(), self_login=ME,
+                    advance_ms=board_avatar_give_up_ms() - 1)
+        self.assertEqual(1, len(_find(t, lambda n: n["tag"] == "img")))
+        self.assertIn("loading", (self._beam(t).get("cls") or "").split())
+
+    def test_an_ARRIVED_portrait_is_not_killed_by_the_give_up_window(self):
+        """The timer has to be CANCELLED, not merely out-raced. Otherwise every
+        avatar on the board vanishes eight seconds after it appeared."""
+        t = _render(self.card(), self_login=ME, load_avatar=True,
+                    advance_ms=board_avatar_give_up_ms() * 2)
+        self.assertEqual(1, len(_find(t, lambda n: n["tag"] == "img")))
+        blocks = _find(t, lambda n: _cls(n, "owner"))
+        self.assertFalse(_cls(blocks[0], "dead"))
+
+    # ── S196: lazy is gone ────────────────────────────────────────────────
+    def test_the_portrait_is_NOT_lazy(self):
+        """`loading="lazy"` saved nothing on a 17px image and interacted badly
+        with the give-up window: a deferred portrait never starts, never errors,
+        and would trip the give-up on a card the captain had simply not
+        scrolled to yet — turning "off screen" into "this person has no face"."""
+        t = _render(self.card(), self_login=ME)
+        imgs = _find(t, lambda n: n["tag"] == "img")
+        self.assertEqual(1, len(imgs))
+        self.assertIsNone(imgs[0]["attrs"].get("loading"),
+                          "the avatar is lazy again; a deferred image trips the "
+                          "give-up window on a card that is merely off screen")
+        # …and the third-party posture is unchanged.
+        self.assertEqual("no-referrer", imgs[0]["attrs"].get("referrerpolicy"))
+
+    # ── the error path must not regress ───────────────────────────────────
+    def test_a_HARD_ERROR_still_degrades_exactly_as_it_did_before(self):
+        t = _render(self.card(), self_login=ME, kill_avatar=True)
+        self.assertEqual([], _find(t, lambda n: n["tag"] == "img"))
+        self.assertEqual([], _find(t, lambda n: _cls(n, "beam")))
+        blocks = _find(t, lambda n: _cls(n, "owner"))
+        self.assertEqual(1, len(blocks))
+        self.assertTrue(_cls(blocks[0], "dead"))
+
+    def test_a_card_with_NO_owner_grows_no_disc(self):
+        m = self.card()
+        del m["owner"]
+        t = _render(m, self_login=ME)
+        self.assertEqual([], _find(t, lambda n: _cls(n, "beam")))
+        self.assertEqual([], _find(t, lambda n: _cls(n, "owner")))
+
+
+def board_avatar_give_up_ms():
+    """The give-up window, read out of the shipping board.js.
+
+    Read rather than duplicated: a constant copied into a test is a second
+    source of truth, and the first thing that goes stale. This also pins that
+    it IS a named constant — the captain asked for one, and `setTimeout(fn,
+    8000)` buried in a render path is the shape that never gets found again.
+    """
+    with open(os.path.normpath(os.path.join(
+            HERE, "..", "static", "board.js"))) as fh:
+        src = fh.read()
+    m = re.search(r"var\s+AVATAR_GIVE_UP_MS\s*=\s*(\d+)\s*;", src)
+    assert m, "board.js declares no named AVATAR_GIVE_UP_MS constant"
+    return int(m.group(1))
+
+
+class TheTransporterPadKeepsItsPromises(unittest.TestCase):
+    """S196 — the stylesheet half, and the same posture as the class above it:
+    NOT the proof, the tripwire between drive runs.
+
+    What a browser paints is measured in tests/drives/s190/owner-paint.sh, in
+    real Chrome, at real rendered dimensions, with a red control per defect.
+    These lines are what stops the cured shape from quietly walking back in.
+    """
+
+    CSS = os.path.normpath(os.path.join(HERE, "..", "static", "board.css"))
+
+    def setUp(self):
+        with open(self.CSS) as fh:
+            raw = fh.read()
+        self.raw = raw
+        self.css = re.sub(r"/\*.*?\*/", " ", raw, flags=re.S)
+
+    def _rule(self, selector):
+        rules = re.findall(re.escape(selector) + r"\s*\{([^}]*)\}", self.css)
+        self.assertTrue(rules, "nothing styles `%s`" % selector)
+        return " ".join(rules).replace(" ", "").replace("\n", "")
+
+    def test_the_portrait_rule_OUTRANKS_the_bare_avatar_rule(self):
+        """THE SPECIFICITY TRAP, learned the hard way in the captain's mock.
+
+        `.owner .owner-av img` is (0,2,1). A bare `.beam img` is (0,1,1) and
+        LOSES to it — so the portrait keeps the old rule's explicit 17px box and
+        its own 1px ring inside a 15px disc that then clips it: a visibly
+        non-circular avatar with two fighting black rings, from a stylesheet in
+        which every individual rule reads correct.
+        """
+        beam_img = re.findall(r"([^{}]*?)\.beam\s+img\s*\{", self.css)
+        self.assertTrue(beam_img, "nothing styles the portrait inside the disc")
+        for prefix in beam_img:
+            sel = (prefix + ".beam img").strip().split(",")[-1].strip()
+            self.assertGreaterEqual(
+                sel.count("."), 3,
+                "`%s` is too weak to outrank `.owner .owner-av img` (0,2,1); "
+                "the portrait will paint at the old rule's size inside a "
+                "smaller disc and be clipped out of round" % sel)
+
+    def test_the_disc_owns_the_ring_and_the_portrait_owns_none(self):
+        disc = self._rule(".owner .owner-av .beam")
+        self.assertIn("border-radius:50%", disc)
+        self.assertIn("overflow:hidden", disc)
+        self.assertIn("position:relative", disc)
+        self.assertRegex(disc, r"border:1pxsolidvar\(--lcars-black")
+        img = self._rule(".owner .owner-av .beam img")
+        self.assertIn("border:0", img,
+                      "the portrait draws a second ring inside the disc's")
+        self.assertIn("width:100%", img)
+        self.assertIn("height:100%", img)
+
+    def test_the_settled_pill_wears_EXACTLY_the_filter_it_wore_before(self):
+        """"Once loaded the pill must look exactly as it does today." The seat-
+        it-in-the-palette filter is the whole of that treatment."""
+        img = self._rule(".owner .owner-av .beam img")
+        self.assertIn("filter:saturate(.72)contrast(1.06)brightness(.98)", img)
+
+    def test_the_pad_loops_ONLY_while_the_portrait_is_in_transit(self):
+        for sel in (".owner .owner-av .beam.loading::after",
+                    ".owner .owner-av .beam.loading::before"):
+            self.assertIn("infinite", self._rule(sel),
+                          "%s does not loop; the pad would run once and stop "
+                          "with the portrait still absent" % sel)
+        # …and the arrival must not loop, or it strobes for ever.
+        for sel in (".owner .owner-av .beam.done img",):
+            self.assertNotIn("infinite", self._rule(sel))
+
+    def test_the_pad_beams_in_the_OWNER_S_OWN_COLOUR(self):
+        """ADR-007: amber on mine, blue on someone else's, and NOT because the
+        beam knows anything about ownership — because it reads `--owner-col`,
+        the token the pill already switches. No new colour is minted."""
+        for sel in (".owner .owner-av .beam::after",
+                    ".owner .owner-av .beam::before"):
+            self.assertIn("var(--owner-col)", self._rule(sel))
+
+    def test_no_new_lcars_token_is_MINTED_for_the_beam(self):
+        """ADR-007, the house idiom (test_server's board.css token guard):
+        board.css may READ any --lcars-* token and must DEFINE none."""
+        stripped = re.sub(r"var\(\s*--lcars-[^)]*\)", "", self.css)
+        self.assertNotRegex(stripped, r"--lcars-[a-z-]+\s*:",
+                            "board.css defines an --lcars-* token")
+
+    def test_REDUCED_MOTION_gets_no_loop_at_all(self):
+        """Motion here is decoration; the ARRIVAL is the information. So the
+        loop goes and the arrival stays, as a plain fade."""
+        blocks = re.findall(r"@media\s*\(prefers-reduced-motion[^{]*\)\s*\{"
+                            r"((?:[^{}]|\{[^{}]*\})*)\}", self.css)
+        beam_blocks = [b for b in blocks if ".beam" in b]
+        self.assertTrue(beam_blocks,
+                        "the transporter pad loops for a reader who asked the "
+                        "OS for less motion")
+        joined = " ".join(beam_blocks).replace(" ", "").replace("\n", "")
+        self.assertNotIn("infinite", joined,
+                         "a looping animation survives prefers-reduced-motion")
+        self.assertIn(".beam.loading::after{animation:none", joined)
+        # (spaces stripped above, so `.done img` reads `.doneimg`)
+        self.assertIn(".beam.doneimg{animation:padFadeIn", joined,
+                      "reduced motion loses the ARRIVAL too; the one thing on this disc that is information, not decoration")
+        # D6 again, from the other side: this is a MOTION block, so it must not
+        # be where the portrait's COLOUR treatment gets decided.
+        self.assertNotIn("filter:", joined,
+                         "a colour treatment is being gated on a motion "
+                         "preference again (S190 D6)")
+
+    def test_the_HIGH_CONTRAST_escape_hatch_still_reaches_the_portrait(self):
+        """S190 D6's cure has to move with the portrait. `.owner .owner-av img`
+        (0,2,1) no longer outranks the beam's own rule, so a `filter:none` left
+        at the old selector is a promise the cascade cannot keep."""
+        blocks = re.findall(r"@media\s*\(prefers-contrast[^{]*\)\s*\{"
+                            r"((?:[^{}]|\{[^{}]*\})*)\}", self.css)
+        joined = " ".join(blocks)
+        self.assertIn(".beam img", joined,
+                      "prefers-contrast:more resets a selector that no longer "
+                      "wins; the portrait keeps its saturation treatment")
 
 
 if __name__ == "__main__":

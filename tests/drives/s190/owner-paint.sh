@@ -21,6 +21,16 @@
 #       a remote fixture. They now take the SAME `.btn.locked` treatment.
 #   B3  …and the CARD stops drawing them at all (captain ruling: hide Verify,
 #       offer only Adopt).
+#   S196 BEAM  A PORTRAIT THAT HAD NOT ARRIVED YET WAS A HOLE. `ownerNode()`
+#       degraded a FAILED avatar and never a PENDING one, so an in-flight (or
+#       lazily-deferred) portrait painted a flat dark disc at rest — the exact
+#       hole the .dead degrade exists to prevent, reachable without anything
+#       ever erroring. Proven by HOLDING the avatar's own GET with CDP's
+#       `Fetch.enable`, so the real board sits in the real pending state and
+#       the disc can be read and photographed in it; plus the RENDERED BOXES
+#       of the disc and the portrait inside it, which is the only way to see
+#       the specificity trap (`.beam img` (0,1,1) losing to `.owner .owner-av
+#       img` (0,2,1) and painting the portrait out of round).
 #   B5  THERE WAS NO WAY TO FILTER THE BOARD BY OWNERSHIP. Four facets — mine /
 #       someone else's / unassigned / remote — proven ON THE REAL PAGE: the
 #       chips paint solid-vs-hollow (the same axis as B1 and the lock), each
@@ -344,7 +354,16 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
                  remote-keeps-dead-controls adopt-stutters \
                  filter-draws-everything filter-counts-lie \
                  filter-forgets-on-reload filter-refetches-the-board \
-                 filter-footer-counts-active-only; do
+                 filter-footer-counts-active-only \
+                 beam-pending-is-a-hole beam-img-outranks-its-disc; do
+    # ONE CONTROL AT A TIME, when that is what is being asked. The full set is
+    # sixteen browser runs; `LCARS_S190_ONLY=beam-pending-is-a-hole,...` narrows
+    # it while a control is being written, and an empty value means all of them.
+    case ",${LCARS_S190_ONLY:-},"  in
+      ",,") ;;
+      *",$variant,"*) ;;
+      *) continue ;;
+    esac
     i=$((i + 1))
     BROKEN="$WORK/broken-$variant"
     mkdir -p "$BROKEN"
@@ -486,6 +505,41 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
           FAILED=1; PATCHED=0
         fi
         rm -f "$JS.bak" ;;
+      # ── S196 THE TRANSPORTER MATERIALIZE. Two controls, one per half of the
+      #    change, because a control that trips every check proves less than
+      #    two that trip one each. Both are `sed` and both are then VERIFIED to
+      #    have bitten (cmp against the .bak): tests/drives/browser/
+      #    calibrate.sh sat DEAD FROM S176 TO S191 because its cut silently
+      #    matched nothing, and a red control that cannot go red is worse than
+      #    no red control at all.
+      #
+      # 1. THE DEFECT, VERBATIM — a PENDING portrait back to a resting hole.
+      #    The disc still exists, still has its ring, still has the right
+      #    geometry; it simply says nothing while the portrait is in flight,
+      #    which is exactly what shipped and exactly what no error handler and
+      #    no unit harness can see. Every stylesheet rule stays correct.
+      beam-pending-is-a-hole)
+        "${LCARS_SED_BIN:-sed}" -i.bak 's/^      beam\.className = "beam loading";$/      beam.className = "beam";/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # 2. THE SPECIFICITY TRAP, verbatim — what the captain's mock did first.
+      #    Put the OLD explicit sizing and the portrait's own ring back, so the
+      #    portrait is larger than the disc that clips it and two black rings
+      #    fight inside a visibly non-circular avatar. Nothing in the sheet
+      #    reads wrong; only the rendered boxes can see it, which is the whole
+      #    reason those boxes are measured.
+      beam-img-outranks-its-disc)
+        "${LCARS_SED_BIN:-sed}" -i.bak \
+          -e 's|^  width:100%;height:100%;object-fit:cover;$|  width:calc(var(--owner-h) + 4px);height:calc(var(--owner-h) + 4px);object-fit:cover;|' \
+          -e 's|^  border:0;border-radius:50%;$|  border:1px solid var(--lcars-black,#030608);border-radius:50%;|' "$CSS"
+        if cmp -s "$CSS" "$CSS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$CSS.bak" ;;
     esac
     [ "$PATCHED" -eq 1 ] || continue
     run_against "$BROKEN" "calib-$variant"

@@ -555,16 +555,111 @@ a.logbug-badge:hover{filter:brightness(1.08)}
      one continuous edge in the hollow state and the solid state is unchanged. */
   border:1px var(--owner-edge) var(--owner-col);border-right-width:0;
   border-radius:calc(var(--owner-h) / 2) 0 0 calc(var(--owner-h) / 2)}
-.owner .owner-av img{
-  display:block;box-sizing:border-box;
+/* ── S196 — THE TRANSPORTER PAD ────────────────────────────────────────────
+   WHAT WAS WRONG. The ring, the dark ground and the portrait were all ONE
+   element: the <img>. So a portrait that had not arrived yet had nothing to
+   show but that dark ground — a 15px black disc, at rest, on every card. The
+   error handler that exists to prevent exactly this hole never fired, because
+   a pending image has not failed.
+
+   THE FIX IS A SEPARATION, not a new look. A wrapper (`.beam`) takes the ring
+   and the ground; the portrait becomes a fill inside it. The disc is then a
+   surface something can be DRAWN ON while the portrait is in transit — the
+   transporter pad — and once the portrait lands the pill is pixel-for-pixel
+   the pill it was before: same box, same ring, same filter, same baseline.
+
+   SPECIFICITY, and it is the whole reason these selectors are this long.
+   `.owner .owner-av img` was (0,2,1). A bare `.beam img` is (0,1,1) and LOSES
+   to it, which sizes the portrait at the OLD explicit 17px inside a 15px disc
+   that then clips it: a visibly non-circular avatar with two fighting black
+   rings, out of a stylesheet in which every rule reads correct on its own.
+   That is not hypothetical — it is what the captain's mock did first. The old
+   rule is GONE (it would have been dead CSS describing a treatment that no
+   longer applies — S190 D3) and its replacement is written at (0,3,1), with
+   the rendered boxes measured in tests/drives/s190/owner-paint.sh.
+
+   ADR-007: no colour is minted. The pad reads `--owner-col` — the token the
+   pill already switches — so it beams amber on the captain's own missions and
+   blue on somebody else's without knowing that fact exists. `#fff` in the
+   gradients is not a palette entry: it is the beam's own light, the highlight
+   colour-mix()ed INTO the owner's hue, and it never paints on its own. */
+.owner .owner-av .beam{
+  position:relative;overflow:hidden;flex:0 0 auto;
+  box-sizing:border-box;
   width:calc(var(--owner-h) - 5px);height:calc(var(--owner-h) - 5px);
-  border-radius:50%;object-fit:cover;
+  aspect-ratio:1 / 1;border-radius:50%;
   /* A dark ring between portrait and cap: the inset that makes the frame read
      as a frame instead of as a coloured halo. */
   border:1px solid var(--lcars-black,#030608);
-  background:var(--lcars-card-alt);
+  background:var(--lcars-card-alt)}
+.owner .owner-av .beam img{
+  display:block;box-sizing:border-box;
+  width:100%;height:100%;object-fit:cover;
+  /* The disc owns the ring now. A second one here is the clipped-avatar bug. */
+  border:0;border-radius:50%;
+  /* Invisible until it MATERIALISES. Nothing else in this file may assume the
+     portrait is painted — the arrival is what paints it. */
+  opacity:0;
   /* Seat the photograph in the palette (see the note above). */
   filter:saturate(.72) contrast(1.06) brightness(.98)}
+/* THE PAD ITSELF, both halves on the disc's own pseudo-elements so no extra
+   node enters the render path. PERCENTAGE stops throughout: this disc is 15px
+   on a card and 17px in the base scale, and one rule has to work at both.
+   `mix-blend-mode:screen` because light ADDS — it brightens the ground it
+   falls on instead of covering it. */
+/* the standing columns of light */
+.owner .owner-av .beam::after{
+  content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+  background:repeating-linear-gradient(90deg,transparent 0 7%,
+    color-mix(in srgb,var(--owner-col) 82%,#fff) 7% 11%,
+    transparent 11% 19%);
+  mix-blend-mode:screen;opacity:0}
+/* the bright column cycling DOWN through them — deliberately taller and wider
+   than the disc so it enters and leaves rather than fading in place */
+.owner .owner-av .beam::before{
+  content:"";position:absolute;left:-10%;right:-10%;top:-60%;height:220%;
+  z-index:1;pointer-events:none;
+  background:linear-gradient(180deg,transparent 0%,
+    color-mix(in srgb,var(--owner-col) 40%,#fff) 45%,#fff 50%,
+    color-mix(in srgb,var(--owner-col) 40%,#fff) 55%,transparent 100%);
+  mix-blend-mode:screen;opacity:0}
+/* IN TRANSIT — and it LOOPS, for as long as that is true. */
+.owner .owner-av .beam.loading::after{animation:padHum 1.6s ease-in-out infinite}
+.owner .owner-av .beam.loading::before{animation:padSweep 1.6s linear infinite}
+/* ARRIVED — the light dies out and the portrait resolves in. `both` so the end
+   state STICKS; without it the portrait would snap back to opacity:0. */
+.owner .owner-av .beam.done::after,
+.owner .owner-av .beam.done::before{animation:padOut .3s ease-out both}
+.owner .owner-av .beam.done img{animation:padMaterialize .45s ease-out both}
+/* ALREADY ARRIVED, on a later repaint. Visible, with no animation at all —
+   board.js remembers the arrival (AVATAR_ARRIVED) precisely so this state
+   exists, because a board that repaints on every SSE tick would otherwise
+   strobe every face on it in unison. */
+.owner .owner-av .beam.settled img{opacity:1}
+@keyframes padHum{0%,100%{opacity:.42}50%{opacity:1}}
+@keyframes padSweep{
+  0%{transform:translateY(-38%);opacity:0}
+  14%{opacity:1}
+  86%{opacity:.45}
+  100%{transform:translateY(38%);opacity:0}}
+@keyframes padOut{from{opacity:1}to{opacity:0}}
+@keyframes padMaterialize{
+  0%{opacity:0;filter:brightness(3) contrast(.25) saturate(0)}
+  55%{opacity:.8;filter:brightness(1.5) contrast(.8) saturate(.45)}
+  100%{opacity:1;filter:saturate(.72) contrast(1.06) brightness(.98)}}
+/* The reduced-motion arrival: the same event, told without the theatre. */
+@keyframes padFadeIn{from{opacity:0}to{opacity:1}}
+/* PREFERS-REDUCED-MOTION. The loop is DECORATION; the ARRIVAL is the
+   information — so the loop goes entirely (a static dim tint still says the
+   disc is occupied and waiting) and the arrival stays as a plain fade. Nothing
+   in here touches `filter`: a colour treatment gated on a motion preference is
+   S190 D6, and this is the block it was found in. */
+@media (prefers-reduced-motion:reduce){
+  .owner .owner-av .beam.loading::after{animation:none;opacity:.42}
+  .owner .owner-av .beam.loading::before{animation:none;opacity:0}
+  .owner .owner-av .beam.done::after,
+  .owner .owner-av .beam.done::before{animation:none;opacity:0}
+  .owner .owner-av .beam.done img{animation:padFadeIn .28s ease-out both}}
 /* THE HANDLE BLOCK. Same colour, butting flush against the cap, fully rounded
    on its own right end, so the two together are ONE pill. */
 .owner .owner-handle{
@@ -682,7 +777,18 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    the untouched image, so `prefers-contrast` is the preference that governs it.
    It was gated on `prefers-reduced-motion` — nothing here animates, and a colour
    treatment is not motion. */
-@media (prefers-contrast:more){.owner .owner-av img{filter:none}}
+/* S196: the selector had to MOVE WITH THE PORTRAIT. `.owner .owner-av img` is
+   (0,2,1) and no longer outranks the beam's own (0,3,1) rule, so left where it
+   was this reset would have been a promise the cascade cannot keep — the
+   `.det-head .owner` failure exactly, from the other direction. The arrival
+   animation also has to be neutered here: `padMaterialize` fills forwards with
+   the saturation treatment in its last keyframe, and a filled animation
+   outranks a static declaration, so resetting only the static one would leave
+   the treatment on every settled portrait. The FADE stays — the arrival is
+   information, and this preference is about colour. */
+@media (prefers-contrast:more){
+  .owner .owner-av .beam img{filter:none}
+  .owner .owner-av .beam.done img{animation:padFadeIn .45s ease-out both}}
 
 /* ════════════════════════════════════════════════════════════════════════
    S196 B5 — THE OWNERSHIP FILTER STRIP.

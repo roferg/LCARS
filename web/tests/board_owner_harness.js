@@ -14,7 +14,12 @@
  *   - it projects `title` and `hidden`, which carry the lock tooltip and the
  *     dead-image degrade;
  *   - it can FIRE an element's error handler, so the dead-src fallback is driven
- *     the way a broken image drives it, not asserted from the markup.
+ *     the way a broken image drives it, not asserted from the markup;
+ *   - it OWNS THE CLOCK (S196 beam). `setTimeout` is recorded rather than
+ *     dropped, so the avatar's give-up window can be advanced deterministically
+ *     instead of slept through, and the card can be RE-RENDERED in the same
+ *     process so "the beam does not replay" is a thing the harness can see at
+ *     all. A fresh subprocess per render cannot answer that question.
  *
  * A projected class name is NOT proof that an avatar rendered — a dead <img> has
  * the same box and class as a live one (the S164 legend-swatch lesson). This
@@ -22,7 +27,11 @@
  * real rendered dimensions. Both are required.
  *
  * argv[2]: a JSON file: {mission: <card>, self: "<login>"|null,
- *                        readonly: bool, killAvatar: bool}
+ *                        readonly: bool, killAvatar: bool,
+ *                        loadAvatar: bool,   // fire the <img>'s own load event
+ *                        advanceMs: <int>,   // run the card's timers that far
+ *                        rerender: bool}     // build the SAME card again after
+ *                                            // the above, and project THAT
  */
 const fs = require("fs");
 const path = require("path");
@@ -97,11 +106,32 @@ const sandbox = {
   navigator: { userAgent: "node" },
   localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
   setInterval() { return 0; }, clearInterval() {},
-  setTimeout() { return 0; }, clearTimeout() {},
   fetch() { const p = { then() { return p; }, catch() { return p; } }; return p; },
   EventSource: function () { this.addEventListener = function () {}; this.close = function () {}; },
   console, JSON, Math, Date,
 };
+/* THE CLOCK. board.js's avatar give-up is a real `setTimeout`, and a stub that
+   silently drops it would make the give-up path untestable AND make the "load
+   cancels the timer" promise unfalsifiable. Timers are recorded here and fired
+   on demand, so the 8s window is asserted in microseconds. */
+const TIMERS = [];
+let TIMER_ID = 0;
+sandbox.setTimeout = function (fn, ms) {
+  TIMERS.push({ id: ++TIMER_ID, fn: fn, ms: Number(ms) || 0, dead: false });
+  return TIMER_ID;
+};
+sandbox.clearTimeout = function (id) {
+  for (const t of TIMERS) if (t.id === id) t.dead = true;
+};
+function advanceTimers(fromIndex, ms) {
+  for (let i = fromIndex; i < TIMERS.length; i++) {
+    const t = TIMERS[i];
+    if (t.dead || t.ms > ms) continue;
+    t.dead = true;
+    try { t.fn(); } catch (e) { /* a stub-driven boot timer is not the subject */ }
+  }
+}
+
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 
@@ -132,6 +162,9 @@ if (typeof sandbox.captureForgeIdentity === "function") {
 }
 if (spec.readonly) sandbox.writesActive = false;
 
+// Only the timers THIS card arms may be advanced; boot side-effects against the
+// stubs are not the subject and firing them would be noise, not signal.
+const TIMER_MARK = TIMERS.length;
 const card = sandbox.cardNode(spec.mission);
 
 // KILL THE AVATAR the way a broken URL kills it: fire the element's own error
@@ -141,6 +174,18 @@ function walk(n, fn) {
   fn(n);
   (n.children || []).forEach(function (c) { walk(c, fn); });
 }
+// THE PORTRAIT ARRIVES. Fired through the element's own `load`, the way the
+// network fires it — asserting the handler exists proves nothing about what it
+// does, and this is the event the whole beam hangs off.
+if (spec.loadAvatar) {
+  let fired = 0;
+  walk(card, function (n) {
+    if (n.tag !== "img") return;
+    (n._handlers.load || []).forEach(function (fn) { fired++; fn.call(n, {}); });
+  });
+  if (!fired) process.stderr.write("no image load handler was fired\n");
+}
+
 if (spec.killAvatar) {
   var fired = 0;
   walk(card, function (n) {
@@ -150,6 +195,14 @@ if (spec.killAvatar) {
   });
   if (!fired) process.stderr.write("no image error handler was fired\n");
 }
+
+// THE CLOCK MOVES. The give-up window is the only thing standing between a
+// portrait that never arrives and a pad that hums for ever.
+if (spec.advanceMs) advanceTimers(TIMER_MARK, Number(spec.advanceMs));
+
+// RE-RENDER. Same mission, same process, after whatever happened above — the
+// only way to see whether the beam replays on a card the board simply repainted.
+const subject = spec.rerender ? sandbox.cardNode(spec.mission) : card;
 
 function project(n) {
   if (!n || typeof n !== "object") return null;
@@ -164,4 +217,4 @@ function project(n) {
     children: (n.children || []).map(project).filter(Boolean),
   };
 }
-process.stdout.write(JSON.stringify(project(card)));
+process.stdout.write(JSON.stringify(project(subject)));
