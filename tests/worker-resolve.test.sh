@@ -5,9 +5,20 @@
 # the cold worker (and with which model), the adapter (worker-adapter.sh) decides
 # the cli-specific flags. Resolution precedence:
 #
-#   worker bin   : $LCARS_WORKER_BIN  >  config.json workerBin
+#   worker bin   : $LCARS_WORKER_BIN  >  the MISSION's recorded workerBin
+#                  >  config.json workerBin
 #                  >  host-CLI auto-detect (env marker)  >  claude (default)
 #   worker model : $LCARS_WORKER_MODEL >  config.json workerModel  >  unset
+#
+# S196 A3 — THE MISSION NOW OUTRANKS config.json, and that is a REVERSAL. Until
+# this session the clone's config sat above the mission's own pin, so a mission
+# FILED on copilot and adopted onto a laptop whose config said claude ran on
+# CLAUDE, silently: measured in S191's capstone with shims faking both engines —
+# 3 invocations of the BILLED shim, 0 of the free one, no warning anywhere. The
+# engine is now an EXPLICIT CHOICE MADE AT THE HANDOFF (`lcars adopt` asks and
+# converts, and RECORDS the answer on the mission), and a recorded choice must
+# beat an ambient repo default or the asking was theatre. $LCARS_WORKER_BIN — a
+# per-invocation, deliberate operator act — still outranks everything.
 #
 # Host markers (the env var a process LCARS spawns inherits from its host CLI):
 #   CLAUDECODE=1  ⇒ claude
@@ -49,6 +60,20 @@ trap 'rm -rf "$TMPROOT"' EXIT
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
+
+# THE PARSE GUARD. S196 A3 makes the resolver WRITE to state.json (it records the
+# engine it resolved and where that came from), and run.sh's field writer is the
+# copy-pasted one that re-inserts after line 1 with a hard-coded comma. A text
+# assertion cannot see the trailing comma that makes an object invalid — the exact
+# class of defect S189's 100-check suite sailed past — so every claim about a
+# written field goes THROUGH a real JSON parser.
+jok()  { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" >/dev/null 2>&1; }
+jget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get(sys.argv[2]); sys.stdout.write("" if v is None else str(v))' "$1" "$2" 2>/dev/null; }
+command -v python3 >/dev/null 2>&1 || {
+  echo "  python3 is REQUIRED by this suite — it is the only assertion that can see"
+  echo "  invalid JSON, and the resolver now writes to state.json."
+  exit 1
+}
 
 # Build a throwaway git repo with a .git/lcars/config.json so the resolver's
 # config-path resolution (git-common-dir → .git/lcars/config.json) finds it.
@@ -119,11 +144,27 @@ check "3f. copilot version-marker source = detected" \
 # silently re-homed onto billed claude mid-flight, pin ignored. Observed live —
 # 7 workers, $11.39 on the wrong engine, and the SPEND was the only symptom.
 # An explicitly recorded engine must beat a guess.
+# ONE FIELD PER LINE, exactly as file.sh's write_state emits it — the shape every
+# state writer in LCARS edits as lines. S196: the resolver now WRITES here, so a
+# fixture in a shape no real state.json has would prove nothing about the writer.
 make_mission() { # repo  id  workerBin
   mkdir -p "$1/.git/lcars/missions/$2"
-  printf '{ "id":"%s","stage":"implement","workerBin":"%s" }\n' "$2" "$3" \
-    >"$1/.git/lcars/missions/$2/state.json"
+  cat >"$1/.git/lcars/missions/$2/state.json" <<JSON
+{
+  "id": "$2",
+  "stage": "implement",
+  "workerBin": "$3",
+  "base": "main"
 }
+JSON
+}
+# A mission that records NO engine of its own — the fall-through fixture.
+mk_nopin() { # repo
+  mkdir -p "$1/.git/lcars/missions/m-nopin"
+  printf '{\n  "id": "m-nopin",\n  "stage": "implement",\n  "base": "main"\n}\n' \
+    >"$1/.git/lcars/missions/m-nopin/state.json"
+}
+
 resolve_mission_in() { # repo  mission-id  [env...]
   local repo="$1" mid="$2"; shift 2
   ( cd "$repo" && env -u CLAUDECODE \
@@ -142,20 +183,60 @@ check "3h. the winning source is the mission pin, not detection" \
 check "3i. it did NOT silently re-home onto the host cli" \
   "! printf '%s' \"\$out3m\" | qgrep -q 'bin=claude'"
 
-# Deliberate operator acts still outrank the mission's pin (env > config > mission).
+# S196 A3 — THE MISSION'S PIN NOW OUTRANKS config.json. (Before this session the
+# assertion here was the opposite: "3j. config.json still OUTRANKS the mission
+# pin". It was wrong in the only way that costs money — see the header.)
 r3mc="$(make_repo '{"workerBin": "config-bin"}')"
 make_mission "$r3mc" m-pin copilot
 out3mc="$(resolve_mission_in "$r3mc" m-pin CLAUDECODE=1)"
-check "3j. config.json still OUTRANKS the mission pin" \
-  "printf '%s' \"\$out3mc\" | qgrep -q 'bin=config-bin' && printf '%s' \"\$out3mc\" | qgrep -q 'binsrc=config'"
+check "3j. the mission's recorded engine OUTRANKS config.json workerBin" \
+  "printf '%s' \"\$out3mc\" | qgrep -q 'bin=copilot' && printf '%s' \"\$out3mc\" | qgrep -q 'binsrc=mission'"
+check "3j2. the clone's config does NOT silently re-home the mission" \
+  "! printf '%s' \"\$out3mc\" | qgrep -q 'bin=config-bin'"
 out3me="$(resolve_mission_in "$r3m" m-pin CLAUDECODE=1 LCARS_WORKER_BIN=/usr/bin/explicit-bin)"
 check "3k. \$LCARS_WORKER_BIN still OUTRANKS the mission pin" \
   "printf '%s' \"\$out3me\" | qgrep -q 'binsrc=env'"
 
+# config.json is still consulted for a mission that records NO engine of its own
+# — the reversal moves the mission ABOVE config, it does not remove config.
+r3mc2="$(make_repo '{"workerBin": "config-bin"}')"
+mk_nopin "$r3mc2"
+out3mc2="$(resolve_mission_in "$r3mc2" m-nopin CLAUDECODE=1)"
+check "3j3. an unpinned mission still takes config.json workerBin" \
+  "printf '%s' \"\$out3mc2\" | qgrep -q 'bin=config-bin' && printf '%s' \"\$out3mc2\" | qgrep -q 'binsrc=config'"
+
+# --- 3m. THE PROVENANCE IS RECORDED, NOT RE-DERIVED --------------------------
+# S196 A3(g). The `worker: … (bin: config)` line printed ZERO times during a real
+# 6-stage auto-advance run (it only prints on --step), was persisted NOWHERE, and
+# never reached the viewscreen — so "which engine ran, and why" was unanswerable
+# after the fact. The RESOLVER now records the pair (engineResolved +
+# engineSource) on the mission AT THE MOMENT IT RESOLVES. That is the round's
+# infer-vs-record rule: the producer records; nobody re-reads config later and
+# guesses which source won (the mistake S147/S156/S188 each paid rounds for).
+r3p="$(make_repo '{"workerBin": "config-bin"}')"
+make_mission "$r3p" m-pin copilot
+out3p="$(resolve_mission_in "$r3p" m-pin CLAUDECODE=1)"
+s3p="$r3p/.git/lcars/missions/m-pin/state.json"
+check "3m. the resolution PERSISTS the engine it resolved" \
+  "[ \"\$(jget '$s3p' engineResolved)\" = 'copilot' ]"
+check "3n. and WHERE it came from" \
+  "[ \"\$(jget '$s3p' engineSource)\" = 'mission' ]"
+check "3o. state.json is still VALID JSON after the resolver wrote to it" \
+  "jok '$s3p'"
+check "3p. and the mission's own recorded workerBin is untouched" \
+  "[ \"\$(jget '$s3p' workerBin)\" = 'copilot' ]"
+# A resolution that did NOT come from the mission is recorded just as plainly.
+r3q="$(make_repo '{"workerBin": "config-bin"}')"
+mk_nopin "$r3q"
+resolve_mission_in "$r3q" m-nopin CLAUDECODE=1 >/dev/null
+s3q="$r3q/.git/lcars/missions/m-nopin/state.json"
+check "3q. a config-sourced resolution records source=config" \
+  "[ \"\$(jget '$s3q' engineSource)\" = 'config' ] && [ \"\$(jget '$s3q' engineResolved)\" = 'config-bin' ]"
+check "3r. that state.json PARSES too" "jok '$s3q'"
+
 # A mission with NO recorded engine must fall through to detection UNCHANGED.
 r3mn="$(make_repo)"
-mkdir -p "$r3mn/.git/lcars/missions/m-nopin"
-printf '{ "id":"m-nopin","stage":"implement" }\n' >"$r3mn/.git/lcars/missions/m-nopin/state.json"
+mk_nopin "$r3mn"
 out3mn="$(resolve_mission_in "$r3mn" m-nopin COPILOT_RUN_APP=1)"
 check "3l. a mission with no pin still falls through to host detection" \
   "printf '%s' \"\$out3mn\" | qgrep -q 'binsrc=detected'"

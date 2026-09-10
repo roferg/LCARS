@@ -101,6 +101,24 @@ class ActionError(Exception):
 _ADOPT_REFUSAL_BANNER = "lcars adopt: "
 
 
+# adopt.sh's `note()` writes exactly `  ⚠ <sentence>` — see its NOTES channel.
+# A warning may WRAP over following lines in the terminal, but note() emits one
+# line per warning, so one line is one warning.
+_ADOPT_WARN_MARK = "\u26a0"
+
+
+def _adopt_warnings(output):
+    """The `⚠` lines adopt printed, in order, with the marker trimmed."""
+    out = []
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_ADOPT_WARN_MARK):
+            text = stripped[len(_ADOPT_WARN_MARK):].strip()
+            if text:
+                out.append(text)
+    return out
+
+
 def _adopt_refusal(exc):
     """`exc` re-cast as a 409 when adopt.sh REFUSED, else `exc` untouched."""
     if getattr(exc, "skill_exit", None) != 1:
@@ -13125,7 +13143,20 @@ class Actions(LogFacts):
         # The board refreshes itself off the next poll — the adopted mission is
         # now a LOCAL mission dir, so the overlay stops drawing its remote card
         # and the local card takes its place. Nothing to reconcile here.
-        return {"adopted": int(n), "output": out}
+        #
+        # S196 A4 — THE WARNINGS TRAVEL. adopt succeeds and still has things the
+        # captain must know: no `testCommand` could be detected, attachments could
+        # not follow the issue, no open PR resolves at Verify, the repo's config
+        # prefers a different engine. Every one of those went into adopt's stdout
+        # and the board threw the whole string away, showing only "Adopted #34 —
+        # it is a local mission now." A warning nobody sees is not a warning.
+        #
+        # They are lifted by adopt's OWN marker, not by prose-matching: `note()`
+        # in adopt.sh emits exactly `  ⚠ <sentence>` and nothing else in the verb
+        # uses that glyph at the head of a line. Same discipline as
+        # _ADOPT_REFUSAL_BANNER above — one script, one marker, no classifier.
+        return {"adopted": int(n), "output": out,
+                "warnings": _adopt_warnings(out)}
 
     # ── S190: THE LIGHT LOCK, SERVER-SIDE ───────────────────────────────────
     def owner_lock_reason(self, mid):

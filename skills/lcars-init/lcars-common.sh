@@ -2072,6 +2072,201 @@ lcars_config_set_string() {
   mv "$tmp" "$config"
 }
 
+# ===========================================================================
+# THE CLONE FINGERPRINT AND THE MISSION-ID MINTER  (S196, half A, leg 4)
+# ===========================================================================
+#
+# WHAT WAS MEASURED (S191's live two-laptop capstone, 2026-09-09). Mission ids
+# were `lcars-YYYYMMDD-NNN`, and NNN was counted by scanning ONE CLONE's
+# `.git/lcars/missions/`. That number is generated from purely local
+# information, yet the id it produces is a GLOBALLY SHARED NAME: it is the
+# mission DIRECTORY the CLI addresses, it is the git BRANCH `lcars/<id>` on the
+# SHARED remote, and it was adopt's lookup key. Two laptops filing against one
+# repo on one day minted the IDENTICAL id. Adopting the colliding issue matched
+# the wrong mission, reported "refreshed an existing local mission", overwrote a
+# SHIPPED mission's merge record in place, and reused its MERGED branch.
+#
+# The round doc froze the id FORMAT. The captain UNFROZE it on 2026-09-09, after
+# being shown the refusal-only alternative, and chose to WIDEN THE NAME:
+#
+#     lcars-YYYYMMDD-NNN-<fp>        fp = 4 lowercase hex, PER CLONE
+#
+# THE THREE RULES THIS CODE EXISTS TO KEEP:
+#
+#   1. THE FINGERPRINT IS PER CLONE, NOT PER MISSION, NOT PER MACHINE, NOT PER
+#      USER, NOT PER PATH. It is minted ONCE as a UUID4 and stored in the
+#      clone's own `.git/lcars/config.json` — which git never carries, so a
+#      clone can only ever hold its own. Deriving it from the login, the
+#      hostname or the repo path would be cheaper and WRONG: two clones of one
+#      repo, on one machine, by one user, share all three and must still
+#      differ. (`git clone` twice into ~/a and ~/b is a normal thing to do.)
+#
+#   2. EXISTING IDS ARE NEVER RE-MINTED. Nothing migrates, nothing is renamed.
+#      Every `lcars-YYYYMMDD-NNN` already on disk keeps resolving, running,
+#      rendering and adopting exactly as it did — which is why the SEQUENCE
+#      SCAN below is the most dangerous line in this file. It used to read
+#      `${d##*-}`: the text after the LAST hyphen. On `…-001-a3f4` that is the
+#      FINGERPRINT, and `$((10#a3f4))` is a fatal arithmetic error, so the very
+#      first mission a widened clone filed would have broken every mint after
+#      it. The scan now strips the KNOWN prefix `lcars-<date>-`, takes the field
+#      up to the next hyphen, and SKIPS anything that is not all digits — so a
+#      mixed directory (legacy + fingerprinted + hand-made junk) sequences
+#      correctly and can never crash.
+#
+#   3. LAZY ACQUISITION, NEVER A CAPTAIN CHORE. Every repo already initialised
+#      on this machine — and every clone `lcars adopt` seeds — has no
+#      fingerprint. It acquires one on first use, silently. `lcars init` seeds
+#      it up front and `lcars update` backfills it, but neither is required.
+#
+# The `lcars adopt` refusals from leg 1 (id collision, branch collision) STAY.
+# They are the backstop for LEGACY ids minted before this change; this code
+# stops them firing for NEW missions, it does not make them unnecessary.
+
+# The fingerprint's length. Four hex chars is a 65 536-value space — a coin-flip
+# birthday collision needs ~300 clones of one repo, and the handful of laptops
+# this protocol is for are nowhere near it. It also keeps the id short enough to
+# read on a board card and to type as a partial-id selector. And a collision is
+# not silent even then: `lcars adopt`'s leg-1 refusals are still standing behind
+# this, and they fire on exactly that case.
+LCARS_CLONE_FP_LEN=4
+
+# _lcars_valid_clone_id — 0 iff the argument is a 32-char lowercase hex string.
+_lcars_valid_clone_id() {
+  case "${1:-}" in
+    *[!0-9a-f]* | '') return 1 ;;
+  esac
+  [ "${#1}" -eq 32 ]
+}
+
+# _lcars_new_clone_id — a fresh 32-hex clone identity. UUID4 is the honest
+# source (genuinely random, no hidden dependence on user/host/path); the two
+# fallbacks exist only so a repo without python3 or /dev/urandom still gets an
+# id rather than an error.
+_lcars_new_clone_id() {
+  local v=""
+  v="$("${LCARS_PYTHON_BIN:-python3}" -c 'import uuid; print(uuid.uuid4().hex)' 2>/dev/null)"
+  _lcars_valid_clone_id "$v" || v=""
+  if [ -z "$v" ]; then
+    v="$(LC_ALL=C od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    _lcars_valid_clone_id "$v" || v=""
+  fi
+  if [ -z "$v" ]; then
+    v="$(printf '%08x%08x%08x%08x' \
+          "$(( (RANDOM << 15) ^ RANDOM ))" "$$" \
+          "$(date +%s 2>/dev/null || echo 0)" "$(( (RANDOM << 15) ^ RANDOM ))")"
+    v="$(printf '%s' "$v" | tr 'A-Z' 'a-z' | cut -c1-32)"
+  fi
+  printf '%s' "$v"
+}
+
+# _lcars_config_insert_head_key <config> <key> <string-value>
+#   Insert a top-level string key as the FIRST key of the object, preserving
+#   every other byte of the file.
+#
+# WHY NOT lcars_config_set_or_add_string. That primitive inserts after the first
+# LINE that begins with `{`. On the multi-line config `lcars init` writes, that
+# is correct. On a ONE-LINE config — `{ "model": …, "created": … }`, the shape
+# every test fixture and every hand-written config uses — it appends a second
+# line AFTER the closing brace and the file stops being JSON. This splits on the
+# first `{` CHARACTER instead, which is right for both shapes and for `{}`.
+_lcars_config_insert_head_key() {
+  local config="$1" key="$2" esc text head rest trimmed tmp
+  [ -f "$config" ] || return 1
+  esc="$(lcars_json_escape "$3")"
+  text="$(cat "$config")" || return 1
+  case "$text" in *'{'*) : ;; *) return 1 ;; esac
+  head="${text%%\{*}"
+  rest="${text#*\{}"
+  # leading whitespace stripped, to see whether the object has any keys at all
+  trimmed="${rest#"${rest%%[![:space:]]*}"}"
+  tmp="$config.tmp.$$"
+  case "$trimmed" in
+    ''|'}'*) printf '%s{\n  "%s": "%s"%s\n'  "$head" "$key" "$esc" "$rest" >"$tmp" ;;
+    *)       printf '%s{\n  "%s": "%s",%s\n' "$head" "$key" "$esc" "$rest" >"$tmp" ;;
+  esac
+  mv "$tmp" "$config"
+}
+
+# lcars_clone_id <config-path> — this clone's durable 32-hex identity.
+#
+# Read it, or mint and PERSIST it. The canonical home is `cloneId` in the
+# clone's config.json (a NEW key, inserted at the TOP of the object per the
+# house rule). When there is no config.json yet — a repo mid-setup, or a clone
+# `lcars adopt` seeded before `lcars init` ran — it falls back to a plain
+# `<lcars-dir>/clone-id` file beside it, and a later config.json ADOPTS that
+# value rather than minting a second one. Either way the answer is stable for
+# the life of the clone, which is the only property the id depends on.
+lcars_clone_id() {
+  local config="${1:-}" dir side cid="" from_config=""
+  [ -n "$config" ] || { _lcars_new_clone_id; return 0; }
+  dir="$(dirname "$config")"
+  side="$dir/clone-id"
+
+  if [ -f "$config" ]; then
+    from_config="$(lcars_config_get "$config" cloneId)"
+    _lcars_valid_clone_id "$from_config" && cid="$from_config"
+  fi
+  if [ -z "$cid" ] && [ -f "$side" ]; then
+    local fromside; fromside="$(tr -d '[:space:]' <"$side" 2>/dev/null)"
+    _lcars_valid_clone_id "$fromside" && cid="$fromside"
+  fi
+  [ -n "$cid" ] || cid="$(_lcars_new_clone_id)"
+
+  if [ ! -f "$config" ]; then
+    [ -d "$dir" ] && { printf '%s\n' "$cid" >"$side" 2>/dev/null || true; }
+  elif [ "$from_config" != "$cid" ]; then
+    if ! lcars_config_has_key "$config" cloneId; then
+      _lcars_config_insert_head_key "$config" cloneId "$cid" 2>/dev/null || true
+    elif [ "$(grep -c '^[[:space:]]*"cloneId"[[:space:]]*:' "$config" 2>/dev/null)" = "1" ]; then
+      # The key owns its own line — lcars_config_set_string's documented
+      # precondition. Repairing an unusable value in place is safe here.
+      lcars_config_set_string "$config" cloneId "$cid" 2>/dev/null || true
+    else
+      # The key is PRESENT, UNUSABLE, and shares its line with other keys (a
+      # hand-edited one-line config). lcars_config_set_string would rewrite the
+      # whole line and take the neighbouring keys with it, so it is never
+      # reached for: the value goes to the bridge file instead, which the read
+      # above prefers over an invalid config value. Stability without a risk of
+      # corrupting a file we did not write.
+      [ -d "$dir" ] && { printf '%s\n' "$cid" >"$side" 2>/dev/null || true; }
+    fi
+  fi
+  printf '%s' "$cid"
+}
+
+# lcars_clone_fingerprint <config-path> — the SHORT per-clone tag that goes in
+# a mission id. Empty only when there is no id to be had at all.
+lcars_clone_fingerprint() {
+  local cid; cid="$(lcars_clone_id "${1:-}")"
+  [ -n "$cid" ] || return 0
+  printf '%s' "$(printf '%s' "$cid" | cut -c1-"$LCARS_CLONE_FP_LEN")"
+}
+
+# lcars_mint_mission_id <missions-dir> <YYYYMMDD> [fingerprint]
+#   The ONE minter. All three mint sites (lcars-file's two lanes and lcars-log)
+#   call this so the sequence scan cannot drift between them. An EMPTY
+#   fingerprint mints the pre-S196 shape — the degraded answer, never the
+#   default.
+lcars_mint_mission_id() {
+  local mdir="$1" date="$2" fp="${3:-}"
+  local max=0 d n
+  shopt -s nullglob
+  for d in "$mdir"/lcars-"$date"-*; do
+    n="${d##*/}"          # basename:            lcars-<date>-NNN[-<fp>]
+    n="${n#lcars-$date-}" # strip the KNOWN prefix:     NNN[-<fp>]
+    n="${n%%-*}"          # the sequence field alone:   NNN
+    case "$n" in ''|*[!0-9]*) continue ;; esac   # junk in missions/ is skipped
+    n=$((10#$n))
+    [ "$n" -gt "$max" ] && max="$n"
+  done
+  shopt -u nullglob
+  if [ -n "$fp" ]; then
+    printf 'lcars-%s-%03d-%s' "$date" "$((max + 1))" "$fp"
+  else
+    printf 'lcars-%s-%03d' "$date" "$((max + 1))"
+  fi
+}
+
 # lcars_config_merge — write config.json preserving existing keys.
 #
 # Args:

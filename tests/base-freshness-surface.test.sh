@@ -190,7 +190,8 @@ scaffold_lcars() {
   # verdict asks of a command. The gate itself is proven in
   # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<EOF
-{ "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e",
+  "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
   "testCommand": "true",
   "lcarsVersion": "$VERSION_STAMP", "created": "2026-05-30T00:00:00Z" }
 EOF
@@ -243,7 +244,13 @@ Actions(repo_root=os.environ["LCARS_PARITY_REPO"],
 ' ) >"$repo.out" 2>&1
 }
 
-MID="lcars-20260530-001"
+# S196 — `cloneId` PINS THE FINGERPRINT so $MID below stays a literal. A minted
+# mission id is now `lcars-YYYYMMDD-NNN-<fp>`, where <fp> is the first 4 hex of
+# the clone's own `cloneId` (a UUID4 minted on first use, so two clones of one
+# repo can never mint the same id — see lcars_clone_id in
+# skills/lcars-init/lcars-common.sh). Pinning it makes <fp> the constant `c10e`;
+# the widening itself is proven in tests/mission-id.test.sh.
+MID="lcars-20260530-001-c10e"
 mdir() { printf '%s/.git/lcars/missions/%s' "$1" "$MID"; }
 
 echo "base freshness — the viewscreen surface (S160)"
@@ -409,7 +416,7 @@ check "8. two 'unknown's, opposite loudness — the verdict alone cannot decide"
 # to date from origin" would move the fix onto code it was never written
 # against. The reporter must say so, take no network call, and stay quiet.
 r9="$(make_fixture s9)"
-( cd "$r9" && git checkout -q -b lcars/lcars-20260530-001 ) >/dev/null 2>&1
+( cd "$r9" && git checkout -q -b "lcars/$MID" ) >/dev/null 2>&1
 advance_origin s9 3
 report "$r9" "$TMPROOT/s9.json" --json
 check "9. verdict is 'child-base'" \

@@ -310,6 +310,99 @@ LCARS_HANDOFF_SCHEMA="v1"
 # lcars_handoff_envelope <mission-dir> [key=value…]
 #   Keys accepted as overrides: id branch base type engine parentIssue
 #   attachments parked. Anything else is ignored (forward-compatible).
+# ---------------------------------------------------------------------------
+# S196 A5 — THE ESTIMATE'S PILL FACTS, CARRIED AS RECORDED FIELDS
+# ---------------------------------------------------------------------------
+# THE DEFECT. A REMOTE card carries a cost pill and two difficulty pills; the
+# instant the captain ADOPTED it they vanished, because `lcars adopt` rebuilds
+# prd.md + state.json and there was nowhere for it to learn the estimate from.
+# A visible downgrade at the exact moment he takes ownership.
+#
+# WHY THE ENVELOPE AND NOT THE "## Estimate" SECTION. The remote card's pills are
+# scraped out of that human section by the github board adapter, and adopt is
+# forbidden from doing the same: adopt NEVER re-scans the captain's prose (rule 1
+# of adopt.sh, three sessions' worth of scar tissue). The captain writes PRDs
+# *about LCARS*, so a PRD quoting an estimate — or a whole decoy envelope — is a
+# document this project has already been handed in anger. Recorded fields win.
+#
+# Only the three PILL facts travel, not the whole estimate: the per-stage token
+# and request tables are local working data (`.git/lcars/` stays the source of
+# richness — the round's standing invariant), and a partial estimate.json is
+# harmless downstream because resolve_stage_model reads `models`, finds none, and
+# emits the legacy no-`--model` argv.
+#
+# Absent estimate.json, or a cost block in a shape these readers do not
+# understand, emits NOTHING — an absent fact stays absent rather than becoming a
+# fabricated zero.
+
+# lcars_ib_jscope <blob> <key> → the BODY (incl. braces) of "<key>": { … } inside
+# a single-line JSON blob, braces MATCHED so a nested object cannot end it early.
+# The same technique as run.sh's _json_scope_into, prefixed and local to this
+# library for the reason stated at the top of the file (each script carries its
+# own jq-free readers rather than sourcing a shared one).
+lcars_ib_jscope() {
+  printf '%s' "$1" | awk -v key="$2" '
+    { s = $0; pat = "\"" key "\""
+      i = index(s, pat); if (i == 0) exit
+      r = substr(s, i + length(pat))
+      ob = index(r, "{"); if (ob == 0) exit
+      r = substr(r, ob); d = 0; out = ""; n = length(r)
+      for (j = 1; j <= n; j++) {
+        c = substr(r, j, 1); out = out c
+        if (c == "{") d++
+        else if (c == "}") { d--; if (d == 0) break }
+      }
+      print out }'
+}
+
+# lcars_ib_jscalar <blob> <key> → the scalar value of "<key>": a quoted string's
+# body, else a bare number. Empty for absent, null, or anything else.
+lcars_ib_jscalar() {
+  local v
+  v="$(printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1)"
+  if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  printf '%s' "$1" \
+    | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9.eE+-]*\).*/\1/p" \
+    | head -1
+}
+
+# lcars_ib_estimate_kv <mission-dir> → the envelope's estimate key/value chunk
+# (leading comma included), or nothing.
+lcars_ib_estimate_kv() {
+  local est="$1/estimate.json"
+  [ -f "$est" ] || return 0
+  local blob; blob="$(tr -d '\n' <"$est" 2>/dev/null)"
+  [ -n "$blob" ] || return 0
+  local reason impl costb unit band low high out=""
+  reason="$(lcars_ib_jscalar "$blob" reasoningCriticality)"
+  impl="$(lcars_ib_jscalar "$blob" implCriticality)"
+  case "$reason" in low|medium|high) : ;; *) reason="" ;; esac
+  case "$impl"   in low|medium|high) : ;; *) impl="" ;; esac
+
+  costb="$(lcars_ib_jscope "$blob" cost)"
+  if [ -n "$costb" ]; then
+    unit="$(lcars_ib_jscalar "$costb" unit)"
+    case "$unit" in
+      usd|premiumRequests) band="$(lcars_ib_jscope "$costb" "$unit")" ;;
+      *) unit=""; band="" ;;
+    esac
+    if [ -n "$band" ]; then
+      low="$(lcars_ib_jscalar "$band" low)"
+      high="$(lcars_ib_jscalar "$band" high)"
+    fi
+    # A band with neither end is no band at all (and `status:"unavailable"`
+    # estimates land here) — say nothing rather than half a pill.
+    if [ -z "${low:-}" ] && [ -z "${high:-}" ]; then unit=""; fi
+  fi
+
+  [ -n "$unit" ] && out="$out,\"estCostUnit\":$(lcars_ib_jstr "$unit")"
+  [ -n "$unit" ] && [ -n "${low:-}" ]  && out="$out,\"estCostLow\":$low"
+  [ -n "$unit" ] && [ -n "${high:-}" ] && out="$out,\"estCostHigh\":$high"
+  [ -n "$reason" ] && out="$out,\"estReasoning\":$(lcars_ib_jstr "$reason")"
+  [ -n "$impl" ]   && out="$out,\"estImpl\":$(lcars_ib_jstr "$impl")"
+  printf '%s' "$out"
+}
+
 lcars_handoff_envelope() {
   local mdir="$1"; shift
   local state="$mdir/state.json"
@@ -356,14 +449,20 @@ lcars_handoff_envelope() {
   local parked=""
   [ "$o_parked" = "true" ] && parked=',"parked":true'
 
-  printf '<!-- lcars:handoff %s {"id":%s,"branch":%s,"base":%s,"type":%s,"engine":%s,"parentIssue":%s,"attachments":%s%s} -->' \
+  # S196 A5 — the three ESTIMATE pill facts, when the mission records them. They
+  # ride at the END so every byte before them is unchanged from S188's envelope,
+  # and they are ADDITIVE within v1: `lcars_handoff_field` reads by key, so an
+  # older LCARS parsing this envelope sees exactly what it saw before.
+  local estkv; estkv="$(lcars_ib_estimate_kv "$mdir")"
+
+  printf '<!-- lcars:handoff %s {"id":%s,"branch":%s,"base":%s,"type":%s,"engine":%s,"parentIssue":%s,"attachments":%s%s%s} -->' \
     "$LCARS_HANDOFF_SCHEMA" \
     "$(lcars_ib_jstr "$id")" \
     "$(lcars_ib_jstr "$branch")" \
     "$(lcars_ib_jstr "$base")" \
     "$(lcars_ib_jstr "$type")" \
     "$(lcars_ib_jstr "$engine")" \
-    "$parent" "$attach" "$parked"
+    "$parent" "$attach" "$parked" "$estkv"
 }
 
 # ===========================================================================
@@ -473,7 +572,8 @@ lcars_handoff_parse() {
   local f="${1:-}" j k
   j="$(lcars_handoff_json "$f")"
   [ -n "$j" ] || return 0
-  for k in id branch base type engine parentIssue attachments parked; do
+  for k in id branch base type engine parentIssue attachments parked \
+           estCostUnit estCostLow estCostHigh estReasoning estImpl; do
     case "$j" in *"\"$k\":"*) : ;; *) continue ;; esac
     printf '%s\t%s\n' "$k" "$(lcars_handoff_field "$f" "$k")"
   done

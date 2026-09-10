@@ -254,10 +254,18 @@ echo "$RULE"
 # STAGE column is 19 wide so the longest stage label — the parked "awaiting
 # alignment" (18 chars) — still gets a separating space before the glyph column
 # instead of gluing into it (e.g. "awaiting alignment◇ Title").
-printf '%-22s%-7s%-19s%-4s%s\n' "ID" "ISSUE" "STAGE" "" "TITLE"
+#
+# S196 — the ID column is 27, not 22. A mission id gained a 5-character
+# per-clone suffix (`lcars-YYYYMMDD-NNN-<fp>`, 23 chars against the old 18), and
+# at 22 the id would have run straight into the ISSUE column with no separating
+# space. 27 keeps the same 4-space gutter the old width gave, and a legacy
+# 18-char id simply pads further. The SORT above is unaffected: it keys on
+# created\tid, and everything up to NNN is still fixed-width, so `…-001-c10e`
+# still sorts before `…-002-c10e`.
+printf '%-27s%-7s%-19s%-4s%s\n' "ID" "ISSUE" "STAGE" "" "TITLE"
 while IFS=$'\t' read -r _created _sortid id issue stage glyph title; do
   [ -n "$id" ] || continue
-  printf '%-22s%-7s%-19s%-4s%s\n' "$id" "$issue" "$stage" "$glyph" "$title"
+  printf '%-27s%-7s%-19s%-4s%s\n' "$id" "$issue" "$stage" "$glyph" "$title"
 done <<<"$sorted"
 echo "$RULE"
 # Only show the glyph legend when a row actually carries a glyph — otherwise a

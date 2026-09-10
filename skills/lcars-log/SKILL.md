@@ -85,7 +85,7 @@ bash ~/.claude/skills/lcars-log/log.sh \
   --prd "$prd1" --prd "$prd2"
 ```
 
-For each bug the script mints a mission id (`lcars-YYYYMMDD-NNN`, sequenced per
+For each bug the script mints a mission id (`lcars-YYYYMMDD-NNN-<fp>`, sequenced per
 day), creates `.git/lcars/missions/<id>/` with `prd.md`, `validated-plan.md`,
 and `state.json` (type `bug`, stage `plan`, `parentMission` set), creates the
 Mission's branch `lcars/<id>` off the current branch, opens a GitHub issue

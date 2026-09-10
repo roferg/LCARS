@@ -375,9 +375,27 @@ function adoptControl(m) {
     b.textContent = "◐ Adopting…";
     postWrite("/api/mission/" + enc(m.issue != null ? m.issue : m.id)
               + "/adopt", {},
-      function () {
+      function (state) {
         // The board refresh postWrite already fired swaps in the LOCAL card.
-        setVerdict("Adopted #" + m.issue + " — it is a local mission now.", "ok");
+        //
+        // S196 A4 — ADOPT'S WARNINGS ARE NOT SWALLOWED. This used to say only
+        // "Adopted #34 — it is a local mission now." and drop everything else
+        // adopt printed: no testCommand could be detected, the attachments could
+        // not follow the issue, no open PR resolves at Verify, this repo's config
+        // prefers a different engine. Each of those is something the captain must
+        // act on, and the one surface that could tell him threw them away.
+        //
+        // The daemon lifts them off adopt's own `⚠` marker and hands them over
+        // as `warnings`; this reads that FIELD, never adopt's prose. A warned
+        // adopt is a WARN verdict, not an ok one — it succeeded, and it is not
+        // finished business.
+        var warns = (state && state.warnings) || [];
+        var head = "Adopted #" + m.issue + " — it is a local mission now.";
+        if (warns.length) {
+          setVerdict(head + " ⚠ " + warns.join(" ⚠ "), "warn");
+        } else {
+          setVerdict(head, "ok");
+        }
       },
       function (msg) {
         b.disabled = false;
@@ -1376,6 +1394,36 @@ function engineBadge(m) {
   return b;
 }
 
+/* S196 A3(g) — "copilot · mission pin", in words, from RECORDED fields only.
+
+   `engineSource` and `engineResolved` are written by whichever producer made the
+   choice, at the moment it made it: `lcars adopt` when the captain picks the
+   engine at the handoff, run.sh's resolver when it resolves for a run. This
+   function only NAMES what they say — it never re-derives which source would
+   have won by reading config, which is the inference S147/S156/S188 each paid
+   fix rounds for. An unknown source is printed verbatim rather than swallowed:
+   a source this front end has not heard of is still a fact, and hiding it would
+   put the board back where it started.
+
+   Null when nothing is recorded, so a pre-S196 card is unchanged. */
+var ENGINE_SOURCE_WORDS = {
+  "mission":         "mission pin",
+  "config":          "repo config",
+  "env":             "$LCARS_WORKER_BIN",
+  "detected":        "host CLI",
+  "default":         "default",
+  "adopt-kept":      "mission pin · kept at adopt",
+  "adopt-converted": "converted at adopt",
+  "adopt-chosen":    "chosen at adopt"
+};
+function engineProvenanceLine(m) {
+  var src = String((m && m.engineSource) || "");
+  if (!src) return null;
+  var eng = String((m && m.engineResolved) || (m && m.engine) || "");
+  var why = ENGINE_SOURCE_WORDS[src] || src;
+  return eng ? (eng + " · " + why) : why;
+}
+
 function btn(label, cls, onClick) {
   var b = el("button", "btn" + (cls ? " " + cls : ""), label);
   b.type = "button";
@@ -1523,6 +1571,15 @@ function cardNode(m) {
 
   var issue = m.issue ? "#" + m.issue : "—";
   card.appendChild(el("div", "no", issue + " · lcars:" + m.stage));
+  // S196 A3(g): the ENGINE and WHERE IT CAME FROM, on the card, in words.
+  // The corner watermark says WHICH cli; it has never said WHY, and "why" is the
+  // half that costs money — a mission filed on copilot and silently re-homed onto
+  // billed claude by a clone's config.json looked identical to one that chose
+  // claude on purpose. A second meta line rather than more text on the first, so
+  // `#34 · lcars:verify` stays byte-identical, and ABSENT entirely for a mission
+  // that has recorded no provenance (every pre-S196 card renders as before).
+  var prov = engineProvenanceLine(m);
+  if (prov) card.appendChild(el("div", "no engine-src", prov));
   // Mission-log-grounding round: a logged bug runs Research in a scoped GROUNDING
   // mode (it anchors the symptom to the existing code, not full research). While
   // the card sits in the Research column, show a small "grounding" descriptor so
@@ -3629,6 +3686,11 @@ function setVerdict(t, kind) {
 function verdictClass(kind) {
   if (kind === "err") return "status-verdict err";
   if (kind === "ok") return "status-verdict ok";
+  // S196: `warn` — it HAPPENED, and it is not finished business (an adopt that
+  // carried warnings). Deliberately the neutral, prominent amber rather than a
+  // fourth colour: amber already means "an outcome worth reading", which is
+  // exactly the register. Named explicitly so it is a decision, not a fallthrough.
+  if (kind === "warn") return "status-verdict";
   return "status-verdict";
 }
 function clearVerdict() { STATUS_VERDICT = null; STATUS_VERDICT_KIND = null; }

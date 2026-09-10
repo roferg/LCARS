@@ -5,7 +5,12 @@
 # This is the mechanical half of `lcars file`. The conversational half
 # (Capture + Align) is driven by Claude per SKILL.md and produces a PRD on
 # disk; this script takes that PRD and:
-#   1. mints a mission ID            lcars-YYYYMMDD-NNN (NNN per-day sequence)
+#   1. mints a mission ID            lcars-YYYYMMDD-NNN-<fp>  (NNN per-day
+#                                    sequence; <fp> the 4-hex per-CLONE
+#                                    fingerprint added in S196, so two laptops
+#                                    filing on one day cannot mint one name for
+#                                    one shared branch. Pre-S196 ids keep their
+#                                    shape for ever — nothing is re-minted.)
 #   2. creates .git/lcars/missions/<id>/ with prd.md + state.json
 #   3. opens a GitHub issue labelled lcars:align + lcars:<type> + lcars:mission
 #   4. prints a confirmation summary
@@ -80,6 +85,28 @@ if [ -f "$LCARS_COMMON_LIB" ]; then
   # shellcheck source=../lcars-init/lcars-common.sh
   . "$LCARS_COMMON_LIB"
 fi
+# S196 — the mission-id minter and the clone fingerprint live in lcars-common.sh
+# (sourced best-effort above). Define the DEGRADED forms when the lib is absent:
+# the PRE-S196 id shape — no fingerprint — but with S196's tolerant sequence
+# scan, so a clone that already holds fingerprinted missions cannot die on
+# `$((10#a3f4))` just because the library went missing.
+if ! command -v lcars_mint_mission_id >/dev/null 2>&1; then
+  lcars_clone_fingerprint() { printf ''; }
+  lcars_mint_mission_id() {
+    local mdir="$1" date="$2" fp="${3:-}" max=0 d n
+    shopt -s nullglob
+    for d in "$mdir"/lcars-"$date"-*; do
+      n="${d##*/}"; n="${n#lcars-$date-}"; n="${n%%-*}"
+      case "$n" in ''|*[!0-9]*) continue ;; esac
+      n=$((10#$n)); [ "$n" -gt "$max" ] && max="$n"
+    done
+    shopt -u nullglob
+    if [ -n "$fp" ]; then printf 'lcars-%s-%03d-%s' "$date" "$((max + 1))" "$fp"
+    else                  printf 'lcars-%s-%03d'    "$date" "$((max + 1))"
+    fi
+  }
+fi
+
 if ! command -v ensure_base_current >/dev/null 2>&1; then
   ensure_base_current() {
     LCARS_BASE_VERDICT=""; LCARS_BASE_BEHIND=""; LCARS_BASE_AHEAD=""
@@ -328,16 +355,16 @@ _worker_bin_line() {
   printf '  "workerBin": "%s",' "$wb_json"
 }
 
-# _mint_id — the per-day sequenced mission id under $MISSIONS_DIR. Echoes it.
+# _mint_id — the per-day sequenced, CLONE-FINGERPRINTED mission id under
+# $MISSIONS_DIR. Echoes it.
+#
+# S196 — the scan and the format both moved to lcars_mint_mission_id in
+# lcars-common.sh, so this lane, the --prd lane below, and `lcars log` share ONE
+# parser. Why the id widened at all (two laptops minting the same name for the
+# same shared branch), and why the scan can no longer read `${d##*-}`, is
+# written out in full over that function.
 _mint_id() {
-  local max=0 d n
-  shopt -s nullglob
-  for d in "$MISSIONS_DIR"/lcars-"$DATE"-*; do
-    n="$((10#${d##*-}))"
-    [ "$n" -gt "$max" ] && max="$n"
-  done
-  shopt -u nullglob
-  printf 'lcars-%s-%03d' "$DATE" "$((max + 1))"
+  lcars_mint_mission_id "$MISSIONS_DIR" "$DATE" "$(lcars_clone_fingerprint "$CONFIG")"
 }
 
 # _make_branch <id> — create the Mission's own branch lcars/<id> off the current
@@ -1024,16 +1051,13 @@ case "$TYPE" in
   *) die_prd "PRD Type must be 'feature' or 'bug' (got: '${TYPE:-empty}')." ;;
 esac
 
-# --- mint the mission ID (per-day sequence) -------------------------------
-max=0
-shopt -s nullglob
-for d in "$MISSIONS_DIR"/lcars-"$DATE"-*; do
-  n="$((10#${d##*-}))"
-  [ "$n" -gt "$max" ] && max="$n"
-done
-shopt -u nullglob
-SEQ="$((max + 1))"
-ID="$(printf 'lcars-%s-%03d' "$DATE" "$SEQ")"
+# --- mint the mission ID (per-day sequence + the clone fingerprint) -------
+# S196 — the SAME minter the --park/--complete lane's _mint_id uses (and the
+# same one `lcars log` uses): lcars_mint_mission_id in lcars-common.sh. The id
+# carries a short per-clone tag because it names a SHARED thing — the branch
+# `lcars/<id>` on the remote — while its sequence number is counted from purely
+# local information. See that function for the capstone collision it fixes.
+ID="$(lcars_mint_mission_id "$MISSIONS_DIR" "$DATE" "$(lcars_clone_fingerprint "$CONFIG")")"
 
 MISSION_DIR="$MISSIONS_DIR/$ID"
 mkdir -p "$MISSION_DIR"

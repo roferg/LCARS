@@ -933,5 +933,732 @@ check "P7. adopt with no issue number refuses" \
 
 # ==========================================================================
 echo
+echo "S196 A1/A2 — identity is the ISSUE NUMBER, and a branch is never re-used"
+# ==========================================================================
+#
+# MEASURED IN S191'S LIVE CAPSTONE (2026-09-09). Mission ids are
+# `lcars-YYYYMMDD-NNN` sequenced PER CLONE, so two laptops filing on the same day
+# mint the IDENTICAL id. Adopt keyed its "is this mission already here?" question
+# on that id, so adopting a SECOND issue matched the FIRST local mission, printed
+# "(refreshed an existing local mission — local artifacts kept)" and OVERWROTE it
+# in place: title, `githubIssue` 34→35, stage done→align, and the ENTIRE merge
+# record (`review`, `prNumber`, `prUrl`) gone. Silent data loss, on a mission the
+# captain had already SHIPPED.
+#
+# `web/lcars_serve/remote.py` has always deduped on the ISSUE NUMBER and says so
+# in its own rule 1 ("the dedupe key is the ISSUE NUMBER and nothing else").
+# adopt now uses the same key: a different issue carrying a colliding mission id
+# is a DIFFERENT mission and can never be a refresh.
+#
+# AND THE ID NAMES THE BRANCH (`lcars/<id>`), so the collision is not merely
+# local: #35's adopt reported "local branch already here" and attached itself to
+# #34's MERGED branch. The id FORMAT is frozen for this round, so adopt cannot
+# re-mint its way out. What it can do — and now does — is REFUSE, loudly, and
+# touch nothing. Both refusals below assert the incumbent's state.json is
+# BYTE-IDENTICAL afterwards, because "we did not destroy it" is the whole claim.
+
+# --- C1: THE HEADLINE. A colliding id from a DIFFERENT issue destroys nothing.
+IFS="$TAB" read -r repoC1 originC1 <<<"$(new_repo)"
+CID="lcars-20260909-001"
+mkdir -p "$repoC1/.git/lcars/missions/$CID"
+# Laptop A's mission, exactly as it stood after `lcars approve` shipped it: the
+# merge record present, `base` LAST (file.sh's write_state shape).
+cat >"$repoC1/.git/lcars/missions/$CID/state.json" <<'SHIPPED'
+{
+  "id": "lcars-20260909-001",
+  "type": "feature",
+  "title": "Laptop A's shipped mission",
+  "stage": "done",
+  "created": "2026-09-09T09:00:00Z",
+  "model": "claude-sonnet",
+  "review": "merged",
+  "prNumber": "77",
+  "prUrl": "https://github.com/acme/repo/pull/77",
+  "githubIssue": 34,
+  "branch": "lcars/lcars-20260909-001",
+  "base": "main"
+}
+SHIPPED
+sC1="$(state_of "$repoC1" "$CID")"
+check "C1. the shipped incumbent is valid JSON to begin with (the test's premise)" \
+  "json_ok '$sC1'"
+beforeC1="$(cat "$sC1")"
+cksumC1="$(cksum <"$sC1")"
+
+# Laptop B filed on the SAME DAY, so its independently-sequenced id is the same
+# string — and its branch is therefore the same branch.
+FIXC1="$(new_fixture "$TMPROOT/fixC1")"
+mk_body "$FIXC1/issue-35.body" "$PRD_TEXT" "$(envelope "$CID" "lcars/$CID" main feature claude null 0)"
+printf "Laptop B's brand new mission\n" >"$FIXC1/issue-35.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXC1/issue-35.labels"
+rcC1=0
+( cd "$repoC1" && GH_FIX="$FIXC1" GH_ASSIGN_STATE="$TMPROOT/assignC1.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 35 >out.txt 2>&1 ) || rcC1=$?
+
+check "C1. adopting a DIFFERENT issue with a colliding mission id REFUSES" \
+  "[ '$rcC1' -ne 0 ]"
+check "C1. it never claims to have 'refreshed an existing local mission'" \
+  "! grep -qi 'refreshed an existing' '$repoC1/out.txt'"
+check "C1. the incumbent's state.json is BYTE-IDENTICAL after the refusal" \
+  "[ \"\$beforeC1\" = \"\$(cat '$sC1')\" ]"
+check "C1. …and its checksum agrees (belt and braces)" \
+  "[ \"\$cksumC1\" = \"\$(cksum <'$sC1')\" ]"
+check "C1. the incumbent still PARSES (S189's lesson: every mutating path parses)" \
+  "json_ok '$sC1'"
+check "C1. the MERGE RECORD survives verbatim — review" \
+  "[ \"\$(json_get '$sC1' review)\" = 'merged' ]"
+check "C1. the MERGE RECORD survives verbatim — prNumber" \
+  "[ \"\$(json_get '$sC1' prNumber)\" = '77' ]"
+check "C1. the MERGE RECORD survives verbatim — prUrl" \
+  "[ \"\$(json_get '$sC1' prUrl)\" = 'https://github.com/acme/repo/pull/77' ]"
+check "C1. githubIssue is STILL 34 (it was rewritten to 35 in the capstone)" \
+  "[ \"\$(json_get '$sC1' githubIssue)\" = '34' ]"
+check "C1. the stage is STILL done (it was rewritten to align in the capstone)" \
+  "[ \"\$(json_get '$sC1' stage)\" = 'done' ]"
+check "C1. the title is STILL laptop A's (it was rewritten in the capstone)" \
+  "[ \"\$(json_get '$sC1' title)\" = \"Laptop A's shipped mission\" ]"
+check "C1. no second mission dir is half-built (still exactly one)" \
+  "[ \"\$(ls -1 '$repoC1/.git/lcars/missions' | wc -l | tr -d ' ')\" = '1' ]"
+check "C1. no prd.md from issue #35 is written over laptop A's mission" \
+  "! grep -qs 'dark mode' '$repoC1/.git/lcars/missions/$CID/prd.md'"
+check "C1. the refusal names BOTH issues, so the captain can see the collision" \
+  "grep -q '35' '$repoC1/out.txt' && grep -q '34' '$repoC1/out.txt'"
+check "C1. the refusal names the colliding mission id" \
+  "grep -q '$CID' '$repoC1/out.txt'"
+check "C1. the refusal says nothing was created / nothing touched" \
+  "grep -qi 'nothing was created\\|not touched' '$repoC1/out.txt'"
+check "C1. the refusal is a plain sentence, not a bash error" \
+  "! grep -qi 'unbound variable\\|no such file or directory\\|syntax error' '$repoC1/out.txt'"
+check "C1. a refused adopt never claims the issue on GitHub" \
+  "[ ! -s '$TMPROOT/assignC1.txt' ]"
+check "C1. and it cuts no local branch" \
+  "[ -z \"\$(cd '$repoC1' && git branch --list 'lcars/*')\" ]"
+
+# --- C2: the LEGITIMATE refresh path is not regressed ----------------------
+# And it proves the KEY is the issue number rather than the directory name: the
+# local mission for issue 42 is deliberately NOT in a directory named after its
+# id, so only an issue-number lookup can find it. A dir-name lookup would create
+# a SECOND mission beside it.
+IFS="$TAB" read -r repoC2 originC2 <<<"$(new_repo)"
+mkdir -p "$repoC2/.git/lcars/missions/legacy-dir"
+cat >"$repoC2/.git/lcars/missions/legacy-dir/state.json" <<'LEGACY'
+{
+  "id": "lcars-20260908-042",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "align",
+  "created": "2026-09-01T00:00:00Z",
+  "model": "claude-sonnet",
+  "baseSha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  "githubIssue": 42,
+  "branch": "lcars/lcars-20260908-042",
+  "base": "main"
+}
+LEGACY
+printf 'the captain said: make it teal\n' >"$repoC2/.git/lcars/missions/legacy-dir/feedback.md"
+FIXC2="$(new_fixture "$TMPROOT/fixC2")"
+mk_body "$FIXC2/issue-42.body" "$PRD_TEXT" "$(envelope "$MID" "lcars/$MID" main feature claude null 0)"
+printf 'Add dark mode (renamed on GitHub)\n' >"$FIXC2/issue-42.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXC2/issue-42.labels"
+rcC2=0
+( cd "$repoC2" && GH_FIX="$FIXC2" GH_ASSIGN_STATE="$TMPROOT/assignC2.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >out.txt 2>&1 ) || rcC2=$?
+sC2="$repoC2/.git/lcars/missions/legacy-dir/state.json"
+check "C2. re-adopting the SAME issue number still exits 0 (a refresh, as before)" \
+  "[ '$rcC2' -eq 0 ]"
+check "C2. it refreshed the mission that CARRIES issue 42, wherever it lives" \
+  "[ \"\$(json_get '$sC2' title)\" = 'Add dark mode (renamed on GitHub)' ]"
+check "C2. it did NOT create a second mission keyed on the id" \
+  "[ ! -d '$repoC2/.git/lcars/missions/$MID' ]"
+check "C2. still exactly one mission dir" \
+  "[ \"\$(ls -1 '$repoC2/.git/lcars/missions' | wc -l | tr -d ' ')\" = '1' ]"
+check "C2. state.json PARSES after the refresh" "json_ok '$sC2'"
+check "C2. the LOCAL-ONLY baseSha survived" \
+  "[ \"\$(json_get '$sC2' baseSha)\" = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' ]"
+check "C2. local-only artifacts survived" \
+  "grep -q teal '$repoC2/.git/lcars/missions/legacy-dir/feedback.md'"
+check "C2. the spec was rebuilt into THAT dir, not a new one" \
+  "[ -f '$repoC2/.git/lcars/missions/legacy-dir/prd.md' ]"
+check "C2. the readout's Next: line names the address \`lcars run\` will resolve" \
+  "grep -q 'lcars run legacy-dir' '$repoC2/out.txt'"
+
+# --- C3: two missions that do NOT collide still coexist, untouched ---------
+# The positive control for C1: matching on the issue number must not have turned
+# every second adopt into a refusal.
+IFS="$TAB" read -r repoC3 originC3 <<<"$(new_repo)"
+FIXC3="$(new_fixture "$TMPROOT/fixC3")"
+AID="lcars-20260909-011"; BID="lcars-20260909-012"
+mk_body "$FIXC3/issue-34.body" "$PRD_TEXT" "$(envelope "$AID" "lcars/$AID" main feature claude null 0)"
+printf 'Mission A\n' >"$FIXC3/issue-34.title"
+printf 'lcars:mission\nlcars:verify\n' >"$FIXC3/issue-34.labels"
+printf '77%shttps://github.com/acme/repo/pull/77\n' "$TAB" >"$FIXC3/closes-34"
+mk_body "$FIXC3/issue-35.body" "$PRD_TEXT" "$(envelope "$BID" "lcars/$BID" main feature claude null 0)"
+printf 'Mission B\n' >"$FIXC3/issue-35.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXC3/issue-35.labels"
+( cd "$repoC3" && GH_FIX="$FIXC3" GH_ASSIGN_STATE="$TMPROOT/assignC3.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 34 >out1.txt 2>&1 )
+sC3a="$(state_of "$repoC3" "$AID")"
+beforeC3a="$(cat "$sC3a" 2>/dev/null)"
+rcC3=0
+( cd "$repoC3" && GH_FIX="$FIXC3" GH_ASSIGN_STATE="$TMPROOT/assignC3.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 35 >out2.txt 2>&1 ) || rcC3=$?
+sC3b="$(state_of "$repoC3" "$BID")"
+check "C3. adopting a SECOND, non-colliding mission exits 0" "[ '$rcC3' -eq 0 ]"
+check "C3. two SEPARATE local missions exist afterwards" \
+  "[ -f '$sC3a' ] && [ -f '$sC3b' ]"
+check "C3. both PARSE" "json_ok '$sC3a' && json_ok '$sC3b'"
+check "C3. the first mission's state is BYTE-IDENTICAL after the second adopt" \
+  "[ \"\$beforeC3a\" = \"\$(cat '$sC3a')\" ]"
+check "C3. the first mission keeps its own issue number" \
+  "[ \"\$(json_get '$sC3a' githubIssue)\" = '34' ]"
+check "C3. the first mission keeps its PR record" \
+  "[ \"\$(json_get '$sC3a' review)\" = 'open' ] && [ \"\$(json_get '$sC3a' prNumber)\" = '77' ]"
+check "C3. the second mission carries ITS issue number" \
+  "[ \"\$(json_get '$sC3b' githubIssue)\" = '35' ]"
+
+# --- D1: A2 — an adopt that would RE-USE another issue's branch refuses -----
+# Ids that differ but a branch that does not: the id guard cannot see this, and
+# it is the half of the collision that lives on the SHARED remote. Adopting here
+# would point two missions at one ref and hand the newcomer #34's history — which
+# is exactly what the capstone's "local branch already here" line did.
+IFS="$TAB" read -r repoD1 originD1 <<<"$(new_repo)"
+mkdir -p "$repoD1/.git/lcars/missions/lcars-20260909-007"
+cat >"$repoD1/.git/lcars/missions/lcars-20260909-007/state.json" <<'HELD'
+{
+  "id": "lcars-20260909-007",
+  "type": "feature",
+  "title": "The mission that owns the branch",
+  "stage": "done",
+  "created": "2026-09-09T09:00:00Z",
+  "model": "claude-sonnet",
+  "review": "merged",
+  "prNumber": "77",
+  "prUrl": "https://github.com/acme/repo/pull/77",
+  "githubIssue": 34,
+  "branch": "lcars/shared-branch",
+  "base": "main"
+}
+HELD
+sD1="$(state_of "$repoD1" "lcars-20260909-007")"
+check "D1. the branch-holding incumbent is valid JSON to begin with" "json_ok '$sD1'"
+beforeD1="$(cat "$sD1")"
+FIXD1="$(new_fixture "$TMPROOT/fixD1")"
+mk_body "$FIXD1/issue-35.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260910-008" "lcars/shared-branch" main feature claude null 0)"
+printf 'A different mission, the same branch\n' >"$FIXD1/issue-35.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXD1/issue-35.labels"
+rcD1=0
+( cd "$repoD1" && GH_FIX="$FIXD1" GH_ASSIGN_STATE="$TMPROOT/assignD1.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 35 >out.txt 2>&1 ) || rcD1=$?
+check "D1. an adopt that would re-use another issue's branch REFUSES" \
+  "[ '$rcD1' -ne 0 ]"
+check "D1. the refusal names the branch" "grep -q 'lcars/shared-branch' '$repoD1/out.txt'"
+check "D1. the refusal names the issue that already owns it" \
+  "grep -q '34' '$repoD1/out.txt'"
+check "D1. the refusal is a legible sentence, not a bash error" \
+  "! grep -qi 'unbound variable\\|no such file or directory\\|syntax error' '$repoD1/out.txt'"
+check "D1. the incumbent's state.json is BYTE-IDENTICAL after the refusal" \
+  "[ \"\$beforeD1\" = \"\$(cat '$sD1')\" ]"
+check "D1. the incumbent still PARSES" "json_ok '$sD1'"
+check "D1. its merge record is untouched" \
+  "[ \"\$(json_get '$sD1' review)\" = 'merged' ] && [ \"\$(json_get '$sD1' prUrl)\" = 'https://github.com/acme/repo/pull/77' ]"
+check "D1. NOTHING new is on disk (still exactly one mission dir)" \
+  "[ \"\$(ls -1 '$repoD1/.git/lcars/missions' | wc -l | tr -d ' ')\" = '1' ]"
+check "D1. no mission dir was created for the newcomer's id" \
+  "[ ! -d '$repoD1/.git/lcars/missions/lcars-20260910-008' ]"
+check "D1. a refused adopt never claims the issue on GitHub" \
+  "[ ! -s '$TMPROOT/assignD1.txt' ]"
+check "D1. and it cuts no local branch" \
+  "[ -z \"\$(cd '$repoD1' && git branch --list 'lcars/*')\" ]"
+
+# --- D2: the branch guard does not fire on the mission's OWN branch --------
+# A refresh re-reads the same envelope, so the recorded branch is by definition
+# the one this mission already holds. If the guard keyed on the branch alone it
+# would make every second adopt impossible.
+IFS="$TAB" read -r repoD2 originD2 <<<"$(new_repo)"
+FIXD2="$(new_fixture "$TMPROOT/fixD2")"
+mk_body "$FIXD2/issue-42.body" "$PRD_TEXT" "$(envelope "$MID" "lcars/$MID" main feature claude null 0)"
+printf 'Add dark mode\n' >"$FIXD2/issue-42.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXD2/issue-42.labels"
+( cd "$repoD2" && GH_FIX="$FIXD2" GH_ASSIGN_STATE="$TMPROOT/assignD2.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >out1.txt 2>&1 )
+rcD2=0
+( cd "$repoD2" && GH_FIX="$FIXD2" GH_ASSIGN_STATE="$TMPROOT/assignD2.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >out2.txt 2>&1 ) || rcD2=$?
+check "D2. re-adopting the same issue is NOT read as re-using its own branch" \
+  "[ '$rcD2' -eq 0 ]"
+check "D2. state.json PARSES after that refresh" "json_ok '$(state_of "$repoD2" "$MID")'"
+
+
+# ==========================================================================
+echo
+echo "S196 A3 — THE ENGINE IS AN EXPLICIT CHOICE AT THE HANDOFF"
+# ==========================================================================
+# THE DEFECT, measured in S191's capstone with shims faking both CLIs. A mission
+# was filed `--engine copilot`; the envelope carried copilot; adopt correctly
+# wrote `workerBin: copilot`; the adopting clone's config.json said claude. The
+# run made 3 invocations of the BILLED shim and 0 of the free one — because
+# run.sh's precedence put `config.json workerBin` ABOVE the mission's own record.
+# The captain is billed and nothing anywhere says why. Meanwhile approve.sh:567
+# does the OPPOSITE (it exports LCARS_WORKER_BIN from the mission's engine): two
+# paths, two answers.
+#
+# THE CAPTAIN'S RULING (2026-09-09) is NOT "the mission always wins" — a laptop
+# may only have ONE CLI installed. It is ASK AND CONVERT: adopt probes what this
+# machine actually has, uses the mission's engine when it is here (and SAYS so),
+# ASKS and converts when it is not, asks when both exist and the local config
+# disagrees (defaulting to the mission's), RECORDS the answer, and from then on
+# that record outranks config.json. Non-interactive: use the mission's engine if
+# available, otherwise FAIL LOUDLY. A silent switch is the defect.
+#
+# EVERY CLAIM ABOUT WHICH ENGINE RAN IS PROVED BY SHIM INVOCATION COUNT. A claim
+# without a count is worthless — that is the whole lesson of the capstone, where
+# the log said one thing and the billing said another.
+
+# --- the two shims --------------------------------------------------------
+# Real executables named `claude` and `copilot`, recording their argv. Both the
+# DETECTION half (`command -v`, the ONE shared detector in lcars-common.sh) and
+# the SPAWN half (run.sh's worker_spawn) see exactly these.
+SHIMBIN="$TMPROOT/shimbin"; mkdir -p "$SHIMBIN"
+SHIMLOG="$TMPROOT/shimlog"; mkdir -p "$SHIMLOG"
+mk_shim() { # <name>
+  cat >"$SHIMBIN/$1" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$SHIMLOG/$1.log"
+exit 0
+SH
+  chmod +x "$SHIMBIN/$1"
+}
+mk_shim claude
+mk_shim copilot
+mk_shim claude-cfg          # a THIRD, distinct bin so "config won" is countable
+shim_count() { # <name> → invocations
+  if [ -f "$SHIMLOG/$1.log" ]; then grep -c . "$SHIMLOG/$1.log" | tr -d ' '; else echo 0; fi
+}
+shim_model_count() { # <name> → invocations that carried --model (would have billed a tier)
+  if [ -f "$SHIMLOG/$1.log" ]; then grep -c -- '--model' "$SHIMLOG/$1.log" | tr -d ' '; else echo 0; fi
+}
+shim_reset() { rm -f "$SHIMLOG"/*.log; }
+
+# THE ABSENCE PATH must be real absence, not a mocked answer: a $PATH that
+# genuinely does not resolve either CLI. /usr/bin:/bin carries git, awk, sed and
+# mktemp and (on this project's machines) neither engine — asserted, not assumed,
+# so this suite cannot pass for the wrong reason on someone else's laptop.
+BARE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+check "E0. the bare PATH really resolves NEITHER engine (the absence is real)" \
+  "! PATH='$BARE_PATH' command -v claude >/dev/null 2>&1 && ! PATH='$BARE_PATH' command -v copilot >/dev/null 2>&1"
+BOTH_PATH="$SHIMBIN:$BARE_PATH"
+GIT_ABS="$(command -v git)"
+PY_DIR="$(dirname "$(command -v python3)")"
+
+RUN_SH="$REPO_ROOT/skills/lcars-run/run.sh"
+
+# adopt_engine <repo> <fixture> <issue> <PATH> [env=val…]  → runs adopt
+adopt_engine() { # repo fixture issue path [extra env / stdin via ADOPT_STDIN]
+  local repo="$1" fix="$2" issue="$3" pth="$4"; shift 4
+  ( cd "$repo" && env PATH="$pth" GH_FIX="$fix" LCARS_GH_BIN="$GH" \
+      LCARS_GIT_BIN="$GIT_ABS" LCARS_GH_USER=capt \
+      GH_ASSIGN_STATE="$TMPROOT/assign-eng.txt" \
+      "$@" bash "$SCRIPT" --issue "$issue" )
+}
+
+# spawn_with <repo> <mission> <PATH> → drive run.sh's REAL spawn chokepoint once
+# through whatever bin the resolver picks, so the argv is recorded by a shim.
+spawn_with() { # repo mission path
+  # `env` wants its -u options BEFORE any NAME=VALUE assignment. The host markers
+  # are scrubbed so this session's own CLAUDECODE=1 can never decide the answer.
+  ( cd "$1" && env -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL \
+      -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+      PATH="$3:$PY_DIR" \
+      bash "$RUN_SH" spawn-stage plan --mission "$2" >/dev/null 2>&1 )
+}
+
+# --- E1: the mission's engine is here, the clone's config disagrees --------
+# The capstone's exact shape. NON-INTERACTIVE (no tty): the ruling says use the
+# mission's engine when it is available, without asking, and say so.
+IFS="$TAB" read -r repoE1 originE1 <<<"$(new_repo)"
+cat >"$repoE1/.git/lcars/config.json" <<'CFG'
+{
+  "model": "claude-sonnet",
+  "workerBin": "claude",
+  "testCommand": "true"
+}
+CFG
+FIXE1="$(new_fixture "$TMPROOT/fixE1")"
+mk_body "$FIXE1/issue-50.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-050" "lcars/lcars-20260909-050" main feature copilot null 0)"
+printf 'A copilot mission\n' >"$FIXE1/issue-50.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXE1/issue-50.labels"
+outE1="$(adopt_engine "$repoE1" "$FIXE1" 50 "$BOTH_PATH" </dev/null 2>&1)"
+sE1="$(state_of "$repoE1" "lcars-20260909-050")"
+check "E1. adopt succeeds when the mission's engine is installed here" "[ -f '$sE1' ]"
+check "E1. state.json PARSES" "json_ok '$sE1'"
+check "E1. the MISSION's engine is recorded, not the clone's config" \
+  "[ \"\$(json_get '$sE1' workerBin)\" = 'copilot' ]"
+check "E1. the provenance is RECORDED at the moment of choice" \
+  "[ \"\$(json_get '$sE1' engineSource)\" = 'adopt-kept' ]"
+check "E1. and so is the engine it resolved to" \
+  "[ \"\$(json_get '$sE1' engineResolved)\" = 'copilot' ]"
+check "E1. the readout TELLS the captain which engine takes over" \
+  "printf '%s' \"\$outE1\" | grep -qi 'engine' && printf '%s' \"\$outE1\" | grep -q 'copilot'"
+check "E1. and names the config it is overruling, rather than doing it silently" \
+  "printf '%s' \"\$outE1\" | grep -q 'claude'"
+# THE COUNT. Nothing else settles this.
+shim_reset
+spawn_with "$repoE1" "lcars-20260909-050" "$BOTH_PATH"
+check "E1. THE COUNT: the free engine ran" "[ \"\$(shim_count copilot)\" -ge 1 ]"
+check "E1. THE COUNT: the BILLED engine ran ZERO times" "[ \"\$(shim_count claude)\" -eq 0 ]"
+# THE TWO PRODUCERS MUST NOT FIGHT. run.sh's resolver records the same pair on
+# every resolution; when the MISSION's pin is what wins, adopt's record is that
+# same fact with more provenance ("kept at the handoff"), so the resolver leaves
+# it alone. Without this the captain's answer at the handoff would be erased by
+# the first run — provenance that does not survive is not provenance.
+( cd "$repoE1" && env -u LCARS_WORKER_BIN -u CLAUDECODE PATH="$BOTH_PATH:$PY_DIR" \
+    bash "$RUN_SH" resolve-worker --mission lcars-20260909-050 >/dev/null 2>&1 )
+check "E1. a real resolution does NOT erase adopt's richer provenance" \
+  "[ \"\$(json_get '$sE1' engineSource)\" = 'adopt-kept' ]"
+check "E1. state.json still PARSES after the resolver touched it" "json_ok '$sE1'"
+# The BILLED engine is the one that must show nothing at all — including no
+# `--model`, the flag that selects a paid tier. (The free engine's Plan spawn
+# DOES carry `--model claude-opus-4.8`: that is run.sh's per-stage tier alias
+# for copilot, a copilot premium request rather than an Anthropic bill, and it
+# is the correct existing behaviour. Counted and reported, not asserted away.)
+check "E1. THE COUNT: the billed engine carried --model ZERO times" \
+  "[ \"\$(shim_model_count claude)\" -eq 0 ]"
+
+# --- E2: the mission's engine is NOT on this machine → ASK and CONVERT -----
+# The reason the ruling is "ask", not "the mission always wins": this laptop has
+# only claude. Refusing forever would strand the mission; switching silently is
+# the defect. So adopt asks, and RECORDS the answer.
+IFS="$TAB" read -r repoE2 originE2 <<<"$(new_repo)"
+cat >"$repoE2/.git/lcars/config.json" <<'CFG'
+{
+  "model": "claude-sonnet",
+  "workerBin": "claude-cfg",
+  "testCommand": "true"
+}
+CFG
+CLAUDE_ONLY="$SHIMBIN/claude-only"
+mkdir -p "$CLAUDE_ONLY"
+ln -sf "$SHIMBIN/claude" "$CLAUDE_ONLY/claude"
+ln -sf "$SHIMBIN/claude-cfg" "$CLAUDE_ONLY/claude-cfg"
+ONLY_CLAUDE_PATH="$CLAUDE_ONLY:$BARE_PATH"
+check "E2. the one-CLI PATH really has claude and really has NO copilot" \
+  "PATH='$ONLY_CLAUDE_PATH' command -v claude >/dev/null 2>&1 && ! PATH='$ONLY_CLAUDE_PATH' command -v copilot >/dev/null 2>&1"
+FIXE2="$(new_fixture "$TMPROOT/fixE2")"
+mk_body "$FIXE2/issue-51.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-051" "lcars/lcars-20260909-051" main feature copilot null 0)"
+printf 'A copilot mission on a claude-only laptop\n' >"$FIXE2/issue-51.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXE2/issue-51.labels"
+outE2="$(printf 'claude\n' | adopt_engine "$repoE2" "$FIXE2" 51 "$ONLY_CLAUDE_PATH" LCARS_ASSUME_TTY=1 2>&1)"
+sE2="$(state_of "$repoE2" "lcars-20260909-051")"
+check "E2. adopt ASKED rather than deciding for the captain" \
+  "printf '%s' \"\$outE2\" | grep -qi 'not installed\\|is not on this machine\\|which engine'"
+check "E2. the mission was adopted after the answer" "[ -f '$sE2' ]"
+check "E2. state.json PARSES" "json_ok '$sE2'"
+check "E2. the CONVERTED engine is recorded on the mission" \
+  "[ \"\$(json_get '$sE2' workerBin)\" = 'claude' ]"
+check "E2. and it is recorded AS a conversion, not as the mission's own pin" \
+  "[ \"\$(json_get '$sE2' engineSource)\" = 'adopt-converted' ]"
+shim_reset
+spawn_with "$repoE2" "lcars-20260909-051" "$ONLY_CLAUDE_PATH"
+check "E2. THE COUNT: the CONVERTED engine ran" "[ \"\$(shim_count claude)\" -ge 1 ]"
+check "E2. THE COUNT: config.json's engine ran ZERO times — the record outranks it" \
+  "[ \"\$(shim_count claude-cfg)\" -eq 0 ]"
+check "E2. THE COUNT: the engine config wanted carried --model ZERO times" \
+  "[ \"\$(shim_model_count claude-cfg)\" -eq 0 ]"
+
+# --- E3: NON-INTERACTIVE + the mission's engine unavailable → FAIL LOUDLY --
+# Never switch silently. A loud failure is the cure; a quiet conversion is the
+# defect wearing the cure's clothes.
+IFS="$TAB" read -r repoE3 originE3 <<<"$(new_repo)"
+FIXE3="$(new_fixture "$TMPROOT/fixE3")"
+mk_body "$FIXE3/issue-52.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-052" "lcars/lcars-20260909-052" main feature copilot null 0)"
+printf 'Unrunnable here\n' >"$FIXE3/issue-52.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXE3/issue-52.labels"
+rcE3=0
+outE3="$(adopt_engine "$repoE3" "$FIXE3" 52 "$ONLY_CLAUDE_PATH" \
+           GH_ASSIGN_STATE="$TMPROOT/assignE3.txt" </dev/null 2>&1)" || rcE3=$?
+check "E3. a non-interactive adopt with no usable engine REFUSES" "[ '$rcE3' -ne 0 ]"
+check "E3. it names the engine the mission needs" "printf '%s' \"\$outE3\" | grep -q 'copilot'"
+check "E3. it names what this machine HAS instead" "printf '%s' \"\$outE3\" | grep -q 'claude'"
+check "E3. it says how to convert on purpose" "printf '%s' \"\$outE3\" | grep -q -- '--engine'"
+check "E3. it is a legible sentence, not a bash error" \
+  "! printf '%s' \"\$outE3\" | grep -qi 'unbound variable\\|syntax error'"
+check "E3. IT SWITCHED NOTHING: no mission dir exists" \
+  "[ ! -d '$repoE3/.git/lcars/missions/lcars-20260909-052' ]"
+check "E3. IT RECORDED NOTHING: the missions dir is still empty" \
+  "[ -z \"\$(ls -A '$repoE3/.git/lcars/missions' 2>/dev/null)\" ]"
+check "E3. and it did not claim the issue on GitHub" "[ ! -s '$TMPROOT/assignE3.txt' ]"
+
+# --- E3b: --engine converts non-interactively, ON PURPOSE ------------------
+# Driven directly rather than through adopt_engine, which appends `--issue` last.
+rcE3c=0
+outE3c="$( cd "$repoE3" && env PATH="$ONLY_CLAUDE_PATH" GH_FIX="$FIXE3" \
+    LCARS_GH_BIN="$GH" LCARS_GIT_BIN="$GIT_ABS" LCARS_GH_USER=capt \
+    GH_ASSIGN_STATE="$TMPROOT/assignE3.txt" \
+    bash "$SCRIPT" --issue 52 --engine claude </dev/null 2>&1 )" || rcE3c=$?
+sE3="$(state_of "$repoE3" "lcars-20260909-052")"
+check "E3b. \`--engine\` converts without a tty (a deliberate operator act)" "[ '$rcE3c' -eq 0 ]"
+check "E3b. state.json PARSES" "json_ok '$sE3'"
+check "E3b. the converted engine is recorded" \
+  "[ \"\$(json_get '$sE3' workerBin)\" = 'claude' ]"
+check "E3b. recorded as a conversion" \
+  "[ \"\$(json_get '$sE3' engineSource)\" = 'adopt-converted' ]"
+
+# --- E4: BOTH engines here and the local config disagrees → ASK, default to
+#         the mission's. An empty answer takes the default. ----------------
+IFS="$TAB" read -r repoE4 originE4 <<<"$(new_repo)"
+cat >"$repoE4/.git/lcars/config.json" <<'CFG'
+{
+  "model": "claude-sonnet",
+  "workerBin": "claude",
+  "testCommand": "true"
+}
+CFG
+FIXE4="$(new_fixture "$TMPROOT/fixE4")"
+mk_body "$FIXE4/issue-53.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-053" "lcars/lcars-20260909-053" main feature copilot null 0)"
+printf 'Both installed, config disagrees\n' >"$FIXE4/issue-53.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXE4/issue-53.labels"
+outE4="$(printf '\n' | adopt_engine "$repoE4" "$FIXE4" 53 "$BOTH_PATH" LCARS_ASSUME_TTY=1 2>&1)"
+sE4="$(state_of "$repoE4" "lcars-20260909-053")"
+check "E4. adopt ASKS when both exist and the config disagrees" \
+  "printf '%s' \"\$outE4\" | grep -qi 'which engine\\|\\[copilot\\]'"
+check "E4. state.json PARSES" "json_ok '$sE4'"
+check "E4. the DEFAULT is the mission's engine" \
+  "[ \"\$(json_get '$sE4' workerBin)\" = 'copilot' ]"
+check "E4. and the answer is recorded as the captain's choice" \
+  "[ \"\$(json_get '$sE4' engineSource)\" = 'adopt-chosen' ]"
+shim_reset
+spawn_with "$repoE4" "lcars-20260909-053" "$BOTH_PATH"
+check "E4. THE COUNT: the chosen engine ran" "[ \"\$(shim_count copilot)\" -ge 1 ]"
+check "E4. THE COUNT: the config engine ran ZERO times" "[ \"\$(shim_count claude)\" -eq 0 ]"
+
+# --- E4b: the captain overrules the mission at the prompt ------------------
+IFS="$TAB" read -r repoE4b originE4b <<<"$(new_repo)"
+cat >"$repoE4b/.git/lcars/config.json" <<'CFG'
+{ "model": "claude-sonnet", "workerBin": "claude", "testCommand": "true" }
+CFG
+outE4b="$(printf 'claude\n' | adopt_engine "$repoE4b" "$FIXE4" 53 "$BOTH_PATH" LCARS_ASSUME_TTY=1 2>&1)"
+sE4b="$(state_of "$repoE4b" "lcars-20260909-053")"
+check "E4b. an explicit answer at the prompt WINS over the default" \
+  "[ \"\$(json_get '$sE4b' workerBin)\" = 'claude' ]"
+check "E4b. state.json PARSES" "json_ok '$sE4b'"
+shim_reset
+spawn_with "$repoE4b" "lcars-20260909-053" "$BOTH_PATH"
+check "E4b. THE COUNT: the captain's pick ran" "[ \"\$(shim_count claude)\" -ge 1 ]"
+check "E4b. THE COUNT: the mission's original engine ran ZERO times" \
+  "[ \"\$(shim_count copilot)\" -eq 0 ]"
+
+# --- E5: no config workerBin at all → no question is asked -----------------
+# Asking when nothing disagrees would be noise. The mission's engine is here and
+# nothing contradicts it: use it, say so, move on.
+IFS="$TAB" read -r repoE5 originE5 <<<"$(new_repo)"
+outE5="$(printf 'claude\n' | adopt_engine "$repoE5" "$FIXE4" 53 "$BOTH_PATH" LCARS_ASSUME_TTY=1 2>&1)"
+sE5="$(state_of "$repoE5" "lcars-20260909-053")"
+check "E5. no prompt when nothing disagrees" \
+  "! printf '%s' \"\$outE5\" | grep -qi 'which engine'"
+check "E5. the mission's engine is kept" "[ \"\$(json_get '$sE5' workerBin)\" = 'copilot' ]"
+check "E5. recorded as kept" "[ \"\$(json_get '$sE5' engineSource)\" = 'adopt-kept' ]"
+check "E5. state.json PARSES" "json_ok '$sE5'"
+
+# --- E6: an envelope with NO engine records nothing and asks nothing -------
+# `engine: null` means host-detection is legitimately in charge (S188). Adopt
+# must not invent a pin the filing laptop deliberately did not make.
+IFS="$TAB" read -r repoE6 originE6 <<<"$(new_repo)"
+FIXE6="$(new_fixture "$TMPROOT/fixE6")"
+mk_body "$FIXE6/issue-54.body" "$PRD_TEXT" \
+  "$(printf '<!-- lcars:handoff v1 {"id":"lcars-20260909-054","branch":"lcars/lcars-20260909-054","base":"main","type":"feature","engine":null,"parentIssue":null,"attachments":0} -->')"
+printf 'No engine recorded\n' >"$FIXE6/issue-54.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXE6/issue-54.labels"
+rcE6=0
+outE6="$(adopt_engine "$repoE6" "$FIXE6" 54 "$BOTH_PATH" </dev/null 2>&1)" || rcE6=$?
+sE6="$(state_of "$repoE6" "lcars-20260909-054")"
+check "E6. an engine-less envelope adopts cleanly" "[ '$rcE6' -eq 0 ]"
+check "E6. state.json PARSES" "json_ok '$sE6'"
+check "E6. no workerBin is invented" "! json_has '$sE6' workerBin"
+check "E6. and no engine provenance is invented either" "! json_has '$sE6' engineSource"
+
+# --- E7: the shared library is MISSING → degraded, not refusing -----------
+# adopt reaches the engine detector through lcars-common.sh. If that file is
+# gone (a half-installed LCARS), the naive read is "no engine is available" —
+# and a non-interactive adopt would then REFUSE a mission this machine can run
+# perfectly well. A missing helper must degrade, never turn into a hard no.
+IFS="$TAB" read -r repoE7 originE7 <<<"$(new_repo)"
+rcE7=0
+outE7="$( cd "$repoE7" && env PATH="$BOTH_PATH" GH_FIX="$FIXE4" \
+    LCARS_GH_BIN="$GH" LCARS_GIT_BIN="$GIT_ABS" LCARS_GH_USER=capt \
+    LCARS_COMMON_LIB=/nonexistent/lcars-common.sh \
+    bash "$SCRIPT" --issue 53 </dev/null 2>&1 )" || rcE7=$?
+sE7="$(state_of "$repoE7" "lcars-20260909-053")"
+check "E7. a missing lcars-common.sh does NOT turn adopt into a refusal" \
+  "[ '$rcE7' -eq 0 ]"
+check "E7. state.json PARSES" "json_ok '$sE7'"
+check "E7. the mission's engine is still recognised as installed here" \
+  "[ \"\$(json_get '$sE7' workerBin)\" = 'copilot' ]"
+
+# ==========================================================================
+echo
+echo "S196 A4 — AN ADOPTED CLONE CAN ACTUALLY RUN THE MISSION"
+# ==========================================================================
+# An adopted clone had no config.json at all: no testCommand, so the Implement
+# red gate has nothing to run, and no stack, so no stage knows the ecosystem.
+# Adopt DID warn — and the board's ADOPT dispatch swallowed the warning, showing
+# only "Adopted #34 — it is a local mission now." A warning nobody sees is not a
+# warning. So adopt SEEDS a usable config, through the SAME shared detectors
+# `lcars init` uses (lcars-common.sh), never a second implementation of them.
+IFS="$TAB" read -r repoF1 originF1 <<<"$(new_repo)"
+rm -f "$repoF1/.git/lcars/config.json"          # a genuinely cold clone
+mkdir -p "$repoF1/tests"
+printf '{ "name": "x", "scripts": { "test": "vitest run" }, "devDependencies": { "vitest": "^1" } }\n' \
+  >"$repoF1/package.json"
+printf 'test("x", () => {});\n' >"$repoF1/tests/x.test.js"
+FIXF1="$(new_fixture "$TMPROOT/fixF1")"
+mk_body "$FIXF1/issue-60.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-060" "lcars/lcars-20260909-060" main feature claude null 0)"
+printf 'Cold clone\n' >"$FIXF1/issue-60.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXF1/issue-60.labels"
+outF1="$(adopt_engine "$repoF1" "$FIXF1" 60 "$BOTH_PATH" </dev/null 2>&1)"
+CFGF1="$repoF1/.git/lcars/config.json"
+check "F1. adopt SEEDS a config.json on a cold clone" "[ -f '$CFGF1' ]"
+check "F1. and it is valid JSON" "json_ok '$CFGF1'"
+check "F1. the adopted mission HAS a testCommand" \
+  "[ -n \"\$(json_get '$CFGF1' testCommand)\" ]"
+check "F1. the stack was detected, not left blank" \
+  "[ -n \"\$(json_get '$CFGF1' stack)\" ]"
+check "F1. the seeding is REPORTED, not done behind the captain's back" \
+  "printf '%s' \"\$outF1\" | grep -qi 'config.json'"
+check "F1. state.json still PARSES" "json_ok '$(state_of "$repoF1" "lcars-20260909-060")'"
+
+# A repo LCARS cannot read a test system out of must still be honest: seed what
+# can be seeded, and WARN about what cannot — never manufacture a testCommand.
+IFS="$TAB" read -r repoF2 originF2 <<<"$(new_repo)"
+rm -f "$repoF2/.git/lcars/config.json"
+FIXF2="$(new_fixture "$TMPROOT/fixF2")"
+mk_body "$FIXF2/issue-61.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-061" "lcars/lcars-20260909-061" main feature claude null 0)"
+printf 'Greenfield clone\n' >"$FIXF2/issue-61.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXF2/issue-61.labels"
+outF2="$(adopt_engine "$repoF2" "$FIXF2" 61 "$BOTH_PATH" </dev/null 2>&1)"
+CFGF2="$repoF2/.git/lcars/config.json"
+check "F2. a stackless repo still gets a config.json" "[ -f '$CFGF2' ]"
+check "F2. and it PARSES" "json_ok '$CFGF2'"
+check "F2. no testCommand is MANUFACTURED where there is no test system" \
+  "[ -z \"\$(json_get '$CFGF2' testCommand)\" ]"
+check "F2. and the captain is TOLD, in adopt's own warning channel" \
+  "printf '%s' \"\$outF2\" | grep -q '⚠'"
+
+# An EXISTING config is never clobbered — a captain's customised testCommand
+# survives an adopt (the merge-preserving writer, same as `lcars init`).
+IFS="$TAB" read -r repoF3 originF3 <<<"$(new_repo)"
+cat >"$repoF3/.git/lcars/config.json" <<'CFG'
+{
+  "model": "claude-sonnet",
+  "testCommand": "make captains-own-suite"
+}
+CFG
+FIXF3="$(new_fixture "$TMPROOT/fixF3")"
+mk_body "$FIXF3/issue-62.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-062" "lcars/lcars-20260909-062" main feature claude null 0)"
+printf 'Existing config\n' >"$FIXF3/issue-62.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXF3/issue-62.labels"
+adopt_engine "$repoF3" "$FIXF3" 62 "$BOTH_PATH" </dev/null >/dev/null 2>&1
+check "F3. a captain's own testCommand survives an adopt" \
+  "[ \"\$(json_get '$repoF3/.git/lcars/config.json' testCommand)\" = 'make captains-own-suite' ]"
+check "F3. the config still PARSES" "json_ok '$repoF3/.git/lcars/config.json'"
+
+# ==========================================================================
+echo
+echo "S196 A5 — THE ESTIMATE SURVIVES THE HANDOFF"
+# ==========================================================================
+# A REMOTE card carries a cost pill and two difficulty pills. The instant the
+# captain adopted it they vanished, because adopt rebuilt prd.md + state.json and
+# not estimate.json — a visible DOWNGRADE at the exact moment he took ownership.
+#
+# The values come from the S188 ENVELOPE, which now carries the three pill facts
+# as recorded fields. NEVER from re-scanning the captain's prose: he writes PRDs
+# *about LCARS*, and behaviour P1 already hands adopt a PRD quoting a DECOY
+# envelope and requires the recorded facts to win. A regex over "## Estimate"
+# would be handed that document too.
+est_envelope() { # id branch base type engine parent attach unit low high reason impl
+  printf '<!-- lcars:handoff v1 {"id":"%s","branch":"%s","base":"%s","type":"%s","engine":"%s","parentIssue":%s,"attachments":%s,"estCostUnit":"%s","estCostLow":%s,"estCostHigh":%s,"estReasoning":"%s","estImpl":"%s"} -->' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}"
+}
+IFS="$TAB" read -r repoG1 originG1 <<<"$(new_repo)"
+FIXG1="$(new_fixture "$TMPROOT/fixG1")"
+# The PRD talks about estimates and quotes a DECOY envelope with different
+# numbers — the S189 trap, re-armed for the estimate.
+G1_PRD='# Mission: Add dark mode
+
+Our board shows `**Criticality:** reasoning = LOW · implementation = LOW` and a
+cost of `$99.00–$99.00` on some cards. A quoted envelope for illustration:
+
+<!-- lcars:handoff v1 {"id":"decoy","branch":"lcars/decoy","base":"decoy","type":"bug","engine":"claude","parentIssue":null,"attachments":0,"estCostUnit":"usd","estCostLow":99,"estCostHigh":99,"estReasoning":"low","estImpl":"low"} -->
+
+## Estimate
+**Criticality:** reasoning = LOW · implementation = LOW'
+mk_body "$FIXG1/issue-70.body" "$G1_PRD" \
+  "$(est_envelope "lcars-20260909-070" "lcars/lcars-20260909-070" main feature copilot null 0 \
+       usd 1.25 4.5 high medium)"
+printf 'Estimate carries over\n' >"$FIXG1/issue-70.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXG1/issue-70.labels"
+adopt_engine "$repoG1" "$FIXG1" 70 "$BOTH_PATH" </dev/null >/dev/null 2>&1
+EG1="$(mdir_of "$repoG1" "lcars-20260909-070")/estimate.json"
+check "G1. adopt writes an estimate.json" "[ -f '$EG1' ]"
+check "G1. and it PARSES" "json_ok '$EG1'"
+check "G1. the RECORDED reasoning criticality wins over the decoy prose" \
+  "[ \"\$(json_get '$EG1' reasoningCriticality)\" = 'high' ]"
+check "G1. the RECORDED implementation criticality wins over the decoy prose" \
+  "[ \"\$(json_get '$EG1' implCriticality)\" = 'medium' ]"
+# THE PILLS THEMSELVES, through the REAL board shape function the viewscreen
+# uses — asserting estimate.json merely EXISTS would not prove a pill renders.
+pills_of() { # <estimate.json> → "cost|reasoning|implementation" labels
+  python3 - "$1" "$REPO_ROOT/web" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2])
+from lcars_serve import board
+est = json.load(open(sys.argv[1]))
+p = board.pills_from_estimate(est)
+def lab(x):
+    return "" if not x else str(x.get("label") or "")
+sys.stdout.write("%s|%s|%s" % (lab(p["cost"]), lab(p["reasoning"]),
+                               lab(p["implementation"])))
+PY
+}
+PG1="$(pills_of "$EG1")"
+check "G1. THE COST PILL RENDERS on the adopted card" \
+  "[ -n \"\$(printf '%s' '$PG1' | cut -d'|' -f1)\" ]"
+check "G1. the cost pill carries the RECORDED band, not the decoy's \$99" \
+  "printf '%s' '$PG1' | cut -d'|' -f1 | grep -q '1.25' && ! printf '%s' '$PG1' | grep -q '99'"
+check "G1. THE REASONING pill renders as HIGH" \
+  "printf '%s' '$PG1' | cut -d'|' -f2 | grep -qi 'high'"
+check "G1. THE IMPLEMENTATION pill renders as MED" \
+  "printf '%s' '$PG1' | cut -d'|' -f3 | grep -qi 'med'"
+
+# An envelope with NO estimate fields writes NO estimate.json — an absent fact is
+# absent, never a fabricated zero.
+IFS="$TAB" read -r repoG2 originG2 <<<"$(new_repo)"
+FIXG2="$(new_fixture "$TMPROOT/fixG2")"
+mk_body "$FIXG2/issue-71.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-071" "lcars/lcars-20260909-071" main feature copilot null 0)"
+printf 'No estimate recorded\n' >"$FIXG2/issue-71.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXG2/issue-71.labels"
+adopt_engine "$repoG2" "$FIXG2" 71 "$BOTH_PATH" </dev/null >/dev/null 2>&1
+check "G2. an estimate-less envelope invents no estimate.json" \
+  "[ ! -f '$(mdir_of "$repoG2" "lcars-20260909-071")/estimate.json' ]"
+
+# A LOCAL estimate.json is never clobbered by a refresh — local richness wins,
+# exactly as feedback.md and events.jsonl do.
+printf '{ "schemaVersion": 3, "reasoningCriticality": "low", "implCriticality": "low" }\n' \
+  >"$(mdir_of "$repoG1" "lcars-20260909-070")/estimate.json"
+adopt_engine "$repoG1" "$FIXG1" 70 "$BOTH_PATH" </dev/null >/dev/null 2>&1
+check "G3. a re-adopt does NOT overwrite a local estimate.json" \
+  "[ \"\$(json_get '$EG1' reasoningCriticality)\" = 'low' ]"
+check "G3. and it still PARSES" "json_ok '$EG1'"
+
+# ==========================================================================
+echo
 printf 'lcars adopt: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

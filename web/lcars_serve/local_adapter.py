@@ -1554,6 +1554,34 @@ class LocalAdapter(object):
         # BYTE-IDENTICAL. The github adapter never reads this local-only field.
         if _truthy(state.get("prdPending")):
             card["prdPending"] = True
+        # S196 A3(g): WHICH ENGINE, AND WHY THAT ONE.
+        #
+        # Until this session the only answer to that was one stderr line from
+        # run.sh's resolver — `worker: claude (bin: config)` — which printed ZERO
+        # times in a real 6-stage auto-advance run, was persisted nowhere, and
+        # never reached this board. So a captain looking at a card whose worker
+        # had been silently re-homed onto a billed engine had no surface that
+        # could tell him.
+        #
+        # Both halves are RECORDED BY THEIR PRODUCER at the moment the choice is
+        # made — `lcars adopt` when the captain picks the engine at the handoff
+        # (`adopt-kept` / `adopt-converted` / `adopt-chosen`), and run.sh's
+        # resolver when it resolves for a run (`env` / `mission` / `config` /
+        # `detected` / `default`). This adapter READS them; it never re-derives
+        # which source "would have" won, which is the inference three prior
+        # sessions each paid fix rounds for.
+        #
+        # `engine` above stays what it always was (state.json.workerBin — the
+        # mission's PIN). `engineResolved` is what actually ran, and the two
+        # differ exactly when env/config/detection overrode the pin — which is
+        # the case worth seeing. ABSENT (not null) for a mission that has never
+        # recorded either, so every pre-S196 card payload is BYTE-IDENTICAL.
+        eng_src = state.get("engineSource")
+        if isinstance(eng_src, str) and eng_src.strip():
+            card["engineSource"] = eng_src.strip()
+        eng_res = state.get("engineResolved")
+        if isinstance(eng_res, str) and eng_res.strip():
+            card["engineResolved"] = eng_res.strip()
         # S160: the base-freshness badge. `lcars file` (S158) and `lcars run`
         # (S159) both stamp state.json.baseFreshness; both print their warning to
         # STDOUT, which the daemon swallows — so a captain filing from the board

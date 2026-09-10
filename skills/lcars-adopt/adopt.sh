@@ -59,6 +59,23 @@
 #    new one on adopt would silently fork the mission in two. The envelope
 #    carries it; this script copies it.
 #
+# 3. IDENTITY IS THE ISSUE NUMBER, NOT THE MISSION ID (S196). Mission ids are
+#    `lcars-YYYYMMDD-NNN` sequenced PER CLONE, so two laptops filing on the same
+#    day mint the IDENTICAL id. Keying "is this mission already here?" on the id
+#    therefore matched the WRONG mission and overwrote it — measured in S191's
+#    capstone, where adopting #35 erased shipped #34's merge record. So the key
+#    is the ISSUE NUMBER, the same key web/lcars_serve/remote.py has always used
+#    for the same question ("the dedupe key is the ISSUE NUMBER and nothing
+#    else", its rule 1). One notion of identity, two surfaces.
+#
+#    A colliding id is then a COLLISION, not a match — and because the id also
+#    names the directory and the branch, there is nowhere honest to put the
+#    newcomer. Adopt REFUSES, names both issues, and touches nothing. That is a
+#    STOP SIGN, not a cure: the cure is a mission-id format that cannot collide
+#    across clones, and the format is frozen for this round (escalated to the
+#    captain, S196). The branch half is guarded separately, and independently of
+#    the id, because two missions may carry different ids and one branch.
+#
 # ---------------------------------------------------------------------------
 # WHY THE STAGE IS A LABEL AND NOT AN ENVELOPE FIELD
 # ---------------------------------------------------------------------------
@@ -79,9 +96,12 @@
 # mission is composed in a STAGING dir, and only a complete mission is moved
 # into `.git/lcars/missions/`. A refusal touches the disk not at all.
 #
-# Idempotent: adopting a mission that is already local REFRESHES it — the spec
-# and the recorded fields are brought up to date IN PLACE, and local-only
-# artifacts (feedback.md, research findings, events.jsonl) are left alone.
+# Idempotent: adopting a mission that is already local — the same ISSUE, found
+# wherever its directory happens to live — REFRESHES it: the spec and the
+# recorded fields are brought up to date IN PLACE, and local-only artifacts
+# (feedback.md, research findings, events.jsonl) are left alone. Adopting a
+# DIFFERENT issue that would land on an occupied id or an occupied branch is a
+# refusal, not a refresh (rule 3).
 #
 # Dependencies are taken via env so tests can stub them:
 #   LCARS_GH_BIN        the gh binary                    (default: gh)
@@ -125,6 +145,23 @@ ISSUE_BODY_LIB="${LCARS_ISSUE_BODY_LIB:-$SELF_DIR/../lcars-run/issue-body.sh}"
 OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SELF_DIR/../lcars-run/ownership.sh}"
 # shellcheck source=/dev/null
 [ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
+
+# --- S196: the SHARED engine detector + the SHARED config writer -----------
+# `lcars_engine_available` / `lcars_available_engines` (S195) are the ONE answer
+# in LCARS to "is that CLI on this machine" — `lcars init` and the front door's
+# engine picker already go through them, and a second answer here is exactly the
+# duplication ADR-002 exists to prevent. The same library carries `detect_stack`,
+# `detect_test_cmd`, `lcars_test_system_evidence` and the merge-preserving
+# `lcars_config_merge` that `lcars init` seeds config.json with, so adopt's
+# seeding (A4) is init's own detection, not a re-implementation of it.
+#
+# Missing library ⇒ adopt still works, degraded: no engine probe, no config
+# seed, and it says so. That mirrors the ownership library's degradation, and it
+# is the honest failure — refusing to rebuild a mission because a helper file is
+# absent would be worse than rebuilding it and naming what is missing.
+COMMON_LIB="${LCARS_COMMON_LIB:-$SELF_DIR/../lcars-init/lcars-common.sh}"
+# shellcheck source=/dev/null
+[ -f "$COMMON_LIB" ] && . "$COMMON_LIB"
 
 # --- tiny JSON writers -----------------------------------------------------
 # state.json is written ONE FIELD PER LINE by every writer in LCARS (file.sh's
@@ -207,15 +244,40 @@ state_set_str() { state_put "$1" str "$(json_escape "$2")"; }      # key value
 state_set_raw() { state_put "$1" raw "$2"; }                       # key token
 json_str_of() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 
+# --- reading ANOTHER mission's state.json ----------------------------------
+# The identity checks in section 3 read state files this adopt did not write, so
+# these two readers are ANCHORED at the start of the line (state.json is one
+# field per line everywhere in LCARS): a title, or any value carrying the text
+# `"githubIssue":`, must never be mistaken for the field itself. Same anchoring,
+# and the same reason, as `state_put`'s awk.
+state_field_str() { # <state.json> <key> → the STRING value, or ""
+  sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | head -1
+}
+state_issue_of() { # <state.json> → the recorded issue number, or ""
+  # `githubIssue` has been written BOTH bare and quoted over this project's life
+  # — remote.py's `_as_issue` records exactly that and tolerates both, so this
+  # reader does too rather than only understanding the form adopt emits.
+  sed -n 's/^[[:space:]]*"githubIssue"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9][0-9]*\).*/\1/p' \
+    "$1" 2>/dev/null | head -1
+}
+
 # --- argv ------------------------------------------------------------------
 ISSUE=""
+OPT_ENGINE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) ISSUE="${2:-}"; shift 2 ;;
+    # S196 A3: the engine, chosen ON PURPOSE and without a prompt. This is how a
+    # NON-INTERACTIVE adopt converts a mission onto the CLI this laptop actually
+    # has — the only way it may, because the alternative (converting silently
+    # because nobody was there to ask) is the defect this session is closing.
+    --engine) OPT_ENGINE="${2:-}"; shift 2 ;;
     -h|--help)
-      printf 'usage: adopt.sh --issue <issue-number>\n'
+      printf 'usage: adopt.sh --issue <issue-number> [--engine <claude|copilot>]\n'
       printf '  Rebuilds the mission on issue <n> locally. Works at the ENDS of the\n'
       printf '  pipeline only: align (claim + rebuild) and verify (join + resolve PR).\n'
+      printf '  --engine converts the mission onto a CLI this machine has, and RECORDS\n'
+      printf '  the choice; without it an unavailable engine is refused, never switched.\n'
       exit 0 ;;
     -*) die "unknown argument: $1" ;;
     *)  ISSUE="$1"; shift ;;
@@ -310,12 +372,256 @@ case "$STAGE" in
 esac
 
 # ===========================================================================
-# 3. COMPOSE the mission — in staging, entirely.
+# 3. IDENTITY — WHICH local mission is this issue? (S196 A1)
 # ===========================================================================
-MISSION_DIR="$MISSIONS_DIR/$MID"
+# THE DEFECT THIS REPLACES, measured in S191's live capstone (2026-09-09).
+# This block used to be three lines: the mission dir was `missions/<envelope
+# id>` and "already here?" was "does that dir hold a state.json?". Mission ids
+# are `lcars-YYYYMMDD-NNN` sequenced PER CLONE, so two laptops filing on the
+# same day mint the IDENTICAL id — and adopting the second laptop's issue then
+# matched the FIRST laptop's mission, announced "(refreshed an existing local
+# mission — local artifacts kept)" and OVERWROTE it in place: title,
+# `githubIssue` 34→35, stage done→align, and the whole merge record (`review`,
+# `prNumber`, `prUrl`) gone. A mission the captain had already SHIPPED, erased
+# by a verb whose entire purpose is not to lose work.
+#
+# `web/lcars_serve/remote.py` has never had this bug, and says why in its own
+# rule 1: "the dedupe key is the ISSUE NUMBER and nothing else". This is the
+# same key, so the two surfaces answer "is this mission already local?" the same
+# way. A different issue carrying a colliding mission id is a DIFFERENT MISSION
+# and can never be a refresh.
+MISSION_DIR=""
 EXISTING=0
-[ -f "$MISSION_DIR/state.json" ] && EXISTING=1
+for _d in "$MISSIONS_DIR"/*/; do
+  _d="${_d%/}"
+  [ -f "$_d/state.json" ] || continue
+  if [ "$(state_issue_of "$_d/state.json")" = "$ISSUE" ]; then
+    MISSION_DIR="$_d"; EXISTING=1; break
+  fi
+done
 
+# --- THE ID COLLISION (S196 A2, local half) --------------------------------
+# Knowing WHICH mission is ours is only half of it: the id also names the
+# DIRECTORY, so a colliding id means the newcomer's home is already occupied.
+# `mkdir -p` + `cp` would still overwrite the incumbent — the destruction above,
+# by a different route. There is no honest way to hold both under one id here
+# (the id names the branch `lcars/<id>` too, so a renamed directory would still
+# collide on the shared remote the moment a stage cut it). So: REFUSE, name both
+# issues, and touch nothing at all — no dir, no state, no assignment.
+if [ "$EXISTING" -eq 0 ]; then
+  MISSION_DIR="$MISSIONS_DIR/$MID"
+  if [ -f "$MISSION_DIR/state.json" ]; then
+    OTHER_ISSUE="$(state_issue_of "$MISSION_DIR/state.json")"
+    if [ -n "$OTHER_ISSUE" ]; then
+      OTHER_TITLE="$(state_field_str "$MISSION_DIR/state.json" title)"
+      die "issue #$ISSUE carries mission id '$MID', but this clone already holds a DIFFERENT mission under that id — issue #$OTHER_ISSUE${OTHER_TITLE:+ (\"$OTHER_TITLE\")}. Mission ids are sequenced per clone, so two laptops filing on the same day mint the same one; the id names the mission directory AND the branch \`lcars/$MID\`, so there is no way to keep both here without overwriting #$OTHER_ISSUE. Nothing was created and #$OTHER_ISSUE was not touched. Adopt #$ISSUE in a clone that does not hold #$OTHER_ISSUE, or retire $MISSION_DIR first."
+    fi
+    # No issue recorded at all: nothing is CLAIMING this directory, so it is
+    # this laptop's own copy of the same mission (a `lcars file` whose gh call
+    # failed leaves exactly this). Refresh it, as adopt always has.
+    EXISTING=1
+  fi
+fi
+
+# --- THE BRANCH COLLISION (S196 A2, the half that lives on the remote) -----
+# The id guard cannot see this one: two missions may carry different ids and the
+# SAME branch, and the branch is a SHARED ref, not a local directory. Adopting
+# would point two local missions at one branch and hand the newcomer the other
+# mission's history — which is precisely what the capstone saw when #35's adopt
+# reported "local branch already here" and attached itself to #34's MERGED
+# branch. Checked against what the other missions RECORD rather than against
+# git's refs, so the refusal does not depend on whether this clone has fetched
+# the branch yet. The mission's OWN branch is skipped, so a refresh is never
+# read as a re-use of itself.
+if [ -n "$BRANCH" ]; then
+  for _d in "$MISSIONS_DIR"/*/; do
+    _d="${_d%/}"
+    [ -f "$_d/state.json" ] || continue
+    [ "$_d" = "$MISSION_DIR" ] && continue
+    [ "$(state_field_str "$_d/state.json" branch)" = "$BRANCH" ] || continue
+    OTHER_ISSUE="$(state_issue_of "$_d/state.json")"
+    [ -n "$OTHER_ISSUE" ] && [ "$OTHER_ISSUE" != "$ISSUE" ] || continue
+    OTHER_TITLE="$(state_field_str "$_d/state.json" title)"
+    die "issue #$ISSUE's mission records branch '$BRANCH', but that branch already belongs to this clone's mission for issue #$OTHER_ISSUE${OTHER_TITLE:+ (\"$OTHER_TITLE\")} at $_d. Adopting would point two missions at one branch and give #$ISSUE #$OTHER_ISSUE's history. Nothing was created and #$OTHER_ISSUE was not touched. Give #$ISSUE a branch of its own, or adopt it in a clone that does not hold #$OTHER_ISSUE."
+  done
+fi
+
+# The LOCAL ADDRESS of the mission — the directory name, which is what every
+# other verb's `locate_mission` takes as its id. Normally identical to $MID; it
+# differs only for a mission whose directory was named something else before
+# adopt learned to find missions by issue number. The `Next:` lines below print
+# THIS, so the command they suggest is one that actually resolves.
+MID_LOCAL="$(basename "$MISSION_DIR")"
+
+# ===========================================================================
+# 3b. THE ENGINE — an explicit choice, made AT THE HANDOFF. (S196 A3)
+# ===========================================================================
+# THE DEFECT, measured in S191's capstone with PATH shims faking both CLIs. A
+# mission was filed `--engine copilot`; the envelope carried copilot; adopt wrote
+# `workerBin: copilot` correctly; the adopting clone's config.json said claude —
+# and run.sh's precedence put `config.json workerBin` ABOVE the mission's own
+# record. Result: 3 invocations of the BILLED shim, 0 of the free one, and not a
+# word anywhere. The spend was the only symptom. (Meanwhile `lcars approve`
+# already pinned the mission's engine by exporting $LCARS_WORKER_BIN — two paths,
+# two answers, which is how a thing like this survives.)
+#
+# THE CAPTAIN'S RULING (2026-09-09) is NOT "the mission always wins". A laptop
+# may only have ONE CLI installed, and a mission that can never run here is not a
+# handover. It is ASK AND CONVERT:
+#
+#   • the mission's engine IS here            → use it, and SAY so.
+#   • it is here and the local config DISAGREES → ASK, defaulting to the
+#     mission's. The config is this repo's ambient preference; the mission is
+#     another laptop's deliberate act, and neither should silently beat the other.
+#   • it is NOT here                          → ASK which of the engines this
+#     machine actually has should take over, and RECORD the conversion.
+#   • no tty and no `--engine`                → REFUSE, loudly, naming both the
+#     engine the mission wants and the ones this machine has. Never switch in
+#     silence: a silent switch IS the defect; a loud failure is the cure.
+#
+# The answer is RECORDED (workerBin + engineSource + engineResolved) and from
+# here on OUTRANKS config.json — run.sh's precedence was reversed in the same
+# session, because an engine the captain was asked about that a repo default
+# could then overrule would make the asking theatre.
+#
+# RECORDED AT THE MOMENT OF CHOICE, never re-derived. Nothing later re-reads
+# config.json to work out which source "would have" won — that inference is the
+# mistake S147, S156 and S188 each paid fix rounds for, and it is this round's
+# standing pre-flight rule: the producer records.
+#
+# THE PROBE IS `command -v`, THROUGH THE SHARED DETECTOR, and deliberately
+# nothing cleverer. lcars-common.sh says why in its own words: no `--version`
+# spawn per engine, and no `~/.claude` / `~/.copilot` directory sniffing (run.sh's
+# host detection explicitly refuses that signal as a launch marker). One detector,
+# so the front door's engine picker, `lcars init` and adopt can never disagree
+# about what this machine has. It answers PRESENCE; a CLI that is installed but
+# not signed in fails at its first spawn with its own error, which is a better
+# message than any guess adopt could make — and probing auth for real would mean
+# a network round trip on a verb that is meant to be instant.
+
+# Is this engine on THIS machine? Known ids go through the shared detector; a
+# custom binary name (a wrapper script, a pinned path) is checked as itself.
+# WITHOUT the shared library it falls back to a bare `command -v` on the engine's
+# own name. That is not a second answer to the question — it IS the shared
+# detector's answer, minus the $LCARS_CLAUDE_BIN / $LCARS_COPILOT_BIN seams it
+# resolves the name through. The fallback exists because the alternative is
+# worse: with `lcars_engine_available` undefined, every engine would read as
+# ABSENT and a non-interactive adopt would refuse a mission it could perfectly
+# well have run — a missing helper file turning into a hard refusal.
+engine_here() { # <engine-or-bin>
+  [ -n "${1:-}" ] || return 1
+  case "$1" in
+    claude|copilot)
+      if command -v lcars_engine_available >/dev/null 2>&1; then
+        lcars_engine_available "$1"
+      else
+        command -v "$1" >/dev/null 2>&1
+      fi ;;
+    *) command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+engines_here() { # → the installed engines, one per line
+  if command -v lcars_available_engines >/dev/null 2>&1; then
+    lcars_available_engines; return 0
+  fi
+  local e
+  for e in claude copilot; do
+    command -v "$e" >/dev/null 2>&1 && printf '%s\n' "$e"
+  done
+  return 0
+}
+engines_here_line() { engines_here | tr '\n' ' ' | sed 's/ *$//'; }
+
+# A tty, or a test standing in for one. `LCARS_ASSUME_TTY=1` exists because the
+# PROMPT is the behaviour under test here and a suite has no terminal; it forces
+# the interactive branch to read from stdin. It is a seam, not a policy: without
+# it the rule is exactly `[ -t 0 ]`.
+ADOPT_TTY=0
+{ [ -t 0 ] || [ "${LCARS_ASSUME_TTY:-}" = "1" ]; } && ADOPT_TTY=1
+
+ENGINE_CHOSEN=""
+ENGINE_SRC=""
+CONFIG="$GITDIR/lcars/config.json"
+CFG_ENGINE=""
+if [ -f "$CONFIG" ] && command -v lcars_config_get >/dev/null 2>&1; then
+  CFG_ENGINE="$(lcars_config_get "$CONFIG" workerBin)"
+fi
+
+# The prompt. Prints to STDERR so the readout on stdout stays machine-clean, and
+# an empty answer takes the default (the mission's engine, per the ruling).
+ask_engine() { # <default> <candidates…>  → the answer on stdout
+  local def="$1"; shift
+  local ans=""
+  printf '  Which engine should drive this mission here? [%s] (%s): ' \
+    "$def" "$*" >&2
+  read -r ans || ans=""
+  ans="$(printf '%s' "$ans" | tr -d '[:space:]')"
+  [ -n "$ans" ] || ans="$def"
+  printf '%s' "$ans"
+}
+
+if [ -n "$OPT_ENGINE" ]; then
+  # An explicit operator act. It is still checked against this machine: recording
+  # an engine that is not here would hand the captain a mission whose first stage
+  # dies in a spawn log.
+  OPT_ENGINE="$(basename "$OPT_ENGINE")"
+  engine_here "$OPT_ENGINE" \
+    || die "\`--engine $OPT_ENGINE\` was asked for, but $OPT_ENGINE is not on this machine$( [ -n "$(engines_here_line)" ] && printf ' (installed: %s)' "$(engines_here_line)"). Nothing was created."
+  ENGINE_CHOSEN="$OPT_ENGINE"
+  if [ -n "$ENGINE" ] && [ "$OPT_ENGINE" = "$(basename "$ENGINE")" ]; then
+    ENGINE_SRC="adopt-kept"
+  else
+    ENGINE_SRC="adopt-converted"
+  fi
+elif [ -z "$ENGINE" ]; then
+  # `engine: null` in the envelope means the filing laptop deliberately made NO
+  # pin and host-detection is legitimately in charge (S188). Inventing one here
+  # would be adopt deciding something nobody decided. Leave it absent.
+  :
+elif engine_here "$ENGINE"; then
+  if [ -n "$CFG_ENGINE" ] && [ "$CFG_ENGINE" != "$ENGINE" ] && engine_here "$CFG_ENGINE"; then
+    if [ "$ADOPT_TTY" -eq 1 ]; then
+      printf '  This mission was filed on %s; this repo'"'"'s config.json prefers %s. Both are installed here.\n' \
+        "$ENGINE" "$CFG_ENGINE" >&2
+      ENGINE_CHOSEN="$(ask_engine "$ENGINE" "$ENGINE" "$CFG_ENGINE")"
+      engine_here "$ENGINE_CHOSEN" \
+        || die "'$ENGINE_CHOSEN' is not an engine this machine has (installed: $(engines_here_line)). Nothing was created."
+      ENGINE_SRC="adopt-chosen"
+    else
+      # No one to ask: the ruling's non-interactive rule is "use the mission's
+      # engine if it is available", so the mission wins — but the disagreement is
+      # NAMED rather than resolved behind the captain's back.
+      ENGINE_CHOSEN="$ENGINE"
+      ENGINE_SRC="adopt-kept"
+      note "this repo's config.json prefers $CFG_ENGINE, but the mission was filed on $ENGINE and $ENGINE is installed here — the MISSION's engine takes over, and it now outranks config.json. Re-run with \`--engine $CFG_ENGINE\` to convert it on purpose."
+    fi
+  else
+    ENGINE_CHOSEN="$ENGINE"
+    ENGINE_SRC="adopt-kept"
+  fi
+else
+  # NOT HERE. Ask, or refuse — never convert in silence.
+  AVAIL_LINE="$(engines_here_line)"
+  if [ -z "$AVAIL_LINE" ]; then
+    die "this mission runs on $ENGINE, which is not on this machine — and neither is any other engine LCARS drives (claude, copilot). Install one and adopt again. Nothing was created."
+  fi
+  if [ "$ADOPT_TTY" -eq 1 ]; then
+    printf '  This mission was filed on %s, which is NOT installed on this machine.\n' "$ENGINE" >&2
+    printf '  Installed here: %s\n' "$AVAIL_LINE" >&2
+    DEF_ENGINE="$(printf '%s' "$AVAIL_LINE" | awk '{print $1}')"
+    [ -n "$CFG_ENGINE" ] && engine_here "$CFG_ENGINE" && DEF_ENGINE="$CFG_ENGINE"
+    ENGINE_CHOSEN="$(ask_engine "$DEF_ENGINE" $AVAIL_LINE)"
+    engine_here "$ENGINE_CHOSEN" \
+      || die "'$ENGINE_CHOSEN' is not an engine this machine has (installed: $AVAIL_LINE). Nothing was created."
+    ENGINE_SRC="adopt-converted"
+  else
+    die "this mission runs on $ENGINE, which is not on this machine (installed here: $AVAIL_LINE) — and there is no terminal to ask on. Adopt will NOT switch a mission's engine in silence: that is how a copilot mission ends up billed to claude with no warning. Re-run with \`--engine <one of: $AVAIL_LINE>\` to convert it on purpose, or adopt from a laptop that has $ENGINE. Nothing was created and nothing was recorded."
+  fi
+fi
+
+# ===========================================================================
+# 3b. COMPOSE the mission — in staging, entirely.
+# ===========================================================================
 TITLE="$(host issue-title "$ISSUE" 2>/dev/null | head -1)"
 [ -n "$TITLE" ] || TITLE="$MID"
 
@@ -360,7 +666,14 @@ if [ "$EXISTING" -eq 1 ]; then
   state_set_str base "$BASE"
   state_set_raw githubIssue "$ISSUE"
   [ -n "$TYPE" ]   && state_set_str type "$TYPE"
-  [ -n "$ENGINE" ] && state_set_str workerBin "$ENGINE"
+  # S196 A3 — the engine RESOLVED at this handoff, not the envelope's raw value:
+  # they differ exactly when the captain converted it, and the converted one is
+  # the fact that must be recorded (see section 3b).
+  if [ -n "$ENGINE_CHOSEN" ]; then
+    state_set_str workerBin     "$ENGINE_CHOSEN"
+    state_set_str engineResolved "$ENGINE_CHOSEN"
+    state_set_str engineSource   "$ENGINE_SRC"
+  fi
   case "$PARENT" in ''|null) state_del parentIssue ;; *) state_set_raw parentIssue "$PARENT" ;; esac
   if [ "$PARKED" = "true" ]; then state_set_raw prdPending true; else state_del prdPending; fi
   # A mission that is back at ALIGN has no open PR — `lcars feedback` closes the
@@ -373,10 +686,9 @@ if [ "$EXISTING" -eq 1 ]; then
   fi
 else
   MODEL=""
-  CONFIG="$GITDIR/lcars/config.json"
+  # $CONFIG was resolved in section 3b (the engine block reads workerBin from it).
   [ -f "$CONFIG" ] && MODEL="$(json_str_of "$CONFIG" model)"
   [ -n "$MODEL" ] || MODEL="${LCARS_MODEL:-claude-sonnet}"
-  [ -f "$CONFIG" ] || note "this repo is not initialised for LCARS (no .git/lcars/config.json) — run \`lcars init\` before driving the mission."
   # Field order mirrors file.sh's write_state so an adopted mission and a filed
   # one read the same way in a diff. Optional fields are OMITTED rather than
   # emitted empty — an absent key is what "not recorded" looks like everywhere
@@ -391,7 +703,11 @@ else
     printf '  "created": "%s",\n' "$NOW"
     printf '  "adopted": "%s",\n' "$NOW"
     printf '  "model": "%s",\n' "$(json_escape "$MODEL")"
-    [ -n "$ENGINE" ] && printf '  "workerBin": "%s",\n' "$(json_escape "$ENGINE")"
+    if [ -n "$ENGINE_CHOSEN" ]; then
+      printf '  "workerBin": "%s",\n'      "$(json_escape "$ENGINE_CHOSEN")"
+      printf '  "engineResolved": "%s",\n' "$(json_escape "$ENGINE_CHOSEN")"
+      printf '  "engineSource": "%s",\n'   "$(json_escape "$ENGINE_SRC")"
+    fi
     case "$PARENT" in ''|null) : ;; *) printf '  "parentIssue": %s,\n' "$PARENT" ;; esac
     printf '  "githubIssue": %s,\n' "$ISSUE"
     printf '  "branch": "%s",\n' "$(json_escape "$BRANCH")"
@@ -477,6 +793,138 @@ cp "$STATE" "$MISSION_DIR/state.json" || die "could not write $MISSION_DIR/state
 [ "$ATTACH" -gt 0 ] 2>/dev/null && note "the original mission had $ATTACH attachment(s); GitHub has no API to carry issue assets, so they are NOT here. Copy them into $MISSION_DIR/attachments/ by hand if a stage needs them."
 
 # ===========================================================================
+# 6b. THE REPO ITSELF — seed a config a mission can actually be DRIVEN with.
+# ===========================================================================
+# S196 A4. An adopted clone had NO `.git/lcars/config.json` at all: no
+# testCommand, so the Implement red gate has nothing to run and degrades to a
+# warning; no stack, so no stage knows the ecosystem. Adopt DID emit a warning
+# and the board's ADOPT dispatch swallowed it, showing only "Adopted #34 — it is
+# a local mission now." A warning nobody sees is not a warning, so both halves
+# are fixed: adopt seeds, and the daemon surfaces what adopt says.
+#
+# IT IS `lcars init`'S OWN DETECTION, NOT A SECOND COPY OF IT. `detect_stack`,
+# `detect_test_cmd`, `lcars_test_system_evidence` and the merge-preserving
+# `lcars_config_merge` all live in lcars-common.sh precisely so init, update,
+# status and the daemon cannot drift; adopt calls the same four. What it does
+# NOT do is run `lcars init`: init creates the GitHub label set, writes
+# .gitignore rules, and — as of S195 — DIES on a machine without the claude CLI,
+# which is exactly the copilot-only laptop this session exists to serve. So adopt
+# seeds the minimum a drive needs and points at init for the rest.
+#
+# S183's provenance rule is honoured because it lives inside the shared
+# detectors: a DETECTED command is dropped when the repo carries no positive
+# evidence of a test system, so adopt can configure a test system a repo already
+# has and can never manufacture one. A repo where nothing is detectable gets a
+# config with a null testCommand and a WARNING naming it — never a fabricated
+# `npm test`.
+if [ ! -f "$CONFIG" ]; then
+  if command -v lcars_config_merge >/dev/null 2>&1 \
+     && command -v detect_stack >/dev/null 2>&1; then
+    # detect_test_cmd / detect_worktree_setup_cmd read $TOPLEVEL from the caller's
+    # environment — the same contract init.sh gives them.
+    TOPLEVEL="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)" || TOPLEVEL="$PWD"
+    [ -n "$TOPLEVEL" ] || TOPLEVEL="$PWD"
+    export TOPLEVEL
+    SEED_STACK="$(detect_stack 2>/dev/null)"
+    case "$SEED_STACK" in
+      ''|ambiguous*) SEED_TESTCMD="${LCARS_TEST_CMD:-}" ;;
+      *)             SEED_TESTCMD="${LCARS_TEST_CMD:-$(detect_test_cmd 2>/dev/null)}" ;;
+    esac
+    if [ -n "$SEED_TESTCMD" ] && [ -z "${LCARS_TEST_CMD:-}" ] \
+       && command -v lcars_test_system_evidence >/dev/null 2>&1 \
+       && ! lcars_test_system_evidence >/dev/null 2>&1; then
+      SEED_TESTCMD=""
+    fi
+    SEED_TESTCMD_JSON='null'
+    [ -n "$SEED_TESTCMD" ] && SEED_TESTCMD_JSON="\"$(json_escape "$SEED_TESTCMD")\""
+    SEED_WT='null'
+    if command -v detect_worktree_setup_cmd >/dev/null 2>&1; then
+      SEED_WT_RAW="$(detect_worktree_setup_cmd 2>/dev/null)"
+      [ -n "$SEED_WT_RAW" ] && SEED_WT="\"$(json_escape "$SEED_WT_RAW")\""
+    fi
+    SEED_MODEL="${LCARS_MODEL:-claude-sonnet}"
+    mkdir -p "$GITDIR/lcars"
+    lcars_config_merge "$CONFIG" "model=\"$(json_escape "$SEED_MODEL")\"
+projectName=\"$(json_escape "$(basename "$TOPLEVEL")")\"
+contextFile=null
+stack=\"$(json_escape "${SEED_STACK:-unknown}")\"
+testCommand=$SEED_TESTCMD_JSON
+worktreeSetupCommand=$SEED_WT
+comprehensionBudget=1200
+adoptedFrom=$ISSUE
+created=\"$NOW\""
+    if [ -n "$SEED_TESTCMD" ]; then
+      note "this clone had no .git/lcars/config.json — one was seeded (stack: ${SEED_STACK:-unknown}, testCommand: $SEED_TESTCMD). Run \`lcars init\` to finish setup (GitHub labels, .gitignore)."
+    else
+      note "this clone had no .git/lcars/config.json — one was seeded (stack: ${SEED_STACK:-unknown}) but NO testCommand could be detected, so the Implement red gate has nothing to prove against. Set it with \`lcars update --test-command '<command>'\`, and run \`lcars init\` to finish setup."
+    fi
+  else
+    note "this repo is not initialised for LCARS (no .git/lcars/config.json) and adopt could not reach its config helpers — run \`lcars init\` before driving the mission."
+  fi
+fi
+
+# ===========================================================================
+# 6c. THE ESTIMATE — carried across, so the card does not downgrade. (S196 A5)
+# ===========================================================================
+# A REMOTE card shows a cost pill and two difficulty pills; adopting it used to
+# make all three vanish, because adopt rebuilt prd.md + state.json and nothing
+# else. That is a visible LOSS at the exact moment the captain takes ownership.
+#
+# The three facts come from the ENVELOPE (issue-body.sh now records them there),
+# NEVER from re-scanning the "## Estimate" section: adopt does not read the
+# captain's prose, for the reason stated at the top of this file, and behaviour
+# P1 in the suite hands it a PRD quoting a decoy envelope to keep it honest.
+#
+# Only the PILL facts are rebuilt — the per-stage token/request tables stay on
+# the laptop that computed them (`.git/lcars/` is the local source of richness;
+# nothing here starts syncing internal artifacts). A partial estimate.json is
+# safe downstream: resolve_stage_model reads `models`, finds none, and emits the
+# legacy no-`--model` argv.
+#
+# A LOCAL estimate.json is never overwritten. Local artifacts survive a refresh
+# — the same rule feedback.md, research findings and events.jsonl live by — and
+# a locally COMPUTED estimate is strictly richer than the three carried facts.
+if [ ! -f "$MISSION_DIR/estimate.json" ]; then
+  EST_UNIT="$(lcars_handoff_field "$BODY" estCostUnit)"
+  EST_LOW="$(lcars_handoff_field "$BODY" estCostLow)"
+  EST_HIGH="$(lcars_handoff_field "$BODY" estCostHigh)"
+  EST_REASON="$(lcars_handoff_field "$BODY" estReasoning)"
+  EST_IMPL="$(lcars_handoff_field "$BODY" estImpl)"
+  case "$EST_UNIT"   in usd|premiumRequests) : ;; *) EST_UNIT="" ;; esac
+  case "$EST_REASON" in low|medium|high) : ;; *) EST_REASON="" ;; esac
+  case "$EST_IMPL"   in low|medium|high) : ;; *) EST_IMPL="" ;; esac
+  case "$EST_LOW"    in ''|*[!0-9.]*) EST_LOW="" ;; esac
+  case "$EST_HIGH"   in ''|*[!0-9.]*) EST_HIGH="" ;; esac
+  [ -n "$EST_LOW$EST_HIGH" ] || EST_UNIT=""
+  if [ -n "$EST_UNIT$EST_REASON$EST_IMPL" ]; then
+    {
+      printf '{\n'
+      printf '  "schemaVersion": 3,\n'
+      printf '  "adoptedFrom": %s,\n' "$ISSUE"
+      [ -n "$EST_REASON" ] && printf '  "reasoningCriticality": "%s",\n' "$EST_REASON"
+      [ -n "$EST_IMPL" ]   && printf '  "implCriticality": "%s",\n' "$EST_IMPL"
+      if [ -n "$EST_UNIT" ]; then
+        printf '  "cost": {\n'
+        printf '    "unit": "%s",\n' "$EST_UNIT"
+        printf '    "%s": {\n' "$EST_UNIT"
+        if [ -n "$EST_LOW" ] && [ -n "$EST_HIGH" ]; then
+          printf '      "low": %s,\n      "high": %s\n' "$EST_LOW" "$EST_HIGH"
+        elif [ -n "$EST_LOW" ]; then
+          printf '      "low": %s\n' "$EST_LOW"
+        else
+          printf '      "high": %s\n' "$EST_HIGH"
+        fi
+        printf '    }\n  },\n'
+      fi
+      # A trailing key with no comma, so the object is valid whichever of the
+      # optional blocks above were emitted.
+      printf '  "carriedByAdopt": true\n'
+      printf '}\n'
+    } >"$MISSION_DIR/estimate.json"
+  fi
+fi
+
+# ===========================================================================
 # 7. THE BRANCH — fetch it when origin has one.
 # ===========================================================================
 # `ls-remote` first, so "the branch does not exist yet" (the normal Align case)
@@ -511,6 +959,27 @@ printf '  Issue:    #%s — %s\n' "$ISSUE" "$TITLE"
 printf '  Mission:  %s\n' "$MISSION_DIR"
 printf '  Spec:     %s (rebuilt from the issue body)\n' "$SPEC_NAME"
 printf '  Branch:   %s — %s\n' "${BRANCH:-<none>}" "$BRANCH_NOTE"
+# S196 A3(g): WHICH engine takes over, and WHY it is that one. This line is the
+# CLI half of "visible provenance"; the persisted engineSource/engineResolved
+# pair is the half the viewscreen reads, and both are written from the same
+# decision so they cannot tell different stories.
+case "$ENGINE_SRC" in
+  adopt-kept)
+    if [ -n "$CFG_ENGINE" ] && [ "$CFG_ENGINE" != "$ENGINE_CHOSEN" ]; then
+      printf '  Engine:   %s — the engine this mission was FILED on; it is installed here and now outranks this repo'"'"'s config.json (%s).\n' \
+        "$ENGINE_CHOSEN" "$CFG_ENGINE"
+    else
+      printf '  Engine:   %s — the engine this mission was filed on, and it is installed here.\n' "$ENGINE_CHOSEN"
+    fi ;;
+  adopt-converted)
+    printf '  Engine:   %s — CONVERTED here (the mission was filed on %s, which this machine does not have). Recorded on the mission; it outranks config.json from now on.\n' \
+      "$ENGINE_CHOSEN" "${ENGINE:-<none>}" ;;
+  adopt-chosen)
+    printf '  Engine:   %s — your choice at the handoff (filed on %s, config.json prefers %s). Recorded on the mission.\n' \
+      "$ENGINE_CHOSEN" "${ENGINE:-<none>}" "${CFG_ENGINE:-<none>}" ;;
+  *)
+    printf '  Engine:   not pinned — the mission records none, so the host CLI decides at run time.\n' ;;
+esac
 if [ -n "$OWNER" ]; then
   if [ -n "$ME" ] && [ "$OWNER" = "$ME" ]; then
     printf '  Owner:    %s (you)\n' "$OWNER"
@@ -526,12 +995,12 @@ fi
 
 case "$STAGE" in
   align)
-    printf 'Next: `lcars run %s` — the mission picks up at Align.\n' "$MID" ;;
+    printf 'Next: `lcars run %s` — the mission picks up at Align.\n' "$MID_LOCAL" ;;
   verify)
     if [ -n "$PR_URL" ]; then
-      printf 'Next: review the PR, then `lcars approve %s` to merge, or `lcars feedback %s "…"` to send it back.\n' "$MID" "$MID"
+      printf 'Next: review the PR, then `lcars approve %s` to merge, or `lcars feedback %s "…"` to send it back.\n' "$MID_LOCAL" "$MID_LOCAL"
     else
-      printf 'Next: `lcars run %s` — Verify will open the PR.\n' "$MID"
+      printf 'Next: `lcars run %s` — Verify will open the PR.\n' "$MID_LOCAL"
     fi ;;
 esac
 exit 0

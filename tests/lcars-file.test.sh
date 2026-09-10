@@ -108,6 +108,13 @@ EOF
   chmod +x "$p"
 }
 
+# S196 — `cloneId` PINS THE FINGERPRINT so this suite's expected ids stay
+# literal. Mission ids are now `lcars-YYYYMMDD-NNN-<fp>`, where <fp> is the
+# first 4 hex of the clone's own `cloneId` (minted as a UUID4 on first use, so
+# two clones of one repo can never mint the same id — see lcars_clone_id in
+# skills/lcars-init/lcars-common.sh). Pinning cloneId here makes <fp> the
+# constant `c10e`. The LAZY acquisition path, the two-real-clones proof and the
+# old-format compatibility guarantee all live in tests/mission-id.test.sh.
 # Build an isolated git repo with .git/lcars/ already scaffolded. An initial
 # commit exists so `lcars file` can branch off it (a Mission gets its own branch
 # at filing time) — matching how `lcars file` is run in a real, non-empty repo.
@@ -124,7 +131,7 @@ new_repo() {
   # readiness verdict asks of a command. The gate itself is proven in
   # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
 EOF
   echo "$repo"
 }
@@ -160,10 +167,10 @@ prd="$repo/prd-in.md"; write_prd "$prd"
   cd "$repo"
   LCARS_GH_BIN="$repo/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prd" >out.txt 2>&1
 )
-check "1. creates mission dir named lcars-20260530-001" \
-  "[ -d '$repo/.git/lcars/missions/lcars-20260530-001' ]"
+check "1. creates mission dir named lcars-20260530-001-c10e" \
+  "[ -d '$repo/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 check "1. summary reports the mission ID" \
-  "grep -q 'lcars-20260530-001' '$repo/out.txt'"
+  "grep -q 'lcars-20260530-001-c10e' '$repo/out.txt'"
 
 # second mission the same day increments to -002
 prd2="$repo/prd-in2.md"; write_prd "$prd2"
@@ -171,11 +178,11 @@ prd2="$repo/prd-in2.md"; write_prd "$prd2"
   cd "$repo"
   LCARS_GH_BIN="$repo/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prd2" >out2.txt 2>&1
 )
-check "1. second mission increments to lcars-20260530-002" \
-  "[ -d '$repo/.git/lcars/missions/lcars-20260530-002' ]"
+check "1. second mission increments to lcars-20260530-002-c10e" \
+  "[ -d '$repo/.git/lcars/missions/lcars-20260530-002-c10e' ]"
 
 # --- Behaviour 2: directory structure -------------------------------------
-M="$repo/.git/lcars/missions/lcars-20260530-001"
+M="$repo/.git/lcars/missions/lcars-20260530-001-c10e"
 check "2. mission dir contains prd.md"    "[ -f '$M/prd.md' ]"
 check "2. mission dir contains state.json" "[ -f '$M/state.json' ]"
 
@@ -203,7 +210,7 @@ check "3. no mission created from a bad PRD" \
 
 # --- Behaviour 4: state.json correct shape --------------------------------
 check "4. state.json has id"          "grep -q '\"id\"' '$M/state.json'"
-check "4. state.json id matches"      "grep -q '\"lcars-20260530-001\"' '$M/state.json'"
+check "4. state.json id matches"      "grep -q '\"lcars-20260530-001-c10e\"' '$M/state.json'"
 check "4. state.json type is bug"     "grep -q '\"type\": *\"bug\"' '$M/state.json'"
 check "4. state.json stage is align"  "grep -q '\"stage\": *\"align\"' '$M/state.json'"
 check "4. state.json has created"     "grep -q '\"created\"' '$M/state.json'"
@@ -227,15 +234,15 @@ rcG=0
   LCARS_GH_BIN="$repoG/definitely-no-gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdG" >outG.txt 2>&1
 ) || rcG=$?
 check "5. still files the mission when gh is missing" \
-  "[ -d '$repoG/.git/lcars/missions/lcars-20260530-001' ]"
+  "[ -d '$repoG/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 check "5. records githubIssue null when gh missing" \
-  "grep -q '\"githubIssue\": *null' '$repoG/.git/lcars/missions/lcars-20260530-001/state.json'"
+  "grep -q '\"githubIssue\": *null' '$repoG/.git/lcars/missions/lcars-20260530-001-c10e/state.json'"
 
 # --- Behaviour 6: confirmation summary ------------------------------------
-check "6. summary: Mission filed line"  "grep -q 'Mission filed:.*lcars-20260530-001' '$repo/out.txt'"
+check "6. summary: Mission filed line"  "grep -q 'Mission filed:.*lcars-20260530-001-c10e' '$repo/out.txt'"
 check "6. summary: GitHub issue line"   "grep -q 'GitHub issue:.*#42' '$repo/out.txt'"
 check "6. summary: Stage align line"    "grep -qi 'Stage:.*align' '$repo/out.txt'"
-check "6. summary: Next lcars run line" "grep -q 'lcars run lcars-20260530-001' '$repo/out.txt'"
+check "6. summary: Next lcars run line" "grep -q 'lcars run lcars-20260530-001-c10e' '$repo/out.txt'"
 
 # --- Behaviour 7: the Mission gets its own branch -------------------------
 # vision.md: each Mission gets its own branch. `lcars file` creates lcars/<id>
@@ -243,15 +250,15 @@ check "6. summary: Next lcars run line" "grep -q 'lcars run lcars-20260530-001' 
 # Implement can commit to it and `lcars approve` can push it + open the PR.
 EXP_BASE="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
 check "7. creates the branch lcars/<mission-id>" \
-  "( cd '$repo' && git show-ref --verify --quiet 'refs/heads/lcars/lcars-20260530-001' )"
+  "( cd '$repo' && git show-ref --verify --quiet 'refs/heads/lcars/lcars-20260530-001-c10e' )"
 check "7. does not switch the working tree off the base branch" \
   "[ \"\$(cd '$repo' && git rev-parse --abbrev-ref HEAD)\" = '$EXP_BASE' ]"
 check "7. records the branch in state.json" \
-  "grep -q '\"branch\": *\"lcars/lcars-20260530-001\"' '$M/state.json'"
+  "grep -q '\"branch\": *\"lcars/lcars-20260530-001-c10e\"' '$M/state.json'"
 check "7. records the base in state.json" \
   "grep -q '\"base\": *\"$EXP_BASE\"' '$M/state.json'"
 check "7. summary reports the branch" \
-  "grep -q 'Branch:.*lcars/lcars-20260530-001' '$repo/out.txt'"
+  "grep -q 'Branch:.*lcars/lcars-20260530-001-c10e' '$repo/out.txt'"
 
 # --- Behaviour 8: adaptive-depth ADR artifact (Session 36) ----------------
 # Align scales depth to complexity. A TRIVIAL Mission is filed with --prd only
@@ -284,7 +291,7 @@ rcT=0
   cd "$repoT"
   LCARS_GH_BIN="$repoT/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdT" >outT.txt 2>&1
 ) || rcT=$?
-MT="$repoT/.git/lcars/missions/lcars-20260530-001"
+MT="$repoT/.git/lcars/missions/lcars-20260530-001-c10e"
 check "8a. trivial Mission (no --adr) files successfully" "[ '$rcT' -eq 0 ]"
 check "8a. no adr.md is written for a trivial Mission" "[ ! -f '$MT/adr.md' ]"
 
@@ -298,7 +305,7 @@ rcC=0
   cd "$repoC"
   LCARS_GH_BIN="$repoC/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdC" --adr "$adrC" >outC.txt 2>&1
 ) || rcC=$?
-MC="$repoC/.git/lcars/missions/lcars-20260530-001"
+MC="$repoC/.git/lcars/missions/lcars-20260530-001-c10e"
 check "8b. complex Mission with --adr files successfully" "[ '$rcC' -eq 0 ]"
 check "8b. adr.md is persisted into the mission dir" "[ -f '$MC/adr.md' ]"
 check "8b. adr.md carries its Context section"      "grep -q '\\*\\*Context:\\*\\*' '$MC/adr.md'"
@@ -342,7 +349,7 @@ adrBody="$repoBody/adr.md"; write_adr "$adrBody"
   cd "$repoBody"
   LCARS_GH_BIN="$repoBody/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdBody" --adr "$adrBody" >outBody.txt 2>&1
 )
-MBody="$repoBody/.git/lcars/missions/lcars-20260530-001"
+MBody="$repoBody/.git/lcars/missions/lcars-20260530-001-c10e"
 check "9a. issue body contains the PRD content" \
   "grep -q 'Fix the broken /about route' '$GH_BODY'"
 check "9a. issue body contains the ADR content" \
@@ -516,7 +523,7 @@ unset GH_BODY
 repoL="$(new_repo)"; make_gh_stub "$repoL/gh"
 # S183: keeps new_repo's testCommand — this rewrite of the config would
 # otherwise strip the repo's test foundation and `lcars file` would refuse.
-printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy" }\n' \
+printf '{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy" }\n' \
   >"$repoL/.git/lcars/config.json"
 export GH_LOG="$repoL/gh.log"; : >"$GH_LOG"
 export GH_BODY="$repoL/gh-body.txt"; : >"$GH_BODY"
@@ -570,7 +577,7 @@ prdMO="$repoMO/prd.md"; write_prd "$prdMO"
   LCARS_GH_BIN="$repoMO/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
     --prd "$prdMO" --model-override 'all:opus' >outMO.txt 2>&1
 )
-MMO="$repoMO/.git/lcars/missions/lcars-20260530-001/state.json"
+MMO="$repoMO/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "11a. state.json records modelOverride scope=all" \
   "grep -q '\"scope\": *\"all\"' '$MMO'"
 check "11a. state.json records modelOverride tier=opus" \
@@ -585,7 +592,7 @@ prdMO2="$repoMO2/prd.md"; write_prd "$prdMO2"
   LCARS_GH_BIN="$repoMO2/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
     --prd "$prdMO2" --model-override 'implementation:sonnet' >outMO2.txt 2>&1
 )
-MMO2="$repoMO2/.git/lcars/missions/lcars-20260530-001/state.json"
+MMO2="$repoMO2/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "11b. state.json records scope=implementation tier=sonnet" \
   "grep -q '\"scope\": *\"implementation\"' '$MMO2' && grep -q '\"tier\": *\"sonnet\"' '$MMO2'"
 
@@ -597,7 +604,7 @@ prdMO3="$repoMO3/prd.md"; write_prd "$prdMO3"
   cd "$repoMO3"
   LCARS_GH_BIN="$repoMO3/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdMO3" >outMO3.txt 2>&1
 )
-MMO3="$repoMO3/.git/lcars/missions/lcars-20260530-001/state.json"
+MMO3="$repoMO3/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "11c. no override ⇒ state.json has no modelOverride key" \
   "! grep -q 'modelOverride' '$MMO3'"
 
@@ -613,7 +620,7 @@ rcMO4=0
 ) || rcMO4=$?
 check "11d. bad scope ⇒ non-zero exit" "[ '$rcMO4' -ne 0 ]"
 check "11d. bad scope ⇒ no mission written" \
-  "[ ! -d '$repoMO4/.git/lcars/missions/lcars-20260530-001' ]"
+  "[ ! -d '$repoMO4/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 
 # 11e. malformed override rejected (bad tier).
 repoMO5="$(new_repo)"; make_gh_stub "$repoMO5/gh"
@@ -662,7 +669,7 @@ prdWB="$repoWB/prd.md"; write_prd "$prdWB"
   LCARS_WORKER_BIN=copilot LCARS_GH_BIN="$repoWB/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdWB" >outWB.txt 2>&1
 )
-MWB="$repoWB/.git/lcars/missions/lcars-20260530-001/state.json"
+MWB="$repoWB/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "12a. state.json persists workerBin=copilot" \
   "[ -f '$MWB' ] && cat '$MWB' | qgrep -q '\"workerBin\": *\"copilot\"'"
 check "12a. state.json is valid JSON (engine set)" \
@@ -678,7 +685,7 @@ prdWN="$repoWN/prd.md"; write_prd "$prdWN"
   LCARS_GH_BIN="$repoWN/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdWN" >outWN.txt 2>&1
 )
-MWN="$repoWN/.git/lcars/missions/lcars-20260530-001/state.json"
+MWN="$repoWN/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "12b. no engine ⇒ state.json has no workerBin field" \
   "[ -f '$MWN' ] && ! cat '$MWN' | qgrep -q 'workerBin'"
 check "12b. state.json is valid JSON (engine unset)" \
@@ -702,7 +709,7 @@ rcAT=0
   LCARS_GH_BIN="$repoAT/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
     --prd "$prdAT" --attach "$imgAT" >outAT.txt 2>&1
 ) || rcAT=$?
-MAT="$repoAT/.git/lcars/missions/lcars-20260530-001"
+MAT="$repoAT/.git/lcars/missions/lcars-20260530-001-c10e"
 check "13a. file with --attach succeeds" "[ '$rcAT' -eq 0 ]"
 check "13a. attachments/attachment-01.png is staged" \
   "[ -f '$MAT/attachments/attachment-01.png' ]"
@@ -728,7 +735,7 @@ imgB="$repoAT2/b.jpg"; printf 'BBB' >"$imgB"
   LCARS_GH_BIN="$repoAT2/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
     --prd "$prdAT2" --attach "$imgA" --attach "$imgB" >outAT2.txt 2>&1
 )
-MAT2="$repoAT2/.git/lcars/missions/lcars-20260530-001"
+MAT2="$repoAT2/.git/lcars/missions/lcars-20260530-001-c10e"
 check "13b. first attachment keeps its .png ext" \
   "[ -f '$MAT2/attachments/attachment-01.png' ]"
 check "13b. second attachment keeps its .jpg ext (order-numbered)" \
@@ -744,7 +751,7 @@ prdAT3="$repoAT3/prd.md"; write_prd "$prdAT3"
   cd "$repoAT3"
   LCARS_GH_BIN="$repoAT3/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdAT3" >outAT3.txt 2>&1
 )
-MAT3="$repoAT3/.git/lcars/missions/lcars-20260530-001"
+MAT3="$repoAT3/.git/lcars/missions/lcars-20260530-001-c10e"
 check "13c. no --attach ⇒ no attachments/ dir" "[ ! -d '$MAT3/attachments' ]"
 check "13c. no --attach ⇒ prd.md has no Attached images section" \
   "! grep -q '## Attached images' '$MAT3/prd.md'"
@@ -763,7 +770,7 @@ rcAT4=0
 ) || rcAT4=$?
 check "13d. missing attachment ⇒ non-zero exit" "[ '$rcAT4' -ne 0 ]"
 check "13d. missing attachment ⇒ no mission written" \
-  "[ ! -d '$repoAT4/.git/lcars/missions/lcars-20260530-001' ]"
+  "[ ! -d '$repoAT4/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 
 # 13e. FL-010 — a holodeck hand-off travels this SAME --attach road, and prd.md
 # is the mission's own document AND the GitHub issue body. Heading an HTML
@@ -782,7 +789,7 @@ rcMK=0
   LCARS_GH_BIN="$repoMK/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
     --prd "$prdMK" --attach "$mockMK" --attach "$concMK" >outMK.txt 2>&1
 ) || rcMK=$?
-MMK="$repoMK/.git/lcars/missions/lcars-20260530-001"
+MMK="$repoMK/.git/lcars/missions/lcars-20260530-001-c10e"
 check "13e. file with a mockup + concept doc succeeds" "[ '$rcMK' -eq 0 ]"
 check "13e. prd.md does NOT call an HTML mockup an image" \
   "! grep -q '## Attached images' '$MMK/prd.md'"
@@ -836,7 +843,7 @@ rcEN=0
   LCARS_GH_BIN="$repoEN/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdEN" --engine copilot >outEN.txt 2>&1
 ) || rcEN=$?
-MEN="$repoEN/.git/lcars/missions/lcars-20260530-001/state.json"
+MEN="$repoEN/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14a. --prd --engine copilot exits clean" "[ '$rcEN' -eq 0 ]"
 check "14a. --prd --engine copilot persists workerBin=copilot" \
   "[ -f '$MEN' ] && cat '$MEN' | qgrep -q '\"workerBin\": *\"copilot\"'"
@@ -852,7 +859,7 @@ prdEN2="$repoEN2/prd.md"; write_prd "$prdEN2"
   LCARS_WORKER_BIN=claude LCARS_GH_BIN="$repoEN2/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdEN2" --engine copilot >outEN2.txt 2>&1
 )
-MEN2="$repoEN2/.git/lcars/missions/lcars-20260530-001/state.json"
+MEN2="$repoEN2/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14b. --engine copilot beats LCARS_WORKER_BIN=claude" \
   "[ -f '$MEN2' ] && cat '$MEN2' | qgrep -q '\"workerBin\": *\"copilot\"'"
 
@@ -870,7 +877,7 @@ check "14c. bogus --engine on --prd ⇒ non-zero exit" "[ '$rcEN3' -ne 0 ]"
 check "14c. bogus --engine on --prd ⇒ names the engine in the error" \
   "grep -q \"unknown engine 'totally-bogus'\" '$repoEN3/outEN3.txt'"
 check "14c. bogus --engine on --prd ⇒ no mission written" \
-  "[ ! -d '$repoEN3/.git/lcars/missions/lcars-20260530-001' ]"
+  "[ ! -d '$repoEN3/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 
 # 14d. no --engine and no $LCARS_WORKER_BIN ⇒ still NO workerBin key (unchanged).
 repoEN4="$(new_repo)"; make_gh_stub "$repoEN4/gh"
@@ -882,7 +889,7 @@ prdEN4="$repoEN4/prd.md"; write_prd "$prdEN4"
   LCARS_GH_BIN="$repoEN4/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdEN4" >outEN4.txt 2>&1
 )
-MEN4="$repoEN4/.git/lcars/missions/lcars-20260530-001/state.json"
+MEN4="$repoEN4/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14d. no engine at all ⇒ no workerBin key" \
   "[ -f '$MEN4' ] && ! cat '$MEN4' | qgrep -q 'workerBin'"
 
@@ -895,7 +902,7 @@ prdEN5="$repoEN5/prd.md"; write_prd "$prdEN5"
   LCARS_WORKER_BIN=copilot LCARS_GH_BIN="$repoEN5/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdEN5" --engine claude >outEN5.txt 2>&1
 )
-MEN5="$repoEN5/.git/lcars/missions/lcars-20260530-001/state.json"
+MEN5="$repoEN5/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14e. --engine claude beats LCARS_WORKER_BIN=copilot" \
   "[ -f '$MEN5' ] && cat '$MEN5' | qgrep -q '\"workerBin\": *\"claude\"'"
 
@@ -912,6 +919,11 @@ gf_repo() { # a repo with NO foundation — what the front door is for
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
       && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
+  # S196 — this repo deliberately has NO config.json, so the clone fingerprint
+  # has nowhere canonical to live; lcars_clone_id falls back to the
+  # `<lcars-dir>/clone-id` BRIDGE file. Seeding it pins the fingerprint the same
+  # way new_repo's cloneId does, and incidentally exercises that fallback.
+  printf 'c10ec10ec10ec10ec10ec10ec10ec10e\n' >"$repo/.git/lcars/clone-id"
   echo "$repo"
 }
 
@@ -925,7 +937,7 @@ rcIN=0
   LCARS_GH_BIN="$repoIN/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --initialization --prd "$prdIN" --engine copilot >outIN.txt 2>&1
 ) || rcIN=$?
-MIN="$repoIN/.git/lcars/missions/lcars-20260530-001/state.json"
+MIN="$repoIN/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14f. --initialization --prd --engine copilot exits clean" "[ '$rcIN' -eq 0 ]"
 check "14f. the FRONT DOOR's mission persists workerBin=copilot" \
   "[ -f '$MIN' ] && cat '$MIN' | qgrep -q '\"workerBin\": *\"copilot\"'"
@@ -946,7 +958,7 @@ prdIN2="$repoIN2/prd.md"; write_prd "$prdIN2"
   LCARS_WORKER_BIN=claude LCARS_GH_BIN="$repoIN2/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --initialization --prd "$prdIN2" --engine copilot >outIN2.txt 2>&1
 )
-MIN2="$repoIN2/.git/lcars/missions/lcars-20260530-001/state.json"
+MIN2="$repoIN2/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14g. --engine beats the daemon-threaded LCARS_WORKER_BIN on this lane" \
   "[ -f '$MIN2' ] && cat '$MIN2' | qgrep -q '\"workerBin\": *\"copilot\"'"
 
@@ -963,7 +975,7 @@ rcIN3=0
 check "14h. bogus --engine on the initialization lane ⇒ non-zero exit" \
   "[ '$rcIN3' -ne 0 ]"
 check "14h. …and nothing was written" \
-  "[ ! -d '$repoIN3/.git/lcars/missions/lcars-20260530-001' ]"
+  "[ ! -d '$repoIN3/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 
 # 14i. REGRESSION — an initialization filing with no engine is unchanged.
 repoIN4="$(gf_repo)"; make_gh_stub "$repoIN4/gh"
@@ -975,7 +987,7 @@ prdIN4="$repoIN4/prd.md"; write_prd "$prdIN4"
   LCARS_GH_BIN="$repoIN4/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --initialization --prd "$prdIN4" >outIN4.txt 2>&1
 )
-MIN4="$repoIN4/.git/lcars/missions/lcars-20260530-001/state.json"
+MIN4="$repoIN4/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14i. no --engine on the initialization lane ⇒ no workerBin key" \
   "[ -f '$MIN4' ] && ! cat '$MIN4' | qgrep -q 'workerBin'"
 
@@ -1022,7 +1034,7 @@ prdH1="$repoH1/prd-h.md"; write_prd_headings "$prdH1"
   LCARS_GH_BIN="$repoH1/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdH1" >outH1.txt 2>&1
 )
-MH1="$repoH1/.git/lcars/missions/lcars-20260530-001/state.json"
+MH1="$repoH1/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "15a. the captain's HEADING-FORM PRD files (was: refused on all six)" \
   "[ -f '$MH1' ]"
 check "15b. …and the TITLE is EXTRACTED from the heading, not empty" \
@@ -1032,7 +1044,7 @@ check "15c. …and the TYPE is EXTRACTED from the heading, not empty" \
 check "15d. …and the issue carries the derived title + lcars:feature label" \
   "grep -q 'MBR builder' '$repoH1/gh.log' && grep -q 'lcars:feature' '$repoH1/gh.log'"
 check "15e. …and prd.md is the PRD verbatim" \
-  "grep -q '^Mission: MBR builder' '$repoH1/.git/lcars/missions/lcars-20260530-001/prd.md'"
+  "grep -q '^Mission: MBR builder' '$repoH1/.git/lcars/missions/lcars-20260530-001-c10e/prd.md'"
 
 # 15f. The HASHED heading variant (`## Type`), same derivation.
 repoH2="$(new_repo)"; make_gh_stub "$repoH2/gh"
@@ -1066,7 +1078,7 @@ EOF
   LCARS_GH_BIN="$repoH2/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdH2" >outH2.txt 2>&1
 )
-MH2="$repoH2/.git/lcars/missions/lcars-20260530-001/state.json"
+MH2="$repoH2/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "15f. the hashed-heading (## Type) form files too" "[ -f '$MH2' ]"
 check "15g. …with the title off the hashed Mission line" \
   "[ -f '$MH2' ] && cat '$MH2' | qgrep -q '\"title\": \"Fix the broken /about route\"'"
@@ -1082,7 +1094,7 @@ prdH3="$repoH3/prd-b.md"; write_prd "$prdH3"
   LCARS_GH_BIN="$repoH3/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdH3" >outH3.txt 2>&1
 )
-MH3="$repoH3/.git/lcars/missions/lcars-20260530-001/state.json"
+MH3="$repoH3/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "15i. the BOLD form still derives its title" \
   "[ -f '$MH3' ] && cat '$MH3' | qgrep -q '\"title\": \"Fix the broken /about route\"'"
 check "15j. …and its type" \
@@ -1113,7 +1125,7 @@ rcH4=0
 ) || rcH4=$?
 check "15k. a PRD with NO Constraints section is still REFUSED" "[ '$rcH4' -ne 0 ]"
 check "15l. …naming Constraints, and writing nothing" \
-  "grep -q \"missing the 'Constraints' section\" '$repoH4/outH4.txt' && [ ! -d '$repoH4/.git/lcars/missions/lcars-20260530-001' ]"
+  "grep -q \"missing the 'Constraints' section\" '$repoH4/outH4.txt' && [ ! -d '$repoH4/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 
 # 15m/n. A heading-form PRD whose title line carries NO title fails LOUDLY at
 # extraction — never silently with an empty title. This is the whole risk of
@@ -1142,7 +1154,7 @@ rcH5=0
     bash "$SCRIPT" --prd "$prdH5" >outH5.txt 2>&1
 ) || rcH5=$?
 check "15m. a titleless PRD is refused LOUDLY, not filed with an empty title" \
-  "[ '$rcH5' -ne 0 ] && [ ! -d '$repoH5/.git/lcars/missions/lcars-20260530-001' ]"
+  "[ '$rcH5' -ne 0 ] && [ ! -d '$repoH5/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 check "15n. …with the extraction's own message" \
   "grep -q 'could not read the Mission title' '$repoH5/outH5.txt'"
 
@@ -1212,7 +1224,7 @@ briefQ="$repoQ/concept.md"; printf '%s' "$BRIEF_2SEC" >"$briefQ"
   LCARS_GH_BIN="$repoQ/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --park "rebuild the MBR builder" --attach "$briefQ" >outQ0.txt 2>&1
 )
-MQ="$repoQ/.git/lcars/missions/lcars-20260530-001"
+MQ="$repoQ/.git/lcars/missions/lcars-20260530-001-c10e"
 check "16a. the parked mission staged the brief" "[ -f '$MQ/attachments/attachment-01.md' ]"
 
 prdQdrop="$repoQ/prd-drop.md"; write_prd "$prdQdrop"
@@ -1220,7 +1232,7 @@ rcQ1=0
 (
   cd "$repoQ"
   LCARS_GH_BIN="$repoQ/gh" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdQdrop" >outQ1.txt 2>&1
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdQdrop" >outQ1.txt 2>&1
 ) || rcQ1=$?
 check "16b. --complete REFUSES a PRD that drops the staged brief's questions" \
   "[ '$rcQ1' -ne 0 ]"
@@ -1244,7 +1256,7 @@ EOF
 (
   cd "$repoQ"
   LCARS_GH_BIN="$repoQ/gh" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdQok" >outQ2.txt 2>&1
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdQok" >outQ2.txt 2>&1
 )
 check "16f. …and a PRD that CARRIES them completes the mission" \
   "[ -f '$MQ/prd.md' ] && cat '$MQ/state.json' | qgrep -q '\"stage\": \"align\"' && ! cat '$MQ/state.json' | qgrep -q '\"prdPending\": true'"
@@ -1261,10 +1273,10 @@ prdQ2="$repoQ2/prd.md"; write_prd "$prdQ2"
 (
   cd "$repoQ2"
   LCARS_GH_BIN="$repoQ2/gh" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdQ2" >outQ4.txt 2>&1
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdQ2" >outQ4.txt 2>&1
 )
 check "16g. a parked mission with NO design brief completes untouched" \
-  "[ -f '$repoQ2/.git/lcars/missions/lcars-20260530-001/prd.md' ]"
+  "[ -f '$repoQ2/.git/lcars/missions/lcars-20260530-001-c10e/prd.md' ]"
 
 # ==========================================================================
 # 17. ON A VALIDATION FAILURE THE AGENT FIXES THE PRD — IT NEVER RE-GRILLS
@@ -1322,14 +1334,14 @@ briefX="$repoX/concept.md"; printf '%s' "$BRIEF_2SEC" >"$briefX"
   LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --park "rebuild the MBR builder" --attach "$briefX" >outX0.txt 2>&1
 )
-MX="$repoX/.git/lcars/missions/lcars-20260530-001"
+MX="$repoX/.git/lcars/missions/lcars-20260530-001-c10e"
 
 prdXdrop="$repoX/prd-drop.md"; write_prd "$prdXdrop"
 rcX1=0
 (
   cd "$repoX"
   LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXdrop" >outX1.txt 2>&1
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdXdrop" >outX1.txt 2>&1
 ) || rcX1=$?
 check "18a. --complete dropping the brief's questions exits 3 (redraftable)" \
   "[ '$rcX1' -eq 3 ]"
@@ -1351,7 +1363,7 @@ rcX2=0
 (
   cd "$repoX"
   LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXsec" >outX2.txt 2>&1
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdXsec" >outX2.txt 2>&1
 ) || rcX2=$?
 check "18c. --complete with a missing PRD section exits 3 too" \
   "[ '$rcX2' -eq 3 ] && grep -q \"missing the 'Constraints' section\" '$repoX/outX2.txt'"
@@ -1371,7 +1383,7 @@ rcX4=0
 (
   cd "$repoX"
   LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$repoX/nope.md" >outX4.txt 2>&1
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$repoX/nope.md" >outX4.txt 2>&1
 ) || rcX4=$?
 check "18e. …and an unreadable --prd path stays exit 1" \
   "[ '$rcX4' -eq 1 ] && grep -q 'PRD file not found' '$repoX/outX4.txt'"
@@ -1380,7 +1392,7 @@ rcX5=0
 (
   cd "$repoX"
   LCARS_GH_BIN="$repoX/gh" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdXdrop" \
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdXdrop" \
       --model-override "nonsense" >outX5.txt 2>&1
 ) || rcX5=$?
 check "18f. …and a malformed --model-override stays exit 1 (bad argv, not a bad PRD)" \
@@ -1482,7 +1494,7 @@ rcZ=0
     bash "$SCRIPT" --prd "$prdZ" >outZ.txt 2>&1
 ) || rcZ=$?
 check "18m. a clean filing still exits 0 and writes prd.md" \
-  "[ '$rcZ' -eq 0 ] && [ -f '$repoZ/.git/lcars/missions/lcars-20260530-001/prd.md' ]"
+  "[ '$rcZ' -eq 0 ] && [ -f '$repoZ/.git/lcars/missions/lcars-20260530-001-c10e/prd.md' ]"
 
 # --- Behaviour 19 (S188): every lane composes through the ONE composer ------
 #
@@ -1515,7 +1527,7 @@ prdE="$repoE/prd-in.md"; write_prd "$prdE"
   LCARS_GH_BIN="$repoE/gh" LCARS_DATE="20260530" \
     bash "$SCRIPT" --prd "$prdE" >outE.txt 2>&1
 )
-ME="$repoE/.git/lcars/missions/lcars-20260530-001"
+ME="$repoE/.git/lcars/missions/lcars-20260530-001-c10e"
 check "19d. the filed body carries exactly one lcars:handoff envelope" \
   "[ \"\$(grep -c 'lcars:handoff' '$repoE/body.txt')\" = 1 ]"
 check "19e. the envelope is the LAST line of the body" \
@@ -1523,7 +1535,7 @@ check "19e. the envelope is the LAST line of the body" \
 check "19f. the PRD is still the top of the body, untouched" \
   "head -1 '$repoE/body.txt' | grep -q '^# Mission:'"
 check "19g. the envelope's branch/base agree with state.json" \
-  "grep -q '\"branch\":\"lcars/lcars-20260530-001\",\"base\":\"main\"' '$repoE/body.txt'"
+  "grep -q '\"branch\":\"lcars/lcars-20260530-001-c10e\",\"base\":\"main\"' '$repoE/body.txt'"
 check "19h. the envelope's type agrees with the PRD-derived type" \
   "grep -q '\"type\":\"bug\"' '$repoE/body.txt'"
 check "19i. no issue-body temp file is left behind in the mission dir" \
@@ -1559,9 +1571,9 @@ prdP="$repoP/prd-in.md"; write_prd "$prdP"
 (
   cd "$repoP"
   LCARS_GH_BIN="$repoP/gh" LCARS_DATE="20260530" LCARS_WORKER_BIN="copilot" \
-    bash "$SCRIPT" --complete lcars-20260530-001 --prd "$prdP" >outP2.txt 2>&1
+    bash "$SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdP" >outP2.txt 2>&1
 )
-MP="$repoP/.git/lcars/missions/lcars-20260530-001"
+MP="$repoP/.git/lcars/missions/lcars-20260530-001-c10e"
 check "19m. the aligned body's envelope is no longer marked parked" \
   "! grep -q '\"parked\":true' '$repoP/body2.txt'"
 check "19n. the aligned envelope carries the PRD-derived type" \

@@ -234,7 +234,7 @@ new_repo() {
       && git commit -q --allow-empty -m init ) >/dev/null 2>&1
   mkdir -p "$repo/.git/lcars/missions"
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
 EOF
   printf '# Context pack\n\nA fixture repo.\n' >"$repo/.git/lcars/context-pack.md"
   make_gh_stub "$repo/gh"
@@ -277,7 +277,14 @@ write_adr() { # path
 EOF
 }
 
-MID="lcars-20260530-001"
+# S196 — `cloneId` PINS THE FINGERPRINT so this suite's expected ids stay
+# literal. Mission ids are now `lcars-YYYYMMDD-NNN-<fp>`, where <fp> is the
+# first 4 hex of the clone's own `cloneId` (a UUID4 minted on first use, so two
+# clones of one repo can never mint the same id — see lcars_clone_id in
+# skills/lcars-init/lcars-common.sh). Pinning it makes <fp> the constant `c10e`;
+# the lazy-acquisition and old-format-compatibility proofs live in
+# tests/mission-id.test.sh.
+MID="lcars-20260530-001-c10e"
 mdir() { printf '%s/.git/lcars/missions/%s' "$1" "$MID"; }
 
 # file <repo> [args…] — one filing lane invocation with everything pinned.
@@ -313,9 +320,24 @@ echo "  -- 1. composer parity (goldens captured from pre-S188 code)"
 # golden_prefix <recorded-body> <golden> — the recorded body must START with the
 # golden's exact bytes. This is the whole invariant: the visible body did not
 # move, only an envelope was appended after it.
+#
+# S196 — ONE normalisation, and only in the direction of the golden: the
+# MISSION ID. `laneA-park.body` quotes the mission in its STANDBY line ("Run
+# `lcars file <id>`"), and S196 WIDENED the id itself
+# (`lcars-YYYYMMDD-NNN` → `…-NNN-<fp>`, a per-clone fingerprint so two laptops
+# cannot mint one name for one shared branch). That is a deliberate change to
+# the id, not drift in the composer, and the goldens' README forbids editing a
+# golden to match new output — so the golden stays byte-for-byte as captured
+# and its old-format id is rewritten to $MID at COMPARE time. Every other byte
+# is still compared exactly, and a golden with no id in it is untouched by this.
 golden_prefix() { # recorded golden
-  local n; n="$(wc -c <"$2" | tr -d ' ')"
-  cmp -s <(head -c "$n" "$1") "$2"
+  local norm; norm="$(mktemp)"
+  sed "s/lcars-20260530-001/$MID/g" "$2" >"$norm"
+  local n; n="$(wc -c <"$norm" | tr -d ' ')"
+  cmp -s <(head -c "$n" "$1") "$norm"
+  local rc=$?
+  rm -f "$norm"
+  return $rc
 }
 
 # --- lane 4: grill-first --prd --adr, with an estimate ---------------------
@@ -433,8 +455,27 @@ check "6. the schema version is stamped v1" \
   "[ \"\$(bash -c '. \"\$1\"; lcars_handoff_version \"\$2\"' _ '$IB_LIB' '$LANE4_BODY')\" = 'v1' ]"
 
 PARSED="$(bash -c '. "$1"; lcars_handoff_parse "$2"' _ "$IB_LIB" "$LANE4_BODY")"
+# S196 A5 — 7 identity keys + the ESTIMATE PILL FACTS the envelope now records.
+# This fixture's estimate.json carries the two criticalities and NO cost block,
+# so exactly `estReasoning` + `estImpl` ride along: 9. (Was 7 before this
+# session; the number moved because the contract did, not because the parser
+# drifted — see the additive-within-v1 note in lcars_handoff_envelope.)
 check "6. parse emits one key=value line per envelope key" \
-  "[ \"\$(printf '%s\n' \"\$PARSED\" | wc -l | tr -d ' ')\" = 7 ]"
+  "[ \"\$(printf '%s\n' \"\$PARSED\" | wc -l | tr -d ' ')\" = 9 ]"
+
+# WHY THE ESTIMATE IS IN THE ENVELOPE AT ALL. A REMOTE card's cost + difficulty
+# pills are scraped out of the human "## Estimate" section by the github board
+# adapter — and `lcars adopt` is forbidden from doing the same (it never reads
+# the captain's prose), so adopting a mission USED TO make all three pills
+# vanish. Recorded fields, read by key, are the only honest source.
+check "6. round-trip: the reasoning criticality is a RECORDED field" \
+  "[ \"\$(env_probe x '$LANE4_BODY' estReasoning)\" = 'low' ]"
+check "6. round-trip: so is the implementation criticality" \
+  "[ \"\$(env_probe x '$LANE4_BODY' estImpl)\" = 'high' ]"
+check "6. an estimate with no cost block records NO cost keys (absent, not zero)" \
+  "[ -z \"\$(env_probe x '$LANE4_BODY' estCostUnit)\" ] && [ -z \"\$(env_probe x '$LANE4_BODY' estCostLow)\" ]"
+check "6. a PARK body (no estimate at all) carries no estimate keys" \
+  "[ -z \"\$(env_probe x '$PARK_BODY' estReasoning)\" ] && [ -z \"\$(env_probe x '$PARK_BODY' estImpl)\" ]"
 check "6. parse emits a null field as an EMPTY value, not a missing line" \
   "printf '%s' \"\$PARSED\" | grep -q '^parentIssue	\$'"
 

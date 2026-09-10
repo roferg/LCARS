@@ -70,6 +70,28 @@ if [ -f "$LCARS_COMMON_LIB" ]; then
   . "$LCARS_COMMON_LIB"
 fi
 
+# S196 — the mission-id minter and the clone fingerprint live in lcars-common.sh
+# (sourced best-effort above). Define the DEGRADED forms when the lib is absent:
+# the PRE-S196 id shape — no fingerprint — but with S196's tolerant sequence
+# scan, so a clone that already holds fingerprinted missions cannot die on
+# `$((10#a3f4))` just because the library went missing.
+if ! command -v lcars_mint_mission_id >/dev/null 2>&1; then
+  lcars_clone_fingerprint() { printf ''; }
+  lcars_mint_mission_id() {
+    local mdir="$1" date="$2" fp="${3:-}" max=0 d n
+    shopt -s nullglob
+    for d in "$mdir"/lcars-"$date"-*; do
+      n="${d##*/}"; n="${n#lcars-$date-}"; n="${n%%-*}"
+      case "$n" in ''|*[!0-9]*) continue ;; esac
+      n=$((10#$n)); [ "$n" -gt "$max" ] && max="$n"
+    done
+    shopt -u nullglob
+    if [ -n "$fp" ]; then printf 'lcars-%s-%03d-%s' "$date" "$((max + 1))" "$fp"
+    else                  printf 'lcars-%s-%03d'    "$date" "$((max + 1))"
+    fi
+  }
+fi
+
 # --- shared helpers: the ONE issue-body composer (S188) --------------------
 # `lcars log` is the FIFTH filing lane. It files a Mission (lcars:mission) like
 # any other, so its issue body must carry the same machine-readable
@@ -351,16 +373,13 @@ fi
 HAS_COMMITS=0
 "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1 && HAS_COMMITS=1
 
-# --- mint the next mission ID (per-day sequence, scanning what exists) ------
+# --- mint the next mission ID (per-day sequence + the clone fingerprint) ----
+# S196 — the SAME minter both `lcars file` lanes use (lcars_mint_mission_id in
+# lcars-common.sh), so a bug child sequences over legacy AND fingerprinted
+# siblings identically to a normally-filed mission. The scan can no longer read
+# the text after the last hyphen: on a fingerprinted id that is the FINGERPRINT.
 next_id() {
-  local max=0 d n
-  shopt -s nullglob
-  for d in "$MISSIONS_DIR"/lcars-"$DATE"-*; do
-    n="$((10#${d##*-}))"
-    [ "$n" -gt "$max" ] && max="$n"
-  done
-  shopt -u nullglob
-  printf 'lcars-%s-%03d' "$DATE" "$((max + 1))"
+  lcars_mint_mission_id "$MISSIONS_DIR" "$DATE" "$(lcars_clone_fingerprint "$CONFIG")"
 }
 
 # --- file one bug; echoes "id<TAB>issue<TAB>title" for the summary ----------

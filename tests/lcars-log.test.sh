@@ -65,6 +65,16 @@ EOF
   chmod +x "$p"
 }
 
+# S196 — `cloneId` PINS THE FINGERPRINT so this suite's expected ids stay
+# literal. A bug child's id is now `lcars-YYYYMMDD-NNN-<fp>`, where <fp> is the
+# first 4 hex of the clone's own `cloneId` (a UUID4 minted on first use, so two
+# clones of one repo can never mint the same id — see lcars_clone_id in
+# skills/lcars-init/lcars-common.sh). Pinning it makes <fp> the constant `c10e`.
+#
+# THE PARENT BELOW IS DELIBERATELY LEFT AT THE OLD, FINGERPRINT-LESS SHAPE.
+# Every repo in the world holds ids like it, and `lcars log` must keep taking
+# one as a parent and sequencing its children PAST it. That is the whole
+# compatibility guarantee, exercised here for free on every check in this file.
 # An isolated git repo with .git/lcars/ scaffolded and one parent Mission
 # already filed: a *feature* sitting at "implement" (issue #42, "Add
 # gamification"), i.e. an active, pre-merge Mission a bug can be logged against.
@@ -74,7 +84,7 @@ new_repo_with_parent() {
       && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-05-30T00:00:00Z" }
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-05-30T00:00:00Z" }
 EOF
   local p="$repo/.git/lcars/missions/lcars-20260530-001"
   mkdir -p "$p"
@@ -136,24 +146,24 @@ rc1=0
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug1" --prd "$bug2" >out.txt 2>&1
 ) || rc1=$?
 check "1. exits zero on a clean two-bug log" "[ '$rc1' -eq 0 ]"
-check "1. mints the first bug mission lcars-20260530-002" \
-  "[ -d '$repo/.git/lcars/missions/lcars-20260530-002' ]"
-check "1. mints the second bug mission lcars-20260530-003" \
-  "[ -d '$repo/.git/lcars/missions/lcars-20260530-003' ]"
+check "1. mints the first bug mission lcars-20260530-002-c10e" \
+  "[ -d '$repo/.git/lcars/missions/lcars-20260530-002-c10e' ]"
+check "1. mints the second bug mission lcars-20260530-003-c10e" \
+  "[ -d '$repo/.git/lcars/missions/lcars-20260530-003-c10e' ]"
 check "1. each bug mission has a prd.md" \
-  "[ -f '$repo/.git/lcars/missions/lcars-20260530-002/prd.md' ] && [ -f '$repo/.git/lcars/missions/lcars-20260530-003/prd.md' ]"
+  "[ -f '$repo/.git/lcars/missions/lcars-20260530-002-c10e/prd.md' ] && [ -f '$repo/.git/lcars/missions/lcars-20260530-003-c10e/prd.md' ]"
 # A logged bug now ENTERS at Research (grounding mode) and walks the full pipeline,
 # so log.sh no longer hand-writes a thin validated-plan.md — Validate produces the
 # real one after grounding. It must NOT exist at file time.
 check "1. no validated-plan.md at file time (Validate now produces it)" \
-  "[ ! -f '$repo/.git/lcars/missions/lcars-20260530-002/validated-plan.md' ] && [ ! -f '$repo/.git/lcars/missions/lcars-20260530-003/validated-plan.md' ]"
+  "[ ! -f '$repo/.git/lcars/missions/lcars-20260530-002-c10e/validated-plan.md' ] && [ ! -f '$repo/.git/lcars/missions/lcars-20260530-003-c10e/validated-plan.md' ]"
 check "1. summary reports 2 bug missions filed" \
   "grep -Eq '2 bug missions filed' '$repo/out.txt'"
 check "1. summary lists both bug titles" \
   "grep -q 'XP not awarded for video completions' '$repo/out.txt' && grep -q 'Leaderboard flicker on first load' '$repo/out.txt'"
 
-B2="$repo/.git/lcars/missions/lcars-20260530-002"
-B3="$repo/.git/lcars/missions/lcars-20260530-003"
+B2="$repo/.git/lcars/missions/lcars-20260530-002-c10e"
+B3="$repo/.git/lcars/missions/lcars-20260530-003-c10e"
 
 # --- Behaviour 2: state.json carries parentMission ------------------------
 check "2. bug 1 state.json has parentMission = parent id" \
@@ -161,7 +171,7 @@ check "2. bug 1 state.json has parentMission = parent id" \
 check "2. bug 1 state.json type is bug" \
   "grep -q '\"type\": *\"bug\"' '$B2/state.json'"
 check "2. bug 1 state.json id matches its dir" \
-  "grep -q '\"id\": *\"lcars-20260530-002\"' '$B2/state.json'"
+  "grep -q '\"id\": *\"lcars-20260530-002-c10e\"' '$B2/state.json'"
 check "2. bug 1 state.json records the bug title" \
   "grep -q 'XP not awarded for video completions' '$B2/state.json'"
 
@@ -214,7 +224,7 @@ check "5. lists the active mission to pick from" \
 check "5. mentions the active mission's title" \
   "grep -q 'Add gamification' '$repo5/out5.txt'"
 check "5. files no bug mission without a parent" \
-  "[ ! -d '$repo5/.git/lcars/missions/lcars-20260530-002' ]"
+  "[ ! -d '$repo5/.git/lcars/missions/lcars-20260530-002-c10e' ]"
 
 # --- Behaviour 6: multiple bugs link to the SAME parent --------------------
 check "6. both bugs share the same parentMission" \
@@ -233,7 +243,7 @@ rc6=0
 ) || rc6=$?
 check "6. resolves the parent by GitHub issue number" "[ '$rc6' -eq 0 ]"
 check "6. links the issue-number bug to the parent mission id" \
-  "grep -q '\"parentMission\": *\"lcars-20260530-001\"' '$repo6/.git/lcars/missions/lcars-20260530-002/state.json'"
+  "grep -q '\"parentMission\": *\"lcars-20260530-001\"' '$repo6/.git/lcars/missions/lcars-20260530-002-c10e/state.json'"
 
 # refuses to link against a done (merged) mission
 repo7="$(new_repo_with_parent)"
@@ -293,7 +303,7 @@ check "7. one link-subissue call per bug issue created" \
 # --- Behaviour 8: linkage by label + state.json is NOT lost (regression) ---
 # Belt and braces: even with native nesting, the lcars:linked label and the
 # parentIssue/parentMission state.json records must still be written.
-B8="$repo8/.git/lcars/missions/lcars-20260530-002"
+B8="$repo8/.git/lcars/missions/lcars-20260530-002-c10e"
 check "8. still applies the lcars:linked label" \
   "grep -q 'lcars:align,lcars:bug,lcars:linked' '$repo8/gh.log'"
 check "8. still records parentMission in state.json" \
@@ -316,7 +326,7 @@ rc9=0
     LCARS_HOST_ADAPTER="$repo9/adapter" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug9" >out9.txt 2>&1
 ) || rc9=$?
-B9="$repo9/.git/lcars/missions/lcars-20260530-002"
+B9="$repo9/.git/lcars/missions/lcars-20260530-002-c10e"
 check "9. exits zero even when the link call fails" "[ '$rc9' -eq 0 ]"
 check "9. still attempted the link-subissue call" \
   "grep -q 'adapter link-subissue 42' '$repo9/adapter.log'"
@@ -337,7 +347,7 @@ rc10=0
 ) || rc10=$?
 check "9. exits zero when the host adapter is missing entirely" "[ '$rc10' -eq 0 ]"
 check "9. still files the Mission when the adapter is missing" \
-  "[ -f '$repo10/.git/lcars/missions/lcars-20260530-002/state.json' ]"
+  "[ -f '$repo10/.git/lcars/missions/lcars-20260530-002-c10e/state.json' ]"
 
 # --- Behaviour 10: no native nesting when the parent has no issue number ----
 # A parent resolvable only locally (githubIssue null) cannot be nested; the
@@ -380,14 +390,14 @@ rc12=0
   LCARS_GH_BIN="$repo12/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug12" >out12.txt 2>&1
 ) || rc12=$?
-B12="$repo12/.git/lcars/missions/lcars-20260530-002"
+B12="$repo12/.git/lcars/missions/lcars-20260530-002-c10e"
 check "11. exits zero logging against a pre-merge parent" "[ '$rc12' -eq 0 ]"
 check "11. bug records the PARENT's branch as its working branch" \
   "grep -q '\"branch\": *\"lcars/lcars-20260530-001\"' '$B12/state.json'"
 check "11. bug does NOT record its own lcars/<bug-id> branch" \
-  "! grep -q '\"branch\": *\"lcars/lcars-20260530-002\"' '$B12/state.json'"
+  "! grep -q '\"branch\": *\"lcars/lcars-20260530-002-c10e\"' '$B12/state.json'"
 check "11. no lcars/<bug-id> branch ref is created (no stacked branch)" \
-  "( cd '$repo12' && ! git show-ref --verify --quiet refs/heads/lcars/lcars-20260530-002 )"
+  "( cd '$repo12' && ! git show-ref --verify --quiet refs/heads/lcars/lcars-20260530-002-c10e )"
 
 # --- Behaviour 12: merged parent -> bug keeps its own branch (regression) ---
 # When the parent has NO live branch (already merged/squashed away), the bug
@@ -403,12 +413,12 @@ rc13=0
   LCARS_GH_BIN="$repo13/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug13" >out13.txt 2>&1
 ) || rc13=$?
-B13="$repo13/.git/lcars/missions/lcars-20260530-002"
+B13="$repo13/.git/lcars/missions/lcars-20260530-002-c10e"
 check "12. exits zero logging against a merged parent" "[ '$rc13' -eq 0 ]"
 check "12. bug records its OWN lcars/<bug-id> branch when parent is merged" \
-  "grep -q '\"branch\": *\"lcars/lcars-20260530-002\"' '$B13/state.json'"
+  "grep -q '\"branch\": *\"lcars/lcars-20260530-002-c10e\"' '$B13/state.json'"
 check "12. its own lcars/<bug-id> branch ref is created" \
-  "( cd '$repo13' && git show-ref --verify --quiet refs/heads/lcars/lcars-20260530-002 )"
+  "( cd '$repo13' && git show-ref --verify --quiet refs/heads/lcars/lcars-20260530-002-c10e )"
 
 # --- Behaviour 13: child bug inherits the PARENT's engine (BUG-D) -----------
 # When the parent ran on a chosen engine, the daemon threads it to `lcars log`
@@ -426,7 +436,7 @@ rc14=0
     LCARS_WORKER_BIN="copilot" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug14" >out14.txt 2>&1
 ) || rc14=$?
-B14="$repo14/.git/lcars/missions/lcars-20260530-002"
+B14="$repo14/.git/lcars/missions/lcars-20260530-002-c10e"
 check "13. exits zero logging with a parent engine set" "[ '$rc14' -eq 0 ]"
 check "13. child state.json persists workerBin = the parent engine" \
   "grep -q '\"workerBin\": *\"copilot\"' '$B14/state.json'"
@@ -448,7 +458,7 @@ rc15=0
   LCARS_GH_BIN="$repo15/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug15" >out15.txt 2>&1
 ) || rc15=$?
-B15="$repo15/.git/lcars/missions/lcars-20260530-002"
+B15="$repo15/.git/lcars/missions/lcars-20260530-002-c10e"
 check "14. exits zero logging with no engine set" "[ '$rc15' -eq 0 ]"
 check "14. child state.json OMITS workerBin when no engine is set" \
   "! grep -q 'workerBin' '$B15/state.json'"
@@ -498,7 +508,7 @@ rc16=0
     STUB_ESTIMATE="$EST_TRIVIAL" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug16" >out16.txt 2>&1
 ) || rc16=$?
-B16="$repo16/.git/lcars/missions/lcars-20260530-002"
+B16="$repo16/.git/lcars/missions/lcars-20260530-002-c10e"
 check "15. exits zero filing a bug with the estimator wired" "[ '$rc16' -eq 0 ]"
 check "15. the child bug carries an estimate.json" "[ -f '$B16/estimate.json' ]"
 check "15. child estimate.json is canonical (schemaVersion 3)" \
@@ -542,7 +552,7 @@ rc17=0
     STUB_ESTIMATE="$EST_QUOTED" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug17" >out17.txt 2>&1
 ) || rc17=$?
-B17="$repo17/.git/lcars/missions/lcars-20260530-002"
+B17="$repo17/.git/lcars/missions/lcars-20260530-002-c10e"
 check "16. exits zero with a quote/newline rationale" "[ '$rc17' -eq 0 ]"
 check "16. child estimate.json (quoted rationale) stays valid JSON" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B17/estimate.json'"
@@ -566,7 +576,7 @@ rc18=0
     STUB_ESTIMATE="NONE" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug18" >out18.txt 2>&1
 ) || rc18=$?
-B18="$repo18/.git/lcars/missions/lcars-20260530-002"
+B18="$repo18/.git/lcars/missions/lcars-20260530-002-c10e"
 check "17. exits zero when the estimator produces nothing" "[ '$rc18' -eq 0 ]"
 check "17. bug still filed (state.json) without an estimate" "[ -f '$B18/state.json' ]"
 check "17. bug still filed (prd.md) without an estimate" "[ -f '$B18/prd.md' ]"
@@ -588,7 +598,7 @@ rc19=0
     LCARS_RUN_BIN="$repo19/no-run.sh" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug19" --model-override "all:opus" >out19.txt 2>&1
 ) || rc19=$?
-B19="$repo19/.git/lcars/missions/lcars-20260530-002"
+B19="$repo19/.git/lcars/missions/lcars-20260530-002-c10e"
 check "18. exits zero with a per-bug model override" "[ '$rc19' -eq 0 ]"
 check "18. child state.json persists modelOverride.scope" \
   "grep -q '\"modelOverride\".*\"scope\": *\"all\"' '$B19/state.json'"
@@ -615,8 +625,8 @@ rc20=0
       --prd "$bug20a" --model-override "all:opus" \
       --prd "$bug20b" --model-override "" >out20.txt 2>&1
 ) || rc20=$?
-B20A="$repo20/.git/lcars/missions/lcars-20260530-002"
-B20B="$repo20/.git/lcars/missions/lcars-20260530-003"
+B20A="$repo20/.git/lcars/missions/lcars-20260530-002-c10e"
+B20B="$repo20/.git/lcars/missions/lcars-20260530-003-c10e"
 check "19. exits zero with per-PRD overrides" "[ '$rc20' -eq 0 ]"
 check "19. first bug carries its own override (all:opus)" \
   "grep -q '\"modelOverride\"' '$B20A/state.json' && grep -q '\"scope\": *\"all\"' '$B20A/state.json'"
@@ -640,7 +650,7 @@ rc21=0
 ) || rc21=$?
 check "20. refuses (non-zero) on a malformed override scope" "[ '$rc21' -ne 0 ]"
 check "20. files no bug mission on a malformed override" \
-  "[ ! -d '$repo21/.git/lcars/missions/lcars-20260530-002' ]"
+  "[ ! -d '$repo21/.git/lcars/missions/lcars-20260530-002-c10e' ]"
 
 # --- Behaviour 21: durable image attachments (--attach) (S92) ---------------
 # `lcars log --attach <img>` (repeatable) copies each image into EVERY child
@@ -662,8 +672,8 @@ rc22=0
     bash "$SCRIPT" --parent lcars-20260530-001 --attach "$img22" \
       --prd "$bug22a" --prd "$bug22b" >out22.txt 2>&1
 ) || rc22=$?
-B22A="$repo22/.git/lcars/missions/lcars-20260530-002"
-B22B="$repo22/.git/lcars/missions/lcars-20260530-003"
+B22A="$repo22/.git/lcars/missions/lcars-20260530-002-c10e"
+B22B="$repo22/.git/lcars/missions/lcars-20260530-003-c10e"
 check "21a. log with --attach succeeds" "[ '$rc22' -eq 0 ]"
 check "21a. first bug has attachments/attachment-01.png" \
   "[ -f '$B22A/attachments/attachment-01.png' ]"
@@ -692,7 +702,7 @@ bug23="$repo23/b.md"; write_bug_prd "$bug23" "No-attach bug" "No images."
   LCARS_GH_BIN="$repo23/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug23" >out23.txt 2>&1
 )
-B23="$repo23/.git/lcars/missions/lcars-20260530-002"
+B23="$repo23/.git/lcars/missions/lcars-20260530-002-c10e"
 check "21b. no --attach ⇒ no attachments/ dir" "[ ! -d '$B23/attachments' ]"
 check "21b. no --attach ⇒ no prd.md section" \
   "! grep -q '## Attached images' '$B23/prd.md'"
@@ -712,7 +722,7 @@ rc24=0
 ) || rc24=$?
 check "21c. missing attachment ⇒ non-zero exit" "[ '$rc24' -ne 0 ]"
 check "21c. missing attachment ⇒ no bug filed" \
-  "[ ! -d '$repo24/.git/lcars/missions/lcars-20260530-002' ]"
+  "[ ! -d '$repo24/.git/lcars/missions/lcars-20260530-002-c10e' ]"
 
 # 21d. FL-010 — `lcars log` is a THIRD home of the same sentence. A bug logged
 # against a holodeck-born mission can carry the very mockup the parent was
@@ -730,7 +740,7 @@ rc24b=0
   LCARS_GH_BIN="$repo24b/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --attach "$mock24" --prd "$bug24b" >out24b.txt 2>&1
 ) || rc24b=$?
-B24B="$repo24b/.git/lcars/missions/lcars-20260530-002"
+B24B="$repo24b/.git/lcars/missions/lcars-20260530-002-c10e"
 check "21d. logging a bug with a mockup attachment succeeds" "[ '$rc24b' -eq 0 ]"
 check "21d. bug prd.md does NOT call an HTML mockup an image" \
   "! grep -q '## Attached images' '$B24B/prd.md'"
@@ -776,8 +786,8 @@ rc25=0
     bash "$SCRIPT" --parent lcars-20260530-001 --attach "$imgG" \
       --prd "$bug25a" --prd "$bug25b" >out25.txt 2>&1
 ) || rc25=$?
-B25A="$repo25/.git/lcars/missions/lcars-20260530-002"
-B25B="$repo25/.git/lcars/missions/lcars-20260530-003"
+B25A="$repo25/.git/lcars/missions/lcars-20260530-002-c10e"
+B25B="$repo25/.git/lcars/missions/lcars-20260530-003-c10e"
 check "22a. global --attach succeeds" "[ '$rc25' -eq 0 ]"
 check "22a. global image lands in BOTH bugs" \
   "[ \"\$(cat '$B25A/attachments/attachment-01.png')\" = 'GLOBAL' ] && [ \"\$(cat '$B25B/attachments/attachment-01.png')\" = 'GLOBAL' ]"
@@ -798,8 +808,8 @@ rc26=0
       --prd "$bug26a" --attach "$img1" \
       --prd "$bug26b" --attach "$img2" >out26.txt 2>&1
 ) || rc26=$?
-B26A="$repo26/.git/lcars/missions/lcars-20260530-002"
-B26B="$repo26/.git/lcars/missions/lcars-20260530-003"
+B26A="$repo26/.git/lcars/missions/lcars-20260530-002-c10e"
+B26B="$repo26/.git/lcars/missions/lcars-20260530-003-c10e"
 check "22b. per-bug --attach succeeds" "[ '$rc26' -eq 0 ]"
 check "22b. bug 1 gets ONLY its own image (IMG-ONE)" \
   "[ \"\$(cat '$B26A/attachments/attachment-01.png')\" = 'IMG-ONE' ] && [ ! -f '$B26A/attachments/attachment-02.png' ]"
@@ -822,8 +832,8 @@ rc27=0
       --prd "$bug27a" --attach "$imgOwn" \
       --prd "$bug27b" >out27.txt 2>&1
 ) || rc27=$?
-B27A="$repo27/.git/lcars/missions/lcars-20260530-002"
-B27B="$repo27/.git/lcars/missions/lcars-20260530-003"
+B27A="$repo27/.git/lcars/missions/lcars-20260530-002-c10e"
+B27B="$repo27/.git/lcars/missions/lcars-20260530-003-c10e"
 check "22c. union --attach succeeds" "[ '$rc27' -eq 0 ]"
 check "22c. bug 1 gets global orphan (01) AND its own (02)" \
   "[ \"\$(cat '$B27A/attachments/attachment-01.png')\" = 'ORPHAN' ] && [ \"\$(cat '$B27A/attachments/attachment-02.png')\" = 'OWN' ]"
@@ -845,8 +855,8 @@ rc28=0
       --prd "$bug28a" --attach "$img28" \
       --prd "$bug28b" >out28.txt 2>&1
 ) || rc28=$?
-B28A="$repo28/.git/lcars/missions/lcars-20260530-002"
-B28B="$repo28/.git/lcars/missions/lcars-20260530-003"
+B28A="$repo28/.git/lcars/missions/lcars-20260530-002-c10e"
+B28B="$repo28/.git/lcars/missions/lcars-20260530-003-c10e"
 check "22d. bug with an assigned image has it" \
   "[ -f '$B28A/attachments/attachment-01.png' ]"
 check "22d. bug with no image + no globals has NO attachments dir" \
@@ -879,7 +889,7 @@ rc29=0
   LCARS_GH_BIN="$repo29/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug29" >out29.txt 2>&1
 ) || rc29=$?
-B29="$repo29/.git/lcars/missions/lcars-20260530-002"
+B29="$repo29/.git/lcars/missions/lcars-20260530-002-c10e"
 check "23. exits zero filing against a parent on a different branch" "[ '$rc29' -eq 0 ]"
 check "23. child base = the PARENT's branch (lcars/parent-custom)" \
   "grep -q '\"base\": *\"lcars/parent-custom\"' '$B29/state.json'"
@@ -905,7 +915,7 @@ rc30=0
   LCARS_GH_BIN="$repo30/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug30" >out30.txt 2>&1
 ) || rc30=$?
-B30="$repo30/.git/lcars/missions/lcars-20260530-002"
+B30="$repo30/.git/lcars/missions/lcars-20260530-002-c10e"
 check "24. exits zero when the parent has no branch field" "[ '$rc30' -eq 0 ]"
 check "24. child base falls back to lcars/<parent-id>" \
   "grep -q '\"base\": *\"lcars/lcars-20260530-001\"' '$B30/state.json'"
@@ -950,7 +960,7 @@ rc31=0
   LCARS_GH_BIN="$repo31/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug31" >out31.txt 2>&1
 ) || rc31=$?
-B31="$repo31/.git/lcars/missions/lcars-20260530-002"
+B31="$repo31/.git/lcars/missions/lcars-20260530-002-c10e"
 check "25a. logging against a mockup-born parent succeeds" "[ '$rc31' -eq 0 ]"
 check "25a. the child carries the parent's MOCKUP on disk" \
   "[ -f '$B31/attachments/attachment-01.html' ]"
@@ -979,7 +989,7 @@ rc32=0
   LCARS_GH_BIN="$repo32/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --attach "$shot32" --prd "$bug32" >out32.txt 2>&1
 ) || rc32=$?
-B32="$repo32/.git/lcars/missions/lcars-20260530-002"
+B32="$repo32/.git/lcars/missions/lcars-20260530-002-c10e"
 check "25b. logging with BOTH succeeds" "[ '$rc32' -eq 0 ]"
 check "25b. the inherited drawing is there" \
   "[ -f '$B32/attachments/attachment-01.html' ]"
@@ -1003,7 +1013,7 @@ rc33=0
   LCARS_GH_BIN="$repo33/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug33" >out33.txt 2>&1
 ) || rc33=$?
-B33="$repo33/.git/lcars/missions/lcars-20260530-002"
+B33="$repo33/.git/lcars/missions/lcars-20260530-002-c10e"
 check "25c. logging against a screenshots-only parent succeeds" "[ '$rc33' -eq 0 ]"
 check "25c. a parent SCREENSHOT is NOT inherited" "[ ! -d '$B33/attachments' ]"
 check "25c. a parent DOC is NOT inherited either" \
@@ -1020,7 +1030,7 @@ rc34=0
   LCARS_GH_BIN="$repo34/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug34" >out34.txt 2>&1
 ) || rc34=$?
-B34="$repo34/.git/lcars/missions/lcars-20260530-002"
+B34="$repo34/.git/lcars/missions/lcars-20260530-002-c10e"
 check "25d. a no-mockup parent still files a bug" "[ '$rc34' -eq 0 ]"
 check "25d. no attachments/ dir (unchanged)" "[ ! -d '$B34/attachments' ]"
 check "25d. no prd.md attachments section (unchanged)" \
@@ -1048,10 +1058,11 @@ rc35=0
 check "25e. a multi-bug filing succeeds" "[ '$rc35' -eq 0 ]"
 M35="$repo35/.git/lcars/missions"
 for n in 002 003 004; do
-  check "25e. bug lcars-20260530-$n can OPEN the drawing" \
-    "[ -f '$M35/lcars-20260530-$n/attachments/attachment-01.html' ]"
-  check "25e. bug lcars-20260530-$n does NOT read attachments: None" \
-    "grep -q 'attachment-01.html' '$M35/lcars-20260530-$n/state.json'"
+  # S196 — the fingerprint the pinned cloneId produces (see new_repo_with_parent).
+  check "25e. bug lcars-20260530-$n-c10e can OPEN the drawing" \
+    "[ -f '$M35/lcars-20260530-$n-c10e/attachments/attachment-01.html' ]"
+  check "25e. bug lcars-20260530-$n-c10e does NOT read attachments: None" \
+    "grep -q 'attachment-01.html' '$M35/lcars-20260530-$n-c10e/state.json'"
 done
 
 # 25f. …and because the child now CARRIES a mockup, the bug's own tickets are
@@ -1059,7 +1070,7 @@ done
 # through Plan like any other, and Plan keys the contract off the Mission's own
 # attachments — so this is the inheritance paying for itself, not a second rule.
 RUN_SH="$REPO_ROOT/skills/lcars-run/run.sh"
-BLOCK35="$(LCARS_ATT_TEST_DIR="$M35/lcars-20260530-002" bash "$RUN_SH" plan-mockup-block-test 2>/dev/null)"
+BLOCK35="$(LCARS_ATT_TEST_DIR="$M35/lcars-20260530-002-c10e" bash "$RUN_SH" plan-mockup-block-test 2>/dev/null)"
 check "25f. the bug's Plan prompt carries the mockup contract" \
   "printf '%s' \"\$BLOCK35\" | grep -q 'changesScreenAppearance'"
 check "25f. …naming the INHERITED drawing" \
@@ -1087,14 +1098,14 @@ cat >"$BUGPLAN" <<'JSON'
   }
 ]
 JSON
-python3 - "$M35/lcars-20260530-002/state.json" <<'PY'
+python3 - "$M35/lcars-20260530-002-c10e/state.json" <<'PY'
 import re, sys
 p = sys.argv[1]
 t = open(p).read()
 open(p, 'w').write(re.sub(r'"stage":\s*"[^"]*"', '"stage": "plan"', t, count=1))
 PY
 OUT35="$( cd "$repo35" && LCARS_GH_BIN="$repo35/gh" LCARS_GIT_BIN="$(command -v git)" \
-  bash "$RUN_SH" plan-save --mission lcars-20260530-002 --plan "$BUGPLAN" 2>&1 )"
+  bash "$RUN_SH" plan-save --mission lcars-20260530-002-c10e --plan "$BUGPLAN" 2>&1 )"
 RC35=$?
 check "25f. a bug ticket inventing an undrawn control is REJECTED" "[ '$RC35' -ne 0 ]"
 check "25f. …naming the offending criterion" \
@@ -1140,7 +1151,7 @@ write_bug_prd "$bug26" "CSV export double-fires" "Two clicks must produce one do
 ( cd "$repo26"
   LCARS_GH_BIN="$repo26/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug26" >"$repo26/out.txt" 2>&1 )
-B26="$repo26/.git/lcars/missions/lcars-20260530-002"
+B26="$repo26/.git/lcars/missions/lcars-20260530-002-c10e"
 
 check "26. the logged-bug body carries exactly one lcars:handoff envelope" \
   "[ \"\$(grep -c 'lcars:handoff' '$GH_BODY')\" = 1 ]"
@@ -1162,7 +1173,7 @@ check "26. …and everything after it is nothing but the appended envelope" \
 # The lane's own envelope values — this is the ONE lane with a real parentIssue.
 lf() { bash -c '. "$1"; lcars_handoff_field "$2" "$3"' _ "$IB_LIB26" "$GH_BODY" "$1"; }
 check "26. envelope id is the BUG mission's id, not the parent's" \
-  "[ \"\$(lf id)\" = 'lcars-20260530-002' ]"
+  "[ \"\$(lf id)\" = 'lcars-20260530-002-c10e' ]"
 check "26. envelope type is bug" "[ \"\$(lf type)\" = 'bug' ]"
 check "26. envelope parentIssue carries the PARENT's issue number" \
   "[ \"\$(lf parentIssue)\" = '42' ]"

@@ -14,11 +14,12 @@ It is purely mechanical — **no LLM** — so run the one script and report.
 ## What to run
 
 ```bash
-bash ~/.claude/skills/lcars-adopt/adopt.sh --issue <issue-number>
+bash ~/.claude/skills/lcars-adopt/adopt.sh --issue <issue-number> [--engine <claude|copilot>]
 ```
 
 Run it from the clone the captain wants the Mission in. `--issue 42`, `42` and
-`#42` are all accepted.
+`#42` are all accepted. `--engine` is how a non-interactive adopt converts the
+Mission onto a CLI this laptop actually has — see *The engine* below.
 
 ## What it does
 
@@ -34,13 +35,53 @@ Run it from the clone the captain wants the Mission in. `--issue 42`, `42` and
    `state.json` from the envelope + the label + the issue title. The mission
    **id is reused**, never minted: the id already names the branch and the
    issue, so a new one would fork the Mission in two.
-4. **At Align** it also **claims** the Mission (assigns the captain on GitHub,
+4. **Settles the ENGINE** (S196) — see the next section. The answer is written
+   to `state.json` as `workerBin` + `engineSource` + `engineResolved`, and from
+   then on it OUTRANKS the repo's `config.json workerBin`.
+5. **Seeds `config.json` when the clone has none**, through the same detectors
+   `lcars init` uses (`detect_stack` / `detect_test_cmd` / the test-system
+   evidence gate), so the adopted Mission has a `testCommand` for the Implement
+   red gate and a `stack` for every stage that keys on the ecosystem. It never
+   clobbers an existing config, and it never MANUFACTURES a `testCommand` in a
+   repo with no test system — it warns instead. `lcars init` is still the full
+   front door (labels, `.gitignore`); adopt seeds the minimum a drive needs.
+6. **Carries the ESTIMATE across**, so the cost pill and the two difficulty
+   pills the REMOTE card was showing survive the moment the Mission becomes
+   local. The three values ride in the envelope as recorded fields
+   (`estCostUnit` / `estCostLow` / `estCostHigh` / `estReasoning` / `estImpl`);
+   a locally computed `estimate.json` is never overwritten, and an envelope
+   without them writes no `estimate.json` at all.
+7. **At Align** it also **claims** the Mission (assigns the captain on GitHub,
    best-effort) and fetches the branch if origin has one.
-5. **At Verify** it resolves the **open PR that closes the issue** and records
+8. **At Verify** it resolves the **open PR that closes the issue** and records
    `prUrl` / `prNumber` / `review: open`, so `lcars approve` and `lcars
    feedback` work immediately. It does **not** claim — looking is never gated —
    but *acting* still requires ownership, and those verbs enforce that
    themselves.
+
+## The engine — asked, converted, RECORDED
+
+A laptop may only have ONE CLI installed, so adopt does not simply impose the
+Mission's engine. It probes what this machine actually has (through the one
+shared detector `lcars init` and the board's engine picker use), then:
+
+- **the Mission's engine is here** → it takes over, and adopt says so;
+- **it is here and this repo's `config.json` prefers a different one** → adopt
+  ASKS, defaulting to the Mission's;
+- **it is NOT here** → adopt ASKS which installed engine should take over, and
+  records the CONVERSION;
+- **no terminal to ask on, and no `--engine`** → adopt REFUSES, naming the
+  engine the Mission wants and the ones this machine has. Nothing is created and
+  nothing is recorded.
+
+**It never switches an engine in silence.** That was a real, measured defect: a
+Mission filed on Copilot, adopted onto a clone whose `config.json` said claude,
+ran three billed workers and nothing anywhere said why. The chosen engine is
+recorded on the Mission and now outranks `config.json`; `$LCARS_WORKER_BIN`
+still outranks everything, because it is a per-invocation deliberate act.
+
+The board shows the pair — `copilot · mission pin`, `claude · converted at
+adopt`, `claude · repo config` — under the issue line on the card.
 
 ## What it refuses, and why
 
@@ -80,6 +121,14 @@ guessing at a boundary. A **parked** mission's body lands in `idea.md` (with
   reassigned **on GitHub**.
 - **`attachment(s) … are NOT here`** — GitHub has no API to carry issue assets;
   copy them into the mission's `attachments/` by hand if a stage needs them.
+- **`config.json … was seeded`** — this clone was not initialised; adopt wrote a
+  usable config so the Mission can be driven, and names what it detected (and
+  what it could not).
+- **`no testCommand could be detected`** — the Implement red gate has nothing to
+  prove against. Set one with `lcars update --test-command '<command>'`.
+- **`config.json prefers <engine>`** — a non-interactive adopt kept the
+  Mission's engine over the repo's preference, and says so rather than
+  resolving it behind the captain's back.
 - **`no open PR resolves to #<n>`** — either Verify has not opened one yet, or
   the one it opened was closed unmerged. Those two are indistinguishable from
   GitHub's answer, so adopt says both rather than picking one.
@@ -100,5 +149,10 @@ The logic lives in `adopt.sh` next to this file; the forge calls go through
 `skills/lcars-run/ownership.sh`. The PR-resolution strategy is the recorded
 outcome of the S189 spike — see `skills/lcars-run/ADOPT-RESOLUTION-SPIKE.md`
 before changing it. Behaviour is covered by `tests/lcars-adopt.test.sh`.
-`LCARS_GH_BIN`, `LCARS_GIT_BIN` and `LCARS_NOW` are taken via env so tests can
-stub them. Edit the repo copy, not `~/.claude` — `./install.sh` symlinks it in.
+The engine probe and the config seeding both go through
+`skills/lcars-init/lcars-common.sh` (`lcars_engine_available`,
+`lcars_available_engines`, `detect_stack`, `detect_test_cmd`,
+`lcars_config_merge`) — one implementation, shared with `lcars init`.
+`LCARS_GH_BIN`, `LCARS_GIT_BIN`, `LCARS_NOW`, `LCARS_COMMON_LIB` and
+`LCARS_ASSUME_TTY` (which forces the interactive branch so the prompt itself is
+testable) are taken via env so tests can stub them. Edit the repo copy, not `~/.claude` — `./install.sh` symlinks it in.

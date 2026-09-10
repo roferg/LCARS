@@ -195,6 +195,43 @@ fi
 PARENT_DIR="$MISSIONS_DIR/$PARENT_ID"
 PARENT_STATE="$PARENT_DIR/state.json"
 
+# --- S189/S196: solo ownership, the light lock -----------------------------
+# A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
+# write verbs. `lcars resolve-logs` DRIVES a parent's logged bugs to their
+# Verify gate, folds them onto the parent's branch and raises a gate on the
+# parent's issue, so it consults the lock; the READ verbs (status, buddy, the
+# viewscreen's reads) never do. The remedy is deliberately a HUMAN act on
+# GitHub — the solo protocol's premise is that the captain moves ownership
+# where both laptops can see it, and LCARS never takes a mission off anyone.
+#
+# ON THE PARENT, and as soon as the parent resolves — before a child is
+# gathered, ordered, driven or folded, and before the `complete` path touches a
+# single state.json. A logged bug rides its parent's branch and nests under its
+# parent's issue, so resolving one against a mission somebody else holds is a
+# write to their work (the same reasoning `lcars log` records at its own call).
+#
+# The library lives in the sibling lcars-run skill dir (the same reach this
+# script already makes for the host adapter). A MISSING library leaves the verb
+# unenforced — exactly pre-S189 behaviour — rather than refusing blindly, and
+# LCARS_OWNER_ENFORCE=0 bypasses the lock for harness debugging.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SKILL_DIR/../lcars-run/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
+
+# owner_lock_or_die <issue> — refuse with ONE plain line, or return.
+# lcars_owner_lock_reason returns 0 (and echoes the line) ONLY when someone else
+# demonstrably holds the mission: unassigned, an unreachable forge and an
+# unresolvable identity all fall through to "proceed", because a lock that fires
+# on uncertainty locks the captain out of his own work.
+owner_lock_or_die() { # <issue>
+  local r
+  command -v lcars_owner_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_owner_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
+owner_lock_or_die "$PARENT_ISSUE"
+
 # --- the PARENT's engine (BUG-D) -------------------------------------------
 # A logged bug folds into the parent and must RUN on the SAME engine the parent
 # ran on — a copilot parent's fixes must not silently host-detect claude. The

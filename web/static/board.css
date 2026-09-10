@@ -432,6 +432,12 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 /* Mission-log-grounding: the scoped "grounding" descriptor on a Research-stage
    logged bug — a touch brighter than the plain .no line so it reads as a badge. */
 .card .no.grounding-note{color:var(--lcars-peach,#f7b26a);text-transform:none;letter-spacing:.04em;margin-top:1px}
+/* S196 A3(g) — the engine + WHERE it came from, in words, under the issue line.
+   Same muted register as `.no` (it is reference, not a state change): the corner
+   watermark already carries the colour, and this line only has to be readable.
+   Lower-case because it names a binary and a source, not a stage label. */
+.card .no.engine-src{text-transform:none;letter-spacing:.04em;margin-top:1px;
+  opacity:.85}
 .card .ttl{font-family:var(--font-display);font-size:14px;letter-spacing:.04em;
   color:var(--lcars-text-bright);margin:2px 0 8px;line-height:1.2}
 .card .pills{display:flex;flex-wrap:wrap;gap:5px}

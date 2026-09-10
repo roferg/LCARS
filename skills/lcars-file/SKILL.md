@@ -454,7 +454,9 @@ closing turn in STEP 2). Do not dispatch `file.sh` on your own judgement that th
 grill is "done" — the captain's "go ahead" is what authorizes filing.
 
 Hand the PRD to the bundled script. It mints the mission ID
-(`lcars-YYYYMMDD-NNN`, sequenced per day), creates
+(`lcars-YYYYMMDD-NNN-<fp>`, sequenced per day, with a short per-clone
+fingerprint so two laptops filing on the same day cannot mint the same id —
+existing ids are never re-minted), creates
 `.git/lcars/missions/<id>/{prd.md,state.json}`, **creates the Mission's own
 branch `lcars/<id>` off the current branch** (recording the branch and its base
 in `state.json`), opens the GitHub issue with the `lcars:align,lcars:<type>`

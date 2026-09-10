@@ -613,6 +613,318 @@ check "D9. a drive on an UNASSIGNED mission assigns the captain on first advance
   "grep -q 'gh issue edit 42 --add-assignee capt' '$GH_LOG'"
 
 # ==========================================================================
+# S196 / A6 — THE CLI LOCKS WHAT THE BOARD LOCKS.
+#
+# Ground truth measured by the S190/S191 capstone: `run`, `respond`, `approve`,
+# `feedback` and `log` all consult `lcars_owner_lock_reason`; `pause` and
+# `resolve-logs` did NOT. The board 403s the captain's Pause on someone else's
+# mission while `lcars pause <id>` in the next terminal obeyed silently — two
+# surfaces, two answers.
+#
+# THE CAPTAIN'S STANDING RULING (2026-09-09): "the board is just meant to be a
+# UI version of the command line" — so where the two disagree the CLI comes into
+# line, and the board's 403 is never relaxed to match. `pause`, `resume` (the
+# same script, and a write the board locks too) and `resolve-logs` therefore
+# consult the SAME one function, with the SAME posture: unassigned never locks,
+# an unresolvable identity never locks, reads are never blocked.
+#
+# Every mutating check below PARSES state.json with python3 as well as diffing
+# it: S189's suite missed a real corruption because not one check parsed it.
+# ==========================================================================
+echo
+echo "the light lock — pause / resume / resolve-logs (S196 A6)"
+
+PAUSE_SCRIPT="$REPO_ROOT/skills/lcars-pause/pause.sh"
+RESOLVE_SCRIPT="$REPO_ROOT/skills/lcars-resolve-logs/resolve-logs.sh"
+BOARD_JS="$REPO_ROOT/web/static/board.js"
+
+# A `lcars run` stand-in, so `resume`'s exec and resolve-logs' drive delegation
+# are OBSERVABLE without a real driver (and a lock that leaked would be visible
+# as a line in this log).
+RUNSTUB="$TMPROOT/runstub.sh"
+cat >"$RUNSTUB" <<'RS'
+#!/usr/bin/env bash
+echo "run $*" >>"$RUN_LOG"
+exit 0
+RS
+chmod +x "$RUNSTUB"
+
+# state.json must still PARSE after any refusal — a lock that corrupted the file
+# it refused to touch would pass a grep and fail a captain.
+json_ok() { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" >/dev/null 2>&1; }
+
+# Build a parent mission with ONE linked child bug, for resolve-logs.
+add_child_bug() { # <repo> <child-id> <parent-id>
+  local d="$1/.git/lcars/missions/$2"
+  mkdir -p "$d"
+  cat >"$d/state.json" <<EOF
+{
+  "id": "$2",
+  "type": "bug",
+  "title": "Logged bug one",
+  "stage": "plan",
+  "githubIssue": 51,
+  "parentMission": "$3",
+  "parentIssue": 42,
+  "branch": "lcars/$2",
+  "base": "main"
+}
+EOF
+}
+
+CHILD="lcars-20260530-002"
+
+# --------------------------------------------------------------------------
+# D10. `lcars pause` on someone else's mission REFUSES, and changes nothing.
+# --------------------------------------------------------------------------
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoPa="$(new_mission_repo implement)"
+sPa="$repoPa/.git/lcars/missions/$MID/state.json"
+sumPa="$(cksum <"$sPa")"
+rcPa=0
+( cd "$repoPa" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$PAUSE_SCRIPT" pause "$MID" >out.txt 2>&1 ) || rcPa=$?
+check "D10. \`lcars pause\` REFUSES a mission owned by someone else" "[ '$rcPa' -ne 0 ]"
+check "D10. …with the plain line naming the owner and the remedy" \
+  "grep -Fxq 'lcars pause: assigned to someone-else — reassign it to yourself on GitHub to take command' '$repoPa/out.txt'"
+check "D10. …state.json is BYTE-IDENTICAL (no paused flag written)" \
+  "[ \"\$(cksum <'$sPa')\" = '$sumPa' ]"
+check "D10. …and still parses as JSON" "json_ok '$sPa'"
+check "D10. …no lcars:paused label was applied on the forge" \
+  "! grep -q 'add-label lcars:paused' '$GH_LOG'"
+check "D10. …and no event was appended" \
+  "[ ! -f '$repoPa/.git/lcars/missions/$MID/events.jsonl' ]"
+
+# --------------------------------------------------------------------------
+# D11. `lcars resume` is a write the board locks too — so the CLI locks it.
+# --------------------------------------------------------------------------
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoRe="$(new_mission_repo implement)"
+sRe="$repoRe/.git/lcars/missions/$MID/state.json"
+sed 's/"stage": "implement",/"stage": "implement",\n  "paused": true,/' \
+  "$sRe" >"$sRe.tmp" && mv "$sRe.tmp" "$sRe"
+sumRe="$(cksum <"$sRe")"
+export RUN_LOG="$repoRe/run.log"; : >"$RUN_LOG"
+rcRe=0
+( cd "$repoRe" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt LCARS_RUN_SCRIPT="$RUNSTUB" \
+    bash "$PAUSE_SCRIPT" resume "$MID" >out.txt 2>&1 ) || rcRe=$?
+check "D11. \`lcars resume\` REFUSES a mission owned by someone else" "[ '$rcRe' -ne 0 ]"
+check "D11. …with the SAME plain line" \
+  "grep -Fq 'assigned to someone-else — reassign it to yourself on GitHub to take command' '$repoRe/out.txt'"
+check "D11. …the paused flag SURVIVES (their mission stays parked)" \
+  "[ \"\$(cksum <'$sRe')\" = '$sumRe' ]"
+check "D11. …state.json still parses as JSON" "json_ok '$sRe'"
+check "D11. …and the driver was never re-entered" "[ ! -s '$RUN_LOG' ]"
+
+# --------------------------------------------------------------------------
+# D12. `lcars resolve-logs` on someone else's parent REFUSES, and drives nothing.
+# --------------------------------------------------------------------------
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoRL="$(new_mission_repo implement)"
+add_child_bug "$repoRL" "$CHILD" "$MID"
+sRLp="$repoRL/.git/lcars/missions/$MID/state.json"
+sRLc="$repoRL/.git/lcars/missions/$CHILD/state.json"
+sumRLp="$(cksum <"$sRLp")"; sumRLc="$(cksum <"$sRLc")"
+export RUN_LOG="$repoRL/run.log"; : >"$RUN_LOG"
+rcRL=0
+( cd "$repoRL" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt LCARS_RUN_SCRIPT="$RUNSTUB" \
+    LCARS_VERSION_CHECK_BIN=/nonexistent LCARS_WORKER_BIN= \
+    bash "$RESOLVE_SCRIPT" --parent "$MID" >out.txt 2>&1 ) || rcRL=$?
+check "D12. \`lcars resolve-logs\` REFUSES a parent owned by someone else" "[ '$rcRL' -ne 0 ]"
+check "D12. …with the plain line naming the owner and the remedy" \
+  "grep -Fxq 'lcars resolve-logs: assigned to someone-else — reassign it to yourself on GitHub to take command' '$repoRL/out.txt'"
+check "D12. …the PARENT state.json is byte-identical" \
+  "[ \"\$(cksum <'$sRLp')\" = '$sumRLp' ]"
+check "D12. …the CHILD bug state.json is byte-identical" \
+  "[ \"\$(cksum <'$sRLc')\" = '$sumRLc' ]"
+check "D12. …both still parse as JSON" "json_ok '$sRLp' && json_ok '$sRLc'"
+check "D12. …and NOTHING was driven" "[ ! -s '$RUN_LOG' ]"
+check "D12. …no consolidated gate was raised on the parent" \
+  "[ ! -f '$repoRL/.git/lcars/missions/$MID/pending.json' ]"
+
+# `resolve-logs complete` folds children to Done — the same lock, the same line.
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+rcRC=0
+( cd "$repoRL" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt LCARS_RUN_SCRIPT="$RUNSTUB" \
+    LCARS_VERSION_CHECK_BIN=/nonexistent \
+    bash "$RESOLVE_SCRIPT" complete --parent "$MID" >outc.txt 2>&1 ) || rcRC=$?
+check "D12. \`lcars resolve-logs complete\` is locked too" "[ '$rcRC' -ne 0 ]"
+check "D12. …with the same plain line" \
+  "grep -Fq 'assigned to someone-else — reassign it to yourself on GitHub to take command' '$repoRL/outc.txt'"
+check "D12. …and the child bug was NOT folded to done" \
+  "[ \"\$(cksum <'$sRLc')\" = '$sumRLc' ] && json_ok '$sRLc'"
+
+# --------------------------------------------------------------------------
+# D13. An UNASSIGNED mission is NEVER locked — both verbs proceed.
+#      (empty is "unowned", not an error)
+# --------------------------------------------------------------------------
+: >"$ASSIGNEES"; : >"$GH_LOG"
+repoPu="$(new_mission_repo implement)"
+sPu="$repoPu/.git/lcars/missions/$MID/state.json"
+rcPu=0
+( cd "$repoPu" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$PAUSE_SCRIPT" pause "$MID" >out.txt 2>&1 ) || rcPu=$?
+check "D13. \`lcars pause\` on an UNASSIGNED mission PROCEEDS" "[ '$rcPu' -eq 0 ]"
+check "D13. …it really paused it" "grep -q '\"paused\": *true' '$sPu'"
+check "D13. …and state.json still parses as JSON" "json_ok '$sPu'"
+
+: >"$ASSIGNEES"; : >"$GH_LOG"
+repoRu="$(new_mission_repo implement)"
+export RUN_LOG="$repoRu/run.log"; : >"$RUN_LOG"
+rcRu=0
+( cd "$repoRu" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt LCARS_RUN_SCRIPT="$RUNSTUB" \
+    LCARS_VERSION_CHECK_BIN=/nonexistent \
+    bash "$RESOLVE_SCRIPT" --parent "$MID" >out.txt 2>&1 ) || rcRu=$?
+check "D13. \`lcars resolve-logs\` on an UNASSIGNED parent PROCEEDS" "[ '$rcRu' -eq 0 ]"
+check "D13. …reaching its own no-op (no open linked bugs), not a refusal" \
+  "grep -q 'nothing to resolve' '$repoRu/out.txt'"
+check "D13. …and the parent state.json still parses as JSON" \
+  "json_ok '$repoRu/.git/lcars/missions/$MID/state.json'"
+
+# --------------------------------------------------------------------------
+# D14. An UNRESOLVABLE identity is NEVER locked — both verbs proceed.
+#
+#      gh is present and its `user` call FAILS: we cannot say who we are, so we
+#      do not get to tell the captain he is someone else. (S190's D1 scar: the
+#      rc must be captured BEFORE any pipeline, or an unreachable gh silently
+#      erases the published owner. A FRESH repo per case, because the whoami
+#      answer is cached on disk for 12h.)
+# --------------------------------------------------------------------------
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoPn="$(new_mission_repo implement)"
+sPn="$repoPn/.git/lcars/missions/$MID/state.json"
+rcPn=0
+( cd "$repoPn" && GH_WHOAMI= GH_API_RC=1 LCARS_GH_BIN="$GH" \
+    bash "$PAUSE_SCRIPT" pause "$MID" >out.txt 2>&1 ) || rcPn=$?
+check "D14. \`lcars pause\` with an UNRESOLVABLE identity PROCEEDS" "[ '$rcPn' -eq 0 ]"
+check "D14. …it really paused it" "grep -q '\"paused\": *true' '$sPn'"
+check "D14. …with no refusal line at all" "! grep -q '$LOCKLINE' '$repoPn/out.txt'"
+check "D14. …and state.json still parses as JSON" "json_ok '$sPn'"
+
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoRn="$(new_mission_repo implement)"
+export RUN_LOG="$repoRn/run.log"; : >"$RUN_LOG"
+rcRn=0
+( cd "$repoRn" && GH_WHOAMI= GH_API_RC=1 LCARS_GH_BIN="$GH" LCARS_RUN_SCRIPT="$RUNSTUB" \
+    LCARS_VERSION_CHECK_BIN=/nonexistent \
+    bash "$RESOLVE_SCRIPT" --parent "$MID" >out.txt 2>&1 ) || rcRn=$?
+check "D14. \`lcars resolve-logs\` with an UNRESOLVABLE identity PROCEEDS" "[ '$rcRn' -eq 0 ]"
+check "D14. …with no refusal line at all" "! grep -q '$LOCKLINE' '$repoRn/out.txt'"
+
+# A GH THAT IS NOT THERE AT ALL — the plane case. Never locked either.
+printf 'someone-else\n' >"$ASSIGNEES"
+repoPz="$(new_mission_repo implement)"
+rcPz=0
+( cd "$repoPz" && LCARS_GH_BIN="$TMPROOT/no-such-gh" \
+    bash "$PAUSE_SCRIPT" pause "$MID" >out.txt 2>&1 ) || rcPz=$?
+check "D14. an ABSENT gh never locks \`lcars pause\`" "[ '$rcPz' -eq 0 ]"
+check "D14. …and state.json still parses as JSON" \
+  "json_ok '$repoPz/.git/lcars/missions/$MID/state.json'"
+
+# --------------------------------------------------------------------------
+# D15. LCARS_OWNER_ENFORCE=0 bypasses the new locks too (harness debugging).
+# --------------------------------------------------------------------------
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoPb="$(new_mission_repo implement)"
+rcPb=0
+( cd "$repoPb" && LCARS_OWNER_ENFORCE=0 LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$PAUSE_SCRIPT" pause "$MID" >out.txt 2>&1 ) || rcPb=$?
+check "D15. LCARS_OWNER_ENFORCE=0 bypasses the lock on \`lcars pause\`" \
+  "[ '$rcPb' -eq 0 ] && ! grep -q '$LOCKLINE' '$repoPb/out.txt'"
+
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoRb="$(new_mission_repo implement)"
+export RUN_LOG="$repoRb/run.log"; : >"$RUN_LOG"
+rcRb=0
+( cd "$repoRb" && LCARS_OWNER_ENFORCE=0 LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    LCARS_RUN_SCRIPT="$RUNSTUB" LCARS_VERSION_CHECK_BIN=/nonexistent \
+    bash "$RESOLVE_SCRIPT" --parent "$MID" >out.txt 2>&1 ) || rcRb=$?
+check "D15. LCARS_OWNER_ENFORCE=0 bypasses the lock on \`lcars resolve-logs\`" \
+  "[ '$rcRb' -eq 0 ] && ! grep -q '$LOCKLINE' '$repoRb/out.txt'"
+
+# --------------------------------------------------------------------------
+# D16. A READ of a locked mission is never blocked — `lcars status` still lists
+#      the mission the two new locks refuse to write.
+# --------------------------------------------------------------------------
+printf 'someone-else\n' >"$ASSIGNEES"; : >"$GH_LOG"
+repoRd="$(new_mission_repo implement)"
+rcRd=0
+( cd "$repoRd" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$STATUS_SCRIPT" >out.txt 2>&1 ) || rcRd=$?
+check "D16. reads stay open beside the two new locks (\`lcars status\`)" \
+  "[ '$rcRd' -eq 0 ] && grep -q '$MID' '$repoRd/out.txt' && ! grep -q '$LOCKLINE' '$repoRd/out.txt'"
+
+# ==========================================================================
+# D17. ONE SENTENCE — SEVEN VERBS AND THE BOARD, BYTE FOR BYTE.
+#
+# THE POINT OF THIS CHECK is that it retypes nothing. The sentence is READ OUT
+# OF THE SHIPPING FILES — the printf in ownership.sh and the concatenation in
+# board.js — and the seven verbs' REAL refusals are compared against it byte for
+# byte. Anyone who edits one of the two files and not the other breaks this test
+# instead of telling the captain two different stories.
+#
+# The daemon's 403 body is the third surface and needs no separate spelling: it
+# is the raw stdout of `ownership.sh lock-reason` (Actions.owner_lock_reason
+# shells exactly that op), so the executable face is checked here in its place.
+# ==========================================================================
+echo
+echo "one sentence — seven verbs and the board"
+
+# The format string, out of the library.
+OWN_FMT="$(sed -n "s/.*printf '\(assigned to %s[^']*\)'.*/\1/p" "$OWNERSHIP" | head -1)"
+check "D17. ownership.sh still carries the sentence as a printf format" \
+  "[ -n \"\$OWN_FMT\" ]"
+OWN_SENTENCE="${OWN_FMT/\%s/someone-else}"
+
+# The same sentence, out of board.js's `ownerLockLine` — the tooltip the captain
+# reads before he clicks. Reconstructed from the function's own literals.
+JS_EXPR="$(awk '/^function ownerLockLine/,/^}/' "$BOARD_JS" | tr '\n' ' ' \
+  | sed 's/.*return //; s/;.*//')"
+JS_SENTENCE="$(printf '%s' "$JS_EXPR" | sed 's/ *+ *//g; s/login/someone-else/; s/"//g')"
+check "D17. board.js's tooltip is the SAME BYTES as ownership.sh's refusal" \
+  "[ \"\$JS_SENTENCE\" = \"\$OWN_SENTENCE\" ]"
+
+# The executable face — what the daemon's 403 body actually is.
+printf 'someone-else\n' >"$ASSIGNEES"
+repoEF="$(new_repo)"
+outEF="$( cd "$repoEF" && LCARS_GH_USER=capt LCARS_GH_BIN="$GH" \
+  bash "$OWNERSHIP" lock-reason 42 2>/dev/null )"
+check "D17. the daemon's 403 body (ownership.sh lock-reason) is the same bytes" \
+  "[ \"\$outEF\" = \"\$OWN_SENTENCE\" ]"
+
+# And now the SEVEN verbs, each refusing for real. `<script-prefix>|<file>`:
+# pause.sh prints `lcars pause:` for both of its subcommands (it is one script),
+# which is why resume shares the prefix.
+verb_refusal() { # <outfile> -> the refusal line, prefix stripped
+  sed -n 's/^lcars [a-z-]*: \(assigned to .*\)$/\1/p' "$1" | head -1
+}
+
+lineRun="$(verb_refusal "$repoR/out.txt")"
+check "D17. \`lcars run\` refuses with EXACTLY that sentence" \
+  "[ \"\$lineRun\" = \"\$OWN_SENTENCE\" ]"
+lineApprove="$(verb_refusal "$repoP/out.txt")"
+check "D17. \`lcars approve\` refuses with EXACTLY that sentence" \
+  "[ \"\$lineApprove\" = \"\$OWN_SENTENCE\" ]"
+lineFeedback="$(verb_refusal "$repoB2/out.txt")"
+check "D17. \`lcars feedback\` refuses with EXACTLY that sentence" \
+  "[ \"\$lineFeedback\" = \"\$OWN_SENTENCE\" ]"
+lineRespond="$(verb_refusal "$repoS/out.txt")"
+check "D17. \`lcars respond\` refuses with EXACTLY that sentence" \
+  "[ \"\$lineRespond\" = \"\$OWN_SENTENCE\" ]"
+lineLog="$(verb_refusal "$repoL/out.txt")"
+check "D17. \`lcars log\` refuses with EXACTLY that sentence" \
+  "[ \"\$lineLog\" = \"\$OWN_SENTENCE\" ]"
+linePause="$(verb_refusal "$repoPa/out.txt")"
+check "D17. \`lcars pause\` refuses with EXACTLY that sentence" \
+  "[ \"\$linePause\" = \"\$OWN_SENTENCE\" ]"
+lineResume="$(verb_refusal "$repoRe/out.txt")"
+check "D17. \`lcars resume\` refuses with EXACTLY that sentence" \
+  "[ \"\$lineResume\" = \"\$OWN_SENTENCE\" ]"
+lineResolve="$(verb_refusal "$repoRL/out.txt")"
+check "D17. \`lcars resolve-logs\` refuses with EXACTLY that sentence" \
+  "[ \"\$lineResolve\" = \"\$OWN_SENTENCE\" ]"
+
+# ==========================================================================
 echo
 printf 'ownership: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

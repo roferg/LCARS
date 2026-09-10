@@ -587,6 +587,79 @@ class AdoptEndpoint(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# 5c. S196 A4 — THE BOARD DOES NOT SWALLOW ADOPT'S WARNINGS
+#
+# MEASURED: an adopted clone had no config.json — no testCommand, so the
+# Implement red gate has nothing to run. adopt SAID so, on stdout, and the
+# board's ADOPT dispatch threw the whole string away and showed only
+# "Adopted #34 — it is a local mission now." Adopt now seeds a config, but the
+# swallow is a defect in its own right: attachments that cannot follow the
+# issue, no open PR at Verify, a repo config that prefers a different engine —
+# all of those still arrive as warnings on a SUCCESSFUL adopt, and all of them
+# were being dropped by the one surface that could have shown them.
+#
+# They are lifted by adopt's OWN marker (`  ⚠ <sentence>`, what note() emits),
+# not by matching its prose — the same discipline as _ADOPT_REFUSAL_BANNER.
+# --------------------------------------------------------------------------
+class AdoptWarningsReachTheBoard(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _serve(self, body):
+        stub = _adopt_stub(self.tmp, "adopt-warn.sh", body)
+        actions = Actions(repo_root=self.tmp, scripts={"adopt": stub},
+                          worker_bin="/bin/echo")
+        adapter = LocalAdapter(self.tmp,
+                               git_url_reader=lambda r: "git@x:acme/repo.git")
+        self.httpd = make_server(adapter, host="127.0.0.1", port=0,
+                                 poll_interval=0.05, actions=actions)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+
+    def post(self, path):
+        url = "http://127.0.0.1:%d%s" % (self.port, path)
+        req = urllib.request.Request(url, data=b"{}", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def test_the_warnings_ride_out_on_the_response(self):
+        self._serve(
+            'printf "%s\\n" "\u25c7 Adopted m1 - stage align"\n'
+            'printf "%s\\n" "  \u26a0 no testCommand could be detected"\n'
+            'printf "%s\\n" "  \u26a0 the original mission had 2 attachment(s)"\n'
+            'exit 0\n')
+        status, payload = self.post("/api/mission/201/adopt")
+        self.assertEqual(200, status)
+        self.assertEqual(
+            ["no testCommand could be detected",
+             "the original mission had 2 attachment(s)"],
+            payload["state"]["warnings"])
+
+    def test_a_clean_adopt_carries_an_empty_warning_list(self):
+        self._serve('printf "%s\\n" "\u25c7 Adopted m1 - stage align"\nexit 0\n')
+        status, payload = self.post("/api/mission/201/adopt")
+        self.assertEqual(200, status)
+        self.assertEqual([], payload["state"]["warnings"])
+
+    def test_the_full_output_still_travels_verbatim(self):
+        """The warnings are a LIFT, not a replacement: nothing is dropped."""
+        self._serve(
+            'printf "%s\\n" "\u25c7 Adopted m1 - stage align"\n'
+            'printf "%s\\n" "  \u26a0 one warning"\nexit 0\n')
+        _, payload = self.post("/api/mission/201/adopt")
+        self.assertIn("Adopted m1", payload["state"]["output"])
+        self.assertIn("one warning", payload["state"]["output"])
+
+
+# --------------------------------------------------------------------------
 # 5b. S191 fix round 1 — THE TWO REFUSALS, SAID PROPERLY
 #
 # D5. An honest "no" must not arrive as a server fault. `lcars adopt` refuses
@@ -918,6 +991,91 @@ class TheRenderedRemoteCard(unittest.TestCase):
         self.assertNotIn("remote", dom["cls"])
         for n in self._walk(dom):
             self.assertNotIn("REMOTE", (n.get("text") or ""))
+
+
+# --------------------------------------------------------------------------
+# 8. S196 A3(g) — WHICH ENGINE, AND WHY THAT ONE, ON THE BOARD
+#
+# The resolver's `worker: claude (bin: config)` line printed ZERO times during a
+# real 6-stage auto-advance run, was persisted nowhere, and never reached this
+# board. So a mission silently re-homed onto a billed engine by a clone's
+# config.json looked exactly like one that chose that engine on purpose, and the
+# spend was the only symptom.
+#
+# The pair is RECORDED BY ITS PRODUCER — `lcars adopt` at the handoff, run.sh's
+# resolver at each resolution — and read here. Nothing in the daemon or the front
+# end re-derives which source would have won.
+# --------------------------------------------------------------------------
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class TheEngineProvenanceOnACard(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _plant(self, mid, **extra):
+        fx.plant_simple(self.tmp, mid, stage="align", issue=101,
+                        worker_bin="copilot")
+        if extra:
+            sp = os.path.join(self.tmp, ".git", "lcars", "missions", mid,
+                              "state.json")
+            with open(sp) as fh:
+                st = json.load(fh)
+            st.update(extra)
+            with open(sp, "w") as fh:
+                json.dump(st, fh, indent=2)
+        adapter = LocalAdapter(self.tmp,
+                               git_url_reader=lambda r: "git@x:acme/repo.git")
+        return {c["id"]: c for c in adapter.board()["missions"]}[mid]
+
+    def _render(self, card):
+        fd, p = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, p)
+        with open(p, "w") as fh:
+            json.dump({"mission": card, "self": ME}, fh)
+        return json.loads(subprocess.check_output([NODE, OWNER_HARNESS, p]))
+
+    def _texts(self, dom):
+        return [(n.get("text") or "").strip()
+                for n in TheRenderedRemoteCard._walk(dom)]
+
+    def test_the_pair_reaches_the_board_shape(self):
+        card = self._plant("m-eng", engineSource="mission",
+                           engineResolved="copilot")
+        self.assertEqual("mission", card["engineSource"])
+        self.assertEqual("copilot", card["engineResolved"])
+
+    def test_the_card_SAYS_which_engine_and_where_it_came_from(self):
+        card = self._plant("m-eng", engineSource="mission",
+                           engineResolved="copilot")
+        self.assertIn("copilot \u00b7 mission pin", self._texts(self._render(card)))
+
+    def test_a_conversion_at_adopt_says_so_in_words(self):
+        card = self._plant("m-conv", engineSource="adopt-converted",
+                           engineResolved="claude")
+        self.assertIn("claude \u00b7 converted at adopt",
+                      self._texts(self._render(card)))
+
+    def test_an_engine_the_repo_CONFIG_imposed_is_named_as_such(self):
+        """The case that cost money: the pin says copilot, config ran claude."""
+        card = self._plant("m-cfg", engineSource="config",
+                           engineResolved="claude")
+        texts = self._texts(self._render(card))
+        self.assertIn("claude \u00b7 repo config", texts)
+
+    def test_a_mission_with_no_recorded_provenance_renders_no_such_line(self):
+        card = self._plant("m-bare")
+        self.assertNotIn("engineSource", card)
+        for t in self._texts(self._render(card)):
+            self.assertNotIn("mission pin", t)
+            self.assertNotIn("repo config", t)
+
+    def test_the_issue_and_stage_line_is_untouched(self):
+        """The provenance is a SECOND line; `#101 \u00b7 lcars:align` is unchanged."""
+        card = self._plant("m-eng", engineSource="mission",
+                           engineResolved="copilot")
+        self.assertIn("#101 \u00b7 lcars:align", self._texts(self._render(card)))
 
 
 if __name__ == "__main__":

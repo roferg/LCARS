@@ -13671,10 +13671,30 @@ cmd_reconcile() {
 # Resolution is CLI-AGNOSTIC and so lives HERE, not in the adapter: the adapter
 # owns cli-SPECIFIC flag emission, run.sh owns host detection + precedence.
 #
-#   bin precedence  : $LCARS_WORKER_BIN  >  config.json workerBin
+#   bin precedence  : $LCARS_WORKER_BIN
 #                     >  the MISSION's recorded workerBin (state.json)
+#                     >  config.json workerBin
 #                     >  host-CLI auto-detect (env marker) >  claude (default)
 #   model precedence: $LCARS_WORKER_MODEL > config.json workerModel > unset
+#
+# S196 A3 — WHY THE MISSION NOW SITS ABOVE config.json, AND WHY THAT IS A
+# REVERSAL. Until this session config.json outranked the mission's own recorded
+# engine, and `skills/lcars-approve/approve.sh` did the OPPOSITE (it reads the
+# mission's workerBin and exports $LCARS_WORKER_BIN to pin it). Two paths, two
+# answers. Measured in S191's capstone with PATH shims faking both CLIs: a
+# mission filed `--engine copilot`, whose envelope carried copilot and whose
+# adopt correctly wrote `workerBin: copilot`, ran on a clone whose config said
+# claude — 3 invocations of the BILLED shim, 0 of the free one, and no warning
+# anywhere. The spend is the only symptom, which is exactly why an AMBIENT repo
+# default must not outrank a per-mission record.
+#
+# The captain's ruling (2026-09-09) is that the engine is an EXPLICIT CHOICE MADE
+# AT THE HANDOFF, because a laptop may only have one CLI installed: `lcars adopt`
+# probes what this machine actually has, uses the mission's engine when it is
+# here, ASKS and CONVERTS when it is not, and RECORDS the answer on the mission.
+# A recorded choice that a repo default could silently overrule would make the
+# asking theatre — so it sits above config. $LCARS_WORKER_BIN, a per-invocation
+# and unmistakably deliberate operator act, still outranks everything.
 #
 # Host detection keys off the per-process env var a spawned shell inherits from
 # the launching CLI: CLAUDECODE=1 ⇒ claude. The real GitHub Copilot CLI (v1.0.60)
@@ -13705,30 +13725,39 @@ resolve_worker_bin() {
   if [ -n "${LCARS_WORKER_BIN:-}" ]; then
     WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="env"; return 0
   fi
-  local cfgbin=""
-  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
-  if [ -n "$cfgbin" ]; then
-    WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
-  fi
-  # THE MISSION'S OWN PIN — ahead of host detection. A mission records the engine
-  # it was filed with in state.json (`lcars file --engine copilot` → workerBin).
-  # Until now the resolver never read it, so the engine was re-DECIDED from the
-  # ambient terminal on every invocation: a mission filed and driven under Copilot
-  # that was later RESUMED from a Claude Code session (CLAUDECODE=1) silently
-  # re-homed onto billed claude mid-flight, with the pin sitting right there in
-  # state.json being ignored. Observed live: 7 workers and $11.39 billed to the
-  # wrong engine after a resume from the wrong terminal, with no warning — the
-  # spend is the ONLY symptom, which is why detection must never outrank an
-  # explicit record. An explicitly recorded engine beats a guess; env and config
-  # (both deliberate operator acts) still outrank the mission, so an operator can
-  # still move a mission on purpose. Several callers set MISSION_DIR but not STATE,
-  # so derive the path defensively and stay silent when there is no mission.
+  # THE MISSION'S OWN PIN — ahead of config.json AND of host detection (S196 A3;
+  # before this session it sat BELOW config, and before that it was not read at
+  # all). A mission records the engine it was filed with in state.json (`lcars
+  # file --engine copilot` → workerBin), and `lcars adopt` records the engine the
+  # captain chose at the handoff. Both are EXPLICIT, per-mission acts. config.json
+  # is the repo's AMBIENT default, and a clone's default silently re-homing
+  # another laptop's mission is the money bug S191 measured with shims (3 billed
+  # invocations, 0 free). $LCARS_WORKER_BIN is still above everything, because it
+  # is per-invocation and unmistakably deliberate — that is how an operator moves
+  # a mission on purpose now.
+  #
+  # The original reason for reading it at all stands unchanged: without it the
+  # engine was re-DECIDED from the ambient terminal on every invocation, so a
+  # mission filed and driven under Copilot and later RESUMED from a Claude Code
+  # session (CLAUDECODE=1) re-homed onto billed claude mid-flight with the pin
+  # sitting right there being ignored. Observed live: 7 workers and $11.39 on the
+  # wrong engine, no warning — the spend is the ONLY symptom.
+  #
+  # Several callers set MISSION_DIR but not STATE, so derive the path defensively
+  # and stay silent when there is no mission.
   local statef="${STATE:-}"
   [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
   local misbin=""
   [ -n "$statef" ] && [ -f "$statef" ] && misbin="$(json_str "$statef" workerBin)"
   if [ -n "$misbin" ]; then
     WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
+  fi
+  # The repo's AMBIENT default — still consulted, just no longer able to
+  # overrule a mission that records an engine of its own (S196 A3).
+  local cfgbin=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
+  if [ -n "$cfgbin" ]; then
+    WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
   fi
   local detected; detected="$(detect_host_cli)"
   if [ -n "$detected" ]; then
@@ -14051,6 +14080,62 @@ resolve_worker() {
   printf '  worker: %s (bin: %s) model=%s (model: %s)\n' \
     "$(basename "$WORKER_BIN")" "$WORKER_BIN_SRC" \
     "${WORKER_MODEL:--}" "$WORKER_MODEL_SRC" >&2
+  record_engine_provenance
+}
+
+# --- S196 A3(g): THE PROVENANCE IS RECORDED, NOT RE-DERIVED ------------------
+# That stderr line above was, until this session, the ONLY answer to "which
+# engine ran, and why". It printed ZERO times during a real 6-stage auto-advance
+# run (the auto-advance driver re-execs per stage and the guard above makes it a
+# once-per-process line, so only `--step` ever showed it), it was persisted
+# nowhere, and it never reached the viewscreen. So after a mission had run there
+# was no way to answer the question at all.
+#
+# It is recorded HERE, by the resolver, AT THE MOMENT IT RESOLVES — never
+# re-derived later by re-reading config.json and guessing which source would have
+# won. That guessing is precisely the mistake S147, S156 and S188 each paid fix
+# rounds for; this round's standing pre-flight rule is that the PRODUCER records.
+#
+#   engineResolved  the basename of the cli that actually ran
+#   engineSource    which rule won: env | mission | config | detected | default
+#
+# WHAT IT DOES NOT DO: it never touches `workerBin`. Recording the resolved bin
+# as the mission's pin would make a one-off `LCARS_WORKER_BIN=… lcars run`
+# permanent — a silent engine switch, the very defect this session is closing.
+# These two keys are display + audit only; nothing reads them back to resolve.
+#
+# AND IT DOES NOT CLOBBER ADOPT'S RICHER ANSWER. `lcars adopt` writes the same
+# pair when the captain chooses the engine at the handoff, with a source of
+# `adopt-kept` / `adopt-converted` / `adopt-chosen`. When the mission's pin is
+# what wins here, that IS the same fact said with more provenance, so it is left
+# alone. Any other outcome overwrites, because then the adopt record is no longer
+# what happened.
+#
+# New keys go at the TOP of the object: state_set_str re-inserts after line 1
+# with a hard-coded trailing comma and breaks only when rewriting the LAST field.
+# `base` is last, and S189/S190/S191 all deliberately preserved that.
+record_engine_provenance() {
+  local statef="${STATE:-}"
+  [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
+  [ -n "$statef" ] && [ -f "$statef" ] || return 0
+  local bin; bin="$(basename "$WORKER_BIN")"
+  local had_bin had_src
+  had_bin="$(json_str "$statef" engineResolved)"
+  had_src="$(json_str "$statef" engineSource)"
+  # Already says exactly this — write nothing (a repeat run of a settled mission
+  # must not churn state.json).
+  [ "$had_bin" = "$bin" ] && [ "$had_src" = "$WORKER_BIN_SRC" ] && return 0
+  # Adopt's record of the same engine, said better. Keep it.
+  if [ "$WORKER_BIN_SRC" = "mission" ] && [ "$had_bin" = "$bin" ]; then
+    case "$had_src" in adopt-*) return 0 ;; esac
+  fi
+  # state_set_str writes to $STATE; several callers resolve a mission by
+  # MISSION_DIR alone and never set it (`set -u` makes an unguarded read fatal).
+  local KEEP_STATE="${STATE:-}"
+  STATE="$statef"
+  state_set_str engineSource   "$WORKER_BIN_SRC"
+  state_set_str engineResolved "$bin"
+  STATE="$KEEP_STATE"
 }
 
 # The `resolve-worker` subcommand: a thin, mission-free test surface over the

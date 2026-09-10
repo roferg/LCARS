@@ -542,7 +542,16 @@ VERSION_LINE=""
 [ -n "$RUNNING_VERSION" ] && VERSION_LINE="
 lcarsVersion=\"$RUNNING_VERSION\""
 
-DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
+# S196 — cloneId, backfilled the same way every other key is: resolved through
+# the shared helper (which reads an existing value, or mints and persists one),
+# then listed in the desired schema so lcars_config_merge PRESERVES it. Leaving
+# it off the list would make `lcars update` DELETE the clone's identity — the
+# merge treats its desired list as the canonical schema — and the next mission
+# filed here would carry a different fingerprint from its siblings.
+CLONE_ID="$(lcars_clone_id "$CONFIG")"
+
+DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
+model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
 stack=$STACK_VALUE
