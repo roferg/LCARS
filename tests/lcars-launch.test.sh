@@ -1437,5 +1437,64 @@ check "30b. with no prediction at all, the verified url is synthesized" \
    && printf '%s\n' \"\$OUT30\" | grep -qx '  On screen:  http://localhost:$P30'"
 ( cd "$R30" && LCARS_WORKER_BIN="$W30" bash "$LAUNCH_SH" m30 --stop >/dev/null 2>&1 )
 
+# =====================================================================
+# 31. THE WRITE-TOOL FLOOR REACHES THE INSPECTOR (S194 follow-through).
+#     S168 took the inspector's shell and left copilot's `create` as its ONLY way
+#     to author launch-discovery.json. S194 measured that `create` exists only on
+#     a model that offers it — copilot's DEFAULT model does not — and cured every
+#     run.sh spawn, but launch spawns through its own path and was never given a
+#     model. Measured live 2026-09-11 (copilot 1.0.84): the inspector ran on the
+#     default gpt-5.6-sol, was offered view/glob only, reasoned that `create` was
+#     "unavailable right now", wrote nothing, and EVERY copilot launch failed with
+#     "the inspector reported nothing back". Same precedence as
+#     resolve_stage_model's (a)/(d)/(e): env pin > config workerModel > the
+#     write-capable alias. Empty for claude => its argv is byte-identical.
+# =====================================================================
+unset LCARS_WORKER_MODEL
+argv_model() { awk 'p == "--model" { print; exit } { p = $0 }' "$1"; }
+rec_stub() { # engine → a recording stub path whose basename is the cli id
+  local d; d="$(mktemp -d "$TMPROOT/wk31.XXXX")"; printf '%s/%s\n' "$d" "$1"
+}
+
+R31="$(make_repo m31 copilot)"
+S31="$(rec_stub copilot)"; A31="$TMPROOT/argv31"; make_rec_worker "$S31" "$A31"
+( cd "$R31" && LCARS_WORKER_BIN="$S31" bash "$LAUNCH_SH" m31 >/dev/null 2>&1 )
+check "31a. copilot launch argv CARRIES --model claude-opus-4.8 (write floor)" \
+  "[ \"\$(argv_model \"$A31\")\" = 'claude-opus-4.8' ]"
+
+R31b="$(make_repo m31b claude)"
+S31b="$(rec_stub claude)"; A31b="$TMPROOT/argv31b"; make_rec_worker "$S31b" "$A31b"
+( cd "$R31b" && LCARS_WORKER_BIN="$S31b" bash "$LAUNCH_SH" m31b >/dev/null 2>&1 )
+check "31b. claude launch argv still carries NO --model (floor is empty there)" \
+  "[ -s \"$A31b\" ] && ! grep -qxF -- '--model' \"$A31b\""
+
+# The floor is the SAME alias map S78 owns, so it stays config-overridable.
+R31c="$(make_repo m31c copilot)"
+printf '{"modelAliases":{"copilot":{"opus":"claude-opus-4.9"}}}\n' > "$R31c/.git/lcars/config.json"
+S31c="$(rec_stub copilot)"; A31c="$TMPROOT/argv31c"; make_rec_worker "$S31c" "$A31c"
+( cd "$R31c" && LCARS_WORKER_BIN="$S31c" bash "$LAUNCH_SH" m31c >/dev/null 2>&1 )
+check "31c. modelAliases.copilot.opus overrides the write floor" \
+  "[ \"\$(argv_model \"$A31c\")\" = 'claude-opus-4.9' ]"
+
+# Precedence: the floor is the LAST resort — config workerModel and the env pin
+# both still win, verbatim, exactly as they do for run.sh's stages.
+R31d="$(make_repo m31d copilot)"
+printf '{"workerModel":"claude-sonnet-4.6"}\n' > "$R31d/.git/lcars/config.json"
+S31d="$(rec_stub copilot)"; A31d="$TMPROOT/argv31d"; make_rec_worker "$S31d" "$A31d"
+( cd "$R31d" && LCARS_WORKER_BIN="$S31d" bash "$LAUNCH_SH" m31d >/dev/null 2>&1 )
+check "31d. config workerModel still beats the write floor" \
+  "[ \"\$(argv_model \"$A31d\")\" = 'claude-sonnet-4.6' ]"
+( cd "$R31d" && LCARS_WORKER_MODEL=zzz LCARS_WORKER_BIN="$S31d" bash "$LAUNCH_SH" m31d >/dev/null 2>&1 )
+check "31e. env LCARS_WORKER_MODEL pin still beats config and the floor" \
+  "[ \"\$(argv_model \"$A31d\")\" = 'zzz' ]"
+
+# The --main deploy has no state.json but spawns the same inspector.
+R31f="$(make_repo m31f)"
+printf '{"mainBranch":"trunk"}\n' > "$R31f/.git/lcars/config.json"
+S31f="$(rec_stub copilot)"; A31f="$TMPROOT/argv31f"; make_rec_worker "$S31f" "$A31f"
+( cd "$R31f" && LCARS_WORKER_BIN="$S31f" bash "$LAUNCH_SH" --main >/dev/null 2>&1 )
+check "31f. the --main deploy's copilot inspector gets the write floor too" \
+  "[ \"\$(argv_model \"$A31f\")\" = 'claude-opus-4.8' ]"
+
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

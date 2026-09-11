@@ -58,10 +58,16 @@ directory (a repo can host more than one), pass that as the free-form **hint**.
    **without** holding the ref. Idempotent — an existing worktree is reused.
 3. **Discover, don't run.** Spawn a `launch`-role cold worker (same engine as the
    mission — its `state.json.workerBin`, or `$LCARS_WORKER_BIN`) that *inspects*
-   the checkout and writes `launch.json` describing how to start the app. The
-   worker is fenced to **read + shell only** (`Read,Grep,Glob,Bash` /
-   `view,grep,glob,bash`) — no Write/Edit — so it cannot modify the checkout, and
-   it is told **not to start anything itself**.
+   the checkout and writes `launch-discovery.json` describing how to start the
+   app. The worker is fenced to **read + author its one answer** (`Read,Grep,Glob,Write`
+   / `view,grep,glob,create`) — no shell, no Edit (S168) — the checkout is checked
+   clean after its turn, and it is told **not to start anything itself**.
+   **On copilot the inspector runs on a write-capable model** (the S194 write
+   floor): `create` exists only on a model that offers it, and copilot's default
+   model does not — without a pin the inspector writes nothing and every launch
+   fails with "the inspector reported nothing back". The model is
+   `$LCARS_WORKER_MODEL`, else config `workerModel`, else
+   `modelAliases.copilot.opus`, else `claude-opus-4.8`. Claude gets no model flag.
 4. **Launch it (the skill does this, not the worker).** The skill reads
    `launch.json` and runs the discovered `command` in `<worktree>/<cwd>`,
    **detached as its own process group**, capturing output to
@@ -232,7 +238,8 @@ bash ~/.claude/skills/lcars-launch/launch.sh --main --stop
 
 Dependencies are taken via env so tests can stub them: `LCARS_GIT_BIN` (git),
 `LCARS_WORKER_BIN` (the cold-worker CLI; defaults to the mission's `workerBin`,
-then `claude`), `LCARS_WORKER_ADAPTER` (the worker-adapter path),
+then `claude`), `LCARS_WORKER_MODEL` (pins the inspector's model; see step 3),
+`LCARS_WORKER_ADAPTER` (the worker-adapter path),
 `LCARS_LAUNCH_SETTLE` (the liveness poll WINDOW in seconds, default 4 — the app
 must stay alive across the whole window to count as running; a dev server that
 dies anywhere in it is caught as failed), `LCARS_LAUNCH_ROOT` (the deploy-checkout

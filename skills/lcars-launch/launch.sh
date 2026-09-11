@@ -63,6 +63,50 @@ json_str() {
 json_raw() {
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1
 }
+# NESTED string at a dotted path (e.g. modelAliases.copilot.opus) — run.sh's
+# json_scoped_str, verbatim: each leading segment scopes into that object's
+# brace-matched `{ … }` body, then the last segment is read as a string.
+json_scoped_str() { # file dotted.path → string value (or empty)
+  local file="$1" path="$2"
+  [ -f "$file" ] || return 0
+  local blob; blob="$(tr -d '\n' <"$file")"
+  local key="${path##*.}" parents="${path%.*}"
+  if [ "$parents" != "$path" ]; then
+    local seg
+    local IFS='.'
+    for seg in $parents; do
+      blob="$(_json_scope_into "$blob" "$seg")"
+      [ -n "$blob" ] || return 0
+    done
+  fi
+  printf '%s' "$blob" \
+    | sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" \
+    | head -1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
+_json_scope_into() { # blob key → "{ … }" body of that key's object value
+  printf '%s' "$1" | awk -v key="$2" '
+    {
+      s = $0
+      pat = "\"" key "\""
+      idx = index(s, pat)
+      if (idx == 0) { exit }
+      rest = substr(s, idx + length(pat))
+      ob = index(rest, "{")
+      if (ob == 0) { exit }
+      rest = substr(rest, ob)
+      depth = 0
+      out = ""
+      n = length(rest)
+      for (i = 1; i <= n; i++) {
+        c = substr(rest, i, 1)
+        out = out c
+        if (c == "{") depth++
+        else if (c == "}") { depth--; if (depth == 0) break }
+      }
+      print out
+    }'
+}
 # JSON-escape a string for safe embedding in the launch.json we WRITE.
 json_esc() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
 
@@ -747,7 +791,34 @@ EOF
 LAUNCH_WT_BEFORE=""
 [ -d "$WT" ] && LAUNCH_WT_BEFORE="$("$GIT_BIN" -C "$WT" status --porcelain 2>/dev/null)"
 
-LCARS_WORKER_INPUT_DIRS="$WT" \
+# --- the inspector's MODEL (S194 follow-through) ---------------------------
+# S168 took the inspector's shell, so on copilot `create` is its ONLY way to
+# author launch-discovery.json — and S194 MEASURED that `create` exists only on a
+# model that offers it: copilot's DEFAULT model does not. Every run.sh spawn got
+# that write floor; this spawn goes through its own path and never did, so every
+# copilot launch ran on the default model, was offered view/glob only, and wrote
+# nothing (measured live 2026-09-11, copilot 1.0.84, default gpt-5.6-sol: "the
+# inspector reported nothing back"). This mirrors resolve_stage_model's
+# (a)/(d)/(e) arms in run.sh — that stays the ONE home of the policy:
+#   (a) $LCARS_WORKER_MODEL — the env pin, verbatim.
+#   (d) config.json workerModel — global, verbatim.
+#   (e) the write-capable alias: copilot → modelAliases.copilot.opus, else S78's
+#       claude-opus-4.8. claude → EMPTY, so the adapter emits no --model and its
+#       argv stays byte-for-byte what it was.
+launch_worker_model() { # cli → flag string (stdout; may be empty)
+  local cli="$1" m=""
+  if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
+  [ -f "$LCARS_CFG" ] && m="$(json_str "$LCARS_CFG" workerModel)"
+  if [ -n "$m" ]; then printf '%s' "$m"; return 0; fi
+  case "$cli" in
+    copilot)
+      [ -f "$LCARS_CFG" ] && m="$(json_scoped_str "$LCARS_CFG" modelAliases.copilot.opus)"
+      printf '%s' "${m:-claude-opus-4.8}" ;;
+  esac
+}
+WORKER_MODEL="$(launch_worker_model "$CLI")"
+
+LCARS_WORKER_INPUT_DIRS="$WT" LCARS_WORKER_MODEL="$WORKER_MODEL" \
 LCARS_LAUNCH_JSON="$LAUNCH_DISCOVERY" LCARS_WORKER_BIN="$WORKER_BIN" \
   bash "$WORKER_ADAPTER" spawn "$CLI" launch "$OUTDIR" "$PROMPT" || true
 
