@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:f2b84465672ba15b4189c3a366890fcf8f2a70f3f9a8756f3673d59161233aed -->
-<!-- lcars-docs-src: vision.md sha256:e0e2044e80dafe673f09a35a765b04615646417f203f1414eac3e04bb463fb69 -->
+<!-- lcars-docs-src: README.md sha256:679699df90984b6a933f1b27282ee1cd57069077d0943e436af2ad6a4fd685cf -->
+<!-- lcars-docs-src: vision.md sha256:e8c6380d926467e3f4630beb34f6c20bc334b5b2a20334faa1b6a889a4bd2907 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -47,6 +47,7 @@
     <div class="nav-section" data-color="amber">
       <div class="nav-label">Orientation</div>
       <a href="#intro"><div class="dot"></div>What it does</a>
+      <a href="#crew"><div class="dot"></div>Whose mission is whose <span class="nav-badge">shared</span></a>
       <a href="#pipeline"><div class="dot"></div>The pipeline</a>
     </div>
     <div class="nav-section" data-color="peach">
@@ -81,7 +82,7 @@
          ═══════════════════════════════════════════════════ -->
     <section id="intro">
       <h1>LCARS</h1>
-      <p class="hero-sub">Local mission control · idea → merged pull request</p>
+      <p class="hero-sub">Mission control · idea → merged pull request · a board your crew shares</p>
       <hr class="divider" />
 
       <p>LCARS is a reusable harness that takes a free-form human idea and drives
@@ -89,6 +90,12 @@
       planning, gate-proven test-and-implement, and a human review gate — mostly
       <strong>unattended</strong>. You file the idea and give the final yes; the
       harness does everything in between.</p>
+
+      <p>A Mission belongs to a <strong>person</strong>, not to a laptop. Every
+      card says whose it is, you can see Missions running right now on machines
+      you do not have, you cannot drive someone else's by accident, and you can
+      deliberately take one over — see
+      <a href="#crew">Whose mission is whose</a>.</p>
 
       <p>It installs as a set of Claude Code skills (<code>lcars init</code>,
       <code>lcars file</code>, …) that work in <strong>any</strong> repo, and
@@ -117,7 +124,8 @@
 
       <p>Every piece of work is a <strong>Mission</strong>: a single human intent
       (a feature, an improvement, or a bug fix). Each Mission gets its own branch,
-      is mirrored as a GitHub issue, and moves through a fixed sequence of
+      is mirrored as a GitHub issue, <strong>belongs to whoever that issue is
+      assigned to</strong>, and moves through a fixed sequence of
       <strong>Stages</strong> as a card on a kanban board. Missions are
       branch-isolated, so many can run concurrently and merge sequentially when
       you approve them.</p>
@@ -156,6 +164,87 @@ flowchart LR
     L --> PR([Merged PR])
     L -. "pings you only at a real decision" .-> H
         </div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         WHOSE MISSION IS WHOSE
+         ═══════════════════════════════════════════════════ -->
+    <section id="crew">
+      <h2>Whose mission is whose</h2>
+      <p>A Mission's real home is its <strong>GitHub issue</strong>, not the
+      laptop that filed it — a second clone has no <code>.git/lcars</code> at
+      all. So LCARS reads ownership from the forge (the issue's assignee) rather
+      than keeping a private answer that could disagree with it, and you change
+      who owns a Mission the way you change anything else about an issue: on
+      GitHub.</p>
+
+      <figure class="screenshot">
+        <img src="assets/ownership-board.png" alt="Two LCARS mission cards side by side on the viewscreen: #73 in Implement marked REMOTE — DRIVEN ELSEWHERE, and #74 in Verify reading copilot — chosen at adopt, both carrying their owner's avatar and handle, above an ownership filter strip reading ALL 2, MINE 2, REMOTE 1." />
+        <figcaption>One board, two machines. <strong>#73</strong> is being driven somewhere else — this clone has no copy of it, and the card still shows its real stage. <strong>#74</strong> was adopted onto this laptop and sits at Verify on the engine a human picked at the handoff. The strip counts what you're looking at: <code>ALL · 2</code>, <code>MINE · 2</code>, <code>REMOTE · 1</code>.</figcaption>
+      </figure>
+
+      <div class="mission-card">
+        <strong>What that buys you:</strong>
+        <ul>
+          <li><strong>You're a person, not a machine.</strong> Identity is the
+          <code>(host, login)</code> pair — never a hostname, never a numeric id.
+          The same login has a different numeric id on github.com than on a
+          GitHub Enterprise host, so every lookup is host-scoped and the same
+          handle on two forges is correctly <strong>two different people</strong>.</li>
+          <li><strong>Every card says whose it is</strong> — avatar + handle in an
+          LCARS pill. Yours is a <strong>solid block</strong>, someone else's is
+          <strong>hollow and dashed</strong>, so ownership survives greyscale and
+          colour-blindness instead of relying on hue (8.18:1 measured).</li>
+          <li><strong>You can't drive someone else's mission.</strong> Not a
+          greyed-out button: the daemon refuses <strong>ten write verbs</strong>
+          at the door with a status code (<code>start</code>, <code>pause</code>,
+          <code>resume</code>, <code>respond</code>, <code>verify</code>,
+          <code>reapprove</code>, and the four Mission Log verbs), and the CLI
+          refuses the same work — both with one byte-identical sentence,
+          <em>assigned to &lt;login&gt; — reassign it to yourself on GitHub to
+          take command</em>. The lock is <strong>light</strong> on purpose:
+          reading is never gated, an <em>unassigned</em> mission isn't locked,
+          and an identity LCARS can't resolve never locks anything (a false lock
+          is worse than what it prevents).</li>
+          <li><strong>You see work on machines you don't have.</strong> A mission
+          with no local copy still appears, read from the forge, at its real stage
+          with its pills intact, marked <code>◈ REMOTE · DRIVEN ELSEWHERE</code>;
+          its write controls carry the same sentence the server would answer
+          with.</li>
+          <li><strong>You can take one over</strong> — <code>lcars adopt
+          &lt;issue#&gt;</code>, or the card's <strong>Adopt</strong> button. It
+          rebuilds the mission here from the issue alone (reusing its id, never
+          minting a new one), reads the stage from the label, carries the estimate
+          across, and <strong>asks which engine should drive it here</strong> —
+          recording that a human chose, which is why #74 above reads
+          <code>copilot · chosen at adopt</code>. It claims the mission at
+          <strong>Align</strong>, joins at <strong>Verify</strong> and resolves
+          the open PR so <code>approve</code> / <code>feedback</code> work
+          immediately, and refuses the stages in between honestly.</li>
+          <li><strong>You can filter the board</strong> — <code>ALL</code> /
+          <code>MINE</code> / <code>THEIRS</code> / <code>UNASSIGNED</code> /
+          <code>REMOTE</code>, each with its own count.</li>
+        </ul>
+      </div>
+
+      <p>Proven on two genuinely cold clones against real GitHub, with live
+      pipelines and real merges, repeatedly.</p>
+
+      <div class="lcars-alert teal">
+        <div><strong>Where this goes next.</strong> The multi-person foundation is
+        laid and working — people are distinguishable rather than machines, every
+        mission carries an owner, the lock is enforced per-person on both surfaces,
+        and the board renders and filters by whose work is whose. What remains is
+        the rest of the build-out, and two pieces are worth naming plainly: LCARS
+        has so far only been run against <strong>one GitHub account</strong>
+        (someone else's mission has been exercised with planted owner data, not yet
+        with a second human), and <strong>two people acting in the same
+        moment</strong> — the race tiebreak and contention handling — is
+        deliberately still ahead, owned by the next round. LCARS is set up to
+        support multiple people; the full multi-person experience is what comes
+        after this round.</div>
       </div>
     </section>
 
@@ -851,6 +940,23 @@ flowchart LR
           recommendation, now including the Research/Validate Stages) in a
           Launch-style review panel, with a plain-language per-bug model
           override.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars adopt &lt;issue#&gt;</div>
+          <div class="control-desc"><strong>Pick a Mission up on <em>this</em>
+          machine from its GitHub issue alone</strong> — the portability verb
+          (the board's <strong>Adopt</strong> button on a remote card does the
+          same). Reuses the Mission's own id, rebuilds
+          <code>.git/lcars/missions/&lt;id&gt;/</code> from the issue body and its
+          <code>lcars:handoff</code> envelope, reads the stage from the
+          <code>lcars:&lt;stage&gt;</code> label, seeds a config if this clone has
+          none, carries the estimate across, and <strong>asks which engine should
+          drive it here</strong> (recorded as <code>chosen at adopt</code>).
+          Claims the Mission at <strong>Align</strong>; at <strong>Verify</strong>
+          it joins without claiming and resolves the open PR so
+          <code>approve</code> / <code>feedback</code> work with no further
+          command. Stages between the two ends are refused honestly.
+          Idempotent.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
@@ -1575,6 +1681,11 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
             <div class="lcars-status active">Cost estimator + per-stage model selection</div>
           </div>
           <div class="lcars-status-row">
+            <div class="lcars-status active">A shared board · (host, login) identity · owner on every card</div>
+            <div class="lcars-status active">The per-person write lock · remote cards · lcars adopt</div>
+            <div class="lcars-status warning">Simultaneous action by two people · next round</div>
+          </div>
+          <div class="lcars-status-row">
             <div class="lcars-status active">Tests ride along into the PR</div>
             <div class="lcars-status active">Under-slice pressure signal</div>
             <div class="lcars-status active">Actionable proof-gate classification</div>
@@ -1586,12 +1697,22 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
       </div>
 
       <div class="scope-bar">
-        <div class="scope-active">v1 · idea → merged PR</div>
-        <div class="scope-future">Future · kanban UI · production monitoring</div>
+        <div class="scope-active">v1 · idea → merged PR · a shared board</div>
+        <div class="scope-future">Next · the full multi-person build-out · production monitoring</div>
       </div>
 
       <div class="future-banner">
         <h3>Roadmap</h3>
+        <p><strong>LCARS is now set up to support multiple people.</strong>
+        Identity is the <code>(host, login)</code> pair, every mission carries an
+        owner, the write lock is enforced per-person on both the daemon and the
+        CLI, missions running on machines you don't have show on the board, and
+        <code>lcars adopt</code> takes one over. That foundation is working — and
+        its <strong>build-out continues in the next round</strong>, which owns the
+        two things this one deliberately left: it has so far only been run against
+        one GitHub account, and simultaneous action by two people (the race
+        tiebreak and contention handling) is not handled yet.</p>
+
         <p><strong>Copilot enablement is in:</strong> <code>$LCARS_WORKER_BIN</code>
         auto-resolves to <code>copilot</code> when you launch from Copilot, so the
         harness runs on whichever CLI you launch from (see

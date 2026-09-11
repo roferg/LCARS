@@ -1,10 +1,16 @@
 # LCARS
 
-**Local mission control for shipping software with AI.** LCARS is a reusable
-harness that takes a free-form human idea and drives it all the way to a merged
-pull request — through alignment, research, planning, gate-proven
-test-and-implement, and a human review gate — mostly unattended. You file the
-idea and give the final yes; the harness does everything in between.
+**Mission control for shipping software with AI — on a board your crew
+shares.** LCARS is a reusable harness that takes a free-form human idea and
+drives it all the way to a merged pull request — through alignment, research,
+planning, gate-proven test-and-implement, and a human review gate — mostly
+unattended. You file the idea and give the final yes; the harness does
+everything in between.
+
+A Mission belongs to a **person**, not to a laptop. Every card says whose it
+is, you can see Missions running right now on machines you do not have, you
+cannot drive someone else's by accident, and you can deliberately take one over
+— see [Whose mission is whose](#whose-mission-is-whose).
 
 It installs as a set of Claude Code skills (`lcars init`, `lcars file`, …) that
 work in **any** repo, and leaves **zero** files in your working tree. The
@@ -24,6 +30,7 @@ web board — with the CLI available as the equivalent power path underneath.
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [Whose mission is whose](#whose-mission-is-whose)
 - [The pipeline](#the-pipeline)
 - [Install](#install)
 - [Quick start (the viewscreen)](#quick-start-the-viewscreen)
@@ -51,9 +58,10 @@ checks, and human checkpoints — that turns intent into shipped software.
 
 Every piece of work is a **Mission**: a single human intent (a feature, an
 improvement, or a bug fix). Each Mission gets its own branch, is mirrored as a
-GitHub issue, and moves through a fixed sequence of **Stages** as a card on a
-kanban board. Missions are branch-isolated, so many can run concurrently and
-merge sequentially when you approve them.
+GitHub issue, **belongs to whoever that issue is assigned to**, and moves
+through a fixed sequence of **Stages** as a card on a kanban board. Missions are
+branch-isolated, so many can run concurrently and merge sequentially when you
+approve them.
 
 An idea doesn't have to arrive as a paragraph of text. When the thing you want
 is easier to *draw* than to describe, the **holodeck** is a room on the
@@ -79,6 +87,64 @@ flowchart LR
     L --> PR([🔀 Merged PR])
     L -. "pings you only at\na real decision" .-> H
 ```
+
+---
+
+## Whose mission is whose
+
+A Mission's real home is its **GitHub issue**, not the laptop that filed it — a
+second clone has no `.git/lcars` at all. So LCARS reads ownership from the forge
+(the issue's assignee) rather than keeping a private answer that could disagree
+with it, and you change who owns a Mission the way you change anything else
+about an issue: on GitHub.
+
+![Two LCARS mission cards side by side on the viewscreen: #73 in Implement marked ◈ REMOTE · DRIVEN ELSEWHERE, and #74 in Verify reading copilot · chosen at adopt, both carrying their owner's avatar and handle, above an ownership filter strip reading ALL · 2, MINE · 2, REMOTE · 1.](docs/assets/ownership-board.png)
+
+<p align="center"><em>One board, two machines. <strong>#73</strong> is being driven somewhere else — this clone has no copy of it, and the card still shows its real stage. <strong>#74</strong> was adopted onto this laptop and sits at Verify on the engine a human picked at the handoff. The strip counts what you're looking at: <code>ALL · 2</code>, <code>MINE · 2</code>, <code>REMOTE · 1</code>.</em></p>
+
+- **You're a person, not a machine.** Identity is the **`(host, login)` pair** —
+  never a hostname, never a numeric id. The same login has a different numeric
+  id on github.com than on a GitHub Enterprise host, so every lookup is
+  host-scoped and the same handle on two forges is correctly **two different
+  people**.
+- **Every card says whose it is** — avatar + handle in an LCARS pill. Yours is a
+  **solid block**, someone else's is **hollow and dashed**, so ownership survives
+  greyscale and colour-blindness instead of relying on hue (8.18:1 measured).
+- **You can't drive someone else's mission.** Not a greyed-out button: the
+  daemon refuses **ten write verbs** at the door with a status code (`start`,
+  `pause`, `resume`, `respond`, `verify`, `reapprove`, and the four Mission Log
+  verbs), and the CLI refuses the same work — both with one byte-identical
+  sentence, *assigned to `<login>` — reassign it to yourself on GitHub to take
+  command*. The lock is **light** on purpose: reading is never gated, an
+  *unassigned* mission isn't locked, and an identity LCARS can't resolve never
+  locks anything (a false lock is worse than what it prevents).
+- **You see work on machines you don't have.** A mission with no local copy
+  still appears, read from the forge, at its real stage with its pills intact,
+  marked `◈ REMOTE · DRIVEN ELSEWHERE`; its write controls carry the same
+  sentence the server would answer with.
+- **You can take one over** — `lcars adopt <issue#>`, or the card's **Adopt**
+  button. It rebuilds the mission here from the issue alone (reusing its id,
+  never minting a new one), reads the stage from the label, carries the estimate
+  across, and **asks which engine should drive it here** — recording that a human
+  chose, which is why #74 above reads `copilot · chosen at adopt`. It claims the
+  mission at **Align**, joins at **Verify** and resolves the open PR so `approve`
+  / `feedback` work immediately, and refuses the stages in between honestly.
+- **You can filter the board** — `ALL` / `MINE` / `THEIRS` / `UNASSIGNED` /
+  `REMOTE`, each with its own count.
+
+Proven on two genuinely cold clones against real GitHub, with live pipelines and
+real merges, repeatedly.
+
+> **Where this goes next.** The multi-person foundation is laid and working —
+> people are distinguishable rather than machines, every mission carries an
+> owner, the lock is enforced per-person on both surfaces, and the board renders
+> and filters by whose work is whose. What remains is the rest of the build-out,
+> and two pieces are worth naming plainly: LCARS has so far only been run against
+> **one GitHub account** (someone else's mission has been exercised with planted
+> owner data, not yet with a second human), and **two people acting in the same
+> moment** — the race tiebreak and contention handling — is deliberately still
+> ahead, owned by the next round. LCARS is set up to support multiple people; the
+> full multi-person experience is what comes after this round.
 
 ---
 
@@ -517,6 +583,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`, and re-stamps the repo's `lcarsVersion`. A clean no-op when nothing's changed. |
 | `lcars version` | Show the version picture — the **running** version (this LCARS clone's `VERSION`), the source clone's path + git state, and, inside an initialized repo, its stamped `lcarsVersion` with a verdict (**current** / **needs `lcars update`** / unknown). Read-only, no network fetch. |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. `lcars file --park "<idea>" [--engine claude\|copilot]` instead **parks** it — Mission + issue created instantly in a pre-PRD standby state (no grill, no PRD, no estimate), dropped in the Align column *awaiting alignment* and never runnable until aligned; `lcars file <id>` later runs the seeded grill and completes it in place, landing exactly where a grill-first filing would. |
+| `lcars adopt <issue#>` | **Pick a Mission up on *this* machine from its GitHub issue alone** — the portability verb (the board's **Adopt** button on a remote card does the same). Reuses the Mission's own id, rebuilds `.git/lcars/missions/<id>/` from the issue body + its `lcars:handoff` envelope, reads the stage from the `lcars:<stage>` label, seeds a config if this clone has none, carries the estimate across, and **asks which engine should drive it here** (recorded as `chosen at adopt`). Claims the Mission at **Align**; at **Verify** joins without claiming and resolves the open PR so `approve` / `feedback` work with no further command. Stages between the two ends are refused honestly. Idempotent. |
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; files a Mission per bug that enters at **Research in a grounding mode** — anchoring the free-form symptom to the parent's existing code so the fix modifies the real feature rather than a duplicate — then flows the full pipeline to Verify (only Align is skipped), and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, now **including** the Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
 | `lcars launch <mission> [hint]` | **Run the Mission's app so you can SEE it during Verify** (the board's ⚡ RUN/STOP does the same). Checks the branch into a disposable detached worktree, spawns a `launch`-role cold worker that *discovers* how to start the app (never starts it itself), then runs the command detached — the harness owns the process group, records `launch.json` for the CLI and the board, and `--stop` kills the group and prunes the worktree. The optional hint picks the target in a multi-app repo ("the example game"); each Mission gets its **own** instance, so two builds can run side by side. Your own checkout is never touched. |
@@ -1007,6 +1074,8 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Mission Log (`lcars log`) | ✅ |
 | Mission Log batch resolve (`lcars resolve-logs`) | ✅ |
 | **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
+| **A shared board** (`(host, login)` identity · owner on every card · the per-person write lock on ten verbs · remote cards · `lcars adopt` · ownership filter) | ✅ |
+| Two people acting **at the same moment** (race tiebreak, contention) | ⏭ next round |
 | **Cost estimator + per-stage model selection** (estimate at Align · Sonnet/Opus per Stage · NL override · per-CLI cost) | ✅ |
 | **Tests ride along into the PR** (authored in-tree at the repo's own convention · declared-edits audited across the commit boundary) | ✅ |
 | Under-slice pressure signal (Plan Review) | ✅ |
@@ -1015,7 +1084,14 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Empty-output worker detection | ✅ |
 | Reconcile env-parity (no phantom self-heal) | ✅ |
 
-**Roadmap.** Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
+**Roadmap.** LCARS is now set up to support **multiple people**: identity is the
+`(host, login)` pair, every mission carries an owner, the write lock is enforced
+per-person on both the daemon and the CLI, missions running on machines you
+don't have show on the board, and `lcars adopt` takes one over. That foundation
+is working — and its **build-out continues in the next round**, which owns the
+two things this one deliberately left: it has so far only been run against one
+GitHub account, and simultaneous action by two people (the race tiebreak and
+contention handling) is not handled yet. Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
 `copilot` when you launch from Copilot, so the harness runs on whichever CLI you
 launch from (see [Running under GitHub Copilot](#running-under-github-copilot)).
 The Claude path is stable; the Copilot path is **new** — it works idea→PR but
