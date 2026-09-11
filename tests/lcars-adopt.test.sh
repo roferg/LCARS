@@ -1840,5 +1840,125 @@ check "G5. …so the board shows its graceful note, not an empty table" \
 
 # ==========================================================================
 echo
+echo "S197 H — \`--engine-source chosen\`: a HUMAN chose it, and the card says so"
+# ==========================================================================
+# The board's engine picker can only speak to adopt.sh through argv. Without a
+# way to SAY "a human picked this", the captain's deliberate click at the
+# viewscreen was written onto the card as a mechanical `converted at adopt` (or
+# `kept at adopt`) — the sentence LCARS uses for something nobody was asked
+# about. `adopt-chosen` existed but was reachable from exactly one place: the
+# ANSWERED PROMPT, which needs a tty AND a config disagreement, and a board
+# dispatch has neither.
+#
+# So the distinction is RECORDED, not inferred. It cannot be inferred: on a
+# two-CLI laptop with no config disagreement adopt never prompts and `--engine
+# claude` on a claude mission is indistinguishable from a click, so there is
+# nothing to infer FROM. One flag carries the fact.
+#
+# FIXE4/issue 53 is a copilot mission (id lcars-20260909-053); both engines are
+# on $PATH as argv-recording shims, so every H case below is zero model spend.
+H_MID="lcars-20260909-053"
+jlast() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.stdout.write(list(d.keys())[-1] if d else "")' "$1" 2>/dev/null; }
+
+# adopt_src <repo> <PATH> [extra argv…] → the real adopt on issue 53, no tty
+adopt_src() {
+  local repo="$1" pth="$2"; shift 2
+  ( cd "$repo" && env PATH="$pth" GH_FIX="$FIXE4" LCARS_GH_BIN="$GH" \
+      LCARS_GIT_BIN="$GIT_ABS" LCARS_GH_USER=capt \
+      GH_ASSIGN_STATE="$TMPROOT/assign-h.txt" \
+      bash "$SCRIPT" --issue 53 "$@" </dev/null 2>&1 )
+}
+
+# --- H1: KEPT-SHAPED but CHOSEN. The flag names the mission's OWN engine ---
+# Today this records `adopt-kept` — "the mission's pin carried", a fact about
+# the envelope. The truth is that a human read the picker and clicked copilot.
+IFS="$TAB" read -r repoH1 originH1 <<<"$(new_repo)"
+rcH1=0
+outH1="$(adopt_src "$repoH1" "$BOTH_PATH" --engine copilot --engine-source chosen)" || rcH1=$?
+sH1="$(state_of "$repoH1" "$H_MID")"
+check "H1. \`--engine copilot --engine-source chosen\` adopts cleanly" "[ '$rcH1' -eq 0 ]"
+check "H1. state.json PARSES" "json_ok '$sH1'"
+check "H1. THE HEADLINE: a human choice is recorded as CHOSEN, not kept" \
+  "[ \"\$(json_get '$sH1' engineSource)\" = 'adopt-chosen' ]"
+check "H1. …on the engine he picked" "[ \"\$(json_get '$sH1' workerBin)\" = 'copilot' ]"
+check "H1. …and engineResolved agrees" \
+  "[ \"\$(json_get '$sH1' engineResolved)\" = 'copilot' ]"
+check "H1. \`base\` is still the LAST key" "[ \"\$(jlast '$sH1')\" = 'base' ]"
+check "H1. the readout tells the captain HE chose it" \
+  "printf '%s' \"\$outH1\" | grep -qi 'your choice'"
+
+# --- H2: CONVERTED-SHAPED and CHOSEN --------------------------------------
+# Same click, different answer: he picked the engine the mission was NOT filed
+# on. It is still a choice, not a mechanical conversion.
+IFS="$TAB" read -r repoH2 originH2 <<<"$(new_repo)"
+rcH2=0
+outH2="$(adopt_src "$repoH2" "$BOTH_PATH" --engine claude --engine-source chosen)" || rcH2=$?
+sH2="$(state_of "$repoH2" "$H_MID")"
+check "H2. a CHOSEN conversion adopts cleanly" "[ '$rcH2' -eq 0 ]"
+check "H2. state.json PARSES" "json_ok '$sH2'"
+check "H2. recorded as CHOSEN, not converted" \
+  "[ \"\$(json_get '$sH2' engineSource)\" = 'adopt-chosen' ]"
+check "H2. …on the engine he picked" "[ \"\$(json_get '$sH2' workerBin)\" = 'claude' ]"
+check "H2. \`base\` is still the LAST key" "[ \"\$(jlast '$sH2')\" = 'base' ]"
+# THE COUNT. The recorded engine is the one that actually runs.
+shim_reset
+spawn_with "$repoH2" "$H_MID" "$BOTH_PATH"
+check "H2. THE COUNT: the chosen engine ran" "[ \"\$(shim_count claude)\" -ge 1 ]"
+check "H2. THE COUNT: the mission's filed engine ran ZERO times" \
+  "[ \"\$(shim_count copilot)\" -eq 0 ]"
+
+# --- H3: NO REGRESSION. `--engine` alone is byte-identical to today -------
+IFS="$TAB" read -r repoH3 originH3 <<<"$(new_repo)"
+adopt_src "$repoH3" "$BOTH_PATH" --engine copilot >/dev/null 2>&1
+sH3="$(state_of "$repoH3" "$H_MID")"
+check "H3. \`--engine\` naming the mission's engine still records KEPT" \
+  "[ \"\$(json_get '$sH3' engineSource)\" = 'adopt-kept' ]"
+check "H3. state.json PARSES" "json_ok '$sH3'"
+IFS="$TAB" read -r repoH3b originH3b <<<"$(new_repo)"
+adopt_src "$repoH3b" "$BOTH_PATH" --engine claude >/dev/null 2>&1
+sH3b="$(state_of "$repoH3b" "$H_MID")"
+check "H3b. \`--engine\` naming another engine still records CONVERTED" \
+  "[ \"\$(json_get '$sH3b' engineSource)\" = 'adopt-converted' ]"
+check "H3b. state.json PARSES" "json_ok '$sH3b'"
+
+# --- H4: any other value is REFUSED, and nothing is written ---------------
+# A typo must not silently produce a WRONG provenance — the whole value of this
+# record is that it is trustworthy. `chosen` is the only thing argv may assert.
+for bad in env adopt-chosen CHOSEN "" picked; do
+  IFS="$TAB" read -r repoH4 originH4 <<<"$(new_repo)"
+  rcH4=0
+  outH4="$(adopt_src "$repoH4" "$BOTH_PATH" --engine claude --engine-source "$bad")" || rcH4=$?
+  sH4="$(state_of "$repoH4" "$H_MID")"
+  check "H4. \`--engine-source '$bad'\` is REFUSED" "[ '$rcH4' -ne 0 ]"
+  check "H4. …and nothing was created for '$bad'" "[ ! -e '$sH4' ]"
+done
+
+# --- H5: `--engine-source chosen` with NO `--engine` → REFUSED ------------
+# THE RULING: refuse, do not ignore. The flag asserts WHO decided; with no
+# engine named there is no decision to attribute, and the two alternatives are
+# both worse. Ignoring it lets a caller believe a human choice was recorded
+# when the mission took adopt's own automatic path; honouring it would stamp
+# "a human chose this" on a decision no human made. A caller that sends the
+# provenance without the value is broken, and adopt says so instead of
+# guessing which half it meant.
+IFS="$TAB" read -r repoH5 originH5 <<<"$(new_repo)"
+rcH5=0
+outH5="$(adopt_src "$repoH5" "$BOTH_PATH" --engine-source chosen)" || rcH5=$?
+sH5="$(state_of "$repoH5" "$H_MID")"
+check "H5. \`--engine-source chosen\` alone is REFUSED, not silently ignored" \
+  "[ '$rcH5' -ne 0 ]"
+check "H5. …and nothing was created" "[ ! -e '$sH5' ]"
+check "H5. …and the refusal names the flag it needs" \
+  "printf '%s' \"\$outH5\" | grep -q -- '--engine'"
+
+# --- H6: --help mentions the new flag -------------------------------------
+# A flag a caller cannot discover is a flag that gets guessed at.
+outH6="$(bash "$SCRIPT" --help 2>&1)"
+printf '%s' "$outH6" > "$TMPROOT/h6-help.txt"
+check "H6. \`--help\` documents \`--engine-source\`" \
+  "printf '%s' \"\$outH6\" | grep -q -- '--engine-source'"
+
+# ==========================================================================
+echo
 printf 'lcars adopt: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

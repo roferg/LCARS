@@ -264,6 +264,7 @@ state_issue_of() { # <state.json> → the recorded issue number, or ""
 # --- argv ------------------------------------------------------------------
 ISSUE=""
 OPT_ENGINE=""
+OPT_ENGINE_SRC=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) ISSUE="${2:-}"; shift 2 ;;
@@ -272,17 +273,41 @@ while [ $# -gt 0 ]; do
     # has — the only way it may, because the alternative (converting silently
     # because nobody was there to ask) is the defect this session is closing.
     --engine) OPT_ENGINE="${2:-}"; shift 2 ;;
+    # S197: WHO decided, carried beside WHAT was decided. `--engine` alone
+    # cannot tell a captain's click at the viewscreen picker from a mechanical
+    # conversion — on a two-CLI laptop with no config disagreement adopt never
+    # prompts, so `--engine claude` on a claude mission looks identical either
+    # way and there is nothing to infer from. The caller that KNOWS a human
+    # chose says so, and the card stops calling a decision nobody was asked
+    # about by the same name as one he made. Only the literal `chosen`: a typo
+    # must not quietly mint a provenance, because a record that can be wrong is
+    # worth nothing.
+    --engine-source)
+      OPT_ENGINE_SRC="${2:-}"
+      [ "$OPT_ENGINE_SRC" = "chosen" ] \
+        || die "\`--engine-source $OPT_ENGINE_SRC\` is not something adopt can record — the only value is \`chosen\`, which means a human picked the engine. Nothing was created."
+      shift 2 ;;
     -h|--help)
-      printf 'usage: adopt.sh --issue <issue-number> [--engine <claude|copilot>]\n'
+      printf 'usage: adopt.sh --issue <issue-number> [--engine <claude|copilot>] [--engine-source chosen]\n'
       printf '  Rebuilds the mission on issue <n> locally. Works at the ENDS of the\n'
       printf '  pipeline only: align (claim + rebuild) and verify (join + resolve PR).\n'
       printf '  --engine converts the mission onto a CLI this machine has, and RECORDS\n'
       printf '  the choice; without it an unavailable engine is refused, never switched.\n'
+      printf '  --engine-source chosen says a HUMAN picked that engine (the viewscreen\n'
+      printf '  picker), so the card reads "chosen at adopt" and not "converted".\n'
       exit 0 ;;
     -*) die "unknown argument: $1" ;;
     *)  ISSUE="$1"; shift ;;
   esac
 done
+# A provenance with no decision under it. REFUSED rather than ignored: with no
+# `--engine` there is no operator choice to attribute, and both other readings
+# are lies. Ignoring it lets the caller believe a human choice was recorded when
+# adopt in fact took its own automatic path; honouring it would stamp "a human
+# chose this" on a decision no human made. A caller that sends the provenance
+# without the value is broken, and adopt says which half is missing.
+[ -z "$OPT_ENGINE_SRC" ] || [ -n "$OPT_ENGINE" ] \
+  || die "\`--engine-source chosen\` says a human picked the engine, but no \`--engine <name>\` came with it — there is no choice to record. Pass both, or neither. Nothing was created."
 ISSUE="${ISSUE#\#}"
 [ -n "$ISSUE" ] || die "no issue number — run \`lcars adopt <issue#>\` (the number of the mission's GitHub issue)."
 case "$ISSUE" in *[!0-9]*) die "'$ISSUE' is not an issue number — run \`lcars adopt <issue#>\`." ;; esac
@@ -573,6 +598,11 @@ if [ -n "$OPT_ENGINE" ]; then
   else
     ENGINE_SRC="adopt-converted"
   fi
+  # …unless the caller RECORDED that a human chose it. kept/converted describe
+  # what the flag did to the mission's pin; `chosen` describes who decided, and
+  # that is the more specific truth, so it wins. The readout's `adopt-chosen`
+  # case and the board's "chosen at adopt" label already exist for it.
+  [ "$OPT_ENGINE_SRC" = "chosen" ] && ENGINE_SRC="adopt-chosen"
 elif [ -z "$ENGINE" ]; then
   # `engine: null` in the envelope means the filing laptop deliberately made NO
   # pin and host-detection is legitimately in charge (S188). Inventing one here

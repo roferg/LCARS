@@ -624,9 +624,15 @@ class TheAnswerReachesAdoptSh(_Serve):
         self.serve(adapter, actions)
 
     def test_the_chosen_engine_arrives_as_adopts_own_flag(self):
+        # S197 added `--engine-source chosen` behind it — the provenance half
+        # of the same act, asserted in full by
+        # TheBoardsChoiceMustRecordAsCHOSEN below. What this test guards is the
+        # ENGINE reaching adopt.sh as adopt's own `--engine`, not as an env var
+        # or a second implementation of the choice.
         status, _ = self.post("/api/mission/34/adopt", {"engine": "claude"})
         self.assertEqual(200, status)
-        self.assertEqual(["--issue 34 --engine claude"], calls(self.argv))
+        self.assertEqual(["--issue 34 --engine claude --engine-source chosen"],
+                         calls(self.argv))
 
     def test_taking_the_default_sends_NOTHING_and_the_argv_is_unchanged(self):
         """Doing nothing must reproduce today's behaviour exactly — including
@@ -663,11 +669,11 @@ class TheAnswerReachesAdoptSh(_Serve):
 #    not finish inside its own fence.
 # ==========================================================================
 class TheBoardsChoiceMustRecordAsCHOSEN(_Serve):
-    """BLOCKED ON `skills/lcars-adopt/adopt.sh`, which is another
-    implementor's file this session (read-only fence). Written now so the
-    moment the flag lands, deleting one decorator is the whole of the proof.
+    """LANDED (S197). Written while `skills/lcars-adopt/adopt.sh` was behind
+    another implementor's read-only fence, and turned on the moment the flag
+    arrived — deleting two decorators was the whole of the proof.
 
-    WHAT THE CARD SAYS TODAY, AND WHY IT IS THE WRONG STORY. adopt.sh records
+    WHAT THE CARD USED TO SAY, AND WHY IT WAS THE WRONG STORY. adopt.sh records
     three provenances and board.js already renders all three
     (ENGINE_SOURCE_LABEL, board.js:2010):
 
@@ -675,19 +681,19 @@ class TheBoardsChoiceMustRecordAsCHOSEN(_Serve):
         adopt-converted  "converted at adopt"
         adopt-chosen     "chosen at adopt"
 
-    `adopt-chosen` is reachable from exactly ONE place — the ANSWERED PROMPT
-    (adopt.sh:589) — and that prompt fires only on a tty, and only when the
-    mission's engine is installed AND this repo's config.json disagrees with
-    it. The `--engine` FLAG path (adopt.sh:570-575) records `adopt-kept` when
-    the flag names the mission's own engine and `adopt-converted` otherwise.
+    `adopt-chosen` was reachable from exactly ONE place — the ANSWERED PROMPT
+    — and that prompt fires only on a tty, and only when the mission's engine
+    is installed AND this repo's config.json disagrees with it. The `--engine`
+    FLAG path recorded `adopt-kept` when the flag named the mission's own
+    engine and `adopt-converted` otherwise.
 
-    So the board, which can only speak to adopt.sh through `--engine`, will
-    have a deliberate human choice written onto the card as a MECHANICAL
+    So the board, which can only speak to adopt.sh through argv, had a
+    deliberate human choice written onto the card as a MECHANICAL
     CONVERSION. A captain who stood at the viewscreen, read that copilot is
     not on this laptop, and picked claude on purpose gets "converted at adopt"
     — the sentence LCARS uses for something nobody was asked about.
 
-    THE ASK, exactly, and it is one flag and four lines:
+    THE FIX, exactly as asked, and it is one flag and four lines:
 
         --engine-source chosen     (argv, beside the existing --engine)
 
@@ -708,17 +714,14 @@ class TheBoardsChoiceMustRecordAsCHOSEN(_Serve):
     silently dropped choice is worse than a mislabelled one.
     """
 
-    REASON = ("BLOCKED: adopt.sh needs `--engine-source chosen`; that file "
-              "belongs to the parallel implementor this session")
-
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.record = os.path.join(self.tmp, "rec.txt")
         self.argv = os.path.join(self.tmp, "argv.txt")
         stub = _adopt_stub(self.tmp, "adopt.sh",
-                           'printf "%s\\n" "$*" >> "' + self.argv + '"\\n'
-                           'exit 0\\n')
+                           'printf "%s\\n" "$*" >> "' + self.argv + '"\n'
+                           'exit 0\n')
         actions = Actions(repo_root=self.tmp, scripts={"adopt": stub},
                           worker_bin="/bin/echo")
         adapter = board_of(self.tmp,
@@ -726,13 +729,11 @@ class TheBoardsChoiceMustRecordAsCHOSEN(_Serve):
                            self.record, ("claude",))
         self.serve(adapter, actions)
 
-    @unittest.skip(REASON)
     def test_the_boards_choice_travels_as_CHOSEN_not_as_a_conversion(self):
         self.post("/api/mission/34/adopt", {"engine": "claude"})
         self.assertEqual(["--issue 34 --engine claude --engine-source chosen"],
                          calls(self.argv))
 
-    @unittest.skip(REASON)
     def test_taking_the_default_claims_no_human_choice(self):
         # He did not choose; he declined to. Nothing is asserted about him.
         self.post("/api/mission/34/adopt")

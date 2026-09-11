@@ -13151,10 +13151,24 @@ class Actions(LogFacts):
         # byte-for-byte the dispatch this daemon has always made — same argv,
         # same non-interactive path, same `note()` when the repo config
         # disagrees. Doing nothing reproduces today's behaviour exactly.
+        #
+        # AND IT TRAVELS AS A CHOICE, NOT AS A CONVERSION (S197). adopt.sh
+        # records three provenances and the card renders all three: `adopt-kept`
+        # ("mission pin · kept at adopt"), `adopt-converted` ("converted at
+        # adopt") and `adopt-chosen` ("chosen at adopt"). `--engine` alone lands
+        # in the first two — both of which are LCARS's sentences for something
+        # nobody was asked about — so a captain who stood at the viewscreen,
+        # read that copilot is not on this laptop and picked claude ON PURPOSE
+        # was told he had been converted. `--engine-source chosen` carries the
+        # one fact only this caller knows: a human answered the picker. It is
+        # RECORDED rather than inferred because it cannot be inferred — on a
+        # two-CLI laptop with no config disagreement adopt never prompts, and
+        # `--engine claude` on a claude mission is byte-identical whether a
+        # human chose it or not.
         args = ["--issue", n]
         eng = self._adopt_engine(engine)
         if eng:
-            args += ["--engine", eng]
+            args += ["--engine", eng, "--engine-source", "chosen"]
         try:
             proc = self._run("adopt", args)
         except ActionError as exc:
