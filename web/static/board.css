@@ -768,6 +768,38 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    stray green button. */
 .card.remote .card-ctrl .remote-adopt,
 .det-actions .remote-adopt{border-color:var(--lcars-violet,#9977ff)}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S197 — THE MISSION THAT ALREADY SHIPPED, FROM SOMEWHERE ELSE.
+
+   The card is LOCAL and its repo genuinely still has it at Verify; the forge
+   says the issue is done (merged) or closed. Two live two-laptop runs found the
+   filing laptop offering a live `✓ Review PR ▸` for a PR that had merged.
+
+   IT IS DRAWN IN SHAPE, NOT HUE, and that is the requirement rather than a
+   preference: this round established solid = actionable, hollow/dashed = not,
+   and the state has to survive a greyscale screenshot. So the card's 6px left
+   edge — the one every card state already speaks through — goes DASHED, and
+   the pill goes HOLLOW AND DASHED. A reader who cannot see the teal still sees
+   a card drawn in broken line where every live card is drawn in solid.
+
+   NO NEW TOKEN (ADR-007). The pill borrows `--lcars-teal`, the shared
+   success/go token, because the common case IS a success — it shipped. The
+   *shape* is what says "not here, not yours to act on".
+
+   NOTHING DIMS THE CONTROL ROW. An `opacity` here would make a compositing
+   group and out-specify `.btn.locked{opacity:1}`, which is S190's D-defect and
+   S191's fix-round-1 trap arrived at from a third direction. The dead controls
+   take `.btn.locked` (hollow, dashed, `⊘`) like every other locked control on
+   this board, and they keep it.
+   ════════════════════════════════════════════════════════════════════════ */
+.pill.shipped{background:transparent;border-style:dashed;
+  border-color:var(--lcars-teal,#00ccaa);color:var(--lcars-teal,#00ccaa)}
+/* The edge. `border-left-style` only — the COLOUR is left to whatever state the
+   card already had (mine/awaiting/child), because "this is over" is a fact
+   about actionability and not a fourth card hue to learn. */
+.card.shipped-elsewhere{border-left-style:dashed}
+
 /* The footer line, beside ● VIEW-ONLY. It inherits `.dim` from the markup, so
    this is spacing and colour only — an ambient condition, never an alert. */
 .remote-note{margin-left:12px;color:var(--lcars-violet,#9977ff);opacity:.85}

@@ -137,6 +137,15 @@ EOF
   #                   beside the live Adopt, 1.79:1 apart.
   #   #202 research — NOT adoptable. The worse card: ONE control, dead, and no
   #                   Adopt at all. After B3 it must offer nothing.
+  #   #106 CLOSED   — NOT a remote card at all, and that is the point. It is
+  #                   the issue belonging to the LOCAL mission `m-shipped-mine`
+  #                   below: laptop B merged it, so GitHub closed it (the PR
+  #                   body carries `Closes #106`) and `lcars approve` relabelled
+  #                   it `lcars:done`. This laptop's `.git/lcars` still says
+  #                   verify. Two live two-laptop runs found exactly this card
+  #                   offering a live `✓ Review PR ▸` for a merged PR. It must
+  #                   draw NO second card (local wins) and it must WITHDRAW that
+  #                   control on the local one.
   # BOTH UNASSIGNED on purpose — `.card.owned-by-other` must keep meaning the
   # S190 lock and nothing else, so the S190/S191 checks above measure exactly
   # the cards they were written for.
@@ -151,6 +160,11 @@ EOF
    "labels":[{"name":"lcars:mission"},{"name":"lcars:research"}],
    "body":"A mission being driven from another machine.",
    "updatedAt":"2026-09-08T09:00:00Z","assignees":[],
+   "subIssuesSummary":{"completed":0,"total":0,"percentCompleted":0}},
+  {"number":106,"title":"Shipped — merged on the other laptop","state":"CLOSED",
+   "labels":[{"name":"lcars:mission"},{"name":"lcars:done"}],
+   "body":"This mission's PR merged on the other laptop.",
+   "updatedAt":"2026-09-09T18:00:00Z","assignees":[{"login":"roferg"}],
    "subIssuesSummary":{"completed":0,"total":0,"percentCompleted":0}}
 ]
 JSONEOF
@@ -218,13 +232,24 @@ fx.plant_simple(root, "m-align-theirs", stage="align", issue=104,
 fx.plant_simple(root, "m-done-mine", stage="done", issue=105,
                 title="Mine — finished, and still on the board",
                 created="2026-06-05T10:00:00Z")
+# THE MISSION THAT SHIPPED FROM SOMEWHERE ELSE. Local, at verify, with an open
+# PR recorded — i.e. IDENTICAL on disk to `m-mine` above, which is the whole
+# design of the fixture: the two cards differ in exactly one fact, and that fact
+# lives only on the forge (issue #106 is CLOSED and wears `lcars:done`; #101 is
+# not in the listing at all). Anything that paints differently between them is
+# the cure, and nothing else can be.
+fx.plant_simple(root, "m-shipped-mine", stage="verify", issue=106,
+                title="Mine — but it already shipped from the other laptop",
+                created="2026-06-06T10:00:00Z",
+                pr_url="https://github.com/acme/repo/pull/9", pr_number="9",
+                review="open")
 # The published-owner files ownership.sh writes. Planted, not fetched: the
 # daemon reads them off disk on the render path and this rig never needs a forge.
 cache = os.path.join(root, ".git", "lcars", "cache")
 os.makedirs(cache, exist_ok=True)
 for issue, login in ((101, "roferg"), (102, "picard"),
                      (103, "roferg"), (104, "picard"),
-                     (105, "roferg")):
+                     (105, "roferg"), (106, "roferg")):
     with open(os.path.join(cache, "owner-github.com-%d" % issue), "w") as fh:
         fh.write(login + "\n")
 PYEOF
@@ -356,7 +381,8 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
                  filter-forgets-on-reload filter-refetches-the-board \
                  filter-footer-counts-active-only \
                  beam-pending-is-a-hole beam-img-outranks-its-disc \
-                 beam-window-restarts-on-repaint; do
+                 beam-window-restarts-on-repaint \
+                 shipped-card-never-learns shipped-lie-is-only-disabled; do
     # ONE CONTROL AT A TIME, when that is what is being asked. The full set is
     # sixteen browser runs; `LCARS_S190_ONLY=beam-pending-is-a-hole,...` narrows
     # it while a control is being written, and an empty value means all of them.
@@ -417,6 +443,38 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
       # control's saturated fill. Scoped to `.det-actions` so it hits the REMOTE
       # measurement and leaves S191's own board-card pair alone: two red controls
       # that both fire on one check prove less than two that fire on one each.
+      # ── S197. THE DEFECT, VERBATIM: the card never learns. `shippedVerdict`
+      # returns null, so the daemon's fact reaches nothing — no pill, no dashed
+      # edge, no sweep — and the card goes back to offering a live
+      # `✓ Review PR ▸` for a pull request that merged on the other laptop.
+      # This is precisely what two live two-laptop runs photographed.
+      #
+      # PATCHED WITH sed AND THEN VERIFIED TO HAVE BITTEN (cmp against the
+      # .bak). tests/drives/browser/calibrate.sh sat DEAD FROM S176 TO S191
+      # because its cut silently matched nothing, and a recent lesson in this
+      # very file is that an indentation change broke an older control's sed —
+      # so the pattern is deliberately NOT anchored to a column.
+      shipped-card-never-learns)
+        "${LCARS_SED_BIN:-sed}" -i.bak \
+          's/function shippedVerdict(m) {/function shippedVerdict(m) { return null;/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # …and the HALF-CURE, which is the more interesting red control: leave the
+      # sweep in place (so the button is disabled and hollow and wears `⊘`) but
+      # take out the affordance that REPLACES THE LABEL. The board then reads
+      # `⊘ Review PR ▸` about a PR that is merged — the lie made unclickable
+      # rather than withdrawn, which is not the same thing and must not pass.
+      shipped-lie-is-only-disabled)
+        "${LCARS_SED_BIN:-sed}" -i.bak \
+          's/var over = shippedOnVerify(m); if (over) return over;/var over = null;/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
       remote-lock-looks-live)
         printf '\n.det-actions .btn.locked{background:var(--lcars-teal);color:var(--lcars-text-on-color);border-color:var(--lcars-teal);border-style:solid}\n' >>"$CSS" ;;
       # ── S196 B3. Neuter the removal so the remote card keeps its dead

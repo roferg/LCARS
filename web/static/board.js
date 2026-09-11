@@ -657,6 +657,134 @@ function remoteControls(host, m) {
   return host;
 }
 
+/* ═══════ THE MISSION THAT SHIPPED FROM SOMEWHERE ELSE ═══════════════════
+
+   FOUND TWICE IN ONE DAY, independently, by two live two-laptop runs. Laptop B
+   adopts a mission, drives it and merges it. Laptop A — the one that FILED it —
+   still shows the card at Verify, offering a live `✓ Review PR ▸` for a pull
+   request that merged minutes ago. LOCAL WINS is the overlay's first rule and
+   it is right for CONTENT; it was being applied to TRUTH as well, so the filing
+   laptop sat on a version of reality that had ended.
+
+   THE SERIOUS HALF IS THE CONTROL, NOT THE COST RECORD. A live button for a
+   merged PR is S191's D4 verbatim — a lie the hand discovers — and it is cured
+   the way S190 and S191 cured theirs: the affordance goes HOLLOW and wears `⊘`,
+   and the card states the fact in words. Nothing new is invented; `markLocked`
+   and `.btn.locked` already say "this control will not go", and this is one
+   more reason for them to say it.
+
+   TWO VERDICTS, BECAUSE THEY ARE TWO FACTS. `shipped` means the issue carries
+   `lcars:done` — the label `lcars approve` applies at the ship and nowhere
+   else. `closed` means the issue is closed on the forge WITHOUT that label: the
+   mission was abandoned or closed by hand. Both end the mission; only one is a
+   merge, and calling the second one "shipped" would invent a merge nobody
+   performed. (There is a real example in LCARS's own repo: issue #83, CLOSED,
+   still wearing `lcars:implement`.)
+
+   WHAT IT IS NOT. It does not move the card to Done and it does not touch
+   `.git/lcars`. The local mission genuinely IS at verify on this laptop — the
+   branch is here and unmerged — so the card stays in the column its own repo
+   puts it in and tells the captain what the forge knows. */
+
+/* The refusals, one sentence each. Both are pinned against the daemon's own
+   vocabulary by test; both name the FACT, never the remedy, because the remedy
+   (pull, delete the branch, leave it) is the captain's call. */
+var SHIPPED_LINE =
+  "already shipped from another machine — its pull request is merged";
+var CLOSED_LINE =
+  "already closed on the forge from another machine — nothing here can act on it";
+
+/* The daemon's verdict block, or null. `shippedElsewhere` is ADDITIVE and
+   ABSENT on every card the forge said nothing about, so this is also the
+   "nothing changed" test for every board that has no gh on it. */
+function shippedVerdict(m) {
+  var v = m && m.shippedElsewhere;
+  if (!v || typeof v !== "object") return null;
+  if (v.state !== "shipped" && v.state !== "closed") return null;
+  return v;
+}
+
+function shippedLine(v) {
+  return (v && v.state === "shipped") ? SHIPPED_LINE : CLOSED_LINE;
+}
+
+/* The marker, in the pill row, in the vocabulary that is already there.
+
+   `◈` is the framed diamond the REMOTE pill wears — the house glyph for "this
+   happened somewhere that is not here" — and the same shape ADOPT wears FILLED
+   (`◆`) for the one thing you CAN do. Solid = yours to act on, hollow = not:
+   the sentence this whole round speaks. No glyph from outside the family, and
+   no new colour token (ADR-007); the stylesheet draws the pill HOLLOW AND
+   DASHED, so it survives a desaturated screenshot. */
+function shippedPill(v) {
+  return el("span", "pill shipped",
+            v.state === "shipped" ? "◈ SHIPPED ELSEWHERE"
+                                  : "◈ CLOSED ON THE FORGE");
+}
+
+/* Disable every write control under `host` on a mission that is already over.
+
+   A SUBTREE SWEEP, for the third time and for the third time for the same
+   reason (applyOwnerLock, applyRemoteLock): cardControls and the detail header
+   are two dozen accumulated branches between them, and a per-branch check is a
+   check the next branch will forget. Whatever the surface decided to draw, if
+   it is a button it is dead and it says why.
+
+   THE ONE EXEMPTION is `detail-close` — a modal you cannot close is a trap, and
+   closing writes nothing. There is deliberately no ADOPT exemption: adopt is an
+   affordance on a REMOTE card, and this fact only ever attaches to a LOCAL one.
+
+   IT OUTRANKS THE OWNER LOCK, and is applied after it so its sentence wins. The
+   owner lock says "this is someone else's to drive"; this says "there is
+   nothing left to drive". The second is the more useful thing to be told. */
+function applyShippedLock(host, m) {
+  var v = shippedVerdict(m);
+  if (!host || !v) return host;
+  var line = shippedLine(v);
+  (function walk(n) {
+    if (!n) return;
+    var tag = String(n.tagName || n.tag || "").toUpperCase();
+    var cls = " " + String(n.className || "") + " ";
+    if (tag === "BUTTON" && cls.indexOf(" detail-close ") < 0) {
+      n.disabled = true;
+      n.title = line;
+      markLocked(n);
+    }
+    var kids = n.children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(host);
+  return host;
+}
+
+/* The Verify affordance for a mission that has already shipped, or null.
+
+   WHY THIS ALSO SITS INSIDE verifyAffordance, when the sweep above would have
+   disabled the button anyway: the sweep can only mark what was BUILT, and what
+   was built here is the literal sentence `✓ Review PR ▸`. Marking it locked
+   would leave the board saying "review the PR" about a PR that is merged — the
+   lie made unclickable rather than withdrawn. The LABEL is the thing that has
+   to change, and this is the one place both surfaces read it from (BUG-049).
+
+   It outranks every kind below it, including the reconcile/heal kinds: each of
+   those describes work IN FLIGHT on a mission that is, in fact, finished.
+
+   AND IT IS ONE LINE AT THE CALL SITE, deliberately. verifyAffordance's opening
+   bytes are pinned by an existing regression guard (test_server's BUG-078
+   window check, which reads the first 1200 of them), so the reasoning lives
+   HERE and the call is a line — the same trade ownerLockOnVerify made above it,
+   for the same reason, and the guard it protects has nothing to do with this
+   session. Verified by making the mistake first: a five-line comment there
+   pushed `isReconcileAwaitingReapprove` out of the window and reddened it. */
+function shippedOnVerify(m) {
+  var v = shippedVerdict(m);
+  if (!v) return null;
+  return {
+    kind: "shipped-elsewhere",
+    label: v.state === "shipped" ? "⊘ Shipped elsewhere" : "⊘ Closed on the forge",
+    cls: "warn", disabled: true, title: shippedLine(v),
+  };
+}
+
 /* THE FORGE DID NOT ANSWER. `meta.remote.status === "unavailable"` means the
    daemon HAS gh and asked, and got nothing back — no auth, no network, not a
    GitHub remote, rate-limited. It is worth ONE quiet line in the footer beside
@@ -1786,6 +1914,13 @@ function cardNode(m) {
   // the stylesheet gives the card its cool "somewhere else" chrome; the controls
   // are disabled by remoteControls below, never by CSS.
   if (isRemote(m)) card.className += " remote";
+  // …and this LOCAL one is finished on the forge — merged, or closed, from
+  // another machine. A marker class only: the stylesheet draws the card's edge
+  // DASHED (shape, not hue, so it survives a desaturated screenshot); the
+  // controls are withdrawn by applyShippedLock below, never by CSS. The class
+  // covers BOTH verdicts — "over, elsewhere" is one state to the eye — and the
+  // pill and the control label carry which one it is.
+  if (shippedVerdict(m)) card.className += " shipped-elsewhere";
   // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
   // animation onto this card (showCardBusy).
   if (m.id != null) {
@@ -1839,6 +1974,10 @@ function cardNode(m) {
   // S191: WHERE is this being driven — first in the row, because a card you
   // cannot act on has to say so before it says anything else.
   if (isRemote(m)) pills.appendChild(remotePill());
+  // …and FIRST for the same reason: a card whose mission has already ended has
+  // to say so before it says what it was going to cost.
+  var sv = shippedVerdict(m);
+  if (sv) pills.appendChild(shippedPill(sv));
   // UX-29: a "QUEUED · WAITING" pill when scheduled-but-not-started in a
   // resolve-logs batch — distinct from running/paused/awaiting, no running
   // pulse. awaiting still wins (a gate outranks the queue).
@@ -2014,7 +2153,13 @@ function cardNode(m) {
   // driving on my other laptop, passes ownerLockLogin (the owner IS me) and must
   // still be read-only here. Two sweeps, two facts, neither one covering for the
   // other. remoteControls also adds the one live control a remote card gets.
-  card.appendChild(remoteControls(applyOwnerLock(cardControls(m), m), m));
+  // S197: …and a THIRD sweep, for a third fact none of the other two covers: a
+  // LOCAL mission I own, at verify, whose PR merged on the other laptop. The
+  // owner lock does not fire (the owner is me) and the remote sweep does not
+  // fire (the mission is local), and the card offered a live `✓ Review PR ▸`
+  // for a merged PR. Applied AFTER the owner lock so its sentence wins.
+  card.appendChild(remoteControls(
+    applyShippedLock(applyOwnerLock(cardControls(m), m), m), m));
 
   card.addEventListener("click", function () { openDetail(m.id); });
   return card;
@@ -7721,6 +7866,10 @@ function renderDetail(mi) {
   // moment the captain clicks in for a closer look. One sweep over the whole
   // grid; ✕ and ADOPT are exempt by class (see applyRemoteLock).
   applyRemoteLock(grid, mi);
+  // S197: the same sweep for a LOCAL mission that already shipped elsewhere.
+  // The detail is the other door onto the card, and its header carries its own
+  // `✓ Review PR` — one fact, both surfaces (BUG-049's rule).
+  applyShippedLock(grid, mi);
   var close = btn("✕", "detail-close", closeOverlay);
   close.className = "detail-close";
   head.appendChild(close);
@@ -9239,6 +9388,7 @@ function stageLabel(stage) {
    wire their own click handlers / dispatch styles). */
 function verifyAffordance(m) {
   if (!m) return null;
+  var over = shippedOnVerify(m); if (over) return over;      // S197 (see fn)
   var owned = ownerLockOnVerify(m); if (owned) return owned; // S190
   // BUG-078: an OPTIMISTIC reapprove/retry-merge dispatch is in flight (isMerging,
   // kept sticky by clearMergingOnState until a terminal change). It must win over

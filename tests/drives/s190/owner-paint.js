@@ -417,6 +417,63 @@ const OWNER_PILL_PROBE = `(function () {
   return { mine: pill("m-align-mine"), theirs: pill("m-align-theirs") };
 })()`;
 
+/* S197. THE MISSION THAT ALREADY SHIPPED, FROM SOMEWHERE ELSE.
+ *
+ * `m-mine` and `m-shipped-mine` are IDENTICAL on disk — same stage, same owner,
+ * same open PR recorded in state.json. The only difference between them lives
+ * on the forge: `m-shipped-mine`'s issue (#106) is CLOSED and wears
+ * `lcars:done`, and #101 is not in the listing at all. So every difference this
+ * probe reports is the cure, and nothing else can be.
+ *
+ * It reads BOTH cards so the pair can be shot in one frame and compared the way
+ * a captain compares them — side by side — and it reports the CARD's own left
+ * edge as well as the controls, because "solid = actionable, hollow/dashed =
+ * not" is a claim about the card at across-the-room distance and about the
+ * control at reading distance, and the two are measured separately. */
+const SHIPPED_PROBE = `(function () {
+  function read(mid) {
+    var card = document.querySelector('.card[data-mid="' + mid + '"]');
+    if (!card) return null;
+    var cs = getComputedStyle(card);
+    var r = card.getBoundingClientRect();
+    var btns = Array.prototype.slice.call(
+      card.querySelectorAll(".card-ctrl button"));
+    return {
+      mid: mid,
+      cls: String(card.className || ""),
+      edgeStyle: cs.borderLeftStyle,
+      text: (card.textContent || "").replace(/\\s+/g, " ").trim(),
+      cardBox: { x: r.x, y: r.y, w: r.width, h: r.height },
+      controls: btns.map(function (b) {
+        var br = b.getBoundingClientRect(), bs = getComputedStyle(b);
+        return {
+          text: (b.textContent || "").trim(),
+          disabled: !!b.disabled,
+          title: String(b.title || ""),
+          cls: String(b.className || ""),
+          bg: bs.backgroundColor, borderStyle: bs.borderTopStyle,
+          box: { x: br.x, y: br.y, w: br.width, h: br.height }
+        };
+      })
+    };
+  }
+  var live = read("m-mine"), over = read("m-shipped-mine");
+  var pairBox = null;
+  if (live && over) {
+    var x0 = Math.min(live.cardBox.x, over.cardBox.x);
+    var y0 = Math.min(live.cardBox.y, over.cardBox.y);
+    var x1 = Math.max(live.cardBox.x + live.cardBox.w,
+                      over.cardBox.x + over.cardBox.w);
+    var y1 = Math.max(live.cardBox.y + live.cardBox.h,
+                      over.cardBox.y + over.cardBox.h);
+    pairBox = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  return { live: live, over: over, pairBox: pairBox,
+           remoteMids: Array.prototype.slice.call(
+             document.querySelectorAll(".card.remote")).map(function (c) {
+               return c.getAttribute("data-mid"); }) };
+})()`;
+
 /* B3 + B4. EVERY REMOTE CARD's control row, child by child.
  *
  * The question B3 asks is not "does the dead control look right" — it is
@@ -1063,6 +1120,120 @@ async function main() {
   } else {
     bad("the MID-PIPELINE remote card offers nothing at all",
         JSON.stringify(noAdopt.map((r) => (r.children || []).map((k) => k.text))));
+  }
+
+  // ── S197 ──────────────────────────────────────────────────────────────
+  console.log("\nS197 — the board stops offering an action that cannot succeed");
+  const sh = await evaluate(cdp, sessionId, SHIPPED_PROBE);
+  if (!sh || !sh.live || !sh.over) {
+    throw new InfraError("the shipped/live pair (m-mine / m-shipped-mine) never "
+      + "rendered — the S197 fixture did not reach the board");
+  }
+  // THE CONTROL, and this is the headline. A live `✓ Review PR ▸` for a pull
+  // request that merged minutes ago is the defect two independent two-laptop
+  // runs found on the same day.
+  const stillOffered = (sh.over.controls || []).filter(
+    (b) => /review pr/i.test(b.text) && !b.disabled);
+  if (stillOffered.length === 0 && !/Review PR/i.test(sh.over.text)) {
+    ok("a merged mission offers NO Review PR control",
+       JSON.stringify((sh.over.controls || []).map((b) => b.text)));
+  } else {
+    bad("a merged mission offers NO Review PR control",
+        "the board is still offering a merged PR for review: "
+        + JSON.stringify((sh.over.controls || []).map((b) => b.text)));
+  }
+  const liveOnOver = (sh.over.controls || []).filter((b) => !b.disabled);
+  if (liveOnOver.length === 0) {
+    ok("nothing in the shipped card's control row is live",
+       (sh.over.controls || []).length + " control(s), all dead");
+  } else {
+    bad("nothing in the shipped card's control row is live",
+        JSON.stringify(liveOnOver.map((b) => b.text)));
+  }
+  // IT SAYS SO IN WORDS. Withdrawing the control without replacing it with a
+  // statement would leave the captain looking at a card that had gone quiet for
+  // no reason he can see.
+  if (/SHIPPED ELSEWHERE/i.test(sh.over.text)) {
+    ok("the card states what actually happened", "it says SHIPPED ELSEWHERE");
+  } else {
+    bad("the card states what actually happened",
+        JSON.stringify(sh.over.text.slice(0, 160)));
+  }
+  // AND IT IS LEGIBLE WITHOUT COLOUR. Shape, at both distances: the card's
+  // 6px left edge goes DASHED where a live card's is SOLID, and every dead
+  // control takes `.btn.locked` (hollow + dashed + `⊘`). Read off the CASCADE
+  // here and confirmed in the pixels below.
+  if (sh.over.edgeStyle === "dashed" && sh.live.edgeStyle !== "dashed") {
+    ok("the shipped card's edge is DASHED where the live one's is solid",
+       sh.over.edgeStyle + " vs " + sh.live.edgeStyle);
+  } else {
+    bad("the shipped card's edge is DASHED where the live one's is solid",
+        sh.over.edgeStyle + " vs " + sh.live.edgeStyle);
+  }
+  const unmarkedOver = (sh.over.controls || []).filter(
+    (b) => b.text && b.text.indexOf("⊘") !== 0);
+  if ((sh.over.controls || []).length > 0 && unmarkedOver.length === 0) {
+    ok("every dead control on the shipped card opens with the ⊘ lock mark",
+       JSON.stringify((sh.over.controls || []).map((b) => b.text)));
+  } else {
+    bad("every dead control on the shipped card opens with the ⊘ lock mark",
+        "unmarked: " + JSON.stringify(unmarkedOver.map((b) => b.text)));
+  }
+  const mute = (sh.over.controls || []).filter((b) => !b.title);
+  if (mute.length === 0) {
+    ok("every dead control still says why in one sentence",
+       JSON.stringify((sh.over.controls || []).map((b) => b.title)[0] || ""));
+  } else {
+    bad("every dead control still says why in one sentence",
+        mute.length + " carry no tooltip");
+  }
+  // THE NEGATIVE CONTROL, and it is the one that stops this from being a cure
+  // that quietly killed the whole column: the card beside it, identical on
+  // disk, whose issue the forge did not mention, must be completely live.
+  const liveOnLive = (sh.live.controls || []).filter((b) => !b.disabled);
+  if (liveOnLive.length > 0 && /Review PR/i.test(sh.live.text)) {
+    ok("the mission the forge said nothing about is UNTOUCHED",
+       JSON.stringify(liveOnLive.map((b) => b.text)));
+  } else {
+    bad("the mission the forge said nothing about is UNTOUCHED",
+        JSON.stringify((sh.live.controls || []).map(
+          (b) => b.text + (b.disabled ? " [DEAD]" : ""))));
+  }
+  // LOCAL WINS, still. The closed issue must not also draw a remote card.
+  if ((sh.remoteMids || []).indexOf("106") < 0) {
+    ok("the shipped issue draws no SECOND card",
+       "remote cards: " + JSON.stringify(sh.remoteMids));
+  } else {
+    bad("the shipped issue draws no SECOND card",
+        "remote cards: " + JSON.stringify(sh.remoteMids));
+  }
+  // ONE FRAME, BOTH CARDS — the artefact a human looks at.
+  await shoot(cdp, sessionId, sh.pairBox, "shipped-vs-live.png", 3, 10);
+  // …and the pixels. Same 3:1 threshold (WCAG 1.4.11 for non-text UI state) the
+  // owner lock is held to, measured between the two control FILLS.
+  if ((sh.over.controls || []).length && (sh.live.controls || []).length) {
+    const overFill = fill(pngPixels(await shoot(
+      cdp, sessionId, sh.over.controls[0].box, "shipped-control.png", 4, 0)));
+    const liveFill2 = fill(pngPixels(await shoot(
+      cdp, sessionId, sh.live.controls[0].box, "shipped-live-control.png", 4, 0)));
+    const sep2 = contrast(overFill, liveFill2);
+    const d2 = "withdrawn fill rgb(" + overFill.join(",") + ") vs live fill rgb("
+      + liveFill2.join(",") + ") → " + sep2.toFixed(2) + ":1 "
+      + "(shipped-vs-live.png — LOOK AT THIS ONE)";
+    if (sep2 >= 3.0) {
+      ok("the withdrawn control and the live one PAINT differently (>= 3:1)", d2);
+    } else {
+      bad("the withdrawn control and the live one PAINT differently (>= 3:1)", d2);
+    }
+    const wr2 = inkAndPaper(pngPixels(await shoot(
+      cdp, sessionId, sh.over.controls[0].box, "shipped-control-ink.png", 4, 0)));
+    if (wr2.contrast >= 4.5) {
+      ok("the withdrawn control is READABLE in the actual pixels (>= 4.5:1)",
+         wr2.contrast.toFixed(2) + ":1");
+    } else {
+      bad("the withdrawn control is READABLE in the actual pixels (>= 4.5:1)",
+          wr2.contrast.toFixed(2) + ":1");
+    }
   }
 
   // ── D3 ────────────────────────────────────────────────────────────────

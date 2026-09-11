@@ -21,6 +21,11 @@ import subprocess
 import time
 
 from . import board
+# Imported as a MODULE, not as a name: `_as_issue` is remote.py's own
+# tolerance for `githubIssue` having been carried as both an int and a
+# string over this project's life, and the two readers must normalise
+# issue numbers identically or a verdict silently misses its card.
+from . import remote as _remote_mod
 
 
 # --- S146-D2: the bounded detection-marker set ------------------------------
@@ -292,6 +297,11 @@ class LocalAdapter(object):
         # was, and remote cards are ADDED to it. Nothing local is consulted, moved
         # or recomputed because a remote card exists.
         self._overlay_remote(b, cards)
+        # …and the ONE fact a LOCAL card is allowed to learn from the forge.
+        # AFTER the overlay because it reads the same cached listing the overlay
+        # just took, and BEFORE the return because the card objects placed in
+        # `b` are these same objects.
+        self._mark_shipped_elsewhere(cards)
         return b
 
     def _overlay_remote(self, b, local_cards):
@@ -326,6 +336,58 @@ class LocalAdapter(object):
             b["columns"][stage].append(c)
             if stage != "done":
                 b["missions"].append(c)
+
+    def _mark_shipped_elsewhere(self, local_cards):
+        """Let a LOCAL card learn that its issue is finished on the forge.
+
+        THE DEFECT. Found TWICE in one day by two independent two-laptop runs:
+        laptop B adopts a mission, drives it and merges it, and laptop A — the
+        one that FILED it — keeps showing the card at Verify with a live
+        `✓ Review PR ▸` for a pull request that merged minutes ago. A live
+        control for a merged PR is S191's D4 exactly: a lie the hand discovers.
+
+        WHY THE CARD IS NOT REBUILT FROM THE FORGE. Rule 3 of the overlay is
+        that a LOCAL mission always wins, and it still does. This adds ONE
+        additive key carrying ONE fact the forge is authoritative about (rule 4:
+        the `lcars:done` LABEL, and the issue's own closed state). Everything
+        else on the card — the title, the pills, the tickets, the activity — is
+        still the local mission's, unchanged.
+
+        WHAT IT DELIBERATELY DOES NOT DO: it does not move the card to Done and
+        it does not rewrite `.git/lcars`. The local mission genuinely IS at
+        verify on this laptop — the branch is here, unmerged, and the CLI would
+        say so. Telling the captain the truth is in scope; silently reconciling
+        his repo behind his back is not.
+
+        ABSENT, NEVER NULL (the rule every additive key in this shape has
+        followed since S109): a mission the forge says nothing about, an overlay
+        that is off, and a listing that failed all leave the card with no
+        `shippedElsewhere` key at all — which is what keeps a gh-less board
+        byte-identical to the one it served before this session.
+
+        NEVER RAISES INTO A BOARD BUILD, on the same reasoning `_overlay_remote`
+        carries: this is a courtesy on top of the captain's own work.
+        """
+        if self._remote is None:
+            return
+        try:
+            verdicts = self._remote.verdicts(
+                [c.get("issue") for c in local_cards])
+        except Exception:
+            return
+        if not verdicts:
+            return
+        for c in local_cards:
+            n = _remote_mod._as_issue(c.get("issue"))
+            if n is None:
+                continue
+            v = verdicts.get(n)
+            if not v:
+                continue
+            if board.normalise_stage(c.get("stage")) == "done":
+                # Nothing to tell him. The local mission already knows.
+                continue
+            c["shippedElsewhere"] = dict(v)
 
     def _meta(self):
         if self._repo_identity_memo is _UNRESOLVED:
@@ -1054,6 +1116,10 @@ class LocalAdapter(object):
         # the captain audits the self-heal straight from this. Empty string when
         # absent (non-crashing). The github adapter omits it (no local files).
         card["prd"] = _read_text(os.path.join(d, "prd.md"))
+        # …and the forge's verdict, so the detail header's own `✓ Review PR`
+        # is withdrawn by the same fact that withdraws the card's. BUG-049's
+        # rule: the two surfaces gate identically or they gate wrongly.
+        self._mark_shipped_elsewhere([card])
         return card
 
     def _remote_mission(self, mid):

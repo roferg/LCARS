@@ -100,13 +100,38 @@ FETCH_TIMEOUT = 25
 _JSON_FIELDS = ("number,title,state,labels,body,updatedAt,assignees,"
                 "subIssuesSummary")
 
-# The forge's window. Missions are OPEN issues — `lcars approve` closes the
-# issue at Done — so `--state open` is both the smaller query and the honest one:
-# a cold laptop wants the work IN FLIGHT elsewhere, not a history of everything
-# this repo ever shipped.
+# The forge's window. WIDENED FROM `open` TO `all`, and the reason is the whole
+# of this session:
+#
+#   `lcars approve` merges the PR, and the PR body carries `Closes #<n>`
+#   (host-adapter.sh `pr-body`), so GitHub CLOSES the mission issue the moment
+#   the merge lands. Under `--state open` the shipped mission therefore
+#   DISAPPEARS from the listing — and the laptop that FILED it, whose local
+#   `.git/lcars` still says `verify`, went on offering a live `✓ Review PR ▸`
+#   for a pull request that merged minutes ago. Measured twice in one day on two
+#   different pairs of clones.
+#
+# ABSENCE IS NOT EVIDENCE, so "it fell out of the open listing" could never be
+# read as "it shipped": the listing is capped, and a mission past the cap would
+# have been declared merged on no information at all. The cure is to ASK FOR THE
+# FACT instead of inferring it from a hole — same ONE call per cycle (S152 is
+# untouched: the count is pinned by test), one wider window.
+#
+# WHAT IT COSTS, stated honestly: closed missions now occupy rows in the capped
+# listing. gh returns newest-created first and a still-open mission is by
+# definition recent, so the ones crowded out are historical; and a mission that
+# IS crowded out simply gets no verdict, which leaves its card exactly as it was.
+# The degrade is silence, never a wrong claim.
+_STATE = "all"
 _LIMIT = "200"
 
 _MISSION_LABEL = "lcars:mission"
+
+# The label `lcars approve` applies at the ship, and the ONE thing on the forge
+# that means "this mission is finished". Rule 4 (S191's standing ruling): stage
+# truth comes from the LABEL, which `gh_relabel` swaps at every transition —
+# never from the S188 envelope, which is stale mid-pipeline by construction.
+_DONE_LABEL = "lcars:done"
 
 # The two ENDS of the pipeline, and the complete list of stages a remote mission
 # may be adopted at. S189's boundary, restated here because this is the surface
@@ -220,7 +245,7 @@ class RemoteMissions(object):
         gh = self._gh_path()
         if gh is None:
             return [], "unavailable"
-        cmd = [gh, "issue", "list", "--state", "open", "--limit", _LIMIT,
+        cmd = [gh, "issue", "list", "--state", _STATE, "--limit", _LIMIT,
                "--label", _MISSION_LABEL, "--json", _JSON_FIELDS]
         if self.repo:
             cmd += ["--repo", self.repo]
@@ -273,6 +298,13 @@ class RemoteMissions(object):
                 # LOCAL WINS. An adopted mission is a local mission and its issue
                 # must never draw a second card.
                 continue
+            if _is_closed(row):
+                # THE WIDER WINDOW IS FOR VERDICTS, NOT FOR CARDS. `--state all`
+                # was taken so a LOCAL card can learn that its issue closed; it
+                # must not also start drawing remote cards for every mission this
+                # repo ever shipped. The overlay's card set is exactly what it
+                # was — the open issues — and that is pinned by test.
+                continue
             card = self._card(row, rows)
             if card is not None:
                 cards.append(card)
@@ -293,6 +325,10 @@ class RemoteMissions(object):
             return None
         for row in rows:
             if str(row.get("number")) == str(mid):
+                if _is_closed(row):
+                    # No card is drawn for it (see cards()), so no detail opens
+                    # onto it either. One window, both surfaces.
+                    return None
                 card = self._card(row, rows)
                 if card is None:
                     return None
@@ -325,7 +361,119 @@ class RemoteMissions(object):
         return card
 
 
+    # -- the verdict on a LOCAL mission --------------------------------------
+    def verdicts(self, local_issues=()):
+        """{issue number: verdict} for the LOCAL missions the forge says are over.
+
+        THE DEFECT THIS ANSWERS. Two live two-laptop runs, independently, on the
+        same day: laptop B adopted a mission, drove it and merged it, and laptop
+        A — the one that FILED it — still showed the card at Verify offering a
+        live `✓ Review PR ▸` for a pull request that had already merged. Local
+        state beats the remote overlay (rule 1), which is right for CONTENT and
+        was silently being applied to TRUTH as well.
+
+        WHAT IT DOES NOT DO. It does not build a card, move a card, or touch
+        `.git/lcars`. It answers ONE question about issues the local board
+        ALREADY holds — is this issue finished on the forge? — and the caller
+        decides what to say. Rule 3 is intact: the local mission still wins.
+
+        IT BUYS NOTHING. `listing()` is the same cached call `cards()` makes;
+        inside one cycle the second reader is free, and inside one board build
+        it is the same cache entry. S152 is pinned by an argv-counting test, not
+        by this paragraph.
+
+        THREE WAYS TO RETURN NOTHING, and every one of them leaves the card
+        exactly as it is:
+
+          * the overlay is OFF (no gh, opted out) — the byte-identity guarantee;
+          * the listing FAILED ("unavailable") — S190's D1 in this session's
+            clothes. A forge that did not answer must never be readable as a
+            forge that said "shipped", so a bad cycle yields `{}` and not a
+            single verdict;
+          * the issue is not IN the listing. Absence is not evidence: the query
+            is capped, so a mission past the cap is UNKNOWN. Only a row we can
+            actually read produces a verdict.
+
+        Two verdicts, because they are two different facts and only one of them
+        is a merge:
+
+          "shipped"  the `lcars:done` label is on the issue. `lcars approve`
+                     applies it at the ship and nowhere else.
+          "closed"   the issue is CLOSED and carries no `lcars:done` — the
+                     mission was abandoned or closed by hand on the forge.
+                     Over, but NOT merged, and saying "shipped" here would be
+                     inventing a merge nobody performed.
+        """
+        rows, status = self.listing()
+        if status != "ok":
+            return {}
+        wanted = set()
+        for n in (local_issues or ()):
+            n = _as_issue(n)
+            if n is not None:
+                wanted.add(n)
+        if not wanted:
+            return {}
+        out = {}
+        for row in rows:
+            n = _as_issue(row.get("number"))
+            if n is None or n not in wanted:
+                continue
+            labels = _labels(row)
+            closed = _is_closed(row)
+            done = _DONE_LABEL in labels
+            if not (done or closed):
+                continue
+            out[n] = {
+                "issue": n,
+                "state": "shipped" if done else "closed",
+                "closed": closed,
+                # The forge's own stage, from the LABEL (rule 4). "done" for a
+                # shipped mission; for a closed-but-unshipped one it is the
+                # stage the mission died at, which is the honest thing to name.
+                "stage": _stage_label(labels),
+            }
+        return out
+
+
 # --- helpers -----------------------------------------------------------------
+def _labels(row):
+    """The issue's label names as a set. Crash-proof: a forge is not a promise."""
+    out = set()
+    for lab in (row.get("labels") or []):
+        if isinstance(lab, dict):
+            name = lab.get("name")
+        else:
+            name = lab
+        if isinstance(name, str) and name:
+            out.add(name)
+    return out
+
+
+def _is_closed(row):
+    """Is this issue CLOSED on the forge? `state` is "OPEN"/"CLOSED" from gh."""
+    return str(row.get("state") or "").strip().upper() == "CLOSED"
+
+
+def _stage_label(labels):
+    """The `lcars:<stage>` the issue currently wears, or None.
+
+    The label, never the envelope — the S188 handoff envelope is refreshed at
+    exactly two transfer points and is stale mid-pipeline by construction, while
+    `gh_relabel` swaps this at every single transition.
+    """
+    if _DONE_LABEL in labels:
+        # FIRST, and not merely by luck of iteration order: `lcars approve`
+        # removes `lcars:verify` as it adds `lcars:done`, but a relabel is
+        # best-effort (gh_relabel never blocks the local stage change), so an
+        # issue wearing both must read as the LATER of the two.
+        return "done"
+    for stage in board.STAGES:
+        if ("lcars:%s" % stage) in labels:
+            return stage
+    return None
+
+
 def _as_issue(value):
     """An issue number as an int, or None. Tolerates the string form: `state.json`
     has carried `githubIssue` as both over this project's life."""

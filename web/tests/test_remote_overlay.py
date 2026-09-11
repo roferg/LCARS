@@ -1508,5 +1508,279 @@ class TheRemoteControlRowIsNotDIMMED(unittest.TestCase):
                         self.css.index(".btn.locked"))
 
 
+# --------------------------------------------------------------------------
+# 9. THE MISSION THAT SHIPPED FROM SOMEWHERE ELSE
+#
+# Found TWICE in one day by two independent two-laptop runs. Laptop B adopts a
+# mission, drives it and merges it; laptop A — the one that FILED it — still
+# shows the card at Verify offering a live `✓ Review PR ▸` for a pull request
+# that merged minutes ago. LOCAL WINS (rule 1) is right for CONTENT and was
+# being applied to TRUTH: the local card never learned the one fact the forge
+# is authoritative about.
+#
+# A live control for a merged PR is the S191 D4 defect exactly — a lie the hand
+# discovers — so the headline behaviour is: WITHDRAW THE AFFORDANCE AND SAY WHY.
+#
+# The information is already paid for. The overlay's ONE cached listing carries
+# every `lcars:mission` issue's state and labels; the reconcile reads that same
+# cache and costs NOTHING (S152 is proven below, not assumed).
+# --------------------------------------------------------------------------
+def local_verify(tmp, mid="m-local", issue_no=101):
+    """A LOCAL mission parked at Verify with an OPEN PR — the exact card the
+    two live runs found lying."""
+    fx.plant_simple(tmp, mid, stage="verify", issue=issue_no,
+                    pr_url="https://github.com/acme/repo/pull/7",
+                    pr_number="7", review="open")
+
+
+class TheLocalCardLearnsThatItShipped(unittest.TestCase):
+    """The DAEMON half: one fact, taken from the listing already in hand."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+        local_verify(self.tmp)
+
+    def _board(self, rows, **kw):
+        return LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, rows, self.record, **kw)).board()
+
+    def _card(self, rows, mid="m-local", **kw):
+        by = {}
+        b = self._board(rows, **kw)
+        for col in b["columns"].values():
+            for c in col:
+                by[c["id"]] = c
+        return by.get(mid)
+
+    # -- the headline ------------------------------------------------------
+    def test_a_merged_mission_is_marked_shipped(self):
+        """`lcars approve` relabels the issue `lcars:done`; the PR body's
+        `Closes #n` closes it. Either alone is enough."""
+        c = self._card([issue(101, stage="done", state="CLOSED")])
+        self.assertIsNotNone(c)
+        self.assertEqual("shipped", (c.get("shippedElsewhere") or {}).get("state"))
+
+    def test_the_done_LABEL_alone_is_enough(self):
+        """Stage truth from the LABEL (S191's ruling). An issue relabelled
+        `lcars:done` whose close has not landed yet still shipped."""
+        c = self._card([issue(101, stage="done", state="OPEN")])
+        self.assertEqual("shipped", (c.get("shippedElsewhere") or {}).get("state"))
+
+    def test_a_closed_issue_with_no_done_label_is_CLOSED_not_shipped(self):
+        """A mission abandoned on the forge (issue closed at `lcars:implement`
+        — there is one in this very repo) must not be reported as merged."""
+        c = self._card([issue(101, stage="implement", state="CLOSED")])
+        self.assertEqual("closed", (c.get("shippedElsewhere") or {}).get("state"))
+
+    def test_the_block_carries_the_forge_stage_from_the_label(self):
+        c = self._card([issue(101, stage="done", state="CLOSED")])
+        self.assertEqual("done", c["shippedElsewhere"]["stage"])
+        self.assertIs(True, c["shippedElsewhere"]["closed"])
+
+    # -- the things that must NOT change ----------------------------------
+    def test_a_mission_whose_issue_is_still_open_is_untouched(self):
+        c = self._card([issue(101, stage="verify", state="OPEN")])
+        self.assertNotIn("shippedElsewhere", c)
+
+    def test_an_unreachable_forge_changes_nothing(self):
+        """S190 D1's shape: rc read through a pipeline ERASED a good cache. A
+        forge that did not answer must never look like a forge that said
+        `shipped`."""
+        c = self._card([issue(101, stage="done", state="CLOSED")], fail=True)
+        self.assertNotIn("shippedElsewhere", c)
+
+    def test_an_issue_absent_from_the_listing_changes_nothing(self):
+        """Absence is not evidence. The listing is capped, so a mission beyond
+        the cap is UNKNOWN, never shipped."""
+        c = self._card([issue(999, stage="done", state="CLOSED")])
+        self.assertNotIn("shippedElsewhere", c)
+
+    def test_gh_absent_adds_no_key_at_all(self):
+        missing = os.path.join(self.tmp, "definitely-not-gh")
+        b = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=RemoteMissions(repo_root=self.tmp, gh_bin=missing)).board()
+        for c in b["missions"]:
+            self.assertNotIn("shippedElsewhere", c)
+
+    def test_no_remote_reader_at_all_adds_no_key(self):
+        b = LocalAdapter(self.tmp,
+                         git_url_reader=lambda r: "git@x:acme/repo.git").board()
+        for c in b["missions"]:
+            self.assertNotIn("shippedElsewhere", c)
+
+    def test_a_mission_already_done_LOCALLY_is_not_marked(self):
+        shutil.rmtree(os.path.join(self.tmp, ".git", "lcars", "missions"))
+        fx.plant_simple(self.tmp, "m-done", stage="done", issue=101)
+        c = self._card([issue(101, stage="done", state="CLOSED")], mid="m-done")
+        self.assertNotIn("shippedElsewhere", c)
+
+    def test_the_shipped_issue_draws_NO_second_card(self):
+        """Rule 1 is untouched: the local mission still wins, and the widened
+        listing must not start drawing remote cards for closed issues."""
+        b = self._board([issue(101, stage="done", state="CLOSED"),
+                         issue(202, stage="done", state="CLOSED")])
+        ids = [c["id"] for col in b["columns"].values() for c in col]
+        self.assertEqual(["m-local"], ids)
+
+    def test_an_OPEN_remote_mission_still_draws_its_card(self):
+        b = self._board([issue(202, stage="implement", state="OPEN")])
+        ids = [c["id"] for col in b["columns"].values() for c in col]
+        self.assertIn("202", ids)
+
+    # -- S152: the cost does not move -------------------------------------
+    def test_it_costs_no_extra_forge_round_trip(self):
+        clock = Clock()
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [issue(101, stage="done", state="CLOSED")],
+                          self.record, clock=clock, ttl=30.0))
+        for _ in range(25):
+            b = adapter.board()
+        self.assertEqual(1, len(calls(self.record)),
+                         "the reconcile bought a second listing")
+        marked = [c for c in b["missions"] if c.get("shippedElsewhere")]
+        self.assertEqual(1, len(marked), "…and it did not even work")
+
+    def test_the_detail_learns_it_too(self):
+        """The detail header offers the same `✓ Review PR` — one fact, both
+        surfaces (BUG-049's rule)."""
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [issue(101, stage="done", state="CLOSED")],
+                          self.record))
+        d = adapter.mission("m-local")
+        self.assertEqual("shipped", (d.get("shippedElsewhere") or {}).get("state"))
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class TheShippedElsewhereCard(unittest.TestCase):
+    """The FRONT-END half: the board stops offering what cannot succeed."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+        local_verify(self.tmp)
+
+    def _card(self, rows):
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, rows, self.record))
+        by = {}
+        for col in adapter.board()["columns"].values():
+            for c in col:
+                by[c["id"]] = c
+        return by["m-local"]
+
+    def _dom(self, card):
+        fd, p = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, p)
+        with open(p, "w") as fh:
+            json.dump({"mission": card, "self": ME}, fh)
+        return json.loads(subprocess.check_output([NODE, OWNER_HARNESS, p]))
+
+    @staticmethod
+    def _walk(node, out=None):
+        out = [] if out is None else out
+        out.append(node)
+        for kid in node.get("children", []):
+            TheShippedElsewhereCard._walk(kid, out)
+        return out
+
+    def _buttons(self, dom):
+        return [n for n in self._walk(dom)
+                if (n.get("tag") or "").lower() == "button"]
+
+    def _texts(self, dom):
+        return [(n.get("text") or "") for n in self._walk(dom)]
+
+    def _shipped(self):
+        return self._dom(self._card([issue(101, stage="done", state="CLOSED")]))
+
+    # -- THE HEADLINE ------------------------------------------------------
+    def test_the_live_REVIEW_PR_control_is_gone(self):
+        for t in self._texts(self._shipped()):
+            self.assertNotIn("Review PR", t,
+                             "the board still offers a merged PR for review")
+
+    def test_the_control_row_holds_nothing_live(self):
+        for b in self._buttons(self._shipped()):
+            self.assertTrue(b["disabled"],
+                            "a live control on a mission that already shipped: "
+                            + repr(b.get("text")))
+
+    def test_the_card_says_what_actually_happened(self):
+        texts = " ".join(self._texts(self._shipped())).upper()
+        self.assertIn("SHIPPED", texts)
+
+    def test_a_closed_but_unshipped_mission_does_not_claim_a_merge(self):
+        dom = self._dom(self._card([issue(101, stage="implement",
+                                          state="CLOSED")]))
+        joined = " ".join(self._texts(dom)).upper()
+        self.assertIn("CLOSED", joined)
+        self.assertNotIn("SHIPPED", joined)
+        for b in self._buttons(dom):
+            self.assertTrue(b["disabled"])
+
+    # -- the negative control ---------------------------------------------
+    def test_a_mission_whose_issue_is_open_keeps_its_live_control(self):
+        dom = self._dom(self._card([issue(101, stage="verify", state="OPEN")]))
+        live = [b for b in self._buttons(dom) if not b["disabled"]]
+        self.assertTrue(live, "the cure withdrew a control it had no business "
+                              "withdrawing")
+        self.assertTrue(any("Review PR" in (b.get("text") or "")
+                            for b in self._buttons(dom)))
+        self.assertNotIn("shipped-elsewhere", dom["cls"])
+
+    # -- legibility --------------------------------------------------------
+    def test_it_is_legible_without_colour(self):
+        """Solid = actionable, hollow/dashed = not. The card takes the state
+        class the stylesheet draws dashed, and every dead control takes
+        `.btn.locked` — both are SHAPE, not hue."""
+        dom = self._shipped()
+        self.assertIn("shipped-elsewhere", dom["cls"])
+        for b in self._buttons(dom):
+            self.assertIn("locked", " " + str(b.get("cls") or "") + " ")
+
+    def test_every_dead_control_opens_with_the_lock_mark(self):
+        for b in self._buttons(self._shipped()):
+            t = (b.get("text") or "").strip()
+            if t:
+                self.assertEqual("⊘", t[0], repr(t))
+
+    def test_every_dead_control_says_why(self):
+        for b in self._buttons(self._shipped()):
+            self.assertTrue(b["title"], "a locked control with no reason")
+            self.assertIn("shipped", b["title"].lower())
+
+    def test_no_glyph_from_outside_the_house_family(self):
+        FAMILY = "▦▤▣▧▨▩◆◇◈●○◐▶▸▹✓⊹⌖⬢⬡⚡↩■⊘◷↻"
+        for dom in (self._shipped(),
+                    self._dom(self._card([issue(101, stage="implement",
+                                                state="CLOSED")]))):
+            for n in self._walk(dom):
+                t = (n.get("text") or "").strip()
+                if not t:
+                    continue
+                if "SHIPPED" in t.upper() or "CLOSED" in t.upper():
+                    self.assertIn(t[0], FAMILY,
+                                  "%r opens with an off-family glyph" % t)
+
+    def test_the_stylesheet_draws_the_state_without_colour(self):
+        with open(os.path.join(HERE, "..", "static", "board.css")) as fh:
+            css = fh.read()
+        import re as _re
+        bodies = [b for s, b in
+                  _re.findall(r"([^{}]*\.shipped[^{}]*)\{([^}]*)\}", css)]
+        self.assertTrue(bodies, "no .shipped rule in the stylesheet")
+        self.assertTrue(any("dashed" in b for b in bodies),
+                        "the shipped state is carried by colour alone")
+
+
 if __name__ == "__main__":
     unittest.main()
