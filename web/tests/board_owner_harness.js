@@ -229,6 +229,31 @@ function fireError(node) {
   if (!fired) process.stderr.write("no image error handler was fired\n");
 }
 
+/* THE CAPTAIN CLICKS. S197's adopt engine picker only exists AFTER the adopt
+   control is pressed — it is a question, and a question nobody asked is not on
+   screen. Asserting that the handler exists would prove nothing about what it
+   builds, so this fires the control's OWN click handler, with the event object
+   `btn()` expects (it calls stopPropagation on it), and the picker the product
+   actually appends is what the projection then sees.
+
+   FIRST MATCH ONLY, by `data-act` / class / label substring — the same handle
+   the keyboard command deck resolves a control by. */
+function fireClick(node, want) {
+  let fired = 0;
+  walk(node, function (n) {
+    if (fired) return;
+    if (String(n.tag || "").toLowerCase() !== "button") return;
+    const key = (n.attrs["data-act"] || "") + " " + (n._cls || "") +
+                " " + (n._text || "");
+    if (key.indexOf(want) < 0) return;
+    (n._handlers.click || []).forEach(function (fn) {
+      fired++;
+      fn.call(n, { stopPropagation() {}, preventDefault() {} });
+    });
+  });
+  if (!fired) process.stderr.write("no button matched " + JSON.stringify(want) + "\n");
+}
+
 let subject = card;
 if (Array.isArray(spec.steps)) {
   /* THE SEQUENCE. One `advanceMs` and one `rerender` cannot express the defect
@@ -240,12 +265,14 @@ if (Array.isArray(spec.steps)) {
   for (const st of spec.steps) {
     if (st.loadAvatar) fireLoad(subject);
     if (st.killAvatar) fireError(subject);
+    if (st.click) fireClick(subject, st.click);
     if (st.advanceMs) advanceTimers(TIMER_MARK, Number(st.advanceMs));
     if (st.rerender) subject = sandbox.cardNode(spec.mission);
   }
 } else {
   if (spec.loadAvatar) fireLoad(card);
   if (spec.killAvatar) fireError(card);
+  if (spec.click) fireClick(card, spec.click);
   // THE CLOCK MOVES. The give-up window is the only thing standing between a
   // portrait that never arrives and a pad that hums for ever.
   if (spec.advanceMs) advanceTimers(TIMER_MARK, Number(spec.advanceMs));

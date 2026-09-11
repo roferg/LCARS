@@ -134,7 +134,13 @@ EOF
   #
   # TWO ROWS, and each is a different half of the defect:
   #   #201 verify   — ADOPTABLE. The card the tester shot: a dead `▶ START`
-  #                   beside the live Adopt, 1.79:1 apart.
+  #                   beside the live Adopt, 1.79:1 apart. S197 gave it a
+  #                   HANDOFF ENVELOPE naming `copilot`, because the adopt
+  #                   engine picker's default is the engine the mission was
+  #                   FILED on and a body with no envelope can never say what
+  #                   that was. Both CLIs are on this PATH (the shims above),
+  #                   so this row is the TWO-CLI LAPTOP — the case the CLI
+  #                   decides silently and the captain has never seen.
   #   #202 research — NOT adoptable. The worse card: ONE control, dead, and no
   #                   Adopt at all. After B3 it must offer nothing.
   #   #106 CLOSED   — NOT a remote card at all, and that is the point. It is
@@ -153,7 +159,7 @@ EOF
 [
   {"number":201,"title":"Remote — driven on the other laptop","state":"OPEN",
    "labels":[{"name":"lcars:mission"},{"name":"lcars:verify"}],
-   "body":"A mission being driven from another machine.",
+   "body":"A mission being driven from another machine.\n\n<!-- lcars:handoff v1 {\"id\":\"lcars-20260909-201\",\"branch\":\"lcars/lcars-20260909-201\",\"base\":\"main\",\"type\":\"feature\",\"engine\":\"copilot\",\"parentIssue\":null,\"attachments\":0} -->",
    "updatedAt":"2026-09-08T10:00:00Z","assignees":[],
    "subIssuesSummary":{"completed":0,"total":0,"percentCompleted":0}},
   {"number":202,"title":"Remote — mid-pipeline, nothing to offer","state":"OPEN",
@@ -243,13 +249,30 @@ fx.plant_simple(root, "m-shipped-mine", stage="verify", issue=106,
                 created="2026-06-06T10:00:00Z",
                 pr_url="https://github.com/acme/repo/pull/9", pr_number="9",
                 review="open")
+# S197 — THE PROVENANCE HALF. A mission that was adopted here with the engine
+# CHOSEN at the handoff. `engineSource: adopt-chosen` is what a deliberate human
+# answer is recorded as, and "chosen at adopt" is what the card must then print
+# — the other half of the picker, and the one that stops a captain's own choice
+# reading on the card as a mechanical conversion.
+fx.plant_simple(root, "m-adopted-chosen", stage="align", issue=107,
+                title="Adopted here — the engine was CHOSEN at the handoff",
+                created="2026-06-07T10:00:00Z", worker_bin="claude")
+import json as _json
+_sp = os.path.join(root, ".git", "lcars", "missions", "m-adopted-chosen",
+                   "state.json")
+with open(_sp) as fh:
+    _st = _json.load(fh)
+_st["engineResolved"] = "claude"
+_st["engineSource"] = "adopt-chosen"
+with open(_sp, "w") as fh:
+    _json.dump(_st, fh, indent=2)
 # The published-owner files ownership.sh writes. Planted, not fetched: the
 # daemon reads them off disk on the render path and this rig never needs a forge.
 cache = os.path.join(root, ".git", "lcars", "cache")
 os.makedirs(cache, exist_ok=True)
 for issue, login in ((101, "roferg"), (102, "picard"),
                      (103, "roferg"), (104, "picard"),
-                     (105, "roferg"), (106, "roferg")):
+                     (105, "roferg"), (106, "roferg"), (107, "roferg")):
     with open(os.path.join(cache, "owner-github.com-%d" % issue), "w") as fh:
         fh.write(login + "\n")
 PYEOF
@@ -358,6 +381,17 @@ if [ "$MODE" = "product" ] || [ "$MODE" = "--all" ]; then
   run_against "$REPO/web" product
   if [ "$RC" -eq 0 ]; then
     printf '\033[32mPROVEN\033[0m — the locked controls paint legibly and no dead rule ships.\n'
+    # S197 — THE DELIVERABLE. The captain asked for a report WITH IMAGES of the
+    # engine question, so the three frames that answer it are copied out of the
+    # throwaway work dir into the capstone's own shot folder, where he (and the
+    # next session) can find them without knowing what $TMPDIR was that day.
+    SHOTS="$REPO/tests/drives/s196-capstone/shots/adopt-picker"
+    mkdir -p "$SHOTS"
+    for f in board.png adopt-picker-open.png adopt-picker.png \
+             adopt-picker-grey.png adopt-provenance-chosen.png; do
+      [ -f "$WORK/product/$f" ] && cp "$WORK/product/$f" "$SHOTS/$f"
+    done
+    printf 'shots:     %s\n' "$SHOTS"
   elif [ "$RC" -eq 77 ]; then
     exit 77
   else
@@ -382,7 +416,9 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
                  filter-footer-counts-active-only \
                  beam-pending-is-a-hole beam-img-outranks-its-disc \
                  beam-window-restarts-on-repaint \
-                 shipped-card-never-learns shipped-lie-is-only-disabled; do
+                 shipped-card-never-learns shipped-lie-is-only-disabled \
+                 adopt-never-asks adopt-picker-looks-the-same \
+                 adopt-picker-dies-on-repaint; do
     # ONE CONTROL AT A TIME, when that is what is being asked. The full set is
     # sixteen browser runs; `LCARS_S190_ONLY=beam-pending-is-a-hole,...` narrows
     # it while a control is being written, and an empty value means all of them.
@@ -612,6 +648,47 @@ if [ "$MODE" = "--calibrate" ] || [ "$MODE" = "--all" ]; then
       beam-window-restarts-on-repaint)
         "${LCARS_SED_BIN:-sed}" -i.bak \
           -e 's/^      var left = AVATAR_DEADLINE\[src\] - now;$/      var left = AVATAR_GIVE_UP_MS;/' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # ── S197 THE DEFECT, VERBATIM — the board that could not ask. Remove
+      #    the one line that opens the picker and Adopt goes straight back to
+      #    dispatching with no `--engine`, which is precisely the state the
+      #    captain found: on a laptop with only the other CLI, that POST comes
+      #    back as adopt.sh's refusal. The drive must notice that nothing was
+      #    asked. UNANCHORED (`s|…|…|` with no ^/$), per the lesson that an
+      #    indentation change once silently killed an older control; verified
+      #    to have bitten by cmp against the .bak.
+      adopt-never-asks)
+        "${LCARS_SED_BIN:-sed}" -i.bak \
+          -e 's|if (openAdoptPicker(b, m)) return;|/* asked nothing */|' "$JS"
+        if cmp -s "$JS" "$JS.bak"; then
+          printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
+          FAILED=1; PATCHED=0
+        fi
+        rm -f "$JS.bak" ;;
+      # ── …and the SHARPER one, which is the failure actually worth guarding
+      #    against: the picker OPENS, both options are there, everything the
+      #    DOM can see is correct — and the option in force paints the same as
+      #    the one merely on offer, so "the default is the mission's engine" is
+      #    a claim the screen does not make. A class-name test is green on
+      #    this. Only the pixels are not. Appended AFTER the cured rule at the
+      #    same specificity, so source order hands it the win.
+      adopt-picker-looks-the-same)
+        printf '\n.adopt-picker .btn.adopt-engine.chosen{background:transparent;color:var(--lcars-text-bright);border-color:var(--lcars-border)}\n' >>"$CSS" ;;
+      # ── THE DEFECT THIS RIG FOUND WHILE IT WAS BEING WRITTEN, VERBATIM: the
+      #    open question lived only in the DOM, so the board's own four-second
+      #    repaint deleted it underneath the captain mid-decision. Put that
+      #    back by refusing to re-open the picker on the rebuilt card —
+      #    everything else stays (the memo is written, the option is chosen,
+      #    the first paint is perfect). A DOM-shape test taken immediately
+      #    after the click is green on this; only a rig that WAITS can see it.
+      #    Unanchored, and cmp-verified to have bitten.
+      adopt-picker-dies-on-repaint)
+        "${LCARS_SED_BIN:-sed}" -i.bak \
+          -e 's|if (ADOPT_PICKING\[adoptKey(m)\]) openAdoptPicker(adopt, m);|/* it does not come back */|' "$JS"
         if cmp -s "$JS" "$JS.bak"; then
           printf '  \033[31mFAIL\033[0m  control "%s" did not patch anything (the cut matched no line)\n' "$variant"
           FAILED=1; PATCHED=0

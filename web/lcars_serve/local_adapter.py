@@ -162,7 +162,7 @@ class LocalAdapter(object):
     def __init__(self, repo_root, read_only=False, git_url_reader=None,
                  readiness_script=None, base_freshness_script=None,
                  host_adapter_script=None, establish_vision_script=None,
-                 ownership_script=None, remote=None):
+                 ownership_script=None, remote=None, engines_reader=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -187,6 +187,15 @@ class LocalAdapter(object):
         # initialization mission lands — a signature keyed on files alone would
         # keep serving the front door over a board that now has a card on it.
         self._front_door_memo = None
+        # S197 — WHICH CLIs THIS MACHINE HAS, for the board's adopt picker.
+        # A CALLABLE, not a path, because the answer is a shell FUNCTION
+        # (`lcars_available_engines` in skills/lcars-init/lcars-common.sh) and
+        # not a script with a verb: the default reader sources that library and
+        # calls it, so the board, `lcars init`, the front door and adopt.sh all
+        # read ONE detector (ADR-002). A test injects its own to pin what this
+        # machine "has" without touching $PATH.
+        self._engines_reader = engines_reader
+        self._engines_memo = None     # (monotonic-deadline, [engines])
         self._establish_vision_script = establish_vision_script
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
         # S160: the shared base-freshness reporter
@@ -333,9 +342,35 @@ class LocalAdapter(object):
         for c in cards:
             stage = board.normalise_stage(c.get("stage"))
             c["stage"] = stage
+            self._offer_engines(c)
             b["columns"][stage].append(c)
             if stage != "done":
                 b["missions"].append(c)
+
+    def _offer_engines(self, card):
+        """S197 — an ADOPTABLE remote card learns what this laptop can run.
+
+        The card already carries `engine` (the engine the mission was FILED on,
+        read out of its handoff envelope by remote.py) — that is the forge's
+        half. This is the LOCAL half, and the two together are everything the
+        picker needs to ask the question `lcars adopt` asks at a terminal.
+
+        ONLY ON A CARD THAT OFFERS ADOPT, and only when the detector actually
+        answered: `enginesHere` is ABSENT — never null, never empty — on every
+        other card, which is the rule every additive key on this shape has
+        followed since S109 and the reason the byte-identity baselines (no gh,
+        no overlay, no remote cards) are untouched by this round.
+
+        ONE DETECTOR CALL PER BOARD BUILD AT WORST: `_engines_here` memoizes,
+        so a board with twelve adoptable remote cards still spawns one bash.
+        NO forge round trip is added — S152 is about `gh`, and this asks the
+        local machine, never the network.
+        """
+        if not card.get("adoptable"):
+            return
+        engines = self._engines_here()
+        if engines:
+            card["enginesHere"] = engines
 
     def _mark_shipped_elsewhere(self, local_cards):
         """Let a LOCAL card learn that its issue is finished on the forge.
@@ -1054,6 +1089,73 @@ class LocalAdapter(object):
         self._front_door_memo = (key, payload)
         return payload
 
+    # --- S197: WHICH ENGINES THIS MACHINE HAS -------------------------------
+    # THE DEFECT THIS SERVES. `lcars adopt` at the CLI ASKS which engine should
+    # drive a mission here — the captain's ruling of 2026-09-09, taken because a
+    # laptop may only have ONE CLI installed. The BOARD could not ask: its adopt
+    # dispatch passed no `--engine` and ran with no tty, so adopt.sh took its
+    # documented non-interactive path and REFUSED on exactly the machine the
+    # feature exists for. The board is a UI of the command line (standing
+    # ruling); where they disagree the board comes up to the CLI.
+    #
+    # ONE DETECTOR, NOT A SECOND ONE (ADR-002). `lcars_available_engines` in
+    # skills/lcars-init/lcars-common.sh is the single answer `lcars init`, the
+    # front door's engine picker and adopt.sh itself already read; this SOURCES
+    # that library and calls the function. Re-implementing `command -v claude`
+    # in Python would be the S168 scar again — two answers to one question, and
+    # the board offering an engine adopt.sh would then refuse.
+    #
+    # LAZY AND MEMOIZED. It is only ever asked when there is an ADOPTABLE remote
+    # card to offer it on, so a board with no forge overlay never spawns it at
+    # all (which is also what keeps the byte-identity baselines untouched). The
+    # memo has a short TTL rather than being permanent: a CLI installed while
+    # the daemon is up should appear on the next minute, not on the next
+    # restart.
+    _ENGINES_TTL = 60.0
+
+    def _engines_here(self):
+        """The engines installed on THIS machine, canonical order. [] is honest."""
+        now = time.time()
+        memo = self._engines_memo
+        if memo is not None and memo[0] > now:
+            return list(memo[1])
+        try:
+            engines = list(self._read_engines())
+        except Exception:
+            engines = []
+        self._engines_memo = (now + self._ENGINES_TTL, list(engines))
+        return list(engines)
+
+    def _read_engines(self):
+        if callable(self._engines_reader):
+            return [str(e) for e in (self._engines_reader() or []) if e]
+        lib = self._resolve_common_lib()
+        if not lib:
+            return []
+        proc = subprocess.run(
+            ["bash", "-c",
+             '. "$1" >/dev/null 2>&1 || exit 0; lcars_available_engines',
+             "bash", lib],
+            cwd=self.repo_root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        out = (proc.stdout or b"").decode("utf-8", "replace")
+        return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+    def _resolve_common_lib(self):
+        """lcars-common.sh: env -> in-repo -> installed. Mirrors
+        `_resolve_establish_vision_script`, so one override points both."""
+        env = os.environ.get("LCARS_COMMON_LIB")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "lcars-common.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        installed = os.path.join(os.path.expanduser("~"), ".claude", "skills",
+                                 "lcars-init", "lcars-common.sh")
+        return installed if os.path.isfile(installed) else ""
+
     def _resolve_establish_vision_script(self):
         """establish-vision.sh: injected → env → in-repo → installed. Mirrors
         `_resolve_readiness_script` exactly, so a test can point both at a stub
@@ -1133,9 +1235,14 @@ class LocalAdapter(object):
         if self._remote is None:
             return None
         try:
-            return self._remote.mission(mid)
+            card = self._remote.mission(mid)
         except Exception:
             return None
+        # S197: the detail is the other door onto the same card, and its header
+        # carries the same Adopt. One fact, both surfaces (BUG-049's rule).
+        if isinstance(card, dict):
+            self._offer_engines(card)
+        return card
 
     def fingerprint(self):
         """A cheap state-change signature: max mtime over every mission file

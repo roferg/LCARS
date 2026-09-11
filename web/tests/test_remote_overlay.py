@@ -1784,3 +1784,176 @@ class TheShippedElsewhereCard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ==========================================================================
+# S197 — A WITHDRAWN CONTROL IS NOT A LOCK.
+#
+# S196's last round taught the FILING laptop that its mission had merged on the
+# other machine and WITHDREW the `✓ Review PR ▸` it had gone on offering for a
+# pull request that closed minutes earlier. It left the daemon ACCEPTING a POST
+# to that very verb, and said so in its own commit message:
+#
+#     "No daemon-side 403 yet: the write endpoints live in server.py, outside
+#      this change's fence. A POST to /verify on a shipped mission is still
+#      accepted. The shape to copy is `_remote_gate` at server.py:693.
+#      LEDGERED — and it matters, because S190's own lesson is that a disabled
+#      button is not a lock."
+#
+# This is that ledger item. Everything here BYPASSES THE DOM and POSTs straight
+# at the daemon, exactly the way anyone with the port number can.
+# ==========================================================================
+SHIPPED_LINE = ("already shipped from another machine — its pull request "
+                "is merged")
+CLOSED_LINE = ("already closed on the forge from another machine — nothing "
+               "here can act on it")
+
+
+class _ShippedBase(_EndpointBase):
+    """One LOCAL mission at verify whose issue the forge says is finished.
+
+    IDENTICAL ON DISK to a mission that is still live — that is the design of
+    the fixture, and the same one the pixel rig uses. The only difference is
+    what the forge says about issue 106, so anything that changes IS the cure
+    and nothing else can be.
+    """
+
+    VERBS = [("start", {}), ("pause", {}), ("resume", {}),
+             ("verify", {"decision": "approve"}), ("respond", {"answer": "x"}),
+             ("reapprove", {}), ("log", {"text": "x"})]
+
+    def build(self, rows, fail=False):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+        self.dispatched = os.path.join(self.tmp, "dispatched.txt")
+        stub = _adopt_stub(self.tmp, "any.sh",
+                           'printf "%s\\n" "$*" >> "' + self.dispatched + '"\n'
+                           'exit 0\n')
+        scripts = dict((k, stub) for k in
+                       ("run", "pause", "respond", "approve", "feedback",
+                        "log", "resolve", "adopt"))
+        actions = Actions(repo_root=self.tmp, scripts=scripts,
+                          worker_bin="/bin/echo")
+        # THE MISSION THAT SHIPPED ELSEWHERE, and a live one beside it as the
+        # negative control — same stage, same PR, same everything on disk.
+        fx.plant_simple(self.tmp, "m-shipped", stage="verify", issue=106,
+                        pr_url="https://github.com/acme/repo/pull/9",
+                        pr_number="9", review="open")
+        fx.plant_simple(self.tmp, "m-live", stage="verify", issue=107,
+                        pr_url="https://github.com/acme/repo/pull/10",
+                        pr_number="10", review="open")
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, rows, self.record, fail=fail))
+        self.serve(adapter, actions)
+
+
+class AShippedMissionRefusesEveryWrite(_ShippedBase):
+    def setUp(self):
+        self.build([issue(106, stage="done", state="CLOSED")])
+
+    def test_every_write_verb_is_refused(self):
+        for verb, body in self.VERBS:
+            status, _ = self.post("/api/mission/m-shipped/%s" % verb, body)
+            self.assertEqual(409, status,
+                             "%s was accepted on a mission that already "
+                             "shipped" % verb)
+
+    def test_the_refusal_is_the_SAME_SENTENCE_the_card_carries(self):
+        for verb, body in self.VERBS:
+            _, payload = self.post("/api/mission/m-shipped/%s" % verb, body)
+            self.assertEqual(SHIPPED_LINE, payload.get("error"), verb)
+
+    def test_nothing_is_dispatched_behind_the_refusal(self):
+        for verb, body in self.VERBS:
+            self.post("/api/mission/m-shipped/%s" % verb, body)
+        self.assertEqual([], calls(self.dispatched))
+
+    def test_a_LIVE_mission_on_the_same_daemon_is_untouched(self):
+        status, _ = self.post("/api/mission/m-live/verify",
+                              {"decision": "approve"})
+        self.assertEqual(200, status)
+
+    def test_the_card_and_the_daemon_carry_ONE_sentence_not_two(self):
+        """Byte-identical, read out of the SHIPPING files on both sides.
+
+        The tooltip on the withdrawn control and the body of the refusal a
+        click past it earns are the same bytes, or the captain is told two
+        different things about one fact (S190's rule, S191's idiom)."""
+        with open(os.path.join(HERE, "..", "static", "board.js")) as fh:
+            js = fh.read()
+        self.assertIn('"%s"' % SHIPPED_LINE, js,
+                      "board.js no longer carries the shipped sentence")
+        self.assertIn('"%s"' % CLOSED_LINE, js,
+                      "board.js no longer carries the closed sentence")
+        from lcars_serve import server as srv
+        self.assertEqual(SHIPPED_LINE, srv._SHIPPED_LOCK_LINE)
+        self.assertEqual(CLOSED_LINE, srv._CLOSED_LOCK_LINE)
+
+
+class AClosedMissionSaysCLOSEDNotSHIPPED(_ShippedBase):
+    """Two verdicts, because they are two facts and only one is a merge."""
+
+    def setUp(self):
+        self.build([issue(106, stage="implement", state="CLOSED")])
+
+    def test_the_write_is_refused(self):
+        status, _ = self.post("/api/mission/m-shipped/verify",
+                              {"decision": "approve"})
+        self.assertEqual(409, status)
+
+    def test_with_the_sentence_that_does_not_claim_a_merge(self):
+        _, payload = self.post("/api/mission/m-shipped/verify",
+                               {"decision": "approve"})
+        self.assertEqual(CLOSED_LINE, payload.get("error"))
+
+
+class AnUnreachableForgeNEVERLocks(_ShippedBase):
+    """S190's D1, preserved. A forge that did not answer must never read as a
+    forge that said "over" — otherwise a flaky network becomes a frozen board.
+    """
+
+    def setUp(self):
+        self.build([issue(106, stage="done", state="CLOSED")], fail=True)
+
+    def test_the_verb_proceeds_when_the_listing_failed(self):
+        for verb, body in self.VERBS:
+            if verb == "log":
+                continue        # a preview does real work; see the OPEN case
+            status, _ = self.post("/api/mission/m-shipped/%s" % verb, body)
+            self.assertNotEqual(409, status,
+                                "a forge that did not answer locked %s" % verb)
+            self.assertEqual(200, status, verb)
+
+
+class AnOPENIssueChangesNothing(_ShippedBase):
+    """The ordinary case, which is every mission: still open, still writable."""
+
+    def setUp(self):
+        self.build([issue(106, stage="verify", state="OPEN")])
+
+    def test_a_normal_mission_is_unaffected(self):
+        # `log` is left out of the positive set and only out of it: it is a
+        # PREVIEW that does real work (it reads the repo and drafts PRDs), so
+        # a 502 from it on a bare tmp tree says nothing about this gate. Every
+        # negative assertion above still covers it — the point there is that it
+        # never reaches its own machinery at all.
+        for verb, body in self.VERBS:
+            if verb == "log":
+                continue
+            status, _ = self.post("/api/mission/m-shipped/%s" % verb, body)
+            self.assertEqual(200, status, verb)
+
+
+class TheGateBuysNoForgeRoundTrip(_ShippedBase):
+    """S152 — the verdict rides the SAME cached listing the board was built
+    from. Counted off the stub's argv log, not asserted in prose."""
+
+    def setUp(self):
+        self.build([issue(106, stage="done", state="CLOSED")])
+
+    def test_twelve_refused_posts_cost_one_gh_invocation(self):
+        for _ in range(12):
+            self.post("/api/mission/m-shipped/verify", {"decision": "approve"})
+        self.assertEqual(1, len(calls(self.record)))

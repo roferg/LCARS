@@ -133,6 +133,28 @@ _REMOTE_LOCK_LINE = ("driven from another machine — adopt at Align/Verify to "
                      "act here")
 
 
+# S197 — THE MISSION THAT IS ALREADY OVER, from somewhere else.
+#
+# S196's last round taught the FILING laptop that its mission had merged on the
+# other machine, and WITHDREW the `✓ Review PR ▸` it had gone on offering for a
+# pull request that closed minutes earlier. It left the daemon accepting a POST
+# to that very verb — ledgered in its own commit message, because S190's lesson
+# is that A DISABLED BUTTON IS NOT A LOCK: anyone with the port can POST straight
+# past the DOM, and the tester will.
+#
+# TWO SENTENCES, BECAUSE THEY ARE TWO FACTS, and they are the SAME BYTES the card
+# puts in the withdrawn control's tooltip (board.js `SHIPPED_LINE` / `CLOSED_LINE`).
+# `shipped` is `lcars:done` — the label `lcars approve` applies at the merge and
+# nowhere else. `closed` is an issue closed on the forge WITHOUT it: over, but
+# NOT merged, and saying "shipped" there would invent a merge nobody performed.
+# Pinned against board.js by test, read out of the shipping file, so an edit to
+# either side breaks here instead of in front of the captain.
+_SHIPPED_LOCK_LINE = ("already shipped from another machine — its pull request "
+                      "is merged")
+_CLOSED_LOCK_LINE = ("already closed on the forge from another machine — "
+                     "nothing here can act on it")
+
+
 # --- S187: a CIVIL refusal when the port is already taken --------------------
 # Plain `lcars viewscreen` binds the fixed 8765 (only `--open` picks a free
 # port), so a second board on the same machine hit `_Server((host, port), ...)`
@@ -722,11 +744,67 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             if isinstance(card, dict) and card.get("remote") is True:
                 raise _ActionError(409, _REMOTE_LOCK_LINE)
 
+        def _shipped_gate(self, mid, verb):
+            """S197 — a write on a LOCAL mission the forge says is FINISHED.
+
+            THE LEDGERED HALF OF S196's last round. The card already withdraws
+            `✓ Review PR ▸` on a mission whose issue merged or closed on
+            another laptop; the daemon went on accepting the POST behind it.
+            A disabled button is not a lock — S190's own lesson, and the reason
+            that round paired every withdrawn control with a server-side
+            refusal.
+
+            409, LIKE `_remote_gate` AND FOR THE SAME REASON. Nothing is
+            missing and nothing is forbidden-to-this-user: the mission is over,
+            and that is a CONFLICT WITH CURRENT STATE. (403 would say "not
+            yours", which is the owner lock's sentence and a different fact —
+            this mission IS the captain's; it has simply ended.)
+
+            THE VERDICT IS THE ADAPTER'S, not a second implementation of one,
+            and it costs NOTHING: `adapter.mission()` reads the SAME cached
+            forge listing the board was built from, so this cannot re-create
+            the S152 storm — pinned by an argv-counting test, not by this
+            paragraph.
+
+            AN UNREACHABLE FORGE NEVER LOCKS. `verdicts()` returns {} on any
+            listing status but ok, so a card built during a bad cycle carries
+            no `shippedElsewhere` key at all and the verb proceeds untouched.
+            That posture is S190's D1 and it is preserved deliberately: a forge
+            that did not answer must never be readable as a forge that said
+            "over". The guard itself never refuses a write either — any
+            exception reaching here allows it.
+            """
+            if verb not in _OWNER_LOCKED_VERBS:
+                return
+            reader = getattr(adapter, "mission", None)
+            if not callable(reader):
+                return
+            try:
+                card = reader(mid)
+            except Exception:
+                return          # never let the guard itself refuse a write
+            if not isinstance(card, dict):
+                return
+            v = card.get("shippedElsewhere")
+            if not isinstance(v, dict):
+                return
+            state = v.get("state")
+            if state == "shipped":
+                raise _ActionError(409, _SHIPPED_LOCK_LINE)
+            if state == "closed":
+                raise _ActionError(409, _CLOSED_LOCK_LINE)
+
         def _dispatch_verb(self, mid, verb, body):
             # REMOTE FIRST. "this mission is not driven from here" is the more
             # specific truth, and asking the ownership seam about an issue number
             # that has no local mission would only ever be able to shrug.
             self._remote_gate(mid, verb)
+            # S197: …and OVER beats both of the below. "there is nothing left
+            # to drive" is a more useful thing to be told than "this is someone
+            # else's to drive", which is exactly the order board.js applies its
+            # three sweeps in (applyShippedLock after applyOwnerLock, so its
+            # sentence wins). One fact, both surfaces.
+            self._shipped_gate(mid, verb)
             self._owner_gate(mid, verb)
             # S191: ADOPT — rebuild a REMOTE mission on this laptop. `mid` here is
             # the ISSUE NUMBER (a remote card has no local mission id yet), so it
@@ -734,7 +812,12 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # mission dir. Deliberately NOT in _OWNER_LOCKED_VERBS: adopting is
             # how the captain takes command here, and adopt.sh does the claiming.
             if verb == "adopt":
-                return actions.adopt(mid)
+                # S197: `engine` is the captain's answer at the board's adopt
+                # picker — the question `lcars adopt` asks at a terminal and
+                # this surface could not. ABSENT means he took the default (the
+                # mission's own engine), and an absent key dispatches the exact
+                # argv this daemon has always dispatched.
+                return actions.adopt(mid, engine=body.get("engine"))
             if verb == "start":
                 return actions.start(mid, override=body.get("override"))
             if verb == "pause":

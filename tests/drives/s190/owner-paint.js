@@ -535,6 +535,98 @@ const REMOTE_DETAIL_PROBE = `(function () {
   };
 })()`;
 
+/* ── S197 — THE ADOPT ENGINE PICKER ────────────────────────────────────────
+ *
+ * `lcars adopt` at a terminal ASKS which CLI should drive a mission on this
+ * laptop. The board could not: it dispatched with no tty and no `--engine`, so
+ * adopt.sh took its non-interactive path and REFUSED on exactly the one-CLI
+ * machine the feature exists for. Every screenshot of the question is a
+ * terminal, because the viewscreen could not produce one.
+ *
+ * WHAT ONLY A BROWSER CAN ANSWER, and it is the same thing as every other
+ * check in this file: whether the three option states LOOK different. A
+ * projected DOM can see the class names; it cannot see that `.chosen` and its
+ * unchosen neighbour paint the same. Solid = in force, hollow = available,
+ * hollow+dashed+`⊘` = not on this machine — and that has to survive the
+ * colour being taken away, which is measured here by desaturating the real
+ * page and re-reading the real pixels through the filter. */
+const PICKER_OPEN = `(function () {
+  var b = document.querySelector('.card[data-mid="201"] .remote-adopt');
+  if (!b) return { clicked: false };
+  b.click();
+  return { clicked: true };
+})()`;
+
+const PICKER_CLOSE = `(function () {
+  var c = document.querySelector('.card[data-mid="201"] .adopt-cancel');
+  if (c) c.click();
+  return 1;
+})()`;
+
+const PICKER_PROBE = `(function () {
+  var card = document.querySelector('.card[data-mid="201"]');
+  if (!card) return { present: false };
+  var box = card.querySelector(".adopt-picker");
+  var cr = card.getBoundingClientRect();
+  function read(n) {
+    var r = n.getBoundingClientRect(), st = getComputedStyle(n);
+    return {
+      tag: n.tagName, cls: String(n.className || ""),
+      text: (n.textContent || "").trim(), disabled: !!n.disabled,
+      title: String(n.title || ""),
+      engine: n.getAttribute("data-engine"),
+      pressed: n.getAttribute("aria-pressed"),
+      bg: st.backgroundColor, color: st.color,
+      borderStyle: st.borderTopStyle, opacity: parseFloat(st.opacity || "1"),
+      box: { x: r.x, y: r.y, w: r.width, h: r.height }
+    };
+  }
+  if (!box) {
+    return { present: false, scrollX: window.scrollX, scrollY: window.scrollY,
+             cardBox: { x: cr.x, y: cr.y, w: cr.width, h: cr.height },
+             ctrlText: (function () {
+               var c = card.querySelector(".card-ctrl");
+               return c ? (c.textContent || "").trim() : ""; })() };
+  }
+  var br = box.getBoundingClientRect();
+  return {
+    present: true,
+    // PAGE SCROLL, because getBoundingClientRect is VIEWPORT-relative and
+    // CDP's screenshot clip is PAGE-relative. They agree only while the page
+    // is at the top — and this picker SCROLLS ITSELF INTO VIEW when it takes
+    // focus, so by the time it is measured the page is 150px down. Every clip
+    // cut from these boxes was 150px too high, landing on the card background:
+    // two option fills that read IDENTICAL because neither was an option. The
+    // caller adds this back.
+    scrollX: window.scrollX, scrollY: window.scrollY,
+    question: (function () {
+      var q = box.querySelector(".adopt-picker-q");
+      return q ? (q.textContent || "").trim() : ""; })(),
+    role: box.getAttribute("role"),
+    ariaLabel: box.getAttribute("aria-label"),
+    options: Array.prototype.slice.call(
+      box.querySelectorAll(".adopt-engine")).map(read),
+    confirm: (function () {
+      var c = box.querySelector(".adopt-confirm"); return c ? read(c) : null; })(),
+    cancel: (function () {
+      var c = box.querySelector(".adopt-cancel"); return c ? read(c) : null; })(),
+    pickerBox: { x: br.x, y: br.y, w: br.width, h: br.height },
+    cardBox: { x: cr.x, y: cr.y, w: cr.width, h: cr.height }
+  };
+})()`;
+
+/* The card of a mission ALREADY adopted with a chosen engine — the provenance
+ * half. `engineSource: adopt-chosen` is what the captain's answer is recorded
+ * as, and "chosen at adopt" is the sentence the card is supposed to print. */
+const PROVENANCE_PROBE = `(function () {
+  var card = document.querySelector('.card[data-mid="m-adopted-chosen"]');
+  if (!card) return { present: false };
+  var r = card.getBoundingClientRect();
+  return { present: true, scrollX: window.scrollX, scrollY: window.scrollY,
+           text: (card.textContent || "").replace(/\\s+/g, " ").trim(),
+           cardBox: { x: r.x, y: r.y, w: r.width, h: r.height } };
+})()`;
+
 /* ── S196 B5 — THE OWNERSHIP FILTER ─────────────────────────────────────────
  * The strip, the cards it left on screen, the counts it printed, and the
  * column heads — read together in ONE probe, because "the chip says 3" and
@@ -1234,6 +1326,184 @@ async function main() {
       bad("the withdrawn control is READABLE in the actual pixels (>= 4.5:1)",
           wr2.contrast.toFixed(2) + ":1");
     }
+  }
+
+  // ── S197 — THE BOARD ASKS WHICH ENGINE ────────────────────────────────
+  console.log("\nS197 — the board asks which engine, because the CLI does");
+  // BOTH CLIs are on this PATH (the shims), and #201 was filed on copilot, so
+  // this is the TWO-CLI LAPTOP — the case the CLI decides silently and the
+  // captain has therefore never seen. It must be reachable here.
+  const before = await evaluate(cdp, sessionId, PICKER_PROBE);
+  if (before && before.present) {
+    bad("the picker is not on screen until it is asked for",
+        "a freshly painted card already had one");
+  } else {
+    ok("the picker is not on screen until it is asked for", "");
+  }
+  await evaluate(cdp, sessionId, PICKER_OPEN);
+  let pk = null;
+  for (let i = 0; i < 30 && Date.now() < deadline; i++) {
+    pk = await evaluate(cdp, sessionId, PICKER_PROBE);
+    if (pk && pk.present) break;
+    await sleep(100);
+  }
+  if (!pk || !pk.present) {
+    bad("clicking Adopt ASKS which engine instead of dispatching",
+        "no picker appeared; the control row said "
+        + JSON.stringify((pk && pk.ctrlText) || "<no card>"));
+  } else {
+    ok("clicking Adopt ASKS which engine instead of dispatching",
+       JSON.stringify(pk.question));
+    // ── AND IT IS STILL THERE FOUR SECONDS LATER. Found the hard way, by this
+    // rig, on the run that first drew it: the board REBUILDS every card off
+    // its poll, so the picker was being deleted underneath the captain while
+    // he read it. The symptom was two screenshots of ONE box a second apart
+    // showing two different pages — a question that closes itself after four
+    // seconds is not a question. (S196.1 cured the avatar give-up window for
+    // the same reason, one commit before this round.)
+    //
+    // EVERY MEASUREMENT BELOW IS TAKEN AFTER THIS, deliberately: the survival
+    // is then a PRECONDITION of the pixels rather than a hope beside them, and
+    // the boxes the clips are cut from are the rebuilt card's own.
+    await sleep(5200);
+    const after = await evaluate(cdp, sessionId, PICKER_PROBE);
+    if (after && after.present && (after.options || []).length === 2) {
+      ok("the engine question SURVIVES the board's own repaint",
+         "still open after a full poll cycle");
+      pk = after;
+    } else {
+      bad("the engine question SURVIVES the board's own repaint",
+          "a four-second poll closed it: "
+          + JSON.stringify(after && (after.ctrlText || after.present)));
+    }
+    const opts = pk.options || [];
+    if (opts.length === 2) {
+      ok("the picker is REACHABLE on a two-CLI laptop (both engines offered)",
+         JSON.stringify(opts.map((o) => o.text)));
+    } else {
+      bad("the picker is REACHABLE on a two-CLI laptop (both engines offered)",
+          JSON.stringify(opts.map((o) => o.text)));
+    }
+    const chosen = opts.filter((o) => /(^|\s)chosen(\s|$)/.test(o.cls));
+    if (chosen.length === 1 && chosen[0].engine === "copilot") {
+      ok("the DEFAULT is the engine the mission was filed on",
+         JSON.stringify(chosen[0].text));
+    } else {
+      bad("the DEFAULT is the engine the mission was filed on",
+          JSON.stringify(opts.map((o) => o.engine + ":" + o.cls)));
+    }
+    const other = opts.filter((o) => !/(^|\s)chosen(\s|$)/.test(o.cls));
+    // THE GLYPHS, from the house family and nowhere else.
+    const HOUSE = "▶▸▹✓⏸◐◷↻◆✹⊘◈";
+    const offFamily = opts.concat(pk.confirm ? [pk.confirm] : []).filter(
+      (o) => o.text && HOUSE.indexOf(o.text[0]) < 0);
+    if (offFamily.length === 0) {
+      ok("every glyph in the picker is from the house family",
+         JSON.stringify(opts.map((o) => o.text[0])));
+    } else {
+      bad("every glyph in the picker is from the house family",
+          JSON.stringify(offFamily.map((o) => o.text)));
+    }
+    if (chosen.length && (chosen[0].text || "").indexOf("◆") === 0
+        && other.length && (other[0].text || "").indexOf("◈") === 0) {
+      ok("solid ◆ for the option in force, hollow ◈ for the one merely available",
+         JSON.stringify([chosen[0].text, other[0].text]));
+    } else {
+      bad("solid ◆ for the option in force, hollow ◈ for the one merely available",
+          JSON.stringify(opts.map((o) => o.text)));
+    }
+    if (pk.confirm && /▸$/.test(pk.confirm.text)
+        && /Copilot/i.test(pk.confirm.text)) {
+      ok("the confirm names the engine it is about to use",
+         JSON.stringify(pk.confirm.text));
+    } else {
+      bad("the confirm names the engine it is about to use",
+          JSON.stringify(pk.confirm && pk.confirm.text));
+    }
+    if (pk.cancel) {
+      ok("there is a way out that adopts nothing", JSON.stringify(pk.cancel.text));
+    } else {
+      bad("there is a way out that adopts nothing", "no cancel control");
+    }
+    // VIEWPORT → PAGE. See `scrollY` on the probe: every clip below is cut in
+    // PAGE coordinates and every box above was measured in VIEWPORT ones.
+    const pg = (b) => ({ x: b.x + (pk.scrollX || 0), y: b.y + (pk.scrollY || 0),
+                         w: b.w, h: b.h });
+    // ── THE ARTEFACT the captain asked for.
+    await shoot(cdp, sessionId, pg(pk.cardBox), "adopt-picker-open.png", 3, 10);
+    await shoot(cdp, sessionId, pg(pk.pickerBox), "adopt-picker.png", 4, 6);
+    // ── THE PIXELS. Two option states must not paint the same, or the
+    // "default" is a claim the screen does not make.
+    if (chosen.length && other.length) {
+      const cf = fill(pngPixels(await shoot(
+        cdp, sessionId, pg(chosen[0].box), "adopt-opt-chosen.png", 4, 0)));
+      const of = fill(pngPixels(await shoot(
+        cdp, sessionId, pg(other[0].box), "adopt-opt-available.png", 4, 0)));
+      const sepP = contrast(cf, of);
+      const dP = "chosen rgb(" + cf.join(",") + ") vs available rgb("
+        + of.join(",") + ") → " + sepP.toFixed(2) + ":1"
+        + " [boxes " + JSON.stringify(chosen[0].box) + " / "
+        + JSON.stringify(other[0].box) + "; scrollY "
+        + (await evaluate(cdp, sessionId, "window.scrollY")) + "]";
+      if (sepP >= 3.0) {
+        ok("the chosen option and the available one PAINT differently (>= 3:1)", dP);
+      } else {
+        bad("the chosen option and the available one PAINT differently (>= 3:1)", dP);
+      }
+      const ink = inkAndPaper(pngPixels(await shoot(
+        cdp, sessionId, pg(chosen[0].box), "adopt-opt-chosen-ink.png", 4, 0)));
+      if (ink.contrast >= 4.5) {
+        ok("the chosen option is READABLE in the actual pixels (>= 4.5:1)",
+           ink.contrast.toFixed(2) + ":1");
+      } else {
+        bad("the chosen option is READABLE in the actual pixels (>= 4.5:1)",
+            ink.contrast.toFixed(2) + ":1");
+      }
+      // ── AND WITH THE COLOUR TAKEN AWAY. The same filter the owner pill is
+      // held to, applied to the real page and re-read through it, with the
+      // r==g==b assertion that proves the filter actually bit.
+      await evaluate(cdp, sessionId,
+        `(function(){document.documentElement.style.filter="grayscale(1)";return 1})()`);
+      await sleep(120);
+      const cg = fill(pngPixels(await shoot(
+        cdp, sessionId, pg(chosen[0].box), "adopt-opt-chosen-grey.png", 4, 0)));
+      const og = fill(pngPixels(await shoot(
+        cdp, sessionId, pg(other[0].box), "adopt-opt-available-grey.png", 4, 0)));
+      await shoot(cdp, sessionId, pg(pk.pickerBox), "adopt-picker-grey.png", 4, 6);
+      await evaluate(cdp, sessionId,
+        `(function(){document.documentElement.style.filter="";return 1})()`);
+      const desat = (cg[0] === cg[1] && cg[1] === cg[2]);
+      if (!desat) {
+        skip("the greyscale filter bit (r == g == b)", "rgb(" + cg.join(",") + ")");
+      } else {
+        const sepG = contrast(cg, og);
+        const dG = "chosen grey " + cg[0] + " vs available grey " + og[0]
+          + " → " + sepG.toFixed(2) + ":1 (adopt-picker-grey.png)";
+        if (sepG >= 3.0) {
+          ok("the picker is LEGIBLE WITH THE COLOUR REMOVED (>= 3:1)", dG);
+        } else {
+          bad("the picker is LEGIBLE WITH THE COLOUR REMOVED (>= 3:1)", dG);
+        }
+      }
+    }
+    await evaluate(cdp, sessionId, PICKER_CLOSE);
+  }
+  // ── THE PROVENANCE HALF: what the card says after an engine was CHOSEN.
+  const prov = await evaluate(cdp, sessionId, PROVENANCE_PROBE);
+  if (!prov || !prov.present) {
+    skip("the adopted card says the engine was CHOSEN, not converted",
+         "the m-adopted-chosen fixture never rendered");
+  } else if (/chosen at adopt/i.test(prov.text)) {
+    ok("the adopted card says the engine was CHOSEN, not converted",
+       JSON.stringify(prov.text.slice(0, 140)));
+    await shoot(cdp, sessionId,
+                { x: prov.cardBox.x + (prov.scrollX || 0),
+                  y: prov.cardBox.y + (prov.scrollY || 0),
+                  w: prov.cardBox.w, h: prov.cardBox.h },
+                "adopt-provenance-chosen.png", 3, 10);
+  } else {
+    bad("the adopted card says the engine was CHOSEN, not converted",
+        JSON.stringify(prov.text.slice(0, 200)));
   }
 
   // ── D3 ────────────────────────────────────────────────────────────────

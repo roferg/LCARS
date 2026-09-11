@@ -31,7 +31,11 @@ THE THREE RULES
    mid-pipeline BY CONSTRUCTION — it says `align` for a mission halfway through
    Implement. `gh_relabel` swaps the `lcars:<stage>` label at every single
    transition. One source per fact: the envelope owns identity, the label owns
-   stage. This module therefore parses no envelope at all.
+   stage. The envelope is therefore read for exactly ONE thing here (S197 —
+   the ENGINE the mission was filed on, which is an IDENTITY fact and is the
+   half of the adopt question the forge is authoritative about) and for
+   nothing that moves as a mission runs. Stage still comes from the label,
+   and always will.
 
 3. THE POLL IS SLOW AND CACHED, AND THAT IS A ROADMAP-LEVEL CONSTRAINT (S152).
    The front end re-fetches `/api/board` every four seconds and the SSE channel
@@ -358,6 +362,20 @@ class RemoteMissions(object):
         # answer it, and offered at exactly the two ENDS.
         card["adoptable"] = card.get("stage") in ADOPTABLE_STAGES
         card["progress"] = _ticket_progress(row, card.get("stage"))
+        # S197 — WHICH ENGINE THIS MISSION WAS FILED ON. The board's adopt
+        # picker has to be able to SAY it before it dispatches, and the issue
+        # body is the only place a laptop that has never seen this mission can
+        # learn it. Read off the row already in hand: NO extra forge call, so
+        # S152's one-listing-per-cycle is untouched.
+        #
+        # ABSENT, NEVER NULL. `engine: null` in the envelope is a real and
+        # deliberate answer ("the filing laptop pinned nothing; host detection
+        # decides" — S188), and it is carried here by the KEY BEING MISSING,
+        # exactly as a body with no envelope at all is. The picker treats both
+        # the same way, which is what the CLI does.
+        eng = _envelope_engine(row.get("body"))
+        if eng:
+            card["engine"] = eng
         return card
 
 
@@ -437,6 +455,52 @@ class RemoteMissions(object):
 
 
 # --- helpers -----------------------------------------------------------------
+# The S188 handoff envelope, as issue-body.sh writes it:
+#   <!-- lcars:handoff v1 {"id":…,"branch":…,"base":…,"type":…,"engine":…,…} -->
+# ONE LINE, APPENDED, and the LAST one on the body is the real one — a PRD may
+# legitimately QUOTE an envelope, and adopt.sh resolves that exactly this way
+# (`index($0, "<!-- lcars:handoff ")` … `last = NR`). Same rule here, so the
+# board and adopt.sh can never read two different envelopes off one body.
+_ENVELOPE_MARK = "<!-- lcars:handoff "
+_ENVELOPE_END = " -->"
+
+
+def _envelope_engine(body):
+    """The `engine` the handoff envelope names, or None. Never raises.
+
+    A FORGE IS NOT A PROMISE (this module's standing posture): a truncated
+    envelope, a body that is not a string, JSON that does not parse, or an
+    `engine` that is null all answer None — and None means the card carries no
+    `engine` key at all, which the picker reads as "the mission pinned
+    nothing". An unreadable envelope must never invent an engine.
+    """
+    if not isinstance(body, str) or _ENVELOPE_MARK not in body:
+        return None
+    tail = body[body.rfind(_ENVELOPE_MARK) + len(_ENVELOPE_MARK):]
+    end = tail.find(_ENVELOPE_END)
+    if end < 0:
+        return None
+    blob = tail[:end].strip()
+    at = blob.find("{")
+    if at < 0:
+        return None
+    try:
+        env = json.loads(blob[at:])
+    except Exception:
+        return None
+    if not isinstance(env, dict):
+        return None
+    eng = env.get("engine")
+    if not isinstance(eng, str):
+        return None
+    eng = eng.strip()
+    # Defensive, and for the same reason actions.adopt validates it again: this
+    # value is one hop from becoming a command-line argument.
+    if not eng or not all(ch.isalnum() or ch in "-_." for ch in eng):
+        return None
+    return eng
+
+
 def _labels(row):
     """The issue's label names as a set. Crash-proof: a forge is not a promise."""
     out = set()

@@ -13105,7 +13105,7 @@ class Actions(LogFacts):
             raise ActionError(404, "no such mission: %s" % mid)
 
     # ── S191: ADOPT A REMOTE MISSION ────────────────────────────────────────
-    def adopt(self, issue):
+    def adopt(self, issue, engine=None):
         """Rebuild the mission on issue `issue` here — `lcars adopt <n>`.
 
         DISPATCH ONLY. Every rule about WHEN an adopt is allowed lives in
@@ -13135,8 +13135,28 @@ class Actions(LogFacts):
             raise ActionError(
                 400, "adopt needs the mission's GitHub issue NUMBER; got %r"
                      % (issue,))
+        # S197 — THE ENGINE THE CAPTAIN PICKED, on its way to adopt.sh's own
+        # `--engine`.
+        #
+        # WHY THIS PARAMETER EXISTS AT ALL. `lcars adopt` at a terminal ASKS
+        # which CLI should drive the mission here (the captain's ruling of
+        # 2026-09-09: ask and convert, because a laptop may only have one CLI
+        # installed). The daemon has no tty, so adopt.sh took its documented
+        # non-interactive path and REFUSED on exactly the machine the feature
+        # exists for. The board could not ask because it had no way to answer.
+        # Now it does: the picker asks, and the answer arrives here.
+        #
+        # PASSED ONLY WHEN IT IS A CHANGE (the board sends nothing when the
+        # captain took the default). An adopt with no `engine` in the body is
+        # byte-for-byte the dispatch this daemon has always made — same argv,
+        # same non-interactive path, same `note()` when the repo config
+        # disagrees. Doing nothing reproduces today's behaviour exactly.
+        args = ["--issue", n]
+        eng = self._adopt_engine(engine)
+        if eng:
+            args += ["--engine", eng]
         try:
-            proc = self._run("adopt", ["--issue", n])
+            proc = self._run("adopt", args)
         except ActionError as exc:
             raise _adopt_refusal(exc)
         out = (proc.stdout or b"").decode("utf-8", "replace").strip()
@@ -13157,6 +13177,35 @@ class Actions(LogFacts):
         # _ADOPT_REFUSAL_BANNER above — one script, one marker, no classifier.
         return {"adopted": int(n), "output": out,
                 "warnings": _adopt_warnings(out)}
+
+    @staticmethod
+    def _adopt_engine(engine):
+        """The requested engine, validated, or "" for "the board sent none".
+
+        VALIDATED HERE RATHER THAN TRUSTED, on the same reasoning the issue
+        number two lines up carries: it is about to become a command-line
+        argument. The shape is the one `lcars_engine_bin` accepts — a bare
+        engine id, or a custom binary NAME — so nothing that could be read as a
+        flag, a path or a shell fragment survives.
+
+        NOT AN ALLOW-LIST OF `claude`/`copilot`, deliberately. adopt.sh checks
+        the engine against THIS MACHINE through the shared detector and refuses
+        with its own sentence if it is not here; a second, narrower gate in
+        Python would be a rule in two places (ADR-002) and the two would drift
+        the day a third engine lands.
+        """
+        eng = str(engine if engine is not None else "").strip()
+        if not eng:
+            return ""
+        # A LEADING DASH IS A FLAG, NOT A NAME, and it is checked first: the
+        # character class below happily admits `--help`, which would have
+        # travelled as a second option rather than as `--engine`'s value. Found
+        # by the test that tries it.
+        if (eng.startswith("-") or len(eng) > 64
+                or not all(c.isalnum() or c in "-_." for c in eng)):
+            raise ActionError(
+                400, "adopt: %r is not an engine name" % (engine,))
+        return eng
 
     # ── S190: THE LIGHT LOCK, SERVER-SIDE ───────────────────────────────────
     def owner_lock_reason(self, mid):

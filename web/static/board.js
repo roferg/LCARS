@@ -571,10 +571,29 @@ function adoptControl(m) {
   // sentence the whole of half B speaks (solid = yours, hollow = not).
   var b = btn("◆ Adopt ▸", "go remote-adopt", function () {
     if (b.disabled) return;
+    // S197 — ASK BEFORE DISPATCHING, exactly as `lcars adopt` asks at a
+    // terminal. Returns false when there is nothing to ask WITH (no daemon
+    // engine list — an older build, the github adapter, a machine the shared
+    // detector could not read), in which case this dispatches the byte-for-byte
+    // same POST it always did. See openAdoptPicker.
+    if (openAdoptPicker(b, m)) return;
+    dispatchAdopt(b, m, "");
+  });
+  b.title = "Rebuild this mission on THIS machine from its GitHub issue";
+  return act("adopt", applyWriteState(b));
+}
+
+/* THE DISPATCH ITSELF, lifted out of the button so the PICKER's confirm can
+   reach the identical code path — one adopt POST on this board, never two.
+   `engine` is "" for "the captain took the default", and an empty engine puts
+   NOTHING in the body, which is the argv this daemon has always sent. */
+function dispatchAdopt(b, m, engine) {
     b.disabled = true;
     b.textContent = "◐ Adopting…";
+    var payload = {};
+    if (engine) payload.engine = engine;
     postWrite("/api/mission/" + enc(m.issue != null ? m.issue : m.id)
-              + "/adopt", {},
+              + "/adopt", payload,
       function (state) {
         // The board refresh postWrite already fired swaps in the LOCAL card.
         //
@@ -605,9 +624,276 @@ function adoptControl(m) {
         // button that quietly came back would say none of them.
         setVerdict(msg || "Adopt failed.", "err");
       });
+}
+
+/* ═══════ S197 — THE BOARD ASKS WHICH ENGINE, BECAUSE THE CLI DOES ═══════
+
+   THE DEFECT, and it is the plainest kind: THERE WAS NOTHING TO SCREENSHOT.
+   `lcars adopt` at a terminal ASKS which CLI should drive a mission on this
+   laptop — the captain's ruling of 2026-09-09, taken because a laptop may only
+   have ONE CLI installed, so a mission filed on the other one is not a handover
+   unless something converts it. The BOARD passed no `--engine` and ran with no
+   tty, so adopt.sh took its documented non-interactive path and REFUSED — on
+   exactly the machine the feature exists for. Every screenshot of the ask is a
+   terminal because the viewscreen could not produce one. The captain works from
+   the viewscreen (standing ruling, 2026-09-07), and the board is a UI version of
+   the command line: where the two disagree, the board comes up to the CLI.
+
+   IT IS A STRICT SUPERSET OF WHAT THE CLI DOES, never a contradiction of it.
+   The CLI only PROMPTS on absence or disagreement; the rest of the time it
+   decides silently and says what it decided. This surfaces that decision every
+   time — which is the only reason the captain can reach it on a laptop with
+   both CLIs installed — WITH THE SAME DEFAULT. Taking the default sends no
+   `engine` at all, so the dispatch is argv-identical to the one this board has
+   always made, warnings and all. Nothing changes unless he acts.
+
+   FOUR GLYPHS, ALL HOUSE (LOCK_ACTION_GLYPHS + `⊘`/`◈`), and they carry the
+   state WITHOUT COLOUR, which is this round's language: SOLID = actionable,
+   HOLLOW/DASHED = not.
+     `◆`  the option in force — the same filled diamond Adopt itself wears.
+     `◈`  an option available but not chosen — the framed diamond, the same
+          shape hollow, which is the sentence the whole round speaks.
+     `⊘`  an engine this machine does NOT have. Disabled, `.btn.locked`
+          (hollow + dashed), and it is still DRAWN rather than hidden, because
+          "the mission was filed on copilot and copilot is not here" is the
+          fact the captain needs in order to understand the choice he is being
+          offered. Hiding it would turn an explanation into a mystery.
+     `▸`  the shared dispatch suffix, on the confirm and nothing else.
+
+   NO NEW COLOUR TOKEN (ADR-007): every rule in the stylesheet block for this
+   reads an existing --lcars-* var, and the state is carried by fill and edge.
+
+   KEYBOARD: every option and both footers are real `<button>`s, so Tab reaches
+   them and board.css's amber `:focus-visible` ring shows where it landed;
+   Enter/Space activate natively. Escape closes the picker WITHOUT adopting, and
+   it is bound on the picker itself and consumed there — NO new global hotkey is
+   registered, so nothing in the command deck's table is shadowed. */
+
+/* THE OPEN QUESTION SURVIVES THE BOARD'S OWN REPAINT.
+
+   FOUND BY THE PIXEL RIG, not by a unit test, and it is the third time this
+   project has met this shape: the board rebuilds every card off the four-second
+   poll (S196.1 cured the avatar give-up window for exactly this reason, one
+   commit ago), so a picker that lived only in the DOM was deleted underneath
+   the captain WHILE HE WAS READING IT. The rig caught it as a screenshot of a
+   flat rectangle where the chosen option had been, a second after the same
+   option measured correctly — two reads of one box, two different pages.
+
+   A question that closes itself after four seconds is not a question. So the
+   OPEN state and the ENGINE CHOSEN SO FAR live here, keyed by the card's issue
+   number, and `remoteControls` re-opens the picker on the rebuilt card. The
+   DOM stays the render of this, never the record of it — the same division
+   S196.1 settled on for the beam's deadline.
+
+   CLEARED on cancel and on dispatch, so nothing is remembered about a question
+   that has been answered or abandoned. */
+var ADOPT_PICKING = {};
+
+function adoptKey(m) {
+  return String(m && (m.issue != null ? m.issue : m.id));
+}
+
+/* The engines to OFFER, in the order to offer them: the mission's own first
+   (it is the default and it is what the question is about), then everything
+   this machine has. `m.enginesHere` is the daemon's answer from the ONE shared
+   detector (lcars-common.sh `lcars_available_engines`) — the board never
+   guesses, and no list ⇒ no picker at all. */
+function adoptEngineOptions(m) {
+  var here = (m && m.enginesHere) || [];
+  if (Object.prototype.toString.call(here) !== "[object Array]") return [];
+  // NO INSTALLED LIST ⇒ NO OPTIONS, even when the mission names an engine.
+  // Found by the test: with `enginesHere` absent the picker still opened, on
+  // one dead `⊘ Copilot — not on this machine` row and nothing to press —
+  // a refusal wearing a picker's clothes, which is the exact defect this
+  // session exists to remove, reintroduced one layer up. A board that cannot
+  // ask must dispatch in one click, as it always did.
+  if (!here.length) return [];
+  var filed = String((m && m.engine) || "");
+  var out = [], seen = {}, i, e;
+  if (filed) { out.push(filed); seen[filed] = true; }
+  for (i = 0; i < here.length; i++) {
+    e = String(here[i] || "");
+    if (!e || seen[e]) continue;
+    seen[e] = true;
+    out.push(e);
+  }
+  return out;
+}
+
+function adoptEngineHere(m, engine) {
+  var here = (m && m.enginesHere) || [];
+  for (var i = 0; i < here.length; i++) {
+    if (String(here[i]) === String(engine)) return true;
+  }
+  return false;
+}
+
+/* The option that is selected when the picker opens.
+
+   THE MISSION'S OWN ENGINE, so doing nothing reproduces today's behaviour
+   exactly. When the mission's engine is not on this machine the default falls
+   to the first one that IS — which is the branch the CLI refuses on with no
+   tty, and the whole reason a one-CLI laptop needs this surface. When the
+   mission pinned NO engine at all (`engine: null` in the handoff envelope — a
+   deliberate S188 answer meaning "host detection decides"), the default is that
+   same non-answer, represented as "". */
+function adoptDefaultEngine(m) {
+  var filed = String((m && m.engine) || "");
+  if (filed && adoptEngineHere(m, filed)) return filed;
+  if (filed) {
+    var here = (m && m.enginesHere) || [];
+    return here.length ? String(here[0]) : "";
+  }
+  return "";
+}
+
+function adoptOptionLabel(m, engine, chosen) {
+  var mark = chosen ? "◆ " : "◈ ";
+  var filed = String((m && m.engine) || "");
+  if (!engine) return mark + "Not pinned — the host CLI decides";
+  var name = engineLabel(engine);
+  if (!adoptEngineHere(m, engine)) return name + " — not on this machine";
+  if (engine === filed) return mark + name + " — filed with this mission";
+  return mark + name + " — installed here";
+}
+
+/* Open the picker under `b`, or answer false when there is nothing to ask with.
+
+   FALSE IS A REAL ANSWER, and it is the byte-identity guarantee: a daemon that
+   sends no `enginesHere` (an older build, the GitHub adapter, a machine whose
+   detector could not be read) leaves this surface exactly as it was — one
+   click, one POST, no engine in the body. The board never invents an engine
+   list, for the same reason the front door's picker does not. */
+function openAdoptPicker(b, m) {
+  var options = adoptEngineOptions(m);
+  if (!options.length) return false;
+  var host = b.parentNode;
+  if (!host || !host.appendChild) return false;
+  if (b._adoptPicker) return true;       // already open — one at a time
+
+  // RESUMED, not restarted: a repaint that landed while he was deciding must
+  // not throw his choice away and go back to the default.
+  var memo = ADOPT_PICKING[adoptKey(m)];
+  var resuming = !!memo;
+  var chosen = resuming ? String(memo.engine || "") : adoptDefaultEngine(m);
+  ADOPT_PICKING[adoptKey(m)] = { engine: chosen };
+  var box = el("div", "adopt-picker");
+  box.setAttribute("role", "group");
+  box.setAttribute("aria-label", "Which engine should drive this mission here");
+  box.addEventListener("click", function (e) { e.stopPropagation(); });
+
+  var q = el("div", "adopt-picker-q",
+             "Which engine should drive this mission here?");
+  box.appendChild(q);
+
+  var rows = [];
+  function paint() {
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.dead) continue;
+      var on = r.engine === chosen;
+      r.node.className = "btn adopt-engine" + (on ? " chosen" : "");
+      r.node.textContent = adoptOptionLabel(m, r.engine, on);
+      r.node.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    go.textContent = "◆ Adopt" +
+      (chosen ? " on " + engineLabel(chosen) : "") + " ▸";
+  }
+
+  function addRow(engine) {
+    var dead = engine && !adoptEngineHere(m, engine);
+    var o = btn(adoptOptionLabel(m, engine, false), "adopt-engine",
+                function () {
+                  if (dead) return;
+                  chosen = engine;
+                  ADOPT_PICKING[adoptKey(m)] = { engine: chosen };
+                  paint();
+                });
+    o.setAttribute("data-engine", engine || "");
+    if (dead) {
+      o.disabled = true;
+      o.title = engineLabel(engine) + " is not installed on this machine";
+      // The house lock treatment, not a second one: `⊘`, hollow, dashed —
+      // the same thing every other unusable control on this board wears.
+      markLocked(o);
+    }
+    rows.push({ engine: engine, node: o, dead: dead });
+    box.appendChild(o);
+  }
+
+  // The "no pin" option exists only when the mission HAS no pin: adopt.sh will
+  // not un-pin a mission that carries one, and offering that here would be a
+  // choice LCARS cannot honour.
+  if (!String((m && m.engine) || "")) addRow("");
+  for (var i = 0; i < options.length; i++) addRow(options[i]);
+
+  var foot = el("div", "adopt-picker-foot");
+  // The confirm's label is COMPOSED by paint() ("◆ Adopt on Claude ▸"), never
+  // written as a literal here: the bare adopt label appears in this file twice
+  // — the card's own control and the label put BACK after a failed dispatch —
+  // and a regression guard counts those two, because a session that changed one
+  // and not the other resurrected an old glyph stutter on the unhappy path.
+  var go = btn("", "go adopt-confirm", function () {
+    var filed = String((m && m.engine) || "");
+    // NOTHING IN THE BODY WHEN HE TOOK THE DEFAULT. The captain choosing the
+    // mission's own engine is not a conversion and must not be recorded as
+    // one; it is also the dispatch this daemon has always made, so adopt.sh's
+    // own `note()` about a disagreeing repo config still reaches him.
+    closeAdoptPicker(b, m);
+    dispatchAdopt(b, m, chosen === filed ? "" : chosen);
   });
-  b.title = "Rebuild this mission on THIS machine from its GitHub issue";
-  return act("adopt", applyWriteState(b));
+  var no = btn("Cancel", "adopt-cancel",
+               function () { closeAdoptPicker(b, m); });
+  foot.appendChild(go);
+  foot.appendChild(no);
+  box.appendChild(foot);
+
+  box.addEventListener("keydown", function (e) {
+    if ((e.key || "") !== "Escape") return;   // everything else keeps bubbling
+    e.stopPropagation();
+    closeAdoptPicker(b, m);
+  });
+
+  paint();
+  host.appendChild(box);
+  // THE TRIGGER STANDS DOWN WHILE THE QUESTION IS OPEN. Found by looking at
+  // the first screenshot: `◆ Adopt ▸` sat beside a panel whose own confirm
+  // said `◆ Adopt on Copilot ▸`, which is TWO adopt buttons offering two
+  // different things — and the flex row stretched the old one to the full
+  // height of the panel, so the louder of the two was the one that no longer
+  // knew which engine it would use. One question, one answer: the trigger
+  // goes away until the question is resolved (Cancel brings it back).
+  host.className = String(host.className || "") + " asking";
+  b.hidden = true;
+  b._adoptPicker = box;
+  b.setAttribute("aria-expanded", "true");
+  // FOCUS ONLY ON A REAL OPEN. Re-taking it on every four-second repaint would
+  // yank the caret out from under a captain who had tabbed somewhere else —
+  // a repaint is not an interaction.
+  if (!resuming && rows.length && rows[0].node.focus) {
+    for (var j = 0; j < rows.length; j++) {
+      if (rows[j].engine === chosen && rows[j].node.focus) {
+        rows[j].node.focus(); break;
+      }
+    }
+  }
+  return true;
+}
+
+function closeAdoptPicker(b, m) {
+  if (m) delete ADOPT_PICKING[adoptKey(m)];
+  var box = b && b._adoptPicker;
+  if (!box) return;
+  var host = box.parentNode;
+  if (host && host.removeChild) host.removeChild(box);
+  if (host) {
+    host.className = String(host.className || "")
+      .replace(/(^|\s)asking(\s|$)/, "$1$2");
+  }
+  b.hidden = false;
+  b._adoptPicker = null;
+  b.setAttribute("aria-expanded", "false");
+  if (b.focus) b.focus();
 }
 
 /* The control row of a remote card: swept read-only, then ADOPT added.
@@ -653,7 +939,15 @@ function remoteControls(host, m) {
     }
   }
   var adopt = adoptControl(m);
-  if (adopt && host) host.appendChild(adopt);
+  if (adopt && host) {
+    host.appendChild(adopt);
+    // S197 — and if the captain had the engine question OPEN when the board
+    // repainted underneath him, it is open on the rebuilt card too, on the
+    // option he had got as far as choosing. Done HERE rather than inside
+    // adoptControl because the picker is appended beside the button, and the
+    // button has no parent until this line has run.
+    if (ADOPT_PICKING[adoptKey(m)]) openAdoptPicker(adopt, m);
+  }
   return host;
 }
 

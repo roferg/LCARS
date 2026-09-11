@@ -2746,3 +2746,68 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .front-door .fd-busy{
   font-family:var(--font-display);letter-spacing:.18em;text-transform:uppercase;
   font-size:13px;color:var(--lcars-teal,#2de3c7)}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S197 — THE ADOPT ENGINE PICKER.
+
+   `lcars adopt` at a terminal asks which CLI should drive a mission on this
+   laptop. The board could not ask — it dispatched with no tty and no
+   `--engine`, so adopt.sh refused on exactly the one-CLI machine the feature
+   exists for. This is the surface that asks.
+
+   DRAWN IN SHAPE, NOT HUE, and that is the requirement rather than a taste:
+   this round's language is SOLID = actionable, HOLLOW/DASHED = not, and the
+   state has to survive a greyscale screenshot. The option IN FORCE is a solid
+   block (`◆`); an option merely available is hollow with a solid edge (`◈`);
+   an engine this machine does not have takes `.btn.locked` — the house lock
+   treatment, hollow AND dashed, wearing `⊘` — exactly like every other control
+   on this board that cannot act. Three states, three edge treatments, legible
+   with the colour removed.
+
+   NO NEW TOKEN (ADR-007). Every colour here is an existing shared --lcars-*
+   var: the picker's frame borrows `--lcars-violet` (the same token the remote
+   Adopt control already wears, because this belongs to that control), the
+   chosen option borrows `--lcars-teal` (the shared go/success token, which is
+   what `.btn.go` already is), and the unavailable option inherits
+   `.btn.locked`'s blue untouched.
+
+   NOTHING DIMS THE GROUP. An `opacity` on the container would make a
+   compositing group and out-specify `.btn.locked{opacity:1}` — S190's D2,
+   arrived at from a fourth direction. Each control carries its own state.
+   ════════════════════════════════════════════════════════════════════════ */
+/* THE ROW WRAPS ONLY WHILE IT IS ASKING. A blanket `flex-wrap` on
+   `.card-ctrl` would change how EVERY control row on this board reflows at a
+   narrow column width, which is a repaint nobody asked for; the class is
+   added by openAdoptPicker and removed by closeAdoptPicker, so exactly one
+   row at a time is affected and only while the question is on screen. */
+.card-ctrl.asking{flex-wrap:wrap}
+.adopt-picker{
+  flex:1 1 100%;
+  display:flex;flex-direction:column;gap:5px;
+  margin-top:7px;padding:8px;
+  border:1px dashed var(--lcars-violet,#9977ff);
+  border-radius:10px;
+  background:rgba(153,119,255,.08)}
+.adopt-picker-q{
+  font-size:10px;letter-spacing:.10em;text-transform:uppercase;
+  color:var(--lcars-text-bright);margin-bottom:1px}
+.adopt-picker .btn.adopt-engine{
+  text-align:left;
+  background:transparent;
+  color:var(--lcars-text-bright);
+  border-color:var(--lcars-border);
+  border-style:solid}
+/* THE OPTION IN FORCE — a solid block, the same sentence `.btn.go` speaks. */
+.adopt-picker .btn.adopt-engine.chosen{
+  background:var(--lcars-teal);
+  color:var(--lcars-text-on-color);
+  border-color:var(--lcars-teal)}
+/* …and an engine this machine does not have keeps `.btn.locked` exactly as the
+   sheet defines it above (hollow, dashed, blue). Stated, not restated: the
+   only thing added is the left alignment the rows share. */
+.adopt-picker .btn.adopt-engine.locked{text-align:left}
+.adopt-picker-foot{display:flex;gap:6px;margin-top:3px}
+.adopt-picker .btn.adopt-cancel{
+  background:transparent;
+  color:var(--lcars-text);
+  border-color:var(--lcars-border)}
