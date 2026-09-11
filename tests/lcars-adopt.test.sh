@@ -1501,6 +1501,82 @@ check "E7. the mission's engine is still recognised as installed here" \
 
 # ==========================================================================
 echo
+echo "E8 — the captain's answer at the adopt prompt SURVIVES \`lcars approve\`"
+# ==========================================================================
+# THE WHOLE POINT OF S196, end to end, with nothing faked between the two verbs:
+# a real `lcars adopt` ASKS which engine to use on this laptop, the captain
+# answers, adopt RECORDS `adopt-chosen` — and then the real `lcars approve`
+# merges the mission and the answer is STILL THERE.
+#
+# It was not. Measured three separate times in one day (S196 capstone): the card
+# went from `copilot · chosen at adopt` to `copilot · $LCARS_WORKER_BIN` the
+# moment approve ran. approve pins the mission's engine for its reconcile leg —
+# correct, and it stays — and run.sh's recorder mistook LCARS's own re-assertion
+# of the mission's engine for a fresh operator act, overwriting the more specific
+# truth with `env`. The engine never moved; the reason it ran did.
+#
+# approve's reconcile here is the REAL run.sh, not a stub: the defect lives in
+# the handshake BETWEEN the two scripts, so a stub cannot have it. It costs
+# nothing — the fixture's base is never ahead of the mission branch, so the
+# reconcile gate returns before a worker exists — and both engines are on $PATH
+# as argv-recording shims whose counts are asserted ZERO, so a future change that
+# does reach for a worker is caught as a count rather than a bill.
+IFS="$TAB" read -r repoE8 originE8 <<<"$(new_repo)"
+cat >"$repoE8/.git/lcars/config.json" <<'CFG'
+{
+  "model": "claude-sonnet",
+  "workerBin": "claude",
+  "testCommand": "true"
+}
+CFG
+E8_MID="lcars-20260909-055"
+FIXE8="$(new_fixture "$TMPROOT/fixE8")"
+mk_body "$FIXE8/issue-55.body" "$PRD_TEXT" \
+  "$(envelope "$E8_MID" "lcars/$E8_MID" main feature copilot null 0)"
+printf 'A copilot mission at verify\n' >"$FIXE8/issue-55.title"
+printf 'lcars:mission\nlcars:verify\n' >"$FIXE8/issue-55.labels"
+printf '77%shttps://github.com/acme/repo/pull/77\n' "$TAB" >"$FIXE8/closes-55"
+seed_branch "$originE8" "lcars/$E8_MID"
+ASSIGN_E8="$TMPROOT/assign-e8.txt"; : >"$ASSIGN_E8"
+
+# 1. ADOPT — both engines here, the clone's config disagrees ⇒ it ASKS. An empty
+#    answer takes the default (the mission's own engine).
+outE8="$(printf '\n' | ( cd "$repoE8" && env PATH="$BOTH_PATH" GH_FIX="$FIXE8" \
+    LCARS_GH_BIN="$GH" LCARS_GIT_BIN="$GIT_ABS" LCARS_GH_USER=capt \
+    GH_ASSIGN_STATE="$ASSIGN_E8" LCARS_ASSUME_TTY=1 \
+    bash "$SCRIPT" --issue 55 2>&1 ))"
+sE8="$(state_of "$repoE8" "$E8_MID")"
+check "E8. adopt at verify ASKS which engine to use here" \
+  "printf '%s' \"\$outE8\" | grep -qi 'which engine\\|\\[copilot\\]'"
+check "E8. the captain's answer is recorded as adopt-chosen" \
+  "[ \"\$(json_get '$sE8' engineSource)\" = 'adopt-chosen' ]"
+check "E8. …on the engine he chose" "[ \"\$(json_get '$sE8' workerBin)\" = 'copilot' ]"
+check "E8. state.json PARSES after adopt" "json_ok '$sE8'"
+
+# 2. APPROVE — the real merge gate, with the real run.sh as its reconcile.
+shim_reset
+: >"$GH_LOG"
+rcE8=0
+( cd "$repoE8" && env -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+    -u LCARS_WORKER_BIN -u LCARS_WORKER_BIN_INTERNAL \
+    PATH="$BOTH_PATH:$PY_DIR" GH_FIX="$FIXE8" GH_ASSIGN_STATE="$ASSIGN_E8" \
+    LCARS_GH_USER=capt LCARS_GH_BIN="$GH" LCARS_GIT_BIN="$GIT_ABS" \
+    LCARS_RUN_SCRIPT="$RUN_SH" \
+    bash "$APPROVE_SCRIPT" --mission "$E8_MID" >approve.txt 2>&1 ) || rcE8=$?
+check "E8. approve ships the adopted mission" \
+  "[ '$rcE8' -eq 0 ] && [ \"\$(json_get '$sE8' stage)\" = 'done' ]"
+check "E8. THE HEADLINE: the adopt answer SURVIVES the merge" \
+  "[ \"\$(json_get '$sE8' engineSource)\" = 'adopt-chosen' ]"
+check "E8. approve did NOT rewrite the provenance to \`env\`" \
+  "[ \"\$(json_get '$sE8' engineSource)\" != 'env' ]"
+check "E8. the engine itself is unchanged" \
+  "[ \"\$(json_get '$sE8' engineResolved)\" = 'copilot' ] && [ \"\$(json_get '$sE8' workerBin)\" = 'copilot' ]"
+check "E8. state.json PARSES after approve wrote to it" "json_ok '$sE8'"
+check "E8. THE COUNT: approve's reconcile spawned NO worker at all" \
+  "[ \"\$(shim_count copilot)\" -eq 0 ] && [ \"\$(shim_count claude)\" -eq 0 ]"
+
+# ==========================================================================
+echo
 echo "S196 A4 — AN ADOPTED CLONE CAN ACTUALLY RUN THE MISSION"
 # ==========================================================================
 # An adopted clone had no config.json at all: no testCommand, so the Implement

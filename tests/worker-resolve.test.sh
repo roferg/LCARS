@@ -95,6 +95,7 @@ resolve_in() { # repo  [extra env assignments...]
   ( cd "$repo" && env -u CLAUDECODE \
       -u COPILOT_CLI -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
       -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL -u LCARS_WORKER_CLI \
+      -u LCARS_WORKER_BIN_INTERNAL \
       "$@" bash "$RUN" resolve-worker 2>&1 )
 }
 
@@ -170,6 +171,7 @@ resolve_mission_in() { # repo  mission-id  [env...]
   ( cd "$repo" && env -u CLAUDECODE \
       -u COPILOT_CLI -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
       -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL -u LCARS_WORKER_CLI \
+      -u LCARS_WORKER_BIN_INTERNAL \
       "$@" bash "$RUN" resolve-worker --mission "$mid" 2>&1 )
 }
 
@@ -233,6 +235,118 @@ s3q="$r3q/.git/lcars/missions/m-nopin/state.json"
 check "3q. a config-sourced resolution records source=config" \
   "[ \"\$(jget '$s3q' engineSource)\" = 'config' ] && [ \"\$(jget '$s3q' engineResolved)\" = 'config-bin' ]"
 check "3r. that state.json PARSES too" "jok '$s3q'"
+
+# --- 3s. LCARS RE-PINNING A MISSION'S *OWN* ENGINE IS NOT A NEW REASON -------
+# S196 fix round. `lcars approve` pins the mission engine for its reconcile leg
+# (`export LCARS_WORKER_BIN="$engine"`, approve.sh) so a copilot mission heals on
+# copilot instead of host-detecting claude. That pin is CORRECT and stays. What
+# was wrong is what the recorder then made of it: an env var won the precedence
+# race, so `engineSource` was rewritten `adopt-chosen` → `env` and the card's
+# provenance line went from `copilot · chosen at adopt` to `copilot · $LCARS_WORKER_BIN`.
+# Measured three separate times in one day's live runs (S196 capstone,
+# tests/drives/s196-capstone/missionA-timeline.md).
+#
+# PROVENANCE ANSWERS "WHY DOES THIS MISSION RUN ON THIS ENGINE". LCARS
+# re-asserting the mission's OWN recorded engine across a process boundary is not
+# a new reason — it is the same reason, said again — so it must not overwrite the
+# more specific truth (adopt-chosen / adopt-converted / the mission's own pin).
+#
+# THE PRODUCER RECORDS IT. approve does not leave the recorder to infer "this env
+# value happens to equal the mission's workerBin, so it was probably me" — that is
+# the inference this round's standing rule forbids (S147/S156/S188 each paid fix
+# rounds for it). approve STATES it, by exporting $LCARS_WORKER_BIN_INTERNAL=1
+# alongside the pin. The resolver reads the statement: an INTERNAL pin is not an
+# operator act, so it does not claim the `env` source — the ladder carries on and
+# the mission's own pin wins, exactly as it would have with no pin at all.
+mk_adopted() { # repo  id  workerBin  engineSource
+  mkdir -p "$1/.git/lcars/missions/$2"
+  cat >"$1/.git/lcars/missions/$2/state.json" <<JSON
+{
+  "id": "$2",
+  "stage": "verify",
+  "workerBin": "$3",
+  "engineResolved": "$3",
+  "engineSource": "$4",
+  "base": "main"
+}
+JSON
+}
+# The house field-writer re-inserts after line 1, so `base` must still be the LAST
+# key after any write — the one shape that writer breaks on.
+jlast() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.stdout.write(list(d.keys())[-1] if d else "")' "$1" 2>/dev/null; }
+
+# 3s/3t — the HEADLINE, at the resolver: approve's internal pin over a mission the
+# captain chose the engine for at adopt.
+r3s="$(make_repo '{"workerBin": "config-bin"}')"
+mk_adopted "$r3s" m-adopt copilot adopt-chosen
+s3s="$r3s/.git/lcars/missions/m-adopt/state.json"
+out3s="$(resolve_mission_in "$r3s" m-adopt CLAUDECODE=1 \
+           LCARS_WORKER_BIN=copilot LCARS_WORKER_BIN_INTERNAL=1)"
+check "3s. an INTERNAL pin resolves the SAME engine (the pin still works)" \
+  "printf '%s' \"\$out3s\" | qgrep -q 'bin=copilot'"
+check "3s2. …but it does NOT claim the env source — the mission's pin does" \
+  "printf '%s' \"\$out3s\" | qgrep -q 'binsrc=mission'"
+check "3t. the captain's answer at the adopt prompt SURVIVES approve's pin" \
+  "[ \"\$(jget '$s3s' engineSource)\" = 'adopt-chosen' ]"
+check "3t2. and the engine it names is unchanged" \
+  "[ \"\$(jget '$s3s' engineResolved)\" = 'copilot' ]"
+check "3t3. state.json is still VALID JSON" "jok '$s3s'"
+check "3t4. and \`base\` is still the LAST field" "[ \"\$(jlast '$s3s')\" = 'base' ]"
+
+# 3u — the --engine conversion path records `adopt-converted`; same rule.
+r3u="$(make_repo '{"workerBin": "config-bin"}')"
+mk_adopted "$r3u" m-conv claude adopt-converted
+s3u="$r3u/.git/lcars/missions/m-conv/state.json"
+resolve_mission_in "$r3u" m-conv COPILOT_RUN_APP=1 \
+  LCARS_WORKER_BIN=claude LCARS_WORKER_BIN_INTERNAL=1 >/dev/null
+check "3u. an adopt CONVERSION survives the internal pin too" \
+  "[ \"\$(jget '$s3u' engineSource)\" = 'adopt-converted' ]"
+check "3u2. that state.json PARSES" "jok '$s3u'"
+
+# 3v — THE CURE MUST NOT BLIND THE RECORDER. A real $LCARS_WORKER_BIN, typed by
+# the captain in his own shell, carries NO internal marker and still records
+# `env` — even over an adopt record, because then the adopt record is no longer
+# what happened.
+r3v="$(make_repo '{"workerBin": "config-bin"}')"
+mk_adopted "$r3v" m-adopt copilot adopt-chosen
+s3v="$r3v/.git/lcars/missions/m-adopt/state.json"
+out3v="$(resolve_mission_in "$r3v" m-adopt CLAUDECODE=1 LCARS_WORKER_BIN=claude)"
+check "3v. a GENUINE external env var still wins the resolution" \
+  "printf '%s' \"\$out3v\" | qgrep -q 'binsrc=env' && printf '%s' \"\$out3v\" | qgrep -q 'bin=claude'"
+check "3v2. …and is still RECORDED as env (the env source stays recordable)" \
+  "[ \"\$(jget '$s3v' engineSource)\" = 'env' ]"
+check "3v3. the recorded engine follows it" \
+  "[ \"\$(jget '$s3v' engineResolved)\" = 'claude' ]"
+
+# 3w — a plain mission PIN with no adopt anywhere (the third live sighting: an
+# `lcars file --engine copilot` mission, $LCARS_WORKER_BIN unset in every shell,
+# recorded `env` after approve and approve printed `worker: copilot (bin: env)`).
+r3w="$(make_repo)"
+make_mission "$r3w" m-pin copilot
+s3w="$r3w/.git/lcars/missions/m-pin/state.json"
+out3w="$(resolve_mission_in "$r3w" m-pin CLAUDECODE=1 \
+           LCARS_WORKER_BIN=copilot LCARS_WORKER_BIN_INTERNAL=1)"
+check "3w. a plain mission pin re-asserted internally records \`mission\`, not env" \
+  "[ \"\$(jget '$s3w' engineSource)\" = 'mission' ]"
+check "3w2. the printed line AGREES with what was persisted" \
+  "printf '%s' \"\$out3w\" | qgrep -q 'bin: mission'"
+check "3w3. it never says the env pinned it" \
+  "! printf '%s' \"\$out3w\" | qgrep -q 'bin: env'"
+check "3w4. state.json PARSES and \`base\` is last" \
+  "jok '$s3w' && [ \"\$(jlast '$s3w')\" = 'base' ]"
+
+# 3x — DEGRADATION: an internal pin whose mission records no engine of its own.
+# Unreachable from approve (it only pins what it read off the mission), but if it
+# ever happens the ENGINE must not move — an internal pin is still a pin. Only
+# the attribution degrades, honestly, to env.
+r3x="$(make_repo '{"workerBin": "config-bin"}')"
+mk_nopin "$r3x"
+out3x="$(resolve_mission_in "$r3x" m-nopin CLAUDECODE=1 \
+           LCARS_WORKER_BIN=copilot LCARS_WORKER_BIN_INTERNAL=1)"
+check "3x. an internal pin on an unpinned mission still fixes the ENGINE" \
+  "printf '%s' \"\$out3x\" | qgrep -q 'bin=copilot'"
+check "3x2. it does NOT fall through to config.json and move the engine" \
+  "! printf '%s' \"\$out3x\" | qgrep -q 'bin=config-bin'"
 
 # A mission with NO recorded engine must fall through to detection UNCHANGED.
 r3mn="$(make_repo)"

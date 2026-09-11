@@ -13722,8 +13722,46 @@ detect_host_cli() {
 
 # Resolve WORKER_BIN + WORKER_BIN_SRC by the precedence above.
 resolve_worker_bin() {
+  # --- IS THIS $LCARS_WORKER_BIN AN OPERATOR ACT, OR LCARS'S OWN RE-PIN? -----
+  # `lcars approve` exports $LCARS_WORKER_BIN before handing its reconcile leg to
+  # this script, so a copilot mission heals on copilot instead of host-detecting
+  # claude out of the ambient terminal. That pin is CORRECT and it stays. But
+  # until this fix the recorder below could not tell it apart from the captain
+  # typing `LCARS_WORKER_BIN=… lcars run`, so it recorded the source as `env` and
+  # OVERWROTE the more specific truth: `adopt-chosen` (the captain answered the
+  # engine prompt at the handoff), `adopt-converted`, or the mission's own pin.
+  # Measured three times in one day of live runs — the card went from
+  # `copilot · chosen at adopt` to `copilot · $LCARS_WORKER_BIN` at the merge, and
+  # a mission carrying nothing but a `workerBin` pin ended up reading `env` with
+  # $LCARS_WORKER_BIN unset in every shell on the machine.
+  #
+  # PROVENANCE ANSWERS "WHY DOES THIS MISSION RUN ON THIS ENGINE". LCARS
+  # re-asserting the mission's OWN recorded engine across a process boundary is
+  # not a new reason — it is the same reason, said again — so it must not
+  # overwrite the reason already on file.
+  #
+  # THE PRODUCER RECORDS IT (this round's standing rule; S147/S156/S188 each paid
+  # fix rounds for inferring instead). The alternative shape was for the recorder
+  # to INFER internality — "this env value equals the mission's workerBin, so it
+  # was probably me" — and that is wrong in both directions: it would also
+  # silence a captain who deliberately re-asserts the mission's own engine from
+  # his shell, and it would say nothing about an internal pin whose value
+  # happened to differ. So approve STATES it: $LCARS_WORKER_BIN_INTERNAL=1,
+  # exported alongside the pin, means "LCARS set this, re-asserting THIS
+  # mission's engine". An internal pin is not an operator act and does not claim
+  # the `env` source — the ladder simply carries on, and the mission's own pin
+  # wins exactly as it would have with no pin in the environment at all.
+  #
+  # A genuine, EXTERNAL $LCARS_WORKER_BIN carries no such marker and still
+  # records `env` — over an adopt record included, because when the captain moves
+  # a mission by hand the adopt record is no longer what happened.
+  local internal_pin=""
   if [ -n "${LCARS_WORKER_BIN:-}" ]; then
-    WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="env"; return 0
+    if [ "${LCARS_WORKER_BIN_INTERNAL:-}" = "1" ]; then
+      internal_pin="$LCARS_WORKER_BIN"
+    else
+      WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="env"; return 0
+    fi
   fi
   # THE MISSION'S OWN PIN — ahead of config.json AND of host detection (S196 A3;
   # before this session it sat BELOW config, and before that it was not read at
@@ -13751,6 +13789,16 @@ resolve_worker_bin() {
   [ -n "$statef" ] && [ -f "$statef" ] && misbin="$(json_str "$statef" workerBin)"
   if [ -n "$misbin" ]; then
     WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
+  fi
+  # AN INTERNAL PIN WITH NOTHING BEHIND IT. approve only ever pins what it read
+  # off the mission, so reaching here means the mission's record has gone (or a
+  # future caller pins without one). THE ENGINE MUST NOT MOVE — an internal pin
+  # is still a pin, and letting it fall through to config.json or host detection
+  # would re-home the very mission the pin exists to hold. Only the ATTRIBUTION
+  # degrades, honestly, to `env`: something in the environment decided this and
+  # the mission itself no longer says why.
+  if [ -n "$internal_pin" ]; then
+    WORKER_BIN="$internal_pin"; WORKER_BIN_SRC="env"; return 0
   fi
   # The repo's AMBIENT default — still consulted, just no longer able to
   # overrule a mission that records an engine of its own (S196 A3).
@@ -14103,6 +14151,14 @@ resolve_worker() {
 # as the mission's pin would make a one-off `LCARS_WORKER_BIN=… lcars run`
 # permanent — a silent engine switch, the very defect this session is closing.
 # These two keys are display + audit only; nothing reads them back to resolve.
+#
+# IT ALSO NEVER SEES LCARS'S OWN RE-PIN AS AN OPERATOR ACT. `lcars approve` pins
+# the mission's engine for its reconcile leg, and this recorder used to write
+# that down as `env` — erasing `adopt-chosen` at the merge, three times in one
+# day of live runs. The distinction is made ONE level up, by resolve_worker_bin
+# reading the $LCARS_WORKER_BIN_INTERNAL marker approve exports with the pin, so
+# by the time this function runs $WORKER_BIN_SRC is already the honest answer and
+# there is nothing here to second-guess.
 #
 # AND IT DOES NOT CLOBBER ADOPT'S RICHER ANSWER. `lcars adopt` writes the same
 # pair when the captain chooses the engine at the handoff, with a source of

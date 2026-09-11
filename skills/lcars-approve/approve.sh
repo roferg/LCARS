@@ -564,12 +564,32 @@ fi
 # `gh pr merge` hit a conflict and escalate. It is a cheap no-op (exit 0) when
 # the base is not ahead. Pin the mission engine so a copilot mission heals on
 # copilot (a CLAUDECODE-tagged env would otherwise host-detect claude).
+#
+# AND SAY WHOSE PIN IT IS. $LCARS_WORKER_BIN is also how the CAPTAIN moves a
+# mission onto another engine on purpose, and run.sh's resolver records which
+# rule won as the mission's engine PROVENANCE (state.json `engineSource`, the
+# card's `copilot · chosen at adopt` line). It could not tell the two apart, so
+# this pin — LCARS re-asserting the mission's OWN engine — was recorded as `env`
+# and DESTROYED the more specific truth underneath it: the engine the captain
+# chose at the adopt prompt, or the mission's own `--engine` pin. Measured three
+# times in one day of live runs (tests/drives/s196-capstone/): the card read
+# `copilot · chosen at adopt` before approve and `copilot · $LCARS_WORKER_BIN`
+# after, and approve's own log line said `worker: copilot (bin: env)` while the
+# mission sat there pinned to copilot.
+#
+# So the pin STATES what it is rather than leaving the far end to guess:
+# $LCARS_WORKER_BIN_INTERNAL=1 says "LCARS set this, re-asserting this mission's
+# engine". The resolver then takes the value but not the credit — the mission's
+# own record wins the source, exactly as it would have with no pin at all. The
+# producer records; nothing downstream infers internality by comparing the value
+# to `workerBin` (the inference S147/S156/S188 each paid a fix round for, and
+# which would mis-silence a captain who re-asserts the same engine by hand).
 engine="$(json_str "$STATE" workerBin)"
 rcode=0
 # The mission engine is plumbed via the environment (an assignment prefix built
 # by expansion is parsed as a command, not a var — export into the subshell).
 ( export LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN"
-  [ -n "$engine" ] && export LCARS_WORKER_BIN="$engine"
+  [ -n "$engine" ] && export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
   bash "$RUN_SCRIPT" reconcile --mission "$MISSION_ID" ) || rcode=$?
 case "$rcode" in
   0)  : ;;  # up to date (base not ahead) → proceed to merge directly below.
