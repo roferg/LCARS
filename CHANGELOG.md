@@ -4,6 +4,21 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.5 — launch works on copilot again
+
+**`lcars launch` (and the viewscreen's launch button) runs your Mission's app on
+copilot again.** Since the worker fences landed (S168), every copilot launch
+failed with "the inspector reported nothing back": the inspector that works out
+how to start your app ran on copilot's default model, which has no tool to write
+its answer. It read your `package.json`, knew exactly what to run, and had no
+way to say so.
+
+The inspector now gets the same write-capable model every other copilot worker
+already gets (the S194 floor): `claude-opus-4.8` unless you pin one — your
+`LCARS_WORKER_MODEL`, config `workerModel`, or `modelAliases.copilot.opus` still
+win, in that order. Claude launches are unchanged. No daemon restart needed; the
+next launch click picks it up.
+
 ## 2026.9.4 — one board, every laptop
 
 **A Mission now belongs to a person, not to a laptop.** Until this release
