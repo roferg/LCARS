@@ -362,7 +362,18 @@ lcarsVersion=\"$RUNNING_VERSION\""
 # stack is the detected ecosystem id (S105); ambiguous(...)/unknown are stored as
 # their literal token so the config self-documents WHY a testCommand may be absent.
 STACK_VALUE="\"$(lcars_json_escape "$STACK")\""
-DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
+# S196 — cloneId is this CLONE's durable identity, and the source of the short
+# fingerprint every mission id minted here carries. Resolved BEFORE the merge so
+# a re-init preserves the existing one (the merge preserves any key already
+# present), and so a clone that acquired its id lazily — through the
+# `<lcars-dir>/clone-id` bridge file, before there was a config.json to hold it
+# — hands that same value over instead of minting a second. It MUST be in the
+# desired schema: lcars_config_merge drops every key absent from that list, so
+# an unlisted cloneId would be silently deleted by the next `lcars init` or
+# `lcars update` and the clone's ids would jump. See lcars_clone_id.
+CLONE_ID="$(lcars_clone_id "$CONFIG")"
+DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
+model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
 stack=$STACK_VALUE
@@ -371,6 +382,13 @@ worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200$VERSION_LINE
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
+
+# The clone-id BRIDGE file has served its purpose: config.json now holds the
+# value (either it always did, or the merge just wrote the one the bridge
+# carried). Remove it so there is exactly ONE home for the clone's identity.
+[ -f "$LCARS_DIR/clone-id" ] \
+  && [ -n "$(lcars_config_get "$CONFIG" cloneId)" ] \
+  && rm -f "$LCARS_DIR/clone-id"
 
 # The readiness banner must report what ACTUALLY landed in config.json after the
 # merge — not the freshly-detected defaults. On a fresh repo the persisted values

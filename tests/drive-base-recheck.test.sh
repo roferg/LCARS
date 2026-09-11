@@ -211,7 +211,8 @@ scaffold_lcars() {
   # verdict asks of a command. The gate itself is proven in
   # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<EOF
-{ "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e",
+  "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
   "testCommand": "true",
   "lcarsVersion": "$VERSION_STAMP", "created": "2026-05-30T00:00:00Z" }
 EOF
@@ -315,7 +316,13 @@ drive() {
   printf '%s' "$rc" >"$repo.drive.rc"
 }
 
-MID="lcars-20260530-001"
+# S196 — `cloneId` PINS THE FINGERPRINT so $MID below stays a literal. A minted
+# mission id is now `lcars-YYYYMMDD-NNN-<fp>`, where <fp> is the first 4 hex of
+# the clone's own `cloneId` (a UUID4 minted on first use, so two clones of one
+# repo can never mint the same id — see lcars_clone_id in
+# skills/lcars-init/lcars-common.sh). Pinning it makes <fp> the constant `c10e`;
+# the widening itself is proven in tests/mission-id.test.sh.
+MID="lcars-20260530-001-c10e"
 mdir() { printf '%s/.git/lcars/missions/%s' "$1" "${2:-$MID}"; }
 
 # sf <state.json> <dotted.key> — read a (possibly nested) field. Empty on miss.
@@ -556,7 +563,7 @@ EOF
 ( cd "$r4" && LCARS_GH_BIN="$GH_STUB" LCARS_DATE="20260530" GH_LOG="$r4.ghlog" \
     LCARS_RUN_BIN="$TMPROOT/no-such-run.sh" \
     bash "$LOG_SCRIPT" --parent "$PARENT" --prd "$bug4" >"$r4.log.out" 2>&1 )
-CHILD="lcars-20260530-002"
+CHILD="lcars-20260530-002-c10e"
 M4="$(mdir "$r4" "$CHILD")"
 check "4. the bug child was filed" "[ -d '$M4' ]"
 check "4. its base really is the parent's Mission branch" \
@@ -815,7 +822,7 @@ bug10="$TMPROOT/bug10.md"; cp "$bug4" "$bug10"
 ( cd "$r10" && LCARS_GH_BIN="$GH_STUB" LCARS_DATE="20260530" GH_LOG="$r10.ghlog" \
     LCARS_RUN_BIN="$TMPROOT/no-such-run.sh" \
     bash "$LOG_SCRIPT" --parent "$MID" --prd "$bug10" >"$r10.log.out" 2>&1 )
-CHILD10="lcars-20260530-002"
+CHILD10="lcars-20260530-002-c10e"
 M10="$(mdir "$r10" "$CHILD10")"
 # Move the PARENT branch on, so the child is genuinely behind its base.
 PWT10="$TMPROOT/d10.pwt"

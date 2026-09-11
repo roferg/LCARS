@@ -432,6 +432,12 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 /* Mission-log-grounding: the scoped "grounding" descriptor on a Research-stage
    logged bug — a touch brighter than the plain .no line so it reads as a badge. */
 .card .no.grounding-note{color:var(--lcars-peach,#f7b26a);text-transform:none;letter-spacing:.04em;margin-top:1px}
+/* S196 A3(g) — the engine + WHERE it came from, in words, under the issue line.
+   Same muted register as `.no` (it is reference, not a state change): the corner
+   watermark already carries the colour, and this line only has to be readable.
+   Lower-case because it names a binary and a source, not a stage label. */
+.card .no.engine-src{text-transform:none;letter-spacing:.04em;margin-top:1px;
+  opacity:.85}
 .card .ttl{font-family:var(--font-display);font-size:14px;letter-spacing:.04em;
   color:var(--lcars-text-bright);margin:2px 0 8px;line-height:1.2}
 .card .pills{display:flex;flex-wrap:wrap;gap:5px}
@@ -469,6 +475,404 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 /* inline card controls (mock #card .card-ctrl) */
 .card-ctrl{display:flex;gap:6px;margin-top:9px}
 
+/* ════════════════════════════════════════════════════════════════════════
+   S190 — THE OWNER PILL: whose mission is this.
+
+   THE DESIGN PROBLEM, stated plainly: a GitHub avatar is a PHOTOGRAPH, and
+   LCARS has no photographs. The console is flat colour blocks, fully-rounded
+   caps and uppercase display type; a circular portrait dropped onto it reads as
+   a browser widget that wandered onto a starship. So the photo is not placed on
+   the console — it is FRAMED BY it.
+
+   The treatment is the board's own `.pill` idiom at pill scale, with the pill's
+   geometry: a solid colour block with a FULLY-ROUNDED LEFT CAP holding the
+   avatar, and the handle in uppercase --font-display on the block beside it.
+   The portrait sits INSET in that cap with solid colour all around it, so the
+   frame is what you read first and the face is a detail within it — the way an
+   LCARS console frames a readout rather than displaying a picture.
+
+   The photo is also seated into the palette: a small desaturate + contrast lift
+   keeps a stranger's holiday snapshot from shouting over a two-colour board.
+   Restrained on purpose — enough to belong, not so much that the person stops
+   being recognisable, since recognising them at a glance is the whole point.
+
+   COLOUR CARRIES THE STATE, and there are only two:
+     amber (--lcars-amber, the iconic primary) — MINE; the card is fully live.
+     blue  (--lcars-blue,  a cool accent)      — SOMEONE ELSE'S; read-only here.
+   Blue, not red: this is not an alert and nothing is wrong. Someone is simply
+   working on it — and red is spoken for by AWAITING YOU.
+
+   ADR-007: geometry and layout only. Every colour is a shared --lcars-* token
+   read straight from docs/lcars.css; this sheet redefines none of them.
+   ════════════════════════════════════════════════════════════════════════ */
+.owner{
+  --owner-h:22px;                    /* cap height == pill height */
+  --owner-col:var(--lcars-amber);    /* the block colour; blue when locked */
+  /* S196 B1 — THE FOUR TOKENS THAT MAKE OWNERSHIP SURVIVE GREYSCALE.
+
+     WHAT WAS WRONG. Ownership was encoded in COLOUR ALONE: amber = mine, blue
+     = someone else's. Those two tokens are 1.52:1 apart in LUMINANCE, which is
+     what a greyscale screenshot, a projector, and a red-green colourblind
+     reader all see — so on the axis that survives, the two pills were the same
+     pill. Nothing else on the card said whose it was.
+
+     THE CURE IS ALREADY IN THE HOUSE. One row down, on the very same card,
+     `.btn.locked` says "solid = you can act, hollow = you cannot" and measures
+     9.07:1 doing it. This says the SAME sentence about the SAME fact rather
+     than inventing a second language for it: MY pill is a solid block, someone
+     else's is an outline. The hue still separates them for anyone who can see
+     it; the FILL is what carries it for everyone else.
+
+     WHY TOKENS AND NOT TWO COPIES OF THE GEOMETRY. The cap and the handle are
+     two elements that have to paint as ONE pill, so both need the fill, the ink
+     and the edge, and a state that set them in one place and not the other
+     would split the pill down the middle. Four custom properties, set once per
+     state, read by both.
+
+     A SOLID PILL CARRIES THE BORDER TOO — in its own fill colour, so it is
+     invisible. That is deliberate: both states then have identical geometry
+     (box-sizing:border-box, same height, same baseline), and the difference on
+     screen is the fill and nothing else.
+
+     ADR-007: no new colour is minted here. `--owner-col` is a shared --lcars-*
+     token in both states and these four read from it. */
+  --owner-fill:var(--owner-col);            /* MINE: a solid block */
+  --owner-ink:var(--lcars-text-on-color);
+  --owner-edge:solid;
+  display:inline-flex;align-items:stretch;max-width:100%;
+  margin:0 0 8px;vertical-align:middle}
+/* THE LEFT CAP. A half-circle (radius == half the height) is THE LCARS cap, and
+   it is what makes this read as console chrome rather than as a photo with a
+   caption beside it. Solid --owner-col all around the inset portrait. */
+.owner .owner-av{
+  display:inline-flex;align-items:center;justify-content:center;
+  flex:0 0 auto;box-sizing:border-box;
+  width:calc(var(--owner-h) + 6px);height:var(--owner-h);
+  padding:0 0 0 4px;
+  background:var(--owner-fill);
+  /* The cap owns the pill's LEFT half of the outline; the handle owns the
+     right. Neither draws the seam between them, so the two elements read as
+     one continuous edge in the hollow state and the solid state is unchanged. */
+  border:1px var(--owner-edge) var(--owner-col);border-right-width:0;
+  border-radius:calc(var(--owner-h) / 2) 0 0 calc(var(--owner-h) / 2)}
+/* ── S196 — THE TRANSPORTER PAD ────────────────────────────────────────────
+   WHAT WAS WRONG. The ring, the dark ground and the portrait were all ONE
+   element: the <img>. So a portrait that had not arrived yet had nothing to
+   show but that dark ground — a 15px black disc, at rest, on every card. The
+   error handler that exists to prevent exactly this hole never fired, because
+   a pending image has not failed.
+
+   THE FIX IS A SEPARATION, not a new look. A wrapper (`.beam`) takes the ring
+   and the ground; the portrait becomes a fill inside it. The disc is then a
+   surface something can be DRAWN ON while the portrait is in transit — the
+   transporter pad — and once the portrait lands the pill is pixel-for-pixel
+   the pill it was before: same box, same ring, same filter, same baseline.
+
+   SPECIFICITY, and it is the whole reason these selectors are this long.
+   `.owner .owner-av img` was (0,2,1). A bare `.beam img` is (0,1,1) and LOSES
+   to it, which sizes the portrait at the OLD explicit 17px inside a 15px disc
+   that then clips it: a visibly non-circular avatar with two fighting black
+   rings, out of a stylesheet in which every rule reads correct on its own.
+   That is not hypothetical — it is what the captain's mock did first. The old
+   rule is GONE (it would have been dead CSS describing a treatment that no
+   longer applies — S190 D3) and its replacement is written at (0,3,1), with
+   the rendered boxes measured in tests/drives/s190/owner-paint.sh.
+
+   ADR-007: no colour is minted. The pad reads `--owner-col` — the token the
+   pill already switches — so it beams amber on the captain's own missions and
+   blue on somebody else's without knowing that fact exists. `#fff` in the
+   gradients is not a palette entry: it is the beam's own light, the highlight
+   colour-mix()ed INTO the owner's hue, and it never paints on its own. */
+.owner .owner-av .beam{
+  position:relative;overflow:hidden;flex:0 0 auto;
+  box-sizing:border-box;
+  width:calc(var(--owner-h) - 5px);height:calc(var(--owner-h) - 5px);
+  aspect-ratio:1 / 1;border-radius:50%;
+  /* A dark ring between portrait and cap: the inset that makes the frame read
+     as a frame instead of as a coloured halo. */
+  border:1px solid var(--lcars-black,#030608);
+  background:var(--lcars-card-alt)}
+.owner .owner-av .beam img{
+  display:block;box-sizing:border-box;
+  width:100%;height:100%;object-fit:cover;
+  /* The disc owns the ring now. A second one here is the clipped-avatar bug. */
+  border:0;border-radius:50%;
+  /* Invisible until it MATERIALISES. Nothing else in this file may assume the
+     portrait is painted — the arrival is what paints it. */
+  opacity:0;
+  /* Seat the photograph in the palette (see the note above). */
+  filter:saturate(.72) contrast(1.06) brightness(.98)}
+/* THE PAD ITSELF, both halves on the disc's own pseudo-elements so no extra
+   node enters the render path. PERCENTAGE stops throughout: this disc is 15px
+   on a card and 17px in the base scale, and one rule has to work at both.
+   `mix-blend-mode:screen` because light ADDS — it brightens the ground it
+   falls on instead of covering it. */
+/* the standing columns of light */
+.owner .owner-av .beam::after{
+  content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+  background:repeating-linear-gradient(90deg,transparent 0 7%,
+    color-mix(in srgb,var(--owner-col) 82%,#fff) 7% 11%,
+    transparent 11% 19%);
+  mix-blend-mode:screen;opacity:0}
+/* the bright column cycling DOWN through them — deliberately taller and wider
+   than the disc so it enters and leaves rather than fading in place */
+.owner .owner-av .beam::before{
+  content:"";position:absolute;left:-10%;right:-10%;top:-60%;height:220%;
+  z-index:1;pointer-events:none;
+  background:linear-gradient(180deg,transparent 0%,
+    color-mix(in srgb,var(--owner-col) 40%,#fff) 45%,#fff 50%,
+    color-mix(in srgb,var(--owner-col) 40%,#fff) 55%,transparent 100%);
+  mix-blend-mode:screen;opacity:0}
+/* IN TRANSIT — and it LOOPS, for as long as that is true. */
+.owner .owner-av .beam.loading::after{animation:padHum 1.6s ease-in-out infinite}
+.owner .owner-av .beam.loading::before{animation:padSweep 1.6s linear infinite}
+/* ARRIVED — the light dies out and the portrait resolves in. `both` so the end
+   state STICKS; without it the portrait would snap back to opacity:0. */
+.owner .owner-av .beam.done::after,
+.owner .owner-av .beam.done::before{animation:padOut .3s ease-out both}
+.owner .owner-av .beam.done img{animation:padMaterialize .45s ease-out both}
+/* ALREADY ARRIVED, on a later repaint. Visible, with no animation at all —
+   board.js remembers the arrival (AVATAR_ARRIVED) precisely so this state
+   exists, because a board that repaints on every SSE tick would otherwise
+   strobe every face on it in unison. */
+.owner .owner-av .beam.settled img{opacity:1}
+@keyframes padHum{0%,100%{opacity:.42}50%{opacity:1}}
+@keyframes padSweep{
+  0%{transform:translateY(-38%);opacity:0}
+  14%{opacity:1}
+  86%{opacity:.45}
+  100%{transform:translateY(38%);opacity:0}}
+@keyframes padOut{from{opacity:1}to{opacity:0}}
+@keyframes padMaterialize{
+  0%{opacity:0;filter:brightness(3) contrast(.25) saturate(0)}
+  55%{opacity:.8;filter:brightness(1.5) contrast(.8) saturate(.45)}
+  100%{opacity:1;filter:saturate(.72) contrast(1.06) brightness(.98)}}
+/* The reduced-motion arrival: the same event, told without the theatre. */
+@keyframes padFadeIn{from{opacity:0}to{opacity:1}}
+/* PREFERS-REDUCED-MOTION. The loop is DECORATION; the ARRIVAL is the
+   information — so the loop goes entirely (a static dim tint still says the
+   disc is occupied and waiting) and the arrival stays as a plain fade. Nothing
+   in here touches `filter`: a colour treatment gated on a motion preference is
+   S190 D6, and this is the block it was found in. */
+@media (prefers-reduced-motion:reduce){
+  .owner .owner-av .beam.loading::after{animation:none;opacity:.42}
+  .owner .owner-av .beam.loading::before{animation:none;opacity:0}
+  .owner .owner-av .beam.done::after,
+  .owner .owner-av .beam.done::before{animation:none;opacity:0}
+  .owner .owner-av .beam.done img{animation:padFadeIn .28s ease-out both}}
+/* THE HANDLE BLOCK. Same colour, butting flush against the cap, fully rounded
+   on its own right end, so the two together are ONE pill. */
+.owner .owner-handle{
+  display:inline-flex;align-items:center;
+  box-sizing:border-box;height:var(--owner-h);
+  padding:0 10px 0 6px;
+  background:var(--owner-fill);color:var(--owner-ink);
+  border:1px var(--owner-edge) var(--owner-col);border-left-width:0;
+  border-radius:0 calc(var(--owner-h) / 2) calc(var(--owner-h) / 2) 0;
+  font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.13em;font-size:10px;font-weight:600;line-height:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+/* DEAD SRC → THE HANDLE ALONE. board.js removes the <img>'s whole cap on error
+   (a broken <img> keeps its box and its class — the S164 legend-swatch lesson —
+   so merely hiding it is not enough; it has to go). What is left must still be a
+   COMPLETE LCARS pill, not one with its nose cut off: the handle takes the full
+   rounding on both ends and the left padding the cap was carrying. */
+.owner.dead .owner-handle{
+  padding-left:11px;
+  /* …and it takes back the left edge the cap was carrying. On a SOLID pill that
+     border is the fill colour and invisible either way; on a HOLLOW one its
+     absence would paint a pill with its nose cut off. */
+  border-left-width:1px;
+  border-radius:calc(var(--owner-h) / 2)}
+/* SOMEONE ELSE'S MISSION. The pill goes cool and the (already disabled)
+   controls go HOLLOW, so the card reads as "watch, don't drive" from across the
+   room. The card BODY is untouched — a locked mission stays completely readable,
+   which is the entire point of a LIGHT lock. */
+/* SOMEONE ELSE'S PILL GOES HOLLOW (S196 B1). The hue change was already here
+   and was the ONLY thing carrying ownership; these three lines are what make it
+   survive a desaturated screenshot. Same idiom, same tokens, one row up from
+   the controls that already speak it. */
+.card.owned-by-other .owner{--owner-col:var(--lcars-blue,#4499ff);
+  --owner-fill:transparent;
+  --owner-ink:var(--lcars-blue,#4499ff);
+  --owner-edge:dashed}
+/* THE LOCKED CONTROL ITSELF is `.btn.locked`, down in the .btn family where the
+   other button variants live — see the long note there (S191 fix round 1, D4).
+   NOTHING dims this row: an `opacity` on `.card-ctrl` makes a COMPOSITING GROUP
+   and nothing inside it can paint brighter than the group whatever the cascade
+   computes, which is the trap round 1 fell into and test_owner_board pins. */
+/* The board card is the compact scale. (Fix round 1, D3: a `.det-head .owner`
+   rule sat here too, and NOTHING EVER MATCHED IT — `ownerNode()` is called only
+   from `cardNode()`, so no owner pill is ever built in the detail header. The
+   header already names the owner, on the disabled `⊘ <login>'s mission` control.
+   Deleted rather than made true: adding a pill to the header is a treatment the
+   captain has not chosen, and dead CSS that describes a feature is how the next
+   reader concludes the feature exists.) */
+.card .owner{--owner-h:20px}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S191 — THE REMOTE CARD. A mission being driven on another machine.
+
+   The design question is the same one S190 answered for the avatar: how do you
+   say a NEW fact in a vocabulary that already exists? So nothing new is
+   invented here. The marker is a `.pill`, with the pill row's geometry and the
+   hollow diamond the STANDBY pill already uses for "present, not active here".
+   The card takes the violet accent — the one accent in the palette not already
+   spoken for by a card state (amber = mine, blue = someone else's, red =
+   AWAITING YOU, teal = running) — on the same 6px left edge every other card
+   state uses.
+
+   ADR-007: geometry and layout only. Every colour is a shared --lcars-* token
+   read from docs/lcars.css; this sheet redefines none of them.
+   ════════════════════════════════════════════════════════════════════════ */
+.pill.remote{background:rgba(153,119,255,.16);
+  border-color:var(--lcars-violet,#9977ff);color:var(--lcars-violet,#9977ff)}
+/* The card edge. NOT dimmed as a whole: a remote card is completely readable —
+   watching it is the entire reason it is on the board. Only the controls, which
+   are the part that cannot be used, are quieted. */
+.card.remote{border-left-color:var(--lcars-violet,#9977ff)}
+/* THE DIM IS GONE, AND SO ARE THE CONTROLS IT DIMMED (S196 B2/B3).
+   `.card.remote .card-ctrl button[disabled]{opacity:.7}` used to live here. Two
+   separate reasons it had to go, and both are worth writing down:
+
+   1. IT WAS THE WRONG TREATMENT, measured. A .7 dim over a saturated `.go` fill
+      is imperceptible — the tester read the dead `▶ START` at median
+      rgb(64,141,122) against the live `▹ ADOPT ▸` at rgb(85,193,161): 1.79:1,
+      the same button. This is S191's D4 verbatim, on the one surface S191
+      deliberately left out because it needed a REMOTE fixture in the pixel rig.
+      Remote-disabled controls now take `.btn.locked` (hollow, dashed, `⊘`) —
+      the same state class, applied by the same markLocked, as the owner lock.
+
+   2. IT WOULD HAVE SILENTLY EATEN THE CURE. `.card.remote .card-ctrl
+      button[disabled]` is (0,4,1); `.btn.locked{opacity:1}` is (0,2,0). Leaving
+      it here while adding the class would have painted every locked remote
+      control at .7 on a hollow fill, with every rule-exists test green — the
+      same shape as S190's compositing-group defect, arrived at from the other
+      direction.
+
+   Nothing replaces it: `.btn.locked{opacity:1}` sits below `.btn[disabled]
+   {opacity:.4}` and wins the tie on source order (test_owner_board and
+   TheRemoteControlRowIsNotDIMMED both pin that ordering, because above it these
+   controls paint at .4 instead and the cure is gone). And after B3 the CARD's
+   row holds no disabled control at all — the rule would have been dead CSS
+   describing a treatment, which is exactly what S190's D3 was. */
+/* ADOPT is the ONE live control on a remote card, so it must not read as part of
+   the dimmed row it sits in. It keeps the full-strength `.go` chrome (opacity is
+   not inherited into it because the rule above targets [disabled] only) and takes
+   the violet edge so it reads as belonging to the remote state rather than as a
+   stray green button. */
+/* ADOPT is the ONE live control on a remote card — on the card it is now the
+   only control at all (B3), and in the detail it is the one solid button in a
+   row of hollow ones. It keeps the full-strength `.go` chrome and takes the
+   violet edge so it reads as belonging to the remote state rather than as a
+   stray green button. */
+.card.remote .card-ctrl .remote-adopt,
+.det-actions .remote-adopt{border-color:var(--lcars-violet,#9977ff)}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S197 — THE MISSION THAT ALREADY SHIPPED, FROM SOMEWHERE ELSE.
+
+   The card is LOCAL and its repo genuinely still has it at Verify; the forge
+   says the issue is done (merged) or closed. Two live two-laptop runs found the
+   filing laptop offering a live `✓ Review PR ▸` for a PR that had merged.
+
+   IT IS DRAWN IN SHAPE, NOT HUE, and that is the requirement rather than a
+   preference: this round established solid = actionable, hollow/dashed = not,
+   and the state has to survive a greyscale screenshot. So the card's 6px left
+   edge — the one every card state already speaks through — goes DASHED, and
+   the pill goes HOLLOW AND DASHED. A reader who cannot see the teal still sees
+   a card drawn in broken line where every live card is drawn in solid.
+
+   NO NEW TOKEN (ADR-007). The pill borrows `--lcars-teal`, the shared
+   success/go token, because the common case IS a success — it shipped. The
+   *shape* is what says "not here, not yours to act on".
+
+   NOTHING DIMS THE CONTROL ROW. An `opacity` here would make a compositing
+   group and out-specify `.btn.locked{opacity:1}`, which is S190's D-defect and
+   S191's fix-round-1 trap arrived at from a third direction. The dead controls
+   take `.btn.locked` (hollow, dashed, `⊘`) like every other locked control on
+   this board, and they keep it.
+   ════════════════════════════════════════════════════════════════════════ */
+.pill.shipped{background:transparent;border-style:dashed;
+  border-color:var(--lcars-teal,#00ccaa);color:var(--lcars-teal,#00ccaa)}
+/* The edge. `border-left-style` only — the COLOUR is left to whatever state the
+   card already had (mine/awaiting/child), because "this is over" is a fact
+   about actionability and not a fourth card hue to learn. */
+.card.shipped-elsewhere{border-left-style:dashed}
+
+/* The footer line, beside ● VIEW-ONLY. It inherits `.dim` from the markup, so
+   this is spacing and colour only — an ambient condition, never an alert. */
+.remote-note{margin-left:12px;color:var(--lcars-violet,#9977ff);opacity:.85}
+/* THE PHOTOGRAPH'S ESCAPE HATCH, on a COLOUR feature (fix round 1, D6). The
+   `filter` above is a saturation/contrast treatment that seats a GitHub portrait
+   in the LCARS palette; a reader who has asked the OS for more contrast wants
+   the untouched image, so `prefers-contrast` is the preference that governs it.
+   It was gated on `prefers-reduced-motion` — nothing here animates, and a colour
+   treatment is not motion. */
+/* S196: the selector had to MOVE WITH THE PORTRAIT. `.owner .owner-av img` is
+   (0,2,1) and no longer outranks the beam's own (0,3,1) rule, so left where it
+   was this reset would have been a promise the cascade cannot keep — the
+   `.det-head .owner` failure exactly, from the other direction. The arrival
+   animation also has to be neutered here: `padMaterialize` fills forwards with
+   the saturation treatment in its last keyframe, and a filled animation
+   outranks a static declaration, so resetting only the static one would leave
+   the treatment on every settled portrait. The FADE stays — the arrival is
+   information, and this preference is about colour. */
+@media (prefers-contrast:more){
+  .owner .owner-av .beam img{filter:none}
+  .owner .owner-av .beam.done img{animation:padFadeIn .45s ease-out both}}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S196 B5 — THE OWNERSHIP FILTER STRIP.
+
+   Its own row between the banners and the board, matching the version- and
+   readiness-banner gutter (28px) so the three read as one stack of console
+   furniture rather than three things that happen to be near each other. NOT in
+   the yellow band: that band's control order is pinned byte-for-byte by
+   test_help_console, and a filter is not a command.
+
+   SELECTED IS SOLID, UNSELECTED IS HOLLOW — the third and last thing this
+   session says it about. `.btn.locked` said it about a control you may not use
+   (9.07:1 measured); B1 said it about a pill that is or is not yours; this says
+   it about a question that is or is not being asked. One language for "on /
+   off / yours / not", so the board can be read at a glance in greyscale, on a
+   projector, and by a red-green colourblind captain — the same axis B1 was
+   fixed onto, extended rather than forked.
+
+   ADR-007: no colour is minted here. Amber is the board's own selection colour
+   (the focus ring, the legend's view-only note) and it is read from the shared
+   --lcars-* token in both states.
+
+   IT IS NOT A WRITE CONTROL, and it deliberately does not wear `.btn.go` —
+   which is exactly what markViewOnly() reaches for. Filtering opens no
+   endpoint, so it stays live on a view-only board, like the `?` console. */
+.owner-filter{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+  padding:12px 28px 0}
+.owner-filter .of-lbl{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.16em;font-size:10px;color:var(--lcars-text-dim);
+  margin-right:4px}
+/* HOLLOW is the resting state: the board is not being filtered until it says
+   it is, so an untouched strip must not read as five active controls. */
+.owner-filter .of-chip{background:transparent;color:var(--lcars-amber);
+  border:1px dashed var(--lcars-amber)}
+.owner-filter .of-chip:hover{background:rgba(255,170,0,.12)}
+/* …and SOLID is the question being asked. Same geometry (box-sizing:border-box
+   is on .btn's padding/border pair already, and the border width does not
+   change), so selecting a chip shifts nothing on the row — only the fill. */
+.owner-filter .of-chip.sel{background:var(--lcars-amber);
+  color:var(--lcars-text-on-color);border-style:solid;
+  border-color:var(--lcars-amber)}
+.owner-filter .of-chip.sel:hover{background:var(--lcars-amber)}
+/* THE STRIP IS BOARD FURNITURE, SO IT LEAVES WITH THE BOARD. The holodeck and
+   the day-zero front door both REPLACE the board in this frame, and render()
+   keeps running underneath either of them (an SSE tick is enough) — so a strip
+   that only decided its own visibility from the card counts would float a set
+   of board filters over a surface that has no board on it. Its own rule rather
+   than an addition to theirs: `body.on-deck`'s list is S125's and
+   `body.on-front-door`'s is S184's, and neither should have to be edited for a
+   later round's furniture. */
+body.on-deck #ownerFilter,
+body.on-front-door #ownerFilter{display:none !important}
 .legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 28px;font-size:12px;color:var(--lcars-text-dim)}
 .legend span{display:flex;align-items:center;gap:6px}
 .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
@@ -499,6 +903,57 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .btn.big{font-size:13px;padding:9px 20px}
 .btn[disabled]{opacity:.4;cursor:not-allowed}
 .btn[disabled]:hover{border-color:var(--lcars-border)}
+/* ════════════════════════════════════════════════════════════════════════
+   `.btn.locked` — A CONTROL THIS LAPTOP MAY NOT USE (S191 fix round 1, D4).
+   Applied by board.js's lock sweep (markLocked) to every control on a mission
+   held by someone else.
+
+   WHAT WAS WRONG. S190's round 1 moved the dim off the control ROW and onto the
+   control, and measured it honestly at .7 — computed .7, painted .700, 5.6:1 ink
+   to paper. Every one of those numbers was true and the treatment still failed,
+   because NONE OF THEM WAS THE QUESTION. The question is whether a locked
+   control looks different from a LIVE one, and .7 on saturated LCARS teal does
+   not: S191's capstone put the two cards side by side at identical framing and
+   measured the locked `▶ START` against the live `▶ START` at 1.84:1 — the same
+   button. The captain clicks something that looks live and gets a tooltip. That
+   is worse than no lock, because it teaches him the console lies.
+
+   THE CURE IS THE FILL, which is what the eye reads across a room long before it
+   reads a 10px label. A locked control stops being a live control wearing a
+   dimmer and becomes its own STATE: hollow, dashed, in the lock's own blue.
+   None of that is new vocabulary — `.btn.danger` above is already a hollow
+   outlined button, `.prog.ondisk` already uses a dashed edge to mean "present,
+   not live", and the blue is the same --lcars-blue the owner pill turns, so the
+   whole card says one thing in one colour. board.js does the other half: the
+   label's leading ACTION glyph (`▶`) is REPLACED with `⊘`.
+
+   A CLASS, NOT `.card.owned-by-other … button[disabled]`. The state belongs to
+   the control, not to a position in a tree — which is how every other state on
+   this board is expressed (.card.owned-by-other, .pill.remote, .tk.done) — and
+   a state class is also the only shape the filing-band colour resolver
+   (test_log_filing_band) can READ: it refuses attribute selectors, so a
+   `button[disabled]` rule carrying a `color` made its own honesty check go red.
+
+   SOURCE ORDER IS LOAD-BEARING. `.btn.locked` and `.btn[disabled]` have the
+   same specificity, so this MUST stay below them — `opacity:1` is what keeps
+   `.btn[disabled]{opacity:.4}` from painting the locked controls at 0.22, which
+   round 1 found the hard way. It is set on the CONTROL and it is 1, so it makes
+   no compositing group at all: the strongest form of that guarantee.
+
+   MEASURED, NOT PICKED, off pixels in real Chrome by
+   tests/drives/s190/owner-paint.sh: locked fill vs live fill 9.07:1 (floor 3:1,
+   WCAG 1.4.11's own number for two UI states that must be told apart — it was
+   1.84:1) and ink-to-paper 6.43:1 on the worst locked control on the board
+   (floor 4.5:1 — it was 5.26:1, so legibility went UP when the dim came off).
+   A rule-exists or computed-style test is green on the broken version.
+   ════════════════════════════════════════════════════════════════════════ */
+.btn.locked{
+  opacity:1;
+  background:transparent;
+  color:var(--lcars-blue,#4499ff);
+  border-color:var(--lcars-blue,#4499ff);
+  border-style:dashed}
+.btn.locked:hover{border-color:var(--lcars-blue,#4499ff)}
 
 /* ── overlay host: a single centered modal stage ── */
 [hidden]{display:none !important}
@@ -2291,3 +2746,68 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .front-door .fd-busy{
   font-family:var(--font-display);letter-spacing:.18em;text-transform:uppercase;
   font-size:13px;color:var(--lcars-teal,#2de3c7)}
+
+/* ════════════════════════════════════════════════════════════════════════
+   S197 — THE ADOPT ENGINE PICKER.
+
+   `lcars adopt` at a terminal asks which CLI should drive a mission on this
+   laptop. The board could not ask — it dispatched with no tty and no
+   `--engine`, so adopt.sh refused on exactly the one-CLI machine the feature
+   exists for. This is the surface that asks.
+
+   DRAWN IN SHAPE, NOT HUE, and that is the requirement rather than a taste:
+   this round's language is SOLID = actionable, HOLLOW/DASHED = not, and the
+   state has to survive a greyscale screenshot. The option IN FORCE is a solid
+   block (`◆`); an option merely available is hollow with a solid edge (`◈`);
+   an engine this machine does not have takes `.btn.locked` — the house lock
+   treatment, hollow AND dashed, wearing `⊘` — exactly like every other control
+   on this board that cannot act. Three states, three edge treatments, legible
+   with the colour removed.
+
+   NO NEW TOKEN (ADR-007). Every colour here is an existing shared --lcars-*
+   var: the picker's frame borrows `--lcars-violet` (the same token the remote
+   Adopt control already wears, because this belongs to that control), the
+   chosen option borrows `--lcars-teal` (the shared go/success token, which is
+   what `.btn.go` already is), and the unavailable option inherits
+   `.btn.locked`'s blue untouched.
+
+   NOTHING DIMS THE GROUP. An `opacity` on the container would make a
+   compositing group and out-specify `.btn.locked{opacity:1}` — S190's D2,
+   arrived at from a fourth direction. Each control carries its own state.
+   ════════════════════════════════════════════════════════════════════════ */
+/* THE ROW WRAPS ONLY WHILE IT IS ASKING. A blanket `flex-wrap` on
+   `.card-ctrl` would change how EVERY control row on this board reflows at a
+   narrow column width, which is a repaint nobody asked for; the class is
+   added by openAdoptPicker and removed by closeAdoptPicker, so exactly one
+   row at a time is affected and only while the question is on screen. */
+.card-ctrl.asking{flex-wrap:wrap}
+.adopt-picker{
+  flex:1 1 100%;
+  display:flex;flex-direction:column;gap:5px;
+  margin-top:7px;padding:8px;
+  border:1px dashed var(--lcars-violet,#9977ff);
+  border-radius:10px;
+  background:rgba(153,119,255,.08)}
+.adopt-picker-q{
+  font-size:10px;letter-spacing:.10em;text-transform:uppercase;
+  color:var(--lcars-text-bright);margin-bottom:1px}
+.adopt-picker .btn.adopt-engine{
+  text-align:left;
+  background:transparent;
+  color:var(--lcars-text-bright);
+  border-color:var(--lcars-border);
+  border-style:solid}
+/* THE OPTION IN FORCE — a solid block, the same sentence `.btn.go` speaks. */
+.adopt-picker .btn.adopt-engine.chosen{
+  background:var(--lcars-teal);
+  color:var(--lcars-text-on-color);
+  border-color:var(--lcars-teal)}
+/* …and an engine this machine does not have keeps `.btn.locked` exactly as the
+   sheet defines it above (hollow, dashed, blue). Stated, not restated: the
+   only thing added is the left alignment the rows share. */
+.adopt-picker .btn.adopt-engine.locked{text-align:left}
+.adopt-picker-foot{display:flex;gap:6px;margin-top:3px}
+.adopt-picker .btn.adopt-cancel{
+  background:transparent;
+  color:var(--lcars-text);
+  border-color:var(--lcars-border)}

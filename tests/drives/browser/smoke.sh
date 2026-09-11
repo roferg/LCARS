@@ -26,8 +26,19 @@
 # ZERO TOKENS. The fixture board is planted on disk; the only `claude`/`copilot`
 # on PATH are logging shims (never an env var — the daemon's align path can
 # override LCARS_WORKER_BIN from a REQUEST BODY, so the env is not a safe pin).
-# The rig issues GETs only; a non-zero shim count means something spawned a
-# worker and is worth investigating.
+# The rig issues GETs only; a non-zero WORKER shim count means something spawned
+# a worker and is worth investigating.
+#
+# TWO SHIMS, TWO LOGS, and they are not the same question (S190 fix round 1, D4).
+# `$OUT/shim/claude` + `$OUT/shim/copilot` are WORKERS — spawning one is spend,
+# and the expected count is 0. `$OUT/shim/gh` is the FORGE, and reading it is
+# free: the daemon's startup owner warm asks who owns each active mission, so a
+# handful of `gh issue view … --json assignees` reads is CORRECT here, not an
+# alarm. They used to share one log ($LCARS_GH_BIN pointed at the claude shim),
+# which made every healthy run print "worker shim invocations: 2 (expected 0)"
+# — a rig that cries wolf every time teaches you to ignore the one alarm it
+# exists to raise. Set LCARS_OWNER_WARM=0 to switch the warm off entirely; the
+# board still paints and the gh log stays empty (selftest property 11).
 #
 # EXIT: 0 painted · 1 did not paint (a real failure) · 3 painted but the app was
 # served INCOMPLETE (a stylesheet 404'd — you are looking at a phantom) · 4 the
@@ -254,6 +265,21 @@ EOF
   chmod +x "$OUT/shim/$engine"
 done
 : >"$OUT/worker-shim.log"
+
+# ── the FORGE stub, on its own log ──────────────────────────────────────────
+# Separate from the worker shims on purpose (see the header). It fails exactly
+# the way the worker shim did — rc 1, nothing on stdout — so the daemon sees the
+# same "gh cannot be reached" it always saw here and the board is unchanged; the
+# only difference is WHICH LOG the call lands in. It also sits in the same PATH
+# dir, which shadows any REAL gh: a bare `gh` from anywhere in the daemon can no
+# longer reach the captain's actual account from inside this rig.
+cat >"$OUT/shim/gh" <<EOF
+#!/usr/bin/env bash
+echo "gh \$*" >>"$OUT/gh-shim.log"
+exit 1
+EOF
+chmod +x "$OUT/shim/gh"
+: >"$OUT/gh-shim.log"
 export PATH="$OUT/shim:$PATH"
 
 # S125 fix round 1 — a rig that DRIVES A TURN needs a worker that answers.
@@ -383,7 +409,7 @@ fi
 # relative paths are untouched.
 ( cd "$WEB_DIR" && exec env -u LCARS_SERVE_PORT \
     LCARS_SERVE_NO_OPEN=1 LCARS_VERSION_CHECK=0 \
-    LCARS_WORKER_BIN="$WORKER_BIN" LCARS_GH_BIN="$OUT/shim/claude" \
+    LCARS_WORKER_BIN="$WORKER_BIN" LCARS_GH_BIN="$OUT/shim/gh" \
     "$PY_BIN" -m lcars_serve --port 0 --repo-root "$FIXTURE" ) \
   >"$OUT/daemon.log" 2>&1 &
 DAEMON_PID=$!
@@ -529,8 +555,20 @@ fi
 RC=$?
 
 SHIM_CALLS=$(wc -l <"$OUT/worker-shim.log" 2>/dev/null | tr -d ' ')
+GH_CALLS=$(wc -l <"$OUT/gh-shim.log" 2>/dev/null | tr -d ' ')
 printf '\n'
-note "worker shim invocations: ${SHIM_CALLS:-0} (expected 0 — this rig only GETs)"
+if [ "${SHIM_CALLS:-0}" -eq 0 ] 2>/dev/null; then
+  note "worker shim invocations: 0 (expected 0 — this rig only GETs)"
+else
+  # LOUD, because this is the one that means SPEND. It still does not change the
+  # exit status: the board's verdict is about the board, and a spawned worker is
+  # a finding about the rig's surroundings that the reader must decide about.
+  printf '  \033[31mworker shim invocations: %s (expected 0 — SOMETHING SPAWNED A WORKER)\033[0m\n' \
+    "$SHIM_CALLS"
+  sed -n '1,5p' "$OUT/worker-shim.log" 2>/dev/null | sed 's/^/    /'
+fi
+note "gh stub reads:           ${GH_CALLS:-0} (forge READS, never spend — the daemon's"
+note "                         startup owner warm; LCARS_OWNER_WARM=0 makes it 0)"
 printf 'screenshot: %s/board.png\n' "$OUT"
 [ -f "$OUT/legend.png" ] && printf 'screenshot: %s/legend.png  (the legend, close-up)\n' "$OUT"
 [ -f "$OUT/gh-links.png" ] && printf 'screenshot: %s/gh-links.png  (the detail overlay + its GitHub link)\n' "$OUT"

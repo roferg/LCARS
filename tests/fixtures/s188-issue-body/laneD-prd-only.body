@@ -1,0 +1,11 @@
+# Mission: Fix the broken /about route
+
+**Type:** bug
+**Goal:** The /about route should resolve to the About page instead of 404ing.
+**Acceptance Criteria:**
+- GET /about returns HTTP 200
+- The About page renders its heading
+**Out of Scope:**
+- Redesigning the About page
+**Constraints:**
+- Existing router; no new dependencies

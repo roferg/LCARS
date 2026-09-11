@@ -239,6 +239,57 @@ else
   fail "the injected error is named on stdout" "$(grep -i 'page error' -A4 "$WORK/run9.log")"
 fi
 
+# ── 10. THE ZERO-SPEND CLAIM IS CHECKED, NOT ASSERTED ────────────────────────
+# S190 fix round 1, D4. The rig printed "worker shim invocations: 2 (expected 0
+# — this rig only GETs)" on a perfectly healthy board and still exited 0. Both
+# lines were the daemon's new STARTUP OWNER WARM asking the forge who owns each
+# active mission — reads, not workers, not spend — but they landed in the WORKER
+# shim log because $LCARS_GH_BIN pointed at `$OUT/shim/claude`. A rig that cries
+# wolf on every run teaches the next tester to ignore the one alarm it exists to
+# raise. The worker log now has to be genuinely EMPTY, and forge reads have a
+# log of their own.
+say "10. a healthy run spawns NO worker, and says so truthfully"
+WLOG="$OUT1/worker-shim.log"
+if [ ! -s "$WLOG" ]; then
+  pass "the worker shim was never invoked on a healthy read-only run"
+else
+  fail "the worker shim was never invoked" "$(cat "$WLOG")"
+fi
+if grep -q 'worker shim invocations: 0' "$WORK/run1.log"; then
+  pass "the run reports 0 worker invocations"
+else
+  fail "the run reports 0 worker invocations" "$(grep -i 'shim invocations' "$WORK/run1.log")"
+fi
+# The forge reads are REAL and must be visible — just not filed as spend. This
+# is the positive control for the split: if the gh stub log were empty too, the
+# split would be untested and a genuinely silent daemon would look identical.
+GLOG="$OUT1/gh-shim.log"
+if [ -s "$GLOG" ] && grep -q 'issue view' "$GLOG"; then
+  pass "the daemon's startup forge reads are logged SEPARATELY, as reads"
+else
+  fail "the startup forge reads are logged separately" \
+       "gh-shim.log: $(cat "$GLOG" 2>/dev/null || echo '(absent)')"
+fi
+
+# ── 11. LCARS_OWNER_WARM=0 GENUINELY TURNS THE STARTUP WARM OFF ──────────────
+# The daemon makes up to 24 forge round trips on boot. The opt-out is documented
+# in __main__.build_adapter and in this rig's README, and a documented off switch
+# nobody has watched turn anything off is a comment, not a switch.
+say "11. LCARS_OWNER_WARM=0 stops the startup forge reads outright"
+OUT11="$WORK/run11"
+LCARS_OWNER_WARM=0 LCARS_BROWSER_OUT="$OUT11" bash "$SMOKE" >"$WORK/run11.log" 2>&1
+RC11=$?
+if [ "$RC11" -eq 0 ]; then pass "the board still paints with the warm off"; else
+  fail "the board still paints with the warm off" "got $RC11; see $WORK/run11.log"
+fi
+if [ ! -s "$OUT11/gh-shim.log" ]; then
+  pass "not one forge read happened with LCARS_OWNER_WARM=0"
+else
+  fail "not one forge read happened with LCARS_OWNER_WARM=0" \
+       "$(cat "$OUT11/gh-shim.log")"
+fi
+check_orphans "$OUT11" "the owner-warm-off run"
+
 printf '\n'
 if [ "$FAILED" -eq 0 ]; then
   printf '\033[32mSELFTEST GREEN\033[0m — the rig passes, fails, skips and cleans up.\n'

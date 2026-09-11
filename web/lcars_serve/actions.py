@@ -72,6 +72,71 @@ class ActionError(Exception):
         self.data = dict(data or {})
 
 
+# S191 fix round 1 (D5) — ADOPT'S OWN REFUSAL CHANNEL.
+#
+# THE DEFECT. `lcars adopt` on a mission mid-pipeline answers with one of the
+# best sentences LCARS writes — it names the boundary, says why the middle of
+# the pipeline is not portable, and says "Nothing was created." The daemon
+# delivered it under HTTP 502. 502 means THE SERVER BROKE. Nothing broke: the
+# captain asked for something this mission's own state does not allow, and the
+# code for that is 409 CONFLICT. A refusal wearing a fault's status teaches the
+# operator to distrust the status line, and after that every real fault is noise.
+#
+# HOW A REFUSAL IS RECOGNISED, AND WHY IT IS NOT PROSE-MATCHING. adopt.sh has
+# exactly ONE way of saying no: `die()` at skills/lcars-adopt/adopt.sh:107 prints
+# `lcars adopt: <sentence>` and exits 1. That banner is the script's own
+# structured refusal channel — a marker it stamps on purpose, not wording a
+# reader has to interpret — so the test is (exit code == 1) AND (the banner is
+# there). S165's rule is kept: nothing here reads the SENTENCE to decide, only
+# the envelope around it.
+#
+# A CRASH IS STILL A FAULT, deliberately and in both directions. A different
+# exit status (127 for a missing binary, 2 for a bash syntax error, a signal) or
+# output that never went through `die()` — a traceback, a stray stderr line —
+# keeps its 502 untouched, because a broken server that answered 409 would be
+# the same lie pointing the other way.
+#
+# NARROW ON PURPOSE. `_run` is unchanged, so every other skill dispatch in this
+# daemon still maps exactly as it did. This is adopt's refusal, and adopt's only.
+_ADOPT_REFUSAL_BANNER = "lcars adopt: "
+
+
+# adopt.sh's `note()` writes exactly `  ⚠ <sentence>` — see its NOTES channel.
+# A warning may WRAP over following lines in the terminal, but note() emits one
+# line per warning, so one line is one warning.
+_ADOPT_WARN_MARK = "\u26a0"
+
+
+def _adopt_warnings(output):
+    """The `⚠` lines adopt printed, in order, with the marker trimmed."""
+    out = []
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_ADOPT_WARN_MARK):
+            text = stripped[len(_ADOPT_WARN_MARK):].strip()
+            if text:
+                out.append(text)
+    return out
+
+
+def _adopt_refusal(exc):
+    """`exc` re-cast as a 409 when adopt.sh REFUSED, else `exc` untouched."""
+    if getattr(exc, "skill_exit", None) != 1:
+        return exc
+    msg = getattr(exc, "message", "") or ""
+    at = msg.find(_ADOPT_REFUSAL_BANNER)
+    if at < 0:
+        return exc
+    # Everything the script said after its banner, verbatim. The prose IS the
+    # refusal — the status code only stops it being read as a crash.
+    line = msg[at + len(_ADOPT_REFUSAL_BANNER):].strip()
+    if not line:
+        return exc
+    out = ActionError(409, line)
+    out.skill_exit = exc.skill_exit
+    return out
+
+
 # The env seam names the daemon resolves each skill path from (mirrors how
 # serve.sh env-injects). Used by the launcher/__main__ to build the script map.
 SCRIPT_ENV = {
@@ -102,6 +167,17 @@ SCRIPT_ENV = {
     # FOUND panel facts, for the grill's foundation brief, and to FILE the
     # initialization mission; it assembles none of those itself.
     "establish_vision": "LCARS_ESTABLISH_VISION_BIN",
+    # S190: the OWNERSHIP library (skills/lcars-run/ownership.sh). The daemon
+    # shells its `lock-reason` op before it lets a mission write through, so the
+    # board's refusal is the SAME verdict, with the SAME posture and the SAME
+    # sentence, as the one `lcars run` / `respond` / `approve` / `feedback` /
+    # `log` already reach at the CLI. It never reimplements the rule (ADR-002).
+    "ownership": "LCARS_OWNERSHIP_SCRIPT",
+    # S191: `lcars adopt` (skills/lcars-adopt/adopt.sh) — rebuild a Mission on
+    # THIS laptop from its GitHub issue alone. The board's remote card offers it
+    # at the two ENDS of the pipeline; the daemon only DISPATCHES it, and every
+    # refusal (wrong stage, missing envelope, no gh) stays the skill's own.
+    "adopt": "LCARS_ADOPT_SCRIPT",
 }
 
 
@@ -13028,6 +13104,182 @@ class Actions(LogFacts):
         if not (mid and os.path.isfile(os.path.join(d, "state.json"))):
             raise ActionError(404, "no such mission: %s" % mid)
 
+    # ── S191: ADOPT A REMOTE MISSION ────────────────────────────────────────
+    def adopt(self, issue, engine=None):
+        """Rebuild the mission on issue `issue` here — `lcars adopt <n>`.
+
+        DISPATCH ONLY. Every rule about WHEN an adopt is allowed lives in
+        adopt.sh: the stage gate (the two ENDS — align and verify), the handoff
+        envelope schema gate, the claim, the branch fetch, the PR resolution and
+        the four honest refusals. Re-deciding any of them here would be a second
+        implementation of the same verdict, which is the S168 scar this project
+        already paid for once (ADR-002).
+
+        NOT OWNER-LOCKED, deliberately, and this is the one write endpoint that
+        is not. Adopting is how a captain TAKES command of a mission on this
+        laptop; refusing it because he does not yet hold it would lock the door
+        from the inside. adopt.sh does the claiming, and every verb that follows
+        it (run / respond / approve / feedback) is locked as it was.
+
+        BLOCKING, like `file`: adopt reads the issue and fetches a branch, which
+        is seconds, and the answer the captain needs is whether it worked. A
+        fire-and-forget adopt would flip the card and then fail in a spawn log.
+
+        The argument is an ISSUE NUMBER, because that is what a remote card is
+        identified by (there is no local mission id yet — minting one is exactly
+        what adopt refuses to do). Validated here rather than trusted: it is
+        about to become a command-line argument.
+        """
+        n = str(issue if issue is not None else "").strip().lstrip("#")
+        if not n.isdigit():
+            raise ActionError(
+                400, "adopt needs the mission's GitHub issue NUMBER; got %r"
+                     % (issue,))
+        # S197 — THE ENGINE THE CAPTAIN PICKED, on its way to adopt.sh's own
+        # `--engine`.
+        #
+        # WHY THIS PARAMETER EXISTS AT ALL. `lcars adopt` at a terminal ASKS
+        # which CLI should drive the mission here (the captain's ruling of
+        # 2026-09-09: ask and convert, because a laptop may only have one CLI
+        # installed). The daemon has no tty, so adopt.sh took its documented
+        # non-interactive path and REFUSED on exactly the machine the feature
+        # exists for. The board could not ask because it had no way to answer.
+        # Now it does: the picker asks, and the answer arrives here.
+        #
+        # PASSED ONLY WHEN IT IS A CHANGE (the board sends nothing when the
+        # captain took the default). An adopt with no `engine` in the body is
+        # byte-for-byte the dispatch this daemon has always made — same argv,
+        # same non-interactive path, same `note()` when the repo config
+        # disagrees. Doing nothing reproduces today's behaviour exactly.
+        #
+        # AND IT TRAVELS AS A CHOICE, NOT AS A CONVERSION (S197). adopt.sh
+        # records three provenances and the card renders all three: `adopt-kept`
+        # ("mission pin · kept at adopt"), `adopt-converted` ("converted at
+        # adopt") and `adopt-chosen` ("chosen at adopt"). `--engine` alone lands
+        # in the first two — both of which are LCARS's sentences for something
+        # nobody was asked about — so a captain who stood at the viewscreen,
+        # read that copilot is not on this laptop and picked claude ON PURPOSE
+        # was told he had been converted. `--engine-source chosen` carries the
+        # one fact only this caller knows: a human answered the picker. It is
+        # RECORDED rather than inferred because it cannot be inferred — on a
+        # two-CLI laptop with no config disagreement adopt never prompts, and
+        # `--engine claude` on a claude mission is byte-identical whether a
+        # human chose it or not.
+        args = ["--issue", n]
+        eng = self._adopt_engine(engine)
+        if eng:
+            args += ["--engine", eng, "--engine-source", "chosen"]
+        try:
+            proc = self._run("adopt", args)
+        except ActionError as exc:
+            raise _adopt_refusal(exc)
+        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        # The board refreshes itself off the next poll — the adopted mission is
+        # now a LOCAL mission dir, so the overlay stops drawing its remote card
+        # and the local card takes its place. Nothing to reconcile here.
+        #
+        # S196 A4 — THE WARNINGS TRAVEL. adopt succeeds and still has things the
+        # captain must know: no `testCommand` could be detected, attachments could
+        # not follow the issue, no open PR resolves at Verify, the repo's config
+        # prefers a different engine. Every one of those went into adopt's stdout
+        # and the board threw the whole string away, showing only "Adopted #34 —
+        # it is a local mission now." A warning nobody sees is not a warning.
+        #
+        # They are lifted by adopt's OWN marker, not by prose-matching: `note()`
+        # in adopt.sh emits exactly `  ⚠ <sentence>` and nothing else in the verb
+        # uses that glyph at the head of a line. Same discipline as
+        # _ADOPT_REFUSAL_BANNER above — one script, one marker, no classifier.
+        return {"adopted": int(n), "output": out,
+                "warnings": _adopt_warnings(out)}
+
+    @staticmethod
+    def _adopt_engine(engine):
+        """The requested engine, validated, or "" for "the board sent none".
+
+        VALIDATED HERE RATHER THAN TRUSTED, on the same reasoning the issue
+        number two lines up carries: it is about to become a command-line
+        argument. The shape is the one `lcars_engine_bin` accepts — a bare
+        engine id, or a custom binary NAME — so nothing that could be read as a
+        flag, a path or a shell fragment survives.
+
+        NOT AN ALLOW-LIST OF `claude`/`copilot`, deliberately. adopt.sh checks
+        the engine against THIS MACHINE through the shared detector and refuses
+        with its own sentence if it is not here; a second, narrower gate in
+        Python would be a rule in two places (ADR-002) and the two would drift
+        the day a third engine lands.
+        """
+        eng = str(engine if engine is not None else "").strip()
+        if not eng:
+            return ""
+        # A LEADING DASH IS A FLAG, NOT A NAME, and it is checked first: the
+        # character class below happily admits `--help`, which would have
+        # travelled as a second option rather than as `--engine`'s value. Found
+        # by the test that tries it.
+        if (eng.startswith("-") or len(eng) > 64
+                or not all(c.isalnum() or c in "-_." for c in eng)):
+            raise ActionError(
+                400, "adopt: %r is not an engine name" % (engine,))
+        return eng
+
+    # ── S190: THE LIGHT LOCK, SERVER-SIDE ───────────────────────────────────
+    def owner_lock_reason(self, mid):
+        """One plain line when this mission belongs to SOMEONE ELSE, else None.
+
+        THE POINT OF THIS EXISTING AT ALL. S189 already refuses at the CLI, and
+        every write here dispatches a skill — so why check twice? Because the
+        long verbs are dispatched DETACHED and fire-and-forget (see `_spawn`):
+        the child's refusal lands in a spawn log nobody is reading, seconds after
+        the board has already flipped the card to "starting" and the captain has
+        walked away. A refusal has to happen AT THE DOOR, with a status code, or
+        it is not a refusal the operator will ever see. And a disabled button is
+        not a lock: anyone with the port can POST straight past the DOM.
+
+        IT SHELLS, IT DOES NOT DECIDE. The verdict, the posture and the sentence
+        all come from `ownership.sh lock-reason` — the same code path
+        `lcars run` consults — so there is exactly one implementation of "whose
+        mission is this?" in LCARS (ADR-002; the S168 scar).
+
+        LIVE, EVERY TIME. It does NOT read the board's published-owner file: that
+        is a display cache, and a captain who has just reassigned a mission to
+        himself on GitHub must be able to act on his very next click. As a side
+        effect the shell-out republishes that cache, so the board catches up too.
+
+        EVERY UNCERTAIN CASE ANSWERS None (allowed):
+          * no `ownership` script wired            → the pre-S190 daemon
+          * the mission carries no forge issue     → nobody can own it
+          * gh absent, unauthenticated, unreachable→ ownership.sh exits non-zero
+          * an unassigned mission                  → "nobody" is not "somebody"
+          * an unresolvable identity               → we may not name the captain
+                                                     as someone else
+        A false lock is strictly worse than the thing the lock prevents.
+        """
+        script = self.scripts.get("ownership")
+        if not script:
+            return None
+        issue = _read_json_key(
+            os.path.join(self._missions_dir(), mid, "state.json"), "githubIssue")
+        if isinstance(issue, str) and issue.isdigit():
+            issue = int(issue)
+        if not isinstance(issue, int):
+            return None
+        env = dict(os.environ)
+        if self.gh_bin:
+            env["LCARS_GH_BIN"] = self.gh_bin
+        try:
+            proc = subprocess.run(
+                ["bash", script, "lock-reason", str(issue)],
+                cwd=self.repo_root, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=20)
+        except Exception:
+            # Script missing, un-runnable, or it hung past the bound. A forge we
+            # cannot reach must never stand between the captain and his own work.
+            return None
+        if proc.returncode != 0:
+            return None
+        line = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return line or None
+
     def _mission_state(self, mid):
         detail = self._reader.mission(mid)
         if detail is None:
@@ -13657,6 +13909,13 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         # S184 — Establish Vision, resolved like every other skill.
         "establish_vision": os.path.join(
             home, ".claude/skills/lcars-init/establish-vision.sh"),
+        # S190 — the ownership library's EXECUTABLE face, resolved like every
+        # other skill. It lives inside lcars-run beside host-adapter.sh.
+        "ownership": os.path.join(
+            home, ".claude/skills/lcars-run/ownership.sh"),
+        # S191 — `lcars adopt`, resolved like every other skill.
+        "adopt": os.path.join(
+            home, ".claude/skills/lcars-adopt/adopt.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():

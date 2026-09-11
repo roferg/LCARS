@@ -109,6 +109,37 @@ textarea down 169px under a captain mid-sentence. Reserving the height instead
 would leave a permanent empty gap on every healthy repo, where the block is
 absent entirely.
 
+### Filter the board by ownership (S196 B5)
+
+A strip of chips above the board — **ALL / MINE / THEIRS / UNASSIGNED /
+REMOTE**, each with the count it selects. It is a SET of toggles ORed together,
+not a radio group, because `remote` is a **card class and not an owner**: a
+remote mission can be assigned to you, to somebody else, or to nobody.
+
+- **The vocabulary is the one that already exists.** `THEIRS` calls the light
+  lock's own predicate, so a card the board will not let you drive and a card
+  the filter calls someone else's can never disagree; `UNASSIGNED` is
+  `ownership.sh`'s "empty is unowned, never locked"; `REMOTE` is `card.remote`.
+- **It costs no forge round trip** (the S152 constraint). Filtering happens on
+  the board the page already holds — one `localStorage` write and a client-only
+  repaint. Measured in real Chrome: **50 filter applications, 0 fetches, `gh`
+  invocations 1 → 1.**
+- **It survives a refresh**, in `localStorage` under `lcars-owner-filter`. The
+  stored value is the captain's CHOICE; what is applied is that choice made
+  legal for the board on screen, so a facet with no cards today drops out
+  instead of blanking the board — and is still there tomorrow.
+- **Identity absent changes nothing.** With no `meta.self` the board cannot say
+  what "mine" means, so MINE and THEIRS are not offered and a remembered `mine`
+  simply stops applying. Every uncertain case shows MORE, never less.
+- **A facet with no cards is not offered**, and a board with fewer than two
+  kinds of ownership on it shows no strip at all — the same no-dead-controls
+  ruling that emptied the remote card's control row.
+- **`o` cycles it** from the keyboard (the help console's `?` deck lists it),
+  and the counts agree: each chip's number is what the board draws, and a
+  column head counts the cards it is actually drawing. A filtered board says so
+  in its own status line — *"2 of 6 missions · filtered"*.
+- **Filtering is a READ**, so the chips stay live on a view-only board.
+
 ### Operator actions (write layer — LOCAL adapter only)
 
 The LOCAL-adapter daemon also serves the operator **write endpoints**, each of
@@ -187,6 +218,42 @@ lcars-viewscreen --adapter github
 LCARS_SERVE_ADAPTER=github lcars-viewscreen
 ```
 
+## Remote missions — the second laptop's board (S191)
+
+On the LOCAL adapter the board also shows missions that exist **on GitHub and
+not in this clone**, as read-only **REMOTE** cards, so a laptop with no
+`.git/lcars` for a mission can still watch it while another machine drives it.
+
+- What the card carries comes off the issue and nothing else: the Stage from
+  the `lcars:<stage>` **label** (never the handoff envelope, which is refreshed
+  at only two transfer points and is stale mid-pipeline by construction),
+  AWAITING-YOU from `lcars:awaiting-human`, the owner from the assignee, the
+  Estimate pills from the body, and — at Implement — closed/total over the
+  mission's `lcars:ticket` sub-issues.
+- **Local missions always win.** Once a mission is adopted here it is a local
+  mission and the issue never draws a second card.
+- **Read-only, and the CARD offers only what it can do** (S196 B2/B3, captain
+  ruling): nothing on a remote card is actionable by definition, so the card
+  draws NO dead control at all — the stage line `#34 · lcars:verify` already
+  carries the state a disabled `▶ Start` was standing in for. The one
+  live control is **◆ Adopt**, offered at exactly the two ENDS of the pipeline
+  (align / verify) — the v1 portability boundary; it dispatches `lcars adopt`.
+  The DETAIL still renders the mission's controls, now wearing the house lock
+  treatment (hollow, dashed, `⊘`) and the tooltip *"driven from another machine
+  — adopt at Align/Verify to act here"*.
+- **One slow, cached forge poll.** ONE `gh issue list` per cycle (default 30s,
+  `LCARS_REMOTE_POLL`, floored at 10s), reused by every remote card, and never
+  on the live channel. A forge that cannot be reached shows
+  `○ REMOTE DATA UNAVAILABLE` in the footer and leaves every local card alone.
+- **No `gh` ⇒ no overlay at all**, and the board is byte-identical to a
+  pre-S191 one. `LCARS_REMOTE_OVERLAY=0` turns it off explicitly.
+- **A refusal reads as a refusal.** A write POSTed straight at a remote
+  mission (past the disabled button) answers **409** with the same sentence the
+  card carries — not `404 no such mission`, which contradicted the card it came
+  from. An `adopt` the skill honestly refuses (wrong stage, no handoff envelope,
+  no `gh`) is **409** too, carrying `lcars adopt`'s own words; a genuine crash
+  still answers 502.
+
 ## Options (all via flag or env)
 
 - `--host` / `LCARS_SERVE_HOST` (default `127.0.0.1`)
@@ -196,6 +263,9 @@ LCARS_SERVE_ADAPTER=github lcars-viewscreen
   the local adapter reads (defaults to the repo `lcars viewscreen` is run in)
 - `--gh-bin` / `LCARS_GH_BIN` — the `gh` binary for the GitHub adapter
 - `--gh-repo` / `LCARS_SERVE_GH_REPO` — `owner/name` for the GitHub adapter
+- `LCARS_REMOTE_POLL` — seconds between remote-overlay forge polls
+  (default `30`, floored at `10`)
+- `LCARS_REMOTE_OVERLAY=0` — turn the remote-mission overlay off entirely
 
 ## Report
 

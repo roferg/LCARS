@@ -280,8 +280,13 @@ init_repo "$repoUc"
 cfgUc="$repoUc/.git/lcars/config.json"
 # Includes a current lcarsVersion (pinned below via LCARS_VERSION) so this repo is
 # genuinely fully-current under the versioned schema — update must change nothing.
+# S196 — and a `cloneId`, which joined that schema: `lcars update` BACKFILLS the
+# clone's durable identity (the source of the per-clone fingerprint in every
+# mission id it mints), so a config without one is no longer "fully-current" and
+# this idempotence check would be asserting the wrong thing.
 cat >"$cfgUc" <<'JSON'
 {
+  "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e",
   "model": "claude-sonnet",
   "projectName": "p",
   "contextFile": null,

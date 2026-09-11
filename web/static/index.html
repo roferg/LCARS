@@ -103,6 +103,15 @@
          to its pre-S184 self, on every repo that has a foundation. -->
     <div class="front-door" id="frontDoor" hidden></div>
 
+    <!-- S196 B5 ownership filter: its OWN row above the board (the version-
+         banner placement idiom — never inside the topbar button cluster, whose
+         control order is pinned byte-for-byte by test_help_console). Filled by
+         board.js on every render from the board it already holds; HIDDEN, and
+         the page byte-identical to its pre-B5 self, whenever there are fewer
+         than two kinds of ownership on screen to ask about. Filtering is a
+         READ, so these chips are live on a view-only board. -->
+    <div class="owner-filter" id="ownerFilter" hidden></div>
+
     <div class="board-wrap">
       <div class="board" id="board"><!-- columns + cards injected by board.js --></div>
     </div>
@@ -119,6 +128,10 @@
       <span><i style="background:var(--lcars-teal)"></i> Ticket green</span>
       <span class="dim" id="status">loading…</span>
       <span class="dim viewonly" id="viewonly" hidden>● VIEW-ONLY — writes disabled</span>
+    <!-- S191: the forge could not be reached, so the board is showing LOCAL
+         missions only. Hidden unless the daemon says so (meta.remote.status);
+         a board with no gh never carries that key, so this never appears. -->
+    <span class="dim remote-note" id="remoteNote" hidden></span>
     </div>
   </div>
 

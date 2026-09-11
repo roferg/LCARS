@@ -84,7 +84,12 @@ class GitHubAdapter(object):
     def _fetch_issues(self):
         cmd = [self.gh_bin, "issue", "list", "--state", "open",
                "--limit", "200",
-               "--json", "number,title,state,labels,body,comments,updatedAt"]
+               # S190: `assignees` rides the SAME list call — the forge already
+               # knows who holds each issue, so owner parity with the local
+               # adapter (ADR-003) costs this adapter nothing: no extra request,
+               # no extra round trip, no new failure mode.
+               "--json",
+               "number,title,state,labels,body,comments,updatedAt,assignees"]
         if self.repo:
             cmd += ["--repo", self.repo]
         try:
@@ -107,6 +112,23 @@ class GitHubAdapter(object):
                     cards.append(c)
         return cards
 
+    def card_from_issue(self, issue, issues=()):
+        """ONE issue row → ONE adapter-neutral card. The public face of `_card`.
+
+        S191's remote overlay borrows exactly this mapping so a mission read off
+        the forge produces the SAME card shape whichever surface read it (ADR-003
+        — one implementation per fact). It is a named method rather than a reach
+        into `_card` so the seam is visible from both sides: change the mapping
+        and you can see who else depends on it.
+
+        The `_n` sort key `_card` carries for its own ordering is dropped here —
+        it is an internal of `board()`, not part of the shape.
+        """
+        card = self._card(issue, list(issues))
+        if card is not None:
+            card.pop("_n", None)
+        return card
+
     def _card(self, issue, issues):
         labels = _label_names(issue)
         stage = _stage_of(labels)
@@ -126,7 +148,7 @@ class GitHubAdapter(object):
         tickets = _tickets_for(issue, issues)
         progress = None  # GitHub progress lives in the mirrored Implement comment
 
-        return {
+        card = {
             "id": str(issue.get("number")),
             "issue": issue.get("number"),
             "title": issue.get("title") or "",
@@ -195,6 +217,21 @@ class GitHubAdapter(object):
             "activeSeconds": 0,
             "_n": issue.get("number") or 0,
         }
+        # S190: WHOSE MISSION IS THIS — from the issue's own assignees, through
+        # the SAME shape builder the local adapter uses, so the two adapters emit
+        # an identical `owner` block and the front end cannot tell them apart
+        # (ADR-003). ABSENT (not null) on an unassigned issue, so a forge board
+        # with nothing assigned on it is byte-identical to before this round.
+        #
+        # THE FIRST assignee, never a list: `mission_owner` defines ownership as
+        # "the single standing assignee" precisely so the team round can swap in
+        # an event-timeline winner later by changing one function. A reader that
+        # started consuming a LIST here would make that swap expensive, so this
+        # one does not.
+        owner = board.owner_block(_first_assignee(issue))
+        if owner is not None:
+            card["owner"] = owner
+        return card
 
     def _activity(self, issue):
         feed = []
@@ -206,6 +243,26 @@ class GitHubAdapter(object):
 
 
 # --- helpers -----------------------------------------------------------------
+def _first_assignee(issue):
+    """The issue's single standing assignee login, or "" when nobody holds it.
+
+    GitHub returns an empty ARRAY for "nobody" — never null, never a missing key
+    — on both the `--json assignees` and the REST paths (recorded against real gh
+    2.96.0 in ADOPT-RESOLUTION-SPIKE.md). So "unowned" is an EMPTY LIST, a valid
+    answer, and never an error. Crash-proof against a payload that is not the
+    shape we expect: this adapter reads a forge, and a forge is not a promise.
+    """
+    rows = issue.get("assignees") if isinstance(issue, dict) else None
+    if not isinstance(rows, list):
+        return ""
+    for row in rows:
+        if isinstance(row, dict):
+            login = row.get("login")
+            if isinstance(login, str) and login:
+                return login
+    return ""
+
+
 def _label_names(issue):
     return {lab.get("name") for lab in (issue.get("labels") or [])
             if isinstance(lab, dict) and lab.get("name")}

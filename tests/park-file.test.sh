@@ -102,6 +102,13 @@ EOF
 # those record the base branch's sha — an unpinned `git commit` would give two
 # otherwise-identical fixtures two different shas and fail the diff for a reason
 # that has nothing to do with the two lanes drifting apart.
+# S196 — `cloneId` PINS THE FINGERPRINT so this suite's expected ids stay
+# literal. Mission ids are now `lcars-YYYYMMDD-NNN-<fp>`, where <fp> is the
+# first 4 hex of the clone's own `cloneId` (a UUID4 minted on first use, so two
+# clones of one repo can never mint the same id — see lcars_clone_id in
+# skills/lcars-init/lcars-common.sh). Pinning it makes <fp> the constant `c10e`;
+# the lazy-acquisition and old-format-compatibility proofs live in
+# tests/mission-id.test.sh.
 new_repo() {
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
@@ -116,7 +123,7 @@ new_repo() {
   # readiness verdict asks of a command. The gate itself is proven in
   # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-05-30T00:00:00Z" }
 EOF
   echo "$repo"
 }
@@ -150,7 +157,7 @@ export GH_BODY="$repo1/gh-body.txt"; : >"$GH_BODY"
   LCARS_GH_BIN="$repo1/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
     bash "$FILE_SCRIPT" --park "Make the leaderboard sortable by streak length" >out.txt 2>&1
 )
-M1="$repo1/.git/lcars/missions/lcars-20260530-001"
+M1="$repo1/.git/lcars/missions/lcars-20260530-001-c10e"
 check "1. parks the mission dir"              "[ -d '$M1' ]"
 check "1. writes idea.md verbatim"            "grep -qF 'Make the leaderboard sortable by streak length' '$M1/idea.md'"
 check "1. state.json marks prdPending true"   "grep -q '\"prdPending\": *true' '$M1/state.json'"
@@ -163,8 +170,8 @@ check "1. issue create labels align+mission"  "grep -q 'lcars:align,lcars:missio
 check "1. issue create adds NO type label"    "! grep -qE 'lcars:(feature|bug)' '$repo1/gh.log'"
 check "1. issue body carries the idea"        "grep -qF 'Make the leaderboard sortable by streak length' '$GH_BODY'"
 check "1. issue body carries a STANDBY note"  "grep -qi 'STANDBY' '$GH_BODY'"
-check "1. readout names the mission id"       "grep -q 'lcars-20260530-001' '$repo1/out.txt'"
-check "1. readout says how to align"          "grep -q 'lcars file lcars-20260530-001' '$repo1/out.txt'"
+check "1. readout names the mission id"       "grep -q 'lcars-20260530-001-c10e' '$repo1/out.txt'"
+check "1. readout says how to align"          "grep -q 'lcars file lcars-20260530-001-c10e' '$repo1/out.txt'"
 check "1. records the issue number"           "grep -q '\"githubIssue\": *42' '$M1/state.json'"
 unset GH_BODY
 
@@ -176,7 +183,7 @@ ideaf="$repo1b/idea-in.txt"; printf 'A dark mode toggle in the header\nwith a pe
   cd "$repo1b"
   LCARS_GH_BIN="$repo1b/gh" LCARS_DATE="20260530" bash "$FILE_SCRIPT" --park --idea "$ideaf" >out.txt 2>&1
 )
-M1b="$repo1b/.git/lcars/missions/lcars-20260530-001"
+M1b="$repo1b/.git/lcars/missions/lcars-20260530-001-c10e"
 check "1b. --idea <file> captures the idea verbatim" \
   "grep -qF 'A dark mode toggle in the header' '$M1b/idea.md'"
 check "1b. issue title is the first idea line (truncated)" \
@@ -190,7 +197,7 @@ export GH_LOG="$repo2/gh.log"; : >"$GH_LOG"
   LCARS_GH_BIN="$repo2/gh" LCARS_DATE="20260530" bash "$FILE_SCRIPT" \
     --park "A copilot-built feature" --engine copilot >out.txt 2>&1
 )
-M2="$repo2/.git/lcars/missions/lcars-20260530-001"
+M2="$repo2/.git/lcars/missions/lcars-20260530-001-c10e"
 check "2. --engine copilot persists workerBin=copilot" \
   "grep -q '\"workerBin\": *\"copilot\"' '$M2/state.json'"
 check "2. state.json still valid JSON with engine" \
@@ -204,7 +211,7 @@ export GH_LOG="$repo2b/gh.log"; : >"$GH_LOG"
   LCARS_GH_BIN="$repo2b/gh" LCARS_DATE="20260530" bash "$FILE_SCRIPT" \
     --park "No engine specified" >out.txt 2>&1
 )
-M2b="$repo2b/.git/lcars/missions/lcars-20260530-001"
+M2b="$repo2b/.git/lcars/missions/lcars-20260530-001-c10e"
 check "2b. no --engine ⇒ no workerBin field" \
   "! grep -q 'workerBin' '$M2b/state.json'"
 
@@ -219,7 +226,7 @@ rc2c=0
 ) || rc2c=$?
 check "2c. a bogus --engine ⇒ non-zero exit" "[ '$rc2c' -ne 0 ]"
 check "2c. a bogus --engine ⇒ no mission written" \
-  "[ ! -d '$repo2c/.git/lcars/missions/lcars-20260530-001' ]"
+  "[ ! -d '$repo2c/.git/lcars/missions/lcars-20260530-001-c10e' ]"
 
 # --- Behaviour 3: a parked mission is NOT runnable, IS offered -----------------
 repo3="$(new_repo)"; make_gh_stub "$repo3/gh"
@@ -232,20 +239,20 @@ export GH_LOG="$repo3/gh.log"; : >"$GH_LOG"
 rc3=0
 (
   cd "$repo3"
-  LCARS_GH_BIN="$repo3/gh" bash "$RUN_SCRIPT" drive --mission lcars-20260530-001 >driveout.txt 2>&1
+  LCARS_GH_BIN="$repo3/gh" bash "$RUN_SCRIPT" drive --mission lcars-20260530-001-c10e >driveout.txt 2>&1
 ) || rc3=$?
 check "3. lcars run on a parked mission exits non-zero" "[ '$rc3' -ne 0 ]"
 check "3. run refusal says 'parked awaiting alignment'" \
   "grep -qi 'parked awaiting alignment' '$repo3/driveout.txt'"
 check "3. run refusal names the align command" \
-  "grep -q 'lcars file lcars-20260530-001' '$repo3/driveout.txt'"
+  "grep -q 'lcars file lcars-20260530-001-c10e' '$repo3/driveout.txt'"
 check "3. run refusal is not a stack trace" \
   "! grep -qi 'line [0-9]*:' '$repo3/driveout.txt'"
 # the Research stage entry also refuses.
 rc3r=0
 (
   cd "$repo3"
-  LCARS_GH_BIN="$repo3/gh" bash "$RUN_SCRIPT" research --mission lcars-20260530-001 >resout.txt 2>&1
+  LCARS_GH_BIN="$repo3/gh" bash "$RUN_SCRIPT" research --mission lcars-20260530-001-c10e >resout.txt 2>&1
 ) || rc3r=$?
 check "3. research stage on a parked mission refuses" \
   "[ '$rc3r' -ne 0 ] && grep -qi 'parked awaiting alignment' '$repo3/resout.txt'"
@@ -258,7 +265,7 @@ check "3. research stage on a parked mission refuses" \
 check "3. bare lcars does NOT auto-drive a parked mission" \
   "! grep -q 'ROUTE: drive' '$repo3/bare.txt'"
 check "3. bare lcars offers the parked mission for alignment" \
-  "grep -qi 'awaiting alignment' '$repo3/bare.txt' && grep -q 'lcars-20260530-001' '$repo3/bare.txt'"
+  "grep -qi 'awaiting alignment' '$repo3/bare.txt' && grep -q 'lcars-20260530-001-c10e' '$repo3/bare.txt'"
 check "3. bare lcars names the align command in the offer" \
   "grep -q 'lcars file' '$repo3/bare.txt'"
 # the resolver keeps parked missions OUT of the active/drivable set.
@@ -267,13 +274,13 @@ check "3. bare lcars names the align command in the offer" \
   bash "$RESOLVE_SCRIPT" --scope active >active.txt 2>err.txt; echo "rc=$?" >>active.txt
 )
 check "3. resolver active scope excludes the parked mission" \
-  "! grep -q 'lcars-20260530-001' '$repo3/active.txt'"
+  "! grep -q 'lcars-20260530-001-c10e' '$repo3/active.txt'"
 (
   cd "$repo3"
   bash "$RESOLVE_SCRIPT" --scope parked >parked.txt 2>&1
 )
 check "3. resolver parked scope lists the parked mission" \
-  "grep -q 'lcars-20260530-001' '$repo3/parked.txt'"
+  "grep -q 'lcars-20260530-001-c10e' '$repo3/parked.txt'"
 
 # --- Behaviour 4: --complete aligns in place, byte-equivalent to grill-first ---
 # 4a. A bad PRD leaves NOTHING partial: no prd.md, prdPending still true.
@@ -283,12 +290,12 @@ export GH_LOG="$repo4/gh.log"; : >"$GH_LOG"
   cd "$repo4"
   LCARS_GH_BIN="$repo4/gh" LCARS_DATE="20260530" bash "$FILE_SCRIPT" --park "To be completed" >/dev/null 2>&1
 )
-M4="$repo4/.git/lcars/missions/lcars-20260530-001"
+M4="$repo4/.git/lcars/missions/lcars-20260530-001-c10e"
 badprd="$repo4/bad.md"; printf '# Mission: incomplete\n\n**Type:** bug\n**Goal:** nope\n' >"$badprd"
 rc4bad=0
 (
   cd "$repo4"
-  LCARS_GH_BIN="$repo4/gh" bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$badprd" >badout.txt 2>&1
+  LCARS_GH_BIN="$repo4/gh" bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$badprd" >badout.txt 2>&1
 ) || rc4bad=$?
 check "4a. complete with a bad PRD exits non-zero" "[ '$rc4bad' -ne 0 ]"
 check "4a. bad PRD ⇒ NO prd.md written"            "[ ! -f '$M4/prd.md' ]"
@@ -301,7 +308,7 @@ export EST_LOG="$repo4/est.log"; : >"$EST_LOG"
 goodprd="$repo4/good.md"; write_prd "$goodprd"
 (
   cd "$repo4"
-  LCARS_GH_BIN="$repo4/gh" bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$goodprd" >compout.txt 2>&1
+  LCARS_GH_BIN="$repo4/gh" bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$goodprd" >compout.txt 2>&1
 )
 check "4b. complete writes prd.md"                "[ -f '$M4/prd.md' ]"
 check "4b. prd.md has the PRD content"            "grep -qF 'Fix the broken /about route' '$M4/prd.md'"
@@ -310,7 +317,7 @@ check "4b. state.json now carries the type"       "grep -q '\"type\": *\"bug\"' 
 check "4b. state.json title is the PRD title"     "grep -q 'Fix the broken /about route' '$M4/state.json'"
 check "4b. state.json still valid JSON"           "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$M4/state.json'"
 check "4b. estimator was invoked (estimate --mission)" \
-  "grep -q 'estimate --mission lcars-20260530-001' '$EST_LOG'"
+  "grep -q 'estimate --mission lcars-20260530-001-c10e' '$EST_LOG'"
 check "4b. estimate.json now exists"              "[ -f '$M4/estimate.json' ]"
 check "4b. issue is edited IN PLACE (issue edit 42)" \
   "grep -q 'issue edit 42' '$repo4/gh.log'"
@@ -324,7 +331,7 @@ check "4b. readout announces the alignment" \
   "grep -qi 'Mission aligned' '$repo4/compout.txt'"
 ( cd "$repo4" && bash "$RESOLVE_SCRIPT" --scope active >runnable.txt 2>&1 )
 check "4b. completed mission is now runnable (resolver active)" \
-  "grep -q 'lcars-20260530-001' '$repo4/runnable.txt'"
+  "grep -q 'lcars-20260530-001-c10e' '$repo4/runnable.txt'"
 unset GH_BODY EST_LOG
 
 # Byte-equivalence: file the SAME PRD grill-first in a fresh repo (same DATE/NOW/
@@ -338,7 +345,7 @@ prdGF="$repoGF/prd.md"; write_prd "$prdGF"
   LCARS_GH_BIN="$repoGF/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
     bash "$FILE_SCRIPT" --prd "$prdGF" >/dev/null 2>&1
 )
-MGF="$repoGF/.git/lcars/missions/lcars-20260530-001"
+MGF="$repoGF/.git/lcars/missions/lcars-20260530-001-c10e"
 
 # Redo the parked→completed filing in a fresh repo with the SAME pinned DATE/NOW
 # so created/id/branch/base match the grill-first filing exactly.
@@ -350,9 +357,9 @@ prdPC="$repoPC/prd.md"; write_prd "$prdPC"
   LCARS_GH_BIN="$repoPC/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
     bash "$FILE_SCRIPT" --park "the raw idea before the grill" >/dev/null 2>&1
   LCARS_GH_BIN="$repoPC/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
-    bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prdPC" >/dev/null 2>&1
+    bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdPC" >/dev/null 2>&1
 )
-MPC="$repoPC/.git/lcars/missions/lcars-20260530-001"
+MPC="$repoPC/.git/lcars/missions/lcars-20260530-001-c10e"
 check "4c. completed state.json is byte-identical to grill-first" \
   "diff '$MGF/state.json' '$MPC/state.json' >/dev/null"
 check "4c. completed prd.md is byte-identical to grill-first" \
@@ -366,7 +373,7 @@ check "4c. idea.md is the ONLY extra artifact vs grill-first" \
 rc4d=0
 (
   cd "$repoPC"
-  LCARS_GH_BIN="$repoPC/gh" bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prdPC" >dblout.txt 2>&1
+  LCARS_GH_BIN="$repoPC/gh" bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$prdPC" >dblout.txt 2>&1
 ) || rc4d=$?
 check "4d. completing an aligned mission exits non-zero" "[ '$rc4d' -ne 0 ]"
 check "4d. message says 'already aligned'" \
@@ -405,26 +412,26 @@ export GH_LOG="$repo7/gh.log"; : >"$GH_LOG"
   LCARS_GH_BIN="$repo7/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
     bash "$FILE_SCRIPT" --park "the raw idea before the grill" >/dev/null 2>&1
 )
-M7="$repo7/.git/lcars/missions/lcars-20260530-001"
+M7="$repo7/.git/lcars/missions/lcars-20260530-001-c10e"
 prd7="$repo7/prd.md"; write_prd "$prd7"
 # First --complete: the issue edit FAILS.
 rc7=0
 (
   cd "$repo7"
   GH_FAIL_EDIT=1 LCARS_GH_BIN="$repo7/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
-    bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prd7" >failout.txt 2>&1
+    bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$prd7" >failout.txt 2>&1
 ) || rc7=$?
 check "7. complete exits non-zero when gh issue edit fails"       "[ '$rc7' -ne 0 ]"
 check "7. gh-edit failure leaves prdPending true (still parked)"  "grep -q '\"prdPending\": *true' '$M7/state.json'"
 check "7. gh-edit failure leaves NO type field in state.json"     "! grep -q '\"type\"' '$M7/state.json'"
 check "7. gh-edit failure makes NO drift 'aligned' claim"         "! grep -qi 'Mission aligned' '$repo7/failout.txt'"
-check "7. gh-edit failure names the re-run --complete command"    "grep -q 'lcars file --complete lcars-20260530-001' '$repo7/failout.txt'"
+check "7. gh-edit failure names the re-run --complete command"    "grep -q 'lcars file --complete lcars-20260530-001-c10e' '$repo7/failout.txt'"
 check "7. state.json is still valid JSON after a failed complete" "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$M7/state.json'"
 # Re-run with the edit NOW succeeding: it must RETRY the edit and land aligned.
 (
   cd "$repo7"
   LCARS_GH_BIN="$repo7/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
-    bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prd7" >okout.txt 2>&1
+    bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$prd7" >okout.txt 2>&1
 )
 check "7. re-run after fixing gh completes (Mission aligned)"     "grep -qi 'Mission aligned' '$repo7/okout.txt'"
 check "7. re-run clears prdPending"                               "! grep -q 'prdPending' '$M7/state.json'"
@@ -440,7 +447,7 @@ prd7GF="$repo7GF/prd.md"; write_prd "$prd7GF"
   LCARS_GH_BIN="$repo7GF/gh" LCARS_DATE="20260530" LCARS_NOW="2026-05-30T00:00:00Z" \
     bash "$FILE_SCRIPT" --prd "$prd7GF" >/dev/null 2>&1
 )
-M7GF="$repo7GF/.git/lcars/missions/lcars-20260530-001"
+M7GF="$repo7GF/.git/lcars/missions/lcars-20260530-001-c10e"
 check "7. retried state.json is byte-identical to grill-first" "diff '$M7GF/state.json' '$M7/state.json' >/dev/null"
 check "7. retried prd.md is byte-identical to grill-first"     "diff '$M7GF/prd.md' '$M7/prd.md' >/dev/null"
 
@@ -451,7 +458,7 @@ export GH_LOG="$repo5/gh.log"; : >"$GH_LOG"
   cd "$repo5"
   LCARS_GH_BIN="$repo5/gh" LCARS_DATE="20260530" bash "$FILE_SCRIPT" --park "Standby me" >/dev/null 2>&1
 )
-M5="$repo5/.git/lcars/missions/lcars-20260530-001"
+M5="$repo5/.git/lcars/missions/lcars-20260530-001-c10e"
 rc5=0
 ( cd "$repo5" && bash "$STATUS_SCRIPT" >statout.txt 2>&1 ) || rc5=$?
 check "5. status exits 0 on a parked mission"      "[ '$rc5' -eq 0 ]"
@@ -462,7 +469,7 @@ check "5. status labels the row 'awaiting alignment'" \
 # the glyph/title columns — there must be whitespace between it and the ◇ glyph.
 check "5. stage cell does not glue the glyph (no overflow)" \
   "! grep -q 'awaiting alignment◇' '$repo5/statout.txt'"
-check "5. status still shows the mission id"        "grep -q 'lcars-20260530-001' '$repo5/statout.txt'"
+check "5. status still shows the mission id"        "grep -q 'lcars-20260530-001-c10e' '$repo5/statout.txt'"
 # comment-mirror never drifts a parked mission: with no run, there is no
 # events.jsonl, so the mirror is a structural no-op (nothing to mirror).
 check "5. a parked mission has no events.jsonl (mirror no-op)" \
@@ -476,7 +483,7 @@ prd6="$repo6/prd.md"; write_prd "$prd6"
   cd "$repo6"
   LCARS_GH_BIN="$repo6/gh" LCARS_DATE="20260530" bash "$FILE_SCRIPT" --prd "$prd6" >out.txt 2>&1
 )
-M6="$repo6/.git/lcars/missions/lcars-20260530-001"
+M6="$repo6/.git/lcars/missions/lcars-20260530-001-c10e"
 check "6. grill-first filing writes prd.md"          "[ -f '$M6/prd.md' ]"
 check "6. grill-first state has NO prdPending"        "! grep -q 'prdPending' '$M6/state.json'"
 check "6. grill-first writes NO idea.md"              "[ ! -f '$M6/idea.md' ]"
@@ -511,7 +518,7 @@ mk_parked() { # repo-var-name [park-engine] → echoes repo path, parks mission 
       bash "$FILE_SCRIPT" "${args[@]}" >/dev/null 2>&1 )
   printf '%s' "$repo"
 }
-CM="lcars-20260530-001"
+CM="lcars-20260530-001-c10e"
 
 # 8a. a bogus --engine on --complete is REJECTED, and the mission stays PARKED.
 r8a="$(mk_parked)"; prd8a="$r8a/prd.md"; write_prd "$prd8a"
@@ -585,12 +592,12 @@ conc9="$r9/concept.md";  printf '# concept'       >"$conc9"
   GH_LOG="$r9/gh.log" LCARS_GH_BIN="$r9/gh" LCARS_DATE="20260530" \
     bash "$FILE_SCRIPT" --park "Holodeck hand-off" --attach "$mock9" --attach "$conc9" >/dev/null 2>&1
 )
-M9="$r9/.git/lcars/missions/lcars-20260530-001"
+M9="$r9/.git/lcars/missions/lcars-20260530-001-c10e"
 prd9="$r9/prd.md"; write_prd "$prd9"
 (
   cd "$r9"
   GH_LOG="$r9/gh.log" LCARS_GH_BIN="$r9/gh" \
-    bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prd9" >comp9.txt 2>&1
+    bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$prd9" >comp9.txt 2>&1
 )
 check "9a. --complete wrote prd.md" "[ -f '$M9/prd.md' ]"
 check "9a. --complete does NOT call an HTML mockup an image" \
@@ -615,12 +622,12 @@ imgB9="$r9b/b.jpg"; printf 'BBB' >"$imgB9"
   GH_LOG="$r9b/gh.log" LCARS_GH_BIN="$r9b/gh" LCARS_DATE="20260530" \
     bash "$FILE_SCRIPT" --park "Screenshots" --attach "$imgA9" --attach "$imgB9" >/dev/null 2>&1
 )
-M9B="$r9b/.git/lcars/missions/lcars-20260530-001"
+M9B="$r9b/.git/lcars/missions/lcars-20260530-001-c10e"
 prd9b="$r9b/prd.md"; write_prd "$prd9b"
 (
   cd "$r9b"
   GH_LOG="$r9b/gh.log" LCARS_GH_BIN="$r9b/gh" \
-    bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prd9b" >comp9b.txt 2>&1
+    bash "$FILE_SCRIPT" --complete lcars-20260530-001-c10e --prd "$prd9b" >comp9b.txt 2>&1
 )
 IMG_SECTION_PC="$(printf '\n## Attached images\n\n- attachments/attachment-01.png\n- attachments/attachment-02.jpg\n')"
 GOT_SECTION_PC="$(python3 - "$M9B/prd.md" <<'PY'

@@ -43,6 +43,34 @@ die() { printf 'lcars approve: %s\n' "$1" >&2; exit 1; }
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
 
+
+# --- S189: solo ownership, the light lock ----------------------------------
+# A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
+# write verbs. `lcars approve` MERGES a pull request and marks a mission Done, so it consults the lock; the READ verbs (status,
+# buddy, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
+# on GitHub — the solo protocol's premise is that the captain moves ownership
+# where both laptops can see it, and LCARS never takes a mission off anyone.
+#
+# The library lives in the sibling lcars-run skill dir (the same reach this
+# script already makes for the host adapter). A MISSING library leaves the verb
+# unenforced — exactly pre-S189 behaviour — rather than refusing blindly, and
+# LCARS_OWNER_ENFORCE=0 bypasses the lock for harness debugging.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SELF_DIR/../lcars-run/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
+
+# owner_lock_or_die <issue> — refuse with ONE plain line, or return.
+# lcars_owner_lock_reason returns 0 (and echoes the line) ONLY when someone else
+# demonstrably holds the mission: unassigned, an unreachable forge and an
+# unresolvable identity all fall through to "proceed", because a lock that fires
+# on uncertainty locks the captain out of his own work.
+owner_lock_or_die() { # <issue>
+  local r
+  command -v lcars_owner_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_owner_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # --- locate the mission (mirrors run.sh) -----------------------------------
 locate_mission() {
   local id="$1" gitdir
@@ -324,6 +352,11 @@ done
 locate_mission "$MISSION_ID"
 require_stage verify
 
+# S189: the light lock. Checked BEFORE the merge gate does any work —
+# reconcile, push, `gh pr merge` — so a mission that is not ours is never
+# half-shipped before the refusal lands.
+owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
+
 BRANCH="$(json_str "$STATE" branch)"
 BASE="$(json_str "$STATE" base)"; BASE="${BASE:-main}"
 
@@ -531,12 +564,32 @@ fi
 # `gh pr merge` hit a conflict and escalate. It is a cheap no-op (exit 0) when
 # the base is not ahead. Pin the mission engine so a copilot mission heals on
 # copilot (a CLAUDECODE-tagged env would otherwise host-detect claude).
+#
+# AND SAY WHOSE PIN IT IS. $LCARS_WORKER_BIN is also how the CAPTAIN moves a
+# mission onto another engine on purpose, and run.sh's resolver records which
+# rule won as the mission's engine PROVENANCE (state.json `engineSource`, the
+# card's `copilot · chosen at adopt` line). It could not tell the two apart, so
+# this pin — LCARS re-asserting the mission's OWN engine — was recorded as `env`
+# and DESTROYED the more specific truth underneath it: the engine the captain
+# chose at the adopt prompt, or the mission's own `--engine` pin. Measured three
+# times in one day of live runs (tests/drives/s196-capstone/): the card read
+# `copilot · chosen at adopt` before approve and `copilot · $LCARS_WORKER_BIN`
+# after, and approve's own log line said `worker: copilot (bin: env)` while the
+# mission sat there pinned to copilot.
+#
+# So the pin STATES what it is rather than leaving the far end to guess:
+# $LCARS_WORKER_BIN_INTERNAL=1 says "LCARS set this, re-asserting this mission's
+# engine". The resolver then takes the value but not the credit — the mission's
+# own record wins the source, exactly as it would have with no pin at all. The
+# producer records; nothing downstream infers internality by comparing the value
+# to `workerBin` (the inference S147/S156/S188 each paid a fix round for, and
+# which would mis-silence a captain who re-asserts the same engine by hand).
 engine="$(json_str "$STATE" workerBin)"
 rcode=0
 # The mission engine is plumbed via the environment (an assignment prefix built
 # by expansion is parsed as a command, not a var — export into the subshell).
 ( export LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN"
-  [ -n "$engine" ] && export LCARS_WORKER_BIN="$engine"
+  [ -n "$engine" ] && export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
   bash "$RUN_SCRIPT" reconcile --mission "$MISSION_ID" ) || rcode=$?
 case "$rcode" in
   0)  : ;;  # up to date (base not ahead) → proceed to merge directly below.

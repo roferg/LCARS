@@ -5,7 +5,12 @@
 # This is the mechanical half of `lcars file`. The conversational half
 # (Capture + Align) is driven by Claude per SKILL.md and produces a PRD on
 # disk; this script takes that PRD and:
-#   1. mints a mission ID            lcars-YYYYMMDD-NNN (NNN per-day sequence)
+#   1. mints a mission ID            lcars-YYYYMMDD-NNN-<fp>  (NNN per-day
+#                                    sequence; <fp> the 4-hex per-CLONE
+#                                    fingerprint added in S196, so two laptops
+#                                    filing on one day cannot mint one name for
+#                                    one shared branch. Pre-S196 ids keep their
+#                                    shape for ever — nothing is re-minted.)
 #   2. creates .git/lcars/missions/<id>/ with prd.md + state.json
 #   3. opens a GitHub issue labelled lcars:align + lcars:<type> + lcars:mission
 #   4. prints a confirmation summary
@@ -80,6 +85,28 @@ if [ -f "$LCARS_COMMON_LIB" ]; then
   # shellcheck source=../lcars-init/lcars-common.sh
   . "$LCARS_COMMON_LIB"
 fi
+# S196 — the mission-id minter and the clone fingerprint live in lcars-common.sh
+# (sourced best-effort above). Define the DEGRADED forms when the lib is absent:
+# the PRE-S196 id shape — no fingerprint — but with S196's tolerant sequence
+# scan, so a clone that already holds fingerprinted missions cannot die on
+# `$((10#a3f4))` just because the library went missing.
+if ! command -v lcars_mint_mission_id >/dev/null 2>&1; then
+  lcars_clone_fingerprint() { printf ''; }
+  lcars_mint_mission_id() {
+    local mdir="$1" date="$2" fp="${3:-}" max=0 d n
+    shopt -s nullglob
+    for d in "$mdir"/lcars-"$date"-*; do
+      n="${d##*/}"; n="${n#lcars-$date-}"; n="${n%%-*}"
+      case "$n" in ''|*[!0-9]*) continue ;; esac
+      n=$((10#$n)); [ "$n" -gt "$max" ] && max="$n"
+    done
+    shopt -u nullglob
+    if [ -n "$fp" ]; then printf 'lcars-%s-%03d-%s' "$date" "$((max + 1))" "$fp"
+    else                  printf 'lcars-%s-%03d'    "$date" "$((max + 1))"
+    fi
+  }
+fi
+
 if ! command -v ensure_base_current >/dev/null 2>&1; then
   ensure_base_current() {
     LCARS_BASE_VERDICT=""; LCARS_BASE_BEHIND=""; LCARS_BASE_AHEAD=""
@@ -89,6 +116,56 @@ if ! command -v ensure_base_current >/dev/null 2>&1; then
   lcars_base_state_line() { printf ''; }
   lcars_base_branch_note() { printf ''; }
 fi
+# --- shared helpers: the ONE issue-body composer (S188) --------------------
+# All four filing lanes below (park, --complete's edit, --complete's create, and
+# grill-first --prd) compose their issue body through `lcars_issue_body_compose`
+# so they cannot drift apart, and so every body carries the machine-readable
+# `lcars:handoff` envelope a second laptop reads. It lives beside the host
+# adapter in the sibling lcars-run skill dir — the same reach `lcars log` and
+# `lcars feedback` already make for host-adapter.sh. $LCARS_ISSUE_BODY_LIB
+# overrides the path for tests.
+LCARS_ISSUE_BODY_LIB="${LCARS_ISSUE_BODY_LIB:-$FILE_SKILL_DIR/../lcars-run/issue-body.sh}"
+if [ -f "$LCARS_ISSUE_BODY_LIB" ]; then
+  # shellcheck source=../lcars-run/issue-body.sh
+  . "$LCARS_ISSUE_BODY_LIB"
+fi
+if ! command -v lcars_issue_body_compose >/dev/null 2>&1; then
+  die "the issue-body composer is missing ($LCARS_ISSUE_BODY_LIB) — re-run ./install.sh from the LCARS checkout."
+fi
+
+# --- shared helpers: solo ownership (S189) ---------------------------------
+# The mission the captain files is HIS: filing assigns him on GitHub, which is
+# where BOTH laptops read ownership from (the second laptop has no .git/lcars at
+# all, so local state cannot answer "whose is this?"). Sourced from the sibling
+# lcars-run skill dir — the same reach the issue-body composer above makes.
+# $LCARS_OWNERSHIP_LIB overrides the path for tests.
+#
+# UNLIKE the composer, a MISSING library is NOT fatal here: ownership is a
+# best-effort overlay on filing, never a precondition for it.
+LCARS_OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$FILE_SKILL_DIR/../lcars-run/ownership.sh}"
+if [ -f "$LCARS_OWNERSHIP_LIB" ]; then
+  # shellcheck source=../lcars-run/ownership.sh
+  . "$LCARS_OWNERSHIP_LIB"
+fi
+
+# _claim_note <issue> — assign the new issue to the captain, BEST-EFFORT.
+#
+# A failed assign WARNS and returns 0. It must NEVER block filing: the same
+# posture notify.sh and the comment mirror already have, and for the same reason
+# — a forge that will not take an assignment is not a reason to lose the PRD the
+# captain just wrote. The adapter's issue-assign READS BACK before reporting
+# success, so a GitHub that accepts the request and silently drops it surfaces
+# here as this warning, instead of as a mission LCARS believes it owns and
+# GitHub says it does not.
+_claim_note() { # <issue>
+  local n="${1:-}" w
+  case "$n" in ''|null) return 0 ;; esac
+  command -v lcars_claim_mission >/dev/null 2>&1 || return 0
+  w="$(lcars_claim_mission "$n")" || true
+  [ -n "$w" ] && printf '%s\n' "$w"
+  return 0
+}
+
 if ! command -v lcars_base_current_branch >/dev/null 2>&1; then
   # The lib is missing, so filing degrades to exactly its pre-S158 behaviour —
   # including the base resolution, which is the pre-S158 lines verbatim.
@@ -278,16 +355,16 @@ _worker_bin_line() {
   printf '  "workerBin": "%s",' "$wb_json"
 }
 
-# _mint_id — the per-day sequenced mission id under $MISSIONS_DIR. Echoes it.
+# _mint_id — the per-day sequenced, CLONE-FINGERPRINTED mission id under
+# $MISSIONS_DIR. Echoes it.
+#
+# S196 — the scan and the format both moved to lcars_mint_mission_id in
+# lcars-common.sh, so this lane, the --prd lane below, and `lcars log` share ONE
+# parser. Why the id widened at all (two laptops minting the same name for the
+# same shared branch), and why the scan can no longer read `${d##*-}`, is
+# written out in full over that function.
 _mint_id() {
-  local max=0 d n
-  shopt -s nullglob
-  for d in "$MISSIONS_DIR"/lcars-"$DATE"-*; do
-    n="$((10#${d##*-}))"
-    [ "$n" -gt "$max" ] && max="$n"
-  done
-  shopt -u nullglob
-  printf 'lcars-%s-%03d' "$DATE" "$((max + 1))"
+  lcars_mint_mission_id "$MISSIONS_DIR" "$DATE" "$(lcars_clone_fingerprint "$CONFIG")"
 }
 
 # _make_branch <id> — create the Mission's own branch lcars/<id> off the current
@@ -467,27 +544,37 @@ do_park() {
   # label; type is unknown until the grill). Body = the idea + a standby note.
   local ISSUE="" GH_NOTE=""
   if command -v "$GH_BIN" >/dev/null 2>&1; then
+    # LANE 1 (park). ONE composer, shared with every other lane — see
+    # skills/lcars-run/issue-body.sh. Byte-identical to the inline body this lane
+    # built before S188, plus the appended `lcars:handoff` envelope (which
+    # carries "parked":true here: there is no PRD yet).
     local BODY_TMP; BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
-    {
-      printf '%s\n' "$idea"
-      printf '\n---\n\n'
-      printf '_◇ STANDBY — parked awaiting alignment. Run `lcars file %s` to run the Align grill and complete this mission._\n' "$ID"
-    } >"$BODY_TMP"
+    lcars_issue_body_compose "$MISSION_DIR" park >"$BODY_TMP"
     local url
     url="$("$GH_BIN" issue create \
             --title "$PTITLE" \
             --body-file "$BODY_TMP" \
             --label "lcars:align,lcars:mission" 2>/dev/null)"
-    rm -f "$BODY_TMP"
     local num="${url##*/}"
     case "$num" in
       ''|*[!0-9]*) GH_NOTE="  ⚠ gh issue create failed — mission parked locally; re-run after fixing gh." ;;
-      *) ISSUE="$num" ;;
+      # Remember the body that actually reached GitHub. S188 fix round 2: this
+      # lane was the ONE lane that never did, so a parked mission had no
+      # carry-forward source at all — and a later refresh whose estimate.json or
+      # adr.md had gone missing was left composing blind on the one lane most
+      # likely to have a half-built mission dir. Same call, same place, as the
+      # --complete and grill-first lanes.
+      *) ISSUE="$num"; lcars_issue_body_record "$MISSION_DIR" "$BODY_TMP" ;;
     esac
+    rm -f "$BODY_TMP"
   else
     GH_NOTE="  ⚠ gh CLI not found — mission parked locally without a GitHub issue."
   fi
   write_park_state "${ISSUE:-null}"
+
+  # S189: a parked mission is still the captain's — claim it now, so a laptop
+  # that adopts it later sees an owner rather than an orphan.
+  _claim_note "${ISSUE:-}"
 
   local issue_line="(none — parked locally only)"
   [ -n "$ISSUE" ] && issue_line="#$ISSUE"
@@ -647,16 +734,19 @@ do_complete() {
   fi
 
   # --- compose the issue body: prd → adr → Estimate (exactly grill-first) -----
-  local BODY_FILE="$MISSION_DIR/prd.md" BODY_TMP=""
-  if [ -f "$MISSION_DIR/adr.md" ] || [ -n "$EST_ISSUE" ]; then
-    BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
-    {
-      cat "$MISSION_DIR/prd.md"
-      if [ -f "$MISSION_DIR/adr.md" ]; then printf '\n\n---\n\n'; cat "$MISSION_DIR/adr.md"; fi
-      if [ -n "$EST_ISSUE" ]; then printf '\n\n---\n\n'; printf '%s\n' "$EST_ISSUE"; fi
-    } >"$BODY_TMP"
-    BODY_FILE="$BODY_TMP"
-  fi
+  # LANE 2/3. ONE composer (skills/lcars-run/issue-body.sh), byte-identical to
+  # the inline body this lane built before S188 plus the appended envelope.
+  #
+  # The envelope's `type` and `engine` are OVERRIDDEN here on purpose: this lane
+  # composes BEFORE it clears `prdPending`, so state.json is still in its PARKED
+  # shape — no `type` at all, and a `workerBin` that the re-resolution above may
+  # have just superseded (--engine / the daemon-threaded $LCARS_WORKER_BIN beat
+  # the parked value). Reading state.json here would ship a stale envelope on the
+  # one lane whose state.json is deliberately not final yet.
+  local BODY_TMP; BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
+  lcars_issue_body_compose "$MISSION_DIR" align "$EST_ISSUE" \
+    "type=$TYPE" "engine=$WB" >"$BODY_TMP"
+  local BODY_FILE="$BODY_TMP"
 
   # --- update the issue IN PLACE (retitle, re-body, add the type label) -------
   # prdPending is cleared LAST (below), so if this fails the mission stays parked
@@ -664,11 +754,17 @@ do_complete() {
   local GH_NOTE="" GH_FAILED=0
   if command -v "$GH_BIN" >/dev/null 2>&1; then
     if [ -n "$ISSUE" ]; then
-      "$GH_BIN" issue edit "$ISSUE" \
+      if "$GH_BIN" issue edit "$ISSUE" \
         --title "$TITLE" \
         --body-file "$BODY_FILE" \
-        --add-label "lcars:$TYPE" >/dev/null 2>&1 \
-        || { GH_FAILED=1; GH_NOTE="  ⚠ gh issue edit failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh."; }
+        --add-label "lcars:$TYPE" >/dev/null 2>&1; then
+        # Remember the body that actually reached GitHub: it is the baseline the
+        # S188 regression guard measures the next recompose against, so a later
+        # transfer point cannot silently delete a section off this issue.
+        lcars_issue_body_record "$MISSION_DIR" "$BODY_FILE"
+      else
+        GH_FAILED=1; GH_NOTE="  ⚠ gh issue edit failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh."
+      fi
     else
       # No issue was opened at park time (gh was down) — create it now, grill-first
       # style (all three labels).
@@ -678,7 +774,7 @@ do_complete() {
       num="${url##*/}"
       case "$num" in
         ''|*[!0-9]*) GH_FAILED=1; GH_NOTE="  ⚠ gh issue create failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh." ;;
-        *) ISSUE="$num" ;;
+        *) ISSUE="$num"; lcars_issue_body_record "$MISSION_DIR" "$BODY_FILE" ;;
       esac
     fi
   else
@@ -745,6 +841,11 @@ do_complete() {
   if [ -f "$RUN_BIN" ] && [ -f "$MISSION_DIR/estimate.json" ]; then
     EST_CLI="$(bash "$RUN_BIN" render-estimate --mission "$ID" --surface cli 2>/dev/null)"
   fi
+
+  # S189: claim it. Idempotent — a mission parked (and claimed) earlier makes no
+  # forge write here, so completing an already-owned mission costs nothing; a
+  # park-time claim that FAILED gets a free retry at this second transfer point.
+  _claim_note "${ISSUE:-}"
 
   local issue_line="(none — recorded locally only)"
   [ -n "$ISSUE" ] && issue_line="#$ISSUE"
@@ -950,16 +1051,13 @@ case "$TYPE" in
   *) die_prd "PRD Type must be 'feature' or 'bug' (got: '${TYPE:-empty}')." ;;
 esac
 
-# --- mint the mission ID (per-day sequence) -------------------------------
-max=0
-shopt -s nullglob
-for d in "$MISSIONS_DIR"/lcars-"$DATE"-*; do
-  n="$((10#${d##*-}))"
-  [ "$n" -gt "$max" ] && max="$n"
-done
-shopt -u nullglob
-SEQ="$((max + 1))"
-ID="$(printf 'lcars-%s-%03d' "$DATE" "$SEQ")"
+# --- mint the mission ID (per-day sequence + the clone fingerprint) -------
+# S196 — the SAME minter the --park/--complete lane's _mint_id uses (and the
+# same one `lcars log` uses): lcars_mint_mission_id in lcars-common.sh. The id
+# carries a short per-clone tag because it names a SHARED thing — the branch
+# `lcars/<id>` on the remote — while its sequence number is counted from purely
+# local information. See that function for the capstone collision it fixes.
+ID="$(lcars_mint_mission_id "$MISSIONS_DIR" "$DATE" "$(lcars_clone_fingerprint "$CONFIG")")"
 
 MISSION_DIR="$MISSIONS_DIR/$ID"
 mkdir -p "$MISSION_DIR"
@@ -1156,31 +1254,28 @@ if command -v "$GH_BIN" >/dev/null 2>&1; then
   # append its "## Estimate" section last, after another `\n\n---\n\n` rule. The
   # on-disk prd.md and adr.md stay separate artifacts — only the issue BODY
   # combines them. Order is always prd → adr → Estimate.
-  BODY_FILE="$MISSION_DIR/prd.md"
-  BODY_TMP=""
-  if [ -f "$MISSION_DIR/adr.md" ] || [ -n "$EST_ISSUE" ]; then
-    BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
-    {
-      cat "$MISSION_DIR/prd.md"
-      if [ -f "$MISSION_DIR/adr.md" ]; then
-        printf '\n\n---\n\n'
-        cat "$MISSION_DIR/adr.md"
-      fi
-      if [ -n "$EST_ISSUE" ]; then
-        printf '\n\n---\n\n'
-        printf '%s\n' "$EST_ISSUE"
-      fi
-    } >"$BODY_TMP"
-    BODY_FILE="$BODY_TMP"
-  fi
-  [ -n "$BODY_TMP" ] && trap 'rm -f "$BODY_TMP"' EXIT
+  # LANE 4 (grill-first). ONE composer (skills/lcars-run/issue-body.sh) — the
+  # body above is what it emits, byte for byte, plus the appended envelope.
+  # No overrides: write_state ran above, so state.json already carries this
+  # mission's final type / branch / base / workerBin / attachments.
+  BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
+  lcars_issue_body_compose "$MISSION_DIR" align "$EST_ISSUE" >"$BODY_TMP"
+  BODY_FILE="$BODY_TMP"
+  trap 'rm -f "$BODY_TMP"' EXIT
   url="$("$GH_BIN" issue create \
           --title "$TITLE" \
           --body-file "$BODY_FILE" \
           --label "lcars:align,lcars:$TYPE,lcars:mission" 2>/dev/null)"
-  if [ -n "$BODY_TMP" ]; then rm -f "$BODY_TMP"; trap - EXIT; fi
   # gh prints the new issue's URL; the trailing path segment is its number.
   num="${url##*/}"
+  case "$num" in
+    ''|*[!0-9]*) : ;;
+    # Remember the body that actually reached GitHub — the S188 regression
+    # guard's baseline (see skills/lcars-run/issue-body.sh). Recorded BEFORE the
+    # temp file is removed, and only when gh really opened the issue.
+    *) lcars_issue_body_record "$MISSION_DIR" "$BODY_TMP" ;;
+  esac
+  if [ -n "$BODY_TMP" ]; then rm -f "$BODY_TMP"; trap - EXIT; fi
   case "$num" in
     ''|*[!0-9]*) GH_NOTE="  ⚠ gh issue create failed — mission filed locally; re-run after fixing gh." ;;
     *) ISSUE="$num" ;;
@@ -1194,6 +1289,9 @@ fi
 # locate_mission could resolve the mission). Now that gh has (maybe) created the
 # issue, rewrite it with the real number — or leave null when gh was missing/failed.
 write_state "${ISSUE:-null}"
+
+# S189: the grill-first lane's claim — the captain who filed it owns it.
+_claim_note "${ISSUE:-}"
 
 # --- render the estimate's compact summary for the CLI readout (S61) -------
 # Same render-estimate driver, the cli surface this time: a compact, two-space-

@@ -873,6 +873,158 @@ check "fold2. prints no fold line when there is nothing to fold" \
   "! qgrep -qi 'logged bug' <'$repoND/out.txt'"
 
 # ==========================================================================
+# --- S196 fix round: APPROVE MUST NOT DESTROY THE ENGINE'S PROVENANCE -------
+# ==========================================================================
+# Measured THREE times in one day's live runs (tests/drives/s196-capstone/):
+#   • adopt asked which engine to use here, the captain answered, the card read
+#     `copilot · chosen at adopt` (engineSource: adopt-chosen);
+#   • `lcars approve` merged it, and the card read `copilot · $LCARS_WORKER_BIN`
+#     (engineSource: env);
+#   • and with no adopt at all, a mission pinned `workerBin: copilot` with
+#     $LCARS_WORKER_BIN unset in every shell ALSO ended up `env`, while approve
+#     printed `worker: copilot (bin: env)`.
+#
+# WHY: approve deliberately pins the mission's engine for its reconcile leg
+# (`export LCARS_WORKER_BIN="$engine"`, so a copilot mission heals on copilot
+# rather than host-detecting claude). That pin is correct and stays. run.sh's
+# recorder then saw an env var win the precedence race and overwrote the more
+# specific truth. The ENGINE was always right; only the ATTRIBUTION was wrong —
+# and the attribution is the entire point of the feature.
+#
+# THE CURE approve carries here is a STATEMENT, not a hint: alongside the pin it
+# exports $LCARS_WORKER_BIN_INTERNAL=1, saying "this is LCARS re-asserting this
+# mission's own engine, not an operator act". The producer records; the recorder
+# does not infer from a value comparison. (The resolver half is pinned in
+# tests/worker-resolve.test.sh 3s-3x.)
+#
+# THESE RUN THE **REAL** run.sh — not the reconcile stub the rest of this suite
+# uses — because the defect lives in the handshake BETWEEN the two scripts and a
+# stub cannot have it. It is free: the fixture's base is never ahead of the
+# mission branch, so reconcile_gate returns at its not-ahead check before any
+# worker exists. Both engines are shimmed on $PATH anyway, argv-recording, and
+# the counts are asserted ZERO — so a future change that does reach for a worker
+# from here is caught as a count, not as a bill.
+REAL_RUN="$REPO_ROOT/skills/lcars-run/run.sh"
+
+# Both engines as argv-recording shims. Nothing here may spend money.
+PROV_BIN="$TMPROOT/prov-bin"; mkdir -p "$PROV_BIN"
+for _e in claude copilot; do
+  cat >"$PROV_BIN/$_e" <<EOF
+#!/usr/bin/env bash
+echo "$_e \$*" >>"$TMPROOT/prov-$_e.log"
+exit 0
+EOF
+  chmod +x "$PROV_BIN/$_e"
+done
+: >"$TMPROOT/prov-claude.log"; : >"$TMPROOT/prov-copilot.log"
+prov_count() { [ -f "$TMPROOT/prov-$1.log" ] && wc -l <"$TMPROOT/prov-$1.log" | tr -d ' ' || echo 0; }
+
+# Seed the engine fields the way every LCARS state writer does — one field per
+# line, inserted after line 1, `base` left LAST (the only shape the house
+# field-writer breaks on).
+seed_engine() { # state-file  workerBin  [engineSource]
+  local s="$1" wb="$2" src="${3:-}"
+  { head -1 "$s"
+    [ -n "$wb" ] && printf '  "workerBin": "%s",\n' "$wb"
+    if [ -n "$src" ]; then
+      printf '  "engineResolved": "%s",\n' "$wb"
+      printf '  "engineSource": "%s",\n' "$src"
+    fi
+    tail -n +2 "$s"
+  } >"$s.tmp" && mv "$s.tmp" "$s"
+}
+jok_()   { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" >/dev/null 2>&1; }
+jget_()  { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));v=d.get(sys.argv[2]);sys.stdout.write("" if v is None else str(v))' "$1" "$2" 2>/dev/null; }
+jlast_() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.stdout.write(list(d.keys())[-1] if d else "")' "$1" 2>/dev/null; }
+
+# Run the REAL approve with the REAL run.sh as its reconcile, both engines
+# shimmed, and the host markers scrubbed so this session's own CLAUDECODE=1 can
+# never be the reason a test passes.
+approve_real() { # repo  [extra env assignments...]
+  local repo="$1"; shift
+  ( cd "$repo" && env -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+      -u LCARS_WORKER_BIN -u LCARS_WORKER_BIN_INTERNAL -u LCARS_WORKER_MODEL \
+      PATH="$PROV_BIN:$PATH" \
+      LCARS_GH_BIN="$repo/gh" LCARS_RUN_SCRIPT="$REAL_RUN" \
+      "$@" bash "$SCRIPT" --mission "$MID" >out.txt 2>&1 )
+}
+
+# --- prov1: THE HEADLINE — the captain's answer at the adopt prompt ---------
+repoP1="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoP1/gh"
+export GH_LOG="$repoP1/gh.log"; : >"$GH_LOG"
+sP1="$(state_of "$repoP1")"
+seed_engine "$sP1" copilot adopt-chosen
+rcP1=0; approve_real "$repoP1" || rcP1=$?
+check "prov1. approve still ships the mission (the cure changes nothing else)" \
+  "[ '$rcP1' -eq 0 ] && [ \"\$(jget_ '$sP1' stage)\" = 'done' ]"
+check "prov1. THE HEADLINE: \`adopt-chosen\` SURVIVES approve" \
+  "[ \"\$(jget_ '$sP1' engineSource)\" = 'adopt-chosen' ]"
+check "prov1. it is NOT rewritten to env by approve's own pin" \
+  "[ \"\$(jget_ '$sP1' engineSource)\" != 'env' ]"
+check "prov1. the engine the card names is unchanged" \
+  "[ \"\$(jget_ '$sP1' engineResolved)\" = 'copilot' ]"
+check "prov1. the mission's own pin is untouched" \
+  "[ \"\$(jget_ '$sP1' workerBin)\" = 'copilot' ]"
+check "prov1. state.json is VALID JSON after approve" "jok_ '$sP1'"
+check "prov1. and \`base\` is still the LAST field" "[ \"\$(jlast_ '$sP1')\" = 'base' ]"
+
+# --- prov2: the --engine conversion path ------------------------------------
+repoP2="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoP2/gh"
+export GH_LOG="$repoP2/gh.log"; : >"$GH_LOG"
+sP2="$(state_of "$repoP2")"
+seed_engine "$sP2" claude adopt-converted
+rcP2=0; approve_real "$repoP2" || rcP2=$?
+check "prov2. \`adopt-converted\` survives approve too" \
+  "[ \"\$(jget_ '$sP2' engineSource)\" = 'adopt-converted' ]"
+check "prov2. the mission still merges" \
+  "[ '$rcP2' -eq 0 ] && [ \"\$(jget_ '$sP2' stage)\" = 'done' ]"
+check "prov2. state.json PARSES, \`base\` last" \
+  "jok_ '$sP2' && [ \"\$(jlast_ '$sP2')\" = 'base' ]"
+
+# --- prov3: a plain mission pin, NO adopt anywhere --------------------------
+# The third sighting. Nothing external pinned anything; approve's own pin was
+# the only $LCARS_WORKER_BIN in the world, and it claimed the credit.
+repoP3="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoP3/gh"
+export GH_LOG="$repoP3/gh.log"; : >"$GH_LOG"
+sP3="$(state_of "$repoP3")"
+seed_engine "$sP3" copilot            # workerBin only — no adopt record
+rcP3=0; approve_real "$repoP3" || rcP3=$?
+check "prov3. a bare mission pin records \`mission\`, never \`env\`" \
+  "[ \"\$(jget_ '$sP3' engineSource)\" = 'mission' ]"
+check "prov3. the resolved engine is the pinned one" \
+  "[ \"\$(jget_ '$sP3' engineResolved)\" = 'copilot' ]"
+# approve's OWN printed line is part of the defect: it said `bin: env` while the
+# mission was pinned. What it prints and what it persists must be one answer.
+check "prov3. approve's printed line says the pin resolved it" \
+  "qgrep -q 'bin: mission' <'$repoP3/out.txt'"
+check "prov3. approve never prints \`bin: env\` for its own internal pin" \
+  "! qgrep -q 'bin: env' <'$repoP3/out.txt'"
+check "prov3. state.json PARSES, \`base\` last" \
+  "jok_ '$sP3' && [ \"\$(jlast_ '$sP3')\" = 'base' ]"
+
+# --- prov4: a GENUINE external $LCARS_WORKER_BIN still records `env` --------
+# The cure must not make the env source unrecordable. This mission records NO
+# engine of its own, so approve pins nothing and the captain's own shell variable
+# is the real and only reason this run used copilot.
+repoP4="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoP4/gh"
+export GH_LOG="$repoP4/gh.log"; : >"$GH_LOG"
+sP4="$(state_of "$repoP4")"
+rcP4=0; approve_real "$repoP4" LCARS_WORKER_BIN=copilot || rcP4=$?
+check "prov4. a real operator env var is still recorded as \`env\`" \
+  "[ \"\$(jget_ '$sP4' engineSource)\" = 'env' ]"
+check "prov4. with the engine it actually named" \
+  "[ \"\$(jget_ '$sP4' engineResolved)\" = 'copilot' ]"
+check "prov4. and approve says so out loud" "qgrep -q 'bin: env' <'$repoP4/out.txt'"
+check "prov4. state.json PARSES, \`base\` last" \
+  "jok_ '$sP4' && [ \"\$(jlast_ '$sP4')\" = 'base' ]"
+
+# --- prov5: THE COUNT — none of that spent a penny --------------------------
+check "prov5. THE COUNT: the claude shim was invoked ZERO times" \
+  "[ \"\$(prov_count claude)\" -eq 0 ]"
+check "prov5. THE COUNT: the copilot shim was invoked ZERO times" \
+  "[ \"\$(prov_count copilot)\" -eq 0 ]"
+
+# ==========================================================================
 echo
 printf 'lcars approve: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

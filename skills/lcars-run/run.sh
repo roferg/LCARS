@@ -88,6 +88,24 @@ host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 # Sourcing only DEFINES functions — they are called later, after every helper
 # they lean on is defined. $LCARS_COMMENT_MIRROR overrides the path for tests.
 COMMENT_MIRROR="${LCARS_COMMENT_MIRROR:-$SKILL_DIR/comment-mirror.sh}"
+# The S188 issue-body composer + `lcars:handoff` envelope, shared with
+# `lcars file`. Loaded LAZILY (see load_issue_body_lib): only the TWO transfer
+# points need it, and run.sh is re-entered as a subprocess for every Stage and
+# every ticket. $LCARS_ISSUE_BODY_LIB overrides the path for tests.
+ISSUE_BODY_LIB="${LCARS_ISSUE_BODY_LIB:-$SKILL_DIR/issue-body.sh}"
+# load_issue_body_lib → 0 once lcars_issue_body_refresh is callable. Best-effort:
+# a missing lib leaves the body un-refreshed (exactly pre-S188 behaviour) rather
+# than failing a Stage.
+load_issue_body_lib() {
+  command -v lcars_issue_body_refresh >/dev/null 2>&1 && return 0
+  [ -f "$ISSUE_BODY_LIB" ] || return 1
+  # The composer renders the "## Estimate" section through run.sh itself; point
+  # it at THIS script so a stubbed/relocated run.sh stays the one renderer.
+  export LCARS_ISSUE_BODY_RUN_BIN="${LCARS_ISSUE_BODY_RUN_BIN:-$SELF}"
+  # shellcheck source=issue-body.sh
+  . "$ISSUE_BODY_LIB" || return 1
+  command -v lcars_issue_body_refresh >/dev/null 2>&1
+}
 # The SHARED renderer (ADR-004 "ONE rendering") — factored out of status.sh so
 # the kanban card, `lcars status --watch`, AND the issue-comment mirror render
 # the progress line / ticket data from the SAME primitives (compute_progress,
@@ -97,6 +115,15 @@ COMMENT_MIRROR="${LCARS_COMMENT_MIRROR:-$SKILL_DIR/comment-mirror.sh}"
 RENDER_LIB="${LCARS_RENDER_LIB:-$SKILL_DIR/../lcars-status/render.sh}"
 [ -f "$RENDER_LIB" ] && . "$RENDER_LIB"
 [ -f "$COMMENT_MIRROR" ] && . "$COMMENT_MIRROR"
+# The S189 solo-ownership library — identity (lcars_whoami), the standing
+# assignee (mission_owner), the light lock (lcars_owner_lock_reason) and the
+# best-effort claim (lcars_claim_mission). SOURCED beside the mirror; sourcing
+# only DEFINES functions and makes no forge call, so it stays free across the
+# many per-stage / per-ticket re-entries of this script. A MISSING library leaves
+# ownership unenforced (exactly pre-S189 behaviour) rather than failing a drive.
+# $LCARS_OWNERSHIP_LIB overrides the path for tests.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SKILL_DIR/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
 # The cold-worker CLI adapter — the ONE place that knows a CLI's spawn flags and
 # tool NAMES. This script (the stage driver) stays CLI-agnostic: it speaks a role
 # keyword + a cli id (basename of WORKER_BIN) and delegates the actual one-shot to
@@ -13644,10 +13671,30 @@ cmd_reconcile() {
 # Resolution is CLI-AGNOSTIC and so lives HERE, not in the adapter: the adapter
 # owns cli-SPECIFIC flag emission, run.sh owns host detection + precedence.
 #
-#   bin precedence  : $LCARS_WORKER_BIN  >  config.json workerBin
+#   bin precedence  : $LCARS_WORKER_BIN
 #                     >  the MISSION's recorded workerBin (state.json)
+#                     >  config.json workerBin
 #                     >  host-CLI auto-detect (env marker) >  claude (default)
 #   model precedence: $LCARS_WORKER_MODEL > config.json workerModel > unset
+#
+# S196 A3 — WHY THE MISSION NOW SITS ABOVE config.json, AND WHY THAT IS A
+# REVERSAL. Until this session config.json outranked the mission's own recorded
+# engine, and `skills/lcars-approve/approve.sh` did the OPPOSITE (it reads the
+# mission's workerBin and exports $LCARS_WORKER_BIN to pin it). Two paths, two
+# answers. Measured in S191's capstone with PATH shims faking both CLIs: a
+# mission filed `--engine copilot`, whose envelope carried copilot and whose
+# adopt correctly wrote `workerBin: copilot`, ran on a clone whose config said
+# claude — 3 invocations of the BILLED shim, 0 of the free one, and no warning
+# anywhere. The spend is the only symptom, which is exactly why an AMBIENT repo
+# default must not outrank a per-mission record.
+#
+# The captain's ruling (2026-09-09) is that the engine is an EXPLICIT CHOICE MADE
+# AT THE HANDOFF, because a laptop may only have one CLI installed: `lcars adopt`
+# probes what this machine actually has, uses the mission's engine when it is
+# here, ASKS and CONVERTS when it is not, and RECORDS the answer on the mission.
+# A recorded choice that a repo default could silently overrule would make the
+# asking theatre — so it sits above config. $LCARS_WORKER_BIN, a per-invocation
+# and unmistakably deliberate operator act, still outranks everything.
 #
 # Host detection keys off the per-process env var a spawned shell inherits from
 # the launching CLI: CLAUDECODE=1 ⇒ claude. The real GitHub Copilot CLI (v1.0.60)
@@ -13675,33 +13722,90 @@ detect_host_cli() {
 
 # Resolve WORKER_BIN + WORKER_BIN_SRC by the precedence above.
 resolve_worker_bin() {
+  # --- IS THIS $LCARS_WORKER_BIN AN OPERATOR ACT, OR LCARS'S OWN RE-PIN? -----
+  # `lcars approve` exports $LCARS_WORKER_BIN before handing its reconcile leg to
+  # this script, so a copilot mission heals on copilot instead of host-detecting
+  # claude out of the ambient terminal. That pin is CORRECT and it stays. But
+  # until this fix the recorder below could not tell it apart from the captain
+  # typing `LCARS_WORKER_BIN=… lcars run`, so it recorded the source as `env` and
+  # OVERWROTE the more specific truth: `adopt-chosen` (the captain answered the
+  # engine prompt at the handoff), `adopt-converted`, or the mission's own pin.
+  # Measured three times in one day of live runs — the card went from
+  # `copilot · chosen at adopt` to `copilot · $LCARS_WORKER_BIN` at the merge, and
+  # a mission carrying nothing but a `workerBin` pin ended up reading `env` with
+  # $LCARS_WORKER_BIN unset in every shell on the machine.
+  #
+  # PROVENANCE ANSWERS "WHY DOES THIS MISSION RUN ON THIS ENGINE". LCARS
+  # re-asserting the mission's OWN recorded engine across a process boundary is
+  # not a new reason — it is the same reason, said again — so it must not
+  # overwrite the reason already on file.
+  #
+  # THE PRODUCER RECORDS IT (this round's standing rule; S147/S156/S188 each paid
+  # fix rounds for inferring instead). The alternative shape was for the recorder
+  # to INFER internality — "this env value equals the mission's workerBin, so it
+  # was probably me" — and that is wrong in both directions: it would also
+  # silence a captain who deliberately re-asserts the mission's own engine from
+  # his shell, and it would say nothing about an internal pin whose value
+  # happened to differ. So approve STATES it: $LCARS_WORKER_BIN_INTERNAL=1,
+  # exported alongside the pin, means "LCARS set this, re-asserting THIS
+  # mission's engine". An internal pin is not an operator act and does not claim
+  # the `env` source — the ladder simply carries on, and the mission's own pin
+  # wins exactly as it would have with no pin in the environment at all.
+  #
+  # A genuine, EXTERNAL $LCARS_WORKER_BIN carries no such marker and still
+  # records `env` — over an adopt record included, because when the captain moves
+  # a mission by hand the adopt record is no longer what happened.
+  local internal_pin=""
   if [ -n "${LCARS_WORKER_BIN:-}" ]; then
-    WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="env"; return 0
+    if [ "${LCARS_WORKER_BIN_INTERNAL:-}" = "1" ]; then
+      internal_pin="$LCARS_WORKER_BIN"
+    else
+      WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="env"; return 0
+    fi
   fi
-  local cfgbin=""
-  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
-  if [ -n "$cfgbin" ]; then
-    WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
-  fi
-  # THE MISSION'S OWN PIN — ahead of host detection. A mission records the engine
-  # it was filed with in state.json (`lcars file --engine copilot` → workerBin).
-  # Until now the resolver never read it, so the engine was re-DECIDED from the
-  # ambient terminal on every invocation: a mission filed and driven under Copilot
-  # that was later RESUMED from a Claude Code session (CLAUDECODE=1) silently
-  # re-homed onto billed claude mid-flight, with the pin sitting right there in
-  # state.json being ignored. Observed live: 7 workers and $11.39 billed to the
-  # wrong engine after a resume from the wrong terminal, with no warning — the
-  # spend is the ONLY symptom, which is why detection must never outrank an
-  # explicit record. An explicitly recorded engine beats a guess; env and config
-  # (both deliberate operator acts) still outrank the mission, so an operator can
-  # still move a mission on purpose. Several callers set MISSION_DIR but not STATE,
-  # so derive the path defensively and stay silent when there is no mission.
+  # THE MISSION'S OWN PIN — ahead of config.json AND of host detection (S196 A3;
+  # before this session it sat BELOW config, and before that it was not read at
+  # all). A mission records the engine it was filed with in state.json (`lcars
+  # file --engine copilot` → workerBin), and `lcars adopt` records the engine the
+  # captain chose at the handoff. Both are EXPLICIT, per-mission acts. config.json
+  # is the repo's AMBIENT default, and a clone's default silently re-homing
+  # another laptop's mission is the money bug S191 measured with shims (3 billed
+  # invocations, 0 free). $LCARS_WORKER_BIN is still above everything, because it
+  # is per-invocation and unmistakably deliberate — that is how an operator moves
+  # a mission on purpose now.
+  #
+  # The original reason for reading it at all stands unchanged: without it the
+  # engine was re-DECIDED from the ambient terminal on every invocation, so a
+  # mission filed and driven under Copilot and later RESUMED from a Claude Code
+  # session (CLAUDECODE=1) re-homed onto billed claude mid-flight with the pin
+  # sitting right there being ignored. Observed live: 7 workers and $11.39 on the
+  # wrong engine, no warning — the spend is the ONLY symptom.
+  #
+  # Several callers set MISSION_DIR but not STATE, so derive the path defensively
+  # and stay silent when there is no mission.
   local statef="${STATE:-}"
   [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
   local misbin=""
   [ -n "$statef" ] && [ -f "$statef" ] && misbin="$(json_str "$statef" workerBin)"
   if [ -n "$misbin" ]; then
     WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
+  fi
+  # AN INTERNAL PIN WITH NOTHING BEHIND IT. approve only ever pins what it read
+  # off the mission, so reaching here means the mission's record has gone (or a
+  # future caller pins without one). THE ENGINE MUST NOT MOVE — an internal pin
+  # is still a pin, and letting it fall through to config.json or host detection
+  # would re-home the very mission the pin exists to hold. Only the ATTRIBUTION
+  # degrades, honestly, to `env`: something in the environment decided this and
+  # the mission itself no longer says why.
+  if [ -n "$internal_pin" ]; then
+    WORKER_BIN="$internal_pin"; WORKER_BIN_SRC="env"; return 0
+  fi
+  # The repo's AMBIENT default — still consulted, just no longer able to
+  # overrule a mission that records an engine of its own (S196 A3).
+  local cfgbin=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
+  if [ -n "$cfgbin" ]; then
+    WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
   fi
   local detected; detected="$(detect_host_cli)"
   if [ -n "$detected" ]; then
@@ -14024,6 +14128,70 @@ resolve_worker() {
   printf '  worker: %s (bin: %s) model=%s (model: %s)\n' \
     "$(basename "$WORKER_BIN")" "$WORKER_BIN_SRC" \
     "${WORKER_MODEL:--}" "$WORKER_MODEL_SRC" >&2
+  record_engine_provenance
+}
+
+# --- S196 A3(g): THE PROVENANCE IS RECORDED, NOT RE-DERIVED ------------------
+# That stderr line above was, until this session, the ONLY answer to "which
+# engine ran, and why". It printed ZERO times during a real 6-stage auto-advance
+# run (the auto-advance driver re-execs per stage and the guard above makes it a
+# once-per-process line, so only `--step` ever showed it), it was persisted
+# nowhere, and it never reached the viewscreen. So after a mission had run there
+# was no way to answer the question at all.
+#
+# It is recorded HERE, by the resolver, AT THE MOMENT IT RESOLVES — never
+# re-derived later by re-reading config.json and guessing which source would have
+# won. That guessing is precisely the mistake S147, S156 and S188 each paid fix
+# rounds for; this round's standing pre-flight rule is that the PRODUCER records.
+#
+#   engineResolved  the basename of the cli that actually ran
+#   engineSource    which rule won: env | mission | config | detected | default
+#
+# WHAT IT DOES NOT DO: it never touches `workerBin`. Recording the resolved bin
+# as the mission's pin would make a one-off `LCARS_WORKER_BIN=… lcars run`
+# permanent — a silent engine switch, the very defect this session is closing.
+# These two keys are display + audit only; nothing reads them back to resolve.
+#
+# IT ALSO NEVER SEES LCARS'S OWN RE-PIN AS AN OPERATOR ACT. `lcars approve` pins
+# the mission's engine for its reconcile leg, and this recorder used to write
+# that down as `env` — erasing `adopt-chosen` at the merge, three times in one
+# day of live runs. The distinction is made ONE level up, by resolve_worker_bin
+# reading the $LCARS_WORKER_BIN_INTERNAL marker approve exports with the pin, so
+# by the time this function runs $WORKER_BIN_SRC is already the honest answer and
+# there is nothing here to second-guess.
+#
+# AND IT DOES NOT CLOBBER ADOPT'S RICHER ANSWER. `lcars adopt` writes the same
+# pair when the captain chooses the engine at the handoff, with a source of
+# `adopt-kept` / `adopt-converted` / `adopt-chosen`. When the mission's pin is
+# what wins here, that IS the same fact said with more provenance, so it is left
+# alone. Any other outcome overwrites, because then the adopt record is no longer
+# what happened.
+#
+# New keys go at the TOP of the object: state_set_str re-inserts after line 1
+# with a hard-coded trailing comma and breaks only when rewriting the LAST field.
+# `base` is last, and S189/S190/S191 all deliberately preserved that.
+record_engine_provenance() {
+  local statef="${STATE:-}"
+  [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
+  [ -n "$statef" ] && [ -f "$statef" ] || return 0
+  local bin; bin="$(basename "$WORKER_BIN")"
+  local had_bin had_src
+  had_bin="$(json_str "$statef" engineResolved)"
+  had_src="$(json_str "$statef" engineSource)"
+  # Already says exactly this — write nothing (a repeat run of a settled mission
+  # must not churn state.json).
+  [ "$had_bin" = "$bin" ] && [ "$had_src" = "$WORKER_BIN_SRC" ] && return 0
+  # Adopt's record of the same engine, said better. Keep it.
+  if [ "$WORKER_BIN_SRC" = "mission" ] && [ "$had_bin" = "$bin" ]; then
+    case "$had_src" in adopt-*) return 0 ;; esac
+  fi
+  # state_set_str writes to $STATE; several callers resolve a mission by
+  # MISSION_DIR alone and never set it (`set -u` makes an unguarded read fatal).
+  local KEEP_STATE="${STATE:-}"
+  STATE="$statef"
+  state_set_str engineSource   "$WORKER_BIN_SRC"
+  state_set_str engineResolved "$bin"
+  STATE="$KEEP_STATE"
 }
 
 # The `resolve-worker` subcommand: a thin, mission-free test surface over the
@@ -14624,6 +14792,25 @@ cmd_research() {
   require_stage align
   require_worker
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD for '$MISSION_ID'."
+
+  # === S188 TRANSFER POINT 1 of 2: the ALIGN RE-ENTRY FINISHER ==============
+  # A `feedback.md` at stage `align` means this Mission was bounced back from
+  # Verify, and reaching Research is the ONE unambiguous signal that the
+  # interactive re-grill has COMPLETED: the driver refuses to auto-advance an
+  # un-regrilled feedback Mission (drive_halt_align), so `research` only runs
+  # here after the host CLI rewrote prd.md against the captain's notes.
+  #
+  # That rewritten PRD is the whole point. Without this push, a second laptop
+  # adopting the Mission from GitHub would build the OLD spec — the exact defect
+  # this session exists to close. Refresh happens HERE and at Verify entry, and
+  # NOWHERE else: mid-flight bodies go stale by design (see the composer header).
+  # Best-effort: a missing lib or a down gh never fails Research; the marker is
+  # written only on a successful push, so the Verify entry retries.
+  if [ -f "$MISSION_DIR/feedback.md" ]; then
+    if load_issue_body_lib; then
+      lcars_issue_body_refresh "$MISSION_DIR" >/dev/null 2>&1 || true
+    fi
+  fi
 
   # IN-FLIGHT STAGE LABEL (CLAUDE.md build item #11). Every other Stage gets its
   # board label from the transition INTO it, because its label matches the stage
@@ -17658,6 +17845,19 @@ drive_mark_done() {
 #                      ONCE, when the PR is first opened). Driver STOPS.
 drive_verify() { # accumulated-summary
   local summary="$1"
+
+  # === S188 TRANSFER POINT 2 of 2: VERIFY ENTRY =============================
+  # The other end of the pipeline. Whoever arrives at this issue now — a
+  # reviewer, or a second laptop adopting the Mission — must read the spec that
+  # was actually BUILT, plus a `lcars:handoff` envelope that matches state.json.
+  # Deliberately before the PR block so the body is current no matter which of
+  # drive_verify's paths this pass takes (bug-child fold, reconcile, open, poll).
+  # Re-entrant by design: the refresh skips an identical re-push, so a reconcile
+  # pass or a second drive pass edits nothing and posts nothing.
+  if load_issue_body_lib; then
+    lcars_issue_body_refresh "$MISSION_DIR" >/dev/null 2>&1 || true
+  fi
+
   local pr; pr="$(json_str "$STATE" prUrl)"
 
   # BUG-026: a Mission-Log bug child (parentMission set) FOLDS its fix onto the
@@ -18110,6 +18310,32 @@ cmd_drive() {
   # A parked mission (prdPending) is NOT drivable — the driver never runs a
   # PRD-less mission. Refuse before taking the lock, naming the align command.
   refuse_if_parked
+
+  # --- S189 THE LIGHT LOCK, then the claim --------------------------------
+  # Both checked HERE: before the driver lock, before the base re-check, before
+  # anything spawns or fetches. A mission assigned to someone ELSE is read-only
+  # to this laptop's write verbs — `lcars run` advances a mission, so it is a
+  # write verb — and refusing at the very top means we never take a lock or move
+  # a branch on work that is not ours. Reassignment is a human act on GitHub;
+  # LCARS never takes a mission off anyone.
+  #
+  # A mission NOBODY holds becomes ours on this first advance, best-effort: the
+  # claim's failure is a warning, never a halt (same posture as filing). Both
+  # are inert when the ownership library is absent.
+  # DECLARED then ASSIGNED, never `local x="$(…)"`: `local` supplies the
+  # statement's own exit status, so the command substitution's rc — which is the
+  # whole signal here — would be thrown away.
+  local drive_own_issue drive_own_lock drive_own_warn
+  drive_own_issue="$(json_raw "$STATE" githubIssue)"
+  if command -v lcars_owner_lock_reason >/dev/null 2>&1; then
+    if drive_own_lock="$(lcars_owner_lock_reason "$drive_own_issue")"; then
+      die "$drive_own_lock"
+    fi
+    if mission_unassigned "$drive_own_issue"; then
+      drive_own_warn="$(lcars_claim_mission "$drive_own_issue")" || true
+      [ -n "${drive_own_warn:-}" ] && printf '%s\n' "$drive_own_warn"
+    fi
+  fi
 
   # Single-instance guard (BUG-A). If a live driver already holds this mission's
   # lock, this invocation is a clean no-op — never a second concurrent driver.

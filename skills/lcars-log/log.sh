@@ -70,6 +70,41 @@ if [ -f "$LCARS_COMMON_LIB" ]; then
   . "$LCARS_COMMON_LIB"
 fi
 
+# S196 — the mission-id minter and the clone fingerprint live in lcars-common.sh
+# (sourced best-effort above). Define the DEGRADED forms when the lib is absent:
+# the PRE-S196 id shape — no fingerprint — but with S196's tolerant sequence
+# scan, so a clone that already holds fingerprinted missions cannot die on
+# `$((10#a3f4))` just because the library went missing.
+if ! command -v lcars_mint_mission_id >/dev/null 2>&1; then
+  lcars_clone_fingerprint() { printf ''; }
+  lcars_mint_mission_id() {
+    local mdir="$1" date="$2" fp="${3:-}" max=0 d n
+    shopt -s nullglob
+    for d in "$mdir"/lcars-"$date"-*; do
+      n="${d##*/}"; n="${n#lcars-$date-}"; n="${n%%-*}"
+      case "$n" in ''|*[!0-9]*) continue ;; esac
+      n=$((10#$n)); [ "$n" -gt "$max" ] && max="$n"
+    done
+    shopt -u nullglob
+    if [ -n "$fp" ]; then printf 'lcars-%s-%03d-%s' "$date" "$((max + 1))" "$fp"
+    else                  printf 'lcars-%s-%03d'    "$date" "$((max + 1))"
+    fi
+  }
+fi
+
+# --- shared helpers: the ONE issue-body composer (S188) --------------------
+# `lcars log` is the FIFTH filing lane. It files a Mission (lcars:mission) like
+# any other, so its issue body must carry the same machine-readable
+# `lcars:handoff` envelope a second laptop reads — without it, `lcars adopt`
+# finds nothing on a logged-bug issue. It lives beside the host adapter in the
+# sibling lcars-run skill dir, the same reach HOST_ADAPTER already makes.
+# $LCARS_ISSUE_BODY_LIB overrides the path for tests.
+LCARS_ISSUE_BODY_LIB="${LCARS_ISSUE_BODY_LIB:-$SKILL_DIR/../lcars-run/issue-body.sh}"
+if [ -f "$LCARS_ISSUE_BODY_LIB" ]; then
+  # shellcheck source=../lcars-run/issue-body.sh
+  . "$LCARS_ISSUE_BODY_LIB"
+fi
+
 die() { printf 'lcars log: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same decoding as resolve.sh / status.sh) -----
@@ -258,6 +293,41 @@ if [ "$matches" -gt 1 ]; then
   exit 1
 fi
 
+
+# --- S189: solo ownership, the light lock ----------------------------------
+# A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
+# write verbs. `lcars log` FILES bug missions against a parent and nests them under its issue, so it consults the lock; the READ verbs (status,
+# buddy, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
+# on GitHub — the solo protocol's premise is that the captain moves ownership
+# where both laptops can see it, and LCARS never takes a mission off anyone.
+#
+# The library lives in the sibling lcars-run skill dir (the same reach this
+# script already makes for the host adapter). A MISSING library leaves the verb
+# unenforced — exactly pre-S189 behaviour — rather than refusing blindly, and
+# LCARS_OWNER_ENFORCE=0 bypasses the lock for harness debugging.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SKILL_DIR/../lcars-run/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
+
+# owner_lock_or_die <issue> — refuse with ONE plain line, or return.
+# lcars_owner_lock_reason returns 0 (and echoes the line) ONLY when someone else
+# demonstrably holds the mission: unassigned, an unreachable forge and an
+# unresolvable identity all fall through to "proceed", because a lock that fires
+# on uncertainty locks the captain out of his own work.
+owner_lock_or_die() { # <issue>
+  local r
+  command -v lcars_owner_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_owner_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
+# S189: the light lock, on the PARENT. A logged bug rides its parent's branch
+# and nests under its parent's issue, so filing one against a mission somebody
+# else holds is a write to their work — refused with the same plain line every
+# other write verb uses. Checked as soon as the parent resolves, before any bug
+# is extracted or any issue is opened.
+owner_lock_or_die "$PARENT_ISSUE"
+
 # --- resolve the model (config.json wins, else env, else default) ----------
 MODEL=""
 if [ -f "$CONFIG" ]; then
@@ -303,16 +373,13 @@ fi
 HAS_COMMITS=0
 "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1 && HAS_COMMITS=1
 
-# --- mint the next mission ID (per-day sequence, scanning what exists) ------
+# --- mint the next mission ID (per-day sequence + the clone fingerprint) ----
+# S196 — the SAME minter both `lcars file` lanes use (lcars_mint_mission_id in
+# lcars-common.sh), so a bug child sequences over legacy AND fingerprinted
+# siblings identically to a normally-filed mission. The scan can no longer read
+# the text after the last hyphen: on a fingerprinted id that is the FINGERPRINT.
 next_id() {
-  local max=0 d n
-  shopt -s nullglob
-  for d in "$MISSIONS_DIR"/lcars-"$DATE"-*; do
-    n="$((10#${d##*-}))"
-    [ "$n" -gt "$max" ] && max="$n"
-  done
-  shopt -u nullglob
-  printf 'lcars-%s-%03d' "$DATE" "$((max + 1))"
+  lcars_mint_mission_id "$MISSIONS_DIR" "$DATE" "$(lcars_clone_fingerprint "$CONFIG")"
 }
 
 # --- file one bug; echoes "id<TAB>issue<TAB>title" for the summary ----------
@@ -449,20 +516,46 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   local issue="" body
   if command -v "$GH_BIN" >/dev/null 2>&1; then
     body="$(mktemp)"
-    {
-      printf '> 🐞 Logged via `lcars log` against %s' "$PARENT_ID"
-      case "$PARENT_ISSUE" in ''|null) : ;; *) printf ' (#%s)' "$PARENT_ISSUE" ;; esac
-      printf '.\n\n'
-      cat "$mdir/prd.md"
-    } >"$body"
+    # LANE 5 (logged bug). ONE composer (skills/lcars-run/issue-body.sh) — the
+    # VISIBLE body is byte-for-byte what this lane built inline before S188 (the
+    # `> 🐞 Logged via …` lead-in, then prd.md), plus the appended envelope.
+    #
+    # Every value is passed as an OVERRIDE because state.json does not exist yet:
+    # it is written below, and it needs the issue number this call is about to
+    # mint. The provenance line comes out of origin/parentMission/parentIssue —
+    # the same three values the inline printf used — so a later Verify-entry
+    # refresh recomposes the identical lead-in instead of deleting it.
+    if command -v lcars_issue_body_compose >/dev/null 2>&1; then
+      lcars_issue_body_compose "$mdir" align "" \
+        "id=$id" "branch=$branch" "base=$BASE" "type=bug" \
+        "engine=${LCARS_WORKER_BIN:-}" "origin=log" "parentMission=$PARENT_ID" \
+        "parentIssue=$PARENT_ISSUE" "attachments=${#attach_rels[@]}" >"$body"
+    else
+      # The composer is missing (a stale install): degrade to exactly the
+      # pre-S188 inline body rather than filing nothing.
+      {
+        printf '> 🐞 Logged via `lcars log` against %s' "$PARENT_ID"
+        case "$PARENT_ISSUE" in ''|null) : ;; *) printf ' (#%s)' "$PARENT_ISSUE" ;; esac
+        printf '.\n\n'
+        cat "$mdir/prd.md"
+      } >"$body"
+    fi
     local url num
     url="$("$GH_BIN" issue create \
             --title "$title" \
             --body-file "$body" \
             --label "lcars:align,lcars:bug,lcars:linked,lcars:mission" 2>/dev/null)"
-    rm -f "$body"
     num="${url##*/}"
-    case "$num" in ''|*[!0-9]*) issue="" ;; *) issue="$num" ;; esac
+    case "$num" in
+      ''|*[!0-9]*) issue="" ;;
+      # Remember the body that actually reached GitHub — the S188 regression
+      # guard's baseline, so a later transfer point cannot delete a section of
+      # this issue (see skills/lcars-run/issue-body.sh).
+      *) issue="$num"
+         { command -v lcars_issue_body_record >/dev/null 2>&1 \
+           && lcars_issue_body_record "$mdir" "$body"; } || true ;;
+    esac
+    rm -f "$body"
   fi
 
   # NATIVELY nest the bug issue under the parent's issue — the SAME host-adapter

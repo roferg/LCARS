@@ -4,6 +4,61 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.4 — one board, every laptop
+
+**A Mission now belongs to a person, not to a laptop.** Until this release
+LCARS assumed one operator at one keyboard: the board showed your Missions,
+your machine held the only copy, and a Mission that started on the desktop
+stayed there. That is over. Every card says whose Mission it is, you can see
+Missions running right now on machines you do not have, you cannot drive
+someone else's by accident, and when one needs to change hands you take it over
+deliberately and on the record.
+
+**LCARS is now set up to support multiple people. The full build-out of that is
+what comes next** — so far it has only been run against one GitHub account
+("someone else's Mission" has been exercised with planted owner data, not yet a
+second human), and two people acting in the same moment is deliberately still
+ahead. The foundation is laid and working; the rest is the next round.
+
+What changed, concretely:
+
+- **Whose Mission is whose.** Identity is the (host, login) pair, never a
+  machine and never a numeric id — so the same login on github.com and on a
+  GitHub Enterprise host is correctly two different people. Your Missions wear
+  a solid owner pill, someone else's a hollow dashed one, so ownership survives
+  a greyscale screenshot and colour-blindness rather than living in hue alone.
+- **A light lock, enforced on both surfaces.** You cannot start, pause, answer,
+  log against or approve someone else's Mission. Not a greyed-out button: the
+  daemon refuses ten verbs outright and the command line refuses them too, with
+  one byte-identical sentence everywhere. Unassigned is never locked, and an
+  identity LCARS cannot resolve never locks you out of your own work.
+- **You see work you do not hold.** A Mission with no local copy still appears
+  on your board, read from the forge, showing its real stage — so a second
+  laptop watches a pipeline advance without touching it.
+- **`lcars adopt`, and an Adopt button that asks.** Take a Mission over at
+  Align or Verify. The viewscreen now asks which engine should drive it here —
+  because a laptop may only have one CLI installed — defaults to the one the
+  Mission was filed with, and records that a human chose, so the card says
+  `chosen at adopt` rather than guessing later.
+- **Two laptops can no longer collide.** Mission names were counted per clone,
+  so two machines filing on the same day minted the same name — and adopting
+  the second silently destroyed the first, merge record and all. Names now
+  carry a per-clone fingerprint; existing Missions keep theirs untouched.
+- **Your billed CLI stops winning by accident.** A clone's local config used to
+  outrank the engine a Mission was filed with. The Mission's own engine now
+  wins, and the card shows which engine is running and where that choice came
+  from.
+- **Filter the board** by mine, someone else's, unassigned or remote, on the
+  `o` key — costing no extra call to GitHub.
+- **Small things that were lying.** A pending avatar left a hole in its pill;
+  it now beams in and collapses honestly if it never arrives. A filter count
+  disagreed with the cards on screen. A merged Mission kept offering to review
+  its own pull request on the laptop that filed it.
+
+Sessions 188–191 and 196, plus four defects that only real two-laptop runs
+could find. Proven on cold clones against real GitHub with live pipelines and
+real merges; every visual claim measured off pixels in a real browser.
+
 ## 2026.9.3 — the launch link tells the truth
 
 **When you click RUN, you get the app you asked for.** Until this release the

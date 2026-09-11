@@ -85,7 +85,7 @@ bash ~/.claude/skills/lcars-log/log.sh \
   --prd "$prd1" --prd "$prd2"
 ```
 
-For each bug the script mints a mission id (`lcars-YYYYMMDD-NNN`, sequenced per
+For each bug the script mints a mission id (`lcars-YYYYMMDD-NNN-<fp>`, sequenced per
 day), creates `.git/lcars/missions/<id>/` with `prd.md`, `validated-plan.md`,
 and `state.json` (type `bug`, stage `plan`, `parentMission` set), creates the
 Mission's branch `lcars/<id>` off the current branch, opens a GitHub issue
@@ -99,6 +99,15 @@ its output to the captain verbatim:
   lcars-20260530-003  #46  Leaderboard flicker on first load
 Run `lcars run lcars-20260530-002` (or any of the above) to begin.
 ```
+
+**The issue body is a handoff document.** A logged bug is a Mission, so its issue
+body is composed by the SAME composer every other filing lane uses
+(`skills/lcars-run/issue-body.sh`): the `> 🐞 Logged via …` provenance lead-in,
+then `prd.md`, then one invisible `<!-- lcars:handoff v1 {…} -->` envelope. This
+is the only lane whose envelope ever carries a real `parentIssue`, and the only
+one that emits a lead-in — both are rebuilt from `state.json` when the body is
+refreshed at Verify entry, so the provenance survives a bounce-and-re-grill
+instead of being replaced by the bare PRD.
 
 Each bug Mission now runs in parallel with the parent and with each other, on
 its own branch — `lcars run <id>` picks it up at Plan.

@@ -29,7 +29,16 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 RELABEL_NOTE=""
 
-die() { printf 'lcars pause: %s\n' "$1" >&2; exit 1; }
+# One script, TWO verbs — so the name in front of the colon is a VARIABLE, set
+# from the subcommand at dispatch. It used to be hard-coded `lcars pause`, and
+# `lcars resume <id>` on someone else's mission answered `lcars pause: assigned
+# to …`: the sentence was right and the verb named was one the captain had not
+# typed. The SENTENCE itself is a shared contract (ownership.sh owns those bytes,
+# and tests/ownership.test.sh D17 compares eight verbs' refusals against it) and
+# is NOT touched here — only the prefix. `pause` stays the default so a failure
+# raised before the subcommand is known still has a name.
+DIE_VERB="pause"
+die() { printf 'lcars %s: %s\n' "$DIE_VERB" "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as run.sh / respond.sh) ----------
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
@@ -100,9 +109,49 @@ gh_label() { # "--add-label X" | "--remove-label X"  (verb + label as one string
   fi
 }
 
+# --- S189/S196: solo ownership, the light lock -----------------------------
+# A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
+# write verbs. `lcars pause` and `lcars resume` both REWRITE state.json and move
+# the `lcars:paused` label on someone's issue, so they consult the lock; the READ
+# verbs (status, buddy, the viewscreen's reads) never do. The remedy is
+# deliberately a HUMAN act on GitHub — the solo protocol's premise is that the
+# captain moves ownership where both laptops can see it, and LCARS never takes a
+# mission off anyone.
+#
+# WHY THIS ARRIVED A ROUND LATE (S196 A6). S189 wired the lock into run /
+# respond / approve / feedback / log but not here, while the viewscreen's write
+# endpoints 403 pause AND resume — so the board refused the captain's Pause on
+# someone else's mission and `lcars pause <id>` in the next terminal obeyed
+# silently. The captain's standing ruling is that the board is a UI version of
+# the command line: where the two disagree the CLI comes into line, and the
+# board's 403 is never relaxed to match.
+#
+# The library lives in the sibling lcars-run skill dir (the same reach this
+# script already makes for run.sh). A MISSING library leaves the verb unenforced
+# — exactly pre-S189 behaviour — rather than refusing blindly, and
+# LCARS_OWNER_ENFORCE=0 bypasses the lock for harness debugging.
+OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SKILL_DIR/../lcars-run/ownership.sh}"
+[ -f "$OWNERSHIP_LIB" ] && . "$OWNERSHIP_LIB"
+
+# owner_lock_or_die <issue> — refuse with ONE plain line, or return.
+# lcars_owner_lock_reason returns 0 (and echoes the line) ONLY when someone else
+# demonstrably holds the mission: unassigned, an unreachable forge and an
+# unresolvable identity all fall through to "proceed", because a lock that fires
+# on uncertainty locks the captain out of his own work.
+owner_lock_or_die() { # <issue>
+  local r
+  command -v lcars_owner_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_owner_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # === subcommand: pause ======================================================
 cmd_pause() {
   locate_mission "$MISSION_ID"
+  # S196: the light lock, before a single field is touched. Pausing someone
+  # else's mission is a write to their work.
+  owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
   local stage; stage="$(json_str "$STATE" stage)"; stage="${stage:-unknown}"
 
   # Idempotent: state_set_raw replaces (deletes-then-adds) so a double-pause
@@ -127,6 +176,9 @@ cmd_pause() {
 # === subcommand: resume =====================================================
 cmd_resume() {
   locate_mission "$MISSION_ID"
+  # S196: resuming somebody else's parked mission starts a driver on their work
+  # — the board 403s it, so the CLI refuses it, with the same sentence.
+  owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
   local stage; stage="$(json_str "$STATE" stage)"; stage="${stage:-unknown}"
 
   # Clear the flag (idempotent — state_del is a no-op when absent) and drop the
@@ -149,6 +201,9 @@ cmd_resume() {
 
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
+# Name the verb the captain typed BEFORE anything can die (the usage errors
+# below are raised by this script for that subcommand, not for its sibling).
+case "$SUB" in resume) DIE_VERB="resume" ;; esac
 MISSION_ID="${1:-}"; [ $# -gt 0 ] && shift
 [ $# -eq 0 ] || die "unexpected argument: $1"
 

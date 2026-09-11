@@ -41,6 +41,9 @@ missionCard:
     }
 """
 
+import re
+
+
 # Pipeline order — the column order. Mirrors LCARS_STAGE_LABELS in
 # skills/lcars-init/lcars-common.sh. "done" is the terminal column: done
 # missions DO render there (PRD §5.1, one column per Stage label), but are kept
@@ -436,6 +439,55 @@ def model_mix_from_estimate(estimate, engine=None, model_aliases=None):
             rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
                          "tier": _tier(val), "why": why})
     return rows or None
+
+
+# --- S190: identity on the board --------------------------------------------
+# A login is alphanumerics and hyphens, ≤39 chars, never leading-hyphen — the
+# SAME rule ownership.sh's `_lcars_own_is_login` applies, deliberately kept in
+# step with it. It is applied AGAIN here because this value is spliced into a URL
+# the browser fetches, and a guard that exists only upstream is not a guard here
+# (the reasoning `gh_host` already carries for the forge host).
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
+
+
+def avatar_url(login):
+    """The owner's avatar URL, CONSTRUCTED from the login. None when the value
+    is not a login at all.
+
+    BUILT, NEVER SCRAPED. There is a tempting alternative — read `avatar_url` out
+    of a gh payload, or lift an image reference out of the issue body — and both
+    are wrong for the same reason: an issue body is text a human can edit, so an
+    avatar taken from one is an image LCARS was told to show by whoever typed in
+    the issue last. The login comes from the forge's assignee list and nowhere
+    else, and this URL is a pure function of it. `?size=64` asks GitHub for a
+    small file for a ~22px cap (2× for retina), so a full board is never pulling
+    full-resolution portraits.
+
+    KNOWN LIMIT, taken deliberately: the host is pinned to github.com rather than
+    the repo's forge host. On the captain's enterprise host the same login is the
+    same person, so his own avatar is right; a GHE-only account would 404 here
+    and degrade to the handle alone, which is exactly the designed fallback. One
+    function to revisit when a second forge has to be right for real.
+    """
+    if not isinstance(login, str) or not _LOGIN_RE.match(login):
+        return None
+    return "https://github.com/%s.png?size=64" % login
+
+
+def owner_block(login):
+    """The additive per-card `owner` value, or None when there is no owner.
+
+    ONE builder for BOTH adapters (ADR-003): the local adapter reads the login
+    off the published-owner file, the github adapter reads it off the issue's
+    assignees, and the front end can tell no difference. None ⇒ the caller adds
+    NO `owner` key at all — absent, never null. That is the rule every additive
+    key in this shape has followed since S109, and it is what keeps an unowned
+    board byte-identical to before this round.
+    """
+    url = avatar_url(login)
+    if url is None:
+        return None
+    return {"login": login, "avatarUrl": url}
 
 
 def empty_meta():

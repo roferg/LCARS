@@ -103,7 +103,8 @@ scaffold_lcars() {
   # verdict asks of a command. The gate itself is proven in
   # tests/foundation-gate.test.sh, against real repos in all four states.
   cat >"$repo/.git/lcars/config.json" <<EOF
-{ "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e",
+  "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
   "testCommand": "true",
   "lcarsVersion": "$VERSION_STAMP", "created": "2026-05-30T00:00:00Z" }
 EOF
@@ -189,7 +190,13 @@ reason_has() { case "$(sf "$1" baseFreshness.reason)" in *"$2"*) return 0 ;; esa
 # unreachable one), so it is asserted independently everywhere.
 loud_is() { [ "$(sf "$1" baseFreshness.loud)" = "$2" ]; }
 
-MID="lcars-20260530-001"
+# S196 — `cloneId` PINS THE FINGERPRINT so $MID below stays a literal. A minted
+# mission id is now `lcars-YYYYMMDD-NNN-<fp>`, where <fp> is the first 4 hex of
+# the clone's own `cloneId` (a UUID4 minted on first use, so two clones of one
+# repo can never mint the same id — see lcars_clone_id in
+# skills/lcars-init/lcars-common.sh). Pinning it makes <fp> the constant `c10e`;
+# the widening itself is proven in tests/mission-id.test.sh.
+MID="lcars-20260530-001-c10e"
 mdir() { printf '%s/.git/lcars/missions/%s' "$1" "$MID"; }
 
 # sf <state.json> <dotted.key> — read a (possibly nested) field. Empty on miss.
@@ -602,7 +609,8 @@ mkdir -p "$WTGD12/lcars/missions"
 # config is not produced by it, so it needs the testCommand of its own or
 # `lcars file` refuses the filing below.
 cat >"$WTGD12/lcars/config.json" <<EOF
-{ "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
+{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e",
+  "model": "claude-sonnet", "projectName": "fixture", "contextFile": null,
   "testCommand": "true",
   "lcarsVersion": "$VERSION_STAMP", "created": "2026-05-30T00:00:00Z" }
 EOF

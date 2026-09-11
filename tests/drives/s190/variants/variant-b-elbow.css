@@ -1,0 +1,100 @@
+/* ════════════════════════════════════════════════════════════════════════
+   S190 VARIANT B — "THE ELBOW BRACKET"     (alternate; NOT shipped)
+
+   Injected AFTER web/static/board.css by the screenshot rig. Pure override:
+   no product markup changes, no --lcars-* token redefined (ADR-007).
+
+   THE IDEA. The default seats the portrait in a rounded cap — a pill. This one
+   answers the same "LCARS has no photographs" problem the other way round: it
+   stops pretending the avatar is a pill at all and instead brackets it with the
+   console's OWN structural motif — the elbow. The board is already wrapped in
+   one big solid-colour L (`.lcars-frame`: a top band sweeping through a fat
+   rounded elbow into the left rail). Variant B repeats that L in miniature
+   around the portrait: a rounded-corner square, capped top-left by the same
+   convex round the frame carries, with a solid bracket running along its top and
+   down its left — a tiny frame-corner holding a face.
+
+   The handle then sits BENEATH the square in small uppercase, the way a console
+   labels the readout it frames rather than sitting inside it. That makes the
+   whole thing read as an identified module on the board, not as a name badge.
+
+   Trade-off worth seeing in the photograph: it is TALLER than the default and
+   the block of colour is smaller, so a column of cards has more air in it and
+   less colour. Whether that reads as elegant or as weak is exactly the judgement
+   only a real screenshot can settle.
+   ════════════════════════════════════════════════════════════════════════ */
+
+.owner{
+  /* A square module, not a pill: the avatar box drives the size. */
+  --owner-h:34px;
+  --owner-col:var(--lcars-amber);
+  --owner-bracket:5px;               /* the L's stroke weight */
+  --owner-round:11px;                /* the convex corner, echoing --frame-outer-r */
+  display:inline-flex;
+  flex-direction:column;             /* handle BENEATH, not beside */
+  align-items:flex-start;
+  gap:4px;
+  margin:2px 0 9px}
+
+/* THE BRACKET. Border-top + border-left in the frame colour, with the outer
+   (top-left) corner carrying the big convex round and the inner corners square
+   — the same rule the real `.frame-elbow` follows, which is what makes this
+   read as the console's motif rather than as a generic outline. */
+.owner .owner-av{
+  display:block;
+  box-sizing:content-box;
+  width:var(--owner-h);height:var(--owner-h);
+  padding:0;
+  background:transparent;
+  border:0;
+  border-top:var(--owner-bracket) solid var(--owner-col);
+  border-left:var(--owner-bracket) solid var(--owner-col);
+  border-radius:var(--owner-round) 0 0 0}
+
+/* THE PORTRAIT. A rounded-corner SQUARE, not a circle: a circle is the web's
+   avatar idiom and reads as a foreign object here, while a squared-off tile with
+   a small radius is what LCARS puts information in. Same palette-seating filter
+   as the default, so the two variants differ in FORM, not in tone. */
+.owner .owner-av img{
+  display:block;box-sizing:border-box;
+  width:100%;height:100%;
+  border-radius:4px;
+  object-fit:cover;
+  border:1px solid var(--lcars-black,#030608);
+  background:var(--lcars-card-alt);
+  filter:saturate(.72) contrast(1.06) brightness(.98)}
+
+/* THE LABEL. Small, uppercase, wide-tracked, in the bracket's own colour — a
+   console label, so it is TEXT on the card ground rather than a second colour
+   block. Indented to sit under the portrait, clear of the bracket stroke. */
+.owner .owner-handle{
+  display:block;
+  height:auto;
+  padding:0;
+  margin-left:calc(var(--owner-bracket) + 1px);
+  background:none;
+  border-radius:0;
+  color:var(--owner-col);
+  font-family:var(--font-display);
+  text-transform:uppercase;
+  letter-spacing:.16em;
+  font-size:9px;font-weight:600;line-height:1.2;
+  max-width:120px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* DEAD SRC → THE LABEL ALONE. board.js removes the whole `.owner-av` node when
+   the image fails, so all that is left is the label — and a bare label with no
+   bracket would read as a stray word. Give it back a short leading rule so it
+   still reads as a labelled module. */
+.owner.dead{gap:0}
+.owner.dead .owner-handle{
+  margin-left:0;
+  padding-left:8px;
+  border-left:var(--owner-bracket) solid var(--owner-col);
+  line-height:16px}
+
+/* SOMEONE ELSE'S MISSION — the same cool blue the default uses, so the STATE
+   language is identical across all three treatments and only the FORM changes. */
+.card.owned-by-other .owner{--owner-col:var(--lcars-blue,#4499ff)}
+
+@media (prefers-reduced-motion:reduce){.owner .owner-av img{filter:none}}

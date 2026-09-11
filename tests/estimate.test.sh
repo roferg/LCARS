@@ -79,7 +79,7 @@ new_repo() {
   # filed against. `true` resolves via `command -v`, which is all the readiness
   # verdict asks of a command. The gate itself is proven in
   # tests/foundation-gate.test.sh, against real repos in all four states.
-  printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-01-01T00:00:00Z" }\n' \
+  printf '{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "created": "2026-01-01T00:00:00Z" }\n' \
     >"$repo/.git/lcars/config.json"
   # A repo-root CONTEXT.md so resolve_context_source never tries to spawn a pack
   # worker (the stub only knows how to emit estimate.json, not a context pack).
@@ -122,7 +122,11 @@ file_with_estimate() { # repo estimate-body
       bash "$FILE" --prd "$prd" >"$repo/file.out" 2>&1 )
 }
 
-MDIR() { printf '%s/.git/lcars/missions/lcars-20260613-001' "$1"; }
+# S196 — the fingerprint the pinned cloneId above produces. A minted mission
+# id is now `lcars-YYYYMMDD-NNN-<fp>` (per-clone, so two laptops filing on one
+# day cannot mint one name for one shared branch); pinning cloneId in the
+# fixture makes <fp> the constant `c10e`. See tests/mission-id.test.sh.
+MDIR() { printf '%s/.git/lcars/missions/lcars-20260613-001-c10e' "$1"; }
 
 echo "estimate — end-of-Align estimator (session 59)"
 
@@ -214,7 +218,7 @@ rsm5() { # repo key  [extra env...]
   ( cd "$repo" && env -u CLAUDECODE \
       -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
       -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL -u LCARS_WORKER_CLI \
-      "$@" bash "$RUN" resolve-stage-model --mission lcars-20260613-001 "$key" 2>/dev/null )
+      "$@" bash "$RUN" resolve-stage-model --mission lcars-20260613-001-c10e "$key" 2>/dev/null )
 }
 sm_model() { sed -En 's/.*model=(.*)$/\1/p' | sed 's/^-$//'; }
 model_of() { awk '/^--model$/{getline; print; exit}'; }
@@ -241,7 +245,7 @@ spawn5() { # repo role
       -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
       "$@" STUB_ARGV="$argv" \
       LCARS_WORKER_BIN="$stub" LCARS_WORKER_CLI=claude \
-      bash "$RUN" spawn-stage --mission lcars-20260613-001 "$role" >/dev/null 2>&1 )
+      bash "$RUN" spawn-stage --mission lcars-20260613-001-c10e "$role" >/dev/null 2>&1 )
   cat "$argv" 2>/dev/null
 }
 check "5e. spawn research-questions argv carries --model opus" \
@@ -376,7 +380,7 @@ r9="$(new_repo)"
 # Pin legacy billing on this repo so the deterministic multiplier math applies.
 # S183: keeps new_repo's testCommand — this rewrite of the config would
 # otherwise strip the test foundation and `lcars file` would refuse.
-printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
+printf '{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
   >"$r9/.git/lcars/config.json"
 e9="$(estimate_typed_mission "$r9" bug "$EST_COSTED" LCARS_WORKER_CLI=copilot COPILOT_RUN_APP=1)"
 check "9a. copilot bug estimate.json is VALID JSON" \
@@ -392,7 +396,7 @@ check "9d. copilot bug premiumRequests LESS than six-stage (162/324)" \
 r9b="$(new_repo)"
 # S183: keeps new_repo's testCommand — this rewrite of the config would
 # otherwise strip the test foundation and `lcars file` would refuse.
-printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
+printf '{ "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e", "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "testCommand": "true", "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
   >"$r9b/.git/lcars/config.json"
 e9b="$(estimate_typed_mission "$r9b" feature "$EST_COSTED" LCARS_WORKER_CLI=copilot COPILOT_RUN_APP=1)"
 check "9e. copilot feature premiumRequests == 162/324 (full six-stage)" \

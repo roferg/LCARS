@@ -105,6 +105,55 @@ _CONTENT_TYPES = {
 _MAX_BODY_BYTES = 12 * 1024 * 1024
 _ALLOWED_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
+# S190 — the per-mission WRITE verbs the light lock refuses on a mission held by
+# someone else (see _owner_gate). An ALLOW-LIST, never a deny-list: a verb added
+# to this daemon later is UNLOCKED until somebody puts it here on purpose, which
+# is the failure direction a solo protocol can live with. The reverse — a
+# deny-list that silently locks a new verb — would refuse writes nobody meant to
+# refuse, and a false lock is the worse of the two errors.
+#
+# `launch` and `launch/stop` are deliberately ABSENT: the launch affordance is
+# S187's territory and this session changes nothing about it.
+_OWNER_LOCKED_VERBS = frozenset((
+    "start", "pause", "resume", "respond", "verify", "reapprove",
+    "log", "log/file", "log/run", "log/discard",
+))
+
+# S191 fix round 1 (D6) — THE REMOTE REFUSAL, IN THE CARD'S OWN WORDS.
+#
+# A remote card's disabled controls carry this sentence as their tooltip
+# (board.js `REMOTE_LINE`). A direct POST past the DOM used to answer
+# `no such mission: <issue>` — because a remote mission genuinely has no local
+# mission directory — so the card and the daemon told the captain TWO DIFFERENT
+# STORIES about one thing: the card said "someone else is driving it", the server
+# said "it does not exist". S190 spent a session making its tooltip, its 403 body
+# and the CLI refusal ONE byte-identical sentence; this is the same rule applied
+# to the state S191 introduced. Pinned against board.js by test_remote_overlay.
+_REMOTE_LOCK_LINE = ("driven from another machine — adopt at Align/Verify to "
+                     "act here")
+
+
+# S197 — THE MISSION THAT IS ALREADY OVER, from somewhere else.
+#
+# S196's last round taught the FILING laptop that its mission had merged on the
+# other machine, and WITHDREW the `✓ Review PR ▸` it had gone on offering for a
+# pull request that closed minutes earlier. It left the daemon accepting a POST
+# to that very verb — ledgered in its own commit message, because S190's lesson
+# is that A DISABLED BUTTON IS NOT A LOCK: anyone with the port can POST straight
+# past the DOM, and the tester will.
+#
+# TWO SENTENCES, BECAUSE THEY ARE TWO FACTS, and they are the SAME BYTES the card
+# puts in the withdrawn control's tooltip (board.js `SHIPPED_LINE` / `CLOSED_LINE`).
+# `shipped` is `lcars:done` — the label `lcars approve` applies at the merge and
+# nowhere else. `closed` is an issue closed on the forge WITHOUT it: over, but
+# NOT merged, and saying "shipped" there would invent a merge nobody performed.
+# Pinned against board.js by test, read out of the shipping file, so an edit to
+# either side breaks here instead of in front of the captain.
+_SHIPPED_LOCK_LINE = ("already shipped from another machine — its pull request "
+                      "is merged")
+_CLOSED_LOCK_LINE = ("already closed on the forge from another machine — "
+                     "nothing here can act on it")
+
 
 # --- S187: a CIVIL refusal when the port is already taken --------------------
 # Plain `lcars viewscreen` binds the fixed 8765 (only `--open` picks a free
@@ -628,7 +677,147 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                     return self._dispatch_verb(mid, verb, body)
             raise _ActionError(404, "no such write endpoint: %s" % path)
 
+        def _owner_gate(self, mid, verb):
+            """S190 — THE LIGHT LOCK, at the door. Raises 403, or returns.
+
+            The board disables these controls on a mission held by someone else,
+            but a disabled button is not a lock: anyone with the port can POST
+            straight past the DOM, and the tester will. This is where the refusal
+            actually happens — before a skill is dispatched, before a driver lock
+            is taken, before a branch moves.
+
+            The set is EXACTLY the set of verbs S189 already refuses at the CLI
+            (run / respond / approve / feedback / log). Two are here that S189
+            does not lock — `pause` and `resume` — deliberately: they are `run`'s
+            own lifecycle from this board's point of view, and offering a live
+            Pause on work driving on someone else's laptop would be a button that
+            promises something LCARS cannot do. Nothing else is annexed; in
+            particular `launch` / `launch/stop` stay out of it, because the launch
+            affordance is S187's territory and this session changes none of it.
+
+            The verdict comes from `Actions.owner_lock_reason`, which shells the
+            same ownership.sh the CLI consults — live, on every request, so a
+            reassignment made on GitHub takes effect on the next click. Every
+            uncertain case allows the write (see that method).
+            """
+            if verb not in _OWNER_LOCKED_VERBS:
+                return
+            reason = getattr(actions, "owner_lock_reason", None)
+            if not callable(reason):
+                return          # a writer wired without the ownership seam
+            try:
+                line = reason(mid)
+            except Exception:
+                return          # never let the guard itself refuse a write
+            if line:
+                raise _ActionError(403, line)
+
+        def _remote_gate(self, mid, verb):
+            """S191 fix round 1 (D6) — a write on a mission driven ELSEWHERE.
+
+            409, not 404. The mission is not missing — it is on the forge, it is
+            on this board, and the captain is looking at its card. What is
+            missing is this laptop's standing to write to it, and that is a
+            CONFLICT WITH CURRENT STATE. `no such mission` was not merely the
+            wrong number: it contradicted the very card the click came from.
+
+            The same verbs the owner lock covers, for the same reason it uses an
+            allow-list — and `adopt` is outside it on purpose, because adopting
+            is how a remote mission stops being remote.
+
+            THE VERDICT IS THE ADAPTER'S, not a second implementation of one.
+            `adapter.mission()` already answers "local, remote, or neither" with
+            local winning by construction, off the SAME cached forge listing the
+            board was built from (no extra `gh` call, so this cannot recreate the
+            S152 storm). A mission the adapter has never heard of falls through
+            untouched and still gets the honest 404 it deserves.
+            """
+            if verb not in _OWNER_LOCKED_VERBS:
+                return
+            reader = getattr(adapter, "mission", None)
+            if not callable(reader):
+                return
+            try:
+                card = reader(mid)
+            except Exception:
+                return          # never let the guard itself refuse a write
+            if isinstance(card, dict) and card.get("remote") is True:
+                raise _ActionError(409, _REMOTE_LOCK_LINE)
+
+        def _shipped_gate(self, mid, verb):
+            """S197 — a write on a LOCAL mission the forge says is FINISHED.
+
+            THE LEDGERED HALF OF S196's last round. The card already withdraws
+            `✓ Review PR ▸` on a mission whose issue merged or closed on
+            another laptop; the daemon went on accepting the POST behind it.
+            A disabled button is not a lock — S190's own lesson, and the reason
+            that round paired every withdrawn control with a server-side
+            refusal.
+
+            409, LIKE `_remote_gate` AND FOR THE SAME REASON. Nothing is
+            missing and nothing is forbidden-to-this-user: the mission is over,
+            and that is a CONFLICT WITH CURRENT STATE. (403 would say "not
+            yours", which is the owner lock's sentence and a different fact —
+            this mission IS the captain's; it has simply ended.)
+
+            THE VERDICT IS THE ADAPTER'S, not a second implementation of one,
+            and it costs NOTHING: `adapter.mission()` reads the SAME cached
+            forge listing the board was built from, so this cannot re-create
+            the S152 storm — pinned by an argv-counting test, not by this
+            paragraph.
+
+            AN UNREACHABLE FORGE NEVER LOCKS. `verdicts()` returns {} on any
+            listing status but ok, so a card built during a bad cycle carries
+            no `shippedElsewhere` key at all and the verb proceeds untouched.
+            That posture is S190's D1 and it is preserved deliberately: a forge
+            that did not answer must never be readable as a forge that said
+            "over". The guard itself never refuses a write either — any
+            exception reaching here allows it.
+            """
+            if verb not in _OWNER_LOCKED_VERBS:
+                return
+            reader = getattr(adapter, "mission", None)
+            if not callable(reader):
+                return
+            try:
+                card = reader(mid)
+            except Exception:
+                return          # never let the guard itself refuse a write
+            if not isinstance(card, dict):
+                return
+            v = card.get("shippedElsewhere")
+            if not isinstance(v, dict):
+                return
+            state = v.get("state")
+            if state == "shipped":
+                raise _ActionError(409, _SHIPPED_LOCK_LINE)
+            if state == "closed":
+                raise _ActionError(409, _CLOSED_LOCK_LINE)
+
         def _dispatch_verb(self, mid, verb, body):
+            # REMOTE FIRST. "this mission is not driven from here" is the more
+            # specific truth, and asking the ownership seam about an issue number
+            # that has no local mission would only ever be able to shrug.
+            self._remote_gate(mid, verb)
+            # S197: …and OVER beats both of the below. "there is nothing left
+            # to drive" is a more useful thing to be told than "this is someone
+            # else's to drive", which is exactly the order board.js applies its
+            # three sweeps in (applyShippedLock after applyOwnerLock, so its
+            # sentence wins). One fact, both surfaces.
+            self._shipped_gate(mid, verb)
+            self._owner_gate(mid, verb)
+            # S191: ADOPT — rebuild a REMOTE mission on this laptop. `mid` here is
+            # the ISSUE NUMBER (a remote card has no local mission id yet), so it
+            # is matched FIRST, before any verb that would try to resolve a local
+            # mission dir. Deliberately NOT in _OWNER_LOCKED_VERBS: adopting is
+            # how the captain takes command here, and adopt.sh does the claiming.
+            if verb == "adopt":
+                # S197: `engine` is the captain's answer at the board's adopt
+                # picker — the question `lcars adopt` asks at a terminal and
+                # this surface could not. ABSENT means he took the default (the
+                # mission's own engine), and an absent key dispatches the exact
+                # argv this daemon has always dispatched.
+                return actions.adopt(mid, engine=body.get("engine"))
             if verb == "start":
                 return actions.start(mid, override=body.get("override"))
             if verb == "pause":

@@ -74,6 +74,1026 @@ function captureForgeIdentity(meta) {
   // render, so a payload that stops carrying it reverts to github.com rather
   // than leaving a stale enterprise host on the page.
   boardGhHost = (meta && typeof meta.ghHost === "string") ? meta.ghHost : null;
+  /* S190: WHO THIS BOARD IS. Captured here for exactly the ordering reason the
+     block above records — cardNode() needs it BEFORE the first card is built, or
+     the very first paint of a fresh page decides "is this mine?" against a null
+     and renders every owned card unlocked until some later re-render happens by.
+     Reassigned on EVERY render, so a payload that stops carrying an identity
+     (auth expired, gh removed) reverts to "we do not know" and stops locking,
+     rather than leaving a stale login deciding whose work this is. */
+  var s = meta && meta.self;
+  selfLogin = (s && typeof s.login === "string" && s.login) ? s.login : null;
+}
+
+/* ════════════════ S190: OWNER, AVATAR, AND THE LIGHT LOCK ════════════════
+
+   The board's half of the solo protocol. The daemon publishes two facts —
+   `card.owner {login, avatarUrl}` and `meta.self {login}` — and this is the only
+   place that turns them into a verdict.
+
+   THE POSTURE IS lcars_owner_lock_reason's, MIRRORED EXACTLY (ownership.sh):
+
+     * an UNASSIGNED mission is NEVER locked — empty is "unowned", not an error;
+     * an UNRESOLVABLE identity NEVER locks anything — if we cannot say who we
+       are, we do not get to tell the captain he is someone else;
+     * only WRITE affordances are affected; every read (the card, the detail, the
+       activity feed, the ticket rows) stays wide open.
+
+   A false lock is strictly worse than the thing the lock prevents: it shuts the
+   captain out of his own work because a network hiccuped. So every uncertain
+   case answers "not locked".
+
+   AND THIS IS NOT THE LOCK. A disabled button is a courtesy — anyone can POST
+   straight past the DOM, and the tester will. The lock is the daemon's
+   server-side re-check (server._dispatch_verb → Actions.owner_lock_reason),
+   which re-asks the forge live and 403s with this same sentence. */
+
+/* The login LCARS is acting as (board.meta.self.login), or null when nothing
+   could say. Captured on every render beside detailRepo/boardGhHost. */
+var selfLogin = null;
+
+/* The owner's login when this mission is DEMONSTRABLY someone else's, else null.
+   The single predicate the whole lock is built on. */
+function ownerLockLogin(m) {
+  var owner = m && m.owner && m.owner.login;
+  if (!owner) return null;      // unassigned / never asked → never locked
+  if (!selfLogin) return null;  // we cannot say who we are → never locked
+  if (owner === selfLogin) return null;
+  return owner;
+}
+
+/* The refusal, in one sentence. It is byte-identical to the line
+   `lcars_owner_lock_reason` prints and the line the daemon's 403 carries — the
+   captain must not be told two different things by the tooltip and the refusal
+   that follows if he clicks past it. Pinned on both sides by tests. */
+function ownerLockLine(login) {
+  return "assigned to " + login +
+    " — reassign it to yourself on GitHub to take command";
+}
+
+/* THE LOCK MARK — the glyph half of "this control is locked".
+
+   S191's capstone (D4) found the light lock ENFORCED perfectly and INVISIBLE. A
+   locked `▶ Start` and a live `▶ Start` were the same button: same shape, same
+   saturated teal, distinguishable only by the owner pill's colour two rows up.
+   The .7 dim the previous round measured so carefully is imperceptible on that
+   fill. So the captain clicks something that looks live and gets a tooltip —
+   and a lock the eye cannot see is a lie the hand discovers.
+
+   TWO THINGS CARRY THE STATE, at the two distances a card is read from. The
+   stylesheet drains the FILL (a locked control goes hollow in the lock's own
+   blue — `.btn.danger`'s existing idiom, no new vocabulary), which is what you
+   see across the room. This carries the near reading: the leading ACTION glyph
+   is REPLACED with `⊘`, because `▶` on a control that will not go is the lie
+   stated a second time, in the one place the eye lands last.
+
+   `⊘` IS NOT A NEW GLYPH. It is the one the Verify lock label has worn since
+   S190, looked at by a tester at 3x and confirmed to sit at the same weight as
+   the board's ▶ ✓ ⊗ ⬡ ▦ family. Nothing outside that family is introduced here —
+   S190's D3 and this session's own `⇩` near-miss were both exactly that mistake. */
+var LOCK_GLYPH = "⊘";
+/* The leading glyphs a control wears to say what it will DO. A locked control
+   must wear none of them. */
+var LOCK_ACTION_GLYPHS = "▶▸▹✓⏸◐◷↻◆⊹";
+
+function markLocked(n) {
+  if (!n) return;
+  // THE STATE CLASS FIRST, and unconditionally — the fill is the half that
+  // reads across the room, so no control may miss it.
+  if ((" " + String(n.className || "") + " ").indexOf(" locked ") < 0) {
+    n.className = String(n.className || "") + " locked";
+  }
+  // THE LABEL, for TEXT-ONLY CONTROLS ONLY. A button carrying element children
+  // is left exactly as it is rather than flattened: `textContent =` would
+  // silently delete those children, which is the S163 shape (a node quietly
+  // removed) in new clothes. Every control cardControls builds is a plain
+  // `btn(label, …)`, so this covers the row; anything richer keeps its label
+  // and still gets the fill, the disable and the tooltip.
+  if (n.children && n.children.length) return;
+  var t = String(n.textContent == null ? "" : n.textContent).replace(/^\s+/, "");
+  if (!t) return;
+  if (t.charAt(0) === LOCK_GLYPH) return;   // already marked (the Verify label)
+  if (LOCK_ACTION_GLYPHS.indexOf(t.charAt(0)) >= 0) {
+    t = t.slice(1).replace(/^\s+/, "");
+  }
+  n.textContent = LOCK_GLYPH + " " + t;
+}
+
+/* Disable every write control under `host` when this mission is someone else's.
+
+   A SUBTREE SWEEP, deliberately, rather than a condition threaded through
+   cardControls' dozen branches. Those branches are the accumulated history of
+   this board — reapprove gates, merge-failed retries, queued cards, filing
+   windows, START ALIGNMENT — and any one of them added later would silently
+   miss a per-branch check. A sweep cannot miss a branch: whatever the card
+   decided to draw, if it is a button in the control row it is disabled and it
+   says why.
+
+   Note what is NOT swept: the ● APP LIVE stop control lives in the PILL row, not
+   here, so a launched app can still be stood down (S187 owns the launch
+   affordance and this session changes nothing about it). */
+function applyOwnerLock(host, m) {
+  var login = ownerLockLogin(m);
+  if (!host || !login) return host;
+  var line = ownerLockLine(login);
+  (function walk(n) {
+    if (!n) return;
+    var tag = String(n.tagName || n.tag || "").toUpperCase();
+    if (tag === "BUTTON") {
+      n.disabled = true;
+      n.title = line;
+      // …and SAY SO on the label itself (D4). The sweep is the right place for
+      // it for the same reason it is the right place for the disable: whatever
+      // branch of cardControls drew this button, it is now marked.
+      markLocked(n);
+    }
+    var kids = n.children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(host);
+  return host;
+}
+
+/* The Verify/Merge affordance for a mission held by someone else, or null.
+
+   WHY THE LOCK ALSO SITS INSIDE verifyAffordance. The sweep above stops at the
+   card. `verifyAffordance` is shared by the board card AND the DETAIL header —
+   that sharing is deliberate (BUG-049: both must gate identically during a
+   reconcile or a merge) — so calling this at the TOP of it covers the
+   Verify/Merge action on BOTH surfaces from one place. Without it, opening
+   someone else's mission would show a live ✓ Merge in the header, and the only
+   thing between a click and a merge would be the daemon's 403.
+
+   It outranks the busy / reapprove / merge-failed kinds on purpose: every one of
+   those describes work IN FLIGHT, and none of it is work THIS laptop may act on.
+
+   It is a FUNCTION rather than eight inline lines because verifyAffordance's
+   opening bytes are pinned by an existing regression guard (test_server's BUG-078
+   window check) — a long insertion there would break a test that has nothing to
+   do with this session. One call, two lines, guard intact. */
+function ownerLockOnVerify(m) {
+  var login = ownerLockLogin(m);
+  if (!login) return null;
+  return {
+    kind: "owned-by-other", label: "⊘ " + login + "'s mission",
+    cls: "warn", disabled: true, title: ownerLockLine(login),
+  };
+}
+
+/* The owner treatment: an LCARS pill — the avatar in a fully-rounded LEFT CAP,
+   the handle in uppercase display type on the colour block beside it.
+
+   THE DESIGN PROBLEM: a GitHub avatar is a PHOTOGRAPH, and LCARS has no
+   photographs — it is flat colour blocks, rounded caps and uppercase type. So
+   the photo is not dropped onto the console; it is FRAMED by it, inset inside a
+   solid cap that reads as part of the chrome, with the handle carrying the LCARS
+   voice beside it. All geometry, no new tokens (ADR-007).
+
+   THE DEAD-SRC DEGRADE is wired here rather than left to alt text: a broken
+   <img> keeps its box and its class (the S164 legend-swatch lesson), so an
+   avatar that fails would otherwise leave a hole in the cap that looks
+   deliberate. On error the image is REMOVED and the block is marked `.dead`, so
+   the stylesheet closes the cap and the handle stands alone — a complete,
+   intentional-looking pill, not a damaged one.
+
+   S196 — AND THE CASE THAT DEGRADE MISSED: A PORTRAIT THAT IS MERELY PENDING.
+   The paragraph above only ever described a portrait that FAILED. One that is
+   still in flight — or that `loading="lazy"` deferred and therefore never even
+   started — painted the exact hole the degrade exists to prevent, and the error
+   handler never fired because nothing errored. The captain hit it for real: a
+   whole capture run of cards wearing a black disc where his face goes.
+
+   THE CURE IS A TRANSPORTER MATERIALIZE, and it is three states with no hole in
+   any of them:
+
+     IN TRANSIT   the disc is a transporter pad — columns of light with a bright
+                  column cycling down through them, LOOPING for as long as the
+                  portrait is loading. The disc is saying something, which is
+                  the whole difference between waiting and broken.
+     ARRIVED      the light dies out and the portrait resolves in from
+                  over-bright and desaturated to its normal seated-in-the-
+                  palette look. The loop STOPS, and `AVATAR_ARRIVED` below makes
+                  sure it does not replay on the next repaint.
+     NEVER ARRIVES after AVATAR_GIVE_UP_MS the cap is removed and the pill takes
+                  the existing `.dead` shape — identical to a hard error,
+                  because a portrait that never comes is not a different kind of
+                  missing. A pad that hums for ever is a spinner that lies.
+
+   The pad is drawn entirely in CSS off `--owner-col`, so it beams amber on the
+   captain's own missions and blue on somebody else's without knowing that fact
+   exists. ADR-007: no new token.
+
+   Returns null when there is no owner: a card with nothing to say about
+   ownership renders exactly as it did before this round. */
+
+/* How long a portrait may stay in transit before the pill gives up on it.
+
+   A NAMED CONSTANT because the number is a judgement, not an implementation
+   detail: it is the point at which "still loading" stops being a true
+   description of what the captain is looking at. Eight seconds is long enough
+   that a slow connection still gets its faces and short enough that a card left
+   open does not hum at him indefinitely. `setTimeout(fn, 8000)` buried in a
+   render path is the shape nobody ever finds again. */
+var AVATAR_GIVE_UP_MS = 8000;
+
+/* Portraits that have already materialised in this page's lifetime, keyed by
+   src.
+
+   THE BOARD REPAINTS ON EVERY SSE TICK, and each repaint builds brand-new
+   nodes. Without this, a face that arrived once would beam in again on every
+   tick — every card on the board strobing in unison, which is worse than the
+   hole it replaced. The arrival is an event in the CAPTAIN'S session, not in
+   the lifetime of a DOM node, so the memory has to outlive the node. Keyed by
+   src rather than by mission: the same person owning three missions is one
+   portrait, and it arrives once. */
+var AVATAR_ARRIVED = {};
+
+/* …and the OTHER side of the same fact, which the memo above was missing.
+
+   S196.1. `AVATAR_ARRIVED` remembers the arrival across repaints; the FAILURE
+   side lived only in `ownerNode`'s closure — the `giveUp` handle and the
+   `closed` flag — and a closure dies with its node. THE SSE TICK REBUILDS THE
+   `.beam` NODE EVERY 3.4–5.6s DURING A MISSION, so every rebuild armed a fresh
+   eight-second window and dropped the previous one before it could expire. The
+   deadline receded for exactly as long as the board stayed busy, which is most
+   of a mission: a blackholed portrait was measured still humming at 14s and
+   16s, six `.beam` generations in twenty seconds, while the same portrait on
+   an IDLE board collapsed at 8s.
+
+   So the failure side gets memos of its own, in the same idiom, and the window
+   is recorded as a DEADLINE rather than a duration — a rebuilt node computes
+   the time REMAINING and never restarts the clock.
+
+     AVATAR_DEADLINE  when this portrait's window runs out (absolute ms).
+     AVATAR_FAILED    it is already known to be missing. STICKY, or a collapsed
+                      pill flickers back into a humming pad on the next tick.
+     AVATAR_TIMER     the ONE live give-up timer for this portrait, so a repaint
+                      replaces it instead of stacking another beside it.
+
+   BOUNDING: none, deliberately. All four are keyed by avatar src, so the set
+   is the DISTINCT PEOPLE with missions on this board — the same bound
+   `AVATAR_ARRIVED` already accepts, a handful of booleans for a fleet. The two
+   transient maps prune themselves the moment a portrait settles either way, so
+   only the two settled-state booleans persist for the life of the page. */
+var AVATAR_DEADLINE = {};
+var AVATAR_FAILED = {};
+var AVATAR_TIMER = {};
+
+function ownerNode(m) {
+  var o = m && m.owner;
+  if (!o || !o.login) return null;
+  var wrap = el("div", "owner");
+  var handle = el("span", "owner-handle", String(o.login).toUpperCase());
+  if (o.avatarUrl) {
+    var cap = el("span", "owner-av");
+    // THE DISC. It owns the ring and the dark ground the pad lights up; the
+    // portrait inside it is just a fill. (Before S196 the <img> itself carried
+    // the ring, which left nowhere for the pad to be drawn — see board.css.)
+    var beam = el("span", "beam");
+    var img = document.createElement("img");
+    var src = String(o.avatarUrl);
+    img.src = src;
+    img.alt = o.login;
+    // NO `loading="lazy"`. It was here as a decorative-image courtesy, and on a
+    // 17px avatar the saving is nil — but it interacts badly with the give-up
+    // window below: a DEFERRED image never starts, never loads and never
+    // errors, so it would sit on the pad until the window expired and then be
+    // declared missing. A card the captain has merely not scrolled to would
+    // report that the person has no face.
+    // github.com is a third party; send it no referrer from the captain's board.
+    img.setAttribute("referrerpolicy", "no-referrer");
+
+    var closed = !!AVATAR_ARRIVED[src];   // has this portrait's fate been settled?
+    var gone = false;   // …and specifically: has the cap been given up on?
+    var giveUp = null;
+
+    /* Drop the give-up window — this node's own handle AND the one the module
+       remembers for this src. Both, because a repaint builds a new node that
+       inherits nothing: without the second line each generation of the `.beam`
+       leaves its abandoned timer running (six of them in twenty seconds of a
+       real mission), every one of which later fires on a node that has long
+       since left the document. */
+    function disarm() {
+      if (giveUp !== null) { clearTimeout(giveUp); giveUp = null; }
+      if (AVATAR_TIMER[src]) { clearTimeout(AVATAR_TIMER[src]); }
+      delete AVATAR_TIMER[src];
+    }
+
+    /* No portrait. Identical for a hard error and for one that never came,
+       because they are the same fact about the pill. */
+    function collapse() {
+      disarm();
+      closed = true;
+      // REMEMBERED, not merely done. The next SSE tick rebuilds this node from
+      // nothing; without the memo it would paint a fresh transporter pad over
+      // a portrait already known to be missing, once per tick, for ever.
+      AVATAR_FAILED[src] = true;
+      gone = true;
+      delete AVATAR_DEADLINE[src];
+      // …and the memo of an ARRIVAL that has since been disproved. The error
+      // handler is armed on an already-arrived portrait too (a cache can be
+      // evicted between two ticks); without this line `AVATAR_ARRIVED` would
+      // keep shadowing `AVATAR_FAILED` and every repaint would rebuild a disc
+      // around an image known to fail, collapsing it again — a pill that
+      // flickers once per SSE tick for the rest of the session.
+      delete AVATAR_ARRIVED[src];
+      if (cap.parentNode) cap.parentNode.removeChild(cap);
+      wrap.className = "owner dead";
+    }
+    // Always armed, including on a repaint of an already-arrived portrait: a
+    // cache can be evicted between two ticks, and this is the one path that
+    // must never leave an empty disc behind.
+    img.addEventListener("error", collapse);
+
+    if (AVATAR_ARRIVED[src]) {
+      // AT REST. Visible, unanimated, exactly the pill this was before S196.
+      beam.className = "beam settled";
+    } else if (AVATAR_FAILED[src]) {
+      // ALREADY GIVEN UP ON. Straight to the handle-alone pill, with no pad and
+      // no second window: a settled failure is as sticky as a settled arrival.
+      collapse();
+    } else {
+      // THE DEADLINE, not the duration. Recorded on FIRST SIGHT of this src and
+      // then honoured by every rebuild, which arms only the time REMAINING —
+      // otherwise a board that repaints faster than the window is a board on
+      // which the window never expires at all.
+      var now = Date.now();
+      if (!AVATAR_DEADLINE[src]) AVATAR_DEADLINE[src] = now + AVATAR_GIVE_UP_MS;
+      var left = AVATAR_DEADLINE[src] - now;
+      if (left <= 0) {
+        collapse();
+      } else {
+        beam.className = "beam loading";
+        disarm();   // whatever the previous generation of this node armed
+        giveUp = setTimeout(function () {
+          giveUp = null;
+          delete AVATAR_TIMER[src];
+          if (!closed) collapse();
+        }, left);
+        AVATAR_TIMER[src] = giveUp;
+        img.addEventListener("load", function () {
+          if (closed) return;
+          closed = true;
+          // CANCEL the window — do not merely out-race it, or every face on the
+          // board would vanish AVATAR_GIVE_UP_MS after it appeared.
+          disarm();
+          AVATAR_ARRIVED[src] = true;
+          delete AVATAR_DEADLINE[src];
+          beam.className = "beam done";
+        });
+      }
+    }
+    // Only if the pill still HAS a cap. `collapse()` above runs before the cap
+    // is in the tree, so an unconditional append would put the empty disc back
+    // on a pill that had just decided it has no portrait to show. `gone`, NOT
+    // `closed`: an ARRIVED portrait is settled too, and it very much keeps its
+    // cap.
+    if (!gone) {
+      beam.appendChild(img);
+      cap.appendChild(beam);
+      wrap.appendChild(cap);
+    }
+  } else {
+    wrap.className = "owner dead";
+  }
+  wrap.appendChild(handle);
+  // The whole pill carries the same sentence the locked controls do, so hovering
+  // the person explains the state without hunting for a disabled button.
+  var lock = ownerLockLogin(m);
+  wrap.title = lock ? ownerLockLine(lock) : (String(o.login) + " owns this mission");
+  return wrap;
+}
+
+/* ═══════════════ S191: THE REMOTE CARD (driven from another machine) ═══════
+
+   A laptop with no `.git/lcars` for a mission still SEES it: the daemon reads
+   the forge on a slow cached poll and adds a card carrying what the issue
+   actually knows — stage (from the STAGE LABEL), awaiting-human, owner, and
+   during Implement the closed/total ticket count. `card.remote === true` is the
+   whole contract; everything below keys off that one boolean.
+
+   IT IS READ-ONLY, AND THAT IS NOT A LIMITATION TO APOLOGISE FOR. The mission is
+   being driven by a `run` on ANOTHER machine, holding a driver lock this laptop
+   cannot see and writing artifacts this laptop does not have. A live Start here
+   would promise something LCARS genuinely cannot do. So every write affordance
+   is disabled and says why, in one sentence.
+
+   THE ONE THING IT DOES OFFER IS ADOPT, at exactly the two ENDS of the pipeline
+   (align / verify) — S189's v1 portability boundary. At align the spec IS the
+   issue body; at verify the branch and the PR are both on the forge; between
+   them the next stage reads local artifacts that were never synced, so an adopt
+   there would hand the captain a mission missing the files it is about to open.
+   The card offers what is honest and stays quiet about the rest. */
+
+/* The refusal, in one sentence — the tooltip on every disabled control. */
+var REMOTE_LINE =
+  "driven from another machine — adopt at Align/Verify to act here";
+
+function isRemote(m) { return !!(m && m.remote === true); }
+
+/* Disable every write control under `host` on a REMOTE mission.
+
+   A SUBTREE SWEEP, for the same reason S190's applyOwnerLock is one: cardControls
+   is a dozen accumulated branches and the detail header is a dozen more, and a
+   per-branch check is a check the next branch will forget. A sweep cannot miss a
+   branch — whatever the surface decided to draw, if it is a button it is
+   disabled and it says why.
+
+   TWO EXEMPTIONS, both by class and both deliberate: `detail-close` (a modal you
+   cannot close is a trap, and closing writes nothing) and `remote-adopt` (the one
+   action a remote card exists to offer). Exempting BY CLASS rather than by
+   build order means the sweep can be called at any point in either builder
+   without a comment about where it has to go. */
+function applyRemoteLock(host, m) {
+  if (!host || !isRemote(m)) return host;
+  (function walk(n) {
+    if (!n) return;
+    var tag = String(n.tagName || n.tag || "").toUpperCase();
+    var cls = " " + String(n.className || "") + " ";
+    if (tag === "BUTTON"
+        && cls.indexOf(" detail-close ") < 0
+        && cls.indexOf(" remote-adopt ") < 0) {
+      n.disabled = true;
+      n.title = REMOTE_LINE;
+      // S196 B2 — …AND IT HAS TO LOOK IT. Measured in real Chrome on 2026-09-09:
+      // a remote card's dead `▶ START` painted median rgb(64,141,122) and
+      // the live `▹ ADOPT ▸` beside it rgb(85,193,161) — 1.79:1
+      // apart, i.e. the same button. On the SAME board S191's owned-by-other
+      // lock measured 8.39:1, because it goes HOLLOW where a live control is
+      // SOLID. The house already had the right language; the remote sweep was
+      // simply not speaking it.
+      //
+      // markLocked, NOT a second treatment. "You cannot act on this" is ONE
+      // state and it must look like one state wherever it comes from — the WHY
+      // is carried by the tooltip above, which is the only thing that differs
+      // between this sweep and S190's.
+      markLocked(n);
+    }
+    var kids = n.children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(host);
+  return host;
+}
+
+/* The REMOTE marker. A pill, in the pill row, in the existing LCARS vocabulary
+   (S190's idiom: no new visual language for a new fact) — the framed diamond is in the
+   product's own console-glyph family (the set test_help_console pins) and is used
+   nowhere else, so it reads as its own state rather than borrowing another's. First in the row on purpose: WHERE this mission is being driven
+   outranks what it will cost. */
+function remotePill() {
+  return el("span", "pill remote", "◈ REMOTE · DRIVEN ELSEWHERE");
+}
+
+/* ADOPT — take command of a remote mission on THIS laptop.
+
+   Offered ONLY where the daemon said it is honest (`m.adoptable`, derived from
+   the stage label), never wherever the front end feels like it: the boundary is
+   a product rule and it belongs on the one side that can also enforce it.
+
+   It POSTs the ISSUE NUMBER, because that is what a remote card IS — there is no
+   local mission id yet, and minting one is exactly what `lcars adopt` refuses to
+   do (the id already names the branch and the issue). On success the mission
+   becomes LOCAL, the overlay stops drawing a remote card for that issue, and the
+   local card takes its place on the next refresh. */
+function adoptControl(m) {
+  if (!isRemote(m) || !m.adoptable) return null;
+  // S196 B4 — THE LABEL READ AS TWO ICONS. `▹ Adopt ▸` is a HOLLOW
+  // triangle beside a SOLID one, and at 10px display type that is a stutter,
+  // not a pair. `▸` is not the half to change: it is the SHARED dispatch
+  // suffix every dispatching button on this board carries (`Go ▸`,
+  // `✓ Review PR ▸`), so dropping it here would make Adopt the one
+  // dispatch that does not say it dispatches.
+  //
+  // `◆` is the leading glyph, from LOCK_ACTION_GLYPHS — no glyph from
+  // outside the house family is introduced (S190's D3 and S191's `⇩`
+  // near-miss were both exactly that mistake). It is also the RIGHT one rather
+  // than merely an allowed one: the remote pill two rows up is `◈ REMOTE`,
+  // a FRAMED diamond, and this is the same shape FILLED — which is the
+  // sentence the whole of half B speaks (solid = yours, hollow = not).
+  var b = btn("◆ Adopt ▸", "go remote-adopt", function () {
+    if (b.disabled) return;
+    // S197 — ASK BEFORE DISPATCHING, exactly as `lcars adopt` asks at a
+    // terminal. Returns false when there is nothing to ask WITH (no daemon
+    // engine list — an older build, the github adapter, a machine the shared
+    // detector could not read), in which case this dispatches the byte-for-byte
+    // same POST it always did. See openAdoptPicker.
+    if (openAdoptPicker(b, m)) return;
+    dispatchAdopt(b, m, "");
+  });
+  b.title = "Rebuild this mission on THIS machine from its GitHub issue";
+  return act("adopt", applyWriteState(b));
+}
+
+/* THE DISPATCH ITSELF, lifted out of the button so the PICKER's confirm can
+   reach the identical code path — one adopt POST on this board, never two.
+   `engine` is "" for "the captain took the default", and an empty engine puts
+   NOTHING in the body, which is the argv this daemon has always sent. */
+function dispatchAdopt(b, m, engine) {
+    b.disabled = true;
+    b.textContent = "◐ Adopting…";
+    var payload = {};
+    if (engine) payload.engine = engine;
+    postWrite("/api/mission/" + enc(m.issue != null ? m.issue : m.id)
+              + "/adopt", payload,
+      function (state) {
+        // The board refresh postWrite already fired swaps in the LOCAL card.
+        //
+        // S196 A4 — ADOPT'S WARNINGS ARE NOT SWALLOWED. This used to say only
+        // "Adopted #34 — it is a local mission now." and drop everything else
+        // adopt printed: no testCommand could be detected, the attachments could
+        // not follow the issue, no open PR resolves at Verify, this repo's config
+        // prefers a different engine. Each of those is something the captain must
+        // act on, and the one surface that could tell him threw them away.
+        //
+        // The daemon lifts them off adopt's own `⚠` marker and hands them over
+        // as `warnings`; this reads that FIELD, never adopt's prose. A warned
+        // adopt is a WARN verdict, not an ok one — it succeeded, and it is not
+        // finished business.
+        var warns = (state && state.warnings) || [];
+        var head = "Adopted #" + m.issue + " — it is a local mission now.";
+        if (warns.length) {
+          setVerdict(head + " ⚠ " + warns.join(" ⚠ "), "warn");
+        } else {
+          setVerdict(head, "ok");
+        }
+      },
+      function (msg) {
+        b.disabled = false;
+        b.textContent = "◆ Adopt ▸";
+        // A VERDICT, not a silent re-enable: adopt.sh refuses for reasons the
+        // captain has to read (wrong stage, no handoff envelope, no gh), and a
+        // button that quietly came back would say none of them.
+        setVerdict(msg || "Adopt failed.", "err");
+      });
+}
+
+/* ═══════ S197 — THE BOARD ASKS WHICH ENGINE, BECAUSE THE CLI DOES ═══════
+
+   THE DEFECT, and it is the plainest kind: THERE WAS NOTHING TO SCREENSHOT.
+   `lcars adopt` at a terminal ASKS which CLI should drive a mission on this
+   laptop — the captain's ruling of 2026-09-09, taken because a laptop may only
+   have ONE CLI installed, so a mission filed on the other one is not a handover
+   unless something converts it. The BOARD passed no `--engine` and ran with no
+   tty, so adopt.sh took its documented non-interactive path and REFUSED — on
+   exactly the machine the feature exists for. Every screenshot of the ask is a
+   terminal because the viewscreen could not produce one. The captain works from
+   the viewscreen (standing ruling, 2026-09-07), and the board is a UI version of
+   the command line: where the two disagree, the board comes up to the CLI.
+
+   IT IS A STRICT SUPERSET OF WHAT THE CLI DOES, never a contradiction of it.
+   The CLI only PROMPTS on absence or disagreement; the rest of the time it
+   decides silently and says what it decided. This surfaces that decision every
+   time — which is the only reason the captain can reach it on a laptop with
+   both CLIs installed — WITH THE SAME DEFAULT. Taking the default sends no
+   `engine` at all, so the dispatch is argv-identical to the one this board has
+   always made, warnings and all. Nothing changes unless he acts.
+
+   FOUR GLYPHS, ALL HOUSE (LOCK_ACTION_GLYPHS + `⊘`/`◈`), and they carry the
+   state WITHOUT COLOUR, which is this round's language: SOLID = actionable,
+   HOLLOW/DASHED = not.
+     `◆`  the option in force — the same filled diamond Adopt itself wears.
+     `◈`  an option available but not chosen — the framed diamond, the same
+          shape hollow, which is the sentence the whole round speaks.
+     `⊘`  an engine this machine does NOT have. Disabled, `.btn.locked`
+          (hollow + dashed), and it is still DRAWN rather than hidden, because
+          "the mission was filed on copilot and copilot is not here" is the
+          fact the captain needs in order to understand the choice he is being
+          offered. Hiding it would turn an explanation into a mystery.
+     `▸`  the shared dispatch suffix, on the confirm and nothing else.
+
+   NO NEW COLOUR TOKEN (ADR-007): every rule in the stylesheet block for this
+   reads an existing --lcars-* var, and the state is carried by fill and edge.
+
+   KEYBOARD: every option and both footers are real `<button>`s, so Tab reaches
+   them and board.css's amber `:focus-visible` ring shows where it landed;
+   Enter/Space activate natively. Escape closes the picker WITHOUT adopting, and
+   it is bound on the picker itself and consumed there — NO new global hotkey is
+   registered, so nothing in the command deck's table is shadowed. */
+
+/* THE OPEN QUESTION SURVIVES THE BOARD'S OWN REPAINT.
+
+   FOUND BY THE PIXEL RIG, not by a unit test, and it is the third time this
+   project has met this shape: the board rebuilds every card off the four-second
+   poll (S196.1 cured the avatar give-up window for exactly this reason, one
+   commit ago), so a picker that lived only in the DOM was deleted underneath
+   the captain WHILE HE WAS READING IT. The rig caught it as a screenshot of a
+   flat rectangle where the chosen option had been, a second after the same
+   option measured correctly — two reads of one box, two different pages.
+
+   A question that closes itself after four seconds is not a question. So the
+   OPEN state and the ENGINE CHOSEN SO FAR live here, keyed by the card's issue
+   number, and `remoteControls` re-opens the picker on the rebuilt card. The
+   DOM stays the render of this, never the record of it — the same division
+   S196.1 settled on for the beam's deadline.
+
+   CLEARED on cancel and on dispatch, so nothing is remembered about a question
+   that has been answered or abandoned. */
+var ADOPT_PICKING = {};
+
+function adoptKey(m) {
+  return String(m && (m.issue != null ? m.issue : m.id));
+}
+
+/* The engines to OFFER, in the order to offer them: the mission's own first
+   (it is the default and it is what the question is about), then everything
+   this machine has. `m.enginesHere` is the daemon's answer from the ONE shared
+   detector (lcars-common.sh `lcars_available_engines`) — the board never
+   guesses, and no list ⇒ no picker at all. */
+function adoptEngineOptions(m) {
+  var here = (m && m.enginesHere) || [];
+  if (Object.prototype.toString.call(here) !== "[object Array]") return [];
+  // NO INSTALLED LIST ⇒ NO OPTIONS, even when the mission names an engine.
+  // Found by the test: with `enginesHere` absent the picker still opened, on
+  // one dead `⊘ Copilot — not on this machine` row and nothing to press —
+  // a refusal wearing a picker's clothes, which is the exact defect this
+  // session exists to remove, reintroduced one layer up. A board that cannot
+  // ask must dispatch in one click, as it always did.
+  if (!here.length) return [];
+  var filed = String((m && m.engine) || "");
+  var out = [], seen = {}, i, e;
+  if (filed) { out.push(filed); seen[filed] = true; }
+  for (i = 0; i < here.length; i++) {
+    e = String(here[i] || "");
+    if (!e || seen[e]) continue;
+    seen[e] = true;
+    out.push(e);
+  }
+  return out;
+}
+
+function adoptEngineHere(m, engine) {
+  var here = (m && m.enginesHere) || [];
+  for (var i = 0; i < here.length; i++) {
+    if (String(here[i]) === String(engine)) return true;
+  }
+  return false;
+}
+
+/* The option that is selected when the picker opens.
+
+   THE MISSION'S OWN ENGINE, so doing nothing reproduces today's behaviour
+   exactly. When the mission's engine is not on this machine the default falls
+   to the first one that IS — which is the branch the CLI refuses on with no
+   tty, and the whole reason a one-CLI laptop needs this surface. When the
+   mission pinned NO engine at all (`engine: null` in the handoff envelope — a
+   deliberate S188 answer meaning "host detection decides"), the default is that
+   same non-answer, represented as "". */
+function adoptDefaultEngine(m) {
+  var filed = String((m && m.engine) || "");
+  if (filed && adoptEngineHere(m, filed)) return filed;
+  if (filed) {
+    var here = (m && m.enginesHere) || [];
+    return here.length ? String(here[0]) : "";
+  }
+  return "";
+}
+
+function adoptOptionLabel(m, engine, chosen) {
+  var mark = chosen ? "◆ " : "◈ ";
+  var filed = String((m && m.engine) || "");
+  if (!engine) return mark + "Not pinned — the host CLI decides";
+  var name = engineLabel(engine);
+  if (!adoptEngineHere(m, engine)) return name + " — not on this machine";
+  if (engine === filed) return mark + name + " — filed with this mission";
+  return mark + name + " — installed here";
+}
+
+/* Open the picker under `b`, or answer false when there is nothing to ask with.
+
+   FALSE IS A REAL ANSWER, and it is the byte-identity guarantee: a daemon that
+   sends no `enginesHere` (an older build, the GitHub adapter, a machine whose
+   detector could not be read) leaves this surface exactly as it was — one
+   click, one POST, no engine in the body. The board never invents an engine
+   list, for the same reason the front door's picker does not. */
+function openAdoptPicker(b, m) {
+  var options = adoptEngineOptions(m);
+  if (!options.length) return false;
+  var host = b.parentNode;
+  if (!host || !host.appendChild) return false;
+  if (b._adoptPicker) return true;       // already open — one at a time
+
+  // RESUMED, not restarted: a repaint that landed while he was deciding must
+  // not throw his choice away and go back to the default.
+  var memo = ADOPT_PICKING[adoptKey(m)];
+  var resuming = !!memo;
+  var chosen = resuming ? String(memo.engine || "") : adoptDefaultEngine(m);
+  ADOPT_PICKING[adoptKey(m)] = { engine: chosen };
+  var box = el("div", "adopt-picker");
+  box.setAttribute("role", "group");
+  box.setAttribute("aria-label", "Which engine should drive this mission here");
+  box.addEventListener("click", function (e) { e.stopPropagation(); });
+
+  var q = el("div", "adopt-picker-q",
+             "Which engine should drive this mission here?");
+  box.appendChild(q);
+
+  var rows = [];
+  function paint() {
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.dead) continue;
+      var on = r.engine === chosen;
+      r.node.className = "btn adopt-engine" + (on ? " chosen" : "");
+      r.node.textContent = adoptOptionLabel(m, r.engine, on);
+      r.node.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    go.textContent = "◆ Adopt" +
+      (chosen ? " on " + engineLabel(chosen) : "") + " ▸";
+  }
+
+  function addRow(engine) {
+    var dead = engine && !adoptEngineHere(m, engine);
+    var o = btn(adoptOptionLabel(m, engine, false), "adopt-engine",
+                function () {
+                  if (dead) return;
+                  chosen = engine;
+                  ADOPT_PICKING[adoptKey(m)] = { engine: chosen };
+                  paint();
+                });
+    o.setAttribute("data-engine", engine || "");
+    if (dead) {
+      o.disabled = true;
+      o.title = engineLabel(engine) + " is not installed on this machine";
+      // The house lock treatment, not a second one: `⊘`, hollow, dashed —
+      // the same thing every other unusable control on this board wears.
+      markLocked(o);
+    }
+    rows.push({ engine: engine, node: o, dead: dead });
+    box.appendChild(o);
+  }
+
+  // The "no pin" option exists only when the mission HAS no pin: adopt.sh will
+  // not un-pin a mission that carries one, and offering that here would be a
+  // choice LCARS cannot honour.
+  if (!String((m && m.engine) || "")) addRow("");
+  for (var i = 0; i < options.length; i++) addRow(options[i]);
+
+  var foot = el("div", "adopt-picker-foot");
+  // The confirm's label is COMPOSED by paint() ("◆ Adopt on Claude ▸"), never
+  // written as a literal here: the bare adopt label appears in this file twice
+  // — the card's own control and the label put BACK after a failed dispatch —
+  // and a regression guard counts those two, because a session that changed one
+  // and not the other resurrected an old glyph stutter on the unhappy path.
+  var go = btn("", "go adopt-confirm", function () {
+    var filed = String((m && m.engine) || "");
+    // NOTHING IN THE BODY WHEN HE TOOK THE DEFAULT. The captain choosing the
+    // mission's own engine is not a conversion and must not be recorded as
+    // one; it is also the dispatch this daemon has always made, so adopt.sh's
+    // own `note()` about a disagreeing repo config still reaches him.
+    closeAdoptPicker(b, m);
+    dispatchAdopt(b, m, chosen === filed ? "" : chosen);
+  });
+  var no = btn("Cancel", "adopt-cancel",
+               function () { closeAdoptPicker(b, m); });
+  foot.appendChild(go);
+  foot.appendChild(no);
+  box.appendChild(foot);
+
+  box.addEventListener("keydown", function (e) {
+    if ((e.key || "") !== "Escape") return;   // everything else keeps bubbling
+    e.stopPropagation();
+    closeAdoptPicker(b, m);
+  });
+
+  paint();
+  host.appendChild(box);
+  // THE TRIGGER STANDS DOWN WHILE THE QUESTION IS OPEN. Found by looking at
+  // the first screenshot: `◆ Adopt ▸` sat beside a panel whose own confirm
+  // said `◆ Adopt on Copilot ▸`, which is TWO adopt buttons offering two
+  // different things — and the flex row stretched the old one to the full
+  // height of the panel, so the louder of the two was the one that no longer
+  // knew which engine it would use. One question, one answer: the trigger
+  // goes away until the question is resolved (Cancel brings it back).
+  host.className = String(host.className || "") + " asking";
+  b.hidden = true;
+  b._adoptPicker = box;
+  b.setAttribute("aria-expanded", "true");
+  // FOCUS ONLY ON A REAL OPEN. Re-taking it on every four-second repaint would
+  // yank the caret out from under a captain who had tabbed somewhere else —
+  // a repaint is not an interaction.
+  if (!resuming && rows.length && rows[0].node.focus) {
+    for (var j = 0; j < rows.length; j++) {
+      if (rows[j].engine === chosen && rows[j].node.focus) {
+        rows[j].node.focus(); break;
+      }
+    }
+  }
+  return true;
+}
+
+function closeAdoptPicker(b, m) {
+  if (m) delete ADOPT_PICKING[adoptKey(m)];
+  var box = b && b._adoptPicker;
+  if (!box) return;
+  var host = box.parentNode;
+  if (host && host.removeChild) host.removeChild(box);
+  if (host) {
+    host.className = String(host.className || "")
+      .replace(/(^|\s)asking(\s|$)/, "$1$2");
+  }
+  b.hidden = false;
+  b._adoptPicker = null;
+  b.setAttribute("aria-expanded", "false");
+  if (b.focus) b.focus();
+}
+
+/* The control row of a remote card: swept read-only, then ADOPT added.
+
+   ORDER MATTERS ONLY FOR READABILITY — the sweep exempts the adopt button by
+   class, so this would be correct either way — but sweeping first and adding
+   second says plainly that adopt is the exception to a rule, not a survivor of
+   one. */
+function remoteControls(host, m) {
+  if (!isRemote(m)) return host;
+  applyRemoteLock(host, m);
+  // S196 B3 (captain ruling R8, 2026-09-09, taken after looking at one): ON A
+  // REMOTE CARD, HIDE VERIFY — OFFER ONLY ADOPT.
+  //
+  // NOTHING on a remote card is actionable BY DEFINITION: the mission is being
+  // driven by a `run` on another machine, holding a driver lock this laptop
+  // cannot see. S191 drew the dead controls anyway, disabled, and the tester
+  // found a remote card at `research` offering ONE control — a dead
+  // `▶ START` — and no Adopt at all. That card promised an action it
+  // could not perform and offered nothing it could.
+  //
+  // IT LOSES NO INFORMATION. `#201 · lcars:research` is on the card two
+  // rows up and is the thing the dead control was standing in for.
+  //
+  // WHY REMOVE RATHER THAN NOT BUILD. cardControls is a dozen accumulated
+  // branches; a "remote?" test threaded through them is a test the next branch
+  // forgets. This is the same argument that made applyRemoteLock a sweep, and
+  // the same shape: whatever the card decided to draw, if the sweep above
+  // DISABLED it, it is not drawn. Keying on `disabled` (not on tag alone) is
+  // what keeps the ONE live control — Adopt, exempted by class above and
+  // appended below — and any future exemption out of it automatically.
+  //
+  // THE DETAIL KEEPS THEM. applyRemoteLock still marks the detail header's
+  // controls locked (B2): a captain who clicked in to READ a mission is
+  // entitled to see what it has, and that surface has the room to say so.
+  if (host && host.children) {
+    var kids = host.children;
+    for (var i = kids.length - 1; i >= 0; i--) {
+      var k = kids[i];
+      if (String(k.tagName || k.tag || "").toUpperCase() !== "BUTTON") continue;
+      if (!k.disabled) continue;
+      if (host.removeChild) host.removeChild(k);
+    }
+  }
+  var adopt = adoptControl(m);
+  if (adopt && host) {
+    host.appendChild(adopt);
+    // S197 — and if the captain had the engine question OPEN when the board
+    // repainted underneath him, it is open on the rebuilt card too, on the
+    // option he had got as far as choosing. Done HERE rather than inside
+    // adoptControl because the picker is appended beside the button, and the
+    // button has no parent until this line has run.
+    if (ADOPT_PICKING[adoptKey(m)]) openAdoptPicker(adopt, m);
+  }
+  return host;
+}
+
+/* ═══════ THE MISSION THAT SHIPPED FROM SOMEWHERE ELSE ═══════════════════
+
+   FOUND TWICE IN ONE DAY, independently, by two live two-laptop runs. Laptop B
+   adopts a mission, drives it and merges it. Laptop A — the one that FILED it —
+   still shows the card at Verify, offering a live `✓ Review PR ▸` for a pull
+   request that merged minutes ago. LOCAL WINS is the overlay's first rule and
+   it is right for CONTENT; it was being applied to TRUTH as well, so the filing
+   laptop sat on a version of reality that had ended.
+
+   THE SERIOUS HALF IS THE CONTROL, NOT THE COST RECORD. A live button for a
+   merged PR is S191's D4 verbatim — a lie the hand discovers — and it is cured
+   the way S190 and S191 cured theirs: the affordance goes HOLLOW and wears `⊘`,
+   and the card states the fact in words. Nothing new is invented; `markLocked`
+   and `.btn.locked` already say "this control will not go", and this is one
+   more reason for them to say it.
+
+   TWO VERDICTS, BECAUSE THEY ARE TWO FACTS. `shipped` means the issue carries
+   `lcars:done` — the label `lcars approve` applies at the ship and nowhere
+   else. `closed` means the issue is closed on the forge WITHOUT that label: the
+   mission was abandoned or closed by hand. Both end the mission; only one is a
+   merge, and calling the second one "shipped" would invent a merge nobody
+   performed. (There is a real example in LCARS's own repo: issue #83, CLOSED,
+   still wearing `lcars:implement`.)
+
+   WHAT IT IS NOT. It does not move the card to Done and it does not touch
+   `.git/lcars`. The local mission genuinely IS at verify on this laptop — the
+   branch is here and unmerged — so the card stays in the column its own repo
+   puts it in and tells the captain what the forge knows. */
+
+/* The refusals, one sentence each. Both are pinned against the daemon's own
+   vocabulary by test; both name the FACT, never the remedy, because the remedy
+   (pull, delete the branch, leave it) is the captain's call. */
+var SHIPPED_LINE =
+  "already shipped from another machine — its pull request is merged";
+var CLOSED_LINE =
+  "already closed on the forge from another machine — nothing here can act on it";
+
+/* The daemon's verdict block, or null. `shippedElsewhere` is ADDITIVE and
+   ABSENT on every card the forge said nothing about, so this is also the
+   "nothing changed" test for every board that has no gh on it. */
+function shippedVerdict(m) {
+  var v = m && m.shippedElsewhere;
+  if (!v || typeof v !== "object") return null;
+  if (v.state !== "shipped" && v.state !== "closed") return null;
+  return v;
+}
+
+function shippedLine(v) {
+  return (v && v.state === "shipped") ? SHIPPED_LINE : CLOSED_LINE;
+}
+
+/* The marker, in the pill row, in the vocabulary that is already there.
+
+   `◈` is the framed diamond the REMOTE pill wears — the house glyph for "this
+   happened somewhere that is not here" — and the same shape ADOPT wears FILLED
+   (`◆`) for the one thing you CAN do. Solid = yours to act on, hollow = not:
+   the sentence this whole round speaks. No glyph from outside the family, and
+   no new colour token (ADR-007); the stylesheet draws the pill HOLLOW AND
+   DASHED, so it survives a desaturated screenshot. */
+function shippedPill(v) {
+  return el("span", "pill shipped",
+            v.state === "shipped" ? "◈ SHIPPED ELSEWHERE"
+                                  : "◈ CLOSED ON THE FORGE");
+}
+
+/* Disable every write control under `host` on a mission that is already over.
+
+   A SUBTREE SWEEP, for the third time and for the third time for the same
+   reason (applyOwnerLock, applyRemoteLock): cardControls and the detail header
+   are two dozen accumulated branches between them, and a per-branch check is a
+   check the next branch will forget. Whatever the surface decided to draw, if
+   it is a button it is dead and it says why.
+
+   THE ONE EXEMPTION is `detail-close` — a modal you cannot close is a trap, and
+   closing writes nothing. There is deliberately no ADOPT exemption: adopt is an
+   affordance on a REMOTE card, and this fact only ever attaches to a LOCAL one.
+
+   IT OUTRANKS THE OWNER LOCK, and is applied after it so its sentence wins. The
+   owner lock says "this is someone else's to drive"; this says "there is
+   nothing left to drive". The second is the more useful thing to be told. */
+function applyShippedLock(host, m) {
+  var v = shippedVerdict(m);
+  if (!host || !v) return host;
+  var line = shippedLine(v);
+  (function walk(n) {
+    if (!n) return;
+    var tag = String(n.tagName || n.tag || "").toUpperCase();
+    var cls = " " + String(n.className || "") + " ";
+    if (tag === "BUTTON" && cls.indexOf(" detail-close ") < 0) {
+      n.disabled = true;
+      n.title = line;
+      markLocked(n);
+    }
+    var kids = n.children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(host);
+  return host;
+}
+
+/* The Verify affordance for a mission that has already shipped, or null.
+
+   WHY THIS ALSO SITS INSIDE verifyAffordance, when the sweep above would have
+   disabled the button anyway: the sweep can only mark what was BUILT, and what
+   was built here is the literal sentence `✓ Review PR ▸`. Marking it locked
+   would leave the board saying "review the PR" about a PR that is merged — the
+   lie made unclickable rather than withdrawn. The LABEL is the thing that has
+   to change, and this is the one place both surfaces read it from (BUG-049).
+
+   It outranks every kind below it, including the reconcile/heal kinds: each of
+   those describes work IN FLIGHT on a mission that is, in fact, finished.
+
+   AND IT IS ONE LINE AT THE CALL SITE, deliberately. verifyAffordance's opening
+   bytes are pinned by an existing regression guard (test_server's BUG-078
+   window check, which reads the first 1200 of them), so the reasoning lives
+   HERE and the call is a line — the same trade ownerLockOnVerify made above it,
+   for the same reason, and the guard it protects has nothing to do with this
+   session. Verified by making the mistake first: a five-line comment there
+   pushed `isReconcileAwaitingReapprove` out of the window and reddened it. */
+function shippedOnVerify(m) {
+  var v = shippedVerdict(m);
+  if (!v) return null;
+  return {
+    kind: "shipped-elsewhere",
+    label: v.state === "shipped" ? "⊘ Shipped elsewhere" : "⊘ Closed on the forge",
+    cls: "warn", disabled: true, title: shippedLine(v),
+  };
+}
+
+/* THE FORGE DID NOT ANSWER. `meta.remote.status === "unavailable"` means the
+   daemon HAS gh and asked, and got nothing back — no auth, no network, not a
+   GitHub remote, rate-limited. It is worth ONE quiet line in the footer beside
+   the view-only marker, and nothing more: the local cards are all still there
+   and completely usable, so this is an ambient condition, never an alert.
+
+   ABSENT ⇒ HIDDEN. A board with no gh carries no `remote` key at all and this
+   never shows, which is what keeps it invisible to everybody who has one laptop. */
+function renderRemoteNote(remote) {
+  var host = document.getElementById("remoteNote");
+  if (!host) return;
+  var down = !!(remote && remote.status === "unavailable");
+  host.hidden = !down;
+  host.textContent = down
+    ? "○ REMOTE DATA UNAVAILABLE — showing local missions only" : "";
 }
 
 /* THE one place the board builds a link to an issue. The scheme is pinned HERE,
@@ -1029,6 +2049,36 @@ function engineBadge(m) {
   return b;
 }
 
+/* S196 A3(g) — "copilot · mission pin", in words, from RECORDED fields only.
+
+   `engineSource` and `engineResolved` are written by whichever producer made the
+   choice, at the moment it made it: `lcars adopt` when the captain picks the
+   engine at the handoff, run.sh's resolver when it resolves for a run. This
+   function only NAMES what they say — it never re-derives which source would
+   have won by reading config, which is the inference S147/S156/S188 each paid
+   fix rounds for. An unknown source is printed verbatim rather than swallowed:
+   a source this front end has not heard of is still a fact, and hiding it would
+   put the board back where it started.
+
+   Null when nothing is recorded, so a pre-S196 card is unchanged. */
+var ENGINE_SOURCE_WORDS = {
+  "mission":         "mission pin",
+  "config":          "repo config",
+  "env":             "$LCARS_WORKER_BIN",
+  "detected":        "host CLI",
+  "default":         "default",
+  "adopt-kept":      "mission pin · kept at adopt",
+  "adopt-converted": "converted at adopt",
+  "adopt-chosen":    "chosen at adopt"
+};
+function engineProvenanceLine(m) {
+  var src = String((m && m.engineSource) || "");
+  if (!src) return null;
+  var eng = String((m && m.engineResolved) || (m && m.engine) || "");
+  var why = ENGINE_SOURCE_WORDS[src] || src;
+  return eng ? (eng + " · " + why) : why;
+}
+
 function btn(label, cls, onClick) {
   var b = el("button", "btn" + (cls ? " " + cls : ""), label);
   b.type = "button";
@@ -1148,6 +2198,23 @@ function cardNode(m) {
   // carries the running tint. Gated on isInFlight so a paused/pausing card never
   // shows the running animation (UX-20). Optimistic-start counts (UX-17).
   if (isInFlight(m)) card.className += " running";
+  // S190: this mission is DEMONSTRABLY someone else's. A marker class only —
+  // the stylesheet dims the (already disabled) control row so the card reads as
+  // "you can watch this, you cannot drive it" from across the room. Absent for
+  // an unassigned mission, for my own, and whenever identity is unresolvable,
+  // so a board with no identity on it carries no new class at all.
+  if (ownerLockLogin(m)) card.className += " owned-by-other";
+  // S191: …and this one is not driven from here at all. A marker class only —
+  // the stylesheet gives the card its cool "somewhere else" chrome; the controls
+  // are disabled by remoteControls below, never by CSS.
+  if (isRemote(m)) card.className += " remote";
+  // …and this LOCAL one is finished on the forge — merged, or closed, from
+  // another machine. A marker class only: the stylesheet draws the card's edge
+  // DASHED (shape, not hue, so it survives a desaturated screenshot); the
+  // controls are withdrawn by applyShippedLock below, never by CSS. The class
+  // covers BOTH verdicts — "over, elsewhere" is one state to the eye — and the
+  // pill and the control label carry which one it is.
+  if (shippedVerdict(m)) card.className += " shipped-elsewhere";
   // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
   // animation onto this card (showCardBusy).
   if (m.id != null) {
@@ -1166,6 +2233,15 @@ function cardNode(m) {
 
   var issue = m.issue ? "#" + m.issue : "—";
   card.appendChild(el("div", "no", issue + " · lcars:" + m.stage));
+  // S196 A3(g): the ENGINE and WHERE IT CAME FROM, on the card, in words.
+  // The corner watermark says WHICH cli; it has never said WHY, and "why" is the
+  // half that costs money — a mission filed on copilot and silently re-homed onto
+  // billed claude by a clone's config.json looked identical to one that chose
+  // claude on purpose. A second meta line rather than more text on the first, so
+  // `#34 · lcars:verify` stays byte-identical, and ABSENT entirely for a mission
+  // that has recorded no provenance (every pre-S196 card renders as before).
+  var prov = engineProvenanceLine(m);
+  if (prov) card.appendChild(el("div", "no engine-src", prov));
   // Mission-log-grounding round: a logged bug runs Research in a scoped GROUNDING
   // mode (it anchors the symptom to the existing code, not full research). While
   // the card sits in the Research column, show a small "grounding" descriptor so
@@ -1181,7 +2257,21 @@ function cardNode(m) {
   // just under the title so the relationship reads at a glance on the pink card.
   if (isLogBug(m)) card.appendChild(logBugBadge(m));
 
+  // S190: WHOSE MISSION IS THIS — the avatar + handle pill, under the title and
+  // above the estimate pills, so "who" reads before "how much". Null (and so
+  // nothing appended) whenever the payload carries no owner, which is what keeps
+  // every card on an identity-free board byte-identical to before this round.
+  var own = ownerNode(m);
+  if (own) card.appendChild(own);
+
   var pills = el("div", "pills");
+  // S191: WHERE is this being driven — first in the row, because a card you
+  // cannot act on has to say so before it says anything else.
+  if (isRemote(m)) pills.appendChild(remotePill());
+  // …and FIRST for the same reason: a card whose mission has already ended has
+  // to say so before it says what it was going to cost.
+  var sv = shippedVerdict(m);
+  if (sv) pills.appendChild(shippedPill(sv));
   // UX-29: a "QUEUED · WAITING" pill when scheduled-but-not-started in a
   // resolve-logs batch — distinct from running/paused/awaiting, no running
   // pulse. awaiting still wins (a gate outranks the queue).
@@ -1350,7 +2440,20 @@ function cardNode(m) {
   if (logFilingState(m).filing) card.appendChild(filingPulse());
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
-  card.appendChild(cardControls(m));
+  // S190: …swept by the light lock AFTER they are built. See applyOwnerLock for
+  // why this is a sweep and not a check inside each of cardControls' branches.
+  // S191: …and then swept AGAIN for a REMOTE mission, which is a different fact
+  // from S190's lock and can be true when the lock is not: a mission I OWN,
+  // driving on my other laptop, passes ownerLockLogin (the owner IS me) and must
+  // still be read-only here. Two sweeps, two facts, neither one covering for the
+  // other. remoteControls also adds the one live control a remote card gets.
+  // S197: …and a THIRD sweep, for a third fact none of the other two covers: a
+  // LOCAL mission I own, at verify, whose PR merged on the other laptop. The
+  // owner lock does not fire (the owner is me) and the remote sweep does not
+  // fire (the mission is local), and the card offered a live `✓ Review PR ▸`
+  // for a merged PR. Applied AFTER the owner lock so its sentence wins.
+  card.appendChild(remoteControls(
+    applyShippedLock(applyOwnerLock(cardControls(m), m), m), m));
 
   card.addEventListener("click", function () { openDetail(m.id); });
   return card;
@@ -1614,6 +2717,272 @@ function isRunningStage(stage) {
     .indexOf(stage) !== -1;
 }
 
+/* ════════════════ S196 B5 — FILTER THE BOARD BY OWNERSHIP ════════════════
+
+   Until this session the board could not be ASKED anything. A captain running
+   two laptops sees his own work, the other laptop's work, whatever GitHub has
+   assigned to somebody else and whatever is assigned to nobody, all in one wall
+   of cards — and the only way to find "the three that are actually mine" was to
+   read every card on the board.
+
+   FOUR FACETS, AND NOT ONE NEW NOTION OF IDENTITY. Half A of this session
+   existed to make ONE key mean ONE fact (adopt matching on the issue number
+   because that is remote.py's key, the estimate RECORDED rather than re-scanned).
+   A filter that invented a fifth answer to "whose is this?" would undo that in
+   the one place the captain actually looks. So every facet below is a question
+   the board can ALREADY answer, off the payload it ALREADY holds:
+
+     mine        card.owner.login === meta.self.login
+     theirs      ownerLockLogin(m) — the EXACT predicate the light lock is built
+                 on, called rather than re-derived, so a card the board will not
+                 let him drive and a card the filter calls "someone else's" can
+                 never disagree
+     unassigned  no owner at all — ownership.sh's own posture, where empty is
+                 "unowned" rather than an error, and is NEVER locked
+     remote      isRemote(m) — a CARD CLASS, NOT AN OWNER. A remote mission can
+                 be assigned to me, to somebody else, or to nobody.
+
+   BECAUSE `remote` IS A SECOND AXIS THE FACETS OVERLAP, so this is a SET of
+   toggles ORed together, not a radio group: a card shows if it matches ANY
+   selected facet, and nothing selected filters nothing. ANDing them would draw
+   an empty board for most pairs a captain would think to click.
+
+   IT COSTS NOTHING AT THE FORGE. This is the S152 constraint and it is
+   absolute: the remote overlay is ONE cached `gh issue list` per CYCLE, never
+   per render (S191 measured the whole board at exactly one invocation across 25
+   GETs). A chip therefore does not re-ask the daemon anything — it writes one
+   string to localStorage and calls repaintBoard(), the house's existing
+   client-only repaint, which re-renders LAST_BOARD with no fetch of any kind.
+
+   IDENTITY ABSENT CHANGES NOTHING — the S190 posture, unbroken. With no
+   `meta.self` the board cannot say what "mine" means, so it does not OFFER it;
+   `unassigned` and `remote` are facts about the card and stay. And a `mine`
+   remembered from a machine that DID have an identity can never blank the
+   board: see ownerFilterEffective. Every uncertain case shows MORE, never less. */
+
+var OWNER_FILTER_KEY = "lcars-owner-filter";
+
+/* `needsSelf` is redundant with the counts — with no identity `mine` and
+   `theirs` both count zero on their own — and it is stated anyway, because
+   "this question cannot be asked without knowing who we are" is the REASON the
+   chip is absent, and a reason that is only implied is a reason the next round
+   deletes by accident. */
+var OWNER_FILTERS = [
+  { id: "mine", label: "MINE", needsSelf: true,
+    title: "Only the missions assigned to me",
+    match: function (m) {
+      var o = m && m.owner && m.owner.login;
+      return !!(o && selfLogin && o === selfLogin);
+    } },
+  { id: "theirs", label: "THEIRS", needsSelf: true,
+    title: "Only the missions assigned to somebody else",
+    match: function (m) { return ownerLockLogin(m) !== null; } },
+  { id: "unassigned", label: "UNASSIGNED", needsSelf: false,
+    title: "Only the missions nobody has taken",
+    match: function (m) { return !(m && m.owner && m.owner.login); } },
+  { id: "remote", label: "REMOTE", needsSelf: false,
+    title: "Only the missions being driven from another machine",
+    match: function (m) { return isRemote(m); } },
+];
+
+function ownerFilterById(id) {
+  for (var i = 0; i < OWNER_FILTERS.length; i++) {
+    if (OWNER_FILTERS[i].id === id) return OWNER_FILTERS[i];
+  }
+  return null;
+}
+
+/* Every card ON SCREEN, in one flat list. Off `columns` and not off `missions`
+   deliberately: `missions` excludes done (it backs the "N active missions"
+   count), and a filter must count the cards it is actually going to draw. */
+function boardCards(board) {
+  var out = [];
+  var cols = (board && board.columns) || {};
+  Object.keys(cols).forEach(function (k) {
+    var v = cols[k];
+    if (v && v.length) for (var i = 0; i < v.length; i++) out.push(v[i]);
+  });
+  return out;
+}
+
+function ownerFilterCounts(cards) {
+  var counts = { all: (cards || []).length };
+  OWNER_FILTERS.forEach(function (f) {
+    var n = 0;
+    for (var i = 0; i < (cards || []).length; i++) if (f.match(cards[i])) n++;
+    counts[f.id] = n;
+  });
+  return counts;
+}
+
+/* The facets this board can actually be asked about. A facet with no cards is
+   NOT offered — B3's ruling applied to this strip: a chip that could only ever
+   empty the board is a dead control, and the same argument that stopped a
+   remote card drawing a `▶ START` it cannot honour stops this drawing a
+   `THEIRS` that selects nothing. */
+function ownerFilterOffered(counts) {
+  var out = [];
+  OWNER_FILTERS.forEach(function (f) {
+    if (f.needsSelf && !selfLogin) return;
+    if (!counts[f.id]) return;
+    out.push(f.id);
+  });
+  return out;
+}
+
+/* Storage is OPTIONAL and never fatal — Safari's private mode throws on read,
+   an embedded webview may not have it at all, and a board that cannot remember
+   a filter is still a board. Same helper shape as holoStore(), for the same
+   reason. */
+function ownerFilterStore() {
+  try {
+    return (typeof localStorage !== "undefined" && localStorage) || null;
+  } catch (e) { return null; }
+}
+
+/* THE CAPTAIN'S CHOICE, as he last left it. Lazily read once and cached, the
+   holoSplitGet() idiom. Anything that is not a known facet id is DROPPED rather
+   than trusted: what comes back off disk was written by an older build, or by
+   hand, or by a different tab, and an unreadable preference must degrade to "no
+   filter" — never to "no cards". */
+var OWNER_FILTER = null;
+function ownerFilterGet() {
+  if (OWNER_FILTER !== null) return OWNER_FILTER;
+  var raw = "";
+  try {
+    var s = ownerFilterStore();
+    if (s) raw = s.getItem(OWNER_FILTER_KEY) || "";
+  } catch (e) { raw = ""; }
+  var out = [];
+  String(raw).split(",").forEach(function (id) {
+    id = id.replace(/^\s+|\s+$/g, "");
+    if (ownerFilterById(id) && out.indexOf(id) < 0) out.push(id);
+  });
+  OWNER_FILTER = out;
+  return OWNER_FILTER;
+}
+
+function ownerFilterSet(ids) {
+  OWNER_FILTER = (ids || []).slice();
+  try {
+    var s = ownerFilterStore();
+    if (s) {
+      if (OWNER_FILTER.length) s.setItem(OWNER_FILTER_KEY, OWNER_FILTER.join(","));
+      else s.removeItem(OWNER_FILTER_KEY);
+    }
+  } catch (e) { /* a board that cannot remember is still a board */ }
+  /* THE REPAINT, AND THE WHOLE S152 STORY IN ONE LINE. repaintBoard() re-runs
+     render() over LAST_BOARD — the payload this page already has. No fetch, no
+     /api/board, and therefore no `gh issue list`: the forge cost of applying a
+     filter is exactly zero, however many times it is applied. */
+  repaintBoard();
+  return OWNER_FILTER;
+}
+
+/* THE CHOICE, MADE LEGAL FOR THE BOARD THAT IS ON SCREEN RIGHT NOW.
+
+   Kept apart from ownerFilterGet() on purpose, and for exactly the reason
+   holoSplitGet and holoSplitEffective are kept apart: `theirs` chosen yesterday
+   on a board that had somebody else's work is still the captain's preference
+   today, on a board that happens to have none — and applying it literally would
+   hand him an empty board with no explanation. So the STORED choice is left
+   alone and the EFFECTIVE one drops whatever this board cannot answer. When
+   that leaves nothing, nothing is filtered.
+
+   This is also what keeps the S190 posture: a `mine` remembered from a laptop
+   with a live gh is not answerable once the identity is gone, so it drops out
+   and the whole board comes back. */
+function ownerFilterEffective(offered) {
+  var chosen = ownerFilterGet(), out = [];
+  for (var i = 0; i < chosen.length; i++) {
+    if (offered.indexOf(chosen[i]) >= 0) out.push(chosen[i]);
+  }
+  return out;
+}
+
+/* ORed, and "no facets" means "no filter" — never "no cards". */
+function ownerFilterShows(m, active) {
+  if (!active || !active.length) return true;
+  for (var i = 0; i < active.length; i++) {
+    var f = ownerFilterById(active[i]);
+    if (f && f.match(m)) return true;
+  }
+  return false;
+}
+
+function ownerFilterToggle(id) {
+  var chosen = ownerFilterGet().slice();
+  var i = chosen.indexOf(id);
+  if (i >= 0) chosen.splice(i, 1); else chosen.push(id);
+  return ownerFilterSet(chosen);
+}
+
+/* The `o` key. ONE key, because the board's letters are nearly spent (f d s p v
+   l ? are taken) and four more would be four more chances to shadow something.
+   It walks the OFFERED facets in the order the strip prints them and then
+   returns to the whole board, so every stop on the cycle draws at least one
+   card and the captain is never one keystroke away from a blank screen.
+
+   A selection of TWO OR MORE (only reachable with the mouse) collapses to the
+   whole board on the next press rather than being guessed at. */
+function ownerFilterCycle() {
+  var offered = ownerFilterOffered(ownerFilterCounts(boardCards(LAST_BOARD)));
+  if (offered.length < 2) return false;   // nothing worth asking → not our key
+  var chosen = ownerFilterEffective(offered);
+  var next = [];
+  if (chosen.length === 1) {
+    var i = offered.indexOf(chosen[0]);
+    if (i >= 0 && i + 1 < offered.length) next = [offered[i + 1]];
+  } else if (chosen.length === 0) {
+    next = [offered[0]];
+  }
+  ownerFilterSet(next);
+  return true;
+}
+
+/* THE STRIP. Its own row above the board, the version-banner placement idiom —
+   never inside the yellow band, whose control order is pinned byte-for-byte by
+   test_help_console.
+
+   IT IS NOT A WRITE CONTROL. Filtering is a READ; it opens no endpoint and
+   POSTs nothing, so — like the `?` console — it stays live on a view-only
+   board. That is why the chips carry `of-chip` and NOT `.btn.go`, which is what
+   markViewOnly() disables.
+
+   SELECTED IS SOLID, UNSELECTED IS HOLLOW. The same sentence B1 just gave the
+   owner pill and S191 gave the locked control, said a third time about a third
+   thing, so the board has ONE visual language for "this is on / this is yours"
+   rather than three. */
+function renderOwnerFilter(counts, offered, active) {
+  var host = document.getElementById("ownerFilter");
+  if (!host) return;                       // a harness with no strip in its DOM
+  host.innerHTML = "";
+  /* Fewer than two answerable facets and there is nothing to ASK: every chip
+     would select the whole board. Hidden, and the page is byte-identical to its
+     pre-B5 self — which is every solo board this product has ever served. */
+  if (offered.length < 2) { host.hidden = true; return; }
+  host.hidden = false;
+  host.appendChild(el("span", "of-lbl", "OWNERSHIP"));
+  var chips = [{ id: "all", label: "ALL", title: "Every mission on the board" }];
+  offered.forEach(function (id) { chips.push(ownerFilterById(id)); });
+  chips.forEach(function (f) {
+    var on = f.id === "all" ? !active.length : active.indexOf(f.id) >= 0;
+    var b = btn(f.label + " · " + counts[f.id], "of-chip" + (on ? " sel" : ""),
+      function () {
+        if (f.id === "all") ownerFilterSet([]);
+        else ownerFilterToggle(f.id);
+      });
+    b.setAttribute("data-filter", f.id);
+    // The count the chip PRINTS, in machine-readable form beside it, so a test
+    // can hold the number on screen against the number of cards drawn without
+    // parsing display type.
+    b.setAttribute("data-count", String(counts[f.id]));
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.title = f.title;
+    host.appendChild(b);
+  });
+}
+
 function render(board) {
   // S140: a full rebuild would drop the keyboard focus — note which card has it.
   var keepFocus = focusedMissionId();
@@ -1638,12 +3007,28 @@ function render(board) {
     var fdHost = frontDoorHost();
     if (fdHost) { fdHost.innerHTML = ""; fdHost.hidden = true; }
   }
+  /* S196 B5 — THE OWNERSHIP FILTER, decided ONCE per render and before a single
+     column is built. Counted across the whole board (a per-column count could
+     not tell the strip how many cards `MINE` selects), and applied per column
+     below. captureForgeIdentity() ran above, so `selfLogin` is already settled
+     — the facets that need to know who we are are asking a question that has an
+     answer by the time they ask it. */
+  var allCards = boardCards(board);
+  var counts = ownerFilterCounts(allCards);
+  var offered = ownerFilterOffered(counts);
+  var active = ownerFilterEffective(offered);
+  renderOwnerFilter(counts, offered, active);
   if (!onFrontDoor) STAGE_META.forEach(function (meta) {
     var key = meta[0], name = meta[1], colour = meta[2];
-    var cards = (board.columns && board.columns[key]) || [];
+    var cards = ((board.columns && board.columns[key]) || [])
+      .filter(function (m) { return ownerFilterShows(m, active); });
     var col = el("div", "col");
     var head = el("div", "col-head " + colour);
     head.appendChild(el("span", null, name));
+    /* THE COUNT IS OF WHAT IS DRAWN. A head that kept counting the cards it is
+       no longer drawing would be the board disagreeing with itself in the one
+       place a captain checks a number. With no filter on, `cards` is the whole
+       column and this is byte-identical to every board before B5. */
     head.appendChild(el("span", "ct", String(cards.length)));
     col.appendChild(head);
     var body = el("div", "col-body");
@@ -1656,11 +3041,38 @@ function render(board) {
   // S163 fix round 5: the ROUTINE line. It describes the board, so it yields to
   // a verdict an action has just reported — this write is what erased a refusal
   // 33 ms after it appeared.
-  setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));
+  // S196 B5: …and it describes a FILTERED board honestly. A line reading "6
+  // active missions" over three drawn cards is the board lying about itself in
+  // the sentence whose whole job is to say what is on it. Byte-identical to the
+  // line above whenever nothing is filtered, which is every board before B5.
+  //
+  // S196 B5 FIX ROUND 1 — AND IT COUNTS THE POPULATION IT IS DESCRIBING.
+  // `board.missions` EXCLUDES done (assemble(), lcars_serve/board.py); the
+  // chips and the column heads count `board.columns`, which includes it. The
+  // first cut of this line took its numerator AND its denominator off
+  // `missions`, so the moment one done card existed the footer disagreed with
+  // both the chip above it and the cards beside it — the exact failure the
+  // boardCards() comment was written to prevent, committed six lines below it.
+  // So the FILTERED sentence counts DRAWN CARDS, both halves, and it drops the
+  // word "active" precisely because it is no longer the active-only list: "4
+  // of 7 missions" is a claim about the board, and 7 cards are on the board.
+  // The UNFILTERED line below is untouched — `n` active missions, worded
+  // "active", byte-identical to every board before B5.
+  if (active.length) {
+    var total = allCards.length;
+    var shown = allCards.filter(function (m) {
+      return ownerFilterShows(m, active);
+    }).length;
+    setIdleStatus(shown + " of " + total + " mission" + (total === 1 ? "" : "s")
+      + " · filtered");
+  } else {
+    setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));
+  }
   renderEmptyState(n); // S141: a cold board teaches itself (the ? mention).
   renderMeta(board.meta);
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
+  renderRemoteNote(board.meta && board.meta.remote);
   renderTestReadiness(board.meta && board.meta.testReadiness);
   /* S183: the FOUNDATION LOCK. On EVERY render, so it lifts as well as locks —
      an initialization mission landing (S185) clears meta.foundation and the
@@ -3254,6 +4666,11 @@ function setVerdict(t, kind) {
 function verdictClass(kind) {
   if (kind === "err") return "status-verdict err";
   if (kind === "ok") return "status-verdict ok";
+  // S196: `warn` — it HAPPENED, and it is not finished business (an adopt that
+  // carried warnings). Deliberately the neutral, prominent amber rather than a
+  // fourth colour: amber already means "an outcome worth reading", which is
+  // exactly the register. Named explicitly so it is a decision, not a fallthrough.
+  if (kind === "warn") return "status-verdict";
   return "status-verdict";
 }
 function clearVerdict() { STATUS_VERDICT = null; STATUS_VERDICT_KIND = null; }
@@ -3604,6 +5021,15 @@ var KEY_BINDINGS = [
   { id: "deploy", keys: ["d"], on: ["d"], scope: "global",
     label: "Open the main-deploy console",
     run: function () { return clickBandControl("deployMainBtn"); } },
+  // S196 B5 — ONE key for the ownership filter, not four. `o` is the only
+  // letter this binding claims, and it was free: f d s p v l ? are the whole of
+  // what the deck had spoken before tonight. It CYCLES rather than toggling a
+  // single facet, so one key reaches every question the strip offers, and
+  // ownerFilterCycle() returns false on a board with nothing worth asking —
+  // which leaves the keystroke to the browser instead of eating it.
+  { id: "owner-filter", keys: ["o"], on: ["o"], scope: "board",
+    label: "Cycle the ownership filter",
+    run: function () { return ownerFilterCycle(); } },
   { id: "nav-column", keys: ["↑", "↓"], on: ["arrowup", "arrowdown"],
     scope: "board", label: "Move between missions in a column",
     run: function (e) { return navColumn(e.key === "ArrowDown" ? 1 : -1); } },
@@ -6687,6 +8113,11 @@ function renderDetail(mi) {
   clearFilingOnState(mi);
   var dFiling = logFilingControl(mi);
   if (dFiling) actions.appendChild(dFiling);
+  // S191: ADOPT rides the detail header too, on the same terms as the card —
+  // the captain who opened a remote mission to read it is exactly the one who
+  // decides to take command of it.
+  var dAdopt = adoptControl(mi);
+  if (dAdopt) actions.appendChild(dAdopt);
   row1.appendChild(actions);
   head.appendChild(row1);
 
@@ -6724,6 +8155,15 @@ function renderDetail(mi) {
   // the header row (after the actions) so it can never overlap the action
   // buttons at any width (item 6); .detail-close styling pins it to the header's
   // top-right with reserved gutter so the title/pills don't run under it.
+  // S191: the detail is the OTHER door onto a mission, built by a different
+  // function, so a control left out of the card's sweep goes live at exactly the
+  // moment the captain clicks in for a closer look. One sweep over the whole
+  // grid; ✕ and ADOPT are exempt by class (see applyRemoteLock).
+  applyRemoteLock(grid, mi);
+  // S197: the same sweep for a LOCAL mission that already shipped elsewhere.
+  // The detail is the other door onto the card, and its header carries its own
+  // `✓ Review PR` — one fact, both surfaces (BUG-049's rule).
+  applyShippedLock(grid, mi);
   var close = btn("✕", "detail-close", closeOverlay);
   close.className = "detail-close";
   head.appendChild(close);
@@ -8242,6 +9682,8 @@ function stageLabel(stage) {
    wire their own click handlers / dispatch styles). */
 function verifyAffordance(m) {
   if (!m) return null;
+  var over = shippedOnVerify(m); if (over) return over;      // S197 (see fn)
+  var owned = ownerLockOnVerify(m); if (owned) return owned; // S190
   // BUG-078: an OPTIMISTIC reapprove/retry-merge dispatch is in flight (isMerging,
   // kept sticky by clearMergingOnState until a terminal change). It must win over
   // the reapprove / merge-failed gate kinds below so the button stays the disabled

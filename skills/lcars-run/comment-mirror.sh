@@ -539,6 +539,42 @@ cm_render_verify() {
     "$MISSION_ID" "$MISSION_ID"
 }
 
+# ===========================================================================
+# S188 — the ONE living "## Verify feedback" comment.
+# ===========================================================================
+# Every Verify send-back (`lcars feedback`) appends a stamped entry to the
+# Mission's feedback.md — durable, accumulating, and until now LOCAL-ONLY. So the
+# issue showed a Mission bouncing back to Align with no visible reason, and a
+# second laptop reading GitHub could not see WHY.
+#
+# The fix reuses the S65 idiom exactly, with no new mechanism: ONE comment keyed
+# `verify-feedback` in comments.json, CREATED on the FIRST send-back (that
+# creation is the ping) and PATCHed in place on every one after. Entries are
+# mirrored VERBATIM — feedback.md IS the accumulated history, so the body is that
+# file, unedited. Two send-backs therefore produce ONE comment carrying BOTH
+# entries, never two comments and never a rewritten first entry.
+
+# cm_render_verify_feedback → the living comment's body, or non-zero when there
+# is no feedback.md to mirror.
+cm_render_verify_feedback() {
+  local f="$MISSION_DIR/feedback.md"
+  [ -f "$f" ] || return 1
+  printf '## Verify feedback\n\n'
+  printf 'The captain'\''s Verify send-backs for this Mission, in order — the same\n'
+  printf '`feedback.md` the Align re-grill reads. Newest last.\n\n'
+  cat "$f"
+}
+
+# cm_mirror_verify_feedback — create-or-edit that one comment. Best-effort and
+# ALWAYS 0: mirroring never fails a send-back.
+cm_mirror_verify_feedback() {
+  local body
+  body="$(cm_render_verify_feedback)" || return 0
+  [ -n "$body" ] || return 0
+  cm_upsert "verify-feedback" "$body"
+  return 0
+}
+
 # cm_hhmm → current time as hh:mm (honours $LCARS_NOW for tests).
 cm_hhmm() {
   local t; t="$(now)"

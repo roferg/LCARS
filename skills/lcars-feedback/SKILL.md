@@ -28,6 +28,14 @@ bash ~/.claude/skills/lcars-feedback/feedback.sh \
 3. **Moves the GitHub label to `lcars:align`** — removes whatever stage label
    the card carried (and any `lcars:awaiting-human` overlay) and adds
    `lcars:align`, so the card returns to the Align column.
+4. **Mirrors the history to the issue as ONE living comment** — a
+   `## Verify feedback` comment, created on the FIRST send-back and edited in
+   place on every one after, carrying `feedback.md` verbatim. So the issue shows
+   *why* the card went back, however many rounds it takes, without a thread of
+   near-duplicate comments. It does **not** touch the issue BODY: the body is
+   rebuilt only at the two transfer points (the re-grill completion and Verify
+   entry), so the spec on GitHub moves when the spec moves, not when a note is
+   filed.
 
 It **deletes nothing**: the PRD, research findings, and validated/approved plans
 all stay on disk.

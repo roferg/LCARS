@@ -1,0 +1,906 @@
+{
+  "columns": {
+    "align": [
+      {
+        "activeSeconds": 0,
+        "activeSecondsAt": 0,
+        "awaiting": false,
+        "dispatched": false,
+        "engine": null,
+        "gate": null,
+        "groundingResearch": false,
+        "id": "m-parked",
+        "issue": 105,
+        "linked": false,
+        "modelMix": null,
+        "origin": null,
+        "parentIssue": null,
+        "parentMission": null,
+        "paused": false,
+        "pills": {
+          "cost": null,
+          "implementation": null,
+          "reasoning": null
+        },
+        "prNumber": null,
+        "prUrl": null,
+        "prdPending": true,
+        "progress": null,
+        "question": null,
+        "queued": false,
+        "reconcileMergeSha": null,
+        "reconcileNote": null,
+        "reconcileStatus": null,
+        "review": null,
+        "running": false,
+        "stage": "align",
+        "tickets": [],
+        "title": "Add a dark mode toggle",
+        "type": "feature"
+      },
+      {
+        "activeSeconds": 0,
+        "activeSecondsAt": 0,
+        "awaiting": false,
+        "dispatched": false,
+        "engine": null,
+        "gate": null,
+        "groundingResearch": false,
+        "id": "m-align",
+        "issue": 101,
+        "linked": false,
+        "modelMix": [
+          {
+            "stage": "Research",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Validate",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan Review",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Implement",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Verify",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          }
+        ],
+        "origin": null,
+        "parentIssue": null,
+        "parentMission": null,
+        "paused": false,
+        "pills": {
+          "cost": {
+            "high": 6.4,
+            "label": "$4.20\u2013$6.40",
+            "low": 4.2,
+            "unit": "usd"
+          },
+          "implementation": {
+            "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+            "level": "high"
+          },
+          "reasoning": {
+            "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+            "level": "medium"
+          }
+        },
+        "prNumber": null,
+        "prUrl": null,
+        "progress": null,
+        "question": null,
+        "queued": false,
+        "reconcileMergeSha": null,
+        "reconcileNote": null,
+        "reconcileStatus": null,
+        "review": null,
+        "running": false,
+        "stage": "align",
+        "tickets": [],
+        "title": "Add Gamification to Course Site",
+        "type": "feature"
+      }
+    ],
+    "done": [],
+    "implement": [
+      {
+        "activeSeconds": 0,
+        "activeSecondsAt": 0,
+        "awaiting": false,
+        "dispatched": false,
+        "engine": null,
+        "gate": null,
+        "groundingResearch": false,
+        "id": "m-paused",
+        "issue": 103,
+        "linked": false,
+        "modelMix": [
+          {
+            "stage": "Research",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Validate",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan Review",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Implement",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Verify",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          }
+        ],
+        "origin": null,
+        "parentIssue": null,
+        "parentMission": null,
+        "paused": true,
+        "pills": {
+          "cost": {
+            "high": 6.4,
+            "label": "$4.20\u2013$6.40",
+            "low": 4.2,
+            "unit": "usd"
+          },
+          "implementation": {
+            "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+            "level": "high"
+          },
+          "reasoning": {
+            "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+            "level": "medium"
+          }
+        },
+        "prNumber": null,
+        "prUrl": null,
+        "progress": {
+          "label": "WAVE ?/? \u00b7 TICKET 0/?",
+          "peakParallel": 0,
+          "shape": null,
+          "ticketsDone": 0,
+          "ticketsTotal": 0,
+          "wave": null,
+          "wavesTotal": null
+        },
+        "question": null,
+        "queued": false,
+        "reconcileMergeSha": null,
+        "reconcileNote": null,
+        "reconcileStatus": null,
+        "review": null,
+        "running": false,
+        "stage": "implement",
+        "tickets": [],
+        "title": "Paused mission",
+        "type": "feature"
+      }
+    ],
+    "plan": [
+      {
+        "activeSeconds": 0,
+        "activeSecondsAt": 0,
+        "awaiting": false,
+        "dispatched": false,
+        "engine": null,
+        "gate": null,
+        "groundingResearch": false,
+        "id": "m-noissue",
+        "issue": null,
+        "linked": false,
+        "modelMix": [
+          {
+            "stage": "Research",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Validate",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan Review",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Implement",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Verify",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          }
+        ],
+        "origin": null,
+        "parentIssue": null,
+        "parentMission": null,
+        "paused": false,
+        "pills": {
+          "cost": {
+            "high": 6.4,
+            "label": "$4.20\u2013$6.40",
+            "low": 4.2,
+            "unit": "usd"
+          },
+          "implementation": {
+            "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+            "level": "high"
+          },
+          "reasoning": {
+            "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+            "level": "medium"
+          }
+        },
+        "prNumber": null,
+        "prUrl": null,
+        "progress": null,
+        "question": null,
+        "queued": false,
+        "reconcileMergeSha": null,
+        "reconcileNote": null,
+        "reconcileStatus": null,
+        "review": null,
+        "running": false,
+        "stage": "plan",
+        "tickets": [],
+        "title": "Add Gamification to Course Site",
+        "type": "feature"
+      }
+    ],
+    "plan-review": [],
+    "research": [
+      {
+        "activeSeconds": 0,
+        "activeSecondsAt": 0,
+        "awaiting": true,
+        "dispatched": false,
+        "engine": null,
+        "gate": null,
+        "groundingResearch": false,
+        "id": "m-gated",
+        "issue": 104,
+        "linked": false,
+        "modelMix": [
+          {
+            "stage": "Research",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Validate",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan Review",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Implement",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Verify",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          }
+        ],
+        "origin": null,
+        "parentIssue": null,
+        "parentMission": null,
+        "paused": false,
+        "pills": {
+          "cost": {
+            "high": 6.4,
+            "label": "$4.20\u2013$6.40",
+            "low": 4.2,
+            "unit": "usd"
+          },
+          "implementation": {
+            "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+            "level": "high"
+          },
+          "reasoning": {
+            "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+            "level": "medium"
+          }
+        },
+        "prNumber": null,
+        "prUrl": null,
+        "progress": null,
+        "question": "Global vs per-course leaderboard?",
+        "queued": false,
+        "reconcileMergeSha": null,
+        "reconcileNote": null,
+        "reconcileStatus": null,
+        "review": null,
+        "running": false,
+        "stage": "research",
+        "tickets": [],
+        "title": "Gated mission",
+        "type": "feature"
+      }
+    ],
+    "schedule": [],
+    "validate": [],
+    "verify": [
+      {
+        "activeSeconds": 0,
+        "activeSecondsAt": 0,
+        "awaiting": false,
+        "dispatched": false,
+        "engine": null,
+        "gate": null,
+        "groundingResearch": false,
+        "id": "m-verify",
+        "issue": 102,
+        "linked": false,
+        "modelMix": [
+          {
+            "stage": "Research",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Validate",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Plan Review",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Implement",
+            "tier": "opus",
+            "why": "Touches a sensitive boundary."
+          },
+          {
+            "stage": "Verify",
+            "tier": "sonnet",
+            "why": "Touches a sensitive boundary."
+          }
+        ],
+        "origin": null,
+        "parentIssue": null,
+        "parentMission": null,
+        "paused": false,
+        "pills": {
+          "cost": {
+            "high": 6.4,
+            "label": "$4.20\u2013$6.40",
+            "low": 4.2,
+            "unit": "usd"
+          },
+          "implementation": {
+            "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+            "level": "high"
+          },
+          "reasoning": {
+            "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+            "level": "medium"
+          }
+        },
+        "prNumber": 7,
+        "prUrl": "https://github.com/acme/repo/pull/7",
+        "progress": null,
+        "question": null,
+        "queued": false,
+        "reconcileMergeSha": null,
+        "reconcileNote": null,
+        "reconcileStatus": null,
+        "review": "open",
+        "running": false,
+        "stage": "verify",
+        "tickets": [],
+        "title": "Add Gamification to Course Site",
+        "type": "feature"
+      }
+    ]
+  },
+  "meta": {
+    "adapter": "local",
+    "mode": "read-write",
+    "repo": "acme/repo"
+  },
+  "missions": [
+    {
+      "activeSeconds": 0,
+      "activeSecondsAt": 0,
+      "awaiting": false,
+      "dispatched": false,
+      "engine": null,
+      "gate": null,
+      "groundingResearch": false,
+      "id": "m-parked",
+      "issue": 105,
+      "linked": false,
+      "modelMix": null,
+      "origin": null,
+      "parentIssue": null,
+      "parentMission": null,
+      "paused": false,
+      "pills": {
+        "cost": null,
+        "implementation": null,
+        "reasoning": null
+      },
+      "prNumber": null,
+      "prUrl": null,
+      "prdPending": true,
+      "progress": null,
+      "question": null,
+      "queued": false,
+      "reconcileMergeSha": null,
+      "reconcileNote": null,
+      "reconcileStatus": null,
+      "review": null,
+      "running": false,
+      "stage": "align",
+      "tickets": [],
+      "title": "Add a dark mode toggle",
+      "type": "feature"
+    },
+    {
+      "activeSeconds": 0,
+      "activeSecondsAt": 0,
+      "awaiting": false,
+      "dispatched": false,
+      "engine": null,
+      "gate": null,
+      "groundingResearch": false,
+      "id": "m-paused",
+      "issue": 103,
+      "linked": false,
+      "modelMix": [
+        {
+          "stage": "Research",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Validate",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan Review",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Implement",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Verify",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        }
+      ],
+      "origin": null,
+      "parentIssue": null,
+      "parentMission": null,
+      "paused": true,
+      "pills": {
+        "cost": {
+          "high": 6.4,
+          "label": "$4.20\u2013$6.40",
+          "low": 4.2,
+          "unit": "usd"
+        },
+        "implementation": {
+          "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+          "level": "high"
+        },
+        "reasoning": {
+          "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+          "level": "medium"
+        }
+      },
+      "prNumber": null,
+      "prUrl": null,
+      "progress": {
+        "label": "WAVE ?/? \u00b7 TICKET 0/?",
+        "peakParallel": 0,
+        "shape": null,
+        "ticketsDone": 0,
+        "ticketsTotal": 0,
+        "wave": null,
+        "wavesTotal": null
+      },
+      "question": null,
+      "queued": false,
+      "reconcileMergeSha": null,
+      "reconcileNote": null,
+      "reconcileStatus": null,
+      "review": null,
+      "running": false,
+      "stage": "implement",
+      "tickets": [],
+      "title": "Paused mission",
+      "type": "feature"
+    },
+    {
+      "activeSeconds": 0,
+      "activeSecondsAt": 0,
+      "awaiting": true,
+      "dispatched": false,
+      "engine": null,
+      "gate": null,
+      "groundingResearch": false,
+      "id": "m-gated",
+      "issue": 104,
+      "linked": false,
+      "modelMix": [
+        {
+          "stage": "Research",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Validate",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan Review",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Implement",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Verify",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        }
+      ],
+      "origin": null,
+      "parentIssue": null,
+      "parentMission": null,
+      "paused": false,
+      "pills": {
+        "cost": {
+          "high": 6.4,
+          "label": "$4.20\u2013$6.40",
+          "low": 4.2,
+          "unit": "usd"
+        },
+        "implementation": {
+          "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+          "level": "high"
+        },
+        "reasoning": {
+          "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+          "level": "medium"
+        }
+      },
+      "prNumber": null,
+      "prUrl": null,
+      "progress": null,
+      "question": "Global vs per-course leaderboard?",
+      "queued": false,
+      "reconcileMergeSha": null,
+      "reconcileNote": null,
+      "reconcileStatus": null,
+      "review": null,
+      "running": false,
+      "stage": "research",
+      "tickets": [],
+      "title": "Gated mission",
+      "type": "feature"
+    },
+    {
+      "activeSeconds": 0,
+      "activeSecondsAt": 0,
+      "awaiting": false,
+      "dispatched": false,
+      "engine": null,
+      "gate": null,
+      "groundingResearch": false,
+      "id": "m-noissue",
+      "issue": null,
+      "linked": false,
+      "modelMix": [
+        {
+          "stage": "Research",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Validate",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan Review",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Implement",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Verify",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        }
+      ],
+      "origin": null,
+      "parentIssue": null,
+      "parentMission": null,
+      "paused": false,
+      "pills": {
+        "cost": {
+          "high": 6.4,
+          "label": "$4.20\u2013$6.40",
+          "low": 4.2,
+          "unit": "usd"
+        },
+        "implementation": {
+          "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+          "level": "high"
+        },
+        "reasoning": {
+          "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+          "level": "medium"
+        }
+      },
+      "prNumber": null,
+      "prUrl": null,
+      "progress": null,
+      "question": null,
+      "queued": false,
+      "reconcileMergeSha": null,
+      "reconcileNote": null,
+      "reconcileStatus": null,
+      "review": null,
+      "running": false,
+      "stage": "plan",
+      "tickets": [],
+      "title": "Add Gamification to Course Site",
+      "type": "feature"
+    },
+    {
+      "activeSeconds": 0,
+      "activeSecondsAt": 0,
+      "awaiting": false,
+      "dispatched": false,
+      "engine": null,
+      "gate": null,
+      "groundingResearch": false,
+      "id": "m-verify",
+      "issue": 102,
+      "linked": false,
+      "modelMix": [
+        {
+          "stage": "Research",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Validate",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan Review",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Implement",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Verify",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        }
+      ],
+      "origin": null,
+      "parentIssue": null,
+      "parentMission": null,
+      "paused": false,
+      "pills": {
+        "cost": {
+          "high": 6.4,
+          "label": "$4.20\u2013$6.40",
+          "low": 4.2,
+          "unit": "usd"
+        },
+        "implementation": {
+          "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+          "level": "high"
+        },
+        "reasoning": {
+          "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+          "level": "medium"
+        }
+      },
+      "prNumber": 7,
+      "prUrl": "https://github.com/acme/repo/pull/7",
+      "progress": null,
+      "question": null,
+      "queued": false,
+      "reconcileMergeSha": null,
+      "reconcileNote": null,
+      "reconcileStatus": null,
+      "review": "open",
+      "running": false,
+      "stage": "verify",
+      "tickets": [],
+      "title": "Add Gamification to Course Site",
+      "type": "feature"
+    },
+    {
+      "activeSeconds": 0,
+      "activeSecondsAt": 0,
+      "awaiting": false,
+      "dispatched": false,
+      "engine": null,
+      "gate": null,
+      "groundingResearch": false,
+      "id": "m-align",
+      "issue": 101,
+      "linked": false,
+      "modelMix": [
+        {
+          "stage": "Research",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Validate",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Plan Review",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Implement",
+          "tier": "opus",
+          "why": "Touches a sensitive boundary."
+        },
+        {
+          "stage": "Verify",
+          "tier": "sonnet",
+          "why": "Touches a sensitive boundary."
+        }
+      ],
+      "origin": null,
+      "parentIssue": null,
+      "parentMission": null,
+      "paused": false,
+      "pills": {
+        "cost": {
+          "high": 6.4,
+          "label": "$4.20\u2013$6.40",
+          "low": 4.2,
+          "unit": "usd"
+        },
+        "implementation": {
+          "label": "IMPL \u25cf\u25cf\u25cf HIGH",
+          "level": "high"
+        },
+        "reasoning": {
+          "label": "REASON \u25cf\u25cf\u25cb MEDIUM",
+          "level": "medium"
+        }
+      },
+      "prNumber": null,
+      "prUrl": null,
+      "progress": null,
+      "question": null,
+      "queued": false,
+      "reconcileMergeSha": null,
+      "reconcileNote": null,
+      "reconcileStatus": null,
+      "review": null,
+      "running": false,
+      "stage": "align",
+      "tickets": [],
+      "title": "Add Gamification to Course Site",
+      "type": "feature"
+    }
+  ],
+  "stages": [
+    "align",
+    "research",
+    "validate",
+    "plan",
+    "plan-review",
+    "schedule",
+    "implement",
+    "verify",
+    "done"
+  ]
+}
