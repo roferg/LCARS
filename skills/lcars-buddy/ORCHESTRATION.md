@@ -276,6 +276,51 @@ confirming it yourself: one `grep` would have confirmed the blank board in ten
 seconds, and it was available for six rounds. **Spot-check *positive* claims
 too** — six rounds of "suites green" were true and meaningless.
 
+### A spot-check needs a known-good control
+
+**Every spot-check MUST include a known-good control — a case whose expected
+result you already know — or it cannot detect its own breakage.**
+
+The story, written down because a rule without its reason gets undone. On
+2026-09-11 an orchestrator verified a HIGH hang-fix with a probe loop that built
+its arguments in a shell variable:
+
+```
+for a in "--five-hour" "--five-hour 50 --weekly 10"; do  bash usage.sh gate $a ; done
+```
+
+That shell does **not** word-split an unquoted variable, so the script under test
+received ONE joined argument and correctly rejected every case. Every probe read
+`exit 64, pass` — including the valid pair, which should have passed. The
+verification step had produced its own false green, and it was the same shape of
+error the spot-check rule above exists to catch. It was caught only because a
+later run included a **valid case whose `exit 64` was impossible**.
+
+So: **pass probe arguments literally, never through a variable**, and always
+include one case you know must succeed.
+
+### Cage a hang probe in its own PROCESS GROUP
+
+`perl -e 'alarm N; exec @ARGV'` does **NOT** reliably kill a blocked probe. On
+2026-09-11 bash waiting on a command-substitution child survived `SIGALRM`, a
+probe ran past 120 s, and an orphan held the tester's stdout pipe open — twice.
+
+Use a process-group cage: `start_new_session=True` to put the probe in its own
+group, `killpg` to kill the whole group on timeout, and **report ELAPSED time**
+so a fast pass is distinguishable from a kill. The reference implementation is
+committed:
+
+```
+python3 tests/drives/s197/cage.py 5 bash skills/<name>/<script>.sh <args…>
+```
+
+It also gives the probe `stdin=DEVNULL`, which matters more than it sounds:
+these suites use a `qgrep` helper that drains stdin, so an uncaged run from an
+interactive shell blocks on its own first assertion.
+
+**A caged run that does not come back is NOT proof of safety** — it is the hang,
+reported.
+
 ---
 
 ## Build contract
@@ -291,7 +336,13 @@ repo needs it to hand:
    it pass. Keep logic in a bundled shell script (not buried in prose) so it
    stays testable, and take external dependencies via env vars
    (`LCARS_GH_BIN`, `LCARS_WORKER_BIN`, …) so tests can stub them.
-3. **Install.** Run `./install.sh` so the change is the code that actually runs.
+3. **Install — ISOLATED.** `./install.sh` so the change is the code that actually
+   runs, but **never a bare `./install.sh` mid-session**: install into a scratch
+   dir with a single `LCARS_INSTALL_PREFIX=<scratch>`. `install.sh` writes to FOUR
+   destinations and setting only one of the four individual variables does NOT
+   isolate the install — its own header block names all four and explains the
+   hazard. A bare run off a WIP branch repoints the captain's live launchers and
+   Copilot plugin at it.
 4. **Verify.** See the scoped-suite rule below.
 5. **Commit.** Source, test and doc updates are all tracked. Nothing that lives
    only in `~/.claude/` counts — it doesn't ship.

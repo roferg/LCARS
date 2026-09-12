@@ -137,23 +137,58 @@ phys() { # path -> its physical path when it exists, else the path unchanged
 }
 lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-probe="$SKILLS_DEST/lcars-run"
-if [ -L "$probe" ]; then
-  target="$(readlink "$probe")"
+# Judge the verdict on EVERY installed lcars-* skill, not one probe symlink. The
+# old check read `lcars-run` ALONE, so a PARTIAL install — lcars-run linked here
+# while the rest still point at another checkout — printed a confident "in sync".
+# That is the one line a captain runs buddy in order to trust before they start
+# editing, and half a checkout running the old code is worse than all of it
+# running the old code, because only some of their fixes take effect. So: IN SYNC
+# only when every installed skill AGREES; when they disagree, say so and NAME one.
+r_cmp="$(lower "$(phys "$REPO")")"
+n_match=0 n_other=0 n_notlink=0
+first_other="" first_other_target="" first_notlink=""
+for entry in "$SKILLS_DEST"/lcars-*; do
+  # A broken symlink fails -e but passes -L, and is still an installed skill.
+  [ -L "$entry" ] || [ -e "$entry" ] || continue
+  name="$(basename "$entry")"
+  if [ ! -L "$entry" ]; then
+    n_notlink=$((n_notlink + 1))
+    [ -n "$first_notlink" ] || first_notlink="$name"
+    continue
+  fi
+  target="$(readlink "$entry")"
   # A relative symlink target is relative to the LINK's directory, not our cwd.
   case "$target" in /*) ;; *) target="$SKILLS_DEST/$target" ;; esac
   t_cmp="$(lower "$(phys "$target")")"
-  r_cmp="$(lower "$(phys "$REPO")")"
   if [ "$t_cmp" = "$r_cmp" ] || [ "${t_cmp#"$r_cmp"/}" != "$t_cmp" ]; then
-    echo "  ✓ installed skills point at THIS checkout — in sync."
+    n_match=$((n_match + 1))
   else
-    echo "  ⚠ installed skills point ELSEWHERE ($target) — they are STALE."
-    echo "    Run \`./install.sh\` in $REPO so your fixes are what runs."
+    n_other=$((n_other + 1))
+    [ -n "$first_other" ] || { first_other="$name"; first_other_target="$target"; }
   fi
-elif [ -e "$probe" ]; then
-  echo "  ⚠ $probe exists but is not a symlink — run \`./install.sh\` in $REPO to (re)link."
-else
+done
+n_checked=$((n_match + n_other + n_notlink))
+
+if [ "$n_checked" -eq 0 ]; then
   echo "  ⚠ LCARS skills are not installed here — run \`./install.sh\` in $REPO."
+elif [ "$n_other" -eq 0 ] && [ "$n_notlink" -eq 0 ]; then
+  # Unanimous. The count is printed so "in sync" is falsifiable — a verdict from
+  # one symlink and a verdict from twenty used to read identically.
+  echo "  ✓ installed skills point at THIS checkout — in sync. ($n_checked skill(s) checked)"
+elif [ "$n_match" -eq 0 ] && [ "$n_other" -eq 0 ]; then
+  echo "  ⚠ $SKILLS_DEST/$first_notlink exists but is not a symlink — run \`./install.sh\` in $REPO to (re)link."
+elif [ "$n_match" -eq 0 ] && [ "$n_notlink" -eq 0 ]; then
+  echo "  ⚠ installed skills point ELSEWHERE ($first_other_target) — they are STALE."
+  echo "    Run \`./install.sh\` in $REPO so your fixes are what runs."
+else
+  echo "  ⚠ installed skills DISAGREE — this is a PARTIAL install, not a synced one."
+  detail="$n_match point at THIS checkout"
+  [ "$n_other" -gt 0 ] && detail="$detail, $n_other point elsewhere"
+  [ "$n_notlink" -gt 0 ] && detail="$detail, $n_notlink are not symlinks"
+  echo "    of $n_checked skill(s) checked: $detail."
+  [ -n "$first_other" ] && echo "    e.g. $first_other -> $first_other_target"
+  [ -n "$first_notlink" ] && echo "    e.g. $first_notlink is not a symlink"
+  echo "    Only SOME of your fixes would take effect. Run \`./install.sh\` in $REPO."
 fi
 
 # ==========================================================================

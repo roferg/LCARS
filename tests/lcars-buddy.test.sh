@@ -249,6 +249,42 @@ check "8. carries every required H2 heading, in order" \
 check "8. keeps the post-mortem examples that justify the rules (S156/S163/S188)" \
   "grep -q 'S156' '$ORCH' && grep -q 'S163' '$ORCH' && grep -q 'S188' '$ORCH'"
 
+# --- 8b. the two rules the 2026-09-11 night earned ------------------------
+# Both were paid for in lost session time and both go in EXISTING sections (the
+# heading list above is pinned, so a new rule may never grow a new H2).
+#   (a) a spot-check without a known-good control cannot detect its own
+#       breakage — an orchestrator's own probe loop produced a false green while
+#       verifying a HIGH hang-fix.
+#   (b) `perl -e 'alarm N; exec @ARGV'` does not reliably kill a blocked probe;
+#       only a process-group cage does. The reference implementation is
+#       committed under tests/drives/ (see § Inherit the rig).
+check "8b. § Time-box requires a known-good control in every spot-check" \
+  "grep -qi 'known-good control' '$ORCH'"
+check "8b. and tells the story that justifies it (the joined-argument false green)" \
+  "grep -qi 'word-split' '$ORCH' && grep -qi 'literal' '$ORCH'"
+check "8b. rules out the perl alarm cage and names the process-group cure" \
+  "grep -qF \"perl -e 'alarm\" '$ORCH' && grep -qF 'killpg' '$ORCH' && grep -qF 'start_new_session' '$ORCH'"
+check "8b. says a caged run that never returns is not proof of safety" \
+  "grep -qi 'not proof of safety' '$ORCH'"
+# The build contract's install step must not contradict the isolated-install rule
+# the consuming skills now point at — one file saying "run ./install.sh" while
+# another says "never bare" is the drift this file exists to end.
+check "8b. the build contract's install step is the ISOLATED one" \
+  "grep -qF 'LCARS_INSTALL_PREFIX' '$ORCH'"
+CAGE="$REPO_ROOT/tests/drives/s197/cage.py"
+check "8b. the rule points at a cage that is actually committed" \
+  "grep -qF 'tests/drives/s197/cage.py' '$ORCH' && [ -f '$CAGE' ]"
+# The cage must really cage: a probe that blocks forever comes back killed, and
+# a probe that exits comes back with its exit code — both reporting ELAPSED.
+cagehang="$TMPROOT/cage-hang.txt"
+python3 "$CAGE" 2 bash -c 'sleep 60' >"$cagehang" 2>&1
+check "8b. the committed cage KILLS a blocked probe and reports it hung" \
+  "qgrep -qi 'timed out' '$cagehang' && qgrep -q 'ELAPSED' '$cagehang'"
+cagefast="$TMPROOT/cage-fast.txt"
+python3 "$CAGE" 5 bash -c 'echo alive; exit 64' >"$cagefast" 2>&1
+check "8b. and passes a fast probe's own exit code and output straight through" \
+  "qgrep -q 'EXIT 64' '$cagefast' && qgrep -q 'alive' '$cagefast'"
+
 # --- 9. SKILL.md points at the rules file instead of restating them -------
 SKILL_MD="$REPO_ROOT/skills/lcars-buddy/SKILL.md"
 check "9. SKILL.md references the rules file by its INSTALL path" \
@@ -322,6 +358,56 @@ check "13. CLAUDE.md scopes the FULL suite to ship-it, fixes/sessions to the sco
   "grep -qF 'ship-it' '$CONTRACT' && grep -qiE 'scoped' '$CONTRACT'"
 check "13. CLAUDE.md states the branch-naming convention and the commit trailer" \
   "grep -qF 'fix/<slug>' '$CONTRACT' && grep -qF 'Co-Authored-By' '$CONTRACT'"
+
+# --- 14. INSTALL SYNC judges ALL installed skills, not one symlink -------
+# buddy.sh resolved install sync by reading the `lcars-run` symlink ALONE, so a
+# PARTIAL install — lcars-run linked to this checkout while the other skills
+# still point somewhere else — reported a confident, wrong "in sync". That is
+# the one line a captain runs buddy in order to trust before editing code, and a
+# partial install is exactly what a half-finished `./install.sh`, a renamed
+# checkout, or an isolated-dest experiment leaves behind.
+other14="$(new_lcars_checkout)"
+mkdir -p "$other14/skills/lcars-answer" "$LCARS/skills/lcars-answer"
+dest_partial="$(new_plain_dir)"
+ln -snf "$LCARS/skills/lcars-run"      "$dest_partial/lcars-run"      # THIS checkout
+ln -snf "$LCARS/skills/lcars-buddy"    "$dest_partial/lcars-buddy"    # THIS checkout
+ln -snf "$other14/skills/lcars-answer" "$dest_partial/lcars-answer"   # somewhere ELSE
+out14="$TMPROOT/out14.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_partial" bash "$SCRIPT" >"$out14" 2>&1
+check "14. a PARTIAL install does NOT report in sync" \
+  "! grep -qi 'in sync' '$out14'"
+check "14. it says the installed skills DISAGREE / the install is partial" \
+  "grep -qiE 'disagree|partial' '$out14'"
+check "14. it NAMES a disagreeing skill so the captain knows where to look" \
+  "grep -q 'lcars-answer' '$out14'"
+check "14. and still tells them to run install.sh" \
+  "grep -qF 'install.sh' '$out14'"
+
+# 14b. unanimity is still IN SYNC — several skills, all pointing here.
+dest_all="$(new_plain_dir)"
+ln -snf "$LCARS/skills/lcars-run"    "$dest_all/lcars-run"
+ln -snf "$LCARS/skills/lcars-buddy"  "$dest_all/lcars-buddy"
+ln -snf "$LCARS/skills/lcars-answer" "$dest_all/lcars-answer"
+out14b="$TMPROOT/out14b.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_all" bash "$SCRIPT" >"$out14b" 2>&1
+check "14b. every skill agreeing reads IN SYNC" "grep -qi 'in sync' '$out14b'"
+check "14b. and says HOW MANY skills it checked (so 'in sync' is falsifiable)" \
+  "grep -qE 'in sync.*3|3 .*(skill|checked)' '$out14b'"
+check "14b. no false disagreement when they all agree" \
+  "! grep -qiE 'disagree|partial|stale' '$out14b'"
+
+# 14c. ALL of them pointing elsewhere is still plain STALE (6b's verdict, which
+# must not be softened into "partial" — a wholly stale install is not partial).
+dest_allstale="$(new_plain_dir)"
+ln -snf "$other14/skills/lcars-run"    "$dest_allstale/lcars-run"
+ln -snf "$other14/skills/lcars-answer" "$dest_allstale/lcars-answer"
+out14c="$TMPROOT/out14c.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_allstale" bash "$SCRIPT" >"$out14c" 2>&1
+check "14c. a wholly different checkout still reads STALE, not partial" \
+  "grep -qi 'stale' '$out14c' && ! grep -qi 'in sync' '$out14c'"
 
 # --- summary --------------------------------------------------------------
 printf '\nlcars buddy: %d passed, %d failed\n' "$pass" "$fail"
