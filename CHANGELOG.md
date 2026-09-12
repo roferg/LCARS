@@ -4,6 +4,19 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.6 — lcars buddy improvements
+
+**`lcars buddy` now fixes LCARS the way a session does** — it briefs you first,
+refuses to start on a checkout that is dirty or mid-round, works on its own
+`fix/<slug>` branch, has a fresh tester check the result, stops after three
+attempts instead of flailing, and reads out what it did. The rules it follows now
+live in one file that `buddy`, `run-session` and `night-watch` all read, so they
+cannot drift apart.
+
+Also: `LCARS_INSTALL_PREFIX` gives you a genuinely isolated install in one
+variable; buddy's install check can no longer report "in sync" on a partial
+install; and the version check can no longer block a test run.
+
 ## 2026.9.5 — launch works on copilot again
 
 **`lcars launch` (and the viewscreen's launch button) runs your Mission's app on
