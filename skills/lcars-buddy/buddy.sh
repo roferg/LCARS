@@ -137,25 +137,55 @@ phys() { # path -> its physical path when it exists, else the path unchanged
 }
 lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# Judge the verdict on EVERY installed lcars-* skill, not one probe symlink. The
-# old check read `lcars-run` ALONE, so a PARTIAL install — lcars-run linked here
+# Judge the verdict on EVERY installed skill, not one probe symlink. The old
+# check read `lcars-run` ALONE, so a PARTIAL install — lcars-run linked here
 # while the rest still point at another checkout — printed a confident "in sync".
 # That is the one line a captain runs buddy in order to trust before they start
 # editing, and half a checkout running the old code is worse than all of it
 # running the old code, because only some of their fixes take effect. So: IN SYNC
 # only when every installed skill AGREES; when they disagree, say so and NAME one.
+#
+# DIRECTION IS ONLY HALF THE QUESTION. A verdict that asks only "does what IS
+# here point at me?" is silent about what is NOT here: a dest holding a single,
+# correctly-linked lcars-run read `in sync. (1 skill(s) checked)` while seventeen
+# skills were missing — which is the ledgered defect in its original words ("a
+# partial install where lcars-run is linked but others are not reads as fully in
+# sync"). The count was printed but compared to NOTHING, so it could not falsify
+# anything. The installed set is therefore measured against the skills this
+# checkout actually SHIPS, and IN SYNC needs direction AND completeness.
+#
+# The glob is `lcars*`, not `lcars-*`: the bare one-word `lcars` skill — the verb
+# the captain uses most — was globbed straight out, so seventeen lcars-* links
+# aimed here plus a bare `lcars` aimed at a DIFFERENT checkout still read
+# "in sync. (17 skill(s) checked)" with eighteen skills installed.
+
+# What this checkout SHIPS — the denominator. Every directory under skills/ is a
+# skill, the bare `lcars` included.
+shipped=""
+n_shipped=0
+for d in "$REPO"/skills/*/; do
+  [ -d "$d" ] || continue
+  shipped="$shipped $(basename "$d")"
+  n_shipped=$((n_shipped + 1))
+done
+
 r_cmp="$(lower "$(phys "$REPO")")"
 n_match=0 n_other=0 n_notlink=0
 first_other="" first_other_target="" first_notlink=""
-for entry in "$SKILLS_DEST"/lcars-*; do
+installed_names=""
+for entry in "$SKILLS_DEST"/lcars*; do
   # A broken symlink fails -e but passes -L, and is still an installed skill.
   [ -L "$entry" ] || [ -e "$entry" ] || continue
   name="$(basename "$entry")"
   if [ ! -L "$entry" ]; then
     n_notlink=$((n_notlink + 1))
     [ -n "$first_notlink" ] || first_notlink="$name"
+    # It occupies the slot, so it counts as PRESENT for completeness — the
+    # complaint about it is direction (it is not a link at all), not absence.
+    installed_names="$installed_names $name"
     continue
   fi
+  installed_names="$installed_names $name"
   target="$(readlink "$entry")"
   # A relative symlink target is relative to the LINK's directory, not our cwd.
   case "$target" in /*) ;; *) target="$SKILLS_DEST/$target" ;; esac
@@ -169,12 +199,31 @@ for entry in "$SKILLS_DEST"/lcars-*; do
 done
 n_checked=$((n_match + n_other + n_notlink))
 
+# COMPLETENESS: which shipped skills have no slot in the dest at all.
+n_missing=0
+first_missing=""
+for name in $shipped; do
+  case " $installed_names " in
+    *" $name "*) ;;
+    *) n_missing=$((n_missing + 1)); [ -n "$first_missing" ] || first_missing="$name" ;;
+  esac
+done
+
 if [ "$n_checked" -eq 0 ]; then
   echo "  ⚠ LCARS skills are not installed here — run \`./install.sh\` in $REPO."
+elif [ "$n_other" -eq 0 ] && [ "$n_notlink" -eq 0 ] && [ "$n_missing" -eq 0 ]; then
+  # Unanimous AND complete. The count is printed as a FRACTION so a reader can
+  # falsify "in sync" — a verdict from one symlink and a verdict from all
+  # eighteen used to read identically.
+  echo "  ✓ installed skills point at THIS checkout — in sync. ($n_checked of $n_shipped skills installed)"
 elif [ "$n_other" -eq 0 ] && [ "$n_notlink" -eq 0 ]; then
-  # Unanimous. The count is printed so "in sync" is falsifiable — a verdict from
-  # one symlink and a verdict from twenty used to read identically.
-  echo "  ✓ installed skills point at THIS checkout — in sync. ($n_checked skill(s) checked)"
+  # Every link that IS here is aimed correctly — but skills are MISSING, so this
+  # is not a synced install: the absent ones are not running this checkout's code
+  # at all, and if they are installed elsewhere on this machine they are running
+  # that checkout's.
+  echo "  ⚠ installed skills point at THIS checkout, but the install is INCOMPLETE — only $n_checked of $n_shipped skills installed."
+  echo "    $n_missing missing, e.g. $first_missing."
+  echo "    Run \`./install.sh\` in $REPO so every skill is linked."
 elif [ "$n_match" -eq 0 ] && [ "$n_other" -eq 0 ]; then
   echo "  ⚠ $SKILLS_DEST/$first_notlink exists but is not a symlink — run \`./install.sh\` in $REPO to (re)link."
 elif [ "$n_match" -eq 0 ] && [ "$n_notlink" -eq 0 ]; then
@@ -186,6 +235,8 @@ else
   [ "$n_other" -gt 0 ] && detail="$detail, $n_other point elsewhere"
   [ "$n_notlink" -gt 0 ] && detail="$detail, $n_notlink are not symlinks"
   echo "    of $n_checked skill(s) checked: $detail."
+  [ "$n_missing" -gt 0 ] && \
+    echo "    and only $n_checked of $n_shipped skills are installed at all ($n_missing missing, e.g. $first_missing)."
   [ -n "$first_other" ] && echo "    e.g. $first_other -> $first_other_target"
   [ -n "$first_notlink" ] && echo "    e.g. $first_notlink is not a symlink"
   echo "    Only SOME of your fixes would take effect. Run \`./install.sh\` in $REPO."

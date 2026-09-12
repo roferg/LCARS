@@ -2,17 +2,29 @@
 #
 # tests/drives/s197/plant.sh — rebuild the S197 buddy-orchestrator proof rig.
 #
-# Builds the sandbox the S197 tester drove: a throwaway LCARS clone carrying the
-# WIP buddy on a CLEAN `main` (buddy's pre-flight refuses a dirty tree or a
-# non-main branch), a throwaway install with ALL FOUR install destinations
+# Builds the sandbox the S197 tester drove: a throwaway LCARS clone carrying THE
+# CODE UNDER TEST on a CLEAN `main` (buddy's pre-flight refuses a dirty tree or a
+# non-main branch), a throwaway install with ALL FIVE install destinations
 # redirected, a foreign fixture repo with one planted mission whose events.jsonl
 # ends in a breadcrumb, and the one-line defect that breadcrumb describes.
 #
-# WHY ALL FOUR DESTINATIONS: install.sh has four, and three default into $HOME
+# WHAT "THE CODE UNDER TEST" MEANS, AND WHY IT IS NOT OBVIOUS.
+# The first version of this rig checked the clone out on `main` and then copied
+# $SRC's UNCOMMITTED files over it. That was right while the work was dirty. The
+# moment the work was COMMITTED to a branch it became silently WRONG: the clone
+# went back to `main` (ff1bb68) and carried none of the branch — no
+# ORCHESTRATION.md, no LCARS_INSTALL_PREFIX — so re-running the rig to "verify
+# the PR" tested the OLD code and reported a confident green. A fresh tester hit
+# exactly that. So: clone $SRC's actual HEAD, keep copying any dirty files on top
+# (both states work), and then PROVE it landed — see THE GUARD below. A proof rig
+# that can silently test the wrong code is worse than no rig at all.
+#
+# WHY ALL FIVE DESTINATIONS: install.sh has five, and four default into $HOME
 # (LCARS_BIN_DEST -> ~/.local/bin, LCARS_COPILOT_PLUGINS_DIR -> ~/.copilot/...,
-# LCARS_COPILOT_CONFIG -> ~/.copilot/config.json). Setting only
-# LCARS_SKILLS_DEST repoints the captain's REAL launchers and Copilot plugin at
-# the throwaway clone. This happened on 2026-09-11 and had to be repaired.
+# LCARS_COPILOT_CONFIG -> ~/.copilot/config.json, LCARS_VERSION_STAMP ->
+# ~/.claude/lcars-version-check). Setting only LCARS_SKILLS_DEST repoints the
+# captain's REAL launchers and Copilot plugin at the throwaway clone. This
+# happened on 2026-09-11 and had to be repaired.
 #
 #   usage: SRC=<lcars checkout to clone> SANDBOX=<empty dir> bash plant.sh
 #
@@ -54,14 +66,20 @@ esac
 SH
 chmod +x "$SANDBOX/stub/gh"
 
-# --- the clone: WIP content, on a CLEAN `main` ------------------------------
-# A plain `git clone` of a worktree carries only COMMITTED content, so an
-# uncommitted WIP buddy would not come along. Copy the dirty files over, then
-# commit them onto the clone's own main so the tree is clean — buddy refuses to
-# stack a fix onto a dirty or non-main checkout, and that refusal is under test.
+# --- the clone: THE CODE UNDER TEST, on a CLEAN `main` ----------------------
+# $SRC's HEAD is the code under test, whatever branch it sits on. Check that sha
+# out as the clone's own `main` (buddy refuses a non-`main` checkout, and that
+# refusal is itself under test), then copy any UNCOMMITTED files over it — a
+# plain `git clone` carries only committed content, so a dirty WIP would not come
+# along. Both states therefore work: committed on a branch, or dirty on main.
+SRC_SHA="$(git -C "$SRC" rev-parse HEAD)"
+SRC_BRANCH="$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
 rm -rf "$CLONE"
 git clone -q "$SRC" "$CLONE"
-git -C "$CLONE" checkout -q main 2>/dev/null || git -C "$CLONE" checkout -q -b main origin/main
+# -B so it works whether or not the clone already has a `main`; the sha, not the
+# branch name, because a detached HEAD has no branch to name.
+git -C "$CLONE" checkout -q -B main "$SRC_SHA" 2>/dev/null \
+  || git -C "$CLONE" checkout -q -B main "origin/$SRC_BRANCH"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ -e "$SRC/$f" ] && { mkdir -p "$CLONE/$(dirname "$f")"; cp "$SRC/$f" "$CLONE/$f"; }
@@ -76,15 +94,71 @@ grep -q 'issue_disp="\$issue"' "$CLONE/skills/lcars-status/status.sh" \
 
 git -C "$CLONE" add -A
 git -C "$CLONE" -c user.name="S197 Rig" -c user.email="rig@example.invalid" \
-  commit -q -m "sandbox baseline: WIP buddy + one planted defect in lcars-status"
+  commit -q -m "sandbox baseline: the code under test + one planted defect in lcars-status"
 
-# --- the throwaway install: ALL FOUR destinations ---------------------------
+# --- THE GUARD: prove the sandbox carries the CODE UNDER TEST ---------------
+# In the spirit of the planted-defect drift guard above, and for the same reason:
+# this script's whole value is that a green brief out of the sandbox says
+# something true about $SRC. When it planted `main` instead of the branch it said
+# something true about code nobody was reviewing, and said it confidently. Every
+# check below is a FAILURE TO PLANT, not a failure of the code under test, so it
+# is loud and fatal rather than a warning someone scrolls past.
+guard_fail=0
+# The check RUNS INSIDE guard rather than before it: `set -e` is on, and a bare
+# failing `grep -q` / `[ ]` would kill the script before it could say which marker
+# was missing — a silent exit 1 from a guard is barely better than no guard.
+guard() { # guard <what was expected> <test command...>
+  local msg="$1"; shift
+  if ! "$@"; then
+    echo "plant.sh GUARD FAILED: $msg" >&2
+    guard_fail=1
+  fi
+}
+# 1. The baseline commit's PARENT must be $SRC's HEAD. This is the wording-proof
+#    version of "did the code under test land" — it does not care what the branch
+#    is called or which files changed on it.
+parent="$(git -C "$CLONE" rev-parse HEAD~1 2>/dev/null || echo none)"
+guard "the sandbox baseline sits on $parent, not on \$SRC's HEAD $SRC_SHA ($SRC_BRANCH) — the clone did NOT get the code under test" \
+  test "$parent" = "$SRC_SHA"
+# 2 & 3. Two distinctive markers of the S197 branch, named rather than inferred,
+#    so a half-planted sandbox (e.g. dirty files copied over an old `main`, which
+#    is precisely what used to happen) cannot pass on one of them alone.
+guard "$CLONE/install.sh has no LCARS_INSTALL_PREFIX — this is pre-S197 install.sh" \
+  grep -q 'LCARS_INSTALL_PREFIX' "$CLONE/install.sh"
+guard "$CLONE/skills/lcars-buddy/ORCHESTRATION.md is missing — the shared orchestration rules did not come along" \
+  test -f "$CLONE/skills/lcars-buddy/ORCHESTRATION.md"
+if [ "$guard_fail" -ne 0 ]; then
+  {
+    echo
+    echo "plant.sh: REFUSING to hand back a sandbox that does not carry the code"
+    echo "under test. A brief out of it would be a FALSE GREEN — see"
+    echo "ORCHESTRATION.md § Time-box and verify claims."
+  } >&2
+  exit 1
+fi
+
+# --- the throwaway install: ALL FIVE destinations ---------------------------
+# The fifth, LCARS_VERSION_STAMP, is not written by install.sh — skills/
+# lcars-version/check.sh writes it — but it defaults into $HOME like the rest, and
+# an absent stamp means the version check fetches on EVERY call, which against a
+# network origin blocks on a credential prompt (measured: 600 s, a hung run).
 ( cd "$CLONE" && \
   LCARS_SKILLS_DEST="$SKILLS" \
   LCARS_BIN_DEST="$SANDBOX/s197-bin" \
   LCARS_COPILOT_PLUGINS_DIR="$SANDBOX/s197-copilot-plugins" \
   LCARS_COPILOT_CONFIG="$SANDBOX/s197-copilot-config.json" \
+  LCARS_VERSION_STAMP="$SANDBOX/s197-version-check" \
   ./install.sh >"$SANDBOX/install.log" 2>&1 )
+
+# 4. The install must have pointed at THIS clone. A stale dest left over from an
+#    earlier run would otherwise send the driver at another checkout entirely —
+#    the very thing `lcars buddy`'s INSTALL SYNC section exists to catch.
+buddy_target="$(readlink "$SKILLS/lcars-buddy" 2>/dev/null || echo none)"
+case "$buddy_target" in
+  "$CLONE"/*) ;;
+  *) echo "plant.sh GUARD FAILED: $SKILLS/lcars-buddy -> $buddy_target, not into $CLONE — the install did not land on the sandbox clone" >&2
+     exit 1 ;;
+esac
 
 # --- the foreign fixture repo + the planted mission -------------------------
 rm -rf "$FIXTURE"; mkdir -p "$FIXTURE"; cd "$FIXTURE"
@@ -114,6 +188,7 @@ EOF
 cat <<EOF
 
 S197 rig planted.
+  code under test:         $SRC @ $SRC_SHA ($SRC_BRANCH)   [guard: PASSED]
   clone (clean, on main):  $CLONE
   installed skills:        $SKILLS
   fixture repo:            $FIXTURE

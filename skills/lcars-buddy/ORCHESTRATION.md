@@ -321,6 +321,28 @@ interactive shell blocks on its own first assertion.
 **A caged run that does not come back is NOT proof of safety** — it is the hang,
 reported.
 
+### Two mechanisms hang a suite, not one
+
+BUG-089 — a harness helper's bare `cat` blocking on inherited stdin — is the
+famous one, and `stdin=DEVNULL` closes it. There is a **second, independent** one:
+the LCARS **version check**. It throttles on `LCARS_VERSION_STAMP`, which defaults
+into `$HOME`, so under a redirected `$HOME` or an isolated install the stamp is
+always absent, the throttle never engages, and every call runs
+`git fetch origin main`. Against a network `origin` with no usable credential that
+fetch asks for one — **and closing stdin is not a defence**, because git never
+reads the prompt from stdin. Measured, with controls:
+
+| condition | result |
+|---|---|
+| worktree (origin = GitHub) + fake `$HOME` | **600.1 s HUNG** |
+| `GIT_TERMINAL_PROMPT=0` only | **still hung** — git prefers `$GIT_ASKPASS`, and an editor's askpass helper waits forever for a GUI answer |
+| `+ GIT_ASKPASS= SSH_ASKPASS= -c core.askPass=` | 0.4 s, degrades to "could not reach origin" |
+| clone whose `origin` is a local path + fake `$HOME` | 8.3 s, PASS |
+
+`check.sh` now sets all four, so the fetch fails fast instead of prompting. When
+a suite hangs, check **both** mechanisms — and remember the obvious variable
+(`GIT_TERMINAL_PROMPT=0`) is not the one that was blocking.
+
 ---
 
 ## Build contract
@@ -338,11 +360,14 @@ repo needs it to hand:
    (`LCARS_GH_BIN`, `LCARS_WORKER_BIN`, …) so tests can stub them.
 3. **Install — ISOLATED.** `./install.sh` so the change is the code that actually
    runs, but **never a bare `./install.sh` mid-session**: install into a scratch
-   dir with a single `LCARS_INSTALL_PREFIX=<scratch>`. `install.sh` writes to FOUR
-   destinations and setting only one of the four individual variables does NOT
-   isolate the install — its own header block names all four and explains the
-   hazard. A bare run off a WIP branch repoints the captain's live launchers and
-   Copilot plugin at it.
+   dir with a single `LCARS_INSTALL_PREFIX=<scratch>`. An LCARS install writes to
+   FIVE destinations under `$HOME` and setting only one of the five individual
+   variables does NOT isolate the install — `install.sh`'s own header block names
+   all five and explains the hazard. A bare run off a WIP branch repoints the
+   captain's live launchers and Copilot plugin at it. The fifth,
+   `LCARS_VERSION_STAMP`, is written by `skills/lcars-version/check.sh` rather
+   than by `install.sh`, which is how it stayed uncounted for a round — and it is
+   not cosmetic; see the hang rule above.
 4. **Verify.** See the scoped-suite rule below.
 5. **Commit.** Source, test and doc updates are all tracked. Nothing that lives
    only in `~/.claude/` counts — it doesn't ship.

@@ -116,13 +116,26 @@ mkdir -p "$LAUNCH_REPO/.git/lcars"
 
 # Invoke the INSTALLED launcher with LCARS_WEB_DIR unset; the stubbed python
 # prints the cwd it was launched from, which must be the repo's web/ dir.
+# LCARS_VIEWSCREEN_ALLOW_AI=1 is REQUIRED here, and its absence is why these two
+# checks were red on main as well as on every branch: viewscreen.sh refuses to
+# start the daemon inside a Claude Code / Copilot session (CLAUDECODE=1) and
+# prints the "open a new Terminal" note instead, so the stubbed python never ran
+# and no `CWD:` line was ever produced. viewscreen.sh documents this exact bypass
+# for "headless automation that really wants the daemon here" — which is what a
+# test is. The launcher's WEB_DIR resolution was never at fault: with the bypass
+# set it prints `CWD: <repo>/web`, the value this check has always asserted.
 runout="$(cd "$LAUNCH_REPO" && \
+  LCARS_VIEWSCREEN_ALLOW_AI=1 \
   LCARS_PYTHON_BIN="$PYSTUB" LCARS_SERVE_NO_OPEN=1 \
   "$e1/bin/lcars-viewscreen" --open 2>&1)"
 check "3. launcher resolves WEB_DIR to the repo's web/ (not a broken ../../web)" \
   "printf '%s' \"\$runout\" | qgrep -q -- 'CWD: $WEB_DIR'"
 check "3. lcars-serve alias resolves WEB_DIR identically" \
-  "[ \"\$(cd '$LAUNCH_REPO' && LCARS_PYTHON_BIN='$PYSTUB' LCARS_SERVE_NO_OPEN=1 '$e1/bin/lcars-serve' --open 2>&1 | grep -c -- 'CWD: $WEB_DIR')\" -ge 1 ]"
+  "[ \"\$(cd '$LAUNCH_REPO' && LCARS_VIEWSCREEN_ALLOW_AI=1 LCARS_PYTHON_BIN='$PYSTUB' LCARS_SERVE_NO_OPEN=1 '$e1/bin/lcars-serve' --open 2>&1 | grep -c -- 'CWD: $WEB_DIR')\" -ge 1 ]"
+# CONTROL: without the bypass the launcher must REFUSE and say why — so the two
+# checks above can never go green by the guard quietly disappearing.
+check "3. CONTROL: without the bypass it refuses inside an AI session and says so" \
+  "[ \"\${CLAUDECODE:-}\" != 1 ] || { out3c=\"\$(cd '$LAUNCH_REPO' && LCARS_PYTHON_BIN='$PYSTUB' LCARS_SERVE_NO_OPEN=1 '$e1/bin/lcars-viewscreen' --open 2>&1)\"; grep -qi 'NOT started' <<<\"\$out3c\" && ! grep -q 'CWD:' <<<\"\$out3c\"; }"
 
 # ==========================================================================
 # Behaviour 4: re-running install.sh is idempotent — launchers still point at the
@@ -270,8 +283,19 @@ check "9. the override install also leaves \$HOME untouched" \
 # setting only one of them does NOT isolate the install. A rule without its
 # reason gets undone, and this one cost a hand repair.
 # ==========================================================================
-check "10. the header names all four destination variables" \
-  "grep -q 'LCARS_SKILLS_DEST' '$INSTALL' && grep -q 'LCARS_BIN_DEST' '$INSTALL' && grep -q 'LCARS_COPILOT_PLUGINS_DIR' '$INSTALL' && grep -q 'LCARS_COPILOT_CONFIG' '$INSTALL'"
+check "10. the header names all FIVE destination variables" \
+  "grep -q 'LCARS_SKILLS_DEST' '$INSTALL' && grep -q 'LCARS_BIN_DEST' '$INSTALL' && grep -q 'LCARS_COPILOT_PLUGINS_DIR' '$INSTALL' && grep -q 'LCARS_COPILOT_CONFIG' '$INSTALL' && grep -q 'LCARS_VERSION_STAMP' '$INSTALL'"
+# S197 fix round: there was a FIFTH $HOME destination nobody had counted —
+# skills/lcars-version/check.sh's throttle stamp, default
+# $HOME/.claude/lcars-version-check. The prefix did not derive it, so under an
+# isolated install the stamp was always absent, the throttle never engaged, and
+# every call ran `git fetch origin main` — which BLOCKS on a credential prompt
+# against a network origin, even with stdin closed (measured: 600 s hung). A
+# header that says "four" is how a sixth one gets missed next time.
+check "10. the header says FIVE destinations, not four" \
+  "grep -qE 'WRITES TO FIVE DESTINATIONS|FIVE DESTINATIONS' '$INSTALL' && ! grep -q 'WRITES TO FOUR DESTINATIONS' '$INSTALL'"
+check "10. the header says the prefix derives the version-check stamp too" \
+  "grep -qE 'version-check' '$INSTALL'"
 check "10. the header warns that setting only ONE does not isolate the install" \
   "grep -qi 'does NOT isolate' '$INSTALL'"
 check "10. the header documents LCARS_INSTALL_PREFIX as the one-variable cure" \
