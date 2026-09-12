@@ -634,6 +634,135 @@ check "10f. no-drift → NO worker spawned" \
 check "10f. no-drift → no commit, VERSION unchanged" \
   "[ \"\$(git -C '$RREPO' rev-parse HEAD)\" = '$head_n' ] && [ \"\$(cat '$RREPO/VERSION')\" = '2026.7.1' ]"
 
+# --- 11. the version check can never BLOCK a session or a test run --------
+# S197 fix round, and it buys back a hang. check.sh throttles on
+# LCARS_VERSION_STAMP (default $HOME/.claude/lcars-version-check). Under any
+# isolated install or redirected $HOME the stamp is always ABSENT, so the check
+# fetches EVERY time; and where `origin` is a network remote, `git fetch` blocks
+# on a credential prompt — even with stdin closed. Measured, with a control:
+#   worktree (origin = GitHub) + fake HOME           -> 600.1 s HUNG
+#   same checkout + GIT_TERMINAL_PROMPT=0            ->  13.6 s, 49/49 PASS
+#   clone whose origin is a local path + fake HOME   ->   8.3 s, PASS
+# That is a SECOND, independent mechanism behind the standing "the suites hang
+# sessions" rule, distinct from BUG-089's bare `cat`, and it hits every fresh
+# user, every CI box, every offline machine and every isolated run.
+
+# 11a. the fetch is told, by every route git has, that it may not prompt.
+# GIT_TERMINAL_PROMPT=0 ALONE IS NOT ENOUGH, and this is where a plausible fix
+# would have stopped. Traced on this machine, the blocking call was not the
+# terminal at all:
+#   run_command: '/Applications/Visual Studio Code.app/.../git/dist/askpass.sh'
+#                'Username for '\''https://github.com'\'': '
+# git prefers $GIT_ASKPASS over the terminal, and an editor-supplied askpass
+# helper waits forever for a GUI answer nobody is there to give — so
+# GIT_TERMINAL_PROMPT=0 was simply not consulted. Measured against a throwaway
+# clone with a 401 origin and a fake $HOME:
+#   GIT_TERMINAL_PROMPT=0 alone                         -> 60 s, still HUNG
+#   + -c credential.helper= as well                     -> 60 s, still HUNG
+#   + GIT_ASKPASS= SSH_ASKPASS= -c core.askPass=        ->  0.4 s, exit 128,
+#                                        "could not read Username … prompts disabled"
+# So all four are asserted: env GIT_ASKPASS and SSH_ASKPASS emptied (git treats
+# an empty value as unset and falls through), core.askPass emptied so a CONFIGURED
+# helper cannot stand in, and GIT_TERMINAL_PROMPT=0 to close the terminal route
+# the fall-through ends at.
+#
+# A git stub that records its OWN environment, so the assertion is about what
+# check.sh actually hands git rather than about what the source reads like.
+mk_fixture "2026.7.1"
+ENVLOG="$FX/fetch-env"
+: >"$ENVLOG"
+GITENV="$FX/git-env"
+ARGLOG="$FX/fetch-args"
+: >"$ARGLOG"
+cat >"$GITENV" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = fetch ]; then
+    printf 'GIT_TERMINAL_PROMPT=%s GIT_ASKPASS=[%s] SSH_ASKPASS=[%s]\n' \
+      "\${GIT_TERMINAL_PROMPT-<unset>}" "\${GIT_ASKPASS-<unset>}" "\${SSH_ASKPASS-<unset>}" >> "$ENVLOG"
+    printf '%s\n' "\$*" >> "$ARGLOG"
+  fi
+done
+exec git "\$@"
+EOF
+chmod +x "$GITENV"
+REPO11="$(mk_initrepo "2026.7.1")"
+OUT11="$FX/out11.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITENV" \
+  LCARS_VERSION_CWD="$REPO11" LCARS_VERSION_STAMP="$FX/stamp11" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" warn >"$OUT11" 2>&1 </dev/null; rc11=$?
+check "11a. the check still exits 0 (it never fails the calling verb)" "[ '$rc11' -eq 0 ]"
+check "11a. CONTROL: the fetch really ran (otherwise 11b is vacuous)" "[ -s '$ENVLOG' ]"
+check "11a. the fetch is run with GIT_TERMINAL_PROMPT=0" \
+  "grep -q 'GIT_TERMINAL_PROMPT=0' '$ENVLOG'"
+check "11a. ... and with GIT_ASKPASS emptied — the route that ACTUALLY blocked" \
+  "grep -q 'GIT_ASKPASS=\[\]' '$ENVLOG'"
+check "11a. ... and SSH_ASKPASS emptied (the same trap for an ssh remote)" \
+  "grep -q 'SSH_ASKPASS=\[\]' '$ENVLOG'"
+check "11a. ... and core.askPass emptied, so a CONFIGURED helper cannot stand in" \
+  "grep -q 'core.askPass=' '$ARGLOG'"
+check "11a. every fetch it makes carries all of them, not just the first" \
+  "! grep -qv 'GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=\[\] SSH_ASKPASS=\[\]' '$ENVLOG'"
+
+# 11b. LCARS_INSTALL_PREFIX derives the stamp, so an isolated install throttles.
+# This was the FIFTH $HOME destination the prefix did not cover: four were
+# redirected, the stamp was not, so "isolated" still meant "fetch every time"
+# and the fetch was the thing that hung.
+mk_fixture "2026.7.1"
+PFX11="$(mktemp -d "$TMPROOT/pfx11.XXXX")/inst"
+FAKEHOME11="$(mktemp -d "$TMPROOT/home11.XXXX")"
+REPO11b="$(mk_initrepo "2026.7.1")"
+FETCH11="$FX/fetch11"; ORDER11="$FX/order11"
+GIT11="$FX/git11"; : >"$FETCH11"; : >"$ORDER11"
+make_git_stub "$GIT11" "$FETCH11" "$ORDER11"
+env -u LCARS_VERSION_STAMP HOME="$FAKEHOME11" \
+    LCARS_INSTALL_PREFIX="$PFX11" \
+    LCARS_REPO="$SRC" LCARS_GIT_BIN="$GIT11" \
+    LCARS_VERSION_CWD="$REPO11b" LCARS_NOW_EPOCH=1000 \
+    bash "$CHECK" warn >"$FX/out11b.txt" 2>&1 </dev/null
+check "11b. the throttle stamp lands under LCARS_INSTALL_PREFIX" \
+  "[ -f '$PFX11/version-check' ]"
+check "11b. and NOTHING is written into the (fake) \$HOME/.claude" \
+  "[ ! -e '$FAKEHOME11/.claude' ]"
+# and once stamped, a second in-window call makes NO fetch at all — which is the
+# whole point: the prefix install can now throttle like a real one.
+: >"$FETCH11"
+env -u LCARS_VERSION_STAMP HOME="$FAKEHOME11" \
+    LCARS_INSTALL_PREFIX="$PFX11" \
+    LCARS_REPO="$SRC" LCARS_GIT_BIN="$GIT11" \
+    LCARS_VERSION_CWD="$REPO11b" LCARS_NOW_EPOCH=1001 \
+    bash "$CHECK" warn >"$FX/out11b2.txt" 2>&1 </dev/null
+check "11b. a second in-window call under the prefix makes ZERO fetches" \
+  "[ ! -s '$FETCH11' ]"
+# 11c. an EXPLICIT LCARS_VERSION_STAMP still wins over the prefix (the same
+# back-compat rule the other four destination variables keep).
+mk_fixture "2026.7.1"
+PFX11c="$(mktemp -d "$TMPROOT/pfx11c.XXXX")/inst"
+EXPLICIT11c="$FX/explicit-stamp"
+REPO11c="$(mk_initrepo "2026.7.1")"
+FETCH11c="$FX/fetch11c"; ORDER11c="$FX/order11c"
+GIT11c="$FX/git11c"; : >"$FETCH11c"; : >"$ORDER11c"
+make_git_stub "$GIT11c" "$FETCH11c" "$ORDER11c"
+LCARS_INSTALL_PREFIX="$PFX11c" LCARS_VERSION_STAMP="$EXPLICIT11c" \
+  LCARS_REPO="$SRC" LCARS_GIT_BIN="$GIT11c" \
+  LCARS_VERSION_CWD="$REPO11c" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" warn >"$FX/out11c.txt" 2>&1 </dev/null
+check "11c. an explicit LCARS_VERSION_STAMP still OVERRIDES the prefix" \
+  "[ -f '$EXPLICIT11c' ] && [ ! -e '$PFX11c/version-check' ]"
+# 11d. with NO prefix and no explicit stamp, the default is unchanged.
+mk_fixture "2026.7.1"
+FAKEHOME11d="$(mktemp -d "$TMPROOT/home11d.XXXX")"
+REPO11d="$(mk_initrepo "2026.7.1")"
+FETCH11d="$FX/fetch11d"; ORDER11d="$FX/order11d"
+GIT11d="$FX/git11d"; : >"$FETCH11d"; : >"$ORDER11d"
+make_git_stub "$GIT11d" "$FETCH11d" "$ORDER11d"
+env -u LCARS_VERSION_STAMP -u LCARS_INSTALL_PREFIX HOME="$FAKEHOME11d" \
+    LCARS_REPO="$SRC" LCARS_GIT_BIN="$GIT11d" \
+    LCARS_VERSION_CWD="$REPO11d" LCARS_NOW_EPOCH=1000 \
+    bash "$CHECK" warn >"$FX/out11d.txt" 2>&1 </dev/null
+check "11d. with no prefix the stamp default is still \$HOME/.claude/lcars-version-check" \
+  "[ -f '$FAKEHOME11d/.claude/lcars-version-check' ]"
+
 # ==========================================================================
 echo
 printf 'version check: %d passed, %d failed\n' "$pass" "$fail"

@@ -1,0 +1,3 @@
+ae670d8 fix(status): restore the "#" on the rendered issue number
+d5138ef sandbox baseline: WIP buddy (feat/buddy-orchestrator working tree) + one planted defect in lcars-status
+ff1bb68 Merge pull request #109 from roferg/fix/launch-copilot-model

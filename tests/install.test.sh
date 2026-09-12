@@ -116,13 +116,26 @@ mkdir -p "$LAUNCH_REPO/.git/lcars"
 
 # Invoke the INSTALLED launcher with LCARS_WEB_DIR unset; the stubbed python
 # prints the cwd it was launched from, which must be the repo's web/ dir.
+# LCARS_VIEWSCREEN_ALLOW_AI=1 is REQUIRED here, and its absence is why these two
+# checks were red on main as well as on every branch: viewscreen.sh refuses to
+# start the daemon inside a Claude Code / Copilot session (CLAUDECODE=1) and
+# prints the "open a new Terminal" note instead, so the stubbed python never ran
+# and no `CWD:` line was ever produced. viewscreen.sh documents this exact bypass
+# for "headless automation that really wants the daemon here" — which is what a
+# test is. The launcher's WEB_DIR resolution was never at fault: with the bypass
+# set it prints `CWD: <repo>/web`, the value this check has always asserted.
 runout="$(cd "$LAUNCH_REPO" && \
+  LCARS_VIEWSCREEN_ALLOW_AI=1 \
   LCARS_PYTHON_BIN="$PYSTUB" LCARS_SERVE_NO_OPEN=1 \
   "$e1/bin/lcars-viewscreen" --open 2>&1)"
 check "3. launcher resolves WEB_DIR to the repo's web/ (not a broken ../../web)" \
   "printf '%s' \"\$runout\" | qgrep -q -- 'CWD: $WEB_DIR'"
 check "3. lcars-serve alias resolves WEB_DIR identically" \
-  "[ \"\$(cd '$LAUNCH_REPO' && LCARS_PYTHON_BIN='$PYSTUB' LCARS_SERVE_NO_OPEN=1 '$e1/bin/lcars-serve' --open 2>&1 | grep -c -- 'CWD: $WEB_DIR')\" -ge 1 ]"
+  "[ \"\$(cd '$LAUNCH_REPO' && LCARS_VIEWSCREEN_ALLOW_AI=1 LCARS_PYTHON_BIN='$PYSTUB' LCARS_SERVE_NO_OPEN=1 '$e1/bin/lcars-serve' --open 2>&1 | grep -c -- 'CWD: $WEB_DIR')\" -ge 1 ]"
+# CONTROL: without the bypass the launcher must REFUSE and say why — so the two
+# checks above can never go green by the guard quietly disappearing.
+check "3. CONTROL: without the bypass it refuses inside an AI session and says so" \
+  "[ \"\${CLAUDECODE:-}\" != 1 ] || { out3c=\"\$(cd '$LAUNCH_REPO' && LCARS_PYTHON_BIN='$PYSTUB' LCARS_SERVE_NO_OPEN=1 '$e1/bin/lcars-viewscreen' --open 2>&1)\"; grep -qi 'NOT started' <<<\"\$out3c\" && ! grep -q 'CWD:' <<<\"\$out3c\"; }"
 
 # ==========================================================================
 # Behaviour 4: re-running install.sh is idempotent — launchers still point at the
@@ -184,6 +197,109 @@ check "7. still prints the copilot-skipped note (graceful degrade)" \
   "qgrep -qi 'copilot' < '$e7/out.txt'"
 check "7. does NOT create a copilot symlink when copilot is absent" \
   "[ ! -L '$e7/copilot/_direct/lcars' ]"
+
+# ==========================================================================
+# Behaviour 8: LCARS_INSTALL_PREFIX — ONE variable gives a genuinely isolated
+# install.
+#
+# install.sh writes to FOUR destinations and only one of them is obvious. On
+# 2026-09-11 an "isolated" install that set only LCARS_SKILLS_DEST still
+# rewrote the captain's three ~/.local/bin launchers to exec an unmerged
+# worktree and repointed his ~/.copilot plugin at it; it had to be repaired by
+# hand. LCARS_INSTALL_PREFIX derives ALL FOUR from one directory, so a session
+# or test can install off a WIP branch without touching a live surface.
+#
+# HOME is redirected to an empty dir for the duration so this test can assert
+# the real default paths are never created. LCARS_COPILOT_BIN is pointed at
+# /usr/bin/true — a binary that exists and is never executed beyond
+# `command -v` — so the copilot half runs deterministically whether or not the
+# machine has Copilot installed. It is NOT one of the four destinations.
+# ==========================================================================
+pfx="$(mktemp -d "$TMPROOT/prefix.XXXX")/inst"
+fakehome="$(mktemp -d "$TMPROOT/fakehome.XXXX")"
+pout="$TMPROOT/prefix-out.txt"
+rc8=0
+env -u LCARS_SKILLS_DEST -u LCARS_BIN_DEST -u LCARS_COPILOT_PLUGINS_DIR \
+    -u LCARS_COPILOT_CONFIG \
+    HOME="$fakehome" \
+    LCARS_INSTALL_PREFIX="$pfx" \
+    LCARS_COPILOT_BIN=/usr/bin/true \
+    bash "$INSTALL" >"$pout" 2>&1 || rc8=$?
+
+check "8. a prefix-only install exits 0" "[ '$rc8' -eq 0 ]"
+check "8. skills land under the prefix (not ~/.claude/skills)" \
+  "[ -L '$pfx/claude-skills/lcars' ]"
+check "8. all skills are linked under the prefix (count matches)" \
+  "[ \"\$(find '$pfx/claude-skills' -maxdepth 1 -type l | wc -l | tr -d ' ')\" -eq '$SKILL_COUNT' ]"
+check "8. launchers land under the prefix (not ~/.local/bin)" \
+  "[ -x '$pfx/bin/lcars-viewscreen' ] && [ -x '$pfx/bin/lcars-serve' ] && [ -x '$pfx/bin/lcars-launch' ]"
+if command -v jq >/dev/null 2>&1; then
+  check "8. the Copilot plugin symlink lands under the prefix" \
+    "[ -L '$pfx/copilot-plugins/lcars' ]"
+  check "8. the Copilot config lands under the prefix" \
+    "[ -f '$pfx/copilot-config.json' ]"
+else
+  ok "8. (copilot plugin/config assertions skipped — no jq on PATH)"
+  ok "8. (copilot config assertion skipped — no jq on PATH)"
+fi
+
+# …and NOTHING under the (fake) HOME: these are the four real default paths.
+check "8. leaves \$HOME/.claude untouched" "[ ! -e '$fakehome/.claude' ]"
+check "8. leaves \$HOME/.local/bin untouched" "[ ! -e '$fakehome/.local' ]"
+check "8. leaves \$HOME/.copilot untouched (plugins dir AND config.json)" \
+  "[ ! -e '$fakehome/.copilot' ]"
+
+# ==========================================================================
+# Behaviour 9: the four individual variables still work and still OVERRIDE the
+# prefix (back-compat — every existing test and doc sets them directly).
+# ==========================================================================
+pfx9="$(mktemp -d "$TMPROOT/prefix9.XXXX")/inst"
+e9="$(new_env)"
+fakehome9="$(mktemp -d "$TMPROOT/fakehome9.XXXX")"
+rc9=0
+env HOME="$fakehome9" \
+    LCARS_INSTALL_PREFIX="$pfx9" \
+    LCARS_SKILLS_DEST="$e9/claude-skills" \
+    LCARS_BIN_DEST="$e9/bin" \
+    LCARS_COPILOT_PLUGINS_DIR="$e9/copilot/_direct" \
+    LCARS_COPILOT_CONFIG="$e9/copilot/config.json" \
+    LCARS_COPILOT_BIN=/usr/bin/true \
+    bash "$INSTALL" >"$e9/out.txt" 2>&1 || rc9=$?
+check "9. an explicit LCARS_SKILLS_DEST still wins over the prefix" \
+  "[ -L '$e9/claude-skills/lcars' ] && [ ! -e '$pfx9/claude-skills' ]"
+check "9. an explicit LCARS_BIN_DEST still wins over the prefix" \
+  "[ -x '$e9/bin/lcars-viewscreen' ] && [ ! -e '$pfx9/bin' ]"
+if command -v jq >/dev/null 2>&1; then
+  check "9. explicit Copilot dest vars still win over the prefix" \
+    "[ -L '$e9/copilot/_direct/lcars' ] && [ -f '$e9/copilot/config.json' ] && [ ! -e '$pfx9/copilot-plugins' ] && [ ! -e '$pfx9/copilot-config.json' ]"
+else
+  ok "9. (explicit Copilot dest override skipped — no jq on PATH)"
+fi
+check "9. the override install also leaves \$HOME untouched" \
+  "[ ! -e '$fakehome9/.claude' ] && [ ! -e '$fakehome9/.local' ] && [ ! -e '$fakehome9/.copilot' ]"
+
+# ==========================================================================
+# Behaviour 10: the header block NAMES all four destinations and says that
+# setting only one of them does NOT isolate the install. A rule without its
+# reason gets undone, and this one cost a hand repair.
+# ==========================================================================
+check "10. the header names all FIVE destination variables" \
+  "grep -q 'LCARS_SKILLS_DEST' '$INSTALL' && grep -q 'LCARS_BIN_DEST' '$INSTALL' && grep -q 'LCARS_COPILOT_PLUGINS_DIR' '$INSTALL' && grep -q 'LCARS_COPILOT_CONFIG' '$INSTALL' && grep -q 'LCARS_VERSION_STAMP' '$INSTALL'"
+# S197 fix round: there was a FIFTH $HOME destination nobody had counted —
+# skills/lcars-version/check.sh's throttle stamp, default
+# $HOME/.claude/lcars-version-check. The prefix did not derive it, so under an
+# isolated install the stamp was always absent, the throttle never engaged, and
+# every call ran `git fetch origin main` — which BLOCKS on a credential prompt
+# against a network origin, even with stdin closed (measured: 600 s hung). A
+# header that says "four" is how a sixth one gets missed next time.
+check "10. the header says FIVE destinations, not four" \
+  "grep -qE 'WRITES TO FIVE DESTINATIONS|FIVE DESTINATIONS' '$INSTALL' && ! grep -q 'WRITES TO FOUR DESTINATIONS' '$INSTALL'"
+check "10. the header says the prefix derives the version-check stamp too" \
+  "grep -qE 'version-check' '$INSTALL'"
+check "10. the header warns that setting only ONE does not isolate the install" \
+  "grep -qi 'does NOT isolate' '$INSTALL'"
+check "10. the header documents LCARS_INSTALL_PREFIX as the one-variable cure" \
+  "grep -q 'LCARS_INSTALL_PREFIX' '$INSTALL'"
 
 # ==========================================================================
 echo

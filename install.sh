@@ -23,25 +23,76 @@
 # Re-running this script is safe and idempotent. Run it again after pulling
 # only to pick up brand-new skills added since you last installed.
 #
-# Dependencies/paths are taken via env so tests can stub them and never touch
-# the real ~/.claude, ~/.copilot, or ~/.local/bin:
+# ---------------------------------------------------------------------------
+# AN LCARS INSTALL WRITES TO FIVE DESTINATIONS UNDER $HOME — and only the first
+# is obvious:
+#
 #   LCARS_SKILLS_DEST          the Claude skills dir (default ~/.claude/skills)
 #   LCARS_BIN_DEST             on-PATH launcher dir  (default ~/.local/bin)
-#   LCARS_COPILOT_BIN          the copilot binary    (default copilot)
+#                              — lcars-viewscreen, lcars-serve, lcars-launch
 #   LCARS_COPILOT_PLUGINS_DIR  Copilot plugins dir   (default ~/.copilot/installed-plugins/_direct)
 #   LCARS_COPILOT_CONFIG       Copilot config.json   (default ~/.copilot/config.json)
+#   LCARS_VERSION_STAMP        the version-check throttle stamp
+#                              (default ~/.claude/lcars-version-check) — written by
+#                              skills/lcars-version/check.sh, not by this script,
+#                              which is exactly why it was missed: four
+#                              destinations were redirected and this FIFTH one was
+#                              not, so under an "isolated" install the stamp was
+#                              always absent, the throttle never engaged, and
+#                              every single check ran `git fetch origin main`.
+#                              Against a network origin that fetch BLOCKS on a
+#                              credential prompt even with stdin closed — measured
+#                              at 600 s, i.e. a hung test run or a hung session.
 #
+# SETTING ONLY ONE OF THEM does NOT isolate the install. The others still default
+# into $HOME, so an "isolated" install off a work-in-progress branch silently
+# rewrites the real on-PATH launchers to exec that branch and repoints the real
+# Copilot plugin at it. That happened on 2026-09-11 and had to be repaired by hand.
+#
+# To get a genuinely isolated install, set ONE variable:
+#
+#   LCARS_INSTALL_PREFIX=/some/scratch/dir ./install.sh
+#
+# which derives ALL FIVE destinations from that prefix:
+#   $PREFIX/claude-skills  $PREFIX/bin  $PREFIX/copilot-plugins
+#   $PREFIX/copilot-config.json  $PREFIX/version-check
+#
+# The five individual variables keep working and still OVERRIDE the prefix, so
+# existing tests and docs that set them directly are unaffected.
+#
+# One more env dependency, which is NOT a destination (nothing is written to it):
+#   LCARS_COPILOT_BIN          the copilot binary    (default copilot)
+# ---------------------------------------------------------------------------
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$REPO_ROOT/skills"
-DEST="${LCARS_SKILLS_DEST:-$HOME/.claude/skills}"
 
-BIN_DEST="${LCARS_BIN_DEST:-$HOME/.local/bin}"
+# Defaults: derived from LCARS_INSTALL_PREFIX when it is set, else $HOME. The
+# prefix exists so ONE variable isolates ALL FIVE destinations (see the block
+# above) — an install that leaks into $HOME is the hazard it was added to close.
+# The fifth, $PREFIX/version-check, is derived in skills/lcars-version/check.sh
+# (the script that writes it) from the same LCARS_INSTALL_PREFIX.
+PREFIX="${LCARS_INSTALL_PREFIX:-}"
+if [ -n "$PREFIX" ]; then
+  DEFAULT_SKILLS_DEST="$PREFIX/claude-skills"
+  DEFAULT_BIN_DEST="$PREFIX/bin"
+  DEFAULT_COPILOT_PLUGINS_DIR="$PREFIX/copilot-plugins"
+  DEFAULT_COPILOT_CONFIG="$PREFIX/copilot-config.json"
+else
+  DEFAULT_SKILLS_DEST="$HOME/.claude/skills"
+  DEFAULT_BIN_DEST="$HOME/.local/bin"
+  DEFAULT_COPILOT_PLUGINS_DIR="$HOME/.copilot/installed-plugins/_direct"
+  DEFAULT_COPILOT_CONFIG="$HOME/.copilot/config.json"
+fi
+
+DEST="${LCARS_SKILLS_DEST:-$DEFAULT_SKILLS_DEST}"
+
+BIN_DEST="${LCARS_BIN_DEST:-$DEFAULT_BIN_DEST}"
 
 COPILOT_BIN="${LCARS_COPILOT_BIN:-copilot}"
-COPILOT_PLUGINS_DIR="${LCARS_COPILOT_PLUGINS_DIR:-$HOME/.copilot/installed-plugins/_direct}"
-COPILOT_CONFIG="${LCARS_COPILOT_CONFIG:-$HOME/.copilot/config.json}"
+COPILOT_PLUGINS_DIR="${LCARS_COPILOT_PLUGINS_DIR:-$DEFAULT_COPILOT_PLUGINS_DIR}"
+COPILOT_CONFIG="${LCARS_COPILOT_CONFIG:-$DEFAULT_COPILOT_CONFIG}"
 PLUGIN_NAME="lcars"
 
 [ -d "$SRC" ] || { echo "lcars install: no skills/ directory at $SRC" >&2; exit 1; }

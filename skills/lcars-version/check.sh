@@ -46,7 +46,8 @@
 #   LCARS_VERSION         running version (default: read $REPO/VERSION)
 #   LCARS_VERSION_CWD     repo to inspect for its stamp (default: $PWD)
 #   LCARS_GIT_BIN/GIT_BIN git binary                   (default: git)
-#   LCARS_VERSION_STAMP   throttle stamp file  (default: ~/.claude/lcars-version-check)
+#   LCARS_VERSION_STAMP   throttle stamp file  (default: $LCARS_INSTALL_PREFIX/version-check
+#                         when that is set, else ~/.claude/lcars-version-check)
 #   LCARS_VERSION_TTL     throttle window seconds       (default: 86400)
 #   LCARS_NOW_EPOCH       "now" in epoch seconds        (default: date +%s)
 #   LCARS_INSTALL_BIN     the installer            (default: $REPO/install.sh)
@@ -72,7 +73,22 @@ COMMON="$REPO/skills/lcars-init/lcars-common.sh"
 
 GIT_BIN="${LCARS_GIT_BIN:-${GIT_BIN:-git}}"
 CWD="${LCARS_VERSION_CWD:-$PWD}"
-STAMP="${LCARS_VERSION_STAMP:-$HOME/.claude/lcars-version-check}"
+# The throttle stamp is the FIFTH $HOME destination, and LCARS_INSTALL_PREFIX did
+# not cover it. install.sh's prefix redirected four destinations; this one still
+# defaulted into $HOME, so under any isolated install or redirected $HOME the
+# stamp was ALWAYS absent, the throttle never engaged, and every single call ran
+# `git fetch origin main`. Where origin is a network remote that fetch blocks on a
+# credential prompt even with stdin closed — measured at 600 s, a hung test run.
+# Deriving it from the prefix is what makes an isolated install throttle like a
+# real one. An explicit LCARS_VERSION_STAMP still wins, exactly as the other four
+# destination variables override the prefix.
+if [ -n "${LCARS_VERSION_STAMP:-}" ]; then
+  STAMP="$LCARS_VERSION_STAMP"
+elif [ -n "${LCARS_INSTALL_PREFIX:-}" ]; then
+  STAMP="$LCARS_INSTALL_PREFIX/version-check"
+else
+  STAMP="$HOME/.claude/lcars-version-check"
+fi
 TTL="${LCARS_VERSION_TTL:-86400}"
 NOW="${LCARS_NOW_EPOCH:-$(date +%s 2>/dev/null || echo 0)}"
 INSTALL_BIN="${LCARS_INSTALL_BIN:-$REPO/install.sh}"
@@ -105,7 +121,32 @@ if [ -f "$STAMP" ] && [ "$age" -ge 0 ] && [ "$age" -lt "$TTL" ]; then
   REMOTE="$last_remote"
 else
   # Stale (or first run) — fetch once, then restamp.
-  if "$GIT_BIN" -C "$REPO" fetch origin main >/dev/null 2>&1; then
+  # A VERSION CHECK MUST NEVER BE ABLE TO BLOCK A SESSION OR A TEST RUN.
+  # With a network `origin` and no usable credential, `git fetch` asks for one —
+  # and closing stdin is NOT a defence, because git never reads the prompt from
+  # stdin. A tester measured 600.1 s hung against a GitHub origin under a fake
+  # $HOME (where the throttle stamp is always absent, so every call fetches).
+  #
+  # Four routes have to be closed, and the obvious one is not the one that bites.
+  # Traced on a real machine, the blocking call was:
+  #   run_command: '/Applications/Visual Studio Code.app/.../git/dist/askpass.sh'
+  #                'Username for https://github.com: '
+  # i.e. $GIT_ASKPASS — an editor-supplied helper that waits forever for a GUI
+  # answer. git PREFERS askpass over the terminal, so GIT_TERMINAL_PROMPT=0 alone
+  # was never consulted and still hung (measured: 60 s, and 60 s again with
+  # `-c credential.helper=` added). Emptying GIT_ASKPASS, SSH_ASKPASS (the same
+  # trap for an ssh remote) and core.askPass (so a CONFIGURED helper cannot stand
+  # in) makes git fall through to the terminal, which GIT_TERMINAL_PROMPT=0 then
+  # refuses: 0.4 s, "could not read Username … terminal prompts disabled".
+  #
+  # An empty value is how git says "unset" for these, so this adds no helper.
+  # Failing fast is the RIGHT degrade: the FETCH_FAILED branch below already
+  # handles an unreachable origin as a one-line warning and continues. The
+  # credential HELPER is deliberately left alone — it answers without prompting
+  # when it has something, so clearing it would break legitimate private fetches
+  # and buy nothing.
+  if GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= \
+     "$GIT_BIN" -C "$REPO" -c core.askPass= fetch origin main >/dev/null 2>&1; then
     REMOTE="$("$GIT_BIN" -C "$REPO" show origin/main:VERSION 2>/dev/null \
               | sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}')"
     mkdir -p "$(dirname "$STAMP")" 2>/dev/null || true

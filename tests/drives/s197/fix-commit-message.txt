@@ -1,0 +1,14 @@
+fix(status): restore the "#" on the rendered issue number
+
+The ISSUE column and the three breadcrumb surfaces that share `issue_disp`
+(the awaiting-human question footer, the refusal lines, the carried-forward
+lines) printed a bare `42` where the board and the comment two lines above
+the seam both say `#42`. One-line regression in the `case` default arm.
+
+Proven by the existing scoped coverage going green (tests/lcars-status.test.sh
+94/3 red -> 97/0) and by a fresh tester re-driving `lcars status` from a
+foreign fixture repo against all four render sites.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PRLqZfJH8nz3N4ojUTapPT
+

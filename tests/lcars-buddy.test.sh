@@ -193,8 +193,12 @@ check "5. says the current repo is not LCARS-initialized (not an error)" \
 
 # --- 6. install staleness check (the code-you-edit-is-the-code-that-runs) --
 # 6a. dest symlink points at THIS checkout -> in sync
+# EVERY skill the fixture checkout ships is linked: this case is about DIRECTION,
+# and since S197 round 1 "in sync" also requires COMPLETENESS (a dest holding one
+# correctly-aimed link out of eighteen is not a synced install — see group 15).
 dest_sync="$(new_plain_dir)"
-ln -snf "$LCARS/skills/lcars-run" "$dest_sync/lcars-run"
+ln -snf "$LCARS/skills/lcars-run"   "$dest_sync/lcars-run"
+ln -snf "$LCARS/skills/lcars-buddy" "$dest_sync/lcars-buddy"
 out6a="$TMPROOT/out6a.txt"
 LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest_sync" bash "$SCRIPT" >"$out6a" 2>&1
@@ -214,6 +218,304 @@ check "6b. WARNS when installed skills do not point at this checkout" \
 # --- 7. points the buddy at the key source docs ---------------------------
 check "7. points the buddy at vision.md and CLAUDE.md" \
   "qgrep -q 'vision.md' '$out1' && qgrep -q 'CLAUDE.md' '$out1'"
+
+# --- 8. ORCHESTRATION.md — the ONE shared orchestration rules file --------
+# S197: run-session (lcars-dev), night-watch (lcars-dev) and `lcars buddy` all
+# follow the SAME orchestration loop — implementor (TDD) → fresh tester → fix
+# rounds → teardown → commit → readout. Until now each of the three RESTATED it,
+# which is exactly how three copies drift apart (and buddy's copy had already
+# lost the tester, the round counter and the regression guard). The rules MOVED
+# into this file; every consumer points at
+# `~/.claude/skills/lcars-buddy/ORCHESTRATION.md` — a stable path from any cwd,
+# reached through the install symlink, so no installer changes.
+ORCH="$REPO_ROOT/skills/lcars-buddy/ORCHESTRATION.md"
+check "8. skills/lcars-buddy/ORCHESTRATION.md exists" "[ -f '$ORCH' ]"
+
+cat >"$TMPROOT/exp-headings.txt" <<'EOF'
+## Who reads this
+## Pre-flight
+## The loop
+## The tester opens the real product first
+## Every fix proves it didn't break the last
+## Three fix rounds, then STOP
+## Inherited defects are ledgered
+## Inherit the rig
+## Narrow briefs after round 1
+## Time-box and verify claims
+## Build contract
+## Readout
+## Guardrails
+EOF
+grep '^## ' "$ORCH" 2>/dev/null >"$TMPROOT/got-headings.txt"
+check "8. carries every required H2 heading, in order" \
+  "diff -q '$TMPROOT/exp-headings.txt' '$TMPROOT/got-headings.txt' >/dev/null"
+# A rule without its reason gets undone — the post-mortem examples are load-bearing.
+check "8. keeps the post-mortem examples that justify the rules (S156/S163/S188)" \
+  "grep -q 'S156' '$ORCH' && grep -q 'S163' '$ORCH' && grep -q 'S188' '$ORCH'"
+
+# --- 8b. the two rules the 2026-09-11 night earned ------------------------
+# Both were paid for in lost session time and both go in EXISTING sections (the
+# heading list above is pinned, so a new rule may never grow a new H2).
+#   (a) a spot-check without a known-good control cannot detect its own
+#       breakage — an orchestrator's own probe loop produced a false green while
+#       verifying a HIGH hang-fix.
+#   (b) `perl -e 'alarm N; exec @ARGV'` does not reliably kill a blocked probe;
+#       only a process-group cage does. The reference implementation is
+#       committed under tests/drives/ (see § Inherit the rig).
+check "8b. § Time-box requires a known-good control in every spot-check" \
+  "grep -qi 'known-good control' '$ORCH'"
+check "8b. and tells the story that justifies it (the joined-argument false green)" \
+  "grep -qi 'word-split' '$ORCH' && grep -qi 'literal' '$ORCH'"
+check "8b. rules out the perl alarm cage and names the process-group cure" \
+  "grep -qF \"perl -e 'alarm\" '$ORCH' && grep -qF 'killpg' '$ORCH' && grep -qF 'start_new_session' '$ORCH'"
+check "8b. says a caged run that never returns is not proof of safety" \
+  "grep -qi 'not proof of safety' '$ORCH'"
+# The build contract's install step must not contradict the isolated-install rule
+# the consuming skills now point at — one file saying "run ./install.sh" while
+# another says "never bare" is the drift this file exists to end.
+check "8b. the build contract's install step is the ISOLATED one" \
+  "grep -qF 'LCARS_INSTALL_PREFIX' '$ORCH'"
+# S197 fix round: a FIFTH $HOME destination turned up (the version check's
+# throttle stamp). A rules file that still says "FOUR destinations ... names all
+# four" is a claim a future session will trust and act on, which is the whole
+# reason this file exists, so it has to move with install.sh's header.
+check "8b. the install step counts FIVE destinations, not four" \
+  "grep -qiE 'writes to FIVE destinations|FIVE destinations' '$ORCH' && ! grep -qF 'writes to FOUR' '$ORCH'"
+# And the hang rule must name BOTH mechanisms. BUG-089's bare `cat` was one; an
+# unthrottled `git fetch` blocking on a credential/askpass prompt is a second,
+# independent one, and a rule that names only the first sends the next orchestrator
+# looking in the wrong place.
+check "8b. the hang rule names the SECOND mechanism (the version check's fetch)" \
+  "grep -qiE 'git fetch|version check' '$ORCH' && grep -qiE 'askpass|GIT_TERMINAL_PROMPT' '$ORCH'"
+CAGE="$REPO_ROOT/tests/drives/s197/cage.py"
+check "8b. the rule points at a cage that is actually committed" \
+  "grep -qF 'tests/drives/s197/cage.py' '$ORCH' && [ -f '$CAGE' ]"
+# The cage must really cage: a probe that blocks forever comes back killed, and
+# a probe that exits comes back with its exit code — both reporting ELAPSED.
+cagehang="$TMPROOT/cage-hang.txt"
+python3 "$CAGE" 2 bash -c 'sleep 60' >"$cagehang" 2>&1
+check "8b. the committed cage KILLS a blocked probe and reports it hung" \
+  "qgrep -qi 'timed out' '$cagehang' && qgrep -q 'ELAPSED' '$cagehang'"
+cagefast="$TMPROOT/cage-fast.txt"
+python3 "$CAGE" 5 bash -c 'echo alive; exit 64' >"$cagefast" 2>&1
+check "8b. and passes a fast probe's own exit code and output straight through" \
+  "qgrep -q 'EXIT 64' '$cagefast' && qgrep -q 'alive' '$cagefast'"
+
+# --- 9. SKILL.md points at the rules file instead of restating them -------
+SKILL_MD="$REPO_ROOT/skills/lcars-buddy/SKILL.md"
+check "9. SKILL.md references the rules file by its INSTALL path" \
+  "grep -qF '~/.claude/skills/lcars-buddy/ORCHESTRATION.md' '$SKILL_MD'"
+check "9. SKILL.md no longer restates the moved rule sentences" \
+  "! grep -qE 'TDD.*: write the failing|Commit only when asked' '$SKILL_MD'"
+check "9. SKILL.md's fix half is an ORCHESTRATOR (brief, fix/<slug>, tester, readout)" \
+  "grep -qF 'fix/<slug>' '$SKILL_MD' && grep -qi 'implementor' '$SKILL_MD' && grep -qi 'tester' '$SKILL_MD'"
+check "9. SKILL.md carries the clean-and-on-main refusal" \
+  "grep -qF 'will not stack a fix onto it' '$SKILL_MD'"
+
+# --- 10. the brief stops carrying a SECOND copy of the rules --------------
+# buddy.sh used to print its own five-rule block — the same five rules SKILL.md
+# stated, i.e. a drift surface inside one skill. One pointer line replaces it.
+check "10. the brief no longer prints the duplicated BUDDY RULES block" \
+  "! grep -qiE 'BUDDY RULES|TDD: failing test first' '$out1'"
+check "10. the brief prints exactly ONE pointer line naming ORCHESTRATION.md" \
+  "[ \"\$(grep -c 'ORCHESTRATION.md' '$out1')\" = 1 ]"
+
+# --- 11. INSTALL SYNC is case-TOLERANT (the S197 bug) --------------------
+# buddy.sh compared the install symlink target against $REPO with a
+# case-SENSITIVE `case` glob. APFS is case-insensitive but `pwd -P` preserves
+# the case you TYPED, so `LCARS_REPO=~/Projects/lcars` (or a buddy invoked
+# through a lowercase path) reported a perfectly in-sync install as STALE — the
+# one check a captain runs buddy in order to trust.
+caseroot="$(mktemp -d "$TMPROOT/case.XXXX")"
+case_upper="$caseroot/Fake-LCARS"
+mkdir -p "$case_upper/skills/lcars-run" "$case_upper/skills/lcars-buddy"
+: >"$case_upper/vision.md"; : >"$case_upper/install.sh"
+case_lower="$caseroot/fake-lcars"
+# On a case-INSENSITIVE FS the lowercase spelling already resolves to the same
+# dir; on a case-SENSITIVE one, make it a second spelling of the same dir.
+[ -d "$case_lower" ] || ln -snf "$case_upper" "$case_lower"
+dest_case="$(new_plain_dir)"
+# Both shipped skills linked — completeness is group 15's subject, not this one.
+ln -snf "$case_upper/skills/lcars-run"   "$dest_case/lcars-run"
+ln -snf "$case_upper/skills/lcars-buddy" "$dest_case/lcars-buddy"
+out11="$TMPROOT/out11.txt"
+LCARS_REPO="$case_lower" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_case" bash "$SCRIPT" >"$out11" 2>&1
+check "11. IN SYNC when the symlink target and LCARS_REPO differ only by CASE" \
+  "grep -qi 'in sync' '$out11'"
+check "11. and does NOT cry STALE on that case-different path" \
+  "! grep -qi 'stale' '$out11'"
+
+# --- 12. default repo resolution through the install symlink -------------
+# Every case above passes LCARS_REPO explicitly, so the `pwd -P` default path
+# (buddy.sh's normal production path — invoked as
+# ~/.claude/skills/lcars-buddy/buddy.sh) was never exercised.
+defroot="$(mktemp -d "$TMPROOT/def.XXXX")"
+defrepo="$defroot/LCARS"
+mkdir -p "$defrepo/skills/lcars-run" "$defrepo/skills/lcars-buddy"
+: >"$defrepo/vision.md"; : >"$defrepo/install.sh"
+cp "$SCRIPT" "$defrepo/skills/lcars-buddy/buddy.sh"
+dest_def="$(new_plain_dir)"
+ln -snf "$defrepo/skills/lcars-buddy" "$dest_def/lcars-buddy"
+ln -snf "$defrepo/skills/lcars-run" "$dest_def/lcars-run"
+defphys="$(cd "$defrepo" && pwd -P)"
+out12="$TMPROOT/out12.txt"
+( unset LCARS_REPO
+  GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+    LCARS_SKILLS_DEST="$dest_def" bash "$dest_def/lcars-buddy/buddy.sh" ) >"$out12" 2>&1
+check "12. with NO LCARS_REPO, resolves the PHYSICAL checkout behind the symlink" \
+  "grep -qF 'LCARS REPO: $defphys' '$out12'"
+check "12. and that default resolution reads as IN SYNC" \
+  "grep -qi 'in sync' '$out12'"
+
+# --- 13. the build contract is complete in its own file ------------------
+CONTRACT="$REPO_ROOT/CLAUDE.md"
+check "13. CLAUDE.md points at the shared orchestration rules file" \
+  "grep -qF 'skills/lcars-buddy/ORCHESTRATION.md' '$CONTRACT'"
+check "13. CLAUDE.md scopes the FULL suite to ship-it, fixes/sessions to the scoped suite" \
+  "grep -qF 'ship-it' '$CONTRACT' && grep -qiE 'scoped' '$CONTRACT'"
+check "13. CLAUDE.md states the branch-naming convention and the commit trailer" \
+  "grep -qF 'fix/<slug>' '$CONTRACT' && grep -qF 'Co-Authored-By' '$CONTRACT'"
+
+# --- 14. INSTALL SYNC judges ALL installed skills, not one symlink -------
+# buddy.sh resolved install sync by reading the `lcars-run` symlink ALONE, so a
+# PARTIAL install — lcars-run linked to this checkout while the other skills
+# still point somewhere else — reported a confident, wrong "in sync". That is
+# the one line a captain runs buddy in order to trust before editing code, and a
+# partial install is exactly what a half-finished `./install.sh`, a renamed
+# checkout, or an isolated-dest experiment leaves behind.
+other14="$(new_lcars_checkout)"
+mkdir -p "$other14/skills/lcars-answer" "$LCARS/skills/lcars-answer"
+dest_partial="$(new_plain_dir)"
+ln -snf "$LCARS/skills/lcars-run"      "$dest_partial/lcars-run"      # THIS checkout
+ln -snf "$LCARS/skills/lcars-buddy"    "$dest_partial/lcars-buddy"    # THIS checkout
+ln -snf "$other14/skills/lcars-answer" "$dest_partial/lcars-answer"   # somewhere ELSE
+out14="$TMPROOT/out14.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_partial" bash "$SCRIPT" >"$out14" 2>&1
+check "14. a PARTIAL install does NOT report in sync" \
+  "! grep -qi 'in sync' '$out14'"
+check "14. it says the installed skills DISAGREE / the install is partial" \
+  "grep -qiE 'disagree|partial' '$out14'"
+check "14. it NAMES a disagreeing skill so the captain knows where to look" \
+  "grep -q 'lcars-answer' '$out14'"
+check "14. and still tells them to run install.sh" \
+  "grep -qF 'install.sh' '$out14'"
+
+# 14b. unanimity is still IN SYNC — several skills, all pointing here.
+dest_all="$(new_plain_dir)"
+ln -snf "$LCARS/skills/lcars-run"    "$dest_all/lcars-run"
+ln -snf "$LCARS/skills/lcars-buddy"  "$dest_all/lcars-buddy"
+ln -snf "$LCARS/skills/lcars-answer" "$dest_all/lcars-answer"
+out14b="$TMPROOT/out14b.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_all" bash "$SCRIPT" >"$out14b" 2>&1
+check "14b. every skill agreeing reads IN SYNC" "grep -qi 'in sync' '$out14b'"
+check "14b. and says HOW MANY skills it checked (so 'in sync' is falsifiable)" \
+  "grep -qE 'in sync.*3|3 .*(skill|checked)' '$out14b'"
+check "14b. no false disagreement when they all agree" \
+  "! grep -qiE 'disagree|partial|stale' '$out14b'"
+
+# 14c. ALL of them pointing elsewhere is still plain STALE (6b's verdict, which
+# must not be softened into "partial" — a wholly stale install is not partial).
+dest_allstale="$(new_plain_dir)"
+ln -snf "$other14/skills/lcars-run"    "$dest_allstale/lcars-run"
+ln -snf "$other14/skills/lcars-answer" "$dest_allstale/lcars-answer"
+out14c="$TMPROOT/out14c.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_allstale" bash "$SCRIPT" >"$out14c" 2>&1
+check "14c. a wholly different checkout still reads STALE, not partial" \
+  "grep -qi 'stale' '$out14c' && ! grep -qi 'in sync' '$out14c'"
+
+# --- 15. INSTALL SYNC checks COMPLETENESS, not just direction ------------
+# The count printed beside "in sync" was compared to nothing, so the probe said
+# the same confident thing about one correctly-linked skill as about all of them.
+# The ledgered defect it was supposed to cure was literally "a partial install
+# where lcars-run is linked but others are not reads as fully in sync" — and that
+# survived, in its original form. A checkout that ships M skills with only N
+# installed is not synced; it is an install that would silently run the OLD code
+# for the M-N skills the captain never linked.
+# Isolate the INSTALL SYNC section before grepping it. The whole brief mentions
+# skill names for other reasons entirely (the git stub's `status --short` line is
+# ` M skills/lcars-run/run.sh`), so a brief-wide grep for a skill name passes
+# whatever the probe says — a vacuous assertion. These checks are about what the
+# SYNC VERDICT says.
+sync_section() { # sync_section <brief-file> <out-file>
+  awk '/^INSTALL SYNC/{f=1} /^CURRENT REPO:/{f=0} f' "$1" >"$2"
+}
+
+c15="$(new_lcars_checkout)"                      # ships lcars-run + lcars-buddy
+mkdir -p "$c15/skills/lcars-answer" "$c15/skills/lcars-status"   # ships 4 now
+
+# 15a. ONLY lcars-run installed, correctly aimed — the ledger's exact shape.
+dest15a="$(new_plain_dir)"
+ln -snf "$c15/skills/lcars-run" "$dest15a/lcars-run"
+out15a="$TMPROOT/out15a.txt"
+LCARS_REPO="$c15" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest15a" bash "$SCRIPT" >"$out15a" 2>&1
+check "15a. ONE correctly-linked skill out of four does NOT read in sync" \
+  "! grep -qi 'in sync' '$out15a'"
+check "15a. it reports the installed count AGAINST the shipped count (1 of 4)" \
+  "grep -qE '1 of 4' '$out15a'"
+sec15a="$TMPROOT/sec15a.txt"; sync_section "$out15a" "$sec15a"
+check "15a. the VERDICT names a skill that is missing, so the gap is visible" \
+  "grep -qE 'lcars-(answer|status|buddy)' '$sec15a'"
+check "15a. and still tells them to run install.sh" "grep -qF 'install.sh' '$sec15a'"
+
+# 15b. many skills installed and aimed here, but lcars-run MISSING.
+dest15b="$(new_plain_dir)"
+ln -snf "$c15/skills/lcars-buddy"  "$dest15b/lcars-buddy"
+ln -snf "$c15/skills/lcars-answer" "$dest15b/lcars-answer"
+ln -snf "$c15/skills/lcars-status" "$dest15b/lcars-status"
+out15b="$TMPROOT/out15b.txt"
+LCARS_REPO="$c15" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest15b" bash "$SCRIPT" >"$out15b" 2>&1
+check "15b. three of four installed does NOT read in sync" \
+  "! grep -qi 'in sync' '$out15b'"
+check "15b. it reports 3 of 4" "grep -qE '3 of 4' '$out15b'"
+sec15b="$TMPROOT/sec15b.txt"; sync_section "$out15b" "$sec15b"
+check "15b. the VERDICT names lcars-run as the one that is missing" \
+  "grep -q 'lcars-run' '$sec15b' && grep -qi 'missing' '$sec15b'"
+
+# 15c. the FLAGSHIP bare `lcars` skill is checked too (it was globbed out).
+# The probe globbed lcars-* , so the one-word `lcars` verb — the one the captain
+# uses most — was invisible: a tester pointed every lcars-* link at this checkout
+# and the bare `lcars` link at a DIFFERENT checkout and still got a confident
+# "in sync. (17 skill(s) checked)" while 18 skills were installed.
+c15c="$(new_lcars_checkout)"
+mkdir -p "$c15c/skills/lcars"                     # ships lcars, lcars-run, lcars-buddy
+other15c="$(new_lcars_checkout)"
+mkdir -p "$other15c/skills/lcars"
+dest15c="$(new_plain_dir)"
+ln -snf "$c15c/skills/lcars-run"    "$dest15c/lcars-run"      # THIS checkout
+ln -snf "$c15c/skills/lcars-buddy"  "$dest15c/lcars-buddy"    # THIS checkout
+ln -snf "$other15c/skills/lcars"    "$dest15c/lcars"          # somewhere ELSE
+out15c="$TMPROOT/out15c.txt"
+LCARS_REPO="$c15c" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest15c" bash "$SCRIPT" >"$out15c" 2>&1
+check "15c. a bare \`lcars\` pointing elsewhere is NOT reported as in sync" \
+  "! grep -qi 'in sync' '$out15c'"
+sec15c="$TMPROOT/sec15c.txt"; sync_section "$out15c" "$sec15c"
+check "15c. the VERDICT names the bare \`lcars\` as the disagreeing skill" \
+  "grep -qE 'e\.g\. lcars ->' '$sec15c'"
+
+# 15d. CONTROL: a COMPLETE install of every shipped skill — bare `lcars`
+# included — still reads IN SYNC, and says N of N. Without this control every
+# assertion above could be satisfied by a probe that never says "in sync".
+dest15d="$(new_plain_dir)"
+ln -snf "$c15c/skills/lcars"       "$dest15d/lcars"
+ln -snf "$c15c/skills/lcars-run"   "$dest15d/lcars-run"
+ln -snf "$c15c/skills/lcars-buddy" "$dest15d/lcars-buddy"
+out15d="$TMPROOT/out15d.txt"
+LCARS_REPO="$c15c" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest15d" bash "$SCRIPT" >"$out15d" 2>&1
+check "15d. CONTROL: a complete, correctly-aimed install reads IN SYNC" \
+  "grep -qi 'in sync' '$out15d'"
+check "15d. CONTROL: and reports completeness as 3 of 3" \
+  "grep -qE '3 of 3' '$out15d'"
+sec15d="$TMPROOT/sec15d.txt"; sync_section "$out15d" "$sec15d"
+check "15d. CONTROL: no false partial/stale/missing on a complete install" \
+  "! grep -qiE 'disagree|partial|stale|missing|incomplete' '$sec15d'"
 
 # --- summary --------------------------------------------------------------
 printf '\nlcars buddy: %d passed, %d failed\n' "$pass" "$fail"
