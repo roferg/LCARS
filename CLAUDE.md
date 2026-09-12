@@ -47,11 +47,32 @@ ignored — never put skills, tests, installers, or docs there.
    external dependencies via env vars (e.g. `LCARS_CLAUDE_BIN`, `LCARS_GH_BIN`)
    so tests can stub them — see `skills/lcars-init/init.sh` for the pattern.
 3. **Install.** Run `./install.sh` to (re)link skills into `~/.claude/skills/`.
-4. **Verify.** Run `bash tests/run.sh` — all suites must be green.
+4. **Verify.** Run the **fast scoped** suite for the skill you touched
+   (`bash tests/<name>.test.sh`). The full `bash tests/run.sh` — all suites green
+   — is **`ship-it`'s merge gate**, not a session's or a fix's inner loop: it is
+   slow, billable, and has hung whole sessions. Never run it (or the heavy
+   `tests/lcars-run.test.sh`) to completion mid-session.
 5. **Commit.** The skill source, its test, and any doc updates are all tracked.
+   Work happens on a branch cut from `main` — **`feat/<round>`** for a round or
+   session, **`fix/<slug>`** for a fix — and **never on `main` itself**. End the
+   commit body with a `Co-Authored-By: <model that wrote it>
+   <noreply@anthropic.com>` trailer, plus a
+   `Claude-Session: https://claude.ai/code/session_…` line when the harness
+   provides one.
 
 A skill is not "done" until its source and test are committed in this repo.
 Files left only in `~/.claude/` do not count — they don't ship.
+
+### Orchestrated fixes and sessions
+
+Sessions and fixes are not run freehand: one orchestrator spawns an implementor
+sub-agent (TDD) and a **fresh** tester at a declared proof surface, loops fixes
+with a regression guard, and **stops hard at three rounds**. Those rules live in
+ONE file — `skills/lcars-buddy/ORCHESTRATION.md`, installed (and readable from
+any cwd) at `~/.claude/skills/lcars-buddy/ORCHESTRATION.md`. It is shared by
+`lcars buddy`, `run-session` and `night-watch` so the loop cannot drift between
+them, and it **wins over any restatement**. Read it before orchestrating
+anything; this section points at it rather than repeating it.
 
 **Versioning contract.** Every PR into `main` bumps the root `VERSION` file
 (`YYYY.M.N` — year, month with no leading zero, per-month counter) and adds a

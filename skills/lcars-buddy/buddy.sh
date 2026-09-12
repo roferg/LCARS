@@ -119,14 +119,37 @@ echo "  recent commits:"
 # ==========================================================================
 echo
 echo "INSTALL SYNC ($SKILLS_DEST):"
+
+# Compare the two paths PHYSICALLY and case-INSENSITIVELY. The old check was a
+# case-SENSITIVE `case "$target" in "$REPO"/*)` string glob, and that is wrong on
+# this machine: APFS is case-insensitive but `pwd -P` preserves the case you
+# TYPED, so the install symlink reads /Users/…/Projects/LCARS/… while
+# `LCARS_REPO=~/Projects/lcars` (or a buddy invoked through a lowercase path)
+# resolves to /Users/…/Projects/lcars — the SAME directory, reported as STALE.
+# This is the one line a captain runs buddy in order to trust, so a false STALE
+# sends them to re-install a perfectly good checkout, or teaches them to ignore
+# the brief. Resolving both sides through `cd … && pwd -P` also collapses /tmp vs
+# /private/tmp and any other symlinked ancestor; lowercasing then makes LCARS vs
+# lcars read IN SYNC while a genuinely different checkout still reads STALE.
+phys() { # path -> its physical path when it exists, else the path unchanged
+  if [ -d "$1" ]; then (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
+  else printf '%s\n' "$1"; fi
+}
+lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 probe="$SKILLS_DEST/lcars-run"
 if [ -L "$probe" ]; then
   target="$(readlink "$probe")"
-  case "$target" in
-    "$REPO"/*) echo "  ✓ installed skills point at THIS checkout — in sync." ;;
-    *)         echo "  ⚠ installed skills point ELSEWHERE ($target) — they are STALE."
-               echo "    Run \`./install.sh\` in $REPO so your fixes are what runs." ;;
-  esac
+  # A relative symlink target is relative to the LINK's directory, not our cwd.
+  case "$target" in /*) ;; *) target="$SKILLS_DEST/$target" ;; esac
+  t_cmp="$(lower "$(phys "$target")")"
+  r_cmp="$(lower "$(phys "$REPO")")"
+  if [ "$t_cmp" = "$r_cmp" ] || [ "${t_cmp#"$r_cmp"/}" != "$t_cmp" ]; then
+    echo "  ✓ installed skills point at THIS checkout — in sync."
+  else
+    echo "  ⚠ installed skills point ELSEWHERE ($target) — they are STALE."
+    echo "    Run \`./install.sh\` in $REPO so your fixes are what runs."
+  fi
 elif [ -e "$probe" ]; then
   echo "  ⚠ $probe exists but is not a symlink — run \`./install.sh\` in $REPO to (re)link."
 else
@@ -187,11 +210,6 @@ echo "  - CLAUDE.md   the build contract: skills live in skills/<name>/, TDD,"
 echo "                ./install.sh symlinks them, fast scoped tests/<name>.test.sh."
 echo "  - vision.md   the product design.    - CONTEXT.md  the domain glossary."
 echo
-echo "BUDDY RULES (carry the LCARS contract into this foreign repo):"
-echo "  • Author fixes in $REPO/skills/<name>/ (NEVER ~/.claude) + tests/<name>.test.sh."
-echo "  • TDD: failing test first. Verify with the FAST scoped tests/<name>.test.sh."
-echo "  • Do NOT run the heavy tests/lcars-run.test.sh or full tests/run.sh to completion."
-echo "  • After any change run \`./install.sh\` so the fix is what actually runs."
-echo "  • Reproduce off the breadcrumb above, then read the relevant skill's .sh."
+echo "HOW A FIX IS RUN: this skill's SKILL.md § 2, which follows ~/.claude/skills/lcars-buddy/ORCHESTRATION.md."
 hr
 exit 0

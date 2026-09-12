@@ -15,9 +15,10 @@ that's useful from the very first mission and stays useful as things evolve:
   is the code that's running, and what each Mission is *actually* doing event by
   event. Pure situational awareness. It's **read-only and safe to run as often as
   you like.**
-- **When something's off** — it escalates, in the same session, into a live-debug
-  partner: reproduce from the breadcrumb, find the cause in the LCARS source, and
-  fix it under LCARS's own contract.
+- **When something's off** — it escalates into the **orchestrator of one fix**:
+  brief the captain, cut a `fix/<slug>` branch, spawn an implementor on TDD and a
+  fresh tester, and land the cure under LCARS's own contract — the same loop a
+  session runs (§ 2).
 
 It works from anywhere because the skill is installed globally (symlinked into
 `~/.claude/skills/` by `install.sh`).
@@ -52,36 +53,102 @@ After showing the brief, give the captain a short read of it — what's notable,
 what each mission is doing, anything worth watching — even if nothing's wrong.
 That ride-along read is the point in the healthy case.
 
-## 2. When it's time to debug — fix following the LCARS contract
+## 2. When it's time to fix — run it as an orchestrated session
 
-When the captain flags something (or the brief surfaces a failing event), work the
-problem against the **LCARS source** (use absolute paths under the reported
-`LCARS REPO` — you can read and edit it even though the session's cwd is the other
-repo):
+A fix to LCARS is run the **same way a session is run**: you become the
+**orchestrator**, and you write **no production code yourself**. The rules are in
+ONE file, shared with `run-session` and `night-watch` so the three cannot drift:
 
-1. **Reproduce from the breadcrumb.** Start from the failing event(s) in the
-   CURRENT REPO section and the relevant skill script (`skills/lcars-run/run.sh`,
-   `skills/lcars-init/init.sh`, …). Read before you theorize.
-2. **Honour the build contract** (it's in `LCARS_REPO/CLAUDE.md` — read it):
-   - Author every fix in `LCARS_REPO/skills/<name>/` — **never** in `~/.claude`.
-   - **TDD**: write the failing `tests/<name>.test.sh` case first, then the fix.
-   - Verify with the **FAST scoped** suite for that skill only
-     (`bash tests/<name>.test.sh`). **Do NOT** run the heavy
-     `tests/lcars-run.test.sh` or the full `tests/run.sh` to completion — they are
-     slow, billable, and have hung whole sessions.
-   - After any change, run **`./install.sh`** in `LCARS_REPO` so the fix is the
-     code that actually runs, then re-collect the brief / re-drive to confirm.
-3. **Mind the protected machinery.** Don't loosen a gate to make a stall go away,
-   don't weaken the adversarial Test-Writer→Implementer split or the immutable
-   test hashes, and keep external CLIs env-injected/stubbable. When unsure whether
-   a change is in-scope, ask the captain rather than guessing.
-4. **Commit only when asked.** LCARS work goes on a feature branch off `main`
-   (never commit to `main`). End commit bodies per `CLAUDE.md`. No PR unless the
-   captain asks.
+```
+~/.claude/skills/lcars-buddy/ORCHESTRATION.md
+```
+
+**Read it now, before anything else.** It is the source; everything below is the
+buddy-shaped wrapper around it. Where the two appear to disagree, that file wins.
+
+`$REPO` below is the **LCARS REPO** the brief reported — the checkout the install
+symlinks actually point at. That is where the fix lands, always: never a second
+clone, never `~/.claude`.
+
+### a. BRIEF FIRST, then wait for the go
+
+Before touching anything, give the captain a short briefing in plain English —
+the same shape `run-session` uses for a session, but for one defect:
+
+1. **The breadcrumb** — the failing event(s) from the CURRENT REPO section, or
+   what the captain flagged, quoted.
+2. **The suspected seam** — `file:line` in `$REPO`, having *read* it. Read before
+   you theorize.
+3. **The proof surface for THIS fix** — what must be real to prove it, and what a
+   fake there could not see. Usually: re-collect the brief
+   (`bash $REPO/skills/lcars-buddy/buddy.sh`) or re-drive the failing verb against
+   the repo that produced the breadcrumb. Apply ORCHESTRATION.md § Pre-flight's
+   proof-surface check: **if the fix changes a layer its harness fakes, say so and
+   do not start.**
+4. **The cost** — sub-agent tokens, and **worker spend zero** unless the defect
+   lives inside a worker path. If it does, **RECOMMEND the live leg and ask** —
+   never spend it silently, never skip it silently (ORCHESTRATION.md
+   § Guardrails).
+5. **The branch** — `fix/<slug>`, cut from `main`.
+
+Then **ask and wait**. "y / fix it" proceeds; anything else is feedback.
+
+### b. PRE-FLIGHT — and buddy's own refusal
+
+Run ORCHESTRATION.md § Pre-flight (proof surface, infer-vs-record, PATH-shim
+pinning for both CLIs, engine auth, **never the full suite**). Then buddy's own
+rule, because the captain is usually mid-round in that very checkout:
+
+**`$REPO` must be clean and on `main`.** Check
+`git -C "$REPO" status --porcelain` (empty) and
+`git -C "$REPO" rev-parse --abbrev-ref HEAD` (`main`). If either fails, **REFUSE
+and stop**, with exactly this sentence:
+
+> LCARS at \<path\> is \<dirty|on \<branch\>\> — finish or stash that round first;
+> buddy will not stack a fix onto it.
+
+A fix stacked onto someone's in-flight round is unreviewable and unshippable
+separately. On a clean `main`:
+
+```bash
+git -C "$REPO" switch -c fix/<slug>
+```
+
+### c. THE LOOP — per ORCHESTRATION.md § The loop
+
+Implementor sub-agent (TDD) → **fresh** tester at the proof surface → fix rounds
+with the regression guard → **hard stop at three rounds** → teardown → commit →
+readout. Buddy-specific instructions for the sub-agents:
+
+- **Implementor:** author only under `$REPO/skills/` and `$REPO/tests/` (never
+  `~/.claude`); failing `tests/<name>.test.sh` case FIRST; verify with the **fast
+  scoped** `bash tests/<name>.test.sh` only — **not** `tests/lcars-run.test.sh`,
+  **not** the full `tests/run.sh`; then `./install.sh` in `$REPO` so the fix is
+  the code that actually runs.
+- **Tester (fresh, never saw the implementor's reasoning):** from the foreign repo,
+  re-collect the brief / re-drive the failing verb and judge from the outside —
+  the breadcrumb must be gone and nothing else changed. It edits no source and no
+  tests, and logs every artifact for teardown.
+- **Mind the protected machinery.** Don't loosen a gate to make a stall go away,
+  don't weaken the adversarial Test-Writer→Implementer split or the immutable test
+  hashes, and keep external CLIs env-injected/stubbable. An invariant touch is a
+  **STOP and report**, not a judgement call.
+
+### d. COMMIT, then READ OUT
+
+Commit on `fix/<slug>` with the trailer from ORCHESTRATION.md § Build contract
+(`Co-Authored-By:` for the model that wrote it, plus the `Claude-Session:` line
+when the harness gives one). **No PR.** Then read out in chat per
+ORCHESTRATION.md § Readout — unit + tester verdict, rounds with the
+own/inherited/fix-loop split, **both** costs, what the proof was blind to,
+ledgered items — and add one line:
+
+> ship it with `ship-it` when you are ready.
 
 ## What this skill is NOT
 
-It does **not** drive a Mission, file issues, or run a worker CLI — it is a
-read-only collector plus this orientation. To run/board a Mission use `lcars` /
-`lcars run` / `lcars viewscreen`. `lcars buddy` is the "ride along, get the extra
-detail, and help me fix LCARS if it comes to that" companion.
+It does **not** drive a Mission, file issues, or run a worker CLI. It is two
+things: the **read-only collector** of §1, and the **orchestrator of one fix** in
+§2 — which spawns sub-agents and commits to a `fix/<slug>` branch, but never
+opens a PR and never merges. To run/board a Mission use `lcars` / `lcars run` /
+`lcars viewscreen`; to land a fix use `ship-it`.

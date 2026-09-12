@@ -215,6 +215,114 @@ check "6b. WARNS when installed skills do not point at this checkout" \
 check "7. points the buddy at vision.md and CLAUDE.md" \
   "qgrep -q 'vision.md' '$out1' && qgrep -q 'CLAUDE.md' '$out1'"
 
+# --- 8. ORCHESTRATION.md — the ONE shared orchestration rules file --------
+# S197: run-session (lcars-dev), night-watch (lcars-dev) and `lcars buddy` all
+# follow the SAME orchestration loop — implementor (TDD) → fresh tester → fix
+# rounds → teardown → commit → readout. Until now each of the three RESTATED it,
+# which is exactly how three copies drift apart (and buddy's copy had already
+# lost the tester, the round counter and the regression guard). The rules MOVED
+# into this file; every consumer points at
+# `~/.claude/skills/lcars-buddy/ORCHESTRATION.md` — a stable path from any cwd,
+# reached through the install symlink, so no installer changes.
+ORCH="$REPO_ROOT/skills/lcars-buddy/ORCHESTRATION.md"
+check "8. skills/lcars-buddy/ORCHESTRATION.md exists" "[ -f '$ORCH' ]"
+
+cat >"$TMPROOT/exp-headings.txt" <<'EOF'
+## Who reads this
+## Pre-flight
+## The loop
+## The tester opens the real product first
+## Every fix proves it didn't break the last
+## Three fix rounds, then STOP
+## Inherited defects are ledgered
+## Inherit the rig
+## Narrow briefs after round 1
+## Time-box and verify claims
+## Build contract
+## Readout
+## Guardrails
+EOF
+grep '^## ' "$ORCH" 2>/dev/null >"$TMPROOT/got-headings.txt"
+check "8. carries every required H2 heading, in order" \
+  "diff -q '$TMPROOT/exp-headings.txt' '$TMPROOT/got-headings.txt' >/dev/null"
+# A rule without its reason gets undone — the post-mortem examples are load-bearing.
+check "8. keeps the post-mortem examples that justify the rules (S156/S163/S188)" \
+  "grep -q 'S156' '$ORCH' && grep -q 'S163' '$ORCH' && grep -q 'S188' '$ORCH'"
+
+# --- 9. SKILL.md points at the rules file instead of restating them -------
+SKILL_MD="$REPO_ROOT/skills/lcars-buddy/SKILL.md"
+check "9. SKILL.md references the rules file by its INSTALL path" \
+  "grep -qF '~/.claude/skills/lcars-buddy/ORCHESTRATION.md' '$SKILL_MD'"
+check "9. SKILL.md no longer restates the moved rule sentences" \
+  "! grep -qE 'TDD.*: write the failing|Commit only when asked' '$SKILL_MD'"
+check "9. SKILL.md's fix half is an ORCHESTRATOR (brief, fix/<slug>, tester, readout)" \
+  "grep -qF 'fix/<slug>' '$SKILL_MD' && grep -qi 'implementor' '$SKILL_MD' && grep -qi 'tester' '$SKILL_MD'"
+check "9. SKILL.md carries the clean-and-on-main refusal" \
+  "grep -qF 'will not stack a fix onto it' '$SKILL_MD'"
+
+# --- 10. the brief stops carrying a SECOND copy of the rules --------------
+# buddy.sh used to print its own five-rule block — the same five rules SKILL.md
+# stated, i.e. a drift surface inside one skill. One pointer line replaces it.
+check "10. the brief no longer prints the duplicated BUDDY RULES block" \
+  "! grep -qiE 'BUDDY RULES|TDD: failing test first' '$out1'"
+check "10. the brief prints exactly ONE pointer line naming ORCHESTRATION.md" \
+  "[ \"\$(grep -c 'ORCHESTRATION.md' '$out1')\" = 1 ]"
+
+# --- 11. INSTALL SYNC is case-TOLERANT (the S197 bug) --------------------
+# buddy.sh compared the install symlink target against $REPO with a
+# case-SENSITIVE `case` glob. APFS is case-insensitive but `pwd -P` preserves
+# the case you TYPED, so `LCARS_REPO=~/Projects/lcars` (or a buddy invoked
+# through a lowercase path) reported a perfectly in-sync install as STALE — the
+# one check a captain runs buddy in order to trust.
+caseroot="$(mktemp -d "$TMPROOT/case.XXXX")"
+case_upper="$caseroot/Fake-LCARS"
+mkdir -p "$case_upper/skills/lcars-run" "$case_upper/skills/lcars-buddy"
+: >"$case_upper/vision.md"; : >"$case_upper/install.sh"
+case_lower="$caseroot/fake-lcars"
+# On a case-INSENSITIVE FS the lowercase spelling already resolves to the same
+# dir; on a case-SENSITIVE one, make it a second spelling of the same dir.
+[ -d "$case_lower" ] || ln -snf "$case_upper" "$case_lower"
+dest_case="$(new_plain_dir)"
+ln -snf "$case_upper/skills/lcars-run" "$dest_case/lcars-run"
+out11="$TMPROOT/out11.txt"
+LCARS_REPO="$case_lower" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$dest_case" bash "$SCRIPT" >"$out11" 2>&1
+check "11. IN SYNC when the symlink target and LCARS_REPO differ only by CASE" \
+  "grep -qi 'in sync' '$out11'"
+check "11. and does NOT cry STALE on that case-different path" \
+  "! grep -qi 'stale' '$out11'"
+
+# --- 12. default repo resolution through the install symlink -------------
+# Every case above passes LCARS_REPO explicitly, so the `pwd -P` default path
+# (buddy.sh's normal production path — invoked as
+# ~/.claude/skills/lcars-buddy/buddy.sh) was never exercised.
+defroot="$(mktemp -d "$TMPROOT/def.XXXX")"
+defrepo="$defroot/LCARS"
+mkdir -p "$defrepo/skills/lcars-run" "$defrepo/skills/lcars-buddy"
+: >"$defrepo/vision.md"; : >"$defrepo/install.sh"
+cp "$SCRIPT" "$defrepo/skills/lcars-buddy/buddy.sh"
+dest_def="$(new_plain_dir)"
+ln -snf "$defrepo/skills/lcars-buddy" "$dest_def/lcars-buddy"
+ln -snf "$defrepo/skills/lcars-run" "$dest_def/lcars-run"
+defphys="$(cd "$defrepo" && pwd -P)"
+out12="$TMPROOT/out12.txt"
+( unset LCARS_REPO
+  GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+    LCARS_SKILLS_DEST="$dest_def" bash "$dest_def/lcars-buddy/buddy.sh" ) >"$out12" 2>&1
+check "12. with NO LCARS_REPO, resolves the PHYSICAL checkout behind the symlink" \
+  "grep -qF 'LCARS REPO: $defphys' '$out12'"
+check "12. and that default resolution reads as IN SYNC" \
+  "grep -qi 'in sync' '$out12'"
+
+# --- 13. the build contract is complete in its own file ------------------
+CONTRACT="$REPO_ROOT/CLAUDE.md"
+check "13. CLAUDE.md points at the shared orchestration rules file" \
+  "grep -qF 'skills/lcars-buddy/ORCHESTRATION.md' '$CONTRACT'"
+check "13. CLAUDE.md scopes the FULL suite to ship-it, fixes/sessions to the scoped suite" \
+  "grep -qF 'ship-it' '$CONTRACT' && grep -qiE 'scoped' '$CONTRACT'"
+check "13. CLAUDE.md states the branch-naming convention and the commit trailer" \
+  "grep -qF 'fix/<slug>' '$CONTRACT' && grep -qF 'Co-Authored-By' '$CONTRACT'"
+
 # --- summary --------------------------------------------------------------
 printf '\nlcars buddy: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
