@@ -30,6 +30,22 @@ PR_NOTE=""
 # the sibling lcars-run skill dir; $LCARS_HOST_ADAPTER overrides the path so
 # tests can stub the whole adapter.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SELF_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
@@ -111,10 +127,6 @@ set_stage() {
     && mv "$tmp" "$STATE"
 }
 
-# drop a field's line if present (no-op otherwise) — clears the recorded PR so a
-# re-entry to Verify opens a fresh PR.
-state_del() { local tmp; tmp="$(mktemp)"; grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"; }
-
 # Close the Mission's open PR (S75): send-back returns the Mission to Align, so
 # the in-flight PR must not linger open. Best-effort — gh absent / a forge error
 # leaves a note but never blocks the send-back (the stage reset is the contract).
@@ -139,9 +151,9 @@ close_open_pr() {
   fi
   # Clear the recorded PR + review marker either way, so a re-entry to Verify
   # opens a FRESH PR rather than re-using the closed one.
-  state_del prUrl
-  state_del prNumber
-  state_del review
+  lcars_state_unset "$STATE" prUrl
+  lcars_state_unset "$STATE" prNumber
+  lcars_state_unset "$STATE" review
 }
 
 # --- gh relabel: best-effort, never blocks the local stage change ----------
@@ -239,6 +251,11 @@ if [ "$TYPE" = "bug" ] && [ -n "$PARENT" ]; then
   set_stage "plan"
   gh_relabel "lcars:plan" "${PREV_STAGE:+lcars:$PREV_STAGE} lcars:awaiting-human"
 
+  # S207 fix round 1 (D2): the state writer now REFUSES a state.json it will
+  # not touch, and returns non-zero. Ask before announcing anything — a verb
+  # that prints success over a refused write is the `lcars pause` lie the
+  # captain ruled on.
+  lcars_state_refusal_die "lcars feedback"
   echo "FEEDBACK: logged bug re-staged to Plan with your correction folded into the PRD"
   echo "  Appended your note to feedback.md and folded it into prd.md."
   echo "  Stage:  plan (was ${PREV_STAGE:-unknown})"
@@ -267,6 +284,11 @@ close_open_pr
 set_stage "align"
 gh_relabel "lcars:align" "${PREV_STAGE:+lcars:$PREV_STAGE} lcars:awaiting-human"
 
+# S207 fix round 1 (D2): the state writer now REFUSES a state.json it will
+# not touch, and returns non-zero. Ask before announcing anything — a verb
+# that prints success over a refused write is the `lcars pause` lie the
+# captain ruled on.
+lcars_state_refusal_die "lcars feedback"
 echo "FEEDBACK: sent back to Align"
 echo "  Appended your note to feedback.md."
 echo "  Stage:  align (was ${PREV_STAGE:-unknown})"

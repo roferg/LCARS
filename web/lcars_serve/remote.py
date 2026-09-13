@@ -75,7 +75,7 @@ import threading
 import time
 
 from . import board
-from .github_adapter import GitHubAdapter
+from .github_adapter import GitHubAdapter, ticket_progress
 
 # The cadence. THIRTY SECONDS, not one: this is a "somebody else's laptop is
 # working" indicator, not a live feed, and the cost of being wrong in the fast
@@ -551,33 +551,14 @@ def _as_issue(value):
 
 
 def _ticket_progress(row, stage):
-    """Implement progress from the mission issue's own sub-issue summary.
+    """The Implement ticket count off the listing's own `subIssuesSummary`.
 
-    WHAT THIS IS AND IS NOT. It is `completed/total` over the `lcars:ticket`
-    sub-issues Schedule opened and nested under this mission — the forge's own
-    count, so it moves as Implement closes each ticket. It is NOT the local
-    card's wave progress: waves.json lives in the driving laptop's `.git/` and is
-    not synced anywhere, so the label says TICKET and never WAVE, and the block
-    carries no `wave`/`shape` keys for the renderer to imply one from. Claiming
-    a wave number we cannot see would be the exact class of invented fact this
-    round has spent three sessions refusing.
-
-    None (no block at all) for any stage but implement, for a mission with no
-    sub-issues, and for a payload that does not carry the summary — a gh too old
-    to know the field returns nothing here rather than a wrong zero.
+    S207 moved the implementation to github_adapter.ticket_progress so the ONE
+    fact has ONE implementation: this module's overlay and the github adapter's
+    own cards now render the same count from the same code. The name stays as
+    this module's seam (and its callers' and tests') — the body is gone, not the
+    contract: None for any stage but implement, None for a mission with no
+    sub-issues, and None for a payload that does not carry the summary (a gh too
+    old to know the field returns nothing rather than a wrong zero).
     """
-    if board.normalise_stage(stage) != "implement":
-        return None
-    summary = row.get("subIssuesSummary")
-    if not isinstance(summary, dict):
-        return None
-    total = summary.get("total")
-    if not isinstance(total, int) or total <= 0:
-        return None
-    done = summary.get("completed")
-    if not isinstance(done, int) or done < 0:
-        done = 0
-    if done > total:
-        done = total
-    return {"ticketsDone": done, "ticketsTotal": total,
-            "label": "TICKET %d/%d" % (done, total)}
+    return ticket_progress(row, stage)

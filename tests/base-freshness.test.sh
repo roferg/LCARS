@@ -1830,8 +1830,13 @@ check "44. …and the quoted path is shown exactly as 'ls' shows it" \
 # in both directions, so the prose can neither over- nor under-claim.
 READERS45="$TMPROOT/readers45.txt"
 grep -rl 'baseFreshness' "$REPO_ROOT/skills" >"$READERS45" 2>/dev/null
+# S207 added a SIXTH: skills/lcars-init/lcars-state.sh, the one state.json field
+# writer. It is not a reader — it names the field to record WHY it must never
+# reformat the file: `baseFreshness` is one of the two values every sed/awk
+# reader in LCARS requires on ONE line. That is the writer's own constraint, so
+# it belongs on this list exactly as lcars-common.sh (the field's writer) does.
 check "45. the only files mentioning baseFreshness are its writer, its readers and their docs" \
-  "! grep -v -e 'lcars-init/lcars-common.sh\$' -e 'lcars-file/SKILL.md\$' -e 'lcars-run/run.sh\$' -e 'lcars-run/SKILL.md\$' -e 'lcars-viewscreen/SKILL.md\$' '$READERS45' | grep -q ."
+  "! grep -v -e 'lcars-init/lcars-common.sh\$' -e 'lcars-init/lcars-state.sh\$' -e 'lcars-file/SKILL.md\$' -e 'lcars-run/run.sh\$' -e 'lcars-run/SKILL.md\$' -e 'lcars-viewscreen/SKILL.md\$' '$READERS45' | grep -q ."
 check "45. …and the drive-time reader (S159) really is one of them" \
   "grep -q 'lcars-run/run.sh\$' '$READERS45'"
 # S160 built the board badge. The claim that it does not exist would now be the

@@ -149,6 +149,17 @@ if [ "$MODE" = "snapshot" ]; then
 # Each mission becomes one tab-separated record prefixed with a sort key
 # (created\tid) so we can sort newest-first with a plain `sort -r`, breaking
 # ties on id. Record fields: id, issue, stage, glyph, title.
+# S207 R4 — THE RECORD SEPARATOR IS NOT A TAB, and that is the whole of the
+# "TITLE header skew". These records were tab-separated and read back with
+# `IFS=$'\t' read -r …`; TAB IS IFS WHITESPACE, so bash COLLAPSES a run of them
+# and drops empty leading/trailing fields. A row with no status glyph therefore
+# lost that field entirely and every later field shifted left by one: the TITLE
+# was printed into the 4-wide glyph column, four columns off its own header, on
+# every ordinary (unpaused, ungated) mission — i.e. on almost every row LCARS
+# has ever printed. A non-whitespace separator has no such rule: empty fields
+# survive, and the split is positional. US (0x1f) is the ASCII unit separator,
+# is not legal unescaped inside a JSON string, and cannot appear in a title.
+RS=$'\037'
 PAUSE_GLYPH="⏸"
 ASK_GLYPH="❓"
 STANDBY_GLYPH="◇"
@@ -199,9 +210,13 @@ for s in "${states[@]}"; do
 
   # issue → "#42" or "-" when none has been opened yet (ASCII dash keeps the
   # column aligned — a multibyte em-dash would throw printf's width off)
+  # S207 R2 — `0` IS NOT AN ISSUE NUMBER. GitHub numbers issues from 1, so a
+  # `"githubIssue": 0` is the absence of one written down (a shell arithmetic
+  # default that reached disk). Rendered `#0` it read as a real issue and the
+  # footer offered it too — a link to nothing.
   case "$issue" in
-    ''|null) issue_disp="-" ;;
-    *)       issue_disp="#$issue" ;;
+    ''|null|0) issue_disp="-" ;;
+    *)         issue_disp="#$issue" ;;
   esac
 
   # status glyph: paused and/or awaiting-human (awaiting requires a question)
@@ -240,11 +255,11 @@ for s in "${states[@]}"; do
     done <"$carried_file"
   fi
 
-  rows+=("$created"$'\t'"$id"$'\t'"$id"$'\t'"$issue_disp"$'\t'"$stage"$'\t'"$glyph"$'\t'"$title")
+  rows+=("$created$RS$id$RS$id$RS$issue_disp$RS$stage$RS$glyph$RS$title")
 done
 
-# Sort newest-first by the created\tid prefix, then drop that prefix.
-sorted="$(printf '%s\n' "${rows[@]}" | sort -r -t$'\t' -k1,2)"
+# Sort newest-first by the created+id prefix, then drop that prefix.
+sorted="$(printf '%s\n' "${rows[@]}" | sort -r -t"$RS" -k1,2)"
 
 # --- render the table -----------------------------------------------------
 RULE="───────────────────────────────────────────────────────────────"
@@ -262,10 +277,31 @@ echo "$RULE"
 # 18-char id simply pads further. The SORT above is unaffected: it keys on
 # created\tid, and everything up to NNN is still fixed-width, so `…-001-c10e`
 # still sorts before `…-002-c10e`.
-printf '%-27s%-7s%-19s%-4s%s\n' "ID" "ISSUE" "STAGE" "" "TITLE"
-while IFS=$'\t' read -r _created _sortid id issue stage glyph title; do
+#
+# S207 R1 — the ISSUE column is 9, not 7. `#123456` is SEVEN characters and the
+# field was seven wide, so a repo that reached six-digit issue numbers printed
+# `#123456implement` with no separating space at all. 9 restores the same
+# 2-space gutter a 5-digit issue had, and still fits a 7-digit `#1234567`.
+#
+# S207 R5 — THE GLYPH CELL IS PADDED BY CHARACTER COUNT, not by `%-4s`. printf
+# pads to a BYTE width, and each glyph here is a 3-byte UTF-8 character: one
+# glyph got 1 pad byte instead of 3, and TWO glyphs (⏸❓, a paused mission that
+# is also awaiting the captain) overflowed the field and printed `⏸❓Title` with
+# no space at all. Counting characters guarantees the separating space, and
+# leaves a glyphless row exactly 4 cells so it lines up with the TITLE header.
+# (A terminal that renders these glyphs double-width still shifts that row by
+# the extra cell — a cell LCARS cannot measure from bash; what it can promise,
+# and now does, is that the title is never glued to the glyph.)
+GLYPH_COL=4
+glyph_cell() { # glyph -> the glyph plus its padding, never fewer than one space
+  local g="${1:-}" pad=$((GLYPH_COL - ${#1}))
+  [ "$pad" -lt 1 ] && pad=1
+  printf '%s%*s' "$g" "$pad" ""
+}
+printf '%-27s%-9s%-19s%s%s\n' "ID" "ISSUE" "STAGE" "$(glyph_cell "")" "TITLE"
+while IFS="$RS" read -r _created _sortid id issue stage glyph title; do
   [ -n "$id" ] || continue
-  printf '%-27s%-7s%-19s%-4s%s\n' "$id" "$issue" "$stage" "$glyph" "$title"
+  printf '%-27s%-9s%-19s%s%s\n' "$id" "$issue" "$stage" "$(glyph_cell "$glyph")" "$title"
 done <<<"$sorted"
 echo "$RULE"
 # Only show the glyph legend when a row actually carries a glyph — otherwise a

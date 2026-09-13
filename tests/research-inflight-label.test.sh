@@ -99,20 +99,41 @@ new_repo() {
 
   mkdir -p "$mroot/feat-001"
   cat >"$mroot/feat-001/state.json" <<'JSON'
-{ "id": "feat-001", "type": "feature", "title": "A feature", "stage": "align", "githubIssue": 42 }
+{
+  "id": "feat-001",
+  "type": "feature",
+  "title": "A feature",
+  "stage": "align",
+  "githubIssue": 42
+}
 JSON
   printf '# Mission: A feature\n\n**Type:** feature\nBuild a feature.\n' >"$mroot/feat-001/prd.md"
 
   # a PARENT for the logged bug to ground against
   mkdir -p "$mroot/parent-000"
   cat >"$mroot/parent-000/state.json" <<'JSON'
-{ "id": "parent-000", "type": "feature", "title": "Theme toggle", "stage": "verify", "githubIssue": 41 }
+{
+  "id": "parent-000",
+  "type": "feature",
+  "title": "Theme toggle",
+  "stage": "verify",
+  "githubIssue": 41
+}
 JSON
   printf '# Mission: Theme toggle\nAdd a theme toggle.\n' >"$mroot/parent-000/prd.md"
 
   mkdir -p "$mroot/bug-002"
   cat >"$mroot/bug-002/state.json" <<'JSON'
-{ "id": "bug-002", "type": "bug", "origin": "log", "title": "icon missing", "stage": "align", "githubIssue": 43, "parentMission": "parent-000", "parentIssue": 41 }
+{
+  "id": "bug-002",
+  "type": "bug",
+  "origin": "log",
+  "title": "icon missing",
+  "stage": "align",
+  "githubIssue": 43,
+  "parentMission": "parent-000",
+  "parentIssue": 41
+}
 JSON
   printf '# Mission: icon missing\n\n**Type:** bug\nThe icon vanishes.\n' >"$mroot/bug-002/prd.md"
   echo "$repo"

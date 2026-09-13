@@ -181,9 +181,76 @@ class GitHubAdapterTest(unittest.TestCase):
                          local["implementation"]["level"])
         self.assertEqual(m["pills"]["cost"]["unit"], local["cost"]["unit"])
 
-    def test_tickets_nested_under_parent(self):
+    # ── S207 item 6: the dead nested-ticket matcher, and the COUNT that
+    #    replaces it. The ROWS are still empty by design — this session gave the
+    #    card a ticket-count PILL, not nested rows. ──
+    # `_tickets_for` matched a ticket body containing "#<parent>". Tickets are
+    # nested through GitHub's NATIVE sub-issues API and their bodies carry no
+    # such reference, so it never matched a real mission — the rows have been
+    # dead for every mission ever created, and the old fixture ("Parent: #142")
+    # was the only thing that ever satisfied it. It is gone, and with it the
+    # dead rendering path: dead code that describes a feature is how the next
+    # reader concludes the feature exists.
+    def test_ticket_rows_are_empty_not_invented(self):
         m = self._by_id(self._board(), "142")
-        self.assertIn(201, [t["issue"] for t in m["tickets"]])
+        self.assertEqual(m["tickets"], [])
+
+    def test_tickets_for_is_gone(self):
+        import lcars_serve.github_adapter as ga
+        self.assertFalse(hasattr(ga, "_tickets_for"))
+
+    # …and what replaces it: the forge's OWN count, off the sub-issue summary
+    # the listing already carries (the way remote.py reads it) — no second call.
+    def test_progress_from_sub_issues_summary(self):
+        payload = [dict(PAYLOAD[0], subIssuesSummary={"total": 3, "completed": 1})]
+        stub = os.path.join(self.tmp, "gh-sub")
+        _write_stub(stub, payload)
+        m = GitHubAdapter(gh_bin=stub).board()["columns"]["implement"][0]
+        self.assertEqual(m["progress"]["ticketsDone"], 1)
+        self.assertEqual(m["progress"]["ticketsTotal"], 3)
+        self.assertIn("1/3", m["progress"]["label"])
+
+    def test_progress_none_without_a_summary(self):
+        # A gh too old to know the field returns nothing here rather than a
+        # wrong zero — absence is not evidence of no tickets.
+        m = self._by_id(self._board(), "142")
+        self.assertIsNone(m["progress"])
+
+    def test_progress_only_at_implement(self):
+        payload = [dict(PAYLOAD[1], subIssuesSummary={"total": 3, "completed": 1})]
+        stub = os.path.join(self.tmp, "gh-sub2")
+        _write_stub(stub, payload)
+        m = GitHubAdapter(gh_bin=stub).board()["columns"]["research"][0]
+        self.assertIsNone(m["progress"])
+
+    def test_listing_asks_for_the_summary_field(self):
+        # The count is only free if the ONE listing carries it.
+        log = os.path.join(self.tmp, "argv.log")
+        stub = os.path.join(self.tmp, "gh-log")
+        with open(stub, "w") as fh:
+            fh.write("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >>'" + log +
+                     "'\ncat <<'JSON'\n[]\nJSON\n")
+        os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+        GitHubAdapter(gh_bin=stub).board()
+        with open(log) as fh:
+            argv = fh.read()
+        self.assertIn("subIssuesSummary", argv)
+
+    def test_an_old_gh_still_gets_a_board(self):
+        # `gh` that does not know the field EXITS NON-ZERO on the whole listing.
+        # Without a retry the board would go from "full" to "empty" for every
+        # captain on an older gh — a regression dressed as a feature.
+        log = os.path.join(self.tmp, "argv2.log")
+        stub = os.path.join(self.tmp, "gh-old")
+        with open(stub, "w") as fh:
+            fh.write("#!/usr/bin/env bash\n"
+                     "printf '%s\\n' \"$*\" >>'" + log + "'\n"
+                     "case \"$*\" in *subIssuesSummary*) "
+                     "echo 'unknown JSON field' >&2; exit 1 ;; esac\n"
+                     "cat <<'JSON'\n" + json.dumps(PAYLOAD) + "\nJSON\n")
+        os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+        board = GitHubAdapter(gh_bin=stub).board()
+        self.assertEqual([m["issue"] for m in board["columns"]["implement"]], [142])
 
     # ── S70-A: board-level meta on the github adapter ──
     def test_board_meta_repo_and_adapter(self):

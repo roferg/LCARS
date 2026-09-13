@@ -42,7 +42,9 @@ Respond with `lcars respond <id>`.
   labels.
 - Any Mission awaiting a human answer has its **pending question spelled out**
   below the table so the captain knows exactly what to respond to.
-- A Mission with no GitHub issue yet shows `-` in the ISSUE column.
+- A Mission with no GitHub issue yet shows `-` in the ISSUE column (so does
+  a `githubIssue` of `0`: GitHub numbers issues from 1, so `0` is a missing
+  issue, not a real one).
 - **Issue body NOT updated.** The issue body is rebuilt from the mission dir at
   exactly two transfer points. If a part of it could not be BUILT there — an
   interrupted re-grill left a 0-byte `prd.md`; `estimate.json` went missing and
@@ -148,7 +150,7 @@ Each Mission's `state.json` under `.git/lcars/missions/<id>/`:
 | field | used for |
 |---|---|
 | `id`, `title`, `stage` | the core table columns |
-| `githubIssue` | the ISSUE column (`-` when `null`) |
+| `githubIssue` | the ISSUE column (`-` when `null` — or `0`, which is the absence of an issue written down, never issue number zero) |
 | `created` | sort order (newest first) |
 | `paused` | the `⏸` glyph (when `true`) |
 | `pendingQuestion` | the `❓` glyph + the awaiting-input footer |

@@ -2433,6 +2433,7 @@ var ENGINE_SOURCE_WORDS = {
   "mission":         "mission pin",
   "config":          "repo config",
   "env":             "$LCARS_WORKER_BIN",
+  "internal":        "LCARS re-pin",
   "detected":        "host CLI",
   "default":         "default",
   "adopt-kept":      "mission pin · kept at adopt",

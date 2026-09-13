@@ -204,8 +204,15 @@ pr_repo() { # prd-file -> echoes repo dir, mission parked at plan-review
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$d/state.json" <<'JSON'
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "plan-review",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null }
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "plan-review",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null
+}
 JSON
   cp "$1" "$d/prd.md"
   printf '[{"id":"t-001","title":"a","description":"d","acceptanceCriteria":["c"],"dependencies":[],"filesTouched":["README.md"],"estimatedReadLoc":1,"estimatedTestLoc":1,"estimatedNewLoc":1}]\n' > "$d/plan.json"
@@ -289,10 +296,17 @@ ans_repo() { # stage [planReviewRound] -> repo with a mission at an awaiting gat
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$d/state.json" <<JSON
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "$1",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null,
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "$1",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null,
   "planReviewRound": ${2:-3},
-  "awaitingHuman": true }
+  "awaitingHuman": true
+}
 JSON
   cat > "$d/pending.json" <<JSON
 {

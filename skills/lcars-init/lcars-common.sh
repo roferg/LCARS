@@ -1941,6 +1941,26 @@ lcars_json_escape() {
 }
 
 # ---------------------------------------------------------------------------
+# S207 — THE ONE state.json FIELD WRITER lives in lcars-state.sh
+# ---------------------------------------------------------------------------
+# `lcars_state_set` / `lcars_state_set_string` / `lcars_state_unset` (and the
+# one-line-object trio `lcars_json1_*`) are in a SEPARATE, self-contained file
+# beside this one, and this file pulls them in so anything that sources
+# lcars-common.sh has them.
+#
+# WHY A SEPARATE FILE. Eight scripts write state.json and every one of them
+# needs the writer, but three of them (pause, respond, feedback) source no
+# shared library at all, and run.sh deliberately does not source THIS one
+# eagerly — it is re-entered as a subprocess for every Stage and every ticket,
+# and it says so in its own words at drive_load_common ("sourcing a second
+# library into all of them to serve none of them is blast radius for nothing").
+# A 150-line file they can all source costs them nothing; a 4,000-line one
+# would have forced a choice between that cost and a ninth copy of the writer.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lcars-state.sh}"
+# shellcheck source=./lcars-state.sh
+[ -f "$LCARS_STATE_LIB" ] && . "$LCARS_STATE_LIB"
+
+# ---------------------------------------------------------------------------
 # S195 — WHICH WORKER CLIs THIS MACHINE ACTUALLY HAS
 # ---------------------------------------------------------------------------
 # THE ONE DETECTOR, and it is deliberately the one that already existed: `lcars
@@ -1963,6 +1983,34 @@ lcars_json_escape() {
 # The engines LCARS drives, in the order every surface offers them. Same pair
 # and same order as the daemon's `_HOLODECK_ENGINES` and the File console's
 # picker; this is the shell-side home of it.
+# ---------------------------------------------------------------------------
+# THE RUNNING LCARS VERSION — the stamp `lcarsVersion` carries.
+# ---------------------------------------------------------------------------
+# ONE implementation, here, because THREE skills have to answer it identically:
+# `lcars init` seeds the stamp, `lcars update` refreshes it, and (S207) `lcars
+# adopt` seeds it on the config it writes for a cold clone. init and update each
+# carried a byte-identical private copy; adopt would have been the third, and a
+# third copy of "which version am I" is how the stamp starts disagreeing with
+# itself.
+#
+# VERSION ships in the repo root (../.. from this file's own directory; -P
+# resolves the install symlink to the physical checkout, so the answer is the
+# CHECKOUT's version and not the symlink farm's). $LCARS_VERSION wins so a test
+# can pin it; $LCARS_REPO redirects the checkout root. This mirrors the
+# resolution in skills/lcars-version/version.sh.
+#
+# EMPTY IS A REAL ANSWER (no VERSION file): every caller then OMITS the key
+# rather than seeding a bogus stamp.
+lcars_running_version() {
+  if [ -n "${LCARS_VERSION:-}" ]; then printf '%s' "$LCARS_VERSION"; return; fi
+  local phys repo vf
+  phys="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  repo="${LCARS_REPO:-$(cd "$phys/../.." 2>/dev/null && pwd -P)}"
+  vf="$repo/VERSION"
+  [ -f "$vf" ] || return 0
+  sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}' "$vf"
+}
+
 LCARS_ENGINES="claude copilot"
 
 # lcars_engine_bin <engine> — the binary name/path to look for. Both are env
@@ -2388,15 +2436,34 @@ detect_worktree_setup_cmd() {
   # package's own, which nests its .bin), else an offline lockfile-frozen install.
   if [ -f "$TOPLEVEL/package.json" ]; then
     local install lock
+    # S207 — A LOCKFILE-FROZEN INSTALL NEEDS A LOCKFILE. `npm ci` does not fall
+    # back when `package-lock.json` is absent: it ERRORS ("can only install
+    # packages when your package.json and package-lock.json are in sync"), and
+    # the seeded command was reaching for it in EVERY JS repo. A live run logged
+    # four provisioning failures from exactly this, in a repo whose lockfile is
+    # gitignored. `pnpm install --frozen-lockfile` fails the same way, and the
+    # pnpm arm is taken by a bare `pnpm-workspace.yaml` too — so a workspace
+    # that has never been installed took an arm that could not succeed.
+    # The frozen form is kept wherever the lockfile is really there (it is the
+    # reproducible install, and the whole point of the arm); without one we seed
+    # the install that WORKS. yarn needs no guard: only `yarn.lock` takes its arm.
     if [ -f "$TOPLEVEL/pnpm-lock.yaml" ] || [ -f "$TOPLEVEL/pnpm-workspace.yaml" ]; then
-      install='pnpm install --frozen-lockfile --prefer-offline --silent'
       lock='pnpm-lock.yaml'
+      if [ -f "$TOPLEVEL/pnpm-lock.yaml" ]; then
+        install='pnpm install --frozen-lockfile --prefer-offline --silent'
+      else
+        install='pnpm install --prefer-offline --silent'
+      fi
     elif [ -f "$TOPLEVEL/yarn.lock" ]; then
       install='yarn install --immutable'
       lock='yarn.lock'
     else
-      install='npm ci'
       lock='package-lock.json'
+      if [ -f "$TOPLEVEL/package-lock.json" ]; then
+        install='npm ci'
+      else
+        install='npm install'
+      fi
     fi
     # THE LOCKFILE GUARD comes first: reusing the main checkout's node_modules is
     # only correct while this worktree wants the SAME dependencies. A ticket that

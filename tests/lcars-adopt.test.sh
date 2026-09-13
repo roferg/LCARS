@@ -2136,5 +2136,66 @@ check "I6. \`--help\` documents \`--number-one\`" \
 
 # ==========================================================================
 echo
+echo "S207 item 3 — AN ADOPTED CLONE IS STAMPED, SO IT STOPS NAGGING"
+# ==========================================================================
+# adopt seeds config.json (S196 A4) through init's own detectors, but the one
+# key it did NOT seed was `lcarsVersion` — so `lcars version`'s REPO_PREDATES
+# verdict fired on a repo LCARS had itself configured minutes earlier, and every
+# verb printed "⚠ this repo predates LCARS versioning — run `lcars update`."
+# until the captain ran an update he did not need. The stamp logic is
+# update.sh's (`lcars_running_version`), reused, never re-derived: the running
+# clone's VERSION file, with LCARS_VERSION as the test seam.
+IFS="$TAB" read -r repoV1 originV1 <<<"$(new_repo)"
+rm -f "$repoV1/.git/lcars/config.json"          # the cold clone, as in F1
+FIXV1="$(new_fixture "$TMPROOT/fixV1")"
+mk_body "$FIXV1/issue-63.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-063" "lcars/lcars-20260909-063" main feature claude null 0)"
+printf 'Unstamped clone\n' >"$FIXV1/issue-63.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXV1/issue-63.labels"
+adopt_engine "$repoV1" "$FIXV1" 63 "$BOTH_PATH" LCARS_VERSION=2026.9.99 \
+  </dev/null >/dev/null 2>&1
+CFGV1="$repoV1/.git/lcars/config.json"
+check "V1. the seeded config carries a version stamp" "json_has '$CFGV1' lcarsVersion"
+check "V1. and it is the RUNNING version, not a guess" \
+  "[ \"\$(json_get '$CFGV1' lcarsVersion)\" = '2026.9.99' ]"
+check "V1. the config still PARSES" "json_ok '$CFGV1'"
+# The verdict the stamp exists to answer: version.sh reads config.json and must
+# no longer say the repo predates versioning.
+outV1="$(cd "$repoV1" && LCARS_VERSION=2026.9.99 bash "$REPO_ROOT/skills/lcars-version/version.sh" 2>&1)"
+check "V1. \`lcars version\` no longer says the repo PREDATES versioning" \
+  "! printf '%s' \"\$outV1\" | grep -qi 'predates'"
+check "V1. it reads the stamp as CURRENT" \
+  "printf '%s' \"\$outV1\" | grep -q 'verdict:.*current'"
+
+# THE REFRESH PATH: adopting the SAME issue again re-enters with a config that
+# already exists, and the stamp must survive it (the merge preserves a key it is
+# given; an absent key is DELETED, which is how cloneId was lost in S196).
+adopt_engine "$repoV1" "$FIXV1" 63 "$BOTH_PATH" LCARS_VERSION=2026.9.99 \
+  </dev/null >/dev/null 2>&1
+check "V2. a REFRESH adopt keeps the stamp" \
+  "[ \"\$(json_get '$CFGV1' lcarsVersion)\" = '2026.9.99' ]"
+check "V2. and the config still PARSES" "json_ok '$CFGV1'"
+
+# A repo that already had a config keeps ITS stamp — adopt does not restamp a
+# repo it did not configure (that would silence a TRUE "needs lcars update").
+IFS="$TAB" read -r repoV3 originV3 <<<"$(new_repo)"
+cat >"$repoV3/.git/lcars/config.json" <<'CFG'
+{
+  "model": "claude-sonnet",
+  "lcarsVersion": "2026.1.1"
+}
+CFG
+FIXV3="$(new_fixture "$TMPROOT/fixV3")"
+mk_body "$FIXV3/issue-64.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-064" "lcars/lcars-20260909-064" main feature claude null 0)"
+printf 'Older stamped clone\n' >"$FIXV3/issue-64.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXV3/issue-64.labels"
+adopt_engine "$repoV3" "$FIXV3" 64 "$BOTH_PATH" LCARS_VERSION=2026.9.99 \
+  </dev/null >/dev/null 2>&1
+check "V3. an EXISTING stamp is left alone (adopt is not an update)" \
+  "[ \"\$(json_get '$repoV3/.git/lcars/config.json' lcarsVersion)\" = '2026.1.1' ]"
+
+# ==========================================================================
+echo
 printf 'lcars adopt: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

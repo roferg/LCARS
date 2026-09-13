@@ -42,6 +42,22 @@ RELABEL_NOTE=""
 # the logged-bug fold to resolve-logs so that lifecycle logic stays in one place
 # (ADR-002). Env-injected so tests can point at the real script / stub it.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SELF_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SELF_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 # S180 — the driver this script hands back to once the gate is cleared. Same
 # env-injection pattern as the resolve-logs delegate above, so a test can point a
@@ -311,20 +327,6 @@ locate_mission() { # id
   [ -f "$STATE" ]       || die "mission '$1' has no state.json — its state is corrupt."
 }
 
-# --- state.json field editing (one-field-per-line; same as run.sh) ----------
-state_del() { # key — drop the field's line if present
-  local tmp; tmp="$(mktemp)"
-  grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-# Add or replace a bare field (true/false/number). Same one-field-per-line
-# convention, and the same implementation, as run.sh's state_set_raw.
-state_set_raw() { # key token
-  state_del "$1"
-  local tmp; tmp="$(mktemp)"
-  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-
 # --- gh: remove the awaiting-human overlay, best-effort ---------------------
 # Tolerant by design: gh is happy to remove a label that isn't applied, and a
 # missing gh / failed edit never blocks the local clear — it just leaves a note.
@@ -467,9 +469,9 @@ cmd_answer() {
     local escs; escs="$(json_raw "$STATE" planReviewEscalations)"
     case "$escs" in ''|*[!0-9]*) escs=0 ;; esac
     escs=$((escs + 1))
-    state_set_raw planReviewEscalations "$escs"
+    lcars_state_set "$STATE" planReviewEscalations "$escs"
     if [ "$escs" -le "$MAX_REVIEW_ESCALATIONS" ]; then
-      state_set_raw planReviewRound 0
+      lcars_state_set "$STATE" planReviewRound 0
       REVIEW_NOTE="  Plan Review gets a fresh review round on your answer (answered escalation $escs of $MAX_REVIEW_ESCALATIONS)."
     else
       REVIEW_NOTE="  Plan Review budget NOT reset: $MAX_REVIEW_ESCALATIONS answered escalations is the cap, and this is $escs. The next failed round comes straight back to you — a fourth loop would spend a full review cycle to reach this same gate."
@@ -489,16 +491,16 @@ cmd_answer() {
   RECONCILE_NOTE=""
   if [ -f "$MISSION_DIR/reconcile-design-question.txt" ]; then
     printf '%s\n' "$ANSWER" >"$MISSION_DIR/reconcile-answer.txt"
-    state_del reconcileRound
-    state_del reconcileStatus
+    lcars_state_unset "$STATE" reconcileRound
+    lcars_state_unset "$STATE" reconcileStatus
     rm -f "$MISSION_DIR/reconcile-design-question.txt"
     RECONCILE_NOTE="  Recorded your reconcile design decision and reset the reconcile budget."
   fi
 
   # Clear the gate — but DO NOT touch the stage. The Mission stays parked at the
   # stage that escalated; `lcars run` re-enters it and consumes answers.json.
-  state_del awaitingHuman
-  state_del pendingQuestion
+  lcars_state_unset "$STATE" awaitingHuman
+  lcars_state_unset "$STATE" pendingQuestion
 
   gh_remove_awaiting
 
@@ -563,6 +565,11 @@ $FOLD_REFUSAL"
     FOLD_NOTE="$(awk '/^Folded /{ print "  " $0; exit }' <<<"$FOLD_OUT")" || true
   fi
 
+  # S207 fix round 1 (D2): the state writer now REFUSES a state.json it will
+  # not touch, and returns non-zero. Ask before announcing anything — a verb
+  # that prints success over a refused write is the `lcars pause` lie the
+  # captain ruled on.
+  lcars_state_refusal_die "lcars respond"
   echo "RESPOND: answered $MISSION_ID"
   echo "  Recorded your answer in answers.json (appended — earlier answers kept; stage unchanged)."
   echo "  Stage:  $stage"

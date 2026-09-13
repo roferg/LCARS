@@ -54,7 +54,12 @@ SH
   mkdir -p "$repo/.git/lcars/missions/test-001/tickets/t-001" \
            "$repo/.git/lcars/missions/test-001/manifests"
   cat > "$repo/.git/lcars/missions/test-001/state.json" <<'JSON'
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "implement" }
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "implement"
+}
 JSON
   cat > "$repo/.git/lcars/missions/test-001/approved-plan.json" <<'JSON'
 { "tickets": [ { "id": "t-001", "title": "hint overlay", "description": "d",

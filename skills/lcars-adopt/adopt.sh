@@ -160,88 +160,38 @@ OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SELF_DIR/../lcars-run/ownership.sh}"
 # is the honest failure — refusing to rebuild a mission because a helper file is
 # absent would be worse than rebuilding it and naming what is missing.
 COMMON_LIB="${LCARS_COMMON_LIB:-$SELF_DIR/../lcars-init/lcars-common.sh}"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SELF_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 # shellcheck source=/dev/null
 [ -f "$COMMON_LIB" ] && . "$COMMON_LIB"
 
-# --- tiny JSON writers -----------------------------------------------------
-# state.json is written ONE FIELD PER LINE by every writer in LCARS (file.sh's
-# write_state, run.sh's open_pr, approve.sh), and json_escape flattens any
-# newline in a value, so a field is edited as a LINE. These helpers keep that
-# shape.
-#
-# They do NOT keep the shape of the copy-pasted helper the other verbs carry:
-# that one deletes the field's line and re-inserts it after line 1 with a
-# HARD-CODED trailing comma. `base` is the LAST field of every state.json and
-# adopt's refresh path rewrites it, so the previously-second-to-last line kept
-# its comma and became the last one — a trailing comma, and INVALID JSON.
-# `lcars status` is sed-based and never noticed; the viewscreen board parses
-# state.json for real, so a refreshed mission silently VANISHED from the
-# captain's main surface (S189 fix round 1, defect 1).
-#
-# The cure is to treat the comma as a property of POSITION rather than of the
-# line: every write re-derives the separators over whatever the object ends up
-# containing, so only the last field carries none — for any key, including the
-# last one, and for an object with a single field. It also repairs an object
-# that a previous adopt already corrupted. A key that is already present is
-# updated IN PLACE, which keeps file.sh's field order and makes a repeat adopt
-# byte-stable; a NEW key still goes in at the top, exactly where the incumbent
-# put it, because that convention is load-bearing while the siblings are
-# unfixed — it is what keeps `base` the last field.
-#
-# The five sibling copies (run.sh, approve.sh, pause.sh, respond.sh,
-# resolve-logs.sh) are LEDGERED, not touched here: nothing else in the product
-# rewrites the last field, so they are latent, and fixing five files across the
-# merge and drive paths mid-cure is exactly the restructure this project has
-# paid for before.
+# --- state.json writing ----------------------------------------------------
+# S189 cured THIS file's copy of the house field writer (adopt's refresh path
+# had rewritten the last field and left a trailing comma, and the viewscreen
+# silently dropped the mission), and ledgered the other seven. S207 promoted
+# that cured awk pass to lcars-state.sh and deleted every copy, this one
+# included — so adopt's writer is now literally the same code, in one place.
+# `json_escape` below stays: the handoff envelope and the event line use it.
 json_escape() { # string → JSON-safe string body (no surrounding quotes)
   local s="$1"
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
   s="${s//$'\t'/\\t}"; s="${s//$'\r'/}"
   printf '%s' "${s//$'\n'/\\n}"
 }
-state_put() { # key mode(str|raw|del) [value] — rewrite $STATE, commas re-derived
-  local tmp; tmp="$(mktemp)"
-  if K="$1" MODE="$2" V="${3:-}" awk '
-    function rendered(   q) { q = (mode == "str") ? "\"" : ""
-                              return "  \"" key "\": " q val q }
-    BEGIN { key   = ENVIRON["K"]; mode = ENVIRON["MODE"]; val = ENVIRON["V"]
-            # anchored at the start of the line, so a VALUE that happens to
-            # contain `"base":` is never mistaken for the field itself.
-            keyre = "^[[:space:]]*\"" key "\"[[:space:]]*:" }
-    { line[NR] = $0 }
-    END {
-      if (NR < 2) exit 1
-      close_i = NR
-      while (close_i > 1 && line[close_i] !~ /^[[:space:]]*\}[[:space:]]*$/) close_i--
-      if (close_i <= 1) exit 1          # no closing brace: leave the file alone
-      n = 0; seen = 0
-      for (i = 2; i < close_i; i++) {
-        l = line[i]
-        if (l ~ /^[[:space:]]*$/) continue
-        sub(/,[[:space:]]*$/, "", l)    # the separator only; a comma INSIDE a
-                                        # quoted value is not at end-of-line.
-        if (l ~ keyre) {
-          if (mode == "del") continue
-          l = rendered(); seen = 1
-        }
-        out[++n] = l
-      }
-      print line[1]
-      # A NEW key goes straight after the opening brace — the position the
-      # incumbent helper used, and the one the five sibling copies still
-      # DEPEND on (see the note above): it keeps `base` the LAST field, which
-      # is what keeps their hard-coded comma latent. Appending here instead
-      # would leave `review` last, and the `state_set_str review merged` in
-      # approve would then corrupt the object the moment the captain shipped.
-      if (mode != "del" && seen == 0) printf "%s%s\n", rendered(), (n > 0 ? "," : "")
-      for (i = 1; i <= n; i++) printf "%s%s\n", out[i], (i < n ? "," : "")
-      print line[close_i]
-    }
-  ' "$STATE" >"$tmp"; then mv "$tmp" "$STATE"; else rm -f "$tmp"; fi
-}
-state_del()     { state_put "$1" del; }                            # key
-state_set_str() { state_put "$1" str "$(json_escape "$2")"; }      # key value
-state_set_raw() { state_put "$1" raw "$2"; }                       # key token
 json_str_of() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 
 # --- reading ANOTHER mission's state.json ----------------------------------
@@ -718,35 +668,35 @@ if [ "$EXISTING" -eq 1 ]; then
   # the whole rebuild has succeeded, and every local-only field on it (an
   # estimate's modelOverride, baseSha, attachments paths) survives untouched.
   cp "$MISSION_DIR/state.json" "$STATE" 2>/dev/null || die "could not read the existing mission at $MISSION_DIR."
-  state_set_str id "$MID"
-  state_set_str title "$TITLE"
-  state_set_str stage "$STAGE"
-  state_set_str branch "$BRANCH"
-  state_set_str base "$BASE"
-  state_set_raw githubIssue "$ISSUE"
-  [ -n "$TYPE" ]   && state_set_str type "$TYPE"
+  lcars_state_set_string "$STATE" id "$MID"
+  lcars_state_set_string "$STATE" title "$TITLE"
+  lcars_state_set_string "$STATE" stage "$STAGE"
+  lcars_state_set_string "$STATE" branch "$BRANCH"
+  lcars_state_set_string "$STATE" base "$BASE"
+  lcars_state_set "$STATE" githubIssue "$ISSUE"
+  [ -n "$TYPE" ]   && lcars_state_set_string "$STATE" type "$TYPE"
   # S196 A3 — the engine RESOLVED at this handoff, not the envelope's raw value:
   # they differ exactly when the captain converted it, and the converted one is
   # the fact that must be recorded (see section 3b).
   if [ -n "$ENGINE_CHOSEN" ]; then
-    state_set_str workerBin     "$ENGINE_CHOSEN"
-    state_set_str engineResolved "$ENGINE_CHOSEN"
-    state_set_str engineSource   "$ENGINE_SRC"
+    lcars_state_set_string "$STATE" workerBin     "$ENGINE_CHOSEN"
+    lcars_state_set_string "$STATE" engineResolved "$ENGINE_CHOSEN"
+    lcars_state_set_string "$STATE" engineSource   "$ENGINE_SRC"
   fi
-  case "$PARENT" in ''|null) state_del parentIssue ;; *) state_set_raw parentIssue "$PARENT" ;; esac
-  if [ "$PARKED" = "true" ]; then state_set_raw prdPending true; else state_del prdPending; fi
+  case "$PARENT" in ''|null) lcars_state_unset "$STATE" parentIssue ;; *) lcars_state_set "$STATE" parentIssue "$PARENT" ;; esac
+  if [ "$PARKED" = "true" ]; then lcars_state_set "$STATE" prdPending true; else lcars_state_unset "$STATE" prdPending; fi
   # A mission that is back at ALIGN has no open PR — `lcars feedback` closes the
   # PR when it bounces one, and Verify opens a FRESH one on the way back. So a
   # prUrl left over from this laptop's earlier copy of the mission is stale by
   # the label's own account, and keeping it would make `lcars run` believe a PR
   # is already open. The stage is the recorded fact; these follow it.
   if [ "$STAGE" = "align" ]; then
-    state_del prUrl; state_del prNumber; state_del review
+    lcars_state_unset "$STATE" prUrl; lcars_state_unset "$STATE" prNumber; lcars_state_unset "$STATE" review
   fi
   # …and Number One, at EVERY stage. Unlike the PR fields above this is not a
   # fact that goes stale at one stage and holds at another — it is stale the
   # moment the mission changes laptops, so it goes unconditionally.
-  state_del numberOne
+  lcars_state_unset "$STATE" numberOne
 else
   MODEL=""
   # $CONFIG was resolved in section 3b (the engine block reads workerBin from it).
@@ -781,7 +731,7 @@ else
   # not emit `numberOne` if it tried — which is exactly why the guard belongs
   # here too: the day somebody adds a field to that heredoc, the rule is already
   # written down beside it instead of living in one branch of an if.
-  state_del numberOne
+  lcars_state_unset "$STATE" numberOne
 fi
 
 # ===========================================================================
@@ -823,7 +773,7 @@ if [ "$STAGE" = "verify" ]; then
     esac
   fi
   if [ -n "$PR_URL" ]; then
-    state_set_str prUrl "$PR_URL"
+    lcars_state_set_string "$STATE" prUrl "$PR_URL"
     # prNumber is a STRING, matching the ONE existing writer — pr-lib.sh:217,
     # which run.sh's Verify auto-open goes through. S189 fix round 1, defect 2:
     # adopt first wrote it as a bare NUMBER, so the same PR had a different JSON
@@ -835,10 +785,10 @@ if [ "$STAGE" = "verify" ]; then
     # returns "" for the quoted form and falls back to resolving the PR by
     # `--head <branch>`, which is the same fallback the driving laptop relies on
     # today. Upgrading BOTH writers to a number together is LEDGERED.)
-    case "$PR_NUM" in ''|*[!0-9]*) : ;; *) state_set_str prNumber "$PR_NUM" ;; esac
+    case "$PR_NUM" in ''|*[!0-9]*) : ;; *) lcars_state_set_string "$STATE" prNumber "$PR_NUM" ;; esac
     # The same in-review sub-state the driving laptop records when Verify opens
     # the PR (run.sh cmd_open_pr), so the board reads "in review — PR open".
-    state_set_str review open
+    lcars_state_set_string "$STATE" review open
   else
     # Failure mode 11: an empty answer means "no PR" AND "the only PR is
     # closed-unmerged", indistinguishably, and adopt does not pretend to know
@@ -922,6 +872,12 @@ fi
 # ===========================================================================
 # 6. PUBLISH — the whole mission, at once. Up to here the repo is untouched.
 # ===========================================================================
+# S207 fix round 1 (D2): the refresh path above edits a STAGING COPY of an
+# existing state.json, and the writer now REFUSES a state.json it will not
+# touch. Publishing a staging copy whose edits were refused would move a
+# STALE file over the real one and call it an adoption. Ask before the repo is
+# touched at all — this is still the "up to here the repo is untouched" point.
+lcars_state_refusal_die "lcars adopt"
 mkdir -p "$MISSION_DIR" || die "could not create $MISSION_DIR."
 cp "$STAGING/spec.md" "$MISSION_DIR/$SPEC_NAME" || die "could not write $MISSION_DIR/$SPEC_NAME."
 cp "$STATE" "$MISSION_DIR/state.json" || die "could not write $MISSION_DIR/state.json."
@@ -979,6 +935,23 @@ if [ ! -f "$CONFIG" ]; then
       [ -n "$SEED_WT_RAW" ] && SEED_WT="\"$(json_escape "$SEED_WT_RAW")\""
     fi
     SEED_MODEL="${LCARS_MODEL:-claude-sonnet}"
+    # S207 — STAMP WHAT WE SEED. Without `lcarsVersion` the config adopt had
+    # just written read as "initialized but never stamped", which
+    # skills/lcars-version/check.sh reports as REPO_PREDATES: every verb printed
+    # "⚠ this repo predates LCARS versioning — run `lcars update`" until the
+    # captain ran an update that had nothing to do — a nag LCARS aimed at itself,
+    # on a config LCARS wrote minutes earlier. The version comes from
+    # lcars-common.sh's `lcars_running_version` (init's and update's stamper,
+    # shared there by this session), and an unresolvable version OMITS the key
+    # rather than seeding a bogus stamp. Only the SEED path stamps: a config that
+    # already exists keeps whatever stamp it has, because an older repo's "needs
+    # lcars update" is TRUE and adopt is not an update.
+    SEED_VERSION_LINE=""
+    if command -v lcars_running_version >/dev/null 2>&1; then
+      SEED_VERSION="$(lcars_running_version)"
+      [ -n "$SEED_VERSION" ] && SEED_VERSION_LINE="
+lcarsVersion=\"$(json_escape "$SEED_VERSION")\""
+    fi
     mkdir -p "$GITDIR/lcars"
     lcars_config_merge "$CONFIG" "model=\"$(json_escape "$SEED_MODEL")\"
 projectName=\"$(json_escape "$(basename "$TOPLEVEL")")\"
@@ -987,7 +960,7 @@ stack=\"$(json_escape "${SEED_STACK:-unknown}")\"
 testCommand=$SEED_TESTCMD_JSON
 worktreeSetupCommand=$SEED_WT
 comprehensionBudget=1200
-adoptedFrom=$ISSUE
+adoptedFrom=$ISSUE$SEED_VERSION_LINE
 created=\"$NOW\""
     if [ -n "$SEED_TESTCMD" ]; then
       note "this clone had no .git/lcars/config.json — one was seeded (stack: ${SEED_STACK:-unknown}, testCommand: $SEED_TESTCMD). Run \`lcars init\` to finish setup (GitHub labels, .gitignore)."

@@ -1442,6 +1442,143 @@ rc15m=0
 check "15f. a missing host adapter does not abort the fold" \
   "[ '$rc15m' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$s15m'"
 
+# --- S207 item 2: a DIRECT `lcars resolve-logs` keeps engine provenance -----
+# run_child_driver re-pins the mission's OWN engine through $LCARS_WORKER_BIN so
+# the child drive inherits it. run.sh reads a BARE $LCARS_WORKER_BIN as an
+# OPERATOR act and records `engineSource: env` — destroying the richer
+# adopt-chosen / adopt-converted / mission answer. approve.sh was cured in
+# 3055874 by exporting $LCARS_WORKER_BIN_INTERNAL=1 beside the pin ("LCARS set
+# this, re-asserting THIS mission's engine"); reached THROUGH approve the marker
+# is inherited and resolve-logs is incidentally fine, so the defect only shows
+# when resolve-logs is run DIRECTLY. One line, the same cure.
+#
+# S207 FIX ROUND 1 (D1) — THE STUB NO LONGER PARAPHRASES THE RULE; IT RUNS IT.
+# The original stub re-implemented run.sh's provenance rule in twelve lines, and
+# it PASSED while the defect was live: it asserted at the PARENT level (that the
+# marker was exported) and its hand-written copy of the rule had no idea what the
+# real resolver does with an internal pin on a mission that records no engine of
+# its own. That is exactly the case a child bug mission is in — `lcars log` files
+# it with no engine in scope, so it carries no `workerBin` — and the real run.sh
+# degraded the attribution to `env`, the CAPTAIN's source, for a pin LCARS set.
+#
+# So this stub now shells out to the REAL run.sh `resolve-worker --mission <id>`
+# (a mission-aware, LLM-free, spawn-free surface over resolve_worker_bin +
+# record_engine_provenance — the same two functions the drive's stage subprocess
+# runs), and then does the stage flip the drive would have done. The rule under
+# test is run.sh's own, and the assertions below read the CHILD's state.json.
+make_run_stub_provenance() {
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+REAL_RUN="$REPO_ROOT/skills/lcars-run/run.sh"
+EOF
+  cat >>"$1" <<'EOF'
+mid=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mission) mid="$2"; shift 2 ;;
+    --mission=*) mid="${1#--mission=}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "run drive $mid" >>"$RUN_LOG"
+printf 'env %s WORKER_BIN=%s INTERNAL=%s\n' "$mid" \
+  "${LCARS_WORKER_BIN:-<unset>}" "${LCARS_WORKER_BIN_INTERNAL:-<unset>}" >>"$RUN_LOG"
+gitdir="$(git rev-parse --git-common-dir 2>/dev/null)"
+case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+state="$gitdir/lcars/missions/$mid/state.json"
+# THE REAL RESOLVER, on the CHILD, with whatever environment resolve-logs handed
+# us. Host markers are scrubbed so nothing passes for the wrong reason.
+env -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION -u COPILOT_CLI   bash "$REAL_RUN" resolve-worker --mission "$mid" >>"$RUN_LOG" 2>&1
+tmp="$(mktemp)"
+awk 'NR==1{print; print "  \"stage\": \"verify\","; next} /"stage"/{next} {print}' "$state" >"$tmp" && mv "$tmp" "$state"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+repoEP="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repoEP/gh"; make_notify_stub "$repoEP/notify"
+make_run_stub_provenance "$repoEP/run"; make_worker_stub "$repoEP/worker"
+export GH_LOG="$repoEP/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repoEP/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repoEP/run.log"; : >"$RUN_LOG"
+# The PARENT carries the engine (that is where run_child_driver reads it), and
+# the CHILD carries the adopt provenance the drive must not erase.
+pEP="$repoEP/.git/lcars/missions/lcars-20260601-001/state.json"
+cEP="$repoEP/.git/lcars/missions/lcars-20260601-002/state.json"
+awk 'NR==1{print; print "  \"workerBin\": \"copilot\","; next} {print}' "$pEP" >"$pEP.t" && mv "$pEP.t" "$pEP"
+# All THREE fields, exactly as adopt.sh writes them (workerBin + engineResolved
+# + engineSource). The old fixture wrote only two, which was fine against a
+# hand-written stub and is not fine against the real recorder: its "adopt said
+# this better, keep it" rule compares the RECORDED engineResolved with the bin it
+# just resolved, so a fixture missing engineResolved would fail for a reason that
+# has nothing to do with this defect.
+awk 'NR==1{print; print "  \"workerBin\": \"copilot\",";
+           print "  \"engineResolved\": \"copilot\",";
+           print "  \"engineSource\": \"adopt-chosen\","; next} {print}' "$cEP" >"$cEP.t" && mv "$cEP.t" "$cEP"
+check "S207-2: the fixture really starts at adopt-chosen (a control)" \
+  "qgrep '\"engineSource\": *\"adopt-chosen\"' '$cEP'"
+rcEP=0
+(
+  cd "$repoEP"
+  ESCALATE_IDS="" WORKER_ORDER="lcars-20260601-002" \
+  LCARS_GH_BIN="$repoEP/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repoEP/notify" \
+  LCARS_RUN_SCRIPT="$repoEP/run" LCARS_WORKER_BIN="$repoEP/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >outEP.txt 2>&1
+) || rcEP=$?
+check "S207-2: a direct resolve-logs drives the child" \
+  "qgrep 'run drive lcars-20260601-002' '$RUN_LOG'"
+check "S207-2: it pins the parent's engine for the child drive" \
+  "qgrep 'WORKER_BIN=copilot' '$RUN_LOG'"
+check "S207-2: and MARKS the pin internal (\$LCARS_WORKER_BIN_INTERNAL=1)" \
+  "qgrep 'INTERNAL=1' '$RUN_LOG'"
+check "S207-2: so the child KEEPS engineSource: adopt-chosen" \
+  "qgrep '\"engineSource\": *\"adopt-chosen\"' '$cEP'"
+check "S207-2: and it is not rewritten to the operator source 'env'" \
+  "! qgrep '\"engineSource\": *\"env\"' '$cEP'"
+check "S207-2: the child's state.json still PARSES" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cEP'"
+
+# --- S207 fix round 1 (D1): THE CHILD THAT RECORDS NO ENGINE OF ITS OWN ------
+# THIS is the case a fresh tester measured going wrong, on both engines, and the
+# case the block above could not see. A bug child filed by `lcars log` with no
+# engine in scope carries NO `workerBin`. resolve-logs pins the PARENT's engine
+# with the internal marker; run.sh's "an internal pin with nothing behind it"
+# arm held the ENGINE (right) but recorded the source as `env` (wrong) — `env`
+# means the captain typed $LCARS_WORKER_BIN himself, and he did not. It now
+# records `internal`.
+#
+# The assertion is on the CHILD's own state.json, written by the REAL resolver.
+repoEU="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repoEU/gh"; make_notify_stub "$repoEU/notify"
+make_run_stub_provenance "$repoEU/run"; make_worker_stub "$repoEU/worker"
+export GH_LOG="$repoEU/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repoEU/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repoEU/run.log"; : >"$RUN_LOG"
+pEU="$repoEU/.git/lcars/missions/lcars-20260601-001/state.json"
+cEU="$repoEU/.git/lcars/missions/lcars-20260601-002/state.json"
+# The PARENT carries the engine; the CHILD carries NOTHING — no workerBin, no
+# engineSource. That is what `lcars log` leaves behind.
+awk 'NR==1{print; print "  \"workerBin\": \"copilot\","; next} {print}' "$pEU" >"$pEU.t" && mv "$pEU.t" "$pEU"
+check "S207-D1: the fixture child really records NO engine (a control)" \
+  "! qgrep '\"workerBin\"' '$cEU' && ! qgrep '\"engineSource\"' '$cEU'"
+rcEU=0
+(
+  cd "$repoEU"
+  ESCALATE_IDS="" WORKER_ORDER="lcars-20260601-002" \
+  LCARS_GH_BIN="$repoEU/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repoEU/notify" \
+  LCARS_RUN_SCRIPT="$repoEU/run" LCARS_WORKER_BIN="$repoEU/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >outEU.txt 2>&1
+) || rcEU=$?
+check "S207-D1: the child drive really ran the REAL resolver" \
+  "qgrep 'WORKER-RESOLVED' '$RUN_LOG'"
+check "S207-D1: the ENGINE does not move — the parent's copilot holds" \
+  "[ \"\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(\"engineResolved\",\"\"))' '$cEU')\" = 'copilot' ]"
+check "S207-D1: the CHILD records \`internal\`, not the captain's \`env\`" \
+  "[ \"\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(\"engineSource\",\"\"))' '$cEU')\" = 'internal' ]"
+check "S207-D1: the child's state.json PARSES after the write" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cEU'"
+
 # ==========================================================================
 echo
 printf 'lcars resolve-logs: %d passed, %d failed\n' "$pass" "$fail"

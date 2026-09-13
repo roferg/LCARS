@@ -67,6 +67,32 @@ TEST_CMD_ENV="${LCARS_TEST_CMD:-}"
 SELF="${BASH_SOURCE[0]}"
 # The skill's own directory, and the per-Stage worker prompt templates under it.
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+#
+# S207 fix round 1 (D2) — A REFUSED WRITE STOPS THE DRIVER. The writer returns
+# non-zero when it refuses a state.json it will not touch (see lcars-state.sh).
+# Every AWAITING-HUMAN GATE in this file IS those two writes: `awaitingHuman`
+# and `pendingQuestion`. If they did not land there is no gate — the card is
+# not parked, the inbox has nothing to show, and driving on would run straight
+# past the question the captain was supposed to answer. So each gate asks
+# `lcars_state_refusal_die` immediately after writing, BEFORE the label, the
+# event, the notification and the "⏹ stopped … flagged the human" line. It is a
+# no-op on every healthy path.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SKILL_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 # ABSOLUTE from here on. `$0` is whatever the caller typed, which may be relative
 # to the caller's cwd — and a Stage that moves its cwd (S166: the front half now
 # runs inside the Mission's own worktree) would then re-invoke a path that no
@@ -478,22 +504,6 @@ ticket_hire_count() { # ticket-id
   local n; n="$(event_count ticket_attempt "\"ticket\":\"$1\"")"
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   printf '%s' "$n"
-}
-state_del() { # key   — drop the field's line if present (no-op otherwise)
-  local tmp; tmp="$(mktemp)"
-  grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-state_set_str() { # key value   — add or replace a string field
-  state_del "$1"
-  local esc tmp; esc="$(json_escape "$2")"; tmp="$(mktemp)"
-  K="$1" V="$esc" awk 'NR==1{print; printf "  \"%s\": \"%s\",\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-state_set_raw() { # key token   — add or replace a bare field (true/false/number)
-  state_del "$1"
-  local tmp; tmp="$(mktemp)"
-  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
 }
 
 # --- locate the mission ----------------------------------------------------
@@ -3228,8 +3238,9 @@ cmd_gate() {
     write_pending "$q" "research"
 
     local first; first="$(head -1 "$q")"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$first"
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "$first"
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     # In-flight stage label first (research), THEN the awaiting-human overlay.
     gh_relabel "lcars:research lcars:awaiting-human" "lcars:align"
     rm -f "$q"
@@ -3304,8 +3315,9 @@ cmd_save() {
     local cq_n cq_first
     cq_n="$(grep -cve '^[[:space:]]*$' "$claim_q")"
     cq_first="$(grep -ve '^[[:space:]]*$' "$claim_q" | head -1)"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$cq_first"
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "$cq_first"
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     # The durable record, deliberately OUTSIDE research/: it is not a finding, and
     # cmd_validate lists research/*.json to the Validator as findings.
     cp "$claim_q" "$MISSION_DIR/claim-check.txt"
@@ -3402,8 +3414,9 @@ cmd_validate_pause() {
   # board) prints, so surface the first question there; the full set lives in
   # pending.json.
   local first; first="$(grep -ve '^[[:space:]]*$' "$QFILE" | head -1)"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$first"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$first"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
 
   # In-flight stage label first (validate — already applied on entry, re-asserted
   # so the escalation is self-contained), THEN the awaiting-human overlay, so the
@@ -3464,8 +3477,8 @@ cmd_validate_advance() {
   # stale sentence it would treat as the captain's merge decision. Widening the
   # ledger's lifetime is therefore its own round, with its own gate on that
   # fallback — not a side effect of this one.
-  state_del awaitingHuman
-  state_del pendingQuestion
+  lcars_state_unset "$STATE" awaitingHuman
+  lcars_state_unset "$STATE" pendingQuestion
   rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
 
   set_stage "plan"
@@ -4455,7 +4468,7 @@ review_fail() {
   # Log the full verdict for this round so the planner (and the human, on
   # escalation) can see exactly what was objected to.
   cp "$VERDICT" "$MISSION_DIR/plan-review-$round.json"
-  state_set_raw planReviewRound "$round"
+  lcars_state_set "$STATE" planReviewRound "$round"
 
   if [ "$round" -ge "$MAX_REVIEW_ROUNDS" ]; then
     # Out of rounds — hand the unresolved issues to the human. The card stays in
@@ -4466,8 +4479,9 @@ review_fail() {
     write_pending "$obj" "plan-review"
 
     local first; first="$(head -1 "$obj")"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$first"
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "$first"
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     gh_relabel "lcars:awaiting-human" ""
 
     echo "PLAN-REVIEW: escalated — $round rounds without a clean plan"
@@ -7753,8 +7767,9 @@ impl_park_env_cannot_test() { # ticket  reason-text
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "Ticket $t is blocked: the test runner cannot run where this ticket builds — needs a human (add a runner / fix provisioning / retarget)."
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "Ticket $t is blocked: the test runner cannot run where this ticket builds — needs a human (add a runner / fix provisioning / retarget)."
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   gh_relabel "lcars:awaiting-human" ""
   emit_event ticket_env_cannot_test implement \
     "ticket $t parked: the test environment cannot run any tests (no runner in the target package, or unprovisioned)" \
@@ -7793,8 +7808,9 @@ impl_park_ticket_blocked() { # subject  reason  summary  question  headline  det
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$question"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$question"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   gh_relabel "lcars:awaiting-human" ""
   # A stage-level park has no ticket, so it emits no `ticket=` field rather than
   # an empty one — the events log never names a ticket this wall did not inspect.
@@ -11249,8 +11265,9 @@ cmd_impl_save_result() {
     printf 'Ticket %s could not be made green (the worker iterated %s time(s)): %s\n' \
       "$TICKET" "$attempts" "$(json_str "$RESULT" summary)" >"$q"
     write_pending "$q" "implement"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "Ticket $TICKET failed — needs a human."
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "Ticket $TICKET failed — needs a human."
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     gh_relabel "lcars:awaiting-human" ""
     rm -f "$q"
 
@@ -11913,8 +11930,9 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$summary"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$summary"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
@@ -12123,8 +12141,8 @@ EOF
   # and advance the Mission to Verify, keeping stage and label in step.
   # S180: the answers.json deletion here is kept for the same reason as
   # validate-advance's — see the note there.
-  state_del awaitingHuman
-  state_del pendingQuestion
+  lcars_state_unset "$STATE" awaitingHuman
+  lcars_state_unset "$STATE" pendingQuestion
   rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
 
   set_stage "verify"
@@ -12673,7 +12691,7 @@ cmd_open_pr() {
   open_pr   # sets PR_URL, records prUrl/prNumber; dies on any precondition fail.
 
   # Record the in-review sub-state so the board shows "in review — PR open".
-  state_set_str review "open"
+  lcars_state_set_string "$STATE" review "open"
   emit_event pr_opened verify "PR opened — $PR_URL"
 
   echo "OPEN-PR: opened — $PR_URL"
@@ -12795,7 +12813,7 @@ This is a DECISION, not a new option to weigh. Resolve the conflict to implement
 EXACTLY that arrangement."
   fi
 
-  state_set_str reconcileStatus "resolving"
+  lcars_state_set_string "$STATE" reconcileStatus "resolving"
   emit_event reconcile_resolve verify "resolving textual conflict in place via a cold worker (keeping the merge)"
 
   local tries=0 odir
@@ -12891,7 +12909,7 @@ reconcile_resolve_record() { # attempt  short-reason  detail-block
 reconcile_author_and_dispatch() { # failure-summary  affected-block
   local summary="$1" affected="$2"
   RECONCILE_DESIGN_QUESTION=""
-  state_set_str reconcileStatus "healing"
+  lcars_state_set_string "$STATE" reconcileStatus "healing"
   emit_event reconcile_heal verify "authoring self-heal bug PRD(s) from the merge failure"
 
   # The mission's own engine (BUG-D): a copilot mission self-heals on copilot. Feed
@@ -13096,7 +13114,7 @@ The deterministic failure summary is at:
 # answer and RESETS the round budget, rather than reusing the generic answers.json.
 reconcile_escalate() { # diagnosis-text  [design]
   local diag="$1" kind="${2:-}"
-  state_set_str reconcileStatus "escalated"
+  lcars_state_set_string "$STATE" reconcileStatus "escalated"
   if [ "$kind" = "design" ]; then
     printf '%s\n' "$diag" >"$MISSION_DIR/reconcile-design-question.txt"
   fi
@@ -13105,8 +13123,9 @@ reconcile_escalate() { # diagnosis-text  [design]
     "$BASE" "$RECONCILE_MAX" "$diag" >"$qf"
   write_pending "$qf" "verify"
   local first; first="$(grep -ve '^[[:space:]]*$' "$qf" | head -1)"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$first"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$first"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
   emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — escalated to the human"
@@ -13148,7 +13167,7 @@ reconcile_retest_env_blocked() { # capture-dir-or-log-or-text → 0 if env-block
 # by the escalated-idempotency guard) and a DISTINCT event (reconcile_env_blocked).
 reconcile_retest_env_escalate() { # failed-ids  captured-output
   local ids="$1" cap_out="$2"
-  state_set_str reconcileStatus "env-blocked"
+  lcars_state_set_string "$STATE" reconcileStatus "env-blocked"
   local note="Reconcile with $BASE merged CLEANLY, but the re-test could not RUN — the reconcile merge worktree was not provisioned (no node_modules / the testCommand binary was not found), so the mission's ticket suite(s) errored at startup. This is NOT a code conflict. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`) so the retest environment matches the build, then re-run \`lcars approve\` / \`lcars run\`."
   local qf; qf="$(mktemp)"
   {
@@ -13158,9 +13177,10 @@ reconcile_retest_env_escalate() { # failed-ids  captured-output
     fi
   } >"$qf"
   write_pending "$qf" "verify"
-  state_set_str reconcileDiagnosis "$note"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$note"
+  lcars_state_set_string "$STATE" reconcileDiagnosis "$note"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$note"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
   emit_event reconcile_env_blocked verify "reconcile merged $BASE cleanly but the retest could not run — the merge worktree was not provisioned; set worktreeSetupCommand (NOT a code conflict)"
@@ -13353,8 +13373,8 @@ reconcile_gate() {
   local round; round="$(json_raw "$STATE" reconcileRound)"
   case "$round" in ''|*[!0-9]*) round=0 ;; esac
   round=$((round + 1))
-  state_set_raw reconcileRound "$round"
-  state_set_str reconcileStatus "merging"
+  lcars_state_set "$STATE" reconcileRound "$round"
+  lcars_state_set_string "$STATE" reconcileStatus "merging"
   emit_event reconcile_start verify "base '$BASE' is $ahead commit(s) ahead — reconciling (round $round)" \
     "round=$round" "ahead=$ahead"
 
@@ -13388,7 +13408,7 @@ reconcile_gate() {
       # Roll the round back — this pass did nothing — so the round counter reflects
       # only real reconcile attempts, then escalate honestly (awaiting-human, no PR).
       round=$((round - 1))
-      if [ "$round" -le 0 ]; then state_del reconcileRound; else state_set_raw reconcileRound "$round"; fi
+      if [ "$round" -le 0 ]; then lcars_state_unset "$STATE" reconcileRound; else lcars_state_set "$STATE" reconcileRound "$round"; fi
       local rc_holder
       rc_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
         | awk -v b="branch refs/heads/$BRANCH" '
@@ -13460,7 +13480,7 @@ $(sed -n '/^<<<<<<< /,/^>>>>>>> /p' "$wt/$cf" 2>/dev/null | head -60)"
 $conflicted
 EOF
   else
-    state_set_str reconcileStatus "retesting"
+    lcars_state_set_string "$STATE" reconcileStatus "retesting"
     emit_event reconcile_retest verify "clean merge — re-testing $ordered against the merged state"
     if [ -n "$cmd" ] && [ -n "$ordered" ]; then
       local cap; cap="$(mktemp -d)"
@@ -13529,8 +13549,8 @@ ${base_log:-(no log available)}"
     # Clean (or conflict-free) AND green: the worktree committed the merge ON the
     # branch, so the live branch ref already advanced — just remove the worktree.
     reconcile_cleanup
-    state_del reconcileRound
-    state_del reconcileDiagnosis
+    lcars_state_unset "$STATE" reconcileRound
+    lcars_state_unset "$STATE" reconcileDiagnosis
 
     # BUG-067 — a self-heal that converges green AFTER a PR is open must NOT
     # auto-merge. The captain has not seen the reconciled tree; blindly running
@@ -13551,11 +13571,12 @@ ${base_log:-(no log available)}"
         [ -n "$total" ] && [ "$total" != 0 ] || total=1
         local short; short="$(printf '%s' "$merge_sha" | cut -c1-7)"
         local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove to merge."
-        state_set_str reconcileStatus "awaiting-reapprove"
-        state_set_str reconcileNote "$note"
-        state_set_str reconcileMergeSha "$merge_sha"
-        state_set_raw awaitingHuman true
-        state_set_str pendingQuestion "$note"
+        lcars_state_set_string "$STATE" reconcileStatus "awaiting-reapprove"
+        lcars_state_set_string "$STATE" reconcileNote "$note"
+        lcars_state_set_string "$STATE" reconcileMergeSha "$merge_sha"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$note"
+        lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
         local qf; qf="$(mktemp)"
         printf '%s\nReapprove to merge the reconciled branch, or send it back.\n' "$note" >"$qf"
         write_pending "$qf" "verify"
@@ -13567,7 +13588,7 @@ ${base_log:-(no log available)}"
         return 30 ;;
     esac
 
-    state_del reconcileStatus
+    lcars_state_unset "$STATE" reconcileStatus
     emit_event reconcile_green verify "merged $BASE and re-test is green — proceeding to open the PR"
     echo "RECONCILE: ok — merged $BASE; re-test green; proceeding"
     return 0
@@ -13585,7 +13606,7 @@ ${base_log:-(no log available)}"
   # up here frees $BRANCH so the heal succeeds. The later cleanup calls are now
   # redundant and have been removed.
   reconcile_cleanup
-  state_set_str reconcileDiagnosis "$failure_summary"
+  lcars_state_set_string "$STATE" reconcileDiagnosis "$failure_summary"
   local affected="Conflicted/affected: ${conflicted:-$RETEST_FAILED}"
 
   # BUG-045 — DETERMINISTIC post-heal design-question escalation (the PRIMARY fix).
@@ -13641,7 +13662,7 @@ ${base_log:-(no log available)}"
     return 20
   fi
 
-  state_set_str reconcileStatus "healing"
+  lcars_state_set_string "$STATE" reconcileStatus "healing"
   echo "RECONCILE: reconciling — merged $BASE; combined state not green; self-heal dispatched (round $round/$RECONCILE_MAX)"
   return 10
 }
@@ -13828,14 +13849,31 @@ resolve_worker_bin() {
     WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
   fi
   # AN INTERNAL PIN WITH NOTHING BEHIND IT. approve only ever pins what it read
-  # off the mission, so reaching here means the mission's record has gone (or a
-  # future caller pins without one). THE ENGINE MUST NOT MOVE — an internal pin
-  # is still a pin, and letting it fall through to config.json or host detection
-  # would re-home the very mission the pin exists to hold. Only the ATTRIBUTION
-  # degrades, honestly, to `env`: something in the environment decided this and
-  # the mission itself no longer says why.
+  # off the mission, so reaching here used to mean the mission's record had gone
+  # — "or a future caller pins without one", said this comment, and S207's
+  # resolve-logs cure is exactly that caller. THE ENGINE MUST NOT MOVE: an
+  # internal pin is still a pin, and letting it fall through to config.json or
+  # host detection would re-home the very mission the pin exists to hold.
+  #
+  # S207 FIX ROUND 1 (D1) — AND THE ATTRIBUTION IS `internal`, NOT `env`.
+  # It degraded to `env` here, and `env` in this file means ONE specific thing:
+  # THE CAPTAIN set $LCARS_WORKER_BIN himself, a deliberate per-invocation
+  # operator act. An internal pin is the opposite — it is LCARS re-asserting an
+  # engine across a process boundary, with the marker right there saying so.
+  # Writing the operator's source for LCARS's own act is a false record, and a
+  # fresh tester measured it live: `lcars resolve-logs` run DIRECTLY pins the
+  # PARENT's engine onto each bug CHILD, and a child filed by `lcars log` with
+  # no engine in scope carries no `workerBin` of its own — so every child landed
+  # here and recorded `engineSource: env` for a pin the captain never typed.
+  # (Through `lcars approve` the pin always came OFF the mission, so a
+  # `workerBin` was always behind it and this arm was never reached — which is
+  # why the defect only showed on the direct path.)
+  #
+  # `internal` says the honest thing: LCARS pinned this, and the mission itself
+  # no longer records why. The RESOLVED BIN is unchanged in every case — this is
+  # the provenance field only.
   if [ -n "$internal_pin" ]; then
-    WORKER_BIN="$internal_pin"; WORKER_BIN_SRC="env"; return 0
+    WORKER_BIN="$internal_pin"; WORKER_BIN_SRC="internal"; return 0
   fi
   # The repo's AMBIENT default — still consulted, just no longer able to
   # overrule a mission that records an engine of its own (S196 A3).
@@ -14206,7 +14244,10 @@ resolve_worker() {
 # rounds for; this round's standing pre-flight rule is that the PRODUCER records.
 #
 #   engineResolved  the basename of the cli that actually ran
-#   engineSource    which rule won: env | mission | config | detected | default
+#   engineSource    which rule won: env | internal | mission | config | detected
+#                   | default  (`internal` = LCARS re-asserted an engine across a
+#                   process boundary and the mission records no pin of its own;
+#                   `env` is ALWAYS the captain's own $LCARS_WORKER_BIN)
 #
 # WHAT IT DOES NOT DO: it never touches `workerBin`. Recording the resolved bin
 # as the mission's pin would make a one-off `LCARS_WORKER_BIN=… lcars run`
@@ -14228,7 +14269,7 @@ resolve_worker() {
 # alone. Any other outcome overwrites, because then the adopt record is no longer
 # what happened.
 #
-# New keys go at the TOP of the object: state_set_str re-inserts after line 1
+# New keys go at the TOP of the object: lcars_state_set_string "$STATE" re-inserts after line 1
 # with a hard-coded trailing comma and breaks only when rewriting the LAST field.
 # `base` is last, and S189/S190/S191 all deliberately preserved that.
 record_engine_provenance() {
@@ -14252,12 +14293,12 @@ record_engine_provenance() {
   if [ "$WORKER_BIN_SRC" = "mission" ] && [ "$had_bin" = "$bin" ]; then
     case "$had_src" in adopt-*) return 0 ;; esac
   fi
-  # state_set_str writes to $STATE; several callers resolve a mission by
+  # lcars_state_set_string "$STATE" writes to $STATE; several callers resolve a mission by
   # MISSION_DIR alone and never set it (`set -u` makes an unguarded read fatal).
   local KEEP_STATE="${STATE:-}"
   STATE="$statef"
-  state_set_str engineSource   "$WORKER_BIN_SRC"
-  state_set_str engineResolved "$bin"
+  lcars_state_set_string "$STATE" engineSource   "$WORKER_BIN_SRC"
+  lcars_state_set_string "$STATE" engineResolved "$bin"
   STATE="$KEEP_STATE"
 }
 
@@ -16992,8 +17033,9 @@ $(cat "$tdir/flip-flop.json" 2>/dev/null)"
   LCARS_PENDING_TECHNICAL_DETAIL="${lastsig:-no gate signal captured}" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "Ticket $TICKET failed its proof gates after $sessions session(s) — needs a human."
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "Ticket $TICKET failed its proof gates after $sessions session(s) — needs a human."
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   gh_relabel "lcars:awaiting-human" ""
   emit_event ticket_flagged implement \
     "ticket $TICKET flagged after $sessions worker session(s) — last gate verdict: ${last_verdict:-unknown}" \
@@ -17616,8 +17658,9 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
     printf 'Ticket %s could not be recomposed on the current tip: after a same-file replay conflict its serial rebuild produced NO file changes, so the change it made in the concurrent build never landed. Its locked tests still require that code — the ticket needs a human.\n' \
       "$t" >"$q"
     write_pending "$q" "implement"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "Ticket $t could not be recomposed after a same-file replay conflict (empty rebuild) — needs a human."
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "Ticket $t could not be recomposed after a same-file replay conflict (empty rebuild) — needs a human."
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     gh_relabel "lcars:awaiting-human" ""
     rm -f "$q"
     emit_event ticket_rebuild_empty implement \
@@ -17849,7 +17892,7 @@ drive_persist_base_freshness() { # mission-branch
   local line
   line="$(lcars_base_state_line "${1:-}")" || return 0
   [ -n "$line" ] || return 0
-  state_del baseFreshness
+  lcars_state_unset "$STATE" baseFreshness
   local tmp; tmp="$(mktemp)"
   LCARS_BF_LINE="$line" awk 'NR==1{print; print ENVIRON["LCARS_BF_LINE"]; next} {print}' \
     "$STATE" >"$tmp" && mv "$tmp" "$STATE"
@@ -17947,7 +17990,7 @@ drive_pr_merged() { # → 0 if merged, 1 otherwise
 drive_mark_done() {
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
-  state_set_str review "merged"
+  lcars_state_set_string "$STATE" review "merged"
   emit_event stage_done verify "PR merged — Mission shipped"
 }
 
@@ -18062,7 +18105,7 @@ drive_verify() { # accumulated-summary
        printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
        if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
          notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
-         state_set_str verifyDegradedNotified "1"
+         lcars_state_set_string "$STATE" verifyDegradedNotified "1"
        fi
        return 0 ;;
   esac
@@ -18444,11 +18487,13 @@ release_driver_lock() {
 # mission's own state. It is recorded, not worked out afterwards from a journal
 # or a comment: the producer records, the surface displays.
 #
-# THE STATE WRITER IS A LINE-BASED COPY of xo.sh's, deliberately. `numberOne` is
-# ONE line of state.json by construction, both writers set scalar keys on it, and
-# the two are byte-compatible so neither can lose the other's fields. S207's
-# aftercare owns unifying the state writers repo-wide (41 call sites); making a
-# 42nd shape here to be different would be the opposite of helping it.
+# THE STATE WRITER IS NOW THE SHARED ONE. S202 wrote the three functions below
+# as a verbatim copy of xo.sh's, deliberately, and said so: "S207's aftercare
+# owns unifying the state writers repo-wide (41 call sites); making a 42nd shape
+# here to be different would be the opposite of helping it." S207 unified them —
+# the object edit is lcars_json1_set / lcars_json1_del and the file write is
+# lcars_state_set (lcars-state.sh), the same two xo.sh calls, so the two can no
+# longer disagree about the shape of this one line.
 
 # The mission's one-line numberOne object, or empty.
 drive_xo_block() {
@@ -18465,38 +18510,17 @@ drive_xo_field() {
 # creating the block when it is absent. Values are this file's own (a status
 # word, a cksum), never user text.
 drive_xo_put() {
-  local obj inner tmp
-  obj="$(drive_xo_block)"; [ -n "$obj" ] || obj='{}'
-  inner="$(printf '%s' "$obj" \
-    | sed -E "s/\"$1\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|[^,}]+)[[:space:]]*,?[[:space:]]*//" \
-    | sed -E 's/,[[:space:]]*\}/}/; s/\{[[:space:]]*,[[:space:]]*/{/')"
-  inner="${inner#\{}"; inner="${inner%\}}"
-  inner="$(printf '%s' "$inner" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/,$//')"
-  if [ -n "$inner" ]; then obj="$(printf '{%s, "%s": %s}' "$inner" "$1" "$2")"
-  else obj="$(printf '{"%s": %s}' "$1" "$2")"; fi
-  tmp="$(mktemp)"
-  grep -v '"numberOne"[[:space:]]*:' "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-  tmp="$(mktemp)"
-  V="$obj" awk 'NR==1{print; printf "  \"numberOne\": %s,\n", ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+  lcars_state_set "$STATE" numberOne "$(lcars_json1_set "$(drive_xo_block)" "$1" "$2")"
 }
 
 # drive_xo_del <key> — the block without that key. The mirror image of
-# drive_xo_put, and byte-compatible with xo.sh's obj_del for the same reason the
-# writer above is a copy of xo.sh's: the two must never disagree about the shape
-# of this one line. A block that has no such key is left exactly as it was.
+# drive_xo_put, and the SAME function xo.sh's obj_del is: the two must never
+# disagree about the shape of this one line, and since S207 they cannot.
+# A block that has no such key is left exactly as it was.
 drive_xo_del() {
-  local obj inner tmp
-  obj="$(drive_xo_block)"; [ -n "$obj" ] || return 0
+  local obj; obj="$(drive_xo_block)"; [ -n "$obj" ] || return 0
   case "$obj" in *"\"$1\""*) : ;; *) return 0 ;; esac
-  inner="$(printf '%s' "$obj" \
-    | sed -E "s/\"$1\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|[^,}]+)[[:space:]]*,?[[:space:]]*//" \
-    | sed -E 's/,[[:space:]]*\}/}/; s/\{[[:space:]]*,[[:space:]]*/{/')"
-  tmp="$(mktemp)"
-  grep -v '"numberOne"[[:space:]]*:' "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-  tmp="$(mktemp)"
-  V="$inner" awk 'NR==1{print; printf "  \"numberOne\": %s,\n", ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+  lcars_state_set "$STATE" numberOne "$(lcars_json1_del "$obj" "$1")"
 }
 
 # Is Number One ON for this REPO? The same one-line read `lcars xo` does — a
@@ -18776,8 +18800,9 @@ cmd_drive() {
         local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run '$(drive_hint)' to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
         local wq; wq="$(mktemp)"; printf '%s\n' "$wdq" >"$wq"
         write_pending "$wq" "$stage"; rm -f "$wq"
-        state_set_raw awaitingHuman true
-        state_set_str pendingQuestion "$wdq"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$wdq"
+        lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
         gh_relabel "lcars:awaiting-human" ""
         emit_event error "$stage" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
         drive_print_summary "$summary"

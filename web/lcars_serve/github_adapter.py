@@ -8,7 +8,14 @@ comment-mirror.sh's gh-invocation idiom: every external call is the env-injected
 
 This is the adapter a future view-only hosted build uses: GitHub issues carry
 full board state (labels for the column + card state, the issue body's
-"## Estimate" section for the pills, sub-issues for the nested tickets).
+"## Estimate" section for the pills, the sub-issue SUMMARY for the Implement
+ticket COUNT).
+
+WHAT THIS ADAPTER DOES NOT HAVE: nested ticket ROWS. `tickets` is `[]` on every
+card, deliberately — rendering the rows needs the sub-issue LIST, a second forge
+call per mission that S152's one-listing-per-cycle budget does not have. S207
+added the COUNT pill (`subIssuesSummary` → `TICKET 1/3`), which rides the listing
+already being made; it did NOT add the rows. See the comment at `tickets = []`.
 
 stdlib only.
 """
@@ -23,7 +30,9 @@ from . import board
 _STAGE_LABELS = {"align", "research", "validate", "plan", "plan-review",
                  "schedule", "implement", "verify", "done"}
 _MISSION_LABEL = "lcars:mission"
-_TICKET_LABEL = "lcars:ticket"
+# (`lcars:ticket` had one reader, the never-matching _tickets_for; S207 removed
+# both rather than leave a constant that implies a feature this adapter has not
+# got.)
 _AWAITING_LABEL = "lcars:awaiting-human"
 _PAUSED_LABEL = "lcars:paused"
 _LINKED_LABEL = "lcars:linked"
@@ -82,25 +91,42 @@ class GitHubAdapter(object):
 
     # -- gh invocation (the ONE external seam) --------------------------------
     def _fetch_issues(self):
-        cmd = [self.gh_bin, "issue", "list", "--state", "open",
-               "--limit", "200",
-               # S190: `assignees` rides the SAME list call — the forge already
-               # knows who holds each issue, so owner parity with the local
-               # adapter (ADR-003) costs this adapter nothing: no extra request,
-               # no extra round trip, no new failure mode.
-               "--json",
-               "number,title,state,labels,body,comments,updatedAt,assignees"]
-        if self.repo:
-            cmd += ["--repo", self.repo]
-        try:
-            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        except (OSError, subprocess.CalledProcessError):
+        # S207: `subIssuesSummary` rides the SAME list call, for the same reason
+        # `assignees` does — the forge already counts the sub-issues Schedule
+        # nested under each mission (completed/total, on the parent), so the
+        # Implement ticket count costs this adapter nothing. remote.py has read
+        # it off one listing since S191; this is that fact, on this adapter.
+        base = "number,title,state,labels,body,comments,updatedAt,assignees"
+        out = self._list(base + ",subIssuesSummary")
+        if out is None:
+            # A gh too old to know the field fails the WHOLE listing, not just
+            # the field. Retrying without it keeps a board on an older gh
+            # exactly as full as it was — the count degrades to absent (see
+            # _ticket_progress), never the board.
+            out = self._list(base)
+        if out is None:
             return []
         try:
             data = json.loads(out.decode("utf-8") or "[]")
         except ValueError:
             return []
         return data if isinstance(data, list) else []
+
+    def _list(self, fields):
+        """One `gh issue list` for these --json fields; None when gh refused."""
+        cmd = [self.gh_bin, "issue", "list", "--state", "open",
+               "--limit", "200",
+               # S190: `assignees` rides the SAME list call — the forge already
+               # knows who holds each issue, so owner parity with the local
+               # adapter (ADR-003) costs this adapter nothing: no extra request,
+               # no extra round trip, no new failure mode.
+               "--json", fields]
+        if self.repo:
+            cmd += ["--repo", self.repo]
+        try:
+            return subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.CalledProcessError):
+            return None
 
     # -- mapping --------------------------------------------------------------
     def _cards(self, issues):
@@ -145,8 +171,16 @@ class GitHubAdapter(object):
         # still render blank Research/Validate cells — never shows empty rows.
         model_mix = _model_mix_from_body(body)
         question = _gate_question(issue) if awaiting else None
-        tickets = _tickets_for(issue, issues)
-        progress = None  # GitHub progress lives in the mirrored Implement comment
+        # S207 — NO NESTED TICKET ROWS ON THIS ADAPTER, and that is now said
+        # once, honestly, instead of being implied by a matcher that never
+        # matched. `_tickets_for` grepped each ticket body for "#<parent>";
+        # Schedule nests tickets through GitHub's NATIVE sub-issues API and the
+        # bodies carry no such reference, so the rows have been empty for every
+        # mission ever created. Rendering them for real needs the sub-issue LIST
+        # — a SECOND forge call per mission, which S152's one-listing-per-cycle
+        # budget does not have. The COUNT, however, is free (see below).
+        tickets = []
+        progress = ticket_progress(issue, stage)
 
         card = {
             "id": str(issue.get("number")),
@@ -291,28 +325,40 @@ def _gate_question(issue):
     return None
 
 
-def _tickets_for(parent, issues):
-    """Sub-issues (lcars:ticket) that reference this parent in their body."""
-    pn = parent.get("number")
-    rows = []
-    for i in issues:
-        labels = _label_names(i)
-        if _TICKET_LABEL not in labels:
-            continue
-        body = i.get("body") or ""
-        if ("#%s" % pn) not in body:
-            continue
-        title = i.get("title") or ""
-        tid_match = re.match(r"\s*(t-\d+)", title)
-        rows.append({
-            "id": tid_match.group(1) if tid_match else str(i.get("number")),
-            "issue": i.get("number"),
-            "title": title,
-            "state": "done" if (i.get("state") or "").upper() == "CLOSED"
-                     else "in-progress" if "lcars:implement" in labels else "pending",
-        })
-    # single-ticket missions reuse the parent issue → no nested rows
-    return rows if len(rows) > 1 else []
+def ticket_progress(row, stage):
+    """Implement progress from the mission issue's own sub-issue summary.
+
+    WHAT THIS IS AND IS NOT. It is `completed/total` over the `lcars:ticket`
+    sub-issues Schedule opened and nested under this mission — the forge's own
+    count, so it moves as Implement closes each ticket. It is NOT the local
+    card's wave progress: waves.json lives in the driving laptop's `.git/` and is
+    not synced anywhere, so the label says TICKET and never WAVE, and the block
+    carries no `wave`/`shape` keys for the renderer to imply one from. Claiming
+    a wave number we cannot see would be an invented fact.
+
+    None (no block at all) for any stage but implement, for a mission with no
+    sub-issues, and for a payload that does not carry the summary — a gh too old
+    to know the field returns nothing here rather than a wrong zero.
+
+    S207 moved this here from remote.py (which still calls it) so the ONE fact
+    has ONE implementation: remote.py imports this module already, and the
+    github adapter cannot import remote.py back without a cycle.
+    """
+    if board.normalise_stage(stage) != "implement":
+        return None
+    summary = row.get("subIssuesSummary")
+    if not isinstance(summary, dict):
+        return None
+    total = summary.get("total")
+    if not isinstance(total, int) or total <= 0:
+        return None
+    done = summary.get("completed")
+    if not isinstance(done, int) or done < 0:
+        done = 0
+    if done > total:
+        done = total
+    return {"ticketsDone": done, "ticketsTotal": total,
+            "label": "TICKET %d/%d" % (done, total)}
 
 
 # Parse the issue body's "## Estimate" section into the same pill dicts the

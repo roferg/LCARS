@@ -11,10 +11,15 @@
 #
 # Dependencies are taken via env so they can be stubbed in tests:
 #   LCARS_CLAUDE_BIN  the claude binary (default: claude)
+#   LCARS_COPILOT_BIN the copilot binary (default: copilot) — S207: init accepts
+#                     EITHER engine, and both seams are lcars-common.sh's
 #   LCARS_GH_BIN      the gh binary     (default: gh)
 #
 set -uo pipefail
 
+# Kept as the named default for the header above; the engine actually verified
+# (and the bin actually run) is resolved below through lcars-common.sh's shared
+# detector, which reads this same $LCARS_CLAUDE_BIN seam.
 CLAUDE_BIN="${LCARS_CLAUDE_BIN:-claude}"
 GH_BIN="${LCARS_GH_BIN:-gh}"
 DEFAULT_MODEL="${LCARS_MODEL:-claude-sonnet}"
@@ -26,20 +31,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { printf 'lcars init: %s\n' "$1" >&2; exit 1; }
 
 # --- the running LCARS version (stamped into the repo's config) ------------
-# The VERSION file ships in the repo root (../.. from this skill dir; -P resolves
-# the install symlink to the physical checkout). An explicit LCARS_VERSION wins so
-# tests can pin it; LCARS_REPO redirects the checkout root (mirrors the resolution
-# in skills/lcars-version/version.sh). Empty when unresolved — the key is then
-# simply omitted rather than seeding a bogus stamp.
-lcars_running_version() {
-  if [ -n "${LCARS_VERSION:-}" ]; then printf '%s' "$LCARS_VERSION"; return; fi
-  local phys repo vf
-  phys="$(cd "$SCRIPT_DIR" && pwd -P)"
-  repo="${LCARS_REPO:-$(cd "$phys/../.." 2>/dev/null && pwd -P)}"
-  vf="$repo/VERSION"
-  [ -f "$vf" ] || return 0
-  sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}' "$vf"
-}
+# `lcars_running_version` is lcars-common.sh's (sourced above) — S207 moved the
+# byte-identical copies init and update each carried into the one place all
+# three stampers read, because `lcars adopt` now seeds the stamp too.
 RUNNING_VERSION="$(lcars_running_version)"
 
 # --- locate the repo ------------------------------------------------------
@@ -56,16 +50,38 @@ LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
 
-# --- verify the Claude CLI ------------------------------------------------
+# --- verify a WORKER ENGINE ----------------------------------------------
 # S195 — through the SHARED detector (lcars-common.sh `lcars_engine_available`),
 # which is this exact `command -v "${LCARS_CLAUDE_BIN:-claude}"` check, named.
 # Same binary, same env seam, same message: what changes is that the front
 # door's engine picker and this check can no longer answer "is claude installed"
 # differently.
-if ! lcars_engine_available claude; then
-  die "Claude CLI not found (looked for '$CLAUDE_BIN'). Install it from https://claude.com/claude-code and re-run."
+#
+# S207, captain's ruling 2026-09-11 — THE FRONT DOOR REQUIRES AT LEAST ONE
+# ENGINE, NOT CLAUDE SPECIFICALLY. LCARS has driven missions on Copilot since
+# S195, and every OTHER surface (the File console's picker, `lcars xo`, the
+# board) already offers both; only init still died on a laptop that has copilot
+# and not claude — refusing to set up a repo LCARS could then drive perfectly.
+# `lcars_default_engine` is the S195 picker itself, so this is the same answer
+# those surfaces give, in the same precedence: the repo's own pin (when it is
+# installed) > the single installed engine > claude. With BOTH installed the
+# answer is claude and nothing about init changes. With NEITHER it is empty,
+# and THAT is the fatal case — named for both engines, since either one cures it.
+ENGINE_CHOSEN="$(lcars_default_engine "$CONFIG")"
+if [ -z "$ENGINE_CHOSEN" ]; then
+  die "no worker CLI found — LCARS drives missions with Claude Code (looked for '$(lcars_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(lcars_engine_bin copilot)'). Install either one and re-run: https://claude.com/claude-code"
 fi
-CLAUDE_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null | head -1)"
+ENGINE_BIN="$(lcars_engine_bin "$ENGINE_CHOSEN")"
+# Read the version of the engine we ACTUALLY picked. `$CLAUDE_BIN --version` is
+# never run when claude is absent — that shell-out was the second half of the
+# defect (it printed a resolution error into the readout).
+ENGINE_VERSION="$("$ENGINE_BIN" --version 2>/dev/null | head -1)"
+# The fallback is ANNOUNCED, never silent: a captain whose laptop has no claude
+# must be told which engine his repo was set up on, at the moment it happens.
+ENGINE_FALLBACK_NOTE=""
+if [ "$ENGINE_CHOSEN" != "claude" ] && ! lcars_engine_available claude; then
+  ENGINE_FALLBACK_NOTE="claude not found — using $ENGINE_CHOSEN"
+fi
 
 # --- S182: seed the first commit on an UNBORN HEAD ------------------------
 # LCARS proves every ticket against its PARENT COMMIT — the ticket's tests must
@@ -372,6 +388,25 @@ STACK_VALUE="\"$(lcars_json_escape "$STACK")\""
 # an unlisted cloneId would be silently deleted by the next `lcars init` or
 # `lcars update` and the clone's ids would jump. See lcars_clone_id.
 CLONE_ID="$(lcars_clone_id "$CONFIG")"
+# S207 — `workerBin`, the repo's engine pin, and it is CONDITIONAL by design.
+#
+# It is written when init had to fall back off claude (a copilot-only laptop:
+# the repo must open on the engine it can actually run), and it is written when
+# the config ALREADY carries the key — because lcars_config_merge treats this
+# list as the canonical schema and DELETES every top-level key absent from it,
+# so an unlisted workerBin was being WIPED by the next `lcars init` (the exact
+# failure S196 paid for with cloneId, and the merge preserves the existing value
+# when the key is listed).
+#
+# It is NOT written on a machine with claude installed and no existing pin: a
+# repo with no pin keeps run.sh's historical default, and seeding `claude` into
+# every config would hand config.json a say in engine precedence it has never
+# had — which is the bug S196 spent a session reversing (adopt.sh:451-473).
+WORKERBIN_LINE=""
+if [ "$ENGINE_CHOSEN" != "claude" ] || lcars_config_has_key "$CONFIG" workerBin; then
+  WORKERBIN_LINE="
+workerBin=\"$(lcars_json_escape "$ENGINE_CHOSEN")\""
+fi
 # S201 — `numberOne`, Number One's repo-level switch. It is in the desired
 # schema for the reason cloneId is: lcars_config_merge treats this list as the
 # canonical schema and DELETES every top-level key absent from it, so an
@@ -385,7 +420,7 @@ CLONE_ID="$(lcars_clone_id "$CONFIG")"
 # writer of this key (`lcars xo`, the board's toggle) emits one line for the
 # same reason.
 DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
-model=\"$DEFAULT_MODEL\"
+model=\"$DEFAULT_MODEL\"$WORKERBIN_LINE
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
 stack=$STACK_VALUE
@@ -465,7 +500,11 @@ case "$SEEDED_INITIAL_COMMIT" in
 esac
 echo "  ✓ config.json written  (stack: $PERSISTED_STACK, model: $PERSISTED_MODEL, context: $PERSISTED_CONTEXT, tests: $PERSISTED_TESTCMD)"
 [ -n "${LCARS_CONFIG_ADDED_KEYS:-}" ] && echo "    keys seeded: $LCARS_CONFIG_ADDED_KEYS"
-echo "  ✓ Claude CLI verified  ($CLAUDE_VERSION)"
+case "$ENGINE_CHOSEN" in
+  claude) echo "  ✓ Claude CLI verified  ($ENGINE_VERSION)" ;;
+  *)      echo "  ✓ $ENGINE_CHOSEN CLI verified  ($ENGINE_VERSION)" ;;
+esac
+[ -n "$ENGINE_FALLBACK_NOTE" ] && echo "    $ENGINE_FALLBACK_NOTE"
 if [ "$GH_OK" -eq 1 ]; then
   total=$((LABELS_CREATED + LABELS_SKIPPED))
   where="${GH_REPO:+ on $(lcars_gh_web_host)/$GH_REPO}"

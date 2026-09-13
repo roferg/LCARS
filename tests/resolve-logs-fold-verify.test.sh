@@ -55,10 +55,15 @@ GIT_BIN=git
 GH_BIN=/nonexistent-gh          # label move is best-effort; skip it
 json_str() { sed -En "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -En "s/.*\"$2\"[[:space:]]*:[[:space:]]*([^,}\"[:space:]]*).*/\1/p" "$1" | head -1; }
-state_set_str() { # file key value
-  local f="$1" k="$2" v="$3"
-  sed -i.bak "s/\"$k\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"$k\": \"$v\"/" "$f" && rm -f "$f.bak"
-}
+# THE STATE WRITER IS THE REAL ONE (S207). This harness used to define its own
+# `state_set_str` — a NINTH copy of the house field writer, living under tests/
+# where item 5's acceptance grep could not see it. It builds the FIXTURE state
+# files these assertions read, so a writer that can corrupt JSON here plants
+# corrupt JSON into the test's own setup and the suite grades the wrong file.
+# It now sources the ONE writer family, which is also what `fold_one_child`
+# (extracted from resolve-logs.sh above) calls.
+# shellcheck source=../skills/lcars-init/lcars-state.sh
+. "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
 # shellcheck source=/dev/null
 . "$LIB"
 
@@ -82,8 +87,19 @@ setup() {
       echo fix >>f.txt; git add -A
       git commit -qm "lcars(bug-001) t-001: the fix, cherry-picked onto the parent"
     fi ) >/dev/null 2>&1
+  # ONE FIELD PER LINE — the shape every LCARS writer emits and the ONE state
+  # writer (skills/lcars-init/lcars-state.sh) requires. The old fixture was a
+  # single-line object no LCARS code path produces, which the writer correctly
+  # refuses to edit: a fixture that is not the real file's shape grades the real
+  # writer on a file it will never meet.
   cat >"$MISSIONS_DIR/bug-001/state.json" <<EOF
-{ "id": "bug-001", "type": "bug", "stage": "verify", "branch": "parent", "githubIssue": null }
+{
+  "id": "bug-001",
+  "type": "bug",
+  "stage": "verify",
+  "branch": "parent",
+  "githubIssue": null
+}
 EOF
   # The recorded WORKTREE sha — deliberately never equal to what is on the branch.
   [ "$mode" = "nocommit" ] || echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
@@ -125,7 +141,7 @@ check "4c. and reaches done" '[ "$(stage_of)" = "done" ]'
 
 # --- 5. a child not at Verify is still just skipped (rc 1, unchanged) -----
 setup skip landed
-state_set_str "$MISSIONS_DIR/bug-001/state.json" stage plan
+lcars_state_set_string "$MISSIONS_DIR/bug-001/state.json" stage plan
 fold_one_child bug-001 >/dev/null 2>&1; RC=$?
 check "5. a child mid-flight is skipped with rc 1, not refused" '[ "$RC" -eq 1 ]'
 

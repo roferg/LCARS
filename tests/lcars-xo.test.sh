@@ -298,8 +298,20 @@ check "B5. …with the conn handed back in the note" \
   "grep -q 'you have the conn' '$m5/state.json'"
 check "B5. the per-mission opt-out is recorded" \
   "grep -q '\"optOut\": true' '$m5/state.json'"
-check "B5. numberOne sits at the TOP of state.json (the S189 last-key rule)" \
-  "sed -n '2p' '$m5/state.json' | grep -q '^[[:space:]]*\"numberOne\":'"
+# THE INVARIANT, restated at S207. This used to assert numberOne was on LINE 2,
+# because every writer of the day deleted the key's line and re-inserted it
+# after the opening brace — so a write MOVED the field to the top whether it
+# needed to or not. That move was the whole of the S189 protection: a field at
+# the top is never the LAST one, and the last one was what the writers
+# corrupted. S207 fixed the writer instead — it re-derives every separator, so
+# the last field is safe and an existing key is updated IN PLACE, keeping
+# file.sh's field order. What must still be true is the thing the line-2 check
+# was standing in for, so that is what is checked now: the block is ONE line,
+# it is NOT the object's last field, and the file parses.
+check "B5. numberOne is still ONE line (state_xo_block seds for it)" \
+  "grep -q '\"numberOne\": {.*}' '$m5/state.json'"
+check "B5. numberOne is NOT the last field (the S189 last-key rule)" \
+  "[ \"\$(grep -n '\"numberOne\":' '$m5/state.json' | cut -d: -f1)\" -lt \"\$(( \$(grep -c '' '$m5/state.json') - 1 ))\" ]"
 check "B5. state.json is still valid JSON" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$m5/state.json'"
 

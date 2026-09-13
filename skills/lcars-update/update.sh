@@ -48,19 +48,9 @@ while [ $# -gt 0 ]; do
 done
 
 # --- the running LCARS version (what update stamps the repo current to) ----
-# VERSION ships in the repo root (../.. from this skill dir; -P resolves the
-# install symlink to the physical checkout). LCARS_VERSION wins so tests can pin
-# it; LCARS_REPO redirects the checkout root (mirrors skills/lcars-version and
-# init.sh). Empty when unresolved — the stamp is then left as-is.
-lcars_running_version() {
-  if [ -n "${LCARS_VERSION:-}" ]; then printf '%s' "$LCARS_VERSION"; return; fi
-  local phys repo vf
-  phys="$(cd "$SCRIPT_DIR" && pwd -P)"
-  repo="${LCARS_REPO:-$(cd "$phys/../.." 2>/dev/null && pwd -P)}"
-  vf="$repo/VERSION"
-  [ -f "$vf" ] || return 0
-  sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}' "$vf"
-}
+# `lcars_running_version` is lcars-common.sh's (sourced above) — S207 moved the
+# byte-identical copies init and update each carried into the one place all
+# three stampers read, because `lcars adopt` now seeds the stamp too.
 RUNNING_VERSION="$(lcars_running_version)"
 
 # --- MIGRATION: stale copy-based vitest testCommand -> in-place form ---------

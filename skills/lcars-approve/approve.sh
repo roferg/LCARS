@@ -26,6 +26,22 @@ RELABEL_NOTE=""
 # The host-integration adapter — the ONE place that speaks to a forge. It lives
 # in the sibling lcars-run skill dir; $LCARS_HOST_ADAPTER overrides that path.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SELF_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
 # The sibling run.sh — its `reconcile` subcommand is the S76 self-heal engine the
 # merge gate runs BEFORE merging (BUG-037). Override the path for tests.
@@ -110,8 +126,6 @@ set_stage() {
     && mv "$tmp" "$STATE"
 }
 
-# add or replace a string field (used by pr-lib's open_pr to record prUrl).
-state_del() { local tmp; tmp="$(mktemp)"; grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"; }
 # JSON-string-safe escape (no surrounding quotes): backslash/quote, then awk
 # escapes every control char (newline/tab/CR → \n \t \r, rest \u00XX) so any
 # multi-line value yields VALID JSON. jq-free. Order: backslash first.
@@ -123,22 +137,6 @@ json_escape() {
         if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
         else if (c=="\r") printf "\\r"
         else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
-}
-state_set_str() {
-  state_del "$1"
-  local esc tmp; esc="$(json_escape "$2")"; tmp="$(mktemp)"
-  K="$1" V="$esc" awk 'NR==1{print; printf "  \"%s\": \"%s\",\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-# add or replace a BARE field (true/false/number, unquoted) — mirrors
-# run.sh:state_set_raw / pause.sh. BUG-068: the merge-failed paths call this to
-# set `awaitingHuman true`; it was undefined here so those lines errored
-# ("command not found") and the gate flag never got set.
-state_set_raw() { # key token
-  state_del "$1"
-  local tmp; tmp="$(mktemp)"
-  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
 }
 
 # --- append-only mission event (BUG-071) -----------------------------------
@@ -221,7 +219,7 @@ promote_test_command() {
   # `lcars update --test-command` uses, so there is exactly one way repo config
   # ever gains a testCommand. Sourced in a SUBSHELL: this runs in the middle of
   # do_merge, after the merge and before the stage flip, and approve.sh's own
-  # helpers (die / json_str / state_set_str / emit_event) must not be reachable
+  # helpers (die / json_str / lcars_state_set_string "$STATE" / emit_event) must not be reachable
   # by anything the lib might define. The subshell writes the file and exits;
   # nothing it defines survives. ($lib was located and checked above.)
   if ! ( . "$lib" >/dev/null 2>&1 \
@@ -244,7 +242,7 @@ promote_test_command() {
 # mark it Done is the fold. Before this, the fold was reachable from exactly one
 # place — accepting the parent's consolidated re-verify gate (respond.sh →
 # resolve-logs complete). Merging the parent here therefore STRANDED every child:
-# this block's `state_del awaitingHuman/pendingQuestion` destroyed the gate that
+# this block's `lcars_state_unset "$STATE" awaitingHuman/pendingQuestion` destroyed the gate that
 # was the only route to the fold, `set_stage done` then put the parent outside
 # resolve-logs' reach entirely (its active_table skips done missions), and approve
 # itself refuses a child directly (no PR of its own). Four real bug missions sat at
@@ -443,19 +441,19 @@ do_merge() {
                 recovered=1
               else
                 local fnote="Could not force-update the PR branch (\`git push --force-with-lease origin $BRANCH\`) — the remote lease was stale (someone else pushed). Re-run the reconcile, then reapprove."
-                state_set_str reconcileStatus "merge-failed"
-                state_set_str reconcileNote "$fnote"
-                state_set_raw awaitingHuman true
-                state_set_str pendingQuestion "$fnote"
+                lcars_state_set_string "$STATE" reconcileStatus "merge-failed"
+                lcars_state_set_string "$STATE" reconcileNote "$fnote"
+                lcars_state_set "$STATE" awaitingHuman true
+                lcars_state_set_string "$STATE" pendingQuestion "$fnote"
                 die "$fnote Mission stays at verify."
               fi
             else
               # STALENESS GUARD: main moved past the heal → never force.
               local mnote="main moved since the heal — re-reconcile required. origin/$BASE advanced past the reconciled tip ($sha); the heal no longer incorporates current main. Re-run \`lcars approve $MISSION_ID\` to reconcile against the new base, then reapprove."
-              state_set_str reconcileStatus "merge-failed"
-              state_set_str reconcileNote "$mnote"
-              state_set_raw awaitingHuman true
-              state_set_str pendingQuestion "$mnote"
+              lcars_state_set_string "$STATE" reconcileStatus "merge-failed"
+              lcars_state_set_string "$STATE" reconcileNote "$mnote"
+              lcars_state_set "$STATE" awaitingHuman true
+              lcars_state_set_string "$STATE" pendingQuestion "$mnote"
               die "$mnote Mission stays at verify."
             fi
           fi
@@ -463,10 +461,10 @@ do_merge() {
             # Not the authoritative tip (or no recorded green tip) — do NOT force;
             # surface the divergence for the captain to resolve, as before.
             local note="Could not update the PR branch: non-fast-forward (the remote PR branch diverged) and the local tip is not the recorded reconciled green tip. The heal is green at ${sha:-the reconciled tip} — re-run the reconcile (\`lcars approve $MISSION_ID\`) or push manually (\`git push --force-with-lease origin $BRANCH\`), then reapprove."
-            state_set_str reconcileStatus "merge-failed"
-            state_set_str reconcileNote "$note"
-            state_set_raw awaitingHuman true
-            state_set_str pendingQuestion "$note"
+            lcars_state_set_string "$STATE" reconcileStatus "merge-failed"
+            lcars_state_set_string "$STATE" reconcileNote "$note"
+            lcars_state_set "$STATE" awaitingHuman true
+            lcars_state_set_string "$STATE" pendingQuestion "$note"
             die "$note Mission stays at verify."
           fi
           # recovered: fall through to gh pr merge below.
@@ -518,10 +516,10 @@ do_merge() {
 
   if [ "$merged_ok" -ne 1 ]; then
     local note="gh pr merge failed for $PR_URL after $merge_tries attempt(s) — resolve it (conflicts/checks/auth) and re-run \`lcars approve $MISSION_ID\` (or \`--reapprove\`), or merge on GitHub. Mission stays at verify."
-    state_set_str reconcileStatus "merge-failed"
-    state_set_str reconcileNote "$note"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$note"
+    lcars_state_set_string "$STATE" reconcileStatus "merge-failed"
+    lcars_state_set_string "$STATE" reconcileNote "$note"
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "$note"
     die "$note"
   fi
 
@@ -537,20 +535,25 @@ do_merge() {
   promote_test_command
 
   # Then clear the reconcile gate state and flip the Mission to Done.
-  state_del reconcileStatus
-  state_del reconcileNote
-  state_del reconcileMergeSha
-  state_del awaitingHuman
-  state_del pendingQuestion
+  lcars_state_unset "$STATE" reconcileStatus
+  lcars_state_unset "$STATE" reconcileNote
+  lcars_state_unset "$STATE" reconcileMergeSha
+  lcars_state_unset "$STATE" awaitingHuman
+  lcars_state_unset "$STATE" pendingQuestion
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
-  state_set_str review "merged"
+  lcars_state_set_string "$STATE" review "merged"
 
   # BUG-071: record the ship on the mission timeline so the card shows the
   # `merged` milestone (and a terminal `mission_done`), not just stdout.
   emit_event merged verify "PR merged — $PR_URL"
   emit_event mission_done done "Mission shipped — the PR is merged"
 
+  # S207 fix round 1 (D2): the state writer now REFUSES a state.json it will
+  # not touch, and returns non-zero. Ask before announcing anything — a verb
+  # that prints success over a refused write is the `lcars pause` lie the
+  # captain ruled on.
+  lcars_state_refusal_die "lcars approve"
   echo "APPROVE: merged — $(pr_title)"
   echo "  Merged PR: $PR_URL"
   echo "  Branch:    $BRANCH → $BASE"

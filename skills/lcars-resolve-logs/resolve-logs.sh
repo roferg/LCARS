@@ -40,6 +40,22 @@ set -uo pipefail
 
 SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SKILL_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
@@ -78,24 +94,6 @@ json_escape() {
         if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
         else if (c=="\r") printf "\\r"
         else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
-}
-
-# --- state mutators (jq-free; same shape as run.sh) ------------------------
-state_del() { # file key
-  local tmp; tmp="$(mktemp)"
-  grep -v "\"$2\"[[:space:]]*:" "$1" >"$tmp" && mv "$tmp" "$1"
-}
-state_set_str() { # file key value
-  state_del "$1" "$2"
-  local esc tmp; esc="$(json_escape "$3")"; tmp="$(mktemp)"
-  K="$2" V="$esc" awk 'NR==1{print; printf "  \"%s\": \"%s\",\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$1" >"$tmp" && mv "$tmp" "$1"
-}
-state_set_raw() { # file key token
-  state_del "$1" "$2"
-  local tmp; tmp="$(mktemp)"
-  K="$2" V="$3" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$1" >"$tmp" && mv "$tmp" "$1"
 }
 
 # --- args ------------------------------------------------------------------
@@ -393,8 +391,8 @@ emit_resolve_waves_json() { # "<wave> <id>" lines on stdin
 }
 
 # The queued flag (UX-29): stamp/clear state.json.queued for a child.
-mark_queued()   { state_set_raw "$MISSIONS_DIR/$1/state.json" queued true; }
-clear_queued()  { state_del     "$MISSIONS_DIR/$1/state.json" queued; }
+mark_queued()   { lcars_state_set "$MISSIONS_DIR/$1/state.json" queued true; }
+clear_queued()  { lcars_state_unset "$MISSIONS_DIR/$1/state.json" queued; }
 
 # --- complete: fold the verified children to Done, no per-bug PR (BUG-E) ----
 # Model A — logged-bug fixes ride the PARENT's PR. When the consolidated
@@ -475,7 +473,7 @@ fold_one_child() { # bug-id
   fi
   # Move the child to Done on disk — stage flips to done, branch is preserved
   # (the fix stays folded onto the parent branch; we never rewrite it here).
-  state_set_str "$cstate" stage done
+  lcars_state_set_string "$cstate" stage done
   # Board: clear the stage labels, apply lcars:done — same column move approve
   # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
   #
@@ -547,8 +545,8 @@ undriven_children() {
 # Best-effort; mirrors the gate-raising at the bottom of the default flow in
 # reverse. Called only when NO child of the parent remains pending.
 clear_parent_gate() {
-  state_del "$PARENT_STATE" awaitingHuman
-  state_del "$PARENT_STATE" pendingQuestion
+  lcars_state_unset "$PARENT_STATE" awaitingHuman
+  lcars_state_unset "$PARENT_STATE" pendingQuestion
   rm -f "$PARENT_DIR/pending.json" 2>/dev/null || true
   case "$PARENT_ISSUE" in
     ''|null) : ;;
@@ -582,8 +580,8 @@ reraise_incomplete_gate() { # $1 = "<id>\t<stage>" lines (the undriven set)
     echo '  ]'
     echo '}'
   } >"$PARENT_DIR/pending.json"
-  state_set_raw "$PARENT_STATE" awaitingHuman true
-  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
   case "$PARENT_ISSUE" in
     ''|null) : ;;
     *) command -v "$GH_BIN" >/dev/null 2>&1 \
@@ -611,8 +609,8 @@ reraise_push_failure_gate() {
     echo '  ]'
     echo '}'
   } >"$PARENT_DIR/pending.json"
-  state_set_raw "$PARENT_STATE" awaitingHuman true
-  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
   case "$PARENT_ISSUE" in
     ''|null) : ;;
     *) command -v "$GH_BIN" >/dev/null 2>&1 \
@@ -638,8 +636,8 @@ reraise_no_branch_gate() {
     echo '  ]'
     echo '}'
   } >"$PARENT_DIR/pending.json"
-  state_set_raw "$PARENT_STATE" awaitingHuman true
-  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
   case "$PARENT_ISSUE" in
     ''|null) : ;;
     *) command -v "$GH_BIN" >/dev/null 2>&1 \
@@ -915,7 +913,29 @@ run_child_driver() { # id
   local id="$1"
   clear_queued "$id"
   if [ -n "$PARENT_ENGINE" ]; then
+    # $LCARS_WORKER_BIN_INTERNAL=1 SAYS WHO SET THE PIN (S207; approve.sh's same
+    # cure, 3055874). run.sh reads a bare $LCARS_WORKER_BIN as the CAPTAIN's own
+    # act and records `engineSource: env` — which overwrites the richer answer
+    # the mission already carries (`adopt-chosen` / `adopt-converted` /
+    # `mission`). This pin is not an operator act: it is LCARS re-asserting the
+    # PARENT mission's engine across a process boundary, so it must not claim to
+    # be the captain's.
+    #
+    # BOTH VARIABLES ARE EXPORTED TO THE CHILD AND STAY TOGETHER. `drive`
+    # re-execs `bash "$SELF" <stage>` once per stage and both travel that hop
+    # as ordinary environment; MEASURED in S207 fix round 1 against the real
+    # run.sh, not a stub. The pin and its marker cannot separate.
+    #
+    # WHAT THIS LINE ALONE DID NOT FIX (S207 fix round 1, D1). The marker
+    # arrived, but the CHILD recorded `engineSource: env` anyway — because a bug
+    # child filed by `lcars log` with no engine in scope has NO `workerBin` of
+    # its own, and run.sh's "an internal pin with nothing behind it" arm used to
+    # degrade the attribution to `env` (the captain's source) for LCARS's own
+    # act. That arm now records `internal`. Through `lcars approve` the pin
+    # always came off a mission that HAD a workerBin, so that arm was never
+    # reached and the defect only showed on this, the direct, path.
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$PARENT_ENGINE" \
+    LCARS_WORKER_BIN_INTERNAL=1 \
     LCARS_NOTIFY="$NOTIFY_BIN" \
       bash "$RUN_SCRIPT" drive --mission "$id" >/dev/null 2>&1 || true
   else
@@ -1107,8 +1127,8 @@ ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your
 } >"$PARENT_DIR/pending.json"
 
 # Overlay the awaiting-human gate on the parent's state.
-state_set_raw "$PARENT_STATE" awaitingHuman true
-state_set_str "$PARENT_STATE" pendingQuestion "$ASK"
+lcars_state_set "$PARENT_STATE" awaitingHuman true
+lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ASK"
 
 # Best-effort board label: add lcars:awaiting-human to the parent issue.
 case "$PARENT_ISSUE" in
@@ -1129,6 +1149,10 @@ if [ -n "$STUCK_NOTE" ]; then
   echo "⚠ $STUCK_NOTE"
 fi
 echo
+# S207 fix round 1 (D2): the consolidated gate IS those two state writes. If the
+# writer refused them the gate does not exist, so this readout would be inviting
+# the captain to answer a card that is not there.
+lcars_state_refusal_die "lcars resolve-logs"
 echo "Raised ONE consolidated re-verify gate on $PARENT_ID and pinged you once."
 echo "The fixes ride this Mission's PR — there is NO per-bug PR. Re-inspect them, then:"
 echo "  lcars answer respond --mission $PARENT_ID --answer \"…\"   — accept (folds each logged bug to Done)"

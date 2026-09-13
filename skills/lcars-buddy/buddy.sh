@@ -62,6 +62,22 @@ fi
 # truncated the same way. POSIX awk only (no jq, no GNU-isms) so it runs on BSD
 # awk; kept byte-identical to skills/lcars-status/status.sh so the two readers
 # can never disagree — which is what this comment claimed all along.
+# S207 R3 — SAY "UNSET", DON'T PRINT NOTHING. `json_str` returns an empty
+# string for a key that is absent, for one set to `null`, and for one genuinely
+# set to "" — three different facts, one blank. In this readout that printed
+#
+#     testCommand:
+#
+# a bare label with nothing after it, which reads as a rendering bug rather than
+# as the answer to the question the buddy is here to answer (why does this repo
+# have no test command?). The distinction that matters to a reader is
+# "configured" vs "not configured", so that is what it prints. json_str itself
+# is untouched: it is a value reader, and this is a RENDERING decision.
+cfg_show() { # file key
+  local v; v="$(json_str "$1" "$2")"
+  if [ -n "$v" ]; then printf '%s' "$v"; else printf '(unset)'; fi
+}
+
 json_str() { # file key
   [ -f "$1" ] || return 0
   awk -v k="$2" '
@@ -257,9 +273,9 @@ else
   cfg="$lcars_dir/config.json"
   if [ -f "$cfg" ]; then
     echo "  config:"
-    echo "    testCommand:          $(json_str "$cfg" testCommand)"
-    echo "    worktreeSetupCommand: $(json_str "$cfg" worktreeSetupCommand)"
-    echo "    model: $(json_str "$cfg" model)    workerBin: $(json_str "$cfg" workerBin)"
+    echo "    testCommand:          $(cfg_show "$cfg" testCommand)"
+    echo "    worktreeSetupCommand: $(cfg_show "$cfg" worktreeSetupCommand)"
+    echo "    model: $(cfg_show "$cfg" model)    workerBin: $(cfg_show "$cfg" workerBin)"
   fi
   found=0
   for s in "$missions_dir"/*/state.json; do

@@ -87,26 +87,15 @@ NOW_LOCAL="$(date +%H:%M)"
 # not a general JSON library: the moment a value could contain a `{`, a `}` or a
 # quote these stop being correct, so every WRITER below controls its own values.
 # ===========================================================================
-obj_get() { # <obj> <key> — a string value, or empty
-  printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
-}
-obj_del() { # <obj> <key> — the object without that key
-  printf '%s' "$1" \
-    | sed -E "s/\"$2\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|[^,}]+)[[:space:]]*,?[[:space:]]*//" \
-    | sed -E 's/,[[:space:]]*\}/}/; s/\{[[:space:]]*,[[:space:]]*/{/'
-}
-obj_set() { # <obj> <key> <raw-json-value> — replace or append, order-stable
-  local obj="${1:-}" inner
-  [ -n "$obj" ] || obj='{}'
-  inner="$(obj_del "$obj" "$2")"
-  inner="${inner#\{}"; inner="${inner%\}}"
-  inner="$(printf '%s' "$inner" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/,$//')"
-  if [ -n "$inner" ]; then printf '{%s, "%s": %s}' "$inner" "$2" "$3"
-  else printf '{"%s": %s}' "$2" "$3"; fi
-}
-jstr() { # a JSON string literal for a value this script controls
-  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-}
+# S207 unified these: the implementations live in lcars-state.sh (sourced via
+# lcars-common.sh above) as lcars_json1_get / _del / _set / _str, because
+# run.sh's drive loop had copied all four verbatim into drive_xo_put and
+# drive_xo_del. The four names below are this file's vocabulary, kept so its
+# ~30 call sites read as they did; there is exactly ONE implementation.
+obj_get() { lcars_json1_get "$1" "$2"; }        # <obj> <key> — a string value
+obj_del() { lcars_json1_del "$1" "$2"; }        # <obj> <key> — obj without it
+obj_set() { lcars_json1_set "${1:-}" "$2" "$3"; }  # <obj> <key> <raw-json-value>
+jstr()    { lcars_json1_str "$1"; }             # a JSON string literal
 
 # ===========================================================================
 # COLUMN PADDING, BY DISPLAY WIDTH (fix round 1, D5).
@@ -183,23 +172,21 @@ xo_engine_for() { # <state.json> — Number One's engine, or empty
 }
 
 # ===========================================================================
-# MISSION STATE — the writer, at the TOP of the file (the S189 rule).
+# MISSION STATE — `numberOne`, ONE line of state.json.
 #
-# Modelled on run.sh's state_set_raw (run.sh:470-484): delete the key's line,
-# then re-insert it immediately after the opening brace. S207's aftercare will
-# unify the copies of that pair; until it does, this one matches run.sh's shape
-# exactly so the unification has nothing to reconcile.
+# S201 wrote this as a copy of run.sh's state_set_raw (delete the key's line,
+# re-insert after the opening brace with a hard-coded comma) and said S207
+# would unify it. S207 did: the write is now lcars_state_set, the ONE writer,
+# which re-derives every separator and so cannot leave a trailing comma even
+# when `numberOne` is the object's last field. The value stays on ONE line —
+# state_xo_block below, and run.sh's drive_xo_block, both `sed` for `{…}` on a
+# single line — and lcars_state_set preserves it because it edits LINES.
 # ===========================================================================
 state_xo_block() { # <state.json>
   sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*\({[^}]*}\).*/\1/p' "$1" | head -1
 }
 state_set_xo() { # <state.json> <one-line-object>
-  local st="$1" obj="$2" tmp
-  tmp="$(mktemp)"
-  grep -v '"numberOne"[[:space:]]*:' "$st" >"$tmp" && mv "$tmp" "$st"
-  tmp="$(mktemp)"
-  V="$obj" awk 'NR==1{print; printf "  \"numberOne\": %s,\n", ENVIRON["V"]; next} {print}' \
-    "$st" >"$tmp" && mv "$tmp" "$st"
+  lcars_state_set "$1" numberOne "$2"
 }
 mission_stage() { sed -n 's/.*"stage"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1; }
 
@@ -414,6 +401,7 @@ cmd_on() {
       fi
       state_set_xo "$st" "$obj"
     fi
+    lcars_state_refusal_die "lcars xo on"
     printf '◈ NUMBER ONE: %s is back in scope — the opt-out is cleared.\n' "$id"
     cfg_enabled || printf '  Number One is OFF for this repo; run `lcars xo on` to engage it.\n'
     return 0
@@ -435,6 +423,10 @@ cmd_off() {
   if [ -n "$target" ]; then
     id="$(resolve_mission "$target")"
     stand_down "$id" --opt-out
+    # S207 fix round 1 (D2): `numberOne` is ONE write. If the writer refused the
+    # mission's state.json, nothing stood down and nothing opted out — so say so
+    # and exit non-zero rather than print either line.
+    lcars_state_refusal_die "lcars xo off"
     if [ "$XO_STOOD_DOWN" -gt 0 ]; then
       printf '◈ NUMBER ONE: stood down on %s — you have the conn.\n' "$id"
     else
@@ -452,6 +444,7 @@ cmd_off() {
     [ -n "$m" ] || continue
     stand_down "$m"
   done <<< "$(all_missions)"
+  lcars_state_refusal_die "lcars xo off"
   printf '◈ NUMBER ONE: OFF\n'
   if [ "$XO_STOOD_DOWN" -gt 0 ]; then
     printf '  %d engaged mission(s) stood down — you have the conn.\n' "$XO_STOOD_DOWN"
@@ -614,6 +607,7 @@ escalate() { # <mission-dir> <stage> <note> <journal-body>
   obj="$(obj_set "$obj" lastAction "$(jstr "escalated $stage $NOW_LOCAL")")"
   obj="$(obj_set "$obj" since "$(jstr "$NOW")")"
   state_set_xo "$st" "$obj"
+  lcars_state_refusal_die "lcars xo"
   journal "$dir" escalated "$body"
   printf '◈ NUMBER ONE: escalated — this one is yours.\n'
   printf '  %s\n' "$note"
@@ -875,6 +869,9 @@ XO_PY
   obj="$(obj_del "$obj" note)"
   obj="$(obj_set "$obj" lastAction "$(jstr "answered $stage $NOW_LOCAL")")"
   state_set_xo "$st" "$obj"
+  # The gate answer is recorded in `numberOne`; a refused write means Number One
+  # did NOT take the conn, so it must not report that it did.
+  lcars_state_refusal_die "lcars xo answer"
   journal "$dir" answered \
     "$(printf '"stage": %s, "answer": %s, "rationale": %s, "citation": {"file": %s, "quote": %s}' \
          "$(jstr "$stage")" "$(jstr "$answer_text")" "$(jstr "$rationale")" \

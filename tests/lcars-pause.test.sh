@@ -244,6 +244,74 @@ rcGr=0
 ( cd "$repoG" && LCARS_GH_BIN="$repoG/gh" bash "$SCRIPT" resume "no-such" >out.txt 2>&1 ) || rcGr=$?
 check "guard. resume rejects an unknown mission id" "[ '$rcGr' -ne 0 ]"
 
+# --- S207 fix round 1 (D2): A REFUSED WRITE IS NOT A PAUSE ------------------
+# THE TESTER'S EXACT CASE. state.json is valid JSON but COMPACT — not the
+# one-field-per-line object LCARS writes. The writer refuses it (correctly, and
+# loudly, on stderr) and leaves the file byte-identical. Before this fix pause.sh
+# then printed "PAUSE: paused lcars-…" and "⏸ Mission will stop at the next safe
+# boundary" and exited 0, for a mission that was still running: the loudest
+# possible warning, said to a caller that could not hear it, in front of a
+# success line the captain could.
+repoR="$(new_repo_with_mission)"; make_gh_stub "$repoR/gh"
+export GH_LOG="$repoR/gh.log"; : >"$GH_LOG"
+sR="$(state_of "$repoR")"
+# Compact it — same fields, same values, one line. A control first: this file
+# really is valid JSON, so nothing below passes because the fixture is broken.
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); open(p,"w").write(json.dumps(d))' "$sR"
+check "D2. the fixture is VALID json (a control)" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$sR'"
+check "D2. …and is NOT the one-field-per-line shape (a control)" \
+  "[ \"\$(wc -l <'$sR' | tr -d ' ')\" -le 1 ]"
+cpR="$(cat "$sR")"
+rcR=0
+( cd "$repoR" && LCARS_GH_BIN="$repoR/gh" bash "$SCRIPT" pause "$MID" >outR.txt 2>&1 ) || rcR=$?
+check "D2. \`lcars pause\` on a refused state.json EXITS NON-ZERO" "[ '$rcR' -ne 0 ]"
+check "D2. it does NOT print 'PAUSE: paused'" \
+  "! qgrep -q 'PAUSE: paused' '$repoR/outR.txt'"
+check "D2. it does NOT promise the Mission will stop" \
+  "! qgrep -q 'will stop at the next safe boundary' '$repoR/outR.txt'"
+check "D2. it says plainly that the write was REFUSED" \
+  "qgrep -q 'REFUSED' '$repoR/outR.txt'"
+check "D2. …and why, naming the shape it needs" \
+  "qgrep -q 'one-field-per-line' '$repoR/outR.txt'"
+check "D2. the state.json is left BYTE-IDENTICAL" \
+  "[ \"\$(cat '$sR')\" = \"\$cpR\" ]"
+check "D2. the mission is NOT paused" "! qgrep -q 'paused' '$sR'"
+check "D2. and the lcars:paused label was never applied" \
+  "! qgrep -q 'lcars:paused' '$repoR/gh.log'"
+
+# THE CONTROL FOR THE CONTROL: the same verb, same fixture shape, on a WELL-FORMED
+# state.json, still pauses and still exits 0. Without this the block above would
+# pass just as happily if `lcars pause` were broken outright.
+repoRok="$(new_repo_with_mission)"; make_gh_stub "$repoRok/gh"
+export GH_LOG="$repoRok/gh.log"; : >"$GH_LOG"
+sRok="$(state_of "$repoRok")"
+rcRok=0
+( cd "$repoRok" && LCARS_GH_BIN="$repoRok/gh" bash "$SCRIPT" pause "$MID" >outRok.txt 2>&1 ) || rcRok=$?
+check "D2. control: a well-formed state.json still pauses, exit 0" \
+  "[ '$rcRok' -eq 0 ] && qgrep -q 'PAUSE: paused' '$repoRok/outRok.txt'"
+check "D2. control: …and really sets paused=true" \
+  "qgrep -q '\"paused\": *true' '$sRok'"
+
+# `lcars resume` is the same lie the other way round: a refused unset leaves the
+# mission paused, so it must not announce a resume — and must not exec the driver.
+repoRr="$(new_repo_with_mission)"; make_gh_stub "$repoRr/gh"; make_run_stub "$repoRr/run"
+export GH_LOG="$repoRr/gh.log"; : >"$GH_LOG"
+export RUN_LOG="$repoRr/run.log"; : >"$RUN_LOG"
+sRr="$(state_of "$repoRr")"
+python3 - "$sRr" <<'PYEOF'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["paused"]=True
+open(p,"w").write(json.dumps(d))
+PYEOF
+rcRr=0
+( cd "$repoRr" && LCARS_GH_BIN="$repoRr/gh" LCARS_RUN_SCRIPT="$repoRr/run" \
+    bash "$SCRIPT" resume "$MID" >outRr.txt 2>&1 ) || rcRr=$?
+check "D2. \`lcars resume\` on a refused state.json EXITS NON-ZERO" "[ '$rcRr' -ne 0 ]"
+check "D2. it does NOT print 'RESUME:'" "! qgrep -q 'RESUME:' '$repoRr/outRr.txt'"
+check "D2. and it never re-enters the driver on a still-paused mission" \
+  "! qgrep -q 'drive --mission' '$repoRr/run.log'"
+
 # ==========================================================================
 echo
 printf 'lcars pause / resume: %d passed, %d failed\n' "$pass" "$fail"
