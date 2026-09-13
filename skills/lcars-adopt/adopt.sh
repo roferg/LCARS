@@ -265,6 +265,7 @@ state_issue_of() { # <state.json> → the recorded issue number, or ""
 ISSUE=""
 OPT_ENGINE=""
 OPT_ENGINE_SRC=""
+OPT_XO=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) ISSUE="${2:-}"; shift 2 ;;
@@ -287,14 +288,28 @@ while [ $# -gt 0 ]; do
       [ "$OPT_ENGINE_SRC" = "chosen" ] \
         || die "\`--engine-source $OPT_ENGINE_SRC\` is not something adopt can record — the only value is \`chosen\`, which means a human picked the engine. Nothing was created."
       shift 2 ;;
+    # S201: the captain's answer to "engage Number One on this mission here?",
+    # carried from a caller that has no tty to ask at — the board's adopt
+    # picker checkbox. `yes` puts the mission IN SCOPE, `no` records the
+    # per-mission opt-out. Only those two literals: a typo must not silently
+    # decide who has the conn.
+    --number-one)
+      OPT_XO="${2:-}"
+      case "$OPT_XO" in
+        yes|no) : ;;
+        *) die "\`--number-one $OPT_XO\` is not something adopt can record — the only values are \`yes\` and \`no\`. Nothing was created." ;;
+      esac
+      shift 2 ;;
     -h|--help)
-      printf 'usage: adopt.sh --issue <issue-number> [--engine <claude|copilot>] [--engine-source chosen]\n'
+      printf 'usage: adopt.sh --issue <issue-number> [--engine <claude|copilot>] [--engine-source chosen] [--number-one yes|no]\n'
       printf '  Rebuilds the mission on issue <n> locally. Works at the ENDS of the\n'
       printf '  pipeline only: align (claim + rebuild) and verify (join + resolve PR).\n'
       printf '  --engine converts the mission onto a CLI this machine has, and RECORDS\n'
       printf '  the choice; without it an unavailable engine is refused, never switched.\n'
       printf '  --engine-source chosen says a HUMAN picked that engine (the viewscreen\n'
       printf '  picker), so the card reads "chosen at adopt" and not "converted".\n'
+      printf '  --number-one answers the Verify engagement question without a tty:\n'
+      printf '  yes puts the mission in scope for Number One, no records an opt-out.\n'
       exit 0 ;;
     -*) die "unknown argument: $1" ;;
     *)  ISSUE="$1"; shift ;;
@@ -683,6 +698,20 @@ SPEC_NAME="prd.md"
 [ "$PARKED" = "true" ] && SPEC_NAME="idea.md"
 
 # --- state.json -----------------------------------------------------------
+# S201 — NUMBER ONE IS DISMISSED BY AN ADOPT, ALWAYS.
+#
+# Engagement is a fact about ONE LAPTOP: a first officer running there, holding
+# that laptop's conn, with a worker pid recorded in that mission directory. A
+# mission adopted HERE has none of that — no process, no pid, nothing to stand
+# down — so a `numberOne` key carried across would be a badge for an officer who
+# is not aboard, locking the controls of a mission nobody is driving.
+#
+# Read BEFORE the rebuild, because the rebuild is what removes it.
+XO_WAS=""
+if [ "$EXISTING" -eq 1 ] && [ -f "$MISSION_DIR/state.json" ]; then
+  XO_WAS="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{[^}]*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+              "$MISSION_DIR/state.json" | head -1)"
+fi
 STATE="$STAGING/state.json"
 if [ "$EXISTING" -eq 1 ]; then
   # REFRESH, never duplicate. Edit a COPY: the real file is only replaced once
@@ -714,6 +743,10 @@ if [ "$EXISTING" -eq 1 ]; then
   if [ "$STAGE" = "align" ]; then
     state_del prUrl; state_del prNumber; state_del review
   fi
+  # …and Number One, at EVERY stage. Unlike the PR fields above this is not a
+  # fact that goes stale at one stage and holds at another — it is stale the
+  # moment the mission changes laptops, so it goes unconditionally.
+  state_del numberOne
 else
   MODEL=""
   # $CONFIG was resolved in section 3b (the engine block reads workerBin from it).
@@ -744,6 +777,11 @@ else
     printf '  "base": "%s"\n' "$(json_escape "$BASE")"
     printf '}\n'
   } >"$STATE"
+  # BOTH PATHS, on purpose. This one writes the object field by field and could
+  # not emit `numberOne` if it tried — which is exactly why the guard belongs
+  # here too: the day somebody adds a field to that heredoc, the rule is already
+  # written down beside it instead of living in one branch of an if.
+  state_del numberOne
 fi
 
 # ===========================================================================
@@ -810,6 +848,74 @@ if [ "$STAGE" = "verify" ]; then
   # Surface the fallback's own caveat if the adapter had to use it.
   if [ -s "$STAGING/pr.err" ] && grep -q 'scanning the' "$STAGING/pr.err" 2>/dev/null; then
     note "this \`gh\` could not answer GitHub's closing-PR query, so the PR was resolved by scanning open PR bodies — a PR linked without a \`Closes #$ISSUE\` line would have been missed."
+  fi
+fi
+
+# ===========================================================================
+# 5b. NUMBER ONE — dismissed, and (at Verify) offered.
+# ===========================================================================
+# TWO SEPARATE FACTS, and conflating them is the mistake this section is shaped
+# to avoid.
+#
+# THE DISMISSAL IS UNCONDITIONAL and has already happened (the state rebuild
+# above). It is not a choice and it is not reversible by answering a question:
+# the officer who held this mission is on another laptop and this one cannot
+# reach it. All that is left is to SAY SO, because a badge that vanishes without
+# a word is a fact the captain has to discover.
+#
+# THE OFFER IS THIS REPO'S OWN. Number One being on HERE is a different setting
+# from Number One having been engaged THERE, and it is asked only where there is
+# something to answer it about: `numberOne.enabled` in this repo's config, and a
+# mission at VERIFY — the gate an adopting captain has actually arrived at. At
+# Align there is nothing for a first officer to do yet, so asking would be
+# furniture.
+#
+# NOTHING IS ENGAGED HERE, AND NOTHING IS RECORDED HERE. `yes` puts the mission
+# IN SCOPE (its opt-out is gone with the rest of the block); taking the conn is
+# the driver's to do at a gate, and a second way in would be exactly the
+# duplication this round exists to prevent. NO TTY IS `no` — the same posture
+# the engine picker takes one section up, for the same reason: deciding in
+# silence is the defect.
+#
+# AND `no` LEAVES THE KEY ABSENT (fix round 1). It used to write
+# `numberOne: {"optOut": true}`, which made every SILENT adopt — scripted, from
+# the board, from any caller with no tty — opt that mission out of a later
+# repo-wide `lcars xo on` permanently, until someone ran `lcars xo on <id>` by
+# hand. Declining at the prompt is "not engaged NOW", and that is already the
+# state every fresh mission is in; a durable opt-out is a larger answer, and
+# only `lcars xo off <id>` gives it. The DISCLOSURE still prints — the captain
+# is told where he stands — but the record is exactly what a fresh adopt
+# writes: no `numberOne` key at all (the additive-key rule, S109).
+XO_LINES=""
+if [ -n "$XO_WAS" ] && [ "$XO_WAS" = "engaged" ]; then
+  XO_LINES="  ${OWNER:-the previous owner}'s Number One was dismissed by this adopt"$'\n'
+fi
+
+CFG_XO_ENABLED=""
+if [ -f "$CONFIG" ]; then
+  case "$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$CONFIG" | head -1)" in
+    *'"enabled"'*true*) CFG_XO_ENABLED=1 ;;
+  esac
+fi
+
+if [ -n "$CFG_XO_ENABLED" ] && [ "$STAGE" = "verify" ]; then
+  XO_ANSWER="$OPT_XO"
+  if [ -z "$XO_ANSWER" ]; then
+    if [ "$ADOPT_TTY" -eq 1 ]; then
+      printf '  Number One is ON for this repo. Engage Number One on this mission now? [y/N]: ' >&2
+      read -r xo_ans || xo_ans=""
+      case "$(printf '%s' "$xo_ans" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+        y|yes) XO_ANSWER="yes" ;;
+        *)     XO_ANSWER="no" ;;
+      esac
+    else
+      XO_ANSWER="no"
+    fi
+  fi
+  if [ "$XO_ANSWER" = "yes" ]; then
+    XO_LINES="${XO_LINES}  Number One: in scope for this mission — it takes the conn at the next gate"$'\n'
+  else
+    XO_LINES="${XO_LINES}  Number One: NOT engaged on this mission (\`lcars xo on $MID_LOCAL\` puts it back in scope)"$'\n'
   fi
 fi
 
@@ -1061,6 +1167,7 @@ else
   printf '  Owner:    unassigned\n'
 fi
 [ -n "$PR_URL" ] && printf '  PR:       %s\n' "$PR_URL"
+[ -n "$XO_LINES" ] && printf '%s' "$XO_LINES"
 [ "$EXISTING" -eq 1 ] && printf '  (refreshed an existing local mission — local artifacts kept)\n'
 [ -n "$NOTES" ] && printf '%s' "$NOTES"
 

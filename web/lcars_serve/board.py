@@ -534,3 +534,39 @@ def assemble(cards, meta=None):
         if stage != "done":
             board["missions"].append(c)
     return board
+
+
+# S201 — NUMBER ONE, ON A CARD.
+#
+# `xo_block` is the sibling of `owner_block` above and it exists for the same
+# reason: ONE builder for a shape both adapters could emit, so the front end
+# cannot tell which adapter served it (ADR-003). The local adapter reads the
+# mission's own `state.numberOne`; the github adapter reads nothing (engagement
+# is a LOCAL fact — the forge has never heard of it), and that asymmetry is
+# deliberate rather than a gap: S191's one-call remote poll must never grow a
+# per-mission `gh` call for it.
+#
+# None ⇒ the caller adds NO `numberOne` key at all — ABSENT, never null. That is
+# the rule every additive key in this shape has followed since S109 and it is
+# what keeps a board with no Number One on it byte-identical to before this
+# round, which is every board this product has served until today.
+#
+# ONLY THE RECORDED FIELDS RIDE. A `numberOne` carrying nothing but `optOut`
+# (what `lcars xo off <id>` writes on a mission Number One never held) answers
+# None: an opt-out is a fact about a FUTURE engagement and the card has nothing
+# to draw for it. A malformed value — a string, a list, a number — answers None
+# too, on the same posture `lcars_xo_status` takes in the shell: an unreadable
+# record is "nothing recorded", never a guess.
+_XO_FIELDS = ("status", "engine", "since", "note", "score")
+
+
+def xo_block(value):
+    """{status, engine, since, note, score} for the card, or None."""
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key in _XO_FIELDS:
+        v = value.get(key)
+        if isinstance(v, str) and v.strip():
+            out[key] = v.strip()
+    return out or None

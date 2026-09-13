@@ -342,6 +342,77 @@ lcars_owner_lock_reason() { # <issue>
 }
 
 # ===========================================================================
+# lcars_xo_lock_reason <mission-dir | mission-id> — THE ENGAGED LOCK (S201).
+# ===========================================================================
+# A SECOND REASON ON THE SAME SEAM, not a second mechanism. Number One acts on
+# the captain's behalf THROUGH the ordinary verbs; while it holds a mission, a
+# captain writing to that same mission from another terminal (or from the board)
+# is racing his own first officer. So the write verbs refuse — with ONE sentence,
+# at the same call sites, with the same posture the owner lock has kept since
+# S189:
+#
+#   • rc 0 + one plain line  ⇒  refuse
+#   • rc 1 + silence         ⇒  proceed
+#   • EVERY UNCERTAIN CASE PROCEEDS. No mission dir, no state.json, no
+#     `numberOne` key, an unreadable file: all of them are "not engaged". A
+#     false lock shuts the captain out of his own work, which is strictly worse
+#     than the thing the lock prevents.
+#   • LCARS_XO_ENFORCE=0 bypasses it, exactly like LCARS_OWNER_ENFORCE=0.
+#
+# THE FACT IS RECORDED, NEVER INFERRED. The only thing consulted is
+# `state.numberOne.status`, written by `lcars xo` and by the driver. Nothing
+# here parses prose, a readout, or a log to work out whether Number One is
+# engaged — the producer records it (the standing rule this round).
+#
+# WHY THE ARGUMENT IS THE MISSION, NOT AN ISSUE NUMBER. `lcars_owner_lock_reason`
+# takes an <issue> because ownership is a FORGE fact and the issue is its name
+# there. Engagement is a LOCAL fact living in the mission's own state.json, so
+# the thing that names it is the mission. The shape is otherwise identical: one
+# positional identifier, resolved inside, one sentence out. A path to the
+# mission directory is accepted as-is (what the verbs and the daemon both
+# already hold); a bare id is resolved against this checkout's
+# .git/lcars/missions.
+_xo_mission_state() { # <mission-dir | mission-id> → path to state.json, or rc 1
+  local m="${1:-}" gitdir
+  [ -n "$m" ] || return 1
+  case "$m" in
+    */*)
+      [ -f "$m/state.json" ] || return 1
+      printf '%s/state.json' "$m"
+      return 0 ;;
+  esac
+  gitdir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+  [ -f "$gitdir/lcars/missions/$m/state.json" ] || return 1
+  printf '%s/lcars/missions/%s/state.json' "$gitdir" "$m"
+}
+
+# The RECORDED status, or empty. Reads the one-line `numberOne` object the
+# writers emit; a missing key, a malformed value and an unreadable file all
+# answer empty, which every caller reads as "not engaged".
+lcars_xo_status() { # <mission-dir | mission-id>
+  local st obj
+  st="$(_xo_mission_state "${1:-}")" || return 0
+  obj="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$st" | head -1)"
+  [ -n "$obj" ] || return 0
+  printf '%s' "$obj" \
+    | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+lcars_xo_lock_reason() { # <mission-dir | mission-id>
+  [ "${LCARS_XO_ENFORCE:-1}" = "0" ] && return 1
+  local m="${1:-}" id status
+  [ -n "$m" ] || return 1
+  status="$(lcars_xo_status "$m")"
+  [ "$status" = "engaged" ] || return 1
+  # The remedy names THIS mission, so the captain can paste it. A dir argument
+  # carries the id as its basename; an id argument is already the id.
+  id="$(basename "$m")"
+  printf 'Number One is engaged on this mission on your behalf — stand it down (lcars xo off %s) to act yourself' "$id"
+  return 0
+}
+
+# ===========================================================================
 # lcars_claim_mission <issue> — assign this mission to me, BEST-EFFORT.
 # ===========================================================================
 # The solo paths call this: filing assigns the captain, and a drive on an
@@ -424,11 +495,23 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     lock-reason)
       lcars_owner_lock_reason "${2:-}"
       ;;
+    # S201 — THE ENGAGED LOCK, same contract. rc=0 + one plain line ⇒ Number One
+    # holds this mission and the verb must refuse. rc=1 + silence ⇒ proceed. The
+    # argument is the MISSION (a directory path, or an id resolved against this
+    # checkout) because engagement is recorded in the mission's own state.json.
+    xo-lock-reason)
+      lcars_xo_lock_reason "${2:-}"
+      ;;
+    # The RECORDED status itself, for a surface that shows it rather than gates
+    # on it. ALWAYS rc=0 — "nothing recorded" is an answer.
+    xo-status)
+      lcars_xo_status "${2:-}"
+      ;;
     # An unknown op is a HARD, LOUD error. A silent 0 would be read by the
     # daemon as "not locked", which is precisely the failure this file exists to
     # prevent — so a typo must never look like permission.
     *)
-      printf 'ownership.sh: unknown op: %s (want: whoami | owner <n> | lock-reason <n>)\n' \
+      printf 'ownership.sh: unknown op: %s (want: whoami | owner <n> | lock-reason <n> | xo-lock-reason <mission> | xo-status <mission>)\n' \
         "${1:-}" >&2
       exit 2
       ;;

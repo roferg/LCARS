@@ -934,6 +934,211 @@ lineResolve="$(verb_refusal "$repoRL/out.txt")"
 check "D17. \`lcars resolve-logs\` refuses with EXACTLY that sentence" \
   "[ \"\$lineResolve\" = \"\$OWN_SENTENCE\" ]"
 
+
+# ==========================================================================
+# E. S201 — THE ENGAGED LOCK: A SECOND REASON ON THE SAME SEAM.
+#
+# Number One acts on the captain's behalf THROUGH the verbs. While it holds a
+# mission the captain must not be racing it from a second terminal — so the
+# write verbs refuse with ONE sentence, exactly the way S189's owner lock
+# refuses, on the SAME call sites, with the SAME posture:
+#
+#   * the fact is RECORDED, never inferred: `state.numberOne.status == engaged`
+#     and nothing else. A stood-down or opted-out mission is not locked.
+#   * every uncertain case PROCEEDS (no state file, no key, unreadable) — a
+#     false lock shuts the captain out of his own work, which is strictly worse
+#     than the thing the lock prevents.
+#   * `LCARS_XO_ENFORCE=0` bypasses it, exactly like LCARS_OWNER_ENFORCE=0.
+#   * `lcars run` and `lcars xo` are EXEMPT: Number One's own actions go
+#     through them, so locking them would lock Number One out of itself.
+#
+# The mission here is assigned to the CAPTAIN throughout, so the only thing
+# that can refuse is the engaged lock.
+# ==========================================================================
+echo
+echo "the engaged lock — Number One holds the conn (S201)"
+
+XO_SCRIPT="$REPO_ROOT/skills/lcars-xo/xo.sh"
+
+engaged_repo() { # <stage> [numberOne-raw]
+  local repo stage="$1" xo="${2:-{\"status\": \"engaged\", \"engine\": \"copilot\"\}}" s
+  repo="$(new_mission_repo "$stage")"
+  s="$repo/.git/lcars/missions/$MID/state.json"
+  awk -v xo="$xo" 'NR==1{print; printf "  \"numberOne\": %s,\n", xo; next} {print}' \
+    "$s" >"$s.tmp" && mv "$s.tmp" "$s"
+  printf '%s' "$repo"
+}
+
+# The sentence, READ OUT OF THE SHIPPING LIBRARY — nothing here retypes it.
+XO_FMT="$(sed -n "s/.*printf '\(Number One is engaged[^']*\)'.*/\1/p" "$OWNERSHIP" | head -1)"
+check "E0. ownership.sh carries the engaged sentence as a printf format" \
+  "[ -n \"\$XO_FMT\" ]"
+XO_SENTENCE="${XO_FMT/\%s/$MID}"
+
+printf 'capt\n' >"$ASSIGNEES"
+
+xo_refusal() { # <outfile> -> the refusal line, the `lcars <verb>: ` prefix stripped
+  sed -n 's/^lcars [a-z-]*: \(Number One is engaged .*\)$/\1/p' "$1" | head -1
+}
+
+# --- approve ---------------------------------------------------------------
+repoX1="$(engaged_repo verify)"
+rcX=0
+( cd "$repoX1" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$APPROVE_SCRIPT" --mission "$MID" >out.txt 2>&1 ) || rcX=$?
+check "E1. \`lcars approve\` REFUSES an engaged mission" "[ '$rcX' -ne 0 ]"
+check "E1. …with EXACTLY the library's sentence" \
+  "[ \"\$(xo_refusal '$repoX1/out.txt')\" = \"\$XO_SENTENCE\" ]"
+
+# --- feedback --------------------------------------------------------------
+repoX2="$(engaged_repo verify)"
+rcX=0
+( cd "$repoX2" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$FEEDBACK_SCRIPT" --mission "$MID" --feedback "nope" >out.txt 2>&1 ) || rcX=$?
+check "E2. \`lcars feedback\` REFUSES an engaged mission" "[ '$rcX' -ne 0 ]"
+check "E2. …with EXACTLY the library's sentence" \
+  "[ \"\$(xo_refusal '$repoX2/out.txt')\" = \"\$XO_SENTENCE\" ]"
+check "E2. …and it did NOT write feedback.md" \
+  "[ ! -f '$repoX2/.git/lcars/missions/$MID/feedback.md' ]"
+
+# --- respond ----------------------------------------------------------------
+repoX3="$(engaged_repo plan-review)"
+sX3="$repoX3/.git/lcars/missions/$MID/state.json"
+sed 's/"stage": "plan-review",/"stage": "plan-review",\n  "awaitingHuman": true,/' \
+  "$sX3" >"$sX3.tmp" && mv "$sX3.tmp" "$sX3"
+cat >"$repoX3/.git/lcars/missions/$MID/pending.json" <<'PJ'
+{
+  "stage": "plan-review",
+  "questions": [
+    "which way?"
+  ]
+}
+PJ
+rcX=0
+( cd "$repoX3" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$RESPOND_SCRIPT" answer --mission "$MID" --answer "that way" >out.txt 2>&1 ) || rcX=$?
+check "E3. \`lcars respond answer\` REFUSES an engaged mission" "[ '$rcX' -ne 0 ]"
+check "E3. …with EXACTLY the library's sentence" \
+  "[ \"\$(xo_refusal '$repoX3/out.txt')\" = \"\$XO_SENTENCE\" ]"
+# READS are never blocked — by the engaged lock either.
+rcX=0
+( cd "$repoX3" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$RESPOND_SCRIPT" show --mission "$MID" >show.txt 2>&1 ) || rcX=$?
+check "E3. READ verb \`lcars respond show\` is NEVER blocked" \
+  "[ '$rcX' -eq 0 ] && ! grep -q 'Number One is engaged' '$repoX3/show.txt'"
+
+# --- log --------------------------------------------------------------------
+repoX4="$(engaged_repo implement)"
+cat >"$repoX4/bug.md" <<'BUG'
+# Mission: The toggle does not persist
+
+**Type:** bug
+**Goal:** The dark-mode toggle should survive a reload.
+**Acceptance Criteria:**
+- The described defect no longer reproduces
+**Out of Scope:**
+- Unrelated refactors
+**Constraints:**
+- Minimal change; no new dependencies
+BUG
+rcX=0
+( cd "$repoX4" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt LCARS_RUN_BIN=/nonexistent \
+    bash "$LOG_SCRIPT" --parent "$MID" --prd bug.md >out.txt 2>&1 ) || rcX=$?
+check "E4. \`lcars log\` REFUSES an engaged parent" "[ '$rcX' -ne 0 ]"
+check "E4. …with EXACTLY the library's sentence" \
+  "[ \"\$(xo_refusal '$repoX4/out.txt')\" = \"\$XO_SENTENCE\" ]"
+
+# --- pause / resume ---------------------------------------------------------
+repoX5="$(engaged_repo implement)"
+sX5="$repoX5/.git/lcars/missions/$MID/state.json"
+sumX5="$(cksum <"$sX5")"
+rcX=0
+( cd "$repoX5" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$PAUSE_SCRIPT" pause "$MID" >out.txt 2>&1 ) || rcX=$?
+check "E5. \`lcars pause\` REFUSES an engaged mission" "[ '$rcX' -ne 0 ]"
+check "E5. …with EXACTLY the library's sentence" \
+  "[ \"\$(xo_refusal '$repoX5/out.txt')\" = \"\$XO_SENTENCE\" ]"
+check "E5. …state.json is BYTE-IDENTICAL" "[ \"\$(cksum <'$sX5')\" = '$sumX5' ]"
+check "E5. …and still parses as JSON" "json_ok '$sX5'"
+
+# --- resolve-logs -----------------------------------------------------------
+repoX6="$(engaged_repo implement)"
+add_child_bug "$repoX6" "$CHILD" "$MID"
+export RUN_LOG="$repoX6/run.log"; : >"$RUN_LOG"
+rcX=0
+( cd "$repoX6" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt LCARS_RUN_SCRIPT="$RUNSTUB" \
+    LCARS_VERSION_CHECK_BIN=/nonexistent LCARS_WORKER_BIN= \
+    bash "$RESOLVE_SCRIPT" --parent "$MID" >out.txt 2>&1 ) || rcX=$?
+check "E6. \`lcars resolve-logs\` REFUSES an engaged parent" "[ '$rcX' -ne 0 ]"
+check "E6. …with EXACTLY the library's sentence" \
+  "[ \"\$(xo_refusal '$repoX6/out.txt')\" = \"\$XO_SENTENCE\" ]"
+check "E6. …and NOTHING was driven" "[ ! -s '$RUN_LOG' ]"
+
+# --------------------------------------------------------------------------
+# E7. `lcars run` and `lcars xo` are EXEMPT — Number One acts THROUGH them.
+# --------------------------------------------------------------------------
+repoX7="$(engaged_repo research)"
+sX7="$repoX7/.git/lcars/missions/$MID/state.json"
+sed 's/"stage": "research",/"stage": "research",\n  "paused": true,/' \
+  "$sX7" >"$sX7.tmp" && mv "$sX7.tmp" "$sX7"
+rcX=0
+( cd "$repoX7" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$RUN_SCRIPT" drive --mission "$MID" >out.txt 2>&1 ) || rcX=$?
+check "E7. \`lcars run\` is NOT refused by the engaged lock" \
+  "! grep -q 'Number One is engaged' '$repoX7/out.txt'"
+rcX=0
+( cd "$repoX7" && bash "$XO_SCRIPT" >xo.txt 2>&1 ) || rcX=$?
+check "E7. \`lcars xo\` is NOT refused by the engaged lock" \
+  "[ '$rcX' -eq 0 ] && ! grep -q 'Number One is engaged' '$repoX7/xo.txt'"
+
+# --------------------------------------------------------------------------
+# E8. THE POSTURE. Every uncertain case PROCEEDS; the kill switch bypasses.
+# --------------------------------------------------------------------------
+repoX8="$(new_mission_repo verify)"          # no numberOne key at all
+mX8="$repoX8/.git/lcars/missions/$MID"
+rcX=0
+( cd "$repoX8" && bash "$OWNERSHIP" xo-lock-reason "$mX8" >/dev/null 2>&1 ) || rcX=$?
+check "E8. a mission with NO numberOne key is not locked" "[ '$rcX' -ne 0 ]"
+
+repoX9="$(engaged_repo verify '{"status": "stood-down", "engine": "copilot"}')"
+mX9="$repoX9/.git/lcars/missions/$MID"
+rcX=0
+( cd "$repoX9" && bash "$OWNERSHIP" xo-lock-reason "$mX9" >/dev/null 2>&1 ) || rcX=$?
+check "E8. a STOOD-DOWN mission is not locked" "[ '$rcX' -ne 0 ]"
+
+repoXa="$(engaged_repo verify '{"status": "finished", "engine": "copilot", "score": 91}')"
+mXa="$repoXa/.git/lcars/missions/$MID"
+rcX=0
+( cd "$repoXa" && bash "$OWNERSHIP" xo-lock-reason "$mXa" >/dev/null 2>&1 ) || rcX=$?
+check "E8. a FINISHED mission is not locked" "[ '$rcX' -ne 0 ]"
+
+rcX=0
+( cd "$repoX1" && LCARS_XO_ENFORCE=0 bash "$OWNERSHIP" xo-lock-reason \
+    "$repoX1/.git/lcars/missions/$MID" >/dev/null 2>&1 ) || rcX=$?
+check "E8. LCARS_XO_ENFORCE=0 bypasses the engaged lock" "[ '$rcX' -ne 0 ]"
+
+rcX=0
+( cd "$repoX1" && LCARS_XO_ENFORCE=0 LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$APPROVE_SCRIPT" --mission "$MID" >out2.txt 2>&1 ) || rcX=$?
+check "E8. …and through a verb too" \
+  "! grep -q 'Number One is engaged' '$repoX1/out2.txt'"
+
+rcX=0
+( cd "$repoX1" && bash "$OWNERSHIP" xo-lock-reason /nonexistent/mission >/dev/null 2>&1 ) || rcX=$?
+check "E8. an unreadable mission dir is not locked" "[ '$rcX' -ne 0 ]"
+
+# --------------------------------------------------------------------------
+# E9. ONE SENTENCE, EVERY SURFACE. The executable face IS the daemon's 403 body
+#     (server.py shells this op), so checking it here checks both.
+# --------------------------------------------------------------------------
+outX="$( cd "$repoX1" && bash "$OWNERSHIP" xo-lock-reason \
+  "$repoX1/.git/lcars/missions/$MID" 2>/dev/null )"
+check "E9. the executable face echoes EXACTLY the library's sentence" \
+  "[ \"\$outX\" = \"\$XO_SENTENCE\" ]"
+check "E9. …naming the mission and the remedy verb" \
+  "printf '%s' \"\$outX\" | grep -q 'lcars xo off $MID'"
+
+
 # ==========================================================================
 echo
 printf 'ownership: %d passed, %d failed\n' "$pass" "$fail"

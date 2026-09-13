@@ -227,6 +227,15 @@ class BandButtonTest(unittest.TestCase):
                           flags=re.S)
         stripped = re.sub(r"\n[ ]*<button[^>]*id=\"holodeckBtn\"[^>]*>[^<]*</button>",
                           "", stripped)
+        # …and S201's ◈ Number One toggle, with the comment block that documents
+        # it. Stripped by ID like every round before it: the BASELINE above is
+        # still never edited, so this test goes on asserting the one property
+        # worth keeping — that no round has MOVED or RE-WORDED a control that
+        # was already in the band.
+        stripped = re.sub(r"\n[ ]*<!-- S201: NUMBER ONE\..*?-->", "", stripped,
+                          flags=re.S)
+        stripped = re.sub(r"\n[ ]*<button[^>]*id=\"xoBtn\"[^>]*>[^<]*</button>",
+                          "", stripped)
         self.assertEqual(stripped, self.BAND_BEFORE_S141)
 
 

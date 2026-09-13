@@ -40,6 +40,14 @@
          deploy status from board.meta.mainLaunch (◐ DEPLOYING → ● MAIN LIVE →
          failed) on every render; the button opens the ▸ Deploy Main modal. -->
     <div class="main-deploy" id="mainDeploy" title="local main deploy"></div>
+    <!-- S201: NUMBER ONE. The repo-level toggle — ◈ Number One · OFF (hollow,
+         black on the yellow band) / ◈ Number One · ON · <ENGINE> (solid peach).
+         board.js owns the label, the class and the click (renderXoBand); it
+         renders HIDDEN on a board whose daemon sends no meta.numberOne, so a
+         repo that has never run `lcars xo` is byte-identical to before. ADDED
+         here, reordering nothing: the band's control order is pinned
+         byte-for-byte by test_help_console's band-parity test. -->
+    <button class="btn xo-toggle" id="xoBtn" type="button" hidden>◈ Number One · OFF</button>
     <button class="btn go" id="deployMainBtn" type="button">▸ Deploy Main</button>
     <!-- S125 (D1): THE HOLODECK. One control, beside ▦ File Mission, that swaps
          the board content for the deck IN THIS FRAME — the elbow, the brand and

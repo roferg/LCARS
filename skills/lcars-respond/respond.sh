@@ -266,6 +266,22 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # --- locate a single mission ------------------------------------------------
 locate_mission() { # id
   locate_missions_dir
@@ -390,6 +406,7 @@ cmd_answer() {
   # are never blocked — a captain must always be able to SEE what a teammate's
   # mission is waiting on.
   owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
+  xo_lock_or_die "$MISSION_DIR"
   [ -n "$ANSWER" ] || die "no answer — pass --answer \"<your answer>\" with the captain's response."
 
   # Only a Mission actually waiting on a human can be answered.

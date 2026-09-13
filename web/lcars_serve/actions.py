@@ -178,6 +178,8 @@ SCRIPT_ENV = {
     # at the two ENDS of the pipeline; the daemon only DISPATCHES it, and every
     # refusal (wrong stage, missing envelope, no gh) stays the skill's own.
     "adopt": "LCARS_ADOPT_SCRIPT",
+    # S201: `lcars xo` — the repo toggle and the stand-down.
+    "xo": "LCARS_XO_SCRIPT",
 }
 
 
@@ -13105,7 +13107,7 @@ class Actions(LogFacts):
             raise ActionError(404, "no such mission: %s" % mid)
 
     # ── S191: ADOPT A REMOTE MISSION ────────────────────────────────────────
-    def adopt(self, issue, engine=None):
+    def adopt(self, issue, engine=None, number_one=None):
         """Rebuild the mission on issue `issue` here — `lcars adopt <n>`.
 
         DISPATCH ONLY. Every rule about WHEN an adopt is allowed lives in
@@ -13169,6 +13171,15 @@ class Actions(LogFacts):
         eng = self._adopt_engine(engine)
         if eng:
             args += ["--engine", eng, "--engine-source", "chosen"]
+        # S201 — THE CAPTAIN'S ANSWER TO ADOPT'S VERIFY QUESTION, from a surface
+        # with no tty. `lcars adopt` at a terminal asks "engage Number One on
+        # this mission now?"; the daemon cannot be asked, so adopt.sh takes its
+        # documented non-interactive path and answers `no`. The board's picker
+        # asks instead, and the answer arrives here. ABSENT means the captain
+        # left the box alone, and an absent flag dispatches the exact argv this
+        # daemon has always dispatched.
+        if number_one is not None:
+            args += ["--number-one", "yes" if number_one else "no"]
         try:
             proc = self._run("adopt", args)
         except ActionError as exc:
@@ -13274,6 +13285,102 @@ class Actions(LogFacts):
         except Exception:
             # Script missing, un-runnable, or it hung past the bound. A forge we
             # cannot reach must never stand between the captain and his own work.
+            return None
+        if proc.returncode != 0:
+            return None
+        line = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return line or None
+
+    # ── S201: THE REPO TOGGLE AND THE STAND-DOWN ────────────────────────────
+    def xo_on(self, engine=None):
+        """`lcars xo on [--engine E]` — Number One takes the conn in this repo.
+
+        DISPATCH ONLY, and BLOCKING, like `adopt`. Every rule about WHICH
+        engines exist, whether the one asked for is on this machine, what the
+        config block looks like and how it is written lives in `xo.sh`
+        (ADR-002). Re-deciding any of it here would be a second implementation
+        of the same verdict — the S168 scar this project already paid for once.
+
+        THE ENGINE IS ALWAYS SENT. The CLI REFUSES a non-tty `on` with no
+        `--engine` on purpose (the adopt precedent: picking an engine in
+        silence is the defect), and the daemon has no tty — so the board's
+        picker asks and the answer arrives here. A body with no engine is that
+        same refusal, raised at the door where the captain can see it, rather
+        than in a spawn log.
+        """
+        eng = self._adopt_engine(engine)
+        if not eng:
+            raise ActionError(
+                400, "which engine should Number One use? Pick one at the "
+                     "board's picker, or run `lcars xo on --engine <engine>`.")
+        proc = self._run("xo", ["on", "--engine", eng])
+        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return {"enabled": True, "engine": eng, "output": out}
+
+    def xo_off(self, mid=None):
+        """`lcars xo off [<mission>]` — hand the conn back.
+
+        With no mission: the repo goes OFF and every engaged mission is stood
+        down. With one: that mission alone, and it is validated against this
+        laptop first — `mid` is about to become a command-line argument, and a
+        mission that is not here is a 404 rather than a shell-out that fails.
+
+        NEVER LOCKED, by anything. Standing Number One down is how the captain
+        takes the conn back; refusing it because Number One holds the mission
+        would lock the door from the inside — the same reasoning `adopt` sits
+        outside `_OWNER_LOCKED_VERBS` on.
+        """
+        args = ["off"]
+        if mid is not None:
+            name = str(mid).strip()
+            if (not name or name.startswith("-") or "/" in name
+                    or name in (".", "..")):
+                raise ActionError(400, "xo off: %r is not a mission id" % (mid,))
+            if not os.path.isfile(os.path.join(self._missions_dir(), name,
+                                               "state.json")):
+                raise ActionError(404, "no such mission: %s" % name)
+            args.append(name)
+        proc = self._run("xo", args)
+        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return {"mission": mid, "output": out}
+
+    # ── S201: THE ENGAGED LOCK, SERVER-SIDE ─────────────────────────────────
+    def xo_lock_reason(self, mid):
+        """One plain line when Number One holds this mission, else None.
+
+        The sibling of `owner_lock_reason`, and it works the same way: IT
+        SHELLS, IT DOES NOT DECIDE. The verdict, the posture and the sentence
+        all come from `ownership.sh xo-lock-reason` — the same op the CLI verbs
+        consult through the sourced library — so there is exactly one
+        implementation of "is Number One engaged here?" (ADR-002).
+
+        WHAT IS PASSED IS THE MISSION DIRECTORY, not an issue number.
+        Engagement is a LOCAL fact recorded in the mission's own state.json;
+        the forge knows nothing about it. Handing over the resolved path also
+        keeps the shell-out free of any `git rev-parse` of its own, so the
+        answer cannot change with the daemon's working directory.
+
+        EVERY UNCERTAIN CASE ANSWERS None (allowed):
+          * no `ownership` script wired            → the pre-S201 daemon
+          * no mission directory on this laptop    → nothing to be engaged on
+          * an unreadable or keyless state.json    → nothing recorded
+          * the script missing, un-runnable, slow  → a guard must not refuse
+        A false lock is strictly worse than the thing the lock prevents.
+        """
+        script = self.scripts.get("ownership")
+        if not script:
+            return None
+        mission_dir = os.path.join(self._missions_dir(), mid)
+        if not os.path.isfile(os.path.join(mission_dir, "state.json")):
+            return None
+        try:
+            proc = subprocess.run(
+                ["bash", script, "xo-lock-reason", mission_dir],
+                cwd=self.repo_root, env=dict(os.environ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=20)
+        except Exception:
             return None
         if proc.returncode != 0:
             return None
@@ -13916,6 +14023,10 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         # S191 — `lcars adopt`, resolved like every other skill.
         "adopt": os.path.join(
             home, ".claude/skills/lcars-adopt/adopt.sh"),
+        # S201 — `lcars xo`, the ONE writer of the numberOne config block and
+        # of a mission's numberOne state. The daemon only dispatches it.
+        "xo": os.path.join(
+            home, ".claude/skills/lcars-xo/xo.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():

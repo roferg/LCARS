@@ -230,7 +230,24 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 owner_lock_or_die "$PARENT_ISSUE"
+xo_lock_or_die "$PARENT_DIR"
 
 # --- the PARENT's engine (BUG-D) -------------------------------------------
 # A logged bug folds into the parent and must RUN on the SAME engine the parent

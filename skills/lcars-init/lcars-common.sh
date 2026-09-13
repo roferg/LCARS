@@ -2026,6 +2026,50 @@ lcars_default_engine() { # [config]
   esac
 }
 
+# ===========================================================================
+# lcars_xo_default_engine [config.json] — which engine NUMBER ONE's pickers
+# open on. THE ONE PLACE THE ANSWER IS DECIDED, and it is deliberately not
+# `lcars_default_engine`:
+#
+#     the repo's pinned `numberOne.engine` (when it is installed)
+#       >  the first INSTALLED engine of LCARS_XO_ENGINE_PREFERENCE
+#       >  nothing at all (neither CLI here — an honest empty answer)
+#
+# WHY IT IS A SECOND FUNCTION. `lcars_default_engine` answers a different
+# question — which engine drives the captain's own mission, where the front
+# door's historical answer is claude and a repo full of missions depends on it.
+# Number One is the OTHER kind of drive: one LCARS starts on the captain's
+# behalf, often while he is not watching.
+#
+# WHY COPILOT LEADS THE PREFERENCE (fix round 1, D2). LCARS's standing rule is
+# that a live drive defaults to Copilot, and a bare Enter is exactly the answer
+# a captain gives without reading — so it must land on the conservative engine,
+# never on the metered one. The board's picker preselected copilot and this
+# answered claude, which meant the SAME question got two answers depending on
+# which door you came through. Both doors read this function now: the CLI
+# picker calls it directly (`skills/lcars-xo/xo.sh`), and the daemon spawns it
+# and publishes the answer as `meta.engineDefault` for the board's picker
+# (`web/lcars_serve/local_adapter.py`). Change the order here and both move.
+# ===========================================================================
+LCARS_XO_ENGINE_PREFERENCE="copilot claude"
+
+lcars_xo_default_engine() { # [config]
+  local cfg="${1:-}" pinned="" e
+  if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+    pinned="$(lcars_config_get_raw "$cfg" numberOne \
+      | sed -n 's/.*"engine"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  fi
+  # A PIN THAT IS NOT INSTALLED IS SKIPPED, never preselected: offering an
+  # engine the captain cannot run is worse than offering one he can.
+  if [ -n "$pinned" ] && lcars_engine_available "$pinned"; then
+    printf '%s' "$pinned"; return 0
+  fi
+  for e in $LCARS_XO_ENGINE_PREFERENCE; do
+    lcars_engine_available "$e" && { printf '%s' "$e"; return 0; }
+  done
+  return 0
+}
+
 # lcars_config_has_key — 0 if the config file has a top-level "key": present.
 lcars_config_has_key() {
   local config="$1" key="$2"
@@ -3547,6 +3591,60 @@ lcars_config_set_or_add_string() {
     fi
   done <"$config" >"$tmp"
   mv "$tmp" "$config"
+}
+
+# lcars_config_set_or_add_raw — the same primitive for a RAW (unquoted) JSON
+# value: an object, an array, a number, true/false/null. Overwrites the key's
+# line in place when it is present, or inserts it as the first key after the
+# opening brace when it is not. Every other line is preserved byte-for-byte.
+#
+# THE VALUE MUST BE ONE LINE, and that is not a style preference. The merge in
+# `lcars_config_merge` preserves an existing raw value by capturing the tail of
+# the line the key sits on — so a pretty-printed object would be truncated at
+# its first newline and the config would be left invalid the first time the
+# captain ran `lcars update`. Callers pass e.g.
+#   {"enabled": true, "engine": "copilot"}
+# Nothing verifies that for you; the suites do.
+lcars_config_set_or_add_raw() {
+  local config="$1" key="$2" value="$3"
+  [ -f "$config" ] || return 1
+  local tmp="$config.tmp.$$" line indent comma inserted=0
+  if lcars_config_has_key "$config" "$key"; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *"\"$key\""*:*)
+          comma=""; case "$line" in *,) comma="," ;; esac
+          indent="${line%%\"*}"
+          printf '%s"%s": %s%s\n' "$indent" "$key" "$value" "$comma"
+          ;;
+        *) printf '%s\n' "$line" ;;
+      esac
+    done <"$config" >"$tmp"
+    mv "$tmp" "$config"
+    return 0
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+    if [ "$inserted" -eq 0 ]; then
+      case "$line" in
+        '{'*) printf '  "%s": %s,\n' "$key" "$value"; inserted=1 ;;
+      esac
+    fi
+  done <"$config" >"$tmp"
+  mv "$tmp" "$config"
+}
+
+# lcars_config_get_raw — the RAW text of a top-level key's value: an object on
+# one line, a number, true/false/null. Empty when absent. The string reader
+# above cannot answer for an object, and a surface that showed `numberOne` by
+# re-deriving it from somewhere else would be inferring a fact its producer
+# already recorded.
+lcars_config_get_raw() {
+  local config="$1" key="$2" v
+  [ -f "$config" ] || return 0
+  v="$(sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(.*\)/\1/p" "$config" | head -1)"
+  v="${v%,}"
+  printf '%s' "$v" | sed 's/[[:space:]]*$//'
 }
 
 # === S176: THE PRD's REQUIRED FIELDS, IN EITHER SHAPE ======================

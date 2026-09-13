@@ -119,6 +119,15 @@ _OWNER_LOCKED_VERBS = frozenset((
     "log", "log/file", "log/run", "log/discard",
 ))
 
+# S201 — THE ENGAGED LOCK's verbs: the owner set MINUS `start`.
+#
+# Derived from the owner set rather than retyped, so the two can never drift
+# apart by a copy-paste. `start` is the one deliberate difference: the owner
+# lock covers it because someone else's mission must not be started here AT
+# ALL, whereas an ENGAGED mission is already being driven — by Number One,
+# through this very door. Locking `start` would lock Number One out of itself.
+_XO_LOCKED_VERBS = _OWNER_LOCKED_VERBS - frozenset(("start",))
+
 # S191 fix round 1 (D6) — THE REMOTE REFUSAL, IN THE CARD'S OWN WORDS.
 #
 # A remote card's disabled controls carry this sentence as their tooltip
@@ -667,6 +676,33 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                     holodeck=body.get("holodeck"),
                     holodeck_scope=body.get("holodeckScope"),
                     holodeck_answers=body.get("holodeckAnswers"))
+            # POST /api/xo/on | /api/xo/off | /api/xo/off/<mission>
+            #
+            # S201 — NUMBER ONE'S OWN DOOR, deliberately OUTSIDE
+            # /api/mission/<id>/<verb> and therefore outside all four gates.
+            #
+            # Two of these three are REPO-level acts with no mission at all, so
+            # there is nothing for a per-mission gate to be asked about. The
+            # third — `off <mission>` — is the one act that must NEVER be
+            # locked by anything, and least of all by the engaged lock itself:
+            # standing Number One down is how the captain takes the conn back,
+            # and refusing it because Number One holds the mission would lock
+            # the door from the inside. That is the same reasoning `adopt` sits
+            # outside `_OWNER_LOCKED_VERBS` on.
+            #
+            # A view-only build never reaches here: actions is None and do_POST
+            # has already answered 403.
+            if path == "/api/xo/on":
+                return actions.xo_on(engine=body.get("engine"))
+            if path == "/api/xo/off":
+                return actions.xo_off()
+            if path.startswith("/api/xo/off/"):
+                rest = [p for p in path[len("/api/xo/off/"):].split("/") if p]
+                if len(rest) == 1:
+                    return actions.xo_off(rest[0])
+                raise _ActionError(404, "no such xo endpoint: %s" % path)
+            if path.startswith("/api/xo"):
+                raise _ActionError(404, "no such xo endpoint: %s" % path)
             # POST /api/mission/<id>/<verb>[/<sub>]
             if path.startswith("/api/mission/"):
                 rest = path[len("/api/mission/"):]
@@ -705,6 +741,37 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             reason = getattr(actions, "owner_lock_reason", None)
             if not callable(reason):
                 return          # a writer wired without the ownership seam
+            try:
+                line = reason(mid)
+            except Exception:
+                return          # never let the guard itself refuse a write
+            if line:
+                raise _ActionError(403, line)
+
+        def _xo_gate(self, mid, verb):
+            """S201 — NUMBER ONE HAS THE CONN. Raises 403, or returns.
+
+            Beside `_owner_gate`, built the same way and for the same reason: a
+            disabled button is not a lock, and the board's sweep must always be
+            paired with a server refusal. What differs is only the FACT being
+            consulted — `state.numberOne.status`, a local record written by
+            `lcars xo` and by the driver, rather than a forge assignee.
+
+            DISPATCHED AFTER THE OWNER GATE, deliberately. "this mission is
+            someone else's" is the more fundamental answer; being told Number
+            One holds a mission that was never yours to act on would send the
+            captain to `lcars xo off` for a mission he cannot stand down.
+
+            The verdict comes from `Actions.xo_lock_reason`, which shells the
+            same `ownership.sh` the CLI consults, so there is ONE implementation
+            of "is Number One engaged here?" and ONE sentence. Every uncertain
+            case allows the write (see that method).
+            """
+            if verb not in _XO_LOCKED_VERBS:
+                return
+            reason = getattr(actions, "xo_lock_reason", None)
+            if not callable(reason):
+                return          # a writer wired without the Number One seam
             try:
                 line = reason(mid)
             except Exception:
@@ -806,6 +873,8 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # sentence wins). One fact, both surfaces.
             self._shipped_gate(mid, verb)
             self._owner_gate(mid, verb)
+            # S201: …and LAST of the three refusals. See _xo_gate.
+            self._xo_gate(mid, verb)
             # S191: ADOPT — rebuild a REMOTE mission on this laptop. `mid` here is
             # the ISSUE NUMBER (a remote card has no local mission id yet), so it
             # is matched FIRST, before any verb that would try to resolve a local
@@ -817,7 +886,10 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 # this surface could not. ABSENT means he took the default (the
                 # mission's own engine), and an absent key dispatches the exact
                 # argv this daemon has always dispatched.
-                return actions.adopt(mid, engine=body.get("engine"))
+                # S201: `numberOne` is the adopt picker's checkbox — the
+                # Verify engagement question, answered at the board.
+                return actions.adopt(mid, engine=body.get("engine"),
+                                     number_one=body.get("numberOne"))
             if verb == "start":
                 return actions.start(mid, override=body.get("override"))
             if verb == "pause":

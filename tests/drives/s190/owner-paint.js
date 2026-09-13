@@ -2252,6 +2252,18 @@ async function main() {
   return failures === 0 ? 0 : 1;
 }
 
+/* S201 — THE RIG IS INHERITABLE, not copyable.
+ *
+ * A later round that needs THE SAME primitives (a CDP session, PNG pixels, a
+ * real contrast number, the greyscale read) must not fork 2,200 lines to get
+ * them: `tests/drives/s201/xo-paint.js` requires this file and uses these. The
+ * drive below still runs exactly as it always has when this file is executed
+ * directly — `require.main === module` is the whole of the difference. */
+module.exports = { pngPixels, lum, contrast, inkAndPaper, fill, connect,
+                   InfraError, evaluate, CDP };
+
+if (require.main !== module) return;
+
 main().then((code) => {
   if (skips) console.log("\n\x1b[33m" + skips + " check(s) SKIPPED — a skip is not a pass.\x1b[0m");
   process.exit(code);

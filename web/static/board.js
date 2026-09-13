@@ -463,6 +463,344 @@ function ownerNode(m) {
   return wrap;
 }
 
+/* ═══════════════ S201: NUMBER ONE — THE FIRST OFFICER ═══════════════════
+
+   The captain's optional crew member. Toggled per repo (`lcars xo on|off`), it
+   takes the two stops that are his — a stage parked awaiting-human, and Verify
+   — while he is away, and hands the conn back with a report.
+
+   THREE FACTS, THREE SURFACES, ONE RECORD. The card says whether Number One
+   holds THIS mission (`m.numberOne`, read off its own state.json); the band
+   says whether it is on for THIS REPO (`meta.numberOne`, read off config.json);
+   and `lcars xo` says both at a terminal. Nothing here infers, derives or
+   guesses: a mission is engaged because the record says `engaged`.
+
+   IT NEVER SAYS "FIXING" (captain, 2026-09-11). Number One files ordinary
+   mission logs and LCARS drives them, so fixes already show through the
+   board's own `◐ resolving N logged bugs…` control. A second, quieter claim
+   about the same work on the same card would be this board telling one story
+   twice and getting it wrong once.
+
+   AND IT NAMES NO PRICE. The picker lists engines and says installed / not
+   installed, and that is all — not everyone's situation is the captain's
+   (his ruling, same date). */
+
+/* The recorded block, or null. Malformed is nothing — the posture
+   `lcars_xo_status` takes in the shell, mirrored here. */
+function xoBlock(m) {
+  var x = m && m.numberOne;
+  if (!x || typeof x !== "object") return null;
+  return x;
+}
+
+function xoStatus(m) {
+  var x = xoBlock(m);
+  return x ? String(x.status || "") : "";
+}
+
+/* THE single predicate the whole engaged lock is built on, exactly as
+   `ownerLockLogin` is for S190's. `engaged` and nothing else: a FINISHED,
+   ESCALATED, ANSWERED or STOOD-DOWN Number One has already handed the conn
+   back, and locking a mission it no longer holds would be a false lock — the
+   error this board treats as strictly worse than the one it prevents. */
+function xoEngaged(m) {
+  return xoStatus(m) === "engaged";
+}
+
+/* The refusal, in one sentence. It is byte-identical to the line
+   `lcars_xo_lock_reason` prints and the line the daemon's 403 carries — the
+   captain must not be told two different things by the tooltip and the refusal
+   that follows if he clicks past it. Pinned on both sides by tests. */
+function xoLockLine(m) {
+  return "Number One is engaged on this mission on your behalf — stand it "
+    + "down (lcars xo off " + String((m && m.id) || "") + ") to act yourself";
+}
+
+/* THE PILL. Solid while it has the conn, hollow once it has given it back —
+   the same "selected is solid, unselected is hollow" sentence the owner pill,
+   the locked control and the ownership filter already speak, said a fourth
+   time about a fourth thing rather than invented anew.
+
+   A STOOD-DOWN mission gets NO pill. It is not a state Number One is in; it is
+   the absence of one, and the note line below carries what happened. */
+var XO_PILL = {
+  engaged: "◈ NUMBER ONE · ENGAGED",
+  finished: "◈ NUMBER ONE · FINISHED",
+  escalated: "◈ ESCALATED",
+  answered: "◈ ANSWERED",
+};
+
+function xoPill(m) {
+  var status = xoStatus(m);
+  var label = XO_PILL[status];
+  if (!label) return null;
+  return el("span", "pill xo" + (status === "engaged" ? "" : " done"), label);
+}
+
+/* WHAT IT IS DOING NOW, in one line, COMPOSED FROM THE RECORD and from nothing
+   else. There is no free-text "activity" field on this shape and there
+   deliberately is not one: a line assembled from {status, engine, score} can
+   only ever say something the mission's own state.json says. */
+function xoLine(m) {
+  var x = xoBlock(m);
+  if (!x) return null;
+  var status = String(x.status || "");
+  var engine = x.engine ? " · " + engineLabel(x.engine) : "";
+  if (status === "engaged") return "Number One has the conn" + engine;
+  if (status === "finished") {
+    return "Number One handed the conn back"
+      + (x.score ? " · scored " + String(x.score) : "");
+  }
+  if (status === "escalated") return "Number One escalated this to you";
+  if (status === "answered") return "Number One answered this gate for you";
+  return null;
+}
+
+/* The mission's own recorded note — an escalation, or a stand-down. Mono,
+   because it is a quotation of something written elsewhere, not board copy. */
+function xoNote(m) {
+  var x = xoBlock(m);
+  var note = x && x.note ? String(x.note) : "";
+  return note ? el("div", "xo-note", note) : null;
+}
+
+/* The pill + line + note, or null. */
+function xoNode(m) {
+  var pill = xoPill(m), line = xoLine(m), note = xoNote(m);
+  if (!pill && !line && !note) return null;
+  var wrap = el("div", "xo-block");
+  if (pill) {
+    var row = el("div", "pills xo-pills");
+    row.appendChild(pill);
+    wrap.appendChild(row);
+  }
+  if (line) wrap.appendChild(el("div", "xo-line", line));
+  if (note) wrap.appendChild(note);
+  if (xoEngaged(m)) wrap.title = xoLockLine(m);
+  return wrap;
+}
+
+/* THE VERBS THE DAEMON REFUSES — and therefore the ones the sweep disables.
+
+   The server's set is `_OWNER_LOCKED_VERBS` MINUS `start`, so the exemption
+   list here is keyed off the SAME verb names, read from the buttons' own
+   `data-act` (S140's machine-readable identity) rather than from their labels.
+   `launch` / `launch-stop` are outside the owner set too and live in the pill
+   row anyway; `adopt` only ever appears on a remote card, which carries no
+   `numberOne` at all. A control with no `data-act` is swept, which is the
+   right default: an un-named write control is one nobody has exempted. */
+var XO_UNSWEPT_ACTS = { "start": 1, "adopt": 1, "launch": 1, "launch-stop": 1 };
+
+/* Disable every write control under `host` while Number One holds this mission.
+
+   A SUBTREE SWEEP, for the fourth time and for the fourth time for the same
+   reason (applyOwnerLock, applyRemoteLock, applyShippedLock): cardControls'
+   two dozen accumulated branches are branches a per-branch check will forget.
+
+   APPLIED FIRST — INNERMOST at the call site — so the three older sweeps paint
+   over it. That is the daemon's own order read backwards: `_dispatch_verb`
+   asks remote, then shipped, then owner, then xo, and the FIRST to raise wins,
+   so the last to be applied in the DOM must be the first to be asked at the
+   door. "this is someone else's mission" and "there is nothing left to drive"
+   are both more fundamental than "Number One has it for you". */
+function applyXoLock(host, m) {
+  if (!host || !xoEngaged(m)) return host;
+  var line = xoLockLine(m);
+  (function walk(n) {
+    if (!n) return;
+    var tag = String(n.tagName || n.tag || "").toUpperCase();
+    if (tag === "BUTTON") {
+      var act = n.getAttribute ? n.getAttribute("data-act") : null;
+      if (!XO_UNSWEPT_ACTS[String(act || "")]) {
+        n.disabled = true;
+        n.title = line;
+        markLocked(n);
+      }
+    }
+    var kids = n.children || [];
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+  })(host);
+  return host;
+}
+
+/* …and the one control an engaged mission GAINS: hand the conn back.
+
+   ADDED AFTER EVERY SWEEP, never before, because it is the one button on an
+   engaged card that must still work — a stand-down the captain cannot press is
+   the lock locking the door from the inside. Red-outline (`.danger`'s existing
+   idiom, no new vocabulary), beside the controls it replaces. */
+function xoControls(host, m) {
+  if (!host || !xoEngaged(m)) return host;
+  var b = btn("■ Stand down", "danger xo-stand-down", function () {
+    dispatchCard("/api/xo/off/" + enc(String(m.id)), {});
+  });
+  b.title = "Hand the conn back — the mission's controls return to you";
+  host.appendChild(applyWriteState(b));
+  return host;
+}
+
+/* ── THE BAND TOGGLE ──────────────────────────────────────────────────────
+   ◈ Number One · OFF (hollow, black on the yellow band) / ◈ Number One · ON ·
+   <ENGINE> (solid peach). Placed BEFORE ▸ Deploy Main and reordering nothing:
+   the band's control order is pinned byte-for-byte by test_help_console, and
+   every round since S141 has only ever ADDED its own control to it.
+
+   HIDDEN ENTIRELY when the daemon sends no `meta.numberOne` — a repo that has
+   never run `lcars xo`, a GitHub-adapter board, a daemon older than this
+   round. That board is byte-identical to the one it served before. */
+function xoMeta(meta) {
+  var x = meta && meta.numberOne;
+  if (!x || typeof x !== "object") return null;
+  return x;
+}
+
+function xoBandLabel(x) {
+  if (!x.enabled) return "◈ Number One · OFF";
+  var engine = String(x.engine || "").toUpperCase();
+  // ON WITH NO ENGINE RECORDED is a real config a captain can hand-edit into
+  // existence. The band says ON and stops there rather than printing a
+  // trailing separator with nothing after it.
+  return engine ? "◈ Number One · ON · " + engine : "◈ Number One · ON";
+}
+
+function renderXoBand(meta) {
+  var b = document.getElementById("xoBtn");
+  if (!b) return;                       // a harness with no band in its DOM
+  var x = xoMeta(meta);
+  b.hidden = !x;
+  if (!x) return;
+  b.className = "btn xo-toggle" + (x.enabled ? " on" : "");
+  b.textContent = xoBandLabel(x);
+  b.disabled = false;
+  b.title = x.enabled
+    ? "Number One takes the conn at a gate — press to stand it down"
+    : "Number One can take the gates while you are away — press to engage it";
+  b.onclick = function () {
+    if (x.enabled) dispatchCard("/api/xo/off", {});
+    else openXoPicker(meta);
+  };
+  // THE VIEW-ONLY REASON, in the band's own words. A view-only board must say
+  // WHY the control is dead, not merely grey it out (S125's D7 lesson).
+  applyWriteState(b);
+}
+
+/* The two legend entries — present ONLY while Number One is ON.
+
+   REMOVED, not merely skipped, on every render: the legend is a static node
+   that survives a repaint, so a toggle turned off would otherwise leave its
+   swatches behind for the life of the page. Zero nodes when off, which is what
+   keeps the legend byte-identical to its pre-S201 self on every other board. */
+function renderXoLegend(meta) {
+  var host = document.querySelector(".legend");
+  if (!host) return;
+  var old = host.querySelectorAll(".xo-legend");
+  for (var i = 0; i < old.length; i++) {
+    if (old[i].parentNode) old[i].parentNode.removeChild(old[i]);
+  }
+  var x = xoMeta(meta);
+  if (!x || !x.enabled) return;
+  var anchor = document.getElementById("status");
+  [["xo-sw", "Number One engaged for you"],
+   ["xo-sw done", "Number One finished · score"]].forEach(function (pair) {
+    var span = el("span", "xo-legend");
+    span.appendChild(el("i", pair[0]));
+    span.appendChild(document.createTextNode(" " + pair[1]));
+    span.title = pair[1];
+    if (anchor && host.insertBefore) host.insertBefore(span, anchor);
+    else host.appendChild(span);
+  });
+}
+
+/* ── THE ENGINE PICKER ────────────────────────────────────────────────────
+   Two radio rows, each labelled `installed` or `not installed`, Cancel and
+   ◈ Engage. It NAMES ENGINES AND NOTHING ELSE.
+
+   The detector's answer is the daemon's (`meta.enginesHere`, the same shared
+   `lcars_available_engines` the CLI picker uses) — the board never guesses at
+   an install. With no answer at all both rows are offered unlabelled rather
+   than declared missing, because "I could not ask" is not "it is not here". */
+var XO_ENGINES = ["copilot", "claude"];
+
+function xoEnginesHere(meta) {
+  var here = meta && meta.enginesHere;
+  return Object.prototype.toString.call(here) === "[object Array]"
+    ? here.map(String) : [];
+}
+
+function xoEngineHere(meta, engine) {
+  return xoEnginesHere(meta).indexOf(String(engine)) >= 0;
+}
+
+function xoEngineRowLabel(meta, engine, chosen) {
+  var here = xoEnginesHere(meta);
+  var mark = chosen ? "◆ " : "◈ ";
+  if (!here.length) return mark + engineLabel(engine);
+  return mark + engineLabel(engine) + " — "
+    + (xoEngineHere(meta, engine) ? "installed" : "not installed");
+}
+
+/* The row that is selected when the picker opens — THE DAEMON'S ANSWER, which
+   is `lcars_xo_default_engine`'s answer, which is the one the CLI picker
+   preselects at a terminal (`meta.engineDefault`).
+
+   FIX ROUND 1, D2: this board worked the default out for itself and so did the
+   CLI, and the two disagreed — the board opened on copilot, the terminal on
+   claude, and a bare Enter engaged a different first officer depending on which
+   door the captain came through. One function answers it now and this renders
+   the answer. The old derivation stays ONLY as the fallback for a board the
+   daemon told nothing (an older daemon, the GitHub adapter, a machine whose
+   detector could not run), where opening on a row we can see beats opening on
+   none. */
+function xoDefaultEngine(meta) {
+  var told = meta && meta.engineDefault;
+  if (told && XO_ENGINES.indexOf(String(told)) >= 0) return String(told);
+  var here = xoEnginesHere(meta);
+  for (var i = 0; i < XO_ENGINES.length; i++) {
+    if (here.indexOf(XO_ENGINES[i]) >= 0) return XO_ENGINES[i];
+  }
+  var cfg = xoMeta(meta);
+  return (cfg && cfg.engine) ? String(cfg.engine) : XO_ENGINES[0];
+}
+
+function openXoPicker(meta) {
+  var m = modal("◈ ENGAGE NUMBER ONE", { headClass: "xo" });
+  var chosen = xoDefaultEngine(meta);
+  m.body.appendChild(el("div", "xo-q",
+    "Number One takes the gates that are yours — a stage parked for an "
+    + "answer, and the look at Verify — and hands the conn back with a "
+    + "report. It never writes code and it never merges."));
+  var rows = [];
+  function paint() {
+    for (var i = 0; i < rows.length; i++) {
+      var on = rows[i].engine === chosen;
+      rows[i].node.className = "btn xo-engine" + (on ? " chosen" : "");
+      rows[i].node.textContent = xoEngineRowLabel(meta, rows[i].engine, on);
+      rows[i].node.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+  XO_ENGINES.forEach(function (engine) {
+    var dead = xoEnginesHere(meta).length && !xoEngineHere(meta, engine);
+    var o = btn(xoEngineRowLabel(meta, engine, false), "xo-engine",
+                function () { if (!dead) { chosen = engine; paint(); } });
+    o.setAttribute("data-engine", engine);
+    o.setAttribute("role", "radio");
+    if (dead) {
+      o.disabled = true;
+      o.title = engineLabel(engine) + " is not installed on this machine";
+      markLocked(o);
+    }
+    rows.push({ engine: engine, node: o });
+    m.body.appendChild(o);
+  });
+  paint();
+  m.foot.appendChild(btn("Cancel", "", closeOverlay));
+  m.foot.appendChild(applyWriteState(btn("◈ Engage", "go", function () {
+    closeOverlay();
+    dispatchCard("/api/xo/on", { engine: chosen });
+  })));
+  showOverlay(m.wrap);
+}
+
 /* ═══════════════ S191: THE REMOTE CARD (driven from another machine) ═══════
 
    A laptop with no `.git/lcars` for a mission still SEES it: the daemon reads
@@ -587,11 +925,15 @@ function adoptControl(m) {
    reach the identical code path — one adopt POST on this board, never two.
    `engine` is "" for "the captain took the default", and an empty engine puts
    NOTHING in the body, which is the argv this daemon has always sent. */
-function dispatchAdopt(b, m, engine) {
+function dispatchAdopt(b, m, engine, numberOne) {
     b.disabled = true;
     b.textContent = "◐ Adopting…";
     var payload = {};
     if (engine) payload.engine = engine;
+    // S201: the picker's Number One checkbox. ABSENT unless the picker OFFERED
+    // the question (it only does at Verify, and only when this repo has Number
+    // One on), so every other adopt sends the body it has always sent.
+    if (numberOne === true || numberOne === false) payload.numberOne = numberOne;
     postWrite("/api/mission/" + enc(m.issue != null ? m.issue : m.id)
               + "/adopt", payload,
       function (state) {
@@ -827,6 +1169,31 @@ function openAdoptPicker(b, m) {
   if (!String((m && m.engine) || "")) addRow("");
   for (var i = 0; i < options.length; i++) addRow(options[i]);
 
+  // S201 — AND THE OTHER QUESTION ADOPT ASKS AT A TERMINAL. `lcars adopt` at
+  // Verify asks "engage Number One on this mission now?"; this surface has no
+  // tty, so without this row adopt.sh silently takes its documented `no`. The
+  // row appears ONLY where the question exists — at VERIFY, and only when this
+  // repo has Number One ON — so every other adopt picker is byte-identical.
+  var xoWanted = null;
+  if (normStage(m && m.stage) === "verify") {
+    var xcfg = xoMeta(LAST_BOARD && LAST_BOARD.meta);
+    if (xcfg && xcfg.enabled) {
+      xoWanted = false;
+      var xrow = btn("◈ Engage Number One on this mission", "adopt-engine xo-opt",
+                     function () {
+                       xoWanted = !xoWanted;
+                       xrow.className = "btn adopt-engine xo-opt"
+                         + (xoWanted ? " chosen" : "");
+                       xrow.setAttribute("aria-pressed", xoWanted ? "true" : "false");
+                     });
+      xrow.setAttribute("role", "checkbox");
+      xrow.setAttribute("aria-checked", "false");
+      xrow.setAttribute("aria-pressed", "false");
+      xrow.title = "Number One takes this mission's gates on your behalf";
+      box.appendChild(xrow);
+    }
+  }
+
   var foot = el("div", "adopt-picker-foot");
   // The confirm's label is COMPOSED by paint() ("◆ Adopt on Claude ▸"), never
   // written as a literal here: the bare adopt label appears in this file twice
@@ -839,8 +1206,9 @@ function openAdoptPicker(b, m) {
     // mission's own engine is not a conversion and must not be recorded as
     // one; it is also the dispatch this daemon has always made, so adopt.sh's
     // own `note()` about a disagreeing repo config still reaches him.
+    var xo = xoWanted;
     closeAdoptPicker(b, m);
-    dispatchAdopt(b, m, chosen === filed ? "" : chosen);
+    dispatchAdopt(b, m, chosen === filed ? "" : chosen, xo);
   });
   var no = btn("Cancel", "adopt-cancel",
                function () { closeAdoptPicker(b, m); });
@@ -2215,6 +2583,12 @@ function cardNode(m) {
   // covers BOTH verdicts — "over, elsewhere" is one state to the eye — and the
   // pill and the control label carry which one it is.
   if (shippedVerdict(m)) card.className += " shipped-elsewhere";
+  // S201: …and Number One has the conn on this one, on the captain's behalf.
+  // A marker class only — the stylesheet gives the card its PEACH EDGE; the
+  // controls are disabled by applyXoLock below, never by CSS. ENGAGED alone
+  // wears it: a Number One that has already handed the conn back is reported
+  // by its pill, not by the card's frame.
+  if (xoEngaged(m)) card.className += " xo-engaged";
   // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
   // animation onto this card (showCardBusy).
   if (m.id != null) {
@@ -2263,6 +2637,14 @@ function cardNode(m) {
   // every card on an identity-free board byte-identical to before this round.
   var own = ownerNode(m);
   if (own) card.appendChild(own);
+
+  // S201: …and WHO IS FLYING IT — the first officer's pill, the one line of
+  // what it is doing now, and any note it left. Under the owner pill, because
+  // "who owns this" is still the first question and Number One acts on that
+  // person's behalf. Null (and so nothing appended) whenever the payload
+  // records no Number One, which is every card on every board before today.
+  var xo = xoNode(m);
+  if (xo) card.appendChild(xo);
 
   var pills = el("div", "pills");
   // S191: WHERE is this being driven — first in the row, because a card you
@@ -2452,8 +2834,13 @@ function cardNode(m) {
   // owner lock does not fire (the owner is me) and the remote sweep does not
   // fire (the mission is local), and the card offered a live `✓ Review PR ▸`
   // for a merged PR. Applied AFTER the owner lock so its sentence wins.
-  card.appendChild(remoteControls(
-    applyShippedLock(applyOwnerLock(cardControls(m), m), m), m));
+  // S201: …and a FOURTH sweep, INNERMOST, so the three older sentences paint
+  // over it — the daemon's own gate order (remote → shipped → owner → xo) read
+  // backwards. `xoControls` then adds the one control an engaged card GAINS,
+  // AFTER every sweep, because a stand-down the captain cannot press is the
+  // lock locking the door from the inside.
+  card.appendChild(xoControls(remoteControls(
+    applyShippedLock(applyOwnerLock(applyXoLock(cardControls(m), m), m), m), m), m));
 
   card.addEventListener("click", function () { openDetail(m.id); });
   return card;
@@ -3070,6 +3457,11 @@ function render(board) {
   }
   renderEmptyState(n); // S141: a cold board teaches itself (the ? mention).
   renderMeta(board.meta);
+  // S201: the band toggle and its two legend entries, on EVERY render so they
+  // CLEAR as well as appear — a repo toggled off elsewhere must not leave its
+  // swatches on this board.
+  renderXoBand(board.meta);
+  renderXoLegend(board.meta);
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
   renderRemoteNote(board.meta && board.meta.remote);
@@ -3641,7 +4033,7 @@ function setFrontDoorMode(on) {
    and columns that are not on screen — so on day zero it is an offer to explain
    a thing the captain cannot see. */
 var FRONT_DOOR_BAND_HIDDEN = ["deployMainBtn", "mainDeploy", "holodeckBtn",
-                              "fileBtn", "helpBtn"];
+                              "fileBtn", "helpBtn", "xoBtn"];
 function paintFrontDoorBand(on) {
   FRONT_DOOR_BAND_HIDDEN.forEach(function (id) {
     var n = document.getElementById(id);
@@ -5461,6 +5853,10 @@ function markViewOnly() {
   // applyWriteState — a view-only board must SAY why the deck is unavailable,
   // not just grey a button out (see applyHolodeckWriteState).
   applyHolodeckWriteState();
+  // S201: and the band's Number One toggle, which is a write control like
+  // ▸ Deploy Main and lives outside `.board` exactly as that one does.
+  var xb = document.getElementById("xoBtn");
+  if (xb) applyWriteState(xb);
 }
 
 /* Probe the write layer once at boot with a harmless OPTIONS-like POST? The
@@ -8159,6 +8555,9 @@ function renderDetail(mi) {
   // function, so a control left out of the card's sweep goes live at exactly the
   // moment the captain clicks in for a closer look. One sweep over the whole
   // grid; ✕ and ADOPT are exempt by class (see applyRemoteLock).
+  // S201: …and Number One's, applied FIRST so the two below paint over it —
+  // the daemon's gate order read backwards, exactly as on the card.
+  applyXoLock(grid, mi);
   applyRemoteLock(grid, mi);
   // S197: the same sweep for a LOCAL mission that already shipped elsewhere.
   // The detail is the other door onto the card, and its header carries its own

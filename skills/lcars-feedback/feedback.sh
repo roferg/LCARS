@@ -77,6 +77,22 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # --- locate the mission (mirrors run.sh) -----------------------------------
 locate_mission() {
   local id="$1" gitdir
@@ -166,6 +182,7 @@ locate_mission "$MISSION_ID"
 # S189: the light lock. BEFORE the feedback.md append — a refusal must leave
 # no trace on a mission that is not ours.
 owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
+xo_lock_or_die "$MISSION_DIR"
 
 # Record the stage we're bouncing back FROM so we can drop its label cleanly.
 PREV_STAGE="$(json_str "$STATE" stage)"

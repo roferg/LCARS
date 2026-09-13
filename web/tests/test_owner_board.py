@@ -172,6 +172,25 @@ class NoIdentityIsByteIdentical(unittest.TestCase):
     def test_meta_carries_no_self_key_without_an_identity(self):
         self.assertNotIn("self", self.adapter.board()["meta"])
 
+    # ── S201 ───────────────────────────────────────────────────────────────
+    # The same guarantee, named rather than left to the baseline to imply. The
+    # two baseline comparisons above are what actually PROVE it — they diff the
+    # whole payload and the whole rendered DOM against files captured from the
+    # pre-change tree — but a round that added `"numberOne": null` to every card
+    # would fail them with a 200-line diff and no clue which key did it. These
+    # two fail in one line and say the name.
+    def test_no_card_carries_a_numberOne_key_when_none_is_recorded(self):
+        for c in self.adapter.board()["missions"]:
+            self.assertNotIn("numberOne", c,
+                             "%s gained a numberOne key with nothing recorded "
+                             "— the key is ABSENT, never null" % c["id"])
+
+    def test_meta_carries_no_numberOne_key_without_a_config_block(self):
+        """This fixture's repo has no `.git/lcars/config.json` at all, which is
+        every board that has never run `lcars xo` — and, until today, all of
+        them."""
+        self.assertNotIn("numberOne", self.adapter.board()["meta"])
+
     @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
     def test_every_rendered_card_is_byte_identical_to_the_pre_change_baseline(self):
         with open(os.path.join(FIXTURES, "card-dom-baseline.json")) as fh:

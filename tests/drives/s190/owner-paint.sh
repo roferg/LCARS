@@ -277,6 +277,18 @@ for issue, login in ((101, "roferg"), (102, "picard"),
         fh.write(login + "\n")
 PYEOF
 
+  # ---- S201: THE INHERITANCE SEAM ----------------------------------------
+  # A later round that needs THE SAME board, daemon and Chrome with ONE more
+  # fact planted on it hooks in here instead of forking 700 lines. The extra
+  # planter is handed the repo and the fixture root, exactly as the built-in
+  # one above is, and runs AFTER it — so it can add missions, add a config, or
+  # amend what the built-in planter wrote, and can never silently replace it.
+  if [ -n "${LCARS_PAINT_PLANT:-}" ]; then
+    [ -f "$LCARS_PAINT_PLANT" ] \
+      || { teardown; skip "LCARS_PAINT_PLANT is not a file: $LCARS_PAINT_PLANT"; }
+    "$PY_BIN" "$LCARS_PAINT_PLANT" "$REPO" "$fixture" || return 77
+  fi
+
   # ---- the daemon ---------------------------------------------------------
   # LCARS_GH_USER pins the identity with no subprocess (rule 1 of lcars_whoami's
   # own order). LCARS_OWNER_WARM=0 because the owners are already planted and a
@@ -342,7 +354,12 @@ PYEOF
   [ -n "$DEV_PORT" ] || { teardown; skip "Chrome never opened a usable devtools port; see $out/chrome.log"; }
   note "chrome:    devtools :$DEV_PORT (pid $CHROME_PID)"
 
-  "$NODE_BIN" "$HERE/owner-paint.js" --devtools-port "$DEV_PORT" --url "$url" --timeout 75000 \
+  # …and the SECOND half of the seam: which driver asks the questions. Default
+  # is this round's own; S201 points it at `tests/drives/s201/xo-paint.js`,
+  # which REQUIRES this one for its primitives rather than re-implementing a
+  # CDP client, a PNG reader and a contrast formula.
+  "$NODE_BIN" "${LCARS_PAINT_DRIVER:-$HERE/owner-paint.js}" \
+    --devtools-port "$DEV_PORT" --url "$url" --timeout 75000 \
     --out "$out" 2>&1 | tee "$LOG"
   RC=${PIPESTATUS[0]}
   teardown

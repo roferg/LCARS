@@ -372,6 +372,18 @@ STACK_VALUE="\"$(lcars_json_escape "$STACK")\""
 # an unlisted cloneId would be silently deleted by the next `lcars init` or
 # `lcars update` and the clone's ids would jump. See lcars_clone_id.
 CLONE_ID="$(lcars_clone_id "$CONFIG")"
+# S201 — `numberOne`, Number One's repo-level switch. It is in the desired
+# schema for the reason cloneId is: lcars_config_merge treats this list as the
+# canonical schema and DELETES every top-level key absent from it, so an
+# unlisted block would be silently wiped the first time the captain ran
+# `lcars update` — un-engaging his first officer without saying so (the exact
+# failure S196 paid for with cloneId).
+#
+# THE DEFAULT IS `{"enabled": false}` and it is written on ONE LINE. The merge
+# preserves an existing raw value by capturing the tail of the line the key sits
+# on, so a pretty-printed object would be truncated at its first newline. Every
+# writer of this key (`lcars xo`, the board's toggle) emits one line for the
+# same reason.
 DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
 model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
@@ -379,7 +391,8 @@ contextFile=$CONTEXT_VALUE
 stack=$STACK_VALUE
 testCommand=$TESTCMD_VALUE
 worktreeSetupCommand=$WTSETUP_VALUE
-comprehensionBudget=1200$VERSION_LINE
+comprehensionBudget=1200
+numberOne={\"enabled\": false}$VERSION_LINE
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
 

@@ -2747,6 +2747,85 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   font-family:var(--font-display);letter-spacing:.18em;text-transform:uppercase;
   font-size:13px;color:var(--lcars-teal,#2de3c7)}
 
+/* ═════════════════ S201 — NUMBER ONE, THE FIRST OFFICER ══════════════════
+   ADR-007: geometry only. The ONE colour named here is `--lcars-peach`, the
+   shared warm token docs/lcars.css defines (#ff9966) and no card state had
+   claimed — with the same `#ff9966` fallback every other peach declaration in
+   this sheet already carries. Nothing new is minted.
+
+   THE SENTENCE THE FILL SPEAKS is the board's own, said a fourth time about a
+   fourth thing: SOLID = it has the conn, HOLLOW = it has handed it back. The
+   owner pill (`.owner`), the locked control (`.btn.locked`) and the ownership
+   filter chip all say it already, and saying it again rather than inventing a
+   second language is what makes the card readable in GREYSCALE — where peach
+   and amber are one hue and only the fill survives.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* THE CARD EDGE. The left rule is the card's state channel — amber by default,
+   teal while running, red-dashed when it shipped elsewhere — so Number One
+   takes it in peach while it holds the mission, and gives it straight back. */
+.card.xo-engaged{border-left-color:var(--lcars-peach,#ff9966)}
+
+/* THE PILL. Solid peach + a SLOW pulse while engaged (2.8s: a heartbeat, not a
+   blink — the card's own `card-running` rhythm, half a beat slower so two
+   pulsing things on one card do not strobe against each other). */
+.xo-block{margin:0 0 8px}
+.pills.xo-pills{margin:0 0 4px}
+.pill.xo{background:var(--lcars-peach,#ff9966);
+  border-color:var(--lcars-peach,#ff9966);
+  color:var(--lcars-text-on-color);font-weight:700;
+  animation:xopulse 2.8s ease-in-out infinite}
+/* HOLLOW once the conn is back — and with the animation OFF, because a pill
+   that still pulses is still claiming to be working. */
+.pill.xo.done{background:transparent;color:var(--lcars-peach,#ff9966);
+  border-color:var(--lcars-peach,#ff9966);font-weight:400;animation:none}
+@keyframes xopulse{0%,100%{box-shadow:0 0 0 0 rgba(255,153,102,0)}
+  50%{box-shadow:0 0 0 4px rgba(255,153,102,.32)}}
+@media (prefers-reduced-motion:reduce){
+  .pill.xo{animation:none;box-shadow:0 0 0 1px rgba(255,153,102,.45)}}
+
+/* WHAT IT IS DOING NOW — one line, peach, sentence case (it is a report, not a
+   label, so it does not shout in display type like a pill). */
+.xo-line{color:var(--lcars-peach,#ff9966);font-size:11.5px;line-height:1.35;
+  letter-spacing:.02em;margin:0 0 2px}
+/* AND THE NOTE IT LEFT — mono, because it is a QUOTATION of something written
+   elsewhere (an escalation, a stand-down) and not this board's own words. */
+.xo-note{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;
+  line-height:1.4;color:var(--lcars-text-dim);
+  border-left:2px solid var(--lcars-peach,#ff9966);padding-left:7px;
+  margin:0 0 2px;white-space:pre-wrap;word-break:break-word}
+
+/* THE STAND-DOWN. Red-outline — `.btn.danger`'s existing idiom, untouched —
+   sat beside the controls it is handing back. */
+.card-ctrl .btn.xo-stand-down{margin-left:auto}
+
+/* THE BAND TOGGLE, on the yellow band. OFF is HOLLOW with BLACK ink (the band
+   is the light surface here, so black is the legible ink and the outline is
+   the "not engaged" half of the sentence); ON is the solid peach block. */
+.topbar .btn.xo-toggle{background:transparent;
+  color:var(--lcars-black,#030608);
+  border-color:var(--lcars-black,#030608)}
+.topbar .btn.xo-toggle:hover{border-color:var(--lcars-black,#030608)}
+.topbar .btn.xo-toggle.on{background:var(--lcars-peach,#ff9966);
+  color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach,#ff9966);font-weight:700}
+
+/* THE LEGEND'S TWO SWATCHES — the same solid/hollow pair, at swatch size. */
+.legend .xo-legend i.xo-sw{background:var(--lcars-peach,#ff9966)}
+.legend .xo-legend i.xo-sw.done{background:transparent;
+  border:2px solid var(--lcars-peach,#ff9966)}
+
+/* THE PICKER. A plain `.modal` with a peach head; the rows are the board's own
+   option-row idiom (`.adopt-engine`), re-used rather than re-drawn. */
+.modal-head.xo{background:var(--lcars-peach,#ff9966);
+  color:var(--lcars-black,#030608)}
+.xo-q{font-size:12px;line-height:1.5;color:var(--lcars-text);margin:0 0 10px}
+.btn.xo-engine{display:block;width:100%;text-align:left;margin:0 0 6px;
+  text-transform:none;letter-spacing:.02em;font-size:12px;padding:8px 12px}
+.btn.xo-engine.chosen{background:var(--lcars-peach,#ff9966);
+  color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach,#ff9966);font-weight:700}
+
 /* ════════════════════════════════════════════════════════════════════════
    S197 — THE ADOPT ENGINE PICKER.
 
@@ -2811,3 +2890,4 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   background:transparent;
   color:var(--lcars-text);
   border-color:var(--lcars-border)}
+

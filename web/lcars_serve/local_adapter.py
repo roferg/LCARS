@@ -196,6 +196,7 @@ class LocalAdapter(object):
         # machine "has" without touching $PATH.
         self._engines_reader = engines_reader
         self._engines_memo = None     # (monotonic-deadline, [engines])
+        self._engine_default_memo = None   # (deadline, engine) — S201/D2
         self._establish_vision_script = establish_vision_script
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
         # S160: the shared base-freshness reporter
@@ -518,7 +519,67 @@ class LocalAdapter(object):
         me = self.self_login()
         if me:
             meta["self"] = {"login": me}
+        # S201: IS NUMBER ONE ON FOR THIS REPO — the band toggle's whole state.
+        #
+        # The repo's `numberOne` config block, echoed rather than interpreted:
+        # `lcars xo on|off` is the ONE writer (ADR-002) and this is a read of
+        # what it wrote. Purely ADDITIVE and present ONLY when the block is
+        # there AND well formed, so a repo that has never run `lcars xo` — and
+        # every repo that predates this round — carries no `numberOne` key at
+        # all and its meta is byte-identical.
+        xo = self._number_one_config()
+        if xo is not None:
+            meta["numberOne"] = xo
+            # …and the other half of the picker's question: WHICH engines this
+            # laptop actually has. The SAME detector `lcars xo` uses at a
+            # terminal (S195's `lcars_available_engines`, reached here through
+            # the offer the remote overlay already builds), so the board never
+            # guesses at an install. Absent when the detector cannot answer,
+            # which leaves the picker offering both rows unlabelled rather than
+            # claiming an engine is missing.
+            here = self._engines_here()
+            if here:
+                meta["enginesHere"] = here
+            # …and WHICH ROW THE PICKER OPENS ON. Not a second opinion: this is
+            # `lcars_xo_default_engine`'s answer, the same function the CLI
+            # picker preselects with, spawned the way `enginesHere` already is.
+            # FIX ROUND 1, D2: the board opened on copilot and the terminal on
+            # claude, so a bare Enter engaged a different officer depending on
+            # which door the captain came through. One function answers both
+            # now, and the front end RENDERS this rather than deriving one.
+            # Absent when nothing is installed — an unanswered question, never
+            # a guessed answer.
+            default = self._engine_default()
+            if default:
+                meta["engineDefault"] = default
         return meta
+
+    # ── S201: the repo-level toggle, and what this laptop can run ───────────
+    def _number_one_config(self):
+        """The repo's `numberOne` config block, or None.
+
+        {enabled: bool} at minimum, plus `engine` / `model` when the captain
+        pinned them. MALFORMED IS NOTHING: a string, a list, a missing
+        `enabled` — every one of them answers None rather than a guess, which
+        is the posture `lcars_xo_status` takes in the shell for the same
+        reason. A board that cannot read the toggle shows no toggle; it never
+        shows a toggle that says the wrong thing.
+        """
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        cfg = _load_json(config)
+        if not isinstance(cfg, dict):
+            return None
+        blk = cfg.get("numberOne")
+        if not isinstance(blk, dict):
+            return None
+        if not isinstance(blk.get("enabled"), bool):
+            return None
+        out = {"enabled": blk["enabled"]}
+        for key in ("engine", "model"):
+            v = blk.get(key)
+            if isinstance(v, str) and v.strip():
+                out[key] = v.strip()
+        return out
 
     def _resolve_host_adapter_script(self):
         """The host adapter path: injected → env → in-repo → installed.
@@ -1125,6 +1186,39 @@ class LocalAdapter(object):
             engines = []
         self._engines_memo = (now + self._ENGINES_TTL, list(engines))
         return list(engines)
+
+    def _engine_default(self):
+        """The engine Number One's pickers open on — the shell's answer.
+
+        Memoized beside `_engines_here` and on the same TTL, so a board build
+        spawns at most one bash for it, and NEVER raises into a board build:
+        an unanswerable question leaves the key off the meta, which is what
+        keeps a board that has never heard of Number One byte-identical.
+        """
+        now = time.time()
+        memo = self._engine_default_memo
+        if memo is not None and memo[0] > now:
+            return memo[1]
+        try:
+            default = self._read_engine_default()
+        except Exception:
+            default = ""
+        self._engine_default_memo = (now + self._ENGINES_TTL, default)
+        return default
+
+    def _read_engine_default(self):
+        lib = self._resolve_common_lib()
+        if not lib:
+            return ""
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        proc = subprocess.run(
+            ["bash", "-c",
+             '. "$1" >/dev/null 2>&1 || exit 0; lcars_xo_default_engine "$2"',
+             "bash", lib, config],
+            cwd=self.repo_root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        out = (proc.stdout or b"").decode("utf-8", "replace")
+        return out.strip().splitlines()[0].strip() if out.strip() else ""
 
     def _read_engines(self):
         if callable(self._engines_reader):
@@ -1780,6 +1874,18 @@ class LocalAdapter(object):
         owner = board.owner_block(self._published_owner(issue))
         if owner is not None:
             card["owner"] = owner
+        # S201: DOES NUMBER ONE HAVE THE CONN HERE. The whole block is read off
+        # the mission's OWN state.json — the file `lcars xo` and the driver
+        # write and `ownership.sh xo-lock-reason` reads — so the card, the CLI
+        # refusal and the daemon's 403 are all answering from one record.
+        #
+        # ABSENT, not null, whenever nothing is recorded (see board.xo_block),
+        # which is every mission on every board this product has served until
+        # today. NOTHING IS INFERRED: a mission is engaged because the record
+        # says `engaged`, never because a worker looks busy.
+        xo = board.xo_block(state.get("numberOne"))
+        if xo is not None:
+            card["numberOne"] = xo
         return card
 
     def _activity(self, d):
