@@ -378,5 +378,64 @@ check "18f. stages.infra.model is STILL ignored (infra off the ladder; floor win
 check "18g. and estimate.json still cannot escalate infra on claude (7a, restated)" \
   "[ -z \"\$(rsm \"$r18d\" infra CLAUDECODE=1 | sm_model)\" ]"
 
+# === Behavior 19 (S202): the numberOne stage key — the Opus pin =============
+# THE ROLE MUST HAVE A KEY. `stage_key_for_role` returns EMPTY for a role it does
+# not know, and resolve_stage_model's whole ladder is skipped for an empty key —
+# so a Number One worker with no key falls straight through to the legacy
+# no-`--model` path and runs on copilot's DEFAULT model. S194 measured what that
+# costs: copilot's default `create` tool cannot write the file, so the worker is
+# hired, reasons, reports what it "wrote", and the harness finds nothing on disk.
+# That is exactly the failure `number-one) numberOne` prevents, so these checks
+# drive the KEY, not just the value.
+#
+# The captain's ruling (2026-09-11): a copilot Number One resolves through the
+# S194 write floor like every other copilot worker — write_capable_alias →
+# alias_for_tier copilot opus → modelAliases.copilot.opus, default
+# claude-opus-4.8. `numberOne.model` in config may override it; LCARS_WORKER_MODEL
+# outranks both. Claude is untouched (its floor is empty on purpose).
+r19="$(make_repo '{}')"
+check "19a. copilot numberOne ⇒ the write floor's opus alias (claude-opus-4.8)" \
+  "[ \"\$(rsm \"$r19\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "19b. claude numberOne ⇒ NO --model (claude's floor is empty; argv unchanged)" \
+  "[ -z \"\$(rsm \"$r19\" numberOne CLAUDECODE=1 | sm_model)\" ]"
+
+# modelAliases.copilot.opus re-points the floor — one home for the mapping.
+r19b="$(make_repo '{"modelAliases":{"copilot":{"opus":"claude-opus-9.9"}}}')"
+check "19c. modelAliases.copilot.opus re-points the Number One pin" \
+  "[ \"\$(rsm \"$r19b\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-9.9' ]"
+
+# config numberOne.model — the captain's own pin for HIS first officer, verbatim
+# (it is a raw flag, like workerModel, not a logical tier).
+r19c="$(make_repo '{"numberOne": {"enabled": true, "engine": "copilot", "model": "claude-haiku-4.5"}}')"
+check "19d. config numberOne.model overrides the floor, verbatim" \
+  "[ \"\$(rsm \"$r19c\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-haiku-4.5' ]"
+check "19e. …and it touches NO other stage (research still resolves the floor)" \
+  "[ \"\$(rsm \"$r19c\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "19f. LCARS_WORKER_MODEL outranks numberOne.model" \
+  "[ \"\$(rsm \"$r19c\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_WORKER_MODEL=pinned-by-env | sm_model)\" = 'pinned-by-env' ]"
+
+# The captain's whole-way override reaches Number One; a scoped one does not.
+# numberOne is in `all` ONLY: `reasoning` and `implementation` are the ESTIMATOR's
+# two axes over the pipeline's own stages, and the first officer is neither.
+r19d="$(make_repo '{"modelAliases":{"copilot":{"sonnet":"claude-sonnet-4.6"}}}')"
+check "19g. all:sonnet override reaches numberOne" \
+  "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=all:sonnet | sm_model)\" = 'claude-sonnet-4.6' ]"
+check "19h. reasoning:sonnet does NOT (numberOne is not a reasoning STAGE)" \
+  "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-opus-4.8' ]"
+check "19i. implementation:sonnet does NOT either" \
+  "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=implementation:sonnet | sm_model)\" = 'claude-opus-4.8' ]"
+
+# THE KEY ITSELF, through the REAL spawn chokepoint: worker_spawn maps the env
+# ROLE `number-one` → the stage key → the model → the adapter argv. A missing map
+# line shows up here as a spawn with NO --model at all, because an empty key
+# skips the whole ladder. (spawn_argv pins the cli to claude, so the pin under
+# test here is the captain's own `numberOne.model` — which only a real key can
+# reach.)
+r19e="$(make_repo '{"numberOne": {"enabled": true, "engine": "claude", "model": "pinned-by-config"}}')"
+check "19j. spawn-stage number-one reaches the numberOne key end-to-end" \
+  "[ \"\$(spawn_argv \"$r19e\" number-one CLAUDECODE=1 | model_of)\" = 'pinned-by-config' ]"
+check "19k. …and an UNMAPPED role still resolves nothing (the key is what did it)" \
+  "[ -z \"\$(spawn_argv \"$r19e\" plan CLAUDECODE=1 | model_of)\" ]"
+
 echo "stage-model: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

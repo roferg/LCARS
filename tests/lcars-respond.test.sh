@@ -762,6 +762,65 @@ check "9b. a non-reconcile gate writes NO dedicated reconcile answer store" \
 check "9b. a non-reconcile gate still writes the generic answers.json" \
   "[ -f '$(answers_of "$repo9b")' ]"
 
+
+# ==========================================================================
+# Behaviour 10 (S202) — `answeredBy`, the ATTRIBUTION on a recorded answer.
+#
+# WHY IT EXISTS. Number One answers a gate through THIS verb — the same one the
+# captain uses, because "Number One may only do what a human could do in LCARS,
+# through the same verbs". That makes the ledger ambiguous unless the entry says
+# who wrote it, and the captain must always be able to see which answers were
+# his and which his first officer took on his behalf.
+#
+# WHY IT IS ADDITIVE AND ABSENT-NOT-NULL. Every answer already on disk was the
+# captain's, and every reader of answers.json predates this field. A captain's
+# own answer therefore carries NO `answeredBy` key at all — not `null`, not
+# `"human"` — so the file he wrote yesterday and the file he writes today are
+# the same shape, and only an answer that really was delegated says so.
+# ==========================================================================
+echo
+echo "10. answeredBy — attribution on a delegated answer (session 202)"
+
+# The captain's own answer: the field is ABSENT.
+repo10="$(new_repo_with_paused_mission)"; make_gh_stub "$repo10/gh"
+( cd "$repo10" && LCARS_GH_BIN="$repo10/gh" LCARS_NOW="2026-09-11T12:00:00Z" \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >/dev/null 2>&1 )
+a10="$(answers_of "$repo10")"
+check "10a. a captain's answer carries NO answeredBy key at all" \
+  "! grep -q 'answeredBy' '$a10'"
+check "10b. …and answers.json is still valid JSON with its ledger intact" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d[\"answers\"])==1; assert \"answeredBy\" not in d[\"answers\"][0]' '$a10'"
+
+# A DELEGATED answer: LCARS_ANSWERED_BY names who took it.
+repo10b="$(new_repo_with_paused_mission)"; make_gh_stub "$repo10b/gh"
+( cd "$repo10b" && LCARS_GH_BIN="$repo10b/gh" LCARS_NOW="2026-09-11T12:00:00Z" \
+    LCARS_ANSWERED_BY=number-one \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >/dev/null 2>&1 )
+a10b="$(answers_of "$repo10b")"
+check "10c. LCARS_ANSWERED_BY lands on the ledger entry" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"answers\"][-1][\"answeredBy\"]==\"number-one\"' '$a10b'"
+check "10d. …and the answer itself is recorded exactly as before" \
+  "grep -q 'Per-course' '$a10b'"
+check "10e. …and it changes NOTHING else — the gate still clears" \
+  "! grep -q '\"awaitingHuman\": *true' '$(state_of "$repo10b")'"
+
+# A ledger with BOTH kinds. Number One answered above; re-raise the gate (the
+# way a later stage would) and let the CAPTAIN answer the next one. The first
+# entry keeps its attribution, the second has none — and the newest one is what
+# the legacy top-level slot mirrors, exactly as before.
+# Re-raised the way the pipeline's own writers do it — a line put back at the
+# TOP of the file. (The fixture state.json is deliberately line-shaped, not
+# strict JSON, so a json round-trip here would rewrite the file under the test.)
+st10b="$(state_of "$repo10b")"
+awk 'NR==1{print; print "  \"awaitingHuman\": true,"; next} {print}' "$st10b" \
+  >"$st10b.tmp" && mv "$st10b.tmp" "$st10b"
+( cd "$repo10b" && LCARS_GH_BIN="$repo10b/gh" \
+    bash "$SCRIPT" answer --mission "$MID" --answer "And again." >/dev/null 2>&1 ) || true
+check "10f. a mixed ledger keeps each entry's own attribution" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); xs=d[\"answers\"]; assert len(xs)==2, xs; assert xs[0][\"answeredBy\"]==\"number-one\"; assert \"answeredBy\" not in xs[1], xs' '$a10b'"
+check "10g. …and the legacy top-level slot still mirrors the NEWEST answer" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"answer\"]==\"And again.\"' '$a10b'"
+
 # ==========================================================================
 echo
 printf 'lcars respond: %d passed, %d failed\n' "$pass" "$fail"

@@ -8,6 +8,9 @@
 #   lcars xo on <mission>             clear a per-mission opt-out
 #   lcars xo off                      stand the repo down (and every engaged mission)
 #   lcars xo off <mission>            opt ONE mission out, standing it down
+#   lcars xo answer --mission <id>    take the park: read the record, then ANSWER
+#                                     through `lcars respond` or ESCALATE with a
+#                                     note and a recommendation (exit 1)
 #
 # THE DIVISION OF LABOUR (captain ruling, 2026-09-11): the worker REASONS, the
 # skill EXECUTES. Nothing in this file asks a model anything. It writes two
@@ -151,6 +154,35 @@ cfg_engine() { obj_get "$(cfg_block)" engine; }
 cfg_model()  { obj_get "$(cfg_block)" model; }
 
 # ===========================================================================
+# NUMBER ONE'S ENGINE — A REAL PIN, NOT A LABEL (fix round 1, D1).
+#
+# `numberOne.engine` was recorded by `lcars xo on --engine …`, copied onto the
+# mission by the driver at engage, printed on the banner, shown on the card and
+# rendered in the living comment — and CONSULTED BY NOTHING. Engine selection
+# fell straight through to run.sh's resolve_worker_bin, where the MISSION's own
+# `workerBin` wins, so a repo pinned to claude spawned the copilot binary with
+# the copilot argv while every surface said claude. The report named an engine
+# that did not run.
+#
+# WHERE THE VALUE COMES FROM. The MISSION's recorded `numberOne.engine` first,
+# then the repo's. That order is not a preference — it is the requirement that
+# the engine which RUNS is the engine the record SAYS: the banner, the state
+# block and the living comment all read the mission's copy, so anything else
+# would leave exactly the gap this defect is.
+#
+# WHAT STILL OUTRANKS IT: the captain's own $LCARS_WORKER_BIN. It is
+# per-invocation and unmistakably deliberate — the way he moves one spin by
+# hand — and Number One's engine is repo config. So the pin is only exported
+# when he has not set one (see cmd_answer).
+# ===========================================================================
+xo_engine_for() { # <state.json> — Number One's engine, or empty
+  local st="${1:-}" e=""
+  [ -n "$st" ] && [ -f "$st" ] && e="$(obj_get "$(state_xo_block "$st")" engine)"
+  [ -n "$e" ] || e="$(cfg_engine)"
+  printf '%s' "$e"
+}
+
+# ===========================================================================
 # MISSION STATE — the writer, at the TOP of the file (the S189 rule).
 #
 # Modelled on run.sh's state_set_raw (run.sh:470-484): delete the key's line,
@@ -225,7 +257,23 @@ stand_down() { # <mission-id> [--opt-out]
     obj="$(obj_set "$obj" status "$(jstr stood-down)")"
     obj="$(obj_set "$obj" note "$(jstr "Number One stood down $NOW_LOCAL · you have the conn")")"
     obj="$(obj_set "$obj" since "$(jstr "$NOW")")"
+    # THE GATE COMES BACK WITH THE CONN (fix round 1, D4). `lastPending` is the
+    # cksum of the gate Number One took, written BEFORE the spin so that a crash
+    # cannot buy a second worker. A spin killed HERE never answered anything, so
+    # leaving the stamp would lock the first officer out of that gate for ever —
+    # it would see its own memory of a question it never got to read. Clearing it
+    # is what makes `lcars xo on <id>` able to pick the gate up again.
+    obj="$(obj_del "$obj" lastPending)"
     XO_STOOD_DOWN=$((XO_STOOD_DOWN + 1))
+    # EVERY ACTION IS JOURNALLED (SKILL.md), and aborting a spin is an action.
+    # Without this line the only trace of a mid-spin stand-down was the state
+    # note, so the living comment — which renders this journal — had no record
+    # that a spin had been stopped at all. Written only on the branch that
+    # actually stood something down: the file records what happened.
+    journal "$dir" stood-down \
+      "$(printf '"stage": %s, "detail": %s' \
+           "$(jstr "$(mission_stage "$st")")" \
+           "$(jstr "the captain took the conn back")")"
   fi
   [ "$optout" = "--opt-out" ] && obj="$(obj_set "$obj" optOut true)"
   [ -n "$obj" ] && state_set_xo "$st" "$obj"
@@ -328,10 +376,30 @@ cmd_on() {
     esac
   done
 
-  # `lcars xo on <mission>` — a per-mission act: CLEAR the opt-out. It does not
-  # engage anything by itself. Engaging is the driver's to do at a gate, and a
-  # verb that engaged directly would be a second way in for the one thing this
-  # round is trying to keep in one place.
+  # `lcars xo on <mission>` — a per-mission act: PUT THE MISSION BACK IN SCOPE.
+  # It does not engage anything by itself. Engaging is the driver's to do at a
+  # gate, and a verb that engaged directly would be a second way in for the one
+  # thing this round is trying to keep in one place.
+  #
+  # BACK IN SCOPE MEANS BOTH HALVES (fix round 2). `lcars xo off <mission>`
+  # writes TWO facts — the `optOut` flag and the `stood-down` status — and this
+  # verb used to undo only the first. `drive_engage_number_one` returns on
+  # EITHER, so the mission stayed locked out: the banner never printed, no spin
+  # happened, no journal line was written, and the captain had been told in
+  # plain words that the mission was back in scope. Fix round 1 cured this same
+  # lock-out at `lastPending`; it had not gone away, it had moved to `status`.
+  #
+  # THE RESTING STATE IS "NEVER STOOD DOWN", NOT A NEW WORD. No status value is
+  # invented here: the stand-down's own three fields — `status`, its `note`
+  # ("you have the conn") and the `since` that timestamps them — are REMOVED, so
+  # what engage-at-drive-start reads is exactly what it reads on a mission that
+  # was never stood down, and the status table prints the same `—`. What Number
+  # One DID is not erased: `lastAction` and the engine pin stay.
+  #
+  # ONLY A STAND-DOWN IS UNDONE. `escalated` is a different fact — the captain
+  # still has that gate — and clearing it here would re-open the downgrade D9
+  # closed. So the status is touched only when it is the one this verb's own
+  # counterpart wrote.
   if [ -n "$target" ]; then
     local id st obj
     id="$(resolve_mission "$target")"
@@ -339,6 +407,11 @@ cmd_on() {
     obj="$(state_xo_block "$st")"
     if [ -n "$obj" ]; then
       obj="$(obj_del "$obj" optOut)"
+      if [ "$(obj_get "$obj" status)" = "stood-down" ]; then
+        obj="$(obj_del "$obj" status)"
+        obj="$(obj_del "$obj" note)"
+        obj="$(obj_del "$obj" since)"
+      fi
       state_set_xo "$st" "$obj"
     fi
     printf '◈ NUMBER ONE: %s is back in scope — the opt-out is cleared.\n' "$id"
@@ -417,11 +490,408 @@ cmd_status() {
   [ "$any" -eq 1 ] || printf '\n  No missions in this repo yet.\n'
 }
 
+
+# ===========================================================================
+# THE ANSWER PATH (S202) — Number One at a park.
+# ===========================================================================
+#
+# THE DIVISION OF LABOUR (captain ruling, 2026-09-11). The worker REASONS; this
+# script EXECUTES. Everything below is the executing half: gather the record,
+# hire one cold worker through the SAME chokepoint every Stage uses, read its
+# one file, CHECK it, and then either answer the gate through `respond.sh` — the
+# ordinary verb, the one a human uses — or leave the gate exactly where it was
+# and write down why. Nothing here asks a model anything, and nothing here
+# writes pending.json, plan.json or a ticket by hand.
+#
+# WHY THE VERDICT IS CHECKED AND NOT TRUSTED. The prior-art research on
+# LLM judges says the failure to expect is not a judge that refuses too often —
+# it is a judge that REASONS ITS WAY PAST THE RECORD: a chain of sensible
+# inferences, landing somewhere the mission never said, stated with confidence.
+# The guard against that is the citation, and a citation is only a guard if
+# somebody checks it. So an ANSWER must carry at least one quote that OCCURS,
+# verbatim, in the file it names. A verdict that cannot show its line is not a
+# verdict: it becomes an escalation, and the captain decides.
+#
+# THE OTHER DIRECTION IS A REAL COST TOO. Escalating a question the PRD answers
+# in one plain sentence wastes the captain's evening, which is the whole thing
+# Number One exists to prevent. That is why the check is "is this quote really
+# in that file", not "do I agree with the reasoning".
+#
+# WHAT ALWAYS GOES TO THE CAPTAIN, whatever the worker decided: a gate whose
+# `escalationType` is `scope`. Scope and spend are his by ruling, not by
+# heuristic — a mission that grows is a decision about his time and his money,
+# and no amount of citation makes that Number One's to take.
+
+XO_RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
+XO_RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.sh}"
+
+# The malformed-verdict note, in ONE place: it is asserted by the suite and read
+# by the captain off the card, so the two must be the same string.
+XO_MALFORMED="Number One could not decide — malformed verdict"
+
+pending_field() { # <pending.json> <key>
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
+}
+
+# --- the read-only INPUT dir -----------------------------------------------
+# COPIES, not the originals, and every one of them chmod a-w. Number One is
+# reading the record of a mission it must not be able to change; the worker role
+# has no shell and no Edit (worker-adapter.sh), and this is the second fence
+# behind that one. A copy also means a mid-flight Stage writing to the mission
+# cannot move the ground under a verdict half-formed.
+gather_inputs() { # <mission-dir> <input-dir>
+  local dir="$1" into="$2" f
+  mkdir -p "$into"
+  for f in prd.md adr.md plan.json validated-plan.md approved-plan.json \
+           plan-under-review.json pending.json answers.json estimate.json \
+           claim-check.txt reconcile-design-question.txt feedback.md; do
+    [ -f "$dir/$f" ] && cp "$dir/$f" "$into/$f"
+  done
+  if [ -d "$dir/research" ]; then
+    mkdir -p "$into/research"
+    for f in "$dir"/research/*.json; do
+      [ -f "$f" ] && cp "$f" "$into/research/"
+    done
+  fi
+  # The attachments the captain filed WITH the mission — the holodeck drawing and
+  # its concept. They are part of what a human at this gate would be looking at.
+  if [ -d "$dir/attachments" ]; then
+    mkdir -p "$into/attachments"
+    for f in "$dir"/attachments/*; do
+      [ -f "$f" ] && cp "$f" "$into/attachments/"
+    done
+  fi
+  # THE LAST 200 EVENTS, not all of them. A long mission's events.jsonl is tens
+  # of thousands of lines of machinery; the tail is the part that explains why
+  # this gate is up, and the head is context the PRD already carries better.
+  [ -f "$dir/events.jsonl" ] && tail -200 "$dir/events.jsonl" >"$into/events.jsonl"
+  chmod -R a-w "$into" 2>/dev/null || true
+  return 0
+}
+
+# --- the journal ------------------------------------------------------------
+# One JSON line per action, beside the mission's other facts. It is what the
+# living comment (wave B) renders and what the captain reads to see what his
+# first officer has been doing. Append-only; nothing is ever rewritten.
+journal() { # <mission-dir> <action> <one-line-json-body>
+  printf '{"at": %s, "action": %s, %s}\n' \
+    "$(jstr "$NOW")" "$(jstr "$2")" "$3" >>"$1/number-one.jsonl"
+}
+
+# --- the worker's process tree ---------------------------------------------
+# `lcars xo off <id>` TERMs the pid in xo.pid (S201). That pid is THIS script,
+# because the CLI is a grandchild — run.sh spawns the adapter, the adapter execs
+# the CLI — and a TERM to this script alone would leave a live worker the board
+# swears is gone. So the trap walks down and TERMs the whole tree, deepest
+# first, and nothing is ever KILLed: a worker gets to run its own cleanup.
+xo_kill_tree() { # <pid>
+  local p="${1:-}" c
+  [ -n "$p" ] || return 0
+  for c in $(pgrep -P "$p" 2>/dev/null); do xo_kill_tree "$c"; done
+  kill -TERM "$p" 2>/dev/null || true
+}
+
+XO_SPIN_PID=""
+XO_MISSION_DIR=""
+on_stand_down() {
+  [ -n "$XO_SPIN_PID" ] && xo_kill_tree "$XO_SPIN_PID"
+  [ -n "$XO_MISSION_DIR" ] && rm -f "$XO_MISSION_DIR/xo.pid"
+  # NOTHING IS RECORDED HERE. `lcars xo off` has already written stood-down, and
+  # a second writer racing it is how a stand-down ends up reading `escalated`.
+  printf '◈ NUMBER ONE: stood down mid-spin — you have the conn.\n' >&2
+  exit 143
+}
+
+# Record an escalation and stop. The gate is NOT touched: it is already up, and
+# leaving it exactly as the stage raised it is the whole point — the captain
+# sees the question the pipeline asked, plus Number One's note beside it.
+escalate() { # <mission-dir> <stage> <note> <journal-body>
+  local dir="$1" stage="$2" note="$3" body="$4" st obj
+  st="$dir/state.json"
+  obj="$(state_xo_block "$st")"
+  obj="$(obj_set "$obj" status "$(jstr escalated)")"
+  obj="$(obj_set "$obj" note "$(jstr "$note")")"
+  obj="$(obj_set "$obj" lastAction "$(jstr "escalated $stage $NOW_LOCAL")")"
+  obj="$(obj_set "$obj" since "$(jstr "$NOW")")"
+  state_set_xo "$st" "$obj"
+  journal "$dir" escalated "$body"
+  printf '◈ NUMBER ONE: escalated — this one is yours.\n'
+  printf '  %s\n' "$note"
+  printf '  The gate is still up. Answer it with `lcars respond --mission %s`.\n' \
+    "$(basename "$dir")"
+  exit 1
+}
+
+cmd_answer() {
+  local target="" id dir st pending stage etype
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mission)   target="${2:-}"; shift 2 || true ;;
+      --mission=*) target="${1#--mission=}"; shift ;;
+      -*)          die "unknown option: $1" ;;
+      *)           target="$1"; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "no mission — pass --mission <id>."
+  id="$(resolve_mission "$target")" || exit $?
+  dir="$MISSIONS_DIR/$id"
+  st="$dir/state.json"
+  pending="$dir/pending.json"
+
+  # NO GATE, NO SPIN. Refusing here is the cheapest defence there is against
+  # hiring a worker to answer a question nobody asked.
+  [ -f "$pending" ] || die "mission '$id' has no pending question — there is no gate for Number One to take."
+  stage="$(pending_field "$pending" stage)"
+  [ -n "$stage" ] || stage="$(mission_stage "$st")"
+  etype="$(pending_field "$pending" escalationType)"
+
+  local work input out
+  work="$(mktemp -d)"
+  input="$work/input"; out="$work/out"
+  mkdir -p "$input" "$out"
+  gather_inputs "$dir" "$input"
+
+  XO_MISSION_DIR="$dir"
+  trap on_stand_down TERM INT
+  printf '%s\n' "$$" >"$dir/xo.pid"
+
+  printf '◈ NUMBER ONE: reading the record for %s (%s gate)…\n' "$id" "${stage:-?}"
+
+  # ONE cold worker, through run.sh's chokepoint — the same road every Stage
+  # takes (role → stage key → the pinned model → the fenced argv → the S168
+  # fence snapshot → usage capture). Backgrounded and waited on so the TERM trap
+  # above can actually fire: bash runs a trap at the first opportunity, and a
+  # foreground child would hold that opportunity until the worker finished.
+  #
+  # THE ENGINE PIN RIDES ALONG (fix round 1, D1). $LCARS_WORKER_BIN carries the
+  # engine and $LCARS_WORKER_BIN_INTERNAL=1 says LCARS set it, not the captain —
+  # which is what keeps the MISSION's own engineSource/engineResolved/workerBin
+  # untouched on the far side. Number One's engine is Number One's.
+  #
+  # Exported inside a SUBSHELL that wraps nothing but the spawn, so the `lcars
+  # respond` call further down still runs with the captain's own environment.
+  # (A `VAR=… cmd` prefix cannot do it: the pin is conditional, and a prefix
+  # with an empty value would still SET the variable.) The `exec` keeps
+  # $XO_SPIN_PID naming the run.sh process itself, so the stand-down trap's
+  # kill-tree walk reaches the worker exactly as it did before.
+  #
+  # An ambient $LCARS_WORKER_BIN the captain set himself wins: the pin is left
+  # empty and the ladder over there answers `env`, exactly as today.
+  local xo_engine=""
+  [ -n "${LCARS_WORKER_BIN:-}" ] || xo_engine="$(xo_engine_for "$st")"
+  (
+    export LCARS_XO_INPUT_DIR="$input" LCARS_WORKER_INPUT_DIRS="$input"
+    if [ -n "$xo_engine" ]; then
+      export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+      --mission "$id" --mode answer --outdir "$out"
+  ) >/dev/null 2>&1 &
+  XO_SPIN_PID=$!
+  wait "$XO_SPIN_PID" 2>/dev/null || true
+  XO_SPIN_PID=""
+  trap - TERM INT
+  rm -f "$dir/xo.pid"
+
+  # --- read the verdict, and CHECK it --------------------------------------
+  # THE READER LIVES IN A FILE, not in a heredoc inside `$( … )`. The bash this
+  # harness targets (3.2, the one macOS ships) mis-parses a here-document nested
+  # in a command substitution, and the failure is a syntax error hundreds of
+  # lines away from the cause. Writing the script out first is the cheap cure.
+  local verdict="$out/xo-answer.json" report reader="$work/read-verdict.py"
+  cat >"$reader" <<'XO_PY'
+import json, os, re, sys
+
+path = os.environ.get("LCARS_XO_VERDICT", "")
+indir = os.environ.get("LCARS_XO_INPUT", "")
+
+def bad(why):
+    print("MALFORMED\t" + why)
+    sys.exit(0)
+
+try:
+    with open(path) as fh:
+        raw = fh.read()
+except Exception:
+    bad("no verdict file was written")
+
+# A worker that wraps its JSON in a fenced block has still answered; unwrap the
+# ONE outermost object rather than refuse over punctuation. Anything else is a
+# genuine malformation.
+try:
+    doc = json.loads(raw)
+except Exception:
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        bad("the verdict file is not JSON")
+    try:
+        doc = json.loads(m.group(0))
+    except Exception:
+        bad("the verdict file is not JSON")
+
+if not isinstance(doc, dict):
+    bad("the verdict is not a JSON object")
+
+decision = (doc.get("decision") or "").strip().lower()
+if decision not in ("answer", "escalate"):
+    bad("the verdict names no decision")
+
+answer = doc.get("answer") or ""
+rationale = (doc.get("rationale") or "").strip()
+recommendation = (doc.get("recommendation") or "").strip()
+confidence = (doc.get("confidence") or "").strip().lower()
+cites = doc.get("citations")
+cites = [c for c in cites if isinstance(c, dict)] if isinstance(cites, list) else []
+
+def norm(s):
+    return re.sub(r"\s+", " ", s or "").strip().lower()
+
+if decision == "answer":
+    if not answer.strip():
+        bad("it decided to answer but wrote no answer")
+    if not cites:
+        bad("it decided to answer but cited nothing")
+    # AT LEAST ONE QUOTE MUST REALLY BE THERE. Not all of them: a worker that
+    # gets one citation right and paraphrases a second has still shown its line,
+    # and refusing that is the over-rejection this round is trying not to do.
+    grounded = None
+    for c in cites:
+        f = str(c.get("file") or "").strip()
+        q = str(c.get("quote") or "").strip()
+        if not f or not q:
+            continue
+        # The worker cites by the name it was shown; accept the input-dir path,
+        # a bare name, or an absolute path it read.
+        cands = [os.path.join(indir, f), os.path.join(indir, os.path.basename(f)), f]
+        body = None
+        for cand in cands:
+            try:
+                with open(cand) as fh:
+                    body = fh.read()
+                break
+            except Exception:
+                continue
+        if body is None:
+            continue
+        if norm(q) and norm(q) in norm(body):
+            grounded = (f, q)
+            break
+    if grounded is None:
+        bad("no citation quote occurs in the file it names")
+    # THE JUDGE'S UNSURE EXIT IS HONOURED. The prompt tells Number One to
+    # escalate when it is unsure; a verdict that answers while declaring low
+    # confidence is it saying so, and taking the answer anyway would be arguing
+    # with the one honest signal it gave us.
+    if confidence == "low":
+        print("ESCALATE\tNumber One was not confident enough to answer for you")
+        print("RATIONALE\t" + rationale)
+        print("RECOMMENDATION\t" + (recommendation or answer.strip()))
+        sys.exit(0)
+    print("ANSWER\t" + answer.replace("\n", " ").strip())
+    print("RATIONALE\t" + rationale)
+    print("CITE_FILE\t" + grounded[0])
+    print("CITE_QUOTE\t" + grounded[1].replace("\n", " "))
+    sys.exit(0)
+
+print("ESCALATE\t" + (rationale.split("\n")[0] if rationale else "Number One did not find the answer in the record"))
+print("RATIONALE\t" + rationale)
+print("RECOMMENDATION\t" + recommendation)
+XO_PY
+  report="$(LCARS_XO_VERDICT="$verdict" LCARS_XO_INPUT="$input" \
+            "${LCARS_PYTHON_BIN:-python3}" "$reader" 2>/dev/null)" || report=""
+
+  local kind="" answer_text="" rationale="" recommendation="" why="" cite_file="" cite_quote=""
+  local line key val
+  while IFS= read -r line; do
+    key="${line%%$'\t'*}"; val="${line#*$'\t'}"
+    case "$key" in
+      MALFORMED)      kind=malformed; why="$val" ;;
+      ANSWER)         kind=answer;   answer_text="$val" ;;
+      ESCALATE)       kind=escalate; why="$val" ;;
+      RATIONALE)      rationale="$val" ;;
+      RECOMMENDATION) recommendation="$val" ;;
+      CITE_FILE)      cite_file="$val" ;;
+      CITE_QUOTE)     cite_quote="$val" ;;
+    esac
+  done <<< "$report"
+  [ -n "$kind" ] || { kind=malformed; why="the verdict could not be read"; }
+
+  # --- SCOPE AND SPEND ARE THE CAPTAIN'S, ALWAYS ---------------------------
+  # Checked AFTER the worker ran, on purpose: the escalation the captain reads
+  # should carry Number One's recommendation, and a recommendation needs a
+  # worker to have thought about it. What the check refuses is the DECISION,
+  # never the reading.
+  if [ "$etype" = "scope" ]; then
+    local rec="${recommendation:-$answer_text}"
+    escalate "$dir" "$stage" \
+      "this gate is a scope decision, and scope is yours — ${rec:-Number One read the record but did not decide}" \
+      "$(printf '"stage": %s, "reason": "scope", "recommendation": %s' \
+           "$(jstr "$stage")" "$(jstr "${rec:-}")")"
+  fi
+
+  case "$kind" in
+    malformed)
+      escalate "$dir" "$stage" "$XO_MALFORMED — ${why:-unreadable}" \
+        "$(printf '"stage": %s, "reason": "malformed", "detail": %s' \
+             "$(jstr "$stage")" "$(jstr "${why:-unreadable}")")" ;;
+    escalate)
+      escalate "$dir" "$stage" \
+        "${why:-Number One did not find the answer in the record} — ${recommendation:-no recommendation}" \
+        "$(printf '"stage": %s, "reason": "escalated", "rationale": %s, "recommendation": %s' \
+             "$(jstr "$stage")" "$(jstr "$rationale")" "$(jstr "$recommendation")")" ;;
+  esac
+
+  # --- THE ANSWER PATH -----------------------------------------------------
+  # Through `respond.sh answer`, the verb a human uses — never by writing
+  # answers.json here. Two env pins ride along:
+  #   LCARS_RESPOND_RESUME=0   respond.sh RE-EXECS the driver by default. Number
+  #                            One is called FROM the driver, so letting it
+  #                            re-exec would put two drivers on one mission.
+  #                            The daemon already uses this pin for the same
+  #                            reason (actions.py).
+  #   LCARS_ANSWERED_BY        the attribution. The record must say who answered.
+  #   LCARS_XO_ENFORCE=0       the engaged lock is there to stop a SECOND hand on
+  #                            the mission. This IS the first officer's hand —
+  #                            locking it out of its own verb would be the lock
+  #                            refusing the thing it was built to permit.
+  local rrc=0 rout
+  rout="$(LCARS_RESPOND_RESUME=0 LCARS_ANSWERED_BY=number-one LCARS_XO_ENFORCE=0 \
+          bash "$XO_RESPOND_SCRIPT" answer \
+            --mission "$id" --answer "$answer_text" 2>&1)" || rrc=$?
+  if [ "$rrc" -ne 0 ]; then
+    # The verb refused. That is a fact about the mission, not a verdict to
+    # override: leave the gate up and say what happened.
+    escalate "$dir" "$stage" \
+      "Number One had an answer but \`lcars respond\` refused it — $(printf '%s' "$rout" | head -1)" \
+      "$(printf '"stage": %s, "reason": "respond-refused", "detail": %s' \
+           "$(jstr "$stage")" "$(jstr "$(printf '%s' "$rout" | head -1)")")"
+  fi
+
+  # STILL ENGAGED. Answering a gate is the job, not the end of it — the mission
+  # carries on with Number One holding the conn, and the card keeps its badge.
+  local obj
+  obj="$(state_xo_block "$st")"
+  obj="$(obj_set "$obj" status "$(jstr engaged)")"
+  obj="$(obj_del "$obj" note)"
+  obj="$(obj_set "$obj" lastAction "$(jstr "answered $stage $NOW_LOCAL")")"
+  state_set_xo "$st" "$obj"
+  journal "$dir" answered \
+    "$(printf '"stage": %s, "answer": %s, "rationale": %s, "citation": {"file": %s, "quote": %s}' \
+         "$(jstr "$stage")" "$(jstr "$answer_text")" "$(jstr "$rationale")" \
+         "$(jstr "$cite_file")" "$(jstr "$cite_quote")")"
+
+  printf '◈ NUMBER ONE: answered the %s gate on your behalf.\n' "${stage:-?}"
+  printf '  %s\n' "$answer_text"
+  printf '  Grounds: %s — "%s"\n' "${cite_file:-?}" "$cite_quote"
+  return 0
+}
+
 case "${1:-status}" in
   on)     shift; cmd_on "$@" ;;
   off)    shift; cmd_off "$@" ;;
   status) shift; cmd_status ;;
+  answer) shift; cmd_answer "$@" ;;
   -h|--help|help)
     sed -n '3,12p' "$SELF" | sed 's/^# \{0,1\}//' ;;
-  *)      die "unknown verb: $1 (want: on | off | status)" ;;
+  *)      die "unknown verb: $1 (want: on | off | status | answer)" ;;
 esac

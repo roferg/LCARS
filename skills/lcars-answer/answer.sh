@@ -139,6 +139,19 @@ cmd_list() {
       else
         pq="$(json_str "$s" pendingQuestion)"; [ -n "$pq" ] && echo "      • $pq"
       fi
+      # S202 — NUMBER ONE ALREADY LOOKED AT THIS ONE. When the first officer
+      # handed a gate back it recorded why, and what it would do. The inbox is
+      # where the captain meets the gate, so it is where that has to be: without
+      # it he reads "awaiting your answer" with no idea anyone had already read
+      # the record. Both values are READ off state.numberOne — the inbox works
+      # nothing out for itself.
+      local xo_blk xo_status xo_note
+      xo_blk="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$s" | head -1)"
+      xo_status="$(printf '%s' "$xo_blk" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+      xo_note="$(printf '%s' "$xo_blk" | sed -n 's/.*"note"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+      if [ "$xo_status" = "escalated" ] && [ -n "$xo_note" ]; then
+        printf '    ◈ Number One handed this one back to you: %s\n' "$xo_note"
+      fi
       printf '    → answer:  lcars answer respond --mission %s --answer "…"\n' "$id"
     elif [ "$stage" = "verify" ]; then
       # The Verify gate — ship or send back.

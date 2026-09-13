@@ -277,6 +277,41 @@ rcC=0
 check "F1. send-back (ambiguous) exits 2"           "[ '$rcC' -eq 2 ]"
 check "F1. send-back (ambiguous) does NOT delegate" "[ ! -f '$FB_STUB2.fired' ]"
 
+# --- S202: an ESCALATED card shows Number One's note and recommendation ------
+#
+# When the first officer hands a gate back it records WHY, and a recommendation
+# with it. The inbox is where the captain meets that gate, so the inbox is where
+# that note has to be — otherwise he is reading "awaiting your answer" with no
+# idea that anyone already looked at it, and has to go and find the card.
+#
+# It is READ off state.numberOne and printed. The inbox infers nothing.
+echo
+echo "S202. an escalated card carries Number One's note"
+repoN="$(new_repo)"
+add_escalation "$repoN" "lcars-20260912-001" "The review queue"
+mN="$repoN/.git/lcars/missions/lcars-20260912-001"
+grep -v '"numberOne"' "$mN/state.json" >"$mN/state.tmp" && mv "$mN/state.tmp" "$mN/state.json"
+awk 'NR==1{print; print "  \"numberOne\": {\"status\": \"escalated\", \"engine\": \"copilot\", \"note\": \"the PRD is silent on email — leave it out and file it as a follow-up\"},"; next} {print}' \
+  "$mN/state.json" >"$mN/state.tmp" && mv "$mN/state.tmp" "$mN/state.json"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$mN/state.json" \
+  || { echo "S202 FIXTURE IS NOT VALID JSON"; exit 1; }
+outN="$( cd "$repoN" && bash "$ANSWER" 2>&1 )"
+check "S202. the card says Number One escalated it" \
+  "printf '%s' \"\$outN\" | grep -qi 'Number One'"
+check "S202. …and prints the note with the recommendation in it" \
+  "printf '%s' \"\$outN\" | grep -q 'file it as a follow-up'"
+check "S202. …the pending question is still listed (nothing was replaced)" \
+  "printf '%s' \"\$outN\" | grep -q 'Global or per-course leaderboard'"
+check "S202. no pricing words in the inbox" \
+  "! printf '%s' \"\$outN\" | grep -Eqi 'free|billed|billing|pricing'"
+
+# A mission with NO first officer prints exactly what it always printed.
+repoQ="$(new_repo)"
+add_escalation "$repoQ" "lcars-20260912-002" "No officer here"
+outQ="$( cd "$repoQ" && bash "$ANSWER" 2>&1 )"
+check "S202. a mission Number One never touched says nothing about it" \
+  "! printf '%s' \"\$outQ\" | grep -qi 'Number One'"
+
 # ==========================================================================
 echo
 printf 'lcars answer: %d passed, %d failed\n' "$pass" "$fail"

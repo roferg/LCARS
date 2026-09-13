@@ -143,6 +143,11 @@ read_questions() { # pending.json
 # legacy top-level slot onto the newest entry. See the design note at the call
 # site in cmd_answer.
 #
+# $LCARS_ANSWERED_BY (S202) names a DELEGATE — today, Number One, which answers a
+# gate through this very verb because it may only do what a human could do here.
+# Unset (the captain answering for himself) leaves the entry exactly the shape it
+# has always had; see the `answeredBy` note inside.
+#
 # Written in python3 because merging JSON with awk is how a ledger quietly loses
 # an entry, and python3 is already a hard dependency of the pipeline this file
 # feeds (run.sh's Stage machinery and the viewscreen are both python3-only). If
@@ -156,6 +161,7 @@ answers_append() { # stage
   local py="${LCARS_PYTHON_BIN:-python3}"
   if command -v "$py" >/dev/null 2>&1; then
     if LCARS_A_STAGE="$stage" LCARS_A_AT="$NOW" LCARS_A_TEXT="$ANSWER" \
+       LCARS_A_BY="${LCARS_ANSWERED_BY:-}" \
        "$py" - "$out" "$qf" <<'S180_PY'
 import json, os, sys
 
@@ -169,6 +175,15 @@ entry = {
     "answer": os.environ.get("LCARS_A_TEXT", ""),
     "questions": questions,
 }
+
+# S202 — WHO ANSWERED. Additive, and ABSENT rather than null when nobody was
+# delegated: every entry already on disk is the captain's own, every reader of
+# this file predates the field, and a `null` would make his answers and Number
+# One's the same shape with a different value instead of different shapes. Only
+# a delegated answer says so, and it says so by carrying the key at all.
+_by = (os.environ.get("LCARS_A_BY") or "").strip()
+if _by:
+    entry["answeredBy"] = _by
 
 # WHAT IS ALREADY ON DISK. Three shapes are possible and all three must survive:
 # the append-only ledger (read the list), a pre-S180 single slot (migrate it into
@@ -212,13 +227,17 @@ S180_PY
       rm -f "$qf"; return 0
     fi
   fi
-  # FALLBACK: the pre-S180 writer, byte for byte.
+  # FALLBACK: the pre-S180 writer, byte for byte — plus the same attribution
+  # rule (emitted only when a delegate was named, so with no delegate this is
+  # still byte-for-byte the pre-S180 file).
   local esc; esc="$(json_escape "$ANSWER")"
   {
     echo '{'
     printf '  "stage": "%s",\n' "$stage"
     printf '  "answeredAt": "%s",\n' "$NOW"
     printf '  "answer": "%s",\n' "$esc"
+    [ -n "${LCARS_ANSWERED_BY:-}" ] \
+      && printf '  "answeredBy": "%s",\n' "$(json_escape "$LCARS_ANSWERED_BY")"
     echo '  "questions": ['
     awk 'NF{ gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); q[++n]=$0 }
          END{ for(i=1;i<=n;i++) printf "    \"%s\"%s\n", q[i], (i<n?",":"") }' \

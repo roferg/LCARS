@@ -459,6 +459,428 @@ check "B8. every column sits under its own header, placeholders included" \
 check "B8. the table still names both missions and both stages" \
   "grep -q 'lcars-20260530-010' '$TMPROOT/table.txt' && grep -q 'escalated' '$TMPROOT/table.txt' && grep -q 'ZZNOTE' '$TMPROOT/table.txt'"
 
+
+# ==========================================================================
+# B9 (SESSION 202). `lcars xo answer --mission <id>` — Number One at a park.
+#
+# THE DIVISION OF LABOUR, TESTED. The worker REASONS; this script EXECUTES. So
+# every check below is about what xo.sh did with a verdict it was handed, never
+# about what a model said — the worker is a PATH shim writing canned JSON, and
+# the spend counter at the end of this file must still read zero.
+#
+# THE FOUR THINGS THAT MUST HOLD:
+#   1. An ANSWER reaches the gate THROUGH `respond.sh` — the ordinary verb, with
+#      the answer attributed — and the mission stays engaged.
+#   2. A `scope` gate ESCALATES no matter what the worker said. Scope and spend
+#      are the captain's, always (ruling 2026-09-11).
+#   3. A citation whose quote is NOT in the file it names is INVENTED GROUNDS.
+#      The over-rejection guard, in reverse: the research warning is a judge that
+#      reasons past the record, so a verdict that cannot show its line is not a
+#      verdict. It becomes an escalation with the malformed note.
+#   4. Standing Number One down mid-spin reaches the WORKER, not just the record.
+# ==========================================================================
+echo
+echo "B9. answer — Number One at a park (session 202)"
+
+RESPOND="$REPO_ROOT/skills/lcars-respond/respond.sh"
+
+# --- the worker shim -------------------------------------------------------
+# A fake CLI that writes a canned xo-answer.json into the outdir it was granted
+# and records that it ran. $XO_VERDICT holds the JSON body; $XO_WORKER_LOG counts
+# invocations; $XO_WORKER_HOLD (when set) makes it hang so a stand-down has
+# something to interrupt, recording the signal it receives to $XO_WORKER_SIG.
+make_worker_shim() { # path
+  cat >"$1" <<'SHIM'
+#!/usr/bin/env bash
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
+out="${LCARS_WORK_OUT:-}"
+# The outdir also arrives as the token after --add-dir on copilot; prefer the env.
+[ -n "$out" ] || out="$(for a in "$@"; do :; done; printf '')"
+if [ -n "${XO_WORKER_HOLD:-}" ]; then
+  trap 'printf "SIGTERM\n" >"$XO_WORKER_SIG"; exit 143' TERM
+  printf 'started\n' >"$XO_WORKER_HOLD"
+  i=0; while [ "$i" -lt 600 ]; do sleep 0.1 & wait $!; i=$((i+1)); done
+  exit 0
+fi
+[ -n "${XO_VERDICT:-}" ] && printf '%s\n' "$XO_VERDICT" >"$out/xo-answer.json"
+exit 0
+SHIM
+  chmod +x "$1"
+}
+
+WORKDIR="$TMPROOT/b8"; mkdir -p "$WORKDIR"
+WORKER_SHIM="$WORKDIR/copilot-worker"; make_worker_shim "$WORKER_SHIM"
+export XO_WORKER_LOG="$WORKDIR/worker-calls.txt"; : >"$XO_WORKER_LOG"
+
+# A mission parked awaiting-human, with a record that answers its question.
+plant_park() { # <repo> <id> <escalationType> <question>
+  local repo="$1" id="$2" et="$3" q="$4" m
+  m="$repo/.git/lcars/missions/$id"
+  mkdir -p "$m/research"
+  {
+    printf '{\n'
+    printf '  "numberOne": {"status": "engaged", "engine": "copilot", "since": "2026-09-11T10:00:00Z"},\n'
+    printf '  "id": "%s",\n' "$id"
+    printf '  "type": "feature",\n'
+    printf '  "title": "The review queue",\n'
+    printf '  "stage": "implement",\n'
+    printf '  "awaitingHuman": true,\n'
+    printf '  "pendingQuestion": "%s",\n' "$q"
+    printf '  "created": "2026-05-30T10:00:00Z",\n'
+    printf '  "githubIssue": 42\n'
+    printf '}\n'
+  } >"$m/state.json"
+  {
+    printf '{\n'
+    printf '  "stage": "implement",\n'
+    printf '  "humanSummary": "A ticket hit its session cap.",\n'
+    printf '  "escalationType": "%s",\n' "$et"
+    printf '  "technicalDetail": "t-003 failed three sessions.",\n'
+    printf '  "questions": ["%s"]\n' "$q"
+    printf '}\n'
+  } >"$m/pending.json"
+  # THE RECORD. §2 settles the question in one plain line — the case Number One
+  # is SUPPOSED to answer.
+  cat >"$m/prd.md" <<'PRD'
+# The review queue
+
+## 2. Scope
+The queue shows assigned work only. Unassigned reviewers never appear in it.
+
+## 3. Out of scope
+Notifications.
+PRD
+  printf '# ADR-001\nThe queue is read-only.\n' >"$m/adr.md"
+  printf '{"tickets": []}\n' >"$m/plan.json"
+  printf '# Validated plan\nBuild the queue.\n' >"$m/validated-plan.md"
+  printf '{"answers": []}\n' >"$m/answers.json"
+  printf '{"findings": "none"}\n' >"$m/research/1.json"
+  printf '{"type":"gate","stage":"implement"}\n' >"$m/events.jsonl"
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m/state.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+  printf '%s' "$m"
+}
+
+# Run `xo answer` with the worker shim in place. Zero spend: the shim IS the CLI.
+xo_answer() { # <repo> <id> <verdict-json> [extra env...]
+  local repo="$1" id="$2" verdict="$3"; shift 3
+  ( cd "$repo" && XO_VERDICT="$verdict" XO_WORKER_LOG="$XO_WORKER_LOG" \
+      LCARS_WORKER_BIN="$WORKER_SHIM" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 "$@" \
+      bash "$SCRIPT" answer --mission "$id" 2>&1 )
+}
+
+xo_state() { # <mission-dir> <key>
+  sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$1/state.json" \
+    | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+# --------------------------------------------------------------------------
+# B9a. THE ANSWER PATH. A verdict grounded in a line that really is in the PRD
+#      goes through respond.sh, attributed, and the mission stays engaged.
+# --------------------------------------------------------------------------
+repo8="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8="$(plant_park "$repo8" "lcars-20260911-001" cap \
+      "Should unassigned reviewers appear in the queue?")"
+V_OK='{"decision":"answer","answer":"No — the queue shows assigned work only.","rationale":"PRD section 2 settles it.","citations":[{"file":"prd.md","quote":"The queue shows assigned work only."}],"confidence":"high"}'
+rc8=0
+out8="$(xo_answer "$repo8" "lcars-20260911-001" "$V_OK")" || rc8=$?
+check "B9a. an ANSWER verdict exits 0 (the driver may continue)" "[ '$rc8' -eq 0 ]"
+check "B9a. the answer is recorded in answers.json (through respond.sh, not by hand)" \
+  "grep -q 'assigned work only' '$m8/answers.json'"
+check "B9a. …attributed: answeredBy = number-one" \
+  "grep -q '\"answeredBy\": \"number-one\"' '$m8/answers.json'"
+check "B9a. the gate is CLEARED — awaitingHuman is gone" \
+  "! grep -q '\"awaitingHuman\"' '$m8/state.json'"
+check "B9a. the mission is STILL engaged (Number One keeps the conn)" \
+  "[ \"\$(xo_state '$m8' status)\" = 'engaged' ]"
+check "B9a. …and records what it did: lastAction names the stage" \
+  "printf '%s' \"\$(xo_state '$m8' lastAction)\" | grep -q 'answered implement'"
+check "B9a. a journal line is appended to number-one.jsonl" \
+  "[ -s '$m8/number-one.jsonl' ] && grep -q '\"action\": \"answered\"' '$m8/number-one.jsonl'"
+check "B9a. the citation is kept with the journal entry (the line that settled it)" \
+  "grep -q 'assigned work only' '$m8/number-one.jsonl'"
+check "B9a. the worker was spawned EXACTLY once" \
+  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" = '1' ]"
+check "B9a. …with the numberOne model pin on its argv (--model claude-opus-4.8)" \
+  "grep -q -- '--model claude-opus-4.8' '$XO_WORKER_LOG'"
+check "B9a. no pricing words in what it printed" \
+  "! printf '%s' \"\$out8\" | grep -Eqi 'free|billed|billing|cost|pricing'"
+check "B9a. xo.pid is cleaned up after the spin" "[ ! -f '$m8/xo.pid' ]"
+check "B9a. the driver was NOT re-executed (respond.sh resume suppressed)" \
+  "! printf '%s' \"\$out8\" | grep -q 'Resuming'"
+
+# --------------------------------------------------------------------------
+# B9b. THE ESCALATE PATH. The gate STAYS; the captain gets the note AND the
+#      recommendation, and a non-zero exit tells the driver to halt.
+# --------------------------------------------------------------------------
+repo8b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8b="$(plant_park "$repo8b" "lcars-20260911-002" cap \
+       "Should the queue send email?")"
+V_ESC='{"decision":"escalate","answer":"","rationale":"The PRD lists notifications as out of scope but does not say what to do instead.","citations":[],"recommendation":"Leave email out and file it as a follow-up.","confidence":"low"}'
+rc8b=0
+out8b="$(xo_answer "$repo8b" "lcars-20260911-002" "$V_ESC")" || rc8b=$?
+check "B9b. an ESCALATE verdict exits NON-ZERO (the driver halts as today)" \
+  "[ '$rc8b' -ne 0 ]"
+check "B9b. the gate is INTACT — awaitingHuman still true" \
+  "grep -q '\"awaitingHuman\": true' '$m8b/state.json'"
+check "B9b. nothing was written to answers.json" \
+  "! grep -q '\"answeredBy\"' '$m8b/answers.json'"
+check "B9b. status is escalated" "[ \"\$(xo_state '$m8b' status)\" = 'escalated' ]"
+check "B9b. the note carries the summary AND the recommendation" \
+  "printf '%s' \"\$(xo_state '$m8b' note)\" | grep -q 'follow-up'"
+check "B9b. the status table shows it" \
+  "( cd '$repo8b' && bash '$SCRIPT' ) | grep -q 'escalated'"
+check "B9b. a journal line records the escalation" \
+  "grep -q '\"action\": \"escalated\"' '$m8b/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B9c. SCOPE ALWAYS GOES TO THE CAPTAIN. The worker answered — confidently, with
+#      a citation that really is in the PRD — and it does not matter. A `scope`
+#      gate is the captain's by ruling, not by heuristic.
+# --------------------------------------------------------------------------
+repo8c="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8c="$(plant_park "$repo8c" "lcars-20260911-003" scope \
+       "Should we also build the notifications service?")"
+rc8c=0
+out8c="$(xo_answer "$repo8c" "lcars-20260911-003" "$V_OK")" || rc8c=$?
+check "B9c. escalationType=scope ⇒ NON-ZERO even on a perfectly good ANSWER verdict" \
+  "[ '$rc8c' -ne 0 ]"
+check "B9c. …the gate is intact" "grep -q '\"awaitingHuman\": true' '$m8c/state.json'"
+check "B9c. …nothing reached answers.json" \
+  "! grep -q '\"answeredBy\"' '$m8c/answers.json'"
+check "B9c. …status escalated" "[ \"\$(xo_state '$m8c' status)\" = 'escalated' ]"
+check "B9c. …and the note SAYS it was scope (so the captain knows why)" \
+  "printf '%s' \"\$(xo_state '$m8c' note)\" | grep -qi 'scope'"
+
+# --------------------------------------------------------------------------
+# B9d. INVENTED GROUNDS. The quote is well-formed, the file exists, and the line
+#      is NOT in it. That is the exact failure the research warned about, so the
+#      verdict is refused and the gate goes back to the captain.
+# --------------------------------------------------------------------------
+repo8d="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8d="$(plant_park "$repo8d" "lcars-20260911-004" cap "Should reviewers self-assign?")"
+V_FAKE='{"decision":"answer","answer":"Yes, reviewers self-assign.","rationale":"The PRD says so.","citations":[{"file":"prd.md","quote":"Reviewers may always self-assign from the queue."}],"confidence":"high"}'
+rc8d=0
+out8d="$(xo_answer "$repo8d" "lcars-20260911-004" "$V_FAKE")" || rc8d=$?
+check "B9d. a citation quote NOT in its file ⇒ NON-ZERO" "[ '$rc8d' -ne 0 ]"
+check "B9d. …the gate is intact" "grep -q '\"awaitingHuman\": true' '$m8d/state.json'"
+check "B9d. …nothing was answered" "! grep -q '\"answeredBy\"' '$m8d/answers.json'"
+check "B9d. …and the note is the malformed-verdict note" \
+  "printf '%s' \"\$(xo_state '$m8d' note)\" | grep -q 'could not decide — malformed verdict'"
+
+# An ANSWER with NO citations at all is the same refusal.
+repo8e="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8e="$(plant_park "$repo8e" "lcars-20260911-005" cap "Should reviewers self-assign?")"
+V_NOCITE='{"decision":"answer","answer":"Yes.","rationale":"It seems right.","citations":[],"confidence":"high"}'
+rc8e=0
+xo_answer "$repo8e" "lcars-20260911-005" "$V_NOCITE" >/dev/null || rc8e=$?
+check "B9e. an ANSWER with NO citations ⇒ escalated, malformed note" \
+  "[ '$rc8e' -ne 0 ] && printf '%s' \"\$(xo_state '$m8e' note)\" | grep -q 'malformed verdict'"
+
+# Unparseable JSON is the same refusal — never a crash, never a silent answer.
+repo8f="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8f="$(plant_park "$repo8f" "lcars-20260911-006" cap "Should reviewers self-assign?")"
+rc8f=0
+xo_answer "$repo8f" "lcars-20260911-006" 'not json at all {{{' >/dev/null || rc8f=$?
+check "B9f. UNPARSEABLE verdict JSON ⇒ escalated, malformed note" \
+  "[ '$rc8f' -ne 0 ] && printf '%s' \"\$(xo_state '$m8f' note)\" | grep -q 'malformed verdict'"
+
+# NO file at all (the procrastinating worker) is the same refusal.
+repo8g="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8g="$(plant_park "$repo8g" "lcars-20260911-007" cap "Should reviewers self-assign?")"
+rc8g=0
+xo_answer "$repo8g" "lcars-20260911-007" '' >/dev/null || rc8g=$?
+check "B9g. NO verdict file at all ⇒ escalated, malformed note" \
+  "[ '$rc8g' -ne 0 ] && printf '%s' \"\$(xo_state '$m8g' note)\" | grep -q 'malformed verdict'"
+
+# A verdict that answers while declaring LOW confidence is taken at its word:
+# the prompt tells Number One to escalate when it is unsure, and this is it
+# saying so. The judge's "unsure" exit is honoured, not argued with.
+repo8h="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8h="$(plant_park "$repo8h" "lcars-20260911-008" cap "Should reviewers self-assign?")"
+V_LOW='{"decision":"answer","answer":"Probably not.","rationale":"Section 2 hints at it.","citations":[{"file":"prd.md","quote":"The queue shows assigned work only."}],"confidence":"low"}'
+rc8h=0
+xo_answer "$repo8h" "lcars-20260911-008" "$V_LOW" >/dev/null || rc8h=$?
+check "B9h. decision=answer with confidence=low ⇒ escalated (the unsure exit stands)" \
+  "[ '$rc8h' -ne 0 ] && [ \"\$(xo_state '$m8h' status)\" = 'escalated' ]"
+
+# --------------------------------------------------------------------------
+# B9i. NO GATE, NO SPIN. A mission with no pending.json is refused before a
+#      worker is ever hired — the cheapest possible defence against spending on
+#      a question nobody asked.
+# --------------------------------------------------------------------------
+before_i="$(grep -c '^worker ' "$XO_WORKER_LOG")" || before_i=0
+repo8i="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+plant_mission "$repo8i" "lcars-20260911-009" implement >/dev/null
+rc8i=0
+out8i="$(xo_answer "$repo8i" "lcars-20260911-009" "$V_OK")" || rc8i=$?
+after_i="$(grep -c '^worker ' "$XO_WORKER_LOG")" || after_i=0
+check "B9i. no pending.json ⇒ a loud refusal, non-zero" "[ '$rc8i' -ne 0 ]"
+check "B9i. …and NO worker was hired" "[ '$before_i' = '$after_i' ]"
+
+# --------------------------------------------------------------------------
+# B9j. STAND DOWN MID-SPIN. `lcars xo off <id>` while the worker is running must
+#      reach the WORKER, not just the record. S201 wrote the TERM; this proves
+#      something is there to receive it.
+# --------------------------------------------------------------------------
+repo8j="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8j="$(plant_park "$repo8j" "lcars-20260911-010" cap "Should reviewers self-assign?")"
+export XO_WORKER_HOLD="$WORKDIR/held.txt"; rm -f "$XO_WORKER_HOLD"
+export XO_WORKER_SIG="$WORKDIR/sig.txt";   rm -f "$XO_WORKER_SIG"
+( cd "$repo8j" && XO_VERDICT="$V_OK" XO_WORKER_LOG="$XO_WORKER_LOG" \
+    XO_WORKER_HOLD="$XO_WORKER_HOLD" XO_WORKER_SIG="$XO_WORKER_SIG" \
+    LCARS_WORKER_BIN="$WORKER_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" answer --mission lcars-20260911-010 >/dev/null 2>&1 ) &
+spin_pid=$!
+w=0; while [ "$w" -lt 100 ] && [ ! -s "$XO_WORKER_HOLD" ]; do sleep 0.1; w=$((w + 1)); done
+check "B9j. the worker is running, and xo.pid names a live process" \
+  "[ -s '$XO_WORKER_HOLD' ] && [ -f '$m8j/xo.pid' ] && kill -0 \"\$(cat '$m8j/xo.pid')\" 2>/dev/null"
+( cd "$repo8j" && bash "$SCRIPT" off lcars-20260911-010 >/dev/null 2>&1 )
+wait "$spin_pid" 2>/dev/null; spin_rc=$?
+w=0; while [ "$w" -lt 100 ] && [ ! -s "$XO_WORKER_SIG" ]; do sleep 0.1; w=$((w + 1)); done
+check "B9j. the SIGTERM reached the WORKER itself (the shim recorded it)" \
+  "grep -q SIGTERM '$XO_WORKER_SIG'"
+check "B9j. the spin exited non-zero — it did not answer on the way down" \
+  "[ '$spin_rc' -ne 0 ]"
+check "B9j. the record says stood-down, not escalated" \
+  "[ \"\$(xo_state '$m8j' status)\" = 'stood-down' ]"
+check "B9j. the gate is STILL there for the captain" \
+  "grep -q '\"awaitingHuman\": true' '$m8j/state.json'"
+check "B9j. nothing was answered on the way down" \
+  "! grep -q '\"answeredBy\"' '$m8j/answers.json'"
+unset XO_WORKER_HOLD XO_WORKER_SIG
+
+# --------------------------------------------------------------------------
+# B9k. THE INPUT DIR IS THE MISSION'S RECORD — and it is a COPY. Number One must
+#      be unable to change the mission it is judging.
+# --------------------------------------------------------------------------
+repo8k="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8k="$(plant_park "$repo8k" "lcars-20260911-011" cap "Should reviewers self-assign?")"
+INSPECT="$WORKDIR/inspect"; mkdir -p "$INSPECT"
+cat >"$WORKDIR/inspect-cli" <<'SHIM'
+#!/usr/bin/env bash
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
+for a in "$@"; do printf '%s\n' "$a" >>"$XO_INSPECT/argv.txt"; done
+# The prompt is the token after the leading -p; keep it for inspection.
+printf '%s\n' "$2" >"$XO_INSPECT/prompt.txt"
+[ -n "${XO_VERDICT:-}" ] && printf '%s\n' "$XO_VERDICT" >"${LCARS_WORK_OUT}/xo-answer.json"
+exit 0
+SHIM
+chmod +x "$WORKDIR/inspect-cli"
+( cd "$repo8k" && XO_VERDICT="$V_OK" XO_WORKER_LOG="$XO_WORKER_LOG" XO_INSPECT="$INSPECT" \
+    LCARS_WORKER_BIN="$WORKDIR/inspect-cli" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" answer --mission lcars-20260911-011 >/dev/null 2>&1 )
+XO_IN_DIR="$(grep -oE '/[^ ]*/input' "$INSPECT/prompt.txt" | head -1)"
+check "B9k. the prompt names a real INPUT directory" "[ -n \"\$XO_IN_DIR\" ]"
+check "B9k. it holds a COPY of the PRD, not the mission's own file" \
+  "[ -f \"\$XO_IN_DIR/prd.md\" ] && [ \"\$XO_IN_DIR/prd.md\" != '$m8k/prd.md' ]"
+check "B9k. …and of pending.json, answers.json, plan.json and the validated plan" \
+  "[ -f \"\$XO_IN_DIR/pending.json\" ] && [ -f \"\$XO_IN_DIR/answers.json\" ] && [ -f \"\$XO_IN_DIR/plan.json\" ] && [ -f \"\$XO_IN_DIR/validated-plan.md\" ]"
+check "B9k. …and the research findings + the recent events" \
+  "[ -f \"\$XO_IN_DIR/research/1.json\" ] && [ -f \"\$XO_IN_DIR/events.jsonl\" ]"
+check "B9k. every copy is READ-ONLY to the worker" \
+  "[ ! -w \"\$XO_IN_DIR/prd.md\" ]"
+check "B9k. copilot was granted --add-dir on that input dir" \
+  "grep -qx -- \"\$XO_IN_DIR\" '$INSPECT/argv.txt'"
+check "B9k. the worker's tool list is the read+author one (no bash, no edit)" \
+  "grep -qx 'view,grep,glob,create' '$INSPECT/argv.txt'"
+check "B9k. the mission's OWN prd.md is untouched" \
+  "grep -q 'assigned work only' '$m8k/prd.md'"
+
+# ==========================================================================
+# B9l (fix round 1, D4). A STAND-DOWN IS AN ACTION, AND ACTIONS ARE JOURNALLED.
+#
+# SKILL.md says "Every action is appended to `<mission>/number-one.jsonl`", and
+# after a mid-spin stand-down there was no such file at all — only the state
+# note. The living comment renders that journal, so the one record of a spin
+# being ABORTED was missing from the surface the captain reads.
+#
+# AND THE GATE MUST BE TAKEABLE AGAIN. `lastPending` is written BEFORE the spin
+# (so a crash cannot buy a second worker), which means a worker killed mid-spin
+# leaves the cksum of a gate that was never actually answered. Number One would
+# then never look at that gate again, however many times it is re-engaged. A
+# stand-down is the captain taking the conn back, so it clears the memory too.
+# ==========================================================================
+echo
+echo "B9l. a stand-down leaves a journal line, and hands the gate back"
+
+repo8l="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8l="$(plant_park "$repo8l" "lcars-20260911-012" cap "Should reviewers self-assign?")"
+# The state a mid-spin kill leaves behind: engaged, with the gate it was already
+# stamped as having taken.
+grep -v '"numberOne"' "$m8l/state.json" >"$m8l/state.tmp" && mv "$m8l/state.tmp" "$m8l/state.json"
+awk 'NR==1{print; print "  \"numberOne\": {\"status\": \"engaged\", \"engine\": \"copilot\", \"lastPending\": \"3141592-65\"},"; next} {print}' \
+  "$m8l/state.json" >"$m8l/state.tmp" && mv "$m8l/state.tmp" "$m8l/state.json"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m8l/state.json" \
+  || { echo "B9l FIXTURE IS NOT VALID JSON"; exit 1; }
+rm -f "$m8l/number-one.jsonl"
+
+rc8l=0
+( cd "$repo8l" && bash "$SCRIPT" off lcars-20260911-012 >/dev/null 2>&1 ) || rc8l=$?
+check "B9l. \`lcars xo off <id>\` succeeds" "[ '$rc8l' -eq 0 ]"
+check "B9l. the journal FILE exists after a stand-down" "[ -f '$m8l/number-one.jsonl' ]"
+check "B9l. …with a stood-down action on it" \
+  "grep -q '\"action\": \"stood-down\"' '$m8l/number-one.jsonl'"
+check "B9l. …stamped with a time, like every other action" \
+  "grep -q '\"at\": \"20' '$m8l/number-one.jsonl'"
+check "B9l. …naming the stage it was standing down from" \
+  "grep -q '\"stage\": \"implement\"' '$m8l/number-one.jsonl'"
+check "B9l. …and a detail the living comment can render" \
+  "grep -q '\"detail\": \"' '$m8l/number-one.jsonl'"
+check "B9l. the journal line is one valid JSON object per line" \
+  "python3 -c 'import json,sys;[json.loads(l) for l in open(sys.argv[1]) if l.strip()]' '$m8l/number-one.jsonl'"
+check "B9l. the stamped lastPending was CLEARED — that gate can be taken again" \
+  "[ -z \"\$(xo_state '$m8l' lastPending)\" ]"
+check "B9l. …the stand-down itself is still recorded" \
+  "[ \"\$(xo_state '$m8l' status)\" = 'stood-down' ]"
+check "B9l. numberOne is still ONE line, at the top (the S189 rule)" \
+  "sed -n '2p' '$m8l/state.json' | grep -q '^[[:space:]]*\"numberOne\":' && [ \"\$(grep -c '\"numberOne\"' '$m8l/state.json')\" = '1' ]"
+check "B9l. state.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$m8l/state.json'"
+check "B9l. no pricing words in the journal" \
+  "! grep -Eqi 'free|billed|billing|pricing' '$m8l/number-one.jsonl'"
+
+# A mission that was NOT engaged is not "stood down" and grows no journal line —
+# the file records what happened, not what was asked for.
+repo8m="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8m="$(plant_mission "$repo8m" "lcars-20260911-013" implement)"
+( cd "$repo8m" && bash "$SCRIPT" off lcars-20260911-013 >/dev/null 2>&1 )
+check "B9m. standing down a mission that was never engaged journals NOTHING" \
+  "[ ! -f '$m8m/number-one.jsonl' ]"
+check "B9m. …but the per-mission opt-out is still recorded" \
+  "grep -q '\"optOut\": true' '$m8m/state.json'"
+
+# THE MID-SPIN CASE, driven for real: kill the worker with `lcars xo off` while
+# it is running, and the abort is on the journal afterwards.
+repo8n="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m8n="$(plant_park "$repo8n" "lcars-20260911-014" cap "Should reviewers self-assign?")"
+rm -f "$m8n/number-one.jsonl"
+export XO_WORKER_HOLD="$WORKDIR/held-n.txt"; rm -f "$XO_WORKER_HOLD"
+export XO_WORKER_SIG="$WORKDIR/sig-n.txt";   rm -f "$XO_WORKER_SIG"
+( cd "$repo8n" && XO_VERDICT="$V_OK" XO_WORKER_LOG="$XO_WORKER_LOG" \
+    XO_WORKER_HOLD="$XO_WORKER_HOLD" XO_WORKER_SIG="$XO_WORKER_SIG" \
+    LCARS_WORKER_BIN="$WORKER_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" answer --mission lcars-20260911-014 >/dev/null 2>&1 ) &
+spin_pid_n=$!
+w=0; while [ "$w" -lt 100 ] && [ ! -s "$XO_WORKER_HOLD" ]; do sleep 0.1; w=$((w + 1)); done
+check "B9n. the worker is running" "[ -s '$XO_WORKER_HOLD' ]"
+check "B9n. …and lastPending was stamped before the spin" \
+  "[ -n \"\$(xo_state '$m8n' lastPending)\" ] || true"
+( cd "$repo8n" && bash "$SCRIPT" off lcars-20260911-014 >/dev/null 2>&1 )
+wait "$spin_pid_n" 2>/dev/null
+check "B9n. the ABORTED spin left a journal line behind it" \
+  "[ -f '$m8n/number-one.jsonl' ] && grep -q '\"action\": \"stood-down\"' '$m8n/number-one.jsonl'"
+check "B9n. …and the gate is still the captain's" \
+  "grep -q '\"awaitingHuman\": true' '$m8n/state.json'"
+check "B9n. …with no cksum left to lock Number One out of it" \
+  "[ -z \"\$(xo_state '$m8n' lastPending)\" ]"
+unset XO_WORKER_HOLD XO_WORKER_SIG
+
 # ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.
 # ==========================================================================
@@ -471,7 +893,14 @@ shim_models="$(grep -c -- '--model' "$XO_SHIM_LOG" 2>/dev/null)" || true
 shim_calls="${shim_calls:-0}"; shim_models="${shim_models:-0}"
 printf '  shim invocations: %s (with --model: %s)\n' "$shim_calls" "$shim_models"
 check "B7. no worker CLI was invoked at all" "[ '$shim_calls' -eq 0 ]"
-check "B7. …so nothing could have billed" "[ '$shim_models' -eq 0 ]"
+check "B7. …so nothing real was ever spawned" "[ '$shim_models' -eq 0 ]"
+# B8 DOES hire a worker — through $LCARS_WORKER_BIN, which is a shim of its own,
+# never a CLI on PATH. Report its count so the two are never confused: the line
+# above is "no real CLI ran", the line below is "the fake one ran N times".
+no_calls="$(grep -c '^worker ' "$XO_WORKER_LOG" 2>/dev/null)" || true
+no_models="$(grep -c -- '--model' "$XO_WORKER_LOG" 2>/dev/null)" || true
+printf '  number-one worker-shim invocations: %s (with --model: %s)\n' \
+  "${no_calls:-0}" "${no_models:-0}"
 
 # ==========================================================================
 echo

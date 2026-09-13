@@ -1,6 +1,6 @@
 ---
 name: lcars-xo
-description: Engage, stand down, and inspect Number One — the AI first officer that holds a Mission on the captain's behalf. `lcars xo on [--engine copilot|claude] [--model M]` turns Number One ON for this repo, recording the choice in `.git/lcars/config.json` as a one-line `numberOne` block; with no `--engine` and a terminal it opens a picker naming the engines installed on this machine, and with no terminal it refuses loudly rather than choosing in silence. `lcars xo off` stands the repo down and hands the conn back on every engaged Mission; `lcars xo off <mission>` opts one Mission out and stands just that one down (signalling its recorded worker pid, recording `stood-down` and a note); `lcars xo on <mission>` clears that per-mission opt-out. Bare `lcars xo` prints the status table — every Mission with its stage, Number One's RECORDED status (engaged / finished / escalated / answered / stood-down / opted-out) and its note. While a Mission is engaged the write verbs (approve, feedback, respond, log, pause, resume, resolve-logs) and the viewscreen's matching endpoints refuse with ONE sentence, because Number One is already acting through them on the captain's behalf. Use when the captain runs `lcars xo`, says "engage Number One", "turn the first officer on/off", "stand Number One down", "who has the conn", or asks what Number One is doing.
+description: Engage, stand down, and inspect Number One — the AI first officer that holds a Mission on the captain's behalf. `lcars xo on [--engine copilot|claude] [--model M]` turns Number One ON for this repo, recording the choice in `.git/lcars/config.json` as a one-line `numberOne` block; with no `--engine` and a terminal it opens a picker naming the engines installed on this machine, and with no terminal it refuses loudly rather than choosing in silence. `lcars xo off` stands the repo down and hands the conn back on every engaged Mission; `lcars xo off <mission>` opts one Mission out and stands just that one down (signalling its recorded worker pid, recording `stood-down` and a note); `lcars xo on <mission>` puts that Mission back in scope — it clears the per-mission opt-out AND the `stood-down` status, so the next drive can engage it again. `lcars xo answer --mission <id>` is the driver's call at a park: Number One reads the Mission's record in a read-only copy, then either ANSWERS the gate through `lcars respond` (attributed `answeredBy: number-one`, exit 0) or ESCALATES with a note and a recommendation and leaves the gate up (exit 1) — always escalating a `scope` gate, an uncited answer, and anything malformed. Bare `lcars xo` prints the status table — every Mission with its stage, Number One's RECORDED status (engaged / finished / escalated / answered / stood-down / opted-out) and its note. While a Mission is engaged the write verbs (approve, feedback, respond, log, pause, resume, resolve-logs) and the viewscreen's matching endpoints refuse with ONE sentence, because Number One is already acting through them on the captain's behalf. Use when the captain runs `lcars xo`, says "engage Number One", "turn the first officer on/off", "stand Number One down", "who has the conn", or asks what Number One is doing.
 ---
 
 # lcars xo — Number One
@@ -22,12 +22,64 @@ bash skills/lcars-xo/xo.sh on                       # …with the picker
 bash skills/lcars-xo/xo.sh off                      # stand the repo down
 bash skills/lcars-xo/xo.sh off <mission>            # opt ONE mission out
 bash skills/lcars-xo/xo.sh on  <mission>            # clear that opt-out
+bash skills/lcars-xo/xo.sh answer --mission <id>    # take the park (S202)
 ```
 
 The front door routes `lcars xo …` here through an explicit delegator in
 `skills/lcars/lcars.sh` — **not** through smart-default routing, because a bare
 `lcars xo` is a READ and the router would otherwise take `xo` for a Mission
 selector and try to drive something.
+
+## `answer` — taking a park (S202)
+
+When a Mission stops **awaiting-human** and Number One is engaged there, the run
+driver calls `xo.sh answer --mission <id>`. It:
+
+1. copies the Mission's record into a temp **input** dir, **read-only** — the
+   PRD, the ADRs, the validated plan, `plan.json`, `pending.json`,
+   `answers.json`, the research findings, the last 200 events, the attachments
+   (the holodeck drawing and its concept), and `claim-check.txt` /
+   `reconcile-design-question.txt` when they are there;
+2. hires **one cold worker** through `run.sh spawn-number-one`, so the first
+   officer reaches the same chokepoint every Stage uses — role → stage key
+   (`numberOne`) → the pinned model → the fenced argv → the S168 fence snapshot
+   → usage capture. The role is READ + author-one-file, **no shell, no
+   network**, on both engines (`worker-adapter.sh`);
+3. reads back the worker's one file, `xo-answer.json`, and **checks it**;
+4. **ANSWER** → `respond.sh answer`, the ordinary verb, with
+   `LCARS_ANSWERED_BY=number-one` (the ledger says who) and
+   `LCARS_RESPOND_RESUME=0` (the driver is already running; a re-exec would put
+   two drivers on one Mission). Exit **0** — the driver continues;
+   **ESCALATE** → the gate is left exactly as the stage raised it,
+   `numberOne.status` becomes `escalated` with a note carrying the summary and
+   the recommendation. Exit **1** — the driver halts, as today.
+
+`xo.pid` holds this script's pid for the length of the spin, and a SIGTERM (what
+`lcars xo off <id>` sends) walks the whole process tree down so the worker dies
+with it. Every action is appended to `<mission>/number-one.jsonl`.
+
+### What is checked, and why
+
+- **An ANSWER must cite a line that is really there.** At least one citation
+  quote must occur, verbatim (whitespace-normalised), in the file it names. The
+  prior-art on LLM judges says the failure to expect is not over-refusal but a
+  judge that **reasons its way past the record** — a chain of sensible
+  inferences landing somewhere the Mission never said. A verdict that cannot
+  show its line is not a verdict.
+- **Scope and spend are the captain's, always.** A gate whose
+  `escalationType` is `scope` escalates no matter what the worker decided
+  (ruling 2026-09-11). The worker still runs, so the captain gets a
+  recommendation with the escalation.
+- **The unsure exit is honoured.** `decision: answer` with `confidence: low` is
+  taken as the escalation the prompt asked for.
+- **Anything malformed escalates** with the note
+  `Number One could not decide — malformed verdict` — no file, not JSON, no
+  decision, an answer with no citations. Never a crash, never a silent answer.
+
+The model is the captain's Opus pin: the S194 write floor
+(`write_capable_alias` → `modelAliases.copilot.opus`, default
+`claude-opus-4.8`), overridable by config `numberOne.model`, outranked by
+`LCARS_WORKER_MODEL`. The prompt is `skills/lcars-xo/prompts/answer.md`.
 
 ## The engine picker
 
@@ -55,6 +107,17 @@ producer records, the surface displays.
   "numberOne": {"enabled": true, "engine": "copilot"}
 ```
 
+**The engine is a real pin, not a label.** `numberOne.engine` is what Number
+One's worker actually runs on: `xo.sh` exports it as `$LCARS_WORKER_BIN` with
+`$LCARS_WORKER_BIN_INTERNAL=1` when it spawns the spin, and `run.sh`'s
+`spawn-number-one` entry honours it ABOVE the Mission's own `workerBin`. The
+Mission's `engineSource` / `engineResolved` / `workerBin` are left untouched —
+those answer "why does this MISSION run on this engine", and Number One's engine
+is Number One's. The captain's own `$LCARS_WORKER_BIN` still outranks the pin,
+because it is per-invocation and unmistakably deliberate. (Fix round 1: the
+engine was recorded and displayed and consulted by nothing, so a repo pinned to
+claude spawned copilot while every surface said claude.)
+
 One line is load-bearing twice over. `lcars_config_merge` preserves an existing
 raw value only when it sits on a single line, and it **deletes** any top-level
 key missing from `DESIRED_CONFIG` — so `numberOne` is listed in both
@@ -71,6 +134,60 @@ failure S196 paid for with `cloneId`.
 `stood-down`. `optOut: true` means "never engage here". The key goes at the top
 because a last-key corruption bug is latent in the state writers (the S189
 rule) — keeping new keys off the end keeps it latent.
+
+## When the driver calls it (S202)
+
+`lcars run` engages Number One **once, at the top of a drive**, when the repo
+switch is on and the Mission is not opted out (and never re-engages one the
+captain stood down, nor overwrites one that is `escalated` while the gate it
+handed back — the one whose cksum is in `lastPending` — is still up; once the
+captain has answered that gate, the next drive re-engages and drops the stale
+note). Engaging is the driver's act and only the driver's:
+`lcars xo on` is a repo switch, and `lcars xo on <mission>` only returns a
+Mission to scope — it clears the opt-out AND the `stood-down` status the
+matching `off` wrote, leaving the Mission looking exactly like one that was
+never stood down, so the NEXT drive is what engages it. It does not touch
+`escalated`: that gate is still the captain's.
+
+Every park in the pipeline lands on ONE line of `cmd_drive` — the awaiting halt
+at the top of the loop — so the hook is there, not at the two dozen raisers:
+
+* `numberOne.status == engaged` → `bash xo.sh answer --mission <id>`
+* exit **0** → the gate is cleared; the loop goes round and the drive carries
+  on. There is **no second driver**: `xo.sh` pins `LCARS_RESPOND_RESUME=0`, so
+  `respond.sh` records the answer and returns instead of re-entering the driver.
+* exit **1** → the driver halts at the gate exactly as it did before S202.
+
+`--step` has its **own** arm. A Stage that finishes by asking has finished, so
+the first officer answers there and the step **ends, cleared** — rather than the
+gate falling through to the top of the loop, where auto mode would clear it and
+then run a second Stage the captain never asked for.
+
+**The same question is never asked twice.** An escalated gate is still a gate,
+and the next pass would otherwise hire a worker to be told the same thing. The
+driver **records** the `cksum` of the `pending.json` it acted on as
+`numberOne.lastPending` — written BEFORE the spawn, so a crash mid-spin does not
+buy a second one — and skips a gate whose pending matches. It is recorded, never
+worked out afterwards from a journal or a comment.
+
+`LCARS_XO_DRIVE=0` takes the hook out of the loop entirely.
+
+## Number One's report — the living comment
+
+`comment-mirror.sh` renders `<mission>/number-one.jsonl` into **one** issue
+comment keyed `number-one`: status, engine, the last answer with the line that
+grounded it, the escalation note, and the whole journal folded into a
+`<details>`. It is CREATED once and **EDITED** thereafter — the S65 model,
+unchanged; two answers are two lines in one comment, never two comments.
+
+The one exception is an **escalation**, and it is S65's own exception: an edit
+does not notify on GitHub, so a gate that has just become the captain's also
+goes out through `cm_ping_gate` as a fresh comment (idempotent by its recorded
+gate key, so a re-render never pings twice). That ping **replaces** the generic
+"Awaiting your answer" one rather than joining it — one gate, one notification —
+and with Number One off, or engaged but not escalated, the pre-existing ping
+fires exactly as it always has. `lcars answer` prints the same note on the card,
+read off `state.numberOne` — the inbox infers nothing.
 
 ## The engaged lock
 
@@ -102,6 +219,13 @@ to hand the conn back, and nothing is ever KILLed, so a worker gets to finish
 its own cleanup), then writes `stood-down` plus the note
 `Number One stood down <time> · you have the conn`, and the lock lifts.
 
+Standing down is an **action**, so it appends its own `stood-down` line to
+`<mission>/number-one.jsonl` — the living comment's journal is otherwise the one
+surface with no record that a spin was aborted. It also **clears
+`lastPending`**: that cksum is stamped BEFORE the spin, so a worker killed
+mid-spin would otherwise leave Number One locked out of a gate it never actually
+read. The conn comes back, and so does the gate.
+
 A repo-level `lcars xo off` does that for every engaged mission and flips
 `enabled` to `false` — **keeping the recorded engine**, because the captain
 turned Number One off, he did not un-choose his engine.
@@ -111,5 +235,17 @@ turned Number One off, he did not un-choose his engine.
 - `skills/lcars-run/ownership.sh` — `lcars_xo_lock_reason`, `xo-lock-reason`
 - `skills/lcars-init/lcars-common.sh` — `lcars_engine_available`,
   `lcars_xo_default_engine`, `lcars_config_set_or_add_raw`, `lcars_config_get_raw`
-- `tests/lcars-xo.test.sh`, `tests/ownership.test.sh`,
-  `tests/lcars-update.test.sh`, `web/tests/test_xo_lock_endpoints.py`
+- `skills/lcars-run/worker-adapter.sh` — the `number-one` role (both CLIs)
+- `skills/lcars-run/run.sh` — `spawn_number_one`, `spawn-number-one`,
+  `stage_key_for_role number-one → numberOne`, `drive_engage_number_one`,
+  `drive_number_one_gate` (the `cmd_drive` hook + the `--step` arm)
+- `skills/lcars-run/comment-mirror.sh` — `cm_render_number_one`,
+  `cm_mirror_number_one`
+- `skills/lcars-answer/answer.sh` — the escalation note on the inbox card
+- `skills/lcars-respond/respond.sh` — `$LCARS_ANSWERED_BY` → `answeredBy`
+- `tests/lcars-xo.test.sh`, `tests/worker-adapter.test.sh`,
+  `tests/stage-model.test.sh`, `tests/lcars-respond.test.sh`,
+  `tests/ownership.test.sh`,
+  `tests/lcars-update.test.sh`, `web/tests/test_xo_lock_endpoints.py`,
+  `tests/lcars-drive-xo.test.sh` (the driver hook — scoped, seconds, never the
+  whole run suite), `tests/lcars-comment.test.sh`, `tests/lcars-answer.test.sh`

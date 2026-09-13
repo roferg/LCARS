@@ -37,6 +37,10 @@
 #       launch         → Read,Grep,Glob,Write  (inspect to DISCOVER how to run an
 #                        app, then AUTHOR its one discovery artifact; NO shell —
 #                        S168 swapped the shell for a pen, see adapter_deny)
+#       number-one     → Read,Grep,Glob,Write  (session 202 — the first officer
+#                        READS the mission's whole record and AUTHORS exactly one
+#                        file, xo-answer.json, in its own scratch dir. Same shape
+#                        as `launch`, same reason: it reasons, `xo.sh` executes.)
 #       default        → Read              (explicit sentinel for the old `*` case)
 # An unknown <cli> or unknown <role> exits NON-ZERO with a message on stderr —
 # never a silent empty argv / silent inline run. The SAME is true of the DENY
@@ -61,6 +65,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read-web) printf 'Read,Grep,Glob,Write,WebSearch,WebFetch' ;;
         repo-write)    printf 'Read,Grep,Glob,Write,Edit,Bash' ;;
         launch)        printf 'Read,Grep,Glob,Write' ;;
+        number-one)    printf 'Read,Grep,Glob,Write' ;;
         default)       printf 'Read' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -79,6 +84,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read-web) printf 'view,grep,glob,create,web_fetch,web_search' ;;
         repo-write)    printf 'view,grep,glob,create,edit,bash' ;;
         launch)        printf 'view,grep,glob,create' ;;
+        number-one)    printf 'view,grep,glob,create' ;;
         default)       printf 'view' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -119,6 +125,16 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 #                  has no general-purpose execution channel at all. The checkout
 #                  is additionally CHECKED clean after the turn (launch.sh), so
 #                  "inspection only" is verified instead of trusted.
+#   number-one     S202. The `launch` posture with the NETWORK taken away as well.
+#                  Number One's whole job is to decide from THE RECORD — the PRD,
+#                  the ADRs, the plan, the answers already given — and the failure
+#                  mode the research warned about is a judge that reasons its way
+#                  past the record. A worker that can fetch is a worker that can
+#                  ground a verdict in something the mission never said, so it
+#                  gets no fetch. It keeps Write because xo-answer.json IS its
+#                  entire output, and it is denied Bash EXPLICITLY: on claude the
+#                  allow list only pre-approves, so this row is the only thing
+#                  that actually takes the shell away.
 #   default        the read-only sentinel: everything but Read/Grep/Glob is gone.
 #
 # An unknown cli or role exits NON-ZERO, exactly like adapter_tools — and a
@@ -133,6 +149,7 @@ adapter_deny() { # cli role → deny list (stdout); non-zero on unknown cli/role
         repo-read-web) printf 'Edit,Bash,NotebookEdit' ;;
         repo-write)    printf 'NotebookEdit' ;;
         launch)        printf 'Edit,Bash,NotebookEdit' ;;
+        number-one)    printf 'Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
         default)       printf 'Write,Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -143,7 +160,7 @@ adapter_deny() { # cli role → deny list (stdout); non-zero on unknown cli/role
       # and no flag is emitted. The role is still VALIDATED so an unknown role
       # exits non-zero from BOTH tables, never just one.
       case "$role" in
-        repo-read|repo-read-web|repo-write|launch|default) : ;;
+        repo-read|repo-read-web|repo-write|launch|number-one|default) : ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
       ;;

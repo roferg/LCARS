@@ -49,6 +49,11 @@ GIT_BIN="${LCARS_GIT_BIN:-git}"
 WORKER_BIN=""
 WORKER_MODEL=""
 WORKER_BIN_SRC=""
+# S202 fix round 1 (D1) — set to 1 by the `spawn-number-one` entry ONLY, before
+# it resolves a worker. It is a shell global, not an env var, because the
+# resolver runs in this very process and a marker on the environment would leak
+# down into the worker (and back up into anything that re-execs run.sh).
+XO_ENGINE_PIN=0
 WORKER_MODEL_SRC=""
 WORKER_RESOLVED=0   # guard so the resolution log line prints ONCE per process.
 # The test runner the Implement red gate invokes to prove the Test Writer's
@@ -69,6 +74,17 @@ SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 # every `bash "$SELF" …` site.
 SELF="$SKILL_DIR/$(basename "$SELF")"
 STAGES_DIR="$SKILL_DIR/stages"
+# Number One's prompt templates (S202). They live with the VERB that owns the
+# first officer (skills/lcars-xo), not with the pipeline's own stage prompts:
+# Number One is not a Stage, it is the captain's stand-in at one. $LCARS_XO_PROMPTS
+# lets a test point at a fixture template without a second copy of the real one.
+XO_PROMPTS_DIR="${LCARS_XO_PROMPTS:-$SKILL_DIR/../lcars-xo/prompts}"
+# Number One's VERB (S202). The driver calls `xo.sh answer` at a gate and reads
+# nothing from it but an exit status — 0 the gate is cleared, non-zero it stays
+# up. The driver decides NOTHING about the answer itself: that belongs to the one
+# script that owns the first officer, and a second opinion here would be a second
+# place the rules live.
+XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILL_DIR/../lcars-xo/xo.sh}"
 # The SINGLE source of truth for billing data (Claude $/MTok per tier; Copilot
 # premium-request multipliers + overage). NO prices/multipliers are hardcoded in
 # this script's cost logic — they all live in pricing.json. $LCARS_PRICING lets
@@ -13755,6 +13771,27 @@ resolve_worker_bin() {
   # A genuine, EXTERNAL $LCARS_WORKER_BIN carries no such marker and still
   # records `env` — over an adopt record included, because when the captain moves
   # a mission by hand the adopt record is no longer what happened.
+  #
+  # NUMBER ONE'S OWN ENGINE (S202 fix round 1, D1) — ABOVE the mission's pin,
+  # and only ever on the `spawn-number-one` path. The first officer's engine is
+  # `numberOne.engine`, a per-repo choice the captain makes with `lcars xo on
+  # --engine …`; the mission's `workerBin` is the engine the MISSION runs on.
+  # They are two different facts about two different things, and until this fix
+  # the second silently answered for the first — a repo pinned to claude spawned
+  # the copilot binary while the banner, state.json and the living comment all
+  # said claude.
+  #
+  # It does NOT take the `env` source and it never reaches
+  # record_engine_provenance (which returns early on the same flag), so the
+  # MISSION's engineSource/engineResolved/workerBin are untouched: Number One's
+  # engine is Number One's, not the mission's. Everywhere else XO_ENGINE_PIN is
+  # 0 and this block does not exist — `lcars approve`'s internal re-pin, and the
+  # captain's own $LCARS_WORKER_BIN, behave exactly as they did.
+  if [ "${XO_ENGINE_PIN:-0}" = "1" ] \
+     && [ -n "${LCARS_WORKER_BIN:-}" ] \
+     && [ "${LCARS_WORKER_BIN_INTERNAL:-}" = "1" ]; then
+    WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="number-one"; return 0
+  fi
   local internal_pin=""
   if [ -n "${LCARS_WORKER_BIN:-}" ]; then
     if [ "${LCARS_WORKER_BIN_INTERNAL:-}" = "1" ]; then
@@ -13848,6 +13885,13 @@ stage_key_for_role() { # role → stage key (stdout; empty if none)
     plan-review)                                  printf 'planReview' ;;
     implement-tdd)                                printf 'implement' ;;
     context-pack)                                 printf 'infra' ;;
+    # S202 — Number One. A role with NO key here resolves NO model: the ladder in
+    # resolve_stage_model is skipped whole for an empty key, so the worker is
+    # handed the CLI's default. S194 measured what that costs on copilot (the
+    # default `create` tool cannot write the file, so the worker reports an
+    # artifact that never reached disk). This line is the whole reason the first
+    # officer runs on the Opus the captain pinned.
+    number-one)                                   printf 'numberOne' ;;
   esac
 }
 
@@ -13986,12 +14030,18 @@ stage_must_write() { # stage key → 0 when the worker's whole job is to write a
 #   implementation = implement, verify
 #   all            = every one of the above (whole-way override)
 # `infra` (context-pack) is never in any scope — it is never escalated.
+# `numberOne` (S202) is in `all` ONLY. The two named axes are the ESTIMATOR's
+# reading of the PIPELINE — how hard is the thinking, how hard is the building —
+# and the first officer is neither: it is the captain's stand-in at a gate. So a
+# scoped override leaves it on its own floor, and only the whole-way override
+# ("run everything on X") reaches it, because that one is a statement about the
+# repo rather than about a stage.
 stage_in_override_scope() { # key scope → 0 if in scope, 1 otherwise
   local key="$1" scope="$2"
   case "$scope" in
     all)
       case "$key" in
-        research|validate|plan|planReview|implement|verify) return 0 ;;
+        research|validate|plan|planReview|implement|verify|numberOne) return 0 ;;
       esac ;;
     reasoning)
       case "$key" in research|validate|plan|planReview) return 0 ;; esac ;;
@@ -14040,6 +14090,17 @@ resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   # (a) global env pin — wins for every stage, verbatim.
   if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
   local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  # (a1) S202 — the captain's own pin for HIS first officer. `numberOne.model` is
+  # written by `lcars xo on --model <m>` onto the SAME one-line config block as
+  # the engine, so the officer he chose and the model he chose are one record.
+  # It is a RAW flag (like `workerModel`), not a logical tier: the captain names
+  # a model, and a tier would silently re-map it. Only the env pin outranks it.
+  if [ "$key" = "numberOne" ]; then
+    local xo_model=""
+    [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+      && xo_model="$(json_scoped_str "$LCARS_CFG" "numberOne.model")"
+    if [ -n "$xo_model" ]; then printf '%s' "$xo_model"; return 0; fi
+  fi
   if [ "$key" != "infra" ] && [ -n "$key" ]; then
     # (a2) captain model override — only for stages within its scope.
     local ov; ov="$(active_model_override)"
@@ -14171,6 +14232,12 @@ resolve_worker() {
 # with a hard-coded trailing comma and breaks only when rewriting the LAST field.
 # `base` is last, and S189/S190/S191 all deliberately preserved that.
 record_engine_provenance() {
+  # NUMBER ONE'S SPIN RECORDS NOTHING HERE (S202 fix round 1, D1). These two
+  # keys answer "why does THIS MISSION run on this engine". A first officer
+  # reading the record on its own pinned engine is not an answer to that
+  # question, and writing it here would replace the captain's real answer
+  # (`adopt-chosen`, the mission's own pin) with a fact about his XO.
+  [ "${XO_ENGINE_PIN:-0}" = "1" ] && return 0
   local statef="${STATE:-}"
   [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
   [ -n "$statef" ] && [ -f "$statef" ] || return 0
@@ -14727,6 +14794,56 @@ exactly as specified above, in the scratch output directory, and nowhere else.$p
   # differs, and that goes through generate_context_pack, not here), so pre-export
   # LCARS_WORKER_ROLE=$role and pass $toolset as the adapter's toolset-role.
   LCARS_WORKER_ROLE="$role" worker_spawn "$toolset" "$outdir" "$prompt"
+}
+
+# === Number One's spawn (S202) =============================================
+# ONE wrapper around spawn_worker, so the first officer arrives at the cold-worker
+# chokepoint by exactly the same road every Stage does: role → stage key → model
+# → adapter argv → fence snapshot → usage capture. Nothing here is a second spawn
+# path; if it were, the S168 fence and the model floor would both have a hole
+# with Number One's name on it.
+#
+# THE DIVISION OF LABOUR (captain ruling, 2026-09-11). This function hires the
+# worker and hands it paper. It does NOT read the verdict, validate it, answer a
+# gate, or touch a mission's state — `xo.sh` does all of that, through the
+# ordinary verbs. The worker REASONS; the skill EXECUTES.
+#
+#   <mission>  the mission id (already located by the caller — MISSION_DIR is set)
+#   <mode>     which question it is being asked: `answer` today (S203 adds the
+#              Verify look). It names the prompt template, so an unknown mode is
+#              a LOUD failure rather than a worker with no instructions.
+#   <outdir>   its scratch dir. The ONLY place it may write, and where xo.sh
+#              reads xo-answer.json back from.
+#
+# The read-only INPUT copies are the caller's: it exports $LCARS_WORKER_INPUT_DIRS
+# (which the adapter turns into copilot `--add-dir` grants) and $LCARS_XO_INPUT_DIR
+# (which names the dir in the prompt). A missing input dir is not fatal here —
+# xo.sh gathers it and would have failed already — but it IS named, because a
+# worker told to read a directory that is not there answers "the PRD is silent",
+# and that is the one wrong answer this round must never manufacture.
+spawn_number_one() { # mission-id  mode  outdir
+  local id="$1" mode="$2" outdir="$3"
+  local template="$XO_PROMPTS_DIR/$mode.md"
+  [ -f "$template" ] || die "no Number One prompt template for mode '$mode' at $template — reinstall LCARS (./install.sh)."
+  mkdir -p "$outdir"
+  local indir="${LCARS_XO_INPUT_DIR:-}"
+  local inventory=""
+  if [ -n "$indir" ] && [ -d "$indir" ]; then
+    inventory="$(cd "$indir" && find . -type f | sed 's|^\./|  - |' | sort)"
+  fi
+  local extra="## The mission
+Mission id: $id
+
+## Your input directory — the mission's RECORD, read-only
+$indir
+
+These are the files a human at this gate would have in front of him. They are
+COPIES; nothing you do can change the mission. Read them with your read tools.
+${inventory:-  (the input directory is empty — say so, and ESCALATE)}
+
+## Your output file
+Write EXACTLY ONE file: $outdir/xo-answer.json"
+  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" number-one "$outdir" "$extra"
 }
 
 # === Bounded fan-out (the ONE shared concurrency helper) ====================
@@ -18305,6 +18422,184 @@ release_driver_lock() {
   DRIVER_LOCK_DIR=""
 }
 
+# ===========================================================================
+# NUMBER ONE AT A GATE (S202) — the driver's half of the first officer.
+# ===========================================================================
+#
+# THE DRIVER DECIDES NOTHING. Everything below answers exactly two questions:
+# "is Number One engaged on this mission?" and "have I already shown it THIS
+# question?". If both say yes-and-no it calls `lcars xo answer`, and then obeys
+# the exit status — 0 the gate is cleared and the drive carries on, non-zero the
+# gate stays up and the drive halts exactly as it did before this session. What
+# the answer IS, whether the record settles it, and whether scope makes it the
+# captain's are xo.sh's to judge; a second copy of that judgement here is how two
+# first officers with different rules get into one tree.
+#
+# WHY THE CKSUM IS RECORDED AND NEVER INFERRED. A gate that Number One escalated
+# is still a gate: the next pass of this loop sees the same `awaitingHuman: true`
+# and the same pending.json, and without a memory it would hire another worker to
+# be told the same thing — every pass, for as long as the mission sits there. The
+# memory is the cksum of the pending.json it acted on, WRITTEN BEFORE the spawn
+# (a crash mid-spin must not buy a second spin either) and read back off the
+# mission's own state. It is recorded, not worked out afterwards from a journal
+# or a comment: the producer records, the surface displays.
+#
+# THE STATE WRITER IS A LINE-BASED COPY of xo.sh's, deliberately. `numberOne` is
+# ONE line of state.json by construction, both writers set scalar keys on it, and
+# the two are byte-compatible so neither can lose the other's fields. S207's
+# aftercare owns unifying the state writers repo-wide (41 call sites); making a
+# 42nd shape here to be different would be the opposite of helping it.
+
+# The mission's one-line numberOne object, or empty.
+drive_xo_block() {
+  [ -f "${STATE:-}" ] || return 0
+  sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*\({[^}]*}\).*/\1/p' "$STATE" | head -1
+}
+
+# drive_xo_field <key> → its recorded STRING value, or empty.
+drive_xo_field() {
+  drive_xo_block | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+# drive_xo_put <key> <raw-json-value> — set one key on the block, order-stable,
+# creating the block when it is absent. Values are this file's own (a status
+# word, a cksum), never user text.
+drive_xo_put() {
+  local obj inner tmp
+  obj="$(drive_xo_block)"; [ -n "$obj" ] || obj='{}'
+  inner="$(printf '%s' "$obj" \
+    | sed -E "s/\"$1\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|[^,}]+)[[:space:]]*,?[[:space:]]*//" \
+    | sed -E 's/,[[:space:]]*\}/}/; s/\{[[:space:]]*,[[:space:]]*/{/')"
+  inner="${inner#\{}"; inner="${inner%\}}"
+  inner="$(printf '%s' "$inner" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/,$//')"
+  if [ -n "$inner" ]; then obj="$(printf '{%s, "%s": %s}' "$inner" "$1" "$2")"
+  else obj="$(printf '{"%s": %s}' "$1" "$2")"; fi
+  tmp="$(mktemp)"
+  grep -v '"numberOne"[[:space:]]*:' "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+  tmp="$(mktemp)"
+  V="$obj" awk 'NR==1{print; printf "  \"numberOne\": %s,\n", ENVIRON["V"]; next} {print}' \
+    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+}
+
+# drive_xo_del <key> — the block without that key. The mirror image of
+# drive_xo_put, and byte-compatible with xo.sh's obj_del for the same reason the
+# writer above is a copy of xo.sh's: the two must never disagree about the shape
+# of this one line. A block that has no such key is left exactly as it was.
+drive_xo_del() {
+  local obj inner tmp
+  obj="$(drive_xo_block)"; [ -n "$obj" ] || return 0
+  case "$obj" in *"\"$1\""*) : ;; *) return 0 ;; esac
+  inner="$(printf '%s' "$obj" \
+    | sed -E "s/\"$1\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|[^,}]+)[[:space:]]*,?[[:space:]]*//" \
+    | sed -E 's/,[[:space:]]*\}/}/; s/\{[[:space:]]*,[[:space:]]*/{/')"
+  tmp="$(mktemp)"
+  grep -v '"numberOne"[[:space:]]*:' "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+  tmp="$(mktemp)"
+  V="$inner" awk 'NR==1{print; printf "  \"numberOne\": %s,\n", ENVIRON["V"]; next} {print}' \
+    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+}
+
+# Is Number One ON for this REPO? The same one-line read `lcars xo` does — a
+# missing key, a malformed block and an unreadable config all answer "off",
+# because the safe reading of "I cannot tell" is that the captain has the conn.
+drive_xo_repo_on() {
+  local blk
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 1
+  blk="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$LCARS_CFG" | head -1)"
+  case "$blk" in *'"enabled"'*'true'*) return 0 ;; esac
+  return 1
+}
+
+drive_xo_repo_engine() {
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 0
+  sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$LCARS_CFG" | head -1 \
+    | sed -n 's/.*"engine"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# === ENGAGE ON DRIVE =======================================================
+# Engaging is the DRIVER's act and only the driver's (S201's `lcars xo on` is a
+# repo switch; `lcars xo on <mission>` only clears an opt-out). One place, at the
+# top of a drive, so "Number One is engaged" can only ever become true where the
+# work actually starts — and so a mission the captain opted out of, or stood
+# down, stays his however many times he re-runs it.
+drive_engage_number_one() {
+  drive_xo_repo_on || return 0
+  case "$(drive_xo_block)" in *'"optOut"'*true*) return 0 ;; esac
+  local status; status="$(drive_xo_field status)"
+  [ "$status" = "engaged" ] && return 0     # already holding the conn — leave `since` alone
+  [ "$status" = "stood-down" ] && return 0  # the captain took it back; only `lcars xo on <id>` re-offers it
+  # ESCALATED IS NOT OVERWRITTEN WHILE THE GATE IS STILL UP (S202 fix round 1,
+  # D3). `escalated` is the one signal that says THIS ONE IS YOURS, and this
+  # line — which already knew about `engaged` and `stood-down` — used to write
+  # straight over it on the very next pass of an auto-advance or the daemon.
+  # Nothing was lost mechanically (the gate survives either way); what was lost
+  # was the red card, on the pass AFTER the one the captain was told about.
+  #
+  # It stays escalated exactly as long as the gate it handed back is up. Once
+  # the captain has ANSWERED that gate, re-engaging is the right act — "until
+  # the captain acts on it" is the rule, and holding `escalated` for ever would
+  # sit the first officer out of every remaining gate on the mission. The stale
+  # "this one is yours" note goes with the re-engage; `lastAction` stays, because
+  # it is the record of what Number One actually did.
+  #
+  # "THE GATE IT HANDED BACK" IS THE RECORDED ONE, not merely "a gate". The
+  # memory already exists: `lastPending` is the cksum of the pending.json Number
+  # One acted on, written before the spin. Same cksum ⇒ the captain is still
+  # looking at the question it escalated, and the card stays red. A DIFFERENT
+  # pending question is a DIFFERENT gate — the escalated one is behind us — and
+  # the conn comes back so the first officer can take it.
+  if [ "$status" = "escalated" ]; then
+    if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
+      local xo_pend="$MISSION_DIR/pending.json" xo_last
+      xo_last="$(drive_xo_field lastPending)"
+      # NO RECORDED CKSUM, or no pending.json to compare it against, is the
+      # UNCERTAIN case, and the safe reading of "I cannot tell" is that the
+      # captain still has this one. It is reachable: an escalation raised by
+      # `lcars xo answer --mission <id>` run by hand never went through the
+      # driver, so nothing stamped `lastPending` — and treating "no memory" as
+      # "a different gate" would put the downgrade straight back.
+      [ -n "$xo_last" ] && [ -f "$xo_pend" ] || return 0
+      [ "$(drive_pending_cksum "$xo_pend")" = "$xo_last" ] && return 0
+    fi
+    drive_xo_del note
+  fi
+  local engine; engine="$(drive_xo_repo_engine)"
+  drive_xo_put status '"engaged"'
+  [ -n "$engine" ] && drive_xo_put engine "\"$engine\""
+  drive_xo_put since "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  printf '◈ NUMBER ONE: engaged%s — it takes the gates on your behalf (`lcars xo off %s` to take them back).\n' \
+    "${engine:+ · $engine}" "$MISSION_ID"
+  return 0
+}
+
+# The cksum of the pending question this pass is looking at. `cksum` is in POSIX
+# and on every box LCARS runs on; the filename is stripped so the value depends
+# on the CONTENT of the gate and nothing else.
+drive_pending_cksum() { # <pending.json>
+  [ -f "$1" ] || return 0
+  cksum <"$1" 2>/dev/null | tr -s ' ' ' ' | cut -d' ' -f1,2 | tr ' ' '-'
+}
+
+# === THE GATE HOOK =========================================================
+# 0 → the gate was ANSWERED and cleared; the caller continues the loop.
+# 1 → not Number One's (not engaged / already seen / it escalated); halt as today.
+drive_number_one_gate() {
+  [ "${LCARS_XO_DRIVE:-1}" = "0" ] && return 1     # kill-switch, as every S202 seam has
+  [ -f "$XO_SCRIPT" ] || return 1
+  [ "$(drive_xo_field status)" = "engaged" ] || return 1
+  local pending="$MISSION_DIR/pending.json"
+  [ -f "$pending" ] || return 1
+  local sum last
+  sum="$(drive_pending_cksum "$pending")"
+  last="$(drive_xo_field lastPending)"
+  [ -n "$sum" ] && [ "$sum" = "$last" ] && return 1   # already shown this exact question
+  # RECORDED BEFORE THE SPAWN, on purpose — see the header.
+  [ -n "$sum" ] && drive_xo_put lastPending "\"$sum\""
+  local rc=0
+  bash "$XO_SCRIPT" answer --mission "$MISSION_ID" || rc=$?
+  return "$rc"
+}
+
 cmd_drive() {
   locate_mission "$MISSION_ID"
   # A parked mission (prdPending) is NOT drivable — the driver never runs a
@@ -18348,6 +18643,12 @@ cmd_drive() {
 
   local mode="auto"; [ "$STEP" = 1 ] && mode="step"
   printf '%s  %s-advance\n%s\n' "$MISSION_ID" "$mode" "$SEP"
+
+  # S202 — ENGAGE NUMBER ONE, if the captain has it on for this repo and has not
+  # opted THIS mission out. Once, here, before anything is spawned: the gates
+  # below ask the mission's state whether it is engaged, and the state must have
+  # been told before the first of them is reached.
+  drive_engage_number_one
 
   # Version check (S129) — WARN mode ONLY. The drive loop is a headless,
   # walk-away path: it must NEVER prompt or block on the update ask. `warn` mode
@@ -18395,6 +18696,15 @@ cmd_drive() {
     # Halt conditions, checked BEFORE running anything. Each emits a `gate` event
     # to the Mission log (the halt block + notify hook below are unchanged).
     if [ "$awaiting" = "true" ]; then
+      # S202 — NUMBER ONE TAKES IT FIRST. Every gate in the pipeline lands on this
+      # line (the design comment further down says so), which is why the hook is
+      # here and not at each of the two dozen raisers. It answers or it does not;
+      # on rc 0 the gate is CLEARED and this is no longer a halt, so the loop goes
+      # round and the drive carries on with no second process anywhere — the
+      # answer went through `lcars respond` with its re-exec pinned off.
+      if drive_number_one_gate; then
+        continue
+      fi
       emit_event gate "$stage" "awaiting your answer"
       mirror_comments || true
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
@@ -18494,6 +18804,23 @@ cmd_drive() {
       # next pass — emitting one here too would double-log the gate.
       summary="${summary:+$summary
 }$line"
+      # S202 — THE `--step` ARM'S OWN HOOK. In auto mode the `continue` below
+      # carries this gate to the halt check at the top of the next pass and
+      # Number One takes it there, so nothing extra is needed. `--step` is
+      # different: the captain asked for ONE Stage, and that Stage has finished —
+      # it just finished by asking a question. So the first officer answers it
+      # here and the step ENDS, cleared, instead of the driver running a second
+      # Stage the captain did not ask for. Escalate (or not engaged) and this is
+      # a no-op: the `continue` falls through to the halt exactly as before, and
+      # the recorded cksum means the top-of-loop hook does not hire a second
+      # worker to be told the same thing.
+      if [ "$mode" = "step" ] && drive_number_one_gate; then
+        drive_print_summary "$summary"
+        printf '⏹ stepped one Stage — Number One answered the gate it raised; still at: %s\n' \
+          "$(json_str "$STATE" stage)"
+        printf 'Run `%s` to continue (or add `--step` for one more).\n' "$(drive_hint)"
+        return 0
+      fi
       continue
     fi
     if [ "$new_stage" != "$stage" ]; then
@@ -18536,6 +18863,7 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; SETUP=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
+XO_MODE=""; XO_OUTDIR=""    # S202 — Number One's spawn (see spawn-number-one)
 FINAL_ATTEMPT=0   # S178: plan-save --final-attempt (guard goes advisory)
 RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
@@ -18579,6 +18907,12 @@ while [ $# -gt 0 ]; do
     --stage=*)     EV_STAGE="${1#--stage=}"; shift ;;
     --detail)      EV_DETAIL="${2:-}"; shift 2 ;;
     --detail=*)    EV_DETAIL="${1#--detail=}"; shift ;;
+    # S202 — Number One's spawn. --mode names its prompt template, --outdir its
+    # scratch dir (xo.sh owns both; it gathers the inputs and reads the verdict).
+    --mode)        XO_MODE="${2:-}"; shift 2 ;;
+    --mode=*)      XO_MODE="${1#--mode=}"; shift ;;
+    --outdir)      XO_OUTDIR="${2:-}"; shift 2 ;;
+    --outdir=*)    XO_OUTDIR="${1#--outdir=}"; shift ;;
     # A single bare positional (the stage key / role for resolve-stage-model /
     # spawn-stage). Only these subcommands consume it; others still reject extras.
     -*)            die "unknown argument: $1" ;;
@@ -18659,6 +18993,20 @@ case "$SUB" in
   # observable end-to-end. The spawn-path test surface.
   spawn-stage)         [ -n "$POSARG" ] || die "usage: run.sh spawn-stage [--mission <id>] <role>"
                        cmd_spawn_stage "$POSARG" ;;
+  # S202 — hire Number One for ONE question. `xo.sh` is the only caller: it has
+  # already gathered the read-only input copies and it reads xo-answer.json back.
+  # This entry exists so the first officer reaches the SAME cold-worker chokepoint
+  # every Stage uses (model ladder, S168 fence, usage capture) instead of growing
+  # a second spawn path of its own.
+  spawn-number-one)
+    [ -n "$MISSION_ID" ] || die "usage: run.sh spawn-number-one --mission <id> --mode <mode> --outdir <dir>"
+    [ -n "$XO_OUTDIR" ] || die "usage: run.sh spawn-number-one --mission <id> --mode <mode> --outdir <dir>"
+    locate_mission "$MISSION_ID"
+    # RAISED BEFORE THE RESOLVER RUNS — require_worker is what resolves the bin
+    # and records provenance, and both read this flag.
+    XO_ENGINE_PIN=1
+    require_worker
+    spawn_number_one "$MISSION_ID" "${XO_MODE:-answer}" "$XO_OUTDIR" ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   # ADR-004: mirror not-yet-posted surfaced events from events.jsonl onto the
