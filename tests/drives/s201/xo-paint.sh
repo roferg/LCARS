@@ -64,7 +64,8 @@ if [ "$RC" -eq 0 ]; then
   mkdir -p "$SHOTS"
   for f in xo-board.png xo-engaged-card.png xo-finished-card.png \
            xo-engaged-grey.png xo-pill.png xo-pill-grey.png \
-           xo-pill-finished-grey.png xo-owner-grey.png; do
+           xo-pill-finished-grey.png xo-owner-grey.png \
+           xo-legend.png xo-legend-grey.png; do
     [ -f "$LCARS_S190_PAINT_OUT/product/$f" ] \
       && cp "$LCARS_S190_PAINT_OUT/product/$f" "$SHOTS/$f"
   done

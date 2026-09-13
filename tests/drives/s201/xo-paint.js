@@ -19,12 +19,20 @@
  *   2. CAN YOU TELL IT FROM THE OWNER PILL WITH THE COLOUR GONE. Peach and
  *      amber are ONE HUE to a greyscale screenshot, a projector and a
  *      red-green colourblind reader — which is S196's B1 defect exactly, and
- *      the reason this check exists at all. The answer must be FILL, not hue:
- *      the ENGAGED pill is a solid block and the FINISHED pill is an outline,
- *      and the rig proves that by DESATURATING the real page in real Chrome
- *      and re-reading the pixels through the filter. It also proves THE FILTER
- *      BIT (r == g == b), because a greyscale check that silently ran in
- *      colour would pass on the broken version.
+ *      the reason this check exists at all. The answer must be SHAPE, not hue,
+ *      and the rig proves it by DESATURATING the real page in real Chrome and
+ *      re-reading the pixels through the filter. It also proves THE FILTER BIT
+ *      (r == g == b), because a greyscale check that silently ran in colour
+ *      would pass on the broken version.
+ *
+ *   3. AND CAN YOU TELL ENGAGED FROM FINISHED WITH THE COLOUR GONE. Both are
+ *      hollow peach pills since the 2026-09-13 ruling, so what separates them
+ *      is RIM WEIGHT — 2px against 1px — and this rig measures that rim band
+ *      in the desaturated screenshot. It deliberately does NOT lean on the
+ *      pulse: a pulse is motion, and motion is gone from a still frame and
+ *      switched off under `prefers-reduced-motion`, so a check that measured
+ *      it would be measuring the one cue that is missing exactly when the
+ *      captain is reading a captured board.
  *
  * EXIT: 0 proven · 1 the product is wrong · 77 infrastructure (never a pass).
  * ========================================================================= */
@@ -137,6 +145,22 @@ const XO_PROBE = `(function () {
                    cls: band.className } : null,
     legend: Array.prototype.map.call(legend,
       function (n) { return (n.textContent || "").trim(); }),
+    // THE UNION BOX of the two legend entries, so the frames can show that the
+    // legend teaches the SAME pair of shapes the cards draw. A legend that
+    // taught a shape the board no longer paints would be a defect no check in
+    // this rig asks about, and the captain reads it off the picture.
+    legendXo: (function () {
+      var u = null;
+      for (var j = 0; j < legend.length; j++) {
+        var b = box(legend[j]);
+        if (!b) continue;
+        if (!u) { u = { x: b.x, y: b.y, w: b.w, h: b.h }; continue; }
+        var x2 = Math.max(u.x + u.w, b.x + b.w), y2 = Math.max(u.y + u.h, b.y + b.h);
+        u.x = Math.min(u.x, b.x); u.y = Math.min(u.y, b.y);
+        u.w = x2 - u.x; u.h = y2 - u.y;
+      }
+      return u;
+    })(),
     liveControls: live, deadControls: dead, standDown: standDown,
   };
 })()`;
@@ -179,6 +203,64 @@ function blockVsGround(pillPng, cardPng) {
   const p = fill(pillPng), g = fill(cardPng);
   if (!p || !g) return null;
   return contrast(p, g);
+}
+
+/* HOW HEAVY IS THE RIM — the one difference between ENGAGED and FINISHED that
+ * a still frame keeps.
+ *
+ * Since the 2026-09-13 ruling both pills are HOLLOW, so `blockVsGround` cannot
+ * separate them: a hollow pill's median pixel IS the card ground, and both
+ * read 1.00:1. What separates them now is the WIDTH OF THE RIM BAND — 2px on
+ * the engaged pill against 1px on the done family — and that is a difference
+ * in shape, which is what survives desaturation, a static screenshot AND
+ * `prefers-reduced-motion`. The pulse survives none of those three, which is
+ * exactly why it is not what gets measured here.
+ *
+ * MEASURED WHERE THE RIM IS PERPENDICULAR TO THE SCAN. The pill is a stadium,
+ * so along a scanline through its vertical centre the left cap's rim is a
+ * clean radial band: walk in from x = 0 and the first run of not-the-ground
+ * pixels IS the border, at its true thickness, with no text in the way (the
+ * label starts a whole padding box further in). Rows are taken in a narrow
+ * band either side of the centre and the MEDIAN run is returned, so one
+ * antialiased row cannot decide the number.
+ *
+ * HALF-MAXIMUM, not a fixed threshold: the rim's outer edge at the extreme of
+ * an arc is smeared across a pixel or two, so the run is counted between the
+ * half-peak crossings. Both pills are measured by the identical rule at the
+ * identical scale, so the comparison is honest whatever the smear costs.
+ *
+ * Returns device pixels (the clips are shot at scale 4, so a 1px CSS border is
+ * about 4), or null when the clip has no rim to measure. */
+function rimBand(png) {
+  if (!png || !png.w || !png.h) return null;
+  const g = fill(png);
+  if (!g) return null;
+  const groundV = (g[0] + g[1] + g[2]) / 3;
+  const val = (x, y) => {
+    const o = (y * png.w + x) * png.bpp;
+    return (png.px[o] + png.px[o + 1] + png.px[o + 2]) / 3;
+  };
+  // The left cap only: never wider than the pill is tall, so the label — which
+  // starts a padding box in — can never be mistaken for rim.
+  const span = Math.max(2, Math.min(png.w, Math.round(png.h * 0.45)));
+  const y0 = Math.floor(png.h * 0.42), y1 = Math.ceil(png.h * 0.58);
+  const runs = [];
+  for (let y = y0; y <= y1 && y < png.h; y++) {
+    let peak = 0;
+    for (let x = 0; x < span; x++) peak = Math.max(peak, Math.abs(val(x, y) - groundV));
+    if (peak < 20) continue;               // no rim on this row worth measuring
+    const half = peak / 2;
+    let run = 0, started = false;
+    for (let x = 0; x < span; x++) {
+      const d = Math.abs(val(x, y) - groundV);
+      if (d >= half) { run++; started = true; }
+      else if (started) break;             // the band has ended — stop counting
+    }
+    if (run > 0) runs.push(run);
+  }
+  if (!runs.length) return null;
+  runs.sort((a, b) => a - b);
+  return { px: runs[Math.floor(runs.length / 2)], rows: runs.length };
 }
 
 async function main() {
@@ -297,6 +379,7 @@ async function main() {
   await shoot(cdp, sessionId, p.finishedCard, "xo-finished-card.png", 2, 6);
   const pillPng = pngPixels(
     await shoot(cdp, sessionId, p.engagedPill, "xo-pill.png", 4, 0));
+  if (p.legendXo) await shoot(cdp, sessionId, p.legendXo, "xo-legend.png", 4, 4);
   const ip = inkAndPaper(pillPng);
   if (!ip) {
     skip("the engaged pill's contrast could not be sampled",
@@ -335,6 +418,9 @@ async function main() {
       ownerGrey = pngPixels(await shoot(
         cdp, sessionId, p.ownerPill, "xo-owner-grey.png", 4, 0));
     }
+    if (p.legendXo) {
+      await shoot(cdp, sessionId, p.legendXo, "xo-legend-grey.png", 4, 4);
+    }
     const engagedCardGrey = pngPixels(await shoot(
       cdp, sessionId, p.engagedCard, "xo-engaged-card-grey.png", 2, 6));
     const finishedCardGrey = pngPixels(await shoot(
@@ -342,17 +428,29 @@ async function main() {
     const se = blockVsGround(engagedGrey, engagedCardGrey);
     const sf = finishedGrey
       ? blockVsGround(finishedGrey, finishedCardGrey) : null;
-    if (se === null || sf === null) {
-      skip("the pills could not be sampled against their cards in greyscale");
-    } else if (se >= 3 && sf <= 1.6) {
-      ok("ENGAGED and FINISHED differ by FILL in greyscale, not hue",
-         "solid block stands " + se.toFixed(2) + ":1 off its card; hollow one "
-         + sf.toFixed(2) + ":1 (i.e. it IS the card, with a rim)");
+    // ENGAGED vs FINISHED, measured in RIM WEIGHT. Both pills are hollow, so
+    // the question is not "which is the block" — it is "is the engaged rim
+    // demonstrably heavier", asked of the desaturated pixels. Nothing here
+    // reads the pulse, the colour or the word: a still frame keeps none of the
+    // first, a projector none of the second, and a glance across a room none
+    // of the third.
+    const re_ = rimBand(engagedGrey);
+    const rf_ = finishedGrey ? rimBand(finishedGrey) : null;
+    if (!re_ || !rf_) {
+      skip("the pills' rims could not be measured in greyscale",
+           "the clip came back with no rim band — the RIG's problem, never a "
+           + "pass");
+    } else if (re_.px >= rf_.px * 1.5 && re_.px - rf_.px >= 2) {
+      ok("ENGAGED and FINISHED differ by RIM WEIGHT in greyscale, not hue",
+         "engaged rim " + re_.px + " device px vs finished " + rf_.px
+         + " (x" + (re_.px / rf_.px).toFixed(2) + " at scale 4) — and both are "
+         + "hollow: they stand " + se.toFixed(2) + ":1 and " + sf.toFixed(2)
+         + ":1 off their own cards");
     } else {
       bad("ENGAGED and FINISHED are the same pill with the colour removed",
-          "engaged " + se.toFixed(2) + ":1 off its card, finished "
-          + sf.toFixed(2) + ":1 — a solid block must stand off it and a hollow "
-          + "one must not");
+          "engaged rim " + re_.px + " device px, finished " + rf_.px
+          + " — two hollow pills with the same rim weight are told apart only "
+          + "by the WORD and the PULSE, and a static screenshot keeps neither");
     }
     if (!ownerGrey) {
       skip("no owner pill on the engaged card to compare against",

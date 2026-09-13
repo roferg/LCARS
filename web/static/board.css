@@ -2783,21 +2783,45 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
    takes it in peach while it holds the mission, and gives it straight back. */
 .card.xo-engaged{border-left-color:var(--lcars-peach,#ff9966)}
 
-/* THE PILL. A peach RIM on the card's own ground — never a peach block (the
-   ruling above) — plus a SLOW pulse while engaged (2.8s: a heartbeat, not a
-   blink — the card's own `card-running` rhythm, half a beat slower so two
-   pulsing things on one card do not strobe against each other). The pulse and
-   the BOLD word are what say "still working"; the rim says "peach". */
+/* CAPTAIN'S SECOND RULING, SAME DAY. Making ENGAGED hollow fixed the owner
+   collision and created a second one: FINISHED / ESCALATED / ANSWERED are
+   hollow peach pills too, so the two states were left differing by the WORD,
+   by font-weight, and by the pulse. THE PULSE CANNOT BE THE LOAD-BEARING CUE.
+   A pulse is motion, and motion is absent from a static screenshot of the
+   board and switched off entirely under `prefers-reduced-motion` — so the
+   strongest of the three cues vanishes exactly when someone is reading a
+   captured board or has asked for less movement.
+
+   SO ENGAGED CARRIES A HEAVIER RIM: 2px against the done family's 1px. A rim
+   weight is a difference in SHAPE, and shape survives all three things the
+   pulse does not — greyscale, a still frame, and reduced motion. The pulse
+   stays, demoted to a bonus. Do not equalise the rims to tidy them up;
+   `tests/drives/s201/xo-paint.js` measures the rim band in greyscale and goes
+   red the moment they match.
+
+   THE OUTER BOX IS HELD CONSTANT. The extra 1px of border is taken back out of
+   the padding, so an engaged pill and a finished pill occupy the identical box
+   and the pill row does not reflow when the conn comes back — the difference
+   on screen is rim weight and nothing else.
+
+   THE PILL. A peach RIM on the card's own ground — never a peach block (the
+   first ruling above) — plus a SLOW pulse while engaged (2.8s: a heartbeat,
+   not a blink — the card's own `card-running` rhythm, half a beat slower so
+   two pulsing things on one card do not strobe against each other). */
 .xo-block{margin:0 0 8px}
 .pills.xo-pills{margin:0 0 4px}
 .pill.xo{background:transparent;
   border-color:var(--lcars-peach,#ff9966);
+  border-width:2px;padding:2px 9px;
   color:var(--lcars-peach,#ff9966);font-weight:700;
   animation:xopulse 2.8s ease-in-out infinite}
-/* Once the conn is back the WORD changes and the animation goes OFF, because a
-   pill that still pulses is still claiming to be working. */
+/* Once the conn is back the RIM THINS to the house 1px, the WORD changes, and
+   the animation goes OFF, because a pill that still pulses is still claiming
+   to be working. The thin rim is the half of that sentence a screenshot keeps. */
 .pill.xo.done{background:transparent;color:var(--lcars-peach,#ff9966);
-  border-color:var(--lcars-peach,#ff9966);font-weight:400;animation:none}
+  border-color:var(--lcars-peach,#ff9966);
+  border-width:1px;padding:3px 10px;
+  font-weight:400;animation:none}
 @keyframes xopulse{0%,100%{box-shadow:0 0 0 0 rgba(255,153,102,0)}
   50%{box-shadow:0 0 0 4px rgba(255,153,102,.32)}}
 @media (prefers-reduced-motion:reduce){
@@ -2829,10 +2853,15 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   color:var(--lcars-black,#030608);
   border-color:var(--lcars-peach,#ff9966);font-weight:700}
 
-/* THE LEGEND'S TWO SWATCHES — the same solid/hollow pair, at swatch size. */
-.legend .xo-legend i.xo-sw{background:var(--lcars-peach,#ff9966)}
-.legend .xo-legend i.xo-sw.done{background:transparent;
+/* THE LEGEND'S TWO SWATCHES — THE SAME PAIR THE CARDS DRAW, at swatch size.
+   A legend that teaches a shape the board no longer paints is worse than no
+   legend, so whatever separates the two pills has to separate these two: both
+   hollow, engaged on the HEAVIER rim, finished on the thin one. If the pills'
+   rim weights ever change, change these with them. */
+.legend .xo-legend i.xo-sw{background:transparent;
   border:2px solid var(--lcars-peach,#ff9966)}
+.legend .xo-legend i.xo-sw.done{background:transparent;
+  border:1px solid var(--lcars-peach,#ff9966)}
 
 /* THE PICKER. A plain `.modal` with a peach head; the rows are the board's own
    option-row idiom (`.adopt-engine`), re-used rather than re-drawn. */
