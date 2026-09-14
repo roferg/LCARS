@@ -14,6 +14,11 @@
 #   lcars xo evaluate --mission <id>  the Verify LOOK: launch the build, walk it
 #                                     headless, compare it to the PRD and the
 #                                     drawing, and score the intent match
+#   lcars xo file-logs --mission <id> file ONE ordinary mission log per gap the
+#                                     look found, with its shots, and let LCARS
+#                                     drive them
+#   lcars xo recheck --mission <id>   after the fixes land: relaunch, look again
+#                                     gap by gap, accept what holds, re-score
 #
 # THE DIVISION OF LABOUR (captain ruling, 2026-09-11): the worker REASONS, the
 # skill EXECUTES. Nothing in this file asks a model anything. It writes two
@@ -249,13 +254,50 @@ stand_down() { # <mission-id> [--opt-out]
   pid="$(head -1 "$dir/xo.pid" 2>/dev/null | tr -dc '0-9')"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=1; fi
 
+  # ===========================================================================
+  # TWO PIDS, AND ONLY ONE OF THEM IS NUMBER ONE'S (S204).
+  #
+  #   xo.pid          the first officer's OWN chain — the worker, the browser,
+  #                   the launch. Standing it down stops these, which is the
+  #                   whole point of the captain's stop button.
+  #   xo-resolve.pid  the `lcars resolve-logs` driver working the logged bugs.
+  #                   THOSE ARE NOT NUMBER ONE'S MISSIONS. A logged bug is an
+  #                   ordinary LCARS mission with its own issue, its own branch
+  #                   and its own worker; the first officer only filed it, the
+  #                   way the captain would have. Killing it here would throw
+  #                   away work the captain never asked to stop and leave N
+  #                   children half-driven with no driver.
+  #
+  # So this pid is READ and never signalled — it is read at all only so the
+  # stand-down note can tell the captain the truth about what is still running
+  # and what will now be waiting for him.
+  local rpid rlive=0 nlogs=0
+  rpid="$(head -1 "$dir/xo-resolve.pid" 2>/dev/null | tr -dc '0-9')"
+  if [ -n "$rpid" ] && kill -0 "$rpid" 2>/dev/null; then rlive=1; fi
+  if [ -f "$dir/xo/logs.json" ]; then
+    nlogs="$(grep -o '"mission"' "$dir/xo/logs.json" 2>/dev/null | grep -c . | tr -d ' ')"
+    nlogs="${nlogs:-0}"
+  fi
+
   if [ "$status" = "engaged" ] || [ "$live" -eq 1 ]; then
     if [ -n "$pid" ]; then
       kill -TERM "$pid" 2>/dev/null || true
       rm -f "$dir/xo.pid"
     fi
     obj="$(obj_set "$obj" status "$(jstr stood-down)")"
-    obj="$(obj_set "$obj" note "$(jstr "Number One stood down $NOW_LOCAL · you have the conn")")"
+    local sd_note="Number One stood down $NOW_LOCAL · you have the conn"
+    if [ "$rlive" -eq 1 ] && [ "$nlogs" -gt 0 ]; then
+      # THE NOTE SAYS WHAT IS STILL HAPPENING. A captain who stands his first
+      # officer down mid-fix-round has two things he needs to know and cannot
+      # see: the fixes are still going, and the gate at the end of them is now
+      # his. Both in one sentence, on the card, the CLI and the comment.
+      # SINGULAR OR PLURAL, PROPERLY (S204 fix round 1, D5). "1 logs still
+      # driving" on the card is the kind of small wrongness that makes a
+      # captain distrust the numbers beside it.
+      local lognoun="logs"; [ "$nlogs" -eq 1 ] && lognoun="log"
+      sd_note="Number One stood down $NOW_LOCAL · $nlogs $lognoun still driving · the re-verify gate will wait for you"
+    fi
+    obj="$(obj_set "$obj" note "$(jstr "$sd_note")")"
     obj="$(obj_set "$obj" since "$(jstr "$NOW")")"
     # THE GATE COMES BACK WITH THE CONN (fix round 1, D4). `lastPending` is the
     # cksum of the gate Number One took, written BEFORE the spin so that a crash
@@ -606,6 +648,53 @@ xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir>
   return 0
 }
 
+# --- ONE LOOK, ONE SHOTS DIRECTORY (S204 fix round 2, D1) -------------------
+#
+# THE DEFECT. `xo/shots` was ONE directory for the life of a mission. Every look
+# wrote into it and nothing ever cleared it, so a second look was handed the
+# first look's pictures as well as its own — and when the second look took FEWER
+# shots than the first, the leftovers of the first were still sitting there under
+# names the second never wrote. Number One then reasoned about them as if they
+# were current and told the captain a flicker story about a line that was simply
+# gone. It reached the right verdict that time only because the stale shot
+# happened to be the last-numbered one; reverse the order and the identical
+# mechanism argues a gap was FIXED when it was not.
+#
+# THE CURE. Every look gets its OWN directory — `xo/shots/look-1`,
+# `xo/shots/recheck-1`, `xo/shots/recheck-2` — and the worker is handed that one
+# and no other. NAMESPACED, NOT DELETED: the captain's walkthrough is built out
+# of these pictures, and a `rm -rf` at the top of a look would destroy the
+# evidence of the look before it (which is exactly what the overwrite-in-place
+# already cost the tester once). Which directory a verdict was reasoned from
+# goes in the journal, beside the look that reasoned from it.
+xo_look_dir() { # <xo-dir> <look-name> — the dir for THIS look, created
+  local d="$1/shots/$2"
+  mkdir -p "$d" 2>/dev/null || true
+  printf '%s' "$d"
+}
+
+# The first free `<stem>-<n>`. A look never reuses a directory, not even after a
+# crash that left one half-written: a half-written look's shots are exactly the
+# stale pictures this whole fix exists to keep out of the next look's evidence.
+xo_next_look_name() { # <xo-dir> <stem>
+  local x="$1" stem="$2" n=1
+  while [ -d "$x/shots/$stem-$n" ]; do n=$((n + 1)); done
+  printf '%s-%s' "$stem" "$n"
+}
+
+# WHERE THE LOOK THAT PRODUCED verdict.json PUT ITS PICTURES. `evaluate` records
+# it in `xo/look.txt` as it opens the directory; `file-logs` reads it back so the
+# shots it attaches to a bug are the ones the verdict actually cites. A mission
+# from before this fix (or a test fixture that plants shots flat) has no pointer
+# and no per-look dir — it falls back to the flat `xo/shots`, which is exactly
+# where its pictures are.
+xo_verdict_shots_dir() { # <xo-dir>
+  local x="$1" rel=""
+  [ -f "$x/look.txt" ] && rel="$(head -1 "$x/look.txt" 2>/dev/null)"
+  if [ -n "$rel" ] && [ -d "$x/$rel" ]; then printf '%s' "$x/$rel"; return 0; fi
+  printf '%s' "$x/shots"
+}
+
 # --- the journal ------------------------------------------------------------
 # One JSON line per action, beside the mission's other facts. It is what the
 # living comment (wave B) renders and what the captain reads to see what his
@@ -738,6 +827,41 @@ cmd_answer() {
   stage="$(pending_field "$pending" stage)"
   [ -n "$stage" ] || stage="$(mission_stage "$st")"
   etype="$(pending_field "$pending" escalationType)"
+
+  # =========================================================================
+  # WHICH GATE IS THIS? READ THE RECORD, NEVER THE PROSE (S204).
+  #
+  # `resolve-logs.sh` raises ONE consolidated re-verify gate on a parent when
+  # every logged bug has reached its Verify gate, and it RECORDS what that gate
+  # is: `"kind": "reverify"` in pending.json. That recorded field is the only
+  # thing this routing reads.
+  #
+  # WHY NOT THE QUESTION TEXT. Because the question text is prose, it is written
+  # by people, and it changes. This project has paid for matching on prose three
+  # times — S147's source parser (four generations, each beaten), S156's regex
+  # classifier (recall 14/14 → 5/14 when the tester REWORDED its own corpus
+  # preserving meaning), S188 — and every one of them was cured the same way:
+  # record the fact at the producer instead of inferring it at the consumer.
+  # A Verify park that happens to say "logged bugs" and "re-verify" is an
+  # ordinary question about the captain's product, and answering it by
+  # relaunching a browser would be this defect's fourth outing.
+  #
+  # `reverify-blocked` is the same producer saying the OPPOSITE thing: the fold
+  # could not happen (a straggler, a push that failed, no branch). Number One
+  # cannot clear any of those — they are the captain's — so it hands the gate
+  # straight back rather than hiring a worker to think about it.
+  # =========================================================================
+  local pkind; pkind="$(pending_field "$pending" kind)"
+  case "$pkind" in
+    reverify)
+      cmd_recheck --mission "$id"
+      return $? ;;
+    reverify-blocked)
+      escalate "$dir" "$stage" \
+        "the logged fixes could not be folded in, and unblocking it is yours — $(pending_first_question "$pending")" \
+        "$(printf '"stage": %s, "reason": "reverify-blocked", "detail": %s' \
+             "$(jstr "$stage")" "$(jstr "$(pending_first_question "$pending")")")" ;;
+  esac
 
   local work input out
   work="$(mktemp -d)"
@@ -948,12 +1072,16 @@ XO_PY
   #                            The daemon already uses this pin for the same
   #                            reason (actions.py).
   #   LCARS_ANSWERED_BY        the attribution. The record must say who answered.
-  #   LCARS_XO_ENFORCE=0       the engaged lock is there to stop a SECOND hand on
+  #   LCARS_XO_INTERNAL=<id>   the engaged lock is there to stop a SECOND hand on
   #                            the mission. This IS the first officer's hand —
   #                            locking it out of its own verb would be the lock
-  #                            refusing the thing it was built to permit.
+  #                            refusing the thing it was built to permit. The
+  #                            marker NAMES this mission (S204 fix round 1, D1)
+  #                            and exempts this call against THIS mission only,
+  #                            where the old LCARS_XO_ENFORCE=0 switched the
+  #                            lock off wholesale for everything it spawns.
   local rrc=0 rout
-  rout="$(LCARS_RESPOND_RESUME=0 LCARS_ANSWERED_BY=number-one LCARS_XO_ENFORCE=0 \
+  rout="$(LCARS_RESPOND_RESUME=0 LCARS_ANSWERED_BY=number-one LCARS_XO_INTERNAL="$id" \
           bash "$XO_RESPOND_SCRIPT" answer \
             --mission "$id" --answer "$answer_text" 2>&1)" || rrc=$?
   if [ "$rrc" -ne 0 ]; then
@@ -1150,12 +1278,11 @@ cmd_evaluate() {
     esac
   done
   [ -n "$target" ] || die "no mission — pass --mission <id>."
-  local id dir st xodir shots
+  local id dir st xodir shots look
   id="$(resolve_mission "$target")" || exit $?
   dir="$MISSIONS_DIR/$id"
   st="$dir/state.json"
   xodir="$dir/xo"
-  shots="$xodir/shots"
 
   # IDEMPOTENT ON evaluatedAt. The Verify driver can pass this way more than
   # once (a poll, a re-run, a second laptop) and a second look would spend a
@@ -1174,7 +1301,12 @@ cmd_evaluate() {
     return 0
   fi
 
-  mkdir -p "$xodir" "$shots"
+  # THIS LOOK'S OWN DIRECTORY (fix round 2, D1), and the pointer `file-logs`
+  # reads to find the pictures this verdict was reasoned from.
+  mkdir -p "$xodir"
+  look="$(xo_next_look_name "$xodir" look)"
+  shots="$(xo_look_dir "$xodir" "$look")"
+  printf 'shots/%s\n' "$look" >"$xodir/look.txt"
   XO_MISSION_DIR="$dir"
   XO_LAUNCH_ID="$id"
   XO_STOP_LOG="$xodir/launch.log"
@@ -1276,8 +1408,11 @@ cmd_evaluate() {
     xo_finish "$dir" low engaged "$why"
     return 0
   fi
-  journal "$dir" looked "$(printf '"round": 0, "shots": %s' \
-    "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')")"
+  # THE DIRECTORY IS PART OF THE RECORD (fix round 2, D1): a verdict is only as
+  # good as the pictures behind it, so which pictures those were is written down.
+  journal "$dir" looked "$(printf '"round": 0, "shots": %s, "shotsDir": %s' \
+    "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \
+    "$(jstr "${shots#$dir/}")")"
 
   # --- 4. THE WORKER ROUNDS ------------------------------------------------
   local work input round=1 verdict="" out=""
@@ -1420,6 +1555,590 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   [ "$score" = "high" ] && status=finished
   xo_finish "$dir" "$score" "$status" "${summary:-$why}"
   xo_rm_work "$work"; XO_WORK_DIR=""
+
+  # --- 8. THE FIX ROUND (S204) ---------------------------------------------
+  # A gap that CONTRADICTS something the captain wrote down is a bug, and a bug
+  # gets an ordinary mission log — the same verb he would use. A HIGH has none
+  # by construction, so nothing is filed; an interpretation is never filed at
+  # all (it is a call the build made, reported on the report). `file_logs_for`
+  # is the one implementation, shared with the hand-run `lcars xo file-logs`,
+  # and it enforces the one-round marker itself.
+  if [ "$status" != "finished" ]; then
+    file_logs_for "$id" "$dir"
+  fi
+  return 0
+}
+
+
+# ===========================================================================
+# THE FIX ROUND (S204)
+#
+#   lcars xo file-logs --mission <id>    file one mission log per contradiction
+#   lcars xo recheck   --mission <id>    re-look after the fixes, accept or hand back
+#
+# WHAT THIS ROUND IS. After the Verify look scores MEDIUM or LOW, Number One
+# does what the captain would: it files an ordinary mission log for each place
+# the build contradicts something he wrote down, with the picture attached, and
+# lets LCARS drive them. When they reach their Verify gates `resolve-logs` parks
+# the PARENT on ONE consolidated re-verify ask; Number One relaunches the build,
+# looks again, and either accepts the set through the ordinary verb or hands the
+# gate back with the list of what still does not hold.
+#
+# EVERY ACTION IS AN EXISTING VERB. `log.sh` files, `resolve-logs.sh` drives,
+# `respond.sh answer` answers, and answering is what triggers `resolve-logs
+# complete`'s fold. Nothing here writes pending.json, plan.json or a ticket by
+# hand, and nothing here opens or merges a PR.
+#
+# ONE ROUND, BY RULING. `numberOne.round` is set to 1 when the logs are filed and
+# is never incremented: a fix that does not hold goes to the captain, not round
+# two. A judge that keeps filing against its own findings is a judge with no
+# stopping rule, and the third round is always the expensive one.
+#
+# THE CAP IS TEN. Eleven gaps file ten and JOURNAL the overflow — never a silent
+# drop, because the captain reads the journal to know what his officer did.
+# ===========================================================================
+
+XO_LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILL_DIR/../lcars-log/log.sh}"
+XO_RESOLVE_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
+XO_LOG_CAP="${LCARS_XO_LOG_CAP:-10}"
+
+# The first question on a gate, for a note the captain reads. Deliberately small
+# — the value was written by an LCARS writer that escaped it.
+pending_first_question() { # <pending.json>
+  [ -f "$1" ] || return 0
+  sed -n '/"questions"/,$p' "$1" \
+    | sed -n 's/^[[:space:]]*"\(.*\)"[,]*$/\1/p' | head -1
+}
+
+# --- the filed-logs record --------------------------------------------------
+# `xo/logs.json` is the map from a gap to the child Mission that carries its
+# fix. It is the ONLY thing `recheck` uses to know what it filed — not the
+# mission table, not a label, not the issue text. The producer records; the
+# consumer reads.
+# NO HEREDOC. The bash this harness targets (3.2, the one macOS ships)
+# mis-parses a here-document nested in a command substitution, and this function
+# is only ever called as `x="$(xo_logs_field …)"`. A single-quoted `-c` program
+# with no apostrophes in it is the shape the rest of this file already uses.
+xo_logs_field() { # <logs.json> <n> <key> — a string value off entry n
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    for f in d.get("filed") or []:
+        if str(f.get("n")) == str(sys.argv[2]):
+            print(str(f.get(sys.argv[3]) or ""))
+            break
+except Exception:
+    pass' "$1" "$2" "$3" 2>/dev/null
+}
+
+# file_logs_for <mission-id> <mission-dir>
+#
+# Called by `lcars xo file-logs` and, directly, by the end of `evaluate` — one
+# implementation, so the wired path and the hand-run verb can never differ.
+# Returns 0 on every ordinary outcome, including "there was nothing to file":
+# a clean look is not a failure.
+file_logs_for() { # <id> <dir>
+  local id="$1" dir="$2" st xodir shots
+  st="$dir/state.json"
+  xodir="$dir/xo"
+  # THE LOOK THAT PRODUCED THE VERDICT, not "the shots directory" (fix round 2,
+  # D1). The gaps being filed here cite that look's pictures by name, and a
+  # later look's directory would hold different ones under the same names.
+  shots="$(xo_verdict_shots_dir "$xodir")"
+
+  [ -s "$xodir/verdict.json" ] || {
+    printf '◈ NUMBER ONE: no verdict on %s yet — there is nothing to file.\n' "$id"
+    return 0
+  }
+
+  # ONE ROUND ONLY (captain ruling). The marker is READ, never inferred from the
+  # presence of children or of a logs.json a half-finished run might have left.
+  local round
+  round="$(obj_get "$(state_xo_block "$st")" round)"
+  if [ -n "$round" ]; then
+    printf '◈ NUMBER ONE: %s has already had its fix round (round %s) — one round only.\n' \
+      "$id" "$round"
+    printf '  Anything still short of the mark is on the report, and it is yours.\n'
+    return 0
+  fi
+
+  mkdir -p "$xodir/logs"
+  local plan overflow=0 n=0
+  plan="$("$XO_PY" "$SKILL_DIR/xo-logs.py" "$xodir/verdict.json" "$xodir/criteria.json" \
+            "$xodir/logs" "$shots" "$XO_LOG_CAP" 2>/dev/null)" || plan=""
+
+  # THE ARGUMENTS ARE BUILT AS AN ARRAY AND PASSED LITERALLY. Never assembled in
+  # a string and expanded: a `VAR=value` word inside an expanded "$@" RUNS AS A
+  # COMMAND instead of setting anything, and this project has been bitten by
+  # that twice, both times as a silent false green.
+  local args=(--parent "$id")
+  local line key num prd shotcsv crit title s
+  local -a gap_crit=() gap_title=() gap_shots=()
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%%$'\t'*}"
+    case "$key" in
+      OVERFLOW) overflow="${line#*$'\t'}" ;;
+      GAP)
+        # GAP <n> <prd> <shots-csv> <criterion> <title>
+        IFS=$'\t' read -r key num prd shotcsv crit title <<< "$line"
+        [ -f "$prd" ] || continue
+        n=$((n + 1))
+        args+=(--prd "$prd")
+        for s in ${shotcsv//,/ }; do
+          # A SHOT THAT IS NOT THERE IS NOT PASSED. `log.sh` validates every
+          # attachment before it files ANYTHING, so one missing PNG would refuse
+          # the whole filing — and a gap is worth filing with a name for its
+          # shot even when the file has been swept.
+          [ -f "$s" ] && args+=(--attach "$s")
+        done
+        gap_crit+=("$crit"); gap_title+=("$title"); gap_shots+=("$shotcsv")
+        ;;
+    esac
+  done <<< "$plan"
+
+  if [ "$n" -eq 0 ]; then
+    printf '◈ NUMBER ONE: nothing on %s contradicts what you wrote down — no logs filed.\n' "$id"
+    journal "$dir" filed-logs '"filed": 0, "detail": "no contradictions to file"'
+    return 0
+  fi
+
+  # --- ONE call to the ordinary verb ---------------------------------------
+  # Exactly the invocation run.sh already makes (`LCARS_WORKER_BIN=<engine> bash
+  # log.sh --parent … --prd …`), with the engine pinned the way every other
+  # Number One spawn pins it. The mockup is NOT attached here: `log.sh` inherits
+  # the parent's drawing itself (S174), and a second copy would land twice.
+  local xo_engine=""
+  [ -n "${LCARS_WORKER_BIN:-}" ] || xo_engine="$(xo_engine_for "$st")"
+  local lout lrc=0
+  lout="$(
+    if [ -n "$xo_engine" ]; then
+      export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    # $LCARS_XO_INTERNAL=<this mission> — Number One's own hand on its own
+    # verb (S204 fix round 1, D1). `log.sh` takes the engaged lock on the
+    # PARENT dir, and the parent is this mission; without the marker the
+    # first officer's filing is refused by the lock that protects its work.
+    # It names THIS mission only: a reach for any other mission still locks.
+    LCARS_XO_INTERNAL="$id" bash "$XO_LOG_SCRIPT" "${args[@]}" 2>&1
+  )" || lrc=$?
+
+  if [ "$lrc" -ne 0 ]; then
+    escalate "$dir" verify \
+      "Number One had $n gaps to file but \`lcars log\` refused them — $(printf '%s' "$lout" | head -1)" \
+      "$(printf '"stage": "verify", "reason": "log-refused", "detail": %s' \
+           "$(jstr "$(printf '%s' "$lout" | head -1)")")"
+  fi
+
+  # --- the child ids, read off the verb's own summary ----------------------
+  # `log.sh` prints one indented `<id>  <#issue|(local)>  <title>` row per bug,
+  # in the order the --prd arguments were given. That order is the binding.
+  local -a kid=() kissue=()
+  while IFS= read -r line; do
+    case "$line" in
+      '  lcars-'*)
+        set -- $line
+        kid+=("$1"); kissue+=("${2#\#}")
+        ;;
+    esac
+  done <<< "$lout"
+
+  # --- logs.json: the map recheck reads ------------------------------------
+  local i items=""
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    local sj="" sn
+    for sn in ${gap_shots[$i]//,/ }; do
+      sn="$(basename "$sn")"; sn="${sn%.png}"
+      sj="${sj:+$sj, }$(jstr "$sn")"
+    done
+    items="${items:+$items,}$(printf '{"n": %d, "mission": %s, "issue": %s, "criterion": %s, "title": %s, "shots": [%s]}' \
+      "$((i + 1))" "$(jstr "${kid[$i]:-}")" "$(jstr "${kissue[$i]:-}")" \
+      "$(jstr "${gap_crit[$i]}")" "$(jstr "${gap_title[$i]}")" "$sj")"
+    i=$((i + 1))
+  done
+  printf '{"round": 1, "filedAt": %s, "overflow": %s, "filed": [%s]}\n' \
+    "$(jstr "$NOW")" "${overflow:-0}" "$items" >"$xodir/logs.json"
+
+  # --- the record ----------------------------------------------------------
+  local obj
+  obj="$(state_xo_block "$st")"
+  obj="$(obj_set "$obj" round "$(jstr 1)")"
+  obj="$(obj_set "$obj" status "$(jstr engaged)")"
+  # Singular or plural, properly (S204 fix round 1, D5).
+  local filednoun="logs"; [ "$n" -eq 1 ] && filednoun="log"
+  obj="$(obj_set "$obj" lastAction "$(jstr "filed $n $filednoun $NOW_LOCAL")")"
+  # THE NOTE IS NOT TOUCHED. It carries the LOOK's own sentence — what is short
+  # of the mark and why — which is the thing the captain reads off the card and
+  # the one thing filing a log does not change. What was filed is in the journal
+  # and in `xo/logs.json`, where the surfaces already read it from.
+  state_set_xo "$st" "$obj"
+  lcars_state_refusal_die "lcars xo file-logs"
+
+  journal "$dir" filed-logs \
+    "$(printf '"filed": %d, "detail": %s' "$n" \
+         "$(jstr "$n log(s) filed against $id: $(printf '%s ' "${kid[@]:-}" | sed 's/ $//')")")"
+  # THE OVERFLOW IS SAID OUT LOUD. Ten is the cap; an eleventh gap that is never
+  # mentioned is the first officer quietly deciding what the captain gets to see.
+  if [ "${overflow:-0}" -gt 0 ] 2>/dev/null; then
+    journal "$dir" overflow \
+      "$(printf '"detail": %s' "$(jstr "$overflow more gaps not filed — cap $XO_LOG_CAP")")"
+    printf '  %s more gap(s) were NOT filed — the cap is %s. They are on the report.\n' \
+      "$overflow" "$XO_LOG_CAP"
+  fi
+  xo_mirror "$id"
+
+  printf '◈ NUMBER ONE: filed %d mission log(s) against %s.\n' "$n" "$id"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    printf '  log #%d  %s  %s\n' "$((i + 1))" "${kid[$i]:-?}" "${gap_title[$i]}"
+    i=$((i + 1))
+  done
+
+  # --- hand them to LCARS's own driver, DETACHED ---------------------------
+  # `resolve-logs` orders them, drives each to its Verify gate and raises ONE
+  # consolidated re-verify ask on this parent. It takes a long time and it is
+  # NOT Number One's process to own: its pid goes in `xo-resolve.pid`, which
+  # `lcars xo off` reads and never signals (see stand_down).
+  mkdir -p "$xodir"
+  local rchild=""
+  # $LCARS_XO_INTERNAL=<this mission> — same marker, same reason (S204 fix
+  # round 1, D1): `resolve-logs.sh` takes the engaged lock on the PARENT, and
+  # the parent is this mission. It names ONLY this mission, so the child bug
+  # missions this drive works — and the workers it spawns for them — are
+  # exempted by nothing and locked exactly as they were.
+  if command -v setsid >/dev/null 2>&1; then
+    LCARS_XO_INTERNAL="$id" setsid bash "$XO_RESOLVE_SCRIPT" --parent "$id" \
+      </dev/null >"$xodir/resolve.log" 2>&1 &
+    rchild=$!
+  else
+    LCARS_XO_INTERNAL="$id" nohup bash "$XO_RESOLVE_SCRIPT" --parent "$id" \
+      </dev/null >"$xodir/resolve.log" 2>&1 &
+    rchild=$!
+  fi
+  disown "$rchild" 2>/dev/null || disown 2>/dev/null || true
+  printf '%s\n' "$rchild" >"$dir/xo-resolve.pid"
+  printf '  LCARS is driving them now. I will re-check the build when they land.\n'
+  return 0
+}
+
+cmd_file_logs() {
+  local target=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mission)   target="${2:-}"; shift 2 || true ;;
+      --mission=*) target="${1#--mission=}"; shift ;;
+      -*)          die "unknown option: $1" ;;
+      *)           target="$1"; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "no mission — pass --mission <id>."
+  local id dir
+  id="$(resolve_mission "$target")" || exit $?
+  dir="$MISSIONS_DIR/$id"
+  XO_MISSION_DIR="$dir"
+  file_logs_for "$id" "$dir"
+}
+
+# ===========================================================================
+# RECHECK — the second look, after the logged fixes landed.
+# ===========================================================================
+cmd_recheck() {
+  local target=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mission)   target="${2:-}"; shift 2 || true ;;
+      --mission=*) target="${1#--mission=}"; shift ;;
+      -*)          die "unknown option: $1" ;;
+      *)           target="$1"; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "no mission — pass --mission <id>."
+  local id dir st xodir shots look
+  id="$(resolve_mission "$target")" || exit $?
+  dir="$MISSIONS_DIR/$id"
+  st="$dir/state.json"
+  xodir="$dir/xo"
+  # THIS re-check's own directory (fix round 2, D1) — `recheck-1`, then
+  # `recheck-2`. The name is resolved here and the directory is opened below, so
+  # a re-check that escalates before it ever launches leaves no empty shell of a
+  # look behind for the next one to skip over.
+  look="$(xo_next_look_name "$xodir" recheck)"
+  shots="$xodir/shots/$look"
+  [ -s "$xodir/logs.json" ] \
+    || die "mission '$id' has no record of any logs Number One filed — there is nothing to re-check."
+
+  XO_MISSION_DIR="$dir"
+
+  # --- 1. A CHILD THAT NEEDS THE CAPTAIN BLOCKS EVERYTHING -----------------
+  # Checked FIRST, before a launch, a browser or a worker is spent on it. A
+  # parked child cannot be folded (resolve-logs' completeness guard refuses the
+  # whole batch), so re-looking at the build would buy a verdict nobody can act
+  # on. The gate goes back to the captain naming the log that needs him.
+  local nlogs i cmid cst blocked="" blocked_kind=""
+  nlogs="$(grep -o '"mission"' "$xodir/logs.json" | grep -c . | tr -d ' ')"
+  i=1
+  while [ "$i" -le "${nlogs:-0}" ]; do
+    cmid="$(xo_logs_field "$xodir/logs.json" "$i" mission)"
+    if [ -n "$cmid" ] && [ -f "$MISSIONS_DIR/$cmid/state.json" ]; then
+      cst="$MISSIONS_DIR/$cmid/state.json"
+      if grep -q '"awaitingHuman"[[:space:]]*:[[:space:]]*true' "$cst" 2>/dev/null; then
+        blocked="${blocked:+$blocked, }log #$i needs you ($cmid)"
+        blocked_kind=parked
+      else
+        case "$(mission_stage "$cst")" in
+          verify|done) : ;;
+          *) blocked="${blocked:+$blocked, }log #$i has not reached its Verify gate ($cmid, stage $(mission_stage "$cst"))"
+             [ -n "$blocked_kind" ] || blocked_kind=undriven ;;
+        esac
+      fi
+    fi
+    i=$((i + 1))
+  done
+  if [ -n "$blocked" ]; then
+    escalate "$dir" verify \
+      "I cannot accept the fixes yet — $blocked. Answer that one and I will have another look." \
+      "$(printf '"stage": "verify", "reason": %s, "detail": %s' \
+           "$(jstr "child-$blocked_kind")" "$(jstr "$blocked")")"
+  fi
+
+  # --- 2. THE SECOND LOOK ---------------------------------------------------
+  mkdir -p "$xodir" "$shots"
+  XO_LAUNCH_ID="$id"
+  XO_STOP_LOG="$xodir/launch.log"
+  trap xo_teardown EXIT
+  trap on_stand_down TERM INT
+  printf '%s\n' "$$" >"$dir/xo.pid"
+
+  local rc_obj
+  rc_obj="$(state_xo_block "$st")"
+  rc_obj="$(obj_set "$rc_obj" status "$(jstr engaged)")"
+  rc_obj="$(obj_set "$rc_obj" lastAction "$(jstr "re-checking $NOW_LOCAL")")"
+  [ -n "$rc_obj" ] && state_set_xo "$st" "$rc_obj"
+
+  local xo_engine=""
+  [ -n "${LCARS_WORKER_BIN:-}" ] || xo_engine="$(xo_engine_for "$st")"
+
+  printf '◈ NUMBER ONE: the fixes are on the branch — relaunching the build…\n'
+  (
+    if [ -n "$xo_engine" ]; then
+      export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_LAUNCH_SCRIPT" "$id"
+  ) >>"$xodir/launch.log" 2>&1 || true
+  local lstatus lurl lmsg
+  lstatus="$(json_field "$dir/launch.json" status)"
+  lurl="$(json_field "$dir/launch.json" url)"
+  lmsg="$(json_field "$dir/launch.json" message)"
+  if [ "$lstatus" != "running" ] || [ -z "$lurl" ]; then
+    # NO BROWSER, AND NO ACCEPT. A build that will not come up is not evidence
+    # that the fixes held — it is the captain's to look at.
+    rm -f "$dir/xo.pid"; trap - TERM INT
+    escalate "$dir" verify \
+      "the fixes are in, but I could not relaunch the build to check them: ${lmsg:-status ${lstatus:-unknown}}" \
+      "$(printf '"stage": "verify", "reason": "relaunch-failed", "detail": %s' \
+           "$(jstr "${lmsg:-status ${lstatus:-unknown}}")")"
+  fi
+  XO_LAUNCH_STOPPED=0
+  printf '  the build is up at %s\n' "$lurl"
+  journal "$dir" relaunched "$(printf '"url": %s' "$(jstr "$lurl")")"
+
+  local drc=0
+  "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
+    --place-names "$xodir/criteria.json" --prefix "recheck" \
+    >"$xodir/drive-recheck.json" 2>"$xodir/drive-recheck.err" &
+  XO_DRIVE_PID=$!
+  wait "$XO_DRIVE_PID" || drc=$?
+  XO_DRIVE_PID=""
+  if [ "$drc" -eq 77 ]; then
+    xo_stop_launch
+    rm -f "$dir/xo.pid"; trap - TERM INT
+    escalate "$dir" verify \
+      "the fixes are in, but the browser would not start, so I have no picture of them ($(head -1 "$xodir/drive-recheck.err" 2>/dev/null))" \
+      "$(printf '"stage": "verify", "reason": "browser-failed", "detail": %s' \
+           "$(jstr "$(head -1 "$xodir/drive-recheck.err" 2>/dev/null)")")"
+  fi
+  journal "$dir" looked "$(printf '"round": %s, "shots": %s, "shotsDir": %s' \
+    "$(jstr "$look")" \
+    "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \
+    "$(jstr "${shots#$dir/}")")"
+
+  # --- 3. ONE worker round, with the FIRST verdict in front of it ----------
+  # No second round of looking and no actions file: the question here is narrow
+  # ("did each filed gap's fix hold?") and a judge that can ask for more looking
+  # on a narrow question is a judge that can spend its way to an answer.
+  local work input out
+  work="$(mktemp -d)"; input="$work/input"; out="$work/recheck"
+  XO_WORK_DIR="$work"
+  mkdir -p "$input" "$out"
+  gather_inputs "$dir" "$input"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+  # The first verdict, the filed logs and their PRDs — the record of what this
+  # re-check is ABOUT. Copied through the same unlock/copy/re-lock door
+  # everything else in the input tree goes through.
+  chmod u+w "$input" 2>/dev/null || true
+  mkdir -p "$input/xo" 2>/dev/null || true
+  cp "$xodir/verdict.json" "$input/xo/verdict.json" 2>/dev/null || true
+  cp "$xodir/logs.json" "$input/xo/logs.json" 2>/dev/null || true
+  if [ -d "$xodir/logs" ]; then
+    mkdir -p "$input/xo/logs" 2>/dev/null || true
+    cp "$xodir"/logs/*.md "$input/xo/logs/" 2>/dev/null || true
+  fi
+  chmod -R a-w "$input" 2>/dev/null || true
+
+  printf '◈ NUMBER ONE: looking again, gap by gap…\n'
+  (
+    export LCARS_XO_INPUT_DIR="$input"
+    export LCARS_WORKER_INPUT_DIRS="$input
+$input/shots
+$shots"
+    if [ -n "$xo_engine" ]; then
+      export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+      --mission "$id" --mode recheck --outdir "$out"
+  ) >/dev/null 2>&1 &
+  XO_SPIN_PID=$!
+  wait "$XO_SPIN_PID" 2>/dev/null || true
+  XO_SPIN_PID=""
+
+  xo_stop_launch
+  rm -f "$dir/xo.pid"; trap - TERM INT
+
+  # --- 4. DID EACH FIX HOLD? ----------------------------------------------
+  local held_out
+  held_out="$("$XO_PY" "$SKILL_DIR/xo-held.py" "$out/xo-recheck.json" "$xodir/logs.json" 2>/dev/null)" \
+    || held_out=""
+  local kind num mission crit title why line
+  local held_list="" not_list="" nheld=0 nnot=0 malformed=""
+  # THE THING FIRST, THE IDS IN BRACKETS AFTER IT (fix round 2, D2). This line
+  # goes onto the card and into the escalation the captain reads on his phone;
+  # `log #1 (t-3-ac1) — …` is two machine handles and a colour of nothing. The
+  # title is the name Number One itself gave the gap when it filed the log, so
+  # nothing here is invented — and every number, shot name and quoted line the
+  # worker gave stays exactly where it was.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    IFS=$'\t' read -r kind num mission crit title why <<< "$line"
+    case "$kind" in
+      MALFORMED) malformed="$num" ;;
+      HELD)    nheld=$((nheld + 1)); held_list="${held_list:+$held_list; }${title:-log #$num} — $why (log #$num, $crit)" ;;
+      NOTHELD) nnot=$((nnot + 1));  not_list="${not_list:+$not_list; }${title:-log #$num} — $why (log #$num, $crit)"
+               journal "$dir" fix-did-not-hold \
+                 "$(printf '"log": %s, "mission": %s, "criterion": %s, "detail": %s' \
+                      "$(jstr "$num")" "$(jstr "$mission")" "$(jstr "$crit")" \
+                      "$(jstr "fix did not hold: $why")")" ;;
+    esac
+  done <<< "$held_out"
+
+  if [ -n "$malformed" ]; then
+    escalate "$dir" verify \
+      "$XO_MALFORMED — $malformed" \
+      "$(printf '"stage": "verify", "reason": "malformed", "detail": %s' "$(jstr "$malformed")")"
+  fi
+
+  # --- 5. THE SECOND SCORE, FROM THE LEDGER, EXACTLY AS THE FIRST ----------
+  # Run BEFORE the accept so the report exists whichever way this ends: an
+  # escalation owes the captain the same ledger an acceptance does.
+  local score2="" why2="" summary2=""
+  if [ -s "$out/xo-recheck.json" ]; then
+    mkdir -p "$xodir/second"
+    [ -s "$xodir/report.md" ] && cp "$xodir/report.md" "$xodir/report-1.md" 2>/dev/null
+    local rep2 key val
+    rep2="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
+              "$xodir/second/verdict.json" 2>/dev/null)" || rep2=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      key="${line%%$'\t'*}"; val="${line#*$'\t'}"
+      case "$key" in
+        SCORE)   score2="$val" ;;
+        WHY)     why2="$val" ;;
+        SUMMARY) summary2="$val" ;;
+      esac
+    done <<< "$rep2"
+    if [ -n "$score2" ]; then
+      cp "$xodir/second/verdict.json" "$xodir/verdict-2.json" 2>/dev/null || true
+      # ONE REPORT, TWO LOOKS, IN ORDER. The captain asked to see the fix beside
+      # the finding; the living comment renders `report.md` verbatim, so the
+      # before and the after have to live in that one file.
+      {
+        printf '### After the fixes\n\n'
+        cat "$xodir/second/report.md" 2>/dev/null
+        if [ -s "$xodir/report-1.md" ]; then
+          printf '\n<details>\n<summary>The first look, before the fixes</summary>\n\n'
+          cat "$xodir/report-1.md"
+          printf '\n</details>\n'
+        fi
+      } >"$xodir/report.md"
+    fi
+  fi
+
+  # --- 6. ACCEPT, OR HAND IT BACK ------------------------------------------
+  if [ "$nnot" -gt 0 ] || [ "$nheld" -eq 0 ]; then
+    # NEVER A SECOND ROUND (captain ruling). The gate stays exactly where
+    # resolve-logs raised it, with the list of what still does not hold beside
+    # it, and the captain decides.
+    local note="the fixes are in but $nnot of them did not hold — $not_list"
+    [ "$nheld" -eq 0 ] && [ "$nnot" -eq 0 ] \
+      && note="I could not tell whether the fixes held — nothing in the re-check named a single one of them"
+    escalate "$dir" verify "$note" \
+      "$(printf '"stage": "verify", "reason": "fixes-did-not-hold", "held": %d, "notHeld": %d, "detail": %s' \
+           "$nheld" "$nnot" "$(jstr "$not_list")")"
+  fi
+
+  # EVERY FIX HELD. Answer the consolidated gate through the ordinary verb — the
+  # one a human uses — which is what triggers `resolve-logs complete`'s fold of
+  # each child to Done and the push of the parent branch. Number One never folds
+  # anything itself and never touches the PR.
+  local answer_text="Accepted. I re-checked each logged fix against the criterion it was filed for and every one holds: $held_list"
+  local rrc=0 rout
+  rout="$(LCARS_RESPOND_RESUME=0 LCARS_ANSWERED_BY=number-one LCARS_XO_INTERNAL="$id" \
+          bash "$XO_RESPOND_SCRIPT" answer \
+            --mission "$id" --answer "$answer_text" 2>&1)" || rrc=$?
+  if [ "$rrc" -ne 0 ]; then
+    escalate "$dir" verify \
+      "every fix held, but \`lcars respond\` refused the accept — $(printf '%s' "$rout" | head -1)" \
+      "$(printf '"stage": "verify", "reason": "respond-refused", "detail": %s' \
+           "$(jstr "$(printf '%s' "$rout" | head -1)")")"
+  fi
+
+  # THE FOLD CAN REFUSE AFTER THE GATE IS CLEARED. `resolve-logs complete` never
+  # blocks the answer: when it cannot fold (a straggler, a push that failed, no
+  # branch) it RE-RAISES the parent's gate, recording `reverify-blocked`. That is
+  # a fact about the mission, not a verdict to override — so if the gate is back,
+  # it goes to the captain with the reason the fold gave, and nothing here claims
+  # the fixes were accepted.
+  if [ -f "$dir/pending.json" ] \
+     && [ "$(pending_field "$dir/pending.json" kind)" = "reverify-blocked" ]; then
+    escalate "$dir" verify \
+      "every fix held, but LCARS could not fold them: $(pending_first_question "$dir/pending.json")" \
+      "$(printf '"stage": "verify", "reason": "fold-blocked", "detail": %s' \
+           "$(jstr "$(pending_first_question "$dir/pending.json")")")"
+  fi
+
+  # --- 7. THE RECORD --------------------------------------------------------
+  local obj
+  obj="$(state_xo_block "$st")"
+  obj="$(obj_set "$obj" status "$(jstr finished)")"
+  obj="$(obj_set "$obj" score2 "$(jstr "${score2:-unknown}")")"
+  obj="$(obj_set "$obj" recheckedAt "$(jstr "$NOW")")"
+  obj="$(obj_set "$obj" lastAction "$(jstr "re-checked $NOW_LOCAL")")"
+  obj="$(obj_del "$obj" note)"
+  state_set_xo "$st" "$obj"
+  lcars_state_refusal_die "lcars xo recheck"
+
+  journal "$dir" rescored \
+    "$(printf '"score": %s, "held": %d, "detail": %s' \
+         "$(jstr "${score2:-unknown}")" "$nheld" \
+         "$(jstr "${summary2:-${why2:-every filed fix held}}")")"
+  [ -n "$score2" ] && xo_label_score "$st" "$score2"
+  xo_mirror "$id"
+
+  printf '◈ NUMBER ONE: every fix held — I accepted the %d logged bug(s) on your behalf.\n' "$nheld"
+  printf '  Intent match after the fixes: %s.\n' \
+    "$(printf '%s' "${score2:-unknown}" | tr '[:lower:]' '[:upper:]')"
+  printf '  The PR is yours. I do not merge.\n'
+  xo_rm_work "$work"; XO_WORK_DIR=""
   return 0
 }
 
@@ -1429,7 +2148,15 @@ case "${1:-status}" in
   status) shift; cmd_status ;;
   answer) shift; cmd_answer "$@" ;;
   evaluate) shift; cmd_evaluate "$@" ;;
+  file-logs) shift; cmd_file_logs "$@" ;;
+  recheck)   shift; cmd_recheck "$@" ;;
   -h|--help|help)
-    sed -n '3,12p' "$SELF" | sed 's/^# \{0,1\}//' ;;
-  *)      die "unknown verb: $1 (want: on | off | status | answer | evaluate)" ;;
+    # THE WHOLE USAGE BLOCK, NOT A COUNTED RANGE (fix round 2, D5). A hand-
+    # counted `sed -n '3,18p'` truncated mid-sentence the moment a verb was
+    # added — `recheck` was in the source and undiscoverable from the CLI, and
+    # widening the range in fix round 1 only moved the cliff. The block runs from
+    # line 3 to the blank comment line that ends it, and awk stops there, so the
+    # next verb somebody adds prints itself.
+    awk 'NR < 3 { next } NR > 4 && /^#$/ { exit } { sub(/^# ?/, ""); print }' "$SELF" ;;
+  *)      die "unknown verb: $1 (want: on | off | status | answer | evaluate | file-logs | recheck)" ;;
 esac

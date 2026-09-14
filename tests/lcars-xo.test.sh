@@ -37,7 +37,16 @@ UPDATE="$REPO_ROOT/skills/lcars-update/update.sh"
 pass=0
 fail=0
 TMPROOT="$(mktemp -d)"
-trap 'rm -rf "$TMPROOT"' EXIT
+# THE TEARDOWN KILLS WHAT THIS SUITE STARTED, from the EXIT trap and not only
+# inline: an inline kill is skipped on every abnormal exit, which is how a suite
+# leaves background processes behind when it is interrupted.
+PROBE_PIDS=""
+xo_test_teardown() {
+  local p
+  for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
+  rm -rf "$TMPROOT"
+}
+trap xo_test_teardown EXIT
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
@@ -968,6 +977,63 @@ exit 0
 DS
 chmod +x "$DRIVE_STUB"
 
+FXDIR="$TMPROOT/b12"; mkdir -p "$FXDIR"
+export XO_LOG_CALLS="$FXDIR/log-calls.txt";     : >"$XO_LOG_CALLS"
+export XO_RESOLVE_CALLS="$FXDIR/resolve-calls.txt"; : >"$XO_RESOLVE_CALLS"
+export XO_RESPOND_CALLS="$FXDIR/respond-calls.txt"; : >"$XO_RESPOND_CALLS"
+
+# --- the stub `lcars log` --------------------------------------------------
+# It records its WHOLE argv on one line (so the per-bug --attach binding order
+# is observable), then files one child per --prd the way the real verb does and
+# prints the real verb's summary shape, which is what xo.sh reads the ids from.
+LOG_STUB="$FXDIR/log.sh"
+cat >"$LOG_STUB" <<'LGS'
+#!/usr/bin/env bash
+printf 'log %s xo_internal=%s\n' "$*" "${LCARS_XO_INTERNAL:-<unset>}" >>"$XO_LOG_CALLS"
+parent=""; n=0
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  case "${args[$i]}" in
+    --parent) parent="${args[$((i+1))]}"; i=$((i+2)) ;;
+    --prd)    n=$((n+1)); i=$((i+2)) ;;
+    *)        i=$((i+1)) ;;
+  esac
+done
+md="$PWD/.git/lcars/missions"
+printf '%d bug missions filed and linked to #42 (parent):\n' "$n"
+k=0
+while [ "$k" -lt "$n" ]; do
+  k=$((k+1))
+  cid="$(printf 'lcars-20260913-9%02d' "$k")"
+  mkdir -p "$md/$cid"
+  printf '{\n  "id": "%s",\n  "type": "bug",\n  "stage": "align",\n  "githubIssue": %d,\n  "parentMission": "%s",\n  "branch": "lcars/%s"\n}\n' \
+    "$cid" "$((500+k))" "$parent" "$parent" >"$md/$cid/state.json"
+  printf '  %s  #%d  bug %d\n' "$cid" "$((500+k))" "$k"
+done
+printf 'Run `lcars run x` to begin.\n'
+exit 0
+LGS
+chmod +x "$LOG_STUB"
+
+# --- the stub `lcars resolve-logs` (the driver Number One must NOT own) -----
+RESOLVE_STUB="$FXDIR/resolve-logs.sh"
+cat >"$RESOLVE_STUB" <<'RLS'
+#!/usr/bin/env bash
+printf 'resolve %s xo_internal=%s\n' "$*" "${LCARS_XO_INTERNAL:-<unset>}" >>"$XO_RESOLVE_CALLS"
+exit 0
+RLS
+chmod +x "$RESOLVE_STUB"
+
+# --- the stub `lcars respond` ----------------------------------------------
+RESPOND_STUB="$FXDIR/respond.sh"
+cat >"$RESPOND_STUB" <<'RSS'
+#!/usr/bin/env bash
+printf 'respond %s by=%s xo_internal=%s\n' "$*" "${LCARS_ANSWERED_BY:-}" "${LCARS_XO_INTERNAL:-<unset>}" >>"$XO_RESPOND_CALLS"
+exit 0
+RSS
+chmod +x "$RESPOND_STUB"
+
 # --- the stub host adapter (the label swap's read surface) -----------------
 HOST_STUB="$EVDIR/host-adapter.sh"
 cat >"$HOST_STUB" <<'HS'
@@ -1052,6 +1118,7 @@ xo_evaluate() { # <repo> <id> [extra env...]
       LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
       LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
       LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
       LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
       LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
       LCARS_OWNER_ENFORCE=0 "$@" \
@@ -1700,6 +1767,878 @@ sys.exit(1 if fails else 0)
 PY
 check "B11i. the evidence cell truncates on a word boundary, with an ellipsis and no open quote, and the gap bullet has one full stop" \
   "[ '$copyrc' -eq 0 ]"
+
+# ==========================================================================
+# B12. THE FIX ROUND (S204) — file the logs, drive them, re-check, re-score.
+#
+# THE ROUTING IS ON A RECORDED MARKER, NOT ON THE QUESTION'S PROSE. The
+# consolidated re-verify gate is written by resolve-logs.sh, and resolve-logs.sh
+# RECORDS what it is (`"kind": "reverify"` in pending.json). `xo.sh answer`
+# routes on that recorded field. This is the S147/S156/S188 lesson applied
+# before it could be paid for a fourth time: the captain writes gate prose, and
+# any heuristic over his wording eventually meets a question that contains its
+# vocabulary. The two rows at the end of this block are the proof — a REWORDED
+# re-verify gate still routes, and an ordinary Verify park that talks about
+# logs does not.
+# ==========================================================================
+echo
+echo "B12. the fix round — logs, drive, re-check, re-score (session 204)"
+
+# A verdict on disk, as S203's evaluate leaves it. $1 = the gaps array body.
+plant_verdict() { # <mission-dir> <gaps-json>
+  local m="$1" gaps="$2"
+  mkdir -p "$m/xo/shots"
+  printf 'PNG\n' >"$m/xo/shots/shot-01.png"
+  printf 'PNG\n' >"$m/xo/shots/shot-02.png"
+  printf 'PNG\n' >"$m/xo/shots/shot-03.png"
+  cat >"$m/xo/verdict.json" <<VJ
+{
+  "score": "medium",
+  "derivation": "the flow works; two things are short of the mark",
+  "counts": {"met": 1, "gap": 0, "untested": 0, "contradictions": 2},
+  "criteria": [{"id": "prd-1", "text": "one list", "status": "met", "shot": "shot-01", "note": "saw it", "primary": true}],
+  "gaps": [$gaps],
+  "summary": "Two mismatches against your drawing."
+}
+VJ
+  # THE CONTRACT IS PART OF THE RECORD A LOOK LEAVES BEHIND. `evaluate` writes
+  # criteria.json before it launches anything, and BOTH the fix round's PRD
+  # writer (which restates the criterion) and the re-score read it back. A
+  # fixture that planted a verdict without it was testing a mission state that
+  # cannot exist.
+  # AND THE REPORT. `xo_finish` guarantees one exists on EVERY path a look can
+  # end on — including the ones with no ledger at all — so a fixture without it
+  # is a mission state that cannot happen, and the re-check's "first look beside
+  # the fixes" has nothing to fold underneath it.
+  cat >"$m/xo/report.md" <<'RM'
+**How close this is to what you asked for: MEDIUM** — two things short of the mark.
+
+Two mismatches against your drawing.
+RM
+  cat >"$m/xo/criteria.json" <<'CJ'
+{"criteria": [
+  {"id": "prd-1", "text": "The board shows every open task in one list.", "primary": true, "source": "PRD \u00a72"},
+  {"id": "prd-2", "text": "A task can be added from the board itself.", "primary": true, "source": "PRD \u00a72"},
+  {"id": "t-1-ac1", "text": "The ADD button sits under the list.", "primary": false, "drawnAt": "#add-button"}
+]}
+CJ
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m/xo/verdict.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m/xo/criteria.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+}
+
+gap_json() { # <n> <kind> <criterion> <shots-csv>
+  local n="$1" kind="$2" crit="$3" shots="$4" sj="" s
+  for s in ${shots//,/ }; do sj="${sj:+$sj, }\"$s\""; done
+  printf '{"title": "gap %s", "expected": "the %s sits under the list", "saw": "it is above it", "shots": [%s], "kind": "%s", "criterion": "%s"}' \
+    "$n" "$n" "$sj" "$kind" "$crit"
+}
+
+xo_file_logs() { # <repo> <id> [env...]
+  local repo="$1" id="$2"; shift 2
+  ( cd "$repo" && XO_LOG_CALLS="$XO_LOG_CALLS" XO_RESOLVE_CALLS="$XO_RESOLVE_CALLS" \
+      LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+      LCARS_RUN_SCRIPT=/usr/bin/true LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_GH_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 "$@" \
+      bash "$SCRIPT" file-logs --mission "$id" 2>&1 )
+}
+
+# --------------------------------------------------------------------------
+# B12a. THREE CONTRADICTIONS + TWO INTERPRETATIONS → exactly THREE logs, each
+#       bound to its OWN shots. An interpretation is a call the build made, not
+#       a fault: it is reported, never filed.
+# --------------------------------------------------------------------------
+repoL1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mL1="$(plant_verify "$repoL1" "lcars-20260913-101")"
+plant_verdict "$mL1" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02),$(gap_json 3 contradiction t-1-ac1 shot-03),$(gap_json 4 interpretation prd-1 shot-01),$(gap_json 5 interpretation prd-2 shot-02)"
+: >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outL1="$(xo_file_logs "$repoL1" "lcars-20260913-101")"
+check "B12a. the log verb was invoked exactly once" \
+  "[ \"\$(grep -c '^log ' '$XO_LOG_CALLS')\" -eq 1 ]"
+check "B12a. …with exactly THREE --prd (the contradictions, not the interpretations)" \
+  "[ \"\$(grep -o -- '--prd' '$XO_LOG_CALLS' | grep -c .)\" -eq 3 ]"
+check "B12a. …filed against the parent" "grep -q -- '--parent lcars-20260913-101' '$XO_LOG_CALLS'"
+check "B12a. every --attach comes AFTER a --prd (per-bug binding, never global)" \
+  "grep -q '^log --parent [^ ]* --prd ' '$XO_LOG_CALLS'"
+check "B12a. gap 2's shot is bound to gap 2's PRD and no other" \
+  "grep -q -- '2.md --attach [^ ]*shot-02.png --prd' '$XO_LOG_CALLS'"
+check "B12a. the mockup is NOT attached by hand (log.sh inherits it)" \
+  "! grep -q -- 'attachment-01.html' '$XO_LOG_CALLS'"
+check "B12a. each bug PRD carries the house shape" \
+  "grep -q '^# Mission: ' '$mL1/xo/logs/1.md' && grep -q '\*\*Type:\*\* bug' '$mL1/xo/logs/1.md'"
+check "B12a. …the expected/saw sentence with its shot" \
+  "grep -qi 'expected' '$mL1/xo/logs/1.md' && grep -q 'shot-01' '$mL1/xo/logs/1.md'"
+check "B12a. …and acceptance restating the criterion" \
+  "grep -qi 'acceptance' '$mL1/xo/logs/1.md'"
+check "B12a. logs.json records child ↔ gap" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d[\"filed\"])==3, d; assert d[\"filed\"][1][\"criterion\"]==\"prd-2\", d' '$mL1/xo/logs.json'"
+check "B12a. no interpretation was filed — only the three contradictions" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert sorted(f[\"criterion\"] for f in d[\"filed\"])==[\"prd-1\",\"prd-2\",\"t-1-ac1\"], d' '$mL1/xo/logs.json'"
+check "B12a. the round marker is set to 1" "[ \"\$(xo_state '$mL1' round)\" = '1' ]"
+check "B12a. resolve-logs was started on the parent" \
+  "grep -q 'resolve .*lcars-20260913-101' '$XO_RESOLVE_CALLS'"
+check "B12a. its pid is in xo-resolve.pid — NOT in xo.pid" \
+  "[ -s '$mL1/xo-resolve.pid' ]"
+check "B12a. the journal records the filing" \
+  "grep -q '\"action\": \"filed-logs\"' '$mL1/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B12b. ELEVEN CONTRADICTIONS → TEN filed, the overflow JOURNALLED.
+# --------------------------------------------------------------------------
+repoL2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mL2="$(plant_verify "$repoL2" "lcars-20260913-102")"
+g11=""; for i in 1 2 3 4 5 6 7 8 9 10 11; do
+  g11="${g11:+$g11,}$(gap_json "$i" contradiction "prd-$i" shot-01)"
+done
+plant_verdict "$mL2" "$g11"
+: >"$XO_LOG_CALLS"
+outL2="$(xo_file_logs "$repoL2" "lcars-20260913-102")"
+check "B12b. exactly TEN --prd (the cap)" \
+  "[ \"\$(grep -o -- '--prd' '$XO_LOG_CALLS' | grep -c .)\" -eq 10 ]"
+check "B12b. the overflow is journalled in the captain's words" \
+  "grep -q '1 more gaps not filed — cap 10' '$mL2/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B12c. ONE ROUND ONLY. A mission already carrying `round: 1` files nothing.
+# --------------------------------------------------------------------------
+repoL3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mL3="$(plant_verify "$repoL3" "lcars-20260913-103")"
+python3 - "$mL3/state.json" <<'PY'
+import sys,re
+p=sys.argv[1]; s=open(p).read()
+s=s.replace('"numberOne": {"status": "engaged"','"numberOne": {"round": "1", "status": "engaged"')
+open(p,"w").write(s)
+PY
+plant_verdict "$mL3" "$(gap_json 1 contradiction prd-1 shot-01)"
+: >"$XO_LOG_CALLS"
+outL3="$(xo_file_logs "$repoL3" "lcars-20260913-103")"
+check "B12c. nothing was filed a second time" "[ ! -s '$XO_LOG_CALLS' ]"
+check "B12c. …and it says so" "printf '%s' \"\$outL3\" | grep -qi 'one round'"
+
+# --------------------------------------------------------------------------
+# B12d. RECHECK, EVERY FIX HOLDING → the gate is answered by number-one, the
+#       second score is written, the label swaps, the status finishes, and the
+#       launch is stopped.
+# --------------------------------------------------------------------------
+plant_logs_json() { # <mission-dir> <n>
+  local m="$1" n="$2" i items=""
+  for i in $(seq 1 "$n"); do
+    items="${items:+$items,}$(printf '{"n": %d, "mission": "lcars-20260913-9%02d", "issue": "%d", "criterion": "prd-%d", "title": "gap %d", "shots": ["shot-0%d"]}' "$i" "$i" "$((500+i))" "$i" "$i" "$i")"
+  done
+  mkdir -p "$m/xo"
+  printf '{"round": 1, "overflow": 0, "filed": [%s]}\n' "$items" >"$m/xo/logs.json"
+}
+plant_child() { # <repo> <parent> <n> <stage> [awaiting]
+  local repo="$1" parent="$2" n="$3" stage="$4" aw="${5:-}" cid d
+  cid="$(printf 'lcars-20260913-9%02d' "$n")"
+  d="$repo/.git/lcars/missions/$cid"; mkdir -p "$d"
+  {
+    printf '{\n  "id": "%s",\n  "type": "bug",\n  "title": "gap %s",\n  "stage": "%s",\n' "$cid" "$n" "$stage"
+    [ -n "$aw" ] && printf '  "awaitingHuman": true,\n'
+    printf '  "githubIssue": %d,\n  "parentMission": "%s",\n  "branch": "lcars/%s"\n}\n' \
+      "$((500+n))" "$parent" "$parent"
+  } >"$d/state.json"
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$d/state.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+}
+plant_reverify_gate() { # <mission-dir> [question]
+  local m="$1" q="${2:-2 logged bugs resolved on this branch — ready for your single re-verify.}"
+  cat >"$m/pending.json" <<PJ
+{
+  "stage": "verify",
+  "kind": "reverify",
+  "questions": [
+    "$q"
+  ]
+}
+PJ
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m/pending.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+}
+
+# The recheck worker shim: writes xo-recheck.json from $XO_RC_BODY.
+RC_SHIM="$FXDIR/rc-worker"
+cat >"$RC_SHIM" <<'RCS'
+#!/usr/bin/env bash
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG.all"
+out="${LCARS_WORK_OUT:-}"
+[ -n "${XO_RC_BODY:-}" ] && printf '%s\n' "$XO_RC_BODY" >"$out/${XO_RC_FILE:-xo-recheck.json}"
+exit 0
+RCS
+chmod +x "$RC_SHIM"
+
+rc_body() { # <held-1> <held-2>
+  printf '{"score":"high","summary":"The fixes are on the build.","criteria":['
+  printf '{"id":"prd-1","text":"one list","status":"met","shot":"r2-01","note":"under the list now"},'
+  printf '{"id":"prd-2","text":"add from the board","status":"met","shot":"r2-01","note":"there"}'
+  printf '],"gaps":[],"held":[{"criterion":"prd-1","held":%s,"why":"the button is under the list now","shots":["r2-01"]},{"criterion":"prd-2","held":%s,"why":"still above the list","shots":["r2-01"]}]}' "$1" "$2"
+}
+
+xo_recheck() { # <repo> <id> [env...]
+  local repo="$1" id="$2"; shift 2
+  ( cd "$repo" && XO_WORKER_LOG="$XO_WORKER_LOG" XO_RESPOND_CALLS="$XO_RESPOND_CALLS" \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+      LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+      LCARS_HOST_ADAPTER="$HOST_STUB" LCARS_RESPOND_SCRIPT="$RESPOND_STUB" \
+      LCARS_WORKER_BIN="$RC_SHIM" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 "$@" \
+      bash "$SCRIPT" recheck --mission "$id" 2>&1 )
+}
+
+repoR1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mR1="$(plant_verify "$repoR1" "lcars-20260913-201")"
+plant_verdict "$mR1" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+cp "$mR1/xo/verdict.json" "$mR1/xo/verdict-1.json"
+plant_logs_json "$mR1" 2
+plant_child "$repoR1" "lcars-20260913-201" 1 verify
+plant_child "$repoR1" "lcars-20260913-201" 2 verify
+plant_reverify_gate "$mR1"
+: >"$XO_WORKER_LOG"; : >"$XO_RESPOND_CALLS"; : >"$XO_LABEL_LOG"; : >"$XO_LAUNCH_LOG"
+outR1="$(XO_RC_BODY="$(rc_body true true)" xo_recheck "$repoR1" "lcars-20260913-201")"
+check "B12d. the build was relaunched" "grep -q 'launch lcars-20260913-201' '$XO_LAUNCH_LOG'"
+check "B12d. the gate was answered through \`lcars respond\`" \
+  "grep -q '^respond answer' '$XO_RESPOND_CALLS'"
+check "B12d. …attributed to number-one" "grep -q 'by=number-one' '$XO_RESPOND_CALLS'"
+check "B12d. the second verdict is on disk" "[ -s '$mR1/xo/verdict-2.json' ]"
+check "B12d. the second score is recorded" "[ -n \"\$(xo_state '$mR1' score2)\" ]"
+check "B12d. the label was swapped to the second score" \
+  "grep -q 'issue-relabel .*--add lcars:xo:' '$XO_LABEL_LOG'"
+check "B12d. Number One's work on this mission is FINISHED" \
+  "[ \"\$(xo_state '$mR1' status)\" = 'finished' ]"
+check "B12d. the launch was stopped" "grep -q -- '--stop' '$XO_LAUNCH_LOG'"
+check "B12d. the report shows the first look beside the fixes" \
+  "grep -qi 'after the fixes' '$mR1/xo/report.md' && grep -qi 'first look' '$mR1/xo/report.md'"
+
+# --------------------------------------------------------------------------
+# B12e. ONE FIX THAT DID NOT HOLD → the gate is ESCALATED with the list, and
+#       NOTHING is accepted. Never a second round.
+# --------------------------------------------------------------------------
+repoR2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mR2="$(plant_verify "$repoR2" "lcars-20260913-202")"
+plant_verdict "$mR2" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+plant_logs_json "$mR2" 2
+plant_child "$repoR2" "lcars-20260913-202" 1 verify
+plant_child "$repoR2" "lcars-20260913-202" 2 verify
+plant_reverify_gate "$mR2"
+: >"$XO_RESPOND_CALLS"
+rcR2=0
+outR2="$(XO_RC_BODY="$(rc_body true false)" xo_recheck "$repoR2" "lcars-20260913-202")" || rcR2=$?
+check "B12e. it exits non-zero — this one is the captain's" "[ '$rcR2' -ne 0 ]"
+check "B12e. NOTHING was answered" "[ ! -s '$XO_RESPOND_CALLS' ]"
+check "B12e. the gate is still up" "[ -f '$mR2/pending.json' ]"
+check "B12e. the status is escalated" "[ \"\$(xo_state '$mR2' status)\" = 'escalated' ]"
+check "B12e. the note names the log that did not hold" \
+  "xo_state '$mR2' note | grep -q 'log #'"
+check "B12e. the journal says the fix did not hold, and why" \
+  "grep -q 'fix did not hold' '$mR2/number-one.jsonl' && grep -q 'still above the list' '$mR2/number-one.jsonl'"
+check "B12e. no second round was started" \
+  "! grep -q '\"action\": \"filed-logs\"' '$mR2/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B12f. A CHILD THAT PARKED blocks the accept — recheck escalates "log #n needs
+#       you" WITHOUT spending a launch, a browser or a worker on it.
+# --------------------------------------------------------------------------
+repoR3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mR3="$(plant_verify "$repoR3" "lcars-20260913-203")"
+plant_verdict "$mR3" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+plant_logs_json "$mR3" 2
+plant_child "$repoR3" "lcars-20260913-203" 1 verify
+plant_child "$repoR3" "lcars-20260913-203" 2 implement awaiting
+plant_reverify_gate "$mR3"
+: >"$XO_WORKER_LOG"; : >"$XO_LAUNCH_LOG"; : >"$XO_RESPOND_CALLS"
+rcR3=0
+outR3="$(XO_RC_BODY="$(rc_body true true)" xo_recheck "$repoR3" "lcars-20260913-203")" || rcR3=$?
+check "B12f. it escalates" "[ '$rcR3' -ne 0 ] && [ \"\$(xo_state '$mR3' status)\" = 'escalated' ]"
+check "B12f. the note names the log that needs the captain" \
+  "xo_state '$mR3' note | grep -q 'log #2 needs you'"
+check "B12f. nothing was answered" "[ ! -s '$XO_RESPOND_CALLS' ]"
+check "B12f. no launch was spent on it" "[ ! -s '$XO_LAUNCH_LOG' ]"
+check "B12f. no worker was hired" "[ ! -s '$XO_WORKER_LOG' ]"
+
+# --------------------------------------------------------------------------
+# B12g. STAND-DOWN LEAVES THE FIXES DRIVING. `lcars xo off <parent>` signals
+#       Number One's OWN pids and leaves the resolve-logs driver alone — those
+#       children are LCARS's missions, not the first officer's.
+# --------------------------------------------------------------------------
+PROBE_PIDS=""
+# EVERY STREAM CLOSED, ON PURPOSE. This helper is CALLED inside a command
+# substitution (`pid="$(probe …)"`), and a background child that inherits that
+# substitution's pipe holds it open for ever — the substitution then never
+# returns and the whole suite hangs. It hung this suite once, exactly here, and
+# the cage that caught it threw the output away with it. stdin is closed for the
+# same family of reason (an inherited terminal is a process that can block on a
+# read nobody is going to answer).
+probe() { # <marker-file> — a process that records the TERM it is sent
+  local mark="$1"
+  ( trap 'printf TERM >>"'"$mark"'"; exit 0' TERM
+    while :; do sleep 0.2; done ) </dev/null >/dev/null 2>&1 &
+  PROBE_PIDS="$PROBE_PIDS $!"
+  printf '%s' "$!"
+}
+repoS1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mS1="$(plant_verify "$repoS1" "lcars-20260913-301")"
+plant_logs_json "$mS1" 2
+plant_child "$repoS1" "lcars-20260913-301" 1 implement
+plant_child "$repoS1" "lcars-20260913-301" 2 implement
+XO_MARK="$FXDIR/xo-term.txt"; RS_MARK="$FXDIR/rs-term.txt"; : >"$XO_MARK"; : >"$RS_MARK"
+xo_pid="$(probe "$XO_MARK")"; rs_pid="$(probe "$RS_MARK")"
+printf '%s\n' "$xo_pid" >"$mS1/xo.pid"
+printf '%s\n' "$rs_pid" >"$mS1/xo-resolve.pid"
+outS1="$( cd "$repoS1" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-301" 2>&1 )"
+# Give the probes a moment to run their traps.
+i=0; while [ "$i" -lt 25 ] && [ ! -s "$XO_MARK" ]; do i=$((i+1)); sleep 0.1; done
+check "B12g. Number One's own pid WAS signalled" "[ -s '$XO_MARK' ]"
+check "B12g. the resolve-logs driver was NOT signalled — the fixes keep driving" \
+  "[ ! -s '$RS_MARK' ] && kill -0 '$rs_pid' 2>/dev/null"
+check "B12g. …and its pid file is left alone" "[ -s '$mS1/xo-resolve.pid' ]"
+check "B12g. the note says the logs are still driving and the gate will wait" \
+  "xo_state '$mS1' note | grep -q '2 logs still driving' && xo_state '$mS1' note | grep -q 'gate will wait for you'"
+for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
+
+# --------------------------------------------------------------------------
+# B12h. THE ROUTING IS ON THE RECORDED MARKER, NOT ON THE QUESTION'S WORDS.
+#
+# Row 1: a re-verify gate whose question text has been completely REWORDED (no
+# "logged bug", no "re-verify", nothing a matcher could key on) still routes to
+# recheck, because resolve-logs RECORDED `"kind": "reverify"`.
+# Row 2: an ordinary Verify park whose question happens to talk about logged
+# bugs and re-verifying does NOT route — there is no recorded marker, so it is
+# the intent-answer path, exactly as S202 left it.
+# --------------------------------------------------------------------------
+xo_answer_b12() { # <repo> <id>
+  local repo="$1" id="$2"; shift 2
+  ( cd "$repo" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" LCARS_XO_DRIVER="$DRIVE_STUB" \
+      LCARS_NODE_BIN=bash LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_RESPOND_SCRIPT="$RESPOND_STUB" \
+      LCARS_WORKER_BIN="$RC_SHIM" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 "$@" \
+      bash "$SCRIPT" answer --mission "$id" 2>&1 )
+}
+repoK1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mK1="$(plant_verify "$repoK1" "lcars-20260913-401")"
+plant_verdict "$mK1" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+plant_logs_json "$mK1" 2
+plant_child "$repoK1" "lcars-20260913-401" 1 verify
+plant_child "$repoK1" "lcars-20260913-401" 2 verify
+plant_reverify_gate "$mK1" "Have another look at the build now that the tidying is done, then tell me if it lines up."
+: >"$XO_LAUNCH_LOG"; : >"$XO_RESPOND_CALLS"
+outK1="$(XO_RC_BODY="$(rc_body true true)" xo_answer_b12 "$repoK1" "lcars-20260913-401")"
+check "B12h. a REWORDED re-verify gate still routes to recheck (it relaunched)" \
+  "grep -q 'launch lcars-20260913-401' '$XO_LAUNCH_LOG'"
+check "B12h. …and answered the gate as the recheck path does" \
+  "grep -q 'by=number-one' '$XO_RESPOND_CALLS'"
+
+repoK2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mK2="$(plant_verify "$repoK2" "lcars-20260913-402")"
+cat >"$mK2/pending.json" <<'PJ'
+{
+  "stage": "verify",
+  "questions": [
+    "Before I re-verify: should the logged bugs list live on this screen, and do you want a re-verify button beside it? The PRD calls them logged bugs."
+  ]
+}
+PJ
+: >"$XO_LAUNCH_LOG"; : >"$XO_WORKER_LOG"; : >"$XO_RESPOND_CALLS"
+rcK2=0
+outK2="$(XO_RC_BODY='' XO_EV_BODY='' xo_answer_b12 "$repoK2" "lcars-20260913-402")" || rcK2=$?
+check "B12h. an ordinary Verify park that TALKS about logs does NOT route to recheck" \
+  "[ ! -s '$XO_LAUNCH_LOG' ]"
+check "B12h. …it took the intent-answer road instead (a worker was hired)" \
+  "[ -s '$XO_WORKER_LOG' ]"
+
+# ==========================================================================
+# B13 (S204 fix round 1, D1). NUMBER ONE'S OWN CALLS CARRY THE MARKER, AND THE
+#      LOCK LETS THEM THROUGH.
+#
+# THE DEFECT. `lcars xo evaluate` found two contradictions on a MEDIUM mission
+# and filed NONE of them: its own `lcars log` was refused by its own engaged
+# lock ("Number One is engaged on this mission on your behalf — …"). It cannot
+# not happen — `status` is `engaged` for the whole evaluate, and that is exactly
+# what the lock refuses — so the whole fix round was unreachable as shipped.
+#
+# THE MARKER NAMES THE MISSION. `$LCARS_XO_INTERNAL=<id>` is the S207
+# `$LCARS_WORKER_BIN_INTERNAL` shape (the producer states who set it), narrowed:
+# it exempts a call only against the mission it names. `LCARS_XO_ENFORCE=0`
+# would have switched the lock off wholesale for everything the call spawns,
+# which is not a cure.
+#
+# Row 1 proves the marker is on every verb Number One calls on its own behalf.
+# Row 2 puts the REAL lock behind the stub and proves the call gets through.
+# ==========================================================================
+echo
+echo "B13. Number One's own calls and the engaged lock"
+
+# --- 1. the marker is set, and it names THIS mission ----------------------
+repoN1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mN1="$(plant_verify "$repoN1" "lcars-20260913-501")"
+plant_verdict "$mN1" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+: >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outN1="$(xo_file_logs "$repoN1" "lcars-20260913-501")"
+# THE DRIVE IS DETACHED (setsid/nohup, then disowned), so the line it records
+# can land a moment after the verb returns — on a loaded machine this row went
+# red for the timing and not for the marker. Wait for it, BOUNDED: the check
+# below still requires the marker to be there, and a drive that never starts
+# still fails.
+w=0
+while [ "$w" -lt 100 ] && ! grep -q 'xo_internal=' "$XO_RESOLVE_CALLS" 2>/dev/null; do
+  sleep 0.1; w=$((w + 1))
+done
+check "B13. \`log.sh\` is called with the marker naming THIS mission" \
+  "grep -q 'xo_internal=lcars-20260913-501\$' '$XO_LOG_CALLS'"
+check "B13. …and NOT with the blunt LCARS_XO_ENFORCE=0 hatch (no live use, comments aside)" \
+  "! grep -q '^[^#]*LCARS_XO_ENFORCE=0' '$REPO_ROOT/skills/lcars-xo/xo.sh'"
+check "B13. \`resolve-logs.sh\` is started with the marker too" \
+  "grep -q 'xo_internal=lcars-20260913-501\$' '$XO_RESOLVE_CALLS'"
+
+# `respond.sh answer` — the third verb Number One calls on its own behalf. It
+# is reached on the recheck path (every fix held ⇒ accept the gate).
+repoN2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mN2="$(plant_verify "$repoN2" "lcars-20260913-502")"
+plant_verdict "$mN2" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+plant_logs_json "$mN2" 2
+plant_child "$repoN2" "lcars-20260913-502" 1 verify
+plant_child "$repoN2" "lcars-20260913-502" 2 verify
+plant_reverify_gate "$mN2" "Two logged bugs resolved — ready for your single re-verify."
+: >"$XO_LAUNCH_LOG"; : >"$XO_RESPOND_CALLS"
+outN2="$(XO_RC_BODY="$(rc_body true true)" xo_answer_b12 "$repoN2" "lcars-20260913-502")"
+check "B13. \`respond.sh answer\` is called with the marker naming THIS mission" \
+  "grep -q 'xo_internal=lcars-20260913-502\$' '$XO_RESPOND_CALLS'"
+check "B13. …and still carries its attribution" \
+  "grep -q 'by=number-one' '$XO_RESPOND_CALLS'"
+
+# --- 2. THE REAL LOCK, BEHIND THE STUB -----------------------------------
+# The stub above records; this one ENFORCES, by calling the very function every
+# write verb calls. If Number One's filing is refused, nothing is filed — which
+# is exactly what the tester measured.
+LOCKED_LOG_STUB="$FXDIR/log-locked.sh"
+cat >"$LOCKED_LOG_STUB" <<'LLS'
+#!/usr/bin/env bash
+parent=""
+args=("$@"); i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  case "${args[$i]}" in
+    --parent) parent="${args[$((i+1))]}"; i=$((i+2)) ;;
+    *) i=$((i+1)) ;;
+  esac
+done
+. "$LCARS_OWNERSHIP_LIB"
+gitdir="$(git rev-parse --git-common-dir 2>/dev/null)"
+case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+if r="$(lcars_xo_lock_reason "$gitdir/lcars/missions/$parent")"; then
+  printf 'lcars log: %s\n' "$r" >&2
+  exit 1
+fi
+printf 'FILED\n' >>"$XO_LOCKED_LOG"
+printf '1 bug missions filed and linked to #42 (parent):\n'
+printf '  lcars-20260913-901  #501  bug 1\n'
+exit 0
+LLS
+chmod +x "$LOCKED_LOG_STUB"
+
+repoN3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mN3="$(plant_verify "$repoN3" "lcars-20260913-503")"
+plant_verdict "$mN3" "$(gap_json 1 contradiction prd-1 shot-01)"
+export XO_LOCKED_LOG="$repoN3/filed.log"; : >"$XO_LOCKED_LOG"
+: >"$XO_RESOLVE_CALLS"
+outN3="$( cd "$repoN3" && XO_LOCKED_LOG="$XO_LOCKED_LOG" XO_RESOLVE_CALLS="$XO_RESOLVE_CALLS" \
+    LCARS_OWNERSHIP_LIB="$REPO_ROOT/skills/lcars-run/ownership.sh" \
+    LCARS_LOG_SCRIPT="$LOCKED_LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+    LCARS_RUN_SCRIPT=/usr/bin/true LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_GH_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" file-logs --mission "lcars-20260913-503" 2>&1 )"
+check "B13. the mission really IS engaged while Number One files (the premise)" \
+  "grep -q '\"status\": *\"engaged\"' '$mN3/state.json'"
+check "B13. Number One's OWN \`lcars log\` is NOT refused by the real lock" \
+  "[ -s '$XO_LOCKED_LOG' ]"
+check "B13. …so the gap was actually filed, not swallowed" \
+  "! printf '%s' \"\$outN3\" | grep -q 'refused them'"
+check "B13. …and the mission's record says one log was filed" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert len(d[\"filed\"])==1, d' '$mN3/xo/logs.json'"
+
+# THE CONTROL, and the point of the whole lock: the CAPTAIN's own hand on the
+# same verb, same mission, same moment, with no marker — still refused, with the
+# sentence byte for byte.
+XO_LOCK_SENTENCE="Number One is engaged on this mission on your behalf — stand it down (lcars xo off lcars-20260913-503) to act yourself"
+: >"$XO_LOCKED_LOG"
+rcN4=0
+( cd "$repoN3" && XO_LOCKED_LOG="$XO_LOCKED_LOG" \
+    LCARS_OWNERSHIP_LIB="$REPO_ROOT/skills/lcars-run/ownership.sh" \
+    bash "$LOCKED_LOG_STUB" --parent "lcars-20260913-503" --prd /dev/null >o.txt 2>&1 ) || rcN4=$?
+check "B13. the CAPTAIN's own hand on the same verb is STILL refused" \
+  "[ '$rcN4' -ne 0 ] && [ ! -s '$XO_LOCKED_LOG' ]"
+check "B13. …with the sentence byte for byte" \
+  "grep -Fqx \"lcars log: \$XO_LOCK_SENTENCE\" '$repoN3/o.txt'"
+
+# AND a marker naming a DIFFERENT mission buys nothing.
+rcN5=0
+( cd "$repoN3" && XO_LOCKED_LOG="$XO_LOCKED_LOG" LCARS_XO_INTERNAL="lcars-20260913-777" \
+    LCARS_OWNERSHIP_LIB="$REPO_ROOT/skills/lcars-run/ownership.sh" \
+    bash "$LOCKED_LOG_STUB" --parent "lcars-20260913-503" --prd /dev/null >o2.txt 2>&1 ) || rcN5=$?
+check "B13. a marker naming ANOTHER mission does NOT exempt this one" \
+  "[ '$rcN5' -ne 0 ] && grep -q 'Number One is engaged' '$repoN3/o2.txt'"
+
+# ==========================================================================
+# B14 (S204 fix round 1, D5). SINGULAR AND PLURAL, PROPERLY.
+# ==========================================================================
+echo
+echo "B14. one log is not 'logs'"
+
+repoP1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mP1="$(plant_verify "$repoP1" "lcars-20260913-601")"
+plant_verdict "$mP1" "$(gap_json 1 contradiction prd-1 shot-01)"
+: >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outP1="$(xo_file_logs "$repoP1" "lcars-20260913-601")"
+check "B14. ONE filing reads 'filed 1 log', never 'filed 1 logs'" \
+  "xo_state '$mP1' lastAction | grep -q '^filed 1 log ' && ! xo_state '$mP1' lastAction | grep -q 'filed 1 logs'"
+
+repoP2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mP2="$(plant_verify "$repoP2" "lcars-20260913-602")"
+plant_verdict "$mP2" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+: >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outP2="$(xo_file_logs "$repoP2" "lcars-20260913-602")"
+check "B14. …and TWO still reads 'filed 2 logs' (a control)" \
+  "xo_state '$mP2' lastAction | grep -q '^filed 2 logs '"
+
+# The stand-down note, the other half of D5. PROBE_PIDS is APPENDED to, never
+# reset — the suite's EXIT teardown kills everything on that list, and clearing
+# it would quietly drop the earlier probes from the teardown's reach.
+repoP3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mP3="$(plant_verify "$repoP3" "lcars-20260913-603")"
+plant_logs_json "$mP3" 1
+plant_child "$repoP3" "lcars-20260913-603" 1 implement
+P3_MARK="$FXDIR/p3-term.txt"; : >"$P3_MARK"
+p3_pid="$(probe "$P3_MARK")"
+printf '%s\n' "$p3_pid" >"$mP3/xo-resolve.pid"
+outP3="$( cd "$repoP3" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-603" 2>&1 )"
+check "B14. ONE driving log reads '1 log still driving', never '1 logs'" \
+  "xo_state '$mP3' note | grep -q '1 log still driving' && ! xo_state '$mP3' note | grep -q '1 logs still driving'"
+for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
+
+# ==========================================================================
+# B15 (S204 fix round 1, D3). THE ESCALATION IS WRITTEN IN THE CAPTAIN'S WORDS.
+#
+# Number One's escalation on a parked child read: "failed the flip-flop proof
+# gate each time (the tests pass on the parent commit, so red-on-parent is not
+# proven) … escalationType is 'cap' … the approved plan.json ticket." The
+# REASONING was right — it caught a real contradiction between two things the
+# record said and refused to choose — but four of those words are ones the
+# captain would have to look up, in a sentence he reads on his phone.
+#
+# The substance is produced by the worker, so the rule lives in the worker's
+# brief. This asserts the brief carries it: what is banned, what to say instead,
+# and that the numbers and quotes stay.
+# ==========================================================================
+echo
+echo "B15. the escalation speaks the captain's language"
+
+ANSWER_PROMPT="$REPO_ROOT/skills/lcars-xo/prompts/answer.md"
+check "B15. the brief exists" "[ -f '$ANSWER_PROMPT' ]"
+check "B15. it says who reads these sentences, and that it is one person" \
+  "grep -qi 'read by ONE person' '$ANSWER_PROMPT'"
+check "B15. it names the harness words that must not appear" \
+  "grep -q 'flip-flop proof gate' '$ANSWER_PROMPT' && grep -q 'red-on-parent' '$ANSWER_PROMPT' && grep -q 'escalationType' '$ANSWER_PROMPT' && grep -q 'plan.json' '$ANSWER_PROMPT'"
+check "B15. …and gives the plain thing to say instead of each" \
+  "grep -q 'the piece of work you approved' '$ANSWER_PROMPT' && grep -q 'attempted three times' '$ANSWER_PROMPT'"
+check "B15. it keeps the substance — plain is not vague" \
+  "grep -qi 'plain is not vague' '$ANSWER_PROMPT'"
+check "B15. it keeps the contradiction that made the escalation worth reading" \
+  "grep -qi 'Keep the contradiction' '$ANSWER_PROMPT'"
+check "B15. identifiers are allowed only AFTER the human sentence" \
+  "grep -qi 'in parentheses AFTER the human sentence' '$ANSWER_PROMPT'"
+
+
+# ==========================================================================
+# B16 (S204 fix round 2, D1). ONE LOOK, ONE SHOTS DIRECTORY.
+#
+# THE DEFECT, as the tester measured it. After an accept, a fix was reverted and
+# `xo recheck` ran a second time. The second look wrote recheck-01…07 — there
+# was no `#status-line` on the page any more, so no eighth shot was taken — and
+# recheck-08 FROM THE PREVIOUS LOOK was still sitting in the directory the
+# worker reads. Number One then told the captain a story about a line that
+# "flickers": "one earlier clip, recheck-08, did show it…". The line was simply
+# gone. The evidence was contaminated, and the story was forced on it.
+#
+# WHY THIS IS THE ROUND'S HIGH. It reached the right verdict only because the
+# stale picture happened to be the LAST-numbered one. Reverse the order and the
+# identical mechanism argues the other way: a stale picture showing a gap as
+# FIXED, in the folder the accept decision reads from.
+#
+# THE PROOF. Two consecutive looks where the second takes FEWER shots than the
+# first — the exact shape of the defect — and the second look's input must hold
+# exactly its own pictures and none of the first's. The control is the first
+# look itself: one look still sees ALL of its own.
+# ==========================================================================
+echo
+echo "B16. a look never reads another look's pictures"
+
+# A driver that takes a SETTABLE number of shots, named off the --prefix it was
+# given. That is how "the second look took fewer than the first" is staged.
+COUNT_DRIVE="$EVDIR/xo-drive-count.sh"
+cat >"$COUNT_DRIVE" <<'CDS'
+#!/usr/bin/env bash
+printf 'drive %s\n' "$*" >>"$XO_DRIVE_LOG"
+out=""; prefix="shot"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    --prefix) prefix="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$out"
+i=1
+while [ "$i" -le "${XO_DRIVE_SHOTS:-1}" ]; do
+  printf 'PNG\n' >"$out/$prefix-0$i.png"
+  printf '{"shot":"%s-0%s","clip":"full-page"}\n' "$prefix" "$i" >"$out/$prefix-0$i.json"
+  printf '%s-0%s — full page\n' "$prefix" "$i" >"$out/$prefix-0$i.txt"
+  i=$((i + 1))
+done
+printf '{"url":"http://127.0.0.1:4310/","allPainted":true}\n'
+exit 0
+CDS
+chmod +x "$COUNT_DRIVE"
+
+# The worker shim that writes down WHICH PICTURES IT WAS HANDED. Not which are
+# on disk — which are in the input directory it, and only it, can read.
+LOOK_SHIM="$EVDIR/look-inventory-worker"
+cat >"$LOOK_SHIM" <<'LKS'
+#!/usr/bin/env bash
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG.all"
+out="${LCARS_WORK_OUT:-}"
+[ -n "${LCARS_XO_INPUT_DIR:-}" ] \
+  && ( cd "$LCARS_XO_INPUT_DIR" && find . -type f -name '*.png' | sed 's|^|SAW |' ) \
+       >>"$XO_LOOK_LOG"
+[ -n "${XO_RC_BODY:-}" ] && printf '%s\n' "$XO_RC_BODY" >"$out/xo-recheck.json"
+[ -n "${XO_EV_BODY:-}" ] && printf '%s\n' "$XO_EV_BODY" >"$out/xo-verdict.json"
+exit 0
+LKS
+chmod +x "$LOOK_SHIM"
+
+LOOK1_LOG="$FXDIR/saw-look-1.txt";  : >"$LOOK1_LOG"
+RC1_LOG="$FXDIR/saw-recheck-1.txt"; : >"$RC1_LOG"
+RC2_LOG="$FXDIR/saw-recheck-2.txt"; : >"$RC2_LOG"
+
+repoS1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mS1="$(plant_verify "$repoS1" "lcars-20260914-701")"
+: >"$XO_WORKER_LOG"
+
+# LOOK ONE — three pictures.
+( cd "$repoS1" && XO_WORKER_LOG="$XO_WORKER_LOG" XO_LOOK_LOG="$LOOK1_LOG" \
+    XO_DRIVE_SHOTS=3 XO_EV_BODY="$(ev_verdict met met met high '')" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+    LCARS_XO_DRIVER="$COUNT_DRIVE" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+    LCARS_WORKER_BIN="$LOOK_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" evaluate --mission "lcars-20260914-701" >/dev/null 2>&1 ) || true
+
+check "B16. THE CONTROL — one look still sees ALL of its own pictures" \
+  "[ \"\$(grep -c '^SAW \./shots/shot-0[123]\.png\$' '$LOOK1_LOG')\" -eq 3 ]"
+
+# The fix round's record, so a re-check has something to re-check.
+plant_logs_json "$mS1" 2
+plant_child "$repoS1" "lcars-20260914-701" 1 verify
+plant_child "$repoS1" "lcars-20260914-701" 2 verify
+plant_reverify_gate "$mS1"
+
+# RE-CHECK ONE — three pictures of its own.
+( cd "$repoS1" && XO_WORKER_LOG="$XO_WORKER_LOG" XO_LOOK_LOG="$RC1_LOG" \
+    XO_RESPOND_CALLS="$XO_RESPOND_CALLS" \
+    XO_DRIVE_SHOTS=3 XO_RC_BODY="$(rc_body true true)" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+    LCARS_XO_DRIVER="$COUNT_DRIVE" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" LCARS_RESPOND_SCRIPT="$RESPOND_STUB" \
+    LCARS_WORKER_BIN="$LOOK_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" recheck --mission "lcars-20260914-701" >/dev/null 2>&1 ) || true
+
+check "B16. the second look sees its OWN pictures" \
+  "[ \"\$(grep -c '^SAW \./shots/recheck-0[123]\.png\$' '$RC1_LOG')\" -eq 3 ]"
+check "B16. …and NOT ONE of the first look's" \
+  "! grep -q '^SAW \./shots/shot-0' '$RC1_LOG'"
+
+# RE-CHECK TWO — ONE picture. The tester's exact case: fewer than the look
+# before it, so the look before it has leftovers under names this one never
+# wrote.
+( cd "$repoS1" && XO_WORKER_LOG="$XO_WORKER_LOG" XO_LOOK_LOG="$RC2_LOG" \
+    XO_RESPOND_CALLS="$XO_RESPOND_CALLS" \
+    XO_DRIVE_SHOTS=1 XO_RC_BODY="$(rc_body true true)" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+    LCARS_XO_DRIVER="$COUNT_DRIVE" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" LCARS_RESPOND_SCRIPT="$RESPOND_STUB" \
+    LCARS_WORKER_BIN="$LOOK_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" recheck --mission "lcars-20260914-701" >/dev/null 2>&1 ) || true
+
+check "B16. THE DEFECT — the third look is handed exactly ONE picture" \
+  "[ \"\$(grep -c '\.png\$' '$RC2_LOG')\" -eq 1 ]"
+check "B16. …its own" "grep -q '^SAW \./shots/recheck-01\.png\$' '$RC2_LOG'"
+check "B16. …and neither of the leftovers the look before it took" \
+  "! grep -q 'recheck-02\.png\|recheck-03\.png' '$RC2_LOG'"
+check "B16. …nor anything from the first look" \
+  "! grep -q '^SAW \./shots/shot-0' '$RC2_LOG'"
+
+# NAMESPACED, NOT DELETED. The captain's walkthrough is built out of these
+# pictures; a look that cleared the directory would have destroyed the evidence
+# of the look before it — which is how re-check one's shots were lost.
+check "B16. every look's pictures are still on disk, in its own directory" \
+  "[ -f '$mS1/xo/shots/recheck-1/recheck-03.png' ] && [ -f '$mS1/xo/shots/recheck-2/recheck-01.png' ]"
+check "B16. …the first look's among them" \
+  "[ -f '$mS1/xo/shots/look-1/shot-03.png' ]"
+check "B16. the journal records WHICH directory each look reasoned from" \
+  "grep -q '\"shotsDir\": \"xo/shots/look-1\"' '$mS1/number-one.jsonl' && grep -q '\"shotsDir\": \"xo/shots/recheck-2\"' '$mS1/number-one.jsonl'"
+
+# ==========================================================================
+# B17 (S204 fix round 2, D2). THE THINGS HAVE NAMES, AND THIS TOOL KNOWS THEM.
+#
+# Round 1 cured the WORKER's brief. These two lines are derived by the SKILL, so
+# that fix could not reach them:
+#
+#   "2 things in the build do not match what you asked for (t-3-ac1, t-5-ac1)"
+#   "log #1 (t-3-ac1) — …"
+#
+# Both name the gap by a machine handle when the gap has a title written in the
+# captain's own words, sitting in the same file the line is built from. Plain is
+# not vague: the ids stay, in brackets, AFTER the human sentence.
+# ==========================================================================
+echo
+echo "B17. the report and the escalation name the thing, not the id"
+
+repoT1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mT1="$(plant_verify "$repoT1" "lcars-20260914-711")"
+: >"$XO_WORKER_LOG"; : >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outT1="$(XO_EV_BODY="$(ev_verdict met met gap medium "$GAP_TICKET")" \
+          xo_evaluate "$repoT1" "lcars-20260914-711")"
+xo_derivation() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["derivation"])' "$1"; }
+check "B17. the first line the captain reads NAMES the thing" \
+  "xo_derivation '$mT1/xo/verdict.json' | grep -q 'ADD is above the list'"
+check "B17. …and still carries the id, in brackets after it" \
+  "xo_derivation '$mT1/xo/verdict.json' | grep -q '(t-1-ac1)'"
+check "B17. …and still carries the count" \
+  "xo_derivation '$mT1/xo/verdict.json' | grep -q '1 thing in the build does not match'"
+check "B17. the report on the issue reads the same way" \
+  "grep -q 'ADD is above the list' '$mT1/xo/report.md'"
+
+# The LOW branch — the one that says the PRD itself is not met — the same way.
+repoT2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mT2="$(plant_verify "$repoT2" "lcars-20260914-712")"
+: >"$XO_WORKER_LOG"; : >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outT2="$(XO_EV_BODY="$(ev_verdict met gap met low "$GAP_PRIMARY")" \
+          xo_evaluate "$repoT2" "lcars-20260914-712")"
+check "B17. a LOW names what the build does not do" \
+  "xo_derivation '$mT2/xo/verdict.json' | grep -q 'no add control'"
+check "B17. …with the PRD criterion's id after it" \
+  "xo_derivation '$mT2/xo/verdict.json' | grep -q '(prd-2)'"
+
+# The escalation when a fix did not hold — the other derived line.
+repoT3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mT3="$(plant_verify "$repoT3" "lcars-20260914-713")"
+plant_verdict "$mT3" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+plant_logs_json "$mT3" 2
+plant_child "$repoT3" "lcars-20260914-713" 1 verify
+plant_child "$repoT3" "lcars-20260914-713" 2 verify
+plant_reverify_gate "$mT3"
+: >"$XO_WORKER_LOG"; : >"$XO_RESPOND_CALLS"
+outT3="$(XO_RC_BODY="$(rc_body true false)" xo_recheck "$repoT3" "lcars-20260914-713")" || true
+check "B17. the hand-back names the gap by its TITLE" \
+  "xo_state '$mT3' note | grep -q 'gap 2 —'"
+check "B17. …with the log number and the criterion in brackets after it" \
+  "xo_state '$mT3' note | grep -q '(log #2, prd-2)'"
+check "B17. …and every word the worker gave is still in it" \
+  "xo_state '$mT3' note | grep -q 'still above the list'"
+
+# ==========================================================================
+# B18 (S204 fix round 2, D3). THE GAP IS BOUND TO THE PICTURE THAT SHOWS IT.
+#
+# THE DEFECT. Number One took shot-03 (the header alone) and shot-06 (the add
+# row alone) — exactly the per-gap evidence — then attached shot-01, the
+# 2880x1626 full page, to BOTH children, byte-for-byte identical, and both issue
+# bodies cited "shot-01". The header-count bug arrived at its fix worker holding
+# a picture of the whole screen.
+# ==========================================================================
+echo
+echo "B18. the bug carries the close-up, not the whole screen"
+
+repoU1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mU1="$(plant_verify "$repoU1" "lcars-20260914-721")"
+plant_verdict "$mU1" "$(gap_json 1 contradiction t-1-ac1 shot-01)"
+# The readouts the driver writes beside every PNG: shot-01 is the whole page,
+# shot-03 is the close-up of #add-button — the element t-1-ac1 was drawn at.
+printf '{"shot":"shot-01","selector":null,"clip":"full-page"}\n' >"$mU1/xo/shots/shot-01.json"
+printf '{"shot":"shot-03","selector":"#add-button","clip":{"x":0,"y":0,"width":10,"height":10}}\n' \
+  >"$mU1/xo/shots/shot-03.json"
+: >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outU1="$(xo_file_logs "$repoU1" "lcars-20260914-721")"
+check "B18. the close-up of the element is on the bug" \
+  "grep -q -- '--attach [^ ]*shot-03.png' '$XO_LOG_CALLS'"
+check "B18. …FIRST, ahead of the full page" \
+  "grep -q -- '--prd [^ ]*1.md --attach [^ ]*shot-03.png --attach [^ ]*shot-01.png' '$XO_LOG_CALLS'"
+check "B18. the full page rides along — it is not replaced" \
+  "grep -q -- '--attach [^ ]*shot-01.png' '$XO_LOG_CALLS'"
+check "B18. the bug PRD says which picture shows the thing" \
+  "grep -q 'shot-03' '$mU1/xo/logs/1.md' && grep -q 'close-up of' '$mU1/xo/logs/1.md'"
+
+# THE CONTROL. A gap whose element has no close-up keeps the picture it cited,
+# and nothing is invented for it.
+repoU2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mU2="$(plant_verify "$repoU2" "lcars-20260914-722")"
+plant_verdict "$mU2" "$(gap_json 1 contradiction prd-1 shot-01)"
+printf '{"shot":"shot-01","selector":null,"clip":"full-page"}\n' >"$mU2/xo/shots/shot-01.json"
+: >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outU2="$(xo_file_logs "$repoU2" "lcars-20260914-722")"
+check "B18. THE CONTROL — with no close-up to be had, the cited shot stands" \
+  "grep -q -- '--prd [^ ]*1.md --attach [^ ]*shot-01.png' '$XO_LOG_CALLS' && ! grep -q -- 'shot-03.png' '$XO_LOG_CALLS'"
+
+# ==========================================================================
+# B19 (S204 fix round 2, D5). THE HELP PRINTS THE WHOLE BLOCK.
+#
+# `lcars xo --help` ended mid-sentence at "…with its shots, and let LCARS",
+# three lines short — so `lcars xo recheck`, this round's headline verb, could
+# not be discovered from the CLI at all. Round 1 widened the hand-counted range
+# from 3,12p to 3,18p; the block outgrew that too. A counted range is the bug.
+# ==========================================================================
+echo
+echo "B19. --help cannot silently truncate"
+
+helpout="$( bash "$SCRIPT" --help 2>&1 )"
+for v in on off answer evaluate file-logs recheck; do
+  check "B19. --help lists \`lcars xo $v\`" \
+    "printf '%s\n' \"\$helpout\" | grep -q 'lcars xo $v'"
+done
+check "B19. the LAST line of the source's usage block reaches the terminal" \
+  "printf '%s\n' \"\$helpout\" | tail -1 | grep -q 'accept what holds, re-score'"
+check "B19. …and the sentence before it is whole, not cut at 'let LCARS'" \
+  "printf '%s\n' \"\$helpout\" | grep -q 'drive them'"
+# THE RANGE CANNOT ROT. Not "the code no longer says sed" — a COPY of the
+# script with one more verb appended to the END of the usage block, run for its
+# help. A hand-counted range prints everything but the new line; the fix prints
+# it. This is the check that would have caught the defect twice.
+XOCOPY="$EVDIR/xo-with-a-later-verb.sh"
+python3 - "$SCRIPT" "$XOCOPY" <<'XPY'
+import sys
+src = open(sys.argv[1]).read()
+i = src.index("#   lcars xo recheck --mission <id>")
+end = src.index("\n#\n", i)
+src = src[:end] + "\n#   lcars xo warpfactor --mission <id>  a verb somebody added later" + src[end:]
+open(sys.argv[2], "w").write(src)
+XPY
+newhelp="$( LCARS_COMMON_LIB="$REPO_ROOT/skills/lcars-init/lcars-common.sh" \
+            LCARS_OWNERSHIP_LIB="$REPO_ROOT/skills/lcars-run/ownership.sh" \
+            bash "$XOCOPY" --help 2>&1 )"
+check "B19. a verb added at the END of the block still prints — the range cannot rot" \
+  "printf '%s\n' \"\$newhelp\" | grep -q 'warpfactor'"
+check "B19. …and the verbs above it are all still there (the control)" \
+  "printf '%s\n' \"\$newhelp\" | grep -q 'lcars xo recheck' && printf '%s\n' \"\$newhelp\" | grep -q 'lcars xo on'"
 
 # ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.

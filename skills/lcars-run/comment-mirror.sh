@@ -657,6 +657,49 @@ cm_render_number_one() {
     printf '\n'
   fi
 
+  # ◈ THE LOGS IT FILED (S204). One row per mission log Number One raised for a
+  # gap, with the issue link and the stage the child is actually at RIGHT NOW —
+  # read off that child's own state.json, never inferred from this parent's
+  # journal. The journal says what was DONE; this says where it GOT TO, and the
+  # two are different facts with different lifetimes.
+  #
+  # SHOT NAMES, NOT IMAGES, for the same reason the report gives them: the PNGs
+  # stay on the laptop that took them.
+  if [ -s "$MISSION_DIR/xo/logs.json" ]; then
+    local logs_root ent l_mid l_iss l_ttl l_crit l_shots l_stage l_mark n_logs
+    logs_root="$(dirname "$MISSION_DIR")"
+    n_logs="$(grep -o '"mission"' "$MISSION_DIR/xo/logs.json" 2>/dev/null | grep -c . | tr -d ' ')"
+    printf '\n### The mission logs I filed (%s)\n\n' "${n_logs:-0}"
+    printf 'One ordinary mission log for each place the build contradicts something you\n'
+    printf 'wrote down, with the shot that shows it. LCARS drives them; their fixes ride\n'
+    printf 'this Mission'"'"'s PR — there is no per-bug PR.\n\n'
+    while IFS= read -r ent; do
+      [ -n "$ent" ] || continue
+      l_mid="$(cm_jl_field "$ent" mission)"
+      [ -n "$l_mid" ] || continue
+      l_iss="$(cm_jl_field "$ent" issue)"
+      l_ttl="$(cm_jl_field "$ent" title)"
+      l_crit="$(cm_jl_field "$ent" criterion)"
+      l_stage=""
+      [ -f "$logs_root/$l_mid/state.json" ] \
+        && l_stage="$(sed -n 's/.*"stage"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+                        "$logs_root/$l_mid/state.json" | head -1)"
+      case "$l_stage" in
+        done)   l_mark="✓ accepted" ;;
+        verify) l_mark="◉ waiting on the re-verify" ;;
+        '')     l_mark="▸ driving" ;;
+        *)      l_mark="▸ driving ($l_stage)" ;;
+      esac
+      if grep -q '"awaitingHuman"[[:space:]]*:[[:space:]]*true' \
+           "$logs_root/$l_mid/state.json" 2>/dev/null; then
+        l_mark="⚠ this one needs you"
+      fi
+      printf -- '- %s — %s%s  ·  %s\n' \
+        "$( [ -n "$l_iss" ] && printf '#%s' "$l_iss" || printf '%s' "$l_mid" )" \
+        "${l_ttl:-a gap}" "${l_crit:+ *($l_crit)*}" "$l_mark"
+    done <<<"$(grep -o '{[^}]*}' "$MISSION_DIR/xo/logs.json" 2>/dev/null)"
+  fi
+
   # THE LAST ANSWER AND THE LINE THAT SETTLED IT. An answer without its grounds
   # is exactly what the round refuses to produce, so the report shows both.
   local line lastans=""

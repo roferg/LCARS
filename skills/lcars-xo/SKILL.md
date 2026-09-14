@@ -24,6 +24,8 @@ bash skills/lcars-xo/xo.sh off <mission>            # opt ONE mission out
 bash skills/lcars-xo/xo.sh on  <mission>            # clear that opt-out
 bash skills/lcars-xo/xo.sh answer --mission <id>    # take the park (S202)
 bash skills/lcars-xo/xo.sh evaluate --mission <id>  # the Verify look (S203)
+bash skills/lcars-xo/xo.sh file-logs --mission <id> # file the gaps as logs (S204)
+bash skills/lcars-xo/xo.sh recheck --mission <id>   # re-look after the fixes (S204)
 ```
 
 The front door routes `lcars xo …` here through an explicit delegator in
@@ -100,6 +102,14 @@ The order is the contract:
 3. **Round 0** — `xo-drive.js` takes the whole page plus one clipped shot per
    place the drawing names. Every PNG gets a paired `.json` readout and a
    one-line `.txt` caption.
+
+   **ONE LOOK, ONE DIRECTORY.** Each look writes into its own
+   `xo/shots/<look>/` — `look-1`, then `recheck-1`, `recheck-2` — and the worker
+   is handed THAT directory and no other. Nothing is ever deleted (the
+   walkthrough is built from these pictures); which directory a look reasoned
+   from is in its journal line, and `xo/look.txt` points `file-logs` at the one
+   the verdict came from. Before this, a second look that took fewer shots than
+   the first inherited the first's leftovers and reasoned about them as current.
 4. **Up to three worker rounds.** Each round Number One writes EITHER
    `xo-actions.json` (it wants to look further — at most 12 actions, every
    screenshot named) OR `xo-verdict.json`. No verdict by the end of round three
@@ -290,6 +300,68 @@ posture exactly: every uncertain case proceeds (no state file, no key, an
 unreadable value), one sentence pinned byte-identical everywhere, and
 `LCARS_XO_ENFORCE=0` bypasses it for harness debugging.
 
+**Number One's own hand is not a second hand** (S204 fix round 1, D1). Number
+One acts THROUGH these very verbs, so without an exemption the lock refuses the
+first officer's own `log.sh`, `resolve-logs.sh` and `respond.sh answer` calls —
+and nothing it decides can ever be filed. `xo.sh` sets
+**`$LCARS_XO_INTERNAL=<mission-id>`** on exactly those child calls, and
+`lcars_xo_lock_reason` exempts a call only when the marker names the SAME
+mission it is being asked to lock. It is the S207 `$LCARS_WORKER_BIN_INTERNAL`
+shape (the producer states who set it), narrowed: Number One holding mission A
+buys no free pass on mission B, and the captain's own `lcars log` on A is
+refused with the same sentence as before. It is never set process-wide and never
+exported to a worker. `LCARS_XO_ENFORCE=0` is NOT the cure — it switches the
+lock off wholesale for everything the call spawns.
+
+## The fix round (S204) — `file-logs` and `recheck`
+
+A look that scores MEDIUM or LOW has found gaps. Number One does with them what
+the captain would: it files an ordinary **mission log** for each one and lets
+LCARS drive it.
+
+**`file-logs`** reads `xo/verdict.json` and takes the gaps of kind
+`contradiction` — the build disagreeing with something written down, with a
+picture of it. An **interpretation** (a call the build made where the record is
+silent) is never filed; it is on the report, as the captain's own call. The cap
+is **ten**; an eleventh gap is journalled (`N more gaps not filed — cap 10`),
+never dropped in silence. For each gap it writes a bug PRD under `xo/logs/`,
+then makes **one** `lcars log` call in the shape `run.sh` already uses —
+`--parent <id> --prd 1.md --attach shot-a.png --prd 2.md --attach shot-b.png` —
+so each shot binds to its OWN bug by argument order. The parent's drawing is
+**not** attached by hand: `log.sh` inherits a holodeck parent's mockup itself.
+The child ids come back off the verb's own summary and land in
+**`xo/logs.json`**, which is the only thing `recheck` reads to know what it
+filed. Then `resolve-logs` is started detached, its pid in **`xo-resolve.pid`**.
+
+**ONE ROUND ONLY** (captain's ruling). `numberOne.round` is set to `1` and never
+incremented. A fix that does not hold goes to the captain, not to round two.
+
+**`recheck`** runs when the consolidated re-verify gate comes up. It relaunches
+the build from the parent branch (the children's fixes are on it), drives it,
+and asks ONE worker the narrow question: **for each gap you filed, did its fix
+hold?** Every fix holding is accepted through `respond.sh answer`, attributed to
+`number-one` — which is what triggers `resolve-logs complete`'s fold of each
+child to Done and the push of the parent branch. Anything that does not hold
+leaves the gate exactly where it was, with the list beside it. The second score
+is recomputed from the ledger by the same `xo-score.py` that scored the first
+look, and `xo/report.md` becomes *after the fixes* with the first look folded
+underneath it.
+
+A child that **parked** blocks all of it — `resolve-logs complete`'s
+completeness guard would refuse the whole batch — so `recheck` escalates
+"log #n needs you" **before** spending a launch, a browser or a worker.
+
+### Which gate is this? The record says, not the prose
+
+`resolve-logs.sh` writes `"kind": "reverify"` into the parent's `pending.json`
+when it raises the consolidated gate, and `"kind": "reverify-blocked"` when it
+re-raises it because the fold could not happen. **`xo.sh answer` routes on that
+recorded field and on nothing else.** Matching the question's wording would be
+the same defect this project has already paid for three times (S147, S156,
+S188), and it is cured the same way every time: the producer records the fact,
+the consumer reads it. The captain rewords gate prose freely; a matcher over it
+eventually meets a question that contains its vocabulary.
+
 ## Standing down
 
 `lcars xo off <mission>` **signals first, then records**: it TERMs the pid in
@@ -304,6 +376,16 @@ surface with no record that a spin was aborted. It also **clears
 `lastPending`**: that cksum is stamped BEFORE the spin, so a worker killed
 mid-spin would otherwise leave Number One locked out of a gate it never actually
 read. The conn comes back, and so does the gate.
+
+**It never stops the fixes.** `xo.pid` is Number One's own chain — its worker,
+its browser, its launch. `xo-resolve.pid` is the `lcars resolve-logs` driver
+working the logged bugs, and **those are LCARS's missions, not the first
+officer's**: each has its own issue, its own branch and its own worker. That pid
+is read and never signalled. When it is alive the stand-down note says so —
+`Number One stood down <time> · N log/logs still driving · the re-verify gate will
+wait for you` — because a captain taking the conn back mid-fix-round needs to
+know both that the fixes are still going and that the gate at the end of them is
+now his.
 
 A repo-level `lcars xo off` does that for every engaged mission and flips
 `enabled` to `false` — **keeping the recorded engine**, because the captain

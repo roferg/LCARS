@@ -61,6 +61,12 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
 WORKER_BIN="${LCARS_WORKER_BIN:-}"
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILL_DIR/../lcars-run/notify.sh}"
+# Number One's verb (S204 fix round 1, D2). Used for ONE thing only: telling the
+# first officer that the drive IT started has ended badly, so it can hand the
+# mission back to the captain through its own escalate path. Never used to hire
+# a worker and never called unless the parent's RECORDED state says Number One
+# is engaged on it.
+XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILL_DIR/../lcars-xo/xo.sh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
@@ -575,6 +581,7 @@ reraise_incomplete_gate() { # $1 = "<id>\t<stage>" lines (the undriven set)
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
     echo '  "questions": ['
     printf '    "%s"\n' "$(json_escape "$ask")"
     echo '  ]'
@@ -587,6 +594,83 @@ reraise_incomplete_gate() { # $1 = "<id>\t<stage>" lines (the undriven set)
     *) command -v "$GH_BIN" >/dev/null 2>&1 \
          && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
   esac
+}
+
+# reraise_stranded_gate — the DRIVE path's counterpart (S204 fix round 1, D2).
+#
+# THE DEFECT. A child hit its 3-session implement cap and parked; the drive
+# printed "did not reach its Verify gate … resolve it manually" into
+# `xo/resolve.log` — a file nobody opens — and exited. Wave 2 never started, and
+# the PARENT card went on showing Number One engaged with no gate and no note.
+# The captain was told work was happening when nothing was. Run by hand,
+# `lcars xo recheck` already says the right thing; nothing triggered it.
+#
+# THE CURE IS THE EXISTING PATH, WIRED TO FIRE. `reverify-blocked` is already
+# the producer's way of saying "the batch cannot go forward and unblocking it is
+# yours" — `lcars xo answer` routes it straight back to the captain and Number
+# One hires nobody. So the drive raises THAT gate, with the stranded bug named,
+# instead of dying into a log file. No new mechanism, no new kind, no new
+# routing; the same two state writes and the same one ping as every other gate.
+#
+# THE SENTENCE IS THE CAPTAIN'S, NOT THE HARNESS'S. It says which log stopped,
+# where it stopped, what is waiting behind it, and the one command that moves it.
+# Folds nothing, ships nothing, and never claims a fix was accepted.
+reraise_stranded_gate() { # <stranded-id> <stranded-stage> <n-waiting>
+  local bid="$1" bstage="$2" nwait="${3:-0}" btitle ask waiting=""
+  btitle="$(json_str "$MISSIONS_DIR/$bid/state.json" title)"
+  if [ "$nwait" -gt 0 ]; then
+    local wnoun="logs"; [ "$nwait" -eq 1 ] && wnoun="log"
+    waiting=" $nwait more $wnoun on this mission are queued behind it and have not started."
+  fi
+  ask="One of the logged bugs on $PARENT_ID ($PARENT_TITLE) stopped before it could be fixed, so there is nothing to re-verify yet. It is $bid (${btitle:-no title}), and it is stuck at the $bstage step.$waiting Pick it up with \`lcars run $bid\` — answer whatever it is asking — then re-run \`lcars resolve-logs $PARENT_ID\` to take the batch the rest of the way. Nothing has been folded and nothing has been shipped."
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
+    echo '  "questions": ['
+    printf '    "%s"\n' "$(json_escape "$ask")"
+    echo '  ]'
+    echo '}'
+  } >"$PARENT_DIR/pending.json"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) command -v "$GH_BIN" >/dev/null 2>&1 \
+         && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
+  esac
+  # ONE ping, keyed to the PARENT — the same single notification the
+  # consolidated gate fires. A captain who is away finds out the same way.
+  LCARS_CFG="$CONFIG" "$NOTIFY_BIN" "$PARENT_ID" "awaiting-human" "$ask" >/dev/null 2>&1 || true
+  printf '%s\n' "$ask"
+  hand_back_to_number_one
+}
+
+# hand_back_to_number_one — the other half of D2, and the reason the gate alone
+# was not enough.
+#
+# This drive is started BY Number One, which stays `engaged` for the whole of it.
+# Raising a gate while it is still engaged tells the captain to act and then
+# REFUSES him when he does: `lcars resolve-logs` and `lcars respond` both take
+# the engaged lock, and both are named in the sentence above. So the first
+# officer has to be told its drive is over.
+#
+# It is told through its OWN verb, and that verb reads the gate we just recorded:
+# `lcars xo answer` routes on `"kind": "reverify-blocked"` straight to escalate —
+# which records `escalated`, puts the reason on the card as Number One's note,
+# leaves the gate exactly where it is, and hires nobody. No new mechanism; the
+# path was already there with nothing to fire it.
+#
+# BEST-EFFORT, AND ONLY WHEN THE RECORD SAYS SO. No xo.sh, no `lcars_xo_status`,
+# or a parent Number One is not engaged on ⇒ nothing happens and this drive ends
+# exactly as it did before. A captain running `lcars resolve-logs` by hand never
+# hires his first officer as a side effect.
+hand_back_to_number_one() {
+  command -v lcars_xo_status >/dev/null 2>&1 || return 0
+  [ -f "$XO_SCRIPT" ] || return 0
+  [ "$(lcars_xo_status "$PARENT_DIR")" = "engaged" ] || return 0
+  bash "$XO_SCRIPT" answer --mission "$PARENT_ID" >/dev/null 2>&1 || true
+  return 0
 }
 
 # reraise_push_failure_gate — sibling of reraise_incomplete_gate for the S89
@@ -604,6 +688,7 @@ reraise_push_failure_gate() {
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
     echo '  "questions": ['
     printf '    "%s"\n' "$(json_escape "$ask")"
     echo '  ]'
@@ -631,6 +716,7 @@ reraise_no_branch_gate() {
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
     echo '  "questions": ['
     printf '    "%s"\n' "$(json_escape "$ask")"
     echo '  ]'
@@ -1092,7 +1178,23 @@ fi
 STUCK_NOTE=""
 if [ -n "$WAVE_ERRORED" ]; then
   if [ "${#resolved[@]}" -eq 0 ]; then
-    die "driving $WAVE_ERRORED did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)') — resolve it manually with \`lcars run $WAVE_ERRORED\`, then re-run."
+    # S204 fix round 1 (D2): HAND IT BACK, do not die into a log file. This
+    # drive is usually DETACHED (Number One spawns it with its output going to
+    # `xo/resolve.log`), so an error printed here was read by nobody and the
+    # mission sat silently with its card still saying work was happening.
+    # `reraise_stranded_gate` raises the parent's existing `reverify-blocked`
+    # gate instead, which is the path that was already built to hand a stuck
+    # batch back to the captain.
+    nqueued=0
+    if [ -n "$WAVE_LINES" ]; then
+      nqueued="$(printf '%s\n' "$WAVE_LINES" | grep -c . | tr -d ' ')"
+      nqueued=$(( nqueued - 1 ))
+      [ "$nqueued" -lt 0 ] && nqueued=0
+    fi
+    reraise_stranded_gate "$WAVE_ERRORED" \
+      "$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)" "$nqueued"
+    lcars_state_refusal_die "lcars resolve-logs"
+    exit 1
   fi
   STUCK_NOTE="One logged bug did NOT reach its Verify gate and still needs attention: $WAVE_ERRORED (stage '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)'). Resolve it with \`lcars run $WAVE_ERRORED\`, then re-run \`lcars resolve-logs $PARENT_ID\` to fold it in."
 fi
@@ -1117,9 +1219,19 @@ ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your
 [ -n "$STUCK_NOTE" ] && ASK="$ASK $STUCK_NOTE"
 
 # pending.json on the PARENT (the answer inbox reads this).
+#
+# THE GATE RECORDS WHAT IT IS (S204). `"kind": "reverify"` is not decoration: it
+# is the ONLY thing `lcars xo answer` is allowed to route on. The alternative —
+# recognising this gate by the shape of the sentence above — is the infer-vs-
+# record defect this project has now paid for three times (S147's source parser,
+# S156's regex classifier, S188). The captain and every later round rewrite gate
+# prose freely; a matcher over that prose eventually meets a question that
+# contains its vocabulary and answers it with the wrong verb. So the PRODUCER
+# records the fact and the CONSUMER reads it, and the wording is free to change.
 {
   echo '{'
   printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+  echo '  "kind": "reverify",'
   echo '  "questions": ['
   printf '    "%s"\n' "$(json_escape "$ASK")"
   echo '  ]'

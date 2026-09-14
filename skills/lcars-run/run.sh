@@ -14881,6 +14881,11 @@ spawn_number_one() { # mission-id  mode  outdir
     evaluate) outfiles="Write EXACTLY ONE of these two files:
   - $outdir/xo-verdict.json   you have seen enough, and this is your verdict
   - $outdir/xo-actions.json   you want to look further (at most 12 actions)" ;;
+    # S204 — the RE-CHECK after the logged fixes landed. One file, and it
+    # carries two things: `held` (did each filed gap's fix hold?) and the full
+    # ledger again, which the skill re-scores exactly as it scored the first
+    # look. There is no second round to ask for, so there is no actions file.
+    recheck)  outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
     *)        outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
   esac
   local extra="## The mission

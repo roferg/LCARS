@@ -1,0 +1,62 @@
+{
+ "title": "S204 — Number One files the gaps, LCARS fixes them, and the second look stands on its own evidence",
+ "session": 204,
+ "intro": "Round 3, driven with nothing bypassed and nothing staged. The Verify look found two real contradictions against your drawing, filed one mission log for each, LCARS fixed both on the Mission branch, and Number One looked again and accepted. Then one fix was deliberately deleted from the branch and it was asked to look a third time — the test this round exists for. New this round: every look keeps its own folder of pictures, so the before and after below are BOTH Number One's own photographs, not the tester's.",
+ "steps": [
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s204/shots/19-r3-n1-before-statusline.png",
+   "caption": "1 — The gap as Number One found it, in its own picture. Below the add row there is nothing, then the grey footer. Your drawing puts an orange MIX RATIO line right there."
+  },
+  {
+   "shot": null,
+   "kind": "record",
+   "caption": "2 — The mission log it filed for that gap, issue #108, in its own words: \"Expected an orange mix-ratio line under the add row reading 'MIX RATIO 3:1 · 2 BATCHES OPEN', per plan; saw nothing there — below the add row the page goes straight to empty space and the footer.\" The second gap — no batch count at the right end of the header — went in the same way as #109, and that one carries the CLOSE-UP of the header itself rather than the whole page: \"shot-03 is the close-up of #app-header — that is the one that shows this.\" The two things your drawing never mentions (the footer, and what colour the ADD button is) were NOT filed: they are listed in the report as your call. Number One filed both through the ordinary `lcars log` verb, with nothing switched off.",
+   "link": {"url": "https://github.com/roferg/lcars-mp-fixture/issues/108", "label": "issue #108"}
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s204/shots/20-r3-board-driving.png",
+   "caption": "3 — The board while LCARS drives the two logs. Each bug is a card in its own right, named in plain English, and the one in flight carries the hollow NUMBER ONE · ENGAGED pill with its heavy rim. Each ran the full pipeline and landed a real red-then-green fix on the Mission's branch — no separate pull request."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s204/shots/21-r3-n1-after-statusline.png",
+   "caption": "4 — THE RE-CHECK, and Number One's OWN after-picture. The same region of the same screen, framed exactly as step 1: MIX RATIO 3:1 · 3 BATCHES OPEN, orange, under the add row. Last round this picture had to be taken by the tester because the product overwrote its own re-check shots; this round each look keeps its own folder, so both halves of this pair are the product's photographs."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s204/shots/23-r3-n1-before-headercount.png",
+   "caption": "5 — The second gap, before: the right-hand end of the header is an empty orange band where your drawing puts a batch count. Number One's own picture."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s204/shots/24-r3-n1-after-headercount.png",
+   "caption": "6 — And after: 3 BATCHES, at the right-hand end of the header. Same region, same framing, also Number One's own."
+  },
+  {
+   "shot": null,
+   "kind": "record",
+   "caption": "7 — ACCEPTED. Number One relaunched the build, checked each gap it had filed, found both closed, folded the two logged bugs to Done, pushed the Mission branch, and handed the Mission back to you: \"every fix held — I accepted the 2 logged bug(s) on your behalf. Intent match after the fixes: MEDIUM. The PR is yours. I do not merge.\" Both children went to done, the branch reached origin, and the pull request was still open and unmerged afterwards. Its own worker wanted to call this HIGH; the comment says so out loud — \"I first called this HIGH. The line above is worked out again from my own notes below, and those notes win.\"",
+   "link": {"url": "https://github.com/roferg/lcars-mp-fixture/pull/106", "label": "the pull request"}
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s204/shots/22-r3-escalated-refused.png",
+   "caption": "8 — THE TEST THIS ROUND EXISTS FOR. The mix-ratio fix was then deleted from the branch and Number One was asked to look again. It did not accept. It escalated, and read the words: \"the fixes are in but 1 of them did not hold — the mix-ratio status line — Below the add row there is still nothing… the page has no #status-line element at all.\" Nothing about an earlier clip, nothing about a flicker — just the thing, named, and gone. Its folder for this look holds seven pictures and no eighth: the close-up of the status line simply does not exist this time, where the two earlier looks each had one. It cited only its own."
+  },
+  {
+   "shot": null,
+   "kind": "record",
+   "caption": "9 — ONE THING TO KNOW BEFORE YOU TRUST THE ISSUE PAGE. The board card above is right. The Mission's GitHub comment is not: sixteen minutes after that escalation it still read \"Status: finished · re-checked 05:04\" and \"Both drawn details you flagged are now on the screen, captain\" — the accepted story from the look before. The escalation reached the terminal and the board and the files on disk, and never reached the issue. Read the board, not the issue, until that is fixed.",
+   "link": {"url": "https://github.com/roferg/lcars-mp-fixture/issues/107", "label": "the Mission, issue #107"}
+  }
+ ],
+ "blind": [
+  "The re-check reads the LOCAL Mission branch, not the remote. A revert pushed to origin was invisible to it until the local branch was fast-forwarded; nothing proves the captain would be told his branch had moved underneath him.",
+  "A drive that gets stranded mid-fix was not exercised; nothing stranded, so nothing proves the captain would be told.",
+  "Standing Number One down was only tried after it had finished, never mid-drive.",
+  "Ten simultaneous logs and the cap-10 overflow were not exercised; the most filed here was two.",
+  "The bug with no element to photograph — the missing status line — still rides the 1440-px-wide full page, because a close-up of a thing that is not there cannot be taken.",
+  "Nothing was merged. The pull request is still open and still yours."
+ ],
+ "costs": {
+  "subagent": "one tester session",
+  "worker": "Copilot only — no Claude leg ran (a tripwire would have recorded one; it stayed empty)"
+ },
+ "shotsDir": "LCARS/tests/drives/s204/shots/"
+}

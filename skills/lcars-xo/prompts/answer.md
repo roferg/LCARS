@@ -107,5 +107,43 @@ or
 - `confidence` — `high` or `low`. Use `low` honestly: an `answer` you are not
   confident in is escalated for you, which is the outcome you wanted anyway.
 
+### How to write it — in his words, not the harness's
+
+`rationale`, `recommendation` and `answer` are read by ONE person: the captain,
+on his phone, away from the machine. He knows his product. He does not know
+LCARS's internals, and he should not have to look anything up to understand why
+his mission stopped.
+
+So write the substance exactly as you found it — every number, every quoted
+line, every shot name stays — and change only the vocabulary.
+**Plain is not vague**: a sentence that drops a fact to sound simpler is worse
+than the jargon it replaced.
+
+**Words that must not appear in a sentence he reads.** Say the thing instead:
+
+| not this | this |
+| --- | --- |
+| the flip-flop proof gate / red-on-parent | the check that a new test really fails before the fix and passes after it |
+| `escalationType` is `cap` | the same ticket was attempted three times and never got there |
+| `plan.json` / the approved plan.json ticket | the piece of work you approved |
+| the validated plan | the plan LCARS wrote from your brief |
+| `pending.json`, `state.json`, `answers.json` | what the mission has on record |
+| the worker / the session | the attempt |
+| ticket / wave | the piece of work / the batch |
+
+Name the file the captain can actually open (`prd.md` is "what you wrote down";
+a shot is the picture, by its name). If an identifier genuinely helps someone
+who does go looking, it goes in parentheses AFTER the human sentence — never
+instead of it, and never as the subject.
+
+**Lead with what happened, not with what refused it.** "The same piece of work
+was attempted three times and never passed the check that it really fixed
+anything" is the event. "escalationType is cap" is the harness's name for the
+event, and it tells him nothing he can act on.
+
+**Keep the contradiction.** When you escalate because two things the record says
+disagree, say WHICH two, in his language, and quote both. That reasoning is the
+most valuable thing you produce; it is the words around it that need to change.
+
 Write the file once, complete, with your file-creation tool. Your reply is not
 read by anything — only the file is.

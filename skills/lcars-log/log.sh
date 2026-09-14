@@ -481,7 +481,7 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
       [ "$dup" -eq 0 ] && attach_list+=("$cand")
     done
   fi
-  local attach_rels=()
+  local attach_rels=() attach_names=()
   if [ "${#attach_list[@]}" -gt 0 ]; then
     mkdir -p "$mdir/attachments"
     local an=0 asrc aext arel
@@ -492,8 +492,48 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
       arel="$(printf 'attachments/attachment-%02d%s' "$an" "$aext")"
       cp "$asrc" "$mdir/$arel"
       attach_rels+=("$arel")
+      attach_names+=("$(basename "$asrc")")
     done
     lcars_attach_prd_section "${attach_rels[@]}" >>"$mdir/prd.md"
+    # --- WHICH FILE IS WHICH (S204 fix round 1, D4) -------------------------
+    # STAGING RENAMES THE FILE AND THE BODY DOES NOT KNOW. Every attachment is
+    # copied in as `attachment-NN.<ext>`, in order; the PRD that came with the
+    # bug still talks about the file by the name it had when it was written.
+    # Measured: a filed log said "(shot-01)" and "Number One's shots of the
+    # running build: shot-01" while the only file attached was
+    # `attachments/attachment-02.png`. Nothing connected the two names, so the
+    # one picture of the bug was, to the captain, unfindable.
+    #
+    # THE FIX IS AT THE RENAME, which is the only place that knows both names —
+    # not a guess made upstream about what number a file will land on. Written
+    # ONLY when a name actually changed, so a bug whose attachments already
+    # carry their staged names gains nothing.
+    #
+    # AND ONLY ON NUMBER ONE'S OWN FILINGS ($LCARS_XO_INTERNAL is set — the
+    # marker that says this call is the first officer's, S204 fix round 1 D1).
+    # That is the whole population with the problem: Number One writes the bug
+    # PRD itself and names its evidence by the name it gave it ("shot-01"). The
+    # captain's own `lcars log --attach screenshot.png` says nothing about a
+    # file name at all, and its attachment section is asserted BYTE FOR BYTE by
+    # the suite (21e) — a pasted screenshot's bug PRD must not move by one
+    # character, so it does not.
+    local ni=0 changed=0
+    while [ "$ni" -lt "${#attach_rels[@]}" ]; do
+      [ "$(basename "${attach_rels[$ni]}")" = "${attach_names[$ni]}" ] || changed=1
+      ni=$((ni + 1))
+    done
+    [ -n "${LCARS_XO_INTERNAL:-}" ] || changed=0
+    if [ "$changed" -eq 1 ]; then
+      {
+        printf '\n## Which file is which\n\n'
+        printf 'The files above were renamed as they were attached. Where the text of this Mission names a picture, this is the file to open:\n\n'
+        ni=0
+        while [ "$ni" -lt "${#attach_rels[@]}" ]; do
+          printf -- '- `%s` — %s\n' "${attach_rels[$ni]}" "${attach_names[$ni]%.*}"
+          ni=$((ni + 1))
+        done
+      } >>"$mdir/prd.md"
+    fi
   fi
 
   # NOTE: a logged bug now ENTERS the pipeline at Research (grounding mode) and

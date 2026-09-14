@@ -409,6 +409,40 @@ check "8. children's commits target the PARENT branch (folded onto parent)" \
 check "8. no child is left orphaned at Verify after acceptance" \
   "! grep -q '\"stage\": *\"verify\"' '$repo8/.git/lcars/missions/lcars-20260530-002/state.json' && ! grep -q '\"stage\": *\"verify\"' '$repo8/.git/lcars/missions/lcars-20260530-003/state.json'"
 
+# --- Behaviour 8a2 (S204): NUMBER ONE'S accept folds exactly as the captain's --
+# The first officer accepts a re-verify gate through this same verb, attributed.
+# Nothing about the fold may be keyed on WHO answered: the children fold, the
+# attribution lands on the ledger, and `kind: reverify` on the gate (which is
+# what routed Number One here in the first place) changes nothing on this side.
+repo8a2="$(new_repo_with_reverify_gate)"; make_gh_stub "$repo8a2/gh"
+export GH_LOG="$repo8a2/gh.log"; : >"$GH_LOG"
+# The gate as resolve-logs now writes it, marker and all.
+cat >"$repo8a2/.git/lcars/missions/$MID/pending.json" <<'EOF'
+{
+  "stage": "verify",
+  "kind": "reverify",
+  "questions": [
+    "2 logged bugs resolved on this branch — ready for your single re-verify."
+  ]
+}
+EOF
+rc8a2=0
+(
+  cd "$repo8a2"
+  LCARS_GH_BIN="$repo8a2/gh" LCARS_GIT_BIN="$(command -v git)"   LCARS_ANSWERED_BY=number-one   LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT"     bash "$SCRIPT" answer --mission "$MID"       --answer "Accepted. I re-checked each logged fix and every one holds." >out8a2.txt 2>&1
+) || rc8a2=$?
+check "8a2. an attributed accept exits 0" "[ '$rc8a2' -eq 0 ]"
+check "8a2. both children fold to Done"   "grep -q '\"stage\": *\"done\"' '$repo8a2/.git/lcars/missions/lcars-20260530-002/state.json' && grep -q '\"stage\": *\"done\"' '$repo8a2/.git/lcars/missions/lcars-20260530-003/state.json'"
+check "8a2. the ledger records WHO accepted"   "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"answers\"][-1][\"answeredBy\"]==\"number-one\", d' '$repo8a2/.git/lcars/missions/$MID/answers.json'"
+check "8a2. still NO per-bug PR is opened" "! grep -q 'pr create' '$repo8a2/gh.log'"
+# THE GATE IS THE STATE OVERLAY, NOT THE FILE. `respond.sh` clears
+# `awaitingHuman` / `pendingQuestion` and the label; `pending.json` is left on
+# disk by every accept path in LCARS (the bulk fold does not remove it either),
+# and every reader gates on the overlay. So this asserts what the product
+# actually guarantees rather than a file lifetime nothing owns.
+check "8a2. the awaiting-human overlay is cleared" \
+  "! grep -q '\"awaitingHuman\": *true' '$repo8a2/.git/lcars/missions/$MID/state.json'"
+
 # --- Behaviour 8b: a plain escalation answer does NOT fold anything ----------
 # Answering an ordinary escalation (a Mission with no verified linked children)
 # must be unaffected by the completion hook — it stays a clean no-op.
@@ -820,6 +854,81 @@ check "10f. a mixed ledger keeps each entry's own attribution" \
   "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); xs=d[\"answers\"]; assert len(xs)==2, xs; assert xs[0][\"answeredBy\"]==\"number-one\"; assert \"answeredBy\" not in xs[1], xs' '$a10b'"
 check "10g. …and the legacy top-level slot still mirrors the NEWEST answer" \
   "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"answer\"]==\"And again.\"' '$a10b'"
+
+# ==========================================================================
+# 11 (S204 fix round 1, D1). THE ENGAGED LOCK EXEMPTS NUMBER ONE'S OWN CALL,
+#     AND NOTHING ELSE.
+#
+# `xo.sh` answers a gate through THIS verb. While it does so the mission's
+# recorded `numberOne.status` is `engaged`, which is exactly what the engaged
+# lock refuses — so before this fix the first officer was refused by the lock
+# built to protect its work, and it could never answer anything.
+#
+# The exemption is a marker that NAMES the mission: $LCARS_XO_INTERNAL. Three
+# rows, and the middle one is the whole point of the lock.
+# ==========================================================================
+echo
+echo "11. the engaged lock vs Number One's own hand"
+
+engage_mission() { # <repo>
+  local st; st="$(state_of "$1")"
+  python3 - "$st" <<'EOF'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+out = {}
+for k, v in d.items():
+    out[k] = v
+    if k == "stage":
+        out["numberOne"] = {"status": "engaged", "engine": "copilot"}
+lines = ["{"]
+keys = list(out)
+for i, k in enumerate(keys):
+    comma = "," if i < len(keys) - 1 else ""
+    lines.append('  %s: %s%s' % (json.dumps(k), json.dumps(out[k]), comma))
+lines.append("}")
+open(p, "w").write("\n".join(lines) + "\n")
+EOF
+}
+
+# The refusal sentence, byte for byte, as `lcars_xo_lock_reason` composes it.
+XO_REFUSAL="Number One is engaged on this mission on your behalf — stand it down (lcars xo off $MID) to act yourself"
+
+# 11a. CONTROL — a mission Number One is NOT on answers normally. Without this
+# row the two refusals below could both be passing for the wrong reason.
+repo11a="$(new_repo_with_paused_mission)"; make_gh_stub "$repo11a/gh"
+rc11a=0
+( cd "$repo11a" && LCARS_GH_BIN="$repo11a/gh"     bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >o11a.txt 2>&1 ) || rc11a=$?
+check "11a. CONTROL: not engaged ⇒ the captain's answer lands"   "[ '$rc11a' -eq 0 ] && ! grep -q 'Number One is engaged' '$repo11a/o11a.txt'"
+
+# 11b. THE CAPTAIN'S OWN HAND IS STILL REFUSED — the lock is not weakened.
+repo11b="$(new_repo_with_paused_mission)"; make_gh_stub "$repo11b/gh"; engage_mission "$repo11b"
+rc11b=0
+( cd "$repo11b" && LCARS_GH_BIN="$repo11b/gh"     bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >o11b.txt 2>&1 ) || rc11b=$?
+check "11b. engaged ⇒ the CAPTAIN's own answer is refused" "[ '$rc11b' -ne 0 ]"
+check "11b. …with the same sentence, byte for byte"   "grep -Fqx \"lcars respond: \$XO_REFUSAL\" '$repo11b/o11b.txt'"
+check "11b. …and nothing was recorded" "[ ! -f '$(answers_of "$repo11b")' ]"
+
+# 11c. NUMBER ONE'S OWN CALL, marker naming THIS mission ⇒ it lands.
+repo11c="$(new_repo_with_paused_mission)"; make_gh_stub "$repo11c/gh"; engage_mission "$repo11c"
+rc11c=0
+( cd "$repo11c" && LCARS_GH_BIN="$repo11c/gh" LCARS_XO_INTERNAL="$MID"     bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >o11c.txt 2>&1 ) || rc11c=$?
+check "11c. engaged + the marker naming THIS mission ⇒ Number One's answer lands"   "[ '$rc11c' -eq 0 ] && ! grep -q 'Number One is engaged' '$repo11c/o11c.txt'"
+check "11c. …and it really recorded the answer"   "grep -q 'Per-course.' '$(answers_of "$repo11c")'"
+
+# 11d. A MARKER NAMING A DIFFERENT MISSION EXEMPTS NOTHING. This is what makes
+# the marker narrower than a boolean: Number One holding mission A never buys a
+# free pass on mission B.
+repo11d="$(new_repo_with_paused_mission)"; make_gh_stub "$repo11d/gh"; engage_mission "$repo11d"
+rc11d=0
+( cd "$repo11d" && LCARS_GH_BIN="$repo11d/gh" LCARS_XO_INTERNAL="lcars-20260530-999"     bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >o11d.txt 2>&1 ) || rc11d=$?
+check "11d. a marker naming ANOTHER mission does NOT exempt this one"   "[ '$rc11d' -ne 0 ] && grep -q 'Number One is engaged' '$repo11d/o11d.txt'"
+
+# 11e. An EMPTY marker is not a wildcard.
+repo11e="$(new_repo_with_paused_mission)"; make_gh_stub "$repo11e/gh"; engage_mission "$repo11e"
+rc11e=0
+( cd "$repo11e" && LCARS_GH_BIN="$repo11e/gh" LCARS_XO_INTERNAL=""     bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >o11e.txt 2>&1 ) || rc11e=$?
+check "11e. an EMPTY marker is not a wildcard"   "[ '$rc11e' -ne 0 ] && grep -q 'Number One is engaged' '$repo11e/o11e.txt'"
 
 # ==========================================================================
 echo

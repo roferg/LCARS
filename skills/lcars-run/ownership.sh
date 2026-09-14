@@ -403,11 +403,40 @@ lcars_xo_lock_reason() { # <mission-dir | mission-id>
   [ "${LCARS_XO_ENFORCE:-1}" = "0" ] && return 1
   local m="${1:-}" id status
   [ -n "$m" ] || return 1
+  # The id THIS call is about. A dir argument carries it as its basename; an id
+  # argument is already the id. Needed both for the marker below and for the
+  # remedy sentence, so it is resolved first.
+  id="$(basename "$m")"
+  # ---------------------------------------------------------------------
+  # NUMBER ONE'S OWN HAND IS NOT A SECOND HAND (S204 fix round 1, D1).
+  # ---------------------------------------------------------------------
+  # The lock exists to stop a SECOND hand on a mission Number One is holding.
+  # Number One acts THROUGH the ordinary verbs — `log.sh`, `resolve-logs.sh`,
+  # `respond.sh answer` — so without this line the first officer is refused by
+  # the very lock that was built to protect its work, and NOTHING it decides
+  # can ever be filed. (Measured: `lcars xo evaluate` found two contradictions
+  # and filed none — "Number One is engaged on this mission on your behalf".)
+  #
+  # THE MARKER NAMES THE MISSION, NOT A BOOLEAN. `$LCARS_XO_INTERNAL=<id>` is
+  # the S207 `$LCARS_WORKER_BIN_INTERNAL` shape — the PRODUCER states who set
+  # it — but narrower: it exempts a call only when it names the SAME mission
+  # the lock is being asked about. If Number One holds mission A and something
+  # in that call tree reaches for mission B, the lock still fires for B, which
+  # is correct: the first officer was never given B.
+  #
+  # WHY NOT `LCARS_XO_ENFORCE=0`. That is the blunt global hatch (the sibling
+  # of LCARS_OWNER_ENFORCE=0) and it disables the lock WHOLESALE for everything
+  # the call spawns — including anything that later acts on the captain's
+  # behalf. A bypass that wide is not a cure, it is the lock switched off.
+  #
+  # The marker is set on the SPECIFIC child calls xo.sh makes on its own
+  # behalf. It is never set process-wide and never exported to a worker.
+  if [ -n "${LCARS_XO_INTERNAL:-}" ] && [ "${LCARS_XO_INTERNAL}" = "$id" ]; then
+    return 1
+  fi
   status="$(lcars_xo_status "$m")"
   [ "$status" = "engaged" ] || return 1
-  # The remedy names THIS mission, so the captain can paste it. A dir argument
-  # carries the id as its basename; an id argument is already the id.
-  id="$(basename "$m")"
+  # The remedy names THIS mission, so the captain can paste it.
   printf 'Number One is engaged on this mission on your behalf — stand it down (lcars xo off %s) to act yourself' "$id"
   return 0
 }

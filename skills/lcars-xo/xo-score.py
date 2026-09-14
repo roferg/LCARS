@@ -217,20 +217,40 @@ def main():
     # written to him: what the build does to HIM, then the machine ids in
     # brackets (captain's ruling, 2026-09-13 — "I need more plain English in my
     # report"). Plain is not vague: every id and every count stays in the line.
+    #
+    # AND THE THINGS HAVE NAMES (fix round 2, D2). "2 things in the build do not
+    # match what you asked for (t-3-ac1, t-5-ac1)" made the captain read two
+    # machine handles to learn nothing — while the gap behind each one carried a
+    # title in his own words, sitting right here in this function. The names go
+    # in the sentence; the ids stay, in the brackets after it.
+    def named(cid):
+        for g in gaps:
+            if str(g.get("criterion") or "") == cid and str(g.get("title") or "").strip():
+                return clip(str(g["title"]), 90)
+        row = contract_by_id.get(cid) or {}
+        return clip(str(row.get("text") or ""), 90) or cid
+
+    def name_list(ids):
+        names = [named(c) for c in ids]
+        if len(names) < 2:
+            return "".join(names)
+        return ", ".join(names[:-1]) + " and " + names[-1]
+
     primary_hit = sorted(contradicted & primary)
     if primary_hit:
         score = "low"
-        why = ("the build does not do the %s the PRD itself asks for (%s). "
+        why = ("the build does not do what the PRD itself asks for — %s (%s). "
                "What you set out to get is not there yet."
-               % ("thing" if len(primary_hit) == 1 else "things",
-                  ", ".join(primary_hit)))
+               % (name_list(primary_hit), ", ".join(primary_hit)))
     elif contradicted:
         score = "medium"
+        hits = sorted(contradicted)
         why = ("the main flow works. %d thing%s in the build %s not match what you asked for "
-               "(%s), and none of them is from the PRD itself — worth reading before you merge."
-               % (len(contradicted), "" if len(contradicted) == 1 else "s",
-                  "does" if len(contradicted) == 1 else "do",
-                  ", ".join(sorted(contradicted))))
+               "— %s (%s) — and none of them is from the PRD itself: worth reading before "
+               "you merge."
+               % (len(hits), "" if len(hits) == 1 else "s",
+                  "does" if len(hits) == 1 else "do",
+                  name_list(hits), ", ".join(hits)))
     elif untested:
         score = "medium"
         why = ("nothing in the build contradicts what you asked for, but there %s %d thing%s "
