@@ -42,6 +42,19 @@
 #                                                            limit, same as the
 #                                                            comment ops.
 #     issue-relabel <n> --add <labels> --remove <labels>  → relabels an issue
+#     label-ensure <name>|<color>|<desc> …                → creates any of those
+#                                                            labels the repo does
+#                                                            NOT already have, and
+#                                                            echoes the names it
+#                                                            created. ONE listing
+#                                                            call, then a create
+#                                                            per missing label —
+#                                                            so a forge whose
+#                                                            labels predate a
+#                                                            round costs one call
+#                                                            and a settled one
+#                                                            costs one call and
+#                                                            no writes.
 #     issue-close   <n> [--comment <c>]                   → closes an issue
 #     whoami                                              → echoes the LOGIN this
 #                                                            repo's forge host is
@@ -314,6 +327,34 @@ github_issue_relabel() { # <n> --add <labels> --remove <labels>
   fi
   # gh absent (callers already guard this themselves) → soft non-zero, not a die.
   return 1
+}
+
+# label-ensure — the create-if-missing half of the label set, for the labels a
+# round INTRODUCES. `lcars init` creates the whole canonical set on a fresh repo;
+# a repo initialized before this round has none of the new family, and the score
+# swap would then relabel an issue with a label the forge has never heard of.
+#
+# LIST ONCE, CREATE WHAT IS MISSING. Never `--force`: a label already on the repo
+# is left exactly as it is, colour, description and all — this op adds, it does
+# not curate. Best-effort like relabel (gh absent → soft non-zero, never a die),
+# because a forge that is down must never lose a verdict that is already on disk.
+github_label_ensure() { # <name>|<color>|<description> …
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  local existing rc=0 spec rest name color desc
+  existing="$("$GH_BIN" label list --limit 200 --json name -q '.[].name' 2>/dev/null)" || return 1
+  for spec in "$@"; do
+    name="${spec%%|*}"; rest="${spec#*|}"
+    color="${rest%%|*}"; desc="${rest#*|}"
+    [ -n "$name" ] || continue
+    printf '%s\n' "$existing" | grep -Fxq "$name" && continue
+    if "$GH_BIN" label create "$name" --color "$color" \
+         --description "$desc" >/dev/null 2>&1; then
+      printf '%s\n' "$name"
+    else
+      rc=1
+    fi
+  done
+  return "$rc"
 }
 
 github_issue_close() { # <n> [--comment <c>]
@@ -754,6 +795,7 @@ case "$OP" in
   issue-comment-edit)   github_issue_comment_edit "$@" ;;
   issue-edit-body)      github_issue_edit_body "$@" ;;
   issue-relabel) github_issue_relabel "$@" ;;
+  label-ensure)  github_label_ensure  "$@" ;;
   issue-close)   github_issue_close   "$@" ;;
   whoami)          github_whoami          "$@" ;;
   issue-assignees) github_issue_assignees "$@" ;;

@@ -564,14 +564,75 @@ function xoNote(m) {
   return note ? el("div", "xo-note", note) : null;
 }
 
+/* ── S203: THE INTENT MATCH ───────────────────────────────────────────────
+
+   What Number One decided when it looked at the built thing: HIGH (every
+   criterion met), MEDIUM (the primary flow works, some criteria gap or could
+   not be tested) or LOW (the primary goal cannot be completed, a criterion is
+   contradicted, or it could not be launched at all). The meanings are the
+   captain's and they are stated wherever the word is.
+
+   IT SAYS "INTENT MATCH", AND THAT IS NOT DECORATION. This card already wears
+   two pills that read LOW / MED / HIGH — the reasoning and implementation
+   DIFFICULTY of the work — so a bare HIGH beside them is genuinely ambiguous,
+   and worse, it is ambiguous in the direction that inverts the meaning: a HIGH
+   difficulty is bad news and a HIGH intent match is the best news on the card.
+   The label carries the whole difference and never comes off.
+
+   AND IT IS READ FROM THE LABEL. On a LOCAL card the score rides
+   `state.numberOne.score`; on a REMOTE one it is decoded from the issue's own
+   `lcars:xo:<score>` label by the same one-call poll that drew the card. One
+   fact, two sources of the same truth, and the front end cannot tell which
+   adapter served it (ADR-003). */
+
+var XO_SCORE_WORD = { high: "HIGH", medium: "MEDIUM", low: "LOW" };
+
+/* The recorded score, lower-cased and VALIDATED against the three the captain
+   named — anything else is nothing, the same posture `xoBlock` takes on a
+   malformed block. A score this board cannot name is one it must not paint. */
+function xoScore(m) {
+  var x = xoBlock(m);
+  var s = x && x.score ? String(x.score).toLowerCase() : "";
+  return XO_SCORE_WORD[s] ? s : "";
+}
+
+/* THE PILL. Teal / amber / red by MEANING, not by the level word: `s-high` is
+   the teal one because a high intent match is the good end, which is the exact
+   opposite of what `.pill.high` (a high DIFFICULTY) means two pills along. The
+   classes are therefore its own (`s-high`/`s-medium`/`s-low`) and never the
+   difficulty vocabulary — reusing those would make the sheet lie the moment
+   someone read it. */
+function xoScorePill(m) {
+  var s = xoScore(m);
+  if (!s) return null;
+  var pill = el("span", "pill xo-score s-" + s,
+                "INTENT MATCH · " + XO_SCORE_WORD[s]);
+  pill.title = XO_SCORE_MEANING[s];
+  return pill;
+}
+
+/* The three meanings, in the captain's words, as the pill's tooltip. The pill
+   says the verdict; the tooltip says what the verdict MEANS, so nobody has to
+   remember which of three words is the good one. */
+var XO_SCORE_MEANING = {
+  high: "Every criterion met and the drawing matched — ship as is",
+  medium: "The primary flow works end to end; some criteria gap or could not "
+    + "be tested, none blocking the stated goal",
+  low: "The primary goal cannot be completed, a criterion is contradicted, or "
+    + "the build could not be launched or verified — look yourself",
+};
+
 /* The pill + line + note, or null. */
 function xoNode(m) {
-  var pill = xoPill(m), line = xoLine(m), note = xoNote(m);
-  if (!pill && !line && !note) return null;
+  var pill = xoPill(m), score = xoScorePill(m), line = xoLine(m), note = xoNote(m);
+  if (!pill && !score && !line && !note) return null;
   var wrap = el("div", "xo-block");
-  if (pill) {
+  if (pill || score) {
     var row = el("div", "pills xo-pills");
-    row.appendChild(pill);
+    // The status pill first (WHO has the conn), the verdict second (WHAT it
+    // found) — the order the two facts are learned in.
+    if (pill) row.appendChild(pill);
+    if (score) row.appendChild(score);
     wrap.appendChild(row);
   }
   if (line) wrap.appendChild(el("div", "xo-line", line));

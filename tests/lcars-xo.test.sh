@@ -778,6 +778,10 @@ printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
 for a in "$@"; do printf '%s\n' "$a" >>"$XO_INSPECT/argv.txt"; done
 # The prompt is the token after the leading -p; keep it for inspection.
 printf '%s\n' "$2" >"$XO_INSPECT/prompt.txt"
+# SNAPSHOT THE INPUT DIR WHILE THE WORKER IS ALIVE. It is a temp tree and it is
+# REMOVED on the way out now (fix round 1, D5) — asserting on it afterwards was
+# asserting on a directory the product is right to have deleted.
+[ -n "${LCARS_XO_INPUT_DIR:-}" ] && cp -Rp "$LCARS_XO_INPUT_DIR" "$XO_INSPECT/indir" 2>/dev/null
 [ -n "${XO_VERDICT:-}" ] && printf '%s\n' "$XO_VERDICT" >"${LCARS_WORK_OUT}/xo-answer.json"
 exit 0
 SHIM
@@ -789,15 +793,18 @@ chmod +x "$WORKDIR/inspect-cli"
 XO_IN_DIR="$(grep -oE '/[^ ]*/input' "$INSPECT/prompt.txt" | head -1)"
 check "B9k. the prompt names a real INPUT directory" "[ -n \"\$XO_IN_DIR\" ]"
 check "B9k. it holds a COPY of the PRD, not the mission's own file" \
-  "[ -f \"\$XO_IN_DIR/prd.md\" ] && [ \"\$XO_IN_DIR/prd.md\" != '$m8k/prd.md' ]"
+  "[ -f '$INSPECT/indir/prd.md' ] && [ \"\$XO_IN_DIR/prd.md\" != '$m8k/prd.md' ]"
 check "B9k. …and of pending.json, answers.json, plan.json and the validated plan" \
-  "[ -f \"\$XO_IN_DIR/pending.json\" ] && [ -f \"\$XO_IN_DIR/answers.json\" ] && [ -f \"\$XO_IN_DIR/plan.json\" ] && [ -f \"\$XO_IN_DIR/validated-plan.md\" ]"
+  "[ -f '$INSPECT/indir/pending.json' ] && [ -f '$INSPECT/indir/answers.json' ] && [ -f '$INSPECT/indir/plan.json' ] && [ -f '$INSPECT/indir/validated-plan.md' ]"
 check "B9k. …and the research findings + the recent events" \
-  "[ -f \"\$XO_IN_DIR/research/1.json\" ] && [ -f \"\$XO_IN_DIR/events.jsonl\" ]"
+  "[ -f '$INSPECT/indir/research/1.json' ] && [ -f '$INSPECT/indir/events.jsonl' ]"
 check "B9k. every copy is READ-ONLY to the worker" \
-  "[ ! -w \"\$XO_IN_DIR/prd.md\" ]"
+  "[ ! -w '$INSPECT/indir/prd.md' ]"
 check "B9k. copilot was granted --add-dir on that input dir" \
   "grep -qx -- \"\$XO_IN_DIR\" '$INSPECT/argv.txt'"
+# The snapshot is a copy of a READ-ONLY tree; leave it writable so the suite's
+# own `rm -rf "$TMPROOT"` on the way out does not trip over it.
+chmod -R u+w "$INSPECT/indir" 2>/dev/null || true
 check "B9k. the worker's tool list is the read+author one (no bash, no edit)" \
   "grep -qx 'view,grep,glob,create' '$INSPECT/argv.txt'"
 check "B9k. the mission's OWN prd.md is untouched" \
@@ -894,6 +901,797 @@ check "B9n. …with no cksum left to lock Number One out of it" \
 unset XO_WORKER_HOLD XO_WORKER_SIG
 
 # ==========================================================================
+# B10. EVALUATE — THE VERIFY LOOK (S203 wave A).
+#
+# Everything real EXCEPT the three things that cost money or raise a window:
+# the launch, the browser and the worker are stubs. The criteria builder, the
+# verdict validator, the SCORE DERIVATION, the label swap, the journal and the
+# state writes are the shipped code.
+#
+# THE ROW THAT MATTERS MOST is B10d: a worker whose own score disagrees with its
+# own ledger is OVERWRITTEN by the ledger, and the disagreement is journaled.
+# The model reasons; the skill decides.
+# ==========================================================================
+echo
+echo "B10. evaluate — the Verify look"
+
+EVDIR="$TMPROOT/b10"; mkdir -p "$EVDIR"
+export XO_LAUNCH_LOG="$EVDIR/launch-calls.txt"; : >"$XO_LAUNCH_LOG"
+export XO_DRIVE_LOG="$EVDIR/drive-calls.txt";   : >"$XO_DRIVE_LOG"
+export XO_LABEL_LOG="$EVDIR/label-calls.txt";   : >"$XO_LABEL_LOG"
+
+# --- the stub launch verb --------------------------------------------------
+# It records WHETHER THE CONTRACT WAS ALREADY ON DISK when it ran. That is how
+# "the criteria list is built BEFORE anything is launched" is proven rather than
+# asserted: the ordering is observed by the thing that comes second.
+LAUNCH_STUB="$EVDIR/launch.sh"
+cat >"$LAUNCH_STUB" <<'LS'
+#!/usr/bin/env bash
+mid="$1"; shift
+m="$PWD/.git/lcars/missions/$mid"
+printf 'launch %s %s contract=%s\n' "$mid" "$*" \
+  "$( [ -f "$m/xo/criteria.json" ] && printf yes || printf no )" >>"$XO_LAUNCH_LOG"
+case "${1:-}" in
+  --stop) printf '{\n  "status": "stopped"\n}\n' >"$m/launch.json"; exit 0 ;;
+esac
+if [ "${XO_LAUNCH_FAIL:-0}" = "1" ]; then
+  printf '{\n  "status": "failed",\n  "url": "",\n  "message": "no start script — the app has no runnable target"\n}\n' >"$m/launch.json"
+  exit 1
+fi
+printf '{\n  "status": "running",\n  "url": "http://127.0.0.1:4310/",\n  "pid": 1\n}\n' >"$m/launch.json"
+LS
+chmod +x "$LAUNCH_STUB"
+
+# --- the stub driver -------------------------------------------------------
+# Invoked as `$LCARS_NODE_BIN $LCARS_XO_DRIVER …`, so pointing NODE at bash lets
+# the stub be a shell script and keeps node off this suite's critical path.
+DRIVE_STUB="$EVDIR/xo-drive-stub.sh"
+cat >"$DRIVE_STUB" <<'DS'
+#!/usr/bin/env bash
+printf 'drive %s\n' "$*" >>"$XO_DRIVE_LOG"
+out=""; acts=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    --actions) acts="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$acts" ] && cp "$acts" "$XO_DRIVE_LOG.actions-$(ls "$XO_DRIVE_LOG".actions-* 2>/dev/null | grep -c .)"
+mkdir -p "$out"
+n="$(ls "$out"/*.png 2>/dev/null | grep -c . | tr -d ' ')"
+printf 'PNG\n' >"$out/shot-0$((n+1)).png"
+printf '{"shot":"shot-0%s"}\n' "$((n+1))" >"$out/shot-0$((n+1)).json"
+printf 'shot-0%s — full page\n' "$((n+1))" >"$out/shot-0$((n+1)).txt"
+printf '{"url":"http://127.0.0.1:4310/","allPainted":true}\n'
+exit 0
+DS
+chmod +x "$DRIVE_STUB"
+
+# --- the stub host adapter (the label swap's read surface) -----------------
+HOST_STUB="$EVDIR/host-adapter.sh"
+cat >"$HOST_STUB" <<'HS'
+#!/usr/bin/env bash
+printf 'host %s\n' "$*" >>"$XO_LABEL_LOG"
+exit 0
+HS
+chmod +x "$HOST_STUB"
+
+# --- the evaluate worker shim ----------------------------------------------
+# $XO_EV_FILE names which file it writes (xo-verdict.json | xo-actions.json) and
+# $XO_EV_BODY is the body. $XO_EV_ROUNDS, when set, makes it ask for ACTIONS for
+# that many rounds before writing the verdict — which is how the three-round cap
+# and "round 4 is never spawned" are exercised.
+EV_SHIM="$EVDIR/ev-worker"
+cat >"$EV_SHIM" <<'EVS'
+#!/usr/bin/env bash
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
+# CUMULATIVE, because the B10 rows truncate $XO_WORKER_LOG between missions to
+# count per-run spawns. Without this the closing accounting would report a fake
+# worker that ran dozens of times as having run zero times.
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG.all"
+out="${LCARS_WORK_OUT:-}"
+n="$(grep -c '^worker ' "$XO_WORKER_LOG" 2>/dev/null)"; n="${n:-1}"
+if [ -n "${XO_EV_ROUNDS:-}" ] && [ "$n" -le "${XO_EV_ROUNDS}" ]; then
+  # The default lives in its own variable ON PURPOSE: a `}` inside a
+  # ${VAR:-default} closes the expansion at the FIRST brace, and this fixture
+  # spent a round appending the tail of its own default to the caller's list.
+  acts='[{"click":"#x"},{"screenshot":"more"}]'
+  [ -n "${XO_EV_ACTIONS:-}" ] && acts="$XO_EV_ACTIONS"
+  printf '%s\n' "$acts" >"$out/xo-actions.json"
+  exit 0
+fi
+[ -n "${XO_EV_BODY:-}" ] && printf '%s\n' "$XO_EV_BODY" >"$out/${XO_EV_FILE:-xo-verdict.json}"
+exit 0
+EVS
+chmod +x "$EV_SHIM"
+
+# --- a mission at Verify, with a PRD, a plan and a drawing -----------------
+plant_verify() { # <repo> <id>
+  local repo="$1" id="$2" m
+  m="$repo/.git/lcars/missions/$id"
+  mkdir -p "$m/attachments"
+  {
+    printf '{\n'
+    printf '  "numberOne": {"status": "engaged", "engine": "copilot", "since": "2026-09-13T10:00:00Z"},\n'
+    printf '  "id": "%s",\n' "$id"
+    printf '  "type": "feature",\n'
+    printf '  "title": "The task board",\n'
+    printf '  "stage": "verify",\n'
+    printf '  "prUrl": "https://github.com/x/y/pull/7",\n'
+    printf '  "created": "2026-09-13T10:00:00Z",\n'
+    printf '  "githubIssue": 42\n'
+    printf '}\n'
+  } >"$m/state.json"
+  cat >"$m/prd.md" <<'PRD'
+# The task board
+
+## 2. Acceptance criteria
+- The board shows every open task in one list.
+- A task can be added from the board itself.
+
+## 3. Out of scope
+Email.
+PRD
+  cat >"$m/plan.json" <<'PL'
+{"tickets": [{"id": "t-1", "changesScreenAppearance": true,
+  "acceptanceCriteria": [
+    {"text": "The ADD button sits under the list.", "drawnAt": "#add-button, beneath the task list"}]}]}
+PL
+  cat >"$m/attachments/attachment-01.html" <<'MK'
+<div id="app-header">BOARD</div><ul id="task-list"></ul><button id="add-button">ADD</button>
+MK
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m/state.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+  printf '%s' "$m"
+}
+
+xo_evaluate() { # <repo> <id> [extra env...]
+  local repo="$1" id="$2"; shift 2
+  ( cd "$repo" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+      LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+      LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 "$@" \
+      bash "$SCRIPT" evaluate --mission "$id" 2>&1 )
+}
+
+# A verdict body over the three-criterion contract this fixture declares.
+# $1 prd-1 status  $2 prd-2 status  $3 t-1-ac1 status  $4 worker score  $5 gaps
+ev_verdict() {
+  printf '{"score":"%s","summary":"Looked at the board.","criteria":[' "$4"
+  printf '{"id":"prd-1","text":"open tasks in one list","status":"%s","shot":"shot-01","note":"saw the list"},' "$1"
+  printf '{"id":"prd-2","text":"add from the board","status":"%s","shot":"shot-01","note":"saw the button"},' "$2"
+  printf '{"id":"t-1-ac1","text":"ADD under the list","status":"%s","shot":"shot-02","note":"under it"}' "$3"
+  printf '],"gaps":[%s],"alsoChecked":["the header"],"escalations":[]}' "$5"
+}
+GAP_PRIMARY='{"title":"no add control","expected":"a task can be added from the board (PRD §2)","saw":"no control anywhere on the page","shots":["shot-01"],"kind":"contradiction","criterion":"prd-2"}'
+GAP_TICKET='{"title":"ADD is above the list","expected":"the ADD button sits under the list","saw":"it is above it","shots":["shot-02"],"kind":"contradiction","criterion":"t-1-ac1"}'
+GAP_INTERP='{"title":"the header is teal","expected":"the drawing is silent on the header colour","saw":"teal","shots":["shot-01"],"kind":"interpretation","criterion":"prd-1"}'
+
+# --------------------------------------------------------------------------
+# B10a. THE CONTRACT IS BUILT FIRST — before anything is launched.
+# --------------------------------------------------------------------------
+repoA="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mA="$(plant_verify "$repoA" "lcars-20260913-001")"
+: >"$XO_WORKER_LOG"
+outA="$(XO_EV_BODY="$(ev_verdict met met met high '')" xo_evaluate "$repoA" "lcars-20260913-001")"
+check "B10a. criteria.json was written" "[ -s '$mA/xo/criteria.json' ]"
+check "B10a. …BEFORE the launch ran (the launch stub saw it already there)" \
+  "grep -q 'contract=yes' '$XO_LAUNCH_LOG'"
+check "B10a. the PRD's acceptance criteria are in it, marked PRIMARY" \
+  "grep -q '\"id\": \"prd-1\"' '$mA/xo/criteria.json' && grep -q '\"primary\": true' '$mA/xo/criteria.json'"
+check "B10a. …the plan's per-ticket criterion too, with its drawnAt intact" \
+  "grep -q '\"id\": \"t-1-ac1\"' '$mA/xo/criteria.json' && grep -q '#add-button, beneath the task list' '$mA/xo/criteria.json'"
+check "B10a. …and the drawing's place names" \
+  "grep -q 'app-header' '$mA/xo/criteria.json' && grep -q 'add-button' '$mA/xo/criteria.json'"
+check "B10a. the driver was handed the place-name file" \
+  "grep -q -- '--place-names' '$XO_DRIVE_LOG'"
+check "B10a. the launch was STOPPED afterwards" \
+  "grep -q -- '--stop' '$XO_LAUNCH_LOG'"
+check "B10a. no pricing words anywhere in what it printed" \
+  "! printf '%s' \"\$outA\" | grep -Eqi 'free|billed|billing|pricing'"
+
+# --------------------------------------------------------------------------
+# B10b. A LAUNCH THAT FAILS IS A LOW THAT SAYS SO — AND NO BROWSER IS STARTED.
+# --------------------------------------------------------------------------
+repoB="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mB="$(plant_verify "$repoB" "lcars-20260913-002")"
+: >"$XO_DRIVE_LOG"; : >"$XO_WORKER_LOG"
+outB="$(XO_LAUNCH_FAIL=1 XO_EV_BODY="$(ev_verdict met met met high '')" \
+        xo_evaluate "$repoB" "lcars-20260913-002")"
+check "B10b. the score is LOW" "[ \"\$(xo_state '$mB' score)\" = 'low' ]"
+check "B10b. …and it says what happened, quoting the launch message" \
+  "grep -q 'could not launch' '$mB/xo/verdict.json' && grep -q 'no runnable target' '$mB/xo/verdict.json'"
+check "B10b. NO browser was started at all" "[ ! -s '$XO_DRIVE_LOG' ]"
+check "B10b. …and no worker was hired either" "[ ! -s '$XO_WORKER_LOG' ]"
+
+# --------------------------------------------------------------------------
+# B10c. THE LEDGER → SCORE MATRIX. One row, one test, per the brief.
+# --------------------------------------------------------------------------
+ev_row() { # <name> <c1> <c2> <c3> <worker-score> <gaps> <want-score> <want-status>
+  local name="$1" repo m id
+  id="lcars-20260913-1$(printf '%02d' "$EV_ROW")"
+  EV_ROW=$((EV_ROW + 1))
+  repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+  m="$(plant_verify "$repo" "$id")"
+  : >"$XO_WORKER_LOG"
+  XO_EV_BODY="$(ev_verdict "$2" "$3" "$4" "$5" "$6")" xo_evaluate "$repo" "$id" >/dev/null 2>&1
+  check "B10c. $name → $7" "[ \"\$(xo_state '$m' score)\" = '$7' ]"
+  check "B10c. …status $8" "[ \"\$(xo_state '$m' status)\" = '$8' ]"
+  EV_LAST_M="$m"
+}
+EV_ROW=0
+ev_row "every criterion MET"                        met met met high ''            high   finished
+ev_row "one GAP contradiction, no PRD criterion hit" met met gap  medium "$GAP_TICKET" medium engaged
+ev_row "a PRD (primary) criterion contradicted"      met gap met  low    "$GAP_PRIMARY" low    engaged
+ev_row "UNTESTED visual criterion, everything else MET" met met untested high '' medium engaged
+ev_row "an INTERPRETATION is reported, never filed"  met met met  high   "$GAP_INTERP" high   finished
+check "B10c. …and the interpretation is still IN the report" \
+  "grep -q '\"kind\": \"interpretation\"' '$EV_LAST_M/xo/verdict.json'"
+check "B10c. the derivation is written down in words, not just the letter" \
+  "grep -q '\"derivation\"' '$EV_LAST_M/xo/verdict.json'"
+
+# A gap filed as a contradiction with NO SHOT is not evidence: it is recorded as
+# an interpretation and it does NOT drag the score down. The anti-over-rejection
+# guard, and the reason "a gap without a shot" can never reach the captain.
+repoC2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mC2="$(plant_verify "$repoC2" "lcars-20260913-120")"
+: >"$XO_WORKER_LOG"
+XO_EV_BODY="$(ev_verdict met gap met low '{"title":"no add control","expected":"x","saw":"y","shots":[],"kind":"contradiction","criterion":"prd-2"}')" \
+  xo_evaluate "$repoC2" "lcars-20260913-120" >/dev/null 2>&1
+check "B10c. a contradiction with NO SHOT is demoted to an interpretation" \
+  "grep -q '\"kind\": \"interpretation\"' '$mC2/xo/verdict.json'"
+check "B10c. …so it cannot make the score LOW on no evidence" \
+  "[ \"\$(xo_state '$mC2' score)\" != 'low' ]"
+check "B10c. …and the demotion is journaled, not hidden" \
+  "grep -q 'ledger-note' '$mC2/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B10d. THE WORKER'S SCORE LOSES TO ITS OWN LEDGER — AND THE FIGHT IS RECORDED.
+# --------------------------------------------------------------------------
+repoD="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mD="$(plant_verify "$repoD" "lcars-20260913-004")"
+: >"$XO_WORKER_LOG"
+outD="$(XO_EV_BODY="$(ev_verdict met gap met high "$GAP_PRIMARY")" \
+        xo_evaluate "$repoD" "lcars-20260913-004")"
+check "B10d. the worker said HIGH; the ledger says LOW and the LEDGER WINS" \
+  "[ \"\$(xo_state '$mD' score)\" = 'low' ]"
+check "B10d. the recorded verdict keeps BOTH scores" \
+  "grep -q '\"workerScore\": \"high\"' '$mD/xo/verdict.json' && grep -q '\"score\": \"low\"' '$mD/xo/verdict.json'"
+check "B10d. …flags the disagreement" \
+  "grep -q '\"scoreDisagreed\": true' '$mD/xo/verdict.json'"
+check "B10d. …and JOURNALS it, so anyone can see the ledger overruled the model" \
+  "grep -q '\"action\": \"score-overruled\"' '$mD/number-one.jsonl' && grep -q '\"workerScore\": \"high\"' '$mD/number-one.jsonl'"
+check "B10d. it says so out loud too" \
+  "printf '%s' \"\$outD\" | grep -q 'the ledger decides'"
+
+# --------------------------------------------------------------------------
+# B10e. THE ACTION ROUNDS — at most three, and round four is never spawned.
+# --------------------------------------------------------------------------
+repoE="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mE="$(plant_verify "$repoE" "lcars-20260913-005")"
+: >"$XO_WORKER_LOG"; : >"$XO_DRIVE_LOG"
+outE="$(XO_EV_ROUNDS=9 xo_evaluate "$repoE" "lcars-20260913-005")"
+check "B10e. exactly THREE workers were hired, never a fourth" \
+  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" = '3' ]"
+check "B10e. no verdict in three rounds → LOW" "[ \"\$(xo_state '$mE' score)\" = 'low' ]"
+check "B10e. …saying exactly that" \
+  "grep -q 'could not reach a verdict in 3 rounds' '$mE/xo/verdict.json'"
+check "B10e. …and LISTING what it did see" \
+  "grep -q '\"sawShots\"' '$mE/xo/verdict.json' && grep -q 'shot-01' '$mE/xo/verdict.json'"
+check "B10e. the driver was handed the worker's action list" \
+  "grep -q -- '--actions' '$XO_DRIVE_LOG'"
+check "B10e. …under the 12-action cap" "grep -q -- '--max-actions 12' '$XO_DRIVE_LOG'"
+check "B10e. the mission is left ENGAGED for the fix round" \
+  "[ \"\$(xo_state '$mE' status)\" = 'engaged' ]"
+
+# An over-long action list is recorded as ASKED, against the cap — never silently
+# passed off as what it got.
+repoE2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mE2="$(plant_verify "$repoE2" "lcars-20260913-006")"
+BIG="$(python3 -c 'import json;print(json.dumps([{"wait":1} for _ in range(20)]))')"
+: >"$XO_WORKER_LOG"
+XO_EV_ROUNDS=1 XO_EV_ACTIONS="$BIG" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate "$repoE2" "lcars-20260913-006" >/dev/null 2>&1
+check "B10e. a 20-action ask is journaled AS 20, against the cap of 12" \
+  "grep -q '\"asked\": 20' '$mE2/number-one.jsonl' && grep -q '\"cap\": 12' '$mE2/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B10f. THE LABEL IS THE SCORE (one source per fact) — and the other two go.
+# --------------------------------------------------------------------------
+repoF="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mF="$(plant_verify "$repoF" "lcars-20260913-007")"
+: >"$XO_WORKER_LOG"; : >"$XO_LABEL_LOG"
+XO_EV_BODY="$(ev_verdict met met gap medium "$GAP_TICKET")" \
+  xo_evaluate "$repoF" "lcars-20260913-007" >/dev/null 2>&1
+check "B10f. lcars:xo:medium is ADDED to the issue" \
+  "grep -q -- '--add lcars:xo:medium' '$XO_LABEL_LOG'"
+check "B10f. …and the other two score labels are REMOVED" \
+  "grep -q -- '--remove lcars:xo:high,lcars:xo:low' '$XO_LABEL_LOG'"
+check "B10f. …on the mission's own issue number" "grep -q 'issue-relabel 42' '$XO_LABEL_LOG'"
+check "B10f. the score is on the state block too (the local board's read)" \
+  "[ \"\$(xo_state '$mF' score)\" = 'medium' ]"
+check "B10f. the gap is in the report WITH the shot that shows it" \
+  "grep -q '\"shots\"' '$mF/xo/verdict.json' && grep -q 'shot-02' '$mF/xo/verdict.json'"
+
+# --------------------------------------------------------------------------
+# B10i. THE LABEL EXISTS BEFORE THE SWAP TRIES TO USE IT.
+#
+# Every repo initialized before this round has none of the `lcars:xo:*` family,
+# and `gh issue edit --add-label` on a label the forge has never heard of FAILS
+# — silently, in a best-effort call, exactly where the verdict was supposed to
+# become visible. So the swap ensures its own family first, from the same list
+# `lcars init` creates from.
+# --------------------------------------------------------------------------
+check "B10i. the family was ensured before the relabel" \
+  "[ \"\$(grep -n 'label-ensure' '$XO_LABEL_LOG' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n 'issue-relabel' '$XO_LABEL_LOG' | head -1 | cut -d: -f1)\" ]"
+for lab in high medium low engaged; do
+  check "B10i. …including lcars:xo:$lab" \
+    "grep -q 'lcars:xo:$lab|' '$XO_LABEL_LOG'"
+done
+check "B10i. …each with a colour and a description, from the shared list" \
+  "grep -q 'lcars:xo:medium|FF9966|Number One: intent match MEDIUM' '$XO_LABEL_LOG'"
+check "B10i. init's canonical set carries the same four and no others" \
+  "[ \"\$(bash -c '. $REPO_ROOT/skills/lcars-init/lcars-common.sh; lcars_all_labels' | grep -c '^lcars:xo:')\" -eq 4 ]"
+check "B10i. …so lcars update fills them in on a repo that predates them" \
+  "bash -c '. $REPO_ROOT/skills/lcars-init/lcars-common.sh; lcars_all_labels' | grep -q '^lcars:xo:engaged|FF9966$'"
+
+# --------------------------------------------------------------------------
+# B10f2. THE LIVING COMMENT CARRIES THE LEDGER — and names its shots.
+# --------------------------------------------------------------------------
+check "B10f2. the report fragment the living comment includes was written" \
+  "[ -s '$mF/xo/report.md' ]"
+check "B10f2. …with the per-criterion table, in full" \
+  "grep -q '| Criterion |' '$mF/xo/report.md' && grep -q 'prd-1 (PRD)' '$mF/xo/report.md' && grep -q 't-1-ac1' '$mF/xo/report.md'"
+check "B10f2. …the score and the DERIVATION that produced it" \
+  "grep -q 'Intent match: MEDIUM' '$mF/xo/report.md'"
+check "B10f2. …and the gap, named with the SHOT that shows it (never an image)" \
+  "grep -q 'ADD is above the list' '$mF/xo/report.md' && grep -q 'shot-02' '$mF/xo/report.md'"
+check "B10f2. a path with no ledger still owes the captain a sentence" \
+  "[ -s '$mB/xo/report.md' ] && grep -q 'could not launch' '$mB/xo/report.md'"
+
+# --------------------------------------------------------------------------
+# B10g. TWICE IS A NO-OP. evaluatedAt is the guard.
+# --------------------------------------------------------------------------
+: >"$XO_WORKER_LOG"
+outG="$(xo_evaluate "$repoF" "lcars-20260913-007")"
+check "B10g. a second evaluate hires nobody" "[ ! -s '$XO_WORKER_LOG' ]"
+check "B10g. …and says it has already looked" \
+  "printf '%s' \"\$outG\" | grep -q 'already looked'"
+check "B10g. state.json is still valid JSON after every write" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$mF/state.json'"
+
+# --------------------------------------------------------------------------
+# B10h. A LOGGED BUG CHILD IS NEVER EVALUATED — its parent carries the build.
+# --------------------------------------------------------------------------
+repoH="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mH="$(plant_verify "$repoH" "lcars-20260913-008")"
+python3 - "$mH/state.json" <<'PY'
+import sys
+p=sys.argv[1]
+lines=open(p).read().splitlines()
+lines.insert(1, '  "parentMission": "lcars-20260913-007",')
+open(p,"w").write("\n".join(lines)+"\n")
+PY
+: >"$XO_WORKER_LOG"; : >"$XO_LAUNCH_LOG"
+outH="$(xo_evaluate "$repoH" "lcars-20260913-008")"
+check "B10h. a bug child is skipped" "printf '%s' \"\$outH\" | grep -q 'bug child'"
+check "B10h. …nothing launched" "[ ! -s '$XO_LAUNCH_LOG' ]"
+check "B10h. …nobody hired" "[ ! -s '$XO_WORKER_LOG' ]"
+
+
+# ==========================================================================
+# B11. FIX ROUND 1 — the stop button, the teardown, the inspector's engine,
+#      the worker's contract, the temp dirs, the clock and the copy.
+#
+# Everything here is driven through the SAME stubs B10 built (a launch script,
+# a driver run under `bash`, a worker shim) so not one real CLI and not one
+# real browser is started.
+# ==========================================================================
+echo
+echo "B11. fix round 1 — stop, teardown, engine pin, contract, clocks, copy"
+
+# --------------------------------------------------------------------------
+# B11a (D1). `lcars xo off <id>` STOPS A LIVE SPIN — whatever the status says.
+#     The bug: the whole kill branch was gated on status == "engaged", and
+#     evaluate never wrote that status, so the captain's stop button was inert.
+# --------------------------------------------------------------------------
+repoK1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mK1="$(plant_mission "$repoK1" "lcars-20260913-101" verify '{"engine": "copilot"}')"
+sleep 45 &
+livepid=$!
+printf '%s\n' "$livepid" >"$mK1/xo.pid"
+( cd "$repoK1" && bash "$SCRIPT" off "lcars-20260913-101" >"$repoK1/off.txt" 2>&1 ) || true
+# Give the TERM a moment to land.
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$livepid" 2>/dev/null || break; sleep 0.2; done
+alive=1; kill -0 "$livepid" 2>/dev/null || alive=0
+kill -9 "$livepid" 2>/dev/null || true
+check "B11a. the recorded pid was SIGNALLED even with no 'engaged' status" "[ '$alive' -eq 0 ]"
+check "B11a. …the state records stood-down" \
+  "grep -q '\"status\": \"stood-down\"' '$mK1/state.json'"
+check "B11a. …with a note the captain can read" \
+  "grep -q 'you have the conn' '$mK1/state.json'"
+check "B11a. …and a since stamp" "grep -q '\"since\"' '$mK1/state.json'"
+check "B11a. …the pid file is gone" "[ ! -f '$mK1/xo.pid' ]"
+check "B11a. …the journal records the stand-down" \
+  "grep -q '\"action\": \"stood-down\"' '$mK1/number-one.jsonl'"
+check "B11a. …and it still says it stood down, not merely 'opted out'" \
+  "grep -q 'stood down on' '$repoK1/off.txt'"
+check "B11a. state.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$mK1/state.json'"
+
+# A STALE pid file is NOT a live spin. The opt-out path must still be the one
+# that runs, or every `xo off` on a crashed mission would claim a stand-down.
+repoK2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mK2="$(plant_mission "$repoK2" "lcars-20260913-102" verify '{"engine": "copilot"}')"
+printf '999999\n' >"$mK2/xo.pid"
+( cd "$repoK2" && bash "$SCRIPT" off "lcars-20260913-102" >"$repoK2/off.txt" 2>&1 ) || true
+check "B11a. a STALE pid is not a spin — the opt-out line is printed" \
+  "grep -q 'opted out' '$repoK2/off.txt'"
+
+# --------------------------------------------------------------------------
+# B11b (D1 + D2). MID-DRIVE: `lcars xo off` kills the spin, STOPS THE LAUNCH,
+#     and leaves no work dir behind. The stub driver here BLOCKS, which is the
+#     browser's place in a real run.
+# --------------------------------------------------------------------------
+SLOW_DRIVE="$EVDIR/xo-drive-slow.sh"
+cat >"$SLOW_DRIVE" <<'SD'
+#!/usr/bin/env bash
+printf 'drive %s\n' "$*" >>"$XO_DRIVE_LOG"
+out=""
+while [ $# -gt 0 ]; do case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "$out"
+printf '%s\n' "$$" >"$XO_DRIVE_LOG.slowpid"
+sleep 45
+exit 0
+SD
+chmod +x "$SLOW_DRIVE"
+
+repoK3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mK3="$(plant_verify "$repoK3" "lcars-20260913-103")"
+: >"$XO_LAUNCH_LOG"; : >"$XO_DRIVE_LOG"; rm -f "$XO_DRIVE_LOG.slowpid"
+# TMPDIR of its own, so the work dirs this run makes are countable.
+evtmp="$WORKDIR/evtmp-103"; mkdir -p "$evtmp"
+( cd "$repoK3" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+    LCARS_XO_DRIVER="$SLOW_DRIVE" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 TMPDIR="$evtmp" \
+    bash "$SCRIPT" evaluate --mission "lcars-20260913-103" >"$repoK3/ev.txt" 2>&1 ) &
+evpid=$!
+# Wait for the drive to be under way (the app is up, the driver is blocking).
+for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
+drivepid="$(cat "$XO_DRIVE_LOG.slowpid" 2>/dev/null)"
+( cd "$repoK3" && bash "$SCRIPT" off "lcars-20260913-103" >"$repoK3/off.txt" 2>&1 ) || true
+for _ in $(seq 1 40); do kill -0 "$evpid" 2>/dev/null || break; sleep 0.25; done
+ev_alive=1; kill -0 "$evpid" 2>/dev/null || ev_alive=0
+dr_alive=1; [ -n "$drivepid" ] && kill -0 "$drivepid" 2>/dev/null || dr_alive=0
+# NEVER `kill 0` — that signals the whole process group, this suite included.
+kill -9 "$evpid" 2>/dev/null || true
+[ -n "$drivepid" ] && kill -9 "$drivepid" 2>/dev/null || true
+wait "$evpid" 2>/dev/null || true
+check "B11b. the evaluate process is gone" "[ '$ev_alive' -eq 0 ]"
+check "B11b. …the driver it started is gone with it" "[ '$dr_alive' -eq 0 ]"
+check "B11b. …the LAUNCH was stopped on the way out" \
+  "grep -q -- '--stop' '$XO_LAUNCH_LOG'"
+check "B11b. …launch.json no longer says running" \
+  "! grep -q '\"status\": \"running\"' '$mK3/launch.json'"
+check "B11b. …no read-only work dir was left behind" \
+  "[ \"\$(ls -1 '$evtmp' 2>/dev/null | grep -c .)\" = '0' ]"
+check "B11b. …and the state says stood-down" \
+  "grep -q '\"status\": \"stood-down\"' '$mK3/state.json'"
+
+# --------------------------------------------------------------------------
+# B11c (D2). A DIRECT SIGTERM to the recorded pid tears down just the same.
+#     This is the shape of a `kill` from the captain's own shell, or a parent
+#     that dies — the path that left an orphaned browser and a live app.
+# --------------------------------------------------------------------------
+repoK4="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mK4="$(plant_verify "$repoK4" "lcars-20260913-104")"
+: >"$XO_LAUNCH_LOG"; : >"$XO_DRIVE_LOG"; rm -f "$XO_DRIVE_LOG.slowpid"
+evtmp4="$WORKDIR/evtmp-104"; mkdir -p "$evtmp4"
+( cd "$repoK4" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+    LCARS_XO_DRIVER="$SLOW_DRIVE" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 TMPDIR="$evtmp4" \
+    bash "$SCRIPT" evaluate --mission "lcars-20260913-104" >"$repoK4/ev.txt" 2>&1 ) &
+ev4=$!
+for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
+drive4="$(cat "$XO_DRIVE_LOG.slowpid" 2>/dev/null)"
+xopid="$(cat "$mK4/xo.pid" 2>/dev/null | tr -dc '0-9')"
+[ -n "$xopid" ] && kill -TERM "$xopid" 2>/dev/null || true
+for _ in $(seq 1 40); do kill -0 "$ev4" 2>/dev/null || break; sleep 0.25; done
+ev4_alive=1; kill -0 "$ev4" 2>/dev/null || ev4_alive=0
+dr4_alive=1; [ -n "$drive4" ] && kill -0 "$drive4" 2>/dev/null || dr4_alive=0
+kill -9 "$ev4" 2>/dev/null || true
+[ -n "$drive4" ] && kill -9 "$drive4" 2>/dev/null || true
+wait "$ev4" 2>/dev/null || true
+check "B11c. a direct TERM to xo.pid ends the spin" "[ '$ev4_alive' -eq 0 ]"
+check "B11c. …and the driver dies with it" "[ '$dr4_alive' -eq 0 ]"
+check "B11c. …the launch is stopped, not orphaned" \
+  "grep -q -- '--stop' '$XO_LAUNCH_LOG'"
+check "B11c. …and no work dir survives" \
+  "[ \"\$(ls -1 '$evtmp4' 2>/dev/null | grep -c .)\" = '0' ]"
+
+# --------------------------------------------------------------------------
+# B11d (D2 driver half). xo-drive.js tears its OWN Chrome down on a signal —
+#     by the pid it started, and it removes its throwaway profile dir.
+#     A fake `chrome` stands in: no browser, no CDP, no spend.
+# --------------------------------------------------------------------------
+if command -v node >/dev/null 2>&1; then
+  DRIVER_REAL="${LCARS_XO_DRIVER_REAL:-$REPO_ROOT/skills/lcars-xo/xo-drive.js}"
+  FAKEC="$EVDIR/fake-chrome"
+  cat >"$FAKEC" <<'FC'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$FAKE_CHROME_PID"
+exec sleep 60
+FC
+  chmod +x "$FAKEC"
+  dtmp="$WORKDIR/drivetmp"; rm -rf "$dtmp"; mkdir -p "$dtmp"
+  export FAKE_CHROME_PID="$WORKDIR/fake-chrome.pid"; rm -f "$FAKE_CHROME_PID"
+  ( TMPDIR="$dtmp" FAKE_CHROME_PID="$FAKE_CHROME_PID" \
+      node "$DRIVER_REAL" --url "http://127.0.0.1:9/" --out "$WORKDIR/drive-out" \
+      --chrome "$FAKEC" >/dev/null 2>&1 ) &
+  dpid=$!
+  for _ in $(seq 1 60); do [ -s "$FAKE_CHROME_PID" ] && break; sleep 0.2; done
+  cpid="$(cat "$FAKE_CHROME_PID" 2>/dev/null | tr -dc '0-9')"
+  kill -TERM "$dpid" 2>/dev/null || true
+  for _ in $(seq 1 40); do kill -0 "$dpid" 2>/dev/null || break; sleep 0.25; done
+  for _ in $(seq 1 20); do [ -n "$cpid" ] || break; kill -0 "$cpid" 2>/dev/null || break; sleep 0.2; done
+  c_alive=1; [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null || c_alive=0
+  udd="$(ls -1d "$dtmp"/lcars-xo-chrome.* 2>/dev/null | grep -c .)"
+  kill -9 "$dpid" 2>/dev/null || true
+  [ -n "$cpid" ] && kill -9 "$cpid" 2>/dev/null || true
+  wait "$dpid" 2>/dev/null || true
+  check "B11d. the driver started a browser we can see" "[ -n '$cpid' ]"
+  check "B11d. a TERM to the driver kills ITS browser, by its own pid" "[ '$c_alive' -eq 0 ]"
+  check "B11d. …and removes its throwaway user-data-dir" "[ '$udd' = '0' ]"
+  # HEADLESS IS STILL STRUCTURAL — the teardown fix must not have bought an
+  # escape hatch on the way past.
+  argv="$(node "$DRIVER_REAL" --print-chrome-argv --url x --out "$WORKDIR/argv-out" 2>/dev/null)"
+  check "B11d. --headless is still in the argv, unconditionally" \
+    "printf '%s' \"\$argv\" | grep -q -- '--headless'"
+else
+  printf '  (node not on PATH — B11d skipped)\n'
+fi
+
+# --------------------------------------------------------------------------
+# B11e (D3). THE LAUNCH INSPECTOR RUNS ON NUMBER ONE'S ENGINE — env-pinned, and
+#     marked INTERNAL so the MISSION's own provenance is untouched. The bug
+#     spawned `claude` under a copilot first officer, which spends real money.
+# --------------------------------------------------------------------------
+LAUNCH_ENV_STUB="$EVDIR/launch-env-stub.sh"
+cat >"$LAUNCH_ENV_STUB" <<'LE'
+#!/usr/bin/env bash
+mid="$1"
+m="$(pwd)/.git/lcars/missions/$mid"
+printf 'launch %s bin=%s internal=%s\n' "$mid" \
+  "${LCARS_WORKER_BIN:-<unset>}" "${LCARS_WORKER_BIN_INTERNAL:-<unset>}" >>"$XO_LAUNCH_LOG"
+case "${2:-}" in
+  --stop) printf '{\n  "status": "stopped"\n}\n' >"$m/launch.json"; exit 0 ;;
+esac
+printf '{\n  "status": "failed",\n  "url": "",\n  "message": "stub: the env is what this test reads"\n}\n' >"$m/launch.json"
+exit 1
+LE
+chmod +x "$LAUNCH_ENV_STUB"
+
+pin_probe() { # <engine> <mission-id>
+  local eng="$1" id="$2" repo m
+  repo="$(new_repo "\"numberOne\": {\"enabled\": true, \"engine\": \"$eng\"}")"
+  m="$(plant_verify "$repo" "$id")"
+  # The MISSION's own engine is the OTHER one — so a pin that leaked from the
+  # mission instead of from Number One would read the wrong way round.
+  python3 - "$m/state.json" "$eng" <<'PY'
+import sys
+p, eng = sys.argv[1], sys.argv[2]
+other = "claude" if eng == "copilot" else "copilot"
+lines = open(p).read().splitlines()
+lines[1] = '  "numberOne": {"status": "engaged", "engine": "%s"},' % eng
+lines.insert(2, '  "workerBin": "%s",' % other)
+lines.insert(3, '  "engineSource": "captain",')
+open(p, "w").write("\n".join(lines) + "\n")
+PY
+  : >"$XO_LAUNCH_LOG"
+  ( cd "$repo" && env -u LCARS_WORKER_BIN XO_LAUNCH_LOG="$XO_LAUNCH_LOG" \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_ENV_STUB" \
+      LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+      LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+      bash "$SCRIPT" evaluate --mission "$id" >/dev/null 2>&1 ) || true
+  printf '%s' "$repo"
+}
+
+repoP1="$(pin_probe copilot "lcars-20260913-105")"
+check "B11e. a copilot Number One pins a COPILOT launch inspector" \
+  "grep -q 'bin=copilot' '$XO_LAUNCH_LOG'"
+check "B11e. …marked INTERNAL, so it is LCARS's pin and not the captain's" \
+  "grep -q 'internal=1' '$XO_LAUNCH_LOG'"
+check "B11e. …and the MISSION's own workerBin is untouched" \
+  "grep -q '\"workerBin\": \"claude\"' '$repoP1/.git/lcars/missions/lcars-20260913-105/state.json'"
+check "B11e. …no real CLI was spawned by this probe" "[ ! -s '$XO_SHIM_LOG' ]"
+
+repoP2="$(pin_probe claude "lcars-20260913-106")"
+check "B11e. …and the other way round: a claude Number One pins CLAUDE" \
+  "grep -q 'bin=claude' '$XO_LAUNCH_LOG'"
+check "B11e. …still INTERNAL" "grep -q 'internal=1' '$XO_LAUNCH_LOG'"
+check "B11e. …with the mission's copilot workerBin untouched" \
+  "grep -q '\"workerBin\": \"copilot\"' '$repoP2/.git/lcars/missions/lcars-20260913-106/state.json'"
+
+# The captain's OWN $LCARS_WORKER_BIN still wins — a pin must never override a
+# choice a human typed.
+repoP3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mP3="$(plant_verify "$repoP3" "lcars-20260913-107")"
+: >"$XO_LAUNCH_LOG"
+( cd "$repoP3" && LCARS_WORKER_BIN="$EV_SHIM" XO_LAUNCH_LOG="$XO_LAUNCH_LOG" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_ENV_STUB" \
+    LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" evaluate --mission "lcars-20260913-107" >/dev/null 2>&1 ) || true
+check "B11e. an ambient \$LCARS_WORKER_BIN the captain set is NOT overridden" \
+  "grep -q \"bin=$EV_SHIM\" '$XO_LAUNCH_LOG'"
+
+# --------------------------------------------------------------------------
+# B11f (D4). THE WORKER IS HANDED ITS CONTRACT. criteria.json and the shots (with
+#     their readouts) are IN the input dir, not somewhere the worker has to go
+#     find — and the grant names the dir that holds them.
+# --------------------------------------------------------------------------
+INV_SHIM="$EVDIR/ev-worker-inventory"
+cat >"$INV_SHIM" <<'IVS'
+#!/usr/bin/env bash
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG.all"
+{ printf 'INDIR %s\n' "${LCARS_XO_INPUT_DIR:-<unset>}"
+  [ -n "${LCARS_XO_INPUT_DIR:-}" ] && ( cd "$LCARS_XO_INPUT_DIR" && find . -type f | sed 's|^|FILE |' )
+  printf '%s\n' "${LCARS_WORKER_INPUT_DIRS:-}" | sed 's|^|GRANT |'
+} >>"$XO_INPUT_LOG"
+out="${LCARS_WORK_OUT:-}"
+printf '%s\n' "${XO_EV_BODY:-}" >"$out/xo-verdict.json"
+exit 0
+IVS
+chmod +x "$INV_SHIM"
+
+repoI="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mI="$(plant_verify "$repoI" "lcars-20260913-108")"
+export XO_INPUT_LOG="$WORKDIR/input-inventory.txt"; : >"$XO_INPUT_LOG"
+: >"$XO_WORKER_LOG"; : >"$XO_LAUNCH_LOG"; : >"$XO_DRIVE_LOG"
+evtmpI="$WORKDIR/evtmp-108"; mkdir -p "$evtmpI"
+( cd "$repoI" && XO_WORKER_LOG="$XO_WORKER_LOG" XO_INPUT_LOG="$XO_INPUT_LOG" \
+    XO_EV_BODY="$(ev_verdict met met met medium "$GAP_TICKET")" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+    LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_WORKER_BIN="$INV_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 TMPDIR="$evtmpI" \
+    bash "$SCRIPT" evaluate --mission "lcars-20260913-108" >"$repoI/ev.txt" 2>&1 ) || true
+check "B11f. criteria.json is IN the worker's input dir" \
+  "grep -q '^FILE \./criteria.json$' '$XO_INPUT_LOG'"
+check "B11f. the SHOTS are in it too — the worker never leaves its input dir" \
+  "grep -q '^FILE \./shots/shot-01.png$' '$XO_INPUT_LOG'"
+check "B11f. …with the readout beside each shot" \
+  "grep -q '^FILE \./shots/shot-01.json$' '$XO_INPUT_LOG' && grep -q '^FILE \./shots/shot-01.txt$' '$XO_INPUT_LOG'"
+check "B11f. …and the input dir is GRANTED to the worker" \
+  "grep -q '^GRANT .*input$' '$XO_INPUT_LOG'"
+
+# --------------------------------------------------------------------------
+# B11g (D5). NO PERMISSION-DENIED SPAM, AND NO LEFTOVER TEMP DIRS.
+# --------------------------------------------------------------------------
+check "B11g. the captain's terminal carries no rm errors" \
+  "! grep -q 'Permission denied' '$repoI/ev.txt'"
+check "B11g. …and the read-only input temp dir was actually removed" \
+  "[ \"\$(ls -1 '$evtmpI' 2>/dev/null | grep -c .)\" = '0' ]"
+
+# --------------------------------------------------------------------------
+# B11h (D6). EVERY JOURNAL LINE IS STAMPED WHEN IT IS WRITTEN.
+# --------------------------------------------------------------------------
+SLEEPY_DRIVE="$EVDIR/xo-drive-sleepy.sh"
+cat >"$SLEEPY_DRIVE" <<'SPD'
+#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "$out"
+n="$(ls "$out"/*.png 2>/dev/null | grep -c . | tr -d ' ')"
+printf 'PNG\n' >"$out/shot-0$((n+1)).png"
+printf '{"shot":"x"}\n' >"$out/shot-0$((n+1)).json"
+printf 'x\n' >"$out/shot-0$((n+1)).txt"
+sleep 2
+printf '{"allPainted":true}\n'
+exit 0
+SPD
+chmod +x "$SLEEPY_DRIVE"
+
+repoJ="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mJ="$(plant_verify "$repoJ" "lcars-20260913-109")"
+: >"$XO_WORKER_LOG"
+evtmpJ="$WORKDIR/evtmp-109"; mkdir -p "$evtmpJ"
+( cd "$repoJ" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+    XO_EV_BODY="$(ev_verdict met met met medium "$GAP_TICKET")" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+    LCARS_XO_DRIVER="$SLEEPY_DRIVE" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 TMPDIR="$evtmpJ" \
+    bash "$SCRIPT" evaluate --mission "lcars-20260913-109" >/dev/null 2>&1 ) || true
+stamps="$(python3 -c '
+import json,sys
+ats=[json.loads(l)["at"] for l in open(sys.argv[1]) if l.strip()]
+print(len(set(ats)), len(ats))' "$mJ/number-one.jsonl" 2>/dev/null)"
+distinct="${stamps%% *}"; total="${stamps##* }"
+printf '  journal stamps: %s distinct of %s lines\n' "$distinct" "$total"
+check "B11h. the journal has more than one line to order" "[ \"\${total:-0}\" -ge 3 ]"
+check "B11h. …and its lines do NOT all carry one frozen timestamp" \
+  "[ \"\${distinct:-1}\" -gt 1 ]"
+
+# --------------------------------------------------------------------------
+# B11i (D7). THE EVIDENCE CELL BREAKS ON A WORD, AND THE GAP BULLET HAS ONE
+#     FULL STOP. A cut landing on an open quote is a cut the captain cannot read.
+# --------------------------------------------------------------------------
+SCOREPY="${LCARS_XO_SCORE_PY:-$REPO_ROOT/skills/lcars-xo/xo-score.py}"
+scdir="$WORKDIR/score-copy"; rm -rf "$scdir"; mkdir -p "$scdir"
+cat >"$scdir/criteria.json" <<'CJ'
+{"criteria": [{"id": "prd-1", "text": "open tasks in one list", "primary": true,
+               "source": "prd"}],
+ "placeNames": ["#task-list"]}
+CJ
+# The note is deliberately LONGER than the cell's budget and carries an opening
+# quote near the cut — the exact shape the captain saw truncated to `…and no '`.
+python3 - "$scdir/verdict-in.json" <<'PY'
+import json, sys
+longnote = ("the list is present and laid out at the top of the page and it carries "
+            "three rows of placeholder copy of the sort a stub ships with and no "
+            "'add' control of any kind is anywhere near it or under it")
+json.dump({"score": "low", "summary": "Looked.",
+           "criteria": [{"id": "prd-1", "text": "open tasks in one list",
+                         "status": "gap", "shot": "shot-01", "note": longnote}],
+           "gaps": [{"title": "no add control", "expected": "a control",
+                     "saw": "nothing anywhere on the page (readout).",
+                     "shots": ["shot-01"], "kind": "contradiction",
+                     "criterion": "prd-1"}]}, open(sys.argv[1], "w"))
+PY
+python3 "$SCOREPY" "$scdir/verdict-in.json" "$scdir/criteria.json" "$scdir/verdict.json" >/dev/null 2>&1 || true
+copyrc=0
+python3 - "$scdir/report.md" <<'PY' || copyrc=$?
+import sys
+md = open(sys.argv[1], encoding="utf-8").read()
+note = ("the list is present and laid out at the top of the page and it carries "
+        "three rows of placeholder copy of the sort a stub ships with and no "
+        "'add' control of any kind is anywhere near it or under it")
+row = [l for l in md.splitlines() if l.startswith("| prd-1")]
+assert row, "no ledger row for prd-1"
+cell = row[0].split("|")[4].strip()
+body = cell.split(" — ", 1)[1] if " — " in cell else cell
+fails = []
+if "…" not in body:
+    fails.append("TRUNCATION IS NOT MARKED: the cell carries no ellipsis (ends %r)" % body[-30:])
+else:
+    prefix = body.split("…")[0].rstrip()
+    if not note.startswith(prefix):
+        fails.append("the cell is not a prefix of the note")
+    elif len(prefix) < len(note) and note[len(prefix)] != " ":
+        fails.append("THE CUT IS MID-WORD: it ends %r" % prefix[-14:])
+    if prefix.count("'") % 2 == 1:
+        fails.append("THE CUT LEAVES AN OPEN QUOTE: it ends %r" % prefix[-14:])
+if ".." in md:
+    bad = [l for l in md.splitlines() if ".." in l]
+    fails.append("DOUBLED PUNCTUATION: %s" % bad[0].strip())
+for f in fails:
+    print("   " + f)
+sys.exit(1 if fails else 0)
+PY
+check "B11i. the evidence cell truncates on a word boundary, with an ellipsis and no open quote, and the gap bullet has one full stop" \
+  "[ '$copyrc' -eq 0 ]"
+
+# ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.
 # ==========================================================================
 echo
@@ -909,8 +1707,9 @@ check "B7. …so nothing real was ever spawned" "[ '$shim_models' -eq 0 ]"
 # B8 DOES hire a worker — through $LCARS_WORKER_BIN, which is a shim of its own,
 # never a CLI on PATH. Report its count so the two are never confused: the line
 # above is "no real CLI ran", the line below is "the fake one ran N times".
-no_calls="$(grep -c '^worker ' "$XO_WORKER_LOG" 2>/dev/null)" || true
-no_models="$(grep -c -- '--model' "$XO_WORKER_LOG" 2>/dev/null)" || true
+cat "$XO_WORKER_LOG" >>"$XO_WORKER_LOG.all" 2>/dev/null || true
+no_calls="$(grep -c '^worker ' "$XO_WORKER_LOG.all" 2>/dev/null)" || true
+no_models="$(grep -c -- '--model' "$XO_WORKER_LOG.all" 2>/dev/null)" || true
 printf '  number-one worker-shim invocations: %s (with --model: %s)\n' \
   "${no_calls:-0}" "${no_models:-0}"
 

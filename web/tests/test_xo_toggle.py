@@ -344,6 +344,25 @@ class TheVocabularyIsTheCaptains(unittest.TestCase):
         self.assertIn('"◈ Number One · OFF"', self.js)
         self.assertIn("◈ Number One · ON · ", self.js)
 
+    def test_the_score_pill_names_three_shared_tokens_and_no_new_colour(self):
+        """S203. Teal / amber / red are the board's own three-level vocabulary
+        and the tints are the SAME rgba values the difficulty pills use — this
+        sheet adds no colour of its own (ADR-007). The hex guard below covers
+        this block too; this one pins that it uses the TOKENS by name."""
+        block = re.search(r"/\* ── S203: THE INTENT-MATCH PILL.*?(?=\n/\* )",
+                          self.css, re.S)
+        self.assertIsNotNone(block, "the S203 board.css section is not marked")
+        body = block.group(0)
+        for token in ("--lcars-teal", "--lcars-amber", "--lcars-red"):
+            self.assertIn(token, body)
+        self.assertEqual([], re.findall(r"#[0-9a-fA-F]{3,8}", body),
+                         "the score pill declares a raw colour of its own")
+
+    def test_the_score_pill_says_intent_match_in_full(self):
+        """Never a bare HIGH/MEDIUM/LOW: the card already has two pills with
+        that exact vocabulary and the opposite polarity."""
+        self.assertIn('"INTENT MATCH · " + XO_SCORE_WORD[s]', self.js)
+
     def test_the_accent_is_the_shared_peach_token_and_no_new_colour(self):
         """ADR-007: this sheet adds no colour of its own. Every declaration the
         wave adds names --lcars-peach (with the sheet's own existing fallback)
@@ -502,6 +521,75 @@ class TheEngagedCard(unittest.TestCase):
                                             "score": "HIGH"}))
         line = _find(tree, lambda n: _cls(n, "xo-line"))[0]
         self.assertIn("HIGH", line["text"])
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class TheIntentMatchPill(unittest.TestCase):
+    """S203 — the SCORE on the card, and the one thing that makes it readable.
+
+    The card already wears two pills whose whole vocabulary is LOW / MED / HIGH
+    — the reasoning and implementation DIFFICULTY of the work. A bare HIGH
+    beside them is not merely vague, it is vague in the direction that inverts
+    the meaning: a high difficulty is bad news and a high intent match is the
+    best news on the card. So the words INTENT MATCH are part of the pill, and
+    that is what this class pins."""
+
+    def test_the_pill_names_what_it_is_measuring(self):
+        for score, word in (("high", "HIGH"), ("medium", "MEDIUM"),
+                            ("low", "LOW")):
+            tree = _render_card(card(numberOne={"status": "finished",
+                                                "score": score}))
+            pills = _find(tree, lambda n: _cls(n, "xo-score"))
+            self.assertEqual(1, len(pills), score)
+            self.assertEqual("INTENT MATCH · " + word, pills[0]["text"])
+
+    def test_it_never_reads_as_a_difficulty_pill(self):
+        """The two vocabularies never share a class, in either direction: a
+        difficulty pill is `.pill.high`, the intent match is `.pill.xo-score
+        .s-high`, and the sheet colours them oppositely on purpose."""
+        tree = _render_card(card(numberOne={"score": "high"}))
+        pill = _find(tree, lambda n: _cls(n, "xo-score"))[0]
+        self.assertTrue(_cls(pill, "s-high"))
+        for difficulty in ("low", "med", "high"):
+            self.assertFalse(_cls(pill, difficulty),
+                             "the score pill wears the DIFFICULTY class %r"
+                             % difficulty)
+
+    def test_a_card_with_no_score_gains_no_pill(self):
+        for block in ({"status": "engaged"}, {"status": "finished"}):
+            tree = _render_card(card(numberOne=block))
+            self.assertFalse(_find(tree, lambda n: _cls(n, "xo-score")),
+                             str(block))
+
+    def test_a_score_this_board_cannot_name_is_not_painted(self):
+        """The posture `xoBlock` already takes on a malformed block: an
+        unreadable record is nothing recorded, never a guess."""
+        for bad in ("HIGHEST", "", "3", "ok"):
+            tree = _render_card(card(numberOne={"score": bad}))
+            self.assertFalse(_find(tree, lambda n: _cls(n, "xo-score")),
+                             repr(bad))
+
+    def test_the_score_alone_is_enough_to_draw_the_block(self):
+        """THE REMOTE CASE. A forge-read card carries `{score}` and nothing
+        else — no engine, no since, no note, because those are local facts —
+        and it must still show the verdict."""
+        tree = _render_card(card(numberOne={"score": "medium"}))
+        self.assertTrue(_find(tree, lambda n: _cls(n, "xo-block")))
+        pills = _find(tree, lambda n: _cls(n, "xo-score"))
+        self.assertEqual("INTENT MATCH · MEDIUM", pills[0]["text"])
+
+    def test_the_status_pill_still_comes_first(self):
+        tree = _render_card(card(numberOne={"status": "finished",
+                                            "score": "low"}))
+        row = _find(tree, lambda n: _cls(n, "xo-pills"))[0]
+        texts = [c.get("text") or "" for c in row["children"]]
+        self.assertEqual(["◈ NUMBER ONE · FINISHED", "INTENT MATCH · LOW"],
+                         texts)
+
+    def test_the_meanings_are_the_captains_and_they_ride_the_tooltip(self):
+        tree = _render_card(card(numberOne={"score": "low"}))
+        pill = _find(tree, lambda n: _cls(n, "xo-score"))[0]
+        self.assertIn("look yourself", (pill.get("title") or ""))
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")

@@ -36,6 +36,16 @@ _MISSION_LABEL = "lcars:mission"
 _AWAITING_LABEL = "lcars:awaiting-human"
 _PAUSED_LABEL = "lcars:paused"
 _LINKED_LABEL = "lcars:linked"
+# S203 — NUMBER ONE, READ OFF THE LISTING. The intent-match score is an ISSUE
+# LABEL and not an envelope field, deliberately: "stage from the label, never the
+# envelope" is the rule that lets a REMOTE card answer a question about a mission
+# this laptop has never driven, out of the ONE listing the poll already fetched
+# (S191). A per-mission `gh` call for the score would buy the same fact and cost
+# the whole one-call budget.
+_XO_SCORE_LABELS = {"lcars:xo:high": "high",
+                    "lcars:xo:medium": "medium",
+                    "lcars:xo:low": "low"}
+_XO_ENGAGED_LABEL = "lcars:xo:engaged"
 
 
 class GitHubAdapter(object):
@@ -265,6 +275,12 @@ class GitHubAdapter(object):
         owner = board.owner_block(_first_assignee(issue))
         if owner is not None:
             card["owner"] = owner
+        # S203 — …and WHAT THE FIRST OFFICER SAID, off the same row's labels. No
+        # extra forge call: `number_one` reads the labels already in hand.
+        # ABSENT, never null, on an issue that carries none of them.
+        xo = number_one(issue)
+        if xo is not None:
+            card["numberOne"] = xo
         return card
 
     def _activity(self, issue):
@@ -323,6 +339,34 @@ def _gate_question(issue):
     if comments and isinstance(comments[-1], dict):
         return (comments[-1].get("body") or "").strip() or None
     return None
+
+
+def number_one(row):
+    """`{status, score}` for a forge-read card, or None — from its LABELS.
+
+    THE ONLY FACTS THE FORGE HAS. Engagement and the intent-match score are the
+    two Number One puts ON THE ISSUE; everything else the local card carries
+    (`engine`, `since`, `note`) lives in the driving laptop's own state.json and
+    a second laptop cannot see it. So this answers with what is really there and
+    nothing else — the adapter-neutral posture ADR-006 takes everywhere: present
+    when known, ABSENT when not, never a guess to make the shape look full.
+
+    Built through `board.xo_block`, the SAME builder the local adapter uses, so
+    the two adapters cannot drift into two shapes for one fact (ADR-003).
+
+    None ⇒ the caller adds NO `numberOne` key at all. A repo with none of these
+    labels on it therefore serves a card byte-identical to the one it served
+    before this round, which is every forge card until today.
+    """
+    labels = _label_names(row)
+    block = {}
+    if _XO_ENGAGED_LABEL in labels:
+        block["status"] = "engaged"
+    for lab, score in _XO_SCORE_LABELS.items():
+        if lab in labels:
+            block["score"] = score
+            break
+    return board.xo_block(block) if block else None
 
 
 def ticket_progress(row, stage):

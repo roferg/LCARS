@@ -2838,6 +2838,31 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   border-left:2px solid var(--lcars-peach,#ff9966);padding-left:7px;
   margin:0 0 2px;white-space:pre-wrap;word-break:break-word}
 
+/* ── S203: THE INTENT-MATCH PILL ──────────────────────────────────────────
+   The verdict Number One reached about the built thing, beside the pill that
+   says who has the conn.
+
+   THREE TOKENS, NONE OF THEM NEW (ADR-007). Teal / amber / red are the board's
+   own three-level vocabulary, and the tints are the SAME rgba values `.pill.low`
+   / `.pill.med` / `.pill.high` already use, quoted rather than re-mixed — this
+   sheet adds no colour of its own.
+
+   BUT THE CLASSES ARE ITS OWN, AND DELIBERATELY. `.pill.high` is the RED one,
+   because it means high DIFFICULTY; a high intent match is the good news on the
+   card and wears the teal. Binding to those classes would have inverted the
+   meaning on the first reading, so the score has `s-high`/`s-medium`/`s-low` and
+   the two vocabularies never touch.
+
+   The word INTENT MATCH rides in the pill itself (board.js) for the same
+   reason — see there. */
+.pill.xo-score{background:transparent;font-weight:700}
+.pill.xo-score.s-high{background:rgba(0,204,170,.14);
+  border-color:var(--lcars-teal);color:var(--lcars-teal)}
+.pill.xo-score.s-medium{background:rgba(255,170,0,.16);
+  border-color:var(--lcars-amber);color:var(--lcars-amber)}
+.pill.xo-score.s-low{background:rgba(255,51,68,.16);
+  border-color:var(--lcars-red);color:var(--lcars-red)}
+
 /* THE STAND-DOWN. Red-outline — `.btn.danger`'s existing idiom, untouched —
    sat beside the controls it is handing back. */
 .card-ctrl .btn.xo-stand-down{margin-left:auto}

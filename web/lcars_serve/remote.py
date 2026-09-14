@@ -75,7 +75,7 @@ import threading
 import time
 
 from . import board
-from .github_adapter import GitHubAdapter, ticket_progress
+from .github_adapter import GitHubAdapter, number_one, ticket_progress
 
 # The cadence. THIRTY SECONDS, not one: this is a "somebody else's laptop is
 # working" indicator, not a live feed, and the cost of being wrong in the fast
@@ -376,6 +376,21 @@ class RemoteMissions(object):
         eng = _envelope_engine(row.get("body"))
         if eng:
             card["engine"] = eng
+        # S203 — WHAT NUMBER ONE SAID ABOUT THIS MISSION, read off the SAME row's
+        # labels: `lcars:xo:engaged` for the badge, `lcars:xo:high|medium|low`
+        # for the intent-match score. NO EXTRA CALL — the whole reason the score
+        # is a label and not an envelope field ("stage from the label, never the
+        # envelope") is that this poll must stay ONE `gh` call per cycle (S191).
+        #
+        # ABSENT, NEVER NULL, and it is `card_from_issue`'s own key: the mapper
+        # already sets it (one implementation, ADR-003) and this line is the
+        # seam that says the overlay depends on it — the shape `_ticket_progress`
+        # above takes for the same reason.
+        xo = _number_one(row)
+        if xo is not None:
+            card["numberOne"] = xo
+        else:
+            card.pop("numberOne", None)
         return card
 
 
@@ -562,3 +577,18 @@ def _ticket_progress(row, stage):
     old to know the field returns nothing rather than a wrong zero).
     """
     return ticket_progress(row, stage)
+
+
+def _number_one(row):
+    """`{status, score}` from the row's `lcars:xo:*` labels, or None.
+
+    Delegates to github_adapter.number_one for the same reason `_ticket_progress`
+    delegates to `ticket_progress`: ONE implementation of one fact, shared by the
+    overlay and by the github adapter's own board. The seam stays named here so
+    this module's dependence on it is visible from this side too.
+
+    IT READS THE ROW, AND ONLY THE ROW. Everything it answers is in the listing
+    `listing()` already fetched, so the overlay's forge budget is exactly what it
+    was before this round — one call per cycle.
+    """
+    return number_one(row)

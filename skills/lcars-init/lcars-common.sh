@@ -25,12 +25,20 @@ LCARS_TYPE_COLOR="4499FF"
 LCARS_STATUS_COLOR="FF3344"
 LCARS_REL_COLOR="9977FF"
 LCARS_ROLE_COLOR="00B894"
+# S203 — Number One. The first officer's own family, in the board's peach:
+# `--lcars-peach` is the one warm accent no card state had claimed, and a forge
+# label has no theme tokens to inherit, so the hex is written here once.
+LCARS_XO_COLOR="FF9966"
 
 LCARS_STAGE_LABELS="align research validate plan plan-review schedule implement verify done"
 LCARS_TYPE_LABELS="feature bug"
 LCARS_STATUS_LABELS="paused awaiting-human"
 LCARS_REL_LABELS="linked"
 LCARS_ROLE_LABELS="mission ticket"
+# THE SCORE IS A LABEL (captain ruling): one source per fact — the label is the
+# score, the comment is the report — so a REMOTE card reads the intent match off
+# the listing the board already fetched, with no second forge call (S191).
+LCARS_XO_LABELS="xo:high xo:medium xo:low xo:engaged"
 
 lcars_label_desc() {
   case "$1" in
@@ -50,6 +58,10 @@ lcars_label_desc() {
     lcars:linked)         echo "Relationship: linked to another mission" ;;
     lcars:mission)        echo "Role: a Mission's own command-and-control issue" ;;
     lcars:ticket)         echo "Role: an implementation sub-issue spun up by Schedule" ;;
+    lcars:xo:high)        echo "Number One: intent match HIGH — every criterion met" ;;
+    lcars:xo:medium)      echo "Number One: intent match MEDIUM — the primary flow works, some gaps" ;;
+    lcars:xo:low)         echo "Number One: intent match LOW — the primary goal is not met, or it could not be verified" ;;
+    lcars:xo:engaged)     echo "Number One: engaged on this mission on the owner's behalf" ;;
     *)                    echo "LCARS label" ;;
   esac
 }
@@ -63,6 +75,7 @@ lcars_all_labels() {
   for n in $LCARS_STATUS_LABELS; do echo "lcars:$n|$LCARS_STATUS_COLOR"; done
   for n in $LCARS_REL_LABELS;    do echo "lcars:$n|$LCARS_REL_COLOR";    done
   for n in $LCARS_ROLE_LABELS;   do echo "lcars:$n|$LCARS_ROLE_COLOR";   done
+  for n in $LCARS_XO_LABELS;     do echo "lcars:$n|$LCARS_XO_COLOR";     done
 }
 
 # lcars_create_labels — create any MISSING canonical labels on the current repo.

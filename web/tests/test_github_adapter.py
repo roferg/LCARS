@@ -384,5 +384,52 @@ class GitHubAdapterTest(unittest.TestCase):
                                             "awaiting", "paused", "pills", "tickets"})
 
 
+class NumberOneFromTheLabels(unittest.TestCase):
+    """S203 — the forge's own half of Number One, on the GITHUB adapter.
+
+    The two facts Number One puts ON THE ISSUE are the engaged badge and the
+    intent-match score, and they are labels for exactly this reason: a laptop
+    that has never driven this mission has no `state.numberOne` to read and the
+    forge listing already carries the label names. Everything else on the local
+    card's block — `engine`, `since`, `note` — is a local file and this adapter
+    answers with none of it (ADR-006: present when known, ABSENT when not).
+    """
+
+    def _card(self, labels):
+        from lcars_serve.github_adapter import number_one
+        return number_one({"labels": [{"name": n} for n in labels]})
+
+    def test_each_score_label_is_read(self):
+        for label, score in (("lcars:xo:high", "high"),
+                             ("lcars:xo:medium", "medium"),
+                             ("lcars:xo:low", "low")):
+            self.assertEqual({"score": score}, self._card(["lcars:mission",
+                                                           label]), label)
+
+    def test_engaged_is_its_own_label(self):
+        self.assertEqual({"status": "engaged"},
+                         self._card(["lcars:xo:engaged"]))
+
+    def test_no_labels_no_block(self):
+        self.assertIsNone(self._card(["lcars:mission", "lcars:verify"]))
+
+    def test_a_card_on_this_adapter_carries_it_too(self):
+        from lcars_serve.github_adapter import GitHubAdapter
+        adapter = GitHubAdapter(gh_bin="/bin/false")
+        row = {"number": 7, "title": "t", "state": "OPEN",
+               "labels": [{"name": "lcars:mission"}, {"name": "lcars:verify"},
+                          {"name": "lcars:xo:low"}], "body": ""}
+        card = adapter.card_from_issue(row)
+        self.assertEqual({"score": "low"}, card["numberOne"])
+
+    def test_a_card_without_them_is_byte_identical_to_before(self):
+        from lcars_serve.github_adapter import GitHubAdapter
+        adapter = GitHubAdapter(gh_bin="/bin/false")
+        row = {"number": 7, "title": "t", "state": "OPEN",
+               "labels": [{"name": "lcars:mission"}, {"name": "lcars:verify"}],
+               "body": ""}
+        self.assertNotIn("numberOne", adapter.card_from_issue(row))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -372,6 +372,100 @@ class RemoteTicketProgress(unittest.TestCase):
         self.assertIsNone(self._card(row)["progress"])
 
 
+class TheScoreComesFromTheLabelAndCostsNothing(unittest.TestCase):
+    """S203 — Number One's verdict on a card this laptop has never driven.
+
+    THE WHOLE REASON THE SCORE IS A LABEL. "Stage from the label, never the
+    envelope" (S191) is not a style: the envelope is written by the FILING
+    laptop and never updated, while a label is a fact the forge holds and the
+    one listing this poll already makes carries it. So the intent match travels
+    to every other laptop for free — and "for free" is the assertion, not the
+    adjective: the invocation recorder below is the same one behaviour 5 uses to
+    pin one listing per cycle, and it must read exactly ONE after a board that
+    shows a score pill.
+
+    Engagement rides the same road for the same reason. `state.numberOne` is a
+    LOCAL file; the badge on a remote card can only come from `lcars:xo:engaged`.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+
+    def _cards(self, rows):
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, rows, self.record))
+        return {c["id"]: c for c in adapter.board()["missions"]}
+
+    def _card(self, row):
+        return self._cards([row])[str(row["number"])]
+
+    def test_the_score_rides_the_card_read_off_the_label(self):
+        for label, score in (("lcars:xo:high", "high"),
+                             ("lcars:xo:medium", "medium"),
+                             ("lcars:xo:low", "low")):
+            c = self._card(issue(301, stage="verify", labels=[label]))
+            self.assertEqual(score, c["numberOne"]["score"], label)
+
+    def test_the_engaged_badge_is_a_label_too(self):
+        c = self._card(issue(302, stage="implement",
+                             labels=["lcars:xo:engaged"]))
+        self.assertEqual("engaged", c["numberOne"]["status"])
+        self.assertNotIn("score", c["numberOne"])
+
+    def test_engaged_and_scored_is_one_block(self):
+        c = self._card(issue(303, stage="verify",
+                             labels=["lcars:xo:engaged", "lcars:xo:medium"]))
+        self.assertEqual({"status": "engaged", "score": "medium"},
+                         c["numberOne"])
+
+    def test_a_mission_with_none_of_them_carries_no_key(self):
+        """ABSENT, never null — the rule every additive key in this shape has
+        followed since S109, and what keeps a forge with no Number One on it
+        serving the payload it served yesterday."""
+        c = self._card(issue(304, stage="plan"))
+        self.assertNotIn("numberOne", c)
+
+    def test_the_local_facts_are_not_invented(self):
+        """`engine`, `since` and `note` live in the DRIVING laptop's state.json.
+        A second laptop cannot see them and must not answer as if it could."""
+        c = self._card(issue(305, stage="verify", labels=["lcars:xo:low"]))
+        for key in ("engine", "since", "note"):
+            self.assertNotIn(key, c["numberOne"])
+
+    def test_the_whole_board_still_costs_exactly_one_gh_call(self):
+        """THE INVARIANT. One listing per cycle (S191) — a score on a card must
+        never have bought a per-mission `gh` call to read a label."""
+        cards = self._cards([
+            issue(401, stage="verify", labels=["lcars:xo:high"]),
+            issue(402, stage="verify", labels=["lcars:xo:medium"]),
+            issue(403, stage="implement", labels=["lcars:xo:engaged"]),
+            issue(404, stage="plan"),
+        ])
+        self.assertEqual("high", cards["401"]["numberOne"]["score"])
+        self.assertEqual("medium", cards["402"]["numberOne"]["score"])
+        self.assertEqual("engaged", cards["403"]["numberOne"]["status"])
+        self.assertNotIn("numberOne", cards["404"])
+        self.assertEqual(1, len(calls(self.record)),
+                         "reading the score cost a second forge call")
+
+    def test_the_listing_asks_for_nothing_new_to_get_it(self):
+        """…and it did not widen the listing either. The label names arrive in
+        the `labels` field the poll has always asked for."""
+        self._cards([issue(401, stage="verify", labels=["lcars:xo:high"])])
+        argv = calls(self.record)[0]
+        self.assertIn("labels", argv)
+        self.assertNotIn("label list", argv)
+
+    def test_the_detail_view_answers_from_the_same_row(self):
+        rows = [issue(501, stage="verify", labels=["lcars:xo:medium"])]
+        rm = remote(self.tmp, rows, self.record)
+        self.assertEqual("medium", rm.mission("501")["numberOne"]["score"])
+        self.assertEqual(1, len(calls(self.record)))
+
+
 # --------------------------------------------------------------------------
 # 3. local wins
 # --------------------------------------------------------------------------

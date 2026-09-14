@@ -11,6 +11,9 @@
 #   lcars xo answer --mission <id>    take the park: read the record, then ANSWER
 #                                     through `lcars respond` or ESCALATE with a
 #                                     note and a recommendation (exit 1)
+#   lcars xo evaluate --mission <id>  the Verify LOOK: launch the build, walk it
+#                                     headless, compare it to the PRD and the
+#                                     drawing, and score the intent match
 #
 # THE DIVISION OF LABOUR (captain ruling, 2026-09-11): the worker REASONS, the
 # skill EXECUTES. Nothing in this file asks a model anything. It writes two
@@ -228,15 +231,25 @@ Name one of them exactly." ;;
 # conn back. Nothing is ever KILLed — a worker gets to finish its own cleanup.
 # ===========================================================================
 stand_down() { # <mission-id> [--opt-out]
-  local id="$1" optout="${2:-}" dir st obj status pid
+  local id="$1" optout="${2:-}" dir st obj status pid live=0
   dir="$MISSIONS_DIR/$id"
   st="$dir/state.json"
   [ -f "$st" ] || die "mission '$id' has no state.json — its state is corrupt."
   obj="$(state_xo_block "$st")"
   status="$(obj_get "$obj" status)"
 
-  if [ "$status" = "engaged" ]; then
-    pid="$(head -1 "$dir/xo.pid" 2>/dev/null | tr -dc '0-9')"
+  # A LIVE PID IS A LIVE SPIN (fix round 1, D1). This branch used to be gated on
+  # `status = engaged` ALONE — and `evaluate` never wrote that status while it
+  # spun, so the captain's stop button did nothing at all through the whole
+  # Verify look: no signal, no stood-down, no note, and a browser and an app
+  # left running. The RECORDED PID is the truth about whether Number One is
+  # doing something; the status string is a record OF that, never the licence
+  # to stop it. A pid that is gone is not a spin, so a crashed mission still
+  # takes the plain opt-out path and no stand-down is ever claimed falsely.
+  pid="$(head -1 "$dir/xo.pid" 2>/dev/null | tr -dc '0-9')"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=1; fi
+
+  if [ "$status" = "engaged" ] || [ "$live" -eq 1 ]; then
     if [ -n "$pid" ]; then
       kill -TERM "$pid" 2>/dev/null || true
       rm -f "$dir/xo.pid"
@@ -562,13 +575,48 @@ gather_inputs() { # <mission-dir> <input-dir>
   return 0
 }
 
+# THE WORKER'S INPUT DIR IS ITS WHOLE WORLD (fix round 1, D4).
+#
+# gather_inputs ends with `chmod -R a-w` — which is what stops a worker editing
+# the record it is judged against, and also what makes every later `cp` into
+# that tree fail. Silently, because the callers all wrote `|| true`. So this is
+# the ONE way anything is added after the gather: unlock the dir, copy, re-lock.
+# It is safe to call repeatedly, which is how a round-three worker sees the
+# shots round two took.
+xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir>
+  local into="$1" crit="$2" from="$3" f
+  [ -d "$into" ] || return 0
+  chmod u+w "$into" 2>/dev/null || true
+  if [ -f "$crit" ]; then
+    rm -f "$into/criteria.json" 2>/dev/null || true
+    cp "$crit" "$into/criteria.json" 2>/dev/null || true
+    chmod a-w "$into/criteria.json" 2>/dev/null || true
+  fi
+  if [ -d "$from" ]; then
+    chmod u+w "$into/shots" 2>/dev/null || true
+    mkdir -p "$into/shots" 2>/dev/null || true
+    for f in "$from"/*; do
+      [ -f "$f" ] || continue
+      [ -f "$into/shots/$(basename "$f")" ] && continue
+      cp "$f" "$into/shots/" 2>/dev/null || true
+    done
+    chmod -R a-w "$into/shots" 2>/dev/null || true
+  fi
+  chmod a-w "$into" 2>/dev/null || true
+  return 0
+}
+
 # --- the journal ------------------------------------------------------------
 # One JSON line per action, beside the mission's other facts. It is what the
 # living comment (wave B) renders and what the captain reads to see what his
 # first officer has been doing. Append-only; nothing is ever rewritten.
 journal() { # <mission-dir> <action> <one-line-json-body>
+  # STAMPED WHEN IT IS WRITTEN, not when the process started (fix round 1, D6).
+  # $NOW is frozen at line 82, so an evaluate that spans three minutes used to
+  # record `criteria`, `launched`, `looked` and `scored` all at the same second
+  # — a journal from which the captain can read neither order nor duration.
   printf '{"at": %s, "action": %s, %s}\n' \
-    "$(jstr "$NOW")" "$(jstr "$2")" "$3" >>"$1/number-one.jsonl"
+    "$(jstr "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" "$(jstr "$2")" "$3" >>"$1/number-one.jsonl"
 }
 
 # --- the worker's process tree ---------------------------------------------
@@ -586,8 +634,60 @@ xo_kill_tree() { # <pid>
 
 XO_SPIN_PID=""
 XO_MISSION_DIR=""
-on_stand_down() {
+# EVERYTHING THIS PROCESS STARTED, NAMED (fix round 1, D2). A `lcars xo evaluate`
+# starts three things that outlive a careless exit: a launched app, a browser
+# (inside the driver), and a read-only input tree in $TMPDIR. Before this round
+# an abnormal exit left all three — a SIGTERM to xo.pid removed the pid file and
+# nothing else, and the LOW paths stopped the app but not the browser.
+XO_DRIVE_PID=""
+XO_LAUNCH_ID=""
+XO_STOP_LOG=""
+XO_LAUNCH_STOPPED=0
+XO_WORK_DIR=""
+
+# Stop the app this run launched. ONE writer for every exit path — success, LOW,
+# error and signal — and idempotent, so calling it twice on the way out costs a
+# `return`, never a second `launch.sh --stop`.
+xo_stop_launch() {
+  [ -n "$XO_LAUNCH_ID" ] || return 0
+  [ "$XO_LAUNCH_STOPPED" -eq 1 ] && return 0
+  XO_LAUNCH_STOPPED=1
+  bash "$XO_LAUNCH_SCRIPT" "$XO_LAUNCH_ID" --stop \
+    >>"${XO_STOP_LOG:-/dev/null}" 2>&1 || true
+  return 0
+}
+
+# Remove a gathered input tree (fix round 1, D5). gather_inputs makes it
+# READ-ONLY so nothing a worker does can edit the record it is judged against —
+# and a plain `rm -rf` on a read-only tree fails eight "Permission denied" lines
+# at a time, straight into the captain's terminal, AND leaves the tree behind
+# (1,336 of them on the tester's machine). Writable first, then removed, and
+# quietly. The absolute-path guard is there because this deletes recursively.
+xo_rm_work() { # <dir>
+  local d="${1:-}"
+  [ -n "$d" ] || return 0
+  case "$d" in /*) ;; *) return 0 ;; esac
+  chmod -R u+w "$d" 2>/dev/null || true
+  rm -rf "$d" 2>/dev/null || true
+  return 0
+}
+
+# The one teardown. Called from the EXIT trap AND from the signal trap, so there
+# is no way out of this script that leaves a browser, an app or a temp tree
+# behind. Deepest first: the driver (and the Chrome it owns) before the app it
+# was looking at.
+xo_teardown() {
+  [ -n "$XO_DRIVE_PID" ] && xo_kill_tree "$XO_DRIVE_PID"
   [ -n "$XO_SPIN_PID" ] && xo_kill_tree "$XO_SPIN_PID"
+  XO_DRIVE_PID=""; XO_SPIN_PID=""
+  xo_stop_launch
+  [ -n "$XO_WORK_DIR" ] && xo_rm_work "$XO_WORK_DIR"
+  XO_WORK_DIR=""
+  return 0
+}
+
+on_stand_down() {
+  xo_teardown
   [ -n "$XO_MISSION_DIR" ] && rm -f "$XO_MISSION_DIR/xo.pid"
   # NOTHING IS RECORDED HERE. `lcars xo off` has already written stood-down, and
   # a second writer racing it is how a stand-down ends up reading `escalated`.
@@ -646,6 +746,10 @@ cmd_answer() {
   gather_inputs "$dir" "$input"
 
   XO_MISSION_DIR="$dir"
+  XO_WORK_DIR="$work"
+  # THE TEMP TREE IS OWNED FROM HERE ON (fix round 1, D5). `answer` never removed
+  # its read-only input copy at all; the EXIT trap does now, on every path.
+  trap xo_teardown EXIT
   trap on_stand_down TERM INT
   printf '%s\n' "$$" >"$dir/xo.pid"
 
@@ -883,12 +987,449 @@ XO_PY
   return 0
 }
 
+
+# ===========================================================================
+# EVALUATE — THE VERIFY LOOK (S203)
+#
+#   lcars xo evaluate --mission <id>
+#
+# The Mission has a PR open and is parked at Verify. Number One launches the
+# build, walks it in a HEADLESS browser, compares what it sees against a
+# contract written before it looked, and scores the intent match LOW / MEDIUM /
+# HIGH with a per-criterion ledger behind it.
+#
+# IT FILES NOTHING. S203 finds and scores; S204 is the round that files logs and
+# drives fixes. A HIGH finishes the Mission's first-officer work; a MEDIUM or a
+# LOW leaves it engaged, with the gaps written down for that next round.
+#
+# THE ORDER MATTERS, AND IT IS THE ORDER OF THE BRIEF:
+#
+#   1. THE CONTRACT FIRST, BEFORE ANY BROWSER. criteria.json is built from the
+#      PRD, the plan and the drawing while the app is still not running. A judge
+#      that writes its checklist after looking writes a checklist of what it
+#      noticed.
+#   2. LAUNCH. If the app does not come up, that is a LOW that says so, and NO
+#      BROWSER IS EVER STARTED. "Could not launch" is an honest verdict; a
+#      browser pointed at nothing is not.
+#   3. ROUND 0 — the standard look: the whole page, plus one clipped shot per
+#      place the drawing names.
+#   4. UP TO THREE WORKER ROUNDS. Each round the worker either asks to look
+#      further (xo-actions.json, at most 12 actions) or writes its verdict. No
+#      verdict by the end of round 3 is a LOW that lists what it saw — an
+#      indecisive judge must not become a passing grade.
+#   5. THE SCORE IS RECOMPUTED FROM THE LEDGER (xo-score.py). The model reasons;
+#      the skill decides. A worker score that disagrees with its own ledger is
+#      OVERWRITTEN and the disagreement journaled.
+#   6. STOP THE APP. Always, including on every failure path.
+#   7. RECORD: xo/verdict.json, the journal, numberOne.score, the status, the
+#      score LABEL on the issue, and the living comment.
+#
+# THE CAPTAIN'S FOCUS IS NEVER TAKEN (ruling 2026-09-13). The browser is
+# headless — structurally, in xo-drive.js, with no flag and no env that can
+# raise a window — and nothing here opens a tab, an app window or a file for
+# him. `launch.sh` is called WITHOUT any open-ish behaviour: it starts the app
+# on a port and returns a url, and the only thing that ever visits that url is
+# Number One's own headless Chrome.
+# ===========================================================================
+
+XO_LAUNCH_SCRIPT="${LCARS_LAUNCH_SCRIPT:-$SKILL_DIR/../lcars-launch/launch.sh}"
+XO_DRIVER="${LCARS_XO_DRIVER:-$SKILL_DIR/xo-drive.js}"
+XO_HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
+XO_NODE="${LCARS_NODE_BIN:-node}"
+XO_PY="${LCARS_PYTHON_BIN:-python3}"
+XO_MAX_ROUNDS="${LCARS_XO_MAX_ROUNDS:-3}"
+XO_MAX_ACTIONS=12
+
+# Every score LABEL, in one place: applied by the swap below, removed by it, and
+# named by init.sh's label set. `lcars:xo:` is the one prefix.
+XO_SCORE_LABELS="lcars:xo:high lcars:xo:medium lcars:xo:low"
+
+json_field() { # <file> <key> — a string value, or empty
+  [ -f "$1" ] || return 0
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
+}
+
+# The score LABEL swap. One source per fact (ruling): the LABEL is the score, the
+# COMMENT is the report — so a remote card reads the score off the listing it
+# already fetched, with no extra call. Best-effort like every relabel in LCARS:
+# a forge that is down leaves a note, it never loses a verdict that is already
+# on disk.
+# THE LABELS MUST EXIST BEFORE THE SWAP CAN LAND. `lcars init` creates the whole
+# canonical set, but every repo initialized before this round has none of the
+# `lcars:xo:*` family — and `gh issue edit --add-label` on a label the forge has
+# never heard of fails, silently, exactly where the verdict was supposed to
+# become visible. So the swap ensures its own family first, from the SAME list
+# init creates from (lcars_all_labels in lcars-common.sh): one source of truth
+# for names, colours and descriptions, never a second copy here.
+#
+# ONE listing call, then a create per missing label — so a settled repo pays one
+# call and writes nothing. Best-effort throughout: a forge that is down leaves
+# the verdict on disk and the label for next time.
+xo_label_ensure() {
+  local specs=() name color
+  while IFS='|' read -r name color; do
+    case "$name" in
+      lcars:xo:*) specs+=("$name|$color|$(lcars_label_desc "$name")") ;;
+    esac
+  done <<EOF
+$(lcars_all_labels)
+EOF
+  [ "${#specs[@]}" -gt 0 ] || return 0
+  bash "$XO_HOST_ADAPTER" label-ensure "${specs[@]}" >/dev/null 2>&1 || true
+  return 0
+}
+
+xo_label_score() { # <state.json> <score>
+  local st="$1" score="$2" issue remove=""
+  issue="$(json_field "$st" githubIssue)"
+  [ -n "$issue" ] || issue="$(sed -n 's/.*"githubIssue"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$st" | head -1)"
+  case "$issue" in ''|0|null) return 0 ;; esac
+  local l
+  for l in $XO_SCORE_LABELS; do
+    [ "$l" = "lcars:xo:$score" ] && continue
+    remove="${remove:+$remove,}$l"
+  done
+  xo_label_ensure
+  bash "$XO_HOST_ADAPTER" issue-relabel "$issue" \
+    --add "lcars:xo:$score" --remove "$remove" >/dev/null 2>&1 || true
+  return 0
+}
+
+# The S65 living comment — created once, EDITED thereafter, keyed `number-one`.
+# Re-rendered through run.sh's own mirror entry so there is exactly ONE renderer
+# and one comment-id map; xo.sh never posts a comment of its own.
+xo_mirror() { # <mission-id>
+  bash "$XO_RUN_SCRIPT" mirror-comments --mission "$1" >/dev/null 2>&1 || true
+}
+
+# Record a finished look and stop. ONE writer for every exit path, so a LOW from
+# a failed launch and a HIGH from a clean look leave the same shaped record.
+xo_finish() { # <mission-dir> <score> <status> <why>
+  local dir="$1" score="$2" status="$3" why="$4" st obj id
+  st="$dir/state.json"; id="$(basename "$dir")"
+  obj="$(state_xo_block "$st")"
+  obj="$(obj_set "$obj" status "$(jstr "$status")")"
+  obj="$(obj_set "$obj" score "$(jstr "$score")")"
+  obj="$(obj_set "$obj" evaluatedAt "$(jstr "$NOW")")"
+  obj="$(obj_set "$obj" lastAction "$(jstr "looked $NOW_LOCAL")")"
+  if [ "$status" = "engaged" ]; then
+    obj="$(obj_set "$obj" note "$(jstr "$why")")"
+  else
+    obj="$(obj_del "$obj" note)"
+  fi
+  state_set_xo "$st" "$obj"
+  lcars_state_refusal_die "lcars xo evaluate"
+  # THE REPORT ALWAYS EXISTS. xo-score.py writes it whenever there was a ledger
+  # to render; the paths that never got one (a build that would not launch, a
+  # browser that would not start, three rounds with no verdict, a verdict that
+  # could not be read) still owe the captain a sentence on his issue, so they
+  # get this one. The living comment includes whichever was written.
+  if [ ! -s "$dir/xo/report.md" ]; then
+    { printf '**Intent match: %s** — %s\n\n' \
+        "$(printf '%s' "$score" | tr '[:lower:]' '[:upper:]')" "$why"
+      printf 'There is no per-criterion ledger for this one: %s\n' "$why"
+    } >"$dir/xo/report.md"
+  fi
+  journal "$dir" scored \
+    "$(printf '"score": %s, "why": %s, "status": %s' \
+         "$(jstr "$score")" "$(jstr "$why")" "$(jstr "$status")")"
+  xo_label_score "$st" "$score"
+  xo_mirror "$id"
+  printf '◈ NUMBER ONE: intent match %s — %s\n' "$(printf '%s' "$score" | tr '[:lower:]' '[:upper:]')" "$why"
+  printf '  The report is in %s/xo/verdict.json.\n' "$dir"
+}
+
+cmd_evaluate() {
+  local target=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mission)   target="${2:-}"; shift 2 || true ;;
+      --mission=*) target="${1#--mission=}"; shift ;;
+      -*)          die "unknown option: $1" ;;
+      *)           target="$1"; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "no mission — pass --mission <id>."
+  local id dir st xodir shots
+  id="$(resolve_mission "$target")" || exit $?
+  dir="$MISSIONS_DIR/$id"
+  st="$dir/state.json"
+  xodir="$dir/xo"
+  shots="$xodir/shots"
+
+  # IDEMPOTENT ON evaluatedAt. The Verify driver can pass this way more than
+  # once (a poll, a re-run, a second laptop) and a second look would spend a
+  # worker and a browser to reach the same verdict.
+  local seen
+  seen="$(obj_get "$(state_xo_block "$st")" evaluatedAt)"
+  if [ -n "$seen" ]; then
+    printf '◈ NUMBER ONE: already looked at %s (%s) — nothing to do.\n' "$id" "$seen"
+    return 0
+  fi
+
+  # A BUG CHILD IS NEVER EVALUATED. Its parent's PR carries the fix (Mission
+  # logs' Model A); looking at a child would score the parent's build twice.
+  if grep -q '"parentMission"' "$st" 2>/dev/null; then
+    printf '◈ NUMBER ONE: %s is a logged bug child — its parent carries the build.\n' "$id"
+    return 0
+  fi
+
+  mkdir -p "$xodir" "$shots"
+  XO_MISSION_DIR="$dir"
+  XO_LAUNCH_ID="$id"
+  XO_STOP_LOG="$xodir/launch.log"
+  # EVERY WAY OUT TEARS DOWN WHAT THIS RUN STARTED (fix round 1, D2) — the EXIT
+  # trap for a `die` or a normal return, the TERM/INT trap for the captain's
+  # stop button and for a parent that dies.
+  trap xo_teardown EXIT
+  trap on_stand_down TERM INT
+  printf '%s\n' "$$" >"$dir/xo.pid"
+
+  # NUMBER ONE IS ENGAGED FOR THE WHOLE SPIN (fix round 1, D1). Written BEFORE
+  # the contract is built and replaced by xo_finish at the end, so the status
+  # table, the board and `lcars xo off` all read a truthful status while the
+  # look is happening rather than only after it.
+  local ev_obj
+  ev_obj="$(state_xo_block "$st")"
+  ev_obj="$(obj_set "$ev_obj" status "$(jstr engaged)")"
+  ev_obj="$(obj_set "$ev_obj" since "$(jstr "$NOW")")"
+  ev_obj="$(obj_set "$ev_obj" lastAction "$(jstr "looking $NOW_LOCAL")")"
+  [ -n "$ev_obj" ] && state_set_xo "$st" "$ev_obj"
+
+  # NUMBER ONE'S ENGINE, RESOLVED ONCE, BEFORE ANYTHING IS SPAWNED (fix round 1,
+  # D3). It is needed by the LAUNCH below as well as by the worker rounds, and
+  # resolving it in two places is how the two could disagree.
+  local xo_engine=""
+  [ -n "${LCARS_WORKER_BIN:-}" ] || xo_engine="$(xo_engine_for "$st")"
+
+  # --- 1. THE CONTRACT, BEFORE THE BROWSER --------------------------------
+  local cbuilt=""
+  cbuilt="$("$XO_PY" "$SKILL_DIR/xo-criteria.py" "$dir" "$xodir/criteria.json" 2>&1)" || cbuilt=""
+  [ -f "$xodir/criteria.json" ] || die "could not build the criteria list for '$id' — the mission's record is unreadable."
+  printf '◈ NUMBER ONE: the contract first — %s.\n' "${cbuilt:-criteria written}"
+  journal "$dir" criteria "$(printf '"detail": %s' "$(jstr "${cbuilt:-criteria written}")")"
+
+  # --- 2. LAUNCH ------------------------------------------------------------
+  # Through launch.sh, the verb a human uses, with no --open-ish path anywhere
+  # near it. xo.sh NEVER writes inside the launch worktree: launch.sh's own
+  # checkout-clean audit dies on a dirty tree, and a first officer that dirtied
+  # it would break the next launch for everyone.
+  #
+  # THE LAUNCH INSPECTOR RUNS ON NUMBER ONE'S ENGINE (fix round 1, D3). launch.sh
+  # spawns a discovery worker of its own, and its ladder is env → state workerBin
+  # → `claude`. Unpinned, a `lcars xo on --engine copilot` therefore hired a
+  # CLAUDE inspector — billed spend under a Copilot first officer, and on an
+  # unauthenticated machine a perfectly good build scored LOW "could not launch".
+  # $LCARS_WORKER_BIN_INTERNAL=1 is the S202/S207 marker: it says LCARS set this,
+  # not the captain, so the MISSION's own provenance (`env` means he typed it)
+  # is untouched. Exported inside a SUBSHELL that wraps nothing but the spawn.
+  printf '◈ NUMBER ONE: launching the build…\n'
+  (
+    if [ -n "$xo_engine" ]; then
+      export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_LAUNCH_SCRIPT" "$id"
+  ) >"$xodir/launch.log" 2>&1 || true
+  local lstatus lurl lmsg
+  lstatus="$(json_field "$dir/launch.json" status)"
+  lurl="$(json_field "$dir/launch.json" url)"
+  lmsg="$(json_field "$dir/launch.json" message)"
+  if [ "$lstatus" != "running" ] || [ -z "$lurl" ]; then
+    # NO BROWSER AT ALL. There is nothing to point one at, and a verdict from a
+    # blank tab is worse than no verdict.
+    local why="could not launch: ${lmsg:-the build did not come up (status ${lstatus:-unknown})}"
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+      "$(jstr "$why")" "$(jstr "$why")" >"$xodir/verdict.json"
+    rm -f "$dir/xo.pid"; trap - TERM INT
+    xo_finish "$dir" low engaged "$why"
+    return 0
+  fi
+  printf '  the build is up at %s\n' "$lurl"
+  journal "$dir" launched "$(printf '"url": %s' "$(jstr "$lurl")")"
+
+  # From here on the app is RUNNING and must be stopped on every path out. The
+  # stopper is the FILE-LEVEL xo_stop_launch (fix round 1, D2) — the same one the
+  # EXIT and TERM traps call — so an abnormal exit stops the app exactly as an
+  # orderly one does. It used to be a function nested here, reachable only from
+  # the paths that remembered to call it.
+  XO_LAUNCH_STOPPED=0
+
+  # --- 3. ROUND 0 — the standard look --------------------------------------
+  # BACKGROUNDED AND WAITED ON (fix round 1, D2). A foreground child holds the
+  # trap's first opportunity to run until it finishes, so a TERM arriving during
+  # the look — which is where most of the wall clock goes — did nothing until the
+  # browser was already done. Backgrounded, the stand-down lands immediately and
+  # the trap kills the driver's whole tree, Chrome included.
+  local drc=0
+  "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
+    --place-names "$xodir/criteria.json" --prefix "shot" \
+    >"$xodir/drive-0.json" 2>"$xodir/drive-0.err" &
+  XO_DRIVE_PID=$!
+  wait "$XO_DRIVE_PID" || drc=$?
+  XO_DRIVE_PID=""
+  if [ "$drc" -eq 77 ]; then
+    local why="could not look: the browser could not be started ($(head -1 "$xodir/drive-0.err" 2>/dev/null))"
+    xo_stop_launch
+    rm -f "$dir/xo.pid"; trap - TERM INT
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+      "$(jstr "$why")" "$(jstr "$why")" >"$xodir/verdict.json"
+    xo_finish "$dir" low engaged "$why"
+    return 0
+  fi
+  journal "$dir" looked "$(printf '"round": 0, "shots": %s' \
+    "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')")"
+
+  # --- 4. THE WORKER ROUNDS ------------------------------------------------
+  local work input round=1 verdict="" out=""
+  work="$(mktemp -d)"; input="$work/input"
+  XO_WORK_DIR="$work"
+  mkdir -p "$input"
+  gather_inputs "$dir" "$input"
+  # THE WORKER IS HANDED ITS CONTRACT (fix round 1, D4). Number One escalated
+  # this against itself: "criteria.json and xo/shots/ were not in the Number One
+  # input directory. They were read from .git/lcars/… instead." Both copies were
+  # meant to be here — the criteria `cp` above was failing SILENTLY, because
+  # gather_inputs chmods the whole tree a-w and a read-only directory takes no
+  # new files. It worked only because claude's Read is unfenced by path; on a
+  # path-sandboxed engine that is the difference between a ledger and a guess.
+  # So: unlock, copy, re-lock. The shots (with the .json/.txt readout beside
+  # each) come too, and are re-synced every round because every round takes more.
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+
+  while [ "$round" -le "$XO_MAX_ROUNDS" ]; do
+    out="$work/round-$round"
+    mkdir -p "$out"
+    xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+    printf '◈ NUMBER ONE: round %s of %s — looking…\n' "$round" "$XO_MAX_ROUNDS"
+    (
+      export LCARS_XO_INPUT_DIR="$input"
+      # The SHOTS are granted as a second input dir: on copilot the adapter turns
+      # each line into an --add-dir, which is how the worker reaches the PNGs.
+      # The spike proved it reads them.
+      export LCARS_WORKER_INPUT_DIRS="$input
+$input/shots
+$shots"
+      if [ -n "$xo_engine" ]; then
+        export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
+      fi
+      exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+        --mission "$id" --mode evaluate --outdir "$out"
+    ) >/dev/null 2>&1 &
+    XO_SPIN_PID=$!
+    wait "$XO_SPIN_PID" 2>/dev/null || true
+    XO_SPIN_PID=""
+
+    if [ -s "$out/xo-verdict.json" ]; then
+      verdict="$out/xo-verdict.json"
+      break
+    fi
+    if [ -s "$out/xo-actions.json" ]; then
+      # MORE LOOKING. The cap is enforced HERE as well as in the driver: the
+      # driver drops the overflow, and this says so in the record, so a worker
+      # that asked for twenty actions can never look like it got them.
+      local nacts
+      nacts="$("$XO_PY" -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    d=d if isinstance(d,list) else d.get("actions",[])
+    print(len(d))
+except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
+      nacts="${nacts:-0}"
+      journal "$dir" actions \
+        "$(printf '"round": %s, "asked": %s, "cap": %s' "$round" "$nacts" "$XO_MAX_ACTIONS")"
+      drc=0
+      "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
+        --actions "$out/xo-actions.json" --place-names "$xodir/criteria.json" \
+        --max-actions "$XO_MAX_ACTIONS" --prefix "round$round" \
+        >"$xodir/drive-$round.json" 2>"$xodir/drive-$round.err" &
+      XO_DRIVE_PID=$!
+      wait "$XO_DRIVE_PID" || drc=$?
+      XO_DRIVE_PID=""
+      cp "$out/xo-actions.json" "$xodir/actions-$round.json" 2>/dev/null || true
+      journal "$dir" looked "$(printf '"round": %s, "driverExit": %s' "$round" "$drc")"
+      round=$((round + 1))
+      continue
+    fi
+    # Neither file. Nothing to act on and nothing to re-look at — another round
+    # with identical inputs would only buy the same silence again.
+    journal "$dir" silent "$(printf '"round": %s' "$round")"
+    round=$((round + 1))
+  done
+
+  xo_stop_launch
+  rm -f "$dir/xo.pid"; trap - TERM INT
+
+  local shotlist
+  shotlist="$(ls "$shots"/*.png 2>/dev/null | sed 's|.*/||; s|\.png$||' | tr '\n' ' ' | sed 's/ $//')"
+
+  if [ -z "$verdict" ]; then
+    # THREE ROUNDS, NO VERDICT. A judge that will not decide is not a pass.
+    local why="Number One could not reach a verdict in $XO_MAX_ROUNDS rounds"
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "sawShots": %s,\n  "summary": %s\n}\n' \
+      "$(jstr "$why")" "$(jstr "$shotlist")" \
+      "$(jstr "$why — it looked at: ${shotlist:-nothing}")" >"$xodir/verdict.json"
+    xo_finish "$dir" low engaged "$why — it looked at: ${shotlist:-nothing}"
+    xo_rm_work "$work"; XO_WORK_DIR=""
+    return 0
+  fi
+
+  # --- 5. THE SCORE IS RECOMPUTED FROM THE LEDGER --------------------------
+  local report
+  report="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
+              "$xodir/verdict.json" 2>/dev/null)" || report=""
+  local score="" wscore="" disagreed="" why="" summary="" line key val
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%%$'\t'*}"; val="${line#*$'\t'}"
+    case "$key" in
+      MALFORMED)    score=""; why="$XO_MALFORMED — $val" ;;
+      SCORE)        score="$val" ;;
+      WORKER_SCORE) wscore="$val" ;;
+      DISAGREED)    disagreed="$val" ;;
+      WHY)          why="$val" ;;
+      SUMMARY)      summary="$val" ;;
+      NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
+    esac
+  done <<< "$report"
+
+  if [ -z "$score" ]; then
+    # A verdict that cannot be read is not a verdict. It is a LOW that says so,
+    # and it stays engaged — the captain looks himself.
+    local mw="${why:-$XO_MALFORMED}"
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+      "$(jstr "$mw")" "$(jstr "$mw")" >"$xodir/verdict.json"
+    xo_finish "$dir" low engaged "$mw"
+    xo_rm_work "$work"; XO_WORK_DIR=""
+    return 0
+  fi
+
+  # THE DISAGREEMENT IS JOURNALED, ALWAYS. The ledger already won — this line is
+  # how anyone can see that it did, and by how much.
+  if [ "$disagreed" = "yes" ]; then
+    journal "$dir" score-overruled \
+      "$(printf '"workerScore": %s, "ledgerScore": %s, "derivation": %s' \
+           "$(jstr "$wscore")" "$(jstr "$score")" "$(jstr "$why")")"
+    printf '  Number One scored this %s; the ledger says %s, and the ledger decides.\n' \
+      "$wscore" "$score"
+  fi
+
+  # --- 7. THE RECORD --------------------------------------------------------
+  # A HIGH finishes the first officer's work on this Mission. Anything else
+  # leaves it ENGAGED — there are gaps, and S204 is the round that acts on them.
+  local status=engaged
+  [ "$score" = "high" ] && status=finished
+  xo_finish "$dir" "$score" "$status" "${summary:-$why}"
+  xo_rm_work "$work"; XO_WORK_DIR=""
+  return 0
+}
+
 case "${1:-status}" in
   on)     shift; cmd_on "$@" ;;
   off)    shift; cmd_off "$@" ;;
   status) shift; cmd_status ;;
   answer) shift; cmd_answer "$@" ;;
+  evaluate) shift; cmd_evaluate "$@" ;;
   -h|--help|help)
     sed -n '3,12p' "$SELF" | sed 's/^# \{0,1\}//' ;;
-  *)      die "unknown verb: $1 (want: on | off | status | answer)" ;;
+  *)      die "unknown verb: $1 (want: on | off | status | answer | evaluate)" ;;
 esac

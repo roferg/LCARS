@@ -14872,6 +14872,17 @@ spawn_number_one() { # mission-id  mode  outdir
   if [ -n "$indir" ] && [ -d "$indir" ]; then
     inventory="$(cd "$indir" && find . -type f | sed 's|^\./|  - |' | sort)"
   fi
+  # THE OUTPUT FILE IS THE MODE'S, NOT THIS FUNCTION'S (S203). `answer` writes
+  # one file and only one. `evaluate` writes ONE OF TWO — a verdict, or a
+  # request to look further — and naming the wrong one here is how a worker
+  # that wanted another round silently produces nothing at all.
+  local outfiles
+  case "$mode" in
+    evaluate) outfiles="Write EXACTLY ONE of these two files:
+  - $outdir/xo-verdict.json   you have seen enough, and this is your verdict
+  - $outdir/xo-actions.json   you want to look further (at most 12 actions)" ;;
+    *)        outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
+  esac
   local extra="## The mission
 Mission id: $id
 
@@ -14883,7 +14894,7 @@ COPIES; nothing you do can change the mission. Read them with your read tools.
 ${inventory:-  (the input directory is empty — say so, and ESCALATE)}
 
 ## Your output file
-Write EXACTLY ONE file: $outdir/xo-answer.json"
+$outfiles"
   LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" number-one "$outdir" "$extra"
 }
 
@@ -18079,6 +18090,9 @@ drive_verify() { # accumulated-summary
       fi
       # Still open — in review. Halt, but do NOT re-ping (one ping at open time).
       emit_event gate verify "in review — PR open"
+      # S203 — …and if Number One has the conn and has not looked yet, it looks
+      # now, DETACHED, so this halt still returns the terminal immediately.
+      drive_number_one_verify || true
       mirror_comments || true
       drive_print_summary "$summary"
       drive_halt_in_review "$pr"
@@ -18112,6 +18126,10 @@ drive_verify() { # accumulated-summary
 
   # PR opened — fire the ONE notification and halt "in review".
   emit_event gate verify "PR opened — review & merge"
+  # S203 — the first officer's look starts HERE, on the pass that opened the PR,
+  # and detached (see drive_number_one_verify): the notification and the halt
+  # below must not wait on a browser.
+  drive_number_one_verify || true
   mirror_comments || true
   drive_print_summary "$summary"
   printf 'verify       ✓  PR opened — %s\n' "$pr2"
@@ -18622,6 +18640,90 @@ drive_number_one_gate() {
   local rc=0
   bash "$XO_SCRIPT" answer --mission "$MISSION_ID" || rc=$?
   return "$rc"
+}
+
+# === THE VERIFY HOOK (S203) ================================================
+# When a Mission reaches Verify with a PR open, Number One LOOKS: it launches the
+# build, walks it headless against the PRD and the drawing, and scores the intent
+# match. Two call sites in `drive_verify` — the pass that JUST opened the PR and
+# the pass that finds one already open — because a mission can reach "in review"
+# by either road and the look is owed on both.
+#
+# DETACHED, ALWAYS. `setsid`/`nohup` with the pid in `xo.pid`, because the look
+# takes minutes (a launch, a browser, up to three worker rounds) and the driver's
+# halt is what hands the captain his terminal back. A foreground spawn here would
+# park `lcars run` behind a browser — and the captain's ruling (2026-09-13) is
+# that Number One never takes his focus. A detached child, a headless Chrome and
+# a notification that does not raise a window are the three halves of that.
+#
+# IDEMPOTENT ON evaluatedAt, HERE AS WELL AS IN xo.sh. The verb refuses a second
+# look on its own, but a driver that spawned it anyway would start a browser and
+# a launch before the verb got as far as refusing; the guard has to be on the
+# side that decides to spend.
+#
+# AND NEVER A BUG CHILD. A logged bug's fix folds onto its PARENT's branch and it
+# has no PR of its own (Mission logs' Model A), so there is no build of its own to
+# look at — looking would score the parent's build a second time and label the
+# child with it. `drive_verify` short-circuits bug children before it ever gets
+# here; this says so a second time because the guard is cheap and the mistake is
+# not.
+#
+# ONE MORE PID FILE, NOT A LOCK. `xo.pid` is what `lcars xo off <id>` reads to
+# stand a look down mid-flight; a live pid in it also means a look is already
+# running, so the hook does not start a second.
+drive_number_one_verify() {
+  [ "${LCARS_XO_DRIVE:-1}" = "0" ] && return 1     # kill-switch, as every S202 seam has
+  [ -f "$XO_SCRIPT" ] || return 1
+  [ "$(drive_xo_field status)" = "engaged" ] || return 1
+  # A bug child has no build of its own — see the header.
+  local parent; parent="$(json_str "$STATE" parentMission)"
+  [ -n "$parent" ] && [ "$parent" != "null" ] && return 1
+  # ALREADY LOOKED — the one fact that makes a second look pure spend.
+  [ -n "$(drive_xo_field evaluatedAt)" ] && return 1
+  # …or looking right now. A recorded pid that is still alive is a look in
+  # flight; a stale one (the box rebooted, the look was killed) is not, and is
+  # simply overwritten by the child below.
+  local pidfile="$MISSION_DIR/xo.pid" live
+  if [ -f "$pidfile" ]; then
+    live="$(head -1 "$pidfile" 2>/dev/null | tr -dc '0-9')"
+    [ -n "$live" ] && kill -0 "$live" 2>/dev/null && return 1
+  fi
+  local log="$MISSION_DIR/xo/evaluate.log"
+  mkdir -p "$MISSION_DIR/xo"
+  # `setsid` where the box has it (Linux) puts the look in its OWN session, so
+  # nothing that happens to the captain's terminal reaches it. macOS has no
+  # setsid, and there `nohup` + `disown` is the honest best: the look survives
+  # the terminal closing and the driver exiting, and it is said plainly here
+  # rather than claimed as a full session detach it is not.
+  #
+  # WHAT IS NOT DONE, AND WHY. The obvious extra — `trap "" INT TERM` in a
+  # wrapper subshell — would detach it from a ^C on macOS too, and it would
+  # also make the look UNKILLABLE: bash cannot trap a signal it inherited as
+  # ignored, so `lcars xo off <id>`'s stand-down (xo.sh traps TERM/INT to stop
+  # Chrome and the launch) would stop working. A look the captain cannot stand
+  # down is worse than one a ^C can end.
+  #
+  # STDIN IS /dev/null on both paths: a detached child that inherits a terminal
+  # can stop the whole job on a read, which is the loudest possible way to take
+  # the captain's focus.
+  local child=""
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+      </dev/null >"$log" 2>&1 &
+    child=$!
+  else
+    nohup bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+      </dev/null >"$log" 2>&1 &
+    child=$!
+  fi
+  disown "$child" 2>/dev/null || disown 2>/dev/null || true
+  # The pid, for `lcars xo off <id>`. xo.sh REPLACES this with its own `$$` the
+  # moment it starts — that is the authoritative one, and this is what stands in
+  # for the fraction of a second before it does (and what says "a look is in
+  # flight" to the guard above).
+  printf '%s\n' "$child" >"$pidfile"
+  printf '◈ NUMBER ONE: looking at the build — it will score the intent match and report on the issue.\n'
+  return 0
 }
 
 cmd_drive() {

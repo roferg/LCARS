@@ -642,6 +642,21 @@ cm_render_number_one() {
     printf '\n> **This one is yours.** %s\n' "$note"
   fi
 
+  # ◈ THE FIRST OFFICER'S REPORT ON THE BUILD (S203). One rendering, not two:
+  # xo-score.py writes `xo/report.md` out of the same verdict it writes
+  # `xo/verdict.json` from, and this includes it VERBATIM. A second renderer
+  # here would be a second way for the ledger on the issue and the ledger on
+  # disk to disagree, and the whole point of the ledger is that it is checkable.
+  #
+  # SHOT NAMES, NOT IMAGES. GitHub has no comment-image upload API and the PNGs
+  # never leave the laptop that took them (ruling, ledgered) — so the report
+  # names each shot and says in words what it showed.
+  if [ -s "$MISSION_DIR/xo/report.md" ]; then
+    printf '\n### The Verify look\n\n'
+    cat "$MISSION_DIR/xo/report.md"
+    printf '\n'
+  fi
+
   # THE LAST ANSWER AND THE LINE THAT SETTLED IT. An answer without its grounds
   # is exactly what the round refuses to produce, so the report shows both.
   local line lastans=""

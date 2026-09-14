@@ -23,6 +23,7 @@ bash skills/lcars-xo/xo.sh off                      # stand the repo down
 bash skills/lcars-xo/xo.sh off <mission>            # opt ONE mission out
 bash skills/lcars-xo/xo.sh on  <mission>            # clear that opt-out
 bash skills/lcars-xo/xo.sh answer --mission <id>    # take the park (S202)
+bash skills/lcars-xo/xo.sh evaluate --mission <id>  # the Verify look (S203)
 ```
 
 The front door routes `lcars xo …` here through an explicit delegator in
@@ -80,6 +81,84 @@ The model is the captain's Opus pin: the S194 write floor
 (`write_capable_alias` → `modelAliases.copilot.opus`, default
 `claude-opus-4.8`), overridable by config `numberOne.model`, outranked by
 `LCARS_WORKER_MODEL`. The prompt is `skills/lcars-xo/prompts/answer.md`.
+
+## `evaluate` — the Verify look (S203)
+
+The Mission has a PR open and is parked at Verify. `evaluate` launches the
+build, walks it in a **headless** browser, compares it against a contract
+written before it looked, and scores the intent match.
+
+The order is the contract:
+
+1. **`xo/criteria.json` FIRST, before any browser.** The PRD's acceptance
+   criteria (marked `primary`), the plan's per-ticket criteria with their
+   `drawnAt` / `notDrawn` / `notVisual`, and the drawing's place names. A judge
+   that writes its checklist after looking writes a checklist of what it
+   happened to notice.
+2. **`launch.sh <id>`.** If the build does not come up, the score is **LOW**
+   quoting the launch message — and **no browser is started at all**.
+3. **Round 0** — `xo-drive.js` takes the whole page plus one clipped shot per
+   place the drawing names. Every PNG gets a paired `.json` readout and a
+   one-line `.txt` caption.
+4. **Up to three worker rounds.** Each round Number One writes EITHER
+   `xo-actions.json` (it wants to look further — at most 12 actions, every
+   screenshot named) OR `xo-verdict.json`. No verdict by the end of round three
+   is a **LOW** that lists what it saw.
+5. **The score is RECOMPUTED from the ledger** (`xo-score.py`). The model
+   reasons; the skill decides:
+
+   | the ledger | the score | |
+   |---|---|---|
+   | a contradicted PRIMARY (PRD) criterion | **LOW** | the stated goal is not met |
+   | any other contradiction | **MEDIUM** | the flow works; read the gaps |
+   | any UNTESTED, everything else met | **MEDIUM** | *not* HIGH — "could not see it" is not "it is fine" |
+   | every criterion met | **HIGH** | ship as is |
+
+   **A worker score that disagrees with its own ledger is overwritten, and the
+   disagreement is journaled** (`score-overruled`). Both scores stay in
+   `xo/verdict.json`.
+6. **`launch.sh <id> --stop`** — on every path out.
+7. **The record:** `xo/verdict.json`, `xo/report.md` (what the living comment
+   includes), journal lines, `numberOne.score`, status `finished` (a HIGH) or
+   `engaged` (gaps → S204), and the score **LABEL** `lcars:xo:<score>` with the
+   other two removed. One source per fact: the label is the score, the comment
+   is the report.
+
+   The four `lcars:xo:*` labels are part of `lcars init`'s canonical set, and
+   the swap **ensures its own family first** (host adapter `label-ensure`) so a
+   repo initialized before this round does not silently lose the verdict to a
+   label the forge has never heard of. `lcars update` fills them in too.
+
+`evaluate` is idempotent on `numberOne.evaluatedAt`, and a logged bug child
+(`parentMission`) is never evaluated — its parent carries the build.
+
+**The driver starts the look, detached.** `drive_verify` hands the build to
+`xo.sh evaluate` at both Verify halts — the pass that opens the PR and the pass
+that finds one already open — as a `setsid`/`nohup` child with its pid in
+`xo.pid`, so the halt returns the captain's terminal immediately. Same two
+guards on the driver's side (`evaluatedAt`, `parentMission`), because a spawn
+that only refuses *inside* the verb has already paid for a launch and a browser.
+`LCARS_XO_DRIVE=0` turns the hook off.
+
+**The score travels.** Because it is a LABEL, a board on another laptop reads it
+off the one listing the remote poll already fetched (S191) and draws an
+`INTENT MATCH · HIGH|MEDIUM|LOW` pill — teal / amber / red, and labelled in full
+so it never reads as one of the card's two DIFFICULTY pills, whose HIGH means
+the opposite kind of news. `lcars:xo:engaged` carries the badge the same way.
+
+**It files nothing.** S203 finds and scores; S204 is the round that acts.
+
+### The captain's focus is never taken
+
+Captain's ruling, 2026-09-13. `xo-drive.js` launches Chrome **headless, always,
+with no flag and no environment variable that can raise a window** — not even
+`LCARS_BROWSER_HEADED`, which is a test affordance for the board's eyeball legs
+and must never become a product path. Nothing here opens a tab, an app window or
+a file for the captain: `launch.sh` starts the app on a port and returns a url,
+and the only thing that ever visits that url is Number One's own headless
+Chrome, in a throwaway profile, TERMed by its own pid on the way out.
+`tests/drives/s203/drive-rig.sh` asserts it by reading the frontmost application
+before and after a whole real drive.
 
 ## The engine picker
 
