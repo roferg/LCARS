@@ -1244,10 +1244,20 @@ check "B10i. …so lcars update fills them in on a repo that predates them" \
 # --------------------------------------------------------------------------
 check "B10f2. the report fragment the living comment includes was written" \
   "[ -s '$mF/xo/report.md' ]"
+# THE TABLE IS STILL MACHINE-READABLE; ITS HEADER IS NOW WRITTEN TO HIM.
+# "Intent match" and "Criterion" were the captain's two reports of 2026-09-13
+# ("I need more plain English in my report") arriving as column furniture. The
+# ROWS are asserted exactly as before — same ids, same (PRD) marker, same
+# MET/GAP/UNTESTED verdicts — because it is the prose around the table that
+# changed and the table itself that must not.
 check "B10f2. …with the per-criterion table, in full" \
-  "grep -q '| Criterion |' '$mF/xo/report.md' && grep -q 'prd-1 (PRD)' '$mF/xo/report.md' && grep -q 't-1-ac1' '$mF/xo/report.md'"
-check "B10f2. …the score and the DERIVATION that produced it" \
-  "grep -q 'Intent match: MEDIUM' '$mF/xo/report.md'"
+  "grep -q '| What you asked for |' '$mF/xo/report.md' && grep -q 'prd-1 (PRD)' '$mF/xo/report.md' && grep -q 't-1-ac1' '$mF/xo/report.md'"
+check "B10f2. …the rows still carry the machine verdicts, unchanged" \
+  "grep -qE '\| (MET|GAP|UNTESTED) \|' '$mF/xo/report.md'"
+check "B10f2. …the score and the DERIVATION that produced it, in his words" \
+  "grep -q 'How close this is to what you asked for: MEDIUM' '$mF/xo/report.md'"
+check "B10f2. …with the criterion ids AFTER the human sentence, never before it" \
+  "grep -q 'the main flow works' '$mF/xo/report.md'"
 check "B10f2. …and the gap, named with the SHOT that shows it (never an image)" \
   "grep -q 'ADD is above the list' '$mF/xo/report.md' && grep -q 'shot-02' '$mF/xo/report.md'"
 check "B10f2. a path with no ledger still owes the captain a sentence" \

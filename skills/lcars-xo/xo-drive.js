@@ -81,6 +81,29 @@ const TIMEOUT = parseInt(arg("timeout", "30000"), 10) || 30000;
 const MAX_ACTIONS = parseInt(arg("max-actions", "12"), 10) || 12;
 const ATTACH_PORT = arg("devtools-port", "");
 const PREFIX = arg("prefix", "shot");
+/* ── THE SHOT HAS TO BE SHARP (captain's ruling, 2026-09-13) ────────────────
+ * In his words: *"the images are very pixely"*.
+ *
+ * Every shot up to S203 was captured at device scale factor 1, so a crop of
+ * 665 CSS px was a 665-PIXEL png. The captain reads the walkthrough on a phone
+ * whose column is ~334 CSS px across but ~1000 physical pixels deep; a 665 px
+ * png is UPSCALED to fill it, and upscaling is what "pixely" looks like.
+ *
+ * So the browser is told to render at a real device scale factor and the same
+ * 665 CSS px of content comes back as a ~1330-pixel png that DOWNSAMPLES on
+ * his phone instead of stretching. 2 is the default because it clears a 3x
+ * phone at the half-size the page lays a shot out at; --scale 3 costs a little
+ * more png and is there for a caller who wants it. Clamped to 1..4: a scale of
+ * 0 is a blank image and a scale of 9 is a 16 MB page.
+ *
+ * THIS IS NOT THE HEADLESS SWITCH. It changes how many pixels the raster has,
+ * never whether a window exists; chromeArgv is still the only place the
+ * browser's flags are built and `--headless=new` is still unconditional there. */
+const SCALE = (() => {
+  const v = parseFloat(arg("scale", "2"));
+  if (!isFinite(v) || v <= 0) return 2;
+  return Math.min(4, Math.max(1, v));
+})();
 
 /* Codes as constants so the tests can name them and the code cannot drift. */
 const EXIT_OK = 0, EXIT_PRODUCT = 1, EXIT_INCOMPLETE = 3, EXIT_INFRA = 77;
@@ -127,8 +150,25 @@ function readActions(file) {
  * an app on. So every PNG is decoded here (node's own zlib, no dependency) and
  * reported: distinct colours, the dominant colour and its share, the mean
  * channels. `painted` is the honest summary of those numbers.
- * Lifted, unchanged in substance, from the S203 probe that proved it. */
-function pngStats(buf) {
+ * Lifted, unchanged in substance, from the S203 probe that proved it.
+ *
+ * ── THE INK FLOOR MOVES WITH THE SCALE (2026-09-13) ──
+ * `painted` used to be `distinct > 8 && nonDominantFraction > 0.01`, a floor
+ * calibrated on 1x rasters. Capturing at a real device scale factor makes the
+ * SAME element measure LESS ink, because at 1x a 14 px glyph is mostly
+ * antialiasing fringe and every fringe pixel counts as non-dominant, while at
+ * 2x the strokes resolve and the fraction falls towards the true coverage.
+ * Measured on the S203 rig's own `#task-list` — three lines of text in a wide
+ * box — nonDominantFraction went 0.0105 (1x) → 0.0081 (2x) → 0.0073 (3x) with
+ * the picture unchanged and plainly legible. A fixed 0.01 floor therefore calls
+ * a perfectly painted element FLAT the moment the shot gets sharper, and a flat
+ * shot is exit 1: an ACCUSATION AGAINST THE APP for something the driver did.
+ * So the floor is divided by the scale the shot was taken at. A genuinely blank
+ * frame is still caught by both halves — one colour is one colour at any
+ * density, and `distinctColours > 8` does not move at all. */
+const FLAT_FLOOR_AT_1X = 0.01;
+function pngStats(buf, scale) {
+  const floor = FLAT_FLOOR_AT_1X / Math.max(1, scale || 1);
   if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) throw new Infra("not a PNG");
   let off = 8, w = 0, h = 0, depth = 0, ctype = -1, interlace = 0;
   const idat = [];
@@ -179,7 +219,8 @@ function pngStats(buf) {
     dominantFraction: +(topN / n).toFixed(4),
     nonDominantFraction: +(1 - topN / n).toFixed(4),
     mean: { r: Math.round(sr / n), g: Math.round(sg / n), b: Math.round(sb / n) },
-    painted: counts.size > 8 && (1 - topN / n) > 0.01,
+    painted: counts.size > 8 && (1 - topN / n) > floor,
+    inkFloor: +floor.toFixed(5),
   };
 }
 
@@ -381,6 +422,24 @@ const TYPE = (sel, text) => `(function () {
   await send("Log.enable", {}, S);
   await send("Page.enable", {}, S);
 
+  /* The device scale factor, set ONCE for the whole look so every shot — the
+   * full-page ones and the clipped ones alike — comes back at the same real
+   * resolution. width/height 0 means "override nothing but the scale": the
+   * page still lays out at the 1440x900 window chromeArgv asked for, so a
+   * selector's box is the same CSS box it always was, and only the raster
+   * behind it gets denser. A browser too old to know the command is not a
+   * reason to abandon the look, so a failure here is recorded and the shots
+   * are taken at whatever it does give. */
+  let scaleApplied = SCALE;
+  try {
+    await send("Emulation.setDeviceMetricsOverride",
+      { width: 0, height: 0, deviceScaleFactor: SCALE, mobile: false }, S);
+  } catch (e) {
+    scaleApplied = 1;
+    notes.push("this browser refused a device scale factor of " + SCALE +
+               " (" + e.message + "); the shots are at whatever it renders natively");
+  }
+
   let currentUrl = URL_;
   async function navigate(u) {
     currentUrl = u;
@@ -453,11 +512,14 @@ const TYPE = (sel, text) => `(function () {
     const png = path.join(OUT, name + ".png");
     fs.writeFileSync(png, buf);
     let pixels = null;
-    try { pixels = pngStats(buf); } catch (e) { pixels = { error: e.message, painted: false }; }
+    try { pixels = pngStats(buf, scaleApplied); } catch (e) { pixels = { error: e.message, painted: false }; }
     fs.writeFileSync(path.join(OUT, name + ".json"), JSON.stringify({
       shot: name, file: png, capturedAt: new Date().toISOString(),
       selector: selector || null, clip: clip || "full-page",
       note: clipNote || undefined,
+      // The scale the raster was taken at, so a reader of this file can divide
+      // the pixel width back into the CSS width it actually shows.
+      deviceScaleFactor: scaleApplied,
       pixels, page,
     }, null, 2) + "\n");
     // The caption is what the REPORT quotes. Screenshots do not travel between
@@ -465,7 +527,9 @@ const TYPE = (sel, text) => `(function () {
     fs.writeFileSync(path.join(OUT, name + ".txt"),
       name + " — " + (selector && clip ? "clipped to " + selector : "full page") +
       " of " + (page.url || currentUrl) +
-      " (" + (pixels.width || "?") + "x" + (pixels.height || "?") + "), " +
+      " (" + (pixels.width || "?") + "x" + (pixels.height || "?") + " px at " +
+      scaleApplied + "x, " +
+      (pixels.width ? Math.round(pixels.width / scaleApplied) : "?") + " CSS px wide), " +
       (pixels.distinctColours || 0) + " distinct colours, " +
       (pixels.painted ? "PAINTED" : "FLAT/BLANK") +
       (page.title ? ', title "' + page.title + '"' : "") +

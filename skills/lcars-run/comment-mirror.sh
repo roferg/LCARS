@@ -652,7 +652,7 @@ cm_render_number_one() {
   # never leave the laptop that took them (ruling, ledgered) — so the report
   # names each shot and says in words what it showed.
   if [ -s "$MISSION_DIR/xo/report.md" ]; then
-    printf '\n### The Verify look\n\n'
+    printf '\n### What I saw when I looked at the build\n\n'
     cat "$MISSION_DIR/xo/report.md"
     printf '\n'
   fi

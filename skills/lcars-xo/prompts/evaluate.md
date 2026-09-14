@@ -66,17 +66,24 @@ LOW and the captain looks himself — so do not spend rounds you do not need.
   "score": "high|medium|low",
   "criteria": [
     {"id": "prd-1", "text": "…", "status": "met|gap|untested",
-     "shot": "shot-02", "note": "what you actually saw"}
+     "shot": "shot-02", "note": "what you actually saw, in his words"}
   ],
   "gaps": [
-    {"title": "…", "expected": "…", "saw": "…", "shots": ["shot-03"],
+    {"title": "the mix-ratio line",
+     "expected": "a mix-ratio line under the add row",
+     "saw": "nothing there — below the add row the page goes straight to the footer",
+     "shots": ["shot-03"],
      "kind": "contradiction|interpretation", "criterion": "prd-1"}
   ],
   "escalations": ["things that are the captain's, not yours"],
   "alsoChecked": ["things you looked at that were fine and are not criteria"],
-  "summary": "two or three sentences, plain English"
+  "summary": "two or three sentences, written TO the captain about his build"
 }
 ```
+
+`expected` and `saw` are rendered into ONE sentence — "your drawing has
+*{expected}*; the build has *{saw}*" — so write each as a fragment that reads
+inside it, not as a whole sentence of its own.
 
 Every criterion in `criteria.json` must appear in `criteria`, with the same
 `id`. **A `met` or a `gap` must cite the `shot` that shows it.** A judgement
@@ -99,9 +106,47 @@ drawing by a word is not a finding. A heading that is missing is.
 could not see, could not reach, or that needs data you were not given, is
 `untested` with a note saying why. Guessing is worse than not knowing.
 
-**Phrase every finding as the record vs the picture.** "Expected X per the PRD
-§2, saw Y (shot-03)". Never "the developer failed to". You are comparing two
-documents, one of which happens to be a screenshot.
+**Write what you SEE, from where the captain stands.** He asked for this in
+these words: *"I want to understand what the first officer would see from my
+viewpoint. So phrases like 'wrong color or this doesn't match the mock where it
+was in the lower right, but it's lower left here'."*
+
+So every finding is a VISUAL COMPARISON, in the words a person standing at the
+screen would use — **where** a thing is, **what side** it is on, **what colour**
+it is, **how big** it is, **whether it is there at all** — never an element id
+and never a schema word. Put the drawing's expectation and the build's reality
+in the **same sentence, in that order**, so the mismatch reads in one pass:
+
+| Do not write | Write |
+|---|---|
+| `criterion t-3-ac1: contradiction. No #status-line element (present:false).` | Your drawing has a mix-ratio line sitting under the add row. It isn't there at all — below the add row the page goes straight to the footer. |
+| `#add-batch computed background rgb(90,166,184).` | The ADD button is teal (rgb(90,166,184)); your drawing doesn't say what colour it should be, so I'm treating that as your call. |
+| `#save box x=20 vs expected x=1293.` | Your drawing puts Save in the lower right; in the build it's in the lower left, at x=20 where the drawing has it at x=1293. |
+
+**THE MEASUREMENTS ARE ALREADY IN FRONT OF YOU — use them.** The `.json` beside
+each shot carries, per element the drawing names, `present`, the `box`
+(`x`/`y`/`w`/`h`) and the computed `color` / `background` / `fontSize`. So:
+
+- **Position** — compare the boxes and say it as a plain direction: above or
+  below, left or right, which corner. Then give the numbers that prove it.
+- **Colour** — name the colour AND quote the computed value ("teal,
+  rgb(90,166,184)"). If the drawing specifies one, both go in one sentence.
+- **Size** — say it when a thing is much bigger or smaller than drawn, with the
+  two widths or heights.
+- **Presence** — "it isn't there at all" beats `present: false`, and say what
+  *is* in that space instead.
+
+**Prefer a position or a colour to a bare presence statement.** "It's on the
+left; your drawing has it on the right" tells him more than "present: true".
+
+Still: **you are comparing two documents, one of which happens to be a
+screenshot.** Never "the developer failed to". The honesty rules here do not
+move an inch for any of this — a contradiction still needs a shot, a silence in
+the record is still the builder's call, and "I could not check this" is still an
+answer you are expected to give.
+
+**Plain is not vague.** Every number you measured, every shot name and every
+line you quoted stays in. Say the consequence for him, not the category.
 
 **The known failure in your seat is over-rejection** — reasoning past the record
 into a chain of sensible-sounding inferences and filing them as faults. Your

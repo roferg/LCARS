@@ -1125,9 +1125,9 @@ xo_finish() { # <mission-dir> <score> <status> <why>
   # could not be read) still owe the captain a sentence on his issue, so they
   # get this one. The living comment includes whichever was written.
   if [ ! -s "$dir/xo/report.md" ]; then
-    { printf '**Intent match: %s** — %s\n\n' \
+    { printf '**How close this is to what you asked for: %s** — %s\n\n' \
         "$(printf '%s' "$score" | tr '[:lower:]' '[:upper:]')" "$why"
-      printf 'There is no per-criterion ledger for this one: %s\n' "$why"
+      printf 'I have nothing item-by-item for this one: %s\n' "$why"
     } >"$dir/xo/report.md"
   fi
   journal "$dir" scored \

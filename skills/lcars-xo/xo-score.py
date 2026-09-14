@@ -67,6 +67,18 @@ def clip(text, n):
 # ONE FULL STOP, NOT TWO (fix round 1, D7). The gap bullet appends its own `.`
 # after the worker's `saw` text, and a worker that ended its sentence produced
 # `…(readout)..`. Strip a trailing stop from the fragment; the template adds it.
+def cite(g):
+    """The brackets at the end of a finding: the shot the captain can open, and
+    the criterion id, in that order. THE HUMAN SENTENCE COMES FIRST and the id
+    goes in the brackets after it (captain's ruling, 2026-09-13) — an id is for
+    a machine, and reading one first is reading the wrong thing first."""
+    bits = ["see " + ", ".join(g["shots"])] if g.get("shots") else ["no shot"]
+    cid = str(g.get("criterion") or "").strip()
+    if cid:
+        bits.append(cid)
+    return "; ".join(bits)
+
+
 def unstop(text):
     return (text or "").rstrip().rstrip(".")
 
@@ -138,8 +150,8 @@ def main():
             bad("a gap names no kind (want contradiction|interpretation)")
         shots = [str(s) for s in g.get("shots") or [] if str(s).strip()]
         if kind == "contradiction" and not shots:
-            notes.append("the gap %r was filed as a contradiction with no shot behind it; "
-                         "recorded as an interpretation instead — a finding with no picture "
+            notes.append("I called %r a mismatch but had no picture of it, so I have moved it "
+                         "to the calls-the-build-made list instead — a finding with no picture "
                          "is not evidence" % (str(g.get("title") or g.get("criterion") or "?")))
             kind = "interpretation"
         gg = dict(g)
@@ -186,9 +198,9 @@ def main():
             continue
         ledger.append({
             "id": cid, "text": str(c.get("text") or ""), "status": "untested",
-            "note": "Number One did not rate this criterion", "primary": cid in primary,
+            "note": "I never got to this one, so it is unchecked", "primary": cid in primary,
         })
-        notes.append("criterion %s was in the contract and was never rated" % cid)
+        notes.append("%s was on the list you gave me and I never rated it" % cid)
 
     # A contradiction naming a criterion that is no longer contradicted in the
     # ledger (downgraded above for want of a shot) must not still count.
@@ -201,29 +213,42 @@ def main():
     untested = sum(1 for e in ledger if e["status"] == "untested")
 
     # --- THE DERIVATION ------------------------------------------------------
+    # THE DERIVATION IS THE FIRST LINE THE CAPTAIN READS, on a phone, so it is
+    # written to him: what the build does to HIM, then the machine ids in
+    # brackets (captain's ruling, 2026-09-13 — "I need more plain English in my
+    # report"). Plain is not vague: every id and every count stays in the line.
     primary_hit = sorted(contradicted & primary)
     if primary_hit:
         score = "low"
-        why = ("a criterion the PRD itself states is contradicted by the build (%s) — "
-               "the stated goal is not met" % ", ".join(primary_hit))
+        why = ("the build does not do the %s the PRD itself asks for (%s). "
+               "What you set out to get is not there yet."
+               % ("thing" if len(primary_hit) == 1 else "things",
+                  ", ".join(primary_hit)))
     elif contradicted:
         score = "medium"
-        why = ("%d criteri%s contradicted (%s) but no PRD criterion is — the primary flow "
-               "works, the gaps are worth reading"
-               % (len(contradicted), "on is" if len(contradicted) == 1 else "a are",
+        why = ("the main flow works. %d thing%s in the build %s not match what you asked for "
+               "(%s), and none of them is from the PRD itself — worth reading before you merge."
+               % (len(contradicted), "" if len(contradicted) == 1 else "s",
+                  "does" if len(contradicted) == 1 else "do",
                   ", ".join(sorted(contradicted))))
     elif untested:
         score = "medium"
-        why = ("%d criteri%s could not be verified; nothing is contradicted. Not HIGH: "
-               "\"could not see it\" is not \"it is fine\""
-               % (untested, "on" if untested == 1 else "a"))
+        why = ("nothing in the build contradicts what you asked for, but there %s %d thing%s "
+               "on your list I could not check. I will not call a build good on the strength "
+               "of what I could not see."
+               % ("is" if untested == 1 else "are", untested,
+                  "" if untested == 1 else "s"))
     elif gap:
         score = "medium"
-        why = ("%d criteri%s reported as a gap, none of them a contradiction of the record "
-               "— reported, not filed against the build" % (gap, "on" if gap == 1 else "a"))
+        why = ("%d thing%s I am reporting as short of the mark, but %s contradicts anything "
+               "you wrote down — so I am showing you %s rather than filing %s against the "
+               "build." % (gap, "" if gap == 1 else "s",
+                           "it" if gap == 1 else "none of them",
+                           "it" if gap == 1 else "them",
+                           "it" if gap == 1 else "them"))
     else:
         score = "high"
-        why = "every criterion met, each with the shot that shows it"
+        why = "everything you asked for is in the build, and I have a picture of each one."
 
     out = {
         "score": score,
@@ -255,12 +280,15 @@ def main():
     with open(os.path.join(os.path.dirname(os.path.abspath(opath)), "report.md"),
               "w", encoding="utf-8") as fh:
         w = fh.write
-        w("**Intent match: %s** — %s\n\n" % (score.upper(), why))
+        w("**How close this is to what you asked for: %s** — %s\n\n" % (score.upper(), why))
         w(summary + "\n\n")
         if out["scoreDisagreed"]:
-            w("> Number One scored this %s. The score above is recomputed from its own\n"
-              "> ledger, and the ledger decides.\n\n" % worker_score.upper())
-        w("| Criterion | | Verdict | Evidence |\n|---|---|---|---|\n")
+            w("> I first called this %s. The line above is worked out again from my own\n"
+              "> notes below, and those notes win.\n\n" % worker_score.upper())
+        # THE TABLE STAYS MACHINE-READABLE: four columns, one row per criterion,
+        # the ids and the MET/GAP/UNTESTED marks exactly as they were. Only the
+        # two header words the captain reads are written to him.
+        w("| What you asked for | | Verdict | What I saw |\n|---|---|---|---|\n")
         mark = {"met": "MET", "gap": "GAP", "untested": "UNTESTED"}
         for e in ledger:
             w("| %s | %s | %s | %s |\n" % (
@@ -269,33 +297,40 @@ def main():
                 mark[e["status"]],
                 ((e.get("shot", "") + " — ") if e.get("shot") else "") +
                 clip(e["note"], 160).replace("|", "\\|")))
+        # ONE SENTENCE, BOTH HALVES OF THE MISMATCH. The captain asked to see
+        # what his first officer sees, from where he stands: *"phrases like
+        # 'wrong color or this doesn't match the mock where it was in the lower
+        # right, but it's lower left here'"*. So the drawing's expectation and
+        # the build's reality sit in the SAME sentence, in that order, and the
+        # machine id goes in the brackets at the end with the shot.
         real = [g for g in gaps if g["kind"] == "contradiction"]
         if real:
-            w("\n### Gaps — the record says one thing, the build shows another\n\n")
+            w("\n### Where the build does not match what you asked for\n\n")
             for g in real:
-                w("- **%s** — expected %s; saw %s. *(%s)*\n" % (
+                w("- **%s** — your drawing has %s; the build has %s. *(%s)*\n" % (
                     g.get("title", "?"), unstop(g.get("expected", "?")),
-                    unstop(g.get("saw", "?")),
-                    ", ".join(g["shots"]) or "no shot"))
+                    unstop(g.get("saw", "?")), cite(g)))
         interp = [g for g in gaps if g["kind"] == "interpretation"]
         if interp:
-            w("\n### Interpretations — the record is silent, the build chose\n\n")
-            w("Reported, not filed against the build.\n\n")
+            w("\n### Calls the build made that your drawing does not cover\n\n")
+            w("I am reading these as yours, not as faults.\n\n")
             for g in interp:
-                w("- **%s** — %s *(%s)*\n" % (
-                    g.get("title", "?"), unstop(g.get("saw", "?")),
-                    ", ".join(g["shots"]) or "no shot"))
+                w("- **%s** — the build has %s; your drawing does not say, so I am "
+                  "treating it as your call. *(%s)*\n" % (
+                      g.get("title", "?"), unstop(g.get("saw", "?")), cite(g)))
         blind = [e for e in ledger if e["status"] == "untested"]
         if blind:
-            w("\n### What it could not see\n\n")
+            w("\n### What I could not check\n\n")
             for e in blind:
-                w("- %s — %s\n" % (e["id"], e["note"] or "not verified"))
+                w("- %s — %s. *(%s)*\n" % (
+                    clip(e["text"], 120) or "this one",
+                    unstop(e["note"] or "I could not check this"), e["id"]))
         if out["alsoChecked"]:
-            w("\n**Also checked:** " + "; ".join(out["alsoChecked"]) + "\n")
+            w("\n**I also looked at:** " + "; ".join(out["alsoChecked"]) + "\n")
         if out["escalations"]:
-            w("\n**For you:** " + "; ".join(out["escalations"]) + "\n")
+            w("\n**These are yours to decide:** " + "; ".join(out["escalations"]) + "\n")
         if notes:
-            w("\n<details><summary>Ledger notes</summary>\n\n")
+            w("\n<details><summary>How I put this together</summary>\n\n")
             for n in notes:
                 w("- %s\n" % n)
             w("\n</details>\n")
