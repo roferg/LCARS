@@ -1457,6 +1457,59 @@ check "29c. the captain's own filing is renamed too (a control)" \
 check "29c. …and gets NO extra section — his wording does not move" \
   "! grep -q 'Which file is which' '$B46/prd.md'"
 
+# --- Behaviour 30 (S205 ruling 3): NO FALSE SUCCESS ------------------------
+# `file_one_bug` runs inside `ROWS+=("$(file_one_bug ...)")` — a command
+# substitution, hence a SUBSHELL. Its own `die` prints to stderr (which escapes
+# the substitution, so the captain still sees the validation error) and exits
+# the SUBSHELL, but that exit code was silently discarded and `ROWS+=` still
+# appended one (empty) row — so the loop always believed every PRD it was
+# handed had been filed, and the summary printed
+# "1 bug mission filed and linked to #42" with an empty id and a bare
+# "Run `lcars run ` to begin." even though `mkdir "$mdir"` never ran for that
+# bug (validation is checked BEFORE the mkdir). Cure: the parent must notice
+# the subshell's exit status and refuse to print a success summary it did not
+# earn.
+repo47="$(new_repo_with_parent)"; make_gh_stub "$repo47/gh"
+export GH_LOG="$repo47/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug47="$repo47/bad.md"
+cat >"$bug47" <<'EOF'
+**Type:** bug
+**Goal:** This PRD is missing its title line on purpose.
+**Acceptance Criteria:**
+- n/a
+EOF
+rc47=0
+( cd "$repo47" && LCARS_GH_BIN="$repo47/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug47" >out47.txt 2>out47.err ) || rc47=$?
+check "30. refuses (non-zero) on a PRD missing '# Mission:'" "[ '$rc47' -ne 0 ]"
+check "30. prints the validation error" \
+  "grep -q \"missing its '# Mission:' title line\" '$repo47/out47.err'"
+check "30. NEVER prints a false 'filed and linked' success line" \
+  "! grep -q 'filed and linked' '$repo47/out47.txt' '$repo47/out47.err'"
+check "30. NEVER prints the empty-id 'Run \`lcars run \`' line" \
+  "! grep -Eq 'Run .lcars run . to begin' '$repo47/out47.txt' '$repo47/out47.err'"
+check "30. files NOTHING — no bug mission dir was created" \
+  "! ls -d '$repo47/.git/lcars/missions/lcars-20260530-'*-c10e >/dev/null 2>&1"
+
+# 30b. A GOOD bug ahead of a bad one in the SAME invocation: the good one's
+# summary must still be honest about the one that failed — never silently
+# dropped into a report that claims full success.
+repo48="$(new_repo_with_parent)"; make_gh_stub "$repo48/gh"
+export GH_LOG="$repo48/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+good48="$repo48/good.md"; write_bug_prd "$good48" "A real bug" "Reproduces every time."
+bad48="$repo48/bad.md"
+cat >"$bad48" <<'EOF'
+**Type:** bug
+**Goal:** Missing title again.
+EOF
+rc48=0
+( cd "$repo48" && LCARS_GH_BIN="$repo48/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$good48" --prd "$bad48" >out48.txt 2>out48.err ) || rc48=$?
+check "30b. refuses (non-zero) when any bug in the batch is malformed" \
+  "[ '$rc48' -ne 0 ]"
+check "30b. never prints a false 'filed and linked' summary for the batch" \
+  "! grep -q 'filed and linked' '$repo48/out48.txt' '$repo48/out48.err'"
+
 # ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"

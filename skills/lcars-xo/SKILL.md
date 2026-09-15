@@ -26,6 +26,17 @@ bash skills/lcars-xo/xo.sh answer --mission <id>    # take the park (S202)
 bash skills/lcars-xo/xo.sh evaluate --mission <id>  # the Verify look (S203)
 bash skills/lcars-xo/xo.sh file-logs --mission <id> # file the gaps as logs (S204)
 bash skills/lcars-xo/xo.sh recheck --mission <id>   # re-look after the fixes (S204)
+bash skills/lcars-xo/xo.sh report [<mission>] [--all] [--seen]
+                                                     # the First Officer's report (S205):
+                                                     # since you last looked, then history,
+                                                     # folded per mission. Scope to one
+                                                     # mission's own journal by naming it;
+                                                     # --all shows every entry; --seen marks
+                                                     # it read (.git/lcars/xo-seen.json).
+                                                     # The board's own GET /api/xo/report and
+                                                     # POST /api/xo/seen read and write the
+                                                     # SAME record through the SAME builder
+                                                     # (skills/lcars-xo/xo-report.py).
 ```
 
 The front door routes `lcars xo …` here through an explicit delegator in
@@ -350,6 +361,25 @@ underneath it.
 A child that **parked** blocks all of it — `resolve-logs complete`'s
 completeness guard would refuse the whole batch — so `recheck` escalates
 "log #n needs you" **before** spending a launch, a browser or a worker.
+
+**AN ACCEPT IS FINAL (captain's ruling, S205, 2026-09-14).** Once
+`numberOne.status` is recorded `finished` — the terminal state BOTH a clean
+first look and a successful `recheck` leave behind — a further `recheck` is
+**refused, verbatim, before a look name is even minted**: *"I've already
+handed this one back — the PR is yours."* Wanting a fresh opinion after
+changing the branch is a deliberate restart (stand it down, re-engage), never
+a second call to `recheck` on a mission it already closed out.
+
+**`recheck` FETCHES — it never trusts the local branch alone (captain's
+ruling, S205, 2026-09-14).** Before relaunching, it fetches the mission's
+branch from `origin` (best-effort — no remote, no network, or no recorded
+branch never blocks the look) and fast-forwards the LOCAL branch ref when that
+is safe (origin moved past local, no local-only work). When it cannot — the
+histories have diverged, or origin is unreachable — it never force-resets (the
+same data-loss `reconcile_sync_local_branch` in `run.sh` was written to stop);
+it says, plainly, which commit it is about to look at instead. Either way the
+captain never gets a confident "every fix held" against a branch this process
+never actually looked at. See `xo_recheck_branch_report` in `xo.sh`.
 
 ### Which gate is this? The record says, not the prose
 

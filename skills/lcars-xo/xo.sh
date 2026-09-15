@@ -19,6 +19,14 @@
 #                                     drive them
 #   lcars xo recheck --mission <id>   after the fixes land: relaunch, look again
 #                                     gap by gap, accept what holds, re-score
+#   lcars xo report [#n] [--all] [--seen]
+#                                     the First Officer's report: what is new
+#                                     since you last looked, then history,
+#                                     folded per mission — nothing is ever
+#                                     deleted. `#n` (or a mission id) scopes
+#                                     it to one mission's own journal; --all
+#                                     shows every entry, not just the recent
+#                                     ones; --seen marks it read
 #
 # THE DIVISION OF LABOUR (captain ruling, 2026-09-11): the worker REASONS, the
 # skill EXECUTES. Nothing in this file asks a model anything. It writes two
@@ -65,6 +73,11 @@ COMMON="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
 . "$COMMON"
 
 OWNERSHIP_LIB="${LCARS_OWNERSHIP_LIB:-$SKILL_DIR/../lcars-run/ownership.sh}"
+
+# The git binary — stubbable, same convention as run.sh (S205 ruling 2:
+# `xo recheck` must not silently trust a stale local branch — see
+# `xo_recheck_sync_branch` below).
+GIT_BIN="${LCARS_GIT_BIN:-git}"
 
 # --- locate .git/lcars ------------------------------------------------------
 GIT_DIR="$(git rev-parse --git-common-dir 2>/dev/null)" \
@@ -523,8 +536,12 @@ cmd_status() {
     st="$MISSIONS_DIR/$m/state.json"
     [ -f "$st" ] || continue
     if [ "$any" -eq 0 ]; then
-      printf '\n  %s %s %s %s\n' "$(col MISSION 26)" "$(col STAGE 13)" \
-        "$(col 'NUMBER ONE' 12)" NOTE
+      # S205: SCORE, between NUMBER ONE and NOTE — the latest look's intent
+      # match (score2 once a recheck has run, else the first score), so the
+      # table answers "how close is it" without opening a card. Inserted, not
+      # appended: NOTE stays the last, un-padded column exactly as before.
+      printf '\n  %s %s %s %s %s\n' "$(col MISSION 26)" "$(col STAGE 13)" \
+        "$(col 'NUMBER ONE' 12)" "$(col SCORE 8)" NOTE
       any=1
     fi
     obj="$(state_xo_block "$st")"
@@ -532,8 +549,10 @@ cmd_status() {
     note="$(obj_get "$obj" note)"
     case "$obj" in *'"optOut": true'*) [ -n "$status" ] || status="opted-out" ;; esac
     stage="$(mission_stage "$st")"
-    printf '  %s %s %s %s\n' "$(col "$m" 26)" "$(col "${stage:-?}" 13)" \
-      "$(col "${status:-—}" 12)" "${note:-—}"
+    score="$(obj_get "$obj" score2)"
+    [ -n "$score" ] || score="$(obj_get "$obj" score)"
+    printf '  %s %s %s %s %s\n' "$(col "$m" 26)" "$(col "${stage:-?}" 13)" \
+      "$(col "${status:-—}" 12)" "$(col "${score:-—}" 8)" "${note:-—}"
   done <<< "$(all_missions)"
   [ "$any" -eq 1 ] || printf '\n  No missions in this repo yet.\n'
 }
@@ -1840,6 +1859,66 @@ cmd_file_logs() {
   file_logs_for "$id" "$dir"
 }
 
+# xo_recheck_branch_report <state.json> — S205 ruling 2, 2026-09-14.
+#
+# `xo recheck` used to relaunch straight from whatever the LOCAL checkout
+# happened to hold, and never fetched — so a branch that had moved anywhere
+# else (a fix pushed from another machine, a captain who force-pushed a
+# rebase) got a confident, WRONG "every fix held". S204's own round-3 tester
+# had to `git fetch origin` BY HAND before its sabotage even reached the
+# product. A false "held" is the same family of defect as the evidence-
+# contamination bug S204 cured: both make Number One certify something it did
+# not actually see.
+#
+# Sets two globals the caller prints and journals:
+#   XO_RECHECK_SHA    the short commit this look is ABOUT to examine
+#   XO_RECHECK_NOTE   one plain sentence: what the fetch found (or why it
+#                     could not happen), always true, never a guess
+#
+# Best-effort throughout — a repo with no `origin`, no network, or no
+# recorded branch never blocks the look; it just means this can only say
+# which LOCAL commit it examined, honestly, rather than pretending to have
+# checked upstream.
+#
+# ONLY EVER FAST-FORWARDS. When origin has moved PAST the local branch with
+# no local-only work, the local ref is brought up to date (the ordinary case
+# S204 hit — a fix pushed elsewhere). When the local branch carries commits
+# origin does not have, or the two have diverged, this NEVER force-resets —
+# that is exactly the data-loss `reconcile_sync_local_branch` (run.sh) was
+# written to stop — it says so instead, by name, so the report is honest
+# about what it is (and is not) looking at.
+xo_recheck_branch_report() {
+  local st="$1" branch local_before local_after remote
+  XO_RECHECK_SHA=""
+  XO_RECHECK_NOTE=""
+  branch="$(json_field "$st" branch)"
+  if [ -z "$branch" ]; then
+    XO_RECHECK_NOTE="no branch is recorded for this mission — looking at whatever this checkout resolves to locally."
+    XO_RECHECK_SHA="$("$GIT_BIN" rev-parse --short HEAD 2>/dev/null)"
+    return 0
+  fi
+  local_before="$("$GIT_BIN" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"
+  if "$GIT_BIN" fetch origin "$branch" --quiet 2>/dev/null; then
+    remote="$("$GIT_BIN" rev-parse --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null)"
+    if [ -z "$remote" ]; then
+      XO_RECHECK_NOTE="fetched origin, but it has no '$branch' branch — looking at the local commit only."
+    elif [ "$remote" = "$local_before" ]; then
+      XO_RECHECK_NOTE="fetched origin/$branch — already up to date."
+    elif [ -n "$local_before" ] \
+         && "$GIT_BIN" merge-base --is-ancestor "$local_before" "$remote" 2>/dev/null; then
+      "$GIT_BIN" update-ref "refs/heads/$branch" "$remote" 2>/dev/null
+      XO_RECHECK_NOTE="fetched origin/$branch — it had moved, so I brought the local branch up to date before looking again."
+    else
+      XO_RECHECK_NOTE="origin/$branch and the local branch have diverged — looking at the LOCAL commit; if the fix was pushed somewhere else, land it on this branch before asking me to look again."
+    fi
+  else
+    XO_RECHECK_NOTE="could not reach origin to fetch '$branch' — looking at the local commit only."
+  fi
+  local_after="$("$GIT_BIN" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"
+  [ -n "$local_after" ] || local_after="${local_before:-HEAD}"
+  XO_RECHECK_SHA="$("$GIT_BIN" rev-parse --short "$local_after" 2>/dev/null)"
+}
+
 # ===========================================================================
 # RECHECK — the second look, after the logged fixes landed.
 # ===========================================================================
@@ -1859,6 +1938,24 @@ cmd_recheck() {
   dir="$MISSIONS_DIR/$id"
   st="$dir/state.json"
   xodir="$dir/xo"
+
+  # AN ACCEPT IS FINAL (S205 ruling 1, captain, 2026-09-14). Checked FIRST,
+  # before a look name is even minted: once Number One has handed a mission
+  # back — `status: finished`, the terminal state both a clean first look and
+  # a successful recheck record — asking it to look again is refused, in the
+  # captain's own words, not re-run. S204's round-3 defects were all
+  # downstream of running another look with nowhere to put the answer (the
+  # mission's own comment kept the earlier "held" verdict while the
+  # escalation contradicted it; the escalation pointed at a gate that no
+  # longer existed; `verdict-2.json` / `second/report.md` were overwritten,
+  # losing the record of what was accepted). Refusing DELETES all three by
+  # removing the state rather than defining a re-check-after-accept flow.
+  # Wanting a fresh opinion after changing the branch is a deliberate
+  # restart — stand it down and re-engage — never this verb again on a
+  # mission it already closed out.
+  [ "$(obj_get "$(state_xo_block "$st")" status)" = "finished" ] \
+    && die "I've already handed this one back — the PR is yours."
+
   # THIS re-check's own directory (fix round 2, D1) — `recheck-1`, then
   # `recheck-2`. The name is resolved here and the directory is opened below, so
   # a re-check that escalates before it ever launches leaves no empty shell of a
@@ -1902,6 +1999,17 @@ cmd_recheck() {
            "$(jstr "child-$blocked_kind")" "$(jstr "$blocked")")"
   fi
 
+  # --- 1b. DO NOT TRUST THE LOCAL BRANCH (S205 ruling 2, 2026-09-14) -------
+  # `xo_recheck_branch_report` fetches the mission's branch from origin
+  # (best-effort — never fatal) and, when that is a clean fast-forward, brings
+  # the LOCAL branch ref up to date before the relaunch below ever reads it.
+  # When it cannot (no remote, no network, or the histories have diverged and
+  # forcing would destroy real local work) it never pretends otherwise: it
+  # says, plainly, which commit it is about to look at and why. Either way the
+  # captain never gets a confident "every fix held" against a branch this
+  # process never actually looked at.
+  xo_recheck_branch_report "$st"
+
   # --- 2. THE SECOND LOOK ---------------------------------------------------
   mkdir -p "$xodir" "$shots"
   XO_LAUNCH_ID="$id"
@@ -1920,6 +2028,7 @@ cmd_recheck() {
   [ -n "${LCARS_WORKER_BIN:-}" ] || xo_engine="$(xo_engine_for "$st")"
 
   printf '◈ NUMBER ONE: the fixes are on the branch — relaunching the build…\n'
+  printf '  looking at commit %s. %s\n' "${XO_RECHECK_SHA:-unknown}" "${XO_RECHECK_NOTE:-}"
   (
     if [ -n "$xo_engine" ]; then
       export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
@@ -1941,7 +2050,9 @@ cmd_recheck() {
   fi
   XO_LAUNCH_STOPPED=0
   printf '  the build is up at %s\n' "$lurl"
-  journal "$dir" relaunched "$(printf '"url": %s' "$(jstr "$lurl")")"
+  journal "$dir" relaunched \
+    "$(printf '"url": %s, "commit": %s, "branchNote": %s' \
+         "$(jstr "$lurl")" "$(jstr "${XO_RECHECK_SHA:-}")" "$(jstr "${XO_RECHECK_NOTE:-}")")"
 
   local drc=0
   "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
@@ -2142,6 +2253,36 @@ $shots"
   return 0
 }
 
+# ===========================================================================
+# REPORT — the First Officer's report, on the CLI (S205). ONE builder shared
+# with the daemon's `GET /api/xo/report`: xo-report.py. Neither surface
+# re-derives the since/history split — both call the same function, so a
+# board and a terminal reading the same repo can never disagree (behaviour 6).
+# ===========================================================================
+XO_REPORT_SCRIPT="$SKILL_DIR/xo-report.py"
+
+cmd_report() {
+  local target="" show_all=0 mark=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all)  show_all=1; shift ;;
+      --seen) mark=1; shift ;;
+      -*)     die "unknown option: $1" ;;
+      *)      target="$1"; shift ;;
+    esac
+  done
+  local mission_filter=""
+  if [ -n "$target" ]; then
+    mission_filter="$(resolve_mission "$target")" || exit $?
+  fi
+  local seen_file="$LCARS_DIR/xo-seen.json"
+  local args=("$MISSIONS_DIR" "$seen_file" --format text)
+  [ -n "$mission_filter" ] && args+=(--mission "$mission_filter")
+  [ "$show_all" -eq 1 ] && args+=(--all)
+  [ "$mark" -eq 1 ] && args+=(--mark-seen)
+  "$XO_PY" "$XO_REPORT_SCRIPT" "${args[@]}"
+}
+
 case "${1:-status}" in
   on)     shift; cmd_on "$@" ;;
   off)    shift; cmd_off "$@" ;;
@@ -2150,6 +2291,7 @@ case "${1:-status}" in
   evaluate) shift; cmd_evaluate "$@" ;;
   file-logs) shift; cmd_file_logs "$@" ;;
   recheck)   shift; cmd_recheck "$@" ;;
+  report)    shift; cmd_report "$@" ;;
   -h|--help|help)
     # THE WHOLE USAGE BLOCK, NOT A COUNTED RANGE (fix round 2, D5). A hand-
     # counted `sed -n '3,18p'` truncated mid-sentence the moment a verb was
@@ -2158,5 +2300,5 @@ case "${1:-status}" in
     # line 3 to the blank comment line that ends it, and awk stops there, so the
     # next verb somebody adds prints itself.
     awk 'NR < 3 { next } NR > 4 && /^#$/ { exit } { sub(/^# ?/, ""); print }' "$SELF" ;;
-  *)      die "unknown verb: $1 (want: on | off | status | answer | evaluate | file-logs | recheck)" ;;
+  *)      die "unknown verb: $1 (want: on | off | status | answer | evaluate | file-logs | recheck | report)" ;;
 esac

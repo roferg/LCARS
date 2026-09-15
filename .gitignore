@@ -1,5 +1,12 @@
 .dev/
 
+# Python bytecode caches — build detritus, not source. web/.gitignore already
+# carries this for web/lcars_serve and web/tests; skills/lcars-xo/xo-report.py
+# and its four siblings (xo-held.py, xo-logs.py, xo-criteria.py, xo-score.py)
+# are Python too, and can produce the same detritus anywhere under skills/, so
+# this is repo-wide rather than re-scoped per directory.
+__pycache__/
+
 # Test-drive screenshots — rigs are committed, their PNG output is not (captain ruling 2026-09-06)
 tests/drives/*/shots/
 tests/drives/*/*/shots/

@@ -480,6 +480,37 @@ check "B8. every column sits under its own header, placeholders included" \
 check "B8. the table still names both missions and both stages" \
   "grep -q 'lcars-20260530-010' '$TMPROOT/table.txt' && grep -q 'escalated' '$TMPROOT/table.txt' && grep -q 'ZZNOTE' '$TMPROOT/table.txt'"
 
+# --- B8b (S205): `lcars xo` gains the SCORE column ------------------------
+check "B8b. the header names SCORE, between NUMBER ONE and NOTE" \
+  "grep -qE 'NUMBER ONE +SCORE +NOTE' '$TMPROOT/table.txt'"
+check "B8b. a mission with no numberOne block shows the placeholder, not a score" \
+  "grep 'lcars-20260530-010' '$TMPROOT/table.txt' | grep -qv 'medium' && grep 'lcars-20260530-010' '$TMPROOT/table.txt' | grep -qv 'high'"
+
+repo8b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+plant_mission "$repo8b" "lcars-20260530-020" verify \
+  '{"status": "finished", "score": "medium"}' >/dev/null
+plant_mission "$repo8b" "lcars-20260530-021" verify \
+  '{"status": "finished", "score": "medium", "score2": "high"}' >/dev/null
+( cd "$repo8b" && bash "$SCRIPT" >"$TMPROOT/table2.txt" 2>&1 )
+check "B8b. first-look score shows when there is no recheck yet" \
+  "grep 'lcars-20260530-020' '$TMPROOT/table2.txt' | grep -q 'medium'"
+check "B8b. SCORE2 WINS once a recheck has run — the LATEST look, not the first" \
+  "grep 'lcars-20260530-021' '$TMPROOT/table2.txt' | grep -q 'high' && ! grep 'lcars-20260530-021' '$TMPROOT/table2.txt' | grep -qw 'medium'"
+check "B8b. the header still lines up over the new column (positional)" \
+  "python3 -c \"
+lines = open('$TMPROOT/table2.txt').read().splitlines()
+h = [l for l in lines if 'SCORE' in l and 'NOTE' in l][0]
+want = h.index('SCORE')
+rows = [l for l in lines if l.strip().startswith('lcars-2026')]
+assert len(rows) == 2, rows
+import sys
+for r in rows:
+    got = r.index('medium') if 'medium' in r else r.index('high')
+    if got != want:
+        print('MISMATCH', want, got, repr(r)); sys.exit(1)
+sys.exit(0)
+\""
+
 
 # ==========================================================================
 # B9 (SESSION 202). `lcars xo answer --mission <id>` — Number One at a park.
@@ -2428,9 +2459,14 @@ repoS1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mS1="$(plant_verify "$repoS1" "lcars-20260914-701")"
 : >"$XO_WORKER_LOG"
 
-# LOOK ONE — three pictures.
+# LOOK ONE — three pictures. S205 ruling 1 (AN ACCEPT IS FINAL): a HIGH,
+# all-met verdict here would set `status: finished` on the FIRST look, and
+# every recheck below would then be the captain's own refused case — "I've
+# already handed this one back" — never reaching a driven look at all. A real
+# gap (GAP_PRIMARY) keeps this mission genuinely ENGAGED, which is the only
+# state this test's later `recheck` calls are entitled to run from.
 ( cd "$repoS1" && XO_WORKER_LOG="$XO_WORKER_LOG" XO_LOOK_LOG="$LOOK1_LOG" \
-    XO_DRIVE_SHOTS=3 XO_EV_BODY="$(ev_verdict met met met high '')" \
+    XO_DRIVE_SHOTS=3 XO_EV_BODY="$(ev_verdict met gap met medium "$GAP_PRIMARY")" \
     LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
     LCARS_XO_DRIVER="$COUNT_DRIVE" LCARS_NODE_BIN=bash \
     LCARS_HOST_ADAPTER="$HOST_STUB" \
@@ -2449,10 +2485,14 @@ plant_child "$repoS1" "lcars-20260914-701" 1 verify
 plant_child "$repoS1" "lcars-20260914-701" 2 verify
 plant_reverify_gate "$mS1"
 
-# RE-CHECK ONE — three pictures of its own.
+# RE-CHECK ONE — three pictures of its own. ONE fix held, one did not (S205
+# ruling 1): a clean `rc_body true true` here would finish the mission and
+# refuse RE-CHECK TWO below outright. Leaving it ESCALATED — a live gate the
+# captain has not answered — is the only state a further `recheck` may
+# legitimately run from (see B20b's own control for the same distinction).
 ( cd "$repoS1" && XO_WORKER_LOG="$XO_WORKER_LOG" XO_LOOK_LOG="$RC1_LOG" \
     XO_RESPOND_CALLS="$XO_RESPOND_CALLS" \
-    XO_DRIVE_SHOTS=3 XO_RC_BODY="$(rc_body true true)" \
+    XO_DRIVE_SHOTS=3 XO_RC_BODY="$(rc_body true false)" \
     LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
     LCARS_XO_DRIVER="$COUNT_DRIVE" LCARS_NODE_BIN=bash \
     LCARS_HOST_ADAPTER="$HOST_STUB" LCARS_RESPOND_SCRIPT="$RESPOND_STUB" \
@@ -2611,14 +2651,16 @@ echo
 echo "B19. --help cannot silently truncate"
 
 helpout="$( bash "$SCRIPT" --help 2>&1 )"
-for v in on off answer evaluate file-logs recheck; do
+for v in on off answer evaluate file-logs recheck report; do
   check "B19. --help lists \`lcars xo $v\`" \
     "printf '%s\n' \"\$helpout\" | grep -q 'lcars xo $v'"
 done
 check "B19. the LAST line of the source's usage block reaches the terminal" \
-  "printf '%s\n' \"\$helpout\" | tail -1 | grep -q 'accept what holds, re-score'"
+  "printf '%s\n' \"\$helpout\" | tail -1 | grep -q -- '--seen marks it read'"
 check "B19. …and the sentence before it is whole, not cut at 'let LCARS'" \
   "printf '%s\n' \"\$helpout\" | grep -q 'drive them'"
+check "B19. …the recheck verb's own last line still reaches the terminal too" \
+  "printf '%s\n' \"\$helpout\" | grep -q 'accept what holds, re-score'"
 # THE RANGE CANNOT ROT. Not "the code no longer says sed" — a COPY of the
 # script with one more verb appended to the END of the usage block, run for its
 # help. A hand-counted range prints everything but the new line; the fix prints
@@ -2639,6 +2681,252 @@ check "B19. a verb added at the END of the block still prints — the range cann
   "printf '%s\n' \"\$newhelp\" | grep -q 'warpfactor'"
 check "B19. …and the verbs above it are all still there (the control)" \
   "printf '%s\n' \"\$newhelp\" | grep -q 'lcars xo recheck' && printf '%s\n' \"\$newhelp\" | grep -q 'lcars xo on'"
+
+# ==========================================================================
+# B20 (S205 ruling 1, 2026-09-14): AN ACCEPT IS FINAL — a later look is
+# REFUSED, with the captain's own sentence, before a look name is even
+# minted, a launch is spent, or a worker is hired.
+# ==========================================================================
+echo
+echo "B20. an accept is final — recheck refuses, verbatim"
+
+repoF1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mF1="$(plant_verify "$repoF1" "lcars-20260914-401")"
+# This mission already went through a clean accept — `status: finished` is the
+# ONE terminal record both a clean first look and a successful recheck leave
+# behind (xo_finish / cmd_recheck's own closing obj_set).
+python3 - "$mF1/state.json" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace('"numberOne": {"status": "engaged"', '"numberOne": {"status": "finished"')
+open(p, "w").write(s)
+PY
+plant_logs_json "$mF1" 1
+plant_child "$repoF1" "lcars-20260914-401" 1 verify
+: >"$XO_LAUNCH_LOG"; : >"$XO_WORKER_LOG"; : >"$XO_RESPOND_CALLS"; : >"$XO_LABEL_LOG"
+before_journal=""; [ -f "$mF1/number-one.jsonl" ] && before_journal="$(cat "$mF1/number-one.jsonl")"
+rcF1=0
+outF1="$(xo_recheck "$repoF1" "lcars-20260914-401")" || rcF1=$?
+check "B20. refuses (non-zero)" "[ '$rcF1' -ne 0 ]"
+check "B20. …with the captain's OWN sentence, verbatim" \
+  "printf '%s' \"\$outF1\" | grep -qF \"I've already handed this one back — the PR is yours.\""
+check "B20. no look name was even minted — no recheck-1 shots dir" \
+  "[ ! -d '$mF1/xo/shots/recheck-1' ]"
+check "B20. no launch was spent on it" "[ ! -s '$XO_LAUNCH_LOG' ]"
+check "B20. no worker was hired" "[ ! -s '$XO_WORKER_LOG' ]"
+check "B20. nothing was answered through \`lcars respond\`" "[ ! -s '$XO_RESPOND_CALLS' ]"
+check "B20. the label was never touched" "[ ! -s '$XO_LABEL_LOG' ]"
+check "B20. status stays finished — untouched, not re-escalated" \
+  "[ \"\$(xo_state '$mF1' status)\" = 'finished' ]"
+check "B20. the journal gained NOTHING for this refusal" \
+  "[ \"\$(cat '$mF1/number-one.jsonl' 2>/dev/null)\" = \"\$before_journal\" ]"
+
+# --- B20b. CONTROL — every OTHER status still runs recheck normally --------
+# (escalated, engaged, or no numberOne status at all): only `finished` is the
+# terminal one this ruling closes the door on.
+repoF2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mF2="$(plant_verify "$repoF2" "lcars-20260914-402")"
+python3 - "$mF2/state.json" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace('"numberOne": {"status": "engaged"', '"numberOne": {"status": "escalated"')
+open(p, "w").write(s)
+PY
+plant_verdict "$mF2" "$(gap_json 1 contradiction prd-1 shot-01)"
+plant_logs_json "$mF2" 1
+plant_child "$repoF2" "lcars-20260914-402" 1 verify
+plant_reverify_gate "$mF2"
+: >"$XO_LAUNCH_LOG"; : >"$XO_RESPOND_CALLS"
+outF2="$(XO_RC_BODY="$(rc_body true true)" xo_recheck "$repoF2" "lcars-20260914-402" 2>&1)"
+check "B20b. an ESCALATED mission still gets a fresh look" \
+  "grep -q 'launch lcars-20260914-402' '$XO_LAUNCH_LOG'"
+check "B20b. …and this one is not the refusal sentence" \
+  "! printf '%s' \"\$outF2\" | grep -qF \"I've already handed this one back\""
+
+# ==========================================================================
+# B21 (S205 ruling 2, 2026-09-14): `xo recheck` MUST NOT TRUST THE LOCAL
+# BRANCH — it fetches origin first (fast-forwarding when it safely can) and,
+# whether or not that was possible, always says PLAINLY which commit it is
+# about to look at. Real git throughout: an origin bare repo, a branch pushed
+# to it, and a "fix" pushed from a THIRD clone (simulating "the branch moved
+# somewhere else") — the same shape S204's round-3 tester hit by hand.
+# ==========================================================================
+echo
+echo "B21. xo recheck fetches — it never trusts a stale local branch"
+
+git_recheck_repo() { # <id> — a real git repo, with an ORIGIN, and the
+                     # mission's branch pushed to it. Echoes the repo path.
+  local id="$1" repo origin
+  repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+  origin="$(mktemp -d "$TMPROOT/origin.XXXX")"
+  ( cd "$origin" && git init -q --bare ) >/dev/null 2>&1
+  (
+    cd "$repo"
+    git remote add origin "$origin"
+    git commit -q --allow-empty -m init
+    git checkout -q -b "lcars/$id"
+    git commit -q --allow-empty -m "the mission's own work"
+    git push -q -u origin "lcars/$id"
+  ) >/dev/null 2>&1
+  printf '%s' "$repo"
+}
+
+push_fix_from_elsewhere() { # <repo> <branch> — a THIRD clone pushes one more
+                            # commit, moving origin PAST this repo's local ref.
+  local repo="$1" branch="$2" origin elsewhere
+  origin="$(git -C "$repo" remote get-url origin)"
+  elsewhere="$(mktemp -d "$TMPROOT/elsewhere.XXXX")"
+  git clone -q "$origin" "$elsewhere" >/dev/null 2>&1
+  (
+    cd "$elsewhere"
+    git config user.email t@t; git config user.name t
+    git checkout -q "$branch"
+    git commit -q --allow-empty -m "the fix, pushed from elsewhere"
+    git push -q origin "$branch"
+  ) >/dev/null 2>&1
+  git -C "$elsewhere" rev-parse "$branch"
+}
+
+repoG1="$(git_recheck_repo lcars-20260914-501)"
+mG1="$(plant_verify "$repoG1" "lcars-20260914-501")"
+python3 - "$mG1/state.json" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace('"stage": "verify",', '"stage": "verify",\n  "branch": "lcars/lcars-20260914-501",')
+open(p, "w").write(s)
+PY
+remote_tip="$(push_fix_from_elsewhere "$repoG1" "lcars/lcars-20260914-501")"
+local_before="$(git -C "$repoG1" rev-parse "lcars/lcars-20260914-501")"
+plant_verdict "$mG1" "$(gap_json 1 contradiction prd-1 shot-01)"
+plant_logs_json "$mG1" 1
+plant_child "$repoG1" "lcars-20260914-501" 1 verify
+plant_reverify_gate "$mG1"
+: >"$XO_LAUNCH_LOG"; : >"$XO_RESPOND_CALLS"
+outG1="$(XO_RC_BODY="$(rc_body true true)" xo_recheck "$repoG1" "lcars-20260914-501")"
+check "B21. it actually fetched — local≠remote before, so a stale run was possible" \
+  "[ '$local_before' != '$remote_tip' ]"
+check "B21. the local branch was brought up to the remote tip before relaunching" \
+  "[ \"\$(git -C '$repoG1' rev-parse 'lcars/lcars-20260914-501')\" = '$remote_tip' ]"
+check "B21. it SAYS which commit it is looking at, plainly, on the terminal" \
+  "printf '%s' \"\$outG1\" | grep -q 'looking at commit'"
+check "B21. …and says the branch had moved" \
+  "printf '%s' \"\$outG1\" | grep -qi 'it had moved'"
+check "B21. the journal records the commit it examined" \
+  "grep -q '\"action\": \"relaunched\"' '$mG1/number-one.jsonl' && grep -q '\"commit\":' '$mG1/number-one.jsonl'"
+check "B21. …and the branch-note, so the record — not just the terminal — is honest" \
+  "grep -q '\"branchNote\":' '$mG1/number-one.jsonl'"
+
+# --- B21b. NO ORIGIN AT ALL — best-effort: never blocks the look, never
+#     pretends to have checked upstream. Every OTHER recheck test in this
+#     suite runs a repo shaped exactly like this (no branch recorded, no
+#     origin) and all of them still pass — the regression guard for this is
+#     the rest of the file.
+repoG2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mG2="$(plant_verify "$repoG2" "lcars-20260914-502")"
+plant_verdict "$mG2" "$(gap_json 1 contradiction prd-1 shot-01)"
+plant_logs_json "$mG2" 1
+plant_child "$repoG2" "lcars-20260914-502" 1 verify
+plant_reverify_gate "$mG2"
+: >"$XO_LAUNCH_LOG"
+outG2="$(XO_RC_BODY="$(rc_body true true)" xo_recheck "$repoG2" "lcars-20260914-502")"
+check "B21b. no branch recorded ⇒ it still relaunches (best-effort, never blocks)" \
+  "grep -q 'launch lcars-20260914-502' '$XO_LAUNCH_LOG'"
+check "B21b. …and says so plainly rather than pretending to have checked upstream" \
+  "printf '%s' \"\$outG2\" | grep -qi 'no branch is recorded'"
+
+# ==========================================================================
+# B22 (S205): `lcars xo report` — since/history, Seen, one mission's journal,
+# and CLI==API parity (behaviours 4 and 6). No worker, no launch, no gh — a
+# pure read of number-one.jsonl + xo-seen.json, so the whole section runs
+# with none of the usual stubs wired at all.
+# ==========================================================================
+echo
+echo "B22. xo report — since you last looked, then history"
+
+repoP1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mkdir -p "$repoP1/.git/lcars/missions/lcars-p1" "$repoP1/.git/lcars/missions/lcars-p2"
+cat >"$repoP1/.git/lcars/missions/lcars-p1/state.json" <<'EOF'
+{"id": "lcars-p1", "type": "feature", "title": "The task board", "stage": "verify", "githubIssue": 901}
+EOF
+cat >"$repoP1/.git/lcars/missions/lcars-p2/state.json" <<'EOF'
+{"id": "lcars-p2", "type": "feature", "title": "Dark mode", "stage": "verify", "githubIssue": 902}
+EOF
+cat >"$repoP1/.git/lcars/missions/lcars-p1/number-one.jsonl" <<'EOF'
+{"at": "2026-09-14T10:00:00Z", "action": "scored", "score": "high", "why": "all criteria met"}
+{"at": "2026-09-14T11:00:00Z", "action": "escalated", "detail": "the lock glyph is missing"}
+EOF
+cat >"$repoP1/.git/lcars/missions/lcars-p2/number-one.jsonl" <<'EOF'
+{"at": "2026-09-14T09:00:00Z", "action": "scored", "score": "medium", "why": "one gap"}
+EOF
+
+xo_report() { ( cd "$repoP1" && bash "$SCRIPT" report "$@" 2>&1 ); }
+
+out22a="$(xo_report)"
+check "B22. everything is new the first time (no xo-seen.json yet)" \
+  "printf '%s\n' \"\$out22a\" | grep -q 'Since you last looked (3)'"
+check "B22. …names the mission by TITLE and issue" \
+  "printf '%s\n' \"\$out22a\" | grep -q 'The task board (#901)'"
+check "B22. …and the OTHER mission's entry too — this is repo-wide" \
+  "printf '%s\n' \"\$out22a\" | grep -q 'Dark mode (#902)'"
+check "B22. History folds BOTH missions, nothing dropped" \
+  "printf '%s\n' \"\$out22a\" | grep -q 'The task board (#901)' && printf '%s\n' \"\$out22a\" | grep -q 'Dark mode (#902)'"
+check "B22. no xo-seen.json was written by a plain read" \
+  "[ ! -f '$repoP1/.git/lcars/xo-seen.json' ]"
+
+# --- ✓ Seen folds it: the file is written, and nothing new remains ---------
+out22b="$(xo_report --seen)"
+check "B22. --seen writes the record" "[ -s '$repoP1/.git/lcars/xo-seen.json' ]"
+check "B22. …as a real lastSeenAt timestamp" \
+  "grep -q 'lastSeenAt' '$repoP1/.git/lcars/xo-seen.json'"
+out22c="$(xo_report)"
+check "B22. reopening after Seen says so — nothing new" \
+  "printf '%s\n' \"\$out22c\" | grep -q 'Since you last looked (0)' && printf '%s\n' \"\$out22c\" | grep -qi 'nothing new'"
+check "B22. …but NOTHING was deleted — history still carries both missions" \
+  "printf '%s\n' \"\$out22c\" | grep -q 'The task board (#901)' && printf '%s\n' \"\$out22c\" | grep -q 'Dark mode (#902)'"
+
+# --- ONE mission's journal (`lcars xo report <id>`) ------------------------
+out22d="$(xo_report lcars-p1)"
+check "B22. scoping to one mission shows its own entries" \
+  "printf '%s\n' \"\$out22d\" | grep -q 'the lock glyph is missing'"
+check "B22. …and NOT the other mission's" \
+  "! printf '%s\n' \"\$out22d\" | grep -q 'Dark mode'"
+
+# --- --all vs the default fold (>10 entries in one mission) ----------------
+rm -f "$repoP1/.git/lcars/xo-seen.json"
+: >"$repoP1/.git/lcars/missions/lcars-p1/number-one.jsonl"
+for n in $(seq 1 14); do
+  printf '{"at": "2026-09-14T12:%02d:00Z", "action": "note-%d", "detail": "entry %d"}\n' "$n" "$n" "$n" \
+    >>"$repoP1/.git/lcars/missions/lcars-p1/number-one.jsonl"
+done
+# Every one of the 14 is "new" (no seen record), so the UNFOLDED "since" list
+# always names all 14 — the fold is a HISTORY-section behaviour only. Isolate
+# the History section (everything from its header on) before counting.
+out22e="$(xo_report lcars-p1)"
+hist22e="$(printf '%s\n' "$out22e" | sed -n '/^History:/,$p')"
+check "B22. the default fold caps a mission's HISTORY and says how many more" \
+  "printf '%s\n' \"\$hist22e\" | grep -q 'more (use --all'"
+check "B22. …showing at most 10 entries in that folded history" \
+  "[ \"\$(printf '%s\n' \"\$hist22e\" | grep -c 'note-')\" -eq 10 ]"
+out22f="$(xo_report lcars-p1 --all)"
+hist22f="$(printf '%s\n' "$out22f" | sed -n '/^History:/,$p')"
+check "B22. --all's HISTORY shows every one of the 14 entries" \
+  "[ \"\$(printf '%s\n' \"\$hist22f\" | grep -c 'note-')\" -eq 14 ]"
+check "B22. …with no '… more' line left once nothing is held back" \
+  "! printf '%s\n' \"\$hist22f\" | grep -q 'more (use --all'"
+
+# --- behaviour 6: CLI text and the API's JSON split agree, on ONE fixture --
+rm -f "$repoP1/.git/lcars/xo-seen.json"
+json22="$( python3 "$REPO_ROOT/skills/lcars-xo/xo-report.py" \
+             "$repoP1/.git/lcars/missions" "$repoP1/.git/lcars/xo-seen.json" --format json )"
+api_since_count="$(printf '%s' "$json22" | python3 -c 'import json,sys; print(json.load(sys.stdin)["since"]["count"])')"
+api_hist_missions="$(printf '%s' "$json22" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len([h for h in d["history"] if h["entries"]]))')"
+cli_out="$(xo_report --all)"
+cli_since_count="$(printf '%s\n' "$cli_out" | sed -n 's/.*Since you last looked (\([0-9]*\)).*/\1/p')"
+cli_hist_missions="$(printf '%s\n' "$cli_out" | grep -cE '^  .* \(#[0-9]+\)$')"
+check "B22. CLI's since-count == the API's since-count, same fixture" \
+  "[ '$cli_since_count' = '$api_since_count' ]"
+check "B22. CLI's history mission-count == the API's, same fixture" \
+  "[ '$cli_hist_missions' = '$api_hist_missions' ]"
 
 # ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.

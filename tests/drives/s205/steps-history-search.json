@@ -1,0 +1,19 @@
+[
+  {"goto": "http://127.0.0.1:50306/", "settle": 1200},
+  {"wait": ".card[data-mid]", "timeout": 15000},
+  {"sleep": 500},
+  {"click": "#xoBtn"},
+  {"wait": ".xo-menu-item", "timeout": 8000},
+  {"eval": "(function(){var items=document.querySelectorAll('.xo-menu-item'); var target=Array.prototype.filter.call(items,function(b){return /First Officer/.test(b.textContent);})[0]; if(target) target.click(); return !!target;})()"},
+  {"wait": ".xo-report-since-head", "timeout": 8000},
+  {"sleep": 400},
+  {"click": ".xo-report-history details summary"},
+  {"sleep": 300},
+  {"shot": "18-history-expanded-clean", "full": true},
+  {"eval": "document.querySelector('.xo-report-history').textContent.length", "log": true},
+  {"type": ".xo-report-search", "text": "mix-ratio"},
+  {"sleep": 400},
+  {"shot": "19-history-search-mixratio", "full": true},
+  {"eval": "(function(){var d=document.querySelectorAll('.xo-report-history details'); return d.length + ' mission group(s) match; visible entries: ' + document.querySelectorAll('.xo-report-history .xo-report-entry').length;})()", "log": true},
+  {"eval": "document.querySelector('.xo-report-history').textContent.slice(0,600)", "log": true}
+]

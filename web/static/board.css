@@ -1305,6 +1305,14 @@ body.on-front-door #ownerFilter{display:none !important}
 .evt.s-gate .marker{background:var(--lcars-red)}
 .evt.s-verify .marker{background:var(--lcars-red)}
 .evt.s-done .marker{background:var(--lcars-teal)}
+/* S205 — Number One's own posts: the peach marker + "posted by" line reads at
+   a glance beside the ordinary lcars-bot entries it is interleaved with, IN
+   whichever stage band it happened (never a second feed, never a second
+   colour system — the SAME `--lcars-peach` token every other Number One
+   surface uses, ADR-007). Applied on top of the stage class above it (a
+   Number One post at Verify still says VERIFY in its `.when` line). */
+.evt.evt-number-one .marker{background:var(--lcars-peach)}
+.evt .ec .bot.bot-number-one{color:var(--lcars-peach)}
 /* S134 — proof-gate event accents (S133 unified implementer): the marker + the
    headline colour read the proof outcome at a glance. PROVEN/accept = teal,
    reject/inconclusive = red, contract amendment = amber, bounce = gold. */
@@ -1431,6 +1439,22 @@ body.on-front-door #ownerFilter{display:none !important}
   border:1px solid var(--lcars-border);cursor:pointer}
 .tabbar .tab.on{background:var(--lcars-amber);color:var(--lcars-text-on-color)}
 .tabpane{display:none;font-size:13px} .tabpane.on{display:block}
+/* S205 — the ◈ Number One tab: peach when ON (its own accent, ADR-007), never
+   the amber every other tab uses ON, so it reads as a distinct crew member's
+   voice rather than one more section of the captain's own spec. */
+.tabbar .tab.tab-xo.on{background:var(--lcars-peach);color:var(--lcars-text-on-color)}
+.xo-score-block{margin-bottom:10px}
+.xo-score-label{color:var(--lcars-peach)}
+.xo-engine-line{font-size:12px;color:var(--lcars-text-dim);margin:0 0 10px}
+.xo-gap-row{margin-bottom:16px}
+.xo-gap-title{font-weight:700;margin-bottom:6px}
+.xo-shots{display:flex;flex-wrap:wrap;gap:10px}
+.xo-shot-cell{max-width:220px}
+.xo-thumb{max-width:220px;border-radius:6px;border:1px solid var(--lcars-border);display:block}
+.xo-thumb-broken{width:220px;height:120px;border:1px dashed var(--lcars-border);border-radius:6px;
+  display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--lcars-text-dim)}
+.xo-thumb-cap{font-size:11px;color:var(--lcars-text-dim);margin-top:4px}
+.xo-shots-note{font-size:11px;color:var(--lcars-text-dim);margin-top:14px}
 .crit{display:flex;gap:7px;align-items:center;margin:4px 0;font-size:12px}
 .adr{border-left:3px solid var(--lcars-violet,#9977ff);padding:6px 12px;margin-bottom:10px;
   background:rgba(153,119,255,.06);border-radius:0 6px 6px 0}
@@ -2898,6 +2922,35 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .btn.xo-engine.chosen{background:var(--lcars-peach,#ff9966);
   color:var(--lcars-black,#030608);
   border-color:var(--lcars-peach,#ff9966);font-weight:700}
+
+/* S205 — the band's ON-state MENU (report / change engine / turn off) and
+   the First Officer's report modal. Same peach head + option-row idiom as
+   the picker above (re-used, never redrawn); nothing here is a new colour —
+   every rule is an existing --lcars-* token (ADR-007). */
+.btn.xo-menu-item{display:block;width:100%;text-align:left;margin:0 0 6px;
+  text-transform:none;letter-spacing:.02em;font-size:12px;padding:8px 12px}
+.xo-report-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.xo-report-search{flex:1 1 220px;min-width:160px;padding:6px 10px;border-radius:8px;
+  background:var(--lcars-black);color:var(--lcars-text);
+  border:1px solid var(--lcars-border);font-size:12px}
+.xo-report-chips{display:flex;gap:6px;flex-wrap:wrap}
+.xo-chip{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.06em;
+  font-size:10px;cursor:pointer;padding:4px 10px;border-radius:10px;
+  color:var(--lcars-text-dim);background:transparent;border:1px solid var(--lcars-border)}
+.xo-chip.on{background:var(--lcars-peach);color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach);font-weight:700}
+.xo-report-since-head{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.1em;font-size:13px;color:var(--lcars-peach);margin:6px 0}
+.xo-report-since{margin-bottom:16px}
+.xo-report-entry{padding:6px 0;border-bottom:1px solid var(--lcars-border)}
+.xo-report-entry.is-new{border-left:2px solid var(--lcars-peach);padding-left:8px}
+.xo-report-when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
+.xo-report-text{font-size:13px;color:var(--lcars-text);margin-top:2px}
+.xo-report-mission{margin-bottom:8px;border:1px solid var(--lcars-border);
+  border-radius:8px;padding:6px 10px}
+.xo-report-mission summary{cursor:pointer;font-size:12px;color:var(--lcars-text-bright);
+  font-weight:700}
+.xo-report-mission[open] summary{margin-bottom:6px}
 
 /* ════════════════════════════════════════════════════════════════════════
    S197 — THE ADOPT ENGINE PICKER.

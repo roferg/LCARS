@@ -1,0 +1,10 @@
+[
+  {"goto": "http://127.0.0.1:64781/", "settle": 1500},
+  {"wait": ".card[data-mid]", "timeout": 15000},
+  {"sleep": 600},
+  {"eval": "document.querySelectorAll('.card[data-mid]').length", "log": true},
+  {"eval": "!!document.querySelector('.card[data-mid=\"lcars-20260913-s204s205\"]')", "log": true},
+  {"eval": "(function(){var e=document.querySelector('.card[data-mid=\"lcars-20260913-s204s205\"]'); if(e) e.scrollIntoView({inline:'center'}); return !!e;})()", "log": true},
+  {"sleep": 400},
+  {"shot": "01b-board-scrolled-to-verify", "full": true}
+]

@@ -188,8 +188,25 @@ else sandbox.writesActive = true;
 sandbox.renderXoBand(meta);
 sandbox.renderXoLegend(meta);
 
-if (spec.click === "toggle" || spec.click === "engage" || spec.click === "off") {
+if (spec.click === "toggle" || spec.click === "engage" || spec.click === "off"
+    || spec.click === "menu") {
   REGISTRY.xoBtn.click();
+}
+// S205: THE ON-STATE MENU ITSELF — captured BEFORE any follow-through click
+// below would close it, so "menu" alone (an ENABLED mission) can inspect what
+// actually opened.
+const menuItemNodes = overlayNodes().filter(
+  (n) => (" " + String(n._cls || "") + " ").indexOf(" xo-menu-item ") >= 0);
+// S205: an ENGAGED band click now opens the small ON-state MENU (report /
+// change engine / turn off) rather than dispatching a stand-down off the one
+// click — so "toggle"/"off" against an ENABLED mission follow through to the
+// menu's own "■ Turn off" item, reaching the SAME eventual POST the old
+// direct-dispatch reached. A DISABLED-mission "toggle" (the engine picker)
+// has no such item, so this is a no-op there.
+if (spec.click === "toggle" || spec.click === "off") {
+  const menuOff = menuItemNodes.filter(
+    (n) => (n.textContent || "").indexOf("Turn off") >= 0);
+  if (menuOff.length) menuOff[0].click();
 }
 if (spec.click === "engage") {
   const foot = pickerFoot();
@@ -248,6 +265,13 @@ process.stdout.write(JSON.stringify({
     chosen: (rows.filter((r) => r.getAttribute("aria-pressed") === "true")
                  .map((r) => r.getAttribute("data-engine"))[0]) || "",
     foot: pickerFoot().map((b) => (b.textContent || "").trim()),
+  },
+  // S205: the ON-state menu, snapshotted BEFORE any follow-through click
+  // ("toggle"/"off") would have closed it — so `click: "menu"` can inspect
+  // what actually opened.
+  menu: {
+    open: !REGISTRY.overlay.hidden && menuItemNodes.length > 0,
+    items: menuItemNodes.map((n) => (n.textContent || "").trim()),
   },
   /* ONLY NUMBER ONE'S OWN POSTS. board.js's boot probes `/api/board` and
      `/api/mission` against these stubs; those are not this harness's subject

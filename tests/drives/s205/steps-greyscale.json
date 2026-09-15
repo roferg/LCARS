@@ -1,0 +1,20 @@
+[
+  {"goto": "http://127.0.0.1:50306/", "settle": 1200},
+  {"wait": ".card[data-mid]", "timeout": 15000},
+  {"sleep": 500},
+  {"eval": "document.documentElement.style.filter='grayscale(1)'"},
+  {"sleep": 300},
+  {"shot": "26-board-greyscale", "full": true},
+  {"eval": "(function(){var e=document.querySelector('.card[data-mid=\"lcars-20260913-s204s205\"]'); if(e) e.scrollIntoView({inline:'center'});})()"},
+  {"sleep": 300},
+  {"shot": "26b-verify-column-greyscale", "full": true},
+  {"click": ".card[data-mid=\"lcars-20260913-s204s205\"]"},
+  {"wait": ".det-head", "timeout": 10000},
+  {"sleep": 400},
+  {"shot": "27-detail-greyscale", "full": true},
+  {"click": ".tab[data-tab=\"xo\"]"},
+  {"sleep": 300},
+  {"shot": "28-detail-xo-tab-greyscale", "full": true},
+  {"eval": "document.documentElement.style.filter=''"},
+  {"sleep": 200}
+]

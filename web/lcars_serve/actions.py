@@ -13344,6 +13344,19 @@ class Actions(LogFacts):
         out = (proc.stdout or b"").decode("utf-8", "replace").strip()
         return {"mission": mid, "output": out}
 
+    def xo_seen(self):
+        """`POST /api/xo/seen` — the board's ✓ Seen, the SAME mark the CLI's
+        `lcars xo report --seen` writes (S205).
+
+        DISPATCH ONLY (ADR-002): `xo-report.py` already owns the one file this
+        writes (`.git/lcars/xo-seen.json`) — this only shells the verb that
+        writes it. The daemon re-reads the fresh report straight off the
+        adapter afterward (server.py), so a POST answers with what actually
+        changed rather than this dispatch's own stdout.
+        """
+        self._run("xo", ["report", "--all", "--seen"])
+        return {"seen": True}
+
     # ── S201: THE ENGAGED LOCK, SERVER-SIDE ─────────────────────────────────
     def xo_lock_reason(self, mid):
         """One plain line when Number One holds this mission, else None.

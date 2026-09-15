@@ -734,10 +734,14 @@ function renderXoBand(meta) {
   b.textContent = xoBandLabel(x);
   b.disabled = false;
   b.title = x.enabled
-    ? "Number One takes the conn at a gate — press to stand it down"
+    ? "First Officer's report · change engine · turn off"
     : "Number One can take the gates while you are away — press to engage it";
+  // S205: ON now opens a small MENU (report / change engine / turn off)
+  // rather than dispatching a stand-down straight off the one click — the
+  // band control gains a menu, per this round's own brief; the control
+  // itself moves nowhere in the band (S141's pinned order is untouched).
   b.onclick = function () {
-    if (x.enabled) dispatchCard("/api/xo/off", {});
+    if (x.enabled) openXoMenu(meta);
     else openXoPicker(meta);
   };
   // THE VIEW-ONLY REASON, in the band's own words. A view-only board must say
@@ -859,6 +863,218 @@ function openXoPicker(meta) {
     closeOverlay();
     dispatchCard("/api/xo/on", { engine: chosen });
   })));
+  showOverlay(m.wrap);
+}
+
+/* ── S205: THE BAND'S ON-STATE MENU — report / change engine / turn off ──
+   The ON control used to dispatch a stand-down on the one click; it now opens
+   this small menu, which is what actually reaches all three of ON's jobs
+   without growing a second control (S141's pinned band order stays untouched
+   — this is a menu OFF the one control, not a new one beside it). */
+function openXoMenu(meta) {
+  var m = modal("◈ NUMBER ONE", { headClass: "xo" });
+  var x = xoMeta(meta) || {};
+  m.body.appendChild(el("div", "xo-q", xoBandLabel(x)));
+  var report = btn("◈ First Officer's report", "xo-menu-item", function () {
+    closeOverlay();
+    openXoReport();
+  });
+  var change = btn("Change engine", "xo-menu-item", function () {
+    closeOverlay();
+    openXoPicker(meta);
+  });
+  var off = applyWriteState(btn("■ Turn off", "xo-menu-item danger", function () {
+    closeOverlay();
+    dispatchCard("/api/xo/off", {});
+  }));
+  m.body.appendChild(report);
+  m.body.appendChild(change);
+  m.body.appendChild(off);
+  m.foot.appendChild(btn("Close", "", closeOverlay));
+  showOverlay(m.wrap);
+}
+
+/* ── S205: THE FIRST OFFICER'S REPORT modal ──────────────────────────────
+   "Since you last looked" (count + ✓ Seen) first, then History folded per
+   mission (<details>, newest first) — nothing is ever deleted, only moved out
+   of "since" once seen. Search + the four chips filter CLIENT-SIDE over the
+   one payload this already fetched (the IMPLEMENTOR BRIEF's own words) — a
+   second, independent search implementation could never disagree with the
+   first about what "matches", because there is only ever the one. */
+var XO_REPORT_CHIPS = [
+  ["all", "All", null],
+  ["verify", "Verify evaluations", ["criteria", "launched", "looked", "actions",
+    "silent", "scored", "score-overruled", "filed-logs", "overflow",
+    "relaunched", "fix-did-not-hold", "rescored"]],
+  ["gate", "Gate answers", ["answered"]],
+  ["escalated", "Escalated to you", ["escalated"]],
+];
+
+function xoEntryMatchesChip(entry, chipKey) {
+  if (chipKey === "all" || !chipKey) return true;
+  var chip = XO_REPORT_CHIPS.filter(function (c) { return c[0] === chipKey; })[0];
+  if (!chip || !chip[2]) return true;
+  return chip[2].indexOf(entry.action) >= 0;
+}
+
+/* The SAME plain-English labels the adapter's `_NUMBER_ONE_LABELS` uses for
+   the merged activity feed — kept in sync deliberately, not shared by import
+   (this is a static vocabulary table, not logic: the two are proven to agree
+   by `tests/lcars-xo.test.sh`'s CLI/API parity check reading the underlying
+   `action` values, which is the fact that could actually drift). */
+var XO_ACTION_LABELS = {
+  criteria: "Read the drawing", launched: "Launched the build",
+  looked: "Looked at the build", actions: "Drove the build",
+  silent: "Nothing to report this round", scored: "Scored the build",
+  "score-overruled": "Corrected its own score",
+  "filed-logs": "Filed bugs for the gaps",
+  overflow: "Some gaps were not filed", answered: "Answered the gate",
+  escalated: "Escalated to you", relaunched: "Relaunched the build",
+  "fix-did-not-hold": "A fix did not hold",
+  rescored: "Re-scored after the fixes", "stood-down": "Stood down",
+  "ledger-note": "Noted something about the ledger",
+};
+
+function xoActionLabel(entry) {
+  return XO_ACTION_LABELS[entry.action] || entry.action || "?";
+}
+
+function xoEntryMatchesSearch(entry, q) {
+  if (!q) return true;
+  q = q.toLowerCase();
+  if (String(entry.mission || "").toLowerCase().indexOf(q) >= 0) return true;
+  if (String(entry.missionTitle || "").toLowerCase().indexOf(q) >= 0) return true;
+  if (entry.missionIssue != null && String(entry.missionIssue) === q.replace(/^#/, "")) return true;
+  try {
+    return JSON.stringify(entry).toLowerCase().indexOf(q) >= 0;
+  } catch (e) { return false; }
+}
+
+function xoReportEntryLine(entry) {
+  var row = el("div", "xo-report-entry" + (entry.new ? " is-new" : ""));
+  var who = entry.missionTitle
+    ? entry.missionTitle + " (" + (entry.missionIssue ? "#" + entry.missionIssue : entry.mission) + ")"
+    : entry.mission;
+  row.appendChild(el("div", "xo-report-when", (entry.at || "") + " — " + who));
+  var label = xoActionLabel(entry);
+  var detailBits = ["detail", "why", "note", "summary", "answer", "rationale", "url"]
+    .map(function (k) { return entry[k]; })
+    .filter(function (v) { return typeof v === "string" && v.trim(); });
+  var line = label + (detailBits.length ? " — " + detailBits[0] : "");
+  row.appendChild(el("div", "xo-report-text", line));
+  return row;
+}
+
+function openXoReport() {
+  var m = modal("◈ FIRST OFFICER'S REPORT", { headClass: "xo", wide: true });
+  var body = m.body;
+  var state = { chip: "all", q: "" };
+
+  var controls = el("div", "xo-report-controls");
+  var search = document.createElement("input");
+  search.type = "search";
+  search.className = "xo-report-search";
+  search.placeholder = "Search missions and entries…";
+  controls.appendChild(search);
+  var chipsRow = el("div", "xo-report-chips");
+  controls.appendChild(chipsRow);
+  body.appendChild(controls);
+
+  var sinceHead = el("div", "xo-report-since-head");
+  body.appendChild(sinceHead);
+  var sinceList = el("div", "xo-report-since");
+  body.appendChild(sinceList);
+  var histHead = el("div", "mock-cap", "History");
+  body.appendChild(histHead);
+  var histWrap = el("div", "xo-report-history");
+  body.appendChild(histWrap);
+
+  var seenBtn = applyWriteState(btn("✓ Seen", "go", function () {
+    postWrite("/api/xo/seen", {}, function (fresh) { paint(fresh); });
+  }));
+  m.foot.appendChild(seenBtn);
+  m.foot.appendChild(btn("Close", "", closeOverlay));
+
+  var data = null;
+  // FIX ROUND 2, D2: chip highlighting is set ONCE here, at build time — the
+  // click handler below used to call only render(), which rebuilds the LIST
+  // but never chipsRow itself, so `.on` never moved off "All" no matter
+  // which chip the captain actually clicked. `chipEls` (key + element,
+  // built alongside the DOM below) and `syncChipHighlight` are the ONE
+  // place `.on` is applied, called both from the initial paint and from
+  // every click, so the DOM chip elements — never rebuilt after that first
+  // paint — always agree with `state.chip`. Kept as a plain key/element
+  // pair rather than a dataset attribute: the marker itself must read in
+  // GREYSCALE too (the captain's standing ruling), so `.xo-chip.on` in
+  // board.css carries it three ways that survive a colour-blind render —
+  // a solid fill vs. a transparent chip, a border-colour change, and bold
+  // weight vs. normal — never by hue alone.
+  var chipEls = [];
+  function syncChipHighlight() {
+    chipEls.forEach(function (ce) {
+      ce.el.classList.toggle("on", ce.key === state.chip);
+    });
+  }
+  function paint(fresh) {
+    if (fresh) data = fresh;
+    if (!data) return;
+    chipsRow.innerHTML = "";
+    chipEls = [];
+    XO_REPORT_CHIPS.forEach(function (c) {
+      var chip = el("span", "xo-chip", c[1]);
+      chip.addEventListener("click", function () {
+        state.chip = c[0];
+        syncChipHighlight();
+        render();
+      });
+      chipsRow.appendChild(chip);
+      chipEls.push({ key: c[0], el: chip });
+    });
+    syncChipHighlight();
+    render();
+  }
+  function render() {
+    var since = (data.since && data.since.entries) || [];
+    var visSince = since.filter(function (e) {
+      return xoEntryMatchesChip(e, state.chip) && xoEntryMatchesSearch(e, state.q);
+    });
+    sinceHead.textContent = "Since you last looked (" + visSince.length + ")";
+    sinceList.innerHTML = "";
+    if (!visSince.length) {
+      sinceList.appendChild(noteEl("Nothing new."));
+    } else {
+      visSince.forEach(function (e) { sinceList.appendChild(xoReportEntryLine(e)); });
+    }
+    histWrap.innerHTML = "";
+    var history = data.history || [];
+    var anyHist = false;
+    history.forEach(function (h) {
+      var entries = (h.entries || []).filter(function (e) {
+        return xoEntryMatchesChip(e, state.chip) && xoEntryMatchesSearch(e, state.q);
+      });
+      if (!entries.length) return;
+      anyHist = true;
+      var det = document.createElement("details");
+      det.className = "xo-report-mission";
+      var summary = document.createElement("summary");
+      summary.textContent = (h.title || h.id) + " (" +
+        (h.issue ? "#" + h.issue : h.id) + ") — " + entries.length +
+        (entries.length === 1 ? " entry" : " entries");
+      det.appendChild(summary);
+      entries.forEach(function (e) { det.appendChild(xoReportEntryLine(e)); });
+      histWrap.appendChild(det);
+    });
+    if (!anyHist) histWrap.appendChild(noteEl("Nothing matches yet."));
+  }
+  search.addEventListener("input", function () { state.q = search.value; render(); });
+
+  fetch("/api/xo/report").then(function (r) { return r.json(); })
+    .then(function (fresh) { paint(fresh); })
+    .catch(function () {
+      sinceHead.textContent = "Since you last looked";
+      sinceList.appendChild(noteEl("Could not read the report on this laptop."));
+    });
+
   showOverlay(m.wrap);
 }
 
@@ -5746,6 +5962,24 @@ var ORIENTATION_BRIEFING = {
         { label: "▸ Deploy Main", selector: "#deployMainBtn", surface: "band" },
       ],
     },
+    {
+      // S205: descriptive text only — deliberately NO new keyboard shortcut
+      // this round (ledgered). ◈ Number One already had its own toggle
+      // (S201); this step is the first time the console TELLS you about it,
+      // and about the First Officer's report its menu opens.
+      id: "number-one",
+      title: "7 · Let Number One take the gates",
+      body: "◈ Number One in the top band engages a crew member who can take "
+        + "the gates on your behalf while you are away — a stage parked for "
+        + "an answer, and the look at Verify. It never writes code and it "
+        + "never merges. While it is engaged, press the same control for its "
+        + "menu: the First Officer's report (everything it has done since "
+        + "you last looked, and the full history behind it), changing "
+        + "engine, or turning it off.",
+      refs: [
+        { label: "◈ Number One", selector: "#xoBtn", surface: "band" },
+      ],
+    },
   ],
 };
 
@@ -8732,10 +8966,17 @@ function activityFeed(mi) {
 function renderEvent(ev) {
   var stage = normStage(ev.stage);
   var isGate = ev.type === "gate";
+  // S205: Number One's OWN posts (bot: "number-one") get the peach accent —
+  // the one warm token no card state has claimed (ADR-007) — instead of the
+  // plain stage colour, so they read at a glance beside the ordinary
+  // lcars-bot lines they are interleaved with, IN the stage band where they
+  // happened (never a second feed).
+  var isNumberOne = ev.bot === "number-one";
   // S134: a proof-gate event gets an extra accent class (green/red/teal) so its
   // outcome reads at a glance; every other event keeps its plain stage accent.
   var proofCls = PROOF_EVENT_CLASS[ev.type];
-  var e = el("div", "evt s-" + (isGate ? "gate" : stage) + (proofCls ? " " + proofCls : ""));
+  var e = el("div", "evt s-" + (isGate ? "gate" : stage) +
+    (proofCls ? " " + proofCls : "") + (isNumberOne ? " evt-number-one" : ""));
   e.appendChild(el("div", "marker"));
   var ec = el("div", "ec");
   var when = ev.ts != null ? fmtTs(ev.ts) + " · " : "";
@@ -8750,7 +8991,8 @@ function renderEvent(ev) {
     setMd(txt, sanitizeGateText(ev.text || ev.detail));
     ec.appendChild(txt);
   }
-  ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
+  ec.appendChild(el("div", "bot" + (isNumberOne ? " bot-number-one" : ""),
+    isNumberOne ? "◈ posted by Number One" : "⬡ posted by lcars-bot"));
   e.appendChild(ec);
   return e;
 }
@@ -9268,6 +9510,11 @@ var PROOF_EVENT_CLASS = {
 };
 
 function headlineFor(ev) {
+  // S205: Number One's own entries carry their headline pre-built, off the
+  // RECORDED action name (adapter's `_number_one_label` — never re-derived
+  // by parsing `ev.text`, which is a plain-English DETAIL sentence and would
+  // sometimes be empty).
+  if (ev.type === "number-one" && ev.head) return ev.head;
   // S134: the worker-session marker. On a bounce (gate rejection → fresh worker,
   // up to 3 sessions) each unified-TDD session emits a ticket_attempt with
   // phase=tdd + attempt=N. Surface that session number so multiple worker passes
@@ -9321,10 +9568,22 @@ function detailTabs(mi) {
     ["adr", "ADRs", adrPane(mi)],
     ["tk", "Tickets · Waves", ticketsPane(mi)],
   ];
+  // S205: the ◈ Number One tab, LAST in the bar (the mock, captain-approved
+  // 2026-09-11) — and PRD stays first (behaviour 1): pushing it onto the END
+  // of `defs`, never re-ordering the array above, is what keeps that true.
+  // Present whenever the mission carries ANY `numberOne` block at all — a
+  // LOCAL mission with a journal gets the rich report; a mission Number One
+  // has engaged but not yet looked at, or a REMOTE card (score/status from
+  // its labels only, S203), gets the tab too, with a pane that says exactly
+  // what it can and cannot show (xoReportPane decides which).
+  if (mi.numberOne && typeof mi.numberOne === "object") {
+    defs.push(["xo", "◈ Number One", xoReportPane(mi)]);
+  }
   defs.forEach(function (d, idx) {
     var key = d[0], name = d[1], pane = d[2];
     var tab = el("span", "tab" + (idx === 0 ? " on" : ""), name);
     tab.setAttribute("data-tab", key);
+    if (key === "xo") tab.classList.add("tab-xo");
     pane.classList.add("tabpane");
     pane.setAttribute("data-pane", key);
     if (idx === 0) pane.classList.add("on");
@@ -9393,6 +9652,93 @@ function adrPane(mi) {
     }
     pane.appendChild(adr);
   });
+  return pane;
+}
+
+/* S205: the ◈ Number One tab's pane. Score block (first look → after the
+   fixes, with the stated meaning), the engine, "Gaps found" with shot
+   thumbnails captioned "shot k → log #n · status" (READ off `report.logs`
+   and `report.shotsDir` — the RECORDED xo/look.txt pointer, never re-derived
+   by guessing which shot goes with which log), and the one line the captain
+   was told to always see: screenshots stay local, the report text and score
+   travel with the issue.
+
+   A mission with NO `report` (no local journal — a bare-engaged mission
+   Number One hasn't looked at yet, or a REMOTE card whose score/status came
+   off its GitHub labels, S203) gets a plain sentence instead: never a blank
+   pane, and never the rich content it cannot actually show. */
+function xoShotUrl(mid, shotsDir, name) {
+  var dir = String(shotsDir || "shots").split("/").filter(function (p) { return p; })
+    .map(enc).join("/");
+  return "/api/xo/shot/" + enc(mid) + "/" + (dir ? dir + "/" : "") + enc(name) + ".png";
+}
+
+function xoReportPane(mi) {
+  var pane = el("div", "xo-pane");
+  var xo = mi.numberOne || {};
+  var report = xo.report;
+
+  if (!report) {
+    var note = el("p");
+    note.style.cssText = "font-size:13px;color:var(--lcars-text-dim)";
+    note.textContent = isRemote(mi)
+      ? "The report lives on the issue — open it on GitHub."
+      : "Number One hasn't looked at this one yet.";
+    pane.appendChild(note);
+    return pane;
+  }
+
+  var scoreBox = el("div", "xo-score-block");
+  function scoreLine(label, value) {
+    var line = el("div");
+    var b = el("b", "xo-score-label", label + ": ");
+    line.appendChild(b);
+    line.appendChild(document.createTextNode(String(value || "unknown").toUpperCase()));
+    scoreBox.appendChild(line);
+  }
+  scoreLine("Intent match", report.score);
+  if (report.score2) scoreLine("After the fixes", report.score2);
+  pane.appendChild(scoreBox);
+
+  if (xo.engine) {
+    var engLine = el("p", "xo-engine-line", "Engine: " + xo.engine);
+    pane.appendChild(engLine);
+  }
+
+  var logs = report.logs || [];
+  if (logs.length) {
+    pane.appendChild(el("div", "mock-cap", "Gaps found"));
+    logs.forEach(function (g) {
+      var row = el("div", "xo-gap-row");
+      row.appendChild(el("div", "xo-gap-title", g.title || ("log #" + g.n)));
+      var shotsWrap = el("div", "xo-shots");
+      (g.shots || []).forEach(function (shotName, k) {
+        var cell = el("div", "xo-shot-cell");
+        var caption = "shot " + (k + 1) + " → log #" + g.n + " · " + (g.status || "pending");
+        var thumb = el("img", "xo-thumb");
+        thumb.src = xoShotUrl(mi.id, report.shotsDir, shotName);
+        thumb.alt = caption;
+        thumb.title = caption;
+        thumb.loading = "lazy";
+        // S164 standard: a broken image must never sit there silent —
+        // swap in a plain placeholder rather than the browser's own icon.
+        thumb.addEventListener("error", function () {
+          thumb.replaceWith(el("div", "xo-thumb-broken", "picture unavailable"));
+        }, { once: true });
+        cell.appendChild(thumb);
+        cell.appendChild(el("div", "xo-thumb-cap", caption));
+        shotsWrap.appendChild(cell);
+      });
+      row.appendChild(shotsWrap);
+      pane.appendChild(row);
+    });
+  } else {
+    pane.appendChild(noteEl("Also checked, fine — no gaps found on this look."));
+  }
+
+  pane.appendChild(el("p", "xo-shots-note",
+    "Screenshots live on this laptop; the report text and the score travel "
+    + "with the issue."));
   return pane;
 }
 

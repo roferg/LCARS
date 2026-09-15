@@ -1,0 +1,17 @@
+[
+  {"goto": "http://127.0.0.1:50306/", "settle": 1200},
+  {"wait": ".card[data-mid]", "timeout": 15000},
+  {"sleep": 500},
+  {"click": "#helpBtn"},
+  {"sleep": 400},
+  {"eval": "(function(){var t=document.body.innerText; var i=t.indexOf('Number One'); return i<0?'NOT FOUND':t.slice(Math.max(0,i-80), i+300);})()", "log": true},
+  {"eval": "(function(){var t=document.body.innerText; var i=t.toLowerCase().indexOf('first officer'); return i<0?'NOT FOUND':t.slice(Math.max(0,i-80), i+300);})()", "log": true},
+  {"shot": "29-help-console", "full": true},
+  {"eval": "typeof closeOverlay === 'function' ? closeOverlay() : null"},
+  {"sleep": 300},
+  {"click": "#xoBtn"},
+  {"wait": ".xo-menu-item", "timeout": 8000},
+  {"eval": "(function(){var items=document.querySelectorAll('.xo-menu-item'); var target=Array.prototype.filter.call(items,function(b){return /Change engine/.test(b.textContent);})[0]; if(target) target.click(); return !!target;})()", "log": true},
+  {"sleep": 400},
+  {"shot": "30-change-engine-picker", "full": true}
+]

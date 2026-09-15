@@ -1,0 +1,8 @@
+[
+  {"click": ".tab[data-tab=\"xo\"]"},
+  {"sleep": 300},
+  {"shot": "03-detail-engaged-xo-tab", "full": true},
+  {"shot": "03b-detail-header-crop", "clip": ".det-head", "pad": 6},
+  {"eval": "typeof closeOverlay === 'function' ? closeOverlay() : null"},
+  {"sleep": 300}
+]

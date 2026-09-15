@@ -1,0 +1,3 @@
+[
+  {"eval": "typeof closeOverlay === 'function' ? closeOverlay() : null"}
+]

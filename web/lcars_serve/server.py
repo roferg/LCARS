@@ -404,6 +404,49 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 except Exception:
                     rec = None
                 return self._json({"baseFreshness": rec})
+            # GET /api/xo/report — the First Officer's report, repo-wide
+            # (S205): everything since `.git/lcars/xo-seen.json`'s recorded
+            # lastSeenAt, then history, folded per mission. LOCAL adapter
+            # only — a remote/github board has no local journal to read. NOT
+            # gated on `actions`, same posture as base-freshness above: this
+            # is a pure disk read, so a --read-only LOCAL board answers it
+            # too (nothing here can mutate a mission).
+            if path == "/api/xo/report":
+                reader = getattr(adapter, "xo_report", None)
+                if not callable(reader):
+                    return self._error(
+                        404, "this board has no local Number One journal to "
+                             "report (it is not attached to a local checkout)")
+                try:
+                    rec = reader()
+                except Exception:
+                    rec = None
+                if not isinstance(rec, dict):
+                    rec = {"lastSeenAt": None,
+                           "since": {"count": 0, "entries": []},
+                           "history": []}
+                return self._json(rec)
+            # GET /api/xo/shot/<mission>/<name> — ONE screenshot off a
+            # mission's own `xo/shots/` tree (S205 behaviour 3). LOCAL
+            # adapter only: `adapter.xo_shot` does not exist on the github
+            # adapter (a remote card has no local shots at all), so this
+            # falls through to a 404 there. PATH-SAFETY IS A SECURITY
+            # BOUNDARY: containment is checked by REAL PATH, in
+            # `local_adapter._xo_shot_path` — never by rejecting a literal
+            # `..`, which a symlink or an encoded segment would slip past.
+            if path.startswith("/api/xo/shot/"):
+                rest = path[len("/api/xo/shot/"):]
+                mid, _, rel = rest.partition("/")
+                reader = getattr(adapter, "xo_shot", None)
+                if not (mid and callable(reader)):
+                    return self._error(404, "not found")
+                try:
+                    got = reader(mid, rel)
+                except Exception:
+                    got = None
+                if got is None:
+                    return self._error(404, "not found")
+                return self._send_shot(*got)
             if path == "/api/events":
                 return self._sse()
             return self._static(path)
@@ -701,6 +744,21 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 if len(rest) == 1:
                     return actions.xo_off(rest[0])
                 raise _ActionError(404, "no such xo endpoint: %s" % path)
+            # POST /api/xo/seen — ✓ Seen on the First Officer's report (S205).
+            # A benign, per-clone marker write (never a mission's own state),
+            # so it is NOT one of the `_XO_LOCKED_VERBS` — an engaged lock on
+            # mission X has no bearing on the captain marking the REPO-WIDE
+            # report read. Answers with the FRESH report (adapter.xo_report,
+            # the same read GET /api/xo/report serves) so the caller need not
+            # issue a second request to see what changed.
+            if path == "/api/xo/seen":
+                actions.xo_seen()
+                reader = getattr(adapter, "xo_report", None)
+                try:
+                    rec = reader() if callable(reader) else None
+                except Exception:
+                    rec = None
+                return rec if isinstance(rec, dict) else {"seen": True}
             if path.startswith("/api/xo"):
                 raise _ActionError(404, "no such xo endpoint: %s" % path)
             # POST /api/mission/<id>/<verb>[/<sub>]
@@ -1080,6 +1138,21 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # NO Access-Control-Allow-Origin: unlike the board's own assets this
             # is untrusted content and nothing off-origin should be able to read
             # it back.
+            self.end_headers()
+            self.wfile.write(body)
+
+        # -- an xo shot: OUR OWN screenshot, off our own disk (S205) ----------
+        # Unlike the holodeck preview above this is a picture the DRIVER took
+        # of the captain's own build, never model-written content — so it gets
+        # a plain image response, no CSP/sandbox story required. `no-store`
+        # for the same reason board.js/board.css get it: a stale cached shot
+        # after a re-check would show the captain the WRONG picture.
+        def _send_shot(self, body, ctype):
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
             self.end_headers()
             self.wfile.write(body)
 

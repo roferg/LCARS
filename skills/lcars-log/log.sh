@@ -692,10 +692,29 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
 }
 
 # --- file every bug, collecting rows for the summary -----------------------
+#
+# S205 ruling 3 (2026-09-14, false success): `file_one_bug` validates its PRD
+# (title line, **Type:** bug) BEFORE it ever `mkdir`s the mission dir, and dies
+# with a plain message when it does not pass. But it runs inside
+# `$(file_one_bug ...)` — a COMMAND SUBSTITUTION, hence a subshell — so its
+# `exit 1` only ended that subshell; the loop below never looked at the
+# subshell's exit status, so a validation failure still appended an (empty)
+# row to ROWS and the summary printed "1 bug mission filed and linked to #107"
+# with an empty id and "Run `lcars run ` to begin." — a false green for a bug
+# that was never mkdir'd. Cure: capture the exit status of EACH bug filing and
+# refuse to print any success summary the moment one fails. The validation
+# error itself already reached the captain (die's own stderr write happens
+# inside the subshell, which does not capture stderr — only stdout is
+# captured), so nothing here re-prints it; this only stops the false claim.
 ROWS=()
 i=0
 for prd in "${PRDS[@]}"; do
-  ROWS+=("$(file_one_bug "$prd" "${OVERRIDES[$i]:-}" "${PER_BUG_ATTACH[$i]:-}")")
+  row="$(file_one_bug "$prd" "${OVERRIDES[$i]:-}" "${PER_BUG_ATTACH[$i]:-}")"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$row" ]; then
+    die "could not file the bug PRD $prd — see the error above. No bug mission was filed for it, and this batch stops here (${#ROWS[@]} filed before it)."
+  fi
+  ROWS+=("$row")
   i=$((i + 1))
 done
 

@@ -1,0 +1,15 @@
+[
+  {"goto": "http://127.0.0.1:64781/", "settle": 1200},
+  {"wait": ".board", "timeout": 15000},
+  {"shot": "04-board-with-remote-card", "full": true},
+  {"shot": "04b-remote-card-crop", "clip": ".card[data-mid=\"112\"]", "pad": 8},
+  {"click": ".card[data-mid=\"112\"]"},
+  {"wait": ".det-head", "timeout": 10000},
+  {"sleep": 400},
+  {"shot": "05-remote-detail", "full": true},
+  {"click": ".tab[data-tab=\"xo\"]"},
+  {"sleep": 300},
+  {"shot": "06-remote-detail-xo-tab", "full": true},
+  {"shot": "06b-remote-xo-pane-crop", "clip": ".xo-pane", "pad": 10},
+  {"eval": "document.querySelector('.xo-pane') ? document.querySelector('.xo-pane').textContent : 'NO XO PANE'", "log": true}
+]

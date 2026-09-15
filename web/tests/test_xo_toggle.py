@@ -758,10 +758,33 @@ class TheBandToggle(unittest.TestCase):
         self.assertEqual(["Cancel", "◈ Engage"], out["picker"]["foot"])
 
     def test_pressing_it_while_on_stands_the_repo_down(self):
+        # S205: this now goes THROUGH the small ON-state menu (report / change
+        # engine / turn off) rather than dispatching straight off the one
+        # click — the harness follows through to the menu's own "■ Turn off"
+        # item, so the eventual POST is unchanged; see test_pressing_it_while
+        # _on_opens_a_menu below for the menu itself.
         out = _render_band({"numberOne": {"enabled": True, "engine": "copilot"}},
                            click="toggle")
-        self.assertFalse(out["picker"]["open"], "ON → OFF asks nothing")
+        self.assertFalse(out["picker"]["open"], "ON → OFF never asks the "
+                                                "ENGINE picker — that only ever opens OFF")
         self.assertEqual([["/api/xo/off", {}]], out["posts"])
+
+    def test_pressing_it_while_on_opens_a_menu(self):
+        """S205: the band's ON control gains a menu (report / change engine /
+        turn off) instead of dispatching a stand-down off the one click."""
+        out = _render_band({"numberOne": {"enabled": True, "engine": "copilot"}},
+                           click="menu")
+        self.assertTrue(out["menu"]["open"])
+        self.assertEqual(["◈ First Officer's report", "Change engine",
+                          "■ Turn off"], out["menu"]["items"])
+        self.assertEqual([], out["posts"], "opening the menu posts nothing yet")
+
+    def test_pressing_it_while_off_never_opens_the_menu(self):
+        """The menu is the ON-state's own affordance — OFF still goes straight
+        to the engine picker, exactly as before this round."""
+        out = _render_band({"numberOne": {"enabled": False}}, click="menu")
+        self.assertFalse(out["menu"]["open"])
+        self.assertTrue(out["picker"]["open"])
 
     def test_engaging_posts_the_chosen_engine(self):
         out = _render_band({"numberOne": {"enabled": False},
