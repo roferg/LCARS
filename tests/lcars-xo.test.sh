@@ -1156,6 +1156,28 @@ xo_evaluate() { # <repo> <id> [extra env...]
       bash "$SCRIPT" evaluate --mission "$id" 2>&1 )
 }
 
+# xo_evaluate_with <repo> <id> <driver> <worker-bin> — S210's B23 needs a
+# driver OTHER than DRIVE_STUB and a worker OTHER than EV_SHIM on some runs
+# (a driver that also writes a readout.json, and a worker shim that records
+# whether it saw observations.json). `xo_evaluate` above hardcodes both as
+# literal prefix-assignments to its own final command, so passing a
+# replacement through its environment does not work — a command-prefix
+# assignment always wins over an inherited env var of the same name for that
+# one command. This is the same function with those two swapped for
+# parameters instead of constants; everything else is identical.
+xo_evaluate_with() { # <repo> <id> <driver> <worker-bin>
+  local repo="$1" id="$2" driver="$3" workerbin="$4"
+  ( cd "$repo" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+      LCARS_XO_DRIVER="$driver" LCARS_NODE_BIN=bash \
+      LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+      LCARS_WORKER_BIN="$workerbin" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 \
+      bash "$SCRIPT" evaluate --mission "$id" 2>&1 )
+}
+
 # A verdict body over the three-criterion contract this fixture declares.
 # $1 prd-1 status  $2 prd-2 status  $3 t-1-ac1 status  $4 worker score  $5 gaps
 ev_verdict() {
@@ -2927,6 +2949,189 @@ check "B22. CLI's since-count == the API's since-count, same fixture" \
   "[ '$cli_since_count' = '$api_since_count' ]"
 check "B22. CLI's history mission-count == the API's, same fixture" \
   "[ '$cli_hist_missions' = '$api_hist_missions' ]"
+
+# ==========================================================================
+# B23 (S210) — THE OBSERVATIONS PASS AND THE NO-DRAWING PATH, WIRED THROUGH
+# `xo.sh evaluate` ITSELF, not just their own scripts in isolation.
+#
+# `xo-drive.js`, `xo-observe.py`, `xo-score.py` and `xo-criteria.py` are all
+# proven directly, against real headless Chrome and real crafted input, in
+# tests/lcars-xo-observe.test.sh — that is where "never fake the layer you are
+# changing" is honoured for the geometry and the arithmetic. What is faked
+# HERE (the driver, the launch, the worker) is exactly what every other block
+# in this file fakes — this section exists to prove the WIRING: that
+# `evaluate` actually CALLS xo-observe.py at the right moment, hands its
+# output to the worker, folds it into report.md, and enforces the no-drawing
+# guard when there really is no `attachments/` dir on a real mission.
+# ==========================================================================
+echo
+echo "B23. the observations pass and the no-drawing path, wired through evaluate"
+
+# The stub driver, PLUS a `readout.json` carrying two touching buttons — the
+# one thing DRIVE_STUB never wrote, because before S210 nothing ever read it.
+DRIVE_STUB_CROWDED="$EVDIR/xo-drive-crowded.sh"
+cat >"$DRIVE_STUB_CROWDED" <<DSC
+#!/usr/bin/env bash
+printf 'drive %s\n' "\$*" >>"\$XO_DRIVE_LOG"
+out=""
+while [ \$# -gt 0 ]; do case "\$1" in --out) out="\$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "\$out"
+printf 'PNG\n' >"\$out/shot-01.png"
+printf '{"shot":"shot-01"}\n' >"\$out/shot-01.json"
+printf 'shot-01 — full page\n' >"\$out/shot-01.txt"
+cat >"\$out/readout.json" <<'RJ'
+{"url": "http://127.0.0.1:4310/", "notes": [], "shots": [{"name": "shot-01"}],
+ "page": {"elements": [
+   {"id": "add-button", "tag": "button", "text": "ADD", "interactive": true,
+    "box": {"x": 20, "y": 20, "w": 80, "h": 30}, "color": "rgb(0,0,0)",
+    "overflowX": 0, "overflowY": 0},
+   {"id": "cancel-button", "tag": "button", "text": "CANCEL", "interactive": true,
+    "box": {"x": 100, "y": 20, "w": 80, "h": 30}, "color": "rgb(0,0,0)",
+    "overflowX": 0, "overflowY": 0}
+ ]}}
+RJ
+printf '{"url":"http://127.0.0.1:4310/","allPainted":true}\n'
+exit 0
+DSC
+chmod +x "$DRIVE_STUB_CROWDED"
+
+# The worker shim, extended to record whether IT was handed observations.json
+# — the thing that proves "the worker may cite one, the skill does not keep it
+# to itself" rather than just asserting a file exists somewhere on disk.
+export XO_OBS_SEEN_LOG="$TMPROOT/obs-seen.txt"; : >"$XO_OBS_SEEN_LOG"
+EV_SHIM_OBS="$EVDIR/ev-worker-obs"
+cat >"$EV_SHIM_OBS" <<EVO
+#!/usr/bin/env bash
+printf 'worker %s\n' "\$*" >>"\$XO_WORKER_LOG"
+printf 'worker %s\n' "\$*" >>"\$XO_WORKER_LOG.all"
+if [ -s "\${LCARS_XO_INPUT_DIR:-/nonexistent}/observations.json" ]; then
+  printf 'saw observations.json\n' >>"\$XO_OBS_SEEN_LOG"
+else
+  printf 'NO observations.json\n' >>"\$XO_OBS_SEEN_LOG"
+fi
+out="\${LCARS_WORK_OUT:-}"
+[ -n "\${XO_EV_BODY:-}" ] && printf '%s\n' "\$XO_EV_BODY" >"\$out/\${XO_EV_FILE:-xo-verdict.json}"
+exit 0
+EVO
+chmod +x "$EV_SHIM_OBS"
+
+# --------------------------------------------------------------------------
+# B23a. A crowded pair is a real observation on the real mission's report —
+#     its own section, the thresholds printed, and the worker sees the file.
+# --------------------------------------------------------------------------
+repo23a="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m23a="$(plant_verify "$repo23a" "lcars-20260914-201")"
+: >"$XO_WORKER_LOG"; : >"$XO_OBS_SEEN_LOG"
+out23a="$(XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_with "$repo23a" "lcars-20260914-201" "$DRIVE_STUB_CROWDED" "$EV_SHIM_OBS")"
+check "B23a. observations.json was written by the SKILL, unasked" \
+  "[ -s '$m23a/xo/observations.json' ]"
+check "B23a. …with the crowded pair caught, in house style — no harness words" \
+  "grep -q 'the ADD and CANCEL buttons are touching' '$m23a/xo/observations.json' && ! grep -Eq 'bbox|#add-button' '$m23a/xo/observations.json'"
+check "B23a. the WORKER was handed observations.json — it can cite it" \
+  "grep -q 'saw observations.json' '$XO_OBS_SEEN_LOG'"
+check "B23a. it landed in report.md — the captain's copy — in its OWN section" \
+  "grep -q 'Things I noticed' '$m23a/xo/report.md'"
+check "B23a. …with the thresholds PRINTED, not just applied" \
+  "grep -q '8 px apart' '$m23a/xo/report.md'"
+check "B23a. the look JOURNALLED that it observed something (an action, per SKILL.md)" \
+  "grep -q '\"action\": \"observed\"' '$m23a/number-one.jsonl' && grep -q '\"count\": 1' '$m23a/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B23b. AN OBSERVATION NEVER MOVES THE SCORE — proven at the WIRING level:
+#     the identical worker verdict, through the identical evaluate path, once
+#     with a driver that found nothing to observe and once with the crowded
+#     one above. Same ledger, same score, either way.
+# --------------------------------------------------------------------------
+repo23b1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m23b1="$(plant_verify "$repo23b1" "lcars-20260914-202")"
+: >"$XO_WORKER_LOG"
+XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_with "$repo23b1" "lcars-20260914-202" "$DRIVE_STUB" "$EV_SHIM" >/dev/null
+
+repo23b2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m23b2="$(plant_verify "$repo23b2" "lcars-20260914-203")"
+: >"$XO_WORKER_LOG"
+XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_with "$repo23b2" "lcars-20260914-203" "$DRIVE_STUB_CROWDED" "$EV_SHIM_OBS" >/dev/null
+
+check "B23b. no observations at all -> the report has no Observations section" \
+  "! grep -q 'Things I noticed' '$m23b1/xo/report.md'"
+check "B23b. …but WITH a crowded pair, it does" \
+  "grep -q 'Things I noticed' '$m23b2/xo/report.md'"
+check "B23b. …and the SCORE is identical either way (HIGH, all-met)" \
+  "[ \"\$(python3 -c 'import json;print(json.load(open(\"'$m23b1'/xo/verdict.json\"))[\"score\"])')\" = 'high' ] && [ \"\$(python3 -c 'import json;print(json.load(open(\"'$m23b2'/xo/verdict.json\"))[\"score\"])')\" = 'high' ]"
+check "B23b. …and the LEDGER (criterion statuses) is identical either way" \
+  "diff <(python3 -c 'import json;print(json.dumps(json.load(open(\"'$m23b1'/xo/verdict.json\"))[\"criteria\"], sort_keys=True))') <(python3 -c 'import json;print(json.dumps(json.load(open(\"'$m23b2'/xo/verdict.json\"))[\"criteria\"], sort_keys=True))') >/dev/null"
+
+# --------------------------------------------------------------------------
+# B23c. A MISSION WITH NO DRAWING AT ALL — the look still runs, still judges
+#     the PRD and plan criteria, and a `drawnAt` criterion the worker rated
+#     `met` still comes back "I could not check this against a drawing" —
+#     the honest half of this feature, proven with NO attachments/ directory
+#     anywhere on disk, not a drawing that merely names nothing.
+# --------------------------------------------------------------------------
+plant_verify_no_drawing() { # <repo> <id>
+  local repo="$1" id="$2" m
+  m="$repo/.git/lcars/missions/$id"
+  mkdir -p "$m"
+  {
+    printf '{\n'
+    printf '  "numberOne": {"status": "engaged", "engine": "copilot", "since": "2026-09-14T10:00:00Z"},\n'
+    printf '  "id": "%s",\n' "$id"
+    printf '  "type": "feature",\n'
+    printf '  "title": "The task board, no mockup this time",\n'
+    printf '  "stage": "verify",\n'
+    printf '  "prUrl": "https://github.com/x/y/pull/9",\n'
+    printf '  "created": "2026-09-14T10:00:00Z",\n'
+    printf '  "githubIssue": 91\n'
+    printf '}\n'
+  } >"$m/state.json"
+  cat >"$m/prd.md" <<'PRD'
+# The task board, no mockup this time
+
+## 2. Acceptance criteria
+- The board shows every open task in one list.
+
+## 3. Out of scope
+Email.
+PRD
+  cat >"$m/plan.json" <<'PL'
+{"tickets": [{"id": "t-9", "changesScreenAppearance": true,
+  "acceptanceCriteria": [
+    {"text": "The status line sits under the add row.", "drawnAt": "#status-line, beneath the add row"}]}]}
+PL
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m/state.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+  printf '%s' "$m"
+}
+repo23c="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m23c="$(plant_verify_no_drawing "$repo23c" "lcars-20260914-204")"
+check "B23c. no attachments/ directory exists on this mission at all" \
+  "[ ! -d '$m23c/attachments' ]"
+: >"$XO_WORKER_LOG"
+verdict23c='{"score":"high","summary":"Looks perfect, matches the drawing exactly.","criteria":[{"id":"prd-1","text":"open tasks in one list","status":"met","shot":"shot-01","note":"saw the list"},{"id":"t-9-ac1","text":"status line under add row","status":"met","shot":"shot-01","note":"I compared it to the drawing and it lines up"}],"gaps":[]}'
+out23c="$(XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$verdict23c" \
+  LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_WORKER_BIN="$EV_SHIM" \
+  xo_evaluate "$repo23c" "lcars-20260914-204")"
+check "B23c. the look RAN — criteria.json was built from the PRD and the plan alone" \
+  "[ -s '$m23c/xo/criteria.json' ] && grep -q '\"hasDrawing\": false' '$m23c/xo/criteria.json'"
+check "B23c. …and the drawnAt criterion, though the worker called it MET, comes back untested" \
+  "python3 -c 'import json,sys
+d=json.load(open(\"$m23c/xo/verdict.json\"))
+e=[c for c in d[\"criteria\"] if c[\"id\"]==\"t-9-ac1\"][0]
+sys.exit(0 if e[\"status\"]==\"untested\" else 1)'"
+check "B23c. …with the exact honest sentence, never silently MET" \
+  "grep -q \"I could not check this against a drawing, because there isn't one\" '$m23c/xo/verdict.json'"
+check "B23c. the PRD's own (non-drawnAt) criterion is judged normally — MET" \
+  "python3 -c 'import json,sys
+d=json.load(open(\"$m23c/xo/verdict.json\"))
+e=[c for c in d[\"criteria\"] if c[\"id\"]==\"prd-1\"][0]
+sys.exit(0 if e[\"status\"]==\"met\" else 1)'"
+check "B23c. …so the score is NOT the worker's false HIGH" \
+  "[ \"\$(python3 -c 'import json;print(json.load(open(\"'$m23c'/xo/verdict.json\"))[\"score\"])')\" != 'high' ]"
+check "B23c. the launch and the browser both ran normally (no attachments is not an error)" \
+  "grep -q -- '--stop' '$XO_LAUNCH_LOG' && ! printf '%s' \"\$out23c\" | grep -qi 'could not launch'"
 
 # ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.

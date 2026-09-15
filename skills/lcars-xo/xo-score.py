@@ -2,8 +2,29 @@
 """xo-score.py — validate the worker's verdict, then DERIVE the score from it.
 
     python3 xo-score.py <xo-verdict.json> <criteria.json> <out verdict.json>
+                         [<observations.json>]
 
 THIS IS THE HEART OF THE SESSION: the model reasons, the skill decides.
+
+THE FOURTH ARGUMENT is optional and is S210's: `xo-observe.py`'s output, the
+OBSERVATIONS pass (crowding, overlap, a misaligned row, clipped text — things
+no drawing ever states, computed from the same boxes the worker looked at).
+They are rendered into their own section of `report.md`, below, and NOTHING
+ABOUT THEM EVER TOUCHES THE SCORE: this file's derivation reads only the
+ledger and the contract, exactly as it did before observations existed, and an
+`observations.json` full of findings changes not one character of `score` or
+`derivation`. If it is missing, or empty, the section is simply not written —
+a mission with no observations reads exactly as one with the argument omitted.
+
+THE NO-DRAWING GUARD (S210) is the other new thing here. `criteria.json` now
+carries `hasDrawing` (xo-criteria.py) — the plain fact of whether this mission
+was ever handed a holodeck drawing at all. When it was not, every criterion the
+plan marked `drawnAt` is forced to `untested` with one fixed sentence, WHATEVER
+THE WORKER WROTE — this is the one place in this file that overrules the
+worker's own rating rather than merely checking its citation, because "I could
+not check this against a drawing, because there isn't one" is not a judgement
+call available to get right or wrong; it is a fact about the mission's own
+attachments, and the skill knows it before the worker ever looks.
 
 Number One writes a ledger — one line per criterion, met / gap / untested, each
 citing the shot that shows it — and a score of its own. **The score it wrote is
@@ -47,6 +68,12 @@ import sys
 
 VALID_SCORES = ("high", "medium", "low")
 VALID_STATUS = ("met", "gap", "untested")
+
+# THE ONE SENTENCE (S210). Byte-identical wherever it is written, because it is
+# a fact ("there is no drawing"), not prose a worker composed — and a test that
+# wants to be sure the honest answer was given, not a paraphrase of it, can
+# match this string.
+NO_DRAWING_NOTE = "I could not check this against a drawing, because there isn't one"
 
 
 # A CELL THE CAPTAIN CAN READ (fix round 1, D7). A hard `[:160]` cut the
@@ -109,11 +136,36 @@ def load(path, what):
             bad("the %s is not JSON" % what)
 
 
+def load_observations(path):
+    """Best-effort: no fourth argument, a missing file, or a file with nothing
+    in it are all the same case — no observations section, no thresholds
+    printed, exactly as if S210 had never happened for this look."""
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    obs = doc.get("observations")
+    if not isinstance(obs, list):
+        obs = []
+    return {
+        "observations": [o for o in obs if isinstance(o, dict) and o.get("message")],
+        "thresholds": doc.get("thresholds") if isinstance(doc.get("thresholds"), dict) else {},
+        "elementCount": doc.get("elementCount"),
+    }
+
+
 def main():
     if len(sys.argv) < 4:
-        sys.stderr.write("usage: xo-score.py <verdict> <criteria> <out>\n")
+        sys.stderr.write("usage: xo-score.py <verdict> <criteria> <out> [<observations>]\n")
         return 2
     vpath, cpath, opath = sys.argv[1], sys.argv[2], sys.argv[3]
+    obs_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    observations = load_observations(obs_path)
 
     doc = load(vpath, "verdict")
     if not isinstance(doc, dict):
@@ -123,6 +175,7 @@ def main():
     contract_list = contract.get("criteria") if isinstance(contract, dict) else []
     if not isinstance(contract_list, list):
         contract_list = []
+    has_drawing = bool(isinstance(contract, dict) and contract.get("hasDrawing"))
     primary = set(str(c.get("id")) for c in contract_list
                   if isinstance(c, dict) and c.get("primary"))
     contract_by_id = {str(c.get("id")): c for c in contract_list if isinstance(c, dict)}
@@ -201,6 +254,27 @@ def main():
             "note": "I never got to this one, so it is unchecked", "primary": cid in primary,
         })
         notes.append("%s was on the list you gave me and I never rated it" % cid)
+
+    # THE NO-DRAWING GUARD (S210). NEVER SILENTLY MET. A criterion the plan
+    # marked `drawnAt` names a place IN A DRAWING to compare the app against —
+    # and if this mission has no drawing at all, no amount of worker confidence
+    # makes that comparison possible. This overrules whatever status the worker
+    # gave, on purpose: the honest answer here is a fact about the mission's own
+    # attachments, not something a look could ever get right by trying harder.
+    if not has_drawing:
+        for entry in ledger:
+            row = contract_by_id.get(entry["id"]) or {}
+            if not row.get("drawnAt"):
+                continue
+            if entry["status"] == "untested" and entry["note"] == NO_DRAWING_NOTE:
+                continue
+            notes.append("%s asks to be checked against the drawing, but this "
+                         "mission has none, so I am marking it not-checkable "
+                         "rather than trusting what the look called it"
+                         % entry["id"])
+            entry["status"] = "untested"
+            entry["note"] = NO_DRAWING_NOTE
+            entry.pop("shot", None)
 
     # A contradiction naming a criterion that is no longer contradicted in the
     # ledger (downgraded above for want of a shot) must not still count.
@@ -285,6 +359,12 @@ def main():
     }
     if notes:
         out["ledgerNotes"] = notes
+    if observations and observations["observations"]:
+        # CARRIED THROUGH, NOT RECOMPUTED. The observations were already final
+        # when xo-observe.py wrote them; this file is the one place they get
+        # rendered to the captain, never a second place they get decided.
+        out["observations"] = observations["observations"]
+        out["observationThresholds"] = observations["thresholds"]
 
     os.makedirs(os.path.dirname(os.path.abspath(opath)), exist_ok=True)
     with open(opath, "w", encoding="utf-8") as fh:
@@ -345,6 +425,25 @@ def main():
                 w("- %s — %s. *(%s)*\n" % (
                     clip(e["text"], 120) or "this one",
                     unstop(e["note"] or "I could not check this"), e["id"]))
+        # OBSERVATIONS — THEIR OWN SECTION, NEVER THE SCORE (S210). These do not
+        # come from the drawing or the PRD; they are things a person would just
+        # SEE — two controls touching, a row out of line, text spilling past its
+        # own box — measured from the same boxes the ledger above was judged
+        # from. They never moved the score you read at the top of this report.
+        if observations and observations["observations"]:
+            w("\n### Things I noticed that are not on your list\n\n")
+            w("None of these come from your drawing or your PRD — they never "
+              "change the score above. I am just telling you what I saw.\n\n")
+            for o in observations["observations"]:
+                w("- %s\n" % o.get("message", ""))
+            th = observations["thresholds"] or {}
+            w("\n*The numbers I used: I flag two controls less than %s px "
+              "apart, a row whose left edge is more than %s px off from the "
+              "others, and text that needs more than %s px of room it does "
+              "not have. Tell me if these are wrong for your eye — that "
+              "calibration is yours to make.*\n" % (
+                  th.get("gapPx", "?"), th.get("misalignPx", "?"),
+                  th.get("overflowPx", "?")))
         if out["alsoChecked"]:
             w("\n**I also looked at:** " + "; ".join(out["alsoChecked"]) + "\n")
         if out["escalations"]:
@@ -361,6 +460,8 @@ def main():
     print("WHY\t" + why)
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))
     print("SUMMARY\t" + summary.replace("\n", " "))
+    if observations is not None:
+        print("OBSERVATIONS\t%d" % len(observations["observations"]))
     for n in notes:
         print("NOTE\t" + n.replace("\n", " "))
     return 0

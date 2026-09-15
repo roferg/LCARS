@@ -121,6 +121,23 @@ The order is the contract:
    from is in its journal line, and `xo/look.txt` points `file-logs` at the one
    the verdict came from. Before this, a second look that took fewer shots than
    the first inherited the first's leftovers and reasoned about them as current.
+
+   **Every visible element gets geometry, not just the drawing's named places
+   (S210).** `xo-drive.js` walks the whole rendered DOM and records a box, a
+   computed colour and a couple of DOM facts for every visible element, up to
+   `--element-cap` (default 300) — a dense page says how many it captured and
+   how many it dropped, in the record, never in silence.
+3b. **`xo/observations.json` — computed by the SKILL, not asked of the
+   worker** (`xo-observe.py`, arithmetic over Round 0's boxes). Crowding,
+   overlap, a misaligned row, clipped text: things no drawing states, so
+   nothing ever asked the model to notice them. Each reads the way a person
+   would say it — *"the ADD and CANCEL buttons are touching — 0 px between
+   them"* — never harness vocabulary. **They are not gaps.** They never move
+   the score, they live in their own section of `xo/report.md` (and the living
+   comment, which renders it verbatim), and the worker may cite one as
+   evidence for a real gap but may never invent a criterion from one. The
+   thresholds used are printed at the bottom of that section, because only the
+   captain can calibrate them against his own eye.
 4. **Up to three worker rounds.** Each round Number One writes EITHER
    `xo-actions.json` (it wants to look further — at most 12 actions, every
    screenshot named) OR `xo-verdict.json`. No verdict by the end of round three
@@ -138,6 +155,17 @@ The order is the contract:
    **A worker score that disagrees with its own ledger is overwritten, and the
    disagreement is journaled** (`score-overruled`). Both scores stay in
    `xo/verdict.json`.
+
+   **NEVER SILENTLY MET, with no drawing (S210).** `criteria.json` carries
+   `hasDrawing` (`xo-criteria.py`, true only when `attachments/` holds a
+   mockup). When it is false, every `drawnAt` criterion is FORCED to
+   `untested` — *"I could not check this against a drawing, because there
+   isn't one"* — whatever the worker rated it. This is the one place
+   `xo-score.py` overrules the worker outright rather than merely checking a
+   citation: it is a fact about the mission's own attachments, not a
+   judgement call. A mission with no PRD-drawn criteria at all can still score
+   HIGH; a `drawnAt` one cannot pass on a look that had nothing to compare it
+   against.
 6. **`launch.sh <id> --stop`** — on every path out.
 7. **The record:** `xo/verdict.json`, `xo/report.md` (what the living comment
    includes), journal lines, `numberOne.score`, status `finished` (a HIGH) or

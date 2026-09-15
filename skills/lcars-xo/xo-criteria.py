@@ -108,6 +108,22 @@ def plan_criteria(doc):
     return out
 
 
+def has_drawing(mission_dir):
+    """Whether this mission was ever handed a holodeck drawing at all — S210.
+
+    `placeNames` being empty is ambiguous: a drawing with no `id=` attributes
+    would also produce an empty list, and that mission DID have a drawing (a
+    bad one). `hasDrawing` is the plain fact underneath both cases — is there
+    an attached mockup at all — and it is what lets xo-score.py tell the
+    difference between "nothing in the drawing named this place" and "there is
+    no drawing to check anything against."
+    """
+    adir = os.path.join(mission_dir, "attachments")
+    if not os.path.isdir(adir):
+        return False
+    return any(fn.lower().endswith((".html", ".htm")) for fn in os.listdir(adir))
+
+
 def place_names(mission_dir):
     """The `id=` vocabulary of every drawing this mission carries.
 
@@ -149,6 +165,7 @@ def main():
     doc = {
         "mission": os.path.basename(os.path.abspath(mdir)),
         "builtBeforeLaunch": True,
+        "hasDrawing": has_drawing(mdir),
         "placeNames": place_names(mdir),
         "criteria": criteria,
     }

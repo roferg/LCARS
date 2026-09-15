@@ -5,13 +5,15 @@
  *   node xo-drive.js --url URL --out DIR
  *                    [--actions FILE] [--place-names FILE]
  *                    [--chrome PATH] [--timeout MS] [--max-actions N]
- *                    [--devtools-port N]
+ *                    [--devtools-port N] [--element-cap N]
  *
  * It opens the app Number One is judging, walks it, and leaves behind EVIDENCE:
  * one PNG per shot, and beside every PNG a `.json` readout of what the page
  * actually said (url, title, a visible-text excerpt, the box + computed colour
- * of each named place, console errors, and the PNG's own pixel statistics) plus
- * a one-line `.txt` caption.
+ * of each named place, a box + computed colour + a couple of cheap DOM facts
+ * for EVERY OTHER visible element up to `--element-cap` (default 300, S210),
+ * console errors, and the PNG's own pixel statistics) plus a one-line `.txt`
+ * caption.
  *
  * WHY NOT tests/drives/browser/cdp.js. That file is 3,900 lines hard-wired to
  * the LCARS board — `.card` polling, `--legend-check`, board-specific paint
@@ -81,6 +83,17 @@ const TIMEOUT = parseInt(arg("timeout", "30000"), 10) || 30000;
 const MAX_ACTIONS = parseInt(arg("max-actions", "12"), 10) || 12;
 const ATTACH_PORT = arg("devtools-port", "");
 const PREFIX = arg("prefix", "shot");
+/* ── EVERY VISIBLE ELEMENT, NOT ONLY THE NAMED ONES (S210) ──────────────────
+ * Before this the readout only ever carried a box for a PLACE NAME — an
+ * element the drawing never mentions had no geometry at all, so "these two
+ * buttons are smooshed together" was literally unmeasurable. `--element-cap`
+ * bounds how many of them the readout carries (a dense page cannot blow up
+ * the readout), and if the page has more than that the readout SAYS so — the
+ * count captured and the count dropped — rather than truncating in silence. */
+const ELEMENT_CAP = (() => {
+  const v = parseInt(arg("element-cap", "300"), 10);
+  return isFinite(v) && v > 0 ? v : 300;
+})();
 /* ── THE SHOT HAS TO BE SHARP (captain's ruling, 2026-09-13) ────────────────
  * In his words: *"the images are very pixely"*.
  *
@@ -352,11 +365,68 @@ async function connect(port) {
   return { ws, send, events };
 }
 
-/* The page reader — ONE evaluate, returning facts and never opinions. */
-const READ = (places) => `(function () {
+/* The page reader — ONE evaluate, returning facts and never opinions.
+ *
+ * `elements` is the S210 addition: a box, a computed colour and a couple of
+ * cheap DOM facts (is it interactive, does its own content overflow it) for
+ * EVERY VISIBLE element on the page — not just the drawing's named places.
+ * Geometry is arithmetic; nothing here decides whether two things are too
+ * close together. That decision is xo-observe.py's, done AFTER the browser
+ * has closed, from exactly these numbers. */
+const READ = (places, cap) => `(function () {
   var ids = ${JSON.stringify(places)};
+  var CAP = ${JSON.stringify(cap)};
   function box(el) { var r = el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; }
-  var out = { url: location.href, title: document.title, textExcerpt: (document.body ? (document.body.innerText || "") : "").replace(/[ \\t\\r\\n]+/g, " ").trim().slice(0, 2000), places: {} };
+  function visible(el, b) {
+    if (b.w <= 0 || b.h <= 0) return false;
+    var s = getComputedStyle(el);
+    if (s.display === "none" || s.visibility === "hidden") return false;
+    // OFF-SCREEN. A box that never lands inside the viewport is not something
+    // the captain (or Number One) can see, so it earns no geometry either.
+    if (b.x + b.w <= 0 || b.y + b.h <= 0) return false;
+    if (b.x >= (window.innerWidth || 0) || b.y >= (window.innerHeight || 0)) return false;
+    return true;
+  }
+  var SKIP_TAG = { SCRIPT: 1, STYLE: 1, META: 1, LINK: 1, TITLE: 1, HEAD: 1,
+    NOSCRIPT: 1, TEMPLATE: 1, HTML: 1, BR: 1, WBR: 1 };
+  var INTERACTIVE_TAG = { BUTTON: 1, A: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, SUMMARY: 1 };
+  var all = document.querySelectorAll("*");
+  var elements = [], dropped = 0;
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    if (SKIP_TAG[el.tagName]) continue;
+    var b = box(el);
+    if (!visible(el, b)) continue;
+    if (elements.length >= CAP) { dropped++; continue; }
+    var s = getComputedStyle(el);
+    var role = el.getAttribute("role") || "";
+    var interactive = !!INTERACTIVE_TAG[el.tagName] || role === "button" || role === "link" ||
+      el.hasAttribute("onclick") || (el.tabIndex != null && el.tabIndex >= 0 && el.tagName !== "BODY");
+    // Leaf-ish text only: a container's "text" would be every descendant's
+    // text glued together, which names nothing.
+    var ownText = el.childElementCount === 0 ? (el.innerText || el.textContent || "") : "";
+    elements.push({
+      id: el.id || null,
+      tag: el.tagName.toLowerCase(),
+      className: (typeof el.className === "string" && el.className) ? el.className : null,
+      inputType: el.tagName === "INPUT" ? (el.getAttribute("type") || "text") : null,
+      ariaLabel: el.getAttribute("aria-label") || null,
+      text: ownText.replace(/[ \\t\\r\\n]+/g, " ").trim().slice(0, 80),
+      box: b,
+      color: s.color, background: s.backgroundColor,
+      interactive: interactive,
+      // How many pixels of the element's own content spill past its own box —
+      // 0 when nothing does. Computed here because scrollWidth/scrollHeight
+      // are DOM facts, not a judgement about whether that is a problem.
+      overflowX: Math.max(0, Math.round((el.scrollWidth || 0) - (el.clientWidth || 0))),
+      overflowY: Math.max(0, Math.round((el.scrollHeight || 0) - (el.clientHeight || 0)))
+    });
+  }
+  var elementsNote = dropped > 0
+    ? ("the page has more visible elements than one look records; " + elements.length +
+       " were captured and " + dropped + " were dropped (cap " + CAP + ")")
+    : null;
+  var out = { url: location.href, title: document.title, textExcerpt: (document.body ? (document.body.innerText || "") : "").replace(/[ \\t\\r\\n]+/g, " ").trim().slice(0, 2000), places: {}, elements: elements, elementsNote: elementsNote };
   ids.forEach(function (id) {
     var sel = id.charAt(0) === "#" ? id.slice(1) : id;
     var el = document.getElementById(sel) || document.querySelector(id.charAt(0) === "#" ? id : "#" + sel);
@@ -455,7 +525,7 @@ const TYPE = (sel, text) => `(function () {
     let last = null;
     while (Date.now() < deadline) {
       try {
-        const r = await send("Runtime.evaluate", { expression: READ(places), returnByValue: true }, S);
+        const r = await send("Runtime.evaluate", { expression: READ(places, ELEMENT_CAP), returnByValue: true }, S);
         if (r && r.result && typeof r.result.value === "string") {
           last = JSON.parse(r.result.value);
           const named = places.length === 0 || places.some((id) => {
@@ -471,7 +541,7 @@ const TYPE = (sel, text) => `(function () {
   }
 
   async function readout() {
-    const r = await send("Runtime.evaluate", { expression: READ(places), returnByValue: true }, S);
+    const r = await send("Runtime.evaluate", { expression: READ(places, ELEMENT_CAP), returnByValue: true }, S);
     const doc = (r && r.result && typeof r.result.value === "string") ? JSON.parse(r.result.value) : { url: currentUrl, title: "", textExcerpt: "", places: {} };
     doc.consoleErrors = events
       .filter((e) => e.method === "Log.entryAdded" && e.params.entry.level === "error")
@@ -540,6 +610,7 @@ const TYPE = (sel, text) => `(function () {
 
   await navigate(URL_);
   const first = await readout();
+  if (first.elementsNote) notes.push(first.elementsNote);
   if (!first.textExcerpt) {
     // The app did not lay out. That is the PRODUCT's answer, exit 1 — but the
     // evidence is written anyway, because "it rendered nothing" is a finding

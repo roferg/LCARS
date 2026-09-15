@@ -32,6 +32,13 @@ per gap, and you write one file.
   against. If something you expect is not in a picture here, it was not there
   when the browser looked; do not reason about a shot you were not given.
 - `prd.md`, the drawing in `attachments/`, and the plan.
+- `observations.json`, if it is there — crowding, overlap, a misaligned row,
+  clipped text, computed from this look's own boxes. Same rule as the first
+  look: cite one as evidence for a real gap if it helps, never invent a gap
+  from one, and it never moves the score. If this mission has no drawing at
+  all (`criteria.json`'s `hasDrawing: false`), any `drawnAt` criterion in
+  `criteria` below is still `untested`, with *"I could not check this against
+  a drawing, because there isn't one"* — LCARS enforces it either way.
 
 ## How to decide that a fix HELD
 

@@ -644,14 +644,23 @@ gather_inputs() { # <mission-dir> <input-dir>
 # the ONE way anything is added after the gather: unlock the dir, copy, re-lock.
 # It is safe to call repeatedly, which is how a round-three worker sees the
 # shots round two took.
-xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir>
-  local into="$1" crit="$2" from="$3" f
+xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json]
+  local into="$1" crit="$2" from="$3" obs="${4:-}" f
   [ -d "$into" ] || return 0
   chmod u+w "$into" 2>/dev/null || true
   if [ -f "$crit" ]; then
     rm -f "$into/criteria.json" 2>/dev/null || true
     cp "$crit" "$into/criteria.json" 2>/dev/null || true
     chmod a-w "$into/criteria.json" 2>/dev/null || true
+  fi
+  # OBSERVATIONS ARE PART OF WHAT THE WORKER SEES, NEVER PART OF WHAT IT WRITES
+  # (S210). Handed over the same read-only door as criteria.json, so it can
+  # cite one as evidence for a real gap — the prompt is what stops it inventing
+  # a criterion from one, not the absence of the file.
+  if [ -n "$obs" ] && [ -s "$obs" ]; then
+    rm -f "$into/observations.json" 2>/dev/null || true
+    cp "$obs" "$into/observations.json" 2>/dev/null || true
+    chmod a-w "$into/observations.json" 2>/dev/null || true
   fi
   if [ -d "$from" ]; then
     chmod u+w "$into/shots" 2>/dev/null || true
@@ -1159,7 +1168,14 @@ XO_PY
 #      BROWSER IS EVER STARTED. "Could not launch" is an honest verdict; a
 #      browser pointed at nothing is not.
 #   3. ROUND 0 — the standard look: the whole page, plus one clipped shot per
-#      place the drawing names.
+#      place the drawing names. `xo-drive.js` also records geometry for EVERY
+#      VISIBLE element now, not only the named ones (S210) — capped, and the
+#      cap and the drop count are said, never silent.
+#   3b. THE OBSERVATIONS PASS (S210) — `xo-observe.py`, computed by the SKILL
+#      from those same boxes: crowding, overlap, a misaligned row, clipped
+#      text. NOT a gap, NEVER moves the score; its own section of the report,
+#      and the worker may cite one as evidence but may not invent a criterion
+#      from one.
 #   4. UP TO THREE WORKER ROUNDS. Each round the worker either asks to look
 #      further (xo-actions.json, at most 12 actions) or writes its verdict. No
 #      verdict by the end of round 3 is a LOW that lists what it saw — an
@@ -1186,6 +1202,20 @@ XO_NODE="${LCARS_NODE_BIN:-node}"
 XO_PY="${LCARS_PYTHON_BIN:-python3}"
 XO_MAX_ROUNDS="${LCARS_XO_MAX_ROUNDS:-3}"
 XO_MAX_ACTIONS=12
+XO_OBSERVE_PY="${LCARS_XO_OBSERVE_PY:-$SKILL_DIR/xo-observe.py}"
+
+# THE OBSERVATIONS PASS (S210) — computed by the SKILL, from the boxes the
+# driver just recorded, never asked of the model. ONE writer, called from every
+# place a look happens (round 0 and a recheck's relaunch alike), so a look that
+# skipped this call is not a look that could have observations to report.
+# Best-effort: a broken/missing readout.json yields an empty observations.json
+# (xo-observe.py's own load() degrades the same way), never a hard failure —
+# an OBSERVATIONS pass going missing must never be why a look cannot finish.
+xo_observe() { # <shots-dir> <out observations.json>
+  local shots="$1" out="$2"
+  "$XO_PY" "$XO_OBSERVE_PY" "$shots/readout.json" "$out" >/dev/null 2>&1 || true
+  return 0
+}
 
 # Every score LABEL, in one place: applied by the swap below, removed by it, and
 # named by init.sh's label set. `lcars:xo:` is the one prefix.
@@ -1433,6 +1463,19 @@ cmd_evaluate() {
     "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \
     "$(jstr "${shots#$dir/}")")"
 
+  # --- 3b. THE OBSERVATIONS PASS — computed by the SKILL, from these same
+  # boxes, before the worker ever looks (S210). Crowding, overlap, a
+  # misaligned row, clipped text: things no drawing states, so nothing has
+  # ever asked the model to notice them. It journals even when it found
+  # nothing — a clean page is a fact worth recording too.
+  local obsfile="$xodir/observations.json" obsn=0
+  xo_observe "$shots" "$obsfile"
+  [ -s "$obsfile" ] && obsn="$("$XO_PY" -c 'import json,sys
+try: print(len(json.load(open(sys.argv[1])).get("observations") or []))
+except Exception: print(0)' "$obsfile" 2>/dev/null)"
+  obsn="${obsn:-0}"
+  journal "$dir" observed "$(printf '"count": %s' "${obsn:-0}")"
+
   # --- 4. THE WORKER ROUNDS ------------------------------------------------
   local work input round=1 verdict="" out=""
   work="$(mktemp -d)"; input="$work/input"
@@ -1448,12 +1491,12 @@ cmd_evaluate() {
   # path-sandboxed engine that is the difference between a ledger and a guess.
   # So: unlock, copy, re-lock. The shots (with the .json/.txt readout beside
   # each) come too, and are re-synced every round because every round takes more.
-  xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile"
 
   while [ "$round" -le "$XO_MAX_ROUNDS" ]; do
     out="$work/round-$round"
     mkdir -p "$out"
-    xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+    xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile"
     printf '◈ NUMBER ONE: round %s of %s — looking…\n' "$round" "$XO_MAX_ROUNDS"
     (
       export LCARS_XO_INPUT_DIR="$input"
@@ -1530,7 +1573,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   # --- 5. THE SCORE IS RECOMPUTED FROM THE LEDGER --------------------------
   local report
   report="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
-              "$xodir/verdict.json" 2>/dev/null)" || report=""
+              "$xodir/verdict.json" "$obsfile" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" line key val
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -2074,6 +2117,17 @@ cmd_recheck() {
     "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \
     "$(jstr "${shots#$dir/}")")"
 
+  # --- 2b. THE OBSERVATIONS PASS, AGAIN (S210). A recheck is a look too — the
+  # fixes may have moved things — so it gets its own fresh pass over the
+  # relaunched build's boxes, exactly as round 0 does.
+  local obsfile="$xodir/observations.json" obsn=0
+  xo_observe "$shots" "$obsfile"
+  [ -s "$obsfile" ] && obsn="$("$XO_PY" -c 'import json,sys
+try: print(len(json.load(open(sys.argv[1])).get("observations") or []))
+except Exception: print(0)' "$obsfile" 2>/dev/null)"
+  obsn="${obsn:-0}"
+  journal "$dir" observed "$(printf '"count": %s' "${obsn:-0}")"
+
   # --- 3. ONE worker round, with the FIRST verdict in front of it ----------
   # No second round of looking and no actions file: the question here is narrow
   # ("did each filed gap's fix hold?") and a judge that can ask for more looking
@@ -2083,7 +2137,7 @@ cmd_recheck() {
   XO_WORK_DIR="$work"
   mkdir -p "$input" "$out"
   gather_inputs "$dir" "$input"
-  xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile"
   # The first verdict, the filed logs and their PRDs — the record of what this
   # re-check is ABOUT. Copied through the same unlock/copy/re-lock door
   # everything else in the input tree goes through.
@@ -2157,7 +2211,7 @@ $shots"
     [ -s "$xodir/report.md" ] && cp "$xodir/report.md" "$xodir/report-1.md" 2>/dev/null
     local rep2 key val
     rep2="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
-              "$xodir/second/verdict.json" 2>/dev/null)" || rep2=""
+              "$xodir/second/verdict.json" "$obsfile" 2>/dev/null)" || rep2=""
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"

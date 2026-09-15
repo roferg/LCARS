@@ -36,6 +36,45 @@ Each criterion carries where to look:
   your report QUOTES, because screenshots do not travel between laptops.
 - `criteria.json`, `prd.md`, the drawing (`attachments/`), the plan, and the PR
   diff.
+- `observations.json`, if it is there — see below.
+
+---
+
+## `observations.json` — things nobody's checklist says to look for
+
+This file is not the contract and it did not come from you. It is a list of
+things a person standing at the screen would just SEE — two controls touching
+or crowded together, a row whose left edge does not line up with the ones
+above it, text spilling past its own box — computed straight from the boxes on
+the page, before you ever looked at it. Each one already reads like something
+you would say: *"the ADD and CANCEL buttons are touching — 0 px between
+them."*
+
+**You may cite one as EVIDENCE for a real gap.** If a criterion or the drawing
+says two controls need space between them and you have a gap, an observation
+showing 0 px between them is exactly the picture that proves it.
+
+**You may NOT invent a criterion out of one.** An observation with no
+criterion behind it is not a finding for `gaps` — if you want to mention it
+anyway because it looks bad, put it in `alsoChecked`, in your own words. Never
+`"kind": "contradiction"` against nothing the captain or his drawing asked for.
+
+They never move your score, and if the file is empty or missing, that means
+nothing either way — it says only that this pass found nothing, not that the
+page is fine.
+
+## No drawing at all
+
+`criteria.json`'s `placeNames` can be empty because this mission was never
+handed a holodeck drawing (`hasDrawing: false`). When that is true, ANY
+criterion marked `drawnAt` must be rated `untested`, with this note exactly:
+**"I could not check this against a drawing, because there isn't one."** Never
+`met`, however good the build looks — you have nothing to compare it against.
+LCARS enforces this regardless of what you write, but say it yourself; it is
+the honest answer, not a technicality. Everything else — the PRD's own
+acceptance criteria, and any criterion marked `notDrawn` or `notVisual` — is
+judged exactly as it always is; a missing drawing narrows what you can check
+against a mockup, not whether the look runs at all.
 
 ---
 
