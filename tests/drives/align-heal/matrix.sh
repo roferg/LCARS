@@ -144,8 +144,16 @@ fi
 export LCARS_BLOCK_LOG="$OUT/claude-attempts.log"
 if [ "$ENGINE" = claude ]; then
   # Resolve the REAL claude BEFORE the shim dir goes on PATH, or the shim finds
-  # itself. Exported for the shim to exec.
-  LCARS_REAL_CLAUDE="${LCARS_REAL_CLAUDE:-$(command -v claude 2>/dev/null)}"
+  # itself. `command -v claude` alone is NOT safe here: if any editor ever
+  # ships a claude shim the same way VS Code ships one for copilot, a plain
+  # PATH search would hand the countshim the shim instead of the real binary,
+  # and the exec below would recurse (see tests/drives/lib/real-worker.sh for
+  # the fork-bomb this caused with copilot on 2026-09-15). Exported for the
+  # shim to exec.
+  # shellcheck source=/dev/null
+  . "$SP/lib/real-worker.sh"
+  LCARS_REAL_CLAUDE="$(lcars_resolve_real_worker claude "${LCARS_REAL_CLAUDE:-}")" || {
+    echo "FATAL: no real claude binary found for the claude cell" >&2; exit 77; }
   export LCARS_REAL_CLAUDE
   SHIM="$SD/countshim"; SHIM_KIND="countshim (logs + execs the real claude)"
   CLAUDE_EXPECT="non-zero"

@@ -9,9 +9,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="${1:-file1}"; MODE="${2:-accept}"
 OUT="$HERE/logs/$LABEL"; rm -rf "$OUT"; mkdir -p "$OUT"
 CHROME="${LCARS_BROWSER_CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
-COPILOT="${LCARS_COPILOT_BIN:-/opt/homebrew/bin/copilot}"
-[ -x "$COPILOT" ] || COPILOT="$(command -v copilot)"
-[ -x "$COPILOT" ] || { echo "no copilot"; exit 1; }
+# Resolved via the shared helper (tests/drives/lib/real-worker.sh) rather than
+# a bare `command -v` fallback: that fallback can resolve to an editor's own
+# re-invocation shim for `copilot`, which recurses with this rig's wrapper on
+# PATH (measured 2026-09-15: fork-bombed to 5,538 processes).
+# shellcheck source=/dev/null
+. "$HERE/../lib/real-worker.sh"
+COPILOT="$(lcars_resolve_real_worker copilot "${LCARS_COPILOT_BIN:-}")" || { echo "no copilot"; exit 1; }
 
 if [ -n "${LIVE_REPO:-}" ]; then REPO="$LIVE_REPO"; else REPO="$(newrepo "s184-verify-$LABEL")"; fi
 SHIM="$(mktemp -d "${TMPDIR:-/tmp}/s184vfy.XXXXXX")"

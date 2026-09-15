@@ -31,9 +31,6 @@ ENVF="$OUT/rig.env"
 FIXTURE_REPO="roferg/lcars-mp-fixture"
 PY_BIN="${LCARS_PY_BIN:-python3}"
 
-REAL_COPILOT="${LCARS_S202_COPILOT:-$(command -v copilot || true)}"
-REAL_CLAUDE="${LCARS_S202_CLAUDE:-$(command -v claude || true)}"
-
 down() {
   [ -f "$ENVF" ] || { echo "no rig.env at $ENVF"; return 0; }
   # shellcheck disable=SC1090
@@ -48,7 +45,13 @@ case "${1:-up}" in
   down) down; exit 0 ;;
 esac
 
-[ -n "$REAL_COPILOT" ] || { echo "no copilot CLI on PATH"; exit 77; }
+# RESOLVE THE REAL binaries — NEVER an editor's own re-invocation shim. See
+# tests/drives/lib/real-worker.sh for why `command -v copilot` alone is unsafe
+# (measured 2026-09-15: it fork-bombed the captain's laptop to 5,538 processes).
+# shellcheck source=/dev/null
+. "$REPO/tests/drives/lib/real-worker.sh"
+REAL_COPILOT="$(lcars_resolve_real_worker copilot "${LCARS_S202_COPILOT:-}")" || { echo "no copilot CLI on PATH"; exit 77; }
+REAL_CLAUDE="$(lcars_resolve_real_worker claude "${LCARS_S202_CLAUDE:-}")" || REAL_CLAUDE=""
 
 rm -rf "$OUT"; mkdir -p "$OUT/bin"
 : >"$OUT/worker.argv.log"

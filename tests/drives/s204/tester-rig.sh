@@ -54,26 +54,14 @@ case "${1:-up}" in down) down; exit 0 ;; esac
 # dir before exec, but VS Code's shim re-enters with a fresh PATH that finds it
 # again, so the cleaning does not survive the hop.
 #
-# So: take the first candidate that is a REAL binary, and refuse anything that
-# is a known shim. An explicit LCARS_S204_COPILOT still wins, but is checked too.
-_copilot_is_shim() {  # a shim re-invokes `copilot` by name; a real binary does not
-  case "$1" in *"copilotCLIShim"*|*"Code/User/globalStorage"*|*"/Code Helper"*) return 0 ;; esac
-  grep -qs 'copilotCLIShim' "$1" 2>/dev/null
-}
-REAL_COPILOT=""
-for _c in "${LCARS_S204_COPILOT:-}" \
-          /opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot \
-          /usr/local/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot \
-          "$(command -v copilot || true)"; do
-  [ -n "$_c" ] && [ -x "$_c" ] || continue
-  if _copilot_is_shim "$_c"; then
-    echo "  ⚠ skipping $_c — that is an editor shim, not the copilot binary (it would recurse)" >&2
-    continue
-  fi
-  REAL_COPILOT="$_c"; break
-done
-[ -n "$REAL_COPILOT" ] && echo "  ◇ real copilot: $REAL_COPILOT" >&2
-[ -n "$REAL_COPILOT" ] || { echo "no copilot CLI on PATH"; exit 77; }
+# This was the FIRST fix for the bug (this rig, commit 734f223); the same
+# resolve-and-refuse logic now lives once in tests/drives/lib/real-worker.sh so
+# every other rig (S202, S203, S184, ...) shares it instead of re-deriving it.
+# An explicit LCARS_S204_COPILOT still wins, but is checked too, not trusted
+# blindly.
+# shellcheck source=/dev/null
+. "$REPO/tests/drives/lib/real-worker.sh"
+REAL_COPILOT="$(lcars_resolve_real_worker copilot "${LCARS_S204_COPILOT:-}")" || { echo "no copilot CLI on PATH"; exit 77; }
 
 rm -rf "$OUT"; mkdir -p "$OUT/bin"
 : >"$OUT/worker.argv.log"

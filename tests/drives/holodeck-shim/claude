@@ -13,16 +13,30 @@
 #
 # It spends whatever the real CLI spends: it is a pass-through, not a stub.
 set -u
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "$self_dir/../lib/real-worker.sh"   # for _lcars_is_editor_shim — never trust
+                                      # a PATH match (or the override) blindly
 LOG="${LCARS_SHIM_LOG:-/tmp/lcars-holodeck-shim.log}"
 REAL="${LCARS_HOLODECK_REAL_CLAUDE:-}"
+if [ -n "$REAL" ] && _lcars_is_editor_shim "$REAL" claude; then
+  echo "holodeck-shim: \$LCARS_HOLODECK_REAL_CLAUDE ($REAL) is an editor shim — refusing it, not trusting it blindly" >&2
+  REAL=""
+fi
 if [ -z "$REAL" ]; then
-  # resolve the real binary WITHOUT finding this shim again
-  self_dir="$(cd "$(dirname "$0")" && pwd)"
+  # Resolve the real binary WITHOUT finding this shim again, AND without
+  # picking an editor's own re-invocation shim for `claude` — the identical
+  # copilot fork-bomb (measured 2026-09-15: 5,538 processes) opens on this side
+  # too if any editor ever ships one. See tests/drives/lib/real-worker.sh.
   while IFS= read -r cand; do
     case "$(cd "$(dirname "$cand")" && pwd)" in
       "$self_dir") continue ;;
-      *) REAL="$cand"; break ;;
     esac
+    if _lcars_is_editor_shim "$cand" claude; then
+      echo "holodeck-shim: skipping $cand — that is an editor shim, not the claude binary (it would recurse)" >&2
+      continue
+    fi
+    REAL="$cand"; break
   done < <(type -pa claude 2>/dev/null)
 fi
 {

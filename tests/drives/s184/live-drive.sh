@@ -11,10 +11,12 @@ OUT="$HERE/logs/$LABEL"; rm -rf "$OUT"; mkdir -p "$OUT"
 CHROME="${LCARS_BROWSER_CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 # The REAL npm CLI, never the VS Code launcher shim: that shim re-resolves
 # `copilot` from PATH, so with our wrapper first on PATH it recursed into itself
-# (measured: 215 nested invocations, one hung turn of 7 minutes).
-COPILOT="${LCARS_COPILOT_BIN:-/opt/homebrew/bin/copilot}"
-[ -x "$COPILOT" ] || COPILOT="$(command -v copilot)"
-[ -x "$COPILOT" ] || { echo "no copilot"; exit 1; }
+# (measured: 215 nested invocations, one hung turn of 7 minutes). Resolved via
+# the shared helper (tests/drives/lib/real-worker.sh) rather than a bare
+# `command -v` fallback, which is the exact idiom that let a shim through.
+# shellcheck source=/dev/null
+. "$HERE/../lib/real-worker.sh"
+COPILOT="$(lcars_resolve_real_worker copilot "${LCARS_COPILOT_BIN:-}")" || { echo "no copilot"; exit 1; }
 
 REPO="$(newrepo "s184-live-$LABEL")"
 # --- the NO-CLAUDE fence: a real copilot, and a claude that screams ---------
