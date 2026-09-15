@@ -40,7 +40,39 @@ down() {
 }
 case "${1:-up}" in down) down; exit 0 ;; esac
 
-REAL_COPILOT="${LCARS_S204_COPILOT:-$(command -v copilot || true)}"
+# RESOLVE THE REAL COPILOT BINARY — NOT another shim. (2026-09-15)
+#
+# `command -v copilot` is NOT safe here. On this machine it resolves to
+#   ~/Library/Application Support/Code/.../github.copilot-chat/copilotCli/copilot
+# which is VS CODE'S OWN shim: a /bin/sh script that launches Code Helper
+# running copilotCLIShim.js. That shim then invokes `copilot` BY NAME, finds
+# THIS rig's wrapper on PATH, and the two call each other forever.
+#
+# It fork-bombed the captain's laptop to 5,538 processes on 2026-09-15 while he
+# was working on it — ~5 procs per cycle, until the shell could no longer fork
+# at all. The wrapper's own PATH-cleaning does not save us: it strips this bin
+# dir before exec, but VS Code's shim re-enters with a fresh PATH that finds it
+# again, so the cleaning does not survive the hop.
+#
+# So: take the first candidate that is a REAL binary, and refuse anything that
+# is a known shim. An explicit LCARS_S204_COPILOT still wins, but is checked too.
+_copilot_is_shim() {  # a shim re-invokes `copilot` by name; a real binary does not
+  case "$1" in *"copilotCLIShim"*|*"Code/User/globalStorage"*|*"/Code Helper"*) return 0 ;; esac
+  grep -qs 'copilotCLIShim' "$1" 2>/dev/null
+}
+REAL_COPILOT=""
+for _c in "${LCARS_S204_COPILOT:-}" \
+          /opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot \
+          /usr/local/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot \
+          "$(command -v copilot || true)"; do
+  [ -n "$_c" ] && [ -x "$_c" ] || continue
+  if _copilot_is_shim "$_c"; then
+    echo "  ⚠ skipping $_c — that is an editor shim, not the copilot binary (it would recurse)" >&2
+    continue
+  fi
+  REAL_COPILOT="$_c"; break
+done
+[ -n "$REAL_COPILOT" ] && echo "  ◇ real copilot: $REAL_COPILOT" >&2
 [ -n "$REAL_COPILOT" ] || { echo "no copilot CLI on PATH"; exit 77; }
 
 rm -rf "$OUT"; mkdir -p "$OUT/bin"
