@@ -27,6 +27,92 @@ can calibrate "how close is too close" against his own eye on his own apps
 `observations.json` as `thresholds`, and xo-score.py prints them into the
 report so he can tell us they are wrong.
 
+S212 — IT MUST NOT CRY WOLF. Driven live, the pass above fired on UI that was
+perfectly correct: a chip's own embedded remove button read as "touching", a
+notification badge on a button corner read as "overlap", a box that is MEANT to
+scroll read as "clipped", and a tidy five-row list produced five separate notes
+saying the same thing. None of that needed anyone to define anything — every
+case is settled by a fact the BROWSER already knows, which `xo-drive.js` now
+writes down (`path`, `overflowStyleX/Y`, `seen`). This script only READS those
+facts. It never works nesting out from the boxes: a badge sits geometrically
+inside its button, and so does a genuinely misplaced element that merely
+overlaps one, and no amount of rectangle arithmetic can tell those apart.
+
+Then two rules about VOLUME, because noise kills a feature just as surely as a
+falsehood does: one fact reported N times is collapsed into one note that names
+the count, and past a handful the list is capped at the three worst and SAYS how
+many it held back. A wall of notes gets skipped, and a feature that gets skipped
+is dead.
+
+S212, FIX ROUND 1 — AND IT MUST NOT GO DEAF. Quietening the four false alarms
+above bought three new faults, all of the opposite kind, and a guard quietened
+into uselessness is the worse failure:
+
+  * ANYTHING laid over the page bought total silence. The only escape hatch was
+    `pointer-events:none`, so a bare `position:fixed; inset:0` click-catcher —
+    which real apps put over the page constantly — read every element beneath
+    it as unseen and Number One reported a clean page. A cover now has to be
+    SOLID ENOUGH TO ACTUALLY HIDE to hide anything, measured in the driver
+    where the browser is still open to be asked. An ancestor winning the hit
+    test is still the other case entirely (a row its own scroll container has
+    carried away) and is still silence; the two are recorded APART.
+    THAT CURE LEAKED TWICE MORE before the rule itself was changed: round 2
+    assumed any background-image solid (so any gradient silenced a page), and
+    round 3 assumed any unparseable colour solid (so a 30% dim written as
+    oklch() or lab() or color-mix() silenced a page while the identical dim
+    written as rgba() did not). ROUND 4 INVERTED THE FALLBACK ITSELF — an
+    element is recorded as not-seen ONLY where hiding was positively
+    established, and anything unmeasurable means LOOK. The captain's ruling,
+    and his reason: a wrong complaint is on the screen where he can see it and
+    say it is wrong; going quiet means he never finds out it did not look. The
+    whole argument lives in `xo-drive.js` beside the code it governs.
+  * A collapsed sentence invented a place. A family was "same tag, same class"
+    and never looked at the container, so a tab bar and a segmented control
+    60 px below it became "five buttons in this row are touching" — and there
+    was no such row on the page. A family is now things that really sit
+    together, and a sentence only names a place when the group shares one.
+    The first cure for that asked every pair to share a DIRECT parent, which
+    is right about the tab bar and wrong about the commonest repeat in UI:
+    twenty list rows each carrying its own Edit/Delete pair share no direct
+    parent, so nothing folded and the captain read a cap line followed by
+    three byte-identical sentences. The second cure took the LOWEST COMMON
+    ANCESTOR of the whole group instead, and sprang the leak again: every
+    real application has a wrapper — #app, #root, .container, <main> — so the
+    LCA always finds something and a place was therefore ALWAYS asserted. A
+    tab bar, a segmented control and a pager inside one #app read as "seven
+    buttons in this list are touching", and there is no list of seven buttons
+    on that screen. ROUND 4 MADE A PLACE SOMETHING THAT HAS TO BE EARNED, by
+    one of exactly two shapes and nothing else (`shared_place`): one direct
+    parent, or one genuinely repeated family. A wrapper that merely contains
+    everything is not a place, and a group that has none says so. Which WORD
+    to call a place it does have, a row or a list, is read off the boxes
+    rather than off the crowding axis. Under all of it sits one invariant:
+    two notes that would read the same word for word FOLD (`say_it_once`),
+    because that is proof they were one fact all along.
+
+    And where the group IS a repeated family whose units all carry the same
+    names, the sentence describes THAT rather than counting — "every row's
+    Edit and Delete buttons are touching" beats "38 buttons in this list are
+    touching", which is a number with no story (`repeated_labels`). ROUND 5
+    MADE THE WORD "EVERY" SOMETHING THAT HAS TO BE ESTABLISHED: the rest of
+    the family is counted (`family_census`), and a page where three of eight
+    rows are affected says "three rows'" instead. A story with a FALSE number
+    is worse than a number with no story — it is the error he catches himself,
+    standing in front of the screen.
+  * "The three worst" were not the worst. They were ranked by a FIXED CATEGORY
+    ORDER, so clipped text and a crooked row were last in the queue by
+    construction and were exactly what the cap threw away. Worst is EARNED now
+    — see `noticeability`.
+
+And one more of the ORIGINAL kind that got through: `overflow:hidden;
+text-overflow:ellipsis` always fired, and that is the universal idiom for
+deliberately shortening a long name. Same cure as `overflow:auto`, one recorded
+field along — but only where the ellipsis can actually RENDER. It cannot on
+text that is allowed to wrap, and a base class setting `text-overflow:
+ellipsis` on everything (which is how people write CSS) bought silence for a
+60 px box whose one long unbreakable word was chopped with no "…" anywhere.
+`white-space` is recorded too now, and it is what decides.
+
 Input: `readout.json`, exactly as `xo-drive.js` writes it — this script reads
 `page.elements`, the list EVERY visible element on the page, one box + computed
 colour + a couple of DOM facts each (S210). A page with no elements (or none
@@ -45,9 +131,41 @@ GAP_PX_DEFAULT = 8         # two INTERACTIVE elements closer than this: crowded
 MISALIGN_PX_DEFAULT = 6    # a sibling's left edge missing the others' by this
 OVERFLOW_PX_DEFAULT = 2    # content spilling past its own box by more than this
 
-OBS_CAP = 20                # bounded output: a dense page cannot blow up the
-                             # readout here either (S210's own rule, applied to
-                             # its own output).
+# ── HOW MUCH IT IS ALLOWED TO SAY (S212) ───────────────────────────────────
+# A wall of notes gets skipped, and a feature that gets skipped is dead. So:
+# the same fact found over and over becomes ONE note that names the count, and
+# past a handful of notes only the worst few are printed — out loud, with the
+# number held back, so a quiet report is never mistaken for a clean page.
+COLLAPSE_AT = 3             # this many of one fact in one family -> one note
+OBS_HANDFUL = 5             # up to this many notes, he reads them all
+OBS_CAP = 3                 # past a handful: the three worst, and say so
+
+# A FIXED CATEGORY ORDER IS NOT "THE WORST" (S212 fix round 1). This used to
+# rank the findings by their KIND — overlap, then crowding, then clipped, then
+# misaligned — so clipped text and a crooked row were structurally last in the
+# queue and were exactly what the cap threw away first. Driven on a real batch
+# tracker it printed three trivial toolbar notes and held back six names cut
+# off mid-word and a row 40 px out of true: the only two things a person
+# actually notices in the screenshot. A live worker reading the same shot
+# found both and led with them. The cap was outranked by the model.
+#
+# So "worst" is EARNED now — see `noticeability` below — and the kind order
+# survives only as a tie-break, so that two findings of equal weight still
+# come out in the same order every run.
+KIND_RANK = {"overlap": 0, "crowding": 1, "clipped": 2, "misaligned": 3}
+
+COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+               7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven",
+               12: "twelve"}
+
+
+def count_word(n):
+    """Spelled out while a person would spell it out, digits after that."""
+    return COUNT_WORDS.get(n, str(n))
+
+
+def plural(word):
+    return word + "es" if word.endswith(("s", "x", "ch", "sh")) else word + "s"
 
 
 def load(path):
@@ -108,6 +226,252 @@ def pair(a, b):
     return "%s and %s" % (solo(a), solo(b))
 
 
+# ── the three facts the BROWSER wrote down, read back (S212) ──────────────
+# Every one of these is a lookup. None of them is a derivation from the boxes.
+# That distinction is the whole session: inferring nesting from geometry would
+# be beaten the first time a genuinely misplaced element landed inside another
+# one's rectangle, which is exactly what a badge looks like from the outside.
+def nested(a, b):
+    """True when one of these two elements is INSIDE the other. A parent and
+    its own child touching at 0 px is structurally inevitable — a chip and its
+    remove button, a button and its unread badge — not a fault anyone can fix.
+
+    The DOM position comes from the driver as a chain of child indices, so one
+    being inside the other is a prefix test. When either path is missing (an
+    older readout, a crafted fixture) we say nothing and let the pair be
+    measured: staying quiet is the failure mode worth avoiding."""
+    pa, pb = a.get("path"), b.get("path")
+    if not isinstance(pa, str) or not isinstance(pb, str) or not pa or not pb:
+        return False
+    return pa == pb or pa.startswith(pb + ".") or pb.startswith(pa + ".")
+
+
+def can_be_seen(el):
+    """Whether this element is really what is painted at its own position —
+    recorded by the driver with one hit test. A row its container has scrolled
+    away and a button behind an opaque modal backdrop are the same case, and
+    measuring either of them is measuring something nobody can look at."""
+    return el.get("seen") is not False
+
+
+SCROLLING = ("auto", "scroll", "overlay")
+
+# The white-space values that keep text on ONE line. An ellipsis can only be
+# drawn where the line does not wrap, so these are the only values under which
+# `text-overflow: ellipsis` means anything at all.
+NO_WRAP = ("nowrap", "pre")
+
+
+def scrolls(el, axis):
+    """Whether the element is MEANT to hold more than it shows on this axis.
+    Reads the computed overflow PROPERTY — a different fact from the pixel
+    spill in `overflowX`/`overflowY`, which says how much, never whether it
+    matters."""
+    v = el.get("overflowStyleX" if axis == "x" else "overflowStyleY")
+    return isinstance(v, str) and v.strip().lower() in SCROLLING
+
+
+def ellipsized(el):
+    """Whether the author asked for the text to be SHORTENED rather than to
+    fit. `overflow:hidden; text-overflow:ellipsis` is the universal idiom for
+    a long name in a narrow column, and the ellipsis is the author saying out
+    loud that cutting it off was the point — a person reading the screen sees
+    the "…" and knows there is more. `overflow:hidden` with no ellipsis says
+    nothing of the kind and still reports: that is the control.
+
+    BUT ONLY WHERE THE ELLIPSIS CAN ACTUALLY RENDER. `text-overflow` does
+    nothing whatsoever to text that is allowed to wrap — the browser wraps
+    first, there is no single overflowing line to put a "…" on, and a 60 px
+    box holding one long unbreakable word is chopped mid-word with no "…"
+    anywhere on the screen. Reading the property alone made a base class that
+    sets `text-overflow: ellipsis` on everything — which is how people write
+    CSS — buy silence for every wrapping box in the application. A readout
+    too old to carry `white-space` therefore reports rather than stays quiet:
+    the failure mode worth avoiding is silence.
+
+    Another lookup of a fact the browser wrote down, exactly like `scrolls`
+    one field along. It applies only across the inline axis, which is the only
+    axis text-overflow has ever governed."""
+    v = el.get("textOverflow")
+    if not (isinstance(v, str) and v.strip().lower() not in ("", "clip", "none")):
+        return False
+    ws = el.get("whiteSpace")
+    return isinstance(ws, str) and ws.strip().lower() in NO_WRAP
+
+
+def family(el):
+    """What KIND of thing this is, for the purpose of noticing that the same
+    fault has just been reported about five of them."""
+    return "%s|%s" % ((el.get("tag") or "").lower(),
+                      (el.get("className") or "").strip())
+
+
+def parent_path(el):
+    """WHERE this element lives — its parent's position in the DOM, read off
+    the path the driver recorded. Never inferred from the boxes."""
+    path = el.get("path")
+    if not isinstance(path, str) or "." not in path:
+        return None
+    return path.rsplit(".", 1)[0]
+
+
+def container_of(a, b):
+    """The nearest place that holds BOTH of these — the longest prefix their
+    two recorded DOM paths share. Two things in one toolbar share the toolbar;
+    a tab bar and a segmented control 60 px below it share only the page.
+
+    This is what makes a family a real GROUP rather than a coincidence of tag
+    and class. Without it, three tabs and two segmented buttons — five
+    unrelated `button`s with nothing in common but their tag — collapse into
+    one sentence about "this row", and there is no such row on the screen."""
+    pa, pb = a.get("path"), b.get("path")
+    if not isinstance(pa, str) or not isinstance(pb, str) or not pa or not pb:
+        return None
+    sa, sb = pa.split("."), pb.split(".")
+    shared = []
+    for x, y in zip(sa, sb):
+        if x != y:
+            break
+        shared.append(x)
+    return ".".join(shared) if shared else None
+
+
+def lowest_common_ancestor(members):
+    """The deepest DOM path that holds every one of these, or None."""
+    paths = []
+    for m in members:
+        p = m.get("path")
+        if not isinstance(p, str) or not p:
+            return None
+        paths.append(p.split("."))
+    shared = []
+    for parts in zip(*paths):
+        if len(set(parts)) != 1:
+            break
+        shared.append(parts[0])
+    return ".".join(shared) if shared else None
+
+
+def unit_shape(members):
+    """THE SHAPE OF ONE UNIT of a repeated family: how many of the group sit
+    in it, how big each of them is, and where each sits relative to the
+    unit's own top-left corner. Two units are the same thing repeated when
+    these match exactly — twenty rows each carrying an Edit and a Delete, cut
+    to the same size in the same two places.
+
+    A tab bar holding three tabs and a segmented control holding two are not
+    the same thing repeated, and this is what says so."""
+    boxes = [m.get("box") for m in members]
+    if any(not isinstance(b, dict) for b in boxes):
+        return None
+    ox = min(b["x"] for b in boxes)
+    oy = min(b["y"] for b in boxes)
+    return tuple(sorted((b["x"] - ox, b["y"] - oy, b["w"], b["h"]) for b in boxes))
+
+
+def unit_corner(members):
+    boxes = [m["box"] for m in members]
+    return (min(b["x"] for b in boxes), min(b["y"] for b in boxes))
+
+
+def units_line_up(units):
+    """Whether the units are laid out the way a family is laid out — one
+    column, one row, or a filled grid. Read off the corners, with no
+    threshold in it: the units' top-left corners must be exactly every
+    combination of the distinct lefts and the distinct tops.
+
+    Twenty list rows are a column; six buttons in two columns of three are a
+    grid; three identical widgets at (40,100), (600,300) and (1000,600) are
+    three points on a diagonal — one of nine combinations filled — and a
+    sentence calling those "this list" sends the captain looking for a list
+    that is not on the screen."""
+    corners = [unit_corner(u) for u in units]
+    if len(set(corners)) != len(corners):
+        return False
+    xs = set(c[0] for c in corners)
+    ys = set(c[1] for c in corners)
+    return len(xs) * len(ys) == len(corners)
+
+
+def repeated_family(members):
+    """THE GROUP AS ONE THING REPEATED — the units, in order — or None when
+    it is not that shape.
+
+    This is the second of the only two ways a group earns a place, and every
+    condition in it has to be POSITIVELY true:
+
+      * every member's parent is a SIBLING directly under the one ancestor
+        that holds them all (so a wrapper two levels up buys nothing),
+      * there are at least two such units,
+      * every unit is the same shape (see `unit_shape`), and
+      * the units line up (see `units_line_up`).
+
+    Twenty list rows each carrying its own Edit/Delete pair pass all four,
+    and they genuinely ARE one list. A tab bar, a segmented control and a
+    pager inside one #app pass the first two and fail the third."""
+    parents = [parent_path(m) for m in members]
+    if not parents or any(p is None for p in parents):
+        return None
+    lca = lowest_common_ancestor(members)
+    if not lca:
+        return None
+    for p in parents:
+        if "." not in p or p.rsplit(".", 1)[0] != lca:
+            return None
+    order, by_parent = [], {}
+    for p, m in zip(parents, members):
+        if p not in by_parent:
+            order.append(p)
+            by_parent[p] = []
+        by_parent[p].append(m)
+    units = [by_parent[p] for p in order]
+    if len(units) < 2:
+        return None
+    shapes = [unit_shape(u) for u in units]
+    if any(sh is None for sh in shapes) or len(set(shapes)) != 1:
+        return None
+    if not units_line_up(units):
+        return None
+    return units
+
+
+def shared_place(members):
+    """THE ONE PLACE THAT HOLDS EVERY ONE OF THESE, or None when there is no
+    such place.
+
+    A PLACE HAS TO BE EARNED (captain's ruling, S212 round 4), and there are
+    exactly two ways to earn one:
+
+      1. every member shares the SAME DIRECT PARENT — one toolbar, one list,
+         one form row. There is no arguing about where that is.
+      2. the group is ONE REPEATED FAMILY (see `repeated_family`) — twenty
+         rows each carrying its own Edit and Delete. That genuinely is one
+         list, and asking for a direct parent cannot see it.
+
+    ANYTHING ELSE HAS NO PLACE, and says so ("in different parts of the
+    page") rather than inventing one. That is the change round 4 made, and
+    the reason is the same one that runs through the driver: what this used
+    to do was take the LOWEST COMMON ANCESTOR of the whole group, and every
+    real application has a wrapper — #app, #root, .container, <main> — so the
+    LCA always found something and a place was therefore always asserted. A
+    tab bar, a segmented control and a pager, three plainly separate things
+    60 px apart, all inside one #app, read as "seven buttons in this list are
+    touching". There is no list of seven buttons on that screen. A WRAPPER
+    THAT MERELY CONTAINS EVERYTHING IS NOT A PLACE.
+
+    Erring toward naming a place was the old comment's stated intention, and
+    it was wrong: a false place is not noise the captain can shrug off, it is
+    a sentence sending him to look for something that is not there. Erring
+    toward "I cannot tell you where" costs him a vaguer sentence and nothing
+    else."""
+    parents = [parent_path(m) for m in members]
+    if not parents or any(p is None for p in parents):
+        return None
+    if len(set(parents)) == 1:
+        return parents[0]
+    return lowest_common_ancestor(members) if repeated_family(members) else None
+
+
 # ── box geometry ─────────────────────────────────────────────────────────
 def edges(box):
     return box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]
@@ -151,6 +515,8 @@ def detect_crowding(elements, gap_px):
     for i in range(len(inter)):
         for j in range(i + 1, len(inter)):
             a, b = inter[i], inter[j]
+            if nested(a, b):
+                continue  # one is INSIDE the other — never a crowding fault
             if intersects(a["box"], b["box"]):
                 continue  # that is an OVERLAP, a different finding
             gap = adjacency_gap(a["box"], b["box"])
@@ -158,8 +524,15 @@ def detect_crowding(elements, gap_px):
                 continue
             px = max(gap, 0)
             verb = "touching" if px == 0 else "crowded together"
+            ax1, ay1, ax2, ay2 = edges(a["box"])
+            bx1, by1, bx2, by2 = edges(b["box"])
+            axis = "row" if min(ay2, by2) - max(ay1, by1) > 0 else "column"
             out.append({
-                "kind": "crowding", "px": px,
+                "kind": "crowding", "px": px, "axis": axis,
+                "group": ("crowding", axis)
+                         + tuple(sorted((family(a), family(b)))),
+                "place": container_of(a, b),
+                "members": [a, b],
                 "elements": [label(a) or solo(a), label(b) or solo(b)],
                 "message": "%s are %s — %d px between them" % (pair(a, b), verb, px),
             })
@@ -172,11 +545,17 @@ def detect_overlap(elements):
     for i in range(len(inter)):
         for j in range(i + 1, len(inter)):
             a, b = inter[i], inter[j]
+            if nested(a, b):
+                continue  # a badge sits inside its button; that is the design
             if not intersects(a["box"], b["box"]):
                 continue
             px = overlap_extent(a["box"], b["box"])
             out.append({
-                "kind": "overlap", "px": px,
+                "kind": "overlap", "px": px, "axis": "row",
+                "group": ("overlap",)
+                         + tuple(sorted((family(a), family(b)))),
+                "place": container_of(a, b),
+                "members": [a, b],
                 "elements": [label(a) or solo(a), label(b) or solo(b)],
                 "message": "%s overlap — they share %d px of the same space" % (pair(a, b), px),
             })
@@ -207,7 +586,10 @@ def detect_misaligned(elements, threshold):
             if abs(off) <= threshold:
                 continue
             out.append({
-                "kind": "misaligned", "px": abs(off),
+                "kind": "misaligned", "px": abs(off), "axis": "column",
+                "group": ("misaligned", family(e)),
+                "place": parent_path(e),
+                "members": [e],
                 "elements": [label(e) or solo(e)],
                 "message": "%s does not line up with the rows above it — its "
                            "left edge is %d px %s (%d px vs %d px for the "
@@ -219,21 +601,373 @@ def detect_misaligned(elements, threshold):
 
 
 def detect_clipped(elements, threshold):
+    """Text that does not fit the box it is in — UNLESS the box is meant to
+    scroll. A box with `overflow: auto` holding more than it shows is not a
+    fault, it is the whole point of the box, and the two are indistinguishable
+    from the pixel spill alone: both spill the same amount. The computed
+    overflow property is what separates them, and `overflow: hidden` with the
+    same spill still reports, which is the control.
+
+    The same is true one field along for `text-overflow: ellipsis`, the
+    universal idiom for deliberately shortening a long name: the spill is
+    identical to a truncation nobody meant, and the computed property is
+    again the only thing that tells them apart."""
     out = []
     for e in elements:
         if not (e.get("text") or "").strip():
             continue
-        ox, oy = e.get("overflowX") or 0, e.get("overflowY") or 0
+        ox = 0 if (scrolls(e, "x") or ellipsized(e)) else (e.get("overflowX") or 0)
+        oy = 0 if scrolls(e, "y") else (e.get("overflowY") or 0)
         worst = max(ox, oy)
         if worst <= threshold:
             continue
         out.append({
-            "kind": "clipped", "px": worst,
+            "kind": "clipped", "px": worst, "axis": "column",
+            "group": ("clipped", family(e)),
+            "place": parent_path(e),
+            "members": [e],
             "elements": [label(e) or solo(e)],
             "message": "%s text is clipped by its own box — it needs %d px "
                        "more room than the box gives it" % (solo(e), worst),
         })
     return out
+
+
+# ── saying it once (S212) ────────────────────────────────────────────────
+def place_phrase(members):
+    """Where these things are — but only when there IS a single where. A group
+    that does not all sit in one container has no "this row" to point at, and
+    sending the captain to look for a row of eight touching buttons that was
+    never on the screen is worse than not naming a place at all.
+
+    AND WHICH WORD, read off the boxes rather than off the crowding axis. The
+    axis says which way two controls are crowding each other, which is a
+    different question from what the captain is looking at: twenty table rows
+    of side-by-side buttons crowd along a row and are plainly a LIST, and
+    calling them "this row" invents a place just as surely as naming one that
+    is not there. They are a row when every one of them sits in the same
+    horizontal band, and a list when they walk down the page."""
+    if shared_place(members) is None:
+        return "in different parts of the page"
+    boxes = [m["box"] for m in members if isinstance(m.get("box"), dict)]
+    if len(boxes) > 1:
+        band_top = max(b["y"] for b in boxes)
+        band_bottom = min(b["y"] + b["h"] for b in boxes)
+        if band_bottom <= band_top:
+            return "in this list"
+    return "in this row"
+
+
+def group_noun(members, axis):
+    """What to call a handful of the same thing. Their own kind when they all
+    share one and it is a real word — buttons, links, fields — and otherwise
+    the layout word a person would reach for."""
+    kinds = set(kind_word(e) for e in members)
+    if len(kinds) == 1:
+        k = kinds.pop()
+        if k != "control":
+            return plural(k)
+    return "rows" if axis == "column" else "items"
+
+
+def and_list(names):
+    """'Edit and Delete', 'Edit, Copy and Delete' — the way a person says it."""
+    if len(names) == 2:
+        return "%s and %s" % (names[0], names[1])
+    return "%s and %s" % (", ".join(names[:-1]), names[-1])
+
+
+def repeated_labels(members):
+    """THE SHAPE THE CAPTAIN WOULD RECOGNISE, when the group has one: the
+    names that repeat, identically, in every single unit of a repeated
+    family.
+
+    "38 buttons in this list are touching — 0 px between them" is a number
+    with no story. It was TWENTY ROWS, each with its own Edit and Delete, and
+    what a person would say is that every row's Edit and Delete buttons are
+    touching. The count stays in the record for the ranking to read; the
+    SENTENCE describes the shape.
+
+    THE NAMES ONLY. Whether "every" can be said about them is a separate
+    question, asked of the whole family in `family_census` — this says what
+    the affected units are called, not how many of its kind there are.
+
+    Claimed only where the shape is not in doubt: the units must stand in one
+    column, and every one of them must carry the same names in the same
+    reading order. Anything less and the counted sentence is the honest one —
+    three bars holding A0/B0, A1/B1 and A2/B2 have no name in common to put
+    in a sentence, so they keep their count."""
+    units = repeated_family(members)
+    if not units:
+        return None
+    corners = [unit_corner(u) for u in units]
+    if len(set(c[0] for c in corners)) != 1 or len(set(c[1] for c in corners)) < 2:
+        return None                    # not a column of units: no "every row"
+    names = None
+    for unit in units:
+        ordered = sorted(unit, key=lambda m: (m["box"]["y"], m["box"]["x"]))
+        these = [label(m) for m in ordered]
+        if len(these) < 2 or any(not n for n in these):
+            return None
+        if len(set(these)) != len(these):
+            return None                # "Edit and Edit" names nothing
+        if names is None:
+            names = these
+        elif these != names:
+            return None
+    return names
+
+
+def family_census(members, elements, names):
+    """HOW MANY UNITS OF THIS FAMILY ARE ON THE PAGE, beside how many of them
+    this note is about — the two numbers the word "every" has to be measured
+    against.
+
+    THIS IS ROUND 5'S CURE, and the defect it exists for was the tester's:
+    eight list rows, the first three with their Edit and Delete touching and
+    the last five comfortably spaced, read as "every row's Edit and Delete
+    buttons are touching" with five well-spaced rows on the screen in the same
+    glance. Every check in front of that word looked at the AFFECTED units —
+    same column, same names, same reading order — and not one of them asked
+    whether the rest of the list was affected at all.
+
+    "Every" is a claim about the WHOLE family, so the whole family has to be
+    counted: the units are the siblings under the one container that holds
+    them, and a sibling is a unit of this family when it carries these same
+    names in this same order. Where the census cannot account for the page —
+    no container to count under, or fewer units found than the note is about —
+    the total comes back unknown and the sentence COUNTS rather than claims.
+    Only a census that adds up can license the word.
+
+    A story with a false number is worse than a number with no story. The
+    round-4 sentence was the second; this is what keeps it from becoming the
+    first."""
+    units = repeated_family(members)
+    if not units:
+        return None
+    lca = lowest_common_ancestor([m for unit in units for m in unit])
+    if not lca:
+        return (len(units), None)
+    siblings = {}
+    for e in elements:
+        if not isinstance(e.get("box"), dict):
+            continue
+        p = parent_path(e)
+        if p and "." in p and p.rsplit(".", 1)[0] == lca:
+            siblings.setdefault(p, []).append(e)
+    total = 0
+    for kids in siblings.values():
+        ordered = sorted(kids, key=lambda m: (m["box"]["y"], m["box"]["x"]))
+        if [label(m) for m in ordered if label(m) in names] == names:
+            total += 1
+    # A census that cannot account for the units it was handed has not
+    # counted the family, and says so rather than guessing low.
+    return (len(units), total if total >= len(units) else None)
+
+
+def fold(bucket, elements=()):
+    """Turn N notes saying one thing into ONE note that names the count.
+
+    Five rows in a list, each 6 px from the next, is five notes today and one
+    fact — and five identical sentences is how a reader learns to skip the
+    section. The count is the information; the repetition is not."""
+    first = bucket[0]
+    kind = first["kind"]
+    axis = first.get("axis") or "column"
+    members, seen_already = [], set()
+    for o in bucket:
+        for m in o.get("members") or []:
+            if id(m) not in seen_already:
+                seen_already.add(id(m))
+                members.append(m)
+    n = len(members) or len(bucket)
+    noun = group_noun(members, axis)
+    where = place_phrase(members)
+    pxs = [o.get("px") or 0 for o in bucket]
+    lo, hi = min(pxs), max(pxs)
+    span = lo == hi
+    # THE SHAPE FIRST, WHERE THERE IS ONE (S212 round 4). A repeated family
+    # whose units all carry the same names is described, not counted.
+    names = repeated_labels(members) if kind in ("crowding", "overlap") else None
+    # AND ONLY THEN THE WORD "EVERY" — once the rest of the family has been
+    # counted and every one of them really is affected. Three rows out of
+    # eight are three rows, and say so; the counted sentence is the same
+    # shape, so he reads the same story either way, with the true number in
+    # it (S212 round 5).
+    census = family_census(members, elements, names) if names else None
+    if census and census[1] == census[0]:
+        who = "every row's %s %s" % (and_list(names), noun)
+    elif census:
+        who = "%s rows' %s %s" % (count_word(census[0]), and_list(names), noun)
+    else:
+        who = None
+    if who and kind == "crowding":
+        if span and lo == 0:
+            msg = "%s are touching — 0 px between them" % who
+        elif span:
+            msg = "%s sit %d px apart" % (who, lo)
+        else:
+            msg = "%s sit between %d and %d px apart" % (who, lo, hi)
+    elif who:
+        msg = ("%s overlap each other — they share %s of the same space"
+               % (who, ("%d px" % hi) if span else ("between %d and %d px" % (lo, hi))))
+    elif kind == "crowding":
+        if span and lo == 0:
+            msg = "%s %s %s are touching — 0 px between them" % (count_word(n), noun, where)
+        elif span:
+            msg = "%s %s %s sit %d px apart" % (count_word(n), noun, where, lo)
+        else:
+            msg = "%s %s %s sit between %d and %d px apart" % (count_word(n), noun, where, lo, hi)
+    elif kind == "overlap":
+        msg = ("%s %s %s overlap each other — they share %s of the same space"
+               % (count_word(n), noun, where,
+                  ("%d px" % hi) if span else ("between %d and %d px" % (lo, hi))))
+    elif kind == "misaligned":
+        msg = ("%s %s %s do not line up with the others — their left edges are %s off"
+               % (count_word(n), noun, where,
+                  ("%d px" % hi) if span else ("between %d and %d px" % (lo, hi))))
+    else:  # clipped
+        msg = ("%s %s %s have text clipped by their own boxes — each needs %s "
+               "more room than its box gives it"
+               % (count_word(n), noun, where,
+                  ("%d px" % hi) if span else ("between %d and %d px" % (lo, hi))))
+    return {
+        "kind": kind,
+        # KEPT, not dropped: `publish` strips these before the captain ever
+        # sees them, and keeping them is what lets a folded note be folded
+        # again — the last resort below, where two notes would otherwise read
+        # the same word for word.
+        "members": members,
+        "axis": axis,
+        "place": first.get("place"),
+        "px": lo if kind == "crowding" else hi,
+        # THE SAME NUMBER THE SENTENCE SAYS. It used to be len(bucket) — the
+        # number of PAIRS — while the sentence counted the elements, so a note
+        # reading "five rows" carried `count: 4` and contradicted itself in
+        # the captain's own record.
+        "count": n,
+        "elements": [label(m) or solo(m) for m in members][:8],
+        "message": msg,
+    }
+
+
+def members_of(bucket):
+    """Every element the notes in this bucket are about, once each."""
+    members, seen = [], set()
+    for o in bucket:
+        for m in o.get("members") or []:
+            if id(m) not in seen:
+                seen.add(id(m))
+                members.append(m)
+    return members
+
+
+def by_place(bucket):
+    """The bucket split into the places its notes DO share, in order. The
+    fallback when no one place holds the whole group: a tab bar and a
+    segmented control stay two facts rather than becoming one row that is not
+    on the screen."""
+    order, subs = [], {}
+    for o in bucket:
+        k = o.get("place")
+        if k not in subs:
+            order.append(k)
+            subs[k] = []
+        subs[k].append(o)
+    return [subs[k] for k in order]
+
+
+def say_it_once(obs, elements=()):
+    """THE LAST RESORT, and an invariant rather than a special case: two notes
+    that read the same word for word are one fact printed twice. The captain
+    reading the same sentence three times under a cap line is the exact noise
+    the collapse exists to prevent, so if two notes would render identically,
+    that is proof they should have folded — whatever the grouping thought."""
+    order, same = [], {}
+    for o in obs:
+        msg = o.get("message")
+        if msg not in same:
+            order.append(msg)
+            same[msg] = []
+        same[msg].append(o)
+    return [same[m][0] if len(same[m]) == 1 else fold(same[m], elements)
+            for m in order]
+
+
+def collapse(obs, elements=()):
+    """Group the findings that are the same fault about the same family of
+    thing, and fold any group of COLLAPSE_AT or more into one note. Two of a
+    kind stay two notes — a collapse that swallows a genuine second fault is
+    the quietening this session is trying not to cause.
+
+    A group folds when there is ONE PLACE that holds all of it (see
+    `shared_place`). When there is not, it is split into the places it does
+    share and each of those is considered on its own."""
+    order, buckets = [], {}
+    for o in obs:
+        key = o.get("group")
+        if key is None:
+            order.append(None)
+            buckets.setdefault(None, []).append(o)
+            continue
+        if key not in buckets:
+            order.append(key)
+            buckets[key] = []
+        buckets[key].append(o)
+    out = []
+    for key in order:
+        if key is None:
+            continue
+        bucket = buckets[key]
+        if len(bucket) < COLLAPSE_AT:
+            out.extend(bucket)
+        elif shared_place(members_of(bucket)) is not None:
+            out.append(fold(bucket, elements))
+        else:
+            for sub_bucket in by_place(bucket):
+                out.extend(sub_bucket if len(sub_bucket) < COLLAPSE_AT
+                           else [fold(sub_bucket, elements)])
+    out.extend(buckets.get(None, []))
+    return say_it_once(out, elements)
+
+
+def noticeability(o, gap_px):
+    """HOW MUCH OF THE PAGE THIS FAULT ACTUALLY SPOILS, in pixels a person
+    would notice — the thing "the three worst" has to be measured against.
+
+    One currency, because these have to be compared with each other:
+      clipped     the px of text that are not on the screen at all
+      misaligned  the px the row is out of true
+      overlap     the px two controls are sitting in each other's space
+      crowding    the px of space that are MISSING — a 0 px gap is the whole
+                  threshold missing, a 7 px gap is 1 px missing. Crowding is
+                  inherently a small-magnitude fault and now reads as one.
+    Then multiplied by how many things it is about: six names cut off mid-word
+    is six times the fault one is.
+
+    A name cut off mid-word (120 px x 6) outranks two buttons 1 px apart
+    (1 px missing x 1), which is the whole point — and among crowded pairs the
+    tightest is still the worst, which is how it always behaved."""
+    kind = o.get("kind")
+    px = o.get("px") or 0
+    n = o.get("count") or 1
+    span = max(1, gap_px - px) if kind == "crowding" else max(1, px)
+    return span * n
+
+
+def severity(o, gap_px):
+    """Worst first, for when only a few can be printed: most noticeable first,
+    then the old kind order and the count purely so that two findings of equal
+    weight never swap places between runs."""
+    return (-noticeability(o, gap_px), KIND_RANK.get(o.get("kind"), 9),
+            -(o.get("count") or 1))
+
+
+INTERNAL = ("group", "members", "axis", "place")
+
+
+def publish(o):
+    return {k: v for k, v in o.items() if k not in INTERNAL}
 
 
 def main(argv):
@@ -260,18 +994,37 @@ def main(argv):
     elements = elements if isinstance(elements, list) else []
     elements = [e for e in elements if isinstance(e, dict) and isinstance(e.get("box"), dict)]
 
+    # NEVER MEASURE WHAT CANNOT BE SEEN (S212). A row its container has
+    # scrolled away and a button behind an opaque modal backdrop both still
+    # have a box, and reporting either is reporting something nobody can look
+    # at. The driver recorded the answer; this is the one place it is applied,
+    # so every detector below inherits it.
+    unseen = len(elements)
+    elements = [e for e in elements if can_be_seen(e)]
+    unseen -= len(elements)
+
     obs = (detect_crowding(elements, gap_px) + detect_overlap(elements) +
            detect_misaligned(elements, misalign_px) + detect_clipped(elements, overflow_px))
 
+    obs = collapse(obs, elements)
+    found = len(obs)
+
     notes = []
-    if len(obs) > OBS_CAP:
-        notes.append("found %d observations; only the first %d are kept (cap %d)"
-                     % (len(obs), OBS_CAP, OBS_CAP))
-        obs = obs[:OBS_CAP]
+    if len(obs) > OBS_HANDFUL:
+        ranked = sorted(obs, key=lambda o: severity(o, gap_px))
+        held = len(obs) - OBS_CAP
+        obs = ranked[:OBS_CAP]
+        notes.append("This page has a lot going on — here are the %s worst. "
+                     "I held back %d more." % (count_word(OBS_CAP), held))
+    obs = [publish(o) for o in obs]
 
     out = {
         "thresholds": {"gapPx": gap_px, "misalignPx": misalign_px, "overflowPx": overflow_px},
         "elementCount": len(elements),
+        "unseenCount": unseen,
+        # What it FOUND, beside what it chose to print. The cap must never be
+        # able to make a busy page look like a quiet one in the record.
+        "foundCount": found,
         "observations": obs,
         "notes": notes,
     }
@@ -279,7 +1032,10 @@ def main(argv):
     with open(outpath, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2)
         fh.write("\n")
-    print("%d observation(s) from %d element(s)" % (len(obs), len(elements)))
+    print("%d observation(s) from %d element(s)%s"
+          % (len(obs), len(elements),
+             ("" if found == len(obs) else " (%d found, %d held back)"
+              % (found, found - len(obs)))))
     return 0
 
 

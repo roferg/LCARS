@@ -127,6 +127,21 @@ The order is the contract:
    computed colour and a couple of DOM facts for every visible element, up to
    `--element-cap` (default 300) — a dense page says how many it captured and
    how many it dropped, in the record, never in silence.
+
+   **And it writes down what the browser knows about each one (S212):** where
+   it sits in the DOM (`path`), its computed `overflow` (`overflowStyleX/Y`,
+   kept separate from the pixel-spill `overflowX/Y`), whether cutting its text
+   off was the POINT (`textOverflow` — the ellipsis idiom), and whether it is
+   really the thing painted at its own position (`seen`, with `hiddenBy`
+   saying WHY when it is not: `clipped` — its own scroll container has carried
+   it away — or `covered` — something solid is painted on top). A cover only
+   counts when it is solid enough to actually hide what is under it: the alpha
+   of its background colour times its opacity, multiplied down the ancestor
+   chain because opacity is inherited. A bare click-catcher and a 35% modal
+   backdrop hide NOTHING and buy no silence; an opaque backdrop does. These
+   are RECORDED, never worked out afterwards from the boxes: a badge sits
+   geometrically inside its button and so does a genuinely misplaced element
+   that merely overlaps one, and rectangles cannot tell those two apart.
 3b. **`xo/observations.json` — computed by the SKILL, not asked of the
    worker** (`xo-observe.py`, arithmetic over Round 0's boxes). Crowding,
    overlap, a misaligned row, clipped text: things no drawing states, so
@@ -138,6 +153,71 @@ The order is the contract:
    evidence for a real gap but may never invent a criterion from one. The
    thresholds used are printed at the bottom of that section, because only the
    captain can calibrate them against his own eye.
+
+   **It does not cry wolf, and it does not shout (S212).** Driven live, this
+   pass fired on UI that was perfectly correct, so four things are now true of
+   it. It never compares an element with something inside it — a chip and its
+   own remove button, a button and its unread badge. It never calls a box that
+   is MEANT to scroll "clipped", nor a name deliberately shortened with an
+   ellipsis that can actually render (`overflow: hidden` with the same spill
+   and NO ellipsis still reports, and so does `text-overflow: ellipsis` on
+   text that is allowed to WRAP, where no ellipsis is ever drawn — those are
+   the controls). It never measures what cannot be seen —
+   and "cannot be seen" means actually covered, not merely overlaid. And
+   one fact found over and over is ONE note that names the count — *"five rows
+   in this list sit 6 px apart"* — with the whole list capped past a handful:
+   *"This page has a lot going on — here are the three worst. I held back 5
+   more."* `foundCount` keeps the true total in the file and in the journal, so
+   a capped list can never read as a quiet page.
+
+   Two rules keep those collapsed sentences honest. A family is things that
+   really sit TOGETHER — same kind AND **one place that holds all of them**,
+   and A PLACE HAS TO BE EARNED. There are exactly two shapes that earn one,
+   read off the recorded DOM paths and boxes: every member shares the **same
+   direct parent** (one toolbar, one list, one form row), or the group is
+   **one repeated family** — units that are siblings under one ancestor, all
+   the same shape, laid out in a column, a row or a filled grid. That second
+   shape is the table for twenty list rows each carrying its own Edit/Delete
+   pair: one fact, said once, and said as *"every row's Edit and Delete
+   buttons are touching — 0 px between them"* rather than as a button count
+   nobody can picture. **"Every" is established before it is said** — the rest
+   of that family is counted, and a list where only three of eight rows are
+   affected reads *"three rows' Edit and Delete buttons are touching — 0 px
+   between them"*. A story with a false number in it is worse than a number
+   with no story: it is the one he can catch himself, looking at the screen. Anything else has **no place** and says so — *"in
+   different parts of the page"* — instead of inventing one. A WRAPPER THAT
+   MERELY CONTAINS EVERYTHING IS NOT A PLACE: a tab bar, a segmented control
+   and a pager inside one `#app` stay separate facts rather than becoming
+   "seven buttons in this list". Whether a place it does have is a row or a
+   list is read off the boxes, not off the crowding axis. And as a last
+   resort: if two notes would read the same word for word, they fold — the
+   captain is never handed the same sentence twice.
+   And "the three worst" is EARNED, not a fixed order of categories: how much
+   of the page each fault actually spoils, in pixels, times how many things it
+   is about. Six names cut off mid-word outrank two buttons a pixel apart.
+
+   **Silence has to be earned.** An element is written off as not-seen only
+   where hiding was POSITIVELY established: an ancestor won the hit test (its
+   own scroll container has carried it away), or a cover was MEASURED and
+   found opaque. Everything else is looked at. A colour's alpha is really
+   parsed, in every syntax a browser computes — `rgba()`, `hsl()`, `oklch()`,
+   `lab()`, `color(srgb …)`, `color-mix()` — so six visually identical 30%
+   dims behave identically, and an opaque one in any of them still hides. A
+   gradient states its own colour stops, so its strongest stop bounds it: a
+   sheet whose every stop is alpha 0, or a decorative vignette topping out at
+   0.25, hides nothing. `backdrop-filter: blur(0px)` hides nothing either,
+   while a real `blur(8px)` glass panel still does. Anything that cannot be
+   measured — an unrecognised filter, a `paint()` worklet, a colour syntax
+   nobody has written yet — means "I could not establish that this is
+   hidden", and the page under it is measured. Two deliberate exceptions stay
+   solid because there is a real reason to believe they cover: a raster
+   `url(...)` image and an SVG `url(#…)` filter. The failure mode of this
+   whole pass is SILENCE, not noise — a false alarm is on the screen for the
+   captain to overrule, a false silence he never learns about. **And the
+   silence that is left is said out loud**: where something really was behind
+   something solid, the report's own observations section tells him so —
+   *"Three things on this page were behind something solid, so I could not
+   look at them."* Nothing hidden, nothing said.
 4. **Up to three worker rounds.** Each round Number One writes EITHER
    `xo-actions.json` (it wants to look further — at most 12 actions, every
    screenshot named) OR `xo-verdict.json`. No verdict by the end of round three

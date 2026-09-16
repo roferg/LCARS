@@ -372,11 +372,282 @@ async function connect(port) {
  * EVERY VISIBLE element on the page — not just the drawing's named places.
  * Geometry is arithmetic; nothing here decides whether two things are too
  * close together. That decision is xo-observe.py's, done AFTER the browser
- * has closed, from exactly these numbers. */
+ * has closed, from exactly these numbers.
+ *
+ * S212 ADDS THREE FACTS, AND IT ADDS THEM HERE ON PURPOSE. Driven live, the
+ * observations pass cried wolf on correct UI — a chip's own remove button, a
+ * badge on a button corner, a box that is MEANT to scroll. Every one of those
+ * is settled by something THE BROWSER ALREADY KNOWS and nobody wrote down:
+ *
+ *   `path`            where the element sits in the DOM, as the chain of
+ *                     child indices from the root. Two elements are nested
+ *                     when one path is the other's prefix — a STRUCTURAL
+ *                     fact, recorded. It would have been tempting to work
+ *                     nesting out downstream from the boxes ("A's box
+ *                     contains B's, so A is B's parent"), and that is exactly
+ *                     the inference this project has been beaten by three
+ *                     times: a badge sits geometrically inside its button,
+ *                     and so does a genuinely misplaced element that merely
+ *                     overlaps one. Boxes cannot tell those apart. The DOM
+ *                     can, and it is right here when we look.
+ *   overflowStyleX/Y  the COMPUTED overflow property — "visible", "hidden",
+ *                     "auto", "scroll". Deliberately NOT folded into the
+ *                     existing `overflowX`/`overflowY`, which are pixel
+ *                     amounts of spill and are read downstream today.
+ *   textOverflow      the COMPUTED text-overflow property — "clip" or
+ *                     "ellipsis". `overflow: hidden` says the text is cut
+ *                     off; this says whether cutting it off was the POINT.
+ *                     The same shape of fact as overflowStyleX/Y, one field on.
+ *   whiteSpace        the COMPUTED white-space property. An ellipsis only
+ *                     ever renders on a single non-wrapping line, so this is
+ *                     what says whether the field above can do anything at
+ *                     all — a base class setting `text-overflow: ellipsis`
+ *                     on everything is how people write CSS.
+ *   seen              whether the element is actually the thing painted at
+ *                     its own position, and
+ *   hiddenBy          why not, when it is not: "clipped" (an ANCESTOR won the
+ *                     hit test — its own scroll container has carried it away)
+ *                     or "covered" (something else is painted on top, and that
+ *                     something is solid enough to actually hide it). Two
+ *                     different causes that used to be one silent boolean;
+ *                     recorded apart because only one of them should ever be
+ *                     bought by a see-through overlay.
+ *
+ * Still facts, still no opinions: every one of them is recorded and none of
+ * them is acted on until the browser has closed. */
 const READ = (places, cap) => `(function () {
   var ids = ${JSON.stringify(places)};
   var CAP = ${JSON.stringify(cap)};
   function box(el) { var r = el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; }
+  // WHERE IT SITS IN THE DOM — the chain of child indices from the root, so
+  // "is one of these inside the other" is a prefix test on a string the
+  // BROWSER wrote, not a guess made later from two rectangles.
+  function pathOf(el) {
+    var parts = [], n = el, guard = 0;
+    while (n && n.nodeType === 1 && guard++ < 100) {
+      var i = 0, sib = n;
+      while ((sib = sib.previousElementSibling)) i++;
+      parts.push(i);
+      n = n.parentElement;
+    }
+    return parts.reverse().join(".");
+  }
+  // HOW MUCH OF WHAT IS UNDERNEATH SURVIVES A COVER. Anything at all can be
+  // laid over a page — a modal backdrop, a drag layer, a toast container, a
+  // bare click-catcher — and a hit test alone cannot tell a sheet of black
+  // from a sheet of nothing: both win it. What separates them is how solid
+  // the cover actually paints, and the browser already knows: the alpha of
+  // its background colour, times its opacity — which is INHERITED, so a
+  // cover whose own opacity is 1 inside a half-faded wrapper is still half
+  // see-through and the whole ancestor chain has to be multiplied out.
+  //
+  // ── THE RULE EVERYTHING BELOW OBEYS (captain's ruling, S212 round 4) ──
+  //
+  //   AN ELEMENT MAY BE RECORDED AS NOT-SEEN ONLY WHERE HIDING WAS
+  //   POSITIVELY ESTABLISHED — an ancestor won the hit test (it is genuinely
+  //   clipped away by its own scroll container), or a non-ancestor cover was
+  //   MEASURED and found opaque. Everything else is SEEN, and gets measured.
+  //
+  // A colour that cannot be parsed, a background image whose paint cannot be
+  // bounded, a filter nobody here understands: every one of those now means
+  // "I could not establish that this is hidden, so I will look at it."
+  //
+  // WHY, because this is the argument three rounds of authors got backwards
+  // and the comment that used to sit here got backwards with them. THE
+  // FAILURE MODE OF THIS FEATURE IS SILENCE, NOT NOISE. A false complaint is
+  // right there on the screen where the captain can see it and say it is
+  // wrong. A false silence he never finds out about — he cannot tell "it
+  // looked and there was nothing" from "it never looked", and these covers
+  // are position:fixed inset:0 in every real application, so what goes quiet
+  // is the whole page. He accepted the cost of the occasional wrong
+  // complaint, knowingly, to get that.
+  //
+  // Three authors wrote a fallback here believing it unreachable and three
+  // were wrong: no alpha measured at all (round 1, so ANY overlay silenced
+  // the page), any background-image assumed solid (round 2, so ANY gradient
+  // did), any unparseable colour assumed solid (round 3 — which is how a 30%
+  // dim written as oklch() / lab() / color-mix() / color(srgb …) silenced a
+  // whole page while the identical dim written as rgba() did not). Arguing a
+  // branch is unreachable is not the safeguard. WHICH WAY IT FAILS is.
+
+  // THE ALPHA OF A COLOUR — or null when it cannot be measured. A SENTINEL
+  // rather than a number, deliberately, so that no caller can quietly read
+  // "I do not know" as "solid" the way round 3's "return 1" did: null has to
+  // be handled on purpose or the arithmetic breaks loudly.
+  //
+  // And most of what round 3 gave up on is genuinely READABLE. Every CSS
+  // colour function states its alpha after a "/" — oklch(0 0 0 / 0.3),
+  // color(srgb 0 0 0 / 0.3), lab(0 0 0 / 0.3) — and is fully opaque when it
+  // states none. That is a fact about the syntax, not a guess. So parse what
+  // can be parsed, AND make what still cannot mean "look anyway".
+  var COLOUR_FN = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)$/i;
+  function alphaAfterSlash(args) {
+    var i = args.lastIndexOf("/");
+    if (i < 0) return 1;                     // no alpha channel stated: opaque
+    var t = args.slice(i + 1).trim();
+    var a = parseFloat(t);
+    if (isNaN(a)) return null;               // an alpha is stated and unreadable
+    return t.indexOf("%") >= 0 ? a / 100 : a;
+  }
+  function bgAlpha(colour) {
+    if (!colour) return 0;
+    var c = colour.trim();
+    if (c.toLowerCase() === "transparent") return 0;
+    var m = /^rgba?\\(([^)]*)\\)$/.exec(c);
+    if (m) {
+      var parts = m[1].split(/[,/ ]+/).filter(function (p) { return p !== ""; });
+      // THE ONE FALLBACK IN THIS FUNCTION THAT IS MEASURED RATHER THAN
+      // ASSUMED, AND SO STAYS A 1: rgb(0,0,0) carries no alpha channel at
+      // all, and a colour with no alpha channel is genuinely opaque.
+      if (parts.length < 4) return 1;
+      var a = parseFloat(parts[3]);
+      if (isNaN(a)) return null;
+      return parts[3].indexOf("%") >= 0 ? a / 100 : a;
+    }
+    var f = /^([a-z-]+)\\((.*)\\)$/i.exec(c);
+    if (!f || !COLOUR_FN.test(f[1])) return null;   // nothing established
+    return alphaAfterSlash(f[2]);
+  }
+  function effectiveOpacity(el) {
+    var o = 1, n = el, guard = 0;
+    while (n && n.nodeType === 1 && guard++ < 100) {
+      var v = parseFloat(getComputedStyle(n).opacity);
+      if (!isNaN(v)) o *= v;
+      n = n.parentElement;
+    }
+    return o;
+  }
+  // WHAT A BACKGROUND IMAGE CAN PAINT AT ITS DARKEST — an upper bound on
+  // anything it can put on the screen, or null when there is no bound to be
+  // had. A gradient is not an unknown: it STATES its own colour stops, and
+  // the strongest of them bounds it. A sheet whose every stop is alpha 0
+  // paints not one pixel and hides nothing; a decorative vignette topping
+  // out at 0.25 is a decoration, not a lid.
+  //
+  // ONE DELIBERATE EXCEPTION, and the tester endorsed it: a real raster
+  // url(...) still reads as solid. A picture genuinely does paint something,
+  // and its pixels are not in computed style to be measured — unlike a
+  // gradient, there is a real reason to believe it covers. Everything else
+  // that cannot be bounded — a paint() worklet, a stop in a syntax nobody
+  // has written yet — now means LOOK, where round 2 and round 3 both made
+  // it mean silence.
+  var COLOUR_TOKEN = /\\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\\([^()]*\\)/gi;
+  function imageStrength(v) {
+    if (!v || v === "none") return 0;
+    if (/url\\(/i.test(v)) return 1;         // a real picture — it really paints
+    var stops = v.match(COLOUR_TOKEN);
+    if (!stops) return null;                 // nothing measurable in it at all
+    var max = 0;
+    for (var i = 0; i < stops.length; i++) {
+      var a = bgAlpha(stops[i]);
+      if (a === null) return null;           // one unreadable stop, so no bound
+      if (a > max) max = a;
+    }
+    return max;
+  }
+  // A BACKDROP FILTER ONLY HIDES WHEN IT DOES SOMETHING THAT CAN BE SHOWN TO
+  // HIDE. blur(8px) really does destroy what is behind it and must keep
+  // buying silence — a glass modal is genuinely unreadable through.
+  // blur(0px), and every other identity value, has no visual effect
+  // whatsoever and must buy none.
+  //
+  // ROUND 4 REVERSED THE UNRECOGNISED CASE. It used to be assumed to act,
+  // "because an unknown filter is far more likely to be a real effect than a
+  // no-op" — which may even be true, and is still the wrong way round under
+  // the rule above: likely-to-act is not ESTABLISHED to hide, and the price
+  // of being wrong is a silent page. The identity table itself was proven
+  // clean against twelve no-op forms, so what is recognised is trustworthy;
+  // only the unrecognised changed hands, and an unrecognised function now
+  // contributes nothing either way rather than silencing the page alone.
+  //
+  // ONE EXCEPTION KEPT ON PURPOSE — url(#…), an SVG filter — and here is the
+  // why, since keeping it needs one: an SVG filter is an arbitrary program
+  // over the pixels behind it, and feFlood on its own paints an opaque
+  // sheet. Nothing in computed style bounds what it does. That is the same
+  // case as the raster url(...) background above — a real reason to believe
+  // it covers — and not the same case as a function name we merely have not
+  // heard of.
+  var IDENTITY = { blur: 0, grayscale: 0, sepia: 0, invert: 0, opacity: 1,
+                   brightness: 1, contrast: 1, saturate: 1, "hue-rotate": 0 };
+  function filterHides(v) {
+    if (!v || v === "none") return false;
+    if (/url\\(/i.test(v)) return true;      // an SVG filter — see above
+    var fns = v.match(/[a-z-]+\\([^)]*\\)/gi);
+    if (!fns) return false;                  // unreadable: nothing established
+    var hides = false;
+    for (var i = 0; i < fns.length; i++) {
+      var m = /^([a-z-]+)\\((.*)\\)$/i.exec(fns[i]);
+      if (!m) continue;                      // unreadable token
+      var name = m[1].toLowerCase();
+      if (!(name in IDENTITY)) continue;     // unrecognised: establishes nothing
+      var n = parseFloat(m[2]);
+      if (isNaN(n)) continue;
+      if (m[2].indexOf("%") >= 0) n /= 100;
+      if (n !== IDENTITY[name]) hides = true;
+    }
+    return hides;                            // only a RECOGNISED, real effect
+  }
+  function coverStrength(el) {
+    var cs = getComputedStyle(el);
+    // null from either measurement means "hiding could not be established",
+    // and that contributes NOTHING. It must never be folded in as if it were
+    // a 1 — that single substitution is round 3's whole defect.
+    var strength = 0;
+    var a = bgAlpha(cs.backgroundColor);
+    if (a !== null && a > strength) strength = a;
+    var img = imageStrength(cs.backgroundImage);
+    if (img !== null && img > strength) strength = img;
+    if (filterHides(cs.backdropFilter || cs.webkitBackdropFilter)) strength = 1;
+    return strength * effectiveOpacity(el);
+  }
+  // Past this much, the page underneath is gone. Below it you can still read
+  // what is there — the ordinary modal backdrop is 0.3–0.6 and is MEANT to
+  // dim, not to hide. A backdrop drawn to actually hide the page is opaque.
+  var HIDE_AT = 0.85;
+  // CAN IT ACTUALLY BE SEEN. visible() below already covers display,
+  // visibility and the outer viewport; this covers the two it cannot — an
+  // ancestor's scroll having carried the element out of its own container,
+  // and something solid painted on top of it. Both are one question: is
+  // this element (or its own content) what is painted where it says it is?
+  // Sampled at the centre of the part of the box that is inside the
+  // viewport, then at four inset corners, so a control that is merely
+  // half-covered still counts as seen.
+  //
+  // Returns WHY, not just whether: "seen", "clipped" (an ancestor won), or
+  // "covered" (a solid non-ancestor won). Those two are not the same fault
+  // and must not buy the same silence.
+  function seenAt(el, b, s) {
+    // An element with pointer-events:none can never be returned by a hit
+    // test, so a miss proves nothing about it. Say nothing rather than
+    // wrongly calling it hidden — quietening a real fault is the worse error.
+    if (s.pointerEvents === "none") return "seen";
+    var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+    var x1 = Math.max(0, b.x), y1 = Math.max(0, b.y);
+    var x2 = Math.min(vw, b.x + b.w), y2 = Math.min(vh, b.y + b.h);
+    if (x2 <= x1 || y2 <= y1) return "offscreen";
+    var ix = Math.min(4, (x2 - x1) / 4), iy = Math.min(4, (y2 - y1) / 4);
+    var pts = [[(x1 + x2) / 2, (y1 + y2) / 2],
+               [x1 + ix, y1 + iy], [x2 - ix, y1 + iy],
+               [x1 + ix, y2 - iy], [x2 - ix, y2 - iy]];
+    var covered = false;
+    for (var i = 0; i < pts.length; i++) {
+      var hit = document.elementFromPoint(pts[i][0], pts[i][1]);
+      if (!hit) continue;
+      // The element itself, or its own content painted inside it.
+      if (hit === el || el.contains(hit)) return "seen";
+      // An ANCESTOR won: the element is not painted here because its own
+      // scroll container has carried it away. Genuinely gone — keep looking
+      // at the other sample points, but this one proves nothing in favour.
+      if (hit.contains(el)) continue;
+      // A NON-ANCESTOR is on top. It only hides anything if it actually
+      // paints something solid enough to hide it — a fully transparent
+      // click-catcher hides NOTHING, and a 35% backdrop is a dimmer, not a
+      // lid. Measured, not assumed.
+      if (coverStrength(hit) < HIDE_AT) return "seen";
+      covered = true;
+    }
+    return covered ? "covered" : "clipped";
+  }
   function visible(el, b) {
     if (b.w <= 0 || b.h <= 0) return false;
     var s = getComputedStyle(el);
@@ -405,6 +676,7 @@ const READ = (places, cap) => `(function () {
     // Leaf-ish text only: a container's "text" would be every descendant's
     // text glued together, which names nothing.
     var ownText = el.childElementCount === 0 ? (el.innerText || el.textContent || "") : "";
+    var why = seenAt(el, b, s);
     elements.push({
       id: el.id || null,
       tag: el.tagName.toLowerCase(),
@@ -419,7 +691,21 @@ const READ = (places, cap) => `(function () {
       // 0 when nothing does. Computed here because scrollWidth/scrollHeight
       // are DOM facts, not a judgement about whether that is a problem.
       overflowX: Math.max(0, Math.round((el.scrollWidth || 0) - (el.clientWidth || 0))),
-      overflowY: Math.max(0, Math.round((el.scrollHeight || 0) - (el.clientHeight || 0)))
+      overflowY: Math.max(0, Math.round((el.scrollHeight || 0) - (el.clientHeight || 0))),
+      // The COMPUTED overflow PROPERTY — a different fact from the two pixel
+      // amounts above, and the one that says whether spilling is the point.
+      overflowStyleX: s.overflowX, overflowStyleY: s.overflowY,
+      // Whether cutting the text off was the POINT. overflow:hidden alone
+      // says only that it IS cut off; the ellipsis is the author saying so.
+      textOverflow: s.textOverflow,
+      // ...and whether an ellipsis could RENDER. text-overflow does nothing
+      // at all on text that is allowed to wrap, so the property alone is not
+      // the author saying anything.
+      whiteSpace: s.whiteSpace,
+      // Where it sits in the DOM, and whether it is really on screen.
+      path: pathOf(el),
+      seen: why === "seen",
+      hiddenBy: why === "seen" ? null : why
     });
   }
   var elementsNote = dropped > 0

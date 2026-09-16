@@ -1470,11 +1470,20 @@ cmd_evaluate() {
   # nothing — a clean page is a fact worth recording too.
   local obsfile="$xodir/observations.json" obsn=0
   xo_observe "$shots" "$obsfile"
+  local obsfound=0
   [ -s "$obsfile" ] && obsn="$("$XO_PY" -c 'import json,sys
 try: print(len(json.load(open(sys.argv[1])).get("observations") or []))
 except Exception: print(0)' "$obsfile" 2>/dev/null)"
-  obsn="${obsn:-0}"
-  journal "$dir" observed "$(printf '"count": %s' "${obsn:-0}")"
+  # WHAT IT FOUND, beside what it PRINTED. Past a handful the pass keeps only
+  # the worst few (S212), and a record that logged the short list as the whole
+  # story would make a busy page look like a quiet one for ever after.
+  [ -s "$obsfile" ] && obsfound="$("$XO_PY" -c 'import json,sys
+try:
+  d = json.load(open(sys.argv[1]))
+  print(d.get("foundCount", len(d.get("observations") or [])))
+except Exception: print(0)' "$obsfile" 2>/dev/null)"
+  obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
+  journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
 
   # --- 4. THE WORKER ROUNDS ------------------------------------------------
   local work input round=1 verdict="" out=""
@@ -2122,11 +2131,20 @@ cmd_recheck() {
   # relaunched build's boxes, exactly as round 0 does.
   local obsfile="$xodir/observations.json" obsn=0
   xo_observe "$shots" "$obsfile"
+  local obsfound=0
   [ -s "$obsfile" ] && obsn="$("$XO_PY" -c 'import json,sys
 try: print(len(json.load(open(sys.argv[1])).get("observations") or []))
 except Exception: print(0)' "$obsfile" 2>/dev/null)"
-  obsn="${obsn:-0}"
-  journal "$dir" observed "$(printf '"count": %s' "${obsn:-0}")"
+  # WHAT IT FOUND, beside what it PRINTED. Past a handful the pass keeps only
+  # the worst few (S212), and a record that logged the short list as the whole
+  # story would make a busy page look like a quiet one for ever after.
+  [ -s "$obsfile" ] && obsfound="$("$XO_PY" -c 'import json,sys
+try:
+  d = json.load(open(sys.argv[1]))
+  print(d.get("foundCount", len(d.get("observations") or [])))
+except Exception: print(0)' "$obsfile" 2>/dev/null)"
+  obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
+  journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
 
   # --- 3. ONE worker round, with the FIRST verdict in front of it ----------
   # No second round of looking and no actions file: the question here is narrow

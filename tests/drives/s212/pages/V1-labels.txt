@@ -1,0 +1,12 @@
+details-closed
+hidden-attr
+content-vis
+drawer-offscreen
+accordion-h0
+clip-path-inset
+opacity-0
+visibility-hidden
+display-none
+svg-opaque
+canvas-opaque
+img-opaque

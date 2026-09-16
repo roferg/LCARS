@@ -63,6 +63,12 @@ They never move your score, and if the file is empty or missing, that means
 nothing either way — it says only that this pass found nothing, not that the
 page is fine.
 
+**Repeats are already folded up for you.** If five rows in a list are all the
+same distance apart you get one note saying so and naming the count, not five
+notes. And if the page had a lot going on, the list was capped at the three
+worst and it says how many it held back — so a short list is not a promise that
+there was nothing else.
+
 ## No drawing at all
 
 `criteria.json`'s `placeNames` can be empty because this mission was never

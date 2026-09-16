@@ -156,7 +156,35 @@ def load_observations(path):
         "observations": [o for o in obs if isinstance(o, dict) and o.get("message")],
         "thresholds": doc.get("thresholds") if isinstance(doc.get("thresholds"), dict) else {},
         "elementCount": doc.get("elementCount"),
+        # S212: when the list was capped, the pass says so in a sentence, and
+        # that sentence has to reach HIM. A short list he believes is the whole
+        # list is worse than a long one.
+        "notes": [n for n in (doc.get("notes") or []) if isinstance(n, str) and n.strip()],
+        # S212 round 5: the ONE silence that is left. The look now only writes
+        # something off as unseen when it POSITIVELY established that something
+        # solid was over it, which makes this rare, legitimate — and cheap to
+        # say out loud. It was in the record and never in his copy, so the one
+        # thing the look admits it could not see was the one thing he could
+        # not read.
+        "unseenCount": doc.get("unseenCount"),
     }
+
+
+HIDDEN_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
+                6: "Six", 7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten",
+                11: "Eleven", 12: "Twelve"}
+
+
+def hidden_sentence(n):
+    """What it could not look at, said the way he would say it — and nothing
+    at all when there was nothing."""
+    if not isinstance(n, int) or n < 1:
+        return None
+    if n == 1:
+        return ("One thing on this page was behind something solid, so I "
+                "could not look at it.")
+    return ("%s things on this page were behind something solid, so I could "
+            "not look at them." % HIDDEN_WORDS.get(n, str(n)))
 
 
 def main():
@@ -434,8 +462,16 @@ def main():
             w("\n### Things I noticed that are not on your list\n\n")
             w("None of these come from your drawing or your PRD — they never "
               "change the score above. I am just telling you what I saw.\n\n")
+            # If the list was capped, say so BEFORE the list — otherwise three
+            # bullets read as "three things", which is the lie the cap could
+            # tell if it kept quiet about itself.
+            for n in observations.get("notes") or []:
+                w("%s\n\n" % n)
             for o in observations["observations"]:
                 w("- %s\n" % o.get("message", ""))
+            hidden = hidden_sentence(observations.get("unseenCount"))
+            if hidden:
+                w("\n%s\n" % hidden)
             th = observations["thresholds"] or {}
             w("\n*The numbers I used: I flag two controls less than %s px "
               "apart, a row whose left edge is more than %s px off from the "
