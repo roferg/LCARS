@@ -31,6 +31,21 @@ per gap, and you write one file.
   is in `xo/verdict.json`, in words — that is what you compare today's pictures
   against. If something you expect is not in a picture here, it was not there
   when the browser looked; do not reason about a shot you were not given.
+- `tests.json` — **THIS look's test run, and only this look's.** LCARS re-ran
+  the project's own test suite in the relaunched build before you looked, the
+  same way it did the first time, so what is in there is about the FIXED code
+  and not about what the first look saw. Same rules as the first look: a
+  criterion with no visual surface may be settled by it and cited with a
+  `testQuote` copied out of `outputTail`; **a passing suite proves nothing
+  about a criterion the suite does not speak to**, so if nothing in the output
+  speaks to one, it is still "I could not check this"; a count line (`413
+  passed, 0 failed`, `Duration 1.23s`) names nothing and is refused outright,
+  so quote the line that names the test; a failing test relevant
+  to a criterion is a gap with the failure quoted; and `outcome: hung`, or a
+  run that crashed before any test executed, is trouble running the tests, not
+  a fault in the build. LCARS checks every quote against the recorded output,
+  so do not carry one forward from your first verdict without finding it in
+  today's.
 - `prd.md`, the drawing in `attachments/`, and the plan.
 - `observations.json`, if it is there — crowding, overlap, a misaligned row,
   clipped text, computed from this look's own boxes. Same rule as the first

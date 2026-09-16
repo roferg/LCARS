@@ -644,8 +644,8 @@ gather_inputs() { # <mission-dir> <input-dir>
 # the ONE way anything is added after the gather: unlock the dir, copy, re-lock.
 # It is safe to call repeatedly, which is how a round-three worker sees the
 # shots round two took.
-xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json]
-  local into="$1" crit="$2" from="$3" obs="${4:-}" f
+xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json] [tests.json]
+  local into="$1" crit="$2" from="$3" obs="${4:-}" tst="${5:-}" f
   [ -d "$into" ] || return 0
   chmod u+w "$into" 2>/dev/null || true
   if [ -f "$crit" ]; then
@@ -661,6 +661,14 @@ xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json]
     rm -f "$into/observations.json" 2>/dev/null || true
     cp "$obs" "$into/observations.json" 2>/dev/null || true
     chmod a-w "$into/observations.json" 2>/dev/null || true
+  fi
+  # THE PROJECT'S OWN TEST RESULT (S211) — through the same read-only door, for
+  # the same reason. The worker may CITE it; it can never run it, and it can
+  # never edit the record it is judged against.
+  if [ -n "$tst" ] && [ -s "$tst" ]; then
+    rm -f "$into/tests.json" 2>/dev/null || true
+    cp "$tst" "$into/tests.json" 2>/dev/null || true
+    chmod a-w "$into/tests.json" 2>/dev/null || true
   fi
   if [ -d "$from" ]; then
     chmod u+w "$into/shots" 2>/dev/null || true
@@ -757,6 +765,9 @@ XO_MISSION_DIR=""
 # an abnormal exit left all three — a SIGTERM to xo.pid removed the pid file and
 # nothing else, and the LOW paths stopped the app but not the browser.
 XO_DRIVE_PID=""
+# …and, since S211, a FOURTH: the project's own test suite, which may legitimately
+# run for the whole five-minute bound.
+XO_TESTS_PID=""
 XO_LAUNCH_ID=""
 XO_STOP_LOG=""
 XO_LAUNCH_STOPPED=0
@@ -796,7 +807,8 @@ xo_rm_work() { # <dir>
 xo_teardown() {
   [ -n "$XO_DRIVE_PID" ] && xo_kill_tree "$XO_DRIVE_PID"
   [ -n "$XO_SPIN_PID" ] && xo_kill_tree "$XO_SPIN_PID"
-  XO_DRIVE_PID=""; XO_SPIN_PID=""
+  [ -n "$XO_TESTS_PID" ] && xo_kill_tree "$XO_TESTS_PID"
+  XO_DRIVE_PID=""; XO_SPIN_PID=""; XO_TESTS_PID=""
   xo_stop_launch
   [ -n "$XO_WORK_DIR" ] && xo_rm_work "$XO_WORK_DIR"
   XO_WORK_DIR=""
@@ -1201,8 +1213,28 @@ XO_HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
 XO_NODE="${LCARS_NODE_BIN:-node}"
 XO_PY="${LCARS_PYTHON_BIN:-python3}"
 XO_MAX_ROUNDS="${LCARS_XO_MAX_ROUNDS:-3}"
+# THE RECORD SEPARATOR FOR EVERY PLAN THIS SCRIPT READS BACK (fix round 1, D2).
+# ASCII US (0x1f), never a tab. TAB IS IFS WHITESPACE, so `IFS=$'\t' read -r …`
+# COLLAPSES a run of them: a record with an EMPTY field loses it and every later
+# field shifts left. That is how a gap with no shot — newly reachable once a
+# failing test could stand in for a picture — filed `{"criterion": "batches do
+# not survive a restart", "title": ""}` into `xo/logs.json`, and how the
+# captain's filing readout printed `log #2` with no title at all. `lcars status`
+# took the identical cure for the identical class in S207 R4. Both producers
+# (`xo-logs.py`, `xo-held.py`) carry the same constant.
+XO_RS=$'\037'
 XO_MAX_ACTIONS=12
 XO_OBSERVE_PY="${LCARS_XO_OBSERVE_PY:-$SKILL_DIR/xo-observe.py}"
+XO_TESTS_PY="${LCARS_XO_TESTS_PY:-$SKILL_DIR/xo-tests.py}"
+# THE BOUND ON THE PROJECT'S OWN SUITE (S211). Five minutes is a long test run
+# and a short wait; past it the look says the tests could not be run and gets on
+# with itself rather than holding the captain's Verify gate open all night.
+XO_TEST_TIMEOUT="${LCARS_XO_TEST_TIMEOUT:-300}"
+# How much of the output the worker is handed. The tail, because that is where
+# every runner in common use puts its summary and its failures — and the cut is
+# STATED in the record, because a line the worker cannot find is a line the
+# scorer will refuse to accept as a citation.
+XO_TEST_TAIL_CAP="${LCARS_XO_TEST_TAIL_CAP:-8000}"
 
 # THE OBSERVATIONS PASS (S210) — computed by the SKILL, from the boxes the
 # driver just recorded, never asked of the model. ONE writer, called from every
@@ -1214,6 +1246,42 @@ XO_OBSERVE_PY="${LCARS_XO_OBSERVE_PY:-$SKILL_DIR/xo-observe.py}"
 xo_observe() { # <shots-dir> <out observations.json>
   local shots="$1" out="$2"
   "$XO_PY" "$XO_OBSERVE_PY" "$shots/readout.json" "$out" >/dev/null 2>&1 || true
+  return 0
+}
+
+# THE PROJECT'S OWN TESTS (S211) — run by the SKILL, never by the worker.
+#
+# Number One acts only through a browser, so a change with no UI surface is
+# invisible to it. `config.json` already carries `testCommand`: the suite the
+# captain trusts. This runs it ONCE per look, in the LAUNCHED BUILD'S worktree
+# (so it is the built code being tested, not the captain's own checkout), and
+# writes `xo/tests.json` — the command, the exit code, the duration, the tail of
+# the output, and a plain verdict, all recorded where they were known.
+#
+# THE FENCE IS UNCHANGED. "The worker reasons, the skill executes" (captain's
+# ruling 2026-09-11). Nothing here gives the worker a shell; it is handed the
+# RESULT, as a read-only file, exactly as it is handed the screenshots.
+#
+# BEST-EFFORT, LIKE THE OBSERVATIONS PASS. A repo with no testCommand, a
+# worktree the launch did not record, a runner that will not start — each is
+# recorded plainly by xo-tests.py and the look carries on. A missing suite must
+# never be why the captain does not get his Verify look.
+xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing else
+  local launch="$1" out="$2" cmd="" wt=""
+  cmd="$(lcars_config_get "$CONFIG" testCommand 2>/dev/null)" || cmd=""
+  wt="$(json_field "$launch" worktree)"
+  # BACKGROUNDED AND WAITED ON, exactly as the driver is (S204 fix round 1, D2).
+  # A foreground child holds the trap's first opportunity to run until it
+  # finishes, and this one may legitimately take the whole five minutes — five
+  # minutes in which the captain's stop button would have done nothing.
+  # Backgrounded, a stand-down lands at once and xo_teardown kills this tree,
+  # the test runner and its children included.
+  "$XO_PY" "$XO_TESTS_PY" --out "$out" --cwd "$wt" \
+    --timeout "$XO_TEST_TIMEOUT" --cap "$XO_TEST_TAIL_CAP" \
+    --command "$cmd" >/dev/null 2>&1 &
+  XO_TESTS_PID=$!
+  wait "$XO_TESTS_PID" 2>/dev/null || true
+  XO_TESTS_PID=""
   return 0
 }
 
@@ -1485,6 +1553,28 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
   journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
 
+  # --- 3c. THE PROJECT'S OWN TESTS (S211) — run by the SKILL, between the
+  # capture and the worker round. A screenshot cannot answer "batches survive a
+  # restart"; the captain's own suite can. Run ONCE, here, in the launched
+  # build's worktree, so however many rounds of looking follow, they are all
+  # reasoning from the same one run.
+  local testsfile="$xodir/tests.json" test_outcome=""
+  xo_run_tests "$dir/launch.json" "$testsfile"
+  test_outcome="$(json_field "$testsfile" outcome)"
+  case "${test_outcome:-}" in
+    passed)          printf '◈ NUMBER ONE: your tests pass — I can use them as evidence.\n' ;;
+    # NOT "your tests FAIL" (fix round 1, D1). A non-zero exit is a red test of
+    # his OR a runner that never started, and nothing here can tell which — see
+    # the measurement in xo-tests.py. The banner says what is known and leaves
+    # the meaning to the line the look has to quote.
+    failed)          printf '◈ NUMBER ONE: your test run came back FAILED — a red test of yours, or a runner that never started.\n'
+                     printf '  I am not counting that against the build on its own.\n' ;;
+    hung)            printf '◈ NUMBER ONE: your tests were still running after %ss, so I stopped them.\n' "$XO_TEST_TIMEOUT" ;;
+    no-test-command) printf '◈ NUMBER ONE: no test command for this repo — going on what I can see.\n' ;;
+    *)               printf '◈ NUMBER ONE: could not run your tests — going on what I can see.\n' ;;
+  esac
+  journal "$dir" tested "$(printf '"outcome": %s' "$(jstr "${test_outcome:-unknown}")")"
+
   # --- 4. THE WORKER ROUNDS ------------------------------------------------
   local work input round=1 verdict="" out=""
   work="$(mktemp -d)"; input="$work/input"
@@ -1500,12 +1590,12 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # path-sandboxed engine that is the difference between a ledger and a guess.
   # So: unlock, copy, re-lock. The shots (with the .json/.txt readout beside
   # each) come too, and are re-synced every round because every round takes more.
-  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile" "$testsfile"
 
   while [ "$round" -le "$XO_MAX_ROUNDS" ]; do
     out="$work/round-$round"
     mkdir -p "$out"
-    xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile"
+    xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile" "$testsfile"
     printf '◈ NUMBER ONE: round %s of %s — looking…\n' "$round" "$XO_MAX_ROUNDS"
     (
       export LCARS_XO_INPUT_DIR="$input"
@@ -1582,7 +1672,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   # --- 5. THE SCORE IS RECOMPUTED FROM THE LEDGER --------------------------
   local report
   report="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
-              "$xodir/verdict.json" "$obsfile" 2>/dev/null)" || report=""
+              "$xodir/verdict.json" "$obsfile" "$testsfile" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" line key val
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -1747,12 +1837,14 @@ file_logs_for() { # <id> <dir>
   local -a gap_crit=() gap_title=() gap_shots=()
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    key="${line%%$'\t'*}"
+    key="${line%%$XO_RS*}"
     case "$key" in
-      OVERFLOW) overflow="${line#*$'\t'}" ;;
+      OVERFLOW) overflow="${line#*$XO_RS}" ;;
       GAP)
         # GAP <n> <prd> <shots-csv> <criterion> <title>
-        IFS=$'\t' read -r key num prd shotcsv crit title <<< "$line"
+        # US, NOT TAB — <shots-csv> is EMPTY for a gap the project's own tests
+        # found, and a tab would eat it and shift the title into nothing.
+        IFS="$XO_RS" read -r key num prd shotcsv crit title <<< "$line"
         [ -f "$prd" ] || continue
         n=$((n + 1))
         args+=(--prd "$prd")
@@ -2146,6 +2238,18 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
   journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
 
+  # --- 2c. AND THE PROJECT'S OWN TESTS, AGAIN (S211). A recheck relaunches the
+  # build from the FIXED branch, so the first look's test run is about code that
+  # no longer exists. Re-running it here is the same reason the observations
+  # pass re-runs: this is a look, and a look reasons from what is in front of it
+  # today. Handing the recheck stale evidence is the S204 stale-shots defect in
+  # another costume — it reached the right verdict once by luck and the wrong
+  # one the time after.
+  local testsfile="$xodir/tests.json" test_outcome2=""
+  xo_run_tests "$dir/launch.json" "$testsfile"
+  test_outcome2="$(json_field "$testsfile" outcome)"
+  journal "$dir" tested "$(printf '"outcome": %s, "round": "recheck"' "$(jstr "${test_outcome2:-unknown}")")"
+
   # --- 3. ONE worker round, with the FIRST verdict in front of it ----------
   # No second round of looking and no actions file: the question here is narrow
   # ("did each filed gap's fix hold?") and a judge that can ask for more looking
@@ -2155,7 +2259,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   XO_WORK_DIR="$work"
   mkdir -p "$input" "$out"
   gather_inputs "$dir" "$input"
-  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile" "$testsfile"
   # The first verdict, the filed logs and their PRDs — the record of what this
   # re-check is ABOUT. Copied through the same unlock/copy/re-lock door
   # everything else in the input tree goes through.
@@ -2202,7 +2306,9 @@ $shots"
   # worker gave stays exactly where it was.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    IFS=$'\t' read -r kind num mission crit title why <<< "$line"
+    # US, NOT TAB (fix round 1, D2) — `mission` and `criterion` both come off a
+    # filed-logs record that can carry either of them empty.
+    IFS="$XO_RS" read -r kind num mission crit title why <<< "$line"
     case "$kind" in
       MALFORMED) malformed="$num" ;;
       HELD)    nheld=$((nheld + 1)); held_list="${held_list:+$held_list; }${title:-log #$num} — $why (log #$num, $crit)" ;;
@@ -2229,7 +2335,7 @@ $shots"
     [ -s "$xodir/report.md" ] && cp "$xodir/report.md" "$xodir/report-1.md" 2>/dev/null
     local rep2 key val
     rep2="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
-              "$xodir/second/verdict.json" "$obsfile" 2>/dev/null)" || rep2=""
+              "$xodir/second/verdict.json" "$obsfile" "$testsfile" 2>/dev/null)" || rep2=""
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"

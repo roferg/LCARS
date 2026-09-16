@@ -688,7 +688,15 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
     bash "$RUN_BIN" estimate --mission "$id" >/dev/null 2>&1 || true
   fi
 
-  printf '%s\t%s\t%s\n' "$id" "$issue" "$title"
+  # US (0x1f), NOT A TAB (S211 fix round 1, D2). `$issue` is EMPTY whenever a
+  # bug is filed with no forge issue behind it, and TAB IS IFS WHITESPACE — the
+  # `read` that takes this row back apart COLLAPSES the empty middle field and
+  # shifts every field after it left. The `(local)` arm below could therefore
+  # never fire, and the captain was handed the first word of his own bug title
+  # rendered as an issue NUMBER (`#the mix-ratio status line`); Number One's
+  # filing readout copied that word into `xo/logs.json` as `"issue": "the"`.
+  # Same class and same cure as `lcars status` took in S207 R4.
+  printf '%s\037%s\037%s\n' "$id" "$issue" "$title"
 }
 
 # --- file every bug, collecting rows for the summary -----------------------
@@ -726,7 +734,7 @@ case "$PARENT_ISSUE" in ''|null) plabel="$PARENT_ID" ;; *) plabel="#$PARENT_ISSU
 printf '%d %s filed and linked to %s (%s):\n' "$n" "$noun" "$plabel" "$PARENT_TITLE"
 first_id=""
 for r in "${ROWS[@]}"; do
-  IFS=$'\t' read -r rid rissue rtitle <<<"$r"
+  IFS=$'\037' read -r rid rissue rtitle <<<"$r"
   [ -n "$first_id" ] || first_id="$rid"
   case "$rissue" in '') ilabel="(local)" ;; *) ilabel="#$rissue" ;; esac
   printf '  %s  %s  %s\n' "$rid" "$ilabel" "$rtitle"

@@ -21,6 +21,11 @@ Output on stdout, one TAB-separated record per line:
 
     HELD     <n> <mission> <criterion> <title> <why>
     NOTHELD  <n> <mission> <criterion> <title> <why>
+
+The fields are separated by ASCII US (0x1f), not a tab — `mission` and
+`criterion` can both come back empty off a filed-logs record, and a tab is IFS
+whitespace, so `read` would eat the empty one and shift every field after it
+left. See xo-logs.py's docstring for the whole of that story.
     MALFORMED <why>
 
 THE TITLE IS CARRIED (S204 fix round 2, D2), because the line the shell builds
@@ -31,6 +36,10 @@ first, with the id in brackets after it.
 """
 import json
 import sys
+
+
+# The record separator: US (0x1f), never a tab. See the docstring.
+RS = "\x1f"
 
 
 def clean(s):
@@ -48,20 +57,20 @@ def main():
             logs = json.load(fh)
         filed = [f for f in (logs.get("filed") or []) if isinstance(f, dict)]
     except Exception as exc:
-        print("MALFORMED\tthe filed-logs record could not be read (%s)" % exc)
+        print("MALFORMED" + RS + "the filed-logs record could not be read (%s)" % exc)
         return 0
     if not filed:
-        print("MALFORMED\tno logs were filed, so there is nothing to re-check")
+        print("MALFORMED" + RS + "no logs were filed, so there is nothing to re-check")
         return 0
 
     try:
         with open(rpath, encoding="utf-8") as fh:
             doc = json.load(fh)
     except Exception as exc:
-        print("MALFORMED\tthe re-check verdict could not be read (%s)" % exc)
+        print("MALFORMED" + RS + "the re-check verdict could not be read (%s)" % exc)
         return 0
     if not isinstance(doc, dict):
-        print("MALFORMED\tthe re-check verdict is not a JSON object")
+        print("MALFORMED" + RS + "the re-check verdict is not a JSON object")
         return 0
 
     # The worker's answers, keyed BOTH ways a worker might name a gap: by the
@@ -70,7 +79,7 @@ def main():
     by_crit, by_n = {}, {}
     held = doc.get("held")
     if not isinstance(held, list):
-        print("MALFORMED\tthe re-check verdict has no `held` list")
+        print("MALFORMED" + RS + "the re-check verdict has no `held` list")
         return 0
     for h in held:
         if not isinstance(h, dict):
@@ -96,16 +105,17 @@ def main():
             except Exception:
                 h = None
         if h is None:
-            print("NOTHELD\t%s\t%s\t%s\t%s\t%s" % (
-                n, mission, cid, title,
-                "it did not say whether this one is fixed, and silence is not a pass"))
+            print(RS.join([
+                "NOTHELD", str(n), mission, cid, title,
+                "it did not say whether this one is fixed, and silence is not a pass"]))
             continue
         why = clean(h.get("why") or h.get("note")) or "no reason given"
         shots = [clean(s) for s in (h.get("shots") or []) if clean(s)]
         if shots:
             why = "%s (see %s)" % (why, ", ".join(shots))
-        print("%s\t%s\t%s\t%s\t%s\t%s" % (
-            "HELD" if h.get("held") is True else "NOTHELD", n, mission, cid, title, why))
+        print(RS.join([
+            "HELD" if h.get("held") is True else "NOTHELD",
+            str(n), mission, cid, title, why]))
     return 0
 
 

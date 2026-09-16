@@ -1305,10 +1305,59 @@ rm -rf "$repo34/xo/logs11"; mkdir -p "$repo34/xo/logs11"
 plan34b="$(python3 "$XOLOGS" "$repo34/verdict11.json" "$repo34/criteria.json" \
              "$repo34/xo/logs11" "$repo34/xo/shots" 10)"
 ngap34b="$(printf '%s\n' "$plan34b" | grep -c '^GAP')"
-nover34b="$(printf '%s\n' "$plan34b" | grep -c '^OVERFLOW	1$')"
+# US (0x1f), not a tab: xo-logs.py's records must carry an EMPTY shots field
+# for a gap the project's own tests found, and a tab is IFS whitespace — the
+# shell's `read` eats it and shifts every later field left (S211 fix round 1).
+nover34b="$(printf '%s\n' "$plan34b" | grep -c "^OVERFLOW$(printf '\037')1$")"
 check "27b. exactly TEN bug PRDs are written" \
   "[ '$ngap34b' -eq 10 ] && [ ! -f '$repo34/xo/logs11/11.md' ]"
 check "27b. the overflow is REPORTED, with its count" "[ '$nover34b' -eq 1 ]"
+
+# --- Behaviour 27c (S211 fix round 1, D2). THE LOCAL-ONLY SUMMARY ROW ---------
+#
+# `file_one_bug` emits `<id>\t<issue>\t<title>` and the summary reads it back
+# with `IFS=$'\t' read -r rid rissue rtitle`. TAB IS IFS WHITESPACE, so when a
+# bug is filed with NO issue — a repo with no forge, or a `gh issue create` that
+# did not come back with a number — bash COLLAPSES the empty middle field and
+# every field after it shifts left. The `case "$rissue" in ''` arm that exists
+# for exactly this case can then NEVER fire, and the captain was shown
+#
+#     lcars-…-001-c10e  #the mix-ratio status line
+#
+# — the first word of his own title rendered as an issue NUMBER. Number One's
+# filing readout then recorded `"issue": "the"` in `xo/logs.json` off the same
+# row. Same class and same cure as the gap plan: a separator that is not IFS
+# whitespace. THE CONTROL is in the row: a bug filed WITH an issue must still
+# read `#45`.
+repo27c="$(new_repo_with_parent)"
+cat >"$repo27c/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >>"$GH_LOG"
+exit 0
+EOF
+chmod +x "$repo27c/gh"
+export GH_LOG="$repo27c/gh.log"; : >"$GH_LOG"
+bug27c="$repo27c/bug.md"
+write_bug_prd "$bug27c" "the mix-ratio status line" "The status line is missing."
+( cd "$repo27c"
+  LCARS_GH_BIN="$repo27c/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug27c" >"$repo27c/out.txt" 2>&1 )
+check "27c. a bug filed with NO issue reads as (local), not as a fake issue number" \
+  "grep -q '(local)' '$repo27c/out.txt'"
+check "27c. …and the captain's own title is NOT rendered as an issue number" \
+  "! grep -q '#the' '$repo27c/out.txt'"
+check "27c. …with the whole title intact on the row" \
+  "grep -q 'the mix-ratio status line' '$repo27c/out.txt'"
+repo27d="$(new_repo_with_parent)"
+make_gh_stub "$repo27d/gh"
+export GH_LOG="$repo27d/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug27d="$repo27d/bug.md"
+write_bug_prd "$bug27d" "the mix-ratio status line" "The status line is missing."
+( cd "$repo27d"
+  LCARS_GH_BIN="$repo27d/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug27d" >"$repo27d/out.txt" 2>&1 )
+check "27c. CONTROL: a bug filed WITH an issue still shows its number" \
+  "grep -qE '  #[0-9]+  the mix-ratio status line\$' '$repo27d/out.txt'"
 
 # ==========================================================================
 # 28 (S204 fix round 1, D1). THE ENGAGED LOCK EXEMPTS NUMBER ONE'S OWN FILING.

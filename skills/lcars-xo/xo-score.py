@@ -2,7 +2,7 @@
 """xo-score.py — validate the worker's verdict, then DERIVE the score from it.
 
     python3 xo-score.py <xo-verdict.json> <criteria.json> <out verdict.json>
-                         [<observations.json>]
+                         [<observations.json>] [<tests.json>]
 
 THIS IS THE HEART OF THE SESSION: the model reasons, the skill decides.
 
@@ -15,6 +15,31 @@ ledger and the contract, exactly as it did before observations existed, and an
 `observations.json` full of findings changes not one character of `score` or
 `derivation`. If it is missing, or empty, the section is simply not written —
 a mission with no observations reads exactly as one with the argument omitted.
+
+THE FIFTH ARGUMENT is S211's: `xo-tests.py`'s record of the project's OWN test
+suite, run by the skill in the launched build's worktree before the worker ever
+looked. It does two things here and no more:
+
+  * It lets a `notVisual` criterion — one that makes no visual claim at all, and
+    that a screenshot therefore can never settle — be answered by the project's
+    own tests, cited exactly as a picture is cited.
+  * It is the RECORD the over-claiming guard checks a citation against.
+
+THE OVER-CLAIMING GUARD, WHICH IS THE POINT OF S211. **A passing suite does not
+prove a criterion the suite does not speak to.** So a `met` whose evidence is
+the tests must name the LINE of test output that settles it, and that line must
+be findable in the output actually recorded. Lean on the green alone — no line
+cited — and the honest answer stands: "I could not check this." The same holds
+if the suite never ran, or hung: a suite that did not finish settles nothing,
+and a hang is trouble running the tests, never a fault in the build.
+
+THE EVIDENCE KIND IS RECORDED, NOT INFERRED (S211). Every ledger line carries
+where its judgement came from — `picture`, `measurement`, `tests`, or `none` —
+declared by the worker that made the judgement, or, when it declared nothing,
+taken from the structural fact that it cited a shot. It is NEVER worked out
+afterwards by reading the wording of a note. Four rounds of this project
+(S147, S156, S188, S212) were lost to code that read back text a human also
+writes.
 
 THE NO-DRAWING GUARD (S210) is the other new thing here. `criteria.json` now
 carries `hasDrawing` (xo-criteria.py) — the plain fact of whether this mission
@@ -68,6 +93,50 @@ import sys
 
 VALID_SCORES = ("high", "medium", "low")
 VALID_STATUS = ("met", "gap", "untested")
+# WHERE A JUDGEMENT CAME FROM. The captain must never have to guess which of
+# these decided a line (S211): a picture of the running app, a box measured off
+# that page, or his project's own tests. `none` is the honest fourth — nothing
+# settled it.
+VALID_EVIDENCE = ("picture", "measurement", "tests")
+EVIDENCE_WORD = {"picture": "a picture", "measurement": "a measured box",
+                 "tests": "your tests", "none": "—"}
+
+# THE FAILING RUN'S SENTENCE, AND THE ONE CASE THAT RESOLVES IT (fix round 2,
+# R2-2). Round 1 stopped this sentence guessing which of the two things a
+# non-zero exit meant — a red test of the captain's, or a runner that never
+# started — because nothing this skill knows can tell them apart at the moment
+# the suite exits. It then stayed agnostic FOREVER, in the most prominent
+# position on the page, on a report that went on to quote a CHECKED failing
+# line three inches below. That under-states a confirmed fault.
+#
+# By the time the report is written the ambiguity may have been settled, by the
+# one thing that can settle it: a quoted line, found in the recorded output,
+# through the same guard every other citation goes through. When it has, the
+# clause is swapped for one that says so. When it has not — the crashed runner,
+# which is round 1's whole cure — the agnostic clause stands word for word.
+#
+# FAILED_AMBIGUOUS is xo-tests.py's own literal, repeated here (they are two
+# processes, and the file names cannot be imported) and pinned by a test that
+# asserts the two are byte-identical. If they ever drift, the resolved clause
+# is APPENDED instead of swapped, so the captain still gets the fact.
+FAILED_AMBIGUOUS = ("A failed run can be a test of yours going red or a test runner "
+                    "that never started, and the exit code does not say which, so I "
+                    "have not counted it against the build on its own.")
+FAILED_RESOLVED = ("A failed run can also be a test runner that never started, but this "
+                   "one is not that: a test of yours went red, I found the line it "
+                   "printed in the output, and I have counted it against the build.")
+
+
+def tests_sentence(tests, resolved):
+    """The run's own recorded verdict — with its one hedged clause swapped out
+    when, and only when, a checked failing line has resolved the hedge."""
+    said = str(tests.get("verdict") or "").strip()
+    if not resolved or str(tests.get("outcome") or "") != "failed":
+        return said
+    if FAILED_AMBIGUOUS in said:
+        return said.replace(FAILED_AMBIGUOUS, FAILED_RESOLVED)
+    return (said + " " + FAILED_RESOLVED).strip()
+
 
 # THE ONE SENTENCE (S210). Byte-identical wherever it is written, because it is
 # a fact ("there is no drawing"), not prose a worker composed — and a test that
@@ -99,7 +168,13 @@ def cite(g):
     the criterion id, in that order. THE HUMAN SENTENCE COMES FIRST and the id
     goes in the brackets after it (captain's ruling, 2026-09-13) — an id is for
     a machine, and reading one first is reading the wrong thing first."""
-    bits = ["see " + ", ".join(g["shots"])] if g.get("shots") else ["no shot"]
+    if str(g.get("evidence") or "") == "tests":
+        # S211: this one was settled by the project's own suite. Saying "no
+        # shot" of it would read as a missing picture rather than as a
+        # different kind of evidence.
+        bits = ["your tests"]
+    else:
+        bits = ["see " + ", ".join(g["shots"])] if g.get("shots") else ["no shot"]
     cid = str(g.get("criterion") or "").strip()
     if cid:
         bits.append(cid)
@@ -170,6 +245,167 @@ def load_observations(path):
     }
 
 
+def load_tests(path):
+    """`xo/tests.json`, exactly as xo-tests.py wrote it, or None when this look
+    never had one (the four-argument call every pre-S211 caller makes). None and
+    "the file is unreadable" are the same case on purpose: a look with no record
+    of a test run has no test evidence, which is the safe direction."""
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(doc, dict) or not doc.get("outcome"):
+        return None
+    return doc
+
+
+# A REAL TEST RUNNER COLOURS ITS OUTPUT. `bash tests/…` and vitest alike emit
+# SGR escapes mid-line, so the recorded tail holds "\x1b[32mPASS\x1b[0m B13 …"
+# while the sentence a reader would copy out of it is "PASS B13 …". Comparing
+# the two verbatim would refuse a perfectly good citation. So the escapes and
+# the whitespace are normalised on BOTH SIDES for the comparison only — the
+# recorded output itself is never rewritten.
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def norm_for_match(text):
+    return " ".join(ANSI.sub("", str(text or "")).split())
+
+
+# A LINE THAT IS ONLY A TALLY (S211 fix round 1, D4). `413 passed, 0 failed`,
+# `Tests: 1 failed, 41 passed`, `ℹ pass 2`, `Duration 1.23s`, a bare `PASS` —
+# a whole CLASS of line that can never settle ANY criterion, because it names
+# no subject at all. Hand-fed one of these as a citation, the guard used to
+# find it in the output, accept it, and score HIGH.
+#
+# THIS IS NOT A RELEVANCE JUDGEMENT AND NOT A PROSE CLASSIFIER. The guard still
+# cannot tell whether a line is ABOUT a criterion — that is declared, and rests
+# on the prompt. This asks a structural question instead: drop the digits and
+# the punctuation, drop a fixed list of tally words, and see whether the line
+# mentions anything whatsoever. `PASS batches survive a restart` keeps three
+# words and is accepted exactly as before; `413 passed, 0 failed` keeps none,
+# so there is nothing for it to be about, whatever the criterion is.
+# BOTH EDGES OF THIS BELT WERE WRONG (fix round 2, R2-3) and the words moved
+# in both directions. OUT: `ok` and `case`/`cases`, which are not counts at all
+# — they cost the belt `✔ 200 OK (1ms)` and `✔ case 3 passed (1ms)`, two
+# perfectly ordinary test names, and `200 OK` is exactly the API-shaped name
+# this session exists to serve. IN: `all`, which is what let jest's
+# `Ran all test suites.` through. Nothing here reads a runner's PROSE: a word
+# is either in this list or it is not.
+TALLY_WORDS = frozenset("""
+pass passed passes passing fail failed fails failing failure failures
+skip skipped skipping todo pending cancelled canceled
+test tests testing suite suites spec specs file files
+assertion assertions checks
+total totals count counts all
+duration elapsed time took start started finish finished
+ran run runs
+of in and or
+s ms us ns sec secs second seconds m min mins minute minutes h hr hrs
+""".split())
+
+# THE SUMMARY LINES THE WORD LIST CANNOT SEE. A runner's own summary can name
+# its subject in ordinary words and still count nothing whatsoever. These are
+# matched as the fixed strings the runners print them as — not as a guess at
+# what a summary sounds like.
+# EACH ONE CARRIES ITS COUNT, so a test of the captain's that happens to start
+# with one of these words is not refused for its first word alone.
+SUMMARY_LINES = (
+    re.compile(r"^ran all test suites"),
+    re.compile(r"^(test suites|test files|tests|snapshots|time|duration)\s*[:=]\s*\d"),
+    re.compile(r"^passed!.*\bfailed\s*[:=]\s*\d"),
+)
+
+
+def is_marker(word):
+    """A RUNNER'S MARKER GLYPH IS NOT A WORD. `node --test` prefixes every
+    summary line with `ℹ`, which Unicode classifies as a LETTER (category Ll,
+    the Letterlike Symbols block) — so `ℹ 413` came back carrying one "word"
+    and sailed through a guard whose whole job was to refuse it. Everything in
+    U+2100–U+214F is a symbol drawn from letters, never a name."""
+    return all(0x2100 <= ord(ch) <= 0x214F for ch in word)
+
+
+def tally_refusal(text):
+    """WHY THIS CITATION NAMES NOTHING — or "" when it does name something.
+
+    Three refusals, each narrow, and NOTHING ELSE IS REFUSED (fix round 2):
+    a citation with no words in it at all cannot name anything; a runner's own
+    summary line counts and names nothing; and a line with nothing left once
+    the counting words are taken out is a count. A line that still names
+    something after that is a test name and is accepted — including one whose
+    name happens to be `200 OK`.
+
+    The sentence it returns says what it COULD NOT FIND. It used to declare
+    what the line WAS ("the only line you quoted is a tally of how many tests
+    passed or failed"), which for the captain's own `✔ 200 OK (1ms)` was
+    simply untrue — and a guard that is wrong out loud is worse than one that
+    is merely cautious."""
+    t = " ".join(str(text or "").split())
+    if not t:
+        return ""
+    # ANY SCRIPT, NOT JUST LATIN. `[A-Za-z]+` found no words in
+    # `✔ 批次在重启后仍然存在` and, on the old empty-list branch, ACCEPTED it by
+    # accident while ALSO accepting `ℹ 413`. Word runs here are letters in any
+    # script, so the Chinese name is a word and the bare count is not.
+    words = [w for w in re.findall(r"[^\W\d_]+", t, re.UNICODE) if not is_marker(w)]
+    if not words:
+        return ("the line you quoted has no words in it at all — nothing but a count "
+                "of how many — so there is nothing in it that could name what you "
+                "asked for")
+    low = t.lower()
+    for pat in SUMMARY_LINES:
+        if pat.search(low):
+            return ("the line you quoted is your test runner's own summary — a count "
+                    "of how many tests ran — and I could not find a test name in it, "
+                    "so I cannot tell which of your tests speaks to this one")
+    if all(w.lower() in TALLY_WORDS for w in words):
+        return ("I could not find a test name in the line you quoted — take out the "
+                "count of how many passed and failed and there is nothing left of it "
+                "— so it cannot settle this one whatever it says")
+    return ""
+
+
+def tests_settle(tests, quote):
+    """CAN THE PROJECT'S OWN TESTS SETTLE THIS ONE? → (yes/no, why not).
+
+    Every branch below is decided from a FACT xo-tests.py recorded at the moment
+    it ran — the outcome it derived there, and the output it kept — never from
+    the wording of anything a model wrote. The second half of the tuple is the
+    sentence the captain reads when the answer is no."""
+    if not tests or not tests.get("ran"):
+        why = "this repo has no test command set, so I have nothing from your tests to go on"
+        if tests and tests.get("outcome") == "no-worktree":
+            why = ("I could not find the checkout the build was launched from, so your "
+                   "tests never ran")
+        return False, why
+    outcome = str(tests.get("outcome") or "")
+    if outcome == "hung":
+        return False, ("your tests were still running when I stopped them, so they "
+                       "settled nothing either way")
+    if outcome == "could-not-run":
+        return False, "I could not start your tests at all, so they settled nothing"
+    q = norm_for_match(quote)
+    if not q:
+        # THE OVER-CLAIMING GUARD ITSELF. A green suite is not a blanket proof;
+        # the line that speaks to THIS criterion is what proves it.
+        return False, ("your tests pass, but nothing in your test output speaks to this "
+                       "one, so a green run does not tell me it is there")
+    names_nothing = tally_refusal(q)
+    if names_nothing:
+        return False, names_nothing
+    hay = norm_for_match(tests.get("outputTail"))
+    if q not in hay:
+        cut = ("  (I only kept the last %s bytes of it)" % tests.get("tailCapBytes")
+               if tests.get("truncated") else "")
+        return False, ("I could not find that line in your test output, so I am not "
+                       "going to say your tests proved it%s" % cut)
+    return True, ""
+
+
 HIDDEN_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
                 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten",
                 11: "Eleven", 12: "Twelve"}
@@ -189,11 +425,14 @@ def hidden_sentence(n):
 
 def main():
     if len(sys.argv) < 4:
-        sys.stderr.write("usage: xo-score.py <verdict> <criteria> <out> [<observations>]\n")
+        sys.stderr.write(
+            "usage: xo-score.py <verdict> <criteria> <out> [<observations>] [<tests>]\n")
         return 2
     vpath, cpath, opath = sys.argv[1], sys.argv[2], sys.argv[3]
     obs_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    tests_path = sys.argv[5] if len(sys.argv) > 5 else ""
     observations = load_observations(obs_path)
+    tests = load_tests(tests_path)
 
     doc = load(vpath, "verdict")
     if not isinstance(doc, dict):
@@ -221,6 +460,29 @@ def main():
     gaps_in = doc.get("gaps") if isinstance(doc.get("gaps"), list) else []
     notes = []
 
+    # THE SAME FACT, DECLARED ONCE, IS ENOUGH (fix round 2, R2-1). The worker
+    # declares a finding in TWO places — a ledger row and a gap entry — and on
+    # 1 live spin in 4, on identical input, it put `evidence:"tests"` and the
+    # failing line on the ROW and left the GAP bare. The gap loop below read
+    # the gap entry only, found no shot and no declared test backing, and
+    # demoted a test-proven product fault to "a call the build made": the
+    # headline count fell 2 → 1 and no bug was ever filed for it. That is the
+    # output lottery, not a regression — but it is a hole THIS session opened,
+    # because before it every contradiction carried a shot and a second
+    # declaration site with no fallback did not exist.
+    #
+    # So the gap loop gets the rows to fall back on. Nothing is inferred and
+    # nothing new is trusted: the row's quote goes through the SAME guard,
+    # against the SAME recorded output. NEVER MAKE THE MODEL DECLARE THE SAME
+    # FACT TWICE — that is the whole lesson of this round.
+    declared_rows = {}
+    for c in rated:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id") or "").strip()
+        if cid and cid not in declared_rows:
+            declared_rows[cid] = c
+
     # --- the gaps, checked for their pictures --------------------------------
     gaps = []
     for g in gaps_in:
@@ -230,18 +492,66 @@ def main():
         if kind not in ("contradiction", "interpretation"):
             bad("a gap names no kind (want contradiction|interpretation)")
         shots = [str(s) for s in g.get("shots") or [] if str(s).strip()]
-        if kind == "contradiction" and not shots:
+        # WHERE THIS FINDING CAME FROM, RECORDED ON THE FINDING (S211). Declared
+        # by the look that made it; when it declared nothing, taken from the
+        # structural fact that it cited a shot — never from the wording.
+        g_ev = str(g.get("evidence") or "").strip().lower()
+        if g_ev not in VALID_EVIDENCE:
+            g_ev = "picture" if shots else ""
+        g_quote = str(g.get("testQuote") or "").strip()
+        # A FAILING TEST IS A PICTURE (S211). The citation guard below exists so
+        # a confident-sounding fault always has something behind it; for a
+        # criterion with no visual surface at all, the thing behind it is the
+        # line the suite printed. That line is checked against the recorded
+        # output exactly as a `met` is, so this is not a hole in the guard —
+        # it is the same guard, over the other kind of evidence.
+        tests_back_it = g_ev == "tests" and tests_settle(tests, g_quote)[0]
+        # THE FALLBACK, AND ONLY WHERE THE HOLE IS. It applies to a
+        # contradiction that is about to be demoted for want of anything behind
+        # it, and that cited no line of its own — a gap that DID cite one and
+        # failed the guard has already been answered, and rescuing that from a
+        # second place would be exactly the promotion this guard exists to
+        # refuse.
+        if kind == "contradiction" and not shots and not tests_back_it and not g_quote:
+            row = declared_rows.get(str(g.get("criterion") or "").strip()) or {}
+            r_quote = str(row.get("testQuote") or "").strip()
+            if str(row.get("evidence") or "").strip().lower() == "tests" and r_quote \
+                    and tests_settle(tests, r_quote)[0]:
+                tests_back_it = True
+                g_ev, g_quote = "tests", r_quote
+                notes.append("%r cited no line of its own, so I took the one your tests "
+                             "printed from my note on the same criterion (%s) and checked "
+                             "it against your test output the same way"
+                             % (str(g.get("title") or g.get("criterion") or "?"),
+                                str(g.get("criterion") or "?")))
+        if kind == "contradiction" and not shots and not tests_back_it:
             notes.append("I called %r a mismatch but had no picture of it, so I have moved it "
                          "to the calls-the-build-made list instead — a finding with no picture "
                          "is not evidence" % (str(g.get("title") or g.get("criterion") or "?")))
             kind = "interpretation"
         gg = dict(g)
         gg["kind"] = kind
+        # THE GUARD'S OWN ANSWER, carried out of the loop that made it and
+        # dropped again below — never re-derived from the finished entry (a
+        # contradiction that has a picture can carry an unchecked quote too).
+        gg["_testsBacked"] = bool(tests_back_it)
         gg["shots"] = shots
+        gg["evidence"] = g_ev or "none"
+        if g_quote:
+            gg["testQuote"] = g_quote
         gaps.append(gg)
 
     contradicted = set(str(g.get("criterion") or "") for g in gaps
                        if g["kind"] == "contradiction" and g.get("criterion"))
+    # ONE FACT, RECORDED WHERE IT WAS DECIDED (fix round 2, R2-2): a
+    # contradiction that the tests guard PASSED. It is what tells the failing
+    # run's sentence, far below, that the ambiguity it is hedging about has
+    # actually been settled — and it is set here, in the loop that settled it,
+    # never worked out later by reading the report back.
+    tests_proved_a_red = any(g.get("_testsBacked") for g in gaps
+                             if g["kind"] == "contradiction")
+    for g in gaps:
+        g.pop("_testsBacked", None)
 
     # --- the ledger, checked for its pictures --------------------------------
     ledger = []
@@ -256,20 +566,66 @@ def main():
         if status not in VALID_STATUS:
             bad("criterion %r has no valid status (want met|gap|untested)" % cid)
         shot = str(c.get("shot") or "").strip()
-        if status in ("met", "gap") and not shot:
-            notes.append("criterion %s was rated %s with no shot cited; recorded as "
-                         "untested — a judgement with no picture behind it is not a "
-                         "judgement" % (cid, status))
-            status = "untested"
+        note = str(c.get("note") or "")
+        # THE EVIDENCE KIND, RECORDED BY WHATEVER MADE THE JUDGEMENT (S211).
+        # The look declares it; an undeclared one falls back to `picture` when
+        # a shot is cited, which is a structural fact about the entry and not a
+        # reading of its prose. An unrecognised word is treated as undeclared.
+        evidence = str(c.get("evidence") or "").strip().lower()
+        if evidence not in VALID_EVIDENCE:
+            evidence = "picture" if shot else ""
+        quote = str(c.get("testQuote") or "").strip()
+        if status in ("met", "gap"):
+            if evidence == "tests":
+                # THE OVER-CLAIMING GUARD. The project's own tests may settle a
+                # criterion a screenshot never could — but only the line that
+                # actually speaks to it, and only if that line is in the output
+                # the skill recorded. A green suite on its own proves nothing
+                # about a criterion the suite is silent on.
+                settled, why = tests_settle(tests, quote)
+                if not settled:
+                    notes.append("%s was rated %s on your tests, but %s; recorded as "
+                                 "not-checked" % (cid, status, why))
+                    status = "untested"
+                    note = why
+                    evidence = ""
+                    quote = ""
+            elif not shot:
+                notes.append("criterion %s was rated %s with no shot cited; recorded as "
+                             "untested — a judgement with no picture behind it is not a "
+                             "judgement" % (cid, status))
+                status = "untested"
+                evidence = ""
+        # AN UNTESTED ROW SETTLED NOTHING, SO IT NAMES NO SOURCE (fix round 1,
+        # D3). `evidence` was stamped from the structural fact that a shot was
+        # cited, and only the met/gap downgrades above ever cleared it — so a
+        # row the look itself rated `untested` kept whatever it was stamped
+        # with, and the table read `| UNTESTED | a picture | shot-01 — Nothing
+        # on screen can settle whether batches survive a restart … |`. The
+        # column named a source; the note in the same cell said that source
+        # decided nothing. On a hung or crashed run the same rows said "your
+        # tests". This is the session's own contract sentence — the captain
+        # must never have to guess whether a judgement came from a picture, a
+        # measured box, or his tests — and naming the wrong one is worse than
+        # making him guess. `none` is the honest fourth word and it is already
+        # in EVIDENCE_WORD. The SHOT stays on the row: a picture was taken, it
+        # is still worth naming under *What I saw*; it simply did not decide
+        # anything.
+        if status == "untested":
+            evidence = ""
+            quote = ""
         entry = {
             "id": cid,
             "text": str(c.get("text") or (contract_by_id.get(cid, {}) or {}).get("text") or ""),
             "status": status,
-            "note": str(c.get("note") or ""),
+            "note": note,
             "primary": cid in primary,
+            "evidence": evidence or "none",
         }
         if shot:
             entry["shot"] = shot
+        if quote and entry["evidence"] == "tests":
+            entry["testQuote"] = quote
         ledger.append(entry)
         seen.add(cid)
 
@@ -280,6 +636,7 @@ def main():
         ledger.append({
             "id": cid, "text": str(c.get("text") or ""), "status": "untested",
             "note": "I never got to this one, so it is unchecked", "primary": cid in primary,
+            "evidence": "none",
         })
         notes.append("%s was on the list you gave me and I never rated it" % cid)
 
@@ -302,7 +659,9 @@ def main():
                          % entry["id"])
             entry["status"] = "untested"
             entry["note"] = NO_DRAWING_NOTE
+            entry["evidence"] = "none"
             entry.pop("shot", None)
+            entry.pop("testQuote", None)
 
     # A contradiction naming a criterion that is no longer contradicted in the
     # ledger (downgraded above for want of a shot) must not still count.
@@ -413,18 +772,48 @@ def main():
         if out["scoreDisagreed"]:
             w("> I first called this %s. The line above is worked out again from my own\n"
               "> notes below, and those notes win.\n\n" % worker_score.upper())
-        # THE TABLE STAYS MACHINE-READABLE: four columns, one row per criterion,
-        # the ids and the MET/GAP/UNTESTED marks exactly as they were. Only the
-        # two header words the captain reads are written to him.
-        w("| What you asked for | | Verdict | What I saw |\n|---|---|---|---|\n")
+        # YOUR OWN TESTS, AND WHAT THEY DO NOT COVER (S211). The sentence comes
+        # from the record xo-tests.py wrote at the moment it ran — the command,
+        # the outcome and the duration are its facts, not this file's reading of
+        # its output. The second sentence is the LIMIT the captain asked for in
+        # his own words: "I ran your tests and they pass, but they don't cover
+        # X, so I can't tell you about that."
+        if tests:
+            w(tests_sentence(tests, tests_proved_a_red) + "\n\n")
+            if tests.get("outcome") == "passed" and untested:
+                w("They pass, but they don't cover everything on your list — there %s "
+                  "still %d thing%s below, under *What I could not check*, that I can't "
+                  "tell you about from them.\n\n"
+                  % ("is" if untested == 1 else "are", untested,
+                     "" if untested == 1 else "s"))
+        # THE TABLE STAYS MACHINE-READABLE: one row per criterion, the ids and
+        # the MET/GAP/UNTESTED marks exactly as they were. Only the header words
+        # the captain reads are written to him. (Five columns since S211 — the
+        # fifth says where each judgement came from.)
+        # HOW I KNOW is S211's column: a picture, a measured box, or your own
+        # tests. The captain must never have to guess which decided a line.
+        w("| What you asked for | | Verdict | How I know | What I saw |\n"
+          "|---|---|---|---|---|\n")
         mark = {"met": "MET", "gap": "GAP", "untested": "UNTESTED"}
         for e in ledger:
-            w("| %s | %s | %s | %s |\n" % (
+            # WHICH TEST SETTLED IT (fix round 1, D5). A met on the project's
+            # own suite said "Your own tests cover this and they pass" and
+            # never which line — while a GAP quoted its line and the guard had
+            # already checked that same quote against the recorded output. The
+            # quote was on the record and only the failures got to show it.
+            # Same contract sentence as D3: he should not have to take "your
+            # tests" on trust when the line is right there.
+            what_i_saw = ((e.get("shot", "") + " — ") if e.get("shot") else "") \
+                + clip(e["note"], 160)
+            if e.get("evidence") == "tests" and e.get("testQuote"):
+                what_i_saw = what_i_saw.rstrip() + (" " if what_i_saw.strip() else "") + \
+                    'Your tests said: "%s"' % clip(e["testQuote"], 120)
+            w("| %s | %s | %s | %s | %s |\n" % (
                 e["id"] + (" (PRD)" if e["primary"] else ""),
                 clip(e["text"], 120).replace("|", "\\|"),
                 mark[e["status"]],
-                ((e.get("shot", "") + " — ") if e.get("shot") else "") +
-                clip(e["note"], 160).replace("|", "\\|")))
+                EVIDENCE_WORD.get(e.get("evidence") or "none", "—"),
+                what_i_saw.replace("|", "\\|")))
         # ONE SENTENCE, BOTH HALVES OF THE MISMATCH. The captain asked to see
         # what his first officer sees, from where he stands: *"phrases like
         # 'wrong color or this doesn't match the mock where it was in the lower
@@ -435,9 +824,19 @@ def main():
         if real:
             w("\n### Where the build does not match what you asked for\n\n")
             for g in real:
-                w("- **%s** — your drawing has %s; the build has %s. *(%s)*\n" % (
-                    g.get("title", "?"), unstop(g.get("expected", "?")),
-                    unstop(g.get("saw", "?")), cite(g)))
+                if g.get("evidence") == "tests":
+                    # NOT "your drawing has…": there was nothing to draw. This
+                    # one came out of the suite, so it is said that way, and the
+                    # line the suite printed is quoted for the captain to read.
+                    w("- **%s** — you asked for %s; the build gives %s. Your tests say "
+                      "so: \"%s\" *(%s)*\n" % (
+                          g.get("title", "?"), unstop(g.get("expected", "?")),
+                          unstop(g.get("saw", "?")),
+                          clip(str(g.get("testQuote") or ""), 200), cite(g)))
+                else:
+                    w("- **%s** — your drawing has %s; the build has %s. *(%s)*\n" % (
+                        g.get("title", "?"), unstop(g.get("expected", "?")),
+                        unstop(g.get("saw", "?")), cite(g)))
         interp = [g for g in gaps if g["kind"] == "interpretation"]
         if interp:
             w("\n### Calls the build made that your drawing does not cover\n\n")

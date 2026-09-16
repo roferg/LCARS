@@ -1798,7 +1798,11 @@ note = ("the list is present and laid out at the top of the page and it carries 
         "'add' control of any kind is anywhere near it or under it")
 row = [l for l in md.splitlines() if l.startswith("| prd-1")]
 assert row, "no ledger row for prd-1"
-cell = row[0].split("|")[4].strip()
+# THE LAST CELL, NOT THE FOURTH (S211). "What I saw" is the final column, and
+# S211 inserted "How I know" before it — an index counted from the left moves
+# every time a column is added, and this assertion is about the EVIDENCE cell,
+# not about its position.
+cell = [c for c in row[0].split("|") if c.strip()][-1].strip()
 body = cell.split(" — ", 1)[1] if " — " in cell else cell
 fails = []
 if "…" not in body:
@@ -1935,6 +1939,49 @@ check "B12a. its pid is in xo-resolve.pid — NOT in xo.pid" \
   "[ -s '$mL1/xo-resolve.pid' ]"
 check "B12a. the journal records the filing" \
   "grep -q '\"action\": \"filed-logs\"' '$mL1/number-one.jsonl'"
+
+# --------------------------------------------------------------------------
+# B12a2 (S211 fix round 1, D2). A GAP WITH NO SHOT, THROUGH THE REAL VERB.
+#
+# Since S211 a contradiction can stand on a quoted line from the project's own
+# test suite instead of a picture, so `xo-logs.py` emits a record whose shots
+# field is EMPTY — a shape that could not exist before (the score step demoted
+# a shotless contradiction to an interpretation). `xo.sh` read that record with
+# `IFS=$'\t' read -r …`, and TAB IS IFS WHITESPACE: bash collapsed the empty
+# field and shifted every field after it left. The live drive filed
+#   {"n": 2, "criterion": "batches do not survive a restart", "title": "", …}
+# and the captain's readout printed `log #2` with no title at all.
+#
+# THIS IS THE REAL PATH, NOT THE PARSER IN ISOLATION: the verb is driven, the
+# record it writes is read back, and the CONTROL in the same row is the gap
+# that DOES have a shot — which parsed perfectly all along, which is what makes
+# this the empty field and not the delimiter.
+# --------------------------------------------------------------------------
+repoL1b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mL1b="$(plant_verify "$repoL1b" "lcars-20260913-104")"
+plant_verdict "$mL1b" '{"title": "the ADD button is above the list", "expected": "it under the list", "saw": "it above", "shots": ["shot-01"], "kind": "contradiction", "criterion": "prd-1"},{"title": "batches do not survive a restart", "expected": "the batches to be there after a restart", "saw": "an empty list", "shots": [], "evidence": "tests", "testQuote": "FAIL batches survive a restart", "kind": "contradiction", "criterion": "prd-2"}'
+: >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
+outL1b="$(xo_file_logs "$repoL1b" "lcars-20260913-104")"
+check "B12a2. a gap with NO shot is filed, and its TITLE survives the shell" \
+  "python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+f = d[\"filed\"][1]
+assert f[\"title\"] == \"batches do not survive a restart\", f
+assert f[\"criterion\"] == \"prd-2\", f
+assert f[\"shots\"] == [], f' '$mL1b/xo/logs.json'"
+check "B12a2. CONTROL: the gap that HAS a shot is unchanged" \
+  "python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+f = d[\"filed\"][0]
+assert f[\"title\"] == \"the ADD button is above the list\", f
+assert f[\"criterion\"] == \"prd-1\", f
+assert f[\"shots\"] == [\"shot-01\"], f' '$mL1b/xo/logs.json'"
+check "B12a2. both bugs were filed, the shotless one with no --attach of its own" \
+  "[ \"\$(grep -o -- '--prd' '$XO_LOG_CALLS' | grep -c .)\" -eq 2 ]"
+check "B12a2. the shotless bug PRD does not send a fix worker to a screen" \
+  "! grep -q 'the shot above was taken of' '$mL1b/xo/logs/2.md'"
+check "B12a2. …and the one with a shot still does" \
+  "grep -q 'the shot above was taken of' '$mL1b/xo/logs/1.md'"
 
 # --------------------------------------------------------------------------
 # B12b. ELEVEN CONTRADICTIONS → TEN filed, the overflow JOURNALLED.
@@ -3132,6 +3179,178 @@ check "B23c. …so the score is NOT the worker's false HIGH" \
   "[ \"\$(python3 -c 'import json;print(json.load(open(\"'$m23c'/xo/verdict.json\"))[\"score\"])')\" != 'high' ]"
 check "B23c. the launch and the browser both ran normally (no attachments is not an error)" \
   "grep -q -- '--stop' '$XO_LAUNCH_LOG' && ! printf '%s' \"\$out23c\" | grep -qi 'could not launch'"
+
+# ==========================================================================
+# B24. THE PROJECT'S OWN TESTS AS EVIDENCE (Session 211), WIRED THROUGH
+#      `evaluate`.
+#
+# The captain, 2026-09-13: "some things might just be API changes that don't
+# affect the UI that need to be tested … a functionality bug is like a button
+# being pushed was supposed to do something and it doesn't." Number One acts
+# only through a browser, so the first half of that was simply invisible to it
+# — "batches survive a restart" came back "I could not check this" on BOTH
+# engines in S203: correct, and useless.
+#
+# `tests/lcars-xo-evidence.test.sh` proves the runner's own arithmetic and the
+# scorer's guards directly. THESE rows prove the WIRING — that `xo.sh evaluate`
+# really runs the repo's own suite, in the LAUNCHED BUILD'S worktree, between
+# the capture and the worker round, and really hands the result to the worker.
+# A guard nobody calls is not a guard.
+# ==========================================================================
+echo
+echo "B24. the project's own tests as evidence, wired through evaluate"
+
+# The launch stub, PLUS the `worktree` field the real launch.sh always writes —
+# the one thing DRIVE_STUB's sibling never wrote, because before S211 nothing
+# read it. It also creates that directory, because it is where the tests run.
+LAUNCH_STUB_WT="$EVDIR/launch-wt.sh"
+cat >"$LAUNCH_STUB_WT" <<'LWT'
+#!/usr/bin/env bash
+mid="$1"; shift
+m="$PWD/.git/lcars/missions/$mid"
+printf 'launch %s %s\n' "$mid" "$*" >>"$XO_LAUNCH_LOG"
+case "${1:-}" in
+  --stop) printf '{\n  "status": "stopped"\n}\n' >"$m/launch.json"; exit 0 ;;
+esac
+wt="${XO_FAKE_WORKTREE:-$PWD/.fake-worktree}"
+mkdir -p "$wt"
+printf '{\n  "status": "running",\n  "url": "http://127.0.0.1:4310/",\n  "worktree": "%s",\n  "pid": 1\n}\n' "$wt" >"$m/launch.json"
+LWT
+chmod +x "$LAUNCH_STUB_WT"
+
+# The worker shim, extended to record whether IT was handed tests.json — the
+# same proof shape B23 uses for observations.json. A file on disk somewhere is
+# not the same fact as a file the worker can read.
+export XO_TESTS_SEEN_LOG="$TMPROOT/tests-seen.txt"; : >"$XO_TESTS_SEEN_LOG"
+EV_SHIM_TESTS="$EVDIR/ev-worker-tests"
+cat >"$EV_SHIM_TESTS" <<'EVT'
+#!/usr/bin/env bash
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
+printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG.all"
+if [ -s "${LCARS_XO_INPUT_DIR:-/nonexistent}/tests.json" ]; then
+  printf 'saw tests.json\n' >>"$XO_TESTS_SEEN_LOG"
+else
+  printf 'NO tests.json\n' >>"$XO_TESTS_SEEN_LOG"
+fi
+out="${LCARS_WORK_OUT:-}"
+[ -n "${XO_EV_BODY:-}" ] && printf '%s\n' "$XO_EV_BODY" >"$out/${XO_EV_FILE:-xo-verdict.json}"
+exit 0
+EVT
+chmod +x "$EV_SHIM_TESTS"
+
+set_test_command() { # <repo> <command-or-null-literal>
+  python3 - "$1/.git/lcars/config.json" "$2" <<'STC'
+import json, sys
+path, cmd = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    doc = json.load(fh)
+doc["testCommand"] = None if cmd == "__null__" else cmd
+with open(path, "w") as fh:
+    json.dump(doc, fh, indent=2)
+STC
+}
+
+# The same evaluate driver as xo_evaluate_with, with the worktree-aware launch
+# stub in place of the plain one.
+xo_evaluate_tests() { # <repo> <id> <worker-bin>
+  local repo="$1" id="$2" workerbin="$3"
+  ( cd "$repo" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB_WT" \
+      LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+      LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+      LCARS_WORKER_BIN="$workerbin" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 \
+      bash "$SCRIPT" evaluate --mission "$id" 2>&1 )
+}
+
+# --------------------------------------------------------------------------
+# B24a. THE SUITE IS RUN, IN THE BUILD'S OWN CHECKOUT, AND THE WORKER IS
+#     HANDED THE RESULT. The test command writes a marker beside itself, so
+#     "it ran" is observed rather than asserted, and "it ran THERE" is too.
+# --------------------------------------------------------------------------
+repo24a="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24a="$(plant_verify "$repo24a" "lcars-20260915-301")"
+WT24A="$TMPROOT/wt-24a"; mkdir -p "$WT24A"
+set_test_command "$repo24a" "pwd > ran-here.txt; echo 'PASS batches survive a restart'; exit 0"
+: >"$XO_WORKER_LOG"; : >"$XO_TESTS_SEEN_LOG"
+out24a="$(XO_FAKE_WORKTREE="$WT24A" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24a" "lcars-20260915-301" "$EV_SHIM_TESTS")"
+check "B24a. the look wrote xo/tests.json" "[ -s '$m24a/xo/tests.json' ]"
+check "B24a. …recording the command it actually ran" \
+  "grep -q 'PASS batches survive a restart' '$m24a/xo/tests.json'"
+check "B24a. …and the outcome, derived where it was known" \
+  "grep -q '\"outcome\": \"passed\"' '$m24a/xo/tests.json'"
+check "B24a. the suite really ran — it left its mark" "[ -s '$WT24A/ran-here.txt' ]"
+check "B24a. …IN THE LAUNCHED BUILD'S worktree, not the captain's checkout" \
+  "grep -q \"\$(cd '$WT24A' && pwd -P)\" '$WT24A/ran-here.txt'"
+check "B24a. the WORKER was handed tests.json — it can cite it" \
+  "grep -q 'saw tests.json' '$XO_TESTS_SEEN_LOG'"
+check "B24a. the look JOURNALLED the test run, with its outcome" \
+  "grep -q '\"action\": \"tested\"' '$m24a/number-one.jsonl' && grep -q 'passed' '$m24a/number-one.jsonl'"
+check "B24a. …and the captain's report says it ran them" \
+  "grep -q 'I ran your tests' '$m24a/xo/report.md'"
+
+# --------------------------------------------------------------------------
+# B24b. NO testCommand — THE COMMON CASE. The look runs exactly as it always
+#     did, says so plainly, and nothing regresses.
+# --------------------------------------------------------------------------
+repo24b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24b="$(plant_verify "$repo24b" "lcars-20260915-302")"
+set_test_command "$repo24b" __null__
+: >"$XO_WORKER_LOG"
+out24b="$(XO_FAKE_WORKTREE="$TMPROOT/wt-24b" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24b" "lcars-20260915-302" "$EV_SHIM")"
+check "B24b. a repo with no test command still gets a full look" \
+  "[ -s '$m24b/xo/verdict.json' ] && [ -s '$m24b/xo/report.md' ]"
+check "B24b. …scored exactly as it would have been before S211" \
+  "[ \"\$(python3 -c 'import json;print(json.load(open(\"'$m24b'/xo/verdict.json\"))[\"score\"])')\" = high ]"
+check "B24b. …and tests.json records the absence plainly, never an error" \
+  "grep -q '\"outcome\": \"no-test-command\"' '$m24b/xo/tests.json'"
+check "B24b. …the report says there is no suite to run" \
+  "grep -q 'no test command' '$m24b/xo/report.md'"
+check "B24b. …and it did NOT claim to have run anything" \
+  "! grep -q 'I ran your tests' '$m24b/xo/report.md'"
+
+# --------------------------------------------------------------------------
+# B24c. A HANGING SUITE IS KILLED AT THE BOUND, AND REPORTED AS TROUBLE
+#     RUNNING THE TESTS — never as a fault in the captain's build. The look
+#     finishes; a hung suite must not cost him the whole Verify look.
+# --------------------------------------------------------------------------
+repo24c="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24c="$(plant_verify "$repo24c" "lcars-20260915-303")"
+set_test_command "$repo24c" "sleep 30"
+: >"$XO_WORKER_LOG"
+t24c0="$(date +%s)"
+out24c="$(XO_FAKE_WORKTREE="$TMPROOT/wt-24c" LCARS_XO_TEST_TIMEOUT=2 \
+  XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24c" "lcars-20260915-303" "$EV_SHIM")"
+t24c1="$(date +%s)"
+check "B24c. a hanging suite is killed at the bound, not waited out" \
+  "[ \$(( t24c1 - t24c0 )) -lt 25 ]"
+check "B24c. …recorded as hung, which is not a failure" \
+  "grep -q '\"outcome\": \"hung\"' '$m24c/xo/tests.json'"
+check "B24c. …and the look still reached a verdict" "[ -s '$m24c/xo/verdict.json' ]"
+check "B24c. …the captain is told it is trouble running his tests, not a bad build" \
+  "grep -q 'not something wrong with the build' '$m24c/xo/report.md'"
+
+# --------------------------------------------------------------------------
+# B24d. THE SKILL RAN IT, THE WORKER DID NOT. The fence is unchanged: the
+#     suite is executed exactly ONCE, before the worker is spawned at all.
+# --------------------------------------------------------------------------
+repo24d="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24d="$(plant_verify "$repo24d" "lcars-20260915-304")"
+WT24D="$TMPROOT/wt-24d"; mkdir -p "$WT24D"
+set_test_command "$repo24d" "echo run >> $WT24D/times-run.txt; exit 0"
+: >"$XO_WORKER_LOG"
+XO_FAKE_WORKTREE="$WT24D" XO_EV_ROUNDS=2 XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24d" "lcars-20260915-304" "$EV_SHIM" >/dev/null 2>&1
+n24d="$(grep -c . "$WT24D/times-run.txt" 2>/dev/null)" || true
+check "B24d. the suite ran ONCE, however many worker rounds there were" \
+  "[ \"${n24d:-0}\" -eq 1 ]"
+check "B24d. …and there were three rounds for it not to be re-run in" \
+  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" -ge 3 ]"
 
 # ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.

@@ -4,10 +4,13 @@
     python3 xo-logs.py <verdict.json> <criteria.json> <out-dir> <shots-dir> [cap]
 
 S203's verdict carries two kinds of gap. A **contradiction** is the build
-disagreeing with something the captain wrote down, and it has a picture (the
-score step demotes a contradiction with no shot to an interpretation, so one
-cannot reach here). An **interpretation** is a call the build made where the
-record is silent — reported to the captain, never filed against the build.
+disagreeing with something the captain wrote down, and it always has evidence:
+either a picture (the score step demotes a contradiction with no shot to an
+interpretation, so a bare one cannot reach here) or — since S211 — a quoted
+line from the project's own failing test suite, which is what proves a
+criterion that had no visual surface to photograph. An **interpretation** is a
+call the build made where the record is silent — reported to the captain,
+never filed against the build.
 
 ONLY CONTRADICTIONS ARE FILED. That is the whole selection rule, and it is read
 off the recorded `kind` field rather than guessed from the prose, for the same
@@ -23,10 +26,23 @@ was actually seen and in which shot, and an acceptance criterion that is the
 original criterion restated. Nothing is invented here: every sentence is
 assembled from fields the verdict already carries.
 
-Output on stdout, one TAB-separated record per line, for the shell:
+Output on stdout, one record per line, for the shell. The fields are separated
+by ASCII US (0x1f), NOT by a tab:
 
     GAP <n> <prd-path> <shot-path,shot-path> <criterion> <title>
     OVERFLOW <how-many-were-not-filed>
+
+WHY NOT A TAB (S211 fix round 1, D2). TAB IS IFS WHITESPACE, so `IFS=$'\t'
+read -r …` COLLAPSES a run of tabs: a record whose shots field is empty loses
+that field entirely and every field after it shifts left by one. Before S211 a
+contradiction with no shot could not exist — the score step demoted it to an
+interpretation — so the empty field was unreachable; `tests_back_it` opened the
+door and `xo/logs.json` immediately recorded criterion="batches do not survive a
+restart", title="", and the captain's filing readout printed `log #2` with no
+title at all. US has no such rule: empty fields survive and the split is
+positional. This is the same cure `lcars status` took for the same class in
+S207 R4, and it is the reason this constant exists in both this file and
+`xo-held.py` rather than a tab being typed twice.
 
 The shell consumes GAP lines in order to build ONE `log.sh` invocation whose
 `--attach` arguments sit AFTER the `--prd` they belong to, which is what binds
@@ -38,6 +54,10 @@ import re
 import sys
 
 CAP = 10
+
+# THE RECORD SEPARATOR. ASCII US (0x1f) — not a tab. See the module docstring:
+# a tab is IFS whitespace and silently eats an empty field.
+RS = "\x1f"
 
 
 def clean(s):
@@ -169,7 +189,7 @@ def main():
         with open(vpath, encoding="utf-8") as fh:
             doc = json.load(fh)
     except Exception as exc:
-        print("MALFORMED\tthe verdict could not be read (%s)" % exc)
+        print("MALFORMED" + RS + "the verdict could not be read (%s)" % exc)
         return 0
 
     gaps = doc.get("gaps") if isinstance(doc, dict) else None
@@ -208,6 +228,17 @@ def main():
             if ctext:
                 w("The criterion this is judged against, in full:\n\n> %s\n\n" % ctext)
             w("## Where to look\n\n")
+            # THE FAILING TEST LINE, WHEN THAT IS WHAT FOUND IT (S211). A gap a
+            # screenshot could never have shown is proven by the project's own
+            # suite instead, and the line it printed is the single most useful
+            # thing a fix worker can be handed. Read off the recorded `evidence`
+            # field, never guessed from the prose — the same rule as `kind`.
+            quote = ""
+            if str(g.get("evidence") or "") == "tests":
+                quote = clean(g.get("testQuote"))
+                if quote:
+                    w("This one did not come from a picture — it came from the project's\n"
+                      "own test suite, which said:\n\n> %s\n\n" % quote)
             if shots:
                 w("Number One's shots of the running build: %s. Each PNG has a `.json`\n"
                   "readout beside it (url, visible text, the box and computed colour of\n"
@@ -223,15 +254,29 @@ def main():
                 w("There is no shot for this one.\n\n")
             w("## Acceptance criteria\n\n")
             w("- %s\n" % (ctext or expected))
-            w("- The fix is visible on the same screen the shot above was taken of.\n")
+            # THIS LINE USED TO BE UNCONDITIONAL (S211 fix round 1, D6), and it
+            # sat directly under "There is no shot for this one." A gap the
+            # project's own tests found has no visual surface by definition —
+            # that is WHY the suite had to answer it — so telling a fix worker
+            # the fix is "visible on the same screen the shot above was taken
+            # of" points it at a screen that does not exist and invites it to
+            # build one: a parallel dead control beside the real thing. That is
+            # the exact class CONTEXT.md → *Grounding* exists to kill. So the
+            # sentence is now conditional on there BEING a shot, and a
+            # test-sourced bug is anchored the only way it honestly can be — to
+            # the code the failing test already exercises.
+            if shots:
+                w("- The fix is visible on the same screen the shot above was taken of.\n")
+            elif quote:
+                w("- The test that reported this now passes, and the fix is in the code\n"
+                  "  that test already exercises — not in a new path built beside it.\n")
 
-        print("GAP\t%d\t%s\t%s\t%s\t%s" % (
-            n, path,
-            ",".join(os.path.join(shotsdir, s + ".png") for s in shots),
-            cid, title))
+        print(RS.join(["GAP", str(n), path,
+                       ",".join(os.path.join(shotsdir, s + ".png") for s in shots),
+                       cid, title]))
 
     if overflow:
-        print("OVERFLOW\t%d" % overflow)
+        print("OVERFLOW" + RS + str(overflow))
     return 0
 
 

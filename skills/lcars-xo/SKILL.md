@@ -218,6 +218,66 @@ The order is the contract:
    something solid, the report's own observations section tells him so —
    *"Three things on this page were behind something solid, so I could not
    look at them."* Nothing hidden, nothing said.
+3c. **`xo/tests.json` — the project's OWN tests, run by the SKILL** (S211,
+   `xo-tests.py`). Number One acts only through a browser, so a change with no
+   screen surface was simply invisible to it: *"batches survive a restart"*
+   came back "I could not check this" on both engines in S203 — correct, and
+   useless. So between the capture and the worker round, `evaluate` runs the
+   repo's own `testCommand` **in the launched build's worktree**, bounded
+   (`LCARS_XO_TEST_TIMEOUT`, 300s) with the output tail capped
+   (`LCARS_XO_TEST_TAIL_CAP`, 8000 bytes) and the cut STATED. It records the
+   command, the exit code, the duration, the tail and a plain verdict, and
+   derives ONE `outcome` where it knew it: `passed` · `failed` · `hung` ·
+   `no-test-command` · `no-worktree`. **A hang is infrastructure, never a
+   product failure** — a suite that did not finish says nothing about the
+   build, and the whole process group is killed. **A repo with no
+   `testCommand` is the common case**: the file records that plainly and the
+   look proceeds exactly as it always did.
+
+   **The skill runs it; the worker never does.** The fence (S168) is untouched
+   — the worker is handed `tests.json` through the same read-only door as the
+   shots and the observations, and has no shell.
+
+   **THE OVER-CLAIMING GUARD, which is the point of the session.** A
+   `notVisual` criterion may be settled by the project's own tests and cited
+   like any other evidence — but a citation is a LINE out of the recorded
+   output, and `xo-score.py` checks it against that record. Lean on a green
+   run with no line to point at, quote a line that is not there, quote a line
+   that is only a TALLY (`413 passed, 0 failed`, `Duration 1.23s` — a class of
+   line that names nothing, so it can settle nothing, refused with no
+   relevance judgement at all), or cite a suite that never ran or hung, and
+   the criterion goes back to **"I could not check this"**. A passing suite does not prove a criterion the suite does not
+   cover, and the report says so in his words: *"They pass, but they don't
+   cover everything on your list…"*
+
+   **A FAILING test relevant to a criterion is a GAP**, with the failure
+   quoted — and the score falls by the EXISTING matrix below, with no new
+   rule. Such a gap keeps its `contradiction` kind with no screenshot behind
+   it, because the failing line IS the picture; the bug PRD `file-logs` writes
+   carries that line for the fix worker.
+
+   **Every ledger line names its evidence kind** — `picture`, `measurement`,
+   `tests` or `none` — declared by whatever made the judgement, never worked
+   out afterwards from the wording of a note, and rendered as a *How I know*
+   column in `xo/report.md`. The captain must never have to guess which of the
+   three decided a line. An **`untested` line settled nothing, so it names
+   nothing**: its kind is `none` and the column reads `—`. A row that both
+   decided nothing and named a source is worse than one that admits it could
+   not tell. A `met` on the tests **quotes the line that settled it**, the same
+   way a gap does.
+
+   **A non-zero exit is not "your tests failed".** A run that exits 1 is a red
+   test of his OR a runner that never started, and nothing on disk separates
+   them: measured, the tester's genuine failing suite exited 1 after 0.26s with
+   877 bytes of output and the crashed runner exited 1 after 0.12s with 1030.
+   So the sentence the skill writes for itself says the RUN failed, names both
+   possibilities, and does not count the number against the build on its own —
+   what it MEANS is decided by a quoted line, checked against the output.
+
+   **`recheck` re-runs it too**, for the reason its observations pass re-runs:
+   a recheck relaunches the build from the FIXED branch, so the first look's
+   test run is about code that no longer exists. Carrying it forward would be
+   the S204 stale-shots defect in another costume.
 4. **Up to three worker rounds.** Each round Number One writes EITHER
    `xo-actions.json` (it wants to look further — at most 12 actions, every
    screenshot named) OR `xo-verdict.json`. No verdict by the end of round three
