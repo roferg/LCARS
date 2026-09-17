@@ -414,6 +414,27 @@ these four, which are **mandatory**:
 - **Ledgered items** — inherited defects filed rather than cured, and anything
   deliberately left.
 
+### And when a model DROVE LCARS itself — the journey (captain ruling 2026-09-17)
+
+**Whenever Copilot or Claude stood in for a human and drove LCARS — filing a
+mission and living the pipeline as a person would — a JOURNEY is published
+alongside the readout.** Numbered steps, a real screenshot each, written so
+**a colleague who has never heard of LCARS can follow it**: what was asked for,
+what the run found and built (quoting the real plan, tickets and tests, never
+describing their shape), what kind of mission it was and what the other kinds
+are, what is NEW, and what WORKED — including what a person did NOT have to do
+because the system did it. Any patch the drive leaned on is said plainly and
+early. Every picture is tappable to full size.
+
+**The contract lives in ONE place — `run-session` STEP 5.5 § THE STAND-IN
+DRIVE** — and `walkthrough.sh` beside it builds the page. Read it there.
+
+**His reason:** *"being able to click through the journey and feel like I'm
+going along with it helps cut down the evaluation time greatly"*, and he intends
+to show these to other stakeholders. **It is IN ADDITION to the readout above,
+never instead of it** — the readout carries defect health, both costs and the
+blind spots; the journey carries the experience.
+
 ---
 
 ## Guardrails
