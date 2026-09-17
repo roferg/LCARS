@@ -299,6 +299,32 @@ later run included a **valid case whose `exit 64` was impossible**.
 So: **pass probe arguments literally, never through a variable**, and always
 include one case you know must succeed.
 
+### Inspect the thing, don't measure a correlate of it
+
+**When you can look at the artefact itself for the same effort, looking beats
+measuring something that merely correlates with the fault.** Written down after
+this failed THREE TIMES IN ONE NIGHT (2026-09-16/17), each time in a different
+costume, each time with the real check available and cheap:
+
+| the claim | the proxy used | what it missed |
+|---|---|---|
+| "the test fixture is sound" | `.bin/vitest` exists on disk | it did — but the PACKAGE it points at was a dangling symlink into a deleted worktree. **The repo's tests could not run at all.** Running them would have taken 20 seconds. |
+| "the walkthrough's images are fine" | image DIMENSIONS (tall+narrow ⇒ suspect) | a crop of the WRONG COLUMN that was neither tall nor narrow. The captain found more after the proxy declared the rest clean. **Opening them found every fault in one pass.** |
+| "the test failures are the node_modules symlinking" | reasoning from `worktreeSetupCommand`'s text | the actual cause was a double `cd` — the gate runs the command from INSIDE the package, so a command that also steps in lands nowhere. **A two-line shell test settled it.** |
+
+The tell is always the same: **the proxy answers a question NEAR the one being
+asked.** "A binary is present" is near "the tests run". "This image is an odd
+shape" is near "this image shows the wrong thing". Near is not the same, and the
+gap is exactly where the defect lives.
+
+**So: if the real check costs a command, run the command.** Reserve inference for
+things that genuinely cannot be observed — and when you must infer, say in the
+readout that you inferred, so the next reader knows what was actually established.
+
+**This sits beside the known-good control rule above, and they compose:** a
+control proves your check can detect the fault; inspecting rather than measuring
+proves you are checking the fault at all.
+
 ### Cage a hang probe in its own PROCESS GROUP
 
 `perl -e 'alarm N; exec @ARGV'` does **NOT** reliably kill a blocked probe. On
