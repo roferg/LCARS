@@ -18952,7 +18952,11 @@ cmd_drive() {
         lcars_state_set_string "$STATE" pendingQuestion "$wdq"
         lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
         gh_relabel "lcars:awaiting-human" ""
-        emit_event error "$stage" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
+        # The event's stage field is the stage that RAN, matching its own
+        # sentence (S214 fix round 1, D2). It used to be `$stage`, where the
+        # Mission sits, so a Research timeout banded itself ALIGN on the board
+        # while the sentence beside it said Research.
+        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
         drive_print_summary "$summary"
         printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
@@ -19019,13 +19023,42 @@ cmd_drive() {
     fi
 
     # Nothing advanced and no gate was raised → a hard Stage error. Carry the
-    # cause: the tail of the stage subprocess output ($out) — including any die
-    # reason — so the board event itself names WHY (BUG-051), not a bare "failed".
-    local err_tail; err_tail="$(printf '%s' "$out" | tr '\n' ' ')"
-    err_tail="${err_tail: -200}"
-    emit_event error "$stage" "$stage failed${err_tail:+: $err_tail}"
+    # cause: the stage subprocess's own reason for stopping, so the board event
+    # itself names WHY (BUG-051), not a bare "failed".
+    #
+    # NAME THE STAGE THAT RAN (S214 fix round 1, D2). `$stage` is where the
+    # Mission SITS; `$action` is what actually ran, and the two differ on every
+    # freshly filed Mission — it sits at `align` while RESEARCH runs. This arm
+    # used `$stage` for the event's own field AND for the word in the sentence,
+    # so a question-generator failure reached the captain as "align failed",
+    # banded ALIGN on a board where Research had never started.
+    #
+    # AND SAY THE WHOLE SENTENCE (S214 fix round 1, D2). The cause used to be
+    # the last 200 characters of everything the Stage printed. On any Mission
+    # that enters a worktree the tree banner is printed AHEAD of the reason, so
+    # the window opened inside the banner and the captain's line began
+    # mid-word, on a dangling quote: "…ars-20260918-001-fea3' @ fd4e952 …".
+    # A Stage that stops on purpose says why through `die`, which writes one
+    # line. READ THAT LINE, whole, and drop the `lcars run:` it wears — the
+    # captain is reading about his own build, not about a script.
+    local err_tail
+    err_tail="$(printf '%s\n' "$out" | sed -n 's/.*lcars run: //p' | tail -1)"
+    if [ -z "$err_tail" ]; then
+      # No stated reason — the Stage died without one (a crash, a signal, a
+      # `set -e`). Then the output IS all there is, and the tail of it is a
+      # guess at the interesting end. Keep the guess, but never publish a
+      # fragment that starts mid-word: cut forward to the next word boundary
+      # and mark the line as the offcut it is.
+      err_tail="$(printf '%s' "$out" | tr '\n' ' ')"
+      if [ "${#err_tail}" -gt 200 ]; then
+        err_tail="${err_tail: -200}"
+        case "$err_tail" in *' '*) err_tail="${err_tail#* }" ;; esac
+        err_tail="…$err_tail"
+      fi
+    fi
+    emit_event error "$action" "$action failed${err_tail:+: $err_tail}"
     drive_print_summary "$summary"
-    printf '⏹ stopped: %s failed\n' "$stage"
+    printf '⏹ stopped: %s failed\n' "$action"
     printf '%s\n' "$out"
     return "${rc:-1}"
   done

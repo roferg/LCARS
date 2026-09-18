@@ -2009,6 +2009,19 @@ class LocalAdapter(object):
         # says `engaged`, never because a worker looks busy.
         xo = board.xo_block(state.get("numberOne"))
         if xo is not None:
+            # S214 fix round 1, D1 — THE SCORE WORD IS THE RECORDED ONE.
+            # `xo/verdict.json` is where `xo-score.py` wrote the score; the
+            # block above is the copy `xo.sh` took of it. When the two
+            # disagree the copy is stale, and a stale block is stale ENTIRE —
+            # it reverted as one line of one file — so the sentences beside
+            # the stale word go with it and the two fallbacks just below
+            # refill all three off the one record. When they agree there is
+            # nothing to choose between and S213's precedence stands.
+            recorded = _xo_recorded_score(d)
+            if recorded and recorded != xo.get("score"):
+                xo["score"] = recorded
+                xo.pop("headline", None)
+                xo.pop("meaning", None)
             # S213 C1 — THE ONE LINE, for a mission scored before this session.
             # `xo.sh` records `headline` on every look from now on; a mission
             # looked at earlier has the very same sentence sitting in its own
@@ -2560,6 +2573,32 @@ def _number_one_report(d):
         "shotsDir": shots_dir,
         "journal": journal_sorted,
     }
+
+
+def _xo_recorded_score(mission_dir):
+    """The score this mission's own `xo/verdict.json` RECORDS, or "".
+
+    `xo-score.py` is the producer: it decides the word and writes it here, and
+    nothing downstream is entitled to a second opinion. `state.numberOne.score`
+    is a COPY of this value, made by `xo.sh`'s one finisher at the moment of
+    the look — and a copy can go stale. On the captain's own disk one of seven
+    missions had been looked at twice, and a later writer holding a stale
+    `state.json` put the FIRST look's block back; the ledger was never
+    reverted, so the board drew HIGH over a mission this file records as LOW.
+
+    THIS READS ONE FIELD AND COUNTS NOTHING. The `counts` sitting beside it in
+    the same document would ratio to "high" for exactly that mission. Working a
+    score out of them is the second opinion whose existence is the defect."""
+    try:
+        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    score = doc.get("score")
+    return score.strip() if isinstance(score, str) and score.strip() else ""
 
 
 def _xo_recorded_derivation(mission_dir):

@@ -1,0 +1,185 @@
+[
+  {
+    "id": "lcars-20260917-001-fea3",
+    "title": "Recon probe mission: add a subtle grid-line overlay toggle to the edit",
+    "stateNumberOne": {
+      "since": "2026-09-17T03:01:20Z",
+      "status": "engaged",
+      "score": "low",
+      "evaluatedAt": "2026-09-17T03:01:20Z",
+      "lastAction": "looked 20:01",
+      "note": "could not launch: the app is running."
+    },
+    "verdict": {
+      "score": "low",
+      "derivation": "could not launch: the app is running.",
+      "criteria": [],
+      "gaps": [],
+      "summary": "could not launch: the app is running."
+    }
+  },
+  {
+    "id": "lcars-20260917-002-fea3",
+    "title": "Example game: show a player character sprite on a rendered tilemap wit",
+    "stateNumberOne": {
+      "since": "2026-09-17T02:53:46Z",
+      "status": "finished",
+      "score": "high",
+      "evaluatedAt": "2026-09-17T02:53:46Z",
+      "lastAction": "looked 19:53"
+    },
+    "verdict": {
+      "score": "high",
+      "workerScore": "high",
+      "scoreDisagreed": false,
+      "derivation": "everything you asked for is in the build, and I have a picture of each one.",
+      "counts": {
+        "met": 5,
+        "gap": 0,
+        "untested": 0,
+        "contradictions": 0
+      },
+      "criteria": [],
+      "gaps": [],
+      "summary": "Captain, your opening scene renders exactly as the PRD asks. I can see the grassy tilemap with a dirt path, a blue-shirted player standing on it, several trees "
+    }
+  },
+  {
+    "id": "lcars-20260917-003-fea3",
+    "title": "Editor shell UI audit: confirm the tile editor's existing left-rail pa",
+    "stateNumberOne": {
+      "since": "2026-09-17T03:23:43Z",
+      "status": "finished",
+      "score": "high",
+      "evaluatedAt": "2026-09-17T03:23:43Z",
+      "lastAction": "looked 20:23"
+    },
+    "verdict": {
+      "score": "low",
+      "workerScore": "low",
+      "scoreDisagreed": false,
+      "derivation": "the build does not do what the PRD itself asks for \u2014 the TILES section text and Import button, hidden behind a black box (prd-5). What you set out to get is not there yet.",
+      "counts": {
+        "met": 5,
+        "gap": 1,
+        "untested": 0,
+        "contradictions": 1
+      },
+      "criteria": [],
+      "gaps": [],
+      "summary": "Five of your six shell items paint correctly: the New Project / Open Project header, the Maps/Objects tabs with Maps selected, the LAYERS list, the GAME MECHANI"
+    }
+  },
+  {
+    "id": "lcars-20260917-004-fea3",
+    "title": "Add worldToScreen / screenToWorld coordinate conversion to the engine camera",
+    "stateNumberOne": {
+      "engine": "copilot",
+      "since": "2026-09-17T04:55:38Z",
+      "status": "engaged",
+      "score": "medium",
+      "evaluatedAt": "2026-09-17T04:55:38Z",
+      "lastAction": "looked 21:55",
+      "note": "Captain, this build is a code-only engine change \u2014 two pure coordinate functions, a factory method, a Camera type field, and their unit tests \u2014 none of which shows up on a screen, and the PRD deliberately leaves the editor/example wiring that would exercise them out of scope. The example game does render fine, so the engine compiles and runs, but that proves nothing about the new methods. The decisive evidence would have been your vitest suite, and it never ran: 'vitest: command not found', exit 127 before a single test executed \u2014 a broken runner invocation, not a failing test. So every criterion is honestly untested. Get vitest running inside packages/engine and read that result before you accept this."
+    },
+    "verdict": {
+      "score": "medium",
+      "workerScore": "medium",
+      "scoreDisagreed": false,
+      "derivation": "nothing in the build contradicts what you asked for, but there are 11 things on your list I could not check. I will not call a build good on the strength of what I could not see.",
+      "counts": {
+        "met": 0,
+        "gap": 0,
+        "untested": 11,
+        "contradictions": 0
+      },
+      "criteria": [],
+      "gaps": [],
+      "summary": "Captain, this build is a code-only engine change \u2014 two pure coordinate functions, a factory method, a Camera type field, and their unit tests \u2014 none of which sh"
+    }
+  },
+  {
+    "id": "lcars-20260917-005-fea3",
+    "title": "Example game: show the player's live tile coordinates on screen in dev mode",
+    "stateNumberOne": {
+      "lastPending": "752819065-987",
+      "engine": "copilot",
+      "since": "2026-09-17T16:23:02Z",
+      "status": "engaged",
+      "score": "medium",
+      "evaluatedAt": "2026-09-17T16:23:02Z",
+      "lastAction": "looked 09:23",
+      "note": "Captain, your tile readout is exactly where you asked for it: 'Tile 10, 10' sits in the bottom-left corner the instant the example game loads, white monospace over the map, no key needed. Your engine test suite ran fully green (45 tests, 5 files), including the new renderer/utils tests that cover worldToTile, the zero-tile guard, and formatTileReadout. The only thing I couldn't settle is that the F3 overlay was left untouched \u2014 it's hidden until F3 and the tests don't name it \u2014 so I've marked that one untested rather than claim it. No contradictions anywhere."
+    },
+    "verdict": {
+      "score": "medium",
+      "workerScore": "high",
+      "scoreDisagreed": true,
+      "derivation": "nothing in the build contradicts what you asked for, but there is 1 thing on your list I could not check. I will not call a build good on the strength of what I could not see.",
+      "counts": {
+        "met": 16,
+        "gap": 0,
+        "untested": 1,
+        "contradictions": 0
+      },
+      "criteria": [],
+      "gaps": [],
+      "summary": "Captain, your tile readout is exactly where you asked for it: 'Tile 10, 10' sits in the bottom-left corner the instant the example game loads, white monospace o"
+    }
+  },
+  {
+    "id": "lcars-20260917-006-fea3",
+    "title": "Example game: add a health/energy bar to the HUD in the top-right corner",
+    "stateNumberOne": {
+      "engine": "copilot",
+      "since": "2026-09-17T17:58:39Z",
+      "status": "finished",
+      "score": "high",
+      "evaluatedAt": "2026-09-17T17:58:39Z",
+      "lastAction": "looked 10:58"
+    },
+    "verdict": {
+      "score": "high",
+      "workerScore": "high",
+      "scoreDisagreed": false,
+      "derivation": "everything you asked for is in the build, and I have a picture of each one.",
+      "counts": {
+        "met": 31,
+        "gap": 0,
+        "untested": 0,
+        "contradictions": 0
+      },
+      "criteria": [],
+      "gaps": [],
+      "summary": "Your HP bar is there and it matches the ask: a red, partly-filled bar pinned to the top-right corner, filling from the left, sitting on a dark track, clear of t"
+    }
+  },
+  {
+    "id": "lcars-20260917-007-fea3",
+    "title": "Example game: add a top-right \"STEPS walked\" HUD readout in dev mode",
+    "stateNumberOne": {
+      "engine": "copilot",
+      "since": "2026-09-17T18:58:57Z",
+      "status": "engaged",
+      "score": "medium",
+      "evaluatedAt": "2026-09-17T18:58:57Z",
+      "lastAction": "looked 11:58",
+      "note": "Captain, your STEPS readout is there and it reads right: 'STEPS 0' in white monospace, pinned to the top-right corner on load, exactly where your drawing puts it, and the world around it is untouched. The engine's own test suite is fully green (6 files, 60 tests, exit 0), which settles the pure stepDelta/formatStepCount utils. I found no contradiction with the drawing. What I could not confirm is the counting-up as the player walks and the several internal/dev-mode behaviors \u2014 movement is keyboard-driven and I have no keypress action, and the test summary names files, not those individual behaviors \u2014 so those stand as untested, which is why I land on medium rather than high."
+    },
+    "verdict": {
+      "score": "medium",
+      "workerScore": "medium",
+      "scoreDisagreed": false,
+      "derivation": "nothing in the build contradicts what you asked for, but there are 8 things on your list I could not check. I will not call a build good on the strength of what I could not see.",
+      "counts": {
+        "met": 21,
+        "gap": 0,
+        "untested": 8,
+        "contradictions": 0
+      },
+      "criteria": [],
+      "gaps": [],
+      "summary": "Captain, your STEPS readout is there and it reads right: 'STEPS 0' in white monospace, pinned to the top-right corner on load, exactly where your drawing puts i"
+    }
+  }
+]
