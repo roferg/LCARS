@@ -21,8 +21,18 @@
  *
  * argv[2]: a JSON spec file:
  *   { "reportData": <the GET /api/xo/report payload>,
- *     "clicks": ["gate", "escalated", "all"]   // chip keys, IN ORDER
- *   }
+ *     "clicks": [ "all"                    // a FILTER CHIP, by key
+ *               | {"view": "time"}         // the by-time / by-mission switch
+ *               | {"seen": "<entry key>"}  // one entry's ✓ Seen button
+ *               | {"open": "<mission id>"} // a mission header's way in
+ *               ],
+ *     "seenResponses": [ <report payload>, … ]  // what the daemon answers to
+ *   }                                           // each POST /api/xo/seen, in
+ *                                               // order. S213 generates these
+ *                                               // with the REAL builder after
+ *                                               // a REAL mark, so the board is
+ *                                               // repainted off what the
+ *                                               // server would truly send.
  *
  * stdout: a JSON report — see the bottom of the file.
  */
@@ -374,11 +384,25 @@ function settled(value) {
   };
   return p;
 }
+const SEEN_RESPONSES = (JSON.parse(fs.readFileSync(process.argv[2], "utf8"))
+  .seenResponses) || [];
+let seenPosts = 0;
+
 function fetchStub(url, opts) {
   const method = (opts && opts.method) || "GET";
-  FETCHES.push({ url: String(url), method: method });
+  let body = null;
+  try { body = JSON.parse((opts && opts.body) || "null"); } catch (e) { body = null; }
+  FETCHES.push({ url: String(url), method: method, body: body });
   if (method === "GET" && String(url) === "/api/xo/report") {
     return settled({ status: 200, json() { return settled(REPORT_DATA); } });
+  }
+  // The daemon answers a ✓ Seen with the FRESH report (server.py), wrapped in
+  // the ordinary write envelope — so the board repaints off a real answer and
+  // never has to ask twice.
+  if (method === "POST" && String(url) === "/api/xo/seen") {
+    const next = SEEN_RESPONSES[seenPosts++] || REPORT_DATA;
+    return settled({ status: 200,
+                     json() { return settled({ ok: true, state: next }); } });
   }
   const p = { then() { return p; }, catch() { return p; } };
   return p;
@@ -444,28 +468,95 @@ function sinceHeadText() {
 const chipsAtOpen = chipSnapshot();
 const sinceHeadAtOpen = sinceHeadText();
 
-const afterClicks = [];
-(spec.clicks || []).forEach(function (key) {
-  const row = chipRow();
-  const hit = row ? row.children.filter(function (c) {
-    return (c.textContent || "").trim() ===
-      (sandbox.XO_REPORT_CHIPS.filter(function (x) { return x[0] === key; })[0] || [])[1];
-  })[0] : null;
-  let clickErr = null;
-  if (hit) { try { hit.click(); } catch (e) { clickErr = String(e && e.message ? e.message : e); } }
-  else { clickErr = "no chip labelled for key " + key; }
-  afterClicks.push({
-    key: key, error: clickErr,
+/* ── S213: the GROUPED view, projected in DOCUMENT ORDER ─────────────────── */
+function project(n) {
+  if (!n || n.nodeType !== 1) return null;
+  return {
+    tag: String(n.tagName || "").toLowerCase(),
+    cls: n.getAttribute("class") || "",
+    text: (n.textContent || "").trim(),
+    key: n.getAttribute("data-key") || "",
+    mission: n.getAttribute("data-mission") || "",
+    chip: n.getAttribute("data-chip") || "",
+    view: n.getAttribute("data-view") || "",
+    disabled: !!n.disabled,
+    children: (n.children || []).map(project).filter(Boolean),
+  };
+}
+function snapshot() {
+  const body = overlayEl.querySelector(".overlay-stage") || overlayEl;
+  return {
     chips: chipSnapshot(),
-    sinceHead: sinceHeadText(),
-  });
+    views: (overlayEl.querySelectorAll(".xo-view") || []).map(function (v) {
+      return { text: (v.textContent || "").trim(),
+               cls: v.getAttribute("class") || "",
+               view: v.getAttribute("data-view") || "" };
+    }),
+    groups: (overlayEl.querySelectorAll(".xo-mgrp") || []).map(project),
+    // The BY-TIME list only. `.xo-report-entry` is also the row History folds,
+    // and counting both would have made the flat list look twice its size.
+    flat: (overlayEl.querySelectorAll(".xo-report-since .xo-report-entry")
+           || []).map(project),
+    histLine: (function () {
+      const h = overlayEl.querySelector(".xo-hist-line");
+      return h ? (h.textContent || "").trim() : null;
+    })(),
+    tree: project(body),
+  };
+}
+
+const atOpen = snapshot();
+
+const afterClicks = [];
+(spec.clicks || []).forEach(function (step) {
+  let clickErr = null;
+  let hit = null;
+  if (typeof step === "string") {
+    const row = chipRow();
+    hit = row ? row.children.filter(function (c) {
+      return (c.getAttribute("data-chip") || "") === step;
+    })[0] : null;
+    if (!hit) clickErr = "no chip for key " + step;
+  } else if (step && step.view) {
+    hit = (overlayEl.querySelectorAll(".xo-view") || []).filter(function (v) {
+      return (v.getAttribute("data-view") || "") === step.view;
+    })[0];
+    if (!hit) clickErr = "no view switch for " + step.view;
+  } else if (step && step.seen) {
+    hit = (overlayEl.querySelectorAll(".xo-seen") || []).filter(function (b) {
+      return (b.getAttribute("data-key") || "") === step.seen;
+    })[0];
+    if (!hit) clickErr = "no ✓ Seen button for entry " + step.seen;
+  } else if (step && step.open) {
+    hit = (overlayEl.querySelectorAll(".xo-mopen") || []).filter(function (a) {
+      return (a.getAttribute("data-mission") || "") === step.open;
+    })[0];
+    if (!hit) clickErr = "no way in for mission " + step.open;
+  } else {
+    clickErr = "unrecognised click step";
+  }
+  if (hit) {
+    try { hit.click(); } catch (e) { clickErr = String(e && e.message ? e.message : e); }
+  }
+  const shot = snapshot();
+  shot.step = step;
+  shot.error = clickErr;
+  shot.sinceHead = sinceHeadText();
+  afterClicks.push(shot);
 });
 
-process.stdout.write(JSON.stringify({
+/* WRITTEN SYNCHRONOUSLY, then exit. `process.stdout.write` on a pipe is
+   ASYNC, and the `process.exit(0)` below it — which this harness needs, because
+   board.js's boot arms timers — truncated the report the moment it outgrew the
+   pipe buffer. The symptom was a JSON parse error at a byte offset that moved
+   with the fixture, which reads exactly like a bug in the code under test. */
+fs.writeSync(1, JSON.stringify({
   bootErrors: bootErrors,
   chipsAtOpen: chipsAtOpen,
   sinceHeadAtOpen: sinceHeadAtOpen,
+  atOpen: atOpen,
   afterClicks: afterClicks,
+  fetches: FETCHES,
   overlayHidden: !!overlayEl.hidden,
 }));
 process.exit(0);

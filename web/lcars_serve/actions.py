@@ -13344,9 +13344,14 @@ class Actions(LogFacts):
         out = (proc.stdout or b"").decode("utf-8", "replace").strip()
         return {"mission": mid, "output": out}
 
-    def xo_seen(self):
+    def xo_seen(self, entry=None):
         """`POST /api/xo/seen` — the board's ✓ Seen, the SAME mark the CLI's
         `lcars xo report --seen` writes (S205).
+
+        WITH AN `entry` KEY it is S213's finer mark: ONE entry dealt with,
+        `lcars xo report --seen-entry <key>`. Seen means "I have dealt with
+        this", never "this is gone" — neither verb removes anything, and the
+        entry stays in history for good.
 
         DISPATCH ONLY (ADR-002): `xo-report.py` already owns the one file this
         writes (`.git/lcars/xo-seen.json`) — this only shells the verb that
@@ -13354,6 +13359,10 @@ class Actions(LogFacts):
         adapter afterward (server.py), so a POST answers with what actually
         changed rather than this dispatch's own stdout.
         """
+        key = str(entry or "").strip()
+        if key:
+            self._run("xo", ["report", "--all", "--seen-entry", key])
+            return {"seen": True, "entry": key}
         self._run("xo", ["report", "--all", "--seen"])
         return {"seen": True}
 

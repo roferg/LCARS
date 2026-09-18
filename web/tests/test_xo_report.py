@@ -159,6 +159,50 @@ class SinceAndHistory(XoReportBase):
         self.assertEqual("rescored", after["since"]["entries"][0]["action"])
 
 
+class S213_SeenOneEntryOverHttp(XoReportBase):
+    """C5 over the wire — the board's per-entry ✓ Seen. ONE entry is dealt
+    with; its siblings are untouched, and NOTHING is deleted."""
+
+    def a_key(self, mid, action):
+        _, body = self.get("/api/xo/report")
+        for row in body["missions"]:
+            if row["id"] != mid:
+                continue
+            for e in row["entries"]:
+                if e["action"] == action:
+                    return e["key"]
+        self.fail("no %s entry on %s in the grouped view" % (action, mid))
+
+    def test_marking_one_entry_leaves_the_rest_new(self):
+        before = self.get("/api/xo/report")[1]["since"]["count"]
+        status, _ = self.post("/api/xo/seen",
+                              {"entry": self.a_key(MID1, "escalated")})
+        self.assertEqual(200, status)
+        after = self.get("/api/xo/report")[1]
+        self.assertEqual(before - 1, after["since"]["count"])
+
+    def test_it_writes_the_key_and_keeps_the_wholesale_mark_separate(self):
+        self.post("/api/xo/seen", {"entry": self.a_key(MID1, "escalated")})
+        with open(os.path.join(self.tmp, ".git", "lcars",
+                               "xo-seen.json")) as fh:
+            doc = json.load(fh)
+        self.assertEqual([MID1 + "#1"], doc["seenEntries"])
+        self.assertIsNone(doc.get("lastSeenAt"))
+
+    def test_the_entry_is_still_in_history_afterwards(self):
+        self.post("/api/xo/seen", {"entry": self.a_key(MID1, "escalated")})
+        _, after = self.get("/api/xo/report")
+        hist = {h["id"]: h for h in after["history"]}
+        self.assertIn("escalated",
+                      [e["action"] for e in hist[MID1]["entries"]])
+
+    def test_an_empty_body_still_means_the_wholesale_mark(self):
+        self.post("/api/xo/seen")
+        _, after = self.get("/api/xo/report")
+        self.assertEqual(0, after["since"]["count"])
+        self.assertIsNotNone(after["lastSeenAt"])
+
+
 class CliApiParity(XoReportBase):
 
     def test_since_count_matches(self):

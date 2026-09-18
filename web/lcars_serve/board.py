@@ -557,11 +557,15 @@ def assemble(cards, meta=None):
 # to draw for it. A malformed value — a string, a list, a number — answers None
 # too, on the same posture `lcars_xo_status` takes in the shell: an unreadable
 # record is "nothing recorded", never a guess.
-_XO_FIELDS = ("status", "engine", "since", "note", "score")
+# S213 — `headline` is the ONE LINE the card shows instead of the whole verdict.
+# It is the sentence `xo-score.py` derives off the ledger in the same breath as
+# the score, so the line and the score on that card cannot disagree with each
+# other (C8). It is never a truncation of the worker's own prose.
+_XO_FIELDS = ("status", "engine", "since", "note", "score", "headline")
 
 
 def xo_block(value):
-    """{status, engine, since, note, score} for the card, or None."""
+    """{status, engine, since, note, score, headline} for the card, or None."""
     if not isinstance(value, dict):
         return None
     out = {}

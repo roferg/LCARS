@@ -1423,12 +1423,24 @@ xo_mirror() { # <mission-id>
 
 # Record a finished look and stop. ONE writer for every exit path, so a LOW from
 # a failed launch and a HIGH from a clean look leave the same shaped record.
-xo_finish() { # <mission-dir> <score> <status> <why>
-  local dir="$1" score="$2" status="$3" why="$4" st obj id
+# THE HEADLINE (S213). One line, for the board card, which no longer carries the
+# whole verdict. It is the LEDGER'S OWN DERIVATION — the sentence xo-score.py
+# writes in the same breath as the score, from the same ledger, by the same
+# rule — so the line on the card and the score beside it cannot disagree. It is
+# never a cut-down of the worker's prose: a truncation is this harness deciding
+# what Number One meant, which is exactly the fault S213 exists to kill.
+# Omitted (and any stale one deleted) when there is no derivation to record.
+xo_finish() { # <mission-dir> <score> <status> <why> [<headline>]
+  local dir="$1" score="$2" status="$3" why="$4" headline="${5:-}" st obj id
   st="$dir/state.json"; id="$(basename "$dir")"
   obj="$(state_xo_block "$st")"
   obj="$(obj_set "$obj" status "$(jstr "$status")")"
   obj="$(obj_set "$obj" score "$(jstr "$score")")"
+  if [ -n "$headline" ]; then
+    obj="$(obj_set "$obj" headline "$(jstr "$headline")")"
+  else
+    obj="$(obj_del "$obj" headline)"
+  fi
   obj="$(obj_set "$obj" evaluatedAt "$(jstr "$NOW")")"
   obj="$(obj_set "$obj" lastAction "$(jstr "looked $NOW_LOCAL")")"
   if [ "$status" = "engaged" ]; then
@@ -1583,7 +1595,7 @@ cmd_evaluate() {
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
       "$(jstr "$why")" "$(jstr "$why")" >"$xodir/verdict.json"
     rm -f "$dir/xo.pid"; trap - TERM INT
-    xo_finish "$dir" low engaged "$why"
+    xo_finish "$dir" low engaged "$why" "$why"
     return 0
   fi
   printf '  the build is up at %s\n' "$lurl"
@@ -1615,7 +1627,7 @@ cmd_evaluate() {
     rm -f "$dir/xo.pid"; trap - TERM INT
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
       "$(jstr "$why")" "$(jstr "$why")" >"$xodir/verdict.json"
-    xo_finish "$dir" low engaged "$why"
+    xo_finish "$dir" low engaged "$why" "$why"
     return 0
   fi
   # THE DIRECTORY IS PART OF THE RECORD (fix round 2, D1): a verdict is only as
@@ -1757,7 +1769,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "sawShots": %s,\n  "summary": %s\n}\n' \
       "$(jstr "$why")" "$(jstr "$shotlist")" \
       "$(jstr "$why — it looked at: ${shotlist:-nothing}")" >"$xodir/verdict.json"
-    xo_finish "$dir" low engaged "$why — it looked at: ${shotlist:-nothing}"
+    xo_finish "$dir" low engaged "$why — it looked at: ${shotlist:-nothing}" "$why"
     xo_rm_work "$work"; XO_WORK_DIR=""
     return 0
   fi
@@ -1787,7 +1799,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
     local mw="${why:-$XO_MALFORMED}"
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
       "$(jstr "$mw")" "$(jstr "$mw")" >"$xodir/verdict.json"
-    xo_finish "$dir" low engaged "$mw"
+    xo_finish "$dir" low engaged "$mw" "$mw"
     xo_rm_work "$work"; XO_WORK_DIR=""
     return 0
   fi
@@ -1807,7 +1819,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   # leaves it ENGAGED — there are gaps, and S204 is the round that acts on them.
   local status=engaged
   [ "$score" = "high" ] && status=finished
-  xo_finish "$dir" "$score" "$status" "${summary:-$why}"
+  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why"
   xo_rm_work "$work"; XO_WORK_DIR=""
 
   # --- 8. THE FIX ROUND (S204) ---------------------------------------------
@@ -2535,11 +2547,16 @@ $shots"
 XO_REPORT_SCRIPT="$SKILL_DIR/xo-report.py"
 
 cmd_report() {
-  local target="" show_all=0 mark=0
+  local target="" show_all=0 mark=0 seen_entry=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --all)  show_all=1; shift ;;
       --seen) mark=1; shift ;;
+      # S213: ✓ Seen on ONE entry, named by the key the report itself hands
+      # out. Marking one thing dealt with is not the same act as saying "I
+      # have read the whole report", so it is not the same flag.
+      --seen-entry)   seen_entry="${2:-}"; shift 2 || true ;;
+      --seen-entry=*) seen_entry="${1#--seen-entry=}"; shift ;;
       -*)     die "unknown option: $1" ;;
       *)      target="$1"; shift ;;
     esac
@@ -2553,6 +2570,7 @@ cmd_report() {
   [ -n "$mission_filter" ] && args+=(--mission "$mission_filter")
   [ "$show_all" -eq 1 ] && args+=(--all)
   [ "$mark" -eq 1 ] && args+=(--mark-seen)
+  [ -n "$seen_entry" ] && args+=(--seen-entry "$seen_entry")
   "$XO_PY" "$XO_REPORT_SCRIPT" "${args[@]}"
 }
 

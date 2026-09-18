@@ -537,6 +537,26 @@ function xoPill(m) {
   return el("span", "pill xo" + (status === "engaged" ? "" : " done"), label);
 }
 
+/* S213 — THE ONE LINE, and where it comes from.
+
+   The card used to carry Number One's whole 150-word verdict. It ran several
+   screens tall and pushed the cost pills, the difficulty pills and both
+   buttons off the bottom; a column the captain cannot scan is not a board.
+
+   So the card carries ONE sentence — and it matters enormously WHICH one.
+   Not the first sentence of the worker's prose: cutting a paragraph down is
+   this board deciding what Number One meant, and a verdict that disagrees
+   with the score beside it is the exact fault this session exists to kill.
+   It is `headline`, the ledger's own DERIVATION — written by xo-score.py in
+   the same breath as the score, off the same ledger, by the same rule. The
+   line and the score are two outputs of one decision, so they cannot
+   contradict each other. The same sentence leads the ◈ Number One tab. */
+function xoHeadline(m) {
+  var x = xoBlock(m);
+  var h = x && x.headline ? String(x.headline).trim() : "";
+  return h || "";
+}
+
 /* WHAT IT IS DOING NOW, in one line, COMPOSED FROM THE RECORD and from nothing
    else. There is no free-text "activity" field on this shape and there
    deliberately is not one: a line assembled from {status, engine, score} can
@@ -601,12 +621,20 @@ function xoScore(m) {
    opposite of what `.pill.high` (a high DIFFICULTY) means two pills along. The
    classes are therefore its own (`s-high`/`s-medium`/`s-low`) and never the
    difficulty vocabulary — reusing those would make the sheet lie the moment
-   someone read it. */
+   someone read it.
+
+   S213 CHANGED WHAT IT SAYS, not what it means. It used to read `INTENT MATCH
+   · MEDIUM` beside a second pill reading `◈ NUMBER ONE · ENGAGED`, which spent
+   two pills to say one thing and buried the half that matters. Now ONE pill
+   carries both: `◈ NUMBER ONE · MEDIUM` — who looked, and what they found. The
+   label still says whose MEDIUM it is, which is the whole reason the old label
+   existed: the two DIFFICULTY pills next to it also read LOW/MED/HIGH and mean
+   the opposite direction. The tooltip still carries the meaning in full. */
 function xoScorePill(m) {
   var s = xoScore(m);
   if (!s) return null;
   var pill = el("span", "pill xo-score s-" + s,
-                "INTENT MATCH · " + XO_SCORE_WORD[s]);
+                "◈ NUMBER ONE · " + XO_SCORE_WORD[s]);
   pill.title = XO_SCORE_MEANING[s];
   return pill;
 }
@@ -622,17 +650,70 @@ var XO_SCORE_MEANING = {
     + "the build could not be launched or verified — look yourself",
 };
 
-/* The pill + line + note, or null. */
+/* S213 — THE CARD IS A SIGNAL, NOT A TRANSCRIPT.
+
+   Two shapes, and which one you get turns on ONE recorded fact: has Number One
+   reached a verdict here yet?
+
+   IT HAS (a score is recorded) — the card says three things and stops:
+     · ONE pill, `◈ NUMBER ONE · MEDIUM`, carrying who looked and what they
+       found (it replaces the old ENGAGED pill plus a separate match pill);
+     · ONE line of verdict, the ledger's own derivation, in its own voice;
+     · `⊙ Read the full report →`, which opens this mission on its ◈ Number One
+       tab — the captain's own words: *"make the user aware there is a number 1
+       message and have a way to click to open the card on the number 1 tab."*
+   The 150-word text is NOT here. It is one click away, on the surface built to
+   hold it, and the card fits a column again — which is what puts the cost
+   pills, the difficulty pills and both buttons back on screen.
+
+   IT HAS NOT — the card reads exactly as it did before this session: the
+   status pill, the one line of what it is doing now, and any note it left.
+   There is no verdict to lead with, so nothing is taken away.
+
+   THE NOTE IS SUPPRESSED ON EXACTLY ONE STATUS, and the status is the reason.
+   `xo_finish` writes the worker's transcript into `note` only while a mission
+   is ENGAGED; `escalate()` writes a short sentence there and sets the status to
+   `escalated`; a stand-down writes its own line. So `engaged` is the one status
+   whose note is a transcript, and it is the only one the card hides. Every
+   other status's note is a sentence somebody wrote for the captain to read,
+   and on an escalation it is the NEWS — what Number One needs him to do.
+
+   FOUND ON THE REAL BOARD (S213's own browser check), not by a unit test: the
+   first cut of this keyed off "is there a score" and silently dropped the
+   escalation note from a mission that had been scored LOW and then escalated.
+   A RECORDED STATUS decides it, never the presence of another field. */
 function xoNode(m) {
-  var pill = xoPill(m), score = xoScorePill(m), line = xoLine(m), note = xoNote(m);
-  if (!pill && !score && !line && !note) return null;
-  var wrap = el("div", "xo-block");
-  if (pill || score) {
+  var score = xoScorePill(m), headline = xoHeadline(m);
+  var wrap;
+  if (score) {
+    wrap = el("div", "xo-block xo-signal");
+    var srow = el("div", "pills xo-pills");
+    srow.appendChild(score);
+    wrap.appendChild(srow);
+    if (headline) wrap.appendChild(el("div", "xo-verdict-line", headline));
+    // The note, unless this is the ENGAGED status whose note is the transcript.
+    if (!xoEngaged(m)) {
+      var scoredNote = xoNote(m);
+      if (scoredNote) wrap.appendChild(scoredNote);
+    }
+    var read = btn("⊙ Read the full report →", "xo-read-report", function () {
+      openDetail(m.id, "xo");
+    });
+    read.title = "Open this mission on its ◈ Number One tab";
+    // NOT swept by applyXoLock: reading the report is the one thing an engaged
+    // mission must never stop the captain doing (it is how he finds out what
+    // Number One did on his behalf), and it writes nothing.
+    read.setAttribute("data-act", "xo-report");
+    wrap.appendChild(read);
+    if (xoEngaged(m)) wrap.title = xoLockLine(m);
+    return wrap;
+  }
+  var pill = xoPill(m), line = xoLine(m), note = xoNote(m);
+  if (!pill && !line && !note) return null;
+  wrap = el("div", "xo-block");
+  if (pill) {
     var row = el("div", "pills xo-pills");
-    // The status pill first (WHO has the conn), the verdict second (WHAT it
-    // found) — the order the two facts are learned in.
-    if (pill) row.appendChild(pill);
-    if (score) row.appendChild(score);
+    row.appendChild(pill);
     wrap.appendChild(row);
   }
   if (line) wrap.appendChild(el("div", "xo-line", line));
@@ -650,7 +731,11 @@ function xoNode(m) {
    row anyway; `adopt` only ever appears on a remote card, which carries no
    `numberOne` at all. A control with no `data-act` is swept, which is the
    right default: an un-named write control is one nobody has exempted. */
-var XO_UNSWEPT_ACTS = { "start": 1, "adopt": 1, "launch": 1, "launch-stop": 1 };
+// S213 adds `xo-report`: reading what Number One did on your behalf is the
+// one control an engaged card must never disable — it writes nothing, and
+// it is how the captain finds out what the lock is for.
+var XO_UNSWEPT_ACTS = { "start": 1, "adopt": 1, "launch": 1, "launch-stop": 1,
+                        "xo-report": 1 };
 
 /* Disable every write control under `host` while Number One holds this mission.
 
@@ -901,20 +986,34 @@ function openXoMenu(meta) {
    one payload this already fetched (the IMPLEMENTOR BRIEF's own words) — a
    second, independent search implementation could never disagree with the
    first about what "matches", because there is only ever the one. */
+/* ── S213: THREE FILTERS, KEYED OFF THE RECORDED RANK ────────────────────────
+
+   The old row was All / Verify evaluations / Gate answers / Escalated to you,
+   and the captain landed on ALL — 29 flat rows, the machine's own lifecycle
+   steps outnumbering the news. His words: *"I'm so lost what issues its
+   talking about and what I should focus my attention on."*
+
+   So there are three, and he LANDS ON "NEEDS YOU" (C7). The firehose is still
+   one tap away and nothing has been taken from it. Each chip carries its own
+   count, read off `report.counts`, which `xo-report.py` computes beside the
+   entries themselves — the board never counts them a second way.
+
+   THE RANK IS ALREADY DECIDED when the payload arrives: `xo-report.py` stamps
+   `rank` on every entry from a lookup on its recorded `action`. This row
+   filters on that field and reads no prose at all. */
 var XO_REPORT_CHIPS = [
-  ["all", "All", null],
-  ["verify", "Verify evaluations", ["criteria", "launched", "looked", "actions",
-    "silent", "scored", "score-overruled", "filed-logs", "overflow",
-    "relaunched", "fix-did-not-hold", "rescored"]],
-  ["gate", "Gate answers", ["answered"]],
-  ["escalated", "Escalated to you", ["escalated"]],
+  ["needs", "Needs you", ["needs-you"]],
+  ["verdicts", "Verdicts", ["verdict"]],
+  ["all", "Everything", null],
 ];
+
+var XO_REPORT_DEFAULT_CHIP = "needs";
 
 function xoEntryMatchesChip(entry, chipKey) {
   if (chipKey === "all" || !chipKey) return true;
   var chip = XO_REPORT_CHIPS.filter(function (c) { return c[0] === chipKey; })[0];
   if (!chip || !chip[2]) return true;
-  return chip[2].indexOf(entry.action) >= 0;
+  return chip[2].indexOf(entry.rank) >= 0;
 }
 
 /* The SAME plain-English labels the adapter's `_NUMBER_ONE_LABELS` uses for
@@ -950,12 +1049,45 @@ function xoEntryMatchesSearch(entry, q) {
   } catch (e) { return false; }
 }
 
+/* ── S213: A TIME A PERSON READS ─────────────────────────────────────────────
+
+   `2026-09-17T04:58:59Z` on every row, to the second, in a timezone he does
+   not live in. Nobody needs the seconds and nobody was reading the date. So:
+   "today, 05:58" · "yesterday, 04:41" · "12 Sep, 09:10" · "12 Sep 2025".
+
+   LOCAL TIME, because the captain is local. An unparsable stamp comes back
+   verbatim rather than as a guess or a blank — the record is what it is. */
+var XO_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function xoWhen(at, nowRef) {
+  var raw = String(at || "");
+  if (!raw) return "";
+  var d = new Date(raw);
+  if (isNaN(d.getTime())) return raw;
+  var now = nowRef ? new Date(nowRef) : new Date();
+  function ymd(x) { return [x.getFullYear(), x.getMonth(), x.getDate()]; }
+  var a = ymd(d), b = ymd(now);
+  var hh = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  if (a[0] === b[0] && a[1] === b[1] && a[2] === b[2]) return "today, " + hh;
+  var yest = new Date(now.getTime());
+  yest.setDate(yest.getDate() - 1);
+  var y = ymd(yest);
+  if (a[0] === y[0] && a[1] === y[1] && a[2] === y[2]) return "yesterday, " + hh;
+  var stamp = d.getDate() + " " + XO_MONTHS[d.getMonth()];
+  if (a[0] !== b[0]) return stamp + " " + a[0];
+  return stamp + ", " + hh;
+}
+
+/* One flat row, for the BY TIME view — unchanged from S205, because "what has
+   happened lately" is a question the flat list already answered well. It is
+   one tap away and it is still the whole firehose. */
 function xoReportEntryLine(entry) {
   var row = el("div", "xo-report-entry" + (entry.new ? " is-new" : ""));
   var who = entry.missionTitle
     ? entry.missionTitle + " (" + (entry.missionIssue ? "#" + entry.missionIssue : entry.mission) + ")"
     : entry.mission;
-  row.appendChild(el("div", "xo-report-when", (entry.at || "") + " — " + who));
+  row.appendChild(el("div", "xo-report-when", xoWhen(entry.at) + " — " + who));
   var label = xoActionLabel(entry);
   var detailBits = ["detail", "why", "note", "summary", "answer", "rationale", "url"]
     .map(function (k) { return entry[k]; })
@@ -965,10 +1097,66 @@ function xoReportEntryLine(entry) {
   return row;
 }
 
+/* ── S213: WHAT ONE ENTRY SAYS, AND HOW LOUDLY ───────────────────────────────
+
+   Three ranks, visibly different, because that was the whole complaint: a
+   needs-you item (red, and it carries a way to act), a verdict to read
+   (amber), and the machine's own steps (folded underneath the conclusion they
+   produced, available but not shouting). */
+function xoEntryWho(entry) {
+  if (entry.rank === "needs-you") return "▲ Needs you";
+  if (entry.action === "scored" || entry.action === "rescored") {
+    var sc = String(entry.score || "").toLowerCase();
+    return "◈ Verdict" + (XO_SCORE_WORD[sc] ? " · " + XO_SCORE_WORD[sc] : "");
+  }
+  return "◈ " + xoActionLabel(entry);
+}
+
+function xoEntrySays(entry) {
+  var bits = ["detail", "why", "note", "summary", "answer", "rationale"]
+    .map(function (k) { return entry[k]; })
+    .filter(function (v) { return typeof v === "string" && v.trim(); });
+  return bits.length ? bits[0].trim() : xoActionLabel(entry);
+}
+
+/* ── S213: THE FIRST OFFICER'S REPORT, GROUPED BY MISSION ────────────────────
+
+   The captain chose by-mission over by-time, and said why: his complaint was
+   never "I cannot find the newest thing", it was "I'm so lost what issues its
+   talking about". By-mission answers that one directly. By-time stays one tap
+   away, unchanged, for the other question.
+
+   THREE OF HIS RULINGS ARE BUILT INTO THIS FUNCTION AND ARE NOT OPEN:
+
+   C10 — MISSION BLOCKS DO NOT COLLAPSE. His reason, kept here with the code:
+   the lifecycle steps already fold, and a collapsed block can hide a needs-you
+   item — the one thing this report exists to surface.
+
+   C11 — A NEEDS-YOU ITEM DOES NOT FLOAT OUT OF ITS BLOCK. Its MISSION sorts
+   first (xo-report.py does that sort), block intact. His reason: the grouping
+   stays pure, and he sees the item AND the context it happened in.
+
+   C7 — HE LANDS ON "NEEDS YOU", not the firehose.
+
+   AND ✓ SEEN NEVER DELETES ANYTHING. It means "I have dealt with this". The
+   entry leaves the news and stays in history for good; the count drops by one;
+   and when the last one goes the mission dims and re-tags rather than
+   vanishing — a block that disappears takes its context with it. */
+function xoMissionTag(row) {
+  if (row.needsYou) return { cls: "need", text: "▲ needs you" };
+  if (!row.newCount) return { cls: "ok", text: "◈ seen" };
+  var sc = String(row.score || "").toLowerCase();
+  if (XO_SCORE_WORD[sc]) {
+    return { cls: sc === "high" ? "ok" : (sc === "low" ? "need" : "med"),
+             text: "◈ " + XO_SCORE_WORD[sc].toLowerCase() };
+  }
+  return { cls: "med", text: "◈ new" };
+}
+
 function openXoReport() {
   var m = modal("◈ FIRST OFFICER'S REPORT", { headClass: "xo", wide: true });
   var body = m.body;
-  var state = { chip: "all", q: "" };
+  var state = { chip: XO_REPORT_DEFAULT_CHIP, q: "", view: "mission" };
 
   var controls = el("div", "xo-report-controls");
   var search = document.createElement("input");
@@ -976,76 +1164,212 @@ function openXoReport() {
   search.className = "xo-report-search";
   search.placeholder = "Search missions and entries…";
   controls.appendChild(search);
+  var viewsRow = el("div", "xo-report-views");
+  controls.appendChild(viewsRow);
   var chipsRow = el("div", "xo-report-chips");
   controls.appendChild(chipsRow);
   body.appendChild(controls);
 
+  var groupsWrap = el("div", "xo-report-groups");
+  body.appendChild(groupsWrap);
   var sinceHead = el("div", "xo-report-since-head");
   body.appendChild(sinceHead);
   var sinceList = el("div", "xo-report-since");
   body.appendChild(sinceList);
-  var histHead = el("div", "mock-cap", "History");
-  body.appendChild(histHead);
+  var histLine = el("div", "xo-hist-line");
+  body.appendChild(histLine);
   var histWrap = el("div", "xo-report-history");
   body.appendChild(histWrap);
 
-  var seenBtn = applyWriteState(btn("✓ Seen", "go", function () {
+  // The wholesale mark stays in the footer: "I have read the whole thing" is a
+  // different act from "I have dealt with this one", and both are his to make.
+  var seenBtn = applyWriteState(btn("✓ Mark all seen", "go", function () {
     postWrite("/api/xo/seen", {}, function (fresh) { paint(fresh); });
   }));
+  seenBtn.title = "Clear everything out of the news. Nothing is deleted — it "
+    + "all stays in history.";
   m.foot.appendChild(seenBtn);
   m.foot.appendChild(btn("Close", "", closeOverlay));
 
   var data = null;
-  // FIX ROUND 2, D2: chip highlighting is set ONCE here, at build time — the
-  // click handler below used to call only render(), which rebuilds the LIST
-  // but never chipsRow itself, so `.on` never moved off "All" no matter
-  // which chip the captain actually clicked. `chipEls` (key + element,
-  // built alongside the DOM below) and `syncChipHighlight` are the ONE
-  // place `.on` is applied, called both from the initial paint and from
-  // every click, so the DOM chip elements — never rebuilt after that first
-  // paint — always agree with `state.chip`. Kept as a plain key/element
-  // pair rather than a dataset attribute: the marker itself must read in
-  // GREYSCALE too (the captain's standing ruling), so `.xo-chip.on` in
-  // board.css carries it three ways that survive a colour-blind render —
-  // a solid fill vs. a transparent chip, a border-colour change, and bold
-  // weight vs. normal — never by hue alone.
-  var chipEls = [];
-  function syncChipHighlight() {
+
+  function clearOne(key) {
+    postWrite("/api/xo/seen", { entry: key }, function (fresh) { paint(fresh); });
+  }
+
+  var chipEls = [], viewEls = [];
+  function syncHighlights() {
     chipEls.forEach(function (ce) {
       ce.el.classList.toggle("on", ce.key === state.chip);
     });
+    viewEls.forEach(function (ve) {
+      ve.el.classList.toggle("on", ve.key === state.view);
+      ve.el.setAttribute("aria-pressed", ve.key === state.view ? "true" : "false");
+    });
   }
+
+  function chipCount(key) {
+    var counts = (data && data.counts) || {};
+    var n = counts[key];
+    return typeof n === "number" ? n : null;
+  }
+
   function paint(fresh) {
     if (fresh) data = fresh;
     if (!data) return;
-    chipsRow.innerHTML = "";
-    chipEls = [];
-    XO_REPORT_CHIPS.forEach(function (c) {
-      var chip = el("span", "xo-chip", c[1]);
-      chip.addEventListener("click", function () {
-        state.chip = c[0];
-        syncChipHighlight();
-        render();
+    // The two control rows are built ONCE and then only re-highlighted — S205
+    // fix round 2's D2 lesson: a handler that rebuilds the LIST but not the
+    // row leaves `.on` stuck wherever it started.
+    if (!chipEls.length) {
+      XO_REPORT_CHIPS.forEach(function (c) {
+        var chip = el("span", "xo-chip", c[1]);
+        chip.setAttribute("data-chip", c[0]);
+        chip.addEventListener("click", function () {
+          state.chip = c[0];
+          syncHighlights();
+          render();
+        });
+        chipsRow.appendChild(chip);
+        chipEls.push({ key: c[0], el: chip, label: c[1] });
       });
-      chipsRow.appendChild(chip);
-      chipEls.push({ key: c[0], el: chip });
-    });
-    syncChipHighlight();
+      [["mission", "By mission"], ["time", "By time"]].forEach(function (v) {
+        var b = btn(v[1], "xo-view", function () {
+          state.view = v[0];
+          syncHighlights();
+          render();
+        });
+        b.setAttribute("data-view", v[0]);
+        viewsRow.appendChild(b);
+        viewEls.push({ key: v[0], el: b });
+      });
+    }
+    syncHighlights();
     render();
   }
-  function render() {
-    var since = (data.since && data.since.entries) || [];
-    var visSince = since.filter(function (e) {
-      return xoEntryMatchesChip(e, state.chip) && xoEntryMatchesSearch(e, state.q);
+
+  function renderGrouped() {
+    var rows = data.missions || [];
+    var anyShown = false;
+    rows.forEach(function (row) {
+      var entries = (row.entries || []).filter(function (e) {
+        return xoEntryMatchesChip(e, state.chip) && xoEntryMatchesSearch(e, state.q);
+      });
+      // A mission with nothing LEFT still shows, dimmed — but only in the
+      // unfiltered view. Under "Needs you" a quiet mission is not an answer to
+      // the question he asked.
+      if (!entries.length && state.chip !== "all") return;
+      anyShown = true;
+      var grp = el("div", "xo-mgrp"
+        + (row.needsYou ? " needs" : "") + (row.newCount ? "" : " quiet"));
+      grp.setAttribute("data-mission", row.id);
+      var head = el("div", "xo-mhead");
+      head.appendChild(el("span", "xo-mid", row.issue ? "#" + row.issue : row.id));
+      head.appendChild(el("span", "xo-mname", row.title || row.id));
+      var tag = xoMissionTag(row);
+      head.appendChild(el("span", "xo-mtag " + tag.cls, tag.text));
+      // THE COUNT DESCRIBES THE BLOCK, and says so honestly when the filter
+      // is hiding some of it. A header reading "2 new" above ONE visible row
+      // is a small lie of exactly the kind this session exists to stop: the
+      // second thing is real, it is on this mission, and it is one tap away
+      // under Everything — so the header says both numbers rather than
+      // picking one and looking wrong.
+      var shown = entries.length;
+      var countText = row.newCount ? row.newCount + " new" : "nothing new";
+      if (row.newCount && shown < row.newCount) {
+        countText += " · " + shown + " here";
+      }
+      head.appendChild(el("span", "xo-mcount", countText));
+      // EVERY MISSION HEADER IS A WAY IN, and it lands on the ◈ Number One tab
+      // — the report is where he learns there is something to read, so it has
+      // to be where he can go and read it.
+      var open = el("a", "xo-mopen", "open mission →");
+      open.href = "#";
+      open.setAttribute("data-mission", row.id);
+      open.addEventListener("click", function (ev) {
+        if (ev && ev.preventDefault) ev.preventDefault();
+        closeOverlay();
+        openDetail(row.id, "xo");
+      });
+      head.appendChild(open);
+      grp.appendChild(head);
+
+      entries.forEach(function (e) {
+        var ent = el("div", "xo-entry r-" + (e.rank || "step"));
+        ent.setAttribute("data-key", e.key || "");
+        var eh = el("div", "xo-entry-head");
+        eh.appendChild(el("span", "xo-entry-who", xoEntryWho(e)));
+        eh.appendChild(el("span", "xo-entry-when", xoWhen(e.at)));
+        var seen = applyWriteState(btn("✓ Seen", "xo-seen", function () {
+          clearOne(e.key);
+        }));
+        seen.setAttribute("data-key", e.key || "");
+        seen.title = "I have dealt with this. It leaves the news and stays in "
+          + "history — nothing is deleted.";
+        eh.appendChild(seen);
+        ent.appendChild(eh);
+        ent.appendChild(el("div", "xo-entry-say", xoEntrySays(e)));
+        var steps = e.steps || [];
+        if (steps.length) {
+          var det = document.createElement("details");
+          det.className = "xo-fold";
+          var sum = document.createElement("summary");
+          sum.textContent = "⌄ " + steps.length + " step"
+            + (steps.length === 1 ? "" : "s") + " it took to get there";
+          det.appendChild(sum);
+          steps.forEach(function (st) {
+            det.appendChild(el("div", "xo-step",
+              xoWhen(st.at) + " — " + xoActionLabel(st)));
+          });
+          ent.appendChild(det);
+        }
+        grp.appendChild(ent);
+      });
+      groupsWrap.appendChild(grp);
     });
-    sinceHead.textContent = "Since you last looked (" + visSince.length + ")";
-    sinceList.innerHTML = "";
-    if (!visSince.length) {
-      sinceList.appendChild(noteEl("Nothing new."));
-    } else {
-      visSince.forEach(function (e) { sinceList.appendChild(xoReportEntryLine(e)); });
+    if (!anyShown) {
+      groupsWrap.appendChild(noteEl(
+        state.chip === "needs"
+          ? "Nothing needs you. Number One has left everything it found under "
+            + "Verdicts."
+          : "Nothing matches yet."));
     }
+  }
+
+  function render() {
+    groupsWrap.innerHTML = "";
+    sinceList.innerHTML = "";
     histWrap.innerHTML = "";
+    chipEls.forEach(function (ce) {
+      var n = chipCount(ce.key);
+      ce.el.textContent = ce.label + (n === null ? "" : " · " + n);
+    });
+
+    var byMission = state.view === "mission";
+    groupsWrap.hidden = !byMission;
+    sinceHead.hidden = byMission;
+    sinceList.hidden = byMission;
+
+    if (byMission) {
+      renderGrouped();
+    } else {
+      var since = (data.since && data.since.entries) || [];
+      var visSince = since.filter(function (e) {
+        return xoEntryMatchesChip(e, state.chip) && xoEntryMatchesSearch(e, state.q);
+      });
+      sinceHead.textContent = "Since you last looked (" + visSince.length + ")";
+      if (!visSince.length) {
+        sinceList.appendChild(noteEl("Nothing new."));
+      } else {
+        visSince.forEach(function (e) { sinceList.appendChild(xoReportEntryLine(e)); });
+      }
+    }
+
+    // HISTORY KEEPS EVERYTHING. The line says so in as many words, because
+    // "Seen" is the one word on this screen a person could reasonably read as
+    // "gone", and it never means that.
+    var seenCount = typeof data.seenCount === "number" ? data.seenCount : 0;
+    histLine.textContent = "⌄ History — " + seenCount + " already seen, kept "
+      + "for good. Nothing is ever deleted.";
     var history = data.history || [];
     var anyHist = false;
     history.forEach(function (h) {
@@ -8646,15 +8970,20 @@ function renderLogPreview(host, state, parentLabel, authored) {
 }
 
 /* ════════════════ SCREEN: MISSION DETAIL (#detail) — two-pane ════════════════ */
-function openDetail(id) {
+function openDetail(id, tab) {
   // S163 fix round 6 (D2): the other door a captain opens onto a mission. Same
   // rule as openLog — reading a card is starting something else, and the last
   // action's verdict must stop speaking over it.
+  //
+  // S213: `tab` names which tab to land on. The card's `⊙ Read the full report`
+  // and the report's mission headers both come in this way, so a captain who
+  // followed a Number One signal arrives AT the Number One report rather than
+  // on the PRD with one more click to find.
   retireVerdict();
-  fetchMission(id, function (mi) { renderDetail(mi); });
+  fetchMission(id, function (mi) { renderDetail(mi, tab); });
 }
 
-function renderDetail(mi) {
+function renderDetail(mi, wantTab) {
   // UX-32: clear any prior live-tick timers before rebuilding the detail so a
   // re-render (or re-open) never stacks intervals.
   clearDetailTimers();
@@ -8840,7 +9169,7 @@ function renderDetail(mi) {
   // ── body: LEFT feed, RIGHT tabs ──
   var body = el("div", "det-body");
   body.appendChild(activityFeed(mi));
-  body.appendChild(detailTabs(mi));
+  body.appendChild(detailTabs(mi, wantTab));
   grid.appendChild(body);
 
   // Explicit close affordance. It lives in its OWN flow slot at the very end of
@@ -9544,7 +9873,7 @@ function headlineFor(ev) {
   return EVENT_HEADS[ev.type] || (ev.type || "Event").replace(/_/g, " ");
 }
 
-function detailTabs(mi) {
+function detailTabs(mi, wantTab) {
   // Park & Align: a PARKED mission has no PRD/ADRs/tickets yet — the grill hasn't
   // run. Showing the PRD tabs (with the "The behaviour described in the PRD works
   // end to end" placeholder criterion) reads as if a spec exists. Instead show a
@@ -9579,14 +9908,23 @@ function detailTabs(mi) {
   if (mi.numberOne && typeof mi.numberOne === "object") {
     defs.push(["xo", "◈ Number One", xoReportPane(mi)]);
   }
+  // S213: which tab the detail LANDS on. PRD unless the caller asked for one
+  // that actually exists here — a `wantTab` naming a tab this mission has no
+  // pane for falls back to PRD rather than opening on nothing.
+  var openIdx = 0;
+  if (wantTab) {
+    for (var wi = 0; wi < defs.length; wi++) {
+      if (defs[wi][0] === wantTab) { openIdx = wi; break; }
+    }
+  }
   defs.forEach(function (d, idx) {
     var key = d[0], name = d[1], pane = d[2];
-    var tab = el("span", "tab" + (idx === 0 ? " on" : ""), name);
+    var tab = el("span", "tab" + (idx === openIdx ? " on" : ""), name);
     tab.setAttribute("data-tab", key);
     if (key === "xo") tab.classList.add("tab-xo");
     pane.classList.add("tabpane");
     pane.setAttribute("data-pane", key);
-    if (idx === 0) pane.classList.add("on");
+    if (idx === openIdx) pane.classList.add("on");
     tab.addEventListener("click", function () {
       bar.querySelectorAll(".tab").forEach(function (t) { t.classList.remove("on"); });
       paneHost.querySelectorAll(".tabpane").forEach(function (p) { p.classList.remove("on"); });
@@ -9673,6 +10011,81 @@ function xoShotUrl(mid, shotsDir, name) {
   return "/api/xo/shot/" + enc(mid) + "/" + (dir ? dir + "/" : "") + enc(name) + ".png";
 }
 
+/* ── S213: HOW A JUDGEMENT WAS SETTLED, IN WORDS HE ALREADY KNOWS ──────────
+
+   `UNTESTED — —` is harness vocabulary. The captain's standing rule is that a
+   surface says what happened to HIM, in his product, in plain English — so the
+   table says "I could not check this" and names nothing as its evidence,
+   because nothing settled it.
+
+   THE KIND IS READ, NEVER WORKED OUT. `xo-score.py` (S211) records `evidence`
+   on every ledger line as one of picture / measurement / tests / none, stamped
+   by whatever actually made the judgement. This table looks that word up. It
+   never reads the note beside it to decide — a note saying "I saw it in the
+   screenshot" on a row the record marks `tests` is a note, not a fact, and
+   four rounds of this project (S147, S156, S188, S212) went to code that
+   believed the prose instead. */
+var XO_EVIDENCE_WORD = {
+  picture: "a picture",
+  measurement: "a measured box",
+  tests: "your tests",
+  none: "—",
+};
+
+var XO_STATUS_WORD = {
+  met: "It's there",
+  gap: "Short of the mark",
+  untested: "I could not check this",
+};
+
+function xoCriteriaTable(criteria) {
+  var wrap = el("div", "xo-crit");
+  var head = el("div", "xo-crit-head");
+  head.appendChild(el("div", "xo-crit-what", "What you asked for"));
+  head.appendChild(el("div", "xo-crit-verdict", "How it went"));
+  head.appendChild(el("div", "xo-crit-how", "How I know"));
+  wrap.appendChild(head);
+  criteria.forEach(function (c) {
+    var status = String((c && c.status) || "untested").toLowerCase();
+    if (!XO_STATUS_WORD[status]) status = "untested";
+    var kind = String((c && c.evidence) || "none").toLowerCase();
+    if (!XO_EVIDENCE_WORD[kind]) kind = "none";
+    var row = el("div", "xo-crit-row v-" + status);
+    var what = el("div", "xo-crit-what");
+    what.appendChild(el("div", "xo-crit-text", String((c && c.text) || (c && c.id) || "")));
+    if (c && c.note) what.appendChild(el("div", "xo-crit-note", String(c.note)));
+    row.appendChild(what);
+    row.appendChild(el("div", "xo-crit-verdict", XO_STATUS_WORD[status]));
+    var how = el("div", "xo-crit-how", XO_EVIDENCE_WORD[kind]);
+    if (kind === "tests" && c && c.testQuote) how.title = String(c.testQuote);
+    row.appendChild(how);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+/* S205/S213: the ◈ Number One tab's pane. THE VERDICT LEADS.
+
+   THIS IS THE SURFACE THE SESSION EXISTS FOR. Before S213 it opened on "Also
+   checked, fine — no gaps found on this look" sitting above a MEDIUM score
+   whose real finding was that nothing could be tested at all. A person could
+   read it and come away believing the build was sound. That is the single
+   thing Number One exists to get right, and the order of this pane is the fix:
+
+     1. the SCORE, in one word, with the engine and the counts beside it;
+     2. ONE honest sentence — the ledger's own derivation, the same sentence
+        the card carries, so the two can never disagree (C8);
+     3. the FULL text, in Number One's own voice;
+     4. a row per criterion with its EVIDENCE KIND, so "I could not check
+        this — —" reads nothing like "It's there — a picture";
+     5. the gaps it filed, with their pictures;
+     6. LAST, and LABELLED: `alsoChecked` — reassurance about things nobody
+        asked about. It may never sit where the verdict belongs.
+
+   A mission with NO `report` (no local journal — a bare-engaged mission Number
+   One hasn't looked at yet, or a REMOTE card whose score/status came off its
+   GitHub labels, S203) gets a plain sentence instead: never a blank pane, and
+   never the rich content it cannot actually show. */
 function xoReportPane(mi) {
   var pane = el("div", "xo-pane");
   var xo = mi.numberOne || {};
@@ -9688,23 +10101,51 @@ function xoReportPane(mi) {
     return pane;
   }
 
-  var scoreBox = el("div", "xo-score-block");
-  function scoreLine(label, value) {
-    var line = el("div");
-    var b = el("b", "xo-score-label", label + ": ");
-    line.appendChild(b);
-    line.appendChild(document.createTextNode(String(value || "unknown").toUpperCase()));
-    scoreBox.appendChild(line);
-  }
-  scoreLine("Intent match", report.score);
-  if (report.score2) scoreLine("After the fixes", report.score2);
-  pane.appendChild(scoreBox);
+  var verdict = (report.verdict && typeof report.verdict === "object")
+    ? report.verdict : {};
+  var score = String(report.score || verdict.score || "").toLowerCase();
 
-  if (xo.engine) {
-    var engLine = el("p", "xo-engine-line", "Engine: " + xo.engine);
-    pane.appendChild(engLine);
+  // 1 — THE SCORE, FIRST AND ALONE ON ITS LINE.
+  var head = el("div", "xo-score-block");
+  var word = el("span", "xo-score-word s-" + (XO_SCORE_WORD[score] ? score : "unknown"),
+                XO_SCORE_WORD[score] || "NOT SCORED");
+  word.title = XO_SCORE_MEANING[score] || "";
+  head.appendChild(word);
+  if (xo.engine) head.appendChild(el("span", "pill xo", "◈ " + engineLabel(xo.engine)));
+  var counts = verdict.counts && typeof verdict.counts === "object"
+    ? verdict.counts : null;
+  if (counts && counts.untested) {
+    head.appendChild(el("span", "pill xo-score s-medium",
+      counts.untested + (counts.untested === 1
+        ? " thing I could not check" : " things I could not check")));
+  }
+  if (report.score2) {
+    head.appendChild(el("span", "pill xo-score s-"
+      + (XO_SCORE_WORD[String(report.score2).toLowerCase()] ? String(report.score2).toLowerCase() : "unknown"),
+      "after the fixes · " + String(report.score2).toUpperCase()));
+  }
+  pane.appendChild(head);
+
+  // 2 — ONE HONEST SENTENCE. The card carries this same string.
+  var lede = String(verdict.derivation || xo.headline || "").trim();
+  if (lede) pane.appendChild(el("div", "xo-lede", lede));
+
+  // 3 — THE FULL TEXT, in its own voice. Only when it says something the lede
+  // has not already said — repeating one sentence twice is not detail.
+  var full = String(verdict.summary || "").trim();
+  if (full && full !== lede) {
+    var body = el("div", "xo-full");
+    setMd(body, full);
+    pane.appendChild(body);
   }
 
+  // 4 — THE LEDGER, one row per criterion, each naming its evidence.
+  var criteria = verdict.criteria;
+  if (Array.isArray(criteria) && criteria.length) {
+    pane.appendChild(xoCriteriaTable(criteria));
+  }
+
+  // 5 — THE GAPS IT FILED, with the pictures that show them.
   var logs = report.logs || [];
   if (logs.length) {
     pane.appendChild(el("div", "mock-cap", "Gaps found"));
@@ -9732,8 +10173,23 @@ function xoReportPane(mi) {
       row.appendChild(shotsWrap);
       pane.appendChild(row);
     });
-  } else {
-    pane.appendChild(noteEl("Also checked, fine — no gaps found on this look."));
+  }
+
+  // 6 — LAST, AND LABELLED. It is reassurance about things he did not ask
+  // about; it is not, and must never read as, the verdict.
+  var also = verdict.alsoChecked;
+  also = Array.isArray(also)
+    ? also.filter(function (a) { return typeof a === "string" && a.trim(); })
+    : [];
+  if (also.length) {
+    var aside = el("div", "xo-also");
+    aside.appendChild(el("b", "xo-also-label", "Also checked — nothing wrong found"));
+    also.forEach(function (a) {
+      aside.appendChild(el("div", "xo-also-line", String(a).trim()));
+    });
+    aside.appendChild(el("div", "xo-also-why",
+      "Not part of what you asked for; noted so you know it was looked at."));
+    pane.appendChild(aside);
   }
 
   pane.appendChild(el("p", "xo-shots-note",

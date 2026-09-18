@@ -2009,6 +2009,18 @@ class LocalAdapter(object):
         # says `engaged`, never because a worker looks busy.
         xo = board.xo_block(state.get("numberOne"))
         if xo is not None:
+            # S213 C1 — THE ONE LINE, for a mission scored before this session.
+            # `xo.sh` records `headline` on every look from now on; a mission
+            # looked at earlier has the very same sentence sitting in its own
+            # `xo/verdict.json` as `derivation`, written there by the code that
+            # decided the score. Reading it back is reading a RECORD — the
+            # alternative, cutting the worker's 150-word prose down to its
+            # first sentence, would be this board deciding what Number One
+            # meant, which is the class of defect that made S213 necessary.
+            if "headline" not in xo:
+                line = _xo_recorded_derivation(d)
+                if line:
+                    xo["headline"] = line
             card["numberOne"] = xo
         return card
 
@@ -2541,6 +2553,22 @@ def _number_one_report(d):
         "shotsDir": shots_dir,
         "journal": journal_sorted,
     }
+
+
+def _xo_recorded_derivation(mission_dir):
+    """The one-line verdict this mission's own `xo/verdict.json` records, or
+    "". Never the worker's `summary` — that is the transcript the card is
+    being freed of — and never anything derived by reading either of them."""
+    try:
+        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    line = doc.get("derivation")
+    return line.strip() if isinstance(line, str) and line.strip() else ""
 
 
 def _activity_sort_key(entry):

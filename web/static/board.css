@@ -1443,9 +1443,10 @@ body.on-front-door #ownerFilter{display:none !important}
    the amber every other tab uses ON, so it reads as a distinct crew member's
    voice rather than one more section of the captain's own spec. */
 .tabbar .tab.tab-xo.on{background:var(--lcars-peach);color:var(--lcars-text-on-color)}
-.xo-score-block{margin-bottom:10px}
-.xo-score-label{color:var(--lcars-peach)}
-.xo-engine-line{font-size:12px;color:var(--lcars-text-dim);margin:0 0 10px}
+/* S213 replaced the tab's "Intent match: MEDIUM / Engine: copilot" label
+   lines with a score BLOCK (the word, the engine, the counts) — its rule now
+   lives in this sheet's S213 section, and `.xo-score-label` /
+   `.xo-engine-line` went with the markup that wore them. */
 .xo-gap-row{margin-bottom:16px}
 .xo-gap-title{font-weight:700;margin-bottom:6px}
 .xo-shots{display:flex;flex-wrap:wrap;gap:10px}
@@ -3017,3 +3018,142 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   color:var(--lcars-text);
   border-color:var(--lcars-border)}
 
+
+/* ════════════════════════════════════════════════════════════════════════
+   S213 — THE THREE SURFACES: a card that signals, a tab that tells, a report
+   that groups. Built from the mock-up the captain approved 2026-09-17.
+
+   ADR-007: no new colour values. Every rule here names an existing --lcars-*
+   token (peach for Number One's own voice, red for "this needs you", amber
+   for "there is a verdict to read", teal for "dealt with"), or the sheet's
+   own existing rgba() tint idiom (`.pill.xo-score` two hundred lines up uses
+   exactly these three).
+
+   THE THREE RANKS READ IN GREYSCALE, which is the captain's standing ruling
+   about every state on this board: a needs-you block differs from a verdict
+   block by a 3px SPINE and a border weight as well as by hue, a quiet one by
+   opacity, and the filter chips keep `.xo-chip.on`'s existing three signals
+   (solid fill, border colour, weight 700). ─────────────────────────────── */
+
+/* ── the CARD's signal ──────────────────────────────────────────────── */
+.xo-block.xo-signal{margin:0 0 8px}
+.xo-verdict-line{color:var(--lcars-text-bright);font-size:12px;line-height:1.45;
+  margin:2px 0 6px}
+.card-ctrl .btn.xo-read-report,.btn.xo-read-report{
+  background:var(--lcars-peach);color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach);font-weight:700;font-size:10px;
+  padding:4px 10px;margin:0 0 4px}
+.btn.xo-read-report:hover{filter:brightness(1.1)}
+
+/* ── the TAB: the verdict leads ─────────────────────────────────────── */
+.xo-score-block{margin-bottom:10px;display:flex;align-items:baseline;gap:8px;
+  flex-wrap:wrap}
+.xo-score-word{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:22px;font-weight:700;color:var(--lcars-amber)}
+.xo-score-word.s-high{color:var(--lcars-teal)}
+.xo-score-word.s-low{color:var(--lcars-red)}
+.xo-lede{font-size:14px;line-height:1.5;color:var(--lcars-text-bright);
+  border-left:3px solid var(--lcars-peach);padding-left:10px;margin:6px 0 12px}
+.xo-full{font-size:13px;line-height:1.65;color:var(--lcars-text);margin-bottom:14px}
+
+/* the per-criterion ledger. Three columns on a desktop, stacked on a phone —
+   a table that scrolls sideways is a table nobody reads on a phone. */
+.xo-crit{margin-bottom:16px;border-top:1px solid var(--lcars-border)}
+.xo-crit-head,.xo-crit-row{display:grid;grid-template-columns:1fr auto auto;
+  gap:10px;padding:7px 0;border-bottom:1px solid var(--lcars-border);
+  align-items:start}
+.xo-crit-head{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.08em;font-size:10px;color:var(--lcars-text-dim)}
+.xo-crit-text{font-size:12.5px;color:var(--lcars-text-bright);line-height:1.4}
+.xo-crit-note{font-size:11px;color:var(--lcars-text-dim);margin-top:2px;
+  line-height:1.4}
+.xo-crit-verdict{font-family:var(--font-mono);font-size:11px;white-space:nowrap}
+.xo-crit-how{font-family:var(--font-mono);font-size:11px;white-space:nowrap;
+  color:var(--lcars-text-dim)}
+.xo-crit-row.v-met .xo-crit-verdict{color:var(--lcars-teal)}
+.xo-crit-row.v-gap .xo-crit-verdict{color:var(--lcars-red)}
+.xo-crit-row.v-untested .xo-crit-verdict{color:var(--lcars-text-dim);font-style:italic}
+
+/* …and LAST, the reassurance, visibly an aside and never the verdict. */
+.xo-also{background:rgba(255,153,102,.07);border:1px solid var(--lcars-border);
+  border-radius:8px;padding:10px 12px;margin-bottom:12px}
+.xo-also-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:10px;
+  color:var(--lcars-text-dim);margin-bottom:5px}
+.xo-also-line{font-size:12.5px;color:var(--lcars-text);line-height:1.5}
+.xo-also-why{font-size:11px;color:var(--lcars-text-dim);margin-top:5px}
+
+/* ── the REPORT, grouped by mission ─────────────────────────────────── */
+.xo-report-views{display:flex;gap:4px}
+.btn.xo-view{background:transparent;color:var(--lcars-text-dim);
+  border-color:var(--lcars-border);font-size:10px;padding:4px 10px}
+.btn.xo-view.on{background:var(--lcars-peach);color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach);font-weight:700}
+.xo-report-groups{margin-bottom:14px}
+
+.xo-mgrp{border:1px solid var(--lcars-border);border-left:3px solid var(--lcars-border);
+  border-radius:8px;margin-bottom:10px;overflow:hidden}
+/* THE SPINE is the rank, said in a way that survives greyscale: a needs-you
+   block's left edge is thicker as well as red. */
+.xo-mgrp.needs{border-left:5px solid var(--lcars-red)}
+.xo-mgrp.quiet{opacity:.55}
+.xo-mhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:7px 10px;background:rgba(255,153,102,.06)}
+.xo-mid{font-family:var(--font-mono);font-size:12px;color:var(--lcars-text-bright);
+  font-weight:700}
+.xo-mname{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.03em;font-size:13px;color:var(--lcars-text-bright);
+  flex:1 1 140px;min-width:0}
+.xo-mtag{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:9.5px;padding:2px 8px;border-radius:10px;
+  border:1px solid var(--lcars-text-dim);color:var(--lcars-text-dim);white-space:nowrap}
+.xo-mtag.need{color:var(--lcars-red);border-color:var(--lcars-red);font-weight:700}
+.xo-mtag.med{color:var(--lcars-amber);border-color:var(--lcars-amber)}
+.xo-mtag.ok{color:var(--lcars-teal);border-color:var(--lcars-teal)}
+.xo-mcount{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);
+  white-space:nowrap}
+.xo-mopen{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:9.5px;color:var(--lcars-peach);
+  text-decoration:none;border:1px solid var(--lcars-peach);border-radius:6px;
+  padding:3px 8px;white-space:nowrap}
+.xo-mopen:hover{background:var(--lcars-peach);color:var(--lcars-black,#030608)}
+
+.xo-entry{padding:8px 10px;border-top:1px solid var(--lcars-border)}
+.xo-entry.r-needs-you{border-left:3px solid var(--lcars-red)}
+.xo-entry.r-verdict{border-left:3px solid var(--lcars-amber)}
+.xo-entry-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+  margin-bottom:3px}
+.xo-entry-who{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:10px;color:var(--lcars-amber)}
+.xo-entry.r-needs-you .xo-entry-who{color:var(--lcars-red);font-weight:700}
+.xo-entry-when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
+.btn.xo-seen{margin-left:auto;background:transparent;color:var(--lcars-text-dim);
+  border-color:var(--lcars-border);font-size:9.5px;padding:3px 8px}
+.btn.xo-seen:hover{color:var(--lcars-teal);border-color:var(--lcars-teal)}
+.xo-entry-say{font-size:13px;line-height:1.5;color:var(--lcars-text-bright)}
+.xo-fold{margin-top:6px;border-top:1px solid var(--lcars-border);padding-top:5px}
+.xo-fold summary{cursor:pointer;font-family:var(--font-mono);font-size:10px;
+  color:var(--lcars-text-dim);list-style:none}
+/* The fold carries the mock-up's own ⌄ in its text, so the browser's native
+   disclosure triangle beside it is the same thing said twice. Both spellings
+   of "hide it" are here: Safari/Chrome want the ::-webkit- pseudo, Firefox the
+   `list-style`. Found in the real browser — a node DOM renders no marker at
+   all and could never have shown it. */
+.xo-fold summary::-webkit-details-marker{display:none}
+.xo-fold summary::marker{content:""}
+.xo-step{font-family:var(--font-mono);font-size:10.5px;color:var(--lcars-text-dim);
+  padding:3px 0 0 12px}
+
+/* HISTORY KEEPS EVERYTHING, and the line that says so is not fine print. */
+.xo-hist-line{font-family:var(--font-mono);font-size:10.5px;
+  color:var(--lcars-text-dim);border:1px dashed var(--lcars-border);
+  border-radius:8px;padding:7px 10px;margin:4px 0 8px}
+
+/* A phone reads this too. The ledger's three columns stack rather than
+   scrolling sideways, and the mission header wraps instead of squeezing. */
+@media (max-width:560px){
+  .xo-crit-head{display:none}
+  .xo-crit-row{grid-template-columns:1fr;gap:3px}
+  .xo-crit-verdict,.xo-crit-how{white-space:normal}
+  .btn.xo-seen{margin-left:0}
+}

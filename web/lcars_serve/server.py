@@ -752,7 +752,11 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # the same read GET /api/xo/report serves) so the caller need not
             # issue a second request to see what changed.
             if path == "/api/xo/seen":
-                actions.xo_seen()
+                # S213: an `entry` key in the body marks THAT ONE entry dealt
+                # with; no key is the wholesale "I have read the report" mark
+                # S205 shipped. Same route, same refusal posture, two grains.
+                entry = body.get("entry") if isinstance(body, dict) else None
+                actions.xo_seen(entry if isinstance(entry, str) else None)
                 reader = getattr(adapter, "xo_report", None)
                 try:
                     rec = reader() if callable(reader) else None

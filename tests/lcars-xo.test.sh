@@ -3422,6 +3422,55 @@ check "B24d. …and there were three rounds for it not to be re-run in" \
   "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" -ge 3 ]"
 
 # ==========================================================================
+# B25. THE HEADLINE — ONE LINE FOR THE BOARD CARD, RECORDED BY THE FINISHER
+#      (Session 213, claim C1, and the C8 guard at the producer).
+#
+# The card used to carry Number One's whole 150-word verdict; it ran several
+# screens tall and pushed the cost pills, the difficulty pills and both buttons
+# off the bottom. It now carries ONE sentence — and WHICH sentence is the whole
+# point. Not the first line of the worker's prose: cutting a paragraph down is
+# this harness deciding what Number One meant, and a card whose line disagrees
+# with the score beside it is the exact fault S213 exists to kill.
+#
+# So it is the LEDGER'S OWN DERIVATION — the sentence xo-score.py writes in the
+# same breath as the score, off the same ledger, by the same rule. Two outputs
+# of one decision cannot contradict each other. `xo_finish` is the ONE writer
+# every exit path goes through, so this is proved where it is written, on a
+# real evaluate, and not by grepping the script for a string.
+# ==========================================================================
+echo
+echo "B25. the one line the card carries, recorded by the one finisher"
+
+repo25="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m25="$(plant_verify "$repo25" "lcars-20260917-401")"
+: >"$XO_WORKER_LOG"
+# A worker that reaches a verdict AND writes a long transcript — the shape that
+# produced the unreadable card on the captain's real board. One criterion it
+# could not check, so the honest derivation cannot be a clean bill of health.
+long25='Captain, this build is a code-only engine change - two pure coordinate functions, a factory method, a Camera type field, and their unit tests - none of which shows up on a screen. The example game does render fine, so the engine compiles and runs, but that proves nothing about the new methods.'
+verdict25="$(printf '{"score":"medium","summary":"%s","criteria":[{"id":"prd-1","text":"open tasks in one list","status":"met","shot":"shot-01","evidence":"picture","note":"saw the list"},{"id":"prd-2","text":"add from the board","status":"untested","note":"nothing on screen settles this"}],"gaps":[]}' "$long25")"
+out25="$(XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$verdict25" \
+  LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_WORKER_BIN="$EV_SHIM" \
+  xo_evaluate "$repo25" "lcars-20260917-401")"
+check "B25. the look reached a verdict" "[ -s '$m25/xo/verdict.json' ]"
+check "B25. the mission records a headline for the card" \
+  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));sys.exit(0 if str(st.get('numberOne',{}).get('headline','')).strip() else 1)\""
+check "B25. …and it IS the ledger's own derivation, verbatim" \
+  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));v=json.load(open('$m25/xo/verdict.json'));sys.exit(0 if st['numberOne']['headline']==v['derivation'] else 1)\""
+check "B25. …never a cut-down of the worker's own prose" \
+  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));sys.exit(1 if st['numberOne']['headline'].startswith('Captain, this build') else 0)\""
+check "B25. …and it is ONE line, not a transcript" \
+  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));h=st['numberOne']['headline'];sys.exit(0 if ('\n' not in h and len(h)<400) else 1)\""
+check "B25. the transcript is still recorded, just not as the headline" \
+  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));sys.exit(0 if str(st['numberOne'].get('note','')).startswith('Captain, this build') else 1)\""
+# THE C8 GUARD, AT THE PRODUCER. A MEDIUM whose real finding is "I could not
+# check one of these" must not wear a line that reads like a clean bill.
+check "B25. the score the card wears and the line beside it come from one rule" \
+  "python3 -c \"import json,sys;v=json.load(open('$m25/xo/verdict.json'));st=json.load(open('$m25/state.json'));sys.exit(0 if st['numberOne']['score']==v['score']=='medium' else 1)\""
+check "B25. …and that line says what it could not check, not that all is well" \
+  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));h=st['numberOne']['headline'].lower();sys.exit(0 if 'could not check' in h else 1)\""
+
+# ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.
 # ==========================================================================
 echo

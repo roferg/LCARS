@@ -12,6 +12,13 @@ handler called only `render()` (which rebuilds the FILTERED LIST, never
 `chipsRow` itself), so `.on` stayed on "All" no matter which chip was
 pressed, even though the list it filtered was correct.
 
+S213 RE-AIMED IT AT THE NEW FILTER ROW and left its point alone. The chips
+are now `Needs you · N` / `Verdicts · N` / `Everything · N` (the approved
+mock-up; the captain lands on Needs-you, not the firehose), and the flat
+since-list moved behind the `By time` switch — so this file drives that
+switch first and then clicks. What it proves is unchanged and still the thing
+that actually broke once: a click MOVES `.on`, every time, exactly one chip.
+
 Driven through board_xo_report_harness.js — a sandboxed vm running the REAL,
 SHIPPING board.js against a small synthetic DOM (board_help_harness.js's own
 proven Element engine), opening the report modal for real
@@ -37,15 +44,18 @@ NODE = shutil.which("node")
 def _report_data():
     return {
         "lastSeenAt": None,
+        "counts": {"needs": 1, "verdicts": 2, "all": 3},
+        "seenCount": 0,
+        "missions": [],
         "since": {
             "count": 3,
             "entries": [
                 {"at": "2026-09-14T10:00:00Z", "action": "scored",
-                 "mission": "m1", "new": True},
+                 "rank": "verdict", "mission": "m1", "new": True},
                 {"at": "2026-09-14T10:05:00Z", "action": "answered",
-                 "mission": "m1", "new": True},
+                 "rank": "verdict", "mission": "m1", "new": True},
                 {"at": "2026-09-14T10:10:00Z", "action": "escalated",
-                 "mission": "m2", "new": True},
+                 "rank": "needs-you", "mission": "m2", "new": True},
             ],
         },
         "history": [
@@ -61,11 +71,15 @@ def _report_data():
 
 
 def _run(clicks):
+    """Every drive starts on the BY TIME switch: the flat since-list this file
+    reads its counts off is that view's list, and the chip row it is really
+    about is the same row in both views."""
     fd, p = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     try:
         with open(p, "w") as fh:
-            json.dump({"reportData": _report_data(), "clicks": clicks}, fh)
+            json.dump({"reportData": _report_data(),
+                       "clicks": [{"view": "time"}] + list(clicks)}, fh)
         out = subprocess.check_output([NODE, HARNESS, p])
     finally:
         os.unlink(p)
@@ -80,15 +94,18 @@ def _on_chips(snapshot):
 class TheModalOpens(unittest.TestCase):
 
     def test_boots_clean(self):
-        self.assertEqual([], _run(["gate"])["bootErrors"])
+        self.assertEqual([], _run(["verdicts"])["bootErrors"])
 
-    def test_all_is_the_one_and_only_chip_marked_on_at_open(self):
-        out = _run(["gate"])
-        self.assertEqual(["All"], _on_chips(out["chipsAtOpen"]))
+    def test_needs_you_is_the_one_and_only_chip_marked_on_at_open(self):
+        """S213: he lands on Needs-you, not the firehose (C7). Before, it was
+        All — and 29 flat rows was the complaint that started the session."""
+        out = _run(["verdicts"])
+        self.assertEqual(["Needs you · 1"], _on_chips(out["chipsAtOpen"]))
 
-    def test_since_head_carries_the_full_count_at_open(self):
-        out = _run(["gate"])
-        self.assertEqual("Since you last looked (3)", out["sinceHeadAtOpen"])
+    def test_the_flat_list_carries_the_full_count_once_he_switches(self):
+        out = _run(["all"])
+        self.assertEqual("Since you last looked (3)",
+                         out["afterClicks"][-1]["sinceHead"])
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
@@ -96,36 +113,36 @@ class AChipClickMovesTheMarker(unittest.TestCase):
     """The regression itself: filtering already worked (the since-head count
     already moved before this fix), but `.on` never left "All"."""
 
-    def test_clicking_gate_answers_moves_on_onto_it_and_off_all(self):
-        out = _run(["gate"])
-        after = out["afterClicks"][0]
+    def test_clicking_verdicts_moves_on_onto_it_and_off_needs_you(self):
+        out = _run(["verdicts"])
+        after = out["afterClicks"][-1]
         self.assertIsNone(after["error"])
-        self.assertEqual(["Gate answers"], _on_chips(after["chips"]),
+        self.assertEqual(["Verdicts · 2"], _on_chips(after["chips"]),
                           "exactly one chip — the one clicked — must carry "
                           "`.on` after the click")
 
     def test_the_list_still_filters_the_same_click(self):
-        out = _run(["gate"])
-        after = out["afterClicks"][0]
-        # Only the ONE "answered" entry matches the "gate" chip.
-        self.assertEqual("Since you last looked (1)", after["sinceHead"])
+        out = _run(["verdicts"])
+        after = out["afterClicks"][-1]
+        # The two verdict-rank entries, and not the escalation.
+        self.assertEqual("Since you last looked (2)", after["sinceHead"])
 
     def test_a_second_click_moves_it_again_not_just_the_first(self):
-        out = _run(["gate", "escalated"])
-        first, second = out["afterClicks"]
-        self.assertEqual(["Gate answers"], _on_chips(first["chips"]))
-        self.assertEqual(["Escalated to you"], _on_chips(second["chips"]),
+        out = _run(["verdicts", "needs"])
+        first, second = out["afterClicks"][-2:]
+        self.assertEqual(["Verdicts · 2"], _on_chips(first["chips"]))
+        self.assertEqual(["Needs you · 1"], _on_chips(second["chips"]),
                           "the marker must follow EVERY click, not just the "
                           "first one after paint()")
 
-    def test_clicking_back_to_all_restores_it_and_only_it(self):
-        out = _run(["gate", "escalated", "all"])
+    def test_clicking_out_to_everything_restores_it_and_only_it(self):
+        out = _run(["verdicts", "needs", "all"])
         last = out["afterClicks"][-1]
-        self.assertEqual(["All"], _on_chips(last["chips"]))
+        self.assertEqual(["Everything · 3"], _on_chips(last["chips"]))
         self.assertEqual("Since you last looked (3)", last["sinceHead"])
 
     def test_never_more_than_one_chip_marked_on_at_once(self):
-        out = _run(["gate", "escalated", "all"])
+        out = _run(["verdicts", "needs", "all"])
         for step in out["afterClicks"]:
             self.assertEqual(1, len(_on_chips(step["chips"])),
                               "exactly one chip must read as active at a time: %s"

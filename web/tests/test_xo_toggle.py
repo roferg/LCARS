@@ -358,10 +358,12 @@ class TheVocabularyIsTheCaptains(unittest.TestCase):
         self.assertEqual([], re.findall(r"#[0-9a-fA-F]{3,8}", body),
                          "the score pill declares a raw colour of its own")
 
-    def test_the_score_pill_says_intent_match_in_full(self):
+    def test_the_score_pill_never_says_a_bare_level_word(self):
         """Never a bare HIGH/MEDIUM/LOW: the card already has two pills with
-        that exact vocabulary and the opposite polarity."""
-        self.assertIn('"INTENT MATCH · " + XO_SCORE_WORD[s]', self.js)
+        that exact vocabulary and the opposite polarity. S213 changed which
+        words do the naming (`◈ NUMBER ONE ·` in place of `INTENT MATCH ·`,
+        the approved mock-up) — the rule is the same rule."""
+        self.assertIn('"◈ NUMBER ONE · " + XO_SCORE_WORD[s]', self.js)
 
     def test_the_accent_is_the_shared_peach_token_and_no_new_colour(self):
         """ADR-007: this sheet adds no colour of its own. Every declaration the
@@ -516,11 +518,19 @@ class TheEngagedCard(unittest.TestCase):
             for n in _find(tree, lambda n: _cls(n, "xo-line")):
                 self.assertNotIn("fix", (n.get("text") or "").lower())
 
-    def test_the_score_rides_the_finished_line(self):
+    def test_the_score_rides_the_card_wherever_it_is_shown(self):
+        """S213 MOVED IT, and did not lose it. A card that HAS a verdict is now
+        a signal: one pill carrying the score, one line of verdict, one way in.
+        The `xo-line` ("Number One handed the conn back · scored HIGH") said
+        the score a second time in a second place, so it is no longer drawn
+        beside the pill that already says it — but the score itself is still on
+        the card, which is what this test has always been about."""
         tree = _render_card(card(numberOne={"status": "finished",
                                             "score": "HIGH"}))
-        line = _find(tree, lambda n: _cls(n, "xo-line"))[0]
-        self.assertIn("HIGH", line["text"])
+        pill = _find(tree, lambda n: _cls(n, "xo-score"))[0]
+        self.assertIn("HIGH", pill["text"])
+        self.assertFalse(_find(tree, lambda n: _cls(n, "xo-line")),
+                         "the score is said twice on one card")
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
@@ -535,13 +545,20 @@ class TheIntentMatchPill(unittest.TestCase):
     that is what this class pins."""
 
     def test_the_pill_names_what_it_is_measuring(self):
+        """S213 changed the WORDS and kept the RULE. The pill used to read
+        `INTENT MATCH · MEDIUM` beside a second pill reading `◈ NUMBER ONE ·
+        ENGAGED` — two pills spent saying one thing, with the half that matters
+        underneath. Now one pill says both. What has NOT changed, and is what
+        this test is for, is that the level word never appears bare: the two
+        DIFFICULTY pills beside it read LOW/MED/HIGH with the opposite
+        polarity, so the pill must always name whose level it is."""
         for score, word in (("high", "HIGH"), ("medium", "MEDIUM"),
                             ("low", "LOW")):
             tree = _render_card(card(numberOne={"status": "finished",
                                                 "score": score}))
             pills = _find(tree, lambda n: _cls(n, "xo-score"))
             self.assertEqual(1, len(pills), score)
-            self.assertEqual("INTENT MATCH · " + word, pills[0]["text"])
+            self.assertEqual("◈ NUMBER ONE · " + word, pills[0]["text"])
 
     def test_it_never_reads_as_a_difficulty_pill(self):
         """The two vocabularies never share a class, in either direction: a
@@ -576,15 +593,20 @@ class TheIntentMatchPill(unittest.TestCase):
         tree = _render_card(card(numberOne={"score": "medium"}))
         self.assertTrue(_find(tree, lambda n: _cls(n, "xo-block")))
         pills = _find(tree, lambda n: _cls(n, "xo-score"))
-        self.assertEqual("INTENT MATCH · MEDIUM", pills[0]["text"])
+        self.assertEqual("◈ NUMBER ONE · MEDIUM", pills[0]["text"])
 
-    def test_the_status_pill_still_comes_first(self):
+    def test_a_scored_card_wears_exactly_one_number_one_pill(self):
+        """S213 RETIRED the two-pill row, on the captain's approved mock-up.
+        `◈ NUMBER ONE · FINISHED` + `INTENT MATCH · LOW` was the status said
+        twice and the verdict said once; one pill now carries both, and the
+        status the old pill named is implied by there being a verdict at all.
+        The two-pill row still exists for a mission with no verdict YET — that
+        is `test_a_card_with_no_score_gains_no_pill`'s side of the fork."""
         tree = _render_card(card(numberOne={"status": "finished",
                                             "score": "low"}))
         row = _find(tree, lambda n: _cls(n, "xo-pills"))[0]
         texts = [c.get("text") or "" for c in row["children"]]
-        self.assertEqual(["◈ NUMBER ONE · FINISHED", "INTENT MATCH · LOW"],
-                         texts)
+        self.assertEqual(["◈ NUMBER ONE · LOW"], texts)
 
     def test_the_meanings_are_the_captains_and_they_ride_the_tooltip(self):
         tree = _render_card(card(numberOne={"score": "low"}))
