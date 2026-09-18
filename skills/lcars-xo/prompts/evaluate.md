@@ -187,7 +187,22 @@ screenshot must be named:
 
 Legal actions: `{"navigate":"URL"}`, `{"click":"SEL"}`,
 `{"type":"SEL","text":"…"}`, `{"wait":MS}`,
+`{"press":"KEY"[, "selector":"SEL"][, "times":N][, "modifiers":["Shift"]]}`,
 `{"screenshot":"name"[, "selector":"SEL"]}`.
+
+**`press` sends a real key to the page**, the way a finger does — so this is how
+you check anything the keyboard drives. `ArrowUp`/`Down`/`Left`/`Right`, `Enter`,
+`Escape`, `Tab`, `Backspace`, `Delete`, `Space`, `Home`, `End`, `PageUp`,
+`PageDown`, or any single character (`"w"`, `"a"`, `"s"`, `"d"`, `"7"`).
+`times` repeats it; `selector` puts the focus somewhere first; `modifiers` may
+name `Shift`, `Control`, `Alt` and `Meta`.
+
+**Use it when the thing you are checking only happens on a key.** If the build
+moves on the arrows, walking it and screenshotting the number BEFORE and AFTER
+is the difference between "the step counter is on the screen" and "the step
+counter goes up when you walk" — and only the second one answers what was
+asked. `{"press":"Tab","times":4}` likewise walks focus, which is the only way
+to see the order it lands in.
 LCARS will run them and hand you the new shots. You get **three rounds in
 total**; if you have no verdict by the end of the third, the Mission is scored
 LOW and the captain looks himself — so do not spend rounds you do not need.

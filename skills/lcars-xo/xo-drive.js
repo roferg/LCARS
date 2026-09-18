@@ -55,6 +55,8 @@
  *   {"navigate":"URL"}                 go somewhere
  *   {"click":"SELECTOR"}               click the first match
  *   {"type":"SELECTOR","text":"…"}     focus and type
+ *   {"press":"ArrowRight"}             press a real key (see PRESS below)
+ *   {"press":"w","selector":"#board","times":5,"modifiers":["Shift"]}
  *   {"wait":800}                       wait ms (capped)
  *   {"screenshot":"name"}              full-page shot called `name`
  *   {"screenshot":"name","selector":"#x"}   clipped to that element
@@ -753,6 +755,69 @@ const TYPE = (sel, text) => `(function () {
   return "ok";
 })()`;
 
+/* ── pressing a key (S213) ────────────────────────────────────────────────
+ * Everything above this line is something you do TO an element. A keyboard is
+ * not: the game moves on the arrows, a dialog closes on Escape, and the whole
+ * of tab order is a key nobody could send. Without this the look could confirm
+ * a step-count readout EXISTS and never that the number GOES UP as you walk,
+ * which on a real mission was the entire thing the captain asked for.
+ *
+ * IT HAS TO BE A REAL KEY. The cheap version — set a value, or
+ * dispatchEvent(new KeyboardEvent(…)) — runs the page's own handlers, so a test
+ * of it goes green while no key was ever pressed; and any page that checks
+ * `event.isTrusted`, or relies on the browser's own default behaviour (typing
+ * into a field, moving focus on Tab, scrolling on Space), does nothing at all.
+ * So this goes through CDP's Input domain, where the BROWSER generates the
+ * event, exactly as it does for a finger on a key.
+ */
+const KEYS = {
+  // name              code             vk   text (printable only)
+  ArrowUp:    ["ArrowUp", 38], ArrowDown:  ["ArrowDown", 40],
+  ArrowLeft:  ["ArrowLeft", 37], ArrowRight: ["ArrowRight", 39],
+  Enter:      ["Enter", 13, "\r"], Escape: ["Escape", 27],
+  Tab:        ["Tab", 9], Backspace: ["Backspace", 8], Delete: ["Delete", 46],
+  Space:      ["Space", 32, " "], " ": ["Space", 32, " "],
+  Home:       ["Home", 36], End: ["End", 35],
+  PageUp:     ["PageUp", 33], PageDown: ["PageDown", 34],
+};
+const MODIFIER_BITS = { alt: 1, control: 2, ctrl: 2, meta: 4, command: 4, cmd: 4, shift: 8 };
+
+/* What the browser needs to be told to press <key>, or null when <key> is not
+ * a key anybody can press. Named keys come from the table; a single character
+ * is worked out from the character itself. Returning null rather than guessing
+ * is deliberate: a key we cannot press must be SAID, not silently dropped. */
+function keyDescriptor(key) {
+  if (typeof key !== "string" || key.length === 0) return null;
+  const named = KEYS[key];
+  if (named) {
+    return { key: key === " " ? " " : key, code: named[0],
+             vk: named[1], text: named[2] || "" };
+  }
+  if (key.length !== 1) return null;
+  const ch = key;
+  const upper = ch.toUpperCase();
+  let code = "";
+  if (upper >= "A" && upper <= "Z") code = "Key" + upper;
+  else if (ch >= "0" && ch <= "9") code = "Digit" + ch;
+  else code = "";                       // punctuation: no code, still typable
+  return { key: ch, code, vk: upper.charCodeAt(0), text: ch };
+}
+
+function modifierMask(mods) {
+  if (!Array.isArray(mods)) return 0;
+  let bits = 0;
+  for (const m of mods) bits |= MODIFIER_BITS[String(m).toLowerCase()] || 0;
+  return bits;
+}
+
+const FOCUS = (sel) => `(function () {
+  var el = document.querySelector(${JSON.stringify(sel)});
+  if (!el) return "no-such-element";
+  el.scrollIntoView({ block: "center" });
+  el.focus();
+  return "ok";
+})()`;
+
 /* ── the drive ───────────────────────────────────────────────────────────── */
 (async () => {
   const places = readPlaceNames(PLACES_FILE);
@@ -943,6 +1008,59 @@ const TYPE = (sel, text) => `(function () {
           const r = await send("Runtime.evaluate", { expression: TYPE(String(a.type), String(a.text || "")), returnByValue: true }, S);
           if (r.result && r.result.value === "no-such-element") { notes.push("type: nothing matched " + a.type); incomplete = true; }
           else await sleep(200);
+        } else if (a.press !== undefined) {
+          const d = keyDescriptor(String(a.press));
+          if (!d) {
+            notes.push("press: `" + String(a.press) + "` is not a key this browser can press; nothing was pressed");
+            incomplete = true;
+          } else {
+            // Aim it, when asked. A selector that matches nothing is the
+            // finding, not a reason to press into the void.
+            let aimed = true;
+            if (a.selector) {
+              const f = await send("Runtime.evaluate", { expression: FOCUS(String(a.selector)), returnByValue: true }, S);
+              if (f.result && f.result.value === "no-such-element") {
+                notes.push("press: nothing matched " + a.selector + "; the key was not pressed");
+                incomplete = true;
+                aimed = false;
+              }
+            }
+            if (aimed) {
+              /* TWO THINGS MEASURED HERE THE HARD WAY, both invisible to any
+               * stub of this layer (S213):
+               *
+               * 1. The tab this driver opens is NOT the browser's active one,
+               *    and Input events go to the active one. Without activating
+               *    it first the dispatch never comes back AT ALL — the whole
+               *    look dies on a CDP timeout, not on a bad key.
+               * 2. `nativeVirtualKeyCode` sends headless Chrome into a runaway
+               *    AUTO-REPEAT: one press measured 729 keydowns in 150 ms and
+               *    was still climbing 600 ms later, long after the keyUp. Sent
+               *    without it, one press is exactly one key event. So it is not
+               *    sent, and the count the page sees is the count that was
+               *    asked for.
+               */
+              await send("Target.activateTarget", { targetId: t.targetId });
+              try { await send("Page.bringToFront", {}, S); } catch (_) {}
+              const times = Math.min(Math.max(parseInt(a.times, 10) || 1, 1), 50);
+              const mods = modifierMask(a.modifiers);
+              const common = { modifiers: mods, key: d.key, code: d.code,
+                               windowsVirtualKeyCode: d.vk, autoRepeat: false,
+                               isKeypad: false, location: 0 };
+              for (let k = 0; k < times; k++) {
+                await send("Input.dispatchKeyEvent",
+                  Object.assign({ type: "keyDown", text: d.text, unmodifiedText: d.text }, common), S);
+                await send("Input.dispatchKeyEvent", Object.assign({ type: "keyUp" }, common), S);
+                await sleep(30);
+              }
+              // RECORDED, not left to be inferred from what the page ended up
+              // looking like: the evidence says which key went in and how often.
+              notes.push("pressed " + d.key + (times > 1 ? " x" + times : "") +
+                         (a.modifiers && a.modifiers.length ? " with " + a.modifiers.join("+") : "") +
+                         (a.selector ? " into " + a.selector : ""));
+              await sleep(200);
+            }
+          }
         } else if (a.wait !== undefined) {
           await sleep(Math.min(parseInt(a.wait, 10) || 0, 10000));
         } else if (a.screenshot) {

@@ -978,6 +978,13 @@ if [ "${XO_LAUNCH_FAIL:-0}" = "1" ]; then
   printf '{\n  "status": "failed",\n  "url": "",\n  "message": "no start script — the app has no runnable target"\n}\n' >"$m/launch.json"
   exit 1
 fi
+# The EXACT launch.json a desktop/Electron target produces: it really did start,
+# and there is no web address to open. Byte for byte what launch.sh writes
+# (status running, empty url, "the app is running.").
+if [ "${XO_LAUNCH_NO_URL:-0}" = "1" ]; then
+  printf '{\n  "status": "running",\n  "url": "",\n  "pid": 1,\n  "message": "the app is running."\n}\n' >"$m/launch.json"
+  exit 0
+fi
 printf '{\n  "status": "running",\n  "url": "http://127.0.0.1:4310/",\n  "pid": 1\n}\n' >"$m/launch.json"
 LS
 chmod +x "$LAUNCH_STUB"
@@ -1224,9 +1231,42 @@ outB="$(XO_LAUNCH_FAIL=1 XO_EV_BODY="$(ev_verdict met met met high '')" \
         xo_evaluate "$repoB" "lcars-20260913-002")"
 check "B10b. the score is LOW" "[ \"\$(xo_state '$mB' score)\" = 'low' ]"
 check "B10b. …and it says what happened, quoting the launch message" \
-  "grep -q 'could not launch' '$mB/xo/verdict.json' && grep -q 'no runnable target' '$mB/xo/verdict.json'"
+  "grep -q 'your build did not start' '$mB/xo/verdict.json' && grep -q 'no runnable target' '$mB/xo/verdict.json'"
 check "B10b. NO browser was started at all" "[ ! -s '$XO_DRIVE_LOG' ]"
 check "B10b. …and no worker was hired either" "[ ! -s '$XO_WORKER_LOG' ]"
+
+# --------------------------------------------------------------------------
+# B10b2 (S213). A BUILD THAT STARTED AND HAS NO WEB ADDRESS IS NOT A FAILURE TO
+# LAUNCH — AND MUST NOT BE DESCRIBED AS ONE.
+#
+# launch.json for a desktop target is `status: running, url: "", message: "the
+# app is running."`. This arm used to glue its own failure prefix onto that
+# message and put the result on the captain's board card, verbatim:
+#
+#     could not launch: the app is running.
+#
+# Six words that contradict themselves. He cannot act on it, and it is the
+# opposite of true about the half of it that matters.
+# --------------------------------------------------------------------------
+repoBU="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mBU="$(plant_verify "$repoBU" "lcars-20260913-004")"
+: >"$XO_DRIVE_LOG"; : >"$XO_WORKER_LOG"
+outBU="$(XO_LAUNCH_NO_URL=1 XO_EV_BODY="$(ev_verdict met met met high '')" \
+        xo_evaluate "$repoBU" "lcars-20260913-004")"
+check "B10b2. NOTHING anywhere reads 'could not launch: the app is running'" \
+  "! grep -rq 'could not launch: the app is running' '$mBU' 2>/dev/null"
+check "B10b2. …and no sentence on any surface says it could not launch a build that started" \
+  "! grep -rqi 'could not launch' '$mBU' 2>/dev/null"
+check "B10b2. what he is told instead is TRUE about both halves — it started, and there was nothing to open" \
+  "grep -q 'your build started' '$mBU/xo/verdict.json' && grep -q 'nothing for me to look at' '$mBU/xo/verdict.json'"
+check "B10b2. …and that sentence reaches the card note he actually reads" \
+  "xo_state '$mBU' note | grep -q 'your build started'"
+check "B10b2. …and it reaches his report too" \
+  "[ -s '$mBU/xo/report.md' ] && grep -q 'your build started' '$mBU/xo/report.md'"
+check "B10b2. no browser was started — there was nothing to point one at" \
+  "[ ! -s '$XO_DRIVE_LOG' ]"
+check "B10b2. CONTROL — a build that really did NOT start is still told plainly that it did not" \
+  "grep -q 'your build did not start' '$mB/xo/verdict.json'"
 
 # --------------------------------------------------------------------------
 # B10c. THE LEDGER → SCORE MATRIX. One row, one test, per the brief.
@@ -1381,7 +1421,7 @@ check "B10f2. …with the criterion ids AFTER the human sentence, never before i
 check "B10f2. …and the gap, named with the SHOT that shows it (never an image)" \
   "grep -q 'ADD is above the list' '$mF/xo/report.md' && grep -q 'shot-02' '$mF/xo/report.md'"
 check "B10f2. a path with no ledger still owes the captain a sentence" \
-  "[ -s '$mB/xo/report.md' ] && grep -q 'could not launch' '$mB/xo/report.md'"
+  "[ -s '$mB/xo/report.md' ] && grep -q 'your build did not start' '$mB/xo/report.md'"
 
 # --------------------------------------------------------------------------
 # B10g. TWICE IS A NO-OP. evaluatedAt is the guard.
@@ -2186,16 +2226,45 @@ plant_child "$repoS1" "lcars-20260913-301" 2 implement
 XO_MARK="$FXDIR/xo-term.txt"; RS_MARK="$FXDIR/rs-term.txt"; : >"$XO_MARK"; : >"$RS_MARK"
 xo_pid="$(probe "$XO_MARK")"; rs_pid="$(probe "$RS_MARK")"
 printf '%s\n' "$xo_pid" >"$mS1/xo.pid"
-printf '%s\n' "$rs_pid" >"$mS1/xo-resolve.pid"
+# Planted through the PRODUCT'S OWN writer, so this proves the shipped format
+# and cannot drift from it.
+( cd "$repoS1" && bash "$SCRIPT" record-pid "$rs_pid" "$mS1/xo-resolve.pid" )
 outS1="$( cd "$repoS1" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-301" 2>&1 )"
 # Give the probes a moment to run their traps.
 i=0; while [ "$i" -lt 25 ] && [ ! -s "$XO_MARK" ]; do i=$((i+1)); sleep 0.1; done
+j=0; while [ "$j" -lt 25 ] && [ ! -s "$RS_MARK" ]; do j=$((j+1)); sleep 0.1; done
 check "B12g. Number One's own pid WAS signalled" "[ -s '$XO_MARK' ]"
-check "B12g. the resolve-logs driver was NOT signalled — the fixes keep driving" \
-  "[ ! -s '$RS_MARK' ] && kill -0 '$rs_pid' 2>/dev/null"
-check "B12g. …and its pid file is left alone" "[ -s '$mS1/xo-resolve.pid' ]"
-check "B12g. the note says the logs are still driving and the gate will wait" \
-  "xo_state '$mS1' note | grep -q '2 logs still driving' && xo_state '$mS1' note | grep -q 'gate will wait for you'"
+# S213 — THIS REVERSES S204. The stop button now stops the detached fix chain
+# too; leaving it running meant the only way to halt one was to kill a pid by
+# hand, which is not something the product may ask of anybody.
+check "B12g. the resolve-logs driver WAS signalled — the stop button really stops" \
+  "[ -s '$RS_MARK' ]"
+check "B12g. …and it is really gone, not merely asked" \
+  "k=0; while [ \$k -lt 25 ] && kill -0 '$rs_pid' 2>/dev/null; do k=\$((k+1)); sleep 0.1; done; ! kill -0 '$rs_pid' 2>/dev/null"
+check "B12g. …and its pid file is cleared, so nothing can signal that number again" \
+  "[ ! -f '$mS1/xo-resolve.pid' ]"
+check "B12g. the note tells him the logs stopped where they got to, and he has the conn" \
+  "xo_state '$mS1' note | grep -q '2 logs it was driving stopped where they got to' && xo_state '$mS1' note | grep -q 'you have the conn'"
+check "B12g. …and it never claims they are still driving" \
+  "! xo_state '$mS1' note | grep -q 'still driving'"
+
+# THE IDENTITY CHECK IS NOT DECORATION. A pid file that does not say WHO it was
+# written about — an old one, or one somebody wrote by hand — is REFUSED, and
+# the process on that number is left strictly alone. Pids get reused, and the
+# captain's own viewscreen is on this machine.
+RS2_MARK="$FXDIR/rs2-term.txt"; : >"$RS2_MARK"
+rs2_pid="$(probe "$RS2_MARK")"
+repoS1b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mS1b="$(plant_verify "$repoS1b" "lcars-20260913-302")"
+plant_logs_json "$mS1b" 2
+printf '%s\n' "$rs2_pid" >"$mS1b/xo-resolve.pid"          # a BARE pid: no identity
+printf '%s\n' "$(probe "$FXDIR/xo2-term.txt")" >"$mS1b/xo.pid"
+outS1b="$( cd "$repoS1b" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-302" 2>&1 )"
+sleep 0.5
+check "B12g. CONTROL — a pid file that does not say WHO is NOT signalled" \
+  "[ ! -s '$RS2_MARK' ] && kill -0 '$rs2_pid' 2>/dev/null"
+check "B12g. CONTROL — …and the note ADMITS it could not confirm, instead of claiming a stop" \
+  "xo_state '$mS1b' note | grep -q 'could not confirm'"
 for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
 
 # --------------------------------------------------------------------------
@@ -2413,10 +2482,10 @@ plant_logs_json "$mP3" 1
 plant_child "$repoP3" "lcars-20260913-603" 1 implement
 P3_MARK="$FXDIR/p3-term.txt"; : >"$P3_MARK"
 p3_pid="$(probe "$P3_MARK")"
-printf '%s\n' "$p3_pid" >"$mP3/xo-resolve.pid"
+( cd "$repoP3" && bash "$SCRIPT" record-pid "$p3_pid" "$mP3/xo-resolve.pid" )
 outP3="$( cd "$repoP3" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-603" 2>&1 )"
-check "B14. ONE driving log reads '1 log still driving', never '1 logs'" \
-  "xo_state '$mP3' note | grep -q '1 log still driving' && ! xo_state '$mP3' note | grep -q '1 logs still driving'"
+check "B14. ONE stopped log reads '1 log', never '1 logs'" \
+  "xo_state '$mP3' note | grep -q 'the 1 log it was driving' && ! xo_state '$mP3' note | grep -q '1 logs'"
 for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
 
 # ==========================================================================
@@ -3178,7 +3247,7 @@ sys.exit(0 if e[\"status\"]==\"met\" else 1)'"
 check "B23c. …so the score is NOT the worker's false HIGH" \
   "[ \"\$(python3 -c 'import json;print(json.load(open(\"'$m23c'/xo/verdict.json\"))[\"score\"])')\" != 'high' ]"
 check "B23c. the launch and the browser both ran normally (no attachments is not an error)" \
-  "grep -q -- '--stop' '$XO_LAUNCH_LOG' && ! printf '%s' \"\$out23c\" | grep -qi 'could not launch'"
+  "grep -q -- '--stop' '$XO_LAUNCH_LOG' && ! printf '%s' \"\$out23c\" | grep -qi 'did not start'"
 
 # ==========================================================================
 # B24. THE PROJECT'S OWN TESTS AS EVIDENCE (Session 211), WIRED THROUGH

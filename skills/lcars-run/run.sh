@@ -558,7 +558,36 @@ context_paths() {
   CONTEXT_GITDIR="$gitdir"
   CONTEXT_REPO_ROOT="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
   [ -n "$CONTEXT_REPO_ROOT" ] || CONTEXT_REPO_ROOT="$PWD"
-  CONTEXT_PACK_PATH="$gitdir/lcars/context-pack.md"
+  CONTEXT_PACK_PATH="$(context_pack_home "$gitdir/lcars")/context-pack.md"
+}
+
+# THE PACK'S OWN DIRECTORY — and the ONE place a legacy pack is moved into it.
+#
+# S213. The pack used to live at the store root, `.git/lcars/context-pack.md`,
+# and the worker's read grant named that FILE. copilot 1.0.86 validates
+# `--add-dir` before the model runs and refuses anything that is not a directory
+# ("Not a directory: …"), so EVERY copilot worker died at argv-parse the instant
+# a pack existed — writing nothing, and surfacing as "produced no questions.txt
+# after 3 attempts". (It was file-tolerant on 1.0.60, which the old comment here
+# was verified against.) Granting the file's directory was not the cure either:
+# that directory was the STORE ROOT, holding every other mission's state — the
+# exact widening S168 narrowed away, and pinned by tests/worker-fence.test.sh.
+#
+# So the pack gets a directory of its own. The grant then names a directory, as
+# copilot requires, and stays as narrow as it ever was: one dir, one file, no
+# other mission inside it.
+#
+# WHY THIS MUTATES. Either caller can be the first to run in a given process —
+# the grant site (worker_input_dirs) runs before the resolver on a front-half
+# Stage — and a grant naming a directory that does not exist YET is refused by
+# copilot exactly as a file is. So the relocation happens here, idempotently, in
+# the one function both of them ask for the path.
+context_pack_home() { # <store-root> → prints the pack's directory
+  local store="$1" home="$1/context" legacy="$1/context-pack.md"
+  if [ -f "$legacy" ] && [ ! -f "$home/context-pack.md" ]; then
+    mkdir -p "$home" && mv "$legacy" "$home/context-pack.md"
+  fi
+  printf '%s\n' "$home"
 }
 
 # Generate the pack via ONE cold worker. Mirrors spawn_worker exactly: the
@@ -648,8 +677,21 @@ context_extra_block() {
   # AFTER the Stage exported its path grant, so a copilot worker would be given
   # the pack's path with no sandbox grant to read it. Only a source UNDER the
   # store needs one: a repo-root CONTEXT.md is already inside the worker's cwd.
+  #
+  # S213 — grant the DIRECTORY that holds it, never the file: copilot's
+  # `--add-dir` refuses a file at argv-parse and the worker never starts. The
+  # pack has a directory of its own (context_pack_home) precisely so this grant
+  # stays narrow. If that dirname ever resolves to the store root itself we say
+  # so and stop, rather than quietly handing a worker every mission's state.
+  local _store _sdir
+  _store="$(dirname "${LCARS_CFG:-}")"
   case "$src" in
-    "$(dirname "${LCARS_CFG:-}")"/*) grant_input_dir "$src" ;;
+    "$_store"/*)
+      _sdir="$(dirname "$src")"
+      [ "$_sdir" = "$_store" ] \
+        && die "refusing to grant the whole .git/lcars store to a worker just to reach '$src' — the context source must live in a directory of its own."
+      grant_input_dir "$_sdir"
+      ;;
   esac
   printf '
 ## Repo context (declarative repo facts — read for grounding)
@@ -2912,16 +2954,14 @@ leave_mission_worktree() {
 #                            the whole point of the grounding round is lost. It
 #                            is granted ONLY when state.json records a
 #                            parentMission — a plain Mission gets no such line.
-#   the context pack FILE    .git/lcars/context-pack.md, when it is the resolved
-#                            context source. Granted as the FILE, not its dir —
-#                            its dir IS the store root, which is the whole thing
-#                            we are narrowing away. copilot accepts a file here:
-#                            its `addDirectory` only refuses a path that does not
-#                            EXIST (`stat().isDirectory()?"directory":"file"` —
-#                            both truthy), and `isPathWithinRoot(f, f)` is true,
-#                            so the grant reaches that one file and nothing else.
-#                            A repo with a root CONTEXT.md needs no grant at all:
-#                            that file is inside the worker's own cwd.
+#   the pack's own DIR       .git/lcars/context/, when the generated pack is the
+#                            resolved context source. A DIRECTORY, because that
+#                            is the only thing copilot's `--add-dir` accepts (see
+#                            context_pack_home) — and a directory of the pack's
+#                            own, because the alternative dir was the store root,
+#                            which is every other mission's state. It holds one
+#                            file. A repo with a root CONTEXT.md needs no grant
+#                            at all: that file is inside the worker's own cwd.
 #
 # NOT granted, having been checked: `config.json` (nothing hands a worker its
 # path — the harness reads it and passes VALUES) and `test-landscape/` (written
@@ -2937,7 +2977,8 @@ worker_input_dirs() { # → one absolute path per line; empty when there is no m
     ''|null) : ;;
     *) [ -d "$store/missions/$parent" ] && printf '%s\n' "$store/missions/$parent" ;;
   esac
-  [ -f "$store/context-pack.md" ] && printf '%s\n' "$store/context-pack.md"
+  local pack_home; pack_home="$(context_pack_home "$store")"
+  [ -f "$pack_home/context-pack.md" ] && printf '%s\n' "$pack_home"
   return 0
 }
 

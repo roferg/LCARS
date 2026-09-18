@@ -458,5 +458,36 @@ check "N15. …and the deny list it was handed names Bash" \
 check "N16. …and the worker sees LCARS_WORKER_ROLE=number-one + its outdir" \
   "grep -q 'role=number-one' '$nd/no.env' && grep -q \"out=\$nd\" '$nd/no.env'"
 
+
+# --- A1 (S213): `--add-dir` takes a DIRECTORY, and nothing else -------------
+# copilot 1.0.86 validates `--add-dir` BEFORE the model runs and refuses any
+# path that is not a directory ("Not a directory: …"). An argv carrying a FILE
+# there does not degrade — the worker never starts, writes nothing, and the
+# Stage reports a downstream symptom ("produced no questions.txt"). This was
+# measured live against 1.0.86-2; the older comment in the adapter recorded the
+# opposite, verified against 1.0.60. The adapter is the one layer that knows a
+# CLI's flag contract, so it is the layer that must never emit such an argv.
+printf '\n  -- A1. no copilot argv may hand --add-dir a non-directory --\n'
+adr="$(mktemp -d "$TMPROOT/a1.XXXX")"
+mkdir -p "$adr/out" "$adr/good"
+printf 'pack\n' >"$adr/pack.md"
+A1ERR="$adr/argv.err"
+A1OUT="$(LCARS_WORKER_INPUT_DIRS="$adr/good
+$adr/pack.md
+$adr/does-not-exist" bash "$ADAPTER" argv copilot repo-read "$adr/out" 2>"$A1ERR")"
+a1_add_dirs() { printf '%s\n' "$A1OUT" | awk 'p{print; p=0} $0=="--add-dir"{p=1}'; }
+check "A1a. every --add-dir value in a copilot argv is a DIRECTORY on disk" \
+  "a1_add_dirs | while IFS= read -r p; do [ -d \"\$p\" ] || exit 1; done"
+check "A1b. …the real directory grant still survives (the guard drops nothing else)" \
+  "a1_add_dirs | grep -qxF \"\$adr/good\""
+check "A1c. …and the scratch outdir is still granted" \
+  "a1_add_dirs | grep -qxF \"\$adr/out\""
+check "A1d. a dropped grant is SAID OUT LOUD, naming the path (never a silent loss of reach)" \
+  "grep -qF \"\$adr/pack.md\" \"\$A1ERR\" && grep -qF \"\$adr/does-not-exist\" \"\$A1ERR\""
+check "A1e. a grant list of real directories emits NO warning at all" \
+  "[ ! -s \"\$adr/clean.err\" ] || true; LCARS_WORKER_INPUT_DIRS=\"\$adr/good\" bash \"\$ADAPTER\" argv copilot repo-read \"\$adr/out\" 2>\"\$adr/clean.err\" >/dev/null; [ ! -s \"\$adr/clean.err\" ]"
+check "A1f. claude is untouched by the guard — it takes no --add-dir at all" \
+  "[ -z \"\$(LCARS_WORKER_INPUT_DIRS=\"\$adr/good\" bash \"\$ADAPTER\" argv claude repo-read \"\$adr/out\" 2>/dev/null | grep -x -- '--add-dir')\" ]"
+
 echo "worker-adapter: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

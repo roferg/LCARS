@@ -357,22 +357,52 @@ check "4g. …and its PARENT's dir, which grounding reads by path" \
 check "4h. …and STILL reaches no unrelated sibling mission" \
   "[ -z \"\$(printf '%s' \"\$G4B\" | grep -F \"$SIB\")\" ]"
 
-# The context PACK is granted as the FILE, never as its directory — its directory
-# IS the store root, which is the whole thing being narrowed away. (copilot's
-# addDirectory refuses only a path that does not exist, and a file grant reaches
-# exactly that file.) A repo with a root CONTEXT.md needs no grant at all.
+# THE CONTEXT PACK IS GRANTED AS A DIRECTORY OF ITS OWN (S213).
+#
+# It used to be granted as the FILE, on the strength of a measurement against
+# copilot 1.0.60. copilot 1.0.86 refuses a file to `--add-dir` at ARGV-PARSE
+# ("Not a directory"), so every copilot worker died the instant a pack existed —
+# before the model ran, writing nothing, and reported downstream as "produced no
+# questions.txt". Granting the file's old directory is not the cure either: that
+# directory is the store root, holding every OTHER mission's state, which is the
+# exact widening this whole section narrowed away. So the pack now LIVES in a
+# directory of its own and the grant names that directory: one dir, one file,
+# no other mission inside it. A repo with a root CONTEXT.md needs no grant at all.
 r4c="$(new_repo)"
 rm -f "$r4c/CONTEXT.md"
 ( cd "$r4c" && git add -A && git commit -q -m "drop CONTEXT.md" ) >/dev/null 2>&1
-printf '# pack\n' >"$r4c/.git/lcars/context-pack.md"
+mkdir -p "$r4c/.git/lcars/context"
+printf '# pack\n' >"$r4c/.git/lcars/context/context-pack.md"
 seed_mission "$r4c" "$MID" >/dev/null
 seed_mission "$r4c" "$SIB" >/dev/null
 stage "$r4c" "$MID" research
 G4C="$(rec "$r4c" input_dirs)"
-check "4l. a repo whose context source is the generated pack grants the pack FILE" \
-  "[ -n \"\$(printf '%s' \"\$G4C\" | tr '|' '\\n' | grep -xF \"$r4c/.git/lcars/context-pack.md\")\" ]"
-check "4m. …and NOT the pack's directory, which is the store root" \
+check "4l. EVERY path in the grant is a DIRECTORY — copilot's --add-dir takes nothing else" \
+  "printf '%s' \"\$G4C\" | tr '|' '\\n' | while IFS= read -r p; do [ -z \"\$p\" ] || [ -d \"\$p\" ] || exit 1; done"
+check "4m. …and the grant is still NOT the store root" \
   "[ -z \"\$(printf '%s' \"\$G4C\" | tr '|' '\\n' | grep -xF \"$r4c/.git/lcars\")\" ]"
+check "4n. …and the pack the worker is told to read sits INSIDE a granted dir" \
+  "[ -n \"\$(printf '%s' \"\$G4C\" | tr '|' '\\n' | grep -xF \"$r4c/.git/lcars/context\")\" ] && [ -f \"$r4c/.git/lcars/context/context-pack.md\" ]"
+check "4o. …and it still reaches no sibling mission" \
+  "[ -z \"\$(printf '%s' \"\$G4C\" | grep -F \"$SIB\")\" ]"
+
+# A repo whose pack was written at the LEGACY store-root path keeps working: the
+# pack is relocated into its own directory once, and the grant that results is a
+# directory like any other. Without this, every repo the captain already has
+# would go on handing copilot a file.
+r4d="$(new_repo)"
+rm -f "$r4d/CONTEXT.md"
+( cd "$r4d" && git add -A && git commit -q -m "drop CONTEXT.md" ) >/dev/null 2>&1
+printf '# legacy pack\n' >"$r4d/.git/lcars/context-pack.md"
+seed_mission "$r4d" "$MID" >/dev/null
+stage "$r4d" "$MID" research
+G4D="$(rec "$r4d" input_dirs)"
+check "4p. a legacy store-root pack is relocated into the pack's own directory" \
+  "[ -f \"$r4d/.git/lcars/context/context-pack.md\" ] && grep -q 'legacy pack' \"$r4d/.git/lcars/context/context-pack.md\""
+check "4q. …the old store-root file is gone, so nothing can grant it again" \
+  "[ ! -f \"$r4d/.git/lcars/context-pack.md\" ]"
+check "4r. …and every path in THAT grant is a directory too" \
+  "printf '%s' \"\$G4D\" | tr '|' '\\n' | while IFS= read -r p; do [ -z \"\$p\" ] || [ -d \"\$p\" ] || exit 1; done"
 
 # The other two grant sites. The Implement site hands the SAME traced helper the
 # front-half assertions above prove; reconcile was already narrow (worktree +

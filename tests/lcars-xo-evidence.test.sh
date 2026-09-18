@@ -893,5 +893,133 @@ check "D3. …and still tells him, in his words, why a count settles nothing" \
 
 # ==========================================================================
 echo
+echo "W. THE WORKSPACE BLIND SPOT (S213) — exit 127 on a pnpm monorepo"
+#
+# MEASURED ON THE CAPTAIN'S OWN REPO. `testCommand` is `npx vitest run …` and
+# vitest is installed in a PACKAGE, not at the root. Run from the checkout root
+# it is `sh: vitest: command not found`, exit 127 — so the most decisive
+# evidence Number One has was blind on every workspace repo, and said so in a
+# sentence about the build rather than about itself.
+#
+# EVERY BEHAVIOUR HERE SHIPS AS A PAIR. The rescue is narrow on purpose, and
+# each control below is the same shape with ONE thing changed: a repo that is
+# not a workspace, a package whose tests really are red, and a command that
+# already aims itself. If any of those starts coming back green, the rescue has
+# become a way of not noticing.
+# ==========================================================================
+
+WS="$TMPROOT/ws"; mkdir -p "$WS/bin"
+# A stand-in `npx` that resolves out of ./node_modules/.bin exactly as the real
+# one does, so "not found at the root, found in the package" is real behaviour
+# and not something this test asserts into being.
+cat >"$WS/bin/npx" <<'NPX'
+#!/usr/bin/env bash
+if [ -x "./node_modules/.bin/$1" ]; then b="$1"; shift; exec "./node_modules/.bin/$b" "$@"; fi
+echo "sh: $1: command not found" >&2; exit 127
+NPX
+chmod +x "$WS/bin/npx"
+
+mk_ws() { # <dir> <exit-code-for-ui>  → a pnpm workspace with two packages
+  local root="$1" uirc="${2:-0}" p
+  mkdir -p "$root"
+  printf 'packages:\n  - "packages/*"\n' >"$root/pnpm-workspace.yaml"
+  printf '{"name":"root","private":true}\n' >"$root/package.json"
+  for p in engine ui; do
+    mkdir -p "$root/packages/$p/node_modules/.bin"
+    printf '{"name":"%s"}\n' "$p" >"$root/packages/$p/package.json"
+    local rc=0; [ "$p" = "ui" ] && rc="$uirc"
+    cat >"$root/packages/$p/node_modules/.bin/vitest" <<VT
+#!/usr/bin/env bash
+echo "$p: ran its own suite"
+exit $rc
+VT
+    chmod +x "$root/packages/$p/node_modules/.bin/vitest"
+  done
+}
+
+ws_run() { # <out.json> <cwd> <command>  → echoes the runner's exit code
+  local out="$1" cwd="$2" cmd="$3" rc=0
+  PATH="$WS/bin:$PATH" "$PY" "$RUNNER" --out "$out" --cwd "$cwd" --timeout 30 \
+       --cap 8000 --command "$cmd" >"$out.stdout" 2>"$out.stderr" || rc=$?
+  printf '%s' "$rc"
+}
+
+mk_ws "$WS/green" 0
+rcW1="$(ws_run "$WS/w1.json" "$WS/green" 'npx vitest run')"
+check "W1. a pnpm workspace no longer comes back 127 — the suite actually runs" \
+  "[ \"\$(jget '$WS/w1.json' 'd[\"outcome\"]')\" = passed ] && [ '$rcW1' -eq 0 ]"
+check "W1. …and WHERE it ran is recorded, not left to be worked out from the output" \
+  "[ \"\$(jget '$WS/w1.json' 'd[\"ranIn\"]')\" = '[\"packages/engine\", \"packages/ui\"]' ]"
+check "W1. …and what the ROOT said is kept, so nothing pretends the 127 never happened" \
+  "[ \"\$(jget '$WS/w1.json' 'd[\"rootExitCode\"]')\" = 127 ]"
+check "W1. …and the evidence carries both packages' output, each labelled" \
+  "grep -q 'packages/engine' '$WS/w1.json' && grep -q 'packages/ui' '$WS/w1.json'"
+check "W1. …and the sentence he reads says which packages answered" \
+  "jget '$WS/w1.json' 'd[\"verdict\"]' | grep -q 'across 2 of your packages'"
+
+# --- CONTROL 1: a genuinely red package is STILL red -----------------------
+# The rescue must move the command somewhere it can run. It must never turn a
+# failing suite green, which is the failure mode this project has paid for.
+mk_ws "$WS/red" 3
+rcW2="$(ws_run "$WS/w2.json" "$WS/red" 'npx vitest run')"
+check "W2. CONTROL — a package whose tests really fail is STILL a failed run" \
+  "[ \"\$(jget '$WS/w2.json' 'd[\"outcome\"]')\" = failed ] && [ '$rcW2' -eq 1 ]"
+check "W2. CONTROL — …carrying the package's own exit code, not a rescued zero" \
+  "[ \"\$(jget '$WS/w2.json' 'd[\"exitCode\"]')\" = 3 ]"
+
+# --- CONTROL 2: a repo that is NOT a workspace is untouched ----------------
+NOWS="$TMPROOT/nows"; mkdir -p "$NOWS"
+printf '{"name":"plain"}\n' >"$NOWS/package.json"
+rcW3="$(ws_run "$WS/w3.json" "$NOWS" 'npx vitest run')"
+check "W3. CONTROL — a plain repo that cannot find its runner still says so, 127 and all" \
+  "[ \"\$(jget '$WS/w3.json' 'd[\"outcome\"]')\" = failed ] && [ \"\$(jget '$WS/w3.json' 'd[\"exitCode\"]')\" = 127 ]"
+check "W3. CONTROL — …and nothing claims it ran anywhere else" \
+  "[ \"\$(jget '$WS/w3.json' 'd[\"ranIn\"]')\" = '' ]"
+
+# --- CONTROL 3: THE DOUBLE-`cd` FOOTGUN ------------------------------------
+# A testCommand that aims itself — `cd packages/engine && …` — is already where
+# it means to be. Re-running it from INSIDE packages/engine makes its own `cd`
+# land nowhere, and whether that ends the run or carries on in the wrong place
+# comes down to `&&` versus `;`. So a command that aims itself is never re-aimed.
+mk_ws "$WS/aimed" 0
+rcW4="$(ws_run "$WS/w4.json" "$WS/aimed" 'cd packages/engine && npx vitest run')"
+check "W4. a command that aims itself is left alone — it is never re-aimed" \
+  "[ \"\$(jget '$WS/w4.json' 'd[\"ranIn\"]')\" = '' ]"
+check "W4. …and it still works, because it was already pointing at the right place" \
+  "[ \"\$(jget '$WS/w4.json' 'd[\"outcome\"]')\" = passed ] && [ '$rcW4' -eq 0 ]"
+
+# --- CONTROL 3b: the bound is on the RUN, not on each package --------------
+# Handing every package the full timeout turns a 300s cap into 300s x however
+# many packages the repo has, which is not a bound at all. Two packages that
+# each hang must still be stopped inside ONE budget.
+mk_ws "$WS/slow" 0
+for pkg in engine ui; do
+  printf '#!/usr/bin/env bash\nsleep 30\n' >"$WS/slow/packages/$pkg/node_modules/.bin/vitest"
+  chmod +x "$WS/slow/packages/$pkg/node_modules/.bin/vitest"
+done
+t0W="$(date +%s)"
+rcW6="$(PATH="$WS/bin:$PATH" "$PY" "$RUNNER" --out "$WS/w6.json" --cwd "$WS/slow" \
+        --timeout 3 --cap 8000 --command 'npx vitest run' >/dev/null 2>&1; printf '%s' "$?")"
+t1W="$(date +%s)"
+check "W6. two hanging packages are stopped inside ONE budget, not one each" \
+  "[ \$((t1W - t0W)) -lt 12 ]"
+check "W6. …and the run is reported as a hang, never counted against the build" \
+  "[ \"\$(jget '$WS/w6.json' 'd[\"outcome\"]')\" = hung ] && [ '$rcW6' -eq 2 ]"
+
+# --- CONTROL 4: a root that works is never second-guessed ------------------
+WORKS="$TMPROOT/worksatroot"; mkdir -p "$WORKS/node_modules/.bin"
+printf 'packages:\n  - "packages/*"\n' >"$WORKS/pnpm-workspace.yaml"
+printf '{"name":"root"}\n' >"$WORKS/package.json"
+mkdir -p "$WORKS/packages/a"; printf '{"name":"a"}\n' >"$WORKS/packages/a/package.json"
+printf '#!/usr/bin/env bash\necho "root suite ran"\nexit 0\n' >"$WORKS/node_modules/.bin/vitest"
+chmod +x "$WORKS/node_modules/.bin/vitest"
+rcW5="$(ws_run "$WS/w5.json" "$WORKS" 'npx vitest run')"
+check "W5. CONTROL — a workspace whose runner IS at the root runs exactly once, at the root" \
+  "[ \"\$(jget '$WS/w5.json' 'd[\"ranIn\"]')\" = '' ] && [ \"\$(jget '$WS/w5.json' 'd[\"outcome\"]')\" = passed ]"
+check "W5. CONTROL — …and its sentence names no packages, because none were needed" \
+  "! jget '$WS/w5.json' 'd[\"verdict\"]' | grep -q 'packages'"
+
+# ==========================================================================
+echo
 printf 'lcars xo-evidence: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

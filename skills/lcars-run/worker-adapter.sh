@@ -262,8 +262,30 @@ adapter_argv() { # cli role outdir
         '--add-dir' "$outdir"
       # READ grants for the ticket's out-of-worktree inputs (session 76). One
       # extra --add-dir per supplied dir; none supplied ⇒ exactly the old argv.
+      #
+      # S213 — `--add-dir` TAKES A DIRECTORY AND NOTHING ELSE. copilot 1.0.86
+      # validates this flag before the model runs and exits at argv-parse on any
+      # path that is not an existing directory ("Not a directory: …"). There is
+      # no degraded mode: the worker never starts, writes no artifact, and the
+      # Stage reports a downstream symptom ("produced no questions.txt after 3
+      # attempts") that names neither the flag nor the path. That cost a whole
+      # drive. (This flag WAS file-tolerant on copilot 1.0.60, which the argv
+      # comment above was verified against — a version-drift regression, and
+      # invisible on claude, which ignores input dirs entirely.)
+      #
+      # So the adapter — the one layer that knows a CLI's flag contract — never
+      # emits an argv the CLI cannot parse. A non-directory grant is DROPPED and
+      # SAID OUT LOUD on stderr, naming the path: the worker loses reach it was
+      # meant to have, and a silent loss of reach is the failure we are least
+      # able to see. The callers in run.sh grant directories, so on a healthy
+      # repo this never fires and the argv is byte-for-byte unchanged.
       local d
       for d in ${indirs[@]+"${indirs[@]}"}; do
+        if [ ! -d "$d" ]; then
+          printf 'worker-adapter: NOT granting %s to the %s worker — --add-dir takes a directory and this is not one. The worker will not be able to read it.\n' \
+            "$d" "$cli" >&2
+          continue
+        fi
         printf '%s\n' '--add-dir' "$d"
       done
       [ -n "$model" ] && printf '%s\n' '--model' "$model"

@@ -248,6 +248,57 @@ Name one of them exactly." ;;
 # process can already be gone, and neither is a reason to refuse to hand the
 # conn back. Nothing is ever KILLed — a worker gets to finish its own cleanup.
 # ===========================================================================
+# ── a pid file that says WHO, not just which number (S213) ──────────────────
+#
+# A pid is a number the operating system hands out again. By the time anyone
+# reads one back, it may belong to something else entirely — and this machine
+# runs the captain's own viewscreen, his own Copilot sessions, and long-lived
+# sessions of its own. Signalling a number we merely found is how a stop button
+# kills the wrong thing.
+#
+# So a pid file written here records the process's IDENTITY as well: the group
+# it leads (when it leads one) and the instant it started, both read from the OS
+# at the moment we spawned it. Nothing downstream has to work out who a pid
+# belongs to by looking at its NAME or matching a PATTERN — that is the one
+# thing we never do — because the fact was written down when it was still known.
+#
+# The first line is still the bare pid, so every existing reader (`head -1`) is
+# unaffected.
+xo_write_pidfile() { # <pid> <file>
+  local pid="$1" file="$2" pgid started
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -dc '0-9')"
+  started="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  { printf '%s\n' "$pid"; printf '%s\n' "${pgid:-}"; printf '%s\n' "${started:-}"; } >"$file"
+}
+
+# Signal EXACTLY the process a pid file was written about — or refuse.
+#   0  the recorded process was signalled
+#   1  there is nothing there any more (no pid, or it has already gone)
+#   2  the pid is alive but is NOT the process this file was written about, or
+#      the file never recorded who it was. WE DO NOT SIGNAL IT. A stop button
+#      that stops the wrong process is worse than one that admits it cannot.
+xo_signal_pidfile() { # <file> [signal]
+  local file="$1" sig="${2:-TERM}" pid pgid started now
+  pid="$(sed -n '1p' "$file" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  pgid="$(sed -n '2p' "$file" 2>/dev/null | tr -dc '0-9')"
+  started="$(sed -n '3p' "$file" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  [ -n "$started" ] || return 2
+  now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  [ -n "$now" ] || return 1
+  [ "$now" = "$started" ] || return 2
+  # Its whole GROUP, but only where it genuinely leads one (pgid == pid, which
+  # is what `setsid` gives us). Where it does not, its group is somebody else's
+  # — the shell that started it, and everything else in that shell — so only the
+  # one process is signalled and its children are left to their own exits.
+  if [ -n "$pgid" ] && [ "$pgid" = "$pid" ]; then
+    kill -"$sig" "-$pgid" 2>/dev/null || true
+  fi
+  kill -"$sig" "$pid" 2>/dev/null || true
+  return 0
+}
+
 stand_down() { # <mission-id> [--opt-out]
   local id="$1" optout="${2:-}" dir st obj status pid live=0
   dir="$MISSIONS_DIR/$id"
@@ -268,22 +319,26 @@ stand_down() { # <mission-id> [--opt-out]
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=1; fi
 
   # ===========================================================================
-  # TWO PIDS, AND ONLY ONE OF THEM IS NUMBER ONE'S (S204).
+  # TWO PIDS, AND BOTH OF THEM STOP (S213 — this REVERSES the S204 rule).
   #
   #   xo.pid          the first officer's OWN chain — the worker, the browser,
-  #                   the launch. Standing it down stops these, which is the
-  #                   whole point of the captain's stop button.
-  #   xo-resolve.pid  the `lcars resolve-logs` driver working the logged bugs.
-  #                   THOSE ARE NOT NUMBER ONE'S MISSIONS. A logged bug is an
-  #                   ordinary LCARS mission with its own issue, its own branch
-  #                   and its own worker; the first officer only filed it, the
-  #                   way the captain would have. Killing it here would throw
-  #                   away work the captain never asked to stop and leave N
-  #                   children half-driven with no driver.
+  #                   the launch.
+  #   xo-resolve.pid  the `lcars resolve-logs` driver working the logged bugs:
+  #                   a detached chain that files issues, cuts branches and runs
+  #                   a worker per stage per bug, for a long time, unattended.
   #
-  # So this pid is READ and never signalled — it is read at all only so the
-  # stand-down note can tell the captain the truth about what is still running
-  # and what will now be waiting for him.
+  # S204 signalled the first and deliberately left the second running, reasoning
+  # that the logged bugs are ordinary Missions the captain never asked to stop.
+  # That reasoning is sound about the WORK and wrong about the BUTTON. What it
+  # produced in practice was a stop button that did not stop: the only way to
+  # halt a chain in flight was to find its pid and kill it by hand, which is not
+  # something the product should ever ask of anybody, and is exactly what a
+  # person does at the moment they least want to be careful about pids.
+  #
+  # So the chain stops. What it has already done is untouched — every child
+  # Mission keeps its issue, its branch and whatever stage it reached, and the
+  # captain picks any of them up himself. Nothing is deleted and nothing is
+  # rolled back; only the driving stops.
   local rpid rlive=0 nlogs=0
   rpid="$(head -1 "$dir/xo-resolve.pid" 2>/dev/null | tr -dc '0-9')"
   if [ -n "$rpid" ] && kill -0 "$rpid" 2>/dev/null; then rlive=1; fi
@@ -297,6 +352,17 @@ stand_down() { # <mission-id> [--opt-out]
       kill -TERM "$pid" 2>/dev/null || true
       rm -f "$dir/xo.pid"
     fi
+    # THE CHAIN STOPS TOO. Only ever the exact process the pid file was written
+    # about — see xo_signal_pidfile; a pid that is alive but is no longer that
+    # process is left strictly alone and said out loud below.
+    local rstopped=0 runsure=0
+    if [ "$rlive" -eq 1 ]; then
+      xo_signal_pidfile "$dir/xo-resolve.pid"
+      case $? in
+        0) rstopped=1; rm -f "$dir/xo-resolve.pid" ;;
+        2) runsure=1 ;;
+      esac
+    fi
     obj="$(obj_set "$obj" status "$(jstr stood-down)")"
     local sd_note="Number One stood down $NOW_LOCAL · you have the conn"
     if [ "$rlive" -eq 1 ] && [ "$nlogs" -gt 0 ]; then
@@ -308,7 +374,15 @@ stand_down() { # <mission-id> [--opt-out]
       # driving" on the card is the kind of small wrongness that makes a
       # captain distrust the numbers beside it.
       local lognoun="logs"; [ "$nlogs" -eq 1 ] && lognoun="log"
-      sd_note="Number One stood down $NOW_LOCAL · $nlogs $lognoun still driving · the re-verify gate will wait for you"
+      if [ "$rstopped" -eq 1 ]; then
+        # WHAT HAPPENED TO HIM, in his words: the fixes have stopped where they
+        # got to, and nothing they had already done was thrown away.
+        sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving stopped where they got to · you have the conn"
+      elif [ "$runsure" -eq 1 ]; then
+        sd_note="Number One stood down $NOW_LOCAL · it could not confirm the $nlogs $lognoun it was driving have stopped · you have the conn"
+      else
+        sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving are no longer running · you have the conn"
+      fi
     fi
     obj="$(obj_set "$obj" note "$(jstr "$sd_note")")"
     obj="$(obj_set "$obj" since "$(jstr "$NOW")")"
@@ -1486,7 +1560,26 @@ cmd_evaluate() {
   if [ "$lstatus" != "running" ] || [ -z "$lurl" ]; then
     # NO BROWSER AT ALL. There is nothing to point one at, and a verdict from a
     # blank tab is worse than no verdict.
-    local why="could not launch: ${lmsg:-the build did not come up (status ${lstatus:-unknown})}"
+    #
+    # TWO DIFFERENT THINGS, AND THEY MUST NOT SHARE A SENTENCE (S213). This arm
+    # fires on two quite separate situations, and it used to glue its own
+    # failure prefix onto whatever `launch.json` said — so a desktop build that
+    # started perfectly well but serves no web address produced, verbatim, on
+    # the captain's own board card:
+    #
+    #     could not launch: the app is running.
+    #
+    # which contradicts itself in six words and tells him nothing he can act on.
+    # So the two cases say what actually happened to HIS build:
+    #   • it is running, but at no address a browser can open — a desktop app,
+    #     say. Nothing failed; there was simply nothing to look at.
+    #   • it never came up at all.
+    local why
+    if [ "$lstatus" = "running" ]; then
+      why="your build started, but not at a web address I can open — so there was nothing for me to look at"
+    else
+      why="your build did not start — ${lmsg:-nothing came up (status ${lstatus:-unknown})}"
+    fi
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
       "$(jstr "$why")" "$(jstr "$why")" >"$xodir/verdict.json"
     rm -f "$dir/xo.pid"; trap - TERM INT
@@ -1961,8 +2054,8 @@ file_logs_for() { # <id> <dir>
   # --- hand them to LCARS's own driver, DETACHED ---------------------------
   # `resolve-logs` orders them, drives each to its Verify gate and raises ONE
   # consolidated re-verify ask on this parent. It takes a long time and it is
-  # NOT Number One's process to own: its pid goes in `xo-resolve.pid`, which
-  # `lcars xo off` reads and never signals (see stand_down).
+  # Its pid goes in `xo-resolve.pid`, WITH the identity that lets
+  # `lcars xo off` stop this exact process later (see xo_write_pidfile).
   mkdir -p "$xodir"
   local rchild=""
   # $LCARS_XO_INTERNAL=<this mission> — same marker, same reason (S204 fix
@@ -1980,7 +2073,9 @@ file_logs_for() { # <id> <dir>
     rchild=$!
   fi
   disown "$rchild" 2>/dev/null || disown 2>/dev/null || true
-  printf '%s\n' "$rchild" >"$dir/xo-resolve.pid"
+  # WHO it is, not just which number — so `lcars xo off` can stop this exact
+  # process later and can never mistake a recycled pid for it.
+  xo_write_pidfile "$rchild" "$dir/xo-resolve.pid"
   printf '  LCARS is driving them now. I will re-check the build when they land.\n'
   return 0
 }
@@ -2470,6 +2565,13 @@ case "${1:-status}" in
   file-logs) shift; cmd_file_logs "$@" ;;
   recheck)   shift; cmd_recheck "$@" ;;
   report)    shift; cmd_report "$@" ;;
+  record-pid)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # It exists so a TEST can plant a pid file the way the product plants one,
+    # through the product's own writer, instead of hand-rolling the format
+    # beside it. A test that writes its own copy of a format drifts from the
+    # format the moment the format changes, and then proves the old one.
+    shift; xo_write_pidfile "$1" "$2" ;;
   -h|--help|help)
     # THE WHOLE USAGE BLOCK, NOT A COUNTED RANGE (fix round 2, D5). A hand-
     # counted `sed -n '3,18p'` truncated mid-sentence the moment a verb was

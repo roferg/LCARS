@@ -97,13 +97,20 @@ def human_seconds(secs):
     return "%dm %ds" % (int(secs) // 60, int(secs) % 60)
 
 
-def verdict_for(outcome, command, exit_code, duration, timeout):
+def verdict_for(outcome, command, exit_code, duration, timeout, ran_in=None):
     """THE PLAIN VERDICT, DERIVED FROM THE RECORDED FACTS ABOVE IT. One
     sentence, in the captain's own register — it is written into the record so
     the report never has to work out what happened by reading the output."""
+    # WHERE IT RAN, when that is not simply "your project". On a workspace the
+    # suite lives in the packages, and a captain reading "they passed" deserves
+    # to know which ones answered.
+    where = ""
+    if ran_in:
+        where = (" in %s" % ran_in[0]) if len(ran_in) == 1 else \
+                (" across %d of your packages (%s)" % (len(ran_in), ", ".join(ran_in)))
     if outcome == "passed":
-        return ("I ran your tests (`%s`) and they passed, in %s."
-                % (command, human_seconds(duration)))
+        return ("I ran your tests (`%s`)%s and they passed, in %s."
+                % (command, where, human_seconds(duration)))
     if outcome == "failed":
         # THE ONE SENTENCE THAT WAS BACKWARDS (S211 fix round 1, D1). A runner
         # that CRASHED before running anything — a dangling symlink where
@@ -129,8 +136,8 @@ def verdict_for(outcome, command, exit_code, duration, timeout):
         # thing that can decide it — a quoted line from the output, checked
         # against the output. A sentence that cannot be right must not sound
         # certain.
-        return ("I ran your tests (`%s`) and the run failed — exit %s, after %s. %s"
-                % (command, exit_code, human_seconds(duration), FAILED_AMBIGUOUS))
+        return ("I ran your tests (`%s`)%s and the run failed — exit %s, after %s. %s"
+                % (command, where, exit_code, human_seconds(duration), FAILED_AMBIGUOUS))
     if outcome == "hung":
         return ("I started your tests (`%s`) and the run was still going after %ds, "
                 "so I stopped it. That is trouble running your tests, not something "
@@ -145,6 +152,127 @@ def verdict_for(outcome, command, exit_code, duration, timeout):
                 "the screen.")
     return ("I tried to run your tests (`%s`) and could not start the command at all."
             % command)
+
+
+
+# ── where the project's suite can actually be run (S213) ─────────────────────
+#
+# THE DEFECT. On a pnpm workspace the seeded command is `npx vitest run …` and
+# the runner lives in a PACKAGE's `node_modules/.bin`, not the repo root's. Run
+# from the root it is `sh: vitest: command not found`, exit 127 — measured on
+# the captain's own repo — so the most decisive evidence Number One has was
+# blind on every workspace repo it will ever meet. The Implement red gate
+# already solved this in S87 by running the command from INSIDE the package;
+# Number One has no "touched package", so it asks every package instead.
+#
+# WHAT IS DELIBERATELY NOT DONE HERE. The tempting fix — put every package's
+# `.bin` on PATH and run from the root anyway — turns `command not found` into
+# `No test files found`, because vitest roots its include globs at its cwd.
+# That is a SILENT GREEN, and this project has lost rounds (S147, and the
+# include-rooting gotcha before it) to exactly that trade. A loud 127 is better
+# than a quiet zero, so the cure moves the cwd and never the PATH.
+WORKSPACE_MANIFEST = "pnpm-workspace.yaml"
+
+
+def workspace_globs(root):
+    """The workspace member patterns this repo declares, from pnpm-workspace.yaml
+    or package.json's `workspaces` — READ from what the repo says about itself,
+    never guessed from the shape of the tree."""
+    globs = []
+    wsfile = os.path.join(root, WORKSPACE_MANIFEST)
+    if os.path.isfile(wsfile):
+        try:
+            with open(wsfile, encoding="utf-8") as fh:
+                inlist = False
+                for line in fh:
+                    st = line.strip()
+                    if st.startswith("packages:"):
+                        inlist = True
+                        continue
+                    if inlist:
+                        if st.startswith("- "):
+                            globs.append(st[2:].strip().strip('"\''))
+                        elif st and not st.startswith("#"):
+                            inlist = False
+        except Exception:
+            pass
+    pkg = os.path.join(root, "package.json")
+    if os.path.isfile(pkg):
+        try:
+            with open(pkg, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            ws = doc.get("workspaces")
+            if isinstance(ws, dict):
+                ws = ws.get("packages")
+            if isinstance(ws, list):
+                globs.extend(str(g) for g in ws)
+        except Exception:
+            pass
+    return globs
+
+
+def workspace_packages(root):
+    """Every workspace member that has a package.json of its own, in a stable
+    order. Empty for a repo that is not a workspace, which is how the fallback
+    stays off for every repo that never had this problem."""
+    import glob as globmod
+    out = []
+    for g in workspace_globs(root):
+        g = g.strip()
+        if not g or g.startswith("!"):
+            continue
+        for d in globmod.glob(os.path.join(root, g)):
+            if os.path.isfile(os.path.join(d, "package.json")) and os.path.isdir(d):
+                rd = os.path.realpath(d)
+                if rd != os.path.realpath(root) and rd not in out:
+                    out.append(rd)
+    return sorted(out)
+
+
+def command_picks_its_own_directory(command):
+    """True when the command starts by changing directory itself.
+
+    THE DOUBLE-`cd` FOOTGUN, said out loud. A testCommand of the form
+    `cd packages/engine && npx vitest run` is already aimed; re-running it from
+    inside packages/engine makes its own `cd` land nowhere, and whether that
+    ends the run or carries on in the wrong place comes down to `&&` versus
+    `;`. So a command that aims itself is never re-aimed by us."""
+    head = command.lstrip()
+    return head.startswith("cd ") or head.startswith("cd\t")
+
+
+def run_in(command, cwd, env, timeout):
+    """Run <command> in <cwd> and hand back the raw facts. Used ONLY by the
+    workspace fallback below; the first run is left exactly as it stood, byte
+    for byte, because it is the path every repo already takes and nothing here
+    is worth risking it for."""
+    started = time.time()
+    try:
+        proc = subprocess.Popen(
+            ["bash", "-c", command], cwd=cwd, env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=True)
+    except Exception as exc:
+        return (str(exc).encode("utf-8", "replace"), None, False,
+                time.time() - started)
+    timed_out = False
+    try:
+        raw = proc.communicate(timeout=timeout)[0]
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            raw = proc.communicate(timeout=15)[0]
+        except Exception:
+            raw = b""
+    return (raw or b"", (None if timed_out else proc.returncode), timed_out,
+            time.time() - started)
 
 
 def write(path, doc):
@@ -188,6 +316,11 @@ def main():
         "outputTail": "",
         "outcome": "",
         "verdict": "",
+        # WHERE it ran, when that was not simply the checkout root, and what the
+        # root said before we moved. Both recorded rather than inferable, so the
+        # report never has to work out from the output that a fallback happened.
+        "ranIn": None,
+        "rootExitCode": None,
     }
 
     # --- the two cases where nothing is run at all ---------------------------
@@ -291,8 +424,78 @@ def main():
         doc["exitCode"] = proc.returncode
         doc["outcome"] = "passed" if proc.returncode == 0 else "failed"
 
+    # ── THE WORKSPACE FALLBACK (S213) ───────────────────────────────────────
+    # 127 from a shell is "I could not find that program". On a pnpm workspace
+    # that is exactly what `npx vitest run` says at the repo root, because the
+    # runner is installed in a PACKAGE, and it is why the most decisive evidence
+    # Number One has came back blind on the captain's own repo.
+    #
+    # KEYED ON THE RECORDED EXIT CODE, NEVER ON THE TEXT. 126/127 are the
+    # shell's own two words for "could not run that": not found, and found but
+    # not executable. Matching the message instead would be reading back prose
+    # that changes with the runner, the shell and the locale — the mistake this
+    # file's header already names four times.
+    #
+    # It engages only where all of this is true, so every repo that never had
+    # this problem takes the identical path it always did:
+    #   • the run came back 126 or 127, and
+    #   • the repo SAYS it is a workspace (pnpm-workspace.yaml / package.json
+    #     workspaces), and
+    #   • the command does not already aim itself with a `cd`.
+    if (not timed_out and doc["exitCode"] in (126, 127)
+            and not command_picks_its_own_directory(command)):
+        members = workspace_packages(cwd)
+        if members:
+            # ONE BUDGET FOR THE WHOLE FALLBACK, not one per package. The
+            # timeout is a bound on how long a look may spend on tests; handing
+            # every package the full bound turns a 300s cap into 300s x however
+            # many packages the repo has, which is not a bound at all. What is
+            # left of the budget is what the next package gets, and running out
+            # of it is a hang like any other.
+            ran_in, results, agg = [], [], []
+            budget = timeout
+            for d in members:
+                if budget <= 0:
+                    results.append((os.path.relpath(d, cwd), None, True))
+                    ran_in.append(os.path.relpath(d, cwd))
+                    agg.append("=== %s ===\n(no time left in the run's budget)"
+                               % os.path.relpath(d, cwd))
+                    break
+                m_raw, m_code, m_hung, m_dur = run_in(command, d, env, budget)
+                budget -= m_dur
+                if m_code in (126, 127) or (m_code is None and not m_hung):
+                    continue          # this package cannot run it either
+                rel = os.path.relpath(d, cwd)
+                ran_in.append(rel)
+                results.append((rel, m_code, m_hung))
+                agg.append("=== %s ===\n%s" % (rel, m_raw.decode("utf-8", "replace")))
+            if ran_in:
+                # The command really did run. What it says now is what the
+                # packages said, and WHERE it ran is written down rather than
+                # left for a reader to work out from the output.
+                doc["ranIn"] = ran_in
+                doc["rootExitCode"] = doc["exitCode"]
+                text = "\n".join(agg)
+                b = text.encode("utf-8", "replace")
+                doc["outputBytes"] = len(b)
+                doc["truncated"] = len(b) > cap
+                doc["outputTail"] = b[-cap:].decode("utf-8", "replace") if doc["truncated"] else text
+                doc["durationSeconds"] = round(time.time() - started, 2)
+                if any(h for (_r, _c, h) in results):
+                    doc["exitCode"] = None
+                    doc["timedOut"] = True
+                    doc["outcome"] = "hung"
+                else:
+                    worst = 0
+                    for (_r, c, _h) in results:
+                        if c:
+                            worst = c
+                    doc["exitCode"] = worst
+                    doc["outcome"] = "passed" if worst == 0 else "failed"
+                duration = doc["durationSeconds"]
+
     doc["verdict"] = verdict_for(doc["outcome"], command, doc["exitCode"],
-                                 duration, timeout)
+                                 duration, timeout, doc.get("ranIn"))
     write(args.out, doc)
     return CODE_FOR[doc["outcome"]]
 

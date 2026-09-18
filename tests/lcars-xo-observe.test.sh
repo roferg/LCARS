@@ -547,14 +547,14 @@ $PY - "$S212FX/tidy-list.html" <<'PYGEN'
 import sys
 rows = "".join(
     '<div class="row" tabindex="0" style="position:absolute;left:20px;top:%dpx;width:200px;height:30px;">Row %d</div>'
-    % (20 + i * 36, i + 1) for i in range(5))
+    % (20 + i * 30, i + 1) for i in range(5))
 open(sys.argv[1], "w").write('<!doctype html><html><body style="margin:0;height:900px">' + rows + '</body></html>')
 PYGEN
 drive_observe tidy-list.html tidy
-check "S212-6 five rows 6 px apart collapse to EXACTLY ONE note, not five" \
+check "S212-6 five touching rows collapse to EXACTLY ONE note, not five" \
   "[ \"\$(count_all '$TMPROOT/s212-tidy/observations.json')\" = '1' ]"
 check "S212-6 …and the note NAMES THE COUNT, in the captain's own words" \
-  "grep -q 'five rows in this list sit 6 px apart' '$TMPROOT/s212-tidy/observations.json'"
+  "grep -q 'five rows in this list are touching' '$TMPROOT/s212-tidy/observations.json'"
 check "S212-6 …and the SENTENCE he reads carries no harness vocabulary" \
   "$PY -c 'import json,re,sys
 d=json.load(open(sys.argv[1]))
@@ -928,12 +928,12 @@ ROW() { # <n> <x> <y> — a focusable list row, with a recorded DOM path
     "$1" "$1" "$2" "$3"
 }
 
-mk_readout "$s212dir/list-in.json" "[$(ROW 0 20 20),$(ROW 1 20 56),$(ROW 2 20 92),$(ROW 3 20 128),$(ROW 4 20 164)]"
+mk_readout "$s212dir/list-in.json" "[$(ROW 0 20 20),$(ROW 1 20 50),$(ROW 2 20 80),$(ROW 3 20 110),$(ROW 4 20 140)]"
 observe "$s212dir/list-in.json" "$s212dir/list-out.json"
-check "S212-6u five evenly-spaced rows 6 px apart -> ONE note (arithmetic, exact)" \
+check "S212-6u five touching rows -> ONE note (arithmetic, exact)" \
   "[ \"\$($PY -c 'import json;print(len(json.load(open(\"'$s212dir'/list-out.json\"))[\"observations\"]))')\" = '1' ]"
 check "S212-6u the sentence is the captain's, word for word" \
-  "grep -q 'five rows in this list sit 6 px apart' '$s212dir/list-out.json'"
+  "grep -q 'five rows in this list are touching' '$s212dir/list-out.json'"
 # THE SAME NUMBER, TWICE OVER (S212 fix round 1). This used to expect 4 — the
 # number of crowded PAIRS — beside a sentence that says "five rows". One fact
 # computed two ways, disagreeing with itself in the captain's own record.
@@ -945,10 +945,10 @@ sys.exit(0 if o.get(\"count\") == 5 and o[\"message\"].startswith(\"five rows\")
 
 # two of a kind do NOT collapse — a collapse that eats a genuine second fault
 # is the quietening failure mode this session exists to avoid.
-mk_readout "$s212dir/two-in.json" "[$(ROW 0 20 20),$(ROW 1 20 56)]"
+mk_readout "$s212dir/two-in.json" "[$(ROW 0 20 20),$(ROW 1 20 50)]"
 observe "$s212dir/two-in.json" "$s212dir/two-out.json"
 check "S212-6u CONTROL — a single crowded pair is NOT collapsed away, it is still reported plainly" \
-  "[ \"\$(count_kind '$s212dir/two-out.json' crowding)\" = '1' ] && grep -q '6 px between them' '$s212dir/two-out.json'"
+  "[ \"\$(count_kind '$s212dir/two-out.json' crowding)\" = '1' ] && grep -q '0 px between them' '$s212dir/two-out.json'"
 
 # --- the cap's copy, and the score invariant with a capped file -------------
 scdir2="$TMPROOT/s212-score"; mkdir -p "$scdir2/a" "$scdir2/b"
@@ -963,7 +963,7 @@ check "S212-8 the ledger is byte-identical too" \
 a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
 sys.exit(0 if a[\"criteria\"] == b[\"criteria\"] and a[\"score\"] == b[\"score\"] else 1)' '$scdir2/a/verdict.json' '$scdir2/b/verdict.json'"
 check "S212-8 the collapsed sentence reaches report.md — the captain's copy" \
-  "grep -q 'five rows in this list sit 6 px apart' '$scdir2/b/report.md'"
+  "grep -q 'five rows in this list are touching' '$scdir2/b/report.md'"
 
 # a capped file's "I held back N" note must reach report.md too — a cap the
 # captain cannot see is a cap that lies to him about how much it found.
@@ -1264,6 +1264,178 @@ check "S212R5 CONTROL — and the ledger is byte-identical with it and without i
   "$PY -c 'import json,sys
 a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
 sys.exit(0 if a[\"criteria\"] == b[\"criteria\"] and a[\"score\"] == b[\"score\"] else 1)' '$unseendir/none/verdict.json' '$unseendir/some/verdict.json'"
+
+# ==========================================================================
+# PART 9 — SESSION 213: THE TWO DETECTOR BUGS THE REAL EDITOR FOUND.
+#
+# S212 taught the look not to say the same true thing five times. It did not
+# teach it to stop saying things that were never true. Driven against a real
+# tile-map editor (RECON-2026-09-16), the observations pass produced FIVE
+# faults and ALL FIVE were wrong. They are TWO code defects, not five:
+#
+#   detect_crowding  fired on the New/Open toolbar pair (4 px), the Maps/Objects
+#                    tab bar (4 px) and the layer rows (2 px, seven of them).
+#                    One 8 px floor, four surfacings. Real interfaces use 2-6 px
+#                    between neighbours ON PURPOSE; an absolute floor cannot tell
+#                    deliberate spacing from a mistake and never could.
+#   detect_misaligned read the New/Open pair — two buttons SIDE BY SIDE — as one
+#                    of them being 90 px out of line with a column. There is no
+#                    column. It was the most confidently worded sentence in the
+#                    report and there was nothing there at all.
+#
+# THE CAPTAIN'S RULING, 2026-09-17, not open to re-litigation: a flush tab bar /
+# segmented control is NOT a crowding fault; sibling controls touching there are
+# deliberate design.
+#
+# EVERY BEHAVIOUR BELOW SHIPS AS A PAIR — the false alarm that must now be
+# SILENT, and beside it the known-good positive control that MUST STILL FIRE.
+# That pairing is the point. The failure mode of this work is quietening the
+# guard into uselessness, and a guard that cannot fire is worse than the noise
+# it replaced.
+#
+# The geometry is not invented: the boxes, classes and DOM paths below are the
+# ones the driver actually recorded off that editor (turntwo/readout.json), fed
+# in directly so the arithmetic is the only thing under test — the same way this
+# suite has always proved the observation arithmetic. The same shapes are then
+# driven through REAL headless Chrome further down, so nothing rests on crafted
+# input alone.
+# ==========================================================================
+echo
+echo "PART 9 — S213: the two detector bugs the real editor found"
+
+s213dir="$TMPROOT/s213"; mkdir -p "$s213dir"
+
+# --- the real editor's header: New Project beside Open Project, 4 px apart ---
+# (classes and paths verbatim from the readout; gap = 102 - (12+86) = 4)
+mk_readout "$s213dir/toolbar-in.json" '[
+  {"id":null,"tag":"button","className":"rounded px-2 py-1 text-xs font-medium","text":"New Project","interactive":true,"path":"0.1.0.0.0.0","box":{"x":12,"y":12,"w":86,"h":24},"overflowX":0,"overflowY":0},
+  {"id":null,"tag":"button","className":"rounded px-2 py-1 text-xs font-medium","text":"Open Project","interactive":true,"path":"0.1.0.0.0.1","box":{"x":102,"y":12,"w":86,"h":24},"overflowX":0,"overflowY":0}
+]'
+observe "$s213dir/toolbar-in.json" "$s213dir/toolbar-out.json"
+check "S213-B2 a normal toolbar pair 4 px apart is SPACING — no crowding complaint" \
+  "[ \"\$(count_kind '$s213dir/toolbar-out.json' crowding)\" = '0' ]"
+check "S213-B3 …and the pair sits SIDE BY SIDE, so it is no misaligned column either" \
+  "[ \"\$(count_kind '$s213dir/toolbar-out.json' misaligned)\" = '0' ]"
+check "S213-B3 …the invented sentence is gone by name: nothing claims 90 px out of line" \
+  "! grep -q '90 px' '$s213dir/toolbar-out.json'"
+check "S213 …and that page produces NO observation of any kind" \
+  "[ \"\$($PY -c 'import json;print(len(json.load(open(\"'$s213dir'/toolbar-out.json\"))[\"observations\"]))')\" = '0' ]"
+
+# --- the tab bar, 4 px apart, and the two tabs carry DIFFERENT classes -------
+# (selected vs unselected — which is why they escaped every family-based guard)
+mk_readout "$s213dir/tabs-in.json" '[
+  {"id":null,"tag":"button","className":"rounded px-3 py-1 bg-blue-600 text-white transition-colors","text":"Maps","interactive":true,"path":"0.1.0.0.1.0","box":{"x":8,"y":50,"w":56,"h":26},"overflowX":0,"overflowY":0},
+  {"id":null,"tag":"button","className":"rounded px-3 py-1 text-slate-300 transition-colors","text":"Objects","interactive":true,"path":"0.1.0.0.1.1","box":{"x":68,"y":50,"w":66,"h":26},"overflowX":0,"overflowY":0}
+]'
+observe "$s213dir/tabs-in.json" "$s213dir/tabs-out.json"
+check "S213-B2/C9 a tab bar 4 px apart is a tab bar — no crowding complaint" \
+  "[ \"\$(count_kind '$s213dir/tabs-out.json' crowding)\" = '0' ]"
+
+# --- the layer rail: a tight vertical list, seven rows 2 px apart ------------
+LROW() { # <n> <y>
+  printf '{"id":null,"tag":"button","className":"flex items-center gap-2 rounded px-2 py-1.5","text":"","interactive":true,"path":"0.1.0.0.2.0.0.%s","box":{"x":8,"y":%s,"w":264,"h":28},"overflowX":0,"overflowY":0}' "$1" "$2"
+}
+mk_readout "$s213dir/rail-in.json" "[$(LROW 1 109),$(LROW 2 139),$(LROW 3 169),$(LROW 4 199),$(LROW 5 229),$(LROW 6 259),$(LROW 7 289)]"
+observe "$s213dir/rail-in.json" "$s213dir/rail-out.json"
+check "S213-B2 a tight list — seven rows evenly 2 px apart — is a tight list, not crowding" \
+  "[ \"\$(count_kind '$s213dir/rail-out.json' crowding)\" = '0' ]"
+check "S213-B2 …and nothing claims seven buttons sit 2 px apart" \
+  "! grep -q 'seven buttons' '$s213dir/rail-out.json'"
+
+# ==========================================================================
+# THE CONTROLS. Each is the SAME SHAPE as a silence above with ONE thing
+# changed, so the silence cannot be coming from the detector being switched
+# off. If any of these stops firing, the cure has become a mute.
+# ==========================================================================
+printf '\n  -- S213 CONTROLS: what must STILL fire --\n'
+
+# CONTROL 1 — the same rail, but one pair is out of step with its own list:
+# six gaps of 12 px and one of 2 px. THAT is a person's idea of crowded.
+mk_readout "$s213dir/rail-odd-in.json" \
+  "[$(LROW 1 109),$(LROW 2 149),$(LROW 3 189),$(LROW 4 219),$(LROW 5 271),$(LROW 6 311),$(LROW 7 351)]"
+observe "$s213dir/rail-odd-in.json" "$s213dir/rail-odd-out.json"
+check "S213-B2 CONTROL — one pair tighter than the rest of its own list STILL fires" \
+  "[ \"\$(count_kind '$s213dir/rail-odd-out.json' crowding)\" -ge '1' ]"
+check "S213-B2 CONTROL — …and it names the number it measured" \
+  "grep -q '2 px between them' '$s213dir/rail-odd-out.json'"
+
+# CONTROL 2 — the same toolbar, but the two buttons are TOUCHING. Zero is not
+# spacing anybody chose for a pair with nothing between them.
+mk_readout "$s213dir/toolbar-touch-in.json" '[
+  {"id":null,"tag":"button","className":"rounded px-2 py-1 text-xs font-medium","text":"New Project","interactive":true,"path":"0.1.0.0.0.0","box":{"x":12,"y":12,"w":86,"h":24},"overflowX":0,"overflowY":0},
+  {"id":null,"tag":"button","className":"rounded px-2 py-1 text-xs font-medium","text":"Open Project","interactive":true,"path":"0.1.0.0.0.1","box":{"x":98,"y":12,"w":86,"h":24},"overflowX":0,"overflowY":0}
+]'
+observe "$s213dir/toolbar-touch-in.json" "$s213dir/toolbar-touch-out.json"
+check "S213-B2 CONTROL — two controls actually TOUCHING still fires" \
+  "[ \"\$(count_kind '$s213dir/toolbar-touch-out.json' crowding)\" = '1' ]"
+check "S213-B2 CONTROL — …in the captain's words, naming both" \
+  "grep -q 'the New Project and Open Project buttons are touching' '$s213dir/toolbar-touch-out.json'"
+
+# CONTROL 3 — two controls from DIFFERENT containers nearly colliding. Nothing
+# laid these out together, so there is no rhythm to call it deliberate.
+mk_readout "$s213dir/collide-in.json" '[
+  {"id":null,"tag":"button","className":"a","text":"Save","interactive":true,"path":"0.1.0.0","box":{"x":12,"y":12,"w":86,"h":24},"overflowX":0,"overflowY":0},
+  {"id":null,"tag":"button","className":"b","text":"Delete","interactive":true,"path":"0.2.0.0","box":{"x":101,"y":12,"w":86,"h":24},"overflowX":0,"overflowY":0}
+]'
+observe "$s213dir/collide-in.json" "$s213dir/collide-out.json"
+check "S213-B2 CONTROL — two controls from different containers 3 px apart STILL fires" \
+  "[ \"\$(count_kind '$s213dir/collide-out.json' crowding)\" = '1' ]"
+
+# CONTROL 4 — the misaligned detector has not been switched off: a real COLUMN
+# with one row out of line still reports, and still says by how much.
+mk_readout "$s213dir/column-in.json" '[
+  {"id":null,"tag":"button","className":"rounded px-2 py-1 text-xs font-medium","text":"New Project","interactive":true,"path":"0.1.0.0.0.0","box":{"x":12,"y":12,"w":86,"h":24},"overflowX":0,"overflowY":0},
+  {"id":null,"tag":"button","className":"rounded px-2 py-1 text-xs font-medium","text":"Open Project","interactive":true,"path":"0.1.0.0.0.1","box":{"x":12,"y":60,"w":86,"h":24},"overflowX":0,"overflowY":0},
+  {"id":null,"tag":"button","className":"rounded px-2 py-1 text-xs font-medium","text":"Save Project","interactive":true,"path":"0.1.0.0.0.2","box":{"x":102,"y":108,"w":86,"h":24},"overflowX":0,"overflowY":0}
+]'
+observe "$s213dir/column-in.json" "$s213dir/column-out.json"
+check "S213-B3 CONTROL — a REAL column with one row 90 px out of line STILL fires" \
+  "[ \"\$(count_kind '$s213dir/column-out.json' misaligned)\" = '1' ]"
+check "S213-B3 CONTROL — …and it is the offending row it names, with the number" \
+  "grep -q 'Save Project' '$s213dir/column-out.json' && grep -q '90 px' '$s213dir/column-out.json'"
+
+# --- and through a REAL browser, so none of this rests on crafted input -----
+if [ "$HAVE_NODE" -eq 1 ] && [ "$HAVE_CHROME" -eq 1 ]; then
+cat >"$S212FX/real-editor.html" <<'HTML'
+<!doctype html><html><body style="margin:0;font:12px system-ui;background:#0f172a;color:#e2e8f0">
+<div id="app">
+  <div id="header" style="position:absolute;left:12px;top:12px;">
+    <button style="height:24px;width:120px;margin-right:4px;">New Project</button><button style="height:24px;width:120px;">Open Project</button>
+  </div>
+  <div id="tabbar" style="position:absolute;left:8px;top:50px;">
+    <button class="sel" style="height:26px;width:80px;margin-right:4px;background:#2563eb;color:#fff;">Maps</button><button class="unsel" style="height:26px;width:90px;color:#cbd5e1;">Objects</button>
+  </div>
+  <div id="rail" style="position:absolute;left:8px;top:109px;">
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Ground</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Surface</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Overhead</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Entities</button>
+  </div>
+</div>
+</body></html>
+HTML
+drive_observe real-editor.html s213-editor
+check "S213 REAL BROWSER — a toolbar, a tab bar and a tight list produce ZERO observations" \
+  "[ \"\$(count_all '$TMPROOT/s212-s213-editor/observations.json')\" = '0' ]"
+
+cat >"$S212FX/real-editor-broken.html" <<'HTML'
+<!doctype html><html><body style="margin:0;font:12px system-ui;background:#0f172a;color:#e2e8f0">
+<div id="app">
+  <div id="rail" style="position:absolute;left:8px;top:109px;">
+    <button style="display:block;height:28px;width:264px;margin-bottom:12px;">Ground</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:12px;">Surface</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:1px;">Overhead</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:12px;">Entities</button>
+  </div>
+</div>
+</body></html>
+HTML
+drive_observe real-editor-broken.html s213-editor-broken
+check "S213 REAL BROWSER CONTROL — the SAME list with one row out of step STILL fires" \
+  "[ \"\$(count_kind '$TMPROOT/s212-s213-editor-broken/observations.json' crowding)\" -ge '1' ]"
+else
+  printf '  (node or Chrome not available — the S213 real-browser pair skipped)\n'
+fi
 
 # ==========================================================================
 echo

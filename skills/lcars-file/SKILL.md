@@ -128,7 +128,7 @@ It prints ONE path and you read it:
 
 - If a `CONTEXT.md` exists at the repo root, that is the source (no pack is
   generated).
-- Otherwise it returns `.git/lcars/context-pack.md`, generating it lazily on
+- Otherwise it returns `.git/lcars/context/context-pack.md`, generating it lazily on
   first use via a single cold worker (and reusing it thereafter). The pack lives
   inside `.git/` — it never touches the working tree and is never committed.
 

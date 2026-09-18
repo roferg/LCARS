@@ -508,10 +508,103 @@ def adjacency_gap(a, b):
     return None
 
 
+# ── what a layout SPACES on purpose (S213) ───────────────────────────────
+def neighbour_gaps(elements):
+    """Every NEIGHBOUR gap on the page, grouped by the layout run it belongs to.
+
+    A RUN is the set of interactive elements that share one container — read off
+    the DOM path the driver recorded, a LOOKUP, never inferred from the boxes.
+    Its neighbours are the consecutive members along the axis they are laid out
+    on, and the gaps between those are the rhythm that container was written to.
+
+    Deliberately NOT keyed on family: a tab bar's selected tab carries a
+    different class from its unselected ones, and keying on class would have let
+    exactly the tab bar this exists to forgive escape through the gap.
+
+    Returns {(parent, axis): [(id(a), id(b), gap), …]}.
+    """
+    runs = {}
+    inter = [e for e in elements if e.get("interactive") and e.get("box")]
+    for e in inter:
+        p = parent_path(e)
+        if p is None:
+            continue
+        runs.setdefault(p, []).append(e)
+    out = {}
+    for parent, members in runs.items():
+        if len(members) < 2:
+            continue
+        for axis, sort_key in (("row", lambda e: e["box"]["x"]),
+                               ("column", lambda e: e["box"]["y"])):
+            ordered = sorted(members, key=sort_key)
+            gaps = []
+            for a, b in zip(ordered, ordered[1:]):
+                if nested(a, b) or intersects(a["box"], b["box"]):
+                    continue
+                g = adjacency_gap(a["box"], b["box"])
+                if g is None:
+                    continue
+                if pair_axis(a, b) != axis:
+                    continue
+                gaps.append((id(a), id(b), g))
+            if gaps:
+                out[(parent, axis)] = gaps
+    return out
+
+
+def pair_axis(a, b):
+    """'row' when these two sit beside each other, 'column' when one is under
+    the other — the same test adjacency_gap already makes to decide which gap it
+    is measuring, named once so the two cannot drift apart."""
+    _, ay1, _, ay2 = edges(a["box"])
+    _, by1, _, by2 = edges(b["box"])
+    return "row" if min(ay2, by2) - max(ay1, by1) > 0 else "column"
+
+
+def deliberate_spacing(a, b, gap, runs):
+    """True when this gap is the SPACING ITS OWN LAYOUT USES — in which case it
+    is a design decision, not a fault, whatever the number is.
+
+    THE BUG THIS CLOSES (measured on a real tile-map editor, S213). The rule was
+    an absolute floor: any two controls closer than 8 px were "crowded". Real
+    interfaces put 2, 4 and 6 px between neighbours on purpose all day long, so
+    the floor fired on a perfectly ordinary toolbar, on a tab bar, and on seven
+    rows of a tight list — four complaints, none of them true, all in one look.
+    An absolute number cannot tell deliberate spacing from a mistake, and never
+    could: there is no value that is wrong on every screen.
+
+    What IS evidence is the layout disagreeing with itself. A row of buttons
+    every one of which sits 4 px from the next was written that way. One pair
+    sitting 2 px apart in a list whose other rows sit 12 px apart was not.
+
+    So: a gap that is not tighter than its own run's other neighbour gaps is
+    deliberate. TOUCHING is never covered by this — zero is not a spacing
+    anybody chooses for two controls with nothing between them, and it is the
+    captain's original complaint ("buttons with no spacing between them are
+    smooshed together"), so it keeps its own arm in detect_crowding.
+
+    THE CAPTAIN'S RULING, 2026-09-17: a flush tab bar / segmented control is not
+    a crowding fault. A tab bar's tabs sit at the one spacing its bar uses, so
+    this rule already forgives it, at 4 px as at 0. What it does not forgive is
+    two controls TOUCHING with nothing else around them to establish that
+    touching is the intent — see the report; that one is left visible on purpose
+    rather than guessed at.
+    """
+    run = runs.get((parent_path(a), pair_axis(a, b)))
+    if not run:
+        return False          # nothing laid these out together — no rhythm to appeal to
+    mine = (id(a), id(b))
+    others = [g for (ia, ib, g) in run if (ia, ib) != mine and (ib, ia) != mine]
+    if not others:
+        return True           # a lone pair at its container's one gap IS that gap
+    return gap >= min(others)
+
+
 # ── the four detectors ──────────────────────────────────────────────────
 def detect_crowding(elements, gap_px):
     out = []
     inter = [e for e in elements if e.get("interactive") and e.get("box")]
+    runs = neighbour_gaps(inter)
     for i in range(len(inter)):
         for j in range(i + 1, len(inter)):
             a, b = inter[i], inter[j]
@@ -521,6 +614,10 @@ def detect_crowding(elements, gap_px):
                 continue  # that is an OVERLAP, a different finding
             gap = adjacency_gap(a["box"], b["box"])
             if gap is None or gap >= gap_px:
+                continue
+            # S213 — a gap its own layout uses everywhere is spacing somebody
+            # chose, not crowding. Touching is never spacing anybody chose.
+            if gap > 0 and deliberate_spacing(a, b, gap, runs):
                 continue
             px = max(gap, 0)
             verb = "touching" if px == 0 else "crowded together"
@@ -562,11 +659,38 @@ def detect_overlap(elements):
     return out
 
 
+def is_a_column(group):
+    """True when this same-tag-same-class group really is a COLUMN — one thing
+    under another, every member in its own horizontal band.
+
+    THE BUG THIS CLOSES (S213). "A column" was the detector's whole unstated
+    assumption and it was never once checked. On a real tile-map editor, New
+    Project and Open Project — two identical buttons SIDE BY SIDE in a header —
+    were a same-class group of two, so their left edges were compared as though
+    one sat under the other, and the 90 px between them along the row was
+    reported as one of them being 90 px out of line. There is no column on that
+    screen. It was the most confidently worded sentence in the whole report and
+    there was nothing behind it at all.
+
+    Left edges only mean something when there is a stack to line them up
+    against. When the group shares a row instead, we say nothing: from the boxes
+    alone there is no alignment to have an opinion about."""
+    for i in range(len(group)):
+        for j in range(i + 1, len(group)):
+            a, b = group[i]["box"], group[j]["box"]
+            _, ay1, _, ay2 = edges(a)
+            _, by1, _, by2 = edges(b)
+            if min(ay2, by2) - max(ay1, by1) > 0:
+                return False   # these two sit beside each other, not above
+    return True
+
+
 def detect_misaligned(elements, threshold):
     """A control whose left edge misses its siblings' by more than N px — a
     'sibling' is anything sharing this element's tag AND class, which is what
     a repeated row (a list of tasks, a row of buttons) looks like from the
-    boxes alone."""
+    boxes alone — AND ONLY when those siblings really do form a column
+    (is_a_column). A row of identical buttons is not a misaligned anything."""
     out = []
     groups = {}
     for e in elements:
@@ -576,6 +700,8 @@ def detect_misaligned(elements, threshold):
         groups.setdefault((e.get("tag"), cls), []).append(e)
     for (_, _), group in groups.items():
         if len(group) < 2:
+            continue
+        if not is_a_column(group):
             continue
         xs = [e["box"]["x"] for e in group]
         baseline, _n = Counter(xs).most_common(1)[0]
