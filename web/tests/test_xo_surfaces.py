@@ -56,6 +56,10 @@ LONG = ("Captain, this build is a code-only engine change — two pure "
 HEADLINE = ("I could not check the main thing you asked for — your test "
             "suite never ran, so nothing about the new methods was actually "
             "verified.")
+# 2,673 characters, as planted by the tester on a real board.
+RAMBLE = (("Captain, I want to walk you through everything I did here because "
+           "there is rather a lot of it and none of it is simple. ") * 12
+          + "None of it could be tested.")
 REASSURANCE = ("The header, the tile readout and the map canvas all paint as "
                "before. Not part of what you asked for.")
 
@@ -147,6 +151,39 @@ class C1_TheCardIsASignalNotATranscript(CardBase):
         self.assertEqual(1, len(reads))
         self.assertIn("xo-read-report", reads[0]["cls"])
 
+    # ── FIX ROUND 1, D1: AT ANY LENGTH ──────────────────────────────────
+    # The tester planted a verdict of 2,673 characters — a rambling worker
+    # `why`, the exact shape this session guards against — and the card drew
+    # all of them: 91 wrapped lines, 1,752 px tall in a 200 px column, every
+    # other mission pushed off the screen. Nothing truncated at ANY length.
+    # C1 is a promise about every verdict, not about short ones.
+
+    def test_a_punishing_verdict_is_still_one_line_on_the_card(self):
+        card = self.card(numberOne={"headline": RAMBLE})
+        line = _cls_of(card, " xo-verdict-line ")
+        self.assertEqual(1, len(line))
+        shown = _all_text(line[0]).strip()
+        self.assertLess(len(shown), 220,
+                        "the card is carrying a transcript again")
+        self.assertTrue(shown.endswith("…"), shown[-40:])
+        self.assertTrue(RAMBLE.startswith(shown[:60]),
+                        "the line is not the start of the recorded sentence")
+
+    def test_and_the_rest_of_it_is_not_hiding_on_the_card_somewhere(self):
+        card = self.card(numberOne={"headline": RAMBLE})
+        self.assertNotIn(RAMBLE[-80:], _all_text(card))
+
+    def test_the_way_into_the_whole_thing_is_still_right_there(self):
+        card = self.card(numberOne={"headline": RAMBLE})
+        reads = [n for n in _flatten(card)
+                 if "Read the full report" in (n.get("text") or "")]
+        self.assertEqual(1, len(reads))
+
+    def test_a_normal_length_verdict_is_not_cut_at_all(self):
+        card = self.card()
+        line = _cls_of(card, " xo-verdict-line ")[0]
+        self.assertEqual(HEADLINE, _all_text(line).strip())
+
     def test_the_cost_and_difficulty_pills_are_still_on_the_card(self):
         text = _all_text(self.card())
         self.assertIn("$0.42–$1.44", text)
@@ -190,6 +227,45 @@ class C1_TheCardIsASignalNotATranscript(CardBase):
         plain = _run(CARD_HARNESS,
                      {"id": "x", "issue": 1, "stage": "verify", "title": "t"})
         self.assertNotIn("NUMBER ONE", _all_text(plain))
+
+
+class D4_TheScoreWordCannotAssertAFlowNobodySaw(CardBase):
+    """FIX ROUND 1, D4 — measured on the captain's own board.
+
+    A mission whose verdict was "nothing could be tested — the calculator never
+    rendered", every criterion untested, wore MEDIUM; hovering MEDIUM said, in
+    these words, "The primary flow works end to end; some criteria gap or could
+    not be tested, none blocking the stated goal". The primary flow was never
+    seen. It is the fault the whole session exists to kill, relocated from the
+    alsoChecked line into a tooltip — and it was the NORMAL path, because an
+    all-untested ledger is scored MEDIUM by design.
+
+    The cure is not better copy for MEDIUM. It is that the sentence is decided
+    where the score is, off the same ledger, and merely READ here."""
+
+    def _title(self, card, cls):
+        hits = _cls_of(card, cls)
+        self.assertTrue(hits, "no element with %r on the card" % cls)
+        return hits[0].get("title") or ""
+
+    def test_the_recorded_meaning_is_what_the_pill_says(self):
+        said = ("I could not check anything on your list, so nothing here is "
+                "vouched for")
+        card = self.card(numberOne={"meaning": said})
+        self.assertEqual(said, self._title(card, " xo-score "))
+
+    def test_and_it_never_claims_a_flow_nobody_saw(self):
+        card = self.card(numberOne={
+            "meaning": "I could not check anything on your list, so nothing "
+                       "here is vouched for"})
+        self.assertNotIn("primary flow works", self._title(card, " xo-score "))
+
+    def test_a_mission_with_nothing_recorded_still_gets_the_plain_meaning(self):
+        """A card scored before this round, or a REMOTE one whose score came
+        off a GitHub label: the word's general meaning is the last resort, and
+        it is still there. A blank tooltip would be its own defect."""
+        card = self.card(numberOne={"meaning": None})
+        self.assertTrue(self._title(card, " xo-score ").strip())
 
 
 class TabBase(unittest.TestCase):
@@ -336,6 +412,29 @@ class C3_EveryCriterionSaysHowItWasSettled(TabBase):
         row = _cls_of(out["pane"], " xo-crit-row ")[0]
         self.assertIn("your tests", _all_text(row))
         self.assertNotIn("a picture", _all_text(row))
+
+
+class D4_TheTabSaysTheSameThingAsTheCard(TabBase):
+
+    def _word_title(self, out):
+        words = _cls_of(out["pane"], " xo-score-word ")
+        self.assertTrue(words, "the tab has no score word at all")
+        return words[0].get("title") or ""
+
+    def test_the_tab_reads_the_ledgers_own_sentence(self):
+        said = ("I could not check anything on your list, so nothing here is "
+                "vouched for")
+        self.assertEqual(said,
+                         self._word_title(self.mi(verdict={"scoreMeaning": said})))
+
+    def test_and_never_the_fixed_sentence_about_a_primary_flow(self):
+        out = self.mi(verdict={
+            "scoreMeaning": "I could not check anything on your list, so "
+                            "nothing here is vouched for"})
+        self.assertNotIn("primary flow works", self._word_title(out))
+
+    def test_an_older_verdict_with_no_recorded_meaning_still_explains_itself(self):
+        self.assertTrue(self._word_title(self.mi()).strip())
 
 
 class C8_NoSurfaceContradictsTheScore(TabBase):

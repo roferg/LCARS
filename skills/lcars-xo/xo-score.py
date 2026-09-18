@@ -85,6 +85,7 @@ the look, and a look that skipped part of it is a look with a hole in it.
 Output on stdout, one TAB-separated record per line, for the shell to read:
   MALFORMED <why>                 | SCORE <s> / WORKER_SCORE <s> / DISAGREED yes|no
   WHY <the derivation, in words>  | COUNTS <met> <gap> <untested> <contradictions>
+  MEANING <what the score word means for THIS ledger — never a fixed sentence>
 """
 import json
 import os
@@ -697,12 +698,28 @@ def main():
             return "".join(names)
         return ", ".join(names[:-1]) + " and " + names[-1]
 
+    # --- WHAT THE SCORE WORD MEANS, off the SAME LEDGER ----------------------
+    # THE BUG THIS CLOSES (S213 fix round 1, D4). The three score words carried
+    # a fixed sentence apiece, written into the board's stylesheet-side code:
+    # MEDIUM always read "the primary flow works end to end; some criteria gap
+    # or could not be tested". On a mission whose verdict was "nothing could be
+    # tested — the calculator never rendered", with every criterion untested,
+    # the captain hovered MEDIUM and was told the primary flow worked. Nobody
+    # ever saw that flow. It is the exact fault this session exists to kill,
+    # relocated from a line of copy into a tooltip.
+    #
+    # So the sentence is DECIDED HERE, in the same breath as the score, off the
+    # same ledger, by the same rule — not inferred at the surface from the
+    # verdict's prose. A meaning derived from the counts cannot claim something
+    # the counts do not support.
     primary_hit = sorted(contradicted & primary)
     if primary_hit:
         score = "low"
         why = ("the build does not do what the PRD itself asks for — %s (%s). "
                "What you set out to get is not there yet."
                % (name_list(primary_hit), ", ".join(primary_hit)))
+        meaning = ("What you set out to get is not in the build — look for "
+                   "yourself before this goes anywhere")
     elif contradicted:
         score = "medium"
         hits = sorted(contradicted)
@@ -712,6 +729,9 @@ def main():
                % (len(hits), "" if len(hits) == 1 else "s",
                   "does" if len(hits) == 1 else "do",
                   name_list(hits), ", ".join(hits)))
+        meaning = ("The main flow works; %d thing%s does not match what you "
+                   "asked for, and none of them is from the PRD itself"
+                   % (len(hits), "" if len(hits) == 1 else "s do"))
     elif untested:
         score = "medium"
         why = ("nothing in the build contradicts what you asked for, but there %s %d thing%s "
@@ -719,8 +739,20 @@ def main():
                "of what I could not see."
                % ("is" if untested == 1 else "are", untested,
                   "" if untested == 1 else "s"))
+        # NOT A WORD ABOUT A FLOW NOBODY SAW. When the whole list went unchecked
+        # there is no "main flow works" to be had, and the sentence says so.
+        if met == 0 and gap == 0:
+            meaning = ("I could not check anything on your list, so nothing "
+                       "here is vouched for — this is not a clean bill of "
+                       "health")
+        else:
+            meaning = ("What I could check holds up; %d thing%s on your list I "
+                       "could not check at all"
+                       % (untested, "" if untested == 1 else "s"))
     elif gap:
         score = "medium"
+        meaning = ("Nothing you wrote down is contradicted; %d thing%s short "
+                   "of the mark" % (gap, " is" if gap == 1 else "s are"))
         why = ("%d thing%s I am reporting as short of the mark, but %s contradicts anything "
                "you wrote down — so I am showing you %s rather than filing %s against the "
                "build." % (gap, "" if gap == 1 else "s",
@@ -730,12 +762,18 @@ def main():
     else:
         score = "high"
         why = "everything you asked for is in the build, and I have a picture of each one."
+        meaning = ("Everything you asked for is in the build and I have a "
+                   "picture of each one — ship as is")
 
     out = {
         "score": score,
         "workerScore": worker_score,
         "scoreDisagreed": score != worker_score,
         "derivation": why,
+        # The score word's own meaning, decided beside the score off the same
+        # ledger, so a surface can never explain MEDIUM with something the
+        # ledger does not support (S213 fix round 1, D4).
+        "scoreMeaning": meaning,
         "counts": {"met": met, "gap": gap, "untested": untested,
                    "contradictions": len(contradicted)},
         "criteria": ledger,
@@ -893,6 +931,7 @@ def main():
     print("WORKER_SCORE\t" + worker_score)
     print("DISAGREED\t" + ("yes" if score != worker_score else "no"))
     print("WHY\t" + why)
+    print("MEANING\t" + meaning.replace("\n", " "))
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))
     print("SUMMARY\t" + summary.replace("\n", " "))
     if observations is not None:

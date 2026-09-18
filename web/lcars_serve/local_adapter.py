@@ -2021,6 +2021,13 @@ class LocalAdapter(object):
                 line = _xo_recorded_derivation(d)
                 if line:
                     xo["headline"] = line
+            # S213 fix round 1, D4 — and the score word's own meaning, on the
+            # same footing: recorded beside the score in the mission's own
+            # verdict.json, never a sentence the board keeps for the word.
+            if "meaning" not in xo:
+                said = _xo_recorded_meaning(d)
+                if said:
+                    xo["meaning"] = said
             card["numberOne"] = xo
         return card
 
@@ -2569,6 +2576,24 @@ def _xo_recorded_derivation(mission_dir):
         return ""
     line = doc.get("derivation")
     return line.strip() if isinstance(line, str) and line.strip() else ""
+
+
+def _xo_recorded_meaning(mission_dir):
+    """What the score WORD means for this mission, as its own `xo/verdict.json`
+    records it (`scoreMeaning`) — written beside the score by the code that
+    decided the score. Read back, never re-derived: a meaning inferred at the
+    surface from the verdict's prose is how MEDIUM came to tell the captain his
+    primary flow worked on a mission where nothing could be tested."""
+    try:
+        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    said = doc.get("scoreMeaning")
+    return said.strip() if isinstance(said, str) and said.strip() else ""
 
 
 def _activity_sort_key(entry):

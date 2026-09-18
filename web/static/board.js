@@ -557,6 +557,32 @@ function xoHeadline(m) {
   return h || "";
 }
 
+/* AND IT IS ONE LINE AT ANY LENGTH (S213 fix round 1).
+
+   A verdict of 2,673 characters was planted on a card and the card drew all of
+   them — 91 wrapped lines, 1,752 px tall in a 200 px column, every other
+   mission pushed off the screen. The one-line card was never structural; it
+   held only while the derivation happened to be short, and a rambling worker
+   `why` is exactly the shape this session exists to survive.
+
+   The sheet clamps the line to ONE visually (.xo-verdict-line), which is what
+   the captain's browser does. This is the other half: the card's DOM never
+   carries a transcript in the first place, so nothing depends on a stylesheet
+   having loaded, and the text a machine reads off the card is the text a
+   person sees. The cut is at a word boundary with an ellipsis, and the WHOLE
+   sentence is one click away on the tab — plus on the card's own tooltip, so
+   nothing said here is ever lost, only deferred. */
+var XO_CARD_LINE_MAX = 200;
+
+function xoCardLine(text) {
+  var s = String(text || "").replace(/\s+/g, " ").trim();
+  if (s.length <= XO_CARD_LINE_MAX) return s;
+  var cut = s.slice(0, XO_CARD_LINE_MAX);
+  var space = cut.lastIndexOf(" ");
+  if (space > 40) cut = cut.slice(0, space);
+  return cut.replace(/[\s,;:.\u2014-]+$/, "") + "…";
+}
+
 /* WHAT IT IS DOING NOW, in one line, COMPOSED FROM THE RECORD and from nothing
    else. There is no free-text "activity" field on this shape and there
    deliberately is not one: a line assembled from {status, engine, score} can
@@ -635,13 +661,39 @@ function xoScorePill(m) {
   if (!s) return null;
   var pill = el("span", "pill xo-score s-" + s,
                 "◈ NUMBER ONE · " + XO_SCORE_WORD[s]);
-  pill.title = XO_SCORE_MEANING[s];
+  pill.title = xoScoreMeaning(m, s);
   return pill;
 }
 
-/* The three meanings, in the captain's words, as the pill's tooltip. The pill
-   says the verdict; the tooltip says what the verdict MEANS, so nobody has to
-   remember which of three words is the good one. */
+/* WHAT THE WORD MEANS **HERE** (S213 fix round 1, D4).
+
+   THE FAULT THIS CLOSES, measured on the captain's own board: a mission whose
+   verdict was "nothing could be tested — the calculator never rendered", every
+   criterion untested, wore MEDIUM — and MEDIUM's tooltip told him, verbatim,
+   "The primary flow works end to end". Nobody ever saw that flow. It is the
+   exact fault this session exists to kill, relocated from a line of copy into
+   a tooltip, and it was the NORMAL path: xo-score.py scores an all-untested
+   ledger MEDIUM by design.
+
+   So the sentence is RECORDED AT THE PRODUCER, beside the score, off the same
+   ledger, by the same rule (`scoreMeaning` in the verdict, `meaning` on the
+   board shape) — and read here. It is never parsed out of the verdict's prose:
+   deciding at the surface what a paragraph meant is the class of defect this
+   whole session exists to remove.
+
+   The three fixed sentences below stay as the LAST RESORT for a mission scored
+   before this round whose verdict.json is gone, and for a REMOTE card whose
+   score came off a GitHub label with no record behind it. They are what the
+   word means in general — never a claim about this mission. */
+function xoScoreMeaning(m, s) {
+  var x = xoBlock(m);
+  var said = x && x.meaning ? String(x.meaning).trim() : "";
+  return said || XO_SCORE_MEANING[s] || "";
+}
+
+/* The three meanings, in the captain's words. The pill says the verdict; the
+   tooltip says what the verdict MEANS, so nobody has to remember which of
+   three words is the good one. */
 var XO_SCORE_MEANING = {
   high: "Every criterion met and the drawing matched — ship as is",
   medium: "The primary flow works end to end; some criteria gap or could not "
@@ -690,7 +742,13 @@ function xoNode(m) {
     var srow = el("div", "pills xo-pills");
     srow.appendChild(score);
     wrap.appendChild(srow);
-    if (headline) wrap.appendChild(el("div", "xo-verdict-line", headline));
+    if (headline) {
+      var vline = el("div", "xo-verdict-line", xoCardLine(headline));
+      // The full sentence, for anyone who hovers — the card shows a line, it
+      // never withholds one.
+      vline.title = headline;
+      wrap.appendChild(vline);
+    }
     // The note, unless this is the ENGAGED status whose note is the transcript.
     if (!xoEngaged(m)) {
       var scoredNote = xoNote(m);
@@ -10109,7 +10167,13 @@ function xoReportPane(mi) {
   var head = el("div", "xo-score-block");
   var word = el("span", "xo-score-word s-" + (XO_SCORE_WORD[score] ? score : "unknown"),
                 XO_SCORE_WORD[score] || "NOT SCORED");
-  word.title = XO_SCORE_MEANING[score] || "";
+  // The ledger's own sentence about this score, preferred over the generic
+  // meaning of the word — the verdict on the tab carries `scoreMeaning`, and
+  // the card's block carries the same string as `meaning` (S213 fix round 1).
+  word.title = (typeof verdict.scoreMeaning === "string"
+                && verdict.scoreMeaning.trim())
+    ? verdict.scoreMeaning.trim()
+    : xoScoreMeaning(mi, score);
   head.appendChild(word);
   if (xo.engine) head.appendChild(el("span", "pill xo", "◈ " + engineLabel(xo.engine)));
   var counts = verdict.counts && typeof verdict.counts === "object"

@@ -1020,6 +1020,70 @@ check "W5. CONTROL — …and its sentence names no packages, because none were 
   "! jget '$WS/w5.json' 'd[\"verdict\"]' | grep -q 'packages'"
 
 # ==========================================================================
+# S213 FIX ROUND 1, D4 — THE SCORE WORD MAY NOT ASSERT A FLOW NOBODY SAW.
+#
+# Measured on the captain's real board: a mission whose verdict was "nothing
+# could be tested — the calculator never rendered", every criterion untested,
+# wore MEDIUM, and MEDIUM's own hover text read "The primary flow works end to
+# end; some criteria gap or could not be tested, none blocking the stated
+# goal". Nobody ever saw that flow. It is the fault this whole session exists
+# to kill, relocated from a line of copy into a tooltip — and it is the NORMAL
+# path, because xo-score.py scores an all-untested ledger MEDIUM by design.
+#
+# So the sentence is decided HERE, beside the score, off the same ledger. These
+# are the producer's half; the surfaces' half is web/tests/test_xo_surfaces.py.
+# ==========================================================================
+echo
+echo "S213 D4 — what the score word MEANS is recorded, not assumed"
+
+MDIR="$TMPROOT/meaning"; mkdir -p "$MDIR"
+printf '{"criteria":[{"id":"prd-1","text":"the calculator adds","primary":true},{"id":"prd-2","text":"it subtracts","primary":true}],"hasDrawing":true}\n' >"$MDIR/criteria.json"
+
+meaning_of() { # <ledger-json> <outdir>
+  mkdir -p "$2"
+  printf '%s\n' "$1" >"$2/in.json"
+  "$PY" "$SCOREPY" "$2/in.json" "$MDIR/criteria.json" "$2/verdict.json" \
+        "" "" >"$2/out.tsv" 2>"$2/err.txt"
+  "$PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("scoreMeaning",""))' \
+        "$2/verdict.json"
+}
+
+CRIT() { # <id> <status> — a MET line carries the PICTURE that settled it, or
+         # the no-drawing guard rightly demotes it and every ledger here would
+         # be all-untested, controls included.
+  if [ "$2" = "met" ]; then
+    printf '{"id":"%s","text":"a thing you asked for","status":"met","evidence":"picture","shot":"shot-01","note":"I saw it"}' "$1"
+  else
+    printf '{"id":"%s","text":"a thing you asked for","status":"%s","note":"n"}' "$1" "$2"
+  fi
+}
+
+# THE MISSION FROM THE BOARD: nothing could be tested at all.
+none_said="$(meaning_of "{\"score\":\"medium\",\"summary\":\"The calculator never rendered.\",\"criteria\":[$(CRIT prd-1 untested),$(CRIT prd-2 untested)],\"gaps\":[],\"alsoChecked\":[],\"escalations\":[]}" "$MDIR/none")"
+check "D4 an all-untested ledger NEVER claims the primary flow works" \
+  "! printf '%s' \"$none_said\" | grep -qi 'flow work'"
+check "D4 …it says what actually happened to him: nothing was checked" \
+  "printf '%s' \"$none_said\" | grep -qi 'could not check anything'"
+check "D4 …and the tab reads the same recorded sentence, not one it derived" \
+  "[ \"\$(\"$PY\" -c 'import json,sys;print(json.load(open(sys.argv[1]))[\"scoreMeaning\"])' '$MDIR/none/verdict.json')\" = \"$none_said\" ]"
+check "D4 …the score itself is unchanged by any of this" \
+  "grep -q '^SCORE'\$'\\t''medium' '$MDIR/none/out.tsv'"
+check "D4 …and the sentence rides the shell contract too, for state.json" \
+  "grep -q '^MEANING'\$'\\t' '$MDIR/none/out.tsv'"
+
+# CONTROL — a ledger where things WERE checked says so, and differently.
+some_said="$(meaning_of "{\"score\":\"medium\",\"summary\":\"Most of it works.\",\"criteria\":[$(CRIT prd-1 met),$(CRIT prd-2 untested)],\"gaps\":[],\"alsoChecked\":[],\"escalations\":[]}" "$MDIR/some")"
+check "D4 CONTROL — a ledger with something checked gets a DIFFERENT sentence" \
+  "[ -n \"$some_said\" ] && [ \"$some_said\" != \"$none_said\" ]"
+check "D4 CONTROL — …and it still never over-claims a flow" \
+  "! printf '%s' \"$some_said\" | grep -qi 'flow work'"
+
+# CONTROL — a clean sweep is allowed to say so.
+all_said="$(meaning_of "{\"score\":\"high\",\"summary\":\"All good.\",\"criteria\":[$(CRIT prd-1 met),$(CRIT prd-2 met)],\"gaps\":[],\"alsoChecked\":[],\"escalations\":[]}" "$MDIR/all")"
+check "D4 CONTROL — everything met still reads as ship-as-is" \
+  "printf '%s' \"$all_said\" | grep -qi 'ship as is'"
+
+# ==========================================================================
 echo
 printf 'lcars xo-evidence: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

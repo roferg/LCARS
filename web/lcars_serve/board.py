@@ -561,11 +561,17 @@ def assemble(cards, meta=None):
 # It is the sentence `xo-score.py` derives off the ledger in the same breath as
 # the score, so the line and the score on that card cannot disagree with each
 # other (C8). It is never a truncation of the worker's own prose.
-_XO_FIELDS = ("status", "engine", "since", "note", "score", "headline")
+# S213 fix round 1 — `meaning` is what the SCORE WORD means for THIS ledger,
+# decided by xo-score.py in the same breath as the score. The board used to
+# explain MEDIUM with one fixed sentence about a primary flow working end to
+# end, and showed it over a mission where nothing could be tested at all.
+_XO_FIELDS = ("status", "engine", "since", "note", "score", "headline",
+              "meaning")
 
 
 def xo_block(value):
-    """{status, engine, since, note, score, headline} for the card, or None."""
+    """{status, engine, since, note, score, headline, meaning} for the card,
+    or None."""
     if not isinstance(value, dict):
         return None
     out = {}

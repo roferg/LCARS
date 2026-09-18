@@ -669,6 +669,8 @@ XO_RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.s
 # The malformed-verdict note, in ONE place: it is asserted by the suite and read
 # by the captain off the card, so the two must be the same string.
 XO_MALFORMED="Number One could not decide — malformed verdict"
+# S213 fix round 1, D4 — what a LOW means when the look never happened at all.
+XO_NOLOOK="I never got to look at your build, so nothing on your list is vouched for either way"
 
 pending_field() { # <pending.json> <key>
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
@@ -1430,8 +1432,8 @@ xo_mirror() { # <mission-id>
 # never a cut-down of the worker's prose: a truncation is this harness deciding
 # what Number One meant, which is exactly the fault S213 exists to kill.
 # Omitted (and any stale one deleted) when there is no derivation to record.
-xo_finish() { # <mission-dir> <score> <status> <why> [<headline>]
-  local dir="$1" score="$2" status="$3" why="$4" headline="${5:-}" st obj id
+xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>]
+  local dir="$1" score="$2" status="$3" why="$4" headline="${5:-}" meaning="${6:-}" st obj id
   st="$dir/state.json"; id="$(basename "$dir")"
   obj="$(state_xo_block "$st")"
   obj="$(obj_set "$obj" status "$(jstr "$status")")"
@@ -1440,6 +1442,16 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>]
     obj="$(obj_set "$obj" headline "$(jstr "$headline")")"
   else
     obj="$(obj_del "$obj" headline)"
+  fi
+  # S213 fix round 1, D4 — WHAT THE SCORE WORD MEANS, as the ledger decided it.
+  # The board used to explain MEDIUM with one fixed sentence about a primary
+  # flow working, and said it over a mission where nothing could be tested at
+  # all. The sentence is now recorded beside the score it belongs to, by the
+  # code that decided the score, so no surface has to guess.
+  if [ -n "$meaning" ]; then
+    obj="$(obj_set "$obj" meaning "$(jstr "$meaning")")"
+  else
+    obj="$(obj_del "$obj" meaning)"
   fi
   obj="$(obj_set "$obj" evaluatedAt "$(jstr "$NOW")")"
   obj="$(obj_set "$obj" lastAction "$(jstr "looked $NOW_LOCAL")")"
@@ -1592,10 +1604,10 @@ cmd_evaluate() {
     else
       why="your build did not start — ${lmsg:-nothing came up (status ${lstatus:-unknown})}"
     fi
-    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
-      "$(jstr "$why")" "$(jstr "$why")" >"$xodir/verdict.json"
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+      "$(jstr "$why")" "$(jstr "$XO_NOLOOK")" "$(jstr "$why")" >"$xodir/verdict.json"
     rm -f "$dir/xo.pid"; trap - TERM INT
-    xo_finish "$dir" low engaged "$why" "$why"
+    xo_finish "$dir" low engaged "$why" "$why" "$XO_NOLOOK"
     return 0
   fi
   printf '  the build is up at %s\n' "$lurl"
@@ -1625,9 +1637,9 @@ cmd_evaluate() {
     local why="could not look: the browser could not be started ($(head -1 "$xodir/drive-0.err" 2>/dev/null))"
     xo_stop_launch
     rm -f "$dir/xo.pid"; trap - TERM INT
-    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
-      "$(jstr "$why")" "$(jstr "$why")" >"$xodir/verdict.json"
-    xo_finish "$dir" low engaged "$why" "$why"
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+      "$(jstr "$why")" "$(jstr "$XO_NOLOOK")" "$(jstr "$why")" >"$xodir/verdict.json"
+    xo_finish "$dir" low engaged "$why" "$why" "$XO_NOLOOK"
     return 0
   fi
   # THE DIRECTORY IS PART OF THE RECORD (fix round 2, D1): a verdict is only as
@@ -1766,10 +1778,11 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   if [ -z "$verdict" ]; then
     # THREE ROUNDS, NO VERDICT. A judge that will not decide is not a pass.
     local why="Number One could not reach a verdict in $XO_MAX_ROUNDS rounds"
-    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "sawShots": %s,\n  "summary": %s\n}\n' \
-      "$(jstr "$why")" "$(jstr "$shotlist")" \
+    local nodecide="I looked but never reached a verdict, so nothing on your list is vouched for either way"
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "sawShots": %s,\n  "summary": %s\n}\n' \
+      "$(jstr "$why")" "$(jstr "$nodecide")" "$(jstr "$shotlist")" \
       "$(jstr "$why — it looked at: ${shotlist:-nothing}")" >"$xodir/verdict.json"
-    xo_finish "$dir" low engaged "$why — it looked at: ${shotlist:-nothing}" "$why"
+    xo_finish "$dir" low engaged "$why — it looked at: ${shotlist:-nothing}" "$why" "$nodecide"
     xo_rm_work "$work"; XO_WORK_DIR=""
     return 0
   fi
@@ -1778,7 +1791,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   local report
   report="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
               "$xodir/verdict.json" "$obsfile" "$testsfile" 2>/dev/null)" || report=""
-  local score="" wscore="" disagreed="" why="" summary="" line key val
+  local score="" wscore="" disagreed="" why="" summary="" meaning="" line key val
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="${line%%$'\t'*}"; val="${line#*$'\t'}"
@@ -1788,6 +1801,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       WORKER_SCORE) wscore="$val" ;;
       DISAGREED)    disagreed="$val" ;;
       WHY)          why="$val" ;;
+      MEANING)      meaning="$val" ;;
       SUMMARY)      summary="$val" ;;
       NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
     esac
@@ -1797,9 +1811,10 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
     # A verdict that cannot be read is not a verdict. It is a LOW that says so,
     # and it stays engaged — the captain looks himself.
     local mw="${why:-$XO_MALFORMED}"
-    printf '{\n  "score": "low",\n  "derivation": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
-      "$(jstr "$mw")" "$(jstr "$mw")" >"$xodir/verdict.json"
-    xo_finish "$dir" low engaged "$mw" "$mw"
+    local unreadable="I could not read back my own verdict, so there is nothing here to go on — look yourself"
+    printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+      "$(jstr "$mw")" "$(jstr "$unreadable")" "$(jstr "$mw")" >"$xodir/verdict.json"
+    xo_finish "$dir" low engaged "$mw" "$mw" "$unreadable"
     xo_rm_work "$work"; XO_WORK_DIR=""
     return 0
   fi
@@ -1819,7 +1834,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   # leaves it ENGAGED — there are gaps, and S204 is the round that acts on them.
   local status=engaged
   [ "$score" = "high" ] && status=finished
-  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why"
+  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why" "$meaning"
   xo_rm_work "$work"; XO_WORK_DIR=""
 
   # --- 8. THE FIX ROUND (S204) ---------------------------------------------

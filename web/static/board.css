@@ -3037,8 +3037,21 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 
 /* ── the CARD's signal ──────────────────────────────────────────────── */
 .xo-block.xo-signal{margin:0 0 8px}
+/* ONE LINE, AT ANY LENGTH (S213 fix round 1). A verdict of 2,673 characters
+   was planted on a card and the card drew all 2,673 of them: 91 wrapped lines,
+   1,752 px tall in a 200 px column, every other mission pushed off the screen.
+   Nothing here truncated at any length — no clamp, overflow visible, no
+   ellipsis — so "the card is a signal" held only while the sentence happened
+   to be short. It is now structural: one line, an ellipsis where it stops, and
+   `⊙ Read the full report →` underneath for the rest. Both spellings of the
+   clamp are here (the -webkit- prefixed property is the one every shipping
+   browser implements; `line-clamp` is the standard one) and `max-height` is
+   the floor under both, so a browser that honours neither still cannot draw a
+   transcript. */
 .xo-verdict-line{color:var(--lcars-text-bright);font-size:12px;line-height:1.45;
-  margin:2px 0 6px}
+  margin:2px 0 6px;display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:1;line-clamp:1;overflow:hidden;text-overflow:ellipsis;
+  max-height:1.45em;overflow-wrap:anywhere}
 .card-ctrl .btn.xo-read-report,.btn.xo-read-report{
   background:var(--lcars-peach);color:var(--lcars-black,#030608);
   border-color:var(--lcars-peach);font-weight:700;font-size:10px;
@@ -3156,4 +3169,34 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   .xo-crit-row{grid-template-columns:1fr;gap:3px}
   .xo-crit-verdict,.xo-crit-how{white-space:normal}
   .btn.xo-seen{margin-left:0}
+  /* …AND THE TAB BAR ABOVE IT WRAPS RATHER THAN SETTING THE WIDTH.
+     S213 fix round 1, D5: a row of four tabs that will not wrap has a
+     min-content width of its own, and a flex item is never allowed to shrink
+     below that — so the whole surface grows to fit the BAR, the overlay
+     centres the result, and the half that overflows to the LEFT cannot be
+     scrolled to at all. That is how a 390 px phone came to show a 605 px
+     report with the score word off the left edge. */
+  .tabbar{flex-wrap:wrap}
 }
+
+/* ── S213 fix round 1, D5: THE REPORT FITS THE PHONE IT IS READ ON ──────────
+   Measured at a true 390 CSS px viewport: the ◈ Number One report rendered
+   605 px wide, every verdict line cut off at BOTH edges and the MEDIUM score
+   itself scrolled off to the left, while "1 THING I COULD NOT CHECK" stayed
+   visible. A surface that hides its own verdict defeats C1 and C2.
+
+   THE MECHANISM, and it is the reason these three rules are structural rather
+   than cosmetic: `.overlay-stage` is a flex row and the panel inside it is a
+   flex item, so its automatic minimum size is its own MIN-CONTENT width. Any
+   one child that cannot get narrower — a tab bar that will not wrap, an
+   unbreakable path, a picture at its natural size — silently sets the width of
+   the whole surface, and `justify-content:center` then overflows it EQUALLY IN
+   BOTH DIRECTIONS. The left half of a centred overflow is unreachable: there
+   is no scroll that goes there. So the floor comes off, and the things that
+   can be wide are told to wrap, break or scroll INSIDE their own box. */
+.overlay-stage,.modal,.detail-grid,.tabs,.tabpane,.xo-pane{min-width:0}
+.det-head h3{overflow-wrap:anywhere;min-width:0}
+.xo-lede,.xo-full,.xo-crit-text,.xo-crit-note,.xo-also-line,.xo-also-why,
+.xo-entry-say,.xo-mname{overflow-wrap:anywhere}
+/* A picture is evidence, not a ruler: it fits the column it is read in. */
+.xo-pane img,.xo-shot img,.tabpane img{max-width:100%;height:auto}

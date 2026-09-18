@@ -508,50 +508,7 @@ def adjacency_gap(a, b):
     return None
 
 
-# ── what a layout SPACES on purpose (S213) ───────────────────────────────
-def neighbour_gaps(elements):
-    """Every NEIGHBOUR gap on the page, grouped by the layout run it belongs to.
-
-    A RUN is the set of interactive elements that share one container — read off
-    the DOM path the driver recorded, a LOOKUP, never inferred from the boxes.
-    Its neighbours are the consecutive members along the axis they are laid out
-    on, and the gaps between those are the rhythm that container was written to.
-
-    Deliberately NOT keyed on family: a tab bar's selected tab carries a
-    different class from its unselected ones, and keying on class would have let
-    exactly the tab bar this exists to forgive escape through the gap.
-
-    Returns {(parent, axis): [(id(a), id(b), gap), …]}.
-    """
-    runs = {}
-    inter = [e for e in elements if e.get("interactive") and e.get("box")]
-    for e in inter:
-        p = parent_path(e)
-        if p is None:
-            continue
-        runs.setdefault(p, []).append(e)
-    out = {}
-    for parent, members in runs.items():
-        if len(members) < 2:
-            continue
-        for axis, sort_key in (("row", lambda e: e["box"]["x"]),
-                               ("column", lambda e: e["box"]["y"])):
-            ordered = sorted(members, key=sort_key)
-            gaps = []
-            for a, b in zip(ordered, ordered[1:]):
-                if nested(a, b) or intersects(a["box"], b["box"]):
-                    continue
-                g = adjacency_gap(a["box"], b["box"])
-                if g is None:
-                    continue
-                if pair_axis(a, b) != axis:
-                    continue
-                gaps.append((id(a), id(b), g))
-            if gaps:
-                out[(parent, axis)] = gaps
-    return out
-
-
+# ── what a page DECLARES about its own controls (S213 fix round 1) ───────
 def pair_axis(a, b):
     """'row' when these two sit beside each other, 'column' when one is under
     the other — the same test adjacency_gap already makes to decide which gap it
@@ -561,50 +518,46 @@ def pair_axis(a, b):
     return "row" if min(ay2, by2) - max(ay1, by1) > 0 else "column"
 
 
-def deliberate_spacing(a, b, gap, runs):
-    """True when this gap is the SPACING ITS OWN LAYOUT USES — in which case it
-    is a design decision, not a fault, whatever the number is.
+def same_segment(a, b):
+    """True when the page DECLARES these two controls to be parts of one
+    segmented control — a `role="tablist"` tab bar, a `role="toolbar"`, a
+    radiogroup or `<fieldset>` of radios, a menubar, an explicit `role="group"`,
+    or a set of controls each carrying `role="tab"` / `aria-selected`.
 
-    THE BUG THIS CLOSES (measured on a real tile-map editor, S213). The rule was
-    an absolute floor: any two controls closer than 8 px were "crowded". Real
-    interfaces put 2, 4 and 6 px between neighbours on purpose all day long, so
-    the floor fired on a perfectly ordinary toolbar, on a tab bar, and on seven
-    rows of a tight list — four complaints, none of them true, all in one look.
-    An absolute number cannot tell deliberate spacing from a mistake, and never
-    could: there is no value that is wrong on every screen.
+    THE CAPTAIN'S RULING, 2026-09-17: sibling controls touching inside one of
+    those are DELIBERATE — a flush tab bar is a tab bar, not a fault — so they
+    are silent whether they touch or sit 4 px apart.
 
-    What IS evidence is the layout disagreeing with itself. A row of buttons
-    every one of which sits 4 px from the next was written that way. One pair
-    sitting 2 px apart in a list whose other rows sit 12 px apart was not.
+    IT IS A DECLARATION THE BROWSER CAN READ, NEVER A GEOMETRY GUESS. That
+    distinction is the whole fix. The round before this one tried to tell
+    deliberate spacing from a mistake by comparing a gap with its neighbours'
+    rhythm, and INVERTED the detector: on a uniformly tight page 1, 3 and 6 px
+    IS the rhythm, so every genuinely cramped pair was forgiven, while the one
+    case the captain had exempted — a flush tab bar at 0 px — was the one thing
+    that could still fire. A fact the page states about itself cannot invert
+    like that: a bar either says it is a tab bar or it does not.
 
-    So: a gap that is not tighter than its own run's other neighbour gaps is
-    deliberate. TOUCHING is never covered by this — zero is not a spacing
-    anybody chooses for two controls with nothing between them, and it is the
-    captain's original complaint ("buttons with no spacing between them are
-    smooshed together"), so it keeps its own arm in detect_crowding.
-
-    THE CAPTAIN'S RULING, 2026-09-17: a flush tab bar / segmented control is not
-    a crowding fault. A tab bar's tabs sit at the one spacing its bar uses, so
-    this rule already forgives it, at 4 px as at 0. What it does not forgive is
-    two controls TOUCHING with nothing else around them to establish that
-    touching is the intent — see the report; that one is left visible on purpose
-    rather than guessed at.
-    """
-    run = runs.get((parent_path(a), pair_axis(a, b)))
-    if not run:
-        return False          # nothing laid these out together — no rhythm to appeal to
-    mine = (id(a), id(b))
-    others = [g for (ia, ib, g) in run if (ia, ib) != mine and (ib, ia) != mine]
-    if not others:
-        return True           # a lone pair at its container's one gap IS that gap
-    return gap >= min(others)
+    `segment` is recorded per element by xo-drive.js: the declaring ancestor's
+    own DOM path plus what it declared. Two controls are in one segmented
+    control when, and only when, those two strings are equal — so a tab bar and
+    a separate segmented control 60 px below it never forgive each other."""
+    sa, sb = a.get("segment"), b.get("segment")
+    return bool(sa) and isinstance(sa, str) and sa == sb
 
 
 # ── the four detectors ──────────────────────────────────────────────────
 def detect_crowding(elements, gap_px):
+    """Two controls closer than the floor are crowded — UNLESS the page has
+    declared them parts of one segmented control (same_segment).
+
+    THE FLOOR IS BACK, and on purpose. It is the captain's own complaint
+    ("buttons that have no spacing between them are smooshed together"), and
+    the round that replaced it with a rhythm comparison silenced every real
+    case: a cramped page's tightness became its own excuse. A declaration is
+    what earns silence now — a tab bar says it is a tab bar — and anything
+    that has not said so is measured against the one number again."""
     out = []
     inter = [e for e in elements if e.get("interactive") and e.get("box")]
-    runs = neighbour_gaps(inter)
     for i in range(len(inter)):
         for j in range(i + 1, len(inter)):
             a, b = inter[i], inter[j]
@@ -615,15 +568,14 @@ def detect_crowding(elements, gap_px):
             gap = adjacency_gap(a["box"], b["box"])
             if gap is None or gap >= gap_px:
                 continue
-            # S213 — a gap its own layout uses everywhere is spacing somebody
-            # chose, not crowding. Touching is never spacing anybody chose.
-            if gap > 0 and deliberate_spacing(a, b, gap, runs):
+            # S213 — the page's own declaration: parts of one segmented control
+            # are MEANT to sit flush. Touching or 4 px apart, a tab bar is a tab
+            # bar. Nothing else buys silence.
+            if same_segment(a, b):
                 continue
             px = max(gap, 0)
             verb = "touching" if px == 0 else "crowded together"
-            ax1, ay1, ax2, ay2 = edges(a["box"])
-            bx1, by1, bx2, by2 = edges(b["box"])
-            axis = "row" if min(ay2, by2) - max(ay1, by1) > 0 else "column"
+            axis = pair_axis(a, b)
             out.append({
                 "kind": "crowding", "px": px, "axis": axis,
                 "group": ("crowding", axis)
@@ -673,8 +625,9 @@ def is_a_column(group):
     there was nothing behind it at all.
 
     Left edges only mean something when there is a stack to line them up
-    against. When the group shares a row instead, we say nothing: from the boxes
-    alone there is no alignment to have an opinion about."""
+    against. This is the FALLBACK, for a container that declares nothing about
+    how it lays its children out; when it does declare (declared_axis), the
+    declaration is read instead of this."""
     for i in range(len(group)):
         for j in range(i + 1, len(group)):
             a, b = group[i]["box"], group[j]["box"]
@@ -685,44 +638,181 @@ def is_a_column(group):
     return True
 
 
+FLEX_DISPLAY = ("flex", "inline-flex")
+
+
+def declared_axis(container):
+    """'row' or 'column' when the container SAYS how it lays its children out —
+    `display:flex` plus its `flex-direction` — and None when it says nothing.
+
+    THE BUG THIS CLOSES (S213 fix round 1). is_a_column correctly killed the
+    false positive above, and over-narrowed doing it: a group was only ever
+    looked at as a column, so a genuinely misaligned item in a HORIZONTAL row
+    drew nothing at all. One button pushed 90 px down its own flex row produced
+    zero findings — the detector had gone blind in the shape it was fixed for.
+    A cure that trades a false positive for a false negative of the same shape
+    is not a cure.
+
+    A row IS checkable; it just is not checkable on left edges. What the row
+    declares is which edge it lines its children up on (declared_edge), and
+    that is a fact read off the container, not a guess made from the boxes."""
+    if not isinstance(container, dict):
+        return None
+    display = str(container.get("display") or "").strip().lower()
+    if display not in FLEX_DISPLAY:
+        return None
+    direction = str(container.get("flexDirection") or "row").strip().lower()
+    return "column" if direction.startswith("column") else "row"
+
+
+# How a flex container says it lines its children up across the row, mapped to
+# the edge that must therefore match. `baseline` is deliberately absent: the
+# text baseline is not in the boxes, so a baseline row is one this pass has NO
+# OPINION about rather than one it guesses at.
+ALIGN_EDGE = {
+    "normal": "top", "stretch": "top", "start": "top", "flex-start": "top",
+    "self-start": "top", "center": "centre", "safe center": "centre",
+    "end": "bottom", "flex-end": "bottom", "self-end": "bottom",
+}
+
+
+def declared_edge(container):
+    """The edge a declared ROW lines its children up on, or None for a row that
+    says something this pass cannot check (baseline, and anything unknown)."""
+    if not isinstance(container, dict):
+        return None
+    return ALIGN_EDGE.get(str(container.get("alignItems") or "").strip().lower())
+
+
+def edge_value(box, edge):
+    """Where this box sits on the edge the row is aligned on."""
+    _, y1, _, y2 = edges(box)
+    if edge == "top":
+        return y1
+    if edge == "bottom":
+        return y2
+    return (y1 + y2) / 2.0
+
+
+def opts_out(member, container):
+    """True when the member itself declares it is NOT aligned like its
+    siblings — `align-self` naming a different edge from the container's
+    `align-items` is the author saying so out loud, and an exception somebody
+    wrote down is never a fault."""
+    own = str(member.get("alignSelf") or "").strip().lower()
+    if not own or own == "auto":
+        return False
+    mine = ALIGN_EDGE.get(own)
+    return mine is not None and mine != declared_edge(container)
+
+
+EDGE_WORD = {"top": "top edge", "centre": "centre", "bottom": "bottom edge"}
+
+
 def detect_misaligned(elements, threshold):
-    """A control whose left edge misses its siblings' by more than N px — a
-    'sibling' is anything sharing this element's tag AND class, which is what
-    a repeated row (a list of tasks, a row of buttons) looks like from the
-    boxes alone — AND ONLY when those siblings really do form a column
-    (is_a_column). A row of identical buttons is not a misaligned anything."""
+    """A control that does not line up with its siblings.
+
+    A 'sibling' is anything sharing this element's PARENT, tag and class — a
+    repeated row (a list of tasks, a row of buttons) as the DOM itself lays it
+    out. Which alignment it is judged on comes from what the container DECLARES
+    (declared_axis), and only falls back to the boxes when it declares nothing:
+
+      · a COLUMN lines up on LEFT edges — one row out of true is the fault;
+      · a ROW lines up on the edge its `align-items` names — top, centre or
+        bottom — and the member that misses that edge is the fault;
+      · a row aligned on the text BASELINE, or a container that says nothing
+        and whose members sit in no clear stack, gets no opinion at all.
+    """
     out = []
+    by_path = {}
+    for e in elements:
+        if isinstance(e.get("path"), str) and e["path"]:
+            by_path[e["path"]] = e
     groups = {}
     for e in elements:
-        cls = (e.get("className") or "").strip()
-        if not cls or not e.get("box"):
+        if not e.get("box"):
             continue
-        groups.setdefault((e.get("tag"), cls), []).append(e)
-    for (_, _), group in groups.items():
+        parent = parent_path(e)
+        cls = (e.get("className") or "").strip()
+        # NO RECORDED PATH — nothing says who these elements' parents are, so
+        # the set they belong to is the one it always was before the DOM could
+        # be consulted: same tag, same class, anywhere on the page. A class is
+        # required there, because without a parent AND without a class there is
+        # nothing at all making these a group.
+        if parent is None and not cls:
+            continue
+        groups.setdefault((parent or "", e.get("tag"), cls), []).append(e)
+    for (parent, _tag, _cls), group in sorted(groups.items(), key=lambda kv: str(kv[0])):
         if len(group) < 2:
             continue
-        if not is_a_column(group):
+        container = by_path.get(parent)
+        axis = declared_axis(container)
+        if axis is None:
+            axis = "column" if is_a_column(group) else None
+        if axis == "column":
+            out.extend(_column_faults(group, threshold))
+        elif axis == "row":
+            out.extend(_row_faults(group, container, threshold))
+    return out
+
+
+def _column_faults(group, threshold):
+    """A stack lines up on its LEFT edges. The baseline is the one most of them
+    share; anything that misses it by more than the threshold is the fault."""
+    out = []
+    xs = [e["box"]["x"] for e in group]
+    baseline, _n = Counter(xs).most_common(1)[0]
+    for e in sorted(group, key=lambda e: e["box"]["y"]):
+        x = e["box"]["x"]
+        off = x - baseline
+        if abs(off) <= threshold:
             continue
-        xs = [e["box"]["x"] for e in group]
-        baseline, _n = Counter(xs).most_common(1)[0]
-        group_sorted = sorted(group, key=lambda e: e["box"]["y"])
-        for e in group_sorted:
-            x = e["box"]["x"]
-            off = x - baseline
-            if abs(off) <= threshold:
-                continue
-            out.append({
-                "kind": "misaligned", "px": abs(off), "axis": "column",
-                "group": ("misaligned", family(e)),
-                "place": parent_path(e),
-                "members": [e],
-                "elements": [label(e) or solo(e)],
-                "message": "%s does not line up with the rows above it — its "
-                           "left edge is %d px %s (%d px vs %d px for the "
-                           "others)" % (solo(e), abs(off),
-                                        "further right" if off > 0 else "further left",
-                                        x, baseline),
-            })
+        out.append({
+            "kind": "misaligned", "px": abs(off), "axis": "column",
+            "group": ("misaligned", family(e)),
+            "place": parent_path(e),
+            "members": [e],
+            "elements": [label(e) or solo(e)],
+            "message": "%s does not line up with the rows above it — its "
+                       "left edge is %d px %s (%d px vs %d px for the "
+                       "others)" % (solo(e), abs(off),
+                                    "further right" if off > 0 else "further left",
+                                    x, baseline),
+        })
+    return out
+
+
+def _row_faults(group, container, threshold):
+    """A row lines up on ONE edge, and the row says which: `align-items` top,
+    centre or bottom. Members that opt out with their own `align-self` are not
+    judged against it, and a row aligned on the text baseline is not judged at
+    all — the baseline is not in the boxes."""
+    edge = declared_edge(container)
+    if edge is None:
+        return []
+    judged = [e for e in group if not opts_out(e, container)]
+    if len(judged) < 2:
+        return []
+    values = [edge_value(e["box"], edge) for e in judged]
+    baseline, _n = Counter(values).most_common(1)[0]
+    out = []
+    for e in sorted(judged, key=lambda e: e["box"]["x"]):
+        off = edge_value(e["box"], edge) - baseline
+        if abs(off) <= threshold:
+            continue
+        out.append({
+            "kind": "misaligned", "px": int(round(abs(off))), "axis": "row",
+            "group": ("misaligned", family(e)),
+            "place": parent_path(e),
+            "members": [e],
+            "elements": [label(e) or solo(e)],
+            "message": "%s does not line up with the rest of its row — its %s "
+                       "is %d px %s than the others (%d px vs %d px)"
+                       % (solo(e), EDGE_WORD[edge], int(round(abs(off))),
+                          "lower" if off > 0 else "higher",
+                          int(round(edge_value(e["box"], edge))),
+                          int(round(baseline))),
+        })
     return out
 
 

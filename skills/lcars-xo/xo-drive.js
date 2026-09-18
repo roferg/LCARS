@@ -434,6 +434,43 @@ const READ = (places, cap) => `(function () {
     }
     return parts.reverse().join(".");
   }
+  // ── WHAT THE PAGE DECLARES ABOUT ITS OWN CONTROLS (S213 fix round 1) ──
+  //
+  // Two detectors used to GUESS at intent from the boxes: crowding decided
+  // that a gap matching its neighbours' rhythm was deliberate, and the
+  // misalignment check decided a group was a column because no two members
+  // shared a horizontal band. Guesses, both, and both were wrong in the real
+  // world. A browser already KNOWS the answers, because the page says them out
+  // loud — so they are read here, as facts, and carried through to the
+  // observations pass exactly like a box or a colour.
+  //
+  // 'segment' — the SEGMENTED CONTROL this control belongs to, if any: a
+  // 'role="tablist"' tab bar, a 'role="toolbar"', a 'role="radiogroup"' or
+  // '<fieldset>' of radios, a menubar, an explicit 'role="group"'. Sibling
+  // controls inside one of those are MEANT to sit flush against each other
+  // (the captain's ruling, 2026-09-17), so two of them touching is design, not
+  // crowding. It is a string identifying the group — the declaring ancestor's
+  // own path plus what it declared — so two controls are in the same segmented
+  // control when, and only when, the two strings are equal.
+  var SEGMENT_ROLE = { tablist: 1, toolbar: 1, radiogroup: 1, menubar: 1, group: 1 };
+  var MEMBER_ROLE = { tab: 1, radio: 1, menuitemradio: 1, option: 1 };
+  function segmentOf(el) {
+    var r = (el.getAttribute("role") || "").toLowerCase();
+    // The control saying it for itself: a tab, a radio, or anything carrying
+    // aria-selected is one of a set by its own declaration.
+    var member = !!MEMBER_ROLE[r] || el.hasAttribute("aria-selected") ||
+      (el.tagName === "INPUT" && (el.getAttribute("type") || "").toLowerCase() === "radio");
+    var n = el.parentElement, hops = 0;
+    while (n && n.nodeType === 1 && hops++ < 6) {
+      var nr = (n.getAttribute("role") || "").toLowerCase();
+      if (SEGMENT_ROLE[nr]) return pathOf(n) + "|" + nr;
+      if (n.tagName === "FIELDSET") return pathOf(n) + "|fieldset";
+      n = n.parentElement;
+    }
+    // No container declared itself, but the controls did: their shared parent
+    // is the bar, and what makes it one is that they all say so.
+    return member && el.parentElement ? pathOf(el.parentElement) + "|members" : null;
+  }
   // HOW MUCH OF WHAT IS UNDERNEATH SURVIVES A COVER. Anything at all can be
   // laid over a page — a modal backdrop, a drag layer, a toast container, a
   // bare click-catcher — and a hit test alone cannot tell a sheet of black
@@ -704,6 +741,16 @@ const READ = (places, cap) => `(function () {
       // at all on text that is allowed to wrap, so the property alone is not
       // the author saying anything.
       whiteSpace: s.whiteSpace,
+      // WHAT THE PAGE DECLARES. 'segment' names the segmented control this one
+      // belongs to (see segmentOf); the three layout properties are how its own
+      // container says it lays its children out and which edge it lines them up
+      // on — read off an element, used by the observations pass as the PARENT's
+      // declaration about the children inside it. Never inferred from boxes.
+      segment: segmentOf(el),
+      display: s.display,
+      flexDirection: s.flexDirection,
+      alignItems: s.alignItems,
+      alignSelf: s.alignSelf,
       // Where it sits in the DOM, and whether it is really on screen.
       path: pathOf(el),
       seen: why === "seen",
