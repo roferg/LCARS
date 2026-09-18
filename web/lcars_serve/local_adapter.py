@@ -2579,11 +2579,25 @@ def _xo_recorded_derivation(mission_dir):
 
 
 def _xo_recorded_meaning(mission_dir):
-    """What the score WORD means for this mission, as its own `xo/verdict.json`
-    records it (`scoreMeaning`) — written beside the score by the code that
-    decided the score. Read back, never re-derived: a meaning inferred at the
-    surface from the verdict's prose is how MEDIUM came to tell the captain his
-    primary flow worked on a mission where nothing could be tested."""
+    """What the score WORD means for this mission, off this mission's own
+    `xo/verdict.json` — or "" when the verdict cannot support a sentence.
+
+    RECORDED FIRST. `scoreMeaning` is written beside the score by the code that
+    decided the score (S213 fix round 1). When it is there, it is read back
+    verbatim and nothing else happens.
+
+    DERIVED FROM THE LEDGER SECOND (fix round 3, D4-RESIDUAL). Every mission
+    scored BEFORE that round carries no `scoreMeaning` at all — which is every
+    mission on the captain's real disk — and the board used to explain those
+    scores with one fixed sentence per word, MEDIUM's claiming a primary flow
+    that worked end to end. The tester opened such a mission and was told
+    exactly that about a build whose every criterion was untested. So where
+    there is no recorded sentence the counts in the same file answer instead:
+    see `_xo_meaning_from_ledger`.
+
+    AND OTHERWISE, SILENCE. No file, unreadable file, or a verdict with no
+    ledger in it at all ⇒ "" ⇒ no `meaning` on the card and an empty tooltip.
+    A surface must never assert what no record supports."""
     try:
         with open(os.path.join(mission_dir, "xo", "verdict.json"),
                   encoding="utf-8") as fh:
@@ -2593,7 +2607,77 @@ def _xo_recorded_meaning(mission_dir):
     if not isinstance(doc, dict):
         return ""
     said = doc.get("scoreMeaning")
-    return said.strip() if isinstance(said, str) and said.strip() else ""
+    if isinstance(said, str) and said.strip():
+        return said.strip()
+    return _xo_meaning_from_ledger(doc)
+
+
+def _xo_ledger_counts(doc):
+    """(met, gap, untested) as this verdict RECORDS them, or None.
+
+    `counts` is what `xo-score.py` has written since Number One's first look;
+    an older or hand-written verdict may carry only the `criteria` rows, so
+    they are tallied instead — arithmetic over recorded statuses, which is
+    still the record answering. A verdict with neither answers None, and None
+    means nothing is said at all."""
+    counts = doc.get("counts")
+    if isinstance(counts, dict):
+        got = []
+        for key in ("met", "gap", "untested"):
+            v = counts.get(key)
+            got.append(v if isinstance(v, int) and not isinstance(v, bool)
+                       and v >= 0 else 0)
+        if sum(got):
+            return tuple(got)
+    rows = doc.get("criteria")
+    if isinstance(rows, list) and rows:
+        tally = {"met": 0, "gap": 0, "untested": 0}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            st = str(row.get("status") or "").strip().lower()
+            if st in tally:
+                tally[st] += 1
+        if sum(tally.values()):
+            return (tally["met"], tally["gap"], tally["untested"])
+    return None
+
+
+def _xo_meaning_from_ledger(doc):
+    """One sentence about THIS ledger, built from its own counts, or "".
+
+    IT STATES ARITHMETIC AND NOTHING ELSE. Every number in it is one the
+    verdict itself records, and no clause claims anything the numbers do not
+    hold — no flow is described, no build is vouched for, no cause is guessed
+    at. That is the whole difference between this and the three fixed
+    sentences it replaces: those asserted a fact about a specific build from
+    nothing but the score word, and one of them was wrong every time the score
+    came from an all-untested ledger.
+
+    Written to the captain, in his product's words: things on a list he wrote,
+    which either checked out, fell short, or could not be checked."""
+    counts = _xo_ledger_counts(doc)
+    if counts is None:
+        return ""
+    met, gap, untested = counts
+    total = met + gap + untested
+    things = "thing" if total == 1 else "things"
+    if untested == total:
+        return ("I could not check any of the %d %s on your list, so nothing "
+                "here is vouched for" % (total, things))
+    if met == total:
+        return ("All %d %s on your list checked out" % (total, things))
+    said = []
+    if met:
+        said.append("%d checked out" % met)
+    if gap:
+        said.append("%d fell short" % gap)
+    if untested:
+        said.append("%d I could not check" % untested)
+    if len(said) > 1:
+        said = [", ".join(said[:-1]), said[-1]]
+    return ("Of the %d %s on your list, %s"
+            % (total, things, " and ".join(said)))
 
 
 def _activity_sort_key(entry):

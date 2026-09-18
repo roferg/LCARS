@@ -608,10 +608,26 @@ class TheIntentMatchPill(unittest.TestCase):
         texts = [c.get("text") or "" for c in row["children"]]
         self.assertEqual(["◈ NUMBER ONE · LOW"], texts)
 
-    def test_the_meanings_are_the_captains_and_they_ride_the_tooltip(self):
+    def test_the_meaning_rides_the_tooltip_when_a_ledger_recorded_one(self):
+        """S203 put three fixed sentences here, one per score word, and pinned
+        LOW's. S213 fix round 3 took them out: a sentence kept per WORD is a
+        claim about EVERY build that wears it, and MEDIUM's was telling the
+        captain his primary flow worked on builds nothing could be checked on.
+        What the word means HERE comes off this mission's own ledger — recorded
+        beside the score, or derived from the verdict's counts by the adapter —
+        and rides the block as `meaning`."""
+        said = "I could not check any of the 11 things on your list"
+        tree = _render_card(card(numberOne={"score": "low", "meaning": said}))
+        pill = _find(tree, lambda n: _cls(n, "xo-score"))[0]
+        self.assertEqual(said, pill.get("title") or "")
+
+    def test_and_a_card_with_no_ledger_behind_it_asserts_nothing(self):
+        """THE REMOTE CASE, and every mission scored before fix round 1. The
+        pill is still painted — the verdict is real — but nothing explains it,
+        because nothing on this board knows what it meant."""
         tree = _render_card(card(numberOne={"score": "low"}))
         pill = _find(tree, lambda n: _cls(n, "xo-score"))[0]
-        self.assertIn("look yourself", (pill.get("title") or ""))
+        self.assertEqual("", pill.get("title") or "")
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")

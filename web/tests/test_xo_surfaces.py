@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 CARD_HARNESS = os.path.join(HERE, "board_card_harness.js")
 TAB_HARNESS = os.path.join(HERE, "board_xo_tab_harness.js")
+BOARD_JS = os.path.join(os.path.dirname(HERE), "static", "board.js")
 
 LONG = ("Captain, this build is a code-only engine change — two pure "
         "coordinate functions, a factory method, a Camera type field, and "
@@ -260,12 +261,31 @@ class D4_TheScoreWordCannotAssertAFlowNobodySaw(CardBase):
                        "here is vouched for"})
         self.assertNotIn("primary flow works", self._title(card, " xo-score "))
 
-    def test_a_mission_with_nothing_recorded_still_gets_the_plain_meaning(self):
-        """A card scored before this round, or a REMOTE one whose score came
-        off a GitHub label: the word's general meaning is the last resort, and
-        it is still there. A blank tooltip would be its own defect."""
+    def test_a_mission_with_nothing_recorded_asserts_nothing(self):
+        """FIX ROUND 3, D4-RESIDUAL — and this test is the round-1 test
+        INVERTED, on purpose.
+
+        Round 1 kept the three fixed sentences as a last resort and pinned
+        them here, reasoning that a blank tooltip would be its own defect. It
+        is not. A tooltip that says nothing tells the captain nothing; MEDIUM's
+        fixed sentence told him his primary flow worked on a build nobody could
+        check, and the tester found it still doing exactly that on a mission
+        scored before round 1 — which is every mission on his real disk.
+
+        Where a ledger exists the sentence is DERIVED FROM IT, by the adapter,
+        off the recorded counts (see test_xo_meaning_migration.py). Where there
+        is no ledger at all — a REMOTE card whose score came off a GitHub
+        label, a verdict that never got written — the honest answer is silence.
+        A surface must never assert what no record supports."""
         card = self.card(numberOne={"meaning": None})
-        self.assertTrue(self._title(card, " xo-score ").strip())
+        self.assertEqual("", self._title(card, " xo-score "))
+
+    def test_the_false_sentence_is_not_in_the_shipping_board_at_all(self):
+        """Not "no path reaches it" — it is not THERE to be reached."""
+        with open(BOARD_JS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("primary flow works", src)
+        self.assertNotIn("XO_SCORE_MEANING", src)
 
 
 class TabBase(unittest.TestCase):
@@ -312,6 +332,7 @@ class TabBase(unittest.TestCase):
                                      "logs": [], "shotsDir": "look-1",
                                      "journal": []}},
         }
+        mi["numberOne"].update(over.pop("block", {}))
         mi.update(over)
         return _run(TAB_HARNESS, mi)
 
@@ -433,8 +454,26 @@ class D4_TheTabSaysTheSameThingAsTheCard(TabBase):
                             "nothing here is vouched for"})
         self.assertNotIn("primary flow works", self._word_title(out))
 
-    def test_an_older_verdict_with_no_recorded_meaning_still_explains_itself(self):
-        self.assertTrue(self._word_title(self.mi()).strip())
+    def test_an_older_verdict_falls_back_to_the_line_the_card_carries(self):
+        """FIX ROUND 3, D4-RESIDUAL. No `scoreMeaning` in the verdict — a
+        mission scored before round 1 — so the word reads the same block field
+        the CARD reads, which the adapter has already derived off this
+        verdict's own counts. One sentence, both surfaces, so they cannot
+        disagree about what the word means (C8)."""
+        said = ("Of the 29 things on your list, 21 checked out and 8 I could "
+                "not check")
+        out = self.mi(block={"meaning": said})
+        self.assertEqual(said, self._word_title(out))
+        self.assertNotIn("primary flow works", self._word_title(out))
+
+    def test_a_recorded_meaning_still_wins_over_that_fallback(self):
+        said = "the ledger's own sentence"
+        out = self.mi(verdict={"scoreMeaning": said},
+                      block={"meaning": "the derived one"})
+        self.assertEqual(said, self._word_title(out))
+
+    def test_with_nothing_recorded_anywhere_the_word_asserts_nothing(self):
+        self.assertEqual("", self._word_title(self.mi()))
 
 
 class C8_NoSurfaceContradictsTheScore(TabBase):

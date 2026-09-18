@@ -612,11 +612,12 @@ function xoNote(m) {
 
 /* ── S203: THE INTENT MATCH ───────────────────────────────────────────────
 
-   What Number One decided when it looked at the built thing: HIGH (every
-   criterion met), MEDIUM (the primary flow works, some criteria gap or could
-   not be tested) or LOW (the primary goal cannot be completed, a criterion is
-   contradicted, or it could not be launched at all). The meanings are the
-   captain's and they are stated wherever the word is.
+   What Number One decided when it looked at the built thing: HIGH, MEDIUM or
+   LOW. What any one of those words means about ANY ONE BUILD is decided off
+   that mission's own ledger and travels with it — never spelled out here, and
+   never spelled out in a constant this file keeps per word (fix round 3: a
+   fixed sentence for MEDIUM is how the captain came to be told his primary
+   flow worked on a build nothing could be checked on).
 
    IT SAYS "INTENT MATCH", AND THAT IS NOT DECORATION. This card already wears
    two pills that read LOW / MED / HIGH — the reasoning and implementation
@@ -661,46 +662,45 @@ function xoScorePill(m) {
   if (!s) return null;
   var pill = el("span", "pill xo-score s-" + s,
                 "◈ NUMBER ONE · " + XO_SCORE_WORD[s]);
-  pill.title = xoScoreMeaning(m, s);
+  var said = xoScoreMeaning(m, s);
+  if (said) pill.title = said;
   return pill;
 }
 
-/* WHAT THE WORD MEANS **HERE** (S213 fix round 1, D4).
+/* WHAT THE WORD MEANS **HERE** (S213 fix round 1 D4, fix round 3 D4-RESIDUAL).
 
    THE FAULT THIS CLOSES, measured on the captain's own board: a mission whose
    verdict was "nothing could be tested — the calculator never rendered", every
-   criterion untested, wore MEDIUM — and MEDIUM's tooltip told him, verbatim,
-   "The primary flow works end to end". Nobody ever saw that flow. It is the
-   exact fault this session exists to kill, relocated from a line of copy into
-   a tooltip, and it was the NORMAL path: xo-score.py scores an all-untested
+   criterion untested, wore MEDIUM — and MEDIUM's tooltip told him his primary
+   flow worked from end to end. Nobody ever saw that flow. It is the exact
+   fault this session exists to kill, relocated from a line of copy into a
+   tooltip, and it was the NORMAL path: xo-score.py scores an all-untested
    ledger MEDIUM by design.
 
    So the sentence is RECORDED AT THE PRODUCER, beside the score, off the same
    ledger, by the same rule (`scoreMeaning` in the verdict, `meaning` on the
-   board shape) — and read here. It is never parsed out of the verdict's prose:
-   deciding at the surface what a paragraph meant is the class of defect this
-   whole session exists to remove.
+   board shape) — and merely READ here. It is never parsed out of the verdict's
+   prose: deciding at the surface what a paragraph meant is the class of defect
+   this whole session exists to remove.
 
-   The three fixed sentences below stay as the LAST RESORT for a mission scored
-   before this round whose verdict.json is gone, and for a REMOTE card whose
-   score came off a GitHub label with no record behind it. They are what the
-   word means in general — never a claim about this mission. */
+   AND THERE IS NO LONGER ANY FALLBACK SENTENCE (fix round 3). Three fixed
+   sentences used to sit here, one per score word, for a mission scored before
+   round 1 — which is every mission on the captain's real disk — and the
+   tester caught MEDIUM's still telling him about a flow nobody saw. A better
+   worded constant would assert the same kind of thing: a fact about ONE
+   build, from nothing but the word. So the constant is gone. Where an older
+   verdict.json still holds a ledger, the adapter derives the sentence from
+   its recorded COUNTS and it arrives here as `meaning` like any other record
+   (see local_adapter._xo_meaning_from_ledger); where there is no ledger at
+   all — a REMOTE card whose score came off a GitHub label, a verdict that
+   never got written — this answers "" and the surface says NOTHING.
+
+   A surface must never assert what no record supports. */
 function xoScoreMeaning(m, s) {
   var x = xoBlock(m);
   var said = x && x.meaning ? String(x.meaning).trim() : "";
-  return said || XO_SCORE_MEANING[s] || "";
+  return said;
 }
-
-/* The three meanings, in the captain's words. The pill says the verdict; the
-   tooltip says what the verdict MEANS, so nobody has to remember which of
-   three words is the good one. */
-var XO_SCORE_MEANING = {
-  high: "Every criterion met and the drawing matched — ship as is",
-  medium: "The primary flow works end to end; some criteria gap or could not "
-    + "be tested, none blocking the stated goal",
-  low: "The primary goal cannot be completed, a criterion is contradicted, or "
-    + "the build could not be launched or verified — look yourself",
-};
 
 /* S213 — THE CARD IS A SIGNAL, NOT A TRANSCRIPT.
 
@@ -10167,13 +10167,17 @@ function xoReportPane(mi) {
   var head = el("div", "xo-score-block");
   var word = el("span", "xo-score-word s-" + (XO_SCORE_WORD[score] ? score : "unknown"),
                 XO_SCORE_WORD[score] || "NOT SCORED");
-  // The ledger's own sentence about this score, preferred over the generic
-  // meaning of the word — the verdict on the tab carries `scoreMeaning`, and
-  // the card's block carries the same string as `meaning` (S213 fix round 1).
-  word.title = (typeof verdict.scoreMeaning === "string"
-                && verdict.scoreMeaning.trim())
+  // The ledger's own sentence about this score: the verdict on the tab carries
+  // `scoreMeaning`, and the card's block carries the same string as `meaning`
+  // (S213 fix round 1) — or, for a mission scored before that round, the
+  // sentence the adapter derived off this verdict's own counts (fix round 3).
+  // With neither, NO TOOLTIP: the word stands alone rather than be explained
+  // by something no record supports.
+  var wordSaid = (typeof verdict.scoreMeaning === "string"
+                  && verdict.scoreMeaning.trim())
     ? verdict.scoreMeaning.trim()
     : xoScoreMeaning(mi, score);
+  if (wordSaid) word.title = wordSaid;
   head.appendChild(word);
   if (xo.engine) head.appendChild(el("span", "pill xo", "◈ " + engineLabel(xo.engine)));
   var counts = verdict.counts && typeof verdict.counts === "object"
