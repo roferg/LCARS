@@ -1352,16 +1352,29 @@ observe "$s213dir/tabs-flush-in.json" "$s213dir/tabs-flush-out.json"
 check "S213-C9 a declared tab bar whose tabs TOUCH is silent — 0 px and deliberate" \
   "[ \"\$(count_kind '$s213dir/tabs-flush-out.json' crowding)\" = '0' ]"
 
-# --- the layer rail: a vertical list at a comfortable 10 px ------------------
+# --- the layer rail: SEVEN rows at 2 px, exactly as the editor draws them ----
+# This is the fourth of the four real-world false alarms, and the one fix round
+# 1 put back by deleting the rhythm rule outright. A list every row of which
+# sits 2 px from the next is the spacing that list was WRITTEN with — six
+# identical gaps are not six mistakes — and no absolute floor can see that.
+# It is not declared and it never will be: a list is not a segmented control,
+# so the declaration check cannot save it. Its own rhythm is the only evidence
+# there is, and it is enough.
 LROW() { # <n> <y>
   printf '{"id":null,"tag":"button","className":"flex items-center gap-2 rounded px-2 py-1.5","text":"","interactive":true,"path":"0.1.0.0.2.0.0.%s","box":{"x":8,"y":%s,"w":264,"h":28},"overflowX":0,"overflowY":0}' "$1" "$2"
 }
-mk_readout "$s213dir/rail-in.json" "[$(LROW 1 109),$(LROW 2 147),$(LROW 3 185),$(LROW 4 223),$(LROW 5 261),$(LROW 6 299),$(LROW 7 337)]"
+mk_readout "$s213dir/rail-in.json" "[$(LROW 1 109),$(LROW 2 139),$(LROW 3 169),$(LROW 4 199),$(LROW 5 229),$(LROW 6 259),$(LROW 7 289)]"
 observe "$s213dir/rail-in.json" "$s213dir/rail-out.json"
-check "S213-B2 a list with real spacing between its rows says nothing" \
+check "S213-B2 the real editor's SEVEN-ROW layer rail at 2 px is that rail's own rhythm — silent" \
   "[ \"\$(count_kind '$s213dir/rail-out.json' crowding)\" = '0' ]"
 check "S213-B2 …and nothing claims seven buttons sit on top of each other" \
   "! grep -q 'seven buttons' '$s213dir/rail-out.json'"
+
+# …and the comfortable version of the same list, which must also stay silent.
+mk_readout "$s213dir/rail-wide-in.json" "[$(LROW 1 109),$(LROW 2 147),$(LROW 3 185),$(LROW 4 223),$(LROW 5 261),$(LROW 6 299),$(LROW 7 337)]"
+observe "$s213dir/rail-wide-in.json" "$s213dir/rail-wide-out.json"
+check "S213-B2 a list with roomy spacing between its rows says nothing either" \
+  "[ \"\$(count_kind '$s213dir/rail-wide-out.json' crowding)\" = '0' ]"
 
 # ==========================================================================
 # THE CONTROLS. Each is the SAME SHAPE as a silence above with ONE thing
@@ -1383,32 +1396,58 @@ check "S213-B2 CONTROL — the SAME two buttons TOUCHING with nothing declared S
 check "S213-B2 CONTROL — …in the captain's own complaint, naming both" \
   "grep -q 'the ADD and CANCEL buttons are touching' '$s213dir/bar-plain-out.json'"
 
-# CONTROL 1 — A UNIFORMLY TIGHT PAGE. 1 px, 3 px and 6 px, each pair as evenly
-# spaced as the last. THE DEFECT THIS IS THE REGRESSION TEST FOR: the rhythm
-# rule read that evenness as intent, so a cramped page's own tightness excused
-# it and not one of these drew a word. An absolute floor is what stands between
-# a cramped UI and silence again.
+# THE LIMIT, STATED OUT LOUD RATHER THAN HIDDEN — and it is a limit, not a
+# defect. A run every one of whose neighbours sits at 1 px reads as that run's
+# rhythm and goes SILENT, exactly as the 2 px layer rail above does, because
+# uniformity genuinely cannot tell "tight on purpose" from "wrong everywhere"
+# without a declaration to read. Fix round 1 answered that by deleting the
+# rhythm rule; deleting it brought the layer rail's false alarm back. The trade
+# is accepted on the record (orchestrator, S213 fix round 2) and pinned here so
+# that if anyone ever changes it they change it deliberately.
 TIGHT() { # <n> <x> — a run of three evenly-spaced buttons in one container
   printf '{"id":null,"tag":"button","className":"b","text":"B%s","interactive":true,"path":"0.1.0.%s","box":{"x":%s,"y":10,"w":60,"h":24},"overflowX":0,"overflowY":0}' "$1" "$1" "$2"
 }
 # One page per gap: the observations pass HOLDS BACK the quieter findings when a
 # page has many (S212), so three tight runs on one page would prove nothing
-# about the third. Each gap gets its own page and each one must speak.
+# about the third.
 for g in 1 3 6; do
   mk_readout "$s213dir/tight-$g-in.json" \
     "[$(TIGHT 0 10),$(TIGHT 1 $((70 + g))),$(TIGHT 2 $((130 + g + g)))]"
   observe "$s213dir/tight-$g-in.json" "$s213dir/tight-$g-out.json"
-  check "S213-B2 CONTROL — an evenly ${g} px run FIRES (its own rhythm no longer excuses it)" \
-    "grep -q '${g} px' '$s213dir/tight-$g-out.json'"
+  check "S213-B2 KNOWN LIMIT — an evenly ${g} px run is read as rhythm and stays silent" \
+    "[ \"\$(count_kind '$s213dir/tight-$g-out.json' crowding)\" = '0' ]"
 done
 
-# CONTROL 2 — a list crammed to 2 px between every row. The captain's original
-# complaint in its plainest form: "buttons that have no spacing between them
-# are smooshed together".
+# CONTROL 1 — the SAME three buttons with the rhythm BROKEN: one pair tight,
+# the other roomy. There is a rhythm here and this pair is not in it, so the
+# guard speaks. This is the live half of the limit above — the run's evenness
+# is doing the forgiving, and nothing else is.
+mk_readout "$s213dir/tight-odd-in.json" \
+  "[$(TIGHT 0 10),$(TIGHT 1 71),$(TIGHT 2 143)]"
+observe "$s213dir/tight-odd-in.json" "$s213dir/tight-odd-out.json"
+check "S213-B2 CONTROL — one 1 px pair in a run whose other gap is 12 px FIRES" \
+  "[ \"\$(count_kind '$s213dir/tight-odd-out.json' crowding)\" = '1' ]"
+check "S213-B2 CONTROL — …and it names the number it measured" \
+  "grep -q '1 px' '$s213dir/tight-odd-out.json'"
+
+# CONTROL 1b — and an evenly-spaced run of three UNDECLARED buttons that
+# actually TOUCH still fires. Zero is not a spacing anybody chooses; it is the
+# absence of one, so no amount of evenness buys it silence. Only a declaration
+# does, and these have none. The captain's original complaint, at its hardest.
+mk_readout "$s213dir/tight-0-in.json" \
+  "[$(TIGHT 0 10),$(TIGHT 1 70),$(TIGHT 2 130)]"
+observe "$s213dir/tight-0-in.json" "$s213dir/tight-0-out.json"
+check "S213-B2 CONTROL — three UNDECLARED buttons evenly TOUCHING at 0 px STILL fire" \
+  "[ \"\$(count_kind '$s213dir/tight-0-out.json' crowding)\" -ge '1' ]"
+
+# CONTROL 2 — a list whose rows sit 12 px apart except for ONE pair at 2 px.
+# The list has a rhythm and that pair is not in it. This is the shape the real
+# editor's BROKEN rail has, and it is what separates a tight list from a
+# mistake in a roomy one.
 mk_readout "$s213dir/rail-tight-in.json" \
-  "[$(LROW 1 109),$(LROW 2 139),$(LROW 3 169),$(LROW 4 199),$(LROW 5 229),$(LROW 6 259),$(LROW 7 289)]"
+  "[$(LROW 1 109),$(LROW 2 149),$(LROW 3 189),$(LROW 4 219),$(LROW 5 259),$(LROW 6 299),$(LROW 7 339)]"
 observe "$s213dir/rail-tight-in.json" "$s213dir/rail-tight-out.json"
-check "S213-B2 CONTROL — an undeclared list crammed to 2 px between rows STILL fires" \
+check "S213-B2 CONTROL — one pair at 2 px in a list whose other rows sit 12 px apart STILL fires" \
   "[ \"\$(count_kind '$s213dir/rail-tight-out.json' crowding)\" -ge '1' ]"
 check "S213-B2 CONTROL — …and it names the number it measured" \
   "grep -q '2 px' '$s213dir/rail-tight-out.json'"
@@ -1492,16 +1531,16 @@ cat >"$S212FX/real-editor.html" <<'HTML'
     <button role="tab" aria-selected="true" style="height:26px;width:80px;background:#2563eb;color:#fff;">Maps</button><button role="tab" aria-selected="false" style="height:26px;width:90px;color:#cbd5e1;">Objects</button>
   </div>
   <div id="rail" style="position:absolute;left:8px;top:109px;">
-    <button style="display:block;height:28px;width:264px;margin-bottom:10px;">Ground</button>
-    <button style="display:block;height:28px;width:264px;margin-bottom:10px;">Surface</button>
-    <button style="display:block;height:28px;width:264px;margin-bottom:10px;">Overhead</button>
-    <button style="display:block;height:28px;width:264px;margin-bottom:10px;">Entities</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Ground</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Surface</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Overhead</button>
+    <button style="display:block;height:28px;width:264px;margin-bottom:2px;">Entities</button>
   </div>
 </div>
 </body></html>
 HTML
 drive_observe real-editor.html s213-editor
-check "S213 REAL BROWSER — a DECLARED toolbar (4 px), a DECLARED tab bar FLUSH and a properly spaced list produce ZERO observations" \
+check "S213 REAL BROWSER — a DECLARED toolbar (4 px), a DECLARED tab bar FLUSH and a 2 px layer rail produce ZERO observations" \
   "[ \"\$(count_all '$TMPROOT/s212-s213-editor/observations.json')\" = '0' ]"
 
 cat >"$S212FX/real-editor-broken.html" <<'HTML'

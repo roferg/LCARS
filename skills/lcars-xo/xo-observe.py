@@ -130,6 +130,9 @@ from collections import Counter
 GAP_PX_DEFAULT = 8         # two INTERACTIVE elements closer than this: crowded
 MISALIGN_PX_DEFAULT = 6    # a sibling's left edge missing the others' by this
 OVERFLOW_PX_DEFAULT = 2    # content spilling past its own box by more than this
+RHYTHM_TOL_PX = 1          # two neighbour gaps this close are THE SAME gap
+                           # (sub-pixel layout, not a second opinion about
+                           #  spacing) — a measurement tolerance, not a floor
 
 # ── HOW MUCH IT IS ALLOWED TO SAY (S212) ───────────────────────────────────
 # A wall of notes gets skipped, and a feature that gets skipped is dead. So:
@@ -545,19 +548,127 @@ def same_segment(a, b):
     return bool(sa) and isinstance(sa, str) and sa == sb
 
 
+# ── what a layout SPACES on purpose, when nothing was declared (S213 r2) ──
+def neighbour_gaps(elements):
+    """Every NEIGHBOUR gap on the page, grouped by the layout run it belongs to.
+
+    A RUN is the set of interactive elements that share one container — read off
+    the DOM path the driver recorded, a LOOKUP, never inferred from the boxes.
+    Its neighbours are the consecutive members along the axis they are laid out
+    on, and the gaps between those are the rhythm that container was written to.
+
+    Deliberately NOT keyed on family: a tab bar's selected tab carries a
+    different class from its unselected ones, and keying on class would have let
+    exactly the tab bar this exists to forgive escape through the gap.
+
+    Returns {(parent, axis): [(id(a), id(b), gap), …]}.
+    """
+    runs = {}
+    inter = [e for e in elements if e.get("interactive") and e.get("box")]
+    for e in inter:
+        p = parent_path(e)
+        if p is None:
+            continue
+        runs.setdefault(p, []).append(e)
+    out = {}
+    for parent, members in runs.items():
+        if len(members) < 2:
+            continue
+        for axis, sort_key in (("row", lambda e: e["box"]["x"]),
+                               ("column", lambda e: e["box"]["y"])):
+            ordered = sorted(members, key=sort_key)
+            gaps = []
+            for a, b in zip(ordered, ordered[1:]):
+                if nested(a, b) or intersects(a["box"], b["box"]):
+                    continue
+                g = adjacency_gap(a["box"], b["box"])
+                if g is None:
+                    continue
+                if pair_axis(a, b) != axis:
+                    continue
+                gaps.append((id(a), id(b), g))
+            if gaps:
+                out[(parent, axis)] = gaps
+    return out
+
+
+def uniform_run(a, b, gap, runs):
+    """True when this gap is THE GAP ITS OWN CONTAINER REPEATS — three or more
+    neighbours laid out one after another at the same spacing, within a
+    measurement tolerance. That is a rhythm somebody wrote, and it is silent
+    whatever the number is.
+
+    THE FALSE ALARM THIS CLOSES (measured on a real tile-map editor, S213). A
+    seven-row layer rail draws its rows 2 px apart. Under an absolute 8 px floor
+    that is six complaints, and not one of them is true: six identical gaps are
+    not six mistakes. A list is not a segmented control and never declares
+    itself one, so the declaration check above cannot reach it — its own
+    repetition is the only evidence there is, and it is enough.
+
+    FIX ROUND 1 DELETED THIS RULE and the rail's false alarm came straight back.
+    It is restored BENEATH same_segment, not instead of it, because round 1 was
+    right about the other half: the original rule was the ONLY thing between a
+    cramped UI and silence, and on its own it inverted the detector. Now it
+    forgives one narrow, evidenced thing — repetition — and everything else
+    still meets the floor.
+
+    TWO THINGS IT WILL NOT FORGIVE, on purpose:
+
+      · TOUCHING. Zero is not a spacing anybody chooses; it is the absence of
+        one, so no amount of evenness earns it. Only a declaration does, which
+        is what same_segment is for, and it is the captain's own complaint
+        ("buttons that have no spacing between them are smooshed together").
+      · A run that DISAGREES WITH ITSELF. One pair at 2 px in a list whose other
+        rows sit 12 px apart is not that list's rhythm — it is the one place the
+        rhythm breaks — so it fires, and the number it fires with is the 2.
+
+    THE LIMIT, STATED RATHER THAN PAPERED OVER (orchestrator's ruling, S213 fix
+    round 2): a run EVERY neighbour of which sits at 1 px reads as rhythm here
+    and goes silent. Uniformity cannot tell "tight by design" from "wrong
+    everywhere" without a declaration to read, and no number invented here would
+    tell them apart either — it would only move which real layouts get shouted
+    at. The trade is taken deliberately and pinned by a KNOWN LIMIT test.
+    """
+    if gap <= 0:
+        return False                     # touching is never a rhythm
+    run = runs.get((parent_path(a), pair_axis(a, b)))
+    if not run or len(run) < 2:
+        return False                     # a lone pair has no rhythm to appeal to
+    mine = (id(a), id(b))
+    others = [g for (ia, ib, g) in run if (ia, ib) != mine and (ib, ia) != mine]
+    if not others:
+        return False
+    if gap < min(others) - RHYTHM_TOL_PX:
+        return False                     # tighter than its own neighbours: the break
+    every = [g for (_, _, g) in run]
+    return max(every) - min(every) <= RHYTHM_TOL_PX
+
+
 # ── the four detectors ──────────────────────────────────────────────────
 def detect_crowding(elements, gap_px):
-    """Two controls closer than the floor are crowded — UNLESS the page has
-    declared them parts of one segmented control (same_segment).
+    """Two controls closer than the floor are crowded — unless one of exactly
+    two things says otherwise. THE ORDER OF DECISION, and it is an order:
 
-    THE FLOOR IS BACK, and on purpose. It is the captain's own complaint
-    ("buttons that have no spacing between them are smooshed together"), and
-    the round that replaced it with a rhythm comparison silenced every real
-    case: a cramped page's tightness became its own excuse. A declaration is
-    what earns silence now — a tab bar says it is a tab bar — and anything
-    that has not said so is measured against the one number again."""
+      1. the page DECLARED them one segmented control (same_segment) — a tab
+         bar, a toolbar, a radiogroup. Silent at ANY gap, TOUCHING INCLUDED.
+      2. the gap is the one THEIR OWN CONTAINER REPEATS (uniform_run) — three
+         or more neighbours at the same spacing. Silent, whatever the number:
+         that is the real editor's 2 px layer rail, and a list can never
+         declare itself a segmented control, so nothing else would reach it.
+      3. otherwise it FIRES, and that covers both the pair measurably tighter
+         than its own container's other gaps — the one place a rhythm breaks —
+         and the pair with no rhythm to appeal to at all, which is the
+         captain's original complaint: two undeclared buttons touching.
+
+    THE FLOOR IS STILL THE FLOOR. Nothing above it is ever looked at. What has
+    changed is only which of the pairs BELOW it earn silence, and each of the
+    two ways costs evidence — a declaration the browser read, or a repetition
+    the container actually shows. Fix round 1 kept only the first and the layer
+    rail started shouting again; the round before it kept only the second and a
+    cramped page's tightness became its own excuse."""
     out = []
     inter = [e for e in elements if e.get("interactive") and e.get("box")]
+    runs = neighbour_gaps(inter)
     for i in range(len(inter)):
         for j in range(i + 1, len(inter)):
             a, b = inter[i], inter[j]
@@ -568,10 +679,13 @@ def detect_crowding(elements, gap_px):
             gap = adjacency_gap(a["box"], b["box"])
             if gap is None or gap >= gap_px:
                 continue
-            # S213 — the page's own declaration: parts of one segmented control
-            # are MEANT to sit flush. Touching or 4 px apart, a tab bar is a tab
-            # bar. Nothing else buys silence.
+            # 1. the page's own declaration: parts of one segmented control are
+            # MEANT to sit flush. Touching or 4 px apart, a tab bar is a tab bar.
             if same_segment(a, b):
+                continue
+            # 2. beneath it, and only beneath it: the spacing this container
+            # repeats. A seven-row rail at 2 px is that rail's rhythm.
+            if uniform_run(a, b, gap, runs):
                 continue
             px = max(gap, 0)
             verb = "touching" if px == 0 else "crowded together"
