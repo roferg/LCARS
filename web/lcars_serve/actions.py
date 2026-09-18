@@ -150,8 +150,13 @@ _LAUNCH_REFUSAL_BANNER = "lcars launch: "
 _RUN_STAMP = re.compile(r"^skill '[^']*' exited -?\d+:\s*")
 
 
-def _deploy_failure(exc):
+def _deploy_failure(exc, what="Main was not deployed"):
     """`exc` re-cast as a sentence about the CAPTAIN'S DEPLOY.
+
+    `what` names the thing that did not happen, because the same defect — and
+    so the same cure — lives on ▸ Launch, where what did not happen is his
+    mission's app starting, not Main deploying. ONE re-cast, two buttons: two
+    wordings of one refusal is how they drift apart.
 
     THE DEFECT THIS SERVES. Deploy Main used to answer `{"ok": true}` to a
     deploy that had started nothing, because a stale launch.json was read as
@@ -174,7 +179,7 @@ def _deploy_failure(exc):
     reason = " ".join(raw.split())
     if len(reason) > 400:
         reason = reason[:399].rstrip() + "\u2026"
-    msg = ("Main was not deployed \u2014 nothing came online, and nothing on "
+    msg = (what + " \u2014 nothing came online, and nothing on "
            "the board changed.")
     if reason:
         # launch.sh's sentences open lower-case (they are written to follow its
@@ -10958,20 +10963,39 @@ class Actions(LogFacts):
             args = [mid]
             h = (hint or "").strip()
             if h:
-                args += h.split()
+                # S215 CURE ONE, the twin of deploy_main's — the hint is the
+                # captain's PROSE and travels as the ONE opaque value it is. It
+                # used to travel as `h.split()`, which made every word an
+                # argument: the moment his sentence quoted a command — "(npx
+                # vite --config vite.config.ts)", the natural way to say "the
+                # browser build, not Electron" — launch.sh's option parser met
+                # `--config` in argv and refused the whole launch. `--` marks
+                # the end of options, so nothing after it is read as one.
+                args += ["--", h]
             env_extra = {}
             engine = self._persisted_worker_bin(mid)
             if engine:
                 env_extra["LCARS_WORKER_BIN"] = engine
+            # What the record on disk looks like BEFORE we dispatch, so that
+            # afterwards we can tell a record THIS attempt wrote from one that
+            # was already lying there. See `_mission_launch_failed_here`.
+            before = self._mission_launch_record_state(mid)
             try:
                 self._run("launch", args, env_extra=env_extra)
-            except ActionError:
+            except ActionError as exc:
                 # A discovery/liveness failure exits non-zero AND writes a failed
-                # launch.json. If that readable record is present, swallow the exit
-                # and surface the message via the board; otherwise re-raise (a
-                # genuine dispatch error with no record for the FE to show).
-                if not isinstance(self._read_launch_json(mid), dict):
-                    raise
+                # launch.json ON THIS ATTEMPT; that record is the report, so
+                # swallow the exit and surface its message via the board (UX-33).
+                #
+                # S215 CURE TWO — but ONLY then. This used to swallow whenever
+                # `_read_launch_json(mid)` returned any dict at all, and a
+                # `status: stopped` record left by a stop minutes earlier is a
+                # dict. So a launch that refused at the argument parser, wrote
+                # nothing and started nothing answered `{"ok": true}` instantly,
+                # and the board did not move — the captain was told a thing had
+                # happened that had not.
+                if not self._mission_launch_failed_here(mid, before):
+                    raise _deploy_failure(exc, "The app was not launched")
             rec = self._read_launch_json(mid)
             if isinstance(rec, dict) and rec.get("status") == "running":
                 pgid = rec.get("pgid")
@@ -11024,6 +11048,39 @@ class Actions(LogFacts):
     # `close` is an alias so a daemon can call whichever reads clearer at its
     # shutdown site; both drain the launch table.
     close = shutdown_launches
+
+    def _mission_launch_record_state(self, mid):
+        """An opaque snapshot of the mission's launch.json as it is RIGHT NOW —
+        its mtime AND its bytes — or None when there is no record.
+
+        The mission-scoped twin of `_main_launch_record_state`, and both for the
+        same reason: bytes alone would call a re-run that failed the same way
+        twice "unchanged"; an mtime alone leans on clock granularity. The pair
+        only has to answer one question, conservatively — did THIS attempt touch
+        the record? A "no" costs a louder failure than needed, which is the safe
+        direction to be wrong in."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                         "launch.json")
+        try:
+            st = os.stat(p)
+            with open(p, "rb") as fh:
+                return (st.st_mtime_ns, fh.read())
+        except OSError:
+            return None
+
+    def _mission_launch_failed_here(self, mid, before):
+        """True when the record on disk is THIS attempt's own report of failure.
+
+        `before` is the snapshot taken before dispatch. An absent or byte- and
+        mtime-identical record means the launch wrote nothing: whatever is there
+        is somebody else's news — a `stopped` left by an earlier stop says
+        nothing whatever about this launch — and the failure must reach the
+        captain rather than be swallowed."""
+        after = self._mission_launch_record_state(mid)
+        if after is None or after == before:
+            return False
+        rec = self._read_launch_json(mid)
+        return isinstance(rec, dict) and rec.get("status") == "failed"
 
     def _read_launch_json(self, mid):
         """The mission's launch.json as a dict, or None (absent/unreadable)."""
