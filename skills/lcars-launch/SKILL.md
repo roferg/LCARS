@@ -19,6 +19,10 @@ lcars launch lcars-20260705-001 --stop           # stop it + clean up
 lcars launch --main                              # deploy the LOCAL main HEAD
 lcars launch --main "the game"                    # same, with a WHICH-app hint
 lcars launch --main --stop                        # stop the main deploy + clean up
+
+# A hint is PROSE, and prose can quote a command. `--` ends the options, so
+# everything after it is your words even when a word starts with a dash:
+lcars launch --main -- "the browser build (npx vite --config vite.config.ts)"
 ```
 
 ## `--main` — deploy what's already merged

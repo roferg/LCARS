@@ -137,6 +137,55 @@ def _adopt_refusal(exc):
     return out
 
 
+# S215 — `lcars launch`'s OWN refusal channel, the same shape adopt's is:
+# `die()` at skills/lcars-launch/launch.sh:55 prints `lcars launch: <sentence>`
+# and exits 1. Nothing here reads the SENTENCE to decide anything (S165) — the
+# banner is only where the script's prose STARTS.
+_LAUNCH_REFUSAL_BANNER = "lcars launch: "
+
+# `_run` stamps `skill 'launch' exited 1: ` on the front of everything it
+# raises. That sentence is written for whoever is reading the daemon. The
+# captain pressed a button called ▸ Deploy Main; he is owed a sentence about
+# that, not about a subprocess.
+_RUN_STAMP = re.compile(r"^skill '[^']*' exited -?\d+:\s*")
+
+
+def _deploy_failure(exc):
+    """`exc` re-cast as a sentence about the CAPTAIN'S DEPLOY.
+
+    THE DEFECT THIS SERVES. Deploy Main used to answer `{"ok": true}` to a
+    deploy that had started nothing, because a stale launch.json was read as
+    proof of success. Once that stops, the failure arrives here — and a failure
+    that arrives as `skill 'launch' exited 1: …` has only traded one silence
+    for a different one. So: say what did not happen, in his words, and then
+    hand over the reason the script itself gave, verbatim.
+
+    STATUS. A `die()` refusal is the script saying "you asked for something I
+    cannot do" — 409, exactly as `_adopt_refusal` (S191) rules. Anything else
+    really is a fault and keeps its 502, because a broken server answering 409
+    is the same lie pointing the other way.
+    """
+    raw = _RUN_STAMP.sub("", (getattr(exc, "message", "") or "").strip()).strip()
+    status = exc.status
+    at = raw.find(_LAUNCH_REFUSAL_BANNER)
+    if at >= 0 and getattr(exc, "skill_exit", None) == 1:
+        raw = raw[at + len(_LAUNCH_REFUSAL_BANNER):].strip()
+        status = 409
+    reason = " ".join(raw.split())
+    if len(reason) > 400:
+        reason = reason[:399].rstrip() + "\u2026"
+    msg = ("Main was not deployed \u2014 nothing came online, and nothing on "
+           "the board changed.")
+    if reason:
+        # launch.sh's sentences open lower-case (they are written to follow its
+        # own `lcars launch: ` banner). Here one follows a full stop instead, so
+        # it gets its capital. Nothing else about it is touched.
+        msg += " " + reason[0].upper() + reason[1:]
+    out = ActionError(status, msg, getattr(exc, "data", None))
+    out.skill_exit = getattr(exc, "skill_exit", None)
+    return out
+
+
 # The env seam names the daemon resolves each skill path from (mirrors how
 # serve.sh env-injects). Used by the launcher/__main__ to build the script map.
 SCRIPT_ENV = {
@@ -11018,16 +11067,38 @@ class Actions(LogFacts):
             args = ["--main"]
             h = (hint or "").strip()
             if h:
-                args += h.split()
+                # S215 CURE ONE — the hint is the captain's PROSE, and it
+                # travels as the ONE opaque value it is. It used to travel as
+                # `h.split()`, which made every word an argument: the moment his
+                # sentence quoted a command — "(npx vite --config
+                # vite.config.ts)", the natural way to say "the browser build,
+                # not Electron", and the kind of sentence the overlay's own
+                # placeholder invites — launch.sh's option parser met `--config`
+                # in argv and refused the whole deploy. `--` marks the end of
+                # options, so nothing after it is ever read as one.
+                args += ["--", h]
+            # What the record on disk looks like BEFORE we dispatch, so that
+            # afterwards we can tell a record THIS attempt wrote from one that
+            # was already lying there. See `_main_deploy_failed_here`.
+            before = self._main_launch_record_state()
             try:
                 self._run("launch", args)
-            except ActionError:
+            except ActionError as exc:
                 # A discovery/liveness failure exits non-zero AND writes a failed
-                # main/launch.json. If that readable record is present, swallow
-                # the exit and surface the message via the board; otherwise
-                # re-raise (a genuine dispatch error with no record to show).
-                if not isinstance(self._read_main_launch_json(), dict):
-                    raise
+                # main/launch.json ON THIS ATTEMPT; that record is the report, so
+                # swallow the exit and surface its message via the board (UX-33).
+                #
+                # S215 CURE TWO — but ONLY then. This used to swallow whenever
+                # `_read_main_launch_json()` returned any dict at all, and a
+                # `status: stopped` record left by a stop minutes earlier is a
+                # dict. So a deploy that refused at the argument parser, wrote
+                # nothing and started nothing answered `{"ok": true}` instantly,
+                # and the board did not move — the captain was told a thing had
+                # happened that had not. Success was INFERRED from a file that
+                # happened to exist rather than READ from what this attempt did,
+                # which is the family this project keeps paying for.
+                if not self._main_deploy_failed_here(before):
+                    raise _deploy_failure(exc)
             rec = self._read_main_launch_json()
             if isinstance(rec, dict) and rec.get("status") == "running":
                 pgid = rec.get("pgid")
@@ -11066,6 +11137,37 @@ class Actions(LogFacts):
                 return json.load(fh)
         except (OSError, ValueError):
             return None
+
+    def _main_launch_record_state(self):
+        """An opaque snapshot of `.git/lcars/main/launch.json` as it is RIGHT
+        NOW — its mtime AND its bytes — or None when there is no record.
+
+        Both, deliberately. Bytes alone would call a re-run that failed the same
+        way twice "unchanged"; an mtime alone leans on clock granularity. The
+        pair only has to answer one question, and answer it conservatively:
+        did THIS attempt touch the record? A "no" costs a louder failure than
+        needed, which is the safe direction to be wrong in."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "main", "launch.json")
+        try:
+            st = os.stat(p)
+            with open(p, "rb") as fh:
+                return (st.st_mtime_ns, fh.read())
+        except OSError:
+            return None
+
+    def _main_deploy_failed_here(self, before):
+        """True when the record on disk is THIS attempt's own report of failure.
+
+        `before` is the snapshot taken before dispatch. An absent or byte- and
+        mtime-identical record means the deploy wrote nothing: whatever is there
+        is somebody else's news — a `stopped` left by an earlier stop says
+        nothing whatever about this deploy — and the failure must reach the
+        captain rather than be swallowed."""
+        after = self._main_launch_record_state()
+        if after is None or after == before:
+            return False
+        rec = self._read_main_launch_json()
+        return isinstance(rec, dict) and rec.get("status") == "failed"
 
     def pause(self, mid):
         """POST /api/mission/<id>/pause."""
