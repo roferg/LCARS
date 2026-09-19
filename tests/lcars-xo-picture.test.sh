@@ -82,12 +82,16 @@ m1="$(plant png-only attachment-01.png)"
 score "$m1"
 check "A1. criteria.json records the picture it was handed (a fact, not a guess)" \
   "$PY -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d[\"pictures\"]==[\"attachment-01.png\"] and d[\"hasDrawing\"] is False else 1)' '$m1/xo/criteria.json'"
+# S216 fix round 2 (W1/W2): the headline has a word budget, so it leads with
+# the SHORT form — the board's own label, capitalised — and the report keeps
+# the full sentence.
+LEAD="Your attachment is a picture, not a drawing"
 check "A1. the verdict's one line (the card's line) LEADS with the plain sentence" \
-  "derivation '$m1' | grep -q '^$SENTENCE\\. '"
+  "derivation '$m1' | grep -q '^$LEAD\\. '"
 check "A1. …and the WHY the finisher records as the card headline carries it too" \
-  "grep -q \"^WHY.$SENTENCE\" '$m1/xo/stdout.txt'"
+  "grep -q \"^WHY.$LEAD\" '$m1/xo/stdout.txt'"
 check "A1. the report says it, and says how to get a drawing: an .html mock-up whose ids name the parts, a concept.md, the holodeck" \
-  "grep -q '$SENTENCE' '$m1/xo/report.md' && grep -q 'attachment-01.png' '$m1/xo/report.md' \
+  "grep -qi '$SENTENCE' '$m1/xo/report.md' && grep -q 'attachment-01.png' '$m1/xo/report.md' \
    && grep -q '\\.html' '$m1/xo/report.md' && grep -q 'concept\\.md' '$m1/xo/report.md' \
    && grep -qi 'holodeck' '$m1/xo/report.md'"
 check "A1. the verdict records the fact in its own field, not only in prose" \
@@ -107,7 +111,7 @@ echo "A3. a mission with no attachments at all"
 m3="$(plant nothing)"
 score "$m3"
 check "A3. no picture, no sentence — the derivation is the ledger's own, unchanged" \
-  "[ \"\$(derivation '$m3')\" = 'everything you asked for is in the build, and I have a picture of each one.' ]"
+  "[ \"\$(derivation '$m3')\" = 'Everything you asked for is in the build, and I have a picture of each one.' ]"
 check "A3. no pictureNotDrawing field at all" \
   "! grep -q 'pictureNotDrawing' '$m3/xo/verdict.json'"
 check "A3. the recorded pictures list is empty" \

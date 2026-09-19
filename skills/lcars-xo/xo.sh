@@ -830,6 +830,10 @@ xo_journal_impact() {
   if [ "$kind" = IMPACT_KEPT ]; then
     journal "$dir" impact-kept "$(printf '"criterion": %s, "recorded": %s, "thisLook": %s' \
       "$(jstr "$a")" "$(jstr "$b")" "$(jstr "$c")")"
+  elif [ "$kind" = TEST_DEMOTED ]; then
+    # S216 fix round 2 (T1): a row rated on a test line that names no test case.
+    journal "$dir" test-citation-demoted "$(printf '"criterion": %s, "rated": %s, "quote": %s' \
+      "$(jstr "$a")" "$(jstr "$b")" "$(jstr "$c")")"
   else
     journal "$dir" impact-mismatch "$(printf '"criteria": [%s, %s], "impacts": [%s, %s]' \
       "$(jstr "$a")" "$(jstr "$b")" "$(jstr "$c")" "$(jstr "$d")")"
@@ -1829,7 +1833,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       GRADE_WHY)    gradewhy="$val" ;;
       SUMMARY)      summary="$val" ;;
       NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
-      IMPACT_KEPT|IMPACT_MISMATCH) xo_journal_impact "$dir" "$key" "$val" ;;
+      IMPACT_KEPT|IMPACT_MISMATCH|TEST_DEMOTED) xo_journal_impact "$dir" "$key" "$val" ;;
     esac
   done <<< "$report"
 
@@ -2492,7 +2496,7 @@ $shots"
         SCORE)   score2="$val" ;;
         WHY)     why2="$val" ;;
         SUMMARY) summary2="$val" ;;
-        IMPACT_KEPT|IMPACT_MISMATCH) xo_journal_impact "$dir" "$key" "$val" ;;
+        IMPACT_KEPT|IMPACT_MISMATCH|TEST_DEMOTED) xo_journal_impact "$dir" "$key" "$val" ;;
       esac
     done <<< "$rep2"
     if [ -n "$score2" ]; then

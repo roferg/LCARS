@@ -53,6 +53,7 @@ THE PROCESS GROUP DIES, NOT JUST THE CHILD. `start_new_session=True` plus a
 the captain's machine.
 """
 import argparse
+import re
 import json
 import os
 import signal
@@ -275,6 +276,140 @@ def run_in(command, cwd, env, timeout):
             time.time() - started)
 
 
+# ── the NAMES of the test cases (S216 fix round 2, T1b) ──────────────────────
+#
+# THE DEFECT. vitest's default reporter prints one line per FILE —
+# `✓ src/renderer/utils.test.ts  (9 tests) 2ms` — so the only thing a look could
+# cite was a file and a count. Two looks at the same build read that same line
+# differently (one called seven items "met by tests", the other refused them),
+# and the grade moved HIGH↔MEDIUM. The scorer now accepts a test citation only
+# when it names a test CASE; this is where the names come from.
+#
+# WHAT IS DONE, AND HOW NARROWLY. When the command's LAST step is a direct
+# vitest / jest invocation (`npx vitest run …`, `pnpm exec jest`, …) and the
+# command has no pipe, redirect or backtick anywhere, one flag is appended that
+# makes the runner print a line per test case: vitest `--reporter=verbose`,
+# jest `--verbose`. Anything else — `pnpm test`, `npm test && npm run lint`, a
+# runner we do not know — is run exactly as written and its names, if it prints
+# any, are read from its ordinary output.
+#
+# THE FLAG MUST NEVER CHANGE THE OUTCOME. If the flagged run does not pass, the
+# command is run again exactly as written and ITS exit code decides; the flagged
+# output is kept only when both runs exit the same way (the flag changed
+# nothing). The recorded `command` is always the captain's own; the flag is
+# recorded beside it in `reporterFlag`.
+REPORTER_FLAGS = (
+    (re.compile(r"^\s*(?:(?:npx|bunx|pnpm\s+exec|pnpm|yarn)\s+)?vitest(?:\s|$)"),
+     "--reporter=verbose", "--reporter"),
+    (re.compile(r"^\s*(?:(?:npx|bunx|pnpm\s+exec|pnpm|yarn)\s+)?jest(?:\s|$)"),
+     "--verbose", "--verbose"),
+)
+
+
+def unsafe_to_append(command):
+    """True when a flag appended to the end would not reach the runner as-is:
+    a pipe, redirect, backtick or newline, or a `#` that COMMENTS. Read the way
+    the shell reads it — inside quotes, `${…}` and `$(…)` those characters are
+    data (`${LCARS_TESTS_DIR#"$PWD/"}` is parameter expansion, not a comment),
+    and `#` comments only at the start of a word. A backtick or newline is
+    refused anywhere."""
+    if any(ch in command for ch in "`\n"):
+        return True
+    stack = []  # open contexts: "'", '"', "${", "$("
+    prev = " "
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        top = stack[-1] if stack else ""
+        if top == "'":
+            if ch == "'":
+                stack.pop()
+        elif ch == "\\":
+            i += 1  # the next character is escaped, whatever it is
+        elif top == '"':
+            if ch == '"':
+                stack.pop()
+            elif command.startswith("${", i) or command.startswith("$(", i):
+                stack.append(command[i:i + 2]); i += 1
+        elif ch in "'\"":
+            stack.append(ch)
+        elif command.startswith("${", i) or command.startswith("$(", i):
+            stack.append(command[i:i + 2]); i += 1
+        elif top and ch == ("}" if top == "${" else ")"):
+            stack.pop()
+        elif top == "$(" and ch == "(":
+            stack.append("$(")  # a nested plain paren, balanced by its ")"
+        elif not top:
+            if ch in "|<>":
+                return True
+            if ch == "#" and (prev.isspace() or prev in ";&|("):
+                return True
+        prev = command[i]
+        i += 1
+    return bool(stack)  # an unclosed quote or expansion: do not guess
+
+
+def reporter_flag(command):
+    """The one flag to append, or "" when appending anything is not safe."""
+    if not command or unsafe_to_append(command):
+        return ""
+    last = re.split(r"&&|;", command)[-1]
+    for pat, flag, already in REPORTER_FLAGS:
+        if pat.search(last) and already not in command:
+            return flag
+    return ""
+
+
+# A CASE LINE: a pass/fail glyph, then a name. Durations are dropped off the
+# end. A line whose name is only a file path and a count (vitest's per-file
+# line) is not a case. Matched on the glyph a runner prints — never on prose.
+CASE_GLYPHS = "✓✔√×✕✗✘✖↓"
+CASE_LINE = re.compile(r"^\s*[%s]\s+(.+?)\s*$" % CASE_GLYPHS)
+TRAILING_TIME = re.compile(r"\s+(?:\(\s*\d+(?:\.\d+)?\s*m?s\s*\)|\d+(?:\.\d+)?ms)\s*$")
+FILE_TOKEN = re.compile(r"(?<!\S)\S*(?:/\S*|\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kt|cs|php|svelte|vue))(?!\S)")
+COUNT_TAIL = re.compile(r"\s*\(\s*\d+(?:\s+\w+)?(?:\s*\|\s*\d+\s+\w+)*\s*\)\s*$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+MAX_CASES = 400
+
+
+# The other case-line shapes runners print, matched on their fixed markers:
+# Go's `--- PASS: TestName (0.00s)`, TAP's `ok 1 - name` / `not ok 2 - name`,
+# and a `PASS name` / `FAIL name` line (vitest's failure header, a bash suite).
+# A `PASS src/x.test.js` line is only a file, and the file rule below drops it.
+OTHER_CASE_LINES = (
+    re.compile(r"^\s*---\s+(?:PASS|FAIL|SKIP):\s+(.+?)\s*$"),
+    re.compile(r"^\s*(?:not\s+)?ok\s+\d+\s*(?:-\s*)?(.+?)\s*$"),
+    re.compile(r"^\s*(?:PASS|FAIL)\s+(.+?)\s*$"),
+)
+
+
+def test_cases(text):
+    """Every test case NAME the output shows, in order, de-duplicated."""
+    out, seen = [], set()
+    for raw in ANSI_RE.sub("", text or "").splitlines():
+        m = CASE_LINE.match(raw)
+        if not m:
+            for pat in OTHER_CASE_LINES:
+                m = pat.match(raw)
+                if m:
+                    break
+        if not m:
+            continue
+        name = TRAILING_TIME.sub("", m.group(1))
+        name = COUNT_TAIL.sub("", name).strip()
+        # A file on its own, with or without its count, is not a test case.
+        rest = FILE_TOKEN.sub("", name).replace(">", " ").strip()
+        if not re.search(r"[^\W\d_]", rest, re.UNICODE):
+            continue
+        name = " ".join(name.split())
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+            if len(out) >= MAX_CASES:
+                break
+    return out
+
+
 def write(path, doc):
     d = os.path.dirname(os.path.abspath(path))
     if d:
@@ -321,6 +456,11 @@ def main():
         # report never has to work out from the output that a fallback happened.
         "ranIn": None,
         "rootExitCode": None,
+        # THE TEST CASES THE OUTPUT NAMED (S216 fix round 2), and the one flag
+        # appended to get them, if any — the scorer accepts a test citation
+        # only when it names one of these.
+        "reporterFlag": "",
+        "testCases": [],
     }
 
     # --- the two cases where nothing is run at all ---------------------------
@@ -349,6 +489,10 @@ def main():
     env = dict(os.environ)
     env.pop("LCARS_TESTS_DIR", None)
 
+    # THE ONE FLAG THAT MAKES THE RUNNER NAME ITS TEST CASES (T1b), or none.
+    flag = reporter_flag(command)
+    run_command = ("%s %s" % (command, flag)) if flag else command
+
     started = time.time()
     try:
         # `bash -c` is the shape every other LCARS test-command invocation uses
@@ -356,7 +500,7 @@ def main():
         # there works here. Its own session, so the timeout can kill the whole
         # tree rather than one shell with children still running under it.
         proc = subprocess.Popen(
-            ["bash", "-c", command],
+            ["bash", "-c", run_command],
             cwd=cwd, env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -423,6 +567,28 @@ def main():
     else:
         doc["exitCode"] = proc.returncode
         doc["outcome"] = "passed" if proc.returncode == 0 else "failed"
+
+    # THE FLAG NEVER DECIDES THE OUTCOME (T1b). A flagged run that did not
+    # pass is run again exactly as the captain wrote it, with what is left of
+    # the budget, and that run's exit code is the one recorded. The flagged
+    # output is kept only when both exited the same way — the flag changed
+    # nothing — because that output carries the test names.
+    if flag and not timed_out and proc.returncode != 0:
+        left = max(1.0, timeout - (time.time() - started))
+        o_raw, o_code, o_hung, _d = run_in(command, cwd, env, left)
+        if o_hung or o_code != proc.returncode:
+            flag = ""
+            text = o_raw.decode("utf-8", "replace")
+            b = text.encode("utf-8", "replace")
+            doc["outputBytes"] = len(b)
+            doc["truncated"] = len(b) > cap
+            doc["outputTail"] = b[-cap:].decode("utf-8", "replace") if doc["truncated"] else text
+            timed_out = bool(o_hung)
+            doc["timedOut"] = timed_out
+            doc["exitCode"] = None if o_hung else o_code
+            doc["outcome"] = "hung" if o_hung else ("passed" if o_code == 0 else "failed")
+        duration = time.time() - started
+        doc["durationSeconds"] = round(duration, 2)
 
     # ── THE WORKSPACE FALLBACK (S213) ───────────────────────────────────────
     # 127 from a shell is "I could not find that program". On a pnpm workspace
@@ -494,6 +660,8 @@ def main():
                     doc["outcome"] = "passed" if worst == 0 else "failed"
                 duration = doc["durationSeconds"]
 
+    doc["reporterFlag"] = flag
+    doc["testCases"] = test_cases(text)
     doc["verdict"] = verdict_for(doc["outcome"], command, doc["exitCode"],
                                  duration, timeout, doc.get("ranIn"))
     write(args.out, doc)

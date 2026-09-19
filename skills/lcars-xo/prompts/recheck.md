@@ -40,7 +40,9 @@ per gap, and you write one file.
   about a criterion the suite does not speak to**, so if nothing in the output
   speaks to one, it is still "I could not check this"; a count line (`413
   passed, 0 failed`, `Duration 1.23s`) names nothing and is refused outright,
-  so quote the line that names the test; a failing test relevant
+  so quote the line that names the test — cite a test CASE by its exact
+  name from `testCases` when it is there; a line naming only a file and its
+  count is not a test case and is refused; a failing test relevant
   to a criterion is a gap with the failure quoted; and `outcome: hung`, or a
   run that crashed before any test executed, is trouble running the tests, not
   a fault in the build. LCARS checks every quote against the recorded output,

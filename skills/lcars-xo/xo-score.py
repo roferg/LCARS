@@ -99,6 +99,7 @@ Output on stdout, one TAB-separated record per line, for the shell to read:
   MEANING <what the score word means for THIS ledger — never a fixed sentence>
   GRADE_WHY <why this grade, the table walked in words> | CORE <met|broken|unverified|>
   IMPACT_KEPT <id> <recorded> <this look's>  | IMPACT_MISMATCH <id> <id> <impact> <impact>
+  TEST_DEMOTED <id> <rated> <quote>  — a test citation that settled nothing (T1)
 """
 import json
 import os
@@ -168,6 +169,17 @@ NO_DRAWING_NOTE = "I could not check this against a drawing, because there isn't
 # way, at the head of the one line the card shows. Byte-identical everywhere.
 PICTURE_NOT_DRAWING = ("your attachment is a picture, so I could not check the "
                        "build against a drawing")
+# The headline's short lead (S216 fix round 2, W1/W2) — the same words the
+# board's picture label uses; the headline has a word budget.
+PICTURE_LEAD = "Your attachment is a picture, not a drawing."
+HEADLINE_WORDS = 25
+LIST_NAME = 40      # a name inside a list of three, on a phone
+
+
+def word_count(text):
+    """Words a reader reads: a dash or a bracketed id on its own is not one."""
+    return sum(1 for w in str(text or "").split() if re.search(r"[^\W_]", w, re.UNICODE)
+               and not re.fullmatch(r"\([\w-]+\)[.,;]?", w))
 
 # WHAT TO DO ABOUT IT, said once (S217 fix round 1, D1). report.md prints it and
 # the verdict RECORDS it under pictureNotDrawing.fix, so the ◈ Number One tab
@@ -401,6 +413,45 @@ def tally_refusal(text):
     return ""
 
 
+# ─── A TEST CITATION MUST NAME A TEST CASE (S216 fix round 2, T1) ───────────
+#
+# THE DEFECT. Two looks at one build were handed the same test output, which
+# named only FILES and counts — `✓ src/renderer/utils.test.ts  (9 tests) 2ms`.
+# One look called seven items "met by tests" on that line, the other refused
+# them as unobservable, and the grade moved HIGH↔MEDIUM on nothing but a
+# re-guess. There was no rule for what "met by tests" needs. This is the rule:
+# a row stands as MET on test evidence ONLY if the line it cites names a test
+# CASE — a file name, alone or with its count, names none — and that line is in
+# the recorded output. When xo-tests.py recorded the case names (`testCases`),
+# the citation must also contain one of them, whole. Everything is decided
+# from the recorded output and the recorded names; nothing reads the worker's
+# prose.
+NOT_NAMED = "your tests ran, but none I could see is named for this"
+FILE_TOKEN = re.compile(r"(?<!\S)\S*(?:/\S*|\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kt|cs|php|svelte|vue))(?!\S)")
+
+
+def names_only_a_file(q):
+    """True when the citation, once its file names are taken out, is nothing
+    but glyphs, counts and tally words — a file-level line, not a test case."""
+    rest = FILE_TOKEN.sub(" ", q)
+    if rest.strip() == q.strip():
+        return False                       # no file in it at all
+    rest = rest.replace(">", " ")
+    words = [w for w in re.findall(r"[^\W\d_]+", rest, re.UNICODE) if not is_marker(w)]
+    return all(w.lower() in TALLY_WORDS for w in words)
+
+
+def case_leaves(tests):
+    """The recorded test-case names a citation may contain — each case's last
+    ` > ` segment, normalised, keeping only ones that name something."""
+    out = []
+    for c in (tests or {}).get("testCases") or []:
+        leaf = norm_for_match(str(c).split(" > ")[-1])
+        if leaf and not tally_refusal(leaf) and leaf not in out:
+            out.append(leaf)
+    return out
+
+
 def tests_settle(tests, quote):
     """CAN THE PROJECT'S OWN TESTS SETTLE THIS ONE? → (yes/no, why not).
 
@@ -429,12 +480,18 @@ def tests_settle(tests, quote):
     names_nothing = tally_refusal(q)
     if names_nothing:
         return False, names_nothing
+    if names_only_a_file(q):
+        return False, NOT_NAMED
+    cases = [norm_for_match(c) for c in (tests.get("testCases") or [])]
     hay = norm_for_match(tests.get("outputTail"))
-    if q not in hay:
+    if q not in hay and not any(c and (q in c or c in q) for c in cases):
         cut = ("  (I only kept the last %s bytes of it)" % tests.get("tailCapBytes")
                if tests.get("truncated") else "")
         return False, ("I could not find that line in your test output, so I am not "
                        "going to say your tests proved it%s" % cut)
+    leaves = case_leaves(tests)
+    if leaves and not any(leaf in q for leaf in leaves):
+        return False, NOT_NAMED
     return True, ""
 
 
@@ -559,11 +616,34 @@ DANGLING = set("a an the of for to with and or but in on at by from as is are be
 STRIP_TAIL = " :;,.—-*=+"
 
 
+# MARKDOWN IS NOT A NAME (S216 fix round 2, W1). A PRD's `**low demo value**`
+# leaked into the tab as raw `**`. Emphasis marks go; an identifier's own
+# underscores (DEV_HP_BAR_WIDTH) are left alone.
+def strip_markdown(t):
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)
+    t = re.sub(r"__(.+?)__", r"\1", t)
+    t = re.sub(r"(?<![\w*])\*(?!\s)([^*]+?)(?<!\s)\*(?![\w*])", r"\1", t)
+    t = re.sub(r"(?<![\w_])_(?!\s)([^_]+?)(?<!\s)_(?![\w_])", r"\1", t)
+    return t.replace("**", "")
+
+
+# ARGUMENTS THAT ARE VALUES STAY (W1). `healthBarColor(0)` and
+# `healthBarColor(0.35)` are two different checks; naming both
+# "healthBarColor" made two rows read identically. Arguments with no letters
+# in them are the requirement and are kept; a signature's typed parameters
+# (`current: number`) are not, and go.
+VALUE_ARGS = re.compile(r"^[^A-Za-z]*$")
+SUBORDINATE = set("when if after before while unless once until whenever".split())
+
+
 def short_name(text, limit=60):
-    t = re.sub(r"\s*\(\s*`[^`]*`\s*\)", "", str(text or ""))
+    t = strip_markdown(re.sub(r"\s*\(\s*`[^`]*`\s*\)", "", str(text or "")))
 
     def code(m):
         c = m.group(1).strip()
+        fn = re.match(r"([A-Za-z_$][\w$.]*)\s*\(([^()]*)\)", c)
+        if fn and VALUE_ARGS.match(fn.group(2)) and len(c) <= 40:
+            return c
         fn = re.match(r"([A-Za-z_$][\w$.]*)\s*\(", c)
         if fn:
             return fn.group(1)
@@ -575,12 +655,27 @@ def short_name(text, limit=60):
     t = re.sub(r"(?<![\w/])[\w.-]+(?:/[\w.-]+)+\.\w+", lambda m: m.group(0).rsplit("/", 1)[-1], t)
     t = " ".join(t.split()).rstrip(STRIP_TAIL)
     if len(t) > limit:
-        # Too long: first drop call arguments and worded asides — "(current
-        # === max)", "(not app.renderer.resize directly)" — but keep a bare
-        # value like "(8,8)", which is the requirement.
-        t = re.sub(r"(?<=\w)\([^()]*\)", "", t)
+        # Too long: first drop worded call arguments and worded asides —
+        # "(current, max)", "(not app.renderer.resize directly)" — but keep a
+        # bare value like "(8,8)" or "(0.35)", which is the requirement.
+        t = re.sub(r"(?<=\w)\([^()]*[A-Za-z][^()]*\)", "", t)
         t = re.sub(r"\s+\([^()]*[A-Za-z][^()]*\)", "", t)
         t = " ".join(t.split()).rstrip(STRIP_TAIL)
+    if len(t) > limit:
+        # NEVER MID-PHRASE (W1): prefer the first whole clause — up to a colon,
+        # a semicolon, a dash, then a comma, then an "and" — when that clause
+        # is a name on its own. It carries one "…": there was more.
+        # A clause that is only a condition ("When devMode is false") or a
+        # list's first item ("DEV_HP_BAR_WIDTH") is not a name, so a clause
+        # needs three words and must not open on a subordinating word. A
+        # spaced hyphen is arithmetic here ("width - margin"), never a dash.
+        for sep in (r":\s", r";\s", r"\s[—–]\s", r",\s", r"\sand\s"):
+            head = re.split(sep, t, maxsplit=1)[0].rstrip(STRIP_TAIL)
+            words = head.split(" ")
+            if head != t and 15 <= len(head) <= limit + 15 and len(words) >= 3 \
+                    and words[-1].lower() not in DANGLING \
+                    and words[0].lower() not in SUBORDINATE:
+                return head + "…"
     cut = False
     if len(t) > limit:
         head = t[:limit + 1]
@@ -601,15 +696,19 @@ def short_name(text, limit=60):
 # WHAT A HIGH RESTED ON (D7). "I have a picture of each one" was said of a
 # ledger two thirds of which your tests settled. The rows carry their evidence
 # kind (recorded, S211), so the sentence counts it — no reading of prose.
-def evidence_said(rows):
+def evidence_said(rows, has_drawing=False):
     pics = sum(1 for e in rows if e.get("evidence") in ("picture", "measurement"))
     tests = sum(1 for e in rows if e.get("evidence") == "tests")
+    # W2: with a real drawing on the mission, "picture" reads as the drawing;
+    # the screenshots are what was SEEN on screen.
     if pics and tests:
-        return ("I have a picture of %d and your own tests show the other %d"
+        return (("I saw %d on screen and your own tests show the other %d"
+                 if has_drawing else
+                 "I have a picture of %d and your own tests show the other %d")
                 % (pics, tests))
     if tests:
         return "your own tests show each one"
-    return "I have a picture of each one"
+    return "I saw each one on screen" if has_drawing else "I have a picture of each one"
 
 
 # THE SMALLER ITEMS, SAID APART (D1/D2). "7 small things did not" was said of
@@ -731,6 +830,22 @@ def apply_recorded_impacts(ledger, path, texts=None):
     return note, kept, new
 
 
+def because_tail(why):
+    """ONE "because" (S216 fix round 2, W3). A recorded reason is usually
+    "The tuning constants are medium because they are …"; set after "Impact
+    medium because" that read "because The tuning constants are medium
+    because …". Keep what follows its own "because", and continue in lower
+    case unless the first word is a name (DEV_HP_BAR_WIDTH, API, F3)."""
+    t = unstop(why)
+    m = re.search(r"\bbecause\s+", t, re.IGNORECASE)
+    if m and t[m.end():].strip():
+        t = t[m.end():]
+    w = t.split(" ", 1)[0]
+    if w[:1].isupper() and w[1:].islower() and w.isalpha():
+        t = t[:1].lower() + t[1:]
+    return t
+
+
 def finish_reason(e):
     """Every row carries ONE reason sentence (S216).
 
@@ -749,7 +864,7 @@ def finish_reason(e):
     if e.get("impactAssumed"):
         impact = "Impact high — none was given, so I counted it as the point of the mission"
     elif e.get("impactWhy"):
-        impact = "Impact %s%s because %s" % (e["impact"], tag, unstop(e["impactWhy"]))
+        impact = "Impact %s%s because %s" % (e["impact"], tag, because_tail(e["impactWhy"]))
     else:
         impact = "Impact %s%s" % (e["impact"], tag)
     if rated != e["status"]:
@@ -763,7 +878,10 @@ def finish_reason(e):
     if recorded:
         # The look's own "Impact <x> because …" sentence gives way to the one
         # on the record; what it tried and saw is kept as written.
-        said = "%s. %s" % (impact, re.sub(r"^Impact\s+\w+\b[^.]*\.\s*", "", said))
+        # The look's sentence ends at a full stop that ends a SENTENCE — not
+        # the dot inside `renderer.resize` (W3: that left "resize is medium
+        # because …" behind, a second "because").
+        said = "%s. %s" % (impact, re.sub(r"^Impact\s+\w+\b.*?\.(?:\s+(?=[A-Z])|\s*$)", "", said, count=1))
     e["reason"] = said
 
 
@@ -905,6 +1023,7 @@ def main():
 
     # --- the ledger, checked for its pictures --------------------------------
     ledger = []
+    demoted = []          # (id, rated, quote) — a test citation that named no case
     seen = set()
     for c in rated:
         if not isinstance(c, dict):
@@ -925,6 +1044,7 @@ def main():
         if status not in VALID_STATUS:
             bad("criterion %r has no valid status (want met|gap|untested)" % cid)
         rated_status = status
+        harness_blind = ""
         shot = str(c.get("shot") or "").strip()
         note = str(c.get("note") or "")
         # THE EVIDENCE KIND, RECORDED BY WHATEVER MADE THE JUDGEMENT (S211).
@@ -946,6 +1066,11 @@ def main():
                 if not settled:
                     notes.append("%s was rated %s on your tests, but %s; recorded as "
                                  "not-checked" % (cid, status, why))
+                    # T1: a citation that names no test case is "couldn't
+                    # check — nothing to see", decided here and journaled.
+                    if why == NOT_NAMED or tally_refusal(norm_for_match(quote)):
+                        harness_blind = "unobservable"
+                    demoted.append((cid, status, quote))
                     status = "untested"
                     note = why
                     evidence = ""
@@ -998,6 +1123,8 @@ def main():
             why_not = str(c.get("couldNotCheck") or "").strip().lower()
             if why_not in COULD_NOT_CHECK:
                 entry["couldNotCheck"] = why_not
+        if harness_blind:
+            entry["couldNotCheck"] = harness_blind
         if status == "gap":
             # Notes for the fix loop, never the grade (ISTQB's triage inputs):
             # is there a way round it, and how often did it happen.
@@ -1083,19 +1210,20 @@ def main():
     # machine handles to learn nothing — while the gap behind each one carried a
     # title in his own words, sitting right here in this function. The names go
     # in the sentence; the ids stay, in the brackets after it.
-    def named(cid):
+    def named(cid, limit=60):
         for g in gaps:
             if str(g.get("criterion") or "") == cid and str(g.get("title") or "").strip():
-                return short_name(g["title"], 90)
+                return short_name(g["title"], max(limit, 60) + 30)
         row = contract_by_id.get(cid) or {}
-        return short_name(row.get("text")) or cid
+        return short_name(row.get("text"), limit) or cid
 
     # WHAT WENT WRONG, NOT WHAT WAS ASKED (D3). "Known issues shipping with it:
     # the bar is red" reads as if the bar is red. A known issue names its fault:
     # what was expected against what was seen, off the finding the look
     # recorded — or the row's own observation — and when there is neither, it
     # says it didn't work and where to look.
-    def fault(e):
+    def fault(e, room=140):
+        # A smaller room (the why paragraph) shortens what was asked and seen.
         nm = named(e["id"])
         if e["status"] == "untested":
             return "%s — I could not check it" % nm
@@ -1104,24 +1232,13 @@ def main():
                 continue
             exp, saw = unstop(str(g.get("expected") or "")), unstop(str(g.get("saw") or ""))
             if exp.strip() and saw.strip():
-                return "%s — you asked for %s; the build gives %s" % (nm, exp, saw)
+                return "%s — you asked for %s; the build gives %s" % (
+                    nm, clip(exp, room), clip(saw, room))
         obs = unstop(" ".join(str(e.get("note") or "").split()))
         if obs and _plain(obs) != _plain(e.get("text")) \
                 and _plain(obs) != _plain((contract_by_id.get(e["id"]) or {}).get("text")):
-            return "%s — didn't work: %s" % (nm, clip(obs, 140))
+            return "%s — didn't work: %s" % (nm, clip(obs, room))
         return "%s — didn't work (see the row)" % nm
-
-    def faults(rows):
-        return "; ".join("%s (%s)" % (fault(e), e["id"]) for e in rows)
-
-    def names_ids(rows):
-        return "; ".join("%s (%s)" % (named(e["id"]), e["id"]) for e in rows)
-
-    def name_list(ids):
-        names = [named(c) for c in ids]
-        if len(names) < 2:
-            return "".join(names)
-        return ", ".join(names[:-1]) + " and " + names[-1]
 
     # --- WHAT THE SCORE WORD MEANS, off the SAME LEDGER ----------------------
     # THE BUG THIS CLOSES (S213 fix round 1, D4). The three score words carried
@@ -1140,31 +1257,79 @@ def main():
     grade = derive_grade(ledger)
     score, core = grade["score"], grade["core"]
 
-    def items(rows):
-        return "; ".join(named(e["id"]) for e in rows)
-
     def ids(rows):
         return ", ".join(e["id"] for e in rows)
 
     hi_gap, hi_blind = grade["highGap"], grade["highBlind"]
-    med_open = grade["mediumGap"] + grade["mediumBlind"]
     low_gap = [e for e in grade["lowOpen"] if e["status"] == "gap"]
     low_blind = [e for e in grade["lowOpen"] if e["status"] == "untested"]
+
+    # S217's picture fact, known before the words are chosen: the headline's
+    # word budget has to leave room for its short lead.
+    picture_names = [str(p) for p in (contract.get("pictures") or [])
+                     if str(p).strip()] if isinstance(contract, dict) else []
+    picture_only = bool(picture_names) and not has_drawing
+
+    # ─── S216 fix round 2 (W1): SHORT, ON A PHONE ───────────────────────────
+    # The headline listed seven cut-off names with their ids and the "why"
+    # listed all nineteen of the mission's core items — forty lines at 390px.
+    # Now every list is AT MOST THREE names and "and N more — see the list";
+    # the headline has a word budget and falls back from names to counts; the
+    # full per-item detail stays in the table, where it always was.
+    CAP = 3
+    budget = HEADLINE_WORDS - (word_count(PICTURE_LEAD) if picture_only else 0)
+
+    def some(rows, fmt, n=CAP, sep=", "):
+        """At most n of them, and how many more — never the whole list."""
+        got = [fmt(e) for e in rows[:n]]
+        more = len(rows) - len(got)
+        if not got:
+            return ""
+        if more > 0:
+            return "%s and %d more" % (sep.join(got), more)
+        if len(got) == 1:
+            return got[0]
+        return "%s and %s" % (sep.join(got[:-1]), got[-1])
+
+    def short(e):
+        return named(e["id"], LIST_NAME)
+
+    def named_id(e):
+        return "%s (%s)" % (short(e), e["id"])
+
+    def fault_id(e):
+        return "%s (%s)" % (fault(e, 70), e["id"])
+
+    def fit(*cands):
+        """The first candidate inside the headline's word budget, else the
+        last (the counts-only one, which always is)."""
+        for c in cands:
+            if c and word_count(c) <= budget:
+                return c
+        return cands[-1]
+
+    def n_things(n, what="thing"):
+        return "%d %s%s" % (n, what, "" if n == 1 else "s")
+
     if grade["rule"] == "nothing-listed":
         why = ("there was nothing on your list to check, so nothing here is "
                "vouched for.")
         meaning = ("There was nothing on your list to check, so nothing here is "
                    "vouched for — this is not a clean bill of health")
     elif grade["rule"] == "high-broken":
-        why = ("the point of the mission does not work — %s (%s). What you set "
-               "out to get is not there yet."
-               % (name_list([e["id"] for e in hi_gap]), ids(hi_gap)))
+        why = fit(*["the point of the mission does not work — %s. What you set out "
+                    "to get is not there yet." % some(hi_gap, named_id, n, "; ")
+                    for n in (2, 1)] +
+                  ["%s of the point of the mission didn't work; what you wanted is "
+                   "not there yet." % n_things(len(hi_gap), "part")])
         meaning = ("What you set out to get is not in the build — look for "
                    "yourself before this goes anywhere")
     elif grade["rule"] == "high-unchecked":
-        why = ("I could not check the point of the mission — %s (%s) — so nothing "
-               "here says it works."
-               % (name_list([e["id"] for e in hi_blind]), ids(hi_blind)))
+        why = fit(*["I could not check the point of the mission — %s — so nothing "
+                    "here says it works." % some(hi_blind, named_id, n)
+                    for n in (2, 1)] +
+                  ["I could not check %s of the mission's point, so it is not "
+                   "vouched for." % n_things(len(hi_blind), "part")])
         meaning = ("I could not check the point of the mission, so it is not "
                    "vouched for — look for yourself")
     elif grade["rule"] == "nothing-checked":
@@ -1176,18 +1341,29 @@ def main():
         # What did not work and what could not be checked are said apart, so a
         # MEDIUM that rests on a blind spot never reads as a clean bill.
         mg, mb = grade["mediumGap"], grade["mediumBlind"]
-        bits = []
+
+        def medium_line(n, fmt_gap):
+            bits = []
+            if mg:
+                bits.append("go with %s known issue%s — %s"
+                            % ("this" if len(mg) == 1 else "these",
+                               "" if len(mg) == 1 else "s", some(mg, fmt_gap, n, "; ")))
+            if mb:
+                bits.append("I could not check %s%s"
+                            % (some(mb, named_id, n),
+                               "" if mg else ", so %s"
+                               % ("it ships as a known issue" if len(mb) == 1
+                                  else "they ship as known issues")))
+            return "the point of the mission works; %s." % "; and ".join(bits)
+        counted = []
         if mg:
-            bits.append("go with %s known issue%s — %s"
-                        % ("this" if len(mg) == 1 else "these",
-                           "" if len(mg) == 1 else "s", faults(mg)))
+            counted.append("%s didn't work" % n_things(len(mg)))
         if mb:
-            bits.append("I could not check %s (%s)%s"
-                        % (name_list([e["id"] for e in mb]), ids(mb),
-                           "" if mg else ", so %s as a known issue%s"
-                           % ("it ships" if len(mb) == 1 else "they ship",
-                              "" if len(mb) == 1 else "s")))
-        why = "the point of the mission works; %s." % "; and ".join(bits)
+            counted.append(("%d couldn't be checked" if mg else "%s couldn't be checked")
+                           % (len(mb) if mg else n_things(len(mb))))
+        why = fit(medium_line(2, fault_id), medium_line(1, fault_id),
+                  medium_line(1, named_id),
+                  "the point of the mission works; %s." % " and ".join(counted))
         said = []
         if mg:
             said.append("%d known issue%s that didn't work as asked"
@@ -1208,27 +1384,29 @@ def main():
     else:
         # D7: say what the grade actually rested on — pictures, your tests, or
         # both — counted off the rows' recorded evidence kind.
-        seen = evidence_said([e for e in ledger if e["status"] == "met"])
+        seen = evidence_said([e for e in ledger if e["status"] == "met"], has_drawing)
         why = "everything you asked for is in the build, and %s." % seen
         meaning = "Everything you asked for worked — %s — ship as is" % seen
 
-    # --- WHY THIS GRADE: the table walked in words (S216) --------------------
+    # --- WHY THIS GRADE: at most four short sentences (S216 fix round 2) -----
+    #   1. the rule that fired, in words;
+    #   2. the point of the mission, in ONE sentence: how many, three names;
+    #   3. what didn't work, by name with its fault;
+    #   4. what couldn't be checked, how many and three names.
+    # Nothing else — the rows carry the rest.
     rule_words = {
         "nothing-listed": "there was nothing on your list to check",
         "high-broken": "something that is the point of the mission did not work",
         "high-unchecked": ("I could not check the point of the mission, and I will "
-                           "not call a build good on the strength of what I could "
-                           "not see"),
+                           "not call a build good on what I could not see"),
         "nothing-checked": "I could not check anything on your list",
-        "medium-open": ("every part that is the point of the mission worked, but "
-                        "%s — go with the named known issue%s"
+        "medium-open": ("the point of the mission worked, but %s"
                         % ("something else you asked for did not work as asked"
                            if not grade["mediumBlind"] else
                            "something else you asked for could not be checked"
                            if not grade["mediumGap"] else
-                           "other things you asked for did not work as asked or "
-                           "could not be checked",
-                           "" if len(med_open) == 1 else "s")),
+                           "other things you asked for did not work or could "
+                           "not be checked")),
         # D1: "and everything else you asked for" only when it is TRUE.
         "all-worked": ("everything that is the point of the mission, and everything "
                        "else you asked for, worked"
@@ -1238,34 +1416,49 @@ def main():
                        if any(e.get("impact") == "medium" for e in ledger) else
                        "everything that is the point of the mission worked"),
     }
-    para = ["%s because %s." % (score.upper(), rule_words[grade["rule"]])]
+    first = "%s because %s" % (score.upper(), rule_words[grade["rule"]])
+    assumed = [e for e in ledger if e.get("impactAssumed")]
+    if assumed:
+        first += ("; no impact was given for %s, so I counted %s as the point of "
+                  "the mission, the careful reading"
+                  % (some(assumed, lambda e: e["id"]), "it" if len(assumed) == 1 else "them"))
+    para = [first + "."]
     highs = grade["high"]
     if highs:
-        point = "The point of the mission: %s." % items(highs)
-        if not hi_gap and not hi_blind:
-            point += " All of it worked."
-        else:
-            bits = []
-            if hi_gap:
-                bits.append("%s didn't work" % ", ".join(e["id"] for e in hi_gap))
-            if hi_blind:
-                bits.append("%s couldn't be checked" % ", ".join(e["id"] for e in hi_blind))
-            point += " " + " and ".join(bits) + "."
+        point = ("The point of the mission is %s — %s — and %s."
+                 % (n_things(len(highs)), some(highs, short),
+                    ("it worked" if len(highs) == 1 else "all of them worked")
+                    if not hi_gap and not hi_blind else
+                    " and ".join(x for x in (
+                        ("%d didn't work" % len(hi_gap)) if hi_gap else "",
+                        ("%d couldn't be checked" % len(hi_blind)) if hi_blind else "")
+                        if x)))
         para.append(point)
     elif ledger:
         para.append("Nothing on your list was marked as the point of the mission.")
+    more_note = " — see the list"
+    broke = []
+    if hi_gap:
+        broke.append("didn't work: %s" % some(hi_gap, fault_id, sep="; "))
     if grade["mediumGap"]:
-        para.append("Known issues shipping with it: %s." % faults(grade["mediumGap"]))
-    if grade["mediumBlind"]:
-        para.append("Also shipping unchecked — I could not check %s."
-                    % names_ids(grade["mediumBlind"]))
-    for bit in smaller_items(low_gap, low_blind, names_ids):
-        para.append(bit[:1].upper() + bit[1:] + ".")
-    assumed = [e for e in ledger if e.get("impactAssumed")]
-    if assumed:
-        para.append("No impact was given for %s, so I counted %s as the point of "
-                    "the mission — the careful reading."
-                    % (ids(assumed), "it" if len(assumed) == 1 else "them"))
+        broke.append("Known issues shipping with it: %s" % some(grade["mediumGap"], fault_id, sep="; "))
+    broke += smaller_items(low_gap, [], lambda rows: some(rows, short))
+    if broke:
+        s3 = "; ".join(broke)
+        if any(len(r) > CAP for r in (hi_gap, grade["mediumGap"], low_gap)):
+            s3 += more_note
+        para.append(s3[:1].upper() + s3[1:] + ".")
+    blind = hi_blind + grade["mediumBlind"]
+    unseen = []
+    if blind:
+        unseen.append("I could not check %s — %s"
+                      % (n_things(len(blind)), some(blind, short)))
+    unseen += smaller_items([], low_blind, lambda rows: some(rows, short))
+    if unseen:
+        s4 = "; ".join(unseen)
+        if len(blind) > CAP or len(low_blind) > CAP:
+            s4 += more_note
+        para.append(s4[:1].upper() + s4[1:] + ".")
     why_grade = " ".join(para)
 
     # --- BESIDE HIS GRADE, NEVER INSTEAD OF IT (the research's hybrid) -------
@@ -1291,11 +1484,11 @@ def main():
     # S217 — the picture sentence LEADS the derivation, so the card's one line
     # and the report's first line both open with it. The score is untouched:
     # a missing drawing is not a fault in the build.
-    picture_names = [str(p) for p in (contract.get("pictures") or [])
-                     if str(p).strip()] if isinstance(contract, dict) else []
-    picture_only = bool(picture_names) and not has_drawing
+    # W2: every sentence opens on a capital. The headline's lead is the SHORT
+    # form (the board's own label); the full sentence is in the report.
+    why = why[:1].upper() + why[1:]
     if picture_only:
-        why = "%s. %s" % (PICTURE_NOT_DRAWING, why[:1].upper() + why[1:])
+        why = "%s %s" % (PICTURE_LEAD, why)
 
     out = {
         "score": score,
@@ -1513,6 +1706,8 @@ def main():
     print("CORE\t" + core)
     for cid, was, said_now in impacts_kept:
         print("IMPACT_KEPT\t%s\t%s\t%s" % (cid, was, said_now))
+    for cid, was, q in demoted:
+        print("TEST_DEMOTED\t%s\t%s\t%s" % (cid, was, " ".join(q.split())))
     for m in mismatches:
         print("IMPACT_MISMATCH\t%s\t%s\t%s\t%s" % tuple(m["ids"] + m["impacts"]))
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))

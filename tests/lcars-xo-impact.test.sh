@@ -297,17 +297,25 @@ check "B15. the scorer hands the paragraph to the shell (GRADE_WHY) for the jour
 # the captain would read on those real looks.
 FX="$REPO_ROOT/tests/fixtures/xo-s216"
 # realrun <name> <fixture|file> [impacts.json] [engine] [mutate-python]
+# realrun <name> <fixture> [impacts] [engine] [mutation] [named]
+# With `named`, every test-cited row cites a NAMED test case instead of the
+# file-level line the live look saw (S216 fix round 2, T1) — for the checks
+# that are about something other than the test-citation rule.
 realrun() {
-  local name="$1" src="$2" imp="${3:-}" eng="${4:-}" mut="${5:-}"
+  local name="$1" src="$2" imp="${3:-}" eng="${4:-}" mut="${5:-}" named="${6:-}"
   [ -f "$src" ] || src="$FX/$src-verdict.json"
   mkdir -p "$TMPROOT/$name"
-  "$PY" - "$src" "$TMPROOT/$name.worker.json" "$TMPROOT/$name.tests.json" "$mut" <<'PYX'
+  "$PY" - "$src" "$TMPROOT/$name.worker.json" "$TMPROOT/$name.tests.json" "$mut" "$named" <<'PYX'
 import json, sys
-src, wout, tout, mut = sys.argv[1:5]
+src, wout, tout, mut, named = sys.argv[1:6]
 d = json.load(open(src))
 keep = ("id", "text", "status", "note", "evidence", "testQuote", "shot",
         "impact", "impactWhy", "reason", "couldNotCheck", "workaround", "tries")
 rows = [{k: c[k] for k in keep if k in c} for c in d["criteria"]]
+if named:
+    for c in rows:
+        if c.get("testQuote"):
+            c["testQuote"] = "✓ src/game.test.ts > %s is covered" % c["id"]
 w = {"score": d.get("workerScore") or d["score"], "summary": d["summary"],
      "criteria": rows, "gaps": d.get("gaps") or []}
 if mut:
@@ -323,14 +331,14 @@ PYX
 }
 
 echo "R1 (D1). HIGH with 7 items nobody could check says so — never 'everything else worked'"
-realrun c2 copilot-2
+realrun c2 copilot-2 "" "" "" named
 check "R1. copilot-2 is still HIGH (his table: those 7 are low)" "[ \"\$(score c2)\" = high ]"
 check "R1. why-this-grade no longer claims everything else worked" \
   "! v c2 whyThisGrade | grep -q 'everything else you asked for, worked'"
 check "R1. …it says 7 smaller items could not be checked and do not change the grade" \
   "v c2 whyThisGrade | grep -q \"7 smaller items I could not check, and they don't change the grade\""
-check "R1. …and names them in plain words (not ids only)" \
-  "v c2 whyThisGrade | grep -q 'Player health defaults to full'"
+check "R1. …and names them in plain words (not ids only) — at most three, then how many more" \
+  "v c2 whyThisGrade | grep -q 'DEV_HP_BAR_WIDTH' && v c2 whyThisGrade | grep -q 'and 4 more — see the list'"
 check "R1. …and never calls an unchecked item one that did not work" \
   "! v c2 whyThisGrade | grep -qi \"didn't work\" && ! v c2 whyThisGrade | grep -q 'Polish noted'"
 verdict r1b high "$(row prd-1 high met)" "$(row prd-2 medium met)" \
@@ -385,13 +393,21 @@ echo "R4 (D4). plain short names — no code spans, never cut mid-phrase"
 realrun c1 copilot-1
 check "R4. no backtick anywhere in why-this-grade or the headline" \
   "! v c1 whyThisGrade | grep -q '\`' && ! v c1 derivation | grep -q '\`' && ! v c2 whyThisGrade | grep -q '\`'"
+# The why paragraph now names at most three (fix round 2, W1), so the naming
+# rules are checked on the names themselves, off the same contract.
+sn() { "$PY" - "$SCOREPY" "$FX/criteria.json" "$1" <<'PYX'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("xs", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print([m.short_name(c["text"]) for c in json.load(open(sys.argv[2]))["criteria"] if c["id"] == sys.argv[3]][0])
+PYX
+}
 check "R4. a truncated PRD bullet does not end on a dangling 'for the'" \
   "! v c1 whyThisGrade | grep -q 'for the (' && ! v c1 whyThisGrade | grep -q 'for the;' \
-   && v c1 whyThisGrade | grep -q 'healthBarColor returns a Pixi colour number…'"
+   && [ \"\$(sn prd-3)\" = 'healthBarColor returns a Pixi colour number…' ]"
 check "R4. a signature is named by its function, not its type annotations" \
-  "v c1 whyThisGrade | grep -q 'healthFillRatio returns the fraction' && ! v c1 whyThisGrade | grep -q 'max: number'"
+  "[ \"\$(sn prd-2)\" = 'healthFillRatio returns the fraction' ] && ! v c1 whyThisGrade | grep -q 'max: number'"
 check "R4. a parenthetical file path is dropped from the name" \
-  "v c1 whyThisGrade | grep -q 'The renderer gains an always-visible' && ! v c1 whyThisGrade | grep -q 'renderer/index.ts'"
+  "[ \"\$(sn prd-5)\" = 'The renderer gains an always-visible' ] && ! v c1 whyThisGrade | grep -q 'renderer/index.ts'"
 "$PY" - "$SCOREPY" <<'PYX' >"$TMPROOT/r4names.txt" 2>&1
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("xs", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -455,7 +471,7 @@ check "R5. xo.sh passes the mission's own xo/impacts.json to both scorer calls" 
   "[ \"\$(grep -c 'xo-score.py.*\\\\\$' '$REPO_ROOT/skills/lcars-xo/xo.sh')\" -ge 2 ] \
    && [ \"\$(grep -c '\"\$xodir/impacts.json\"' '$REPO_ROOT/skills/lcars-xo/xo.sh')\" -ge 2 ]"
 check "R5. xo.sh journals a kept impact" \
-  "grep -q 'IMPACT_KEPT|IMPACT_MISMATCH)' '$REPO_ROOT/skills/lcars-xo/xo.sh' && grep -q 'impact-kept' '$REPO_ROOT/skills/lcars-xo/xo.sh'"
+  "grep -q 'IMPACT_KEPT|IMPACT_MISMATCH' '$REPO_ROOT/skills/lcars-xo/xo.sh' && grep -q 'impact-kept' '$REPO_ROOT/skills/lcars-xo/xo.sh'"
 
 echo "R6 (D5). near-identical requirements rated differently are FLAGGED, never re-graded"
 cat >"$TMPROOT/dup-criteria.json" <<'C'
@@ -482,7 +498,7 @@ check "R6. the prompt tells the worker to rate a restated requirement the same" 
   "grep -qi 'same impact' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md' && grep -qi 'what the requirement does' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md'"
 
 echo "R7 (D7). a HIGH says what evidence it actually used"
-realrun cl1 claude-1
+realrun cl1 claude-1 "" "" "" named
 check "R7. claude-1 (pictures AND tests) no longer claims a picture of each one" \
   "! v cl1 derivation | grep -q 'picture of each one' && ! v cl1 scoreMeaning | grep -q 'picture of each one'"
 check "R7. …it names both, with the counts off the rows" \
@@ -491,7 +507,8 @@ check "R7. …and so does the score word's meaning" \
   "v cl1 scoreMeaning | grep -q 'your own tests'"
 verdict r7p high "$(row prd-1 high met)" "$(row prd-2 medium met)" "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
 run r7p
-check "R7. all pictures → 'a picture of each one' still" "v r7p derivation | grep -q 'I have a picture of each one'"
+check "R7. all pictures, with a real drawing → 'I saw each one on screen' (never 'picture', W2)" \
+  "v r7p derivation | grep -q 'I saw each one on screen' && ! v r7p derivation | grep -q picture"
 cat >"$TMPROOT/tests-only-criteria.json" <<'C'
 {"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
  "criteria": [{"id": "prd-1", "text": "the suite passes", "source": "prd", "primary": true}]}
@@ -513,6 +530,196 @@ check "R8. LOW: the point didn't work or couldn't be checked" \
   "desc lcars:xo:low | grep -q \"point of the mission didn't work or couldn't be checked\""
 check "R8. every description fits GitHub's 100-character limit and keeps 'intent match'" \
   "for l in high medium low; do d=\"\$(desc lcars:xo:\$l)\"; [ \${#d} -le 100 ] && printf '%s' \"\$d\" | grep -q 'intent match' || exit 1; done"
+
+echo "T1 (fix round 2). a test citation must NAME a test case — the looks agree"
+# The tester's two live Copilot looks at ONE build, handed the SAME test output
+# (file names and counts only). Look A called 25 rows "met by tests", look B 13,
+# on lines like "✓ src/renderer/utils.test.ts  (9 tests) 2ms" — HIGH vs MEDIUM.
+TRUN="$REPO_ROOT/skills/lcars-xo/xo-tests.py"
+t1look() { # <name> <look A|B> [tests.json]
+  local d="$TMPROOT/$1"; mkdir -p "$d"; cp "$FX/impacts-look-A.json" "$d/impacts.json"
+  "$PY" "$SCOREPY" "$FX/look-$2-verdict.json" "$FX/criteria-joined.json" "$d/verdict.json" "" \
+    "${3:-$FX/tests-file-only.json}" "$d/impacts.json" >"$d/out.txt" 2>"$d/err.txt"
+}
+t1look ta A; t1look tb B
+check "T1. same build, same file-only test output → the two looks land the SAME grade and core" \
+  "[ \"\$(score ta)\" = \"\$(score tb)\" ] && [ \"\$(v ta core)\" = \"\$(v tb core)\" ]"
+check "T1. …no row in either stands MET on a file-level test line" \
+  "$PY -c 'import json,sys
+for f in sys.argv[1:]:
+    for c in json.load(open(f))[\"criteria\"]:
+        if c[\"status\"]==\"met\" and c[\"evidence\"]==\"tests\": sys.exit(1)' '$TMPROOT/ta/verdict.json' '$TMPROOT/tb/verdict.json'"
+check "T1. …every demotion is handed to the journal (TEST_DEMOTED: 25 on look A, 13 on look B)" \
+  "[ \"\$(grep -c '^TEST_DEMOTED' '$TMPROOT/ta/out.txt')\" = 25 ] && [ \"\$(grep -c '^TEST_DEMOTED' '$TMPROOT/tb/out.txt')\" = 13 ] \
+   && grep -q \$'^TEST_DEMOTED\\tprd-1\\tmet\\tsrc/renderer/utils.test.ts (9 tests) 2ms' '$TMPROOT/ta/out.txt'"
+check "T1. …a demoted row is couldn't-check (unobservable) with the harness's own note" \
+  "$PY -c 'import json,sys
+c=[c for c in json.load(open(sys.argv[1]))[\"criteria\"] if c[\"id\"]==\"prd-1\"][0]
+sys.exit(0 if c[\"status\"]==\"untested\" and c.get(\"couldNotCheck\")==\"unobservable\" and c[\"note\"]==\"your tests ran, but none I could see is named for this\" and \"none I could see is named\" in c[\"reason\"] else 1)' '$TMPROOT/ta/verdict.json'"
+check "T1. xo.sh journals the demotion on the first look AND on a recheck" \
+  "[ \"\$(grep -c 'IMPACT_KEPT|IMPACT_MISMATCH|TEST_DEMOTED) xo_journal_impact' '$REPO_ROOT/skills/lcars-xo/xo.sh')\" = 2 ] \
+   && grep -q 'test-citation-demoted' '$REPO_ROOT/skills/lcars-xo/xo.sh'"
+# A NAMED case present in the output stands.
+cat >"$TMPROOT/named-tests.json" <<'J'
+{"ran": true, "outcome": "passed", "exitCode": 0, "command": "npx vitest run",
+ "outputTail": " ✓ src/renderer/utils.test.ts > healthFillRatio > returns 0.3 for 3 of 10 2ms\n ✓ src/renderer/utils.test.ts  (9 tests) 2ms\n RUN  v1.6.1 packages/engine\n",
+ "testCases": ["src/renderer/utils.test.ts > healthFillRatio > returns 0.3 for 3 of 10"]}
+J
+cat >"$TMPROOT/one-crit.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [{"id": "t-1", "text": "healthFillRatio(3,10) === 0.3", "source": "plan", "primary": true}]}
+C
+t1q() { # <name> <quote> → status of t-1
+  local d="$TMPROOT/$1"; mkdir -p "$d"
+  "$PY" -c 'import json,sys; print(json.dumps({"score":"high","summary":"s","criteria":[{"id":"t-1","impact":"high","status":"met","evidence":"tests","testQuote":sys.argv[1],"note":"n","reason":"r"}],"gaps":[]}))' "$2" >"$d/w.json"
+  "$PY" "$SCOREPY" "$d/w.json" "$TMPROOT/one-crit.json" "$d/verdict.json" "" "$TMPROOT/named-tests.json" >"$d/out.txt" 2>&1
+  v "$1" criteria.0.status
+}
+check "T1. a cited test case NAME present in the output → MET stands (whole line)" \
+  "[ \"\$(t1q q1 '✓ src/renderer/utils.test.ts > healthFillRatio > returns 0.3 for 3 of 10 2ms')\" = met ]"
+check "T1. …(the name alone, whitespace normalised)" \
+  "[ \"\$(t1q q2 'healthFillRatio >   returns 0.3 for 3 of 10')\" = met ]"
+check "T1. the file-level tally line → couldn't check, even beside a named case" \
+  "[ \"\$(t1q q3 '✓ src/renderer/utils.test.ts  (9 tests) 2ms')\" = untested ]"
+check "T1. a file name alone → couldn't check" \
+  "[ \"\$(t1q q4 'src/renderer/utils.test.ts')\" = untested ]"
+check "T1. a line in the output that is not one of the recorded cases → couldn't check" \
+  "[ \"\$(t1q q5 'RUN v1.6.1 packages/engine')\" = untested ] && v q5 criteria.0.note | grep -q 'none I could see is named'"
+check "T1. a case name that is NOT in the output → couldn't check" \
+  "[ \"\$(t1q q6 'healthFillRatio > returns 1 at full health')\" = untested ]"
+
+echo "T1b. the test step records per-case names (vitest verbose, jest --verbose)"
+TB="$TMPROOT/t1b"; mkdir -p "$TB/bin" "$TB/wt"
+cat >"$TB/bin/vitest" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *" --reporter=verbose "*)
+  printf ' ✓ src/renderer/utils.test.ts > healthFillRatio > returns 0.3 for 3 of 10 2ms\n'
+  printf ' × src/renderer/utils.test.ts > healthBarColor > is red at 0.35 1ms\n' ;;
+esac
+printf ' ✓ src/renderer/utils.test.ts  (2 tests) 2ms\n\n Test Files  1 passed (1)\n'
+[ -n "${VITEST_FAIL_WITH_FLAG:-}" ] && case " $* " in *" --reporter=verbose "*) exit 1 ;; esac
+exit 0
+SH
+cat >"$TB/bin/jest" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *" --verbose "*) printf '  batches\n    ✓ survive a restart (3 ms)\n' >&2 ;; esac
+printf 'PASS src/batch.test.js\n' >&2
+SH
+chmod +x "$TB/bin/vitest" "$TB/bin/jest"
+tb() { # <name> <command> [env...]
+  local n="$1" c="$2"; shift 2
+  ( export PATH="$TB/bin:$PATH"; env "$@" "$PY" "$TRUN" --out "$TB/$n.json" --cwd "$TB/wt" --timeout 30 --command "$c" ) >/dev/null 2>&1
+}
+jf() { "$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(eval(sys.argv[2])))' "$TB/$1.json" "$2"; }
+tb v1 'cd . && vitest run ${LCARS_TESTS_DIR:+"$LCARS_TESTS_DIR"}' X=1
+check "T1b. a direct vitest run gets --reporter=verbose, and the case names are recorded" \
+  "[ \"\$(jf v1 'd[\"reporterFlag\"]')\" = '\"--reporter=verbose\"' ] \
+   && jf v1 'd[\"testCases\"]' | grep -q 'healthFillRatio > returns 0.3 for 3 of 10' \
+   && jf v1 'd[\"testCases\"]' | grep -q 'is red at 0.35' && ! jf v1 'd[\"testCases\"]' | grep -q '2 tests'"
+check "T1b. …the recorded command is the captain's own, unchanged" \
+  "[ \"\$(jf v1 'd[\"command\"]')\" = '\"cd . && vitest run \${LCARS_TESTS_DIR:+\\\"\$LCARS_TESTS_DIR\\\"}\"' ] && [ \"\$(jf v1 'd[\"outcome\"]')\" = '\"passed\"' ]"
+tb v2 'vitest run' VITEST_FAIL_WITH_FLAG=1
+check "T1b. the flag never decides the outcome: flagged run fails, plain run passes → passed, no flag" \
+  "[ \"\$(jf v2 'd[\"outcome\"]')\" = '\"passed\"' ] && [ \"\$(jf v2 'd[\"reporterFlag\"]')\" = '\"\"' ] && [ \"\$(jf v2 'd[\"exitCode\"]')\" = 0 ]"
+tb v3 'vitest run | cat'
+check "T1b. a command with a pipe is run exactly as written (no flag)" \
+  "[ \"\$(jf v3 'd[\"reporterFlag\"]')\" = '\"\"' ] && [ \"\$(jf v3 'd[\"testCases\"]')\" = '[]' ]"
+tb j1 'npx --no-install jest' X=1
+tb j2 'jest'
+check "T1b. jest gets --verbose and its case names are recorded (from stderr too)" \
+  "[ \"\$(jf j2 'd[\"reporterFlag\"]')\" = '\"--verbose\"' ] && jf j2 'd[\"testCases\"]' | grep -q 'survive a restart'"
+check "T1b. a runner we do not wrap (pnpm test) gets no flag" \
+  "\"$PY\" -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location(\"t\",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); sys.exit(0 if m.reporter_flag(\"pnpm test\")==\"\" and m.reporter_flag(\"npm test && npx vitest run\")==\"--reporter=verbose\" and m.reporter_flag(\"npx vitest run --reporter=dot\")==\"\" else 1)' '$TRUN'"
+rf_case() { # <expected flag> <command> — reporter_flag(command) == expected
+  "$PY" -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("t",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); got=m.reporter_flag(sys.argv[3]); sys.exit(0 if got==sys.argv[2] else (print("got %r" % got) or 1))' "$TRUN" "$1" "$2"
+}
+check "T1b (fix round 3). a \${VAR#pattern} expansion is not a comment — the DX-Scorecard command gets the flag" \
+  "rf_case --reporter=verbose 'npx vitest run \${LCARS_TESTS_DIR:+\"\${LCARS_TESTS_DIR#\"\$PWD/\"}\"}'"
+check "T1b (fix round 3). the groutwork command (cd \"\$(…)\" && npx vitest run …) still gets the flag" \
+  "rf_case --reporter=verbose 'cd \"\$(git rev-parse --show-toplevel)/packages/engine\" && npx vitest run \${LCARS_TESTS_DIR:+\"\$LCARS_TESTS_DIR\"}'"
+check "T1b (fix round 3). a real trailing comment still gets no flag" \
+  "rf_case '' 'npx vitest run # comment' && rf_case '' 'npx vitest run;# c' && rf_case '' '#npx vitest run'"
+check "T1b (fix round 3). a real pipe / redirect / backtick still gets no flag" \
+  "rf_case '' 'npx vitest run | tee x' && rf_case '' 'npx vitest run > out.txt' && rf_case '' 'npx vitest run \`echo x\`' && rf_case '' 'npx vitest run \${X:+\"a\"} | tee x'"
+check "T1b (fix round 3). a # or | inside quotes is not a comment or a pipe" \
+  "rf_case --reporter=verbose 'npx vitest run -t \"a # b | c\"' && rf_case --reporter=verbose \"npx vitest run -t 'x#y'\""
+check "T1b. the prompts tell the worker to cite the exact test name" \
+  "grep -q 'testCases' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md' && grep -q 'testCases' '$REPO_ROOT/skills/lcars-xo/prompts/recheck.md'"
+
+echo "W1-W3 (fix round 2). why-this-grade is short, plain, and names stay distinct"
+"$PY" - "$TMPROOT" "$SCOREPY" "$FX" >"$TMPROOT/w1.txt" 2>&1 <<'PYX'
+import json, re, sys, importlib.util, subprocess
+tmp, scorepy, fx = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("xs", scorepy); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+def sentences(t):
+    return len(re.findall(r"[.](?:\s+(?=[A-Z])|$)", t.strip()))
+bad = []
+# the real ledgers: both looks as scored, plus a MEDIUM and a MEDIUM-with-faults
+# shape of look B (its test rows read as pictures).
+d = json.load(open(fx + "/look-B-verdict.json"))
+for c in d["criteria"]:
+    if c.get("evidence") == "tests":
+        c.update(evidence="picture", shot="shot-01"); c.pop("testQuote", None)
+json.dump(d, open(tmp + "/w1-med.json", "w"))
+for c in d["criteria"]:
+    if c["id"] in ("t-002-ac6", "t-001-ac9"):
+        c.update(status="gap", note="the bar stays at the old x after a resize",
+                 evidence="picture", shot="shot-01")
+d["gaps"] = [{"title": "the bar does not move on resize", "expected": "the bar pinned top-right after a resize",
+              "saw": "it stays at the old x", "kind": "contradiction", "criterion": "t-002-ac6", "shots": ["shot-01"]}]
+json.dump(d, open(tmp + "/w1-gap.json", "w"))
+for name, src in (("A", fx + "/look-A-verdict.json"), ("B", fx + "/look-B-verdict.json"),
+                  ("med", tmp + "/w1-med.json"), ("gap", tmp + "/w1-gap.json")):
+    out = tmp + "/w1-%s.out.json" % name
+    imp = tmp + "/w1-%s.impacts.json" % name
+    open(imp, "w").write(open(fx + "/impacts-look-A.json").read())
+    subprocess.run([sys.executable, scorepy, src, fx + "/criteria-joined.json", out, "",
+                    fx + "/tests-file-only.json", imp], capture_output=True)
+    v = json.load(open(out))
+    why, head = v["whyThisGrade"], v["derivation"]
+    print("%s %s | %s | %s" % (name, v["score"], head, why))
+    if sentences(why) > 4: bad.append("%s: %d sentences" % (name, sentences(why)))
+    if len(why) > 800: bad.append("%s: why is %d chars" % (name, len(why)))
+    if m.word_count(head) > 25: bad.append("%s: headline is %d words" % (name, m.word_count(head)))
+    for t in (why, head):
+        if "**" in t or "`" in t: bad.append("%s: markdown leaked" % name)
+        if re.search(r"\b(?:%s)…" % "|".join(m.DANGLING), t): bad.append("%s: ends mid-phrase: %s" % (name, t))
+    if not head[:1].isupper(): bad.append("%s: headline starts lowercase" % name)
+    if "a known issues" in head + why: bad.append("%s: 'a known issues'" % name)
+    for c in v["criteria"]:
+        first_sentence = re.split(r"\.\s+(?=[A-Z])", c.get("reason", ""), maxsplit=1)[0]
+        if "(set on the first look) because" in first_sentence and first_sentence.count("because") > 1:
+            bad.append("%s: two becauses in %s" % (name, c["id"]))
+# distinct items stay distinct
+texts = [c["text"] for c in json.load(open(fx + "/criteria-joined.json"))["criteria"]]
+for lim in (60, 48):
+    names = [m.short_name(t, lim) for t in texts]
+    for i, a in enumerate(names):
+        for j in range(i + 1, len(names)):
+            if a == names[j] and texts[i] != texts[j]:
+                bad.append("same name for two items at %d: %s" % (lim, a))
+n6 = m.short_name("healthBarColor(0) === 0xff3b30 and healthBarColor(0.35) === 0xff3b30")
+if "(0)" not in n6 or "healthBarColor === " in n6: bad.append("arguments stripped: " + n6)
+n7 = m.short_name("The example game calls `setPlayerHealth` once with a **low demo value** (e.g. `3` of `10`)")
+if "**" in n7 or "low demo" not in n7: bad.append("markdown: " + n7)
+if "DEV_HP_BAR_WIDTH" not in m.short_name("DEV_HP_BAR_WIDTH is exported"): bad.append("identifier underscores eaten")
+print("BAD" if bad else "OK")
+for b in bad: print("  " + b)
+PYX
+check "W1. why-this-grade ≤ 4 sentences and ≤ 800 chars; headline ≤ 25 words; no markdown; never mid-phrase (real ledgers)" \
+  "grep -qx OK '$TMPROOT/w1.txt' || { cat '$TMPROOT/w1.txt'; false; }"
+check "W1. at most three names, then how many more" \
+  "grep '^A ' '$TMPROOT/w1.txt' | grep -q 'and 16 more' && ! grep '^A ' '$TMPROOT/w1.txt' | grep -q 'healthFillRatio(20,10)'"
+check "W1. distinct checks keep their distinguishing arguments (healthBarColor(0) vs (1))" \
+  "grep -qx OK '$TMPROOT/w1.txt'"
+check "W2. a picture-only mission's headline opens on a capital, with the short lead" \
+  "grep '^A ' '$TMPROOT/w1.txt' | grep -q '| Your attachment is a picture, not a drawing\\. '"
+check "W2. 'so it ships as a known issue' / 'they ship as known issues' — grammar" \
+  "! grep -q 'a known issues' '$REPO_ROOT/skills/lcars-xo/xo-score.py'"
+check "W3. a recorded impact's reason has ONE 'because' and continues in lower case" \
+  "$PY -c 'import json,sys
+c=[c for c in json.load(open(sys.argv[1]))[\"criteria\"] if c[\"id\"]==\"t-001-ac9\"][0]
+sys.exit(0 if c[\"reason\"].startswith(\"Impact medium (set on the first look) because they are required config\") else 1)' '$TMPROOT/tb/verdict.json'"
 
 echo
 printf 'lcars xo-impact: %d passed, %d failed\n' "$pass" "$fail"

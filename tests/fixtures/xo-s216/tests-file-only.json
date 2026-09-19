@@ -1,0 +1,17 @@
+{
+  "ran": true,
+  "command": "npx vitest run",
+  "cwd": "",
+  "exitCode": 0,
+  "timedOut": false,
+  "timeoutSeconds": 300,
+  "durationSeconds": 5.0,
+  "outputBytes": 480,
+  "truncated": false,
+  "tailCapBytes": 8000,
+  "outputTail": "\n RUN  v1.6.1 packages/engine\n\n \u2713 src/animation/utils.test.ts  (11 tests) 2ms\n \u2713 src/renderer/utils.test.ts  (9 tests) 3ms\n \u2713 src/collision/utils.test.ts  (13 tests) 3ms\n \u2713 src/camera/utils.test.ts  (13 tests) 3ms\n \u2713 src/renderer/index.test.ts  (9 tests) 5ms\n \u2713 src/index.test.ts  (5 tests) 4ms\n\n Test Files  6 passed (6)\n      Tests  60 passed (60)\n   Start at  12:00:39\n   Duration  914ms (transform 375ms, setup 0ms, collect 696ms, tests 20ms, environment 1ms, prepare 3.23s)\n\n",
+  "outcome": "passed",
+  "verdict": "I ran your tests (`npx vitest run`) and they passed, in 5s.",
+  "reporterFlag": "",
+  "testCases": []
+}

@@ -172,6 +172,16 @@ you do:
 there**. LCARS checks it against the recorded output; a line it cannot find
 there is not evidence, and the criterion goes back to "I could not check this".
 
+**Cite a test CASE by its exact name.** When the runner printed one line per
+test case, `tests.json` lists them in `testCases` (for example
+`src/store.test.ts > batches > survive a restart`). Your `testQuote` must
+contain one of those names exactly as written — copy it, do not paraphrase.
+A line that names only a FILE, with or without its count
+(`✓ src/store.test.ts  (9 tests) 2ms`, `PASS src/store.test.js`), is not a
+test case: it says tests in that file passed, not which one covers this
+criterion. LCARS refuses it and records the criterion as "I could not check
+this". If no case is named for a criterion, that is the honest answer.
+
 **Quote the line that NAMES the thing, never the tally.** `413 passed, 0
 failed`, `Tests: 1 failed, 41 passed`, `Duration 1.23s`, a bare `PASS` — those
 count tests, they do not name one, so they cannot settle any criterion and
