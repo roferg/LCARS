@@ -372,7 +372,7 @@ def _fmt_entry(e, with_mission=True):
         issue = "#%s" % e.get("missionIssue") if e.get("missionIssue") else e.get("mission")
         who = "%s (%s) — " % (e.get("missionTitle") or e.get("mission"), issue)
     detail_bits = []
-    for k in ("detail", "why", "note", "summary", "url", "score", "round"):
+    for k in ("whyThisGrade", "detail", "why", "note", "summary", "url", "score", "round"):
         v = e.get(k)
         if isinstance(v, str) and v.strip():
             detail_bits.append(v.strip())

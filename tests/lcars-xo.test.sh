@@ -1189,9 +1189,11 @@ xo_evaluate_with() { # <repo> <id> <driver> <worker-bin>
 # $1 prd-1 status  $2 prd-2 status  $3 t-1-ac1 status  $4 worker score  $5 gaps
 ev_verdict() {
   printf '{"score":"%s","summary":"Looked at the board.","criteria":[' "$4"
-  printf '{"id":"prd-1","text":"open tasks in one list","status":"%s","shot":"shot-01","note":"saw the list"},' "$1"
-  printf '{"id":"prd-2","text":"add from the board","status":"%s","shot":"shot-01","note":"saw the button"},' "$2"
-  printf '{"id":"t-1-ac1","text":"ADD under the list","status":"%s","shot":"shot-02","note":"under it"}' "$3"
+  # S216: each row carries the IMPACT the look set before judging it — the
+  # two PRD items are the point of the mission, the ticket item is secondary.
+  printf '{"id":"prd-1","text":"open tasks in one list","impact":"high","status":"%s","shot":"shot-01","note":"saw the list"},' "$1"
+  printf '{"id":"prd-2","text":"add from the board","impact":"high","status":"%s","shot":"shot-01","note":"saw the button"},' "$2"
+  printf '{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"%s","shot":"shot-02","note":"under it"}' "$3"
   printf '],"gaps":[%s],"alsoChecked":["the header"],"escalations":[]}' "$5"
 }
 GAP_PRIMARY='{"title":"no add control","expected":"a task can be added from the board (PRD §2)","saw":"no control anywhere on the page","shots":["shot-01"],"kind":"contradiction","criterion":"prd-2"}'
@@ -1297,10 +1299,13 @@ check "B10c. the derivation is written down in words, not just the letter" \
 # A gap filed as a contradiction with NO SHOT is not evidence: it is recorded as
 # an interpretation and it does NOT drag the score down. The anti-over-rejection
 # guard, and the reason "a gap without a shot" can never reach the captain.
+# (S216: the score now reads the ROW's outcome x impact, so the demoted gap sits
+# on the medium-impact ticket row — the one whose outcome alone cannot make it
+# LOW. A high row rated `gap` WITH a shot is a picture of a failure, and LOW.)
 repoC2="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mC2="$(plant_verify "$repoC2" "lcars-20260913-120")"
 : >"$XO_WORKER_LOG"
-XO_EV_BODY="$(ev_verdict met gap met low '{"title":"no add control","expected":"x","saw":"y","shots":[],"kind":"contradiction","criterion":"prd-2"}')" \
+XO_EV_BODY="$(ev_verdict met met gap low '{"title":"ADD is misplaced","expected":"x","saw":"y","shots":[],"kind":"contradiction","criterion":"t-1-ac1"}')" \
   xo_evaluate "$repoC2" "lcars-20260913-120" >/dev/null 2>&1
 check "B10c. a contradiction with NO SHOT is demoted to an interpretation" \
   "grep -q '\"kind\": \"interpretation\"' '$mC2/xo/verdict.json'"
@@ -1417,7 +1422,7 @@ check "B10f2. …the rows still carry the machine verdicts, unchanged" \
 check "B10f2. …the score and the DERIVATION that produced it, in his words" \
   "grep -q 'How close this is to what you asked for: MEDIUM' '$mF/xo/report.md'"
 check "B10f2. …with the criterion ids AFTER the human sentence, never before it" \
-  "grep -q 'the main flow works' '$mF/xo/report.md'"
+  "grep -q 'the point of the mission works; go with this known issue — ADD is above the list (t-1-ac1)' '$mF/xo/report.md'"
 check "B10f2. …and the gap, named with the SHOT that shows it (never an image)" \
   "grep -q 'ADD is above the list' '$mF/xo/report.md' && grep -q 'shot-02' '$mF/xo/report.md'"
 check "B10f2. a path with no ledger still owes the captain a sentence" \
@@ -2702,8 +2707,8 @@ check "B17. the first line the captain reads NAMES the thing" \
   "xo_derivation '$mT1/xo/verdict.json' | grep -q 'ADD is above the list'"
 check "B17. …and still carries the id, in brackets after it" \
   "xo_derivation '$mT1/xo/verdict.json' | grep -q '(t-1-ac1)'"
-check "B17. …and still carries the count" \
-  "xo_derivation '$mT1/xo/verdict.json' | grep -q '1 thing in the build does not match'"
+check "B17. …and still says how many, in words (S216: \"this known issue\")" \
+  "xo_derivation '$mT1/xo/verdict.json' | grep -q 'go with this known issue'"
 check "B17. the report on the issue reads the same way" \
   "grep -q 'ADD is above the list' '$mT1/xo/report.md'"
 
@@ -3448,7 +3453,7 @@ m25="$(plant_verify "$repo25" "lcars-20260917-401")"
 # produced the unreadable card on the captain's real board. One criterion it
 # could not check, so the honest derivation cannot be a clean bill of health.
 long25='Captain, this build is a code-only engine change - two pure coordinate functions, a factory method, a Camera type field, and their unit tests - none of which shows up on a screen. The example game does render fine, so the engine compiles and runs, but that proves nothing about the new methods.'
-verdict25="$(printf '{"score":"medium","summary":"%s","criteria":[{"id":"prd-1","text":"open tasks in one list","status":"met","shot":"shot-01","evidence":"picture","note":"saw the list"},{"id":"prd-2","text":"add from the board","status":"untested","note":"nothing on screen settles this"}],"gaps":[]}' "$long25")"
+verdict25="$(printf '{"score":"medium","summary":"%s","criteria":[{"id":"prd-1","text":"open tasks in one list","status":"met","shot":"shot-01","evidence":"picture","note":"saw the list"},{"id":"prd-2","text":"add from the board","impact":"medium","status":"untested","note":"nothing on screen settles this"},{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"met","shot":"shot-02","evidence":"picture","note":"under it"}],"gaps":[]}' "$long25")"
 out25="$(XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$verdict25" \
   LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_WORKER_BIN="$EV_SHIM" \
   xo_evaluate "$repo25" "lcars-20260917-401")"
@@ -3469,6 +3474,10 @@ check "B25. the score the card wears and the line beside it come from one rule" 
   "python3 -c \"import json,sys;v=json.load(open('$m25/xo/verdict.json'));st=json.load(open('$m25/state.json'));sys.exit(0 if st['numberOne']['score']==v['score']=='medium' else 1)\""
 check "B25. …and that line says what it could not check, not that all is well" \
   "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));h=st['numberOne']['headline'].lower();sys.exit(0 if 'could not check' in h else 1)\""
+# S216 — WHY THIS GRADE rides the scored journal entry, word for word the
+# verdict's own paragraph, so the First Officer's report can lead with it.
+check "B25. the scored journal entry carries the verdict's why-this-grade" \
+  "python3 -c \"import json,sys;v=json.load(open('$m25/xo/verdict.json'));es=[json.loads(l) for l in open('$m25/number-one.jsonl') if l.strip()];s=[e for e in es if e.get('action')=='scored'];sys.exit(0 if s and s[-1].get('whyThisGrade')==v['whyThisGrade'] and v['whyThisGrade'] else 1)\""
 
 # ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.

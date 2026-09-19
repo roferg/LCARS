@@ -346,7 +346,7 @@ check "B5. …and it does NOT become a gap" \
 
 # --- B6. a FAILING suite is a GAP, with the failure quoted ------------------
 GAP_TESTS='{"title":"batches do not survive a restart","expected":"the batches you added to be there after a restart","saw":"an empty list","evidence":"tests","testQuote":"FAIL batches survive a restart","shots":[],"kind":"contradiction","criterion":"t-4-ac1"}'
-score "$(ev gap ',"evidence":"tests","testQuote":"FAIL batches survive a restart"' "$GAP_TESTS")" \
+score "$(ev gap ',"evidence":"tests","testQuote":"FAIL batches survive a restart","impact":"medium"' "$GAP_TESTS")" \
       "$BDIR/tests-fail.json" "$BDIR/b6"
 check "B6. a failing test lands a GAP" \
   "[ \"\$(lstatus '$BDIR/b6/verdict.json' t-4-ac1)\" = gap ]"
@@ -360,7 +360,9 @@ check "B6. …the evidence kind is recorded on the ledger line too" \
   "[ \"\$(levidence '$BDIR/b6/verdict.json' t-4-ac1)\" = tests ]"
 
 # --- B7. the EXISTING matrix does the scoring — no new rule -----------------
-check "B7. a non-primary contradiction is MEDIUM, exactly as before" \
+# (S216: the matrix is now impact x outcome, so the row says it is MEDIUM
+# impact; a test-proven gap is scored exactly like a pictured one.)
+check "B7. a medium-impact contradiction is MEDIUM, exactly as a pictured one" \
   "[ \"\$(jget '$BDIR/b6/verdict.json' 'd[\"score\"]')\" = medium ]"
 GAP_PRIMARY_TESTS='{"title":"the list is empty","expected":"every open task in one list","saw":"nothing","evidence":"tests","testQuote":"FAIL batches survive a restart","shots":[],"kind":"contradiction","criterion":"prd-1"}'
 printf '{"score":"medium","summary":"s","criteria":[{"id":"prd-1","text":"one list","status":"gap","evidence":"tests","testQuote":"FAIL batches survive a restart","note":"the suite fails on it"},{"id":"t-4-ac1","text":"restart","status":"met","evidence":"tests","testQuote":"Tests: 1 failed, 41 passed","note":"green"}],"gaps":[%s],"alsoChecked":[],"escalations":[]}\n' \
@@ -404,7 +406,7 @@ check "B10. …and says the passing suite does not settle everything" \
 check "B10. …and names the command it actually ran" \
   "grep -q 'npm test' '$BDIR/b10/report.md'"
 check "B10. …a green suite with an unchecked criterion is still not HIGH" \
-  "[ \"\$(jget '$BDIR/b10/verdict.json' 'd[\"score\"]')\" = medium ]"
+  "[ \"\$(jget '$BDIR/b10/verdict.json' 'd[\"score\"]')\" != high ]"
 
 # --- B11. no test command: the look reads exactly as it did before ----------
 score "$(ev met ',"shot":"shot-03"')" "$BDIR/tests-none.json" "$BDIR/b11"
@@ -1066,8 +1068,10 @@ check "D4 …it says what actually happened to him: nothing was checked" \
   "printf '%s' \"$none_said\" | grep -qi 'could not check anything'"
 check "D4 …and the tab reads the same recorded sentence, not one it derived" \
   "[ \"\$(\"$PY\" -c 'import json,sys;print(json.load(open(sys.argv[1]))[\"scoreMeaning\"])' '$MDIR/none/verdict.json')\" = \"$none_said\" ]"
-check "D4 …the score itself is unchanged by any of this" \
-  "grep -q '^SCORE'\$'\\t''medium' '$MDIR/none/out.tsv'"
+# S216: nothing checked at all is LOW (the captain's ruling settled the old
+# "MEDIUM when nothing could be checked" question).
+check "D4 …the score is LOW — nothing checked is never a pass" \
+  "grep -q '^SCORE'\$'\\t''low' '$MDIR/none/out.tsv'"
 check "D4 …and the sentence rides the shell contract too, for state.json" \
   "grep -q '^MEANING'\$'\\t' '$MDIR/none/out.tsv'"
 

@@ -106,9 +106,12 @@ prose around it if you can avoid it.
     {
       "id": "prd-1",
       "text": "the criterion as the contract states it",
+      "impact": "high",
+      "impactWhy": "the SAME impact and why you gave it on the first look",
       "status": "met",
       "shot": "round1-01",
-      "note": "what you actually saw, in a sentence"
+      "note": "what you actually saw, in a sentence",
+      "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: …."
     }
   ],
   "gaps": [],
@@ -122,7 +125,12 @@ prose around it if you can avoid it.
 - `criteria` — the FULL ledger again, every criterion in `criteria.json`, rated
   `met` / `gap` / `untested` with the shot that shows it. The skill re-scores
   from this, exactly as it did after the first look: your `score` is a
-  recommendation and the ledger is what decides.
+  recommendation and the ledger is what decides. **Keep each criterion's
+  `impact` exactly as your first look set it** (it is in `xo/verdict.json`) —
+  impact is decided before looking, and a fix does not change how much a
+  requirement matters. Every row carries its `reason` sentence again, and
+  `couldNotCheck` (`unreachable` / `unobservable`) on an `untested` one, just
+  as the first look's instructions describe.
 - `gaps` — anything still short of the mark, in the same shape as your first
   verdict (`kind` is `contradiction` when it disagrees with something written
   down and you have a picture of it, otherwise `interpretation`). These are

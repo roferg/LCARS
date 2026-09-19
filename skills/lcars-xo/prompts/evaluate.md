@@ -28,6 +28,72 @@ Each criterion carries where to look:
   `untested`, and that is the correct answer, not a cop-out.
 - **`primary: true`** — it comes from the PRD itself. These are the stated goal.
 
+## First, before you judge anything: how much does each one MATTER?
+
+For every criterion, decide its **`impact`** from the PRD, the plan and the
+mission's intent — **as if you had not seen a single shot.** Write it down
+before you rate what you saw, and never lower an impact because the thing
+turned out not to work. Ask one question of each: *would a reasonable person
+block the merge if this did not work?*
+
+| `impact` | what it means |
+|---|---|
+| `high` | **The point of the mission.** If this does not work, a reasonable person blocks the merge. |
+| `medium` | A stated requirement that is secondary to the point, or one that can work but not as asked. A person would ask for a fix, and might still ship. |
+| `low` | Polish nobody would block on. |
+
+The captain's own example, and the only one: in a game, a health bar that is
+on screen and drops when you are hit is `high` — that is the point. The bar
+being purple when he asked for red is `medium`.
+
+Give each impact one sentence of why, in `impactWhy`, using this slot:
+*"`<criterion, in plain words>` is `<high|medium|low>` because `<what the
+mission is for>` `<does|does not>` depend on it."* A criterion you give no
+impact is counted as `high` — the careful reading — and the report says you
+left it out.
+
+## Then look: worked, didn't, or couldn't check
+
+Each criterion ends as one of three outcomes. The words the captain reads are
+on the left; the `status` you write is on the right.
+
+| outcome | `status` | when |
+|---|---|---|
+| worked | `met` | you saw it do what was asked, **every time you tried**, and you can cite the shot or the test line |
+| didn't | `gap` | you saw it not do it, do it wrong, or do it only some of the time (intermittent is `gap`) |
+| couldn't check | `untested` | at least **two materially different attempts** failed to reach or observe it |
+
+**Start every criterion unproven.** Before you record `met`, try to show it
+does NOT work — look at the shot that would disprove it, press the key that
+would break it. Judges in your seat are measured skewing positive about a
+build; the cure is to try to disprove "worked" first.
+
+**Do not reach for `untested` after one try.** Two materially different
+attempts first — a different route to the screen, a different key, the
+measured box instead of the picture. Then say which kind of couldn't-check it
+was, in `couldNotCheck`:
+
+- `unreachable` — you could not get to it (the app crashed, a login wall,
+  missing data, a keypress sequence you could not complete).
+- `unobservable` — you got there but nothing you have can observe it (a sound,
+  a timing, something no picture or test line shows).
+
+On a `gap`, you may add `"workaround": true|false` (is there another way to do
+it?) and `"tries": "k of n"` (how often it failed). These go to whoever fixes
+it; they never change the grade.
+
+## Write your reason down, one sentence per criterion
+
+Every criterion carries a **`reason`**, in this shape, filled in with what you
+actually did:
+
+> Impact `<high|medium|low>` because `<why>`. I tried `<what you did>`; I saw
+> `<what you saw>` (evidence: `<shot name or test line>`). Outcome: `<worked |
+> didn't | couldn't check (unreachable|unobservable)>`.
+
+A reason that only repeats the criterion is not a reason. A missing one is
+reported to the captain as "no reason was given".
+
 ## What you are looking at
 
 - `xo/shots/` — every PNG the browser took, in order. **Open them and look.**
@@ -213,9 +279,13 @@ LOW and the captain looks himself — so do not spend rounds you do not need.
 {
   "score": "high|medium|low",
   "criteria": [
-    {"id": "prd-1", "text": "…", "status": "met|gap|untested",
+    {"id": "prd-1", "text": "…",
+     "impact": "high|medium|low", "impactWhy": "one sentence, written before you judged it",
+     "status": "met|gap|untested",
      "evidence": "picture|measurement|tests",
-     "shot": "shot-02", "note": "what you actually saw, in his words"}
+     "shot": "shot-02", "note": "what you actually saw, in his words",
+     "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: ….",
+     "couldNotCheck": "unreachable|unobservable  (only on untested)"}
   ],
   "gaps": [
     {"title": "the mix-ratio line",
@@ -235,7 +305,8 @@ LOW and the captain looks himself — so do not spend rounds you do not need.
 inside it, not as a whole sentence of its own.
 
 Every criterion in `criteria.json` must appear in `criteria`, with the same
-`id`. **A `met` or a `gap` must cite the `shot` that shows it** — or, when its
+`id` — and ONLY those. An id that is not in `criteria.json` is not counted at
+all, whatever you say about it. **A `met` or a `gap` must cite the `shot` that shows it** — or, when its
 `evidence` is `tests`, the `testQuote` that settles it. A judgement with
 nothing behind it is not a judgement.
 
@@ -304,8 +375,15 @@ into a chain of sensible-sounding inferences and filing them as faults. Your
 citations are the guard: a criterion, and a shot. If you cannot name both, you
 have not got a gap.
 
-**Your score is a recommendation, not the verdict.** LCARS recomputes the score
-from your ledger — all met is HIGH, a contradicted primary criterion is LOW,
-anything in between is MEDIUM — and if your score disagrees with your own
-ledger, the ledger wins and the disagreement is recorded. So put your care into
-the per-criterion statuses; they are what actually decides.
+**Your score is a recommendation, not the verdict.** LCARS works the score out
+from your impacts and outcomes, by the captain's own rule:
+
+- **LOW** — a `high` one didn't work, or a `high` one couldn't be checked (or
+  nothing on the list could be checked at all);
+- **MEDIUM** — every `high` one worked; a `medium` one didn't or couldn't be
+  checked. Read it as "ship with these named known issues";
+- **HIGH** — every `high` and `medium` one worked. `low` ones never move it.
+
+If your score disagrees with that rule, the rule wins and the disagreement is
+recorded. So put your care into each impact, each outcome and each reason;
+they are what actually decides.

@@ -410,7 +410,8 @@ class C3_EveryCriterionSaysHowItWasSettled(TabBase):
         unchecked = [t for t in rows if "worldToScreen converts" in t][0]
         for word in ("a picture", "your tests", "a measured box"):
             self.assertNotIn(word, unchecked)
-        self.assertIn("could not check", unchecked.lower())
+        # S216: the captain's own outcome word, "couldn't check".
+        self.assertIn("couldn't check", unchecked.lower())
 
     def test_the_harness_vocabulary_never_reaches_him(self):
         # In OUR labels. The worker's own prose is quoted verbatim and this

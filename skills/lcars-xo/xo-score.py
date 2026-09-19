@@ -56,11 +56,12 @@ citing the shot that shows it — and a score of its own. **The score it wrote i
 a recommendation.** The score that gets recorded, labelled and shown to the
 captain is recomputed HERE, from the ledger, by a rule anyone can check:
 
-    a CONTRADICTED PRIMARY criterion         → LOW     the stated goal is not met
-    any other contradiction                  → MEDIUM  the flow works; file the gap
-    any UNTESTED criterion, everything else  → MEDIUM  not HIGH. "I could not see
-      met                                              it" is not "it is fine".
-    every criterion MET                      → HIGH    ship as is
+    (S216 — the captain's two-part score: IMPACT x OUTCOME; see "THE TWO-PART
+    SCORE" below. It superseded S203's contradiction-driven table.)
+    nothing on the list, or nothing checked         → LOW
+    a HIGH-impact item didn't work / couldn't check → LOW     core broken/unverified
+    every high worked; a MEDIUM didn't / couldn't   → MEDIUM  go with known issues
+    every high and medium worked                    → HIGH    (low never moves it)
 
 If the worker's score disagrees with its own ledger, the LEDGER WINS and the
 disagreement is recorded (xo.sh journals it). A free-floating score is the one
@@ -86,6 +87,7 @@ Output on stdout, one TAB-separated record per line, for the shell to read:
   MALFORMED <why>                 | SCORE <s> / WORKER_SCORE <s> / DISAGREED yes|no
   WHY <the derivation, in words>  | COUNTS <met> <gap> <untested> <contradictions>
   MEANING <what the score word means for THIS ledger — never a fixed sentence>
+  GRADE_WHY <why this grade, the table walked in words> | CORE <met|broken|unverified|>
 """
 import json
 import os
@@ -441,6 +443,125 @@ def hidden_sentence(n):
             "not look at them." % HIDDEN_WORDS.get(n, str(n)))
 
 
+# ─── S216: THE TWO-PART SCORE ────────────────────────────────────────────────
+#
+# The captain's own grading method, and it IS the score (verify-pass-dev.md,
+# rulings Q1 + the last word, which outranks the research):
+#
+#   BEFORE LOOKING  each requirement has an IMPACT — high (the point of the
+#                   mission: a reasonable person would block the merge if it
+#                   did not work), medium (a stated requirement that works but
+#                   not as asked, or is secondary to the point), low (polish).
+#   AFTER LOOKING   each one worked (MET) / didn't (GAP) / couldn't check
+#                   (UNTESTED) — the machine words stay underneath.
+#
+#   first match wins:
+#     nothing on the list at all, or nothing on it checked      → LOW
+#     any high didn't, or any high couldn't be checked          → LOW
+#     every high worked; a medium didn't or couldn't be checked → MEDIUM
+#     every high and medium worked                              → HIGH
+#   Low-impact outcomes never move it. A row with no impact counts as HIGH
+#   (the careful reading) and the reasoning says so.
+#
+# What the research ADDS sits BESIDE the grade and never moves it: `core`
+# (met / broken / unverified — a high that failed and a high nobody could see
+# are both LOW but read differently), `altReading` (only when a risk-based
+# reviewer would read it differently), `polishFlag` (small things piling up).
+VALID_IMPACT = ("high", "medium", "low")
+COULD_NOT_CHECK = ("unreachable", "unobservable")
+OUTCOME_WORD = {"met": "worked", "gap": "didn't", "untested": "couldn't check"}
+POLISH_PILE = 5
+
+
+def take_impact(entry, row):
+    """Copy the look's IMPACT onto a ledger entry — or record HIGH, and that it
+    was assumed, when the look gave none it could name."""
+    imp = str((row or {}).get("impact") or "").strip().lower()
+    if imp in VALID_IMPACT:
+        entry["impact"] = imp
+        why = " ".join(str((row or {}).get("impactWhy") or "").split())
+        if why:
+            entry["impactWhy"] = why
+    else:
+        entry["impact"] = "high"
+        entry["impactAssumed"] = True
+
+
+def derive_grade(ledger):
+    """His table, over the finished ledger. Pure: reads status + impact only."""
+    by = {"high": [], "medium": [], "low": []}
+    for e in ledger:
+        by[e.get("impact") if e.get("impact") in by else "high"].append(e)
+
+    def pick(rows, st):
+        return [e for e in rows if e["status"] == st]
+
+    g = {"high": by["high"],
+         "highGap": pick(by["high"], "gap"), "highBlind": pick(by["high"], "untested"),
+         "mediumGap": pick(by["medium"], "gap"),
+         "mediumBlind": pick(by["medium"], "untested"),
+         "lowOpen": [e for e in by["low"] if e["status"] != "met"]}
+    checked = sum(1 for e in ledger if e["status"] in ("met", "gap"))
+    if not ledger:
+        g.update(score="low", rule="nothing-listed")
+    elif g["highGap"]:
+        g.update(score="low", rule="high-broken")
+    elif not checked:
+        # Said as what it is — nothing at all — rather than as "the core".
+        g.update(score="low", rule="nothing-checked")
+    elif g["highBlind"]:
+        g.update(score="low", rule="high-unchecked")
+    elif g["mediumGap"] or g["mediumBlind"]:
+        g.update(score="medium", rule="medium-open")
+    else:
+        g.update(score="high", rule="all-worked")
+    # THE CORE — the point of the mission, as its own fact beside the grade.
+    # No high row at all is not a core anybody met, so it is left unsaid.
+    if g["highGap"]:
+        g["core"] = "broken"
+    elif g["highBlind"] or not ledger or not checked:
+        g["core"] = "unverified"
+    elif by["high"]:
+        g["core"] = "met"
+    else:
+        g["core"] = ""
+    return g
+
+
+def _plain(text):
+    return " ".join(re.sub(r"[^\w\s]", " ", str(text or "").lower()).split())
+
+
+def finish_reason(e):
+    """Every row carries ONE reason sentence (S216).
+
+    The look writes it: "Impact <h/m/l> because <why>. I tried <action>; I saw
+    <observation> (evidence: <shot/step>). Outcome: <…>." The harness checks it
+    is THERE and is not the requirement read back — it does not grade the prose.
+    When the look gave none, the fallback says so rather than invent one. When
+    the harness overruled the look's outcome (no picture, no drawing, never
+    rated), the look's sentence would now claim an outcome the row does not
+    have, so the harness writes the row's reason itself, from its own note."""
+    said = " ".join(str(e.pop("_reason", "") or "").split())
+    rated = e.pop("_ratedStatus", "")
+    word = OUTCOME_WORD[e["status"]]
+    if e.get("impactAssumed"):
+        impact = "Impact high — none was given, so I counted it as the point of the mission"
+    elif e.get("impactWhy"):
+        impact = "Impact %s because %s" % (e["impact"], unstop(e["impactWhy"]))
+    else:
+        impact = "Impact %s" % e["impact"]
+    if rated != e["status"]:
+        told = unstop(e.get("note") or "") or "I could not check this"
+        e["reason"] = "%s. %s. Outcome: %s." % (impact, told[:1].upper() + told[1:], word)
+        return
+    if not said or _plain(said) == _plain(e.get("text")):
+        e["reason"] = ("No reason was given for this one — all I have is the outcome: "
+                       "%s. %s." % (word, impact))
+        return
+    e["reason"] = said
+
+
 def main():
     if len(sys.argv) < 4:
         sys.stderr.write(
@@ -472,7 +593,12 @@ def main():
     if not summary:
         bad("the verdict has no summary")
     rated = doc.get("criteria")
-    if not isinstance(rated, list) or not rated:
+    if not isinstance(rated, list):
+        rated = []
+    # AN EMPTY CONTRACT IS NOT A MALFORMED VERDICT (S216). With nothing on the
+    # list there is nothing to rate, and the honest answer is LOW with that
+    # sentence — not "I could not read back my own verdict".
+    if not rated and contract_by_id:
         bad("the verdict rates no criteria")
 
     gaps_in = doc.get("gaps") if isinstance(doc.get("gaps"), list) else []
@@ -580,9 +706,19 @@ def main():
         cid = str(c.get("id") or "").strip()
         if not cid:
             continue
+        # ONLY THE CONTRACT COUNTS (S216, inherited D3). A tester watched a
+        # look rate `prd-1`/`prd-2` — ids the contract never carried, with
+        # blank text — and the scorer took them as MET evidence: "ship as is"
+        # on a build checked against nothing. An id that is not on the list
+        # written before the look is not evidence of anything on that list.
+        if cid not in contract_by_id:
+            notes.append("%s is not on the list you gave me, so I have not counted "
+                         "what I said about it" % cid)
+            continue
         status = str(c.get("status") or "").strip().lower()
         if status not in VALID_STATUS:
             bad("criterion %r has no valid status (want met|gap|untested)" % cid)
+        rated_status = status
         shot = str(c.get("shot") or "").strip()
         note = str(c.get("note") or "")
         # THE EVIDENCE KIND, RECORDED BY WHATEVER MADE THE JUDGEMENT (S211).
@@ -612,6 +748,11 @@ def main():
                 notes.append("criterion %s was rated %s with no shot cited; recorded as "
                              "untested — a judgement with no picture behind it is not a "
                              "judgement" % (cid, status))
+                # S216: the row's reason is rebuilt from its note when the
+                # outcome is overruled, so the note must say why.
+                note = ("the look called this %s but cited no picture, and a "
+                        "judgement with no picture behind it is not a judgement"
+                        % OUTCOME_WORD[status])
                 status = "untested"
                 evidence = ""
         # AN UNTESTED ROW SETTLED NOTHING, SO IT NAMES NO SOURCE (fix round 1,
@@ -644,6 +785,22 @@ def main():
             entry["shot"] = shot
         if quote and entry["evidence"] == "tests":
             entry["testQuote"] = quote
+        take_impact(entry, c)
+        entry["_ratedStatus"] = rated_status
+        entry["_reason"] = str(c.get("reason") or "")
+        if status == "untested" and rated_status == "untested":
+            why_not = str(c.get("couldNotCheck") or "").strip().lower()
+            if why_not in COULD_NOT_CHECK:
+                entry["couldNotCheck"] = why_not
+        if status == "gap":
+            # Notes for the fix loop, never the grade (ISTQB's triage inputs):
+            # is there a way round it, and how often did it happen.
+            wa = c.get("workaround")
+            if isinstance(wa, bool):
+                entry["workaround"] = wa
+            tries = str(c.get("tries") or "").strip()
+            if tries:
+                entry["tries"] = clip(tries, 40)
         ledger.append(entry)
         seen.add(cid)
 
@@ -651,11 +808,15 @@ def main():
     for cid, c in contract_by_id.items():
         if cid in seen:
             continue
-        ledger.append({
+        entry = {
             "id": cid, "text": str(c.get("text") or ""), "status": "untested",
             "note": "I never got to this one, so it is unchecked", "primary": cid in primary,
             "evidence": "none",
-        })
+        }
+        take_impact(entry, {})
+        entry["_ratedStatus"] = ""
+        entry["_reason"] = ""
+        ledger.append(entry)
         notes.append("%s was on the list you gave me and I never rated it" % cid)
 
     # THE NO-DRAWING GUARD (S210). NEVER SILENTLY MET. A criterion the plan
@@ -729,58 +890,134 @@ def main():
     # same ledger, by the same rule — not inferred at the surface from the
     # verdict's prose. A meaning derived from the counts cannot claim something
     # the counts do not support.
-    primary_hit = sorted(contradicted & primary)
-    if primary_hit:
-        score = "low"
-        why = ("the build does not do what the PRD itself asks for — %s (%s). "
-               "What you set out to get is not there yet."
-               % (name_list(primary_hit), ", ".join(primary_hit)))
+    grade = derive_grade(ledger)
+    score, core = grade["score"], grade["core"]
+
+    def items(rows):
+        return "; ".join("%s (%s)" % (named(e["id"]), e["id"]) for e in rows)
+
+    def ids(rows):
+        return ", ".join(e["id"] for e in rows)
+
+    hi_gap, hi_blind = grade["highGap"], grade["highBlind"]
+    med_open = grade["mediumGap"] + grade["mediumBlind"]
+    if grade["rule"] == "nothing-listed":
+        why = ("there was nothing on your list to check, so nothing here is "
+               "vouched for.")
+        meaning = ("There was nothing on your list to check, so nothing here is "
+                   "vouched for — this is not a clean bill of health")
+    elif grade["rule"] == "high-broken":
+        why = ("the point of the mission does not work — %s (%s). What you set "
+               "out to get is not there yet."
+               % (name_list([e["id"] for e in hi_gap]), ids(hi_gap)))
         meaning = ("What you set out to get is not in the build — look for "
                    "yourself before this goes anywhere")
-    elif contradicted:
-        score = "medium"
-        hits = sorted(contradicted)
-        why = ("the main flow works. %d thing%s in the build %s not match what you asked for "
-               "— %s (%s) — and none of them is from the PRD itself: worth reading before "
-               "you merge."
-               % (len(hits), "" if len(hits) == 1 else "s",
-                  "does" if len(hits) == 1 else "do",
-                  name_list(hits), ", ".join(hits)))
-        meaning = ("The main flow works; %d thing%s does not match what you "
-                   "asked for, and none of them is from the PRD itself"
-                   % (len(hits), "" if len(hits) == 1 else "s do"))
-    elif untested:
-        score = "medium"
-        why = ("nothing in the build contradicts what you asked for, but there %s %d thing%s "
-               "on your list I could not check. I will not call a build good on the strength "
-               "of what I could not see."
-               % ("is" if untested == 1 else "are", untested,
-                  "" if untested == 1 else "s"))
-        # NOT A WORD ABOUT A FLOW NOBODY SAW. When the whole list went unchecked
-        # there is no "main flow works" to be had, and the sentence says so.
-        if met == 0 and gap == 0:
-            meaning = ("I could not check anything on your list, so nothing "
-                       "here is vouched for — this is not a clean bill of "
-                       "health")
-        else:
-            meaning = ("What I could check holds up; %d thing%s on your list I "
-                       "could not check at all"
-                       % (untested, "" if untested == 1 else "s"))
-    elif gap:
-        score = "medium"
-        meaning = ("Nothing you wrote down is contradicted; %d thing%s short "
-                   "of the mark" % (gap, " is" if gap == 1 else "s are"))
-        why = ("%d thing%s I am reporting as short of the mark, but %s contradicts anything "
-               "you wrote down — so I am showing you %s rather than filing %s against the "
-               "build." % (gap, "" if gap == 1 else "s",
-                           "it" if gap == 1 else "none of them",
-                           "it" if gap == 1 else "them",
-                           "it" if gap == 1 else "them"))
+    elif grade["rule"] == "high-unchecked":
+        why = ("I could not check the point of the mission — %s (%s) — so nothing "
+               "here says it works."
+               % (name_list([e["id"] for e in hi_blind]), ids(hi_blind)))
+        meaning = ("I could not check the point of the mission, so it is not "
+                   "vouched for — look for yourself")
+    elif grade["rule"] == "nothing-checked":
+        why = ("I could not check anything on your list, so nothing here is "
+               "vouched for.")
+        meaning = ("I could not check anything on your list, so nothing here is "
+                   "vouched for — this is not a clean bill of health")
+    elif score == "medium":
+        # What did not work and what could not be checked are said apart, so a
+        # MEDIUM that rests on a blind spot never reads as a clean bill.
+        mg, mb = grade["mediumGap"], grade["mediumBlind"]
+        bits = []
+        if mg:
+            bits.append("go with %s known issue%s — %s (%s)"
+                        % ("this" if len(mg) == 1 else "these",
+                           "" if len(mg) == 1 else "s",
+                           name_list([e["id"] for e in mg]), ids(mg)))
+        if mb:
+            bits.append("I could not check %s (%s)%s"
+                        % (name_list([e["id"] for e in mb]), ids(mb),
+                           "" if mg else ", so it ships as a known issue"))
+        why = "the point of the mission works; %s." % "; and ".join(bits)
+        meaning = ("The point of the mission works; it would ship with %d named "
+                   "known issue%s" % (len(med_open), "" if len(med_open) == 1 else "s"))
+    elif grade["lowOpen"]:
+        n = len(grade["lowOpen"])
+        why = ("everything that matters on your list worked; %d small thing%s did "
+               "not, and polish never moves the grade." % (n, "" if n == 1 else "s"))
+        meaning = "Everything that matters worked; only polish is left — ship as is"
     else:
-        score = "high"
         why = "everything you asked for is in the build, and I have a picture of each one."
         meaning = ("Everything you asked for is in the build and I have a "
                    "picture of each one — ship as is")
+
+    # --- WHY THIS GRADE: the table walked in words (S216) --------------------
+    rule_words = {
+        "nothing-listed": "there was nothing on your list to check",
+        "high-broken": "something that is the point of the mission did not work",
+        "high-unchecked": ("I could not check the point of the mission, and I will "
+                           "not call a build good on the strength of what I could "
+                           "not see"),
+        "nothing-checked": "I could not check anything on your list",
+        "medium-open": ("every part that is the point of the mission worked, but "
+                        "%s — go with the named known issue%s"
+                        % ("something else you asked for did not work as asked"
+                           if not grade["mediumBlind"] else
+                           "something else you asked for could not be checked"
+                           if not grade["mediumGap"] else
+                           "other things you asked for did not work as asked or "
+                           "could not be checked",
+                           "" if len(med_open) == 1 else "s")),
+        "all-worked": ("every part that is the point of the mission, and everything "
+                       "else you asked for, worked"),
+    }
+    para = ["%s because %s." % (score.upper(), rule_words[grade["rule"]])]
+    highs = grade["high"]
+    if highs:
+        point = "The point of the mission was %s" % items(highs)
+        if not hi_gap and not hi_blind:
+            point += "; all of it worked."
+        else:
+            bits = []
+            if hi_gap:
+                bits.append("%s didn't work" % ", ".join(e["id"] for e in hi_gap))
+            if hi_blind:
+                bits.append("%s couldn't be checked" % ", ".join(e["id"] for e in hi_blind))
+            point += "; " + " and ".join(bits) + "."
+        para.append(point)
+    elif ledger:
+        para.append("Nothing on your list was marked as the point of the mission.")
+    if med_open:
+        para.append("Known issues shipping with it: %s." % items(med_open))
+    if grade["lowOpen"]:
+        n = len(grade["lowOpen"])
+        para.append("Polish noted, not counted: %d small thing%s (%s)."
+                    % (n, "" if n == 1 else "s", ids(grade["lowOpen"])))
+    assumed = [e for e in ledger if e.get("impactAssumed")]
+    if assumed:
+        para.append("No impact was given for %s, so I counted %s as the point of "
+                    "the mission — the careful reading."
+                    % (ids(assumed), "it" if len(assumed) == 1 else "them"))
+    why_grade = " ".join(para)
+
+    # --- BESIDE HIS GRADE, NEVER INSTEAD OF IT (the research's hybrid) -------
+    alt_reading = ""
+    if score == "medium" and not grade["mediumGap"] and grade["mediumBlind"]:
+        blind = grade["mediumBlind"]
+        alt_reading = ("a risk-based reviewer might sign this off: the only open "
+                       "item%s %s nobody could check (%s), not one that was seen "
+                       "to fail" % ("" if len(blind) == 1 else "s",
+                                    "is one" if len(blind) == 1 else "are ones",
+                                    ids(blind)))
+    low_gaps = sum(1 for e in grade["lowOpen"] if e["status"] == "gap")
+    polish_flag = ""
+    if low_gaps >= POLISH_PILE:
+        polish_flag = ("lots of small things — %d small things did not work, so it "
+                       "may feel unfinished even though none of them moves the grade"
+                       % low_gaps)
+
+    # --- EVERY ROW CARRIES ITS REASON ----------------------------------------
+    for e in ledger:
+        finish_reason(e)
 
     # S217 — the picture sentence LEADS the derivation, so the card's one line
     # and the report's first line both open with it. The score is untouched:
@@ -802,12 +1039,20 @@ def main():
         "scoreMeaning": meaning,
         "counts": {"met": met, "gap": gap, "untested": untested,
                    "contradictions": len(contradicted)},
+        # S216 — the table walked in words, and the point of the mission as
+        # its own fact. `core` is "" only when no row was marked high at all.
+        "whyThisGrade": why_grade,
+        "core": core,
         "criteria": ledger,
         "gaps": gaps,
         "escalations": [str(e) for e in (doc.get("escalations") or []) if str(e).strip()],
         "alsoChecked": [str(e) for e in (doc.get("alsoChecked") or []) if str(e).strip()],
         "summary": summary,
     }
+    if alt_reading:
+        out["altReading"] = alt_reading
+    if polish_flag:
+        out["polishFlag"] = polish_flag
     if notes:
         out["ledgerNotes"] = notes
     if picture_only:
@@ -836,6 +1081,13 @@ def main():
               "w", encoding="utf-8") as fh:
         w = fh.write
         w("**How close this is to what you asked for: %s** — %s\n\n" % (score.upper(), why))
+        # S216 — WHY THIS GRADE comes first after the score: the table walked
+        # in words, then what the research reads beside it (never instead).
+        w("**Why this grade.** %s\n\n" % why_grade)
+        beside = [s for s in (alt_reading, polish_flag) if s]
+        if beside:
+            w("*Read another way (this does not change the grade):* %s.\n\n"
+              % "; ".join(beside))
         w(summary + "\n\n")
         if picture_only:
             w("**%s.** %s %s a picture, not a drawing, so nothing in this build "
@@ -927,6 +1179,13 @@ def main():
                 w("- %s — %s. *(%s)*\n" % (
                     clip(e["text"], 120) or "this one",
                     unstop(e["note"] or "I could not check this"), e["id"]))
+        # S216 — THE REASONING, ITEM BY ITEM. Its own section, not a table
+        # column: the table above stays exactly as machine-readable as it was.
+        if ledger:
+            w("\n### My reasoning, item by item\n\n")
+            for e in ledger:
+                w("- %s *(%s)* — %s\n" % (clip(e["text"], 120) or e["id"], e["id"],
+                                          e["reason"]))
         # OBSERVATIONS — THEIR OWN SECTION, NEVER THE SCORE (S210). These do not
         # come from the drawing or the PRD; they are things a person would just
         # SEE — two controls touching, a row out of line, text spilling past its
@@ -969,6 +1228,8 @@ def main():
     print("DISAGREED\t" + ("yes" if score != worker_score else "no"))
     print("WHY\t" + why)
     print("MEANING\t" + meaning.replace("\n", " "))
+    print("GRADE_WHY\t" + why_grade.replace("\n", " "))
+    print("CORE\t" + core)
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))
     print("SUMMARY\t" + summary.replace("\n", " "))
     if observations is not None:

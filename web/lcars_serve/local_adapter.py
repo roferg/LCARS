@@ -2048,6 +2048,8 @@ class LocalAdapter(object):
                 said = _xo_recorded_meaning(d)
                 if said:
                     xo["meaning"] = said
+            # S216 — the pill's two axes, off the same recorded verdict.
+            xo.update(_xo_recorded_axes(d))
             card["numberOne"] = xo
         return card
 
@@ -2692,6 +2694,38 @@ def _xo_recorded_meaning(mission_dir):
     if isinstance(said, str) and said.strip():
         return said.strip()
     return _xo_meaning_from_ledger(doc)
+
+
+_XO_CORE_STATES = ("met", "broken", "unverified")
+
+
+def _xo_recorded_axes(mission_dir):
+    """{checked, total, core} for the card pill (S216), off this mission's own
+    `xo/verdict.json` — each key only when the record supports it.
+
+    `checked` / `total` are arithmetic over the verdict's own ledger (worked +
+    didn't, of everything on the list), so a verdict written before S216 has
+    them too. `core` is the state of the point of the mission, which only a
+    verdict that assessed IMPACT recorded; an older one has none, and none is
+    invented for it (the S213 round-3 rule). No file ⇒ {}."""
+    try:
+        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    out = {}
+    counts = _xo_ledger_counts(doc)
+    if counts is not None:
+        met, gap, untested = counts
+        out["checked"] = met + gap
+        out["total"] = met + gap + untested
+    core = doc.get("core")
+    if isinstance(core, str) and core.strip() in _XO_CORE_STATES:
+        out["core"] = core.strip()
+    return out
 
 
 def _xo_ledger_counts(doc):

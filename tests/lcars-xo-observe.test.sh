@@ -348,8 +348,10 @@ check "B6 — the PRD's own criterion (no drawnAt at all) is also unaffected" \
 d=json.load(open(sys.argv[1]))
 e=[c for c in d[\"criteria\"] if c[\"id\"]==\"prd-1\"][0]
 sys.exit(0 if e[\"status\"] == \"met\" else 1)' '$scdir/nodrawing-verdict.json'"
-check "B6 — the score reflects the untested criterion (MEDIUM, not the worker's false HIGH)" \
-  "grep -q '^SCORE.medium' '$scdir/nodrawing-stdout.txt'"
+# S216: the rows carry no impact, so each counts as the point of the mission,
+# and a point nobody could check is LOW (the captain's two-part score).
+check "B6 — the score reflects the untested criterion (LOW, not the worker's false HIGH)" \
+  "grep -q '^SCORE.low' '$scdir/nodrawing-stdout.txt'"
 
 # --- xo-criteria.py: `hasDrawing` itself, the fact the guard above reads -----
 crdir="$TMPROOT/criteria"; mkdir -p "$crdir/with-drawing/attachments" "$crdir/without-drawing"

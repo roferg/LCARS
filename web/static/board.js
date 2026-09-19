@@ -660,11 +660,46 @@ function xoScore(m) {
 function xoScorePill(m) {
   var s = xoScore(m);
   if (!s) return null;
-  var pill = el("span", "pill xo-score s-" + s,
-                "◈ NUMBER ONE · " + XO_SCORE_WORD[s]);
+  var axes = xoAxes(m);
+  var pill;
+  if (axes) {
+    // S216 — BOTH AXES ON THE CARD: `◈ MEDIUM · checked 11 of 14 · core met`.
+    // The grade is its own unbreakable piece and the rest may wrap onto the
+    // card's next line, so a 224px column never clips the grade (S214 D6).
+    // "checked N of M" says whose grade this is as plainly as the old
+    // NUMBER ONE label did: no difficulty pill ever counts anything.
+    pill = el("span", "pill xo-score xo-axes-pill s-" + s);
+    pill.appendChild(el("span", "xo-grade", "◈ " + XO_SCORE_WORD[s]));
+    pill.appendChild(el("span", "xo-axes", " · " + axes));
+  } else {
+    pill = el("span", "pill xo-score s-" + s,
+              "◈ NUMBER ONE · " + XO_SCORE_WORD[s]);
+  }
   var said = xoScoreMeaning(m, s);
   if (said) pill.title = said;
   return pill;
+}
+
+/* S216 — the two axes the pill carries beside the grade, READ off the block
+   (the adapter reads them off the mission's own xo/verdict.json): how many of
+   the list were actually checked, and the state of the point of the mission.
+   A verdict written before S216 recorded no impact, so it has no `core` and
+   none is shown — the counts alone are still arithmetic over its own ledger.
+   A remote card (score off a label) has neither: the old pill, unchanged. */
+var XO_CORE_WORD = { met: "core met", broken: "core broken",
+                     unverified: "core unverified" };
+
+function xoAxes(m) {
+  var x = xoBlock(m);
+  if (!x) return "";
+  var parts = [];
+  var total = x.total, checked = x.checked;
+  if (typeof total === "number" && total > 0 && typeof checked === "number"
+      && checked >= 0 && checked <= total) {
+    parts.push("checked " + checked + " of " + total);
+  }
+  if (XO_CORE_WORD[x.core]) parts.push(XO_CORE_WORD[x.core]);
+  return parts.join(" · ");
 }
 
 /* WHAT THE WORD MEANS **HERE** (S213 fix round 1 D4, fix round 3 D4-RESIDUAL).
@@ -1171,7 +1206,8 @@ function xoEntryWho(entry) {
 }
 
 function xoEntrySays(entry) {
-  var bits = ["detail", "why", "note", "summary", "answer", "rationale"]
+  // S216: a scored entry leads with WHY THIS GRADE when the look recorded one.
+  var bits = ["whyThisGrade", "detail", "why", "note", "summary", "answer", "rationale"]
     .map(function (k) { return entry[k]; })
     .filter(function (v) { return typeof v === "string" && v.trim(); });
   return bits.length ? bits[0].trim() : xoActionLabel(entry);
@@ -10136,10 +10172,25 @@ var XO_EVIDENCE_WORD = {
   none: "—",
 };
 
+/* S216 — the captain's own three outcome words; MET / GAP / UNTESTED stay the
+   machine words underneath. */
 var XO_STATUS_WORD = {
-  met: "It's there",
-  gap: "Short of the mark",
-  untested: "I could not check this",
+  met: "Worked",
+  gap: "Didn't work",
+  untested: "Couldn't check",
+};
+
+/* S216 — how much each one matters, in words, ONLY when the verdict recorded
+   it. A pre-S216 row has no `impact` and gets no line: this board does not
+   assert an impact nobody assessed. */
+var XO_IMPACT_WORD = {
+  high: "Matters most — the point of the mission",
+  medium: "Matters — a known issue if it fails",
+  low: "Polish — never moves the grade",
+};
+var XO_COULD_NOT_WORD = {
+  unreachable: "couldn't reach it",
+  unobservable: "no way to observe it",
 };
 
 function xoCriteriaTable(criteria) {
@@ -10158,8 +10209,23 @@ function xoCriteriaTable(criteria) {
     var what = el("div", "xo-crit-what");
     what.appendChild(el("div", "xo-crit-text", String((c && c.text) || (c && c.id) || "")));
     if (c && c.note) what.appendChild(el("div", "xo-crit-note", String(c.note)));
+    var imp = String((c && c.impact) || "").toLowerCase();
+    if (XO_IMPACT_WORD[imp]) {
+      var impLine = XO_IMPACT_WORD[imp];
+      if (c.impactAssumed) impLine += " (none was given, so counted as high)";
+      else if (c.impactWhy) impLine += ": " + String(c.impactWhy);
+      what.appendChild(el("div", "xo-crit-impact i-" + imp, impLine));
+    }
+    if (c && typeof c.reason === "string" && c.reason.trim()) {
+      what.appendChild(el("div", "xo-crit-reason", c.reason.trim()));
+    }
     row.appendChild(what);
-    row.appendChild(el("div", "xo-crit-verdict", XO_STATUS_WORD[status]));
+    var verdictCell = el("div", "xo-crit-verdict", XO_STATUS_WORD[status]);
+    var whyNot = String((c && c.couldNotCheck) || "");
+    if (status === "untested" && XO_COULD_NOT_WORD[whyNot]) {
+      verdictCell.appendChild(el("div", "xo-crit-why-not", XO_COULD_NOT_WORD[whyNot]));
+    }
+    row.appendChild(verdictCell);
     var how = el("div", "xo-crit-how", XO_EVIDENCE_WORD[kind]);
     if (kind === "tests" && c && c.testQuote) how.title = String(c.testQuote);
     row.appendChild(how);
@@ -10273,6 +10339,30 @@ function xoReportPane(mi) {
       "after the fixes · " + String(report.score2).toUpperCase()));
   }
   pane.appendChild(head);
+
+  // 1b — WHY THIS GRADE (S216): the captain's table walked in words, first
+  // after the score. Then what a different reviewer would read BESIDE it —
+  // never a second grade. A verdict written before S216 has neither field
+  // and this block is simply absent: nothing is derived for it here.
+  var whyGrade = String(verdict.whyThisGrade || "").trim();
+  if (whyGrade) {
+    var whyBox = el("div", "xo-why");
+    whyBox.appendChild(el("b", "xo-why-label", "Why this grade"));
+    whyBox.appendChild(el("div", "xo-why-body", whyGrade));
+    pane.appendChild(whyBox);
+    var beside = [verdict.altReading, verdict.polishFlag].filter(function (t) {
+      return typeof t === "string" && t.trim();
+    });
+    if (beside.length) {
+      var alt = el("div", "xo-alt");
+      alt.appendChild(el("b", "xo-alt-label",
+        "Read another way — this does not change the grade"));
+      beside.forEach(function (t) {
+        alt.appendChild(el("div", "xo-alt-line", String(t).trim()));
+      });
+      pane.appendChild(alt);
+    }
+  }
 
   // 2 — ONE HONEST SENTENCE. The card carries this same string.
   var lede = String(verdict.derivation || xo.headline || "").trim();

@@ -2887,6 +2887,14 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   border-color:var(--lcars-amber);color:var(--lcars-amber)}
 .pill.xo-score.s-low{background:rgba(255,51,68,.16);
   border-color:var(--lcars-red);color:var(--lcars-red)}
+/* S216 — the two-axis pill: `◈ MEDIUM · checked 11 of 14 · core met`. The
+   grade never breaks; the axes wrap inside the pill onto the next line when
+   a 224px column cannot hold them (S214 D6 found the one-line card clipping). */
+.pill.xo-axes-pill{flex-wrap:wrap;white-space:normal;gap:0 4px;max-width:100%;
+  box-sizing:border-box}
+.pill.xo-axes-pill .xo-grade{white-space:nowrap}
+.pill.xo-axes-pill .xo-axes{font-weight:400;letter-spacing:.04em;min-width:0;
+  overflow-wrap:anywhere}
 
 /* THE STAND-DOWN. Red-outline — `.btn.danger`'s existing idiom, untouched —
    sat beside the controls it is handing back. */
@@ -3093,6 +3101,21 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .xo-crit-row.v-met .xo-crit-verdict{color:var(--lcars-teal)}
 .xo-crit-row.v-gap .xo-crit-verdict{color:var(--lcars-red)}
 .xo-crit-row.v-untested .xo-crit-verdict{color:var(--lcars-text-dim);font-style:italic}
+/* S216 — how much each one matters, and the reason written down for it. */
+.xo-crit-impact{font-size:11px;color:var(--lcars-peach);margin-top:3px;line-height:1.4}
+.xo-crit-impact.i-low{color:var(--lcars-text-dim)}
+.xo-crit-reason{font-size:11.5px;color:var(--lcars-text);margin-top:3px;line-height:1.45}
+.xo-crit-why-not{font-size:10px;white-space:normal;margin-top:2px}
+/* S216 — WHY THIS GRADE, first after the score; the alternative reading
+   beside it is visibly an aside (the .xo-also idiom), never a second grade. */
+.xo-why{border-left:3px solid var(--lcars-peach);padding-left:10px;margin:6px 0 10px}
+.xo-why-label,.xo-alt-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:10px;
+  color:var(--lcars-text-dim);margin-bottom:4px}
+.xo-why-body{font-size:13.5px;line-height:1.55;color:var(--lcars-text-bright)}
+.xo-alt{background:rgba(255,153,102,.07);border:1px solid var(--lcars-border);
+  border-radius:8px;padding:8px 12px;margin-bottom:12px}
+.xo-alt-line{font-size:12px;color:var(--lcars-text);line-height:1.5}
 
 /* …and LAST, the reassurance, visibly an aside and never the verdict. */
 .xo-also{background:rgba(255,153,102,.07);border:1px solid var(--lcars-border);
@@ -3204,7 +3227,8 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .overlay-stage,.modal,.detail-grid,.tabs,.tabpane,.xo-pane{min-width:0}
 .det-head h3{overflow-wrap:anywhere;min-width:0}
 .xo-lede,.xo-full,.xo-crit-text,.xo-crit-note,.xo-also-line,.xo-also-why,
-.xo-entry-say,.xo-mname{overflow-wrap:anywhere}
+.xo-entry-say,.xo-mname,.xo-crit-impact,.xo-crit-reason,.xo-why-body,
+.xo-alt-line{overflow-wrap:anywhere}
 /* A picture is evidence, not a ruler: it fits the column it is read in. */
 .xo-pane img,.xo-shot img,.tabpane img{max-width:100%;height:auto}
 

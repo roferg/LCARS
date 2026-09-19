@@ -1432,8 +1432,9 @@ xo_mirror() { # <mission-id>
 # never a cut-down of the worker's prose: a truncation is this harness deciding
 # what Number One meant, which is exactly the fault S213 exists to kill.
 # Omitted (and any stale one deleted) when there is no derivation to record.
-xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>]
+xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<why-this-grade>]
   local dir="$1" score="$2" status="$3" why="$4" headline="${5:-}" meaning="${6:-}" st obj id
+  local gradewhy="${7:-}"
   st="$dir/state.json"; id="$(basename "$dir")"
   obj="$(state_xo_block "$st")"
   obj="$(obj_set "$obj" status "$(jstr "$status")")"
@@ -1473,9 +1474,13 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>]
       printf 'I have nothing item-by-item for this one: %s\n' "$why"
     } >"$dir/xo/report.md"
   fi
+  # S216 — WHY THIS GRADE rides the journal entry too, so the First Officer's
+  # report leads with the table walked in words. Absent when there is none.
+  local gradefield=""
+  [ -n "$gradewhy" ] && gradefield="$(printf ', "whyThisGrade": %s' "$(jstr "$gradewhy")")"
   journal "$dir" scored \
-    "$(printf '"score": %s, "why": %s, "status": %s' \
-         "$(jstr "$score")" "$(jstr "$why")" "$(jstr "$status")")"
+    "$(printf '"score": %s, "why": %s, "status": %s%s' \
+         "$(jstr "$score")" "$(jstr "$why")" "$(jstr "$status")" "$gradefield")"
   xo_label_score "$st" "$score"
   xo_mirror "$id"
   printf '◈ NUMBER ONE: intent match %s — %s\n' "$(printf '%s' "$score" | tr '[:lower:]' '[:upper:]')" "$why"
@@ -1791,7 +1796,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   local report
   report="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
               "$xodir/verdict.json" "$obsfile" "$testsfile" 2>/dev/null)" || report=""
-  local score="" wscore="" disagreed="" why="" summary="" meaning="" line key val
+  local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="${line%%$'\t'*}"; val="${line#*$'\t'}"
@@ -1802,6 +1807,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       DISAGREED)    disagreed="$val" ;;
       WHY)          why="$val" ;;
       MEANING)      meaning="$val" ;;
+      GRADE_WHY)    gradewhy="$val" ;;
       SUMMARY)      summary="$val" ;;
       NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
     esac
@@ -1834,7 +1840,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   # leaves it ENGAGED — there are gaps, and S204 is the round that acts on them.
   local status=engaged
   [ "$score" = "high" ] && status=finished
-  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why" "$meaning"
+  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why" "$meaning" "$gradewhy"
   xo_rm_work "$work"; XO_WORK_DIR=""
 
   # --- 8. THE FIX ROUND (S204) ---------------------------------------------

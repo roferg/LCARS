@@ -47,13 +47,29 @@ def prd_criteria(text):
     A PRD with no such section yields NOTHING rather than a guess — an empty
     primary list is an honest answer and the plan's criteria still carry the
     look.
+
+    A SECTION CAN START AT A BOLD LABEL TOO (S216). A grill as often writes
+    `**Acceptance Criteria:**` on a line of its own as it writes a `##`
+    heading — the captain's real MBR PRDs use exactly that form — and a reader
+    that knew only headings read ZERO criteria from them, which scored a real
+    build against an empty list. A line that is nothing but a bold label (colon
+    inside or outside the stars, or none) opens or closes a section exactly as
+    a heading does. A bold phrase INSIDE a list item is content, not a label.
     """
     out = []
     lines = text.splitlines()
     in_sec = False
     for ln in lines:
-        if re.match(r"^\s{0,3}#{1,6}\s", ln):
-            head = ln.lower()
+        label = re.match(r"^\s{0,3}\*\*([^*]+?)\*\*(.*)$", ln)
+        if label:
+            rest = label.group(2).strip()
+            # `**Label**`, `**Label:**` or `**Label**:` — optionally with text
+            # after a colon (`**Type:** feature`). Bold prose is not a label.
+            if not (rest == "" or rest.startswith(":")
+                    or label.group(1).rstrip().endswith(":")):
+                label = None
+        if re.match(r"^\s{0,3}#{1,6}\s", ln) or label:
+            head = (label.group(1) if label else ln).lower()
             in_sec = bool(re.search(r"(acceptance|success)\s+criteri", head))
             continue
         if not in_sec:

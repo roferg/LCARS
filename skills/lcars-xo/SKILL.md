@@ -285,12 +285,25 @@ The order is the contract:
 5. **The score is RECOMPUTED from the ledger** (`xo-score.py`). The model
    reasons; the skill decides:
 
-   | the ledger | the score | |
+   **The captain's two-part score (S216).** Before judging, each criterion
+   gets an IMPACT (`high` = the point of the mission, a reasonable person
+   would block the merge; `medium` = a stated requirement that is secondary,
+   or works but not as asked; `low` = polish). After looking, each is worked
+   (MET) / didn't (GAP) / couldn't check (UNTESTED, with `couldNotCheck`
+   `unreachable` | `unobservable`). First match wins:
+
+   | impact x outcome | the score | |
    |---|---|---|
-   | a contradicted PRIMARY (PRD) criterion | **LOW** | the stated goal is not met |
-   | any other contradiction | **MEDIUM** | the flow works; read the gaps |
-   | any UNTESTED, everything else met | **MEDIUM** | *not* HIGH — "could not see it" is not "it is fine" |
-   | every criterion met | **HIGH** | ship as is |
+   | nothing on the list, or nothing on it checked | **LOW** | never a pass |
+   | a HIGH one didn't work, or couldn't be checked | **LOW** | `core` broken / unverified |
+   | every high worked; a MEDIUM one didn't or couldn't be checked | **MEDIUM** | go with the named known issues |
+   | every high and medium worked | **HIGH** | low ones never move it |
+
+   A criterion with no impact counts as HIGH and the reasoning says so. Every
+   row carries a `reason` sentence (a fallback says when none was given); the
+   verdict carries `whyThisGrade`, `core`, and — beside the grade, never
+   instead of it — `altReading` / `polishFlag`. Ids not in the contract are
+   not counted. The card pill reads `◈ MEDIUM · checked 11 of 14 · core met`.
 
    **A worker score that disagrees with its own ledger is overwritten, and the
    disagreement is journaled** (`score-overruled`). Both scores stay in
