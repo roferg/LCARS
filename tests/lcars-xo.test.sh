@@ -1422,7 +1422,7 @@ check "B10f2. …the rows still carry the machine verdicts, unchanged" \
 check "B10f2. …the score and the DERIVATION that produced it, in his words" \
   "grep -q 'How close this is to what you asked for: MEDIUM' '$mF/xo/report.md'"
 check "B10f2. …with the criterion ids AFTER the human sentence, never before it" \
-  "grep -q 'the point of the mission works; go with this known issue — ADD is above the list (t-1-ac1)' '$mF/xo/report.md'"
+  "grep -q 'the point of the mission works; go with this known issue — ADD is above the list — you asked for the ADD button sits under the list; the build gives it is above it (t-1-ac1)' '$mF/xo/report.md'"
 check "B10f2. …and the gap, named with the SHOT that shows it (never an image)" \
   "grep -q 'ADD is above the list' '$mF/xo/report.md' && grep -q 'shot-02' '$mF/xo/report.md'"
 check "B10f2. a path with no ledger still owes the captain a sentence" \

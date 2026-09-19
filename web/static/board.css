@@ -3116,6 +3116,8 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .xo-alt{background:rgba(255,153,102,.07);border:1px solid var(--lcars-border);
   border-radius:8px;padding:8px 12px;margin-bottom:12px}
 .xo-alt-line{font-size:12px;color:var(--lcars-text);line-height:1.5}
+.xo-impacts-note,.xo-impact-mismatch{font-size:12px;color:var(--lcars-text-dim);line-height:1.5;
+  margin:0 0 10px}
 
 /* …and LAST, the reassurance, visibly an aside and never the verdict. */
 .xo-also{background:rgba(255,153,102,.07);border:1px solid var(--lcars-border);

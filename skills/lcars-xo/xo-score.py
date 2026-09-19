@@ -83,16 +83,28 @@ A criterion in the contract the worker never rated is `untested` too, with a
 note saying so. It is never silently dropped: the contract was written before
 the look, and a look that skipped part of it is a look with a hole in it.
 
+THE SIXTH ARGUMENT is S216 fix round 1's: the mission's own `xo/impacts.json`,
+THE RECORD OF HOW MUCH EACH REQUIREMENT MATTERS. Two Copilot looks at the same
+build disagreed on 21 of 31 impacts, and the grade's HIGH-vs-MEDIUM hung on
+it. So importance is RECORDED, not re-guessed: the first look that rates an id
+writes its impact (with when, and which engine) and every later look — and
+every recheck — reuses it; the look's new impact for that id is ignored and the
+disagreement handed to the journal (IMPACT_KEPT). Only ids the record has never
+seen take this look's impact. With no sixth argument nothing is read or
+written, exactly as before. The engine is `$LCARS_XO_ENGINE`.
+
 Output on stdout, one TAB-separated record per line, for the shell to read:
   MALFORMED <why>                 | SCORE <s> / WORKER_SCORE <s> / DISAGREED yes|no
   WHY <the derivation, in words>  | COUNTS <met> <gap> <untested> <contradictions>
   MEANING <what the score word means for THIS ledger — never a fixed sentence>
   GRADE_WHY <why this grade, the table walked in words> | CORE <met|broken|unverified|>
+  IMPACT_KEPT <id> <recorded> <this look's>  | IMPACT_MISMATCH <id> <id> <impact> <impact>
 """
 import json
 import os
 import re
 import sys
+import time
 
 VALID_SCORES = ("high", "medium", "low")
 VALID_STATUS = ("met", "gap", "untested")
@@ -532,6 +544,193 @@ def _plain(text):
     return " ".join(re.sub(r"[^\w\s]", " ", str(text or "").lower()).split())
 
 
+# ─── S216 fix round 1: THE WORDS THE CAPTAIN READS ABOUT EACH REQUIREMENT ────
+#
+# A SHORT PLAIN NAME (D4). The paragraph used to embed the contract's text as
+# written — backticked signatures, file paths, and PRD bullets the parser had
+# cut at a line end ("returns a Pixi colour number for the (prd-3)"). A name is
+# derived here, deterministically, from the same text: a parenthetical that is
+# only code goes, a code span becomes the name of the thing it names (a
+# function, a file), and a long one is cut at a word — never on a word that
+# leads nowhere — with one "…".
+DANGLING = set("a an the of for to with and or but in on at by from as is are be "
+               "no not into onto than that which who its their your this then when while "
+               "if so was were has have".split())
+STRIP_TAIL = " :;,.—-*=+"
+
+
+def short_name(text, limit=60):
+    t = re.sub(r"\s*\(\s*`[^`]*`\s*\)", "", str(text or ""))
+
+    def code(m):
+        c = m.group(1).strip()
+        fn = re.match(r"([A-Za-z_$][\w$.]*)\s*\(", c)
+        if fn:
+            return fn.group(1)
+        if "/" in c:
+            return c.rstrip("/").rsplit("/", 1)[-1]
+        return c
+    t = re.sub(r"`([^`]*)`", code, t).replace("`", "")
+    # A bare file path is named by its file.
+    t = re.sub(r"(?<![\w/])[\w.-]+(?:/[\w.-]+)+\.\w+", lambda m: m.group(0).rsplit("/", 1)[-1], t)
+    t = " ".join(t.split()).rstrip(STRIP_TAIL)
+    if len(t) > limit:
+        # Too long: first drop call arguments and worded asides — "(current
+        # === max)", "(not app.renderer.resize directly)" — but keep a bare
+        # value like "(8,8)", which is the requirement.
+        t = re.sub(r"(?<=\w)\([^()]*\)", "", t)
+        t = re.sub(r"\s+\([^()]*[A-Za-z][^()]*\)", "", t)
+        t = " ".join(t.split()).rstrip(STRIP_TAIL)
+    cut = False
+    if len(t) > limit:
+        head = t[:limit + 1]
+        sp = head.rfind(" ")
+        t = head[:sp] if sp > limit // 2 else t[:limit]
+        cut = True
+    words = t.split(" ")
+    while len(words) > 1 and words[-1].lower().strip(STRIP_TAIL) in DANGLING:
+        words.pop()
+        cut = True
+    t = " ".join(words).rstrip(STRIP_TAIL)
+    if cut and t.count("(") > t.count(")"):
+        # Never stop inside a bracket.
+        t = t[:t.rfind("(")].rstrip(STRIP_TAIL)
+    return t + ("…" if cut else "")
+
+
+# WHAT A HIGH RESTED ON (D7). "I have a picture of each one" was said of a
+# ledger two thirds of which your tests settled. The rows carry their evidence
+# kind (recorded, S211), so the sentence counts it — no reading of prose.
+def evidence_said(rows):
+    pics = sum(1 for e in rows if e.get("evidence") in ("picture", "measurement"))
+    tests = sum(1 for e in rows if e.get("evidence") == "tests")
+    if pics and tests:
+        return ("I have a picture of %d and your own tests show the other %d"
+                % (pics, tests))
+    if tests:
+        return "your own tests show each one"
+    return "I have a picture of each one"
+
+
+# THE SMALLER ITEMS, SAID APART (D1/D2). "7 small things did not" was said of
+# seven items nobody could check. Didn't-work and couldn't-check are two facts.
+def smaller_items(lg, lb, names):
+    bits = []
+    for rows, what in ((lg, "didn't work"), (lb, "I could not check")):
+        if not rows:
+            continue
+        n = len(rows)
+        s = "%d smaller item%s %s" % (n, "" if n == 1 else "s", what)
+        if names:
+            s += (", and %s the grade: %s" % ("it doesn't change" if n == 1 else
+                                              "they don't change", names(rows)))
+        bits.append(s)
+    return bits
+
+
+# NEAR-DUPLICATE REQUIREMENTS, RATED APART (D5). The same thing stated in the
+# PRD and again in a ticket got different impacts inside one look. The harness
+# FLAGS such a pair — beside the grade, never moving it. Deliberately simple:
+# the same words once punctuation and case are gone, or nearly all the same
+# words (a token overlap), and nothing cleverer.
+NEAR_DUP_OVERLAP = 0.8
+
+
+def near_duplicates(ledger, texts):
+    def toks(t):
+        return _plain(str(t or "").replace("`", " ")).split()
+    rows = [(e, toks(texts.get(e["id"]) or e.get("text"))) for e in ledger]
+    pairs = []
+    for i, (a, ta) in enumerate(rows):
+        for b, tb in rows[i + 1:]:
+            if a.get("impact") == b.get("impact") or not ta or not tb:
+                continue
+            sa, sb = set(ta), set(tb)
+            same = ta == tb or (min(len(sa), len(sb)) >= 4 and
+                                len(sa & sb) / float(len(sa | sb)) >= NEAR_DUP_OVERLAP)
+            if same:
+                pairs.append({"ids": [a["id"], b["id"]],
+                              "impacts": [a["impact"], b["impact"]]})
+    return pairs
+
+
+ENGINE_WORD = {"copilot": "Copilot", "claude": "Claude"}
+
+
+def apply_recorded_impacts(ledger, path, texts=None):
+    """REUSE the importance the first look set (D5). → (note, kept, new ids).
+
+    `kept` is every (id, recorded, this look's) where the look re-guessed an id
+    already on the record; the record wins and the shell journals each one.
+    The record keeps the requirement's text too: if the PRD was re-aligned and
+    an id now names a DIFFERENT requirement, it is rated afresh, not reused."""
+    texts = texts or {}
+    if not path:
+        return "", [], []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        rec = doc.get("impacts") if isinstance(doc, dict) else None
+    except Exception:
+        rec = None
+    rec = rec if isinstance(rec, dict) else {}
+    engine = os.environ.get("LCARS_XO_ENGINE", "").strip().lower()
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    kept, new, used = [], [], []
+    for e in ledger:
+        r = rec.get(e["id"])
+        now_text = texts.get(e["id"]) or e.get("text") or ""
+        if isinstance(r, dict) and r.get("text") and \
+                _plain(r["text"]) != _plain(now_text):
+            r = None
+        if isinstance(r, dict) and r.get("impact") in VALID_IMPACT:
+            given = "" if e.get("impactAssumed") else e.get("impact", "")
+            if given and given != r["impact"]:
+                kept.append((e["id"], r["impact"], given))
+            e["impact"] = r["impact"]
+            e.pop("impactAssumed", None)
+            if r.get("impactWhy"):
+                e["impactWhy"] = r["impactWhy"]
+            else:
+                e.pop("impactWhy", None)
+            e["_impactRecorded"] = True
+            used.append(r)
+        elif not e.get("impactAssumed"):
+            # An impact nobody gave is not recorded: the next look may give one.
+            rec[e["id"]] = {"impact": e["impact"], "impactWhy": e.get("impactWhy", ""),
+                            "at": now, "engine": engine, "text": now_text}
+            new.append(e["id"])
+    if new:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"impacts": rec}, fh, indent=2)
+                fh.write("\n")
+            os.replace(tmp, path)
+        except Exception:
+            pass
+
+    def when(r):
+        at = str(r.get("at") or "")[:10]
+        eng = ENGINE_WORD.get(str(r.get("engine") or ""), str(r.get("engine") or ""))
+        return ", ".join(x for x in (at, eng) if x)
+    if used:
+        first = min(used, key=lambda r: str(r.get("at") or ""))
+        note = ("Importance was set on the first look (%s) and kept for this one, "
+                "so a new look cannot move the grade by re-guessing it." % when(first))
+        if new:
+            note += (" %d item%s new since then %s rated on this look."
+                     % (len(new), "" if len(new) == 1 else "s",
+                        "was" if len(new) == 1 else "were"))
+    elif new:
+        note = ("Importance was set on this look (%s); later looks keep it."
+                % when(rec[new[0]]))
+    else:
+        note = ""
+    return note, kept, new
+
+
 def finish_reason(e):
     """Every row carries ONE reason sentence (S216).
 
@@ -544,13 +743,15 @@ def finish_reason(e):
     have, so the harness writes the row's reason itself, from its own note."""
     said = " ".join(str(e.pop("_reason", "") or "").split())
     rated = e.pop("_ratedStatus", "")
+    recorded = e.pop("_impactRecorded", False)
+    tag = " (set on the first look)" if recorded else ""
     word = OUTCOME_WORD[e["status"]]
     if e.get("impactAssumed"):
         impact = "Impact high — none was given, so I counted it as the point of the mission"
     elif e.get("impactWhy"):
-        impact = "Impact %s because %s" % (e["impact"], unstop(e["impactWhy"]))
+        impact = "Impact %s%s because %s" % (e["impact"], tag, unstop(e["impactWhy"]))
     else:
-        impact = "Impact %s" % e["impact"]
+        impact = "Impact %s%s" % (e["impact"], tag)
     if rated != e["status"]:
         told = unstop(e.get("note") or "") or "I could not check this"
         e["reason"] = "%s. %s. Outcome: %s." % (impact, told[:1].upper() + told[1:], word)
@@ -559,6 +760,10 @@ def finish_reason(e):
         e["reason"] = ("No reason was given for this one — all I have is the outcome: "
                        "%s. %s." % (word, impact))
         return
+    if recorded:
+        # The look's own "Impact <x> because …" sentence gives way to the one
+        # on the record; what it tried and saw is kept as written.
+        said = "%s. %s" % (impact, re.sub(r"^Impact\s+\w+\b[^.]*\.\s*", "", said))
     e["reason"] = said
 
 
@@ -570,6 +775,7 @@ def main():
     vpath, cpath, opath = sys.argv[1], sys.argv[2], sys.argv[3]
     obs_path = sys.argv[4] if len(sys.argv) > 4 else ""
     tests_path = sys.argv[5] if len(sys.argv) > 5 else ""
+    impacts_path = sys.argv[6] if len(sys.argv) > 6 else ""
     observations = load_observations(obs_path)
     tests = load_tests(tests_path)
 
@@ -842,6 +1048,20 @@ def main():
             entry.pop("shot", None)
             entry.pop("testQuote", None)
 
+    # IMPORTANCE, RECORDED ONCE AND REUSED (S216 fix round 1, D5). Before the
+    # grade is derived, so the grade reads the record, not this look's guess.
+    impacts_note, impacts_kept, _ = apply_recorded_impacts(
+        ledger, impacts_path, {cid: str(c.get("text") or "") for cid, c in contract_by_id.items()})
+    if impacts_kept:
+        notes.append("this look rated how much %d item%s matter%s differently from the "
+                     "first look; I kept the first look's rating%s (%s)"
+                     % (len(impacts_kept), "" if len(impacts_kept) == 1 else "s",
+                        "s" if len(impacts_kept) == 1 else "",
+                        "" if len(impacts_kept) == 1 else "s",
+                        ", ".join(k[0] for k in impacts_kept)))
+    mismatches = near_duplicates(
+        ledger, {cid: c.get("text") for cid, c in contract_by_id.items()})
+
     # A contradiction naming a criterion that is no longer contradicted in the
     # ledger (downgraded above for want of a shot) must not still count.
     contradicted = set(cid for cid in contradicted
@@ -866,9 +1086,36 @@ def main():
     def named(cid):
         for g in gaps:
             if str(g.get("criterion") or "") == cid and str(g.get("title") or "").strip():
-                return clip(str(g["title"]), 90)
+                return short_name(g["title"], 90)
         row = contract_by_id.get(cid) or {}
-        return clip(str(row.get("text") or ""), 90) or cid
+        return short_name(row.get("text")) or cid
+
+    # WHAT WENT WRONG, NOT WHAT WAS ASKED (D3). "Known issues shipping with it:
+    # the bar is red" reads as if the bar is red. A known issue names its fault:
+    # what was expected against what was seen, off the finding the look
+    # recorded — or the row's own observation — and when there is neither, it
+    # says it didn't work and where to look.
+    def fault(e):
+        nm = named(e["id"])
+        if e["status"] == "untested":
+            return "%s — I could not check it" % nm
+        for g in gaps:
+            if str(g.get("criterion") or "") != e["id"]:
+                continue
+            exp, saw = unstop(str(g.get("expected") or "")), unstop(str(g.get("saw") or ""))
+            if exp.strip() and saw.strip():
+                return "%s — you asked for %s; the build gives %s" % (nm, exp, saw)
+        obs = unstop(" ".join(str(e.get("note") or "").split()))
+        if obs and _plain(obs) != _plain(e.get("text")) \
+                and _plain(obs) != _plain((contract_by_id.get(e["id"]) or {}).get("text")):
+            return "%s — didn't work: %s" % (nm, clip(obs, 140))
+        return "%s — didn't work (see the row)" % nm
+
+    def faults(rows):
+        return "; ".join("%s (%s)" % (fault(e), e["id"]) for e in rows)
+
+    def names_ids(rows):
+        return "; ".join("%s (%s)" % (named(e["id"]), e["id"]) for e in rows)
 
     def name_list(ids):
         names = [named(c) for c in ids]
@@ -894,13 +1141,15 @@ def main():
     score, core = grade["score"], grade["core"]
 
     def items(rows):
-        return "; ".join("%s (%s)" % (named(e["id"]), e["id"]) for e in rows)
+        return "; ".join(named(e["id"]) for e in rows)
 
     def ids(rows):
         return ", ".join(e["id"] for e in rows)
 
     hi_gap, hi_blind = grade["highGap"], grade["highBlind"]
     med_open = grade["mediumGap"] + grade["mediumBlind"]
+    low_gap = [e for e in grade["lowOpen"] if e["status"] == "gap"]
+    low_blind = [e for e in grade["lowOpen"] if e["status"] == "untested"]
     if grade["rule"] == "nothing-listed":
         why = ("there was nothing on your list to check, so nothing here is "
                "vouched for.")
@@ -929,26 +1178,39 @@ def main():
         mg, mb = grade["mediumGap"], grade["mediumBlind"]
         bits = []
         if mg:
-            bits.append("go with %s known issue%s — %s (%s)"
+            bits.append("go with %s known issue%s — %s"
                         % ("this" if len(mg) == 1 else "these",
-                           "" if len(mg) == 1 else "s",
-                           name_list([e["id"] for e in mg]), ids(mg)))
+                           "" if len(mg) == 1 else "s", faults(mg)))
         if mb:
             bits.append("I could not check %s (%s)%s"
                         % (name_list([e["id"] for e in mb]), ids(mb),
-                           "" if mg else ", so it ships as a known issue"))
+                           "" if mg else ", so %s as a known issue%s"
+                           % ("it ships" if len(mb) == 1 else "they ship",
+                              "" if len(mb) == 1 else "s")))
         why = "the point of the mission works; %s." % "; and ".join(bits)
-        meaning = ("The point of the mission works; it would ship with %d named "
-                   "known issue%s" % (len(med_open), "" if len(med_open) == 1 else "s"))
+        said = []
+        if mg:
+            said.append("%d known issue%s that didn't work as asked"
+                        % (len(mg), "" if len(mg) == 1 else "s"))
+        if mb:
+            said.append("%d item%s I could not check" % (len(mb), "" if len(mb) == 1 else "s"))
+        meaning = ("The point of the mission works; it would ship with %s"
+                   % " and ".join(said))
     elif grade["lowOpen"]:
+        # D1/D2: didn't-work and couldn't-check are said apart, with counts.
+        small = smaller_items(low_gap, low_blind, None)
         n = len(grade["lowOpen"])
-        why = ("everything that matters on your list worked; %d small thing%s did "
-               "not, and polish never moves the grade." % (n, "" if n == 1 else "s"))
-        meaning = "Everything that matters worked; only polish is left — ship as is"
+        tail = ", and %s the grade" % ("it doesn't change" if n == 1 else "they don't change")
+        why = ("everything that matters on your list worked; %s%s."
+               % (" and ".join(small), tail))
+        meaning = ("Everything that matters worked; %s%s — ship as is"
+                   % (" and ".join(small), tail))
     else:
-        why = "everything you asked for is in the build, and I have a picture of each one."
-        meaning = ("Everything you asked for is in the build and I have a "
-                   "picture of each one — ship as is")
+        # D7: say what the grade actually rested on — pictures, your tests, or
+        # both — counted off the rows' recorded evidence kind.
+        seen = evidence_said([e for e in ledger if e["status"] == "met"])
+        why = "everything you asked for is in the build, and %s." % seen
+        meaning = "Everything you asked for worked — %s — ship as is" % seen
 
     # --- WHY THIS GRADE: the table walked in words (S216) --------------------
     rule_words = {
@@ -967,31 +1229,38 @@ def main():
                            "other things you asked for did not work as asked or "
                            "could not be checked",
                            "" if len(med_open) == 1 else "s")),
-        "all-worked": ("every part that is the point of the mission, and everything "
-                       "else you asked for, worked"),
+        # D1: "and everything else you asked for" only when it is TRUE.
+        "all-worked": ("everything that is the point of the mission, and everything "
+                       "else you asked for, worked"
+                       if not grade["lowOpen"] else
+                       "everything that is the point of the mission worked, and so "
+                       "did every other requirement that is more than polish"
+                       if any(e.get("impact") == "medium" for e in ledger) else
+                       "everything that is the point of the mission worked"),
     }
     para = ["%s because %s." % (score.upper(), rule_words[grade["rule"]])]
     highs = grade["high"]
     if highs:
-        point = "The point of the mission was %s" % items(highs)
+        point = "The point of the mission: %s." % items(highs)
         if not hi_gap and not hi_blind:
-            point += "; all of it worked."
+            point += " All of it worked."
         else:
             bits = []
             if hi_gap:
                 bits.append("%s didn't work" % ", ".join(e["id"] for e in hi_gap))
             if hi_blind:
                 bits.append("%s couldn't be checked" % ", ".join(e["id"] for e in hi_blind))
-            point += "; " + " and ".join(bits) + "."
+            point += " " + " and ".join(bits) + "."
         para.append(point)
     elif ledger:
         para.append("Nothing on your list was marked as the point of the mission.")
-    if med_open:
-        para.append("Known issues shipping with it: %s." % items(med_open))
-    if grade["lowOpen"]:
-        n = len(grade["lowOpen"])
-        para.append("Polish noted, not counted: %d small thing%s (%s)."
-                    % (n, "" if n == 1 else "s", ids(grade["lowOpen"])))
+    if grade["mediumGap"]:
+        para.append("Known issues shipping with it: %s." % faults(grade["mediumGap"]))
+    if grade["mediumBlind"]:
+        para.append("Also shipping unchecked — I could not check %s."
+                    % names_ids(grade["mediumBlind"]))
+    for bit in smaller_items(low_gap, low_blind, names_ids):
+        para.append(bit[:1].upper() + bit[1:] + ".")
     assumed = [e for e in ledger if e.get("impactAssumed")]
     if assumed:
         para.append("No impact was given for %s, so I counted %s as the point of "
@@ -1049,6 +1318,10 @@ def main():
         "alsoChecked": [str(e) for e in (doc.get("alsoChecked") or []) if str(e).strip()],
         "summary": summary,
     }
+    if impacts_note:
+        out["impactsNote"] = impacts_note
+    if mismatches:
+        out["impactMismatches"] = mismatches
     if alt_reading:
         out["altReading"] = alt_reading
     if polish_flag:
@@ -1084,6 +1357,14 @@ def main():
         # S216 — WHY THIS GRADE comes first after the score: the table walked
         # in words, then what the research reads beside it (never instead).
         w("**Why this grade.** %s\n\n" % why_grade)
+        if impacts_note:
+            w("*%s*\n\n" % impacts_note)
+        for m in mismatches:
+            a, b = m["ids"]
+            w("*%s (%s) and %s (%s) say the same thing but were given different "
+              "importance (%s and %s). This does not change the grade — tell me "
+              "which is right.*\n\n" % (named(a), a, named(b), b,
+                                          m["impacts"][0], m["impacts"][1]))
         beside = [s for s in (alt_reading, polish_flag) if s]
         if beside:
             w("*Read another way (this does not change the grade):* %s.\n\n"
@@ -1230,6 +1511,10 @@ def main():
     print("MEANING\t" + meaning.replace("\n", " "))
     print("GRADE_WHY\t" + why_grade.replace("\n", " "))
     print("CORE\t" + core)
+    for cid, was, said_now in impacts_kept:
+        print("IMPACT_KEPT\t%s\t%s\t%s" % (cid, was, said_now))
+    for m in mismatches:
+        print("IMPACT_MISMATCH\t%s\t%s\t%s\t%s" % tuple(m["ids"] + m["impacts"]))
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))
     print("SUMMARY\t" + summary.replace("\n", " "))
     if observations is not None:

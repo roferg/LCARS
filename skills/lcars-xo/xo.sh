@@ -820,6 +820,22 @@ journal() { # <mission-dir> <action> <one-line-json-body>
     "$(jstr "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" "$(jstr "$2")" "$3" >>"$1/number-one.jsonl"
 }
 
+# xo_journal_impact <mission-dir> <IMPACT_KEPT|IMPACT_MISMATCH> <tab fields> —
+# S216 fix round 1 (D5). A later look that re-guessed a recorded impact
+# (`impact-kept`: id, the recorded impact that won, the look's ignored one), or
+# two near-identical requirements rated differently (`impact-mismatch`).
+xo_journal_impact() {
+  local dir="$1" kind="$2" a b c d
+  IFS=$'\t' read -r a b c d <<<"$3"
+  if [ "$kind" = IMPACT_KEPT ]; then
+    journal "$dir" impact-kept "$(printf '"criterion": %s, "recorded": %s, "thisLook": %s' \
+      "$(jstr "$a")" "$(jstr "$b")" "$(jstr "$c")")"
+  else
+    journal "$dir" impact-mismatch "$(printf '"criteria": [%s, %s], "impacts": [%s, %s]' \
+      "$(jstr "$a")" "$(jstr "$b")" "$(jstr "$c")" "$(jstr "$d")")"
+  fi
+}
+
 # --- the worker's process tree ---------------------------------------------
 # `lcars xo off <id>` TERMs the pid in xo.pid (S201). That pid is THIS script,
 # because the CLI is a grandchild — run.sh spawns the adapter, the adapter execs
@@ -1794,8 +1810,11 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
 
   # --- 5. THE SCORE IS RECOMPUTED FROM THE LEDGER --------------------------
   local report
-  report="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
-              "$xodir/verdict.json" "$obsfile" "$testsfile" 2>/dev/null)" || report=""
+  # S216 fix round 1 (D5): importance is RECORDED in the mission's own
+  # xo/impacts.json on the first look and reused by every later one.
+  report="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
+            "$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
+              "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -1810,6 +1829,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       GRADE_WHY)    gradewhy="$val" ;;
       SUMMARY)      summary="$val" ;;
       NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
+      IMPACT_KEPT|IMPACT_MISMATCH) xo_journal_impact "$dir" "$key" "$val" ;;
     esac
   done <<< "$report"
 
@@ -2462,8 +2482,9 @@ $shots"
     mkdir -p "$xodir/second"
     [ -s "$xodir/report.md" ] && cp "$xodir/report.md" "$xodir/report-1.md" 2>/dev/null
     local rep2 key val
-    rep2="$("$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
-              "$xodir/second/verdict.json" "$obsfile" "$testsfile" 2>/dev/null)" || rep2=""
+    rep2="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
+            "$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
+              "$xodir/second/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" 2>/dev/null)" || rep2=""
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"
@@ -2471,6 +2492,7 @@ $shots"
         SCORE)   score2="$val" ;;
         WHY)     why2="$val" ;;
         SUMMARY) summary2="$val" ;;
+        IMPACT_KEPT|IMPACT_MISMATCH) xo_journal_impact "$dir" "$key" "$val" ;;
       esac
     done <<< "$rep2"
     if [ -n "$score2" ]; then

@@ -10350,6 +10350,28 @@ function xoReportPane(mi) {
     whyBox.appendChild(el("b", "xo-why-label", "Why this grade"));
     whyBox.appendChild(el("div", "xo-why-body", whyGrade));
     pane.appendChild(whyBox);
+    // S216 fix round 1 (D5): how much each item matters is RECORDED on the
+    // first look and kept, and near-identical requirements rated apart are
+    // flagged — both beside the grade, never moving it. Absent → nothing.
+    var impNote = String(verdict.impactsNote || "").trim();
+    if (impNote) pane.appendChild(el("div", "xo-impacts-note", impNote));
+    var rowText = {};
+    (Array.isArray(verdict.criteria) ? verdict.criteria : []).forEach(function (c) {
+      if (c && c.id) rowText[c.id] = String(c.text || "").trim();
+    });
+    (Array.isArray(verdict.impactMismatches) ? verdict.impactMismatches : [])
+      .forEach(function (m) {
+        var ids = (m && Array.isArray(m.ids)) ? m.ids : [];
+        var imps = (m && Array.isArray(m.impacts)) ? m.impacts : [];
+        if (ids.length !== 2) return;
+        var named = ids.map(function (id) {
+          return (rowText[id] ? rowText[id] + " " : "") + "(" + id + ")";
+        });
+        pane.appendChild(el("div", "xo-impact-mismatch",
+          named[0] + " and " + named[1] + " say the same thing but were given "
+          + "different importance (" + (imps[0] || "?") + " and " + (imps[1] || "?")
+          + "). This does not change the grade — tell me which is right."));
+      });
     var beside = [verdict.altReading, verdict.polishFlag].filter(function (t) {
       return typeof t === "string" && t.trim();
     });

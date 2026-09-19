@@ -260,6 +260,38 @@ class TheTabSaysWhy(unittest.TestCase):
         self.assertIn("none was given, so counted as high", third)
         self.assertIn("Didn't work", third)
 
+    def test_the_tab_says_when_importance_was_set(self):
+        # S216 fix round 1 (D5): importance is recorded on the first look and
+        # kept; the tab says so, right under why-this-grade.
+        v = dict(NEW_VERDICT, impactsNote="Importance was set on the first "
+                 "look (2026-09-19, Copilot) and kept for this one, so a new "
+                 "look cannot move the grade by re-guessing it.")
+        out = self.tab(v)
+        notes = _cls_of(out["pane"], " xo-impacts-note ")
+        self.assertEqual(1, len(notes))
+        self.assertIn("set on the first look (2026-09-19, Copilot)",
+                      _all_text(notes[0]))
+        joined = " ⇢ ".join(out["paneText"])
+        self.assertLess(joined.index("MEDIUM because"),
+                        joined.index("set on the first look"))
+
+    def test_near_duplicates_rated_apart_are_flagged_not_graded(self):
+        v = dict(NEW_VERDICT, impactMismatches=[
+            {"ids": ["prd-1", "t-1-ac1"], "impacts": ["high", "low"]}])
+        out = self.tab(v)
+        flags = _cls_of(out["pane"], " xo-impact-mismatch ")
+        self.assertEqual(1, len(flags))
+        text = _all_text(flags[0])
+        self.assertIn("say the same thing but were given different importance",
+                      text)
+        self.assertIn("prd-1", text)
+        self.assertIn("does not change the grade", text)
+
+    def test_no_record_no_note(self):
+        out = self.tab(NEW_VERDICT)
+        self.assertEqual([], _cls_of(out["pane"], " xo-impacts-note "))
+        self.assertEqual([], _cls_of(out["pane"], " xo-impact-mismatch "))
+
     def test_a_pre_s216_verdict_asserts_no_impact_and_no_why(self):
         out = self.tab(OLD_VERDICT)
         self.assertEqual([], _cls_of(out["pane"], " xo-why "))

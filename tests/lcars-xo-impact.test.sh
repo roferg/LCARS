@@ -127,8 +127,8 @@ verdict b3b high "$(row prd-1 high met)" "$(row prd-2 medium met)" \
   "$(row t-1-ac1 medium met)" "$(row t-1-ac2 low gap)"
 run b3b
 check "B3b. score is HIGH — polish never moves the grade" "[ \"\$(score b3b)\" = high ]"
-check "B3b. the paragraph counts the polish it did not count" \
-  "v b3b whyThisGrade | grep -q 'Polish noted, not counted: 1'"
+check "B3b. the paragraph names the small thing that DIDN'T work, and that it does not count" \
+  "v b3b whyThisGrade | grep -q \"1 smaller item didn't work, and it doesn't change the grade: the bar has a one pixel border\""
 check "B3b. no pile-up flag for one small thing" "[ -z \"\$(v b3b polishFlag)\" ]"
 
 echo "B4. nothing checkable / zero criteria → LOW (never ship as is)"
@@ -288,6 +288,231 @@ check "B15. an old scored entry reads exactly as before" \
   "grep -q 'an older summary' '$TMPROOT/fo.txt'"
 check "B15. the scorer hands the paragraph to the shell (GRADE_WHY) for the journal" \
   "grep -q '^GRADE_WHY.LOW because' '$TMPROOT/b1/out.txt' && grep -q '^CORE.broken' '$TMPROOT/b1/out.txt'"
+
+# ─── S216 fix round 1 — the tester's three REAL looks, copied in as fixtures ──
+# tests/fixtures/xo-s216/: the health-bar mission's contract and the finished
+# verdicts of two Copilot looks and one Claude look at the same build. Each is
+# turned back into the worker verdict that produced it (same rows, same
+# impacts, same quotes) and scored again, so these tests read the sentences
+# the captain would read on those real looks.
+FX="$REPO_ROOT/tests/fixtures/xo-s216"
+# realrun <name> <fixture|file> [impacts.json] [engine] [mutate-python]
+realrun() {
+  local name="$1" src="$2" imp="${3:-}" eng="${4:-}" mut="${5:-}"
+  [ -f "$src" ] || src="$FX/$src-verdict.json"
+  mkdir -p "$TMPROOT/$name"
+  "$PY" - "$src" "$TMPROOT/$name.worker.json" "$TMPROOT/$name.tests.json" "$mut" <<'PYX'
+import json, sys
+src, wout, tout, mut = sys.argv[1:5]
+d = json.load(open(src))
+keep = ("id", "text", "status", "note", "evidence", "testQuote", "shot",
+        "impact", "impactWhy", "reason", "couldNotCheck", "workaround", "tries")
+rows = [{k: c[k] for k in keep if k in c} for c in d["criteria"]]
+w = {"score": d.get("workerScore") or d["score"], "summary": d["summary"],
+     "criteria": rows, "gaps": d.get("gaps") or []}
+if mut:
+    exec(mut)
+json.dump(w, open(wout, "w"))
+quotes = sorted(set(c["testQuote"] for c in rows if c.get("testQuote")))
+json.dump({"ran": True, "outcome": "passed", "exitCode": 0, "command": "npx vitest run",
+           "durationSeconds": 4, "outputTail": "\n".join(quotes) + "\n"}, open(tout, "w"))
+PYX
+  LCARS_XO_ENGINE="$eng" "$PY" "$SCOREPY" "$TMPROOT/$name.worker.json" "$FX/criteria.json" \
+    "$TMPROOT/$name/verdict.json" "" "$TMPROOT/$name.tests.json" ${imp:+"$imp"} \
+    >"$TMPROOT/$name/out.txt" 2>"$TMPROOT/$name/err.txt"
+}
+
+echo "R1 (D1). HIGH with 7 items nobody could check says so — never 'everything else worked'"
+realrun c2 copilot-2
+check "R1. copilot-2 is still HIGH (his table: those 7 are low)" "[ \"\$(score c2)\" = high ]"
+check "R1. why-this-grade no longer claims everything else worked" \
+  "! v c2 whyThisGrade | grep -q 'everything else you asked for, worked'"
+check "R1. …it says 7 smaller items could not be checked and do not change the grade" \
+  "v c2 whyThisGrade | grep -q \"7 smaller items I could not check, and they don't change the grade\""
+check "R1. …and names them in plain words (not ids only)" \
+  "v c2 whyThisGrade | grep -q 'Player health defaults to full'"
+check "R1. …and never calls an unchecked item one that did not work" \
+  "! v c2 whyThisGrade | grep -qi \"didn't work\" && ! v c2 whyThisGrade | grep -q 'Polish noted'"
+verdict r1b high "$(row prd-1 high met)" "$(row prd-2 medium met)" \
+  "$(row t-1-ac1 low gap)" "$(row t-1-ac2 low untested)"
+run r1b
+check "R1. a low that didn't work and a low nobody checked are said apart" \
+  "v r1b whyThisGrade | grep -q \"1 smaller item didn't work, and it doesn't change the grade: the bar sits in the top right corner\" \
+   && v r1b whyThisGrade | grep -q \"1 smaller item I could not check, and it doesn't change the grade: the bar has a one pixel border\""
+
+echo "R2 (D2). the headline says worked / didn't / couldn't check truthfully"
+check "R2. copilot-2's headline no longer says 7 small things did not work" \
+  "! v c2 derivation | grep -q 'did not' && ! v c2 derivation | grep -qi \"didn't\""
+check "R2. …it says 7 smaller items could not be checked" \
+  "v c2 derivation | grep -q '7 smaller items I could not check'"
+check "R2. the score word's meaning does not say only polish is left" \
+  "! v c2 scoreMeaning | grep -q 'only polish is left' && v c2 scoreMeaning | grep -q 'could not check'"
+check "R2. a low that didn't work is said as didn't work in the headline" \
+  "v r1b derivation | grep -q \"1 smaller item didn't work\" && v r1b derivation | grep -q '1 smaller item I could not check'"
+
+echo "R3 (D3). a MEDIUM's known issue names the FAULT, not the requirement"
+cat >"$TMPROOT/two-criteria.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "the health bar is on screen and drops when you are hit", "source": "prd", "primary": true},
+  {"id": "prd-2", "text": "the health bar is red", "source": "prd", "primary": true}]}
+C
+printf '{"score": "medium", "summary": "s", "criteria": [
+ {"id": "prd-1", "impact": "high", "status": "met", "shot": "shot-01", "evidence": "picture", "note": "the bar drops when hit", "reason": "r"},
+ {"id": "prd-2", "impact": "medium", "status": "gap", "shot": "shot-02", "evidence": "picture", "note": "the bar is drawn purple", "reason": "r"}
+], "gaps": [{"criterion": "prd-2", "kind": "contradiction", "title": "The bar is the wrong colour", "expected": "a red bar", "saw": "a purple bar", "shots": ["shot-02"]}]}\n' >"$TMPROOT/r3.worker.json"
+run r3 "$TMPROOT/two-criteria.json"
+check "R3. with a recorded finding: expected vs seen, in one sentence" \
+  "v r3 whyThisGrade | grep -q 'The bar is the wrong colour — you asked for a red bar; the build gives a purple bar (prd-2)'"
+printf '{"score": "medium", "summary": "s", "criteria": [
+ {"id": "prd-1", "impact": "high", "status": "met", "shot": "shot-01", "evidence": "picture", "note": "ok", "reason": "r"},
+ {"id": "prd-2", "impact": "medium", "status": "gap", "shot": "shot-02", "evidence": "picture", "note": "the bar is drawn purple.", "reason": "r"}
+], "gaps": []}\n' >"$TMPROOT/r3b.worker.json"
+run r3b "$TMPROOT/two-criteria.json"
+check "R3. with only the row's own observation: that observation" \
+  "v r3b whyThisGrade | grep -q \"the health bar is red — didn't work: the bar is drawn purple (prd-2)\""
+printf '{"score": "medium", "summary": "s", "criteria": [
+ {"id": "prd-1", "impact": "high", "status": "met", "shot": "shot-01", "evidence": "picture", "note": "ok", "reason": "r"},
+ {"id": "prd-2", "impact": "medium", "status": "gap", "shot": "shot-02", "evidence": "picture", "note": "the health bar is red", "reason": "r"}
+], "gaps": []}\n' >"$TMPROOT/r3c.worker.json"
+run r3c "$TMPROOT/two-criteria.json"
+check "R3. with no usable observation: says it didn't work and points at the row" \
+  "v r3c whyThisGrade | grep -q \"the health bar is red — didn't work (see the row) (prd-2)\""
+check "R3. the headline says it didn't work too, not just the requirement" \
+  "v r3b derivation | grep -q \"didn't work\""
+
+echo "R4 (D4). plain short names — no code spans, never cut mid-phrase"
+realrun c1 copilot-1
+check "R4. no backtick anywhere in why-this-grade or the headline" \
+  "! v c1 whyThisGrade | grep -q '\`' && ! v c1 derivation | grep -q '\`' && ! v c2 whyThisGrade | grep -q '\`'"
+check "R4. a truncated PRD bullet does not end on a dangling 'for the'" \
+  "! v c1 whyThisGrade | grep -q 'for the (' && ! v c1 whyThisGrade | grep -q 'for the;' \
+   && v c1 whyThisGrade | grep -q 'healthBarColor returns a Pixi colour number…'"
+check "R4. a signature is named by its function, not its type annotations" \
+  "v c1 whyThisGrade | grep -q 'healthFillRatio returns the fraction' && ! v c1 whyThisGrade | grep -q 'max: number'"
+check "R4. a parenthetical file path is dropped from the name" \
+  "v c1 whyThisGrade | grep -q 'The renderer gains an always-visible' && ! v c1 whyThisGrade | grep -q 'renderer/index.ts'"
+"$PY" - "$SCOREPY" <<'PYX' >"$TMPROOT/r4names.txt" 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("xs", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+for t in ["When devMode is false, updateHealthBar is a no-op and no HP-bar object is added to the stage",
+          "the health bar is red", "Two pure functions live in `packages/engine/src/renderer/utils.ts`:"]:
+    print(m.short_name(t))
+PYX
+check "R4. a long requirement is cut at a word, never on 'and'/'no', with …" \
+  "sed -n 1p '$TMPROOT/r4names.txt' | grep -qx 'When devMode is false, updateHealthBar is a no-op…'"
+check "R4. a short one is left whole" "sed -n 2p '$TMPROOT/r4names.txt' | grep -qx 'the health bar is red'"
+check "R4. a path in backticks becomes its file name, and a trailing colon goes" \
+  "sed -n 3p '$TMPROOT/r4names.txt' | grep -qx 'Two pure functions live in utils.ts'"
+m4="$TMPROOT/wrapped"; mkdir -p "$m4"
+printf '# T\n\n## Acceptance criteria\n- `healthBarColor(ratio)` returns a Pixi colour number for the\n  current ratio: red when low\n- second\n' >"$m4/prd.md"
+"$PY" "$CRITERIA" "$m4" "$m4/criteria.json" >/dev/null
+check "R4. xo-criteria joins a PRD bullet wrapped onto the next line" \
+  "$PY -c 'import json,sys; d=json.load(open(sys.argv[1]))[\"criteria\"]; sys.exit(0 if [c[\"text\"] for c in d]==[\"\`healthBarColor(ratio)\` returns a Pixi colour number for the current ratio: red when low\",\"second\"] else 1)' '$m4/criteria.json'"
+
+echo "R5 (D5). impacts are RECORDED on the first look and reused, never re-guessed"
+IMP="$TMPROOT/mission-xo/impacts.json"; mkdir -p "$TMPROOT/mission-xo"
+realrun f1 copilot-1 "$IMP" copilot
+check "R5. the first look writes impacts.json, keyed by id, with when and which engine" \
+  "$PY -c 'import json,sys; d=json.load(open(sys.argv[1]))[\"impacts\"]; r=d[\"t-001-ac9\"]; sys.exit(0 if len(d)==31 and r[\"impact\"]==\"medium\" and r[\"engine\"]==\"copilot\" and r[\"at\"] and r.get(\"impactWhy\") else 1)' '$IMP'"
+check "R5. the first look says the importance was set on this look" \
+  "v f1 impactsNote | grep -qi 'set on this look'"
+cp "$IMP" "$TMPROOT/imp-before.json"
+realrun f2 copilot-2 "$IMP" copilot
+check "R5. a second look REUSES every recorded impact (copilot-2's own guesses ignored)" \
+  "$PY -c 'import json,sys; a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2])); sys.exit(0 if all(c[\"impact\"]==a[\"criteria\"][i][\"impact\"] for i,c in enumerate(b[\"criteria\"])) else 1)' '$TMPROOT/f1/verdict.json' '$TMPROOT/f2/verdict.json'"
+check "R5. …each overruled impact is handed to the journal (IMPACT_KEPT id recorded worker)" \
+  "grep -q \$'^IMPACT_KEPT\\tt-001-ac9\\tmedium\\tlow' '$TMPROOT/f2/out.txt' && [ \"\$(grep -c '^IMPACT_KEPT' '$TMPROOT/f2/out.txt')\" -ge 15 ]"
+check "R5. …the recorded file is not rewritten by a later look" \
+  "cmp -s '$IMP' '$TMPROOT/imp-before.json'"
+check "R5. …and the report and verdict say importance was set on the first look" \
+  "v f2 impactsNote | grep -q 'set on the first look' && grep -q 'set on the first look' '$TMPROOT/f2/report.md'"
+check "R5. …a reused row's reason states the recorded impact, not the look's" \
+  "v f2 criteria.16.reason | grep -q '^Impact medium (set on the first look)'"
+realrun f3 copilot-1 "$IMP" claude \
+  'for c in w["criteria"]: c["impact"] = "low"'
+check "R5. same outcomes + recorded impacts → same grade, whatever the look re-guessed" \
+  "[ \"\$(score f3)\" = \"\$(score f1)\" ] && [ \"\$(v f3 core)\" = \"\$(v f1 core)\" ]"
+IMP2="$TMPROOT/mission2-xo/impacts.json"; mkdir -p "$TMPROOT/mission2-xo"
+"$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); d["impacts"].pop("prd-8"); json.dump(d, open(sys.argv[2],"w"))' "$IMP" "$IMP2"
+realrun f4 copilot-2 "$IMP2" claude
+check "R5. a NEW criterion id gets its fresh impact from this look" \
+  "[ \"\$(v f4 criteria.7.impact)\" = high ] && ! grep -q \$'^IMPACT_KEPT\\tprd-8' '$TMPROOT/f4/out.txt'"
+check "R5. …and is added to the record, stamped with this look's engine" \
+  "$PY -c 'import json,sys; r=json.load(open(sys.argv[1]))[\"impacts\"][\"prd-8\"]; sys.exit(0 if r[\"impact\"]==\"high\" and r[\"engine\"]==\"claude\" else 1)' '$IMP2'"
+check "R5. …and the note says one item was new and rated on this look" \
+  "v f4 impactsNote | grep -q '1 item new since then'"
+IMP3="$TMPROOT/mission3-xo/impacts.json"; mkdir -p "$TMPROOT/mission3-xo"
+"$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); d["impacts"]["prd-8"]["text"]="a different requirement after a re-align"; d["impacts"]["prd-8"]["impact"]="low"; json.dump(d, open(sys.argv[2],"w"))' "$IMP" "$IMP3"
+realrun f6 copilot-2 "$IMP3" copilot
+check "R5. an id whose requirement TEXT changed (a re-aligned PRD) is rated afresh, not reused" \
+  "[ \"\$(v f6 criteria.7.impact)\" = high ] && ! grep -q \$'^IMPACT_KEPT\\tprd-8' '$TMPROOT/f6/out.txt' \
+   && $PY -c 'import json,sys; r=json.load(open(sys.argv[1]))[\"impacts\"][\"prd-8\"]; sys.exit(0 if r[\"text\"]==\"The full engine package test suite passes\" else 1)' '$IMP3'"
+realrun f5 copilot-2 "" ""
+check "R5. with no record path the scorer behaves as before (no note, no file)" \
+  "[ -z \"\$(v f5 impactsNote)\" ] && ! grep -q '^IMPACT_KEPT' '$TMPROOT/f5/out.txt'"
+check "R5. xo.sh passes the mission's own xo/impacts.json to both scorer calls" \
+  "[ \"\$(grep -c 'xo-score.py.*\\\\\$' '$REPO_ROOT/skills/lcars-xo/xo.sh')\" -ge 2 ] \
+   && [ \"\$(grep -c '\"\$xodir/impacts.json\"' '$REPO_ROOT/skills/lcars-xo/xo.sh')\" -ge 2 ]"
+check "R5. xo.sh journals a kept impact" \
+  "grep -q 'IMPACT_KEPT|IMPACT_MISMATCH)' '$REPO_ROOT/skills/lcars-xo/xo.sh' && grep -q 'impact-kept' '$REPO_ROOT/skills/lcars-xo/xo.sh'"
+
+echo "R6 (D5). near-identical requirements rated differently are FLAGGED, never re-graded"
+cat >"$TMPROOT/dup-criteria.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "The example game calls `setPlayerHealth(3, 10)` once", "source": "prd", "primary": true},
+  {"id": "t-1-ac1", "text": "the example game calls setPlayerHealth(3, 10) once.", "source": "plan"},
+  {"id": "t-1-ac2", "text": "the bar has a one pixel border", "source": "plan"}
+ ]}
+C
+verdict r6 high "$(row prd-1 high met)" "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
+run r6 "$TMPROOT/dup-criteria.json"
+check "R6. the pair is recorded beside the grade" \
+  "v r6 impactMismatches | grep -q 'prd-1' && v r6 impactMismatches | grep -q 't-1-ac1'"
+check "R6. …handed to the journal" "grep -q \$'^IMPACT_MISMATCH\\tprd-1\\tt-1-ac1' '$TMPROOT/r6/out.txt'"
+check "R6. …and said in the report in plain words" \
+  "grep -q 'say the same thing but were given different importance' '$TMPROOT/r6/report.md'"
+check "R6. the grade is untouched (HIGH)" "[ \"\$(score r6)\" = high ]"
+verdict r6b high "$(row prd-1 high met)" "$(row t-1-ac1 high met)" "$(row t-1-ac2 low met)"
+run r6b "$TMPROOT/dup-criteria.json"
+check "R6. the same pair with the same impact is not flagged; unlike texts never are" \
+  "[ -z \"\$(v r6b impactMismatches)\" ] && ! grep -q '^IMPACT_MISMATCH' '$TMPROOT/r6b/out.txt'"
+check "R6. the prompt tells the worker to rate a restated requirement the same" \
+  "grep -qi 'same impact' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md' && grep -qi 'what the requirement does' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md'"
+
+echo "R7 (D7). a HIGH says what evidence it actually used"
+realrun cl1 claude-1
+check "R7. claude-1 (pictures AND tests) no longer claims a picture of each one" \
+  "! v cl1 derivation | grep -q 'picture of each one' && ! v cl1 scoreMeaning | grep -q 'picture of each one'"
+check "R7. …it names both, with the counts off the rows" \
+  "v cl1 derivation | grep -q 'I have a picture of 9 and your own tests show the other 22'"
+check "R7. …and so does the score word's meaning" \
+  "v cl1 scoreMeaning | grep -q 'your own tests'"
+verdict r7p high "$(row prd-1 high met)" "$(row prd-2 medium met)" "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
+run r7p
+check "R7. all pictures → 'a picture of each one' still" "v r7p derivation | grep -q 'I have a picture of each one'"
+cat >"$TMPROOT/tests-only-criteria.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [{"id": "prd-1", "text": "the suite passes", "source": "prd", "primary": true}]}
+C
+printf '{"score":"high","summary":"s","criteria":[{"id":"prd-1","impact":"high","status":"met","evidence":"tests","testQuote":"ok 1 the suite","note":"passes","reason":"r"}],"gaps":[]}\n' >"$TMPROOT/r7u.worker.json"
+printf '{"ran":true,"outcome":"passed","exitCode":0,"command":"t","outputTail":"ok 1 the suite\\n"}\n' >"$TMPROOT/r7u.tests.json"
+mkdir -p "$TMPROOT/r7u"
+"$PY" "$SCOREPY" "$TMPROOT/r7u.worker.json" "$TMPROOT/tests-only-criteria.json" "$TMPROOT/r7u/verdict.json" "" "$TMPROOT/r7u.tests.json" >"$TMPROOT/r7u/out.txt" 2>&1
+check "R7. all tests → 'your own tests show each one'" \
+  "[ \"\$(score r7u)\" = high ] && v r7u derivation | grep -q 'your own tests show each one' && ! v r7u derivation | grep -q picture"
+
+echo "R8 (D9). the score labels describe the new meanings"
+desc() { bash -c '. "$1"; lcars_label_desc "$2"' _ "$REPO_ROOT/skills/lcars-init/lcars-common.sh" "$1"; }
+check "R8. HIGH: the point works and every stated requirement worked" \
+  "desc lcars:xo:high | grep -q 'point of the mission' && ! desc lcars:xo:high | grep -q 'every criterion met'"
+check "R8. MEDIUM: the point works, named known issues" \
+  "desc lcars:xo:medium | grep -q 'known issues' && ! desc lcars:xo:medium | grep -q 'primary flow'"
+check "R8. LOW: the point didn't work or couldn't be checked" \
+  "desc lcars:xo:low | grep -q \"point of the mission didn't work or couldn't be checked\""
+check "R8. every description fits GitHub's 100-character limit and keeps 'intent match'" \
+  "for l in high medium low; do d=\"\$(desc lcars:xo:\$l)\"; [ \${#d} -le 100 ] && printf '%s' \"\$d\" | grep -q 'intent match' || exit 1; done"
 
 echo
 printf 'lcars xo-impact: %d passed, %d failed\n' "$pass" "$fail"

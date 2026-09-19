@@ -59,7 +59,17 @@ def prd_criteria(text):
     out = []
     lines = text.splitlines()
     in_sec = False
+    # A BULLET WRAPPED ONTO THE NEXT LINE IS ONE CRITERION (S216 fix round 1,
+    # D4). Read line by line, "returns a Pixi colour number for the" became the
+    # whole requirement. A non-blank, non-bullet line straight after an item is
+    # that item's continuation; a blank line ends it.
+    open_item = False
     for ln in lines:
+        if open_item and ln.strip() and not re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", ln) \
+                and not re.match(r"^\s{0,3}(#{1,6}\s|\*\*)", ln):
+            out[-1] = out[-1] + " " + ln.strip()
+            continue
+        open_item = False
         label = re.match(r"^\s{0,3}\*\*([^*]+?)\*\*(.*)$", ln)
         if label:
             rest = label.group(2).strip()
@@ -81,6 +91,7 @@ def prd_criteria(text):
             item = re.sub(r"^\[[ xX]\]\s*", "", item).strip()
             if item:
                 out.append(item)
+                open_item = True
     return out
 
 

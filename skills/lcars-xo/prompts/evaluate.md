@@ -52,6 +52,14 @@ mission is for>` `<does|does not>` depend on it."* A criterion you give no
 impact is counted as `high` — the careful reading — and the report says you
 left it out.
 
+**Rate what the requirement DOES for the mission's point, not how it is
+worded or where it is written.** The same requirement often appears twice — once
+in the PRD and again, restated, in a ticket. Two criteria that ask for the same
+thing get the **same impact**; the skill flags any pair that says the same thing
+with different impacts. And the impact you give is **recorded**: the first look
+at a mission sets each criterion's impact, and every later look keeps it, so
+decide it carefully once.
+
 ## Then look: worked, didn't, or couldn't check
 
 Each criterion ends as one of three outcomes. The words the captain reads are

@@ -128,7 +128,8 @@ prose around it if you can avoid it.
   recommendation and the ledger is what decides. **Keep each criterion's
   `impact` exactly as your first look set it** (it is in `xo/verdict.json`) —
   impact is decided before looking, and a fix does not change how much a
-  requirement matters. Every row carries its `reason` sentence again, and
+  requirement matters. (The skill holds the first look's impacts on record and
+  uses those whatever you write here.) Every row carries its `reason` sentence again, and
   `couldNotCheck` (`unreachable` / `unobservable`) on an `untested` one, just
   as the first look's instructions describe.
 - `gaps` — anything still short of the mark, in the same shape as your first

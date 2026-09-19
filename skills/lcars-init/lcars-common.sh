@@ -58,9 +58,9 @@ lcars_label_desc() {
     lcars:linked)         echo "Relationship: linked to another mission" ;;
     lcars:mission)        echo "Role: a Mission's own command-and-control issue" ;;
     lcars:ticket)         echo "Role: an implementation sub-issue spun up by Schedule" ;;
-    lcars:xo:high)        echo "Number One: intent match HIGH — every criterion met" ;;
-    lcars:xo:medium)      echo "Number One: intent match MEDIUM — the primary flow works, some gaps" ;;
-    lcars:xo:low)         echo "Number One: intent match LOW — the primary goal is not met, or it could not be verified" ;;
+    lcars:xo:high)        echo "Number One: intent match HIGH — the point of the mission and every requirement beyond polish worked" ;;
+    lcars:xo:medium)      echo "Number One: intent match MEDIUM — the point of the mission works, with named known issues" ;;
+    lcars:xo:low)         echo "Number One: intent match LOW — the point of the mission didn't work or couldn't be checked" ;;
     lcars:xo:engaged)     echo "Number One: engaged on this mission on the owner's behalf" ;;
     *)                    echo "LCARS label" ;;
   esac
