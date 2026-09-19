@@ -39,6 +39,7 @@ import uuid
 import zlib
 
 from .local_adapter import LocalAdapter
+from .worker_guard import DAEMON_HINT as DAEMON_SHIM_HINT, editor_shim_refusal
 
 
 class ActionError(Exception):
@@ -6622,6 +6623,11 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — cannot "
                 "drive the Align/Log worker")
+        # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
+        # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            raise ActionError(502, _refused)
         # S91 — pasted-image hand-off (the ONE shared seam carries images to the
         # conversational worker; the Align grill AND the Mission-Log split both
         # run through here). Per-engine mechanism, PROVEN by the S91 spike:
@@ -7523,6 +7529,10 @@ class Actions(LogFacts):
             return {"state": "done", "ok": False, "changes": [],
                     "why": "no worker engine is configured, so LCARS could not "
                            "read your project against the mockup"}
+        # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py).
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            return {"state": "done", "ok": False, "changes": [], "why": _refused}
         repo = sess.target_repo
         if not repo or not os.path.isdir(repo):
             return {"state": "done", "ok": False, "changes": [],
@@ -9584,6 +9594,11 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — the "
                 "holodeck has nothing to talk to")
+        # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
+        # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            raise ActionError(502, _refused)
         opening = not sess.started
         cwd = sess.program_dir if sess.mode == "design" else sess.target_repo
         # S169 (FL-014) — THE PASTED IMAGE, ON THIS TURN'S ARGV. The same
@@ -10412,6 +10427,10 @@ class Actions(LogFacts):
                 502, "the holodeck cannot run %s — it is not an executable on "
                 "this machine. Check the engine you picked, or the daemon's "
                 "$LCARS_WORKER_BIN." % bin_)
+        # S217 — refused BEFORE a sidecar or a room is built, like a missing bin.
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            raise ActionError(502, _refused)
         return bin_
 
     @staticmethod

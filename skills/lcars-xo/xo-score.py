@@ -145,6 +145,23 @@ def tests_sentence(tests, resolved):
 # match this string.
 NO_DRAWING_NOTE = "I could not check this against a drawing, because there isn't one"
 
+# A PICTURE IS NOT A DRAWING (S217). S214/S215 measured a mission whose only
+# design was a PNG: no drawing, no place names, no `drawnAt` — so the guard
+# above had nothing to overrule, verify_unfenced_note never fired, and the
+# comparison silently did not run. Filing cannot refuse it, because nothing
+# records whether a picture was meant as THE design or as context (see
+# xo-criteria.py `pictures`). So it is SAID, here, as a fact that holds either
+# way, at the head of the one line the card shows. Byte-identical everywhere.
+PICTURE_NOT_DRAWING = ("your attachment is a picture, so I could not check the "
+                       "build against a drawing")
+
+# WHAT TO DO ABOUT IT, said once (S217 fix round 1, D1). report.md prints it and
+# the verdict RECORDS it under pictureNotDrawing.fix, so the ◈ Number One tab
+# reads the scorer's own words instead of carrying a second copy that could drift.
+PICTURE_FIX = ("To have me check it against one, attach an `.html` mock-up "
+               "whose element `id`s name the parts, plus a `concept.md` saying "
+               "what it must do — the holodeck makes both for you.")
+
 
 # A CELL THE CAPTAIN CAN READ (fix round 1, D7). A hard `[:160]` cut the
 # evidence mid-word and landed on an open quote — `…and no '` — which reads as a
@@ -765,6 +782,15 @@ def main():
         meaning = ("Everything you asked for is in the build and I have a "
                    "picture of each one — ship as is")
 
+    # S217 — the picture sentence LEADS the derivation, so the card's one line
+    # and the report's first line both open with it. The score is untouched:
+    # a missing drawing is not a fault in the build.
+    picture_names = [str(p) for p in (contract.get("pictures") or [])
+                     if str(p).strip()] if isinstance(contract, dict) else []
+    picture_only = bool(picture_names) and not has_drawing
+    if picture_only:
+        why = "%s. %s" % (PICTURE_NOT_DRAWING, why[:1].upper() + why[1:])
+
     out = {
         "score": score,
         "workerScore": worker_score,
@@ -784,6 +810,10 @@ def main():
     }
     if notes:
         out["ledgerNotes"] = notes
+    if picture_only:
+        out["pictureNotDrawing"] = {"pictures": picture_names,
+                                    "note": PICTURE_NOT_DRAWING,
+                                    "fix": PICTURE_FIX}
     if observations and observations["observations"]:
         # CARRIED THROUGH, NOT RECOMPUTED. The observations were already final
         # when xo-observe.py wrote them; this file is the one place they get
@@ -807,6 +837,13 @@ def main():
         w = fh.write
         w("**How close this is to what you asked for: %s** — %s\n\n" % (score.upper(), why))
         w(summary + "\n\n")
+        if picture_only:
+            w("**%s.** %s %s a picture, not a drawing, so nothing in this build "
+              "was compared against a design. %s\n\n"
+              % (PICTURE_NOT_DRAWING[:1].upper() + PICTURE_NOT_DRAWING[1:],
+                 ", ".join("`%s`" % p for p in picture_names),
+                 "is" if len(picture_names) == 1 else "are each",
+                 PICTURE_FIX))
         if out["scoreDisagreed"]:
             w("> I first called this %s. The line above is worked out again from my own\n"
               "> notes below, and those notes win.\n\n" % worker_score.upper())

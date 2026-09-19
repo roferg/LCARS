@@ -10122,6 +10122,40 @@ function xoCriteriaTable(criteria) {
   return wrap;
 }
 
+/* S217 fix round 1, D1: which file was a picture, and what to do about it.
+
+   THE NAMES ARE THE STAGED ONES (attachment-NN.<ext>). Filing copies every
+   attachment under that name and records nothing else, so the captain's own
+   filename is not recoverable — and it is not guessed. THE FIX IS THE
+   SCORER'S OWN SENTENCE (`pictureNotDrawing.fix`, xo-score.py PICTURE_FIX, the
+   same words report.md prints); the fallback below is that constant verbatim,
+   for a verdict scored before the scorer recorded it. A field that is not an
+   object with at least one name renders nothing. */
+var XO_PICTURE_FIX_FALLBACK = "To have me check it against one, attach an "
+  + "`.html` mock-up whose element `id`s name the parts, plus a `concept.md` "
+  + "saying what it must do — the holodeck makes both for you.";
+
+function xoPictureNote(pnd) {
+  if (!pnd || typeof pnd !== "object" || !Array.isArray(pnd.pictures)) return null;
+  var names = pnd.pictures.filter(function (p) {
+    return typeof p === "string" && p.trim();
+  }).map(function (p) { return String(p).trim(); });
+  if (!names.length) return null;
+  var fix = (typeof pnd.fix === "string" && pnd.fix.trim())
+    ? pnd.fix.trim() : XO_PICTURE_FIX_FALLBACK;
+  var box = el("div", "xo-picture");
+  box.appendChild(el("b", "xo-picture-label",
+    "Your attachment is a picture, not a drawing"));
+  var body = el("div", "xo-picture-body");
+  setMd(body, names.map(function (n) { return "`" + n.replace(/`/g, "") + "`"; })
+    .join(", ")
+    + (names.length === 1 ? " is a picture" : " are each a picture")
+    + ", not a drawing, so nothing in this build was compared against a "
+    + "design. " + fix);
+  box.appendChild(body);
+  return box;
+}
+
 /* S205/S213: the ◈ Number One tab's pane. THE VERDICT LEADS.
 
    THIS IS THE SURFACE THE SESSION EXISTS FOR. Before S213 it opened on "Also
@@ -10197,6 +10231,14 @@ function xoReportPane(mi) {
   // 2 — ONE HONEST SENTENCE. The card carries this same string.
   var lede = String(verdict.derivation || xo.headline || "").trim();
   if (lede) pane.appendChild(el("div", "xo-lede", lede));
+
+  // 2b — A PICTURE IS NOT A DRAWING (S217 fix round 1, D1). The card's line
+  // cuts off at "your attachment is a picture, …", and READ THE FULL REPORT
+  // lands here — so here is where he learns WHICH file and WHAT TO DO. Read
+  // off the verdict's own `pictureNotDrawing` (the scorer records the names
+  // and its fix sentence); nothing at all when the field is absent.
+  var picNote = xoPictureNote(verdict.pictureNotDrawing);
+  if (picNote) pane.appendChild(picNote);
 
   // 3 — THE FULL TEXT, in its own voice. Only when it says something the lede
   // has not already said — repeating one sentence twice is not detail.

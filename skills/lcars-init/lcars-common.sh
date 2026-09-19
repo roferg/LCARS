@@ -2026,6 +2026,14 @@ lcars_running_version() {
 
 LCARS_ENGINES="claude copilot"
 
+# S217 — the ONE worker-bin guard (lcars_worker_bin_guard: refuse a `copilot`
+# that resolves to VS Code's own re-invoking shim). It lives in its own small
+# file so worker-adapter.sh can source it without this whole library; sourcing
+# it here gives every skill that sources lcars-common.sh the same function.
+# shellcheck source=worker-guard.sh
+[ -f "$(dirname "${BASH_SOURCE[0]}")/worker-guard.sh" ] \
+  && . "$(dirname "${BASH_SOURCE[0]}")/worker-guard.sh"
+
 # lcars_engine_bin <engine> — the binary name/path to look for. Both are env
 # seams so a test can pin what this machine "has" without touching $PATH (and
 # so a wrapper script can stand in for either CLI). Exit 1 on an unknown engine.

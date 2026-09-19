@@ -54,6 +54,14 @@ set -uo pipefail
 
 die() { printf 'worker-adapter: %s\n' "$1" >&2; exit 1; }
 
+# S217 — THE ONE WORKER-BIN GUARD (skills/lcars-init/worker-guard.sh): every
+# cold worker is exec'd below, so this is where a `copilot` that resolves to VS
+# Code's own re-invoking shim is refused, before anything is spawned. Missing
+# guard = refuse to spawn, never spawn unguarded.
+LCARS_WORKER_GUARD_LIB="${LCARS_WORKER_GUARD_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/../lcars-init/worker-guard.sh}"
+# shellcheck source=../lcars-init/worker-guard.sh
+[ -f "$LCARS_WORKER_GUARD_LIB" ] && . "$LCARS_WORKER_GUARD_LIB"
+
 # Map a TOOLSET role → that cli's allowed-tools list. Unknown role → non-zero.
 # (This is the table that used to be worker_tools() in run.sh, now keyed by cli.)
 adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
@@ -329,6 +337,14 @@ adapter_spawn() { # cli role outdir prompt
       [ "$seen_deny" -eq 1 ] || die "refusing to spawn a '$cli' worker whose argv carries no --disallowedTools — on claude \`--allowedTools\` only PRE-APPROVES and \`--dangerously-skip-permissions\` waives the rest, so the deny list is the only thing that actually takes a tool away"
       ;;
   esac
+  command -v lcars_worker_bin_guard >/dev/null 2>&1 \
+    || die "refusing to spawn: the worker guard ($LCARS_WORKER_GUARD_LIB) is missing, so nothing can check that '$bin' is not VS Code's copilot shim"
+  # bin IS ${LCARS_WORKER_BIN:-$cli}, so that variable wins here — unless LCARS
+  # set it itself (_INTERNAL=1), where a captain's prefix is overridden
+  # upstream; then only the PATH fix is offered (fix round 1, D2).
+  local guard_hint=""
+  [ "${LCARS_WORKER_BIN_INTERNAL:-}" != "1" ] && guard_hint=LCARS_WORKER_BIN
+  lcars_worker_bin_guard "$bin" "$guard_hint" || exit 1
   local rest=("${flags[@]:1}")
   mkdir -p "$outdir"
   LCARS_WORK_OUT="$outdir" LCARS_WORKER_ROLE="${LCARS_WORKER_ROLE:-$role}" \

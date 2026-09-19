@@ -124,6 +124,28 @@ def has_drawing(mission_dir):
     return any(fn.lower().endswith((".html", ".htm")) for fn in os.listdir(adir))
 
 
+# The IMAGE extensions of `lcars_attach_kind` (skills/lcars-init/
+# lcars-common.sh) — the one classification every surface uses. Extension-only
+# for the same reason it is there: LCARS staged these files itself.
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".heic")
+
+
+def pictures(mission_dir):
+    """The image attachments this mission carries, by name — S217.
+
+    A RECORD OF WHAT IS ON DISK, NOT A GUESS AT WHAT IT WAS FOR. Nothing at
+    filing records whether a picture was meant as THE design or as context, so
+    this list does not claim either; it lets xo-score.py say the one thing
+    that is a fact either way: when there is no drawing and there IS a picture,
+    the build was not checked against a drawing, and the picture could not
+    stand in for one (S214/S215 measured it falling through both guards).
+    """
+    adir = os.path.join(mission_dir, "attachments")
+    if not os.path.isdir(adir):
+        return []
+    return sorted(fn for fn in os.listdir(adir) if fn.lower().endswith(IMAGE_EXTS))
+
+
 def place_names(mission_dir):
     """The `id=` vocabulary of every drawing this mission carries.
 
@@ -167,6 +189,7 @@ def main():
         "builtBeforeLaunch": True,
         "hasDrawing": has_drawing(mdir),
         "placeNames": place_names(mdir),
+        "pictures": pictures(mdir),
         "criteria": criteria,
     }
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)

@@ -75,6 +75,17 @@ ENGINE_BIN="$(lcars_engine_bin "$ENGINE_CHOSEN")"
 # Read the version of the engine we ACTUALLY picked. `$CLAUDE_BIN --version` is
 # never run when claude is absent — that shell-out was the second half of the
 # defect (it printed a resolution error into the readout).
+# S217 — and never run it at all if it is VS Code's re-invoking copilot shim
+# (lcars_worker_bin_guard, the one rule every worker start goes through).
+# The fix it names must be true HERE (fix round 1, D2): init resolves the bin
+# through LCARS_<ENGINE>_BIN / PATH — $LCARS_WORKER_BIN plays no part — so that
+# is the only variable it may offer.
+case "$ENGINE_CHOSEN" in
+  copilot) GUARD_HINT=LCARS_COPILOT_BIN ;;
+  claude)  GUARD_HINT=LCARS_CLAUDE_BIN ;;
+  *)       GUARD_HINT="" ;;
+esac
+GUARD_MSG="$(lcars_worker_bin_guard "$ENGINE_BIN" "$GUARD_HINT" 2>&1)" || die "$GUARD_MSG"
 ENGINE_VERSION="$("$ENGINE_BIN" --version 2>/dev/null | head -1)"
 # The fallback is ANNOUNCED, never silent: a captain whose laptop has no claude
 # must be told which engine his repo was set up on, at the moment it happens.

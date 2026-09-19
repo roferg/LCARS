@@ -3068,6 +3068,13 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .xo-lede{font-size:14px;line-height:1.5;color:var(--lcars-text-bright);
   border-left:3px solid var(--lcars-peach);padding-left:10px;margin:6px 0 12px}
 .xo-full{font-size:13px;line-height:1.65;color:var(--lcars-text);margin-bottom:14px}
+/* S217 fix round 1, D1: which file was a picture, and what to do about it. */
+.xo-picture{border:1px solid var(--lcars-amber);border-radius:6px;
+  padding:8px 10px;margin:0 0 14px}
+.xo-picture-label{display:block;color:var(--lcars-amber);font-size:13px;
+  margin-bottom:4px}
+.xo-picture-body{font-size:13px;line-height:1.55;color:var(--lcars-text-bright);
+  overflow-wrap:anywhere}
 
 /* the per-criterion ledger. Three columns on a desktop, stacked on a phone —
    a table that scrolls sideways is a table nobody reads on a phone. */

@@ -14789,6 +14789,22 @@ require_worker() {
   # single chokepoint every worker-using Stage (and the context-pack path) hits,
   # so the self-explaining resolution line prints exactly once per process.
   resolve_worker
+  # S217 — refuse a `copilot` that resolves to VS Code's re-invoking shim HERE,
+  # before the Stage starts, so the one sentence is the Stage's own stop and
+  # not a worker that "produced nothing". The same rule guards the exec itself
+  # in worker-adapter.sh; this is where it is loudest.
+  if ! command -v lcars_worker_bin_guard >/dev/null 2>&1; then
+    # shellcheck source=../lcars-init/worker-guard.sh
+    [ -f "$SKILL_DIR/../lcars-init/worker-guard.sh" ] && . "$SKILL_DIR/../lcars-init/worker-guard.sh"
+  fi
+  if command -v lcars_worker_bin_guard >/dev/null 2>&1; then
+    # The variable is offered only where it WINS (fix round 1, D2): an external
+    # $LCARS_WORKER_BIN tops resolve_worker_bin, but LCARS's own re-pin
+    # (_INTERNAL=1: approve, Number One) overrides a captain's prefix.
+    local guard_msg guard_hint=""
+    [ "${LCARS_WORKER_BIN_INTERNAL:-}" != "1" ] && guard_hint=LCARS_WORKER_BIN
+    guard_msg="$(lcars_worker_bin_guard "$WORKER_BIN" "$guard_hint" 2>&1)" || die "$guard_msg"
+  fi
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
   [ -x "$WORKER_BIN" ] && return 0
   printf '  ⚠ NOT ISOLATED — no cold-worker binary on PATH (LCARS_WORKER_BIN=%s).\n' "$WORKER_BIN" >&2
