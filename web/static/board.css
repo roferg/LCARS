@@ -3207,3 +3207,20 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .xo-entry-say,.xo-mname{overflow-wrap:anywhere}
 /* A picture is evidence, not a ruler: it fits the column it is read in. */
 .xo-pane img,.xo-shot img,.tabpane img{max-width:100%;height:auto}
+
+/* ── S218 fix round 1 (F1): a Stage that FAILED, on the card where it sits,
+   in the detail header, and on its activity band. `.card .no.stage-failed`
+   out-specifies `.card .no` (two classes beat one) so it cannot lose the
+   source-order race S162's amber did. ── */
+.card .no.stage-failed{color:var(--lcars-red);text-transform:none;letter-spacing:.02em;
+  font-size:11px;margin-top:2px}
+.det-stage-failed{margin-bottom:14px;padding:10px 14px;
+  border-radius:var(--lcars-radius,14px);background:rgba(204,68,68,.14);
+  box-shadow:0 0 0 1px var(--lcars-red) inset}
+.det-stage-failed .sf-head{font-family:var(--font-display);font-size:13px;
+  letter-spacing:.1em;color:var(--lcars-red);margin-bottom:6px}
+.det-stage-failed .sf-sentence{color:var(--lcars-text-bright);line-height:1.5;
+  font-size:13px;white-space:pre-wrap;word-break:break-word}
+.det-stage-failed .sf-log{margin-top:6px;font-family:var(--font-mono,monospace);
+  font-size:12px;color:var(--lcars-text);word-break:break-all}
+.band-chip.chip-status.failed{color:var(--lcars-red);border-color:rgba(255,138,150,.5)}

@@ -7670,8 +7670,10 @@ worker_produced_nothing() { # outdir → 0 if the worker produced nothing at all
   [ -d "$outdir" ] || return 0   # no outdir at all ⇒ nothing was produced
   # Any REAL artifact (anything the worker wrote EXCEPT the hidden capture files)
   # means it produced something — regardless of stdout/stderr.
+  # (S218: the adapter's own records — .worker.rc/.argv/.warn — are captures
+  # too, never an artifact, so every hidden .worker.* file is excluded.)
   if [ -n "$(find "$outdir" -type f \
-              ! -name '.worker.out' ! -name '.worker.err' -print -quit 2>/dev/null)" ]; then
+              ! -name '.worker.*' -print -quit 2>/dev/null)" ]; then
     return 1
   fi
   # No real file: fall back to the captures. Any non-whitespace output means the
@@ -14715,6 +14717,54 @@ EOF
   die "$msg"
 }
 
+# --- S218: KEEP A FAILED ATTEMPT'S RECORD BEFORE ITS SCRATCH DIR GOES --------
+# A Stage's retry loop spawns each attempt into a `mktemp -d` scratch dir and
+# removes it when the attempt fails. That dir held the ONLY copy of the worker's
+# stderr and (since S218) the adapter's .worker.rc / .worker.argv / .worker.warn,
+# so S214's 6/6 Research deaths left nothing behind but one sentence. Call this
+# BEFORE the `rm -rf`: it appends ONE timestamped section per failed attempt to
+# $MISSION_DIR/<stage-subdir>/worker-failure.log (durable, never truncated) and
+# sets $WORKER_FAILURE_RC to that attempt's exit status ("" when none was
+# recorded — the hang guard stopped it, or the adapter refused before spawning).
+# The argv in the record is the adapter's REDACTED one: the prompt appears only
+# as `<prompt N bytes>`. Best-effort: a write failure never changes the Stage.
+WORKER_FAILURE_RC=""
+worker_failure_record() { # stage-subdir outdir attempt of worker-name missing-artifact
+  local sub="$1" od="$2" n="$3" of="$4" who="$5" missing="$6"
+  WORKER_FAILURE_RC=""   # (guarded: a hang-stopped attempt has no .worker.rc — D1)
+  [ -f "$od/.worker.rc" ] && WORKER_FAILURE_RC="$(tr -d '[:space:]' <"$od/.worker.rc" 2>/dev/null)"
+  [ -n "${MISSION_DIR:-}" ] && [ -d "${MISSION_DIR:-}" ] || return 0
+  mkdir -p "$MISSION_DIR/$sub" 2>/dev/null || return 0
+  {
+    printf '=== attempt %s of %s · %s · %s ===\n' "$n" "$of" "$who" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'missing: %s\n' "$missing"
+    if [ -n "$WORKER_FAILURE_RC" ]; then
+      printf 'exit status: %s\n' "$WORKER_FAILURE_RC"
+    else
+      printf 'exit status: none recorded (the hang guard stopped it, or it never started)\n'
+    fi
+    printf 'argv: '
+    if [ -s "$od/.worker.argv" ]; then cat "$od/.worker.argv"; else printf '(none recorded)\n'; fi
+    if [ -s "$od/.worker.warn" ]; then printf -- '--- adapter warnings ---\n'; cat "$od/.worker.warn"; fi
+    printf -- '--- stderr ---\n'
+    if [ -s "$od/.worker.err" ]; then cat "$od/.worker.err"; else printf '(empty)\n'; fi
+    printf -- '--- stdout (last 20 lines) ---\n'
+    if [ -s "$od/.worker.out" ]; then tail -20 "$od/.worker.out"; else printf '(empty)\n'; fi
+    printf '\n'
+  } >>"$MISSION_DIR/$sub/worker-failure.log" 2>/dev/null || true
+  return 0
+}
+
+# The clause a Stage's stop sentence carries after worker_failure_record: how
+# the LAST attempt ended and where every attempt's record is.
+worker_failure_clause() { # stage-subdir
+  local how
+  if [ -n "$WORKER_FAILURE_RC" ]; then how="the last attempt exited $WORKER_FAILURE_RC"
+  else how="the last attempt left no exit status (the hang guard stopped it, or it never started)"; fi
+  printf '%s; its error output for every attempt is in .git/lcars/missions/%s/%s/worker-failure.log' \
+    "$how" "$MISSION_ID" "$1"
+}
+
 # --- delegate one cold-worker invocation to the CLI adapter -----------------
 # The driver passes a role keyword + outdir + prompt; the adapter (selected by the
 # cli id = basename WORKER_BIN) knows the flags and tool names. The worker binary
@@ -14803,6 +14853,9 @@ require_worker() {
     # (_INTERNAL=1: approve, Number One) overrides a captain's prefix.
     local guard_msg guard_hint=""
     [ "${LCARS_WORKER_BIN_INTERNAL:-}" != "1" ] && guard_hint=LCARS_WORKER_BIN
+    # S218 — a run the viewscreen started is fed the mission's persisted engine,
+    # so a variable prefix cannot reach it: say the daemon's fix instead.
+    [ "${LCARS_VIEWSCREEN_CHILD:-}" = "1" ] && guard_hint="$(lcars_worker_bin_daemon_hint)"
     guard_msg="$(lcars_worker_bin_guard "$WORKER_BIN" "$guard_hint" 2>&1)" || die "$guard_msg"
   fi
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
@@ -15106,9 +15159,11 @@ cmd_research() {
     spawn_worker research-questions "$STAGES_DIR/research-questions.md" repo-read "$qdir" \
       "$rq_extra" "$( [ "$tries" -gt 1 ] && printf no-file )"
     [ -f "$qdir/questions.txt" ] && break
+    # S218 — keep this attempt's stderr / exit status / argv before its dir goes.
+    worker_failure_record research "$qdir" "$tries" "$MAX_WORKER_TRIES" question-generator questions.txt
     rm -rf "$qdir"; qdir=""
   done
-  [ -n "$qdir" ] || die "the question-generator worker produced no questions.txt after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+  [ -n "$qdir" ] || die "the question-generator worker produced no questions.txt after $MAX_WORKER_TRIES attempt(s) — $(worker_failure_clause research). Stage stopped, no advance."
 
   # STEP 2 — gate on the count (reuse the tested subcommand; it owns skip/escalate)
   local gate_out gate_rc=0
@@ -15258,9 +15313,11 @@ guess from the plan alone."
       return 0
     fi
     prior_no_file=no-file
+    # S218 — keep this attempt's stderr / exit status / argv before its dir goes.
+    worker_failure_record research "$odir" "$tries" "$MAX_WORKER_TRIES" grounding grounding.json
     rm -rf "$odir"
   done
-  die "the grounding worker produced no grounding.json after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+  die "the grounding worker produced no grounding.json after $MAX_WORKER_TRIES attempt(s) — $(worker_failure_clause research). Stage stopped, no advance."
 }
 
 # One research agent, retried until it yields a well-shaped response (or the cap).
@@ -18936,6 +18993,16 @@ cmd_drive() {
     # so a tail/scrollback shows the Stage starting in real time.
     emit_event stage_start "$action" "starting"
     printf '%-12s ▶  running…\n' "$action"
+    # S218 fix round 1 (F1) — the size of this Stage's failure log BEFORE it
+    # runs, so the error arm below can RECORD (not re-parse from prose) whether
+    # this run wrote to it.
+    local fail_log_rel=".git/lcars/missions/$MISSION_ID/$action/worker-failure.log"
+    local fail_log_size0
+    # (fix round 2, D1: guarded — a bare `<missing` redirect fails BEFORE its
+    # 2>/dev/null applies, printing "No such file" on every healthy drive.)
+    fail_log_size0=""
+    [ -f "$MISSION_DIR/$action/worker-failure.log" ] \
+      && fail_log_size0="$(wc -c <"$MISSION_DIR/$action/worker-failure.log" 2>/dev/null | tr -d ' ')"
 
     # BUG-020 watchdog: run the Stage subprocess under a bounded wall-clock guard
     # so a wedged stage (e.g. a leaked Implement heartbeat holding the pipe open)
@@ -18972,7 +19039,7 @@ cmd_drive() {
         # sentence (S214 fix round 1, D2). It used to be `$stage`, where the
         # Mission sits, so a Research timeout banded itself ALIGN on the board
         # while the sentence beside it said Research.
-        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
+        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human" stageFailure=1
         drive_print_summary "$summary"
         printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
@@ -19072,7 +19139,18 @@ cmd_drive() {
         err_tail="…$err_tail"
       fi
     fi
-    emit_event error "$action" "$action failed${err_tail:+: $err_tail}"
+    # S218 fix round 1 (F1/F2) — the failure log THIS run wrote rides the event
+    # as data, so the board card and `lcars status` read the path as a recorded
+    # fact rather than fishing it out of the sentence.
+    # (fix round 2, D2: every error event this drive writes carries
+    # stageFailure=1 — the RECORDED marker the card / detail / status read, so
+    # pre-S214 history, which lacks it, is never surfaced as a failure.)
+    local fail_log_size1="" fail_log_kv=("stageFailure=1")
+    [ -f "$MISSION_DIR/$action/worker-failure.log" ] \
+      && fail_log_size1="$(wc -c <"$MISSION_DIR/$action/worker-failure.log" 2>/dev/null | tr -d ' ')"
+    [ -n "$fail_log_size1" ] && [ "$fail_log_size1" != "${fail_log_size0:-}" ] \
+      && fail_log_kv+=("log=$fail_log_rel")
+    emit_event error "$action" "$action failed${err_tail:+: $err_tail}" "${fail_log_kv[@]}"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$action"
     printf '%s\n' "$out"
@@ -19084,7 +19162,7 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; SETUP=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; EV_DATA=(); MANIFESTS=""; POSARG=""; SURFACE=""
 XO_MODE=""; XO_OUTDIR=""    # S202 — Number One's spawn (see spawn-number-one)
 FINAL_ATTEMPT=0   # S178: plan-save --final-attempt (guard goes advisory)
 RC_BRANCH=""; RC_SHA=""
@@ -19129,6 +19207,10 @@ while [ $# -gt 0 ]; do
     --stage=*)     EV_STAGE="${1#--stage=}"; shift ;;
     --detail)      EV_DETAIL="${2:-}"; shift 2 ;;
     --detail=*)    EV_DETAIL="${1#--detail=}"; shift ;;
+    # S218 fix round 2 — emit-event's optional key=value data pairs (repeatable),
+    # so the daemon's refused START records the same stageFailure marker.
+    --data)        EV_DATA+=("${2:-}"); shift 2 ;;
+    --data=*)      EV_DATA+=("${1#--data=}"); shift ;;
     # S202 — Number One's spawn. --mode names its prompt template, --outdir its
     # scratch dir (xo.sh owns both; it gathers the inputs and reads the verdict).
     --mode)        XO_MODE="${2:-}"; shift 2 ;;
@@ -19230,7 +19312,7 @@ case "$SUB" in
     require_worker
     spawn_number_one "$MISSION_ID" "${XO_MODE:-answer}" "$XO_OUTDIR" ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
-  emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
+  emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ${EV_DATA[@]+"${EV_DATA[@]}"} ;;
   # ADR-004: mirror not-yet-posted surfaced events from events.jsonl onto the
   # Mission's issue as ordered comments, idempotently. The driver calls this at
   # each loop pass; it is also the standalone test/maintenance entry point.

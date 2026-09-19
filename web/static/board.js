@@ -3202,6 +3202,28 @@ function keyActivable(node) {
 }
 
 /* ════════════════ CARD RENDER ════════════════ */
+/* S218 fix round 1 (F1): the card's one whole sentence for `m.failure` — the
+   drive's RECORDED stage failure ({stage, sentence, log}, local_adapter's
+   _stage_failure). null when there is none. */
+function stageFailureCardLine(m) {
+  var f = m && m.failure;
+  if (!f || typeof f !== "object") return null;
+  return "✖ " + stageLabel(f.stage) + " failed — open the card to see why"
+    + (f.log ? " and where the log is." : ".");
+}
+
+/* …and its long form under the detail header: the headline, the recorded
+   sentence WHOLE (plain text, never Markdown-folded), and the log path. */
+function stageFailureBlock(m) {
+  var f = m && m.failure;
+  if (!f || typeof f !== "object") return null;
+  var box = el("div", "det-stage-failed");
+  box.appendChild(el("div", "sf-head", "✖ " + stageLabel(f.stage).toUpperCase() + " FAILED"));
+  if (f.sentence) box.appendChild(el("div", "sf-sentence", String(f.sentence)));
+  if (f.log) box.appendChild(el("div", "sf-log", "Log: " + String(f.log)));
+  return box;
+}
+
 function cardNode(m) {
   var rs = runState(m); // UX-17/20/21: derived run/pause lifecycle (one source).
   // S162: reconcile the optimistic "filing" flag with what the server now says,
@@ -3285,6 +3307,12 @@ function cardNode(m) {
       "grounding · scoped to existing code"));
   }
   card.appendChild(el("div", "ttl", m.title || m.id));
+
+  // S218 fix round 1 (F1): a Stage that FAILED says so here, on the card where
+  // it already sits (the column stays the label's — S191). One whole sentence;
+  // the recorded sentence itself and the log path are in the detail.
+  var fl = stageFailureCardLine(m);
+  if (fl) card.appendChild(el("div", "no stage-failed", fl));
 
   // UX-28: a small "log bug · child of #<parentIssue>" badge on a logged bug,
   // linking to the parent issue when the repo + parent issue resolve. Rendered
@@ -7304,8 +7332,10 @@ function sanitizeGateText(text) {
   s = s.replace(/\bwith\s+lcars\s+\w[\w-]*[^.,;]*/gi, "using the send-back action");
   s = s.replace(/\blcars\s+\w[\w-]*\b/gi, "the harness");
   // 4) tidy doubled spaces + dangling " — ." / orphaned punctuation left behind.
+  //    S218: only punctuation that ENDS something (space or end follows) — a
+  //    path such as "is in .git/lcars/…" keeps the space before its dot.
   s = s.replace(/\s{2,}/g, " ").replace(/\(\s*\)/g, "")
-       .replace(/\s+([.,;])/g, "$1").trim();
+       .replace(/\s+([.,;])(?=\s|$)/g, "$1").trim();
   return s;
 }
 
@@ -9206,6 +9236,10 @@ function renderDetail(mi, wantTab) {
   var bfBlock = baseFreshnessBlock(mi.baseFreshness, "det-basefresh");
   if (bfBlock) head.appendChild(bfBlock);
 
+  // S218 fix round 1 (F1): the card's failure line, long form.
+  var sfBlock = stageFailureBlock(mi);
+  if (sfBlock) head.appendChild(sfBlock);
+
   // S162: and the card's band / failure state, so the detail tells the same
   // story. Both are condition-gated (null with no live session), so a mission
   // that never logged a bug opens byte-identically to before this round.
@@ -9477,6 +9511,12 @@ function groupActivityIntoSections(acts) {
       sec.endTs = t;
     }
     var tid;
+    // S218 fix round 1 (F1): the drive's recorded `error` event marks the band
+    // FAILED; a later stage_done in the same band (it recovered) clears it.
+    // (fix round 2, D2: only an error the drive MARKED — data.stageFailure — so
+    // pre-S214 history reads in the feed exactly as it did before tonight.)
+    if (ev.type === "error" && ev.data && ev.data.stageFailure === 1) sec.failed = true;
+    else if (ev.type === "stage_done") sec.failed = false;
     switch (ev.type) {
       case "ticket_start": sec.ticketCount++; break;
       case "ticket_green": sec.greenCount++; break;
@@ -9496,7 +9536,7 @@ function groupActivityIntoSections(acts) {
       kind: kind, stage: normStage(stage), wave: wave || null,
       events: [], startTs: null, endTs: null,
       ticketCount: 0, greenCount: 0, flaggedCount: 0, flagged: false,
-      bounceCount: 0,
+      bounceCount: 0, failed: false,
       // the TICKETS this section showed a hire / bounce for; the whole-stream
       // totals for those tickets are summed in the finalize pass below.
       _hireTickets: {}, _bounceTickets: {}, _looseHires: 0, _looseBounces: 0,
@@ -9609,7 +9649,7 @@ function sectionSummary(sec) {
       bits.push(sec.bounceCount + " bounce" + (sec.bounceCount === 1 ? "" : "s"));
     }
   } else {
-    bits.push(sec.active ? "in progress" : "complete");
+    bits.push(sec.failed ? "failed" : (sec.active ? "in progress" : "complete"));
   }
   if (sec.durationSec != null && sec.durationSec > 0) bits.push(fmtDuration(sec.durationSec));
   return bits.join(" · ");
@@ -9646,8 +9686,14 @@ function sectionSummaryChips(sec) {
     }
   } else {
     // STAGE: an in-progress (pulsing dot via CSS ::before) / complete chip.
-    chips.push(el("span", "band-chip chip-status" + (sec.active ? " active" : ""),
-      sec.active ? "in progress" : "✓ complete"));
+    // S218 fix round 1 (F1): a band whose Stage FAILED says so — never "in
+    // progress" (nothing is running) and never "✓ complete" (it did not).
+    if (sec.failed) {
+      chips.push(el("span", "band-chip chip-status failed", "✖ failed"));
+    } else {
+      chips.push(el("span", "band-chip chip-status" + (sec.active ? " active" : ""),
+        sec.active ? "in progress" : "✓ complete"));
+    }
   }
   if (sec.durationSec != null && sec.durationSec > 0) {
     chips.push(el("span", "band-chip chip-duration", "◷ " + fmtDuration(sec.durationSec)));

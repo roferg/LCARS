@@ -226,6 +226,46 @@ PYEOF
 )"
 check "D2. every daemon refusal ends 'then restart the viewscreen' and names no variable ${dviol:+(lines: $dviol)}" "[ -z \"\$dviol\" ]"
 
+# S218 — A RUN THE VIEWSCREEN STARTED. The daemon feeds the mission's persisted
+# engine (often bare "copilot") to run.sh as $LCARS_WORKER_BIN, so a captain's
+# `LCARS_WORKER_BIN=…` prefix can never reach it: the only fix that works is the
+# daemon's PATH, which only a restart picks up. The daemon marks its children
+# (LCARS_VIEWSCREEN_CHILD=1) and both bash call sites then give the daemon's
+# sentence — PATH, then restart the viewscreen — and never name a variable.
+echo "S218. a viewscreen-started run gets the daemon's fix, never a variable"
+check "S218. the bash rule's daemon hint IS the daemon's (worker_guard.DAEMON_HINT)" \
+  "[ \"\$(bash -c '. \"\$1\"; lcars_worker_bin_daemon_hint' _ '$GUARD')\" = \"\$(cd '$REPO_ROOT/web' && '$PY' -c 'from lcars_serve.worker_guard import DAEMON_HINT; print(DAEMON_HINT)')\" ]"
+out="$(cd "$TMPROOT" && PATH="$LINKBIN:$REALBIN:/usr/bin:/bin" LCARS_WORKER_BIN=copilot LCARS_VIEWSCREEN_CHILD=1 env -u LCARS_WORKER_BIN_INTERNAL bash "$ADAPTER" spawn copilot repo-read "$TMPROOT/outs218a" "hello" 2>&1)"; rc=$?
+check "S218. worker-adapter under the daemon: refused" "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -F 'Refusing to start' >/dev/null"
+check "S218. worker-adapter under the daemon: PATH fix, then restart the viewscreen" \
+  "printf '%s' \"\$out\" | grep -F \"put $REALBIN ahead of it on PATH\" >/dev/null && printf '%s' \"\$out\" | grep -F 'then restart the viewscreen.' >/dev/null"
+check "S218. worker-adapter under the daemon: never names a variable" \
+  "! printf '%s' \"\$out\" | grep -F 'LCARS_WORKER_BIN=' >/dev/null"
+# run.sh's require_worker — the Stage's own loud stop — on a real mission.
+S218R="$TMPROOT/s218-repo"; mkdir -p "$S218R"
+( cd "$S218R" && git init -q && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m i )
+mkdir -p "$S218R/.git/lcars/missions/m-1"
+printf '{}\n' >"$S218R/.git/lcars/config.json"
+printf '{ "id": "m-1", "type": "feature", "title": "t", "stage": "align" }\n' >"$S218R/.git/lcars/missions/m-1/state.json"
+printf '# Mission\n' >"$S218R/.git/lcars/missions/m-1/prd.md"
+printf '#!/bin/sh\nexit 0\n' >"$TMPROOT/gh-s218"; chmod +x "$TMPROOT/gh-s218"
+out="$(cd "$S218R" && PATH="$LINKBIN:$REALBIN:/usr/bin:/bin" LCARS_WORKER_BIN=copilot LCARS_VIEWSCREEN_CHILD=1 \
+  LCARS_GH_BIN="$TMPROOT/gh-s218" env -u LCARS_WORKER_BIN_INTERNAL bash "$REPO_ROOT/skills/lcars-run/run.sh" research --mission m-1 2>&1)"; rc=$?
+check "S218. run.sh under the daemon: refused before any Stage work" "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -F 'Refusing to start' >/dev/null"
+check "S218. run.sh under the daemon: PATH fix, then restart the viewscreen, no variable" \
+  "printf '%s' \"\$out\" | grep -F 'then restart the viewscreen.' >/dev/null && ! printf '%s' \"\$out\" | grep -F 'LCARS_WORKER_BIN=' >/dev/null"
+out="$(cd "$S218R" && PATH="$LINKBIN:$REALBIN:/usr/bin:/bin" LCARS_WORKER_BIN=copilot \
+  LCARS_GH_BIN="$TMPROOT/gh-s218" env -u LCARS_WORKER_BIN_INTERNAL -u LCARS_VIEWSCREEN_CHILD bash "$REPO_ROOT/skills/lcars-run/run.sh" research --mission m-1 2>&1)"
+check "S218. run.sh from a terminal: unchanged — the variable is still offered there" \
+  "printf '%s' \"\$out\" | grep -F \"LCARS_WORKER_BIN=$REALBIN/copilot\" >/dev/null && ! printf '%s' \"\$out\" | grep -F 'restart the viewscreen' >/dev/null"
+# …and the daemon really marks what it dispatches (the one shared env builder).
+dmark="$(cd "$REPO_ROOT/web" && "$PY" -c 'import sys
+from lcars_serve.actions import Actions
+a = Actions(sys.argv[1], {"run": "/bin/true"}, worker_bin="copilot")
+_, env = a._resolve_run("run", ["drive"], {"LCARS_WORKER_BIN": "copilot"})
+print(env.get("LCARS_VIEWSCREEN_CHILD", ""))' "$S218R" 2>&1)"
+check "S218. every skill the daemon dispatches carries LCARS_VIEWSCREEN_CHILD=1 (got: $dmark)" "[ \"\$dmark\" = 1 ]"
+
 check "SAFETY. no shim fixture was ever executed by anything above" "[ ! -e '$SENTINEL' ]"
 
 echo "7. every place LCARS starts a worker CLI goes through the one guard"

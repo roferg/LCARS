@@ -163,6 +163,41 @@ RS=$'\037'
 PAUSE_GLYPH="⏸"
 ASK_GLYPH="❓"
 STANDBY_GLYPH="◇"
+FAILED_GLYPH="✖"
+
+# S218 fix round 1 (F2) — the Stage failure the drive RECORDED: the last
+# `error` event in events.jsonl not superseded by a later stage_start (a new
+# run), stage_done (a Stage finished) or gate (the run stopped on a question).
+# The SAME fact the board card reads (local_adapter._stage_failure). Prints
+# "<stage>\t<log>" (log may be empty), or nothing. Reads the event's TYPE and
+# fields — emit_event's own one-line shape — never the sentence's words.
+stage_failure() { # events.jsonl
+  [ -f "$1" ] || return 0
+  awk '
+    function field(k,   p, r) {
+      p = index($0, "\"" k "\":\"")
+      if (p == 0) return ""
+      r = substr($0, p + length(k) + 4)
+      sub(/".*/, "", r)
+      return r
+    }
+    {
+      t = field("type")
+      # (fix round 2, D2: only an error the drive MARKED — "stageFailure":1 —
+      # counts; unmarked pre-S214 history is never surfaced.)
+      if (t == "error" && index($0, "\"stageFailure\":1") > 0) { st = field("stage"); lg = field("log"); f = 1 }
+      else if (t == "stage_start" || t == "stage_done" || t == "gate") f = 0
+    }
+    END { if (f) printf "%s\t%s\n", st, lg }
+  ' "$1"
+}
+# A live driver holds <mission>/driver.lock/pid — a new run is under way, so
+# the last failure is not the news (mirrors local_adapter._driver_running).
+driver_live() { # mission-dir
+  local pid; pid="$(cat "$1/driver.lock/pid" 2>/dev/null)" || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null
+}
 
 rows=()
 questions=()  # "id\tissue\tquestion" for the awaiting-human footer
@@ -177,9 +212,11 @@ questions=()  # "id\tissue\tquestion" for the awaiting-human footer
 # for "what is wrong with my missions", so it reads it. Cheap: one file read per
 # mission, no gh call, no new file.
 refusals=()   # "id\tissue\tpart\twhy\tfix"
+failures=()   # "id\tissue\tstage\tlog" — S218: a Stage that stopped on a failure
 carried=()    # "id\tissue\tlabel\tfix" — parts a push CARRIED rather than rebuilt
 any_glyph=0   # did any rendered row carry a status glyph? gates the legend
 any_standby=0 # did any row carry the standby (parked / awaiting-alignment) glyph?
+any_failed=0  # did any row carry the failed glyph? (S218)
 for s in "${states[@]}"; do
   id="$(json_str "$s" id)"
   [ -n "$id" ] || id="$(basename "$(dirname "$s")")"
@@ -232,6 +269,17 @@ for s in "${states[@]}"; do
     glyph="${glyph:+$glyph}$STANDBY_GLYPH"
     stage="awaiting alignment"
     any_standby=1
+  fi
+  # S218 fix round 1 (F2): a Stage that FAILED. The STAGE cell stays the
+  # label's (stage from the label, S191) — the row wears ✖ and the footer
+  # below says which Stage failed and where its log is.
+  sfail=""
+  driver_live "$(dirname "$s")" || sfail="$(stage_failure "$(dirname "$s")/events.jsonl")"
+  if [ -n "$sfail" ]; then
+    IFS=$'\t' read -r fstage flog <<<"$sfail"
+    glyph="${glyph:+$glyph}$FAILED_GLYPH"
+    any_failed=1
+    failures+=("$id"$'\t'"$issue_disp"$'\t'"${fstage:-a stage}"$'\t'"${flog:-}")
   fi
   [ -n "$glyph" ] && any_glyph=1
 
@@ -311,7 +359,26 @@ echo "$RULE"
 if [ "$any_glyph" -eq 1 ]; then
   legend="Legend: $PAUSE_GLYPH paused    $ASK_GLYPH awaiting your input"
   [ "$any_standby" -eq 1 ] && legend="$legend    $STANDBY_GLYPH awaiting alignment"
+  [ "$any_failed" -eq 1 ] && legend="$legend    $FAILED_GLYPH stage failed"
   printf '%s\n' "$legend"
+fi
+
+# --- S218 fix round 1 (F2): Stages that stopped on a failure ---------------
+# One line per mission whose last run stopped on a Stage failure: which Stage,
+# the log that run wrote, and where the whole sentence is.
+if [ "${#failures[@]}" -gt 0 ]; then
+  echo
+  echo "Stopped on a failure:"
+  for fl in "${failures[@]}"; do
+    IFS=$'\t' read -r xid xissue xstage xlog <<<"$fl"
+    xname="$(printf '%s' "$xstage" | awk '{ n = split($0, w, "-"); o = ""; for (i = 1; i <= n; i++) o = o (i > 1 ? " " : "") toupper(substr(w[i], 1, 1)) substr(w[i], 2); print o }')"
+    if [ -n "$xlog" ]; then
+      printf '  %s (%s): %s failed — log: %s\n' "$xid" "$xissue" "$xname" "$xlog"
+    else
+      printf '  %s (%s): %s failed.\n' "$xid" "$xissue" "$xname"
+    fi
+    printf '      → the whole sentence: lcars status --once %s\n' "$xid"
+  done
 fi
 
 # --- awaiting-human footer ------------------------------------------------

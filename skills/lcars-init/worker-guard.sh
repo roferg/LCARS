@@ -82,6 +82,15 @@ lcars_worker_bin_real_dir() {
   printf '/opt/homebrew/bin'
 }
 
+# lcars_worker_bin_daemon_hint -> the daemon's call-site hint, byte-identical
+# to web/lcars_serve/worker_guard.py's DAEMON_HINT (parity-tested). S218: a run
+# the viewscreen started ($LCARS_VIEWSCREEN_CHILD=1, set on everything the
+# daemon dispatches) is fed the mission's PERSISTED engine as $LCARS_WORKER_BIN,
+# so a captain's variable prefix cannot reach it — the only true fix there is
+# the daemon's PATH, which only a restart picks up. Words only: precedence is
+# untouched.
+lcars_worker_bin_daemon_hint() { printf 'restart the viewscreen'; }
+
 # lcars_worker_bin_guard <bin> [<hint>] -> 0 when LCARS may start <bin>;
 # otherwise ONE plain sentence on stderr — the path found and the fix — and 1.
 #

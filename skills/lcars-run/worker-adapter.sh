@@ -24,7 +24,11 @@
 #   spawn <cli> <role> <outdir> <prompt>
 #       Build argv via `argv`, inject <prompt> after the leading `-p`, then run the
 #       CLI one-shot capturing stdout→<outdir>/.worker.out and stderr→.worker.err,
-#       with trailing `|| true` semantics (never fails the caller). The env handed
+#       with trailing `|| true` semantics (never fails the caller) — but since
+#       S218 the worker's exit status is RECORDED in <outdir>/.worker.rc, the
+#       call in <outdir>/.worker.argv (prompt summarised as `<prompt N bytes>`,
+#       never its text), and the argv builder's own warnings in .worker.warn
+#       (also printed), so a caller can keep a failed attempt's record. The env handed
 #       to the worker is LCARS_WORK_OUT=<outdir> and LCARS_WORKER_ROLE — the latter
 #       defaults to <role> but is NOT overwritten if the caller already exported it
 #       (the context-pack case: toolset-role repo-read for argv, but the worker must
@@ -312,7 +316,14 @@ adapter_spawn() { # cli role outdir prompt
   local bin="${LCARS_WORKER_BIN:-$cli}"
   # Read argv flags into an array.
   local flags=() line
-  while IFS= read -r line; do flags+=("$line"); done < <(adapter_argv "$cli" "$role" "$outdir")
+  # S218 — the argv builder's own warnings (e.g. "NOT granting <file> …") are
+  # KEPT in $outdir/.worker.warn as well as printed, so a caller that keeps a
+  # failed attempt's record keeps them too instead of losing them to a stream
+  # nobody captured.
+  mkdir -p "$outdir"
+  local warn="$outdir/.worker.warn"
+  while IFS= read -r line; do flags+=("$line"); done < <(adapter_argv "$cli" "$role" "$outdir" 2>"$warn")
+  if [ -s "$warn" ]; then cat "$warn" >&2; else rm -f "$warn"; fi
   # adapter_argv died (unknown cli/role) → no flags produced → refuse, non-zero.
   [ "${#flags[@]}" -gt 0 ] || die "no argv produced for cli '$cli' role '$role'"
   # The first flag MUST be the `-p` placeholder; inject the prompt right after it.
@@ -344,12 +355,35 @@ adapter_spawn() { # cli role outdir prompt
   # upstream; then only the PATH fix is offered (fix round 1, D2).
   local guard_hint=""
   [ "${LCARS_WORKER_BIN_INTERNAL:-}" != "1" ] && guard_hint=LCARS_WORKER_BIN
+  # S218 — started by the viewscreen: its persisted engine wins, so the fix is
+  # the daemon's PATH + a restart, never a variable (lcars_worker_bin_daemon_hint).
+  [ "${LCARS_VIEWSCREEN_CHILD:-}" = "1" ] && guard_hint="$(lcars_worker_bin_daemon_hint)"
   lcars_worker_bin_guard "$bin" "$guard_hint" || exit 1
   local rest=("${flags[@]:1}")
-  mkdir -p "$outdir"
+  # S218 — RECORD WHAT RAN AND HOW IT ENDED. The exit status used to be thrown
+  # away here, so a worker that died at argv-parse (S214: copilot refusing a
+  # FILE as --add-dir, rc=1, 6/6) left nothing but "produced no questions.txt".
+  # .worker.argv is the call with the PROMPT SUMMARISED — never its text: the
+  # prompt carries the captain's PRD, and nothing else in this argv is a secret
+  # (flags, tool names, paths, a model id, a correlation id). .worker.rc is the
+  # worker's own status. The spawn itself still never fails its caller — each
+  # Stage decides what a failed attempt means.
+  {
+    printf '%q -p %s' "$bin" "<prompt $(printf '%s' "$prompt" | wc -c | tr -d ' ') bytes>"
+    local a; for a in ${rest[@]+"${rest[@]}"}; do
+      case "$a" in
+        ''|*[!A-Za-z0-9_./:=,@+%-]*) printf ' %q' "$a" ;;   # quote only what needs it
+        *) printf ' %s' "$a" ;;
+      esac
+    done
+    printf '\n'
+  } >"$outdir/.worker.argv"
+  local wrc=0
   LCARS_WORK_OUT="$outdir" LCARS_WORKER_ROLE="${LCARS_WORKER_ROLE:-$role}" \
     "$bin" -p "$prompt" "${rest[@]}" \
-    >"$outdir/.worker.out" 2>"$outdir/.worker.err" || true
+    >"$outdir/.worker.out" 2>"$outdir/.worker.err" || wrc=$?
+  printf '%s\n' "$wrc" >"$outdir/.worker.rc"
+  return 0
 }
 
 cmd="${1:-}"; shift || true

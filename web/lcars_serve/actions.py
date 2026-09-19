@@ -10919,8 +10919,51 @@ class Actions(LogFacts):
             env_extra["LCARS_WORKER_MODEL"] = worker_model
         else:
             env_extra["LCARS_WORKER_MODEL"] = None
+        # S218 fix round 1 (F3) — a run this daemon can SEE will be refused is
+        # not started and then left to fail out of sight: the S217 editor-shim
+        # guard is answered HERE, synchronously, as ok:false with its own
+        # sentence. And because the POST's answer is gone once the verdict
+        # fades, the refusal is RECORDED the way the drive records any Stage
+        # failure — an `error` event against the Stage the drive would have
+        # run, written by run.sh's own event writer — so the card says it too.
+        self._refuse_unstartable_engine(
+            mid, env_extra.get("LCARS_WORKER_BIN") or self.worker_bin
+            or os.environ.get("LCARS_WORKER_BIN"))
         self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
+
+    # The Stage `run.sh drive` runs from each resting stage — its `case "$stage"`
+    # in cmd_drive (a freshly filed mission sits at `align` while RESEARCH runs).
+    # Only these spawn a worker; verify/done never reach the guard.
+    _DRIVE_ACTION = {"align": "research", "validate": "validate", "plan": "plan",
+                     "plan-review": "plan-review", "schedule": "schedule",
+                     "implement": "implement"}
+
+    def _refuse_unstartable_engine(self, mid, bin_):
+        """S218 F3: raise ActionError(502, <the guard's sentence>) when the
+        engine this start would hand the drive is VS Code's re-invoking shim,
+        after recording the refusal as the drive's own `error` event. A no-op
+        when the engine is unknown here (run.sh's own guard still stands), the
+        mission is gated, or its stage runs no worker."""
+        if not bin_:
+            return
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        stage = _read_json_key(sp, "stage") or "align"
+        action = self._DRIVE_ACTION.get(stage)
+        if action is None or _read_json_key(sp, "awaitingHuman") is True:
+            return
+        refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if not refused:
+            return
+        try:
+            self._run("run", ["emit-event", "--mission", mid, "--type", "error",
+                              "--stage", action,
+                              "--detail", "%s failed: %s" % (action, refused),
+                              "--data", "stageFailure=1"])
+        except ActionError:
+            pass   # best-effort: the POST's own answer still says it
+        raise ActionError(502, refused)
 
     def _is_running(self, mid):
         """True iff a live driver lock is held for this mission (LocalAdapter)."""
@@ -13188,6 +13231,12 @@ class Actions(LogFacts):
         if not script:
             raise ActionError(500, "no script wired for action '%s'" % key)
         env = dict(os.environ)
+        # S218 — mark everything the daemon dispatches, so a worker-guard refusal
+        # downstream (run.sh / worker-adapter) gives the DAEMON's fix — PATH, then
+        # restart the viewscreen — instead of a `LCARS_WORKER_BIN=` prefix that
+        # the mission's persisted engine would override. Words only; engine
+        # precedence is untouched.
+        env["LCARS_VIEWSCREEN_CHILD"] = "1"
         if self.gh_bin:
             env["LCARS_GH_BIN"] = self.gh_bin
         if self.worker_bin and "LCARS_WORKER_BIN" not in (env_extra or {}):

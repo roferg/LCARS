@@ -1927,6 +1927,13 @@ class LocalAdapter(object):
         # (a never-launched mission's card is byte-identical to before).
         if launch is not None:
             card["launch"] = launch
+        # S218 fix round 1 (F1): a Stage that FAILED says so ON the card, where
+        # the card already is (stage from the label, S191 — never moved). The
+        # fact is the drive's RECORDED `error` event; absent (not null) for every
+        # healthy mission, and hidden while a new run is live.
+        failure = None if running else _stage_failure(events)
+        if failure is not None:
+            card["failure"] = failure
         # S114: additive — only present `liveness` while a live worker's sidecar
         # file exists (byte-identical to before for every idle/finished mission).
         if liveness is not None:
@@ -2128,6 +2135,42 @@ def _inflight_stage(events):
     if inflight is None:
         return None
     return board.normalise_stage(inflight)
+
+
+# --- S218 fix round 1 (F1): the Stage failure the drive RECORDED -------------
+# run.sh's drive writes ONE `error` event when a Stage stops without advancing:
+# its `stage` is the Stage that RAN (S214 D2), its `detail` the whole sentence,
+# and — since S218 — `data.log` the failure log that run wrote, when it wrote
+# one. The daemon's refused START records the same event. A later
+# `stage_start` (a new run began), `stage_done` (a Stage finished) or `gate`
+# (the run stopped on a question instead) supersedes it. Only an event carrying
+# `data.stageFailure: 1` (fix round 2, D2) counts — anything unmarked is
+# history, never a surfaced failure. Returns
+# {stage, sentence, log} or None. Reads the event TYPE and fields only — never
+# the sentence's words. Crash-proof: a malformed row is skipped.
+def _stage_failure(events):
+    failure = None
+    for ev in (events or []):
+        if not isinstance(ev, dict):
+            continue
+        typ = ev.get("type")
+        if typ == "error":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            # S218 fix round 2 (D2): only an error the drive MARKED as a
+            # structured Stage failure. Unmarked ones (all pre-S214 history,
+            # some recorded against `align` with a beheaded sentence) stay in
+            # the activity feed and are never surfaced here — nor reinterpreted.
+            if data.get("stageFailure") != 1:
+                continue
+            log = data.get("log")
+            failure = {
+                "stage": board.normalise_stage(ev.get("stage") or ""),
+                "sentence": ev.get("detail") or "",
+                "log": log if isinstance(log, str) and log.strip() else None,
+            }
+        elif typ in ("stage_start", "stage_done", "gate"):
+            failure = None
+    return failure
 
 
 # --- ticket + progress derivation (shared shape; mirrors render.sh ideas) ----
