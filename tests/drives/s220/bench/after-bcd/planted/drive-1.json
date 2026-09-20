@@ -1,0 +1,31 @@
+{
+  "url": "http://127.0.0.1:8220/index.html",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "after-open-board",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 495
+    },
+    {
+      "name": "board-screen",
+      "selector": "#screen-board",
+      "painted": true,
+      "distinctColours": 495
+    },
+    {
+      "name": "after-lock-blank",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 638
+    },
+    {
+      "name": "after-lock-filled",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 696
+    }
+  ]
+}

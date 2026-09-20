@@ -1,0 +1,112 @@
+{
+  "entry": "http://127.0.0.1:8220/index.html",
+  "steps": [
+    {
+      "key": "j1",
+      "name": "from the entry screen, click \"Open the board\"",
+      "do": "click",
+      "phase": null,
+      "match": [
+        "Open the board"
+      ],
+      "expect": "the board screen",
+      "urlBefore": "http://127.0.0.1:8220/index.html",
+      "textBefore": "HARBOUR Tide Board Help Readings Sources History Today's readings for Thornbury harbour. Save reading Publish board 2 readings stale Readings older than six hours are hidden from the public board automatically. Open the board",
+      "matched": "open the board",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://127.0.0.1:8220/index.html",
+      "textAfter": "HARBOUR Board · September Write this month's note, then lock the board to publish it. Lock the board",
+      "changed": true,
+      "shot": "shot-walk-01-j1"
+    },
+    {
+      "key": "j2",
+      "name": "try \"Lock the board\" with the field(s) still blank",
+      "do": "gate",
+      "phase": "blank",
+      "match": [
+        "Lock the board"
+      ],
+      "expect": "it refuses while the This month is blank",
+      "urlBefore": "http://127.0.0.1:8220/index.html",
+      "textBefore": "HARBOUR Board · September Write this month's note, then lock the board to publish it. Lock the board",
+      "matched": "lock the board",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://127.0.0.1:8220/index.html",
+      "textAfter": "HARBOUR Board · September Write this month's note, then lock the board to publish it. Lock the board Board locked and published.",
+      "changed": true,
+      "shot": "shot-walk-02-j2"
+    },
+    {
+      "key": "j3",
+      "name": "type into \"This month\"",
+      "do": "type",
+      "phase": null,
+      "match": [
+        "This month"
+      ],
+      "expect": "what I typed shows on this screen and the next",
+      "urlBefore": "http://127.0.0.1:8220/index.html",
+      "textBefore": "HARBOUR Board · September Write this month's note, then lock the board to publish it. Lock the board Board locked and published.",
+      "matched": "this month's note…",
+      "disabled": false,
+      "typed": "Number One typed this to see it carry",
+      "readBack": "number one typed this to see it carry",
+      "status": "done",
+      "urlAfter": "http://127.0.0.1:8220/index.html",
+      "textAfter": "HARBOUR Board · September Write this month's note, then lock the board to publish it. Lock the board Board locked and published.",
+      "changed": false,
+      "shot": "shot-walk-03-j3"
+    },
+    {
+      "key": "j4",
+      "name": "click \"Lock the board\" now everything is filled",
+      "do": "gate",
+      "phase": "filled",
+      "match": [
+        "Lock the board"
+      ],
+      "expect": "it opens and the flow completes",
+      "urlBefore": "http://127.0.0.1:8220/index.html",
+      "textBefore": "HARBOUR Board · September Write this month's note, then lock the board to publish it. Lock the board Board locked and published.",
+      "matched": "lock the board",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://127.0.0.1:8220/index.html",
+      "textAfter": "HARBOUR Board · September Write this month's note, then lock the board to publish it. Lock the board Board locked and published.",
+      "changed": false,
+      "shot": "shot-walk-04-j4"
+    }
+  ],
+  "actions": [
+    {
+      "click": "open the board"
+    },
+    {
+      "click": "lock the board"
+    },
+    {
+      "type": "this month's note…",
+      "text": "Number One typed this to see it carry"
+    },
+    {
+      "click": "lock the board"
+    }
+  ],
+  "jumps": [],
+  "screens": [
+    "http://127.0.0.1:8220/index.html",
+    "http://127.0.0.1:8220/index.html"
+  ],
+  "moves": {
+    "clicks": 3,
+    "typings": 1,
+    "keypresses": 0,
+    "addressJumps": 0
+  }
+}

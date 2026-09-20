@@ -529,5 +529,84 @@ class C8_NoSurfaceContradictsTheScore(TabBase):
                                                   " xo-score-word ")[0]).upper())
 
 
+OBS = [
+    {"kind": "crowding", "px": 7,
+     "message": "the Cancel button and the unlabeled button are crowded "
+                "together — 7 px between them",
+     "screen": "http://localhost:5173/#mbr/build", "reportedUnder": "layout"},
+    {"kind": "oversized-icon", "part": "Back to builder",
+     "says": "the \"Back to builder\" button holds an icon 41px tall inside a "
+             "control only 30px tall",
+     "message": "the \"Back to builder\" button holds an icon 41px tall inside "
+                "a control only 30px tall",
+     "screen": "http://localhost:5173/#mbr/preview",
+     "reportedUnder": "measured"},
+    {"kind": "carried-value", "shot": "shot-walk-01-j1",
+     "message": "August 2026 became September 2026 after I clicked \"pull data "
+                "& start\" — the month did not carry from one screen to the next",
+     "screen": "http://localhost:5173/#mbr/collect",
+     "reportedUnder": "measured"},
+]
+
+
+class DC_TheMeasurementsAreONTheBoard(TabBase):
+    """S220 fix round 2, D-C — `verdict.observations` reaches the reader.
+
+    The tester served a scored run through the real daemon, opened every
+    filter and every disclosure, and dumped 46.8k characters of rendered
+    text. Not one observation was in it: not the month that did not carry,
+    not the 41px icon, not even the two crowding lines that predate this
+    round. The data was on disk in `verdict.observations` the whole time —
+    the reader simply never rendered the array.
+
+    These are the wiring half (a node DOM is a browser stub); the browser
+    dump is the other half and the tester's.
+    """
+
+    def test_a_measured_finding_is_drawn_in_its_own_words(self):
+        text = _all_text(self.mi(verdict={"observations": OBS})["pane"])
+        self.assertIn("the month did not carry", text)
+        self.assertIn("an icon 41px tall", text)
+        self.assertIn("crowded together", text)
+
+    def test_both_buckets_get_the_headings_report_md_uses(self):
+        text = _all_text(self.mi(verdict={"observations": OBS})["pane"])
+        self.assertIn("What I measured on your drawing", text)
+        self.assertIn("Things I noticed that are not on your list", text)
+
+    def test_the_top_of_the_report_points_at_them(self):
+        text = _all_text(self.mi(verdict={"observations": OBS})["pane"])
+        self.assertIn("I also measured 2 things", text)
+
+    def test_they_are_reachable_by_a_filter_of_their_own(self):
+        out = self.mi(verdict={"observations": OBS})
+        labels = [n["text"] for n in _cls_of(out["pane"], " xo-filter ")]
+        # S220 fix round 3 (F3): BOTH numbers, because two were counted.
+        # The signpost above says "I also measured 2 things" (the measured
+        # bucket); this chip filters the whole row, which also holds the one
+        # loose layout finding. "3" alone surprised the captain against the 2.
+        self.assertIn("I measured · 2 + 1", labels)
+        # and All counts what is actually in the list: 5 criteria + 3.
+        self.assertIn("All · 8", labels)
+
+    def test_they_are_NOT_counted_as_scored_gaps(self):
+        # S210 stands: a measurement never moves the grade and is never
+        # dressed as a criterion that failed.
+        out = self.mi(verdict={"observations": OBS})
+        labels = [n["text"] for n in _cls_of(out["pane"], " xo-filter ")]
+        self.assertIn("Didn't work · 1", labels)   # the one real gap, alone
+        blocks = _cls_of(out["pane"], " xo-obs ")
+        self.assertEqual(3, len(blocks))
+        for b in blocks:
+            self.assertIn("does not change your grade", _all_text(b))
+
+    def test_a_verdict_with_no_observations_grows_no_such_block(self):
+        out = self.mi()
+        self.assertEqual([], _cls_of(out["pane"], " xo-obs "))
+        self.assertNotIn("I also measured", _all_text(out["pane"]))
+        labels = [n["text"] for n in _cls_of(out["pane"], " xo-filter ")]
+        self.assertIn("All · 5", labels)
+
+
 if __name__ == "__main__":
     unittest.main()

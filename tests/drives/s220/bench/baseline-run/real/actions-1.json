@@ -1,0 +1,14 @@
+[
+  {"navigate": "http://localhost:5173/DX-Scorecard/#mbr"},
+  {"wait": 800},
+  {"screenshot": "mbr-start"},
+  {"click": ".start-action .btn"},
+  {"wait": 1000},
+  {"screenshot": "mbr-collect"},
+  {"wait": 5000},
+  {"screenshot": "mbr-collect-done"},
+  {"click": "[data-testid=\"continue-btn\"]"},
+  {"wait": 1000},
+  {"screenshot": "mbr-builder"},
+  {"screenshot": "mbr-builder-bucket", "selector": ".bucket-card"}
+]

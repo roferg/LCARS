@@ -1,0 +1,488 @@
+{
+  "drawing": "file:///var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench/planted/.git/lcars/missions/lcars-20260919-s220-plant/attachments/attachment-01.html",
+  "screens": [
+    "http://127.0.0.1:8220/index.html"
+  ],
+  "partCount": 9,
+  "matched": 6,
+  "unreachable": 3,
+  "measuredDifferences": 2,
+  "stance": "These are MEASUREMENTS, not verdicts. Look at the two pictures and say what you see; if a measurement is wrong about this control, say why and overrule it \u2014 that is recorded too.",
+  "pairs": [
+    {
+      "part": "helpLink",
+      "name": "Help",
+      "drawn": {
+        "box": {
+          "x": 798,
+          "y": 66,
+          "w": 27,
+          "h": 19
+        },
+        "lines": 1,
+        "crop": "drawn-end-part-04",
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "built": {
+        "box": {
+          "x": 45,
+          "y": 75,
+          "w": 27,
+          "h": 19
+        },
+        "lines": 1,
+        "crop": "shot-end-part-03",
+        "iconBox": null,
+        "name": "Help"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": 0.0,
+          "heightPct": 0.0,
+          "says": "it is 0% wider and 0% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 798,
+            "y": 66
+          },
+          "built": {
+            "x": 45,
+            "y": 75
+          },
+          "says": "drawn at x=798 y=66, built at x=45 y=75 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "saveBtn",
+      "name": "Save reading",
+      "drawn": {
+        "box": {
+          "x": 45,
+          "y": 240,
+          "w": 137,
+          "h": 34
+        },
+        "lines": 1,
+        "crop": "drawn-end-part-07",
+        "iconBox": {
+          "x": 60,
+          "y": 249,
+          "w": 16,
+          "h": 16
+        }
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "built": {
+        "box": {
+          "x": 45,
+          "y": 219,
+          "w": 165,
+          "h": 34
+        },
+        "lines": 1,
+        "crop": "shot-end-part-06",
+        "iconBox": {
+          "x": 60,
+          "y": 214,
+          "w": 44,
+          "h": 44
+        },
+        "name": "Save reading"
+      },
+      "measurements": [
+        {
+          "id": "icon-bigger-than-its-control",
+          "fires": true,
+          "ratio": 1.29,
+          "says": "the icon inside it is 44px tall in a 34px button \u2014 1.29x the control, so it spills past the top and bottom edges"
+        },
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": 20.4,
+          "heightPct": 0.0,
+          "says": "it is 20% wider and 0% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 45,
+            "y": 240
+          },
+          "built": {
+            "x": 45,
+            "y": 219
+          },
+          "says": "drawn at x=45 y=240, built at x=45 y=219 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": true
+    },
+    {
+      "part": "publishBtn",
+      "name": "Publish board",
+      "drawn": {
+        "box": {
+          "x": 192,
+          "y": 240,
+          "w": 160,
+          "h": 34
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "built": {
+        "box": {
+          "x": 220,
+          "y": 215,
+          "w": 74,
+          "h": 41
+        },
+        "lines": 2,
+        "crop": "shot-end-part-07",
+        "iconBox": null,
+        "name": "Publish board"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": true,
+          "drawnLines": 1,
+          "builtLines": 2,
+          "says": "the label runs onto 2 lines in the build where your drawing has 1"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": -53.8,
+          "heightPct": 20.6,
+          "says": "it is 54% narrower and 21% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 192,
+            "y": 240
+          },
+          "built": {
+            "x": 220,
+            "y": 215
+          },
+          "says": "drawn at x=192 y=240, built at x=220 y=215 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": true
+    },
+    {
+      "part": "exportBtn",
+      "name": "Export CSV",
+      "drawn": {
+        "box": {
+          "x": 362,
+          "y": 240,
+          "w": 103,
+          "h": 34
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "alertChip",
+      "name": "2 readings stale",
+      "drawn": {
+        "box": {
+          "x": 475,
+          "y": 246,
+          "w": 105,
+          "h": 23
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "built": {
+        "box": {
+          "x": 304,
+          "y": 224,
+          "w": 105,
+          "h": 23
+        },
+        "lines": 1,
+        "crop": "shot-end-part-08",
+        "iconBox": null,
+        "name": "2 readings stale"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": 0.0,
+          "heightPct": 0.0,
+          "says": "it is 0% wider and 0% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "colour-delta",
+          "fires": false,
+          "drawn": "rgb(192, 57, 43)",
+          "built": "rgb(30, 142, 62)",
+          "says": "your drawing fills it rgb(192, 57, 43); the build fills it rgb(30, 142, 62) (recorded \u2014 look and judge)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 475,
+            "y": 246
+          },
+          "built": {
+            "x": 304,
+            "y": 224
+          },
+          "says": "drawn at x=475 y=246, built at x=304 y=224 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "noticeLabel",
+      "name": "Readings older than six hours are hidden from the public board automatically.",
+      "drawn": {
+        "box": {
+          "x": 45,
+          "y": 292,
+          "w": 230,
+          "h": 35
+        },
+        "lines": 2,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "built": {
+        "box": {
+          "x": 45,
+          "y": 274,
+          "w": 230,
+          "h": 35
+        },
+        "lines": 2,
+        "crop": "shot-end-part-09",
+        "iconBox": null,
+        "name": "Readings older than six hours are hidden from the public board automatically."
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 2,
+          "builtLines": 2,
+          "says": "the label is on 2 lines in both"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": 0.0,
+          "heightPct": 0.0,
+          "says": "it is 0% wider and 0% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 45,
+            "y": 292
+          },
+          "built": {
+            "x": 45,
+            "y": 274
+          },
+          "says": "drawn at x=45 y=292, built at x=45 y=274 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "openBoardBtn",
+      "name": "Open the board",
+      "drawn": {
+        "box": {
+          "x": 45,
+          "y": 343,
+          "w": 127,
+          "h": 34
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "built": {
+        "box": {
+          "x": 45,
+          "y": 325,
+          "w": 127,
+          "h": 34
+        },
+        "lines": 1,
+        "crop": "shot-end-part-10",
+        "iconBox": null,
+        "name": "Open the board"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": 0.0,
+          "heightPct": 0.0,
+          "says": "it is 0% wider and 0% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 45,
+            "y": 343
+          },
+          "built": {
+            "x": 45,
+            "y": 325
+          },
+          "says": "drawn at x=45 y=343, built at x=45 y=325 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "insight",
+      "name": "This month's note\u2026",
+      "drawn": {
+        "box": {
+          "x": 45,
+          "y": 613,
+          "w": 780,
+          "h": 70
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "measurements": [],
+      "built": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "why": "it is in the build but it has no laid-out box (0x0), so there is nothing to look at"
+    },
+    {
+      "part": "lockBtn",
+      "name": "Lock the board",
+      "drawn": {
+        "box": {
+          "x": 45,
+          "y": 702,
+          "w": 123,
+          "h": 34
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": "id",
+      "screen": "http://127.0.0.1:8220/index.html",
+      "measurements": [],
+      "built": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "why": "it is in the build but it has no laid-out box (0x0), so there is nothing to look at"
+    }
+  ]
+}

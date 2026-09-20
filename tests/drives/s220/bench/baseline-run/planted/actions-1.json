@@ -1,0 +1,13 @@
+[
+  {"click": "#openBoardBtn"},
+  {"wait": 300},
+  {"screenshot": "board-open", "selector": "#screen-board"},
+  {"click": "#lockBtn"},
+  {"wait": 300},
+  {"screenshot": "lock-blank", "selector": "#screen-board"},
+  {"type": "#insight", "text": "September note: high spring tides midweek."},
+  {"wait": 200},
+  {"click": "#lockBtn"},
+  {"wait": 300},
+  {"screenshot": "lock-filled", "selector": "#screen-board"}
+]

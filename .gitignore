@@ -14,3 +14,7 @@ tests/drives/*/logs/*/
 tests/drives/*/*/shots/*/
 # and any stray drive screenshot, wherever a rig puts it
 tests/drives/**/*.png
+tests/drives/s220/bench/*/*/build-parts-*.json
+tests/drives/s220/bench/*/*/shots/
+tests/drives/s220/bench/*/*/logs/
+tests/drives/s220/bench/*/*/drawing/

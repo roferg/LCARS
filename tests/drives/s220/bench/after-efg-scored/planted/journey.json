@@ -1,0 +1,56 @@
+{
+  "source": [
+    "the drawing's screen order",
+    "the screen's own gate",
+    "the fields the screens carry"
+  ],
+  "typedText": "Number One typed this to see it carry",
+  "entry": [
+    "Tide Board"
+  ],
+  "steps": [
+    {
+      "do": "click",
+      "match": [
+        "Open the board"
+      ],
+      "name": "from the entry screen, click \"Open the board\"",
+      "expect": "the board screen",
+      "why": "the drawing draws screen-entry before screen-board, and this is screen-entry's own forward control",
+      "key": "j1"
+    },
+    {
+      "do": "gate",
+      "phase": "blank",
+      "match": [
+        "Lock the board"
+      ],
+      "name": "try \"Lock the board\" with the field(s) still blank",
+      "expect": "it refuses while the This month is blank",
+      "why": "a gate that opens on an empty form is the fault a filled form can never show",
+      "key": "j2"
+    },
+    {
+      "do": "type",
+      "match": [
+        "This month"
+      ],
+      "text": "Number One typed this to see it carry",
+      "name": "type into \"This month\"",
+      "expect": "what I typed shows on this screen and the next",
+      "why": "it is a field a person fills, drawn on screen-board",
+      "key": "j3"
+    },
+    {
+      "do": "gate",
+      "phase": "filled",
+      "match": [
+        "Lock the board"
+      ],
+      "name": "click \"Lock the board\" now everything is filled",
+      "expect": "it opens and the flow completes",
+      "why": "the end of the flow is part of the flow",
+      "key": "j4"
+    }
+  ]
+}

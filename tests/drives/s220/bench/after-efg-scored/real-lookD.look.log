@@ -1,0 +1,18 @@
+◈ NUMBER ONE: the contract first — 79 criteria (21 primary), 12 place names.
+◈ NUMBER ONE: I read your drawing — 65 part(s); 14 per-part requirement(s) added, 0 catch-all row(s) retired, 28 part(s) held back (cap 14).
+◈ NUMBER ONE: the journey I will walk — 8 step(s) to walk, from the drawing's screen order; the screen's own gate; the fields the screens carry; the PRD's own steps — 8 of them its own requirement.
+◈ NUMBER ONE: launching the build…
+  the build is up at http://localhost:5173/DX-Scorecard/
+◈ NUMBER ONE: no sample data is declared for this repo — screens that need data may be unseeable.
+  side by side: 42 drawn part(s): 8 matched, 34 unreachable, 3 with a measured difference
+◈ NUMBER ONE: your test run came back FAILED — a red test of yours, or a runner that never started.
+  I am not counting that against the build on its own.
+◈ NUMBER ONE: round 1 of 3 — looking…
+◈ NUMBER ONE: intent match MEDIUM — Your MBR builder works end to end: the walk went Reviews → pull → collect → builder → preview → back, the builder renders the header, amber draft banner, completion bar, bucket headers, editable status selects (with a distinct X for off-track), cohort deltas, Carried pills and manual cells, and the lock gate correctly refuses while an insight is blank. The behaviours I couldn't see on screen — wired collect cells, the Refresh-all box, the lock/discard/unlock dialogs, re-pull — are all covered by your own passing tests. The one real defect is visual: the primary action buttons (Pull data & start, Continue to builder, Lock month) render icons that spill past the button and labels that wrap to 2–3 lines where the mockup has slim one-line buttons — a parity gap worth a fix but not a blocker. Note the 6 red tests are contamination from my own walk, not your build.
+  The report is in /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench-b/dx/.git/lcars/missions/lcars-20260911-001-8cb0/xo/verdict.json.
+◈ NUMBER ONE: filed 4 mission log(s) against lcars-20260911-001-8cb0.
+  log #1  lcars-20260920-005-8cb0  the Pull data & start button's oversized icon and wrapped label
+  log #2  lcars-20260920-006-8cb0  the Continue to builder button's oversized icon and wrapped label
+  log #3  lcars-20260920-007-8cb0  the Lock month button's oversized icon and wrapped label
+  log #4  lcars-20260920-008-8cb0  primary action buttons break visual parity with the mockup
+  LCARS is driving them now. I will re-check the build when they land.

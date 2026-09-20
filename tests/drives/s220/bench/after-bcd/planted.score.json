@@ -1,0 +1,72 @@
+{
+ "case": "planted",
+ "label": "after B/C/D",
+ "look": "/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench/planted/.git/lcars/missions/lcars-20260919-s220-plant/xo",
+ "knownFaults": 5,
+ "found": 4,
+ "recall": 0.8,
+ "correctControls": 2,
+ "falseAlarms": 0,
+ "grade": "low",
+ "gradeMustBeAtMost": "medium",
+ "gradeOk": true,
+ "gradeEarned": true,
+ "findings": {
+  "negative": 9,
+  "couldNotCheck": 3
+ },
+ "walk": {
+  "navigations": 1,
+  "clicks": 3,
+  "typings": 1,
+  "keypresses": 0,
+  "jumpsPastEntry": 0
+ },
+ "detail": {
+  "found": [
+   {
+    "key": "p1-save-icon",
+    "by": "prd-3",
+    "src": "criterion",
+    "quote": "The square icon is oversized \u2014 44px tall inside a 34px control (1.29x), so it spills past the top and bottom edges, where the drawing has a small 16px icon inside the 34px button. Label is beside it on one line. Impact medium because it is button presentation secondary to the point. I tried reading "
+   },
+   {
+    "key": "p2-publish-wrap",
+    "by": "prd-4",
+    "src": "criterion",
+    "quote": "It is blue, but only 74px wide (not 160px) so \"Publish board\" wraps onto two lines where the drawing keeps it on one. Impact medium because it is button presentation secondary to the point. I tried reading its box and label wrap; I saw a 74px-wide blue button with the label on 2 lines, where the dra"
+   },
+   {
+    "key": "p3-chip-colour",
+    "by": "prd-6",
+    "src": "criterion",
+    "quote": "The chip reads \"2 readings stale\" but is filled green (rgb(30,142,62)) where the drawing and PRD call for red (#c0392b / rgb(192,57,43)). Green reads as a healthy state \u2014 the exact thing the PRD says it must not do. Impact high because a warning reading as healthy is the failure the PRD warns agains"
+   },
+   {
+    "key": "p5-export-missing",
+    "by": "prd-5",
+    "src": "criterion",
+    "quote": "There is no Export CSV button anywhere beside Publish \u2014 after the blue Publish board button the row goes straight to the green \"2 readings stale\" chip. The drawing has an Export CSV button between them. Impact medium because it is a stated secondary action. I tried scanning the whole button row and "
+   }
+  ],
+  "missed": [
+   {
+    "key": "p4-help-corner",
+    "what": "Help sits bottom-left of the head in the build and top-right in the drawing."
+   }
+  ],
+  "falseAlarms": [],
+  "journey": [
+   {
+    "key": "j1-click-to-board",
+    "what": "Screen two has no URL route: the look must CLICK \"Open the board\" to reach it.",
+    "reported": false
+   },
+   {
+    "key": "j2-gate-opens-blank",
+    "what": "Lock publishes with a blank note; the drawing says it refuses.",
+    "reported": true
+   }
+  ]
+ }
+}

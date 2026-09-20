@@ -1,0 +1,20 @@
+◈ NUMBER ONE: the contract first — 79 criteria (21 primary), 12 place names.
+◈ NUMBER ONE: I read your drawing — 65 part(s); 14 per-part requirement(s) added, 0 catch-all row(s) retired, 28 part(s) held back (cap 14).
+◈ NUMBER ONE: the journey I will walk — 8 step(s) to walk, from the drawing's screen order; the screen's own gate; the fields the screens carry; the PRD's own steps — 8 of them its own requirement.
+◈ NUMBER ONE: launching the build…
+  the build is up at http://localhost:5174/DX-Scorecard/
+  side by side: 42 drawn part(s): 0 matched, 42 unreachable, 0 with a measured difference
+◈ NUMBER ONE: your tests pass — I can use them as evidence.
+◈ NUMBER ONE: round 1 of 3 — looking…
+  side by side: 42 drawn part(s): 8 matched, 34 unreachable, 3 with a measured difference
+◈ NUMBER ONE: round 2 of 3 — looking…
+◈ NUMBER ONE: intent match MEDIUM — Captain, the rebuilt MBR flow is substantially there: the Reviews entry screen, the collection screen, and the redesigned builder all render with the right eyebrow/title/subtitle, the amber draft banner, the 'Insights added — 16 of 19' completion bar, five-silhouette status selects with a distinct red X for off-track, purple Carried pills, cohort 'change vs last MBR' deltas, and manual inline cells — and your own suite of 597 tests passes green, covering the lock gate, autosave, re-pull, dialogs, and Preview/View. The one real blemish is cosmetic but visible: three primary action buttons — Pull data & start, Continue to builder, and Lock month — render with their icons blown up past the button edges and their labels wrapped onto 2–3 lines, where your mockup draws each compact on one line. Everything works; I'd ship with that button-icon fix as the named known issue.
+  The report is in /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench-b/dx/.git/lcars/missions/lcars-20260911-001-8cb0/xo/verdict.json.
+◈ NUMBER ONE: filed 4 mission log(s) against lcars-20260911-001-8cb0.
+  log #1  lcars-20260920-001-8cb0  the 'Pull data & start' button's icon balloons past its edges and the label wraps to 3 lines
+  log #2  lcars-20260920-002-8cb0  the 'Continue to builder' button's icon balloons past its edges and the label wraps to 3 lines
+  log #3  lcars-20260920-003-8cb0  the amber 'Lock month' button's icon spills past its edges and the label wraps to 2 lines
+  log #4  lcars-20260920-004-8cb0  the primary action buttons break mockup parity on icon sizing and label wrapping
+  LCARS is driving them now. I will re-check the build when they land.
+/Users/roganferguson/Projects/LCARS-number-one/skills/lcars-xo/xo.sh: line 2929: syntax error near unexpected token `;;'
+/Users/roganferguson/Projects/LCARS-number-one/skills/lcars-xo/xo.sh: line 2929: `                      "$(jstr "fix did not hold: $why")")" ;;'

@@ -1,0 +1,14 @@
+[
+  {"navigate": "http://localhost:5173/DX-Scorecard/#mbr"},
+  {"wait": 1000},
+  {"click": "[data-testid=\"mbr-slot-start\"] button.btn.success"},
+  {"wait": 6500},
+  {"click": "[data-testid=\"continue-btn\"]"},
+  {"wait": 1200},
+  {"click": ".mbr-builder .toolbar .btn.warn-primary"},
+  {"wait": 500},
+  {"screenshot": "lock-dialog"},
+  {"press": "Escape"},
+  {"click": ".mbr-builder .toolbar .icon-btn"},
+  {"screenshot": "preview-readonly"}
+]

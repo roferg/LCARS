@@ -1,0 +1,39 @@
+{
+  "url": "http://localhost:5174/DX-Scorecard/#mbr",
+  "allPainted": true,
+  "notes": [
+    "reached by address, not by the flow: http://localhost:5174/DX-Scorecard/#mbr"
+  ],
+  "shots": [
+    {
+      "name": "mbr-start",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 2509
+    },
+    {
+      "name": "mbr-start-card",
+      "selector": ".start-card",
+      "painted": true,
+      "distinctColours": 1455
+    },
+    {
+      "name": "mbr-collect",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 1533
+    },
+    {
+      "name": "mbr-collect-done",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 1533
+    },
+    {
+      "name": "mbr-builder",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 5664
+    }
+  ]
+}

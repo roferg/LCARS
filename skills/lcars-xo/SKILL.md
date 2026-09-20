@@ -110,6 +110,41 @@ The order is the contract:
    happened to notice.
 2. **`launch.sh <id>`.** If the build does not come up, the score is **LOW**
    quoting the launch message — and **no browser is started at all**.
+
+   **2b. THE DECLARED SEED (S220 part E).** Screens that only exist once there
+   is data in them cannot be photographed into existence, so a repo may declare
+   sample data for the look and it is loaded here, in the launched build's own
+   worktree, before the first picture. Two places, both of them the RECORD —
+   never a guess by a worker:
+
+   - `"verifySeed": "<command>"` in `.git/lcars/config.json`, or
+   - an executable `.lcars/verify-seed.sh` the project itself ships.
+
+   It is caged (`LCARS_XO_SEED_TIMEOUT`, 300s) and what ran is recorded in
+   `xo/seed.json`. **With neither declared nothing is invented**: the report
+   says in one plain sentence which screens it could not see for want of data,
+   and those rows are `couldn't check` — never a fault in the build.
+
+   **2c. THE DECLARED JOURNEY (S220 part F).** `xo-journey.py` reads the flow
+   out of the record — the drawing's screen order and each screen's own forward
+   control, the PRD's steps ("the Preview button navigates to …", which is how a
+   screen the drawing never drew is reached at all), and the fields and gates
+   the screens carry — and writes `xo/journey.json`, one requirement per step.
+   The DRIVER walks it: it finds its way in by clicking (the first screen's
+   headings and the mission title are the names it tries), clicks each step's
+   control by its accessible name, types into the fields a person fills, and
+   tries every gate BOTH ways — once while the thing it waits for is blank,
+   once when it is filled. `xo/walk.json` is what actually happened: every
+   click, typing, keypress and address jump, and each step that could not be
+   taken, by name. A step recorded `unreachable` is forced to **couldn't check
+   (unreachable)** whatever the look says about it.
+
+   **Why the harness walks it and not the model:** measured twice on the same
+   build with the same code, one look clicked its way through and the next
+   jumped to four addresses and never touched a control. A walk left to the
+   model's discretion is a lottery. `navigate` still works for the model's own
+   rounds — every jump past the front door is counted and the screens reached
+   that way are labelled *reached by address, not by the flow*.
 3. **Round 0** — `xo-drive.js` takes the whole page plus one clipped shot per
    place the drawing names. Every PNG gets a paired `.json` readout and a
    one-line `.txt` caption.
@@ -361,6 +396,29 @@ and the only thing that ever visits that url is Number One's own headless
 Chrome, in a throwaway profile, TERMed by its own pid on the way out.
 `tests/drives/s203/drive-rig.sh` asserts it by reading the frontmost application
 before and after a whole real drive.
+
+## `on` sweeps what is already waiting at Verify (S220 part G)
+
+Switching Number One on is the captain saying *"I have to step out"*, so
+`lcars xo on` (repo-wide, and the board's toggle) does not only arm the hook
+that fires when a run ARRIVES at Verify — it picks up what is already there.
+
+His ruling on scope (2026-09-19): **"Review everyone at verify that doesn't
+have a previous Number One score."** So the sweep takes every mission that is
+
+- at **Verify**, and
+- has **no score on record** — `numberOne.score`, `numberOne.score2` or an
+  `xo/verdict.json` on disk; all three are read, nothing is inferred —
+
+and is not opted out (`lcars xo off <id>`), not a bug child (it has no build of
+its own), and not another laptop's (a different `cloneId`). It says what it
+picked up in plain words — *"I'm reviewing 3 missions that were waiting at
+Verify: …"* — journals `swept` on each, and runs them **one at a time**.
+
+**Standing it down stops the chain.** Both questions are asked again between
+missions, so `lcars xo off` during a round ends the sweep after that round —
+never in the middle of one. `LCARS_XO_SWEEP=0` turns the sweep off entirely;
+`LCARS_XO_SWEEP_BIN` is the per-mission command a test drives it with.
 
 ## The engine picker
 

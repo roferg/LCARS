@@ -1,0 +1,31 @@
+{
+  "url": "http://localhost:5173/DX-Scorecard/#mbr/preview",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "mbr-start",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 2444
+    },
+    {
+      "name": "mbr-build",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 949
+    },
+    {
+      "name": "mbr-collect",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 1522
+    },
+    {
+      "name": "mbr-preview",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 3700
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "ran": false,
+  "command": "",
+  "cwd": "",
+  "exitCode": null,
+  "timedOut": false,
+  "timeoutSeconds": 300,
+  "durationSeconds": 0,
+  "outputBytes": 0,
+  "truncated": false,
+  "tailCapBytes": 8000,
+  "outputTail": "",
+  "outcome": "no-test-command",
+  "verdict": "This repo has no test command set, so the only evidence I have is what I could see on the screen.",
+  "ranIn": null,
+  "rootExitCode": null,
+  "reporterFlag": "",
+  "testCases": []
+}

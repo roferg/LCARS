@@ -1,0 +1,14 @@
+[
+  {"navigate": "http://localhost:5173/DX-Scorecard/#mbr"},
+  {"wait": 1000},
+  {"screenshot": "mbr-start"},
+  {"navigate": "http://localhost:5173/DX-Scorecard/#mbr/build"},
+  {"wait": 1000},
+  {"screenshot": "mbr-build"},
+  {"navigate": "http://localhost:5173/DX-Scorecard/#mbr/collect"},
+  {"wait": 1200},
+  {"screenshot": "mbr-collect"},
+  {"navigate": "http://localhost:5173/DX-Scorecard/#mbr/preview"},
+  {"wait": 1000},
+  {"screenshot": "mbr-preview"}
+]

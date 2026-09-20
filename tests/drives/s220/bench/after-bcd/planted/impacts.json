@@ -1,0 +1,123 @@
+{
+  "impacts": {
+    "prd-2": {
+      "impact": "medium",
+      "impactWhy": "The flush tab bar is medium because the mission's point (save/publish/lock) does not depend on it, but it is a stated layout requirement.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "A **flush tab bar** runs edge to edge under the head \u2014 Readings / Sources / History \u2014 with the current tab underlined. There is no gap at either end."
+    },
+    "prd-3": {
+      "impact": "medium",
+      "impactWhy": "The Save button styling is medium because saving is the point but the exact icon size is presentation, like the health-bar colour example.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "A **Save reading** button carries a small square icon, 16px inside a 34px control, with the label beside it on one line."
+    },
+    "prd-4": {
+      "impact": "medium",
+      "impactWhy": "The Publish button shape is medium because publishing is the point but width and line-wrap are presentation, not whether it works.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "A **Publish board** button is the blue primary action, 160px wide, with \"Publish board\" on **one line**."
+    },
+    "prd-5": {
+      "impact": "medium",
+      "impactWhy": "The Export CSV button is medium because it is a stated secondary action, not the core save/publish/lock the mission is for.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "An **Export CSV** button sits beside Publish."
+    },
+    "prd-6": {
+      "impact": "high",
+      "impactWhy": "The stale-readings warning colour is high because a warning chip that reads as a healthy state is exactly the misleading state the PRD says must not happen.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "A **stale-readings chip** reads \"2 readings stale\" and is **red** (#c0392b) \u2014 it is a warning, and it must not read as a healthy state."
+    },
+    "prd-7": {
+      "impact": "low",
+      "impactWhy": "The notice wrapping is low because it is purely presentational text that nobody would block the merge over.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "A **notice** under the buttons reads \"Readings older than six hours are hidden from the public board automatically.\" It is 230px wide and, as drawn, it takes **two lines**. That is correct, not a defect."
+    },
+    "prd-8": {
+      "impact": "medium",
+      "impactWhy": "Getting to the board screen is medium because it is the means to the lock workflow and clicking the button does reach it.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "**Open the board** is the only way onto the second screen. There is no address for it: a person gets there by clicking."
+    },
+    "prd-9": {
+      "impact": "high",
+      "impactWhy": "The lock-refuses-while-blank rule is high because locking/publishing the month's note correctly is the point of the second screen.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "On the board screen, a note box and a **Lock the board** button. **Lock refuses while the note is blank**, and publishes once a note is written."
+    },
+    "part-helpLink": {
+      "impact": "medium",
+      "impactWhy": "The Help link placement is medium because it is an explicit stated position but the mission's point does not depend on it, like the health-bar colour example.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"Help\" link matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-saveBtn": {
+      "impact": "medium",
+      "impactWhy": "The Save button match is medium because saving is the point but the icon-size detail is presentation, not function.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"Save reading\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-publishBtn": {
+      "impact": "medium",
+      "impactWhy": "The Publish button match is medium because publishing is the point but the wrap and width are presentation, not whether it works.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"Publish board\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-exportBtn": {
+      "impact": "medium",
+      "impactWhy": "The Export CSV button is medium because it is a stated secondary action, matching prd-5, not the core workflow.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"Export CSV\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-alertChip": {
+      "impact": "high",
+      "impactWhy": "The stale chip match is high because it is the same warning element as prd-6, whose colour must not read as a healthy state.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"2 readings stale\" part matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-noticeLabel": {
+      "impact": "low",
+      "impactWhy": "The notice match is low because it is purely presentational text nobody would block on, matching prd-7.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"Readings older than six hours are hidden from the public boa\" part matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-openBoardBtn": {
+      "impact": "medium",
+      "impactWhy": "The Open the board button match is medium because it is the route to the lock screen and its appearance matches the drawing.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"Open the board\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-insight": {
+      "impact": "medium",
+      "impactWhy": "The note textarea match is medium because writing the month's note is part of the point and the box is present and usable.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"This month's note\u2026\" textarea matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    },
+    "part-lockBtn": {
+      "impact": "medium",
+      "impactWhy": "The Lock the board button match is medium because the button appearance is presentation while its behaviour is covered by prd-9.",
+      "at": "2026-09-20T02:44:00Z",
+      "engine": "",
+      "text": "the \"Lock the board\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place"
+    }
+  }
+}

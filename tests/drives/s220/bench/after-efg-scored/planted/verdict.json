@@ -1,0 +1,418 @@
+{
+  "score": "low",
+  "workerScore": "low",
+  "scoreDisagreed": false,
+  "derivation": "2 parts of the point of the mission didn't work; what you wanted is not there yet.",
+  "scoreMeaning": "What you set out to get is not in the build \u2014 look for yourself before this goes anywhere",
+  "counts": {
+    "met": 8,
+    "gap": 6,
+    "untested": 7,
+    "contradictions": 6
+  },
+  "whyThisGrade": "LOW because something that is the point of the mission did not work. The point of the mission is 3 things \u2014 the Lock gate publishes an empty note, blank-note lock is not refused in the walk and Walking the flow\u2026 \u2014 and 2 didn't work. Didn't work: the Lock gate publishes an empty note \u2014 you asked for Lock the board to refuse while the note is blank; the build gives \"Board locked and published.\" with the note field left empty \u2014 it\u2026 (prd-9) and blank-note lock is not refused in the walk \u2014 you asked for a refusal when Lock is pressed with the This month note blank; the build gives the board locked and published on the blank form (journey-j2); Known issues shipping with it: the Save reading icon spills its control \u2014 you asked for a small 16px square icon inside the 34px control; the build gives a 44px icon that spills past the button's top and bottom (prd-3); Publish board is too narrow and wraps \u2014 you asked for a 160px-wide blue button with \"Publish board\" on one line; the build gives a 74px-wide blue button whose label wraps onto two lines (prd-4); no Export CSV button beside Publish \u2014 you asked for an Export CSV button beside Publish; the build gives nothing there \u2014 beside Publish is the stale chip, with no Export CSV\u2026 (prd-5) and 1 more \u2014 see the list. I could not check 7 things \u2014 Help is on the left, not top-right, Save reading icon does not match the drawing, Publish board does not match the drawing and 4 more \u2014 see the list.",
+  "core": "broken",
+  "criteria": [
+    {
+      "id": "prd-2",
+      "text": "A flush tab bar runs edge to edge under the head \u2014 Readings / Sources / History \u2014 with the current tab underlined. There is no gap at either end.",
+      "status": "met",
+      "note": "The tab bar runs Readings / Sources / History flush across the card (tabs span x=25\u2013845 inside a card at x=24\u2013846, no gap at either end) and Readings is underlined in blue.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-01",
+      "impact": "medium",
+      "impactWhy": "The tab bar is a stated requirement because it does not carry the save/publish/lock workflow that the mission is for.",
+      "action": "opened the entry screen and looked at the tab row under the head, checking each end for a gap and which tab is underlined.",
+      "reason": "Impact medium because the mission is for the harbourmaster workflow, not the tab chrome. I tried reading the tab boxes and looking at the row; I saw Readings/Sources/History edge to edge with Readings underlined blue (evidence: shot-01). Outcome: worked."
+    },
+    {
+      "id": "prd-3",
+      "text": "A Save reading button carries a small square icon, 16px inside a 34px control, with the label beside it on one line.",
+      "status": "gap",
+      "note": "The icon inside Save reading is far bigger than drawn \u2014 a 44x44px square inside a 34px-tall control, so it spills past the button's top and bottom edges. Your drawing has a small 16px square. The label is beside it on one line, which is right.",
+      "primary": true,
+      "evidence": "measurement",
+      "shot": "shot-01",
+      "impact": "medium",
+      "impactWhy": "The Save reading icon sizing is a stated requirement that is secondary because the mission's point does not depend on the icon being exactly 16px.",
+      "action": "read the Save reading button box and its inner icon box out of the shot-01 readout and compared them to the 16px-in-34px the PRD asks for.",
+      "reason": "Impact medium because the save action works and only its icon is oversized. I tried measuring the icon against its control; I saw a 44x44px icon in a 34px control, spilling out, where 16px was asked (evidence: shot-01). Outcome: didn't."
+    },
+    {
+      "id": "prd-4",
+      "text": "A Publish board button is the blue primary action, 160px wide, with \"Publish board\" on one line.",
+      "status": "gap",
+      "note": "Publish board is the right blue (rgb(31,111,235)) but it is only 74px wide, not 160px, so \"Publish board\" wraps onto two lines instead of the one line asked for.",
+      "primary": true,
+      "evidence": "measurement",
+      "shot": "shot-01",
+      "impact": "medium",
+      "impactWhy": "The Publish board button shape is a stated requirement that is secondary because the mission's point does not turn on its width or line count.",
+      "action": "measured the Publish board button width from the shot-01 readout and looked at how many lines its label takes.",
+      "reason": "Impact medium because the button is present and blue and only its size and wrap are wrong. I tried measuring its width and reading its label; I saw 74px wide with the label on two lines where 160px and one line were asked (evidence: shot-01). Outcome: didn't."
+    },
+    {
+      "id": "prd-5",
+      "text": "An Export CSV button sits beside Publish.",
+      "status": "gap",
+      "note": "There is no Export CSV button beside Publish at all \u2014 the space beside Publish board holds the stale-readings chip and nothing else. The readout records it as not present.",
+      "primary": true,
+      "evidence": "measurement",
+      "shot": "shot-01",
+      "impact": "medium",
+      "impactWhy": "The Export CSV button is a stated requirement that is secondary because the mission's core is saving, publishing and locking, not exporting.",
+      "action": "looked beside the Publish board button for an Export CSV control and checked the shot-01 readout for it.",
+      "reason": "Impact medium because export is secondary to the save/publish/lock point. I tried finding Export CSV beside Publish; I saw no such button, only the chip in that space (evidence: shot-01, exportBtn present:false). Outcome: didn't."
+    },
+    {
+      "id": "prd-6",
+      "text": "A stale-readings chip reads \"2 readings stale\" and is red (#c0392b) \u2014 it is a warning, and it must not read as a healthy state.",
+      "status": "gap",
+      "note": "The chip does read \"2 readings stale\", but it is green (rgb(30,142,62)), not the red (#c0392b) asked for \u2014 so the warning reads as a healthy state, which is exactly what the PRD said it must not do.",
+      "primary": true,
+      "evidence": "measurement",
+      "shot": "shot-01",
+      "impact": "medium",
+      "impactWhy": "The chip colour is a stated requirement that is secondary in the captain's own rule (a wrong colour is medium), though it does mislead by reading as healthy.",
+      "action": "read the alertChip background colour from the shot-01 readout and compared it to the red the PRD requires.",
+      "reason": "Impact medium because a wrong warning colour is a medium fault by the captain's rule. I tried measuring the chip's background; I saw green rgb(30,142,62) where red #c0392b was asked, reading as healthy (evidence: shot-01). Outcome: didn't."
+    },
+    {
+      "id": "prd-7",
+      "text": "A notice under the buttons reads \"Readings older than six hours are hidden from the public board automatically.\" It is 230px wide and, as drawn, it takes two lines.",
+      "status": "met",
+      "note": "The notice sits under the buttons with the exact wording, 230px wide, and takes two lines just as drawn.",
+      "primary": true,
+      "evidence": "measurement",
+      "shot": "shot-01",
+      "impact": "medium",
+      "impactWhy": "The notice is a stated requirement that is secondary because the mission's point does not depend on this informational line.",
+      "action": "read the noticeLabel width and text out of the shot-01 readout and counted its lines against the drawing.",
+      "reason": "Impact medium because the notice is informational, not the point. I tried measuring the notice width and reading it; I saw the exact text at 230px on two lines as drawn (evidence: shot-01). Outcome: worked."
+    },
+    {
+      "id": "prd-8",
+      "text": "Open the board is the only way onto the second screen. There is no address for it: a person gets there by clicking.",
+      "status": "met",
+      "note": "Clicking Open the board swapped the entry view for the board screen with no address change (the url stayed index.html), so it is reached by clicking, not by an address.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-walk-01-j1",
+      "impact": "medium",
+      "impactWhy": "Reaching the board is a stated requirement that supports but is not itself the lock workflow the mission is for.",
+      "action": "clicked Open the board on the entry screen and watched the page swap to the board view while the url stayed the same.",
+      "reason": "Impact medium because navigation supports the workflow without being its point. I tried clicking Open the board; I saw the board screen appear with the url unchanged (evidence: shot-walk-01-j1). Outcome: worked."
+    },
+    {
+      "id": "prd-9",
+      "text": "On the board screen, a note box and a Lock the board button. Lock refuses while the note is blank, and publishes once a note is written.",
+      "status": "gap",
+      "note": "The note box and Lock the board button are both there, but Lock does NOT refuse while the note is blank \u2014 with the field empty, clicking Lock the board showed \"Board locked and published.\" It publishes an empty note.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-walk-02-j2",
+      "impact": "high",
+      "impactWhy": "The lock gate is high because the mission is for the harbourmaster to lock the month's note, and a gate that publishes an empty note defeats that point.",
+      "action": "on the board screen with the note field left blank, clicked Lock the board and watched for a refusal.",
+      "reason": "Impact high because the mission is for locking the month's note and this gate is the point. I tried clicking Lock with the note blank; I saw \"Board locked and published.\" instead of a refusal (evidence: shot-walk-02-j2). Outcome: didn't."
+    },
+    {
+      "id": "part-helpLink",
+      "text": "the \"Help\" link matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "untested",
+      "note": "your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check",
+      "primary": true,
+      "evidence": "none",
+      "impact": "medium",
+      "impactWhy": "The Help link placement is a stated header detail that is secondary because the mission's workflow does not depend on it.",
+      "action": "compared the Help link position in the shot-01 readout against the drawing's top-right placement.",
+      "reason": "Impact medium because the mission's workflow does not depend on it. Your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check. Outcome: couldn't check.",
+      "reasonByHarness": true
+    },
+    {
+      "id": "part-saveBtn",
+      "text": "the \"Save reading\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "untested",
+      "note": "your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check",
+      "primary": true,
+      "evidence": "none",
+      "impact": "medium",
+      "impactWhy": "The Save reading button appearance is a stated detail that is secondary because the save action itself, not the icon size, is what the mission needs.",
+      "action": "compared the Save reading icon box in shot-01 against the small 16px square in the drawing.",
+      "reason": "Impact medium because the save action itself, not the icon size, is what the mission needs. Your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check. Outcome: couldn't check.",
+      "reasonByHarness": true
+    },
+    {
+      "id": "part-publishBtn",
+      "text": "the \"Publish board\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "untested",
+      "note": "your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check",
+      "primary": true,
+      "evidence": "none",
+      "impact": "medium",
+      "impactWhy": "The Publish board button appearance is a stated detail that is secondary because the mission's point does not turn on its width or wrap.",
+      "action": "compared the Publish board button width and line count in shot-01 against the drawing's 160px one-line button.",
+      "reason": "Impact medium because the mission's point does not turn on its width or wrap. Your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check. Outcome: couldn't check.",
+      "reasonByHarness": true
+    },
+    {
+      "id": "part-exportBtn",
+      "text": "the \"Export CSV\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "untested",
+      "note": "your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check",
+      "primary": true,
+      "evidence": "none",
+      "impact": "medium",
+      "impactWhy": "The Export CSV button is a stated detail that is secondary because the mission's core is save/publish/lock, not export.",
+      "action": "searched the build for an Export CSV control to crop beside the drawing and found none to compare.",
+      "couldNotCheck": "unreachable",
+      "reason": "Impact medium because export is secondary to the workflow. I tried finding an Export CSV control to compare to the drawing; I saw none anywhere, so there was nothing to look at (evidence: \u2014). Outcome: couldn't check (unreachable)."
+    },
+    {
+      "id": "part-alertChip",
+      "text": "the \"2 readings stale\" part matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "untested",
+      "note": "your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check",
+      "primary": true,
+      "evidence": "none",
+      "impact": "medium",
+      "impactWhy": "The chip appearance is a stated detail that is secondary in the captain's own rule that a wrong colour is medium.",
+      "action": "compared the stale chip's colour and position in shot-01 against the drawn warning chip.",
+      "reason": "Impact medium because the chip appearance is a stated detail that is secondary in the captain's own rule that a wrong colour is medium. Your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check. Outcome: couldn't check.",
+      "reasonByHarness": true
+    },
+    {
+      "id": "part-noticeLabel",
+      "text": "the \"Readings older than six hours are hidden from the public boa\" part matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "untested",
+      "note": "your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check",
+      "primary": true,
+      "evidence": "none",
+      "impact": "medium",
+      "impactWhy": "The notice is a stated detail that is secondary because the mission's point does not depend on this line.",
+      "action": "compared the notice width, wording and line count in shot-01 against the drawing.",
+      "reason": "Impact medium because the mission's point does not depend on this line. Your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check. Outcome: couldn't check.",
+      "reasonByHarness": true
+    },
+    {
+      "id": "part-openBoardBtn",
+      "text": "the \"Open the board\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "untested",
+      "note": "your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check",
+      "primary": true,
+      "evidence": "none",
+      "impact": "medium",
+      "impactWhy": "The Open the board button appearance is a stated detail that supports but is not itself the lock workflow.",
+      "action": "compared the Open the board button width, place and line count in shot-01 against the drawing.",
+      "reason": "Impact medium because the Open the board button appearance is a stated detail that supports but is not itself the lock workflow. Your drawing names this part and I could not find it in the build, so there was nothing to look at \u2014 couldn't check. Outcome: couldn't check.",
+      "reasonByHarness": true
+    },
+    {
+      "id": "part-insight",
+      "text": "the \"This month's note\u2026\" textarea matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "met",
+      "note": "The \"This month's note\u2026\" textarea matches the drawing \u2014 same 780px width and 70px height, same left edge (x=45), placeholder as drawn.",
+      "primary": true,
+      "evidence": "measurement",
+      "shot": "shot-walk-03-j3",
+      "impact": "medium",
+      "impactWhy": "The note box appearance is a stated detail that supports but is not itself the lock gate the mission is for.",
+      "action": "compared the note textarea box in the board-screen shot against the drawing's textarea.",
+      "reason": "Impact medium because the note box supports the gate without being it. I tried measuring the textarea against the drawing; I saw the same 780x70 box at x=45 (evidence: shot-walk-03-j3). Outcome: worked."
+    },
+    {
+      "id": "part-lockBtn",
+      "text": "the \"Lock the board\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "status": "met",
+      "note": "Lock the board matches the drawing in shape \u2014 123px wide, label on one line, at the same lower-left place (x=45).",
+      "primary": true,
+      "evidence": "measurement",
+      "shot": "shot-walk-01-j1",
+      "impact": "medium",
+      "impactWhy": "The Lock button's look is a stated detail that is secondary to whether the lock gate behaves, which is judged elsewhere.",
+      "action": "compared the Lock the board button width, place and line count in the board-screen shot against the drawing.",
+      "reason": "Impact medium because the button's look is secondary to its gate. I tried measuring the button against the drawing; I saw 123px on one line at x=45 as drawn (evidence: shot-walk-01-j1). Outcome: worked."
+    },
+    {
+      "id": "journey-j1",
+      "text": "Walking the flow: from the entry screen, click \"Open the board\" \u2014 the board screen.",
+      "status": "met",
+      "note": "From the entry screen, clicking Open the board took me to the board screen (Board \u00b7 September with the note box and Lock button).",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-walk-01-j1",
+      "impact": "medium",
+      "impactWhy": "Reaching the board is a flow step that supports but is not itself the lock workflow the mission is for.",
+      "action": "clicked Open the board from the entry screen and confirmed the board screen appeared.",
+      "reason": "Impact medium because it is a step toward the gate, not the gate. I tried clicking Open the board; I saw the board screen appear (evidence: shot-walk-01-j1). Outcome: worked."
+    },
+    {
+      "id": "journey-j2",
+      "text": "Walking the flow: try \"Lock the board\" with the field(s) still blank \u2014 it refuses while the This month is blank.",
+      "status": "gap",
+      "note": "With the note field blank, Lock the board did not refuse \u2014 it showed \"Board locked and published.\", locking and publishing an empty note.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-walk-02-j2",
+      "impact": "high",
+      "impactWhy": "The blank-note refusal is high because the mission is for locking a written note, and a gate that opens on an empty form defeats that point.",
+      "action": "left the note field blank and clicked Lock the board to see whether it would refuse.",
+      "reason": "Impact high because a gate that opens on an empty form is the fault the mission most needs to avoid. I tried locking with the field blank; I saw \"Board locked and published.\" instead of a refusal (evidence: shot-walk-02-j2). Outcome: didn't."
+    },
+    {
+      "id": "journey-j3",
+      "text": "Walking the flow: type into \"This month\" \u2014 what I typed shows on this screen and the next.",
+      "status": "met",
+      "note": "Typing \"Number One typed this to see it carry\" into the note box showed the text plainly in the field; this is a single-page board with no distinct next screen after locking, so what shows here is what carries.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-walk-03-j3",
+      "impact": "medium",
+      "impactWhy": "The note field carrying its text is a flow step that is secondary because the mission's point is the lock gate, not text persistence.",
+      "action": "typed a sentence into the This month's note field and confirmed it appeared in the box.",
+      "reason": "Impact medium because text persistence is secondary to the gate. I tried typing into the note field; I saw my text shown in the box (evidence: shot-walk-03-j3). Outcome: worked."
+    },
+    {
+      "id": "journey-j4",
+      "text": "Walking the flow: click \"Lock the board\" now everything is filled \u2014 it opens and the flow completes.",
+      "status": "met",
+      "note": "With the note written, clicking Lock the board completed the flow \u2014 the board shows \"Board locked and published.\"",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-walk-04-j4",
+      "impact": "high",
+      "impactWhy": "Completing the lock once a note is written is high because publishing the written month's note is what the mission is for.",
+      "action": "with the note filled in, clicked Lock the board and confirmed the flow completed.",
+      "reason": "Impact high because publishing the written note is the point of the flow. I tried locking with the note filled; I saw \"Board locked and published.\" (evidence: shot-walk-04-j4). Outcome: worked."
+    }
+  ],
+  "gaps": [
+    {
+      "title": "the Lock gate publishes an empty note",
+      "expected": "Lock the board to refuse while the note is blank",
+      "saw": "\"Board locked and published.\" with the note field left empty \u2014 it locked and published anyway",
+      "shots": [
+        "shot-walk-02-j2"
+      ],
+      "kind": "contradiction",
+      "criterion": "prd-9",
+      "evidence": "picture"
+    },
+    {
+      "title": "blank-note lock is not refused in the walk",
+      "expected": "a refusal when Lock is pressed with the This month note blank",
+      "saw": "the board locked and published on the blank form",
+      "shots": [
+        "shot-walk-02-j2"
+      ],
+      "kind": "contradiction",
+      "criterion": "journey-j2",
+      "evidence": "picture"
+    },
+    {
+      "title": "the stale-readings chip is green, not red",
+      "expected": "a red (#c0392b) warning chip that must not read as healthy",
+      "saw": "a green chip (rgb(30,142,62)) that reads as a healthy state",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "prd-6",
+      "evidence": "picture"
+    },
+    {
+      "title": "no Export CSV button beside Publish",
+      "expected": "an Export CSV button beside Publish",
+      "saw": "nothing there \u2014 beside Publish is the stale chip, with no Export CSV at all",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "prd-5",
+      "evidence": "picture"
+    },
+    {
+      "title": "Publish board is too narrow and wraps",
+      "expected": "a 160px-wide blue button with \"Publish board\" on one line",
+      "saw": "a 74px-wide blue button whose label wraps onto two lines",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "prd-4",
+      "evidence": "picture"
+    },
+    {
+      "title": "the Save reading icon spills its control",
+      "expected": "a small 16px square icon inside the 34px control",
+      "saw": "a 44px icon that spills past the button's top and bottom",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "prd-3",
+      "evidence": "picture"
+    },
+    {
+      "title": "Help is on the left, not top-right",
+      "expected": "the Help link in the top-right of the head (x=798)",
+      "saw": "the Help link on the far left under the title at x=45",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "part-helpLink",
+      "evidence": "picture"
+    },
+    {
+      "title": "the stale chip does not match the drawing",
+      "expected": "a red warning chip at the drawn place (x=475)",
+      "saw": "a green chip further left at x=304",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "part-alertChip",
+      "evidence": "picture"
+    },
+    {
+      "title": "Save reading icon does not match the drawing",
+      "expected": "a small 16px square icon in the 34px control",
+      "saw": "a 44px icon spilling top and bottom",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "part-saveBtn",
+      "evidence": "picture"
+    },
+    {
+      "title": "Publish board does not match the drawing",
+      "expected": "a 160px button with the label on one line",
+      "saw": "a 74px button with the label wrapped to two lines",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "part-publishBtn",
+      "evidence": "picture"
+    }
+  ],
+  "escalations": [],
+  "alsoChecked": [
+    "The entry head shows the HARBOUR eyebrow and the Tide Board title, both present and correctly placed.",
+    "The Publish board button is the correct blue (rgb(31,111,235)) \u2014 only its width and wrap are wrong.",
+    "The note textarea accepted and displayed the typed text on the board screen."
+  ],
+  "summary": "Captain, the shell of your Tide Board is here \u2014 the tab bar is flush with Readings underlined, the notice reads right on two lines, Open the board reaches the board screen, and the note box takes text \u2014 but the mission's own point is broken: Lock the board publishes an empty note instead of refusing while the note is blank, so the gate does not gate. On top of that the stale-readings chip is green and reads as healthy when it must be red, the Export CSV button is missing entirely, Publish board is half-width and wraps to two lines, the Save reading icon is oversized and spills its control, and Help sits on the left instead of top-right. I'm recommending LOW: a high-impact requirement (the blank-note lock gate) does not work.",
+  "impactsNote": "Importance was set on this look (2026-09-20); later looks keep it.",
+  "ledgerNotes": [
+    "part-helpLink is about a part of your drawing the build has not got (it is in the build but it has no laid-out box (0x0), so there is nothing to look at), so I am marking it couldn't-check rather than trusting what the look called it",
+    "part-saveBtn is about a part of your drawing the build has not got (it is in the build but it has no laid-out box (0x0), so there is nothing to look at), so I am marking it couldn't-check rather than trusting what the look called it",
+    "part-publishBtn is about a part of your drawing the build has not got (it is in the build but it has no laid-out box (0x0), so there is nothing to look at), so I am marking it couldn't-check rather than trusting what the look called it",
+    "part-alertChip is about a part of your drawing the build has not got (it is in the build but it has no laid-out box (0x0), so there is nothing to look at), so I am marking it couldn't-check rather than trusting what the look called it",
+    "part-noticeLabel is about a part of your drawing the build has not got (it is in the build but it has no laid-out box (0x0), so there is nothing to look at), so I am marking it couldn't-check rather than trusting what the look called it",
+    "part-openBoardBtn is about a part of your drawing the build has not got (it is in the build but it has no laid-out box (0x0), so there is nothing to look at), so I am marking it couldn't-check rather than trusting what the look called it"
+  ]
+}

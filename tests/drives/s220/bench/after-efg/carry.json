@@ -1,0 +1,11 @@
+{
+  "observations": [
+    {
+      "says": "August 2026 became September 2026 after I clicked \"pull data & start\" \u2014 the month did not carry from one screen to the next",
+      "screen": "http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect",
+      "kind": "carried-value",
+      "from": "http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr",
+      "shot": "shot-walk-01-j1"
+    }
+  ]
+}

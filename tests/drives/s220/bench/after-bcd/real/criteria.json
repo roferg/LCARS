@@ -1,0 +1,716 @@
+{
+  "mission": "lcars-20260911-001-8cb0",
+  "builtBeforeLaunch": true,
+  "hasDrawing": true,
+  "placeNames": [
+    "automateBtn",
+    "bulkBar",
+    "collect-list",
+    "continueBtn",
+    "modal-discard",
+    "modal-lock",
+    "modal-unlock",
+    "pullBar",
+    "screen-builder",
+    "screen-collect",
+    "screen-start",
+    "themeBtn"
+  ],
+  "pictures": [],
+  "criteria": [
+    {
+      "id": "prd-1",
+      "text": "**Reviews entry screen** is the landing view: the next unstarted month sits in a \"Next up \u00b7 {Month Year}\" start card showing \"N buckets \u00b7 M KPIs \u00b7 Source: DX Scorecard (live)\", a green \"Pull data & start\" button, and a \"~30s \u00b7 re-pullable anytime\" hint. A \"Published\" list beneath shows prior months, each with a lock icon, a \"Published\" chip, \"M KPIs \u00b7 locked {date}\", and a \"View\" button.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-2",
+      "text": "**Collection screen** shows each bucket cycling Queued \u2192 Collecting\u2026 \u2192 \"N values pulled\" behind a progress bar, with a Cancel control and a \"Continue to builder\" button that stays disabled until the pull finishes.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-3",
+      "text": "**Builder** matches the mockup: eyebrow \"Monthly Business Review\"; title \"MBR builder \u00b7 {month}\"; subtitle \"Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it.\"; a Preview toolbar button; an amber primary \"Lock month\" button.",
+      "source": "prd",
+      "primary": true,
+      "partsCover": "the per-part requirements below carry this row's visual parity; judge the rest of it on its own words"
+    },
+    {
+      "id": "prd-4",
+      "text": "**Draft banner** is an amber-tinted banner with a warning dot reading \"Draft \u2014 changes are saved locally as you go\", a \"Last edited {t} \u00b7 N of M buckets complete\" meta, and a \"Discard draft\" button inside it.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-5",
+      "text": "**Refresh-all** lives in an amber warning box stating it only collects KPIs with automated instructions (\"11 of 14\"), leaves the manual KPIs unchanged, and drives an indeterminate progress strip.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-6",
+      "text": "An **\"Insights added \u2014 N of M KPIs\" completion bar** sits under the banner; a KPI counts as done when its insight text is non-empty (status is not part of the meter). The meter reaching all KPIs is exactly the month-lockable condition.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-7",
+      "text": "**Per-KPI status** is set in the builder: seeded from the scorecard's current status at data-pull time and freely overridable (editorial snapshot, not a live mirror). Rendered as an editable select over the five silhouettes (On track / Watch / Off track / Tracking / WIP). Status is never auto-recomputed \u2014 human-only. The off-track marker is an X shape (distinct from the on-track circle without relying on colour).",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-8",
+      "text": "**Value/target/delta** arrive with the data pull: wired KPIs collect a fresh value; target comes from the KPI's config/default view; delta-vs-last-MBR is always computed (this month's value minus the same KPI's value in the previous published MBR). Editing a manual value recomputes its delta automatically; deltas are never hand-typed.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-9",
+      "text": "**Manual (unwired) KPIs** are edited inline (unit, target, delta, \"From default view \u00b7 edit to override\" note, \"Manual\" tag, amber \"needs value\" state) with no per-value lock/asOf step; \"As of\" defaults to the pull date.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-10",
+      "text": "**Wired KPI value cells** show the value, target, a \"vs last MBR\" delta, an \"Auto\" tag, and Collect / Re-collect / Try again controls with Collecting\u2026/\u2713 Updated/Collection failed chips, a spinner, and a \"was {old} \u00b7 as of {date}\" line.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-11",
+      "text": "**Multi-value (cohort) KPIs** show a per-source \"change vs last MBR\" delta column (up/down/no-change) with a \"change vs last MBR\" caption.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-12",
+      "text": "**Carried KPIs** render a purple \"Carried\" pill with a clock icon. A KPI is Carried when the data pull returns no fresh value and the builder carries forward the value/status from the previous published MBR \u2014 an objective, computed-at-pull-time provenance fact, kept separate from the status marker.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-13",
+      "text": "**Bucket headers** read \"N KPIs\" with an \"N of M insights\" sub-count. Buckets carry no per-bucket lock state, badge, or unlock control.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-14",
+      "text": "**Insights** autosave on blur and debounced while typing (no explicit save control); a non-empty insight gets a distinct filled background. The whole draft persists to `data/snapshots/<id>.json` via the existing dev-write bridge; the \"last edited\" meta reflects the latest autosave.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-15",
+      "text": "**Re-pull** re-runs collection for automated KPIs only, recomputing their deltas; every manual value and every insight is preserved untouched; a KPI that returns no fresh value stays as it was (Carried included).",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-16",
+      "text": "**Locking is per-month only.** There is no per-bucket lock: buckets are never individually locked or unlocked. The month cannot lock or publish while any KPI has a blank insight, so a published month never contains an insight-less KPI. The lock dialog is \"Lock {Month Year}?\" with a summary reflecting insight completeness (empty insights block the lock), and no \"Locked by\" handle field.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-17",
+      "text": "**When the month is locked, all its buckets render read-only** solely because the month is locked: static values, status shown as a label (not a select), insight shown as text (not a textarea). The only way to make them editable again is to unlock the month.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-18",
+      "text": "**Dialogs** (discard, lock, unlock-month) are centered overlay dialogs over a dimmed backdrop, each with a coloured icon badge, dismissable by backdrop click or Esc. Discard is \"Discard this draft?\" with a danger icon and a \"Keep editing\" / \"Discard draft\" pair. Unlock is a simple confirm to unlock the month, with no note field. There is no \"Unlock this bucket?\" dialog.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-19",
+      "text": "**Nav actions:** Continue to builder enters the draft builder for the month once the pull finishes; Preview renders the current draft read-only exactly as it will publish (back out without locking); View opens a published month's locked snapshot in that same read-only rendering (reusing the existing LockedView path). Preview and View share one presentation component, differing only in draft-vs-snapshot source.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-20",
+      "text": "**Theme:** the builder follows the app's global theme; the builder-local theme toggle drawn in the mockup is dropped.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-21",
+      "text": "Visual and flow parity with the mockup (layout, colour, spacing, wording, screen transitions) is met, except where the per-month lock model and the single global theme override the mockup's per-bucket lock affordances and builder-local theme toggle.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "t-001-ac1",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "The Kpi interface exposes optional previousValue, delta, sourceDeltas and carried fields, and Snapshot exposes an optional lastEditedAt"
+    },
+    {
+      "id": "t-001-ac2",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "A snapshot JSON object omitting every new field still satisfies the Snapshot type (all new fields optional)"
+    },
+    {
+      "id": "t-001-ac3",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "sourceDeltas reuses the existing SubReading {label,value} shape rather than a new type"
+    },
+    {
+      "id": "t-002-ac1",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "parseHash('#mbr') returns { view: 'mbr', step: 'start' } and parseHash('#mbr/collect'|'#mbr/build'|'#mbr/preview') return the matching step"
+    },
+    {
+      "id": "t-002-ac2",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "An unknown #mbr/<x> segment falls back to the 'start' step"
+    },
+    {
+      "id": "t-002-ac3",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "MbrBuilderView renders a different step slot for each of start/collect/build/preview based on route.step"
+    },
+    {
+      "id": "t-002-ac4",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "App still resolves view==='mbr' to the Default view on a production (non-DEV) build (gate unchanged)"
+    },
+    {
+      "id": "t-003-ac1",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "parseMetricValue('<= 1 day') and parseMetricValue('~9.4h') return the numeric value with the normalized unit; parseMetricValue('WIP') returns null"
+    },
+    {
+      "id": "t-003-ac2",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "computeDelta returns null (neutral, no arrow) when either side is unparseable or the normalized units differ"
+    },
+    {
+      "id": "t-003-ac3",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "computeDelta of two same-unit numbers returns a signed magnitude string with the shared unit"
+    },
+    {
+      "id": "t-003-ac4",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "cohort diffing matches sub-readings by label, not by array position"
+    },
+    {
+      "id": "t-004-ac1",
+      "source": "plan",
+      "ticket": "t-004",
+      "primary": false,
+      "text": "STATUS_META.negative.shape is 'x' and the StatusMeta shape union includes 'x'",
+      "notVisual": true
+    },
+    {
+      "id": "t-004-ac2",
+      "source": "plan",
+      "ticket": "t-004",
+      "primary": false,
+      "text": "src/styles.css defines a .status-dot--x rule that renders an X silhouette (two crossed strokes), visibly unlike the filled on-track circle by shape alone",
+      "drawnAt": "#screen-builder, the off-track status marker on the Ship Confidence 'Flaky test rate' row"
+    },
+    {
+      "id": "t-004-ac3",
+      "source": "plan",
+      "ticket": "t-004",
+      "primary": false,
+      "text": "The four other status shapes remain circle/triangle/ring/half-circle",
+      "notVisual": true
+    },
+    {
+      "id": "t-004-ac4",
+      "source": "plan",
+      "ticket": "t-004",
+      "primary": false,
+      "text": "The disk-reading shape tests assert 'x' for negative instead of 'diamond' and the suite stays green",
+      "notVisual": true
+    },
+    {
+      "id": "t-005-ac1",
+      "source": "plan",
+      "ticket": "t-005",
+      "primary": false,
+      "text": "The start card shows a 'Next up' pill, the next-up month heading, a 'N buckets \u00b7 M KPIs \u00b7 Source: DX Scorecard (live)' meta line, a green 'Pull data & start' button and a '~30s \u00b7 re-pullable anytime' hint",
+      "drawnAt": "#screen-start, the start-card at the top of the Reviews screen"
+    },
+    {
+      "id": "t-005-ac2",
+      "source": "plan",
+      "ticket": "t-005",
+      "primary": false,
+      "text": "The Published list renders one row per prior locked month with a lock icon, a green 'Published' chip, an 'M KPIs \u00b7 locked {date}' meta and a 'View' button",
+      "drawnAt": "#screen-start, the Published review-list beneath the start card"
+    },
+    {
+      "id": "t-005-ac3",
+      "source": "plan",
+      "ticket": "t-005",
+      "primary": false,
+      "text": "Clicking 'View' on a published row navigates to that month's #locked/<id> route",
+      "notVisual": true
+    },
+    {
+      "id": "t-005-ac4",
+      "source": "plan",
+      "ticket": "t-005",
+      "primary": false,
+      "text": "When an unlocked draft for the next month already exists on disk, the start card's primary action reads 'Continue draft' and resumes it rather than reseeding",
+      "notDrawn": "the mockup only draws the un-started 'Pull data & start' state; the resume-in-place variant is a behaviour the drawing does not show"
+    },
+    {
+      "id": "t-005-ac5",
+      "source": "plan",
+      "ticket": "t-005",
+      "primary": false,
+      "text": "Starting a fresh pull mints the draft id via nextDraftId (date-keyed YYYY-MM-DD.N), never a bare YYYY-MM",
+      "notVisual": true
+    },
+    {
+      "id": "t-006-ac1",
+      "source": "plan",
+      "ticket": "t-006",
+      "primary": false,
+      "text": "Each bucket row cycles through a Queued chip, a Collecting\u2026 chip with a spinner, and an 'N values pulled' chip as its KPIs finish, with the progress bar advancing per bucket",
+      "drawnAt": "#screen-collect, the collect-list rows and the progress bar above them"
+    },
+    {
+      "id": "t-006-ac2",
+      "source": "plan",
+      "ticket": "t-006",
+      "primary": false,
+      "text": "'Continue to builder' is disabled until every bucket has finished, then navigates to #mbr/build; Cancel returns to #mbr",
+      "drawnAt": "#continueBtn and the Cancel control in the collect-list footer"
+    },
+    {
+      "id": "t-006-ac3",
+      "source": "plan",
+      "ticket": "t-006",
+      "primary": false,
+      "text": "The seeded draft freezes target from config, records previousValue from the last published MBR, and stamps a computed delta per KPI",
+      "notVisual": true
+    },
+    {
+      "id": "t-006-ac4",
+      "source": "plan",
+      "ticket": "t-006",
+      "primary": false,
+      "text": "A KPI whose pull returns no fresh reading (failure or empty) carries the previous MBR's value/status forward with carried=true; an emitted value clears carried",
+      "notVisual": true
+    },
+    {
+      "id": "t-006-ac5",
+      "source": "plan",
+      "ticket": "t-006",
+      "primary": false,
+      "text": "The automatable partition driving which KPIs are collected is derived from trim-strict non-empty aiUpdateInstructions resolved from the roster, not from WIRED_METRIC_IDS",
+      "notVisual": true
+    },
+    {
+      "id": "t-007-ac1",
+      "source": "plan",
+      "ticket": "t-007",
+      "primary": false,
+      "text": "The head shows the eyebrow, 'MBR builder \u00b7 {month}' title and the exact subtitle sentence, and the toolbar shows a Preview button and an amber 'Lock month' button with no theme-toggle button",
+      "drawnAt": "#screen-builder, the head-row and its toolbar"
+    },
+    {
+      "id": "t-007-ac2",
+      "source": "plan",
+      "ticket": "t-007",
+      "primary": false,
+      "text": "An amber draft banner shows a warning dot, the 'Draft \u2014 changes are saved locally as you go' text and a 'Last edited {t} \u00b7 N of M buckets complete' meta",
+      "drawnAt": "#screen-builder, the amber .local-banner.draft under the head"
+    },
+    {
+      "id": "t-007-ac3",
+      "source": "plan",
+      "ticket": "t-007",
+      "primary": false,
+      "text": "An 'Insights added \u2014 N of M KPIs' completion bar sits under the banner and counts a KPI as done exactly when its insight text is non-empty",
+      "drawnAt": "#screen-builder, the progress-wrap bar under the banner"
+    },
+    {
+      "id": "t-007-ac4",
+      "source": "plan",
+      "ticket": "t-007",
+      "primary": false,
+      "text": "Each bucket header reads 'N KPIs' with an 'N of M insights' sub-count and carries no per-bucket lock badge or unlock control",
+      "drawnAt": "#screen-builder, a bucket-card header"
+    },
+    {
+      "id": "t-007-ac5",
+      "source": "plan",
+      "ticket": "t-007",
+      "primary": false,
+      "text": "A KPI row renders the name, a value cell, an editable status select over the five silhouettes, and an insight textarea that gains a filled background when non-empty",
+      "drawnAt": "#screen-builder, a kpi-row in the Velocity bucket"
+    },
+    {
+      "id": "t-007-ac6",
+      "source": "plan",
+      "ticket": "t-007",
+      "primary": false,
+      "text": "Typing an insight autosaves via a PUT to /__data/snapshots/<id> debounced at ~800ms with a flush on blur, stamping Snapshot.lastEditedAt",
+      "notVisual": true
+    },
+    {
+      "id": "t-007-ac7",
+      "source": "plan",
+      "ticket": "t-007",
+      "primary": false,
+      "text": "The old New MBR / Refresh all data / lockedBy-handle / amendment-note builder controls are gone and the existing MbrBuilderView tests are updated to the new flow",
+      "notVisual": true
+    },
+    {
+      "id": "t-008-ac1",
+      "source": "plan",
+      "ticket": "t-008",
+      "primary": false,
+      "text": "A wired value cell shows the value, a 'target N' line, a 'vs last MBR' delta, an 'Auto' tag and a Collect control",
+      "drawnAt": "#screen-builder, the Deployment frequency row's value cell in the Velocity bucket"
+    },
+    {
+      "id": "t-008-ac2",
+      "source": "plan",
+      "ticket": "t-008",
+      "primary": false,
+      "text": "Running a collect shows a Collecting\u2026 chip with a spinner, then a '\u2713 Updated' chip with a 'Re-collect' link on success or a 'Collection failed' chip with a 'Try again' button on failure",
+      "drawnAt": "#screen-builder, the value cells showing the \u2713 Updated and Collection failed states"
+    },
+    {
+      "id": "t-008-ac3",
+      "source": "plan",
+      "ticket": "t-008",
+      "primary": false,
+      "text": "A successful (re-)collect renders a 'was {old} \u00b7 as of {date}' line",
+      "drawnAt": "#screen-builder, the .val-updated line under the AI-assisted PRs value"
+    },
+    {
+      "id": "t-008-ac4",
+      "source": "plan",
+      "ticket": "t-008",
+      "primary": false,
+      "text": "A successful re-collect applies the fresh value, stamps asOf, sets previousValue to the prior value and recomputes the KPI's delta via the delta helper",
+      "notVisual": true
+    },
+    {
+      "id": "t-009-ac1",
+      "source": "plan",
+      "ticket": "t-009",
+      "primary": false,
+      "text": "A manual KPI value renders as an editable input with its unit, a 'target N' line and a 'vs last MBR' delta",
+      "drawnAt": "#screen-builder, the PR review latency row's value cell in the Velocity bucket"
+    },
+    {
+      "id": "t-009-ac2",
+      "source": "plan",
+      "ticket": "t-009",
+      "primary": false,
+      "text": "A manual value cell shows a 'From default view \u00b7 edit to override' note and a 'Manual' tag, and takes an amber 'needs value' treatment when empty",
+      "drawnAt": "#screen-builder, the PR review latency value cell (prefill note + Manual tag)"
+    },
+    {
+      "id": "t-009-ac3",
+      "source": "plan",
+      "ticket": "t-009",
+      "primary": false,
+      "text": "Editing a manual value recomputes its delta automatically and never lets the delta be hand-typed",
+      "notVisual": true
+    },
+    {
+      "id": "t-009-ac4",
+      "source": "plan",
+      "ticket": "t-009",
+      "primary": false,
+      "text": "Editing a manual value clears carried on that KPI, and there is no per-value 'Lock in value' + As-of commit step",
+      "notVisual": true
+    },
+    {
+      "id": "t-009-ac5",
+      "source": "plan",
+      "ticket": "t-009",
+      "primary": false,
+      "text": "'As of' defaults to the pull date when a manual value is entered",
+      "notVisual": true
+    },
+    {
+      "id": "t-010-ac1",
+      "source": "plan",
+      "ticket": "t-010",
+      "primary": false,
+      "text": "A cohort KPI lists every source as a label/value row with its own delta and a 'change vs last MBR' caption below the list",
+      "drawnAt": "#screen-builder, the LTC P75 cohort value cell in the Velocity bucket"
+    },
+    {
+      "id": "t-010-ac2",
+      "source": "plan",
+      "ticket": "t-010",
+      "primary": false,
+      "text": "Each source's delta is matched to the previous published MBR by label, not by array position",
+      "notVisual": true
+    },
+    {
+      "id": "t-010-ac3",
+      "source": "plan",
+      "ticket": "t-010",
+      "primary": false,
+      "text": "A source with no comparable prior reading renders a neutral placeholder rather than 'no change'",
+      "notVisual": true
+    },
+    {
+      "id": "t-011-ac1",
+      "source": "plan",
+      "ticket": "t-011",
+      "primary": false,
+      "text": "The amber warning box states it only collects KPIs with automated instructions, shows the automatable count 'N of M', says the manual KPIs stay unchanged, and holds the 'Update all automatically' button inside it",
+      "drawnAt": "#screen-builder, the .warn-line box containing the automateBtn"
+    },
+    {
+      "id": "t-011-ac2",
+      "source": "plan",
+      "ticket": "t-011",
+      "primary": false,
+      "text": "Running the sweep shows a separate indeterminate progress strip below the action bar, not nested inside the amber box",
+      "drawnAt": "#bulkBar, the update-progress strip below the warn-line"
+    },
+    {
+      "id": "t-011-ac3",
+      "source": "plan",
+      "ticket": "t-011",
+      "primary": false,
+      "text": "The automatable count is automatableCount over the flattened draft, derived from trim-strict non-empty aiUpdateInstructions",
+      "notVisual": true
+    },
+    {
+      "id": "t-011-ac4",
+      "source": "plan",
+      "ticket": "t-011",
+      "primary": false,
+      "text": "The sweep refreshes automatable KPIs only, recomputing their deltas, while every manual value and every insight is preserved and a still-empty KPI stays Carried",
+      "notVisual": true
+    },
+    {
+      "id": "t-012-ac1",
+      "source": "plan",
+      "ticket": "t-012",
+      "primary": false,
+      "text": "The 'Lock month' button opens a centered 'Lock {Month Year}?' dialog over a dimmed backdrop with a warn icon badge and a summary reflecting how many KPIs have an insight",
+      "drawnAt": "#modal-lock, the lock dialog"
+    },
+    {
+      "id": "t-012-ac2",
+      "source": "plan",
+      "ticket": "t-012",
+      "primary": false,
+      "text": "The lock action is blocked while any KPI has a blank insight, so a published month never contains an insight-less KPI",
+      "notVisual": true
+    },
+    {
+      "id": "t-012-ac3",
+      "source": "plan",
+      "ticket": "t-012",
+      "primary": false,
+      "text": "Locking sets lockedBy to null (no handle field) and renders every bucket read-only \u2014 static values, status as a label, insight as text \u2014 until the month is unlocked",
+      "drawnAt": "#screen-builder, the locked (read-only) Ship Confidence and Platform Health bucket rows"
+    },
+    {
+      "id": "t-012-ac4",
+      "source": "plan",
+      "ticket": "t-012",
+      "primary": false,
+      "text": "The banner's 'Discard draft' button opens a 'Discard this draft?' danger dialog with 'Keep editing' / 'Discard draft'; confirming clears the draft and returns to the Reviews screen",
+      "drawnAt": "#modal-discard, the discard dialog"
+    },
+    {
+      "id": "t-012-ac5",
+      "source": "plan",
+      "ticket": "t-012",
+      "primary": false,
+      "text": "Unlock is a single centered confirm dialog to unlock the whole month with no note field, and there is no per-bucket unlock control or 'Unlock this bucket?' dialog",
+      "drawnAt": "#modal-unlock, the unlock dialog (repurposed to month-only, no note field)"
+    },
+    {
+      "id": "t-012-ac6",
+      "source": "plan",
+      "ticket": "t-012",
+      "primary": false,
+      "text": "Every dialog is dismissable by backdrop click or Esc",
+      "notVisual": true
+    },
+    {
+      "id": "t-013-ac1",
+      "source": "plan",
+      "ticket": "t-013",
+      "primary": false,
+      "text": "The builder's Preview button navigates to #mbr/preview and renders the current draft read-only in the same presentation the locked buckets use, with a back-out that returns to #mbr/build without locking",
+      "drawnAt": "#screen-builder, the Preview toolbar button and the locked (read-only) bucket rendering it mirrors"
+    },
+    {
+      "id": "t-013-ac2",
+      "source": "plan",
+      "ticket": "t-013",
+      "primary": false,
+      "text": "Preview and View render through one shared read-only component, differing only in draft-vs-snapshot source",
+      "notVisual": true
+    },
+    {
+      "id": "t-013-ac3",
+      "source": "plan",
+      "ticket": "t-013",
+      "primary": false,
+      "text": "LockedView hides the 'Locked by' provenance line when lockedBy is null and never prints 'Locked by \u2014'",
+      "notVisual": true
+    },
+    {
+      "id": "t-013-ac4",
+      "source": "plan",
+      "ticket": "t-013",
+      "primary": false,
+      "text": "The Amendments section still renders for a historical snapshot that carries amendments",
+      "notVisual": true
+    },
+    {
+      "id": "part-pull data start",
+      "text": "the \"Pull data & start\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "pull data start",
+      "drawnPart": "pull data start"
+    },
+    {
+      "id": "part-view",
+      "text": "the \"View\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "view",
+      "drawnPart": "view"
+    },
+    {
+      "id": "part-view",
+      "text": "the \"View\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "view",
+      "drawnPart": "view"
+    },
+    {
+      "id": "part-pullBar",
+      "text": "the pullBar part matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "pullBar",
+      "drawnPart": "pullBar"
+    },
+    {
+      "id": "part-cancel",
+      "text": "the \"Cancel\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "cancel",
+      "drawnPart": "cancel"
+    },
+    {
+      "id": "part-continueBtn",
+      "text": "the \"Continue to builder\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "continueBtn",
+      "drawnPart": "continueBtn"
+    },
+    {
+      "id": "part-themeBtn",
+      "text": "the \"Toggle theme\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "themeBtn",
+      "drawnPart": "themeBtn"
+    },
+    {
+      "id": "part-preview",
+      "text": "the \"Preview\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "preview",
+      "drawnPart": "preview"
+    },
+    {
+      "id": "part-lock month",
+      "text": "the \"Lock month\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "lock month",
+      "drawnPart": "lock month"
+    },
+    {
+      "id": "part-discard draft",
+      "text": "the \"Discard draft\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "discard draft",
+      "drawnPart": "discard draft"
+    },
+    {
+      "id": "part-automateBtn",
+      "text": "the \"Update all automatically\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "automateBtn",
+      "drawnPart": "automateBtn"
+    },
+    {
+      "id": "part-re collect",
+      "text": "the \"Re-collect\" button matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "re collect",
+      "drawnPart": "re collect"
+    },
+    {
+      "id": "part-on trackwatchoff tracktrackingwip",
+      "text": "the \"On trackWatchOff trackTrackingWIP\" select matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "on trackwatchoff tracktrackingwip",
+      "drawnPart": "on trackwatchoff tracktrackingwip"
+    },
+    {
+      "id": "part-gh gh remains the long pole copilot and go sdlc well inside target",
+      "text": "the \"gh/gh remains the long pole; Copilot and Go SDLC well inside\" textarea matches the drawing \u2014 same icon size, same label on the same number of lines, same place",
+      "source": "drawing",
+      "primary": true,
+      "drawnAt": "gh gh remains the long pole copilot and go sdlc well inside target",
+      "drawnPart": "gh gh remains the long pole copilot and go sdlc well inside target"
+    }
+  ],
+  "drawnParts": 14,
+  "drawnPartsHeld": 28
+}

@@ -1,0 +1,266 @@
+{
+  "entry": "http://localhost:5173/DX-Scorecard/",
+  "steps": [
+    {
+      "key": "j0",
+      "name": "find the way in by clicking \"mbr builder\"",
+      "do": "click",
+      "match": [
+        "MBR View Builder"
+      ],
+      "matched": "mbr builder",
+      "status": "done",
+      "reachedFirstScreen": true,
+      "shot": "shot-walk-00-wayin"
+    },
+    {
+      "key": "j1",
+      "name": "from the start screen, click \"Pull data & start\"",
+      "do": "click",
+      "phase": null,
+      "match": [
+        "Pull data & start"
+      ],
+      "expect": "the collect screen",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW Reviews Each month begins with a data pull: the latest KPI values are fetched from the live scorecard. Then you add an insight to each KPI and lock the month to publish it. NEXT UP August 2026 No data pulled yet. Fetch the latest values across every bucket to open this month's review — targets and last-month deltas come with the pull; insights start empty for you to write. 5 buckets · 19 KPIs · Source: DX Scorecard (live) Pull data & start ~30s · re-pullable anytime PUBLISHED July 2026 Published 19 KPIs · locked Jul 28, 2026 View",
+      "matched": "pull data & start",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW Pulling data · September 2026 Automatic metrics are fetched from the scorecard. Any KPI with no automated source is seeded from its latest value on the default view. Comparisons are against the last published MBR. Velocity 6 KPIs · 6 manual 0 values pulled Paved Path Adoption 3 KPIs · 3 manual 0 values pulled AI-Native Engineering 2 KPIs · 2 manual 0 values pulled Ship Confidence 3 KPIs · 3 manual 0 values pulled Platform Health 5 KPIs · 5 manual 0 values pulled Cancel Continue to builder",
+      "changed": true,
+      "shot": "shot-walk-01-j1"
+    },
+    {
+      "key": "j2",
+      "name": "from the collect screen, click \"Continue to builder\"",
+      "do": "click",
+      "phase": null,
+      "match": [
+        "Continue to builder"
+      ],
+      "expect": "the builder screen",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW Pulling data · September 2026 Automatic metrics are fetched from the scorecard. Any KPI with no automated source is seeded from its latest value on the default view. Comparisons are against the last published MBR. Velocity 6 KPIs · 6 manual 0 values pulled Paved Path Adoption 3 KPIs · 3 manual 0 values pulled AI-Native Engineering 2 KPIs · 2 manual 0 values pulled Ship Confidence 3 KPIs · 3 manual 0 values pulled Platform Health 5 KPIs · 5 manual 0 values pulled Cancel Continue to builder",
+      "matched": "continue to builder",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited — · 3 of 5 buckets complete Discard draft Insights added 16 of 19 KPIs Velocity 6 KPIs 4 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch Off track T",
+      "changed": true,
+      "shot": "shot-walk-02-j2"
+    },
+    {
+      "key": "j3",
+      "name": "try \"Lock month\" with the field(s) still blank",
+      "do": "gate",
+      "phase": "blank",
+      "match": [
+        "Lock month"
+      ],
+      "expect": "it refuses while the gh/gh remains the long pole; Copilot and is blank",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited — · 3 of 5 buckets complete Discard draft Insights added 16 of 19 KPIs Velocity 6 KPIs 4 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch Off track T",
+      "matched": "lock month",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited — · 3 of 5 buckets complete Discard draft Insights added 16 of 19 KPIs Velocity 6 KPIs 4 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch Off track T",
+      "changed": false,
+      "shot": "shot-walk-03-j3"
+    },
+    {
+      "key": "j4",
+      "name": "type into \"gh/gh remains the long pole; Copilot and\"",
+      "do": "type",
+      "phase": null,
+      "match": [
+        "gh/gh remains the long pole; Copilot and Go SDLC well inside target."
+      ],
+      "expect": "what I typed shows on this screen and the next",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited — · 3 of 5 buckets complete Discard draft Insights added 16 of 19 KPIs Velocity 6 KPIs 4 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch Off track T",
+      "byFallback": "the first empty field on the screen",
+      "matched": "insight for change failure rate",
+      "disabled": false,
+      "typed": "Number One typed this to see it carry",
+      "readBack": "number one typed this to see it carry",
+      "status": "done",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 3 of 5 buckets complete Discard draft Insights added 17 of 19 KPIs Velocity 6 KPIs 5 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "changed": true,
+      "shot": "shot-walk-04-j4"
+    },
+    {
+      "key": "j5",
+      "name": "type into \"Above target for the third month running\"",
+      "do": "type",
+      "phase": null,
+      "match": [
+        "Above target for the third month running."
+      ],
+      "expect": "what I typed shows on this screen and the next",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 3 of 5 buckets complete Discard draft Insights added 17 of 19 KPIs Velocity 6 KPIs 5 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "byFallback": "the first empty field on the screen",
+      "matched": "insight for deployment frequency",
+      "disabled": false,
+      "typed": "Number One typed this to see it carry",
+      "readBack": "number one typed this to see it carry",
+      "status": "done",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 4 of 5 buckets complete Discard draft Insights added 18 of 19 KPIs Velocity 6 KPIs 6 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "changed": true,
+      "shot": "shot-walk-05-j5"
+    },
+    {
+      "key": "j6",
+      "name": "click \"Preview\", the way the PRD describes it",
+      "do": "click",
+      "phase": null,
+      "match": [
+        "Preview"
+      ],
+      "expect": "the screen it says that leads to",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 4 of 5 buckets complete Discard draft Insights added 18 of 19 KPIs Velocity 6 KPIs 6 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "matched": "preview",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/preview",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MBR BUILDER · PREVIEW Preview this month's MBR A read-only preview of the current draft, rendered as it will publish. Back to builder LOCKED MBR · SEPTEMBER 2026 Locked MBR Snapshot 2026-09-20.0 Moda = all apps except gh/gh; gh/gh = monolith; Copilot = Copilot-org apps; Go SDLC = Go paved-path services (overlaps some Copilot). Data as of Sep 20, 2026 Generated Sep 20, 2026 Locked at — Velocity 6 metrics KPI CURRENT TARGET INSIGHT LTC P75 gh/gh 5.46 days Mode 3.07 days Copilot 1.74 days Go SDLC 2.31 days <= 1 day Cohort-level LTC, change failure rate, and deploy frequency show where speed gains are sustainable versus rollback-prone. Change Failure Rate gh/gh 12.98% Mode 1.85% Copilot 1.42% Go SDLC 2.01% <= 1% Number One typed this to see it carry Deployment Frequency gh/gh 11/day (1 repo) Moda 434/day Copilot 58/day Go SDLC 38/day Increase Number One typed this to see it carry Codespaces Startup Time (gh/gh) 630.39s < 721s Remains under our 50%+ cut goal. Bootstrap Reliability (gh/gh) 88.46% 90% Metting goal; will keep monitor",
+      "changed": true,
+      "shot": "shot-walk-06-j6"
+    },
+    {
+      "key": "j7",
+      "name": "come back the way the record says you can",
+      "do": "click",
+      "phase": null,
+      "match": [
+        "back",
+        "return",
+        "close"
+      ],
+      "expect": "the screen I left",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/preview",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MBR BUILDER · PREVIEW Preview this month's MBR A read-only preview of the current draft, rendered as it will publish. Back to builder LOCKED MBR · SEPTEMBER 2026 Locked MBR Snapshot 2026-09-20.0 Moda = all apps except gh/gh; gh/gh = monolith; Copilot = Copilot-org apps; Go SDLC = Go paved-path services (overlaps some Copilot). Data as of Sep 20, 2026 Generated Sep 20, 2026 Locked at — Velocity 6 metrics KPI CURRENT TARGET INSIGHT LTC P75 gh/gh 5.46 days Mode 3.07 days Copilot 1.74 days Go SDLC 2.31 days <= 1 day Cohort-level LTC, change failure rate, and deploy frequency show where speed gains are sustainable versus rollback-prone. Change Failure Rate gh/gh 12.98% Mode 1.85% Copilot 1.42% Go SDLC 2.01% <= 1% Number One typed this to see it carry Deployment Frequency gh/gh 11/day (1 repo) Moda 434/day Copilot 58/day Go SDLC 38/day Increase Number One typed this to see it carry Codespaces Startup Time (gh/gh) 630.39s < 721s Remains under our 50%+ cut goal. Bootstrap Reliability (gh/gh) 88.46% 90% Metting goal; will keep monitor",
+      "matched": "back to builder",
+      "disabled": false,
+      "clicked": true,
+      "status": "done",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 4 of 5 buckets complete Discard draft Insights added 18 of 19 KPIs Velocity 6 KPIs 6 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "changed": true,
+      "shot": "shot-walk-07-j7"
+    },
+    {
+      "key": "j8",
+      "name": "fill every field this screen still wants",
+      "do": "type-all",
+      "phase": null,
+      "match": [],
+      "expect": "no empty field is left before the gate is tried",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 4 of 5 buckets complete Discard draft Insights added 18 of 19 KPIs Velocity 6 KPIs 6 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "matched": null,
+      "disabled": false,
+      "typed": "Number One typed this to see it carry",
+      "filled": 1,
+      "fieldsOnScreen": 33,
+      "filledNames": [
+        "insight for flake rate"
+      ],
+      "couldNotFill": [
+        "[wip] baseline skills and shift left metrics value",
+        "copilot sre impact score value"
+      ],
+      "status": "done",
+      "why": "I could not fill 2 field(s): [wip] baseline skills and shift left metrics value, copilot sre impact score value",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 5 of 5 buckets complete Discard draft Insights added 19 of 19 KPIs Velocity 6 KPIs 6 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "changed": true,
+      "shot": "shot-walk-08-j8"
+    },
+    {
+      "key": "j9",
+      "name": "click \"Lock month\" now everything is filled",
+      "do": "gate",
+      "phase": "filled",
+      "match": [
+        "Lock month"
+      ],
+      "expect": "it opens and the flow completes",
+      "urlBefore": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textBefore": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 5 of 5 buckets complete Discard draft Insights added 19 of 19 KPIs Velocity 6 KPIs 6 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "matched": "lock month",
+      "disabled": false,
+      "clicked": true,
+      "status": "no-change",
+      "urlAfter": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "textAfter": "Running locally — editing enabled Developer Experience (DX) Scorecard KPIs & Insights Dark Default view Edit roster MBR builder Locked MBR (shared) Data model MONTHLY BUSINESS REVIEW MBR builder · September 2026 Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it. Preview Lock month Draft — changes are saved locally as you go. Last edited Sep 20, 2026 · 5 of 5 buckets complete Discard draft Insights added 19 of 19 KPIs Velocity 6 KPIs 6 of 6 insights KPI THIS MONTH STATUS INSIGHT LTC P75 Carried gh/gh 5.46 days — 0 days Mode 3.07 days — 0 days Copilot 1.74 days — 0 days Go SDLC 2.31 days — 0 days change vs last MBR On track Watch Off track Tracking WIP Change Failure Rate Carried gh/gh 12.98% — 0% Mode 1.85% — 0% Copilot 1.42% — 0% Go SDLC 2.01% — 0% change vs last MBR On track Watch Off track Tracking WIP Deployment Frequency Carried gh/gh 11/day (1 repo) — 0 /day Moda 434/day — 0 /day Copilot 58/day — 0 /day Go SDLC 38/day — 0 /day change vs last MBR On track Watch Off track Tracking WIP Codespaces Startup Time (gh/gh) Carried s target < 721s 0 s vs last MBR From default view · edit to override MANUAL On track Watch ",
+      "changed": false,
+      "couldNotCheck": "nothing changed",
+      "why": "I did it and the screen was the same before and after — same address, same words — so I cannot say whether it worked",
+      "shot": "shot-walk-09-j9"
+    }
+  ],
+  "actions": [
+    {
+      "click": "mbr builder"
+    },
+    {
+      "click": "pull data & start"
+    },
+    {
+      "click": "continue to builder"
+    },
+    {
+      "click": "lock month"
+    },
+    {
+      "type": "insight for change failure rate",
+      "text": "Number One typed this to see it carry"
+    },
+    {
+      "type": "insight for deployment frequency",
+      "text": "Number One typed this to see it carry"
+    },
+    {
+      "click": "preview"
+    },
+    {
+      "click": "back to builder"
+    },
+    {
+      "type": "insight for flake rate",
+      "text": "Number One typed this to see it carry"
+    },
+    {
+      "click": "lock month"
+    },
+    {
+      "press": "Escape",
+      "times": 1
+    },
+    {
+      "press": "Escape",
+      "times": 1
+    }
+  ],
+  "jumps": [],
+  "screens": [
+    "chrome-error://chromewebdata/"
+  ],
+  "moves": {
+    "clicks": 7,
+    "typings": 3,
+    "keypresses": 2,
+    "addressJumps": 0
+  }
+}

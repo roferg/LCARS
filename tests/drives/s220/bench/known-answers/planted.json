@@ -1,0 +1,81 @@
+{
+  "case": "planted",
+  "_comment": [
+    "THE KNOWN ANSWERS for the planted case, DECLARED HERE and nowhere else.",
+    "Nothing in this file is derived from what any look has ever said — it is",
+    "written from the fixture's own source (fixture/app/index.html plants each",
+    "fault with the key below in a comment beside it).",
+    "",
+    "faults[]  a thing that IS wrong. Finding it counts toward recall.",
+    "correct[] a thing that is RIGHT. Flagging it counts as a false alarm.",
+    "journey[] not scored as recall; reported separately (part F)."
+  ],
+  "gradeMustBeAtMost": "medium",
+  "gradeLadder": ["low", "medium", "high"],
+  "faults": [
+    {
+      "key": "p1-save-icon",
+      "part": "saveBtn",
+      "partNames": ["save ?btn", "save reading"],
+      "kind": "oversized-icon",
+      "what": "The Save reading button's icon is 44px inside a 34px control; the drawing's is 16px."
+    },
+    {
+      "key": "p2-publish-wrap",
+      "part": "publishBtn",
+      "partNames": ["publish ?btn", "publish board"],
+      "kind": "wrapped-label",
+      "what": "\"Publish board\" wraps onto two lines in a 74px control; the drawing keeps it on one at 160px."
+    },
+    {
+      "key": "p3-chip-colour",
+      "part": "alertChip",
+      "partNames": ["alert ?chip", "readings stale", "stale (readings )?chip"],
+      "kind": "wrong-colour",
+      "what": "The stale-readings chip is green in the build and red (#c0392b) in the drawing."
+    },
+    {
+      "key": "p4-help-corner",
+      "part": "helpLink",
+      "partNames": ["help ?link", "\\bhelp\\b"],
+      "kind": "wrong-corner",
+      "what": "Help sits bottom-left of the head in the build and top-right in the drawing."
+    },
+    {
+      "key": "p5-export-missing",
+      "part": "exportBtn",
+      "partNames": ["export ?btn", "export csv"],
+      "kind": "missing-part",
+      "what": "The drawing's Export CSV button is not in the build at all."
+    }
+  ],
+  "correct": [
+    {
+      "key": "c1-tabbar",
+      "part": "tabBar",
+      "partNames": ["tab ?bar", "readings.{0,20}sources.{0,20}history"],
+      "what": "A flush tab bar, tabs edge to edge — exactly as drawn. Must NOT be flagged."
+    },
+    {
+      "key": "c2-notice",
+      "part": "noticeLabel",
+      "partNames": ["notice ?label", "older than six hours"],
+      "what": "A notice the drawing ALSO wraps to two lines. Must NOT be flagged as a wrap fault."
+    }
+  ],
+  "journey": [
+    {
+      "key": "j1-click-to-board",
+      "what": "Screen two has no URL route: the look must CLICK \"Open the board\" to reach it.",
+      "reachedOnlyByClicking": true,
+      "partNames": ["open the board", "openBoardBtn", "screen-board", "board . september"]
+    },
+    {
+      "key": "j2-gate-opens-blank",
+      "part": "lockBtn",
+      "partNames": ["lock ?btn", "lock the board"],
+      "kind": "gate-wrong",
+      "what": "Lock publishes with a blank note; the drawing says it refuses."
+    }
+  ]
+}

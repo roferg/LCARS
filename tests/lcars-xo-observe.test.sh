@@ -307,6 +307,42 @@ check "B4 — WITH one, the section appears, in its own place, never inside the 
 check "B7 — the thresholds are PRINTED in the captain's own report.md, not just in the JSON" \
   "grep -q '8 px apart' '$scdir/b/report.md' && grep -q 'wrong for your eye' '$scdir/b/report.md'"
 
+# --- FIX ROUND 1, D5: A FINDING THE SCORE COUNTS AND THE REPORT HIDES ------
+# The layout pass writes `message`; the part-by-part measurement (S220 B) and
+# the journey's carry check (S220 F) write `says`. The loader asked for
+# `message` and nothing else, so on 2026-09-19 four oversized-icon findings
+# and the August→September carry — every one of them counted as FOUND by the
+# benchmark — reached the captain nowhere at all, and his red list came up two
+# short of the number he was being handed. A number nobody can see in the
+# report is a false green.
+mkdir -p "$scdir/d5"
+cat >"$scdir/says-obs.json" <<'OJ'
+{"thresholds": {"gapPx": 8, "misalignPx": 6, "overflowPx": 2},
+ "observations": [
+  {"kind": "oversized-icon", "screen": "http://localhost:1/x#two",
+   "says": "the \"Back to builder\" button holds an icon 41px tall inside a control only 30px tall — the icon is bigger than the button it sits in, and its label runs onto 3 lines"},
+  {"kind": "carried-value", "screen": "http://localhost:1/x#one",
+   "says": "August 2026 became September 2026 after I clicked \"pull data & start\" — the month did not carry from one screen to the next"},
+  {"kind": "crowding", "message": "the Cancel button and the Save button are crowded together — 7 px between them"}
+ ]}
+OJ
+"$PY" "$SCOREPY" "$scdir/worker-verdict.json" "$scdir/criteria-drawn.json" "$scdir/d5/verdict.json" \
+  "$scdir/says-obs.json" >"$scdir/d5/stdout.txt" 2>/dev/null
+check "D5 — a measured finding written as 'says' reaches the captain's report, word for word" \
+  "grep -q 'Back to builder' '$scdir/d5/report.md' && grep -q 'bigger than the button it sits in' '$scdir/d5/report.md'"
+check "D5 — so does the month that did not carry, as its own bullet and not a semicolon clause" \
+  "grep -q 'August 2026 became September 2026' '$scdir/d5/report.md' && \
+   grep -c '^- ' '$scdir/d5/report.md' | awk '{exit !(\$1>=3)}'"
+check "D5 — measured/walked findings get their OWN heading, not 'not on your list'" \
+  "grep -q 'What I measured on your drawing' '$scdir/d5/report.md'"
+check "D5 — the loose layout finding still sits under 'Things I noticed', where it belongs" \
+  "$PY -c 'import sys,re
+t=open(sys.argv[1]).read()
+i=t.index(\"Things I noticed\")
+sys.exit(0 if \"crowded together\" in t[i:] and \"Back to builder\" not in t[i:] else 1)' '$scdir/d5/report.md'"
+check "D5 — and observations STILL never move the score (B4 holds with says-findings too)" \
+  "diff <(grep '^SCORE' '$scdir/a/stdout.txt') <(grep '^SCORE' '$scdir/d5/stdout.txt') >/dev/null"
+
 # --- Behaviour 6: NO DRAWING AT ALL — a drawnAt criterion must NEVER come back
 #     silently MET, however confident the worker's own verdict was.
 cat >"$scdir/criteria-nodrawing.json" <<'CJ'
@@ -403,6 +439,17 @@ drive_observe() {
   "$PY" "$OBSERVE" "$out/readout.json" "$out/observations.json" >"$out/observe.stdout" 2>&1
 }
 
+# WHAT THE FINDINGS SAY, without the record around them (S220 part D). Every
+# finding now carries the SCREEN it was seen on, and a screen is a url — on a
+# fixture named chip.html that url contains the word "chip", which is not the
+# pass saying anything about a chip. So a false-alarm check reads the findings'
+# own words, never the whole file.
+says_all() { # <observations.json>
+  "$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print(json.dumps([{k: v for k, v in o.items() if k != "screen"} for o in d["observations"]]))' "$1"
+}
+
 count_all() { # <observations.json>
   "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1]))
@@ -428,7 +475,7 @@ cat >"$S212FX/chip.html" <<'HTML'
 HTML
 drive_observe chip.html chip
 check "S212-1 FALSE ALARM — a chip and its OWN remove button produce nothing about the chip" \
-  "! grep -qi 'chip\|design' '$TMPROOT/s212-chip/observations.json'"
+  "! says_all '$TMPROOT/s212-chip/observations.json' | grep -qi 'chip\|design'"
 check "S212-1 CONTROL — the genuinely crowded SIBLING pair on the same page STILL fires, exactly once" \
   "[ \"\$(count_all '$TMPROOT/s212-chip/observations.json')\" = '1' ] && grep -q 'the ADD and CANCEL buttons are touching' '$TMPROOT/s212-chip/observations.json'"
 
@@ -449,7 +496,7 @@ cat >"$S212FX/badge.html" <<'HTML'
 HTML
 drive_observe badge.html badge
 check "S212-2 FALSE ALARM — a badge INSIDE its button produces nothing about the badge" \
-  "! grep -qi 'badge\|INBOX' '$TMPROOT/s212-badge/observations.json'"
+  "! says_all '$TMPROOT/s212-badge/observations.json' | grep -qi 'badge\|INBOX'"
 check "S212-2 CONTROL — the genuinely overlapping SIBLING buttons STILL fire, exactly once" \
   "[ \"\$(count_all '$TMPROOT/s212-badge/observations.json')\" = '1' ] && grep -q 'the SAVE and CANCEL buttons overlap' '$TMPROOT/s212-badge/observations.json'"
 

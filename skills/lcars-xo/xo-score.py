@@ -160,6 +160,33 @@ def tests_sentence(tests, resolved):
 # match this string.
 NO_DRAWING_NOTE = "I could not check this against a drawing, because there isn't one"
 
+# S220 PART B — THE PARTS THE BUILD HAS NOT GOT, and the differences a look
+# waved away. Both come from `xo/pairs.json`, which is arithmetic: the drawing
+# had this part, the build either has it or it does not, and the icon either
+# fits its button or it does not.
+UNREACHABLE_PART_NOTE = ("your drawing names this part and I could not find it in the "
+                         "build, so there was nothing to look at — couldn't check")
+
+
+def load_pairs(path):
+    """`{part id: pair}` from xo/pairs.json — empty when there is no pairing.
+
+    Best-effort exactly like the observations pass: a look with no drawing, or
+    a drawing pass that could not run, must still be able to finish a verdict.
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return {}
+    out = {}
+    for p in (doc.get("pairs") if isinstance(doc, dict) else []) or []:
+        if isinstance(p, dict) and p.get("part"):
+            out[str(p["part"])] = p
+    return out
+
 # A PICTURE IS NOT A DRAWING (S217). S214/S215 measured a mission whose only
 # design was a PNG: no drawing, no place names, no `drawnAt` — so the guard
 # above had nothing to overrule, verify_unfenced_note never fired, and the
@@ -271,8 +298,32 @@ def load_observations(path):
     obs = doc.get("observations")
     if not isinstance(obs, list):
         obs = []
+    # ONE FILTER WAS EATING THE FINDINGS THE BENCHMARK WAS COUNTING (fix round
+    # 1, D5). The layout pass (S210) writes `message`; the part-by-part
+    # measurement (S220 B) and the journey's carry/gate checks (S220 F) write
+    # `says`. This line asked for `message` and nothing else, so the four
+    # oversized-icon findings and the August→September carry — the very things
+    # the drill scored as FOUND — were dropped on the floor before the report
+    # was written, and the captain's red list came up two short of the number
+    # he was being given. A finding the score counts and the report hides is
+    # the false green this whole session exists to kill. So both words are
+    # read, and where each came from is kept.
+    kept = []
+    for o in obs:
+        if not isinstance(o, dict):
+            continue
+        said = o.get("message") or o.get("says")
+        if not said:
+            continue
+        o = dict(o)
+        o["message"] = said
+        # `says` means a detector measured or walked it: it is about a part of
+        # the drawing or a step of the flow, not a loose thing noticed on a
+        # page, and it is printed under its own heading.
+        o["reportedUnder"] = "measured" if o.get("says") else "layout"
+        kept.append(o)
     return {
-        "observations": [o for o in obs if isinstance(o, dict) and o.get("message")],
+        "observations": kept,
         "thresholds": doc.get("thresholds") if isinstance(doc.get("thresholds"), dict) else {},
         "elementCount": doc.get("elementCount"),
         # S212: when the list was capped, the pass says so in a sentence, and
@@ -890,6 +941,94 @@ def finish_reason(e):
     e["reason"] = said
 
 
+def load_json_or_none(path):
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def load_walk(path):
+    """THE RECORD OF HOW IT MOVED (S220 part F).
+
+    Never a judgement, and never re-derived from how the report reads: the
+    driver wrote down every click, typing, keypress and address jump as it
+    made them, plus each declared step and whether it happened."""
+    doc = load_json_or_none(path)
+    if not isinstance(doc, dict):
+        return None
+    steps = [st for st in (doc.get("steps") or []) if isinstance(st, dict)]
+    moves = doc.get("moves") if isinstance(doc.get("moves"), dict) else {}
+    return {"steps": steps, "moves": moves, "jumps": doc.get("jumps") or [],
+            "screens": doc.get("screens") or []}
+
+
+def walk_sentence(walk):
+    m = (walk or {}).get("moves") or {}
+    return ("I moved through it with %d click(s), %d typing(s) and %d keypress(es)"
+            "%s." % (int(m.get("clicks") or 0), int(m.get("typings") or 0),
+                     int(m.get("keypresses") or 0),
+                     (", and %d address jump(s) past the front door — those screens "
+                      "I reached by address, not by the flow"
+                      % int(m.get("addressJumps") or 0))
+                     if int(m.get("addressJumps") or 0) else
+                     ", and never by typing an address"))
+
+
+# --- THE SUMMING-UP CANNOT CLAIM A COMPLETENESS THE RECORD CONTRADICTS ------
+# S220 fix round 3, F1. `summary` is the look's own paragraph, in its own
+# voice, and it is the first prose the captain reads. On his own report it
+# said "the one real parity problem is cosmetic but visible" and named three
+# buttons — while five measured faults sat on disk, including a button it
+# never mentions and a month that does not carry between screens, which is
+# not cosmetic. A reader who stopped at the top came away believing the look
+# had seen everything.
+#
+# So the paragraph carries its own caveat, in the same place, in his words.
+# NOTHING NEW IS SCORED: this counts only what the run had already counted,
+# and the S210 contract stands — measurements never move the grade.
+# "Names it" means exactly that: the paragraph contains the finding's own
+# part label. A finding with no part to name can never be named, so it is
+# only ever covered by the first half of the sentence and never accused by
+# the list. Kept word-for-word in step with board.js (`xoSummaryCaveat`).
+PART_LABEL_RE = re.compile(
+    u"[“\"]([^”\"]{2,60})[”\"]\\s*"
+    "(?:button|control|link|chip|field|tab|icon)\\b", re.I)
+
+
+def obs_part_label(o):
+    m = PART_LABEL_RE.search(str((o or {}).get("message")
+                                 or (o or {}).get("says") or ""))
+    return (m.group(1).strip() if m else str((o or {}).get("part") or "").strip())
+
+
+def summary_caveat(summary, measured):
+    """The one sentence that sits under the look's own paragraph, or ''."""
+    if not measured:
+        return ""
+    low = str(summary or "").lower()
+    named, unnamed = 0, []
+    for o in measured:
+        lab = obs_part_label(o)
+        if lab and lab.lower() in low:
+            named += 1
+        elif lab:
+            unnamed.append(u"“%s”" % lab)
+    s = ("That summing-up is my own words, from what I noticed by eye — it is "
+         "not the whole count. Measurements caught %d fault%s on this build "
+         "and this paragraph names %d of them"
+         % (len(measured), "" if len(measured) == 1 else "s", named))
+    if unnamed:
+        s += "; %s %s not in it" % (" and ".join(unnamed),
+                                    "is" if len(unnamed) == 1 else "are")
+    return s + (u". Read the list below, under “What I measured on your "
+                u"drawing”, before you take this paragraph for the whole "
+                u"picture.")
+
+
 def main():
     if len(sys.argv) < 4:
         sys.stderr.write(
@@ -899,6 +1038,15 @@ def main():
     obs_path = sys.argv[4] if len(sys.argv) > 4 else ""
     tests_path = sys.argv[5] if len(sys.argv) > 5 else ""
     impacts_path = sys.argv[6] if len(sys.argv) > 6 else ""
+    # S220 part B: the drawing/build PAIRS, and what was measured on each.
+    pairs_path = sys.argv[7] if len(sys.argv) > 7 else ""
+    # S220 part F: the WALK — what the look actually did, step by step.
+    # S220 part E: the SEED — whether this repo declared sample data at all.
+    walk_path = sys.argv[8] if len(sys.argv) > 8 else ""
+    seed_path = sys.argv[9] if len(sys.argv) > 9 else ""
+    walk = load_walk(walk_path)
+    seed = load_json_or_none(seed_path)
+    pairs_by_part = load_pairs(pairs_path)
     observations = load_observations(obs_path)
     tests = load_tests(tests_path)
 
@@ -1192,6 +1340,74 @@ def main():
             entry["evidence"] = "none"
             entry.pop("shot", None)
             entry.pop("testQuote", None)
+
+    # THE UNWALKED-STEP GUARD (S220 part F). A journey step whose control was
+    # not on the screen was NOT TAKEN, and a step nobody took cannot have
+    # worked. It is named — "couldn't check (unreachable)" about THIS step —
+    # rather than skipped silently, which is what a walk that quietly stopped
+    # halfway used to look like in a report.
+    if walk:
+        by_step = {str(st.get("key")): st for st in walk["steps"]}
+        for entry in ledger:
+            row = contract_by_id.get(entry["id"]) or {}
+            st = by_step.get(str(row.get("journeyStep") or ""))
+            # A STEP THAT CHANGED NOTHING IS THE SAME KIND OF SILENCE as a step
+            # whose control was not there (fix round 1, D6). The driver now
+            # says so in the record; here it becomes a named couldn't-check on
+            # the criterion, instead of a "worked" nobody earned.
+            if not st or st.get("status") not in ("unreachable", "no-change"):
+                continue
+            how = st.get("status")
+            if entry["status"] == "untested":
+                entry.setdefault("couldNotCheck", how)
+                continue
+            notes.append("%s is the journey step \"%s\", and I could not take it "
+                         "(%s) — so it is not-checkable, whatever the look called it"
+                         % (entry["id"], st.get("name") or st.get("key"),
+                            st.get("why") or "the control was not on the screen"))
+            entry["status"] = "untested"
+            entry["couldNotCheck"] = how
+            entry["note"] = ("I could not take this step: %s"
+                             % (st.get("why") or "the control it names was not on the screen"))
+            entry["evidence"] = "none"
+            entry.pop("shot", None)
+            entry.pop("testQuote", None)
+
+    # THE UNREACHABLE-PART GUARD (S220 part B). A requirement about a part of
+    # the DRAWING that the build has not got can never be "worked": there was
+    # nothing on the screen to work. The look has said it was met before — on
+    # 2026-09-19 it called four buttons correct with the faults in its own
+    # frame — and this is a fact about two boxes, not a call a look could get
+    # right by trying harder, so it overrules whatever was said.
+    #
+    # AND THE OVERRULES ARE JOURNALED (the captain's standing rule: a measured
+    # difference is EVIDENCE, never a verdict — the look may overrule it, and
+    # when it does, the reason it gave is written down beside the measurement
+    # so he can see who decided what).
+    for entry in ledger:
+        row = contract_by_id.get(entry["id"]) or {}
+        part = row.get("drawnPart")
+        pair = pairs_by_part.get(str(part)) if part else None
+        if not pair:
+            continue
+        if not pair.get("reachable"):
+            if entry["status"] != "untested":
+                notes.append("%s is about a part of your drawing the build has not got "
+                             "(%s), so I am marking it couldn't-check rather than "
+                             "trusting what the look called it"
+                             % (entry["id"], pair.get("why") or "not found"))
+            entry["status"] = "untested"
+            entry["note"] = UNREACHABLE_PART_NOTE
+            entry["evidence"] = "none"
+            entry.pop("shot", None)
+            entry.pop("testQuote", None)
+            continue
+        fired = [m for m in (pair.get("measurements") or []) if m.get("fires")]
+        if fired and entry["status"] == "met":
+            notes.append("%s: I measured %s and the look overruled it — its reason: %s"
+                         % (entry["id"],
+                            "; ".join(str(m.get("says") or m.get("id")) for m in fired),
+                            (entry.get("note") or "").strip() or "none given"))
 
     # IMPORTANCE, RECORDED ONCE AND REUSED (S216 fix round 1, D5). Before the
     # grade is derived, so the grade reads the record, not this look's guess.
@@ -1581,6 +1797,25 @@ def main():
             w("*Read another way (this does not change the grade):* %s.\n\n"
               % "; ".join(beside))
         w(summary + "\n\n")
+        # POINT AT THE MEASURED FINDINGS FROM THE TOP (fix round 1, D5). The
+        # score is the criteria's; these are measurements and they never move
+        # it. That is the S210 contract and it stands — but a finding the
+        # captain has to scroll past four sections to meet is a finding he
+        # does not act on, so the count is said here, once, with its heading.
+        _measured = [o for o in ((observations or {}).get("observations") or [])
+                     if o.get("reportedUnder") == "measured"]
+        _measured_n = len(_measured)
+        # …and the paragraph above never stands alone claiming to be the whole
+        # picture (fix round 3, F1). Same sentence the board renders.
+        _caveat = summary_caveat(summary, _measured)
+        if _caveat:
+            w("*%s*\n\n" % _caveat)
+        if _measured_n:
+            w("**I also measured %d thing%s against your drawing and while walking "
+              "the flow myself. They are not in the count above — measurements never "
+              "move your score — but they are faults and they are listed below, under "
+              "*What I measured on your drawing*.**\n\n"
+              % (_measured_n, "" if _measured_n == 1 else "s"))
         if picture_only:
             w("**%s.** %s %s a picture, not a drawing, so nothing in this build "
               "was compared against a design. %s\n\n"
@@ -1683,7 +1918,33 @@ def main():
         # SEE — two controls touching, a row out of line, text spilling past its
         # own box — measured from the same boxes the ledger above was judged
         # from. They never moved the score you read at the top of this report.
-        if observations and observations["observations"]:
+        # WHAT I MEASURED, AND WHAT I SAW WALKING IT (fix round 1, D5). These
+        # are the part-by-part measurements (S220 B) and the journey's own
+        # carry and gate checks (S220 F). They ARE about your drawing and your
+        # flow, so they do not belong under "not on your list" — and until
+        # this section existed they reached the captain nowhere at all while
+        # the benchmark was scoring them as found. Every one of them is a
+        # finding he can act on, in its own right, in plain words.
+        measured = [o for o in ((observations or {}).get("observations") or [])
+                    if o.get("reportedUnder") == "measured"]
+        loose = [o for o in ((observations or {}).get("observations") or [])
+                 if o.get("reportedUnder") != "measured"]
+        if measured:
+            w("\n### What I measured on your drawing, and what I saw walking it\n\n")
+            # WHICH EYE SAW THEM (fix round 3, F1). This read as Number One's
+            # own eye, which is the one thing the record does not say: every
+            # line here came off a measurement.
+            w("These came from measurements, not from my own eye. Every part "
+              "of your drawing was held against the part the build renders, "
+              "and the flow was walked a step at a time. Anything here that I "
+              "do not also write up in your list above is something I did not "
+              "notice while looking. They are findings either way — act on "
+              "them.\n\n")
+            for o in measured:
+                where = str(o.get("screen") or "")
+                w("- %s%s\n" % (o.get("message", ""),
+                                ("  *(on %s)*" % where) if where and where not in str(o.get("message") or "") else ""))
+        if loose:
             w("\n### Things I noticed that are not on your list\n\n")
             w("None of these come from your drawing or your PRD — they never "
               "change the score above. I am just telling you what I saw.\n\n")
@@ -1692,7 +1953,7 @@ def main():
             # tell if it kept quiet about itself.
             for n in observations.get("notes") or []:
                 w("%s\n\n" % n)
-            for o in observations["observations"]:
+            for o in loose:
                 w("- %s\n" % o.get("message", ""))
             hidden = hidden_sentence(observations.get("unseenCount"))
             if hidden:
@@ -1705,6 +1966,52 @@ def main():
               "calibration is yours to make.*\n" % (
                   th.get("gapPx", "?"), th.get("misalignPx", "?"),
                   th.get("overflowPx", "?")))
+        # HOW I MOVED (S220 part F) — read off the record of what was
+        # executed, so a report can never claim a walk that did not happen.
+        if walk and walk["steps"]:
+            w("\n### How I walked it\n\n")
+            w("%s\n\n" % walk_sentence(walk))
+            for st in walk["steps"]:
+                if st.get("status") == "unreachable":
+                    w("- **couldn't check (unreachable)** — %s: %s\n"
+                      % (st.get("name") or st.get("key"),
+                         st.get("why") or "the control it names was not on the screen"))
+                elif st.get("status") == "no-change":
+                    w("- **couldn't check (nothing changed)** — %s: %s\n"
+                      % (st.get("name") or st.get("key"),
+                         st.get("why") or "the screen was the same before and after"))
+                elif st.get("status") == "refused":
+                    w("- **it refused** — %s\n" % (st.get("name") or st.get("key")))
+                elif st.get("do") == "type-all":
+                    # D6: say how much of the form was actually filled. "I
+                    # filled the form" over 2 of 19 boxes is the claim that
+                    # made the gate's filled phase meaningless.
+                    w("- %s — I filled %s of %s field(s)%s\n"
+                      % (st.get("name") or st.get("key"), st.get("filled"),
+                         st.get("fieldsOnScreen"),
+                         ("; I could not fill %s" % ", ".join(st.get("couldNotFill") or [])[:160])
+                         if st.get("couldNotFill") else ""))
+                else:
+                    w("- %s%s\n" % (st.get("name") or st.get("key"),
+                                     "" if st.get("changed") else " — and nothing on the screen changed"))
+        # WHAT I COULD NOT SEE FOR WANT OF DATA (S220 part E). One plain
+        # sentence, and only when nothing was declared — a seed that ran is
+        # not worth a paragraph, and a missing one is never the build's fault.
+        if isinstance(seed, dict) and not seed.get("declared"):
+            blind_screens = []
+            for e in ledger:
+                if e["status"] != "untested":
+                    continue
+                row = contract_by_id.get(e["id"]) or {}
+                where = str(row.get("drawnAt") or row.get("drawnPart") or "")
+                where = where.split(",")[0].strip()
+                if where and where not in blind_screens:
+                    blind_screens.append(where)
+            if blind_screens:
+                w("\n**Nothing in this repo declares sample data for a look, so the "
+                  "screens that only appear once there is data in them I could not "
+                  "see: %s.** That is not a fault in your build — it is a gap in "
+                  "what I was given.\n" % ", ".join(blind_screens[:5]))
         if out["alsoChecked"]:
             w("\n**I also looked at:** " + "; ".join(out["alsoChecked"]) + "\n")
         if out["escalations"]:
@@ -1732,6 +2039,12 @@ def main():
     print("SUMMARY\t" + summary.replace("\n", " "))
     if observations is not None:
         print("OBSERVATIONS\t%d" % len(observations["observations"]))
+    if walk:
+        m = walk["moves"]
+        print("WALK\t%d\t%d\t%d\t%d" % (int(m.get("clicks") or 0),
+                                          int(m.get("typings") or 0),
+                                          int(m.get("keypresses") or 0),
+                                          int(m.get("addressJumps") or 0)))
     for n in notes:
         print("NOTE\t" + n.replace("\n", " "))
     return 0

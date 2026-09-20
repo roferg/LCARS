@@ -3094,6 +3094,13 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .xo-lede{font-size:14px;line-height:1.5;color:var(--lcars-text-bright);
   border-left:3px solid var(--lcars-peach);padding-left:10px;margin:6px 0 12px}
 .xo-full{font-size:13px;line-height:1.65;color:var(--lcars-text);margin-bottom:14px}
+/* S220 fix round 3, F1: the summing-up's own caveat. It sits with the
+   paragraph it qualifies and must NOT read as muted metadata beside it —
+   a correction the eye slides over is a correction nobody gets (the amber
+   warning that rendered as grey detail cost a whole round). Bright text,
+   amber rule, same size as the paragraph above it. */
+.xo-full-caveat{font-size:13px;line-height:1.6;color:var(--lcars-text-bright);
+  border-left:3px solid var(--lcars-amber);padding-left:10px;margin:-6px 0 16px}
 /* S217 fix round 1, D1: which file was a picture, and what to do about it. */
 .xo-picture{border:1px solid var(--lcars-amber);border-radius:6px;
   padding:8px 10px;margin:0 0 14px}
@@ -3421,6 +3428,19 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .xo-ochip.o-met{background:rgba(0,204,170,.14);color:var(--lcars-teal)}
 .xo-ochip.o-gap{background:rgba(255,51,68,.16);color:var(--lcars-red)}
 .xo-ochip.o-untested{background:rgba(153,119,255,.18);color:#b9a4ff}
+/* S220 fix round 2 (D-C): a MEASUREMENT reads as its own thing — amber, the
+   board's "worth your attention, not a verdict" colour — so it can never be
+   mistaken for a scored gap. Two text colours still: the colour is in the
+   chip and in the rule down the block's side, never in a sentence. */
+.xo-ochip.o-measured{background:rgba(255,153,0,.16);color:var(--lcars-amber)}
+.xo-item.xo-obs{border-left:3px solid var(--lcars-amber)}
+.xo-obs-head{padding:6px 2px 0}
+.xo-obs-head-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.06em;font-size:11.5px;
+  color:var(--lcars-amber);margin-bottom:4px}
+.xo-obs-head-why{font-size:12.5px;line-height:1.5}
+.xo-pane .xo-obs-head-why,.xo-pane .xo-measured-lede{color:var(--xo-muted)}
+.xo-measured-lede{font-size:12.5px;line-height:1.5;margin-top:6px}
 .xo-ichip{background:var(--lcars-black);color:var(--xo-ink);border:1px solid var(--lcars-border)}
 .xo-score2.s-high{color:var(--lcars-teal)} .xo-score2.s-medium{color:var(--lcars-amber)}
 .xo-score2.s-low{color:var(--lcars-red)}

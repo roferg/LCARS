@@ -85,6 +85,32 @@ const TIMEOUT = parseInt(arg("timeout", "30000"), 10) || 30000;
 const MAX_ACTIONS = parseInt(arg("max-actions", "12"), 10) || 12;
 const ATTACH_PORT = arg("devtools-port", "");
 const PREFIX = arg("prefix", "shot");
+/* ── THE PARTS PASS (S220 part B) ───────────────────────────────────────────
+ * `--parts-out <file>` asks for the page's PARTS — see the PARTS reader below
+ * — written to that file, with a 2x crop of each one beside the ordinary
+ * shots. It is how the drawing and the build are read the same way, by the
+ * same code, at the same scale, so the two crops can go side by side.
+ * `--parts-crop-cap` bounds how many crops one page pays for; the parts
+ * themselves are all recorded either way. */
+const PARTS_OUT = arg("parts-out", "");
+const PARTS_CAP = parseInt(arg("parts-cap", "80"), 10) || 80;
+const PARTS_CROP_CAP = parseInt(arg("parts-crop-cap", "16"), 10) || 16;
+/* ── WALK THE JOURNEY, DON'T TELEPORT (S220 part F) ─────────────────────────
+ * `--journey <file>` hands the driver a DECLARED JOURNEY — screen, action,
+ * next screen — built from the record (the drawing's screen order, the PRD's
+ * own steps) by xo-journey.py. The driver WALKS it: it clicks the control the
+ * step names, types where the step says to type, and photographs each screen
+ * it arrives on.
+ *
+ * WHY THE HARNESS WALKS IT AND NOT THE MODEL. Measured, twice, on the same
+ * case with the same code: one look clicked its way through, the next jumped
+ * to four addresses in a row and never touched a control. A walk left to the
+ * model's discretion is a lottery, and a lottery cannot be a proof. So the
+ * steps are executed here, deterministically, and what actually happened —
+ * every click, every typing, every step that could not be reached — is
+ * written to `--walk-out` as the record the report and the score read. */
+const JOURNEY_FILE = arg("journey", "");
+const WALK_OUT = arg("walk-out", "");
 /* ── EVERY VISIBLE ELEMENT, NOT ONLY THE NAMED ONES (S210) ──────────────────
  * Before this the readout only ever carried a box for a PLACE NAME — an
  * element the drawing never mentions had no geometry at all, so "these two
@@ -157,6 +183,19 @@ function readActions(file) {
   let list = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.actions) ? doc.actions : null);
   if (!list) throw new Infra("--actions must be a JSON array (or {\"actions\": […]})");
   return list;
+}
+
+/* THE DECLARED JOURNEY (S220 part F). A missing or unreadable file means no
+ * walk — never a dead look: a mission whose record says nothing about a flow
+ * is looked at exactly as it always was. */
+function readJourney(file) {
+  if (!file) return { steps: [], entry: [] };
+  let doc;
+  try { doc = JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch (_) { return { steps: [], entry: [] }; }
+  const list = Array.isArray(doc) ? doc : (doc && Array.isArray(doc.steps) ? doc.steps : []);
+  return { steps: list.filter((s) => s && typeof s === "object").slice(0, 24),
+           entry: (doc && Array.isArray(doc.entry) ? doc.entry : []).slice(0, 6) };
 }
 
 /* ── the PNG sampler ─────────────────────────────────────────────────────────
@@ -774,6 +813,132 @@ const READ = (places, cap) => `(function () {
   return JSON.stringify(out);
 })()`;
 
+/* ── THE PARTS READER (S220 part B) ────────────────────────────────────────
+ *
+ * WHY IT IS NOT `READ`. The element capture above is the OBSERVATIONS pass's
+ * input and it deliberately keeps only what is IN THE VIEWPORT — a box nobody
+ * can see is not a crowding fault. A DRAWING is one long page with six screens
+ * stacked down it, so reading it through that lens would find the first screen
+ * and call the rest missing. This reader answers a different question — "what
+ * are the named, labelled PARTS of this page, wherever they sit on it" — so it
+ * keeps everything that is laid out and rendered, above the fold or below it.
+ *
+ * WHAT IT MEASURES, and every one of these is a FACT the browser already knows:
+ *   name      what a person would call it: its aria-label, else its own text,
+ *             else its title/alt/placeholder. The handle that matched a drawn
+ *             part to a built one, when the ids do not line up — and on the
+ *             S220 benchmark they do not: the drawing names twelve and the
+ *             build has none of them.
+ *   testid    `data-testid` when the project uses them. A convention, never a
+ *             guarantee, which is exactly why it is one handle among several.
+ *   iconBox   the tallest icon-ish child: an svg, an img, a canvas, or a glyph
+ *             span of a character or two. The four buttons Number One passed
+ *             on 2026-09-19 each held one of these at 34-61 px inside a 30-38
+ *             px control.
+ *   lines     how many lines the label ACTUALLY renders on, counted from the
+ *             rects of its own text nodes — not guessed from a height, which
+ *             would make padding look like a wrap.
+ * It also stamps `data-xo-part` on each part, so the crop that follows can
+ * clip to exactly the element that was measured.  */
+const PARTS = (cap) => `(function () {
+  var CAP = ${JSON.stringify(cap)};
+  function box(el) { var r = el.getBoundingClientRect(); return { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), w: Math.round(r.width), h: Math.round(r.height) }; }
+  function txt(el) { return (el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim(); }
+  function nameOf(el) {
+    var n = el.getAttribute("aria-label") || "";
+    if (!n) n = txt(el);
+    if (!n) n = el.getAttribute("title") || el.getAttribute("alt") || el.getAttribute("placeholder") || "";
+    return n.slice(0, 80);
+  }
+  // HOW MANY LINES THE LABEL RENDERS ON. From the rects of the TEXT NODES
+  // themselves: an icon beside the text is not a line of text, and a tall box
+  // is padding until the text says otherwise.
+  function lines(el) {
+    try {
+      var w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null), tops = {}, n = 0, node;
+      while ((node = w.nextNode())) {
+        if (!String(node.nodeValue || "").trim()) continue;
+        var r = document.createRange(); r.selectNodeContents(node);
+        var rs = r.getClientRects();
+        for (var i = 0; i < rs.length; i++) {
+          if (rs[i].height < 1 || rs[i].width < 1) continue;
+          var t = Math.round(rs[i].top);
+          if (!(t in tops)) { tops[t] = 1; n++; }
+        }
+      }
+      return n || (txt(el) ? 1 : 0);
+    } catch (e) { return txt(el) ? 1 : 0; }
+  }
+  var ICON_TAG = { SVG: 1, IMG: 1, CANVAS: 1, I: 1, PICTURE: 1 };
+  function iconOf(el) {
+    var kids = el.querySelectorAll("*"), best = null;
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i], r = k.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      var tag = (k.tagName || "").toUpperCase();
+      var own = (k.childElementCount === 0) ? txt(k) : "";
+      // An svg/img/canvas, or a glyph: a leaf of a character or two (an emoji
+      // counts as one or two code units), or a leaf with no text at all that
+      // is still painting something square-ish.
+      var iconish = !!ICON_TAG[tag] || (k.childElementCount === 0 && own.length > 0 && own.length <= 2) ||
+        (k.childElementCount === 0 && own.length === 0 && r.width >= 6 && r.height >= 6 &&
+         (getComputedStyle(k).backgroundImage !== "none" || getComputedStyle(k).backgroundColor !== "rgba(0, 0, 0, 0)" ||
+          (getComputedStyle(k).maskImage && getComputedStyle(k).maskImage !== "none")));
+      if (!iconish) continue;
+      if (!best || r.height > best.h) best = { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), w: Math.round(r.width), h: Math.round(r.height) };
+    }
+    return best;
+  }
+  var INTERACTIVE_TAG = { BUTTON: 1, A: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, SUMMARY: 1, LABEL: 1 };
+  var LABELLED_TAG = { H1: 1, H2: 1, H3: 1, H4: 1, P: 1, LI: 1, TD: 1, TH: 1, LEGEND: 1 };
+  var all = document.querySelectorAll("*");
+  var parts = [], dropped = 0, idx = 0;
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i], tag = (el.tagName || "").toUpperCase();
+    var r = el.getBoundingClientRect();
+    var s = getComputedStyle(el);
+    if (s.display === "none" || s.visibility === "hidden") continue;
+    var role = (el.getAttribute("role") || "").toLowerCase();
+    var interactive = !!INTERACTIVE_TAG[tag] || role === "button" || role === "link" || role === "tab" ||
+      el.hasAttribute("onclick");
+    // A NAMED part of the drawing is a part whatever it is: the drawing's ids
+    // are the vocabulary the contract is written in.
+    var named = !!el.id || el.hasAttribute("data-testid");
+    var labelled = !!LABELLED_TAG[tag] && txt(el).length > 0 && el.childElementCount === 0;
+    if (!interactive && !named && !labelled) continue;
+    if (parts.length >= CAP) { dropped++; continue; }
+    idx++;
+    try { el.setAttribute("data-xo-part", String(idx)); } catch (e) {}
+    // IS IT A PART, OR THE BOX THE PARTS SIT IN? A section with an id is
+    // still a section: measuring "the entry section runs onto 11 lines where
+    // the drawing has 10" is a sentence about nothing, and on the S220
+    // fixture it was a FALSE ALARM against a correct tab bar, because the
+    // section's text contains every control's label. Recorded as a fact here;
+    // xo-parts.py is what decides to leave containers out of the pairing.
+    var kids = el.childElementCount;
+    var container = (!interactive && (kids > 2 || r.height > 200));
+    parts.push({
+      index: idx,
+      kids: kids,
+      container: container,
+      id: el.id || null,
+      testid: el.getAttribute("data-testid") || null,
+      name: nameOf(el),
+      role: role || null,
+      tag: el.tagName.toLowerCase(),
+      interactive: interactive,
+      box: box(el),
+      iconBox: iconOf(el),
+      lines: lines(el),
+      color: s.color,
+      background: s.backgroundColor,
+      crop: null
+    });
+  }
+  return JSON.stringify({ url: location.href, title: document.title, parts: parts,
+    droppedParts: dropped, cap: CAP });
+})()`;
+
 const BOX_OF = (sel) => `(function () {
   var el = document.querySelector(${JSON.stringify(sel)});
   if (!el) return "";
@@ -857,6 +1022,143 @@ function modifierMask(mods) {
   return bits;
 }
 
+/* ── ACTING ON A CONTROL BY ITS NAME (S220 part F) ──────────────────────────
+ * A declared journey names the control the way a person does — "Pull data &
+ * start", "Continue to builder" — not by a css selector, because the record
+ * the journey is built from (a drawing, a PRD) names things that way and a
+ * selector invented from a label is a guess about the build's markup.
+ *
+ * So the browser is asked to find the control by its ACCESSIBLE NAME and act
+ * on it: the same question a person asks looking at the screen. What came
+ * back — which control it matched, whether the control refused (disabled),
+ * and, when nothing matched, the names that WERE on the screen — is returned
+ * so the record can say why a step did not happen.
+ */
+const ACT = (spec) => `(function () {
+  var spec = ${JSON.stringify(spec)};
+  function norm(s) { return String(s == null ? "" : s).replace(/\\s+/g, " ").trim().toLowerCase(); }
+  function nameOf(el) {
+    var n = (el.getAttribute && el.getAttribute("aria-label")) || "";
+    if (!n && el.tagName === "INPUT") n = el.getAttribute("placeholder") || el.value || "";
+    if (!n && el.tagName === "TEXTAREA") n = el.getAttribute("placeholder") || "";
+    if (!n) n = el.innerText || el.textContent || "";
+    if (!n && el.id) {
+      var lab = document.querySelector('label[for="' + el.id + '"]');
+      if (lab) n = lab.innerText || "";
+    }
+    if (!n && el.getAttribute) n = el.getAttribute("title") || el.getAttribute("name") || "";
+    return norm(n).slice(0, 120);
+  }
+  var TYPEABLE = 'input[type=text],input[type=search],input[type=email],input[type=number],input:not([type]),textarea,[contenteditable=true]';
+  var CLICKABLE = 'button,a[href],[role=button],[role=tab],[role=link],input[type=submit],input[type=button],summary,[onclick]';
+  var typing = (spec.do === "type" || spec.do === "typeall");
+  var all = Array.prototype.slice.call(document.querySelectorAll(typing ? TYPEABLE : CLICKABLE));
+  var cands = all.filter(function (el) {
+    var r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+  });
+  var pats = (spec.match || []).map(norm).filter(Boolean);
+  // FILL THE WHOLE FORM (fix round 1, D6). The declared journey names one or
+  // two fields because that is all the DRAWING draws; the screen in front of
+  // it asks for nineteen. A gate's "now everything is filled" phase is a lie
+  // while seventeen boxes are empty, so this mode types into every empty
+  // field on the screen and reports, by name, the ones it could not fill.
+  if (spec.do === "typeall") {
+    var text0 = String(spec.text == null ? "" : spec.text);
+    var filled = 0, names = [], leftNames = [];
+    cands.forEach(function (el) {
+      var cur = el.isContentEditable ? norm(el.innerText) : norm(el.value);
+      if (cur) return;
+      try {
+        el.focus();
+        if (el.isContentEditable) { el.innerText = text0; }
+        else {
+          var proto0 = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+                                                 : window.HTMLInputElement.prototype;
+          var set0 = Object.getOwnPropertyDescriptor(proto0, "value");
+          if (set0 && set0.set) set0.set.call(el, text0); else el.value = text0;
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        var back = el.isContentEditable ? norm(el.innerText) : norm(el.value);
+        if (back) { filled += 1; names.push(nameOf(el)); }
+        else { leftNames.push(nameOf(el)); }
+      } catch (e) { leftNames.push(nameOf(el)); }
+    });
+    return JSON.stringify({ ok: true, filled: filled, left: leftNames.length,
+      names: names.slice(0, 30), leftNames: leftNames.slice(0, 30),
+      fieldsOnScreen: cands.length });
+  }
+  var best = null, bestScore = -1;
+  cands.forEach(function (el) {
+    var n = nameOf(el), sc = -1;
+    if (!pats.length) {
+      // No name to go on: for typing, the first EMPTY field is the one a
+      // person fills; for anything else, nothing is matched at all.
+      sc = (typing && !norm(el.value) && !norm(el.innerText)) ? 1 : -1;
+    } else {
+      for (var i = 0; i < pats.length; i++) {
+        var p = pats[i], s2 = -1;
+        if (n === p) s2 = 100 - i;
+        else if (n.indexOf(p) === 0) s2 = 80 - i;
+        else if (n.indexOf(p) >= 0) s2 = 60 - i;
+        else if (n.length > 3 && p.indexOf(n) >= 0) s2 = 40 - i;
+        else {
+          // MOSTLY THE SAME WORDS. The record names a thing one way and the
+          // build names it another — "MBR View Builder" in the mission, "MBR
+          // builder" on the screen — and neither contains the other. Measured
+          // on the real benchmark, where that one gap left every step of the
+          // walk "unreachable" on a page the button was two clicks from. So:
+          // the words they share, against the shorter of the two.
+          var wa = n.split(" ").filter(function (x) { return x.length > 2; });
+          var wb = p.split(" ").filter(function (x) { return x.length > 2; });
+          if (wa.length && wb.length) {
+            var shared = wa.filter(function (x) { return wb.indexOf(x) >= 0; }).length;
+            var need = Math.min(wa.length, wb.length);
+            if (shared >= 2 && shared >= need * 0.6) s2 = 30 - i;
+          }
+        }
+        if (s2 > sc) sc = s2;
+      }
+    }
+    if (sc > bestScore) { bestScore = sc; best = el; }
+  });
+  if (!best || bestScore < 0) {
+    return JSON.stringify({ ok: false, why: "no-such-control",
+      onScreen: cands.slice(0, 30).map(nameOf).filter(Boolean) });
+  }
+  var disabled = !!best.disabled || best.getAttribute("aria-disabled") === "true" ||
+                 String(best.className || "").indexOf("disabled") >= 0;
+  var found = { ok: true, name: nameOf(best), tag: best.tagName.toLowerCase(),
+                id: best.id || null, disabled: disabled };
+  try { best.scrollIntoView({ block: "center" }); } catch (e) {}
+  if (spec.do === "probe") return JSON.stringify(found);
+  if (spec.do === "type") {
+    var text = String(spec.text == null ? "" : spec.text);
+    try {
+      best.focus();
+      if (best.isContentEditable) { best.innerText = text; }
+      else {
+        var proto = best.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+                                                : window.HTMLInputElement.prototype;
+        var setter = Object.getOwnPropertyDescriptor(proto, "value");
+        if (setter && setter.set) setter.set.call(best, text); else best.value = text;
+      }
+      best.dispatchEvent(new Event("input", { bubbles: true }));
+      best.dispatchEvent(new Event("change", { bubbles: true }));
+      found.typed = text;
+      found.readBack = best.isContentEditable ? norm(best.innerText) : norm(best.value);
+    } catch (e) { found.ok = false; found.why = "could-not-type: " + e.message; }
+    return JSON.stringify(found);
+  }
+  // click. A control that refuses is NOT forced: "it refused" is the answer to
+  // the question a gate step asks, and clicking it anyway would erase it.
+  if (disabled) { found.clicked = false; return JSON.stringify(found); }
+  try { best.click(); found.clicked = true; }
+  catch (e) { found.clicked = false; found.why = "could-not-click: " + e.message; }
+  return JSON.stringify(found);
+})()`;
+
 const FOCUS = (sel) => `(function () {
   var el = document.querySelector(${JSON.stringify(sel)});
   if (!el) return "no-such-element";
@@ -869,6 +1171,8 @@ const FOCUS = (sel) => `(function () {
 (async () => {
   const places = readPlaceNames(PLACES_FILE);
   let actions = readActions(ACTIONS_FILE);
+  const journeyDoc = readJourney(JOURNEY_FILE);
+  const journey = journeyDoc.steps;
   const notes = [];
   if (actions.length > MAX_ACTIONS) {
     // A look is a look. The overflow is DROPPED and SAID, never silently run:
@@ -950,6 +1254,267 @@ const FOCUS = (sel) => `(function () {
 
   const shots = [];
   let incomplete = false;
+
+  /* WHAT MAKES ONE SCREEN DIFFERENT FROM ANOTHER. The address, plus the first
+   * words on it: an app that changes its whole view without changing its url
+   * has two screens, and a record keyed on the url alone keeps only the last. */
+  function screenSig(doc) {
+    return String((doc && (doc.title || "")) + " " +
+                  String((doc && doc.textExcerpt) || "").replace(/\s+/g, " ").trim().slice(0, 80));
+  }
+
+  /* ── A PARTS SNAPSHOT PER SCREEN (S220 part B) ─────────────────────────────
+   * MEASURED ON THE REAL BENCHMARK: a drawing of six screens, paired against
+   * ONE snapshot taken where the round happened to end, matched 6 of 65 parts
+   * and called the other 59 "not in the build" — a wall of couldn't-checks
+   * about controls that were right there two clicks back. A person holding the
+   * drawing walks the app and looks at each screen in turn, so the parts are
+   * read on EVERY screen the look stands on and kept per screen. */
+  const partPages = [];
+  let partCrops = 0;
+  async function snapParts(tag) {
+    if (!PARTS_OUT) return;
+    try {
+      const pr = await send("Runtime.evaluate", { expression: PARTS(PARTS_CAP), returnByValue: true }, S);
+      const doc = (pr && pr.result && typeof pr.result.value === "string")
+        ? JSON.parse(pr.result.value) : null;
+      if (!doc) return;
+      // The same screen twice is one screen. The LATER reading wins: it is the
+      // one the look was standing on when it decided anything.
+      //
+      // AND A SCREEN IS NOT JUST A URL. An app that swaps its whole view
+      // without touching the address has two screens at one address, and
+      // keying this on the url alone threw the second one away — measured on
+      // the S220 fixture, where five visited screens came back as one.
+      const at = String(doc.url || currentUrl);
+      const sig = at + "|" + screenSig(doc);
+      for (let i = partPages.length - 1; i >= 0; i--) {
+        if (partPages[i].sig === sig) partPages.splice(i, 1);
+      }
+      for (const p of doc.parts || []) {
+        if (partCrops >= PARTS_CROP_CAP) break;
+        if (!p.box || p.box.w <= 0 || p.box.h <= 0) continue;
+        // Only the parts worth a picture of their own: a control, or something
+        // the page named. The cap is shared across screens, so a first screen
+        // cannot spend every crop the look has.
+        if (!p.interactive && !p.id && !p.testid) continue;
+        const name = PREFIX + "-" + tag + "-part-" + String(p.index).padStart(2, "0");
+        try {
+          const clip = { x: p.box.x, y: p.box.y, width: p.box.w, height: p.box.h, scale: 1 };
+          const r = await send("Page.captureScreenshot", { format: "png", clip, captureBeyondViewport: true }, S);
+          fs.writeFileSync(path.join(OUT, name + ".png"), Buffer.from(r.data, "base64"));
+          fs.writeFileSync(path.join(OUT, name + ".txt"),
+            name + " — " + (p.name || p.id || p.tag) + ", clipped to it alone, at " +
+            scaleApplied + "x, on " + at + "\n");
+          p.crop = name;
+          partCrops++;
+        } catch (e) { p.cropError = e.message; }
+      }
+      partPages.push({ url: at, sig: sig, title: doc.title || "", parts: doc.parts || [],
+                       droppedParts: doc.droppedParts || 0 });
+      if (partPages.length > 12) partPages.shift();
+    } catch (e) {
+      notes.push("the parts pass could not run on " + currentUrl + ": " + e.message);
+    }
+  }
+
+  /* ── A READOUT PER SCREEN (S220 part D, carry-over) ────────────────────────
+   * `readout.json` is written ONCE, at the end of a driver run, so the layout
+   * pass — overflow, wrapping, clipping, crowding, misalignment — only ever
+   * saw the screen the round happened to END on. Measured on the real
+   * benchmark: five screens visited, two of them ever measured. Every screen
+   * the look stands on gets its own reading here, and `readouts.json` carries
+   * them all, so the layout pass runs on each and every finding can name the
+   * screen it was seen on. */
+  const readoutPages = [];
+  async function snapReadout() {
+    try {
+      const doc = await readout();
+      const at = String((doc && doc.url) || currentUrl);
+      const sig = at + "|" + screenSig(doc);
+      for (let i = readoutPages.length - 1; i >= 0; i--) {
+        if (readoutPages[i].sig === sig) readoutPages.splice(i, 1);
+      }
+      readoutPages.push({ url: at, sig: sig, title: doc.title || "", page: doc });
+      if (readoutPages.length > 12) readoutPages.shift();
+    } catch (e) {
+      notes.push("the layout reading could not be taken on " + currentUrl + ": " + e.message);
+    }
+  }
+
+  async function snapScreen(tag) {
+    await snapParts(tag);
+    await snapReadout();
+  }
+
+  /* ── THE WALK (S220 part F) ────────────────────────────────────────────────
+   * Enter at the front door and move through the app's OWN controls, step by
+   * declared step. Nothing here chooses where to go: the steps come from the
+   * record. What this decides is only whether each one HAPPENED, and it says
+   * so either way — a step whose control is not on the screen is recorded
+   * `unreachable`, by name, with the names that WERE on the screen beside it,
+   * and the walk carries on to the next step rather than stopping the look.
+   */
+  const walk = { entry: URL_, steps: [], actions: [],
+                 moves: { clicks: 0, typings: 0, keypresses: 0, addressJumps: 0 } };
+  function excerpt(doc) {
+    return String((doc && doc.textExcerpt) || "").replace(/\s+/g, " ").trim().slice(0, 1200);
+  }
+  async function probe(match) {
+    try {
+      const r = await send("Runtime.evaluate",
+        { expression: ACT({ do: "probe", match: match }), returnByValue: true }, S);
+      return (r && r.result && typeof r.result.value === "string") ? JSON.parse(r.result.value) : null;
+    } catch (_) { return null; }
+  }
+
+  /* FINDING THE WAY IN (S220 part F). The app's front door is not always the
+   * drawing's first screen — on the real benchmark the front door is one view
+   * and the drawn flow lives behind a nav item. A person clicks their way in;
+   * so does this. The names come from the record (the first screen's own
+   * headings, the mission's title), never from a guess at a URL. */
+  async function findTheWayIn(firstStep) {
+    if (!firstStep || !journeyDoc.entry.length) return null;
+    const there = await probe(firstStep.match || []);
+    if (there && there.ok) return null;
+    for (const hint of journeyDoc.entry) {
+      const r = await send("Runtime.evaluate",
+        { expression: ACT({ do: "click", match: [hint] }), returnByValue: true }, S);
+      const res = (r && r.result && typeof r.result.value === "string") ? JSON.parse(r.result.value) : null;
+      if (!res || !res.ok || !res.clicked) continue;
+      walk.moves.clicks += 1;
+      walk.actions.push({ click: res.name || hint });
+      await sleep(600);
+      try { await settle(); } catch (_) {}
+      const now = await probe(firstStep.match || []);
+      const rec = { key: "j0", name: 'find the way in by clicking "' + (res.name || hint) + '"',
+                    do: "click", match: [hint], matched: res.name || null,
+                    status: (now && now.ok) ? "done" : "done",
+                    reachedFirstScreen: !!(now && now.ok) };
+      rec.shot = PREFIX + "-walk-00-wayin";
+      try { await shoot(rec.shot, null); } catch (_) {}
+      await snapScreen("w0");
+      walk.steps.push(rec);
+      if (now && now.ok) return rec;
+    }
+    return null;
+  }
+
+  async function walkTheJourney() {
+    if (!journey.length) return;
+    await findTheWayIn(journey[0]);
+    let i = 0;
+    for (const step of journey) {
+      i++;
+      const key = String(step.key || "j" + i);
+      const rec = { key, name: String(step.name || key), do: String(step.do || "click"),
+                    phase: step.phase || null,
+                    match: step.match || [], expect: step.expect || null };
+      let before = null;
+      try { before = await readout(); } catch (_) {}
+      rec.urlBefore = (before && before.url) || currentUrl;
+      rec.textBefore = excerpt(before);
+      let res = null;
+      try {
+        const r = await send("Runtime.evaluate",
+          { expression: ACT({ do: rec.do === "gate" ? "click"
+                                : rec.do === "type-all" ? "typeall" : rec.do,
+                              match: rec.match, text: step.text }), returnByValue: true }, S);
+        res = (r && r.result && typeof r.result.value === "string") ? JSON.parse(r.result.value) : null;
+        if ((!res || res.ok === false) && rec.do === "type") {
+          // A FIELD IS A FIELD. The record names it by what the DRAWING put in
+          // it ("gh/gh remains the long pole…") and the build labels it by what
+          // it asks for ("Add an insight for this KPI…"). A person fills the
+          // empty box in front of them, so when the named one is not there the
+          // first empty field is typed into and the record says which.
+          const r2 = await send("Runtime.evaluate",
+            { expression: ACT({ do: "type", match: [], text: step.text }), returnByValue: true }, S);
+          const alt = (r2 && r2.result && typeof r2.result.value === "string") ? JSON.parse(r2.result.value) : null;
+          if (alt && alt.ok) { res = alt; rec.byFallback = "the first empty field on the screen"; }
+        }
+      } catch (e) { rec.status = "unreachable"; rec.why = e.message; }
+      if (!res || res.ok === false) {
+        rec.status = "unreachable";
+        rec.couldNotCheck = "unreachable";
+        rec.why = (res && res.why) || rec.why || "the control this step names was not on the screen";
+        rec.onScreen = (res && res.onScreen) || [];
+        notes.push("the journey step \"" + rec.name + "\" could not be taken: " +
+                   rec.why + " — reached by address, no; not reached at all");
+        walk.steps.push(rec);
+        incomplete = true;
+        continue;
+      }
+      rec.matched = res.name || null;
+      rec.disabled = !!res.disabled;
+      if (rec.do === "type-all") {
+        /* D6: every field the screen still wants, and by NAME the ones it
+         * would not take. "I filled 2 of 19" is the honest number; "9 of 9
+         * steps taken" over a form that was never filled is not. */
+        rec.typed = String(step.text || "");
+        rec.filled = Number(res.filled || 0);
+        rec.fieldsOnScreen = Number(res.fieldsOnScreen || 0);
+        rec.filledNames = res.names || [];
+        rec.couldNotFill = res.leftNames || [];
+        rec.status = rec.filled > 0 ? "done" : "refused";
+        if (rec.couldNotFill.length) {
+          rec.why = "I could not fill " + rec.couldNotFill.length + " field(s): " +
+                    rec.couldNotFill.slice(0, 6).join(", ");
+          notes.push("on \"" + rec.name + "\" I filled " + rec.filled +
+                     " field(s) and could not fill " + rec.couldNotFill.length + ": " +
+                     rec.couldNotFill.slice(0, 6).join(", "));
+        }
+        walk.moves.typings += rec.filled;
+        for (const nm of rec.filledNames) walk.actions.push({ type: nm, text: rec.typed });
+      } else if (rec.do === "type") {
+        rec.typed = res.typed || "";
+        rec.readBack = res.readBack || "";
+        rec.status = res.readBack ? "done" : "refused";
+        walk.moves.typings += 1;
+        walk.actions.push({ type: rec.matched || "(the field)", text: rec.typed });
+      } else {
+        rec.clicked = !!res.clicked;
+        rec.status = res.clicked ? "done" : "refused";
+        if (res.clicked) {
+          walk.moves.clicks += 1;
+          walk.actions.push({ click: rec.matched || (rec.match[0] || "(a control)") });
+        }
+      }
+      await sleep(600);
+      let after = null;
+      try { after = await settle(); } catch (_) {}
+      if (!after) { try { after = await readout(); } catch (_) {} }
+      const url = (after && after.url) || currentUrl;
+      currentUrl = url;
+      rec.urlAfter = url;
+      rec.textAfter = excerpt(after);
+      rec.changed = rec.urlAfter !== rec.urlBefore || rec.textAfter !== rec.textBefore;
+      /* A STEP THAT CHANGED NOTHING WAS NOT TAKEN (fix round 1, D6). On
+       * 2026-09-19 the blank gate and the filled gate came back BYTE-IDENTICAL
+       * — same address, same text, `changed:false` on both — and the record
+       * still said 9 of 9 steps taken. Clicking a control and watching the
+       * screen stay exactly as it was tells you nothing about whether the step
+       * worked, so it is named for what it is: couldn't check.
+       *
+       * Two exceptions, both because the change IS somewhere else: typing
+       * changes the FIELD (its read-back is the evidence, and a textarea's
+       * value never shows in the page's text), and the gate's BLANK phase is
+       * asking the gate to refuse — nothing changing is the answer it wanted. */
+      if (rec.status === "done" && !rec.changed &&
+          rec.do !== "type" && rec.do !== "type-all" &&
+          !(rec.do === "gate" && rec.phase === "blank")) {
+        rec.status = "no-change";
+        rec.couldNotCheck = "nothing changed";
+        rec.why = "I did it and the screen was the same before and after — same address, " +
+                  "same words — so I cannot say whether it worked";
+        notes.push("the journey step \"" + rec.name + "\" changed nothing at all, so it is " +
+                   "couldn't-check, not taken");
+      }
+      rec.shot = PREFIX + "-walk-" + String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-");
+      try { await shoot(rec.shot, null); } catch (e) { rec.shotError = e.message; }
+      await snapScreen("w" + i);
+      walk.steps.push(rec);
+    }
+  }
 
   async function shoot(name, selector) {
     const page = await readout();
@@ -1043,15 +1608,37 @@ const FOCUS = (sel) => `(function () {
         incomplete = true;
       }
     }
+    await snapScreen("s0");
+    await walkTheJourney();
   } else {
     for (const a of actions) {
       try {
-        if (a.navigate) { await navigate(String(a.navigate)); }
+        if (a.navigate) {
+          /* A URL JUMP IS NOT A JOURNEY (S220 part F). The front door is the
+           * one address the look is allowed to type; every later one is
+           * recorded as what it is, and the screen it lands on is marked
+           * "reached by address, not by the flow" so nobody reading the
+           * report mistakes a teleport for a walk. */
+          walk.moves.addressJumps += 1;
+          const jump = { to: String(a.navigate), from: currentUrl };
+          walk.jumps = (walk.jumps || []).concat([jump]);
+          walk.actions.push({ navigate: String(a.navigate) });
+          notes.push("reached by address, not by the flow: " + String(a.navigate));
+          await navigate(String(a.navigate));
+        }
         else if (a.click) {
+          walk.moves.clicks += 1;
+          walk.actions.push({ click: String(a.click) });
           const r = await send("Runtime.evaluate", { expression: CLICK(String(a.click)), returnByValue: true }, S);
-          if (r.result && r.result.value === "no-such-element") { notes.push("click: nothing matched " + a.click); incomplete = true; }
-          else await sleep(400);
+          if (r.result && r.result.value === "no-such-element") {
+            notes.push("click: nothing matched " + a.click);
+            walk.moves.clicks -= 1;
+            walk.actions.pop();
+            incomplete = true;
+          } else await sleep(400);
         } else if (a.type) {
+          walk.moves.typings += 1;
+          walk.actions.push({ type: String(a.type), text: String(a.text || "") });
           const r = await send("Runtime.evaluate", { expression: TYPE(String(a.type), String(a.text || "")), returnByValue: true }, S);
           if (r.result && r.result.value === "no-such-element") { notes.push("type: nothing matched " + a.type); incomplete = true; }
           else await sleep(200);
@@ -1090,6 +1677,8 @@ const FOCUS = (sel) => `(function () {
               await send("Target.activateTarget", { targetId: t.targetId });
               try { await send("Page.bringToFront", {}, S); } catch (_) {}
               const times = Math.min(Math.max(parseInt(a.times, 10) || 1, 1), 50);
+              walk.moves.keypresses += times;
+              walk.actions.push({ press: d.key, times: times });
               const mods = modifierMask(a.modifiers);
               const common = { modifiers: mods, key: d.key, code: d.code,
                                windowsVirtualKeyCode: d.vk, autoRepeat: false,
@@ -1124,11 +1713,41 @@ const FOCUS = (sel) => `(function () {
         notes.push("action failed (" + JSON.stringify(a) + "): " + e.message);
         incomplete = true;
       }
+      // EVERY SCREEN IT STANDS ON. A click that changed nothing costs one
+      // evaluate and replaces the reading for that same url.
+      await snapScreen("a" + partPages.length);
     }
     if (shots.length === 0) {
       // An action round that took no picture saw nothing anyone can check.
       await shoot(nextName(), null);
       notes.push("the action list named no screenshot; one full-page shot was taken so the round has evidence");
+    }
+  }
+
+  /* ── THE PARTS PASS, and the crop of each part ──────────────────────────
+   * Last, so the page is in the state the look left it in: the parts of the
+   * screen it ENDED on are the parts worth pairing with the drawing.
+   * Best-effort in the same way the observations pass is — a page that will
+   * not answer this must never be why a look cannot finish. */
+  await snapReadout();
+  if (PARTS_OUT) {
+    await snapParts("end");
+    // EVERY SCREEN, AND A FLAT LIST OF ALL OF THEM. `pages` is the record;
+    // `parts` is every part of every screen, each carrying the screen it is
+    // on, so a reader that wants one list gets one that is not a lie about
+    // where things were.
+    const flat = [];
+    for (const pg of partPages) {
+      for (const p of pg.parts || []) flat.push(Object.assign({ screen: pg.url }, p));
+    }
+    try {
+      fs.mkdirSync(path.dirname(path.resolve(PARTS_OUT)), { recursive: true });
+      fs.writeFileSync(PARTS_OUT, JSON.stringify({
+        url: currentUrl, screens: partPages.map((p) => p.url),
+        pages: partPages, parts: flat, cropped: partCrops,
+      }, null, 2) + "\n");
+    } catch (e) {
+      notes.push("the parts record could not be written: " + e.message);
     }
   }
 
@@ -1138,6 +1757,39 @@ const FOCUS = (sel) => `(function () {
     shots: shots.map((s) => ({ name: s.name, selector: s.selector, painted: s.painted, pixels: s.pixels })),
     page,
   }, null, 2) + "\n");
+
+  /* EVERY SCREEN'S READING, not just the last one's (S220 part D carry-over).
+   * `readout.json` above stays exactly as it was — callers read it — and this
+   * is the same thing once per screen, so the layout pass can run on each and
+   * name the screen in every finding. */
+  try {
+    fs.writeFileSync(path.join(OUT, "readouts.json"), JSON.stringify({
+      screens: readoutPages.map((p) => p.url),
+      pages: readoutPages, notes,
+    }, null, 2) + "\n");
+  } catch (e) { notes.push("the per-screen readings could not be written: " + e.message); }
+
+  /* THE RECORD OF HOW IT MOVED (S220 part F) — clicks, typings, keypresses and
+   * every address jump past the front door, plus each declared step and
+   * whether it happened. Written whatever the look did: a walk that teleported
+   * is recorded as a walk that teleported. */
+  if (WALK_OUT) {
+    try {
+      fs.mkdirSync(path.dirname(path.resolve(WALK_OUT)), { recursive: true });
+      let prior = null;
+      try { prior = JSON.parse(fs.readFileSync(WALK_OUT, "utf8")); } catch (_) { prior = null; }
+      const out = { entry: (prior && prior.entry) || walk.entry,
+        steps: ((prior && prior.steps) || []).concat(walk.steps),
+        actions: ((prior && prior.actions) || []).concat(walk.actions),
+        jumps: ((prior && prior.jumps) || []).concat(walk.jumps || []),
+        screens: readoutPages.map((p) => p.url),
+        moves: { clicks: ((prior && prior.moves && prior.moves.clicks) || 0) + walk.moves.clicks,
+                 typings: ((prior && prior.moves && prior.moves.typings) || 0) + walk.moves.typings,
+                 keypresses: ((prior && prior.moves && prior.moves.keypresses) || 0) + walk.moves.keypresses,
+                 addressJumps: ((prior && prior.moves && prior.moves.addressJumps) || 0) + walk.moves.addressJumps } };
+      fs.writeFileSync(WALK_OUT, JSON.stringify(out, null, 2) + "\n");
+    } catch (e) { notes.push("the walk record could not be written: " + e.message); }
+  }
 
   ws.close(); stopChrome();
   const allPainted = shots.length > 0 && shots.every((s) => s.painted);

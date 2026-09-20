@@ -1,0 +1,77 @@
+{
+ "case": "real",
+ "label": "look A",
+ "look": "/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench/dx/.git/lcars/missions/lcars-20260911-001-8cb0/xo",
+ "knownFaults": 5,
+ "found": 4,
+ "recall": 0.8,
+ "correctControls": 1,
+ "falseAlarms": 0,
+ "grade": "low",
+ "gradeMustBeAtMost": "medium",
+ "gradeOk": true,
+ "gradeEarned": true,
+ "findings": {
+  "negative": 9,
+  "couldNotCheck": 12
+ },
+ "walk": {
+  "navigations": 2,
+  "clicks": 6,
+  "typings": 0,
+  "keypresses": 1,
+  "jumpsPastEntry": 1
+ },
+ "walkDeclared": {
+  "entry": "http://localhost:5173/DX-Scorecard/",
+  "steps": 8,
+  "stepsTaken": 0,
+  "navigations": 0,
+  "clicks": 0,
+  "typings": 0,
+  "keypresses": 0,
+  "jumpsPastEntry": 0
+ },
+ "detail": {
+  "found": [
+   {
+    "key": "r1-pull-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, wording, colour and flow match the mockup closely, but the primary CTA buttons are wrong: the green Pull data & start button carries a 55px download icon in a 38px button (1.45\u00d7) with its label wrapped onto 3 lines where the mockup has a small inline icon on 1 line; Continue to builder (1.91"
+   },
+   {
+    "key": "r2-continue-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, wording, colour and flow match the mockup closely, but the primary CTA buttons are wrong: the green Pull data & start button carries a 55px download icon in a 38px button (1.45\u00d7) with its label wrapped onto 3 lines where the mockup has a small inline icon on 1 line; Continue to builder (1.91"
+   },
+   {
+    "key": "r3-lock-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, wording, colour and flow match the mockup closely, but the primary CTA buttons are wrong: the green Pull data & start button carries a 55px download icon in a 38px button (1.45\u00d7) with its label wrapped onto 3 lines where the mockup has a small inline icon on 1 line; Continue to builder (1.91"
+   },
+   {
+    "key": "r4-back-button",
+    "by": "oversized-icon",
+    "src": "observation",
+    "quote": "the \"Back to builder\" button on http://localhost:5173/DX-Scorecard/#mbr/preview holds an icon 41px tall inside a control only 30px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 3 lines http://localhost:5173/DX-Scorecard/#mbr/preview oversized-icon Back to builder"
+   }
+  ],
+  "missed": [
+   {
+    "key": "r5-month-mismatch",
+    "what": "The start card offers 'August 2026' and the collect step it leads to says 'Pulling data \u00b7 September 2026'."
+   }
+  ],
+  "falseAlarms": [],
+  "journey": [
+   {
+    "key": "rj1-walk-the-flow",
+    "what": "start -> Pull data & start -> collect -> Continue to builder -> builder -> type an insight -> Lock month, all by CLICKING.",
+    "reported": false
+   }
+  ]
+ }
+}

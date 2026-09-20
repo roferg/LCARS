@@ -1,0 +1,43 @@
+{
+  "observations": [
+    {
+      "says": "the \"Pull data & start\" button on http://localhost:5174/DX-Scorecard/#mbr holds an icon 55px tall inside a control only 38px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 3 lines",
+      "screen": "http://localhost:5174/DX-Scorecard/#mbr",
+      "kind": "oversized-icon",
+      "measured": {
+        "controlHeightPx": 38,
+        "iconHeightPx": 55,
+        "controlWidthPx": 152,
+        "iconWidthPx": 55,
+        "labelLines": 3
+      },
+      "part": "Pull data & start"
+    },
+    {
+      "says": "the \"Continue to builder\" button on http://localhost:5174/DX-Scorecard/#mbr/collect holds an icon 61px tall inside a control only 32px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 3 lines",
+      "screen": "http://localhost:5174/DX-Scorecard/#mbr/collect",
+      "kind": "oversized-icon",
+      "measured": {
+        "controlHeightPx": 32,
+        "iconHeightPx": 61,
+        "controlWidthPx": 152,
+        "iconWidthPx": 61,
+        "labelLines": 3
+      },
+      "part": "Continue to builder"
+    },
+    {
+      "says": "the \"Lock month\" button on http://localhost:5174/DX-Scorecard/#mbr/build holds an icon 34px tall inside a control only 32px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 2 lines",
+      "screen": "http://localhost:5174/DX-Scorecard/#mbr/build",
+      "kind": "oversized-icon",
+      "measured": {
+        "controlHeightPx": 32,
+        "iconHeightPx": 34,
+        "controlWidthPx": 107,
+        "iconWidthPx": 34,
+        "labelLines": 2
+      },
+      "part": "Lock month"
+    }
+  ]
+}

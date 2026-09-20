@@ -1,0 +1,16 @@
+[36m◈[0m real: the look, live on copilot, caged at 2700s…
+[36m◈[0m real: the look came back rc=0 after 1810s → /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T//s220-bench/out/real.look.log
+── S220 bench · real · after B/C/D
+   recall        3/5 known faults found  (60%)
+   false alarms  0/1 correct controls flagged
+   grade         medium (must be at most medium) → low enough, earned by a known fault
+   the look said 3 didn't-work, 20 couldn't-check
+   it moved by   0 click(s), 0 typing(s), 0 keypress(es), 3 address jump(s) past the front door
+   ✓ r1-pull-button       Layout, colour and wording track the mockup across all screens, but three primary buttons miss parity: the gre
+   ✓ r2-continue-button   Layout, colour and wording track the mockup across all screens, but three primary buttons miss parity: the gre
+   ✓ r3-lock-button       Layout, colour and wording track the mockup across all screens, but three primary buttons miss parity: the gre
+   ✗ r4-back-button       MISSED — The 'Back to builder' button on the preview screen holds a 41px icon in a 30px control and its label
+   ✗ r5-month-mismatch    MISSED — The start card offers 'August 2026' and the collect step it leads to says 'Pulling data · September 
+   · rj1-walk-the-flow    start -> Pull data & start -> collect -> Continue to builder -> builder -> type an insight -> Lock m
+   → /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T//s220-bench/out/real.json
+[36m◈[0m results: /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T//s220-bench/out

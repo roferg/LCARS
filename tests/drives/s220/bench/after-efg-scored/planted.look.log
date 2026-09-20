@@ -1,0 +1,25 @@
+◈ NUMBER ONE: the contract first — 9 criteria (9 primary), 12 place names.
+◈ NUMBER ONE: I read your drawing — 19 part(s); 9 per-part requirement(s) added, 1 catch-all row(s) retired.
+◈ NUMBER ONE: the journey I will walk — 4 step(s) to walk, from the drawing's screen order; the screen's own gate; the fields the screens carry — 4 of them its own requirement.
+◈ NUMBER ONE: launching the build…
+  the build is up at http://127.0.0.1:8220/index.html
+◈ NUMBER ONE: no sample data is declared for this repo — screens that need data may be unseeable.
+  side by side: 9 drawn part(s): 2 matched, 7 unreachable, 0 with a measured difference
+◈ NUMBER ONE: no test command for this repo — going on what I can see.
+◈ NUMBER ONE: round 1 of 3 — looking…
+◈ NUMBER ONE: intent match LOW — Captain, the shell of your Tide Board is here — the tab bar is flush with Readings underlined, the notice reads right on two lines, Open the board reaches the board screen, and the note box takes text — but the mission's own point is broken: Lock the board publishes an empty note instead of refusing while the note is blank, so the gate does not gate. On top of that the stale-readings chip is green and reads as healthy when it must be red, the Export CSV button is missing entirely, Publish board is half-width and wraps to two lines, the Save reading icon is oversized and spills its control, and Help sits on the left instead of top-right. I'm recommending LOW: a high-impact requirement (the blank-note lock gate) does not work.
+  The report is in /var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench-c/planted/.git/lcars/missions/lcars-20260919-s220-plant/xo/verdict.json.
+◈ NUMBER ONE: filed 10 mission log(s) against lcars-20260919-s220-plant.
+  log #1  lcars-20260920-001-c838  the Lock gate publishes an empty note
+  log #2  lcars-20260920-002-c838  blank-note lock is not refused in the walk
+  log #3  lcars-20260920-003-c838  the stale-readings chip is green, not red
+  log #4  lcars-20260920-004-c838  no Export CSV button beside Publish
+  log #5  lcars-20260920-005-c838  Publish board is too narrow and wraps
+  log #6  lcars-20260920-006-c838  the Save reading icon spills its control
+  log #7  lcars-20260920-007-c838  Help is on the left, not top-right
+  log #8  lcars-20260920-008-c838  the stale chip does not match the drawing
+  log #9  lcars-20260920-009-c838  Save reading icon does not match the drawing
+  log #10  lcars-20260920-010-c838  Publish board does not match the drawing
+  LCARS is driving them now. I will re-check the build when they land.
+/Users/roganferguson/Projects/LCARS-number-one/skills/lcars-xo/xo.sh: line 3137: syntax error near unexpected token `)'
+/Users/roganferguson/Projects/LCARS-number-one/skills/lcars-xo/xo.sh: line 3137: `ile-logs | recheck | report)" ;;'

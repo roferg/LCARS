@@ -1,0 +1,65 @@
+{
+ "case": "real",
+ "label": "after B/C/D",
+ "look": "/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench/dx/.git/lcars/missions/lcars-20260911-001-8cb0/xo",
+ "knownFaults": 5,
+ "found": 3,
+ "recall": 0.6,
+ "correctControls": 1,
+ "falseAlarms": 0,
+ "grade": "medium",
+ "gradeMustBeAtMost": "medium",
+ "gradeOk": true,
+ "gradeEarned": true,
+ "findings": {
+  "negative": 3,
+  "couldNotCheck": 20
+ },
+ "walk": {
+  "navigations": 4,
+  "clicks": 0,
+  "typings": 0,
+  "keypresses": 0,
+  "jumpsPastEntry": 3
+ },
+ "detail": {
+  "found": [
+   {
+    "key": "r1-pull-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, colour and wording track the mockup across all screens, but three primary buttons miss parity: the green 'Pull data & start' download icon is 1.45x its button and its label wraps to 3 lines (drawing has 1), the 'Continue to builder' arrow icon is 1.91x its button with a 3-line label, and 'Lo"
+   },
+   {
+    "key": "r2-continue-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, colour and wording track the mockup across all screens, but three primary buttons miss parity: the green 'Pull data & start' download icon is 1.45x its button and its label wraps to 3 lines (drawing has 1), the 'Continue to builder' arrow icon is 1.91x its button with a 3-line label, and 'Lo"
+   },
+   {
+    "key": "r3-lock-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, colour and wording track the mockup across all screens, but three primary buttons miss parity: the green 'Pull data & start' download icon is 1.45x its button and its label wraps to 3 lines (drawing has 1), the 'Continue to builder' arrow icon is 1.91x its button with a 3-line label, and 'Lo"
+   }
+  ],
+  "missed": [
+   {
+    "key": "r4-back-button",
+    "what": "The 'Back to builder' button on the preview screen holds a 41px icon in a 30px control and its label runs to three lines."
+   },
+   {
+    "key": "r5-month-mismatch",
+    "what": "The start card offers 'August 2026' and the collect step it leads to says 'Pulling data \u00b7 September 2026'."
+   }
+  ],
+  "falseAlarms": [],
+  "journey": [
+   {
+    "key": "rj1-walk-the-flow",
+    "what": "start -> Pull data & start -> collect -> Continue to builder -> builder -> type an insight -> Lock month, all by CLICKING.",
+    "reported": false
+   }
+  ]
+ }
+}

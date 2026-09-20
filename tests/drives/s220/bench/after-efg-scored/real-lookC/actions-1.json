@@ -1,0 +1,14 @@
+[
+  {"navigate": "http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build"},
+  {"wait": 600},
+  {"screenshot": "builder-resumed"},
+  {"click": "discard draft"},
+  {"wait": 400},
+  {"screenshot": "discard-dialog"},
+  {"press": "Escape"},
+  {"type": "insight for flake rate", "text": "Flaky test rate trending down; stabilizing after quarantine work."},
+  {"wait": 600},
+  {"click": "lock month"},
+  {"wait": 500},
+  {"screenshot": "lock-dialog"}
+]

@@ -561,6 +561,106 @@ cmd_on() {
   [ -n "$model" ] && printf '  model: %s\n' "$model"
   printf '  It takes the conn at a gate and hands it back with a report.\n'
   printf '  Stand it down any time with `lcars xo off`.\n'
+  # AND IT PICKS UP WHAT IS ALREADY WAITING (part G). Switching it on is the
+  # captain saying "I have to step out"; a first officer who ignored the two
+  # missions already parked at Verify would not be taking the conn at all.
+  xo_sweep_verify
+}
+
+# ===========================================================================
+# PART G (S220) — SWITCHING NUMBER ONE ON PICKS UP WHAT IS ALREADY WAITING
+# ===========================================================================
+#
+# THE DEFECT THIS EXISTS FOR, in the captain's own words (2026-09-19): *"a
+# captain having missions at verify, they go 'I have to step out' and turn
+# Number One on. I'd expect it to see missions in verify it hasn't done and
+# work on evaluating and filing bugs."* Until now `lcars xo on` only armed the
+# hook that fires when a run ARRIVES at Verify, so switching it on beside two
+# missions already parked there did nothing at all to them.
+#
+# HIS RULING ON SCOPE, the same morning: **"Review everyone at verify that
+# doesn't have a previous Number One score."** So the sweep's question is not
+# "has it been looked at recently" or "does it look stale" — it is one recorded
+# fact: is there a score on record?
+#
+# READ FROM THE RECORD, NEVER INFERRED. Three places carry a score, and all
+# three are read: `numberOne.score` (and `score2`, the recheck's), and the
+# look's own `xo/verdict.json`. A mission with any of them is left alone.
+#
+# LEFT ALONE, ALSO: a mission the captain opted out (`lcars xo off <id>`), a
+# mission that is not at Verify, a bug child (it has no build of its own — the
+# same rule the Verify hook obeys), and a mission from ANOTHER LAPTOP: a remote
+# mission's build is not here to look at and its owner is not us.
+xo_has_score() { # <mission-dir> — 0 when a score is ON RECORD
+  local m="$1" st="$m/state.json" obj
+  [ -f "$m/xo/verdict.json" ] && return 0
+  obj="$(state_xo_block "$st" 2>/dev/null)"
+  [ -n "$(obj_get "$obj" score)" ] && return 0
+  [ -n "$(obj_get "$obj" score2)" ] && return 0
+  return 1
+}
+
+xo_sweepable() { # <mission-id> — 0 when this one is the sweep's to take
+  local id="$1" m="$MISSIONS_DIR/$id" st="$MISSIONS_DIR/$id/state.json" obj
+  [ -f "$st" ] || return 1
+  [ "$(mission_stage "$st")" = "verify" ] || return 1
+  obj="$(state_xo_block "$st" 2>/dev/null)"
+  case "$obj" in *'"optOut"'*true*) return 1 ;; esac
+  # A bug child folds onto its parent's branch and has no build of its own.
+  grep -q '"parentMission"[[:space:]]*:[[:space:]]*"' "$st" 2>/dev/null && return 1
+  # ANOTHER LAPTOP'S. `cloneId` is stamped by the clone that filed it; a
+  # mission stamped with a different one is not ours to review.
+  local mine theirs
+  mine="$(lcars_config_get "$CONFIG" cloneId 2>/dev/null)"
+  theirs="$(sed -n 's/.*"cloneId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$st" 2>/dev/null | head -1)"
+  [ -n "$mine" ] && [ -n "$theirs" ] && [ "$mine" != "$theirs" ] && return 1
+  xo_has_score "$m" && return 1
+  return 0
+}
+
+# THE SWEEP ITSELF. One mission at a time, in filing order, and it asks two
+# questions BETWEEN missions — is Number One still on, and is this one still
+# in scope — so standing it down stops the chain where the captain expects it
+# to stop: after the round in flight, never in the middle of one (S213).
+#
+# `$LCARS_XO_SWEEP_BIN` is how a test drives it without spending: it is the
+# command run per mission in place of this script's own `evaluate`.
+xo_sweep_verify() {
+  [ "${LCARS_XO_SWEEP:-1}" = "0" ] && return 0
+  local ids="" id n=0 names=""
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    xo_sweepable "$id" || continue
+    ids="$ids$id
+"
+    n=$((n + 1))
+    names="${names:+$names, }$id"
+  done <<< "$(all_missions)"
+  [ "$n" -gt 0 ] || return 0
+  # IN PLAIN WORDS, on the way in — the captain is walking away and this is the
+  # last thing he reads.
+  if [ "$n" -eq 1 ]; then
+    printf "  I'm reviewing 1 mission that was waiting at Verify with no score of mine: %s.\n" "$names"
+  else
+    printf "  I'm reviewing %d missions that were waiting at Verify with no score of mine: %s.\n" "$n" "$names"
+  fi
+  printf '  One at a time. `lcars xo off` stops it after the one in flight.\n'
+  local sweepbin="${LCARS_XO_SWEEP_BIN:-}"
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    # BETWEEN MISSIONS, both questions again: the captain may have stood it
+    # down while the last round was running, and that has to stop the chain.
+    cfg_enabled || { printf '  Stood down — I stopped before %s.\n' "$id"; break; }
+    xo_sweepable "$id" || continue
+    journal "$MISSIONS_DIR/$id" swept '"why": "at Verify with no score of mine when Number One was switched on"'
+    printf '◈ NUMBER ONE: taking %s — it was waiting at Verify.\n' "$id"
+    if [ -n "$sweepbin" ]; then
+      "$sweepbin" "$id" </dev/null || true
+    else
+      bash "$SELF" evaluate --mission "$id" </dev/null || true
+    fi
+  done <<< "$ids"
+  return 0
 }
 
 cmd_off() {
@@ -748,6 +848,34 @@ xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json] 
     rm -f "$into/tests.json" 2>/dev/null || true
     cp "$tst" "$into/tests.json" 2>/dev/null || true
     chmod a-w "$into/tests.json" 2>/dev/null || true
+  fi
+  # THE PAIRS, AND THE DRAWING'S OWN CROPS (S220 part B). The pair file names
+  # a crop of what was DRAWN and a crop of what was BUILT for every part, so
+  # both sets of pictures have to be on the worker's side of the door — a pair
+  # the worker cannot open is not a side-by-side, it is a sentence about one.
+  local xodir_of="${crit%/criteria.json}"
+  local wf
+  for wf in walk.json journey.json; do
+    if [ -s "$xodir_of/$wf" ]; then
+      rm -f "$into/$wf" 2>/dev/null || true
+      cp "$xodir_of/$wf" "$into/$wf" 2>/dev/null || true
+      chmod a-w "$into/$wf" 2>/dev/null || true
+    fi
+  done
+  if [ -s "$xodir_of/pairs.json" ]; then
+    rm -f "$into/pairs.json" 2>/dev/null || true
+    cp "$xodir_of/pairs.json" "$into/pairs.json" 2>/dev/null || true
+    chmod a-w "$into/pairs.json" 2>/dev/null || true
+  fi
+  if [ -d "$xodir_of/drawing" ]; then
+    chmod -R u+w "$into/drawing" 2>/dev/null || true
+    mkdir -p "$into/drawing" 2>/dev/null || true
+    for f in "$xodir_of/drawing"/*; do
+      [ -f "$f" ] || continue
+      [ -f "$into/drawing/$(basename "$f")" ] && continue
+      cp "$f" "$into/drawing/" 2>/dev/null || true
+    done
+    chmod -R a-w "$into/drawing" 2>/dev/null || true
   fi
   if [ -d "$from" ]; then
     chmod u+w "$into/shots" 2>/dev/null || true
@@ -1342,9 +1470,283 @@ XO_TEST_TAIL_CAP="${LCARS_XO_TEST_TAIL_CAP:-8000}"
 # Best-effort: a broken/missing readout.json yields an empty observations.json
 # (xo-observe.py's own load() degrades the same way), never a hard failure —
 # an OBSERVATIONS pass going missing must never be why a look cannot finish.
-xo_observe() { # <shots-dir> <out observations.json>
-  local shots="$1" out="$2"
-  "$XO_PY" "$XO_OBSERVE_PY" "$shots/readout.json" "$out" >/dev/null 2>&1 || true
+xo_observe() { # <shots-dir> <out observations.json> [--merge]
+  local shots="$1" out="$2" merge="${3:-}"
+  # EVERY SCREEN, NOT JUST THE LANDING PAGE (S220 part D). The pass used to run
+  # once, on round 0, and never again — so on the real benchmark it reported
+  # "112 elements, 0 findings" from the Default view and never looked at the six
+  # MBR screens the look walked to. Now every round's readout is passed through
+  # it and MERGED, and each finding carries the screen it was seen on.
+  # EVERY SCREEN THE DRIVER STOOD ON. `readouts.json` is one reading per
+  # screen; `readout.json` is only the last one. The pass prefers the first and
+  # falls back to the second, so a driver too old to write it still works.
+  local src="$shots/readout.json"
+  [ -s "$shots/readouts.json" ] && src="$shots/readouts.json"
+  local screen=""
+  screen="$("$XO_PY" -c 'import json,sys
+try:
+  d=json.load(open(sys.argv[1]))
+  print(d.get("url") or (d.get("page") or {}).get("url") or "")
+except Exception: print("")' "$shots/readout.json" 2>/dev/null)"
+  if [ -n "$merge" ]; then
+    "$XO_PY" "$XO_OBSERVE_PY" "$src" "$out" --merge --screen "$screen" >/dev/null 2>&1 || true
+  else
+    "$XO_PY" "$XO_OBSERVE_PY" "$src" "$out" --screen "$screen" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# ── THE DRAWING AND THE BUILD, SIDE BY SIDE (S220 part B) ──────────────────
+#
+# THE DEFECT THIS EXISTS FOR. Number One asked "is there a button with that
+# label?" and answered from the build alone. Four buttons whose icon spilled
+# past the control and whose label wrapped onto three lines were graded
+# "worked", in shots it took itself. Nobody ever put the drawing's button next
+# to the build's button at the same scale.
+#
+# So: `xo_read_drawing` renders the mission's own drawing in the same headless
+# browser at the same 2x and reads its PARTS, with a crop of each; every round
+# of the look reads the build's parts the same way; and `xo_pair_parts` pairs
+# them, records WHICH handle matched (test id, id, accessible name, label,
+# role) and takes the two measurements the S220 spike proved separate faults
+# from correct controls. Everything it produces is EVIDENCE handed to the
+# look — the outcome is still the look's, and an overrule is journaled with
+# its reason (xo-score.py).
+XO_PARTS_PY="${LCARS_XO_PARTS_PY:-$SKILL_DIR/xo-parts.py}"
+
+xo_drawing_file() { # <mission-dir> — the first drawing on disk, or nothing
+  local dir="$1" f
+  for f in "$dir"/attachments/*.html "$dir"/attachments/*.htm; do
+    [ -f "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 0
+}
+
+xo_read_drawing() { # <mission-dir> <xodir>
+  local dir="$1" xodir="$2" draw=""
+  draw="$(xo_drawing_file "$dir")"
+  [ -n "$draw" ] || return 0
+  mkdir -p "$xodir/drawing" 2>/dev/null || true
+  "$XO_NODE" "$XO_DRIVER" --url "file://$draw" --out "$xodir/drawing" \
+    --parts-out "$xodir/drawing-parts.json" --prefix "drawn" \
+    >"$xodir/drawing.json" 2>"$xodir/drawing.err" || true
+  [ -s "$xodir/drawing-parts.json" ] || {
+    journal "$dir" drawing-parts '"read": 0, "detail": "the drawing would not render"'
+    return 0
+  }
+  local n
+  n="$("$XO_PY" -c 'import json,sys
+try: print(len(json.load(open(sys.argv[1])).get("parts") or []))
+except Exception: print(0)' "$xodir/drawing-parts.json" 2>/dev/null)"
+  # ONE REQUIREMENT PER DRAWN PART (part C), written into the contract before
+  # the look ever starts, so every part has its own importance and its own
+  # outcome — and the catch-all is retired where the parts now cover it.
+  local said=""
+  said="$("$XO_PY" "$XO_PARTS_PY" criteria --drawing "$xodir/drawing-parts.json" \
+        --criteria "$xodir/criteria.json" --out "$xodir/criteria.new.json" 2>/dev/null)" || said=""
+  if [ -s "$xodir/criteria.new.json" ]; then
+    mv "$xodir/criteria.new.json" "$xodir/criteria.json"
+  else
+    rm -f "$xodir/criteria.new.json" 2>/dev/null || true
+  fi
+  printf '◈ NUMBER ONE: I read your drawing — %s part(s); %s.\n' "${n:-0}" "${said:-nothing added}"
+  journal "$dir" drawing-parts "$(printf '"read": %s, "detail": %s' \
+    "${n:-0}" "$(jstr "${said:-}")")"
+  return 0
+}
+
+xo_pair_parts() { # <mission-dir> <xodir> — pair the drawing with every screen seen
+  local dir="$1" xodir="$2" f args=""
+  [ -s "$xodir/drawing-parts.json" ] || return 0
+  set --
+  for f in "$xodir"/build-parts-*.json; do
+    [ -s "$f" ] || continue
+    set -- "$@" --build "$f"
+  done
+  [ "$#" -gt 0 ] || return 0
+  local said=""
+  said="$("$XO_PY" "$XO_PARTS_PY" pair --drawing "$xodir/drawing-parts.json" \
+        "$@" --out "$xodir/pairs.json" 2>/dev/null)" || said=""
+  [ -n "$said" ] && printf '  side by side: %s\n' "$said"
+  journal "$dir" paired "$(printf '"detail": %s' "$(jstr "${said:-}")")"
+  return 0
+}
+
+# ── SEEDABLE DATA FOR THE LOOK (S220 part E) ───────────────────────────────
+#
+# THE DEFECT THIS EXISTS FOR. Half of the MBR builder only appears once there
+# is DATA in it: with no automated KPI on record the automate button and the
+# bulk bar never render at all, and a look that never sees them can only ever
+# say "I could not check that". There was no way to give a build its sample
+# data, so there was no way to see those screens.
+#
+# DECLARED, NEVER GUESSED. A worker inventing rows in somebody's app is a
+# worker writing data into a build nobody asked it to write. So the seed comes
+# from the RECORD, in two places and no others:
+#
+#   1. `verifySeed` in .git/lcars/config.json — a command, this repo's own;
+#   2. `.lcars/verify-seed.sh` in the project — the documented file a project
+#      can ship so that a look can see its data-backed screens.
+#
+# It runs in the LAUNCHED BUILD'S OWN WORKTREE, never the captain's checkout,
+# and it is caged. When neither is declared, nothing is invented and nothing is
+# blamed: the report says, in one plain sentence, which screens it could not
+# see for want of data.
+XO_SEED_TIMEOUT="${LCARS_XO_SEED_TIMEOUT:-300}"
+
+# THE CAGE. `timeout` is not on a stock macOS, so this is it, written once: run
+# it, watch it, and kill the process WE started (never by name — the captain
+# runs his own daemons) if it outstays the limit. 124 is the exit `timeout`
+# itself would give, so a caller can tell a cage from a failure.
+xo_cage() { # <seconds> <command…>
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+  "$@" &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    [ "$waited" -ge "$secs" ] && { kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124; }
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+  return $?
+}
+
+xo_seed_declared() { # <repo-root> — prints "source<TAB>command", or nothing
+  local root="$1" cmd=""
+  cmd="$(lcars_config_get "$CONFIG" verifySeed 2>/dev/null)" || cmd=""
+  if [ -n "$cmd" ] && [ "$cmd" != "null" ]; then
+    printf 'the repo declares one in .git/lcars/config.json (verifySeed)\t%s\n' "$cmd"
+    return 0
+  fi
+  if [ -x "$root/.lcars/verify-seed.sh" ]; then
+    printf 'the project ships one at .lcars/verify-seed.sh\t%s\n' "bash .lcars/verify-seed.sh"
+    return 0
+  fi
+  if [ -f "$root/.lcars/verify-seed.sh" ]; then
+    printf 'the project ships one at .lcars/verify-seed.sh\t%s\n' "bash .lcars/verify-seed.sh"
+    return 0
+  fi
+  return 0
+}
+
+xo_seed() { # <mission-dir> <xodir> <where-to-run> — load the declared sample data
+  local dir="$1" xodir="$2" where="$3" line src cmd rc=0
+  line="$(xo_seed_declared "${where:-$PWD}")"
+  src="${line%%$'\t'*}"; cmd="${line#*$'\t'}"
+  if [ -z "$line" ]; then
+    "$XO_PY" -c 'import json,sys; json.dump({"declared": False}, open(sys.argv[1], "w"), indent=2)' \
+      "$xodir/seed.json" 2>/dev/null || true
+    printf '◈ NUMBER ONE: no sample data is declared for this repo — screens that need data may be unseeable.\n'
+    journal "$dir" seed '"declared": false'
+    return 0
+  fi
+  printf '◈ NUMBER ONE: loading the sample data — %s.\n' "$src"
+  ( cd "$where" 2>/dev/null && xo_cage "$XO_SEED_TIMEOUT" bash -c "$cmd" ) \
+    >"$xodir/seed.log" 2>&1 || rc=$?
+  "$XO_PY" -c 'import json,sys
+json.dump({"declared": True, "source": sys.argv[2], "command": sys.argv[3],
+           "exit": int(sys.argv[4]), "ranIn": sys.argv[5]},
+          open(sys.argv[1], "w"), indent=2)' \
+    "$xodir/seed.json" "$src" "$cmd" "$rc" "$where" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    printf '  the seed came back rc=%s — see %s\n' "$rc" "$xodir/seed.log"
+  fi
+  journal "$dir" seed "$(printf '"declared": true, "exit": %s, "detail": %s' "$rc" "$(jstr "$src")")"
+  return 0
+}
+
+# ── THE JOURNEY, WALKED (S220 part F) ───────────────────────────────────────
+#
+# THE DEFECT THIS EXISTS FOR. On 2026-09-19 Number One "looked at" a six-screen
+# build by typing four addresses into the bar. It never clicked a control,
+# never typed an insight, never watched a value carry from one screen to the
+# next — and then graded the flow. Two later runs of the identical code
+# differed from each other: one clicked, one teleported. A walk left to the
+# model is a LOTTERY, and a lottery is not a proof.
+#
+# So the journey is DECLARED from the record (xo-journey.py reads the drawing's
+# screen order, the PRD's own steps and the fields and gates the screens carry)
+# and the DRIVER executes it. Each step is its own requirement, so a step that
+# could not be taken reads as "couldn't check (unreachable)" BY NAME.
+XO_JOURNEY_PY="${LCARS_XO_JOURNEY_PY:-$SKILL_DIR/xo-journey.py}"
+
+xo_build_journey() { # <mission-dir> <xodir>
+  local dir="$1" xodir="$2" draw="" said=""
+  draw="$(xo_drawing_file "$dir")"
+  said="$("$XO_PY" "$XO_JOURNEY_PY" build --criteria "$xodir/criteria.json" \
+        ${draw:+--drawing-html "$draw"} \
+        ${draw:+--drawing "$xodir/drawing-parts.json"} \
+        --title "$(json_field "$dir/state.json" title)" \
+        --out "$xodir/journey.json" --criteria-out "$xodir/criteria.new.json" 2>/dev/null)" || said=""
+  if [ -s "$xodir/criteria.new.json" ]; then
+    mv "$xodir/criteria.new.json" "$xodir/criteria.json"
+  else
+    rm -f "$xodir/criteria.new.json" 2>/dev/null || true
+  fi
+  printf '◈ NUMBER ONE: the journey I will walk — %s.\n' "${said:-nothing in the record described a flow}"
+  journal "$dir" journey "$(printf '"detail": %s' "$(jstr "${said:-}")")"
+  return 0
+}
+
+# WHAT THE WALK MEASURED, added to what the layout pass measured. Two readings
+# no picture-pair can take: a control holding an icon bigger than itself (true
+# with no drawing at all, and the only way to reach a button on a screen the
+# drawing never drew), and a value that does not CARRY from the screen a person
+# came from to the screen they arrived at. Both are EVIDENCE, shown to the
+# look beside everything else; neither is a verdict.
+xo_measure_walk() { # <mission-dir> <xodir> <observations.json>
+  local dir="$1" xodir="$2" obs="$3" f
+  set --
+  for f in "$xodir"/build-parts-*.json; do
+    [ -s "$f" ] || continue
+    set -- "$@" --build "$f"
+  done
+  if [ "$#" -gt 0 ]; then
+    "$XO_PY" "$XO_PARTS_PY" scan "$@" --out "$xodir/scan.json" >/dev/null 2>&1 || true
+    xo_add_observations "$obs" "$xodir/scan.json"
+  fi
+  if [ -s "$xodir/walk.json" ]; then
+    "$XO_PY" "$XO_JOURNEY_PY" carry --walk "$xodir/walk.json" \
+      --out "$xodir/carry.json" >/dev/null 2>&1 || true
+    xo_add_observations "$obs" "$xodir/carry.json"
+  fi
+  return 0
+}
+
+# One place that adds a fragment's findings to the observations file, so a
+# finding cannot be recorded twice and the counts stay honest.
+xo_add_observations() { # <observations.json> <fragment.json>
+  [ -s "$2" ] || return 0
+  "$XO_PY" -c '
+import json, sys
+obs_path, frag_path = sys.argv[1], sys.argv[2]
+def load(p, d):
+    try:
+        with open(p) as fh: return json.load(fh)
+    except Exception: return d
+doc = load(obs_path, {}) or {}
+frag = load(frag_path, {}) or {}
+have = doc.get("observations") or []
+keys = set(json.dumps(o, sort_keys=True) for o in have if isinstance(o, dict))
+added = 0
+seen_says = set(str(o.get("says") or "") for o in have if isinstance(o, dict))
+for o in frag.get("observations") or []:
+    if not isinstance(o, dict): continue
+    if json.dumps(o, sort_keys=True) in keys or str(o.get("says") or "") in seen_says: continue
+    have.append(o); added += 1
+    seen_says.add(str(o.get("says") or ""))
+doc["observations"] = have
+doc["foundCount"] = int(doc.get("foundCount") or 0) + added
+screens = [s for s in (doc.get("screens") or []) if s]
+for o in have:
+    sc = str(o.get("screen") or "")
+    if sc and sc not in screens: screens.append(sc)
+doc["screens"] = screens
+with open(obs_path, "w") as fh:
+    json.dump(doc, fh, indent=2); fh.write("\n")
+' "$1" "$2" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -1584,6 +1986,21 @@ cmd_evaluate() {
   printf '◈ NUMBER ONE: the contract first — %s.\n' "${cbuilt:-criteria written}"
   journal "$dir" criteria "$(printf '"detail": %s' "$(jstr "${cbuilt:-criteria written}")")"
 
+  # --- 1b. THE DRAWING, READ AS PARTS (S220 part B/C) -----------------------
+  # Before the build is even up: render the mission's drawing in the same
+  # headless browser, at the same 2x, and read every named/labelled part of it
+  # with a crop of each. Then every one of those parts becomes its own
+  # requirement — because on 2026-09-19 "matches the mock-up" was ONE row
+  # covering twelve parts, and one holistic "looks right" hid four broken
+  # buttons. Best-effort: a mission with no drawing, or a drawing the browser
+  # will not open, leaves the contract exactly as it was.
+  xo_read_drawing "$dir" "$xodir"
+
+  # --- 1c. THE JOURNEY (S220 part F) ---------------------------------------
+  # Declared from the record before the build is up, so the walk cannot be
+  # invented while looking.
+  xo_build_journey "$dir" "$xodir"
+
   # --- 2. LAUNCH ------------------------------------------------------------
   # Through launch.sh, the verb a human uses, with no --open-ish path anywhere
   # near it. xo.sh NEVER writes inside the launch worktree: launch.sh's own
@@ -1641,6 +2058,14 @@ cmd_evaluate() {
   printf '  the build is up at %s\n' "$lurl"
   journal "$dir" launched "$(printf '"url": %s' "$(jstr "$lurl")")"
 
+  # --- 2b. THE SAMPLE DATA (S220 part E) ------------------------------------
+  # Before the first picture: a screen that only exists once there is data in
+  # it cannot be photographed into existence afterwards. Declared seeds only —
+  # see xo_seed — and run in the LAUNCHED worktree, never this checkout.
+  local lwork=""
+  lwork="$(json_field "$dir/launch.json" worktree)"
+  xo_seed "$dir" "$xodir" "${lwork:-$PWD}"
+
   # From here on the app is RUNNING and must be stopped on every path out. The
   # stopper is the FILE-LEVEL xo_stop_launch (fix round 1, D2) — the same one the
   # EXIT and TERM traps call — so an abnormal exit stops the app exactly as an
@@ -1657,6 +2082,8 @@ cmd_evaluate() {
   local drc=0
   "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
     --place-names "$xodir/criteria.json" --prefix "shot" \
+    --parts-out "$xodir/build-parts-0.json" \
+    --journey "$xodir/journey.json" --walk-out "$xodir/walk.json" \
     >"$xodir/drive-0.json" 2>"$xodir/drive-0.err" &
   XO_DRIVE_PID=$!
   wait "$XO_DRIVE_PID" || drc=$?
@@ -1697,6 +2124,11 @@ try:
 except Exception: print(0)' "$obsfile" 2>/dev/null)"
   obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
   journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
+
+  # --- 3b-ii. SIDE BY SIDE (S220 part B) — the drawing's parts against what
+  # round 0 actually built, with the two measurements beside each pair.
+  xo_pair_parts "$dir" "$xodir"
+  xo_measure_walk "$dir" "$xodir" "$obsfile"
 
   # --- 3c. THE PROJECT'S OWN TESTS (S211) — run by the SKILL, between the
   # capture and the worker round. A screenshot cannot answer "batches survive a
@@ -1749,6 +2181,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
       # The spike proved it reads them.
       export LCARS_WORKER_INPUT_DIRS="$input
 $input/shots
+$input/drawing
 $shots"
       if [ -n "$xo_engine" ]; then
         export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
@@ -1782,12 +2215,26 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
         --actions "$out/xo-actions.json" --place-names "$xodir/criteria.json" \
         --max-actions "$XO_MAX_ACTIONS" --prefix "round$round" \
+        --parts-out "$xodir/build-parts-$round.json" \
+        --walk-out "$xodir/walk.json" \
         >"$xodir/drive-$round.json" 2>"$xodir/drive-$round.err" &
       XO_DRIVE_PID=$!
       wait "$XO_DRIVE_PID" || drc=$?
       XO_DRIVE_PID=""
       cp "$out/xo-actions.json" "$xodir/actions-$round.json" 2>/dev/null || true
       journal "$dir" looked "$(printf '"round": %s, "driverExit": %s' "$round" "$drc")"
+      # THE SCREEN IT JUST WALKED TO IS A SCREEN THE LAYOUT PASS MUST SEE
+      # (part D), and its parts are parts to pair with the drawing (part B).
+      # Both run after EVERY round now, not only round 0.
+      xo_observe "$shots" "$obsfile" --merge
+      xo_pair_parts "$dir" "$xodir"
+      xo_measure_walk "$dir" "$xodir" "$obsfile"
+      obsfound="$("$XO_PY" -c 'import json,sys
+try:
+  d = json.load(open(sys.argv[1]))
+  print(d.get("foundCount", len(d.get("observations") or [])))
+except Exception: print(0)' "$obsfile" 2>/dev/null)"
+      journal "$dir" observed "$(printf '"round": %s, "found": %s' "$round" "${obsfound:-0}")"
       round=$((round + 1))
       continue
     fi
@@ -1821,7 +2268,8 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
   # xo/impacts.json on the first look and reused by every later one.
   report="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
-              "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" 2>/dev/null)" || report=""
+              "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
+              "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -2356,6 +2804,7 @@ cmd_recheck() {
   local drc=0
   "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
     --place-names "$xodir/criteria.json" --prefix "recheck" \
+    --parts-out "$xodir/build-parts-recheck.json" \
     >"$xodir/drive-recheck.json" 2>"$xodir/drive-recheck.err" &
   XO_DRIVE_PID=$!
   wait "$XO_DRIVE_PID" || drc=$?
@@ -2392,6 +2841,13 @@ try:
 except Exception: print(0)' "$obsfile" 2>/dev/null)"
   obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
   journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
+
+  # --- 2b-ii. AND THE DRAWING, BESIDE THE FIXED BUILD (S220 part B). A recheck
+  # is where "did the fix actually make it look like the drawing" is answered,
+  # so the pairs are recomputed from the relaunched build's own parts. The
+  # drawing itself has not changed; its parts were read at the first look.
+  rm -f "$xodir"/build-parts-[0-9]*.json 2>/dev/null || true
+  xo_pair_parts "$dir" "$xodir"
 
   # --- 2c. AND THE PROJECT'S OWN TESTS, AGAIN (S211). A recheck relaunches the
   # build from the FIXED branch, so the first look's test run is about code that
@@ -2433,6 +2889,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
     export LCARS_XO_INPUT_DIR="$input"
     export LCARS_WORKER_INPUT_DIRS="$input
 $input/shots
+$input/drawing
 $shots"
     if [ -n "$xo_engine" ]; then
       export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
@@ -2491,7 +2948,8 @@ $shots"
     local rep2 key val
     rep2="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
-              "$xodir/second/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" 2>/dev/null)" || rep2=""
+              "$xodir/second/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
+              "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" 2>/dev/null)" || rep2=""
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"
@@ -2643,6 +3101,22 @@ case "${1:-status}" in
   file-logs) shift; cmd_file_logs "$@" ;;
   recheck)   shift; cmd_recheck "$@" ;;
   report)    shift; cmd_report "$@" ;;
+  seed)
+    # NOT A CAPTAIN-FACING VERB. It exists so the seed step can be exercised
+    # (and a project's own seed script tried) through the product's code path
+    # rather than a copy of it in a test.
+    shift
+    _sm=""; _sw="$PWD"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --mission) _sm="${2:-}"; shift 2 || true ;;
+        --in) _sw="${2:-}"; shift 2 || true ;;
+        *) shift ;;
+      esac
+    done
+    _sm="$(resolve_mission "$_sm")"
+    mkdir -p "$MISSIONS_DIR/$_sm/xo"
+    xo_seed "$MISSIONS_DIR/$_sm" "$MISSIONS_DIR/$_sm/xo" "$_sw" ;;
   record-pid)
     # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
     # It exists so a TEST can plant a pid file the way the product plants one,

@@ -1,0 +1,14 @@
+[
+  {"press": "Escape"},
+  {"click": "Discard draft"},
+  {"screenshot": "a1-discard-dialog"},
+  {"press": "Escape"},
+  {"screenshot": "a2-after-esc"},
+  {"click": "Lock month"},
+  {"wait": 300},
+  {"click": ".modal-foot .btn.warn-primary"},
+  {"wait": 800},
+  {"screenshot": "a3-after-lock"},
+  {"click": "Unlock"},
+  {"screenshot": "a4-unlock-dialog"}
+]

@@ -10478,8 +10478,12 @@ function xoShotUrl(mid, shotsDir, name) {
        half is never shown, which is what stops it being said twice. */
 var XO_OUTCOME_CHIP = { gap: "DIDN'T WORK", untested: "COULDN'T CHECK", met: "WORKED" };
 var XO_IMPORTANCE_CHIP = { high: "the point", medium: "a known issue", low: "polish" };
-var XO_OUTCOME_ORDER = { gap: 0, untested: 1, met: 2 };   // problems first
+/* problems first — and the measurements sit WITH the problems, above the
+   things nobody could check, because they are faults somebody has to act on
+   (S220 fix round 2, D-C). They are still not scored criteria: see below. */
+var XO_OUTCOME_ORDER = { gap: 0, measured: 1, untested: 2, met: 3 };
 var XO_ITEM_FILTERS = [["all", "All"], ["gap", "Didn't work"],
+                       ["measured", "I measured"],
                        ["untested", "Couldn't check"], ["met", "Worked"]];
 
 function xoRowStatus(c) {
@@ -10790,24 +10794,210 @@ function xoItemBlock(mi, report, c) {
   return item;
 }
 
-/* The items, problems first, with All / Didn't work / Couldn't check / Worked.
-   The counts are the ledger's own rows, counted where they are drawn. */
-function xoItemsSection(mi, report, criteria) {
+/* ── S220 FIX ROUND 2 (D-C): THE MEASUREMENTS REACH THE READER ──────────────
+
+   `verdict.observations` is where the part-by-part measurements (S220 B) and
+   the journey's own carry/gate facts (S220 F) are recorded, each with its own
+   plain-English `message`. `report.md` has printed them since fix round 1 —
+   the BOARD never did. A scored run served through the real daemon and dumped
+   to text (46.8k characters, every filter and every disclosure open) carried
+   none of them: not "the month did not carry", not the 41px icon on Back to
+   builder, not even the two crowding lines that predate this round. Five of
+   the captain's faults were on disk and invisible on the surface he reads.
+
+   So they are drawn here, in the same boxed-block idiom as a requirement, in
+   the same list, reachable by a filter of their own — and LABELLED for what
+   they are. The S210 contract stands untouched: a measurement is not a scored
+   criterion, it never moves the grade, and it is never counted as one. That
+   is why it gets its own outcome word ("I MEASURED IT"), its own filter, and
+   a line under it saying so in as many words — rather than being folded into
+   "Didn't work", which would be the inflation S210 exists to prevent.
+
+   EVERY WORD IS READ. The block's title is the observation's own `message`
+   (or `says`), verbatim; the heading sentences are the ones `xo-score.py`
+   writes over the same two buckets in report.md, so the page and the file
+   cannot drift into telling him different things. `reportedUnder == "measured"`
+   is the record's own split between "about your drawing and your flow" and
+   "things I noticed that are not on your list" — it is not re-derived here. */
+var XO_OBS_GROUPS = [
+  ["measured", "What I measured on your drawing, and what I saw walking it",
+   "These came from measurements, not from my own eye. Every part of your "
+   + "drawing was held against the part the build renders, and the flow was "
+   + "walked a step at a time. Anything here that I do not also write up in "
+   + "your list above is something I did not notice while looking. They are "
+   + "findings either way — act on them."],
+  ["loose", "Things I noticed that are not on your list",
+   "None of these come from your drawing or your PRD — they never change the "
+   + "score above. I am just telling you what I saw."]
+];
+
+function xoObsList(verdict) {
+  var obs = verdict && verdict.observations;
+  if (!Array.isArray(obs)) return [];
+  return obs.filter(function (o) {
+    return o && typeof o === "object"
+      && String(o.message || o.says || "").trim();
+  });
+}
+
+function xoObsGroup(o) {
+  return String((o && o.reportedUnder) || "") === "measured" ? "measured" : "loose";
+}
+
+/* THE SUMMING-UP CANNOT CLAIM A COMPLETENESS THE RECORD CONTRADICTS
+   (S220 fix round 3, F1).
+
+   `verdict.summary` is the look's own paragraph, in its own voice, and it is
+   the first prose the captain reads. On his own report it said "the one real
+   parity problem is cosmetic but visible" and named three buttons — while the
+   run had five measured faults on disk, including a button it never mentions
+   and a month that does not carry between screens, which is not cosmetic. A
+   reader who stops at the top came away believing the look had seen
+   everything.
+
+   So the paragraph carries its own caveat, in the same place, in his words.
+   NO NEW SCORE IS INVENTED and the grade is untouched: this counts nothing
+   the run had not already counted. "Names it" means exactly what it says —
+   the summing-up contains that finding's own part label. A finding with no
+   part to name (a month that does not carry) can never be "named", so it is
+   only ever covered by the sentence's first half, never accused by the list.
+
+   Kept word-for-word in step with `xo-score.py` (SUMMARY_CAVEAT), which
+   writes the same sentence into report.md. */
+var XO_PART_LABEL = /[“"]([^”"]{2,60})[”"]\s*(?:button|control|link|chip|field|tab|icon)\b/i;
+
+function xoObsPartLabel(o) {
+  var m = XO_PART_LABEL.exec(String((o && (o.message || o.says)) || ""));
+  var lab = m ? m[1].trim() : String((o && o.part) || "").trim();
+  return lab;
+}
+
+function xoSummaryCaveat(verdict) {
+  var measured = xoObsList(verdict).filter(function (o) {
+    return xoObsGroup(o) === "measured";
+  });
+  if (!measured.length) return "";
+  var summary = String((verdict && verdict.summary) || "");
+  var low = summary.toLowerCase();
+  var named = 0, unnamed = [];
+  measured.forEach(function (o) {
+    var lab = xoObsPartLabel(o);
+    if (lab && low.indexOf(lab.toLowerCase()) !== -1) { named++; return; }
+    if (lab) unnamed.push("“" + lab + "”");
+  });
+  var s = "That summing-up is my own words, from what I noticed by eye — it "
+    + "is not the whole count. Measurements caught " + measured.length
+    + " fault" + (measured.length === 1 ? "" : "s") + " on this build and "
+    + "this paragraph names " + named + " of them";
+  if (unnamed.length) {
+    s += "; " + unnamed.join(" and ")
+      + (unnamed.length === 1 ? " is" : " are") + " not in it";
+  }
+  return s + ". Read the list below, under “What I measured on your "
+    + "drawing”, before you take this paragraph for the whole picture.";
+}
+
+function xoObsBlock(mi, report, o) {
+  var item = el("div", "xo-item xo-obs o-measured");
+  item.setAttribute("data-status", "measured");
+  item.setAttribute("data-obs", xoObsGroup(o));
+  var head = el("div", "xo-item-head");
+  head.appendChild(el("span", "xo-chip2 xo-ochip o-measured", "I MEASURED IT"));
+  var kind = String((o && o.kind) || "").trim();
+  if (kind) head.appendChild(el("span", "xo-chip2 xo-ichip", kind));
+  head.appendChild(el("span", "xo-item-title",
+    String((o && (o.message || o.says)) || "").trim()));
+  item.appendChild(head);
+  var body = el("div", "xo-item-body");
+  var story = el("div", "xo-story");
+  var where = String((o && o.screen) || "").trim();
+  if (where && String((o && (o.message || o.says)) || "").indexOf(where) === -1) {
+    var wb = el("div", "xo-beat");
+    wb.appendChild(el("span", "xo-beat-k", "Where"));
+    wb.appendChild(el("span", "xo-beat-v", where));
+    story.appendChild(wb);
+  }
+  // WHICH EYE SAW IT (S220 fix round 3, F1). This said "I measured this
+  // myself", which reads as Number One's own eye and is the one thing the
+  // record does NOT say: every block in this bucket came off a measurement,
+  // and on the captain's own report two of them were things the look never
+  // mentioned at all. The eye is named here, on every block, in his register
+  // — not "detector", not "model column". The S210 contract is untouched:
+  // it is still not a scored criterion and it still does not move the grade.
+  story.appendChild(el("p", "xo-matters",
+    "A measurement caught this, not my own eye — and it is not one of the "
+    + "things you asked for, so it does not change your grade. It is still "
+    + "a fault."));
+  body.appendChild(story);
+  // The walk records a picture for some of these; the evidence cell says in
+  // words when there is none, exactly as it does for a requirement.
+  body.appendChild(xoEvidenceCell(mi, report, {
+    shot: (o && typeof o.shot === "string") ? o.shot : "",
+    evidence: (o && o.shot) ? "picture" : "measurement"
+  }));
+  item.appendChild(body);
+  return item;
+}
+
+/* The items, problems first, with All / Didn't work / I measured / Couldn't
+   check / Worked. The counts are the rows' own, counted where they are drawn. */
+function xoItemsSection(mi, report, criteria, observations) {
   var wrap = el("div", "xo-items-wrap");
   var rows = criteria.map(function (c, i) { return { c: c, i: i, st: xoRowStatus(c) }; });
-  rows.sort(function (x, y) {
-    return (XO_OUTCOME_ORDER[x.st] - XO_OUTCOME_ORDER[y.st]) || (x.i - y.i);
+  // The bucket the record put each one in decides which comes first: what was
+  // measured against HIS drawing and HIS flow, then what was merely noticed.
+  // (The recorded array happens to hold the loose layout findings first.)
+  (observations || []).forEach(function (o, k) {
+    rows.push({ o: o, st: "measured", i: criteria.length + k,
+                g: xoObsGroup(o) === "measured" ? 0 : 1 });
   });
-  var n = { all: rows.length, gap: 0, untested: 0, met: 0 };
+  rows.sort(function (x, y) {
+    return (XO_OUTCOME_ORDER[x.st] - XO_OUTCOME_ORDER[y.st])
+      || ((x.g || 0) - (y.g || 0)) || (x.i - y.i);
+  });
+  var n = { all: rows.length, gap: 0, measured: 0, untested: 0, met: 0 };
   rows.forEach(function (r) { n[r.st]++; });
+  // TWO TRUE NUMBERS, NOT ONE SURPRISING ONE (S220 fix round 3, F3). The
+  // signpost at the top counts the `measured` bucket; this chip filters the
+  // whole "I measured" row, which also holds the loose layout findings. One
+  // said 5 and the other said 7 with nothing to join them. Both are shown.
+  var mMain = 0;
+  rows.forEach(function (r) {
+    if (r.st === "measured" && xoObsGroup(r.o) === "measured") mMain++;
+  });
+  var mLoose = n.measured - mMain;
   var bar = el("div", "xo-filters");
   bar.setAttribute("role", "group");
   bar.setAttribute("aria-label", "Show");
   var list = el("div", "xo-items");
-  var blocks = rows.map(function (r) {
+  var headed = {};
+  var blocks = [];
+  rows.forEach(function (r) {
+    if (r.st === "measured") {
+      // The bucket's own heading, once, immediately above its first block —
+      // and it hides and shows with the blocks it heads, so a filter can
+      // never leave a heading standing over nothing.
+      var g = xoObsGroup(r.o);
+      if (!headed[g]) {
+        headed[g] = true;
+        XO_OBS_GROUPS.forEach(function (grp) {
+          if (grp[0] !== g) return;
+          var h = el("div", "xo-obs-head");
+          h.setAttribute("data-status", "measured");
+          h.appendChild(el("b", "xo-obs-head-label", grp[1]));
+          h.appendChild(el("div", "xo-obs-head-why", grp[2]));
+          list.appendChild(h);
+          blocks.push(h);
+        });
+      }
+      var ob = xoObsBlock(mi, report, r.o);
+      list.appendChild(ob);
+      blocks.push(ob);
+      return;
+    }
     var b = xoItemBlock(mi, report, r.c);
     list.appendChild(b);
-    return b;
+    blocks.push(b);
   });
   var chosen = "all";
   var fbtns = [];
@@ -10822,7 +11012,9 @@ function xoItemsSection(mi, report, criteria) {
     });
   }
   XO_ITEM_FILTERS.forEach(function (f) {
-    var fb = el("button", "xo-filter", f[1] + " · " + n[f[0]]);
+    var count = (f[0] === "measured" && mMain && mLoose)
+      ? (mMain + " + " + mLoose) : n[f[0]];
+    var fb = el("button", "xo-filter", f[1] + " · " + count);
     fb.type = "button";
     fb.setAttribute("data-filter", f[0]);
     fb.setAttribute("data-act", "xo-report");    // a view filter, never a write
@@ -10946,6 +11138,24 @@ function xoReportPane(mi) {
   if (xo.engine) small.push("looked at by " + engineLabel(xo.engine));
   if (small.length) vtext.appendChild(el("div", "xo-vsmall", small.join(" · ")));
   head.appendChild(vtext);
+  // S220 fix round 2 (D-C): SAY IT AT THE TOP, once. report.md points at the
+  // measured findings from the lede for the reason the captain gave — a
+  // finding he has to scroll past four sections to meet is one he does not
+  // act on. The board had neither the pointer nor the findings. Same words as
+  // `xo-score.py` writes, so the page and the file cannot say different
+  // things. The count is of the `measured` bucket only; it is NOT added to
+  // the counts above, because those are the score's and these never move it.
+  var measuredN = xoObsList(verdict).filter(function (o) {
+    return xoObsGroup(o) === "measured";
+  }).length;
+  if (measuredN) {
+    vtext.appendChild(el("div", "xo-measured-lede",
+      "I also measured " + measuredN + " thing" + (measuredN === 1 ? "" : "s")
+      + " against your drawing and while walking the flow myself. They are "
+      + "not in the count above — measurements never move your score — but "
+      + "they are faults, and they are listed below, under "
+      + "“What I measured on your drawing”."));
+  }
   if (report.score2) {
     var s2 = String(report.score2).toLowerCase();
     head.appendChild(el("span", "xo-chip2 xo-score2 s-" + (XO_SCORE_WORD[s2] ? s2 : "unknown"),
@@ -11021,13 +11231,24 @@ function xoReportPane(mi) {
     setMd(body, full);
     pane.appendChild(body);
   }
+  // …and it never stands alone claiming to be the whole picture (fix round 3,
+  // F1). The caveat goes WHERE THE PARAGRAPH IS, so a reader who stops at the
+  // top still meets it; with no summary shown there is nothing to qualify.
+  var caveat = full ? xoSummaryCaveat(verdict) : "";
+  if (caveat) pane.appendChild(el("div", "xo-full-caveat", caveat));
 
-  // 4 — THE LEDGER, one boxed block per requirement (S223), problems first.
+  // 4 — THE LEDGER, one boxed block per requirement (S223), problems first,
+  // and — S220 fix round 2, D-C — the measured/walked findings in the same
+  // list, under their own filter and their own heading.
   var criteria = verdict.criteria;
-  if (Array.isArray(criteria) && criteria.length) {
-    pane.appendChild(xoItemsSection(mi, report, criteria.filter(function (c) {
-      return c && typeof c === "object";
-    })));
+  var obsRows = xoObsList(verdict);
+  if ((Array.isArray(criteria) && criteria.length) || obsRows.length) {
+    pane.appendChild(xoItemsSection(
+      mi, report,
+      (Array.isArray(criteria) ? criteria : []).filter(function (c) {
+        return c && typeof c === "object";
+      }),
+      obsRows));
   }
 
   // 5 — THE GAPS IT FILED, with the pictures that show them.

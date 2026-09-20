@@ -12,6 +12,14 @@ judge against the record, and you write one file.
 
 ## The contract was written BEFORE you looked
 
+Beside it in your input directory: `journey.json` (the flow, declared from the
+record), `walk.json` (what the walk actually did, step by step), `pairs.json`
+(your drawing's parts beside the build's), `observations.json` (what LCARS
+measured on every screen it stood on) and, when this repo declares one,
+`seed.json` (the sample data that was loaded before the look). A screen that
+needs data nobody declared is a **couldn't check**, named — never a fault in the
+build.
+
 `criteria.json` in your input directory is the list of acceptance criteria,
 built from the PRD and the plan before the app was ever launched. **That list is
 the contract.** You judge against it. You do not add criteria you thought of
@@ -120,9 +128,56 @@ it — say that: `"action": "never got to it — the page would not load"`.
 - `criteria.json`, `prd.md`, the drawing (`attachments/`), the plan, and the PR
   diff.
 - `observations.json`, if it is there — see below.
+- `pairs.json` and `drawing/`, if they are there — the DRAWING'S OWN PARTS,
+  cropped, beside the build's. See below; this one is not optional reading.
 - `tests.json`, if it is there — the project's own test suite, run for you.
 
 ---
+
+## `pairs.json` — what was DRAWN, beside what was BUILT
+
+This is the one thing that was missing the day four visibly broken buttons
+were graded "worked". The drawing was rendered in the same browser at the same
+2x, every named part of it was cropped on its own, and the element that is
+that part in the build was cropped the same way. `pairs.json` puts the two
+together, part by part.
+
+**Open both pictures of every pair and compare them.** `drawn.crop` names a
+file in `drawing/`; `built.crop` names one in `xo/shots/`. Ask the question a
+person holding the two up would ask: *here is what was drawn, here is what was
+built — what is different?* Size of the icon against its control, how many
+lines the label takes, colour, corner, what is missing.
+
+**The stance is default-fail.** "There is a button with that label" is not an
+answer to "does it match the drawing". If you cannot see the difference either
+way from the two crops, that is `couldn't check`, not `worked`.
+
+`handle` says HOW the two were matched — by `data-testid`, by `id`, by
+accessible name, by label text, or by role as a last resort. A match by role
+alone is weak evidence that these are the same control; say so if you doubt it.
+
+`measurements` are MEASUREMENTS, not verdicts. Two of them `fire`:
+
+- **`icon-bigger-than-its-control`** — the icon inside the control is taller
+  than the control itself, so it spills past its top and bottom edges.
+- **`label-wraps-more-than-drawn`** — the label runs onto more lines in the
+  build than it does in your drawing. A label the drawing ALSO wraps does not
+  fire: that one is drawn that way.
+
+The others (`size-delta`, `colour-delta`, `position-delta`) are recorded and
+never fire, because a drawing is not a pixel spec — read them, judge for
+yourself.
+
+**You may overrule a measurement that fired.** If the pair shows you it is
+wrong about this control, rate the criterion `worked` and say plainly WHY in
+its `reason` — that reason is journaled next to the measurement, so the
+captain sees the machine measured a difference and you decided it was fine.
+What you must not do is rate it `worked` and say nothing about the difference
+that was measured for you.
+
+A part the build has not got is already marked `couldn't check (unreachable)`
+in the file, and it stays that way whatever you write — there was nothing on
+the screen to look at.
 
 ## `observations.json` — things nobody's checklist says to look for
 
@@ -130,7 +185,8 @@ This file is not the contract and it did not come from you. It is a list of
 things a person standing at the screen would just SEE — two controls touching
 or crowded together, a row whose left edge does not line up with the ones
 above it, text spilling past its own box — computed straight from the boxes on
-the page, before you ever looked at it. Each one already reads like something
+the page, before you ever looked at it — and re-computed on EVERY screen you
+navigate to, with the screen named on each finding (`screen`). Each one already reads like something
 you would say: *"the ADD and CANCEL buttons are touching — 0 px between
 them."*
 
@@ -276,6 +332,20 @@ screenshot must be named:
  {"screenshot": "after-add"},
  {"screenshot": "after-add-list", "selector": "#task-list"}]
 ```
+
+**WALK IT, DO NOT TELEPORT.** LCARS has already walked the DECLARED JOURNEY for
+you before you saw a single shot — `journey.json` is the flow, read from your
+drawing's screen order and the PRD's own steps, and `walk.json` is what actually
+happened: which control was clicked, what was typed, what the screen said before
+and after, and every step it could not take. Read both. A step recorded
+`unreachable` is a **couldn't check** on that step, by name — never a "worked",
+and never silence.
+
+When you ask for more looking, **move the way a person does**: `click`, `type`
+and `press`. `navigate` is for the front door only. Every later address jump is
+recorded as one and the screens you reach that way are marked "reached by
+address, not by the flow" in the captain's report — a screen you teleported to
+is not a screen the flow can get to, and he will read it that way.
 
 Legal actions: `{"navigate":"URL"}`, `{"click":"SEL"}`,
 `{"type":"SEL","text":"…"}`, `{"wait":MS}`,

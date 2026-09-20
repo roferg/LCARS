@@ -171,6 +171,13 @@ def plural(word):
     return word + "es" if word.endswith(("s", "x", "ch", "sh")) else word + "s"
 
 
+def flag_str(argv, name, default=""):
+    try:
+        return argv[argv.index("--" + name) + 1]
+    except (ValueError, IndexError):
+        return default
+
+
 def load(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -1318,36 +1325,81 @@ def main(argv):
     misalign_px = flag("misalign-px", MISALIGN_PX_DEFAULT)
     overflow_px = flag("overflow-px", OVERFLOW_PX_DEFAULT)
 
+    # WHICH SCREEN THIS IS (S220 part D). The observations pass used to run
+    # ONCE, on the landing page, and the record said nothing about where it
+    # had looked — so on 2026-09-19 it reported "112 elements, 0 findings" from
+    # the Default view and never ran again on the six MBR screens the look
+    # walked to. Now it runs after every round, each finding carries the screen
+    # it was seen on, and the record lists every screen it has run on.
+    merge = "--merge" in argv
+    screen = flag_str(argv, "screen", "")
+
     doc = load(inpath) or {}
-    page = doc.get("page") if isinstance(doc, dict) else None
-    elements = (page or {}).get("elements") if isinstance(page, dict) else None
-    elements = elements if isinstance(elements, list) else []
-    elements = [e for e in elements if isinstance(e, dict) and isinstance(e.get("box"), dict)]
+    # ONE READING PER SCREEN, WHEN THE DRIVER TOOK ONE (S220 part D carry-over).
+    # `readouts.json` carries every screen the look stood on; `readout.json`
+    # carries only the last. Either is accepted, and a file with several
+    # screens in it is measured screen by screen, each finding naming its own.
+    pages = doc.get("pages") if isinstance(doc, dict) else None
+    if isinstance(pages, list) and pages:
+        readings = []
+        for pg in pages:
+            if not isinstance(pg, dict):
+                continue
+            readings.append((str(pg.get("url") or ""), pg.get("page") if isinstance(pg.get("page"), dict) else pg))
+    else:
+        readings = [(screen or str((doc or {}).get("url") or
+                     ((doc or {}).get("page") or {}).get("url") or ""),
+                     doc.get("page") if isinstance(doc, dict) else None)]
 
-    # NEVER MEASURE WHAT CANNOT BE SEEN (S212). A row its container has
-    # scrolled away and a button behind an opaque modal backdrop both still
-    # have a box, and reporting either is reporting something nobody can look
-    # at. The driver recorded the answer; this is the one place it is applied,
-    # so every detector below inherits it.
-    unseen = len(elements)
-    elements = [e for e in elements if can_be_seen(e)]
-    unseen -= len(elements)
+    all_obs, all_notes, all_screens = [], [], []
+    total_found = total_elements = total_unseen = 0
+    for screen_at, page in readings:
+      if True:
+        elements = (page or {}).get("elements") if isinstance(page, dict) else None
+        elements = elements if isinstance(elements, list) else []
+        elements = [e for e in elements if isinstance(e, dict) and isinstance(e.get("box"), dict)]
 
-    obs = (detect_crowding(elements, gap_px) + detect_overlap(elements) +
-           detect_misaligned(elements, misalign_px) + detect_clipped(elements, overflow_px))
+        # NEVER MEASURE WHAT CANNOT BE SEEN (S212). A row its container has
+        # scrolled away and a button behind an opaque modal backdrop both still
+        # have a box, and reporting either is reporting something nobody can look
+        # at. The driver recorded the answer; this is the one place it is applied,
+        # so every detector below inherits it.
+        unseen = len(elements)
+        elements = [e for e in elements if can_be_seen(e)]
+        unseen -= len(elements)
 
-    obs = collapse(obs, elements)
-    found = len(obs)
+        obs = (detect_crowding(elements, gap_px) + detect_overlap(elements) +
+               detect_misaligned(elements, misalign_px) + detect_clipped(elements, overflow_px))
 
-    notes = []
-    if len(obs) > OBS_HANDFUL:
-        ranked = sorted(obs, key=lambda o: severity(o, gap_px))
-        held = len(obs) - OBS_CAP
-        obs = ranked[:OBS_CAP]
-        notes.append("This page has a lot going on — here are the %s worst. "
-                     "I held back %d more." % (count_word(OBS_CAP), held))
-    obs = [publish(o) for o in obs]
+        obs = collapse(obs, elements)
+        found = len(obs)
 
+        notes = []
+        if len(obs) > OBS_HANDFUL:
+            ranked = sorted(obs, key=lambda o: severity(o, gap_px))
+            held = len(obs) - OBS_CAP
+            obs = ranked[:OBS_CAP]
+            notes.append("This page has a lot going on — here are the %s worst. "
+                         "I held back %d more." % (count_word(OBS_CAP), held))
+        obs = [publish(o) for o in obs]
+        # EVERY FINDING NAMES ITS SCREEN. A list of layout faults across six
+        # screens with no screen on them is a list nobody can act on.
+        if screen_at:
+            for o in obs:
+                o["screen"] = screen_at
+
+        all_obs.extend(obs)
+        all_notes.extend(notes)
+        total_found += found
+        total_elements += len(elements)
+        total_unseen += unseen
+        if screen_at and screen_at not in all_screens:
+            all_screens.append(screen_at)
+
+    obs, notes, found = all_obs, all_notes, total_found
+    elements = [None] * total_elements
+    unseen = total_unseen
+    screen = all_screens[0] if all_screens else screen
     out = {
         "thresholds": {"gapPx": gap_px, "misalignPx": misalign_px, "overflowPx": overflow_px},
         "elementCount": len(elements),
@@ -1357,7 +1409,32 @@ def main(argv):
         "foundCount": found,
         "observations": obs,
         "notes": notes,
+        "screens": all_screens or ([screen] if screen else []),
     }
+
+    # ADDED TO WHAT IS ALREADY THERE, when the caller is walking (--merge).
+    # The same fault on the same screen is not two faults, so a finding
+    # already recorded for this screen is not added twice.
+    if merge:
+        prev = load(outpath)
+        if isinstance(prev, dict):
+            old = [o for o in (prev.get("observations") or []) if isinstance(o, dict)]
+            keys = set((str(o.get("screen") or ""), str(o.get("says") or o.get("text") or
+                        json.dumps(o, sort_keys=True))) for o in old)
+            fresh = [o for o in out["observations"]
+                     if (str(o.get("screen") or ""),
+                         str(o.get("says") or o.get("text") or
+                             json.dumps(o, sort_keys=True))) not in keys]
+            out["observations"] = old + fresh
+            out["foundCount"] = int(prev.get("foundCount") or len(old)) + found
+            out["elementCount"] = int(prev.get("elementCount") or 0) + len(elements)
+            out["unseenCount"] = int(prev.get("unseenCount") or 0) + unseen
+            out["notes"] = (prev.get("notes") or []) + out["notes"]
+            seen_screens = [s for s in (prev.get("screens") or []) if s]
+            for sc in out["screens"]:
+                if sc and sc not in seen_screens:
+                    seen_screens = seen_screens + [sc]
+            out["screens"] = seen_screens
     os.makedirs(os.path.dirname(os.path.abspath(outpath)) or ".", exist_ok=True)
     with open(outpath, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2)

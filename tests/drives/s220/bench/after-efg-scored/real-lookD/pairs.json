@@ -1,0 +1,1242 @@
+{
+  "drawing": "file:///var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench-b/dx/.git/lcars/missions/lcars-20260911-001-8cb0/attachments/attachment-01.html",
+  "screens": [
+    "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0",
+    "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr",
+    "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect",
+    "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/preview",
+    "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build"
+  ],
+  "partCount": 42,
+  "matched": 8,
+  "unreachable": 34,
+  "measuredDifferences": 3,
+  "stance": "These are MEASUREMENTS, not verdicts. Look at the two pictures and say what you see; if a measurement is wrong about this control, say why and overrule it \u2014 that is recorded too.",
+  "pairs": [
+    {
+      "part": "pull data start",
+      "name": "Pull data & start",
+      "drawn": {
+        "box": {
+          "x": 1096,
+          "y": 208,
+          "w": 167,
+          "h": 38
+        },
+        "lines": 1,
+        "crop": "drawn-end-part-07",
+        "iconBox": {
+          "x": 1115,
+          "y": 220,
+          "w": 15,
+          "h": 15
+        }
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "accessible name",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr",
+      "built": {
+        "box": {
+          "x": 1087,
+          "y": 454,
+          "w": 152,
+          "h": 38
+        },
+        "lines": 3,
+        "crop": null,
+        "iconBox": {
+          "x": 1106,
+          "y": 446,
+          "w": 55,
+          "h": 55
+        },
+        "name": "Pull data & start"
+      },
+      "measurements": [
+        {
+          "id": "icon-bigger-than-its-control",
+          "fires": true,
+          "ratio": 1.45,
+          "says": "the icon inside it is 55px tall in a 38px button \u2014 1.45x the control, so it spills past the top and bottom edges"
+        },
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": true,
+          "drawnLines": 1,
+          "builtLines": 3,
+          "says": "the label runs onto 3 lines in the build where your drawing has 1"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": -9.0,
+          "heightPct": 0.0,
+          "says": "it is 9% narrower and 0% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 1096,
+            "y": 208
+          },
+          "built": {
+            "x": 1087,
+            "y": 454
+          },
+          "says": "drawn at x=1096 y=208, built at x=1087 y=454 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": true
+    },
+    {
+      "part": "view",
+      "name": "View",
+      "drawn": {
+        "box": {
+          "x": 1219,
+          "y": 411,
+          "w": 48,
+          "h": 30
+        },
+        "lines": 1,
+        "crop": "drawn-end-part-09",
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "accessible name",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr",
+      "built": {
+        "box": {
+          "x": 1195,
+          "y": 658,
+          "w": 48,
+          "h": 30
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null,
+        "name": "View"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "size-delta",
+          "fires": false,
+          "widthPct": 0.0,
+          "heightPct": 0.0,
+          "says": "it is 0% wider and 0% taller than the drawing's box (recorded, not a fault on its own \u2014 a drawing is not a pixel spec)"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 1219,
+            "y": 411
+          },
+          "built": {
+            "x": 1195,
+            "y": 658
+          },
+          "says": "drawn at x=1219 y=411, built at x=1195 y=658 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "view",
+      "name": "View",
+      "drawn": {
+        "box": {
+          "x": 1219,
+          "y": 470,
+          "w": 48,
+          "h": 30
+        },
+        "lines": 1,
+        "crop": "drawn-end-part-10",
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "pullBar",
+      "name": "",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "data-testid",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect",
+      "built": {
+        "box": {
+          "x": 178,
+          "y": 371,
+          "w": 1084,
+          "h": 4
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null,
+        "name": ""
+      },
+      "measurements": [
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 0,
+            "y": 0
+          },
+          "built": {
+            "x": 178,
+            "y": 371
+          },
+          "says": "drawn at x=0 y=0, built at x=178 y=371 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "cancel",
+      "name": "Cancel",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "accessible name",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect",
+      "built": {
+        "box": {
+          "x": 178,
+          "y": 696,
+          "w": 69,
+          "h": 32
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null,
+        "name": "Cancel"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 0,
+            "y": 0
+          },
+          "built": {
+            "x": 178,
+            "y": 696
+          },
+          "says": "drawn at x=0 y=0, built at x=178 y=696 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "continueBtn",
+      "name": "Continue to builder",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "data-testid",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect",
+      "built": {
+        "box": {
+          "x": 1110,
+          "y": 696,
+          "w": 152,
+          "h": 32
+        },
+        "lines": 3,
+        "crop": null,
+        "iconBox": {
+          "x": 1188,
+          "y": 681,
+          "w": 61,
+          "h": 61
+        },
+        "name": "Continue to builder"
+      },
+      "measurements": [
+        {
+          "id": "icon-bigger-than-its-control",
+          "fires": true,
+          "ratio": 1.91,
+          "says": "the icon inside it is 61px tall in a 32px button \u2014 1.91x the control, so it spills past the top and bottom edges"
+        },
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": true,
+          "drawnLines": 1,
+          "builtLines": 3,
+          "says": "the label runs onto 3 lines in the build where your drawing has 1"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 0,
+            "y": 0
+          },
+          "built": {
+            "x": 1110,
+            "y": 696
+          },
+          "says": "drawn at x=0 y=0, built at x=1110 y=696 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": true
+    },
+    {
+      "part": "themeBtn",
+      "name": "Toggle theme",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "preview",
+      "name": "Preview",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "accessible name",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "built": {
+        "box": {
+          "x": 1077,
+          "y": 240,
+          "w": 71,
+          "h": 30
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null,
+        "name": "Preview"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 0,
+            "y": 0
+          },
+          "built": {
+            "x": 1077,
+            "y": 240
+          },
+          "says": "drawn at x=0 y=0, built at x=1077 y=240 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "lock month",
+      "name": "Lock month",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "accessible name",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "built": {
+        "box": {
+          "x": 1155,
+          "y": 239,
+          "w": 107,
+          "h": 32
+        },
+        "lines": 2,
+        "crop": null,
+        "iconBox": {
+          "x": 1168,
+          "y": 238,
+          "w": 34,
+          "h": 34
+        },
+        "name": "Lock month"
+      },
+      "measurements": [
+        {
+          "id": "icon-bigger-than-its-control",
+          "fires": true,
+          "ratio": 1.06,
+          "says": "the icon inside it is 34px tall in a 32px button \u2014 1.06x the control, so it spills past the top and bottom edges"
+        },
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": true,
+          "drawnLines": 1,
+          "builtLines": 2,
+          "says": "the label runs onto 2 lines in the build where your drawing has 1"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 0,
+            "y": 0
+          },
+          "built": {
+            "x": 1155,
+            "y": 239
+          },
+          "says": "drawn at x=0 y=0, built at x=1155 y=239 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": true
+    },
+    {
+      "part": "discard draft",
+      "name": "Discard draft",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": true,
+      "outcome": "",
+      "handle": "accessible name",
+      "screen": "http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build",
+      "built": {
+        "box": {
+          "x": 1157,
+          "y": 394,
+          "w": 90,
+          "h": 30
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null,
+        "name": "Discard draft"
+      },
+      "measurements": [
+        {
+          "id": "label-wraps-more-than-drawn",
+          "fires": false,
+          "drawnLines": 1,
+          "builtLines": 1,
+          "says": "the label is on 1 line in both"
+        },
+        {
+          "id": "position-delta",
+          "fires": false,
+          "drawn": {
+            "x": 0,
+            "y": 0
+          },
+          "built": {
+            "x": 1157,
+            "y": 394
+          },
+          "says": "drawn at x=0 y=0, built at x=1157 y=394 (recorded \u2014 the corner is yours to judge)"
+        }
+      ],
+      "measuredDifference": false
+    },
+    {
+      "part": "automateBtn",
+      "name": "Update all automatically",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "re collect",
+      "name": "Re-collect",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "on trackwatchoff tracktrackingwip",
+      "name": "On trackWatchOff trackTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "gh gh remains the long pole copilot and go sdlc well inside target",
+      "name": "gh/gh remains the long pole; Copilot and Go SDLC well inside target.",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "collect",
+      "name": "Collect",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "on trackwatchoff tracktrackingwip",
+      "name": "On trackWatchOff trackTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "above target for the third month running",
+      "name": "Above target for the third month running.",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "pr review latency value",
+      "name": "PR review latency value",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "watchon trackoff tracktrackingwip",
+      "name": "WatchOn trackOff trackTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "add an insight for this kpi",
+      "name": "Add an insight for this KPI\u2026",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "watchon trackoff tracktrackingwip",
+      "name": "WatchOn trackOff trackTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "migrations trending up 6 legacy services remain for q4",
+      "name": "Migrations trending up; 6 legacy services remain for Q4.",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "try again",
+      "name": "Try again",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "off trackon trackwatchtrackingwip",
+      "name": "Off trackOn trackWatchTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "add an insight for this kpi",
+      "name": "Add an insight for this KPI\u2026",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "collect",
+      "name": "Collect",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "on trackwatchoff tracktrackingwip",
+      "name": "On trackWatchOff trackTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "add an insight for this kpi",
+      "name": "Add an insight for this KPI\u2026",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "re collect",
+      "name": "Re-collect",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "on trackwatchoff tracktrackingwip",
+      "name": "On trackWatchOff trackTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "add an insight for this kpi",
+      "name": "Add an insight for this KPI\u2026",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "re collect",
+      "name": "Re-collect",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "watchon trackoff tracktrackingwip",
+      "name": "WatchOn trackOff trackTrackingWIP",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "add an insight for this kpi",
+      "name": "Add an insight for this KPI\u2026",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 0,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "unlock",
+      "name": "Unlock",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "unlock",
+      "name": "Unlock",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "cancel",
+      "name": "Cancel",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "lock month",
+      "name": "Lock month",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "cancel",
+      "name": "Cancel",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "unlock",
+      "name": "Unlock",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "keep editing",
+      "name": "Keep editing",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    },
+    {
+      "part": "discard draft",
+      "name": "Discard draft",
+      "drawn": {
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "lines": 1,
+        "crop": null,
+        "iconBox": null
+      },
+      "reachable": false,
+      "outcome": "couldn't check (unreachable)",
+      "handle": null,
+      "screen": null,
+      "built": null,
+      "measurements": [],
+      "why": "your drawing names this part; I could not find it anywhere I looked, by test id, by id, by its label or by its role"
+    }
+  ]
+}

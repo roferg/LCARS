@@ -1,0 +1,14 @@
+{"at": "2026-09-20T06:50:31Z", "action": "swept", "why": "at Verify with no score of mine when Number One was switched on"}
+{"at": "2026-09-20T06:50:31Z", "action": "criteria", "detail": "79 criteria (21 primary), 12 place names"}
+{"at": "2026-09-20T06:50:37Z", "action": "drawing-parts", "read": 65, "detail": "14 per-part requirement(s) added, 0 catch-all row(s) retired, 28 part(s) held back (cap 14)"}
+{"at": "2026-09-20T06:50:37Z", "action": "journey", "detail": "9 step(s) to walk, from the drawing's screen order; the screen's own gate; the fields the screens carry; the PRD's own steps — 9 of them its own requirement"}
+{"at": "2026-09-20T06:51:08Z", "action": "launched", "url": "http://localhost:5173/DX-Scorecard/"}
+{"at": "2026-09-20T06:51:08Z", "action": "seed", "declared": false}
+{"at": "2026-09-20T06:56:59Z", "action": "looked", "round": 0, "shots": 27, "shotsDir": "xo/shots/look-1"}
+{"at": "2026-09-20T06:56:59Z", "action": "observed", "count": 2, "found": 2}
+{"at": "2026-09-20T06:56:59Z", "action": "paired", "detail": "42 drawn part(s): 8 matched, 34 unreachable, 3 with a measured difference"}
+{"at": "2026-09-20T06:57:50Z", "action": "tested", "outcome": "failed"}
+{"at": "2026-09-20T07:03:41Z", "action": "actions", "round": 1, "asked": 12, "cap": 12}
+{"at": "2026-09-20T07:04:19Z", "action": "looked", "round": 1, "driverExit": 3}
+{"at": "2026-09-20T07:04:20Z", "action": "paired", "detail": "42 drawn part(s): 8 matched, 34 unreachable, 3 with a measured difference"}
+{"at": "2026-09-20T07:04:20Z", "action": "observed", "round": 1, "found": 7}

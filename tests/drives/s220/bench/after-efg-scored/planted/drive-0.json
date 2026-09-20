@@ -1,0 +1,90 @@
+{
+  "url": "http://127.0.0.1:8220/index.html",
+  "allPainted": true,
+  "notes": [
+    "the drawing names `#exportBtn`; the page has no element with that id",
+    "the drawing names `#insight`; the page has it but it has no laid-out box",
+    "the drawing names `#lockBtn`; the page has it but it has no laid-out box",
+    "the drawing names `#screen-board`; the page has it but it has no laid-out box"
+  ],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 912
+    },
+    {
+      "name": "shot-02",
+      "selector": "#alertChip",
+      "painted": true,
+      "distinctColours": 123
+    },
+    {
+      "name": "shot-03",
+      "selector": "#helpLink",
+      "painted": true,
+      "distinctColours": 53
+    },
+    {
+      "name": "shot-04",
+      "selector": "#noticeLabel",
+      "painted": true,
+      "distinctColours": 154
+    },
+    {
+      "name": "shot-05",
+      "selector": "#openBoardBtn",
+      "painted": true,
+      "distinctColours": 123
+    },
+    {
+      "name": "shot-06",
+      "selector": "#publishBtn",
+      "painted": true,
+      "distinctColours": 113
+    },
+    {
+      "name": "shot-07",
+      "selector": "#saveBtn",
+      "painted": true,
+      "distinctColours": 132
+    },
+    {
+      "name": "shot-08",
+      "selector": "#screen-entry",
+      "painted": true,
+      "distinctColours": 912
+    },
+    {
+      "name": "shot-09",
+      "selector": "#tabBar",
+      "painted": true,
+      "distinctColours": 140
+    },
+    {
+      "name": "shot-walk-01-j1",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 495
+    },
+    {
+      "name": "shot-walk-02-j2",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 638
+    },
+    {
+      "name": "shot-walk-03-j3",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 714
+    },
+    {
+      "name": "shot-walk-04-j4",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 714
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "case": "real",
+  "repo": "https://github.ghe.com/github/DX-Scorecard",
+  "pr": 206,
+  "sha": "672825b",
+  "mission": "lcars-20260911-001-8cb0",
+  "_comment": [
+    "THE KNOWN ANSWERS for the real case, DECLARED HERE and nowhere else.",
+    "They come from the captain's own report of PR #206 and from DIRECT",
+    "MEASUREMENT of the build at 672825b in headless Chrome (the S220 spike,",
+    "2026-09-19). Not one of them is read back out of anything a look said.",
+    "",
+    "The measurements behind each entry, taken at 1440x1100:",
+    "  Pull data & start    h=38  icon 55.0px  label on 3 lines",
+    "  Continue to builder  h=32  icon 61.3px  label on 3 lines",
+    "  Lock month           h=32  icon 34.0px  label on 2 lines",
+    "  Back to builder      h=30  icon 41.1px  label on 3 lines",
+    "  Preview              h=30  no icon      label on 1 line   <- CORRECT",
+    "  start card reads 'August 2026'; the collect step it leads to reads",
+    "  'Pulling data . September 2026'.",
+    "",
+    "Note for a later agent: only 'Continue to builder' carries an id in the",
+    "drawing. 'Pull data & start' and 'Lock month' have none, and 'Back to",
+    "builder' is on a preview screen the drawing never drew \u2014 so a look that",
+    "enumerates only the drawing's named parts CANNOT reach all four. They are",
+    "all declared anyway: the measure is what the look FINDS, not what the",
+    "drawing enumerates.",
+    "Fix round 1 (D3/D4): three name patterns widened because the tester wrote three findings in plain English that any person would credit and the ruler scored 0 \u2014 'the button that kicks off the pull', 'the month I chose on the first card', and the Preview control named as a CONTROL rather than with the literal word 'button'. Shape, not transcript: none of them names a fault, only a part."
+  ],
+  "gradeMustBeAtMost": "medium",
+  "gradeLadder": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "faults": [
+    {
+      "key": "r1-pull-button",
+      "part": "pullBtn",
+      "partNames": [
+        "pull data (&|and) start",
+        "pull ?bar",
+        "pull-data",
+        "(button|control)[^.]{0,40}\\bpull\\b",
+        "\\bpull\\b[^.]{0,20}(button|control)"
+      ],
+      "kinds": [
+        "oversized-icon",
+        "wrapped-label"
+      ],
+      "what": "The 'Pull data & start' button holds a 55px icon in a 38px control and its label runs to three lines."
+    },
+    {
+      "key": "r2-continue-button",
+      "part": "continueBtn",
+      "partNames": [
+        "continue to builder",
+        "continue-?btn",
+        "continueBtn"
+      ],
+      "kinds": [
+        "oversized-icon",
+        "wrapped-label"
+      ],
+      "what": "The 'Continue to builder' button holds a 61px icon in a 32px control and its label runs to three lines."
+    },
+    {
+      "key": "r3-lock-button",
+      "part": "lockBtn",
+      "partNames": [
+        "lock month",
+        "lock-month-btn"
+      ],
+      "kinds": [
+        "oversized-icon",
+        "wrapped-label"
+      ],
+      "what": "The 'Lock month' button holds a 34px icon in a 32px control and its label runs to two lines."
+    },
+    {
+      "key": "r4-back-button",
+      "part": "backBtn",
+      "partNames": [
+        "back to builder",
+        "preview-back"
+      ],
+      "kinds": [
+        "oversized-icon",
+        "wrapped-label"
+      ],
+      "what": "The 'Back to builder' button on the preview screen holds a 41px icon in a 30px control and its label runs to three lines."
+    },
+    {
+      "key": "r5-month-mismatch",
+      "part": "startCard",
+      "partNames": [
+        "start card",
+        "next up",
+        "august",
+        "september",
+        "collect",
+        "pulling data",
+        "first card",
+        "month (i|I) (chose|picked)"
+      ],
+      "kinds": [
+        "month-mismatch"
+      ],
+      "what": "The start card offers 'August 2026' and the collect step it leads to says 'Pulling data \u00b7 September 2026'."
+    }
+  ],
+  "correct": [
+    {
+      "key": "rc1-preview-button",
+      "part": "previewBtn",
+      "partNames": [
+        "\\bpreview\\b button",
+        "button[^.]{0,20}\\bpreview\\b",
+        "\\bpreview\\b\\s+(control|cta|pill|action|link|tab)",
+        "(control|cta)[^.]{0,20}\\bpreview\\b",
+        "\\bpreview\\b is (drawn|missing|absent|not)",
+        "(could not find|couldn't find|cannot find|missing)[^.]{0,30}\\bpreview\\b"
+      ],
+      "what": "The builder's Preview button: one line, no icon, correct beside the drawing. Must NOT be flagged."
+    }
+  ],
+  "journey": [
+    {
+      "key": "rj1-walk-the-flow",
+      "what": "start -> Pull data & start -> collect -> Continue to builder -> builder -> type an insight -> Lock month, all by CLICKING.",
+      "reachedOnlyByClicking": true,
+      "partNames": [
+        "pull data (&|and) start",
+        "continue to builder",
+        "lock month"
+      ]
+    }
+  ]
+}

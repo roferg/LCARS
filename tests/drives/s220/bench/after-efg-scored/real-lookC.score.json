@@ -1,0 +1,78 @@
+{
+ "case": "real",
+ "label": "after E/F/G (look C, walking)",
+ "look": "/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench-c/dx/.git/lcars/missions/lcars-20260911-001-8cb0/xo",
+ "knownFaults": 5,
+ "found": 5,
+ "recall": 1.0,
+ "correctControls": 1,
+ "falseAlarms": 0,
+ "grade": "medium",
+ "gradeMustBeAtMost": "medium",
+ "gradeOk": true,
+ "gradeEarned": true,
+ "findings": {
+  "negative": 11,
+  "couldNotCheck": 13
+ },
+ "walk": {
+  "navigations": 1,
+  "clicks": 2,
+  "typings": 1,
+  "keypresses": 1,
+  "jumpsPastEntry": 0
+ },
+ "walkDeclared": {
+  "entry": "http://localhost:5175",
+  "steps": 9,
+  "stepsTaken": 9,
+  "navigations": 0,
+  "clicks": 7,
+  "typings": 2,
+  "keypresses": 0,
+  "jumpsPastEntry": 0
+ },
+ "detail": {
+  "found": [
+   {
+    "key": "r1-pull-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Flow and wording parity are good, but the primary flow buttons break visual parity: 'Pull data & start' and 'Continue to builder' render with an oversized download/arrow icon spilling past the button edges and their labels wrapped onto three lines, where the mockup draws compact single-line pills wi"
+   },
+   {
+    "key": "r2-continue-button",
+    "by": "prd-21",
+    "src": "criterion",
+    "quote": "Flow and wording parity are good, but the primary flow buttons break visual parity: 'Pull data & start' and 'Continue to builder' render with an oversized download/arrow icon spilling past the button edges and their labels wrapped onto three lines, where the mockup draws compact single-line pills wi"
+   },
+   {
+    "key": "r3-lock-button",
+    "by": "oversized-icon",
+    "src": "observation",
+    "quote": "the \"Lock month\" button on http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build holds an icon 34px tall inside a control only 32px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 2 lines http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build "
+   },
+   {
+    "key": "r4-back-button",
+    "by": "oversized-icon",
+    "src": "observation",
+    "quote": "the \"Back to builder\" button on http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr/preview holds an icon 41px tall inside a control only 30px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 3 lines http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr"
+   },
+   {
+    "key": "r5-month-mismatch",
+    "by": "carried-value",
+    "src": "observation",
+    "quote": "August 2026 became September 2026 after I clicked \"pull data & start\" \u2014 the month did not carry from one screen to the next http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect carried-value http://localhost:5175/DX-Scorecard/?snapshot=2026-07-27.0#mbr shot-walk-01-j1"
+   }
+  ],
+  "missed": [],
+  "falseAlarms": [],
+  "journey": [
+   {
+    "key": "rj1-walk-the-flow",
+    "what": "start -> Pull data & start -> collect -> Continue to builder -> builder -> type an insight -> Lock month, all by CLICKING.",
+    "reported": false
+   }
+  ]
+ }
+}

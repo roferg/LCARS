@@ -1,0 +1,37 @@
+{
+  "url": "http://localhost:5173/DX-Scorecard/#mbr",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "mbr-start",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 2509
+    },
+    {
+      "name": "mbr-collect",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 1533
+    },
+    {
+      "name": "mbr-collect-done",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 1533
+    },
+    {
+      "name": "mbr-builder",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 5664
+    },
+    {
+      "name": "mbr-builder-bucket",
+      "selector": ".bucket-card",
+      "painted": true,
+      "distinctColours": 1706
+    }
+  ]
+}

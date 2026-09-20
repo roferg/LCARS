@@ -1,0 +1,123 @@
+{
+ "case": "real",
+ "label": "fix round 1 (look E)",
+ "look": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s220/bench/fix1-scored/real-lookE",
+ "knownFaults": 5,
+ "found": 5,
+ "recall": 1.0,
+ "recallByModel": 0.4,
+ "foundByModel": 2,
+ "recallByDetector": 1.0,
+ "foundByDetector": 5,
+ "recallUnion": 1.0,
+ "correctControls": 1,
+ "falseAlarms": 0,
+ "falseAlarmsByModel": 0,
+ "falseAlarmsByDetector": 0,
+ "notComparable": 1,
+ "grade": "low",
+ "gradeMustBeAtMost": "medium",
+ "gradeOk": true,
+ "gradeEarned": true,
+ "findings": {
+  "negative": 10,
+  "couldNotCheck": 52,
+  "byModel": 3,
+  "byDetector": 7
+ },
+ "walk": {
+  "navigations": 0,
+  "clicks": 0,
+  "typings": 0,
+  "keypresses": 0,
+  "jumpsPastEntry": 0
+ },
+ "walkDeclared": {
+  "entry": "http://localhost:5173",
+  "steps": 10,
+  "stepsTaken": 9,
+  "stepsNoChange": 1,
+  "stepsUnreachable": 0,
+  "navigations": 0,
+  "clicks": 6,
+  "typings": 3,
+  "keypresses": 0,
+  "jumpsPastEntry": 0
+ },
+ "detail": {
+  "found": [
+   {
+    "key": "r1-pull-button",
+    "by": "model",
+    "eyes": [
+     "model",
+     "detector"
+    ],
+    "detector": "oversized-icon",
+    "id": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, wording and flow track the mockup well, but the primary action buttons are visibly off: 'Pull data & start' and 'Continue to builder' render an oversized icon stacked above the label with the label wrapping onto three lines, where the drawing has a compact horizontal button with a small inli"
+   },
+   {
+    "key": "r2-continue-button",
+    "by": "model",
+    "eyes": [
+     "model",
+     "detector"
+    ],
+    "detector": "oversized-icon",
+    "id": "prd-21",
+    "src": "criterion",
+    "quote": "Layout, wording and flow track the mockup well, but the primary action buttons are visibly off: 'Pull data & start' and 'Continue to builder' render an oversized icon stacked above the label with the label wrapping onto three lines, where the drawing has a compact horizontal button with a small inli"
+   },
+   {
+    "key": "r3-lock-button",
+    "by": "detector",
+    "eyes": [
+     "detector"
+    ],
+    "detector": "oversized-icon",
+    "id": "oversized-icon",
+    "src": "observation",
+    "quote": "the \"Lock month\" button on http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build holds an icon 34px tall inside a control only 32px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 2 lines http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/build "
+   },
+   {
+    "key": "r4-back-button",
+    "by": "detector",
+    "eyes": [
+     "detector"
+    ],
+    "detector": "oversized-icon",
+    "id": "oversized-icon",
+    "src": "observation",
+    "quote": "the \"Back to builder\" button on http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/preview holds an icon 41px tall inside a control only 30px tall \u2014 the icon is bigger than the button it sits in, and its label runs onto 3 lines http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr"
+   },
+   {
+    "key": "r5-month-mismatch",
+    "by": "detector",
+    "eyes": [
+     "detector"
+    ],
+    "detector": "carried-value",
+    "id": "carried-value",
+    "src": "observation",
+    "quote": "August 2026 became September 2026 after I clicked \"pull data & start\" \u2014 the month did not carry from one screen to the next http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr/collect carried-value http://localhost:5173/DX-Scorecard/?snapshot=2026-07-27.0#mbr shot-walk-01-j1"
+   }
+  ],
+  "missed": [],
+  "falseAlarms": [],
+  "notComparable": [
+   {
+    "key": "rc1-preview-button",
+    "why": "nothing was drawn for it (its drawn box is 0x0), so the build was never compared against anything"
+   }
+  ],
+  "journey": [
+   {
+    "key": "rj1-walk-the-flow",
+    "what": "start -> Pull data & start -> collect -> Continue to builder -> builder -> type an insight -> Lock month, all by CLICKING.",
+    "reported": false
+   }
+  ]
+ }
+}
