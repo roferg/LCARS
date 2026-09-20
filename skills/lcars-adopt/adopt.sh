@@ -659,8 +659,8 @@ SPEC_NAME="prd.md"
 # Read BEFORE the rebuild, because the rebuild is what removes it.
 XO_WAS=""
 if [ "$EXISTING" -eq 1 ] && [ -f "$MISSION_DIR/state.json" ]; then
-  XO_WAS="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{[^}]*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-              "$MISSION_DIR/state.json" | head -1)"
+  # S223: the JSON-aware reader — never `{[^}]*}` (a `}` in a headline).
+  XO_WAS="$(lcars_json1_get "$(lcars_state_xo_block "$MISSION_DIR/state.json")" status)"
 fi
 STATE="$STAGING/state.json"
 if [ "$EXISTING" -eq 1 ]; then
@@ -843,9 +843,8 @@ fi
 
 CFG_XO_ENABLED=""
 if [ -f "$CONFIG" ]; then
-  case "$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$CONFIG" | head -1)" in
-    *'"enabled"'*true*) CFG_XO_ENABLED=1 ;;
-  esac
+  [ "$(lcars_json1_raw "$(lcars_state_get_raw "$CONFIG" numberOne)" enabled)" = true ] \
+    && CFG_XO_ENABLED=1
 fi
 
 if [ -n "$CFG_XO_ENABLED" ] && [ "$STAGE" = "verify" ]; then

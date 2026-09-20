@@ -13571,7 +13571,7 @@ class Actions(LogFacts):
         out = (proc.stdout or b"").decode("utf-8", "replace").strip()
         return {"mission": mid, "output": out}
 
-    def xo_seen(self, entry=None):
+    def xo_seen(self, entry=None, mission=None, entries=None):
         """`POST /api/xo/seen` — the board's ✓ Seen, the SAME mark the CLI's
         `lcars xo report --seen` writes (S205).
 
@@ -13590,6 +13590,25 @@ class Actions(LogFacts):
         if key:
             self._run("xo", ["report", "--all", "--seen-entry", key])
             return {"seen": True, "entry": key}
+        # S223 fix round 1 (D5): ✓ Seen all N sends the N KEYS it named, not a
+        # mission id — the board's header button counts the rows on screen
+        # under the filter that is on, and those are the rows that clear. Same
+        # mark as one ✓ Seen, N times; still nothing removed.
+        keys = [str(k).strip() for k in (entries or [])
+                if isinstance(k, str) and str(k).strip()]
+        if keys:
+            args = ["report", "--all"]
+            for k in keys:
+                args += ["--seen-entry", k]
+            self._run("xo", args)
+            return {"seen": True, "entries": keys}
+        # S223: ✓ Seen all N — every entry of ONE mission still in the news,
+        # `lcars xo report --seen-mission <id>`. Same grain of meaning as one
+        # ✓ Seen, times N: dealt with, kept in history, nothing deleted.
+        mid = str(mission or "").strip()
+        if mid:
+            self._run("xo", ["report", "--all", "--seen-mission", mid])
+            return {"seen": True, "mission": mid}
         self._run("xo", ["report", "--all", "--seen"])
         return {"seen": True}
 

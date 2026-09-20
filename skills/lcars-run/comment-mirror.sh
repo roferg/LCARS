@@ -599,9 +599,13 @@ cm_mirror_verify_feedback() {
 # wrote. This function works nothing out from prose.
 
 # The mission's one-line numberOne object, or empty.
+# S223: the JSON-aware reader — never `{[^}]*}` (a `}` in a headline).
+_CM_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cm_xo_block() {
   [ -f "${STATE:-}" ] || return 0
-  sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*\({[^}]*}\).*/\1/p' "$STATE" | head -1
+  declare -F lcars_state_xo_block >/dev/null \
+    || . "$_CM_SELF_DIR/../lcars-init/lcars-state.sh"
+  lcars_state_xo_block "$STATE"
 }
 
 # cm_jl_field <json-text> <key> → its string value, lightly un-escaped. The same

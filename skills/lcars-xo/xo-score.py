@@ -867,13 +867,18 @@ def finish_reason(e):
         impact = "Impact %s%s because %s" % (e["impact"], tag, because_tail(e["impactWhy"]))
     else:
         impact = "Impact %s%s" % (e["impact"], tag)
+    # S223 fix round 1 (D2): when the HARNESS writes the reason, the reason is
+    # not the look's own words and must never be shown as "what I did". The
+    # row says so on the record rather than leaving a reader to guess.
     if rated != e["status"]:
         told = unstop(e.get("note") or "") or "I could not check this"
         e["reason"] = "%s. %s. Outcome: %s." % (impact, told[:1].upper() + told[1:], word)
+        e["reasonByHarness"] = True
         return
     if not said or _plain(said) == _plain(e.get("text")):
         e["reason"] = ("No reason was given for this one — all I have is the outcome: "
                        "%s. %s." % (word, impact))
+        e["reasonByHarness"] = True
         return
     if recorded:
         # The look's own "Impact <x> because …" sentence gives way to the one
@@ -1119,6 +1124,19 @@ def main():
         take_impact(entry, c)
         entry["_ratedStatus"] = rated_status
         entry["_reason"] = str(c.get("reason") or "")
+        # S223 fix round 1 (D2) — WHAT IT DID IS A RECORD, NOT A PARSE.
+        # The report used to CHOP the `I tried …; I saw …` clause out of the
+        # reason prose to fill its "What I did" line, and the chop lost the
+        # verb ("The test tail."), missed every reason written without the
+        # `; I saw` joint (39 rows fell back to a canned sentence, 1 to "Not
+        # recorded" though its reason said what it tried), and printed
+        # harness boilerplate over the look's own words. This is the field
+        # instead: the look writes `action` beside `note` and `reason`
+        # (prompts/evaluate.md, prompts/recheck.md), and it is carried here
+        # verbatim. Absent → absent; the reader says so honestly.
+        act = " ".join(str(c.get("action") or "").split())
+        if act:
+            entry["action"] = act
         if status == "untested" and rated_status == "untested":
             why_not = str(c.get("couldNotCheck") or "").strip().lower()
             if why_not in COULD_NOT_CHECK:

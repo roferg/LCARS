@@ -309,6 +309,64 @@ class C10_MissionBlocksDoNotCollapse(ReportRenderBase):
         self.assertIn("a bug it filed stopped", needs["text"])
 
 
+class S223D5_SeenAllClearsExactlyWhatItNames(ReportRenderBase):
+    """S223 fix round 1 (D5) — ✓ SEEN ALL N CLEARS N, NOT THE BACKLOG.
+
+    The fresh tester pressed a header button labelled "SEEN ALL 7" under the
+    Verdicts filter. Seven rows were on screen; forty-eight entries left the
+    news and history jumped 7 → 48. The button named one number and did
+    another thing. It now sends the KEYS of the rows it counted, so the label
+    and the act are the same list by construction."""
+
+    def loud_keys(self, action=None):
+        rows = {r["id"]: r for r in self.build()["missions"]}
+        return [e["key"] for e in rows[LOUD]["entries"]
+                if action is None or e["action"] == action]
+
+    def posted(self, out):
+        return [f["body"] for f in out["fetches"]
+                if f["method"] == "POST" and f["url"] == "/api/xo/seen"]
+
+    def test_under_a_filter_the_label_counts_only_the_rows_on_screen(self):
+        # The board opens on "Needs you", which hides LOUD's verdict row.
+        loud = [g for g in self.drive()["atOpen"]["groups"]
+                if g["mission"] == LOUD][0]
+        shown = len(_cls_of(loud, " xo-entry "))
+        btns = _cls_of(loud, " xo-seen-all ")
+        self.assertEqual(1, len(btns))
+        self.assertLess(shown, len(self.loud_keys()))   # the filter IS hiding some
+        self.assertEqual("✓ Seen all %d" % shown, btns[0]["text"])
+
+    def test_it_posts_exactly_the_keys_that_were_on_screen(self):
+        out = self.drive(clicks=[{"seenAll": LOUD}])
+        loud = [g for g in out["atOpen"]["groups"]
+                if g["mission"] == LOUD][0]
+        on_screen = [e["key"] for e in _cls_of(loud, " xo-entry ")]
+        bodies = self.posted(out)
+        self.assertEqual(1, len(bodies))
+        self.assertEqual(on_screen, bodies[0]["entries"])
+        self.assertLess(len(on_screen), len(self.loud_keys()))
+        self.assertNotIn("mission", bodies[0])
+
+    def test_everything_shown_clears_everything_shown(self):
+        out = self.drive(clicks=["all", {"seenAll": LOUD}])
+        bodies = self.posted(out)
+        self.assertEqual(1, len(bodies))
+        self.assertEqual(sorted(self.loud_keys()), sorted(bodies[0]["entries"]))
+
+    def test_a_sibling_missions_entries_are_never_in_the_body(self):
+        out = self.drive(clicks=["all", {"seenAll": LOUD}])
+        body = self.posted(out)[0]
+        for k in body["entries"]:
+            self.assertTrue(k.startswith(LOUD), k)
+
+    def test_the_button_still_says_nothing_is_deleted(self):
+        out = self.drive(clicks=["all"])
+        loud = [g for g in out["afterClicks"][0]["groups"]
+                if g["mission"] == LOUD][0]
+        self.assertEqual(1, len(_cls_of(loud, " xo-seen-all ")))
+
+
 class C5_SeenClearsOneAndDeletesNothing(ReportRenderBase):
 
     def test_every_entry_has_its_own_seen_button(self):
@@ -428,6 +486,118 @@ class C6_ClearingTheLastEntryDimsTheMission(ReportRenderBase):
         back = self.drive(data=self.cleared, clicks=["all"])
         groups = back["afterClicks"][0]["groups"]
         self.assertIn(LOUD, [g["mission"] for g in groups])
+
+
+WHY_FIXTURE = os.path.normpath(os.path.join(
+    HERE, "..", "..", "tests", "drives", "s223", "why-this-grade.txt"))
+
+
+class D1_TheNewsRendersTheReasoningTheSameWayTheReportDoes(ReportRenderBase):
+    """S223 fix round 2, D1 + D2.
+
+    The tester opened Number One → First Officer's report → Everything and
+    counted 46 literal `**` on screen: the verdict entry printed the whole
+    unclipped `whyThisGrade` as PLAIN TEXT, while the mission report rendered
+    the identical string as markdown. One string, two treatments, and the
+    loud one was the wrong one.
+
+    D2 is the same string's other half. It carries an ODD number of `**` (23
+    on the captain's own report — a `**lead…` whose closer went with the
+    truncation), and round 1's "drop the last marker" balancing dropped the
+    WRONG one: the emphasis inverted, seven lines came out bold and the two
+    words the record really marked came out plain.
+    """
+
+    def _say(self, why):
+        data = self.build()
+        for row in data["missions"]:
+            for e in row["entries"]:
+                if e["action"] == "scored":
+                    e["whyThisGrade"] = why
+        out = self.drive(clicks=["all"], data=data)
+        says = _cls_of({"children": out["afterClicks"][0]["groups"]},
+                       " xo-entry-say ")
+        # Only the VERDICT entries — the other ranks say their own one-liner,
+        # and this is about the string the look recorded.
+        needle = why.replace("**", "").split(".")[0].split(";")[0][:24].strip()
+        mine = [s for s in says if needle and needle in (
+            self._visible(self._html(s)).replace("&quot;", '"')
+            .replace("&amp;", "&") + " " + (s.get("text") or ""))]
+        self.assertTrue(mine, "the recorded reasoning reached no entry")
+        return mine
+
+    @staticmethod
+    def _html(node):
+        return "".join(n.get("html") or "" for n in _flatten(node))
+
+    @staticmethod
+    def _bold(html):
+        import re
+        return re.findall(r"<strong>(.*?)</strong>", html)
+
+    @staticmethod
+    def _visible(html):
+        import re
+        return re.sub(r"<[^>]*>", "", html)
+
+    def test_the_real_report_puts_no_raw_asterisks_on_screen(self):
+        why = open(WHY_FIXTURE).read()
+        self.assertEqual(23, why.count("**"), "fixture drifted")
+        for say in self._say(why):
+            self.assertNotIn("**", self._visible(self._html(say)))
+            self.assertNotIn("**", say["text"])
+
+    def test_the_entry_is_clipped_to_a_lead_not_the_whole_essay(self):
+        why = open(WHY_FIXTURE).read()
+        for say in self._say(why):
+            lead = [n for n in _flatten(say)
+                    if " xo-why-body " in " " + (n.get("cls") or "") + " "][0]
+            self.assertLess(len(self._visible(lead["html"])), 600,
+                            "the lead is still the whole essay")
+
+    def test_and_the_rest_is_reachable_the_way_the_mission_report_offers_it(self):
+        why = open(WHY_FIXTURE).read()
+        for say in self._say(why):
+            more = [n for n in _flatten(say) if n.get("tag") == "details"]
+            self.assertEqual(1, len(more))
+            self.assertIn("Show the full reasoning", more[0]["text"])
+            # …and every word the record wrote is still in there.
+            self.assertIn("Re-pull", self._visible(self._html(more[0])))
+
+    def test_the_words_the_record_marked_are_the_bold_ones(self):
+        why = open(WHY_FIXTURE).read()
+        for say in self._say(why):
+            bold = self._bold(self._html(say))
+            self.assertIn("Refresh-all", bold)
+            self.assertIn("Nav actions:", bold)
+            self.assertIn("Reviews entry screen", bold)
+            # …and nothing enormous: an inverted run swallowed whole lines.
+            self.assertTrue(all(len(b) < 120 for b in bold), bold)
+
+    def test_odd_markers_anywhere_never_invert_and_never_lose_a_word(self):
+        cases = [
+            # (string, the words the record marked)
+            ("**Alpha beta. Then gamma and **delta** and more text here.",
+             ["Alpha beta", "delta"]),
+            ("**One** here; **Two truncated\u2026; **Three** ends it.",
+             ["One", "Two truncated\u2026", "Three"]),
+            ("Some text with **Marked** words and a trailing **",
+             ["Marked"]),
+            ("Lead in: **Reviews entry screen\u2026; **Builder** matches it.",
+             ["Reviews entry screen\u2026", "Builder"]),
+        ]
+        for src, want in cases:
+            for say in self._say(src):
+                html = self._html(say)
+                self.assertEqual(want, self._bold(html), src)
+                self.assertNotIn("**", self._visible(html), src)
+                # NO WORD IS LOST: strip the markers from the source and the
+                # text on screen is the same run of words.
+                self.assertEqual(
+                    " ".join(src.replace("**", "").split()),
+                    " ".join(self._visible(html).replace("&quot;", '"')
+                             .replace("&amp;", "&").split()),
+                    src)
 
 
 if __name__ == "__main__":

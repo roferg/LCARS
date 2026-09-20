@@ -756,7 +756,19 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 # with; no key is the wholesale "I have read the report" mark
                 # S205 shipped. Same route, same refusal posture, two grains.
                 entry = body.get("entry") if isinstance(body, dict) else None
-                actions.xo_seen(entry if isinstance(entry, str) else None)
+                # S223: a `mission` id marks every new entry of THAT mission
+                # (✓ Seen all N on its header).
+                mission = body.get("mission") if isinstance(body, dict) else None
+                # S223 fix round 1 (D5): `entries` is the LIST the header's
+                # ✓ Seen all N button names — exactly the rows it counted.
+                keys = body.get("entries") if isinstance(body, dict) else None
+                has_entry = isinstance(entry, str) and entry.strip()
+                if isinstance(keys, list) and keys and not has_entry:
+                    actions.xo_seen(None, entries=keys)
+                elif isinstance(mission, str) and mission.strip() and not has_entry:
+                    actions.xo_seen(None, mission=mission)
+                else:
+                    actions.xo_seen(entry if isinstance(entry, str) else None)
                 reader = getattr(adapter, "xo_report", None)
                 try:
                     rec = reader() if callable(reader) else None

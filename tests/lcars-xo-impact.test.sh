@@ -721,6 +721,38 @@ check "W3. a recorded impact's reason has ONE 'because' and continues in lower c
 c=[c for c in json.load(open(sys.argv[1]))[\"criteria\"] if c[\"id\"]==\"t-001-ac9\"][0]
 sys.exit(0 if c[\"reason\"].startswith(\"Impact medium (set on the first look) because they are required config\") else 1)' '$TMPROOT/tb/verdict.json'"
 
+# ==========================================================================
+# S223 fix round 1 (D2) — WHAT IT DID IS A RECORDED FIELD, NOT A PARSE.
+# The captain's report filled "What I did" by chopping the `I tried …; I saw`
+# clause out of the reason prose: 39 rows got a canned sentence over a real
+# recorded action, 13 lost their verb, one said "Not recorded" though its
+# reason said what it tried. The look now writes `action` (prompts/evaluate.md,
+# prompts/recheck.md) and the scorer carries it to the ledger WORD FOR WORD.
+# ==========================================================================
+echo "S223-D2. the look's recorded action rides the ledger row"
+verdict d2 medium \
+  "$(row prd-1 high met '"action": "Ran the test tail and read the last line"')" \
+  "$(row prd-2 medium met)" \
+  "$(row t-1-ac1 medium met)" "$(row t-1-ac2 low met)"
+run d2
+check "S223-D2. a recorded action is carried through byte for byte" \
+  "[ \"\$(v d2 criteria.0.action)\" = 'Ran the test tail and read the last line' ]"
+check "S223-D2. a row the look gave no action for carries none (never invented)" \
+  "[ -z \"\$(v d2 criteria.1.action)\" ]"
+check "S223-D2. the reason is still written, unchanged by the new field" \
+  "v d2 criteria.0.reason | grep -q 'I tried looking at shot-01'"
+# A reason the HARNESS wrote is not the look's account of what it did, and the
+# row says so on the record so no reader has to guess.
+verdict d2h medium '{"id": "prd-1", "impact": "high", "impactWhy": "it is why prd-1 exists", "status": "met", "shot": "shot-01", "evidence": "picture", "note": "saw it", "reason": "   "}' \
+  "$(row prd-2 medium met)" "$(row t-1-ac1 medium met)" "$(row t-1-ac2 low met)"
+run d2h
+check "S223-D2. a harness-written reason is flagged reasonByHarness" \
+  "[ \"\$(v d2h criteria.0.reasonByHarness)\" = True ]"
+check "S223-D2. a look-written reason is NOT flagged" \
+  "[ -z \"\$(v d2 criteria.0.reasonByHarness)\" ]"
+check "S223-D2. both prompts ask the look to write \`action\`" \
+  "grep -q '\"action\"' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md' && grep -q '\"action\"' '$REPO_ROOT/skills/lcars-xo/prompts/recheck.md'"
+
 echo
 printf 'lcars xo-impact: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

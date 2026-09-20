@@ -113,6 +113,7 @@ prose around it if you can avoid it.
       "status": "met",
       "shot": "round1-01",
       "note": "what you actually saw, in a sentence",
+      "action": "what you DID, one plain sentence starting with a verb",
       "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: …."
     }
   ],

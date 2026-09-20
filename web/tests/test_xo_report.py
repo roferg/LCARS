@@ -203,6 +203,60 @@ class S213_SeenOneEntryOverHttp(XoReportBase):
         self.assertIsNotNone(after["lastSeenAt"])
 
 
+class S223D5_SeenAllNamesItsKeys(XoReportBase):
+    """S223 fix round 1 (D5) — ✓ Seen all N over the wire.
+
+    The board sends the LIST of keys its header button counted. Exactly those
+    are marked; anything it did not name stays new; nothing is deleted."""
+
+    def keys(self, mid):
+        _, body = self.get("/api/xo/report")
+        for row in body["missions"]:
+            if row["id"] == mid:
+                return [e["key"] for e in row["entries"]]
+        self.fail("no %s in the grouped view" % mid)
+
+    def test_only_the_named_keys_leave_the_news(self):
+        keys = self.keys(MID1)
+        self.assertGreaterEqual(len(keys), 2)
+        before = self.get("/api/xo/report")[1]["since"]["count"]
+        status, _ = self.post("/api/xo/seen", {"entries": keys[:1]})
+        self.assertEqual(200, status)
+        after = self.get("/api/xo/report")[1]
+        self.assertEqual(before - 1, after["since"]["count"])
+        self.assertIn(keys[1], self.keys(MID1))
+
+    def test_a_list_of_two_clears_two(self):
+        keys = self.keys(MID1)[:2]
+        before = self.get("/api/xo/report")[1]["since"]["count"]
+        self.post("/api/xo/seen", {"entries": keys})
+        self.assertEqual(before - 2,
+                         self.get("/api/xo/report")[1]["since"]["count"])
+        with open(os.path.join(self.tmp, ".git", "lcars",
+                               "xo-seen.json")) as fh:
+            doc = json.load(fh)
+        self.assertEqual(sorted(keys), sorted(doc["seenEntries"]))
+        self.assertIsNone(doc.get("lastSeenAt"))
+
+    def test_nothing_is_deleted_it_is_all_still_in_history(self):
+        keys = self.keys(MID1)
+        total = sum(len(h["entries"])
+                    for h in self.get("/api/xo/report")[1]["history"])
+        self.post("/api/xo/seen", {"entries": keys})
+        self.assertEqual(total, sum(
+            len(h["entries"])
+            for h in self.get("/api/xo/report")[1]["history"]))
+
+    def test_an_empty_list_is_not_the_wholesale_mark_by_accident(self):
+        before = self.get("/api/xo/report")[1]["since"]["count"]
+        self.post("/api/xo/seen", {"entries": []})
+        # An empty list carries no keys, so it falls through to the wholesale
+        # mark the old empty body always meant — never a silent no-op that
+        # leaves the captain thinking he cleared something.
+        self.assertGreater(before, 0)
+        self.assertEqual(0, self.get("/api/xo/report")[1]["since"]["count"])
+
+
 class CliApiParity(XoReportBase):
 
     def test_since_count_matches(self):

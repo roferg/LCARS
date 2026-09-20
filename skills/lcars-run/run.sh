@@ -18633,14 +18633,17 @@ release_driver_lock() {
 # longer disagree about the shape of this one line.
 
 # The mission's one-line numberOne object, or empty.
+# S223: the JSON-aware reader (lcars-state.sh) — never `{[^}]*}`, which stops at
+# the first `}` inside a headline and hands drive_xo_put a TRUNCATED object to
+# write back over state.json.
 drive_xo_block() {
   [ -f "${STATE:-}" ] || return 0
-  sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*\({[^}]*}\).*/\1/p' "$STATE" | head -1
+  lcars_state_xo_block "$STATE"
 }
 
 # drive_xo_field <key> → its recorded STRING value, or empty.
 drive_xo_field() {
-  drive_xo_block | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+  lcars_json1_get "$(drive_xo_block)" "$1"
 }
 
 # drive_xo_put <key> <raw-json-value> — set one key on the block, order-stable,
@@ -18666,15 +18669,14 @@ drive_xo_del() {
 drive_xo_repo_on() {
   local blk
   [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 1
-  blk="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$LCARS_CFG" | head -1)"
-  case "$blk" in *'"enabled"'*'true'*) return 0 ;; esac
+  blk="$(lcars_state_get_raw "$LCARS_CFG" numberOne)"
+  [ "$(lcars_json1_raw "$blk" enabled)" = true ] && return 0
   return 1
 }
 
 drive_xo_repo_engine() {
   [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 0
-  sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$LCARS_CFG" | head -1 \
-    | sed -n 's/.*"engine"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+  lcars_json1_get "$(lcars_state_get_raw "$LCARS_CFG" numberOne)" engine
 }
 
 # === ENGAGE ON DRIVE =======================================================

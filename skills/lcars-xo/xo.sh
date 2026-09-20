@@ -203,8 +203,11 @@ xo_engine_for() { # <state.json> — Number One's engine, or empty
 # state_xo_block below, and run.sh's drive_xo_block, both `sed` for `{…}` on a
 # single line — and lcars_state_set preserves it because it edits LINES.
 # ===========================================================================
+# S223: READ BY THE JSON-AWARE SCANNER, never `{[^}]*}` — that regex stopped at
+# the first `}` inside a headline and `lcars xo off` wrote the truncation back
+# over the captain's real state.json.
 state_xo_block() { # <state.json>
-  sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*\({[^}]*}\).*/\1/p' "$1" | head -1
+  lcars_state_xo_block "$1"
 }
 state_set_xo() { # <state.json> <one-line-object>
   lcars_state_set "$1" numberOne "$2"
@@ -2594,7 +2597,8 @@ $shots"
 XO_REPORT_SCRIPT="$SKILL_DIR/xo-report.py"
 
 cmd_report() {
-  local target="" show_all=0 mark=0 seen_entry=""
+  local target="" show_all=0 mark=0 seen_mission=""
+  local seen_entries=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --all)  show_all=1; shift ;;
@@ -2602,8 +2606,12 @@ cmd_report() {
       # S213: ✓ Seen on ONE entry, named by the key the report itself hands
       # out. Marking one thing dealt with is not the same act as saying "I
       # have read the whole report", so it is not the same flag.
-      --seen-entry)   seen_entry="${2:-}"; shift 2 || true ;;
-      --seen-entry=*) seen_entry="${1#--seen-entry=}"; shift ;;
+      # S223 fix round 1 (D5): REPEATABLE — ✓ Seen all N names its N keys.
+      --seen-entry)   [ -n "${2:-}" ] && seen_entries+=("$2"); shift 2 || true ;;
+      --seen-entry=*) seen_entries+=("${1#--seen-entry=}"); shift ;;
+      # S223: ✓ Seen all N — every entry of ONE mission still in the news.
+      --seen-mission)   seen_mission="${2:-}"; shift 2 || true ;;
+      --seen-mission=*) seen_mission="${1#--seen-mission=}"; shift ;;
       -*)     die "unknown option: $1" ;;
       *)      target="$1"; shift ;;
     esac
@@ -2617,7 +2625,12 @@ cmd_report() {
   [ -n "$mission_filter" ] && args+=(--mission "$mission_filter")
   [ "$show_all" -eq 1 ] && args+=(--all)
   [ "$mark" -eq 1 ] && args+=(--mark-seen)
-  [ -n "$seen_entry" ] && args+=(--seen-entry "$seen_entry")
+  local k
+  for k in ${seen_entries[@]+"${seen_entries[@]}"}; do args+=(--seen-entry "$k"); done
+  if [ -n "$seen_mission" ]; then
+    seen_mission="$(resolve_mission "$seen_mission")" || exit $?
+    args+=(--seen-mission "$seen_mission")
+  fi
   "$XO_PY" "$XO_REPORT_SCRIPT" "${args[@]}"
 }
 

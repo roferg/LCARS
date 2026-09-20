@@ -323,5 +323,66 @@ class TheOldSurfacesStillWork(GroupedReportBase):
             [e for h in r["history"] for e in h["entries"]]))
 
 
+class S223_SeenAllForOneMission(GroupedReportBase):
+    """S223 item 5 — ✓ Seen all N on a mission header clears THAT mission's
+    news to history, decrements the counts, and deletes nothing."""
+
+    def missions_dir(self):
+        return os.path.join(self.tmp, ".git", "lcars", "missions")
+
+    def test_it_clears_every_new_entry_of_that_mission(self):
+        before = self.rows(self.build())
+        self.assertGreater(before[LOUD]["newCount"], 0)
+        n = self.mod.mark_mission_seen(self.missions_dir(), self.seen, LOUD)
+        self.assertGreater(n, 0)
+        rows = self.rows(self.build())
+        self.assertEqual(0, rows[LOUD]["newCount"])
+        self.assertEqual([], rows[LOUD]["entries"])
+        self.assertFalse(rows[LOUD]["needsYou"] and
+                         rows[LOUD].get("xoStatus") != "escalated")
+
+    def test_sibling_missions_keep_their_news(self):
+        before = self.rows(self.build())
+        self.mod.mark_mission_seen(self.missions_dir(), self.seen, LOUD)
+        rows = self.rows(self.build())
+        self.assertEqual(before[QUIET]["newCount"], rows[QUIET]["newCount"])
+        self.assertEqual(before[OLDEST]["newCount"], rows[OLDEST]["newCount"])
+
+    def test_the_counts_drop_by_exactly_that_missions_news(self):
+        r0 = self.build()
+        loud_new = len([e for e in r0["since"]["entries"] if e["mission"] == LOUD])
+        self.mod.mark_mission_seen(self.missions_dir(), self.seen, LOUD)
+        r1 = self.build()
+        self.assertEqual(r0["counts"]["all"] - loud_new, r1["counts"]["all"])
+        self.assertEqual(0, r1["counts"]["needs"])
+        self.assertEqual(r0["seenCount"] + loud_new, r1["seenCount"])
+
+    def test_history_keeps_everything_and_the_journal_is_untouched(self):
+        path = fx.mission_dir(self.tmp, LOUD) + "/number-one.jsonl"
+        with open(path) as fh:
+            journal = fh.read()
+        total = len([e for h in self.build()["history"] for e in h["entries"]])
+        self.mod.mark_mission_seen(self.missions_dir(), self.seen, LOUD)
+        with open(path) as fh:
+            self.assertEqual(journal, fh.read())
+        self.assertEqual(total, len(
+            [e for h in self.build()["history"] for e in h["entries"]]))
+
+    def test_the_cli_flag_marks_it_and_answers_with_the_board_after(self):
+        import subprocess
+        out = subprocess.run(
+            [sys.executable, XO_REPORT, self.missions_dir(), self.seen,
+             "--seen-mission", LOUD, "--format", "json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        self.assertEqual(0, out.returncode, out.stderr)
+        rep = json.loads(out.stdout)
+        self.assertEqual(0, {m["id"]: m for m in rep["missions"]}[LOUD]["newCount"])
+
+    def test_an_unknown_mission_marks_nothing(self):
+        self.assertEqual(0, self.mod.mark_mission_seen(
+            self.missions_dir(), self.seen, "lcars-nope"))
+        self.assertEqual(self.build()["counts"], self.build()["counts"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -382,23 +382,26 @@ class C2_TheVerdictLeadsAndReassuranceGoesLast(TabBase):
 
 
 class C3_EveryCriterionSaysHowItWasSettled(TabBase):
+    """S223: each criterion is now its own boxed block (`.xo-item`); how it
+    was settled is said in the evidence cell — the real screenshot when there
+    is one, otherwise a sentence naming the RECORDED kind (never the note)."""
 
     def rows(self):
         out = self.mi()
-        rows = _cls_of(out["pane"], " xo-crit-row ")
+        rows = _cls_of(out["pane"], " xo-item ")
         return {_all_text(r): r for r in rows}, out
 
     def test_there_is_a_row_per_criterion(self):
         out = self.mi()
-        self.assertEqual(5, len(_cls_of(out["pane"], " xo-crit-row ")))
+        self.assertEqual(5, len(_cls_of(out["pane"], " xo-item ")))
 
     def test_tests_and_a_picture_are_different_words(self):
         rows, _ = self.rows()
         tested = [t for t in rows if "Camera exposes" in t][0]
         pictured = [t for t in rows if "example game still runs" in t][0]
         self.assertIn("your tests", tested)
-        self.assertIn("a picture", pictured)
-        self.assertNotEqual("your tests", "a picture")
+        self.assertIn("picture", pictured.lower())
+        self.assertNotIn("your tests", pictured)
 
     def test_a_measured_box_is_a_third_word(self):
         rows, _ = self.rows()
@@ -408,32 +411,28 @@ class C3_EveryCriterionSaysHowItWasSettled(TabBase):
     def test_an_unchecked_criterion_claims_no_evidence_at_all(self):
         rows, _ = self.rows()
         unchecked = [t for t in rows if "worldToScreen converts" in t][0]
-        for word in ("a picture", "your tests", "a measured box"):
+        for word in ("your tests", "a measured box"):
             self.assertNotIn(word, unchecked)
         # S216: the captain's own outcome word, "couldn't check".
         self.assertIn("couldn't check", unchecked.lower())
 
     def test_the_harness_vocabulary_never_reaches_him(self):
-        # In OUR labels. The worker's own prose is quoted verbatim and this
-        # board does not police the words Number One chose — it polices the
-        # ones it writes itself, which is where "UNTESTED — —" used to sit.
+        # In OUR labels — the outcome chips this board writes itself.
         out = self.mi()
-        for row in _cls_of(out["pane"], " xo-crit-row "):
-            verdicts = _cls_of(row, " xo-crit-verdict ")
-            self.assertTrue(verdicts)
-            for v in verdicts:
-                self.assertNotIn("untested", (v["text"] or "").lower())
-        heads = _cls_of(out["pane"], " xo-crit-head ")
-        self.assertNotIn("untested", _all_text(heads[0]).lower())
+        chips = _cls_of(out["pane"], " xo-ochip ")
+        self.assertEqual(5, len(chips))
+        for c in chips:
+            self.assertNotIn("untested", (c["text"] or "").lower())
 
     def test_the_evidence_word_is_read_off_the_record_not_the_note(self):
         # Same NOTE, opposite RECORD: the word must follow the record.
         out = self.mi(verdict={"criteria": [
             {"id": "a", "text": "the one row", "status": "met",
              "evidence": "tests", "note": "I saw it in the screenshot"}]})
-        row = _cls_of(out["pane"], " xo-crit-row ")[0]
-        self.assertIn("your tests", _all_text(row))
-        self.assertNotIn("a picture", _all_text(row))
+        row = _cls_of(out["pane"], " xo-item ")[0]
+        ev = _all_text(_cls_of(row, " xo-ev ")[0])
+        self.assertIn("your tests", ev)
+        self.assertNotIn("a picture", ev)
 
 
 class D4_TheTabSaysTheSameThingAsTheCard(TabBase):

@@ -1439,6 +1439,12 @@ body.on-front-door #ownerFilter{display:none !important}
   border:1px solid var(--lcars-border);cursor:pointer}
 .tabbar .tab.on{background:var(--lcars-amber);color:var(--lcars-text-on-color)}
 .tabpane{display:none;font-size:13px} .tabpane.on{display:block}
+/* S223 fix round 1 (D1), the other half: `.xo-pane{display:flex}` further down
+   this file has the SAME specificity as `.tabpane` and comes later, so the
+   Number One report was displayed whether or not its tab was on — clicking
+   Activity › put the feed UNDER a report that never left. A pane that is not
+   `.on` is not on screen, whatever a later block says about its layout. */
+.tabpane:not(.on){display:none}
 /* S205 — the ◈ Number One tab: peach when ON (its own accent, ADR-007), never
    the amber every other tab uses ON, so it reads as a distinct crew member's
    voice rather than one more section of the captain's own spec. */
@@ -2895,6 +2901,18 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .pill.xo-axes-pill .xo-grade{white-space:nowrap}
 .pill.xo-axes-pill .xo-axes{font-weight:400;letter-spacing:.04em;min-width:0;
   overflow-wrap:anywhere}
+/* S223 — THE SCORE LINE YOU CAN READ. The captain could not read "CHECKED 40
+   OF 79 · CORE UNVERIFIED": tiny, dim, red-on-red, upper-case harness talk.
+   Now only the GRADE WORD wears the colour; the sentence sits on its own line
+   below it in full-contrast body ink, body size, sentence case, plain words —
+   "Couldn't check the point of the mission · 40 of 79 checked". Two short
+   lines in a 224px column. */
+.pill.xo-axes-pill{display:flex;flex-direction:column;align-items:flex-start;
+  gap:3px;padding:6px 10px;border-radius:10px;border-width:2px}
+.pill.xo-axes-pill .xo-grade{font-size:13px;letter-spacing:.08em}
+.pill.xo-axes-pill .xo-axes{color:var(--lcars-text-bright);text-transform:none;
+  letter-spacing:0;font-family:var(--font-body,system-ui,sans-serif);
+  font-size:12px;line-height:1.4;font-weight:400}
 
 /* THE STAND-DOWN. Red-outline — `.btn.danger`'s existing idiom, untouched —
    sat beside the controls it is handing back. */
@@ -3176,6 +3194,16 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   border-color:var(--lcars-border);font-size:9.5px;padding:3px 8px}
 .btn.xo-seen:hover{color:var(--lcars-teal);border-color:var(--lcars-teal)}
 .xo-entry-say{font-size:13px;line-height:1.5;color:var(--lcars-text-bright)}
+/* S223 fix round 2 (D1): the entry renders the recorded reasoning through the
+   SAME path as the mission report (xoReasoningInto), so it needs the report's
+   paragraph rhythm here too — those rules are scoped to `.xo-pane`, which this
+   modal is not. Everything inside INHERITS the entry's ink: the news keeps its
+   two text colours, and markdown never introduces a third. */
+.xo-entry-say .xo-why-body{font-size:13px;line-height:1.5;color:inherit}
+.xo-entry-say .xo-why-body p{margin:0 0 8px}
+.xo-entry-say .xo-why-body p:last-child{margin-bottom:0}
+.xo-entry-say .xo-why-body *{color:inherit}
+.xo-entry-say .xo-why-more > summary{color:inherit}
 .xo-fold{margin-top:6px;border-top:1px solid var(--lcars-border);padding-top:5px}
 .xo-fold summary{cursor:pointer;font-family:var(--font-mono);font-size:10px;
   color:var(--lcars-text-dim);list-style:none}
@@ -3250,3 +3278,208 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .det-stage-failed .sf-log{margin-top:6px;font-family:var(--font-mono,monospace);
   font-size:12px;color:var(--lcars-text);word-break:break-all}
 .band-chip.chip-status.failed{color:var(--lcars-red);border-color:rgba(255,138,150,.5)}
+
+/* ══ S223 — THE NUMBER ONE READER ════════════════════════════════════════
+   Built to the mock the captain approved ("Love it."). Five notes, one block.
+
+   1 · THE REPORT FILLS THE WINDOW. `.detail-grid.xo-full` is the mission
+   window with the ◈ Number One (or Activity ›) tab showing: it glides out to
+   the screen's edges while the feed slides away to the left (`.xo-solo`).
+   Every change is a TRANSITION on width / height / padding / grid columns —
+   the text reflows wider at the same size; nothing here is ever scaled. */
+.overlay{transition:padding .5s cubic-bezier(.2,.8,.2,1)}
+.overlay.xo-full-host{padding:12px}
+.detail-grid{position:relative;
+  transition:max-width .5s cubic-bezier(.2,.8,.2,1),max-height .5s cubic-bezier(.2,.8,.2,1),
+    min-height .5s cubic-bezier(.2,.8,.2,1),border-radius .5s,box-shadow .5s}
+.detail-grid.xo-full{max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);
+  min-height:calc(100vh - 24px);border-radius:8px}
+.det-body{transition:grid-template-columns .5s cubic-bezier(.2,.8,.2,1)}
+.detail-grid.xo-full .det-body{grid-template-columns:minmax(0,1fr) minmax(0,1.6fr)}
+.detail-grid.xo-full.xo-solo .det-body{grid-template-columns:0fr minmax(0,1fr)}
+/* S223 fix round 1 (D1): on the Activity › tab the feed has MOVED into the
+   pane, so the body holds ONE child — and an only child lands in column one,
+   which `xo-solo` above has collapsed to 0fr. That is why the tab lit up on a
+   blank window. One column, full width, whenever the body is down to one. */
+.detail-grid.xo-full.xo-act .det-body,
+.detail-grid.xo-full.xo-solo.xo-act .det-body{grid-template-columns:minmax(0,1fr)}
+.detail-grid.xo-act .act-pane > .feed{max-height:none;border-right:0}
+.det-body > .feed{transition:opacity .3s,transform .5s cubic-bezier(.2,.8,.2,1),padding .5s}
+.detail-grid.xo-solo .det-body > .feed{opacity:0;transform:translateX(-30px);
+  padding-left:0;padding-right:0;border-right:0;overflow:hidden;pointer-events:none}
+/* the Activity › pane holds the one live feed node while it is being read */
+.act-pane > .feed{border-right:0;padding:0}
+.tabbar{flex-wrap:wrap}
+.tabbar .tab.tab-act{background:transparent;border:1px dashed var(--lcars-border-bright)}
+.tabbar .tab.tab-act.on{background:var(--lcars-amber);border-style:solid}
+/* ⤡ Side by side — in the title bar, just left of ✕ */
+.detail-side{position:absolute;top:12px;right:48px;background:transparent;
+  border:1px solid var(--lcars-peach);color:var(--lcars-peach);border-radius:12px;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.08em;
+  font-size:11px;padding:3px 10px;cursor:pointer;white-space:nowrap}
+.detail-side:hover{background:var(--lcars-peach);color:var(--lcars-text-on-color)}
+.detail-side:focus-visible{outline:2px solid var(--lcars-text-bright);outline-offset:2px}
+.detail-grid.xo-full .det-head{padding-right:200px}
+/* the LCARS sweep: a peach bar runs the top edge as the frame resizes */
+.detail-grid::before{content:"";position:absolute;left:0;top:0;height:4px;width:0;
+  z-index:3;pointer-events:none;opacity:0;border-radius:2px;
+  background:linear-gradient(90deg,transparent,var(--lcars-peach),var(--lcars-amber))}
+.detail-grid.xo-go::before{animation:xo-sweep .55s cubic-bezier(.2,.8,.2,1)}
+.detail-grid.xo-go{animation:xo-glow .7s ease-out}
+@keyframes xo-sweep{0%{width:0;opacity:1}80%{width:100%;opacity:1}100%{width:100%;opacity:0}}
+@keyframes xo-glow{0%{box-shadow:0 0 0 2px rgba(255,153,102,.55),0 0 28px rgba(255,153,102,.3)}
+  100%{box-shadow:0 0 0 0 rgba(255,153,102,0),0 0 0 rgba(255,153,102,0)}}
+/* reduced motion: the same switch, instantly */
+@media (prefers-reduced-motion: reduce){
+  .overlay,.detail-grid,.det-body,.det-body > .feed{transition:none !important}
+  .detail-grid.xo-go,.detail-grid.xo-go::before{animation:none !important}
+}
+@media (max-width:760px){
+  .detail-grid.xo-full .det-body{grid-template-columns:minmax(0,1fr)}
+  .detail-grid.xo-full.xo-solo .det-body{grid-template-columns:minmax(0,1fr)}
+  .detail-grid.xo-full.xo-act .det-body{grid-template-columns:minmax(0,1fr)}
+  .detail-grid.xo-solo .det-body > .feed{display:none}
+  .detail-grid.xo-full .det-head{padding-right:52px;padding-top:44px}
+  .detail-side{top:12px;right:44px}
+}
+
+/* INSIDE THE REPORT: TWO TEXT COLOURS ONLY — ink and muted. Colour lives in
+   the chips (outcome, importance, the grade) and in the rule beside "What I
+   saw"; never in a sentence. The muted token is local to the pane (ADR-007:
+   shared tokens are never forked) and reads at ~7.7:1 on the pane. */
+.xo-pane{--xo-ink:var(--lcars-text-bright);--xo-muted:#8ea2c0;color:var(--xo-ink);
+  display:flex;flex-direction:column;gap:14px}
+.xo-pane > *{margin-top:0;margin-bottom:0}
+.xo-pane .mock-cap,.xo-pane .xo-why-label,.xo-pane .xo-alt-label,.xo-pane .xo-also-label,
+.xo-pane .xo-picture-label,.xo-pane .xo-gap-title,.xo-pane .xo-why-body,.xo-pane .xo-full,
+.xo-pane .xo-picture-body,.xo-pane .xo-lede,.xo-pane .xo-item-title,.xo-pane .xo-beat-v{color:var(--xo-ink)}
+.xo-pane .xo-vsmall,.xo-pane .xo-alt-line,.xo-pane .xo-impacts-note,.xo-pane .xo-impact-mismatch,
+.xo-pane .xo-also-line,.xo-pane .xo-also-why,.xo-pane .xo-shots-note,.xo-pane .xo-thumb-cap,
+.xo-pane .xo-beat-k,.xo-pane .xo-matters,.xo-pane .xo-ev-none,.xo-pane .xo-ev-quote,
+.xo-pane .xo-thumb-broken,.xo-pane .xo-ev-kind,.xo-pane > p{color:var(--xo-muted)}
+.xo-pane .xo-full a,.xo-pane .xo-picture-body code,.xo-pane .xo-full code{color:inherit}
+.xo-pane .xo-picture{border-color:var(--lcars-amber)}
+.xo-pane .xo-why{border-left-color:var(--lcars-border-bright)}
+/* the verdict: grade box + the sentence beside it */
+.xo-verdict{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.xo-grade-chip{font-family:var(--font-display);font-weight:700;font-size:34px;line-height:1;
+  border:3px solid currentColor;border-radius:12px;padding:6px 16px;letter-spacing:.04em}
+.xo-grade-chip.s-high{color:var(--lcars-teal)}
+.xo-grade-chip.s-medium{color:var(--lcars-amber)}
+.xo-grade-chip.s-low{color:var(--lcars-red)}
+.xo-grade-chip.s-unknown{color:var(--xo-muted)}
+.xo-vtext{display:flex;flex-direction:column;gap:2px;flex:1 1 280px;min-width:0}
+.xo-pane .xo-lede{font-size:16px;font-weight:600;line-height:1.45;margin:0}
+.xo-vsmall{font-size:13px}
+.xo-why-body{font-size:14px;line-height:1.6}
+/* D3 — the rest of the reasoning, one tap away and never cut */
+.xo-why-more{margin-top:8px}
+/* INK, not peach: inside the report only chips carry colour (behaviour 3),
+   and a computed-style drive reads every visible text node in the pane. The
+   caret and the underline are what make it read as a control. */
+.xo-why-more > summary{cursor:pointer;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.06em;font-size:11px;
+  color:var(--xo-ink);text-decoration:underline;text-underline-offset:3px;
+  text-decoration-color:var(--lcars-peach);list-style:none}
+.xo-why-more > summary::-webkit-details-marker{display:none}
+.xo-why-more > summary::before{content:"⌄ "}
+.xo-why-more[open] > summary::before{content:"⌃ "}
+.xo-why-more > summary:focus-visible{outline:2px solid var(--lcars-text-bright);outline-offset:2px}
+.xo-why-more .xo-why-body{margin-top:8px}
+.xo-pane .xo-why-body p{margin:0 0 10px}
+.xo-pane .xo-why-body p:last-child{margin-bottom:0}
+.xo-pane .xo-why-body strong,.xo-pane .xo-why-body b{color:inherit;font-weight:700}
+/* the filters (All / Didn't work / Couldn't check / Worked) */
+.xo-filters{display:flex;gap:8px;flex-wrap:wrap}
+.xo-filter{background:transparent;border:1px solid var(--lcars-border);border-radius:16px;
+  padding:4px 12px;font-size:13px;color:var(--xo-muted);cursor:pointer;
+  font-family:inherit;font-variant-numeric:tabular-nums}
+.xo-filter.on{border-color:var(--xo-ink);color:var(--xo-ink)}
+.xo-filter:focus-visible{outline:2px solid var(--lcars-peach);outline-offset:2px}
+/* one requirement, one boxed block */
+.xo-items{display:flex;flex-direction:column;gap:12px}
+.xo-item{border:1px solid var(--lcars-border);border-radius:10px;overflow:hidden;
+  background:var(--lcars-card)}
+.xo-item-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;
+  background:var(--lcars-card-alt,#101a33)}
+.xo-item-title{flex:1 1 220px;font-weight:600;font-size:14.5px;line-height:1.4;
+  min-width:0;overflow-wrap:anywhere}
+.xo-item-body{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:16px;padding:14px}
+.xo-story{display:flex;flex-direction:column;gap:12px;min-width:0}
+.xo-beat{display:flex;flex-direction:column;gap:3px}
+.xo-beat-k{font-family:var(--font-mono,ui-monospace,monospace);font-size:10.5px;
+  letter-spacing:.08em;text-transform:uppercase}
+.xo-beat-v{font-size:14px;line-height:1.55;overflow-wrap:anywhere}
+.xo-beat.saw .xo-beat-v{border-left:3px solid var(--lcars-violet);padding-left:10px}
+.xo-beat.saw.o-met .xo-beat-v{border-left-color:var(--lcars-teal)}
+.xo-beat.saw.o-gap .xo-beat-v{border-left-color:var(--lcars-red)}
+.xo-matters{font-size:13px;line-height:1.5;margin:0;border-top:1px solid var(--lcars-border);
+  padding-top:10px}
+/* the chips — the ONLY coloured text in the report */
+.xo-chip2{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;
+  letter-spacing:.04em;padding:2px 8px;border-radius:10px;white-space:nowrap}
+.xo-ochip.o-met{background:rgba(0,204,170,.14);color:var(--lcars-teal)}
+.xo-ochip.o-gap{background:rgba(255,51,68,.16);color:var(--lcars-red)}
+.xo-ochip.o-untested{background:rgba(153,119,255,.18);color:#b9a4ff}
+.xo-ichip{background:var(--lcars-black);color:var(--xo-ink);border:1px solid var(--lcars-border)}
+.xo-score2.s-high{color:var(--lcars-teal)} .xo-score2.s-medium{color:var(--lcars-amber)}
+.xo-score2.s-low{color:var(--lcars-red)}
+.xo-score2{border:1px solid currentColor}
+/* the evidence: the real screenshot, tap to enlarge */
+.xo-ev{min-width:0}
+.xo-thumb-btn{display:flex;flex-direction:column;gap:6px;background:none;border:0;padding:0;
+  color:inherit;text-align:left;cursor:zoom-in;width:100%}
+.xo-thumb-btn .xo-thumb{width:100%;max-width:100%;height:auto;border:1px solid var(--lcars-border);
+  border-radius:6px;display:block}
+.xo-thumb-btn:focus-visible{outline:2px solid var(--lcars-peach);outline-offset:3px;border-radius:6px}
+.xo-pane .xo-thumb-cap{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px}
+.xo-ev-kind{font-size:12px}
+.xo-ev-none{font-size:13px;line-height:1.5;border:1px dashed var(--lcars-border);
+  border-radius:6px;padding:10px}
+.xo-ev-quote{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;
+  margin-top:6px;overflow-wrap:anywhere}
+.xo-lightbox{position:fixed;inset:0;z-index:300;background:rgba(3,6,8,.94);display:flex;
+  align-items:center;justify-content:center;padding:16px;cursor:zoom-out;overflow:auto}
+.xo-lightbox-img{max-width:100%;max-height:100%;border-radius:6px}
+@media (max-width:620px){ .xo-item-body{grid-template-columns:minmax(0,1fr)} }
+/* S223 fix round 3 (D2) — "tap to enlarge" has to MEAN it on a phone.
+   Fitted to a 390px window, a 2880px app screenshot enlarges from a 279px
+   thumbnail to 353px: a 1.27x "enlarge" nobody can read. On a narrow screen
+   the picture opens at its NATURAL resolution instead and the captain pans it
+   (and pinch-zooms — the viewport meta allows it). Escape and tap-out still
+   close it; the thumbnail layout is untouched. */
+@media (max-width:620px){
+  .xo-lightbox{align-items:flex-start;justify-content:flex-start;padding:8px;
+    overflow:auto;-webkit-overflow-scrolling:touch}
+  .xo-lightbox-img{max-width:none;max-height:none;width:auto;height:auto;flex:0 0 auto}
+}
+
+/* 4 · VIEWS vs FILTERS on the First Officer's report — two different KINDS of
+   control, and they look it. ARRANGE is a segmented switch: one peach-ringed
+   capsule, exactly one half filled. SHOW is filter chips: dashed and muted
+   when off; solid amber outline, amber text and a ✓ when on. */
+.xo-ctl-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.xo-ctl-k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:#8ea2c0}
+.xo-seg{display:inline-flex;gap:0;border:1px solid var(--lcars-peach);border-radius:16px;overflow:hidden}
+.xo-seg .xo-view{background:transparent;border:0;border-radius:0;margin:0;cursor:pointer;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.06em;
+  font-size:11px;padding:4px 12px;color:var(--lcars-peach)}
+.xo-seg .xo-view + .xo-view{border-left:1px solid var(--lcars-peach)}
+.xo-seg .xo-view.on{background:var(--lcars-peach);color:var(--lcars-black,#030608);font-weight:700}
+.xo-seg .xo-view:focus-visible,.xo-fchip:focus-visible{outline:2px solid var(--lcars-text-bright);outline-offset:2px}
+.xo-chip.xo-fchip{background:transparent;border:1px dashed #8ea2c0;color:#8ea2c0;
+  border-radius:16px;font-family:inherit;text-transform:none;letter-spacing:0;
+  font-size:12px;padding:4px 12px;font-weight:400}
+.xo-chip.xo-fchip.on{background:transparent;border:1px solid var(--lcars-amber);
+  color:var(--lcars-amber);font-weight:600}
+.xo-chip.xo-fchip.on::before{content:"✓ "}
+/* 5 · ✓ Seen all N sits on the mission header beside "open mission →" */
+.xo-mhead .btn.xo-seen-all{margin-left:auto;color:var(--lcars-text-bright);
+  border-color:var(--lcars-teal)}
+.xo-mhead .btn.xo-seen-all + .xo-mopen{margin-left:0}
+/* 3 · the locked "Standing down…" state */
+.btn.xo-standing-down,.btn.xo-toggle[aria-busy="true"]{cursor:progress;opacity:.85}
+/* markdown inside the report inherits its block's ink or muted — never the
+   board's third body colour */
+.xo-pane .xo-full *,.xo-pane .xo-why-body *,.xo-pane .xo-picture-body *{color:inherit}

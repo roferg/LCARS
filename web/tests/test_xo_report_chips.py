@@ -113,27 +113,32 @@ class AChipClickMovesTheMarker(unittest.TestCase):
     """The regression itself: filtering already worked (the since-head count
     already moved before this fix), but `.on` never left "All"."""
 
-    def test_clicking_verdicts_moves_on_onto_it_and_off_needs_you(self):
+    # S223: "Show" became FILTER chips — the captain's mock: "'Show' items are
+    # filters, with a tick and a different outline when on" — so Needs you and
+    # Verdicts can both be on (their union shows). The S205 regression this
+    # class guards (the marker must follow EVERY click) is still what is
+    # checked; "exactly one on" moved to Arrange, the single-choice switch.
+
+    def test_clicking_verdicts_turns_it_on_beside_needs_you(self):
         out = _run(["verdicts"])
         after = out["afterClicks"][-1]
         self.assertIsNone(after["error"])
-        self.assertEqual(["Verdicts · 2"], _on_chips(after["chips"]),
-                          "exactly one chip — the one clicked — must carry "
-                          "`.on` after the click")
+        self.assertEqual(["Needs you · 1", "Verdicts · 2"], _on_chips(after["chips"]))
 
-    def test_the_list_still_filters_the_same_click(self):
+    def test_the_list_filters_to_the_union_the_same_click(self):
         out = _run(["verdicts"])
         after = out["afterClicks"][-1]
-        # The two verdict-rank entries, and not the escalation.
-        self.assertEqual("Since you last looked (2)", after["sinceHead"])
+        # needs-you (1) + verdicts (2) — all three, and the marker moved.
+        self.assertEqual("Since you last looked (3)", after["sinceHead"])
 
-    def test_a_second_click_moves_it_again_not_just_the_first(self):
+    def test_a_second_click_turns_it_back_off(self):
         out = _run(["verdicts", "needs"])
         first, second = out["afterClicks"][-2:]
-        self.assertEqual(["Verdicts · 2"], _on_chips(first["chips"]))
-        self.assertEqual(["Needs you · 1"], _on_chips(second["chips"]),
+        self.assertEqual(["Needs you · 1", "Verdicts · 2"], _on_chips(first["chips"]))
+        self.assertEqual(["Verdicts · 2"], _on_chips(second["chips"]),
                           "the marker must follow EVERY click, not just the "
                           "first one after paint()")
+        self.assertEqual("Since you last looked (2)", second["sinceHead"])
 
     def test_clicking_out_to_everything_restores_it_and_only_it(self):
         out = _run(["verdicts", "needs", "all"])
@@ -141,13 +146,16 @@ class AChipClickMovesTheMarker(unittest.TestCase):
         self.assertEqual(["Everything · 3"], _on_chips(last["chips"]))
         self.assertEqual("Since you last looked (3)", last["sinceHead"])
 
-    def test_never_more_than_one_chip_marked_on_at_once(self):
+    def test_never_zero_chips_on(self):
+        out = _run(["needs"])      # turning the only one off falls back
+        last = out["afterClicks"][-1]
+        self.assertEqual(["Everything · 3"], _on_chips(last["chips"]))
+
+    def test_arrange_is_exactly_one_at_every_step(self):
         out = _run(["verdicts", "needs", "all"])
         for step in out["afterClicks"]:
-            self.assertEqual(1, len(_on_chips(step["chips"])),
-                              "exactly one chip must read as active at a time: %s"
-                              % step)
-
+            on = [v for v in step["views"] if " on" in (" " + v["cls"])]
+            self.assertEqual(1, len(on), step["views"])
 
 if __name__ == "__main__":
     unittest.main()

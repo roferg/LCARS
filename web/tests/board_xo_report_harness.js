@@ -24,6 +24,7 @@
  *     "clicks": [ "all"                    // a FILTER CHIP, by key
  *               | {"view": "time"}         // the by-time / by-mission switch
  *               | {"seen": "<entry key>"}  // one entry's ✓ Seen button
+ *               | {"seenAll": "<mission id>"} // that header's ✓ Seen all N
  *               | {"open": "<mission id>"} // a mission header's way in
  *               ],
  *     "seenResponses": [ <report payload>, … ]  // what the daemon answers to
@@ -266,9 +267,24 @@ Object.defineProperty(Element.prototype, "id", {
   get() { return this._attrs["id"] || ""; },
   set(v) { this._attrs["id"] = String(v); },
 });
+/* The words a browser would read out of a chunk of our own markup. Only the
+   entities `escapeHtml` emits ever come back out of it. */
+function stripMarkup(html) {
+  return String(html).replace(/<[^>]*>/g, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
 Object.defineProperty(Element.prototype, "textContent", {
   get() {
-    if (!this.children.length) return this._text;
+    // S223 fix round 2 (D1): `innerHTML` is STORED here, not parsed, so a node
+    // filled by `setMd` has no children and used to read as EMPTY text. A real
+    // browser's textContent still reads its words, and the checks that ask
+    // "what does this entry say" have to see them, so the markup is stripped
+    // back to its words the way the screen would show them.
+    if (!this.children.length) {
+      return this._html ? this._text + stripMarkup(this._html) : this._text;
+    }
     return this._text + this.children.map(function (c) { return c.textContent; }).join("");
   },
   set(v) { this._text = v == null ? "" : String(v); this.children.forEach(function (c) { c.parentNode = null; }); this.children = []; },
@@ -475,6 +491,10 @@ function project(n) {
     tag: String(n.tagName || "").toLowerCase(),
     cls: n.getAttribute("class") || "",
     text: (n.textContent || "").trim(),
+    // S223 fix round 2 (D1): a node set by `setMd` has NO children in this DOM
+    // — innerHTML is stored, not parsed — so `text` alone cannot tell rendered
+    // markdown from raw asterisks. The markup itself is what the check needs.
+    html: typeof n.innerHTML === "string" ? n.innerHTML : "",
     key: n.getAttribute("data-key") || "",
     mission: n.getAttribute("data-mission") || "",
     chip: n.getAttribute("data-chip") || "",
@@ -527,6 +547,12 @@ const afterClicks = [];
       return (b.getAttribute("data-key") || "") === step.seen;
     })[0];
     if (!hit) clickErr = "no ✓ Seen button for entry " + step.seen;
+  } else if (step && step.seenAll) {
+    // S223 fix round 1 (D5): the mission header's ✓ Seen all N.
+    hit = (overlayEl.querySelectorAll(".xo-seen-all") || []).filter(function (b) {
+      return (b.getAttribute("data-mission") || "") === step.seenAll;
+    })[0];
+    if (!hit) clickErr = "no ✓ Seen all button for mission " + step.seenAll;
   } else if (step && step.open) {
     hit = (overlayEl.querySelectorAll(".xo-mopen") || []).filter(function (a) {
       return (a.getAttribute("data-mission") || "") === step.open;

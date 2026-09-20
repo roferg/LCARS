@@ -102,6 +102,14 @@ actually did:
 A reason that only repeats the criterion is not a reason. A missing one is
 reported to the captain as "no reason was given".
 
+**Also write `action` on every criterion** — the same "what you did", on its
+own, as one plain sentence starting with a verb: `"action": "opened the
+builder and looked for the amber warn-line"`. The captain's report shows this
+field under **What I did**, word for word. It is a RECORD, not something
+anyone re-derives from the reason afterwards, so write it even when the reason
+already says it. If you genuinely did nothing for this one — you never reached
+it — say that: `"action": "never got to it — the page would not load"`.
+
 ## What you are looking at
 
 - `xo/shots/` — every PNG the browser took, in order. **Open them and look.**
@@ -302,6 +310,7 @@ LOW and the captain looks himself — so do not spend rounds you do not need.
      "status": "met|gap|untested",
      "evidence": "picture|measurement|tests",
      "shot": "shot-02", "note": "what you actually saw, in his words",
+     "action": "what you DID, one plain sentence starting with a verb",
      "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: ….",
      "couldNotCheck": "unreachable|unobservable  (only on untested)"}
   ],

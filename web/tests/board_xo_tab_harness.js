@@ -137,6 +137,9 @@ function project(n) {
     // the full verdict invisible to every assertion about it.
     text: n._text || stripTags(n._html || ""),
     title: n.title || "",
+    // S223 fix round 1 (D2): a row is identified by its own `data-id`, so an
+    // assertion names the requirement it is about rather than an index.
+    attrs: n.attrs || {},
     children: (n.children || []).map(project).filter(Boolean),
   };
 }

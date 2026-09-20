@@ -146,9 +146,12 @@ cmd_list() {
       # the record. Both values are READ off state.numberOne — the inbox works
       # nothing out for itself.
       local xo_blk xo_status xo_note
-      xo_blk="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$s" | head -1)"
-      xo_status="$(printf '%s' "$xo_blk" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-      xo_note="$(printf '%s' "$xo_blk" | sed -n 's/.*"note"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+      # S223: the JSON-aware reader — a `}` or `"` in the note is text.
+      declare -F lcars_state_xo_block >/dev/null \
+        || . "$SKILL_DIR/../lcars-init/lcars-state.sh"
+      xo_blk="$(lcars_state_xo_block "$s")"
+      xo_status="$(lcars_json1_get "$xo_blk" status)"
+      xo_note="$(lcars_json1_get "$xo_blk" note)"
       if [ "$xo_status" = "escalated" ] && [ -n "$xo_note" ]; then
         printf '    ◈ Number One handed this one back to you: %s\n' "$xo_note"
       fi

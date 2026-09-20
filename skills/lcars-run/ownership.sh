@@ -393,10 +393,12 @@ _xo_mission_state() { # <mission-dir | mission-id> → path to state.json, or rc
 lcars_xo_status() { # <mission-dir | mission-id>
   local st obj
   st="$(_xo_mission_state "${1:-}")" || return 0
-  obj="$(sed -n 's/.*"numberOne"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' "$st" | head -1)"
+  # S223: the JSON-aware reader — never `{[^}]*}` (a `}` in a headline).
+  declare -F lcars_state_xo_block >/dev/null \
+    || . "$_LCARS_OWN_DIR/../lcars-init/lcars-state.sh"
+  obj="$(lcars_state_xo_block "$st")"
   [ -n "$obj" ] || return 0
-  printf '%s' "$obj" \
-    | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+  lcars_json1_get "$obj" status
 }
 
 lcars_xo_lock_reason() { # <mission-dir | mission-id>

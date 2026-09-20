@@ -4,7 +4,8 @@ folded history, per mission. (Search over it is client-side, in board.js —
 see `build_report`'s own docstring below.)
 
     python3 xo-report.py <missions-dir> <seen-file> [--mission <id>]
-                          [--all] [--mark-seen] [--seen-entry <key>]
+                          [--all] [--mark-seen] [--seen-entry <key>]...
+                          [--seen-mission <id>]
                           [--format json|text]  (default: text)
 
 ONE BUILDER, TWO RENDERERS (S205 behaviour 6 — "CLI `lcars xo report` == API
@@ -229,6 +230,40 @@ def mark_entry_seen(seen_path, key):
     return True
 
 
+def mark_mission_seen(missions_dir, seen_path, mission_id):
+    """✓ Seen all N on one mission's header (S223).
+
+    Every entry of THAT mission still in the news is marked seen, the same way
+    one ✓ Seen marks one: keys added to the set, nothing else. No journal is
+    opened for writing, nothing is removed, and history keeps every entry for
+    good (S213's ruling). Sibling missions are untouched. Returns how many were
+    marked (0 for an unknown mission or one with nothing new)."""
+    mission_id = str(mission_id or "").strip()
+    if not mission_id:
+        return 0
+    report = build_report(missions_dir, seen_path)
+    keys = []
+    for h in report.get("history") or []:
+        if h.get("id") != mission_id:
+            continue
+        for e in h.get("entries") or []:
+            k = e.get("key")
+            if e.get("new") and isinstance(k, str) and k.strip():
+                keys.append(k)
+    if not keys:
+        return 0
+    doc = _load_json(seen_path)
+    doc = doc if isinstance(doc, dict) else {}
+    have = doc.get("seenEntries")
+    have = [k for k in have if isinstance(k, str)] if isinstance(have, list) else []
+    for k in keys:
+        if k not in have:
+            have.append(k)
+    doc["seenEntries"] = have
+    _write_seen_doc(seen_path, doc)
+    return len(keys)
+
+
 def build_report(missions_dir, seen_path, mission_filter=None):
     """{"lastSeenAt": str|None, "since": {"count", "entries"},
         "history": [{"id","title","issue","entries"}]}
@@ -415,14 +450,16 @@ def render_text(report, show_all):
 def main(argv):
     if len(argv) < 3:
         print("usage: xo-report.py <missions-dir> <seen-file> [--mission <id>] "
-              "[--all] [--mark-seen] [--seen-entry <key>] [--format json|text]",
+              "[--all] [--mark-seen] [--seen-entry <key>]... [--seen-mission <id>] "
+              "[--format json|text]",
               file=sys.stderr)
         return 2
     missions_dir, seen_path = argv[1], argv[2]
     mission_filter = None
     show_all = False
     mark_seen = False
-    seen_entry = None
+    seen_entry = []
+    seen_mission = None
     fmt = "text"
     rest = argv[3:]
     j = 0
@@ -436,8 +473,16 @@ def main(argv):
         elif a == "--mark-seen":
             mark_seen = True
         elif a == "--seen-entry":
+            # S223 fix round 1 (D5): REPEATABLE. ✓ Seen all N names the exact
+            # N entries it counted on screen and marks those, one mark each —
+            # the board used to hand over a mission id and clear whatever that
+            # mission had, which cleared 48 under a button labelled 7.
             j += 1
-            seen_entry = rest[j] if j < len(rest) else None
+            if j < len(rest):
+                seen_entry.append(rest[j])
+        elif a == "--seen-mission":
+            j += 1
+            seen_mission = rest[j] if j < len(rest) else None
         elif a == "--format":
             j += 1
             fmt = rest[j] if j < len(rest) else "text"
@@ -446,8 +491,10 @@ def main(argv):
     # ONE ENTRY, MARKED BEFORE THE REPORT IS BUILT, so the answer this call
     # returns is the board AFTER the click — the caller never has to ask twice
     # to find out what changed.
-    if seen_entry:
-        mark_entry_seen(seen_path, seen_entry)
+    for one in seen_entry:
+        mark_entry_seen(seen_path, one)
+    if seen_mission:
+        mark_mission_seen(missions_dir, seen_path, seen_mission)
 
     report = build_report(missions_dir, seen_path, mission_filter)
 

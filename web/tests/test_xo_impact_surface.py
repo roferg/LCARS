@@ -103,9 +103,13 @@ NEW_VERDICT = {
         {"id": "prd-1", "text": "the health bar drops when you are hit",
          "status": "met", "evidence": "picture", "shot": "shot-02",
          "impact": "high", "impactWhy": "it is the point of the mission",
+         # S223 fix round 1 (D2): the look RECORDS what it did.
+         "action": "Took a hit and watched the bar",
          "reason": "Impact high because it is the point. I tried taking a "
                    "hit; I saw the bar drop (evidence: shot-02). Outcome: "
                    "worked."},
+        # NO `action` — an older verdict. The reader shows the recorded reason
+        # as written; it must never print the canned "no way to observe it".
         {"id": "prd-2", "text": "the bar is red", "status": "untested",
          "evidence": "none", "impact": "medium", "couldNotCheck": "unobservable",
          "reason": "Impact medium because colour is secondary. I tried two "
@@ -113,7 +117,7 @@ NEW_VERDICT = {
                    "check (unobservable)."},
         {"id": "t-1-ac1", "text": "a border", "status": "gap",
          "evidence": "picture", "shot": "shot-03", "impact": "high",
-         "impactAssumed": True,
+         "impactAssumed": True, "reasonByHarness": True,
          "reason": "No reason was given for this one — all I have is the "
                    "outcome: didn't."},
     ],
@@ -188,23 +192,26 @@ class ThePillCarriesBothAxes(unittest.TestCase):
 
     def test_grade_checked_and_core_in_one_pill(self):
         p = self.pill(checked=11, total=14, core="met")
-        self.assertEqual("◈ MEDIUM  · checked 11 of 14 · core met",
+        # S223: plain words, grade word alone in colour, sentence below it.
+        self.assertEqual("◈ MEDIUM The point of the mission worked · 11 of 14 checked",
                          _all_text(p).strip())
+        self.assertEqual(1, len(_cls_of(p, " xo-axes ")))
+        self.assertNotIn("core", _all_text(p))
         self.assertEqual(1, len(_cls_of(p, " xo-grade ")))
         self.assertEqual("◈ MEDIUM", _cls_of(p, " xo-grade ")[0]["text"])
 
     def test_core_broken_and_unverified_read_as_such(self):
-        self.assertIn("core broken",
+        self.assertIn("The point of the mission didn't work",
                       _all_text(self.pill(score="low", checked=4, total=4,
                                           core="broken")))
-        self.assertIn("core unverified",
+        self.assertIn("Couldn't check the point of the mission",
                       _all_text(self.pill(score="low", checked=3, total=4,
                                           core="unverified")))
 
     def test_an_old_verdict_shows_counts_but_asserts_no_core(self):
         t = _all_text(self.pill(checked=3, total=5))
-        self.assertIn("checked 3 of 5", t)
-        self.assertNotIn("core", t)
+        self.assertIn("3 of 5 checked", t)
+        self.assertNotIn("point of the mission", t)
 
     def test_no_axes_keeps_the_old_pill_word_for_word(self):
         self.assertEqual("◈ NUMBER ONE · MEDIUM", self.pill()["text"])
@@ -223,14 +230,53 @@ class TheTabSaysWhy(unittest.TestCase):
                                        "shotsDir": "shots", "journal": []}}}
         return _run(TAB_HARNESS, mi)
 
-    def test_why_this_grade_comes_right_after_the_score(self):
+    def test_why_this_grade_comes_right_after_the_verdict(self):
+        # S223 (the approved mock): the grade box with the one honest sentence
+        # beside it, THEN "Why this grade", then the full text.
         out = self.tab(NEW_VERDICT)
         joined = " ⇢ ".join(out["paneText"])
         self.assertIn("Why this grade", joined)
-        self.assertLess(joined.index("MEDIUM because"),
-                        joined.index(NEW_VERDICT["derivation"][:30]))
+        self.assertLess(joined.index(NEW_VERDICT["derivation"][:30]),
+                        joined.index("MEDIUM because"))
         self.assertLess(joined.index("MEDIUM because"),
                         joined.index("What I found, to the captain"))
+        head = _cls_of(out["pane"], " xo-verdict ")[0]
+        self.assertIn(NEW_VERDICT["derivation"][:30], _all_text(head))
+
+    def test_why_this_grade_is_read_as_prose_not_a_wall(self):
+        """S223 fix round 1 (D3) — DISPLAY ONLY, S216 still writes the words.
+
+        On the captain's real report this was ONE ~2,300-word paragraph with
+        raw `**` asterisks in it, and it is the first thing he reads. The
+        markdown is rendered, the run of sentences is broken into paragraphs,
+        and everything past the first sits behind "Show the full reasoning" —
+        where every word is still there."""
+        long_why = ("**MEDIUM** because every part that is the point of the "
+                    "mission worked. " + " ".join(
+                        "Sentence number %d says something about ticket "
+                        "t-00%d-ac1 that the captain has to read." % (i, i)
+                        for i in range(1, 30)))
+        out = self.tab(dict(NEW_VERDICT, whyThisGrade=long_why))
+        box = _cls_of(out["pane"], " xo-why ")[0]
+        shown = _all_text(box)
+        # 1 · no raw markdown reaches the screen
+        self.assertNotIn("**", shown)
+        self.assertIn("MEDIUM", shown)
+        # 2 · it is broken up, and the lead is short
+        bodies = _cls_of(box, " xo-why-body ")
+        self.assertGreaterEqual(len(bodies), 2)
+        self.assertLess(len(_all_text(bodies[0])), 600)
+        # 3 · the rest is behind ONE disclosure, and every word is in it
+        folds = [n for n in _flatten(box) if n["tag"] == "details"]
+        self.assertEqual(1, len(folds))
+        self.assertIn("Show the full reasoning", _all_text(folds[0]))
+        self.assertIn("Sentence number 29", shown)
+
+    def test_a_short_why_this_grade_needs_no_disclosure(self):
+        out = self.tab(NEW_VERDICT)
+        box = _cls_of(out["pane"], " xo-why ")[0]
+        self.assertEqual([], [n for n in _flatten(box) if n["tag"] == "details"])
+        self.assertIn("MEDIUM because", _all_text(box))
 
     def test_the_alt_reading_is_beside_it_and_labelled_as_not_the_grade(self):
         out = self.tab(NEW_VERDICT)
@@ -245,20 +291,82 @@ class TheTabSaysWhy(unittest.TestCase):
         v.pop("altReading")
         self.assertEqual([], _cls_of(self.tab(v)["pane"], " xo-alt "))
 
-    def test_each_row_shows_its_impact_and_its_reason(self):
+    def test_each_row_shows_its_impact_once_and_what_it_did(self):
+        # S223: one boxed block per requirement, problems first; the
+        # importance reasoning is said ONCE (the "Why it matters" line), and
+        # the reason's "Impact … because" half is never repeated.
         out = self.tab(NEW_VERDICT)
-        rows = _cls_of(out["pane"], " xo-crit-row ")
+        rows = _cls_of(out["pane"], " xo-item ")
         self.assertEqual(3, len(rows))
-        first = _all_text(rows[0])
-        self.assertIn("point of the mission", first)
-        self.assertIn("I tried taking a hit", first)
-        self.assertIn("Worked", first)
-        second = _all_text(rows[1])
-        self.assertIn("Couldn't check", second)
-        self.assertIn("no way to observe it", second)
-        third = _all_text(rows[2])
-        self.assertIn("none was given, so counted as high", third)
-        self.assertIn("Didn't work", third)
+        texts = [_all_text(r) for r in rows]
+        self.assertIn("DIDN'T WORK", texts[0])
+        self.assertIn("COULDN'T CHECK", texts[1])
+        self.assertIn("WORKED", texts[2])
+        met = texts[2]
+        self.assertIn("HIGH · the point", met)
+        # S223 fix round 1 (D2): the RECORDED action, word for word.
+        self.assertIn("Took a hit and watched the bar", met)   # What I did
+        self.assertIn("Why it matters: It is the point of the mission.", met)
+        self.assertEqual(1, met.count("point of the mission"))
+        # a row WITH an action still keeps the reason's "Impact …" half off
+        # the screen entirely — nothing is said twice.
+        self.assertNotIn("Impact high", met)
+        unt = texts[1]
+        self.assertIn("MEDIUM · a known issue", unt)
+        self.assertIn("the bar colour recorded"[4:], unt)
+        gap = texts[0]
+        self.assertIn("None was given, so I counted it as the point of the mission.", gap)
+
+    def test_what_i_did_is_the_recorded_action_never_a_rewrite(self):
+        """S223 fix round 1 (D2) — the infer-vs-record check.
+
+        The reader used to CHOP `I tried …; I saw …` out of the reason prose.
+        On the captain's own report that printed a canned sentence over 39
+        rows that each had a recorded action, dropped the verb on 13 more
+        ("The test tail.", "Preview."), and said "Not recorded for this one."
+        on a row whose reason says what it tried. Three rules, one test:
+        the recorded field wins; no `action` shows the REASON as written; and
+        a canned sentence is never printed over either."""
+        v = dict(NEW_VERDICT, criteria=[
+            # (a) a recorded action is shown word for word
+            {"id": "a-1", "text": "the tail", "status": "met", "impact": "low",
+             "evidence": "tests", "action": "Ran the test tail",
+             "reason": "Impact low because polish. I tried the test tail; I "
+                       "saw 42 passing. Outcome: worked."},
+            # (b) no action, an untested row WITH a couldNotCheck: the old code
+            #     printed "Tried to check it — no way to observe it."
+            {"id": "a-2", "text": "the warn line", "status": "untested",
+             "impact": "high", "evidence": "none", "couldNotCheck": "unobservable",
+             "reason": "I tried finding the amber warn-line in the full "
+                       "builder and could not."},
+            # (c) no action, no `; I saw` joint: the old code said "Not
+            #     recorded for this one." over a real recorded action.
+            {"id": "a-3", "text": "the lock dialog", "status": "gap",
+             "impact": "medium", "evidence": "none",
+             "reason": "I tried reading the bar and cross-checking the lock "
+                       "dialog."},
+        ])
+        rows = {r["attrs"].get("data-id"): _all_text(r)
+                for r in _cls_of(self.tab(v)["pane"], " xo-item ")}
+        self.assertIn("Ran the test tail", rows["a-1"])
+        self.assertNotIn("The test tail.", rows["a-1"])
+        self.assertIn("finding the amber warn-line in the full builder and "
+                      "could not", rows["a-2"])
+        self.assertNotIn("no way to observe it", rows["a-2"])
+        self.assertNotIn("Tried to check it", rows["a-2"])
+        self.assertIn("reading the bar and cross-checking the lock dialog",
+                      rows["a-3"])
+        for text in rows.values():
+            self.assertNotIn("Not recorded for this one.", text)
+
+    def test_a_harness_written_reason_is_not_passed_off_as_what_it_did(self):
+        """The harness writes the reason when the look gave none, and says so
+        on the record (`reasonByHarness`). That sentence is not the look's
+        account of what it did, so "What I did" says nothing was recorded —
+        and that is true."""
+        rows = {r["attrs"].get("data-id"): _all_text(r) for r in
+                _cls_of(self.tab(NEW_VERDICT)["pane"], " xo-item ")}
+        self.assertIn("Not recorded for this one.", rows["t-1-ac1"])
 
     def test_the_tab_says_when_importance_was_set(self):
         # S216 fix round 1 (D5): importance is recorded on the first look and
@@ -295,15 +403,16 @@ class TheTabSaysWhy(unittest.TestCase):
     def test_a_pre_s216_verdict_asserts_no_impact_and_no_why(self):
         out = self.tab(OLD_VERDICT)
         self.assertEqual([], _cls_of(out["pane"], " xo-why "))
-        self.assertEqual([], _cls_of(out["pane"], " xo-crit-impact "))
-        self.assertEqual([], _cls_of(out["pane"], " xo-crit-reason "))
+        self.assertEqual([], _cls_of(out["pane"], " xo-ichip "))
+        self.assertEqual([], _cls_of(out["pane"], " xo-matters "))
         # …but it still renders its rows and its own sentence.
-        self.assertEqual(2, len(_cls_of(out["pane"], " xo-crit-row ")))
+        self.assertEqual(2, len(_cls_of(out["pane"], " xo-item ")))
         self.assertIn(OLD_VERDICT["derivation"][:40],
                       " ".join(out["paneText"]))
 
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="%(tokens)s">
 <link rel="stylesheet" href="%(css)s"></head>
 <body><div id="host"></div>
 <script src="%(js)s"></script>
@@ -337,7 +446,15 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
               pillScroll: pill.scrollWidth, pillClient: pill.clientWidth,
               cardScroll: card.scrollWidth, cardClient: card.clientWidth,
               gradeH: gr.height, gradeLine: lh, gradeText: g.textContent,
-              text: pill.textContent});
+              text: pill.textContent,
+              // S223: COMPUTED styles — only the grade word is coloured; the
+              // sentence is body ink at body size, in sentence case.
+              gradeColor: getComputedStyle(g).color,
+              axesColor: getComputedStyle(pill.querySelector(".xo-axes")).color,
+              axesSize: parseFloat(getComputedStyle(pill.querySelector(".xo-axes")).fontSize),
+              axesCase: getComputedStyle(pill.querySelector(".xo-axes")).textTransform,
+              axesWeight: getComputedStyle(pill.querySelector(".xo-axes")).fontWeight,
+              ink: getComputedStyle(document.body).getPropertyValue("--lcars-text-bright").trim()});
   });
   document.title = "";
   var pre = document.createElement("pre");
@@ -369,6 +486,7 @@ class ThePillFitsTheColumnInARealBrowser(unittest.TestCase):
         page = os.path.join(tmp, "pill.html")
         with open(page, "w") as fh:
             fh.write(PAGE % {
+                "tokens": "file://" + os.path.join(STATIC, "..", "..", "docs", "lcars.css"),
                 "css": "file://" + os.path.join(STATIC, "board.css"),
                 "js": "file://" + os.path.join(STATIC, "board.js"),
                 "cases": json.dumps(cases)})
@@ -400,7 +518,15 @@ class ThePillFitsTheColumnInARealBrowser(unittest.TestCase):
             self.assertLess(r["gradeH"], r["gradeLine"] * 1.6, r)
             self.assertTrue(r["gradeText"].startswith("◈ "), r)
             self.assertIn("checked", r["text"])
-            self.assertIn("core", r["text"])
+            # S223 — plain words, never harness talk.
+            self.assertNotIn("core", r["text"])
+            self.assertIn("point of the mission", r["text"])
+            # S223 — ONLY the grade word is coloured: the sentence is the
+            # board's body ink (#e4eeff), at body size, not upper-cased.
+            self.assertEqual("rgb(228, 238, 255)", r["axesColor"], r)
+            self.assertNotEqual(r["gradeColor"], r["axesColor"], r)
+            self.assertGreaterEqual(r["axesSize"], 12, r)
+            self.assertEqual("none", r["axesCase"], r)
 
 
 if __name__ == "__main__":
