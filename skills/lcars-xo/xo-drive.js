@@ -982,6 +982,19 @@ const PARTS = (cap) => `(function () {
       id: el.id || null,
       testid: el.getAttribute("data-testid") || null,
       name: nameOf(el),
+      // THE OTHER NAMES A CONTROL HAS (S224 item 1). nameOf() returns the
+      // ACCESSIBLE name, and aria-label wins it outright. Measured on the
+      // S222 capstone: the build labels its selects "Status for LTC P75" and
+      // its insight boxes "Insight for LTC P75", while the holodeck drawing —
+      // plain HTML, no aria — names the same controls by what is PRINTED on
+      // them ("On trackWatchOff track") and by their placeholder ("Add an
+      // insight for this KPI…"). Both ends read only the accessible name, so
+      // the two records could never meet and ten controls that were right
+      // there came back "I could not find it in the build". Writing the other
+      // names down costs nothing and is what lets the pairer try them.
+      text: txt(el).slice(0, 80),
+      placeholder: el.getAttribute("placeholder") || null,
+      value: (typeof el.value === "string" ? el.value : "").slice(0, 80) || null,
       role: role || null,
       tag: el.tagName.toLowerCase(),
       interactive: interactive,

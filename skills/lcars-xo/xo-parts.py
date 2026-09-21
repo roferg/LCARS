@@ -149,6 +149,26 @@ def has_size(p):
 
 # ── the match ──────────────────────────────────────────────────────────────
 
+def other_names(p):
+    """The names a control has BESIDE its accessible one, squashed.
+
+    WHY (S224 item 1, measured on the S222 capstone). `nameOf` in the reader
+    returns the ACCESSIBLE name and aria-label wins it outright. The build
+    labels its status selects "Status for LTC P75" and its insight boxes
+    "Insight for LTC P75"; the holodeck drawing is plain HTML with no aria, so
+    it names the very same controls by what is PRINTED on them ("On
+    trackWatchOff track") or by their placeholder ("Add an insight for this
+    KPI…"). Both ends compared accessible names only, so ten controls that
+    were on the screen came back "I could not find it in the build".
+    """
+    out = []
+    for k in ("text", "placeholder", "value", "title", "alt"):
+        s = squash(p.get(k))
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
 def match(drawn, candidates):
     """The build element that IS this drawn part, and the handle that found
     it. Handles in order of how much they prove; None when nothing matched."""
@@ -182,6 +202,21 @@ def match(drawn, candidates):
                   dname.startswith(squash(c.get("name")) or "\0")]
         if len(starts) == 1:
             return starts[0], "label text"
+        # THE CONTROL'S OTHER NAMES (S224 item 1). EXACT equality only — a
+        # whole printed label or a whole placeholder matching is not a coin
+        # toss, and anything looser here is how a leftover control answers for
+        # a part the build has not got. The drawn part's own other names are
+        # tried too, because which end carries the aria-label is an accident
+        # of which end a person hand-wrote.
+        dalts = other_names(drawn)
+        for c in candidates:
+            calts = other_names(c)
+            if dname in calts:
+                return c, "the text on the control"
+            if calts and squash(c.get("name")) in dalts:
+                return c, "the text on the control"
+            if dalts and set(dalts) & set(calts):
+                return c, "the text on the control"
     # ROLE IS THE LAST HANDLE, AND IT IS FENCED. "the only button on the
     # screen" is a real match; "the only button left over" is how a drawn part
     # the build simply has not got gets paired with an unrelated control and
@@ -303,12 +338,61 @@ def pair_all(drawing, builds):
                 c["_screen"] = c.get("screen") or at
                 candidates.append(c)
 
+    # ONE DRAWN PART KEY IS ONE ENTRY (S224 item 1).
+    #
+    # MEASURED ON THE S222 CAPSTONE (mission lcars-20260920-001-8cb0). A
+    # holodeck drawing is ONE long page with every screen stacked down it, so
+    # "Cancel", "View", "Lock month" and "Discard draft" are each drawn twice
+    # — once on the screen and once in a modal. The first instance paired; the
+    # second found nothing left to claim and became "couldn't check
+    # (unreachable)". Downstream, pairs are keyed by the part's name, so the
+    # LAST entry won and the unreachable-part guard blanked four criteria
+    # about controls that were right there on his screen: "your drawing names
+    # this part and I could not find it in the build."
+    #
+    # A drawn part key already carries ONE requirement (see part_criteria —
+    # the key is the same), so a second entry under the same key was never
+    # anything but a second answer to one question. The FIRST instance is the
+    # entry, and since same-key instances match identically it is the one with
+    # first pick of the candidates — the one that finds the control if the
+    # build has it at all. How many times the drawing drew it is kept as
+    # `drawnTimes`, because that is a fact about the drawing worth reading.
+    by_key = []
+    seen_keys = {}
+    for d in drawn_parts:
+        k = str(d.get("id") or d.get("testid") or squash(d.get("name")) or "part")
+        if k in seen_keys:
+            by_key[seen_keys[k]][1] += 1
+            continue
+        seen_keys[k] = len(by_key)
+        by_key.append([d, 1])
+
     pairs = []
     # ONE BUILD ELEMENT ANSWERS FOR ONE DRAWN PART. Without this a single
     # leftover button answers for every part the build is missing.
     claimed = set()
-    for d in drawn_parts:
-        built, handle = match(d, [c for c in candidates if id(c) not in claimed])
+    for d, drawn_times in by_key:
+        free = [c for c in candidates if id(c) not in claimed]
+        # A CONTROL YOU CAN SEE BEATS ONE YOU CANNOT (S224 item 1).
+        #
+        # MEASURED IN REAL HEADLESS CHROME on a four-screen SPA that hides its
+        # screens with `display:none`: 72 of the 100 parts the reader recorded
+        # had a 0x0 box, because the computed display of a button INSIDE a
+        # hidden section is still "inline-flex" — only the section itself
+        # reads "none", so every control on every screen that is not showing
+        # is recorded with no box at all. Those come first in document order,
+        # so the hidden "Cancel" claimed the name and the REAL Cancel two
+        # clicks into the walk was never reached: seven controls that were on
+        # the captain's screen read "it is in the build but it has no
+        # laid-out box".
+        #
+        # So the laid-out candidates are tried first, and the rest only when
+        # nothing laid out answers — which keeps "it is in the build but there
+        # is nothing to look at" for the case where that is the whole truth.
+        sized = [c for c in free if has_size(c)]
+        built, handle = match(d, sized)
+        if built is None:
+            built, handle = match(d, free)
         if built is not None:
             claimed.add(id(built))
         entry = {
@@ -317,6 +401,8 @@ def pair_all(drawing, builds):
             "drawn": {"box": box_of(d), "lines": d.get("lines"),
                       "crop": d.get("crop"), "iconBox": d.get("iconBox")},
         }
+        if drawn_times > 1:
+            entry["drawnTimes"] = drawn_times
         if built is None:
             entry.update({
                 "reachable": False, "outcome": UNREACHABLE, "handle": None,
@@ -352,7 +438,8 @@ def pair_all(drawing, builds):
     return {
         "drawing": (drawing or {}).get("url") or "",
         "screens": screens,
-        "partCount": len(drawn_parts),
+        "partCount": len(by_key),
+        "drawnParts": len(drawn_parts),
         "matched": sum(1 for p in pairs if p.get("reachable")),
         "unreachable": sum(1 for p in pairs if not p.get("reachable")),
         "measuredDifferences": sum(1 for p in pairs if p.get("measuredDifference")),
@@ -366,11 +453,18 @@ def pair_all(drawing, builds):
 # ── one requirement per drawn part (part C) ────────────────────────────────
 
 def part_criteria(drawing, cap=PART_CRITERIA_CAP):
-    rows, held = [], 0
+    rows, held, keys = [], 0, set()
     for d in parts_of(drawing, controls_only=True):
         key = d.get("id") or d.get("testid") or squash(d.get("name"))
         if not key:
             continue
+        # ONE KEY, ONE REQUIREMENT (S224 item 1). A drawing that stacks every
+        # screen on one page draws "Cancel" twice, and two rows with the SAME
+        # id are one question asked twice — on the S222 capstone one of the
+        # fourteen slots under the cap was spent on a duplicate `part-view`.
+        if str(key) in keys:
+            continue
+        keys.add(str(key))
         if len(rows) >= cap:
             held += 1
             continue

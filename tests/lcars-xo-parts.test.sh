@@ -143,6 +143,132 @@ mk_parts "$D/z-build.json" "http://x/#a" "$ZB"
 check "a zero-size drawn part is couldn't check, not a crop error" \
   "$PY -c \"import json;d=json.load(open('$D/z.json'));print(d['pairs'][0]['outcome'])\" | grep -q 'unreachable'"
 
+printf '\n\033[1mB7 · the drawing draws one control twice (S224 item 1)\033[0m\n'
+# MEASURED ON THE S222 CAPSTONE, mission lcars-20260920-001-8cb0. A holodeck
+# drawing is ONE long page showing every screen stacked, so "Cancel", "View",
+# "Lock month" and "Discard draft" are each drawn TWICE. The first instance
+# paired; the second could find nothing left to claim and became
+# `couldn't check (unreachable)` — and because pairs are keyed by part name,
+# the LAST entry won, so four criteria about controls that are right there
+# read "your drawing names this part and I could not find it in the build".
+# One drawn part key is ONE pair entry, and the entry that FOUND something
+# is the one that survives.
+DUP='[
+ {"index":1,"id":null,"testid":null,"name":"Cancel","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-01"},
+ {"index":2,"id":null,"testid":null,"name":"Cancel","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":400,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-02"},
+ {"index":3,"id":null,"testid":null,"name":"Ghost control","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":800,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-03"}
+]'
+DUPB='[{"index":1,"id":null,"testid":null,"name":"Cancel","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"b-01"}]'
+mk_parts "$D/dup-drawing.json" "file:///drawing.html" "$DUP"
+mk_parts "$D/dup-build.json" "http://127.0.0.1:5173/#home" "$DUPB"
+"$PY" "$PARTS" pair --drawing "$D/dup-drawing.json" --build "$D/dup-build.json" \
+      --out "$D/dup-pairs.json" >/dev/null 2>&1
+dq() { "$PY" -c "import json,sys;d=json.load(open('$D/dup-pairs.json'));print(eval(sys.argv[1],{'d':d}))" "$1"; }
+check "B7 · a part the drawing draws twice is ONE entry, not two" \
+  "[ \"\$(dq '[p[\"part\"] for p in d[\"pairs\"]].count(\"cancel\")')\" = 1 ]"
+check "B7 · and that entry FOUND the control (it is in the build)" \
+  "dq 'next(p[\"reachable\"] for p in d[\"pairs\"] if p[\"part\"]==\"cancel\")' | grep -q True"
+check "B7 CONTROL · a part the build genuinely has NOT got is still unreachable" \
+  "dq 'next(p[\"reachable\"] for p in d[\"pairs\"] if p[\"part\"]==\"ghost control\")' | grep -q False"
+check "B7 CONTROL · …and it still says so in the captain's words" \
+  "dq 'next(p[\"outcome\"] for p in d[\"pairs\"] if p[\"part\"]==\"ghost control\")' | grep -q unreachable"
+# END TO END: the guard in xo-score must no longer overrule a met criterion
+# about a control the build HAS, and must still overrule one it has not.
+cat >"$D/dup-criteria.json" <<'JSON'
+{"mission":"m","builtBeforeLaunch":true,"hasDrawing":true,"placeNames":[],"pictures":[],
+ "criteria":[
+  {"id":"part-cancel","text":"the Cancel button matches the drawing","source":"drawing",
+   "primary":true,"drawnPart":"cancel"},
+  {"id":"part-ghost control","text":"the Ghost control matches the drawing","source":"drawing",
+   "primary":true,"drawnPart":"ghost control"}]}
+JSON
+cat >"$D/dup-verdict-in.json" <<'JSON'
+{"score":"high","summary":"looked at both",
+ "criteria":[
+  {"id":"part-cancel","status":"met","note":"Cancel renders as a single-line pill","shot":"shot-01"},
+  {"id":"part-ghost control","status":"met","note":"looked fine to me","shot":"shot-01"}]}
+JSON
+"$PY" "$SCOREPY" "$D/dup-verdict-in.json" "$D/dup-criteria.json" "$D/dup-verdict-out.json" \
+      "" "" "" "$D/dup-pairs.json" >"$D/dup-score.out" 2>&1
+sq() { "$PY" -c "import json,sys;d=json.load(open('$D/dup-verdict-out.json'));print([c['status'] for c in d['criteria'] if c['id']==sys.argv[1]])" "$1"; }
+check "B7 · a criterion about a twice-drawn control the build HAS is not blanked" \
+  "sq 'part-cancel' | grep -q met"
+check "B7 CONTROL · the criterion about the missing control IS still blanked" \
+  "sq 'part-ghost control' | grep -q untested"
+
+printf '\n\033[1mB8 · the build names a control one way, the drawing another\033[0m\n'
+# MEASURED ON THE SAME CAPSTONE. The build gives its selects and textareas an
+# `aria-label` ("Status for LTC P75"); the holodeck drawing has none, so the
+# drawing names the same control by what is PRINTED on it ("On trackWatchOff
+# track") or by its placeholder ("Add an insight for this KPI…"). Both ends
+# read the accessible name, so they never met — five status selects and five
+# insight boxes, all in the build, all reported missing.
+ALTD='[
+ {"index":1,"id":null,"testid":null,"name":"On trackWatchOff track","role":null,"tag":"select",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":120,"h":28},"iconBox":null,"lines":1,"crop":"d-01"},
+ {"index":2,"id":null,"testid":null,"name":"Add an insight for this KPI","role":null,"tag":"textarea",
+  "interactive":true,"container":false,"box":{"x":10,"y":50,"w":300,"h":60},"iconBox":null,"lines":1,"crop":"d-02"},
+ {"index":3,"id":null,"testid":null,"name":"Toggle theme","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":120,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-03"}
+]'
+ALTB='[
+ {"index":1,"id":null,"testid":null,"name":"Status for LTC P75","text":"On trackWatchOff track",
+  "placeholder":null,"value":null,"role":null,"tag":"select",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":120,"h":28},"iconBox":null,"lines":1,"crop":"b-01"},
+ {"index":2,"id":null,"testid":null,"name":"Insight for LTC P75","text":"",
+  "placeholder":"Add an insight for this KPI","value":null,"role":null,"tag":"textarea",
+  "interactive":true,"container":false,"box":{"x":10,"y":50,"w":300,"h":60},"iconBox":null,"lines":1,"crop":"b-02"},
+ {"index":3,"id":null,"testid":null,"name":"Switch to light mode","text":"M","placeholder":null,
+  "value":null,"role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":120,"w":34,"h":30},"iconBox":null,"lines":1,"crop":"b-03"}
+]'
+mk_parts "$D/alt-drawing.json" "file:///drawing.html" "$ALTD"
+mk_parts "$D/alt-build.json" "http://127.0.0.1:5173/#mbr/build" "$ALTB"
+"$PY" "$PARTS" pair --drawing "$D/alt-drawing.json" --build "$D/alt-build.json" \
+      --out "$D/alt-pairs.json" >/dev/null 2>&1
+aq() { "$PY" -c "import json,sys;d=json.load(open('$D/alt-pairs.json'));print(eval(sys.argv[1],{'d':d}))" "$1"; }
+check "B8 · a select the drawing names by its printed options pairs with the build's" \
+  "aq 'next(p[\"reachable\"] for p in d[\"pairs\"] if p[\"part\"]==\"on trackwatchoff track\")' | grep -q True"
+check "B8 · and the record says WHICH handle found it" \
+  "aq 'next(p[\"handle\"] for p in d[\"pairs\"] if p[\"part\"]==\"on trackwatchoff track\")' | grep -qi 'text\|placeholder\|label'"
+check "B8 · a textarea the drawing names by its placeholder pairs too" \
+  "aq 'next(p[\"reachable\"] for p in d[\"pairs\"] if p[\"part\"]==\"add an insight for this kpi\")' | grep -q True"
+check "B8 CONTROL · a control whose build label shares NO words stays unreachable" \
+  "aq 'next(p[\"reachable\"] for p in d[\"pairs\"] if p[\"part\"]==\"toggle theme\")' | grep -q False"
+
+printf '\n\033[1mB9 · the copy of the control that is actually on screen\033[0m\n'
+# MEASURED IN REAL HEADLESS CHROME (tests/drives/s224/parts-reach): an SPA
+# that hides its screens with display:none records 72 of its 100 parts with a
+# 0x0 box, because the computed display of a button INSIDE a hidden section
+# is still inline-flex — only the section itself reads "none". Those come
+# first in document order, so the hidden "Cancel" claimed the name and the
+# real one, two clicks into the walk, was never reached.
+HID='[{"index":1,"id":null,"testid":null,"name":"Cancel","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-01"}]'
+HIDB='[
+ {"index":1,"id":null,"testid":null,"name":"Cancel","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":0,"y":0,"w":0,"h":0},"iconBox":null,"lines":1,"crop":null},
+ {"index":2,"id":null,"testid":null,"name":"Cancel","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"b-02"}
+]'
+mk_parts "$D/hid-drawing.json" "file:///drawing.html" "$HID"
+mk_parts "$D/hid-build.json" "http://127.0.0.1:5173/#mbr/collect" "$HIDB"
+"$PY" "$PARTS" pair --drawing "$D/hid-drawing.json" --build "$D/hid-build.json" \
+      --out "$D/hid-pairs.json" >/dev/null 2>&1
+hq() { "$PY" -c "import json,sys;d=json.load(open('$D/hid-pairs.json'));print(eval(sys.argv[1],{'d':d}))" "$1"; }
+check "B9 · the laid-out copy answers, not the one on a screen that is hidden" \
+  "hq 'd[\"pairs\"][0][\"reachable\"]' | grep -q True"
+check "B9 · and it is the crop of the one you can see" \
+  "hq 'd[\"pairs\"][0][\"built\"][\"crop\"]' | grep -q b-02"
+# THE CONTROL is the zero-size case already above: when the ONLY copy in the
+# build has no box, it is still couldn't-check, with that reason.
+check "B9 CONTROL · when the only copy has no box it is STILL couldn't check" \
+  "$PY -c \"import json;d=json.load(open('$D/z.json'));print(d['pairs'][0]['outcome'],d['pairs'][0]['why'])\" | grep -q 'no laid-out box'"
+
 printf '\n\033[1mC · one requirement per drawn part\033[0m\n'
 cat >"$D/criteria.json" <<'JSON'
 {"mission":"m","builtBeforeLaunch":true,"hasDrawing":true,"placeNames":["saveBtn"],
@@ -252,6 +378,8 @@ button{display:inline-flex;align-items:center;gap:4px;height:34px;padding:0 8px;
 #spacer{height:1400px}</style>
 <button id="saveBtn" data-testid="save-reading"><span class="ico"></span>Save reading</button>
 <button id="okBtn">< span class="ico"></span>OK</button>
+<select id="statusSel" aria-label="Status for LTC P75"><option>On track</option><option>Watch</option></select>
+<textarea id="insightBox" aria-label="Insight for LTC P75" placeholder="Add an insight for this KPI"></textarea>
 <div id="spacer"></div>
 <button id="belowFold" aria-label="Way down here">Way down here</button>
 HTML
@@ -276,6 +404,16 @@ else
     "pq '[p[\"id\"] for p in d[\"parts\"]]' | grep -q belowFold"
   check "each part got its own 2x crop" \
     "ls '$PARTSOUT'/*.png >/dev/null 2>&1"
+  # S224 item 1: the accessible name is not the only name a control has. A
+  # holodeck drawing has no aria-labels, so it names the same control by what
+  # is PRINTED on it, or by its placeholder. The reader has to write both
+  # down or the two records can never meet.
+  check "B8 · the reader records the text PRINTED on a control, beside its name" \
+    "pq 'next(p.get(\"text\") for p in d[\"parts\"] if p[\"id\"]==\"statusSel\")' | grep -qi 'on track'"
+  check "B8 · the accessible name is still recorded, and is the different one" \
+    "pq 'next(p[\"name\"] for p in d[\"parts\"] if p[\"id\"]==\"statusSel\")' | grep -q 'Status for LTC P75'"
+  check "B8 · a placeholder is recorded as the name it is" \
+    "pq 'next(p.get(\"placeholder\") for p in d[\"parts\"] if p[\"id\"]==\"insightBox\")' | grep -qi 'Add an insight'"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

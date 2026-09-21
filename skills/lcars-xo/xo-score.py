@@ -183,8 +183,21 @@ def load_pairs(path):
         return {}
     out = {}
     for p in (doc.get("pairs") if isinstance(doc, dict) else []) or []:
-        if isinstance(p, dict) and p.get("part"):
-            out[str(p["part"])] = p
+        if not (isinstance(p, dict) and p.get("part")):
+            continue
+        key = str(p["part"])
+        # A FOUND PART BEATS A NOT-FOUND ONE UNDER THE SAME KEY (S224 item 1).
+        # A drawing that stacks its screens on one page draws "Cancel" twice;
+        # the pairer now folds those into one entry, but a pairs.json written
+        # by an older drive still has both, and last-wins made the NOT-FOUND
+        # one the answer — which is how `part-lock month` came back "I could
+        # not find it in the build" on the S222 capstone while a crop of that
+        # very button sat beside it. Nothing here can turn a part the build
+        # has not got into a reachable one: the reachable entry has to exist.
+        prev = out.get(key)
+        if prev is not None and prev.get("reachable") and not p.get("reachable"):
+            continue
+        out[key] = p
     return out
 
 # A PICTURE IS NOT A DRAWING (S217). S214/S215 measured a mission whose only
