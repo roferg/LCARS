@@ -1088,6 +1088,139 @@ check "D4 CONTROL — everything met still reads as ship-as-is" \
   "printf '%s' \"$all_said\" | grep -qi 'ship as is'"
 
 # ==========================================================================
+# S224 ITEM 2 — THE UNLISTED PASS ROUTES TO HIS CHANNEL, NEVER TO THE SCORE
+#
+# Measured on the S222 capstone: Number One filed every fault an acceptance
+# criterion named and MISSED or DEMOTED every fault none did. The draft banner
+# reading "Last edited —" was quoted verbatim and the row PASSED; the Preview
+# button with no icon was a false pass, because the comparator asks whether an
+# icon OVERFLOWS and has no way to ask whether one is ABSENT.
+#
+# The cure is one pass whose context has the criteria REMOVED, over the
+# pictures the walk already took. What it finds is EVIDENCE FOR THE CAPTAIN,
+# not a criterion he wrote — so it lands in `escalations`, the channel S222
+# built, and it must be incapable of moving a single outcome or number.
+#
+# THIS BLOCK IS THE FENCE. It pins BOTH halves:
+#   - the finding really reaches him (routing + attribution + the wire)
+#   - the ledger it rode in beside is BYTE-IDENTICAL to the one scored
+#     without it (no outcome, no count, no score, no gap)
+# A finding that cannot name a shot the walk took is DROPPED, not escalated —
+# the same citation discipline every other claim in this file is held to.
+# ==========================================================================
+echo
+echo "U. the unlisted pass — his channel, never the score"
+
+UDIR="$TMPROOT/unlisted"; mkdir -p "$UDIR"
+printf '{"hasDrawing": true, "criteria": [
+  {"id": "prd-1", "text": "the board shows every open task in one list", "primary": true},
+  {"id": "prd-2", "text": "a task can be added from the board", "primary": true}
+]}\n' >"$UDIR/criteria.json"
+
+# ONE ledger, scored twice: once alone, once beside unlisted findings. Nothing
+# about the ledger changes between the two runs, so any difference in the
+# verdict is the unlisted pass reaching somewhere it must not.
+U_LEDGER='{"score":"medium","summary":"Looked at the board.","criteria":[{"id":"prd-1","text":"one list","status":"met","shot":"shot-walk-02-j2","note":"saw the list"},{"id":"prd-2","text":"add a task","status":"met","shot":"shot-walk-03-j3","note":"the add button works"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+
+uscore() { # <outdir> <unlisted.json or "">
+  mkdir -p "$1"
+  printf '%s\n' "$U_LEDGER" >"$1/in.json"
+  "$PY" "$SCOREPY" "$1/in.json" "$UDIR/criteria.json" "$1/verdict.json" \
+        "" "" "" "" "" "" "${2:-}" >"$1/out.tsv" 2>"$1/err.txt"
+}
+
+# THE INVENTORY IS THE PRODUCER'S, NOT THE MODEL'S. `xo.sh` knows exactly which
+# pictures it put on the worker's side of the door, so it stamps that list into
+# the record it writes. The worker cannot declare its own corpus, which is what
+# makes the citation below checkable at all.
+cat >"$UDIR/found.json" <<'UJ'
+{"shots": ["shot-walk-02-j2", "shot-walk-03-j3"], "findings": [
+  {"shot": "shot-walk-02-j2",
+   "what": "the draft banner reads \"Last edited —\" with no date after it",
+   "why": "a placeholder is showing where a timestamp belongs"},
+  {"shot": "shot-walk-03-j3",
+   "what": "the Preview button has no icon while every other button in that row has one",
+   "why": "it reads as a different kind of control from its neighbours"}
+]}
+UJ
+
+uscore "$UDIR/with" "$UDIR/found.json"
+uscore "$UDIR/without" ""
+
+check "U1. an unlisted finding reaches the captain's escalations" \
+  "\"$PY\" -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(\"Last edited\" in e for e in d[\"escalations\"]) else 1)' '$UDIR/with/verdict.json'"
+check "U1. …both of them, not just the first" \
+  "\"$PY\" -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(\"Preview button has no icon\" in e for e in d[\"escalations\"]) else 1)' '$UDIR/with/verdict.json'"
+check "U1. …ATTRIBUTED as something nobody asked about" \
+  "grep -qi 'nobody asked' '$UDIR/with/verdict.json'"
+check "U1. …and it rides the SAME wire the escalation channel already has" \
+  "[ \"\$(grep -c '^ESCALATION'\$'\\t' '$UDIR/with/out.tsv')\" -eq 2 ]"
+check "U1. …and reaches report.md under what is his to decide" \
+  "grep -q 'These are yours to decide' '$UDIR/with/report.md' &&
+   grep -q 'Last edited' '$UDIR/with/report.md'"
+check "U1. …kept structured too, so a surface never re-parses the prose" \
+  "[ \"\$(\"$PY\" -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get(\"unlisted\") or []))' '$UDIR/with/verdict.json')\" -eq 2 ]"
+
+# --- U2. THE INVARIANT ------------------------------------------------------
+check "U2. the SCORE is the same with the findings as without" \
+  "[ \"\$(grep '^SCORE'\$'\\t' '$UDIR/with/out.tsv')\" = \"\$(grep '^SCORE'\$'\\t' '$UDIR/without/out.tsv')\" ]"
+check "U2. …the COUNTS are the same" \
+  "[ \"\$(grep '^COUNTS'\$'\\t' '$UDIR/with/out.tsv')\" = \"\$(grep '^COUNTS'\$'\\t' '$UDIR/without/out.tsv')\" ]"
+check "U2. …every criterion's outcome is BYTE-IDENTICAL" \
+  "[ \"\$(\"$PY\" -c 'import json,sys;d=json.load(open(sys.argv[1]));print(json.dumps([(e[\"id\"],e[\"status\"]) for e in d[\"criteria\"]]))' '$UDIR/with/verdict.json')\" = \"\$(\"$PY\" -c 'import json,sys;d=json.load(open(sys.argv[1]));print(json.dumps([(e[\"id\"],e[\"status\"]) for e in d[\"criteria\"]]))' '$UDIR/without/verdict.json')\" ]"
+check "U2. …no unlisted finding became a criterion" \
+  "[ \"\$(\"$PY\" -c 'import json,sys;print(len(json.load(open(sys.argv[1]))[\"criteria\"]))' '$UDIR/with/verdict.json')\" -eq 2 ]"
+check "U2. …and none of them became a GAP the build is graded on" \
+  "[ \"\$(\"$PY\" -c 'import json,sys;print(len(json.load(open(sys.argv[1]))[\"gaps\"]))' '$UDIR/with/verdict.json')\" -eq 0 ]"
+check "U2. …the grade's own reasoning never mentions them" \
+  "! \"$PY\" -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if \"Last edited\" in (d[\"whyThisGrade\"]+d[\"derivation\"]+d[\"scoreMeaning\"]) else 1)' '$UDIR/with/verdict.json'"
+
+# --- U3. THE CITATION GUARD -------------------------------------------------
+# A finding that names a picture nobody took is an invention, and this project
+# has lost rounds to inventions stated confidently. It is dropped.
+cat >"$UDIR/invented.json" <<'UJ'
+{"shots": ["shot-walk-02-j2", "shot-walk-03-j3"], "findings": [
+  {"shot": "shot-walk-99-nobody-took-this",
+   "what": "the settings drawer overlaps the footer", "why": "it looks wrong"},
+  {"shot": "shot-walk-02-j2",
+   "what": "the draft banner reads \"Last edited —\" with no date after it",
+   "why": "a placeholder is showing where a timestamp belongs"}
+]}
+UJ
+uscore "$UDIR/invented" "$UDIR/invented.json"
+check "U3. a finding citing a shot nobody took is DROPPED" \
+  "! grep -q 'settings drawer' '$UDIR/invented/verdict.json'"
+check "U3. …and the one that cites a real shot still gets through" \
+  "grep -q 'Last edited' '$UDIR/invented/verdict.json'"
+check "U3. …and the drop is DISCLOSED, never silent" \
+  "grep -qi 'could not name a picture' '$UDIR/invented/verdict.json'"
+
+# --- U4. CONTROL — silence stays silent -------------------------------------
+# A pass that reports something every time is worthless: it buries him and
+# teaches him to ignore the channel (S212). Nothing found must add NOTHING.
+printf '{"shots": ["shot-walk-02-j2"], "findings": []}\n' >"$UDIR/none.json"
+uscore "$UDIR/quiet" "$UDIR/none.json"
+check "U4. CONTROL — no findings adds no escalation" \
+  "[ \"\$(grep -c '^ESCALATION'\$'\\t' '$UDIR/quiet/out.tsv')\" -eq 0 ]"
+check "U4. CONTROL — …and no section in the report at all" \
+  "! grep -q 'These are yours to decide' '$UDIR/quiet/report.md'"
+check "U4. CONTROL — …and the verdict is byte-identical to one scored without the pass" \
+  "diff -q '$UDIR/quiet/verdict.json' '$UDIR/without/verdict.json' >/dev/null"
+
+# --- U5. THE LOOK'S OWN ESCALATIONS ARE NOT DISPLACED -----------------------
+# The channel was built for what the LOOK put aside for him. An unlisted
+# finding joins that list; it never replaces it.
+printf '%s\n' "${U_LEDGER%\"escalations\":[]\}}\"escalations\":[\"the August card opened a September review\"]}" >"$UDIR/both-in.json"
+mkdir -p "$UDIR/both"
+cp "$UDIR/both-in.json" "$UDIR/both/in.json"
+"$PY" "$SCOREPY" "$UDIR/both/in.json" "$UDIR/criteria.json" "$UDIR/both/verdict.json" \
+      "" "" "" "" "" "" "$UDIR/found.json" >"$UDIR/both/out.tsv" 2>"$UDIR/both/err.txt"
+check "U5. the look's own escalation survives beside the unlisted ones" \
+  "grep -q 'August card opened a September review' '$UDIR/both/verdict.json'"
+check "U5. …and all three reach the wire" \
+  "[ \"\$(grep -c '^ESCALATION'\$'\\t' '$UDIR/both/out.tsv')\" -eq 3 ]"
+
+# ==========================================================================
 echo
 printf 'lcars xo-evidence: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

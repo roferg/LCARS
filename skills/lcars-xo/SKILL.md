@@ -325,6 +325,38 @@ The order is the contract:
    `xo-verdict.json`. No verdict by the end of the last round is a **LOW** that
    lists what it saw. The number lives in `xo.sh` alone and is exported into
    the worker's prompt, so the model is told the budget it actually has.
+4b. **ONE MORE PASS, WITH THE LIST PUT AWAY (S224).** Number One reviews what
+   the captain wrote down — and on the S222 capstone it filed every fault an
+   acceptance criterion named and missed or demoted every fault none did. It
+   quoted one faulty line of text *verbatim* and passed the row it was on, and
+   it passed a control missing something all its neighbours had, because the
+   comparator asks whether a thing OVERFLOWS and cannot ask whether it is
+   ABSENT.
+
+   So after the verdict exists, one more worker is asked a single question —
+   *"what is wrong here that nobody asked about?"* — **over the pictures the
+   walk already took**. No second browser, no second walk, no extra look: one
+   prompt against shots already on disk. What makes it different is not the
+   prompt but its CONTEXT: its input directory holds the PNGs and their
+   readouts and **nothing else** — no `criteria.json`, no PRD, no plan, no
+   drawing, no journey, no pairs. A reviewer holding a list finds what is on
+   the list.
+
+   **Its findings go to `escalations` — the channel S222 built — and nowhere
+   else.** Not the score, not a criterion, not a gap, not a second surface. An
+   unlisted finding is evidence for the captain, not a criterion he wrote, so
+   it reaches the console line, the journal and `lcars xo report` exactly as
+   the look's own escalations do, attributed *"nobody asked about this"*. The
+   fence is `merge_unlisted` in `xo-score.py`, read after every number is
+   already final, and pinned by a test that scores the SAME ledger twice and
+   demands the two verdicts agree everywhere but there.
+
+   **A finding must name a picture that was taken.** `xo.sh` stamps the
+   inventory it granted into the record, so the model cannot declare its own
+   corpus; one citing a picture nobody took is dropped, and the drop is
+   disclosed in the notes. `LCARS_XO_UNLISTED=0` switches the pass off; no
+   shots, no worker output or a malformed file leaves no record at all and the
+   look finishes exactly as it would have.
 5. **The score is RECOMPUTED from the ledger** (`xo-score.py`). The model
    reasons; the skill decides:
 

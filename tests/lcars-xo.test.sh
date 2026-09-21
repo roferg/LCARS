@@ -3662,6 +3662,117 @@ printf '  number-one worker-shim invocations: %s (with --model: %s)\n' \
   "${no_calls:-0}" "${no_models:-0}"
 
 # ==========================================================================
+# U. THE PASS WITH NO LIST IN ITS HAND (S224 item 2)
+#
+# On the S222 capstone Number One filed every fault an acceptance criterion
+# named and missed or demoted every fault none did — it quoted one faulty line
+# of text VERBATIM and passed the row it was on. So one more pass runs over the
+# pictures the walk already took, with the CRITERIA REMOVED FROM ITS CONTEXT.
+#
+# THAT REMOVAL IS THE WHOLE FEATURE, so it is what this block pins. A prompt
+# that says "ignore the criteria" beside a directory that still contains them
+# is not a criteria-free pass; only the directory is evidence. The pass's input
+# dir is therefore asserted to hold the pictures and NOTHING else — by an
+# inventory of what IS there, not a list of the files somebody remembered to
+# exclude.
+#
+# ZERO SPEND: $LCARS_RUN_SCRIPT is a stub that records what it was handed and
+# writes the worker's file itself. No CLI, real or shimmed, is invoked.
+# ==========================================================================
+echo
+echo "U. the unlisted pass — the criteria are really gone from its context"
+
+UDIR="$TMPROOT/unlisted"; mkdir -p "$UDIR"
+U_SEEN="$UDIR/seen.txt"; U_CALLS="$UDIR/calls.txt"
+: >"$U_SEEN"; : >"$U_CALLS"
+cat >"$UDIR/run-stub.sh" <<'RS'
+#!/usr/bin/env bash
+# Stands in for run.sh's spawn-number-one. Records the mode, and an inventory
+# of everything the worker could actually reach, then writes the file a real
+# worker would have written.
+mode=""; outdir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mode) mode="$2"; shift 2 ;;
+    --outdir) outdir="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'mode=%s indir=%s dirs=%s\n' "$mode" "${LCARS_XO_INPUT_DIR:-}" \
+  "$(printf '%s' "${LCARS_WORKER_INPUT_DIRS:-}" | tr '\n' ',')" >>"$U_CALLS"
+[ -n "${LCARS_XO_INPUT_DIR:-}" ] && \
+  ( cd "$LCARS_XO_INPUT_DIR" && find . -type f | sed 's|^\./||' | sort ) >>"$U_SEEN"
+mkdir -p "$outdir"
+cat >"$outdir/xo-unlisted.json" <<'UJ'
+{"findings": [
+  {"shot": "shot-walk-02-j2", "what": "a label has nothing after it", "why": "it reads unfinished"},
+  {"shot": "shot-made-up", "what": "invented", "why": "nobody took this picture"}
+]}
+UJ
+RS
+chmod +x "$UDIR/run-stub.sh"
+
+repoU="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mU="$(plant_verify "$repoU" "lcars-20260921-224")"
+mkdir -p "$mU/xo/shots"
+for s in shot-walk-02-j2 shot-walk-03-j3; do
+  printf 'not-really-a-png' >"$mU/xo/shots/$s.png"
+  printf '{"shot":"%s","page":{"textExcerpt":"hello"}}\n' "$s" >"$mU/xo/shots/$s.json"
+  printf '%s — full page\n' "$s" >"$mU/xo/shots/$s.txt"
+done
+# The things the pass must NOT be able to see, planted in the place every OTHER
+# pass reads them from. If any of these reaches its input dir, it is holding a
+# list again.
+cp "$mU/prd.md" "$mU/xo/shots/../prd-copy.md" 2>/dev/null || true
+cat >"$mU/xo/criteria.json" <<'CJ'
+{"criteria": [{"id": "prd-1", "text": "the board shows every open task", "primary": true}]}
+CJ
+printf '{"observations":[]}\n' >"$mU/xo/observations.json"
+printf '{"pairs":[]}\n' >"$mU/xo/pairs.json"
+printf '{"steps":[]}\n' >"$mU/xo/journey.json"
+
+( cd "$repoU" && U_SEEN="$U_SEEN" U_CALLS="$U_CALLS" \
+    LCARS_RUN_SCRIPT="$UDIR/run-stub.sh" LCARS_GH_BIN=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" unlisted --mission lcars-20260921-224 ) >"$UDIR/out.txt" 2>&1
+
+check "U1. the pass ran, in its OWN mode" "grep -q 'mode=unlisted' '$U_CALLS'"
+check "U1. …over the pictures the walk already took (no second driver call)" \
+  "[ \"\$(grep -c 'mode=unlisted' '$U_CALLS')\" -eq 1 ]"
+check "U2. its context holds the PNGs" \
+  "grep -qx 'shot-walk-02-j2.png' '$U_SEEN' && grep -qx 'shot-walk-03-j3.png' '$U_SEEN'"
+check "U2. …and the browser readouts beside them" \
+  "grep -qx 'shot-walk-02-j2.json' '$U_SEEN' && grep -qx 'shot-walk-02-j2.txt' '$U_SEEN'"
+# THE FENCE. An inventory, not an exclusion list: every file in there must be
+# one of the three shapes a shot directory has.
+check "U3. its context holds NOTHING BUT pictures and their readouts" \
+  "! grep -v -E '^shot-[A-Za-z0-9._-]+\.(png|json|txt)\$' '$U_SEEN' | grep -q ."
+check "U3. …no criteria.json anywhere near it" "! grep -q 'criteria' '$U_SEEN'"
+check "U3. …no PRD" "! grep -qi 'prd' '$U_SEEN'"
+check "U3. …no drawing, no journey, no pairs, no observations" \
+  "! grep -q -E 'journey|pairs|observations|drawing|attachment' '$U_SEEN'"
+check "U3. …and no other directory was granted to the worker either" \
+  "[ \"\$(grep -o 'dirs=[^ ]*' '$U_CALLS' | head -1 | tr -cd ',' | wc -c | tr -d ' ')\" -eq 0 ]"
+check "U4. the record it leaves names the pictures IT granted, not the model's word" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sorted(d[\"shots\"])==[\"shot-walk-02-j2\",\"shot-walk-03-j3\"] else 1)' '$mU/xo/unlisted.json'"
+check "U4. …and carries the worker's findings through untouched" \
+  "[ \"\$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))[\"findings\"]))' '$mU/xo/unlisted.json')\" -eq 2 ]"
+# The look's OWN score is what the captain is graded on, and this pass is not
+# allowed to be why it never arrives.
+check "U5. a shots directory with no pictures leaves no record and no failure" \
+  "mkdir -p '$UDIR/empty' &&
+   ( cd '$repoU' && U_SEEN='$U_SEEN' U_CALLS='$U_CALLS' LCARS_RUN_SCRIPT='$UDIR/run-stub.sh' \
+       LCARS_GH_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+       bash '$SCRIPT' unlisted --mission lcars-20260921-224 --shots '$UDIR/empty' \
+       --out '$UDIR/empty-out.json' >/dev/null 2>&1 ) &&
+   [ ! -e '$UDIR/empty-out.json' ]"
+check "U5. …and it can be switched off entirely" \
+  "( cd '$repoU' && LCARS_XO_UNLISTED=0 LCARS_RUN_SCRIPT='$UDIR/run-stub.sh' \
+       LCARS_GH_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+       bash '$SCRIPT' unlisted --mission lcars-20260921-224 \
+       --out '$UDIR/off-out.json' >/dev/null 2>&1 ) && [ ! -e '$UDIR/off-out.json' ]"
+
+# ==========================================================================
 echo
 printf 'lcars xo: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

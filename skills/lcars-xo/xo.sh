@@ -2019,6 +2019,102 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   return 0
 }
 
+# === THE PASS WITH NO LIST IN ITS HAND (S224 item 2) ========================
+#
+# Number One reviews what the captain wrote down. Measured on the S222 capstone:
+# every fault an acceptance criterion named was filed, and every fault none
+# named was missed or demoted — one faulty line of text was quoted VERBATIM in
+# the verdict and its row still passed, and a control missing something all its
+# neighbours had was passed outright, because the comparator asks whether a
+# thing OVERFLOWS and has no way to ask whether it is ABSENT.
+#
+# So one more pass runs, over THE PICTURES THE WALK ALREADY TOOK — no second
+# browser, no second walk, no extra look. What makes it different is not a
+# cleverer prompt: it is that **the criteria are removed from its context**. Its
+# input directory holds the shots and nothing else. No criteria.json, no PRD, no
+# plan, no drawing, no journey, no pairs, no observations. A reviewer holding a
+# list finds what is on the list; this one has no list.
+#
+# WHERE IT GOES: `escalations`, the channel S222 built — the console line, the
+# journal, `lcars xo report`. NOT the score, not a criterion, not a gap, and NOT
+# a second surface. An unlisted finding is evidence for the captain, not a
+# criterion he wrote. xo-score.py's merge_unlisted is the fence.
+#
+# BEST-EFFORT, like every other pass here. No shots, a worker that writes
+# nothing, a malformed file — each leaves `unlisted.json` absent and the look
+# finishes exactly as it would have. This must never be why a verdict does not
+# reach him.
+XO_UNLISTED="${LCARS_XO_UNLISTED:-1}"
+
+# THE PICTURES, AND ONLY THE PICTURES. An explicit ALLOW-list of what a shot
+# directory holds, never "copy the directory minus the things I remembered to
+# exclude" — the day a look writes one more file in there, a deny-list silently
+# hands the criteria-free pass something it was built not to see.
+xo_unlisted_inputs() { # <shots-dir> <into>
+  local from="$1" into="$2" f base n=0
+  [ -d "$from" ] || return 1
+  mkdir -p "$into" || return 1
+  for f in "$from"/*.png; do
+    [ -f "$f" ] || continue
+    base="${f##*/}"; base="${base%.png}"
+    cp "$f" "$into/$base.png" 2>/dev/null || continue
+    [ -f "$from/$base.json" ] && cp "$from/$base.json" "$into/$base.json" 2>/dev/null
+    [ -f "$from/$base.txt" ]  && cp "$from/$base.txt"  "$into/$base.txt"  2>/dev/null
+    n=$((n + 1))
+  done
+  [ "$n" -gt 0 ] || return 1
+  # Read-only, for the same reason gather_inputs is: the worker is looking at a
+  # record it must not be able to change.
+  chmod -R a-w "$into" 2>/dev/null || true
+  printf '%s' "$n"
+  return 0
+}
+
+# Run the pass and write `<xodir>/unlisted.json`. Always returns 0.
+xo_unlisted_pass() { # <mission-id> <shots-dir> <out unlisted.json> [<engine>]
+  local id="$1" shots="$2" out="$3" engine="${4:-}"
+  [ "$XO_UNLISTED" = "1" ] || return 0
+  local work indir n
+  work="$(mktemp -d)" || return 0
+  indir="$work/input"
+  n="$(xo_unlisted_inputs "$shots" "$indir")" || { rm -rf "$work"; return 0; }
+  printf '◈ NUMBER ONE: and one more look at those %s picture(s) with your list put away…\n' "$n"
+  (
+    export LCARS_XO_INPUT_DIR="$indir"
+    export LCARS_WORKER_INPUT_DIRS="$indir"
+    if [ -n "$engine" ]; then
+      export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+      --mission "$id" --mode unlisted --outdir "$work/out"
+  ) >/dev/null 2>&1 &
+  XO_SPIN_PID=$!
+  wait "$XO_SPIN_PID" 2>/dev/null || true
+  XO_SPIN_PID=""
+  # THE INVENTORY IS STAMPED BY THE PRODUCER, NEVER DECLARED BY THE MODEL.
+  # This function knows exactly which pictures it put on the worker's side of
+  # the door; the worker does not get to say what it was shown. That is what
+  # makes xo-score.py's citation guard checkable at all — a finding naming a
+  # picture nobody took is an invention, and it is dropped there.
+  "$XO_PY" -c 'import json, os, sys
+src, shots, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(src, encoding="utf-8", errors="replace") as fh:
+        doc = json.load(fh)
+except Exception:
+    sys.exit(1)
+found = doc.get("findings") if isinstance(doc, dict) else None
+if not isinstance(found, list):
+    sys.exit(1)
+names = sorted(f[:-4] for f in os.listdir(shots) if f.endswith(".png"))
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump({"shots": names, "findings": found}, fh, indent=2)
+' "$work/out/xo-unlisted.json" "$indir" "$out" 2>/dev/null || rm -f "$out"
+  chmod -R u+w "$indir" 2>/dev/null || true
+  rm -rf "$work"
+  return 0
+}
+
 # Every score LABEL, in one place: applied by the swap below, removed by it, and
 # named by init.sh's label set. `lcars:xo:` is the one prefix.
 XO_SCORE_LABELS="lcars:xo:high lcars:xo:medium lcars:xo:low"
@@ -2511,6 +2607,13 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
     return 0
   fi
 
+  # --- 4b. WHAT NOBODY ASKED ABOUT (S224 item 2) ---------------------------
+  # AFTER the verdict exists and BEFORE it is scored. After, because this pass
+  # must not be able to influence the look — it is a second reader of the same
+  # pictures, not a hint to the first. Before, because what it finds travels to
+  # the captain on the wire xo-score.py already prints, and nowhere else.
+  xo_unlisted_pass "$id" "$shots" "$xodir/unlisted.json" "$xo_engine"
+
   # --- 5. THE SCORE IS RECOMPUTED FROM THE LEDGER --------------------------
   local report
   # S216 fix round 1 (D5): importance is RECORDED in the mission's own
@@ -2518,7 +2621,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   report="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
               "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
-              "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" 2>/dev/null)" || report=""
+              "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
+              "$xodir/unlisted.json" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   local escalations=""
   while IFS= read -r line; do
@@ -3433,6 +3537,30 @@ case "${1:-status}" in
     _sm="$(resolve_mission "$_sm")"
     mkdir -p "$MISSIONS_DIR/$_sm/xo"
     xo_seed "$MISSIONS_DIR/$_sm" "$MISSIONS_DIR/$_sm/xo" "$_sw" ;;
+  unlisted)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # Same reason `seed` exists: the criteria-free pass can be driven over a
+    # directory of pictures — a test's, or a look's own recording — through the
+    # PRODUCT's code path rather than a copy of it beside the product. It is
+    # also how this pass is proven against a look that already happened, at no
+    # extra spend and with no second walk.
+    shift
+    _um=""; _ushots=""; _uout=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --mission) _um="${2:-}"; shift 2 || true ;;
+        --shots)   _ushots="${2:-}"; shift 2 || true ;;
+        --out)     _uout="${2:-}"; shift 2 || true ;;
+        *) shift ;;
+      esac
+    done
+    _um="$(resolve_mission "$_um")" || exit $?
+    [ -n "$_ushots" ] || _ushots="$MISSIONS_DIR/$_um/xo/shots"
+    [ -n "$_uout" ] || _uout="$MISSIONS_DIR/$_um/xo/unlisted.json"
+    _ust="$MISSIONS_DIR/$_um/state.json"
+    _uengine=""
+    [ -n "${LCARS_WORKER_BIN:-}" ] || _uengine="$(xo_engine_for "$_ust")"
+    xo_unlisted_pass "$_um" "$_ushots" "$_uout" "$_uengine" ;;
   record-pid)
     # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
     # It exists so a TEST can plant a pid file the way the product plants one,

@@ -15021,6 +15021,12 @@ spawn_number_one() { # mission-id  mode  outdir
     # ledger again, which the skill re-scores exactly as it scored the first
     # look. There is no second round to ask for, so there is no actions file.
     recheck)  outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
+    # S224 item 2 — THE PASS WITH NO LIST IN ITS HAND. One file, no rounds to
+    # ask for and no verdict to reach: it is not judging the build, it is
+    # handing the captain what nobody was looking for. Its input dir is the
+    # PICTURES ONLY (xo.sh builds it), which is the whole point — a reviewer
+    # holding a list finds what is on the list.
+    unlisted) outfiles="Write EXACTLY ONE file: $outdir/xo-unlisted.json" ;;
     *)        outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
   esac
   # THE ROUND BUDGET, WHEN THERE IS ONE (S221). `xo.sh` exports its own

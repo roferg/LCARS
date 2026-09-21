@@ -964,6 +964,85 @@ def load_json_or_none(path):
         return None
 
 
+# --- WHAT NOBODY ASKED ABOUT (S224 item 2) ---------------------------------
+# Number One reviews what the captain wrote down. Measured on the S222
+# capstone: it filed every fault an acceptance criterion named, and missed or
+# demoted every fault none did — it quoted the draft banner reading "Last
+# edited —" verbatim and PASSED that row, and it passed a Preview button with
+# no icon at all, because the comparator asks whether an icon OVERFLOWS its
+# control and has no way to ask whether one is simply ABSENT.
+#
+# The cure is a second pass whose context has the criteria REMOVED, asked only
+# "what is wrong here that nobody asked about", over the pictures the walk
+# already took. `xo.sh` runs it and writes its record; this file does ONE thing
+# with that record: it routes it to the captain.
+#
+# IT IS EVIDENCE FOR HIM, NEVER A CRITERION HE WROTE. So it lands in
+# `escalations` — the channel S222 built, already on the wire, already in the
+# console and already in `lcars xo report` — and it touches nothing else. No
+# outcome, no count, no gap, no score, no sentence of the derivation. The
+# invariant is pinned by tests/lcars-xo-evidence.test.sh § U2, which scores the
+# SAME ledger twice and demands the two verdicts agree everywhere but here.
+#
+# THE CITATION GUARD, same as everything else in this file. A finding must name
+# a picture that was actually taken, and the list of those pictures is the
+# PRODUCER'S: `xo.sh` stamps the inventory it granted into the record, so the
+# model cannot declare its own corpus. One that names a picture nobody took is
+# an invention stated confidently, and it is dropped — loudly, in the notes,
+# never in silence.
+UNLISTED_LEAD = "nobody asked about this"
+
+
+def merge_unlisted(path, notes):
+    """(rows, escalation lines) from the unlisted pass's record.
+
+    `notes` is appended to in place when anything is dropped."""
+    doc = load_json_or_none(path)
+    if not isinstance(doc, dict):
+        return [], []
+    findings = doc.get("findings")
+    if not isinstance(findings, list):
+        return [], []
+    # An inventory of "" is not an inventory. When the producer recorded one,
+    # every citation is checked against it; when it recorded none there is
+    # nothing to check against and the guard stands down rather than inventing
+    # a verdict of its own.
+    inventory = set(str(s).strip() for s in (doc.get("shots") or [])
+                    if str(s).strip())
+    rows, lines, dropped = [], [], 0
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        what = " ".join(str(f.get("what") or "").split())
+        if not what:
+            continue
+        shot = str(f.get("shot") or "").strip()
+        why = " ".join(str(f.get("why") or "").split())
+        if inventory and shot not in inventory:
+            dropped += 1
+            continue
+        # THE FINDING FIRST, THE ATTRIBUTION AFTER IT. The console prints these
+        # behind "this one is yours to decide — ", so a line that also OPENS on
+        # its provenance buries the thing he has to read behind two clauses of
+        # machinery before it ever says what is wrong.
+        line = what
+        if why:
+            line += " · %s" % why
+        line += " — %s" % UNLISTED_LEAD
+        if shot:
+            line += "; I saw it in %s" % shot
+        rows.append({"shot": shot, "what": what, "why": why,
+                     "source": "unlisted"})
+        lines.append(line)
+    if dropped:
+        notes.append(
+            "%d thing%s the unlisted pass raised could not name a picture the "
+            "walk took, so I left %s out rather than pass on something I cannot "
+            "show you" % (dropped, "" if dropped == 1 else "s",
+                          "it" if dropped == 1 else "them"))
+    return rows, lines
+
+
 def load_walk(path):
     """THE RECORD OF HOW IT MOVED (S220 part F).
 
@@ -1057,6 +1136,9 @@ def main():
     # S220 part E: the SEED — whether this repo declared sample data at all.
     walk_path = sys.argv[8] if len(sys.argv) > 8 else ""
     seed_path = sys.argv[9] if len(sys.argv) > 9 else ""
+    # S224 item 2: what the criteria-free pass found over the same pictures.
+    # Routed to his escalations and NOWHERE else — see merge_unlisted.
+    unlisted_path = sys.argv[10] if len(sys.argv) > 10 else ""
     walk = load_walk(walk_path)
     seed = load_json_or_none(seed_path)
     pairs_by_part = load_pairs(pairs_path)
@@ -1737,6 +1819,14 @@ def main():
     if picture_only:
         why = "%s %s" % (PICTURE_LEAD, why)
 
+    # S224 item 2 — READ AFTER EVERY NUMBER IS ALREADY DECIDED, on purpose.
+    # `score`, `met`, `gap`, `untested`, `why`, `why_grade` and the whole ledger
+    # are final by this line. Nothing below can move them, and that is the whole
+    # design: an unlisted finding is the captain's to weigh, not a criterion he
+    # wrote. The only thing it may append to is `notes` (when a citation fails)
+    # and the escalation list built just below.
+    unlisted_rows, unlisted_lines = merge_unlisted(unlisted_path, notes)
+
     out = {
         "score": score,
         "workerScore": worker_score,
@@ -1754,7 +1844,11 @@ def main():
         "core": core,
         "criteria": ledger,
         "gaps": gaps,
-        "escalations": [str(e) for e in (doc.get("escalations") or []) if str(e).strip()],
+        # The look's own list FIRST, then what the criteria-free pass found —
+        # one channel, in the order they were produced. An unlisted finding
+        # joins what the look put aside for him; it never displaces it.
+        "escalations": ([str(e) for e in (doc.get("escalations") or [])
+                         if str(e).strip()] + unlisted_lines),
         "alsoChecked": [str(e) for e in (doc.get("alsoChecked") or []) if str(e).strip()],
         "summary": summary,
     }
@@ -1768,6 +1862,12 @@ def main():
         out["polishFlag"] = polish_flag
     if notes:
         out["ledgerNotes"] = notes
+    # STRUCTURED AS WELL AS SAID (S224 item 2). The escalation line is the
+    # captain's sentence; this is the same facts as data, so a surface never
+    # has to read meaning back out of that prose — the mistake S147, S156, S188
+    # and S212 each cost this project a round.
+    if unlisted_rows:
+        out["unlisted"] = unlisted_rows
     if picture_only:
         out["pictureNotDrawing"] = {"pictures": picture_names,
                                     "note": PICTURE_NOT_DRAWING,
