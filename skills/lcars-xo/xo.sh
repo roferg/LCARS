@@ -654,10 +654,28 @@ xo_sweep_verify() {
     xo_sweepable "$id" || continue
     journal "$MISSIONS_DIR/$id" swept '"why": "at Verify with no score of mine when Number One was switched on"'
     printf '◈ NUMBER ONE: taking %s — it was waiting at Verify.\n' "$id"
+    # CAGED, LIKE EVERY OTHER LOOK (S221, captain 2026-09-20). This path used to
+    # spawn a look with no time limit at all, so one build that would not answer
+    # could hold the sweep — and every mission queued behind it — open all night
+    # while he was out. The cage is `xo_cage`, the SAME helper the declared seed
+    # and the project's own suite are run under, and 124 is its "it outstayed
+    # the limit" exit.
+    local rc=0
     if [ -n "$sweepbin" ]; then
-      "$sweepbin" "$id" </dev/null || true
+      xo_cage "$XO_LOOK_TIMEOUT" "$sweepbin" "$id" </dev/null || rc=$?
     else
-      bash "$SELF" evaluate --mission "$id" </dev/null || true
+      xo_cage "$XO_LOOK_TIMEOUT" bash "$SELF" evaluate --mission "$id" </dev/null || rc=$?
+    fi
+    # LOUDLY, AND IN THE RECORD. A look that was stopped part-way has not scored
+    # anything, and the one thing this must never do is let a half-look read as
+    # a quiet success — so it is said on his screen AND journaled on the mission
+    # that hit it, which is where the next reader will look.
+    if [ "$rc" -eq 124 ]; then
+      printf '◈ NUMBER ONE: %s was still looking after %s, so I stopped it — it scored nothing.\n' \
+        "$id" "$(xo_dur_words "$XO_LOOK_TIMEOUT")"
+      printf '  Run `lcars xo evaluate --mission %s` yourself to see where it got stuck.\n' "$id"
+      journal "$MISSIONS_DIR/$id" sweep-timeout \
+        "$(printf '"limitSeconds": %s, "why": "the look outstayed its cage and was stopped — nothing was scored"' "$XO_LOOK_TIMEOUT")"
     fi
   done <<< "$ids"
   return 0
@@ -1009,6 +1027,141 @@ xo_stop_launch() {
   XO_LAUNCH_STOPPED=1
   bash "$XO_LAUNCH_SCRIPT" "$XO_LAUNCH_ID" --stop \
     >>"${XO_STOP_LOG:-/dev/null}" 2>&1 || true
+  # ONE LAST TIDY, with the app stopped so nothing can autosave behind us
+  # (S221). Every exit path goes through here — success, LOW, error and signal —
+  # so there is no way out of a look that leaves the captain's build dirty, and
+  # launch.sh's own clean-tree audit still passes for the next launch.
+  xo_tree_restore "$XO_MISSION_DIR"
+  return 0
+}
+
+# ── THE BUILD IS LEFT AS IT WAS FOUND (S221) ────────────────────────────────
+#
+# THE DEFECT, in the captain's words (2026-09-20): walking a build means TYPING
+# into it. On the groutwork build Number One typed an insight, the app autosaved
+# it into the LAUNCHED WORKTREE'S OWN `data/` — which is where the project's
+# snapshot tests read from — and six of the captain's own tests went red on a
+# build that was fine. Number One correctly refused to blame the build; but
+# unattended, the next round would have spent itself chasing red tests the look
+# itself caused.
+#
+# WHY CLEANUP AND NOT A REDIRECT. A redirect would be the better fix and it is
+# not available: nothing in LCARS knows where an arbitrary app keeps its data.
+# `launch.sh` has no data-directory lever of any kind, there is no env var every
+# stack honours, and inventing one would mean every project must adopt it before
+# its Verify look is safe — exactly the "the harness works if you change your
+# app" contract LCARS refuses. What IS universal is git: the launched build is a
+# worktree, so what the walk changed is measurable, and measurably undoable.
+#
+# SURGICAL, NEVER A `git checkout -- .`. The mark is taken AFTER the declared
+# seed has run (the seed's writes are wanted) and immediately before the first
+# drive; the restore touches ONLY paths whose status differs from that mark. A
+# file the launch itself left dirty, a build artefact, an ignored `node_modules`
+# — none of them are this function's business, and a blunt reset would eat them.
+XO_TREE_MARK=""
+XO_TREE_WT=""
+
+xo_tree_mark() { # <worktree> <markfile> — remember the tree before the walk
+  local wt="${1:-}" out="${2:-}"
+  XO_TREE_MARK=""; XO_TREE_WT=""
+  [ -n "$wt" ] && [ -n "$out" ] && [ -d "$wt" ] && [ -e "$wt/.git" ] || return 0
+  git -C "$wt" status --porcelain -z >"$out" 2>/dev/null || : >"$out"
+  XO_TREE_MARK="$out"; XO_TREE_WT="$wt"
+  return 0
+}
+
+# Undo exactly what changed since the mark, and say how much. Best-effort like
+# every other aftercare here: a worktree that has gone away, a git that will not
+# answer, a path it may not write — each leaves the look alone rather than
+# failing it. Never fatal: tidying up must not be why the captain loses a look.
+xo_tree_restore() { # <mission-dir> — reverts the walk's writes in the launched build
+  local dir="${1:-}" n=0
+  [ -n "$XO_TREE_WT" ] && [ -n "$XO_TREE_MARK" ] || return 0
+  [ -d "$XO_TREE_WT" ] && [ -f "$XO_TREE_MARK" ] || return 0
+  n="$("$XO_PY" - "$XO_TREE_WT" "$XO_TREE_MARK" 2>/dev/null <<'PY'
+import os, shutil, subprocess, sys
+
+wt, mark = sys.argv[1], sys.argv[2]
+
+# `git status --porcelain -z` is the ONLY safe reading of this. The plain form
+# C-quotes any path with a space, a quote or a non-ASCII byte in it (and
+# core.quotePath can turn an ordinary name into `"caf\303\251.json"`), which is
+# how a previous round in this repo got a path no `[ -e ]` would match. -z emits
+# the raw bytes and separates records with NUL, so nothing is escaped.
+def parse(text):
+    seen, parts, i = {}, text.split("\0"), 0
+    while i < len(parts):
+        e = parts[i]
+        if len(e) >= 4:
+            code, path = e[:2], e[3:]
+            seen[path] = code
+            if "R" in code or "C" in code:
+                i += 1          # a rename/copy spends a second record on its source
+        i += 1
+    return seen
+
+def now():
+    try:
+        r = subprocess.run(["git", "-C", wt, "status", "--porcelain", "-z"],
+                           capture_output=True, text=True, timeout=120)
+        return parse(r.stdout)
+    except Exception:
+        return None
+
+before = parse(open(mark, encoding="utf-8", errors="surrogateescape").read())
+after = now()
+if after is None:
+    print(0); raise SystemExit(0)
+
+root = os.path.realpath(wt)
+changed = [(p, c) for p, c in sorted(after.items()) if before.get(p) != c]
+
+def inside(p):
+    # This deletes. Anything that does not resolve under the worktree — a
+    # symlink out, a `..`, an absolute path — is not ours to touch.
+    try:
+        full = os.path.realpath(os.path.join(wt, p))
+    except Exception:
+        return None
+    return full if full == root or full.startswith(root + os.sep) else None
+
+undone = 0
+restore = []
+for p, c in changed:
+    full = inside(p)
+    if not full:
+        continue
+    if c.startswith("??"):
+        try:
+            if os.path.isdir(full) and not os.path.islink(full):
+                shutil.rmtree(full)
+            else:
+                os.remove(full)
+            undone += 1
+        except Exception:
+            pass
+    else:
+        restore.append(p)
+if restore:
+    try:
+        # One call, paths after `--`, so a name that starts with a dash is a
+        # path and never a flag.
+        r = subprocess.run(["git", "-C", wt, "checkout", "--"] + restore,
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            undone += len(restore)
+    except Exception:
+        pass
+print(undone)
+PY
+)"
+  n="${n:-0}"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -gt 0 ]; then
+    printf '◈ NUMBER ONE: I typed into your build, so I put the %s file(s) I changed back as they were.\n' "$n"
+    [ -n "$dir" ] && journal "$dir" tidied \
+      "$(printf '"restored": %s, "why": "what the walk typed into the launched build, undone"' "$n")"
+  fi
   return 0
 }
 
@@ -1439,7 +1592,20 @@ XO_DRIVER="${LCARS_XO_DRIVER:-$SKILL_DIR/xo-drive.js}"
 XO_HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
 XO_NODE="${LCARS_NODE_BIN:-node}"
 XO_PY="${LCARS_PYTHON_BIN:-python3}"
-XO_MAX_ROUNDS="${LCARS_XO_MAX_ROUNDS:-3}"
+# HOW MANY TIMES IT MAY GO BACK AND LOOK AGAIN — TWO (captain's ruling,
+# 2026-09-20; it was three). This is a CEILING, not a quota: the worker writes
+# its verdict the moment it has seen enough, and measured over five real-arm
+# runs on the same benchmark the third round bought nothing at all — 3 rounds
+# scored 4/5, 2 scored 3/5, 2 scored 5/5, 1 scored 5/5, 1 scored 5/5. Lowering
+# it takes an unused hour off the worst case and cannot cost a look that was
+# going to finish anyway.
+#
+# THE NUMBER LIVES HERE AND NOWHERE ELSE. The console line ("round 1 of 2"), the
+# refusal a look with no verdict writes, and the budget the WORKER is told about
+# in its prompt all read this one variable — the prompt's copy through
+# $LCARS_XO_MAX_ROUNDS, which the round loop exports for the spawn. A second
+# hard-coded 3 in prose is exactly how the two drift apart.
+XO_MAX_ROUNDS="${LCARS_XO_MAX_ROUNDS:-2}"
 # THE RECORD SEPARATOR FOR EVERY PLAN THIS SCRIPT READS BACK (fix round 1, D2).
 # ASCII US (0x1f), never a tab. TAB IS IFS WHITESPACE, so `IFS=$'\t' read -r …`
 # COLLAPSES a run of them: a record with an EMPTY field loses it and every later
@@ -1598,6 +1764,23 @@ XO_SEED_TIMEOUT="${LCARS_XO_SEED_TIMEOUT:-300}"
 # it, watch it, and kill the process WE started (never by name — the captain
 # runs his own daemons) if it outstays the limit. 124 is the exit `timeout`
 # itself would give, so a caller can tell a cage from a failure.
+# THE CAGE ON A WHOLE LOOK (S221). 45 minutes, the same limit the benchmark rig
+# has always put round a live look (tests/drives/s220/bench/run.sh) — and until
+# this round the ONLY place that limit existed. It bounds a look launched by the
+# `lcars xo on` sweep, which is the one the captain is not sitting in front of:
+# he switched Number One on because he is stepping out, so a build that will not
+# answer must cost one mission's cage, not the whole night.
+#
+# A look is volume, not thinking: a 9-criteria fixture lands near 7 minutes and a
+# 101-criteria build takes 18–32, so 2700s is a ceiling nothing healthy reaches.
+XO_LOOK_TIMEOUT="${LCARS_XO_LOOK_TIMEOUT:-2700}"
+
+xo_dur_words() { # <seconds> — "45 minutes" / "90s", for a sentence he reads
+  local secs="$1"
+  if [ "$secs" -ge 120 ] 2>/dev/null; then printf '%s minutes' "$((secs / 60))"
+  else printf '%ss' "$secs"; fi
+}
+
 xo_cage() { # <seconds> <command…>
   local secs="$1"; shift
   if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
@@ -1605,7 +1788,23 @@ xo_cage() { # <seconds> <command…>
   "$@" &
   local pid=$! waited=0
   while kill -0 "$pid" 2>/dev/null; do
-    [ "$waited" -ge "$secs" ] && { kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124; }
+    if [ "$waited" -ge "$secs" ]; then
+      # THE WHOLE TREE, TERM FIRST (S221). A `kill -9` on the direct child alone
+      # was enough when the cage only ever held a seed command; it now holds a
+      # WHOLE LOOK, which owns a launched app and a headless Chrome. Killing
+      # just the top of that leaves both running for the rest of the night. So:
+      # TERM down the tree — which is how xo.sh's own traps get the chance to
+      # stop the launch and the browser properly — then KILL anything that has
+      # not gone. Only pids descended from the one WE started; never by name.
+      xo_kill_tree "$pid"
+      local grace=0
+      while kill -0 "$pid" 2>/dev/null && [ "$grace" -lt 10 ]; do
+        sleep 0.5; grace=$((grace + 1))
+      done
+      kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 124
+    fi
     sleep 1
     waited=$((waited + 1))
   done
@@ -1675,9 +1874,15 @@ XO_JOURNEY_PY="${LCARS_XO_JOURNEY_PY:-$SKILL_DIR/xo-journey.py}"
 xo_build_journey() { # <mission-dir> <xodir>
   local dir="$1" xodir="$2" draw="" said=""
   draw="$(xo_drawing_file "$dir")"
+  # THE PRD ITSELF, not just what survived into the contract (S221 fix 7).
+  # The captain says how a build is USED in the Goal — "walk the character
+  # around the village with the arrow keys" — and none of that reaches
+  # criteria.json, which is why a keyboard-driven build produced an empty
+  # journey. The planner drops the Out-of-Scope section itself.
   said="$("$XO_PY" "$XO_JOURNEY_PY" build --criteria "$xodir/criteria.json" \
         ${draw:+--drawing-html "$draw"} \
         ${draw:+--drawing "$xodir/drawing-parts.json"} \
+        $([ -f "$dir/prd.md" ] && printf -- '--prd\n%s' "$dir/prd.md") \
         --title "$(json_field "$dir/state.json" title)" \
         --out "$xodir/journey.json" --criteria-out "$xodir/criteria.new.json" 2>/dev/null)" || said=""
   if [ -s "$xodir/criteria.new.json" ]; then
@@ -2065,6 +2270,9 @@ cmd_evaluate() {
   local lwork=""
   lwork="$(json_field "$dir/launch.json" worktree)"
   xo_seed "$dir" "$xodir" "${lwork:-$PWD}"
+  # AND THE TREE IS REMEMBERED, HERE (S221). After the seed — whose writes are
+  # wanted — and before the first drive, which is the first thing that types.
+  xo_tree_mark "$lwork" "$xodir/tree-mark"
 
   # From here on the app is RUNNING and must be stopped on every path out. The
   # stopper is the FILE-LEVEL xo_stop_launch (fix round 1, D2) — the same one the
@@ -2097,6 +2305,9 @@ cmd_evaluate() {
     xo_finish "$dir" low engaged "$why" "$why" "$XO_NOLOOK"
     return 0
   fi
+  # WHAT THE WALK TYPED, PUT BACK (S221). Before the project's own suite runs —
+  # the whole point is that it must not read the insight Number One typed.
+  xo_tree_restore "$dir"
   # THE DIRECTORY IS PART OF THE RECORD (fix round 2, D1): a verdict is only as
   # good as the pictures behind it, so which pictures those were is written down.
   journal "$dir" looked "$(printf '"round": 0, "shots": %s, "shotsDir": %s' \
@@ -2186,6 +2397,11 @@ $shots"
       if [ -n "$xo_engine" ]; then
         export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
       fi
+      # THE WORKER IS TOLD ITS REAL BUDGET, not a number written into the
+      # prompt. `evaluate.md` used to say "three rounds in total"; the day the
+      # ceiling came down that sentence became a lie the model would have
+      # planned against. run.sh prints whatever this says.
+      export LCARS_XO_MAX_ROUNDS="$XO_MAX_ROUNDS"
       exec bash "$XO_RUN_SCRIPT" spawn-number-one \
         --mission "$id" --mode evaluate --outdir "$out"
     ) >/dev/null 2>&1 &
@@ -2222,6 +2438,9 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       wait "$XO_DRIVE_PID" || drc=$?
       XO_DRIVE_PID=""
       cp "$out/xo-actions.json" "$xodir/actions-$round.json" 2>/dev/null || true
+      # …and again after EVERY round that drove the build (S221): each round of
+      # looking is another round of typing.
+      xo_tree_restore "$dir"
       journal "$dir" looked "$(printf '"round": %s, "driverExit": %s' "$round" "$drc")"
       # THE SCREEN IT JUST WALKED TO IS A SCREEN THE LAYOUT PASS MUST SEE
       # (part D), and its parts are parts to pair with the drawing (part B).
@@ -2251,7 +2470,9 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   shotlist="$(ls "$shots"/*.png 2>/dev/null | sed 's|.*/||; s|\.png$||' | tr '\n' ' ' | sed 's/ $//')"
 
   if [ -z "$verdict" ]; then
-    # THREE ROUNDS, NO VERDICT. A judge that will not decide is not a pass.
+    # EVERY ROUND SPENT, NO VERDICT. A judge that will not decide is not a
+    # pass. The sentence quotes $XO_MAX_ROUNDS rather than a number of its own,
+    # so lowering the ceiling can never leave the captain reading "three".
     local why="Number One could not reach a verdict in $XO_MAX_ROUNDS rounds"
     local nodecide="I looked but never reached a verdict, so nothing on your list is vouched for either way"
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "sawShots": %s,\n  "summary": %s\n}\n' \
@@ -2800,6 +3021,10 @@ cmd_recheck() {
   journal "$dir" relaunched \
     "$(printf '"url": %s, "commit": %s, "branchNote": %s' \
          "$(jstr "$lurl")" "$(jstr "${XO_RECHECK_SHA:-}")" "$(jstr "${XO_RECHECK_NOTE:-}")")"
+  # THE RELAUNCHED TREE IS REMEMBERED TOO (S221). A recheck drives the build the
+  # same way a look does, and it runs the project's suite afterwards — so it
+  # gets the same guarantee: whatever the browser leaves behind is put back.
+  xo_tree_mark "$(json_field "$dir/launch.json" worktree)" "$xodir/tree-mark"
 
   local drc=0
   "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
@@ -2817,6 +3042,7 @@ cmd_recheck() {
       "$(printf '"stage": "verify", "reason": "browser-failed", "detail": %s' \
            "$(jstr "$(head -1 "$xodir/drive-recheck.err" 2>/dev/null)")")"
   fi
+  xo_tree_restore "$dir"
   journal "$dir" looked "$(printf '"round": %s, "shots": %s, "shotsDir": %s' \
     "$(jstr "$look")" \
     "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \

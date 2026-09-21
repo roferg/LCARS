@@ -1223,6 +1223,8 @@ var XO_ACTION_LABELS = {
   "fix-did-not-hold": "A fix did not hold",
   rescored: "Re-scored after the fixes", "stood-down": "Stood down",
   "ledger-note": "Noted something about the ledger",
+  tidied: "Put your build back as it found it",
+  "sweep-timeout": "A look ran out of time",
 };
 
 function xoActionLabel(entry) {

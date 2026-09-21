@@ -2441,6 +2441,9 @@ _NUMBER_ONE_LABELS = {
     "rescored": "Re-scored after the fixes",
     "stood-down": "Stood down",
     "ledger-note": "Noted something about the ledger",
+    # S221 — the two things a look now records about itself.
+    "tidied": "Put your build back as it found it",
+    "sweep-timeout": "A look ran out of time",
 }
 _NUMBER_ONE_DETAIL_KEYS = ("detail", "why", "note", "summary", "answer",
                            "rationale", "url")

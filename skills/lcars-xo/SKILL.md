@@ -313,10 +313,18 @@ The order is the contract:
    a recheck relaunches the build from the FIXED branch, so the first look's
    test run is about code that no longer exists. Carrying it forward would be
    the S204 stale-shots defect in another costume.
-4. **Up to three worker rounds.** Each round Number One writes EITHER
-   `xo-actions.json` (it wants to look further — at most 12 actions, every
-   screenshot named) OR `xo-verdict.json`. No verdict by the end of round three
-   is a **LOW** that lists what it saw.
+4. **Up to `$LCARS_XO_MAX_ROUNDS` worker rounds — TWO by default** (the ceiling
+   came down from three on 2026-09-20: over five real-arm runs the third round
+   changed nothing). Each round Number One writes EITHER `xo-actions.json` (it
+   wants to look further — at most 12 actions, every screenshot named; the
+   vocabulary is `navigate` / `click` / `type` / `press` / `wait` / `screenshot`,
+   and `press` takes a **`hold` in milliseconds** (S221) because a tap cannot
+   move anything that moves only while a key is DOWN — a game character walks a
+   couple of pixels on a tap and one 32px tile on a 250ms hold, and a look that
+   taps at one is reading a readout that had no reason to change) OR
+   `xo-verdict.json`. No verdict by the end of the last round is a **LOW** that
+   lists what it saw. The number lives in `xo.sh` alone and is exported into
+   the worker's prompt, so the model is told the budget it actually has.
 5. **The score is RECOMPUTED from the ledger** (`xo-score.py`). The model
    reasons; the skill decides:
 
@@ -419,6 +427,12 @@ Verify: …"* — journals `swept` on each, and runs them **one at a time**.
 missions, so `lcars xo off` during a round ends the sweep after that round —
 never in the middle of one. `LCARS_XO_SWEEP=0` turns the sweep off entirely;
 `LCARS_XO_SWEEP_BIN` is the per-mission command a test drives it with.
+
+**Each swept look is CAGED** at `$LCARS_XO_LOOK_TIMEOUT` seconds (default 2700 —
+45 minutes, the benchmark rig's own limit). A look that outstays it is stopped,
+said out loud naming the mission and the limit, and journaled as `sweep-timeout`
+on that mission; the sweep then carries on to the next one. A stopped look has
+scored nothing and never reads as a quiet success.
 
 ## The engine picker
 

@@ -30,7 +30,7 @@ an empty journey and the look is exactly what it was before.
 
 Usage:
   xo-journey.py build --criteria <criteria.json> [--drawing <drawing-parts.json>]
-                      [--drawing-html <the drawing itself>]
+                      [--drawing-html <the drawing itself>] [--prd <prd.md>]
                       --out <journey.json> [--criteria-out <criteria.json>]
   xo-journey.py carry --walk <walk.json> --out <observations-fragment.json>
 """
@@ -57,6 +57,84 @@ SCREEN_ID = re.compile(r"^(?:screen[-_]?(.+)|(.+?)[-_]screen)$", re.I)
 TYPEABLE = ("textarea", "input")
 MONTH = re.compile(r"\b(january|february|march|april|may|june|july|august|"
                    r"september|october|november|december)\s+(20\d\d)\b", re.I)
+
+# ── A KEY IS A CONTROL (S221 fix 7) ────────────────────────────────────────
+#
+# WHY THIS EXISTS. On 2026-09-20 this planner read a PRD that says, in plain
+# English and twice, "walk the character around the village with the arrow
+# keys" and "updates live as they walk" — and emitted `"steps": []`. It was not
+# wrong by its own lights: all three of its sources are about CLICKING, and its
+# whole vocabulary is buttons, forms, screens and gates. A canvas game has no
+# named controls, no screens and no fields, so it correctly found nothing by a
+# definition of "flow" that never imagined a keyboard. The walk that night
+# happened because the model improvised, and a guarantee that depends on the
+# model's willingness is not a guarantee: a lazier one grades a still frame and
+# is correct by the machinery's lights.
+#
+# WHAT COUNTS AS THE RECORD NAMING A KEY. Both halves, in ONE sentence:
+#   (a) a key NAMED from the closed list below — "the arrow keys", "ArrowUp",
+#       "WASD", "F3", "the Enter key", "press Escape". Never a bare English
+#       word: `Return`, `Space`, `Tab`, `Delete` and the single letters only
+#       count next to the word "key" or a press verb, because they are ordinary
+#       prose everywhere else.
+#   (b) a RESPONSE verb tying the BUILD to that key in the same sentence —
+#       walk, move, drive, steer, navigate, toggle, press, hold, respond,
+#       switch, open, close, trigger.
+#
+# WHAT IT DELIBERATELY WILL NOT MATCH, and these are the rows the tests pin:
+#   · a sentence that names a key and then DENIES the build responds to it.
+#     This PRD's own "so you see it without pressing any key" is the trap, and
+#     it is one `without pressing` away from inventing a walk out of a sentence
+#     that says the opposite.
+#   · anything under `## Out of Scope`. That section is about what NOT to
+#     change — "leave its F3 toggle exactly as they are" names a key in a
+#     sentence whose whole point is to stay away from it.
+#   · a key mentioned with no response verb at all: "the keyboard shortcut is
+#     documented in README" names nothing this can walk.
+#
+# Three rounds in this repo have been lost to a regex reading the captain's own
+# prose (S147, S156, S188), and the captain writes PRDs ABOUT the things being
+# parsed. So this is the narrowest rule that covers the case, both halves are
+# required, and the misses are encoded as tests so a flattering number cannot
+# drift into a looser one.
+
+# The arrow keys and WASD, named as a set. These are MOVEMENT.
+ARROWS_SET = re.compile(r"\barrow[\s-]?keys\b", re.I)
+WASD_SET = re.compile(r"\b(wasd|w\s*/\s*a\s*/\s*s\s*/\s*d|w,\s*a,\s*s,\s*d)\b", re.I)
+# One named arrow, spelled the way a key event spells it.
+ARROW_ONE = re.compile(r"\bArrow(Up|Down|Left|Right)\b")
+# A function key. Unambiguous enough to stand alone — but the response verb is
+# still required, so "F3" in a spreadsheet sense cannot become a step.
+FKEY = re.compile(r"\bF(1[0-2]|[1-9])\b")
+# The word-like keys, which are ordinary English and therefore only count when
+# the sentence says they are KEYS: "the Enter key", "press Escape", "hold Tab".
+WORD_KEYS = "enter|return|escape|esc|tab|space|spacebar|backspace|delete|shift"
+NAMED_KEY = re.compile(r"\b(?:the\s+)?(%s)\s+key\b" % WORD_KEYS, re.I)
+PRESSED_KEY = re.compile(r"\b(?:press|presses|pressing|hit|hits|hold|holds|holding)\s+"
+                         r"(?:the\s+|and\s+hold\s+)?(%s)\b" % WORD_KEYS, re.I)
+# The build DOING something because of the key. Without one of these a sentence
+# merely mentions a key.
+RESPONDS = re.compile(r"\b(walk|walks|walking|move|moves|moving|drive|drives|driving|"
+                      r"steer|steers|steering|navigat\w*|toggle\w*|press\w*|hold|holds|holding|"
+                      r"respond\w*|switch\w*|open|opens|close|closes|trigger\w*|scroll\w*)\b", re.I)
+# THE VETO. Any of these in the sentence and it is not a step, whatever else it
+# says. `without pressing` is this very mission's own trap.
+KEY_VETO = re.compile(r"\bwithout\s+(?:pressing|holding|touching|using|having)|"
+                      r"\bno\s+need\s+to\s+press|"
+                      r"\bdoes\s+not\s+(?:respond|require|need|use)|"
+                      r"\bnever\s+(?:press|respond|move)|"
+                      r"\bmust\s+not\b|\bdo\s+not\s+(?:add|change|touch)|"
+                      r"\bleave\s+.{0,40}\bas\s+(?:they|it)\s+(?:are|is)\b|"
+                      r"\bout\s+of\s+scope\b", re.I)
+# The movement words — which keys get HELD (see key_steps).
+MOVEMENT = re.compile(r"\b(walk\w*|mov\w*|driv\w*|steer\w*|run\w*|scroll\w*)\b", re.I)
+SENTENCE = re.compile(r"[^.!?\n]+[.!?\n]?")
+# A movement key is held long enough to travel: the example game moves at
+# 128px/s, so 250ms is one 32px tile. A tap moves it ~2px and is
+# indistinguishable from a dead key — which is the false DIDN'T-WORK this
+# whole session exists to stop.
+MOVE_HOLD_MS = 250
+KEY_STEP_CAP = 3
 
 # A criterion naming a control and what it leads to: the PRD's own step.
 NAMED_ROUTE = re.compile(
@@ -215,7 +293,104 @@ def gate_control(members):
     return None
 
 
-def build(criteria, drawing, html_screens=None, title=""):
+def prd_prose(path):
+    """The PRD's own words, MINUS `## Out of Scope`.
+
+    That section exists to say what not to change, so every key it names is a
+    key to stay away from. Dropping it whole is cheaper and far safer than
+    trying to read intent out of each of its sentences.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+    except Exception:
+        return ""
+    out, skipping = [], False
+    for line in raw.splitlines():
+        if line.lstrip().startswith("#"):
+            skipping = bool(re.search(r"out\s+of\s+scope|non[- ]goals?", line, re.I))
+        if not skipping:
+            out.append(line)
+    # UNWRAP THE PARAGRAPHS FIRST. A PRD is hard-wrapped at about eighty
+    # columns, so "walk the character around the village with the" ends one
+    # line and "arrow keys" begins the next — and a sentence splitter that
+    # treats a newline as a full stop sees a verb with no key followed by a key
+    # with no verb, and matches neither. Measured on this mission's own PRD:
+    # unwrapped it found F3 and nothing else. A blank line, a bullet and a
+    # heading are real boundaries and stay; a bare wrap is joined.
+    joined, buf = [], []
+    for line in out:
+        st = line.strip()
+        if not st or st.startswith(("-", "*", "#", "|", "```")) or re.match(r"^\d+[.)]\s", st):
+            if buf:
+                joined.append(" ".join(buf)); buf = []
+            joined.append(line)
+        else:
+            buf.append(st)
+    if buf:
+        joined.append(" ".join(buf))
+    return "\n".join(joined)
+
+
+def key_steps(sentences):
+    """Steps for the keys the RECORD names, and only those.
+
+    One sentence at a time, because the veto has to sit next to the key it
+    vetoes: read the whole document as one blob and "without pressing any key"
+    is three paragraphs away from "with the arrow keys" and cancels nothing.
+    """
+    found, why = [], []
+    for raw in sentences:
+        sent = norm(raw)
+        if not sent or not RESPONDS.search(sent) or KEY_VETO.search(sent):
+            continue
+        moving = bool(MOVEMENT.search(sent))
+        keys = []
+        # MOVEMENT SETS. "the arrow keys" is the record naming a way to walk,
+        # so it becomes a walk on BOTH axes — one step is not enough to show a
+        # readout tracks a player, since a column that moves and a row that
+        # does not is exactly the half-working build this must catch.
+        if ARROWS_SET.search(sent):
+            keys += [("ArrowRight", True), ("ArrowDown", True)]
+        if WASD_SET.search(sent):
+            keys += [("d", True), ("s", True)]
+        for m in ARROW_ONE.finditer(sent):
+            keys.append(("Arrow" + m.group(1), True))
+        for m in FKEY.finditer(sent):
+            keys.append((m.group(0).upper(), False))
+        for rx in (NAMED_KEY, PRESSED_KEY):
+            for m in rx.finditer(sent):
+                name = m.group(1).lower()
+                keys.append(({"esc": "Escape", "return": "Enter",
+                              "spacebar": "Space"}.get(name, name.title()), False))
+        if not keys:
+            continue
+        for name, is_move in keys:
+            # THE HOLD RULE. A key the record ties to MOVEMENT is held, because
+            # a build that moves continuously moves ~2px on a tap and looks
+            # broken. Everything else is a tap: holding Enter or F3 is not what
+            # a person does and repeat-fires on some builds.
+            hold = MOVE_HOLD_MS if (is_move and moving) else 0
+            found.append({
+                "do": "press", "pressKey": name, "hold": hold,
+                "times": 3 if hold else 1, "match": [],
+                "name": ("hold %s and watch what changes" % name) if hold
+                        else ("press %s and watch what changes" % name),
+                "expect": "the screen answers the key — whatever the record says "
+                          "follows it is different afterwards",
+                "why": "the record names this key: %s" % sent[:140]})
+        why.append("the keys the record names")
+    # De-duplicated on the key itself, longest hold wins, and capped so a
+    # chatty record cannot fill the journey with keystrokes.
+    best = {}
+    for st in found:
+        cur = best.get(st["pressKey"])
+        if not cur or st["hold"] > cur["hold"]:
+            best[st["pressKey"]] = st
+    return list(best.values())[:KEY_STEP_CAP], (why[:1] if found else [])
+
+
+def build(criteria, drawing, html_screens=None, title="", prd=""):
     crit = [c for c in (criteria or {}).get("criteria") or [] if isinstance(c, dict)]
     prd_text = low(" ".join(str(c.get("text") or "") for c in crit))
     scr = html_screens or (screens_of(drawing) if drawing else [])
@@ -224,10 +399,12 @@ def build(criteria, drawing, html_screens=None, title=""):
     # the record describes, and only then finish the flow. The gate closes the
     # journey because locking a month is the last thing anyone does to it.
     walk_steps, gate_blank, fills, fill_all, routes, gate_filled = [], [], [], [], [], []
+    keys = []
     why_from, seen = [], set()
 
     def mk(bucket, step):
-        k = low(" ".join(step.get("match") or [])) + "|" + step["do"] + "|" + str(step.get("phase") or "")
+        k = (low(" ".join(step.get("match") or [])) + "|" + step["do"] + "|"
+             + str(step.get("phase") or "") + "|" + str(step.get("pressKey") or ""))
         if k in seen:
             return
         seen.add(k)
@@ -343,9 +520,25 @@ def build(criteria, drawing, html_screens=None, title=""):
         t = norm(t)
         if t and t not in entry:
             entry.append(t)
+    # ── THE KEYS THE RECORD NAMES (S221 fix 7) ──────────────────────────
+    # Every criterion as its own sentence, plus the PRD's prose when the caller
+    # passed it — the Goal is where the captain says how the build is USED
+    # ("walk the character around the village with the arrow keys"), and none
+    # of that survives into the acceptance criteria this planner used to read.
+    sentences = [c.get("text") or "" for c in crit]
+    if prd:
+        sentences += SENTENCE.findall(prd)
+    ks, kwhy = key_steps(sentences)
+    for st in ks:
+        mk(keys, st)
+    why_from.extend(kwhy)
+
     # The whole-form fill sits directly before the gate it exists to make
-    # meaningful, after the side trips that may have navigated away.
-    steps = (walk_steps + gate_blank + fills + routes + fill_all + gate_filled)[:STEP_CAP]
+    # meaningful, after the side trips that may have navigated away. THE KEYS
+    # GO AFTER THE CLICK-DRIVEN JOURNEY, never in front of it: on a build that
+    # has both, the flow the drawing describes is the thing being proved and a
+    # keystroke must not be what pushes its last step past the cap.
+    steps = (walk_steps + gate_blank + fills + routes + keys + fill_all + gate_filled)[:STEP_CAP]
     for i, st in enumerate(steps):
         st["key"] = st.get("key") or ("j%d" % (i + 1))
     src = []
@@ -470,7 +663,7 @@ def main(argv):
         drawing = load(opt("drawing"), None)
         html = opt("drawing-html")
         j = build(criteria, drawing, screens_from_html(html) if html else [],
-                  title=opt("title", ""))
+                  title=opt("title", ""), prd=prd_prose(opt("prd", "")))
         out = opt("out")
         if out:
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)

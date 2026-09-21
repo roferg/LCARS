@@ -131,6 +131,152 @@ check "F1-4 a mission whose record describes no flow gets no journey (and no wal
    \"\$PY\" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))[\"steps\"]==[] else 1)' '$TMPROOT/empty.json'"
 
 # ===========================================================================
+# F4 (S221 fix 7). A KEY IS A CONTROL.
+#
+# THE DEFECT. This planner read a PRD that says, twice and in plain English,
+# "walk the character around the village with the arrow keys" and "updates live
+# as they walk" — and emitted `"steps": []`. All three of its sources were
+# about CLICKING; a canvas game has no named controls, no screens and no
+# fields, so it found nothing by a definition of flow that never imagined a
+# keyboard. The walk that night happened because the model improvised, and a
+# guarantee that depends on the model's willingness is not a guarantee.
+#
+# THE RISK IN THE FIX, which is why half these rows are MISSES: the captain
+# writes PRDs ABOUT the things being parsed, and three rounds in this repo have
+# been lost to a regex reading his prose (S147, S156, S188). A pattern that
+# matched every mention of a key would look like a triumph on the row below and
+# invent walks out of sentences that say the opposite. So the misses are pinned
+# here, where a loosened rule cannot quietly pass.
+# ===========================================================================
+echo
+echo "F4. a key is a control — the record names one, the planner walks it"
+
+kj() { # <criteria-json-text> [prd-text] — prints the journey json path
+  local dir="$TMPROOT/kj$RANDOM"; mkdir -p "$dir"
+  printf '%s' "$1" >"$dir/criteria.json"
+  if [ $# -gt 1 ]; then printf '%s' "$2" >"$dir/prd.md"; fi
+  "$PY" "$JOURNEY" build --criteria "$dir/criteria.json" \
+    ${2:+--prd "$dir/prd.md"} --out "$dir/journey.json" >/dev/null 2>&1
+  printf '%s' "$dir/journey.json"
+}
+# what keys a journey presses, in order, as "KEY:HOLD" pairs
+keys_of() {
+  "$PY" -c 'import json,sys
+j=json.load(open(sys.argv[1]))
+print(" ".join("%s:%s" % (s["pressKey"], s["hold"]) for s in j["steps"] if s["do"]=="press"))' "$1"
+}
+
+C_NONE='{"criteria":[{"id":"c1","text":"The header shows the project name."}]}'
+
+# --- THE HIT: the record names the keys, so the journey presses them --------
+J1="$(kj "$C_NONE" 'When I run the example game I can walk the character around
+the village with the arrow keys, and the readout updates live as they walk.')"
+check "F4-1 \"walk … with the arrow keys\" becomes press steps on BOTH axes" \
+  "[ \"\$(keys_of '$J1')\" = 'ArrowRight:250 ArrowDown:250' ]"
+check "F4-2 …and a movement key is HELD, not tapped (a tap moves a game ~2px)" \
+  "\"\$PY\" -c 'import json,sys
+j=json.load(open(sys.argv[1]))
+p=[s for s in j[\"steps\"] if s[\"do\"]==\"press\"]
+sys.exit(0 if p and all(s[\"hold\"]==250 and s[\"times\"]==3 for s in p) else 1)' '$J1'"
+check "F4-3 …each step says what it expects to be DIFFERENT afterwards" \
+  "\"\$PY\" -c 'import json,sys
+j=json.load(open(sys.argv[1]))
+p=[s for s in j[\"steps\"] if s[\"do\"]==\"press\"]
+sys.exit(0 if p and all(\"different\" in (s.get(\"expect\") or \"\") for s in p) else 1)' '$J1'"
+check "F4-4 …and each is its OWN requirement in the contract, by name" \
+  "\"\$PY\" -c 'import json,sys
+j=json.load(open(sys.argv[1]))
+sys.exit(0 if any(s[\"do\"]==\"press\" and s.get(\"key\",\"\").startswith(\"j\") for s in j[\"steps\"]) else 1)' '$J1'"
+check "F4-5 the source SAYS where the steps came from" \
+  "grep -q 'the keys the record names' '$J1'"
+
+# A TOGGLE IS TAPPED, NOT HELD. Holding F3 or Enter is not what a person does.
+J2="$(kj '{"criteria":[{"id":"c1","text":"The debug overlay is toggled by F3 and its visibility does not depend on the readout."}]}')"
+check "F4-6 a NON-movement key is tapped, never held" \
+  "[ \"\$(keys_of '$J2')\" = 'F3:0' ]"
+J3="$(kj '{"criteria":[{"id":"c1","text":"Pressing the Escape key closes the dialog."}]}')"
+check "F4-7 \"the Escape key\" + a response verb is a step, tapped" \
+  "[ \"\$(keys_of '$J3')\" = 'Escape:0' ]"
+
+# ===========================================================================
+# THE KNOWN MISSES. Every one of these NAMES a key. None of them is the record
+# saying the build responds to one, and a widened pattern makes them all pass.
+# ===========================================================================
+echo
+echo "F4 MISSES. named keys that must NOT become steps"
+
+# THIS MISSION'S OWN TRAP, verbatim from its PRD. It contains "pressing" and
+# "key" and sits two lines from a sentence that does name the arrow keys.
+J4="$(kj "$C_NONE" 'It should be on by default when the game runs in dev mode,
+so you see it without pressing any key.')"
+check "F4-M1 \"without pressing any key\" invents nothing (the PRD's own trap)" \
+  "[ -z \"\$(keys_of '$J4')\" ]"
+
+# OUT OF SCOPE is about what NOT to touch. Every key it names is a key to leave
+# alone — and this PRD names F3 there, in a sentence with "toggle" in it.
+J5="$(kj "$C_NONE" '## Goal
+Show the tile readout.
+
+## Out of Scope
+The existing F3 debug overlay — leave its contents and its F3 toggle exactly as
+they are. Do not change how the arrow keys move the player.')"
+check "F4-M2 a key named under \"Out of Scope\" is NOT a step" \
+  "[ -z \"\$(keys_of '$J5')\" ]"
+
+# A KEY WITH NO RESPONSE VERB is a mention, not a flow.
+J6="$(kj '{"criteria":[{"id":"c1","text":"The keyboard shortcuts, including F3 and the Enter key, are listed in README.md."}]}')"
+check "F4-M3 a key MENTIONED with no response verb is not a step" \
+  "[ -z \"\$(keys_of '$J6')\" ]"
+
+# ORDINARY ENGLISH. "return", "space", "tab" and "delete" are words long before
+# they are keys; only "the X key" or "press X" makes them one.
+J7="$(kj '{"criteria":[{"id":"c1","text":"The user can return to the dashboard, and the delete control removes the row; white space is preserved when the table moves."}]}')"
+check "F4-M4 the words return/delete/space are not keys just because they appear" \
+  "[ -z \"\$(keys_of '$J7')\" ]"
+
+# A DENIAL. The build explicitly does not answer the key.
+J8="$(kj '{"criteria":[{"id":"c1","text":"The panel does not respond to the arrow keys; it must not move when they are pressed."}]}')"
+check "F4-M5 a sentence that DENIES the build answers the key is not a step" \
+  "[ -z \"\$(keys_of '$J8')\" ]"
+
+# THE UNCHANGED BASELINE. A record that names no key at all is exactly what it
+# was — this is the row that catches a pattern matching everything.
+J9="$(kj "$C_NONE" 'The header shows the project name and the footer shows the version.')"
+check "F4-M6 a record with no key in it produces no journey at all, as before" \
+  "\"\$PY\" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))[\"steps\"]==[] else 1)' '$J9'"
+
+# --- THE CAP: keys never push the click-driven journey out ------------------
+check "F4-8 at most 3 key steps, so a chatty record cannot fill the journey" \
+  "\"\$PY\" -c 'import json,sys
+j=json.load(open(sys.argv[1]))
+sys.exit(0 if len([s for s in j[\"steps\"] if s[\"do\"]==\"press\"]) <= 3 else 1)' \
+   \"\$(kj '{\"criteria\":[{\"id\":\"c1\",\"text\":\"Pressing the Enter key submits; the Escape key closes it; the Tab key moves focus; F3 toggles the overlay; F4 toggles the grid; the arrow keys walk the player.\"}]}')\""
+
+# ===========================================================================
+# F4-REAL. THE REGRESSION THAT WOULD HAVE CAUGHT THIS: the mission's OWN
+# record, on disk, the exact input that produced `"steps": []` last night.
+# Read-only — the capstone checkout is never written to.
+# ===========================================================================
+echo
+echo "F4-REAL. the mission's own record now emits a walk"
+REALM="$HOME/Projects/groutwork-capstone/.git/lcars/missions/lcars-20260920-001-fea3"
+if [ -s "$REALM/xo/criteria.json" ] && [ -s "$REALM/prd.md" ]; then
+  "$PY" "$JOURNEY" build --criteria "$REALM/xo/criteria.json" --prd "$REALM/prd.md" \
+    --title "Example game: show the player's live tile coordinates on screen in dev mode" \
+    --out "$TMPROOT/real-journey.json" >/dev/null 2>&1
+  check "F4-R1 the real mission's record now produces press steps (it produced NONE)" \
+    "\"\$PY\" -c 'import json,sys
+j=json.load(open(sys.argv[1]))
+sys.exit(0 if [s for s in j[\"steps\"] if s[\"do\"]==\"press\"] else 1)' '$TMPROOT/real-journey.json'"
+  check "F4-R2 …the arrow keys, HELD, on both axes — the walk it had to improvise" \
+    "[ \"\$(keys_of '$TMPROOT/real-journey.json')\" = 'F3:0 ArrowRight:250 ArrowDown:250' ]"
+  check "F4-R3 …and its own F3 criterion is walked too, as a tap" \
+    "grep -q '\"pressKey\": \"F3\"' '$TMPROOT/real-journey.json'"
+else
+  printf '  (the S221 mission record is not on this machine — F3-REAL SKIPPED)\n'
+fi
+
+# ===========================================================================
 # F2. THE WALK ITSELF — real headless Chrome, real clicks, real typing.
 # ===========================================================================
 echo
@@ -484,6 +630,45 @@ check "G-5 standing down mid-round stops the chain AFTER that mission, not befor
 check "G-6 the sweep is journaled on each mission it takes" \
   "grep -q 'swept' '$g1/.git/lcars/missions/lcars-unscored/journal.jsonl' 2>/dev/null || \
    grep -rq 'swept' '$g1/.git/lcars/missions/lcars-unscored/' 2>/dev/null"
+
+# ---------------------------------------------------------------------------
+# G-7..G-10 — THE SWEEP'S LOOK IS CAGED, like every other look (S221).
+#
+# THE DEFECT (captain, 2026-09-20): the bench caps a look at 45 minutes; the
+# look `lcars xo on` launched had no time limit at all, so one build that would
+# not answer could hold the sweep — and every mission queued behind it — open
+# all night. His words: it should "limit the time like the normal pathway does".
+# The cage is xo_cage, the same helper the seed and the project's own suite use.
+# ---------------------------------------------------------------------------
+g5="$(new_repo)"
+plant "$g5" lcars-slow verify >/dev/null
+plant "$g5" lcars-next verify >/dev/null
+cat >"$TMPROOT/hangbin" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >>"$SWEEPLOG"
+sleep 30
+EOF
+chmod +x "$TMPROOT/hangbin"
+: >"$SWEEPLOG"
+started="$(date +%s)"
+( cd "$g5" && LCARS_XO_SWEEP_BIN="$TMPROOT/hangbin" LCARS_XO_LOOK_TIMEOUT=2 \
+    LCARS_COPILOT_BIN=/usr/bin/true \
+    bash "$SCRIPT" on --engine copilot ) >"$TMPROOT/on5.out" 2>&1
+elapsed=$(( $(date +%s) - started ))
+check "G-7 a sweep look that outstays the cage is stopped, not waited on" \
+  "[ '$elapsed' -lt 20 ]"
+check "G-8 …and it says so LOUDLY, naming the mission and the limit" \
+  "grep -qi 'lcars-slow' '$TMPROOT/on5.out' && \
+   grep -qi 'still looking after' '$TMPROOT/on5.out'"
+check "G-9 …it is journaled on that mission, so a half-verdict cannot pass for a look" \
+  "grep -q 'sweep-timeout' '$g5/.git/lcars/missions/lcars-slow/number-one.jsonl'"
+check "G-10 …and the sweep carries on to the next mission" \
+  "grep -q 'lcars-next' '$SWEEPLOG'"
+
+# The cage's DEFAULT is the same 45 minutes the bench pathway uses, and the
+# override is the only place the number may come from.
+check "G-11 the default cage is 45 minutes (2700s), stated once" \
+  "grep -q 'XO_LOOK_TIMEOUT=\"\${LCARS_XO_LOOK_TIMEOUT:-2700}\"' '$REPO_ROOT/skills/lcars-xo/xo.sh'"
 
 echo
 printf '  %d passed, %d failed\n' "$pass" "$fail"

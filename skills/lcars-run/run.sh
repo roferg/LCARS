@@ -14998,8 +14998,21 @@ spawn_number_one() { # mission-id  mode  outdir
     recheck)  outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
     *)        outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
   esac
+  # THE ROUND BUDGET, WHEN THERE IS ONE (S221). `xo.sh` exports its own
+  # $XO_MAX_ROUNDS as $LCARS_XO_MAX_ROUNDS before it spawns an `evaluate`
+  # worker, and this prints whatever that says. There is deliberately NO
+  # default here: a second default is a second place for the number to live,
+  # and the prompt that used to say "three rounds in total" outlived the cap
+  # it described. Unset (a hand-run spawn), the line simply does not appear.
+  local rounds_line=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_MAX_ROUNDS:-}" ]; then
+    rounds_line="
+Your round budget: ${LCARS_XO_MAX_ROUNDS} round(s) of looking, in total. Ask for
+more actions only while rounds remain; with none left you must write a verdict."
+  fi
   local extra="## The mission
 Mission id: $id
+$rounds_line
 
 ## Your input directory — the mission's RECORD, read-only
 $indir

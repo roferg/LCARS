@@ -1334,17 +1334,27 @@ check "B10d. it says so out loud too" \
   "printf '%s' \"\$outD\" | grep -q 'the ledger decides'"
 
 # --------------------------------------------------------------------------
-# B10e. THE ACTION ROUNDS — at most three, and round four is never spawned.
+# B10e. THE ACTION ROUNDS — at most TWO, and round three is never spawned.
+#
+# THE CEILING CAME DOWN FROM THREE (captain's ruling, 2026-09-20). Measured over
+# five real-arm runs, the extra round bought nothing: 3 rounds → 4/5, 2 → 3/5,
+# 2 → 5/5, 1 → 5/5, 1 → 5/5. The worker already ends early against the cap; this
+# only lowers what it can never exceed. The env override is unchanged and is
+# proven below, because the benchmark rig raises it.
 # --------------------------------------------------------------------------
 repoE="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mE="$(plant_verify "$repoE" "lcars-20260913-005")"
 : >"$XO_WORKER_LOG"; : >"$XO_DRIVE_LOG"
 outE="$(XO_EV_ROUNDS=9 xo_evaluate "$repoE" "lcars-20260913-005")"
-check "B10e. exactly THREE workers were hired, never a fourth" \
-  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" = '3' ]"
-check "B10e. no verdict in three rounds → LOW" "[ \"\$(xo_state '$mE' score)\" = 'low' ]"
-check "B10e. …saying exactly that" \
-  "grep -q 'could not reach a verdict in 3 rounds' '$mE/xo/verdict.json'"
+check "B10e. exactly TWO workers were hired, never a third" \
+  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" = '2' ]"
+check "B10e. no verdict in two rounds → LOW" "[ \"\$(xo_state '$mE' score)\" = 'low' ]"
+check "B10e. …saying exactly that, with the cap it actually ran to" \
+  "grep -q 'could not reach a verdict in 2 rounds' '$mE/xo/verdict.json'"
+check "B10e. …and the printed round line counts to the same cap" \
+  "printf '%s' \"\$outE\" | grep -q 'round 1 of 2' && \
+   printf '%s' \"\$outE\" | grep -q 'round 2 of 2' && \
+   ! printf '%s' \"\$outE\" | grep -q 'round 3 of'"
 check "B10e. …and LISTING what it did see" \
   "grep -q '\"sawShots\"' '$mE/xo/verdict.json' && grep -q 'shot-01' '$mE/xo/verdict.json'"
 check "B10e. the driver was handed the worker's action list" \
@@ -1363,6 +1373,24 @@ XO_EV_ROUNDS=1 XO_EV_ACTIONS="$BIG" XO_EV_BODY="$(ev_verdict met met met high ''
   xo_evaluate "$repoE2" "lcars-20260913-006" >/dev/null 2>&1
 check "B10e. a 20-action ask is journaled AS 20, against the cap of 12" \
   "grep -q '\"asked\": 20' '$mE2/number-one.jsonl' && grep -q '\"cap\": 12' '$mE2/number-one.jsonl'"
+
+# THE OVERRIDE IS UNCHANGED. $LCARS_XO_MAX_ROUNDS still raises (or lowers) the
+# ceiling exactly as it did — the benchmark rig and the fix-round drives set it,
+# and a default that could not be overridden would strand them.
+repoE3="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mE3="$(plant_verify "$repoE3" "lcars-20260913-0061")"
+: >"$XO_WORKER_LOG"
+# The override goes in the ENVIRONMENT, not in xo_evaluate's extra arguments.
+# A word that only becomes `VAR=value` AFTER expansion is not an assignment —
+# bash decides that before it expands `"$@"` — so passing it as an argument
+# makes it the COMMAND, and the row silently measures nothing. (The same trap
+# xo_evaluate_with was written for.) xo_evaluate does not name this variable in
+# its own prefix list, so an inherited one reaches xo.sh untouched.
+outE3="$(XO_EV_ROUNDS=9 LCARS_XO_MAX_ROUNDS=4 xo_evaluate "$repoE3" "lcars-20260913-0061")"
+check "B10e. \$LCARS_XO_MAX_ROUNDS still sets the ceiling (4 → four workers)" \
+  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" = '4' ]"
+check "B10e. …and the refusal quotes the cap that was actually in force" \
+  "grep -q 'could not reach a verdict in 4 rounds' '$mE3/xo/verdict.json'"
 
 # --------------------------------------------------------------------------
 # B10f. THE LABEL IS THE SCORE (one source per fact) — and the other two go.
@@ -3424,8 +3452,8 @@ XO_FAKE_WORKTREE="$WT24D" XO_EV_ROUNDS=2 XO_EV_BODY="$(ev_verdict met met met hi
 n24d="$(grep -c . "$WT24D/times-run.txt" 2>/dev/null)" || true
 check "B24d. the suite ran ONCE, however many worker rounds there were" \
   "[ \"${n24d:-0}\" -eq 1 ]"
-check "B24d. …and there were three rounds for it not to be re-run in" \
-  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" -ge 3 ]"
+check "B24d. …and there was more than ONE round for it not to be re-run in" \
+  "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" -ge 2 ]"
 
 # ==========================================================================
 # B25. THE HEADLINE — ONE LINE FOR THE BOARD CARD, RECORDED BY THE FINISHER
@@ -3479,6 +3507,137 @@ check "B25. …and that line says what it could not check, not that all is well"
 # verdict's own paragraph, so the First Officer's report can lead with it.
 check "B25. the scored journal entry carries the verdict's why-this-grade" \
   "python3 -c \"import json,sys;v=json.load(open('$m25/xo/verdict.json'));es=[json.loads(l) for l in open('$m25/number-one.jsonl') if l.strip()];s=[e for e in es if e.get('action')=='scored'];sys.exit(0 if s and s[-1].get('whyThisGrade')==v['whyThisGrade'] and v['whyThisGrade'] else 1)\""
+
+# ==========================================================================
+# B26 (S221) — THE WALK LEAVES THE BUILD AS IT FOUND IT.
+#
+# THE DEFECT (captain, 2026-09-20). Walking a build means TYPING into it. On the
+# groutwork build Number One typed an insight, the app autosaved it into the
+# LAUNCHED WORKTREE'S `data/` — where the project's snapshot tests read from —
+# and six of his own tests went red on a build that was fine. Number One rightly
+# refused to blame the build; unattended, the next round would have spent itself
+# chasing red tests the look itself caused.
+#
+# THIS IS A FILESYSTEM PROOF, NOT A PROMPT ONE. The worker is a shim and says
+# nothing; the whole question is what is left on disk when the look is over.
+# ==========================================================================
+echo
+echo "B26. the walk leaves the launched build's tracked tree exactly as it was"
+
+# A REAL git worktree standing in for the launched build, with the shapes that
+# matter: a TRACKED data file the app will autosave over, a file that was
+# already untracked before the walk (not ours to remove), and an IGNORED
+# directory (a blunt `git clean` would eat it).
+BUILD26="$TMPROOT/build26"
+rm -rf "$BUILD26"; mkdir -p "$BUILD26/data"
+git -C "$BUILD26" init -q
+git -C "$BUILD26" config user.email t@example.com
+git -C "$BUILD26" config user.name t
+printf 'node_modules/\n' >"$BUILD26/.gitignore"
+printf '{"notes": []}\n' >"$BUILD26/data/notes.json"
+printf 'expected snapshot\n' >"$BUILD26/data/snapshot.txt"
+git -C "$BUILD26" add -A >/dev/null 2>&1
+git -C "$BUILD26" commit -qm "the build" >/dev/null 2>&1
+mkdir -p "$BUILD26/node_modules"; printf 'dep\n' >"$BUILD26/node_modules/dep.js"
+printf 'someone else left this here\n' >"$BUILD26/scratch-of-its-own.txt"
+B26_BEFORE="$(git -C "$BUILD26" status --porcelain | sort)"
+B26_TRACKED="$(git -C "$BUILD26" rev-parse HEAD)"
+
+# A driver that TYPES: the app autosaves what was typed over a tracked file and
+# drops a new one beside it — exactly what the real walk provoked.
+DRIVE_TYPES="$EVDIR/xo-drive-types.sh"
+cat >"$DRIVE_TYPES" <<'DT'
+#!/usr/bin/env bash
+printf 'drive %s\n' "$*" >>"$XO_DRIVE_LOG"
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in --out) out="$2"; shift 2 ;; --url) url="$2"; shift 2 ;; *) shift ;; esac
+done
+mkdir -p "$out"
+n="$(ls "$out"/*.png 2>/dev/null | grep -c . | tr -d ' ')"
+printf 'PNG\n' >"$out/shot-0$((n+1)).png"
+printf '{"shot":"shot-0%s"}\n' "$((n+1))" >"$out/shot-0$((n+1)).json"
+printf 'shot-0%s — full page\n' "$((n+1))" >"$out/shot-0$((n+1)).txt"
+# THE AUTOSAVE. This is the app writing, not the harness: the insight Number
+# One typed lands in the build's own data directory.
+#
+# ONLY WHEN IT IS THE BUILD BEING WALKED (`--url http…`). The very same driver
+# is also pointed at the DRAWING (`--url file://…`) before the build is even
+# launched — and a fixture that typed on that pass wrote its autosave BEFORE
+# the tree was marked, so the diff came back empty and this row measured
+# nothing at all. It cost a round to find; the gate stays.
+case "$url" in
+  http*)
+    if [ -n "${XO_TYPE_INTO:-}" ] && [ -d "$XO_TYPE_INTO/data" ]; then
+      printf '{"notes": ["the KPI row never updates"]}\n' >"$XO_TYPE_INTO/data/notes.json"
+      printf 'typed at round\n' >>"$XO_TYPE_INTO/data/autosave.json"
+      # A WITNESS OUTSIDE THE BUILD. The autosave itself is what the fix
+      # deletes, so it cannot also be the proof that it ever existed.
+      printf 'typed at round\n' >>"${XO_TYPE_WITNESS:-/dev/null}"
+    fi ;;
+esac
+printf '{"url":"http://127.0.0.1:4310/","allPainted":true}\n'
+exit 0
+DT
+chmod +x "$DRIVE_TYPES"
+
+repo26="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m26="$(plant_verify "$repo26" "lcars-20260920-601")"
+: >"$XO_WORKER_LOG"
+out26="$( cd "$repo26" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+    XO_FAKE_WORKTREE="$BUILD26" XO_TYPE_INTO="$BUILD26" \
+    XO_TYPE_WITNESS="$TMPROOT/b26-typed.txt" \
+    XO_EV_BODY="$(ev_verdict met met met high '')" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB_WT" \
+    LCARS_XO_DRIVER="$DRIVE_TYPES" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+    LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" evaluate --mission "lcars-20260920-601" 2>&1 )"
+B26_AFTER="$(git -C "$BUILD26" status --porcelain | sort)"
+
+check "B26. the walk really did type into the build (the fixture is honest)" \
+  "grep -q 'typed at round' '$TMPROOT/b26-typed.txt'"
+check "B26. the tracked file the app autosaved over is back as it was" \
+  "[ \"\$(cat '$BUILD26/data/notes.json')\" = '{\"notes\": []}' ]"
+check "B26. the file the autosave created is gone" \
+  "[ ! -e '$BUILD26/data/autosave.json' ]"
+check "B26. the launched build's tracked tree is EXACTLY as the look found it" \
+  "[ \"\$B26_AFTER\" = \"\$B26_BEFORE\" ]"
+check "B26. …and nothing was committed, reset or rewritten to achieve that" \
+  "[ \"\$(git -C '$BUILD26' rev-parse HEAD)\" = '$B26_TRACKED' ]"
+check "B26. a file that was already untracked before the look is LEFT ALONE" \
+  "[ -f '$BUILD26/scratch-of-its-own.txt' ]"
+check "B26. …and so is an ignored directory (this is not a git clean)" \
+  "[ -f '$BUILD26/node_modules/dep.js' ]"
+check "B26. it is journaled, so the record says the look tidied up after itself" \
+  "grep -q '\"action\": \"tidied\"' '$m26/number-one.jsonl'"
+check "B26. …and said so in plain words" \
+  "printf '%s' \"\$out26\" | grep -q 'put the'"
+check "B26. the look still reached its verdict" "[ -s '$m26/xo/verdict.json' ]"
+
+# A build that is not a git worktree at all — nothing to mark, nothing to undo,
+# and above all nothing that fails the look.
+BUILD26B="$TMPROOT/build26b"; rm -rf "$BUILD26B"; mkdir -p "$BUILD26B/data"
+printf 'plain\n' >"$BUILD26B/data/notes.json"
+repo26b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m26b="$(plant_verify "$repo26b" "lcars-20260920-602")"
+: >"$XO_WORKER_LOG"
+( cd "$repo26b" && XO_WORKER_LOG="$XO_WORKER_LOG" \
+    XO_FAKE_WORKTREE="$BUILD26B" XO_TYPE_INTO="$BUILD26B" \
+    XO_EV_BODY="$(ev_verdict met met met high '')" \
+    LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB_WT" \
+    LCARS_XO_DRIVER="$DRIVE_TYPES" LCARS_NODE_BIN=bash \
+    LCARS_HOST_ADAPTER="$HOST_STUB" \
+    LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+    LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+    LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+    LCARS_OWNER_ENFORCE=0 \
+    bash "$SCRIPT" evaluate --mission "lcars-20260920-602" ) >/dev/null 2>&1
+check "B26. a build that is not a git worktree costs the look nothing" \
+  "[ -s '$m26b/xo/verdict.json' ]"
 
 # ==========================================================================
 # B7. ZERO SPEND — the shim recorded nothing at all.

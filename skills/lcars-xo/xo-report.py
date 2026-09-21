@@ -105,7 +105,10 @@ def _mission_meta(mdir):
 # what a line MEANT by matching words a human also writes. Every action here is
 # one `journal()` in xo.sh writes; an action nobody has classified ranks as a
 # step, which is the safe direction — a step is kept and folded, never dropped.
-NEEDS_YOU_ACTIONS = ("escalated", "overflow", "fix-did-not-hold")
+# S221: a look the cage stopped scored NOTHING, and the mission is still at
+# Verify with nobody's eye on it — that is his to pick up, not machinery.
+NEEDS_YOU_ACTIONS = ("escalated", "overflow", "fix-did-not-hold",
+                     "sweep-timeout")
 VERDICT_ACTIONS = ("scored", "rescored", "score-overruled", "answered",
                    "stood-down", "silent")
 

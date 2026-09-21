@@ -349,7 +349,7 @@ is not a screen the flow can get to, and he will read it that way.
 
 Legal actions: `{"navigate":"URL"}`, `{"click":"SEL"}`,
 `{"type":"SEL","text":"…"}`, `{"wait":MS}`,
-`{"press":"KEY"[, "selector":"SEL"][, "times":N][, "modifiers":["Shift"]]}`,
+`{"press":"KEY"[, "selector":"SEL"][, "times":N][, "hold":MS][, "modifiers":["Shift"]]}`,
 `{"screenshot":"name"[, "selector":"SEL"]}`.
 
 **`press` sends a real key to the page**, the way a finger does — so this is how
@@ -359,15 +359,35 @@ you check anything the keyboard drives. `ArrowUp`/`Down`/`Left`/`Right`, `Enter`
 `times` repeats it; `selector` puts the focus somewhere first; `modifiers` may
 name `Shift`, `Control`, `Alt` and `Meta`.
 
+**`hold` keeps the key DOWN, in milliseconds, and you will need it more often
+than you expect.** Without it a press is a tap: down and up in the same breath.
+That is right for a menu, a form, a focus walk — anything that happens ON the
+keystroke. It is useless for anything that happens WHILE the key is down. A
+game character that walks at a steady speed moves a couple of PIXELS on a tap
+and keeps walking for as long as you hold: on the build this was measured, a
+250ms hold is one whole 32px tile and a tap is about two pixels — invisible.
+So if you tap an arrow, look at a coordinate readout that has not changed, and
+write "the readout does not follow the player", **you will have failed a build
+that works.** When the thing under test MOVES, hold the key.
+
+`{"press":"ArrowRight","hold":250}` walks one tile. `times` composes with it as
+separate holds, not one long one — `{"press":"ArrowRight","hold":250,"times":3}`
+is three deliberate steps east, which is what you want when you are checking
+that a readout counts up by three. Hold as long as the thing needs; a very long
+hold, or a great many repeats of one, is trimmed and the trim is written into
+the record, so read what came back rather than assuming you got what you asked.
+
 **Use it when the thing you are checking only happens on a key.** If the build
 moves on the arrows, walking it and screenshotting the number BEFORE and AFTER
 is the difference between "the step counter is on the screen" and "the step
 counter goes up when you walk" — and only the second one answers what was
 asked. `{"press":"Tab","times":4}` likewise walks focus, which is the only way
 to see the order it lands in.
-LCARS will run them and hand you the new shots. You get **three rounds in
-total**; if you have no verdict by the end of the third, the Mission is scored
-LOW and the captain looks himself — so do not spend rounds you do not need.
+LCARS will run them and hand you the new shots. **Your round budget is stated
+under "The mission" below** — it is a hard ceiling, not a quota. If you have no
+verdict by the end of the last round, the Mission is scored LOW and the captain
+looks himself — so do not spend rounds you do not need, and never plan on having
+more than the budget you were given.
 
 **OR** you have seen enough, and you write the verdict: `xo-verdict.json`.
 

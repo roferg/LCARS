@@ -2956,7 +2956,10 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
    every rule is an existing --lcars-* token (ADR-007). */
 .btn.xo-menu-item{display:block;width:100%;text-align:left;margin:0 0 6px;
   text-transform:none;letter-spacing:.02em;font-size:12px;padding:8px 12px}
-.xo-report-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+/* S221 — the same 14px step under the "Show" row as under the report's own
+   filter row (.xo-filters); it was 12px, a hair tighter than everything around
+   it. Measured, not asserted — see tests/drives/s221/run.sh. */
+.xo-report-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .xo-report-search{flex:1 1 220px;min-width:160px;padding:6px 10px;border-radius:8px;
   background:var(--lcars-black);color:var(--lcars-text);
   border:1px solid var(--lcars-border);font-size:12px}
@@ -3397,7 +3400,16 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
 .xo-pane .xo-why-body p:last-child{margin-bottom:0}
 .xo-pane .xo-why-body strong,.xo-pane .xo-why-body b{color:inherit;font-weight:700}
 /* the filters (All / Didn't work / Couldn't check / Worked) */
-.xo-filters{display:flex;gap:8px;flex-wrap:wrap}
+/* S221 — BREATHING ROOM UNDER THE FILTER ROW. Measured in real Chrome, the gap
+   between this row's bottom edge and the top of the first item beneath it was
+   ZERO: `All · 108 / Didn't work · 3 / …` sat flush against the heading it was
+   filtering, which is what the captain spotted in S220's walkthrough. 14px is
+   the same step `.xo-report-groups` puts under the First Officer's own row, so
+   the two filter rows in Number One's surfaces breathe alike.
+   Proven by geometry, not by this rule existing: tests/drives/s221/run.sh reads
+   the COMPUTED distance in a real browser, because a rule that ties on
+   specificity loses on source order and never reaches the screen. */
+.xo-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .xo-filter{background:transparent;border:1px solid var(--lcars-border);border-radius:16px;
   padding:4px 12px;font-size:13px;color:var(--xo-muted);cursor:pointer;
   font-family:inherit;font-variant-numeric:tabular-nums}

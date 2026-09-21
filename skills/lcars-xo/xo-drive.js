@@ -55,7 +55,8 @@
  *   {"navigate":"URL"}                 go somewhere
  *   {"click":"SELECTOR"}               click the first match
  *   {"type":"SELECTOR","text":"…"}     focus and type
- *   {"press":"ArrowRight"}             press a real key (see PRESS below)
+ *   {"press":"ArrowRight"}             tap a real key (see PRESS below)
+ *   {"press":"ArrowRight","hold":250}  HOLD it down 250ms, then let go
  *   {"press":"w","selector":"#board","times":5,"modifiers":["Shift"]}
  *   {"wait":800}                       wait ms (capped)
  *   {"screenshot":"name"}              full-page shot called `name`
@@ -992,12 +993,31 @@ const KEYS = {
   Home:       ["Home", 36], End: ["End", 35],
   PageUp:     ["PageUp", 33], PageDown: ["PageDown", 34],
 };
+/* THE FUNCTION KEYS (S221 fix 8c). F1..F12, generated rather than typed out —
+ * their virtual key codes are contiguous from 112, and their `code` is their
+ * own name. They are here because the planner can now emit them and a build
+ * can answer them: this session's own mission has a criterion about its F3
+ * debug overlay, and the driver refusing F3 left that criterion reading
+ * "couldn't check" for ever while the game answered the key perfectly well.
+ * No `text`: a function key prints nothing. */
+for (let fn = 1; fn <= 12; fn++) KEYS["F" + fn] = ["F" + fn, 111 + fn];
 const MODIFIER_BITS = { alt: 1, control: 2, ctrl: 2, meta: 4, command: 4, cmd: 4, shift: 8 };
 
 /* What the browser needs to be told to press <key>, or null when <key> is not
  * a key anybody can press. Named keys come from the table; a single character
  * is worked out from the character itself. Returning null rather than guessing
  * is deliberate: a key we cannot press must be SAID, not silently dropped. */
+/* THE CEILING ON A HELD KEY (S221). Two of them, because one is not enough:
+ * MAX_HOLD_MS bounds a single hold, MAX_HOLD_TOTAL_MS bounds what ONE action
+ * may spend holding however many repeats it asked for. 2s is far longer than
+ * any single input gesture a person makes; 10s of holding is 40 tiles of
+ * walking in the build this was measured on. Twelve actions at the total is
+ * two minutes — a rounding error against the 45-minute cage, and nothing an
+ * action list can do will wedge a look.
+ */
+const MAX_HOLD_MS = 2000;
+const MAX_HOLD_TOTAL_MS = 10000;
+
 function keyDescriptor(key) {
   if (typeof key !== "string" || key.length === 0) return null;
   const named = KEYS[key];
@@ -1234,7 +1254,13 @@ const FOCUS = (sel) => `(function () {
             const p = last.places[id.replace(/^#/, "")];
             return p && p.laidOut;
           });
-          if (last.textExcerpt && named) return last;
+          /* A PAGE THAT DRAWS ITSELF HAS NOTHING TO WAIT FOR (S221 fix 7).
+           * This loop waits for TEXT to appear, and a canvas build has none —
+           * ever. So on one it never returned early and every journey step
+           * burned the whole --timeout before moving on, which reads exactly
+           * like a hung look. Measured: a three-hold press step never came
+           * back. With nothing to settle on, the first readout IS the answer. */
+          if ((last.textExcerpt || canvasOnly) && named) return last;
         }
       } catch (_) {}
       await sleep(250);
@@ -1254,6 +1280,10 @@ const FOCUS = (sel) => `(function () {
 
   const shots = [];
   let incomplete = false;
+  // S221 fix 6: this page draws itself and has no laid-out text (a canvas app).
+  // Set by the render gate below; it suppresses round 0's duplicate full-page
+  // shot and is carried into the walk record.
+  let canvasOnly = false;
 
   /* WHAT MAKES ONE SCREEN DIFFERENT FROM ANOTHER. The address, plus the first
    * words on it: an app that changes its whole view without changing its url
@@ -1400,6 +1430,82 @@ const FOCUS = (sel) => `(function () {
     return null;
   }
 
+  /* ONE PLACE THAT BUILDS A KEY EVENT (S221 fix 7). The action list and the
+   * declared journey both press keys now, and two copies of this payload is
+   * exactly how a `hold` ends up working in one path and silently not in the
+   * other. Everything measured the hard way lives here:
+   *
+   *   1. The tab this driver opens is NOT the browser's active one, and Input
+   *      events go to the active one. Without activating it first the dispatch
+   *      never comes back AT ALL — the whole look dies on a CDP timeout, not on
+   *      a bad key.
+   *   2. `nativeVirtualKeyCode` sends headless Chrome into a runaway AUTO-REPEAT:
+   *      one press measured 729 keydowns in 150 ms and was still climbing 600 ms
+   *      after the keyUp. Sent without it, one press is exactly one key event.
+   *   3. `hold` is real wall-clock time between the down and the up — the only
+   *      thing a game loop reading "is this key down right now" can respond to.
+   */
+  async function dispatchKey(d, mods, hold, reps) {
+    /* BOUNDED, because this one can hang (S221 fix 7, measured). Activating
+     * the tab is required — Input events go to the ACTIVE tab and without it
+     * the dispatch never returns at all — but the call itself does not always
+     * come back either, and a look now runs under a 45-minute cage. An
+     * unbounded await here spends the whole cage on one keystroke. So it is
+     * raced against a short timer: if it does not answer, the press is tried
+     * anyway (the tab is usually already active) rather than the look dying.
+     */
+    const bounded = (pr, ms) => Promise.race([
+      pr.catch(() => null),
+      new Promise((res) => setTimeout(() => res("timeout"), ms)),
+    ]);
+    if (await bounded(send("Target.activateTarget", { targetId: t.targetId }), 4000) === "timeout") {
+      notes.push("the browser did not answer when asked to bring its tab forward; the key was sent anyway");
+    }
+    await bounded(send("Page.bringToFront", {}, S), 4000);
+    const common = { modifiers: mods, key: d.key, code: d.code,
+                     windowsVirtualKeyCode: d.vk, autoRepeat: false,
+                     isKeypad: false, location: 0 };
+    for (let k = 0; k < reps; k++) {
+      await send("Input.dispatchKeyEvent",
+        Object.assign({ type: "keyDown", text: d.text, unmodifiedText: d.text }, common), S);
+      if (hold > 0) await sleep(hold);
+      await send("Input.dispatchKeyEvent", Object.assign({ type: "keyUp" }, common), S);
+      await sleep(hold > 0 ? 60 : 30);
+    }
+  }
+
+  /* DID THE PICTURE MOVE? (S221 fix 7.) A journey step is only taken if
+   * something CHANGED, and the existing test for that reads the url and the
+   * page's TEXT — which on a canvas build never change, however far the
+   * character walked. So a press step is judged on its two pictures instead:
+   * the same statistics `pngStats` already computes for every shot. Any
+   * difference at all counts, because a build that answers a key answers it
+   * visibly.
+   *
+   * WHAT THIS WOULD MISS — and on the build it was written for it MISSES IT
+   * EVERY TIME, so this is not a caveat, it is the state of the mechanism. A
+   * page with an idle animation or a clock changes between any two shots.
+   * Measured by the tester on 2026-09-20: pressing `q`, a key the example game
+   * ignores completely, came back "changed" — the only differing pixels were a
+   * 42x58 patch of the character's own idle animation, while the tile readout
+   * read `Tile 10, 10` before and after. So on any animating build this is a
+   * rubber stamp: it can say a step RAN, and it can never say a key was
+   * ANSWERED. Nothing that reads it may claim otherwise (S221 fix 8b).
+   *
+   * THE CURE, ledgered and not built tonight: take a third shot with NO key
+   * pressed and require the keyed difference to exceed that idle difference.
+   * That needs its own proof, so until it exists the verdict on a key press
+   * comes from the LOOK, by eye, with the before and after pair in front of it.
+   */
+  function pictureMoved(a, b) {
+    if (!a || !b || a.error || b.error) return false;
+    return a.distinctColours !== b.distinctColours
+        || a.dominantColour !== b.dominantColour
+        || Math.abs((a.dominantFraction || 0) - (b.dominantFraction || 0)) > 0.0005
+        || !a.mean || !b.mean
+        || a.mean.r !== b.mean.r || a.mean.g !== b.mean.g || a.mean.b !== b.mean.b;
+  }
+
   async function walkTheJourney() {
     if (!journey.length) return;
     await findTheWayIn(journey[0]);
@@ -1415,7 +1521,62 @@ const FOCUS = (sel) => `(function () {
       rec.urlBefore = (before && before.url) || currentUrl;
       rec.textBefore = excerpt(before);
       let res = null;
+      /* A KEY IS A CONTROL (S221 fix 7). A press step does not go through ACT
+       * — there is no element to find and nothing to click. It takes its own
+       * BEFORE picture first, because on a canvas build the picture is the only
+       * place a change can show. */
+      let pxBefore = null;
+      if (rec.do === "press") {
+        const d = keyDescriptor(String(step.pressKey || ""));
+        if (!d) {
+          rec.status = "unreachable";
+          rec.couldNotCheck = "not a key this browser can press";
+          rec.why = "the record names `" + String(step.pressKey || "") +
+                    "`, which is not a key I can press";
+          notes.push("journey step \"" + rec.name + "\": `" + String(step.pressKey || "") +
+                     "` is not a key this browser can press");
+          incomplete = true;
+        } else {
+          const hold = Math.min(Math.max(parseInt(step.hold, 10) || 0, 0), MAX_HOLD_MS);
+          const reps = Math.min(Math.max(parseInt(step.times, 10) || 1, 1),
+                                hold > 0 ? Math.max(1, Math.floor(MAX_HOLD_TOTAL_MS / hold)) : 50);
+          rec.pressed = d.key; rec.holdMs = hold; rec.times = reps;
+          try { pxBefore = await shoot(rec.shotBefore = PREFIX + "-walk-" +
+                 String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-") +
+                 "-before", null); } catch (e) { rec.shotError = e.message; }
+          walk.moves.keypresses += reps;
+          walk.actions.push(hold > 0 ? { press: d.key, times: reps, holdMs: hold }
+                                     : { press: d.key, times: reps });
+          /* THE WHOLE DISPATCH IS BOUNDED (S221 fix 7). Measured on a canvas
+           * page driving a rAF loop: a press issued from the JOURNEY path can
+           * leave a CDP call pending for ever — the same press from the action
+           * list returns fine, and the cause is not yet understood. A look now
+           * runs under a 45-minute cage, so an unbounded await here spends the
+           * captain's whole night on one keystroke. It is raced against a
+           * deadline generous enough for the longest legal hold, and a step
+           * that does not come back is recorded as COULDN'T CHECK, by name —
+           * never as taken, and never as a fault of the build.
+           */
+          const budget = 6000 + reps * (hold + 400);
+          const finished = await Promise.race([
+            dispatchKey(d, 0, hold, reps).then(() => "done").catch((e) => "failed: " + e.message),
+            new Promise((r) => setTimeout(() => r("timeout"), budget)),
+          ]);
+          if (finished === "done") {
+            res = { ok: true };
+          } else {
+            rec.status = "unreachable";
+            rec.couldNotCheck = "the key could not be pressed";
+            rec.why = "I asked the browser to press " + d.key +
+                      (hold ? " and hold it " + hold + "ms" : "") +
+                      " and it never came back (" + finished + "), so I could not try this step";
+            notes.push("journey step \"" + rec.name + "\": the browser never finished the key press");
+            incomplete = true;
+          }
+        }
+      }
       try {
+        if (rec.do !== "press") {
         const r = await send("Runtime.evaluate",
           { expression: ACT({ do: rec.do === "gate" ? "click"
                                 : rec.do === "type-all" ? "typeall" : rec.do,
@@ -1431,6 +1592,7 @@ const FOCUS = (sel) => `(function () {
             { expression: ACT({ do: "type", match: [], text: step.text }), returnByValue: true }, S);
           const alt = (r2 && r2.result && typeof r2.result.value === "string") ? JSON.parse(r2.result.value) : null;
           if (alt && alt.ok) { res = alt; rec.byFallback = "the first empty field on the screen"; }
+        }
         }
       } catch (e) { rec.status = "unreachable"; rec.why = e.message; }
       if (!res || res.ok === false) {
@@ -1471,6 +1633,14 @@ const FOCUS = (sel) => `(function () {
         rec.status = res.readBack ? "done" : "refused";
         walk.moves.typings += 1;
         walk.actions.push({ type: rec.matched || "(the field)", text: rec.typed });
+      } else if (rec.do === "press") {
+        // A PRESS HAS NOTHING TO CLICK (S221 fix 7). Falling through to the
+        // click branch made every key press "refused" — res.clicked is
+        // undefined because no element was ever looked for — and a step the
+        // record asked for, that the build answered, read as one the build
+        // turned down. It is done; whether it CHANGED anything is decided by
+        // the picture pair below, which is the honest question here.
+        rec.status = "done";
       } else {
         rec.clicked = !!res.clicked;
         rec.status = res.clicked ? "done" : "refused";
@@ -1499,7 +1669,17 @@ const FOCUS = (sel) => `(function () {
        * changes the FIELD (its read-back is the evidence, and a textarea's
        * value never shows in the page's text), and the gate's BLANK phase is
        * asking the gate to refuse — nothing changing is the answer it wanted. */
-      if (rec.status === "done" && !rec.changed &&
+      /* A THIRD EXCEPTION, and it is a retraction (S221 fix 8a): a PRESS
+       * step is not settled here at all. Its evidence is the picture pair
+       * compared a few lines below, and this block used to push a note saying
+       * the step "changed nothing at all, so it is couldn't-check, not taken"
+       * which was never taken back when that comparison upgraded the status.
+       * The tester read both: `walk.json` saying done, and this note saying
+       * couldn't-check, about the SAME step — and both go to the worker. The
+       * harness must not tell its own reader two opposite things about the one
+       * fact this round exists to establish. So a press step is skipped here
+       * and says its piece once, below, whichever way it goes. */
+      if (rec.status === "done" && !rec.changed && rec.do !== "press" &&
           rec.do !== "type" && rec.do !== "type-all" &&
           !(rec.do === "gate" && rec.phase === "blank")) {
         rec.status = "no-change";
@@ -1510,7 +1690,56 @@ const FOCUS = (sel) => `(function () {
                    "couldn't-check, not taken");
       }
       rec.shot = PREFIX + "-walk-" + String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-");
-      try { await shoot(rec.shot, null); } catch (e) { rec.shotError = e.message; }
+      let pxAfter = null;
+      try { pxAfter = await shoot(rec.shot, null); } catch (e) { rec.shotError = e.message; }
+      /* THE PRESS STEP IS JUDGED ON ITS TWO PICTURES (S221 fix 7), and this
+       * has to happen AFTER the shot, because the after-picture is the shot.
+       * On a canvas build the url and the page text are identical before and
+       * after however far the character walked, so the text comparison above
+       * calls every key press "nothing changed" — which would turn a build
+       * that works perfectly into a couldn't-check on every step. The pair is
+       * also the evidence the look reads: a before and an after of the same
+       * screen is how a person tells a readout that follows from one that is
+       * merely present. */
+      if (rec.do === "press" && rec.status !== "unreachable") {
+        rec.pictureMoved = pictureMoved(pxBefore, pxAfter);
+        if (rec.pictureMoved) {
+          /* TAKEN — AND THAT IS ALL IT MEANS (S221 fix 8b). This used to say
+           * "something answered the key", which is a claim the mechanism
+           * cannot support. Measured by the tester: pressing `q`, a key this
+           * game ignores completely, came back "done, something answered the
+           * key" — the only differing pixels were a 42x58 patch of the
+           * character's own IDLE ANIMATION, and the tile readout said
+           * `Tile 10, 10` before and after. On a build that animates by
+           * itself the picture always differs, so this is a rubber stamp on
+           * "the step ran", never on "the key did something". The words now
+           * say exactly that, and hand the judgement to the reader with the
+           * two pictures. */
+          rec.status = "done";
+          delete rec.couldNotCheck;
+          rec.changeEvidence = "picture-only";
+          rec.why = "I pressed " + (rec.pressed || "the key") +
+                    (rec.holdMs ? " and held it " + rec.holdMs + "ms" : "") +
+                    ". The page's words are identical before and after — on a build that " +
+                    "draws itself they always are — and the two pictures differ. That means " +
+                    "the step was TAKEN. It is NOT evidence the key was answered: a build " +
+                    "that animates on its own changes its picture whether or not it heard " +
+                    "you. Compare the before and after shots yourself and judge it by eye.";
+          notes.push("the journey step \"" + rec.name + "\" was taken and its picture " +
+                     "changed — but this build draws itself, so a changed picture is NOT " +
+                     "evidence the key was answered. Read the before/after pair for this " +
+                     "step and judge it by eye.");
+        } else if (!rec.changed && !rec.pictureMoved) {
+          rec.status = "no-change";
+          rec.couldNotCheck = "nothing changed";
+          rec.why = "I pressed " + (rec.pressed || "the key") +
+                    (rec.holdMs ? " and held it " + rec.holdMs + "ms" : "") +
+                    ", and the screen was the same before and after — same words AND the " +
+                    "same picture — so I cannot say whether it worked";
+          notes.push("the journey step \"" + rec.name + "\" changed nothing at all — " +
+                     "same words and the same picture — so it is couldn't-check, not taken");
+        }
+      }
       await snapScreen("w" + i);
       walk.steps.push(rec);
     }
@@ -1574,28 +1803,85 @@ const FOCUS = (sel) => `(function () {
   await navigate(URL_);
   const first = await readout();
   if (first.elementsNote) notes.push(first.elementsNote);
-  if (!first.textExcerpt) {
-    // The app did not lay out. That is the PRODUCT's answer, exit 1 — but the
-    // evidence is written anyway, because "it rendered nothing" is a finding
-    // and the caller needs the picture of the nothing.
-    await shoot(PREFIX + "-01", null);
-    fs.writeFileSync(path.join(OUT, "readout.json"), JSON.stringify({
-      url: currentUrl, painted: false, shots, notes: notes.concat(["the app never laid out any text at " + URL_]),
-      places, page: first,
-    }, null, 2) + "\n");
-    console.error("the app never laid out any text at " + URL_);
-    ws.close(); stopChrome(); process.exit(EXIT_PRODUCT);
-  }
-
   let n = 1;
   const nextName = () => PREFIX + "-" + String(n++).padStart(2, "0");
+
+  /* ── DID ANYTHING RENDER? (S221 fix 6, captain's ruling) ──────────────────
+   *
+   * THE DEFECT THIS REPLACES. This gate used to ask "is there TEXT on the
+   * page", and exit 1 — an accusation against the app — the moment there was
+   * none, BEFORE a single action in the list ran. A canvas game is exactly
+   * that page: a `<title>`, a `<canvas>`, and an empty body. So the example
+   * game was scored LOW for "rendering nothing" while it sat there rendering
+   * a whole world, and no key was ever pressed at it. Measured: both runs
+   * exit 1, `walk.json` never written.
+   *
+   * WHAT IT ASKS NOW, and the boundary is the whole fix: a page with no text
+   * gets its picture taken FIRST, and the question is whether that picture is
+   * PAINTED — `pngStats`'s own long-standing measure, `distinctColours > 8 &&
+   * nonDominantFraction > inkFloor`. So:
+   *   • a page that truly laid out nothing — white, blank, one or two colours
+   *     — is NOT painted, and exits 1 with the same sentence and the same
+   *     picture-of-the-nothing it always did. Nothing about that case moved.
+   *   • a page that is one flat fill and nothing else is ALSO not painted:
+   *     one colour is one colour, `distinctColours` does not reach 9. That is
+   *     deliberate — a solid background is far closer to blank than to a game,
+   *     and a look that wandered it for 45 minutes would be worse than a fast
+   *     honest failure.
+   *   • a canvas with a world drawn in it is hundreds of colours and plenty of
+   *     non-dominant ink. It proceeds, and gets walked.
+   *
+   * WHAT IT WOULD MISS, said plainly because the next reader deserves it:
+   *   • a page that renders a rich BACKGROUND IMAGE or a decorative gradient
+   *     and nothing else reads as painted and will be walked. It is a busy
+   *     picture by every measure this driver has; only a human eye can call
+   *     it empty.
+   *   • the converse: a canvas app drawing something genuinely minimal — two
+   *     flat rectangles on a flat field — can fall under the ink floor and be
+   *     called blank. The floor is `pngStats`'s, calibrated on text, and this
+   *     gate inherits it rather than inventing a second one.
+   *   • it says nothing about whether the right thing rendered. "Something
+   *     painted" is the floor for looking at all, never evidence of working.
+   */
+  if (!first.textExcerpt) {
+    // The picture is needed either way — as the evidence of the nothing, or as
+    // round 0's full-page shot — so it is taken once, under the name round 0
+    // would have given it, and `n` carries on from there.
+    const px = await shoot(nextName(), null);
+    if (!px || !px.painted) {
+      // The app did not lay out. That is the PRODUCT's answer, exit 1 — but the
+      // evidence is written anyway, because "it rendered nothing" is a finding
+      // and the caller needs the picture of the nothing.
+      fs.writeFileSync(path.join(OUT, "readout.json"), JSON.stringify({
+        url: currentUrl, painted: false, shots, notes: notes.concat(["the app never laid out any text at " + URL_]),
+        places, page: first,
+      }, null, 2) + "\n");
+      console.error("the app never laid out any text at " + URL_);
+      ws.close(); stopChrome(); process.exit(EXIT_PRODUCT);
+    }
+    /* IT PAINTED, AND THERE IS NOTHING HERE TO MEASURE — and that second half
+     * has to be SAID. Every deterministic pass this harness runs reads the
+     * DOM: the readout's element boxes, the layout/crowding pass, the
+     * drawing-to-build part pairing. On a canvas app they all come back empty,
+     * and an empty measurement is not a finding of absence — it is the absence
+     * of a measurement. Unsaid, a look reads "0 findings" as "nothing wrong",
+     * which is the confabulation this whole round exists to stop. So the
+     * record says it, in the words the worker will read.
+     */
+    canvasOnly = true;
+    walk.canvasOnly = true;
+    notes.push("this page draws itself — there is no laid-out text or element on it to measure. " +
+               "Every measurement pass here is blind, so nothing it reports as empty is evidence of absence: " +
+               "judge this build BY EYE from the pictures, and say so.");
+  }
 
   if (actions.length === 0) {
     /* ROUND 0 — the standard look: the whole page, then one CLIPPED shot per
      * place the drawing named AND THE APP ACTUALLY HAS. A name the app does not
      * have gets no shot and an explicit note, which is exactly the shape of a
      * "the drawing says X, the app has no X" finding. */
-    await shoot(nextName(), null);
+    // …unless the gate above already took it (a canvas app's only shot).
+    if (!canvasOnly) await shoot(nextName(), null);
     for (const id of places) {
       const key = id.replace(/^#/, "");
       const pl = first.places[key];
@@ -1674,24 +1960,58 @@ const FOCUS = (sel) => `(function () {
                *    sent, and the count the page sees is the count that was
                *    asked for.
                */
-              await send("Target.activateTarget", { targetId: t.targetId });
-              try { await send("Page.bringToFront", {}, S); } catch (_) {}
               const times = Math.min(Math.max(parseInt(a.times, 10) || 1, 1), 50);
-              walk.moves.keypresses += times;
-              walk.actions.push({ press: d.key, times: times });
-              const mods = modifierMask(a.modifiers);
-              const common = { modifiers: mods, key: d.key, code: d.code,
-                               windowsVirtualKeyCode: d.vk, autoRepeat: false,
-                               isKeypad: false, location: 0 };
-              for (let k = 0; k < times; k++) {
-                await send("Input.dispatchKeyEvent",
-                  Object.assign({ type: "keyDown", text: d.text, unmodifiedText: d.text }, common), S);
-                await send("Input.dispatchKeyEvent", Object.assign({ type: "keyUp" }, common), S);
-                await sleep(30);
+              /* HOLDING THE KEY DOWN (S221). A tap is a keyDown and a keyUp in
+               * the same breath, and for a great many builds that is exactly
+               * right — a menu, a form, a focus walk. For anything that moves
+               * WHILE a key is held it is useless: the example game walks its
+               * character at 128 px/s, so a tap moves it about two pixels —
+               * a sixteenth of one 32px tile — and Number One, looking at a
+               * readout that has not changed, reports a DIDN'T-WORK against a
+               * build that is perfectly correct. The prompt has been telling
+               * it to "walk the character with the arrows" since S220; this is
+               * the capability that sentence promised.
+               *
+               * `hold` is milliseconds between the down and the up. Absent or
+               * 0 is the old tap, byte for byte.
+               */
+              const holdAsked = Math.max(parseInt(a.hold, 10) || 0, 0);
+              const hold = Math.min(holdAsked, MAX_HOLD_MS);
+              if (holdAsked > hold) {
+                notes.push("press: a " + holdAsked + "ms hold is longer than this driver allows; held "
+                           + hold + "ms instead");
               }
+              /* AND A BUDGET ON THE WHOLE ACTION, not just one hold. `times`
+               * alone clamps at 50; 50 x 2000ms is a hundred seconds from ONE
+               * entry, and twelve of those would eat a third of the 45-minute
+               * cage a look now runs under. So the repeats are cut to fit a
+               * total, and the cut is SAID — a look that quietly did six of the
+               * twenty walks it asked for would reason from a distance it never
+               * travelled.
+               */
+              let reps = times;
+              if (hold > 0) {
+                const fits = Math.max(1, Math.floor(MAX_HOLD_TOTAL_MS / hold));
+                if (reps > fits) {
+                  notes.push("press: " + times + " x " + hold + "ms is longer than one action may hold a key; did "
+                             + fits + " of them");
+                  incomplete = true;
+                  reps = fits;
+                }
+              }
+              walk.moves.keypresses += reps;
+              const rec = { press: d.key, times: reps };
+              if (hold > 0) rec.holdMs = hold;
+              walk.actions.push(rec);
+              await dispatchKey(d, modifierMask(a.modifiers), hold, reps);
               // RECORDED, not left to be inferred from what the page ended up
-              // looking like: the evidence says which key went in and how often.
-              notes.push("pressed " + d.key + (times > 1 ? " x" + times : "") +
+              // looking like: the evidence says which key went in, how often,
+              // and — since S221 — whether it was HELD and for how long. A
+              // report that cannot tell a tap from a walk cannot show the
+              // captain that his character was walked.
+              notes.push("pressed " + d.key + (reps > 1 ? " x" + reps : "") +
+                         (hold > 0 ? (reps > 1 ? ", each held down " + hold + "ms"
+                                               : ", held down " + hold + "ms") : "") +
                          (a.modifiers && a.modifiers.length ? " with " + a.modifiers.join("+") : "") +
                          (a.selector ? " into " + a.selector : ""));
               await sleep(200);
@@ -1787,6 +2107,13 @@ const FOCUS = (sel) => `(function () {
                  typings: ((prior && prior.moves && prior.moves.typings) || 0) + walk.moves.typings,
                  keypresses: ((prior && prior.moves && prior.moves.keypresses) || 0) + walk.moves.keypresses,
                  addressJumps: ((prior && prior.moves && prior.moves.addressJumps) || 0) + walk.moves.addressJumps } };
+      /* S221 fix 6 — CARRIED, not dropped. This writer builds a NEW object
+       * with an explicit field list, so anything set on `walk` that is not
+       * named right here vanishes silently (which is exactly how it ate
+       * `canvasOnly` the first time). Sticky across rounds like the counters
+       * above: once a look has seen a page with nothing to measure, every
+       * later round's record still says so. */
+      if (canvasOnly || (prior && prior.canvasOnly)) out.canvasOnly = true;
       fs.writeFileSync(WALK_OUT, JSON.stringify(out, null, 2) + "\n");
     } catch (e) { notes.push("the walk record could not be written: " + e.message); }
   }

@@ -72,11 +72,21 @@ cat >"$FX/walker.html" <<'HTML'
 <div>shift seen: <span id="shift">no</span></div>
 <input id="box" style="width:200px" />
 <div>typed into box: <span id="boxkeys">0</span></div>
+<div>heldms: <span id="heldms">0</span></div>
+<div>peakms: <span id="peakms">0</span></div>
+<div>ups: <span id="ups">0</span></div>
 <script>
 var steps = 0, trusted = 0;
+/* S221 — HOW LONG THE KEY WAS ACTUALLY DOWN. The whole `hold` defect is that a
+   perfectly well-formed key event carried no TIME with it, and a page that
+   only counts keydowns cannot tell a tap from a walk. So this one measures the
+   wall clock between a trusted keydown and its keyup, which is the only thing
+   a build that moves while a key is held can possibly respond to. */
+var downAt = 0;
 document.addEventListener("keydown", function (e) {
   document.getElementById("last").textContent = e.key;
   if (!e.isTrusted) return;               // a synthetic event moves nothing
+  if (!downAt) downAt = performance.now();
   trusted++;
   document.getElementById("trusted").textContent = trusted;
   if (e.shiftKey) document.getElementById("shift").textContent = "yes";
@@ -84,6 +94,17 @@ document.addEventListener("keydown", function (e) {
     steps++;
     document.getElementById("steps").textContent = steps;
   }
+});
+document.addEventListener("keyup", function (e) {
+  if (!e.isTrusted) return;
+  document.getElementById("ups").textContent =
+    +document.getElementById("ups").textContent + 1;
+  if (!downAt) return;
+  var ms = Math.round(performance.now() - downAt);
+  downAt = 0;
+  document.getElementById("heldms").textContent = ms;
+  if (ms > +document.getElementById("peakms").textContent)
+    document.getElementById("peakms").textContent = ms;
 });
 document.getElementById("box").addEventListener("keydown", function (e) {
   if (!e.isTrusted) return;
@@ -160,6 +181,66 @@ check "B1l a key nobody can press is SAID OUT LOUD, not silently swallowed" \
   "grep -q 'NotARealKeyAtAll' '$TMPROOT/bad/readout.json'"
 check "B1m …and the round is marked incomplete rather than passing as a clean look" \
   "[ \"$RC6\" = '3' ]"
+
+# ==========================================================================
+# B2 (S221) — HOLDING THE KEY DOWN.
+#
+# THE DEFECT. `press` sent keyDown and keyUp in the same breath, so nothing
+# that moves WHILE a key is down could be checked at all. The example game
+# walks its character at 128 px/s: a tap moves it about two pixels, a
+# sixteenth of one tile, and Number One — reading a coordinate readout that
+# has not changed — reports a DIDN'T-WORK against a build that is correct.
+# The prompt has been telling it to "walk the character with the arrows"
+# since S220; this is the capability that sentence promised.
+#
+# A COUNTER OF KEYDOWNS CANNOT SEE THIS DEFECT, which is why the fixture above
+# now measures the wall clock the key spent DOWN. (The end-to-end proof — the
+# real driver walking a real character a real 34px against a 2px tap — is
+# tests/drives/s221/hold-run.sh; this is the fast row that guards it.)
+# ==========================================================================
+printf '\n  -- B2: the key stays DOWN for as long as it was asked to --\n'
+RC7="$(drive '[{"press":"ArrowRight","hold":300},{"wait":150},{"screenshot":"held"}]' "$TMPROOT/held")"
+check "B2a a 300ms hold really keeps the key down for ~300ms" \
+  "[ \"\$(saw '$TMPROOT/held' heldms)\" -ge 250 ] 2>/dev/null"
+check "B2b …and it is still ONE key event, not a repeat storm" \
+  "[ \"\$(saw '$TMPROOT/held' trusted)\" = '1' ] && [ \"\$(saw '$TMPROOT/held' ups)\" = '1' ]"
+check "B2c …and the round is a clean look, not an incomplete one" "[ \"$RC7\" = '0' ]"
+check "B2d the evidence says it was HELD and for how long" \
+  "grep -q 'held down 300ms' '$TMPROOT/held/readout.json'"
+
+# THE CONTROL, and it is the whole point: the SAME action without `hold` is
+# down for a moment. A rig that only ever measured the hold would have passed
+# on the broken code too.
+RC8="$(drive '[{"press":"ArrowRight"},{"wait":150},{"screenshot":"tap"}]' "$TMPROOT/tap")"
+check "B2e CONTROL — the same press with no hold is down for under 100ms" \
+  "[ \"\$(saw '$TMPROOT/tap' heldms)\" -lt 100 ] 2>/dev/null"
+check "B2f CONTROL — …and its evidence line says nothing about holding" \
+  "! grep -q 'held down' '$TMPROOT/tap/readout.json'"
+
+# `times` composes as SEPARATE holds — three deliberate steps, not one long
+# one. Three downs, three ups, each about 150ms.
+RC9="$(drive '[{"press":"ArrowRight","hold":150,"times":3},{"wait":150},{"screenshot":"three"}]' "$TMPROOT/three")"
+check "B2g times composes with hold as SEPARATE holds — three downs and three ups" \
+  "[ \"\$(saw '$TMPROOT/three' trusted)\" = '3' ] && [ \"\$(saw '$TMPROOT/three' ups)\" = '3' ]"
+check "B2h …each one held for its own 150ms, never merged into one long press" \
+  "[ \"\$(saw '$TMPROOT/three' peakms)\" -ge 120 ] && [ \"\$(saw '$TMPROOT/three' peakms)\" -lt 400 ]" 
+check "B2i …and the step count went up by three, the way a walk does" \
+  "[ \"\$(saw '$TMPROOT/three' steps)\" = '3' ]"
+
+# THE CLAMPS. A look runs under a 45-minute cage now; no action list may wedge
+# it, and no trim may happen in silence.
+RC10="$(drive '[{"press":"ArrowRight","hold":99999},{"wait":100},{"screenshot":"clamp"}]' "$TMPROOT/clamp")"
+check "B2j an absurd hold is CLAMPED, not obeyed (the key came back up quickly)" \
+  "[ \"\$(saw '$TMPROOT/clamp' heldms)\" -le 2500 ] 2>/dev/null"
+check "B2k …and the trim is SAID, with both numbers" \
+  "grep -q '99999ms hold is longer than this driver allows' '$TMPROOT/clamp/readout.json'"
+
+RC11="$(drive '[{"press":"ArrowRight","hold":2000,"times":20},{"screenshot":"budget"}]' "$TMPROOT/budget")"
+check "B2l a whole action may not hold a key forever — the repeats are cut to fit" \
+  "[ \"\$(saw '$TMPROOT/budget' trusted)\" = '5' ]"
+check "B2m …the cut is SAID, naming what was asked and what was done" \
+  "grep -q 'did 5 of them' '$TMPROOT/budget/readout.json'"
+check "B2n …and the round is marked incomplete, never a clean look" "[ \"$RC11\" = '3' ]"
 
 printf '\nlcars xo-press: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
