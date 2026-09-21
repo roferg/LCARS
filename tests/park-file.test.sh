@@ -215,8 +215,16 @@ export GH_LOG="$repo2/gh.log"; : >"$GH_LOG"
     --park "A copilot-built feature" --engine copilot >out.txt 2>&1
 )
 M2="$repo2/.git/lcars/missions/lcars-20260530-001-c10e"
+# THE PATTERN ACCEPTS A PATH (S222), and every `copilot` row below does too.
+# These rows assert WHICH ENGINE was persisted, not how many letters it took to
+# say it. A mission now records the real CLI's ABSOLUTE PATH whenever the bare
+# name would resolve to VS Code's fork-bomb shim — which it does on any machine
+# with the Copilot extension installed, so the literal string `"copilot"` made
+# the result depend on the developer's own PATH. `claude` rows are untouched:
+# nothing normalises claude. The rule itself, both directions, is proved in
+# tests/lcars-worker-guard.test.sh (the S222 block).
 check "2. --engine copilot persists workerBin=copilot" \
-  "grep -q '\"workerBin\": *\"copilot\"' '$M2/state.json'"
+  "grep -q '\"workerBin\": *\"[^\"]*copilot\"' '$M2/state.json'"
 check "2. state.json still valid JSON with engine" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$M2/state.json'"
 
@@ -555,7 +563,7 @@ r8b="$(mk_parked)"; prd8b="$r8b/prd.md"; write_prd "$prd8b"
 ( cd "$r8b" && GH_LOG="$r8b/gh.log" LCARS_GH_BIN="$r8b/gh" \
     bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8b" --engine copilot >o.txt 2>&1 )
 check "8b. --complete --engine copilot persists workerBin=copilot" \
-  "grep -q '\"workerBin\": *\"copilot\"' '$r8b/.git/lcars/missions/$CM/state.json'"
+  "grep -q '\"workerBin\": *\"[^\"]*copilot\"' '$r8b/.git/lcars/missions/$CM/state.json'"
 
 # 8c. THE VIEWSCREEN CASE: parked on claude, captain picks copilot at START
 #     ALIGNMENT ⇒ the daemon threads $LCARS_WORKER_BIN=copilot ⇒ the PIPELINE
@@ -566,7 +574,7 @@ check "8c. (precondition) parked mission recorded workerBin=claude" \
 ( cd "$r8c" && GH_LOG="$r8c/gh.log" LCARS_WORKER_BIN=copilot LCARS_GH_BIN="$r8c/gh" \
     bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8c" >o.txt 2>&1 )
 check "8c. an explicit picker engine BEATS the parked engine on --complete" \
-  "grep -q '\"workerBin\": *\"copilot\"' '$r8c/.git/lcars/missions/$CM/state.json'"
+  "grep -q '\"workerBin\": *\"[^\"]*copilot\"' '$r8c/.git/lcars/missions/$CM/state.json'"
 
 # 8d. --engine beats $LCARS_WORKER_BIN on --complete too (same order as the
 #     other two lanes).
@@ -574,7 +582,7 @@ r8d="$(mk_parked claude)"; prd8d="$r8d/prd.md"; write_prd "$prd8d"
 ( cd "$r8d" && GH_LOG="$r8d/gh.log" LCARS_WORKER_BIN=claude LCARS_GH_BIN="$r8d/gh" \
     bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8d" --engine copilot >o.txt 2>&1 )
 check "8d. --engine beats \$LCARS_WORKER_BIN on --complete" \
-  "grep -q '\"workerBin\": *\"copilot\"' '$r8d/.git/lcars/missions/$CM/state.json'"
+  "grep -q '\"workerBin\": *\"[^\"]*copilot\"' '$r8d/.git/lcars/missions/$CM/state.json'"
 
 # 8e. NO REGRESSION: with neither signal, the PARKED engine is still carried
 #     forward untouched (the S136 behaviour the byte-identity test locks).
@@ -582,7 +590,7 @@ r8e="$(mk_parked copilot)"; prd8e="$r8e/prd.md"; write_prd "$prd8e"
 ( cd "$r8e" && GH_LOG="$r8e/gh.log" LCARS_GH_BIN="$r8e/gh" \
     bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8e" >o.txt 2>&1 )
 check "8e. no explicit engine ⇒ the parked engine is preserved" \
-  "grep -q '\"workerBin\": *\"copilot\"' '$r8e/.git/lcars/missions/$CM/state.json'"
+  "grep -q '\"workerBin\": *\"[^\"]*copilot\"' '$r8e/.git/lcars/missions/$CM/state.json'"
 
 # 8f. NO REGRESSION: parked with nothing and completed with nothing ⇒ still NO
 #     workerBin key at all (host-detect stays in charge).

@@ -13801,6 +13801,22 @@ detect_host_cli() {
 }
 
 # Resolve WORKER_BIN + WORKER_BIN_SRC by the precedence above.
+# lcars_prefer_real_worker_bin <bin> — the shim normaliser, sourced lazily the
+# same way require_worker sources the guard, and an IDENTITY when the rule file
+# is not there. It is never this function's place to decide the engine; it only
+# turns a name LCARS persisted into the path that name was meant to be.
+lcars_prefer_real_worker_bin() {
+  if ! command -v lcars_worker_bin_prefer_real >/dev/null 2>&1; then
+    # shellcheck source=../lcars-init/worker-guard.sh
+    [ -f "$SKILL_DIR/../lcars-init/worker-guard.sh" ] && . "$SKILL_DIR/../lcars-init/worker-guard.sh"
+  fi
+  if command -v lcars_worker_bin_prefer_real >/dev/null 2>&1; then
+    lcars_worker_bin_prefer_real "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 resolve_worker_bin() {
   # --- IS THIS $LCARS_WORKER_BIN AN OPERATOR ACT, OR LCARS'S OWN RE-PIN? -----
   # `lcars approve` exports $LCARS_WORKER_BIN before handing its reconcile leg to
@@ -13889,7 +13905,16 @@ resolve_worker_bin() {
   local misbin=""
   [ -n "$statef" ] && [ -f "$statef" ] && misbin="$(json_str "$statef" workerBin)"
   if [ -n "$misbin" ]; then
-    WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
+    # S222 — A PERSISTED ENGINE IS A NAME *LCARS* WROTE, so it is normalised to
+    # the real CLI's absolute path before it is used. Missions filed before
+    # tonight all carry the bare `copilot`, and on a machine with the VS Code
+    # Copilot extension that name resolves to the fork-bomb shim, so the guard
+    # in require_worker refused them and the Stage died. The guard is right and
+    # is untouched; what is cured is the late-bound PATH lookup for a value
+    # LCARS chose itself. An operator's own $LCARS_WORKER_BIN is handled above
+    # and is deliberately NOT normalised — see worker-guard.sh.
+    WORKER_BIN="$(lcars_prefer_real_worker_bin "$misbin")"
+    WORKER_BIN_SRC="mission"; return 0
   fi
   # AN INTERNAL PIN WITH NOTHING BEHIND IT. approve only ever pins what it read
   # off the mission, so reaching here used to mean the mission's record had gone

@@ -13519,14 +13519,29 @@ class Actions(LogFacts):
         return line or None
 
     # ── S201: THE REPO TOGGLE AND THE STAND-DOWN ────────────────────────────
+    # How long the toggle waits for `xo on` to refuse before it lets the sweep
+    # run on in the background (S222). It is a REFUSAL window, not a work
+    # budget: `xo.sh` checks the engine and writes the config block before it
+    # sweeps anything, so every answer that is not "I am now sweeping" lands
+    # inside it with room to spare. Env-settable so a test need not sit through
+    # it.
+    _XO_ON_GRACE = 5.0
+
+    def _xo_on_grace(self):
+        try:
+            return max(0.2, float(os.environ.get("LCARS_XO_ON_GRACE",
+                                                 self._XO_ON_GRACE)))
+        except (TypeError, ValueError):
+            return self._XO_ON_GRACE
+
     def xo_on(self, engine=None):
         """`lcars xo on [--engine E]` — Number One takes the conn in this repo.
 
-        DISPATCH ONLY, and BLOCKING, like `adopt`. Every rule about WHICH
-        engines exist, whether the one asked for is on this machine, what the
-        config block looks like and how it is written lives in `xo.sh`
-        (ADR-002). Re-deciding any of it here would be a second implementation
-        of the same verdict — the S168 scar this project already paid for once.
+        DISPATCH ONLY. Every rule about WHICH engines exist, whether the one
+        asked for is on this machine, what the config block looks like and how
+        it is written lives in `xo.sh` (ADR-002). Re-deciding any of it here
+        would be a second implementation of the same verdict — the S168 scar
+        this project already paid for once.
 
         THE ENGINE IS ALWAYS SENT. The CLI REFUSES a non-tty `on` with no
         `--engine` on purpose (the adopt precedent: picking an engine in
@@ -13534,15 +13549,61 @@ class Actions(LogFacts):
         picker asks and the answer arrives here. A body with no engine is that
         same refusal, raised at the door where the captain can see it, rather
         than in a spawn log.
+
+        SPAWNED, THEN WAITED ON BRIEFLY (S222). This used to be `_run` —
+        blocking, with no timeout at all — and that was fine while `xo on` only
+        wrote a config block. Since S220 it ALSO sweeps every mission parked at
+        Verify with no score of Number One's, one at a time, each look caged at
+        45 minutes. Eight of those is one HTTP POST held open for six hours: the
+        captain's ONE action in the whole walk-away flow, and it looks hung.
+
+        Fire-and-forget alone would have cost the thing the blocking call was
+        buying. `xo.sh` REFUSES an engine that is not on this machine, and that
+        refusal reaches the board as a 502 it prints (`dispatchCard` →
+        `setVerdict`); through `_spawn` it would go to a log file while the
+        board said "ON". A silent failure behind a spinner is worse than the
+        hang we set out to cure.
+
+        So: spawn it detached with its output captured (the `_spawn` contract —
+        a real file, never a pipe, so it can never wedge the daemon), then wait
+        a few seconds. An `xo.sh` that has already exited answers now, exit code
+        and all. One that is still going is sweeping, which is the whole point,
+        and the board is told so. Nothing here re-decides anything `xo.sh` owns.
         """
         eng = self._adopt_engine(engine)
         if not eng:
             raise ActionError(
                 400, "which engine should Number One use? Pick one at the "
                      "board's picker, or run `lcars xo on --engine <engine>`.")
-        proc = self._run("xo", ["on", "--engine", eng])
-        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
-        return {"enabled": True, "engine": eng, "output": out}
+        args = ["on", "--engine", eng]
+        # WHERE THIS RUN'S OUTPUT STARTS. `_spawn` appends to the per-key log,
+        # so an earlier toggle's text is already in the file; the offset is what
+        # keeps a refusal message about THIS run from quoting the last one.
+        log_path = self._spawn_log_path("xo", args)
+        try:
+            start = os.path.getsize(log_path)
+        except OSError:
+            start = 0
+        proc = self._spawn("xo", args)
+        try:
+            rc = proc.wait(timeout=self._xo_on_grace())
+        except subprocess.TimeoutExpired:
+            # Still going — it is sweeping. NOT killed, not waited on further.
+            rc = None
+        out = ""
+        try:
+            with open(log_path, "rb") as fh:
+                fh.seek(start)
+                out = fh.read().decode("utf-8", "replace").strip()
+        except OSError:
+            pass
+        if rc not in (None, 0):
+            err = ActionError(
+                502, "skill 'xo' exited %d: %s" % (rc, out))
+            err.skill_exit = rc
+            raise err
+        return {"enabled": True, "engine": eng, "output": out,
+                "sweeping": rc is None}
 
     def xo_off(self, mid=None):
         """`lcars xo off [<mission>]` — hand the conn back.

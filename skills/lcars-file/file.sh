@@ -338,10 +338,29 @@ _validate_engine() {
 # the parked value won, the grill and the pipeline would run on DIFFERENT
 # engines — the one thing the engines-separate-paths rule forbids — and the
 # captain's most recent, most explicit choice would be silently dropped.
+#
+# S222 — AND WHAT IT PERSISTS IS A PATH, NOT A NAME. The winner of that
+# precedence used to be written into state.json verbatim, so a mission filed
+# with `copilot` recorded the bare word and every later subprocess resolved it
+# through PATH. On a machine with the VS Code Copilot extension that lookup is
+# the fork-bomb shim, worker-guard.sh refuses it, and the captain sees his
+# mission fail ("⚠ estimator unavailable", no cost pill, no difficulty pills)
+# rather than his machine being saved. The precedence above is untouched; only
+# the RECORDING is — an engine that would resolve to the shim is written as the
+# real CLI's absolute path instead. Everything else is passed through byte for
+# byte, so a mission that never had this problem has a byte-identical
+# state.json. The shared rule, and why an OPERATOR-typed engine is deliberately
+# NOT normalised, are in skills/lcars-init/worker-guard.sh.
 _resolve_worker_bin() { # [fallback]
-  if   [ -n "$ENGINE" ];                 then printf '%s' "$ENGINE"
-  elif [ -n "${LCARS_WORKER_BIN:-}" ];   then printf '%s' "$LCARS_WORKER_BIN"
-  else                                        printf '%s' "${1:-}"
+  local wb=""
+  if   [ -n "$ENGINE" ];                 then wb="$ENGINE"
+  elif [ -n "${LCARS_WORKER_BIN:-}" ];   then wb="$LCARS_WORKER_BIN"
+  else                                        wb="${1:-}"
+  fi
+  if [ -n "$wb" ] && command -v lcars_worker_bin_prefer_real >/dev/null 2>&1; then
+    lcars_worker_bin_prefer_real "$wb"
+  else
+    printf '%s' "$wb"
   fi
 }
 

@@ -1683,6 +1683,18 @@ class LocalAdapter(object):
         engine = state.get("workerBin")
         if not (isinstance(engine, str) and engine.strip()):
             engine = None
+        # S222 — THIS IS THE DISPLAY VALUE, so it is the engine's NAME. A
+        # mission now records the engine as an absolute path when the bare name
+        # would resolve to VS Code's copilot shim (worker-guard.sh
+        # lcars_worker_bin_prefer_real), and the card's `engine` reaches
+        # board.js's engineLabel(), which looks the string up in a table of
+        # ids — a path falls through it and the captain's card would read
+        # "/opt/homebrew/bin/copilot". Nothing SPAWNS from this value: the
+        # daemon's worker paths read state.json themselves and still get the
+        # full path. board.model_mix_from_estimate already basenames its own
+        # copy, so this is a no-op for the model mix.
+        if engine:
+            engine = engine.replace("\\", "/").rsplit("/", 1)[-1]
         # Mission-log-grounding round: the model mix is now driven PURELY by what
         # estimate.json carries (one row per stage present in `models`). A logged
         # bug walks the FULL pipeline (Research grounding → Validate → …) so its

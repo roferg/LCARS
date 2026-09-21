@@ -841,8 +841,8 @@ gather_inputs() { # <mission-dir> <input-dir>
 # the ONE way anything is added after the gather: unlock the dir, copy, re-lock.
 # It is safe to call repeatedly, which is how a round-three worker sees the
 # shots round two took.
-xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json] [tests.json]
-  local into="$1" crit="$2" from="$3" obs="${4:-}" tst="${5:-}" f
+xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json] [tests.json] [walk.json]
+  local into="$1" crit="$2" from="$3" obs="${4:-}" tst="${5:-}" walk="${6:-}" f
   [ -d "$into" ] || return 0
   chmod u+w "$into" 2>/dev/null || true
   if [ -f "$crit" ]; then
@@ -872,14 +872,24 @@ xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json] 
   # both sets of pictures have to be on the worker's side of the door — a pair
   # the worker cannot open is not a side-by-side, it is a sentence about one.
   local xodir_of="${crit%/criteria.json}"
-  local wf
-  for wf in walk.json journey.json; do
-    if [ -s "$xodir_of/$wf" ]; then
-      rm -f "$into/$wf" 2>/dev/null || true
-      cp "$xodir_of/$wf" "$into/$wf" 2>/dev/null || true
-      chmod a-w "$into/$wf" 2>/dev/null || true
-    fi
-  done
+  # THE WALK RECORD IS THIS LOOK'S, NOT THE LOOK BEFORE'S (S222 fix round 1).
+  # A re-check writes its walk under its own look's name, and the caller says
+  # which file that is; only a first look leaves it at `walk.json`. Handed the
+  # wrong one, the S222 re-check worker read a walk that had not happened —
+  # "walk.json shows the relaunched build walked that flow end to end" — beside
+  # pictures that proved it had not. The journey is the PLAN and does not
+  # change between looks, so it is always the one on record.
+  [ -n "$walk" ] || walk="$xodir_of/walk.json"
+  if [ -s "$walk" ]; then
+    rm -f "$into/walk.json" 2>/dev/null || true
+    cp "$walk" "$into/walk.json" 2>/dev/null || true
+    chmod a-w "$into/walk.json" 2>/dev/null || true
+  fi
+  if [ -s "$xodir_of/journey.json" ]; then
+    rm -f "$into/journey.json" 2>/dev/null || true
+    cp "$xodir_of/journey.json" "$into/journey.json" 2>/dev/null || true
+    chmod a-w "$into/journey.json" 2>/dev/null || true
+  fi
   if [ -s "$xodir_of/pairs.json" ]; then
     rm -f "$into/pairs.json" 2>/dev/null || true
     cp "$xodir_of/pairs.json" "$into/pairs.json" 2>/dev/null || true
@@ -987,6 +997,20 @@ xo_journal_impact() {
     journal "$dir" impact-mismatch "$(printf '"criteria": [%s, %s], "impacts": [%s, %s]' \
       "$(jstr "$a")" "$(jstr "$b")" "$(jstr "$c")" "$(jstr "$d")")"
   fi
+}
+
+# WHAT THE LOOK LEFT FOR THE CAPTAIN, SAID OUT LOUD (S222 fix round 1). One
+# line per escalation, in the look's own words — the same list that is
+# journaled, so the terminal and the report can never disagree about what was
+# put aside for him. Nothing at all when the list is empty.
+xo_say_escalations() { # <newline-separated list>
+  local line
+  [ -n "${1:-}" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '◈ NUMBER ONE: this one is yours to decide — %s\n' "$line"
+  done <<< "$1"
+  return 0
 }
 
 # --- the worker's process tree ---------------------------------------------
@@ -1901,8 +1925,12 @@ xo_build_journey() { # <mission-dir> <xodir>
 # drawing never drew), and a value that does not CARRY from the screen a person
 # came from to the screen they arrived at. Both are EVIDENCE, shown to the
 # look beside everything else; neither is a verdict.
-xo_measure_walk() { # <mission-dir> <xodir> <observations.json>
-  local dir="$1" xodir="$2" obs="$3" f
+xo_measure_walk() { # <mission-dir> <xodir> <observations.json> [walk.json]
+  # THE WALK IT READS IS NAMED BY THE CALLER (S222 fix round 1). A re-check
+  # walks the same journey again and writes its OWN record; handed the file
+  # name rather than assuming `walk.json`, this pass measures the look that
+  # just happened instead of the look before it.
+  local dir="$1" xodir="$2" obs="$3" walk="${4:-$xodir/walk.json}" f
   set --
   for f in "$xodir"/build-parts-*.json; do
     [ -s "$f" ] || continue
@@ -1912,8 +1940,8 @@ xo_measure_walk() { # <mission-dir> <xodir> <observations.json>
     "$XO_PY" "$XO_PARTS_PY" scan "$@" --out "$xodir/scan.json" >/dev/null 2>&1 || true
     xo_add_observations "$obs" "$xodir/scan.json"
   fi
-  if [ -s "$xodir/walk.json" ]; then
-    "$XO_PY" "$XO_JOURNEY_PY" carry --walk "$xodir/walk.json" \
+  if [ -s "$walk" ]; then
+    "$XO_PY" "$XO_JOURNEY_PY" carry --walk "$walk" \
       --out "$xodir/carry.json" >/dev/null 2>&1 || true
     xo_add_observations "$obs" "$xodir/carry.json"
   fi
@@ -2492,6 +2520,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
               "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
+  local escalations=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="${line%%$'\t'*}"; val="${line#*$'\t'}"
@@ -2505,9 +2534,16 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
       GRADE_WHY)    gradewhy="$val" ;;
       SUMMARY)      summary="$val" ;;
       NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
+      # WHAT THE LOOK PUT ASIDE FOR HIM (S222 fix round 1) — journaled like any
+      # other finding, so the board, `lcars xo report` and the console all show
+      # it off the ONE record, and collected for the line printed below.
+      ESCALATION)   journal "$dir" escalation "$(printf '"detail": %s' "$(jstr "$val")")"
+                    escalations="${escalations}${val}
+" ;;
       IMPACT_KEPT|IMPACT_MISMATCH|TEST_DEMOTED) xo_journal_impact "$dir" "$key" "$val" ;;
     esac
   done <<< "$report"
+  xo_say_escalations "$escalations"
 
   if [ -z "$score" ]; then
     # A verdict that cannot be read is not a verdict. It is a LOW that says so,
@@ -3026,10 +3062,47 @@ cmd_recheck() {
   # gets the same guarantee: whatever the browser leaves behind is put back.
   xo_tree_mark "$(json_field "$dir/launch.json" worktree)" "$xodir/tree-mark"
 
+  # --- 2a. THE SAME JOURNEY, WALKED AGAIN (S222 fix round 1) ---------------
+  #
+  # THE DEFECT. This drive was called with neither `--journey` nor
+  # `--walk-out`, so a re-check photographed whatever the build opens on and
+  # nothing else. Measured on the captain's own repo on 2026-09-20: the look
+  # left 30 walk artefacts in `shots/look-1`, the re-check left NOT ONE in
+  # `shots/recheck-1`; the look's shot was of `…#mbr`, the re-check's of the
+  # landing page. Every side-by-side then read "42 drawn part(s): 0 matched,
+  # 42 unreachable" against 4 / 7 / 8 on the looks — so three times out of
+  # three the fixes held and Number One still had to hand the mission back,
+  # because it could not see them. It said so exactly: "a new test passes, but
+  # that is code, not the button on screen." That refusal is right. This is
+  # the missing half of it.
+  #
+  # THE PLAN IS RE-USED, NEVER RE-PLANNED. `journey.json` was declared from the
+  # record before the first look ever launched, and it is still on disk.
+  # Re-planning here would invite a second, differently-shaped journey — and
+  # then the before and after pictures are not of the same thing. When there is
+  # no journey on record (a mission first looked at before this existed), that
+  # is said in one plain sentence and the re-check carries on seeing what it
+  # can, rather than inventing a flow.
+  #
+  # AND ITS OWN RECORD. `walk-<look>.json`, not `walk.json`: the driver MERGES
+  # into whatever it finds at `--walk-out`, so writing there would glue this
+  # walk onto the first look's and leave neither readable.
+  local rwalk="$xodir/walk-$look.json"
+  local -a jargs=()
+  if [ -s "$xodir/journey.json" ]; then
+    jargs=(--journey "$xodir/journey.json" --walk-out "$rwalk")
+    printf '◈ NUMBER ONE: walking the same journey I walked the first time.\n'
+  else
+    printf '◈ NUMBER ONE: the first look left no journey on record, so I can only see the screen your build opens on.\n'
+    journal "$dir" journey \
+      '"detail": "no journey was on record from the first look, so this re-check could not walk one"'
+  fi
+
   local drc=0
   "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
     --place-names "$xodir/criteria.json" --prefix "recheck" \
     --parts-out "$xodir/build-parts-recheck.json" \
+    ${jargs[@]+"${jargs[@]}"} \
     >"$xodir/drive-recheck.json" 2>"$xodir/drive-recheck.err" &
   XO_DRIVE_PID=$!
   wait "$XO_DRIVE_PID" || drc=$?
@@ -3074,6 +3147,11 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # drawing itself has not changed; its parts were read at the first look.
   rm -f "$xodir"/build-parts-[0-9]*.json 2>/dev/null || true
   xo_pair_parts "$dir" "$xodir"
+  # AND WHAT THE WALK MEASURED (S222 fix round 1) — the icon bigger than its
+  # own control, the value that does not carry from one screen to the next.
+  # Those are the readings the fixes filed against, and until this ran on the
+  # re-check too the second look had no measurement of them at all.
+  xo_measure_walk "$dir" "$xodir" "$obsfile" "$rwalk"
 
   # --- 2c. AND THE PROJECT'S OWN TESTS, AGAIN (S211). A recheck relaunches the
   # build from the FIXED branch, so the first look's test run is about code that
@@ -3096,7 +3174,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   XO_WORK_DIR="$work"
   mkdir -p "$input" "$out"
   gather_inputs "$dir" "$input"
-  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile" "$testsfile"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile" "$testsfile" "$rwalk"
   # The first verdict, the filed logs and their PRDs — the record of what this
   # re-check is ABOUT. Copied through the same unlock/copy/re-lock door
   # everything else in the input tree goes through.
@@ -3167,7 +3245,7 @@ $shots"
   # --- 5. THE SECOND SCORE, FROM THE LEDGER, EXACTLY AS THE FIRST ----------
   # Run BEFORE the accept so the report exists whichever way this ends: an
   # escalation owes the captain the same ledger an acceptance does.
-  local score2="" why2="" summary2=""
+  local score2="" why2="" summary2="" escalations2=""
   if [ -s "$out/xo-recheck.json" ]; then
     mkdir -p "$xodir/second"
     [ -s "$xodir/report.md" ] && cp "$xodir/report.md" "$xodir/report-1.md" 2>/dev/null
@@ -3175,7 +3253,7 @@ $shots"
     rep2="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
               "$xodir/second/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
-              "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" 2>/dev/null)" || rep2=""
+              "$xodir/pairs.json" "$rwalk" "$xodir/seed.json" 2>/dev/null)" || rep2=""
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"
@@ -3183,9 +3261,13 @@ $shots"
         SCORE)   score2="$val" ;;
         WHY)     why2="$val" ;;
         SUMMARY) summary2="$val" ;;
+        ESCALATION) journal "$dir" escalation "$(printf '"detail": %s' "$(jstr "$val")")"
+                    escalations2="${escalations2}${val}
+" ;;
         IMPACT_KEPT|IMPACT_MISMATCH|TEST_DEMOTED) xo_journal_impact "$dir" "$key" "$val" ;;
       esac
     done <<< "$rep2"
+    xo_say_escalations "$escalations2"
     if [ -n "$score2" ]; then
       cp "$xodir/second/verdict.json" "$xodir/verdict-2.json" 2>/dev/null || true
       # ONE REPORT, TWO LOOKS, IN ORDER. The captain asked to see the fix beside

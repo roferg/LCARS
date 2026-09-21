@@ -2045,6 +2045,20 @@ def main():
                                           int(m.get("typings") or 0),
                                           int(m.get("keypresses") or 0),
                                           int(m.get("addressJumps") or 0)))
+    # WHAT IS HIS TO DECIDE, ON THE WIRE (S222 fix round 1). `escalations` is
+    # what the look flagged for the captain himself — something it saw, and
+    # believes matters, that no acceptance criterion names. It reached
+    # `report.md` and stopped there: on 2026-09-20 Number One described the
+    # August→September month jump exactly, called it "worth the captain's eye",
+    # and it appeared in neither the console nor `lcars xo report`. So the one
+    # thing it flagged for him was the one thing he would never see.
+    #
+    # READ AS DATA, NEVER PARSED OUT OF PROSE. This is the list the look wrote
+    # into its verdict, carried word for word onto the same tab-separated wire
+    # NOTE already travels on, so xo.sh can journal it the way it journals
+    # every other finding. No line at all when there is nothing to escalate.
+    for e in out["escalations"]:
+        print("ESCALATION\t" + e.replace("\n", " "))
     for n in notes:
         print("NOTE\t" + n.replace("\n", " "))
     return 0

@@ -109,8 +109,13 @@ def _mission_meta(mdir):
 # Verify with nobody's eye on it — that is his to pick up, not machinery.
 NEEDS_YOU_ACTIONS = ("escalated", "overflow", "fix-did-not-hold",
                      "sweep-timeout")
+# S222: an `escalation` is what a look put aside for the captain himself —
+# something it saw and believes matters that no acceptance criterion names. It
+# is a conclusion he should read, not a step on the way to one, so it ranks
+# beside the score rather than folding underneath it. It is NOT `needs-you`:
+# nothing is blocked on it and the mission is not waiting.
 VERDICT_ACTIONS = ("scored", "rescored", "score-overruled", "answered",
-                   "stood-down", "silent")
+                   "stood-down", "silent", "escalation")
 
 
 def entry_rank(action):

@@ -258,16 +258,34 @@ function pngStats(buf, scale) {
     }
   }
   const counts = new Map(); let sr = 0, sg = 0, sb = 0, n = 0;
+  // THE GRID (S222 fix 1). Every statistic above is a single number over the
+  // WHOLE frame, so it answers "did anything change" and can never answer "how
+  // much". The idle control needs a magnitude — the keyed change has to be
+  // compared against what this build does on its own — so the frame is also
+  // reduced to a GRID_N x GRID_N block of average colours. It is the same pass
+  // and the same samples; nothing extra is decoded.
+  const gsum = new Float64Array(GRID_N * GRID_N * 3);
+  const gcnt = new Float64Array(GRID_N * GRID_N);
   for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
     const o = y * stride + x * bpp, r = out[o], g = out[o + 1], bl = out[o + 2];
     const k = (r << 16) | (g << 8) | bl;
     counts.set(k, (counts.get(k) || 0) + 1);
     sr += r; sg += g; sb += bl; n++;
+    const gi = (Math.min(GRID_N - 1, (y * GRID_N / h) | 0) * GRID_N)
+             + Math.min(GRID_N - 1, (x * GRID_N / w) | 0);
+    gsum[gi * 3] += r; gsum[gi * 3 + 1] += g; gsum[gi * 3 + 2] += bl; gcnt[gi]++;
+  }
+  const grid = new Uint8Array(GRID_N * GRID_N * 3);
+  for (let i = 0; i < GRID_N * GRID_N; i++) {
+    const c = gcnt[i] || 1;
+    grid[i * 3] = Math.round(gsum[i * 3] / c);
+    grid[i * 3 + 1] = Math.round(gsum[i * 3 + 1] / c);
+    grid[i * 3 + 2] = Math.round(gsum[i * 3 + 2] / c);
   }
   let topKey = 0, topN = 0;
   for (const [k, v] of counts) if (v > topN) { topN = v; topKey = k; }
   const hex = (k) => "#" + k.toString(16).padStart(6, "0");
-  return {
+  const stats = {
     width: w, height: h, sampled: n,
     distinctColours: counts.size,
     dominantColour: hex(topKey),
@@ -277,6 +295,45 @@ function pngStats(buf, scale) {
     painted: counts.size > 8 && (1 - topN / n) > floor,
     inkFloor: +floor.toFixed(5),
   };
+  // NOT ENUMERABLE, so it never reaches readout.json. This object is written
+  // straight into the record for every shot a look takes; 3072 numbers per
+  // shot would swamp the file a person reads, and the grid is machinery, not
+  // a finding. The two distances computed FROM it are what gets recorded.
+  Object.defineProperty(stats, "grid", { value: grid, enumerable: false });
+  return stats;
+}
+
+/* HOW MUCH OF THE PICTURE CHANGED (S222 fix 1) — the fraction of grid cells
+ * whose average colour moved by more than GRID_TOL in any channel. Returns
+ * null when either frame has no grid (a failed shot, a different size), which
+ * the caller must treat as "no control", never as zero. */
+const GRID_N = 32;
+const GRID_TOL = 8;
+// The idle control's window is the keyed window's own length, floored so a
+// zero-hold press still watches for a moment and capped so a pathological
+// keyed step cannot double a whole look's runtime.
+const IDLE_WINDOW_CAP_MS = 10000;
+// Two grid cells out of GRID_N x GRID_N — the floor a still build's keyed
+// change must clear. See the margin note at the verdict.
+const IDLE_MARGIN = 2 / (GRID_N * GRID_N);
+// A fraction of the picture, said the way a person reads it.
+function fmtFrac(v) {
+  if (typeof v !== "number") return "an unknown amount";
+  if (v <= 0) return "none";
+  return v < 0.001 ? "under 0.1%" : (v * 100).toFixed(1) + "%";
+}
+function pictureDistance(a, b) {
+  const ga = a && a.grid, gb = b && b.grid;
+  if (!ga || !gb || ga.length !== gb.length || !ga.length) return null;
+  const cells = ga.length / 3;
+  let moved = 0;
+  for (let i = 0; i < cells; i++) {
+    const o = i * 3;
+    if (Math.abs(ga[o] - gb[o]) > GRID_TOL ||
+        Math.abs(ga[o + 1] - gb[o + 1]) > GRID_TOL ||
+        Math.abs(ga[o + 2] - gb[o + 2]) > GRID_TOL) moved++;
+  }
+  return +(moved / cells).toFixed(5);
 }
 
 /* ── Chrome, headless, ours, and ours alone ──────────────────────────────────
@@ -1525,7 +1582,7 @@ const FOCUS = (sel) => `(function () {
        * — there is no element to find and nothing to click. It takes its own
        * BEFORE picture first, because on a canvas build the picture is the only
        * place a change can show. */
-      let pxBefore = null;
+      let pxBefore = null, keyedFrom = 0;
       if (rec.do === "press") {
         const d = keyDescriptor(String(step.pressKey || ""));
         if (!d) {
@@ -1544,6 +1601,11 @@ const FOCUS = (sel) => `(function () {
           try { pxBefore = await shoot(rec.shotBefore = PREFIX + "-walk-" +
                  String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-") +
                  "-before", null); } catch (e) { rec.shotError = e.message; }
+          // WHEN THE KEYED WINDOW OPENED. The idle control below has to watch
+          // this build for the SAME length of time with no key, or it is not
+          // a control — a shorter look would under-measure the drift and a
+          // longer one would over-measure it.
+          keyedFrom = Date.now();
           walk.moves.keypresses += reps;
           walk.actions.push(hold > 0 ? { press: d.key, times: reps, holdMs: hold }
                                      : { press: d.key, times: reps });
@@ -1692,52 +1754,138 @@ const FOCUS = (sel) => `(function () {
       rec.shot = PREFIX + "-walk-" + String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-");
       let pxAfter = null;
       try { pxAfter = await shoot(rec.shot, null); } catch (e) { rec.shotError = e.message; }
-      /* THE PRESS STEP IS JUDGED ON ITS TWO PICTURES (S221 fix 7), and this
-       * has to happen AFTER the shot, because the after-picture is the shot.
-       * On a canvas build the url and the page text are identical before and
-       * after however far the character walked, so the text comparison above
-       * calls every key press "nothing changed" — which would turn a build
-       * that works perfectly into a couldn't-check on every step. The pair is
+      /* THE IDLE CONTROL — THE THIRD SHOT (S222 fix 1).
+       *
+       * S221 judged a press on a BEFORE and an AFTER, and on a build that
+       * animates by itself that is a rubber stamp: the picture always differs,
+       * so every key "worked". Measured by the tester on 2026-09-20 on the
+       * captain's real game — `q`, a key it ignores completely, came back
+       * `done`; the readout said `Tile 10, 10` before AND after; the only
+       * differing pixels were a 42x58 patch of the character breathing.
+       *
+       * So a third picture is taken with NO KEY PRESSED, over a window the
+       * same length as the keyed one, and it measures how much this build
+       * changes ON ITS OWN. The keyed change has to EXCEED that. It is the
+       * same comparison, given a control — no new mechanism, and nothing here
+       * asks the build a question it cannot answer.
+       *
+       * The idle window starts AFTER the after-shot, so it is very slightly
+       * longer than the keyed window (it also pays for its own capture). That
+       * bias is deliberate and it is the safe direction: the control can only
+       * over-state the drift, which makes a "taken" verdict harder to earn. */
+      let pxIdle = null;
+      if (rec.do === "press" && rec.status !== "unreachable" && pxBefore && pxAfter) {
+        rec.idleWindowMs = Math.min(Math.max(Date.now() - keyedFrom, 300), IDLE_WINDOW_CAP_MS);
+        await sleep(rec.idleWindowMs);
+        const idleName = rec.shot + "-idle";
+        try { pxIdle = await shoot(idleName, null); rec.shotIdle = idleName; }
+        catch (e) { rec.shotError = rec.shotError || e.message; }
+      }
+      /* THE PRESS STEP IS JUDGED ON ITS PICTURES (S221 fix 7), and this has to
+       * happen AFTER the shot, because the after-picture is the shot. On a
+       * canvas build the url and the page text are identical before and after
+       * however far the character walked, so the text comparison above calls
+       * every key press "nothing changed" — which would turn a build that
+       * works perfectly into a couldn't-check on every step. The shots are
        * also the evidence the look reads: a before and an after of the same
        * screen is how a person tells a readout that follows from one that is
        * merely present. */
       if (rec.do === "press" && rec.status !== "unreachable") {
         rec.pictureMoved = pictureMoved(pxBefore, pxAfter);
-        if (rec.pictureMoved) {
-          /* TAKEN — AND THAT IS ALL IT MEANS (S221 fix 8b). This used to say
-           * "something answered the key", which is a claim the mechanism
-           * cannot support. Measured by the tester: pressing `q`, a key this
-           * game ignores completely, came back "done, something answered the
-           * key" — the only differing pixels were a 42x58 patch of the
-           * character's own IDLE ANIMATION, and the tile readout said
-           * `Tile 10, 10` before and after. On a build that animates by
-           * itself the picture always differs, so this is a rubber stamp on
-           * "the step ran", never on "the key did something". The words now
-           * say exactly that, and hand the judgement to the reader with the
-           * two pictures. */
+        const keyed = pictureDistance(pxBefore, pxAfter);
+        const idle = pictureDistance(pxAfter, pxIdle);
+        /* WITHOUT A CONTROL, THE OLD, WEAKER TEST — and it says so. A shot
+         * that failed leaves no grid to compare, and a missing control must
+         * never be read as a control that measured zero. */
+        let answered = rec.pictureMoved;
+        if (keyed !== null && idle !== null) {
+          rec.keyedDistance = keyed;
+          rec.idleDistance = idle;
+          /* THE MARGIN, AND WHY IT IS THIS ONE. One idle shot is a single
+           * noisy sample of a build's self-drift, so the keyed change must
+           * beat DOUBLE it — a sample that happened to land low cannot pass a
+           * key off as answered. And on a build that is perfectly still (idle
+           * 0) the keyed change must still be worth more than two grid cells,
+           * so image-compression and anti-aliasing noise in one cell cannot
+           * do it either. */
+          rec.beatIdle = keyed > Math.max(2 * idle, idle + IDLE_MARGIN);
+          answered = rec.beatIdle;
+        } else {
+          rec.idleControl = "none — a shot could not be measured, so the keyed " +
+                            "change was not compared against this build's own drift";
+        }
+        if (answered) {
+          /* TAKEN. S221 fix 8b took out "something answered the key", which
+           * the two-shot mechanism could not support. With the control it can
+           * support MORE than that — the keyed change beat what this build
+           * does with no key at all — but the sentence below still refuses to
+           * read a changed picture ON ITS OWN as the evidence, because it is
+           * not: the control is. The numbers are in the record either way, and
+           * the three shots are on disk for the reader. */
           rec.status = "done";
           delete rec.couldNotCheck;
-          rec.changeEvidence = "picture-only";
+          rec.changeEvidence = rec.beatIdle === true ? "picture-beat-idle-control" : "picture-only";
           rec.why = "I pressed " + (rec.pressed || "the key") +
                     (rec.holdMs ? " and held it " + rec.holdMs + "ms" : "") +
                     ". The page's words are identical before and after — on a build that " +
-                    "draws itself they always are — and the two pictures differ. That means " +
-                    "the step was TAKEN. It is NOT evidence the key was answered: a build " +
-                    "that animates on its own changes its picture whether or not it heard " +
-                    "you. Compare the before and after shots yourself and judge it by eye.";
-          notes.push("the journey step \"" + rec.name + "\" was taken and its picture " +
-                     "changed — but this build draws itself, so a changed picture is NOT " +
-                     "evidence the key was answered. Read the before/after pair for this " +
-                     "step and judge it by eye.");
-        } else if (!rec.changed && !rec.pictureMoved) {
+                    "draws itself they always are — and the pictures differ. That means " +
+                    "the step was TAKEN. A changed picture on its own is NOT evidence the " +
+                    "key was answered, because a build that animates changes its picture " +
+                    "whether or not it heard you" +
+                    (rec.beatIdle === true
+                      ? "; what settles it here is the un-keyed control shot — with no key at " +
+                        "all this build changed " + fmtFrac(rec.idleDistance) + " of the " +
+                        "picture over the same length of time, and with the key it changed " +
+                        fmtFrac(rec.keyedDistance) + ", which is more"
+                      : " — and there is no control shot for this step, so this is the weaker " +
+                        "two-picture test") +
+                    ". Compare the shots yourself and judge it by eye.";
+          /* THE NOTE KEEPS S221 fix 8b's SENTENCE WHICHEVER WAY THIS WENT. A
+           * changed picture ON ITS OWN is never the evidence — with a control
+           * the control is, without one there is none — and the reader is
+           * told that in both cases, because both cases reach them. */
+          notes.push("the journey step \"" + rec.name + "\" was taken and its picture changed" +
+                     (rec.beatIdle === true
+                       ? " MORE than this build changes on its own with no key at all (" +
+                         fmtFrac(rec.keyedDistance) + " against " + fmtFrac(rec.idleDistance) +
+                         "). A changed picture by itself is NOT evidence the key was answered — " +
+                         "the un-keyed control shot is what makes this one count. Read the " +
+                         "before/after pair for this step and judge it by eye."
+                       : " — but this build draws itself and there was no control shot for this " +
+                         "step, so a changed picture is NOT evidence the key was answered. Read " +
+                         "the before/after pair for this step and judge it by eye."));
+        } else if (!rec.changed) {
           rec.status = "no-change";
-          rec.couldNotCheck = "nothing changed";
-          rec.why = "I pressed " + (rec.pressed || "the key") +
-                    (rec.holdMs ? " and held it " + rec.holdMs + "ms" : "") +
-                    ", and the screen was the same before and after — same words AND the " +
-                    "same picture — so I cannot say whether it worked";
-          notes.push("the journey step \"" + rec.name + "\" changed nothing at all — " +
-                     "same words and the same picture — so it is couldn't-check, not taken");
+          /* "THE PICTURE DID CHANGE" IS THE GRID'S ANSWER, NOT pictureMoved's.
+           * pictureMoved reads whole-frame statistics, and a small animating
+           * patch can move the grid while leaving those statistics alone — it
+           * did on this fixture, intermittently. The branch has to key off the
+           * measurement the verdict was actually made on. */
+          if (rec.beatIdle === false && (rec.keyedDistance > 0 || rec.pictureMoved)) {
+            /* THE CASE THIS FIX EXISTS FOR: the picture DID change, and it
+             * changed no more than the build changes on its own. That is not
+             * a key being answered; it is a build breathing. */
+            rec.couldNotCheck = "no more than it changes on its own";
+            rec.why = "I pressed " + (rec.pressed || "the key") +
+                      (rec.holdMs ? " and held it " + rec.holdMs + "ms" : "") +
+                      ", and the picture did change — but this build changes by itself. " +
+                      "With no key pressed at all, over the same length of time, " +
+                      fmtFrac(rec.idleDistance) + " of the picture changed; with the key, " +
+                      fmtFrac(rec.keyedDistance) + " did. It changed as much as it changes " +
+                      "on its own, so I cannot say whether the key was answered.";
+            notes.push("the journey step \"" + rec.name + "\" changed the picture no more " +
+                       "than this build changes on its own with no key at all (" +
+                       fmtFrac(rec.keyedDistance) + " against " + fmtFrac(rec.idleDistance) +
+                       "), so it is couldn't-check, not taken");
+          } else {
+            rec.couldNotCheck = "nothing changed";
+            rec.why = "I pressed " + (rec.pressed || "the key") +
+                      (rec.holdMs ? " and held it " + rec.holdMs + "ms" : "") +
+                      ", and the screen was the same before and after — same words AND the " +
+                      "same picture — so I cannot say whether it worked";
+            notes.push("the journey step \"" + rec.name + "\" changed nothing at all — " +
+                       "same words and the same picture — so it is couldn't-check, not taken");
+          }
         }
       }
       await snapScreen("w" + i);

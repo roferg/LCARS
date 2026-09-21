@@ -320,6 +320,87 @@ PYEOF
 )"
 check "7. every daemon function that builds a worker argv calls the guard ${pyviol:+(offenders: $pyviol)}" "[ -z \"\$pyviol\" ]"
 
+# ==========================================================================
+# S222 — A PERSISTED ENGINE IS A PATH, NOT A NAME.
+#
+# THE DEFECT. `lcars file` writes the engine into a mission's state.json as a
+# BARE NAME — `"workerBin": "copilot"` — and every later subprocess resolves
+# that name through PATH. On any machine with the VS Code Copilot extension
+# installed, `which copilot` IS the shim this file exists to refuse. So the
+# guard correctly refuses, and what the captain sees is his mission failing,
+# not his machine being saved. Measured 2026-09-20: a filed mission came back
+# "⚠ estimator unavailable" with no cost pill; the same mission re-run by hand
+# with the absolute path produced a valid estimate in one worker.
+#
+# THE CURE, AND ITS EXACT LIMITS. A name LCARS WROTE FOR ITSELF is normalised
+# to the real CLI's absolute path — at filing time, and when a mission's
+# PERSISTED engine is read. That is all. An engine the OPERATOR named (an
+# explicit $LCARS_WORKER_BIN, config.json, the daemon's own hand-off) is left
+# exactly as it was and the guard still refuses it, loudly, with its sentence
+# — because refusing the fork bomb is right, and silently rewriting what a
+# person typed would hide the one thing they need to fix.
+# ==========================================================================
+echo "S222. a persisted engine is normalised to the real CLI; typed ones are not"
+
+prefer() { # <bin> [PATH]
+  PATH="${2:-$PATH}" bash -c '. "$1"; lcars_worker_bin_prefer_real "$2"' _ "$GUARD" "$1"
+}
+check "S222. bare \`copilot\` that would hit the shim becomes the REAL absolute path" \
+  "[ \"\$(prefer copilot '$LINKBIN:$REALBIN:/usr/bin:/bin')\" = '$REALBIN/copilot' ]"
+check "S222. …and with no real copilot on PATH, the path the refusal names" \
+  "[ \"\$(prefer copilot '$LINKBIN:/usr/bin:/bin')\" = '/opt/homebrew/bin/copilot' ]"
+check "S222. a bare \`copilot\` that is ALREADY fine is left alone (no gratuitous rewrite)" \
+  "[ \"\$(prefer copilot '$REALBIN:/usr/bin:/bin')\" = 'copilot' ]"
+check "S222. an ABSOLUTE shim path is replaced too — PATH order cannot cure that one" \
+  "[ \"\$(prefer '$SHIM' '$REALBIN:/usr/bin:/bin')\" = '$REALBIN/copilot' ]"
+check "S222. \`claude\` is untouched" \
+  "[ \"\$(prefer claude '$LINKBIN:$REALBIN:/usr/bin:/bin')\" = 'claude' ]"
+check "S222. a bin that is nowhere on PATH is untouched (not this rule's to invent)" \
+  "[ \"\$(prefer no-such-cli-s222 '$LINKBIN:/usr/bin:/bin')\" = 'no-such-cli-s222' ]"
+check "S222. the empty string stays empty (callers use it to mean 'no engine')" \
+  "[ -z \"\$(prefer '' '$LINKBIN:/usr/bin:/bin')\" ]"
+check "S222. NOTHING was executed to work any of that out" "[ ! -e '$SENTINEL' ]"
+
+# THE LOAD-BEARING ROW. A mission ALREADY on disk carrying the bare name — the
+# state every mission filed before tonight is in — must run. This is the whole
+# reason the fix is in the READ path and not only in `lcars file`.
+S222R="$TMPROOT/s222-repo"; mkdir -p "$S222R"
+( cd "$S222R" && git init -q && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m i )
+mkdir -p "$S222R/.git/lcars/missions/m-1"
+printf '{}\n' >"$S222R/.git/lcars/config.json"
+printf '{ "id": "m-1", "type": "feature", "title": "t", "stage": "align", "workerBin": "copilot" }\n' \
+  >"$S222R/.git/lcars/missions/m-1/state.json"
+printf '# Mission\n' >"$S222R/.git/lcars/missions/m-1/prd.md"
+printf '#!/bin/sh\nexit 0\n' >"$TMPROOT/gh-s222"; chmod +x "$TMPROOT/gh-s222"
+# A REAL copilot that LEAVES A MARK. The run's own readout basenames the engine
+# ("worker: copilot"), so it cannot tell a cured run from a broken one — only
+# WHICH FILE ACTUALLY RAN can. This one records that it did.
+S222BIN="$TMPROOT/s222-real-bin"; mkdir -p "$S222BIN"
+printf '#!/bin/sh\n: >"%s/s222-real-ran"\necho "copilot 0.0 (stub)"\nexit 0\n' "$TMPROOT" \
+  >"$S222BIN/copilot"; chmod +x "$S222BIN/copilot"
+out="$(cd "$S222R" && PATH="$LINKBIN:$S222BIN:/usr/bin:/bin" LCARS_GH_BIN="$TMPROOT/gh-s222" \
+  env -u LCARS_WORKER_BIN -u LCARS_WORKER_BIN_INTERNAL -u LCARS_VIEWSCREEN_CHILD \
+  bash "$REPO_ROOT/skills/lcars-run/run.sh" research --mission m-1 2>&1)"
+check "S222. an EXISTING mission recording bare \`copilot\` is no longer refused by the guard" \
+  "! printf '%s' \"\$out\" | grep -F 'Refusing to start' >/dev/null"
+check "S222. …and the file that actually RAN is the real CLI, not the shim" \
+  "[ -f '$TMPROOT/s222-real-ran' ]"
+check "S222. …and still nothing executed the shim" "[ ! -e '$SENTINEL' ]"
+
+# THE OTHER DIRECTION, and it is the one that keeps this file honest: a shim
+# the OPERATOR named is still refused, with the sentence it always gave. (The
+# S218/D2 rows above already drive every wording of it; this row is here so a
+# future reader of the S222 block sees both halves in one place.)
+out="$(cd "$S222R" && PATH="$LINKBIN:$REALBIN:/usr/bin:/bin" LCARS_WORKER_BIN=copilot \
+  LCARS_GH_BIN="$TMPROOT/gh-s222" env -u LCARS_WORKER_BIN_INTERNAL -u LCARS_VIEWSCREEN_CHILD \
+  bash "$REPO_ROOT/skills/lcars-run/run.sh" research --mission m-1 2>&1)"
+check "S222. an engine the OPERATOR typed is still refused, never silently rewritten" \
+  "printf '%s' \"\$out\" | grep -F 'Refusing to start' >/dev/null"
+
+# AND THE FILING HALF: a mission filed from now on records the path, not the name.
+check "S222. file.sh normalises the engine it PERSISTS through the same one rule" \
+  "grep -F 'lcars_worker_bin_prefer_real' '$REPO_ROOT/skills/lcars-file/file.sh' >/dev/null"
+
 echo
 printf 'lcars worker-guard: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

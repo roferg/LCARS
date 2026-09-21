@@ -91,6 +91,38 @@ lcars_worker_bin_real_dir() {
 # untouched.
 lcars_worker_bin_daemon_hint() { printf 'restart the viewscreen'; }
 
+# lcars_worker_bin_prefer_real <bin> -> the engine LCARS should RECORD for
+# itself: <bin> unchanged, unless it resolves to the shim, in which case the
+# real CLI's absolute path (the same one the refusal above names).
+#
+# WHY THIS EXISTS, AND WHY IT IS NOT THE GUARD (S222). `lcars file` wrote a
+# mission's engine as a BARE NAME — `"workerBin": "copilot"` — and every later
+# subprocess resolved that name through PATH, in an environment nobody
+# controls. On any machine with the VS Code Copilot extension installed, that
+# lookup IS the shim, so the guard refused it and the captain's mission died
+# with "estimator unavailable". The guard was right; the NAME was wrong. A
+# late-bound PATH lookup for a value LCARS chose and persisted itself is the
+# same class as the engine-override money bug — the winner depends on which
+# process reads it.
+#
+# IT NORMALISES ONLY WHAT LCARS WROTE FOR ITSELF: the engine persisted at
+# filing time, and that engine when it is read back off a mission. An engine
+# the OPERATOR named — an explicit $LCARS_WORKER_BIN, config.json, a daemon
+# hand-off — is NEVER rewritten here, and the guard still refuses it with its
+# own sentence, because the fix belongs in the place the person set it and
+# silently curing it would hide that.
+#
+# Like everything else in this file it only RESOLVES: nothing is executed.
+lcars_worker_bin_prefer_real() {
+  local bin="${1:-}" real
+  [ -n "$bin" ] || { printf ''; return 0; }
+  real="$(lcars_worker_bin_resolve "$bin")" || { printf '%s' "$bin"; return 0; }
+  if _lcars_worker_bin_is_shim "$real"; then
+    printf '%s/copilot' "$(lcars_worker_bin_real_dir)"; return 0
+  fi
+  printf '%s' "$bin"
+}
+
 # lcars_worker_bin_guard <bin> [<hint>] -> 0 when LCARS may start <bin>;
 # otherwise ONE plain sentence on stderr — the path found and the fix — and 1.
 #

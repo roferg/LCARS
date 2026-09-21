@@ -304,9 +304,22 @@ check "3. the escalating bug (003) is parked at awaiting-human" \
   "qgrep '\"awaitingHuman\": *true' '$repo3/.git/lcars/missions/lcars-20260601-003/state.json'"
 check "3. its question lands where the answer inbox reads it (pending.json)" \
   "[ -f '$repo3/.git/lcars/missions/lcars-20260601-003/pending.json' ]"
-check "3. NO consolidated re-verify gate on the parent yet" \
-  "! qgrep '\"awaitingHuman\": *true' '$repo3/.git/lcars/missions/lcars-20260601-001/state.json'"
-check "3. NO consolidated notify fired" "[ ! -s '$repo3/notify.log' ]"
+# S222-B REVERSES THE TWO ASSERTIONS THAT USED TO LIVE HERE. They read
+#   "NO consolidated re-verify gate on the parent yet"  (awaitingHuman absent)
+#   "NO consolidated notify fired"                      (notify.log empty)
+# and they were pinning the silence that cost the captain a night: one log stuck,
+# seven queued behind it, nothing shipped and nothing said so. The consolidated
+# RE-VERIFY gate must still not be raised — nothing is ready to re-verify — but
+# the parent must not go quiet either. It gets the `reverify-blocked` gate and
+# ONE ping, exactly as the stranded-log path has since S204. Proven in full at
+# S222-B below; kept here so the old silence cannot come back by this door.
+check "3. still NO consolidated re-verify gate (nothing is ready for one)" \
+  "! qgrep '\"kind\": *\"reverify\",' '$repo3/.git/lcars/missions/lcars-20260601-001/pending.json'"
+check "3. but the parent is NOT silent — it gets the reverify-blocked gate" \
+  "qgrep '\"awaitingHuman\": *true' '$repo3/.git/lcars/missions/lcars-20260601-001/state.json' \
+   && qgrep '\"kind\": *\"reverify-blocked\"' '$repo3/.git/lcars/missions/lcars-20260601-001/pending.json'"
+check "3. and exactly ONE notify fired (never one per bug)" \
+  "[ \"\$(wc -l <'$repo3/notify.log' | tr -d ' ')\" -eq 1 ]"
 check "3. the bug AFTER the escalation (004) was NOT driven" \
   "! qgrep 'run drive lcars-20260601-004' '$RUN_LOG'"
 check "3. already-resolved earlier bug (002) is not rolled back" \
@@ -1797,6 +1810,215 @@ check "S204-D2c. no Number One on the mission ⇒ nothing is hired" \
   "[ ! -s '$XO_HANDBACK_LOG' ]"
 check "S204-D2c. …but the captain still gets the gate" \
   "qgrep '\"kind\": *\"reverify-blocked\"' '$repoD2c/.git/lcars/missions/lcars-20260601-001/pending.json'"
+
+# ==========================================================================
+# S222-A. THE SUCCESS PATH TELLS NUMBER ONE TOO — AND DOES NOT WAIT FOR IT.
+#
+# THE DEFECT. The captain switches Number One on and walks away. It looks, it
+# files the bugs, this drive fixes them and raises the parent's consolidated
+# re-verify gate — and then stops dead. Nothing tells the first officer, so the
+# single re-grade the captain was promised never fires and the mission sits at a
+# gate he has to answer himself. The only automatic road into the re-grade is
+# `lcars xo answer` on a `reverify` gate, and nothing was calling it: the drive
+# that raises the gate is a DETACHED process that exits the moment it has, and
+# no `lcars run` is alive on the parent to notice.
+#
+# The FAILURE path has handed back since S204 (D2b above). This is the same
+# hand-back on the success path — with two differences that matter:
+#   * it is DETACHED. A re-check relaunches the build, drives a browser and runs
+#     a live worker: minutes. Handing back inline would hold this process open
+#     for all of it.
+#   * its output is KEPT, beside the mission's other Number One logs, instead of
+#     going to /dev/null. `xo/recheck.log` is where the morning's questions get
+#     answered from.
+# ==========================================================================
+echo
+echo "S222-A. the success path hands back too — detached, and logged"
+
+# A SLOW stub. The sleep is the whole point: if the hand-back were inline,
+# resolve-logs could not possibly have returned before this finishes.
+XO_SLOW="$TMPROOT/xo-slow.sh"
+cat >"$XO_SLOW" <<'XS'
+#!/usr/bin/env bash
+sleep 3
+printf 'xo %s\n' "$*" >>"$XO_HANDBACK_LOG"
+printf 'NUMBER ONE: re-checking\n'
+exit 0
+XS
+chmod +x "$XO_SLOW"
+
+repoA="$(new_repo_with_linked_bugs 1)"; engage_parent_rl "$repoA"
+make_gh_stub "$repoA/gh"; make_notify_stub "$repoA/notify"; make_run_stub "$repoA/run"; make_worker_stub "$repoA/worker"
+export GH_LOG="$repoA/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repoA/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repoA/run.log"; : >"$RUN_LOG"
+export XO_HANDBACK_LOG="$repoA/xo.log"; : >"$XO_HANDBACK_LOG"
+pA="$repoA/.git/lcars/missions/lcars-20260601-001"
+rcA=0
+(
+  cd "$repoA"
+  ESCALATE_IDS="" ERROR_IDS="" \
+  LCARS_GH_BIN="$repoA/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repoA/notify" \
+  LCARS_RUN_SCRIPT="$repoA/run" LCARS_WORKER_BIN="$repoA/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+  LCARS_XO_SCRIPT="$XO_SLOW" LCARS_XO_INTERNAL="$PARENT" \
+    bash "$SCRIPT" "$PARENT" >outA.txt 2>&1
+) || rcA=$?
+
+# THE DETACHMENT PROOF, taken the instant the drive returns: the hand-back has
+# NOT finished yet. (Read before anything else below, so nothing can wait for it
+# by accident.)
+still_running_A=0; [ ! -s "$XO_HANDBACK_LOG" ] && still_running_A=1
+
+check "S222-A. the drive still exits clean" "[ '$rcA' -eq 0 ]"
+check "S222-A. REGRESSION: the consolidated re-verify gate is still raised" \
+  "qgrep '\"awaitingHuman\": *true' '$pA/state.json' && qgrep '\"kind\": *\"reverify\"' '$pA/pending.json'"
+check "S222-A. …and the captain is still pinged exactly once" \
+  "[ \"\$(wc -l <'$NOTIFY_LOG' | tr -d ' ')\" -eq 1 ]"
+check "S222-A. the drive did NOT block on the re-grade (it was still running)" \
+  "[ '$still_running_A' -eq 1 ]"
+
+# …and now let the detached hand-back land.
+waitedA=0
+while [ ! -s "$XO_HANDBACK_LOG" ] && [ "$waitedA" -lt 30 ]; do sleep 1; waitedA=$((waitedA + 1)); done
+
+check "S222-A. Number One IS told, through its OWN verb" \
+  "qgrep '^xo answer --mission lcars-20260601-001\$' '$XO_HANDBACK_LOG'"
+check "S222-A. …exactly once" \
+  "[ \"\$(wc -l <'$XO_HANDBACK_LOG' | tr -d ' ')\" -eq 1 ]"
+check "S222-A. its output is KEPT, beside the mission's other xo logs" \
+  "[ -s '$pA/xo/recheck.log' ] && qgrep 'NUMBER ONE: re-checking' '$pA/xo/recheck.log'"
+
+# CONTROL — the captain running this by hand never hires his first officer on
+# the success path either. Same stub, same fixture, no engagement on record.
+repoAc="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repoAc/gh"; make_notify_stub "$repoAc/notify"; make_run_stub "$repoAc/run"; make_worker_stub "$repoAc/worker"
+export GH_LOG="$repoAc/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repoAc/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repoAc/run.log"; : >"$RUN_LOG"
+export XO_HANDBACK_LOG="$repoAc/xo.log"; : >"$XO_HANDBACK_LOG"
+pAc="$repoAc/.git/lcars/missions/lcars-20260601-001"
+rcAc=0
+(
+  cd "$repoAc"
+  ESCALATE_IDS="" ERROR_IDS="" \
+  LCARS_GH_BIN="$repoAc/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repoAc/notify" \
+  LCARS_RUN_SCRIPT="$repoAc/run" LCARS_WORKER_BIN="$repoAc/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+  LCARS_XO_SCRIPT="$XO_SLOW" \
+    bash "$SCRIPT" "$PARENT" >outAc.txt 2>&1
+) || rcAc=$?
+sleep 5
+check "S222-A. CONTROL: no Number One on the mission ⇒ nothing is hired" \
+  "[ ! -s '$XO_HANDBACK_LOG' ] && [ ! -e '$pAc/xo/recheck.log' ]"
+check "S222-A. CONTROL: …but the captain still gets his consolidated gate" \
+  "qgrep '\"kind\": *\"reverify\"' '$pAc/pending.json'"
+
+# ==========================================================================
+# S222-B. A STUCK LOG RAISES A REAL GATE — IT DOES NOT JUST PRINT.
+#
+# THE INCIDENT (2026-09-19). One logged bug parked at implement asking a
+# question; SEVEN were queued behind it. The batch stopped, `pause_at` echoed
+# three lines into `xo/resolve.log` — a file nobody opens, because this drive is
+# DETACHED — and exited 0. No gate, no label, no ping, no hand-back. The parent
+# card went on showing Number One engaged with work in flight. Nothing shipped
+# and nothing said so.
+#
+# The cure is the gate that already exists for the sibling failure:
+# `reverify-blocked` — the ONE kind Number One is allowed to hand straight back
+# to the captain, because it cannot clear a fold that could not happen. The
+# sentence names the log, its question, AND how many are queued behind it: that
+# last number is the thing that was invisible on the night.
+# ==========================================================================
+echo
+echo "S222-B. a stuck log raises a real gate"
+
+repoB="$(new_repo_with_linked_bugs 3)"; engage_parent_rl "$repoB"
+make_gh_stub "$repoB/gh"; make_notify_stub "$repoB/notify"; make_run_stub "$repoB/run"; make_worker_stub "$repoB/worker"
+export GH_LOG="$repoB/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repoB/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repoB/run.log"; : >"$RUN_LOG"
+export XO_HANDBACK_LOG="$repoB/xo.log"; : >"$XO_HANDBACK_LOG"
+plant_child_plan "$repoB/.git/lcars/missions/lcars-20260601-002" "src/shared.py"
+plant_child_plan "$repoB/.git/lcars/missions/lcars-20260601-003" "src/shared.py"
+plant_child_plan "$repoB/.git/lcars/missions/lcars-20260601-004" "src/shared.py"
+pB="$repoB/.git/lcars/missions/lcars-20260601-001"
+rcB=0
+(
+  cd "$repoB"
+  ESCALATE_IDS="lcars-20260601-003" \
+  WORKER_ORDER="lcars-20260601-002 lcars-20260601-003 lcars-20260601-004" \
+  LCARS_RESOLVE_CONCURRENCY=1 \
+  LCARS_GH_BIN="$repoB/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repoB/notify" \
+  LCARS_RUN_SCRIPT="$repoB/run" LCARS_WORKER_BIN="$repoB/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+  LCARS_XO_SCRIPT="$XO_HANDBACK" LCARS_XO_INTERNAL="$PARENT" \
+    bash "$SCRIPT" "$PARENT" >outB.txt 2>&1
+) || rcB=$?
+check "S222-B. the batch really did stop at the parked log" \
+  "qgrep '\"awaitingHuman\": *true' '$repoB/.git/lcars/missions/lcars-20260601-003/state.json' \
+   && ! qgrep 'run drive lcars-20260601-004' '$RUN_LOG'"
+check "S222-B. the PARENT is now awaiting the captain (it was silent before)" \
+  "qgrep '\"awaitingHuman\": *true' '$pB/state.json'"
+check "S222-B. …through the EXISTING reverify-blocked path, not a new kind" \
+  "[ -f '$pB/pending.json' ] && qgrep '\"kind\": *\"reverify-blocked\"' '$pB/pending.json'"
+check "S222-B. …and NOT the consolidated re-verify gate (nothing is ready)" \
+  "! qgrep '\"kind\": *\"reverify\",' '$pB/pending.json'"
+check "S222-B. the ask NAMES the log that needs him" \
+  "qgrep 'lcars-20260601-003' '$pB/pending.json'"
+check "S222-B. …carries the question that log is actually asking" \
+  "qgrep 'Ticket T1 failed' '$pB/pending.json'"
+check "S222-B. …and says how many are QUEUED BEHIND IT (the invisible number)" \
+  "qgrep '1 more log .*queued behind it' '$pB/pending.json'"
+check "S222-B. it says plainly that nothing was folded or shipped" \
+  "qgrep -i 'nothing has been folded' '$pB/pending.json'"
+check "S222-B. the captain is pinged ONCE, on the parent" \
+  "[ \"\$(wc -l <'$NOTIFY_LOG' | tr -d ' ')\" -eq 1 ] && qgrep 'mission=lcars-20260601-001' '$NOTIFY_LOG'"
+check "S222-B. the awaiting-human label went on the parent issue" \
+  "qgrep 'lcars:awaiting-human' '$GH_LOG'"
+check "S222-B. Number One is told its drive is over, through its OWN verb" \
+  "qgrep '^xo answer --mission lcars-20260601-001\$' '$XO_HANDBACK_LOG'"
+check "S222-B. the parent's state.json still PARSES" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$pB/state.json'"
+check "S222-B. the not-yet-started log keeps its queued flag (the board shows it waiting)" \
+  "qgrep '\"queued\": *true' '$repoB/.git/lcars/missions/lcars-20260601-004/state.json'"
+
+# --- S222-B2. THE TWIN: a log ALREADY parked, found by the pre-check --------
+# Same silence, a different door. `resolve-logs` gathers the linked bugs and
+# finds one already at awaiting-human from a previous round: it printed the same
+# three lines and exited 0, having driven nothing at all.
+repoB2="$(new_repo_with_linked_bugs 3)"; engage_parent_rl "$repoB2"
+make_gh_stub "$repoB2/gh"; make_notify_stub "$repoB2/notify"; make_run_stub "$repoB2/run"; make_worker_stub "$repoB2/worker"
+export GH_LOG="$repoB2/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repoB2/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repoB2/run.log"; : >"$RUN_LOG"
+export XO_HANDBACK_LOG="$repoB2/xo.log"; : >"$XO_HANDBACK_LOG"
+# 002 arrives already parked, asking something.
+b2s="$repoB2/.git/lcars/missions/lcars-20260601-002/state.json"
+awk 'NR==1{print; print "  \"awaitingHuman\": true,"; print "  \"pendingQuestion\": \"Which of the two toolbars did you mean?\","; next} {print}' \
+  "$b2s" >"$b2s.tmp" && mv "$b2s.tmp" "$b2s"
+pB2="$repoB2/.git/lcars/missions/lcars-20260601-001"
+rcB2=0
+(
+  cd "$repoB2"
+  ESCALATE_IDS="" ERROR_IDS="" \
+  LCARS_GH_BIN="$repoB2/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repoB2/notify" \
+  LCARS_RUN_SCRIPT="$repoB2/run" LCARS_WORKER_BIN="$repoB2/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+  LCARS_XO_SCRIPT="$XO_HANDBACK" LCARS_XO_INTERNAL="$PARENT" \
+    bash "$SCRIPT" "$PARENT" >outB2.txt 2>&1
+) || rcB2=$?
+check "S222-B2. the pre-check really did stop the batch (nothing was driven)" \
+  "[ ! -s '$RUN_LOG' ]"
+check "S222-B2. the PARENT gets the same reverify-blocked gate" \
+  "qgrep '\"awaitingHuman\": *true' '$pB2/state.json' \
+   && qgrep '\"kind\": *\"reverify-blocked\"' '$pB2/pending.json'"
+check "S222-B2. …naming the parked log and its question" \
+  "qgrep 'lcars-20260601-002' '$pB2/pending.json' && qgrep 'two toolbars' '$pB2/pending.json'"
+check "S222-B2. …and the 2 waiting behind it" \
+  "qgrep '2 more logs .*queued behind it' '$pB2/pending.json'"
+check "S222-B2. pinged ONCE" \
+  "[ \"\$(wc -l <'$NOTIFY_LOG' | tr -d ' ')\" -eq 1 ]"
+check "S222-B2. Number One is told" \
+  "qgrep '^xo answer --mission lcars-20260601-001\$' '$XO_HANDBACK_LOG'"
+check "S222-B2. the parent's state.json still PARSES" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$pB2/state.json'"
 
 # ==========================================================================
 echo

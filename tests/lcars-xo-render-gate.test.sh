@@ -143,6 +143,55 @@ cx.fillStyle = "#f4d03f"; cx.fillRect(40, 200, 24, 24);
 </body></html>
 HTML
 
+# 6. THE BUILD THIS SESSION EXISTS FOR (S222 fix 1) — A CANVAS THAT ANIMATES
+#    ON ITS OWN AND ALSO ANSWERS ONE KEY. The captain's example game does
+#    exactly this: the character breathes on the spot in a small patch whether
+#    or not anybody touches the keyboard, and it walks when ArrowRight is held.
+#    Measured by the tester on 2026-09-20: pressing `q` — a key that build
+#    ignores completely — came back "done, something answered the key", and the
+#    only differing pixels were a 42x58 patch of that breathing. So this
+#    fixture reproduces the rubber stamp: any before/after pair on it differs.
+#    The patch here is the same size as the measured one, and it is drawn in a
+#    fixed spot so it cannot be mistaken for the character moving.
+cat >"$FX/canvas-live.html" <<'HTML'
+<!doctype html><html><head><title>Living Canvas</title></head>
+<body style="margin:0;background:#101820">
+<canvas id="c" width="600" height="400"></canvas>
+<script>
+var cx = document.getElementById("c").getContext("2d");
+var px = 40, py = 200, held = false, last = 0, phase = 0;
+function draw() {
+  cx.fillStyle = "#1b4f72"; cx.fillRect(0, 0, 600, 240);
+  cx.fillStyle = "#145a32"; cx.fillRect(0, 240, 600, 160);
+  for (var i = 0; i < 120; i++) {
+    cx.fillStyle = "rgb(" + (60 + i) + "," + (200 - i) + "," + (120 + (i % 90)) + ")";
+    cx.fillRect((i * 37) % 590, (i * 53) % 390, 6, 6);
+  }
+  // THE IDLE ANIMATION: a 42x58 patch that never stops changing, in a fixed
+  // place. This is the whole hazard — it is present in EVERY pair of shots,
+  // and it has to be busy enough to move the picture statistics, because on
+  // the real build it did: `q` came back "changed" off this patch alone.
+  for (var j = 0; j < 58; j += 2) {
+    var v = Math.floor(128 + 127 * Math.sin(phase + j * 0.4));
+    cx.fillStyle = "rgb(" + v + "," + ((255 - v + j) % 256) + "," + ((v * 3 + j * 7) % 256) + ")";
+    cx.fillRect(500, 300 + j, 42, 2);
+  }
+  cx.fillStyle = "#f4d03f"; cx.fillRect(px, py, 24, 24);
+}
+function tick(t) {
+  var dt = last ? (t - last) / 1000 : 0; last = t;
+  phase += dt * 6;
+  if (held) px += 128 * dt;
+  draw();
+  requestAnimationFrame(tick);
+}
+document.addEventListener("keydown", function (e) { if (e.isTrusted && e.code === "ArrowRight") held = true; });
+document.addEventListener("keyup", function (e) { if (e.isTrusted && e.code === "ArrowRight") held = false; });
+requestAnimationFrame(tick);
+</script>
+</body></html>
+HTML
+
 drive() { # <page> <actions-json> <outdir> — prints the driver's exit code
   local page="$1" out="$3" acts="$3/actions.json"
   mkdir -p "$out"
@@ -336,11 +385,17 @@ import json,sys
 st=json.load(open('$TMPROOT/jsay/walk.json'))['steps'][0]
 w=st.get('why') or ''
 sys.exit(0 if 'NOT evidence the key was answered' in w and 'judge it by eye' in w else 1)\""
+# UPDATED BY S222 fix 1. The row's point is unchanged — the record must name
+# WHAT THE EVIDENCE ACTUALLY IS — but the evidence itself got stronger. This
+# fixture is still when no key is held, so ArrowRight now beats the un-keyed
+# control shot, and calling that `picture-only` would understate it by exactly
+# the amount this session added. `picture-only` is still what a press with no
+# usable control shot records, and C8 owns the new marker's two directions.
 check "C6e …and the record marks what the evidence actually is" \
   "$PY -c \"
 import json,sys
 st=json.load(open('$TMPROOT/jsay/walk.json'))['steps'][0]
-sys.exit(0 if st.get('changeEvidence')=='picture-only' else 1)\""
+sys.exit(0 if st.get('changeEvidence')=='picture-beat-idle-control' else 1)\""
 
 # THE CONTROL for 8a's other half: a build that really did not answer still
 # gets its couldn't-check note — retracting the contradiction must not have
@@ -377,6 +432,67 @@ check "C7c …and so are the ends of the family, F1 and F12" \
   "[ \"$RC11\" = '0' ] && grep -q 'pressed F1' '$TMPROOT/jfk/readout.json' && \
    grep -q 'pressed F12' '$TMPROOT/jfk/readout.json' && \
    ! grep -q 'is not a key this browser can press' '$TMPROOT/jfk/readout.json'"
+
+# ==========================================================================
+# C8 (S222 fix 1) — THE IDLE CONTROL. A PRESS STEP MUST BE ABLE TO FAIL ON A
+#      BUILD THAT ANIMATES BY ITSELF.
+#
+# S221 fix 8b made the WORDING honest — the record stopped claiming a changed
+# picture meant the key was answered — but left the MECHANISM unable to fail.
+# Measured by the tester on 2026-09-20 on the captain's real game: pressing
+# `q`, a key it ignores completely, came back `status: done`; the readout said
+# `Tile 10, 10` before AND after, and the only differing pixels were a 42x58
+# patch of the character breathing on the spot. Comparing a before shot to an
+# after shot on a build that animates is a rubber stamp.
+#
+# THE CURE: a THIRD shot with NO key pressed, over a window the same length as
+# the keyed one. That shot measures how much this build changes ON ITS OWN, and
+# the keyed change has to EXCEED it.
+#
+# BOTH HALVES ARE PROVED HERE, on ONE fixture, because a fixture that only
+# showed the failing half could be satisfied by breaking press steps outright:
+#   - a key this build IGNORES (`q`)          must come back no-change
+#   - a key this build HONOURS (ArrowRight)   must still come back taken
+# ==========================================================================
+printf '\n  -- C8: the idle control — a key this build ignores cannot pass --\n'
+QSTEP='{"steps":[{"key":"j1","do":"press","pressKey":"q","hold":250,"times":3,"match":[],"name":"hold q and watch what changes","expect":"the screen answers the key"}],"entry":[]}'
+
+RC12="$(journey canvas-live.html "$QSTEP" "$TMPROOT/jlivedeaf")"
+check "C8a a key this ANIMATING build IGNORES comes back no-change, not taken" \
+  "$PY -c \"
+import json,sys
+st=json.load(open('$TMPROOT/jlivedeaf/walk.json'))['steps'][0]
+sys.exit(0 if st.get('status')=='no-change' and st.get('couldNotCheck') else 1)\""
+check "C8b …and the reason given is the idle control, by its numbers" \
+  "$PY -c \"
+import json,sys
+st=json.load(open('$TMPROOT/jlivedeaf/walk.json'))['steps'][0]
+k=st.get('keyedDistance'); idle=st.get('idleDistance')
+sys.exit(0 if isinstance(k,(int,float)) and isinstance(idle,(int,float)) \
+             and st.get('beatIdle') is False else 1)\""
+check "C8c …and it says in words that the build changes this much on its own" \
+  "grep -q 'as much as it changes on its own' '$TMPROOT/jlivedeaf/walk.json'"
+check "C8d …and the THIRD, un-keyed picture is on disk beside the other two" \
+  "$PY -c \"
+import json,os,sys
+st=json.load(open('$TMPROOT/jlivedeaf/walk.json'))['steps'][0]
+n=st.get('shotIdle')
+sys.exit(0 if n and os.path.exists(os.path.join('$TMPROOT/jlivedeaf', n + '.png')) else 1)\""
+
+# THE OTHER HALF, on the SAME animating fixture: the key it really does answer.
+RC13="$(journey canvas-live.html "$STEP" "$TMPROOT/jliveheard")"
+check "C8e the key this same build HONOURS is still TAKEN" \
+  "$PY -c \"
+import json,sys
+st=json.load(open('$TMPROOT/jliveheard/walk.json'))['steps'][0]
+sys.exit(0 if st.get('status')=='done' and st.get('pressed')=='ArrowRight' \
+             and not st.get('couldNotCheck') else 1)\""
+check "C8f …because it moved MORE than the build moves on its own" \
+  "$PY -c \"
+import json,sys
+st=json.load(open('$TMPROOT/jliveheard/walk.json'))['steps'][0]
+sys.exit(0 if st.get('beatIdle') is True \
+             and st.get('keyedDistance') > st.get('idleDistance') else 1)\""
 
 printf '\nlcars xo-render-gate: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
