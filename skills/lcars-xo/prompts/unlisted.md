@@ -63,8 +63,68 @@ For each picture, in this order:
    those.
 3. Note anything that made you frown, then move on to the next picture.
 
-Only when you have been through the whole list do you decide what goes in the
-file.
+## Then go round AGAIN, and look ACROSS them
+
+One pass, one picture at a time, only finds faults that are visible inside a
+single picture. A whole class of them is not: nothing in the picture itself
+says anything is wrong, and what says it is the picture BESIDE it. If you stop
+after the first pass you will read those faults, register them as ordinary, and
+move on — which is exactly the failure you were hired to prevent, in a
+different costume.
+
+So go round a second time, and this time the thing you are looking at is a
+PAIR. Their names and their captions tell you what you need to pair them up:
+which screen each one is of, and what order they were taken in.
+
+**Two ways of pairing. Do both.**
+
+1. **The same thing, at two different moments.** Some of these pictures are the
+   same screen, photographed at different points as somebody worked through it.
+   Group them by the screen they are of, put each group in the order it was
+   taken, and then **actually compare them, don't just re-read them**: take the
+   `page.textExcerpt` of the first and of the last, hold them side by side, and
+   work out **every place the two differ**. Write that list of differences out
+   for yourself before you judge any of it. Skimming two long readouts in turn
+   will not do this — you will read both and notice neither, which is precisely
+   how this kind of fault survives.
+
+   Then take each difference in turn and ask one question: **is one side a real
+   value and the other side nothing at all?** Nothing at all means blank, a
+   dash, an ellipsis, a stand-in, a placeholder, an error string, a label with
+   nothing following it. That is a finding, and the side that HAS a value is
+   your proof — it shows you what belongs in that slot, so the empty one is not
+   a house style meaning "not yet", it is an unfilled slot that reached the
+   screen. Name both pictures and quote both readings.
+
+   Differences where both sides are real values are not findings — that is just
+   somebody's work showing up, and it is supposed to change.
+
+2. **A thing against its peers.** Wherever several things sit together as a set
+   — controls in a row, cards in a list, rows in a table, entries in a menu,
+   fields in a form — they were built from one mould, and you can read them as
+   a set instead of one at a time. Ask what EVERY member of the set carries: a
+   mark, a label, a value, a unit, a state, a piece of decoration. Then ask
+   whether one member is missing it. That one is a finding, and you must say
+   what the set is and what the others have that it has not.
+
+   This is the fault that a close crop of the odd one out cannot show you.
+   Alone it looks like a perfectly ordinary thing; it only looks wrong standing
+   next to its neighbours. So when several crops come from the same screen,
+   put them side by side before you judge any of them — and when a set is only
+   fully visible in the whole-screen picture, go and find it there.
+
+These two are how to LOOK, not a list of what to find. Apply them to whatever
+this app actually puts on the screen. And they widen what you can SEE — they do
+not widen what counts as wrong. Everything under "What is NOT wrong" below
+still applies to anything they turn up: a difference you can see is not
+automatically a defect. Before you call something an odd one out, satisfy
+yourself that its group really is a group — that the things in it sit together,
+do the same kind of job, and are plainly built to the same pattern. If they are
+merely near each other on the screen, you have not got a set, and a difference
+between them is just two different things being different.
+
+Only when you have been through the whole list twice — once picture by picture,
+once across them — do you decide what goes in the file.
 
 ## What counts as WRONG
 
@@ -125,6 +185,11 @@ A candidate that fails any of the three does not go in the file.
 
 Name a picture **exactly as it is named in your input directory**, without the
 extension. A finding that names a picture nobody took is thrown away unread.
+
+`shot` holds **exactly one** name — never two, never a list, never a name with
+anything else stuck to it. A fault you found by comparing two pictures still
+puts ONE name there, the picture that shows it most plainly, and names the
+other one inside your sentence, where it reads as the evidence it is.
 
 ## Your output file
 
