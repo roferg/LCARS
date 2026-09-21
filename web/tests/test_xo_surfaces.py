@@ -484,9 +484,17 @@ class C8_NoSurfaceContradictsTheScore(TabBase):
         # finding is "nothing could be tested", with a comforting alsoChecked.
         out = self.mi(verdict={"alsoChecked": [
             "Also checked, fine — no gaps found on this look."]})
-        lead = " ".join(out["paneText"][:3])
+        # S224 — the grade and its numbers now lead as a RAIL (a word, a
+        # denominator and a legend of counts) before the sentence beside it,
+        # so the window is counted in text nodes, not in blocks. The claim is
+        # unchanged and is the one that matters: the honest sentence is at the
+        # top of the pane and the reassurance is nowhere near it.
+        lead = " ".join(out["paneText"][:14])
         self.assertNotIn("no gaps found", lead)
-        self.assertIn(HEADLINE.split("—")[0].strip(), " ".join(out["paneText"][:4]))
+        self.assertIn(HEADLINE.split("—")[0].strip(), lead)
+        # and it is the first SENTENCE on the pane — nothing prose-like runs
+        # ahead of it.
+        self.assertEqual(HEADLINE, _all_text(_cls_of(out["pane"], " xo-lede ")[0]).strip())
 
     def test_the_old_no_gaps_found_sentence_is_gone_from_the_board(self):
         src = open(os.path.join(HERE, "..", "static", "board.js")).read()
@@ -575,19 +583,97 @@ class DC_TheMeasurementsAreONTheBoard(TabBase):
         self.assertIn("Things I noticed that are not on your list", text)
 
     def test_the_top_of_the_report_points_at_them(self):
-        text = _all_text(self.mi(verdict={"observations": OBS})["pane"])
-        self.assertIn("I also measured 2 things", text)
+        # S224: still said at the top, still says the rule — but as ONE
+        # clause on the counts line, not the paragraph it used to be. The
+        # captain's words: "that rule stays true and stays stated, but it
+        # does not need a paragraph above the fold."
+        out = self.mi(verdict={"observations": OBS})
+        line = _cls_of(out["pane"], " xo-measured-lede ")
+        self.assertEqual(1, len(line), "the measurements line is gone")
+        text = _all_text(line[0])
+        # S224 — it is a COUNT, so it lives in the rail with the other counts,
+        # under the bar it is explicitly not part of. Same rule, said shorter.
+        self.assertIn("plus 2 I measured", text)
+        self.assertIn("never moves the grade", text)
+        # and it is ONE line, not a block of prose.
+        self.assertLess(len(text), 120, "it grew back into a paragraph")
+        rail = _cls_of(out["pane"], " xo-rail ")[0]
+        self.assertEqual(1, len(_cls_of(rail, " xo-measured-lede ")),
+                         "it is not in the rail with the counts it qualifies")
 
     def test_they_are_reachable_by_a_filter_of_their_own(self):
         out = self.mi(verdict={"observations": OBS})
         labels = [n["text"] for n in _cls_of(out["pane"], " xo-filter ")]
-        # S220 fix round 3 (F3): BOTH numbers, because two were counted.
-        # The signpost above says "I also measured 2 things" (the measured
-        # bucket); this chip filters the whole row, which also holds the one
-        # loose layout finding. "3" alone surprised the captain against the 2.
-        self.assertIn("I measured · 2 + 1", labels)
+        # S224: the chip says the total it actually filters. S220 fix round 3
+        # (F3) joined the two numbers with "2 + 1" ON THE CHIP, and the
+        # captain could not read it as a label. Both numbers survive — in
+        # words, on the line under the row, where the 108 is also explained.
+        self.assertIn("I measured · 3", labels)
+        self.assertNotIn("I measured · 2 + 1", labels)
         # and All counts what is actually in the list: 5 criteria + 3.
         self.assertIn("All · 8", labels)
+
+    def test_the_other_denominators_are_explained_where_they_appear(self):
+        """S224 — three true numbers, none of them a surprise.
+
+        `All · 8` is not the 5 things he asked for and not the 3 measured,
+        and it used to arrive with nothing to join it to either. One muted
+        line under the chip row it belongs to does the joining, and carries
+        the 2/1 split the "I measured" chip stopped spelling out."""
+        out = self.mi(verdict={"observations": OBS})
+        keys = _cls_of(out["pane"], " xo-filters-key ")
+        self.assertEqual(1, len(keys), "nothing explains All · 8")
+        text = _all_text(keys[0])
+        self.assertIn("All · 8", text)
+        self.assertIn("5 things you asked for", text)
+        self.assertIn("3 I measured", text)
+        self.assertIn("2 came from your drawing", text)
+        self.assertIn("1 more I simply noticed", text)
+        self.assertIn("never change your grade", text)
+
+    def test_no_measurements_means_no_key_line_to_explain(self):
+        # With nothing measured, All is the criteria count and needs no
+        # reconciling — an explanation of an identity is noise.
+        out = self.mi()
+        self.assertEqual([], _cls_of(out["pane"], " xo-filters-key "))
+
+    def test_the_counts_line_adds_up_to_the_one_number_that_leads(self):
+        """S224 — ONE denominator is the spine, and the chips match it.
+
+        It read "79 of 101 checked · 3 didn't work · 22 I couldn't check"
+        over a chip row saying "Worked · 76": three denominators, all right,
+        and reconciling them was subtraction he had to do. The spine is now
+        the things HE asked for, and the outcomes under it add up to it —
+        and since the captain called the row of four numbers "too smashed to
+        parse", it is drawn as a bar with the counts written out beside it."""
+        out = self.mi(verdict={"observations": OBS})
+        rail = _cls_of(out["pane"], " xo-rail ")
+        self.assertEqual(1, len(rail), "there is no rail of numbers")
+        text = _all_text(rail[0])
+        # the fixture: 2 met, 0 gap, 2 untested → 4 asked for
+        self.assertIn("4 things you asked for", text)
+        self.assertIn("2 worked", text)
+        self.assertIn("2 I couldn't check", text)
+        # the old shape, which he had to reconcile by hand, is gone
+        self.assertNotIn("of 4 checked", text)
+
+    def test_every_count_is_written_out_and_never_only_a_colour(self):
+        """Colour is never the only channel: one legend row per outcome, the
+        count in the row, in the fixed order worked / didn't / couldn't."""
+        out = self.mi(verdict={"observations": OBS})
+        rows = _cls_of(out["pane"], " xo-legend-row ")
+        self.assertEqual(3, len(rows))
+        said = [_all_text(r) for r in rows]
+        self.assertIn("2", said[0])
+        self.assertIn("worked", said[0])
+        self.assertIn("didn't work", said[1])
+        self.assertIn("I couldn't check", said[2])
+
+    def test_one_look_draws_ONE_bar_and_claims_no_deltas(self):
+        out = self.mi(verdict={"observations": OBS})
+        self.assertEqual(1, len(_cls_of(out["pane"], " xo-bar ")))
+        self.assertEqual([], _cls_of(out["pane"], " xo-legend-d "))
+        self.assertNotIn("First look", _all_text(out["pane"]))
 
     def test_they_are_NOT_counted_as_scored_gaps(self):
         # S210 stands: a measurement never moves the grade and is never
@@ -603,9 +689,409 @@ class DC_TheMeasurementsAreONTheBoard(TabBase):
     def test_a_verdict_with_no_observations_grows_no_such_block(self):
         out = self.mi()
         self.assertEqual([], _cls_of(out["pane"], " xo-obs "))
-        self.assertNotIn("I also measured", _all_text(out["pane"]))
+        self.assertEqual([], _cls_of(out["pane"], " xo-measured-lede "))
+        self.assertNotIn("I measured against", _all_text(out["pane"]))
         labels = [n["text"] for n in _cls_of(out["pane"], " xo-filter ")]
         self.assertIn("All · 5", labels)
+
+
+class S224_TheHeaderIsTheGradeTheReasonAndWhatNeedsHim(TabBase):
+    """S224 — the captain, looking at his own scored report: *"that's a hot
+    mess visually and trying to take context away, we need to improve that
+    UX."*
+
+    Five blocks of prose arrived before a single piece of evidence, and two
+    of them were hedges ABOUT the prose beside them (the measurements
+    caveat and the summing-up's self-audit). The grade's own one-line reason
+    was the fourth thing down. Meanwhile `verdict.escalations` — the look's
+    "these are yours to decide", the one thing on the page that needs a
+    decision — was in report.md and in the terminal and NOWHERE on the board.
+
+    The target shape: the grade, ONE sentence of why, and what needs him.
+    Everything else folds — folds, not disappears. A node DOM is a browser
+    stub, so this proves the wiring and the order; the real-Chrome drive at
+    both widths is the other half.
+    """
+
+    ESC = ["The next-up month jumped from 'August 2026' on the start card to "
+           "'September 2026' on the collect screens — worth the captain's eye."]
+
+    def test_what_needs_him_is_on_the_board_at_all(self):
+        out = self.mi(verdict={"escalations": self.ESC})
+        box = _cls_of(out["pane"], " xo-needs ")
+        self.assertEqual(1, len(box), "the escalation is still not drawn")
+        text = _all_text(box[0])
+        self.assertIn("yours to decide", text)
+        self.assertIn("The next-up month jumped", text)
+
+    def test_it_is_said_in_the_looks_own_words_not_a_rewrite(self):
+        out = self.mi(verdict={"escalations": self.ESC})
+        self.assertIn(self.ESC[0], _all_text(_cls_of(out["pane"], " xo-needs ")[0]))
+
+    def test_it_sits_with_the_grade_before_any_of_the_prose(self):
+        # S224: the header is a two-column rail now, so what needs him is a
+        # child of the right-hand column rather than of the pane. The claim is
+        # the same one and it is read in DOCUMENT order, which is what a
+        # reader actually meets.
+        out = self.mi(verdict={"escalations": self.ESC})
+        order = [(n.get("cls") or "") for n in _flatten(out["pane"])]
+        self.assertTrue(any("xo-needs" in c for c in order))
+        needs = [i for i, c in enumerate(order) if "xo-needs" in c][0]
+        grade = [i for i, c in enumerate(order) if "xo-grade-chip" in c][0]
+        self.assertLess(grade, needs, "the grade must still lead")
+        for later in ("xo-more", "xo-items-wrap", "xo-showme"):
+            idx = [i for i, c in enumerate(order) if later in c]
+            if idx:
+                self.assertLess(needs, idx[0],
+                                "%s came before what needs him" % later)
+
+    def test_no_escalation_no_block(self):
+        self.assertEqual([], _cls_of(self.mi()["pane"], " xo-needs "))
+
+    def test_everything_else_is_behind_ONE_door_that_says_what_it_holds(self):
+        out = self.mi(verdict={"observations": OBS})
+        folds = [n for n in _flatten(out["pane"]) if n["tag"] == "details"]
+        self.assertEqual(1, len(folds), "expected exactly one top-level fold")
+        label = _all_text(folds[0])
+        # the door is labelled with what is behind it, not "more…"
+        self.assertIn("what I made of it", label)
+        self.assertIn("where my summing-up falls short", label)
+
+    def test_the_self_audit_is_still_reachable_word_for_word(self):
+        # It was expensive honesty. It folds; it does not go.
+        out = self.mi(verdict={"observations": OBS})
+        cav = _cls_of(out["pane"], " xo-full-caveat ")
+        self.assertEqual(1, len(cav))
+        self.assertIn("is not the whole count", _all_text(cav[0]))
+        # …and it is inside the fold, not competing with the grade.
+        folds = [n for n in _flatten(out["pane"]) if n["tag"] == "details"]
+        self.assertIn("is not the whole count", _all_text(folds[0]))
+
+    def test_the_summing_up_folds_too(self):
+        out = self.mi()
+        folds = [n for n in _flatten(out["pane"]) if n["tag"] == "details"]
+        self.assertIn(LONG[:40], _all_text(folds[0]))
+        # and nothing of it is left loose as a direct child of the pane
+        order = [(n.get("cls") or "") for n in out["pane"]["children"]]
+        self.assertNotIn("xo-full", order)
+        self.assertNotIn("xo-full-caveat", order)
+
+    def test_the_second_score_sits_with_the_grade_it_modifies(self):
+        """It used to be the LAST child of the verdict row, which parked it
+        against the far right margin — the captain read it as debris."""
+        out = _run(TAB_HARNESS, self._with_score2())
+        col = _cls_of(out["pane"], " xo-gradecol ")
+        self.assertEqual(1, len(col), "there is no grade column")
+        kids = [(n.get("cls") or "") for n in col[0]["children"]]
+        self.assertTrue(any("xo-grade-chip" in c for c in kids))
+        self.assertTrue(any("xo-score2" in c for c in kids),
+                        "the second score is not with the grade")
+        self.assertIn("after the fixes", _all_text(col[0]))
+
+    def _with_score2(self):
+        mi = {
+            "id": "lcars-20260920-001", "issue": 9, "stage": "verify",
+            "title": "second look",
+            "numberOne": {"status": "finished", "engine": "copilot",
+                          "score": "low", "headline": HEADLINE,
+                          "report": {"score": "low", "score2": "low",
+                                     "status": "finished", "engine": "copilot",
+                                     "verdict": {"score": "low",
+                                                 "derivation": HEADLINE,
+                                                 "counts": {"met": 1, "gap": 1,
+                                                            "untested": 1},
+                                                 "criteria": [], "gaps": [],
+                                                 "alsoChecked": []},
+                                     "logs": [], "shotsDir": "look-1",
+                                     "journal": []}},
+        }
+        return mi
+
+
+class S224_TheNumbersAreAShapeAndTheGradeMoves(TabBase):
+    """S224 — the two-column rail, and the question the old screen could not
+    answer: *"how did its grading change?"*
+
+    A mission looked at twice had a SECOND verdict on disk and on the payload
+    (`report.verdict2`) the whole time, and this pane never opened it: it drew
+    the FIRST look's grade, counts, ledger and summing-up with one `after the
+    fixes` chip as the only hint. So the numbers on screen were the stale ones
+    and nothing said what had moved.
+
+    Two states, and the difference between them is a RECORD, not a guess: a
+    first look draws ONE bar and claims no deltas; a re-check draws two on the
+    same scale, with the deltas as arithmetic on two recorded tallies.
+
+    A node DOM is a browser stub — this proves the wiring, the order and the
+    arithmetic; the real-Chrome drive at 1600px and 400px is the other half.
+    """
+
+    # Four bugs filed; their child Missions are on the board, and the stage
+    # each one RECORDS is what "fixed" means here. Nothing reads a sentence.
+    LOGS = [{"n": 1, "mission": "child-1", "criterion": "prd-1",
+             "title": "the buttons wrap", "shots": []},
+            {"n": 2, "mission": "child-2", "criterion": "prd-5",
+             "title": "the icon is 1.45x its button", "shots": []}]
+    BOARD = {"columns": {"done": [{"id": "child-1", "stage": "done"},
+                                  {"id": "child-2", "stage": "done"}]}}
+    HALF = {"columns": {"done": [{"id": "child-1", "stage": "done"}],
+                        "implement": [{"id": "child-2", "stage": "implement"}]}}
+    JOURNAL = [{"action": "rescored", "at": "2026-09-21T07:37:34Z"},
+               {"action": "scored", "at": "2026-09-21T05:15:38Z"}]
+
+    def regrade(self, board=None, **over):
+        """A mission with BOTH looks recorded: 2 met / 1 gap / 2 untested on
+        the first, 3 met / 0 gap / 2 untested on the re-check."""
+        v1 = {"score": "low", "derivation": HEADLINE,
+              "scoreMeaning": "the first look's sentence",
+              "counts": {"met": 2, "gap": 1, "untested": 2},
+              "criteria": [], "gaps": [], "alsoChecked": []}
+        v2 = {"score": "low", "derivation": "the re-check's own sentence.",
+              "scoreMeaning": "I still could not check the point of it",
+              "summary": "All the gaps I filed are fixed.",
+              "counts": {"met": 3, "gap": 0, "untested": 2},
+              "criteria": [], "gaps": [], "alsoChecked": []}
+        v2.update(over.pop("verdict2", {}))
+        report = {"score": "low", "score2": "low", "status": "finished",
+                  "engine": "copilot", "verdict": v1, "verdict2": v2,
+                  "logs": self.LOGS, "shotsDir": "look-2",
+                  "journal": self.JOURNAL}
+        report.update(over.pop("report", {}))
+        mi = {"id": "lcars-20260920-001", "issue": 9, "stage": "verify",
+              "title": "the MBR builder",
+              "numberOne": {"status": "finished", "engine": "copilot",
+                            "score": "low", "headline": HEADLINE,
+                            "report": report}}
+        args = [json.dumps(self.BOARD if board is None else board)]
+        return _run(TAB_HARNESS, mi, *args)
+
+    # ── the rail ───────────────────────────────────────────────────────────
+    def test_the_numbers_live_in_a_rail_and_the_words_get_the_width(self):
+        out = self.mi()
+        self.assertEqual(1, len(_cls_of(out["pane"], " xo-rail ")))
+        self.assertEqual(1, len(_cls_of(out["pane"], " xo-vtext ")))
+        # the grade is in the rail, the sentence is in the column
+        self.assertEqual(1, len(_cls_of(_cls_of(out["pane"], " xo-rail ")[0],
+                                        " xo-grade-chip ")))
+        self.assertEqual(1, len(_cls_of(_cls_of(out["pane"], " xo-vtext ")[0],
+                                        " xo-lede ")))
+
+    def test_the_chips_that_filter_the_list_are_the_last_control_in_the_column(self):
+        out = self.mi()
+        col = _cls_of(out["pane"], " xo-vtext ")[0]
+        show = _cls_of(col, " xo-showme ")
+        self.assertEqual(1, len(show), "the Show me bar is not in the column")
+        self.assertTrue(_cls_of(show[0], " xo-filter "),
+                        "the chips did not come with it")
+        self.assertEqual("xo-showme", (col["children"][-1].get("cls") or ""))
+
+    # ── two bars, one scale ────────────────────────────────────────────────
+    def test_a_re_check_draws_the_first_look_and_the_now_on_one_scale(self):
+        out = self.regrade()
+        bars = _cls_of(out["pane"], " xo-bar ")
+        self.assertEqual(2, len(bars), "expected the first look and the now")
+        self.assertIn("xo-bar-was", bars[0]["cls"])
+        self.assertNotIn("xo-bar-was", bars[1]["cls"])
+        text = _all_text(_cls_of(out["pane"], " xo-rail ")[0])
+        self.assertIn("First look", text)
+        self.assertIn("Now", text)
+        # SAME SCALE, and that is the whole point of drawing two: the first
+        # look's "worked" is 2 of the SAME 5, not 2 of its own 5-that-happens-
+        # to-match. A zero segment is not drawn at all — an invisible child
+        # would still claim its 2px gap.
+        def widths(bar):
+            return [k["style"].get("width") for k in bar["children"]]
+        self.assertEqual(["40%", "20%", "40%"], widths(bars[0]))
+        self.assertEqual(["60%", "40%"], widths(bars[1]))
+
+    def test_the_bar_says_when_each_look_happened_off_the_journal(self):
+        out = self.regrade()
+        text = _all_text(_cls_of(out["pane"], " xo-rail ")[0])
+        # 05:15Z and 07:37Z, rendered in the reader's own clock — the HOUR is
+        # local, so this asserts the minutes the record carries.
+        self.assertIn(":15", text)
+        self.assertIn(":37", text)
+
+    def test_with_no_journal_entry_it_says_when_nothing(self):
+        out = self.regrade(report={"journal": []})
+        text = _all_text(_cls_of(out["pane"], " xo-rail ")[0])
+        self.assertIn("First look", text)
+        self.assertNotIn("First look ·", text)
+
+    def test_the_legend_gains_the_deltas_and_they_are_subtraction(self):
+        out = self.regrade()
+        rows = [_all_text(r) for r in _cls_of(out["pane"], " xo-legend-row ")]
+        self.assertIn("+1", rows[0])          # met 2 → 3
+        self.assertIn("\u22121", rows[1])     # gap 1 → 0, a REAL minus sign
+        self.assertIn("no change", rows[2])   # untested 2 → 2
+        # and the counts shown are the NOW ones, not the first look's
+        self.assertIn("3", rows[0])
+        self.assertIn("0", rows[1])
+
+    def test_a_first_look_never_grows_a_second_bar_or_a_delta(self):
+        out = self.mi()
+        self.assertEqual(1, len(_cls_of(out["pane"], " xo-bar ")))
+        self.assertEqual([], _cls_of(out["pane"], " xo-legend-d "))
+
+    # ── the badge ──────────────────────────────────────────────────────────
+    def test_the_badge_is_the_current_grade_and_the_chip_says_what_it_was(self):
+        out = self.regrade(report={"score": "medium", "score2": "low"})
+        col = _cls_of(out["pane"], " xo-gradecol ")[0]
+        self.assertIn("LOW", _all_text(_cls_of(col, " xo-grade-chip ")[0]))
+        self.assertIn("after the fixes · was MEDIUM",
+                      _all_text(_cls_of(col, " xo-score2 ")[0]))
+
+    def test_the_re_check_is_the_verdict_the_pane_renders(self):
+        out = self.regrade()
+        self.assertEqual("the re-check's own sentence.",
+                         _all_text(_cls_of(out["pane"], " xo-lede ")[0]).strip())
+        self.assertNotIn(HEADLINE, _all_text(out["pane"]))
+
+    # ── what changed ───────────────────────────────────────────────────────
+    def test_what_changed_appears_ONLY_when_a_second_score_exists(self):
+        self.assertEqual([], _cls_of(self.mi()["pane"], " xo-changed "))
+        self.assertEqual(1, len(_cls_of(self.regrade()["pane"], " xo-changed ")))
+
+    def test_the_filed_and_fixed_counts_are_the_childrens_recorded_stages(self):
+        text = _all_text(_cls_of(self.regrade()["pane"], " xo-changed ")[0])
+        self.assertIn("2 bugs filed · 2 fixed.", text)
+        half = _all_text(_cls_of(self.regrade(board=self.HALF)["pane"],
+                                 " xo-changed ")[0])
+        self.assertIn("2 bugs filed · 1 fixed.", half)
+
+    def test_with_no_child_on_the_board_it_says_filed_and_claims_nothing_else(self):
+        """A number nobody recorded is not a number."""
+        text = _all_text(_cls_of(self.regrade(board={"columns": {}})["pane"],
+                                 " xo-changed ")[0])
+        self.assertIn("2 bugs filed.", text)
+        self.assertNotIn("fixed", text)
+
+    def test_why_it_is_still_low_is_the_recorded_sentence_verbatim(self):
+        text = _all_text(_cls_of(self.regrade()["pane"], " xo-changed ")[0])
+        self.assertIn("Why it's still LOW:", text)
+        self.assertIn("I still could not check the point of it", text)
+
+    def test_a_grade_that_moved_says_so_instead(self):
+        out = self.regrade(report={"score": "low", "score2": "medium"})
+        text = _all_text(_cls_of(out["pane"], " xo-changed ")[0])
+        self.assertIn("Why it's now MEDIUM, was LOW:", text)
+
+    def test_with_no_recorded_sentence_it_writes_none(self):
+        out = self.regrade(verdict2={"scoreMeaning": ""})
+        text = _all_text(_cls_of(out["pane"], " xo-changed ")[0])
+        self.assertIn("2 bugs filed · 2 fixed.", text)
+        self.assertNotIn("Why it's", text)
+
+    def test_what_changed_comes_after_the_sentence_and_before_what_needs_him(self):
+        out = self.regrade(verdict2={"escalations": ["yours to decide, this"]})
+        order = [(n.get("cls") or "") for n in _flatten(out["pane"])]
+        i = lambda k: [j for j, c in enumerate(order) if k in c][0]
+        self.assertLess(i("xo-lede"), i("xo-changed"))
+        self.assertLess(i("xo-changed"), i("xo-needs"))
+
+    def test_a_second_score_with_no_second_verdict_is_still_only_one_bar(self):
+        """The chip has always keyed off `score2` alone and still does — but
+        a bar needs tallies, and a verdict nobody recorded has none."""
+        out = self.regrade(report={"verdict2": None})
+        self.assertEqual(1, len(_cls_of(out["pane"], " xo-bar ")))
+        self.assertEqual([], _cls_of(out["pane"], " xo-changed "))
+        self.assertEqual(1, len(_cls_of(out["pane"], " xo-score2 ")))
+
+
+class S224_ThePicturesComeFromTheLookOnTheScreen(TabBase):
+    """S224 fix round 1, D4 — the captain: *"What happened to the pictures
+    being inline?"*
+
+    Every ledger row on his re-checked mission read "The picture for this one
+    (recheck-walk-01-j1) isn't on this laptop any more" over a file sitting on
+    his disk. S224 made this pane draw the SECOND verdict; its shots were taken
+    into the re-check's own directory, and they were still being asked for from
+    the first look's. `shotsDir` stays the first look's — the gaps it FILED
+    were filed there and their thumbnails were never broken — so the fix is a
+    second directory used for the ledger and nothing else.
+
+    A node DOM is a browser stub: this proves which URL each thumbnail asks
+    for. That the image then LOADS (`naturalWidth > 0`) is the real-Chrome
+    drive's half, and the route composition is proven end to end against a real
+    server in `test_xo_shot_route.py`.
+    """
+
+    V2_CRIT = [{"id": "prd-1", "text": "the month carries", "status": "gap",
+                "evidence": "picture", "shot": "recheck-walk-01-j1",
+                "note": "August became September"}]
+    V1_CRIT = [{"id": "prd-1", "text": "the month carries", "status": "gap",
+                "evidence": "picture", "shot": "shot-walk-01-j1",
+                "note": "August became September"}]
+    LOGS = [{"n": 1, "mission": "child-1", "criterion": "prd-1",
+             "title": "the month does not carry", "shots": ["shot-walk-01-j1"],
+             "status": "held"}]
+
+    def twice(self, **over):
+        v1 = {"score": "low", "derivation": HEADLINE,
+              "counts": {"met": 0, "gap": 1, "untested": 0},
+              "criteria": self.V1_CRIT, "gaps": [], "alsoChecked": []}
+        v2 = {"score": "low", "derivation": "the re-check's own sentence.",
+              "counts": {"met": 0, "gap": 1, "untested": 0},
+              "criteria": self.V2_CRIT, "gaps": [], "alsoChecked": [],
+              "observations": [{"says": "the month did not carry",
+                                "kind": "carried-value",
+                                "shot": "recheck-walk-01-j1"}]}
+        report = {"score": "low", "score2": "low", "status": "finished",
+                  "engine": "copilot", "verdict": v1, "verdict2": v2,
+                  "logs": self.LOGS, "shotsDir": "look-1",
+                  "shotsDir2": "recheck-3", "journal": []}
+        report.update(over)
+        mi = {"id": "lcars-20260920-001-8cb0", "issue": 9, "stage": "verify",
+              "title": "the MBR builder",
+              "numberOne": {"status": "finished", "engine": "copilot",
+                            "score": "low", "headline": HEADLINE,
+                            "report": report}}
+        return _run(TAB_HARNESS, mi)
+
+    def _srcs(self, node):
+        return [n["src"] for n in _flatten(node)
+                if n["tag"] == "img" and n.get("src")]
+
+    def test_a_ledger_row_asks_for_the_re_checks_own_directory(self):
+        out = self.twice()
+        item = _cls_of(out["pane"], " xo-item ")[0]
+        srcs = self._srcs(item)
+        self.assertEqual(1, len(srcs), "the row drew no picture at all")
+        self.assertIn("/recheck-3/recheck-walk-01-j1.png", srcs[0])
+        self.assertNotIn("/look-1/", srcs[0],
+                         "the re-check's shot was asked for from the first look")
+
+    def test_a_measured_finding_with_a_shot_draws_it_too(self):
+        """The captain also sees "No picture — a measured box settled this
+        one" — right when the record has no shot, wrong when it has one."""
+        out = self.twice()
+        obs = _cls_of(out["pane"], " xo-obs ")
+        self.assertTrue(obs, "the measured finding is not on the pane")
+        srcs = self._srcs(obs[0])
+        self.assertEqual(1, len(srcs))
+        self.assertIn("/recheck-3/", srcs[0])
+        self.assertNotIn("No picture", _all_text(obs[0]))
+
+    def test_the_filed_gaps_thumbnails_still_come_off_the_first_look(self):
+        """These were never broken and must not be 'fixed'. The gap was filed
+        ON the first look; its picture is the one that look took."""
+        out = self.twice()
+        srcs = [s for s in self._srcs(out["pane"]) if "shot-walk-01-j1" in s]
+        self.assertTrue(srcs, "the filed gap's thumbnail vanished")
+        for s in srcs:
+            self.assertIn("/look-1/", s)
+
+    def test_one_look_only_still_reads_its_own_directory(self):
+        out = self.twice(score2=None, verdict2=None, shotsDir2=None)
+        srcs = self._srcs(_cls_of(out["pane"], " xo-item ")[0])
+        self.assertIn("/look-1/shot-walk-01-j1.png", srcs[0])
+
+    def test_no_second_directory_on_the_payload_changes_nothing(self):
+        """An older daemon, or a re-check whose directory could not be
+        resolved: the pane falls back rather than composing a broken URL."""
+        out = self.twice(shotsDir2=None)
+        srcs = self._srcs(_cls_of(out["pane"], " xo-item ")[0])
+        self.assertIn("/look-1/recheck-walk-01-j1.png", srcs[0])
 
 
 if __name__ == "__main__":

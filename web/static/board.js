@@ -10637,14 +10637,26 @@ function xoParagraphs(text) {
    string as plain text, so "Everything" put 46 literal asterisks on screen and
    dumped the whole essay into one news entry. The two surfaces now share this
    one function rather than each having a treatment of its own — there is no
-   second renderer to drift. */
-function xoReasoningInto(host, text) {
+   second renderer to drift.
+
+   S224: `flat` renders every paragraph with no disclosure of its own. The
+   mission report now folds this whole block behind ONE reader, and a fold
+   inside a fold is two taps to reach a sentence. The First Officer's report
+   is NOT inside a fold, so it keeps the disclosure — which is why this is a
+   flag with a default, and not a deletion. Either way every word is there. */
+function xoReasoningInto(host, text, flat) {
   var src = String(text || "").trim();
   if (!src) return host;
   var paras = xoParagraphs(src);
   var lead = el("div", "xo-why-body");
   setMd(lead, paras.length ? paras[0] : xoBalanceEmphasis(src));
   host.appendChild(lead);
+  if (flat && paras.length > 1) {
+    var rest2 = el("div", "xo-why-body");
+    setMd(rest2, paras.slice(1).join("\n\n"));
+    host.appendChild(rest2);
+    return host;
+  }
   if (paras.length > 1) {
     var more = document.createElement("details");
     more.className = "xo-why-more";
@@ -10942,8 +10954,15 @@ function xoObsBlock(mi, report, o) {
 }
 
 /* The items, problems first, with All / Didn't work / I measured / Couldn't
-   check / Worked. The counts are the rows' own, counted where they are drawn. */
-function xoItemsSection(mi, report, criteria, observations) {
+   check / Worked. The counts are the rows' own, counted where they are drawn.
+
+   S224: `barHost` is where the CHIP ROW is hung. The header is now a two-column
+   rail, and the captain's shape puts "Show me" — the chips — last in the right
+   column, above the evidence they filter. The chips and the rows they hide are
+   wired by ONE closure (`apply`), and that closure does not care where either
+   sits in the document, so this is a placement argument and NOT a second copy
+   of the filter. No host given ⇒ exactly the old layout, chips above the list. */
+function xoItemsSection(mi, report, criteria, observations, barHost) {
   var wrap = el("div", "xo-items-wrap");
   var rows = criteria.map(function (c, i) { return { c: c, i: i, st: xoRowStatus(c) }; });
   // The bucket the record put each one in decides which comes first: what was
@@ -11014,9 +11033,15 @@ function xoItemsSection(mi, report, criteria, observations) {
     });
   }
   XO_ITEM_FILTERS.forEach(function (f) {
-    var count = (f[0] === "measured" && mMain && mLoose)
-      ? (mMain + " + " + mLoose) : n[f[0]];
-    var fb = el("button", "xo-filter", f[1] + " · " + count);
+    // S224: `I measured · 5 + 2` DOES NOT PARSE AS A LABEL. S220 fix round 3
+    // (F3) was right that both numbers must be joined rather than left to
+    // contradict each other — it just did the joining with an arithmetic
+    // expression on a chip, and the captain read it as broken. The chip now
+    // says the total it actually filters, and the split it was protecting is
+    // said in words on the line under this row (where the two headings in the
+    // list below also say it). Same two numbers, neither one lost, nothing on
+    // screen he has to add up.
+    var fb = el("button", "xo-filter", f[1] + " · " + n[f[0]]);
     fb.type = "button";
     fb.setAttribute("data-filter", f[0]);
     fb.setAttribute("data-act", "xo-report");    // a view filter, never a write
@@ -11025,7 +11050,26 @@ function xoItemsSection(mi, report, criteria, observations) {
     fbtns.push({ key: f[0], el: fb });
   });
   apply();
-  wrap.appendChild(bar);
+  var barTo = barHost || wrap;
+  barTo.appendChild(bar);
+  // S224 — THE OTHER DENOMINATORS, EXPLAINED WHERE THEY APPEAR. The header's
+  // spine is the 101 things he asked for. `All · 108` is a different number
+  // and used to arrive unannounced, three chips away from the counts it did
+  // not match. One muted line under the row it belongs to says how the two
+  // are related, and says the 5/2 split the "I measured" chip no longer
+  // spells out. Every number here is read off the rows as they were drawn.
+  var scored = n.all - n.measured;
+  if (n.measured) {
+    var key = "All · " + n.all + " is the " + scored + " thing"
+      + (scored === 1 ? "" : "s") + " you asked for plus the " + n.measured
+      + " I measured.";
+    if (mMain && mLoose) {
+      key += " Of those, " + mMain + " came from your drawing and the walk, "
+        + "and " + mLoose + " more I simply noticed.";
+    }
+    key += " Measurements never change your grade.";
+    barTo.appendChild(el("div", "xo-filters-key", key));
+  }
   wrap.appendChild(list);
   return wrap;
 }
@@ -11062,6 +11106,134 @@ function xoPictureNote(pnd) {
     + "design. " + fix);
   box.appendChild(body);
   return box;
+}
+
+/* ── S224: THE NUMBERS, AS A SHAPE ──────────────────────────────────────────
+   The header read as a paragraph of arithmetic — "101 things you asked for ·
+   76 worked · 3 didn't work · 22 I couldn't check" — four numbers in a row of
+   prose, and the captain's verdict on it was "too smashed and too hard to
+   parse". A proportion is a picture before it is a sum, so the counts become
+   one bar in a rail of their own, and the words get the rest of the width.
+
+   THE ORDER OF THE SEGMENTS IS FIXED — worked, didn't work, couldn't check —
+   so the same outcome is always in the same place and two bars can be read
+   against each other without re-reading the legend.
+
+   COLOUR IS NEVER THE ONLY CHANNEL. The three hexes below were run through the
+   dataviz validator against this board's own surface (#030608) in dark: CVD
+   separation ΔE 14.4 protan / 17.6 tritan, normal-vision floor 17.4, contrast
+   ≥3:1, all PASS. The green/red/grey that reads as the obvious choice FAILS —
+   red against grey is ΔE 6.1 under protanopia, so "didn't work" and "couldn't
+   check" collapse for a red-blind reader. On top of the hues: a 2px surface
+   gap between segments, a 135° hatch on "didn't work" so it survives greyscale
+   and forced-colors, and every count written out in the legend. */
+var XO_BAR_SEGS = [
+  ["met", "w", "worked"],
+  ["gap", "d", "didn't work"],
+  ["untested", "c", "I couldn't check"]
+];
+
+/* The three recorded tallies and their sum, or null when there is nothing to
+   draw. Arithmetic on `verdict.counts` as the scorer wrote it — no re-deriving
+   what any of them MEAN. */
+function xoCountTrio(counts) {
+  if (!counts || typeof counts !== "object") return null;
+  var t = {
+    met: +counts.met || 0,
+    gap: +counts.gap || 0,
+    untested: +counts.untested || 0
+  };
+  t.total = t.met + t.gap + t.untested;
+  return t.total ? t : null;
+}
+
+/* One bar. `scale` is passed in rather than taken from the trio so that a
+   first look and a re-check are drawn ON THE SAME SCALE — the whole point of
+   showing two of them is that the change is a shape. A zero segment is not
+   drawn at all (an invisible child would still claim its 2px gap). */
+function xoBar(trio, scale, dim) {
+  var bar = el("div", "xo-bar" + (dim ? " xo-bar-was" : ""));
+  bar.setAttribute("role", "presentation");
+  XO_BAR_SEGS.forEach(function (s) {
+    var v = trio[s[0]];
+    if (!v) return;
+    var seg = el("i", "xo-seg xo-seg-" + s[1]);
+    seg.style.width = (v / scale * 100) + "%";
+    seg.title = v + " " + s[2];
+    bar.appendChild(seg);
+  });
+  return bar;
+}
+
+/* +3 / −3 / no change. Subtraction of two recorded tallies and nothing else. */
+function xoDeltaWord(now, was) {
+  var d = now - was;
+  if (!d) return "no change";
+  return (d > 0 ? "+" : "−") + Math.abs(d);
+}
+
+/* The legend, ONE OUTCOME PER LINE with its count written out, so the bar is
+   never the only place a number lives. With a previous trio it also carries
+   the delta — which is the captain's question ("how did its grading change?")
+   answered as arithmetic on two recorded verdicts, not as prose. */
+function xoBarLegend(trio, prev) {
+  var leg = el("div", "xo-legend");
+  XO_BAR_SEGS.forEach(function (s) {
+    var row = el("div", "xo-legend-row");
+    row.appendChild(el("i", "xo-key xo-seg-" + s[1]));
+    row.appendChild(el("b", "xo-legend-n", String(trio[s[0]])));
+    row.appendChild(el("span", "xo-legend-t", s[2]));
+    if (prev) {
+      var w = xoDeltaWord(trio[s[0]], prev[s[0]]);
+      row.appendChild(el("span",
+        "xo-legend-d" + (w === "no change" ? " xo-legend-d-none" : ""), w));
+    }
+    leg.appendChild(row);
+  });
+  return leg;
+}
+
+/* WHEN each look happened, off the journal's own entries — `scored` for the
+   first, `rescored` for the re-check. The journal arrives newest-first, so the
+   first look is the LAST `scored` seen and the re-check the FIRST `rescored`.
+   Nothing is inferred from prose and nothing is guessed when the entry is
+   absent: no entry ⇒ the label is just "First look" / "Now". */
+function xoLookTimes(report) {
+  var out = { first: "", now: "" };
+  var j = (report && Array.isArray(report.journal)) ? report.journal : [];
+  j.forEach(function (e) {
+    if (!e || typeof e !== "object" || !e.at) return;
+    if (e.action === "scored") out.first = String(e.at);
+    else if (e.action === "rescored" && !out.now) out.now = String(e.at);
+  });
+  return out;
+}
+
+/* HOW MANY OF THE BUGS IT FILED ARE FIXED — COUNTED, NEVER READ OFF PROSE.
+   `report.logs` is `xo/logs.json`: one entry per bug Number One filed, each
+   carrying the id of the child Mission it opened. Whether that bug is fixed is
+   that child Mission's own RECORDED STAGE — `done` means its PR merged. So
+   this is a lookup and a count over two records, and it never opens a summary
+   to see what a sentence claims.
+
+   `known` is how many of the filed bugs we could actually find a card for. If
+   it is 0 — the children are not on this board — the caller says how many were
+   filed and says NOTHING about how many were fixed. A number nobody recorded
+   is not a number. */
+function xoFiledFixed(report) {
+  var logs = (report && Array.isArray(report.logs)) ? report.logs : [];
+  var byId = {};
+  boardCards(LAST_BOARD).forEach(function (c) {
+    if (c && c.id) byId[c.id] = c;
+  });
+  var fixed = 0, known = 0;
+  logs.forEach(function (g) {
+    var child = (g && g.mission) ? byId[g.mission] : null;
+    if (!child) return;
+    known++;
+    if (String(child.stage || "").toLowerCase() === "done") fixed++;
+  });
+  return { filed: logs.length, fixed: fixed, known: known };
 }
 
 /* S205/S213: the ◈ Number One tab's pane. THE VERDICT LEADS.
@@ -11101,14 +11273,43 @@ function xoReportPane(mi) {
     return pane;
   }
 
-  var verdict = (report.verdict && typeof report.verdict === "object")
+  // S224 — WHEN A RE-CHECK HAS RUN, THE RE-CHECK IS THE VERDICT.
+  //
+  // `xo/second/verdict.json` has been on the payload as `report.verdict2`
+  // since the adapter learned to read it, and this pane never once opened it:
+  // a mission looked at twice drew its FIRST look's grade, counts, ledger and
+  // summing-up, with a lone `after the fixes · LOW` chip as the only hint that
+  // a second look existed at all. So the captain's morning question — "how did
+  // its grading change?" — had no answer on the screen, and the numbers he
+  // could see were the stale ones. `xo.sh` already treats `score2` as the
+  // current score (xo.sh:747); this makes the board agree with it.
+  //
+  // The FIRST look is not thrown away — it is the rail's first bar and the
+  // baseline every delta is measured against.
+  var first = (report.verdict && typeof report.verdict === "object")
     ? report.verdict : {};
-  var score = String(report.score || verdict.score || "").toLowerCase();
+  var hasScore2 = !!report.score2;
+  var second = (hasScore2 && report.verdict2
+                && typeof report.verdict2 === "object"
+                && Object.keys(report.verdict2).length) ? report.verdict2 : null;
+  var verdict = second || first;
+  var score1 = String(report.score || first.score || "").toLowerCase();
+  var score = hasScore2
+    ? String(report.score2 || (second && second.score) || "").toLowerCase()
+    : score1;
 
-  // 1 — THE SCORE, FIRST. S223: the grade in its own coloured box, and beside
-  // it the one honest sentence (the ledger's own derivation — the same string
-  // the card carries, C8) with the counts under it in muted text.
+  // 1 — THE SCORE, FIRST, AND THE NUMBERS AS A SHAPE UNDER IT.
+  //
+  // This was one flex row: a grade box, then four counts in a sentence, then
+  // the measurements caveat, then the engine — all of it prose, all of it
+  // competing for one line. The captain: "too smashed and too hard to parse."
+  // It is now a RAIL and a COLUMN. The rail holds every number, as a shape;
+  // the column holds every word, at a readable measure. Nothing was deleted to
+  // make room — the counts moved from a run-on line into a bar and a legend
+  // that say the same three numbers out loud.
   var head = el("div", "xo-score-block xo-verdict");
+  var rail = el("div", "xo-rail");
+  head.appendChild(rail);
   var word = el("span", "xo-score-word xo-grade-chip s-" + (XO_SCORE_WORD[score] ? score : "unknown"),
                 XO_SCORE_WORD[score] || "NOT SCORED");
   // The ledger's own sentence about this score: the verdict on the tab carries
@@ -11122,51 +11323,179 @@ function xoReportPane(mi) {
     ? verdict.scoreMeaning.trim()
     : xoScoreMeaning(mi, score);
   if (wordSaid) word.title = wordSaid;
-  head.appendChild(word);
-  var vtext = el("div", "xo-vtext");
-  // 2 — ONE HONEST SENTENCE. The card carries this same string.
-  var lede = String(verdict.derivation || xo.headline || "").trim();
-  if (lede) vtext.appendChild(el("div", "xo-lede", lede));
+  // S224: THE SECOND SCORE BELONGS TO THE FIRST ONE. `after the fixes · LOW`
+  // used to be appended to `.xo-verdict` LAST, so flexbox parked it against
+  // the far right margin, a whole window away from the grade it modifies —
+  // the captain read it as debris. It is not debris: it is "this build was
+  // re-checked after the fixes, and here is what it scored then". So it now
+  // lives in a column WITH the grade, directly under the badge, where a
+  // modifier can be read as modifying something. Words unchanged.
+  var gradeCol = el("div", "xo-gradecol");
+  gradeCol.appendChild(word);
+  if (hasScore2) {
+    // The badge above is the CURRENT grade — the re-check's. This says what it
+    // was before the fixes, which is the only thing the reader needs the first
+    // score for once a second one exists.
+    gradeCol.appendChild(el("span",
+      "xo-chip2 xo-score2 s-" + (XO_SCORE_WORD[score1] ? score1 : "unknown"),
+      "after the fixes · was " + (XO_SCORE_WORD[score1] || "NOT SCORED")));
+  }
+  rail.appendChild(gradeCol);
+
+  // THE COUNTS, AS A BAR. They read "101 things you asked for · 76 worked ·
+  // 3 didn't work · 22 I couldn't check" — four numbers in a row of prose. The
+  // numbers are untouched and the spine is still the one HE wrote (the three
+  // outcomes add up to it exactly), but a proportion is a picture before it is
+  // a sum, so it is drawn as one, with every count still written out beside it.
   var counts = verdict.counts && typeof verdict.counts === "object"
     ? verdict.counts : null;
-  var small = [];
-  if (counts) {
-    var met = +counts.met || 0, gap = +counts.gap || 0, unt = +counts.untested || 0;
-    var tot = met + gap + unt;
-    if (tot) small.push((met + gap) + " of " + tot + " checked");
-    small.push(gap ? gap + " didn't work" : "nothing I checked failed");
-    if (unt) small.push(unt + " I couldn't check");
+  var nowTrio = xoCountTrio(counts);
+  // TWO BARS ONLY WHEN THERE IS REALLY A SECOND SCORE. A first look draws one
+  // bar and no deltas — there is nothing to compare it with, and a "+0" beside
+  // a number nobody looked at twice is a claim about a look that never ran.
+  var wasTrio = second ? xoCountTrio(first.counts) : null;
+  if (nowTrio) {
+    var bars = el("div", "xo-bars");
+    bars.appendChild(el("div", "xo-barlab",
+      nowTrio.total + " things you asked for"));
+    if (wasTrio) {
+      var when = xoLookTimes(report);
+      var scale = Math.max(nowTrio.total, wasTrio.total);
+      bars.appendChild(el("div", "xo-barlab xo-barlab-sub",
+        "First look" + (when.first ? " · " + fmtTs(when.first) : "")));
+      bars.appendChild(xoBar(wasTrio, scale, true));
+      bars.appendChild(el("div", "xo-barlab xo-barlab-sub",
+        "Now" + (when.now ? " · " + fmtTs(when.now) : "")));
+      bars.appendChild(xoBar(nowTrio, scale, false));
+      bars.appendChild(xoBarLegend(nowTrio, wasTrio));
+    } else {
+      bars.appendChild(xoBar(nowTrio, nowTrio.total, false));
+      bars.appendChild(xoBarLegend(nowTrio, null));
+    }
+    rail.appendChild(bars);
   }
-  if (xo.engine) small.push("looked at by " + engineLabel(xo.engine));
-  if (small.length) vtext.appendChild(el("div", "xo-vsmall", small.join(" · ")));
-  head.appendChild(vtext);
-  // S220 fix round 2 (D-C): SAY IT AT THE TOP, once. report.md points at the
-  // measured findings from the lede for the reason the captain gave — a
-  // finding he has to scroll past four sections to meet is one he does not
-  // act on. The board had neither the pointer nor the findings. Same words as
-  // `xo-score.py` writes, so the page and the file cannot say different
-  // things. The count is of the `measured` bucket only; it is NOT added to
-  // the counts above, because those are the score's and these never move it.
+
+  // S220 fix round 2 (D-C) said it at the top, and it stays said at the top —
+  // S224 makes it a LINE UNDER THE NUMBERS IT IS ABOUT, which is where it
+  // belongs: it is a count, and the rail is where counts live. The S210
+  // contract is untouched — a measurement is not a scored criterion, it never
+  // moves the grade, and it is still not counted as one; the line says so.
+  // The pointer into the list survives as the "I measured" filter chip and
+  // the list's own headings, which is where the findings actually are.
   var measuredN = xoObsList(verdict).filter(function (o) {
     return xoObsGroup(o) === "measured";
   }).length;
   if (measuredN) {
-    vtext.appendChild(el("div", "xo-measured-lede",
-      "I also measured " + measuredN + " thing" + (measuredN === 1 ? "" : "s")
-      + " against your drawing and while walking the flow myself. They are "
-      + "not in the count above — measurements never move your score — but "
-      + "they are faults, and they are listed below, under "
-      + "“What I measured on your drawing”."));
+    rail.appendChild(el("div", "xo-measured-lede",
+      "plus " + measuredN + " I measured — never moves the grade"));
   }
-  if (report.score2) {
-    var s2 = String(report.score2).toLowerCase();
-    head.appendChild(el("span", "xo-chip2 xo-score2 s-" + (XO_SCORE_WORD[s2] ? s2 : "unknown"),
-      "after the fixes · " + String(report.score2).toUpperCase()));
+  if (xo.engine) {
+    rail.appendChild(el("div", "xo-vsmall xo-looked",
+      "looked at by " + engineLabel(xo.engine)));
   }
+
+  var vtext = el("div", "xo-vtext");
+  head.appendChild(vtext);
   pane.appendChild(head);
+  // 2 — ONE HONEST SENTENCE. The card carries this same string.
+  var lede = String(verdict.derivation || xo.headline || "").trim();
+  if (lede) vtext.appendChild(el("div", "xo-lede", lede));
+
+  // S224 — WHAT CHANGED, AND WHY THE GRADE DID OR DIDN'T MOVE.
+  //
+  // This is the block the captain actually asked for: the old screen never
+  // told him how the grade moved. It exists ONLY when a second score does.
+  //
+  // NOTHING HERE IS COMPOSED BY READING PROSE. The filed/fixed pair is a count
+  // over `xo/logs.json` and the child Missions' own recorded stages; the
+  // sentence after "Why it's still LOW" is `scoreMeaning` exactly as the
+  // scorer wrote it beside the score. Where the record has no sentence, this
+  // block says the numbers and stops — it does not write one.
+  if (second) {
+    var chg = el("div", "xo-changed");
+    chg.appendChild(el("b", "xo-changed-label", "What changed"));
+    var ff = xoFiledFixed(report);
+    if (ff.filed) {
+      chg.appendChild(el("div", "xo-changed-line",
+        ff.filed + " bug" + (ff.filed === 1 ? "" : "s") + " filed"
+        + (ff.known ? " · " + ff.fixed + " fixed" : "") + "."));
+    }
+    var said = (typeof verdict.scoreMeaning === "string")
+      ? verdict.scoreMeaning.trim() : "";
+    if (said) {
+      var moved = score !== score1;
+      var why = el("div", "xo-changed-line xo-changed-why");
+      why.appendChild(el("b", "xo-changed-why-label", moved
+        ? ("Why it's now " + (XO_SCORE_WORD[score] || score.toUpperCase())
+           + ", was " + (XO_SCORE_WORD[score1] || score1.toUpperCase()) + ":")
+        : ("Why it's still " + (XO_SCORE_WORD[score] || score.toUpperCase())
+           + ":")));
+      why.appendChild(el("span", "xo-changed-why-body", " " + said));
+      chg.appendChild(why);
+    }
+    if (chg.children.length > 1) vtext.appendChild(chg);
+  }
+
+  // S224 — WHAT NEEDS HIM, SECOND, AND NOWHERE ELSE ON THIS PAGE.
+  //
+  // `verdict.escalations` is the look's own "these are yours to decide" list.
+  // xo-score.py has written it into report.md and xo.sh has printed it to the
+  // terminal since S222 — the BOARD never drew it at all, so the one thing on
+  // a report that actually needs a decision was the one thing he could only
+  // find by opening a file. It sits directly under the grade because, of
+  // everything on this page, it is the only part that is his to act on.
+  // Same words as the record; nothing derived. No list, no block.
+  var escal = (Array.isArray(verdict.escalations) ? verdict.escalations : [])
+    .map(function (e) { return String(e || "").trim(); })
+    .filter(function (e) { return e; });
+  if (escal.length) {
+    var needs = el("div", "xo-needs");
+    needs.appendChild(el("b", "xo-needs-label", "This one is yours to decide"));
+    escal.forEach(function (e) {
+      needs.appendChild(el("div", "xo-needs-line", e));
+    });
+    vtext.appendChild(needs);
+  }
+
+  // 2b — A PICTURE IS NOT A DRAWING (S217 fix round 1, D1). The card's line
+  // cuts off at "your attachment is a picture, …", and READ THE FULL REPORT
+  // lands here — so here is where he learns WHICH file and WHAT TO DO. Read
+  // off the verdict's own `pictureNotDrawing` (the scorer records the names
+  // and its fix sentence); nothing at all when the field is absent.
+  // It stays ABOVE the fold with the escalation: like the escalation, it is
+  // not an account of the grade, it is something for him to go and fix.
+  var picNote = xoPictureNote(verdict.pictureNotDrawing);
+  if (picNote) vtext.appendChild(picNote);
+
+  // S224 — ONE FOLD, AND EVERY WORD STILL IN IT.
+  //
+  // Five blocks of prose used to arrive before a single piece of evidence:
+  // the headline, the counts, the measurements caveat, WHY THIS GRADE, its
+  // own nested "show the full reasoning", the summing-up, and the summing-
+  // up's self-audit. Two of those were hedges ABOUT the prose beside them,
+  // and the grade's actual one-line reason was the fourth thing down.
+  //
+  // The captain's target shape: the grade, ONE sentence of why, and what
+  // needs him — everything else folds away behind a disclosure. So that is
+  // what this is. NOTHING IS DELETED and nothing is rewritten: the same
+  // blocks, in the same order, built by the same code, inside one <details>.
+  //
+  // The self-audit (xoSummaryCaveat — the model saying its own summing-up
+  // names 3 of the 5 measured faults) is honesty that was expensive to earn,
+  // so it is REACHABLE, not gone: it sits with the paragraph it qualifies,
+  // one tap away, which is exactly what S220 fix round 3 (F1) required of it
+  // — "the caveat goes WHERE THE PARAGRAPH IS". It can no longer compete
+  // with the grade for the top of the page, which is the whole complaint.
+  var more = document.createElement("details");
+  more.className = "xo-more";
+  var moreSum = document.createElement("summary");
+  more.appendChild(moreSum);
+  var moreBody = el("div", "xo-more-body");
+  more.appendChild(moreBody);
+  var moreParts = [];
 
   // 1b — WHY THIS GRADE (S216): the captain's table walked in words, first
-  // after the score. Then what a different reviewer would read BESIDE it —
+  // inside the fold. Then what a different reviewer would read BESIDE it —
   // never a second grade. A verdict written before S216 has neither field
   // and this block is simply absent: nothing is derived for it here.
   var whyGrade = String(verdict.whyThisGrade || "").trim();
@@ -11177,15 +11506,21 @@ function xoReportPane(mi) {
     // was ONE ~2,300-word paragraph carrying raw `**` asterisks, and it is the
     // first thing he reads. DISPLAY ONLY: S216 still writes exactly what it
     // wrote. The markdown is RENDERED (no stray asterisks on screen), the run
-    // of sentences is broken into paragraphs, and everything after the first
-    // sits behind a disclosure — open it and every word is still there.
-    xoReasoningInto(whyBox, whyGrade);
-    pane.appendChild(whyBox);
+    // of sentences is broken into paragraphs.
+    // S224: FLAT here. The paragraphs used to hide behind a second disclosure
+    // of their own; now that the whole block is behind ONE, a nested fold is
+    // two taps to reach a sentence and buys nothing — so the reader that is
+    // already open shows every paragraph. The First Officer's report keeps
+    // the disclosure (it is not inside a fold), which is why this is a flag
+    // and not a deletion.
+    xoReasoningInto(whyBox, whyGrade, true);
+    moreBody.appendChild(whyBox);
+    moreParts.push("why this grade");
     // S216 fix round 1 (D5): how much each item matters is RECORDED on the
     // first look and kept, and near-identical requirements rated apart are
     // flagged — both beside the grade, never moving it. Absent → nothing.
     var impNote = String(verdict.impactsNote || "").trim();
-    if (impNote) pane.appendChild(el("div", "xo-impacts-note", impNote));
+    if (impNote) moreBody.appendChild(el("div", "xo-impacts-note", impNote));
     var rowText = {};
     (Array.isArray(verdict.criteria) ? verdict.criteria : []).forEach(function (c) {
       if (c && c.id) rowText[c.id] = String(c.text || "").trim();
@@ -11198,7 +11533,7 @@ function xoReportPane(mi) {
         var named = ids.map(function (id) {
           return (rowText[id] ? rowText[id] + " " : "") + "(" + id + ")";
         });
-        pane.appendChild(el("div", "xo-impact-mismatch",
+        moreBody.appendChild(el("div", "xo-impact-mismatch",
           named[0] + " and " + named[1] + " say the same thing but were given "
           + "different importance (" + (imps[0] || "?") + " and " + (imps[1] || "?")
           + "). This does not change the grade — tell me which is right."));
@@ -11213,17 +11548,9 @@ function xoReportPane(mi) {
       beside.forEach(function (t) {
         alt.appendChild(el("div", "xo-alt-line", String(t).trim()));
       });
-      pane.appendChild(alt);
+      moreBody.appendChild(alt);
     }
   }
-
-  // 2b — A PICTURE IS NOT A DRAWING (S217 fix round 1, D1). The card's line
-  // cuts off at "your attachment is a picture, …", and READ THE FULL REPORT
-  // lands here — so here is where he learns WHICH file and WHAT TO DO. Read
-  // off the verdict's own `pictureNotDrawing` (the scorer records the names
-  // and its fix sentence); nothing at all when the field is absent.
-  var picNote = xoPictureNote(verdict.pictureNotDrawing);
-  if (picNote) pane.appendChild(picNote);
 
   // 3 — THE FULL TEXT, in its own voice. Only when it says something the lede
   // has not already said — repeating one sentence twice is not detail.
@@ -11231,26 +11558,71 @@ function xoReportPane(mi) {
   if (full && full !== lede) {
     var body = el("div", "xo-full");
     setMd(body, full);
-    pane.appendChild(body);
+    moreBody.appendChild(body);
+    moreParts.push("what I made of it");
   }
   // …and it never stands alone claiming to be the whole picture (fix round 3,
-  // F1). The caveat goes WHERE THE PARAGRAPH IS, so a reader who stops at the
-  // top still meets it; with no summary shown there is nothing to qualify.
+  // F1). The caveat goes WHERE THE PARAGRAPH IS, so a reader who opens the
+  // fold still meets it; with no summary shown there is nothing to qualify.
   var caveat = full ? xoSummaryCaveat(verdict) : "";
-  if (caveat) pane.appendChild(el("div", "xo-full-caveat", caveat));
+  if (caveat) {
+    moreBody.appendChild(el("div", "xo-full-caveat", caveat));
+    moreParts.push("where my summing-up falls short");
+  }
+  // The summary NAMES what is inside, so the fold is a door with a label on
+  // it rather than a "more…" that could be anything. Nothing inside → no
+  // door at all; an empty disclosure is furniture.
+  if (moreParts.length) {
+    // Two lines, not one long one: the door, then what is behind it. A single
+    // sentence naming all three parts wrapped past the window at phone width
+    // (measured in Chrome at 400px), which is the fault this whole session is
+    // fixing — it would have been a hot mess of its own.
+    moreSum.appendChild(el("span", "xo-more-say", "Read the full reasoning"));
+    moreSum.appendChild(el("span", "xo-more-parts", moreParts.join(" · ")));
+    vtext.appendChild(more);
+  }
 
   // 4 — THE LEDGER, one boxed block per requirement (S223), problems first,
   // and — S220 fix round 2, D-C — the measured/walked findings in the same
   // list, under their own filter and their own heading.
+  //
+  // S224: the CHIPS that filter it are the last thing in the right column —
+  // "Show me", directly above the evidence, where a control belongs — and the
+  // rows themselves run the full width underneath. One closure still wires
+  // them to each other; only the placement moved.
   var criteria = verdict.criteria;
   var obsRows = xoObsList(verdict);
+  // THE PICTURES OF THE VERDICT ACTUALLY ON THE SCREEN (S224 fix round 1, D4).
+  //
+  // `report.shotsDir` is the FIRST look's directory, and it must stay that:
+  // the filed gaps below ("Gaps found") were filed on that look and their
+  // thumbnails render off it correctly. But since S224 this ledger is the
+  // SECOND verdict's, and its shots (`recheck-walk-*`) were taken into the
+  // re-check's own directory. Rendered against the first look's they 404ed —
+  // every row on the captain's board read "The picture for this one … isn't on
+  // this laptop any more" over files sitting on his disk.
+  //
+  // The adapter now says where they are (`shotsDir2`). One shallow copy with
+  // that directory swapped in is the whole fix: every renderer below already
+  // reads `report.shotsDir`, and none of them needs to learn a second
+  // argument. No `shotsDir2` (no re-check, or a mission whose re-check left no
+  // resolvable directory) ⇒ `report` itself, i.e. exactly the old behaviour.
+  var itemsReport = report;
+  if (second && report.shotsDir2 && report.shotsDir2 !== report.shotsDir) {
+    itemsReport = {};
+    Object.keys(report).forEach(function (k) { itemsReport[k] = report[k]; });
+    itemsReport.shotsDir = report.shotsDir2;
+  }
   if ((Array.isArray(criteria) && criteria.length) || obsRows.length) {
+    var showBar = el("div", "xo-showme");
+    showBar.appendChild(el("b", "xo-showme-label", "Show me"));
+    vtext.appendChild(showBar);
     pane.appendChild(xoItemsSection(
-      mi, report,
+      mi, itemsReport,
       (Array.isArray(criteria) ? criteria : []).filter(function (c) {
         return c && typeof c === "object";
       }),
-      obsRows));
+      obsRows, showBar));
   }
 
   // 5 — THE GAPS IT FILED, with the pictures that show them.

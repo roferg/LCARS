@@ -249,8 +249,14 @@ class TheTabSaysWhy(unittest.TestCase):
         On the captain's real report this was ONE ~2,300-word paragraph with
         raw `**` asterisks in it, and it is the first thing he reads. The
         markdown is rendered, the run of sentences is broken into paragraphs,
-        and everything past the first sits behind "Show the full reasoning" —
-        where every word is still there."""
+        and every word is still there.
+
+        S224 MOVED THE DOOR OUT ONE LEVEL. The whole block now sits behind
+        the pane's single fold, so a disclosure of its own would be two taps
+        to reach one sentence — the reader that is already open shows every
+        paragraph. What this test has always been about is unchanged: no raw
+        markdown on screen, the wall broken into paragraphs, and every word
+        still present."""
         long_why = ("**MEDIUM** because every part that is the point of the "
                     "mission worked. " + " ".join(
                         "Sentence number %d says something about ticket "
@@ -266,11 +272,23 @@ class TheTabSaysWhy(unittest.TestCase):
         bodies = _cls_of(box, " xo-why-body ")
         self.assertGreaterEqual(len(bodies), 2)
         self.assertLess(len(_all_text(bodies[0])), 600)
-        # 3 · the rest is behind ONE disclosure, and every word is in it
-        folds = [n for n in _flatten(box) if n["tag"] == "details"]
-        self.assertEqual(1, len(folds))
-        self.assertIn("Show the full reasoning", _all_text(folds[0]))
+        # 3 · no fold INSIDE the block — the pane's own one already holds it
+        self.assertEqual([], [n for n in _flatten(box) if n["tag"] == "details"])
+        self.assertNotIn("Show the full reasoning", shown)
+        # 4 · and not one word is lost to the flattening
         self.assertIn("Sentence number 29", shown)
+
+    def test_why_this_grade_is_behind_the_panes_one_fold(self):
+        """S224 — the grade's account of itself folds with the rest of the
+        prose. It is still first inside that fold, and the door names it."""
+        out = self.tab(NEW_VERDICT)
+        folds = [n for n in _flatten(out["pane"]) if n["tag"] == "details"]
+        self.assertEqual(1, len(folds), "expected exactly one fold on the pane")
+        self.assertIn("why this grade", _all_text(folds[0]).lower())
+        self.assertIn("MEDIUM because", _all_text(folds[0]))
+        # …and it is no longer a direct child of the pane, above the evidence
+        top = [(n.get("cls") or "") for n in out["pane"]["children"]]
+        self.assertNotIn("xo-why", top)
 
     def test_a_short_why_this_grade_needs_no_disclosure(self):
         out = self.tab(NEW_VERDICT)

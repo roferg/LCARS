@@ -2618,11 +2618,38 @@ def _number_one_report(d):
     except OSError:
         pass
 
+    # THE RE-CHECK'S OWN PICTURES (S224 fix round 1, D4).
+    #
+    # `look.txt` is written ONCE, by `evaluate`, and it points at the FIRST
+    # look — which is right for `report.logs[].shots` (a filed gap's pictures
+    # were taken on the look that filed it, and those thumbnails render today).
+    # A re-check opens a directory of its OWN (`xo.sh`: `shots/recheck-<n>`)
+    # and never recorded a pointer to it, so there was exactly one directory on
+    # the payload for TWO verdicts. Since S224 the pane draws the SECOND
+    # verdict when there is one, and every one of its `recheck-walk-*` shots
+    # was being looked for in `look-1/` — a 404 on every picture, drawn as
+    # "The picture for this one … isn't on this laptop any more" over files
+    # that are on the disk. Measured on the captain's own mission:
+    # `…/look-1/recheck-walk-01-j1.png` 404, `…/recheck-3/…` 200.
+    #
+    # So: a SECOND pointer, never a re-pointing of the first. It is read the
+    # same way the first is — `xo/second/look.txt`, which `xo.sh` now writes as
+    # the re-check opens its directory — and normalised across the same one
+    # boundary. For the missions already on disk, which have no such pointer
+    # because the re-check that made them predates it, the fallback resolves it
+    # AGAINST THE RECORD rather than by guessing: the second verdict names the
+    # shots it reasoned from, and the answer is the directory that actually
+    # holds them. Most-held wins (an aborted re-check leaves an empty or
+    # part-filled directory behind and must not win over the real one); a tie
+    # goes to the later name, which is the later re-check. Nothing found ⇒ no
+    # key at all, and the board falls back to `shotsDir` exactly as before.
+    shots_dir2 = _xo_second_shots_dir(xodir, verdict2)
+
     journal_sorted = sorted(
         (j for j in journal if isinstance(j, dict)),
         key=lambda j: _activity_sort_key({"ts": j.get("at")}), reverse=True)
 
-    return {
+    out = {
         "score": xo.get("score"),
         "score2": xo.get("score2"),
         "status": xo.get("status"),
@@ -2633,6 +2660,70 @@ def _number_one_report(d):
         "shotsDir": shots_dir,
         "journal": journal_sorted,
     }
+    if shots_dir2:
+        out["shotsDir2"] = shots_dir2
+    return out
+
+
+def _xo_cited_shots(verdict):
+    """Every shot name the verdict's own ledger cites, in order, de-duped."""
+    seen, names = set(), []
+    if not isinstance(verdict, dict):
+        return names
+    for key in ("criteria", "observations"):
+        for row in (verdict.get(key) or []):
+            if not isinstance(row, dict):
+                continue
+            shot = row.get("shot")
+            if isinstance(shot, str) and shot.strip() and shot.strip() not in seen:
+                seen.add(shot.strip())
+                names.append(shot.strip())
+    return names
+
+
+def _xo_second_shots_dir(xodir, verdict2):
+    """Where the SECOND verdict's pictures live, relative to `xo/shots/`, or "".
+
+    The recorded pointer first (`xo/second/look.txt`, same one-leading-"shots"
+    normalisation as `look.txt`); then, for a mission re-checked before that
+    pointer existed, the directory under `xo/shots/` that holds the most of the
+    shots this verdict NAMES. It reads the record and the disk; it never picks
+    "the first one it finds"."""
+    if not isinstance(verdict2, dict) or not verdict2:
+        return ""
+    try:
+        with open(os.path.join(xodir, "second", "look.txt"), encoding="utf-8") as fh:
+            rel = fh.readline().strip()
+        if rel and os.path.isdir(os.path.join(xodir, rel)):
+            segs = [s for s in rel.split("/") if s]
+            if segs and segs[0] == "shots":
+                segs = segs[1:]
+            if segs:
+                return "/".join(segs)
+    except OSError:
+        pass
+
+    # A PROBE, NOT A CENSUS. The captain's ledger cites 101 shots and his
+    # `xo/shots/` holds four directories: stat-ing every pair on every detail
+    # request is 400 syscalls to answer a question the first dozen already
+    # answer (on his own mission: recheck-1 holds 0 of them, recheck-3 holds
+    # 12). The cap is the budget, not the evidence.
+    cited = _xo_cited_shots(verdict2)[:12]
+    if not cited:
+        return ""
+    room = os.path.join(xodir, "shots")
+    try:
+        candidates = sorted(d for d in os.listdir(room)
+                            if os.path.isdir(os.path.join(room, d)))
+    except OSError:
+        return ""
+    best, best_n = "", 0
+    for d in candidates:
+        n = sum(1 for s in cited
+                if os.path.isfile(os.path.join(room, d, s + ".png")))
+        if n >= best_n and n > 0:      # >= : a tie goes to the LATER name
+            best, best_n = d, n
+    return best
 
 
 def _xo_recorded_score(mission_dir):

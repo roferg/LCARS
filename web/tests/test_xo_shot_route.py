@@ -279,5 +279,132 @@ class CompositionFromTheRealPayload(unittest.TestCase):
         self.assertEqual("image/png", ctype)
 
 
+class S224_ThePicturesOfTheLookTheVerdictCameFrom(unittest.TestCase):
+    """S224 fix round 1, D4 — the captain: *"What happened to the pictures
+    being inline?"*
+
+    Every row of his re-checked mission read "The picture for this one
+    (recheck-walk-01-j1) isn't on this laptop any more" over a file that is on
+    his disk at `…/xo/shots/recheck-3/recheck-walk-01-j1.png`. Measured live
+    against his own daemon before a line was changed:
+
+        /api/xo/shot/<mid>/look-1/recheck-walk-01-j1.png    → 404
+        /api/xo/shot/<mid>/recheck-3/recheck-walk-01-j1.png → 200
+
+    The route was never wrong. `look.txt` is written ONCE, by `evaluate`, and
+    points at the first look; a re-check opens `shots/recheck-<n>` and recorded
+    no pointer to it. So the payload carried ONE directory for TWO verdicts,
+    and since S224 the pane draws the SECOND one. `shotsDir` still belongs to
+    the first look — the filed gaps' thumbnails render off it and they were
+    never broken — and `shotsDir2` is the second pointer beside it.
+
+    A mission re-checked BEFORE that pointer existed (every one on his disk)
+    gets it resolved against the record instead: the second verdict names the
+    shots it reasoned from, and the answer is the directory that holds them.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        fx.plant_simple(self.tmp, MID, stage="verify")
+        self.d = fx.mission_dir(self.tmp, MID)
+        self.xodir = os.path.join(self.d, "xo")
+
+        # THE SHAPE OF HIS OWN MISSION, not a simplified stand-in: a first
+        # look, an ABORTED re-check that left an empty directory behind, and
+        # the real re-check. The aborted one is the reason "the first one you
+        # find" is not an answer.
+        self._plant("look-1", ["shot-walk-00-wayin", "shot-walk-01-j1"])
+        self._plant("recheck-1", [])
+        self._plant("recheck-2", ["recheck-walk-00-wayin", "recheck-walk-01-j1"])
+        with open(os.path.join(self.xodir, "look.txt"), "w") as fh:
+            fh.write("shots/look-1\n")
+
+        self._verdict("verdict.json", "shot-walk-")
+        os.makedirs(os.path.join(self.xodir, "second"), exist_ok=True)
+        self._verdict(os.path.join("second", "verdict.json"), "recheck-walk-")
+
+        with open(os.path.join(self.d, "number-one.jsonl"), "w") as fh:
+            fh.write(json.dumps({"at": "2026-09-20T09:00:00Z",
+                                 "action": "rescored", "score": "low"}) + "\n")
+        self.adapter = LocalAdapter(self.tmp)
+        self.httpd = make_server(self.adapter, host="127.0.0.1", port=0,
+                                 poll_interval=0.05, actions=None)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+
+    def _plant(self, look, names):
+        room = os.path.join(self.xodir, "shots", look)
+        os.makedirs(room, exist_ok=True)
+        for n in names:
+            with open(os.path.join(room, n + ".png"), "wb") as fh:
+                fh.write(_PNG_MAGIC)
+
+    def _verdict(self, rel, stem):
+        doc = {"score": "low", "criteria": [
+            {"id": "prd-1", "status": "gap", "evidence": "picture",
+             "shot": stem + "00-wayin"},
+            {"id": "prd-2", "status": "gap", "evidence": "picture",
+             "shot": stem + "01-j1"}]}
+        with open(os.path.join(self.xodir, rel), "w") as fh:
+            json.dump(doc, fh)
+
+    def report(self):
+        return self.adapter.mission(MID)["numberOne"]["report"]
+
+    def fetch(self, path):
+        url = "http://127.0.0.1:%d%s" % (self.port, path)
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    def test_the_first_looks_pointer_is_untouched(self):
+        """The gaps he filed were filed on that look; their thumbnails render
+        off this value and they were never the broken ones."""
+        self.assertEqual("look-1", self.report()["shotsDir"])
+
+    def test_the_second_verdict_gets_its_own_directory(self):
+        self.assertEqual("recheck-2", self.report().get("shotsDir2"))
+
+    def test_the_url_board_js_composes_for_a_recheck_shot_returns_200(self):
+        # Composed the way board.js composes it, from the value the API
+        # actually emits — the composition, not two halves proven apart.
+        r = self.report()
+        url = _board_js_xo_shot_url(MID, r["shotsDir2"], "recheck-walk-01-j1")
+        status, body = self.fetch(url)
+        self.assertEqual(200, status, "the re-check's picture must serve: " + url)
+        self.assertEqual(_PNG_MAGIC, body)
+        # …and the value it was rendered against before this fix still 404s,
+        # which is the defect, stated as a fact rather than as a memory.
+        self.assertEqual(404, self.fetch(
+            _board_js_xo_shot_url(MID, r["shotsDir"], "recheck-walk-01-j1"))[0])
+
+    def test_an_aborted_recheck_does_not_win_by_coming_first(self):
+        """`recheck-1` sorts before `recheck-2` and holds none of the shots
+        the verdict names. Most-held wins; first-found is not an answer."""
+        self.assertEqual("recheck-2", self.report().get("shotsDir2"))
+
+    def test_the_recorded_pointer_beats_the_resolution(self):
+        """What `xo.sh` now writes as the re-check opens its directory. A
+        record always outranks a derivation — same rule as look.txt."""
+        self._plant("recheck-9", ["recheck-walk-01-j1"])
+        with open(os.path.join(self.xodir, "second", "look.txt"), "w") as fh:
+            fh.write("shots/recheck-9\n")
+        self.assertEqual("recheck-9", self.report().get("shotsDir2"))
+
+    def test_a_mission_looked_at_once_carries_no_second_pointer(self):
+        os.remove(os.path.join(self.xodir, "second", "verdict.json"))
+        r = self.report()
+        self.assertEqual("look-1", r["shotsDir"])
+        self.assertNotIn("shotsDir2", r,
+                         "a single look must not grow a second directory")
+
+
 if __name__ == "__main__":
     unittest.main()

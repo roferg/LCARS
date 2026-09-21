@@ -3016,6 +3016,14 @@ cmd_recheck() {
 
   # --- 2. THE SECOND LOOK ---------------------------------------------------
   mkdir -p "$xodir" "$shots"
+  # WHERE THIS RE-CHECK'S PICTURES LIVE, recorded the moment the directory is
+  # opened — the exact idiom `evaluate` uses for `look.txt` (line 2187), and
+  # for the same reason: the board must be able to find the pictures a verdict
+  # cites without guessing which directory they went into. `look.txt` itself is
+  # NOT re-pointed — it belongs to the first look, and the filed gaps' shots
+  # (`file-logs`, `xo_verdict_shots_dir`) are still that look's.
+  mkdir -p "$xodir/second"
+  printf 'shots/%s\n' "$look" >"$xodir/second/look.txt"
   XO_LAUNCH_ID="$id"
   XO_STOP_LOG="$xodir/launch.log"
   trap xo_teardown EXIT

@@ -13,6 +13,11 @@
  * proves the WIRING and the ORDER; a real browser is the tester's job.
  *
  * argv[2]: a JSON file with a mission DETAIL object (`mi`).
+ * argv[3]: OPTIONAL inline JSON for the BOARD payload (S224). The pane counts
+ *          how many of the bugs Number One filed are fixed by looking up each
+ *          filed bug's child Mission and reading its recorded STAGE off the
+ *          board — so a test about that count has to be able to plant one.
+ *          Absent ⇒ no board, exactly as it is on a page that never rendered.
  * stdout:  { pane: <projected xoReportPane tree>,
  *            tabs: [tab labels in bar order],
  *            paneText: [every non-empty text node, in document order] }
@@ -112,6 +117,11 @@ for (const name of ["xoReportPane", "detailTabs"]) {
 }
 
 const mission = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (process.argv[3]) {
+  // `var LAST_BOARD` in board.js is a property of the sandbox global, so this
+  // plants the very payload the shipping code reads — no shim in between.
+  sandbox.LAST_BOARD = JSON.parse(process.argv[3]);
+}
 const pane = sandbox.xoReportPane(mission);
 let tabs = [];
 try {
@@ -137,6 +147,16 @@ function project(n) {
     // the full verdict invisible to every assertion about it.
     text: n._text || stripTags(n._html || ""),
     title: n.title || "",
+    // S224: the bar's segments are sized by an inline width, so a claim about
+    // TWO BARS ON ONE SCALE has to be able to read it. (The cascade still
+    // belongs to the browser drive; this is the value the code set.)
+    style: Object.assign({}, n.style || {}),
+    // S224 fix round 1 (D4): the picture a row points AT. The captain's board
+    // drew "isn't on this laptop any more" over files that were on his disk,
+    // because the URL was composed against the wrong look's directory — a
+    // claim about which directory a thumbnail asks for cannot be made without
+    // reading the value the code set on it.
+    src: n.src || "",
     // S223 fix round 1 (D2): a row is identified by its own `data-id`, so an
     // assertion names the requirement it is about rather than an index.
     attrs: n.attrs || {},
