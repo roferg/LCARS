@@ -1372,8 +1372,58 @@ const FOCUS = (sel) => `(function () {
    * read on EVERY screen the look stands on and kept per screen. */
   const partPages = [];
   let partCrops = 0;
+  /* ── THE CROP BUDGET IS DIVIDED, NOT RACED FOR (S224 fix round 2) ──────────
+   * MEASURED ON THE S222 CAPSTONE: the look came back with exactly sixteen
+   * `shot-s0-part-*.png` — all of them from the LANDING screen — and not one
+   * part crop from any of the screens the walk then went on to visit. The
+   * counter below was a single running total and `snapScreen("s0")` runs before
+   * `walkTheJourney()`, so the first screen spent the whole budget before the
+   * walk began. The comment here used to claim the opposite ("the cap is shared
+   * across screens, so a first screen cannot spend every crop the look has");
+   * nothing implemented it. It does now.
+   *
+   * HOW IT IS DIVIDED. Each parts snapshot may spend its FAIR SHARE of what is
+   * LEFT — the remainder over the snapshots the plan still has to take — with a
+   * floor of one, so no screen the look stood on comes back with no picture of
+   * its parts while there is budget left. A screen with fewer croppable parts
+   * than its share leaves the rest to the screens after it, so nothing is
+   * reserved and then wasted. The plan is the walk itself: the landing screen,
+   * the way in if there are entry hints, and one snapshot per journey step (or
+   * per action, on the action path). The final `snapParts("end")` is deliberately
+   * NOT in the plan — it re-reads the screen the look ended on, which it has
+   * already photographed.
+   *
+   * THE TOTAL IS UNCHANGED, deliberately. More pictures cost RECALL: on a
+   * 40-picture corpus the criteria-free pass lost the month-jump finding it
+   * caught 2/2 on the same corpus at 27 pictures — same prompt, same day. This
+   * buys SPREAD at the same price; it must never buy more pictures.
+   *
+   * A SCREEN IS PHOTOGRAPHED ONCE. Standing on a screen again re-reads its
+   * parts (the later reading still wins) but REUSES the crops already on disk
+   * rather than taking near-duplicates under a second tag — which would spend
+   * the budget twice and pad the corpus with the same picture twice over.
+   */
+  const plannedSnaps = Math.max(1, journey.length
+    ? 1 + (journeyDoc.entry.length ? 1 : 0) + journey.length
+    : 1 + actions.length);
+  const nominalShare = Math.max(1, Math.ceil(PARTS_CROP_CAP / plannedSnaps));
+  let snapsDone = 0;
+  const cropsBySig = new Map();   // screen signature -> Map(part index -> crop name)
+  function cropAllowance(sig) {   // how many NEW crops this screen may take now
+    const left = PARTS_CROP_CAP - partCrops;
+    if (left <= 0) return 0;
+    const mine = cropsBySig.get(sig);
+    const spent = mine ? mine.size : 0;
+    // Past the plan (a screen the walk did not predict): the nominal share
+    // only, so an unplanned late screen cannot hoover up what is left either.
+    const share = (snapsDone > plannedSnaps)
+      ? nominalShare
+      : Math.max(1, Math.ceil((left + spent) / Math.max(1, plannedSnaps - snapsDone + 1)));
+    return Math.max(0, Math.min(share - spent, left));
+  }
   async function snapParts(tag) {
     if (!PARTS_OUT) return;
+    snapsDone++;
     try {
       const pr = await send("Runtime.evaluate", { expression: PARTS(PARTS_CAP), returnByValue: true }, S);
       const doc = (pr && pr.result && typeof pr.result.value === "string")
@@ -1391,13 +1441,19 @@ const FOCUS = (sel) => `(function () {
       for (let i = partPages.length - 1; i >= 0; i--) {
         if (partPages[i].sig === sig) partPages.splice(i, 1);
       }
+      let mine = cropsBySig.get(sig);
+      if (!mine) { mine = new Map(); cropsBySig.set(sig, mine); }
+      let allow = cropAllowance(sig);
       for (const p of doc.parts || []) {
-        if (partCrops >= PARTS_CROP_CAP) break;
         if (!p.box || p.box.w <= 0 || p.box.h <= 0) continue;
         // Only the parts worth a picture of their own: a control, or something
-        // the page named. The cap is shared across screens, so a first screen
-        // cannot spend every crop the look has.
+        // the page named.
         if (!p.interactive && !p.id && !p.testid) continue;
+        // ALREADY PHOTOGRAPHED, ON THIS SAME SCREEN. The picture on disk is the
+        // picture of this part; the reading is new, the crop is not.
+        const already = mine.get(p.index);
+        if (already) { p.crop = already; continue; }
+        if (allow <= 0 || partCrops >= PARTS_CROP_CAP) continue;
         const name = PREFIX + "-" + tag + "-part-" + String(p.index).padStart(2, "0");
         try {
           const clip = { x: p.box.x, y: p.box.y, width: p.box.w, height: p.box.h, scale: 1 };
@@ -1407,7 +1463,8 @@ const FOCUS = (sel) => `(function () {
             name + " — " + (p.name || p.id || p.tag) + ", clipped to it alone, at " +
             scaleApplied + "x, on " + at + "\n");
           p.crop = name;
-          partCrops++;
+          mine.set(p.index, name);
+          partCrops++; allow--;
         } catch (e) { p.cropError = e.message; }
       }
       partPages.push({ url: at, sig: sig, title: doc.title || "", parts: doc.parts || [],
@@ -2226,6 +2283,11 @@ const FOCUS = (sel) => `(function () {
       fs.writeFileSync(PARTS_OUT, JSON.stringify({
         url: currentUrl, screens: partPages.map((p) => p.url),
         pages: partPages, parts: flat, cropped: partCrops,
+        // THE BUDGET, WRITTEN DOWN. `cropped` alone cannot say whether the
+        // pictures were spread or spent in one place; `croppedScreens` can,
+        // and a reader (or a test) can see the bound was a bound.
+        cropCap: PARTS_CROP_CAP, plannedSnaps: plannedSnaps,
+        croppedScreens: Array.from(cropsBySig.values()).filter((m) => m.size > 0).length,
       }, null, 2) + "\n");
     } catch (e) {
       notes.push("the parts record could not be written: " + e.message);

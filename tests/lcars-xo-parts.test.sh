@@ -416,5 +416,86 @@ else
     "pq 'next(p.get(\"placeholder\") for p in d[\"parts\"] if p[\"id\"]==\"insightBox\")' | grep -qi 'Add an insight'"
 fi
 
+printf '\n\033[1mE · the crop budget reaches the screens the look WALKED (S224 fix round 2)\033[0m\n'
+# MEASURED ON THE S222 CAPSTONE: the look came back holding exactly sixteen
+# `shot-s0-part-*.png` — every one of them from the LANDING screen — and not a
+# single part crop from any of the four screens it then walked to. The counter
+# was one running total and `snapScreen("s0")` runs before `walkTheJourney()`,
+# so the first screen spent the whole budget before the walk began. The comment
+# in the driver claimed the opposite and nothing implemented it.
+#
+# REAL HEADLESS CHROME, over a hash-routed app of four screens walked by its own
+# controls — a node DOM harness cannot prove where a crop was taken.
+WALK="$TMPROOT/walkfix"; mkdir -p "$WALK"
+cat >"$WALK/app.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>four screens</title>
+<style>body{font:14px system-ui;margin:0;padding:16px}
+.screen{display:none}.screen.on{display:block}
+button{height:30px;padding:0 10px;border:1px solid #888;margin-right:6px}</style>
+<section id="s-one" class="screen on"><h2>Screen one</h2>
+  <button id="one-a" data-go="two">Go to two</button>
+  <button id="one-b">Reset one</button><button id="one-c">Help one</button>
+  <button id="one-d">Export one</button><button id="one-e">Print one</button></section>
+<section id="s-two" class="screen"><h2>Screen two</h2>
+  <button id="two-a" data-go="three">Go to three</button>
+  <button id="two-b">Reset two</button><button id="two-c">Help two</button>
+  <button id="two-d">Export two</button><button id="two-e">Print two</button></section>
+<section id="s-three" class="screen"><h2>Screen three</h2>
+  <button id="three-a" data-go="four">Go to four</button>
+  <button id="three-b">Reset three</button><button id="three-c">Help three</button>
+  <button id="three-d">Export three</button><button id="three-e">Print three</button></section>
+<section id="s-four" class="screen"><h2>Screen four</h2>
+  <button id="four-a">Done</button>
+  <button id="four-b">Reset four</button><button id="four-c">Help four</button>
+  <button id="four-d">Export four</button><button id="four-e">Print four</button></section>
+<script>
+ function show(k){for(const s of document.querySelectorAll('.screen'))s.classList.remove('on');
+   document.getElementById('s-'+k).classList.add('on');location.hash='#'+k;}
+ for(const b of document.querySelectorAll('button[data-go]'))
+   b.addEventListener('click',()=>show(b.dataset.go));
+</script>
+HTML
+cat >"$WALK/journey.json" <<'JSON'
+{"entry": null,
+ "steps": [
+  {"key":"j1","name":"click \"Go to two\"","do":"click","match":["Go to two"],"expect":"screen two"},
+  {"key":"j2","name":"click \"Go to three\"","do":"click","match":["Go to three"],"expect":"screen three"},
+  {"key":"j3","name":"click \"Go to four\"","do":"click","match":["Go to four"],"expect":"screen four"}
+ ]}
+JSON
+WOUT="$TMPROOT/walkout"; mkdir -p "$WOUT"
+"$NODE" "$DRIVER" --url "file://$WALK/app.html" --out "$WOUT" \
+  --parts-out "$WOUT/parts.json" --journey "$WALK/journey.json" \
+  --walk-out "$WOUT/walk.json" --prefix shot >"$WOUT/drive.json" 2>"$WOUT/drive.err"
+wrc=$?
+if [ "$wrc" -eq 77 ] || [ ! -s "$WOUT/parts.json" ]; then
+  printf '  \033[33mSKIP\033[0m no usable Chrome here (%s)\n' "$(head -1 "$WOUT/drive.err" 2>/dev/null)"
+else
+  wq() { "$PY" -c "import json,sys;d=json.load(open('$WOUT/parts.json'));print(eval(sys.argv[1],{'d':d}))" "$1"; }
+  # How many DISTINCT screen tags the crops on disk carry. `shot-<tag>-part-NN`
+  # — counted from the files themselves, not from anything the driver says
+  # about itself.
+  crop_tags() { ls "$WOUT"/shot-*-part-*.png 2>/dev/null |
+                  sed 's|.*/shot-||; s|-part-.*||' | sort -u; }
+  check "E · the walk really did reach four screens" \
+    "[ \"\$(wq 'len(d[\"screens\"])')\" -ge 4 ]"
+  check "E · part crops come back from MORE THAN ONE screen" \
+    "[ \"\$(crop_tags | grep -c .)\" -ge 2 ]"
+  check "E · …from every screen the look stood on, not just the landing page" \
+    "[ \"\$(crop_tags | grep -c .)\" -ge 4 ]"
+  # THE LAST SCREEN IS THE ONE THE OLD COUNTER ALWAYS STARVED: measured on this
+  # very fixture, the cap ran out on the third screen and the fourth — the one
+  # the walk worked hardest to reach — came back with nothing at all.
+  check "E · the LAST screen the walk reached is photographed too" \
+    "[ \"\$(ls '$WOUT'/shot-w3-part-*.png 2>/dev/null | grep -c .)\" -ge 1 ]"
+  # THE CONTROL — a budget that no longer bounds anything is a different bug.
+  check "E CONTROL · the total is still bounded by the cap" \
+    "[ \"\$(ls '$WOUT'/shot-*-part-*.png 2>/dev/null | grep -c .)\" -le \"\$(wq 'd[\"cropCap\"]')\" ]"
+  check "E CONTROL · …and the record's own count agrees with the files on disk" \
+    "[ \"\$(wq 'd[\"cropped\"]')\" = \"\$(ls '$WOUT'/shot-*-part-*.png 2>/dev/null | grep -c . | tr -d ' ')\" ]"
+  check "E CONTROL · the record says how many screens were photographed" \
+    "[ \"\$(wq 'd[\"croppedScreens\"]')\" -ge 4 ]"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

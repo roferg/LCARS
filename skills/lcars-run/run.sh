@@ -18473,6 +18473,40 @@ _liveness_write() { # file stage startedAt lastOutputTs outputBytes state
   mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
+# WAIT OUT ONE POLL INTERVAL, OR THE WORKER'S EXIT — WHICHEVER COMES FIRST.
+#
+# THE DEFECT THIS EXISTS FOR (S224 fix round 2, measured). The hang guard's loop
+# slept the WHOLE poll interval (`sleep "$poll"`, 15s shipped) before it looked
+# at the worker again, so a worker that finished one moment after a tick was
+# STILL WAITED OUT for the rest of the interval. That is dead time every cold
+# worker spawn pays — every Research, Validate, Plan, Implement and Verify
+# worker in the harness. Measured on `lcars xo evaluate` with instant stub
+# workers: two spawns, 36.1s wall, of which 31.5s was this sleep running on
+# after both workers had already exited and written their files. It is what
+# broke B24c ("a hanging suite is killed at the bound, not waited out") when a
+# SECOND spawn — the criteria-free pass — was added to the look: the hung suite
+# was killed correctly at 2.1s in both cases; the look's clock was this.
+#
+# THE INTERVAL IS UNCHANGED for a worker that is still running: this returns
+# only when the full `secs` have elapsed by the WALL CLOCK, so the stagnation
+# arithmetic below (`stagnant + poll` once per interval) means exactly what it
+# meant before. What changed is that a DEAD worker stops the wait at once.
+#
+# Wall-clock-bounded rather than slice-counted on purpose: bash 3.2 has no
+# `wait -n`, and a system whose `sleep` refuses fractions would otherwise
+# silently lengthen the poll interval and with it the hang window.
+# Returns 0 when the interval elapsed or the worker is gone, 1 if `sleep`
+# itself failed (the caller breaks, exactly as it did on `sleep ... || break`).
+_wait_for_exit_or_poll() { # <pid> <secs>
+  local p="$1" secs="$2" end
+  end=$(( $(date +%s) + secs ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    sleep 0.5 2>/dev/null || sleep 1 2>/dev/null || return 1
+    pid_alive "$p" || return 0
+  done
+  return 0
+}
+
 # Run a cold-worker command HANG-GUARDED. Launches it as its OWN process-group
 # leader (perl POSIX::setsid + exec — REUSE the BUG-048 pattern in
 # run_with_watchdog), so the whole descendant tree can be group-killed. While it
@@ -18551,7 +18585,9 @@ run_worker_hang_guarded() { # outdir  cmd...
   fi
 
   while pid_alive "$cmd_pid"; do
-    sleep "$poll" 2>/dev/null || break
+    # ONE POLL INTERVAL, OR THE WORKER'S EXIT — whichever comes first. See
+    # _wait_for_exit_or_poll: the interval a LIVE worker gets is unchanged.
+    _wait_for_exit_or_poll "$cmd_pid" "$poll" || break
     pid_alive "$cmd_pid" || break
     local cpu sig
     cpu="$(_pgid_cpu_sum "$cmd_pid")"

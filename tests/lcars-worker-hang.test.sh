@@ -36,11 +36,13 @@ HG_LIB="$TMPROOT/hangguard.lib.sh"
 sed -n '/^pid_alive() {/,/^}/p'                 "$RUN_SH" >"$HG_LIB"
 sed -n '/^_pgid_cpu_sum() {/,/^}/p'             "$RUN_SH" >>"$HG_LIB"
 sed -n '/^_file_size_mtime() {/,/^}/p'          "$RUN_SH" >>"$HG_LIB"
+sed -n '/^_wait_for_exit_or_poll() {/,/^}/p'    "$RUN_SH" >>"$HG_LIB"
 sed -n '/^run_worker_hang_guarded() {/,/^}/p'   "$RUN_SH" >>"$HG_LIB"
 # shellcheck source=/dev/null
 . "$HG_LIB"
 
-for fn in pid_alive _pgid_cpu_sum _file_size_mtime run_worker_hang_guarded; do
+for fn in pid_alive _pgid_cpu_sum _file_size_mtime _wait_for_exit_or_poll \
+          run_worker_hang_guarded; do
   if ! type "$fn" >/dev/null 2>&1; then
     echo "FATAL: could not extract $fn from $RUN_SH" >&2
     exit 1
@@ -203,6 +205,58 @@ if [ "$rc" -eq 0 ]; then
   ok "F3. default-window idle+silent worker finishing quickly is NOT killed (rc 0)"
 else
   bad "F3. default-window quick worker rc (expected 0, got $rc)"
+fi
+
+# === G. A FINISHED WORKER IS NOT WAITED OUT (S224 fix round 2) ==============
+# THE DEFECT. The loop slept the WHOLE poll interval before looking at the
+# worker again, so a worker that exited a moment after a tick was still waited
+# out for the rest of it. At the shipped poll of 15s that is up to 15 seconds
+# of dead time on EVERY cold worker spawn in the harness. Measured on one
+# `lcars xo evaluate`: 36.1s wall for two spawns, 31.5s of it this sleep,
+# running on after both workers had exited and written their files — which is
+# what broke `B24c. a hanging suite is killed at the bound, not waited out`
+# the moment a second spawn (the criteria-free pass) joined the look. The hung
+# suite itself was killed correctly at 2.1s throughout.
+G_OUT="$TMPROOT/g"; mkdir -p "$G_OUT"
+GQ="$TMPROOT/gquick.sh"; printf '#!/usr/bin/env bash\nexit 0\n' >"$GQ"; chmod +x "$GQ"
+g0="$(date +%s)"
+( LCARS_WORKER_HANG_POLL=20 run_worker_hang_guarded "$G_OUT" "$GQ" )
+rc=$?
+g1="$(date +%s)"
+if [ "$rc" -eq 0 ] && [ "$(( g1 - g0 ))" -lt 5 ]; then
+  ok "G1. a worker that has already exited is not slept over (poll 20s, back in $(( g1 - g0 ))s)"
+else
+  bad "G1. a finished worker was waited out (rc=$rc, $(( g1 - g0 ))s of a 20s poll)"
+fi
+
+# THE CONTROL — the wait is still a WAIT. A worker that takes four seconds must
+# be waited FOR, and its real rc returned: an early return that fired while the
+# worker was alive would be a far worse bug than the one above.
+G2_OUT="$TMPROOT/g2"; mkdir -p "$G2_OUT"
+GS="$TMPROOT/gslow.sh"; printf '#!/usr/bin/env bash\nsleep 4\nexit 7\n' >"$GS"; chmod +x "$GS"
+h0="$(date +%s)"
+( unset LCARS_WORKER_HANG_SECS; LCARS_WORKER_HANG_POLL=20 \
+    run_worker_hang_guarded "$G2_OUT" "$GS" )
+rc=$?
+h1="$(date +%s)"
+if [ "$rc" -eq 7 ] && [ "$(( h1 - h0 ))" -ge 3 ] && [ "$(( h1 - h0 ))" -lt 12 ]; then
+  ok "G2. …but a working worker is still waited FOR, and its rc round-trips (7 after $(( h1 - h0 ))s)"
+else
+  bad "G2. slow worker (expected rc 7 in 3-12s, got rc=$rc in $(( h1 - h0 ))s)"
+fi
+
+# AND THE STAGNATION CLOCK STILL RUNS ON POLL INTERVALS. A quiet worker that
+# outlives the window is still killed — the early return must not be able to
+# keep resetting the timer by shortening the interval.
+G3_OUT="$TMPROOT/g3"; mkdir -p "$G3_OUT"
+GH="$TMPROOT/ghung.sh"; printf '#!/usr/bin/env bash\nsleep 60\n' >"$GH"; chmod +x "$GH"
+LCARS_WORKER_HANG_SECS=2 LCARS_WORKER_HANG_POLL=1 \
+  run_worker_hang_guarded "$G3_OUT" "$GH"
+rc=$?
+if [ "$rc" -eq 137 ]; then
+  ok "G3. …and a quiet worker past its window is still killed (137)"
+else
+  bad "G3. quiet worker past its window was not killed (rc=$rc)"
 fi
 
 # --- summary ----------------------------------------------------------------
