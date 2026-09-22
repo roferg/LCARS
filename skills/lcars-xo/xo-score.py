@@ -1452,6 +1452,31 @@ def main():
                     note = why
                     evidence = ""
                     quote = ""
+            elif evidence == "measurement" and status == "met":
+                # A MEASUREMENT MAY LOWER AN OUTCOME OR RAISE A FAULT, NEVER
+                # SETTLE A CRITERION. A measured box is a number read out of
+                # pairs.json — e.g. icon-bigger-than-its-control, which only
+                # sees an icon OVERFLOW its button and cannot notice one that is
+                # ABSENT. On a real run four rows — View, Cancel, Discard draft
+                # and Preview — closed `met` on a measurement alone, and Preview
+                # was a planted fault (a button with no icon at all) the ruler
+                # was blind to. So a `met` on a measurement does not stand; the
+                # row stays open and says why. A `gap` from a measurement is a
+                # legitimate fault and is left to stand (handled by falling
+                # through this chain).
+                notes.append("%s was rated met on a measured box, but a "
+                             "measurement cannot settle a criterion; recorded "
+                             "as not-checked" % cid)
+                # S216: the row's reason is rebuilt from its note when the
+                # outcome is overruled, so the note must say why.
+                note = ("the look called this met on a measured box, but a "
+                        "measurement can lower an outcome or raise a fault, "
+                        "never settle a criterion — a measurement cannot settle "
+                        "a criterion")
+                demoted.append((cid, status, quote))
+                status = "untested"
+                evidence = ""
+                quote = ""
             elif not shot:
                 notes.append("criterion %s was rated %s with no shot cited; recorded as "
                              "untested — a judgement with no picture behind it is not a "

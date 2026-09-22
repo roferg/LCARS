@@ -386,13 +386,34 @@ check "B8. …and the report's table has a column saying where each came from" \
 check "B8. …a picture reads as a picture in that column" \
   "grep -q 'a picture' '$BDIR/b1/report.md'"
 
-# --- B9. a MEASURED box is its own kind ------------------------------------
+# --- B9. a MEASURED box is its own kind — and CANNOT settle a criterion -----
+# A measurement is a number read out of pairs.json (e.g. icon-bigger-than-its-
+# control, which only sees an icon OVERFLOW its button — never an icon that is
+# ABSENT). So a measurement may LOWER an outcome or RAISE a fault, but must
+# NEVER satisfy one. Measured on a real run: four rows — View, Cancel, Discard
+# draft and Preview — closed `met` on a measurement alone, and Preview was a
+# planted fault (a button with NO icon at all) the ruler was blind to.
+
+# B9a. a MET on a measurement alone does NOT stand — it stays open and says so.
 score "$(ev met ',"evidence":"measurement","shot":"shot-02"')" \
       "$BDIR/tests-pass.json" "$BDIR/b9"
-check "B9. a judgement off the measured boxes records itself as a measurement" \
-  "[ \"\$(levidence '$BDIR/b9/verdict.json' t-4-ac1)\" = measurement ]"
-check "B9. …and it still needs the shot the boxes came from" \
-  "[ \"\$(lstatus '$BDIR/b9/verdict.json' t-4-ac1)\" = met ]"
+check "B9. a criterion MET on a measurement alone does NOT stand" \
+  "[ \"\$(lstatus '$BDIR/b9/verdict.json' t-4-ac1)\" = untested ]"
+check "B9. …and its ledger line no longer claims a measurement settled it" \
+  "[ \"\$(levidence '$BDIR/b9/verdict.json' t-4-ac1)\" = none ]"
+check "B9. …and it records that a measurement cannot settle a criterion" \
+  "grep -qi 'measurement cannot settle a criterion' '$BDIR/b9/verdict.json'"
+
+# B9b. a FAULT raised from a measurement is legitimate and MUST still stand.
+GAP_MEAS='{"title":"the Preview button has no icon","expected":"an icon on the Preview button","saw":"a bare button","evidence":"measurement","shots":["shot-02"],"kind":"contradiction","criterion":"t-4-ac1"}'
+score "$(ev gap ',"evidence":"measurement","shot":"shot-02","impact":"medium"' "$GAP_MEAS")" \
+      "$BDIR/tests-pass.json" "$BDIR/b9g"
+check "B9. …but a FAULT raised from a measurement still stands" \
+  "[ \"\$(lstatus '$BDIR/b9g/verdict.json' t-4-ac1)\" = gap ]"
+check "B9. …and that standing fault still names the measurement as its kind" \
+  "[ \"\$(levidence '$BDIR/b9g/verdict.json' t-4-ac1)\" = measurement ]"
+
+# B9c. a measurement with no shot behind it is not a judgement (unchanged).
 score "$(ev met ',"evidence":"measurement"')" "$BDIR/tests-pass.json" "$BDIR/b9b"
 check "B9. …a measurement with no shot behind it is not a judgement" \
   "[ \"\$(lstatus '$BDIR/b9b/verdict.json' t-4-ac1)\" = untested ]"
@@ -589,7 +610,7 @@ check "C3. an UNTESTED row does not claim the tests settled it either" \
    ! grep -q '| UNTESTED | your tests |' '$CDIR/c3b/report.md'"
 check "C3. CONTROL: a MET row still names the source that decided it" \
   "[ \"\$(levidence '$BDIR/b1/verdict.json' t-4-ac1)\" = tests ] &&
-   [ \"\$(levidence '$BDIR/b9/verdict.json' t-4-ac1)\" = measurement ]"
+   [ \"\$(levidence '$BDIR/b1/verdict.json' prd-1)\" = picture ]"
 
 # --- C4 (D4). A TALLY LINE CANNOT SETTLE ANYTHING ---------------------------
 # The guard cannot judge RELEVANCE — that is declared, and rests on the prompt,
