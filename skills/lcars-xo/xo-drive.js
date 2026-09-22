@@ -1124,9 +1124,18 @@ function modifierMask(mods) {
  * and, when nothing matched, the names that WERE on the screen — is returned
  * so the record can say why a step did not happen.
  */
-const ACT = (spec) => `(function () {
-  var spec = ${JSON.stringify(spec)};
+/* ── ONE COPY OF THE PAGE-SIDE VOCABULARY (S225) ────────────────────────────
+ * THREE expressions now run inside the page — act on a control, read what the
+ * screen SAID when it refused, and fill the fields that refusal named — and all
+ * three have to agree on what a field is, what a control is called, and what a
+ * value for a field looks like. Two copies of a payload is exactly how a `hold`
+ * ends up working in one path and silently not in the other (S221, measured, a
+ * few hundred lines down). So the vocabulary is written ONCE, here, and
+ * injected into each expression.
+ */
+const PAGE_LIB = `
   function norm(s) { return String(s == null ? "" : s).replace(/\\s+/g, " ").trim().toLowerCase(); }
+  function raw(s) { return String(s == null ? "" : s).replace(/\\s+/g, " ").trim(); }
   function nameOf(el) {
     var n = (el.getAttribute && el.getAttribute("aria-label")) || "";
     if (!n && el.tagName === "INPUT") n = el.getAttribute("placeholder") || el.value || "";
@@ -1141,12 +1150,84 @@ const ACT = (spec) => `(function () {
   }
   var TYPEABLE = 'input[type=text],input[type=search],input[type=email],input[type=number],input:not([type]),textarea,[contenteditable=true]';
   var CLICKABLE = 'button,a[href],[role=button],[role=tab],[role=link],input[type=submit],input[type=button],summary,[onclick]';
-  var typing = (spec.do === "type" || spec.do === "typeall");
-  var all = Array.prototype.slice.call(document.querySelectorAll(typing ? TYPEABLE : CLICKABLE));
-  var cands = all.filter(function (el) {
+  function visible(el) {
     var r = el.getBoundingClientRect(), s = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
-  });
+  }
+  function isEmpty(el) { return el.isContentEditable ? !norm(el.innerText) : !norm(el.value); }
+  /* WHAT THIS PARTICULAR BOX WILL ACTUALLY TAKE (S225 fix c).
+   *
+   * MEASURED ON THE CAPTAIN'S OWN APP: the whole-form fill assigned the SAME
+   * sentence to every empty field, and a browser silently coerces a non-numeric
+   * string assigned to an <input type=number> to "". The read-back check below
+   * then saw an empty box and recorded "could not fill" — so a number box was
+   * SELECTED by the selector and STRUCTURALLY unfillable, every single time, and
+   * the gate it fed could never be satisfied. A field gets a value that suits
+   * its own type, and a number box's value respects the min/max/step the page
+   * declared rather than a constant that might sit outside them.
+   */
+  function fieldValue(el, text0) {
+    var type = (el.tagName === "INPUT" ? (el.getAttribute("type") || "text") : "").toLowerCase();
+    var mode = (el.getAttribute && el.getAttribute("inputmode")) || "";
+    if (type === "email") return "number.one@example.com";
+    if (type !== "number" && mode !== "numeric" && mode !== "decimal") return text0;
+    var min = parseFloat(el.getAttribute("min"));
+    var max = parseFloat(el.getAttribute("max"));
+    var step = parseFloat(el.getAttribute("step"));
+    var v = 42;
+    if (!isNaN(min) && v < min) v = min;
+    if (!isNaN(max) && v > max) v = max;
+    if (!isNaN(step) && step > 0) {
+      var base = !isNaN(min) ? min : 0;
+      v = base + Math.round((v - base) / step) * step;
+      if (!isNaN(max) && v > max) v = v - Math.ceil((v - max) / step) * step;
+      if (!isNaN(min) && v < min) v = min;
+    }
+    if (!isFinite(v)) v = 42;
+    return String(Math.round(v * 1e6) / 1e6);
+  }
+  /* Assign through the PROTOTYPE setter so a framework's own change tracking
+   * sees it, then READ IT BACK: a browser drops a value a field will not take
+   * without a word of complaint, and the read-back is the only honest evidence
+   * anything landed at all. Returns what the field now holds. */
+  function setField(el, v) {
+    el.focus();
+    if (el.isContentEditable) { el.innerText = v; }
+    else {
+      var proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+                                            : window.HTMLInputElement.prototype;
+      var setter = Object.getOwnPropertyDescriptor(proto, "value");
+      if (setter && setter.set) setter.set.call(el, v); else el.value = v;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.isContentEditable ? norm(el.innerText) : norm(el.value);
+  }
+  /* The words a control carries ABOUT ITSELF when it will not be used: the
+   * tooltip, or whatever the page pointed at with aria-describedby. On a
+   * disabled control this is very often the only place the reason lives. */
+  function tipOf(el) {
+    var tip = raw((el.getAttribute && el.getAttribute("title")) || "");
+    if (!tip && el.getAttribute) {
+      var db = el.getAttribute("aria-describedby") || "";
+      var parts = [];
+      db.split(/\\s+/).forEach(function (idr) {
+        if (!idr) return;
+        var e = document.getElementById(idr);
+        if (e) parts.push(raw(e.innerText || e.textContent || ""));
+      });
+      tip = parts.filter(Boolean).join(" ");
+    }
+    return tip.slice(0, 200);
+  }
+`;
+
+const ACT = (spec) => `(function () {
+  var spec = ${JSON.stringify(spec)};
+  ${PAGE_LIB}
+  var typing = (spec.do === "type" || spec.do === "typeall");
+  var all = Array.prototype.slice.call(document.querySelectorAll(typing ? TYPEABLE : CLICKABLE));
+  var cands = all.filter(visible);
   var pats = (spec.match || []).map(norm).filter(Boolean);
   // FILL THE WHOLE FORM (fix round 1, D6). The declared journey names one or
   // two fields because that is all the DRAWING draws; the screen in front of
@@ -1155,28 +1236,21 @@ const ACT = (spec) => `(function () {
   // field on the screen and reports, by name, the ones it could not fill.
   if (spec.do === "typeall") {
     var text0 = String(spec.text == null ? "" : spec.text);
-    var filled = 0, names = [], leftNames = [];
+    var filled = 0, names = [], values = [], leftNames = [];
     cands.forEach(function (el) {
-      var cur = el.isContentEditable ? norm(el.innerText) : norm(el.value);
-      if (cur) return;
+      if (!isEmpty(el)) return;
       try {
-        el.focus();
-        if (el.isContentEditable) { el.innerText = text0; }
-        else {
-          var proto0 = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
-                                                 : window.HTMLInputElement.prototype;
-          var set0 = Object.getOwnPropertyDescriptor(proto0, "value");
-          if (set0 && set0.set) set0.set.call(el, text0); else el.value = text0;
-        }
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        var back = el.isContentEditable ? norm(el.innerText) : norm(el.value);
-        if (back) { filled += 1; names.push(nameOf(el)); }
+        // S225 fix c: the value suits THIS box, not every box. One string for
+        // all of them is how two KPI number inputs were "could not fill".
+        var want = fieldValue(el, text0);
+        var back = setField(el, want);
+        if (back) { filled += 1; names.push(nameOf(el)); values.push(want); }
         else { leftNames.push(nameOf(el)); }
       } catch (e) { leftNames.push(nameOf(el)); }
     });
     return JSON.stringify({ ok: true, filled: filled, left: leftNames.length,
-      names: names.slice(0, 30), leftNames: leftNames.slice(0, 30),
+      names: names.slice(0, 30), typedValues: values.slice(0, 30),
+      leftNames: leftNames.slice(0, 30),
       fieldsOnScreen: cands.length });
   }
   var best = null, bestScore = -1;
@@ -1226,27 +1300,156 @@ const ACT = (spec) => `(function () {
   if (spec.do === "type") {
     var text = String(spec.text == null ? "" : spec.text);
     try {
-      best.focus();
-      if (best.isContentEditable) { best.innerText = text; }
-      else {
-        var proto = best.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
-                                                : window.HTMLInputElement.prototype;
-        var setter = Object.getOwnPropertyDescriptor(proto, "value");
-        if (setter && setter.set) setter.set.call(best, text); else best.value = text;
-      }
-      best.dispatchEvent(new Event("input", { bubbles: true }));
-      best.dispatchEvent(new Event("change", { bubbles: true }));
-      found.typed = text;
-      found.readBack = best.isContentEditable ? norm(best.innerText) : norm(best.value);
+      var want1 = fieldValue(best, text);
+      found.typed = want1;
+      found.readBack = setField(best, want1);
     } catch (e) { found.ok = false; found.why = "could-not-type: " + e.message; }
+    // S225 fix a: a field that would not take the text usually says why. The
+    // browser's own validation message, then whatever the page put on the box.
+    if (!found.readBack) {
+      var vm1 = "";
+      try { vm1 = raw(best.validationMessage || ""); } catch (e2) {}
+      found.refusalText = vm1 || tipOf(best);
+    }
     return JSON.stringify(found);
   }
   // click. A control that refuses is NOT forced: "it refused" is the answer to
   // the question a gate step asks, and clicking it anyway would erase it.
-  if (disabled) { found.clicked = false; return JSON.stringify(found); }
+  // S225 fix a: and it is asked what it has to say for itself, because a
+  // disabled control's tooltip is very often the whole reason.
+  if (disabled) {
+    found.clicked = false;
+    var tip = tipOf(best);
+    if (tip) found.refusalText = tip;
+    return JSON.stringify(found);
+  }
   try { best.click(); found.clicked = true; }
   catch (e) { found.clicked = false; found.why = "could-not-click: " + e.message; }
   return JSON.stringify(found);
+})()`;
+
+/* ── WHAT THE SCREEN SAID WHEN IT REFUSED (S225 fix a) ──────────────────────
+ * A refusal used to be recorded as a bare word. `status: "refused"` was set in
+ * three places with NOTHING beside it about why, while the `unreachable` case
+ * one branch above always captured a reason — refused and unreachable are
+ * siblings in that code and only one of them talked. So the captain's row read
+ * "I did it and the screen was the same before and after … so I cannot say
+ * whether it worked", and nobody could tell a broken button from a form that
+ * was never made ready.
+ *
+ * This reads the refusal back off the screen, from the places a page DECLARES
+ * one rather than from any guess about English:
+ *
+ *   MARKED — the browser's own `validationMessage`, and any visible element the
+ *   page tagged as a message (role=alert/status, aria-live, an error/invalid/
+ *   warning class). These are the page's own declaration, not a classifier.
+ *   `hint` — short text that appeared on the screen since the action, passed in
+ *   from the driver. Not marked, so it never on its own decides that a refusal
+ *   happened; it only adds words to what the refusal SAID.
+ *
+ * And it names the fields the refusal points at, so the repair can do THAT and
+ * nothing else: a field the page marks required-and-empty or invalid, or an
+ * empty field whose own name shares a word with what the refusal said. Nothing
+ * is actionable because it merely exists — an empty box the refusal never
+ * mentioned is left exactly as it is.
+ */
+const REFUSAL = (hint) => `(function () {
+  ${PAGE_LIB}
+  var hint = ${JSON.stringify(String(hint == null ? "" : hint))};
+  var marked = [], seen = {};
+  function say(list, s) {
+    s = raw(s);
+    if (!s) return;
+    if (s.length > 240) s = s.slice(0, 240);
+    var k = s.toLowerCase();
+    if (seen[k]) return;
+    seen[k] = 1;
+    list.push(s);
+  }
+  var MSG = '[role=alert],[role=status],[role=alertdialog],[aria-live],.error,.errors,' +
+            '.invalid,.warning,.validation,.validation-message,.form-error,.field-error,' +
+            '.help-block,[data-error],[aria-invalid=true]';
+  Array.prototype.slice.call(document.querySelectorAll(MSG)).forEach(function (el) {
+    if (!visible(el)) return;
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return;
+    say(marked, el.innerText || el.textContent || "");
+  });
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(TYPEABLE + ",select"))
+                   .filter(visible);
+  boxes.forEach(function (el) {
+    var vm = "";
+    try { vm = raw(el.validationMessage || ""); } catch (e) {}
+    if (vm) say(marked, vm);
+  });
+  var said = marked.slice(0);
+  if (hint) say(said, hint);
+  var hay = norm(said.join(" "));
+  var STOP = { the:1, and:1, for:1, this:1, that:1, with:1, your:1, you:1, are:1, was:1,
+               not:1, but:1, its:1, has:1, have:1, add:1, enter:1, type:1, please:1,
+               field:1, fields:1, first:1, must:1, all:1, each:1, into:1, from:1,
+               here:1, more:1, some:1, any:1, one:1, before:1, need:1, needs:1,
+               required:1, missing:1, cannot:1, still:1, then:1, they:1, them:1 };
+  function stem(w) { return w.replace(/ies$/, "y").replace(/s$/, ""); }
+  function namedIn(nm) {
+    if (!hay) return false;
+    var ws = nm.split(/[^a-z0-9]+/).filter(function (w) { return w.length >= 4 && !STOP[w]; });
+    for (var i = 0; i < ws.length; i++) if (hay.indexOf(stem(ws[i])) >= 0) return true;
+    return false;
+  }
+  var fields = [];
+  Array.prototype.slice.call(document.querySelectorAll(TYPEABLE)).filter(visible)
+    .forEach(function (el) {
+      if (!isEmpty(el) || fields.length >= 12) return;
+      var nm = nameOf(el);
+      var vm = "";
+      try { vm = raw(el.validationMessage || ""); } catch (e) {}
+      var required = !!el.required || el.getAttribute("aria-required") === "true";
+      var invalid = el.getAttribute("aria-invalid") === "true" || !!vm;
+      var why = required ? "the screen marks it required and it is empty"
+              : invalid ? "the screen marks it invalid"
+              : namedIn(nm) ? "the refusal names it"
+              : null;
+      if (!why) return;
+      fields.push({ name: nm, id: el.id || null, why: why, message: vm,
+                    kind: el.tagName === "INPUT"
+                            ? (el.getAttribute("type") || "text").toLowerCase()
+                            : el.tagName.toLowerCase() });
+    });
+  return JSON.stringify({ marked: marked.slice(0, 6), said: said.slice(0, 6),
+                          text: said.slice(0, 6).join(" "), fields: fields });
+})()`;
+
+/* ── DO EXACTLY WHAT IT NAMED, AND NOTHING ELSE (S225 fix b) ────────────────
+ * Fill the fields the refusal pointed at, each with a value its own box will
+ * take, and say by name what went in and what would not. It is handed the list
+ * REFUSAL produced — it never looks for work of its own — and a field somebody
+ * has filled in the meantime is left alone.
+ */
+const FILL_FIELDS = (targets, text) => `(function () {
+  ${PAGE_LIB}
+  var targets = ${JSON.stringify(targets)};
+  var text0 = ${JSON.stringify(String(text == null ? "" : text))};
+  var all = Array.prototype.slice.call(document.querySelectorAll(TYPEABLE)).filter(visible);
+  var filled = [], left = [];
+  targets.forEach(function (t) {
+    var el = null;
+    if (t.id) { try { el = document.getElementById(t.id); } catch (e) { el = null; } }
+    if (el && all.indexOf(el) < 0) el = null;
+    if (!el) {
+      for (var i = 0; i < all.length; i++) {
+        if (nameOf(all[i]) === norm(t.name)) { el = all[i]; break; }
+      }
+    }
+    if (!el) { left.push(String(t.name || "(a field)")); return; }
+    if (!isEmpty(el)) return;
+    try {
+      var want = fieldValue(el, text0);
+      var back = setField(el, want);
+      if (back) filled.push({ name: nameOf(el), value: want, why: t.why || null });
+      else left.push(nameOf(el));
+    } catch (e) { left.push(nameOf(el)); }
+  });
+  return JSON.stringify({ ok: true, filled: filled, left: left });
 })()`;
 
 const FOCUS = (sel) => `(function () {
@@ -1633,6 +1836,107 @@ const FOCUS = (sel) => `(function () {
         || a.mean.r !== b.mean.r || a.mean.g !== b.mean.g || a.mean.b !== b.mean.b;
   }
 
+  /* ── ONE PLACE THAT TAKES A STEP, AND ONE THAT SCORES IT (S225) ────────────
+   * A step can now be tried TWICE — once, and once more after the screen's own
+   * refusal has been answered — and a second copy of "ask the browser to do the
+   * thing" is how the two attempts end up being subtly different actions. So
+   * both the doing and the scoring are lifted out of the loop and shared.
+   */
+  async function actOnStep(rec, step) {
+    const r = await send("Runtime.evaluate",
+      { expression: ACT({ do: rec.do === "gate" ? "click"
+                            : rec.do === "type-all" ? "typeall" : rec.do,
+                          match: rec.match, text: step.text }), returnByValue: true }, S);
+    let res = (r && r.result && typeof r.result.value === "string") ? JSON.parse(r.result.value) : null;
+    if ((!res || res.ok === false) && rec.do === "type") {
+      // A FIELD IS A FIELD. The record names it by what the DRAWING put in
+      // it ("gh/gh remains the long pole…") and the build labels it by what
+      // it asks for ("Add an insight for this KPI…"). A person fills the
+      // empty box in front of them, so when the named one is not there the
+      // first empty field is typed into and the record says which.
+      const r2 = await send("Runtime.evaluate",
+        { expression: ACT({ do: "type", match: [], text: step.text }), returnByValue: true }, S);
+      const alt = (r2 && r2.result && typeof r2.result.value === "string") ? JSON.parse(r2.result.value) : null;
+      if (alt && alt.ok) { res = alt; rec.byFallback = "the first empty field on the screen"; }
+    }
+    return res;
+  }
+
+  /* What the result MEANS for this step, and what it adds to the tally of what
+   * the look actually did. Called once per attempt: an attempt that clicked is
+   * a click that happened, whether or not it was the first. */
+  function scoreStep(rec, res, step) {
+    rec.matched = res.name || null;
+    rec.disabled = !!res.disabled;
+    if (res.refusalText) rec.saidByTheControl = String(res.refusalText);
+    if (rec.do === "type-all") {
+      /* D6: every field the screen still wants, and by NAME the ones it
+       * would not take. "I filled 2 of 19" is the honest number; "9 of 9
+       * steps taken" over a form that was never filled is not. */
+      rec.typed = String(step.text || "");
+      rec.filled = Number(res.filled || 0);
+      rec.fieldsOnScreen = Number(res.fieldsOnScreen || 0);
+      rec.filledNames = res.names || [];
+      rec.typedValues = res.typedValues || [];
+      rec.couldNotFill = res.leftNames || [];
+      rec.status = rec.filled > 0 ? "done" : "refused";
+      if (rec.couldNotFill.length) {
+        rec.why = "I could not fill " + rec.couldNotFill.length + " field(s): " +
+                  rec.couldNotFill.slice(0, 6).join(", ");
+        notes.push("on \"" + rec.name + "\" I filled " + rec.filled +
+                   " field(s) and could not fill " + rec.couldNotFill.length + ": " +
+                   rec.couldNotFill.slice(0, 6).join(", "));
+      }
+      walk.moves.typings += rec.filled;
+      for (let k = 0; k < rec.filledNames.length; k++) {
+        walk.actions.push({ type: rec.filledNames[k],
+                            text: rec.typedValues[k] === undefined ? rec.typed : rec.typedValues[k] });
+      }
+    } else if (rec.do === "type") {
+      rec.typed = res.typed || "";
+      rec.readBack = res.readBack || "";
+      rec.status = res.readBack ? "done" : "refused";
+      walk.moves.typings += 1;
+      walk.actions.push({ type: rec.matched || "(the field)", text: rec.typed });
+    } else if (rec.do === "press") {
+      // A PRESS HAS NOTHING TO CLICK (S221 fix 7). Falling through to the
+      // click branch made every key press "refused" — res.clicked is
+      // undefined because no element was ever looked for — and a step the
+      // record asked for, that the build answered, read as one the build
+      // turned down. It is done; whether it CHANGED anything is decided by
+      // the picture pair below, which is the honest question here.
+      rec.status = "done";
+    } else {
+      rec.clicked = !!res.clicked;
+      rec.status = res.clicked ? "done" : "refused";
+      if (res.clicked) {
+        walk.moves.clicks += 1;
+        walk.actions.push({ click: rec.matched || (rec.match[0] || "(a control)") });
+      }
+    }
+  }
+
+  /* THE WORDS THAT ARE NEW ON THE SCREEN. A validation message is very often
+   * the only thing that changed, and it is short and on the same address. Long
+   * new text, or a new address, is a page the step went THROUGH to — not a
+   * sentence it was refused with — so neither counts here. */
+  function newOnScreen(before, after, sameUrl) {
+    if (!sameUrl) return "";
+    const a = String(after || ""), b = String(before || "");
+    if (!a || a === b) return "";
+    const fresh = a.split(/(?<=[.!?:;])\s+/)
+                   .map((s) => s.trim())
+                   .filter((s) => s.length > 2 && b.indexOf(s) < 0);
+    const text = fresh.join(" ");
+    return text.length > 240 ? "" : text;
+  }
+
+  /* The text a repair puts in a field the refusal named. The journey's own
+   * words when it has any — the same sentence the whole-form fill uses, so a
+   * reader sees one voice in the boxes — and a plain one otherwise. */
+  const REPAIR_TEXT = String((journey.filter((s) => s && s.text)[0] || {}).text ||
+                             "Number One filled this because the screen asked for it");
+
   async function walkTheJourney() {
     if (!journey.length) return;
     await findTheWayIn(journey[0]);
@@ -1708,24 +2012,7 @@ const FOCUS = (sel) => `(function () {
         }
       }
       try {
-        if (rec.do !== "press") {
-        const r = await send("Runtime.evaluate",
-          { expression: ACT({ do: rec.do === "gate" ? "click"
-                                : rec.do === "type-all" ? "typeall" : rec.do,
-                              match: rec.match, text: step.text }), returnByValue: true }, S);
-        res = (r && r.result && typeof r.result.value === "string") ? JSON.parse(r.result.value) : null;
-        if ((!res || res.ok === false) && rec.do === "type") {
-          // A FIELD IS A FIELD. The record names it by what the DRAWING put in
-          // it ("gh/gh remains the long pole…") and the build labels it by what
-          // it asks for ("Add an insight for this KPI…"). A person fills the
-          // empty box in front of them, so when the named one is not there the
-          // first empty field is typed into and the record says which.
-          const r2 = await send("Runtime.evaluate",
-            { expression: ACT({ do: "type", match: [], text: step.text }), returnByValue: true }, S);
-          const alt = (r2 && r2.result && typeof r2.result.value === "string") ? JSON.parse(r2.result.value) : null;
-          if (alt && alt.ok) { res = alt; rec.byFallback = "the first empty field on the screen"; }
-        }
-        }
+        if (rec.do !== "press") res = await actOnStep(rec, step);
       } catch (e) { rec.status = "unreachable"; rec.why = e.message; }
       if (!res || res.ok === false) {
         rec.status = "unreachable";
@@ -1738,49 +2025,7 @@ const FOCUS = (sel) => `(function () {
         incomplete = true;
         continue;
       }
-      rec.matched = res.name || null;
-      rec.disabled = !!res.disabled;
-      if (rec.do === "type-all") {
-        /* D6: every field the screen still wants, and by NAME the ones it
-         * would not take. "I filled 2 of 19" is the honest number; "9 of 9
-         * steps taken" over a form that was never filled is not. */
-        rec.typed = String(step.text || "");
-        rec.filled = Number(res.filled || 0);
-        rec.fieldsOnScreen = Number(res.fieldsOnScreen || 0);
-        rec.filledNames = res.names || [];
-        rec.couldNotFill = res.leftNames || [];
-        rec.status = rec.filled > 0 ? "done" : "refused";
-        if (rec.couldNotFill.length) {
-          rec.why = "I could not fill " + rec.couldNotFill.length + " field(s): " +
-                    rec.couldNotFill.slice(0, 6).join(", ");
-          notes.push("on \"" + rec.name + "\" I filled " + rec.filled +
-                     " field(s) and could not fill " + rec.couldNotFill.length + ": " +
-                     rec.couldNotFill.slice(0, 6).join(", "));
-        }
-        walk.moves.typings += rec.filled;
-        for (const nm of rec.filledNames) walk.actions.push({ type: nm, text: rec.typed });
-      } else if (rec.do === "type") {
-        rec.typed = res.typed || "";
-        rec.readBack = res.readBack || "";
-        rec.status = res.readBack ? "done" : "refused";
-        walk.moves.typings += 1;
-        walk.actions.push({ type: rec.matched || "(the field)", text: rec.typed });
-      } else if (rec.do === "press") {
-        // A PRESS HAS NOTHING TO CLICK (S221 fix 7). Falling through to the
-        // click branch made every key press "refused" — res.clicked is
-        // undefined because no element was ever looked for — and a step the
-        // record asked for, that the build answered, read as one the build
-        // turned down. It is done; whether it CHANGED anything is decided by
-        // the picture pair below, which is the honest question here.
-        rec.status = "done";
-      } else {
-        rec.clicked = !!res.clicked;
-        rec.status = res.clicked ? "done" : "refused";
-        if (res.clicked) {
-          walk.moves.clicks += 1;
-          walk.actions.push({ click: rec.matched || (rec.match[0] || "(a control)") });
-        }
-      }
+      scoreStep(rec, res, step);
       await sleep(600);
       let after = null;
       try { after = await settle(); } catch (_) {}
@@ -1790,6 +2035,153 @@ const FOCUS = (sel) => `(function () {
       rec.urlAfter = url;
       rec.textAfter = excerpt(after);
       rec.changed = rec.urlAfter !== rec.urlBefore || rec.textAfter !== rec.textBefore;
+
+      /* ── A REFUSAL CARRIES ITS TEXT, AND IS ANSWERED ONCE (S225) ────────────
+       * THE ROW THIS COST HIM. He clicked "Lock month" in his own app, read the
+       * refusal, saw it wanted three missing insights, said "I can do that
+       * easily", filled them, and locked it. This walked the same screen, filled
+       * one field of three, clicked Lock month regardless, and wrote: "I did it
+       * and the screen was the same before and after — same address, same words
+       * — so I cannot say whether it worked." It could not tell a broken button
+       * from a form it never got ready.
+       *
+       * So a step that meets a refusal now does what he did: read what the
+       * screen said, do ONLY what that refusal named, and try the original
+       * action ONE more time. Through on the retry and the step passes with the
+       * repair on its record; refused again and it is a genuine fault with two
+       * attempts behind it — never a shrug.
+       *
+       * WHY IT CANNOT WANDER. The only work it will do is work the product
+       * itself asked for: a field the page marks required-and-empty or invalid,
+       * or an empty field whose own name is in the words the refusal used. A
+       * refusal that names nothing actionable is simply a refusal with its text
+       * captured — there is no guessing branch. It never fires on a step that
+       * went somewhere (the address must be unchanged), never fires twice, and
+       * never fires on the gate's BLANK phase, where a refusal is the answer the
+       * journey wanted.
+       */
+      /* WHICH STEPS CAN EVEN BE REFUSED. A `type` or `type-all` that came back
+       * done DID fill its boxes — the read-back is the evidence — and the page's
+       * words do not change when a textarea does, so "nothing changed" says
+       * nothing about it. Only a step that was refused outright, or a click on a
+       * control that was supposed to move the screen, is asked this question. */
+      const actedOnControl = rec.do === "click" || rec.do === "gate";
+      if (rec.do !== "press" && rec.status !== "unreachable" &&
+          (rec.status === "refused" || actedOnControl)) {
+        const blankGate = rec.do === "gate" && rec.phase === "blank";
+        const sameUrl = rec.urlAfter === rec.urlBefore;
+        const hint = newOnScreen(rec.textBefore, rec.textAfter, sameUrl);
+        let said = null;
+        try {
+          const rr = await send("Runtime.evaluate",
+            { expression: REFUSAL(hint), returnByValue: true }, S);
+          said = (rr && rr.result && typeof rr.result.value === "string")
+            ? JSON.parse(rr.result.value) : null;
+        } catch (_) { said = null; }
+        const marked = (said && said.marked) || [];
+        // A message that was ALREADY on the screen before the step is the
+        // page's furniture, not this step's answer. Only a fresh one decides
+        // that a step which otherwise moved the screen was refused.
+        const freshMarked = marked.filter((m) => (rec.textBefore || "").indexOf(m) < 0);
+        const fromControl = rec.saidByTheControl ? [rec.saidByTheControl] : [];
+        const metRefusal = rec.status === "refused" || !rec.changed ||
+                           freshMarked.length > 0 || blankGate;
+        if (metRefusal) {
+          const words = fromControl.concat((said && said.said) || []).filter(Boolean);
+          const text = words.join(" ").trim().slice(0, 400);
+          if (text || (said && said.fields && said.fields.length)) {
+            rec.refusal = { text: text, said: words.slice(0, 6),
+                            asks: ((said && said.fields) || []).map((f) => f.name) };
+          } else {
+            // It refused and told us nothing. That is itself worth saying, and
+            // the screen's own words are the next best evidence a reader has.
+            rec.refusal = { text: "", said: [],
+                            screenReads: String(rec.textAfter || "").slice(0, 300) };
+          }
+        }
+        const asks = (metRefusal && !blankGate && sameUrl && said) ? (said.fields || []) : [];
+        if (asks.length) {
+          let fres = null;
+          try {
+            const fr = await send("Runtime.evaluate",
+              { expression: FILL_FIELDS(asks.map((a) => ({ id: a.id, name: a.name, why: a.why })),
+                                        REPAIR_TEXT), returnByValue: true }, S);
+            fres = (fr && fr.result && typeof fr.result.value === "string")
+              ? JSON.parse(fr.result.value) : null;
+          } catch (_) { fres = null; }
+          rec.repair = { becauseItSaid: (rec.refusal && rec.refusal.text) || "",
+                         asked: asks.map((a) => a.name + " — " + a.why),
+                         filled: (fres && fres.filled) || [],
+                         couldNotFill: (fres && fres.left) || [] };
+          if (rec.repair.filled.length) {
+            walk.moves.typings += rec.repair.filled.length;
+            for (const f of rec.repair.filled) {
+              walk.actions.push({ type: f.name, text: f.value,
+                                  because: "the screen refused and named this field" });
+            }
+            /* The state the retry is judged against is the state right HERE —
+             * after the repair, before the second attempt. Comparing back to
+             * before the first attempt would score the refusal message itself
+             * as "the screen moved", and a build that refuses twice would read
+             * as one that went through. */
+            let mid = null;
+            try { mid = await readout(); } catch (_) {}
+            const urlMid = (mid && mid.url) || currentUrl;
+            const textMid = excerpt(mid);
+            rec.attempts = 2;
+            let res2 = null;
+            try { res2 = await actOnStep(rec, step); } catch (e) { res2 = null; }
+            if (res2 && res2.ok !== false) scoreStep(rec, res2, step);
+            await sleep(600);
+            let after2 = null;
+            try { after2 = await settle(); } catch (_) {}
+            if (!after2) { try { after2 = await readout(); } catch (_) {} }
+            currentUrl = rec.urlAfter = (after2 && after2.url) || currentUrl;
+            rec.textAfter = excerpt(after2);
+            rec.changed = rec.urlAfter !== rec.urlBefore || rec.textAfter !== rec.textBefore;
+            const wentThrough = rec.status === "done" &&
+                                (rec.urlAfter !== urlMid || rec.textAfter !== textMid);
+            const names = rec.repair.filled.map((f) => f.name).join(", ");
+            if (wentThrough) {
+              rec.repaired = true;
+              rec.changeEvidence = "refused, repaired, then through";
+              delete rec.couldNotCheck;
+              rec.why = "It refused" +
+                        (rec.repair.becauseItSaid ? " and said: \"" + rec.repair.becauseItSaid + "\"" : "") +
+                        ". I did exactly what it named — filled " + names +
+                        " — tried the same thing again, and that time it went through.";
+              notes.push("the journey step \"" + rec.name + "\" was refused, and the screen said " +
+                         "what it wanted (" + (rec.repair.becauseItSaid || "nothing in words") +
+                         "). I filled " + names + " and tried again, and it went through — so " +
+                         "this step is taken, on the second attempt, not the first.");
+            } else {
+              rec.status = "refused";
+              rec.refusedTwice = true;
+              delete rec.couldNotCheck;
+              rec.why = "It refused" +
+                        (rec.repair.becauseItSaid ? " and said: \"" + rec.repair.becauseItSaid + "\"" : "") +
+                        ". I did exactly what it named — filled " + names +
+                        " — and tried again, and it refused a second time. This is the build, " +
+                        "not a form I failed to get ready.";
+              /* NOT `incomplete`. A look that asked twice and was turned down
+               * twice is a COMPLETE look reporting a fault in the build; only
+               * the harness failing to ask is an incomplete one. */
+              notes.push("the journey step \"" + rec.name + "\" refused TWICE: it said what it " +
+                         "wanted, I filled " + names + ", and it still would not go through.");
+            }
+          }
+        }
+        /* THE WHOLE POINT OF (a), on its own. A refusal that was never repaired
+         * — because it named nothing anyone could act on — still says what it
+         * told us, in the record, beside whatever else this step had to say. */
+        if (rec.status === "refused" && !rec.repaired && !rec.refusedTwice &&
+            rec.refusal && rec.refusal.text) {
+          rec.why = (rec.why ? rec.why + " " : "") +
+                    "It refused, and this is what it told me: \"" + rec.refusal.text + "\".";
+          notes.push("the journey step \"" + rec.name + "\" refused, and said: \"" +
+                     rec.refusal.text + "\"");
+        }
+      }
       /* A STEP THAT CHANGED NOTHING WAS NOT TAKEN (fix round 1, D6). On
        * 2026-09-19 the blank gate and the filled gate came back BYTE-IDENTICAL
        * — same address, same text, `changed:false` on both — and the record
@@ -1811,15 +2203,31 @@ const FOCUS = (sel) => `(function () {
        * harness must not tell its own reader two opposite things about the one
        * fact this round exists to establish. So a press step is skipped here
        * and says its piece once, below, whichever way it goes. */
-      if (rec.status === "done" && !rec.changed && rec.do !== "press" &&
+      /* A FOURTH EXCEPTION, and it is the point of S225: a step that was
+       * REPAIRED and then went through is not a step that changed nothing, and
+       * it must never end up wearing this sentence. And when the screen DID say
+       * something on its way to refusing, that sentence is no longer true
+       * either — "I cannot say whether it worked" is the wrong answer when the
+       * screen told us exactly what it wanted. The status is unchanged (nothing
+       * moved, so nothing is proven); the WORDS carry what was learnt. */
+      if (rec.status === "done" && !rec.changed && !rec.repaired && rec.do !== "press" &&
           rec.do !== "type" && rec.do !== "type-all" &&
           !(rec.do === "gate" && rec.phase === "blank")) {
         rec.status = "no-change";
         rec.couldNotCheck = "nothing changed";
-        rec.why = "I did it and the screen was the same before and after — same address, " +
-                  "same words — so I cannot say whether it worked";
-        notes.push("the journey step \"" + rec.name + "\" changed nothing at all, so it is " +
-                   "couldn't-check, not taken");
+        const heard = rec.refusal && rec.refusal.text;
+        rec.why = heard
+          ? "I did it and the screen's address and words were the same before and after — " +
+            "but it did not go silent: it said \"" + heard + "\". So it refused; it did not " +
+            "simply fail to answer."
+          : "I did it and the screen was the same before and after — same address, " +
+            "same words — so I cannot say whether it worked";
+        notes.push(heard
+          ? "the journey step \"" + rec.name + "\" changed nothing on the screen, and the " +
+            "screen said \"" + heard + "\" — so it REFUSED, which is a different thing from " +
+            "a control that did nothing"
+          : "the journey step \"" + rec.name + "\" changed nothing at all, so it is " +
+            "couldn't-check, not taken");
       }
       rec.shot = PREFIX + "-walk-" + String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-");
       let pxAfter = null;

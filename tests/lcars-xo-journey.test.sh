@@ -396,6 +396,212 @@ done=[x for x in w[\"steps\"] if x[\"status\"]==\"done\"]
 sys.exit(0 if len(done)==1 and done[0][\"key\"]==\"d2\" and w[\"moves\"][\"typings\"]==3 else 1)' '$TMPROOT/walk4.json'"
 
 # ===========================================================================
+# F5 (S225). A REFUSAL IS A SENTENCE, NOT A SILENCE — and it is answered once.
+#
+# THE ROW THIS COST HIM, in his own words. He clicked "Lock month" in his app,
+# read the refusal, saw it wanted three missing insights, said "I can do that
+# easily", filled them, and locked it. Number One ran a fixed script instead: a
+# `type-all` that filled ONE field and gave up on two KPI value boxes, then
+# clicked Lock month regardless. The app correctly refused, nothing changed, and
+# the record said:
+#
+#   "I did it and the screen was the same before and after — same address,
+#    same words — so I cannot say whether it worked."
+#
+# It could not tell "the button is broken" from "I never got the form ready".
+# Three faults, all of them the LOOK's, and one fixture per fault:
+#
+#   (a) `status: "refused"` was set in three places with NOTHING recorded about
+#       why — while the `unreachable` case one branch above always captured a
+#       reason. Refused and unreachable are siblings; only one of them talked.
+#   (b) There was no retry anywhere in the driver. A person reads the refusal,
+#       does what it names, and tries again. This does exactly that and no more:
+#       ONLY the fields the product's own refusal named, and ONE more attempt.
+#   (c) `type-all` assigned the SAME string to every empty field, so a browser
+#       silently coerced it to "" in every `input[type=number]` and the read-back
+#       check recorded "could not fill". Number boxes were selected and then
+#       structurally unfillable.
+#
+# REAL HEADLESS CHROME against real local pages, as the rest of F2 is: the layer
+# under test IS the browser driver and a stub of it would prove nothing.
+# ===========================================================================
+echo
+echo "F5. a refusal carries its text, is answered once, and number boxes fill"
+
+# --- FIXTURE A: the captain's month lock, reproduced -----------------------
+# A gate that names EXACTLY what it is missing, two of the three fields being
+# number boxes, and a message the page marks as a message (role=alert) the way
+# a real form does.
+LOCK="$TMPROOT/lock"; mkdir -p "$LOCK"
+cat >"$LOCK/index.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Month lock</title>
+<body style="font-family:sans-serif">
+<h1>September readings</h1>
+<div id="msg" role="alert"></div>
+<textarea id="i1" placeholder="Add an insight for this KPI"></textarea>
+<input id="v1" type="number" placeholder="Insight value">
+<input id="v2" type="number" placeholder="Target value">
+<button id="lock">Lock month</button>
+<p id="out"></p>
+<script>
+  lock.onclick = function () {
+    var miss = [];
+    if (!i1.value.trim()) miss.push("an insight");
+    if (!v1.value) miss.push("an insight value");
+    if (!v2.value) miss.push("a target value");
+    if (miss.length) {
+      msg.textContent = "Add " + miss.join(", ") + " before locking the month.";
+      return;
+    }
+    msg.textContent = "";
+    out.textContent = "September is locked.";
+  };
+</script>
+HTML
+
+# --- (c) the whole-form fill must actually fill a number box ---------------
+cat >"$TMPROOT/lockfill.json" <<'JSON'
+{"steps":[
+ {"key":"f1","do":"type-all","match":[],"text":"Number One typed this to see it carry",
+  "name":"fill every field this screen still wants",
+  "expect":"no empty field is left before the gate is tried"},
+ {"key":"f2","do":"gate","phase":"filled","match":["Lock month"],
+  "name":"click \"Lock month\" with the form filled","expect":"the month locks"}]}
+JSON
+"$NODE" "$DRIVER" --url "file://$LOCK/index.html" --out "$TMPROOT/shots5" \
+  --journey "$TMPROOT/lockfill.json" --walk-out "$TMPROOT/walk5.json" --prefix n \
+  >/dev/null 2>&1
+check "F5-1 (c) the whole-form fill fills the NUMBER boxes too — nothing left behind" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=[x for x in w[\"steps\"] if x[\"key\"]==\"f1\"][0]
+sys.exit(0 if s[\"filled\"]==3 and s[\"fieldsOnScreen\"]==3 and not s.get(\"couldNotFill\") else 1)' '$TMPROOT/walk5.json'"
+check "F5-2 (c) …with a value the box will TAKE, and the record says which value went where" \
+  "\"\$PY\" -c 'import json,sys,re
+w=json.load(open(sys.argv[1]))
+s=[x for x in w[\"steps\"] if x[\"key\"]==\"f1\"][0]
+vals=dict(zip(s.get(\"filledNames\") or [], s.get(\"typedValues\") or []))
+nums=[v for k,v in vals.items() if \"value\" in k]
+sys.exit(0 if len(nums)==2 and all(re.match(r\"^-?[0-9.]+$\", str(v)) for v in nums) else 1)' '$TMPROOT/walk5.json'"
+check "F5-3 (c) …and the gate the form feeds then goes THROUGH — the proof it is really filled" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=[x for x in w[\"steps\"] if x[\"key\"]==\"f2\"][0]
+sys.exit(0 if s[\"status\"]==\"done\" and s[\"changed\"] and \"locked\" in (s.get(\"textAfter\") or \"\").lower() else 1)' '$TMPROOT/walk5.json'"
+
+# --- (a)+(b) the gate alone: it refuses, it SAYS why, and it is answered ----
+cat >"$TMPROOT/lockgate.json" <<'JSON'
+{"steps":[
+ {"key":"g1","do":"gate","phase":"filled","match":["Lock month"],
+  "name":"click \"Lock month\"","expect":"the month locks"}]}
+JSON
+"$NODE" "$DRIVER" --url "file://$LOCK/index.html" --out "$TMPROOT/shots6" \
+  --journey "$TMPROOT/lockgate.json" --walk-out "$TMPROOT/walk6.json" --prefix r \
+  >/dev/null 2>&1
+check "F5-4 (a) the refusal is RECORDED, in the screen's own words" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=w[\"steps\"][0]
+t=(s.get(\"refusal\") or {}).get(\"text\") or \"\"
+sys.exit(0 if \"before locking the month\" in t.lower() else 1)' '$TMPROOT/walk6.json'"
+check "F5-5 (b) it did ONLY what the refusal named — those three fields, by name" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=w[\"steps\"][0]
+r=s.get(\"repair\") or {}
+got=sorted(f[\"name\"] for f in (r.get(\"filled\") or []))
+sys.exit(0 if len(got)==3 and not r.get(\"couldNotFill\") else 1)' '$TMPROOT/walk6.json'"
+check "F5-6 (b) …then tried the SAME action once more, and it went through" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=w[\"steps\"][0]
+sys.exit(0 if s[\"status\"]==\"done\" and s.get(\"repaired\") is True and s.get(\"attempts\")==2 else 1)' '$TMPROOT/walk6.json'"
+check "F5-7 (b) …and a repaired pass never wears the \"I cannot say whether it worked\" sentence" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=w[\"steps\"][0]
+why=(s.get(\"why\") or \"\").lower()
+sys.exit(0 if s[\"status\"]!=\"no-change\" and \"cannot say whether it worked\" not in why
+         and not s.get(\"couldNotCheck\") else 1)' '$TMPROOT/walk6.json'"
+check "F5-8 a reader can tell a REPAIRED pass from a first-try pass" \
+  "\"\$PY\" -c 'import json,sys
+one=json.load(open(sys.argv[1]))[\"steps\"][0]
+two=[x for x in json.load(open(sys.argv[2]))[\"steps\"] if x[\"key\"]==\"f2\"][0]
+sys.exit(0 if one.get(\"repaired\") and not two.get(\"repaired\")
+         and two.get(\"attempts\") in (None,1) else 1)' '$TMPROOT/walk6.json' '$TMPROOT/walk5.json'"
+
+# --- FIXTURE B: a control that refuses and names nothing actionable --------
+# A disabled button with a tooltip. It is one of the three sites that set
+# "refused" with nothing recorded, and there is not a single field on the page,
+# so it is ALSO the narrowness guard: with nothing named, nothing is invented.
+SHUT="$TMPROOT/shut"; mkdir -p "$SHUT"
+cat >"$SHUT/index.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Closed month</title>
+<body style="font-family:sans-serif">
+<h1>August readings</h1>
+<button id="lock" disabled title="This month is closed — reopen it before locking">Lock month</button>
+</body>
+HTML
+cat >"$TMPROOT/shutjourney.json" <<'JSON'
+{"steps":[{"key":"s1","do":"click","match":["Lock month"],
+  "name":"click \"Lock month\"","expect":"the month locks"}]}
+JSON
+"$NODE" "$DRIVER" --url "file://$SHUT/index.html" --out "$TMPROOT/shots7" \
+  --journey "$TMPROOT/shutjourney.json" --walk-out "$TMPROOT/walk7.json" --prefix s \
+  >/dev/null 2>&1
+check "F5-9 (a) a control that refuses carries what it told me — the tooltip, not a silence" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=w[\"steps\"][0]
+t=((s.get(\"refusal\") or {}).get(\"text\") or \"\") + \" \" + (s.get(\"why\") or \"\")
+sys.exit(0 if s[\"status\"]==\"refused\" and \"reopen it before locking\" in t.lower() else 1)' '$TMPROOT/walk7.json'"
+check "F5-10 (b) a refusal that names nothing actionable invents NOTHING — no fill, no retry" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=w[\"steps\"][0]
+sys.exit(0 if not s.get(\"repair\") and s.get(\"attempts\") in (None,1)
+         and w[\"moves\"][\"typings\"]==0 and w[\"moves\"][\"clicks\"]==0 else 1)' '$TMPROOT/walk7.json'"
+
+# --- FIXTURE C: it refuses, we do what it asked, and it refuses again ------
+# The genuine fault. It must read as a fault with TWO attempts behind it, never
+# as a couldn't-check and never as the look's own failure to fill the form.
+STUCK="$TMPROOT/stuck"; mkdir -p "$STUCK"
+cat >"$STUCK/index.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Vault</title>
+<body style="font-family:sans-serif">
+<h1>Vault</h1>
+<div id="msg" role="alert"></div>
+<input id="code" type="number" placeholder="Access code">
+<button id="go">Unlock</button>
+<script>
+  go.onclick = function () { msg.textContent = "Add an access code before unlocking."; };
+</script>
+HTML
+cat >"$TMPROOT/stuckjourney.json" <<'JSON'
+{"steps":[{"key":"v1","do":"gate","phase":"filled","match":["Unlock"],
+  "name":"click \"Unlock\"","expect":"the vault opens"}]}
+JSON
+"$NODE" "$DRIVER" --url "file://$STUCK/index.html" --out "$TMPROOT/shots8" \
+  --journey "$TMPROOT/stuckjourney.json" --walk-out "$TMPROOT/walk8.json" --prefix v \
+  >/dev/null 2>&1
+check "F5-11 (b) refused a SECOND time is a fault with two attempts behind it, not a shrug" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+s=w[\"steps\"][0]
+sys.exit(0 if s[\"status\"]==\"refused\" and s.get(\"attempts\")==2 and s.get(\"refusedTwice\") is True
+         and s.get(\"repaired\") is not True else 1)' '$TMPROOT/walk8.json'"
+check "F5-12 …and it says all of it in one sentence a person can act on" \
+  "\"\$PY\" -c 'import json,sys
+w=json.load(open(sys.argv[1]))
+why=(w[\"steps\"][0].get(\"why\") or \"\").lower()
+sys.exit(0 if \"access code\" in why and \"again\" in why and \"cannot say whether it worked\" not in why else 1)' '$TMPROOT/walk8.json'"
+check "F5-13 the number box the refusal named WAS filled before the second try (c feeding b)" \
+  "\"\$PY\" -c 'import json,sys,re
+w=json.load(open(sys.argv[1]))
+f=(w[\"steps\"][0].get(\"repair\") or {}).get(\"filled\") or []
+sys.exit(0 if len(f)==1 and \"access code\" in f[0][\"name\"] and re.match(r\"^-?[0-9.]+$\", str(f[0][\"value\"])) else 1)' '$TMPROOT/walk8.json'"
+
+# ===========================================================================
 # F3. WHAT THE WALK MEASURED — a value that did not carry, and a control that
 #     does not fit itself (the only route to a button on an undrawn screen).
 # ===========================================================================
