@@ -1773,6 +1773,37 @@ xo_pair_parts() { # <mission-dir> <xodir> — pair the drawing with every screen
   return 0
 }
 
+xo_touch_criteria() { # <mission-dir> <xodir> [walk.json] — file a row per CLICKED control
+  # EVERY CONTROL THE WALK CLICKED gets a second question, drawn or not (S225).
+  # The pairing above is keyed entirely off the DRAWING's `id=` vocabulary, so
+  # a control the walk clicked that the drawing never named had no criterion to
+  # be held to — the gap that let his three-line "Back to builder" button score
+  # "met". This joins walk.json (the controls actually clicked) to the same
+  # build inventory the pairing reads, and files a fault against a touched
+  # control WHETHER OR NOT THE DRAWING NAMED IT. It runs after the walk and
+  # before the look is handed its criteria, so the enriched contract is what
+  # gets graded and scored.
+  local dir="$1" xodir="$2" walk="${3:-$xodir/walk.json}" f said=""
+  [ -s "$walk" ] || return 0
+  [ -s "$xodir/criteria.json" ] || return 0
+  set --
+  for f in "$xodir"/build-parts-*.json; do
+    [ -s "$f" ] || continue
+    set -- "$@" --build "$f"
+  done
+  [ "$#" -gt 0 ] || return 0
+  said="$("$XO_PY" "$XO_PARTS_PY" touched --walk "$walk" "$@" \
+        --criteria "$xodir/criteria.json" --out "$xodir/criteria.new.json" 2>/dev/null)" || said=""
+  if [ -s "$xodir/criteria.new.json" ]; then
+    mv "$xodir/criteria.new.json" "$xodir/criteria.json"
+  else
+    rm -f "$xodir/criteria.new.json" 2>/dev/null || true
+  fi
+  [ -n "$said" ] && printf '  touched: %s\n' "$said"
+  journal "$dir" touched "$(printf '"detail": %s' "$(jstr "${said:-}")")"
+  return 0
+}
+
 # ── SEEDABLE DATA FOR THE LOOK (S220 part E) ───────────────────────────────
 #
 # THE DEFECT THIS EXISTS FOR. Half of the MBR builder only appears once there
@@ -2474,6 +2505,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # --- 3b-ii. SIDE BY SIDE (S220 part B) — the drawing's parts against what
   # round 0 actually built, with the two measurements beside each pair.
   xo_pair_parts "$dir" "$xodir"
+  xo_touch_criteria "$dir" "$xodir"
   xo_measure_walk "$dir" "$xodir" "$obsfile"
 
   # --- 3b-iii. THE SAME PLACE, READ AT EVERY MOMENT (S224 fix round 3) ------
@@ -2594,6 +2626,7 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       # Both run after EVERY round now, not only round 0.
       xo_observe "$shots" "$obsfile" --merge
       xo_pair_parts "$dir" "$xodir"
+      xo_touch_criteria "$dir" "$xodir"
       xo_measure_walk "$dir" "$xodir" "$obsfile"
       obsfound="$("$XO_PY" -c 'import json,sys
 try:
@@ -3282,6 +3315,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # drawing itself has not changed; its parts were read at the first look.
   rm -f "$xodir"/build-parts-[0-9]*.json 2>/dev/null || true
   xo_pair_parts "$dir" "$xodir"
+  xo_touch_criteria "$dir" "$xodir" "$rwalk"
   # AND WHAT THE WALK MEASURED (S222 fix round 1) — the icon bigger than its
   # own control, the value that does not carry from one screen to the next.
   # Those are the readings the fixes filed against, and until this ran on the

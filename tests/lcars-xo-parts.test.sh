@@ -579,5 +579,92 @@ else
     "[ \"\$(wq 'd[\"croppedScreens\"]')\" -ge 4 ]"
 fi
 
+printf '\n\033[1mF · the control the walk CLICKED, drawn or not (S225)\033[0m\n'
+# THE CAPTAIN'S BUG. His "Back to builder" button wraps onto three lines. The
+# walk clicked it, confirmed it WORKED, and scored that row met — with the
+# picture on disk the whole time. Nobody asked whether it LOOKED right, because
+# his drawing never names that control, so `pair_all`/`part_criteria` — keyed
+# entirely off the drawing's own `id=` vocabulary — never made a row to hold it
+# to. This path is PARALLEL to the pairing: it is driven by walk.json (the
+# controls the walk actually clicked) joined to the full build inventory, and
+# it files a fault against a touched control WHETHER OR NOT THE DRAWING NAMED
+# IT. The rows it emits carry source "touched" — a NEW value, distinct from
+# prd/plan/drawing/journey — so a concurrent three-group score can move them.
+#
+# THE STANDARD WITHOUT A DRAWN BASELINE. `label-wraps-more-than-drawn` compares
+# the built line count against the DRAWING's; a touched-but-undrawn control has
+# no drawn baseline. But a person clicked this — it is a real control, not a
+# prose paragraph that may legitimately run long — so its OWN label on THREE OR
+# MORE lines is wrong with no mock-up needed. Two lines is allowed: deliberate
+# two-line buttons are a real design, and a false alarm on one is the S212 sin.
+T="$TMPROOT/touched"; mkdir -p "$T"
+# The inventory the driver already writes: every control on every screen the
+# walk visited, its box, its icon box, its label line count. Flat parts, each
+# carrying the screen it is on (exactly `build-parts-*.json`'s `parts`).
+TBUILD='[
+ {"index":1,"id":"continue","testid":null,"name":"Continue","role":"button","tag":"button",
+  "interactive":true,"container":false,"screen":"http://127.0.0.1:5173/#one",
+  "box":{"x":10,"y":10,"w":120,"h":34},"iconBox":{"x":14,"y":19,"w":16,"h":16},"lines":1,"crop":"b-01"},
+ {"index":2,"id":"back","testid":null,"name":"Back to builder","role":"button","tag":"button",
+  "interactive":true,"container":false,"screen":"http://127.0.0.1:5173/#two",
+  "box":{"x":10,"y":10,"w":90,"h":30},"iconBox":{"x":14,"y":8,"w":44,"h":44},"lines":1,"crop":"b-02"},
+ {"index":3,"id":"logtwice","testid":null,"name":"Log the tide reading","role":"button","tag":"button",
+  "interactive":true,"container":false,"screen":"http://127.0.0.1:5173/#two",
+  "box":{"x":10,"y":50,"w":90,"h":40},"iconBox":{"x":14,"y":56,"w":16,"h":16},"lines":3,"crop":"b-03"},
+ {"index":4,"id":"twoline","testid":null,"name":"Save all readings now","role":"button","tag":"button",
+  "interactive":true,"container":false,"screen":"http://127.0.0.1:5173/#two",
+  "box":{"x":10,"y":100,"w":90,"h":48},"iconBox":{"x":14,"y":106,"w":16,"h":16},"lines":2,"crop":"b-04"},
+ {"index":5,"id":"ghost","testid":null,"name":"Ghost broken","role":"button","tag":"button",
+  "interactive":true,"container":false,"screen":"http://127.0.0.1:5173/#two",
+  "box":{"x":10,"y":160,"w":90,"h":30},"iconBox":{"x":14,"y":138,"w":44,"h":44},"lines":1,"crop":"b-05"}
+]'
+# walk.json: the walk CLICKED four controls — Continue (clean), Back to builder
+# (oversized icon), Log the tide reading (label on 3 lines), Save all readings
+# now (a deliberate two-line control). It NEVER clicked Ghost broken, whose
+# icon is just as oversized as Back to builder's.
+TWALK='{"entry":null,"screens":["http://127.0.0.1:5173/#one","http://127.0.0.1:5173/#two"],
+ "steps":[
+  {"key":"j1","name":"click Continue","do":"click","match":["Continue"],"matched":"Continue",
+   "clicked":true,"status":"done","urlBefore":"http://127.0.0.1:5173/#one","urlAfter":"http://127.0.0.1:5173/#two"},
+  {"key":"j2","name":"click Back to builder","do":"click","match":["Back to builder"],"matched":"Back to builder",
+   "clicked":true,"status":"done","urlBefore":"http://127.0.0.1:5173/#two","urlAfter":"http://127.0.0.1:5173/#two"},
+  {"key":"j3","name":"click Log the tide reading","do":"click","match":["Log the tide reading"],"matched":"Log the tide reading",
+   "clicked":true,"status":"done","urlBefore":"http://127.0.0.1:5173/#two","urlAfter":"http://127.0.0.1:5173/#two"},
+  {"key":"j4","name":"click Save all readings now","do":"click","match":["Save all readings now"],"matched":"Save all readings now",
+   "clicked":true,"status":"done","urlBefore":"http://127.0.0.1:5173/#two","urlAfter":"http://127.0.0.1:5173/#two"}
+ ]}'
+mk_parts "$T/build.json" "http://127.0.0.1:5173/#two" "$TBUILD"
+printf '%s\n' "$TWALK" >"$T/walk.json"
+cat >"$T/criteria.json" <<'JSON'
+{"mission":"m","builtBeforeLaunch":true,"hasDrawing":false,"placeNames":[],"pictures":[],
+ "criteria":[{"id":"prd-1","text":"the collect flow works end to end","source":"prd","primary":true}]}
+JSON
+"$PY" "$PARTS" touched --walk "$T/walk.json" --build "$T/build.json" \
+      --criteria "$T/criteria.json" --out "$T/criteria2.json" >"$T/touched.log" 2>&1
+trc=$?
+tq() { "$PY" -c "import json,sys;d=json.load(open('$T/criteria2.json'));print(eval(sys.argv[1],{'d':d}))" "$1"; }
+check "F · the touched pass runs and writes the contract" \
+  "[ $trc -eq 0 ] && [ -s '$T/criteria2.json' ]"
+check "F1 · the clicked 'Back to builder' the drawing never named gets a row" \
+  "tq '[c[\"id\"] for c in d[\"criteria\"] if c.get(\"source\")==\"touched\"]' | grep -qi back"
+check "F1 · and that row's source is exactly 'touched', not 'drawing'" \
+  "tq 'next(c[\"source\"] for c in d[\"criteria\"] if \"back\" in c[\"id\"].lower())' | grep -qx touched"
+check "F1 · the oversized icon is MEASURED on it and fires" \
+  "tq 'any(m.get(\"fires\") for c in d[\"criteria\"] if \"back\" in c[\"id\"].lower() for m in c.get(\"measurements\",[]) if m[\"id\"]==\"icon-bigger-than-its-control\")' | grep -q True"
+check "F2 · a clicked control whose OWN label runs onto 3 lines fires (no drawn baseline)" \
+  "tq 'any(m.get(\"fires\") for c in d[\"criteria\"] if \"logtwice\" in c[\"id\"].lower() or \"log\" in c[\"id\"].lower() for m in c.get(\"measurements\",[]) if \"wrap\" in m[\"id\"] or \"clip\" in m[\"id\"])' | grep -q True"
+check "F CONTROL · a clicked control with a TWO-line label does NOT fire (2 lines is allowed)" \
+  "[ \"\$(tq '[c[\"id\"] for c in d[\"criteria\"] if c.get(\"source\")==\"touched\" and (\"twoline\" in c[\"id\"].lower() or \"save all\" in c[\"id\"].lower())]')\" = '[]' ]"
+check "F CONTROL · a clean clicked control (Continue) gets NO touched row" \
+  "[ \"\$(tq '[c[\"id\"] for c in d[\"criteria\"] if c.get(\"source\")==\"touched\" and \"continue\" in c[\"id\"].lower()]')\" = '[]' ]"
+check "F CONTROL · a broken control the walk did NOT click (Ghost) is NOT measured" \
+  "[ \"\$(tq '[c[\"id\"] for c in d[\"criteria\"] if c.get(\"source\")==\"touched\" and \"ghost\" in c[\"id\"].lower()]')\" = '[]' ]"
+check "F · the pre-existing prd row is left exactly as it was" \
+  "tq '[c[\"id\"] for c in d[\"criteria\"] if c[\"id\"]==\"prd-1\" and c[\"source\"]==\"prd\"]' | grep -q prd-1"
+check "F · with an empty walk the contract is unchanged (no clicks, no rows)" \
+  "printf '%s' '{\"entry\":null,\"steps\":[]}' >'$T/empty-walk.json'; \
+   $PY '$PARTS' touched --walk '$T/empty-walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/criteria3.json' >/dev/null 2>&1; \
+   $PY -c \"import json,sys;a=json.load(open('$T/criteria.json'));b=json.load(open('$T/criteria3.json'));sys.exit(0 if a['criteria']==b['criteria'] else 1)\""
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

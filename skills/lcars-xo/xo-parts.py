@@ -60,6 +60,8 @@ Usage:
                    --out <pairs.json>
   xo-parts.py criteria [--drawing <parts.json>] --criteria <criteria.json>
                        --out <criteria.json> [--cap N]
+  xo-parts.py touched --walk <walk.json> --build <build-parts.json> [--build …]
+                      --criteria <criteria.json> --out <criteria.json>
   xo-parts.py scan --build <build-parts.json> [--build …] --out <fragment.json>
 """
 
@@ -602,6 +604,223 @@ def oversized_icons(builds):
     return out
 
 
+# ── THE CONTROL THE WALK CLICKED, DRAWN OR NOT (S225) ──────────────────────
+#
+# WHY THIS EXISTS, in the captain's words. His "Back to builder" button wraps
+# onto three lines. The walk clicked it, confirmed it RETURNED, scored that row
+# `met` — and had the picture on disk the whole time. It was asked whether the
+# button WORKED. Nobody asked whether it LOOKED right, because his drawing does
+# not name that control, so no row existed to hold it to.
+#
+# `pair_all`/`part_criteria` start from `parts_of(drawing, controls_only=True)`
+# — every entry is keyed off the DRAWING's own `id=` vocabulary. A control the
+# walk clicked that the drawing never named gets no pair, no measurement and no
+# criterion, so no fault can ever be filed for it. This path is the missing
+# join, PARALLEL to the pairing: it is driven by walk.json (the controls the
+# walk actually clicked) against the full build inventory (`build-parts-*.json`
+# — every control on every screen the walk visited, with its box, its icon box
+# and its label's line count), and it files a fault against a touched control
+# WHETHER OR NOT THE DRAWING NAMED IT.
+#
+# THE STANDARD WITHOUT A DRAWN BASELINE. The pairing's `label-wraps-more-than-
+# drawn` compares the built line count against the DRAWING's — safe, because a
+# label the drawing ALSO wraps is not a fault. A touched-but-undrawn control
+# has no drawn baseline, so that comparison is impossible. But a person CLICKED
+# this: it is a real control, not a prose paragraph (a `<p>` notice) that may
+# legitimately run long — and the walk only ever clicks controls. So the
+# standard here is the control's OWN label on THREE OR MORE lines, which is
+# exactly the "Back to builder" fault and needs no mock-up to call wrong. TWO
+# lines is deliberately allowed: a two-line button is a real design, and firing
+# on one is the S212 sin (a detector that cries wolf on correct UI teaches the
+# captain to ignore the whole feature). The icon check is the pairing's own
+# `icon-bigger-than-its-control`, which reads the built element ALONE and so
+# needs no drawing at all.
+#
+# LIKE `oversized_icons`, THIS ONLY FILES FAULTS. A touched control that is
+# correct gets measured and produces no row — the "second question" is asked of
+# every clicked control, but a contract row (a thing the captain must
+# adjudicate) is filed only when a measurement finds a fault to answer for.
+
+TOUCHED_MAX_LINES = 2       # a real control's own label past two lines is wrong
+
+
+def steps_of(walk):
+    if not isinstance(walk, dict):
+        return []
+    s = walk.get("steps")
+    return [x for x in s if isinstance(x, dict)] if isinstance(s, list) else []
+
+
+def touched_controls(walk):
+    """The controls the walk ACTUALLY clicked — the name it matched and the
+    screen it was standing on when it clicked. A step counts only when it was a
+    CLICK that landed on a named control: a type, a key press or a refused
+    click never touched a control to look at. De-duplicated by (name, screen),
+    because clicking the same control twice is one control to measure."""
+    out, seen = [], set()
+    for st in steps_of(walk):
+        do = str(st.get("do") or "click").lower()
+        if do != "click":
+            continue
+        landed = bool(st.get("clicked")) or (
+            st.get("status") == "done" and st.get("matched"))
+        if not landed:
+            continue
+        raw = st.get("matched") or (st.get("match") or [None])[0]
+        name = squash(raw)
+        if not name:
+            continue
+        screen = str(st.get("urlBefore") or st.get("urlAfter") or "")
+        key = (name, screen)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "display": str(raw), "screen": screen})
+    return out
+
+
+def inventory(builds):
+    """Every control on every screen the walk visited, flattened, each carrying
+    the screen it is on. `build-parts-*.json` writes both `pages` and a flat
+    `parts` (each with its own `screen`); either is read the same way."""
+    cands = []
+    for b in builds:
+        url = str((b or {}).get("url") or "")
+        pages = (b or {}).get("pages")
+        if isinstance(pages, list) and pages:
+            for pg in pages:
+                at = str((pg or {}).get("url") or url)
+                for c in parts_of(pg, controls_only=True):
+                    c = dict(c)
+                    c["_screen"] = c.get("screen") or at
+                    cands.append(c)
+        else:
+            for c in parts_of(b, controls_only=True):
+                c = dict(c)
+                c["_screen"] = c.get("screen") or url
+                cands.append(c)
+    return cands
+
+
+def find_touched(name, screen, candidates):
+    """The inventory control that IS the one the walk clicked. By its name, or
+    one of its other names; the copy ON THE SCREEN IT WAS CLICKED and with a
+    laid-out box wins, for the same reason the pairing prefers a sized
+    candidate — a 0x0 copy on a hidden screen is not the one that was seen."""
+    nm = squash(name)
+
+    def is_it(c):
+        return squash(c.get("name")) == nm or nm in other_names(c)
+    hits = [c for c in candidates if is_it(c)]
+    if not hits:
+        return None
+    here = [c for c in hits if c.get("_screen") == screen and has_size(c)]
+    if here:
+        return here[0]
+    sized = [c for c in hits if has_size(c)]
+    if sized:
+        return sized[0]
+    return hits[0]
+
+
+def measure_touched(built):
+    """The second question, taken on the built control ALONE. Icon in
+    proportion (the pairing's own check, which never needed a drawing); label
+    inside its box, judged against the control's own standard because there is
+    no drawn baseline to judge against."""
+    out = []
+    bb = box_of(built)
+
+    ic = built.get("iconBox")
+    if isinstance(ic, dict) and bb.get("h"):
+        try:
+            ratio = float(ic.get("h") or 0) / float(bb.get("h") or 1)
+        except Exception:
+            ratio = 0.0
+        fires = ratio > 1.0
+        out.append({
+            "id": "icon-bigger-than-its-control",
+            "fires": bool(fires),
+            "ratio": round(ratio, 2),
+            "says": ("the icon inside it is %dpx tall in a %dpx %s — %.2fx the control, "
+                     "so it spills past the top and bottom edges"
+                     % (ic.get("h") or 0, bb.get("h") or 0,
+                        built.get("tag") or "control", ratio)) if fires else
+                    ("the icon inside it is %dpx tall in a %dpx control (%.2fx) — it fits"
+                     % (ic.get("h") or 0, bb.get("h") or 0, ratio)),
+        })
+
+    bl = built.get("lines")
+    if isinstance(bl, int) and bl > 0:
+        fires = bl > TOUCHED_MAX_LINES
+        out.append({
+            "id": "label-wraps-or-clips",
+            "fires": bool(fires),
+            "builtLines": bl,
+            "standard": TOUCHED_MAX_LINES,
+            "says": ("its label runs onto %d lines — a control's own label past %d is "
+                     "wrapping or clipped, no mock-up needed to see it"
+                     % (bl, TOUCHED_MAX_LINES)) if fires else
+                    ("its label is on %d line%s, within a control's own budget of %d"
+                     % (bl, "" if bl == 1 else "s", TOUCHED_MAX_LINES)),
+        })
+    return out
+
+
+def touched_criteria(walk, builds):
+    """One requirement per touched control that a measurement faulted — source
+    `touched`, distinct from prd/plan/drawing/journey so a downstream score can
+    move these rows by changing one mapping."""
+    cands = inventory(builds)
+    rows, keys = [], set()
+    for ctl in touched_controls(walk):
+        built = find_touched(ctl["name"], ctl["screen"], cands)
+        # Not in the inventory, or in it with no laid-out box, is COULDN'T-CHECK,
+        # not a fault — there is nothing to look at, so no row is filed.
+        if built is None or not has_size(built):
+            continue
+        ms = measure_touched(built)
+        if not any(m.get("fires") for m in ms):
+            continue
+        key = str(built.get("id") or built.get("testid")
+                  or squash(built.get("name")) or ctl["name"])
+        if key in keys:
+            continue
+        keys.add(key)
+        name = re.sub(r"\s+", " ", str(built.get("name") or ctl["display"] or "")).strip()
+        kind = str(built.get("role") or built.get("tag") or "control").lower()
+        what = ('the "%s" %s' % (name[:60], kind)) if name else ("the %s %s" % (key, kind))
+        rows.append({
+            "id": "touched-%s" % key,
+            "text": "%s you clicked sits right — the label inside its box, the icon in "
+                    "proportion, nothing wrapping or clipped (the walk clicked it, so it "
+                    "is held to the mock-up's standard even though the drawing never "
+                    "named it)" % what,
+            "source": "touched",
+            "primary": True,
+            "touchedControl": key,
+            "screen": built.get("_screen"),
+            "measurements": ms,
+            "measuredDifference": True,
+        })
+    return rows
+
+
+def apply_touched(contract, walk, builds):
+    """Append the touched rows to the contract, skipping any id it already
+    carries. The rest of the contract is left exactly as it was."""
+    rows = touched_criteria(walk, builds)
+    if not rows:
+        return contract, 0
+    have = {str(c.get("id")) for c in (contract.get("criteria") or [])}
+    rows = [r for r in rows if r["id"] not in have]
+    if not rows:
+        return contract, 0
+    contract["criteria"] = (contract.get("criteria") or []) + rows
+    contract["touchedParts"] = contract.get("touchedParts", 0) + len(rows)
+    return contract, len(rows)
+
+
 def main(argv):
     if len(argv) < 2:
         sys.stderr.write(__doc__.split("Usage:")[-1])
@@ -668,6 +887,22 @@ def main(argv):
             fh.write("\n")
         print("%d per-part requirement(s) added, %d catch-all row(s) retired%s"
               % (added, retired, (", %d part(s) held back (cap %d)" % (held, cap)) if held else ""))
+        return 0
+
+    if cmd == "touched":
+        cpath = opt("criteria")
+        contract = load(cpath or "")
+        if not isinstance(contract, dict):
+            sys.stderr.write("xo-parts.py: cannot read the criteria list\n")
+            return 2
+        walk = load(opt("walk") or "") or {}
+        builds = [load(p) or {} for p in opts("build")]
+        contract, added = apply_touched(contract, walk, builds)
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(contract, fh, indent=2)
+            fh.write("\n")
+        print("%d touched-control requirement(s) added" % added)
         return 0
 
     sys.stderr.write("xo-parts.py: unknown command %r\n" % cmd)
