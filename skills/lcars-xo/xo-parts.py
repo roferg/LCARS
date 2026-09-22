@@ -202,6 +202,25 @@ def match(drawn, candidates):
                   dname.startswith(squash(c.get("name")) or "\0")]
         if len(starts) == 1:
             return starts[0], "label text"
+        # A WHOLE-WORD RUN of the drawn name inside a build label is that
+        # control: "Unlock" is the "Unlock month" button. This generalises the
+        # literal-prefix handle above to a run in the MIDDLE or at the END of
+        # the label, but keeps a word BOUNDARY — "Lock" is letters inside
+        # "Unlock", not a word of it, and must not pair; "Month view" shares
+        # the word "month" with "Unlock month" but is not a contiguous run of
+        # its words, and must not pair either. Fenced to ONE candidate for the
+        # same reason the prefix is: when the run is in two labels equally,
+        # pairing an arbitrary one is worse than not pairing.
+        dwords = dname.split()
+
+        def _run_in(hay):
+            hw = squash(hay).split()
+            n = len(dwords)
+            return n > 0 and any(hw[i:i + n] == dwords
+                                 for i in range(len(hw) - n + 1))
+        runs = [c for c in candidates if _run_in(c.get("name"))]
+        if len(runs) == 1:
+            return runs[0], "the drawn name is a whole-word run of the label"
         # THE CONTROL'S OTHER NAMES (S224 item 1). EXACT equality only — a
         # whole printed label or a whole placeholder matching is not a coin
         # toss, and anything looser here is how a leftover control answers for

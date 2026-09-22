@@ -240,6 +240,88 @@ check "B8 · a textarea the drawing names by its placeholder pairs too" \
 check "B8 CONTROL · a control whose build label shares NO words stays unreachable" \
   "aq 'next(p[\"reachable\"] for p in d[\"pairs\"] if p[\"part\"]==\"toggle theme\")' | grep -q False"
 
+printf '\n\033[1mB10 · the drawn name is a whole-word run of the built label\033[0m\n'
+# THE CAPTAIN'S WORDS. His drawing names a part "Unlock"; his build labels that
+# same button "Unlock month". Name matching was exact-only, so it came out
+# "Unlock -> couldn't check", and an icon fault he photographed on that button
+# had no row to land in. The exact-only rule was there for a reason — it stops
+# a button reading "Switch to light mode" answering for a drawn "Toggle theme"
+# — but it was too blunt. The rule now: a drawn name that is a WHOLE-WORD RUN
+# inside the built label may pair; a name that merely SHARES a word may not.
+# Each case below is its OWN pairing so exactly one thing is under test.
+wr_pair() { # <slug> <drawn json> <build json>
+  mk_parts "$D/$1-d.json" "file:///drawing.html" "$2"
+  mk_parts "$D/$1-b.json" "http://127.0.0.1:5173/#cal" "$3"
+  "$PY" "$PARTS" pair --drawing "$D/$1-d.json" --build "$D/$1-b.json" \
+        --out "$D/$1-p.json" >/dev/null 2>&1
+}
+wq() { "$PY" -c "import json,sys;d=json.load(open(sys.argv[2]));print(eval(sys.argv[1],{'d':d}))" "$1" "$2"; }
+
+# POSITIVE. The build has TWO controls whose labels begin with the letters
+# "unlock": "Unlock month" (the one he drew) and "Unlocked reads" (a decoy).
+# The literal char-prefix handle sees both and abstains — exactly how his real
+# capstone reported the button missing. Word BOUNDARIES tell them apart:
+# "unlock" is a whole word in "Unlock month" but not in "Unlocked reads", so
+# the run is UNIQUE and pairs.
+wr_pair unlk \
+ '[{"index":1,"id":null,"testid":null,"name":"Unlock","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":{"x":14,"y":14,"w":16,"h":16},"lines":1,"crop":"d-01"}]' \
+ '[{"index":1,"id":null,"testid":null,"name":"Unlock month","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":140,"h":30},"iconBox":{"x":14,"y":12,"w":26,"h":26},"lines":1,"crop":"b-01"},
+  {"index":2,"id":null,"testid":null,"name":"Unlocked reads","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":50,"w":150,"h":30},"iconBox":null,"lines":1,"crop":"b-02"}]'
+check "B10 · a drawn 'Unlock' pairs with the built 'Unlock month'" \
+  "wq 'd[\"pairs\"][0][\"reachable\"]' '$D/unlk-p.json' | grep -q True"
+check "B10 · it is the whole-word 'Unlock month', not the char-prefix 'Unlocked reads'" \
+  "wq 'd[\"pairs\"][0][\"built\"][\"crop\"]' '$D/unlk-p.json' | grep -q b-01"
+check "B10 · and the record says BY WHICH RULE it matched — a whole-word run" \
+  "wq 'd[\"pairs\"][0][\"handle\"]' '$D/unlk-p.json' | grep -qi 'run\|whole.word'"
+
+# POSITIVE, MIDDLE/END. The run sits at the END of the label, so the literal
+# prefix handle can never find it — only the new rule can. Build is a LINK so
+# the role fence cannot answer instead.
+wr_pair mid \
+ '[{"index":1,"id":null,"testid":null,"name":"unlock month","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":140,"h":30},"iconBox":null,"lines":1,"crop":"d-01"}]' \
+ '[{"index":1,"id":null,"testid":null,"name":"Confirm unlock month","role":"link","tag":"a",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":190,"h":30},"iconBox":null,"lines":1,"crop":"b-01"}]'
+check "B10 · a run in the MIDDLE/END of the label pairs too (not just a prefix)" \
+  "wq 'd[\"pairs\"][0][\"reachable\"]' '$D/mid-p.json' | grep -q True"
+
+# CONTROL — MERELY SHARES A WORD. "Month view" and "Unlock month" share
+# "month", but "Month view" is not a contiguous run of whole words inside
+# "Unlock month". Build is a LINK so only the name rule can decide.
+wr_pair shr \
+ '[{"index":1,"id":null,"testid":null,"name":"Month view","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"d-01"}]' \
+ '[{"index":1,"id":null,"testid":null,"name":"Unlock month","role":"link","tag":"a",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":140,"h":30},"iconBox":null,"lines":1,"crop":"b-01"}]'
+check "B10 CONTROL · a drawn 'Month view' that merely SHARES the word 'month' does NOT pair" \
+  "wq 'd[\"pairs\"][0][\"reachable\"]' '$D/shr-p.json' | grep -q False"
+
+# CONTROL — SUBSTRING INSIDE A WORD. "Lock" is letters inside "Unlock", not a
+# whole word of "Unlock month". It must not pair.
+wr_pair sub \
+ '[{"index":1,"id":null,"testid":null,"name":"Lock","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-01"}]' \
+ '[{"index":1,"id":null,"testid":null,"name":"Unlock month","role":"link","tag":"a",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":140,"h":30},"iconBox":null,"lines":1,"crop":"b-01"}]'
+check "B10 CONTROL · a drawn 'Lock' does NOT match the letters inside 'Unlock'" \
+  "wq 'd[\"pairs\"][0][\"reachable\"]' '$D/sub-p.json' | grep -q False"
+
+# CONTROL — AMBIGUITY GUARD. The run "unlock" is a whole word in BOTH
+# "Unlock month" and "Unlock week"; pairing an arbitrary one is worse than not
+# pairing, so it must abstain — the same caution the len==1 gates already keep.
+wr_pair amb \
+ '[{"index":1,"id":null,"testid":null,"name":"Unlock","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-01"}]' \
+ '[{"index":1,"id":null,"testid":null,"name":"Unlock month","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":140,"h":30},"iconBox":null,"lines":1,"crop":"b-01"},
+  {"index":2,"id":null,"testid":null,"name":"Unlock week","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":50,"w":140,"h":30},"iconBox":null,"lines":1,"crop":"b-02"}]'
+check "B10 CONTROL · a run in TWO labels equally does NOT coin-toss a pair" \
+  "wq 'd[\"pairs\"][0][\"reachable\"]' '$D/amb-p.json' | grep -q False"
+
 printf '\n\033[1mB9 · the copy of the control that is actually on screen\033[0m\n'
 # MEASURED IN REAL HEADLESS CHROME (tests/drives/s224/parts-reach): an SPA
 # that hides its screens with display:none records 72 of its 100 parts with a
