@@ -1043,6 +1043,132 @@ def merge_unlisted(path, notes):
     return rows, lines
 
 
+# --- A FAULT NO LIST COULD HAVE NAMED REACHES HIM BY CONSTRUCTION ------------
+#
+# S224 fix round 3. The walk's own checks (xo-journey.py's carry and gate
+# passes) find the things a person notices ONLY because they walked: a value
+# that was on the screen they came from and is different on the screen they
+# arrived at, a gate that opened on a blank form. Nothing on the captain's list
+# can ever name one of those, because his list is written from the PRD, the plan
+# and the drawing's parts — all of which describe screens, not the seams between
+# them.
+#
+# S222 put one of these in front of him. S224 measured the SAME fault in the
+# same words and it never left the file, because whether it reached him was left
+# to the model's choice of what to write in `escalations` — and a model's choice
+# is a lottery this project has lost before (S175). So it is not a choice any
+# more. The producer already recorded which measurements are anchored to a part
+# of the drawing (they carry `part`, and a `part-…` row on his list answers for
+# them) and which are not; the unanchored ones are routed here, the same way the
+# unlisted pass's findings are, and by the same rule: INFER NOTHING, ROUTE WHAT
+# WAS RECORDED.
+#
+# IT IS EVIDENCE, NEVER A CRITERION. Same channel S222 built, no score, no
+# count, no gap, no outcome — the fence xo-observe's measurements have always
+# had. And the same silence discipline: on a build where the walk found nothing,
+# this adds nothing at all.
+WALKED_LEAD = "I only saw this because I walked it, and nothing on your list asks about it"
+
+
+def _significant(text):
+    return set(w for w in re.findall(r"[0-9a-z]+", str(text or "").lower())
+               if len(w) > 3 or w.isdigit())
+
+
+def already_said(line, existing):
+    """True when one of the look's own escalation lines is already about this.
+
+    Not a substring test: the look writes the same fact in its own words ("the
+    next-up month jumped from X to Y on the start card"), and a second copy of a
+    thing he has already read is noise, which is the one thing this channel
+    cannot afford."""
+    mine = _significant(line)
+    if not mine:
+        return False
+    for e in existing:
+        theirs = _significant(e)
+        if theirs and len(mine & theirs) * 10 >= len(mine) * 6:
+            return True
+    return False
+
+
+def walked_escalations(observations, existing):
+    """Escalation lines for the measurements no criterion could have named."""
+    lines = []
+    for o in (observations or {}).get("observations") or []:
+        # STAMPED BY THE WALK, NOT GUESSED HERE. The first cut asked instead
+        # whether the measurement named a drawn part, and a part-measurement
+        # with that field simply missing was routed as if no criterion could
+        # name it — a rule that reads meaning out of an ABSENT field will
+        # eventually be wrong about a present one. The producer says so itself.
+        if not o.get("fromWalk"):
+            continue
+        said = " ".join(str(o.get("message") or o.get("says") or "").split())
+        if not said:
+            continue
+        line = "%s — %s" % (said, WALKED_LEAD)
+        if str(o.get("shot") or "").strip():
+            line += "; I saw it in %s" % str(o["shot"]).strip()
+        if already_said(said, list(existing) + lines):
+            continue
+        lines.append(line)
+    return lines
+
+
+# --- A ROW SETTLED ON ONE MOMENT OF SEVERAL ---------------------------------
+#
+# S224 fix round 3, the other half. `readings.json` (xo-readings.py) lists every
+# place on a screen whose words read differently from one moment of the walk to
+# the next. A row that quotes one of the LATER readings and never the first was
+# graded on one moment of a walk that had several — measured on the captain's
+# own build, where a row passed on a late picture while the walk's own record
+# showed that strip reading differently at its first three moments.
+#
+# THIS DOES NOT DECIDE ANYTHING, AND MUST NOT. On the same corpus the rule fires
+# on three rows and only one of them is a fault: the other two are counters
+# doing exactly their job, and a detector that called those faults would be
+# crying wolf over correct behaviour — the failure that teaches him to ignore a
+# channel (S212). A value that changes is not a fault; whether it is one is the
+# eye's to say, which is why the same record goes to the eye through its own
+# read-only door. All this does is refuse to let the ledger read as if the
+# question never came up: the row keeps its outcome and the note says, in his
+# words, which moment it rests on and what the same place read first.
+def moment_notes(ledger, readings):
+    """Ledger notes for rows that quote a later reading and never the first."""
+    out = []
+    reads = [r for r in (readings or {}).get("readings") or [] if isinstance(r, dict)]
+    if not reads:
+        return out
+    for e in ledger:
+        if e.get("status") != "met":
+            continue
+        said = " ".join(("%s %s" % (e.get("note") or "", e.get("reason") or "")).split()).lower()
+        if not said:
+            continue
+        for r in reads:
+            first = " ".join(str((r.get("first") or {}).get("reads") or "").split())
+            if not first or first.lower() in said:
+                continue
+            for later in (r.get("later") or []):
+                quoted = " ".join(str(later.get("reads") or "").split())
+                if not quoted or quoted.lower() not in said:
+                    continue
+                out.append(
+                    u"%s was read at one moment of the walk (%s, where that place "
+                    u"said “%s”). At the first moment I was on that screen (%s) the "
+                    u"same place said “%s”. I have left the outcome as it was — a "
+                    u"value that changes is usually a value doing its job — but this "
+                    u"row speaks for one moment, not for the walk."
+                    % (str(e.get("id")), str(later.get("moment") or "a later moment"),
+                       quoted, str((r.get("first") or {}).get("moment") or "the first moment"),
+                       first))
+                break
+            else:
+                continue
+            break
+    return out
+
+
 def load_walk(path):
     """THE RECORD OF HOW IT MOVED (S220 part F).
 
@@ -1139,6 +1265,9 @@ def main():
     # S224 item 2: what the criteria-free pass found over the same pictures.
     # Routed to his escalations and NOWHERE else — see merge_unlisted.
     unlisted_path = sys.argv[10] if len(sys.argv) > 10 else ""
+    # S224 fix round 3: the walk's own moments — see moment_notes.
+    readings_path = sys.argv[11] if len(sys.argv) > 11 else ""
+    readings = load_json_or_none(readings_path)
     walk = load_walk(walk_path)
     seed = load_json_or_none(seed_path)
     pairs_by_part = load_pairs(pairs_path)
@@ -1827,6 +1956,17 @@ def main():
     # and the escalation list built just below.
     unlisted_rows, unlisted_lines = merge_unlisted(unlisted_path, notes)
 
+    # …and, on the same terms, the faults the walk found that no row on his list
+    # could have named. The look's own lines are read FIRST so a fact it already
+    # put in front of him is never handed to him twice.
+    _own = [str(e) for e in (doc.get("escalations") or []) if str(e).strip()]
+    walked_lines = walked_escalations(observations, _own)
+
+    # A row that rests on one moment of a walk that had several — the note only,
+    # never the outcome. Read after every number is final, like everything else
+    # below this line.
+    notes.extend(moment_notes(ledger, readings))
+
     out = {
         "score": score,
         "workerScore": worker_score,
@@ -1847,8 +1987,7 @@ def main():
         # The look's own list FIRST, then what the criteria-free pass found —
         # one channel, in the order they were produced. An unlisted finding
         # joins what the look put aside for him; it never displaces it.
-        "escalations": ([str(e) for e in (doc.get("escalations") or [])
-                         if str(e).strip()] + unlisted_lines),
+        "escalations": _own + walked_lines + unlisted_lines,
         "alsoChecked": [str(e) for e in (doc.get("alsoChecked") or []) if str(e).strip()],
         "summary": summary,
     }

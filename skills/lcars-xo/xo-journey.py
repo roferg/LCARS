@@ -594,6 +594,15 @@ def carry(walk):
     """
     out = []
     steps = [s for s in (walk or {}).get("steps") or [] if isinstance(s, dict)]
+    # WHERE A FINDING CAME FROM IS STAMPED BY WHOEVER FOUND IT (S224 fix round
+    # 3). Everything this function produces was noticed by WALKING — a value
+    # that changed between two screens, a gate that opened on a blank form — and
+    # nothing on the captain's acceptance list can name one of those, because
+    # his list describes screens and these are the seams between them. So the
+    # fact travels ON the finding, stamped here at birth, instead of being read
+    # back later out of which fields happen to be missing. xo-score.py routes on
+    # this flag and on nothing else: the round that inferred it from an absent
+    # `part` was wrong about a measurement a drawn part DOES answer for.
     for i, s in enumerate(steps):
         if s.get("status") != "done":
             continue
@@ -643,6 +652,8 @@ def carry(walk):
                     "kind": "gate",
                     "shot": s.get("shot") or "",
                 })
+    for o in out:
+        o["fromWalk"] = True
     return {"observations": out}
 
 

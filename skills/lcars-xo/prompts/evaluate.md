@@ -13,7 +13,9 @@ judge against the record, and you write one file.
 ## The contract was written BEFORE you looked
 
 Beside it in your input directory: `journey.json` (the flow, declared from the
-record), `walk.json` (what the walk actually did, step by step), `pairs.json`
+record), `walk.json` (what the walk actually did, step by step),
+`readings.json` (places that read differently at different moments of that
+walk), `pairs.json`
 (your drawing's parts beside the build's), `observations.json` (what LCARS
 measured on every screen it stood on) and, when this repo declares one,
 `seed.json` (the sample data that was loaded before the look). A screen that
@@ -340,6 +342,23 @@ happened: which control was clicked, what was typed, what the screen said before
 and after, and every step it could not take. Read both. A step recorded
 `unreachable` is a **couldn't check** on that step, by name — never a "worked",
 and never silence.
+
+**A WALK HAS MOMENTS, AND A ROW MUST HOLD AT ALL OF THEM.** Anything that stays
+on screen while the walk goes on has been photographed more than once, so a row
+about it has several moments it could be judged at — and picking whichever
+picture you reached for is picking one of them. `readings.json` lists, for every
+screen, each place whose words read differently from one moment to the next: the
+FIRST reading, every later one, and which moment each came from. It judges none
+of them, and neither should you on sight — something that changes is usually
+something doing its job.
+
+So when a row is about a place that appears in that file: **quote what it read
+at the first moment as well as at the moment you are grading, and say your
+verdict holds at both.** If the row works at the moment you looked but not at
+the first, it did not work — that is a gap, and the note gives both readings and
+both moments. If both readings are right, say so in one clause and move on: a
+value that changed because it was supposed to is not a fault and must never be
+written up as one.
 
 When you ask for more looking, **move the way a person does**: `click`, `type`
 and `press`. `navigate` is for the front door only. Every later address jump is

@@ -1221,6 +1221,142 @@ check "U5. …and all three reach the wire" \
   "[ \"\$(grep -c '^ESCALATION'\$'\\t' '$UDIR/both/out.tsv')\" -eq 3 ]"
 
 # ==========================================================================
+# W. THE WALK'S OWN FAULTS, AND THE MOMENTS A ROW RESTS ON (S224 fix round 3)
+# ==========================================================================
+#
+# TWO THINGS THE MODEL WAS BEING TRUSTED TO DO BY ITSELF, AND DID ONCE EACH.
+#
+# W1–W3: a fault only a walk can find — a value that was on the screen you came
+# from and is different on the screen you arrive at — was put in front of the
+# captain on one run and, measured again in the SAME WORDS on the next, never
+# left the file. Nothing on his list can name one of those, because his list
+# describes screens and this is a seam between them. So it is routed, not hoped
+# for. The control is a measurement that IS anchored to a part of the drawing:
+# a `part-…` row answers for that one, and it must not be handed to him twice.
+#
+# W4–W6: a row about something that stays on screen has several moments it could
+# be judged at, and the look was settling those on whichever picture it reached
+# for. The walk's own record says which places read differently and when; the
+# note says which moment a row rests on. It does NOT move the outcome — on the
+# captain's own build the same rule fires on three rows and only one is a fault,
+# the other two being counters counting, and calling those faults is exactly how
+# a channel earns being ignored (S212).
+
+WDIR="$TMPROOT/walked"; mkdir -p "$WDIR"
+cat >"$WDIR/criteria.json" <<'WC'
+{"hasDrawing": true, "criteria": [
+  {"id": "prd-1", "text": "one list", "primary": true},
+  {"id": "part-preview", "text": "the Preview button", "primary": false}
+]}
+WC
+
+# The look's ledger. `prd-1` is graded on a LATE moment of the walk.
+W_LEDGER='{"score":"medium","summary":"Looked at the board.","criteria":[{"id":"prd-1","text":"one list","status":"met","shot":"shot-walk-07-j7","note":"the meta line reads Last edited Sep 22, 2026 and 4 of 5 buckets complete"},{"id":"part-preview","text":"the Preview button","status":"met","shot":"shot-walk-02-j2","note":"the Preview button renders with its label"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+
+# What the walk measured. ONE is a seam between screens (no `part` — nothing on
+# his list can name it); ONE is anchored to a drawn part (`part` present — the
+# `part-preview` row answers for it).
+cat >"$WDIR/observations.json" <<'WO'
+{"thresholds": {}, "observations": [
+  {"says": "August 2026 became September 2026 after I clicked pull data and start - the month did not carry from one screen to the next",
+   "kind": "carried-value", "fromWalk": true, "screen": "http://localhost:1/x#b", "shot": "shot-walk-01-j1"},
+  {"says": "the Preview button holds an icon 41px tall inside a control only 30px tall",
+   "kind": "oversized-icon", "part": "Preview", "screen": "http://localhost:1/x#b"}
+]}
+WO
+
+# The walk itself: the same screen at two moments, one place reading differently
+# at each, beside a second place that is a counter counting.
+cat >"$WDIR/walk.json" <<'WW'
+{"steps": [
+  {"key": "j2", "do": "click", "status": "done",
+   "urlBefore": "http://localhost:1/x#a", "textBefore": "a start card",
+   "urlAfter": "http://localhost:1/x#b",
+   "textAfter": "Draft saved as you go. Last edited - and 3 of 5 buckets complete. Insights added 16 of 19 KPIs."},
+  {"key": "j5", "do": "type", "status": "done",
+   "urlBefore": "http://localhost:1/x#b",
+   "textBefore": "Draft saved as you go. Last edited - and 3 of 5 buckets complete. Insights added 16 of 19 KPIs.",
+   "urlAfter": "http://localhost:1/x#b",
+   "textAfter": "Draft saved as you go. Last edited Sep 22, 2026 and 4 of 5 buckets complete. Insights added 18 of 19 KPIs."}
+]}
+WW
+
+"$PY" "$REPO_ROOT/skills/lcars-xo/xo-readings.py" "$WDIR/walk.json" "$WDIR/readings.json" >/dev/null 2>&1
+
+wscore() { # <outdir> <ledger json> [<readings.json>]
+  mkdir -p "$1"
+  printf '%s\n' "$2" >"$1/in.json"
+  "$PY" "$SCOREPY" "$1/in.json" "$WDIR/criteria.json" "$1/verdict.json" \
+        "$WDIR/observations.json" "" "" "" "$WDIR/walk.json" "" "" "${3:-}" \
+        >"$1/out.tsv" 2>"$1/err.txt"
+}
+wscore "$WDIR/on" "$W_LEDGER" "$WDIR/readings.json"
+
+check "W1. a fault only the walk could find reaches his escalations" \
+  "\"$PY\" -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(\"did not carry\" in e for e in d[\"escalations\"]) else 1)' '$WDIR/on/verdict.json'"
+check "W1. …said as something no list asks about, with the picture named" \
+  "grep -q 'nothing on your list asks about it' '$WDIR/on/verdict.json' &&
+   grep -q 'shot-walk-01-j1' '$WDIR/on/verdict.json'"
+check "W1. …on the SAME wire, not a second channel" \
+  "[ \"\$(grep -c '^ESCALATION'\$'\\t' '$WDIR/on/out.tsv')\" -eq 1 ]"
+
+check "W2. CONTROL — a measurement a drawn part answers for is NOT escalated" \
+  "\"$PY\" -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if not any(\"41px\" in e for e in d[\"escalations\"]) else 1)' '$WDIR/on/verdict.json'"
+
+# W2b. THE CONTROL THE D5 REGRESSION EARNED. The first cut of this rule asked
+# whether a measurement named a drawn part, and routed one that did not. A
+# part-measurement whose `part` field is simply missing then read as "nothing on
+# his list can name this" — and `lcars-xo-observe` §D5 caught it, because a rule
+# that reads meaning out of an ABSENT field will eventually be wrong about a
+# present one. Only what the walk STAMPED is routed.
+cat >"$WDIR/obs-nopart.json" <<'WN'
+{"thresholds": {}, "observations": [
+  {"says": "the Back to builder button holds an icon 41px tall inside a control only 30px tall",
+   "kind": "oversized-icon", "screen": "http://localhost:1/x#b"}
+]}
+WN
+mkdir -p "$WDIR/nopart"
+printf '%s\n' "$W_LEDGER" >"$WDIR/nopart/in.json"
+"$PY" "$SCOREPY" "$WDIR/nopart/in.json" "$WDIR/criteria.json" "$WDIR/nopart/verdict.json" \
+      "$WDIR/obs-nopart.json" "" "" "" "$WDIR/walk.json" "" "" "$WDIR/readings.json" \
+      >"$WDIR/nopart/out.tsv" 2>"$WDIR/nopart/err.txt"
+check "W2b. CONTROL — a measurement with NO part field is still not escalated" \
+  "[ \"\$(grep -c '^ESCALATION'\$'\\t' '$WDIR/nopart/out.tsv')\" -eq 0 ]"
+
+# W3. …and a fact the LOOK already put in front of him is not handed over twice.
+W_SAID='{"score":"medium","summary":"Looked.","criteria":[{"id":"prd-1","text":"one list","status":"met","shot":"shot-walk-07-j7","note":"saw it"}],"gaps":[],"alsoChecked":[],"escalations":["The next-up month jumped from August 2026 on the start card to September 2026 after I clicked pull data and start, so the month did not carry from one screen to the next"]}'
+wscore "$WDIR/dup" "$W_SAID" "$WDIR/readings.json"
+check "W3. CONTROL — a fault the look already escalated is not repeated" \
+  "[ \"\$(grep -c '^ESCALATION'\$'\\t' '$WDIR/dup/out.tsv')\" -eq 1 ]"
+
+check "W4. a row graded on a later moment says which moment it rests on" \
+  "\"$PY\" -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(n.startswith(\"prd-1 was read at one moment\") for n in (d.get(\"ledgerNotes\") or [])) else 1)' '$WDIR/on/verdict.json'"
+check "W4. …and quotes what the same place said at the FIRST moment" \
+  "grep -q '3 of 5 buckets' '$WDIR/on/verdict.json'"
+
+check "W5. CONTROL — the outcome is NOT moved by it" \
+  "\"$PY\" -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if [c[\"status\"] for c in d[\"criteria\"]] == [\"met\",\"met\"] and d[\"counts\"][\"gap\"] == 0 else 1)' '$WDIR/on/verdict.json'"
+check "W5. CONTROL — …and a row that names NO changed reading gets no note" \
+  "! grep -q 'part-preview was read at one moment' '$WDIR/on/verdict.json'"
+
+# W6. CONTROL — a screen whose words never change produces nothing at all.
+cat >"$WDIR/still.json" <<'WS'
+{"steps": [
+  {"key": "j1", "do": "click", "status": "done",
+   "urlBefore": "http://localhost:1/x#b", "textBefore": "Last edited - and 3 of 5 buckets complete.",
+   "urlAfter": "http://localhost:1/x#b", "textAfter": "Last edited - and 3 of 5 buckets complete."}
+]}
+WS
+"$PY" "$REPO_ROOT/skills/lcars-xo/xo-readings.py" "$WDIR/still.json" "$WDIR/still-readings.json" >/dev/null 2>&1
+check "W6. CONTROL — a screen that never changed records no readings" \
+  "[ \"\$(\"$PY\" -c 'import json,sys;print(len(json.load(open(sys.argv[1]))[\"readings\"]))' '$WDIR/still-readings.json')\" -eq 0 ]"
+wscore "$WDIR/off" "$W_LEDGER" "$WDIR/still-readings.json"
+check "W6. CONTROL — …and then no row is accused of resting on one moment" \
+  "! grep -q 'was read at one moment' '$WDIR/off/verdict.json'"
+
+
+
+# ==========================================================================
 echo
 printf 'lcars xo-evidence: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

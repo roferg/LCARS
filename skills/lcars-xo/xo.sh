@@ -885,6 +885,17 @@ xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json] 
     cp "$walk" "$into/walk.json" 2>/dev/null || true
     chmod a-w "$into/walk.json" 2>/dev/null || true
   fi
+  # THE SAME PLACE AT EVERY MOMENT (S224 fix round 3). Computed from the walk
+  # record beside it, never declared by anyone: which strips of a screen read
+  # differently from one moment of the walk to the next. It goes through this
+  # same read-only door because a criterion about something that is on screen
+  # the whole way through has SEVERAL moments it could be judged at, and the
+  # look was settling those on whichever picture it reached for.
+  if [ -s "$xodir_of/readings.json" ]; then
+    rm -f "$into/readings.json" 2>/dev/null || true
+    cp "$xodir_of/readings.json" "$into/readings.json" 2>/dev/null || true
+    chmod a-w "$into/readings.json" 2>/dev/null || true
+  fi
   if [ -s "$xodir_of/journey.json" ]; then
     rm -f "$into/journey.json" 2>/dev/null || true
     cp "$xodir_of/journey.json" "$into/journey.json" 2>/dev/null || true
@@ -2465,6 +2476,18 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   xo_pair_parts "$dir" "$xodir"
   xo_measure_walk "$dir" "$xodir" "$obsfile"
 
+  # --- 3b-iii. THE SAME PLACE, READ AT EVERY MOMENT (S224 fix round 3) ------
+  # A walk is a sequence of pictures, and a criterion about something that is
+  # on screen the whole way through therefore has several moments it could be
+  # judged at. Measured on the captain's own build: a row was graded on a late
+  # picture while the walk's own record showed that strip of the page reading
+  # differently at its first three moments. This writes those moments down, from
+  # the driver's record and nothing else. It judges NONE of them — a value that
+  # changes is usually a value doing its job — it only makes sure the eye is
+  # looking at all of them instead of one.
+  "$XO_PY" "$SKILL_DIR/xo-readings.py" "$xodir/walk.json" "$xodir/readings.json" \
+    >/dev/null 2>&1 || true
+
   # --- 3c. THE PROJECT'S OWN TESTS (S211) — run by the SKILL, between the
   # capture and the worker round. A screenshot cannot answer "batches survive a
   # restart"; the captain's own suite can. Run ONCE, here, in the launched
@@ -2622,7 +2645,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
               "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
-              "$xodir/unlisted.json" 2>/dev/null)" || report=""
+              "$xodir/unlisted.json" "$xodir/readings.json" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   local escalations=""
   while IFS= read -r line; do
