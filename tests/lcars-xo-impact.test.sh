@@ -127,9 +127,27 @@ verdict b3b high "$(row prd-1 high met)" "$(row prd-2 medium met)" \
   "$(row t-1-ac1 medium met)" "$(row t-1-ac2 low gap)"
 run b3b
 check "B3b. score is HIGH — polish never moves the grade" "[ \"\$(score b3b)\" = high ]"
-check "B3b. the paragraph names the small thing that DIDN'T work, and that it does not count" \
-  "v b3b whyThisGrade | grep -q \"1 smaller item didn't work, and it doesn't change the grade: the bar has a one pixel border\""
+# CHANGED, S225 — AND THE OLD ASSERTION IS THE DEFECT IN ONE LINE. `t-1-ac2`
+# carries `source: "plan"`: it is a TICKET ACCEPTANCE CRITERION. The old check
+# demanded the grade's own reasoning paragraph narrate it — which is exactly the
+# averaging the captain ruled against on 2026-09-22, at the scale where it cost
+# him a grade (58 ticket criteria against 9 things a person can do). It is not
+# dropped: it is counted, by name, on the contract line, and the paragraph now
+# says out loud that it does not speak for that list.
+check "B3b. the grade's paragraph no longer narrates a ticket criterion" \
+  "! v b3b whyThisGrade | grep -q 'one pixel border' \
+   && v b3b whyThisGrade | grep -q 'ticket contract are on their own lines'"
+check "B3b. …and the small thing that didn't work is counted on the contract line" \
+  "[ \"\$(v b3b groups.contract.didntWork)\" = 1 ] && [ \"\$(v b3b groups.contract.covered)\" = 2 ]"
 check "B3b. no pile-up flag for one small thing" "[ -z \"\$(v b3b polishFlag)\" ]"
+# CONTROL for the change above — a low-impact PRD row that didn't work is in the
+# PERSON group, and its sentence is word for word the one S216 fix round 2 wrote.
+verdict b3bc high "$(row prd-1 high met)" "$(row prd-2 low gap)" \
+  "$(row t-1-ac1 medium met)" "$(row t-1-ac2 medium met)"
+run b3bc
+check "B3b. CONTROL — a low PRD row that didn't work keeps the old sentence, verbatim" \
+  "[ \"\$(score b3bc)\" = high ] \
+   && v b3bc whyThisGrade | grep -q \"1 smaller item didn't work, and it doesn't change the grade: the health bar is red\""
 
 echo "B4. nothing checkable / zero criteria → LOW (never ship as is)"
 verdict b4 high "$(row prd-1 medium untested)" "$(row prd-2 medium untested)" \
@@ -202,14 +220,25 @@ run b11b
 check "B11. an extra invented id beside a full contract is dropped from the counts" \
   "[ \"\$(v b11b counts.met)\" = 4 ] && [ \"\$(score b11b)\" = high ]"
 
-echo "B12. MEDIUM caused ONLY by a medium couldn't-check → an alternative reading"
+echo "B12. a medium nobody could check → the grade holds, and a reading beside it"
+# CHANGED, S225 CHANGE 03, AND THE BRIEF NAMES THIS RULE BY NAME. The old check
+# asserted that a medium NOBODY COULD SEE dragged a HIGH down to MEDIUM
+# (`medium-open` firing on `mediumBlind`). That is a failure of OURS reading as
+# a doubt about HIS build — the exact thing the captain ruled out. The grade now
+# holds at HIGH; the blind spot is louder, not quieter, everywhere else.
 verdict b12 medium "$(row prd-1 high met)" "$(row prd-2 medium untested '"couldNotCheck": "unobservable"')" \
   "$(row t-1-ac1 medium met)" "$(row t-1-ac2 low met)"
 run b12
-check "B12. the grade stays MEDIUM (his table)" "[ \"\$(score b12)\" = medium ]"
-check "B12. an altReading is recorded beside it" \
-  "v b12 altReading | grep -qi 'risk-based reviewer might sign this off'"
-check "B12. no altReading on a HIGH" "[ -z \"\$(v b3b altReading)\" ]"
+check "B12. a medium nobody could check no longer drags the grade down" \
+  "[ \"\$(score b12)\" = high ]"
+check "B12. …and the reading beside it is now the CAUTIOUS one, naming what to check" \
+  "v b12 altReading | grep -qi 'cautious reviewer' && v b12 altReading | grep -q 'prd-2' \
+   && v b12 altReading | grep -qi 'not a fault in the build'"
+check "B12. …the headline says it could not check it, in the same breath as the grade" \
+  "v b12 derivation | grep -qi 'could not check 1 thing'"
+check "B12. …and it is listed for us to fix, with what defeated it" \
+  "[ \"\$(v b12 myChecking.total)\" = 1 ] && v b12 myChecking.couldntSee | grep -q unobservable"
+check "B12. no altReading when nothing was left unchecked" "[ -z \"\$(v b3b altReading)\" ]"
 check "B12. no altReading on a LOW" "[ -z \"\$(v b1 altReading)\" ]"
 
 echo "B13. lots of small things → a flag, never a grade change"
@@ -335,28 +364,65 @@ realrun c2 copilot-2 "" "" "" named
 check "R1. copilot-2 is still HIGH (his table: those 7 are low)" "[ \"\$(score c2)\" = high ]"
 check "R1. why-this-grade no longer claims everything else worked" \
   "! v c2 whyThisGrade | grep -q 'everything else you asked for, worked'"
-check "R1. …it says 7 smaller items could not be checked and do not change the grade" \
-  "v c2 whyThisGrade | grep -q \"7 smaller items I could not check, and they don't change the grade\""
-check "R1. …and names them in plain words (not ids only) — at most three, then how many more" \
-  "v c2 whyThisGrade | grep -q 'DEV_HP_BAR_WIDTH' && v c2 whyThisGrade | grep -q 'and 4 more — see the list'"
+# CHANGED, S225. Every one of copilot-2's seven unchecked rows carries
+# `source: "plan"` (measured: t-001-ac9, t-002-ac5/6/7, t-003-ac2/4/5). The old
+# assertions demanded the HEADLINE and the grade's reasoning carry seven ticket
+# criteria — 23 of that mission's 31 rows are ticket criteria, and drowning the
+# 8 PRD rows in them is the defect this session exists to close. They are not
+# dropped: they are the contract line, counted, and named in full under *What I
+# could not check* and in `myChecking`.
+check "R1. the 7 nobody could answer are on the CONTRACT line, not in the grade's reasoning" \
+  "[ \"\$(v c2 groups.contract.uncovered)\" = 7 ] && [ \"\$(v c2 groups.contract.covered)\" = 16 ] \
+   && ! v c2 whyThisGrade | grep -q 'smaller item'"
+check "R1. …and they are still named in plain words, each with what defeated it" \
+  "[ \"\$(v c2 myChecking.total)\" = 7 ] && v c2 myChecking.couldntSee | grep -q 'DEV_HP_BAR_WIDTH' \
+   && v c2 myChecking.couldntSetUp | grep -q unreachable"
+check "R1. …and the captain reads them by name in the report" \
+  "grep -q 'DEV_HP_BAR_WIDTH' '$TMPROOT/c2/report.md'"
 check "R1. …and never calls an unchecked item one that did not work" \
   "! v c2 whyThisGrade | grep -qi \"didn't work\" && ! v c2 whyThisGrade | grep -q 'Polish noted'"
 verdict r1b high "$(row prd-1 high met)" "$(row prd-2 medium met)" \
   "$(row t-1-ac1 low gap)" "$(row t-1-ac2 low untested)"
 run r1b
-check "R1. a low that didn't work and a low nobody checked are said apart" \
-  "v r1b whyThisGrade | grep -q \"1 smaller item didn't work, and it doesn't change the grade: the bar sits in the top right corner\" \
-   && v r1b whyThisGrade | grep -q \"1 smaller item I could not check, and it doesn't change the grade: the bar has a one pixel border\""
+# CHANGED for the same reason: both of r1b's low rows are ticket criteria.
+check "R1. a ticket criterion that didn't work and one nobody checked are still said apart" \
+  "[ \"\$(v r1b groups.contract.didntWork)\" = 1 ] && [ \"\$(v r1b groups.contract.uncovered)\" = 1 ]"
+# CONTROL — the SAME two outcomes on two PRD rows still read word for word as
+# S216 fix round 2 wrote them.
+verdict r1bc high "$(row prd-1 high met)" "$(row prd-2 low gap)" \
+  "$(row t-1-ac1 low untested)" "$(row t-1-ac2 medium met)" "$(row journey-x low untested)"
+cat >"$TMPROOT/r1bc-criteria.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "the health bar is on screen and drops when you are hit", "source": "prd", "primary": true},
+  {"id": "prd-2", "text": "the health bar is red", "source": "prd", "primary": true},
+  {"id": "journey-x", "text": "Walking the flow: take a hit — the bar drops.", "source": "journey", "primary": true},
+  {"id": "t-1-ac1", "text": "the bar sits in the top right corner", "source": "plan"},
+  {"id": "t-1-ac2", "text": "the bar has a one pixel border", "source": "plan"}
+ ]}
+C
+run r1bc "$TMPROOT/r1bc-criteria.json"
+check "R1. CONTROL — two PRD/journey lows, said apart, in the old words exactly" \
+  "v r1bc whyThisGrade | grep -q \"1 smaller item didn't work, and it doesn't change the grade: the health bar is red\" \
+   && v r1bc whyThisGrade | grep -q \"1 smaller item I could not check, and it doesn't change the grade: Walking the flow\""
 
 echo "R2 (D2). the headline says worked / didn't / couldn't check truthfully"
 check "R2. copilot-2's headline no longer says 7 small things did not work" \
   "! v c2 derivation | grep -q 'did not' && ! v c2 derivation | grep -qi \"didn't\""
-check "R2. …it says 7 smaller items could not be checked" \
-  "v c2 derivation | grep -q '7 smaller items I could not check'"
-check "R2. the score word's meaning does not say only polish is left" \
-  "! v c2 scoreMeaning | grep -q 'only polish is left' && v c2 scoreMeaning | grep -q 'could not check'"
-check "R2. a low that didn't work is said as didn't work in the headline" \
-  "v r1b derivation | grep -q \"1 smaller item didn't work\" && v r1b derivation | grep -q '1 smaller item I could not check'"
+# CHANGED, S225 — same seven ticket criteria as R1. The headline no longer
+# speaks for the ticket contract at all, so the one thing it must not do is
+# claim it: it says what it DOES cover, and points at the other two lines.
+check "R2. …and the headline never claims everything you asked for is in the build" \
+  "! v c2 derivation | grep -q 'everything you asked for is in the build' \
+   && v c2 derivation | grep -qi 'everything a person can do worked'"
+check "R2. the score word's meaning does not say only polish is left, and names the other lines" \
+  "! v c2 scoreMeaning | grep -q 'only polish is left' \
+   && v c2 scoreMeaning | grep -q 'ticket contract are on their own lines'"
+check "R2. a ticket criterion that didn't work never reads as one nobody checked" \
+  "[ \"\$(v r1b groups.contract.gap)\" = 1 ] && [ \"\$(v r1b groups.contract.couldntSee)\" = 1 ]"
+check "R2. CONTROL — a PRD low that didn't work is still said so in the headline" \
+  "v r1bc derivation | grep -q \"1 smaller item didn't work\" \
+   && v r1bc derivation | grep -q '1 smaller item I could not check'"
 
 echo "R3 (D3). a MEDIUM's known issue names the FAULT, not the requirement"
 cat >"$TMPROOT/two-criteria.json" <<'C'
@@ -708,8 +774,13 @@ for b in bad: print("  " + b)
 PYX
 check "W1. why-this-grade ≤ 4 sentences and ≤ 800 chars; headline ≤ 25 words; no markdown; never mid-phrase (real ledgers)" \
   "grep -qx OK '$TMPROOT/w1.txt' || { cat '$TMPROOT/w1.txt'; false; }"
+# CHANGED, S225 — the CAP is the rule under test and it is unchanged; only the
+# size of the list it caps moved. Look A's paragraph used to name items off all
+# 31 rows (8 PRD + 23 ticket criteria) and say "and 16 more"; it now names them
+# off the 6 that are the point of the mission and says "and 3 more". Both the
+# three-name cap and the never-list-the-rest rule are asserted exactly as before.
 check "W1. at most three names, then how many more" \
-  "grep '^A ' '$TMPROOT/w1.txt' | grep -q 'and 16 more' && ! grep '^A ' '$TMPROOT/w1.txt' | grep -q 'healthFillRatio(20,10)'"
+  "grep '^A ' '$TMPROOT/w1.txt' | grep -q 'and 3 more' && ! grep '^A ' '$TMPROOT/w1.txt' | grep -q 'healthFillRatio(20,10)'"
 check "W1. distinct checks keep their distinguishing arguments (healthBarColor(0) vs (1))" \
   "grep -qx OK '$TMPROOT/w1.txt'"
 check "W2. a picture-only mission's headline opens on a capital, with the short lead" \
@@ -752,6 +823,178 @@ check "S223-D2. a look-written reason is NOT flagged" \
   "[ -z \"\$(v d2 criteria.0.reasonByHarness)\" ]"
 check "S223-D2. both prompts ask the look to write \`action\`" \
   "grep -q '\"action\"' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md' && grep -q '\"action\"' '$REPO_ROOT/skills/lcars-xo/prompts/recheck.md'"
+
+# ═══ S225 — THREE GROUPS, AND FOUR OUTCOMES OF WHICH ONLY TWO GRADE ══════════
+#
+# THE MEASURED DEFECT. Number One graded the captain's build LOW; he drove it
+# himself and scored it HIGH. Its own record says why:
+#
+#   ticket acceptance criteria  58 rows  57%   39 answered · 19 nothing covers
+#   PRD statements              21 rows  21%   18 met · 2 couldn't check · 1 fault
+#   parts from the drawing      14 rows  14%   5 met · 3 faults · 6 couldn't check
+#   a person clicking through    9 rows   9%   8 met · 1 couldn't check
+#
+# The thing a person can actually SEE was under a tenth of the grade and scored
+# 8 of 9 — then got averaged against 58 ticket criteria a walk can never answer.
+# Every criterion has carried a `source` since it was written; NOTHING
+# downstream ever read it. That was the bug.
+#
+# CHANGE 01 — the ledger splits three ways by `source`, nothing counted twice
+# and nothing dropped:
+#   1. journey + prd → "Can a person do what it promises?" — THE HEADLINE.
+#   2. drawing       → "Does it look like your drawing?"   — its own graded line.
+#   3. plan          → "Is the contract covered?"          — NOT A GRADE AT ALL.
+# The captain ruled on 2026-09-22 that the one word the rail and the card show
+# reads GROUP 1 — not the worst of the three.
+#
+# CHANGE 03 — four first-class outcomes: worked / didn't work / I couldn't see
+# it / I couldn't set it up. ONLY THE FIRST TWO MAY TOUCH THE GRADE. "A failure
+# of ours should never read as a doubt about your build."
+echo "S225. three groups, four outcomes"
+
+# A contract with all four sources on it at once.
+cat >"$TMPROOT/four-sources.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "you can save a reading and see it in the list", "source": "prd", "primary": true},
+  {"id": "prd-2", "text": "the list keeps its order after a reload", "source": "prd", "primary": true},
+  {"id": "journey-save", "text": "Walking the flow: Save a reading — the row appears.", "source": "journey", "primary": true, "notDrawn": true},
+  {"id": "part-saveBtn", "text": "the Save button matches the drawing", "source": "drawing", "primary": true},
+  {"id": "t-1-ac1", "text": "the store writes through to disk", "source": "plan", "primary": false},
+  {"id": "t-1-ac2", "text": "the reducer rejects a blank reading", "source": "plan", "primary": false}
+ ]}
+C
+# present <name> <dotted path> — is the key THERE at all (not merely empty)?
+present() { "$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    if not isinstance(d, dict) or k not in d: sys.exit(1)
+    d = d[k]
+sys.exit(0)' "$TMPROOT/$1/verdict.json" "$2" 2>/dev/null; }
+
+# ── G. THE HEADLINE IS THE PERSON GROUP ─────────────────────────────────────
+# The captain's own run, in miniature: the person group is clean, the drawing
+# is a mess, and two ticket criteria nobody could answer. He scored this HIGH.
+verdict g1 low "$(row prd-1 high met)" "$(row prd-2 medium met)" \
+  "$(row journey-save high met)" "$(row part-saveBtn high gap)" \
+  "$(row t-1-ac1 high untested)" "$(row t-1-ac2 medium untested)"
+run g1 "$TMPROOT/four-sources.json"
+check "S225-G1. every ledger row carries the source it was written with" \
+  "[ \"\$(v g1 criteria.0.source)\" = prd ] && [ \"\$(v g1 criteria.3.source)\" = drawing ] \
+   && [ \"\$(v g1 criteria.4.source)\" = plan ]"
+check "S225-G1. …and the group that source puts it in" \
+  "[ \"\$(v g1 criteria.0.group)\" = person ] && [ \"\$(v g1 criteria.2.group)\" = person ] \
+   && [ \"\$(v g1 criteria.3.group)\" = drawing ] && [ \"\$(v g1 criteria.4.group)\" = contract ]"
+check "S225-G2. THE DEFECT: a broken drawing and two unanswered tickets no longer set the headline" \
+  "[ \"\$(score g1)\" = high ]"
+check "S225-G2. …and the headline says which group it read" \
+  "[ \"\$(v g1 scoreGroup)\" = person ]"
+check "S225-G3. the person group's own grade IS the headline word" \
+  "[ \"\$(v g1 groups.person.grade)\" = \"\$(score g1)\" ]"
+check "S225-G3. the drawing keeps its own graded line, and it is LOW" \
+  "[ \"\$(v g1 groups.drawing.grade)\" = low ]"
+check "S225-G3. …and it is never hidden: the report prints it under the grade" \
+  "grep -qi 'Does it look like your drawing' '$TMPROOT/g1/report.md'"
+check "S225-G3. the report asks the person question and marks it as the grade" \
+  "grep -qi 'Can a person do what it promises' '$TMPROOT/g1/report.md'"
+check "S225-G4. the contract group is a COVERAGE COUNT, never a grade" \
+  "! present g1 groups.contract.grade && [ \"\$(v g1 groups.contract.kind)\" = coverage ]"
+check "S225-G4. …and counts what has an answer behind it against what has nothing" \
+  "[ \"\$(v g1 groups.contract.total)\" = 2 ] && [ \"\$(v g1 groups.contract.covered)\" = 0 ] \
+   && [ \"\$(v g1 groups.contract.uncovered)\" = 2 ]"
+check "S225-G4. …and the report says so in his words, without grading it" \
+  "grep -qi 'Is the contract covered' '$TMPROOT/g1/report.md'"
+check "S225-G5. nothing counted twice, nothing dropped — the groups tile the ledger" \
+  "$PY -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+g=d[\"groups\"]
+sys.exit(0 if sum(x[\"total\"] for x in g.values())==len(d[\"criteria\"])==6 else 1)' '$TMPROOT/g1/verdict.json'"
+check "S225-G5. the person group holds the prd AND the journey rows" \
+  "[ \"\$(v g1 groups.person.total)\" = 3 ] && [ \"\$(v g1 groups.drawing.total)\" = 1 ]"
+check "S225-G6. the whole-ledger counts are untouched — an old reader still reads them" \
+  "[ \"\$(v g1 counts.met)\" = 3 ] && [ \"\$(v g1 counts.gap)\" = 1 ] && [ \"\$(v g1 counts.untested)\" = 2 ]"
+check "S225-G6. the groups reach the shell as data, one record per group" \
+  "[ \"\$(grep -c '^GROUP' '$TMPROOT/g1/out.txt')\" = 3 ] && grep -q '^SCORE_GROUP.person' '$TMPROOT/g1/out.txt'"
+
+# CONTROL for G2 — a fault in the PERSON group still lands on the headline.
+verdict g2 high "$(row prd-1 high gap)" "$(row prd-2 medium met)" \
+  "$(row journey-save high met)" "$(row part-saveBtn high met)" \
+  "$(row t-1-ac1 high met)" "$(row t-1-ac2 medium met)"
+run g2 "$TMPROOT/four-sources.json"
+check "S225-G2. CONTROL — a high PRD row that didn't work is still LOW" \
+  "[ \"\$(score g2)\" = low ] && [ \"\$(v g2 core)\" = broken ]"
+# CONTROL — a journey step that didn't work is the person group too.
+verdict g2j high "$(row prd-1 high met)" "$(row prd-2 medium met)" \
+  "$(row journey-save high gap)" "$(row part-saveBtn high met)" \
+  "$(row t-1-ac1 high met)" "$(row t-1-ac2 medium met)"
+run g2j "$TMPROOT/four-sources.json"
+check "S225-G2. CONTROL — a walked step that didn't work is still LOW" \
+  "[ \"\$(score g2j)\" = low ]"
+# A ticket AC that DIDN'T work is a real fault — but it is the contract's line,
+# not the headline's, and it is counted where it belongs.
+verdict g3 high "$(row prd-1 high met)" "$(row prd-2 medium met)" \
+  "$(row journey-save high met)" "$(row part-saveBtn high met)" \
+  "$(row t-1-ac1 high gap)" "$(row t-1-ac2 medium met)"
+run g3 "$TMPROOT/four-sources.json"
+check "S225-G7. a ticket AC that didn't work does not set the headline" \
+  "[ \"\$(score g3)\" = high ]"
+check "S225-G7. …and it is still counted, and still named, on the contract line" \
+  "[ \"\$(v g3 groups.contract.covered)\" = 2 ] && [ \"\$(v g3 groups.contract.gap)\" = 1 ]"
+
+# ── O. FOUR OUTCOMES ────────────────────────────────────────────────────────
+verdict o1 low "$(row prd-1 high met)" "$(row prd-2 medium gap)" \
+  "$(row journey-save low untested '"couldNotCheck": "unobservable"')" \
+  "$(row part-saveBtn low untested '"couldNotCheck": "unreachable"')" \
+  "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
+run o1 "$TMPROOT/four-sources.json"
+check "S225-O1. met is worked, gap is didn't work" \
+  "[ \"\$(v o1 criteria.0.outcome)\" = worked ] && [ \"\$(v o1 criteria.1.outcome)\" = didnt-work ]"
+check "S225-O1. an unobservable row is 'I couldn't see it'" \
+  "[ \"\$(v o1 criteria.2.outcome)\" = couldnt-see ]"
+check "S225-O1. an unreachable row is 'I couldn't set it up'" \
+  "[ \"\$(v o1 criteria.3.outcome)\" = couldnt-set-up ]"
+check "S225-O1. status is untouched, so an old reader degrades instead of crashing" \
+  "[ \"\$(v o1 criteria.2.status)\" = untested ] && [ \"\$(v o1 criteria.3.status)\" = untested ] \
+   && [ \"\$(v o1 criteria.0.status)\" = met ]"
+check "S225-O2. what it could not set up is LISTED FOR US, naming what defeated it" \
+  "v o1 myChecking.couldntSetUp | grep -q part-saveBtn && v o1 myChecking.couldntSee | grep -q journey-save"
+check "S225-O2. …and the list says plainly it is our failure, not his build" \
+  "v o1 myChecking.note | grep -qi 'not a fault in your build'"
+
+# THE RULING, MEASURED. An untested row must not drag the grade down.
+verdict o3 low "$(row prd-1 high met)" "$(row prd-2 high untested)" \
+  "$(row journey-save high met)" "$(row part-saveBtn low met)" \
+  "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
+run o3 "$TMPROOT/four-sources.json"
+check "S225-O3. a high nobody could check, beside highs that worked, no longer forces LOW" \
+  "[ \"\$(score o3)\" = high ]"
+check "S225-O3. …and the blind spot is still on the record, beside the grade" \
+  "[ \"\$(v o3 core)\" = unverified ] && v o3 whyThisGrade | grep -qi 'could not check'"
+verdict o4 low "$(row prd-1 high met)" "$(row prd-2 medium untested)" \
+  "$(row journey-save high met)" "$(row part-saveBtn low met)" \
+  "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
+run o4 "$TMPROOT/four-sources.json"
+check "S225-O4. a medium nobody could check no longer drags HIGH down to MEDIUM" \
+  "[ \"\$(score o4)\" = high ]"
+check "S225-O4. …and the headline never claims everything you asked for is there" \
+  "! v o4 derivation | grep -q 'everything you asked for is in the build'"
+check "S225-O4. …it says what it could not check, in the same breath" \
+  "v o4 derivation | grep -qi 'could not check'"
+# CONTROL — worked and didn't-work still grade exactly as they did.
+verdict o5 low "$(row prd-1 high met)" "$(row prd-2 medium gap)" \
+  "$(row journey-save high met)" "$(row part-saveBtn low met)" \
+  "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
+run o5 "$TMPROOT/four-sources.json"
+check "S225-O5. CONTROL — a medium that DIDN'T work is still MEDIUM" \
+  "[ \"\$(score o5)\" = medium ]"
+# …and the floor holds: when NOTHING that is the point was checked, nothing is
+# vouched for. That is the nothing-checked family, not a blind row dragging.
+verdict o6 high "$(row prd-1 high untested)" "$(row prd-2 high untested)" \
+  "$(row journey-save high untested)" "$(row part-saveBtn low met)" \
+  "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)"
+run o6 "$TMPROOT/four-sources.json"
+check "S225-O6. every point-of-the-mission row blind → LOW, nothing is vouched for" \
+  "[ \"\$(score o6)\" = low ] && [ \"\$(v o6 core)\" = unverified ]"
 
 echo
 printf 'lcars xo-impact: %d passed, %d failed\n' "$pass" "$fail"

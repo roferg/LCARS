@@ -384,10 +384,29 @@ check "B6 — the PRD's own criterion (no drawnAt at all) is also unaffected" \
 d=json.load(open(sys.argv[1]))
 e=[c for c in d[\"criteria\"] if c[\"id\"]==\"prd-1\"][0]
 sys.exit(0 if e[\"status\"] == \"met\" else 1)' '$scdir/nodrawing-verdict.json'"
-# S216: the rows carry no impact, so each counts as the point of the mission,
-# and a point nobody could check is LOW (the captain's two-part score).
-check "B6 — the score reflects the untested criterion (LOW, not the worker's false HIGH)" \
-  "grep -q '^SCORE.low' '$scdir/nodrawing-stdout.txt'"
+# CHANGED, S225. S210's cure is the four checks above and they are untouched:
+# the worker's confident "matches the drawing perfectly" does NOT stand, and the
+# row comes back untested with the one honest sentence. What this line added was
+# that the refusal ALSO pulled the captain's grade to LOW — and `t-1-ac1` is a
+# TICKET criterion (`source: "plan"`), so that was the ticket list outvoting what
+# a person can do (change 01) on top of our own missing drawing reading as a
+# doubt about his build (change 03). Both are struck out by the captain's ruling
+# of 2026-09-22. What must still hold is that the refusal reaches him: the row is
+# on OUR list, named, with what defeated it, and it is counted as answered by
+# nothing on the contract line.
+check "B6 — the refusal is ours, not his: it could not be SET UP, there being no drawing" \
+  "$PY -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+e=[c for c in d[\"criteria\"] if c[\"id\"]==\"t-1-ac1\"][0]
+mc=[r for r in d[\"myChecking\"][\"couldntSetUp\"] if r[\"id\"]==\"t-1-ac1\"]
+sys.exit(0 if e[\"outcome\"] == \"couldnt-set-up\" and mc else 1)' '$scdir/nodrawing-verdict.json'"
+check "B6 — …and the contract line records that nothing answered it" \
+  "$PY -c 'import json,sys
+g=json.load(open(sys.argv[1]))[\"groups\"][\"contract\"]
+sys.exit(0 if g[\"uncovered\"] == 1 and g[\"total\"] == 2 else 1)' '$scdir/nodrawing-verdict.json'"
+check "B6 — …and the score is never a clean bill: it does not claim everything he asked for" \
+  "! $PY -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"derivation\"])' \
+      '$scdir/nodrawing-verdict.json' | grep -q 'everything you asked for is in the build'"
 
 # --- xo-criteria.py: `hasDrawing` itself, the fact the guard above reads -----
 crdir="$TMPROOT/criteria"; mkdir -p "$crdir/with-drawing/attachments" "$crdir/without-drawing"

@@ -1198,6 +1198,20 @@ ev_verdict() {
 }
 GAP_PRIMARY='{"title":"no add control","expected":"a task can be added from the board (PRD §2)","saw":"no control anywhere on the page","shots":["shot-01"],"kind":"contradiction","criterion":"prd-2"}'
 GAP_TICKET='{"title":"ADD is above the list","expected":"the ADD button sits under the list","saw":"it is above it","shots":["shot-02"],"kind":"contradiction","criterion":"t-1-ac1"}'
+# S225 — THE SAME CONTRADICTION, ON A PRD STATEMENT INSTEAD OF A TICKET. Since
+# S225 the headline grade reads the PERSON group (PRD + journey) alone, so a
+# MEDIUM — and with it the "go with this known issue" sentence whose FORMAT the
+# checks below are about — can only come from a PRD statement that did not work.
+# Nothing about those format rules changed; the row that triggers them moved off
+# the ticket list, which is the whole point of the session.
+GAP_PRD_MEDIUM='{"title":"ADD is above the list","expected":"the ADD button sits under the list","saw":"it is above it","shots":["shot-02"],"kind":"contradiction","criterion":"prd-2"}'
+ev_verdict_prd_medium() {
+  printf '{"score":"medium","summary":"Looked at the board.","criteria":['
+  printf '{"id":"prd-1","text":"open tasks in one list","impact":"high","status":"met","shot":"shot-01","note":"saw the list"},'
+  printf '{"id":"prd-2","text":"add from the board","impact":"medium","status":"gap","shot":"shot-02","note":"it is above it"},'
+  printf '{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"met","shot":"shot-02","note":"under it"}'
+  printf '],"gaps":[%s],"alsoChecked":["the header"],"escalations":[]}' "$GAP_PRD_MEDIUM"
+}
 GAP_INTERP='{"title":"the header is teal","expected":"the drawing is silent on the header colour","saw":"teal","shots":["shot-01"],"kind":"interpretation","criterion":"prd-1"}'
 
 # --------------------------------------------------------------------------
@@ -1286,10 +1300,25 @@ ev_row() { # <name> <c1> <c2> <c3> <worker-score> <gaps> <want-score> <want-stat
   EV_LAST_M="$m"
 }
 EV_ROW=0
+# CHANGED, S225, ROWS 2 AND 4 — AND THIS MATRIX IS THE DEFECT WRITTEN OUT. In
+# this fixture `t-1-ac1` is a TICKET acceptance criterion (xo-criteria.py stamps
+# it `source: "plan"` off plan.json); `prd-1`/`prd-2` are the PRD. Row 2 asserted
+# that a ticket criterion alone pulled the captain's headline to MEDIUM while
+# every PRD statement was met, and row 4 asserted that a ticket criterion NOBODY
+# COULD CHECK did the same. Those are the two mechanisms — a ticket list
+# outvoting what a person can do (change 01), and our own blind spot reading as
+# a doubt about his build (change 03) — that graded his build LOW while he
+# scored it HIGH himself.
+#
+# NOTHING IS DROPPED. Both rows are counted, by name, on the contract line, and
+# the ticket contradiction in row 2 is still filed as a fault (B10f2 below).
+# ROWS 1, 3 AND 5 ARE THE CONTROLS and are untouched: a PRD statement seen to
+# fail is still LOW, an all-met look is still HIGH, an interpretation still
+# never counts.
 ev_row "every criterion MET"                        met met met high ''            high   finished
-ev_row "one GAP contradiction, no PRD criterion hit" met met gap  medium "$GAP_TICKET" medium engaged
+ev_row "a TICKET criterion contradicted, every PRD statement met" met met gap medium "$GAP_TICKET" high finished
 ev_row "a PRD (primary) criterion contradicted"      met gap met  low    "$GAP_PRIMARY" low    engaged
-ev_row "UNTESTED visual criterion, everything else MET" met met untested high '' medium engaged
+ev_row "a TICKET criterion nobody could check, everything else MET" met met untested high '' high finished
 ev_row "an INTERPRETATION is reported, never filed"  met met met  high   "$GAP_INTERP" high   finished
 check "B10c. …and the interpretation is still IN the report" \
   "grep -q '\"kind\": \"interpretation\"' '$EV_LAST_M/xo/verdict.json'"
@@ -1398,7 +1427,7 @@ check "B10e. …and the refusal quotes the cap that was actually in force" \
 repoF="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mF="$(plant_verify "$repoF" "lcars-20260913-007")"
 : >"$XO_WORKER_LOG"; : >"$XO_LABEL_LOG"
-XO_EV_BODY="$(ev_verdict met met gap medium "$GAP_TICKET")" \
+XO_EV_BODY="$(ev_verdict_prd_medium)" \
   xo_evaluate "$repoF" "lcars-20260913-007" >/dev/null 2>&1
 check "B10f. lcars:xo:medium is ADDED to the issue" \
   "grep -q -- '--add lcars:xo:medium' '$XO_LABEL_LOG'"
@@ -1409,6 +1438,25 @@ check "B10f. the score is on the state block too (the local board's read)" \
   "[ \"\$(xo_state '$mF' score)\" = 'medium' ]"
 check "B10f. the gap is in the report WITH the shot that shows it" \
   "grep -q '\"shots\"' '$mF/xo/verdict.json' && grep -q 'shot-02' '$mF/xo/verdict.json'"
+
+# S225 — AND NOTHING IS DROPPED BY THE SPLIT, PROVED ON THE WIRED PATH. The
+# SAME contradiction on a TICKET criterion no longer sets the captain's grade
+# (that is the ruling), and it is still filed, still named, still counted —
+# on the contract line, where he can act on it.
+repoFT="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+mFT="$(plant_verify "$repoFT" "lcars-20260913-0072")"
+: >"$XO_WORKER_LOG"; : >"$XO_LABEL_LOG"
+XO_EV_BODY="$(ev_verdict met met gap medium "$GAP_TICKET")" \
+  xo_evaluate "$repoFT" "lcars-20260913-0072" >/dev/null 2>&1
+check "B10f. a TICKET contradiction alone no longer sets the headline" \
+  "[ \"\$(xo_state '$mFT' score)\" = 'high' ] && grep -q -- '--add lcars:xo:high' '$XO_LABEL_LOG'"
+check "B10f. …and the contract line still counts it, and still says it didn't work" \
+  "python3 -c 'import json,sys
+g=json.load(open(\"$mFT/xo/verdict.json\"))[\"groups\"][\"contract\"]
+sys.exit(0 if g[\"total\"]==1 and g[\"covered\"]==1 and g[\"didntWork\"]==1 and \"grade\" not in g else 1)' \
+   && grep -qi 'Is the contract covered' '$mFT/xo/report.md'"
+check "B10f. …and the fault itself is still written out, with its shot" \
+  "grep -q 'ADD is above the list' '$mFT/xo/report.md' && grep -q 'shot-02' '$mFT/xo/verdict.json'"
 
 # --------------------------------------------------------------------------
 # B10i. THE LABEL EXISTS BEFORE THE SWAP TRIES TO USE IT.
@@ -1450,8 +1498,8 @@ check "B10f2. …the rows still carry the machine verdicts, unchanged" \
 check "B10f2. …the score and the DERIVATION that produced it, in his words" \
   "grep -q 'How close this is to what you asked for: MEDIUM' '$mF/xo/report.md'"
 check "B10f2. …with the criterion ids AFTER the human sentence, never before it" \
-  "grep -q 'The point of the mission works; go with this known issue — ADD is above the list (t-1-ac1)' '$mF/xo/report.md' \
-   && grep -q 'ADD is above the list — you asked for the ADD button sits under the list; the build gives it is above it (t-1-ac1)' '$mF/xo/report.md'"
+  "grep -q 'The point of the mission works; go with this known issue — ADD is above the list (prd-2)' '$mF/xo/report.md' \
+   && grep -q 'ADD is above the list — you asked for the ADD button sits under the list; the build gives it is above it (prd-2)' '$mF/xo/report.md'"
 check "B10f2. …and the gap, named with the SHOT that shows it (never an image)" \
   "grep -q 'ADD is above the list' '$mF/xo/report.md' && grep -q 'shot-02' '$mF/xo/report.md'"
 check "B10f2. a path with no ledger still owes the captain a sentence" \
@@ -2729,13 +2777,17 @@ echo "B17. the report and the escalation name the thing, not the id"
 repoT1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mT1="$(plant_verify "$repoT1" "lcars-20260914-711")"
 : >"$XO_WORKER_LOG"; : >"$XO_LOG_CALLS"; : >"$XO_RESOLVE_CALLS"
-outT1="$(XO_EV_BODY="$(ev_verdict met met gap medium "$GAP_TICKET")" \
+# S225 — the contradiction moved from a TICKET criterion onto a PRD statement:
+# since the headline reads the person group alone, only a PRD statement can
+# produce the MEDIUM "known issue" line whose WORDING these checks are about.
+# The naming rule under test is untouched.
+outT1="$(XO_EV_BODY="$(ev_verdict_prd_medium)" \
           xo_evaluate "$repoT1" "lcars-20260914-711")"
 xo_derivation() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["derivation"])' "$1"; }
 check "B17. the first line the captain reads NAMES the thing" \
   "xo_derivation '$mT1/xo/verdict.json' | grep -q 'ADD is above the list'"
 check "B17. …and still carries the id, in brackets after it" \
-  "xo_derivation '$mT1/xo/verdict.json' | grep -q '(t-1-ac1)'"
+  "xo_derivation '$mT1/xo/verdict.json' | grep -q '(prd-2)'"
 check "B17. …and still says how many, in words (S216: \"this known issue\")" \
   "xo_derivation '$mT1/xo/verdict.json' | grep -q 'go with this known issue'"
 check "B17. the report on the issue reads the same way" \
@@ -3278,8 +3330,28 @@ check "B23c. the PRD's own (non-drawnAt) criterion is judged normally — MET" \
 d=json.load(open(\"$m23c/xo/verdict.json\"))
 e=[c for c in d[\"criteria\"] if c[\"id\"]==\"prd-1\"][0]
 sys.exit(0 if e[\"status\"]==\"met\" else 1)'"
-check "B23c. …so the score is NOT the worker's false HIGH" \
-  "[ \"\$(python3 -c 'import json;print(json.load(open(\"'$m23c'/xo/verdict.json\"))[\"score\"])')\" != 'high' ]"
+# CHANGED, S225. S210's cure is the line ABOVE and it is untouched: the worker
+# called the drawnAt row MET, the harness refuses, and the row comes back
+# untested with the honest sentence. What this line used to add was that the
+# refusal also pulled the captain's GRADE down — and `t-9-ac1` is a TICKET
+# criterion (`source: "plan"`), so that is the ticket list outvoting what a
+# person can do, plus a hole in our own checking reading as a doubt about his
+# build. Both are struck out. What must still hold is that the verdict is not a
+# clean bill: the row is ours to fix, by name, with what defeated it, and the
+# headline never claims everything he asked for is there.
+check "B23c. …and the refusal is named as OURS — it could not be set up, no drawing exists" \
+  "python3 -c 'import json,sys
+d=json.load(open(\"$m23c/xo/verdict.json\"))
+e=[c for c in d[\"criteria\"] if c[\"id\"]==\"t-9-ac1\"][0]
+mc=d[\"myChecking\"][\"couldntSetUp\"]
+sys.exit(0 if e[\"outcome\"]==\"couldnt-set-up\" and [r for r in mc if r[\"id\"]==\"t-9-ac1\"] else 1)'"
+check "B23c. …and the headline never claims everything he asked for is in the build" \
+  "! python3 -c 'import json;print(json.load(open(\"'$m23c'/xo/verdict.json\"))[\"derivation\"])' \
+     | grep -q 'everything you asked for is in the build'"
+check "B23c. …and the contract line counts it as having nothing behind it" \
+  "python3 -c 'import json,sys
+g=json.load(open(\"$m23c/xo/verdict.json\"))[\"groups\"][\"contract\"]
+sys.exit(0 if g[\"uncovered\"]==1 and g[\"covered\"]==0 else 1)'"
 check "B23c. the launch and the browser both ran normally (no attachments is not an error)" \
   "grep -q -- '--stop' '$XO_LAUNCH_LOG' && ! printf '%s' \"\$out23c\" | grep -qi 'did not start'"
 
@@ -3482,7 +3554,14 @@ m25="$(plant_verify "$repo25" "lcars-20260917-401")"
 # produced the unreadable card on the captain's real board. One criterion it
 # could not check, so the honest derivation cannot be a clean bill of health.
 long25='Captain, this build is a code-only engine change - two pure coordinate functions, a factory method, a Camera type field, and their unit tests - none of which shows up on a screen. The example game does render fine, so the engine compiles and runs, but that proves nothing about the new methods.'
-verdict25="$(printf '{"score":"medium","summary":"%s","criteria":[{"id":"prd-1","text":"open tasks in one list","status":"met","shot":"shot-01","evidence":"picture","note":"saw the list"},{"id":"prd-2","text":"add from the board","impact":"medium","status":"untested","note":"nothing on screen settles this"},{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"met","shot":"shot-02","evidence":"picture","note":"under it"}],"gaps":[]}' "$long25")"
+# S225 — `prd-1` now carries a medium-impact FAULT beside `prd-2`'s unchecked
+# row. Both rules this block is about need it: a mission only stays MEDIUM (and
+# therefore ENGAGED, which is what keeps the worker's transcript on the state
+# block) when something a person can do DIDN'T WORK — an unchecked row is a hole
+# in our checking and no longer moves the grade — while the unchecked row is
+# what keeps the C8 guard below honest ("that line says what it could not
+# check"). Neither rule changed; the ledger that exercises both did.
+verdict25="$(printf '{"score":"medium","summary":"%s","criteria":[{"id":"prd-1","text":"open tasks in one list","impact":"medium","status":"gap","shot":"shot-01","evidence":"picture","note":"the list shows only the first ten"},{"id":"prd-2","text":"add from the board","impact":"medium","status":"untested","note":"nothing on screen settles this"},{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"met","shot":"shot-02","evidence":"picture","note":"under it"}],"gaps":[]}' "$long25")"
 out25="$(XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$verdict25" \
   LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_WORKER_BIN="$EV_SHIM" \
   xo_evaluate "$repo25" "lcars-20260917-401")"
@@ -3501,8 +3580,12 @@ check "B25. the transcript is still recorded, just not as the headline" \
 # check one of these" must not wear a line that reads like a clean bill.
 check "B25. the score the card wears and the line beside it come from one rule" \
   "python3 -c \"import json,sys;v=json.load(open('$m25/xo/verdict.json'));st=json.load(open('$m25/state.json'));sys.exit(0 if st['numberOne']['score']==v['score']=='medium' else 1)\""
+# The RULE is unchanged — the card's one line must say what it could not check.
+# Only the WORDING the headline's word budget picks moved: with a fault beside
+# the unchecked row the full sentence no longer fits on a phone, so the budget
+# falls back to the counted form, which says the same thing in fewer words.
 check "B25. …and that line says what it could not check, not that all is well" \
-  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));h=st['numberOne']['headline'].lower();sys.exit(0 if 'could not check' in h else 1)\""
+  "python3 -c \"import json,sys;st=json.load(open('$m25/state.json'));h=st['numberOne']['headline'].lower();sys.exit(0 if ('could not check' in h or \\\"couldn't be checked\\\" in h) else 1)\""
 # S216 — WHY THIS GRADE rides the scored journal entry, word for word the
 # verdict's own paragraph, so the First Officer's report can lead with it.
 check "B25. the scored journal entry carries the verdict's why-this-grade" \

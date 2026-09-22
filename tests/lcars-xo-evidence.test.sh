@@ -426,8 +426,32 @@ check "B10. …and says the passing suite does not settle everything" \
   "grep -qi \"don't cover\\|do not cover\\|cannot tell you\\|can't tell you\" '$BDIR/b10/report.md'"
 check "B10. …and names the command it actually ran" \
   "grep -q 'npm test' '$BDIR/b10/report.md'"
-check "B10. …a green suite with an unchecked criterion is still not HIGH" \
-  "[ \"\$(jget '$BDIR/b10/verdict.json' 'd[\"score\"]')\" != high ]"
+# CHANGED, S225 CHANGE 03 — THE OLD ASSERTION IS THE RULE THE CAPTAIN STRUCK
+# OUT. `t-4-ac1` here is `untested`: the green suite did not settle it, which is
+# a hole in OUR CHECKING and says nothing at all about his build. Forcing the
+# grade off HIGH for it (`derive_grade`'s `high-unchecked`) made our failure read
+# as a doubt about his work — the exact thing that graded his build LOW while he
+# scored it HIGH himself. The grade no longer moves for it.
+#
+# THE S211 GUARD THIS WAS STANDING IN FOR IS UNTOUCHED, and is what is asserted
+# now: the green suite still does not turn the row `met`, the row still names no
+# evidence, the report still says what the suite does not cover — and the
+# unchecked row is now named on OUR list, with the note that it is not his fault.
+check "B10. …a green suite still does not settle an unchecked criterion (S211)" \
+  "[ \"\$(lstatus '$BDIR/b10/verdict.json' t-4-ac1)\" = untested ] \
+   && [ \"\$(levidence '$BDIR/b10/verdict.json' t-4-ac1)\" = none ]"
+check "B10. …and the unchecked row is listed as OURS to fix, never against the build" \
+  "[ \"\$(jget '$BDIR/b10/verdict.json' 'd[\"myChecking\"][\"total\"]')\" = 1 ] \
+   && grep -q 'not a fault in your build' '$BDIR/b10/verdict.json' \
+   && grep -q 't-4-ac1' '$BDIR/b10/verdict.json'"
+check "B10. …and the grade never pretends it was checked: core is unverified and it says so" \
+  "[ \"\$(jget '$BDIR/b10/verdict.json' 'd[\"core\"]')\" = unverified ] \
+   && jget '$BDIR/b10/verdict.json' 'd[\"derivation\"]' | grep -qi 'could not check'"
+# CONTROL — the two outcomes that DO grade still do. The same criterion, seen
+# to fail with a picture behind it, still drives the grade to LOW.
+score "$(ev gap ',"shot":"shot-02"')" "$BDIR/tests-pass.json" "$BDIR/b10c"
+check "B10. CONTROL — the same criterion SEEN TO FAIL is still LOW" \
+  "[ \"\$(jget '$BDIR/b10c/verdict.json' 'd[\"score\"]')\" = low ]"
 
 # --- B11. no test command: the look reads exactly as it did before ----------
 score "$(ev met ',"shot":"shot-03"')" "$BDIR/tests-none.json" "$BDIR/b11"

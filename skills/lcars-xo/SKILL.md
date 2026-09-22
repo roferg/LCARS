@@ -363,16 +363,43 @@ The order is the contract:
    **The captain's two-part score (S216).** Before judging, each criterion
    gets an IMPACT (`high` = the point of the mission, a reasonable person
    would block the merge; `medium` = a stated requirement that is secondary,
-   or works but not as asked; `low` = polish). After looking, each is worked
-   (MET) / didn't (GAP) / couldn't check (UNTESTED, with `couldNotCheck`
-   `unreachable` | `unobservable`). First match wins:
+   or works but not as asked; `low` = polish).
+
+   **THREE QUESTIONS, NOT ONE GRADE (S225 change 01).** Every criterion has
+   carried a `source` since it was written; the ledger splits three ways on it
+   and each row carries its `source` and its `group`:
+
+   | group | from | question | what it produces |
+   |---|---|---|---|
+   | `person` | `prd` + `journey` | Can a person do what it promises? | **the headline grade** |
+   | `drawing` | `drawing` | Does it look like your drawing? | its own graded line |
+   | `contract` | `plan` (ticket ACs) | Is the contract covered? | a COVERAGE COUNT, no grade |
+
+   `verdict.score` is the PERSON group's grade and nothing else (the captain's
+   ruling, 2026-09-22 — not the worst of the three); `verdict.scoreGroup` says
+   so, and `verdict.groups` carries all three. A source this file does not
+   know falls to `person`. The drawing line is never hidden; it simply does not
+   set the headline. The contract group carries no `grade` key at all: a ticket
+   criterion nobody could answer is a fact about our checking, not a failure of
+   the build.
+
+   **FOUR OUTCOMES, AND ONLY TWO OF THEM GRADE (S225 change 03).** Each row
+   carries an `outcome`: `worked` | `didnt-work` | `couldnt-see` |
+   `couldnt-set-up`. `status` (`met`/`gap`/`untested`) and `couldNotCheck`
+   (`unreachable` | `unobservable`) are unchanged beneath it. Only `worked` and
+   `didnt-work` may move the grade — *a failure of ours must never read as a
+   doubt about your build* — and what could not be checked is listed for US to
+   fix in `verdict.myChecking` (`couldntSee` / `couldntSetUp`, each naming what
+   defeated it). First match wins, over ONE graded group:
 
    | impact x outcome | the score | |
    |---|---|---|
-   | nothing on the list, or nothing on it checked | **LOW** | never a pass |
-   | a HIGH one didn't work, or couldn't be checked | **LOW** | `core` broken / unverified |
-   | every high worked; a MEDIUM one didn't or couldn't be checked | **MEDIUM** | go with the named known issues |
-   | every high and medium worked | **HIGH** | low ones never move it |
+   | nothing on this list | **LOW** | never a pass |
+   | a HIGH one didn't work | **LOW** | `core` broken |
+   | nothing on this list was checked at all | **LOW** | nothing is vouched for |
+   | there are HIGH ones and not one was checked | **LOW** | `core` unverified |
+   | every high worked; a MEDIUM one didn't work | **MEDIUM** | go with the named known issues |
+   | every high and medium worked | **HIGH** | low ones, and blind spots, never move it |
 
    A criterion with no impact counts as HIGH and the reasoning says so. Every
    row carries a `reason` sentence (a fallback says when none was given); the

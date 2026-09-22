@@ -57,11 +57,28 @@ a recommendation.** The score that gets recorded, labelled and shown to the
 captain is recomputed HERE, from the ledger, by a rule anyone can check:
 
     (S216 — the captain's two-part score: IMPACT x OUTCOME; see "THE TWO-PART
-    SCORE" below. It superseded S203's contradiction-driven table.)
-    nothing on the list, or nothing checked         → LOW
-    a HIGH-impact item didn't work / couldn't check → LOW     core broken/unverified
-    every high worked; a MEDIUM didn't / couldn't   → MEDIUM  go with known issues
+    SCORE" below. It superseded S203's contradiction-driven table. S225 then
+    split the ledger three ways and took the blind rows out of the rule.)
+    nothing on this list                            → LOW
+    a HIGH-impact item didn't work                  → LOW     core broken
+    nothing on this list was checked at all         → LOW     nothing vouched for
+    HIGH items exist and NOT ONE was checked        → LOW     core unverified
+    every high worked; a MEDIUM didn't work         → MEDIUM  go with known issues
     every high and medium worked                    → HIGH    (low never moves it)
+
+THREE QUESTIONS, NOT ONE GRADE (S225 change 01). The ledger splits on the
+`source` every criterion has always carried: `prd` + `journey` are the PERSON
+group ("can a person do what it promises?"), `drawing` is its own graded line,
+and `plan` — the ticket acceptance criteria — is a COVERAGE COUNT and not a
+grade at all. `score` is the PERSON group's grade and nothing else, by the
+captain's ruling of 2026-09-22: his build scored LOW on a ledger where 57% of
+the rows were ticket criteria a walk can never answer and the nine things a
+person can actually do scored 8 of 9.
+
+FOUR OUTCOMES, AND ONLY TWO OF THEM GRADE (S225 change 03). Every row carries
+`outcome`: worked / didnt-work / couldnt-see / couldnt-set-up. `status` is
+unchanged beneath it. A row nobody could check no longer moves the grade in
+either direction; it is listed for US to fix in `myChecking`.
 
 If the worker's score disagrees with its own ledger, the LEDGER WINS and the
 disagreement is recorded (xo.sh journals it). A free-floating score is the one
@@ -100,6 +117,9 @@ Output on stdout, one TAB-separated record per line, for the shell to read:
   GRADE_WHY <why this grade, the table walked in words> | CORE <met|broken|unverified|>
   IMPACT_KEPT <id> <recorded> <this look's>  | IMPACT_MISMATCH <id> <id> <impact> <impact>
   TEST_DEMOTED <id> <rated> <quote>  — a test citation that settled nothing (T1)
+  SCORE_GROUP <group>  — which of the three the headline was read from (S225)
+  GROUP <key> <kind> <grade|-> <total> <worked> <didnt> <couldntSee> <couldntSetUp>
+  OPEN <n>  — rows still open ANYWHERE; the score word no longer implies zero
 """
 import json
 import os
@@ -606,6 +626,120 @@ OUTCOME_WORD = {"met": "worked", "gap": "didn't", "untested": "couldn't check"}
 POLISH_PILE = 5
 
 
+# ─── S225 CHANGE 01: THREE GROUPS, NOT ONE GRADE ─────────────────────────────
+#
+# THE MEASURED DEFECT. Number One graded the captain's build LOW; he drove it
+# himself and scored it HIGH. Its own record says the whole reason:
+#
+#   ticket acceptance criteria  58 rows  57%   39 answered · 19 nothing covers
+#   PRD statements              21 rows  21%   18 met · 2 couldn't check · 1 fault
+#   parts from the drawing      14 rows  14%   5 met · 3 faults · 6 couldn't check
+#   a person clicking through    9 rows   9%   8 met · 1 couldn't check
+#
+# The one thing a person can actually SEE was under a tenth of the grade and
+# scored 8 of 9 — and was then averaged against 58 ticket criteria that a walk
+# can never answer. The machine had his answer and averaged it away.
+#
+# Every criterion has carried a `source` since the moment it was written
+# (xo-criteria.py, xo-parts.py, xo-journey.py). NOTHING DOWNSTREAM EVER READ IT
+# to change how grading works. That was the bug, and this is where it is read.
+#
+#   1. person   journey + prd   "Can a person do what it promises?"  THE HEADLINE
+#   2. drawing  drawing         "Does it look like your drawing?"    its own line
+#   3. contract plan            "Is the contract covered?"           NOT A GRADE
+#
+# THE CAPTAIN RULED THIS EXPLICITLY, 2026-09-22, and it is not to be re-decided
+# in a build: the single headline grade — the one word the report rail and the
+# board card show — reads GROUP 1, the person group. NOT the worst of the three.
+# On the recorded run group 1 reads 26/30, which is HIGH, which is the score he
+# gave it himself. The drawing line sits beneath it and is NEVER hidden; it
+# simply stops setting the headline, because a fault there is real but rarely
+# stops anyone using the thing. The contract group is a COVERAGE COUNT — how
+# many ticket criteria have an answer behind them and how many have nothing —
+# because a row nobody could answer is a fact about OUR CHECKING and never a
+# failure of his build.
+#
+# A SOURCE THIS FILE DOES NOT KNOW FALLS TO THE PERSON GROUP. Contracts written
+# before this split carry free text ("PRD §2") or no source at all, and the
+# conservative place for an unknown row is the group that sets the grade — never
+# quietly out of the grade altogether.
+GROUP_PERSON, GROUP_DRAWING, GROUP_CONTRACT = "person", "drawing", "contract"
+GROUP_ORDER = (GROUP_PERSON, GROUP_DRAWING, GROUP_CONTRACT)
+SOURCE_GROUP = {"prd": GROUP_PERSON, "journey": GROUP_PERSON,
+                "drawing": GROUP_DRAWING, "plan": GROUP_CONTRACT}
+GROUP_QUESTION = {
+    GROUP_PERSON: "Can a person do what it promises?",
+    GROUP_DRAWING: "Does it look like your drawing?",
+    GROUP_CONTRACT: "Is the contract covered?",
+}
+GROUP_KIND = {GROUP_PERSON: "graded", GROUP_DRAWING: "graded",
+              GROUP_CONTRACT: "coverage"}
+HEADLINE_GROUP = GROUP_PERSON
+GROUP_ASIDE = {
+    GROUP_PERSON: "This is the grade at the top of this report.",
+    GROUP_DRAWING: ("A fault here is real, but it rarely stops anyone using the "
+                    "thing, so it does not set the grade."),
+    GROUP_CONTRACT: ("This is not a grade. It is how much of the ticket contract "
+                     "I could answer at all — a fact about my checking, not "
+                     "about your build."),
+}
+
+
+def group_of(source):
+    """Which of the captain's three questions a criterion answers."""
+    return SOURCE_GROUP.get(str(source or "").strip().lower(), GROUP_PERSON)
+
+
+# ─── S225 CHANGE 03: FOUR OUTCOMES, AND ONLY TWO OF THEM TOUCH THE GRADE ─────
+#
+# The distinction was already in the file and demoted to a sub-field: an
+# `untested` row could carry `couldNotCheck` — `unreachable` (I couldn't set it
+# up) or `unobservable` (I couldn't see it). Those are not one outcome, they are
+# two, and neither of them is a statement about the build. So there are four
+# first-class outcomes and the grade may read only the first two:
+#
+#   worked          | the build did it            GRADES
+#   didnt-work      | the build did not do it     GRADES
+#   couldnt-see     | I looked and nothing settled it
+#   couldnt-set-up  | I could not get to the point of looking
+#
+# "A failure of ours should never read as a doubt about your build." Until this
+# session an `untested` row dragged the grade down twice over — `high-unchecked`
+# forced LOW and `medium-open` forced MEDIUM. It no longer does either. What it
+# could not set up is LISTED FOR US TO FIX, naming what defeated it.
+#
+# `status` (met/gap/untested) is left exactly as it was on every row, so a
+# reader written before this session degrades instead of crashing.
+OUTCOME_WORKED = "worked"
+OUTCOME_DIDNT = "didnt-work"
+OUTCOME_BLIND = "couldnt-see"
+OUTCOME_SETUP = "couldnt-set-up"
+VALID_OUTCOME = (OUTCOME_WORKED, OUTCOME_DIDNT, OUTCOME_BLIND, OUTCOME_SETUP)
+GRADING_OUTCOMES = (OUTCOME_WORKED, OUTCOME_DIDNT)
+OUTCOME_SAID = {OUTCOME_WORKED: "worked", OUTCOME_DIDNT: "didn't work",
+                OUTCOME_BLIND: "I couldn't see it",
+                OUTCOME_SETUP: "I couldn't set it up"}
+# A `couldNotCheck` word that means "I never got to the point of looking".
+# `no-change` is xo-journey's: the step ran and the screen was the same, so the
+# thing the step was supposed to set up never got set up.
+SETUP_DEFEATED = ("unreachable", "no-change")
+MY_CHECKING_NOTE = ("These are gaps in my checking, not a fault in your build. "
+                    "They are mine to fix — nothing here is counted against you.")
+
+
+def outcome_of(entry):
+    """The four-way outcome of a finished ledger row. Reads only `status` and
+    the recorded `couldNotCheck` word — never the prose of a note."""
+    st = entry.get("status")
+    if st == "met":
+        return OUTCOME_WORKED
+    if st == "gap":
+        return OUTCOME_DIDNT
+    if str(entry.get("couldNotCheck") or "") in SETUP_DEFEATED:
+        return OUTCOME_SETUP
+    return OUTCOME_BLIND
+
+
 def take_impact(entry, row):
     """Copy the look's IMPACT onto a ledger entry — or record HIGH, and that it
     was assumed, when the look gave none it could name."""
@@ -621,7 +755,25 @@ def take_impact(entry, row):
 
 
 def derive_grade(ledger):
-    """His table, over the finished ledger. Pure: reads status + impact only."""
+    """His table, over ONE GRADED GROUP of the finished ledger. Pure: reads
+    status + impact only.
+
+    S225 CHANGE 03 — ONLY `worked` AND `didn't work` MOVE THIS. Two rules used
+    to let a blind row decide the captain's grade: `high-unchecked` forced LOW
+    the moment ANY high row was unchecked, and `medium-open` forced MEDIUM on a
+    medium nobody could see. Both were a failure of OURS reading as a doubt
+    about HIS build, and both are gone: a blind row is now recorded, listed and
+    said out loud beside the grade, and counts for nothing inside it.
+
+    WHAT SURVIVES, AND WHY IT IS NOT THE SAME RULE. `nothing-checked` (not one
+    row in this group was ever settled) and `high-unchecked` (there ARE rows
+    that are the point of the mission and NOT ONE of them was settled) both say
+    "nothing here is vouched for" — which is the opposite of a doubt about the
+    build, and the exact hole S220's benchmark fell through when a silent model
+    scored 5/5. One unchecked high among checked highs no longer moves a thing;
+    a group where the point of the mission was never looked at still refuses to
+    certify itself.
+    """
     by = {"high": [], "medium": [], "low": []}
     for e in ledger:
         by[e.get("impact") if e.get("impact") in by else "high"].append(e)
@@ -635,6 +787,7 @@ def derive_grade(ledger):
          "mediumBlind": pick(by["medium"], "untested"),
          "lowOpen": [e for e in by["low"] if e["status"] != "met"]}
     checked = sum(1 for e in ledger if e["status"] in ("met", "gap"))
+    highs_checked = sum(1 for e in by["high"] if e["status"] in ("met", "gap"))
     if not ledger:
         g.update(score="low", rule="nothing-listed")
     elif g["highGap"]:
@@ -642,9 +795,9 @@ def derive_grade(ledger):
     elif not checked:
         # Said as what it is — nothing at all — rather than as "the core".
         g.update(score="low", rule="nothing-checked")
-    elif g["highBlind"]:
+    elif by["high"] and not highs_checked:
         g.update(score="low", rule="high-unchecked")
-    elif g["mediumGap"] or g["mediumBlind"]:
+    elif g["mediumGap"]:
         g.update(score="medium", rule="medium-open")
     else:
         g.update(score="high", rule="all-worked")
@@ -1587,6 +1740,11 @@ def main():
             entry["status"] = "untested"
             entry["note"] = NO_DRAWING_NOTE
             entry["evidence"] = "none"
+            # S225 — WHICH OF THE TWO BLIND OUTCOMES THIS IS, RECORDED WHERE IT
+            # IS KNOWN. Nobody failed to SEE this: there was no drawing to hold
+            # the build against, so the check was never set up. That makes it
+            # ours to fix (attach the drawing) and it says so by name.
+            entry["couldNotCheck"] = "unreachable"
             entry.pop("shot", None)
             entry.pop("testQuote", None)
 
@@ -1648,6 +1806,9 @@ def main():
             entry["status"] = "untested"
             entry["note"] = UNREACHABLE_PART_NOTE
             entry["evidence"] = "none"
+            # S225 — the build has not got this part of the drawing, so there
+            # was nothing on the screen to look at: I could not set it up.
+            entry["couldNotCheck"] = "unreachable"
             entry.pop("shot", None)
             entry.pop("testQuote", None)
             continue
@@ -1677,6 +1838,22 @@ def main():
     contradicted = set(cid for cid in contradicted
                        if any(e["id"] == cid and e["status"] == "gap" for e in ledger)
                        or cid not in seen)
+
+    # ─── S225: THE SOURCE IS READ AT LAST ────────────────────────────────────
+    # Every guard above has finished; a row's status and its `couldNotCheck`
+    # word are final, so this is the first line at which the four-way outcome
+    # is knowable. Both facts are stamped on the row itself — `source` copied
+    # from the contract that was written before the look, `group` derived from
+    # it — so nothing downstream ever has to re-derive either, and no surface
+    # has to read provenance back out of prose.
+    for e in ledger:
+        row = contract_by_id.get(e["id"]) or {}
+        src = str(row.get("source") or "").strip()
+        if src:
+            e["source"] = src
+        e["group"] = group_of(src)
+        e["outcome"] = outcome_of(e)
+    by_group = {k: [e for e in ledger if e["group"] == k] for k in GROUP_ORDER}
 
     met = sum(1 for e in ledger if e["status"] == "met")
     gap = sum(1 for e in ledger if e["status"] == "gap")
@@ -1737,8 +1914,83 @@ def main():
     # same ledger, by the same rule — not inferred at the surface from the
     # verdict's prose. A meaning derived from the counts cannot claim something
     # the counts do not support.
-    grade = derive_grade(ledger)
+    # S225 — THE HEADLINE READS THE PERSON GROUP, BY THE CAPTAIN'S RULING. The
+    # prose below (the derivation, the meaning, the why-this-grade paragraph)
+    # is the headline's own explanation, so it is built off the same rows the
+    # headline was decided from. The other two groups get their own lines,
+    # below the grade, where they can never be averaged into it and can never
+    # be hidden either.
+    grade = derive_grade(by_group[GROUP_PERSON])
     score, core = grade["score"], grade["core"]
+
+    def group_block(key):
+        rows = by_group[key]
+        b = {"question": GROUP_QUESTION[key], "kind": GROUP_KIND[key],
+             "aside": GROUP_ASIDE[key], "total": len(rows)}
+        for name, o in (("worked", OUTCOME_WORKED), ("didntWork", OUTCOME_DIDNT),
+                        ("couldntSee", OUTCOME_BLIND), ("couldntSetUp", OUTCOME_SETUP)):
+            b[name] = sum(1 for e in rows if e["outcome"] == o)
+        b["met"] = b["worked"]
+        b["gap"] = b["didntWork"]
+        b["untested"] = b["couldntSee"] + b["couldntSetUp"]
+        b["ids"] = [e["id"] for e in rows]
+        if GROUP_KIND[key] == "graded":
+            if key == HEADLINE_GROUP:
+                # The headline group always carries a grade: it IS the grade,
+                # and an empty list is still an answer ("nothing here is
+                # vouched for"), which is the rule that fires.
+                b["grade"], b["rule"] = grade["score"], grade["rule"]
+                b["isHeadline"] = True
+            elif rows:
+                g = derive_grade(rows)
+                b["grade"], b["rule"] = g["score"], g["rule"]
+            # A GROUP WITH NOTHING ON IT IS NOT A LOW ONE. A mission with no
+            # drawing has no drawing line; grading its empty list would print
+            # "Does it look like your drawing? — LOW" at a captain who never
+            # gave us one. The key is simply absent, and the report skips it.
+        else:
+            # COVERAGE, NEVER A GRADE. "Covered" is: something actually settled
+            # this row, either way. "Uncovered" is: nothing did — which is a
+            # hole in the checking, not a fault in the build. `backedByTests`
+            # is the narrower fact for anyone who wants it: a row that closed
+            # `met` on a named line of the project's own suite.
+            b["covered"] = b["met"] + b["gap"]
+            b["uncovered"] = b["untested"]
+            b["backedByTests"] = sum(1 for e in rows if e["status"] == "met"
+                                     and e.get("evidence") == "tests")
+        return b
+
+    groups = {k: group_block(k) for k in GROUP_ORDER}
+
+    # S225 — WHAT DEFEATED MY CHECKS, LISTED FOR US TO FIX, NEVER COUNTED
+    # AGAINST HIM. These are exactly the two outcomes that no longer touch the
+    # grade, and the price of that is that each one has to say what stopped it:
+    # a list of blind spots with no reasons on it is a list nobody can act on.
+    def _check_row(e):
+        r = {"id": e["id"], "group": e["group"], "name": named(e["id"]),
+             "why": (" ".join(str(e.get("note") or "").split())
+                     or "nothing on the record says what stopped me")}
+        if e.get("couldNotCheck"):
+            r["defeatedBy"] = e["couldNotCheck"]
+        return r
+
+    my_checking = {
+        "note": MY_CHECKING_NOTE,
+        "couldntSee": [_check_row(e) for e in ledger if e["outcome"] == OUTCOME_BLIND],
+        "couldntSetUp": [_check_row(e) for e in ledger if e["outcome"] == OUTCOME_SETUP],
+    }
+    my_checking["total"] = (len(my_checking["couldntSee"])
+                            + len(my_checking["couldntSetUp"]))
+
+    # IS ANYTHING OPEN ON THE OTHER TWO LISTS? The headline may only claim
+    # "everything you asked for is in the build" when that is true of ALL THREE
+    # of his lists. The person group setting the grade is the captain's ruling;
+    # it is not a licence for the grade's sentence to speak for lists it no
+    # longer reads. When the drawing or the ticket contract has anything open,
+    # the sentence says what it actually covers and the three-question block
+    # under it carries the rest.
+    others_open = sum(groups[k][n] for k in (GROUP_DRAWING, GROUP_CONTRACT)
+                      for n in ("didntWork", "couldntSee", "couldntSetUp"))
 
     def ids(rows):
         return ", ".join(e["id"] for e in rows)
@@ -1855,21 +2107,50 @@ def main():
             said.append("%d item%s I could not check" % (len(mb), "" if len(mb) == 1 else "s"))
         meaning = ("The point of the mission works; it would ship with %s"
                    % " and ".join(said))
-    elif grade["lowOpen"]:
+    elif grade["lowOpen"] or hi_blind or grade["mediumBlind"]:
         # D1/D2: didn't-work and couldn't-check are said apart, with counts.
-        small = smaller_items(low_gap, low_blind, None)
-        n = len(grade["lowOpen"])
+        #
+        # S225 — AND A BLIND SPOT THAT NO LONGER MOVES THE GRADE IS SAID LOUDER,
+        # NOT QUIETER. Under change 03 a high or medium nobody could check stops
+        # dragging the score down; the one thing that must not follow is a
+        # headline reading "everything you asked for is in the build" over a row
+        # nobody ever saw. So the moment this group holds ANY unchecked row, the
+        # headline opens on what it could check and names the gap in the same
+        # breath. With nothing unchecked above polish, every word below is the
+        # sentence S216 fix round 2 already wrote, unchanged.
+        big_blind = hi_blind + grade["mediumBlind"]
+        bits = []
+        if big_blind:
+            bits.append("I could not check %s" % n_things(len(big_blind)))
+        bits += smaller_items(low_gap, low_blind, None)
+        n = len(big_blind) + len(grade["lowOpen"])
         tail = ", and %s the grade" % ("it doesn't change" if n == 1 else "they don't change")
-        why = ("everything that matters on your list worked; %s%s."
-               % (" and ".join(small), tail))
-        meaning = ("Everything that matters worked; %s%s — ship as is"
-                   % (" and ".join(small), tail))
+        if big_blind:
+            why = ("everything I could check worked; %s%s."
+                   % (" and ".join(bits), tail))
+            meaning = ("Everything I could check worked; %s%s — that is a gap in "
+                       "my checking, not a fault in the build"
+                       % (" and ".join(bits), tail))
+        else:
+            why = ("everything that matters on your list worked; %s%s."
+                   % (" and ".join(bits), tail))
+            meaning = ("Everything that matters worked; %s%s — ship as is"
+                       % (" and ".join(bits), tail))
     else:
         # D7: say what the grade actually rested on — pictures, your tests, or
         # both — counted off the rows' recorded evidence kind.
         seen = evidence_said([e for e in ledger if e["status"] == "met"], has_drawing)
-        why = "everything you asked for is in the build, and %s." % seen
-        meaning = "Everything you asked for worked — %s — ship as is" % seen
+        if others_open:
+            # S225 — SCOPED TO WHAT THIS GRADE READ. The person group is clean,
+            # so the grade is HIGH and stays HIGH; but something on the drawing
+            # or the ticket contract is open, and "everything you asked for" is
+            # a claim about all three of his lists. It is not made here.
+            why = "everything a person can do worked, and %s." % seen
+            meaning = ("Everything a person can do worked — %s — the drawing and "
+                       "the ticket contract are on their own lines" % seen)
+        else:
+            why = "everything you asked for is in the build, and %s." % seen
+            meaning = "Everything you asked for worked — %s — ship as is" % seen
 
     # --- WHY THIS GRADE: at most four short sentences (S216 fix round 2) -----
     #   1. the rule that fired, in words;
@@ -1883,15 +2164,34 @@ def main():
         "high-unchecked": ("I could not check the point of the mission, and I will "
                            "not call a build good on what I could not see"),
         "nothing-checked": "I could not check anything on your list",
+        # S225 — MEDIUM now fires on a medium that DIDN'T WORK and nothing
+        # else. A medium nobody could check no longer moves the grade, so this
+        # sentence no longer offers it as a reason (it is still said, in the
+        # couldn't-check sentence below, where it belongs).
         "medium-open": ("the point of the mission worked, but %s"
                         % ("something else you asked for did not work as asked"
-                           if not grade["mediumBlind"] else
-                           "something else you asked for could not be checked"
-                           if not grade["mediumGap"] else
-                           "other things you asked for did not work or could "
-                           "not be checked")),
+                           if len(grade["mediumGap"]) == 1 else
+                           "other things you asked for did not work as asked")),
         # D1: "and everything else you asked for" only when it is TRUE.
-        "all-worked": ("everything that is the point of the mission, and everything "
+        #
+        # S225 — AND NOW "WORKED" MEANS "WORKED WHERE I COULD LOOK". Until this
+        # session an all-worked grade could not carry an unchecked row: a blind
+        # high forced LOW and a blind medium forced MEDIUM, so these sentences
+        # were safe. Change 03 removed both, and the FIRST thing that has to
+        # follow is that this sentence stops claiming a build nobody finished
+        # checking. The grade does not move for the blind spot; the words do.
+        "all-worked": ("everything I could check worked, and I will not turn what "
+                       "I could not check into a doubt about your build"
+                       if (hi_blind or grade["mediumBlind"] or low_blind) else
+                       # …and never "everything ELSE you asked for" while
+                       # something on the drawing or the ticket contract is
+                       # open: those are two of his three lists and this
+                       # sentence does not read them (S225).
+                       "everything a person can do with the build worked — the "
+                       "drawing and your ticket contract are on their own lines "
+                       "below"
+                       if others_open else
+                       "everything that is the point of the mission, and everything "
                        "else you asked for, worked"
                        if not grade["lowOpen"] else
                        "everything that is the point of the mission worked, and so "
@@ -1945,15 +2245,28 @@ def main():
     why_grade = " ".join(para)
 
     # --- BESIDE HIS GRADE, NEVER INSTEAD OF IT (the research's hybrid) -------
+    #
+    # S225 TURNED THIS ROUND. It used to say a risk-based reviewer might sign a
+    # MEDIUM off because its only open items were ones nobody could check —
+    # which was the reading the grade itself now takes, so the note had nothing
+    # left to add. The reading that is NOT in the grade any more is the cautious
+    # one: this grade was earned by what was checked, and here is what wasn't.
+    # It sits beside the grade and moves nothing, exactly as before.
     alt_reading = ""
-    if score == "medium" and not grade["mediumGap"] and grade["mediumBlind"]:
-        blind = grade["mediumBlind"]
-        alt_reading = ("a risk-based reviewer might sign this off: the only open "
-                       "item%s %s nobody could check (%s), not one that was seen "
-                       "to fail" % ("" if len(blind) == 1 else "s",
-                                    "is one" if len(blind) == 1 else "are ones",
-                                    ids(blind)))
-    low_gaps = sum(1 for e in grade["lowOpen"] if e["status"] == "gap")
+    blind_beside = hi_blind + grade["mediumBlind"] + low_blind
+    if score != "low" and blind_beside:
+        alt_reading = ("a cautious reviewer would want %s checked before this "
+                       "ships: nobody could see %s (%s). That is a gap in my "
+                       "checking, not a fault in the build"
+                       % (n_things(len(blind_beside)),
+                          "it" if len(blind_beside) == 1 else "them",
+                          ids(blind_beside)))
+    # POLISH PILES UP WHEREVER IT COMES FROM (S225). This never touched the
+    # grade and still doesn't, so it is counted over the WHOLE ledger — a
+    # ticket criterion that broke is a small thing that broke, and five of them
+    # make a build feel unfinished whichever of his three lists named them.
+    low_gaps = sum(1 for e in ledger
+                   if e.get("impact") == "low" and e["status"] == "gap")
     polish_flag = ""
     if low_gaps >= POLISH_PILE:
         polish_flag = ("lots of small things — %d small things did not work, so it "
@@ -2007,6 +2320,13 @@ def main():
         # its own fact. `core` is "" only when no row was marked high at all.
         "whyThisGrade": why_grade,
         "core": core,
+        # S225 — THE THREE QUESTIONS, KEPT APART. `score` above is the PERSON
+        # group's grade and nothing else (the captain's ruling, 2026-09-22);
+        # `scoreGroup` says so out loud so no reader has to assume. The drawing
+        # carries its own grade here, and the ticket contract carries a coverage
+        # count and NO grade at all — the absence of the key is the contract.
+        "scoreGroup": HEADLINE_GROUP,
+        "groups": groups,
         "criteria": ledger,
         "gaps": gaps,
         # The look's own list FIRST, then what the criteria-free pass found —
@@ -2016,6 +2336,8 @@ def main():
         "alsoChecked": [str(e) for e in (doc.get("alsoChecked") or []) if str(e).strip()],
         "summary": summary,
     }
+    if my_checking["total"]:
+        out["myChecking"] = my_checking
     if impacts_note:
         out["impactsNote"] = impacts_note
     if mismatches:
@@ -2061,6 +2383,45 @@ def main():
         # S216 — WHY THIS GRADE comes first after the score: the table walked
         # in words, then what the research reads beside it (never instead).
         w("**Why this grade.** %s\n\n" % why_grade)
+        # ─── S225: THE THREE QUESTIONS, NEVER AVERAGED INTO ONE ──────────────
+        # Directly under the grade, because the whole defect was one number
+        # standing in for three different questions with three different
+        # answers. The person line IS the grade above and says so; the drawing
+        # line is never hidden, it simply does not set the headline; the
+        # contract line is a coverage count and is not graded at all.
+        def _tally(b):
+            bits = []
+            for key, said in (("worked", "worked"), ("didntWork", "didn't work"),
+                              ("couldntSee", "I couldn't see"),
+                              ("couldntSetUp", "I couldn't set up")):
+                if b[key]:
+                    bits.append("%d %s" % (b[key], said))
+            return ", ".join(bits)
+        shown = [k for k in GROUP_ORDER if groups[k]["total"]]
+        if shown:
+            w("**The three questions, kept apart.**\n\n")
+            for k in shown:
+                b = groups[k]
+                if b["kind"] == "graded":
+                    w("- **%s** — **%s**. %d on this list: %s. *%s*\n"
+                      % (b["question"], b["grade"].upper(), b["total"],
+                         _tally(b) or "nothing was settled either way", b["aside"]))
+                else:
+                    # A ticket criterion SEEN TO FAIL is still a fault, and it
+                    # is said here — it is simply not graded here (S225).
+                    broke_n = ("" if not b["didntWork"] else
+                               " %d of those answers was that it didn't work."
+                               % b["didntWork"] if b["didntWork"] == 1 else
+                               " %d of those answers were that it didn't work."
+                               % b["didntWork"])
+                    w("- **%s** — %d of %d %s an answer behind %s; %d %s "
+                      "nothing.%s *%s*\n"
+                      % (b["question"], b["covered"], b["total"],
+                         "has" if b["covered"] == 1 else "have",
+                         "it" if b["covered"] == 1 else "them",
+                         b["uncovered"], "has" if b["uncovered"] == 1 else "have",
+                         broke_n, b["aside"]))
+            w("\n")
         if impacts_note:
             w("*%s*\n\n" % impacts_note)
         for m in mismatches:
@@ -2306,6 +2667,15 @@ def main():
     print("MEANING\t" + meaning.replace("\n", " "))
     print("GRADE_WHY\t" + why_grade.replace("\n", " "))
     print("CORE\t" + core)
+    # S225 — THE THREE GROUPS ON THE WIRE, AS DATA. Same discipline as every
+    # other record here: the shell journals what was decided, and never reads a
+    # meaning back out of the prose above it.
+    print("SCORE_GROUP\t" + HEADLINE_GROUP)
+    for _k in GROUP_ORDER:
+        _b = groups[_k]
+        print("GROUP\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d"
+              % (_k, _b["kind"], _b.get("grade") or "-", _b["total"], _b["worked"],
+                 _b["didntWork"], _b["couldntSee"], _b["couldntSetUp"]))
     for cid, was, said_now in impacts_kept:
         print("IMPACT_KEPT\t%s\t%s\t%s" % (cid, was, said_now))
     for cid, was, q in demoted:
@@ -2313,6 +2683,11 @@ def main():
     for m in mismatches:
         print("IMPACT_MISMATCH\t%s\t%s\t%s\t%s" % tuple(m["ids"] + m["impacts"]))
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))
+    # S225 — HOW MUCH IS STILL OPEN ANYWHERE, as one number. The headline reads
+    # ONE of the captain's three lists now, so "the grade is HIGH" no longer
+    # implies "there is nothing left on any list". Anything downstream that used
+    # to infer that from the score word has to read this instead of guessing.
+    print("OPEN\t%d" % (gap + untested))
     print("SUMMARY\t" + summary.replace("\n", " "))
     if observations is not None:
         print("OBSERVATIONS\t%d" % len(observations["observations"]))
