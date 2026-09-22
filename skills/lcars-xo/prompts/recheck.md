@@ -59,20 +59,52 @@ per gap, and you write one file.
 
 ## How to decide that a fix HELD
 
-A fix held when the thing you said was wrong is **no longer wrong in a picture
-you can point at**. Not "the code looks like it would fix it" — you cannot see
-the code from here and you are not being asked to. A new shot showing the
-criterion met is the only thing that settles it.
+A fix held when the thing you said was wrong is **no longer wrong, and you can
+point at the SAME kind of evidence the first look judges by** — a picture you
+can name, or, for a criterion with no visual surface, a named passing test line
+you can quote from this look's run. Not "the code looks like it would fix it" —
+you cannot see the code from here and you are not being asked to.
 
 A fix did NOT hold when:
 
 - the new shot shows the same mismatch, or
 - the new shot shows a different mismatch of the same criterion, or
-- there is no new shot of that place at all — you could not see it, and
-  **"I could not see it" is not "it is fixed"**.
+- a test that covers it now fails, its failure quoted, or
+- there is nothing that shows it fixed at all — no new shot of that place, no
+  test line that speaks to it — you could not see it, and **"I could not see
+  it" is not "it is fixed"**.
 
-Say which shot settled each one, by name. A verdict with no shot name behind it
-will be read as "not held", because a claim nobody can check is not evidence.
+**A measurement alone never settles a fix as held.** A box, a colour or a size
+read out of the `.json` beside a shot can pull a fix DOWN — show it still wrong
+— but it can never lift one up: a measurement may lower an outcome or raise a
+fault, it may **never** satisfy the criterion. Where only a measurement speaks,
+the fix stays open and you say so.
+
+Say what settled each one, by name — the shot, or the test line you quoted. A
+verdict with no evidence of any kind behind it will be read as "not held",
+because a claim nobody can check is not evidence.
+
+## Say WHERE each judgement came from
+
+Every line of your ledger carries `evidence`, exactly as it did on the first
+look, and it is one of three words:
+
+| `evidence` | when |
+|---|---|
+| `picture` | you looked at a screenshot and saw it |
+| `measurement` | you read the box, the colour or the size out of the `.json` beside a shot |
+| `tests` | the project's own suite settled it — with a `testQuote` |
+
+`picture` and `measurement` both need the `shot` they came from. `tests` needs
+the `testQuote`. **A criterion the first look settled on `tests` is settled the
+same way today** — this look re-ran the suite, so quote the line from THIS run;
+it does not fall to "I could not check this" just because no new picture was
+taken of it. **A `measurement` may lower an outcome or raise a fault, but it
+may never make a row `met`** — where a measurement is the only thing that
+speaks to a criterion, the row stays open (`gap` or `untested`) and says so.
+An `untested` line has no `evidence` at all — nothing settled it — and reads
+as `—`. The captain must never have to guess which of the three decided a line,
+so declare it.
 
 ## What you must not do
 
@@ -111,7 +143,9 @@ prose around it if you can avoid it.
       "impact": "high",
       "impactWhy": "the SAME impact and why you gave it on the first look",
       "status": "met",
+      "evidence": "picture|measurement|tests",
       "shot": "round1-01",
+      "testQuote": "the exact test line, when evidence is tests",
       "note": "what you actually saw, in a sentence",
       "action": "what you DID, one plain sentence starting with a verb",
       "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: …."
@@ -126,7 +160,14 @@ prose around it if you can avoid it.
 - `held` — **one entry per log in `xo/logs.json`, no more and no fewer.** A gap
   you leave out is read as not held.
 - `criteria` — the FULL ledger again, every criterion in `criteria.json`, rated
-  `met` / `gap` / `untested` with the shot that shows it. The skill re-scores
+  `met` / `gap` / `untested`, each carrying the same `evidence` it did on the
+  first look — `picture`, `measurement` or `tests` — and the `shot` or
+  `testQuote` that backs it. **A criterion the first look settled on a named
+  test reads the same way here: its passing test line, quoted from THIS look's
+  run, still settles it, and it must NOT fall to "couldn't check" merely because
+  no fresh screenshot was taken of it.** A `measurement` may lower a row or
+  raise a fault but never make one `met`; where only a measurement speaks, the
+  row stays open. The skill re-scores
   from this, exactly as it did after the first look: your `score` is a
   recommendation and the ledger is what decides. **Keep each criterion's
   `impact` exactly as your first look set it** (it is in `xo/verdict.json`) —

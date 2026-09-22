@@ -300,7 +300,11 @@ Every line of your ledger carries `evidence`, and it is one of three words:
 | `tests` | the project's own suite settled it — with a `testQuote` |
 
 `picture` and `measurement` both need the `shot` they came from. `tests` needs
-the `testQuote`. A line with neither is not a judgement, and LCARS records it
+the `testQuote`. **A `measurement` may lower an outcome or raise a fault, but
+it may never make a row `met`** — where only a measurement speaks to a
+criterion, the row stays open (`gap` or `untested`) and says so; the shot or
+the test line is the only thing that lifts a row to `met`, as the outcome table
+says. A line with neither is not a judgement, and LCARS records it
 as unchecked. **An `untested` line has no `evidence` at all** — nothing settled
 it, by definition, so it carries none and reads as `—`. Naming a source that
 decided nothing is worse than saying you could not tell. The captain must never have to guess which of the three decided a
