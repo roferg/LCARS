@@ -390,6 +390,171 @@ def key_steps(sentences):
     return list(best.values())[:KEY_STEP_CAP], (why[:1] if found else [])
 
 
+# ── THE CRITERIA ARE THE FLOOR AND THE CEILING (S226) ──────────────────────
+#
+# WHY THIS EXISTS. On 2026-09-23 a single save-slot panel — one screen, no
+# `screen-*` container — produced ONE walk step: the Escape key read out of the
+# PRD prose. screens_of found nothing, so the whole fill/gate machinery never
+# ran, and five of the six things the PRD says a PLAYER can do were never
+# attempted. The grader then reported on all six as though it had. The walk was
+# SCRAPED — whatever fell out of the sources is what got walked — and nothing
+# asked the one question that matters: "did I attempt the things I am going to
+# be graded on?"
+#
+# THE RULE. The person's own acceptance list is the FLOOR: every criterion a
+# person could check gets an attempt, or a recorded reason it could not be set
+# up. It is also the CEILING: an attempt is only ever made for a control a
+# criterion NAMES, so this can never degenerate into clicking everything on the
+# screen. A control nothing names is never touched. A criterion whose control
+# is not on the screen is recorded WITH the reason — never papered over with a
+# step that does nothing, which is the exact failure this project keeps undoing.
+
+# The ubiquitous words a criterion and a step both use no matter WHAT they are
+# about. Two steps that share only these have nothing real in common, so they
+# are struck before the token overlap that links a criterion to the step that
+# attempted it. Domain nouns ("panel", "slot", "save", "month") are kept —
+# THEY are what makes a match mean something.
+COV_STOP = set((
+    "a an the of to and or in on for with while then this that they it its is are be "
+    "does do not no if so as at by from into out up down over under can could will "
+    "would should must may player players screen screens game games click clicks "
+    "button buttons control controls field fields press presses pressing press's "
+    "watch changes change record names name key keys different afterwards answers "
+    "again still show shows shown make makes made says say said which what when who "
+    "you your their them there here first second third row rows one two both either "
+    "empty blank thing things something anything everything nothing"
+).split())
+
+
+def cov_toks(s):
+    return set(t for t in re.findall(r"[a-z0-9]+", low(s))
+               if len(t) >= 4 and t not in COV_STOP)
+
+
+# The person's own promises — source `prd`/`journey`, MINUS the `journey-*`
+# rows, which ARE the walk and would count the attempts as the promises. A
+# `plan` (ticket) criterion is the contract, a `drawing` criterion is compared
+# by pictures; neither is a thing a walk sets out to DO, so neither is here.
+def is_person_promise(c):
+    if not isinstance(c, dict):
+        return False
+    cid = str(c.get("id") or "")
+    if cid.startswith("journey-"):
+        return False
+    src = low(c.get("source"))
+    if src in ("plan", "drawing"):
+        return False
+    if src in ("prd", "journey"):
+        return True
+    # No source stamped (older contracts): a `prd-N` id is a promise; a
+    # `part-…`/`t-…` id is not.
+    if re.match(r"prd[-_]?\d", cid):
+        return True
+    return bool(c.get("primary")) and not cid.startswith(("part-", "t-"))
+
+
+def clickables(parts):
+    """Every named thing a person can CLICK — a button, a link, a role=button.
+    Labels and fields are deliberately out: a person does not click a label,
+    and a field is TYPED into, not clicked."""
+    out = []
+    for p in parts or []:
+        if not isinstance(p, dict) or not p.get("interactive"):
+            continue
+        if not norm(p.get("name")):
+            continue
+        tag, role = low(p.get("tag")), low(p.get("role"))
+        if tag in ("button", "a") or role == "button":
+            out.append(p)
+    return out
+
+
+def all_parts(drawing, screens):
+    """Every interactive part the record carries, flat — from the drawing's
+    screens AND from the drawing-parts file (whose parts live under
+    `pages[].parts`, not at the top). This is the SURFACE a criterion's control
+    is looked for on; without it a one-screen panel has no controls at all."""
+    parts = []
+    for s in screens or []:
+        parts += [p for p in (s.get("parts") or []) if isinstance(p, dict)]
+    if isinstance(drawing, dict):
+        parts += [p for p in (drawing.get("parts") or []) if isinstance(p, dict)]
+        for pg in drawing.get("pages") or []:
+            if isinstance(pg, dict):
+                parts += [p for p in (pg.get("parts") or []) if isinstance(p, dict)]
+    return parts
+
+
+def names_control(text_low, ctrl):
+    """Does this criterion NAME this control — as a whole phrase, on word
+    boundaries? Substring would let "Lock slot" match inside "unlock slot" and
+    send the Unlock criterion to the Lock gate; the boundary is what stops it."""
+    nm = low(ctrl.get("name"))
+    if not nm or len(nm) < 3:
+        return False
+    return re.search(r"\b%s\b" % re.escape(nm), text_low) is not None
+
+
+def cannot_reason(text, surf_ctrls):
+    """The honest 'I couldn't set it up' — naming, where it can, the screen or
+    control the criterion wanted and the surface does not have."""
+    m = re.search(r"\b(?:back|return)s?\b.*?\b(?:to\s+)?(?:the\s+)?"
+                  r"([a-z][a-z ]{1,20}?)\s+screen\b", text, re.I)
+    if m:
+        return ("I couldn't set it up: no \u201c%s screen\u201d on the drawing to reach"
+                % norm(m.group(1)))
+    m = re.search(r"[\"\u201c]([A-Za-z][A-Za-z0-9 &'\-]{1,28})[\"\u201d]", text)
+    if m:
+        return ("I couldn't set it up: nothing on the drawing matches \u201c%s\u201d"
+                % norm(m.group(1)))
+    return ("I couldn't set it up: nothing on the drawing corresponds to this — "
+            "no control to click and no field to fill")
+
+
+def link_criterion(c, steps, surf_ctrls):
+    """The step that ATTEMPTED this promise, or the reason none could. A named
+    gate is answered by its own phase (blank when the criterion is about a
+    refusal, filled otherwise); a named plain control by the click that pressed
+    it; anything else by the step whose words overlap it most (≥2 real words)."""
+    t = low(c.get("text"))
+    neg = bool(re.search(r"\b(empty|blank|refus\w*|without|missing|invalid|"
+                         r"required|reject\w*)\b", t))
+
+    def gate_step(nm, phase):
+        for s in steps:
+            if s.get("do") == "gate" and low(" ".join(s.get("match") or [])) == low(nm):
+                if s.get("phase") == phase:
+                    return s
+        for s in steps:               # the gate was tried, but not this phase
+            if s.get("do") == "gate" and low(" ".join(s.get("match") or [])) == low(nm):
+                return s
+        return None
+
+    for x in surf_ctrls:
+        if GATE.search(norm(x.get("name"))) and names_control(t, x):
+            s = gate_step(x.get("name"), "blank" if neg else "filled")
+            if s:
+                return s.get("key"), None
+    for x in surf_ctrls:
+        if GATE.search(norm(x.get("name"))) or not names_control(t, x):
+            continue
+        for s in steps:
+            if s.get("do") == "click" and any(low(m) == low(x.get("name"))
+                                              for m in s.get("match") or []):
+                return s.get("key"), None
+    ct = cov_toks(t)
+    best, best_n = None, 0
+    for s in steps:
+        so = cov_toks(" ".join([s.get("name") or "", s.get("why") or "",
+                                s.get("expect") or "", " ".join(s.get("match") or [])]))
+        n = len(ct & so)
+        if n > best_n:
+            best, best_n = s, n
+    if best is not None and best_n >= 2:
+        return best.get("key"), None
+    return None, cannot_reason(str(c.get("text") or ""), surf_ctrls)
+
+
 def build(criteria, drawing, html_screens=None, title="", prd=""):
     crit = [c for c in (criteria or {}).get("criteria") or [] if isinstance(c, dict)]
     prd_text = low(" ".join(str(c.get("text") or "") for c in crit))
@@ -400,6 +565,7 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     # journey because locking a month is the last thing anyone does to it.
     walk_steps, gate_blank, fills, fill_all, routes, gate_filled = [], [], [], [], [], []
     keys = []
+    named_clicks = []
     why_from, seen = [], set()
 
     def mk(bucket, step):
@@ -504,6 +670,84 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                             "expect": "the screen I left",
                             "why": "the record says there is a way back from there"})
 
+    # ── THE KEYS THE RECORD NAMES (S221 fix 7) ──────────────────────────
+    # Every criterion as its own sentence, plus the PRD's prose when the caller
+    # passed it — the Goal is where the captain says how the build is USED
+    # ("walk the character around the village with the arrow keys"), and none
+    # of that survives into the acceptance criteria this planner used to read.
+    sentences = [c.get("text") or "" for c in crit]
+    if prd:
+        sentences += SENTENCE.findall(prd)
+    ks, kwhy = key_steps(sentences)
+    for st in ks:
+        mk(keys, st)
+    why_from.extend(kwhy)
+
+    # ── THE FLOOR: every person promise gets an ATTEMPT (S226) ──────────
+    # What the scraper found above is whatever fell out of the sources. Now the
+    # person's own acceptance list is made the floor: a promise the walk does
+    # not yet attempt, whose control IS on the surface, is turned into one; a
+    # promise whose control is NOT there is left for the coverage pass to record
+    # with its reason. Nothing here is invented for a control no criterion names
+    # — that is the ceiling, and it is why the loops are driven BY the criteria.
+    person = [c for c in crit if is_person_promise(c)]
+    surface = all_parts(drawing, scr)
+    surf_ctrls = clickables(surface)
+    surf_fields = typeables(surface)
+
+    tried_gates = set(low(" ".join(s.get("match") or [])) for s in gate_blank + gate_filled)
+    for c in person:
+        t = low(c.get("text"))
+        g = next((x for x in surf_ctrls
+                  if GATE.search(norm(x.get("name"))) and names_control(t, x)), None)
+        if not g or low(g.get("name")) in tried_gates:
+            continue
+        tried_gates.add(low(g.get("name")))
+        gname = norm(g.get("name"))
+        if surf_fields:
+            mk(gate_blank, {"do": "gate", "phase": "blank", "match": [gname],
+                            "name": 'try "%s" with the field(s) still blank' % gname,
+                            "expect": "it refuses while the %s is blank"
+                                      % (norm(surf_fields[0].get("name"))[:40] or "field"),
+                            "why": "a person is promised this refuses on an empty form: %s"
+                                   % norm(c.get("text"))[:110]})
+            for f in surf_fields[:2]:
+                fname = norm(f.get("name"))
+                mk(fills, {"do": "type", "match": [fname] if fname else [], "text": TYPED_TEXT,
+                           "name": 'type into "%s"' % (fname[:40] or "the first empty field"),
+                           "expect": "what I typed shows on this screen",
+                           "why": "the promise says a person fills this before the gate"})
+            mk(fill_all, {"do": "type-all", "match": [], "text": TYPED_TEXT,
+                          "name": "fill every field this screen still wants",
+                          "expect": "no empty field is left before the gate is tried",
+                          "why": "the gate's filled phase says nothing while the form is empty"})
+        mk(gate_filled, {"do": "gate", "phase": "filled", "match": [gname],
+                         "name": 'click "%s" now everything is filled' % gname,
+                         "expect": "it opens and the promise holds",
+                         "why": "a person is promised this locks once filled: %s"
+                                % norm(c.get("text"))[:110]})
+
+    # THE PLAIN BUTTONS A PROMISE NAMES, and only those. A control already
+    # walked (a forward click, a PRD route) is not clicked twice; a gate has its
+    # own two steps; a control no criterion names is never touched at all.
+    already = set()
+    for s in walk_steps + routes + named_clicks:
+        for m in s.get("match") or []:
+            already.add(low(m))
+    for c in person:
+        t = low(c.get("text"))
+        for x in surf_ctrls:
+            nm = norm(x.get("name"))
+            if not nm or GATE.search(nm) or low(nm) in already:
+                continue
+            if not names_control(t, x):
+                continue
+            already.add(low(nm))
+            mk(named_clicks, {"do": "click", "match": [nm], "bornOf": "named-click",
+                              "name": 'click "%s", which a person is promised they can' % nm,
+                              "expect": "the screen answers the control",
+                              "why": "a person is promised this: %s" % norm(c.get("text"))[:120]})
+
     # THE WAY IN (measured, 2026-09-19). The drawing's first screen is not
     # necessarily the app's front door: on the real benchmark the front door is
     # a scorecard and the drawn flow lives behind a nav item, so every step of
@@ -520,33 +764,46 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
         t = norm(t)
         if t and t not in entry:
             entry.append(t)
-    # ── THE KEYS THE RECORD NAMES (S221 fix 7) ──────────────────────────
-    # Every criterion as its own sentence, plus the PRD's prose when the caller
-    # passed it — the Goal is where the captain says how the build is USED
-    # ("walk the character around the village with the arrow keys"), and none
-    # of that survives into the acceptance criteria this planner used to read.
-    sentences = [c.get("text") or "" for c in crit]
-    if prd:
-        sentences += SENTENCE.findall(prd)
-    ks, kwhy = key_steps(sentences)
-    for st in ks:
-        mk(keys, st)
-    why_from.extend(kwhy)
 
-    # The whole-form fill sits directly before the gate it exists to make
-    # meaningful, after the side trips that may have navigated away. THE KEYS
-    # GO AFTER THE CLICK-DRIVEN JOURNEY, never in front of it: on a build that
-    # has both, the flow the drawing describes is the thing being proved and a
-    # keystroke must not be what pushes its last step past the cap.
-    steps = (walk_steps + gate_blank + fills + routes + keys + fill_all + gate_filled)[:STEP_CAP]
+    # THE ORDER OF THE WALK. Where the drawing gives a click-driven journey, the
+    # keys go AFTER it so a keystroke cannot push its last step past the cap.
+    # Where there is NO such journey — a one-screen panel opened BY a key, like
+    # the save panel Escape reveals — the key must go FIRST, or the fills and
+    # the gate run against a panel that was never opened.
+    if walk_steps:
+        ordered = (walk_steps + gate_blank + fills + routes + named_clicks
+                   + keys + fill_all + gate_filled)
+    else:
+        ordered = (keys + gate_blank + fills + routes + named_clicks
+                   + fill_all + gate_filled)
+    steps = ordered[:STEP_CAP]
     for i, st in enumerate(steps):
         st["key"] = st.get("key") or ("j%d" % (i + 1))
+
+    # ── THE COVERAGE: attempted N of M, and which step (or why none) ─────
+    # Emitted as DATA for the report to render. Each person promise is paired
+    # with the walk step that attempted it, or the honest reason it could not
+    # be turned into an attempt. This is the number the captain asked to SEE.
+    cov_rows = []
+    for c in person:
+        key, reason = link_criterion(c, steps, surf_ctrls)
+        cov_rows.append({"id": str(c.get("id") or ""),
+                         "text": norm(c.get("text")),
+                         "attempted": bool(key),
+                         "step": key,
+                         "reason": reason})
+    coverage = {"group": "can a person do what it promises",
+                "attempted": sum(1 for r in cov_rows if r["attempted"]),
+                "total": len(cov_rows),
+                "criteria": cov_rows}
+
     src = []
     for w in why_from:
         if w not in src:
             src.append(w)
     return {"source": src or ["nothing in the record described a flow"],
-            "typedText": TYPED_TEXT, "entry": entry, "steps": steps}
+            "typedText": TYPED_TEXT, "entry": entry, "steps": steps,
+            "coverage": coverage}
 
 
 def journey_criteria(journey):
@@ -568,6 +825,9 @@ def journey_criteria(journey):
 
 def apply_criteria(contract, journey):
     rows = journey_criteria(journey)
+    cov = journey.get("coverage")
+    if cov:
+        contract["personCoverage"] = cov
     if not rows:
         return contract, 0
     have = set(str(c.get("id")) for c in contract.get("criteria") or [])
@@ -689,12 +949,17 @@ def main(argv):
                 json.dump(contract, fh, indent=2)
                 fh.write("\n")
         n = len(j["steps"])
+        cov = j.get("coverage") or {}
+        csuffix = ("" if not cov.get("total")
+                   else " — attempted %d of %d a person can check"
+                        % (cov.get("attempted", 0), cov.get("total", 0)))
         if not n:
-            print("nothing in the record described a flow to walk")
+            print("nothing in the record described a flow to walk" + csuffix)
         else:
-            print("%d step(s) to walk, from %s%s"
+            print("%d step(s) to walk, from %s%s%s"
                   % (n, "; ".join(j["source"]),
-                     (" — %d of them its own requirement" % added) if added else ""))
+                     (" — %d of them its own requirement" % added) if added else "",
+                     csuffix))
         return 0
 
     if cmd == "carry":

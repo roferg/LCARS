@@ -277,6 +277,108 @@ else
 fi
 
 # ===========================================================================
+# F6 (S226). THE CRITERIA ARE THE FLOOR AND THE CEILING.
+#
+# THE DEFECT, measured on a real mission on 2026-09-23. The build was a single
+# save-slot panel — one screen, no `screen-*` container — so screens_of found
+# nothing, and the ONLY step the scraper produced was the Escape key it read
+# out of the PRD prose. The journey walked ONE step. Yet the PRD had SIX
+# acceptance criteria describing things a PLAYER does — open the panel, type a
+# name and note and Lock, Lock-while-empty, Unlock, Preview, Back-to-map — and
+# the grader reported on all of them as though it had done the work. Nothing
+# anywhere asked: "did I attempt the things I am going to be graded on?"
+#
+# THE FIX. Every person-checkable criterion (source prd/journey, minus the
+# journey-* rows that ARE the walk) gets an ATTEMPT — a walk step — or a
+# recorded reason it could not be turned into one. The criteria are the FLOOR
+# (six person promises ⇒ six attempts-or-reasons) and the CEILING (nothing on
+# the panel that a criterion does not name gets clicked — no overkill). The
+# coverage is emitted as data: attempted N of M, and per-criterion which step
+# attempted it or why none could.
+# ===========================================================================
+echo
+echo "F6. every person promise gets an attempt or a recorded reason (floor & ceiling)"
+
+PANEL="$TMPROOT/panel"; mkdir -p "$PANEL"
+cat >"$PANEL/criteria.json" <<'JSON'
+{"mission":"m","hasDrawing":true,"placeNames":["lock","unlock","preview","slot-name","slot-note"],"criteria":[
+ {"id":"prd-1","text":"A player can open the save-slot panel from the game screen.","source":"prd","primary":true},
+ {"id":"prd-2","text":"Typing a slot name and a note, then pressing Lock slot, locks the slot.","source":"prd","primary":true},
+ {"id":"prd-3","text":"Pressing Lock slot while either field is empty REFUSES and says on screen which field is still empty.","source":"prd","primary":true},
+ {"id":"prd-4","text":"Pressing Unlock slot on a locked slot makes it editable again.","source":"prd","primary":true},
+ {"id":"prd-5","text":"Preview shows what the slot will look like in the load list.","source":"prd","primary":true},
+ {"id":"prd-6","text":"Back to the map screen returns the player to the game.","source":"prd","primary":true},
+ {"id":"t-1-ac1","text":"Opening the panel calls input.suspend() so the player cannot move behind the overlay.","source":"plan","primary":false},
+ {"id":"part-lock","text":"the Lock slot button matches the drawing.","source":"drawing","primary":true}]}
+JSON
+# The panel's parts, exactly the shape drawing-parts.json carries (pages[].parts),
+# plus ONE control NO criterion names — the ceiling's tripwire.
+cat >"$PANEL/drawing-parts.json" <<'JSON'
+{"url":"file:///panel.html","pages":[{"url":"file:///panel.html","title":"Save slots","parts":[
+ {"index":1,"id":"panel-title","name":"Save slots","tag":"h1","role":null,"interactive":false,"container":false},
+ {"index":3,"id":"slot-name","name":"name this save","placeholder":"name this save","tag":"input","role":null,"interactive":true,"container":false},
+ {"index":5,"id":"slot-note","name":"a line about where you are","placeholder":"a line about where you are","tag":"textarea","role":null,"interactive":true,"container":false},
+ {"index":6,"id":"lock","name":"Lock slot","tag":"button","role":null,"interactive":true,"container":false},
+ {"index":7,"id":"unlock","name":"Unlock","tag":"button","role":null,"interactive":true,"container":false},
+ {"index":8,"id":"preview","name":"Preview","tag":"button","role":null,"interactive":true,"container":false},
+ {"index":9,"id":"nuke","name":"Delete everything","tag":"button","role":null,"interactive":true,"container":false}]}]}
+JSON
+printf '# Goal\n\nPressing Escape reveals the save panel over the game canvas.\n' >"$PANEL/prd.md"
+
+"$PY" "$JOURNEY" build --criteria "$PANEL/criteria.json" \
+  --drawing "$PANEL/drawing-parts.json" --prd "$PANEL/prd.md" --title "Save slots" \
+  --out "$PANEL/journey.json" --criteria-out "$PANEL/criteria2.json" >"$PANEL/j.out" 2>&1
+
+# cov <journey.json> <python-body-using d and c> — d=journey, c=coverage
+cov() { "$PY" -c "import json,sys
+d=json.load(open(sys.argv[1]))
+c=d.get('coverage') or {}
+$2" "$1"; }
+
+check "F6-1 the coverage counts the SIX person promises — floor is the acceptance list" \
+  "cov '$PANEL/journey.json' 'sys.exit(0 if c.get(\"total\")==6 else 1)'"
+check "F6-2 FIVE of the six were turned into an attempt (was ONE step total before)" \
+  "cov '$PANEL/journey.json' 'sys.exit(0 if c.get(\"attempted\")==5 else 1)'"
+check "F6-3 back-to-map is the one that could NOT be set up, recorded WITH its reason" \
+  "cov '$PANEL/journey.json' 'r=[x for x in c[\"criteria\"] if x[\"id\"]==\"prd-6\"][0]
+sys.exit(0 if (not r[\"attempted\"]) and r.get(\"reason\") and \"map\" in r[\"reason\"].lower() else 1)'"
+check "F6-4 every ATTEMPTED promise names a real walk step that exists in the journey" \
+  "cov '$PANEL/journey.json' 'keys=set(s[\"key\"] for s in d[\"steps\"])
+att=[x for x in c[\"criteria\"] if x[\"attempted\"]]
+sys.exit(0 if att and all(x.get(\"step\") in keys for x in att) else 1)'"
+check "F6-5 the panel is now WALKED — typing, the gate both ways, and the named buttons" \
+  "cov '$PANEL/journey.json' 'ds=[s[\"do\"] for s in d[\"steps\"]]
+ph=[s.get(\"phase\") for s in d[\"steps\"] if s[\"do\"]==\"gate\"]
+clicks=\" \".join(\" \".join(s.get(\"match\") or []) for s in d[\"steps\"] if s[\"do\"]==\"click\").lower()
+sys.exit(0 if \"type\" in ds and \"blank\" in ph and \"filled\" in ph and \"unlock\" in clicks and \"preview\" in clicks else 1)'"
+check "F6-6 the CEILING holds — the un-named 'Delete everything' button is NEVER clicked" \
+  "cov '$PANEL/journey.json' 'blob=\" \".join(\" \".join(s.get(\"match\") or [])+\" \"+s.get(\"name\",\"\") for s in d[\"steps\"]).lower()
+sys.exit(0 if \"delete everything\" not in blob and \"nuke\" not in blob else 1)'"
+check "F6-7 prd-1 (open the panel) is attempted BY the Escape key step — not fabricated anew" \
+  "cov '$PANEL/journey.json' 'r=[x for x in c[\"criteria\"] if x[\"id\"]==\"prd-1\"][0]
+st=[s for s in d[\"steps\"] if s[\"key\"]==r.get(\"step\")]
+sys.exit(0 if r[\"attempted\"] and st and st[0][\"do\"]==\"press\" else 1)'"
+check "F6-8 a ticket (plan) criterion and a drawing criterion are NOT in the person floor" \
+  "cov '$PANEL/journey.json' 'ids=set(x[\"id\"] for x in c[\"criteria\"])
+sys.exit(0 if \"t-1-ac1\" not in ids and \"part-lock\" not in ids else 1)'"
+check "F6-9 the coverage is stamped onto the contract too, for the report to read" \
+  "\"\$PY\" -c 'import json,sys
+c=json.load(open(sys.argv[1]))
+pc=c.get(\"personCoverage\") or {}
+sys.exit(0 if pc.get(\"total\")==6 and pc.get(\"attempted\")==5 else 1)' '$PANEL/criteria2.json'"
+
+# ── THE CONTROL: a MULTI-SCREEN build must not balloon. Its person promises
+# are already attempted by the scraped screen-walk, so coverage is full and NOT
+# ONE extra step is invented. This is the anti-overkill half, proven on the F1
+# journey built at the top of this file.
+check "F6-10 the two-screen fixture is 2 of 2 attempted with NO invented steps (no balloon)" \
+  "\"\$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+c=d.get(\"coverage\") or {}
+named=[s for s in d[\"steps\"] if s.get(\"bornOf\")==\"named-click\"]
+sys.exit(0 if c.get(\"total\")==2 and c.get(\"attempted\")==2 and not named else 1)' '$TMPROOT/journey.json'"
+
+# ===========================================================================
 # F2. THE WALK ITSELF — real headless Chrome, real clicks, real typing.
 # ===========================================================================
 echo
