@@ -799,6 +799,19 @@ def derive_grade(ledger):
         g.update(score="low", rule="high-unchecked")
     elif g["mediumGap"]:
         g.update(score="medium", rule="medium-open")
+    elif 2 * checked <= len(ledger):
+        # THE HALF-CHECKED FLOOR (captain's ruling, 2026-09-22). Measured on a
+        # live mission: a group of 7 with one row worked and six that could not
+        # be SET UP read HIGH — it graded on the single row that got checked,
+        # exactly the "silent model scores 5/5" hole. `high-unchecked` could not
+        # catch it because ONE high row was checked. So a graded group may not
+        # read HIGH unless MORE THAN HALF of its rows were actually checked
+        # (worked or didn't-work; the two "couldn't" outcomes are not checks).
+        # Below the floor it is UNKNOWN, said as what it is — too little checked
+        # to grade — NEVER a doubt about the build: no row here didn't work, the
+        # core stays `unverified` below, and the rows we could not check are
+        # listed as OURS to fix, never counted against him.
+        g.update(score="low", rule="too-little-checked")
     else:
         g.update(score="high", rule="all-worked")
     # THE CORE — the point of the mission, as its own fact beside the grade.
@@ -811,6 +824,8 @@ def derive_grade(ledger):
         g["core"] = "met"
     else:
         g["core"] = ""
+    # Counts the floor and its reasons read (additive; older readers ignore).
+    g["checked"], g["total"] = checked, len(ledger)
     return g
 
 
@@ -2072,6 +2087,16 @@ def main():
                "vouched for.")
         meaning = ("I could not check anything on your list, so nothing here is "
                    "vouched for — this is not a clean bill of health")
+    elif grade["rule"] == "too-little-checked":
+        # UNKNOWN, NOT GOOD AND NOT A FAULT. More than half of this group could
+        # not be checked, so it is too thin to certify — but nothing here didn't
+        # work, so it is not held against the build either.
+        why = ("too little was checked to grade — I could not check %d of %d."
+               % (grade["total"] - grade["checked"], grade["total"]))
+        meaning = ("Too little was checked to grade — only %d of %d rows got a "
+                   "real outcome — so this is not a grade, it is a gap in my "
+                   "checking; nothing here is a fault in your build"
+                   % (grade["checked"], grade["total"]))
     elif score == "medium":
         # What did not work and what could not be checked are said apart, so a
         # MEDIUM that rests on a blind spot never reads as a clean bill.
@@ -2164,6 +2189,13 @@ def main():
         "high-unchecked": ("I could not check the point of the mission, and I will "
                            "not call a build good on what I could not see"),
         "nothing-checked": "I could not check anything on your list",
+        # S225+ — THE HALF-CHECKED FLOOR. More than half of this group could not
+        # be checked, so it is too thin to read HIGH; it is not held against the
+        # build (nothing here didn't work), it simply is not vouched for.
+        "too-little-checked": ("too little was checked to grade — only %d of %d "
+                               "rows got a real outcome, and a grade needs more "
+                               "than half; nothing here is a fault in your build"
+                               % (grade["checked"], grade["total"])),
         # S225 — MEDIUM now fires on a medium that DIDN'T WORK and nothing
         # else. A medium nobody could check no longer moves the grade, so this
         # sentence no longer offers it as a reason (it is still said, in the

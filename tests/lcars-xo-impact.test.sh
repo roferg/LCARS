@@ -226,9 +226,30 @@ echo "B12. a medium nobody could check → the grade holds, and a reading beside
 # (`medium-open` firing on `mediumBlind`). That is a failure of OURS reading as
 # a doubt about HIS build — the exact thing the captain ruled out. The grade now
 # holds at HIGH; the blind spot is louder, not quieter, everywhere else.
-verdict b12 medium "$(row prd-1 high met)" "$(row prd-2 medium untested '"couldNotCheck": "unobservable"')" \
+#
+# CHANGED AGAIN, THE HALF-CHECKED FLOOR (captain's ruling, 2026-09-22). The old
+# fixture's PERSON group was two rows — prd-1 and prd-2 — with only one of them
+# checked. That is EXACTLY the defect the floor now forbids: a group may not
+# read HIGH unless MORE THAN HALF its rows were checked, and 1 of 2 is not more
+# than half. So the old fixture ENCODED the defect (it asserted HIGH on a
+# half-checked group). B12's real intent — a blind medium does not DRAG the
+# grade down — is preserved here on a group that clears the floor: three person
+# rows, two of them checked, one a blind medium. The blind medium still does not
+# drag it (no medium-open), and the grade legitimately holds at HIGH.
+cat >"$TMPROOT/b12-criteria.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "the health bar is on screen and drops when you are hit", "source": "prd", "primary": true},
+  {"id": "journey-x", "text": "Walking the flow: take a hit — the bar drops.", "source": "journey", "primary": true, "notDrawn": true},
+  {"id": "prd-2", "text": "the health bar is red", "source": "prd", "primary": true},
+  {"id": "t-1-ac1", "text": "the bar sits in the top right corner", "source": "plan", "primary": false},
+  {"id": "t-1-ac2", "text": "the bar has a one pixel border", "source": "plan", "primary": false}
+ ]}
+C
+verdict b12 medium "$(row prd-1 high met)" "$(row journey-x high met)" \
+  "$(row prd-2 medium untested '"couldNotCheck": "unobservable"')" \
   "$(row t-1-ac1 medium met)" "$(row t-1-ac2 low met)"
-run b12
+run b12 "$TMPROOT/b12-criteria.json"
 check "B12. a medium nobody could check no longer drags the grade down" \
   "[ \"\$(score b12)\" = high ]"
 check "B12. …and the reading beside it is now the CAUTIOUS one, naming what to check" \
@@ -995,6 +1016,134 @@ verdict o6 high "$(row prd-1 high untested)" "$(row prd-2 high untested)" \
 run o6 "$TMPROOT/four-sources.json"
 check "S225-O6. every point-of-the-mission row blind → LOW, nothing is vouched for" \
   "[ \"\$(score o6)\" = low ] && [ \"\$(v o6 core)\" = unverified ]"
+
+# ── H. THE HALF-CHECKED FLOOR ───────────────────────────────────────────────
+# THE MEASURED DEFECT, tonight, on a live mission. The person group came back
+#   total 7 · worked 1 · didn't work 0 · I couldn't see it 0 · I couldn't set it up 6
+# and the headline read HIGH — one row of seven actually checked, six that
+# could not be set up at all, and the captain's report said things were good.
+# `high-unchecked` did not fire because ONE high row WAS checked; the group
+# then graded on that single row. The captain ruled (2026-09-22): a graded
+# group may NOT read HIGH unless MORE THAN HALF of its rows were actually
+# checked — worked or didn't-work; the two "couldn't" outcomes are not checks.
+# Below that floor it is UNKNOWN, never GOOD and never a FAULT.
+cat >"$TMPROOT/seven-person.json" <<'C'
+{"mission": "m", "hasDrawing": false, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "you can save a reading and see it in the list", "source": "prd", "primary": true},
+  {"id": "prd-2", "text": "the list keeps its order after a reload", "source": "prd", "primary": true},
+  {"id": "prd-3", "text": "a blank reading is refused", "source": "prd", "primary": true},
+  {"id": "prd-4", "text": "the total updates when you add one", "source": "prd", "primary": true},
+  {"id": "journey-1", "text": "Walking the flow: save a reading — the row appears.", "source": "journey", "primary": true, "notDrawn": true},
+  {"id": "journey-2", "text": "Walking the flow: reload — the list is still there.", "source": "journey", "primary": true, "notDrawn": true},
+  {"id": "journey-3", "text": "Walking the flow: delete a reading — it goes.", "source": "journey", "primary": true, "notDrawn": true}
+ ]}
+C
+
+echo "H1. THE DEFECT: one row of seven checked no longer reads HIGH"
+verdict h1 high "$(row prd-1 high met)" \
+  "$(row prd-2 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row prd-3 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row prd-4 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-1 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-2 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-3 high untested '"couldNotCheck": "unreachable"')"
+run h1 "$TMPROOT/seven-person.json"
+check "H1. 1 of 7 checked → NOT high" "[ \"\$(score h1)\" != high ]"
+check "H1. …it is LOW, by the honest rule name" \
+  "[ \"\$(score h1)\" = low ] && [ \"\$(v h1 groups.person.rule)\" = too-little-checked ]"
+check "H1. …and the group's own grade word matches the headline" \
+  "[ \"\$(v h1 groups.person.grade)\" = low ]"
+# UNKNOWN, NOT A FAULT. The six we could not set up are not turned into faults:
+# no high row DIDN'T work, the core is unverified (not broken), and the list of
+# them says plainly it is our checking, not his build.
+check "H1. the thin group is UNKNOWN, never a FAULT — core is unverified, not broken" \
+  "[ \"\$(v h1 core)\" = unverified ]"
+check "H1. …not one row is counted as didn't-work" \
+  "[ \"\$(v h1 groups.person.didntWork)\" = 0 ]"
+check "H1. …the six are listed as OUR failure to set up, not his build" \
+  "[ \"\$(v h1 groups.person.couldntSetUp)\" = 6 ] \
+   && v h1 myChecking.couldntSetUp | grep -q unreachable \
+   && v h1 myChecking.note | grep -qi 'not a fault in your build'"
+check "H1. …the reasoning says too little was checked, and names no fault" \
+  "v h1 whyThisGrade | grep -qi 'too little was checked' \
+   && ! v h1 whyThisGrade | grep -qi \"didn't work\""
+check "H1. …the why-this-grade paragraph opens with the honest rule" \
+  "v h1 whyThisGrade | grep -q '^LOW because too little was checked'"
+check "H1. …and the report carries it, never claiming things are good" \
+  "grep -q 'too little was checked' '$TMPROOT/h1/report.md' \
+   && ! grep -qi 'everything you asked for is in the build' '$TMPROOT/h1/report.md'"
+
+echo "H2. CONTROL: a WELL-checked group with some blind rows still reads HIGH"
+# 4 of 7 checked (more than half), 3 blind. Exactly the old all-worked path —
+# a blind row still does not drag the grade down, and the grade stays HIGH.
+verdict h2 high "$(row prd-1 high met)" "$(row prd-2 high met)" \
+  "$(row prd-3 high met)" "$(row prd-4 high met)" \
+  "$(row journey-1 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-2 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-3 high untested '"couldNotCheck": "unreachable"')"
+run h2 "$TMPROOT/seven-person.json"
+check "H2. 4 of 7 checked → still HIGH, by all-worked, exactly as before" \
+  "[ \"\$(score h2)\" = high ] && [ \"\$(v h2 groups.person.rule)\" = all-worked ]"
+check "H2. …and the three blind rows are still said beside it, never counted against him" \
+  "[ \"\$(v h2 myChecking.total)\" = 3 ] && [ \"\$(v h2 groups.person.didntWork)\" = 0 ]"
+
+echo "H3. the floor is MORE THAN half — exactly half is not enough"
+# 3 of 6 checked is exactly half → below the floor → LOW/too-little-checked.
+cat >"$TMPROOT/six-person.json" <<'C'
+{"mission": "m", "hasDrawing": false, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "save a reading", "source": "prd", "primary": true},
+  {"id": "prd-2", "text": "keep the order", "source": "prd", "primary": true},
+  {"id": "prd-3", "text": "refuse a blank", "source": "prd", "primary": true},
+  {"id": "journey-1", "text": "Walking the flow: save — the row appears.", "source": "journey", "primary": true, "notDrawn": true},
+  {"id": "journey-2", "text": "Walking the flow: reload — still there.", "source": "journey", "primary": true, "notDrawn": true},
+  {"id": "journey-3", "text": "Walking the flow: delete — it goes.", "source": "journey", "primary": true, "notDrawn": true}
+ ]}
+C
+verdict h3 high "$(row prd-1 high met)" "$(row prd-2 high met)" "$(row prd-3 high met)" \
+  "$(row journey-1 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-2 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-3 high untested '"couldNotCheck": "unreachable"')"
+run h3 "$TMPROOT/six-person.json"
+check "H3. exactly half (3 of 6) checked → NOT high, it is too-little-checked" \
+  "[ \"\$(score h3)\" = low ] && [ \"\$(v h3 groups.person.rule)\" = too-little-checked ]"
+# CONTROL — one more checked (4 of 6) clears the floor and reads HIGH.
+verdict h3b high "$(row prd-1 high met)" "$(row prd-2 high met)" "$(row prd-3 high met)" \
+  "$(row journey-1 high met)" \
+  "$(row journey-2 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row journey-3 high untested '"couldNotCheck": "unreachable"')"
+run h3b "$TMPROOT/six-person.json"
+check "H3. CONTROL — 4 of 6 checked (more than half) reads HIGH" \
+  "[ \"\$(score h3b)\" = high ] && [ \"\$(v h3b groups.person.rule)\" = all-worked ]"
+
+echo "H4. the floor is a GROUP rule — it fires on the drawing group too"
+# A drawing group that is thinly checked must not read HIGH either, and must
+# still not become a fault. Person group here is clean (stays the headline).
+verdict h4 high "$(row prd-1 high met)" "$(row prd-2 high met)" \
+  "$(row journey-save high met)" \
+  "$(row part-saveBtn high met)" \
+  "$(row t-1-ac1 low met)" "$(row t-1-ac2 low met)" \
+  "$(row part-2 high untested '"couldNotCheck": "unreachable"')" \
+  "$(row part-3 high untested '"couldNotCheck": "unreachable"')"
+cat >"$TMPROOT/thin-drawing.json" <<'C'
+{"mission": "m", "hasDrawing": true, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "save a reading", "source": "prd", "primary": true},
+  {"id": "prd-2", "text": "keep the order", "source": "prd", "primary": true},
+  {"id": "journey-save", "text": "Walking the flow: save — the row appears.", "source": "journey", "primary": true, "notDrawn": true},
+  {"id": "part-saveBtn", "text": "the Save button matches the drawing", "source": "drawing", "primary": true},
+  {"id": "part-2", "text": "the header matches the drawing", "source": "drawing", "primary": true},
+  {"id": "part-3", "text": "the list rows match the drawing", "source": "drawing", "primary": true},
+  {"id": "t-1-ac1", "text": "the store writes through to disk", "source": "plan", "primary": false},
+  {"id": "t-1-ac2", "text": "the reducer rejects a blank reading", "source": "plan", "primary": false}
+ ]}
+C
+run h4 "$TMPROOT/thin-drawing.json"
+check "H4. the headline person group is clean → HIGH" \
+  "[ \"\$(score h4)\" = high ]"
+check "H4. the thinly-checked drawing group (1 of 3) does not read HIGH" \
+  "[ \"\$(v h4 groups.drawing.grade)\" = low ] && [ \"\$(v h4 groups.drawing.rule)\" = too-little-checked ]"
 
 echo
 printf 'lcars xo-impact: %d passed, %d failed\n' "$pass" "$fail"
