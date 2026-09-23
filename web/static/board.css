@@ -3465,6 +3465,118 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   font-weight:600;font-size:11.5px}
 /* "no change" is a fact, not a movement — it must not read like one. */
 .xo-legend-d-none{color:var(--xo-muted);font-weight:400}
+
+/* ── S225 — THE RAIL IS THREE QUESTIONS ────────────────────────────────────
+   One block per group, in the scorer's order, each with its question, what it
+   answers, its shape and its counts. The blocks are separated by a RULE rather
+   than gap alone: at 205px three stacked blocks of small type run together,
+   and the reader has to be able to tell where one question ends.
+
+   THE FOURTH OUTCOME IS A SHAPE, NOT A FOURTH HUE. S224's three fills were run
+   through the dataviz validator against this surface and they are kept exactly
+   as they were; adding a fourth hue to a four-way split would have meant
+   re-validating all six pairs, and the pair that matters most is the one no
+   hue can carry: "I couldn't SEE it" (a doubt about the build) versus "I
+   couldn't SET it UP" (my own failure to reach the state). So the set-up
+   segment is HOLLOW — a thin outline over a near-transparent fill, in the
+   pane's own muted ink. Solid vs hatched vs hollow is a channel that survives
+   greyscale, forced-colors and every flavour of colour blindness by itself,
+   and it says the right thing on sight: nothing was filled in there, and the
+   empty box is mine. */
+/* NO NEW COLOUR IS MINTED HERE. `--xo-mine` is the pane's own muted ink under
+   a name that says what it MEANS on a bar — the shortfall is mine — and the
+   fill is that same ink at 16%, mixed rather than re-typed as a second hex.
+   (web/tests/test_adopt_engine_picker's raw-colour guard is the reason the
+   value is a var() and not a second hex literal — the guard reads the file
+   as text, so even a hex in a COMMENT trips it; `transparent` is the pre-color-mix
+   fallback, and the outline alone still reads as hollow.) */
+.xo-pane{--xo-mine:var(--xo-muted)}
+.xo-seg-u,.xo-key.xo-seg-u{background:transparent;
+  background:color-mix(in srgb, var(--xo-mine) 16%, transparent);
+  box-shadow:inset 0 0 0 1.5px var(--xo-mine)}
+.xo-groups{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+.xo-group{display:flex;flex-direction:column;gap:3px;min-width:0}
+.xo-group + .xo-group{border-top:1px solid var(--lcars-border);padding-top:10px}
+/* The question, in the captain's own words off the record. Full-contrast: it
+   is the heading of its block, not a caption under the numbers. */
+.xo-pane .xo-group-q{font-size:12.5px;line-height:1.3;color:var(--xo-ink);
+  font-weight:600}
+.xo-group-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;
+  font-variant-numeric:tabular-nums}
+.xo-group-grade{font-family:var(--font-display);font-weight:700;font-size:17px;
+  line-height:1.1;letter-spacing:.05em}
+/* The same three meanings as the headline chip, and deliberately the same
+   three tokens — a group grade that disagreed in colour with the badge above
+   it would be two claims about one word. */
+.xo-group-grade.s-high{color:var(--lcars-teal)}
+.xo-group-grade.s-medium{color:var(--lcars-amber)}
+.xo-group-grade.s-low{color:var(--lcars-red)}
+/* COVERAGE IS A COUNT, AND IT MAY NEVER LOOK LIKE A GRADE. This is the whole
+   point of the S225 split, so it is stated in the sheet as well as in the DOM:
+   ordinary ink, never the teal/amber/red the grade words own. A colour from
+   that set here would make "39 of 58 answered" read as a verdict on his build,
+   which is exactly the misreading the three-way split exists to end. */
+.xo-pane .xo-group-cov{font-family:var(--font-display);font-weight:700;
+  font-size:15px;line-height:1.15;letter-spacing:.03em;color:var(--xo-ink)}
+.xo-pane .xo-group-sub{font-size:11px;color:var(--xo-muted)}
+/* WHEN, SAID ONCE, ABOVE ALL THREE. */
+.xo-pane .xo-when-both{margin-bottom:2px;font-size:10px}
+/* The two looks share a scale, so their labels share a track — a 34px gutter
+   holds FIRST and NOW at this size and leaves the bar the rest. */
+.xo-bar-row{display:grid;grid-template-columns:34px minmax(0,1fr);
+  column-gap:7px;align-items:center}
+.xo-pane .xo-bar-when{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.05em;font-size:9.5px;color:var(--xo-muted);line-height:1}
+/* EVERY DRAWN COUNT IS WRITTEN OUT, part 3 of "colour is never the only
+   channel" — but as ONE WRAPPING LINE per group, not four legend rows. Three
+   groups times four rows is twelve rows in a column this narrow, and the third
+   question would never be on screen at the same time as the first. An outcome
+   with nothing in it on either look is not listed: no segment was drawn for
+   it, so there is no key to give, and "0 couldn't see it" is noise. */
+.xo-counts{display:flex;flex-wrap:wrap;gap:0 9px;margin-top:2px;
+  font-size:11px;color:var(--xo-muted);font-variant-numeric:tabular-nums}
+.xo-count{display:inline-flex;align-items:center;gap:4px;line-height:1.42;
+  white-space:nowrap}
+.xo-count .xo-key{width:8px;height:8px}
+.xo-pane .xo-count-n{color:var(--xo-ink);font-weight:700}
+.xo-pane .xo-count-d{color:var(--xo-ink);font-weight:600;font-size:10.5px}
+/* The scorer's one-line caveat. On the contract group it is the sentence that
+   says the number above is not a grade, which is why it is never optional and
+   never a tooltip — a phone has no hover. */
+.xo-pane .xo-group-aside{font-size:10px;line-height:1.35;margin-top:2px;
+  color:var(--xo-muted)}
+
+/* WHAT I COULDN'T CHECK — MINE, AND IT MUST NOT READ AS A FAULT IN HIS BUILD.
+   Keyed to the hollow segment's own ink, so the rail's empty boxes and this
+   block are visibly the same subject. It is a bordered aside, never the amber
+   of a warning or the red of a fault: nothing here is against him. */
+.xo-pane .xo-mine{border-left:3px solid var(--xo-mine);padding:2px 0 2px 12px;
+  display:flex;flex-direction:column;gap:6px}
+.xo-pane .xo-mine-label{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:11px;line-height:1.35;color:var(--xo-mine)}
+.xo-pane .xo-mine-note{font-size:12.5px;line-height:1.5;color:var(--xo-ink);
+  max-width:68ch}
+.xo-mine-counts{display:flex;flex-wrap:wrap;gap:2px 16px;font-size:12px;
+  color:var(--xo-muted);font-variant-numeric:tabular-nums}
+.xo-mine-more > summary{cursor:pointer;list-style:none;padding:1px 0;display:block}
+.xo-mine-more > summary::-webkit-details-marker{display:none}
+.xo-pane .xo-mine-sum{font-size:11.5px;color:var(--xo-muted)}
+/* The summary IS the .xo-mine-sum element, not its parent — a descendant
+   selector here matched nothing and the fold shipped with no marker at all
+   (measured in the first drive's screenshot). */
+.xo-mine-more > summary.xo-mine-sum::before{content:"⌄ "}
+.xo-mine-more[open] > summary.xo-mine-sum::before{content:"⌃ "}
+.xo-mine-more > summary:focus-visible{outline:2px solid var(--lcars-text-bright);
+  outline-offset:2px}
+.xo-mine-body{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.xo-mine-row{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:9px;
+  align-items:start}
+.xo-mine-row .xo-key{margin-top:4px;align-self:start}
+.xo-pane .xo-mine-name{font-size:12px;line-height:1.35;color:var(--xo-ink);
+  font-weight:600;display:block}
+.xo-pane .xo-mine-why{font-size:11.5px;line-height:1.45;color:var(--xo-muted);
+  max-width:68ch}
+
 .xo-pane .xo-measured-lede{font-size:12px;line-height:1.45;margin-top:9px;
   color:var(--xo-muted)}
 .xo-pane .xo-looked{margin-top:2px;font-size:12px;color:var(--xo-muted)}

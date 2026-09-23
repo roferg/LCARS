@@ -11193,6 +11193,260 @@ function xoBarLegend(trio, prev) {
   return leg;
 }
 
+/* ── S225 — THREE QUESTIONS, NOT ONE GRADE ───────────────────────────────
+
+   Everything above this line draws ONE bar over `verdict.counts`, which is the
+   WHOLE ledger lumped together. On the captain's own report that meant 58
+   ticket acceptance criteria — most of which nothing could observe — sat in
+   the same grey as the handful of things a person actually does with the
+   build, and the bar answered no question at all. Worse, the coverage of a
+   ticket contract READ LIKE A GRADE, because it was drawn beside one.
+
+   The scorer now splits every row three ways and answers three DIFFERENT
+   questions, so the rail does too:
+
+     person   "Can a person do what it promises?"   graded — THE headline.
+     drawing  "Does it look like your drawing?"     graded, never the headline.
+     contract "Is the contract covered?"            NOT GRADED. `39 of 58
+              answered` is a fact about my checking, and the absence of a grade
+              on it is the entire point of this change.
+
+   NOTHING HERE DECIDES ANYTHING. The question, the aside, the grade, the four
+   counts and the coverage numbers are all read off `verdict.groups` exactly as
+   `xo-score.py` wrote them; this code arranges them and does arithmetic on
+   two recorded tallies. Where the record has no grade — an empty non-headline
+   group — NO GRADE IS DRAWN, because a default in that slot would be this
+   board inventing a verdict nobody reached. */
+
+/* THE FOUR OUTCOMES, and why "I couldn't set it up" is not a fourth grey.
+
+   The old bar had three segments and lumped the last two together as "I
+   couldn't check". They are not the same thing and they do not belong to the
+   same person: "I couldn't see it" is a doubt about the build in front of me,
+   and "I couldn't set it up" is MY failure — a seed that never reached the
+   screen, a state I could not construct. Painting ours in a shade of his makes
+   our own shortfall read as a shortfall in his build, which is the one thing
+   this report must never do.
+
+   So the fourth state is HOLLOW — an outlined box with almost no fill, in the
+   pane's own muted ink rather than a new hue nobody validated. Hollow-vs-solid
+   is a SHAPE channel: it survives greyscale, forced-colors and every flavour
+   of colour blindness on its own, which the three validated hues cannot claim
+   between four segments. The three fills are S224's validated palette,
+   untouched (see the block above `.xo-bar` in board.css for the measurements). */
+var XO_OUT_SEGS = [
+  ["worked", "w", "worked"],
+  ["didntWork", "d", "didn't work"],
+  ["couldntSee", "c", "couldn't see"],
+  ["couldntSetUp", "u", "couldn't set up"]
+];
+
+/* The scorer's own order, and the order the captain approved. Never sorted by
+   size: "which question got the most rows" is not the question. */
+var XO_GROUP_ORDER = ["person", "drawing", "contract"];
+
+/* The four recorded counts and their sum, or null when the group is empty.
+   The sum is the denominator every width is drawn against — the contract says
+   the four always add to `total`, so using the sum makes the bar fill exactly
+   and makes a malformed record shrink rather than overflow.
+
+   NULL IS THE SKIP SIGNAL. A group with nothing in it is not drawn at all:
+   a mission with no drawing must never render "Does it look like your
+   drawing? — LOW". */
+function xoOutTally(g) {
+  if (!g || typeof g !== "object") return null;
+  var t = {};
+  var sum = 0;
+  XO_OUT_SEGS.forEach(function (s) {
+    t[s[0]] = +g[s[0]] || 0;
+    sum += t[s[0]];
+  });
+  t.total = sum;
+  return sum ? t : null;
+}
+
+/* One bar over the four outcomes. `scale` is passed in so the first look and
+   the re-check are drawn ON THE SAME DENOMINATOR — comparing two bars drawn
+   each to its own total would make a shrinking ledger look like a steady one.
+   A zero segment is not drawn at all (an invisible child still claims its 2px
+   gap, and it would also claim a count nobody measured). */
+function xoOutBar(tally, scale, dim) {
+  var bar = el("div", "xo-bar" + (dim ? " xo-bar-was" : ""));
+  bar.setAttribute("role", "presentation");
+  XO_OUT_SEGS.forEach(function (s) {
+    var v = tally[s[0]];
+    if (!v) return;
+    var seg = el("i", "xo-seg xo-seg-" + s[1]);
+    seg.style.width = (v / scale * 100) + "%";
+    seg.title = v + " " + s[2];
+    bar.appendChild(seg);
+  });
+  return bar;
+}
+
+/* ONE COUNTS LINE per group, and every DRAWN segment's count written out in
+   words beside its swatch — colour is never the only channel, and a rail this
+   narrow has no room for four legend rows per group three times over.
+
+   An outcome is listed when it is non-zero on EITHER look, so a count that
+   fell to zero still reads (with its delta) instead of vanishing. A count that
+   was zero on both looks is not listed: nothing was drawn for it, so there is
+   nothing to key, and "0 couldn't see it" is noise in a 240px column. */
+function xoCountsLine(tally, prev) {
+  var line = el("div", "xo-counts");
+  XO_OUT_SEGS.forEach(function (s) {
+    var now = tally[s[0]];
+    var was = prev ? prev[s[0]] : 0;
+    if (!now && !was) return;
+    var item = el("span", "xo-count");
+    item.appendChild(el("i", "xo-key xo-seg-" + s[1]));
+    item.appendChild(el("b", "xo-count-n", String(now)));
+    item.appendChild(el("span", "xo-count-t", s[2]));
+    if (prev && now !== was) {
+      item.appendChild(el("span", "xo-count-d", xoDeltaWord(now, was)));
+    }
+    line.appendChild(item);
+  });
+  return line;
+}
+
+/* ONE GROUP. Question, then what it answers, then the shape, then the counts,
+   then the scorer's own aside.
+
+   THE COVERAGE GROUP GETS NO GRADE AND NOTHING SHAPED LIKE ONE — no grade
+   node, no grade class, no HIGH/MEDIUM/LOW anywhere in this subtree. It says
+   `39 of 58 answered`, which is a count, and then how many of those were
+   settled by his own tests. The scorer records no `grade` on it; drawing one
+   would be the board asserting a verdict the record refuses to make. */
+function xoGroupBlock(key, g, now, was, scale) {
+  var blk = el("div", "xo-group xo-group-" + key);
+  var q = String(g.question || "").trim();
+  if (q) blk.appendChild(el("div", "xo-group-q", q));
+
+  var coverage = String(g.kind || "") === "coverage";
+  var meta = el("div", "xo-group-meta");
+  if (coverage) {
+    // A COUNT, IN THE PANE'S ORDINARY INK. Never the grade colours — a teal or
+    // a red here is the same claim the word would have made.
+    var covered = (typeof g.covered === "number") ? g.covered : now.worked;
+    meta.appendChild(el("b", "xo-group-cov",
+      covered + " of " + now.total + " answered"));
+    if (typeof g.backedByTests === "number") {
+      meta.appendChild(el("span", "xo-group-sub",
+        g.backedByTests + " backed by your tests"));
+    }
+  } else {
+    var gr = String(g.grade || "").toLowerCase();
+    // NO RECORDED GRADE ⇒ NO GRADE. The scorer omits it on purpose.
+    if (XO_SCORE_WORD[gr]) {
+      meta.appendChild(el("span", "xo-group-grade s-" + gr, XO_SCORE_WORD[gr]));
+    }
+    meta.appendChild(el("span", "xo-group-sub",
+      now.total + " thing" + (now.total === 1 ? "" : "s") + " I checked"));
+  }
+  blk.appendChild(meta);
+
+  // THE SHAPE. Two bars when two looks were recorded, on one scale, each with
+  // its short label; one bar and NO label when there is only a first look — a
+  // "then" over a single bar claims a comparison nobody made. The DATES are
+  // said once above all three groups (see the caller), not six times here.
+  if (was) {
+    [[was, "First", true], [now, "Now", false]].forEach(function (pair) {
+      var row = el("div", "xo-bar-row");
+      row.appendChild(el("span", "xo-bar-when", pair[1]));
+      row.appendChild(xoOutBar(pair[0], scale, pair[2]));
+      blk.appendChild(row);
+    });
+  } else {
+    blk.appendChild(xoOutBar(now, scale, false));
+  }
+  blk.appendChild(xoCountsLine(now, was));
+
+  // The scorer's one-line caveat, verbatim. On the contract group this is the
+  // sentence that says it is not a grade, which is why it is never optional.
+  var aside = String(g.aside || "").trim();
+  if (aside) blk.appendChild(el("div", "xo-group-aside", aside));
+  return blk;
+}
+
+/* The three blocks, in the scorer's order, or NULL when this verdict predates
+   the split. Null is what sends the rail back to the single-bar drawing every
+   mission on the captain's machine was scored with before today. */
+function xoGroupBlocks(verdict, firstVerdict) {
+  var groups = verdict && verdict.groups;
+  if (!groups || typeof groups !== "object") return null;
+  var prev = (firstVerdict && firstVerdict.groups
+              && typeof firstVerdict.groups === "object")
+    ? firstVerdict.groups : null;
+  var out = [];
+  XO_GROUP_ORDER.forEach(function (key) {
+    var g = groups[key];
+    var now = xoOutTally(g);
+    if (!now) return;                       // empty group: not drawn at all
+    var was = prev ? xoOutTally(prev[key]) : null;
+    var scale = was ? Math.max(now.total, was.total) : now.total;
+    out.push(xoGroupBlock(key, g, now, was, scale));
+  });
+  return out.length ? out : null;
+}
+
+/* WHAT I COULDN'T CHECK — AND IT IS MINE, NOT HIS.
+
+   `verdict.myChecking` exists only when something could not be settled, and
+   every entry in it is a shortfall in the LOOKING: a state I could not reach,
+   a behaviour with no test I could name. The scorer says so in its own `note`
+   and that note leads this block, because the failure mode being cured is a
+   reader counting these against the build.
+
+   The summary is always on screen; the entries fold, because there can be
+   fifty of them and a fold that is closed still says how many. Nothing is
+   re-worded: the name and the reason are the scorer's own strings. */
+function xoMyCheckingBlock(mc) {
+  if (!mc || typeof mc !== "object") return null;
+  var see = Array.isArray(mc.couldntSee) ? mc.couldntSee : [];
+  var set = Array.isArray(mc.couldntSetUp) ? mc.couldntSetUp : [];
+  if (!see.length && !set.length) return null;
+  var box = el("div", "xo-mine");
+  box.appendChild(el("b", "xo-mine-label",
+    "What I couldn't check — mine to fix, not counted against you"));
+  var note = String(mc.note || "").trim();
+  if (note) box.appendChild(el("div", "xo-mine-note", note));
+
+  var tally = el("div", "xo-mine-counts");
+  [["c", see.length, "I couldn't see"],
+   ["u", set.length, "I couldn't set up"]].forEach(function (p) {
+    if (!p[1]) return;
+    var item = el("span", "xo-count");
+    item.appendChild(el("i", "xo-key xo-seg-" + p[0]));
+    item.appendChild(el("b", "xo-count-n", String(p[1])));
+    item.appendChild(el("span", "xo-count-t", p[2]));
+    tally.appendChild(item);
+  });
+  box.appendChild(tally);
+
+  var det = el("details", "xo-mine-more");
+  var sum = el("summary", "xo-mine-sum",
+    "The " + (see.length + set.length) + " of them, and why");
+  det.appendChild(sum);
+  var body = el("div", "xo-mine-body");
+  [["c", see], ["u", set]].forEach(function (pair) {
+    pair[1].forEach(function (e) {
+      if (!e || typeof e !== "object") return;
+      var row = el("div", "xo-mine-row");
+      row.appendChild(el("i", "xo-key xo-seg-" + pair[0]));
+      var txt = el("div", "xo-mine-txt");
+      txt.appendChild(el("b", "xo-mine-name", String(e.name || e.id || "")));
+      var why = String(e.why || "").trim();
+      if (why) txt.appendChild(el("div", "xo-mine-why", why));
+      row.appendChild(txt);
+      body.appendChild(row);
+    });
+  });
+  det.appendChild(body);
+  box.appendChild(det);
+  return box;
+}
+
 /* WHEN each look happened, off the journal's own entries — `scored` for the
    first, `rescored` for the re-check. The journal arrives newest-first, so the
    first look is the LAST `scored` seen and the re-check the FIRST `rescored`.
@@ -11342,6 +11596,36 @@ function xoReportPane(mi) {
   }
   rail.appendChild(gradeCol);
 
+  // S225 — THE NUMBERS, AS THREE QUESTIONS. The rail used to draw ONE bar over
+  // `verdict.counts`, the whole ledger lumped: 58 ticket criteria nothing could
+  // observe shared a bar with the 30 things a person actually does, and the
+  // ticket contract's COVERAGE sat beside a grade and read like one. The scorer
+  // now splits the ledger three ways and the rail draws one block per group —
+  // see xoGroupBlocks. `whenLooked` is shared with the legacy drawing below.
+  var blocks = xoGroupBlocks(verdict, second ? first : null);
+  if (blocks) {
+    var groupWrap = el("div", "xo-groups");
+    // WHEN THE TWO LOOKS HAPPENED, SAID ONCE. Every group draws the same pair
+    // of bars, so dating each of the six would repeat one fact three times in
+    // a 205px column and push the third question off the screen. The bars
+    // carry the short label; the dates live here, above all three.
+    if (second) {
+      var wl = xoLookTimes(report);
+      if (wl.first || wl.now) {
+        groupWrap.appendChild(el("div", "xo-barlab xo-when-both",
+          "First look " + (wl.first ? fmtTs(wl.first) : "—")
+          + " → now " + (wl.now ? fmtTs(wl.now) : "—")));
+      }
+    }
+    blocks.forEach(function (b) { groupWrap.appendChild(b); });
+    rail.appendChild(groupWrap);
+  }
+
+  // …AND THE DRAWING EVERY MISSION SCORED BEFORE TODAY STILL GETS. A verdict
+  // with no `groups` predates the split, and there are plenty of them on the
+  // captain's machine: it keeps the single whole-ledger bar it was drawn with,
+  // untouched, rather than a blank rail or a crash.
+  //
   // THE COUNTS, AS A BAR. They read "101 things you asked for · 76 worked ·
   // 3 didn't work · 22 I couldn't check" — four numbers in a row of prose. The
   // numbers are untouched and the spine is still the one HE wrote (the three
@@ -11349,11 +11633,11 @@ function xoReportPane(mi) {
   // a sum, so it is drawn as one, with every count still written out beside it.
   var counts = verdict.counts && typeof verdict.counts === "object"
     ? verdict.counts : null;
-  var nowTrio = xoCountTrio(counts);
+  var nowTrio = blocks ? null : xoCountTrio(counts);
   // TWO BARS ONLY WHEN THERE IS REALLY A SECOND SCORE. A first look draws one
   // bar and no deltas — there is nothing to compare it with, and a "+0" beside
   // a number nobody looked at twice is a claim about a look that never ran.
-  var wasTrio = second ? xoCountTrio(first.counts) : null;
+  var wasTrio = (nowTrio && second) ? xoCountTrio(first.counts) : null;
   if (nowTrio) {
     var bars = el("div", "xo-bars");
     bars.appendChild(el("div", "xo-barlab",
@@ -11466,6 +11750,16 @@ function xoReportPane(mi) {
   // not an account of the grade, it is something for him to go and fix.
   var picNote = xoPictureNote(verdict.pictureNotDrawing);
   if (picNote) vtext.appendChild(picNote);
+
+  // S225 — WHAT I COULDN'T CHECK, AND WHOSE IT IS. `verdict.myChecking` is the
+  // scorer's own list of rows nothing could settle, and every one of them is a
+  // shortfall in the LOOKING: a state I could not reach, a behaviour no test I
+  // could name covers. It goes BELOW the escalation and the picture note — both
+  // of those are his to act on, and this one is mine — but above the fold,
+  // because a grey bar with no account of itself is exactly how "I could not
+  // check this" gets read as "this does not work".
+  var mine = xoMyCheckingBlock(verdict.myChecking);
+  if (mine) vtext.appendChild(mine);
 
   // S224 — ONE FOLD, AND EVERY WORD STILL IN IT.
   //
