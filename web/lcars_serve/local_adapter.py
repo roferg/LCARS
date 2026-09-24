@@ -2726,22 +2726,56 @@ def _xo_second_shots_dir(xodir, verdict2):
     return best
 
 
-def _xo_recorded_score(mission_dir):
-    """The score this mission's own `xo/verdict.json` RECORDS, or "".
+def _xo_current_verdict_path(mission_dir):
+    """The verdict file that carries this mission's CURRENT grade.
 
-    `xo-score.py` is the producer: it decides the word and writes it here, and
-    nothing downstream is entitled to a second opinion. `state.numberOne.score`
-    is a COPY of this value, made by `xo.sh`'s one finisher at the moment of
-    the look — and a copy can go stale. On the captain's own disk one of seven
-    missions had been looked at twice, and a later writer holding a stale
-    `state.json` put the FIRST look's block back; the ledger was never
-    reverted, so the board drew HIGH over a mission this file records as LOW.
+    A mission can be looked at twice: the first look writes `xo/verdict.json`,
+    a re-check after the fixes land writes `xo/second/verdict.json`. Once a
+    re-check exists, the re-check IS the verdict — `xo.sh` treats its `score2`
+    as the current score (xo.sh:747) and the report pane draws it entire
+    (board.js S224). The card must read the same file the report does, or it
+    draws the superseded first-look grade beside a report showing the current
+    one (the captain's MEDIUM-on-card / HIGH-in-report confusion, S225).
+
+    So: the second verdict when it is present AND loadable AND non-empty; the
+    first verdict otherwise. A mission looked at once has no `second/` at all
+    and gets `xo/verdict.json` exactly as before — the CONTROL. An aborted
+    re-check that left an empty or unreadable `second/verdict.json` behind must
+    NOT win over the real first look, so it falls back too."""
+    first = os.path.join(mission_dir, "xo", "verdict.json")
+    second = os.path.join(mission_dir, "xo", "second", "verdict.json")
+    try:
+        with open(second, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if isinstance(doc, dict) and doc:
+            return second
+    except Exception:
+        pass
+    return first
+
+
+def _xo_recorded_score(mission_dir):
+    """The score this mission's CURRENT verdict RECORDS, or "".
+
+    `xo-score.py` is the producer: it decides the word and writes it into the
+    verdict, and nothing downstream is entitled to a second opinion.
+    `state.numberOne.score` is a COPY of the FIRST look's value, made by
+    `xo.sh`'s finisher, and a copy can go stale — on the captain's own disk one
+    of seven missions had been looked at twice and a later writer holding a
+    stale `state.json` put the FIRST look's block back; the ledger was never
+    reverted. It can also be stale simply by being the first look's word on a
+    mission a re-check has since re-graded (S225): the state block keeps `score`
+    as the first look and adds `score2` for the re-check without disturbing it.
+
+    Either way the record wins, and `_xo_current_verdict_path` points at the
+    record that is current — the re-check's when there has been one.
 
     THIS READS ONE FIELD AND COUNTS NOTHING. The `counts` sitting beside it in
-    the same document would ratio to "high" for exactly that mission. Working a
-    score out of them is the second opinion whose existence is the defect."""
+    the same document would ratio to a different word for exactly these
+    missions. Working a score out of them is the second opinion whose existence
+    is the defect."""
     try:
-        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+        with open(_xo_current_verdict_path(mission_dir),
                   encoding="utf-8") as fh:
             doc = json.load(fh)
     except Exception:
@@ -2753,11 +2787,13 @@ def _xo_recorded_score(mission_dir):
 
 
 def _xo_recorded_derivation(mission_dir):
-    """The one-line verdict this mission's own `xo/verdict.json` records, or
-    "". Never the worker's `summary` — that is the transcript the card is
+    """The one-line verdict this mission's CURRENT verdict records, or "" —
+    the re-check's when there has been one, the first look's otherwise (see
+    `_xo_current_verdict_path`), so the headline rides beside the grade it
+    explains. Never the worker's `summary` — that is the transcript the card is
     being freed of — and never anything derived by reading either of them."""
     try:
-        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+        with open(_xo_current_verdict_path(mission_dir),
                   encoding="utf-8") as fh:
             doc = json.load(fh)
     except Exception:
@@ -2769,8 +2805,10 @@ def _xo_recorded_derivation(mission_dir):
 
 
 def _xo_recorded_meaning(mission_dir):
-    """What the score WORD means for this mission, off this mission's own
-    `xo/verdict.json` — or "" when the verdict cannot support a sentence.
+    """What the score WORD means for this mission, off this mission's CURRENT
+    verdict (the re-check's when there has been one — `_xo_current_verdict_path`
+    — so the tooltip matches the grade beside it) — or "" when the verdict
+    cannot support a sentence.
 
     RECORDED FIRST. `scoreMeaning` is written beside the score by the code that
     decided the score (S213 fix round 1). When it is there, it is read back
@@ -2789,7 +2827,7 @@ def _xo_recorded_meaning(mission_dir):
     ledger in it at all ⇒ "" ⇒ no `meaning` on the card and an empty tooltip.
     A surface must never assert what no record supports."""
     try:
-        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+        with open(_xo_current_verdict_path(mission_dir),
                   encoding="utf-8") as fh:
             doc = json.load(fh)
     except Exception:
@@ -2806,8 +2844,10 @@ _XO_CORE_STATES = ("met", "broken", "unverified")
 
 
 def _xo_recorded_axes(mission_dir):
-    """{checked, total, core} for the card pill (S216), off this mission's own
-    `xo/verdict.json` — each key only when the record supports it.
+    """{checked, total, core} for the card pill (S216), off this mission's
+    CURRENT verdict (the re-check's when there has been one —
+    `_xo_current_verdict_path` — so the pill counts the same look the grade
+    reports) — each key only when the record supports it.
 
     `checked` / `total` are arithmetic over the verdict's own ledger (worked +
     didn't, of everything on the list), so a verdict written before S216 has
@@ -2815,7 +2855,7 @@ def _xo_recorded_axes(mission_dir):
     verdict that assessed IMPACT recorded; an older one has none, and none is
     invented for it (the S213 round-3 rule). No file ⇒ {}."""
     try:
-        with open(os.path.join(mission_dir, "xo", "verdict.json"),
+        with open(_xo_current_verdict_path(mission_dir),
                   encoding="utf-8") as fh:
             doc = json.load(fh)
     except Exception:
