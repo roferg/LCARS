@@ -379,6 +379,87 @@ named=[s for s in d[\"steps\"] if s.get(\"bornOf\")==\"named-click\"]
 sys.exit(0 if c.get(\"total\")==2 and c.get(\"attempted\")==2 and not named else 1)' '$TMPROOT/journey.json'"
 
 # ===========================================================================
+# F7 (Number One). A WALK WITH NO DRAWING MUST STILL WALK.
+#
+# THE DEFECT, measured across six runs on 2026-09-23/24. The walk planner reads
+# the DRAWING to learn what screens and controls exist. The two missions that
+# had NO drawing attempted the LEAST work (1 of 4, 0 of 4) and both PASSED,
+# while every defect found that round came from a mission that HAD a drawing.
+# With no drawing the planner had almost nothing to build steps from, so it
+# collapsed to "I couldn't set it up" for everything.
+#
+# THE FIX. With no drawing, the walk's steps are derived from the REQUIREMENTS
+# themselves — each person promise that names something DOABLE (an action on a
+# place) becomes a real step, stamped derivedFrom:"requirement". A drawing,
+# when present, still wins (its steps are stamped derivedFrom:"drawing"). And
+# "I couldn't set it up" now means a step was genuinely unreachable — never
+# "nobody gave me a drawing".
+# ===========================================================================
+echo
+echo "F7. no drawing? still walk — derive the steps from the requirements"
+
+NODR="$TMPROOT/nodrawing"; mkdir -p "$NODR"
+cat >"$NODR/criteria.json" <<'JSON'
+{"mission":"m","hasDrawing":false,"criteria":[
+ {"id":"prd-1","text":"A player can pause the game from the game screen.","source":"prd","primary":true},
+ {"id":"prd-2","text":"A player can open the settings panel.","source":"prd","primary":true},
+ {"id":"prd-3","text":"The header shows the project name.","source":"prd","primary":true}]}
+JSON
+printf '# Goal\n\nThe game can be paused and the settings opened.\n' >"$NODR/prd.md"
+
+# NO --drawing is passed: this is the collapse case, cured.
+"$PY" "$JOURNEY" build --criteria "$NODR/criteria.json" --prd "$NODR/prd.md" \
+  --title "Pausable game" --out "$NODR/journey.json" \
+  --criteria-out "$NODR/criteria2.json" >"$NODR/j.out" 2>&1
+
+ncov() { "$PY" -c "import json,sys
+d=json.load(open(sys.argv[1]))
+c=d.get('coverage') or {}
+$2" "$1"; }
+
+check "F7-1 with NO drawing the walk still produces real steps (was empty/collapsed)" \
+  "\"\$PY\" -c 'import json,sys; sys.exit(0 if len(json.load(open(sys.argv[1]))[\"steps\"])>=2 else 1)' '$NODR/journey.json'"
+check "F7-2 the two DOABLE promises are each turned into an attempt, not a couldn't" \
+  "ncov '$NODR/journey.json' 'sys.exit(0 if c.get(\"total\")==3 and c.get(\"attempted\")==2 else 1)'"
+check "F7-3 each derived step RECORDS its source as the requirement (not the drawing)" \
+  "\"\$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+st=[s for s in d[\"steps\"] if s.get(\"promiseId\")]
+sys.exit(0 if st and all(s.get(\"derivedFrom\")==\"requirement\" for s in st) else 1)' '$NODR/journey.json'"
+check "F7-4 every step carries derivedFrom in {drawing,requirement}" \
+  "\"\$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if d[\"steps\"] and all(s.get(\"derivedFrom\") in (\"drawing\",\"requirement\") for s in d[\"steps\"]) else 1)' '$NODR/journey.json'"
+check "F7-5 pause and open each name a real step attempting them" \
+  "ncov '$NODR/journey.json' 'keys=set(s[\"key\"] for s in d[\"steps\"])
+att=[x for x in c[\"criteria\"] if x[\"id\"] in (\"prd-1\",\"prd-2\")]
+sys.exit(0 if len(att)==2 and all(x[\"attempted\"] and x[\"step\"] in keys for x in att) else 1)'"
+check "F7-6 a display-only promise (\"shows\") is the one NOT attempted — a genuine miss" \
+  "ncov '$NODR/journey.json' 'r=[x for x in c[\"criteria\"] if x[\"id\"]==\"prd-3\"][0]
+sys.exit(0 if not r[\"attempted\"] and r.get(\"reason\") else 1)'"
+check "F7-7 its reason does NOT blame a missing drawing — it says what it means" \
+  "ncov '$NODR/journey.json' 'r=[x for x in c[\"criteria\"] if x[\"id\"]==\"prd-3\"][0]
+sys.exit(0 if \"drawing\" not in (r.get(\"reason\") or \"\").lower() else 1)'"
+check "F7-8 the derived steps CLICK toward what the requirement names (pause / settings)" \
+  "\"\$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+blob=\" \".join(\" \".join(s.get(\"match\") or []) for s in d[\"steps\"]).lower()
+sys.exit(0 if \"pause\" in blob and \"settings\" in blob else 1)' '$NODR/journey.json'"
+
+# ── THE DRAWING STILL WINS: the panel journey's scraped steps are stamped
+# derivedFrom:"drawing", and the two-screen fixture's clicks are too. No regress.
+check "F7-9 a scraped drawing step records derivedFrom:\"drawing\" (the panel walk)" \
+  "\"\$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+dr=[s for s in d[\"steps\"] if s.get(\"derivedFrom\")==\"drawing\"]
+sys.exit(0 if dr else 1)' '$PANEL/journey.json'"
+check "F7-10 the two-screen fixture's click steps are drawing-derived, not requirement" \
+  "\"\$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+cl=[s for s in d[\"steps\"] if s[\"do\"]==\"click\" and s.get(\"match\")]
+sys.exit(0 if cl and all(s.get(\"derivedFrom\")==\"drawing\" for s in cl) else 1)' '$TMPROOT/journey.json'"
+
+# ===========================================================================
 # F2. THE WALK ITSELF — real headless Chrome, real clicks, real typing.
 # ===========================================================================
 echo

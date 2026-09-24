@@ -159,6 +159,75 @@ def low(s):
     return norm(s).lower()
 
 
+# ── A REQUIREMENT NAMES A STEP WHEN NOBODY DREW ONE (Number One) ────────────
+#
+# WHY THIS EXISTS. Measured across six runs on 2026-09-23/24: the two missions
+# with NO drawing attempted the LEAST work and both PASSED, while every defect
+# found came from a mission that HAD a drawing. The walk planner reads the
+# drawing to learn what screens and controls exist; with no drawing it had
+# almost nothing to build steps from and collapsed to "I couldn't set it up".
+#
+# THE RULE. When there is no drawing to walk, a person promise that names
+# something DOABLE — an ACTION verb performed on the build — becomes a real
+# step, aimed at whatever the requirement names. "A player can pause the game"
+# names an action (pause) and a target (the game): enough to click toward.
+# A promise that names no action at all ("The header shows the project name")
+# is display-only — there is nothing to DO — and stays an honest miss.
+#
+# The verbs are person-performed actions only. Bare display words (show, list,
+# display, render, appear) are deliberately absent: a walk is about DOING, and
+# a screen that merely shows something is checked by looking, not by acting.
+ACTION_VERB = re.compile(
+    r"\b(open|close|pause|resume|start|stop|play|walk|move|"
+    r"add|create|delete|remove|clear|save|load|submit|send|post|"
+    r"lock|unlock|preview|publish|confirm|cancel|select|choose|pick|"
+    r"toggle|switch|enter|search|filter|sort|edit|update|rename|"
+    r"drag|drop|press|click|tap|navigate|return|reveal|expand|collapse|"
+    r"mark|complete|finish|reset|rest|assign|attach|upload|download)"
+    r"(?:s|es)?\b", re.I)
+# Where the object of the action ends: the prepositions and conjunctions that
+# begin the NEXT clause, or any sentence punctuation.
+OBJ_END = re.compile(r"\b(?:from|when|so|and|then|but|because|until|while|"
+                     r"to|on|in|onto|into|over|with|after|before|if|that)\b|[.,;:!?\u2014]")
+
+
+def requirement_steps(person):
+    """Steps derived from the requirements when there is no drawing to walk.
+
+    One step per person promise that names something DOABLE — an action verb on
+    a target. The step is a CLICK aimed at what the requirement names (the verb
+    itself, since buttons are usually labelled with it, and the object phrase),
+    and it RECORDS, at birth, that it was derived from the requirement and which
+    promise it serves. A promise with no action verb produces nothing here and
+    stays an honest miss for the coverage pass to record.
+    """
+    out = []
+    for c in person:
+        text = norm(c.get("text"))
+        m = ACTION_VERB.search(text)
+        if not m:
+            continue
+        verb = low(m.group(1))
+        rest = text[m.end():]
+        obj = OBJ_END.split(rest, 1)[0]
+        obj = re.sub(r"^\s*(?:the|a|an|their|his|her|its|your|this|that)\s+",
+                     " ", obj, flags=re.I)
+        obj = norm(obj)
+        match = []
+        if obj and low(obj) != verb:
+            match.append(obj)
+        match.append(verb)
+        out.append({
+            "do": "click", "match": match,
+            "promiseId": str(c.get("id") or ""),
+            "name": "do what the requirement says: %s" % (text[:80]),
+            "expect": "the build lets me %s%s"
+                      % (verb, (" the " + obj) if obj else ""),
+            "why": "no drawing was given, so this step is derived from the "
+                   "requirement: %s" % text[:120]})
+    return out
+
+
 TAGS = re.compile(r"<(button|a|textarea|input|select)\b([^>]*)>(.*?)</\1>|<(input)\b([^>]*?)/?>",
                   re.I | re.S)
 SCREEN_TAG = re.compile(r"<[a-z][a-z0-9]*\b[^>]*\bid=[\"']((?:screen[-_][^\"']+)|(?:[^\"']+[-_]screen))[\"'][^>]*>",
@@ -495,9 +564,17 @@ def names_control(text_low, ctrl):
     return re.search(r"\b%s\b" % re.escape(nm), text_low) is not None
 
 
-def cannot_reason(text, surf_ctrls):
-    """The honest 'I couldn't set it up' — naming, where it can, the screen or
-    control the criterion wanted and the surface does not have."""
+def cannot_reason(text, surf_ctrls, has_surface=True):
+    """The honest 'I couldn't set it up'.
+
+    With a surface (a drawing), it names, where it can, the screen or control
+    the criterion wanted and the surface does not have. With NO surface, a
+    DOABLE requirement would already have become a step, so the only promises
+    that reach here name nothing a walk can act on — and the reason says THAT,
+    never "nothing on the drawing", because there was no drawing to blame."""
+    if not has_surface:
+        return ("I couldn't set it up: this criterion names nothing a walk can do — "
+                "no action to take, only something to look at")
     m = re.search(r"\b(?:back|return)s?\b.*?\b(?:to\s+)?(?:the\s+)?"
                   r"([a-z][a-z ]{1,20}?)\s+screen\b", text, re.I)
     if m:
@@ -511,12 +588,19 @@ def cannot_reason(text, surf_ctrls):
             "no control to click and no field to fill")
 
 
-def link_criterion(c, steps, surf_ctrls):
-    """The step that ATTEMPTED this promise, or the reason none could. A named
-    gate is answered by its own phase (blank when the criterion is about a
-    refusal, filled otherwise); a named plain control by the click that pressed
-    it; anything else by the step whose words overlap it most (≥2 real words)."""
+def link_criterion(c, steps, surf_ctrls, has_surface=True):
+    """The step that ATTEMPTED this promise, or the reason none could. A step
+    STAMPED with this promise's id (a requirement-derived step) answers it
+    outright. Otherwise a named gate is answered by its own phase (blank when
+    the criterion is about a refusal, filled otherwise); a named plain control
+    by the click that pressed it; anything else by the step whose words overlap
+    it most (≥2 real words)."""
     t = low(c.get("text"))
+    cid = str(c.get("id") or "")
+    if cid:
+        for s in steps:
+            if s.get("promiseId") == cid:
+                return s.get("key"), None
     neg = bool(re.search(r"\b(empty|blank|refus\w*|without|missing|invalid|"
                          r"required|reject\w*)\b", t))
 
@@ -552,7 +636,7 @@ def link_criterion(c, steps, surf_ctrls):
             best, best_n = s, n
     if best is not None and best_n >= 2:
         return best.get("key"), None
-    return None, cannot_reason(str(c.get("text") or ""), surf_ctrls)
+    return None, cannot_reason(str(c.get("text") or ""), surf_ctrls, has_surface)
 
 
 def build(criteria, drawing, html_screens=None, title="", prd=""):
@@ -566,6 +650,7 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     walk_steps, gate_blank, fills, fill_all, routes, gate_filled = [], [], [], [], [], []
     keys = []
     named_clicks = []
+    req_steps = []
     why_from, seen = [], set()
 
     def mk(bucket, step):
@@ -748,6 +833,30 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                               "expect": "the screen answers the control",
                               "why": "a person is promised this: %s" % norm(c.get("text"))[:120]})
 
+    # ── NO DRAWING? DERIVE THE STEPS FROM THE REQUIREMENTS (Number One) ──
+    # Everything above needs a SURFACE — screens, controls, fields the drawing
+    # drew. With no drawing there is none, and the scraper collapses to an empty
+    # journey while every promise reads "I couldn't set it up". So when the
+    # record carries no surface at all, each person promise that names something
+    # DOABLE becomes a real step aimed at what the requirement names, stamped at
+    # birth with the promise it serves. A drawing, when present, still wins:
+    # this fires only when there is nothing drawn to walk.
+    has_surface = bool(surface)
+    if not has_surface:
+        for st in requirement_steps(person):
+            mk(req_steps, st)
+            why_from.append("the requirements themselves, with no drawing to walk")
+
+    # WHERE A STEP CAME FROM IS A RECORD, STAMPED HERE AT BIRTH — never inferred
+    # later by re-reading its text. The bucket that produced a step IS its
+    # source: the drawing's screens/controls/fields on one side, the
+    # requirements' own words on the other.
+    for st in (walk_steps + gate_blank + fills + fill_all + gate_filled
+               + named_clicks):
+        st.setdefault("derivedFrom", "drawing")
+    for st in routes + keys + req_steps:
+        st.setdefault("derivedFrom", "requirement")
+
     # THE WAY IN (measured, 2026-09-19). The drawing's first screen is not
     # necessarily the app's front door: on the real benchmark the front door is
     # a scorecard and the drawn flow lives behind a nav item, so every step of
@@ -772,10 +881,10 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     # the gate run against a panel that was never opened.
     if walk_steps:
         ordered = (walk_steps + gate_blank + fills + routes + named_clicks
-                   + keys + fill_all + gate_filled)
+                   + keys + fill_all + gate_filled + req_steps)
     else:
         ordered = (keys + gate_blank + fills + routes + named_clicks
-                   + fill_all + gate_filled)
+                   + req_steps + fill_all + gate_filled)
     steps = ordered[:STEP_CAP]
     for i, st in enumerate(steps):
         st["key"] = st.get("key") or ("j%d" % (i + 1))
@@ -786,7 +895,7 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     # be turned into an attempt. This is the number the captain asked to SEE.
     cov_rows = []
     for c in person:
-        key, reason = link_criterion(c, steps, surf_ctrls)
+        key, reason = link_criterion(c, steps, surf_ctrls, has_surface)
         cov_rows.append({"id": str(c.get("id") or ""),
                          "text": norm(c.get("text")),
                          "attempted": bool(key),
