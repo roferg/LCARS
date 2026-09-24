@@ -453,25 +453,37 @@ score "$(ev gap ',"shot":"shot-02"')" "$BDIR/tests-pass.json" "$BDIR/b10c"
 check "B10. CONTROL — the same criterion SEEN TO FAIL is still LOW" \
   "[ \"\$(jget '$BDIR/b10c/verdict.json' 'd[\"score\"]')\" = low ]"
 
-# --- B11. no test command: the look reads exactly as it did before ----------
+# --- B11. no test command: a WORKS-question still needs more than a photo ----
+# UPDATED for the captain's ruling, 2026-09-24. `t-4-ac1` ("batches survive a
+# restart") is `notVisual` — a pure works-question. This fixture used to assert
+# that a picture-backed met on it was "untouched" when no suite ran; that WAS
+# the defect. A works-question the reviewer only photographed was never
+# exercised (a picture shows a list is on screen, not that it survives a
+# restart), so it now reads "couldn't check", not "worked" — the absence of a
+# test command does not turn a photo into a check.
 score "$(ev met ',"shot":"shot-03"')" "$BDIR/tests-none.json" "$BDIR/b11"
-check "B11. with no test command, a picture-backed met is untouched" \
-  "[ \"\$(lstatus '$BDIR/b11/verdict.json' t-4-ac1)\" = met ]"
+check "B11. with no test command, a picture-only WORKS-question is NOT met" \
+  "[ \"\$(lstatus '$BDIR/b11/verdict.json' t-4-ac1)\" != met ]"
+check "B11. …and it is surfaced by name as passing on a look alone" \
+  "grep -q 'worksOnLookAlone' '$BDIR/b11/verdict.json' && grep -q 't-4-ac1' '$BDIR/b11/verdict.json'"
 check "B11. …and the report says plainly that there is no suite to run" \
   "grep -qi 'no test command' '$BDIR/b11/report.md'"
 
 # --- B12. THE REGRESSION CONTROL -------------------------------------------
-# Called with no tests.json at all — the S210 argv — the ledger and the score
-# must be what they were. This is what proves nothing regressed for every repo
-# that never gets near this feature.
+# Called with no tests.json at all — the S210 argv — the machinery still runs
+# and nothing crashes. UPDATED for the 2026-09-24 ruling: the base case USED to
+# grade this HIGH on a photo of a works-question, which is exactly the score the
+# ruling forbids. The old call still produces a verdict (no crash, no invented
+# tests section); it simply no longer banks a works-question nobody exercised,
+# so the picture-only `t-4-ac1` is not met and the build is not HIGH.
 mkdir -p "$BDIR/b12"
 printf '%s\n' "$(ev met ',"shot":"shot-03"')" >"$BDIR/b12/in.json"
 "$PY" "$SCOREPY" "$BDIR/b12/in.json" "$BDIR/criteria.json" "$BDIR/b12/verdict.json" \
       >/dev/null 2>&1
 check "B12. the old four-argument call still works" "[ -s '$BDIR/b12/verdict.json' ]"
-check "B12. …with the same statuses it always gave" \
-  "[ \"\$(lstatus '$BDIR/b12/verdict.json' t-4-ac1)\" = met ] &&
-   [ \"\$(jget '$BDIR/b12/verdict.json' 'd[\"score\"]')\" = high ]"
+check "B12. …and a works-question backed only by a photo is not banked as HIGH" \
+  "[ \"\$(lstatus '$BDIR/b12/verdict.json' t-4-ac1)\" != met ] &&
+   [ \"\$(jget '$BDIR/b12/verdict.json' 'd[\"score\"]')\" != high ]"
 check "B12. …and no tests section is invented out of nothing" \
   "! grep -qi 'I ran your tests' '$BDIR/b12/report.md'"
 
@@ -1500,6 +1512,176 @@ check "R2. a passing row backed by nothing but a screenshot is listed, by name" 
 d=json.load(open(sys.argv[1]))
 p=d.get(\"passingOnLookAlone\") or []
 sys.exit(0 if any(x[\"id\"]==\"bylook\" for x in p) and all(x[\"id\"]!=\"bytest\" for x in p) else 1)' '$NDIR/s3/verdict.json'"
+
+
+# ==========================================================================
+echo
+echo "K. THE KIND OF QUESTION DECIDES THE KIND OF PROOF (Captain, 2026-09-24)"
+# Number One establishes things two ways — it PRESSES and it PHOTOGRAPHS — and
+# today both count equally as proof. They are not equal. A LOOKS-question ("the
+# title is there") a picture genuinely settles. A WORKS-question ("Save saves")
+# only an ACTION settles; a picture of a button proves it is DRAWN, not that it
+# DOES anything. Measured damage: builds got credit for "pausing works" from a
+# photo showing a Pause button exists.
+#
+# RECORD, DO NOT INFER (this session's whole point, and LCARS has lost three
+# sessions to prose heuristics): the KIND is a produce-time STAMP the criterion
+# carries — `kind: "looks"|"works"`, or the planner's own `notVisual: true`
+# stamp (a criterion that makes no visual claim IS a works-question). The
+# consumer READS the stamp; it never reads the criterion's prose to guess.
+# ==========================================================================
+KDIR="$TMPROOT/kind"; mkdir -p "$KDIR"
+
+kscore() { # <outdir> <criteria.json> <ledger>
+  mkdir -p "$1"; printf '%s\n' "$3" >"$1/in.json"
+  "$PY" "$SCOREPY" "$1/in.json" "$2" "$1/verdict.json" >"$1/out.tsv" 2>"$1/err.txt"
+}
+
+# One contract, two stamped questions: a looks-question and a works-question,
+# both PRD (person group, so both are graded).
+cat >"$KDIR/criteria.json" <<'KC'
+{"criteria": [
+  {"id": "look1", "text": "the title bar shows the app name", "primary": true,
+   "source": "prd", "kind": "looks"},
+  {"id": "work1", "text": "the Save button saves the document", "primary": true,
+   "source": "prd", "kind": "works"}
+], "hasDrawing": false}
+KC
+
+# THE DEFECT, REPRODUCED: BOTH settled by a picture alone — a shot, no action,
+# no test. Today both read "worked".
+KL_PIC='{"score":"high","summary":"Looks right.","criteria":[{"id":"look1","text":"the title bar shows the app name","status":"met","shot":"shot-01","evidence":"picture","note":"the title bar reads the app name"},{"id":"work1","text":"the Save button saves the document","status":"met","shot":"shot-02","evidence":"picture","note":"a Save button is visible in the toolbar"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+kscore "$KDIR/pic" "$KDIR/criteria.json" "$KL_PIC"
+
+krow() { # <verdict> <id> <field-expr over row `r`>
+  "$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+r=[c for c in d["criteria"] if c["id"]==sys.argv[2]][0]
+v=eval(sys.argv[3])
+print("" if v is None else (v if isinstance(v,str) else json.dumps(v)))' "$1" "$2" "$3" 2>/dev/null
+}
+
+# --- K1. CONTROL — a looks-question settled by a picture is a FULL PASS ------
+# This control is non-negotiable: without it the cure could silently turn every
+# picture into a failure, the exact over-correction the captain warned against.
+check "K1. CONTROL a looks-question backed by a picture still passes cleanly" \
+  "[ \"\$(krow '$KDIR/pic/verdict.json' look1 'r[\"status\"]')\" = met ]"
+check "K1. CONTROL …and it carries its produce-time kind, read from the stamp" \
+  "[ \"\$(krow '$KDIR/pic/verdict.json' look1 'r.get(\"questionKind\")')\" = looks ]"
+check "K1. CONTROL …and it is NOT flagged as passing on a look it shouldn't" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+w=d.get(\"worksOnLookAlone\") or []
+sys.exit(0 if all(x[\"id\"]!=\"look1\" for x in w) else 1)' '$KDIR/pic/verdict.json'"
+
+# --- K2. a works-question backed ONLY by a picture is NOT a pass ------------
+check "K2. a works-question backed only by a picture does NOT read 'worked'" \
+  "[ \"\$(krow '$KDIR/pic/verdict.json' work1 'r[\"status\"]')\" != met ]"
+check "K2. …its outcome is 'couldn't set up' (it was never exercised)" \
+  "[ \"\$(krow '$KDIR/pic/verdict.json' work1 'r.get(\"outcome\")')\" = couldnt-set-up ]"
+check "K2. …the words a person reads say I could not check it, never worked" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+r=[c for c in d[\"criteria\"] if c[\"id\"]==\"work1\"][0]
+n=(r.get(\"note\") or \"\").lower()
+sys.exit(0 if (\"could not check\" in n or \"couldn'\''t check\" in n) and \"worked\" not in n else 1)' '$KDIR/pic/verdict.json'"
+check "K2. …and it is surfaced BY NAME on the works-on-look-alone list" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+w=d.get(\"worksOnLookAlone\") or []
+sys.exit(0 if any(x[\"id\"]==\"work1\" for x in w) else 1)' '$KDIR/pic/verdict.json'"
+
+# --- K3. a works-question settled by an ACTION IS a full pass ---------------
+# Pressing is what a works-question needs; when it happens, full marks.
+KL_ACT='{"score":"high","summary":"Save works.","criteria":[{"id":"look1","text":"the title bar shows the app name","status":"met","shot":"shot-01","evidence":"picture","note":"the title bar reads the app name"},{"id":"work1","text":"the Save button saves the document","status":"met","shot":"shot-02","evidence":"picture","action":"clicked Save, reloaded the page, the document was still there","note":"the edit persisted across a reload"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+kscore "$KDIR/act" "$KDIR/criteria.json" "$KL_ACT"
+check "K3. a works-question actually exercised stays MET" \
+  "[ \"\$(krow '$KDIR/act/verdict.json' work1 'r[\"status\"]')\" = met ]"
+check "K3. …and it records that an action settled it, not a picture" \
+  "[ \"\$(krow '$KDIR/act/verdict.json' work1 'r.get(\"settledBy\",{}).get(\"record\")')\" = action ]"
+check "K3. …so it is NOT on the works-on-look-alone list" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+w=d.get(\"worksOnLookAlone\") or []
+sys.exit(0 if all(x[\"id\"]!=\"work1\" for x in w) else 1)' '$KDIR/act/verdict.json'"
+
+# --- K4. the planner's own `notVisual` stamp IS a works-question ------------
+# A criterion that makes no visual claim cannot be settled by a picture of the
+# screen; the produce-time stamp already says so, and the consumer reads it.
+cat >"$KDIR/nv.json" <<'NVC'
+{"criteria": [
+  {"id": "nv1", "text": "batches persist across a restart", "primary": true,
+   "source": "plan", "notVisual": true}
+], "hasDrawing": false}
+NVC
+KL_NV='{"score":"high","summary":"Persists.","criteria":[{"id":"nv1","text":"batches persist across a restart","status":"met","shot":"shot-03","evidence":"picture","note":"I saw the batch list on screen"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+kscore "$KDIR/nv" "$KDIR/nv.json" "$KL_NV"
+check "K4. a notVisual criterion is a works-question, read from its stamp" \
+  "[ \"\$(krow '$KDIR/nv/verdict.json' nv1 'r.get(\"questionKind\")')\" = works ]"
+check "K4. …and picture-only, it does not read 'worked'" \
+  "[ \"\$(krow '$KDIR/nv/verdict.json' nv1 'r[\"status\"]')\" != met ]"
+check "K4. …and its kind was read from the notVisual stamp, recorded plainly" \
+  "[ \"\$(krow '$KDIR/nv/verdict.json' nv1 'r.get(\"questionKindFrom\")')\" = notVisual ]"
+
+# --- K5. the split is said out loud, as data and as words -------------------
+check "K5. the verdict carries the split of looks vs works questions" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+s=d.get(\"questionSplit\") or {}
+sys.exit(0 if s.get(\"looks\")==1 and s.get(\"works\")==1 and s.get(\"worksExercised\")==0 and s.get(\"worksPictureOnly\")==1 else 1)' '$KDIR/pic/verdict.json'"
+check "K5. …and the report says the split in words a person reads" \
+  "grep -qi 'works-question' '$KDIR/pic/report.md'"
+
+# --- K6. it may not grade HIGH on works-questions it never exercised --------
+# A whole mission of works-questions, every one backed by nothing but a photo,
+# must NOT come out high — it collapsed into looks-questions before this cure.
+cat >"$KDIR/allwork.json" <<'AWC'
+{"criteria": [
+  {"id": "w1", "text": "pressing space pauses the game", "primary": true, "source": "prd", "kind": "works"},
+  {"id": "w2", "text": "the Reset button clears the board", "primary": true, "source": "prd", "kind": "works"},
+  {"id": "w3", "text": "a bad name shows an error", "primary": true, "source": "prd", "kind": "works"},
+  {"id": "w4", "text": "the score goes up when you score", "primary": true, "source": "prd", "kind": "works"}
+], "hasDrawing": false}
+AWC
+KL_ALLWORK='{"score":"high","summary":"All present.","criteria":[{"id":"w1","text":"pressing space pauses the game","status":"met","shot":"s1","evidence":"picture","note":"a Pause button is visible"},{"id":"w2","text":"the Reset button clears the board","status":"met","shot":"s2","evidence":"picture","note":"a Reset button is visible"},{"id":"w3","text":"a bad name shows an error","status":"met","shot":"s3","evidence":"picture","note":"a name field is visible"},{"id":"w4","text":"the score goes up when you score","status":"met","shot":"s4","evidence":"picture","note":"a score readout is visible"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+kscore "$KDIR/allwork" "$KDIR/allwork.json" "$KL_ALLWORK"
+check "K6. four works-questions, all photos and no presses, is NOT high" \
+  "[ \"\$(jget '$KDIR/allwork/verdict.json' 'd[\"score\"]')\" != high ]"
+
+# ==========================================================================
+echo "K'. THE PRODUCE-TIME STAMP IS CARRIED THROUGH AT BIRTH (xo-criteria.py)"
+# The stamp is recorded WHEN THE CRITERION IS PRODUCED, not guessed later. The
+# planner stamps `kind` on each acceptance criterion; xo-criteria.py carries it
+# through verbatim, additive-key style — absent when unstamped, dropped when
+# bogus — exactly as it carries `serves`/`drawnAt`.
+# ==========================================================================
+CRITPY="${LCARS_XO_CRITERIA_PY:-$REPO_ROOT/skills/lcars-xo/xo-criteria.py}"
+CDIR="$TMPROOT/critkind"; mkdir -p "$CDIR"
+cat >"$CDIR/plan.json" <<'PJ'
+{"tickets": [
+  {"id": "t-1", "acceptanceCriteria": [
+    {"text": "the Save button saves the document", "kind": "works"},
+    {"text": "the header shows the title", "kind": "looks"},
+    {"text": "a criterion with a bogus kind", "kind": "sideways"},
+    {"text": "a criterion with no kind at all"}
+  ]}
+]}
+PJ
+"$PY" "$CRITPY" "$CDIR" "$CDIR/criteria.json" >"$CDIR/out.txt" 2>&1
+ckind() { # <criteria.json> <criterion id>
+  "$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+c=[x for x in d["criteria"] if x["id"]==sys.argv[2]][0]
+print(c.get("kind",""))' "$1" "$2" 2>/dev/null
+}
+check "K'.1 a works stamp is carried onto the criterion at birth" \
+  "[ \"\$(ckind '$CDIR/criteria.json' t-1-ac1)\" = works ]"
+check "K'.2 a looks stamp is carried onto the criterion at birth" \
+  "[ \"\$(ckind '$CDIR/criteria.json' t-1-ac2)\" = looks ]"
+check "K'.3 a bogus kind is dropped, not laundered through" \
+  "[ -z \"\$(ckind '$CDIR/criteria.json' t-1-ac3)\" ]"
+check "K'.4 an unstamped criterion carries no kind key (additive invariant)" \
+  "[ -z \"\$(ckind '$CDIR/criteria.json' t-1-ac4)\" ]"
 
 
 # ==========================================================================

@@ -134,6 +134,20 @@ def plan_criteria(doc):
                 # contradiction check reads a declared link, not a guess.
                 if ac.get("serves"):
                     entry["serves"] = str(ac["serves"]).strip()
+                # WHICH KIND OF QUESTION THIS IS, STAMPED AT BIRTH (captain's
+                # ruling, 2026-09-24). A looks-question ("the header shows the
+                # title") a picture settles; a works-question ("Save saves")
+                # only an action settles. RECORD, DO NOT INFER: the planner
+                # declares it here and the reviewer READS the stamp — nothing
+                # downstream reads the criterion's prose to guess, the pattern
+                # LCARS has lost three sessions to. Carried additive-key style:
+                # a recognised value is kept, a bogus one is dropped, and an
+                # unstamped criterion carries no `kind` key at all (a
+                # notVisual criterion needs none — it is a works-question by
+                # its own notVisual stamp, read at score time).
+                kind = str(ac.get("kind") or "").strip().lower()
+                if kind in ("looks", "works"):
+                    entry["kind"] = kind
             else:
                 continue
             if entry.get("text"):

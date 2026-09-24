@@ -721,8 +721,11 @@ OUTCOME_SAID = {OUTCOME_WORKED: "worked", OUTCOME_DIDNT: "didn't work",
                 OUTCOME_SETUP: "I couldn't set it up"}
 # A `couldNotCheck` word that means "I never got to the point of looking".
 # `no-change` is xo-journey's: the step ran and the screen was the same, so the
-# thing the step was supposed to set up never got set up.
-SETUP_DEFEATED = ("unreachable", "no-change")
+# thing the step was supposed to set up never got set up. `works-needs-action`
+# is the captain's 2026-09-24 ruling: a works-question that got only a picture
+# was never exercised — a photo shows a Pause button is DRAWN, not that pausing
+# pauses — so the check was never set up, and it says so by name.
+SETUP_DEFEATED = ("unreachable", "no-change", "works-needs-action")
 MY_CHECKING_NOTE = ("These are gaps in my checking, not a fault in your build. "
                     "They are mine to fix — nothing here is counted against you.")
 
@@ -738,6 +741,56 @@ def outcome_of(entry):
     if str(entry.get("couldNotCheck") or "") in SETUP_DEFEATED:
         return OUTCOME_SETUP
     return OUTCOME_BLIND
+
+
+# ─── THE KIND OF QUESTION, READ FROM THE STAMP (captain's ruling, 2026-09-24) ─
+#
+# A LOOKS-question asks about appearance/presence — "the title is there", "the
+# badge is red". A picture genuinely SETTLES it; pressing adds nothing. A
+# WORKS-question asks about behaviour — "Save saves", "pausing pauses". Only an
+# ACTION settles it; a picture of a button proves the button is DRAWN, not that
+# it DOES anything. The measured defect: a build got credit for "pausing works"
+# from a photo showing a Pause button exists.
+#
+# RECORD, DO NOT INFER — and this is the whole point of the session that added
+# this. The kind is a PRODUCE-TIME STAMP on the criterion, written when the
+# criterion is born: the planner's `kind: "looks"|"works"`, carried through
+# xo-criteria.py. A criterion the planner marked `notVisual` makes no visual
+# claim at all, so it is a works-question by the planner's OWN stamp — read
+# here, not guessed. NOTHING here reads the criterion's PROSE to classify it:
+# LCARS has lost three sessions to text heuristics (a source parser, a regex
+# classifier, a heading guard), each beaten because the captain writes specs
+# ABOUT LCARS in LCARS's own vocabulary. The consumer reads a field a producer
+# stamped, and nothing else.
+def question_kind(row):
+    """(kind, from) for a contract row — ("looks"|"works"|"", provenance).
+
+    Reads only stamped fields: the explicit `kind`, else the planner's
+    `notVisual` (no visual claim ⇒ a works-question). An unstamped criterion is
+    UNKNOWN ("", "") — never guessed from its text, and never downgraded on a
+    guess, so a legitimate looks-question backed by a picture is never harmed.
+    """
+    if not isinstance(row, dict):
+        return "", ""
+    k = str(row.get("kind") or "").strip().lower()
+    if k in ("looks", "works"):
+        return k, "stamp"
+    if row.get("notVisual"):
+        return "works", "notVisual"
+    return "", ""
+
+
+def settled_by_picture_alone(entry):
+    """True when the ONLY thing behind a passing row is a screenshot — no test
+    line quoted, no action recorded. The same predicate the settledBy record
+    uses (a picture is the fallback once tests and action are ruled out), read
+    from producer-stamped fields, so the two can never disagree."""
+    ev = str(entry.get("evidence") or "").strip().lower()
+    if ev == "tests" and str(entry.get("testQuote") or "").strip():
+        return False
+    if str(entry.get("action") or "").strip():
+        return False
+    return True
 
 
 def take_impact(entry, row):
@@ -1932,6 +1985,59 @@ def main():
                        if any(e["id"] == cid and e["status"] == "gap" for e in ledger)
                        or cid not in seen)
 
+    # ─── THE KIND OF QUESTION DECIDES THE KIND OF PROOF (Captain, 2026-09-24) ─
+    # Number One PRESSES things and it PHOTOGRAPHS things, and both used to
+    # count equally as proof that something WORKS. They are not equal. A picture
+    # of a Pause button proves it is DRAWN, not that pausing pauses. So each
+    # criterion is judged by the RIGHT KIND of proof, read from its produce-time
+    # STAMP (see question_kind — the planner's `kind`/`notVisual`, never the
+    # criterion's prose):
+    #
+    #   * a LOOKS-question backed by a picture is a FULL PASS — a picture
+    #     genuinely settles "the title is there". Pictures are NOT devalued
+    #     where they belong; that is half the ruling.
+    #   * a WORKS-question backed by NOTHING BUT A PICTURE is NOT a pass — it was
+    #     never exercised, so it reads "I could not check this" in the words a
+    #     person reads, and it is surfaced BY NAME. A works-question that got a
+    #     real action (or its own test) is untouched and passes on its merits.
+    #
+    # This runs BEFORE the outcome is stamped below, so a downgraded row is
+    # already `untested` when outcome_of reads it, and the grade (which reads
+    # only worked/didn't-work) can never bank a works-question nobody exercised.
+    works_on_look_alone = []
+    split = {"looks": 0, "works": 0, "worksExercised": 0, "worksPictureOnly": 0,
+             "unstamped": 0}
+    for e in ledger:
+        kind, kfrom = question_kind(contract_by_id.get(e["id"]) or {})
+        if kind:
+            e["questionKind"] = kind
+            if kfrom == "notVisual":
+                e["questionKindFrom"] = "notVisual"
+        # THE SPLIT, COUNTED OFF THE STAMPS — said out loud below (ruling #5).
+        if kind == "looks":
+            split["looks"] += 1
+        elif kind == "works":
+            split["works"] += 1
+            if not settled_by_picture_alone(e):
+                split["worksExercised"] += 1
+            else:
+                split["worksPictureOnly"] += 1
+        else:
+            split["unstamped"] += 1
+        # THE DOWNGRADE: a works-question that PASSED on a picture alone did not
+        # actually get checked. Never `met`, never counted as worked.
+        if kind == "works" and e["status"] == "met" \
+                and settled_by_picture_alone(e):
+            e["status"] = "untested"
+            e["couldNotCheck"] = "works-needs-action"
+            e["evidence"] = "none"
+            e["note"] = ("This asks whether it WORKS, and I only have a picture "
+                         "of it. A picture shows the thing is on screen, not "
+                         "that it does anything, so I could not check it — it "
+                         "needs a press, not a photo.")
+            e.pop("testQuote", None)
+            works_on_look_alone.append({"id": e["id"], "text": e.get("text") or ""})
+
     # ─── S225: THE SOURCE IS READ AT LAST ────────────────────────────────────
     # Every guard above has finished; a row's status and its `couldNotCheck`
     # word are final, so this is the first line at which the four-way outcome
@@ -2498,6 +2604,16 @@ def main():
         out["reconciled"] = reconciled
     if passing_on_look_alone:
         out["passingOnLookAlone"] = passing_on_look_alone
+    # ─── THE KIND-OF-QUESTION SPLIT, AS DATA (Captain, 2026-09-24) ────────────
+    # How many of the checks were looks-questions and how many were works-
+    # questions, and — the number the whole ruling turns on — how many of the
+    # works-questions actually got an action rather than just a photo.
+    # `worksOnLookAlone` names every works-question that passed on nothing but a
+    # picture and was therefore NOT counted as worked. Always emitted so a
+    # surface never has to recompute it or read it back out of prose.
+    out["questionSplit"] = split
+    if works_on_look_alone:
+        out["worksOnLookAlone"] = works_on_look_alone
     # STRUCTURED AS WELL AS SAID (S224 item 2). The escalation line is the
     # captain's sentence; this is the same facts as data, so a surface never
     # has to read meaning back out of that prose — the mistake S147, S156, S188
@@ -2572,6 +2688,21 @@ def main():
                          b["uncovered"], "has" if b["uncovered"] == 1 else "have",
                          broke_n, b["aside"]))
             w("\n")
+        # ─── SAY THE SPLIT OUT LOUD (Captain's ruling, 2026-09-24, #5) ────────
+        # How many checks were looks-questions a picture can settle, how many
+        # were works-questions only an action can, and — the number the ruling
+        # turns on — how many works-questions actually got a press. A photo of a
+        # button is not a check that the button does anything.
+        if split["looks"] or split["works"]:
+            _wq = split["works"]
+            bit = ("**%d were works-questions** (only a press settles those); of "
+                   "those, %d actually got an action, and %d had nothing but a "
+                   "photo — those are marked *couldn't check*, not *worked*."
+                   % (_wq, split["worksExercised"], split["worksPictureOnly"])) \
+                if _wq else "none were works-questions"
+            w("**How I checked, by the kind of question.** %d %s a looks-question "
+              "(a picture settles those); %s\n\n"
+              % (split["looks"], "was" if split["looks"] == 1 else "were", bit))
         if impacts_note:
             w("*%s*\n\n" % impacts_note)
         for m in mismatches:
