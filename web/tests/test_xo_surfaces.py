@@ -794,7 +794,11 @@ class S224_TheHeaderIsTheGradeTheReasonAndWhatNeedsHim(TabBase):
         self.assertTrue(any("xo-grade-chip" in c for c in kids))
         self.assertTrue(any("xo-score2" in c for c in kids),
                         "the second score is not with the grade")
-        self.assertIn("after the fixes", _all_text(col[0]))
+        # S225: the chip names the FIRST grade as the BEFORE state ("before the
+        # fixes") instead of floating the old, two-way "after the fixes" beside
+        # it. This _with_score2 fixture is a same-grade re-check (low → low), so
+        # the chip reads "unchanged from LOW before the fixes".
+        self.assertIn("before the fixes", _all_text(col[0]))
 
     def _with_score2(self):
         mi = {
@@ -946,8 +950,16 @@ class S224_TheNumbersAreAShapeAndTheGradeMoves(TabBase):
         out = self.regrade(report={"score": "medium", "score2": "low"})
         col = _cls_of(out["pane"], " xo-gradecol ")[0]
         self.assertIn("LOW", _all_text(_cls_of(col, " xo-grade-chip ")[0]))
-        self.assertIn("after the fixes · was MEDIUM",
-                      _all_text(_cls_of(col, " xo-score2 ")[0]))
+        # S225: the chip named the first grade with a two-way "after the fixes
+        # · was MEDIUM" that, under a LOW badge, read as "after the fixes it
+        # was MEDIUM" — the OLD grade masquerading as the new one. It now names
+        # MEDIUM as the BEFORE state and shows the direction: this build went
+        # MEDIUM → LOW, a demotion, drawn "▼ down from MEDIUM before the fixes".
+        chip = _all_text(_cls_of(col, " xo-score2 ")[0])
+        self.assertIn("before the fixes", chip)
+        self.assertIn("MEDIUM", chip)
+        self.assertIn("down from", chip)
+        self.assertNotIn("after the fixes", chip)
 
     def test_the_re_check_is_the_verdict_the_pane_renders(self):
         out = self.regrade()

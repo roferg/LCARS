@@ -599,6 +599,25 @@ function xoNote(m) {
 
 var XO_SCORE_WORD = { high: "HIGH", medium: "MEDIUM", low: "LOW" };
 
+/* S225 — HOW THE GRADE MOVED BETWEEN THE TWO LOOKS, SAID ONE WAY ONLY.
+   The badge already shows the CURRENT grade (the re-check's). This labels the
+   chip beneath it with where the grade came from, so the pair can only be read
+   as before → now. `after the fixes · was MEDIUM` used to sit under a HIGH
+   badge and read, wrongly, as "after the fixes it dropped to MEDIUM"; naming
+   the old word as the BEFORE state and showing the arrow removes that reading.
+   A word this board cannot rank (a verdict written before the three-way split,
+   or a NOT-SCORED first look) degrades to a plain, still-unambiguous "was …
+   before the fixes" with no arrow. */
+var XO_SCORE_RANK = { low: 0, medium: 1, high: 2 };
+function xoGradeMovedLabel(before, now) {
+  var was = XO_SCORE_WORD[before] || "NOT SCORED";
+  var rb = XO_SCORE_RANK[before], rn = XO_SCORE_RANK[now];
+  if (rb == null || rn == null) return "was " + was + " before the fixes";
+  if (rn > rb) return "▲ up from " + was + " before the fixes";
+  if (rn < rb) return "▼ down from " + was + " before the fixes";
+  return "unchanged from " + was + " before the fixes";
+}
+
 /* The recorded score, lower-cased and VALIDATED against the three the captain
    named — anything else is nothing, the same posture `xoBlock` takes on a
    malformed block. A score this board cannot name is one it must not paint. */
@@ -11517,12 +11536,17 @@ function xoReportPane(mi) {
   var gradeCol = el("div", "xo-gradecol");
   gradeCol.appendChild(word);
   if (hasScore2) {
-    // The badge above is the CURRENT grade — the re-check's. This says what it
-    // was before the fixes, which is the only thing the reader needs the first
-    // score for once a second one exists.
+    // The badge above is the CURRENT grade — the re-check's. This chip says
+    // where it came FROM. S225: the old wording was `after the fixes · was
+    // MEDIUM`, and the captain read it as "after the fixes, it was MEDIUM" —
+    // i.e. the badge's HIGH being demoted to MEDIUM. It was the opposite: the
+    // build went MEDIUM → HIGH. So the chip no longer floats the ambiguous
+    // "after the fixes" beside the OLD word; it names the old word as the
+    // BEFORE state explicitly ("before the fixes") and shows the direction the
+    // grade moved, so HIGH can only read as where it is NOW.
     gradeCol.appendChild(el("span",
       "xo-chip2 xo-score2 s-" + (XO_SCORE_WORD[score1] ? score1 : "unknown"),
-      "after the fixes · was " + (XO_SCORE_WORD[score1] || "NOT SCORED")));
+      xoGradeMovedLabel(score1, score)));
   }
   rail.appendChild(gradeCol);
 
