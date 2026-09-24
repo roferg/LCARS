@@ -257,6 +257,83 @@ check "4. REPO_STALE-only runs ONLY update (no pull, no install)" \
 check "4. REPO_STALE-only restamps the repo current (2026.7.1)" \
   "grep -q '\"lcarsVersion\": *\"2026.7.1\"' '$REPO4/.git/lcars/config.json'"
 
+# --- 4X. ask-mode prompt must never BLOCK FOREVER (S-hang) ----------------
+# The measured bug: `read -r` with no timeout blocks forever when stdin is a
+# terminal/pipe that never delivers AND never closes (not EOF). A background
+# `lcars file` sat 44 min in this exact read. The fix: when nobody can answer,
+# take the documented [y/N] default (No) after a bounded wait and continue.
+# A never-closing, never-delivering stdin is modelled by a FIFO with a writer
+# held open (so no EOF) that sends nothing.
+
+# run_bounded SECS OUTVAR -- CMD... : runs CMD in the background reading from a
+# never-delivering FIFO; sets OUTVAR=hung|done and never itself hangs.
+mk_fixture "2026.7.1"
+setup_stubs
+REPO4X="$(mk_initrepo "2026.7.0")"      # REPO_STALE only (offers just `lcars update`)
+OUT="$FX/out4x.txt"
+FIFO="$FX/never.fifo"; mkfifo "$FIFO"
+sleep 20 > "$FIFO" &                     # writer holds the FIFO open, sends nothing
+holder=$!
+( LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+    LCARS_VERSION_CWD="$REPO4X" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+    LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
+    LCARS_ASK_TIMEOUT_NONTTY=1 \
+    bash "$CHECK" ask < "$FIFO" >"$OUT" 2>&1 ) &
+checkpid=$!
+i=0; hung=1
+while kill -0 "$checkpid" 2>/dev/null; do
+  sleep 0.1; i=$((i + 1))
+  [ "$i" -gt 60 ] && break              # 6s cap ≫ the 1s bounded wait
+done
+if kill -0 "$checkpid" 2>/dev/null; then kill "$checkpid" 2>/dev/null; hung=1
+else wait "$checkpid" 2>/dev/null; hung=0; fi
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+
+check "4X. ask on a never-delivering stdin COMPLETES (does not hang)" \
+  "[ '$hung' -eq 0 ]"
+check "4X. it took the safe default (Holding this repo, unchanged)" \
+  "grep -qi 'Holding this repo' '$OUT'"
+check "4X. it announced WHY it defaulted (no operator / no answer)" \
+  "grep -qi 'no answer' '$OUT' || grep -qi 'no operator' '$OUT'"
+check "4X. it ran NO update (nobody said yes)" "[ ! -s '$ORDER' ]"
+check "4X. the repo stamp is left untouched (still 2026.7.0)" \
+  "grep -q '\"lcarsVersion\": *\"2026.7.0\"' '$REPO4X/.git/lcars/config.json'"
+
+# --- 4Y. CONTROL: an operator who DOES answer is still honoured -----------
+# Proves the fix bounded the wait WITHOUT removing the prompt: a scripted answer
+# that arrives is still read and obeyed, both "y" (update) and "n" (Holding),
+# even under the short non-tty wait.
+# 4Y-yes: "y" still runs the update.
+mk_fixture "2026.7.1"
+setup_stubs
+REPO4Y="$(mk_initrepo "2026.7.0")"
+OUT="$FX/out4y.txt"
+printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$REPO4Y" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
+  LCARS_ASK_TIMEOUT_NONTTY=1 \
+  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+check "4Y. CONTROL 'y' is HONOURED — runs ONLY update, exits 0" \
+  "[ '$rc' -eq 0 ] && [ \"\$(tr '\n' ' ' < '$ORDER')\" = 'update ' ]"
+check "4Y. CONTROL 'y' restamps the repo current (2026.7.1)" \
+  "grep -q '\"lcarsVersion\": *\"2026.7.1\"' '$REPO4Y/.git/lcars/config.json'"
+check "4Y. CONTROL 'y' did NOT emit the no-answer note (a real answer arrived)" \
+  "! grep -qi 'no answer' '$OUT' && ! grep -qi 'no operator' '$OUT'"
+# 4Y-no: "n" is honoured — Holding, nothing run.
+mk_fixture "2026.7.1"
+setup_stubs
+REPO4Yn="$(mk_initrepo "2026.7.0")"
+OUT="$FX/out4yn.txt"
+printf 'n\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$REPO4Yn" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
+  LCARS_ASK_TIMEOUT_NONTTY=1 \
+  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+check "4Yn. CONTROL 'n' is HONOURED — Holding, no update, exits 0" \
+  "[ '$rc' -eq 0 ] && [ ! -s '$ORDER' ] && grep -qi 'Holding this repo' '$OUT'"
+check "4Yn. CONTROL 'n' did NOT emit the no-answer note (a real answer arrived)" \
+  "! grep -qi 'no answer' '$OUT' && ! grep -qi 'no operator' '$OUT'"
+
 # --- 5. DRIFT → warned, names lcars release -------------------------------
 mk_fixture "2026.7.1" 1              # tip has an unversioned commit past VERSION
 setup_stubs
