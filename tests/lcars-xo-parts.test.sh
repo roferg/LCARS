@@ -322,6 +322,45 @@ wr_pair amb \
 check "B10 CONTROL · a run in TWO labels equally does NOT coin-toss a pair" \
   "wq 'd[\"pairs\"][0][\"reachable\"]' '$D/amb-p.json' | grep -q False"
 
+printf '\n\033[1mB10R · is the "label text" fallback dead code, or load-bearing?\033[0m\n'
+# THE CAPTAIN'S RULING (2026-09-24) proposed deleting the "label text" handle
+# (line 206) as UNREACHABLE: "parts are matched by id first, and a faithful
+# build reuses the ids the drawing declares — so the id match always wins
+# before the name match is reached." This block is the proof asked for BEFORE
+# any deletion. Half of it confirms the premise; the other half REFUTES the
+# unreachability, so the handle must stay.
+#
+# HALF ONE — the premise is TRUE when an id is present. The drawing declares
+# `id=dropBtn`, the faithful build reuses it, and the two LABELS differ on
+# purpose. The id handle answers and the name block — "label text" included —
+# is never entered.
+wr_pair idwins \
+ '[{"index":1,"id":"dropBtn","testid":null,"name":"Drop","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"d-01"}]' \
+ '[{"index":1,"id":"dropBtn","testid":null,"name":"Drop selected item","role":"button","tag":"button",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":150,"h":30},"iconBox":null,"lines":1,"crop":"b-01"}]'
+check "B10R · with the drawn id reused, the ID handle wins — the name path is never reached" \
+  "wq 'd[\"pairs\"][0][\"handle\"]' '$D/idwins-p.json' | grep -qi '^id$\|by id\|\bid\b'"
+
+# HALF TWO — but id-less drawn parts are a FIRST-CLASS, tested case (see B10
+# above, "the captain's words": his drawing named "Unlock" with no id). For
+# such a part the id handle is skipped and "label text" can be the SOLE
+# decider. Here the drawing's verbose "Drop selected item" was shortened in
+# the build to "Drop": the build label is a whole-word PREFIX of the drawn
+# name, so `dname.startswith(build name)` fires. The whole-word-RUN handle
+# cannot reach it — the drawn name is LONGER than the label, so no run of the
+# drawn words fits inside it — and the role handle is fenced off (a link, and
+# it only fires last). Delete "label text" and this real pairing is LOST.
+wr_pair lblonly \
+ '[{"index":1,"id":null,"testid":null,"name":"Drop selected item","role":"link","tag":"a",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":150,"h":30},"iconBox":null,"lines":1,"crop":"d-01"}]' \
+ '[{"index":1,"id":null,"testid":null,"name":"Drop","role":"link","tag":"a",
+   "interactive":true,"container":false,"box":{"x":10,"y":10,"w":90,"h":30},"iconBox":null,"lines":1,"crop":"b-01"}]'
+check "B10R · an id-less part pairs SOLELY via the 'label text' handle — it is REACHABLE" \
+  "wq 'd[\"pairs\"][0][\"handle\"]' '$D/lblonly-p.json' | grep -qi 'label text'"
+check "B10R · and the pairing is real (reachable), so the handle is load-bearing, not dead" \
+  "wq 'd[\"pairs\"][0][\"reachable\"]' '$D/lblonly-p.json' | grep -q True"
+
 printf '\n\033[1mB9 · the copy of the control that is actually on screen\033[0m\n'
 # MEASURED IN REAL HEADLESS CHROME (tests/drives/s224/parts-reach): an SPA
 # that hides its screens with display:none records 72 of its 100 parts with a
