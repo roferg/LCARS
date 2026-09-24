@@ -1802,6 +1802,21 @@ def main():
         act = " ".join(str(c.get("action") or "").split())
         if act:
             entry["action"] = act
+        # THE KIND OF QUESTION, RECORDED AS THE PASS JUDGED IT (S… , Captain
+        # 2026-09-24). Beside its verdict the evaluating pass states which kind
+        # of question this criterion is — `looks` (a picture can settle it) or
+        # `works` (only an action can). It is RECORDED here beside the evidence
+        # kind, exactly like `evidence` and `action`, and NEVER worked out later
+        # from the criterion's prose (LCARS has lost three sessions to prose
+        # heuristics). The captain's ruling: the reviewer states the kind AS IT
+        # JUDGES, because it is already reading the requirement to judge it — so
+        # this reaches the PRD/journey/drawing criteria a planner stamp never
+        # touched. Unrecognised or absent is DROPPED, not defaulted: a guessed
+        # `works` would be a false downgrade, a guessed `looks` a false excuse.
+        # The consumer reads it through the SAME question_kind() path below.
+        judged_kind = str(c.get("kind") or "").strip().lower()
+        if judged_kind in ("looks", "works"):
+            entry["kind"] = judged_kind
         if status == "untested" and rated_status == "untested":
             why_not = str(c.get("couldNotCheck") or "").strip().lower()
             if why_not in COULD_NOT_CHECK:
@@ -2047,11 +2062,24 @@ def main():
     split = {"looks": 0, "works": 0, "worksExercised": 0, "worksPictureOnly": 0,
              "unstamped": 0}
     for e in ledger:
-        kind, kfrom = question_kind(contract_by_id.get(e["id"]) or {})
+        # RECORDED KIND WINS, THEN THE PRODUCE-TIME STAMP (Captain 2026-09-24).
+        # question_kind reads a row's explicit `kind`, then `notVisual`. Called
+        # on the LEDGER ROW it reads the kind the pass RECORDED as it judged;
+        # only when the pass stated none does it fall back to the CONTRACT row,
+        # where the planner's `kind`/`notVisual` stamp still stands. Same path,
+        # two sources — never a second classifier. An unstamped criterion is
+        # UNKNOWN from both and is never downgraded (the guard is preserved).
+        kind, kfrom = question_kind(e)
+        if kind:
+            kfrom = "recorded"
+        else:
+            kind, kfrom = question_kind(contract_by_id.get(e["id"]) or {})
         if kind:
             e["questionKind"] = kind
             if kfrom == "notVisual":
                 e["questionKindFrom"] = "notVisual"
+            elif kfrom == "recorded":
+                e["questionKindFrom"] = "recorded"
         # THE SPLIT, COUNTED OFF THE STAMPS — said out loud below (ruling #5).
         if kind == "looks":
             split["looks"] += 1

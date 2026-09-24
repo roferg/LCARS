@@ -1815,5 +1815,127 @@ check "L7. …and the report's drawing line says it was held back for coverage" 
 
 # ==========================================================================
 echo
+echo "M. THE KIND IS RECORDED AS THE PASS JUDGES (Captain, 2026-09-24)"
+# THE MEASURED GAP, on the captain's real 106-criterion mission: the ruling
+# above only reached 23 of 105 criteria — the 82 that carry a produce-time
+# stamp NOWHERE (the PRD's own requirements, the journey steps, the drawing's
+# parts) were all unstamped, so it never touched them. The only producer of the
+# kind was the planner's `notVisual` on ticket acceptance criteria; nothing
+# produced it for the rest.
+#
+# THE CAPTAIN'S RULING: the REVIEWER states the kind AS IT JUDGES — beside its
+# verdict, in the same structured output — because it is already reading the
+# requirement in order to judge it. Chosen OVER deriving it from action-vs-
+# display words (the prose heuristic that cost LCARS three sessions).
+#
+# So here the CONTRACT carries NO kind at all (the 82-unstamped case), and the
+# evaluating pass RECORDS the kind on each row it judges. The consumer reads
+# that recorded stamp through the SAME `question_kind()` path — prefer the
+# explicit `kind`, fall back to the planner's stamp — and the unstamped guard
+# is preserved exactly: a row nobody stamped is never downgraded.
+# ==========================================================================
+MDIR="$TMPROOT/judgekind"; mkdir -p "$MDIR"
+
+# ONE contract, four PRD requirements, NONE stamped by the planner — the exact
+# shape of the 82 the ruling could not reach before this cure.
+cat >"$MDIR/criteria.json" <<'MC'
+{"criteria": [
+  {"id": "prd-1", "text": "the header shows the app name", "primary": true, "source": "prd"},
+  {"id": "prd-2", "text": "the Save button saves the document", "primary": true, "source": "prd"},
+  {"id": "prd-3", "text": "the board shows every open task", "primary": true, "source": "prd"},
+  {"id": "prd-4", "text": "pressing space pauses the game", "primary": true, "source": "prd"}
+], "hasDrawing": false}
+MC
+
+# The evaluating pass's OWN output: every row met on a picture alone (a shot, no
+# action, no test). It RECORDS the kind beside each verdict — `looks` on prd-1,
+# `works` on prd-2, NOTHING on prd-3 (it did not state one), a BOGUS word on
+# prd-4. The contract stamped none of these; the recording is the only signal.
+ML='{"score":"high","summary":"Looked at it.","criteria":[
+  {"id":"prd-1","text":"the header shows the app name","status":"met","shot":"s1","evidence":"picture","kind":"looks","note":"the header reads the app name"},
+  {"id":"prd-2","text":"the Save button saves the document","status":"met","shot":"s2","evidence":"picture","kind":"works","note":"a Save button is visible in the toolbar"},
+  {"id":"prd-3","text":"the board shows every open task","status":"met","shot":"s3","evidence":"picture","note":"every task is on screen in one list"},
+  {"id":"prd-4","text":"pressing space pauses the game","status":"met","shot":"s4","evidence":"picture","kind":"sideways","note":"a pause control is visible"}
+],"gaps":[],"alsoChecked":[],"escalations":[]}'
+kscore "$MDIR/j" "$MDIR/criteria.json" "$ML"
+
+# --- M1. CONTROL(a) — a recorded looks-question, met on a picture, PASSES ----
+check "M1. CONTROL(a) a looks recorded by the pass, met on a picture, stays met" \
+  "[ \"\$(krow '$MDIR/j/verdict.json' prd-1 'r[\"status\"]')\" = met ]"
+check "M1. CONTROL(a) …and it carries the kind the pass recorded, read at judgement" \
+  "[ \"\$(krow '$MDIR/j/verdict.json' prd-1 'r.get(\"questionKind\")')\" = looks ]"
+check "M1. CONTROL(a) …its kind came from the reviewer's recording, not notVisual" \
+  "[ \"\$(krow '$MDIR/j/verdict.json' prd-1 'r.get(\"questionKindFrom\")')\" = recorded ]"
+check "M1. CONTROL(a) …and it is NOT flagged as passing on a look it shouldn't" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+w=d.get(\"worksOnLookAlone\") or []
+sys.exit(0 if all(x[\"id\"]!=\"prd-1\" for x in w) else 1)' '$MDIR/j/verdict.json'"
+
+# --- M2. a recorded works-question, picture-only, is downgraded and named ----
+check "M2. a works recorded by the pass, met on a picture only, does NOT read met" \
+  "[ \"\$(krow '$MDIR/j/verdict.json' prd-2 'r[\"status\"]')\" != met ]"
+check "M2. …its recorded kind is carried through as works" \
+  "[ \"\$(krow '$MDIR/j/verdict.json' prd-2 'r.get(\"questionKind\")')\" = works ]"
+check "M2. …and it is surfaced BY NAME on the works-on-look-alone list" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+w=d.get(\"worksOnLookAlone\") or []
+sys.exit(0 if any(x[\"id\"]==\"prd-2\" for x in w) else 1)' '$MDIR/j/verdict.json'"
+
+# --- M3. CONTROL(b) — an UNSTAMPED criterion is UNTOUCHED --------------------
+# The pass stated no kind and the contract carries none; it must not be
+# downgraded and must carry no kind key. This is the guard that stops the cure
+# becoming an over-correction, and it must hold exactly.
+check "M3. CONTROL(b) an unstamped criterion is not downgraded, stays met" \
+  "[ \"\$(krow '$MDIR/j/verdict.json' prd-3 'r[\"status\"]')\" = met ]"
+check "M3. CONTROL(b) …and it carries NO questionKind (never guessed)" \
+  "[ -z \"\$(krow '$MDIR/j/verdict.json' prd-3 'r.get(\"questionKind\")')\" ]"
+check "M3. CONTROL(b) …and it is NOT on the works-on-look-alone list" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+w=d.get(\"worksOnLookAlone\") or []
+sys.exit(0 if all(x[\"id\"]!=\"prd-3\" for x in w) else 1)' '$MDIR/j/verdict.json'"
+
+# --- M4. CONTROL(c) — a BOGUS recorded kind is DROPPED, not laundered --------
+# `sideways` is neither looks nor works; it must read as ABSENT — never
+# defaulted to works (a false downgrade) nor to looks (a false excuse).
+check "M4. CONTROL(c) a bogus recorded kind is dropped: the row is not downgraded" \
+  "[ \"\$(krow '$MDIR/j/verdict.json' prd-4 'r[\"status\"]')\" = met ]"
+check "M4. CONTROL(c) …and it carries NO questionKind (the bogus word is not laundered)" \
+  "[ -z \"\$(krow '$MDIR/j/verdict.json' prd-4 'r.get(\"questionKind\")')\" ]"
+check "M4. CONTROL(c) …and it is NOT on the works-on-look-alone list" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+w=d.get(\"worksOnLookAlone\") or []
+sys.exit(0 if all(x[\"id\"]!=\"prd-4\" for x in w) else 1)' '$MDIR/j/verdict.json'"
+
+# --- M5. the split counts the recorded stamps, off criteria the planner never
+# stamped — one looks, one works (picture-only), two unstamped ---------------
+check "M5. the split counts the recorded stamps, unstamped left as unstamped" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+s=d.get(\"questionSplit\") or {}
+sys.exit(0 if s.get(\"looks\")==1 and s.get(\"works\")==1 and s.get(\"worksPictureOnly\")==1 and s.get(\"unstamped\")==2 else 1)' '$MDIR/j/verdict.json'"
+
+# --- M6. the recorded kind wins where the pass stated one, else the planner's
+# produce-time stamp still stands (the two paths coexist) --------------------
+# A contract that DOES carry notVisual, with the pass recording nothing: the
+# planner's stamp must still be read (fall-back path intact).
+cat >"$MDIR/nvonly.json" <<'NVO'
+{"criteria": [
+  {"id": "nv1", "text": "batches persist across a restart", "primary": true, "source": "plan", "notVisual": true}
+], "hasDrawing": false}
+NVO
+MLNV='{"score":"high","summary":"Persists.","criteria":[{"id":"nv1","text":"batches persist across a restart","status":"met","shot":"s5","evidence":"picture","note":"I saw the batch list on screen"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+kscore "$MDIR/nv" "$MDIR/nvonly.json" "$MLNV"
+check "M6. the planner's notVisual stamp is still read when the pass records none" \
+  "[ \"\$(krow '$MDIR/nv/verdict.json' nv1 'r.get(\"questionKind\")')\" = works ]"
+check "M6. …and its provenance is the notVisual stamp, not a recording" \
+  "[ \"\$(krow '$MDIR/nv/verdict.json' nv1 'r.get(\"questionKindFrom\")')\" = notVisual ]"
+
+
+# ==========================================================================
+echo
 printf 'lcars xo-evidence: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -327,6 +327,38 @@ decided nothing is worse than saying you could not tell. The captain must never 
 line — so declare it; it is not worked out afterwards from how you phrased your
 note.
 
+## Say WHICH KIND OF QUESTION each one is — as you judge it
+
+You are already reading each criterion in order to judge it. In the same
+breath, **write `kind` on the row**, and it is one of two words:
+
+| `kind` | when |
+|---|---|
+| `looks` | a picture can settle it — something is present, positioned, coloured or worded. "The header shows the app name." "The Save button is amber." |
+| `works` | only an ACTION can settle it — a control acts, a value changes, an error appears. "Save saves the document." "Pressing space pauses." "A bad name shows an error." |
+
+This is the difference between DRAWN and DOES: a photo of a Save button proves
+it is on screen, not that pressing it saves anything. So a `works` criterion you
+only PHOTOGRAPHED — no press, no test line — is **not** settled; LCARS records
+it as "I could not check this", the same as any unexercised row. A `looks`
+criterion a picture genuinely settles is a full pass, untouched. Pictures are
+not devalued where they belong.
+
+Say it **as you judge**, from what the criterion is ASKING — not by scanning its
+wording for action verbs afterwards. It rides beside `evidence`:
+
+```json
+{"id": "prd-2", "status": "met", "kind": "works", "evidence": "picture",
+ "shot": "shot-02", "action": "clicked Save, reloaded, the edit was still there",
+ "note": "the document survived a reload"}
+```
+
+If you are genuinely unsure which it is, **omit `kind`** — leave it off the row
+entirely. A criterion you did not stamp is never downgraded on a guess, so
+silence is honest and safe; a wrong stamp is not. Never write anything but
+`looks` or `works` — an unrecognised word is dropped exactly as if you had left
+it off.
+
 ## No drawing at all
 
 `criteria.json`'s `placeNames` can be empty because this mission was never
