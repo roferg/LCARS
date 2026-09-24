@@ -128,11 +128,17 @@ class C1_TheCardIsASignalNotATranscript(CardBase):
         card = self.card()
         self.assertNotIn(LONG[:60], _all_text(card))
 
-    def test_one_line_of_verdict_in_its_own_voice_is(self):
+    def test_the_verdict_line_is_no_longer_on_the_card(self):
+        """The captain asked for the grade alone. The verdict line — the
+        ledger's derivation drawn under the pill in `.xo-verdict-line` — was
+        exactly the "extra text" he called out: "I don't think we need all
+        that extra text there." It comes off the card entirely. It is not
+        lost: the same sentence still LEADS the ◈ Number One tab (the report),
+        which is where the detail now belongs. This assertion used to require
+        the line ON the card; it now requires it OFF."""
         card = self.card()
-        lines = _cls_of(card, " xo-verdict-line ")
-        self.assertEqual(1, len(lines))
-        self.assertEqual(HEADLINE, _all_text(lines[0]).strip())
+        self.assertEqual([], _cls_of(card, " xo-verdict-line "))
+        self.assertNotIn(HEADLINE, _all_text(card))
 
     def test_the_score_rides_one_pill_that_names_number_one(self):
         card = self.card()
@@ -152,23 +158,17 @@ class C1_TheCardIsASignalNotATranscript(CardBase):
         self.assertEqual(1, len(reads))
         self.assertIn("xo-read-report", reads[0]["cls"])
 
-    # ── FIX ROUND 1, D1: AT ANY LENGTH ──────────────────────────────────
-    # The tester planted a verdict of 2,673 characters — a rambling worker
-    # `why`, the exact shape this session guards against — and the card drew
-    # all of them: 91 wrapped lines, 1,752 px tall in a 200 px column, every
-    # other mission pushed off the screen. Nothing truncated at ANY length.
-    # C1 is a promise about every verdict, not about short ones.
+    # ── A PUNISHING VERDICT NEVER REACHES THE CARD ──────────────────────
+    # The tester once planted a verdict of 2,673 characters — a rambling
+    # worker `why` — and an earlier card drew all of them: 91 wrapped lines,
+    # 1,752 px tall. The cure then was to clamp the line to one; the cure now
+    # is that there is no line to clamp. A transcript cannot reach the card
+    # because the card carries no verdict line at all.
 
-    def test_a_punishing_verdict_is_still_one_line_on_the_card(self):
+    def test_a_punishing_verdict_never_reaches_the_card(self):
         card = self.card(numberOne={"headline": RAMBLE})
-        line = _cls_of(card, " xo-verdict-line ")
-        self.assertEqual(1, len(line))
-        shown = _all_text(line[0]).strip()
-        self.assertLess(len(shown), 220,
-                        "the card is carrying a transcript again")
-        self.assertTrue(shown.endswith("…"), shown[-40:])
-        self.assertTrue(RAMBLE.startswith(shown[:60]),
-                        "the line is not the start of the recorded sentence")
+        self.assertEqual([], _cls_of(card, " xo-verdict-line "))
+        self.assertNotIn(RAMBLE[:60], _all_text(card))
 
     def test_and_the_rest_of_it_is_not_hiding_on_the_card_somewhere(self):
         card = self.card(numberOne={"headline": RAMBLE})
@@ -180,10 +180,10 @@ class C1_TheCardIsASignalNotATranscript(CardBase):
                  if "Read the full report" in (n.get("text") or "")]
         self.assertEqual(1, len(reads))
 
-    def test_a_normal_length_verdict_is_not_cut_at_all(self):
+    def test_a_normal_length_headline_is_also_off_the_card(self):
         card = self.card()
-        line = _cls_of(card, " xo-verdict-line ")[0]
-        self.assertEqual(HEADLINE, _all_text(line).strip())
+        self.assertEqual([], _cls_of(card, " xo-verdict-line "))
+        self.assertNotIn(HEADLINE, _all_text(card))
 
     def test_the_cost_and_difficulty_pills_are_still_on_the_card(self):
         text = _all_text(self.card())
@@ -511,7 +511,14 @@ class C8_NoSurfaceContradictsTheScore(TabBase):
         self.assertLess(joined.index("everything you asked for"),
                         joined.index(REASSURANCE[:30]))
 
-    def test_the_card_line_and_the_tab_lede_are_the_same_sentence(self):
+    def test_the_card_carries_no_verdict_line_while_the_tab_still_ledes(self):
+        """C8's guarantee — the card can never contradict the score — now
+        holds TRIVIALLY, because the card shows only the grade. The verdict
+        line that used to sit on the card (and had to match the tab lede so
+        the two could not disagree) is gone; the derivation still ledes the
+        tab, which is where the reader goes for it. This assertion used to
+        require card_line == tab_lede; it now requires the card to have no
+        line at all while the tab keeps its lede."""
         if shutil.which("node") is None:
             self.skipTest("node not available")
         tab = self.mi()
@@ -521,9 +528,10 @@ class C8_NoSurfaceContradictsTheScore(TabBase):
             "numberOne": {"status": "engaged", "engine": "copilot",
                           "score": "medium", "note": LONG,
                           "headline": HEADLINE}})
-        card_line = _all_text(_cls_of(card, " xo-verdict-line ")[0]).strip()
+        self.assertEqual([], _cls_of(card, " xo-verdict-line "))
+        self.assertNotIn(HEADLINE, _all_text(card))
         lede = _all_text(_cls_of(tab["pane"], " xo-lede ")[0]).strip()
-        self.assertEqual(card_line, lede)
+        self.assertEqual(HEADLINE, lede)
 
     def test_the_score_word_on_the_card_matches_the_score_on_the_tab(self):
         tab = self.mi()

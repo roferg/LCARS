@@ -537,51 +537,16 @@ function xoPill(m) {
   return el("span", "pill xo" + (status === "engaged" ? "" : " done"), label);
 }
 
-/* S213 — THE ONE LINE, and where it comes from.
+/* THE VERDICT LINE IS OFF THE CARD (captain, this session).
 
-   The card used to carry Number One's whole 150-word verdict. It ran several
-   screens tall and pushed the cost pills, the difficulty pills and both
-   buttons off the bottom; a column the captain cannot scan is not a board.
-
-   So the card carries ONE sentence — and it matters enormously WHICH one.
-   Not the first sentence of the worker's prose: cutting a paragraph down is
-   this board deciding what Number One meant, and a verdict that disagrees
-   with the score beside it is the exact fault this session exists to kill.
-   It is `headline`, the ledger's own DERIVATION — written by xo-score.py in
-   the same breath as the score, off the same ledger, by the same rule. The
-   line and the score are two outputs of one decision, so they cannot
-   contradict each other. The same sentence leads the ◈ Number One tab. */
-function xoHeadline(m) {
-  var x = xoBlock(m);
-  var h = x && x.headline ? String(x.headline).trim() : "";
-  return h || "";
-}
-
-/* AND IT IS ONE LINE AT ANY LENGTH (S213 fix round 1).
-
-   A verdict of 2,673 characters was planted on a card and the card drew all of
-   them — 91 wrapped lines, 1,752 px tall in a 200 px column, every other
-   mission pushed off the screen. The one-line card was never structural; it
-   held only while the derivation happened to be short, and a rambling worker
-   `why` is exactly the shape this session exists to survive.
-
-   The sheet clamps the line to ONE visually (.xo-verdict-line), which is what
-   the captain's browser does. This is the other half: the card's DOM never
-   carries a transcript in the first place, so nothing depends on a stylesheet
-   having loaded, and the text a machine reads off the card is the text a
-   person sees. The cut is at a word boundary with an ellipsis, and the WHOLE
-   sentence is one click away on the tab — plus on the card's own tooltip, so
-   nothing said here is ever lost, only deferred. */
-var XO_CARD_LINE_MAX = 200;
-
-function xoCardLine(text) {
-  var s = String(text || "").replace(/\s+/g, " ").trim();
-  if (s.length <= XO_CARD_LINE_MAX) return s;
-  var cut = s.slice(0, XO_CARD_LINE_MAX);
-  var space = cut.lastIndexOf(" ");
-  if (space > 40) cut = cut.slice(0, space);
-  return cut.replace(/[\s,;:.\u2014-]+$/, "") + "…";
-}
+   The card used to carry Number One's whole 150-word verdict, then — after
+   S213 cut that to one — a single `headline` line, the ledger's own
+   derivation, in an `.xo-verdict-line` under the grade pill. The captain read
+   that line as the same "too much information" the grade pill's axes sentence
+   was, and asked for the grade alone with the reasons in the report: "I don't
+   think we need all that extra text there." So the card no longer draws a
+   verdict line at all. The derivation is not lost — it still leads the ◈
+   Number One tab (the full report), one click away. */
 
 /* WHAT IT IS DOING NOW, in one line, COMPOSED FROM THE RECORD and from nothing
    else. There is no free-text "activity" field on this shape and there
@@ -650,62 +615,33 @@ function xoScore(m) {
    difficulty vocabulary — reusing those would make the sheet lie the moment
    someone read it.
 
-   S213 CHANGED WHAT IT SAYS, not what it means. It used to read `INTENT MATCH
-   · MEDIUM` beside a second pill reading `◈ NUMBER ONE · ENGAGED`, which spent
-   two pills to say one thing and buried the half that matters. Now ONE pill
-   carries both: `◈ NUMBER ONE · MEDIUM` — who looked, and what they found. The
-   label still says whose MEDIUM it is, which is the whole reason the old label
-   existed: the two DIFFICULTY pills next to it also read LOW/MED/HIGH and mean
-   the opposite direction. The tooltip still carries the meaning in full. */
+   THE PILL CARRIES THE GRADE AND NOTHING ELSE — ONE WORD, ITS OWN. It reads
+   `◈ NUMBER ONE · MEDIUM`: who looked, and what they found. The `◈ NUMBER ONE`
+   label is not decoration — it is what tells a reader whose MEDIUM this is and
+   that it is a REVIEW, because the two DIFFICULTY pills beside it also read
+   LOW/MED/HIGH and mean the opposite direction (a high difficulty is bad news;
+   a high review is the best news on the card).
+
+   THE CARD USED TO CARRY MORE, AND THAT IS THE BUG THIS REMOVES. Earlier
+   rounds crowded a coverage sentence onto the pill's own face — `◈ MEDIUM ·
+   Couldn't check the point of the mission · 40 of 79 checked` — and a second
+   verdict line underneath it. The captain read HIGH/MEDIUM/LOW smothered in
+   caveats and asked for the grade alone: "let the person go read the report …
+   trying to shove too much information on that card is gonna just make it
+   confusing." So the axes sentence comes off the face and the verdict line
+   comes off the card entirely. Nothing is lost — the meaning still rides the
+   tooltip in full, and the counts and the why live in the report, one click
+   away on the ◈ Number One tab. */
 function xoScorePill(m) {
   var s = xoScore(m);
   if (!s) return null;
-  var axes = xoAxes(m);
-  var pill;
-  if (axes) {
-    // S216 — BOTH AXES ON THE CARD: `◈ MEDIUM · checked 11 of 14 · core met`.
-    // The grade is its own unbreakable piece and the rest may wrap onto the
-    // card's next line, so a 224px column never clips the grade (S214 D6).
-    // "checked N of M" says whose grade this is as plainly as the old
-    // NUMBER ONE label did: no difficulty pill ever counts anything.
-    // S223 — THE SENTENCE IS READ, NOT DECODED. Only the grade word carries
-    // the colour; the rest is full-contrast body text in plain words on its
-    // own line ("Couldn't check the point of the mission · 40 of 79
-    // checked"), so a 224px column holds it in two short lines.
-    pill = el("span", "pill xo-score xo-axes-pill s-" + s);
-    pill.appendChild(el("span", "xo-grade", "◈ " + XO_SCORE_WORD[s]));
-    pill.appendChild(el("span", "xo-axes", axes));
-  } else {
-    pill = el("span", "pill xo-score s-" + s,
-              "◈ NUMBER ONE · " + XO_SCORE_WORD[s]);
-  }
+  var pill = el("span", "pill xo-score s-" + s,
+                "◈ NUMBER ONE · " + XO_SCORE_WORD[s]);
+  // The meaning still rides the tooltip in full — the card face shows only the
+  // grade, but a reader who hovers gets the sentence the ledger recorded.
   var said = xoScoreMeaning(m, s);
   if (said) pill.title = said;
   return pill;
-}
-
-/* S216 — the two axes the pill carries beside the grade, READ off the block
-   (the adapter reads them off the mission's own xo/verdict.json): how many of
-   the list were actually checked, and the state of the point of the mission.
-   A verdict written before S216 recorded no impact, so it has no `core` and
-   none is shown — the counts alone are still arithmetic over its own ledger.
-   A remote card (score off a label) has neither: the old pill, unchanged. */
-// S223: plain words — "core unverified" was harness talk.
-var XO_CORE_WORD = { met: "The point of the mission worked",
-                     broken: "The point of the mission didn't work",
-                     unverified: "Couldn't check the point of the mission" };
-
-function xoAxes(m) {
-  var x = xoBlock(m);
-  if (!x) return "";
-  var parts = [];
-  var total = x.total, checked = x.checked;
-  if (XO_CORE_WORD[x.core]) parts.push(XO_CORE_WORD[x.core]);
-  if (typeof total === "number" && total > 0 && typeof checked === "number"
-      && checked >= 0 && checked <= total) {
-    parts.push(checked + " of " + total + " checked");
-  }
-  return parts.join(" · ");
 }
 
 /* WHAT THE WORD MEANS **HERE** (S213 fix round 1 D4, fix round 3 D4-RESIDUAL).
@@ -748,16 +684,17 @@ function xoScoreMeaning(m, s) {
    Two shapes, and which one you get turns on ONE recorded fact: has Number One
    reached a verdict here yet?
 
-   IT HAS (a score is recorded) — the card says three things and stops:
+   IT HAS (a score is recorded) — the card says two things and stops:
      · ONE pill, `◈ NUMBER ONE · MEDIUM`, carrying who looked and what they
-       found (it replaces the old ENGAGED pill plus a separate match pill);
-     · ONE line of verdict, the ledger's own derivation, in its own voice;
+       found (it replaces the old ENGAGED pill plus a separate match pill),
+       with the meaning on its tooltip and the detail in the report;
      · `⊙ Read the full report →`, which opens this mission on its ◈ Number One
        tab — the captain's own words: *"make the user aware there is a number 1
        message and have a way to click to open the card on the number 1 tab."*
-   The 150-word text is NOT here. It is one click away, on the surface built to
-   hold it, and the card fits a column again — which is what puts the cost
-   pills, the difficulty pills and both buttons back on screen.
+   The verdict line and the 150-word text are NOT here. They are one click
+   away, on the surface built to hold them, and the card fits a column again —
+   which is what puts the cost pills, the difficulty pills and both buttons
+   back on screen.
 
    IT HAS NOT — the card reads exactly as it did before this session: the
    status pill, the one line of what it is doing now, and any note it left.
@@ -776,20 +713,13 @@ function xoScoreMeaning(m, s) {
    escalation note from a mission that had been scored LOW and then escalated.
    A RECORDED STATUS decides it, never the presence of another field. */
 function xoNode(m) {
-  var score = xoScorePill(m), headline = xoHeadline(m);
+  var score = xoScorePill(m);
   var wrap;
   if (score) {
     wrap = el("div", "xo-block xo-signal");
     var srow = el("div", "pills xo-pills");
     srow.appendChild(score);
     wrap.appendChild(srow);
-    if (headline) {
-      var vline = el("div", "xo-verdict-line", xoCardLine(headline));
-      // The full sentence, for anyone who hovers — the card shows a line, it
-      // never withholds one.
-      vline.title = headline;
-      wrap.appendChild(vline);
-    }
     // The note, unless this is the ENGAGED status whose note is the transcript.
     if (!xoEngaged(m)) {
       var scoredNote = xoNote(m);

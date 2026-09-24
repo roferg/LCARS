@@ -1,16 +1,19 @@
-"""S216 — THE TWO-PART SCORE on the board: the pill, the tab, the adapter.
+"""S216 + THIS SESSION — THE SCORE on the board: the pill, the tab, the adapter.
 
-The captain approved the card as drawn: `◈ MEDIUM · checked 11 of 14 · core
-met`. The grade is still the ONE label (`lcars:xo:<score>`); the two axes ride
-beside it on the card and live in the verdict file, the tab and the report —
-never an envelope field, never a second label.
+S216 put a coverage sentence on the card's grade pill (`◈ MEDIUM · checked 11
+of 14 · core met`). The captain then asked for the grade ALONE — "let the
+person go read the report … trying to shove too much information on that card
+is gonna just make it confusing." So the pill now carries only the grade,
+`◈ NUMBER ONE · MEDIUM`, and the axes move OFF the card face. They are NOT
+deleted: the adapter still records them, and they live in the verdict file,
+the tab and the report.
 
-  * THE ADAPTER reads `checked` / `total` / `core` off the mission's own
-    `xo/verdict.json`. A verdict written before S216 has counts but no impact,
-    so it gets the counts and NO core — nothing it never assessed is asserted.
-  * THE PILL carries grade + checked N of M + core, and at the real column
-    width (220px `.col`, inside the 224px the captain measured) the grade never
-    breaks and nothing clips — proven in REAL headless Chrome, not the vm.
+  * THE ADAPTER still reads `checked` / `total` / `core` off the mission's own
+    `xo/verdict.json` (unchanged) — the report needs them. A verdict written
+    before S216 has counts but no impact, so it gets the counts and NO core.
+  * THE PILL carries the grade and nothing else, and reads as Number One's
+    review (`◈ NUMBER ONE · <grade>`); no coverage text is on its face. Proven
+    grade-only and column-fitting in REAL headless Chrome, not the vm.
   * THE TAB leads with WHY THIS GRADE after the score; the alternative reading
     sits beside it as an aside; each row shows its impact and its reason.
 
@@ -180,7 +183,7 @@ class TheAdapterCarriesTheAxes(unittest.TestCase):
 
 
 @unittest.skipIf(shutil.which("node") is None, "node not available")
-class ThePillCarriesBothAxes(unittest.TestCase):
+class ThePillCarriesTheGradeAlone(unittest.TestCase):
 
     def pill(self, **block):
         m = {"id": MID, "issue": 16, "stage": "verify", "title": "t",
@@ -190,27 +193,38 @@ class ThePillCarriesBothAxes(unittest.TestCase):
         self.assertEqual(1, len(pills))
         return pills[0]
 
-    def test_grade_checked_and_core_in_one_pill(self):
+    def test_the_pill_is_grade_only_even_with_axes_recorded(self):
+        # THE CHANGE (captain, this session): the pill carries the grade and
+        # nothing else, even when the block records checked/total/core. The
+        # coverage sentence used to sit on the pill's own face
+        # (`◈ MEDIUM The point of the mission worked · 11 of 14 checked`) and
+        # was the "too much information" he asked to remove. It is gone from
+        # the face; the counts live in the report. The old assertion required
+        # that sentence ON the pill — it now requires it OFF.
         p = self.pill(checked=11, total=14, core="met")
-        # S223: plain words, grade word alone in colour, sentence below it.
-        self.assertEqual("◈ MEDIUM The point of the mission worked · 11 of 14 checked",
-                         _all_text(p).strip())
-        self.assertEqual(1, len(_cls_of(p, " xo-axes ")))
-        self.assertNotIn("core", _all_text(p))
-        self.assertEqual(1, len(_cls_of(p, " xo-grade ")))
-        self.assertEqual("◈ MEDIUM", _cls_of(p, " xo-grade ")[0]["text"])
+        self.assertEqual("◈ NUMBER ONE · MEDIUM", _all_text(p).strip())
+        self.assertEqual([], _cls_of(p, " xo-axes "))
+        self.assertEqual([], _cls_of(p, " xo-grade "))
+        self.assertNotIn("checked", _all_text(p))
+        self.assertNotIn("point of the mission", _all_text(p))
 
-    def test_core_broken_and_unverified_read_as_such(self):
-        self.assertIn("The point of the mission didn't work",
-                      _all_text(self.pill(score="low", checked=4, total=4,
-                                          core="broken")))
-        self.assertIn("Couldn't check the point of the mission",
-                      _all_text(self.pill(score="low", checked=3, total=4,
-                                          core="unverified")))
+    def test_the_core_sentence_is_not_on_the_pill_face(self):
+        # It used to read "The point of the mission didn't work" / "Couldn't
+        # check the point of the mission" ON the pill; those move to the
+        # report. The pill is the grade alone.
+        broken = _all_text(self.pill(score="low", checked=4, total=4,
+                                     core="broken"))
+        self.assertEqual("◈ NUMBER ONE · LOW", broken.strip())
+        self.assertNotIn("The point of the mission didn't work", broken)
+        unver = _all_text(self.pill(score="low", checked=3, total=4,
+                                    core="unverified"))
+        self.assertEqual("◈ NUMBER ONE · LOW", unver.strip())
+        self.assertNotIn("Couldn't check the point of the mission", unver)
 
-    def test_an_old_verdict_shows_counts_but_asserts_no_core(self):
+    def test_an_old_verdict_shows_no_counts_on_the_pill_either(self):
         t = _all_text(self.pill(checked=3, total=5))
-        self.assertIn("3 of 5 checked", t)
+        self.assertEqual("◈ NUMBER ONE · MEDIUM", t.strip())
+        self.assertNotIn("3 of 5 checked", t)
         self.assertNotIn("point of the mission", t)
 
     def test_no_axes_keeps_the_old_pill_word_for_word(self):
@@ -454,25 +468,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
     card.appendChild(block);
     col.appendChild(card);
     host.appendChild(col);
-    var g = pill.querySelector(".xo-grade");
-    var gr = g.getBoundingClientRect(), pr = pill.getBoundingClientRect(),
+    var pr = pill.getBoundingClientRect(),
         cr = card.getBoundingClientRect(), lr = col.getBoundingClientRect();
-    var lh = parseFloat(getComputedStyle(g).lineHeight) || 16;
+    var lh = parseFloat(getComputedStyle(pill).lineHeight) || 16;
     out.push({colW: lr.width, pillRight: pr.right, cardRight: cr.right,
               cardInner: cr.right - parseFloat(getComputedStyle(card).paddingRight)
                          - parseFloat(getComputedStyle(card).borderRightWidth),
               pillScroll: pill.scrollWidth, pillClient: pill.clientWidth,
               cardScroll: card.scrollWidth, cardClient: card.clientWidth,
-              gradeH: gr.height, gradeLine: lh, gradeText: g.textContent,
-              text: pill.textContent,
-              // S223: COMPUTED styles — only the grade word is coloured; the
-              // sentence is body ink at body size, in sentence case.
-              gradeColor: getComputedStyle(g).color,
-              axesColor: getComputedStyle(pill.querySelector(".xo-axes")).color,
-              axesSize: parseFloat(getComputedStyle(pill.querySelector(".xo-axes")).fontSize),
-              axesCase: getComputedStyle(pill.querySelector(".xo-axes")).textTransform,
-              axesWeight: getComputedStyle(pill.querySelector(".xo-axes")).fontWeight,
-              ink: getComputedStyle(document.body).getPropertyValue("--lcars-text-bright").trim()});
+              pillH: pr.height, pillLine: lh,
+              text: pill.textContent});
   });
   document.title = "";
   var pre = document.createElement("pre");
@@ -488,9 +493,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 class ThePillFitsTheColumnInARealBrowser(unittest.TestCase):
     """REAL CHROME, REAL STYLESHEET. The vm harness knows nothing of layout
     (see test_board_boot_paints), and S214's D6 was a clip only a browser
-    could see."""
+    could see. The pill is now the grade alone, so it can never wrap a
+    sentence onto a second line — but it must still sit inside the column and
+    read as Number One's review, and the coverage text must NOT be on it."""
 
-    def test_the_widest_pill_fits_224px_and_the_grade_never_breaks(self):
+    def test_the_grade_only_pill_fits_224px_and_carries_no_axes(self):
         cases = [
             {"status": "engaged", "score": "medium", "checked": 11,
              "total": 14, "core": "unverified"},
@@ -532,19 +539,13 @@ class ThePillFitsTheColumnInARealBrowser(unittest.TestCase):
             self.assertLessEqual(r["pillRight"], r["cardInner"] + 0.5, r)
             self.assertLessEqual(r["pillScroll"], r["pillClient"] + 1, r)
             self.assertLessEqual(r["cardScroll"], r["cardClient"] + 1, r)
-            # The grade is one unbroken line.
-            self.assertLess(r["gradeH"], r["gradeLine"] * 1.6, r)
-            self.assertTrue(r["gradeText"].startswith("◈ "), r)
-            self.assertIn("checked", r["text"])
-            # S223 — plain words, never harness talk.
-            self.assertNotIn("core", r["text"])
-            self.assertIn("point of the mission", r["text"])
-            # S223 — ONLY the grade word is coloured: the sentence is the
-            # board's body ink (#e4eeff), at body size, not upper-cased.
-            self.assertEqual("rgb(228, 238, 255)", r["axesColor"], r)
-            self.assertNotEqual(r["gradeColor"], r["axesColor"], r)
-            self.assertGreaterEqual(r["axesSize"], 12, r)
-            self.assertEqual("none", r["axesCase"], r)
+            # The grade-only pill is one unbroken line.
+            self.assertLess(r["pillH"], r["pillLine"] * 1.6, r)
+            # It reads as Number One's review — and the coverage text the
+            # captain asked to remove is nowhere on it.
+            self.assertIn("◈ NUMBER ONE ·", r["text"])
+            self.assertNotIn("checked", r["text"])
+            self.assertNotIn("point of the mission", r["text"])
 
 
 if __name__ == "__main__":

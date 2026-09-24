@@ -2893,26 +2893,13 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   border-color:var(--lcars-amber);color:var(--lcars-amber)}
 .pill.xo-score.s-low{background:rgba(255,51,68,.16);
   border-color:var(--lcars-red);color:var(--lcars-red)}
-/* S216 — the two-axis pill: `◈ MEDIUM · checked 11 of 14 · core met`. The
-   grade never breaks; the axes wrap inside the pill onto the next line when
-   a 224px column cannot hold them (S214 D6 found the one-line card clipping). */
-.pill.xo-axes-pill{flex-wrap:wrap;white-space:normal;gap:0 4px;max-width:100%;
-  box-sizing:border-box}
-.pill.xo-axes-pill .xo-grade{white-space:nowrap}
-.pill.xo-axes-pill .xo-axes{font-weight:400;letter-spacing:.04em;min-width:0;
-  overflow-wrap:anywhere}
-/* S223 — THE SCORE LINE YOU CAN READ. The captain could not read "CHECKED 40
-   OF 79 · CORE UNVERIFIED": tiny, dim, red-on-red, upper-case harness talk.
-   Now only the GRADE WORD wears the colour; the sentence sits on its own line
-   below it in full-contrast body ink, body size, sentence case, plain words —
-   "Couldn't check the point of the mission · 40 of 79 checked". Two short
-   lines in a 224px column. */
-.pill.xo-axes-pill{display:flex;flex-direction:column;align-items:flex-start;
-  gap:3px;padding:6px 10px;border-radius:10px;border-width:2px}
-.pill.xo-axes-pill .xo-grade{font-size:13px;letter-spacing:.08em}
-.pill.xo-axes-pill .xo-axes{color:var(--lcars-text-bright);text-transform:none;
-  letter-spacing:0;font-family:var(--font-body,system-ui,sans-serif);
-  font-size:12px;line-height:1.4;font-weight:400}
+/* THE REVIEW PILL CARRIES THE GRADE ALONE (captain, this session). The
+   two-axis pill (`◈ MEDIUM · Couldn't check the point of the mission · 40 of
+   79 checked`) and the verdict line under it are gone from the card — the
+   grade word is the whole message, the meaning is on the tooltip, and the
+   counts and the why live in the report. The `.xo-score` rules above draw it;
+   there is no longer an `.xo-axes-pill` variant, because the pill never wraps
+   a sentence onto a second line. */
 
 /* THE STAND-DOWN. Red-outline — `.btn.danger`'s existing idiom, untouched —
    sat beside the controls it is handing back. */
