@@ -20,8 +20,15 @@
 # read as a clean upward win.
 #
 # RECORD, DO NOT INFER. The planner records which requirement each ticket
-# criterion serves (`serves`). xo-criteria.py uses that link; only where no
-# link exists does it fall back to text comparison, and it says so (`via`).
+# criterion serves (`serves`). xo-criteria.py fires the contradiction check
+# ONLY on a recorded, resolved link. There is NO text fallback: an unlinked
+# criterion is left unjudged (silence, not a guess), and the contract states
+# plainly how many ticket criteria carried no link so an unlinked plan reads as
+# "not checked", never as "clean". MEASURED 2026-09-24: on the first real
+# mission the text fallback touched (106 criteria) it produced 8 false
+# positives, all resolving to the longest requirement (prd-1) and all
+# downgrading a correct criterion from met to gap. Deleting the fallback is
+# LCARS's proven cure (S147, S156, S188): refuse to judge what you cannot name.
 #
 # Skill source under test:
 #   skills/lcars-xo/xo-criteria.py — the contract + the contradiction check.
@@ -122,7 +129,10 @@ check "B1. an agreeing ticket criterion yields NO contradiction" \
 check "B2. and nothing is marked contradictsRequirement" \
   "j '$mB/criteria.json' 'all(\"contradictsRequirement\" not in c for c in d[\"criteria\"])'"
 
-# ─── C. the fallback — no link, so a text comparison, PLAINLY LABELLED ────────
+# ─── C. NO LINK → NO GUESS: an unlinked criterion is left unjudged ───────────
+# The measured defect: a text fallback matched unlinked criteria to the longest
+# requirement and downgraded correct criteria. The cure is silence — and an
+# honest, visible count of how many criteria carried no link.
 mC="$TMPROOT/nolink"; mkdir -p "$mC"
 printf '%s' "$PRD" >"$mC/prd.md"
 cat >"$mC/plan.json" <<'P'
@@ -139,10 +149,12 @@ cat >"$mC/plan.json" <<'P'
 ]
 P
 "$PY" "$CRITERIA" "$mC" "$mC/criteria.json" >/dev/null
-check "C1. an unlinked contradiction is still caught" \
-  "j '$mC/criteria.json' 'len(d.get(\"contradictions\",[]))==1'"
-check "C2. and it says plainly it fell back to text comparison" \
-  "j '$mC/criteria.json' 'd[\"contradictions\"][0][\"via\"]==\"text\"'"
+check "C1. an unlinked absence-asserting criterion is NOT guessed into a contradiction" \
+  "j '$mC/criteria.json' 'len(d.get(\"contradictions\",[]))==0'"
+check "C2. the contract states plainly how many ticket criteria carried no link" \
+  "j '$mC/criteria.json' 'd.get(\"unlinkedTicketCriteria\")==1'"
+check "C3. a linked plan (case A) reports zero unlinked ticket criteria" \
+  "j '$mA/criteria.json' 'd.get(\"unlinkedTicketCriteria\")==0'"
 
 # ─── D. serves by SYNTHETIC ID resolves the same as by text ──────────────────
 mD="$TMPROOT/byid"; mkdir -p "$mD"

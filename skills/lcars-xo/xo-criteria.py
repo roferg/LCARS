@@ -233,32 +233,18 @@ def place_names(mission_dir):
 #
 # RECORD, DO NOT INFER. The planner records which requirement each ticket
 # criterion serves (`serves`, resolved to a `prd-N` id or the requirement's
-# verbatim text). Where the link resolves, the planner's declaration that the
-# two are about the SAME requirement is trusted — a served, affirmative
-# requirement plus an absence-asserting ticket criterion IS the contradiction,
-# with no re-derivation of subject identity from prose. Only where no link
-# resolves does this fall back to a text comparison, and it says so (`via`).
-# LCARS has lost sessions to code that reads back the captain's own wording;
-# the link path deliberately reads a field, not a sentence.
+# verbatim text). The contradiction check fires ONLY on a resolved link: the
+# planner's declaration that the two are about the SAME requirement is trusted —
+# a served, affirmative requirement plus an absence-asserting ticket criterion
+# IS the contradiction, with no re-derivation of subject identity from prose.
+# There is NO text fallback. An unlinked criterion is left UNJUDGED (silence,
+# not a guess); the contract reports how many ticket criteria carried no link so
+# an unlinked plan reads as "not checked", never as "clean". MEASURED
+# 2026-09-24: on the first real mission the text fallback touched (106 criteria)
+# it produced 8 false positives, all resolving to the longest requirement and
+# all downgrading a correct criterion from met to gap. Deleting it is LCARS's
+# proven cure (S147, S156, S188): refuse to judge what you cannot name.
 # ===========================================================================
-
-_STOPWORDS = {
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "on",
-    "in", "of", "to", "and", "or", "for", "with", "as", "at", "by", "it", "its",
-    "that", "this", "these", "those", "you", "your", "when", "then", "there",
-    "here", "so", "not", "no", "any", "all", "each", "every", "which", "what",
-}
-
-# Layout words so ubiquitous that sharing ONE of them is not evidence two
-# criteria are about the same thing. Used ONLY to keep the no-link text
-# fallback honest — the link path never consults it.
-_UBIQUITOUS = {
-    "page", "screen", "board", "app", "ui", "view", "panel", "section",
-    "component", "element", "display", "displayed", "shown", "show", "shows",
-    "render", "rendered", "renders", "visible", "appear", "appears",
-}
-
-# A criterion DENIES EXISTENCE / PRESENCE / APPEARANCE. Deliberately narrow: a
 # criterion that says something is "green, not red" denies a COLOUR, not the
 # thing's existence, and must not trip this. So a bare "not" is never enough —
 # the negation has to land on presence, appearance or existence.
@@ -285,12 +271,6 @@ def _asserts_absence(text):
     return any(r.search(t) for r in _ABSENCE_RES)
 
 
-def _words(text):
-    """Content words of a criterion — lowercased, punctuation gone, stops out."""
-    toks = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).split()
-    return {w for w in toks if w and w not in _STOPWORDS and len(w) > 1}
-
-
 def _norm(text):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).split())
 
@@ -313,9 +293,11 @@ def find_contradictions(criteria):
     """Ticket criteria that contradict the PRD requirement they serve.
 
     A contradiction is a plan (ticket) criterion that asserts the ABSENCE of
-    what an affirmative PRD requirement asks FOR. Returns (contradictions,
-    marks) where `marks` maps a ticket criterion id to the prd-id it
-    contradicts, so the caller can stamp the offending criterion.
+    what an affirmative PRD requirement asks FOR — fired ONLY on a resolved
+    `serves` link. Returns (contradictions, marks, unlinked) where `marks` maps
+    a ticket criterion id to the prd-id it contradicts, so the caller can stamp
+    the offending criterion, and `unlinked` counts the ticket criteria that
+    carried no resolvable link (left unjudged).
     """
     primaries = [c for c in criteria
                  if isinstance(c, dict) and c.get("primary") and c.get("text")]
@@ -329,32 +311,26 @@ def find_contradictions(criteria):
 
     contradictions = []
     marks = {}
+    unlinked = 0
     for c in criteria:
         if not isinstance(c, dict) or c.get("source") != "plan":
             continue
+        # An unlinked ticket criterion is one the planner named no requirement
+        # for. Counted so an unlinked plan reads as "not checked", never "clean".
+        target = _resolve_serves(c.get("serves"), primaries, by_id, by_norm)
+        linked = target is not None and target["id"] in aff_ids
+        if not linked:
+            unlinked += 1
         text = c.get("text") or ""
         if not _asserts_absence(text):
             continue
-        cwords = _words(text)
-        req = None
-        via = None
-        # THE LINK FIRST. A resolved, affirmative `serves` IS the subject
-        # identity — the planner declared these two are the same requirement —
-        # so no prose overlap is re-derived.
-        target = _resolve_serves(c.get("serves"), primaries, by_id, by_norm)
-        if target is not None and target["id"] in aff_ids:
-            req, via = target, "link"
-        else:
-            # NO LINK: fall back to a text comparison, and SAY SO. The absence
-            # must land on the same subject the requirement asks for — shared
-            # content words beyond the ubiquitous layout vocabulary.
-            for r in affirmative:
-                shared = cwords & _words(r["text"])
-                if shared and (shared - _UBIQUITOUS):
-                    req, via = r, "text"
-                    break
-        if req is None:
+        # THE LINK, AND ONLY THE LINK. A resolved, affirmative `serves` IS the
+        # subject identity — the planner declared these two are the same
+        # requirement — so no prose overlap is re-derived. No link, no judgement:
+        # silence, not a text guess (the measured false-positive class).
+        if not linked:
             continue
+        req = target
         marks[c["id"]] = req["id"]
         contradictions.append({
             "requirement": {"id": req["id"], "text": req["text"]},
@@ -362,9 +338,9 @@ def find_contradictions(criteria):
                                 "text": text},
             "direction": ("the ticket criterion requires the ABSENCE of what "
                           "requirement %s asks for" % req["id"]),
-            "via": via,
+            "via": "link",
         })
-    return contradictions, marks
+    return contradictions, marks, unlinked
 
 
 def main():
@@ -385,7 +361,7 @@ def main():
         except Exception:
             pass
 
-    contradictions, marks = find_contradictions(criteria)
+    contradictions, marks, unlinked = find_contradictions(criteria)
     for c in criteria:
         if isinstance(c, dict) and c.get("id") in marks:
             c["contradictsRequirement"] = marks[c["id"]]
@@ -398,15 +374,18 @@ def main():
         "pictures": pictures(mdir),
         "criteria": criteria,
         "contradictions": contradictions,
+        "unlinkedTicketCriteria": unlinked,
     }
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
-    print("%d criteria (%d primary), %d place names, %d contradiction%s" % (
+    print("%d criteria (%d primary), %d place names, %d contradiction%s, "
+          "%d ticket criteri%s carried no link (not checked)" % (
         len(criteria), sum(1 for c in criteria if c.get("primary")),
         len(doc["placeNames"]), len(contradictions),
-        "" if len(contradictions) == 1 else "s"))
+        "" if len(contradictions) == 1 else "s",
+        unlinked, "on" if unlinked == 1 else "a"))
     return 0
 
 
