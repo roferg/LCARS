@@ -1472,6 +1472,14 @@ def main():
 
     gaps_in = doc.get("gaps") if isinstance(doc.get("gaps"), list) else []
     notes = []
+    # RECONCILING THE RECORDS OF ONE LOOK (S226, Number One). The reviewer keeps
+    # several records of the same look — the walk, the probe/action pass, the
+    # verdict. Where two of them disagree the difference is written down HERE,
+    # by name, and surfaced in the verdict, rather than resolved silently in the
+    # build's favour by whichever record was most generous. RECORD, DO NOT
+    # INFER: every entry below is one producer's recorded field compared to
+    # another producer's recorded field — never a re-reading of finished prose.
+    reconciled = []
 
     # THE SAME FACT, DECLARED ONCE, IS ENOUGH (fix round 2, R2-1). The worker
     # declares a finding in TWO places — a ledger row and a gap entry — and on
@@ -1770,6 +1778,19 @@ def main():
     # halfway used to look like in a report.
     if walk:
         by_step = {str(st.get("key")): st for st in walk["steps"]}
+        # WHAT THE PROBE ALREADY REACHED, IN THIS SAME LOOK (S226 R4). Mission
+        # "Name your hero": the probe pressed `n`, opened the hero panel and
+        # photographed its validation bubble, while the walk — hunting for a
+        # button that was not there — called the SAME screen unreachable, and
+        # the grade came from the walk. A screen the probe stood on is not
+        # unreachable. The set is the URLs the observation pass RECORDED
+        # standing on (`screen`); the walk step RECORDS the URL it stood on
+        # (`urlBefore`/`urlAfter`). Two recorded URLs, compared — no prose read.
+        reached_screens = set()
+        for o in (observations or {}).get("observations") or []:
+            scr = str(o.get("screen") or "").strip()
+            if scr:
+                reached_screens.add(scr)
         for entry in ledger:
             row = contract_by_id.get(entry["id"]) or {}
             st = by_step.get(str(row.get("journeyStep") or ""))
@@ -1780,6 +1801,31 @@ def main():
             if not st or st.get("status") not in ("unreachable", "no-change"):
                 continue
             how = st.get("status")
+            # THE WALK MAY NOT CALL A SCREEN UNREACHABLE THAT THE PROBE REACHED
+            # (S226 R4). Only "unreachable" is a claim about arriving at all —
+            # "no-change" is a claim the action did nothing, which a probe
+            # standing on the screen does NOT contradict, so it is left alone.
+            if how == "unreachable" and entry["status"] == "met":
+                here = {str(st.get("urlBefore") or "").strip(),
+                        str(st.get("urlAfter") or "").strip()} - {""}
+                if here & reached_screens:
+                    hit = sorted(here & reached_screens)[0]
+                    notes.append(
+                        "%s: the walk called the journey step \"%s\" unreachable, "
+                        "but the probe reached that same screen (%s) in this look, "
+                        "so I am NOT downgrading it — the two records disagreed and "
+                        "the walk did not win by being the more generous"
+                        % (entry["id"], st.get("name") or st.get("key"), hit))
+                    reconciled.append({
+                        "id": entry["id"],
+                        "kind": "walk-overruled-by-probe",
+                        "step": st.get("name") or st.get("key"),
+                        "screen": hit,
+                        "walkSaid": "unreachable",
+                        "probeReached": True,
+                    })
+                    entry.setdefault("ledgerNote", "")
+                    continue
             if entry["status"] == "untested":
                 entry.setdefault("couldNotCheck", how)
                 continue
@@ -1868,6 +1914,35 @@ def main():
             e["source"] = src
         e["group"] = group_of(src)
         e["outcome"] = outcome_of(e)
+
+    # ─── S226 R2/R3: A PASS SAYS WHAT ESTABLISHED IT ─────────────────────────
+    # A criterion settled "worked" (status met) records WHICH record settled it
+    # and what that record actually did. RECORD, DO NOT INFER: each answer is
+    # read from a field a producer already stamped on the row — the tests'
+    # quoted line, the probe's `action`, or the bare fact that only a picture
+    # was cited — never from re-reading the note's prose. A pass that did no
+    # more than look at a screenshot is marked look-only; and because a passing
+    # row backed by nothing but a look is never legitimate on its own, every
+    # such row is also surfaced BY NAME so it is visible in the output.
+    passing_on_look_alone = []
+    for e in ledger:
+        if e["status"] != "met":
+            continue
+        ev = str(e.get("evidence") or "").strip().lower()
+        if ev == "tests" and str(e.get("testQuote") or "").strip():
+            e["settledBy"] = {"record": "tests",
+                              "did": str(e["testQuote"]).strip()}
+        elif str(e.get("action") or "").strip():
+            e["settledBy"] = {"record": "action", "lookedOnly": False,
+                              "did": str(e["action"]).strip()}
+        else:
+            did = "looked at a screenshot"
+            if e.get("shot"):
+                did += " (%s)" % str(e["shot"]).strip()
+            e["settledBy"] = {"record": "picture", "lookedOnly": True, "did": did}
+            passing_on_look_alone.append({"id": e["id"],
+                                          "text": e.get("text") or ""})
+
     by_group = {k: [e for e in ledger if e["group"] == k] for k in GROUP_ORDER}
 
     met = sum(1 for e in ledger if e["status"] == "met")
@@ -2380,6 +2455,17 @@ def main():
         out["polishFlag"] = polish_flag
     if notes:
         out["ledgerNotes"] = notes
+    # ─── S226: THE RECORDS THAT DISAGREED, AS DATA ───────────────────────────
+    # Where two records of one look disagreed, the difference is surfaced here
+    # by name — never resolved silently in the build's favour. `reconciled`
+    # lists the walk-said-unreachable rows the probe overruled by reaching the
+    # same screen; `passingOnLookAlone` names every worked row backed by
+    # nothing but a screenshot. Both are the same facts a surface would
+    # otherwise have to read back out of prose (S147/S156/S188/S212).
+    if reconciled:
+        out["reconciled"] = reconciled
+    if passing_on_look_alone:
+        out["passingOnLookAlone"] = passing_on_look_alone
     # STRUCTURED AS WELL AS SAID (S224 item 2). The escalation line is the
     # captain's sentence; this is the same facts as data, so a surface never
     # has to read meaning back out of that prose — the mistake S147, S156, S188

@@ -1400,6 +1400,107 @@ check "W6. CONTROL — …and then no row is accused of resting on one moment" \
   "! grep -q 'was read at one moment' '$WDIR/off/verdict.json'"
 
 
+# ==========================================================================
+echo
+echo "R. RECONCILE THE RECORDS BEFORE THE GRADE (Number One)"
+# The reviewer keeps several records of ONE look — the walk, the probe/action
+# pass, the verdict. Nothing reconciled them, and where they disagreed the most
+# generous set the grade. These reconcile them: a disagreement is written down
+# and surfaced, never resolved silently in the build's favour. RECORD, DO NOT
+# INFER — each assertion reads a field a producer wrote, compared to another
+# field a producer wrote.
+# ==========================================================================
+NDIR="$TMPROOT/reconcile"; mkdir -p "$NDIR"
+
+# --- R4: the walk must use what the probe/action pass already found --------
+# Mission "Name your hero", measured 2026-09-23. In ONE look the probe pressed
+# `n`, opened the hero panel and photographed its validation bubble; the WALK,
+# separately, hunted for a button, failed, and called the screen unreachable.
+# The grade came from the walk — a working screen graded as if it did not exist.
+cat >"$NDIR/criteria.json" <<'NC'
+{"criteria": [
+  {"id": "hero", "text": "the hero naming screen", "primary": true,
+   "source": "prd", "journeyStep": "j-hero"}
+], "hasDrawing": false}
+NC
+cat >"$NDIR/walk.json" <<'NW'
+{"steps": [
+  {"key": "j-hero", "do": "click", "status": "unreachable",
+   "couldNotCheck": "unreachable", "name": "click \"Save hero\"",
+   "onScreen": "a name field and an n hint",
+   "urlBefore": "http://localhost:1/x#hero"}
+]}
+NW
+cat >"$NDIR/observations.json" <<'NO'
+{"thresholds": {}, "observations": [
+  {"says": "the hero name field shows a validation bubble reading give your hero a name",
+   "kind": "reached", "screen": "http://localhost:1/x#hero", "shot": "shot-hero"}
+]}
+NO
+N_LEDGER='{"score":"high","summary":"The hero screen names a hero.","criteria":[{"id":"hero","text":"the hero naming screen","status":"met","shot":"shot-hero","evidence":"picture","action":"pressed n, opened the hero panel, read the validation bubble","note":"the panel opened and validated"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+
+nscore() { # <outdir> <ledger> <observations>
+  mkdir -p "$1"; printf '%s\n' "$2" >"$1/in.json"
+  "$PY" "$SCOREPY" "$1/in.json" "$NDIR/criteria.json" "$1/verdict.json" \
+        "$3" "" "" "" "$NDIR/walk.json" "" "" "" >"$1/out.tsv" 2>"$1/err.txt"
+}
+nscore "$NDIR/reached" "$N_LEDGER" "$NDIR/observations.json"
+
+check "R4. the walk said unreachable but the probe reached that screen — NOT downgraded" \
+  "[ \"\$(jget '$NDIR/reached/verdict.json' '[c for c in d[\"criteria\"] if c[\"id\"]==\"hero\"][0][\"status\"]')\" = met ]"
+check "R4. …and the two records disagreeing is written down, by name" \
+  "\"$PY\" -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get(\"reconciled\") or []; sys.exit(0 if any(x[\"id\"]==\"hero\" and x.get(\"kind\")==\"walk-overruled-by-probe\" for x in r) else 1)' '$NDIR/reached/verdict.json'"
+
+# CONTROL: with the probe standing on a DIFFERENT screen, nothing contradicts
+# the walk, so its unreachable still stands — the existing guard is untouched.
+cat >"$NDIR/obs-elsewhere.json" <<'NE'
+{"thresholds": {}, "observations": [
+  {"says": "the landing page shows a start button", "kind": "layout",
+   "screen": "http://localhost:1/x#landing"}
+]}
+NE
+nscore "$NDIR/elsewhere" "$N_LEDGER" "$NDIR/obs-elsewhere.json"
+check "R4. CONTROL — no probe on that screen, so the walk's unreachable still downgrades it" \
+  "[ \"\$(jget '$NDIR/elsewhere/verdict.json' '[c for c in d[\"criteria\"] if c[\"id\"]==\"hero\"][0][\"status\"]')\" = untested ]"
+
+# --- R3: a pass records WHICH record settled it, and what that record did ---
+cat >"$NDIR/crit2.json" <<'NC2'
+{"criteria": [
+  {"id": "bytest", "text": "batches survive a restart", "primary": true, "source": "prd"},
+  {"id": "bylook", "text": "the list renders", "primary": true, "source": "prd"}
+], "hasDrawing": false}
+NC2
+cat >"$NDIR/tests.json" <<'NT'
+{"ran": true, "outcome": "passed", "command": "npm test", "exitCode": 0,
+ "durationMs": 10, "outputTail": "PASS batches survive a restart\nTests: 42 passed",
+ "tailCapBytes": 8000, "truncated": false}
+NT
+# bytest is settled by a named test line; bylook by a bare screenshot, no action.
+L2='{"score":"high","summary":"looked and tested.","criteria":[{"id":"bytest","text":"restart","status":"met","evidence":"tests","testQuote":"PASS batches survive a restart","note":"green"},{"id":"bylook","text":"the list renders","status":"met","shot":"shot-01","evidence":"picture","note":"saw the list"}],"gaps":[],"alsoChecked":[],"escalations":[]}'
+mkdir -p "$NDIR/s3"; printf '%s\n' "$L2" >"$NDIR/s3/in.json"
+"$PY" "$SCOREPY" "$NDIR/s3/in.json" "$NDIR/crit2.json" "$NDIR/s3/verdict.json" \
+      "" "$NDIR/tests.json" >"$NDIR/s3/out.tsv" 2>"$NDIR/s3/err.txt"
+
+check "R3. a pass settled by the tests records that, and the line that did it" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+e=[c for c in d[\"criteria\"] if c[\"id\"]==\"bytest\"][0]
+sb=e.get(\"settledBy\") or {}
+sys.exit(0 if sb.get(\"record\")==\"tests\" and \"batches survive a restart\" in (sb.get(\"did\") or \"\") else 1)' '$NDIR/s3/verdict.json'"
+check "R3. a pass that did no more than look at a screenshot is marked look-only" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+e=[c for c in d[\"criteria\"] if c[\"id\"]==\"bylook\"][0]
+sb=e.get(\"settledBy\") or {}
+sys.exit(0 if sb.get(\"record\")==\"picture\" and sb.get(\"lookedOnly\") is True else 1)' '$NDIR/s3/verdict.json'"
+
+# --- R2: the illegitimate combination is visible in the output, by name ----
+check "R2. a passing row backed by nothing but a screenshot is listed, by name" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+p=d.get(\"passingOnLookAlone\") or []
+sys.exit(0 if any(x[\"id\"]==\"bylook\" for x in p) and all(x[\"id\"]!=\"bytest\" for x in p) else 1)' '$NDIR/s3/verdict.json'"
+
 
 # ==========================================================================
 echo
