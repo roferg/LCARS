@@ -1685,6 +1685,135 @@ check "K'.4 an unstamped criterion carries no kind key (additive invariant)" \
 
 
 # ==========================================================================
+echo "L. COVERAGE HOLDS A GRADED RAIL BACK (captain's ruling, 2026-09-24)"
+# THE MEASURED DEFECT, on lcars-20260921-007-8cb0: the drawing rail read HIGH
+# under `all-worked` having checked only 8 of 14 of its own items (57%), and
+# `all-worked` is blind to how much went unchecked. The captain: "Unchecked
+# must pull the grade down" — on the two GRADED rails (person, drawing) — but
+# not to LOW for a working, good-looking build.
+#
+# THE THRESHOLD, STATED AND VISIBLE: a graded rail must have ACTUALLY CHECKED
+# (worked or didn't-work) at least 80% of its own items to read HIGH. Between
+# the half-checked floor (50%) and 80%, with nothing failed, it is HELD BACK
+# one notch to MEDIUM, and the words say the threshold and how much went
+# unchecked. Coverage only ever LOWERS a grade; didn't-work still dominates.
+# ==========================================================================
+LDIR="$TMPROOT/coverage"; mkdir -p "$LDIR"
+
+# covbuild <outdir> <source> <n-worked> <n-unchecked> — a graded rail with
+# n-worked looks-questions settled by a picture and n-unchecked rows nobody
+# could reach (unreachable). hasDrawing follows the source.
+covbuild() {
+  local out="$1" src="$2" nw="$3" nu="$4"
+  mkdir -p "$out"
+  "$PY" - "$out" "$src" "$nw" "$nu" <<'PY'
+import json, sys
+out, src, nw, nu = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+crit, led = [], []
+for i in range(nw):
+    cid = "w%d" % i
+    crit.append({"id": cid, "text": "row %d looks right" % i, "primary": True,
+                 "source": src, "kind": "looks"})
+    led.append({"id": cid, "text": "row %d looks right" % i, "status": "met",
+                "shot": "s%d" % i, "evidence": "picture", "note": "saw it"})
+for i in range(nu):
+    cid = "u%d" % i
+    crit.append({"id": cid, "text": "row %d unreachable" % i, "primary": True,
+                 "source": src, "kind": "looks"})
+    led.append({"id": cid, "text": "row %d unreachable" % i, "status": "untested",
+                "evidence": "none", "couldNotCheck": "unreachable",
+                "note": "I never got to this screen"})
+json.dump({"criteria": crit, "hasDrawing": src == "drawing"},
+          open(out + "/criteria.json", "w"))
+json.dump({"score": "high", "summary": "all present", "criteria": led,
+           "gaps": [], "alsoChecked": [], "escalations": []},
+          open(out + "/in.json", "w"))
+PY
+  "$PY" "$SCOREPY" "$out/in.json" "$out/criteria.json" "$out/verdict.json" \
+        >"$out/out.tsv" 2>"$out/err.txt"
+}
+
+# --- L1. the measured defect: a graded rail at 8/14 (57%) is NOT HIGH --------
+covbuild "$LDIR/p57" prd 8 6
+check "L1. a graded person rail at 8 of 14 checked does NOT read HIGH" \
+  "[ \"\$(jget '$LDIR/p57/verdict.json' 'd[\"score\"]')\" != high ]"
+check "L1. …it is held back to MEDIUM, not slammed to LOW (nothing failed)" \
+  "[ \"\$(jget '$LDIR/p57/verdict.json' 'd[\"score\"]')\" = medium ]"
+check "L1. …recorded by name as the coverage rule on the headline group" \
+  "[ \"\$(jget '$LDIR/p57/verdict.json' 'd[\"groups\"][\"person\"][\"rule\"]')\" = held-back-coverage ]"
+
+# --- L2. THE THRESHOLD IS VISIBLE IN THE OUTPUT, not inferred ----------------
+check "L2. the 80% coverage floor is a recorded number on the graded group" \
+  "[ \"\$(jget '$LDIR/p57/verdict.json' 'd[\"groups\"][\"person\"][\"coverageFloorPct\"]')\" = 80 ]"
+check "L2. …and the group carries the coverage it actually reached" \
+  "[ \"\$(jget '$LDIR/p57/verdict.json' 'd[\"groups\"][\"person\"][\"coveragePct\"]')\" = 57 ]"
+
+# --- L3. the words a person reads say WHAT HAPPENED, and how much ------------
+check "L3. the report says the grade was held back for coverage" \
+  "grep -qi 'held back' '$LDIR/p57/report.md'"
+check "L3. …and names the 80% threshold that was applied" \
+  "grep -q '80%' '$LDIR/p57/report.md'"
+check "L3. …and says how much went unchecked (6 of 14)" \
+  "grep -q '6 of 14' '$LDIR/p57/report.md'"
+
+# --- L4. CONTROL (a): full coverage, all worked, still reads HIGH ------------
+# Without this the cure could silently lower every grade — the exact thing the
+# threshold must NOT do.
+covbuild "$LDIR/full" prd 6 0
+check "L4. CONTROL(a) a graded rail at full coverage, all worked, reads HIGH" \
+  "[ \"\$(jget '$LDIR/full/verdict.json' 'd[\"score\"]')\" = high ]"
+check "L4. CONTROL(a) …by all-worked, proving coverage did not lower every grade" \
+  "[ \"\$(jget '$LDIR/full/verdict.json' 'd[\"groups\"][\"person\"][\"rule\"]')\" = all-worked ]"
+
+# A graded rail JUST AT the 80% floor (4 of 5) still reads HIGH — the floor is
+# inclusive, so a build that cleared it is not held back.
+covbuild "$LDIR/at80" prd 4 1
+check "L4. CONTROL(a) …a rail exactly at the 80% floor still reads HIGH" \
+  "[ \"\$(jget '$LDIR/at80/verdict.json' 'd[\"score\"]')\" = high ]"
+
+# --- L5. CONTROL (b): the contract rail still carries NO grade ---------------
+covbuild "$LDIR/contract" plan 4 2
+check "L5. CONTROL(b) the contract rail carries no grade key" \
+  "[ -z \"\$(jget '$LDIR/contract/verdict.json' 'd[\"groups\"][\"contract\"].get(\"grade\")')\" ]"
+check "L5. CONTROL(b) …its kind stays coverage, never graded" \
+  "[ \"\$(jget '$LDIR/contract/verdict.json' 'd[\"groups\"][\"contract\"][\"kind\"]')\" = coverage ]"
+check "L5. CONTROL(b) …and its aside still says it is not a grade" \
+  "jget '$LDIR/contract/verdict.json' 'd[\"groups\"][\"contract\"][\"aside\"]' | grep -qi 'not a grade'"
+check "L5. CONTROL(b) …the contract rail carries NO coverage floor (it is not graded)" \
+  "[ -z \"\$(jget '$LDIR/contract/verdict.json' 'd[\"groups\"][\"contract\"].get(\"coverageFloorPct\")')\" ]"
+
+# --- L6. didn't-work still dominates: coverage never rescues a failure -------
+# A thin rail (60% checked) whose one checked high FAILED is LOW for the
+# failure — never held-back for coverage, never rescued by good coverage.
+cat >"$LDIR/domcrit.json" <<'JC'
+{"criteria":[
+ {"id":"g1","text":"the point of the mission","primary":true,"source":"prd","impact":"high"},
+ {"id":"m1","text":"row one","primary":true,"source":"prd","kind":"looks"},
+ {"id":"m2","text":"row two","primary":true,"source":"prd","kind":"looks"},
+ {"id":"u1","text":"row three unreachable","primary":true,"source":"prd","kind":"looks"},
+ {"id":"u2","text":"row four unreachable","primary":true,"source":"prd","kind":"looks"}
+],"hasDrawing":false}
+JC
+DOM='{"score":"high","summary":"x","criteria":[{"id":"g1","text":"the point of the mission","impact":"high","status":"gap","shot":"s","evidence":"picture","note":"it did not work"},{"id":"m1","text":"row one","status":"met","shot":"s","evidence":"picture","note":"saw"},{"id":"m2","text":"row two","status":"met","shot":"s","evidence":"picture","note":"saw"},{"id":"u1","text":"row three unreachable","status":"untested","evidence":"none","couldNotCheck":"unreachable","note":"nope"},{"id":"u2","text":"row four unreachable","status":"untested","evidence":"none","couldNotCheck":"unreachable","note":"nope"}],"gaps":[]}'
+kscore "$LDIR/dom" "$LDIR/domcrit.json" "$DOM"
+check "L6. a real failure dominates coverage: a thin rail with a gap is LOW" \
+  "[ \"\$(jget '$LDIR/dom/verdict.json' 'd[\"score\"]')\" = low ]"
+check "L6. …LOW for the broken point, not held-back for coverage" \
+  "[ \"\$(jget '$LDIR/dom/verdict.json' 'd[\"groups\"][\"person\"][\"rule\"]')\" = high-broken ]"
+
+# --- L7. the drawing rail, held back on its OWN line, says so ----------------
+# The drawing group is graded but never the headline; its held-back grade and
+# reason must show on its own three-questions line, not only in the headline.
+covbuild "$LDIR/draw" drawing 8 6
+check "L7. a held-back drawing rail reads MEDIUM on its own line" \
+  "[ \"\$(jget '$LDIR/draw/verdict.json' 'd[\"groups\"][\"drawing\"][\"grade\"]')\" = medium ]"
+check "L7. …by the same coverage rule, recorded by name" \
+  "[ \"\$(jget '$LDIR/draw/verdict.json' 'd[\"groups\"][\"drawing\"][\"rule\"]')\" = held-back-coverage ]"
+check "L7. …and the report's drawing line says it was held back for coverage" \
+  "grep -qi 'held back' '$LDIR/draw/report.md'"
+
+
+# ==========================================================================
 echo
 printf 'lcars xo-evidence: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

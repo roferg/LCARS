@@ -625,6 +625,26 @@ COULD_NOT_CHECK = ("unreachable", "unobservable")
 OUTCOME_WORD = {"met": "worked", "gap": "didn't", "untested": "couldn't check"}
 POLISH_PILE = 5
 
+# ─── THE COVERAGE FLOOR ON A GRADED RAIL (captain's ruling, 2026-09-24) ──────
+#
+# THE MEASURED DEFECT, on lcars-20260921-007-8cb0. `all-worked` asks only
+# whether anything FAILED and is blind to how much was never checked, so the
+# drawing rail read HIGH having checked 8 of 14 of its own items (57%). The
+# captain's own policy — "HIGH because everything I could check worked" — is
+# coherent at 95% coverage and indefensible at 57%. His ruling: unchecked must
+# pull the grade down on the two GRADED rails (person, drawing), but a working,
+# good-looking build must not be dragged to LOW for it.
+#
+# THE THRESHOLD, STATED. A graded rail must have ACTUALLY CHECKED (worked or
+# didn't-work — the two "couldn't" outcomes are not checks) at least 80% of its
+# own items to read HIGH. Between the half-checked floor (50%, `too-little-
+# checked` → LOW) and this floor, with nothing failed, the rail is HELD BACK
+# one notch to MEDIUM. Coverage only ever LOWERS a grade; a real failure
+# (`high-broken`, `medium-open`) fires first and always dominates it. The
+# contract rail is `kind: "coverage"` and is NEVER graded, so this never
+# touches it.
+HIGH_COVERAGE_PCT = 80
+
 
 # ─── S225 CHANGE 01: THREE GROUPS, NOT ONE GRADE ─────────────────────────────
 #
@@ -841,6 +861,9 @@ def derive_grade(ledger):
          "lowOpen": [e for e in by["low"] if e["status"] != "met"]}
     checked = sum(1 for e in ledger if e["status"] in ("met", "gap"))
     highs_checked = sum(1 for e in by["high"] if e["status"] in ("met", "gap"))
+    # The 80% coverage floor, as a row COUNT off the recorded total — a graded
+    # group reads HIGH only if it checked at least this many of its own rows.
+    coverage_needed = (HIGH_COVERAGE_PCT * len(ledger) + 99) // 100
     if not ledger:
         g.update(score="low", rule="nothing-listed")
     elif g["highGap"]:
@@ -865,6 +888,17 @@ def derive_grade(ledger):
         # core stays `unverified` below, and the rows we could not check are
         # listed as OURS to fix, never counted against him.
         g.update(score="low", rule="too-little-checked")
+    elif checked < coverage_needed:
+        # THE 80% COVERAGE FLOOR (captain's ruling, 2026-09-24). Above the
+        # half-checked floor but below 80% actually checked, with nothing
+        # failed: the rail worked everywhere it was looked at, but too much of
+        # it went unlooked-at to certify. It is HELD BACK one notch to MEDIUM —
+        # not LOW: no row here didn't work, so it is not a doubt about the
+        # build, it is a doubt about how much of the build we reached. The core
+        # reads `unverified` below (there is an unchecked high), and the words
+        # name the floor and the count. `didntWork` fired above and always wins;
+        # coverage can only lower a grade, never raise one.
+        g.update(score="medium", rule="held-back-coverage")
     else:
         g.update(score="high", rule="all-worked")
     # THE CORE — the point of the mission, as its own fact beside the grade.
@@ -879,6 +913,11 @@ def derive_grade(ledger):
         g["core"] = ""
     # Counts the floor and its reasons read (additive; older readers ignore).
     g["checked"], g["total"] = checked, len(ledger)
+    # THE THRESHOLD, MADE VISIBLE. The 80% floor that was applied and the
+    # coverage this group actually reached, both as recorded numbers a person
+    # can read, so the rule that held a grade back is on the page, not inferred.
+    g["coverageFloorPct"] = HIGH_COVERAGE_PCT
+    g["coveragePct"] = int(round(100 * checked / len(ledger))) if ledger else 0
     return g
 
 
@@ -2168,10 +2207,14 @@ def main():
                 # and an empty list is still an answer ("nothing here is
                 # vouched for"), which is the rule that fires.
                 b["grade"], b["rule"] = grade["score"], grade["rule"]
+                b["coverageFloorPct"] = grade["coverageFloorPct"]
+                b["coveragePct"] = grade["coveragePct"]
                 b["isHeadline"] = True
             elif rows:
                 g = derive_grade(rows)
                 b["grade"], b["rule"] = g["score"], g["rule"]
+                b["coverageFloorPct"] = g["coverageFloorPct"]
+                b["coveragePct"] = g["coveragePct"]
             # A GROUP WITH NOTHING ON IT IS NOT A LOW ONE. A mission with no
             # drawing has no drawing line; grading its empty list would print
             # "Does it look like your drawing? — LOW" at a captain who never
@@ -2310,6 +2353,21 @@ def main():
                    "real outcome — so this is not a grade, it is a gap in my "
                    "checking; nothing here is a fault in your build"
                    % (grade["checked"], grade["total"]))
+    elif grade["rule"] == "held-back-coverage":
+        # HELD BACK, NOT MARKED DOWN. Everything checked worked; the grade is
+        # one notch below HIGH only because too much went unchecked to certify.
+        # The words name the floor and the count so the rule is on the page.
+        _un = grade["total"] - grade["checked"]
+        why = ("held back to MEDIUM: everything I could check worked, but I only "
+               "checked %d of %d — below the %d%% a HIGH needs — so %d of %d went "
+               "unchecked." % (grade["checked"], grade["total"],
+                               grade["coverageFloorPct"], _un, grade["total"]))
+        meaning = ("Everything I could check worked, but the grade is held back "
+                   "to MEDIUM: only %d of %d were checked, below the %d%% a HIGH "
+                   "needs, so %d of %d went unchecked — that is a gap in my "
+                   "checking, not a fault in your build"
+                   % (grade["checked"], grade["total"], grade["coverageFloorPct"],
+                      _un, grade["total"]))
     elif score == "medium":
         # What did not work and what could not be checked are said apart, so a
         # MEDIUM that rests on a blind spot never reads as a clean bill.
@@ -2409,6 +2467,17 @@ def main():
                                "rows got a real outcome, and a grade needs more "
                                "than half; nothing here is a fault in your build"
                                % (grade["checked"], grade["total"])),
+        # THE 80% COVERAGE FLOOR (captain's ruling, 2026-09-24). Everything
+        # checked worked; the grade is held back one notch only because too
+        # much went unchecked to certify — the floor and the count are named.
+        "held-back-coverage": ("everything I could check worked, but I checked "
+                               "only %d of %d — below the %d%% a HIGH needs — so "
+                               "the grade is held back to MEDIUM; %d of %d went "
+                               "unchecked, and that is a gap in my checking, not "
+                               "a fault in your build"
+                               % (grade["checked"], grade["total"],
+                                  grade["coverageFloorPct"],
+                                  grade["total"] - grade["checked"], grade["total"])),
         # S225 — MEDIUM now fires on a medium that DIDN'T WORK and nothing
         # else. A medium nobody could check no longer moves the grade, so this
         # sentence no longer offers it as a reason (it is still said, in the
@@ -2669,9 +2738,21 @@ def main():
             for k in shown:
                 b = groups[k]
                 if b["kind"] == "graded":
-                    w("- **%s** — **%s**. %d on this list: %s. *%s*\n"
+                    # HELD BACK FOR COVERAGE, SAID ON THE RAIL'S OWN LINE. So a
+                    # graded rail below the headline (the drawing) carries the
+                    # rule that held it back, the floor, and the count — never
+                    # only in the headline, which reads a different rail.
+                    held = ""
+                    if b.get("rule") == "held-back-coverage":
+                        held = (" Held back for coverage: only %d of %d checked, "
+                                "below the %d%% a HIGH needs, so %d of %d went "
+                                "unchecked."
+                                % (b["worked"] + b["didntWork"], b["total"],
+                                   b["coverageFloorPct"], b["untested"], b["total"]))
+                    w("- **%s** — **%s**. %d on this list: %s.%s *%s*\n"
                       % (b["question"], b["grade"].upper(), b["total"],
-                         _tally(b) or "nothing was settled either way", b["aside"]))
+                         _tally(b) or "nothing was settled either way",
+                         held, b["aside"]))
                 else:
                     # A ticket criterion SEEN TO FAIL is still a fault, and it
                     # is said here — it is simply not graded here (S225).
