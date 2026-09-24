@@ -1771,7 +1771,39 @@ def main():
             entry.pop("shot", None)
             entry.pop("testQuote", None)
 
-    # THE UNWALKED-STEP GUARD (S220 part F). A journey step whose control was
+    # THE TICKET-CONTRADICTION GUARD (Number One, 2026-09-24). NEVER LET AN
+    # OMISSION CERTIFY ITSELF. xo-criteria.py marks a ticket (plan) criterion
+    # `contradictsRequirement` when it asserts the ABSENCE of what an
+    # affirmative PRD requirement asks FOR — decided before the look, from the
+    # plan's own recorded `serves` link. The measured defect was exactly this
+    # criterion rated MET: the reviewer saw the counter absent, the ticket line
+    # asked for it to be absent, and the omission the PRD faults was blessed as
+    # correct. A criterion that contradicts the requirement it serves may not
+    # read as a clean win. It is overruled to a gap and NAMED — which ticket
+    # criterion, which requirement, which direction — so the captain sees the
+    # disagreement instead of a covered contract. (Plan criteria are the
+    # non-grading CONTRACT group, so this never lifts the grade on its own; the
+    # point is that it can no longer be laundered into "met" either.)
+    for entry in ledger:
+        row = contract_by_id.get(entry["id"]) or {}
+        req = row.get("contradictsRequirement")
+        if not req:
+            continue
+        req_text = str((contract_by_id.get(req) or {}).get("text") or req)
+        notes.append(
+            "%s requires the ABSENCE of what requirement %s (%s) asks for — a "
+            "ticket criterion cannot certify the omission of a stated "
+            "requirement, so I am not counting it as met" % (
+                entry["id"], req, clip(req_text, 60)))
+        if entry["status"] == "met":
+            entry["status"] = "gap"
+            entry["note"] = ("this criterion contradicts requirement %s, which "
+                             "asks for the very thing it requires to be absent" % req)
+            entry["evidence"] = "none"
+            entry.pop("shot", None)
+            entry.pop("testQuote", None)
+
+
     # not on the screen was NOT TAKEN, and a step nobody took cannot have
     # worked. It is named — "couldn't check (unreachable)" about THIS step —
     # rather than skipped silently, which is what a walk that quietly stopped

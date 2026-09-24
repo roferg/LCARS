@@ -125,6 +125,19 @@ run_plan_save "$repo" "$pf"
   && ok "empty inline acceptanceCriteria rejected" \
   || bad "empty inline acceptanceCriteria rejected (rc=$RC: $OUT)"
 
+# --- case 4b: an OBJECT criterion carrying `serves` advances (no-mockup) -----
+# The planner records which PRD requirement a ticket criterion delivers so the
+# contract can cross-check it (see stages/plan.md, xo-criteria.py). `serves` is
+# additive — it must not trip the validator on a Mission with no mockup.
+repo="$(new_mission)"; pf="$repo/serves.json"
+ticket '    "acceptanceCriteria": [
+      {"text": "a live counter updates as items change", "serves": "a live counter shows the number of items"}
+    ],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "an object criterion with serves advances" \
+  || bad "an object criterion with serves advances (rc=$RC: $OUT)"
+
 # ===========================================================================
 # S169 fix round 2 — THE TICKETS MUST CARRY THE MOCKUP
 #

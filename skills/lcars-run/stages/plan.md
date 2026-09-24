@@ -35,6 +35,34 @@ with their own eyes at the Verify stage. Mention the deferred judgment in the
 ticket's `description` (e.g. "visual unobtrusiveness is judged at Verify") so
 nothing silently disappears.
 
+**A ticket criterion may NOT contradict the requirement it delivers.** A
+criterion that asserts the ABSENCE of what a PRD requirement asks FOR — "no
+counter is displayed", "the badge never appears" for a PRD that asks for the
+counter or the badge — is a contradiction, and a plan that carries one is
+rejected downstream. If the PRD both asks for a thing and (elsewhere) says not
+to build it, that conflict is resolved at Align/Validate, not laundered into a
+ticket criterion that certifies the omission as correct. Never write a
+criterion that requires something the PRD wants to be absent.
+
+**Record which requirement each criterion delivers — `serves`.** So the
+contract can cross-check a ticket criterion against the requirement it is
+supposed to deliver (instead of guessing from prose later), record the link at
+planning time. When a criterion delivers a specific PRD acceptance criterion,
+write that criterion as an OBJECT carrying its text and a `serves` field naming
+the PRD requirement — its verbatim acceptance-criterion line is the safest
+reference:
+
+```json
+"acceptanceCriteria": [
+  {"text": "a live counter updates as items change", "serves": "a live counter shows the number of items"}
+]
+```
+
+`serves` is additive: a criterion that delivers no single PRD line (pure
+plumbing, a test-hygiene rule) stays a plain string. Recording the link is what
+lets the contract catch a ticket criterion that has drifted from its
+requirement — so record it wherever a criterion maps to a stated requirement.
+
 ## Slicing: cohesion first, size second
 
 **Slice on behavioral seams, not on a line count.** The primary rule is
