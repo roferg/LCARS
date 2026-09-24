@@ -666,5 +666,52 @@ check "F · with an empty walk the contract is unchanged (no clicks, no rows)" \
    $PY '$PARTS' touched --walk '$T/empty-walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/criteria3.json' >/dev/null 2>&1; \
    $PY -c \"import json,sys;a=json.load(open('$T/criteria.json'));b=json.load(open('$T/criteria3.json'));sys.exit(0 if a['criteria']==b['criteria'] else 1)\""
 
+printf '\n\033[1mG · effort is visible: the pass records what it CHECKED, not only what it faulted\033[0m\n'
+# THE CAPTAIN'S SECOND BUG. On five of six live runs this pass ran, examined
+# every control the walk clicked, and filed nothing — because nothing was
+# wrong. Correct, and completely invisible: "0 requirement(s) added" reads
+# identically whether it looked at six controls that were all fine or never
+# looked at a control at all. The cure is the same as the walk's `attempted N
+# of M`: record how many controls it TOUCHED (clicked), how many of those it
+# could EXAMINE, how many it FAULTED, and — the honest third number — how many
+# it clicked but COULD NOT examine (missing from the inventory, or no box). The
+# numbers are DATA on the contract (touchedCheck), so a report can show them;
+# no rows are manufactured to make a count look better.
+gq() { "$PY" -c "import json,sys;d=json.load(open(sys.argv[2]));print(eval(sys.argv[1],{'d':d}))" "$1" "$2"; }
+# G uses the SAME 4-click run written into criteria2.json above: the walk
+# clicked Continue (clean), Back to builder (faulted), Log the tide reading
+# (faulted) and Save all readings now (clean). All four are in the inventory
+# with a box, so: clicked 4, examined 4, faulted 2, couldNotExamine 0.
+check "G · the contract carries a touchedCheck tally" \
+  "gq 'isinstance(d.get(\"touchedCheck\"),dict)' '$T/criteria2.json' | grep -q True"
+check "G · clicked counts every control the walk touched (4)" \
+  "gq 'd[\"touchedCheck\"][\"clicked\"]' '$T/criteria2.json' | grep -qx 4"
+check "G · examined counts the ones it could measure (4)" \
+  "gq 'd[\"touchedCheck\"][\"examined\"]' '$T/criteria2.json' | grep -qx 4"
+check "G · faulted counts only the ones with a fault (2), and equals the rows filed" \
+  "gq 'd[\"touchedCheck\"][\"faulted\"]==2 and d[\"touchedCheck\"][\"faulted\"]==len([c for c in d[\"criteria\"] if c.get(\"source\")==\"touched\"])' '$T/criteria2.json' | grep -q True"
+check "G · couldNotExamine is 0 when every clicked control is in the inventory" \
+  "gq 'd[\"touchedCheck\"][\"couldNotExamine\"]' '$T/criteria2.json' | grep -qx 0"
+check "G · 'all fine' is now sayable: examined>0 with faulted 0 and zero rows" \
+  "$PY '$PARTS' touched --walk '$T/clean-walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/cleanchk.json' >/dev/null 2>&1 || true; \
+   printf '%s' '{\"entry\":null,\"steps\":[{\"key\":\"c1\",\"do\":\"click\",\"match\":[\"Continue\"],\"matched\":\"Continue\",\"clicked\":true,\"status\":\"done\",\"urlBefore\":\"http://127.0.0.1:5173/#one\"}]}' >'$T/clean-walk.json'; \
+   $PY '$PARTS' touched --walk '$T/clean-walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/cleanchk.json' >/dev/null 2>&1; \
+   gq 'd[\"touchedCheck\"][\"clicked\"]==1 and d[\"touchedCheck\"][\"examined\"]==1 and d[\"touchedCheck\"][\"faulted\"]==0 and len([c for c in d[\"criteria\"] if c.get(\"source\")==\"touched\"])==0' '$T/cleanchk.json' | grep -q True"
+# The honest third number: a control the walk clicked that the inventory does
+# not hold (or holds with no laid-out box) CANNOT be examined — never folded
+# into "examined and fine".
+check "G · a clicked control missing from the inventory counts as couldNotExamine, not examined" \
+  "printf '%s' '{\"entry\":null,\"steps\":[{\"key\":\"m1\",\"do\":\"click\",\"match\":[\"Continue\"],\"matched\":\"Continue\",\"clicked\":true,\"status\":\"done\",\"urlBefore\":\"http://127.0.0.1:5173/#one\"},{\"key\":\"m2\",\"do\":\"click\",\"match\":[\"Phantom control\"],\"matched\":\"Phantom control\",\"clicked\":true,\"status\":\"done\",\"urlBefore\":\"http://127.0.0.1:5173/#two\"}]}' >'$T/miss-walk.json'; \
+   $PY '$PARTS' touched --walk '$T/miss-walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/misschk.json' >/dev/null 2>&1; \
+   gq 'd[\"touchedCheck\"][\"clicked\"]==2 and d[\"touchedCheck\"][\"examined\"]==1 and d[\"touchedCheck\"][\"couldNotExamine\"]==1' '$T/misschk.json' | grep -q True"
+check "G · clicked always equals examined + couldNotExamine (honest arithmetic)" \
+  "gq 'd[\"touchedCheck\"][\"clicked\"]==d[\"touchedCheck\"][\"examined\"]+d[\"touchedCheck\"][\"couldNotExamine\"]' '$T/misschk.json' | grep -q True"
+check "G · an empty walk records a zero tally (looked at nothing) and files nothing" \
+  "$PY '$PARTS' touched --walk '$T/empty-walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/emptychk.json' >/dev/null 2>&1; \
+   gq 'd[\"touchedCheck\"]=={\"clicked\":0,\"examined\":0,\"faulted\":0,\"couldNotExamine\":0}' '$T/emptychk.json' | grep -q True"
+check "G · the CLI line reports the effort (clicked/examined/faulted), not only rows added" \
+  "$PY '$PARTS' touched --walk '$T/walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/g-line.json' 2>&1 | grep -qi 'clicked' && \
+   $PY '$PARTS' touched --walk '$T/walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/g-line.json' 2>&1 | grep -qi 'examined'"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -767,18 +767,32 @@ def measure_touched(built):
     return out
 
 
-def touched_criteria(walk, builds):
-    """One requirement per touched control that a measurement faulted — source
-    `touched`, distinct from prd/plan/drawing/journey so a downstream score can
-    move these rows by changing one mapping."""
+def touched_report(walk, builds):
+    """The touched pass as a WHOLE: the rows it faults AND a tally of the effort
+    it made. The captain's cure for the lazy reviewer — silence must not read
+    the same as work. So alongside the fault rows we count, honestly:
+      clicked         — controls the walk actually touched (distinct)
+      examined        — of those, the ones we could measure (in the inventory
+                        with a laid-out box)
+      faulted         — of the examined, the ones a measurement faulted; equals
+                        the number of rows filed
+      couldNotExamine — clicked but NOT measurable (missing from the inventory,
+                        or present with no box); NEVER folded into "examined"
+    By construction clicked == examined + couldNotExamine. Rows are counted,
+    not manufactured: a clean control adds to `examined`, never a "this was
+    fine" row, so the verdict is not drowned."""
     cands = inventory(builds)
+    clicked = touched_controls(walk)
     rows, keys = [], set()
-    for ctl in touched_controls(walk):
+    examined = 0
+    for ctl in clicked:
         built = find_touched(ctl["name"], ctl["screen"], cands)
         # Not in the inventory, or in it with no laid-out box, is COULDN'T-CHECK,
-        # not a fault — there is nothing to look at, so no row is filed.
+        # not a fault — there is nothing to look at, so no row is filed and it is
+        # recorded as couldNotExamine (clicked - examined), never as fine.
         if built is None or not has_size(built):
             continue
+        examined += 1
         ms = measure_touched(built)
         if not any(m.get("fires") for m in ms):
             continue
@@ -803,22 +817,38 @@ def touched_criteria(walk, builds):
             "measurements": ms,
             "measuredDifference": True,
         })
+    tally = {
+        "clicked": len(clicked),
+        "examined": examined,
+        "faulted": len(rows),
+        "couldNotExamine": len(clicked) - examined,
+    }
+    return rows, tally
+
+
+def touched_criteria(walk, builds):
+    """One requirement per touched control that a measurement faulted — source
+    `touched`, distinct from prd/plan/drawing/journey so a downstream score can
+    move these rows by changing one mapping. Thin wrapper over
+    `touched_report`, which also carries the effort tally."""
+    rows, _tally = touched_report(walk, builds)
     return rows
 
 
 def apply_touched(contract, walk, builds):
     """Append the touched rows to the contract, skipping any id it already
-    carries. The rest of the contract is left exactly as it was."""
-    rows = touched_criteria(walk, builds)
-    if not rows:
-        return contract, 0
+    carries, and ALWAYS record the effort tally on the contract as
+    `touchedCheck` — even when nothing faulted, so the verdict can tell "looked
+    at N, all fine" from "never looked at a control". Returns the enriched
+    contract, the number of NEW rows added, and the tally."""
+    rows, tally = touched_report(walk, builds)
+    contract["touchedCheck"] = tally
     have = {str(c.get("id")) for c in (contract.get("criteria") or [])}
     rows = [r for r in rows if r["id"] not in have]
-    if not rows:
-        return contract, 0
-    contract["criteria"] = (contract.get("criteria") or []) + rows
-    contract["touchedParts"] = contract.get("touchedParts", 0) + len(rows)
-    return contract, len(rows)
+    if rows:
+        contract["criteria"] = (contract.get("criteria") or []) + rows
+        contract["touchedParts"] = contract.get("touchedParts", 0) + len(rows)
+    return contract, len(rows), tally
 
 
 def main(argv):
@@ -897,12 +927,15 @@ def main(argv):
             return 2
         walk = load(opt("walk") or "") or {}
         builds = [load(p) or {} for p in opts("build")]
-        contract, added = apply_touched(contract, walk, builds)
+        contract, added, tally = apply_touched(contract, walk, builds)
         os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(contract, fh, indent=2)
             fh.write("\n")
-        print("%d touched-control requirement(s) added" % added)
+        print("%d control(s) clicked, %d examined, %d faulted, %d could not be examined "
+              "(%d requirement(s) added)"
+              % (tally["clicked"], tally["examined"], tally["faulted"],
+                 tally["couldNotExamine"], added))
         return 0
 
     sys.stderr.write("xo-parts.py: unknown command %r\n" % cmd)
