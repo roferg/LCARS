@@ -1,0 +1,14 @@
+ELAPSED 5.6s EXIT 1
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/C2-overflow-hidden.html",
+  "allPainted": false,
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": false,
+      "distinctColours": 167
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 11,
+  "unseenCount": 0,
+  "foundCount": 3,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "P0",
+        "Q0"
+      ],
+      "message": "the P0 and Q0 buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "P1",
+        "Q1"
+      ],
+      "message": "the P1 and Q1 buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "P2",
+        "Q2"
+      ],
+      "message": "the P2 and Q2 buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

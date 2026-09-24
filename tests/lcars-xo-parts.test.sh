@@ -713,5 +713,80 @@ check "G · the CLI line reports the effort (clicked/examined/faulted), not only
   "$PY '$PARTS' touched --walk '$T/walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/g-line.json' 2>&1 | grep -qi 'clicked' && \
    $PY '$PARTS' touched --walk '$T/walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/g-line.json' 2>&1 | grep -qi 'examined'"
 
+printf '\n\033[1mV · the re-check went blind (S222 round 2)\033[0m\n'
+# MEASURED 2026-09-24 on the final run of the round. The first look SAW 7 of 8
+# drawn parts; the re-check that confirmed the fix saw 0 of 8. With nothing in
+# front of it, it found no faults, reported the original fault gone, and graded
+# the build HIGH. It never saw the button it was re-checking, could not look,
+# and said "fine". A fault whose evidence became unreachable between two looks
+# is "I could not check whether this was fixed" — never "resolved", never HIGH.
+#
+# THE COMPARISON IS RECORDED, NOT INFERRED. The prior look's part-match count is
+# handed in as `--baseline-matched`; the re-check reads that number and compares
+# it against what THIS look could see. No prose is read back to re-derive it.
+V="$TMPROOT/vis"; mkdir -p "$V"
+# A drawing of four controls, and a re-launched build in which NONE of them are
+# present — the screen they live on never built, so the look is blind to them.
+VDRAWN='[
+ {"index":1,"id":"lockBtn","testid":null,"name":"Lock month","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"d-01"},
+ {"index":2,"id":"draftBtn","testid":null,"name":"Save draft","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":50,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"d-02"},
+ {"index":3,"id":"exportBtn","testid":null,"name":"Export","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":90,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"d-03"},
+ {"index":4,"id":"previewBtn","testid":null,"name":"Preview","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":130,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"d-04"}
+]'
+VBLIND='[{"index":1,"id":null,"testid":null,"name":"Pull data & start","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":140,"h":34},"iconBox":null,"lines":1,"crop":"b-01"}]'
+mk_parts "$V/drawing.json" "file:///drawing.html" "$VDRAWN"
+mk_parts "$V/blind-build.json" "http://127.0.0.1:5173/#landing" "$VBLIND"
+"$PY" "$PARTS" pair --drawing "$V/drawing.json" --build "$V/blind-build.json" \
+      --baseline-matched 7 --out "$V/blind-pairs.json" >"$V/blind.log" 2>&1
+vq() { "$PY" -c "import json,sys;d=json.load(open('$V/blind-pairs.json'));print(eval(sys.argv[1],{'d':d}))" "$1"; }
+check "V1 · the baseline the prior look saw is RECORDED, not re-derived" \
+  "vq 'd[\"visibility\"][\"baseline\"]' | grep -qx 7"
+check "V2 · what THIS look could see is recorded beside it" \
+  "vq 'd[\"visibility\"][\"now\"]' | grep -qx 0"
+check "V3 · a sharp fall (7 seen -> 0 seen) is FLAGGED as its own outcome" \
+  "vq 'd[\"visibility\"][\"collapsed\"]' | grep -q True"
+check "V4 · it reads 'I could not check whether this was fixed', not 'resolved'" \
+  "vq 'd[\"visibility\"][\"says\"]' | grep -qi 'could not check whether this was fixed'"
+check "V5 · a vanished fault is named as VANISHED, not shown fixed" \
+  "vq 'd[\"visibility\"][\"says\"]' | grep -qi 'vanish'"
+check "V6 · and it may not grade HIGH on what it could not see" \
+  "vq 'd[\"visibility\"][\"says\"]' | grep -qi 'not earned a pass\|could not see'"
+
+# THE KNOWN-GOOD CONTROL: a re-check whose visibility did NOT collapse. The same
+# four controls, a build that has every one, baseline equal to what it now sees.
+# It must record the comparison and grade NORMALLY — no collapse, no blind words.
+VSEEN='[
+ {"index":1,"id":null,"testid":null,"name":"Lock month","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":10,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"b-01"},
+ {"index":2,"id":null,"testid":null,"name":"Save draft","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":50,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"b-02"},
+ {"index":3,"id":null,"testid":null,"name":"Export","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":90,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"b-03"},
+ {"index":4,"id":null,"testid":null,"name":"Preview","role":"button","tag":"button",
+  "interactive":true,"container":false,"box":{"x":10,"y":130,"w":110,"h":30},"iconBox":null,"lines":1,"crop":"b-04"}
+]'
+mk_parts "$V/seen-build.json" "http://127.0.0.1:5173/#collect" "$VSEEN"
+"$PY" "$PARTS" pair --drawing "$V/drawing.json" --build "$V/seen-build.json" \
+      --baseline-matched 4 --out "$V/seen-pairs.json" >/dev/null 2>&1
+svq() { "$PY" -c "import json,sys;d=json.load(open('$V/seen-pairs.json'));print(eval(sys.argv[1],{'d':d}))" "$1"; }
+check "V7 CONTROL · visibility that HELD (4 seen -> 4 seen) is not flagged" \
+  "svq 'd[\"visibility\"][\"collapsed\"]' | grep -q False"
+check "V7 CONTROL · …and it does not utter the blind words on a look that saw" \
+  "svq 'd[\"visibility\"][\"says\"]' | grep -qvi 'could not check whether this was fixed'"
+check "V7 CONTROL · …it still records baseline and now, so the compare is auditable" \
+  "svq 'd[\"visibility\"][\"baseline\"]==4 and d[\"visibility\"][\"now\"]==4' | grep -q True"
+
+# CONTROL 2: no baseline handed in (a first look, or a mission that predates
+# this) records no visibility block at all and costs nothing.
+"$PY" "$PARTS" pair --drawing "$V/drawing.json" --build "$V/seen-build.json" \
+      --out "$V/nobase-pairs.json" >/dev/null 2>&1
+check "V8 CONTROL · no baseline handed in -> no visibility block, no false flag" \
+  "$PY -c \"import json;d=json.load(open('$V/nobase-pairs.json'));print('visibility' in d)\" | grep -q False"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

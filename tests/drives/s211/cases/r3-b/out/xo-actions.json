@@ -1,0 +1,7 @@
+[
+  {"type": "#batch-input", "text": "B-1099"},
+  {"click": "#add-batch"},
+  {"wait": 400},
+  {"screenshot": "after-add-full"},
+  {"screenshot": "after-add-list", "selector": "#batch-list"}
+]

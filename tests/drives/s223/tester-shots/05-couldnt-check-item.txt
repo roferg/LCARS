@@ -1,0 +1,1 @@
+A couldn't-check requirement: outcome chip, importance chip, one why-it-matters line, and 'No picture - I couldn't check this one' in words. Its What I did reads 'Tried to check it - couldn't reach it' although a real action was recorded.

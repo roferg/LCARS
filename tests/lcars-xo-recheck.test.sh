@@ -360,6 +360,121 @@ check "W12. …and it says plainly what it could and could not see" \
 check "W13. …and invents no walk record out of nothing" \
   "[ -z \"\$(ls '$mN/xo'/walk-*.json 2>/dev/null)\" ]"
 
+# ===========================================================================
+# V. THE RE-CHECK WENT BLIND — IT MAY NOT GRADE THE THING IT COULD NOT SEE
+#
+# MEASURED 2026-09-24. The first look SAW most of the drawing's parts; the
+# re-check that confirmed the fix saw ~none. It found no faults, called the
+# fault gone, and graded HIGH — it never saw the button it was re-checking.
+# Reproduced here with REAL headless Chrome: the re-check is relaunched against
+# a BLIND build whose "start" button does nothing, so the screen the fixes live
+# on never builds and the drawn parts fall out of view. The prior look's
+# part-match count is on disk as the recorded baseline; the collapse must be
+# FLAGGED, must read "I could not check whether this was fixed", must NOT accept,
+# and must NOT label the issue HIGH.
+# ===========================================================================
+echo
+echo "V. the re-check went blind — no accept, no HIGH (real headless Chrome)"
+
+# A blind twin of the fixture: the landing button is there, but pressing it
+# builds nothing, so the second screen (where six of the drawn parts live)
+# never appears. This is the landing-page-and-nothing-else the defect produced.
+cat >"$APP/index-blind.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Tides</title>
+<body style="font-family:sans-serif">
+<div id="app">
+  <h1>Readings</h1>
+  <h2>August 2026</h2>
+  <button id="startBtn">Pull data &amp; start</button>
+</div>
+HTML
+
+repoB="$(new_repo)"
+mB="$(plant_parent "$repoB" "lcars-20260920-803")"
+plant_child "$repoB" "lcars-20260920-803" 1
+plant_child "$repoB" "lcars-20260920-803" 2
+cp "$mW/xo/criteria.json" "$mB/xo/criteria.json"
+
+# The drawing, its parts, and the journey — exactly as the first look leaves them.
+mkdir -p "$mB/xo/drawing"
+"$NODE" "$DRIVER" --url "file://$APP/drawing.html" --out "$mB/xo/drawing" \
+  --parts-out "$mB/xo/drawing-parts.json" --prefix drawn >/dev/null 2>&1 || true
+"$PY" "$JOURNEY_PY" build --criteria "$mB/xo/criteria.json" \
+  --drawing-html "$APP/drawing.html" --drawing "$mB/xo/drawing-parts.json" \
+  --title "Tides" --out "$mB/xo/journey.json" --criteria-out "$FX/critB.json" \
+  >/dev/null 2>&1 || true
+[ -s "$FX/critB.json" ] && cp "$FX/critB.json" "$mB/xo/criteria.json"
+
+# THE FIRST LOOK, against the WORKING build, leaving its recorded pairs.json —
+# this is the baseline the re-check is measured against.
+mkdir -p "$mB/xo/shots/look-1"
+"$NODE" "$DRIVER" --url "file://$APP/index.html" --out "$mB/xo/shots/look-1" \
+  --place-names "$mB/xo/criteria.json" --prefix shot \
+  --parts-out "$mB/xo/build-parts-0.json" \
+  --journey "$mB/xo/journey.json" --walk-out "$mB/xo/walk.json" >/dev/null 2>&1 || true
+"$PY" "$PARTS_PY" pair --drawing "$mB/xo/drawing-parts.json" \
+  --build "$mB/xo/build-parts-0.json" --out "$mB/xo/pairs.json" >/dev/null 2>&1 || true
+BASE_MATCHED="$(matched_in "$mB/xo/pairs.json")"
+
+# The fixture is only a proof if the first look actually SAW the parts.
+check "V0. the first look saw the drawing's parts (baseline is high)" \
+  "[ '$BASE_MATCHED' -ge 2 ]"
+
+# --- THE RE-CHECK, relaunched BLIND -------------------------------------
+: >"$XO_WORKER_LOG"; : >"$XO_RESPOND_CALLS"; : >"$XO_LAUNCH_LOG"; : >"$XO_LABEL_LOG"
+export XO_LAUNCH_URL="file://$APP/index-blind.html"
+# The blind worker does what the real one did: sees nothing, grades HIGH.
+outB="$(XO_RC_BODY="$RC_HELD" run_recheck "$repoB" "lcars-20260920-803")" || true
+RC_MATCHED_B="$(matched_in "$mB/xo/pairs.json")"
+statusB="$("$PY" -c 'import json,sys
+try: print(json.load(open(sys.argv[1]))["numberOne"]["status"])
+except Exception: print("?")' "$mB/state.json" 2>/dev/null)"
+
+check "V1. the blind re-check saw far fewer parts than the first look" \
+  "[ '$RC_MATCHED_B' -ge 0 ] && [ '$RC_MATCHED_B' -lt '$BASE_MATCHED' ]"
+check "V2. the pairing RECORDED the visibility collapse against the baseline" \
+  "$PY -c \"import json;v=json.load(open('$mB/xo/pairs.json')).get('visibility') or {};import sys;sys.exit(0 if v.get('collapsed') else 1)\""
+check "V3. …with the recorded baseline, not a re-derived one" \
+  "$PY -c \"import json;v=json.load(open('$mB/xo/pairs.json')).get('visibility') or {};import sys;sys.exit(0 if int(v.get('baseline',-1))==int('$BASE_MATCHED') else 1)\""
+check "V4. it reads 'I could not check whether this was fixed' to the captain" \
+  "printf '%s' \"\$outB\" | grep -qi 'could not check whether this was fixed'"
+check "V5. a vanished fault is named as VANISHED, not shown fixed" \
+  "printf '%s' \"\$outB\" | grep -qi 'vanish'"
+check "V6. it ESCALATED — it did not quietly finish" \
+  "[ '$statusB' = 'escalated' ]"
+check "V7. it did NOT accept the fixes (no accept answer was sent)" \
+  "! grep -qi 'Accepted' '$XO_RESPOND_CALLS' 2>/dev/null"
+check "V8. it did NOT label the issue HIGH on what it could not see" \
+  "! grep -q 'lcars:xo:high' '$XO_LABEL_LOG' 2>/dev/null"
+check "V9. it is in the mission journal as its own visibility-collapse entry" \
+  "grep -q '\"action\": \"visibility-collapse\"' '$mB/number-one.jsonl'"
+
+# --- CONTROL: the SAME re-check against the WORKING build must accept -----
+# Visibility that did NOT collapse still grades normally. Without this control
+# the blind-check cannot detect its own breakage (a check that always fires).
+: >"$XO_WORKER_LOG"; : >"$XO_RESPOND_CALLS"; : >"$XO_LABEL_LOG"
+repoC="$(new_repo)"
+mC="$(plant_parent "$repoC" "lcars-20260920-804")"
+plant_child "$repoC" "lcars-20260920-804" 1
+plant_child "$repoC" "lcars-20260920-804" 2
+cp "$mB/xo/criteria.json"       "$mC/xo/criteria.json"
+cp "$mB/xo/drawing-parts.json"  "$mC/xo/drawing-parts.json"
+cp "$mB/xo/journey.json"        "$mC/xo/journey.json"
+mkdir -p "$mC/xo/drawing"; cp "$mB/xo/drawing"/* "$mC/xo/drawing/" 2>/dev/null || true
+cp "$mB/xo/pairs.json"          "$mC/xo/pairs.json"
+cp "$mB/xo/walk.json"           "$mC/xo/walk.json" 2>/dev/null || true
+export XO_LAUNCH_URL="file://$APP/index.html"
+outC="$(XO_RC_BODY="$RC_HELD" run_recheck "$repoC" "lcars-20260920-804")" || true
+statusC="$("$PY" -c 'import json,sys
+try: print(json.load(open(sys.argv[1]))["numberOne"]["status"])
+except Exception: print("?")' "$mC/state.json" 2>/dev/null)"
+check "V10. CONTROL — visibility held, so the pairing does NOT flag a collapse" \
+  "$PY -c \"import json;v=json.load(open('$mC/xo/pairs.json')).get('visibility') or {};import sys;sys.exit(1 if v.get('collapsed') else 0)\""
+check "V11. CONTROL — it did NOT go blind, so it finished, not escalated" \
+  "[ '$statusC' = 'finished' ]"
+check "V12. CONTROL — and it accepted the fixes normally" \
+  "grep -qi 'Accepted' '$XO_RESPOND_CALLS' 2>/dev/null"
+
 unset XO_LAUNCH_URL
 fi
 

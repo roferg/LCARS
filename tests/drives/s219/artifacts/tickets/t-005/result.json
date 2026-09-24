@@ -1,0 +1,9 @@
+{
+  "ticketId": "t-005",
+  "passed": true,
+  "attempts": 3,
+  "summary": "Built the Reviews entry screen (#mbr/start): a 'Next up' start card for the calendar month after the newest published review (grouped by YYYY-MM id prefix) with the 'N buckets · M KPIs · Source: DX Scorecard (live)' meta from the live config roster, a green 'Pull data & start' button and the verbatim '~30s · re-pullable anytime' hint; a grouped 'Published' list (lock icon, green 'Published' chip, 'M KPIs · locked {date}', 'View' → #locked/<id>). Pull mints a date-keyed draft id via nextDraftId and moves to #mbr/collect; an existing unlocked next-month draft flips the primary action to 'Continue draft' that resumes in place without reseeding. Added month-grouping helpers (monthKeyOf/nextMonthKey/publishedReviewMonths), a pending-draft handoff store, monthLabel/todayIso, and ported the start-screen classes into styles.css. Full suite green (552).",
+  "newTests": ["src/views/MbrBuilderView.startScreen.test.tsx"],
+  "testEdits": [],
+  "flipFlop": "expected"
+}

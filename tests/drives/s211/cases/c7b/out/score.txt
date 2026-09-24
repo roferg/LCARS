@@ -1,0 +1,7 @@
+SCORE	medium
+WORKER_SCORE	medium
+DISAGREED	no
+WHY	the main flow works. 1 thing in the build does not match what you asked for — the mix-ratio status line (t-3-ac1) — and none of them is from the PRD itself: worth reading before you merge.
+COUNTS	6	1	1	1
+SUMMARY	The board itself is right: GROUT TRACKER names it in the orange header, all three batches show in one list directly beneath, and the add row with its ADD BATCH button to the right lets a tiler add without leaving the page. Two gaps hold it back from clean: the mix-ratio status line your drawing puts beneath the add row is missing entirely, and I can't confirm the CSV export writes a header row — the passing tests only exercise a CSV parser, not the export. Persistence across a restart is covered and passes.
+OBSERVATIONS	0

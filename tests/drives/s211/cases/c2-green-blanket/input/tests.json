@@ -1,0 +1,15 @@
+{
+  "ran": true,
+  "command": "pnpm test",
+  "cwd": "/private/tmp/wt",
+  "exitCode": 0,
+  "timedOut": false,
+  "timeoutSeconds": 300,
+  "durationSeconds": 18.4,
+  "outputBytes": 138,
+  "truncated": false,
+  "tailCapBytes": 8000,
+  "outputTail": "\n Test Suites: 12 passed, 12 total\n Tests:       413 passed, 413 total\n Snapshots:   0 total\n Time:        18.402 s\n Ran all test suites.\n",
+  "outcome": "passed",
+  "verdict": "I ran your tests (`pnpm test`) and they passed, in 18s."
+}

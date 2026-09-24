@@ -1,0 +1,45 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 9,
+  "unseenCount": 0,
+  "foundCount": 3,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "count": 6,
+      "elements": [
+        "T0",
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5"
+      ],
+      "message": "six buttons in this row are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "overlap",
+      "px": 1,
+      "elements": [
+        "T1",
+        "T2"
+      ],
+      "message": "the T1 and T2 buttons overlap \u2014 they share 1 px of the same space"
+    },
+    {
+      "kind": "overlap",
+      "px": 1,
+      "elements": [
+        "T3",
+        "T4"
+      ],
+      "message": "the T3 and T4 buttons overlap \u2014 they share 1 px of the same space"
+    }
+  ],
+  "notes": []
+}

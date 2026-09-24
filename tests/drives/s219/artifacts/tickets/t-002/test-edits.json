@@ -1,0 +1,10 @@
+[
+  {
+    "path": "src/lib/useHashRoute.test.ts",
+    "reason": "parseHash('#mbr') now returns { view: 'mbr', step: 'start' } per this ticket's new Route.step field; the old toEqual({ view: 'mbr' }) assertion is superseded. Same assertion count."
+  },
+  {
+    "path": "src/views/MbrBuilderView.test.tsx",
+    "reason": "This ticket moves the draft builder to the #mbr/build sub-route; #mbr now shows the start (Reviews) slot. The 'mounts the builder through the app shell under DEV' test was updated from setHash('#mbr') to setHash('#mbr/build') so it still asserts the builder mounts, at its new route. Same assertion count."
+  }
+]

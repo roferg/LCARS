@@ -1,0 +1,43 @@
+{
+  "score": "low",
+  "criteria": [
+    {
+      "id": "prd-1",
+      "text": "the batch list shows every batch with its name",
+      "status": "gap",
+      "shot": "shot-01",
+      "note": "All six batches are there in the list (B-1004 through B-1009), but you can't read any of the names — each row is cut off after a few letters, so B-1004 reads 'B-1004 Se' and stops. The readout confirms every row box is only 78 px wide with the text clipped inside it, needing 125 to 191 px more room. The batches show; their names don't."
+    },
+    {
+      "id": "t-2-ac1",
+      "text": "an ADD BATCH button sits above the list",
+      "status": "met",
+      "shot": "shot-01",
+      "note": "The ADD BATCH button sits at the top left (x=20, y=65) and the list starts below it at y=117 — so the button is above the list, as asked. EXPORT sits to its right on the same row."
+    },
+    {
+      "id": "t-3-ac1",
+      "text": "the app has a header bar with the product name",
+      "status": "met",
+      "shot": "shot-01",
+      "note": "There's a full-width dark header bar across the top (rgb(34,34,51), 45 px tall) with the product name 'Grout Tracker' in white text on the left."
+    }
+  ],
+  "gaps": [
+    {
+      "title": "the batch names are clipped",
+      "expected": "every batch listed with its name readable",
+      "saw": "six rows each cut off after a few letters — 'B-1004 Se', 'B-1005 Se', 'B-1006 Oc' — the names clipped 125 to 191 px inside their own 78 px boxes",
+      "shots": ["shot-01"],
+      "kind": "contradiction",
+      "criterion": "prd-1"
+    }
+  ],
+  "escalations": [],
+  "alsoChecked": [
+    "The B-1008 November row doesn't line up with the rows above it — its left edge is 40 px further right (x=60 vs x=20 for the others), so it juts out to the right. No criterion covers alignment, but it looks off.",
+    "Over on the right there are two empty text fields that overlap by 8 px, plus two dropdowns ('All' and 'Mine'). Nothing in the contract asks for these; noting them in case they're leftovers.",
+    "The EXPORT button, Help and About links are all present and read cleanly."
+  ],
+  "summary": "Captain, the frame is right — you've got your dark header bar with 'Grout Tracker', and the ADD BATCH button sits above the list where you wanted it. But the heart of the ask fails: the list shows all six batches yet every name is clipped after a few letters, so you can read 'B-1004 Se' and no further. The batches are there; you can't tell what any of them are. There's also a stray row that juts out to the right and a pair of overlapping fields off to the side that nothing asked for."
+}

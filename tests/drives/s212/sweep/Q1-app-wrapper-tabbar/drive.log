@@ -1,0 +1,14 @@
+ELAPSED 5.6s EXIT 0
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/Q1-app-wrapper-tabbar.html",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 199
+    }
+  ]
+}

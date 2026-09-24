@@ -1,0 +1,9 @@
+{
+  "ticketId": "t-008",
+  "passed": true,
+  "attempts": 3,
+  "summary": "Added per-KPI collect controls to the builder's wired value cells: for roster-automatable KPIs the build-slot value cell now renders the value, a 'target N' line, a 'vs last MBR' delta, an 'Auto' tag and Collect/Re-collect/Try again controls that drive collectKpi (POST /__collect/<kpiId>), with Collecting…(spinner) / '✓ Updated' / 'Collection failed' state chips and a 'was {old} · as of {date}' line after a (re-)collect. A successful (re-)collect applies the fresh value, stamps asOf, moves the prior value into previousValue, recomputes the KPI's delta via the t-003 computeDelta helper and persists the draft; reuses the Update-KPIs collection vocabulary. Threaded the live roster into MbrBuilder to resolve automatability (ADR-002) and ported the mock's wired value-cell CSS. Full suite green (567) and tsc clean; flip-flop verified (7/7 red on parent, green on tree).",
+  "newTests": ["src/views/MbrBuilderView.wiredCollect.test.tsx"],
+  "testEdits": [],
+  "flipFlop": "expected"
+}

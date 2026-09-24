@@ -1,0 +1,27 @@
+{
+  "url": "http://localhost:5173/DX-Scorecard/#mbr/build",
+  "allPainted": true,
+  "notes": [
+    "pressed Escape"
+  ],
+  "shots": [
+    {
+      "name": "preview",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 3714
+    },
+    {
+      "name": "discard-dialog",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 5150
+    },
+    {
+      "name": "lock-dialog",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 5285
+    }
+  ]
+}

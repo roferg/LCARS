@@ -1,0 +1,86 @@
+{
+  "score": "medium",
+  "criteria": [
+    {
+      "id": "prd-1",
+      "text": "The board shows every recorded grout batch in one list on the page.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "Every batch sits in one list right under the header — B-1041, B-1042 and B-1043, each on its own line."
+    },
+    {
+      "id": "prd-2",
+      "text": "A new batch can be added from the board itself, without leaving the page.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "The board carries its own add row — a 'new batch code' input with an ADD BATCH button beside it — so a batch is entered right on the page, nothing sends you off it."
+    },
+    {
+      "id": "prd-3",
+      "text": "The board names itself in a header so the tiler knows what he is looking at.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-03",
+      "note": "An orange band across the top reads GROUT TRACKER (rgb(224,138,60)), naming the tool just as your drawing does."
+    },
+    {
+      "id": "t-1-ac1",
+      "text": "The batch list is the first thing under the header.",
+      "status": "met",
+      "evidence": "measurement",
+      "shot": "shot-01",
+      "note": "The list sits directly beneath the header — the header ends at y=51 and the list opens at y=71, with nothing between them."
+    },
+    {
+      "id": "t-2-ac1",
+      "text": "An ADD BATCH button sits to the right of the input.",
+      "status": "met",
+      "evidence": "measurement",
+      "shot": "shot-06",
+      "note": "ADD BATCH is to the right of the input, teal (rgb(90,166,184)), at x=1293 where the input runs from x=20 out to 1283."
+    },
+    {
+      "id": "t-3-ac1",
+      "text": "A status line beneath the add row shows the current mix ratio.",
+      "status": "gap",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "Your drawing has an orange mix-ratio line sitting under the add row (MIX RATIO 3:1 · 2 BATCHES OPEN). It isn't there at all — below the add row the page drops straight to the grey footer."
+    },
+    {
+      "id": "t-4-ac1",
+      "text": "Batches survive a restart.",
+      "status": "met",
+      "evidence": "tests",
+      "testQuote": "\u2714 batches survive a restart (6.815125ms)",
+      "note": "No screen surface for this, but your own tests cover it and it passes."
+    },
+    {
+      "id": "t-6-ac1",
+      "text": "The export writes valid CSV with a header row.",
+      "status": "untested",
+      "evidence": "tests",
+      "note": "I could not check this. It makes no visual claim, and your suite — which ran green on two tests — has nothing in it about the export or its CSV, so a green run doesn't settle it."
+    }
+  ],
+  "gaps": [
+    {
+      "title": "the mix-ratio status line",
+      "expected": "an orange status line beneath the add row showing the current mix ratio",
+      "saw": "nothing there — below the add row the page goes straight to the footer",
+      "shots": ["shot-01"],
+      "kind": "contradiction",
+      "criterion": "t-3-ac1"
+    }
+  ],
+  "escalations": [],
+  "alsoChecked": [
+    "The ADD button is teal (rgb(90,166,184)); your drawing leaves its colour to the builder, so I'm treating that as your call.",
+    "There's a grey footer reading 'grout tracker · sandbox build' at the bottom; the drawing says nothing about a footer, so that's the builder's call, not a fault.",
+    "The build shows three batches (B-1041/1042/1043) where the drawing sketched two — that's just sample data, not a mismatch.",
+    "No console errors were reported on the page."
+  ],
+  "summary": "Captain, the board runs and reads well: the orange GROUT TRACKER header, the batch list directly beneath it, and an add row with ADD BATCH to the right of the input all match your drawing, and your persistence test passes. The one miss is the status line — your drawing puts an orange mix-ratio line under the add row, and in the build that space is empty, the page dropping straight to the footer. The CSV export makes no visual claim and your tests don't cover it, so I left it unchecked."
+}

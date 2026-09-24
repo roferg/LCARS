@@ -1,0 +1,42 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 55,
+  "unseenCount": 6,
+  "foundCount": 10,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "A0",
+        "B0"
+      ],
+      "message": "the A0 and B0 buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "A1",
+        "B1"
+      ],
+      "message": "the A1 and B1 buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "A2",
+        "B2"
+      ],
+      "message": "the A2 and B2 buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": [
+    "This page has a lot going on \u2014 here are the three worst. I held back 7 more."
+  ]
+}

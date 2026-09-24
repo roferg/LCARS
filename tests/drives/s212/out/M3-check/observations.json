@@ -1,0 +1,27 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 35,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "count": 6,
+      "elements": [
+        "Edit",
+        "Delete",
+        "Edit",
+        "Delete",
+        "Edit",
+        "Delete"
+      ],
+      "message": "every row's Edit and Delete buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

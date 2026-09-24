@@ -1,0 +1,126 @@
+{
+  "shot": "shot-01",
+  "file": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/out/B8-no-modal/shot-01.png",
+  "capturedAt": "2026-09-16T00:53:08.572Z",
+  "selector": null,
+  "clip": "full-page",
+  "deviceScaleFactor": 2,
+  "pixels": {
+    "width": 2880,
+    "height": 1626,
+    "sampled": 1170720,
+    "distinctColours": 191,
+    "dominantColour": "#ffffff",
+    "dominantFraction": 0.9901,
+    "nonDominantFraction": 0.0099,
+    "mean": {
+      "r": 254,
+      "g": 254,
+      "b": 254
+    },
+    "painted": true,
+    "inkFloor": 0.005
+  },
+  "page": {
+    "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/B8-no-modal.html",
+    "title": "",
+    "textExcerpt": "B8 CONTROL — the same page with the modal dismissed SAVE CANCEL",
+    "places": {},
+    "elements": [
+      {
+        "id": null,
+        "tag": "body",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "",
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 1440,
+          "h": 100
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1",
+        "seen": true
+      },
+      {
+        "id": null,
+        "tag": "h3",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "B8 CONTROL — the same page with the modal dismissed",
+        "box": {
+          "x": 24,
+          "y": 40,
+          "w": 1392,
+          "h": 19
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.0",
+        "seen": true
+      },
+      {
+        "id": "save-behind",
+        "tag": "button",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "SAVE",
+        "box": {
+          "x": 40,
+          "y": 100,
+          "w": 120,
+          "h": 36
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgb(239, 239, 239)",
+        "interactive": true,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.1",
+        "seen": true
+      },
+      {
+        "id": "cancel-behind",
+        "tag": "button",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "CANCEL",
+        "box": {
+          "x": 160,
+          "y": 100,
+          "w": 120,
+          "h": 36
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgb(239, 239, 239)",
+        "interactive": true,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.2",
+        "seen": true
+      }
+    ],
+    "elementsNote": null,
+    "consoleErrors": []
+  }
+}

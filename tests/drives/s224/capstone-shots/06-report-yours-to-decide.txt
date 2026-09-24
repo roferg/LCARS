@@ -1,0 +1,7 @@
+The verdict text and the two things Number One handed back to the captain rather than
+deciding itself. First "THIS ONE IS YOURS TO DECIDE": the planted automation trap — "The
+loaded snapshot (2026-07-27.0) has zero automatable/wired KPIs ... could not be observed on
+screen" — reported as unseeable, never as broken. Second: a finding nobody wrote a criterion
+for — the legend says "Moda" while three KPI rows label the same cohort "Mode" — ending
+"nobody asked about this; I saw it in shot-s0-part-01". Filters below: All 109, Didn't work 4,
+I measured 7, Couldn't check 28, Worked 70. 659 x 917 px.

@@ -1,0 +1,8 @@
+Question 8
+
+There's a genuine contradiction to resolve here. The mockup's lock modal implies **a KPI with no insight still publishes** (goes out with value + status, no commentary) — but you already ruled **all insights need text before the month can lock**. Those can't both hold. My recommendation: **your ruling wins — the month cannot lock until every KPI has insight text, so a published month never contains an insight-less KPI.** The mockup's "publishes anyway" implication is the account being loose; we drop it. That makes the completion meter, the lock gate, and "what gets published" all say the same thing. Confirm your all-insights-required rule governs publish (no insight-less KPI ever ships), or did you intend a way to publish with some blank?
+
+Options offered:
+My rule governs — no month locks/publishes with any blank insight
+Allow publishing with some insights blank (relax the lock rule)
+Something else

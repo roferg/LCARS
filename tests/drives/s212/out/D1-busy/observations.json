@@ -1,0 +1,40 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 20,
+  "unseenCount": 0,
+  "foundCount": 8,
+  "observations": [
+    {
+      "kind": "clipped",
+      "px": 146,
+      "elements": [
+        "a very long clipped title num\u2026"
+      ],
+      "message": "the a very long clipped title num\u2026 control text is clipped by its own box \u2014 it needs 146 px more room than the box gives it"
+    },
+    {
+      "kind": "clipped",
+      "px": 144,
+      "elements": [
+        "a very long clipped title num\u2026"
+      ],
+      "message": "the a very long clipped title num\u2026 control text is clipped by its own box \u2014 it needs 144 px more room than the box gives it"
+    },
+    {
+      "kind": "overlap",
+      "px": 32,
+      "elements": [
+        "OV0A",
+        "OV0B"
+      ],
+      "message": "the OV0A and OV0B buttons overlap \u2014 they share 32 px of the same space"
+    }
+  ],
+  "notes": [
+    "This page has a lot going on \u2014 here are the three worst. I held back 5 more."
+  ]
+}

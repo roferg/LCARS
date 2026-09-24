@@ -1,0 +1,1 @@
+DEFECT: with the report full-screen, the Activity tab highlights but its pane renders 0 pixels wide - the live-activity feed is in the page (1676 nodes) yet the captain sees an empty window.

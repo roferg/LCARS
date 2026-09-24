@@ -336,7 +336,63 @@ def measure(drawn, built):
 UNREACHABLE = "couldn't check (unreachable)"
 
 
-def pair_all(drawing, builds):
+# ── did the re-check go blind between two looks? (S222 round 2) ─────────────
+#
+# MEASURED 2026-09-24, and it qualifies EVERY loop-closure claim. On the final
+# run of the round the reviewer re-checked a fixed build to confirm the fix. The
+# first look SAW 7 of 8 drawn parts; the re-check saw 0 of 8. With nothing in
+# front of it, it found no faults, called the original fault gone, and graded the
+# build HIGH — it never saw the button it was re-checking, could not look, and
+# said "fine".
+#
+# A fault whose evidence became unreachable between the two looks is exactly "I
+# could not check whether this was fixed". It is never "resolved" and it must
+# never read HIGH: a look that saw nothing has not earned a pass for the thing it
+# could not see, and a fault that VANISHED is not a fault that was FIXED.
+#
+# RECORD, DO NOT INFER. The look that produces a part-match count writes it down
+# (`matched` in this very file). The re-check is HANDED that recorded number as
+# `baseline` and compares it against what THIS look could see. Nothing here reads
+# back finished report prose to work out what a previous look saw — the number is
+# read, never re-derived. This is the producer side of the fix; the re-check flow
+# (xo.sh) reads `collapsed` and refuses to grade HIGH or accept on that basis.
+def visibility(baseline, now):
+    """Compare what THIS look could SEE against what the look it re-checks saw.
+
+    `baseline` is the prior look's recorded part-match count (`matched`); `now`
+    is this look's. A SHARP fall — the parts a re-check can see collapsing
+    against the look it re-checks (7 -> 0 is the measured case) — is a distinct
+    outcome of its own, flagged and not silently graded. Returns None when there
+    is no baseline to compare against (a first look), so no false flag is raised.
+    """
+    try:
+        b = int(baseline)
+    except (TypeError, ValueError):
+        return None
+    n = int(now or 0)
+    # A fall is "sharp" when this look kept barely a third of the baseline's
+    # visibility (7 -> 0/1/2 all qualify; 7 -> 6 does not). A baseline under two
+    # has nothing to fall from, so it can never collapse.
+    collapsed = b >= 2 and n <= b * 0.34
+    block = {"baseline": b, "now": n, "collapsed": bool(collapsed)}
+    if collapsed:
+        block["says"] = (
+            "I could not check whether this was fixed: this look saw %d of the %d "
+            "part(s) the look it re-checks saw. The evidence went unreachable "
+            "between the two looks, so a fault that reads gone this time has "
+            "VANISHED, not been shown fixed — and a look that saw nothing has NOT "
+            "earned a pass for the thing it could not see, so this may not grade "
+            "HIGH." % (n, b)
+        )
+    else:
+        block["says"] = (
+            "this look saw %d of the %d part(s) the look it re-checks saw — "
+            "visibility held, so it could look at what it confirms" % (n, b)
+        )
+    return block
+
+
+def pair_all(drawing, builds, baseline=None):
     """One entry per drawn part. Nothing is dropped and nothing is assumed."""
     drawn_parts = parts_of(drawing, controls_only=True)
     candidates = []
@@ -456,7 +512,7 @@ def pair_all(drawing, builds):
         })
         pairs.append(entry)
 
-    return {
+    doc = {
         "drawing": (drawing or {}).get("url") or "",
         "screens": screens,
         "partCount": len(by_key),
@@ -469,6 +525,13 @@ def pair_all(drawing, builds):
                    "why and overrule it — that is recorded too."),
         "pairs": pairs,
     }
+    # WHAT THIS LOOK COULD SEE, BESIDE THE LOOK IT RE-CHECKS (S222 round 2). Only
+    # when a baseline was handed in — a first look has none, and must not read as
+    # a collapse from nothing.
+    vis = visibility(baseline, doc["matched"])
+    if vis is not None:
+        doc["visibility"] = vis
+    return doc
 
 
 # ── one requirement per drawn part (part C) ────────────────────────────────
@@ -880,14 +943,19 @@ def main(argv):
     if cmd == "pair":
         drawing = load(opt("drawing") or "") or {}
         builds = [load(p) or {} for p in opts("build")]
-        doc = pair_all(drawing, builds)
+        baseline = opt("baseline-matched")
+        doc = pair_all(drawing, builds, baseline=baseline)
         os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, indent=2)
             fh.write("\n")
-        print("%d drawn part(s): %d matched, %d unreachable, %d with a measured difference"
-              % (doc["partCount"], doc["matched"], doc["unreachable"],
-                 doc["measuredDifferences"]))
+        line = ("%d drawn part(s): %d matched, %d unreachable, %d with a measured difference"
+                % (doc["partCount"], doc["matched"], doc["unreachable"],
+                   doc["measuredDifferences"]))
+        vis = doc.get("visibility")
+        if isinstance(vis, dict) and vis.get("collapsed"):
+            line += ("\n  VISIBILITY COLLAPSE: %s" % vis.get("says"))
+        print(line)
         return 0
 
     if cmd == "scan":

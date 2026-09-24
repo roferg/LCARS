@@ -1,0 +1,2 @@
+Yes — value/target/delta arrive on pull; editing a manual value recomputes delta only; status stays human. Delta is always derived (this month's value minus the same KPI's last published MBR value), so it's never hand-typed and must refresh the moment a manual value changes. Status is the captain's editorial judgment — seeded on pull but only ever changed by a human, consistent with our earlier ruling. Target comes from the KPI's config/default view.
+

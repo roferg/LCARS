@@ -1,0 +1,14 @@
+ELAPSED 6.4s EXIT 1
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/G5-ellipsis.html",
+  "allPainted": false,
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": false,
+      "distinctColours": 169
+    }
+  ]
+}

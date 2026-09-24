@@ -1,0 +1,46 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 20,
+  "unseenCount": 0,
+  "foundCount": 6,
+  "observations": [
+    {
+      "kind": "clipped",
+      "px": 191,
+      "count": 6,
+      "elements": [
+        "B-1004 September kitchen back\u2026",
+        "B-1005 September bathroom flo\u2026",
+        "B-1006 October porch repair",
+        "B-1007 October hallway tiles",
+        "B-1008 November utility room",
+        "B-1009 November garage floor"
+      ],
+      "message": "six rows in this list have text clipped by their own boxes \u2014 each needs between 125 and 191 px more room than its box gives it"
+    },
+    {
+      "kind": "misaligned",
+      "px": 40,
+      "elements": [
+        "B-1008 November utility room"
+      ],
+      "message": "the B-1008 November utility room control does not line up with the rows above it \u2014 its left edge is 40 px further right (60 px vs 20 px for the others)"
+    },
+    {
+      "kind": "overlap",
+      "px": 8,
+      "elements": [
+        "search one",
+        "search two"
+      ],
+      "message": "the search one and search two fields overlap \u2014 they share 8 px of the same space"
+    }
+  ],
+  "notes": [
+    "This page has a lot going on \u2014 here are the three worst. I held back 3 more."
+  ]
+}

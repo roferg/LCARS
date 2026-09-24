@@ -1,0 +1,42 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 20,
+  "unseenCount": 0,
+  "foundCount": 6,
+  "observations": [
+    {
+      "kind": "overlap",
+      "px": 8,
+      "elements": [
+        "search one",
+        "search two"
+      ],
+      "message": "the search one and search two fields overlap \u2014 they share 8 px of the same space"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "ADD BATCH",
+        "EXPORT"
+      ],
+      "message": "the ADD BATCH and EXPORT buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "Help",
+        "About"
+      ],
+      "message": "the Help and About links are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": [
+    "This page has a lot going on \u2014 here are the three worst. I held back 3 more."
+  ]
+}

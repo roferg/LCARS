@@ -1,0 +1,22 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 5,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "overlap",
+      "px": 34,
+      "elements": [
+        "OK",
+        "APPLY"
+      ],
+      "message": "the OK and APPLY buttons overlap \u2014 they share 34 px of the same space"
+    }
+  ],
+  "notes": []
+}

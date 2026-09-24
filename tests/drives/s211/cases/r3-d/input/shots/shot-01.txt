@@ -1,0 +1,1 @@
+shot-01 — full page of http://localhost:4362/ (2880x1626 px at 2x, 1440 CSS px wide), 577 distinct colours, PAINTED, title "Grout Tracker"

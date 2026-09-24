@@ -1,0 +1,12 @@
+I'll start by reading the contract and supporting files.
+
+The test suite never started (module-not-found), so it settles nothing. Now let me look at the shots and their readouts.
+
+Now let me look at the actual screenshots.
+
+I have enough. The build matches the drawing well except the **#status-line** — the drawing shows a mix-ratio line beneath the add row (orange), but the build has no such element; below the add row it goes straight to the footer. The test suite never ran (module-not-found), so the two `notVisual` criteria are untested.
+
+Verdict written. **Medium.**
+
+Six of eight criteria met: the orange GROUT TRACKER header, all three batches in one list directly under it, the add row with ADD BATCH to the right of the input. One gap: the drawing's orange mix-ratio **status line** beneath the add row is missing entirely — below the add row the page drops straight to the footer. The two `notVisual` criteria (restart persistence, CSV export) are `untested`: the test suite crashed on `Cannot find module ... vitest` before any test ran, so nothing settles them, and that's a runner failure, not a build fault.
+

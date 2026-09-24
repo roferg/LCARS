@@ -1,0 +1,10 @@
+[
+  {
+    "path": "src/views/MbrBuilderView.lock.test.tsx",
+    "reason": "The manifest names this as the lock-flow test to move to the month-only model. Its 'opens no dialog on Lock month' assertion is superseded by t-012, which makes 'Lock month' open the centered month-lock dialog; the case now asserts the dialog opens while still confirming it collects no lockedBy-handle or amendment-note field (the month-only model). All four tests are retained."
+  },
+  {
+    "path": "src/views/MbrBuilderView.restyle.test.tsx",
+    "reason": "Its assertion that no 'Discard draft' button renders is invalidated by t-012, which reintroduces the draft banner's 'Discard draft' control (opening the danger dialog). Removed only that one stale assertion; the New MBR / Refresh all data / Lock-in removal checks are kept."
+  }
+]

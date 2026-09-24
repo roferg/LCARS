@@ -1,0 +1,40 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 8,
+  "unseenCount": 0,
+  "foundCount": 3,
+  "observations": [
+    {
+      "kind": "misaligned",
+      "px": 676,
+      "elements": [
+        "Customer name here"
+      ],
+      "message": "the Customer name here control does not line up with the rows above it \u2014 its left edge is 676 px further right (709 px vs 33 px for the others)"
+    },
+    {
+      "kind": "misaligned",
+      "px": 276,
+      "elements": [
+        "Customer name here"
+      ],
+      "message": "the Customer name here control does not line up with the rows above it \u2014 its left edge is 276 px further right (309 px vs 33 px for the others)"
+    },
+    {
+      "kind": "clipped",
+      "px": 75,
+      "count": 3,
+      "elements": [
+        "Customer name here",
+        "Customer name here",
+        "Customer name here"
+      ],
+      "message": "three rows in different parts of the page have text clipped by their own boxes \u2014 each needs 75 px more room than its box gives it"
+    }
+  ],
+  "notes": []
+}

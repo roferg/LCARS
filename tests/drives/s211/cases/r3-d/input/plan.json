@@ -1,0 +1,59 @@
+{
+  "tickets": [
+    {
+      "id": "t-1",
+      "title": "The batch list",
+      "changesScreenAppearance": true,
+      "acceptanceCriteria": [
+        {
+          "text": "The batch list is the first thing under the header.",
+          "drawnAt": "#batch-list, directly beneath #app-header"
+        }
+      ]
+    },
+    {
+      "id": "t-2",
+      "title": "Adding a batch",
+      "changesScreenAppearance": true,
+      "acceptanceCriteria": [
+        {
+          "text": "An ADD BATCH button sits to the right of the input.",
+          "drawnAt": "#add-batch, right of #batch-input"
+        }
+      ]
+    },
+    {
+      "id": "t-3",
+      "title": "The status line",
+      "changesScreenAppearance": true,
+      "acceptanceCriteria": [
+        {
+          "text": "A status line beneath the add row shows the current mix ratio.",
+          "drawnAt": "#status-line, beneath #batch-row"
+        }
+      ]
+    },
+    {
+      "id": "t-4",
+      "title": "Persistence",
+      "changesScreenAppearance": false,
+      "acceptanceCriteria": [
+        {
+          "text": "Batches survive a restart.",
+          "notVisual": true
+        }
+      ]
+    },
+    {
+      "id": "t-6",
+      "title": "CSV export",
+      "changesScreenAppearance": false,
+      "acceptanceCriteria": [
+        {
+          "text": "The export writes valid CSV with a header row.",
+          "notVisual": true
+        }
+      ]
+    }
+  ]
+}

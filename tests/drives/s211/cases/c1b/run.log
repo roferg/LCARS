@@ -1,0 +1,9 @@
+  ◇ real copilot: /opt/homebrew/bin/copilot
+worker exit 0
+--- score.txt ---
+SCORE	medium
+WORKER_SCORE	medium
+DISAGREED	no
+WHY	the main flow works. 1 thing in the build does not match what you asked for — the mix-ratio status line (t-3-ac1) — and none of them is from the PRD itself: worth reading before you merge.
+COUNTS	6	1	1	1
+SUMMARY	Captain, the board runs and reads well: the orange GROUT TRACKER header, the batch list directly beneath it, and an add row with ADD BATCH to the right of the input all match your drawing, and your persistence test passes. The one miss is the status line — your drawing puts an orange mix-ratio line under the add row, and in the build that space is empty, the page dropping straight to the footer. The CSV export makes no visual claim and your tests don't cover it, so I left it unchecked.

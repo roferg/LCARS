@@ -1,0 +1,14 @@
+ELAPSED 5.5s EXIT 0
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/E3-dropdown-open.html",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 183
+    }
+  ]
+}

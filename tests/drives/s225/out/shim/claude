@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "claude $*" >>"/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/out/shim.log"
+exit 1

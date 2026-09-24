@@ -1,0 +1,1 @@
+gh issue list --state all --limit 200 --label lcars:mission --json number,title,state,labels,body,updatedAt,assignees,subIssuesSummary

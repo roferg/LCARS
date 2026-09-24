@@ -1,0 +1,8 @@
+Question 10
+
+Down to the last two, both about save mechanics. First, **insight autosave granularity**: the mockup shows no explicit "Save" button but a "last edited 2 min ago" meta. My recommendation: **insights autosave on blur (and debounced while typing), no explicit save action** — the whole draft persists to `data/snapshots/<id>.json` through the dev-write bridge, and the "last edited" meta reflects the most recent autosave. This matches the mockup (no visible save control) and your local-autosave ruling. Autosave-on-blur/debounced, or do you want an explicit save action?
+
+Options offered:
+Autosave on blur + debounced while typing; no explicit save control
+Explicit save action per insight
+Something else

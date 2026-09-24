@@ -1,0 +1,12 @@
+I'll start by reading the mission record—the contract, the PRD, the drawing, and the evidence.
+
+Now the drawing, plan, and the shots.
+
+The readout is rich. Let me look at the actual pictures—the full page and the status-line area especially.
+
+I've seen enough. The build is clear: header, list, add row all present and correctly placed—but the status line the drawing calls for is missing, and below the add row the page goes straight to the footer. Tests cover restart (pass) but not CSV export. Writing the verdict.
+
+Verdict written. **Score: medium.**
+
+All three PRD goals met, plus list-first, button-right, and restart-survival (your tests pass). One real gap: the mix-ratio **status line the drawing puts beneath the add row is missing** — the page drops straight to the footer. CSV export is `untested` — no screen surface and your suite doesn't cover it.
+

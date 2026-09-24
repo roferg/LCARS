@@ -1,0 +1,15 @@
+(This is not the Align interviewer — the spec is long since written and the build is at review. LCARS is asking you, the product owner, to answer ONE re-verify gate. The attached images are BEFORE/AFTER pairs of the same spots at the same screen size.)
+
+You logged four bugs against the MBR View Builder build after comparing it to your drawing. LCARS fixed them on the mission's branch and now asks ONE consolidated question:
+
+"4 logged bugs resolved on lcars-20260911-001-8cb0 (MBR View Builder)'s branch — ready for your single re-verify. Re-inspect the fixes (they ride this Mission's PR — no per-bug PR), then ANSWER this gate to accept them (each logged bug is folded to Done) or send the Mission back."
+
+What the rebuilt branch shows (attached pairs 121–126):
+1. Buttons (#207): "Pull data & start", "Continue to builder", "Lock month", "Back to builder" now have a small inline icon and a one-line label, like your drawing. (pairs 121, 122, 123, 124)
+2. "Last edited" (#208): the Draft banner now reads "Last edited just now" instead of "Last edited —". (pair 125)
+3. Month mismatch (#209): PARTLY fixed. The start card says "Next up · August 2026"; after Pull, the builder now says "MBR builder · August 2026" and the saved draft is August — but the in-between data-pull step still says "Pulling data · September 2026". (pair 126)
+4. Preview eye icon (#210): the builder's Preview button now shows the eye icon (pair 123). No separate code change was needed — the button-sizing fix made the existing icon visible.
+
+Accepting marks all four logged bugs Done and pushes these fixes onto the mission's open pull request (it does NOT merge or approve the pull request). Not accepting leaves the gate open; the one remaining difference can be logged as a new bug against the mission. Sending the mission back re-opens its whole spec (Align).
+
+Decide: ACCEPT, or DO NOT ACCEPT YET (and say what you would log), or SEND BACK. One line starting with your decision, then 1–3 sentences why.

@@ -1,0 +1,22 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 6,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "SAVE",
+        "CANCEL"
+      ],
+      "message": "the SAVE and CANCEL buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

@@ -1756,15 +1756,20 @@ except Exception: print(0)' "$xodir/drawing-parts.json" 2>/dev/null)"
   return 0
 }
 
-xo_pair_parts() { # <mission-dir> <xodir> — pair the drawing with every screen seen
-  local dir="$1" xodir="$2" f args=""
+xo_pair_parts() { # <mission-dir> <xodir> [baseline-matched] — pair the drawing with every screen seen
+  local dir="$1" xodir="$2" baseline="${3:-}" f nbuild=0
   [ -s "$xodir/drawing-parts.json" ] || return 0
   set --
   for f in "$xodir"/build-parts-*.json; do
     [ -s "$f" ] || continue
-    set -- "$@" --build "$f"
+    set -- "$@" --build "$f"; nbuild=$((nbuild + 1))
   done
-  [ "$#" -gt 0 ] || return 0
+  [ "$nbuild" -gt 0 ] || return 0
+  # THE BASELINE THIS RE-CHECK IS MEASURED AGAINST (S222 round 2). A number the
+  # PRIOR look recorded, handed in so the pairing can say whether this look went
+  # blind on the thing it is confirming. Absent on a first look — then no
+  # visibility block is written and nothing false is flagged.
+  [ -n "$baseline" ] && set -- "$@" --baseline-matched "$baseline"
   local said=""
   said="$("$XO_PY" "$XO_PARTS_PY" pair --drawing "$xodir/drawing-parts.json" \
         "$@" --out "$xodir/pairs.json" 2>/dev/null)" || said=""
@@ -3313,8 +3318,22 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # is where "did the fix actually make it look like the drawing" is answered,
   # so the pairs are recomputed from the relaunched build's own parts. The
   # drawing itself has not changed; its parts were read at the first look.
+  #
+  # BUT FIRST, RECORD WHAT THE PRIOR LOOK COULD SEE (S222 round 2). At this
+  # instant `pairs.json` is still the FIRST look's, so its `matched` is the
+  # part-match count the look this re-check confirms actually saw. Read that
+  # RECORDED number now, before we overwrite it, and hand it to the pairing as
+  # the baseline — the re-check reads the number, it never re-derives it from
+  # prose. If the re-check then sees far fewer, the pairing flags a visibility
+  # collapse and the accept below refuses to grade HIGH on what it could not see.
+  local vis_baseline=""
+  if [ -s "$xodir/pairs.json" ]; then
+    vis_baseline="$("$XO_PY" -c 'import json,sys
+try: print(int(json.load(open(sys.argv[1])).get("matched")))
+except Exception: pass' "$xodir/pairs.json" 2>/dev/null)"
+  fi
   rm -f "$xodir"/build-parts-[0-9]*.json 2>/dev/null || true
-  xo_pair_parts "$dir" "$xodir"
+  xo_pair_parts "$dir" "$xodir" "$vis_baseline"
   xo_touch_criteria "$dir" "$xodir" "$rwalk"
   # AND WHAT THE WALK MEASURED (S222 fix round 1) — the icon bigger than its
   # own control, the value that does not carry from one screen to the next.
@@ -3455,6 +3474,36 @@ $shots"
   fi
 
   # --- 6. ACCEPT, OR HAND IT BACK ------------------------------------------
+  # DID THE RE-CHECK GO BLIND? (S222 round 2). Before anything else, read the
+  # visibility comparison the pairing RECORDED against the prior look's part-match
+  # count. A sharp fall — the button it was re-checking gone from view — is "I
+  # could not check whether this was fixed", not "resolved": a look that saw
+  # nothing has not earned a pass, so this may never accept or grade HIGH on it.
+  # `escalate` exits, so this stops before the accept and before HIGH is labelled.
+  if [ -s "$xodir/pairs.json" ]; then
+    local vis_says=""
+    vis_says="$("$XO_PY" -c 'import json,sys
+try:
+  v = json.load(open(sys.argv[1])).get("visibility") or {}
+  if v.get("collapsed"): sys.stdout.write(str(v.get("says") or ""))
+except Exception: pass' "$xodir/pairs.json" 2>/dev/null)" || vis_says=""
+    if [ -n "$vis_says" ]; then
+      local vis_b vis_n
+      vis_b="$("$XO_PY" -c 'import json,sys
+try: print(int((json.load(open(sys.argv[1])).get("visibility") or {}).get("baseline")))
+except Exception: print(0)' "$xodir/pairs.json" 2>/dev/null)"
+      vis_n="$("$XO_PY" -c 'import json,sys
+try: print(int((json.load(open(sys.argv[1])).get("visibility") or {}).get("now")))
+except Exception: print(0)' "$xodir/pairs.json" 2>/dev/null)"
+      journal "$dir" visibility-collapse \
+        "$(printf '"baseline": %s, "now": %s, "detail": %s' \
+             "${vis_b:-0}" "${vis_n:-0}" "$(jstr "$vis_says")")"
+      escalate "$dir" verify "$vis_says" \
+        "$(printf '"stage": "verify", "reason": "visibility-collapse", "baseline": %s, "now": %s, "detail": %s' \
+             "${vis_b:-0}" "${vis_n:-0}" "$(jstr "$vis_says")")"
+    fi
+  fi
+
   if [ "$nnot" -gt 0 ] || [ "$nheld" -eq 0 ]; then
     # NEVER A SECOND ROUND (captain ruling). The gate stays exactly where
     # resolve-logs raised it, with the list of what still does not hold beside

@@ -1,0 +1,2 @@
+My rule governs — no month locks or publishes with any blank insight. Every KPI must have insight text before the month can lock, so a published month never contains an insight-less KPI. The mockup's lock-modal copy about publishing blanks is the account being loose; drop it and make the summary reflect that empty insights block the lock. Completion meter, lock gate, and what ships all say the same thing.
+

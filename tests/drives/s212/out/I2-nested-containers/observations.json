@@ -1,0 +1,31 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 8,
+  "unseenCount": 0,
+  "foundCount": 2,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "OUT-A",
+        "OUT-B"
+      ],
+      "message": "the OUT-A and OUT-B buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "IN-A",
+        "IN-B"
+      ],
+      "message": "the IN-A and IN-B buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

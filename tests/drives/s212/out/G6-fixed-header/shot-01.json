@@ -1,0 +1,172 @@
+{
+  "shot": "shot-01",
+  "file": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/out/G6-fixed-header/shot-01.png",
+  "capturedAt": "2026-09-16T01:05:22.402Z",
+  "selector": null,
+  "clip": "full-page",
+  "deviceScaleFactor": 2,
+  "pixels": {
+    "width": 2880,
+    "height": 1626,
+    "sampled": 1170720,
+    "distinctColours": 272,
+    "dominantColour": "#ffffff",
+    "dominantFraction": 0.9361,
+    "nonDominantFraction": 0.0639,
+    "mean": {
+      "r": 241,
+      "g": 241,
+      "b": 242
+    },
+    "painted": true,
+    "inkFloor": 0.005
+  },
+  "page": {
+    "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/G6-fixed-header.html",
+    "title": "",
+    "textExcerpt": "Grout Tracker G6 — a fixed header bar above scrolling content (CORRECT UI) ADD Content below the bar.",
+    "places": {},
+    "elements": [
+      {
+        "id": null,
+        "tag": "body",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "",
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 1440,
+          "h": 221
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1",
+        "seen": true
+      },
+      {
+        "id": "bar",
+        "tag": "div",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "Grout Tracker",
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 1440,
+          "h": 48
+        },
+        "color": "rgb(255, 255, 255)",
+        "background": "rgb(34, 34, 51)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.0",
+        "seen": true
+      },
+      {
+        "id": null,
+        "tag": "div",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "",
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 1440,
+          "h": 221
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.1",
+        "seen": true
+      },
+      {
+        "id": null,
+        "tag": "h3",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "G6 — a fixed header bar above scrolling content (CORRECT UI)",
+        "box": {
+          "x": 20,
+          "y": 86,
+          "w": 1400,
+          "h": 19
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.1.0",
+        "seen": true
+      },
+      {
+        "id": "b1",
+        "tag": "button",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "ADD",
+        "box": {
+          "x": 20,
+          "y": 122,
+          "w": 60,
+          "h": 34
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgb(239, 239, 239)",
+        "interactive": true,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.1.1",
+        "seen": true
+      },
+      {
+        "id": null,
+        "tag": "p",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "Content below the bar.",
+        "box": {
+          "x": 20,
+          "y": 170,
+          "w": 1400,
+          "h": 17
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "path": "0.1.1.2",
+        "seen": true
+      }
+    ],
+    "elementsNote": null,
+    "consoleErrors": []
+  }
+}

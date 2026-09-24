@@ -1,0 +1,12 @@
+I'll start by reading the mission's core record: criteria, PRD, plan, and the drawing.
+
+Now the drawing and shots readout.
+
+Let me look at the key screenshots.
+
+I have enough to render the verdict. The build largely matches, but the status line is missing and the persistence test genuinely fails.
+
+Verdict written. **MEDIUM.**
+
+All three PRD goals are met: the orange GROUT TRACKER header, the batch list of three sitting directly under it, and the add row with ADD BATCH to the right of the input. Two plan pieces fall short — the mix-ratio **status line is missing** entirely (below the add row it goes straight to the footer), and your **persistence test ran and failed** (empty list after a restart). CSV export is `untested` — no screen surface and no test covers it.
+

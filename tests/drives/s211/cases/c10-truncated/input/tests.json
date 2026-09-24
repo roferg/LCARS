@@ -1,0 +1,15 @@
+{
+  "ran": true,
+  "command": "pnpm test",
+  "cwd": "/private/tmp/wt",
+  "exitCode": 0,
+  "timedOut": false,
+  "timeoutSeconds": 300,
+  "durationSeconds": 41.2,
+  "outputBytes": 161,
+  "truncated": true,
+  "tailCapBytes": 8000,
+  "outputTail": "...are is trimmed (0.20ms)\n\u2714 batch codes are trimmed (0.22ms)\n\u2714 the add row is keyboard reachable (0.31ms)\n\u2139 tests 640\n\u2139 pass 640\n\u2139 fail 0\n\u2139 duration_ms 41203.6\n",
+  "outcome": "passed",
+  "verdict": "I ran your tests (`pnpm test`) and they passed, in 41s."
+}

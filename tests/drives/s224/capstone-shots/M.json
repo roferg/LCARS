@@ -1,0 +1,35 @@
+{
+ "title": "S224 capstone - one toggle, Number One did the rest",
+ "session": 224,
+ "intro": "Number One was switched on once against a fresh Mission parked at Verify on the S222 rewind build. Nobody prompted it again.",
+ "steps": [
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s224/capstone-shots/01-board-before-toggle.png",
+   "caption": "The captain's live LCARS board (his own viewscreen daemon, port 8790), cropped to the fresh capstone card in the Verify column just before Number One was switched on. The card reads \"MBR View Builder (S224 capstone)\", label lcars:verify, engine copilot, and the Number One row is EMPTY \u2014 no score, no headline, nothing. Estimate pills: $4.30-$28.39, reason HIGH, impl HIGH. Captured in headless Chrome at 430px wide, deviceScaleFactor 3; the PNG is 672 x 963 px."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s224/capstone-shots/02-number-one-engaged.png",
+   "caption": "The same card about 90 seconds after the single `lcars xo on --engine copilot` toggle. Number One has taken the conn by itself: an amber \"NUMBER ONE \u00b7 ENGAGED\" pill, the line \"Number One has the conn\", a live \"LAUNCHING\u2026\" state, and \u2014 the point \u2014 the captain's own VERIFY button is now struck out and disabled (dashed outline, \u2298) with a STAND DOWN offered in its place. Nobody typed anything after the toggle. 672 x 1091 px, headless Chrome, 430px viewport, deviceScaleFactor 3."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s224/capstone-shots/03-verdict-on-the-card.png",
+   "caption": "Thirty-one minutes after the toggle, with nobody prompting it: the capstone card now carries Number One's verdict \u2014 a red LOW pill reading \"Couldn't check the point of the mission \u00b7 74 of 102 checked\", a READ THE FULL REPORT button, an ACTUAL ~$9.76 pill beside the $4.30-$28.39 estimate, and the human VERIFY button replaced by \"\u2298 RESOLVING 4 LOGGED BUGS\u2026\" \u2014 it had already filed four bugs and started fixing them. 638 x 1389 px."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s224/capstone-shots/04-four-bugs-filed-and-driving.png",
+   "caption": "One of the four bugs Number One filed by itself, an hour after the toggle: GitHub Enterprise issue #220, \"the Pull data & start button's oversized icon\", now at lcars:plan, engine copilot, NUMBER ONE \u00b7 ENGAGED, \"Number One has the conn \u00b7 Copilot\", live progress \"PLOTTING THE COURSE TO ENGINEERING\u2026 \u2014 WRITING OUTPUT\". Nobody typed anything to make this happen; issues #220, #221, #222 and #223 were all filed and started in the same pass. 638 x 1154 px."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s224/capstone-shots/05-report-counts.png",
+   "caption": "The left rail of Number One's report, cropped and enlarged 3x: \"102 THINGS YOU ASKED FOR\" with a three-colour bar \u2014 70 worked, 4 didn't work, 28 I couldn't check \u2014 and the line \"plus 5 I measured \u2014 never moves the grade\". The S222 baseline's equivalent numbers on the same build were 101 things: 76 worked, 3 didn't work, 22 couldn't check. 645 x 684 px."
+  },
+  {
+   "shot": "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s224/capstone-shots/06-report-yours-to-decide.png",
+   "caption": "The verdict text and the two things Number One handed back to the captain rather than deciding itself. First \"THIS ONE IS YOURS TO DECIDE\": the planted automation trap \u2014 \"The loaded snapshot (2026-07-27.0) has zero automatable/wired KPIs ... could not be observed on screen\" \u2014 reported as unseeable, never as broken. Second: a finding nobody wrote a criterion for \u2014 the legend says \"Moda\" while three KPI rows label the same cohort \"Mode\" \u2014 ending \"nobody asked about this; I saw it in shot-s0-part-01\". Filters below: All 109, Didn't work 4, I measured 7, Couldn't check 28, Worked 70. 659 x 917 px."
+  }
+ ],
+ "blindTo": [
+  "The four bugs it filed were still being fixed when these were taken - the single re-grade had not run yet.",
+  "Only the captain's own viewscreen board was photographed; Number One's own 27 walk shots live in the mission record, not here."
+ ]
+}

@@ -1,0 +1,164 @@
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/H10-vignette.html",
+  "painted": true,
+  "places": [],
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": true,
+      "pixels": {
+        "width": 2880,
+        "height": 1626,
+        "sampled": 1170720,
+        "distinctColours": 235,
+        "dominantColour": "#ffffff",
+        "dominantFraction": 0.5552,
+        "nonDominantFraction": 0.4448,
+        "mean": {
+          "r": 244,
+          "g": 244,
+          "b": 244
+        },
+        "painted": true,
+        "inkFloor": 0.005
+      }
+    }
+  ],
+  "page": {
+    "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/H10-vignette.html",
+    "title": "",
+    "textExcerpt": "H10 — a decorative vignette over the page (readable everywhere) SAVE CANCEL",
+    "places": {},
+    "elements": [
+      {
+        "id": null,
+        "tag": "body",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "",
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 1440,
+          "h": 100
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "textOverflow": "clip",
+        "path": "0.1",
+        "seen": true,
+        "hiddenBy": null
+      },
+      {
+        "id": null,
+        "tag": "h3",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "H10 — a decorative vignette over the page (readable everywhere)",
+        "box": {
+          "x": 24,
+          "y": 40,
+          "w": 1392,
+          "h": 19
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "textOverflow": "clip",
+        "path": "0.1.0",
+        "seen": false,
+        "hiddenBy": "covered"
+      },
+      {
+        "id": "save-behind",
+        "tag": "button",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "SAVE",
+        "box": {
+          "x": 40,
+          "y": 100,
+          "w": 120,
+          "h": 36
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgb(239, 239, 239)",
+        "interactive": true,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "textOverflow": "clip",
+        "path": "0.1.1",
+        "seen": false,
+        "hiddenBy": "covered"
+      },
+      {
+        "id": "cancel-behind",
+        "tag": "button",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "CANCEL",
+        "box": {
+          "x": 160,
+          "y": 100,
+          "w": 120,
+          "h": 36
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgb(239, 239, 239)",
+        "interactive": true,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "textOverflow": "clip",
+        "path": "0.1.2",
+        "seen": false,
+        "hiddenBy": "covered"
+      },
+      {
+        "id": null,
+        "tag": "div",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "",
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 1440,
+          "h": 813
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "textOverflow": "clip",
+        "path": "0.1.3",
+        "seen": true,
+        "hiddenBy": null
+      }
+    ],
+    "elementsNote": null,
+    "consoleErrors": []
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 112,
+  "unseenCount": 2,
+  "foundCount": 0,
+  "observations": [],
+  "notes": []
+}

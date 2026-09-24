@@ -1,0 +1,31 @@
+{
+  "url": "http://localhost:5173/DX-Scorecard/#locked/2026-07-27.0",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "mbr-start",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 2509
+    },
+    {
+      "name": "mbr-collect",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 1533
+    },
+    {
+      "name": "mbr-build",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 5664
+    },
+    {
+      "name": "locked-view",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 3686
+    }
+  ]
+}

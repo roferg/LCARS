@@ -1,0 +1,15 @@
+{
+  "ran": true,
+  "command": "node --test",
+  "cwd": "/private/tmp/wt",
+  "exitCode": 0,
+  "timedOut": false,
+  "timeoutSeconds": 300,
+  "durationSeconds": 0.22,
+  "outputBytes": 174,
+  "truncated": false,
+  "tailCapBytes": 8000,
+  "outputTail": "\u2714 renders the header (0.874542ms)\n\u2714 batches survive a restart (6.815125ms)\n\u2139 tests 2\n\u2139 suites 0\n\u2139 pass 2\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 129.965708\n",
+  "outcome": "passed",
+  "verdict": "I ran your tests (`node --test`) and they passed, in under a second."
+}

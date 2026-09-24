@@ -1,0 +1,27 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 11,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "count": 6,
+      "elements": [
+        "the unlabeled field",
+        "the unlabeled field",
+        "the unlabeled field",
+        "the unlabeled field",
+        "the unlabeled field",
+        "the unlabeled field"
+      ],
+      "message": "six fields in different parts of the page are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

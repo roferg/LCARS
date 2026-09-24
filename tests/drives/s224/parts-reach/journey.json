@@ -1,0 +1,8 @@
+{"entry": null,
+ "steps": [
+  {"key":"j1","name":"from the start screen, click \"Pull data & start\"","do":"click","match":["Pull data & start"],"expect":"the collect screen"},
+  {"key":"j2","name":"from the collect screen, click \"Continue to builder\"","do":"click","match":["Continue to builder"],"expect":"the builder screen"},
+  {"key":"j3","name":"click \"Preview\"","do":"click","match":["Preview"],"expect":"the preview screen"},
+  {"key":"j4","name":"come back to the builder","do":"click","match":["Back to builder"],"expect":"the builder screen"},
+  {"key":"j5","name":"click \"Lock month\"","do":"click","match":["Lock month"],"expect":"the locked screen"}
+ ]}

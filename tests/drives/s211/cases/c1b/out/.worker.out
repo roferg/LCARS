@@ -1,0 +1,12 @@
+I'll start by reading the contract and supporting evidence.
+
+Now the drawing, plan, and shot readouts.
+
+Let me look at the actual screenshots — especially the full page and the area below the add row.
+
+I have enough evidence. The build matches the drawing except for the missing status line beneath the add row. Writing the verdict.
+
+Verdict written. **Score: medium.**
+
+Five of six visual criteria and both PRD goals hold; the one contradiction is the missing orange mix-ratio status line under the add row (t-3-ac1) — the drawing shows it, the build drops straight to the footer (shot-01, `status-line` present:false). Persistence passes via your own tests; CSV export is uncovered by the suite, so left `untested`.
+

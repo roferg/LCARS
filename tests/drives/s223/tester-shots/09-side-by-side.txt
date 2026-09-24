@@ -1,0 +1,1 @@
+Side by side brings live activity back beside the report; the choice is remembered in the browser and survives a reload.

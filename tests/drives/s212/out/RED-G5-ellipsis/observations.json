@@ -1,0 +1,21 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 3,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "clipped",
+      "px": 217,
+      "elements": [
+        "Roganscott Ferguson \u2014 Septemb\u2026"
+      ],
+      "message": "the Roganscott Ferguson \u2014 Septemb\u2026 control text is clipped by its own box \u2014 it needs 217 px more room than the box gives it"
+    }
+  ],
+  "notes": []
+}

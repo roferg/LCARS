@@ -1,0 +1,31 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 43,
+  "unseenCount": 48,
+  "foundCount": 2,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "A16",
+        "B16"
+      ],
+      "message": "the A16 and B16 buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "A17",
+        "B17"
+      ],
+      "message": "the A17 and B17 buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

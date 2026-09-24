@@ -1,0 +1,9 @@
+(This is not the Align interviewer — the build is at review. LCARS is asking you, the product owner, to answer the re-verify gate again.)
+
+After your "DO NOT ACCEPT YET", your new bug was logged (#211 "Data-pull (collect) step still shows September 2026 after pulling the August review") and fixed on the mission's branch. LCARS now asks:
+
+"5 logged bugs resolved on lcars-20260911-001-8cb0 (MBR View Builder)'s branch — ready for your single re-verify. Re-inspect the fixes (they ride this Mission's PR — no per-bug PR), then ANSWER this gate to accept them (each logged bug is folded to Done) or send the Mission back."
+
+Attached: pair 139 — the collect step BEFORE ("Pulling data · September 2026") and AFTER ("Pulling data · August 2026"); 138 — the builder after that pull ("MBR builder · August 2026"); and your earlier pairs 121–125 (buttons, Preview eye icon, "Last edited just now"), which are unchanged by this last fix.
+
+Accepting marks all five logged bugs Done and pushes the fixes onto the mission's open pull request (it does NOT merge or approve the pull request). Decide: ACCEPT, DO NOT ACCEPT YET (say what), or SEND BACK. One line starting with your decision, then 1–2 sentences why.

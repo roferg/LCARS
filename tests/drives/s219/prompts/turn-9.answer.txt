@@ -1,0 +1,2 @@
+Local-only on disk, as today — the draft autosaves to `data/snapshots/<id>.json` via the existing dev-write bridge, and the banner wording just reflects that local autosave. There's no backend; that's a firm ADR-003 decision, and adding one would blow scope. "Lock month" writes the immutable snapshot locally, and publishing stays the existing commit/PR path.
+

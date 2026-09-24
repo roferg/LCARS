@@ -1,0 +1,40 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 32,
+  "unseenCount": 13,
+  "foundCount": 3,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "OA",
+        "OB"
+      ],
+      "message": "the OA and OB buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "Z0A",
+        "Z0B"
+      ],
+      "message": "the Z0A and Z0B buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "Z2A",
+        "Z2B"
+      ],
+      "message": "the Z2A and Z2B buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

@@ -1,0 +1,1 @@
+shot-03 — clipped to #app-header of http://localhost:4362/ (2880x102 px at 2x, 1440 CSS px wide), 122 distinct colours, PAINTED, title "Grout Tracker"

@@ -1,0 +1,7 @@
+SCORE	medium
+WORKER_SCORE	medium
+DISAGREED	no
+WHY	1 thing I am reporting as short of the mark, but it contradicts anything you wrote down — so I am showing you it rather than filing it against the build.
+COUNTS	1	1	0	0
+SUMMARY	The batch list is there and works, but the add button is below the list, not above it.
+OBSERVATIONS	1

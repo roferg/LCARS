@@ -1,0 +1,6 @@
+The captain's live LCARS board (his own viewscreen daemon, port 8790), cropped to the
+fresh capstone card in the Verify column just before Number One was switched on. The
+card reads "MBR View Builder (S224 capstone)", label lcars:verify, engine copilot, and
+the Number One row is EMPTY — no score, no headline, nothing. Estimate pills: $4.30-$28.39,
+reason HIGH, impl HIGH. Captured in headless Chrome at 430px wide, deviceScaleFactor 3;
+the PNG is 672 x 963 px.

@@ -1,0 +1,11 @@
+4 logged bugs resolved to Verify and folded onto #192 (MBR View Builder):
+  • lcars-20260919-001-8cb0 — Primary action buttons render with oversized icons and labels wrapped onto 2–3 lines
+  • lcars-20260919-002-8cb0 — Draft banner shows \
+  • lcars-20260919-003-8cb0 — \
+  • lcars-20260919-004-8cb0 — Builder header \
+
+Raised ONE consolidated re-verify gate on lcars-20260911-001-8cb0 and pinged you once.
+The fixes ride this Mission's PR — there is NO per-bug PR. Re-inspect them, then:
+  lcars answer respond --mission lcars-20260911-001-8cb0 --answer "…"   — accept (folds each logged bug to Done)
+  lcars feedback lcars-20260911-001-8cb0 "…"                            — send the Mission back
+Open the inbox with `lcars answer` to act on the consolidated card.

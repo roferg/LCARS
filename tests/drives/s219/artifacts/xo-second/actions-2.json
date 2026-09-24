@@ -1,0 +1,14 @@
+[
+  {"navigate": "http://localhost:5173/DX-Scorecard/#mbr"},
+  {"click": ".start-action button"},
+  {"wait": 2500},
+  {"click": ".btn.success"},
+  {"wait": 1200},
+  {"screenshot": "builder-full"},
+  {"click": ".btn.warn-primary"},
+  {"wait": 500},
+  {"screenshot": "lock-dialog"},
+  {"press": "Escape"},
+  {"wait": 300},
+  {"screenshot": "builder-after-esc"}
+]

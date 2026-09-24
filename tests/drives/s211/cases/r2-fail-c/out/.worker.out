@@ -1,0 +1,17 @@
+I'll start by reading the contract and supporting files.
+
+Now the drawing, plan, and shot readouts.
+
+Let me look at the actual screenshots.
+
+Everything's clear. The full-page shot confirms header, list, and add row are all present, but there's **no status-line** — below the add row it goes straight to the footer, contradicting the drawing (t-3). The project's own test for persistence **ran and failed** (t-4). Writing the verdict.
+
+Verdict written. **Score: medium.**
+
+All three PRD goals are met — header names the board (GROUT TRACKER, orange), every batch is listed on the page (B-1041/1042/1043), and the add row lets you add one in place. Two plan criteria fall short:
+
+- **t-3** (gap): the drawing's orange mix-ratio line beneath the add row is missing entirely — the page drops straight to the footer.
+- **t-4** (gap): your own persistence test ran and went red — batches don't survive a restart.
+
+**t-6** (CSV export) is untested — no screen, no covering test line. Both primaries remaining intact keeps this out of LOW.
+

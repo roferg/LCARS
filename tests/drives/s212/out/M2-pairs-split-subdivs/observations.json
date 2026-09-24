@@ -1,0 +1,27 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 18,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "count": 6,
+      "elements": [
+        "L0",
+        "R0",
+        "L1",
+        "R1",
+        "L2",
+        "R2"
+      ],
+      "message": "six buttons in different parts of the page are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

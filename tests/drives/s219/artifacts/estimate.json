@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 3,
+  "reasoningCriticality": "high",
+  "implCriticality": "high",
+  "models": {
+    "research": "opus",
+    "validate": "opus",
+    "plan": "opus",
+    "planReview": "opus",
+    "implement": "opus",
+    "verify": "sonnet"
+  },
+  "tokenEstimates": {
+    "research": { "low": 40000, "high": 200000 },
+    "validate": { "low": 18000, "high": 70000 },
+    "plan": { "low": 30000, "high": 110000 },
+    "planReview": { "low": 25000, "high": 120000 },
+    "implement": { "low": 350000, "high": 2600000 },
+    "verify": { "low": 15000, "high": 55000 }
+  },
+  "requestEstimates": {
+    "research": { "low": 3, "high": 12 },
+    "validate": { "low": 1, "high": 2 },
+    "plan": { "low": 1, "high": 2 },
+    "planReview": { "low": 1, "high": 3 },
+    "implement": { "low": 22, "high": 130 },
+    "verify": { "low": 1, "high": 1 }
+  },
+  "deviations": [],
+  "rationale": "This is a full rebuild of the MBR builder across three screens (Reviews entry, data-pull collection, redesigned builder) with real state and persistence, not a restyle. The reasoning is genuinely fraught: several independent, easy-to-conflate invariants must all hold at once \u2014 delta-vs-last-MBR is always derived (never typed) and recomputes on manual edits, status is a human-owned editorial snapshot seeded at pull time and never auto-recomputed, \"Carried\" is pull-time provenance kept strictly separate from the status marker, and the month-only lock gate equals the completion meter (every KPI has a non-empty insight). The mockup-vs-brief tie-break rules (look wins vs behaviour wins, per-bucket lock affordances dropped) add scope-judgement risk. The seeded ADRs frame the architecture but the correctness reasoning and vertical-slice decomposition remain high, so research/validate/plan/planReview all warrant Opus.\n\nImplementation is intricate and touches sensitive boundaries: a large CSS/class-vocabulary port into src/styles.css (checked by disk-reading contrast/token tests), DEV-only gating enforced by build-purity.test.ts, autosave/debounce, collection progress state, re-pull semantics that preserve manual values and insights, and reuse of the existing LockedView path for shared Preview/View rendering. Implement dominates both units: the plan likely decomposes into ~8\u201316 vertical slices, each running the adversarial Test-Writer + Implementer pair with retries against a broad co-located test suite, so request and token bands are wide. Verify stays Sonnet as a final check.",
+  "cost": {
+    "cli": "copilot",
+    "unit": "usd",
+    "billing": "usage",
+    "usd": { "low": 4.302, "high": 28.395 },
+    "includedCreditsUsd": 10,
+    "netUsd": { "low": 0, "high": 18.395 }
+  },
+  "estimatorModel": "opus"
+}

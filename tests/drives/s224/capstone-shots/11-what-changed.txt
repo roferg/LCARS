@@ -1,0 +1,4 @@
+The one line in the report that says what happened between the two looks: "WHAT CHANGED — 4 bugs
+filed · 4 fixed." Underneath it, the assistant refuses to upgrade its own grade on that basis —
+"Why it's still LOW: I could not check the point of the mission, so it is not vouched for — look for
+yourself." 1052 x 261 px, headless Chrome at deviceScaleFactor 2.

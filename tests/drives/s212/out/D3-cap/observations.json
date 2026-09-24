@@ -1,0 +1,39 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 27,
+  "unseenCount": 0,
+  "foundCount": 10,
+  "observations": [
+    {
+      "kind": "clipped",
+      "px": 130,
+      "elements": [
+        "a very long clipped bravo tit\u2026"
+      ],
+      "message": "the a very long clipped bravo tit\u2026 control text is clipped by its own box \u2014 it needs 130 px more room than the box gives it"
+    },
+    {
+      "kind": "clipped",
+      "px": 129,
+      "elements": [
+        "a very long clipped alpha tit\u2026"
+      ],
+      "message": "the a very long clipped alpha tit\u2026 control text is clipped by its own box \u2014 it needs 129 px more room than the box gives it"
+    },
+    {
+      "kind": "misaligned",
+      "px": 60,
+      "elements": [
+        "OB"
+      ],
+      "message": "the OB control does not line up with the rows above it \u2014 its left edge is 60 px further right (580 px vs 520 px for the others)"
+    }
+  ],
+  "notes": [
+    "This page has a lot going on \u2014 here are the three worst. I held back 7 more."
+  ]
+}

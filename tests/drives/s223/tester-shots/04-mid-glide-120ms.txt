@@ -1,0 +1,1 @@
+Mid-glide 120ms after clicking the Number One tab: the window is growing (1080 to 1566px over ~500ms), live activity is sliding out to the left, and the peach sweep and glow are on the top edge.

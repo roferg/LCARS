@@ -1,0 +1,115 @@
+{
+  "score": "medium",
+  "workerScore": "medium",
+  "scoreDisagreed": false,
+  "derivation": "the main flow works. 2 things in the build do not match what you asked for \u2014 the mix-ratio status line and batches do not survive a restart (t-3-ac1, t-4-ac1) \u2014 and none of them is from the PRD itself: worth reading before you merge.",
+  "counts": {
+    "met": 5,
+    "gap": 2,
+    "untested": 1,
+    "contradictions": 2
+  },
+  "criteria": [
+    {
+      "id": "prd-1",
+      "text": "The board shows every recorded grout batch in one list on the page.",
+      "status": "met",
+      "note": "One dark list panel sits under the header with every batch on its own line \u2014 B-1041, B-1042 and B-1043, all on the page at once.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-01"
+    },
+    {
+      "id": "prd-2",
+      "text": "A new batch can be added from the board itself, without leaving the page.",
+      "status": "met",
+      "note": "The add row is right there on the board \u2014 a 'new batch code' input with an ADD BATCH button beside it, no navigating away.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-01"
+    },
+    {
+      "id": "prd-3",
+      "text": "The board names itself in a header so the tiler knows what he is looking at.",
+      "status": "met",
+      "note": "An orange band across the top reads GROUT TRACKER, just as the drawing has it.",
+      "primary": true,
+      "evidence": "picture",
+      "shot": "shot-01"
+    },
+    {
+      "id": "t-1-ac1",
+      "text": "The batch list is the first thing under the header.",
+      "status": "met",
+      "note": "The list starts at y=71, right under the header that ends at y=51 \u2014 nothing between them, exactly as drawn.",
+      "primary": false,
+      "evidence": "measurement",
+      "shot": "shot-05"
+    },
+    {
+      "id": "t-2-ac1",
+      "text": "An ADD BATCH button sits to the right of the input.",
+      "status": "met",
+      "note": "The input runs from x=20 and the ADD BATCH button sits to its right at x=1293, on the same row \u2014 as the drawing shows.",
+      "primary": false,
+      "evidence": "measurement",
+      "shot": "shot-06"
+    },
+    {
+      "id": "t-3-ac1",
+      "text": "A status line beneath the add row shows the current mix ratio.",
+      "status": "gap",
+      "note": "Your drawing has a mix-ratio status line in orange sitting beneath the add row; it isn't there at all \u2014 below the add row the page goes straight to the footer.",
+      "primary": false,
+      "evidence": "measurement",
+      "shot": "shot-01"
+    },
+    {
+      "id": "t-4-ac1",
+      "text": "Batches survive a restart.",
+      "status": "gap",
+      "note": "Your own test for this ran and went red \u2014 the batches were gone after a restart.",
+      "primary": false,
+      "evidence": "tests",
+      "testQuote": "\u2716 batches survive a restart (2.711625ms)"
+    },
+    {
+      "id": "t-6-ac1",
+      "text": "The export writes valid CSV with a header row.",
+      "status": "untested",
+      "note": "Nothing on screen shows an export, and your test suite says nothing about CSV \u2014 the run only covers the header and a restart, so I could not check this.",
+      "primary": false,
+      "evidence": "none"
+    }
+  ],
+  "gaps": [
+    {
+      "title": "the mix-ratio status line",
+      "expected": "a status line beneath the add row, in orange, showing the current mix ratio and how many batches are open",
+      "saw": "nothing there \u2014 below the add row the page goes straight to the footer",
+      "shots": [
+        "shot-01"
+      ],
+      "kind": "contradiction",
+      "criterion": "t-3-ac1",
+      "evidence": "picture"
+    },
+    {
+      "title": "batches do not survive a restart",
+      "expected": "the batches you added to still be there after a restart",
+      "saw": "an empty list \u2014 the batches were gone",
+      "shots": [],
+      "evidence": "tests",
+      "testQuote": "\u2716 batches survive a restart (2.711625ms)",
+      "kind": "contradiction",
+      "criterion": "t-4-ac1"
+    }
+  ],
+  "escalations": [],
+  "alsoChecked": [
+    "The ADD BATCH button is teal (rgb(90,166,184)); your drawing doesn't say what colour it should be, so I'm treating that as the builder's call.",
+    "There's a 'grout tracker \u00b7 sandbox build' footer at the bottom; the drawing says nothing about a footer, so that's the builder's call too.",
+    "No console errors on the page."
+  ],
+  "summary": "The board itself looks right, captain: the orange GROUT TRACKER header, the batch list directly beneath it, and an input with ADD BATCH to its right all match your drawing. Two things fall short \u2014 the mix-ratio status line you drew beneath the add row isn't there at all, and your own test for batches surviving a restart ran and failed, the list coming back empty. The CSV export makes no visual claim and no test covers it, so I couldn't check it."
+}

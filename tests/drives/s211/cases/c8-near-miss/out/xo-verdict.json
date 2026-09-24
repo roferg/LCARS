@@ -1,0 +1,86 @@
+{
+  "score": "medium",
+  "criteria": [
+    {
+      "id": "prd-1",
+      "text": "The board shows every recorded grout batch in one list on the page.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "All three batches sit in one list under the header — B-1041, B-1042 and B-1043, one line each, on the single page. Nothing is paged away or hidden."
+    },
+    {
+      "id": "prd-2",
+      "text": "A new batch can be added from the board itself, without leaving the page.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "The add row is right there on the board — a 'new batch code' input with an ADD BATCH button beside it — so a batch is added in place, with no navigation away."
+    },
+    {
+      "id": "prd-3",
+      "text": "The board names itself in a header so the tiler knows what he is looking at.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "The orange band across the top reads GROUT TRACKER, exactly as the drawing has it — the board names itself at the top of the page."
+    },
+    {
+      "id": "t-1-ac1",
+      "text": "The batch list is the first thing under the header.",
+      "status": "met",
+      "evidence": "measurement",
+      "shot": "shot-05",
+      "note": "The header ends at y=51 and the batch list starts at y=71 — it is the first thing beneath the header, just as the drawing shows, with nothing in between."
+    },
+    {
+      "id": "t-2-ac1",
+      "text": "An ADD BATCH button sits to the right of the input.",
+      "status": "met",
+      "evidence": "measurement",
+      "shot": "shot-06",
+      "note": "The input runs from x=20 to x=1283 and the ADD BATCH button sits at x=1293 — to the right of the input, as drawn."
+    },
+    {
+      "id": "t-3-ac1",
+      "text": "A status line beneath the add row shows the current mix ratio.",
+      "status": "gap",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "Your drawing has an orange mix-ratio line ('MIX RATIO 3:1 · 2 BATCHES OPEN') sitting under the add row. It isn't there at all — below the add row the page goes straight to the footer 'grout tracker · sandbox build'. The readout confirms no status-line element is present."
+    },
+    {
+      "id": "t-4-ac1",
+      "text": "Batches survive a restart.",
+      "status": "met",
+      "evidence": "tests",
+      "testQuote": "\u2714 batches survive a restart (6.81ms)",
+      "note": "Nothing on screen can settle this, but your own suite covers it and it passes."
+    },
+    {
+      "id": "t-6-ac1",
+      "text": "The export writes valid CSV with a header row.",
+      "status": "untested",
+      "evidence": "tests",
+      "note": "Your suite checks that the export button renders and that a click handler is wired, but nothing in it checks that the export writes valid CSV with a header row — and there is no export surface on screen to look at. I could not check this one."
+    }
+  ],
+  "gaps": [
+    {
+      "title": "the mix-ratio status line",
+      "expected": "an orange status line beneath the add row reading the mix ratio and how many batches are open",
+      "saw": "nothing there — below the add row the page drops straight to the footer",
+      "shots": ["shot-01"],
+      "kind": "contradiction",
+      "criterion": "t-3-ac1"
+    }
+  ],
+  "escalations": [],
+  "alsoChecked": [
+    "The ADD BATCH button is teal (rgb(90,166,184)); your drawing doesn't say what colour it should be, so I'm treating that as the builder's call and not a finding.",
+    "There is a footer, 'grout tracker · sandbox build', in muted grey at the bottom; your drawing says nothing about a footer, so that's the builder's call too.",
+    "The list shows three batches (B-1041/1042/1043) where the holodeck drawing had two placeholder rows — content the builder chose, not a mismatch.",
+    "No console errors were reported on the page."
+  ],
+  "summary": "The board runs and the three things you actually asked for in the PRD are all there — one list of every batch under a GROUT TRACKER header, and an add row on the page itself. The one real miss is the mix-ratio status line: your drawing puts it beneath the add row, but the build skips it and goes straight to the footer. Persistence passes your own tests; the CSV-export criterion I couldn't check, because the suite only proves the button and handler exist, not that the CSV it writes is valid."
+}

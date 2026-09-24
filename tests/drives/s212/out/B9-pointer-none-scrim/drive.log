@@ -1,0 +1,14 @@
+ELAPSED 5.4s EXIT 0
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/B9-pointer-none-scrim.html",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 175
+    }
+  ]
+}

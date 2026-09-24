@@ -1,0 +1,8 @@
+Question 1
+
+Let's sharpen the core data model first. The mockup shows each KPI with a per-KPI status select over the five silhouettes (On track / Watch / Off track / Tracking / WIP). My recommendation: status is **set here in the builder** per KPI (seeded from the scorecard's current status on pull, but freely overridable), because an MBR is an editorial snapshot — you're making a judgement call about each metric for this month, not just mirroring live state. Do you want status set in the builder, or strictly inherited read-only from the scorecard?
+
+Options offered:
+Set in the builder (seeded from scorecard, overridable)
+Inherited read-only from the scorecard
+Something else

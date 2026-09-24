@@ -1,0 +1,39 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 7,
+  "unseenCount": 0,
+  "foundCount": 3,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "OK",
+        "GO"
+      ],
+      "message": "the OK and GO buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "overlap",
+      "px": 380,
+      "elements": [
+        ".",
+        "."
+      ],
+      "message": "the . and . buttons overlap \u2014 they share 380 px of the same space"
+    },
+    {
+      "kind": "clipped",
+      "px": 115,
+      "elements": [
+        "Margaret Thornbury-Wallace"
+      ],
+      "message": "the Margaret Thornbury-Wallace control text is clipped by its own box \u2014 it needs 115 px more room than the box gives it"
+    }
+  ],
+  "notes": []
+}

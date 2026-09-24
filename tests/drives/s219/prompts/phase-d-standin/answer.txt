@@ -1,0 +1,46 @@
+● Disabled tools: 1up-get_skill_details, 1up-install_skill, 1up-list_mcp_servers, 1up-list_skills,
+  1up-search_skills, 1up-setup_datadog, 1up-setup_kusto, 1up-setup_pagerduty, 1up-setup_sentry,
+  1up-setup_slack, 1up-setup_splunk, 1up-uninstall_skill, Kusto-acr, Kusto-adme, Kusto-advisor,
+  Kusto-aks, Kusto-appconfig, Kusto-applens, Kusto-applicationinsights, Kusto-appservice, Kusto-arm,
+  Kusto-azd, Kusto-azurebackup, Kusto-azuremigrate, Kusto-azureterraform,
+  Kusto-azureterraformbestpractices, Kusto-bicepschema, Kusto-cloudarchitect, Kusto-communication,
+  Kusto-compute, Kusto-confidentialledger, Kusto-containerapps, Kusto-cosmos, Kusto-datadog,
+  Kusto-deploy, Kusto-deviceregistry, Kusto-documentation, Kusto-eventgrid, Kusto-eventhubs,
+  Kusto-extension_azqr, Kusto-extension_cli_generate, Kusto-extension_cli_install, Kusto-fileshares,
+  Kusto-foundry, Kusto-foundryextensions, Kusto-functionapp, Kusto-functions,
+  Kusto-get_azure_bestpractices, Kusto-grafana, Kusto-group_list, Kusto-group_resource_list,
+  Kusto-insights, Kusto-iothub, Kusto-iotoperations, Kusto-keyvault, Kusto-kusto, Kusto-loadtesting,
+  Kusto-managedlustre, Kusto-marketplace, Kusto-monitor, Kusto-mysql, Kusto-optimization,
+  Kusto-policy, Kusto-postgres, Kusto-pricing, Kusto-quota, Kusto-redis, Kusto-resilience,
+  Kusto-resourcehealth, Kusto-role, Kusto-search, Kusto-servicebus, Kusto-servicefabric,
+  Kusto-signalr, Kusto-speech, Kusto-sql, Kusto-sreagent, Kusto-storage, Kusto-storagesync,
+  Kusto-subscription_list, Kusto-virtualdesktop, Kusto-wellarchitectedframework, Kusto-workbooks,
+  Port-describe_user_details, Port-get_blueprint_permissions, Port-get_page, Port-get_sidebar,
+  Port-list_actions, Port-list_blueprints, Port-list_entities, Port-list_scorecards,
+  Port-list_self_service_triggers, Port-load_skill, Port-load_widget_schema, Port-search_audit_logs,
+  Port-search_port_knowledge_sources, Port-simulate_blueprint_permissions, Port-track_action_run,
+  Port-validate_page, Slack-slack_read_canvas, Slack-slack_read_channel, Slack-slack_read_thread,
+  Slack-slack_read_user_profile, Slack-slack_search_channels, Slack-slack_search_public,
+  Slack-slack_search_public_and_private, Slack-slack_search_users, bash, create, edit,
+  factories_manage, fetch_copilot_cli_documentation, gh-projects-projects_get,
+  gh-projects-projects_list, gh-projects-projects_write, glob, grep, list_agents, list_bash,
+  read_agent, read_bash, run_factory, session_store_sql, skill, slack-slack_read_canvas,
+  slack-slack_read_channel, slack-slack_read_thread, slack-slack_read_user_profile,
+  slack-slack_search_channels, slack-slack_search_public, slack-slack_search_public_and_private,
+  slack-slack_search_users, sql, stop_bash, task, web_fetch, workiq-accept_eula, workiq-ask,
+  workiq-call_function, workiq-create_entity, workiq-delete_entity, workiq-do_action, workiq-fetch,
+  workiq-fetch_blob, workiq-get_debug_link, workiq-get_schema, workiq-list_agents, workiq-retrieve,
+  workiq-search_paths, workiq-update_entity, write_agent
+
+I compared each build screen to the drawing. Here are the bugs I'd log.
+
+1. **Primary action buttons render broken (text wrapping + icon stacked).** Across the flow, every green/gold pill button collapses to a narrow width so its label wraps onto 2–3 lines and its icon jumps *above* the text instead of sitting inline beside it. The drawing shows single-line buttons with the icon to the left of the label. Instances: the start card's "Pull data & start" (build-1b: icon-over-"Pull / data & / start" vs drawing's inline "⬇ Pull data & start"), the collect step's "Continue to builder" (build-2b vs drawing-2's single-line "Continue to builder →"), and the builder header's "Lock month" (build-3b: "Lock / month" wrapped vs drawing-3's single-line "🔒 Lock month"). Same defect also on the Preview header's "Back to builder." This is a systemic button sizing/layout regression and it's visible on every screen.
+
+2. **"Last edited —" in the draft banner.** The builder's Draft strip reads "Last edited — · 3 of 5 buckets complete," showing an em dash where a timestamp belongs (drawing-3 shows "Last edited 2 min ago"). The draft clearly contains authored insight prose, so an autosave has occurred and the meta should reflect it — per the resolved decision, "last edited" reflects the latest autosave. A blank timestamp on a draft with content is a visible defect, not a demo-date difference.
+
+3. **Advertised next-up month doesn't match the review that opens.** The start card's "NEXT UP" is "August 2026" (correct: last published is July 2026), but pressing "Pull data & start" opens a review titled "September 2026" — the collect step and the builder header both say September 2026. The build skips a month between what it promises and what it creates. (Full ruling below.)
+
+4. **Preview button missing its eye icon (minor).** In the builder header the drawing's "Preview" carries an eye icon (build-3b/drawing-3); the build renders "Preview" as bare text. Low severity, but a visible fidelity gap from the drawing.
+
+MONTH MISMATCH RULING: **Yes — bug.** This isn't the "demo dates" carve-out. The card and the review it launches live in the *same* build, and they disagree: the card advertises August 2026 and the started review is September 2026. With July 2026 as the last published month, "next up" is correctly August, so opening September skips a month and breaks the card→review contract. Logged as bug #3.
+

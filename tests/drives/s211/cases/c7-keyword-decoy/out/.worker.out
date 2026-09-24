@@ -1,0 +1,18 @@
+I'll start by reading the mission record — the contract, the PRD, the drawing, and the test results.
+
+Now the drawing, plan, and the shots.
+
+Let me look at the actual screenshots, especially the full page and the region below the add row.
+
+I have enough to render a verdict. Clear picture: header, list, and add row all present and correctly placed — but the mix-ratio status line the drawing shows beneath the add row is missing (page goes straight to footer). Tests pass but the CSV keywords are a decoy — they cover a *parser*, not the export writing a header row.
+
+Verdict written. Summary:
+
+- **All three primary (PRD) criteria met** — header, one-list of all batches, and on-page add row, confirmed by the shots.
+- **Layout criteria met** — list first under header (y=51→71), ADD BATCH right of input (x=1293 vs x=20).
+- **One gap** (t-3-ac1, contradiction): the drawing's orange mix-ratio line beneath the add row is missing — page goes straight to the footer.
+- **t-4 met via tests** ("✔ batches survive a restart").
+- **t-6 untested** — the green csv lines test a *parser*, not the export writing a header row (the keyword decoy); no evidence covers it.
+
+Recommended score: **medium**.
+

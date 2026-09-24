@@ -1,0 +1,26 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 9,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "count": 3,
+      "elements": [
+        "Overview",
+        "Activity",
+        "Settings",
+        "Day",
+        "Week"
+      ],
+      "message": "five buttons in this row are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

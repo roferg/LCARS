@@ -1,0 +1,29 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 79,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "count": 38,
+      "elements": [
+        "Edit",
+        "Delete",
+        "Edit",
+        "Delete",
+        "Edit",
+        "Delete",
+        "Edit",
+        "Delete"
+      ],
+      "message": "38 buttons in this list are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

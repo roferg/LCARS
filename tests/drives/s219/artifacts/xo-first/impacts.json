@@ -1,0 +1,557 @@
+{
+  "impacts": {
+    "prd-1": {
+      "impact": "high",
+      "impactWhy": "The Reviews entry screen is high because the whole MBR flow starts from it and the mission depends on it being the landing view.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Reviews entry screen** is the landing view: the next unstarted month sits in a \"Next up \u00b7 {Month Year}\" start card showing \"N buckets \u00b7 M KPIs \u00b7 Source: DX Scorecard (live)\", a green \"Pull data & start\" button, and a \"~30s \u00b7 re-pullable anytime\" hint. A \"Published\" list beneath shows prior months, each with a lock icon, a \"Published\" chip, \"M KPIs \u00b7 locked {date}\", and a \"View\" button."
+    },
+    "prd-2": {
+      "impact": "high",
+      "impactWhy": "The collection screen is high because the pull is the entry gate to the builder and the mission's flow depends on it.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Collection screen** shows each bucket cycling Queued \u2192 Collecting\u2026 \u2192 \"N values pulled\" behind a progress bar, with a Cancel control and a \"Continue to builder\" button that stays disabled until the pull finishes."
+    },
+    "prd-3": {
+      "impact": "high",
+      "impactWhy": "The builder head and toolbar are high because the builder is the core surface the mission rebuilds.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Builder** matches the mockup: eyebrow \"Monthly Business Review\"; title \"MBR builder \u00b7 {month}\"; subtitle \"Assemble this month's review from the live scorecard. Add an insight to each KPI, then lock the month to publish it.\"; a Preview toolbar button; an amber primary \"Lock month\" button."
+    },
+    "prd-4": {
+      "impact": "medium",
+      "impactWhy": "The draft banner is medium because it is a stated requirement but secondary to the builder's core add-insight-and-lock purpose.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Draft banner** is an amber-tinted banner with a warning dot reading \"Draft \u2014 changes are saved locally as you go\", a \"Last edited {t} \u00b7 N of M buckets complete\" meta, and a \"Discard draft\" button inside it."
+    },
+    "prd-5": {
+      "impact": "medium",
+      "impactWhy": "Refresh-all is medium because it is a stated convenience but secondary to the per-KPI collect and manual editing the mission centres on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Refresh-all** lives in an amber warning box stating it only collects KPIs with automated instructions (\"11 of 14\"), leaves the manual KPIs unchanged, and drives an indeterminate progress strip."
+    },
+    "prd-6": {
+      "impact": "high",
+      "impactWhy": "The completion bar is high because it is the lock gate the whole publish flow hinges on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "An **\"Insights added \u2014 N of M KPIs\" completion bar** sits under the banner; a KPI counts as done when its insight text is non-empty (status is not part of the meter). The meter reaching all KPIs is exactly the month-lockable condition."
+    },
+    "prd-7": {
+      "impact": "high",
+      "impactWhy": "Per-KPI editorial status is high because it is a core builder capability and the X/circle distinction is an explicit design requirement.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Per-KPI status** is set in the builder: seeded from the scorecard's current status at data-pull time and freely overridable (editorial snapshot, not a live mirror). Rendered as an editable select over the five silhouettes (On track / Watch / Off track / Tracking / WIP). Status is never auto-recomputed \u2014 human-only. The off-track marker is an X shape (distinct from the on-track circle without relying on colour)."
+    },
+    "prd-8": {
+      "impact": "high",
+      "impactWhy": "Value/target/delta plumbing is high because the review's numbers are the substance of the MBR.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Value/target/delta** arrive with the data pull: wired KPIs collect a fresh value; target comes from the KPI's config/default view; delta-vs-last-MBR is always computed (this month's value minus the same KPI's value in the previous published MBR). Editing a manual value recomputes its delta automatically; deltas are never hand-typed."
+    },
+    "prd-9": {
+      "impact": "medium",
+      "impactWhy": "Manual inline editing is medium because it is a required editing model but supports rather than defines the core review flow.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Manual (unwired) KPIs** are edited inline (unit, target, delta, \"From default view \u00b7 edit to override\" note, \"Manual\" tag, amber \"needs value\" state) with no per-value lock/asOf step; \"As of\" defaults to the pull date."
+    },
+    "prd-10": {
+      "impact": "medium",
+      "impactWhy": "Wired value cells are medium because they are a required automated-collect surface but secondary to the manual editing that carries this build's data.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Wired KPI value cells** show the value, target, a \"vs last MBR\" delta, an \"Auto\" tag, and Collect / Re-collect / Try again controls with Collecting\u2026/\u2713 Updated/Collection failed chips, a spinner, and a \"was {old} \u00b7 as of {date}\" line."
+    },
+    "prd-11": {
+      "impact": "medium",
+      "impactWhy": "Cohort delta display is medium because it is a required detail for some KPIs but not the mission's central mechanism.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Multi-value (cohort) KPIs** show a per-source \"change vs last MBR\" delta column (up/down/no-change) with a \"change vs last MBR\" caption."
+    },
+    "prd-12": {
+      "impact": "medium",
+      "impactWhy": "The Carried pill is medium because it is a required provenance cue but secondary to the values and insights themselves.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Carried KPIs** render a purple \"Carried\" pill with a clock icon. A KPI is Carried when the data pull returns no fresh value and the builder carries forward the value/status from the previous published MBR \u2014 an objective, computed-at-pull-time provenance fact, kept separate from the status marker."
+    },
+    "prd-13": {
+      "impact": "medium",
+      "impactWhy": "Bucket headers are medium because they are a required layout detail but not the point of the review.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Bucket headers** read \"N KPIs\" with an \"N of M insights\" sub-count. Buckets carry no per-bucket lock state, badge, or unlock control."
+    },
+    "prd-14": {
+      "impact": "medium",
+      "impactWhy": "Autosave/persistence is medium because it is a stated requirement that supports, but does not define, the add-insight-and-lock flow, and the visible draft/preview state shows the draft is retained.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Insights** autosave on blur and debounced while typing (no explicit save control); a non-empty insight gets a distinct filled background. The whole draft persists to `data/snapshots/<id>.json` via the existing dev-write bridge; the \"last edited\" meta reflects the latest autosave."
+    },
+    "prd-15": {
+      "impact": "medium",
+      "impactWhy": "Re-pull is medium because it is a stated refresh behaviour secondary to the initial pull and manual editing.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Re-pull** re-runs collection for automated KPIs only, recomputing their deltas; every manual value and every insight is preserved untouched; a KPI that returns no fresh value stays as it was (Carried included)."
+    },
+    "prd-16": {
+      "impact": "high",
+      "impactWhy": "Per-month locking is high because publishing the review is the mission's end goal and its gate.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Locking is per-month only.** There is no per-bucket lock: buckets are never individually locked or unlocked. The month cannot lock or publish while any KPI has a blank insight, so a published month never contains an insight-less KPI. The lock dialog is \"Lock {Month Year}?\" with a summary reflecting insight completeness (empty insights block the lock), and no \"Locked by\" handle field."
+    },
+    "prd-17": {
+      "impact": "high",
+      "impactWhy": "Locked read-only rendering is high because a published month must not be editable and that is a core correctness guarantee.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**When the month is locked, all its buckets render read-only** solely because the month is locked: static values, status shown as a label (not a select), insight shown as text (not a textarea). The only way to make them editable again is to unlock the month."
+    },
+    "prd-18": {
+      "impact": "medium",
+      "impactWhy": "Dialog styling is medium because the dialogs are required affordances but secondary to the actions they confirm.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Dialogs** (discard, lock, unlock-month) are centered overlay dialogs over a dimmed backdrop, each with a coloured icon badge, dismissable by backdrop click or Esc. Discard is \"Discard this draft?\" with a danger icon and a \"Keep editing\" / \"Discard draft\" pair. Unlock is a simple confirm to unlock the month, with no note field. There is no \"Unlock this bucket?\" dialog."
+    },
+    "prd-19": {
+      "impact": "high",
+      "impactWhy": "The nav actions are high because they connect the collect, build, preview and publish stages the mission delivers.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Nav actions:** Continue to builder enters the draft builder for the month once the pull finishes; Preview renders the current draft read-only exactly as it will publish (back out without locking); View opens a published month's locked snapshot in that same read-only rendering (reusing the existing LockedView path). Preview and View share one presentation component, differing only in draft-vs-snapshot source."
+    },
+    "prd-20": {
+      "impact": "low",
+      "impactWhy": "Dropping the builder-local toggle is low because it is a small polish decision nobody would block the merge on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "**Theme:** the builder follows the app's global theme; the builder-local theme toggle drawn in the mockup is dropped."
+    },
+    "prd-21": {
+      "impact": "high",
+      "impactWhy": "Visual/flow parity is high because it is an explicit acceptance criterion of this rebuild.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Visual and flow parity with the mockup (layout, colour, spacing, wording, screen transitions) is met, except where the per-month lock model and the single global theme override the mockup's per-bucket lock affordances and builder-local theme toggle."
+    },
+    "t-001-ac1": {
+      "impact": "medium",
+      "impactWhy": "The data-model fields are medium because they are foundational plumbing the visible provenance depends on, but they are not themselves the mission's point.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The Kpi interface exposes optional previousValue, delta, sourceDeltas and carried fields, and Snapshot exposes an optional lastEditedAt"
+    },
+    "t-001-ac2": {
+      "impact": "low",
+      "impactWhy": "Backward-compatible optionality is low because it protects existing snapshots but no user-facing behaviour blocks on it.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A snapshot JSON object omitting every new field still satisfies the Snapshot type (all new fields optional)"
+    },
+    "t-001-ac3": {
+      "impact": "low",
+      "impactWhy": "Reusing SubReading is low because it is an internal type-reuse choice with no user-facing consequence.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "sourceDeltas reuses the existing SubReading {label,value} shape rather than a new type"
+    },
+    "t-002-ac1": {
+      "impact": "medium",
+      "impactWhy": "Route parsing is medium because it drives which screen shows, but it is realized through the screens themselves which I could verify directly.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "parseHash('#mbr') returns { view: 'mbr', step: 'start' } and parseHash('#mbr/collect'|'#mbr/build'|'#mbr/preview') return the matching step"
+    },
+    "t-002-ac2": {
+      "impact": "low",
+      "impactWhy": "Unknown-segment fallback is low because it is an edge case no user relies on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "An unknown #mbr/<x> segment falls back to the 'start' step"
+    },
+    "t-002-ac3": {
+      "impact": "high",
+      "impactWhy": "Per-step rendering is high because it is what makes the multi-screen builder flow exist at all.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "MbrBuilderView renders a different step slot for each of start/collect/build/preview based on route.step"
+    },
+    "t-002-ac4": {
+      "impact": "low",
+      "impactWhy": "The production gate is low because it guards a dev-only feature and has no bearing on the local build under review.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "App still resolves view==='mbr' to the Default view on a production (non-DEV) build (gate unchanged)"
+    },
+    "t-003-ac1": {
+      "impact": "medium",
+      "impactWhy": "Metric parsing is medium because the delta engine depends on it, but it is internal and expressed only through the deltas users see.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "parseMetricValue('<= 1 day') and parseMetricValue('~9.4h') return the numeric value with the normalized unit; parseMetricValue('WIP') returns null"
+    },
+    "t-003-ac2": {
+      "impact": "medium",
+      "impactWhy": "Neutral-delta handling is medium because it keeps the delta column honest but is an internal edge of the engine.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "computeDelta returns null (neutral, no arrow) when either side is unparseable or the normalized units differ"
+    },
+    "t-003-ac3": {
+      "impact": "medium",
+      "impactWhy": "Signed-delta formatting is medium because it produces the visible 'vs last MBR' figures but is verified only indirectly here.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "computeDelta of two same-unit numbers returns a signed magnitude string with the shared unit"
+    },
+    "t-003-ac4": {
+      "impact": "medium",
+      "impactWhy": "Label-based cohort diffing is medium because it keeps cohort deltas correct but is an internal detail.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "cohort diffing matches sub-readings by label, not by array position"
+    },
+    "t-004-ac1": {
+      "impact": "low",
+      "impactWhy": "The shape constant is low because it is internal metadata behind the visible X marker, which itself is verified elsewhere.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "STATUS_META.negative.shape is 'x' and the StatusMeta shape union includes 'x'"
+    },
+    "t-004-ac2": {
+      "impact": "medium",
+      "impactWhy": "The X silhouette is medium because it is an explicit accessibility-by-shape requirement, though it applies only to off-track KPIs.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "src/styles.css defines a .status-dot--x rule that renders an X silhouette (two crossed strokes), visibly unlike the filled on-track circle by shape alone"
+    },
+    "t-004-ac3": {
+      "impact": "low",
+      "impactWhy": "Preserving the other four shapes is low because it is a non-regression detail below the threshold anyone would block on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The four other status shapes remain circle/triangle/ring/half-circle"
+    },
+    "t-004-ac4": {
+      "impact": "low",
+      "impactWhy": "This is low because it is a test-maintenance detail internal to the suite.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The disk-reading shape tests assert 'x' for negative instead of 'diamond' and the suite stays green"
+    },
+    "t-005-ac1": {
+      "impact": "high",
+      "impactWhy": "The start card is high because it is the same landing surface as prd-1 that the flow begins from.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The start card shows a 'Next up' pill, the next-up month heading, a 'N buckets \u00b7 M KPIs \u00b7 Source: DX Scorecard (live)' meta line, a green 'Pull data & start' button and a '~30s \u00b7 re-pullable anytime' hint"
+    },
+    "t-005-ac2": {
+      "impact": "high",
+      "impactWhy": "The Published list is high because reaching prior locked months is a core part of the entry screen.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The Published list renders one row per prior locked month with a lock icon, a green 'Published' chip, an 'M KPIs \u00b7 locked {date}' meta and a 'View' button"
+    },
+    "t-005-ac3": {
+      "impact": "medium",
+      "impactWhy": "The View navigation is medium because it opens a published month, a supporting rather than central action.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Clicking 'View' on a published row navigates to that month's #locked/<id> route"
+    },
+    "t-005-ac4": {
+      "impact": "medium",
+      "impactWhy": "The resume-in-place variant is medium because it protects in-progress work but is a secondary state of the start card.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "When an unlocked draft for the next month already exists on disk, the start card's primary action reads 'Continue draft' and resumes it rather than reseeding"
+    },
+    "t-005-ac5": {
+      "impact": "low",
+      "impactWhy": "Draft-id minting is low because it is an internal identifier detail with no user-facing consequence.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Starting a fresh pull mints the draft id via nextDraftId (date-keyed YYYY-MM-DD.N), never a bare YYYY-MM"
+    },
+    "t-006-ac1": {
+      "impact": "high",
+      "impactWhy": "The collection cycle is high because it is the visible substance of the pull step in the flow.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Each bucket row cycles through a Queued chip, a Collecting\u2026 chip with a spinner, and an 'N values pulled' chip as its KPIs finish, with the progress bar advancing per bucket"
+    },
+    "t-006-ac2": {
+      "impact": "high",
+      "impactWhy": "The Continue gate is high because it is what carries the user from pull to builder in the flow.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "'Continue to builder' is disabled until every bucket has finished, then navigates to #mbr/build; Cancel returns to #mbr"
+    },
+    "t-006-ac3": {
+      "impact": "medium",
+      "impactWhy": "Seed provenance is medium because it feeds the visible target/delta but is an internal pull-time computation.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The seeded draft freezes target from config, records previousValue from the last published MBR, and stamps a computed delta per KPI"
+    },
+    "t-006-ac4": {
+      "impact": "medium",
+      "impactWhy": "Carried-on-empty is medium because it is a provenance rule visible as the Carried pill but not the mission's centrepiece.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A KPI whose pull returns no fresh reading (failure or empty) carries the previous MBR's value/status forward with carried=true; an emitted value clears carried"
+    },
+    "t-006-ac5": {
+      "impact": "medium",
+      "impactWhy": "The partition source is medium because it decides what gets auto-collected but is an internal derivation.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The automatable partition driving which KPIs are collected is derived from trim-strict non-empty aiUpdateInstructions resolved from the roster, not from WIRED_METRIC_IDS"
+    },
+    "t-007-ac1": {
+      "impact": "high",
+      "impactWhy": "The builder head/toolbar is high because it frames the core builder surface (same as prd-3).",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The head shows the eyebrow, 'MBR builder \u00b7 {month}' title and the exact subtitle sentence, and the toolbar shows a Preview button and an amber 'Lock month' button with no theme-toggle button"
+    },
+    "t-007-ac2": {
+      "impact": "medium",
+      "impactWhy": "The draft banner is medium (same as prd-4): a required status affordance secondary to the core flow.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "An amber draft banner shows a warning dot, the 'Draft \u2014 changes are saved locally as you go' text and a 'Last edited {t} \u00b7 N of M buckets complete' meta"
+    },
+    "t-007-ac3": {
+      "impact": "high",
+      "impactWhy": "The completion bar is high (same as prd-6): it is the lock gate the publish flow hinges on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "An 'Insights added \u2014 N of M KPIs' completion bar sits under the banner and counts a KPI as done exactly when its insight text is non-empty"
+    },
+    "t-007-ac4": {
+      "impact": "medium",
+      "impactWhy": "Bucket headers are medium (same as prd-13): a required layout detail, not the point.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Each bucket header reads 'N KPIs' with an 'N of M insights' sub-count and carries no per-bucket lock badge or unlock control"
+    },
+    "t-007-ac5": {
+      "impact": "high",
+      "impactWhy": "The KPI row is high because it is the atomic unit of the builder the whole mission is about.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A KPI row renders the name, a value cell, an editable status select over the five silhouettes, and an insight textarea that gains a filled background when non-empty"
+    },
+    "t-007-ac6": {
+      "impact": "medium",
+      "impactWhy": "The autosave mechanism is medium because it is an internal persistence detail; the observable outcome (draft retained, preview renders it) works, and the app has no other save control.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Typing an insight autosaves via a PUT to /__data/snapshots/<id> debounced at ~800ms with a flush on blur, stamping Snapshot.lastEditedAt"
+    },
+    "t-007-ac7": {
+      "impact": "low",
+      "impactWhy": "Removing the old controls is low because it is cleanup below what anyone would block a merge on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The old New MBR / Refresh all data / lockedBy-handle / amendment-note builder controls are gone and the existing MbrBuilderView tests are updated to the new flow"
+    },
+    "t-008-ac1": {
+      "impact": "medium",
+      "impactWhy": "The wired value cell is medium (same as prd-10): a required automated surface secondary to the manual editing carrying this data.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A wired value cell shows the value, a 'target N' line, a 'vs last MBR' delta, an 'Auto' tag and a Collect control"
+    },
+    "t-008-ac2": {
+      "impact": "medium",
+      "impactWhy": "Collect-state chips are medium because they are secondary automated-collect feedback not exercised by this manual data.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Running a collect shows a Collecting\u2026 chip with a spinner, then a '\u2713 Updated' chip with a 'Re-collect' link on success or a 'Collection failed' chip with a 'Try again' button on failure"
+    },
+    "t-008-ac3": {
+      "impact": "medium",
+      "impactWhy": "The 'was/as of' line is medium because it is secondary provenance shown only after an automated collect.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A successful (re-)collect renders a 'was {old} \u00b7 as of {date}' line"
+    },
+    "t-008-ac4": {
+      "impact": "medium",
+      "impactWhy": "Re-collect recompute is medium because it is an internal effect of an automated collect not present in this data.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A successful re-collect applies the fresh value, stamps asOf, sets previousValue to the prior value and recomputes the KPI's delta via the delta helper"
+    },
+    "t-009-ac1": {
+      "impact": "medium",
+      "impactWhy": "Manual value rendering is medium (same as prd-9): a required editing surface supporting the flow.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A manual KPI value renders as an editable input with its unit, a 'target N' line and a 'vs last MBR' delta"
+    },
+    "t-009-ac2": {
+      "impact": "medium",
+      "impactWhy": "The manual cell affordances are medium because they clarify the manual model but are secondary to the review's content.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A manual value cell shows a 'From default view \u00b7 edit to override' note and a 'Manual' tag, and takes an amber 'needs value' treatment when empty"
+    },
+    "t-009-ac3": {
+      "impact": "medium",
+      "impactWhy": "Auto-recompute on manual edit is medium because it keeps deltas honest but is an internal effect.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Editing a manual value recomputes its delta automatically and never lets the delta be hand-typed"
+    },
+    "t-009-ac4": {
+      "impact": "medium",
+      "impactWhy": "Clearing carried on edit is medium because it keeps provenance accurate; dropping the lock/asOf step is an explicit scope decision.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Editing a manual value clears carried on that KPI, and there is no per-value 'Lock in value' + As-of commit step"
+    },
+    "t-009-ac5": {
+      "impact": "low",
+      "impactWhy": "The As-of default is low because it is a small provenance default no one would block on.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "'As of' defaults to the pull date when a manual value is entered"
+    },
+    "t-010-ac1": {
+      "impact": "medium",
+      "impactWhy": "Cohort listing is medium (same as prd-11): a required per-KPI detail.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A cohort KPI lists every source as a label/value row with its own delta and a 'change vs last MBR' caption below the list"
+    },
+    "t-010-ac2": {
+      "impact": "medium",
+      "impactWhy": "Label-matching is medium because it keeps cohort deltas correct but is internal.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Each source's delta is matched to the previous published MBR by label, not by array position"
+    },
+    "t-010-ac3": {
+      "impact": "low",
+      "impactWhy": "The neutral placeholder is low because it is an edge-case rendering detail.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "A source with no comparable prior reading renders a neutral placeholder rather than 'no change'"
+    },
+    "t-011-ac1": {
+      "impact": "medium",
+      "impactWhy": "The refresh-all box is medium (same as prd-5): a stated convenience secondary to per-KPI collect.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The amber warning box states it only collects KPIs with automated instructions, shows the automatable count 'N of M', says the manual KPIs stay unchanged, and holds the 'Update all automatically' button inside it"
+    },
+    "t-011-ac2": {
+      "impact": "medium",
+      "impactWhy": "The sweep progress strip is medium because it is feedback for a secondary sweep action not present here.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Running the sweep shows a separate indeterminate progress strip below the action bar, not nested inside the amber box"
+    },
+    "t-011-ac3": {
+      "impact": "medium",
+      "impactWhy": "The count derivation is medium because it drives the sweep scope but is internal.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The automatable count is automatableCount over the flattened draft, derived from trim-strict non-empty aiUpdateInstructions"
+    },
+    "t-011-ac4": {
+      "impact": "medium",
+      "impactWhy": "Sweep preservation is medium (mirrors prd-15): a required refresh guarantee secondary to the initial pull.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The sweep refreshes automatable KPIs only, recomputing their deltas, while every manual value and every insight is preserved and a still-empty KPI stays Carried"
+    },
+    "t-012-ac1": {
+      "impact": "high",
+      "impactWhy": "The lock dialog is high (same as prd-16): it is the publish gate that is the mission's end goal.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The 'Lock month' button opens a centered 'Lock {Month Year}?' dialog over a dimmed backdrop with a warn icon badge and a summary reflecting how many KPIs have an insight"
+    },
+    "t-012-ac2": {
+      "impact": "high",
+      "impactWhy": "The blank-insight gate is high because it is the core correctness law (LAW 2) preventing incomplete publishes.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The lock action is blocked while any KPI has a blank insight, so a published month never contains an insight-less KPI"
+    },
+    "t-012-ac3": {
+      "impact": "high",
+      "impactWhy": "Locked read-only rendering is high (same as prd-17): a published month must not be editable.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Locking sets lockedBy to null (no handle field) and renders every bucket read-only \u2014 static values, status as a label, insight as text \u2014 until the month is unlocked"
+    },
+    "t-012-ac4": {
+      "impact": "medium",
+      "impactWhy": "The discard dialog is medium because it is a required confirm affordance secondary to the build flow.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The banner's 'Discard draft' button opens a 'Discard this draft?' danger dialog with 'Keep editing' / 'Discard draft'; confirming clears the draft and returns to the Reviews screen"
+    },
+    "t-012-ac5": {
+      "impact": "medium",
+      "impactWhy": "The unlock dialog is medium because it is a required confirm secondary to the primary lock/publish action.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Unlock is a single centered confirm dialog to unlock the whole month with no note field, and there is no per-bucket unlock control or 'Unlock this bucket?' dialog"
+    },
+    "t-012-ac6": {
+      "impact": "medium",
+      "impactWhy": "Backdrop/Esc dismissal is medium because it is standard dialog behaviour users expect but not the mission's point.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Every dialog is dismissable by backdrop click or Esc"
+    },
+    "t-013-ac1": {
+      "impact": "high",
+      "impactWhy": "Preview is high (part of prd-19): it lets the user see the review as it will publish before committing.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The builder's Preview button navigates to #mbr/preview and renders the current draft read-only in the same presentation the locked buckets use, with a back-out that returns to #mbr/build without locking"
+    },
+    "t-013-ac2": {
+      "impact": "medium",
+      "impactWhy": "The shared component is medium because it is an internal reuse decision, visible only as identical rendering.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "Preview and View render through one shared read-only component, differing only in draft-vs-snapshot source"
+    },
+    "t-013-ac3": {
+      "impact": "low",
+      "impactWhy": "Hiding the null Locked-by line is low because it is a small provenance-rendering detail.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "LockedView hides the 'Locked by' provenance line when lockedBy is null and never prints 'Locked by \u2014'"
+    },
+    "t-013-ac4": {
+      "impact": "low",
+      "impactWhy": "The amendments section is low because it is a legacy rendering path unrelated to the mission's new surfaces.",
+      "at": "2026-09-19T12:10:08Z",
+      "engine": "copilot",
+      "text": "The Amendments section still renders for a historical snapshot that carries amendments"
+    }
+  }
+}

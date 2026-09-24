@@ -1,0 +1,41 @@
+You are the product owner of the DX Scorecard's "MBR View Builder" (the Monthly Business Review builder). You drew a design for it (a mock-up, the "drawing"), an automated pipeline built it, and the build is now waiting for your review on its pull request. Your first officer (an AI reviewer) looked at the build and filed ZERO bugs.
+
+The images are attached, and they are also in this directory: /Users/roganferguson/Projects/LCARS-number-one/tests/drives/s219/prompts/phase-d-standin
+- drawing-1-start-page.png, drawing-1b-start-card-crop.png — your drawing: the start page ("Reviews") and its "Next up" card with the "Pull data & start" button.
+- drawing-2-collect-step.png — your drawing: the data-pull step with the "Continue to builder" button.
+- drawing-3-builder.png — your drawing: the builder, header with "Preview" and "Lock month".
+- build-1-start-page.png, build-1b-start-card-crop.png — the BUILD's start page and its "Next up" card.
+- build-2-collect-step.png, build-2b-continue-button-crop.png — the BUILD's data-pull step and its "Continue to builder" button.
+- build-3-builder.png, build-3b-builder-header-crop.png — the BUILD's builder and its header ("Lock month").
+- build-4-preview.png, build-4b-preview-header-crop.png — the BUILD's Preview page and its header ("Back to builder"). (Your drawing has no separate preview screen.)
+- prd-resolved-decisions.txt — the decisions you already made (these are settled; do not re-litigate them). Also printed below.
+
+Two of your decisions are LAW: (1) locking is per MONTH only — there is no per-bucket lock; (2) every KPI needs insight text before the month can lock. The build uses a different, smaller data set than the drawing (19 KPIs, all manual, no automated values) — differences that come only from that data are NOT bugs. Dates in the drawing are demo dates.
+
+Your decisions (verbatim from the PRD):
+- Draft and snapshot persistence is local-only on disk (`data/snapshots/<id>.json` via the existing dev-write bridge); no backend service.
+- Reuse the existing LockedView rendering path for View and Preview.
+- Locking is month-only; the lock gate is every KPI having a non-empty insight (LAW 2).
+
+## Open questions from the design session
+
+- RESOLVED with the captain: Does "lock" happen per-bucket, per-month, or both? — Per month only; there is no per-bucket lock.
+- RESOLVED with the captain: Must every KPI have an insight before the month can be locked? — All insights need text before locking.
+- RESOLVED with the captain: Status set in builder or inherited from the scorecard? — Set in the builder, seeded from the scorecard's current status on pull, freely overridable.
+- RESOLVED with the captain: What makes a KPI "Carried"? — No fresh value this pull; value/status carried from the previous published MBR (data-provenance), kept separate from the status marker.
+- RESOLVED with the captain: Manual value entry model (inline vs Lock-in-value + As-of)? — Inline editing, no lock/asOf step (follow the mockup); As-of defaults to the pull date.
+- RESOLVED with the captain: What do "Preview", "View", and "Continue to builder" do? — Continue enters the draft builder once the pull finishes; Preview renders the current draft read-only as it will publish (no lock); View opens a published month's locked snapshot in that same read-only rendering (reuses the existing LockedView path); Preview and View share one presentation component.
+- RESOLVED with the captain: The theme toggle in the toolbar flips dark/light — should the builder follow the app's global theme instead of having its own toggle? — Follow the app's global theme; drop the builder's own toggle.
+- RESOLVED with the captain: The mockup adds a theme-toggle button to the builder toolbar, but the app already has a global theme toggle — should the builder carry its own, or just follow the global theme? — Just follow the global theme; the builder carries no toggle of its own (single source of truth per CONTEXT.md).
+- RESOLVED with the captain: Is a non-empty insight the bar for "done", or must status also be set? — Completion = non-empty insight only; status is not part of the meter; the meter equals the lock gate.
+- RESOLVED with the captain: Do value/target/delta arrive with the pull, and does editing a value recompute delta/status? — Value/target/delta arrive on pull; delta is always computed (this month minus last published MBR); editing a manual value recomputes delta only; status stays human; target from the KPI's config/default view.
+- RESOLVED with the captain: Does an insight-less KPI still publish? — No; the month cannot lock or publish with any blank insight, so a published month never contains an insight-less KPI. The mockup's lock-modal copy about publishing blanks is dropped.
+- RESOLVED with the captain: Is the draft stored locally only or synced? — Local-only on disk via the dev-write bridge to `data/snapshots/<id>.json`; no backend; publish via the existing commit/PR path.
+- RESOLVED with the captain: Is an insight saved on blur/autosaved, or does it need an explicit save action? — Autosave on blur + debounced while typing; no explicit save control; the "last edited" meta reflects the latest autosave.
+- RESOLVED with the captain: Is the re-pull rule "automatic only, manual + insights untouched"? — Yes; re-pull refreshes automated values only (recomputing their deltas); manual values and all insights are untouched; a KPI with no fresh value stays as it was (Carried included).
+
+THE TASK: Compare the build to your drawing. List the bugs you would log against this mission — each as a one-paragraph bug report (what's wrong, where, what the drawing shows). Only real, visible differences; nothing you'd accept.
+
+Also rule on one thing specifically: the build's start card says "Next up · August 2026", but pressing "Pull data & start" opens a review titled "September 2026" (the collect step and builder both say September 2026). Is that a bug you would log? Say yes or no and why, and if yes include it as one of your bug reports.
+
+Answer format: a numbered list of bug reports (one paragraph each, starting with a short title in bold), then a line "MONTH MISMATCH RULING:" with your ruling. If you would log nothing, say "NO BUGS" and why.

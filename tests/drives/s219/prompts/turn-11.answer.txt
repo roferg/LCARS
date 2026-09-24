@@ -1,0 +1,2 @@
+Yes — re-pull refreshes automated values only, recomputing their deltas, while every manual value and every insight I've written stays exactly as it is; the warning box's "11 of 14, 3 manual untouched" copy is the rule. A KPI that comes back with no fresh value stays as it was, Carried included.
+

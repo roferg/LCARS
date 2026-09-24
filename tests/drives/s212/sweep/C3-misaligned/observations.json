@@ -1,0 +1,21 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 6,
+  "unseenCount": 0,
+  "foundCount": 1,
+  "observations": [
+    {
+      "kind": "misaligned",
+      "px": 39,
+      "elements": [
+        "Row three"
+      ],
+      "message": "the Row three control does not line up with the rows above it \u2014 its left edge is 39 px further right (79 px vs 40 px for the others)"
+    }
+  ],
+  "notes": []
+}

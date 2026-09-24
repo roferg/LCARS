@@ -1,0 +1,2 @@
+Autosave on blur plus debounced while typing, no explicit save control — the mockup shows no save button and a "last edited 2 min ago" meta, so autosave is what it depicts. The whole draft persists to `data/snapshots/<id>.json` via the existing dev-write bridge, and the meta reflects the most recent autosave.
+

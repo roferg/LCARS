@@ -1,0 +1,31 @@
+{
+  "thresholds": {
+    "gapPx": 8,
+    "misalignPx": 6,
+    "overflowPx": 2
+  },
+  "elementCount": 10,
+  "unseenCount": 0,
+  "foundCount": 2,
+  "observations": [
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "ONE",
+        "TWO"
+      ],
+      "message": "the ONE and TWO buttons are touching \u2014 0 px between them"
+    },
+    {
+      "kind": "crowding",
+      "px": 0,
+      "elements": [
+        "THREE",
+        "FOUR"
+      ],
+      "message": "the THREE and FOUR buttons are touching \u2014 0 px between them"
+    }
+  ],
+  "notes": []
+}

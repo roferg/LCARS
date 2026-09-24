@@ -1,0 +1,17 @@
+I'll start by reading the mission record — criteria, PRD, plan, and the shot readouts.
+
+Now the shots and drawing. Let me look at the screenshots and their readouts.
+
+Let me look at the actual screenshots to confirm the visual state.
+
+I have enough to write the verdict. The build matches the drawing on header, list, and add row; the status line the drawing calls for is missing; tests confirm persistence but don't cover the CSV header row.
+
+Verdict written. **Score: medium.**
+
+- **PRD goals (all met):** orange GROUT TRACKER header, all three batches in one list directly under it, add row with ADD BATCH button on the right.
+- **t-1, t-2 met** by measurement; **t-4 met** by your passing suite ("batches survive a restart").
+- **One gap (t-3):** the drawing's orange mix-ratio status line beneath the add row isn't there — the page drops straight to the footer, and there's no `status-line` element at all.
+- **t-6 untested:** the green suite only tests a CSV parser, not that the export writes a header row.
+
+One non-primary contradiction, no primary gaps → medium.
+

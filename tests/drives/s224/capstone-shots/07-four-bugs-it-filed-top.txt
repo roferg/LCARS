@@ -1,0 +1,6 @@
+Two of the four bugs the assistant wrote itself and then fixed, shown as finished cards on the
+captain's live board — both now reading "lcars:done". Top: issue #223, "overall button-icon visual
+parity", which cost ~$12.00 against a $0.52-$2.07 estimate. Under it: issue #222, "the Lock month
+button's wrapped label", ~$8.04 against $0.43-$1.60. Each says "NUMBER ONE · ENGAGED" and "Number
+One has the conn · Copilot" — nobody typed anything to file or fix them. 872 x 2756 px, headless
+Chrome at deviceScaleFactor 4.

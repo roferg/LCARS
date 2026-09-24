@@ -1,0 +1,9 @@
+  ◇ real copilot: /opt/homebrew/bin/copilot
+worker exit 0
+--- score.txt ---
+SCORE	medium
+WORKER_SCORE	medium
+DISAGREED	no
+WHY	the main flow works. 2 things in the build do not match what you asked for — the mix-ratio status line and batches do not survive a restart (t-3-ac1, t-4-ac1) — and none of them is from the PRD itself: worth reading before you merge.
+COUNTS	5	2	1	2
+SUMMARY	All three PRD goals hold up: the header names the board GROUT TRACKER, every batch is listed on the page, and a new one can be added right there from the add row. Two plan criteria fall short, though — the mix-ratio status line the drawing puts beneath the add row is missing entirely, and your own persistence test ran and failed, so batches don't survive a restart. The CSV export has no screen and no test line, so I couldn't check it.

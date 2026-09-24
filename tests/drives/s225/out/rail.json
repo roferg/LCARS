@@ -1,0 +1,1352 @@
+{
+ "checks": [
+  {
+   "name": "lcars-20260921-twice: the card shows exactly ONE Number One grade pill",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · HIGH",
+    "pillTitle": "the point of it worked this time",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-twice: the pill is grade-only (◈ NUMBER ONE · WORD, no axes sentence)",
+   "ok": true,
+   "detail": "◈ NUMBER ONE · HIGH"
+  },
+  {
+   "name": "lcars-20260921-twice: no second verdict line is on the card",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · HIGH",
+    "pillTitle": "the point of it worked this time",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-twice: the meaning is still on hover (pill title kept)",
+   "ok": true,
+   "detail": "the point of it worked this time"
+  },
+  {
+   "name": "the rail is the narrow column it was (~205px content, ~240px box)",
+   "ok": true,
+   "detail": {
+    "railW": 205,
+    "contentW": 184,
+    "cols": "205px 1298px"
+   }
+  },
+  {
+   "name": "one block per group, in the scorer's order person → drawing → contract",
+   "ok": true,
+   "detail": [
+    "xo-group xo-group-person",
+    "xo-group xo-group-drawing",
+    "xo-group xo-group-contract"
+   ]
+  },
+  {
+   "name": "each group paints — none is laid out but invisible",
+   "ok": true,
+   "detail": [
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "each group asks its own question, in his words",
+   "ok": true,
+   "detail": [
+    "Can a person do what it promises?",
+    "Does it look like your drawing?",
+    "Is the contract covered?"
+   ]
+  },
+  {
+   "name": "the headline is exactly one grade chip and it is one word",
+   "ok": true,
+   "detail": {
+    "t": "HIGH",
+    "c": "rgb(0, 204, 170)",
+    "cls": "xo-score-word xo-grade-chip s-high"
+   }
+  },
+  {
+   "name": "the board CARD's pill is grade-only in Number One's voice (◈ NUMBER ONE · WORD)",
+   "ok": true,
+   "detail": "◈ NUMBER ONE · HIGH"
+  },
+  {
+   "name": "the card grade and the report grade AGREE (both the re-check's HIGH)",
+   "ok": true,
+   "detail": {
+    "card": "HIGH",
+    "pane": "HIGH",
+    "note": "S225 FIXED: the card shows the CURRENT grade (the re-check's), the same one the report opens on. Both HIGH; MEDIUM→HIGH is an improvement, and neither surface reads it as a demotion any more."
+   }
+  },
+  {
+   "name": "the headline reads the person group's grade (HIGH on the re-check)",
+   "ok": true,
+   "detail": [
+    "HIGH",
+    {
+     "t": "HIGH",
+     "c": "rgb(0, 204, 170)"
+    }
+   ]
+  },
+  {
+   "name": "the contract block renders NO grade word anywhere",
+   "ok": true,
+   "detail": "Is the contract covered?17 of 58 answeredFirstNow17worked−2241couldn't see+22This is not a grade, it is how much of the contract I could answer at all."
+  },
+  {
+   "name": "the contract block has no grade node at all",
+   "ok": true,
+   "detail": null
+  },
+  {
+   "name": "the contract says how much was answered, as a count",
+   "ok": true,
+   "detail": {
+    "t": "17 of 58 answered",
+    "c": "rgb(228, 238, 255)"
+   }
+  },
+  {
+   "name": "…and the count is NOT painted in any of the grade colours",
+   "ok": true,
+   "detail": {
+    "cov": "rgb(228, 238, 255)",
+    "person": "rgb(0, 204, 170)",
+    "drawing": "rgb(255, 51, 68)"
+   }
+  },
+  {
+   "name": "the contract carries the scorer's 'this is not a grade' aside, on screen",
+   "ok": true,
+   "detail": "This is not a grade, it is how much of the contract I could answer at all."
+  },
+  {
+   "name": "'worked' is S224's validated blue, untouched",
+   "ok": true,
+   "detail": [
+    "rgb(47, 116, 192)",
+    "rgb(47, 116, 192)"
+   ]
+  },
+  {
+   "name": "'didn't work' is the validated orange AND still hatched",
+   "ok": true,
+   "detail": [
+    [
+     "rgb(192, 111, 30)",
+     "repeating-linear-gradient(135deg, rgba(255, 255, 2"
+    ],
+    [
+     "rgb(192, 111, 30)",
+     "repeating-linear-gradient(135deg, rgba(255, 255, 2"
+    ]
+   ]
+  },
+  {
+   "name": "'couldn't see it' is the muted grey",
+   "ok": true,
+   "detail": [
+    "rgb(110, 104, 120)",
+    "rgb(110, 104, 120)"
+   ]
+  },
+  {
+   "name": "'couldn't set it up' is drawn at all",
+   "ok": true,
+   "detail": [
+    "xo-seg xo-seg-w",
+    "xo-seg xo-seg-d",
+    "xo-seg xo-seg-u",
+    "xo-seg xo-seg-w",
+    "xo-seg xo-seg-c",
+    "xo-seg xo-seg-u"
+   ]
+  },
+  {
+   "name": "'couldn't set it up' is HOLLOW — an outline, not a fifth grey fill",
+   "ok": true,
+   "detail": [
+    [
+     "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+    ],
+    [
+     "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+    ],
+    [
+     "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+    ],
+    [
+     "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+    ]
+   ]
+  },
+  {
+   "name": "…and it is therefore distinguishable from 'couldn't see it' with no colour at all",
+   "ok": true,
+   "detail": {
+    "setUp": [
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset",
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset",
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset",
+     "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+    ],
+    "see": [
+     "none",
+     "none"
+    ]
+   }
+  },
+  {
+   "name": "every drawn count is written out beside its swatch",
+   "ok": true,
+   "detail": [
+    "25worked−1",
+    "0didn't work−1",
+    "2couldn't see+2",
+    "3couldn't set up"
+   ]
+  },
+  {
+   "name": "a count that MOVED carries its delta; the rest do not invent one",
+   "ok": true,
+   "detail": [
+    "25worked−1",
+    "0didn't work−1",
+    "2couldn't see+2",
+    "3couldn't set up"
+   ]
+  },
+  {
+   "name": "two bars per group, one for each look",
+   "ok": true,
+   "detail": [
+    2,
+    2,
+    2
+   ]
+  },
+  {
+   "name": "the two looks are dated ONCE, above all three groups",
+   "ok": true,
+   "detail": "First look 22:15 → now 00:37"
+  },
+  {
+   "name": "the two bars share one scale (26 of 30 then is wider than 25 of 30 now)",
+   "ok": true,
+   "detail": [
+    120.4,
+    115.8
+   ]
+  },
+  {
+   "name": "nothing in the report spills past its own pane",
+   "ok": true,
+   "detail": {
+    "px": 0,
+    "who": ""
+   }
+  },
+  {
+   "name": "what I couldn't check is on screen, and it is MINE",
+   "ok": true,
+   "detail": {
+    "text": "What I couldn't check — mine to fix, not counted against youThese are gaps in my checking, not a fault in your build. They are mine to fix — nothing here is counted against you.1I couldn't see1I couldn't set upThe 2 of them, and whyThe Kpi interface exposes optional previousValue…your tests ran, but none I could see is named for thisRefresh-all lives in an amber warning box…every KPI in the loaded",
+    "visible": true,
+    "rows": 2,
+    "foldOpen": false,
+    "w": 1298
+   }
+  },
+  {
+   "name": "…and it does not read as a fault in his build",
+   "ok": true,
+   "detail": "What I couldn't check — mine to fix, not counted against youThese are gaps in my checking, not a fault in your build. They are mine to fix — nothing here is counted against you.1I couldn't see1I could"
+  },
+  {
+   "name": "lcars-20260921-once: the card shows exactly ONE Number One grade pill",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · MEDIUM",
+    "pillTitle": "the point of it did not clearly land on the first look",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-once: the pill is grade-only (◈ NUMBER ONE · WORD, no axes sentence)",
+   "ok": true,
+   "detail": "◈ NUMBER ONE · MEDIUM"
+  },
+  {
+   "name": "lcars-20260921-once: no second verdict line is on the card",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · MEDIUM",
+    "pillTitle": "the point of it did not clearly land on the first look",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-once: the meaning is still on hover (pill title kept)",
+   "ok": true,
+   "detail": "the point of it did not clearly land on the first look"
+  },
+  {
+   "name": "a first look draws ONE bar per group",
+   "ok": true,
+   "detail": [
+    1,
+    1,
+    1
+   ]
+  },
+  {
+   "name": "…and claims no delta off a comparison nobody made",
+   "ok": true,
+   "detail": [
+    "26worked",
+    "1didn't work",
+    "3couldn't set up"
+   ]
+  },
+  {
+   "name": "the headline is the FIRST look's person grade (MEDIUM)",
+   "ok": true,
+   "detail": [
+    "MEDIUM",
+    {
+     "t": "MEDIUM",
+     "c": "rgb(255, 170, 0)"
+    }
+   ]
+  },
+  {
+   "name": "a zero outcome is not drawn (person had 0 couldn't-see on the first look)",
+   "ok": true,
+   "detail": [
+    "26worked",
+    "1didn't work",
+    "3couldn't set up"
+   ]
+  },
+  {
+   "name": "lcars-20260921-nodrawing: the card shows exactly ONE Number One grade pill",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · MEDIUM",
+    "pillTitle": "the point of it did not clearly land on the first look",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-nodrawing: the pill is grade-only (◈ NUMBER ONE · WORD, no axes sentence)",
+   "ok": true,
+   "detail": "◈ NUMBER ONE · MEDIUM"
+  },
+  {
+   "name": "lcars-20260921-nodrawing: no second verdict line is on the card",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · MEDIUM",
+    "pillTitle": "the point of it did not clearly land on the first look",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-nodrawing: the meaning is still on hover (pill title kept)",
+   "ok": true,
+   "detail": "the point of it did not clearly land on the first look"
+  },
+  {
+   "name": "a group with nothing in it is not drawn — no 'drawing — LOW' invented",
+   "ok": true,
+   "detail": [
+    "xo-group xo-group-person",
+    "xo-group xo-group-contract"
+   ]
+  },
+  {
+   "name": "…and the other two questions are still there",
+   "ok": true,
+   "detail": [
+    true,
+    true
+   ]
+  },
+  {
+   "name": "lcars-20260921-legacy: the card shows exactly ONE Number One grade pill",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · MEDIUM",
+    "pillTitle": "the point of it did not clearly land on the first look",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-legacy: the pill is grade-only (◈ NUMBER ONE · WORD, no axes sentence)",
+   "ok": true,
+   "detail": "◈ NUMBER ONE · MEDIUM"
+  },
+  {
+   "name": "lcars-20260921-legacy: no second verdict line is on the card",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · MEDIUM",
+    "pillTitle": "the point of it did not clearly land on the first look",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-legacy: the meaning is still on hover (pill title kept)",
+   "ok": true,
+   "detail": "the point of it did not clearly land on the first look"
+  },
+  {
+   "name": "a verdict with no groups still paints its rail",
+   "ok": true,
+   "detail": {
+    "t": "MEDIUM",
+    "c": "rgb(255, 170, 0)",
+    "cls": "xo-score-word xo-grade-chip s-medium"
+   }
+  },
+  {
+   "name": "…and it is the OLD single whole-ledger bar and 3-row legend",
+   "ok": true,
+   "detail": {
+    "groups": 0,
+    "bars": 1,
+    "legend": 3
+   }
+  },
+  {
+   "name": "nothing in the old rail spills past the pane either",
+   "ok": true,
+   "detail": {
+    "px": 0,
+    "who": ""
+   }
+  },
+  {
+   "name": "all three questions are one screenful at a 1200px window",
+   "ok": true,
+   "detail": {
+    "railH": 683,
+    "viewport": 1200,
+    "heights": {
+     "newRail": 683,
+     "oldRail": 197,
+     "ratio": 3.47,
+     "wordsBesideIt": 224,
+     "headerNow": 683,
+     "headerIfRailWereOld": 224
+    }
+   }
+  },
+  {
+   "name": "lcars-20260921-twice: the card shows exactly ONE Number One grade pill",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · HIGH",
+    "pillTitle": "the point of it worked this time",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-twice: the pill is grade-only (◈ NUMBER ONE · WORD, no axes sentence)",
+   "ok": true,
+   "detail": "◈ NUMBER ONE · HIGH"
+  },
+  {
+   "name": "lcars-20260921-twice: no second verdict line is on the card",
+   "ok": true,
+   "detail": {
+    "scorePills": 1,
+    "pillText": "◈ NUMBER ONE · HIGH",
+    "pillTitle": "the point of it worked this time",
+    "verdictLines": 0,
+    "hasAxes": false
+   }
+  },
+  {
+   "name": "lcars-20260921-twice: the meaning is still on hover (pill title kept)",
+   "ok": true,
+   "detail": "the point of it worked this time"
+  },
+  {
+   "name": "on a 390px phone the rail takes the full width and stacks",
+   "ok": true,
+   "detail": {
+    "railW": 319,
+    "cols": "319px"
+   }
+  },
+  {
+   "name": "…and still nothing spills off the side",
+   "ok": true,
+   "detail": {
+    "px": 0,
+    "who": ""
+   }
+  },
+  {
+   "name": "…and all three questions are still painted",
+   "ok": true,
+   "detail": [
+    134,
+    145,
+    136
+   ]
+  },
+  {
+   "name": "no uncaught exception was thrown on the page",
+   "ok": true,
+   "detail": []
+  }
+ ],
+ "shots": [
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/card-lcars-20260921-twice.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/twice-card-and-report-agree.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/01-rail-three-questions.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/02-contract-is-not-a-grade.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/03-four-outcomes.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/04-mine-to-fix.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/04b-mine-to-fix-opened.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/card-lcars-20260921-once.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/05-first-look-only.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/card-lcars-20260921-nodrawing.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/06-no-drawing-group-skipped.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/card-lcars-20260921-legacy.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/07-old-shape-unchanged.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/card-lcars-20260921-twice.png",
+  "/Users/roganferguson/Projects/LCARS-number-one/tests/drives/s225/shots/08-phone-390.png"
+ ],
+ "m": {
+  "pill:lcars-20260921-twice": "◈ NUMBER ONE · HIGH",
+  "card:lcars-20260921-twice": {
+   "scorePills": 1,
+   "pillText": "◈ NUMBER ONE · HIGH",
+   "pillTitle": "the point of it worked this time",
+   "verdictLines": 0,
+   "hasAxes": false
+  },
+  "twice": {
+   "railW": 205,
+   "railH": 683,
+   "vtextH": 224,
+   "headH": 683,
+   "railPadR": "20px",
+   "railBorder": "1px",
+   "railContentW": 184,
+   "cols": "205px 1298px",
+   "chip": {
+    "t": "HIGH",
+    "c": "rgb(0, 204, 170)",
+    "cls": "xo-score-word xo-grade-chip s-high"
+   },
+   "chips": 1,
+   "order": [
+    "xo-group xo-group-person",
+    "xo-group xo-group-drawing",
+    "xo-group xo-group-contract"
+   ],
+   "person": {
+    "text": "Can a person do what it promises?HIGH30 things I checkedFirstNow25worked−10didn't work−12couldn't see+23couldn't set upIt sets the grade.",
+    "question": "Can a person do what it promises?",
+    "grade": {
+     "t": "HIGH",
+     "c": "rgb(0, 204, 170)"
+    },
+    "cov": null,
+    "aside": "It sets the grade.",
+    "counts": [
+     "25worked−1",
+     "0didn't work−1",
+     "2couldn't see+2",
+     "3couldn't set up"
+    ],
+    "bars": 2,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 120.4,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 4.7,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 13.9,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     },
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 115.8,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 9.3,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 13.9,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     }
+    ],
+    "h": 182,
+    "visible": true,
+    "right": 217
+   },
+   "drawing": {
+    "text": "Does it look like your drawing?LOW14 things I checkedFirstNow3worked+22didn't work−14couldn't see5couldn't set up−1It does not set the grade.",
+    "question": "Does it look like your drawing?",
+    "grade": {
+     "t": "LOW",
+     "c": "rgb(255, 51, 68)"
+    },
+    "cov": null,
+    "aside": "It does not set the grade.",
+    "counts": [
+     "3worked+2",
+     "2didn't work−1",
+     "4couldn't see",
+     "5couldn't set up−1"
+    ],
+    "bars": 2,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 9.8,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 29.4,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 39.1,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 58.7,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     },
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 29.4,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 19.6,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 39.1,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 48.9,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     }
+    ],
+    "h": 161,
+    "visible": true,
+    "right": 217
+   },
+   "contract": {
+    "text": "Is the contract covered?17 of 58 answeredFirstNow17worked−2241couldn't see+22This is not a grade, it is how much of the contract I could answer at all.",
+    "question": "Is the contract covered?",
+    "grade": null,
+    "cov": {
+     "t": "17 of 58 answered",
+     "c": "rgb(228, 238, 255)"
+    },
+    "aside": "This is not a grade, it is how much of the contract I could answer at all.",
+    "counts": [
+     "17worked−22",
+     "41couldn't see+22"
+    ],
+    "bars": 2,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 94.8,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 46.2,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 41.3,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 99.7,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     }
+    ],
+    "h": 152,
+    "visible": true,
+    "right": 217
+   },
+   "legacyBars": 0,
+   "legacyLegend": 0,
+   "whenBoth": "First look 22:15 → now 00:37",
+   "mine": {
+    "text": "What I couldn't check — mine to fix, not counted against youThese are gaps in my checking, not a fault in your build. They are mine to fix — nothing here is counted against you.1I couldn't see1I couldn't set upThe 2 of them, and whyThe Kpi interface exposes optional previousValue…your tests ran, but none I could see is named for thisRefresh-all lives in an amber warning box…every KPI in the loaded",
+    "visible": true,
+    "rows": 2,
+    "foldOpen": false,
+    "w": 1298
+   },
+   "overflow": {
+    "px": 0,
+    "who": ""
+   }
+  },
+  "cardVsPane": {
+   "card": "HIGH",
+   "pane": "HIGH",
+   "note": "S225 FIXED: the card shows the CURRENT grade (the re-check's), the same one the report opens on. Both HIGH; MEDIUM→HIGH is an improvement, and neither surface reads it as a demotion any more."
+  },
+  "pill:lcars-20260921-once": "◈ NUMBER ONE · MEDIUM",
+  "card:lcars-20260921-once": {
+   "scorePills": 1,
+   "pillText": "◈ NUMBER ONE · MEDIUM",
+   "pillTitle": "the point of it did not clearly land on the first look",
+   "verdictLines": 0,
+   "hasAxes": false
+  },
+  "once": {
+   "railW": 205,
+   "railH": 507,
+   "vtextH": 148,
+   "headH": 507,
+   "railPadR": "20px",
+   "railBorder": "1px",
+   "railContentW": 184,
+   "cols": "205px 1298px",
+   "chip": {
+    "t": "MEDIUM",
+    "c": "rgb(255, 170, 0)",
+    "cls": "xo-score-word xo-grade-chip s-medium"
+   },
+   "chips": 1,
+   "order": [
+    "xo-group xo-group-person",
+    "xo-group xo-group-drawing",
+    "xo-group xo-group-contract"
+   ],
+   "person": {
+    "text": "Can a person do what it promises?MEDIUM30 things I checked26worked1didn't work3couldn't set upIt sets the grade.",
+    "question": "Can a person do what it promises?",
+    "grade": {
+     "t": "MEDIUM",
+     "c": "rgb(255, 170, 0)"
+    },
+    "cov": null,
+    "aside": "It sets the grade.",
+    "counts": [
+     "26worked",
+     "1didn't work",
+     "3couldn't set up"
+    ],
+    "bars": 1,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 155.9,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 6,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 18,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     }
+    ],
+    "h": 132,
+    "visible": true,
+    "right": 217
+   },
+   "drawing": {
+    "text": "Does it look like your drawing?LOW14 things I checked1worked3didn't work4couldn't see6couldn't set upIt does not set the grade.",
+    "question": "Does it look like your drawing?",
+    "grade": {
+     "t": "LOW",
+     "c": "rgb(255, 51, 68)"
+    },
+    "cov": null,
+    "aside": "It does not set the grade.",
+    "counts": [
+     "1worked",
+     "3didn't work",
+     "4couldn't see",
+     "6couldn't set up"
+    ],
+    "bars": 1,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 12.8,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 38.2,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 50.8,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 76.2,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     }
+    ],
+    "h": 143,
+    "visible": true,
+    "right": 217
+   },
+   "contract": {
+    "text": "Is the contract covered?39 of 58 answered39worked19couldn't seeThis is not a grade, it is how much of the contract I could answer at all.",
+    "question": "Is the contract covered?",
+    "grade": null,
+    "cov": {
+     "t": "39 of 58 answered",
+     "c": "rgb(228, 238, 255)"
+    },
+    "aside": "This is not a grade, it is how much of the contract I could answer at all.",
+    "counts": [
+     "39worked",
+     "19couldn't see"
+    ],
+    "bars": 1,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 122.4,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 59.6,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     }
+    ],
+    "h": 118,
+    "visible": true,
+    "right": 217
+   },
+   "legacyBars": 0,
+   "legacyLegend": 0,
+   "whenBoth": "",
+   "mine": {
+    "text": "What I couldn't check — mine to fix, not counted against youThese are gaps in my checking, not a fault in your build. They are mine to fix — nothing here is counted against you.1I couldn't see1I couldn't set upThe 2 of them, and whyThe Kpi interface exposes optional previousValue…your tests ran, but none I could see is named for thisRefresh-all lives in an amber warning box…every KPI in the loaded",
+    "visible": true,
+    "rows": 2,
+    "foldOpen": false,
+    "w": 1298
+   },
+   "overflow": {
+    "px": 0,
+    "who": ""
+   }
+  },
+  "pill:lcars-20260921-nodrawing": "◈ NUMBER ONE · MEDIUM",
+  "card:lcars-20260921-nodrawing": {
+   "scorePills": 1,
+   "pillText": "◈ NUMBER ONE · MEDIUM",
+   "pillTitle": "the point of it did not clearly land on the first look",
+   "verdictLines": 0,
+   "hasAxes": false
+  },
+  "nodrawing": {
+   "railW": 205,
+   "railH": 354,
+   "vtextH": 148,
+   "headH": 354,
+   "railPadR": "20px",
+   "railBorder": "1px",
+   "railContentW": 184,
+   "cols": "205px 1298px",
+   "chip": {
+    "t": "MEDIUM",
+    "c": "rgb(255, 170, 0)",
+    "cls": "xo-score-word xo-grade-chip s-medium"
+   },
+   "chips": 1,
+   "order": [
+    "xo-group xo-group-person",
+    "xo-group xo-group-contract"
+   ],
+   "person": {
+    "text": "Can a person do what it promises?MEDIUM30 things I checked26worked1didn't work3couldn't set upIt sets the grade.",
+    "question": "Can a person do what it promises?",
+    "grade": {
+     "t": "MEDIUM",
+     "c": "rgb(255, 170, 0)"
+    },
+    "cov": null,
+    "aside": "It sets the grade.",
+    "counts": [
+     "26worked",
+     "1didn't work",
+     "3couldn't set up"
+    ],
+    "bars": 1,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 155.9,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 6,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 18,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     }
+    ],
+    "h": 132,
+    "visible": true,
+    "right": 217
+   },
+   "drawing": null,
+   "contract": {
+    "text": "Is the contract covered?39 of 58 answered39worked19couldn't seeThis is not a grade, it is how much of the contract I could answer at all.",
+    "question": "Is the contract covered?",
+    "grade": null,
+    "cov": {
+     "t": "39 of 58 answered",
+     "c": "rgb(228, 238, 255)"
+    },
+    "aside": "This is not a grade, it is how much of the contract I could answer at all.",
+    "counts": [
+     "39worked",
+     "19couldn't see"
+    ],
+    "bars": 1,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 122.4,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 59.6,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     }
+    ],
+    "h": 118,
+    "visible": true,
+    "right": 217
+   },
+   "legacyBars": 0,
+   "legacyLegend": 0,
+   "whenBoth": "",
+   "mine": {
+    "text": "What I couldn't check — mine to fix, not counted against youThese are gaps in my checking, not a fault in your build. They are mine to fix — nothing here is counted against you.1I couldn't see1I couldn't set upThe 2 of them, and whyThe Kpi interface exposes optional previousValue…your tests ran, but none I could see is named for thisRefresh-all lives in an amber warning box…every KPI in the loaded",
+    "visible": true,
+    "rows": 2,
+    "foldOpen": false,
+    "w": 1298
+   },
+   "overflow": {
+    "px": 0,
+    "who": ""
+   }
+  },
+  "pill:lcars-20260921-legacy": "◈ NUMBER ONE · MEDIUM",
+  "card:lcars-20260921-legacy": {
+   "scorePills": 1,
+   "pillText": "◈ NUMBER ONE · MEDIUM",
+   "pillTitle": "the point of it did not clearly land on the first look",
+   "verdictLines": 0,
+   "hasAxes": false
+  },
+  "legacy": {
+   "railW": 205,
+   "railH": 197,
+   "vtextH": 23,
+   "headH": 197,
+   "railPadR": "20px",
+   "railBorder": "1px",
+   "railContentW": 184,
+   "cols": "205px 1298px",
+   "chip": {
+    "t": "MEDIUM",
+    "c": "rgb(255, 170, 0)",
+    "cls": "xo-score-word xo-grade-chip s-medium"
+   },
+   "chips": 1,
+   "order": [],
+   "person": null,
+   "drawing": null,
+   "contract": null,
+   "legacyBars": 1,
+   "legacyLegend": 3,
+   "whenBoth": "",
+   "mine": null,
+   "overflow": {
+    "px": 0,
+    "who": ""
+   }
+  },
+  "heights": {
+   "newRail": 683,
+   "oldRail": 197,
+   "ratio": 3.47,
+   "wordsBesideIt": 224,
+   "headerNow": 683,
+   "headerIfRailWereOld": 224
+  },
+  "phone": {
+   "railW": 319,
+   "railH": 603,
+   "vtextH": 287,
+   "headH": 906,
+   "railPadR": "0px",
+   "railBorder": "0px",
+   "railContentW": 319,
+   "cols": "319px",
+   "chip": {
+    "t": "HIGH",
+    "c": "rgb(0, 204, 170)",
+    "cls": "xo-score-word xo-grade-chip s-high"
+   },
+   "chips": 1,
+   "order": [
+    "xo-group xo-group-person",
+    "xo-group xo-group-drawing",
+    "xo-group xo-group-contract"
+   ],
+   "person": {
+    "text": "Can a person do what it promises?HIGH30 things I checkedFirstNow25worked−10didn't work−12couldn't see+23couldn't set upIt sets the grade.",
+    "question": "Can a person do what it promises?",
+    "grade": {
+     "t": "HIGH",
+     "c": "rgb(0, 204, 170)"
+    },
+    "cov": null,
+    "aside": "It sets the grade.",
+    "counts": [
+     "25worked−1",
+     "0didn't work−1",
+     "2couldn't see+2",
+     "3couldn't set up"
+    ],
+    "bars": 2,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 237.4,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 9.2,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 27.4,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     },
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 228.3,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 18.3,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 27.4,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     }
+    ],
+    "h": 134,
+    "visible": true,
+    "right": 431
+   },
+   "drawing": {
+    "text": "Does it look like your drawing?LOW14 things I checkedFirstNow3worked+22didn't work−14couldn't see5couldn't set up−1It does not set the grade.",
+    "question": "Does it look like your drawing?",
+    "grade": {
+     "t": "LOW",
+     "c": "rgb(255, 51, 68)"
+    },
+    "cov": null,
+    "aside": "It does not set the grade.",
+    "counts": [
+     "3worked+2",
+     "2didn't work−1",
+     "4couldn't see",
+     "5couldn't set up−1"
+    ],
+    "bars": 2,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 19.5,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 58.3,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 77.7,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 116.5,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     },
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 58.3,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-d",
+      "w": 38.9,
+      "bg": "rgb(192, 111, 30)",
+      "img": "repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0px, rgba(255, 255, 255, 0.5) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 77.7,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-u",
+      "w": 97.1,
+      "bg": "color(srgb 0.556863 0.635294 0.752941 / 0.16)",
+      "img": "none",
+      "shadow": "rgb(142, 162, 192) 0px 0px 0px 1.5px inset"
+     }
+    ],
+    "h": 145,
+    "visible": true,
+    "right": 431
+   },
+   "contract": {
+    "text": "Is the contract covered?17 of 58 answeredFirstNow17worked−2241couldn't see+22This is not a grade, it is how much of the contract I could answer at all.",
+    "question": "Is the contract covered?",
+    "grade": null,
+    "cov": {
+     "t": "17 of 58 answered",
+     "c": "rgb(228, 238, 255)"
+    },
+    "aside": "This is not a grade, it is how much of the contract I could answer at all.",
+    "counts": [
+     "17worked−22",
+     "41couldn't see+22"
+    ],
+    "bars": 2,
+    "segs": [
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 185.6,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 90.4,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-w",
+      "w": 80.9,
+      "bg": "rgb(47, 116, 192)",
+      "img": "none",
+      "shadow": "none"
+     },
+     {
+      "cls": "xo-seg xo-seg-c",
+      "w": 195.1,
+      "bg": "rgb(110, 104, 120)",
+      "img": "none",
+      "shadow": "none"
+     }
+    ],
+    "h": 136,
+    "visible": true,
+    "right": 431
+   },
+   "legacyBars": 0,
+   "legacyLegend": 0,
+   "whenBoth": "First look 22:15 → now 00:37",
+   "mine": {
+    "text": "What I couldn't check — mine to fix, not counted against youThese are gaps in my checking, not a fault in your build. They are mine to fix — nothing here is counted against you.1I couldn't see1I couldn't set upThe 2 of them, and whyThe Kpi interface exposes optional previousValue…your tests ran, but none I could see is named for thisRefresh-all lives in an amber warning box…every KPI in the loaded",
+    "visible": true,
+    "rows": 2,
+    "foldOpen": false,
+    "w": 319
+   },
+   "overflow": {
+    "px": 0,
+    "who": ""
+   }
+  }
+ }
+}

@@ -1,0 +1,8 @@
+Question 5
+
+Let's clear the **theme toggle** — it shows up twice in the open questions and they're really the same point. The app already has a global theme toggle, and the mockup draws a theme-toggle button in the builder toolbar. My recommendation: **the builder does NOT carry its own toggle — it just follows the app's global theme**, and we drop the toolbar toggle the mockup shows. A second, builder-local toggle would either fight the global one or create a confusing per-page theme; one source of truth is cleaner. This is a spot where I'd deliberately diverge from the mockup's look because the brief/app reality overrides it. Follow global theme (no builder toggle), or do you want a builder-local toggle as drawn?
+
+Options offered:
+Follow the global theme; drop the builder's own toggle
+Keep a builder-local theme toggle as the mockup draws it
+Something else

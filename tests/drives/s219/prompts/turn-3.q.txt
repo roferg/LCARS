@@ -1,0 +1,8 @@
+Question 3
+
+Now the **manual (unwired) KPI entry model** — this one has a real conflict to resolve. The mockup edits manual values inline (a plain input, no commit step), but the app's existing Update KPIs page commits a manual value with an explicit "Lock in value" button and an editable "As of" date, then shows Edit. My recommendation: **follow the mockup — inline editing, no per-value lock/asOf step** — because within the MBR builder the whole month is the unit of commitment (the per-month "Lock month" is the real gate), so a second per-value lock would be redundant ceremony; the "As of" date can default to the pull date. That said, this is a WHAT-IT-MUST-DO area where the brief flags the conflict, so I want your explicit call. Inline (mockup) or the Lock-in-value + As-of model (existing page)?
+
+Options offered:
+Inline editing, no lock/asOf step (follow the mockup); As-of defaults to pull date
+Lock-in-value + editable As-of date (match existing Update KPIs page)
+Inline value, but keep an editable As-of field (hybrid)

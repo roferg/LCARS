@@ -1,0 +1,14 @@
+ELAPSED 5.3s EXIT 0
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/C4-crowded-in-wrapper.html",
+  "allPainted": true,
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": true,
+      "distinctColours": 193
+    }
+  ]
+}

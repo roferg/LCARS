@@ -1,0 +1,2 @@
+ACCEPT — pair 139 now shows the collect step as "Pulling data · August 2026" matching the "Next up · August 2026" start card and the builder header (138 "MBR builder · August 2026"), so the month is consistent across start → collect → builder, and pairs 121–125 confirm the earlier fixes are unchanged.
+

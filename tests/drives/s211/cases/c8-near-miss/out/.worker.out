@@ -1,0 +1,12 @@
+I'll start by reading the mission record—the contract, PRD, drawing, and the evidence.
+
+Now the drawing and the shots.
+
+The record is clear. Let me look at the key screenshots to confirm visually.
+
+The picture confirms the record: below the add row the page drops straight to the footer — no status/mix-ratio line. The drawing calls for one there. Everything else looks right. Writing the verdict.
+
+Verdict written. **Medium.**
+
+The three PRD primaries all pass — one list of every batch (B-1041/1042/1043) under the GROUT TRACKER header, plus an in-place add row. One real gap: your drawing puts an orange mix-ratio status line beneath the add row, but the build skips it — below the add row it goes straight to the footer (`status-line` present:false, shot-01). Persistence is green in your own suite; the CSV-export criterion I left `untested` because the tests only prove the button and handler exist, not that the CSV is valid.
+

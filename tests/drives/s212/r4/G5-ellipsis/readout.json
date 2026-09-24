@@ -1,0 +1,117 @@
+{
+  "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/G5-ellipsis.html",
+  "painted": false,
+  "places": [],
+  "notes": [],
+  "shots": [
+    {
+      "name": "shot-01",
+      "selector": null,
+      "painted": false,
+      "pixels": {
+        "width": 2880,
+        "height": 1626,
+        "sampled": 1170720,
+        "distinctColours": 169,
+        "dominantColour": "#ffffff",
+        "dominantFraction": 0.9959,
+        "nonDominantFraction": 0.0041,
+        "mean": {
+          "r": 254,
+          "g": 254,
+          "b": 254
+        },
+        "painted": false,
+        "inkFloor": 0.005
+      }
+    }
+  ],
+  "page": {
+    "url": "file:///Users/roganferguson/Projects/LCARS-number-one/tests/drives/s212/pages/G5-ellipsis.html",
+    "title": "",
+    "textExcerpt": "G5 — the standard ellipsis idiom (INTENTIONAL truncation, correct UI) Roganscott Ferguson — September kitchen backsplash batch",
+    "places": {},
+    "elements": [
+      {
+        "id": null,
+        "tag": "body",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "",
+        "box": {
+          "x": 0,
+          "y": 0,
+          "w": 1440,
+          "h": 100
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "textOverflow": "clip",
+        "whiteSpace": "normal",
+        "path": "0.1",
+        "seen": true,
+        "hiddenBy": null
+      },
+      {
+        "id": null,
+        "tag": "h3",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "G5 — the standard ellipsis idiom (INTENTIONAL truncation, correct UI)",
+        "box": {
+          "x": 24,
+          "y": 40,
+          "w": 1392,
+          "h": 19
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 0,
+        "overflowY": 0,
+        "overflowStyleX": "visible",
+        "overflowStyleY": "visible",
+        "textOverflow": "clip",
+        "whiteSpace": "normal",
+        "path": "0.1.0",
+        "seen": true,
+        "hiddenBy": null
+      },
+      {
+        "id": "name",
+        "tag": "div",
+        "className": null,
+        "inputType": null,
+        "ariaLabel": null,
+        "text": "Roganscott Ferguson — September kitchen backsplash batch",
+        "box": {
+          "x": 40,
+          "y": 100,
+          "w": 190,
+          "h": 27
+        },
+        "color": "rgb(0, 0, 0)",
+        "background": "rgba(0, 0, 0, 0)",
+        "interactive": false,
+        "overflowX": 217,
+        "overflowY": 0,
+        "overflowStyleX": "hidden",
+        "overflowStyleY": "hidden",
+        "textOverflow": "ellipsis",
+        "whiteSpace": "nowrap",
+        "path": "0.1.1",
+        "seen": true,
+        "hiddenBy": null
+      }
+    ],
+    "elementsNote": null,
+    "consoleErrors": []
+  }
+}

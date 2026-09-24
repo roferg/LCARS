@@ -1,0 +1,10 @@
+[
+  {
+    "path": "src/lib/status.shape.test.ts",
+    "reason": "Ticket per ADR-006 renames the off-track marker shape from 'diamond' to 'x'; the assertion for STATUS_META.negative.shape is superseded and now asserts 'x'."
+  },
+  {
+    "path": "src/styles.status-dot.test.ts",
+    "reason": "The rule-existence loop iterated the modifier names including 'diamond'; the off-track modifier is now '.status-dot--x', so the loop iterates 'x' instead of 'diamond'."
+  }
+]

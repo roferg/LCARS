@@ -1,0 +1,85 @@
+{
+  "score": "medium",
+  "criteria": [
+    {
+      "id": "prd-1",
+      "text": "The board shows every recorded grout batch in one list on the page.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "Every batch sits in one list right under the header — B-1041, B-1042 and B-1043, one line each, on the dark panel."
+    },
+    {
+      "id": "prd-2",
+      "text": "A new batch can be added from the board itself, without leaving the page.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "The add row is right there on the same screen — a 'new batch code' input with an ADD BATCH button beside it, no navigation away."
+    },
+    {
+      "id": "prd-3",
+      "text": "The board names itself in a header so the tiler knows what he is looking at.",
+      "status": "met",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "The orange band across the top reads GROUT TRACKER (background rgb(224,138,60)), just as the drawing has it."
+    },
+    {
+      "id": "t-1-ac1",
+      "text": "The batch list is the first thing under the header.",
+      "status": "met",
+      "evidence": "measurement",
+      "shot": "shot-01",
+      "note": "The list opens at y=71, directly beneath the header that ends at y=51 — nothing sits between them."
+    },
+    {
+      "id": "t-2-ac1",
+      "text": "An ADD BATCH button sits to the right of the input.",
+      "status": "met",
+      "evidence": "measurement",
+      "shot": "shot-06",
+      "note": "ADD BATCH is to the right of the input on the same row — the input runs from x=20 out to x=1283, and the button starts at x=1293."
+    },
+    {
+      "id": "t-3-ac1",
+      "text": "A status line beneath the add row shows the current mix ratio.",
+      "status": "gap",
+      "evidence": "picture",
+      "shot": "shot-01",
+      "note": "Your drawing has an orange mix-ratio line ('MIX RATIO 3:1 · 2 BATCHES OPEN') sitting beneath the add row. It isn't there at all — below the add row the page goes straight to the footer."
+    },
+    {
+      "id": "t-4-ac1",
+      "text": "Batches survive a restart.",
+      "status": "met",
+      "evidence": "tests",
+      "testQuote": "\u2714 batches survive a restart #1 (2.82ms)",
+      "note": "No screen can settle this, but your own suite covers it and it passes."
+    },
+    {
+      "id": "t-6-ac1",
+      "text": "The export writes valid CSV with a header row.",
+      "status": "untested",
+      "evidence": "tests",
+      "note": "I could not check this. Your suite is green, but its CSV lines are about parsing quoted commas, loading fixtures and header-row theme styling — nothing in it shows the export writing valid CSV with a header row, and no screen surface shows it either."
+    }
+  ],
+  "gaps": [
+    {
+      "title": "the mix-ratio status line",
+      "expected": "an orange mix-ratio line beneath the add row showing the current ratio and open-batch count",
+      "saw": "nothing there — below the add row the page drops straight to the 'grout tracker · sandbox build' footer",
+      "shots": ["shot-01"],
+      "kind": "contradiction",
+      "criterion": "t-3-ac1"
+    }
+  ],
+  "escalations": [],
+  "alsoChecked": [
+    "The ADD BATCH button is teal (rgb(90,166,184)); your drawing doesn't say what colour it should be, so I'm treating that as the builder's call.",
+    "There is a footer reading 'grout tracker · sandbox build' at the bottom; the drawing says nothing about a footer, so that's the builder's call, not a fault.",
+    "No console errors were reported on the page."
+  ],
+  "summary": "Captain, the core of the board is here and matches your drawing: the orange GROUT TRACKER header, the batch list directly beneath it, and an add row with the ADD BATCH button to the right of the input — your three PRD goals all hold. The one real miss is the status line: your drawing puts an orange mix-ratio line under the add row, and the build simply doesn't have it — it goes straight to the footer. Persistence passes your own tests; the CSV-export claim I couldn't confirm, because neither the screen nor the suite actually exercises writing a CSV with a header row."
+}

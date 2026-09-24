@@ -1,0 +1,4 @@
+{"score": "medium", "summary": "The batch list is there and works, but the add button is below the list, not above it.",
+ "criteria": [{"id": "prd-1", "status": "met", "shot": "shot-01", "note": "today's batches are listed"},
+              {"id": "t-2-ac1", "status": "gap", "shot": "shot-01", "note": "the button is under the list"}],
+ "gaps": []}

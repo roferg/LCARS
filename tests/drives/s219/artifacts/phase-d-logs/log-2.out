@@ -1,0 +1,3 @@
+1 bug mission filed and linked to #192 (MBR View Builder):
+  lcars-20260919-005-8cb0  #211  Data-pull (collect) step still shows September 2026 after pulling the August review
+Run `lcars run lcars-20260919-005-8cb0` to begin.

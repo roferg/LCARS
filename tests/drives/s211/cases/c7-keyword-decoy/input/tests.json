@@ -1,0 +1,15 @@
+{
+  "ran": true,
+  "command": "node --test",
+  "cwd": "/private/tmp/wt",
+  "exitCode": 0,
+  "timedOut": false,
+  "timeoutSeconds": 300,
+  "durationSeconds": 0.22,
+  "outputBytes": 198,
+  "truncated": false,
+  "tailCapBytes": 8000,
+  "outputTail": "\u2714 csv parser handles quoted commas (1.02ms)\n\u2714 csv parser trims whitespace (0.41ms)\n\u2714 renders the header (0.87ms)\n\u2714 batches survive a restart (6.81ms)\n\u2139 tests 4\n\u2139 pass 4\n\u2139 fail 0\n\u2139 duration_ms 140.1\n",
+  "outcome": "passed",
+  "verdict": "I ran your tests (`node --test`) and they passed, in under a second."
+}
