@@ -146,7 +146,7 @@ prose around it if you can avoid it.
       "evidence": "picture|measurement|tests",
       "shot": "round1-01",
       "testQuote": "the exact test line, when evidence is tests",
-      "note": "what you actually saw, in a sentence",
+      "note": "what you saw on his screen, in plain words — read verbatim as 'What I saw'",
       "action": "what you DID, one plain sentence starting with a verb",
       "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: …."
     }

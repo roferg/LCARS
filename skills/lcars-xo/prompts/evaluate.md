@@ -56,11 +56,15 @@ The captain's own example, and the only one: in a game, a health bar that is
 on screen and drops when you are hit is `high` — that is the point. The bar
 being purple when he asked for red is `medium`.
 
-Give each impact one sentence of why, in `impactWhy`, using this slot:
-*"`<criterion, in plain words>` is `<high|medium|low>` because `<what the
-mission is for>` `<does|does not>` depend on it."* A criterion you give no
-impact is counted as `high` — the careful reading — and the report says you
-left it out.
+Give each impact one sentence of why, in `impactWhy`. The captain's report shows
+it to him as **"Why it matters: …"**, with the grade already beside it as a chip
+— so do NOT repeat the grade word here, and do NOT restate the criterion's name;
+write only the plain reason it matters, the half that would follow "because",
+and say the consequence. *"the whole mission is about surviving the hits, so if
+this doesn't work there's nothing to ship"* reads to him; *"the health bar is
+high because the game does depend on it"* makes him read the grade twice and
+tells him nothing new. A criterion you give no impact is counted as `high` — the
+careful reading — and the report says you left it out.
 
 **Rate what the requirement DOES for the mission's point, not how it is
 worded or where it is written.** The same requirement often appears twice — once
@@ -119,6 +123,18 @@ field under **What I did**, word for word. It is a RECORD, not something
 anyone re-derives from the reason afterwards, so write it even when the reason
 already says it. If you genuinely did nothing for this one — you never reached
 it — say that: `"action": "never got to it — the page would not load"`.
+
+**`note` is the twin of that, and it is what he reads as "What I saw"** — the
+report shows your `note`, word for word, on EVERY criterion, the worked ones as
+much as the gaps. So write both `action` and `note` the way the "Write what you
+SEE" table further down asks, even on a `met` row: say what happened on HIS
+screen in plain words — where the thing is, what colour, whether it is there at
+all — and what that MEANS for him, not the category it falls in. Lead with what
+you saw or did; a selector or a criterion id goes in brackets after the
+sentence, never as the sentence. Keep every number, measured colour and quoted
+line — plain is readable, not short. Write both even when your reason already
+says the same thing, because the report reads these two fields, not the reason,
+whenever you have filled them in.
 
 ## What you are looking at
 
