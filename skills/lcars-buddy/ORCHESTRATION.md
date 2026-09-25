@@ -156,8 +156,9 @@ no production code itself** — it spawns sub-agents and runs this loop:
 
 **An invariant touch is a STOP.** Honour every invariant the work declares (a
 session doc's *What we are NOT changing*; for a buddy fix, the protected
-machinery: gates, the adversarial Test-Writer→Implementer split, immutable test
-hashes, env-injected/stubbable CLIs). If a change would touch one, **STOP and
+machinery: the Implement proof gates (flip-flop, declared test-edits,
+quality floor), the ≤3-sessions-then-park bound, env-injected/stubbable CLIs). If
+a change would touch one, **STOP and
 report** rather than papering over it.
 
 ---

@@ -130,9 +130,10 @@ readout. Buddy-specific instructions for the sub-agents:
   the breadcrumb must be gone and nothing else changed. It edits no source and no
   tests, and logs every artifact for teardown.
 - **Mind the protected machinery.** Don't loosen a gate to make a stall go away,
-  don't weaken the adversarial Test-Writer→Implementer split or the immutable test
-  hashes, and keep external CLIs env-injected/stubbable. An invariant touch is a
-  **STOP and report**, not a judgement call.
+  don't weaken the Implement proof gates (the fail-on-parent/pass-on-tip
+  flip-flop, the declared test-edits contract, the quality floor) or the
+  ≤3-sessions-then-park bound, and keep external CLIs env-injected/stubbable. An
+  invariant touch is a **STOP and report**, not a judgement call.
 
 ### d. COMMIT, then READ OUT
 
