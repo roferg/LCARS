@@ -1937,5 +1937,122 @@ check "M6. …and its provenance is the notVisual stamp, not a recording" \
 
 # ==========================================================================
 echo
+echo "N. A GRADED RAIL THAT SAW NOTHING HOLDS THE HEADLINE BACK (captain, 2026-09-24)"
+# THE MEASURED DEFECT, on lcars-20260924-009-72bf: the person rail read HIGH
+# (all-worked, 6/6) while the drawing rail read `nothing-checked` — four items,
+# NONE checked (0 of 4) — and the headline STILL read HIGH. A confident grade
+# sitting on top of a graded sub-rail that admits it saw nothing is the exact
+# failure this round exists to close.
+#
+# THE CAPTAIN'S RULING: "Unchecked must pull the grade down, but care more about
+# the can a person do what it promises and does it look correct." He named BOTH
+# graded rails as things he cares about. So the headline may NOT read HIGH when
+# ANOTHER graded rail had items and checked none of them.
+#
+# WHAT THIS DOES NOT DO — and the three controls that prove it: it does not lower
+# a build where both graded rails were checked (a), it does not fire on a rail
+# with nothing to look at (total==0, no drawing) (b), and the coverage-only
+# contract rail can never fire it (c).
+# ==========================================================================
+NDIR="$TMPROOT/blindrail"; mkdir -p "$NDIR"
+
+# mixbuild <outdir> <person-worked> <draw-worked> <draw-unchecked> <contract-unchecked>
+# A person rail of `pw` looks-questions each settled by a picture (worked), a
+# drawing rail of `dw` worked + `du` unreachable rows, and `cu` unreachable
+# plan (contract) rows. hasDrawing follows whether any drawing row exists.
+mixbuild() {
+  local out="$1" pw="$2" dw="$3" du="$4" cu="$5"
+  mkdir -p "$out"
+  "$PY" - "$out" "$pw" "$dw" "$du" "$cu" <<'PY'
+import json, sys
+out = sys.argv[1]
+pw, dw, du, cu = (int(x) for x in sys.argv[2:6])
+crit, led = [], []
+def worked(cid, src):
+    crit.append({"id": cid, "text": cid + " looks right", "primary": True,
+                 "source": src, "kind": "looks"})
+    led.append({"id": cid, "text": cid + " looks right", "status": "met",
+                "shot": "s-" + cid, "evidence": "picture", "note": "saw it"})
+def unchecked(cid, src):
+    crit.append({"id": cid, "text": cid + " unreachable", "primary": True,
+                 "source": src, "kind": "looks"})
+    led.append({"id": cid, "text": cid + " unreachable", "status": "untested",
+                "evidence": "none", "couldNotCheck": "unreachable",
+                "note": "I never reached this screen"})
+for i in range(pw): worked("p%d" % i, "prd")
+for i in range(dw): worked("d%d" % i, "drawing")
+for i in range(du): unchecked("du%d" % i, "drawing")
+for i in range(cu): unchecked("c%d" % i, "plan")
+json.dump({"criteria": crit, "hasDrawing": (dw + du) > 0},
+          open(out + "/criteria.json", "w"))
+json.dump({"score": "high", "summary": "all present", "criteria": led,
+           "gaps": [], "alsoChecked": [], "escalations": []},
+          open(out + "/in.json", "w"))
+PY
+  "$PY" "$SCOREPY" "$out/in.json" "$out/criteria.json" "$out/verdict.json" \
+        >"$out/out.tsv" 2>"$out/err.txt"
+}
+
+# --- N1. THE DEFECT: person HIGH, drawing 0-of-4 → headline is NOT HIGH ------
+mixbuild "$NDIR/defect" 6 0 4 0
+check "N1. person HIGH over a drawing rail that saw nothing does NOT read HIGH" \
+  "[ \"\$(jget '$NDIR/defect/verdict.json' 'd[\"score\"]')\" != high ]"
+check "N1. …it is held back to MEDIUM (not slammed to LOW, nothing failed)" \
+  "[ \"\$(jget '$NDIR/defect/verdict.json' 'd[\"score\"]')\" = medium ]"
+check "N1. …the drawing rail's own line still reads its own grade, nothing-checked" \
+  "[ \"\$(jget '$NDIR/defect/verdict.json' 'd[\"groups\"][\"drawing\"][\"rule\"]')\" = nothing-checked ]"
+check "N1. …the person rail itself is NOT lowered — its own line stays HIGH" \
+  "[ \"\$(jget '$NDIR/defect/verdict.json' 'd[\"groups\"][\"person\"][\"grade\"]')\" = high ]"
+check "N1. …a structured record names the blind rail (a surface never parses prose)" \
+  "\"$PY\" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+h=d.get(\"heldBackByBlindRail\") or {}
+rails=[r[\"group\"] for r in h.get(\"rails\") or []]
+sys.exit(0 if rails==[\"drawing\"] else 1)' '$NDIR/defect/verdict.json'"
+check "N1. …the words a person reads say it was held back to MEDIUM" \
+  "grep -qi 'held back to medium' '$NDIR/defect/report.md'"
+check "N1. …and name the drawing rail that could not be checked" \
+  "grep -qi 'look like your drawing' '$NDIR/defect/report.md'"
+
+# --- N2. CONTROL (a): BOTH graded rails checked and working → still HIGH -----
+# Without this the cure could silently hold back every build with a drawing.
+mixbuild "$NDIR/both" 6 4 0 0
+check "N2. CONTROL(a) both graded rails checked and working still reads HIGH" \
+  "[ \"\$(jget '$NDIR/both/verdict.json' 'd[\"score\"]')\" = high ]"
+check "N2. CONTROL(a) …the drawing rail graded HIGH by all-worked" \
+  "[ \"\$(jget '$NDIR/both/verdict.json' 'd[\"groups\"][\"drawing\"][\"rule\"]')\" = all-worked ]"
+check "N2. CONTROL(a) …and NO hold-back record was written" \
+  "[ -z \"\$(jget '$NDIR/both/verdict.json' 'd.get(\"heldBackByBlindRail\")')\" ]"
+
+# --- N3. CONTROL (b): a graded rail with total==0 (no drawing) → UNAFFECTED --
+# "Nothing to look at" is not "looked at nothing." A mission with no drawing has
+# no drawing line and must not hold anything back.
+mixbuild "$NDIR/nodraw" 6 0 0 0
+check "N3. CONTROL(b) no drawing at all (total==0) leaves the headline HIGH" \
+  "[ \"\$(jget '$NDIR/nodraw/verdict.json' 'd[\"score\"]')\" = high ]"
+check "N3. CONTROL(b) …the drawing rail has nothing on it (total 0)" \
+  "[ \"\$(jget '$NDIR/nodraw/verdict.json' 'd[\"groups\"][\"drawing\"][\"total\"]')\" = 0 ]"
+check "N3. CONTROL(b) …and NO hold-back record was written" \
+  "[ -z \"\$(jget '$NDIR/nodraw/verdict.json' 'd.get(\"heldBackByBlindRail\")')\" ]"
+
+# --- N4. CONTROL (c): the contract rail unchecked → UNAFFECTED (his wish) ----
+# The captain explicitly does not want a thin contract dragging a good, good-
+# looking build to LOW. The contract is `kind: coverage`, never graded, so it
+# can never hold the headline back.
+mixbuild "$NDIR/contract" 6 0 0 4
+check "N4. CONTROL(c) an unchecked contract rail leaves the headline HIGH" \
+  "[ \"\$(jget '$NDIR/contract/verdict.json' 'd[\"score\"]')\" = high ]"
+check "N4. CONTROL(c) …the contract rail stays coverage, carries no grade" \
+  "[ \"\$(jget '$NDIR/contract/verdict.json' 'd[\"groups\"][\"contract\"][\"kind\"]')\" = coverage ]"
+check "N4. CONTROL(c) …and NO hold-back record was written" \
+  "[ -z \"\$(jget '$NDIR/contract/verdict.json' 'd.get(\"heldBackByBlindRail\")')\" ]"
+
+# --- N5. the SCORE on the wire is held back too (the shell reads data) -------
+check "N5. the console SCORE line reads medium, not high, over the blind rail" \
+  "grep -qxF 'SCORE	medium' '$NDIR/defect/out.tsv'"
+
+
+# ==========================================================================
+echo
 printf 'lcars xo-evidence: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

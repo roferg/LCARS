@@ -2646,6 +2646,51 @@ def main():
     # below this line.
     notes.extend(moment_notes(ledger, readings))
 
+    # ─── THE HEADLINE MAY NOT READ HIGH OVER A GRADED RAIL THAT SAW NOTHING ──
+    # (captain's ruling, 2026-09-24, measured on lcars-20260924-009-72bf)
+    #
+    # THE MEASURED DEFECT. The person rail read HIGH (all-worked, 6/6) while the
+    # drawing rail read `nothing-checked` — it had four items and checked NONE
+    # of them (0 of 4) — and the headline STILL read HIGH. A confident grade
+    # sitting on top of a graded sub-rail that admits it saw nothing is the
+    # exact failure this round exists to close: "unchecked must pull the grade
+    # down, but care more about … does it look correct". He named BOTH graded
+    # rails as the things he cares about, so a graded rail that saw nothing may
+    # not sit silently beneath a HIGH.
+    #
+    # THE NARROW RULE, AND ONLY IT. When the headline reads HIGH and ANOTHER
+    # GRADED rail (today only the drawing) HAD items and checked none of them,
+    # the headline is HELD BACK one notch to MEDIUM and names which rail could
+    # not be checked. The rails are NOT averaged, the drawing does NOT become
+    # the headline, and the coverage contract rail — `kind: "coverage"`, never
+    # graded, so never carrying a `nothing-checked` rule — can NEVER fire this:
+    # the captain does not want a thin contract dragging a good, good-looking
+    # build down. A rail with NOTHING to check at all (`total == 0`, e.g. a
+    # mission with no drawing) is "nothing to look at", not "looked at nothing",
+    # and holds nothing back — the whole difference between the two.
+    blind_rails = [
+        k for k in GROUP_ORDER
+        if k != HEADLINE_GROUP and groups[k].get("kind") == "graded"
+        and groups[k].get("total", 0) > 0
+        and groups[k].get("rule") == "nothing-checked"
+    ]
+    headline_held_by_blind_rail = False
+    if score == "high" and blind_rails:
+        score = "medium"
+        headline_held_by_blind_rail = True
+        which = "; ".join(
+            'the "%s" rail checked none of its %d item%s'
+            % (GROUP_QUESTION[k], groups[k]["total"],
+               "" if groups[k]["total"] == 1 else "s")
+            for k in blind_rails)
+        hold = ("Held back to MEDIUM: %s, so this cannot read HIGH over a graded "
+                "rail that saw nothing." % which)
+        why = "%s %s" % (hold, why)
+        meaning = ("%s Everything a person can do worked, but a graded rail was "
+                   "never looked at, and a grade cannot sit on a rail that saw "
+                   "nothing" % hold)
+        why_grade = "%s %s" % (hold, why_grade)
+
     out = {
         "score": score,
         "workerScore": worker_score,
@@ -2687,6 +2732,18 @@ def main():
         out["altReading"] = alt_reading
     if polish_flag:
         out["polishFlag"] = polish_flag
+    # THE HELD-BACK HEADLINE, AS DATA (captain's ruling, 2026-09-24). When a
+    # graded rail that saw nothing pulled the headline off HIGH, a surface reads
+    # WHICH rail and how many items it never looked at from here — never back
+    # out of the prose above. Emitted only when it fired.
+    if score == "medium" and headline_held_by_blind_rail:
+        out["heldBackByBlindRail"] = {
+            "rails": [{"group": k, "question": GROUP_QUESTION[k],
+                       "total": groups[k]["total"]} for k in blind_rails],
+            "note": ("The headline is held back to MEDIUM because a graded rail "
+                     "had items and checked none of them — a grade cannot sit on "
+                     "a rail that saw nothing."),
+        }
     if notes:
         out["ledgerNotes"] = notes
     # ─── S226: THE RECORDS THAT DISAGREED, AS DATA ───────────────────────────
