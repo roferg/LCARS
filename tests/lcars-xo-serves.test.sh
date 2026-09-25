@@ -198,11 +198,21 @@ P
 check "E1. 'green, not red' about a delivered counter is NOT a contradiction" \
   "j '$mE/criteria.json' 'len(d.get(\"contradictions\",[]))==0'"
 
-# ─── F. the SCORE guard — a contradiction can never read as a clean MET ──────
-# The measured defect: the reviewer rated the absence-asserting ticket criterion
-# MET, and the omission the PRD faults was blessed as correct. Feed xo-score.py
-# the marked contract (from case A) and a worker verdict that rates the
-# contradicting criterion MET; it must be overruled to a gap and NAMED.
+# ─── F. the SCORE guard — TEETH REMOVED, SIGNAL KEPT (2026-09-24, night) ──────
+# The detection is demonstrably unreliable: it classifies a NEGATIVE requirement
+# ("never asks the player to name anything") as affirmative and then flags a
+# ticket that CORRECTLY implements it (see case G). While the captain rules on
+# the design, the guard's CONSEQUENCE is withdrawn: a contradiction mark may no
+# longer change a criterion's status or grade. It is still SURFACED — the pair,
+# both ids, the direction — as a possible disagreement worth a look, worded so
+# it does NOT assert a contradiction and does NOT claim a criterion "cannot
+# certify" or is an "omission". Feed xo-score.py the marked contract (case A) and
+# a verdict that rates the flagged criterion MET; the grade must stand.
+#
+# F1/F2 previously asserted the met→gap OVERRULE and the "omission … cannot
+# certify" ledger note. Those encode exactly the behaviour being removed, so
+# they are INVERTED here: F1 now asserts the grade stands, F2 that the note is a
+# hedged "possible disagreement", not a finding.
 mkdir -p "$TMPROOT/scored"
 cat >"$TMPROOT/scored/worker.json" <<'W'
 {"score":"high","summary":"all good","criteria":[
@@ -213,10 +223,80 @@ cat >"$TMPROOT/scored/worker.json" <<'W'
 ],"gaps":[]}
 W
 "$PY" "$SCOREPY" "$TMPROOT/scored/worker.json" "$mA/criteria.json" "$TMPROOT/scored/verdict.json" >/dev/null 2>&1
-check "F1. the contradicting ticket criterion, rated MET, is overruled to a gap" \
-  "j '$TMPROOT/scored/verdict.json' '[c for c in d[\"criteria\"] if c[\"id\"]==\"t-001-ac1\"][0][\"status\"]==\"gap\"'"
-check "F2. and the verdict names the disagreement (criterion + requirement) by name" \
-  "j '$TMPROOT/scored/verdict.json' 'any(\"t-001-ac1\" in n and \"prd-1\" in n and \"omission\" in n for n in d.get(\"ledgerNotes\",[]))'"
+check "F1. a flagged ticket criterion rated MET KEEPS its met status (grade not lowered)" \
+  "j '$TMPROOT/scored/verdict.json' '[c for c in d[\"criteria\"] if c[\"id\"]==\"t-001-ac1\"][0][\"status\"]==\"met\"'"
+check "F2. the pair is still SURFACED (both ids + direction), as a possible disagreement to check" \
+  "j '$TMPROOT/scored/verdict.json' 'any(\"t-001-ac1\" in n and \"prd-1\" in n and \"absence\" in n.lower() for n in d.get(\"ledgerNotes\",[]))'"
+check "F3. the wording does NOT assert a contradiction or claim it cannot certify / is an omission" \
+  "j '$TMPROOT/scored/verdict.json' 'all(not any(w in n.lower() for w in (\"cannot certify\",\"omission\",\"contradicts requirement\")) for n in d.get(\"ledgerNotes\",[]) if \"t-001-ac1\" in n)'"
+
+# ─── CONTROL (a) — the REAL false positive: prd-3 / t-004-ac2 no downgrade ───
+# REQUIREMENT prd-3: "Saving is instant and never asks the player to name
+# anything." (a NEGATIVE requirement mis-read as affirmative). TICKET t-004-ac2:
+# "Activating Save completes without presenting any text-entry/name prompt" —
+# which AGREES with it. The detection still fires (captain's call pending); the
+# score must not touch the grade.
+mG="$TMPROOT/realfp"; mkdir -p "$mG"
+cat >"$mG/prd.md" <<'PP'
+# Mission: Save
+
+## Acceptance criteria
+- the game autosaves on every room change
+- a save indicator flashes briefly after each save
+- Saving is instant and never asks the player to name anything.
+PP
+cat >"$mG/plan.json" <<'P'
+[
+  {
+    "id": "t-004",
+    "title": "Instant save",
+    "description": "save without prompting",
+    "acceptanceCriteria": [
+      {"text": "Save writes the current state to disk", "serves": "prd-1"},
+      {"text": "Activating Save completes without presenting any text-entry/name prompt", "serves": "Saving is instant and never asks the player to name anything."}
+    ],
+    "dependencies": []
+  }
+]
+P
+"$PY" "$CRITERIA" "$mG" "$mG/criteria.json" >/dev/null
+check "Ga. the real pair IS flagged by the (still-present) detection" \
+  "j '$mG/criteria.json' 'any(c.get(\"contradictsRequirement\")==\"prd-3\" for c in d[\"criteria\"] if c[\"id\"]==\"t-004-ac2\")'"
+cat >"$TMPROOT/scored/workerG.json" <<'W'
+{"score":"high","summary":"all good","criteria":[
+ {"id":"prd-1","impact":"high","impactWhy":"pt","status":"met","shot":"s1","evidence":"picture","note":"saw","reason":"Impact high. I tried; I saw (evidence: s1). Outcome: met."},
+ {"id":"prd-2","impact":"high","impactWhy":"pt","status":"met","shot":"s1","evidence":"picture","note":"saw","reason":"Impact high. I tried; I saw (evidence: s1). Outcome: met."},
+ {"id":"prd-3","impact":"high","impactWhy":"pt","status":"met","shot":"s1","evidence":"picture","note":"saw","reason":"Impact high. I tried; I saw (evidence: s1). Outcome: met."},
+ {"id":"t-004-ac1","impact":"low","impactWhy":"pt","status":"met","shot":"s1","evidence":"picture","note":"saw","reason":"Impact low. I tried; I saw (evidence: s1). Outcome: met."},
+ {"id":"t-004-ac2","impact":"low","impactWhy":"pt","status":"met","shot":"s1","evidence":"picture","note":"saw","reason":"Impact low. I tried; I saw (evidence: s1). Outcome: met."}
+],"gaps":[]}
+W
+"$PY" "$SCOREPY" "$TMPROOT/scored/workerG.json" "$mG/criteria.json" "$TMPROOT/scored/verdictG.json" >/dev/null 2>&1
+check "(a) the correctly-implementing ticket criterion is NOT downgraded" \
+  "j '$TMPROOT/scored/verdictG.json' '[c for c in d[\"criteria\"] if c[\"id\"]==\"t-004-ac2\"][0][\"status\"]==\"met\"'"
+
+# ─── CONTROL (b) — signal preserved: a genuine contradiction is still reported ─
+# Case A is a genuine contradiction (a ticket asking for the counter's ABSENCE).
+# It must still be surfaced at score time — the signal is not deleted, only its
+# teeth. (Reuses the F verdict, scored from the case-A marked contract.)
+check "(b) a genuine contradiction is still reported to a person (pair surfaced)" \
+  "j '$TMPROOT/scored/verdict.json' 'any(\"t-001-ac1\" in n and \"prd-1\" in n for n in d.get(\"ledgerNotes\",[]))'"
+
+# ─── CONTROL (c) — a criterion's grade is unchanged by the contradiction ─────
+# Same worker verdict, scored once against the MARKED contract (case A) and once
+# against an UNMARKED copy: the score word and the met/gap/untested counts must
+# be identical. The contradiction may not move a single number.
+"$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+for c in d.get("criteria",[]):
+    c.pop("contradictsRequirement",None)
+d["contradictions"]=[]
+json.dump(d,open(sys.argv[2],"w"))' "$mA/criteria.json" "$TMPROOT/unmarked.json"
+"$PY" "$SCOREPY" "$TMPROOT/scored/worker.json" "$TMPROOT/unmarked.json" "$TMPROOT/scored/verdict_unmarked.json" >/dev/null 2>&1
+check "(c) the score word is identical with and without the contradiction mark" \
+  "$PY -c 'import json;a=json.load(open(\"$TMPROOT/scored/verdict.json\"));b=json.load(open(\"$TMPROOT/scored/verdict_unmarked.json\"));exit(0 if a[\"score\"]==b[\"score\"] else 1)'"
+check "(c) the met/gap/untested counts are identical with and without the mark" \
+  "$PY -c 'import json;a=json.load(open(\"$TMPROOT/scored/verdict.json\"));b=json.load(open(\"$TMPROOT/scored/verdict_unmarked.json\"));exit(0 if a[\"counts\"]==b[\"counts\"] else 1)'"
 
 echo
 echo "  ${pass} passed, ${fail} failed"

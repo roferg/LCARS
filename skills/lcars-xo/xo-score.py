@@ -1878,19 +1878,25 @@ def main():
             entry.pop("shot", None)
             entry.pop("testQuote", None)
 
-    # THE TICKET-CONTRADICTION GUARD (Number One, 2026-09-24). NEVER LET AN
-    # OMISSION CERTIFY ITSELF. xo-criteria.py marks a ticket (plan) criterion
-    # `contradictsRequirement` when it asserts the ABSENCE of what an
-    # affirmative PRD requirement asks FOR — decided before the look, from the
-    # plan's own recorded `serves` link. The measured defect was exactly this
-    # criterion rated MET: the reviewer saw the counter absent, the ticket line
-    # asked for it to be absent, and the omission the PRD faults was blessed as
-    # correct. A criterion that contradicts the requirement it serves may not
-    # read as a clean win. It is overruled to a gap and NAMED — which ticket
-    # criterion, which requirement, which direction — so the captain sees the
-    # disagreement instead of a covered contract. (Plan criteria are the
-    # non-grading CONTRACT group, so this never lifts the grade on its own; the
-    # point is that it can no longer be laundered into "met" either.)
+    # THE TICKET-CONTRADICTION SIGNAL (Number One, 2026-09-24 — TEETH WITHDRAWN
+    # the same night). xo-criteria.py marks a ticket (plan) criterion
+    # `contradictsRequirement` when it reads it as asserting the ABSENCE of what
+    # an affirmative PRD requirement asks FOR. That detection judges POLARITY
+    # FROM PROSE, and it is demonstrably unreliable: it classified a NEGATIVE
+    # requirement ("Saving is instant and never asks the player to name
+    # anything") as affirmative and flagged a ticket that CORRECTLY implements it
+    # ("completes without presenting any text-entry/name prompt"), overruling a
+    # correct `met` to `gap` and telling the captain a correct ticket "cannot
+    # certify". Widening the verb list is generation five of the mistake that
+    # cost LCARS three sessions (S147/S156/S188) — the cure has always been to
+    # stop inferring, never a better pattern.
+    #
+    # So while the captain rules on the design, the CONSEQUENCE is removed and
+    # only the SIGNAL is kept. A contradiction mark MAY NOT change a criterion's
+    # status or grade. It is still surfaced — the pair, both ids, the direction —
+    # as a POSSIBLE disagreement worth a look, worded so it does not assert a
+    # contradiction and never claims a criterion "cannot certify". The detection
+    # code stays in place; only what happens next is withdrawn.
     for entry in ledger:
         row = contract_by_id.get(entry["id"]) or {}
         req = row.get("contradictsRequirement")
@@ -1898,17 +1904,10 @@ def main():
             continue
         req_text = str((contract_by_id.get(req) or {}).get("text") or req)
         notes.append(
-            "%s requires the ABSENCE of what requirement %s (%s) asks for — a "
-            "ticket criterion cannot certify the omission of a stated "
-            "requirement, so I am not counting it as met" % (
+            "%s and requirement %s (%s) may disagree — this criterion reads as "
+            "asking for the absence of what that requirement asks for. Worth a "
+            "look; the detection is unreliable so I have NOT changed its grade" % (
                 entry["id"], req, clip(req_text, 60)))
-        if entry["status"] == "met":
-            entry["status"] = "gap"
-            entry["note"] = ("this criterion contradicts requirement %s, which "
-                             "asks for the very thing it requires to be absent" % req)
-            entry["evidence"] = "none"
-            entry.pop("shot", None)
-            entry.pop("testQuote", None)
 
 
     # not on the screen was NOT TAKEN, and a step nobody took cannot have
