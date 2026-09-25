@@ -85,7 +85,14 @@ case "$ENGINE_CHOSEN" in
   claude)  GUARD_HINT=LCARS_CLAUDE_BIN ;;
   *)       GUARD_HINT="" ;;
 esac
-GUARD_MSG="$(lcars_worker_bin_guard "$ENGINE_BIN" "$GUARD_HINT" 2>&1)" || die "$GUARD_MSG"
+GUARD_ERR="$(mktemp)"
+if GUARD_EFF="$(lcars_worker_bin_guard "$ENGINE_BIN" "$GUARD_HINT" 2>"$GUARD_ERR")"; then
+  [ -s "$GUARD_ERR" ] && cat "$GUARD_ERR" >&2       # S231 — surface the fallback notice
+  [ -n "$GUARD_EFF" ] && ENGINE_BIN="$GUARD_EFF"    # …and run the real CLI it chose
+  rm -f "$GUARD_ERR"
+else
+  GUARD_MSG="$(cat "$GUARD_ERR")"; rm -f "$GUARD_ERR"; die "$GUARD_MSG"
+fi
 ENGINE_VERSION="$("$ENGINE_BIN" --version 2>/dev/null | head -1)"
 # The fallback is ANNOUNCED, never silent: a captain whose laptop has no claude
 # must be told which engine his repo was set up on, at the moment it happens.

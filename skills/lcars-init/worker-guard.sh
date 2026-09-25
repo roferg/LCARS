@@ -64,6 +64,27 @@ _lcars_worker_bin_is_shim() {
   head -c 65536 -- "$1" 2>/dev/null | grep -q 'copilotCLIShim'
 }
 
+# lcars_worker_bin_fallback -> STDOUT the first REAL (non-shim) `copilot` at a
+# known absolute location, or non-zero when none is there. RESOLUTION ONLY —
+# lcars_worker_bin_resolve + _lcars_worker_bin_is_shim, the SAME two facts the
+# guard already uses; this is not a second resolver and NOTHING is executed. The
+# locations are where Homebrew (/opt/homebrew/bin) and a manual / Intel install
+# (/usr/local/bin) put the CLI — the real binary a VS-Code/editor PATH, which
+# often omits /opt/homebrew/bin, leaves unreachable by name. $LCARS_WORKER_BIN_
+# FALLBACKS overrides the list (space-separated); set-but-EMPTY means "no
+# fallback", so a test can pin it off and never touch the captain's real install.
+lcars_worker_bin_fallback() {
+  local c r cands
+  cands="${LCARS_WORKER_BIN_FALLBACKS-/opt/homebrew/bin/copilot /usr/local/bin/copilot}"
+  for c in $cands; do
+    [ -n "$c" ] || continue
+    r="$(lcars_worker_bin_resolve "$c")" || continue
+    _lcars_worker_bin_is_shim "$r" && continue      # a location that IS a shim is no fallback
+    printf '%s' "$c"; return 0
+  done
+  return 1
+}
+
 # lcars_worker_bin_real_dir -> the first PATH directory whose `copilot` is NOT
 # the shim (resolution only, never run), or /opt/homebrew/bin when PATH holds
 # none — the fix the refusal names is DERIVED, never guessed when it can be found.
@@ -126,6 +147,19 @@ lcars_worker_bin_prefer_real() {
 # lcars_worker_bin_guard <bin> [<hint>] -> 0 when LCARS may start <bin>;
 # otherwise ONE plain sentence on stderr — the path found and the fix — and 1.
 #
+# THE FALLBACK, NOT A WEAKENING (S231). A BARE `copilot` that PATH-resolves to
+# VS Code's shim is not yet doomed: a GUI/editor PATH commonly omits
+# /opt/homebrew/bin, so the real CLI at a known absolute location was never even
+# looked for. Before refusing such a bin, this looks there (lcars_worker_bin_
+# fallback) and, when a real non-shim CLI is found, does NOT refuse — it prints
+# that CLI on STDOUT for the caller to run in the shim's place and one plain
+# sentence on stderr saying it worked around the shim and which binary it chose.
+# The protection is intact: with no real CLI anywhere it refuses exactly as
+# before, and a bin someone named by ABSOLUTE path is never rescued this way (it
+# "wins and is still shim-checked") — its slash sends it straight to the refusal
+# so the person fixes it where they set it. On the ordinary allow path (not a
+# shim, or not found) it stays silent and emits nothing, exactly as before.
+#
 # THE FIX MUST BE TRUE WHERE IT IS SAID (S217 fix round 1, D2). Only the PATH
 # fix cures every call site: init resolves copilot through $LCARS_COPILOT_BIN
 # and PATH, the daemon's picker outranks $LCARS_WORKER_BIN, and LCARS's own
@@ -138,9 +172,21 @@ lcars_worker_bin_prefer_real() {
 #   <hint> = any other text (e.g. "restart the viewscreen") → "…, then <hint>"
 # Engine-resolution precedence is untouched: this only chooses WORDS.
 lcars_worker_bin_guard() {
-  local bin="$1" hint="${2:-}" real dir lead tail=""
+  local bin="$1" hint="${2:-}" real dir lead tail="" fb
   real="$(lcars_worker_bin_resolve "$bin")" || return 0
   _lcars_worker_bin_is_shim "$real" || return 0
+  # A bare name that hit the shim: try a real CLI at a known absolute location
+  # (never for an absolute/relative bin someone named — PATH order can't cure
+  # that, so it must be refused where it was set). Resolution only; no run.
+  case "$bin" in
+    */*) : ;;
+    *) if fb="$(lcars_worker_bin_fallback)"; then
+         printf '%s' "$fb"
+         printf 'Worked around VS Code'"'"'s copilot shim (%s): starting the real CLI at %s in its place.\n' \
+           "$real" "$fb" >&2
+         return 0
+       fi ;;
+  esac
   dir="$(lcars_worker_bin_real_dir)"
   case "$bin" in
     */*) lead="give LCARS $dir/copilot in place of $bin wherever that path was set" ;;

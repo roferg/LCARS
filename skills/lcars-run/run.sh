@@ -14876,12 +14876,23 @@ require_worker() {
     # The variable is offered only where it WINS (fix round 1, D2): an external
     # $LCARS_WORKER_BIN tops resolve_worker_bin, but LCARS's own re-pin
     # (_INTERNAL=1: approve, Number One) overrides a captain's prefix.
-    local guard_msg guard_hint=""
+    local guard_msg guard_hint="" guard_eff guard_err
     [ "${LCARS_WORKER_BIN_INTERNAL:-}" != "1" ] && guard_hint=LCARS_WORKER_BIN
     # S218 — a run the viewscreen started is fed the mission's persisted engine,
     # so a variable prefix cannot reach it: say the daemon's fix instead.
     [ "${LCARS_VIEWSCREEN_CHILD:-}" = "1" ] && guard_hint="$(lcars_worker_bin_daemon_hint)"
-    guard_msg="$(lcars_worker_bin_guard "$WORKER_BIN" "$guard_hint" 2>&1)" || die "$guard_msg"
+    # S231 — the guard may return a REAL CLI on stdout to run in the shim's
+    # place (a bare persisted `copilot` cured from a known absolute location).
+    # Adopt it; empty means unchanged. A refusal is rc≠0 with its sentence on
+    # stderr, which we surface through die exactly as before.
+    guard_err="$(mktemp)"
+    if guard_eff="$(lcars_worker_bin_guard "$WORKER_BIN" "$guard_hint" 2>"$guard_err")"; then
+      [ -s "$guard_err" ] && cat "$guard_err" >&2
+      [ -n "$guard_eff" ] && WORKER_BIN="$guard_eff"
+      rm -f "$guard_err"
+    else
+      guard_msg="$(cat "$guard_err")"; rm -f "$guard_err"; die "$guard_msg"
+    fi
   fi
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
   [ -x "$WORKER_BIN" ] && return 0

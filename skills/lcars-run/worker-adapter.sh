@@ -358,7 +358,13 @@ adapter_spawn() { # cli role outdir prompt
   # S218 — started by the viewscreen: its persisted engine wins, so the fix is
   # the daemon's PATH + a restart, never a variable (lcars_worker_bin_daemon_hint).
   [ "${LCARS_VIEWSCREEN_CHILD:-}" = "1" ] && guard_hint="$(lcars_worker_bin_daemon_hint)"
-  lcars_worker_bin_guard "$bin" "$guard_hint" || exit 1
+  # S231 — the guard may hand back a REAL CLI to run in the shim's place (a bare
+  # `copilot` that PATH-resolved to VS Code's shim, cured from a known absolute
+  # location). Adopt it; empty stdout means "use $bin unchanged". A refusal is
+  # rc≠0 with its sentence already on stderr.
+  local guard_eff
+  guard_eff="$(lcars_worker_bin_guard "$bin" "$guard_hint")" || exit 1
+  [ -n "$guard_eff" ] && bin="$guard_eff"
   local rest=("${flags[@]:1}")
   # S218 — RECORD WHAT RAN AND HOW IT ENDED. The exit status used to be thrown
   # away here, so a worker that died at argv-parse (S214: copilot refusing a

@@ -40,6 +40,15 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
 SENTINEL="$TMPROOT/A-SHIM-WAS-EXECUTED"
 
+# The absolute-location FALLBACK (S231, below) would rescue a bare `copilot`
+# that PATH resolves to the shim on any dev box that has a real
+# /opt/homebrew/bin/copilot — flipping every REFUSAL row that follows from
+# refuse to allow. Pin the fallback OFF for the whole file (set-but-empty =
+# "no fallback locations") so each refusal row still measures the refusal, and
+# so nothing here can ever reach the captain's real install. The S231 controls
+# set it per-invocation. Production leaves it UNSET → the real locations.
+export LCARS_WORKER_BIN_FALLBACKS=""
+
 # A harmless stand-in: if anything ever RUNS it, the sentinel says so.
 harmless() { # <path> [<extra line>]
   mkdir -p "$(dirname "$1")"
@@ -400,6 +409,101 @@ check "S222. an engine the OPERATOR typed is still refused, never silently rewri
 # AND THE FILING HALF: a mission filed from now on records the path, not the name.
 check "S222. file.sh normalises the engine it PERSISTS through the same one rule" \
   "grep -F 'lcars_worker_bin_prefer_real' '$REPO_ROOT/skills/lcars-file/file.sh' >/dev/null"
+
+# ==========================================================================
+# S231 — THE FALLBACK, NOT A WEAKENING.
+#
+# The VS Code Copilot extension puts its own `copilot` shim ON PATH, AHEAD of
+# /opt/homebrew/bin. A bare `copilot` therefore PATH-resolves to the shim and
+# the guard refuses it — CORRECTLY, the fork-bomb protection is right. But a
+# GUI/editor PATH often does not include /opt/homebrew/bin at all, so the real
+# CLI, sitting right there at a known absolute location, is never even looked
+# for and Holodeck will not start.
+#
+# The cure is a FALLBACK, never a weakening: when the PATH-resolved `copilot`
+# turns out to be the shim, look for a REAL CLI at the known absolute locations
+# and hand back the first that resolves and is NOT itself a shim — on STDOUT,
+# with one plain sentence naming it — so the caller runs THAT. Only when no real
+# CLI can be found anywhere does it refuse, exactly as before. Resolution stays
+# resolution: lcars_worker_bin_resolve + _lcars_worker_bin_is_shim, never a run.
+# ==========================================================================
+echo "S231. a shim-first PATH falls back to a real CLI at a known absolute location"
+
+# A REAL (non-shim) copilot at a stand-in "absolute location" the test injects
+# via $LCARS_WORKER_BIN_FALLBACKS — never the captain's real /opt/homebrew one.
+# Self-answering: never run by the guard, harmless (no sentinel) if it were.
+ABSREAL_DIR="$TMPROOT/abs-real"; mkdir -p "$ABSREAL_DIR"
+ABSREAL="$ABSREAL_DIR/copilot"
+printf '#!/bin/sh\necho "copilot 0.0 (stub)"\nexit 0\n' >"$ABSREAL"; chmod +x "$ABSREAL"
+
+GOUT="$TMPROOT/g231.out"; GERR="$TMPROOT/g231.err"
+# run_guard <bin> <PATH> <fallbacks> -> echoes rc; stdout→$GOUT, stderr→$GERR.
+run_guard() {
+  PATH="$2" LCARS_WORKER_BIN_FALLBACKS="$3" \
+    bash -c '. "$1"; lcars_worker_bin_guard "$2"' _ "$GUARD" "$1" >"$GOUT" 2>"$GERR"
+  echo "$?"
+}
+
+# --- unit: the fallback resolver itself -----------------------------------
+fb() { PATH="/usr/bin:/bin" LCARS_WORKER_BIN_FALLBACKS="$1" \
+        bash -c '. "$1"; lcars_worker_bin_fallback' _ "$GUARD"; }
+check "S231. fallback returns the first real (non-shim) absolute CLI" \
+  "[ \"\$(fb \"$SHIM $ABSREAL\")\" = '$ABSREAL' ]"
+check "S231. fallback SKIPS a location that is itself the shim" \
+  "[ \"\$(fb \"$SHIM\")\" = '' ] ; fb \"$SHIM\" >/dev/null ; [ \$? -ne 0 ]"
+check "S231. fallback with no locations set fails (nothing to fall back to)" \
+  "fb '' >/dev/null ; [ \$? -ne 0 ]"
+
+# --- CONTROL (a): shim first on PATH AND a real CLI present → the REAL one ---
+rc="$(run_guard copilot "$LINKBIN:/usr/bin:/bin" "$ABSREAL")"
+check "S231(a). CURE — allowed (rc 0), does not refuse" "[ '$rc' = 0 ]"
+check "S231(a). CURE — chose the real absolute CLI, on stdout for the caller to run" \
+  "[ \"\$(cat '$GOUT')\" = '$ABSREAL' ]"
+check "S231(a). CURE — said so in one plain sentence naming the binary it chose" \
+  "grep -qF '$ABSREAL' '$GERR' && [ \"\$(grep -c . '$GERR')\" = 1 ]"
+check "S231(a). CURE — and NOTHING executed the shim to work that out" "[ ! -e '$SENTINEL' ]"
+
+# --- CONTROL (b): shim first AND no real CLI anywhere → STILL REFUSES --------
+# THE MOST IMPORTANT CONTROL: the fork-bomb protection is intact.
+rc="$(run_guard copilot "$LINKBIN:/usr/bin:/bin" "")"
+check "S231(b). PROTECTION — with no real CLI anywhere it STILL REFUSES (rc 1)" "[ '$rc' = 1 ]"
+check "S231(b). PROTECTION — with the same refusal sentence" \
+  "grep -qF 'Refusing to start' '$GERR'"
+check "S231(b). PROTECTION — it did not silently swap in anything (stdout empty)" \
+  "[ -z \"\$(cat '$GOUT')\" ]"
+# …and a 'fallback location' that is itself a shim is no fallback at all.
+rc="$(run_guard copilot "$LINKBIN:/usr/bin:/bin" "$SHIM")"
+check "S231(b). PROTECTION — a fallback location that IS a shim is rejected → still refuses" \
+  "[ '$rc' = 1 ]"
+check "S231(b). PROTECTION — and nothing executed" "[ ! -e '$SENTINEL' ]"
+
+# --- CONTROL (c): a real CLI already first on PATH → UNCHANGED ---------------
+rc="$(run_guard copilot "$REALBIN:/usr/bin:/bin" "$ABSREAL")"
+check "S231(c). UNCHANGED — a real CLI first on PATH is allowed (rc 0)" "[ '$rc' = 0 ]"
+check "S231(c). UNCHANGED — no override emitted (stdout empty → original bin runs)" \
+  "[ -z \"\$(cat '$GOUT')\" ]"
+check "S231(c). UNCHANGED — and nothing is announced" "[ ! -s '$GERR' ]"
+
+# --- REQ 4: an explicitly-set ABSOLUTE shim still wins, still shim-checked ---
+# PATH order cannot cure a bin someone named by absolute path, so it is NOT
+# rescued by the fallback — it goes straight to the refusal, loudly, so the
+# person fixes it where they set it.
+rc="$(run_guard "$SHIM" "$REALBIN:/usr/bin:/bin" "$ABSREAL")"
+check "S231(req4). an ABSOLUTE shim path still REFUSES even when a fallback exists" "[ '$rc' = 1 ]"
+check "S231(req4). …and was NOT silently swapped (stdout empty)" "[ -z \"\$(cat '$GOUT')\" ]"
+
+# --- END-TO-END: worker-adapter actually SPAWNS the fallback, never the shim -
+# A real fallback CLI that LEAVES A MARK when run — the only proof of WHICH file
+# ran. If the shim ran instead, the sentinel would exist; it must not.
+ABSMARK_DIR="$TMPROOT/abs-mark"; mkdir -p "$ABSMARK_DIR"
+ABSMARK="$ABSMARK_DIR/copilot"
+printf '#!/bin/sh\n: >"%s/absmark-ran"\nexit 0\n' "$TMPROOT" >"$ABSMARK"; chmod +x "$ABSMARK"
+OUTE="$TMPROOT/out231-e2e"
+( cd "$TMPROOT" && PATH="$LINKBIN:/usr/bin:/bin" LCARS_WORKER_BIN_FALLBACKS="$ABSMARK" \
+  env -u LCARS_WORKER_BIN bash "$ADAPTER" spawn copilot repo-read "$OUTE" "hi" ) >/dev/null 2>&1
+check "S231(a-e2e). worker-adapter ran the REAL fallback CLI, not the shim" \
+  "[ -f '$TMPROOT/absmark-ran' ]"
+check "S231(a-e2e). …and the shim was never executed" "[ ! -e '$SENTINEL' ]"
 
 echo
 printf 'lcars worker-guard: %d passed, %d failed\n' "$pass" "$fail"
