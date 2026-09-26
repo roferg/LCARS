@@ -15220,6 +15220,24 @@ cmd_research() {
   done
   [ -n "$qdir" ] || die "the question-generator worker produced no questions.txt after $MAX_WORKER_TRIES attempt(s) — $(worker_failure_clause research). Stage stopped, no advance."
 
+  # PRODUCT DECISIONS THE WORKER RECORDED AS IT WORKED (2026-09-25, "decide, but
+  # tell me it decided"). As the question-generator writes its questions it
+  # DECLARES each one's kind — a researchable fact, or a product decision that is
+  # the captain's to make. For every product decision it does NOT stop and does
+  # NOT dispatch a research agent (no researcher can answer "what should the
+  # product be"); it MAKES a reasonable call to keep the build moving and RECORDS
+  # that call — question, options, choice, why, where — in decisions.json at the
+  # moment it decides. Land it beside prd.md/research/ in the durable mission dir
+  # so the Verify report can NAME every call made on his behalf. It is written by
+  # the producer and read downstream as structured fields — never inferred from
+  # prose (RECORD, DO NOT INFER). Persist it BEFORE the count gate: a Mission
+  # whose only open points were product decisions has an EMPTY questions.txt and
+  # takes the GATE: skip path, but its decisions still belong on the record.
+  # Absent when the worker took none — the report omits the section then.
+  if [ -f "$qdir/decisions.json" ]; then
+    cp "$qdir/decisions.json" "$MISSION_DIR/decisions.json"
+  fi
+
   # STEP 2 — gate on the count (reuse the tested subcommand; it owns skip/escalate)
   local gate_out gate_rc=0
   gate_out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" gate \

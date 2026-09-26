@@ -1528,6 +1528,17 @@ def main():
     # S224 fix round 3: the walk's own moments — see moment_notes.
     readings_path = sys.argv[11] if len(sys.argv) > 11 else ""
     readings = load_json_or_none(readings_path)
+    # THE CHOICES LCARS MADE FOR HIM (2026-09-25, "decide, but tell me it
+    # decided"). Research RECORDS, at the moment it decides, every open point
+    # that was the captain's to settle and that it settled anyway to keep the
+    # build moving — question, options considered, the one chosen, why, where.
+    # It is read HERE as structured fields and rendered in report.md; nothing
+    # downstream scans prose to work out that a decision was taken (RECORD, DO
+    # NOT INFER — the most expensive recurring mistake in this codebase). One
+    # of two producers of the report's "Choices I made for you" section; the
+    # other is the scoring system's OWN assumed-impact call (impactAssumed).
+    decisions_path = sys.argv[12] if len(sys.argv) > 12 else ""
+    made_decisions = load_json_or_none(decisions_path)
     walk = load_walk(walk_path)
     seed = load_json_or_none(seed_path)
     pairs_by_part = load_pairs(pairs_path)
@@ -2983,6 +2994,57 @@ def main():
                 w("- **%s** — the build has %s; your drawing does not say, so I am "
                   "treating it as your call. *(%s)*\n" % (
                       g.get("title", "?"), unstop(g.get("saw", "?")), cite(g)))
+        # ─── CHOICES I MADE FOR YOU — two producers, one section (2026-09-25) ─
+        # The defect this closes: LCARS noticed a choice was the captain's to
+        # make, made it anyway, and said nothing. The ruling is "decide, but
+        # tell me it decided" — so it keeps deciding and the report NAMES every
+        # call made on his behalf and the alternatives it passed over.
+        #   Producer 1 — Research's recorded PRODUCT decisions (decisions.json),
+        #     read as structured fields (question / options / chose / why /
+        #     where), never inferred from prose.
+        #   Producer 2 — the scoring system's OWN call: a criterion that arrived
+        #     with no importance, which take_impact() stamped high + assumed
+        #     (impactAssumed). That is the machine deciding for him too, and it
+        #     had no home of its own — it lived only inside grade prose above.
+        # ABSENT, not present-and-empty, when there were none: an empty list
+        # reads as "nothing was decided", a different fact from "these were".
+        chosen = []
+        if isinstance(made_decisions, dict):
+            for d in made_decisions.get("decisions") or []:
+                if isinstance(d, dict) and \
+                   " ".join(str(d.get("question") or "").split()) and \
+                   " ".join(str(d.get("chose") or "").split()):
+                    chosen.append(d)
+        assumed_calls = [e for e in ledger if e.get("impactAssumed")]
+        if chosen or assumed_calls:
+            w("\n### Choices I made for you\n\n")
+            w("You did not settle these, so I did — to keep the build moving. "
+              "Here is each call, and what I passed over.\n\n")
+            for d in chosen:
+                q = clip(str(d.get("question") or ""), 200)
+                pick = unstop(" ".join(str(d.get("chose") or "").split()))
+                picknorm = " ".join(str(d.get("chose") or "").split())
+                alts = []
+                for o in (d.get("options") or []):
+                    on = " ".join(str(o).split())
+                    if on and on != picknorm and on not in alts:
+                        alts.append(on)
+                why = unstop(" ".join(str(d.get("why") or "").split()))
+                where = " ".join(str(d.get("where") or "").split())
+                line = "- **%s** — I went with %s" % (q, pick)
+                if alts:
+                    line += ", over " + ", ".join(alts)
+                line += "."
+                if why:
+                    line += " %s." % why
+                if where:
+                    line += " You will see it in %s." % where
+                w(line + "\n")
+            for e in assumed_calls:
+                what = clip(e.get("text") or "", 120) or e["id"]
+                w("- **how much %s counts** — you gave it no importance, so I "
+                  "counted it as the point of the mission, the careful reading. "
+                  "*(%s)*\n" % (what, e["id"]))
         blind = [e for e in ledger if e["status"] == "untested"]
         if blind:
             w("\n### What I could not check\n\n")
