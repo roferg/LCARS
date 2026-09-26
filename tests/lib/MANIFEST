@@ -1,0 +1,39 @@
+# tests/lib/MANIFEST — the CLOSED inventory of shared test EQUIPMENT.
+#
+# WHY A MANIFEST AND NOT A RULE ABOUT NAMES. The rigs ruling (captain,
+# 2026-09-25) has to hold against a path nobody has thought of yet. A gate
+# that tries to recognise "this looks like a rig" from a name is a classifier,
+# and classifiers in this project have been beaten by rewording every time
+# they have been tried. So tests/no-rigs.test.sh does the opposite: it knows
+# what is ALLOWED and refuses everything else. This file is the allow-list for
+# tests/lib/ — the one place under tests/ that carries executable helpers.
+#
+# A new file under tests/lib/ FAILS the gate until someone adds a row here.
+# That friction is the feature: the inventory can only grow deliberately.
+#
+# The gate checks three things per row: the file is on disk, it is tracked,
+# and its git index mode matches column 1 (so a `git mv` that dropped an
+# executable bit is caught). It also checks column 3 against the shipped
+# suites, so this file cannot claim a file is exercised when nothing runs it.
+#
+# COLUMNS:  <git-index-mode> <path> <status> <note>
+#   status = exercised  a suite in tests/*.test.sh names it as `lib/<rest>`
+#          = unused     deliberately kept, and NO suite names it
+#          = doc        documentation; not scanned either way
+#
+# Paths may not contain spaces.
+
+100644 tests/lib/MANIFEST                          doc        this file — the allow-list itself
+100644 tests/lib/README.md                         doc        what lives here, and the equipment-vs-rig line
+100644 tests/lib/cage.py                           exercised  harness, lcars-buddy, lcars-xo-observe/-press/-phone/-evidence/-render-gate
+100755 tests/lib/drive-rig.sh                      exercised  establish-vision, foundation-gate
+100644 tests/lib/phone-mkfixture.py                exercised  lcars-xo-phone
+100755 tests/lib/ptyrun.py                         exercised  harness
+100755 tests/lib/real-worker.sh                    exercised  real-worker-resolution
+100755 tests/lib/stdin_guard.py                    exercised  harness (as "$DIR/lib/stdin_guard.py")
+100755 tests/lib/shims/align-heal-faultinj/copilot exercised  lcars-worker-guard
+100755 tests/lib/shims/deploy-watcher/claude       unused     claude half of the deploy-watcher shim pair; kept as the engine sibling
+100755 tests/lib/shims/deploy-watcher/copilot      exercised  lcars-worker-guard
+100644 tests/lib/shims/holodeck/README.md          doc        how to drive the holodeck shims by hand
+100755 tests/lib/shims/holodeck/claude             unused     claude half of the holodeck shim pair; kept as the engine sibling
+100755 tests/lib/shims/holodeck/copilot            exercised  lcars-worker-guard

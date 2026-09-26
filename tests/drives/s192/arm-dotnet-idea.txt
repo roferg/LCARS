@@ -1,4 +1,0 @@
-I want a small C# .NET console app called `Ledger` that tracks simple
-double-entry bookkeeping entries in a local JSON file — record a debit and a
-credit against named accounts, and print a trial balance that proves the books
-balance. .NET, because the rest of my team is on it.

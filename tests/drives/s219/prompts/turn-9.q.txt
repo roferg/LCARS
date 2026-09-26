@@ -1,8 +1,0 @@
-Question 9
-
-Two closely-related persistence questions left — let's take **draft storage** first, then insight-save, then the re-pull rule. On the draft banner ("saved locally as you go", "last edited 2 min ago"): today the app persists the draft to `data/snapshots/<id>.json` and publishes via commit + PR. My recommendation: **keep that model — the draft is stored locally (on disk under the app's data dir), not synced to any server**, and the banner wording just reflects local autosave. Publishing stays the existing commit/PR-to-publish path; "Lock month" writes the immutable snapshot locally. That matches how the app works today and CONTEXT.md's local-dev framing. Is the draft local-only (as today), or do you want it synced to a backend?
-
-Options offered:
-Local-only on disk (as today); publish via the existing commit/PR path
-Synced to a backend service
-Something else

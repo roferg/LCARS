@@ -1,1 +1,0 @@
-Three fast clicks on Stand down: the control reads STANDING DOWN..., is disabled, and exactly 1 POST went to the server.

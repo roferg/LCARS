@@ -1,3 +1,0 @@
-{"hasDrawing": true, "placeNames": ["#batch-list"],
- "criteria": [{"id": "prd-1", "text": "the batch list opens with today's batches", "primary": true, "source": "prd"},
-              {"id": "t-2-ac1", "text": "the ADD BATCH button sits above the list", "primary": false, "source": "plan"}]}

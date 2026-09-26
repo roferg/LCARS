@@ -1,1 +1,0 @@
-importing one CSV row from your bank and showing it on screen

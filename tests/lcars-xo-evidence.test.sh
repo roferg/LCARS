@@ -23,7 +23,7 @@
 #                                    does not prove a criterion the suite does
 #                                    not speak to.
 #
-# THE TRAP THIS SUITE EXISTS TO STOP. `tests/drives/s197/cage.py` reports a
+# THE TRAP THIS SUITE EXISTS TO STOP. `tests/lib/cage.py` reports a
 # hang and a failure on STDOUT while its own process exit status stays 0 in all
 # three cases. Anything wired to a cage's exit status reads every test run as a
 # pass — a green that means nothing, on a feature whose entire purpose is to

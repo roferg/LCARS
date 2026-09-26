@@ -148,8 +148,8 @@ no production code itself** — it spawns sub-agents and runs this loop:
 4. **Teardown.** The tester tears down everything its runs created — locally and
    remotely — leaving the sandbox clean (reuse, don't delete, between rounds). No
    orphans. **Never tear down before the verdict is final**, and rigging worth
-   keeping gets committed under `tests/drives/` rather than rebuilt by the next
-   round.
+   keeping gets committed to **lcars-dev's** `tests/drives/` — never the
+   product repo's — rather than rebuilt by the next round.
 5. **Commit + readout.** The orchestrator commits the implementor's work + the
    fixes to the work's branch (see *Build contract*), then reads out per
    *Readout*. No PR unless asked.
@@ -254,8 +254,17 @@ story, in plain English, and let them rule.
 Seven S163 tester rounds each rebuilt the same fixture scaffold from scratch, and
 one tore it down before its verdict was final, so the next round had to rebuild
 rigging five rounds had accumulated. **Reuse the rig between rounds.** When the
-work invents rigging worth keeping, **commit it under `tests/drives/`** rather
-than discarding it. **Testers must not tear down until the verdict is final.**
+work invents rigging worth keeping, **commit it to lcars-dev's `tests/drives/`**
+rather than discarding it. **Testers must not tear down until the verdict is
+final.**
+
+**Rigs do NOT live in the product repo** (captain's ruling, 2026-09-25). They
+had accumulated to 3,913 tracked files / ~109 MB in LCARS, most of it recorded
+run output nobody realised was committed. `tests/drives/` in LCARS is now
+git-ignored and `tests/no-rigs.test.sh` fails the build if anything under it is
+tracked. Shared EQUIPMENT that a shipped suite in `tests/*.test.sh` sources or
+execs is a different thing and stays, under `tests/lib/` — a clone of LCARS
+must still be testable.
 
 ---
 
@@ -338,7 +347,7 @@ so a fast pass is distinguishable from a kill. The reference implementation is
 committed:
 
 ```
-python3 tests/drives/s197/cage.py 5 bash skills/<name>/<script>.sh <args…>
+python3 tests/lib/cage.py 5 bash skills/<name>/<script>.sh <args…>
 ```
 
 It also gives the probe `stdin=DEVNULL`, which matters more than it sounds:
@@ -347,6 +356,10 @@ interactive shell blocks on its own first assertion.
 
 **A caged run that does not come back is NOT proof of safety** — it is the hang,
 reported.
+
+**Never key a decision on the cage's own `$?`.** It exits 0 whether the probe
+passed, failed or was killed; the verdict is in the text it prints (`EXIT <n>`,
+`*** TIMED OUT -> HUNG ***`, `ELAPSED`). Parse the output, not the status.
 
 ### Two mechanisms hang a suite, not one
 

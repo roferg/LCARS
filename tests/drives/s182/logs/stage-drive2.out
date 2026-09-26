@@ -1,3 +1,0 @@
-  worker: claude (bin: detected) model=- (model: unset)
-lcars run: waves.json has no tickets — nothing to implement.
-lcars run: impl-status failed — Implement cannot sequence the waves.

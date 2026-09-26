@@ -1,2 +1,0 @@
-Set in the builder, seeded from the scorecard's current status on pull but freely overridable — the mockup draws an editable per-KPI status select, and an MBR is an editorial snapshot where I want to make the judgement call for the month rather than mirror live state.
-

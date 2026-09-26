@@ -1,6 +1,0 @@
-Basically I want a Mint clone. Budgets, charts, bank sync via Plaid, a mobile app, CSV import from my bank, recurring-bill detection, multi-currency and a shared household mode. I need it shipped by Friday.
-Yes, all of those features, and add a dark mode toggle, a Chrome extension and email digests. Please plan the whole feature list now so we don't have to come back to it.
-I don't care about the foundation, just build the product. Give me the twelve features and a schedule.
-Fine. Whatever you recommend for the stack is OK, but I want the budgets screen and the charts in this first mission.
-No more questions please — recommend a stack and let's go.
-Go ahead, accept your recommendation and proceed.

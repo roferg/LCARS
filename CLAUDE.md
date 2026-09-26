@@ -60,7 +60,7 @@ ignored — never put skills, tests, installers, or docs there.
    completed one, so "all suites green" is still an unverified claim (S209
    measures it). Run a single suite the safe way — `bash tests/<name>.test.sh`
    from a terminal is now fine; cage anything unattended with
-   `python3 tests/drives/s197/cage.py <secs> …`, which reports ELAPSED and kills
+   `python3 tests/lib/cage.py <secs> …`, which reports ELAPSED and kills
    the whole process group.
 5. **Commit.** The skill source, its test, and any doc updates are all tracked.
    Work happens on a branch cut from `main` — **`feat/<round>`** for a round or

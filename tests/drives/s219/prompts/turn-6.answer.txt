@@ -1,2 +1,0 @@
-Completion = non-empty insight only; status is not part of the meter. Status is seeded on the data pull so it's never genuinely missing, and the human work this bar tracks is the insight. Keeping it insight-only makes the meter mean exactly what the lock gate enforces — 14 of 14 ⟺ the month is lockable — which is the whole point of showing it.
-

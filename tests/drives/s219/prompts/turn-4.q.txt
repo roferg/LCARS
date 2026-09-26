@@ -1,8 +1,0 @@
-Question 4
-
-Let's nail down the three navigation actions the mockup draws but never defines: **"Preview", "View" (on a published month), and "Continue to builder"**. My recommendation: - **Continue to builder** — on the collection screen, becomes enabled once the pull finishes and takes you into the draft builder for that month. - **Preview** (builder toolbar) — opens a read-only rendering of the *current draft* exactly as it will look published, without locking it (a "what will this publish as" view you can back out of). - **View** (on a Published month) — opens that month's locked, published MBR read-only (same rendering as Preview, but of the immutable snapshot). So Preview and View share one read-only presentation component; the only difference is Preview shows the live draft and View shows a locked snapshot. Does that match what you intended for the three, or should any of them differ?
-
-Options offered:
-Yes — Continue=enter builder; Preview=read-only render of current draft; View=read-only render of published snapshot
-Preview/View differ from that — let me clarify
-Something else

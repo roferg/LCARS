@@ -1,1 +1,0 @@
-The report at 390px: the window goes full, evidence drops below the text, and the block reads cleanly.

@@ -1,9 +1,0 @@
-{
-  "question": "In the DX-Scorecard MBR builder, insights autosave \"debounced while typing\" before a PUT /__data/snapshots/<id> write — what debounce interval should be used, and how should the \"Last edited {t}\" meta be formatted (relative like \"2 min ago\" or absolute timestamp)?",
-  "recommendation": "Debounce the autosave at 800ms of typing-inactivity (a value in the 500–1000ms band; 800ms is the sweet spot), and render \"Last edited {t}\" as an absolute, locale-aware timestamp (e.g. \"Jul 27, 2026, 3:04 PM\") produced via the existing UTC-pinned date helper — not a live relative \"2 min ago\" string.",
-  "supporting_points": [
-    "An 800ms debounce is the well-established range for text-field autosave (Google Docs/Notion-style behaviour, ~500ms–1s): long enough that a full PUT /__data/snapshots/<id> write isn't fired on every keystroke, short enough that a save lands almost immediately after the user pauses; pair it with a max-wait/flush on blur and before unload so no edit is lost.",
-    "The repo already standardises on absolute, deterministic timestamps: src/lib/date.ts's formatDate() renders locale-aware dates with timeZone:'UTC' precisely so every viewer and CI runner sees the same string and labels 'never drift'. A relative 'x min ago' label is non-deterministic, needs a re-render timer, and is untestable without clock-mocking — reusing/extending formatDate keeps 'Last edited {t}' consistent with the ProvenanceBar 'Data as of'/'Generated' labels.",
-    "For an editorial MBR artifact the exact edit time carries audit value (it maps to when the snapshot JSON was last PUT); an absolute timestamp is unambiguous across sessions and days, whereas 'relative' phrasing degrades ('2 min ago' becomes stale/misleading once the tab sits open). If a friendlier feel is wanted, keep the absolute string as the visible value and expose the relative phrasing only as a title/tooltip."
-  ]
-}

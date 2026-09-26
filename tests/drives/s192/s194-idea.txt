@@ -1,4 +1,0 @@
-I want a small command-line tool called `pace` that reads a plain text file of
-run times — one line per run, like "5k 24:31" — and tells me my average pace per
-kilometre, my fastest run, and whether I am getting quicker over the last month.
-`pace summary runs.txt`. Node, because I want it to start instantly.

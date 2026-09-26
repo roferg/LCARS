@@ -35,7 +35,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRIVER="${LCARS_XO_DRIVER_REAL:-$REPO_ROOT/skills/lcars-xo/xo-drive.js}"
-CAGE="$REPO_ROOT/tests/drives/s197/cage.py"
+CAGE="$REPO_ROOT/tests/lib/cage.py"
 PY="${LCARS_PYTHON_BIN:-python3}"
 
 pass=0; fail=0

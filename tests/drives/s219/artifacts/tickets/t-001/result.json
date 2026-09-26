@@ -1,9 +1,0 @@
-{
-  "ticketId": "t-001",
-  "passed": true,
-  "attempts": 3,
-  "summary": "Added optional Kpi fields (previousValue, delta, sourceDeltas, carried) and Snapshot.lastEditedAt to shared/types.ts, all optional for backward compatibility. sourceDeltas reuses the existing SubReading {label,value} shape. Proved the type-level contract with a compiler-API test (like build-purity runs a real build) that compiles fixtures against shared/types.ts and asserts on diagnostics; green on the new tree, red on the parent (unknown-property errors).",
-  "newTests": ["src/types.provenance.test.ts"],
-  "testEdits": [],
-  "flipFlop": "expected"
-}

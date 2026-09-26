@@ -1,2 +1,0 @@
-DO NOT ACCEPT YET — three of the four fixes are clean, but bug #209 is still visibly wrong: the collect step reads "Pulling data · September 2026" while the start card and builder both say August, so the month is inconsistent within one flow. I'd log a new bug: "Data-pull/collect step shows September 2026; must read August 2026 to match the start card and builder." Fix that one spot and I'll accept.
-

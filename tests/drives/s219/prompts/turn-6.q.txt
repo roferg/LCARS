@@ -1,8 +1,0 @@
-Question 6
-
-Let's settle the **completion / "done" definition** — this drives the "Insights added — 9 of 14" bar and interacts with the lock rule. You already ruled every KPI needs insight text before the month can lock. My recommendation: **the completion meter counts a KPI as done when its insight textarea is non-empty** (matching the mockup's "Insights added" label), and status is NOT part of the meter — status is always seeded on pull so it's never really "missing", whereas insight is the human work the bar is tracking. That keeps the bar's meaning identical to the lock gate (bar hits 14 of 14 ⟺ month is lockable). Is insight-text the sole completion bar, or must status also be explicitly set for a KPI to count as done?
-
-Options offered:
-Completion = non-empty insight only (matches the lock gate); status not counted
-Completion requires both a non-empty insight AND an explicitly-set status
-Something else

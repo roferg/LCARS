@@ -1,2 +1,0 @@
-Yes — Continue enters the draft builder for August once the pull finishes; Preview renders the current draft read-only exactly as it will publish (back out without locking); View opens a published month's locked snapshot in that same read-only rendering. Preview and View share one presentation component, differing only in draft-vs-snapshot source, and View reuses the existing LockedView path.
-

@@ -1,8 +1,0 @@
-Question 11
-
-Last open item — the **re-pull rule**. The "Refresh all data" warning box says it only collects KPIs with automated instructions (11 of 14), leaving the 3 manual KPIs unchanged. My recommendation: **re-pull re-runs collection for automated KPIs only, and never overwrites manual values or any insight (manual or automated).** Concretely: automated values refresh (and their deltas recompute); manual-entered values stay put; every insight the captain has written is preserved across a re-pull. A KPI that comes back with no fresh value stays Carried. That matches the mockup's warning copy and protects the human's work. Is that the intended re-pull behaviour?
-
-Options offered:
-Yes — re-pull refreshes automated values only; manual values and all insights untouched; no-fresh-value stays Carried
-Re-pull should also overwrite/clear something (let me specify)
-Something else

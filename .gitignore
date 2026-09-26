@@ -7,14 +7,19 @@
 # this is repo-wide rather than re-scoped per directory.
 __pycache__/
 
-# Test-drive screenshots — rigs are committed, their PNG output is not (captain ruling 2026-09-06)
-tests/drives/*/shots/
-tests/drives/*/*/shots/
-tests/drives/*/logs/*/
-tests/drives/*/*/shots/*/
-# and any stray drive screenshot, wherever a rig puts it
-tests/drives/**/*.png
-tests/drives/s220/bench/*/*/build-parts-*.json
-tests/drives/s220/bench/*/*/shots/
-tests/drives/s220/bench/*/*/logs/
-tests/drives/s220/bench/*/*/drawing/
+# Test rigs — NOT in the product repo (captain's ruling, 2026-09-25):
+#   "I don't want the test rigs checked into the LCARS repo at all. If they're
+#    useful to have, put them in lcars-dev."
+# They had reached 3,913 tracked files / ~109 MB, most of it recorded run
+# output nobody realised was committed. The rig SCRIPTS now live in
+# lcars-dev/tests/drives/; the recorded artefacts were untracked and LEFT ON
+# DISK here (untracking is not deleting) so live drives keep their evidence.
+#
+# This line is only the advisory half — it stops an accidental `git add`.
+# `git add -f` walks straight past it, so tests/no-rigs.test.sh reads the real
+# git index and FAILS the build if anything under here is tracked again.
+#
+# Shared EQUIPMENT that shipped suites in tests/*.test.sh source or exec is a
+# different thing and is NOT ignored: it lives in tests/lib/ so a clone of
+# LCARS stays testable (CLAUDE.md's golden rule).
+tests/drives/

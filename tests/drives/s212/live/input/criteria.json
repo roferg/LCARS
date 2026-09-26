@@ -1,6 +1,0 @@
-{"hasDrawing": true, "placeNames": ["#app-header", "#add-batch", "#batch-list"],
- "criteria": [
-   {"id": "prd-1", "text": "the batch list shows every batch with its name", "primary": true, "source": "prd"},
-   {"id": "t-2-ac1", "text": "an ADD BATCH button sits above the list", "primary": false, "source": "plan", "drawnAt": "#add-batch"},
-   {"id": "t-3-ac1", "text": "the app has a header bar with the product name", "primary": false, "source": "plan", "drawnAt": "#app-header"}
- ]}

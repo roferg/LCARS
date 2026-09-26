@@ -1,6 +1,0 @@
-Yes, that is the core of it. Keep the first mission to the foundation only.
-Whatever stack and runner you recommend for this language — I trust your judgement, just make sure the runner is a real one I can watch run.
-No, do not add extra features. One thin slice is exactly what I want.
-That slice sounds right. Go ahead.
-Recommend it and let's go.
-Accept your recommendation and file the mission.

@@ -1,6 +1,0 @@
-LCARS — mission app online. The DX Scorecard Vite dev server is on the viewscreen.
-  On screen:  http://localhost:5174/DX-Scorecard/
-  ⚠ Heads up — the launch inspector predicted http://localhost:5173/DX-Scorecard/, but the app is actually listening on http://localhost:5174/DX-Scorecard/.
-  To stand down:  Press Ctrl+C in the terminal running the dev server.
-  Log:  /private/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench-b/dx/.git/lcars/missions/lcars-20260911-001-8cb0/launch.log
-LCARS — mission app offline. The lcars-20260911-001-8cb0 viewer has been powered down.

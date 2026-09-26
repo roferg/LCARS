@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the shared worker-CLI resolver (source: tests/drives/lib/real-worker.sh
+# Tests for the shared worker-CLI resolver (source: tests/lib/real-worker.sh
 # — lcars_resolve_real_worker), which every tester rig that builds a cold-worker
 # wrapper (S202, S203, S204, S184, align-heal/matrix.sh, ...) sources instead of
 # hand-rolling its own resolution.
@@ -13,7 +13,7 @@
 # the two call each other forever. This fork-bombed the captain's laptop to
 # 5,538 processes during a live overnight run and cost ~8 hours. See
 # tests/drives/s204/tester-rig.sh (the first fix, commit 734f223) and
-# tests/drives/lib/real-worker.sh (the shared generalisation of that fix).
+# tests/lib/real-worker.sh (the shared generalisation of that fix).
 #
 # THE CONTROL THAT MATTERS: run this file with REAL_WORKER_TEST_MODE=old and
 # section 0 fails (the pre-fix idiom picks the shim) — proving this suite would
@@ -25,7 +25,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIB="$REPO_ROOT/tests/drives/lib/real-worker.sh"
+LIB="$REPO_ROOT/tests/lib/real-worker.sh"
 MODE="${REAL_WORKER_TEST_MODE:-new}"
 
 pass=0; fail=0

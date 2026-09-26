@@ -1,7 +1,0 @@
-
-DevTools listening on ws://127.0.0.1:49223/devtools/browser/0976a338-3563-451a-b0d4-d6c5c98bd42c
-Trying to load the allocator multiple times. This is *not* supported.
-[13432:200025595:0905/191812.106250:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
-[13432:200025609:0905/191812.238443:ERROR:base/process/process_mac.cc:53] task_policy_set TASK_CATEGORY_POLICY: (os/kern) invalid argument (4)
-[13432:200025609:0905/191812.238495:ERROR:base/process/process_mac.cc:98] task_policy_set TASK_SUPPRESSION_POLICY: (os/kern) invalid argument (4)
-[13432:200025475:0905/191812.260881:ERROR:chrome/browser/web_applications/externally_managed_app_manager.cc:680] https://drive.google.com/drive/installwebapp?usp=chrome_default from install source 1 failed to install with reason 21

@@ -129,7 +129,7 @@ if [ -e /opt/homebrew/bin/copilot ]; then
 else
   printf '  (no /opt/homebrew/bin/copilot on this machine — skipped)\n'
 fi
-for s in tests/drives/holodeck-shim/copilot tests/drives/deploy-watcher/shim/copilot tests/drives/align-heal/faultinj/copilot; do
+for s in tests/lib/shims/holodeck/copilot tests/lib/shims/deploy-watcher/copilot tests/lib/shims/align-heal-faultinj/copilot; do
   check "6. committed stub $s is allowed" "guard_sh '$REPO_ROOT/$s' | grep 'rc=0' >/dev/null"
 done
 check "6. a bin that is not on PATH at all is not the guard's to refuse (the spawn's own error says so)" \
@@ -147,7 +147,7 @@ fi
 
 echo "parity. the daemon's copy answers exactly as the bash rule does"
 for b in "$SHIM" "$MARKED" "$LINKBIN/copilot-via-dir" "$STUB" \
-         "$REPO_ROOT/tests/drives/holodeck-shim/copilot" no-such-cli-s217 /opt/homebrew/bin/copilot; do
+         "$REPO_ROOT/tests/lib/shims/holodeck/copilot" no-such-cli-s217 /opt/homebrew/bin/copilot; do
   check "parity. $(basename "$(dirname "$b")")/$(basename "$b")" \
     "[ \"\$(guard_sh '$b')\" = \"\$(guard_py '$b')\" ]"
 done

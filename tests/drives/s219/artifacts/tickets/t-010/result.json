@@ -1,9 +1,0 @@
-{
-  "ticketId": "t-010",
-  "passed": true,
-  "attempts": 2,
-  "summary": "Extended MetricValueCell to render a cohort KPI's per-source 'change vs last MBR' deltas: each source row gets its own delta cell matched to the persisted sourceDeltas BY LABEL (never array position, via a consuming label match), with a 'change vs last MBR' caption below the list, and a neutral placeholder ('—', .sub-delta.none) for any source with no comparable prior reading — distinct from a genuine zero no-change (.flat). Wired kpi.sourceDeltas into both builder cohort value cells (wired + read-only branches), and ported the mock's .cohort-list.with-deltas / .sub-delta.up/.down/.flat/.none / .cohort-caption CSS into src/styles.css. Non-cohort and delta-less cohort rendering is unchanged (Scorecard/DefaultView/UpdateKpis pass no sourceDeltas). New test green on tree; 3 behavioural cases red on parent. Full suite 580/580 green, typecheck clean.",
-  "newTests": ["src/components/MetricValueCell.cohortDeltas.test.tsx"],
-  "testEdits": [],
-  "flipFlop": "expected"
-}

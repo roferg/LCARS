@@ -304,9 +304,9 @@ check "8b. the install step counts FIVE destinations, not four" \
 # looking in the wrong place.
 check "8b. the hang rule names the SECOND mechanism (the version check's fetch)" \
   "grep -qiE 'git fetch|version check' '$ORCH' && grep -qiE 'askpass|GIT_TERMINAL_PROMPT' '$ORCH'"
-CAGE="$REPO_ROOT/tests/drives/s197/cage.py"
+CAGE="$REPO_ROOT/tests/lib/cage.py"
 check "8b. the rule points at a cage that is actually committed" \
-  "grep -qF 'tests/drives/s197/cage.py' '$ORCH' && [ -f '$CAGE' ]"
+  "grep -qF 'tests/lib/cage.py' '$ORCH' && [ -f '$CAGE' ]"
 # The cage must really cage: a probe that blocks forever comes back killed, and
 # a probe that exits comes back with its exit code — both reporting ELAPSED.
 cagehang="$TMPROOT/cage-hang.txt"

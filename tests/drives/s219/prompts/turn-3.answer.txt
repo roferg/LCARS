@@ -1,2 +1,0 @@
-Inline editing, no lock/asOf step — follow the mockup. Within the builder the month is the unit of commitment, so the per-month "Lock month" is the real gate and a second per-value lock would be redundant ceremony. As-of defaults to the pull date.
-

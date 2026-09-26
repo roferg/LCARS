@@ -11,10 +11,10 @@
 # the assertion passes BY ACCIDENT. So:
 #
 #   * every probe here runs from a REAL PTY with stdin genuinely OPEN
-#     (tests/drives/s208/ptyrun.py). A `</dev/null` probe is the accident that
+#     (tests/lib/ptyrun.py). A `</dev/null` probe is the accident that
 #     hid this bug for a year and proves nothing;
 #   * every probe is caged in its OWN PROCESS GROUP and reports ELAPSED time
-#     (tests/drives/s197/cage.py), because `perl -e 'alarm N; exec @ARGV'` does
+#     (tests/lib/cage.py), because `perl -e 'alarm N; exec @ARGV'` does
 #     NOT reliably kill a bash blocked on a command substitution;
 #   * and there is a PLANTED-HANG CONTROL. A detector that cannot catch a hang
 #     it planted itself cannot catch a real one, and a green from it is worthless.
@@ -54,8 +54,8 @@
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CAGE="$DIR/drives/s197/cage.py"
-PTY="$DIR/drives/s208/ptyrun.py"
+CAGE="$DIR/lib/cage.py"
+PTY="$DIR/lib/ptyrun.py"
 
 # Generous, so a merely SLOW suite never reads as a hang. A blocked read never
 # returns at all, so any bound distinguishes the two; this one is a bound on
@@ -146,7 +146,7 @@ check "3d. run.sh honours \$LCARS_TESTS_DIR (BUG-009)" \
 # scanner skips comments and heredoc BODIES (a `gh` stub reading `$(cat)` for
 # `--field body=@-` is reading a real pipe, correctly) and allows exactly one
 # line: the cured qgrep's drain, reached only when no FILE operand was passed.
-GUARD="$DIR/drives/s208/stdin_guard.py"
+GUARD="$DIR/lib/stdin_guard.py"
 guard_out="$(python3 "$GUARD" "$DIR"/*.test.sh 2>&1)"; guard_rc=$?
 [ -n "$guard_out" ] && printf '%s\n' "$guard_out" | sed 's/^/    /'
 check "4a. no *.test.sh reads inherited stdin via an unguarded cat" "[ $guard_rc -eq 0 ]"

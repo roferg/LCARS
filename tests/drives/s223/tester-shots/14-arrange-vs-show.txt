@@ -1,1 +1,0 @@
-Arrange is a solid two-way segmented switch (single-choice); Show is a row of outlined chips with a tick when on (multi-select) - visibly different kinds of control.

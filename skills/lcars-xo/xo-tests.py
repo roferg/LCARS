@@ -23,7 +23,7 @@ facts and nothing else — never re-read later out of prose. This project has
 lost four rounds (S147, S156, S188, S212) to code that parsed back text a human
 also writes; the cure every time was to record the decision where it was made.
 
-THE TRAP THIS FILE WAS WRITTEN TO AVOID. `tests/drives/s197/cage.py` — the
+THE TRAP THIS FILE WAS WRITTEN TO AVOID. `tests/lib/cage.py` — the
 obvious thing to reach for — reports a failure and a hang on STDOUT while its
 own process exit status stays **0 in all three cases**. Anything wired to a
 cage's exit status reads every test run as a pass: a green that means nothing,

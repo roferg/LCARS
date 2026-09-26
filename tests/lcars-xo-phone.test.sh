@@ -40,8 +40,8 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRIVER="${LCARS_XO_DRIVER_REAL:-$REPO_ROOT/skills/lcars-xo/xo-drive.js}"
-CAGE="$REPO_ROOT/tests/drives/s197/cage.py"
-MKFIXTURE="$REPO_ROOT/tests/drives/s213/phone/mkfixture.py"
+CAGE="$REPO_ROOT/tests/lib/cage.py"
+MKFIXTURE="$REPO_ROOT/tests/lib/phone-mkfixture.py"
 PY="${LCARS_PYTHON_BIN:-python3}"
 
 pass=0

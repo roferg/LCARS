@@ -1,7 +1,0 @@
-SCORE	medium
-WORKER_SCORE	medium
-DISAGREED	no
-WHY	the main flow works. 1 thing in the build does not match what you asked for — the mix-ratio status line (t-3-ac1) — and none of them is from the PRD itself: worth reading before you merge.
-COUNTS	6	1	1	1
-SUMMARY	Captain, the board runs and reads well: an orange GROUT TRACKER header, all three batches in one list directly beneath it, and an add row with the ADD BATCH button on the right — all three of your PRD goals are met, and your own tests confirm batches survive a restart. The one miss is the mix-ratio status line your drawing puts beneath the add row: it isn't there at all, the page drops straight to the footer. The CSV-header-row export I couldn't settle — the green suite only tests a parser, not that behaviour.
-OBSERVATIONS	0

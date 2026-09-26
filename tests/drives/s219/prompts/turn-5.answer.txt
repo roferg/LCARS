@@ -1,2 +1,0 @@
-Follow the global theme; drop the builder's own toggle — the app already has one global toggle and CONTEXT.md is explicit about one source of truth, so a builder-local toggle would only fight it or create a confusing per-page theme. The builder just follows the app's global theme, and we drop the toolbar toggle the mockup draws.
-

@@ -1,5 +1,0 @@
-LCARS — mission app online. The Tide Board static server is on the viewscreen.
-  On screen:  http://127.0.0.1:8220/index.html
-  To stand down:  Press Ctrl+C in the terminal running the server.
-  Log:  /private/var/folders/0x/l097fgqd4rxf404d8z9fgwrh0000gn/T/s220-bench-c/planted/.git/lcars/missions/lcars-20260919-s220-plant/launch.log
-LCARS — mission app offline. The lcars-20260919-s220-plant viewer has been powered down.

@@ -1,1 +1,0 @@
-History after the press: every entry is kept (impact-kept rows for #192), nothing deleted - no file disappeared and number-one.jsonl still has its 48 lines. The header counted 50 entries for #192 after a button that said SEEN ALL 7.

@@ -1,1 +1,0 @@
-Tapping the thumbnail opens the real screenshot full size (2880x1712 natural, shown 1563px wide); Escape closes it and leaves the report open.

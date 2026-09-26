@@ -1,6 +1,0 @@
-daemon http://127.0.0.1:62352/ repo=untested
-  file                         404  body: {"ok": false, "error": "no such write endpoint: /api/file"}
-  park                         404  body: {"ok": false, "error": "no such write endpoint: /api/file"}
-  holodeck                     409  body: {"ok": false, "error": "\u25c7 NO TEST FOUNDATION \u2014 this repo cannot run a normal mission yet.\n\nThis repo has code, but no test system: this repo has code and no test system.\n\nEvery LCARS ticket is proven by RUN
-SPAWNS during HTTP drive: 0
-tests/drives/s183b/http-drive.sh: line 21: 99649 Terminated: 15          ( cd "$LCARS_SRC/web" && exec env -u LCARS_SERVE_PORT PATH="$SHIM:$PATH" LCARS_SERVE_NO_OPEN=1 LCARS_VERSION_CHECK=0 LCARS_WORKER_BIN="$SHIM/claude" LCARS_GH_BIN="$SHIM/claude" python3 -m lcars_serve --port 0 --repo-root "$FIX" ) > "$OUT/daemon.log" 2>&1

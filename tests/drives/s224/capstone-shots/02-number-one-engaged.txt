@@ -1,6 +1,0 @@
-The same card about 90 seconds after the single `lcars xo on --engine copilot` toggle.
-Number One has taken the conn by itself: an amber "NUMBER ONE · ENGAGED" pill, the line
-"Number One has the conn", a live "LAUNCHING…" state, and — the point — the captain's own
-VERIFY button is now struck out and disabled (dashed outline, ⊘) with a STAND DOWN offered
-in its place. Nobody typed anything after the toggle. 672 x 1091 px, headless Chrome,
-430px viewport, deviceScaleFactor 3.

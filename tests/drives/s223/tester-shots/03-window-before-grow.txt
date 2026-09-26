@@ -1,1 +1,0 @@
-Before: the mission window is 1080px wide with live activity taking the left ~60% and the report squeezed into the right strip.

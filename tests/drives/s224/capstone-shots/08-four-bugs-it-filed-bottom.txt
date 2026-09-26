@@ -1,5 +1,0 @@
-The other two bugs from the same pass, also finished: issue #221, "the Continue to builder button's
-oversized arrow", ~$7.87 against a $0.56-$2.50 estimate, and issue #220, "the Pull data & start
-button's oversized icon", ~$8.26 against $0.48-$1.62. Both are marked "lcars:done" and both were
-filed by the assistant against the build it had just graded. 872 x 2544 px, headless Chrome at
-deviceScaleFactor 4.

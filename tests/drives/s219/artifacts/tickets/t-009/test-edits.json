@@ -1,6 +1,0 @@
-[
-  {
-    "path": "src/views/MbrBuilderView.test.tsx",
-    "reason": "A manual scalar KPI value now renders as an editable input (this ticket's change) rather than plain text, so the old `getByText('31')` assertion for the manual deploy-freq KPI is superseded; updated it to assert the value via the new `manual-value-input-deploy-freq` input. The test's intent (the row shows its scalar value) is preserved."
-  }
-]

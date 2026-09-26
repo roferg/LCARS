@@ -1,2 +1,0 @@
-Carried = no fresh value this pull; value/status carried from last MBR (data-provenance) — that's exactly right. It's an objective, computed-at-pull-time fact that a KPI reused last MBR's number because the pull returned nothing fresh, and keeping it separate from the status marker avoids overloading "off track" with a provenance meaning it shouldn't carry.
-

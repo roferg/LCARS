@@ -1,9 +1,0 @@
-{
-  "ticketId": "t-006",
-  "passed": true,
-  "attempts": 3,
-  "summary": "Built the #mbr/collect screen: MbrCollectSlot runs the real per-KPI POST /__collect/<id> (collectKpi, concurrency 1) over the roster-resolved trim-strict aiUpdateInstructions partition (resolveAutomatable, NOT WIRED_METRIC_IDS), aggregating per bucket Queued → Collecting… → 'N values pulled' with a per-bucket progress bar, a Cancel → #mbr control and a 'Continue to builder' button disabled until every bucket finishes then navigating to #mbr/build. Added the pure seedCollectedDraft that freezes target from config (via reconcileRoster), records previousValue from the last published MBR, stamps a computed delta / cohort sourceDeltas (t-003), seeds status from the scorecard, sets asOf = pull date, and marks carried=true when a KPI has no fresh reading (fresh emitted value clears carried). Ported the collect-list/queued-chip/determinate-bar CSS into styles.css. Full suite green (562) and typecheck clean.",
-  "newTests": ["src/views/MbrBuilderView.collect.test.tsx"],
-  "testEdits": [],
-  "flipFlop": "expected"
-}

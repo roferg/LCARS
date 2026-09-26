@@ -1,9 +1,0 @@
-{
-  "ticketId": "t-003",
-  "passed": true,
-  "attempts": 1,
-  "summary": "Added pure src/lib/metricDelta.ts with parseMetricValue (strips <= >= < > ~ approx qualifiers, first signed decimal with commas removed, normalized trailing unit), computeDelta (signed magnitude with shared unit; null when either side unparseable or units differ), and computeSourceDeltas (cohort diffing matched by label with order as tie-break, neutral placeholder for incomparable sources). No IO, no Date, no import.meta.env. 19 co-located tests green on first run; typecheck clean.",
-  "newTests": ["src/lib/metricDelta.test.ts"],
-  "testEdits": [],
-  "flipFlop": "expected"
-}

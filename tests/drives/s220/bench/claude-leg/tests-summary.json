@@ -1,9 +1,0 @@
-{
- "ran": true,
- "command": "npx vitest run ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR#\"$PWD/\"}\"}",
- "exitCode": 1,
- "timedOut": false,
- "durationSeconds": 50.97,
- "truncated": true,
- "note": "FAILED because the walk typed \"Number One typed this to see it carry\" into a field that the app's own snapshot test asserts on \u2014 the look dirtied the launch worktree data/ (the D7 issue ledgered in AFTER-EFG.md). Not a build fault."
-}

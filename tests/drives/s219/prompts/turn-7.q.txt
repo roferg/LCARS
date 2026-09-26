@@ -1,9 +1,0 @@
-Question 7
-
-Two related threads on **where each KPI's value, target, and delta-vs-last-MBR come from**. My recommendation: - **Value/target/delta arrive with the data pull** (as the mockup shows): on pull, each wired KPI collects its fresh value; target comes from the KPI's default view/config; delta is *computed* by the builder as this month's value minus the same KPI's value in the previous published MBR. - **When a manual value is edited inline, the delta recomputes automatically** (it's derived from the value + last MBR, so it should never be hand-typed), but **status does NOT auto-recompute** — status is the captain's editorial call (seeded on pull, overridable), consistent with our earlier ruling. So editing a value refreshes the delta but leaves status alone for the human to judge. Does that split match your intent — delta always computed, status always human?
-
-Options offered:
-Yes — value/target/delta arrive on pull; editing a manual value recomputes delta only; status stays human
-Delta should also be manual / entered by hand
-Editing a value should also auto-recompute status
-Something else

@@ -1,6 +1,0 @@
-
-DevTools listening on ws://127.0.0.1:57030/devtools/browser/96a98fc0-1f62-4c34-8533-11e6a5d4f6ca
-Trying to load the allocator multiple times. This is *not* supported.
-[19957:200608948:0905/194642.993828:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
-[19957:200608917:0905/194643.061220:ERROR:chrome/browser/web_applications/os_integration/os_integration_manager.cc:261] Can't perform OS integration while the browser is shutting down.
-[19957:200608917:0905/194643.071959:ERROR:chrome/browser/web_applications/externally_managed_app_manager.cc:680] https://docs.google.com/presentation/installwebapp?usp=chrome_default from install source 1 failed to install with reason 21

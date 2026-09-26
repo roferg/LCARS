@@ -1,4 +1,0 @@
-
-DevTools listening on ws://127.0.0.1:56492/devtools/browser/a716f311-9eba-4943-be64-d3ae6ecd387b
-Trying to load the allocator multiple times. This is *not* supported.
-[17080:195511021:0905/161438.786376:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT

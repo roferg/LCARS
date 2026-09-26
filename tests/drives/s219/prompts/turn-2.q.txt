@@ -1,9 +1,0 @@
-Question 2
-
-Good — that also settles the "status inherited vs set in builder" open question. Next, the **"Carried" pill**. The mockup renders a purple "Carried" pill with a clock icon, but nobody's defined what actually earns it. My recommendation: a KPI is **Carried when the data pull produced no fresh value for it this month, so the builder carries forward the value/status from the previous published MBR** — i.e. it's a data-provenance fact ("this month reuses last month's number"), not a status judgement. That keeps it objective and computable at pull time, and it's distinct from an off-track or unresolved status (which the status marker already conveys). Does that match your intent, or do you mean something else by Carried — e.g. an explicit "carry this over" choice, or off-track items specifically?
-
-Options offered:
-Carried = no fresh value this pull; value/status carried from last MBR (data-provenance)
-Carried = an explicit per-KPI "carry over" choice
-Carried = off-track / unresolved items specifically
-Something else

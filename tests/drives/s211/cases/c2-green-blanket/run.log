@@ -1,9 +1,0 @@
-  ◇ real copilot: /opt/homebrew/bin/copilot
-worker exit 0
---- score.txt ---
-SCORE	medium
-WORKER_SCORE	medium
-DISAGREED	no
-WHY	the main flow works. 1 thing in the build does not match what you asked for — the mix-ratio status line (t-3-ac1) — and none of them is from the PRD itself: worth reading before you merge.
-COUNTS	5	1	2	1
-SUMMARY	Captain, the board runs and the three things you asked for in the PRD are all there — the named orange header, the one list of every batch, and an add row that works without leaving the page. The one real miss is the mix-ratio status line from your drawing: it's simply absent, with the footer where it should sit. Persistence and CSV export I couldn't settle — your test suite passed but its output only prints a summary, naming no line that covers either, so honestly those are unchecked, not confirmed.

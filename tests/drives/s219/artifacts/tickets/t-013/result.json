@@ -1,9 +1,0 @@
-{
-  "ticketId": "t-013",
-  "passed": true,
-  "attempts": 2,
-  "summary": "Preview (#mbr/preview) now renders the live draft read-only through the SAME shared LockedMBR component published View uses (ADR-002), with a 'Back to builder' back-out to #mbr/build that never locks; the builder toolbar's Preview button navigates there. LockedView hides the 'Locked by' provenance line when lockedBy is null (never prints 'Locked by —') while the Amendments section is retained unchanged. Full suite green (565) and typecheck clean.",
-  "newTests": ["src/views/SharedReadOnlyRender.test.tsx"],
-  "testEdits": [],
-  "flipFlop": "expected"
-}

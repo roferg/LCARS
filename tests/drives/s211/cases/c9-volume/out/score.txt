@@ -1,7 +1,0 @@
-SCORE	medium
-WORKER_SCORE	medium
-DISAGREED	no
-WHY	the main flow works. 1 thing in the build does not match what you asked for — the mix-ratio status line (t-3-ac1) — and none of them is from the PRD itself: worth reading before you merge.
-COUNTS	6	1	1	1
-SUMMARY	Captain, the core of the board is here and matches your drawing: the orange GROUT TRACKER header, the batch list directly beneath it, and an add row with the ADD BATCH button to the right of the input — your three PRD goals all hold. The one real miss is the status line: your drawing puts an orange mix-ratio line under the add row, and the build simply doesn't have it — it goes straight to the footer. Persistence passes your own tests; the CSV-export claim I couldn't confirm, because neither the screen nor the suite actually exercises writing a CSV with a header row.
-OBSERVATIONS	0
