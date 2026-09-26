@@ -327,6 +327,26 @@ decided nothing is worse than saying you could not tell. The captain must never 
 line — so declare it; it is not worked out afterwards from how you phrased your
 note.
 
+**When a measurement is your evidence for a `looks` row, look at the shot too
+and settle it from the picture.** You already took the screenshot — it is the
+`.json` beside the very box you read. So when the thing that speaks to a `looks`
+criterion is a measured size, colour or position, do not lean on the number
+alone: look at that same shot and write your picture verdict on the row as
+`pictureStatus`, one of `met` or `gap`, backed by the same `shot`. A number can
+tell you an icon overflows its button; only the picture can tell you the button
+has no icon at all — so the picture is what settles a `looks` row, and the
+measurement rides beside it as the reason. LCARS keeps the measurement rule
+exactly as above (a measurement never makes a row `met`); where you leave
+`pictureStatus` off, the row has nothing but a number behind it and reads as
+unchecked. Stamp it — it is your own reading of the photo, not something worked
+out afterwards from the box:
+
+```json
+{"id": "part-save", "status": "met", "kind": "looks", "evidence": "measurement",
+ "shot": "shot-03", "pictureStatus": "met",
+ "note": "the amber Save icon sits on the button, as drawn (44px, drawing 40)"}
+```
+
 ## Say WHICH KIND OF QUESTION each one is — as you judge it
 
 You are already reading each criterion in order to judge it. In the same

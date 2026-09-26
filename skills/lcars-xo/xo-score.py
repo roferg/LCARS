@@ -1743,19 +1743,54 @@ def main():
                 # row stays open and says why. A `gap` from a measurement is a
                 # legitimate fault and is left to stand (handled by falling
                 # through this chain).
-                notes.append("%s was rated met on a measured box, but a "
-                             "measurement cannot settle a criterion; recorded "
-                             "as not-checked" % cid)
-                # S216: the row's reason is rebuilt from its note when the
-                # outcome is overruled, so the note must say why.
-                note = ("the look called this met on a measured box, but a "
-                        "measurement can lower an outcome or raise a fault, "
-                        "never settle a criterion — a measurement cannot settle "
-                        "a criterion")
-                demoted.append((cid, status, quote))
-                status = "untested"
-                evidence = ""
-                quote = ""
+                #
+                # FALL BACK TO THE PICTURE IT ALREADY HAS (the captain,
+                # 2026-09-25). The rule above discards a whole rail's worth of
+                # rows on a coin-flip about which evidence word the eye named —
+                # on a real run 8 of 14 drawing checks were cited as
+                # measurements and ALL EIGHT vanished, so the look rail read
+                # `nothing-checked` (half the review gone). But the eye took a
+                # screenshot of that part anyway, and it is retained. So when
+                # the measurement is thrown out, settle the row FROM THE EYE'S
+                # OWN READING OF THAT PICTURE instead of discarding it.
+                #
+                # RECORD, DO NOT INFER — this is the seam this codebase has lost
+                # four sessions to. The rail is deterministic Python and CANNOT
+                # look at a photograph, so it does not judge the image, and it
+                # does NOT read the shot's mere presence or the note's prose to
+                # credit a row: that would manufacture the exact blind
+                # confidence this rule exists to prevent. The PRODUCER records
+                # the judgement — the eye stamps `pictureStatus` (`met`/`gap`),
+                # its own verdict from looking at that shot (prompts/evaluate.md)
+                # — and the rail reads only that explicit field, and only when a
+                # shot backs it. The measurement STILL settles nothing; the
+                # PICTURE does. A row the eye left no picture verdict on is
+                # discarded exactly as before and reads unchecked — a genuinely
+                # unsettled row still vanishes, which is the honest outcome; the
+                # only thing cured is the row the eye DID look at with a camera.
+                pic_status = str(c.get("pictureStatus") or "").strip().lower()
+                if pic_status in ("met", "gap") and shot:
+                    notes.append("%s was rated met on a measured box, which "
+                                 "cannot settle a criterion — settled instead "
+                                 "from the eye's own reading of its picture %s"
+                                 % (cid, shot))
+                    status = pic_status
+                    evidence = "picture"
+                    quote = ""
+                else:
+                    notes.append("%s was rated met on a measured box, but a "
+                                 "measurement cannot settle a criterion; recorded "
+                                 "as not-checked" % cid)
+                    # S216: the row's reason is rebuilt from its note when the
+                    # outcome is overruled, so the note must say why.
+                    note = ("the look called this met on a measured box, but a "
+                            "measurement can lower an outcome or raise a fault, "
+                            "never settle a criterion — a measurement cannot settle "
+                            "a criterion")
+                    demoted.append((cid, status, quote))
+                    status = "untested"
+                    evidence = ""
+                    quote = ""
             elif not shot:
                 notes.append("criterion %s was rated %s with no shot cited; recorded as "
                              "untested — a judgement with no picture behind it is not a "
