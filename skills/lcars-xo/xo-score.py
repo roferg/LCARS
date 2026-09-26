@@ -705,9 +705,54 @@ GROUP_ASIDE = {
 }
 
 
-def group_of(source):
-    """Which of the captain's three questions a criterion answers."""
-    return SOURCE_GROUP.get(str(source or "").strip().lower(), GROUP_PERSON)
+def group_of(source, kind=None, drawn=False):
+    """Which of the captain's three questions a criterion answers.
+
+    APPEARANCE CLAIMS BELONG ON THE LOOK RAIL, NOT THE PERSON RAIL (the captain,
+    2026-09-25). Grouping was by `source` alone, and it carried a measured
+    defect: a mission whose DRAWING was restyled — card colour, button colour,
+    text colour, corner radius — with the BUILD NEVER TOUCHED and every drawn
+    part still pairing saw its PERSON rail ("can a person do what it promises?")
+    fall 7/7 -> 4/7, while the drawing rail correctly caught the restyle. The
+    build did not change, so nothing a person can DO could have got worse; the
+    only cause was appearance claims being graded on the functional rail, so
+    restyling the drawing made that rail start demanding the new colours.
+
+    An APPEARANCE CLAIM is one BOTH producers declared to be settled by
+    comparing the built screen to the DRAWING — and it takes both, because
+    neither declaration alone means "appearance":
+
+      * `drawn` (from the criterion's `drawnAt`, declared where the per-part
+        requirement is DERIVED from the drawing — the planner on a mockup
+        mission, xo-parts.part_criteria) says "this surface IS in the drawing;
+        compare the app to the drawing there." But a DRAWN requirement can be
+        functional — "the board shows every open task" is drawn yet is a person
+        promise that must pull the headline when it breaks.
+      * `kind == "looks"` (the eye's produce-time stamp as it judges) says "a
+        picture settles this — presence, position, colour, wording." But a
+        LOOKS-question can be a person promise with no tie to a drawing — "the
+        header shows the app name" is settled by a photo yet is not an
+        appearance-vs-drawing check, and is legitimately graded on the person
+        rail (the coverage-floor and blind-rail rulings depend on it).
+
+    Only a criterion carrying BOTH — declared drawn AND settled by looking — is
+    "does the built appearance match the drawn appearance", and only that is
+    lifted off the person rail onto the DRAWING rail. Two rails are untouched: a
+    `drawing`-source row is already on the look rail, and the CONTRACT group
+    (coverage, never graded) keeps its rows.
+
+    RECORD, DO NOT INFER. Both signals are PRODUCER stamps — `drawnAt` declared
+    at derivation, `kind` stamped by the eye beside its verdict
+    (prompts/evaluate.md). Nothing here reads the criterion's PROSE (colour
+    words, "looks like") to decide it is appearance: that is the infer-vs-record
+    class this codebase has lost sessions to. The consumer reads the stamps, and
+    nothing else.
+    """
+    base = SOURCE_GROUP.get(str(source or "").strip().lower(), GROUP_PERSON)
+    if base == GROUP_PERSON and drawn \
+            and str(kind or "").strip().lower() == "looks":
+        return GROUP_DRAWING
+    return base
 
 
 # ─── S225 CHANGE 03: FOUR OUTCOMES, AND ONLY TWO OF THEM TOUCH THE GRADE ─────
@@ -2181,7 +2226,14 @@ def main():
         src = str(row.get("source") or "").strip()
         if src:
             e["source"] = src
-        e["group"] = group_of(src)
+        # THE KIND AND THE DRAWING TIE ARE READ HERE TOO — an appearance claim
+        # (declared drawn at derivation AND judged a `looks`-question by the eye)
+        # is graded on the drawing rail, never the person rail (captain,
+        # 2026-09-25). `questionKind` was resolved above (the eye's recorded
+        # kind, else the planner's produce-time stamp); `drawnAt` is the
+        # producer's derivation-time declaration that this surface is IN the
+        # drawing. Both are PRODUCER fields — nothing here reads the prose.
+        e["group"] = group_of(src, e.get("questionKind"), bool(row.get("drawnAt")))
         e["outcome"] = outcome_of(e)
 
     # ─── S226 R2/R3: A PASS SAYS WHAT ESTABLISHED IT ─────────────────────────
