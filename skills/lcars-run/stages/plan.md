@@ -35,33 +35,45 @@ with their own eyes at the Verify stage. Mention the deferred judgment in the
 ticket's `description` (e.g. "visual unobtrusiveness is judged at Verify") so
 nothing silently disappears.
 
-**A ticket criterion may NOT contradict the requirement it delivers.** A
-criterion that asserts the ABSENCE of what a PRD requirement asks FOR — "no
-counter is displayed", "the badge never appears" for a PRD that asks for the
-counter or the badge — is a contradiction, and a plan that carries one is
-rejected downstream. If the PRD both asks for a thing and (elsewhere) says not
-to build it, that conflict is resolved at Align/Validate, not laundered into a
-ticket criterion that certifies the omission as correct. Never write a
-criterion that requires something the PRD wants to be absent.
+**A ticket criterion may NOT quietly contradict the requirement it relates to.**
+A criterion that certifies the ABSENCE of what a PRD requirement asks FOR —
+"no counter is displayed", "the badge never appears" for a PRD that asks for the
+counter or the badge — must never be laundered in as if it were correct. If the
+PRD both asks for a thing and (elsewhere) says not to build it, that conflict is
+resolved at Align/Validate, not smuggled into a ticket criterion that blesses
+the omission. The mechanism that keeps this honest is the declaration below: you
+STATE which way round each criterion is, and a criterion that removes a stated
+requirement is caught downstream and drags the grade down — it does not pass.
 
-**Record which requirement each criterion delivers — `serves`.** So the
-contract can cross-check a ticket criterion against the requirement it is
-supposed to deliver (instead of guessing from prose later), record the link at
-planning time. When a criterion delivers a specific PRD acceptance criterion,
-write that criterion as an OBJECT carrying its text and a `serves` field naming
-the PRD requirement — its verbatim acceptance-criterion line is the safest
-reference:
+**State which requirement each criterion relates to, and which way round —
+`serves` + `direction`.** So the contract can cross-check a ticket criterion
+against the requirement it maps to WITHOUT anything reading your prose to guess
+whether you asked FOR a thing or for its absence (that guess has been wrong
+before), you RECORD both at planning time. When a criterion relates to a
+specific PRD acceptance criterion, write it as an OBJECT carrying:
 
 ```json
-"acceptanceCriteria": [
-  {"text": "a live counter updates as items change", "serves": "a live counter shows the number of items"}
-]
+{"text": "<what the Implementer builds against>",
+ "serves": "<the PRD acceptance-criterion line this relates to, verbatim, or its prd-N id>",
+ "direction": "<delivers | removes>"}
 ```
 
-`serves` is additive: a criterion that delivers no single PRD line (pure
-plumbing, a test-hygiene rule) stays a plain string. Recording the link is what
-lets the contract catch a ticket criterion that has drifted from its
-requirement — so record it wherever a criterion maps to a stated requirement.
+- **`"direction": "delivers"`** — this criterion MAKES that requirement true.
+  This is the normal case: use it for every criterion that helps deliver the
+  requirement it names, whatever its wording (a styling detail, a "not red"
+  colour, an empty-state rule all still DELIVER the feature).
+- **`"direction": "removes"`** — this criterion DELIBERATELY makes the
+  requirement false — it certifies the requirement is gone. You should almost
+  never write this: a deliberate omission is resolved at Align/Validate, not
+  here. If you do, it is HONEST to declare it, and the harness will flag it and
+  lower the grade — declaring `delivers` on a criterion that actually removes
+  the requirement is the dishonest move this design exists to stop.
+
+`serves`/`direction` are additive: a criterion that maps to no single PRD line
+(pure plumbing, a test-hygiene rule) stays a plain string and declares neither.
+But a criterion that carries `serves` MUST carry a readable `direction` — the
+harness rejects a `serves` with no `direction`, naming the criterion, because a
+missing direction is exactly the polarity nothing is allowed to guess.
 
 ## Slicing: cohesion first, size second
 

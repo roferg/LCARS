@@ -129,11 +129,24 @@ def plan_criteria(doc):
                 elif ac.get("notVisual"):
                     entry["notVisual"] = True
                 # RECORD, DO NOT INFER. The planner names the PRD requirement
-                # this ticket criterion delivers, by its synthetic id (prd-N)
-                # or its verbatim text. It is carried through untouched so the
-                # contradiction check reads a declared link, not a guess.
+                # this ticket criterion relates to, by its synthetic id (prd-N)
+                # or its verbatim text, AND states which way round it is — it
+                # DELIVERS that requirement (makes it true) or DELIBERATELY
+                # REMOVES it (a deliberate omission the mission asked for). Both
+                # are carried through untouched so the contradiction check reads
+                # a DECLARED direction, not a polarity guessed from the prose.
+                # The `direction` is the whole point of this design: nothing
+                # anywhere reads English to decide whether a sentence asks FOR a
+                # thing or for its ABSENCE — the machinery was beaten at that
+                # twice in one day, so the planner records it and the check
+                # reads the record. A malformed pair (a `serves` with no
+                # readable `direction`) is caught in find_contradictions and
+                # named there; it is NEVER defaulted to a direction here.
                 if ac.get("serves"):
                     entry["serves"] = str(ac["serves"]).strip()
+                    direction = str(ac.get("direction") or "").strip().lower()
+                    if direction in ("delivers", "removes"):
+                        entry["direction"] = direction
                 # WHICH KIND OF QUESTION THIS IS, STAMPED AT BIRTH (captain's
                 # ruling, 2026-09-24). A looks-question ("the header shows the
                 # title") a picture settles; a works-question ("Save saves")
@@ -214,68 +227,62 @@ def place_names(mission_dir):
 
 
 # ===========================================================================
-# THE TICKET-CRITERION CONTRADICTION CHECK — measured 2026-09-24.
+# THE TICKET-CRITERION CONTRADICTION CHECK — the ruling of 2026-09-25.
 #
 # A mission was written with a deliberate omission ("deliberately do not build
 # the counter"). The planner turned it into a ticket whose acceptance criterion
-# REQUIRED the counter's ABSENCE; the reviewer checked that ticket criterion,
+# certified the counter's ABSENCE; the reviewer checked that ticket criterion,
 # found the counter absent, and marked it MET. One line called the missing
 # feature a fault (the PRD's own acceptance criterion asks FOR the counter) and
-# another certified its absence as correct (the ticket line). NOTHING checked a
-# ticket criterion against the requirement it is supposed to DELIVER, so any
-# ticket that drifts from its requirement was self-certifying.
+# another certified its absence as correct (the ticket line). The real case
+# this exists to catch is exactly that: a MISSING feature quietly certified as
+# correct by a ticket that drifted from the requirement it was supposed to
+# deliver.
 #
 # This is decidable HERE, before a pixel is seen, because the contract already
 # reads both the PRD's acceptance criteria and the plan's per-ticket criteria.
-# When a plan (ticket) criterion asserts the ABSENCE of what the PRD
-# requirement it serves asks FOR, that is a contradiction: recorded by name,
-# and marked on the criterion so it can never read as a clean upward win.
 #
-# RECORD, DO NOT INFER. The planner records which requirement each ticket
-# criterion serves (`serves`, resolved to a `prd-N` id or the requirement's
-# verbatim text). The contradiction check fires ONLY on a resolved link: the
-# planner's declaration that the two are about the SAME requirement is trusted —
-# a served, affirmative requirement plus an absence-asserting ticket criterion
-# IS the contradiction, with no re-derivation of subject identity from prose.
-# There is NO text fallback. An unlinked criterion is left UNJUDGED (silence,
-# not a guess); the contract reports how many ticket criteria carried no link so
-# an unlinked plan reads as "not checked", never as "clean". MEASURED
-# 2026-09-24: on the first real mission the text fallback touched (106 criteria)
-# it produced 8 false positives, all resolving to the longest requirement and
-# all downgrading a correct criterion from met to gap. Deleting it is LCARS's
-# proven cure (S147, S156, S188): refuse to judge what you cannot name.
+# RECORD, DO NOT INFER — and this time all the way down. The first cut of this
+# check read the criterion's PROSE to decide polarity (did the sentence ask FOR
+# a thing or for its ABSENCE), and it was beaten twice in one day: once by
+# text-matching that guessed the wrong requirement (deleted), and once through a
+# CORRECT link, because it classified a NEGATIVE requirement ("Saving is instant
+# and never asks the player to name anything") as affirmative and downgraded a
+# ticket that CORRECTLY delivered it. Reading English for polarity is the single
+# most expensive recurring mistake in this codebase (S147, S156, S188, and this
+# very detector twice) — every generation of it has eventually met a document it
+# misread. So NOTHING here reads prose for polarity any more.
+#
+# INSTEAD THE PLANNER DECLARES. When a ticket criterion relates to a PRD
+# requirement it names it with `serves` (a `prd-N` id or the requirement's
+# verbatim text) AND states which way round it is with `direction`:
+#
+#     "delivers" — this criterion makes that requirement TRUE.
+#     "removes"  — this criterion DELIBERATELY makes it false (an omission the
+#                  mission asked for), certifying that the requirement is gone.
+#
+# A CONTRADICTION is a criterion the planner declared it `removes` against a
+# requirement the PRD asks FOR — i.e. a resolved link to a PRIMARY PRD
+# acceptance criterion. "Affirmative" is not read from prose here: a PRD
+# acceptance criterion IS a stated goal by being on the acceptance list, and a
+# ticket that declares it deliberately removes one is certifying a missing
+# requirement. A `delivers`, whatever its wording, is never a contradiction —
+# which is what stops the "never asks to name" false alarm, since a ticket that
+# delivers that requirement declares `delivers`.
+#
+# There is NO text fallback and NO default. An unlinked criterion (no `serves`)
+# is left UNJUDGED and COUNTED, so an unlinked plan reads as "not checked", never
+# "clean". A criterion that DID name a requirement but gave no readable
+# `direction` is a MALFORMED declaration: recorded by name so it is refused, not
+# guessed. Refuse to judge what the planner did not state.
 # ===========================================================================
-# criterion that says something is "green, not red" denies a COLOUR, not the
-# thing's existence, and must not trip this. So a bare "not" is never enough —
-# the negation has to land on presence, appearance or existence.
-_PRESENCE = (r"shown|displayed|display|visible|present|rendered|render|renders|"
-             r"appear|appears|appearing|exist|exists|existing|there|added|"
-             r"created|included|built|implemented|drawn|generated")
-_ABSENCE_RES = [
-    re.compile(r"\bno\s+[a-z]", re.I),
-    re.compile(r"\bthere\s+(?:is|are|will\s+be)\s+no\b", re.I),
-    re.compile(r"\bwithout\s+(?:a|an|any|the)?\s*[a-z]", re.I),
-    re.compile(r"\b(?:absent|non-?existent|omitted|excluded|removed|hidden)\b", re.I),
-    re.compile(r"\babsence\s+of\b", re.I),
-    re.compile(r"\bnever\s+(?:%s)\b" % _PRESENCE, re.I),
-    re.compile(
-        r"\b(?:is|are|was|were|does|do|should|shall|must|will|can|be)\s+not\b"
-        r"(?:\s+\w+){0,3}?\s+(?:%s)\b" % _PRESENCE, re.I),
-    re.compile(r"\bnot\s+(?:%s)\b" % _PRESENCE, re.I),
-]
-
-
-def _asserts_absence(text):
-    """Does this criterion deny that something EXISTS / is present / appears?"""
-    t = str(text or "")
-    return any(r.search(t) for r in _ABSENCE_RES)
 
 
 def _norm(text):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).split())
 
 
-def _resolve_serves(serves, primaries, by_id, by_norm):
+def _resolve_serves(serves, by_id, by_norm):
     """The primary requirement a `serves` reference names, or None.
 
     A `prd-N` id first, then the requirement's verbatim (normalised) text. This
@@ -290,57 +297,74 @@ def _resolve_serves(serves, primaries, by_id, by_norm):
 
 
 def find_contradictions(criteria):
-    """Ticket criteria that contradict the PRD requirement they serve.
+    """Ticket criteria the planner DECLARED remove the requirement they serve.
 
-    A contradiction is a plan (ticket) criterion that asserts the ABSENCE of
-    what an affirmative PRD requirement asks FOR — fired ONLY on a resolved
-    `serves` link. Returns (contradictions, marks, unlinked) where `marks` maps
-    a ticket criterion id to the prd-id it contradicts, so the caller can stamp
-    the offending criterion, and `unlinked` counts the ticket criteria that
-    carried no resolvable link (left unjudged).
+    A contradiction is a plan (ticket) criterion whose `direction` the planner
+    declared `removes` against a resolved PRIMARY PRD requirement — the ticket
+    certifies that a stated goal is deliberately gone. Nothing reads the
+    criterion's prose; the direction is the planner's own record.
+
+    Returns (contradictions, marks, unlinked, malformed):
+      * `marks`     maps a ticket-criterion id to the prd-id it contradicts, so
+                    the caller can stamp the offending criterion.
+      * `unlinked`  counts ticket criteria that named no requirement (unjudged).
+      * `malformed` lists ticket criteria that DID name a requirement but gave
+                    no readable `direction`, each with the field to add — a
+                    declaration refused, never silently defaulted.
     """
     primaries = [c for c in criteria
                  if isinstance(c, dict) and c.get("primary") and c.get("text")]
-    # A requirement that itself asks for an ABSENCE is not asking FOR the thing,
-    # so a ticket agreeing with it is no contradiction. Only affirmative
-    # requirements can be contradicted this way.
-    affirmative = [r for r in primaries if not _asserts_absence(r["text"])]
     by_id = {r["id"]: r for r in primaries}
     by_norm = {_norm(r["text"]): r for r in primaries}
-    aff_ids = {r["id"] for r in affirmative}
 
     contradictions = []
     marks = {}
     unlinked = 0
+    malformed = []
     for c in criteria:
         if not isinstance(c, dict) or c.get("source") != "plan":
             continue
+        serves = str(c.get("serves") or "").strip()
         # An unlinked ticket criterion is one the planner named no requirement
         # for. Counted so an unlinked plan reads as "not checked", never "clean".
-        target = _resolve_serves(c.get("serves"), primaries, by_id, by_norm)
-        linked = target is not None and target["id"] in aff_ids
-        if not linked:
+        if not serves:
             unlinked += 1
-        text = c.get("text") or ""
-        if not _asserts_absence(text):
             continue
-        # THE LINK, AND ONLY THE LINK. A resolved, affirmative `serves` IS the
-        # subject identity — the planner declared these two are the same
-        # requirement — so no prose overlap is re-derived. No link, no judgement:
-        # silence, not a text guess (the measured false-positive class).
-        if not linked:
+        direction = str(c.get("direction") or "").strip().lower()
+        # NAMED A REQUIREMENT BUT DID NOT SAY WHICH WAY ROUND — a malformed
+        # declaration. Refused by name (the id and the field to add), never
+        # defaulted to delivers or removes: a guessed direction is exactly the
+        # inference this design removed.
+        if direction not in ("delivers", "removes"):
+            malformed.append({
+                "id": c["id"], "ticket": c.get("ticket"),
+                "serves": serves,
+                "problem": ('names a requirement with "serves" but declares no '
+                            'readable "direction" — add "direction": "delivers" '
+                            '(this criterion makes that requirement true) or '
+                            '"direction": "removes" (it deliberately removes it)'),
+            })
+            continue
+        target = _resolve_serves(serves, by_id, by_norm)
+        if target is None:
+            # A serves that resolves to no PRIMARY requirement: nothing to
+            # contradict. Counted as unlinked (the plan reads "not checked"),
+            # not guessed at.
+            unlinked += 1
+            continue
+        if direction != "removes":
             continue
         req = target
         marks[c["id"]] = req["id"]
         contradictions.append({
             "requirement": {"id": req["id"], "text": req["text"]},
             "ticketCriterion": {"id": c["id"], "ticket": c.get("ticket"),
-                                "text": text},
-            "direction": ("the ticket criterion requires the ABSENCE of what "
-                          "requirement %s asks for" % req["id"]),
-            "via": "link",
+                                "text": c.get("text") or ""},
+            "direction": ("the ticket criterion declares it deliberately "
+                          "REMOVES what requirement %s asks for" % req["id"]),
+            "via": "declaration",
         })
-    return contradictions, marks, unlinked
+    return contradictions, marks, unlinked, malformed
 
 
 def main():
@@ -361,7 +385,7 @@ def main():
         except Exception:
             pass
 
-    contradictions, marks, unlinked = find_contradictions(criteria)
+    contradictions, marks, unlinked, malformed = find_contradictions(criteria)
     for c in criteria:
         if isinstance(c, dict) and c.get("id") in marks:
             c["contradictsRequirement"] = marks[c["id"]]
@@ -375,17 +399,20 @@ def main():
         "criteria": criteria,
         "contradictions": contradictions,
         "unlinkedTicketCriteria": unlinked,
+        "malformedDeclarations": malformed,
     }
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
     print("%d criteria (%d primary), %d place names, %d contradiction%s, "
-          "%d ticket criteri%s carried no link (not checked)" % (
+          "%d ticket criteri%s carried no link (not checked), "
+          "%d malformed declaration%s" % (
         len(criteria), sum(1 for c in criteria if c.get("primary")),
         len(doc["placeNames"]), len(contradictions),
         "" if len(contradictions) == 1 else "s",
-        unlinked, "on" if unlinked == 1 else "a"))
+        unlinked, "on" if unlinked == 1 else "a",
+        len(malformed), "" if len(malformed) == 1 else "s"))
     return 0
 
 

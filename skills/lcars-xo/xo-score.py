@@ -1889,25 +1889,29 @@ def main():
             entry.pop("shot", None)
             entry.pop("testQuote", None)
 
-    # THE TICKET-CONTRADICTION SIGNAL (Number One, 2026-09-24 — TEETH WITHDRAWN
-    # the same night). xo-criteria.py marks a ticket (plan) criterion
-    # `contradictsRequirement` when it reads it as asserting the ABSENCE of what
-    # an affirmative PRD requirement asks FOR. That detection judges POLARITY
-    # FROM PROSE, and it is demonstrably unreliable: it classified a NEGATIVE
-    # requirement ("Saving is instant and never asks the player to name
-    # anything") as affirmative and flagged a ticket that CORRECTLY implements it
-    # ("completes without presenting any text-entry/name prompt"), overruling a
-    # correct `met` to `gap` and telling the captain a correct ticket "cannot
-    # certify". Widening the verb list is generation five of the mistake that
-    # cost LCARS three sessions (S147/S156/S188) — the cure has always been to
-    # stop inferring, never a better pattern.
+    # THE TICKET-CONTRADICTION GUARD (the ruling of 2026-09-25 — TEETH RESTORED).
+    # NEVER LET A DELIBERATE OMISSION CERTIFY ITSELF. xo-criteria.py marks a
+    # ticket (plan) criterion `contradictsRequirement` when the PLANNER DECLARED
+    # — with `direction: "removes"` — that the criterion deliberately removes a
+    # requirement the PRD asks FOR. That is now a RECORD, not a prose guess: the
+    # earlier detector read the criterion's English to decide polarity and was
+    # beaten twice in one day (once through a CORRECT link, misreading the
+    # negative "never asks the player to name anything" as affirmative), so the
+    # consequence was withdrawn while the design was ruled on. The ruling: the
+    # planner STATES which way round each criterion is, and this check READS that
+    # statement — nothing reads prose for polarity any more. So the teeth come
+    # back, and they are now sound.
     #
-    # So while the captain rules on the design, the CONSEQUENCE is removed and
-    # only the SIGNAL is kept. A contradiction mark MAY NOT change a criterion's
-    # status or grade. It is still surfaced — the pair, both ids, the direction —
-    # as a POSSIBLE disagreement worth a look, worded so it does not assert a
-    # contradiction and never claims a criterion "cannot certify". The detection
-    # code stays in place; only what happens next is withdrawn.
+    # THE CONSEQUENCE, and why it moves the grade. A ticket the planner declared
+    # `removes` is certifying that a stated goal is gone — so the requirement it
+    # names is NOT delivered, whatever a look thought it saw. Two things happen:
+    # the offending ticket criterion is dropped from met to a gap so it can never
+    # read as a clean win, AND the PRIMARY requirement it names is overruled to a
+    # gap. The primary sits in the graded person group, so this is what stops a
+    # build that deliberately removes a requirement from reading HIGH on the
+    # strength of a look that was fooled. The pair is named — which ticket
+    # criterion, which requirement — so the captain sees the disagreement.
+    ledger_by_id = {e["id"]: e for e in ledger}
     for entry in ledger:
         row = contract_by_id.get(entry["id"]) or {}
         req = row.get("contradictsRequirement")
@@ -1915,10 +1919,25 @@ def main():
             continue
         req_text = str((contract_by_id.get(req) or {}).get("text") or req)
         notes.append(
-            "%s and requirement %s (%s) may disagree — this criterion reads as "
-            "asking for the absence of what that requirement asks for. Worth a "
-            "look; the detection is unreliable so I have NOT changed its grade" % (
+            "%s declares it deliberately REMOVES requirement %s (%s), which the "
+            "PRD asks for — so the build does not deliver that requirement" % (
                 entry["id"], req, clip(req_text, 60)))
+        if entry["status"] == "met":
+            entry["status"] = "gap"
+            entry["note"] = ("this ticket criterion declares it deliberately "
+                             "removes requirement %s, which the PRD asks for" % req)
+            entry["evidence"] = "none"
+            entry.pop("shot", None)
+            entry.pop("testQuote", None)
+        preq = ledger_by_id.get(req)
+        if preq is not None and preq.get("status") == "met":
+            preq["status"] = "gap"
+            preq["note"] = ("a ticket in this plan (%s) declares it deliberately "
+                            "removes this requirement, so the build does not "
+                            "deliver it" % entry["id"])
+            preq["evidence"] = "none"
+            preq.pop("shot", None)
+            preq.pop("testQuote", None)
 
 
     # not on the screen was NOT TAKEN, and a step nobody took cannot have

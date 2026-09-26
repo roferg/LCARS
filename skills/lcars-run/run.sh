@@ -3588,7 +3588,7 @@ LCARS_AWK_CRIT="$(cat <<'LCARS_AWK_CRIT_EOF'
 # null, true, 0 and "\t" as content, so all four passed as anchors. The
 # validator refuses anything that is not a non-empty string, and it can only do
 # that if the parser tells it what the value WAS.
-function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
+function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
   n = length(t); inq = 0; esc = 0; cur = ""; k = 0; depth = 0; pend = ""
   for (i = 1; i <= n; i++) {
     ch = substr(t, i, 1)
@@ -3597,10 +3597,12 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, 
       else if (ch == "\\") { cur = cur ch; esc = 1 }
       else if (ch == "\"") {
         inq = 0
-        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = "" }
+        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = "" }
         else if (pend == "") { pend = cur }          # this string is a KEY
         else {                                        # …the VALUE of that key
           if (pend == "text") ctext[k] = cur
+          else if (pend == "serves") cserves[k] = cur
+          else if (pend == "direction") cdir[k] = cur
           else if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
             cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
             cval[k] = cur; ctype[k] = "s"
@@ -3613,7 +3615,7 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, 
     }
     if (ch == "\"") { inq = 1; cur = "" }
     else if (ch == "{" && depth == 0) {
-      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""
+      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""
     }
     else if ((ch == "{" || ch == "[") && depth > 0) {
       # A NESTED object/array as a value ({"drawnAt": {"screen": "b"}} or []).
@@ -3834,6 +3836,24 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
       tickets++
       for (k=1; k<=9; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
       if (!acok) fail("ticket " tickets " (" id ") needs at least one acceptance criterion.")
+      # THE SERVES/DIRECTION DECLARATION (the ruling of 2026-09-25). A criterion
+      # that names a PRD requirement it relates to (via "serves") MUST also STATE
+      # which way round it is ("direction": delivers | removes) — so the contract
+      # reads the planner'"'"'s statement instead of guessing polarity from prose,
+      # which has been beaten before. A "serves" with no readable "direction" is
+      # refused BY NAME here, never defaulted: the missing direction is exactly
+      # the polarity nothing downstream is allowed to infer. Runs for EVERY
+      # ticket (a requirement link is not a visual concern), accumulated into ONE
+      # message like s174bad and emitted from END.
+      delete sdtext; delete sddecl; delete sdval; delete sdtype; delete sdserves; delete sddir
+      nsd = lcars_crit_entries(actext, sdtext, sddecl, sdval, sdtype, sdserves, sddir)
+      for (ci = 1; ci <= nsd; ci++) {
+        if (sdserves[ci] != "" && sddir[ci] != "delivers" && sddir[ci] != "removes") {
+          sdbad = sdbad "\n  ticket " tickets " (" id "), criterion " ci
+          if (sdtext[ci] != "") sdbad = sdbad " (\"" excerpt(sdtext[ci]) "\")"
+          sdbad = sdbad ": carries \"serves\" but no readable \"direction\" — add \"direction\": \"delivers\" (this criterion makes that requirement true) or \"direction\": \"removes\" (it deliberately takes that requirement away)."
+        }
+      }
       # --- S169: the tickets must carry the mockup ---------------------------
       # Only for a Mission that ACTUALLY carries one. The planner DECLARES;
       # we check the declaration is there, is a boolean, and — when it says this
@@ -4040,6 +4060,8 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
         : "\n  This drawing carries NO element ids, so nothing can check WHICH place an anchor names — \"drawnAt\" only has to be a non-empty string here, and it is on you to make it point somewhere real.\n")
       if (s174bad != "" && !failed)
         fail("this plan'"'"'s screen-changing tickets do not declare where their criteria come from. This Mission carries a mockup (" mock "), so on every ticket with \"changesScreenAppearance\": true, EVERY entry of \"acceptanceCriteria\" must be an object — {\"text\": \"…\", …} — carrying EXACTLY ONE of:\n    \"drawnAt\":   \"<the screen id / section / row of " mockname[1] " this criterion'"'"'s surface appears in>\"\n    \"notDrawn\":  \"<why this VISIBLE thing is not in the drawing>\"   (legitimate — and the captain sees every one at Verify)\n    \"notVisual\": true                                          (this criterion makes no visual claim at all)\n" s174bad "\n" vocab "  A plain string stays fine on a changesScreenAppearance:false ticket, and on every Mission without a mockup. Open the drawing, then declare each criterion once.")
+      if (sdbad != "" && !failed)
+        fail("this plan links a criterion to a requirement with \"serves\" but does not STATE which way round it is. Every acceptanceCriteria entry that carries \"serves\" MUST also carry \"direction\": \"delivers\" (the criterion makes that requirement true) or \"direction\": \"removes\" (it deliberately takes that requirement away) — nothing reads your prose to decide polarity, because that guess has been wrong before. Add the missing field on:" sdbad "\n  A criterion that links to no single requirement stays a plain string and declares neither.")
     }
   ' "$1"
 }
