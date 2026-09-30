@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: vision.md sha256:e8c6380d926467e3f4630beb34f6c20bc334b5b2a20334faa1b6a889a4bd2907 -->
+<!-- lcars-docs-src: vision.md sha256:b416a28d8e03079cda87c191d6a0e8968a4827ffbb0ec1706895be3a189fdf46 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -62,6 +62,7 @@
       <div class="nav-label">Control</div>
       <a href="#isolation"><div class="dot"></div>Stage Isolation</a>
       <a href="#human"><div class="dot"></div>Human Control</a>
+      <a href="#numberone"><div class="dot"></div>Number One <span class="nav-badge">first officer</span></a>
       <a href="#multi"><div class="dot"></div>Multi-Mission</a>
       <a href="#cli"><div class="dot"></div>The CLI</a>
     </div>
@@ -486,6 +487,109 @@ stateDiagram-v2
         </div>
       </div>
       <p>Every Mission's state is persisted. Walking away and coming back is a <strong>first-class interaction pattern</strong>, not an edge case.</p>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- NUMBER ONE -->
+    <section id="numberone">
+      <h2>Number One: The First Officer</h2>
+      <p>Human Control assumes there is a human awake. <strong>Number One is the AI
+      first officer who holds the conn when there isn't</strong> — an optional,
+      per-repository crew member that works a Mission's gates on the captain's
+      behalf and hands command back with a report.</p>
+
+      <p>It is off by default, and turning it on is one line:</p>
+
+      <pre>lcars xo on --engine copilot      # engage for this repo
+lcars xo                          # who has the conn, and what they did
+lcars xo off                      # stand down, hand the conn back</pre>
+
+      <p>The choice is recorded in <code>.git/lcars/config.json</code> as a
+      one-line <code>numberOne</code> block, so the engine that reviews your work is
+      a <strong>declared fact, not a default that drifted</strong>. With no
+      <code>--engine</code> and a terminal, a picker names the CLIs actually
+      installed on the machine; with no terminal it refuses out loud rather than
+      choosing in silence. A single Mission can be opted out with
+      <code>lcars xo off &lt;mission&gt;</code> without standing the whole repo
+      down.</p>
+
+      <p>Number One does two jobs.</p>
+
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">it takes a park</div>
+          <div class="control-desc">When a Stage escalates and a Mission stops
+          awaiting a human, <code>lcars xo answer</code> reads that Mission's record
+          in a <strong>read-only copy</strong> and either answers the gate through
+          the ordinary <code>lcars respond</code> — attributed
+          <code>answeredBy: number-one</code>, so the record always says who decided
+          — or escalates with a note and a recommendation and <strong>leaves the
+          gate standing</strong>. It always escalates a scope question, an answer it
+          cannot cite, and anything malformed. The bias is deliberate: a first
+          officer who guesses is worse than one who wakes you.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">it looks at what got built</div>
+          <div class="control-desc">At Verify, <code>lcars xo evaluate</code> writes
+          its checklist <em>before</em> it opens a browser — the PRD's acceptance
+          criteria, the plan's per-ticket criteria, the drawing's place names — then
+          launches the build, walks it headless, photographs it, and scores the
+          intent match. The order is the contract: <em>a judge that writes its
+          checklist after looking writes a checklist of what it happened to
+          notice.</em> If the build never comes up, the score is LOW quoting the
+          launch message and no browser starts at all.</div>
+        </div>
+      </div>
+
+      <p>Two things about that look are worth stating plainly, because both were
+      learned the hard way. <strong>A screen that needs data to exist cannot be
+      photographed into existence</strong>, so a repo may <em>declare</em> sample
+      data (<code>verifySeed</code> in config, or an executable
+      <code>.lcars/verify-seed.sh</code>); with neither declared, <strong>nothing is
+      invented</strong> — the report names the screens it could not see and marks
+      those rows <em>couldn't check</em>, never a fault in the build. And the walk
+      itself is read out of the record rather than improvised: the drawing's screen
+      order, each screen's forward control, the PRD's own steps. Every gate is tried
+      <strong>both ways</strong> — once while the thing it waits for is blank, once
+      when it is filled — and a step recorded <code>unreachable</code> is forced to
+      <em>couldn't check</em> whatever the pictures seem to say.</p>
+
+      <p><strong>What it cannot check holds the grade back.</strong> Appearance is
+      judged on one rail and behaviour on another, a headline may not read HIGH over
+      a rail that looked at nothing, and the report records <strong>what it checked,
+      not only what it faulted</strong> — so "no faults" has to be earned rather
+      than assumed from silence.</p>
+
+      <p><strong>While Number One is engaged, the write verbs refuse.</strong>
+      <code>approve</code>, <code>feedback</code>, <code>respond</code>,
+      <code>log</code>, <code>pause</code>, <code>resume</code> and
+      <code>resolve-logs</code> — and the viewscreen's matching endpoints — answer
+      with one sentence, because Number One is already acting through exactly those
+      verbs on the captain's behalf. Reading is never gated.</p>
+
+      <h3>Where this goes next</h3>
+
+      <p><strong>Ship the review; do not yet let it take the gates.</strong> That is
+      the standing ruling, and it comes from measurement rather than caution. On
+      three identical looks at one build, Number One published <code>high</code> over
+      a review that was only <strong>55–64% checked</strong>, and the single
+      highest-impact criterion it never verified was the very thing LCARS had decided
+      on the captain's behalf. In 3 of 3 runs, two frames filed under the names of
+      screens it meant to reach were <strong>byte-identical to the opening
+      shot</strong> — it had never navigated, and nothing checked that it had, so a
+      whole feature read as reviewed when nobody had looked at it. Roughly half of
+      each review goes unchecked, with a nine-point swing run to run.</p>
+
+      <div class="lcars-alert amber">
+        <div>None of that makes the review worthless — it is a genuinely useful
+        second pair of eyes, and it names real blockers. It makes it an
+        <strong>advisory</strong> second pair of eyes. Two things have to land before
+        it holds a gate unsupervised: the headline must state how much of the review
+        it actually rests on, and a shot that did not show what it was sent for must
+        stop counting as evidence. Until then, <strong>Number One reviews and
+        recommends; the captain still ships.</strong></div>
+      </div>
     </section>
 
     <!-- MULTI-MISSION -->

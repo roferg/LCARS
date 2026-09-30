@@ -342,6 +342,40 @@ Every Mission's state is persisted. Walking away and coming back is a first-clas
 
 ---
 
+## Number One: The First Officer
+
+Human Control assumes there is a human awake. **Number One is the AI first officer who holds the conn when there isn't** — an optional, per-repository crew member that works a Mission's gates on the captain's behalf and hands command back with a report.
+
+It is off by default, and turning it on is one line:
+
+```bash
+lcars xo on --engine copilot      # engage for this repo
+lcars xo                          # who has the conn, and what they did
+lcars xo off                      # stand down, hand the conn back
+```
+
+The choice is recorded in `.git/lcars/config.json` as a one-line `numberOne` block, so the engine that reviews your work is a **declared fact, not a default that drifted**. With no `--engine` and a terminal, a picker names the CLIs actually installed on the machine; with no terminal it refuses out loud rather than choosing in silence. A single Mission can be opted out with `lcars xo off <mission>` without standing the whole repo down.
+
+Number One does two jobs.
+
+**It takes a park.** When a Stage escalates and a Mission stops awaiting a human, `lcars xo answer` reads that Mission's record in a **read-only copy** and either answers the gate through the ordinary `lcars respond` — attributed `answeredBy: number-one`, so the record always says who decided — or escalates with a note and a recommendation and **leaves the gate standing**. It always escalates a scope question, an answer it cannot cite, and anything malformed. The bias is deliberate: a first officer who guesses is worse than one who wakes you.
+
+**It looks at what got built.** At Verify, `lcars xo evaluate` writes its checklist *before* it opens a browser — the PRD's acceptance criteria, the plan's per-ticket criteria, the drawing's place names — then launches the build, walks it headless, photographs it, and scores the intent match. The order is the contract: *a judge that writes its checklist after looking writes a checklist of what it happened to notice.* If the build never comes up, the score is LOW quoting the launch message and no browser starts at all.
+
+Two things about that look are worth stating plainly, because both were learned the hard way. **A screen that needs data to exist cannot be photographed into existence**, so a repo may *declare* sample data (`verifySeed` in config, or an executable `.lcars/verify-seed.sh`); with neither declared, **nothing is invented** — the report names the screens it could not see and marks those rows *couldn't check*, never a fault in the build. And the walk itself is read out of the record rather than improvised: the drawing's screen order, each screen's forward control, the PRD's own steps. Every gate is tried **both ways** — once while the thing it waits for is blank, once when it is filled — and a step recorded `unreachable` is forced to *couldn't check* whatever the pictures seem to say.
+
+**What it cannot check holds the grade back.** Appearance is judged on one rail and behaviour on another, a headline may not read HIGH over a rail that looked at nothing, and the report records **what it checked, not only what it faulted** — so "no faults" has to be earned rather than assumed from silence.
+
+**While Number One is engaged, the write verbs refuse.** `approve`, `feedback`, `respond`, `log`, `pause`, `resume` and `resolve-logs` — and the viewscreen's matching endpoints — answer with one sentence, because Number One is already acting through exactly those verbs on the captain's behalf. Reading is never gated.
+
+### Where this goes next
+
+**Ship the review; do not yet let it take the gates.** That is the standing ruling, and it comes from measurement rather than caution. On three identical looks at one build, Number One published `high` over a review that was only **55–64% checked**, and the single highest-impact criterion it never verified was the very thing LCARS had decided on the captain's behalf. In 3 of 3 runs, two frames filed under the names of screens it meant to reach were **byte-identical to the opening shot** — it had never navigated, and nothing checked that it had, so a whole feature read as reviewed when nobody had looked at it. Roughly half of each review goes unchecked, with a nine-point swing run to run.
+
+None of that makes the review worthless — it is a genuinely useful second pair of eyes, and it names real blockers. It makes it an **advisory** second pair of eyes. Two things have to land before it holds a gate unsupervised: the headline must state how much of the review it actually rests on, and a shot that did not show what it was sent for must stop counting as evidence. Until then, Number One reviews and recommends; the captain still ships.
+
+---
+
 ## Multi-Mission Management
 
 Multiple Missions can be active simultaneously at different Stages. `lcars status` is the command-and-control view — all active Missions, each showing its current Stage and anything awaiting you. Pending decisions from every Mission collect in one inbox (`lcars answer`), so the union of "what needs me" is a single list to clear rather than something scattered across Missions. Notifications fire only at genuine gates, batched per Stage, so concurrent Missions running unattended don't become a stream of interruptions.
