@@ -480,6 +480,61 @@ fold_one_child() { # bug-id
   # Move the child to Done on disk — stage flips to done, branch is preserved
   # (the fix stays folded onto the parent branch; we never rewrite it here).
   lcars_state_set_string "$cstate" stage done
+  # S231 — RECORD THE FOLD. Until now the ONLY trace that a logged bug's fix had
+  # been folded into its parent was `parentMission` + `stage: done`, which says
+  # nothing about WHICH branch tip carries it. The parent's pre-merge drift check
+  # needs exactly that fact: a bug that legitimately adapts one of the parent's
+  # proven tests DECLARES the edit in its own tickets/*/test-edits.json, and the
+  # parent's allow-list can only honour that declaration if it knows the fold
+  # happened and that it lands on the tip about to be merged. Over the 2026-09-26
+  # weekend it did not, and three merges refused work that HAD been declared
+  # (LCARS-BUG-fold-test-drift.md).
+  #
+  # The producer records it; the reader never reconstructs it from `git log`
+  # (ORCHESTRATION.md § infer-vs-record — an inference here cost S147, S156 and
+  # S188 a round each). Three fields, written at the one moment the fact is known:
+  #   foldedInto  the parent Mission this fix now rides
+  #   foldedAt    when
+  #   foldCommit  the child's fix TIP AS IT SITS ON THE PARENT BRANCH — the sha a
+  #               reader can ancestry-check. Deliberately NOT the recorded
+  #               worktree sha from tickets/*/.commit-sha: cmd_implement
+  #               CHERRY-PICKS, so the branch carries a DIFFERENT sha with the
+  #               same subject (the real incident had ec85424 in the worktree and
+  #               b75400b on the branch). A cherry-pick preserves the subject, so
+  #               we resolve the sha the same way child_fix_on_branch detects
+  #               presence — by the "lcars(<bug-id>)" prefix commit_ticket writes.
+  #
+  # NO PIPE into a short-circuiting reader here: this file runs under
+  # `set -o pipefail` and that combination already inverted child_fix_on_branch
+  # once (git killed by SIGPIPE → 141 handed back as the result). Capture first,
+  # match with a here-string.
+  local fold_sha="" _fl="" _fline
+  if [ -n "$cbranch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$cbranch"; then
+    _fl="$("$GIT_BIN" log --format='%H %s' "$cbranch" 2>/dev/null)" || _fl=""
+    while IFS= read -r _fline; do
+      case "$_fline" in
+        *"lcars($bid)"*) fold_sha="${_fline%% *}"; break ;;
+      esac
+    done <<<"$_fl"
+    # A bug whose Implement produced no commit of its own (a green no-op ticket —
+    # child_recorded_a_commit is false, which is why the refusal above correctly
+    # did not fire) has no subject to match. Its fold still happened, so record
+    # the branch tip: that IS the state of the parent branch the fold was accepted
+    # against, and it is trivially an ancestor of any later tip.
+    [ -n "$fold_sha" ] || fold_sha="$("$GIT_BIN" rev-parse "refs/heads/$cbranch" 2>/dev/null)" || fold_sha=""
+  fi
+  # $PARENT_ID / $NOW are read with defaults on purpose: this function is also
+  # EXTRACTED and driven directly by tests/resolve-logs-fold-verify.test.sh, whose
+  # harness supplies neither, and a bare expansion under `set -u` would turn that
+  # suite's happy path into an unbound-variable failure. A missing parent id
+  # records NOTHING rather than `foldedInto: ""` — an empty record would read as a
+  # fold into the anonymous mission, which is worse than no record at all.
+  [ -n "${PARENT_ID:-}" ] && lcars_state_set_string "$cstate" foldedInto "$PARENT_ID"
+  lcars_state_set_string "$cstate" foldedAt "${NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  # An unresolvable branch leaves foldCommit ABSENT rather than empty-and-lying:
+  # the reader treats a missing sha as "no ancestry evidence available" and falls
+  # back to the record itself, which is still a positive act by the producer.
+  [ -n "$fold_sha" ] && lcars_state_set_string "$cstate" foldCommit "$fold_sha"
   # Board: clear the stage labels, apply lcars:done — same column move approve
   # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
   #

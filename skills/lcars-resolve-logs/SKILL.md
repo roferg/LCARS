@@ -91,6 +91,25 @@ is cleared; it is a clean no-op for an ordinary escalation. `resolve-logs`
 **never auto-accepts** anything and never opens a PR — the re-verify decision is
 always the captain's.
 
+**The fold is RECORDED on the child (S231).** A successful fold writes three
+fields into the child's `state.json`:
+
+| field | meaning |
+|---|---|
+| `foldedInto` | the parent Mission this fix now rides |
+| `foldedAt`   | when it folded (ISO 8601, UTC) |
+| `foldCommit` | the child's fix tip **as it sits on the parent branch** — not the recorded worktree sha, because Implement cherry-picks |
+
+That record is what lets the parent's **pre-merge drift check** honour a test
+edit the bug legitimately declared in its own `tickets/*/test-edits.json`.
+Without it the parent's allow-list saw only its own tickets, and three merges
+over the 2026-09-26 weekend refused work that HAD been declared. The fact is
+recorded at the fold rather than reconstructed from `git log` later; the reader
+(`mission_declared_edit_paths` in `lcars-run`) uses ancestry only as a **guard**
+on the record, so a fold whose commits were later reset off the branch
+authorises nothing. An **undeclared** test edit still blocks the merge, in
+exactly the same words.
+
 ## Usage
 
 ```
