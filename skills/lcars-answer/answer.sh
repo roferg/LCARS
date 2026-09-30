@@ -139,6 +139,22 @@ cmd_list() {
       else
         pq="$(json_str "$s" pendingQuestion)"; [ -n "$pq" ] && echo "      • $pq"
       fi
+      # S202 — NUMBER ONE ALREADY LOOKED AT THIS ONE. When the first officer
+      # handed a gate back it recorded why, and what it would do. The inbox is
+      # where the captain meets the gate, so it is where that has to be: without
+      # it he reads "awaiting your answer" with no idea anyone had already read
+      # the record. Both values are READ off state.numberOne — the inbox works
+      # nothing out for itself.
+      local xo_blk xo_status xo_note
+      # S223: the JSON-aware reader — a `}` or `"` in the note is text.
+      declare -F lcars_state_xo_block >/dev/null \
+        || . "$SKILL_DIR/../lcars-init/lcars-state.sh"
+      xo_blk="$(lcars_state_xo_block "$s")"
+      xo_status="$(lcars_json1_get "$xo_blk" status)"
+      xo_note="$(lcars_json1_get "$xo_blk" note)"
+      if [ "$xo_status" = "escalated" ] && [ -n "$xo_note" ]; then
+        printf '    ◈ Number One handed this one back to you: %s\n' "$xo_note"
+      fi
       printf '    → answer:  lcars answer respond --mission %s --answer "…"\n' "$id"
     elif [ "$stage" = "verify" ]; then
       # The Verify gate — ship or send back.

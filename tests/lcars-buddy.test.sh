@@ -17,7 +17,24 @@
 # Usage: bash tests/lcars-buddy.test.sh
 set -uo pipefail
 
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_BUDDY_SCRIPT:-$REPO_ROOT/skills/lcars-buddy/buddy.sh}"
@@ -287,9 +304,9 @@ check "8b. the install step counts FIVE destinations, not four" \
 # looking in the wrong place.
 check "8b. the hang rule names the SECOND mechanism (the version check's fetch)" \
   "grep -qiE 'git fetch|version check' '$ORCH' && grep -qiE 'askpass|GIT_TERMINAL_PROMPT' '$ORCH'"
-CAGE="$REPO_ROOT/tests/drives/s197/cage.py"
+CAGE="$REPO_ROOT/tests/lib/cage.py"
 check "8b. the rule points at a cage that is actually committed" \
-  "grep -qF 'tests/drives/s197/cage.py' '$ORCH' && [ -f '$CAGE' ]"
+  "grep -qF 'tests/lib/cage.py' '$ORCH' && [ -f '$CAGE' ]"
 # The cage must really cage: a probe that blocks forever comes back killed, and
 # a probe that exits comes back with its exit code — both reporting ELAPSED.
 cagehang="$TMPROOT/cage-hang.txt"

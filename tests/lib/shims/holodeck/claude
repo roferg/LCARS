@@ -1,0 +1,53 @@
+#!/bin/bash
+# LCARS holodeck argv shim — claude.
+#
+# Records the FULL argv and cwd of every worker spawn, then execs the real CLI.
+# `ps` cannot show you this: the daemon spawns the worker and the process is
+# usually gone before you can look, and the argv is built inside the daemon from
+# per-(engine, mode) tables. This shim is the only way to read the flag set the
+# product ACTUALLY built during a live drive.
+#
+#   export LCARS_SHIM_LOG=/tmp/shim-claude.log
+#   export LCARS_HOLODECK_REAL_CLAUDE=/path/to/claude     # optional
+#   LCARS_WORKER_BIN=tests/lib/shims/holodeck/claude web/serve.sh …
+#
+# It spends whatever the real CLI spends: it is a pass-through, not a stub.
+set -u
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "$self_dir/../lib/real-worker.sh"   # for _lcars_is_editor_shim — never trust
+                                      # a PATH match (or the override) blindly
+LOG="${LCARS_SHIM_LOG:-/tmp/lcars-holodeck-shim.log}"
+REAL="${LCARS_HOLODECK_REAL_CLAUDE:-}"
+if [ -n "$REAL" ] && _lcars_is_editor_shim "$REAL" claude; then
+  echo "holodeck-shim: \$LCARS_HOLODECK_REAL_CLAUDE ($REAL) is an editor shim — refusing it, not trusting it blindly" >&2
+  REAL=""
+fi
+if [ -z "$REAL" ]; then
+  # Resolve the real binary WITHOUT finding this shim again, AND without
+  # picking an editor's own re-invocation shim for `claude` — the identical
+  # copilot fork-bomb (measured 2026-09-15: 5,538 processes) opens on this side
+  # too if any editor ever ships one. See tests/lib/real-worker.sh.
+  while IFS= read -r cand; do
+    case "$(cd "$(dirname "$cand")" && pwd)" in
+      "$self_dir") continue ;;
+    esac
+    if _lcars_is_editor_shim "$cand" claude; then
+      echo "holodeck-shim: skipping $cand — that is an editor shim, not the claude binary (it would recurse)" >&2
+      continue
+    fi
+    REAL="$cand"; break
+  done < <(type -pa claude 2>/dev/null)
+fi
+{
+  printf 'TIME: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'ARGV: %s\n' "$*"
+  printf 'CWD:  %s\n' "$PWD"
+  printf 'REAL: %s\n' "${REAL:-<not found>}"
+  printf -- '---\n'
+} >> "$LOG" 2>/dev/null
+if [ -z "$REAL" ]; then
+  echo "holodeck-shim: no real claude found (set \$LCARS_HOLODECK_REAL_CLAUDE)" >&2
+  exit 127
+fi
+exec "$REAL" "$@"

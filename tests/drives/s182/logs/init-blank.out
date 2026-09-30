@@ -1,8 +1,0 @@
-  ✓ .git/lcars/ created
-  ✓ seeded an empty initial commit — LCARS proves work against a parent commit (tests red on the parent, green on the tip); your staged/untracked files were left exactly as they were
-  ✓ config.json written  (stack: unknown, model: claude-sonnet, context: none, tests: none)
-    keys seeded: model projectName contextFile stack testCommand worktreeSetupCommand comprehensionBudget lcarsVersion created
-  ✓ Claude CLI verified  (0.0.0-s182-fake (counting shim))
-  ✓ 16 labels created
-  ◇ NO TEST SYSTEMS FOUND — a greenfield repo; the first mission's engineering crew will establish them.
-  LCARS ready — run `lcars file` to start your first Mission.

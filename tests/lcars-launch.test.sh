@@ -1496,5 +1496,55 @@ S31f="$(rec_stub copilot)"; A31f="$TMPROOT/argv31f"; make_rec_worker "$S31f" "$A
 check "31f. the --main deploy's copilot inspector gets the write floor too" \
   "[ \"\$(argv_model \"$A31f\")\" = 'claude-opus-4.8' ]"
 
+# --- 32. A HINT IS PROSE, NOT ARGV (S215) ---------------------------------
+# THE DEFECT. The board's ▸ Deploy Main sent the captain's sentence through
+# `h.split()`, so every word became an argv element and the parser below read
+# `--config` — a word INSIDE his sentence, in the parentheses of "(npx vite
+# --config vite.config.ts)" — as an option it did not know. It died at exit 1
+# having launched nothing. The overlay's own placeholder invites prose, so the
+# sentence that broke it is the sentence it asked for.
+#
+# THE CURE HERE. `--` is now a real end-of-options marker: everything after it
+# is a positional, whatever it starts with. The daemon passes the hint as ONE
+# opaque value after it. Real options BEFORE `--` are unchanged.
+CAPTAIN_HINT='run the plain BROWSER dev server for packages/editor using its vite.config.ts (npx vite --config vite.config.ts) — not electron-vite, no Electron'
+
+R32="$(make_repo m32)"
+printf '{"mainBranch":"trunk"}\n' > "$R32/.git/lcars/config.json"
+S32="$(rec_stub copilot)"; A32="$TMPROOT/argv32"; make_rec_worker "$S32" "$A32"
+E32="$TMPROOT/err32"
+( cd "$R32" && LCARS_WORKER_BIN="$S32" bash "$LAUNCH_SH" --main -- "$CAPTAIN_HINT" \
+    >/dev/null 2>"$E32" )
+check "32a. a --word inside a hint sentence is NOT read as an option" \
+  "! grep -q 'unknown option' \"$E32\""
+check "32b. the whole hint sentence reaches the inspector intact" \
+  "grep -qF -- '(npx vite --config vite.config.ts)' \"$A32\""
+
+# The same sentence WITHOUT the marker is the pre-cure path — still refused, so
+# we can see the marker is what carries it, not a weakened parser.
+E32c="$TMPROOT/err32c"
+( cd "$R32" && LCARS_WORKER_BIN="$S32" bash "$LAUNCH_SH" --main --config vite.config.ts \
+    >/dev/null 2>"$E32c" )
+check "32c. a genuinely unknown option is STILL refused (the parser is intact)" \
+  "grep -q 'unknown option' \"$E32c\""
+
+# --stop and --main are still options, and a hint after `--` never eats them.
+E32d="$TMPROOT/err32d"
+( cd "$R32" && LCARS_WORKER_BIN="$S32" bash "$LAUNCH_SH" --main --stop \
+    >/dev/null 2>"$E32d" )
+check "32d. --main --stop still parses as options, not as a hint" \
+  "! grep -q 'unknown option' \"$E32d\""
+
+# …and the same is true when the hint's FIRST word is a --word. `--` means
+# "everything after this is his words", so a hint that OPENS with one is prose
+# too. Before the cure this still died: `--` only shifted, it set nothing.
+E32e="$TMPROOT/err32e"
+( cd "$R32" && LCARS_WORKER_BIN="$S32" bash "$LAUNCH_SH" --main -- '--config vite.config.ts, the browser build' \
+    >/dev/null 2>"$E32e" )
+check "32e. a hint that OPENS with a --word is prose after the marker too" \
+  "! grep -q 'unknown option' \"$E32e\""
+check "32f. …and that hint reaches the inspector intact" \
+  "grep -qF -- '--config vite.config.ts, the browser build' \"$A32\""
+
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

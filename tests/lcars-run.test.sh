@@ -32,7 +32,24 @@ set -uo pipefail
 # genuine match into a phantom assertion failure (timing/load-sensitive — it bit
 # the worker-prompt assertions only under the full back-to-back suite). Draining
 # first removes the race; exit status and output are otherwise identical to grep.
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
@@ -7291,6 +7308,201 @@ check "S88-5. the accepted assertion-red suite IS quarantined for the Implemente
 # S88-6: source-level guard — red_gate_ok's compile branch consults the resolution detector.
 check "S88-6. red_gate_ok routes a resolution failure to a rejection (red_gate_resolution_failure)" \
   "qgrep -q 'red_gate_resolution_failure' '$SCRIPT'"
+
+
+# ==========================================================================
+echo
+echo "S203 — the Verify hook: Number One LOOKS, and looks DETACHED"
+#
+# When an ENGAGED Mission reaches Verify with a PR open, the driver hands the
+# build to `xo.sh evaluate`. Three things have to be true of that hand-off and
+# this block is each of them:
+#
+#   1. IT IS DETACHED. The look takes minutes — a launch, a browser, up to three
+#      worker rounds — and `drive_verify`'s halt is what gives the captain his
+#      terminal back. A foreground spawn would park `lcars run` behind a browser,
+#      which is the captain's ruling of 2026-09-13 broken in the most literal way
+#      available ("NUMBER ONE NEVER TAKES THE CAPTAIN'S FOCUS"). Proven by the
+#      clock AND by the child still being alive after the driver has exited: a
+#      spawn that merely returned fast but died with its parent would pass a
+#      timing test alone.
+#   2. IT LOOKS ONCE. `numberOne.evaluatedAt` is the memory. `xo.sh` refuses a
+#      second look on its own, but a driver that spawned it anyway would have
+#      started a launch and a browser before the verb got as far as refusing —
+#      so the guard has to be on the side that decides to spend.
+#   3. IT NEVER LOOKS AT A BUG CHILD. A logged bug's fix folds onto its PARENT's
+#      branch and it has no PR of its own (Mission logs' Model A), so there is no
+#      build of its own to look at; looking would score the parent's build twice
+#      and hang the label on the child.
+#
+# WHAT THIS BLOCK PINS BY READING THE SOURCE, AND WHY. There are TWO call sites —
+# the pass that just opened the PR and the pass that finds one already open — and
+# only the second is reachable without a real `git push` to a real forge. The
+# behaviour is proven on the reachable one; that the OTHER halt calls the same
+# hook is pinned against the two halt lines by name. That is stated here rather
+# than left to look like full coverage.
+
+XO_HOOK_LOG="$TMPROOT/xo-hook.log"; : >"$XO_HOOK_LOG"
+XO_HOOK_STUB="$TMPROOT/xo-hook-stub.sh"
+cat >"$XO_HOOK_STUB" <<'EOF'
+#!/usr/bin/env bash
+# Records the call, then SLEEPS, then records again. The gap between the two
+# lines is where "detached" is either true or false.
+printf 'called %s\n' "$*" >>"$XO_HOOK_LOG"
+sleep "${XO_HOOK_SLEEP:-0}"
+printf 'finished %s\n' "$*" >>"$XO_HOOK_LOG"
+EOF
+chmod +x "$XO_HOOK_STUB"
+
+XO_GH_STUB="$TMPROOT/xo-gh-stub.sh"
+cat >"$XO_GH_STUB" <<'EOF'
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >>"${XO_GH_LOG:-/dev/null}"
+exit 0
+EOF
+chmod +x "$XO_GH_STUB"
+
+# A repo with ONE mission parked at Verify with a PR already open. Built here
+# rather than from the suite's fixtures because this block is about ONE seam and
+# a fixture that also carries waves, tickets and results would put four other
+# things between the hook and its proof.
+#
+# THE STATE FILE IS ONE FIELD PER LINE, `{` alone on the first and `}` alone on
+# the last. S207's writer REFUSES anything else, and a fixture in the old shape
+# proves nothing about a product that would never see it.
+xo_verify_repo() { # [extra one-line state field, without the trailing comma]
+  local repo m extra="${1:-}"
+  repo="$(mktemp -d "$TMPROOT/xorepo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && printf '# seed\n' >seed.md && git add seed.md && git commit -qm seed ) >/dev/null 2>&1
+  mkdir -p "$repo/.git/lcars"
+  printf '{\n  "testCommand": "true"\n}\n' >"$repo/.git/lcars/config.json"
+  m="$repo/.git/lcars/missions/$MID"
+  mkdir -p "$m"
+  printf '# Mission\n**Type:** feature\n' >"$m/prd.md"
+  {
+    printf '{\n'
+    printf '  "numberOne": {"status": "engaged", "engine": "copilot"},\n'
+    [ -n "$extra" ] && printf '  %s,\n' "$extra"
+    printf '  "id": "%s",\n' "$MID"
+    printf '  "type": "feature",\n'
+    printf '  "title": "Add dark mode",\n'
+    printf '  "stage": "verify",\n'
+    printf '  "branch": "lcars/%s",\n' "$MID"
+    printf '  "prUrl": "https://github.com/acme/repo/pull/7",\n'
+    printf '  "created": "2026-09-13T10:00:00Z",\n'
+    printf '  "githubIssue": 42\n'
+    printf '}\n'
+  } >"$m/state.json"
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m/state.json" \
+    || { echo "FIXTURE IS NOT VALID JSON"; exit 1; }
+  printf '%s' "$repo"
+}
+
+# `env`, not a bare assignment prefix: a VAR=val word that arrives from an
+# EXPANSION is a command name to bash, not an assignment — so `… "$@" bash …`
+# dies with "command not found" and every negative assertion after it passes for
+# the wrong reason. (It did, here, before this line was written.)
+drive_xo() { # repo [env=val…]
+  local repo="$1"; shift
+  ( cd "$repo" && env LCARS_GH_BIN="$XO_GH_STUB" LCARS_NOTIFY=/usr/bin/true \
+      LCARS_XO_SCRIPT="$XO_HOOK_STUB" XO_HOOK_LOG="$XO_HOOK_LOG" \
+      LCARS_OWNER_ENFORCE=0 LCARS_VERSION_CHECK_BIN=/dev/null "$@" \
+      bash "$SCRIPT" drive --mission "$MID" >"$repo/drive.out" 2>&1 )
+}
+
+# --- X1: the look starts, and the driver does NOT wait for it ---------------
+repoX1="$(xo_verify_repo)"
+: >"$XO_HOOK_LOG"
+x1_t0=$SECONDS
+rcX1=0; drive_xo "$repoX1" XO_HOOK_SLEEP=6 || rcX1=$?
+x1_elapsed=$((SECONDS - x1_t0))
+check "X1. the drive still exits 0" "[ '$rcX1' -eq 0 ]"
+check "X1. it handed the build to \`xo evaluate\` for THIS mission" \
+  "grep -q \"^called evaluate --mission $MID\$\" '$XO_HOOK_LOG'"
+check "X1. …and RETURNED without waiting for the look (detached)" \
+  "[ '$x1_elapsed' -lt 5 ]"
+check "X1. …the look was still running when the driver was already done" \
+  "! grep -q '^finished' '$XO_HOOK_LOG'"
+check "X1. …and the driver still printed its in-review halt" \
+  "grep -q 'in review' '$repoX1/drive.out'"
+check "X1. it says what it is doing, on the captain's terminal" \
+  "grep -q 'NUMBER ONE' '$repoX1/drive.out'"
+check "X1. the pid is recorded, so \`lcars xo off\` can stand it down" \
+  "[ -s '$repoX1/.git/lcars/missions/$MID/xo.pid' ]"
+# THE OTHER HALF OF "DETACHED": the child OUTLIVED its parent. A spawn that
+# returned fast and then died with the driver would pass the clock check alone.
+sleep 7
+check "X1. the look ran on after the driver exited (it was not killed with it)" \
+  "grep -q '^finished evaluate' '$XO_HOOK_LOG'"
+
+# --- X2: twice is once. evaluatedAt is the memory. --------------------------
+repoX2="$(xo_verify_repo)"
+python3 - "$repoX2/.git/lcars/missions/$MID/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+out = []
+for ln in open(p).read().splitlines():
+    if '"numberOne"' in ln:
+        ln = ('  "numberOne": {"status": "engaged", "engine": "copilot", '
+              '"evaluatedAt": "2026-09-13T11:00:00Z"},')
+    out.append(ln)
+open(p, "w").write("\n".join(out) + "\n")
+json.load(open(p))
+PY
+: >"$XO_HOOK_LOG"
+drive_xo "$repoX2" || true
+check "X2. a mission it has already looked at is never looked at again" \
+  "[ ! -s '$XO_HOOK_LOG' ]"
+check "X2. …and the drive still halts in review as it always did" \
+  "grep -q 'in review' '$repoX2/drive.out'"
+
+# --- X3: a logged bug child is never evaluated ------------------------------
+repoX3="$(xo_verify_repo '"parentMission": "lcars-20260913-001"')"
+: >"$XO_HOOK_LOG"
+drive_xo "$repoX3" || true
+check "X3. a bug child's build is never looked at (its parent's PR carries it)" \
+  "[ ! -s '$XO_HOOK_LOG' ]"
+check "X3. …and the fold message is the one it always printed" \
+  "grep -q 'folds onto parent' '$repoX3/drive.out'"
+check "X3. the hook refuses one on its own account too, not only by luck" \
+  "qgrep -q 'parentMission' <(sed -n '/^drive_number_one_verify/,/^}/p' '$SCRIPT')"
+
+# --- X4: a mission Number One does NOT hold is the captain's ----------------
+repoX4="$(xo_verify_repo)"
+python3 - "$repoX4/.git/lcars/missions/$MID/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+out = [ln for ln in open(p).read().splitlines() if '"numberOne"' not in ln]
+open(p, "w").write("\n".join(out) + "\n")
+json.load(open(p))
+PY
+: >"$XO_HOOK_LOG"
+drive_xo "$repoX4" || true
+check "X4. nothing is spawned for a mission with no Number One on it" \
+  "[ ! -s '$XO_HOOK_LOG' ]"
+check "X4. …and that board is byte-identical to the one it served before" \
+  "! grep -q 'NUMBER ONE' '$repoX4/drive.out'"
+# THE CONTROL. Without this the two checks above pass just as well on a drive
+# that never ran at all, which is the shape of every vacuous negative test.
+check "X4. (control) the drive really did reach the in-review halt" \
+  "grep -q 'in review' '$repoX4/drive.out'"
+
+# --- X5: the kill-switch, as every Number One seam has ----------------------
+repoX5="$(xo_verify_repo)"
+: >"$XO_HOOK_LOG"
+drive_xo "$repoX5" LCARS_XO_DRIVE=0 || true
+check "X5. LCARS_XO_DRIVE=0 turns the whole hook off" "[ ! -s '$XO_HOOK_LOG' ]"
+check "X5. (control) …and the drive it is switched off inside still ran" \
+  "grep -q 'in review' '$repoX5/drive.out'"
+
+# --- X6: BOTH halt paths call it (see the block header) ---------------------
+check "X6. the pass that finds a PR already open calls the hook" \
+  "qgrep -q 'drive_number_one_verify' <(sed -n '/in review — PR open\"/,/return 0/p' '$SCRIPT')"
+check "X6. the pass that just OPENED the PR calls it too" \
+  "qgrep -q 'drive_number_one_verify' <(sed -n '/PR opened — review & merge\"/,/drive_halt_in_review/p' '$SCRIPT')"
+check "X6. the spawn is detached (setsid where there is one, nohup where there is not)" \
+  "qgrep -qE 'setsid bash \"\\\$XO_SCRIPT\"' '$SCRIPT' && qgrep -qE 'nohup bash \"\\\$XO_SCRIPT\"' '$SCRIPT'"
 
 # ==========================================================================
 echo

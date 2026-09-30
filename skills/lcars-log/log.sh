@@ -321,12 +321,29 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # S189: the light lock, on the PARENT. A logged bug rides its parent's branch
 # and nests under its parent's issue, so filing one against a mission somebody
 # else holds is a write to their work — refused with the same plain line every
 # other write verb uses. Checked as soon as the parent resolves, before any bug
 # is extracted or any issue is opened.
 owner_lock_or_die "$PARENT_ISSUE"
+xo_lock_or_die "$MISSIONS_DIR/$PARENT_ID"
 
 # --- resolve the model (config.json wins, else env, else default) ----------
 MODEL=""
@@ -464,7 +481,7 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
       [ "$dup" -eq 0 ] && attach_list+=("$cand")
     done
   fi
-  local attach_rels=()
+  local attach_rels=() attach_names=()
   if [ "${#attach_list[@]}" -gt 0 ]; then
     mkdir -p "$mdir/attachments"
     local an=0 asrc aext arel
@@ -475,8 +492,48 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
       arel="$(printf 'attachments/attachment-%02d%s' "$an" "$aext")"
       cp "$asrc" "$mdir/$arel"
       attach_rels+=("$arel")
+      attach_names+=("$(basename "$asrc")")
     done
     lcars_attach_prd_section "${attach_rels[@]}" >>"$mdir/prd.md"
+    # --- WHICH FILE IS WHICH (S204 fix round 1, D4) -------------------------
+    # STAGING RENAMES THE FILE AND THE BODY DOES NOT KNOW. Every attachment is
+    # copied in as `attachment-NN.<ext>`, in order; the PRD that came with the
+    # bug still talks about the file by the name it had when it was written.
+    # Measured: a filed log said "(shot-01)" and "Number One's shots of the
+    # running build: shot-01" while the only file attached was
+    # `attachments/attachment-02.png`. Nothing connected the two names, so the
+    # one picture of the bug was, to the captain, unfindable.
+    #
+    # THE FIX IS AT THE RENAME, which is the only place that knows both names —
+    # not a guess made upstream about what number a file will land on. Written
+    # ONLY when a name actually changed, so a bug whose attachments already
+    # carry their staged names gains nothing.
+    #
+    # AND ONLY ON NUMBER ONE'S OWN FILINGS ($LCARS_XO_INTERNAL is set — the
+    # marker that says this call is the first officer's, S204 fix round 1 D1).
+    # That is the whole population with the problem: Number One writes the bug
+    # PRD itself and names its evidence by the name it gave it ("shot-01"). The
+    # captain's own `lcars log --attach screenshot.png` says nothing about a
+    # file name at all, and its attachment section is asserted BYTE FOR BYTE by
+    # the suite (21e) — a pasted screenshot's bug PRD must not move by one
+    # character, so it does not.
+    local ni=0 changed=0
+    while [ "$ni" -lt "${#attach_rels[@]}" ]; do
+      [ "$(basename "${attach_rels[$ni]}")" = "${attach_names[$ni]}" ] || changed=1
+      ni=$((ni + 1))
+    done
+    [ -n "${LCARS_XO_INTERNAL:-}" ] || changed=0
+    if [ "$changed" -eq 1 ]; then
+      {
+        printf '\n## Which file is which\n\n'
+        printf 'The files above were renamed as they were attached. Where the text of this Mission names a picture, this is the file to open:\n\n'
+        ni=0
+        while [ "$ni" -lt "${#attach_rels[@]}" ]; do
+          printf -- '- `%s` — %s\n' "${attach_rels[$ni]}" "${attach_names[$ni]%.*}"
+          ni=$((ni + 1))
+        done
+      } >>"$mdir/prd.md"
+    fi
   fi
 
   # NOTE: a logged bug now ENTERS the pipeline at Research (grounding mode) and
@@ -631,14 +688,41 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
     bash "$RUN_BIN" estimate --mission "$id" >/dev/null 2>&1 || true
   fi
 
-  printf '%s\t%s\t%s\n' "$id" "$issue" "$title"
+  # US (0x1f), NOT A TAB (S211 fix round 1, D2). `$issue` is EMPTY whenever a
+  # bug is filed with no forge issue behind it, and TAB IS IFS WHITESPACE — the
+  # `read` that takes this row back apart COLLAPSES the empty middle field and
+  # shifts every field after it left. The `(local)` arm below could therefore
+  # never fire, and the captain was handed the first word of his own bug title
+  # rendered as an issue NUMBER (`#the mix-ratio status line`); Number One's
+  # filing readout copied that word into `xo/logs.json` as `"issue": "the"`.
+  # Same class and same cure as `lcars status` took in S207 R4.
+  printf '%s\037%s\037%s\n' "$id" "$issue" "$title"
 }
 
 # --- file every bug, collecting rows for the summary -----------------------
+#
+# S205 ruling 3 (2026-09-14, false success): `file_one_bug` validates its PRD
+# (title line, **Type:** bug) BEFORE it ever `mkdir`s the mission dir, and dies
+# with a plain message when it does not pass. But it runs inside
+# `$(file_one_bug ...)` — a COMMAND SUBSTITUTION, hence a subshell — so its
+# `exit 1` only ended that subshell; the loop below never looked at the
+# subshell's exit status, so a validation failure still appended an (empty)
+# row to ROWS and the summary printed "1 bug mission filed and linked to #107"
+# with an empty id and "Run `lcars run ` to begin." — a false green for a bug
+# that was never mkdir'd. Cure: capture the exit status of EACH bug filing and
+# refuse to print any success summary the moment one fails. The validation
+# error itself already reached the captain (die's own stderr write happens
+# inside the subshell, which does not capture stderr — only stdout is
+# captured), so nothing here re-prints it; this only stops the false claim.
 ROWS=()
 i=0
 for prd in "${PRDS[@]}"; do
-  ROWS+=("$(file_one_bug "$prd" "${OVERRIDES[$i]:-}" "${PER_BUG_ATTACH[$i]:-}")")
+  row="$(file_one_bug "$prd" "${OVERRIDES[$i]:-}" "${PER_BUG_ATTACH[$i]:-}")"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$row" ]; then
+    die "could not file the bug PRD $prd — see the error above. No bug mission was filed for it, and this batch stops here (${#ROWS[@]} filed before it)."
+  fi
+  ROWS+=("$row")
   i=$((i + 1))
 done
 
@@ -650,7 +734,7 @@ case "$PARENT_ISSUE" in ''|null) plabel="$PARENT_ID" ;; *) plabel="#$PARENT_ISSU
 printf '%d %s filed and linked to %s (%s):\n' "$n" "$noun" "$plabel" "$PARENT_TITLE"
 first_id=""
 for r in "${ROWS[@]}"; do
-  IFS=$'\t' read -r rid rissue rtitle <<<"$r"
+  IFS=$'\037' read -r rid rissue rtitle <<<"$r"
   [ -n "$first_id" ] || first_id="$rid"
   case "$rissue" in '') ilabel="(local)" ;; *) ilabel="#$rissue" ;; esac
   printf '  %s  %s  %s\n' "$rid" "$ilabel" "$rtitle"

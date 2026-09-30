@@ -1,4 +1,0 @@
-  worker: claude (bin: detected) model=- (model: unset)
-  worker: claude (bin: detected) model=- (model: unset)
-lcars run: the TDD worker produced no output 2 times for t-001 — likely a transient CLI failure, not a code problem — Stage stopped.
-lcars run: implement-ticket t-001 failed — Stage stopped, no advance. reason: 2026-09-05T04:11:32Z	ticket=t-001	empty-worker-output: empty worker output (the worker produced no file and no output — likely a transient CLI failure, not a code problem)

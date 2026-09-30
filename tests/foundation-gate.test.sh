@@ -33,8 +33,8 @@ FILE_SH="$REPO_ROOT/skills/lcars-file/file.sh"
 
 # The S182 rig — make_shim / fuse (reused, never rebuilt).
 LCARS_SRC="$REPO_ROOT"
-# shellcheck source=drives/s182/rig.sh
-. "$REPO_ROOT/tests/drives/s182/rig.sh"
+# shellcheck source=lib/drive-rig.sh
+. "$REPO_ROOT/tests/lib/drive-rig.sh"
 
 pass=0; fail=0
 TMPROOT="$(mktemp -d)"

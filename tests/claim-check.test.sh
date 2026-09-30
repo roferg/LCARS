@@ -178,7 +178,12 @@ claim_repo() { # research-src-dir  "symbol-to-plant-or-empty"  -> repo dir
   local d="$repo/.git/lcars/missions/test-001"; mkdir -p "$d/research"
   cp "$1"/*.json "$d/research/"
   cat > "$d/state.json" <<'JSON'
-{ "id": "test-001", "stage": "align", "branch": "lcars/test-001", "base": "main" }
+{
+  "id": "test-001",
+  "stage": "align",
+  "branch": "lcars/test-001",
+  "base": "main"
+}
 JSON
   echo "$repo"
 }
@@ -339,7 +344,12 @@ plan_repo() { # validated-plan  -> repo with a mission at stage plan
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$d/state.json" <<'JSON'
-{ "id": "test-001", "stage": "plan", "branch": "lcars/test-001", "base": "main" }
+{
+  "id": "test-001",
+  "stage": "plan",
+  "branch": "lcars/test-001",
+  "base": "main"
+}
 JSON
   cp "$1" "$d/validated-plan.md"
   printf '#!/usr/bin/env bash\nexit 0\n' >"$repo.gh"; chmod +x "$repo.gh"
@@ -434,8 +444,15 @@ e2e_repo() { # research-src  symbol-or-empty -> repo at stage align
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$d/state.json" <<'JSON'
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "align",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null }
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "align",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null
+}
 JSON
   printf '# PRD\n\nBuild the thing.\n' > "$d/prd.md"
   cat >"$repo.adapter" <<EOF

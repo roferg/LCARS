@@ -50,9 +50,16 @@ new_repo() { # -> echoes repo dir
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$repo/.git/lcars/missions/test-001/state.json" <<'JSON'
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "plan",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null,
-  "planReviewRound": 1 }
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "plan",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null,
+  "planReviewRound": 1
+}
 JSON
   echo "$repo"
 }
@@ -194,9 +201,16 @@ review_repo() { # stage-round -> echoes repo dir, mission parked at plan-review
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$d/state.json" <<JSON
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "plan-review",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null,
-  "planReviewRound": ${1:-0} }
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "plan-review",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null,
+  "planReviewRound": ${1:-0}
+}
 JSON
   cp "$FIX/pre-review-plan.json" "$d/plan.json"
   echo "$repo"
@@ -318,8 +332,15 @@ e2e_repo() { # -> echoes repo dir (a real git repo on a real mission branch)
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$repo/.git/lcars/missions/test-001/state.json" <<'JSON'
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "plan",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null }
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "plan",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null
+}
 JSON
   printf '# PRD\n\nBuild the MBR builder.\n' > "$repo/.git/lcars/missions/test-001/prd.md"
   printf '# Validated Plan\n\n## Synthesis\nBuild it.\n' > "$repo/.git/lcars/missions/test-001/validated-plan.md"
@@ -534,7 +555,10 @@ assert_no  "F1g …and never names a plan it did not list" "plan-under-review.js
 # window where a token could survive a send-back: a Mission sent back while a
 # revision was still owed. The real feedback.sh is driven here, both branches.
 FEEDBACK_SH="${LCARS_FEEDBACK_SCRIPT:-$REPO_ROOT/skills/lcars-feedback/feedback.sh}"
-feedback_repo() { # extra-state-json -> echoes repo dir, mission at plan, token owed
+# The extra fields arrive ALREADY one-per-line and indented — state.json's
+# one-field-per-line shape is LCARS's own invariant and the writer refuses a
+# file that breaks it, so a fixture must be written the way file.sh writes one.
+feedback_repo() { # extra-state-json-lines -> echoes repo dir, mission at plan, token owed
   local repo; repo="$(mktemp -d "$TMPROOT/fb.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
   local d="$repo/.git/lcars/missions/test-001"
@@ -543,14 +567,22 @@ feedback_repo() { # extra-state-json -> echoes repo dir, mission at plan, token 
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$d/state.json" <<JSON
-{ "id": "test-001", "title": "t", "stage": "plan",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null${1:-, "type": "feature"} }
+{
+  "id": "test-001",
+  "title": "t",
+  "stage": "plan",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null,
+${1:-  "type": "feature"}
+}
 JSON
   printf '# PRD\n' > "$d/prd.md"
   revision_pending "$d" "$FIX/pre-review-plan.json" "$FIX/plan-review-1.json"
   echo "$repo"
 }
-for variant in 'ORDINARY|, "type": "feature"' 'LOGGED-BUG|, "type": "bug", "parentMission": "test-000"'; do
+for variant in 'ORDINARY|  "type": "feature"' \
+               $'LOGGED-BUG|  "type": "bug",\n  "parentMission": "test-000"'; do
   label="${variant%%|*}"; extra="${variant#*|}"
   repo="$(feedback_repo "$extra")"; d="$(mdir "$repo")"
   ( cd "$repo" && LCARS_GH_BIN=true bash "$FEEDBACK_SH" --mission test-001 \
@@ -826,8 +858,15 @@ sched_repo() { # plan-file -> echoes repo dir
 { "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
 JSON
   cat > "$repo/.git/lcars/missions/test-001/state.json" <<'JSON'
-{ "id": "test-001", "type": "feature", "title": "t", "stage": "schedule",
-  "branch": "lcars/test-001", "base": "main", "githubIssue": null }
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "schedule",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null
+}
 JSON
   cp "$1" "$repo/.git/lcars/missions/test-001/approved-plan.json"
   make_gh "$repo.gh"

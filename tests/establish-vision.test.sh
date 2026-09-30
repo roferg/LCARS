@@ -36,8 +36,8 @@ FILE_SH="$REPO_ROOT/skills/lcars-file/file.sh"
 LCARS_SH="$REPO_ROOT/skills/lcars/lcars.sh"
 
 LCARS_SRC="$REPO_ROOT"
-# shellcheck source=drives/s182/rig.sh
-. "$REPO_ROOT/tests/drives/s182/rig.sh"
+# shellcheck source=lib/drive-rig.sh
+. "$REPO_ROOT/tests/lib/drive-rig.sh"
 
 pass=0; fail=0
 TMPROOT="$(mktemp -d)"

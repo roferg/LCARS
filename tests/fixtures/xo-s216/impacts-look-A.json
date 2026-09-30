@@ -1,0 +1,221 @@
+{
+  "impacts": {
+    "prd-1": {
+      "impact": "high",
+      "impactWhy": "The ratio and colour helpers are high because the whole fill-and-colour behaviour the mission is for depends on them existing.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "Two pure functions live in `packages/engine/src/renderer/utils.ts`:"
+    },
+    "prd-2": {
+      "impact": "high",
+      "impactWhy": "Proportional fill is high because the bar showing current HP as a fraction is the point of the mission.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "`healthFillRatio(current: number, max: number): number` returns the fraction of the bar that should be filled, clamped to the range `0..1`: `healthFillRatio(3, 10)` returns `0.3`, `healthFillRatio(10, 10)` returns `1`, `healthFillRatio(-5, 10)` returns `0`, `healthFillRatio(20, 10)` returns `1`. A `max` of `0` or less returns `0` rather than dividing by zero."
+    },
+    "prd-3": {
+      "impact": "high",
+      "impactWhy": "Red-when-low is high because colouring the bar red at low HP is exactly what the drawing and PRD ask a reviewer to see.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "`healthBarColor(ratio: number): number` returns a Pixi colour number for the fill: **red** (`0xff3b30`) when the ratio is low (`ratio <= 0.35`), **green** (`0x34c759`) when healthy (`ratio > 0.6`), and an amber (`0xffcc00`) in between. Boundaries are exact: `healthBarColor(0)` and `healthBarColor(0.35)` are red; `healthBarColor(1)` and `healthBarColor(0.61)` are green."
+    },
+    "prd-4": {
+      "impact": "medium",
+      "impactWhy": "Test coverage is medium because it is a stated requirement a reviewer would want, but it is secondary to the bar actually working on screen.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "Both are covered by unit tests in `packages/engine/src/renderer/utils.test.ts`, including: full HP, low HP, the clamp above `max` and below `0`, the `max <= 0` guard, and the red / amber / green colour boundaries."
+    },
+    "prd-5": {
+      "impact": "high",
+      "impactWhy": "The visible top-right bar is high because it is the single user-observable thing the mission exists to add.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The renderer (`packages/engine/src/renderer/index.ts`) gains an always-visible (in `devMode`) HP bar built from Pixi `Graphics` (a dark background \"track\" plus a coloured \"fill\" rectangle) grouped in a `Container`, positioned in the"
+    },
+    "prd-6": {
+      "impact": "high",
+      "impactWhy": "Feeding stored health to the bar each frame is high because without it the bar would show nothing and the feature would not function.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The engine (`packages/engine/src/index.ts`) stores a current/max health pair (defaulting to full health), exposes `setPlayerHealth(current: number, max: number): void` to set it, and calls `renderer.updateHealthBar(current, max)` every render frame (in `onRender`, guarded by `devMode`) so the bar reflects the stored health."
+    },
+    "prd-7": {
+      "impact": "high",
+      "impactWhy": "A partial red bar on load is high because it is the on-screen proof of placement, fill and colour that the mission is meant to demonstrate.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The example game (`example-game/game/index.ts`) calls `setPlayerHealth` once with a **low demo value** (e.g. `3` of `10`) so the bar is visibly partial and red on load, matching the mock-up."
+    },
+    "prd-8": {
+      "impact": "medium",
+      "impactWhy": "A green suite is medium because it is a quality gate a reviewer would want, but secondary to the feature being visible and correct.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The full engine package test suite passes (`cd packages/engine && npx vitest run`)."
+    },
+    "t-001-ac1": {
+      "impact": "high",
+      "impactWhy": "The proportional-fill case is high because it is the same fill behaviour the mission depends on (twin of prd-2).",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthFillRatio(3,10) === 0.3"
+    },
+    "t-001-ac2": {
+      "impact": "high",
+      "impactWhy": "The full-HP case is high because it is the same fill behaviour the mission depends on (twin of prd-2).",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthFillRatio(10,10) === 1"
+    },
+    "t-001-ac3": {
+      "impact": "high",
+      "impactWhy": "The below-zero clamp is high because it is the same fill behaviour the mission depends on (twin of prd-2).",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthFillRatio(-5,10) === 0"
+    },
+    "t-001-ac4": {
+      "impact": "high",
+      "impactWhy": "The above-max clamp is high because it is the same fill behaviour the mission depends on (twin of prd-2).",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthFillRatio(20,10) === 1"
+    },
+    "t-001-ac5": {
+      "impact": "high",
+      "impactWhy": "The divide-by-zero guard is high because a crash here would break the bar the mission depends on (twin of prd-2).",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthFillRatio(5,0) === 0 and healthFillRatio(5,-1) === 0"
+    },
+    "t-001-ac6": {
+      "impact": "high",
+      "impactWhy": "The red boundary is high because red-at-low-HP is exactly what a reviewer is meant to see (twin of prd-3).",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthBarColor(0) === 0xff3b30 and healthBarColor(0.35) === 0xff3b30"
+    },
+    "t-001-ac7": {
+      "impact": "high",
+      "impactWhy": "The green boundary is high because the healthy/low colour split is the point of the bar (twin of prd-3).",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthBarColor(1) === 0x34c759 and healthBarColor(0.61) === 0x34c759"
+    },
+    "t-001-ac8": {
+      "impact": "medium",
+      "impactWhy": "The amber mid-band is medium because it is a secondary colour a reviewer would want but not the red/green point of the bar.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "healthBarColor(0.5) === 0xffcc00"
+    },
+    "t-001-ac9": {
+      "impact": "medium",
+      "impactWhy": "The tuning constants are medium because they are required config a reviewer would check, but they are a means to the placement rather than the point itself.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "DEV_HP_BAR_WIDTH, DEV_HP_BAR_HEIGHT, DEV_OVERLAY_MARGIN are exported from constants.ts with values 120, 10, 8"
+    },
+    "t-002-ac1": {
+      "impact": "high",
+      "impactWhy": "The bar being built and shown in dev mode is high because it is the visible element the mission exists to add.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "In devMode the renderer adds an HP-bar Container with two Graphics children (track + fill) to the stage"
+    },
+    "t-002-ac2": {
+      "impact": "medium",
+      "impactWhy": "The exact position formula is medium because top-right placement is the point but the precise pixel offset is a detail a reviewer would tweak rather than block on.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The HP-bar container's x equals app.screen.width - DEV_HP_BAR_WIDTH - DEV_OVERLAY_MARGIN and y equals DEV_OVERLAY_MARGIN"
+    },
+    "t-002-ac3": {
+      "impact": "high",
+      "impactWhy": "Left-to-right fill is high because the drawing labels the bar 'fills L->R' and that behaviour is a stated point.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "updateHealthBar(current,max) draws the fill with width DEV_HP_BAR_WIDTH * healthFillRatio(current,max) starting at local x=0 (left edge) growing rightward"
+    },
+    "t-002-ac4": {
+      "impact": "high",
+      "impactWhy": "The fill colour matching the ratio is high because red-at-low-HP is the reviewer-visible behaviour the mission is for.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The fill colour equals healthBarColor(healthFillRatio(current,max))"
+    },
+    "t-002-ac5": {
+      "impact": "medium",
+      "impactWhy": "The non-dev no-op is medium because it is a stated guard a reviewer would want, but the mission is demonstrated in dev mode.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "When devMode is false, updateHealthBar is a no-op and no HP-bar object is added to the stage"
+    },
+    "t-002-ac6": {
+      "impact": "medium",
+      "impactWhy": "Reposition-on-resize is medium because staying pinned matters, but a reviewer would file a fix rather than block if it drifted.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "After resize(width,height) the HP-bar container repositions to the top-right using the updated app.screen.width"
+    },
+    "t-002-ac7": {
+      "impact": "medium",
+      "impactWhy": "Leaving the F3 overlay unchanged is medium because it is an out-of-scope regression guard, not the new feature itself.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The existing dev overlay Text still renders at (8,8) and the F3 toggle behaviour is unchanged"
+    },
+    "t-003-ac1": {
+      "impact": "high",
+      "impactWhy": "setPlayerHealth existing is high because it is the entry point the demo uses to make the bar show a value.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "engine.setPlayerHealth(current, max) exists on the returned engine object and stores the pair"
+    },
+    "t-003-ac2": {
+      "impact": "medium",
+      "impactWhy": "Defaulting to full is medium because it is sensible default state a reviewer would want, but the demo overrides it immediately.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "Player health defaults to full (current === max) before setPlayerHealth is called"
+    },
+    "t-003-ac3": {
+      "impact": "high",
+      "impactWhy": "Calling updateHealthBar each frame is high because it is what keeps the bar reflecting the stored health that the mission is about.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "onRender calls renderer.updateHealthBar with the stored current/max health inside the devMode guard each frame"
+    },
+    "t-003-ac4": {
+      "impact": "medium",
+      "impactWhy": "Routing resize through renderer.resize is medium because it enables repositioning but is a plumbing detail rather than the visible point.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The ResizeObserver callback calls renderer.resize(w, h) (not app.renderer.resize directly) and then camera.setViewport with app.screen dimensions"
+    },
+    "t-003-ac5": {
+      "impact": "medium",
+      "impactWhy": "The interface declaration is medium because correct typing is required, but it is a type-level detail secondary to the runtime behaviour.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "The Engine interface in types/engine.ts declares setPlayerHealth: (current: number, max: number) => void and PlayerSystem is unchanged"
+    },
+    "t-003-ac6": {
+      "impact": "high",
+      "impactWhy": "Seeding 3 of 10 is high because it is what makes the bar load visibly partial and red, the on-screen demonstration the mission is for.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "example-game/game/index.ts calls engine.setPlayerHealth(3, 10) once"
+    },
+    "t-003-ac7": {
+      "impact": "medium",
+      "impactWhy": "A green suite is medium because it is a quality gate a reviewer would want, but secondary to the feature being visible and correct.",
+      "at": "2026-09-19T10:24:18Z",
+      "engine": "copilot",
+      "text": "cd packages/engine && npx vitest run passes"
+    }
+  }
+}

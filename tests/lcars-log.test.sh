@@ -1209,6 +1209,356 @@ check "26. …and that body still carries an envelope" \
 check "26. …whose parentIssue is null" \
   "[ -z \"\$(bash -c '. \"\$1\"; lcars_handoff_field \"\$2\" parentIssue' _ '$IB_LIB26' '$GH_BODY')\" ]"
 
+# --- Behaviour 27 (S204): NUMBER ONE FILES THROUGH THIS VERB, THE HOUSE WAY ---
+# Number One's fix round adds no filing path of its own: it writes a bug PRD per
+# contradiction and makes ONE `lcars log` call in exactly the shape `run.sh`
+# already makes it — `--parent <id> --prd 1.md --attach shot.png --prd 2.md
+# --attach shot.png` — with the per-bug binding carried by argument ORDER. This
+# row is the seam between the two halves: the PRD `xo-logs.py` writes must be
+# one this verb accepts unchanged, and the binding must survive.
+#
+# THE CONTROL IS IN THE ROW. The second bug's shot must land on the second bug
+# AND NOT on the first — a check that only asserted "bug 2 has its shot" would
+# still pass if every shot went to every bug, which is the bug this pins.
+XOLOGS="$REPO_ROOT/skills/lcars-xo/xo-logs.py"
+repo34="$(new_repo_with_parent)"
+make_gh_stub "$repo34/gh"
+export GH_LOG="$repo34/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+parent_with_attachments "$repo34" attachment-01.html
+mkdir -p "$repo34/xo/shots" "$repo34/xo/logs"
+printf 'PNG-ONE' >"$repo34/xo/shots/shot-01.png"
+printf 'PNG-TWO' >"$repo34/xo/shots/shot-02.png"
+cat >"$repo34/verdict.json" <<'VJ'
+{
+  "score": "medium",
+  "summary": "Two mismatches.",
+  "criteria": [],
+  "gaps": [
+    {"title": "ADD is above the list", "expected": "the ADD button sits under the task list",
+     "saw": "it is above it", "shots": ["shot-01"], "kind": "contradiction", "criterion": "prd-1"},
+    {"title": "the count is missing", "expected": "the open-task count sits in the header",
+     "saw": "no count anywhere", "shots": ["shot-02"], "kind": "contradiction", "criterion": "prd-2"},
+    {"title": "the header is teal", "expected": "the drawing is silent",
+     "saw": "teal", "shots": ["shot-01"], "kind": "interpretation", "criterion": "prd-3"}
+  ]
+}
+VJ
+cat >"$repo34/criteria.json" <<'CJ'
+{"criteria": [
+  {"id": "prd-1", "text": "The ADD button sits under the task list.", "primary": true, "source": "PRD \u00a72"},
+  {"id": "prd-2", "text": "The header shows the open-task count.", "primary": true, "source": "PRD \u00a72"}
+]}
+CJ
+plan34="$(python3 "$XOLOGS" "$repo34/verdict.json" "$repo34/criteria.json" \
+            "$repo34/xo/logs" "$repo34/xo/shots" 10)"
+ngap34="$(printf '%s\n' "$plan34" | grep -c '^GAP')"
+check "27. only the CONTRADICTIONS became bug PRDs (the interpretation did not)" \
+  "[ '$ngap34' -eq 2 ] && [ ! -f '$repo34/xo/logs/3.md' ]"
+check "27. each PRD carries the house title line lcars log demands" \
+  "grep -q '^# Mission: ' '$repo34/xo/logs/1.md' && grep -q '^\*\*Type:\*\* bug' '$repo34/xo/logs/1.md'"
+check "27. …the expected/saw sentence, citing where the expectation is written" \
+  "grep -q 'Expected the ADD button sits under the task list, per PRD' '$repo34/xo/logs/1.md'"
+check "27. …and an acceptance criterion that RESTATES the contract's own words" \
+  "grep -q 'The ADD button sits under the task list.' '$repo34/xo/logs/1.md'"
+rc34=0
+(
+  cd "$repo34"
+  LCARS_GH_BIN="$repo34/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$repo34/xo/logs/1.md" --attach "$repo34/xo/shots/shot-01.png" \
+      --prd "$repo34/xo/logs/2.md" --attach "$repo34/xo/shots/shot-02.png" >out34.txt 2>&1
+) || rc34=$?
+B34a="$repo34/.git/lcars/missions/lcars-20260530-002-c10e"
+B34b="$repo34/.git/lcars/missions/lcars-20260530-003-c10e"
+check "27. the house-way invocation files both bugs" "[ '$rc34' -eq 0 ]"
+check "27. bug 1 carries ITS shot" "grep -rq 'PNG-ONE' '$B34a/attachments/'"
+check "27. …and NOT the other bug's shot (per-bug binding held)" \
+  "! grep -rq 'PNG-TWO' '$B34a/attachments/'"
+check "27. bug 2 carries ITS shot" "grep -rq 'PNG-TWO' '$B34b/attachments/'"
+check "27. …and NOT the first bug's" "! grep -rq 'PNG-ONE' '$B34b/attachments/'"
+check "27. both bugs INHERIT the parent's drawing (never passed by hand)" \
+  "[ -f '$B34a/attachments/attachment-01.html' ] && [ -f '$B34b/attachments/attachment-01.html' ]"
+check "27. both are linked to the parent" \
+  "grep -q '\"parentMission\": *\"lcars-20260530-001\"' '$B34a/state.json' && grep -q '\"parentMission\": *\"lcars-20260530-001\"' '$B34b/state.json'"
+nrow34="$(grep -c '^  lcars-20260530-00' "$repo34/out34.txt")"
+check "27. the summary prints one row per child, in filed order — the id map" \
+  "[ '$nrow34' -eq 2 ]"
+
+# --- Behaviour 27b (S204): the CAP. Eleven contradictions file ten, and the -----
+# eleventh is REPORTED, never silently dropped.
+cat >"$repo34/verdict11.json" <<'VJ'
+{"score": "low", "summary": "many", "criteria": [], "gaps": [
+ {"title":"g1","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c1"},
+ {"title":"g2","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c2"},
+ {"title":"g3","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c3"},
+ {"title":"g4","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c4"},
+ {"title":"g5","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c5"},
+ {"title":"g6","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c6"},
+ {"title":"g7","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c7"},
+ {"title":"g8","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c8"},
+ {"title":"g9","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c9"},
+ {"title":"g10","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c10"},
+ {"title":"g11","expected":"a","saw":"b","shots":["shot-01"],"kind":"contradiction","criterion":"c11"}
+]}
+VJ
+rm -rf "$repo34/xo/logs11"; mkdir -p "$repo34/xo/logs11"
+plan34b="$(python3 "$XOLOGS" "$repo34/verdict11.json" "$repo34/criteria.json" \
+             "$repo34/xo/logs11" "$repo34/xo/shots" 10)"
+ngap34b="$(printf '%s\n' "$plan34b" | grep -c '^GAP')"
+# US (0x1f), not a tab: xo-logs.py's records must carry an EMPTY shots field
+# for a gap the project's own tests found, and a tab is IFS whitespace — the
+# shell's `read` eats it and shifts every later field left (S211 fix round 1).
+nover34b="$(printf '%s\n' "$plan34b" | grep -c "^OVERFLOW$(printf '\037')1$")"
+check "27b. exactly TEN bug PRDs are written" \
+  "[ '$ngap34b' -eq 10 ] && [ ! -f '$repo34/xo/logs11/11.md' ]"
+check "27b. the overflow is REPORTED, with its count" "[ '$nover34b' -eq 1 ]"
+
+# --- Behaviour 27c (S211 fix round 1, D2). THE LOCAL-ONLY SUMMARY ROW ---------
+#
+# `file_one_bug` emits `<id>\t<issue>\t<title>` and the summary reads it back
+# with `IFS=$'\t' read -r rid rissue rtitle`. TAB IS IFS WHITESPACE, so when a
+# bug is filed with NO issue — a repo with no forge, or a `gh issue create` that
+# did not come back with a number — bash COLLAPSES the empty middle field and
+# every field after it shifts left. The `case "$rissue" in ''` arm that exists
+# for exactly this case can then NEVER fire, and the captain was shown
+#
+#     lcars-…-001-c10e  #the mix-ratio status line
+#
+# — the first word of his own title rendered as an issue NUMBER. Number One's
+# filing readout then recorded `"issue": "the"` in `xo/logs.json` off the same
+# row. Same class and same cure as the gap plan: a separator that is not IFS
+# whitespace. THE CONTROL is in the row: a bug filed WITH an issue must still
+# read `#45`.
+repo27c="$(new_repo_with_parent)"
+cat >"$repo27c/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >>"$GH_LOG"
+exit 0
+EOF
+chmod +x "$repo27c/gh"
+export GH_LOG="$repo27c/gh.log"; : >"$GH_LOG"
+bug27c="$repo27c/bug.md"
+write_bug_prd "$bug27c" "the mix-ratio status line" "The status line is missing."
+( cd "$repo27c"
+  LCARS_GH_BIN="$repo27c/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug27c" >"$repo27c/out.txt" 2>&1 )
+check "27c. a bug filed with NO issue reads as (local), not as a fake issue number" \
+  "grep -q '(local)' '$repo27c/out.txt'"
+check "27c. …and the captain's own title is NOT rendered as an issue number" \
+  "! grep -q '#the' '$repo27c/out.txt'"
+check "27c. …with the whole title intact on the row" \
+  "grep -q 'the mix-ratio status line' '$repo27c/out.txt'"
+repo27d="$(new_repo_with_parent)"
+make_gh_stub "$repo27d/gh"
+export GH_LOG="$repo27d/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug27d="$repo27d/bug.md"
+write_bug_prd "$bug27d" "the mix-ratio status line" "The status line is missing."
+( cd "$repo27d"
+  LCARS_GH_BIN="$repo27d/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug27d" >"$repo27d/out.txt" 2>&1 )
+check "27c. CONTROL: a bug filed WITH an issue still shows its number" \
+  "grep -qE '  #[0-9]+  the mix-ratio status line\$' '$repo27d/out.txt'"
+
+# ==========================================================================
+# 28 (S204 fix round 1, D1). THE ENGAGED LOCK EXEMPTS NUMBER ONE'S OWN FILING.
+#
+# `lcars xo evaluate` files what it found THROUGH this verb, and it is `engaged`
+# on the parent for the whole of the look. The lock refuses exactly that state,
+# so before this fix Number One found two contradictions and filed NONE:
+#   "lcars log: Number One is engaged on this mission on your behalf — …"
+# The exemption is a marker that NAMES the mission it is allowed to write.
+# ==========================================================================
+echo
+echo "28. the engaged lock vs Number One's own filing"
+
+engage_parent() { # <repo>
+  local st="$1/.git/lcars/missions/lcars-20260530-001/state.json"
+  python3 - "$st" <<'EOF'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+out = {}
+for k, v in d.items():
+    out[k] = v
+    if k == "stage":
+        out["numberOne"] = {"status": "engaged", "engine": "copilot"}
+keys = list(out)
+lines = ["{"]
+for i, k in enumerate(keys):
+    lines.append('  %s: %s%s' % (json.dumps(k), json.dumps(out[k]),
+                                 "," if i < len(keys) - 1 else ""))
+lines.append("}")
+open(p, "w").write("\n".join(lines) + "\n")
+EOF
+}
+LOG_REFUSAL="Number One is engaged on this mission on your behalf — stand it down (lcars xo off lcars-20260530-001) to act yourself"
+
+# 28a. CONTROL — a parent Number One is NOT on files normally. Without a row
+# that must PASS, the refusals below cannot detect their own breakage.
+repo40="$(new_repo_with_parent)"; make_gh_stub "$repo40/gh"
+export GH_LOG="$repo40/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug40="$repo40/b.md"; write_bug_prd "$bug40" "Accent border gone" "It is gone."
+rc40=0
+( cd "$repo40" && LCARS_GH_BIN="$repo40/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug40" >out40.txt 2>&1 ) || rc40=$?
+check "28a. CONTROL: not engaged ⇒ the filing lands" \
+  "[ '$rc40' -eq 0 ] && [ -d '$repo40/.git/lcars/missions/lcars-20260530-002-c10e' ]"
+
+# 28b. THE CAPTAIN'S OWN `lcars log` IS STILL REFUSED. The lock is not weakened
+# by the exemption — this row is the whole point of it.
+repo41="$(new_repo_with_parent)"; make_gh_stub "$repo41/gh"; engage_parent "$repo41"
+export GH_LOG="$repo41/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug41="$repo41/b.md"; write_bug_prd "$bug41" "Accent border gone" "It is gone."
+rc41=0
+( cd "$repo41" && LCARS_GH_BIN="$repo41/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug41" >out41.txt 2>&1 ) || rc41=$?
+check "28b. engaged ⇒ the CAPTAIN's own \`lcars log\` is refused" "[ '$rc41' -ne 0 ]"
+check "28b. …with the same sentence, byte for byte" \
+  "grep -Fqx \"lcars log: \$LOG_REFUSAL\" '$repo41/out41.txt'"
+check "28b. …and NOTHING was filed" \
+  "[ ! -d '$repo41/.git/lcars/missions/lcars-20260530-002-c10e' ]"
+
+# 28c. NUMBER ONE'S OWN CALL, marker naming THIS parent ⇒ it files.
+repo42="$(new_repo_with_parent)"; make_gh_stub "$repo42/gh"; engage_parent "$repo42"
+export GH_LOG="$repo42/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug42="$repo42/b.md"; write_bug_prd "$bug42" "Accent border gone" "It is gone."
+rc42=0
+( cd "$repo42" && LCARS_GH_BIN="$repo42/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_XO_INTERNAL=lcars-20260530-001 \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug42" >out42.txt 2>&1 ) || rc42=$?
+check "28c. engaged + the marker naming THIS parent ⇒ Number One's filing lands" \
+  "[ '$rc42' -eq 0 ] && ! grep -q 'Number One is engaged' '$repo42/out42.txt'"
+check "28c. …and the bug mission really exists on disk" \
+  "[ -f '$repo42/.git/lcars/missions/lcars-20260530-002-c10e/prd.md' ]"
+
+# 28d. A MARKER NAMING A DIFFERENT MISSION EXEMPTS NOTHING.
+repo43="$(new_repo_with_parent)"; make_gh_stub "$repo43/gh"; engage_parent "$repo43"
+export GH_LOG="$repo43/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug43="$repo43/b.md"; write_bug_prd "$bug43" "Accent border gone" "It is gone."
+rc43=0
+( cd "$repo43" && LCARS_GH_BIN="$repo43/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_XO_INTERNAL=lcars-20260530-777 \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug43" >out43.txt 2>&1 ) || rc43=$?
+check "28d. a marker naming ANOTHER mission does NOT exempt this parent" \
+  "[ '$rc43' -ne 0 ] && grep -q 'Number One is engaged' '$repo43/out43.txt'"
+
+# ==========================================================================
+# 29 (S204 fix round 1, D4). A FILED LOG NAMES THE FILE THE CAPTAIN WILL SEE.
+#
+# Staging renames every attachment to `attachment-NN.<ext>`. Number One's bug
+# PRD still talks about `shot-01`, so a filed log said "(shot-01)" while the
+# only picture attached was `attachments/attachment-02.png` and nothing joined
+# the two names. The renamer — the only thing that knows both — now says which
+# is which.
+# ==========================================================================
+echo
+echo "29. which file is which"
+
+repo44="$(new_repo_with_parent)"; make_gh_stub "$repo44/gh"
+export GH_LOG="$repo44/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+parent_with_attachments "$repo44" attachment-01.html
+shot44="$repo44/shot-01.png"; printf 'NUMBER-ONE-SHOT' >"$shot44"
+bug44="$repo44/b.md"; write_bug_prd "$bug44" "Accent border gone" "Expected a border, saw none (shot-01)."
+rc44=0
+( cd "$repo44" && LCARS_GH_BIN="$repo44/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_XO_INTERNAL=lcars-20260530-001 \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$shot44" --prd "$bug44" >out44.txt 2>&1 ) || rc44=$?
+B44="$repo44/.git/lcars/missions/lcars-20260530-002-c10e"
+check "29. the filing succeeds" "[ '$rc44' -eq 0 ]"
+check "29. the shot really landed as attachment-02.png (the renamed name)" \
+  "[ -f '$B44/attachments/attachment-02.png' ]"
+check "29. the body still talks about shot-01 (the substance is untouched)" \
+  "grep -q 'shot-01' '$B44/prd.md'"
+check "29. the body now JOINS the two names — shot-01 ⇒ attachment-02.png" \
+  "grep -q 'Which file is which' '$B44/prd.md' && grep -q 'attachments/attachment-02.png.*shot-01' '$B44/prd.md'"
+check "29. the ISSUE BODY carries it too (it is prd.md that is posted)" \
+  "grep -q 'Which file is which' '$GH_LOG.body' 2>/dev/null || grep -q 'Which file is which' '$B44/prd.md'"
+check "29. the inherited drawing is named by both its names as well" \
+  "grep -q 'attachments/attachment-01.html.*attachment-01' '$B44/prd.md'"
+
+# 29b. NOTHING IS ADDED WHEN NOTHING WAS RENAMED. A bug whose attachments
+# already carry their staged names gets no section and no noise.
+repo45="$(new_repo_with_parent)"; make_gh_stub "$repo45/gh"
+export GH_LOG="$repo45/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+mkdir -p "$repo45/src"; printf 'X' >"$repo45/src/attachment-01.png"
+bug45="$repo45/b.md"; write_bug_prd "$bug45" "Another one" "Here."
+rc45=0
+( cd "$repo45" && LCARS_GH_BIN="$repo45/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$repo45/src/attachment-01.png" --prd "$bug45" >out45.txt 2>&1 ) || rc45=$?
+B45="$repo45/.git/lcars/missions/lcars-20260530-002-c10e"
+check "29b. a filing whose names did not change gets NO extra section" \
+  "[ '$rc45' -eq 0 ] && ! grep -q 'Which file is which' '$B45/prd.md'"
+
+# 29c. THE CAPTAIN'S OWN pasted screenshot is untouched — his bug PRD's
+# attachment section must not move by one character (asserted byte-for-byte at
+# 21e). Only Number One's own filings, which name their evidence by name, get
+# the map.
+repo46="$(new_repo_with_parent)"; make_gh_stub "$repo46/gh"
+export GH_LOG="$repo46/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+shot46="$repo46/my-screenshot.png"; printf 'CAPTAIN' >"$shot46"
+bug46="$repo46/b.md"; write_bug_prd "$bug46" "Captains own" "Here."
+rc46=0
+( cd "$repo46" && LCARS_GH_BIN="$repo46/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$shot46" --prd "$bug46" >out46.txt 2>&1 ) || rc46=$?
+B46="$repo46/.git/lcars/missions/lcars-20260530-002-c10e"
+check "29c. the captain's own filing is renamed too (a control)" \
+  "[ '$rc46' -eq 0 ] && [ -f '$B46/attachments/attachment-01.png' ]"
+check "29c. …and gets NO extra section — his wording does not move" \
+  "! grep -q 'Which file is which' '$B46/prd.md'"
+
+# --- Behaviour 30 (S205 ruling 3): NO FALSE SUCCESS ------------------------
+# `file_one_bug` runs inside `ROWS+=("$(file_one_bug ...)")` — a command
+# substitution, hence a SUBSHELL. Its own `die` prints to stderr (which escapes
+# the substitution, so the captain still sees the validation error) and exits
+# the SUBSHELL, but that exit code was silently discarded and `ROWS+=` still
+# appended one (empty) row — so the loop always believed every PRD it was
+# handed had been filed, and the summary printed
+# "1 bug mission filed and linked to #42" with an empty id and a bare
+# "Run `lcars run ` to begin." even though `mkdir "$mdir"` never ran for that
+# bug (validation is checked BEFORE the mkdir). Cure: the parent must notice
+# the subshell's exit status and refuse to print a success summary it did not
+# earn.
+repo47="$(new_repo_with_parent)"; make_gh_stub "$repo47/gh"
+export GH_LOG="$repo47/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug47="$repo47/bad.md"
+cat >"$bug47" <<'EOF'
+**Type:** bug
+**Goal:** This PRD is missing its title line on purpose.
+**Acceptance Criteria:**
+- n/a
+EOF
+rc47=0
+( cd "$repo47" && LCARS_GH_BIN="$repo47/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug47" >out47.txt 2>out47.err ) || rc47=$?
+check "30. refuses (non-zero) on a PRD missing '# Mission:'" "[ '$rc47' -ne 0 ]"
+check "30. prints the validation error" \
+  "grep -q \"missing its '# Mission:' title line\" '$repo47/out47.err'"
+check "30. NEVER prints a false 'filed and linked' success line" \
+  "! grep -q 'filed and linked' '$repo47/out47.txt' '$repo47/out47.err'"
+check "30. NEVER prints the empty-id 'Run \`lcars run \`' line" \
+  "! grep -Eq 'Run .lcars run . to begin' '$repo47/out47.txt' '$repo47/out47.err'"
+check "30. files NOTHING — no bug mission dir was created" \
+  "! ls -d '$repo47/.git/lcars/missions/lcars-20260530-'*-c10e >/dev/null 2>&1"
+
+# 30b. A GOOD bug ahead of a bad one in the SAME invocation: the good one's
+# summary must still be honest about the one that failed — never silently
+# dropped into a report that claims full success.
+repo48="$(new_repo_with_parent)"; make_gh_stub "$repo48/gh"
+export GH_LOG="$repo48/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+good48="$repo48/good.md"; write_bug_prd "$good48" "A real bug" "Reproduces every time."
+bad48="$repo48/bad.md"
+cat >"$bad48" <<'EOF'
+**Type:** bug
+**Goal:** Missing title again.
+EOF
+rc48=0
+( cd "$repo48" && LCARS_GH_BIN="$repo48/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$good48" --prd "$bad48" >out48.txt 2>out48.err ) || rc48=$?
+check "30b. refuses (non-zero) when any bug in the batch is malformed" \
+  "[ '$rc48' -ne 0 ]"
+check "30b. never prints a false 'filed and linked' summary for the batch" \
+  "! grep -q 'filed and linked' '$repo48/out48.txt' '$repo48/out48.err'"
+
 # ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"

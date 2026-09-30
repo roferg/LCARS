@@ -1,9 +1,38 @@
 .dev/
 
-# Test-drive screenshots — rigs are committed, their PNG output is not (captain ruling 2026-09-06)
-tests/drives/*/shots/
-tests/drives/*/*/shots/
-tests/drives/*/logs/*/
-tests/drives/*/*/shots/*/
-# and any stray drive screenshot, wherever a rig puts it
-tests/drives/**/*.png
+# Python bytecode caches — build detritus, not source. web/.gitignore already
+# carries this for web/lcars_serve and web/tests; skills/lcars-xo/xo-report.py
+# and its four siblings (xo-held.py, xo-logs.py, xo-criteria.py, xo-score.py)
+# are Python too, and can produce the same detritus anywhere under skills/, so
+# this is repo-wide rather than re-scoped per directory.
+__pycache__/
+
+# Test rigs — NOT in the product repo (captain's ruling, 2026-09-25):
+#   "I don't want the test rigs checked into the LCARS repo at all. If they're
+#    useful to have, put them in lcars-dev."
+# They had reached 3,913 tracked files / ~109 MB, most of it recorded run
+# output nobody realised was committed. The rig SCRIPTS now live in
+# lcars-dev/tests/drives/; the recorded artefacts were untracked so live drives
+# keep their evidence without the repo carrying it.
+#
+# WHERE THE ARTEFACTS ACTUALLY ARE (corrected 2026-09-29, S228 close-out).
+# This block used to say they were "LEFT ON DISK here (untracking is not
+# deleting)". That was true only of the machine that did the move: untracked
+# files do not travel through `git push`, so a FRESH CLONE has no tests/drives/
+# at all -- measured on the captain's new laptop three days later. The durable
+# statement is that all 3,913 are still tracked in the PARENT of the commit that
+# untracked them, and restore to the worktree without touching the index:
+#
+#   git archive 07e6b42^ tests/drives | tar -x -C .
+#
+# The ~2,600 that were on disk but never tracked did not survive, which is why
+# claim-check 5a stays red (tests/drives/align-heal/runs/plain-1).
+#
+# This line is only the advisory half — it stops an accidental `git add`.
+# `git add -f` walks straight past it, so tests/no-rigs.test.sh reads the real
+# git index and FAILS the build if anything under here is tracked again.
+#
+# Shared EQUIPMENT that shipped suites in tests/*.test.sh source or exec is a
+# different thing and is NOT ignored: it lives in tests/lib/ so a clone of
+# LCARS stays testable (CLAUDE.md's golden rule).
+tests/drives/

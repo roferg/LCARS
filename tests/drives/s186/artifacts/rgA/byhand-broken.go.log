@@ -1,5 +1,0 @@
---- FAIL: TestGreet (0.00s)
-    greet_test.go:5: bad
-FAIL
-FAIL	gfapp	0.300s
-FAIL

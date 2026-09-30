@@ -1,0 +1,16 @@
+OVER-CORRECTION — this revision was REJECTED before the reviewer saw it.
+
+Plan Review raised 1 objection(s), naming these ticket(s): t-001, t-004, t-006.
+Your revision ADDED 3 dependency edge(s), and 1 of them touch no ticket
+any objection names, at either end:
+    t-007 now depends on t-001 — nobody asked for that edge
+
+A correction is a PATCH. Take the plan you were given, apply exactly what
+the objections ask, and leave every other ticket's `dependencies` byte-for-
+byte as it was. Do NOT re-derive the graph. Do NOT order tickets by their
+number: a dependency is what a ticket GENUINELY needs BUILT FIRST, never
+authoring order, and "comes after" is not a dependency. Tickets that add
+separate things into the same shell are SIBLINGS and belong in the same wave.
+
+This is not a request for FEWER dependencies. Declare every edge that is
+real, add the ones the objections ask for — and change nothing else.

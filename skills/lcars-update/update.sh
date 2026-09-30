@@ -48,19 +48,9 @@ while [ $# -gt 0 ]; do
 done
 
 # --- the running LCARS version (what update stamps the repo current to) ----
-# VERSION ships in the repo root (../.. from this skill dir; -P resolves the
-# install symlink to the physical checkout). LCARS_VERSION wins so tests can pin
-# it; LCARS_REPO redirects the checkout root (mirrors skills/lcars-version and
-# init.sh). Empty when unresolved — the stamp is then left as-is.
-lcars_running_version() {
-  if [ -n "${LCARS_VERSION:-}" ]; then printf '%s' "$LCARS_VERSION"; return; fi
-  local phys repo vf
-  phys="$(cd "$SCRIPT_DIR" && pwd -P)"
-  repo="${LCARS_REPO:-$(cd "$phys/../.." 2>/dev/null && pwd -P)}"
-  vf="$repo/VERSION"
-  [ -f "$vf" ] || return 0
-  sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}' "$vf"
-}
+# `lcars_running_version` is lcars-common.sh's (sourced above) — S207 moved the
+# byte-identical copies init and update each carried into the one place all
+# three stampers read, because `lcars adopt` now seeds the stamp too.
 RUNNING_VERSION="$(lcars_running_version)"
 
 # --- MIGRATION: stale copy-based vitest testCommand -> in-place form ---------
@@ -550,6 +540,18 @@ lcarsVersion=\"$RUNNING_VERSION\""
 # filed here would carry a different fingerprint from its siblings.
 CLONE_ID="$(lcars_clone_id "$CONFIG")"
 
+# S201 — `numberOne`, Number One's repo-level switch. It is in the desired
+# schema for the reason cloneId is: lcars_config_merge treats this list as the
+# canonical schema and DELETES every top-level key absent from it, so an
+# unlisted block would be silently wiped the first time the captain ran
+# `lcars update` — un-engaging his first officer without saying so (the exact
+# failure S196 paid for with cloneId).
+#
+# THE DEFAULT IS `{"enabled": false}` and it is written on ONE LINE. The merge
+# preserves an existing raw value by capturing the tail of the line the key sits
+# on, so a pretty-printed object would be truncated at its first newline. Every
+# writer of this key (`lcars xo`, the board's toggle) emits one line for the
+# same reason.
 DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
 model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
@@ -557,7 +559,8 @@ contextFile=$CONTEXT_VALUE
 stack=$STACK_VALUE
 testCommand=null
 worktreeSetupCommand=$WTSETUP_VALUE
-comprehensionBudget=1200$VERSION_LINE
+comprehensionBudget=1200
+numberOne={\"enabled\": false}$VERSION_LINE
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
 CONFIG_ADDED="$LCARS_CONFIG_ADDED_KEYS"

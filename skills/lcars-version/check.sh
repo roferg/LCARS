@@ -96,6 +96,45 @@ UPDATE_BIN="${LCARS_UPDATE_BIN:-$HOME/.claude/skills/lcars-update/update.sh}"
 
 say() { printf '%s\n' "$1"; }
 
+# --- bounded ask-to-update read (a prompt nobody can answer must not wait) --
+# `read -r` with no timeout blocks FOREVER when stdin is attached to a terminal
+# or pipe that never delivers AND never closes — the `|| reply=""` fallback only
+# fires on EOF, and an absent-but-inherited terminal is not EOF. Measured: a
+# background `lcars file` sat 44 min inside this read, stopped, not slow.
+#
+# read_reply gets the operator's answer WITHOUT ever blocking forever. Any answer
+# that ARRIVES — typed at a real terminal, or piped/scripted in — is echoed
+# verbatim on stdout and obeyed. When nobody can answer it echoes "" (the [y/N]
+# default = No) and explains on stderr, so an unattended run takes the documented
+# safe default and continues.
+#
+# Two halves, per the fix brief:
+#   * No terminal at all — knowable up front (`[ -t 0 ]` is false): there is no
+#     interactive operator, so we cap the wait LOW. We still DRAIN a scripted
+#     answer already queued in the pipe (so `echo y | lcars` and the suite's
+#     scripted-"y" tests are honoured) — we do not skip the read outright, which
+#     would discard that answer.
+#   * A terminal that never answers (`[ -t 0 ]` is true): a real human gets a
+#     GENEROUS but still bounded window to read the one-line prompt and reply;
+#     if they never do, we default to No rather than block the calling verb.
+# A closed/empty stdin is EOF and returns at once — already safe before this.
+ASK_TIMEOUT="${LCARS_ASK_TIMEOUT:-60}"              # interactive: room to read + answer
+ASK_TIMEOUT_NONTTY="${LCARS_ASK_TIMEOUT_NONTTY:-2}" # non-interactive: just drain a queued answer
+read_reply() {
+  local r="" t="$ASK_TIMEOUT"
+  [ -t 0 ] || t="$ASK_TIMEOUT_NONTTY"
+  if read -t "$t" -r r 2>/dev/null; then
+    printf '%s' "$r"
+  else
+    printf ''
+    if [ -t 0 ]; then
+      printf '%s\n' "⚠ LCARS update prompt: no answer (timed out after ${t}s) — taking the default (No). Set LCARS_VERSION_CHECK=0 to silence." >&2
+    else
+      printf '%s\n' "⚠ LCARS update prompt: no operator to answer (no terminal / stdin never delivered) — taking the default (No). Set LCARS_VERSION_CHECK=0 to silence." >&2
+    fi
+  fi
+}
+
 # --- running version ------------------------------------------------------
 if [ -n "${LCARS_VERSION:-}" ]; then
   RUNNING="$LCARS_VERSION"
@@ -330,7 +369,7 @@ fi
 if [ "$SOURCE_BEHIND" = 1 ]; then
   # The full update also restamps this repo, so it subsumes any REPO_STALE.
   printf 'LCARS %s AVAILABLE — ENGAGE UPDATE? [y/N] ' "$REMOTE"
-  reply=""; read -r reply || reply=""
+  reply="$(read_reply)"
   case "$reply" in
     y|Y|yes|YES|Yes) do_full_update ;;
     *) say "Holding at $RUNNING." ;;
@@ -342,7 +381,7 @@ elif [ "$REPO_STALE" = 1 ]; then
   else
     printf 'LCARS REPO STAMP %s BEHIND RUNNING %s — RUN lcars update? [y/N] ' "$STAMPED" "$RUNNING"
   fi
-  reply=""; read -r reply || reply=""
+  reply="$(read_reply)"
   case "$reply" in
     y|Y|yes|YES|Yes) run_repo_update ;;
     *) say "Holding this repo at ${STAMPED:-unstamped}." ;;

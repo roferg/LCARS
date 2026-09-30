@@ -42,6 +42,22 @@ RELABEL_NOTE=""
 # the logged-bug fold to resolve-logs so that lifecycle logic stays in one place
 # (ADR-002). Env-injected so tests can point at the real script / stub it.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SELF_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SELF_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 # S180 — the driver this script hands back to once the gate is cleared. Same
 # env-injection pattern as the resolve-logs delegate above, so a test can point a
@@ -143,6 +159,11 @@ read_questions() { # pending.json
 # legacy top-level slot onto the newest entry. See the design note at the call
 # site in cmd_answer.
 #
+# $LCARS_ANSWERED_BY (S202) names a DELEGATE — today, Number One, which answers a
+# gate through this very verb because it may only do what a human could do here.
+# Unset (the captain answering for himself) leaves the entry exactly the shape it
+# has always had; see the `answeredBy` note inside.
+#
 # Written in python3 because merging JSON with awk is how a ledger quietly loses
 # an entry, and python3 is already a hard dependency of the pipeline this file
 # feeds (run.sh's Stage machinery and the viewscreen are both python3-only). If
@@ -156,6 +177,7 @@ answers_append() { # stage
   local py="${LCARS_PYTHON_BIN:-python3}"
   if command -v "$py" >/dev/null 2>&1; then
     if LCARS_A_STAGE="$stage" LCARS_A_AT="$NOW" LCARS_A_TEXT="$ANSWER" \
+       LCARS_A_BY="${LCARS_ANSWERED_BY:-}" \
        "$py" - "$out" "$qf" <<'S180_PY'
 import json, os, sys
 
@@ -169,6 +191,15 @@ entry = {
     "answer": os.environ.get("LCARS_A_TEXT", ""),
     "questions": questions,
 }
+
+# S202 — WHO ANSWERED. Additive, and ABSENT rather than null when nobody was
+# delegated: every entry already on disk is the captain's own, every reader of
+# this file predates the field, and a `null` would make his answers and Number
+# One's the same shape with a different value instead of different shapes. Only
+# a delegated answer says so, and it says so by carrying the key at all.
+_by = (os.environ.get("LCARS_A_BY") or "").strip()
+if _by:
+    entry["answeredBy"] = _by
 
 # WHAT IS ALREADY ON DISK. Three shapes are possible and all three must survive:
 # the append-only ledger (read the list), a pre-S180 single slot (migrate it into
@@ -212,13 +243,17 @@ S180_PY
       rm -f "$qf"; return 0
     fi
   fi
-  # FALLBACK: the pre-S180 writer, byte for byte.
+  # FALLBACK: the pre-S180 writer, byte for byte — plus the same attribution
+  # rule (emitted only when a delegate was named, so with no delegate this is
+  # still byte-for-byte the pre-S180 file).
   local esc; esc="$(json_escape "$ANSWER")"
   {
     echo '{'
     printf '  "stage": "%s",\n' "$stage"
     printf '  "answeredAt": "%s",\n' "$NOW"
     printf '  "answer": "%s",\n' "$esc"
+    [ -n "${LCARS_ANSWERED_BY:-}" ] \
+      && printf '  "answeredBy": "%s",\n' "$(json_escape "$LCARS_ANSWERED_BY")"
     echo '  "questions": ['
     awk 'NF{ gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); q[++n]=$0 }
          END{ for(i=1;i<=n;i++) printf "    \"%s\"%s\n", q[i], (i<n?",":"") }' \
@@ -266,6 +301,22 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # --- locate a single mission ------------------------------------------------
 locate_mission() { # id
   locate_missions_dir
@@ -274,20 +325,6 @@ locate_mission() { # id
   PENDING="$MISSION_DIR/pending.json"
   [ -d "$MISSION_DIR" ] || die "no mission '$1' under .git/lcars/missions/ — check the id."
   [ -f "$STATE" ]       || die "mission '$1' has no state.json — its state is corrupt."
-}
-
-# --- state.json field editing (one-field-per-line; same as run.sh) ----------
-state_del() { # key — drop the field's line if present
-  local tmp; tmp="$(mktemp)"
-  grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-# Add or replace a bare field (true/false/number). Same one-field-per-line
-# convention, and the same implementation, as run.sh's state_set_raw.
-state_set_raw() { # key token
-  state_del "$1"
-  local tmp; tmp="$(mktemp)"
-  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
 }
 
 # --- gh: remove the awaiting-human overlay, best-effort ---------------------
@@ -390,6 +427,7 @@ cmd_answer() {
   # are never blocked — a captain must always be able to SEE what a teammate's
   # mission is waiting on.
   owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
+  xo_lock_or_die "$MISSION_DIR"
   [ -n "$ANSWER" ] || die "no answer — pass --answer \"<your answer>\" with the captain's response."
 
   # Only a Mission actually waiting on a human can be answered.
@@ -431,9 +469,9 @@ cmd_answer() {
     local escs; escs="$(json_raw "$STATE" planReviewEscalations)"
     case "$escs" in ''|*[!0-9]*) escs=0 ;; esac
     escs=$((escs + 1))
-    state_set_raw planReviewEscalations "$escs"
+    lcars_state_set "$STATE" planReviewEscalations "$escs"
     if [ "$escs" -le "$MAX_REVIEW_ESCALATIONS" ]; then
-      state_set_raw planReviewRound 0
+      lcars_state_set "$STATE" planReviewRound 0
       REVIEW_NOTE="  Plan Review gets a fresh review round on your answer (answered escalation $escs of $MAX_REVIEW_ESCALATIONS)."
     else
       REVIEW_NOTE="  Plan Review budget NOT reset: $MAX_REVIEW_ESCALATIONS answered escalations is the cap, and this is $escs. The next failed round comes straight back to you — a fourth loop would spend a full review cycle to reach this same gate."
@@ -453,16 +491,16 @@ cmd_answer() {
   RECONCILE_NOTE=""
   if [ -f "$MISSION_DIR/reconcile-design-question.txt" ]; then
     printf '%s\n' "$ANSWER" >"$MISSION_DIR/reconcile-answer.txt"
-    state_del reconcileRound
-    state_del reconcileStatus
+    lcars_state_unset "$STATE" reconcileRound
+    lcars_state_unset "$STATE" reconcileStatus
     rm -f "$MISSION_DIR/reconcile-design-question.txt"
     RECONCILE_NOTE="  Recorded your reconcile design decision and reset the reconcile budget."
   fi
 
   # Clear the gate — but DO NOT touch the stage. The Mission stays parked at the
   # stage that escalated; `lcars run` re-enters it and consumes answers.json.
-  state_del awaitingHuman
-  state_del pendingQuestion
+  lcars_state_unset "$STATE" awaitingHuman
+  lcars_state_unset "$STATE" pendingQuestion
 
   gh_remove_awaiting
 
@@ -527,6 +565,11 @@ $FOLD_REFUSAL"
     FOLD_NOTE="$(awk '/^Folded /{ print "  " $0; exit }' <<<"$FOLD_OUT")" || true
   fi
 
+  # S207 fix round 1 (D2): the state writer now REFUSES a state.json it will
+  # not touch, and returns non-zero. Ask before announcing anything — a verb
+  # that prints success over a refused write is the `lcars pause` lie the
+  # captain ruled on.
+  lcars_state_refusal_die "lcars respond"
   echo "RESPOND: answered $MISSION_ID"
   echo "  Recorded your answer in answers.json (appended — earlier answers kept; stage unchanged)."
   echo "  Stage:  $stage"

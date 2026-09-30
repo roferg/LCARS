@@ -46,7 +46,24 @@ set -uo pipefail
 # genuine match into a phantom assertion failure (timing/load-sensitive — it bit
 # the worker-prompt assertions only under the full back-to-back suite). Draining
 # first removes the race; exit status and output are otherwise identical to grep.
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$REPO_ROOT/skills/lcars-run/run.sh"
@@ -336,9 +353,15 @@ check "3w4. state.json PARSES and \`base\` is last" \
   "jok '$s3w' && [ \"\$(jlast '$s3w')\" = 'base' ]"
 
 # 3x — DEGRADATION: an internal pin whose mission records no engine of its own.
-# Unreachable from approve (it only pins what it read off the mission), but if it
-# ever happens the ENGINE must not move — an internal pin is still a pin. Only
-# the attribution degrades, honestly, to env.
+# S196 called this unreachable from approve (it only pins what it read off the
+# mission). S207's resolve-logs cure made it the COMMON case: `lcars resolve-logs`
+# pins the PARENT's engine onto each bug CHILD, and a child filed by `lcars log`
+# with no engine in scope carries no workerBin at all.
+#
+# The ENGINE must not move — an internal pin is still a pin. And the ATTRIBUTION
+# is `internal`, NOT `env` (S207 fix round 1, D1): in this file `env` means the
+# CAPTAIN typed $LCARS_WORKER_BIN himself, and recording his source for LCARS's
+# own re-pin is a false record. A fresh tester measured it on both engines.
 r3x="$(make_repo '{"workerBin": "config-bin"}')"
 mk_nopin "$r3x"
 out3x="$(resolve_mission_in "$r3x" m-nopin CLAUDECODE=1 \
@@ -347,6 +370,14 @@ check "3x. an internal pin on an unpinned mission still fixes the ENGINE" \
   "printf '%s' \"\$out3x\" | qgrep -q 'bin=copilot'"
 check "3x2. it does NOT fall through to config.json and move the engine" \
   "! printf '%s' \"\$out3x\" | qgrep -q 'bin=config-bin'"
+check "3x3. the SOURCE is \`internal\` — LCARS re-pinned it, not the captain" \
+  "printf '%s' \"\$out3x\" | qgrep -q 'binsrc=internal'"
+check "3x4. it never claims the captain's \`env\` source" \
+  "! printf '%s' \"\$out3x\" | qgrep -q 'binsrc=env'"
+s3x="$r3x/.git/lcars/missions/m-nopin/state.json"
+check "3x5. and that is what is PERSISTED on the mission" \
+  "[ \"\$(jget '$s3x' engineSource)\" = 'internal' ]"
+check "3x6. state.json still PARSES" "jok '$s3x'"
 
 # A mission with NO recorded engine must fall through to detection UNCHANGED.
 r3mn="$(make_repo)"

@@ -12,8 +12,10 @@ shape in board.py. It MUST reproduce status.sh's gate/in-flight rule exactly:
 
 stdlib only; no model/gh/git invoked.
 """
+import datetime
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -196,6 +198,7 @@ class LocalAdapter(object):
         # machine "has" without touching $PATH.
         self._engines_reader = engines_reader
         self._engines_memo = None     # (monotonic-deadline, [engines])
+        self._engine_default_memo = None   # (deadline, engine) — S201/D2
         self._establish_vision_script = establish_vision_script
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
         # S160: the shared base-freshness reporter
@@ -518,7 +521,67 @@ class LocalAdapter(object):
         me = self.self_login()
         if me:
             meta["self"] = {"login": me}
+        # S201: IS NUMBER ONE ON FOR THIS REPO — the band toggle's whole state.
+        #
+        # The repo's `numberOne` config block, echoed rather than interpreted:
+        # `lcars xo on|off` is the ONE writer (ADR-002) and this is a read of
+        # what it wrote. Purely ADDITIVE and present ONLY when the block is
+        # there AND well formed, so a repo that has never run `lcars xo` — and
+        # every repo that predates this round — carries no `numberOne` key at
+        # all and its meta is byte-identical.
+        xo = self._number_one_config()
+        if xo is not None:
+            meta["numberOne"] = xo
+            # …and the other half of the picker's question: WHICH engines this
+            # laptop actually has. The SAME detector `lcars xo` uses at a
+            # terminal (S195's `lcars_available_engines`, reached here through
+            # the offer the remote overlay already builds), so the board never
+            # guesses at an install. Absent when the detector cannot answer,
+            # which leaves the picker offering both rows unlabelled rather than
+            # claiming an engine is missing.
+            here = self._engines_here()
+            if here:
+                meta["enginesHere"] = here
+            # …and WHICH ROW THE PICKER OPENS ON. Not a second opinion: this is
+            # `lcars_xo_default_engine`'s answer, the same function the CLI
+            # picker preselects with, spawned the way `enginesHere` already is.
+            # FIX ROUND 1, D2: the board opened on copilot and the terminal on
+            # claude, so a bare Enter engaged a different officer depending on
+            # which door the captain came through. One function answers both
+            # now, and the front end RENDERS this rather than deriving one.
+            # Absent when nothing is installed — an unanswered question, never
+            # a guessed answer.
+            default = self._engine_default()
+            if default:
+                meta["engineDefault"] = default
         return meta
+
+    # ── S201: the repo-level toggle, and what this laptop can run ───────────
+    def _number_one_config(self):
+        """The repo's `numberOne` config block, or None.
+
+        {enabled: bool} at minimum, plus `engine` / `model` when the captain
+        pinned them. MALFORMED IS NOTHING: a string, a list, a missing
+        `enabled` — every one of them answers None rather than a guess, which
+        is the posture `lcars_xo_status` takes in the shell for the same
+        reason. A board that cannot read the toggle shows no toggle; it never
+        shows a toggle that says the wrong thing.
+        """
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        cfg = _load_json(config)
+        if not isinstance(cfg, dict):
+            return None
+        blk = cfg.get("numberOne")
+        if not isinstance(blk, dict):
+            return None
+        if not isinstance(blk.get("enabled"), bool):
+            return None
+        out = {"enabled": blk["enabled"]}
+        for key in ("engine", "model"):
+            v = blk.get(key)
+            if isinstance(v, str) and v.strip():
+                out[key] = v.strip()
+        return out
 
     def _resolve_host_adapter_script(self):
         """The host adapter path: injected → env → in-repo → installed.
@@ -897,6 +960,115 @@ class LocalAdapter(object):
             return None
         return rec
 
+    # --- S205: the First Officer's report + its screenshots -----------------
+    def _resolve_xo_report_script(self):
+        """`skills/lcars-xo/xo-report.py`'s path: env → in-repo → installed.
+
+        Same rungs as `_resolve_base_freshness_script` (ADR-002: the daemon
+        DISPATCHES to the one shared implementation, it never reimplements the
+        verdict in a second language) — except this one is imported, not
+        shelled: it is a pure, dependency-free read (no git, no gh, no
+        subprocess of its own), so a real Python import costs nothing a
+        subprocess wouldn't and skips a process spawn on every detail render.
+        """
+        env = os.environ.get("LCARS_XO_REPORT_SCRIPT")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-xo", "xo-report.py"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-xo",
+                            "xo-report.py")
+
+    def _xo_report_module(self):
+        script = self._resolve_xo_report_script()
+        cache = _XO_REPORT_MODULE_CACHE.get(script)
+        if cache is not None:
+            return cache
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "lcars_xo_report_module", script)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception:
+            return None
+        _XO_REPORT_MODULE_CACHE[script] = mod
+        return mod
+
+    def xo_report(self):
+        """`GET /api/xo/report`'s body: {lastSeenAt, since, history} — every
+        mission's `number-one.jsonl`, split against `.git/lcars/xo-seen.json`.
+
+        ONE BUILDER, SHARED WITH THE CLI (S205 behaviour 6): this imports and
+        calls `xo-report.py`'s own `build_report`, the SAME function
+        `xo.sh report` execs the file for. Neither surface re-derives the
+        since/history split independently.
+        """
+        mod = self._xo_report_module()
+        if mod is None:
+            return None
+        seen_path = os.path.join(self.repo_root, ".git", "lcars",
+                                  "xo-seen.json")
+        try:
+            return mod.build_report(self.missions_dir, seen_path)
+        except Exception:
+            return None
+
+    def xo_seen(self):
+        """Marks the report seen NOW (`.git/lcars/xo-seen.json`), through the
+        SAME `xo-report.py` writer the CLI's `--seen` flag uses — one file,
+        one writer. Returns the fresh report (now showing "nothing new")."""
+        mod = self._xo_report_module()
+        if mod is None:
+            return None
+        seen_path = os.path.join(self.repo_root, ".git", "lcars",
+                                  "xo-seen.json")
+        try:
+            report = mod.build_report(self.missions_dir, seen_path)
+            now = datetime.datetime.now(datetime.timezone.utc) \
+                .strftime("%Y-%m-%dT%H:%M:%SZ")
+            mod.write_seen(seen_path, now)
+            report["lastSeenAt"] = now
+            report["markedSeenAt"] = now
+            return report
+        except Exception:
+            return None
+
+    _XO_SHOT_TYPES = {".png": "image/png", ".jpg": "image/jpeg",
+                       ".jpeg": "image/jpeg"}
+
+    def xo_shot(self, mission_id, rel):
+        """(bytes, content-type) for one screenshot under
+        `<mission>/xo/shots/…`, or None. LOCAL adapter only — a remote card
+        has no local shots at all.
+
+        PATH-SAFETY IS A SECURITY BOUNDARY, not a nicety: `_xo_shot_path`
+        checks containment by REAL PATH (`os.path.realpath` + a prefix check),
+        never by rejecting a literal `..` alone — a symlink inside the shots
+        tree, or an encoded segment, would slip past a naive string check.
+        """
+        if not (isinstance(mission_id, str) and mission_id.strip()
+                and "/" not in mission_id and mission_id not in (".", "..")):
+            return None
+        d = os.path.join(self.missions_dir, mission_id)
+        if not os.path.isdir(d):
+            return None
+        target = _xo_shot_path(d, rel)
+        if target is None or not os.path.isfile(target):
+            return None
+        ext = os.path.splitext(target)[1].lower()
+        ctype = self._XO_SHOT_TYPES.get(ext)
+        if ctype is None:
+            return None
+        try:
+            with open(target, "rb") as fh:
+                return fh.read(), ctype
+        except OSError:
+            return None
+
     def _detect_signature(self):
         """(existence, mtime) over the bounded detection-marker set.
 
@@ -1126,6 +1298,39 @@ class LocalAdapter(object):
         self._engines_memo = (now + self._ENGINES_TTL, list(engines))
         return list(engines)
 
+    def _engine_default(self):
+        """The engine Number One's pickers open on — the shell's answer.
+
+        Memoized beside `_engines_here` and on the same TTL, so a board build
+        spawns at most one bash for it, and NEVER raises into a board build:
+        an unanswerable question leaves the key off the meta, which is what
+        keeps a board that has never heard of Number One byte-identical.
+        """
+        now = time.time()
+        memo = self._engine_default_memo
+        if memo is not None and memo[0] > now:
+            return memo[1]
+        try:
+            default = self._read_engine_default()
+        except Exception:
+            default = ""
+        self._engine_default_memo = (now + self._ENGINES_TTL, default)
+        return default
+
+    def _read_engine_default(self):
+        lib = self._resolve_common_lib()
+        if not lib:
+            return ""
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        proc = subprocess.run(
+            ["bash", "-c",
+             '. "$1" >/dev/null 2>&1 || exit 0; lcars_xo_default_engine "$2"',
+             "bash", lib, config],
+            cwd=self.repo_root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        out = (proc.stdout or b"").decode("utf-8", "replace")
+        return out.strip().splitlines()[0].strip() if out.strip() else ""
+
     def _read_engines(self):
         if callable(self._engines_reader):
             return [str(e) for e in (self._engines_reader() or []) if e]
@@ -1209,6 +1414,19 @@ class LocalAdapter(object):
             return None
         card.pop("_created", None)
         card["activity"] = self._activity(d)
+        # S205 behaviour 1: `numberOne.report` — DETAIL-ONLY, present only when
+        # the mission has a journal at all. `_done_card` may have handed back a
+        # SHALLOW copy of a memoized card (S176: "no nested value is ever
+        # mutated downstream") — `card["numberOne"]`, if present, can be the
+        # SAME nested dict the memo holds, so this builds a FRESH dict rather
+        # than mutating it in place. Mutating it would leak the detail-only
+        # `report` key onto every future BOARD card for this mission too.
+        xo_report = _number_one_report(d)
+        if xo_report is not None:
+            xo_existing = card.get("numberOne")
+            xo_new = dict(xo_existing) if isinstance(xo_existing, dict) else {}
+            xo_new["report"] = xo_report
+            card["numberOne"] = xo_new
         # detail-only shape fields (S70-B): ADRs + verbatim acceptance criteria.
         card["adrs"] = _adrs_from_file(os.path.join(d, "adr.md"))
         card["criteria"] = _criteria_from_prd(os.path.join(d, "prd.md"))
@@ -1465,6 +1683,18 @@ class LocalAdapter(object):
         engine = state.get("workerBin")
         if not (isinstance(engine, str) and engine.strip()):
             engine = None
+        # S222 — THIS IS THE DISPLAY VALUE, so it is the engine's NAME. A
+        # mission now records the engine as an absolute path when the bare name
+        # would resolve to VS Code's copilot shim (worker-guard.sh
+        # lcars_worker_bin_prefer_real), and the card's `engine` reaches
+        # board.js's engineLabel(), which looks the string up in a table of
+        # ids — a path falls through it and the captain's card would read
+        # "/opt/homebrew/bin/copilot". Nothing SPAWNS from this value: the
+        # daemon's worker paths read state.json themselves and still get the
+        # full path. board.model_mix_from_estimate already basenames its own
+        # copy, so this is a no-op for the model mix.
+        if engine:
+            engine = engine.replace("\\", "/").rsplit("/", 1)[-1]
         # Mission-log-grounding round: the model mix is now driven PURELY by what
         # estimate.json carries (one row per stage present in `models`). A logged
         # bug walks the FULL pipeline (Research grounding → Validate → …) so its
@@ -1709,6 +1939,13 @@ class LocalAdapter(object):
         # (a never-launched mission's card is byte-identical to before).
         if launch is not None:
             card["launch"] = launch
+        # S218 fix round 1 (F1): a Stage that FAILED says so ON the card, where
+        # the card already is (stage from the label, S191 — never moved). The
+        # fact is the drive's RECORDED `error` event; absent (not null) for every
+        # healthy mission, and hidden while a new run is live.
+        failure = None if running else _stage_failure(events)
+        if failure is not None:
+            card["failure"] = failure
         # S114: additive — only present `liveness` while a live worker's sidecar
         # file exists (byte-identical to before for every idle/finished mission).
         if liveness is not None:
@@ -1780,6 +2017,52 @@ class LocalAdapter(object):
         owner = board.owner_block(self._published_owner(issue))
         if owner is not None:
             card["owner"] = owner
+        # S201: DOES NUMBER ONE HAVE THE CONN HERE. The whole block is read off
+        # the mission's OWN state.json — the file `lcars xo` and the driver
+        # write and `ownership.sh xo-lock-reason` reads — so the card, the CLI
+        # refusal and the daemon's 403 are all answering from one record.
+        #
+        # ABSENT, not null, whenever nothing is recorded (see board.xo_block),
+        # which is every mission on every board this product has served until
+        # today. NOTHING IS INFERRED: a mission is engaged because the record
+        # says `engaged`, never because a worker looks busy.
+        xo = board.xo_block(state.get("numberOne"))
+        if xo is not None:
+            # S214 fix round 1, D1 — THE SCORE WORD IS THE RECORDED ONE.
+            # `xo/verdict.json` is where `xo-score.py` wrote the score; the
+            # block above is the copy `xo.sh` took of it. When the two
+            # disagree the copy is stale, and a stale block is stale ENTIRE —
+            # it reverted as one line of one file — so the sentences beside
+            # the stale word go with it and the two fallbacks just below
+            # refill all three off the one record. When they agree there is
+            # nothing to choose between and S213's precedence stands.
+            recorded = _xo_recorded_score(d)
+            if recorded and recorded != xo.get("score"):
+                xo["score"] = recorded
+                xo.pop("headline", None)
+                xo.pop("meaning", None)
+            # S213 C1 — THE ONE LINE, for a mission scored before this session.
+            # `xo.sh` records `headline` on every look from now on; a mission
+            # looked at earlier has the very same sentence sitting in its own
+            # `xo/verdict.json` as `derivation`, written there by the code that
+            # decided the score. Reading it back is reading a RECORD — the
+            # alternative, cutting the worker's 150-word prose down to its
+            # first sentence, would be this board deciding what Number One
+            # meant, which is the class of defect that made S213 necessary.
+            if "headline" not in xo:
+                line = _xo_recorded_derivation(d)
+                if line:
+                    xo["headline"] = line
+            # S213 fix round 1, D4 — and the score word's own meaning, on the
+            # same footing: recorded beside the score in the mission's own
+            # verdict.json, never a sentence the board keeps for the word.
+            if "meaning" not in xo:
+                said = _xo_recorded_meaning(d)
+                if said:
+                    xo["meaning"] = said
+            # S216 — the pill's two axes, off the same recorded verdict.
+            xo.update(_xo_recorded_axes(d))
+            card["numberOne"] = xo
         return card
 
     def _activity(self, d):
@@ -1804,6 +2087,39 @@ class LocalAdapter(object):
             if isinstance(data, dict) and data:
                 entry["data"] = data
             feed.append(entry)
+        # S205 behaviour 2: Number One's own journal (number-one.jsonl) merges
+        # into the SAME feed, `bot: "number-one"` marked so board.js renders
+        # "◈ posted by Number One" in peach beside the ordinary lcars-bot
+        # entries — inside the stage band where it happened (the S65 living-
+        # comment model: one more producer into the one feed, never a second
+        # feed). A journal entry's OWN recorded `stage` wins (cmd_answer can
+        # escalate at any gate); every Verify-only action omits it on disk, so
+        # it falls back to "verify", which is the only stage those actions are
+        # ever written from — never a guess, a fact about which functions call
+        # `journal()` without a stage field.
+        for j in _load_jsonl(os.path.join(d, "number-one.jsonl")):
+            if not isinstance(j, dict):
+                continue
+            stage = j.get("stage")
+            if not (isinstance(stage, str) and stage.strip()):
+                stage = "verify"
+            entry = {
+                "ts": j.get("at"),
+                "stage": board.normalise_stage(stage),
+                "type": "number-one",
+                # `head` is the human HEADLINE (board.js's headlineFor reads
+                # it for a number-one entry, exactly as it reads EVENT_HEADS
+                # off an ordinary event's `type`); `detail`/`text` is the best
+                # available DETAIL sentence alone, never repeating the
+                # headline, so the feed's existing headline+txt rendering
+                # never shows "Scored the build — Scored the build".
+                "head": _number_one_label(j),
+                "detail": _number_one_detail(j),
+                "text": _number_one_detail(j),
+                "bot": "number-one",
+            }
+            feed.append(entry)
+        feed.sort(key=_activity_sort_key)
         return feed
 
 
@@ -1833,6 +2149,42 @@ def _inflight_stage(events):
     if inflight is None:
         return None
     return board.normalise_stage(inflight)
+
+
+# --- S218 fix round 1 (F1): the Stage failure the drive RECORDED -------------
+# run.sh's drive writes ONE `error` event when a Stage stops without advancing:
+# its `stage` is the Stage that RAN (S214 D2), its `detail` the whole sentence,
+# and — since S218 — `data.log` the failure log that run wrote, when it wrote
+# one. The daemon's refused START records the same event. A later
+# `stage_start` (a new run began), `stage_done` (a Stage finished) or `gate`
+# (the run stopped on a question instead) supersedes it. Only an event carrying
+# `data.stageFailure: 1` (fix round 2, D2) counts — anything unmarked is
+# history, never a surfaced failure. Returns
+# {stage, sentence, log} or None. Reads the event TYPE and fields only — never
+# the sentence's words. Crash-proof: a malformed row is skipped.
+def _stage_failure(events):
+    failure = None
+    for ev in (events or []):
+        if not isinstance(ev, dict):
+            continue
+        typ = ev.get("type")
+        if typ == "error":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            # S218 fix round 2 (D2): only an error the drive MARKED as a
+            # structured Stage failure. Unmarked ones (all pre-S214 history,
+            # some recorded against `align` with a beheaded sentence) stay in
+            # the activity feed and are never surfaced here — nor reinterpreted.
+            if data.get("stageFailure") != 1:
+                continue
+            log = data.get("log")
+            failure = {
+                "stage": board.normalise_stage(ev.get("stage") or ""),
+                "sentence": ev.get("detail") or "",
+                "log": log if isinstance(log, str) and log.strip() else None,
+            }
+        elif typ in ("stage_start", "stage_done", "gate"):
+            failure = None
+    return failure
 
 
 # --- ticket + progress derivation (shared shape; mirrors render.sh ideas) ----
@@ -2078,6 +2430,536 @@ def _human(ev):
     return (fmt % detail) if fmt else detail
 
 
+# --- S205: Number One's journal (number-one.jsonl), merged into the feed ----
+# ONE line per action Number One recorded — see xo.sh's `journal()`. This is a
+# READ, never an inference: the label names the ACTION xo.sh already wrote,
+# and the detail is whichever of the entry's OWN recorded fields best explains
+# it, in the same priority order the CLI report (xo-report.py) uses. Nothing
+# here parses a human sentence to guess what happened.
+_NUMBER_ONE_LABELS = {
+    "criteria": "Read the drawing",
+    "launched": "Launched the build",
+    "looked": "Looked at the build",
+    "actions": "Drove the build",
+    "silent": "Nothing to report this round",
+    "scored": "Scored the build",
+    "score-overruled": "Corrected its own score",
+    "filed-logs": "Filed bugs for the gaps",
+    "overflow": "Some gaps were not filed",
+    "answered": "Answered the gate",
+    "escalated": "Escalated to you",
+    "relaunched": "Relaunched the build",
+    "fix-did-not-hold": "A fix did not hold",
+    "rescored": "Re-scored after the fixes",
+    "stood-down": "Stood down",
+    "ledger-note": "Noted something about the ledger",
+    # S221 — the two things a look now records about itself.
+    "tidied": "Put your build back as it found it",
+    "sweep-timeout": "A look ran out of time",
+}
+_NUMBER_ONE_DETAIL_KEYS = ("detail", "why", "note", "summary", "answer",
+                           "rationale", "url")
+
+
+def _number_one_label(entry):
+    """The human HEADLINE — board.js's `headlineFor` reads this off `head`
+    for a `type: "number-one"` entry, the same way it reads `EVENT_HEADS` off
+    an ordinary event's `type`."""
+    return _NUMBER_ONE_LABELS.get(entry.get("action"), entry.get("action") or "?")
+
+
+def _number_one_detail(entry):
+    """The best-available detail sentence, or "" — never duplicates the
+    label (unlike the combined form, this rides in `text`/`detail` ALONE, so
+    board.js's existing `.txt` line never repeats the headline)."""
+    for k in _NUMBER_ONE_DETAIL_KEYS:
+        v = entry.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _number_one_text(entry):
+    """Kept for callers that want ONE combined "Label — detail" sentence
+    (the CLI-flavoured form; xo-report.py's own `_fmt_entry` does the same
+    thing independently, in bash's/CLI's own voice)."""
+    label = _number_one_label(entry)
+    detail = _number_one_detail(entry)
+    return "%s — %s" % (label, detail) if detail else label
+
+
+def _xo_block_from_state(state):
+    xo = state.get("numberOne") if isinstance(state, dict) else None
+    return xo if isinstance(xo, dict) else {}
+
+
+def _number_one_shot_status(logs_doc, journal):
+    """{criterion: "held"|"not-held"|"pending"} — READ off two records, never
+    inferred: a log is "not-held" ONLY when a `fix-did-not-hold` journal entry
+    names its criterion; it is "held" once a `rescored` entry exists (a
+    successful recheck accepted the whole batch) and nothing named it as not
+    holding; anything else — no recheck has run yet — is "pending"."""
+    not_held = set()
+    rescored = False
+    for j in journal:
+        if not isinstance(j, dict):
+            continue
+        if j.get("action") == "fix-did-not-hold":
+            c = j.get("criterion")
+            if isinstance(c, str) and c.strip():
+                not_held.add(c.strip())
+        elif j.get("action") == "rescored":
+            rescored = True
+    out = {}
+    filed = logs_doc.get("filed") if isinstance(logs_doc, dict) else None
+    for f in (filed or []):
+        if not isinstance(f, dict):
+            continue
+        crit = f.get("criterion")
+        if not isinstance(crit, str):
+            continue
+        if crit in not_held:
+            out[crit] = "not-held"
+        elif rescored:
+            out[crit] = "held"
+        else:
+            out[crit] = "pending"
+    return out
+
+
+def _number_one_report(d):
+    """`numberOne.report` on the mission DETAIL payload — verdict(s), the
+    filed gaps with their held/not-held/pending status, the shots directory
+    the current verdict's pictures live in, and a journal tail. Present ONLY
+    when the mission has a journal at all (S205 behaviour 1) — a mission
+    Number One has never looked at gets no `report` key, ever, not an empty
+    one.
+
+    EVERY FIELD IS A DISK READ. Nothing here re-derives what a verdict MEANS;
+    it reads xo/verdict.json, xo/second/verdict.json (falling back to the
+    legacy xo/verdict-2.json name), xo/logs.json and xo/look.txt exactly as
+    xo.sh itself left them.
+    """
+    journal_path = os.path.join(d, "number-one.jsonl")
+    if not os.path.isfile(journal_path):
+        return None
+    journal = _load_jsonl(journal_path)
+
+    state = _load_json(os.path.join(d, "state.json"))
+    state = state if isinstance(state, dict) else {}
+    xo = _xo_block_from_state(state)
+
+    xodir = os.path.join(d, "xo")
+    verdict = _load_json(os.path.join(xodir, "verdict.json"))
+    verdict2 = _load_json(os.path.join(xodir, "second", "verdict.json"))
+    if verdict2 is None:
+        verdict2 = _load_json(os.path.join(xodir, "verdict-2.json"))
+
+    logs_doc = _load_json(os.path.join(xodir, "logs.json"))
+    status_by_crit = _number_one_shot_status(logs_doc, journal)
+    logs_out = []
+    if isinstance(logs_doc, dict):
+        for f in (logs_doc.get("filed") or []):
+            if not isinstance(f, dict):
+                continue
+            crit = f.get("criterion")
+            issue = f.get("issue")
+            if isinstance(issue, str) and issue.isdigit():
+                issue = int(issue)
+            elif not isinstance(issue, int):
+                issue = None
+            shots = f.get("shots")
+            shots = [s for s in shots if isinstance(s, str)] if isinstance(shots, list) else []
+            logs_out.append({
+                "n": f.get("n"),
+                "mission": f.get("mission"),
+                "issue": issue,
+                "criterion": crit,
+                "title": f.get("title"),
+                "shots": shots,
+                "status": status_by_crit.get(crit, "pending") if isinstance(crit, str) else "pending",
+            })
+
+    # xo/look.txt: the ONE recorded pointer to where the CURRENT verdict's
+    # pictures live (S204) — never re-derived by guessing which shots dir goes
+    # with which verdict.
+    #
+    # THE NORMALISING BOUNDARY (fix round 2, D1): xo.sh:1328 writes look.txt
+    # relative to xodir — "shots/<look>" — because that is what `file-logs`
+    # (xo.sh:712, `xo_verdict_shots_dir`) reads it back as: `$xodir/$rel`.
+    # That reader is untouched here and still gets the on-disk form verbatim
+    # via `rel` below. But `report.shotsDir` is a DIFFERENT contract: it is
+    # composed by board.js's `xoShotUrl` onto `/api/xo/shot/<mission>/…`,
+    # whose `rel` argument `_xo_shot_path` resolves against the room
+    # `<mission>/xo/shots/` — i.e. relative to xo/shots, not to xodir. Those
+    # two contracts disagree by exactly one leading "shots" segment, which is
+    # why every thumbnail 404ed (doubled `xo/shots/shots/…`). This is the
+    # ONE place the pointer crosses from the CLI's on-disk contract into the
+    # web API's: strip one leading "shots" path segment here, once, rather
+    # than lstrip-ing it in the route, in board.js, and in a test fixture.
+    #
+    # Missions recorded before this fix (S204) already have look.txt in the
+    # "shots/<look>" form — this still reads them: `rel` is unchanged and the
+    # isdir check below still resolves against xodir exactly as before, only
+    # the VALUE handed to the API is normalised. A fixture or a future writer
+    # that already recorded the normalised "<look>" form (no "shots" prefix)
+    # passes through untouched too — the strip only fires when the first
+    # segment literally is "shots".
+    shots_dir = "shots"
+    look_txt = os.path.join(xodir, "look.txt")
+    try:
+        with open(look_txt, encoding="utf-8") as fh:
+            rel = fh.readline().strip()
+        if rel and os.path.isdir(os.path.join(xodir, rel)):
+            segs = rel.split("/")
+            if segs and segs[0] == "shots":
+                segs = segs[1:]
+            shots_dir = "/".join(segs) if segs else "shots"
+    except OSError:
+        pass
+
+    # THE RE-CHECK'S OWN PICTURES (S224 fix round 1, D4).
+    #
+    # `look.txt` is written ONCE, by `evaluate`, and it points at the FIRST
+    # look — which is right for `report.logs[].shots` (a filed gap's pictures
+    # were taken on the look that filed it, and those thumbnails render today).
+    # A re-check opens a directory of its OWN (`xo.sh`: `shots/recheck-<n>`)
+    # and never recorded a pointer to it, so there was exactly one directory on
+    # the payload for TWO verdicts. Since S224 the pane draws the SECOND
+    # verdict when there is one, and every one of its `recheck-walk-*` shots
+    # was being looked for in `look-1/` — a 404 on every picture, drawn as
+    # "The picture for this one … isn't on this laptop any more" over files
+    # that are on the disk. Measured on the captain's own mission:
+    # `…/look-1/recheck-walk-01-j1.png` 404, `…/recheck-3/…` 200.
+    #
+    # So: a SECOND pointer, never a re-pointing of the first. It is read the
+    # same way the first is — `xo/second/look.txt`, which `xo.sh` now writes as
+    # the re-check opens its directory — and normalised across the same one
+    # boundary. For the missions already on disk, which have no such pointer
+    # because the re-check that made them predates it, the fallback resolves it
+    # AGAINST THE RECORD rather than by guessing: the second verdict names the
+    # shots it reasoned from, and the answer is the directory that actually
+    # holds them. Most-held wins (an aborted re-check leaves an empty or
+    # part-filled directory behind and must not win over the real one); a tie
+    # goes to the later name, which is the later re-check. Nothing found ⇒ no
+    # key at all, and the board falls back to `shotsDir` exactly as before.
+    shots_dir2 = _xo_second_shots_dir(xodir, verdict2)
+
+    journal_sorted = sorted(
+        (j for j in journal if isinstance(j, dict)),
+        key=lambda j: _activity_sort_key({"ts": j.get("at")}), reverse=True)
+
+    out = {
+        "score": xo.get("score"),
+        "score2": xo.get("score2"),
+        "status": xo.get("status"),
+        "engine": xo.get("engine"),
+        "verdict": verdict if isinstance(verdict, dict) else None,
+        "verdict2": verdict2 if isinstance(verdict2, dict) else None,
+        "logs": logs_out,
+        "shotsDir": shots_dir,
+        "journal": journal_sorted,
+    }
+    if shots_dir2:
+        out["shotsDir2"] = shots_dir2
+    return out
+
+
+def _xo_cited_shots(verdict):
+    """Every shot name the verdict's own ledger cites, in order, de-duped."""
+    seen, names = set(), []
+    if not isinstance(verdict, dict):
+        return names
+    for key in ("criteria", "observations"):
+        for row in (verdict.get(key) or []):
+            if not isinstance(row, dict):
+                continue
+            shot = row.get("shot")
+            if isinstance(shot, str) and shot.strip() and shot.strip() not in seen:
+                seen.add(shot.strip())
+                names.append(shot.strip())
+    return names
+
+
+def _xo_second_shots_dir(xodir, verdict2):
+    """Where the SECOND verdict's pictures live, relative to `xo/shots/`, or "".
+
+    The recorded pointer first (`xo/second/look.txt`, same one-leading-"shots"
+    normalisation as `look.txt`); then, for a mission re-checked before that
+    pointer existed, the directory under `xo/shots/` that holds the most of the
+    shots this verdict NAMES. It reads the record and the disk; it never picks
+    "the first one it finds"."""
+    if not isinstance(verdict2, dict) or not verdict2:
+        return ""
+    try:
+        with open(os.path.join(xodir, "second", "look.txt"), encoding="utf-8") as fh:
+            rel = fh.readline().strip()
+        if rel and os.path.isdir(os.path.join(xodir, rel)):
+            segs = [s for s in rel.split("/") if s]
+            if segs and segs[0] == "shots":
+                segs = segs[1:]
+            if segs:
+                return "/".join(segs)
+    except OSError:
+        pass
+
+    # A PROBE, NOT A CENSUS. The captain's ledger cites 101 shots and his
+    # `xo/shots/` holds four directories: stat-ing every pair on every detail
+    # request is 400 syscalls to answer a question the first dozen already
+    # answer (on his own mission: recheck-1 holds 0 of them, recheck-3 holds
+    # 12). The cap is the budget, not the evidence.
+    cited = _xo_cited_shots(verdict2)[:12]
+    if not cited:
+        return ""
+    room = os.path.join(xodir, "shots")
+    try:
+        candidates = sorted(d for d in os.listdir(room)
+                            if os.path.isdir(os.path.join(room, d)))
+    except OSError:
+        return ""
+    best, best_n = "", 0
+    for d in candidates:
+        n = sum(1 for s in cited
+                if os.path.isfile(os.path.join(room, d, s + ".png")))
+        if n >= best_n and n > 0:      # >= : a tie goes to the LATER name
+            best, best_n = d, n
+    return best
+
+
+def _xo_current_verdict_path(mission_dir):
+    """The verdict file that carries this mission's CURRENT grade.
+
+    A mission can be looked at twice: the first look writes `xo/verdict.json`,
+    a re-check after the fixes land writes `xo/second/verdict.json`. Once a
+    re-check exists, the re-check IS the verdict — `xo.sh` treats its `score2`
+    as the current score (xo.sh:747) and the report pane draws it entire
+    (board.js S224). The card must read the same file the report does, or it
+    draws the superseded first-look grade beside a report showing the current
+    one (the captain's MEDIUM-on-card / HIGH-in-report confusion, S225).
+
+    So: the second verdict when it is present AND loadable AND non-empty; the
+    first verdict otherwise. A mission looked at once has no `second/` at all
+    and gets `xo/verdict.json` exactly as before — the CONTROL. An aborted
+    re-check that left an empty or unreadable `second/verdict.json` behind must
+    NOT win over the real first look, so it falls back too."""
+    first = os.path.join(mission_dir, "xo", "verdict.json")
+    second = os.path.join(mission_dir, "xo", "second", "verdict.json")
+    try:
+        with open(second, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if isinstance(doc, dict) and doc:
+            return second
+    except Exception:
+        pass
+    return first
+
+
+def _xo_recorded_score(mission_dir):
+    """The score this mission's CURRENT verdict RECORDS, or "".
+
+    `xo-score.py` is the producer: it decides the word and writes it into the
+    verdict, and nothing downstream is entitled to a second opinion.
+    `state.numberOne.score` is a COPY of the FIRST look's value, made by
+    `xo.sh`'s finisher, and a copy can go stale — on the captain's own disk one
+    of seven missions had been looked at twice and a later writer holding a
+    stale `state.json` put the FIRST look's block back; the ledger was never
+    reverted. It can also be stale simply by being the first look's word on a
+    mission a re-check has since re-graded (S225): the state block keeps `score`
+    as the first look and adds `score2` for the re-check without disturbing it.
+
+    Either way the record wins, and `_xo_current_verdict_path` points at the
+    record that is current — the re-check's when there has been one.
+
+    THIS READS ONE FIELD AND COUNTS NOTHING. The `counts` sitting beside it in
+    the same document would ratio to a different word for exactly these
+    missions. Working a score out of them is the second opinion whose existence
+    is the defect."""
+    try:
+        with open(_xo_current_verdict_path(mission_dir),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    score = doc.get("score")
+    return score.strip() if isinstance(score, str) and score.strip() else ""
+
+
+def _xo_recorded_derivation(mission_dir):
+    """The one-line verdict this mission's CURRENT verdict records, or "" —
+    the re-check's when there has been one, the first look's otherwise (see
+    `_xo_current_verdict_path`), so the headline rides beside the grade it
+    explains. Never the worker's `summary` — that is the transcript the card is
+    being freed of — and never anything derived by reading either of them."""
+    try:
+        with open(_xo_current_verdict_path(mission_dir),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    line = doc.get("derivation")
+    return line.strip() if isinstance(line, str) and line.strip() else ""
+
+
+def _xo_recorded_meaning(mission_dir):
+    """What the score WORD means for this mission, off this mission's CURRENT
+    verdict (the re-check's when there has been one — `_xo_current_verdict_path`
+    — so the tooltip matches the grade beside it) — or "" when the verdict
+    cannot support a sentence.
+
+    RECORDED FIRST. `scoreMeaning` is written beside the score by the code that
+    decided the score (S213 fix round 1). When it is there, it is read back
+    verbatim and nothing else happens.
+
+    DERIVED FROM THE LEDGER SECOND (fix round 3, D4-RESIDUAL). Every mission
+    scored BEFORE that round carries no `scoreMeaning` at all — which is every
+    mission on the captain's real disk — and the board used to explain those
+    scores with one fixed sentence per word, MEDIUM's claiming a primary flow
+    that worked end to end. The tester opened such a mission and was told
+    exactly that about a build whose every criterion was untested. So where
+    there is no recorded sentence the counts in the same file answer instead:
+    see `_xo_meaning_from_ledger`.
+
+    AND OTHERWISE, SILENCE. No file, unreadable file, or a verdict with no
+    ledger in it at all ⇒ "" ⇒ no `meaning` on the card and an empty tooltip.
+    A surface must never assert what no record supports."""
+    try:
+        with open(_xo_current_verdict_path(mission_dir),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    said = doc.get("scoreMeaning")
+    if isinstance(said, str) and said.strip():
+        return said.strip()
+    return _xo_meaning_from_ledger(doc)
+
+
+_XO_CORE_STATES = ("met", "broken", "unverified")
+
+
+def _xo_recorded_axes(mission_dir):
+    """{checked, total, core} for the card pill (S216), off this mission's
+    CURRENT verdict (the re-check's when there has been one —
+    `_xo_current_verdict_path` — so the pill counts the same look the grade
+    reports) — each key only when the record supports it.
+
+    `checked` / `total` are arithmetic over the verdict's own ledger (worked +
+    didn't, of everything on the list), so a verdict written before S216 has
+    them too. `core` is the state of the point of the mission, which only a
+    verdict that assessed IMPACT recorded; an older one has none, and none is
+    invented for it (the S213 round-3 rule). No file ⇒ {}."""
+    try:
+        with open(_xo_current_verdict_path(mission_dir),
+                  encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    out = {}
+    counts = _xo_ledger_counts(doc)
+    if counts is not None:
+        met, gap, untested = counts
+        out["checked"] = met + gap
+        out["total"] = met + gap + untested
+    core = doc.get("core")
+    if isinstance(core, str) and core.strip() in _XO_CORE_STATES:
+        out["core"] = core.strip()
+    return out
+
+
+def _xo_ledger_counts(doc):
+    """(met, gap, untested) as this verdict RECORDS them, or None.
+
+    `counts` is what `xo-score.py` has written since Number One's first look;
+    an older or hand-written verdict may carry only the `criteria` rows, so
+    they are tallied instead — arithmetic over recorded statuses, which is
+    still the record answering. A verdict with neither answers None, and None
+    means nothing is said at all."""
+    counts = doc.get("counts")
+    if isinstance(counts, dict):
+        got = []
+        for key in ("met", "gap", "untested"):
+            v = counts.get(key)
+            got.append(v if isinstance(v, int) and not isinstance(v, bool)
+                       and v >= 0 else 0)
+        if sum(got):
+            return tuple(got)
+    rows = doc.get("criteria")
+    if isinstance(rows, list) and rows:
+        tally = {"met": 0, "gap": 0, "untested": 0}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            st = str(row.get("status") or "").strip().lower()
+            if st in tally:
+                tally[st] += 1
+        if sum(tally.values()):
+            return (tally["met"], tally["gap"], tally["untested"])
+    return None
+
+
+def _xo_meaning_from_ledger(doc):
+    """One sentence about THIS ledger, built from its own counts, or "".
+
+    IT STATES ARITHMETIC AND NOTHING ELSE. Every number in it is one the
+    verdict itself records, and no clause claims anything the numbers do not
+    hold — no flow is described, no build is vouched for, no cause is guessed
+    at. That is the whole difference between this and the three fixed
+    sentences it replaces: those asserted a fact about a specific build from
+    nothing but the score word, and one of them was wrong every time the score
+    came from an all-untested ledger.
+
+    Written to the captain, in his product's words: things on a list he wrote,
+    which either checked out, fell short, or could not be checked."""
+    counts = _xo_ledger_counts(doc)
+    if counts is None:
+        return ""
+    met, gap, untested = counts
+    total = met + gap + untested
+    things = "thing" if total == 1 else "things"
+    if untested == total:
+        return ("I could not check any of the %d %s on your list, so nothing "
+                "here is vouched for" % (total, things))
+    if met == total:
+        return ("All %d %s on your list checked out" % (total, things))
+    said = []
+    if met:
+        said.append("%d checked out" % met)
+    if gap:
+        said.append("%d fell short" % gap)
+    if untested:
+        said.append("%d I could not check" % untested)
+    if len(said) > 1:
+        said = [", ".join(said[:-1]), said[-1]]
+    return ("Of the %d %s on your list, %s"
+            % (total, things, " and ".join(said)))
+
+
+def _activity_sort_key(entry):
+    """A chronological key for an activity entry whose `ts` may be an events.
+    jsonl epoch (int/float) OR a number-one.jsonl ISO-8601 string — so the two
+    producers interleave in true time order. Never raises: an unparsable
+    timestamp sorts as 0 (oldest), same posture every other lenient reader in
+    this file takes toward a malformed record."""
+    ts = entry.get("ts")
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str):
+        try:
+            dt = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+            return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
 # --- BUG-036: derive a PR number from a PR url (trailing /pull/<n>) ----------
 _PR_NUM = re.compile(r"/pull/(\d+)")
 
@@ -2118,6 +3000,37 @@ def _load_jsonl(path):
 
 def _truthy(v):
     return v is True or (isinstance(v, str) and v.strip().lower() == "true")
+
+
+# --- S205: xo-report.py, imported once per resolved path ---------------------
+_XO_REPORT_MODULE_CACHE = {}
+
+
+# --- S205 behaviour 3: the xo shot route's jail ------------------------------
+# A COPY of the holodeck preview's own jail shape (actions.py's
+# `_room_file_path`) — same checks, same order: refuse an absolute path, a
+# drive letter, or any `..` SEGMENT before ever touching the filesystem, then
+# resolve the REAL path and verify it is still inside the room. Two jails
+# guarding two different rooms is right here (the holodeck's room is
+# model-written content; a mission's `xo/shots/` is the driver's own
+# screenshots) — what would be wrong is checking containment two DIFFERENT
+# ways, so this checks it the same proven way.
+def _xo_shot_path(mission_dir, rel):
+    """The real, contained path for `rel` under `<mission_dir>/xo/shots/`, or
+    None when it is missing, malformed, or would escape that tree."""
+    rel = rel or ""
+    if "\x00" in rel:
+        return None
+    if rel.startswith("/") or rel.startswith("\\") or ":" in rel.split("/")[0]:
+        return None
+    parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." for p in parts):
+        return None
+    room = os.path.realpath(os.path.join(mission_dir, "xo", "shots"))
+    target = os.path.realpath(os.path.join(room, *parts))
+    if target != room and not target.startswith(room + os.sep):
+        return None
+    return target
 
 
 _BASE_FRESHNESS_KEYS = ("verdict", "loud", "reason", "fix", "fixNote",

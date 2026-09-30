@@ -148,16 +148,17 @@ no production code itself** — it spawns sub-agents and runs this loop:
 4. **Teardown.** The tester tears down everything its runs created — locally and
    remotely — leaving the sandbox clean (reuse, don't delete, between rounds). No
    orphans. **Never tear down before the verdict is final**, and rigging worth
-   keeping gets committed under `tests/drives/` rather than rebuilt by the next
-   round.
+   keeping gets committed to **lcars-dev's** `tests/drives/` — never the
+   product repo's — rather than rebuilt by the next round.
 5. **Commit + readout.** The orchestrator commits the implementor's work + the
    fixes to the work's branch (see *Build contract*), then reads out per
    *Readout*. No PR unless asked.
 
 **An invariant touch is a STOP.** Honour every invariant the work declares (a
 session doc's *What we are NOT changing*; for a buddy fix, the protected
-machinery: gates, the adversarial Test-Writer→Implementer split, immutable test
-hashes, env-injected/stubbable CLIs). If a change would touch one, **STOP and
+machinery: the Implement proof gates (flip-flop, declared test-edits,
+quality floor), the ≤3-sessions-then-park bound, env-injected/stubbable CLIs). If
+a change would touch one, **STOP and
 report** rather than papering over it.
 
 ---
@@ -253,8 +254,17 @@ story, in plain English, and let them rule.
 Seven S163 tester rounds each rebuilt the same fixture scaffold from scratch, and
 one tore it down before its verdict was final, so the next round had to rebuild
 rigging five rounds had accumulated. **Reuse the rig between rounds.** When the
-work invents rigging worth keeping, **commit it under `tests/drives/`** rather
-than discarding it. **Testers must not tear down until the verdict is final.**
+work invents rigging worth keeping, **commit it to lcars-dev's `tests/drives/`**
+rather than discarding it. **Testers must not tear down until the verdict is
+final.**
+
+**Rigs do NOT live in the product repo** (captain's ruling, 2026-09-25). They
+had accumulated to 3,913 tracked files / ~109 MB in LCARS, most of it recorded
+run output nobody realised was committed. `tests/drives/` in LCARS is now
+git-ignored and `tests/no-rigs.test.sh` fails the build if anything under it is
+tracked. Shared EQUIPMENT that a shipped suite in `tests/*.test.sh` sources or
+execs is a different thing and stays, under `tests/lib/` — a clone of LCARS
+must still be testable.
 
 ---
 
@@ -299,6 +309,32 @@ later run included a **valid case whose `exit 64` was impossible**.
 So: **pass probe arguments literally, never through a variable**, and always
 include one case you know must succeed.
 
+### Inspect the thing, don't measure a correlate of it
+
+**When you can look at the artefact itself for the same effort, looking beats
+measuring something that merely correlates with the fault.** Written down after
+this failed THREE TIMES IN ONE NIGHT (2026-09-16/17), each time in a different
+costume, each time with the real check available and cheap:
+
+| the claim | the proxy used | what it missed |
+|---|---|---|
+| "the test fixture is sound" | `.bin/vitest` exists on disk | it did — but the PACKAGE it points at was a dangling symlink into a deleted worktree. **The repo's tests could not run at all.** Running them would have taken 20 seconds. |
+| "the walkthrough's images are fine" | image DIMENSIONS (tall+narrow ⇒ suspect) | a crop of the WRONG COLUMN that was neither tall nor narrow. The captain found more after the proxy declared the rest clean. **Opening them found every fault in one pass.** |
+| "the test failures are the node_modules symlinking" | reasoning from `worktreeSetupCommand`'s text | the actual cause was a double `cd` — the gate runs the command from INSIDE the package, so a command that also steps in lands nowhere. **A two-line shell test settled it.** |
+
+The tell is always the same: **the proxy answers a question NEAR the one being
+asked.** "A binary is present" is near "the tests run". "This image is an odd
+shape" is near "this image shows the wrong thing". Near is not the same, and the
+gap is exactly where the defect lives.
+
+**So: if the real check costs a command, run the command.** Reserve inference for
+things that genuinely cannot be observed — and when you must infer, say in the
+readout that you inferred, so the next reader knows what was actually established.
+
+**This sits beside the known-good control rule above, and they compose:** a
+control proves your check can detect the fault; inspecting rather than measuring
+proves you are checking the fault at all.
+
 ### Cage a hang probe in its own PROCESS GROUP
 
 `perl -e 'alarm N; exec @ARGV'` does **NOT** reliably kill a blocked probe. On
@@ -311,7 +347,7 @@ so a fast pass is distinguishable from a kill. The reference implementation is
 committed:
 
 ```
-python3 tests/drives/s197/cage.py 5 bash skills/<name>/<script>.sh <args…>
+python3 tests/lib/cage.py 5 bash skills/<name>/<script>.sh <args…>
 ```
 
 It also gives the probe `stdin=DEVNULL`, which matters more than it sounds:
@@ -320,6 +356,10 @@ interactive shell blocks on its own first assertion.
 
 **A caged run that does not come back is NOT proof of safety** — it is the hang,
 reported.
+
+**Never key a decision on the cage's own `$?`.** It exits 0 whether the probe
+passed, failed or was killed; the verdict is in the text it prints (`EXIT <n>`,
+`*** TIMED OUT -> HUNG ***`, `ELAPSED`). Parse the output, not the status.
 
 ### Two mechanisms hang a suite, not one
 
@@ -413,6 +453,27 @@ these four, which are **mandatory**:
   driven, including any Claude drive the captain declined.
 - **Ledgered items** — inherited defects filed rather than cured, and anything
   deliberately left.
+
+### And when a model DROVE LCARS itself — the journey (captain ruling 2026-09-17)
+
+**Whenever Copilot or Claude stood in for a human and drove LCARS — filing a
+mission and living the pipeline as a person would — a JOURNEY is published
+alongside the readout.** Numbered steps, a real screenshot each, written so
+**a colleague who has never heard of LCARS can follow it**: what was asked for,
+what the run found and built (quoting the real plan, tickets and tests, never
+describing their shape), what kind of mission it was and what the other kinds
+are, what is NEW, and what WORKED — including what a person did NOT have to do
+because the system did it. Any patch the drive leaned on is said plainly and
+early. Every picture is tappable to full size.
+
+**The contract lives in ONE place — `run-session` STEP 5.5 § THE STAND-IN
+DRIVE** — and `walkthrough.sh` beside it builds the page. Read it there.
+
+**His reason:** *"being able to click through the journey and feel like I'm
+going along with it helps cut down the evaluation time greatly"*, and he intends
+to show these to other stakeholders. **It is IN ADDITION to the readout above,
+never instead of it** — the readout carries defect health, both costs and the
+blind spots; the journey carries the experience.
 
 ---
 

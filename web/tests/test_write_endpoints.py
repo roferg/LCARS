@@ -192,7 +192,7 @@ def _sleep_stub(record_path, sleep_secs):
     return path
 
 
-def _launch_stub(record_path, *, spawn_real=False, fail=False):
+def _launch_stub(record_path, *, spawn_real=False, fail=False, die=False):
     """A stub for skills/lcars-launch/launch.sh (S109).
 
     Records its argv/env (so a test can assert the mission id + hint + engine
@@ -208,12 +208,24 @@ def _launch_stub(record_path, *, spawn_real=False, fail=False):
                              the pid is dead afterward.
       * fail=True          → status=failed record + a human message, exit 1 (as
                              launch.sh dies on a discovery/liveness failure).
+      * die=True           → launch.sh's OWN refusal channel (`die()`: `lcars
+                             launch: <sentence>` on stderr, exit 1) and NO
+                             launch.json at all. The arg parser dies before
+                             anything is written — exactly what a hint carrying
+                             a `--word` used to do.
     A `--stop` invocation kills the recorded pgid (best-effort) and rewrites the
     record to status=stopped. Returns the stub's absolute path.
     """
     fd, path = tempfile.mkstemp(suffix=".sh")
     os.close(fd)
-    if fail:
+    if die:
+        write_body = (
+            '  echo \'lcars launch: unknown option "--config" — usage: lcars '
+            'launch <mission> [hint] [--stop], or lcars launch --main [hint] '
+            '[--stop].\' >&2\n'
+            '  exit 1\n'
+        )
+    elif fail:
         write_body = (
             '  printf \'{"status":"failed","target":"","url":"",\' > "$lj"\n'
             '  printf \'"message":"could not determine how to start this app '
@@ -280,12 +292,25 @@ def _launch_stub(record_path, *, spawn_real=False, fail=False):
         '#!/usr/bin/env bash\n'
         '{\n'
         '  printf "ARGV: %s\\n" "$*"\n'
+        # `"$*"` joins on spaces, which ERASES argument boundaries: a hint split
+        # into ten words and the same hint passed whole read identically there.
+        # One line per argv element is what tells them apart, and telling them
+        # apart is the whole defect.
+        '  for a in "$@"; do printf "ARG: [%s]\\n" "$a"; done\n'
         '  printf "ENV_WORKER_BIN: %s\\n" "${LCARS_WORKER_BIN:-}"\n'
         '} >> "' + record_path + '"\n'
-        'mid=""; stop=0\n'
+        # `--` is a REAL end-of-options marker here, as it is in launch.sh since
+        # S215: after it every word is a positional whatever it starts with. The
+        # stub must not be more forgiving than the script it stands in for.
+        'mid=""; stop=0; endopts=0\n'
         'for a in "$@"; do\n'
+        '  if [ "$endopts" -eq 1 ]; then\n'
+        '    [ -z "$mid" ] && mid="$a"\n'
+        '    continue\n'
+        '  fi\n'
         '  case "$a" in\n'
         '    --stop) stop=1 ;;\n'
+        '    --) endopts=1 ;;\n'
         '    --*) ;;\n'
         '    *) [ -z "$mid" ] && mid="$a" ;;\n'
         '  esac\n'
@@ -1450,6 +1475,29 @@ class LaunchEndpointTest(WriteEndpointBase):
     def _mission_launch_json(self, mid):
         return os.path.join(fx.mission_dir(self.tmp, mid), "launch.json")
 
+    def _args(self):
+        """The argv the launch stub was handed, ONE ELEMENT PER ITEM.
+
+        `_record()`'s "ARGV:" line joins on spaces, which cannot distinguish a
+        sentence passed whole from the same sentence split into words — the
+        exact distinction this turns on. The stub also writes one `ARG: [x]`
+        line per element; this reads those, from the LAST dispatch only."""
+        out = []
+        for line in self._record("launch").splitlines():
+            if line.startswith("ARGV: "):
+                out = []          # a new dispatch begins
+            elif line.startswith("ARG: [") and line.endswith("]"):
+                out.append(line[len("ARG: ["):-1])
+        return out
+
+    def _post_allowing_error(self, path, obj=None, timeout=10):
+        """Like `_post`, but a 4xx/5xx comes back as (status, body) instead of
+        raising — a REFUSAL is a result here, not an accident."""
+        try:
+            return self._post(path, obj, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
     # ── 1: launch dispatch + the additive board/detail `launch` field ─────────
     def test_launch_dispatches_script_with_hint_and_surfaces_launch_field(self):
         self._rebuild_with_launch()
@@ -1660,6 +1708,135 @@ class LaunchEndpointTest(WriteEndpointBase):
         self.assertTrue(card["launch"]["message"])
         self.assertNotIn("Traceback", json.dumps(body))
         self.assertNotIn("Traceback", json.dumps(card))
+
+    # ── S215 twin: ▸ Launch carried BOTH halves of the Deploy Main defect ─────
+    #
+    # The sentence a captain types into ▸ Launch on a Verify card. It is kept
+    # whole because every claim below is about THIS string: ordinary prose that
+    # happens to quote a command, which is the natural way to say "the browser
+    # build, not Electron" — and the overlay's own placeholder invites prose.
+    CAPTAIN_HINT = (
+        "run the plain BROWSER dev server for packages/editor using its "
+        "vite.config.ts (npx vite --config vite.config.ts) — not "
+        "electron-vite, no Electron"
+    )
+
+    def test_launch_hint_is_prose_and_travels_whole(self):
+        """Half one — a hint is PROSE, not argv.
+
+        It used to travel as `h.split()`, so every word became an argv element
+        and a word from inside his parentheses (`--config`) met the option
+        parser on the far side, which refused the whole launch."""
+        self._rebuild_with_launch()
+        status, body = self._post("/api/mission/m-001/launch",
+                                  {"hint": self.CAPTAIN_HINT})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        args = self._args()
+        # THREE elements: the mission, the end-of-options marker, his sentence.
+        # Not twenty-six, one of which the far side reads as `--config`.
+        self.assertEqual(args, ["m-001", "--", self.CAPTAIN_HINT])
+        self.assertNotIn("--config", args)
+        # and it really launched: the board moved.
+        _, board = self._get("/api/board")
+        card = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertEqual(card["launch"]["status"], "running")
+
+    def test_launch_without_a_hint_dispatches_just_the_mission(self):
+        """CONTROL — nothing to carry, so no marker and no empty argument."""
+        self._rebuild_with_launch()
+        self._post("/api/mission/m-001/launch", {})
+        self.assertEqual(self._args(), ["m-001"])
+
+    def test_launch_blank_hint_is_no_hint(self):
+        """CONTROL — whitespace only must not become an empty argv element."""
+        self._rebuild_with_launch()
+        self._post("/api/mission/m-001/launch", {"hint": "   "})
+        self.assertEqual(self._args(), ["m-001"])
+
+    def test_a_plain_hint_still_launches_exactly_as_before(self):
+        """CONTROL — the hint with no `--` word. This is the one that worked,
+        and it must keep working, byte for byte on the board."""
+        self._rebuild_with_launch()
+        status, _ = self._post("/api/mission/m-001/launch",
+                               {"hint": "the game in web"})
+        self.assertEqual(status, 200)
+        _, board = self._get("/api/board")
+        card = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertEqual(card["launch"]["status"], "running")
+        self.assertEqual(card["launch"]["url"], "http://localhost:9931")
+
+    def _plant_launch_record(self, mid, **fields):
+        with open(self._mission_launch_json(mid), "w") as fh:
+            json.dump(fields, fh)
+
+    def test_a_stale_stopped_record_cannot_certify_this_launch(self):
+        """Half two, and the important one — a stale record is not proof that
+        THIS attempt worked. The swallow fired whenever the mission's
+        launch.json held ANY dict, and a `status: stopped` record left by a stop
+        minutes earlier is a dict: a launch that started nothing answered
+        `{"ok": true}` instantly and the board did not move."""
+        self._plant_launch_record("m-001", status="stopped", target="fake app",
+                                  url="", message="the app has been stopped.")
+        with open(self._mission_launch_json("m-001"), "rb") as fh:
+            before = fh.read()
+        self._rebuild_with_launch(die=True)
+        status, body = self._post_allowing_error(
+            "/api/mission/m-001/launch", {"hint": self.CAPTAIN_HINT})
+        self.assertNotEqual(status, 200, "a launch that did nothing said ok")
+        self.assertFalse(body.get("ok"))
+        # the stale record is untouched — nothing launched, nothing pretended to.
+        with open(self._mission_launch_json("m-001"), "rb") as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_the_launch_refusal_says_in_plain_english_what_did_not_happen(self):
+        self._plant_launch_record("m-001", status="stopped",
+                                  message="the app has been stopped.")
+        self._rebuild_with_launch(die=True)
+        _, body = self._post_allowing_error("/api/mission/m-001/launch", {})
+        err = body.get("error") or ""
+        low = err.lower()
+        # it says the app did not start…
+        self.assertIn("launch", low)
+        # …it NAMES what went wrong, rather than going quiet…
+        self.assertIn("unknown option", low)
+        # …in the captain's vocabulary, not the harness's…
+        for word in ("skill '", "exited", "traceback", "subprocess", "argv",
+                     "stderr", "non-zero"):
+            self.assertNotIn(word, low, "harness vocabulary leaked: %r" % word)
+        # …and never in pricing words.
+        for word in ("free", "billed", "cost"):
+            self.assertNotIn(word, low, "pricing word leaked: %r" % word)
+        # …and it reads as sentences, not a log line spliced onto one.
+        self.assertTrue(err.startswith("The app was not launched"), err)
+        tail = err.split("changed.", 1)[1].strip()
+        self.assertTrue(tail[:1].isupper(), "the reason keeps a lower-case "
+                        "opening after a full stop: %r" % err)
+
+    def test_a_fresh_failed_record_is_still_reported_on_the_board(self):
+        """CONTROL, and the thing most easily broken by half two: a REAL failed
+        launch writes its own record on THIS attempt. That record IS this
+        attempt's, stale neighbour or not, so it still rides the board at 200
+        rather than becoming a 502 (UX-33)."""
+        self._plant_launch_record("m-001", status="stopped",
+                                  message="the app has been stopped.")
+        self._rebuild_with_launch(fail=True)
+        status, body = self._post_allowing_error("/api/mission/m-001/launch",
+                                                 {})
+        self.assertEqual(status, 200, body.get("error"))
+        _, board = self._get("/api/board")
+        card = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertEqual(card["launch"]["status"], "failed")
+        self.assertTrue(card["launch"]["message"])
+
+    def test_a_launch_that_never_ran_is_not_tracked_for_group_kill(self):
+        """A refusal leaves no entry — we never adopt a pgid we did not see
+        start, however running the stale record claims to be."""
+        self._plant_launch_record("m-001", status="running", pgid=999999,
+                                  message="stale")
+        self._rebuild_with_launch(die=True)
+        self._post_allowing_error("/api/mission/m-001/launch", {})
+        self.assertNotIn("m-001", self.actions._launches)
 
     # ── 3/4: read-only 403 + the additive field is truly additive ─────────────
     def test_launch_declined_when_read_only(self):

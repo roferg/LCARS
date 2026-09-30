@@ -7,13 +7,13 @@
 #
 # Resolution order (the spec):
 #   1. CONTEXT.md at the repo root            → use it; generate NO pack.
-#   2. .git/lcars/context-pack.md (generated) → reuse it; do NOT regenerate.
+#   2. .git/lcars/context/context-pack.md (generated) → reuse it; do NOT regenerate.
 #   3. neither                                → generate the pack via ONE cold
 #      worker, then use it.
 #
 # HARD INVARIANTS proven here:
 #   - Zero working-tree footprint: the pack lives ONLY at
-#     .git/lcars/context-pack.md; `git status --porcelain` stays empty and no
+#     .git/lcars/context/context-pack.md; `git status --porcelain` stays empty and no
 #     tracked CONTEXT.md is ever created.
 #   - Lazy + once: generation happens on first resolution, never twice.
 #   - Research-agent PURITY: the resolved source reaches the declarative Stages
@@ -31,7 +31,24 @@ set -uo pipefail
 # genuine match into a phantom assertion failure (timing/load-sensitive — it bit
 # the worker-prompt assertions only under the full back-to-back suite). Draining
 # first removes the race; exit status and output are otherwise identical to grep.
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
@@ -190,11 +207,11 @@ out1="$( cd "$r1" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS
     bash "$SCRIPT" context-source 2>/dev/null )"
 # The pack path is derived from `git rev-parse --git-dir` ($PWD/.git), so it
 # carries the $PWD form (NOT the symlink-resolved --show-toplevel form).
-pack1="$r1/.git/lcars/context-pack.md"
+pack1="$r1/.git/lcars/context/context-pack.md"
 check "1. resolver prints the generated pack path" \
   "[ \"$out1\" = \"$pack1\" ]"
 check "1. the pack file was actually created in .git/lcars/" \
-  "[ -f \"$r1/.git/lcars/context-pack.md\" ]"
+  "[ -f \"$r1/.git/lcars/context/context-pack.md\" ]"
 check "1. the context-pack worker was invoked exactly once" \
   "[ \"$(ctx_calls "$WORKER_LOG")\" -eq 1 ]"
 check "1. NO CONTEXT.md was created in the working tree" \
@@ -210,15 +227,37 @@ check "1. the context worker runs read-only (no Bash/Edit)" \
 # ==========================================================================
 r2="$(new_repo)"; arm "$r2"
 mkdir -p "$r2/.git/lcars"
-printf '# pre-existing pack\n' > "$r2/.git/lcars/context-pack.md"
+mkdir -p "$r2/.git/lcars/context"
+printf '# pre-existing pack\n' > "$r2/.git/lcars/context/context-pack.md"
 out2="$( cd "$r2" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
     bash "$SCRIPT" context-source 2>/dev/null )"
 check "2. resolver returns the existing pack path" \
-  "[ \"$out2\" = \"$r2/.git/lcars/context-pack.md\" ]"
+  "[ \"$out2\" = \"$r2/.git/lcars/context/context-pack.md\" ]"
 check "2. the worker was NOT invoked (pack reused, not regenerated)" \
   "[ \"$(ctx_calls "$WORKER_LOG")\" -eq 0 ]"
 check "2. the pre-existing pack content is untouched" \
-  "grep -q 'pre-existing pack' '$r2/.git/lcars/context-pack.md'"
+  "grep -q 'pre-existing pack' '$r2/.git/lcars/context/context-pack.md'"
+
+# ==========================================================================
+# Behaviour 2b (S213) — a pack written at the LEGACY store-root path is moved
+# into the pack's own directory, once, and reused from there. Every repo the
+# captain already has holds one at the old path; without this they would go on
+# handing copilot a FILE for `--add-dir`, which it refuses at argv-parse, and
+# every copilot worker would keep dying before the model ran.
+# ==========================================================================
+r2b="$(new_repo)"; arm "$r2b"
+mkdir -p "$r2b/.git/lcars"
+printf '# legacy pack\n' > "$r2b/.git/lcars/context-pack.md"
+out2b="$( cd "$r2b" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
+    bash "$SCRIPT" context-source 2>/dev/null )"
+check "2b. a legacy store-root pack resolves to the pack's own directory" \
+  "[ \"$out2b\" = \"$r2b/.git/lcars/context/context-pack.md\" ]"
+check "2b. …the content came with it — nothing was regenerated or lost" \
+  "grep -q 'legacy pack' '$r2b/.git/lcars/context/context-pack.md' && [ \"$(ctx_calls \"$WORKER_LOG\")\" -eq 0 ]"
+check "2b. …and the old store-root file is gone, so nothing can grant it again" \
+  "[ ! -f \"$r2b/.git/lcars/context-pack.md\" ]"
+check "2b. …and the resolved path is a real file inside a real DIRECTORY (what copilot's --add-dir needs)" \
+  "[ -d \"$r2b/.git/lcars/context\" ] && [ -f \"$out2b\" ]"
 
 # ==========================================================================
 # Behaviour 3 — CONTEXT.md present → used directly; NO pack generated.
@@ -232,8 +271,8 @@ check "3. resolver returns the repo-root CONTEXT.md" \
   "[ \"$out3\" = \"$(rp "$r3")/CONTEXT.md\" ]"
 check "3. NO pack was generated (worker never invoked)" \
   "[ \"$(ctx_calls "$WORKER_LOG")\" -eq 0 ]"
-check "3. no context-pack.md exists under .git/lcars/" \
-  "[ ! -f \"$r3/.git/lcars/context-pack.md\" ]"
+check "3. no context-pack.md exists under .git/lcars/context/" \
+  "[ ! -f \"$r3/.git/lcars/context/context-pack.md\" ]"
 
 # ==========================================================================
 # Behaviour 3b — CONTEXT.md added AFTER init (filesystem check, not config):
@@ -252,7 +291,7 @@ out3b="$( cd "$r3b" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCA
 check "3b. a CONTEXT.md added after init still wins (resolver returns it)" \
   "[ \"$out3b\" = \"$(rp "$r3b")/CONTEXT.md\" ]"
 check "3b. no pack generated despite config contextFile=null" \
-  "[ \"$(ctx_calls "$WORKER_LOG")\" -eq 0 ] && [ ! -f \"$r3b/.git/lcars/context-pack.md\" ]"
+  "[ \"$(ctx_calls "$WORKER_LOG")\" -eq 0 ] && [ ! -f \"$r3b/.git/lcars/context/context-pack.md\" ]"
 
 # ==========================================================================
 # Behaviour 4 — Readership + PURITY. The resolved source path appears in the
@@ -297,7 +336,7 @@ EOF
 prompt_of() { cat "$1/$2".*.txt 2>/dev/null; }
 
 # The pack path the resolver hands the declarative Stages ($PWD/.git form).
-pack_path() { echo "$1/.git/lcars/context-pack.md"; }
+pack_path() { echo "$1/.git/lcars/context/context-pack.md"; }
 state_at() { # mission-dir  stage
   cat > "$1/state.json" <<JSON
 { "id": "lcars-20260530-001", "type": "feature", "title": "Add dark mode", "stage": "$2", "githubIssue": 42, "branch": "lcars/lcars-20260530-001", "base": "main" }
@@ -356,7 +395,8 @@ check "4. unified TDD worker prompt names the context source path" \
 # CONTEXT.md.
 rRes="$(new_full_mission)"; arm "$rRes"
 state_at "$rRes/.git/lcars/missions/lcars-20260530-001" align
-printf '# pack\n' > "$rRes/.git/lcars/context-pack.md"
+mkdir -p "$rRes/.git/lcars/context"
+printf '# pack\n' > "$rRes/.git/lcars/context/context-pack.md"
 ( cd "$rRes" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
     bash "$SCRIPT" research --mission lcars-20260530-001 >/dev/null 2>&1 )
 # The pack path must not reach either research worker, and neither may carry the
@@ -365,9 +405,9 @@ printf '# pack\n' > "$rRes/.git/lcars/context-pack.md"
 # pointer — that is fixed template text, NOT an injected context source, so we
 # assert on the pack path + the injected block, which are the real leak vectors.)
 check "4. PURITY: research-questions prompt does NOT name the pack path" \
-  "! prompt_of '$WORKER_CALLS' research-questions | qgrep -qF '.git/lcars/context-pack.md'"
+  "! prompt_of '$WORKER_CALLS' research-questions | qgrep -qF 'context-pack.md'"
 check "4. PURITY: research-agent prompt does NOT name the pack path" \
-  "! prompt_of '$WORKER_CALLS' research-agent | qgrep -qF '.git/lcars/context-pack.md'"
+  "! prompt_of '$WORKER_CALLS' research-agent | qgrep -qF 'context-pack.md'"
 check "4. PURITY: research-questions prompt has NO injected '## Repo context' block" \
   "! prompt_of '$WORKER_CALLS' research-questions | qgrep -qF '## Repo context'"
 check "4. PURITY: research-agent prompt has NO injected '## Repo context' block" \
@@ -426,7 +466,7 @@ OUT5="$( cd "$r5" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" \
     bash "$SCRIPT" implement --mission lcars-20260530-001 2>&1 )"
 
 check "5a. the context-pack worker WAS hired and produced no pack (the defect's shape)" \
-  "[ \"$(ctx_calls "$WORKER_LOG")\" -ge 1 ] && [ ! -f \"$r5/.git/lcars/context-pack.md\" ]"
+  "[ \"$(ctx_calls "$WORKER_LOG")\" -ge 1 ] && [ ! -f \"$r5/.git/lcars/context/context-pack.md\" ]"
 # THE STAGE SURVIVED: it reached the wave driver, which emits wave_start. Before
 # the cure the process was already dead at the resolve line and no such event
 # (nor anything else past it) was ever written.

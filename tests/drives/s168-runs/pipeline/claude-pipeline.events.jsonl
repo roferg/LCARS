@@ -1,4 +1,0 @@
-{"ts":1788246167,"mission":"lcars-20260829-002","stage":"research","type":"worker_usage","detail":"usage captured","data":{"engine":"claude","inputTokens":44,"outputTokens":40774,"cost":"1.85525","billingUnit":"usd"}}
-{"ts":1788246969,"mission":"lcars-20260829-002","stage":"validate","type":"worker_usage","detail":"usage captured","data":{"engine":"claude","inputTokens":98,"outputTokens":125402,"cost":"4.15864","billingUnit":"usd"}}
-{"ts":1788247831,"mission":"lcars-20260829-002","stage":"plan","type":"worker_usage","detail":"usage captured","data":{"engine":"claude","inputTokens":144,"outputTokens":250614,"cost":"11.2488","billingUnit":"usd"}}
-{"ts":1788248114,"mission":"lcars-20260829-002","stage":"research","type":"worker_usage","detail":"usage captured","data":{"engine":"claude","inputTokens":20,"outputTokens":23843,"cost":"1.05327","billingUnit":"usd"}}

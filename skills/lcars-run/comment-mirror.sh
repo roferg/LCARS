@@ -575,6 +575,211 @@ cm_mirror_verify_feedback() {
   return 0
 }
 
+# ===========================================================================
+# NUMBER ONE'S REPORT (S202) — one more key in the S65 model, not a new one.
+# ===========================================================================
+# While the first officer holds a Mission, everything it does is written to
+# `<mission>/number-one.jsonl` — one JSON line per action, appended, never
+# rewritten (xo.sh owns that file). This renders that journal onto the issue.
+#
+# IT IS ONE COMMENT, KEYED `number-one`, CREATED ONCE AND EDITED THEREAFTER.
+# The S65 rule, unchanged: a comment per action is precisely the stream the
+# captain rejected, and "Number One answered a gate" is no more entitled to its
+# own comment than "a ticket went green" is. Two answers are two lines in one
+# comment.
+#
+# THE ONE EXCEPTION IS AN ESCALATION, and it is S65's own exception: an EDIT does
+# not notify on GitHub. A gate that has just become the captain's must reach him,
+# so it goes through `cm_ping_gate` — the same fresh-comment-per-distinct-gate
+# path every other human gate uses, idempotent by its recorded key. That is a
+# ping, not a second report.
+#
+# NOTHING HERE INFERS. Status, engine and note are READ off state.numberOne,
+# which the producers wrote; the actions are READ off the journal, which xo.sh
+# wrote. This function works nothing out from prose.
+
+# The mission's one-line numberOne object, or empty.
+# S223: the JSON-aware reader — never `{[^}]*}` (a `}` in a headline).
+_CM_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cm_xo_block() {
+  [ -f "${STATE:-}" ] || return 0
+  declare -F lcars_state_xo_block >/dev/null \
+    || . "$_CM_SELF_DIR/../lcars-init/lcars-state.sh"
+  lcars_state_xo_block "$STATE"
+}
+
+# cm_jl_field <json-text> <key> → its string value, lightly un-escaped. The same
+# deliberately small reader the rest of this file uses: every value it reads was
+# written by an LCARS writer that escaped it, and nothing here needs a parser.
+cm_jl_field() {
+  printf '%s' "$1" \
+    | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
+
+# cm_render_number_one → the report body, or non-zero when there is nothing to
+# report (no journal and no recorded status ⇒ this Mission has no first officer
+# and must grow no comment at all).
+cm_render_number_one() {
+  local jl="$MISSION_DIR/number-one.jsonl" blk status engine note last
+  blk="$(cm_xo_block)"
+  status="$(cm_jl_field "$blk" status)"
+  engine="$(cm_jl_field "$blk" engine)"
+  note="$(cm_jl_field "$blk" note)"
+  last="$(cm_jl_field "$blk" lastAction)"
+  [ -f "$jl" ] || [ -n "$status" ] || return 1
+  [ -s "$jl" ] || [ -n "$status" ] || return 1
+
+  printf '## ◈ Number One'"'"'s report\n\n'
+  printf 'Your first officer has the conn on this Mission. It reads the record and\n'
+  printf 'acts through the ordinary LCARS verbs — it never writes code and it never\n'
+  printf 'merges. Stand it down any time with `lcars xo off %s`.\n\n' "$MISSION_ID"
+
+  printf '**Status:** %s' "${status:-—}"
+  [ -n "$engine" ] && printf '  ·  **Engine:** `%s`' "$engine"
+  [ -n "$last" ] && printf '  ·  **Last action:** %s' "$last"
+  printf '\n'
+
+  # THE NOTE, WHERE THE CAPTAIN CANNOT MISS IT. When Number One handed a gate
+  # back, the reason it gave is the most important line on this comment.
+  if [ -n "$note" ]; then
+    printf '\n> **This one is yours.** %s\n' "$note"
+  fi
+
+  # ◈ THE FIRST OFFICER'S REPORT ON THE BUILD (S203). One rendering, not two:
+  # xo-score.py writes `xo/report.md` out of the same verdict it writes
+  # `xo/verdict.json` from, and this includes it VERBATIM. A second renderer
+  # here would be a second way for the ledger on the issue and the ledger on
+  # disk to disagree, and the whole point of the ledger is that it is checkable.
+  #
+  # SHOT NAMES, NOT IMAGES. GitHub has no comment-image upload API and the PNGs
+  # never leave the laptop that took them (ruling, ledgered) — so the report
+  # names each shot and says in words what it showed.
+  if [ -s "$MISSION_DIR/xo/report.md" ]; then
+    printf '\n### What I saw when I looked at the build\n\n'
+    cat "$MISSION_DIR/xo/report.md"
+    printf '\n'
+  fi
+
+  # ◈ THE LOGS IT FILED (S204). One row per mission log Number One raised for a
+  # gap, with the issue link and the stage the child is actually at RIGHT NOW —
+  # read off that child's own state.json, never inferred from this parent's
+  # journal. The journal says what was DONE; this says where it GOT TO, and the
+  # two are different facts with different lifetimes.
+  #
+  # SHOT NAMES, NOT IMAGES, for the same reason the report gives them: the PNGs
+  # stay on the laptop that took them.
+  if [ -s "$MISSION_DIR/xo/logs.json" ]; then
+    local logs_root ent l_mid l_iss l_ttl l_crit l_shots l_stage l_mark n_logs
+    logs_root="$(dirname "$MISSION_DIR")"
+    n_logs="$(grep -o '"mission"' "$MISSION_DIR/xo/logs.json" 2>/dev/null | grep -c . | tr -d ' ')"
+    printf '\n### The mission logs I filed (%s)\n\n' "${n_logs:-0}"
+    printf 'One ordinary mission log for each place the build contradicts something you\n'
+    printf 'wrote down, with the shot that shows it. LCARS drives them; their fixes ride\n'
+    printf 'this Mission'"'"'s PR — there is no per-bug PR.\n\n'
+    while IFS= read -r ent; do
+      [ -n "$ent" ] || continue
+      l_mid="$(cm_jl_field "$ent" mission)"
+      [ -n "$l_mid" ] || continue
+      l_iss="$(cm_jl_field "$ent" issue)"
+      l_ttl="$(cm_jl_field "$ent" title)"
+      l_crit="$(cm_jl_field "$ent" criterion)"
+      l_stage=""
+      [ -f "$logs_root/$l_mid/state.json" ] \
+        && l_stage="$(sed -n 's/.*"stage"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+                        "$logs_root/$l_mid/state.json" | head -1)"
+      case "$l_stage" in
+        done)   l_mark="✓ accepted" ;;
+        verify) l_mark="◉ waiting on the re-verify" ;;
+        '')     l_mark="▸ driving" ;;
+        *)      l_mark="▸ driving ($l_stage)" ;;
+      esac
+      if grep -q '"awaitingHuman"[[:space:]]*:[[:space:]]*true' \
+           "$logs_root/$l_mid/state.json" 2>/dev/null; then
+        l_mark="⚠ this one needs you"
+      fi
+      printf -- '- %s — %s%s  ·  %s\n' \
+        "$( [ -n "$l_iss" ] && printf '#%s' "$l_iss" || printf '%s' "$l_mid" )" \
+        "${l_ttl:-a gap}" "${l_crit:+ *($l_crit)*}" "$l_mark"
+    done <<<"$(grep -o '{[^}]*}' "$MISSION_DIR/xo/logs.json" 2>/dev/null)"
+  fi
+
+  # THE LAST ANSWER AND THE LINE THAT SETTLED IT. An answer without its grounds
+  # is exactly what the round refuses to produce, so the report shows both.
+  local line lastans=""
+  if [ -f "$jl" ]; then
+    lastans="$(grep '"action": "answered"' "$jl" 2>/dev/null | tail -1)"
+  fi
+  if [ -n "$lastans" ]; then
+    local a_stage a_answer a_file a_quote
+    a_stage="$(cm_jl_field "$lastans" stage)"
+    a_answer="$(cm_jl_field "$lastans" answer)"
+    a_file="$(cm_jl_field "$lastans" file)"
+    a_quote="$(cm_jl_field "$lastans" quote)"
+    printf '\n### The last answer%s\n\n' "${a_stage:+ — the $a_stage gate}"
+    printf '%s\n' "$(cm_blockquote "$a_answer")"
+    if [ -n "$a_quote" ]; then
+      printf '\nGrounds — `%s`:\n\n' "${a_file:-the record}"
+      printf '%s\n' "$(cm_blockquote "$a_quote")"
+    fi
+  fi
+
+  # THE JOURNAL, FOLDED. Newest last, the way the mission's own log reads.
+  if [ -f "$jl" ] && [ -s "$jl" ]; then
+    local n; n="$(grep -c . "$jl" 2>/dev/null)"; n="${n:-0}"
+    printf '\n<details>\n<summary>Number One'"'"'s journal (%s entr%s)</summary>\n\n' \
+      "$n" "$( [ "$n" = "1" ] && printf 'y' || printf 'ies' )"
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      local at act stg what
+      at="$(cm_jl_field "$line" at)"
+      act="$(cm_jl_field "$line" action)"
+      stg="$(cm_jl_field "$line" stage)"
+      case "$act" in
+        answered)  what="$(cm_jl_field "$line" answer)" ;;
+        escalated) what="$(cm_jl_field "$line" recommendation)"
+                   [ -n "$what" ] || what="$(cm_jl_field "$line" rationale)"
+                   [ -n "$what" ] || what="$(cm_jl_field "$line" detail)" ;;
+        *)         what="$(cm_jl_field "$line" detail)" ;;
+      esac
+      printf -- '- `%s` — **%s**%s%s\n' "${at:-—}" "${act:-acted}" \
+        "${stg:+ the $stg gate}" "${what:+ — $what}"
+    done <"$jl"
+    printf '\n</details>\n'
+  fi
+  return 0
+}
+
+# ONE GATE, ONE NOTIFICATION (S202 fix round 1, D2). Set when the ping below
+# fires, read by mirror_comments' generic gate loop. Measured live: a scope park
+# with the first officer ON posted TWO comments a second apart — Number One's
+# ping AND the generic contentless one — while the same park with `lcars xo off`
+# posted one. S202's ping was ADDITIONAL to the pre-existing gate ping instead of
+# REPLACING it, so turning Number One on doubled the captain's notifications.
+#
+# The flag says "THIS GATE has already been announced, with its reason", not
+# "Number One is on": a first officer holding the conn at a gate it has NOT
+# handed back leaves it 0, and the pre-existing ping fires exactly as it always
+# has. With the first officer off, nothing in this file runs at all.
+CM_XO_GATE_PINGED=0
+
+# cm_mirror_number_one — create-or-edit that ONE comment, then ping IF the gate
+# has come back to the captain. Best-effort and ALWAYS 0: the mirror never fails
+# a run.
+cm_mirror_number_one() {
+  local body status note
+  body="$(cm_render_number_one)" || return 0
+  [ -n "$body" ] || return 0
+  cm_upsert "number-one" "$body"
+  status="$(cm_jl_field "$(cm_xo_block)" status)"
+  note="$(cm_jl_field "$(cm_xo_block)" note)"
+  if [ "$status" = "escalated" ]; then
+    cm_ping_gate "Number One handed this gate back to you — ${note:-it would not decide this one for you}"
+    CM_XO_GATE_PINGED=1
+  fi
+  return 0
+}
+
 # cm_hhmm → current time as hh:mm (honours $LCARS_NOW for tests).
 cm_hhmm() {
   local t; t="$(now)"
@@ -651,9 +856,22 @@ mirror_comments() {
     cm_upsert verify "$(cm_render_verify)"
   fi
 
+  # S202 — Number One's report. Keyed like any other living comment; it renders
+  # nothing at all on a Mission the first officer never touched.
+  cm_mirror_number_one
+
   # Gate pings — a NEW comment per distinct gate (idempotent by gate key).
+  #
+  # SKIPPED ENTIRELY when Number One's ping above already carried this gate
+  # (S202 fix round 1, D2). The captain gets one notification per gate, and when
+  # his first officer handed the gate back the one he gets is the one that says
+  # why — never that one PLUS the generic "awaiting your answer" a second later.
+  # Suppressing the whole pass rather than one line is deliberate: every gate
+  # still on this log was pinged on the pass that raised it (the key map is the
+  # dedup truth), so there is no un-announced gate in here to lose.
   local line gtype gstage gdetail
   while IFS= read -r line || [ -n "$line" ]; do
+    [ "${CM_XO_GATE_PINGED:-0}" = "1" ] && break
     [ -n "$line" ] || continue
     case "$line" in *'"type":"gate"'*) : ;; *) continue ;; esac
     gdetail="$(ev_str "$line" detail)"

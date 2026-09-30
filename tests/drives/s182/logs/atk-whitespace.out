@@ -1,2 +1,0 @@
-  worker: claude (bin: detected) model=- (model: unset)
-lcars run: the TDD worker produced no output 1 times for t-001 — likely a transient CLI failure, not a code problem — Stage stopped.

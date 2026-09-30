@@ -384,6 +384,49 @@ def effective_tier(cli, tier, model_aliases=None):
     return tier
 
 
+_TIER_WORDS = {"opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku"}
+
+
+def _reconciled_rationale(why, moved_to):
+    """The estimator's rationale, reconciled with what the engine ACTUALLY
+    runs (S214 fix round 1, D4).
+
+    The captain read `tier: opus` on all six stages with "the ramp keeps every
+    stage on Sonnet" underneath. Both came off records, but off DIFFERENT ones:
+    the tier is the alias resolution, the sentence is free prose from an
+    estimator that is never told which engine the mission runs on. So it
+    narrates the ramp it chose and cannot know what that ramp resolves to.
+
+    `moved_to` is the set of tiers the resolution moved a stage ONTO — empty
+    when every stage kept the tier the estimator picked. It is a fact taken off
+    the resolution itself, never a reading of the sentence: a regex for
+    "Sonnet" would match wording rather than meaning, and the same claim in
+    other words would walk straight past it.
+
+    NOTHING IS OVERWRITTEN. His sizing reasoning is the only record of WHY the
+    mission was scored the way it was and it is still true — only its closing
+    claim about what runs has been overtaken, so the resolution is added after
+    it rather than in place of it. And a tier is named only when every moved
+    stage landed on the SAME one; a mixed table points at itself instead,
+    because there is no single word that would be true of all of it."""
+    if not moved_to:
+        return why
+    if len(moved_to) == 1:
+        word = _TIER_WORDS.get(next(iter(moved_to)))
+        if word:
+            note = ("Your engine runs those stages on %s instead — that is "
+                    "what this table shows." % word)
+        else:
+            note = ("Your engine does not run that ramp as written — this "
+                    "table shows what actually runs.")
+    else:
+        note = ("Your engine does not run that ramp as written — this table "
+                "shows what actually runs, stage by stage.")
+    # No prose is no contradiction: a mission with no rationale (and the github
+    # adapter, which sends none by design) keeps its `why: None`.
+    return "%s %s" % (why.strip(), note) if why else why
+
+
 def model_mix_from_estimate(estimate, engine=None, model_aliases=None):
     """Build `[{stage, tier, why}]` from estimate.json. None when absent.
 
@@ -426,19 +469,39 @@ def model_mix_from_estimate(estimate, engine=None, model_aliases=None):
         return effective_tier(_cli, val, model_aliases)
 
     rows = []
+    # The tiers the resolution moved a stage ONTO, gathered as the rows are
+    # built so the reconciliation below reads the resolution and never the
+    # prose (S214 fix round 1, D4).
+    moved_to = set()
+
+    def _row(key, val):
+        logical = str(val or "").strip().lower()
+        tier = _tier(val)
+        if tier != logical:
+            moved_to.add(tier)
+        return {"stage": _MODEL_STAGE_LABELS.get(key, key), "tier": tier,
+                "why": why}
+
     # Keep the canonical stage order; tolerate extra/missing keys gracefully.
     seen = set()
     for key in _MODEL_STAGE_ORDER:
         if key in models and models[key]:
-            rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
-                         "tier": _tier(models[key]),
-                         "why": why})
+            rows.append(_row(key, models[key]))
             seen.add(key)
     for key, val in models.items():
         if key not in seen and val:
-            rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
-                         "tier": _tier(val), "why": why})
-    return rows or None
+            rows.append(_row(key, val))
+    if not rows:
+        return None
+    # ONE sentence for the whole table — which is how the front end draws it,
+    # as a single note under the rows. Applied after every row is known, so a
+    # stage further down the table cannot leave an earlier row saying something
+    # the resolution has already contradicted.
+    settled = _reconciled_rationale(why, moved_to)
+    if settled != why:
+        for r in rows:
+            r["why"] = settled
+    return rows
 
 
 # --- S190: identity on the board --------------------------------------------
@@ -534,3 +597,49 @@ def assemble(cards, meta=None):
         if stage != "done":
             board["missions"].append(c)
     return board
+
+
+# S201 — NUMBER ONE, ON A CARD.
+#
+# `xo_block` is the sibling of `owner_block` above and it exists for the same
+# reason: ONE builder for a shape both adapters could emit, so the front end
+# cannot tell which adapter served it (ADR-003). The local adapter reads the
+# mission's own `state.numberOne`; the github adapter reads nothing (engagement
+# is a LOCAL fact — the forge has never heard of it), and that asymmetry is
+# deliberate rather than a gap: S191's one-call remote poll must never grow a
+# per-mission `gh` call for it.
+#
+# None ⇒ the caller adds NO `numberOne` key at all — ABSENT, never null. That is
+# the rule every additive key in this shape has followed since S109 and it is
+# what keeps a board with no Number One on it byte-identical to before this
+# round, which is every board this product has served until today.
+#
+# ONLY THE RECORDED FIELDS RIDE. A `numberOne` carrying nothing but `optOut`
+# (what `lcars xo off <id>` writes on a mission Number One never held) answers
+# None: an opt-out is a fact about a FUTURE engagement and the card has nothing
+# to draw for it. A malformed value — a string, a list, a number — answers None
+# too, on the same posture `lcars_xo_status` takes in the shell: an unreadable
+# record is "nothing recorded", never a guess.
+# S213 — `headline` is the ONE LINE the card shows instead of the whole verdict.
+# It is the sentence `xo-score.py` derives off the ledger in the same breath as
+# the score, so the line and the score on that card cannot disagree with each
+# other (C8). It is never a truncation of the worker's own prose.
+# S213 fix round 1 — `meaning` is what the SCORE WORD means for THIS ledger,
+# decided by xo-score.py in the same breath as the score. The board used to
+# explain MEDIUM with one fixed sentence about a primary flow working end to
+# end, and showed it over a mission where nothing could be tested at all.
+_XO_FIELDS = ("status", "engine", "since", "note", "score", "headline",
+              "meaning")
+
+
+def xo_block(value):
+    """{status, engine, since, note, score, headline, meaning} for the card,
+    or None."""
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key in _XO_FIELDS:
+        v = value.get(key)
+        if isinstance(v, str) and v.strip():
+            out[key] = v.strip()
+    return out or None

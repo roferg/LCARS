@@ -1,4 +1,0 @@
-  worker: claude (bin: detected) model=- (model: unset)
-IMPLEMENT: no test runner is configured — mission test-001 parked (awaiting-human).
-  No worker was hired — no retry can conjure a test runner; this needs a human call.
-  Resolve with:  bash /Users/roganferguson/Projects/LCARS/skills/lcars-run/../lcars-respond/respond.sh answer --mission test-001 --answer "<your answer>"

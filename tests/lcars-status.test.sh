@@ -23,7 +23,24 @@ set -uo pipefail
 # genuine match into a phantom assertion failure (timing/load-sensitive — it bit
 # the worker-prompt assertions only under the full back-to-back suite). Draining
 # first removes the race; exit status and output are otherwise identical to grep.
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_STATUS_SCRIPT:-$REPO_ROOT/skills/lcars-status/status.sh}"
@@ -865,6 +882,60 @@ check "W17. NO implement ticket-level line is left flush-left mid-timeline" \
   "! grep -qE '^ticket t-001 ' '$repoW17/out.txt'"
 check "W17. the two cured lines sit between their indented neighbours" \
   "grep -E '^    (⊕|⊗|⊜|⤫|✓|↻|⚑) ' '$repoW17/out.txt' | grep -c . | grep -qE '^(5|6|7)$'"
+
+# --- S207 (absorbed): the five inherited RENDER faults ---------------------
+# Found by the S197 tester, confirmed identical on `main`, and all five visible
+# in ONE table. The column contract is: ID 27, ISSUE, STAGE 19, glyph, TITLE —
+# and every row must line up with the header and keep a separating space.
+repoR="$(new_init_repo)"
+write_mission "$repoR" "lcars-20260601-003-c10e" align   7      "2026-06-03T00:00:00Z" "Plain row"
+write_mission "$repoR" "lcars-20260601-002-c10e" plan    0      "2026-06-02T00:00:00Z" "Zero issue" true "Which way?"
+write_mission "$repoR" "lcars-20260601-001-c10e" implement 123456 "2026-06-01T00:00:00Z" "Six digit issue"
+( cd "$repoR" && bash "$SCRIPT" >outR.txt 2>&1 )
+
+# R1. the ISSUE column vs a 6-digit issue: "#123456" is SEVEN characters and the
+# field was seven wide, so the issue ran straight into the stage with no gutter.
+check "R1. a 6-digit issue does not collide with the STAGE column" \
+  "! qgrep -q '#123456implement' '$repoR/outR.txt'"
+check "R1. the 6-digit row still shows its issue and stage" \
+  "qgrep -qE '#123456 +implement' '$repoR/outR.txt'"
+
+# R2. githubIssue: 0 is NOT an issue number — `#0` links nowhere.
+check "R2. githubIssue 0 renders as the no-issue dash, never '#0'" \
+  "! qgrep -q '#0' '$repoR/outR.txt'"
+check "R2. and the awaiting-input footer says it too" \
+  "! qgrep -q '(#0)' '$repoR/outR.txt'"
+
+# R4. the TITLE header skew: with an EMPTY glyph the tab-split collapsed the
+# field (tab is IFS whitespace), so the title was printed in the 4-wide glyph
+# column — every glyphless row sat 4 columns LEFT of the TITLE header.
+title_col() { # file header-or-row-pattern word
+  awk -v pat="$1" -v w="$2" '$0 ~ pat { i = index($0, w); if (i) { print i; exit } }' "$3"
+}
+HDRCOL="$(awk '/^ID  /{ print index($0, "TITLE"); exit }' "$repoR/outR.txt")"
+PLAINCOL="$(awk '/Plain row/{ print index($0, "Plain row"); exit }' "$repoR/outR.txt")"
+check "R4. a glyphless row's title starts in the TITLE column, not 4 left of it" \
+  "[ -n \"\$HDRCOL\" ] && [ \"\$PLAINCOL\" = \"\$HDRCOL\" ]"
+
+# R5. a DOUBLE-glyph row lost its separating space (two 3-byte glyphs overflow a
+# 4-BYTE-wide printf field), gluing the glyphs to the title.
+check "R5. a double-glyph row keeps a space before the title" \
+  "! qgrep -q '⏸❓Zero issue' '$repoR/outR.txt'"
+check "R5. the double-glyph row still carries both glyphs and its title" \
+  "qgrep -qE '⏸❓ +Zero issue' '$repoR/outR.txt'"
+
+# R3. `json_str` cannot tell UNSET from EMPTY, so a `"testCommand": null` config
+# printed a bare label and a blank value in the buddy readout — indistinguishable
+# from a testCommand set to the empty string, and unreadable either way.
+BUDDY="$REPO_ROOT/skills/lcars-buddy/buddy.sh"
+repoB="$(new_init_repo)"
+printf '{\n  "model": "claude-sonnet",\n  "testCommand": null,\n  "stack": "python"\n}\n' \
+  >"$repoB/.git/lcars/config.json"
+( cd "$repoB" && bash "$BUDDY" >outB.txt 2>&1 )
+check "R3. an unset testCommand SAYS it is unset, not a blank line" \
+  "qgrep -qE 'testCommand: +\(unset\)' '$repoB/outB.txt'"
+check "R3. a SET testCommand still prints its value" \
+  "printf '{\"model\": \"claude-sonnet\", \"testCommand\": \"pytest -q\"}\n' >'$repoB/.git/lcars/config.json'; ( cd '$repoB' && bash '$BUDDY' >outB2.txt 2>&1 ); qgrep -q 'pytest -q' '$repoB/outB2.txt'"
 
 # ==========================================================================
 echo

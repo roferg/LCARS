@@ -40,11 +40,33 @@ set -uo pipefail
 
 SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SKILL_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
 WORKER_BIN="${LCARS_WORKER_BIN:-}"
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILL_DIR/../lcars-run/notify.sh}"
+# Number One's verb (S204 fix round 1, D2). Used for ONE thing only: telling the
+# first officer that the drive IT started has ended badly, so it can hand the
+# mission back to the captain through its own escalate path. Never used to hire
+# a worker and never called unless the parent's RECORDED state says Number One
+# is engaged on it.
+XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILL_DIR/../lcars-xo/xo.sh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
@@ -78,24 +100,6 @@ json_escape() {
         if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
         else if (c=="\r") printf "\\r"
         else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
-}
-
-# --- state mutators (jq-free; same shape as run.sh) ------------------------
-state_del() { # file key
-  local tmp; tmp="$(mktemp)"
-  grep -v "\"$2\"[[:space:]]*:" "$1" >"$tmp" && mv "$tmp" "$1"
-}
-state_set_str() { # file key value
-  state_del "$1" "$2"
-  local esc tmp; esc="$(json_escape "$3")"; tmp="$(mktemp)"
-  K="$2" V="$esc" awk 'NR==1{print; printf "  \"%s\": \"%s\",\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$1" >"$tmp" && mv "$tmp" "$1"
-}
-state_set_raw() { # file key token
-  state_del "$1" "$2"
-  local tmp; tmp="$(mktemp)"
-  K="$2" V="$3" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$1" >"$tmp" && mv "$tmp" "$1"
 }
 
 # --- args ------------------------------------------------------------------
@@ -230,7 +234,24 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 owner_lock_or_die "$PARENT_ISSUE"
+xo_lock_or_die "$PARENT_DIR"
 
 # --- the PARENT's engine (BUG-D) -------------------------------------------
 # A logged bug folds into the parent and must RUN on the SAME engine the parent
@@ -376,8 +397,8 @@ emit_resolve_waves_json() { # "<wave> <id>" lines on stdin
 }
 
 # The queued flag (UX-29): stamp/clear state.json.queued for a child.
-mark_queued()   { state_set_raw "$MISSIONS_DIR/$1/state.json" queued true; }
-clear_queued()  { state_del     "$MISSIONS_DIR/$1/state.json" queued; }
+mark_queued()   { lcars_state_set "$MISSIONS_DIR/$1/state.json" queued true; }
+clear_queued()  { lcars_state_unset "$MISSIONS_DIR/$1/state.json" queued; }
 
 # --- complete: fold the verified children to Done, no per-bug PR (BUG-E) ----
 # Model A — logged-bug fixes ride the PARENT's PR. When the consolidated
@@ -458,7 +479,7 @@ fold_one_child() { # bug-id
   fi
   # Move the child to Done on disk — stage flips to done, branch is preserved
   # (the fix stays folded onto the parent branch; we never rewrite it here).
-  state_set_str "$cstate" stage done
+  lcars_state_set_string "$cstate" stage done
   # Board: clear the stage labels, apply lcars:done — same column move approve
   # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
   #
@@ -530,8 +551,8 @@ undriven_children() {
 # Best-effort; mirrors the gate-raising at the bottom of the default flow in
 # reverse. Called only when NO child of the parent remains pending.
 clear_parent_gate() {
-  state_del "$PARENT_STATE" awaitingHuman
-  state_del "$PARENT_STATE" pendingQuestion
+  lcars_state_unset "$PARENT_STATE" awaitingHuman
+  lcars_state_unset "$PARENT_STATE" pendingQuestion
   rm -f "$PARENT_DIR/pending.json" 2>/dev/null || true
   case "$PARENT_ISSUE" in
     ''|null) : ;;
@@ -560,18 +581,216 @@ reraise_incomplete_gate() { # $1 = "<id>\t<stage>" lines (the undriven set)
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
     echo '  "questions": ['
     printf '    "%s"\n' "$(json_escape "$ask")"
     echo '  ]'
     echo '}'
   } >"$PARENT_DIR/pending.json"
-  state_set_raw "$PARENT_STATE" awaitingHuman true
-  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
   case "$PARENT_ISSUE" in
     ''|null) : ;;
     *) command -v "$GH_BIN" >/dev/null 2>&1 \
          && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
   esac
+}
+
+# reraise_stranded_gate — the DRIVE path's counterpart (S204 fix round 1, D2).
+#
+# THE DEFECT. A child hit its 3-session implement cap and parked; the drive
+# printed "did not reach its Verify gate … resolve it manually" into
+# `xo/resolve.log` — a file nobody opens — and exited. Wave 2 never started, and
+# the PARENT card went on showing Number One engaged with no gate and no note.
+# The captain was told work was happening when nothing was. Run by hand,
+# `lcars xo recheck` already says the right thing; nothing triggered it.
+#
+# THE CURE IS THE EXISTING PATH, WIRED TO FIRE. `reverify-blocked` is already
+# the producer's way of saying "the batch cannot go forward and unblocking it is
+# yours" — `lcars xo answer` routes it straight back to the captain and Number
+# One hires nobody. So the drive raises THAT gate, with the stranded bug named,
+# instead of dying into a log file. No new mechanism, no new kind, no new
+# routing; the same two state writes and the same one ping as every other gate.
+#
+# THE SENTENCE IS THE CAPTAIN'S, NOT THE HARNESS'S. It says which log stopped,
+# where it stopped, what is waiting behind it, and the one command that moves it.
+# Folds nothing, ships nothing, and never claims a fix was accepted.
+reraise_stranded_gate() { # <stranded-id> <stranded-stage> <n-waiting>
+  local bid="$1" bstage="$2" nwait="${3:-0}" btitle ask waiting=""
+  btitle="$(json_str "$MISSIONS_DIR/$bid/state.json" title)"
+  if [ "$nwait" -gt 0 ]; then
+    local wnoun="logs"; [ "$nwait" -eq 1 ] && wnoun="log"
+    waiting=" $nwait more $wnoun on this mission are queued behind it and have not started."
+  fi
+  ask="One of the logged bugs on $PARENT_ID ($PARENT_TITLE) stopped before it could be fixed, so there is nothing to re-verify yet. It is $bid (${btitle:-no title}), and it is stuck at the $bstage step.$waiting Pick it up with \`lcars run $bid\` — answer whatever it is asking — then re-run \`lcars resolve-logs $PARENT_ID\` to take the batch the rest of the way. Nothing has been folded and nothing has been shipped."
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
+    echo '  "questions": ['
+    printf '    "%s"\n' "$(json_escape "$ask")"
+    echo '  ]'
+    echo '}'
+  } >"$PARENT_DIR/pending.json"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) command -v "$GH_BIN" >/dev/null 2>&1 \
+         && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
+  esac
+  # ONE ping, keyed to the PARENT — the same single notification the
+  # consolidated gate fires. A captain who is away finds out the same way.
+  LCARS_CFG="$CONFIG" "$NOTIFY_BIN" "$PARENT_ID" "awaiting-human" "$ask" >/dev/null 2>&1 || true
+  printf '%s\n' "$ask"
+  hand_back_to_number_one
+}
+
+# hand_back_to_number_one — the other half of D2, and the reason the gate alone
+# was not enough.
+#
+# This drive is started BY Number One, which stays `engaged` for the whole of it.
+# Raising a gate while it is still engaged tells the captain to act and then
+# REFUSES him when he does: `lcars resolve-logs` and `lcars respond` both take
+# the engaged lock, and both are named in the sentence above. So the first
+# officer has to be told its drive is over.
+#
+# It is told through its OWN verb, and that verb reads the gate we just recorded:
+# `lcars xo answer` routes on `"kind": "reverify-blocked"` straight to escalate —
+# which records `escalated`, puts the reason on the card as Number One's note,
+# leaves the gate exactly where it is, and hires nobody. No new mechanism; the
+# path was already there with nothing to fire it.
+#
+# BEST-EFFORT, AND ONLY WHEN THE RECORD SAYS SO. No xo.sh, no `lcars_xo_status`,
+# or a parent Number One is not engaged on ⇒ nothing happens and this drive ends
+# exactly as it did before. A captain running `lcars resolve-logs` by hand never
+# hires his first officer as a side effect.
+#
+# TWO WAYS TO SAY IT, BECAUSE THE TWO ANSWERS COST DIFFERENT THINGS (S222).
+#
+#   (no argument) — INLINE. The gate being handed back is `reverify-blocked`,
+#     which `lcars xo answer` routes straight to `escalate`: a couple of state
+#     writes and a note on the card. It hires nobody and it is over in a blink,
+#     so waiting for it costs nothing and keeps the ordering obvious.
+#
+#   `detached`    — for a `reverify` gate, which routes to `cmd_recheck`: it
+#     relaunches the build, drives a real browser and runs a live model worker.
+#     MINUTES. This drive is itself a detached process whose stdout is
+#     `xo/resolve.log`, so running that inline would hold it open for the whole
+#     re-grade and throw every word of the re-grade's own output away. Instead
+#     it is spawned the way Number One spawns THIS script (nohup/setsid, stdin
+#     closed, disowned) with its output kept beside the mission's other logs, in
+#     `xo/recheck.log` — which is where the morning's questions get answered
+#     from — and caged, like every other look.
+XO_HANDBACK_TIMEOUT="${LCARS_XO_RECHECK_TIMEOUT:-${LCARS_XO_LOOK_TIMEOUT:-2700}}"
+
+# THE CAGE. `timeout` is not on a stock macOS, so this is the same three-branch
+# shape xo.sh's own `xo_cage` uses: timeout, gtimeout, or watch it and stop the
+# process WE started — never one found by name, because the captain runs his own
+# daemons beside this one. It lives here as a string rather than as a call
+# because xo.sh is a SCRIPT, not a library this one can source. TERM goes first
+# so xo.sh's own TERM trap gets its chance to stop the launch and the browser
+# properly; KILL takes only what is still there after the grace. 124 is the exit
+# `timeout` itself would give, so a reader can tell a cage from a failure.
+XO_HANDBACK_CAGE_SH='
+secs="$1"; shift
+if command -v timeout  >/dev/null 2>&1; then exec timeout  "$secs" "$@"; fi
+if command -v gtimeout >/dev/null 2>&1; then exec gtimeout "$secs" "$@"; fi
+"$@" &
+pid=$!
+waited=0
+while kill -0 "$pid" 2>/dev/null; do
+  if [ "$waited" -ge "$secs" ]; then
+    kill -TERM "$pid" 2>/dev/null
+    grace=0
+    while kill -0 "$pid" 2>/dev/null && [ "$grace" -lt 10 ]; do
+      sleep 1; grace=$((grace + 1))
+    done
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    exit 124
+  fi
+  sleep 1; waited=$((waited + 1))
+done
+wait "$pid"
+'
+
+hand_back_to_number_one() { # [detached]
+  command -v lcars_xo_status >/dev/null 2>&1 || return 0
+  [ -f "$XO_SCRIPT" ] || return 0
+  [ "$(lcars_xo_status "$PARENT_DIR")" = "engaged" ] || return 0
+  if [ "${1:-}" != "detached" ]; then
+    bash "$XO_SCRIPT" answer --mission "$PARENT_ID" >/dev/null 2>&1 || true
+    return 0
+  fi
+  mkdir -p "$PARENT_DIR/xo" 2>/dev/null || true
+  local rchild=""
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c "$XO_HANDBACK_CAGE_SH" lcars-recheck-cage \
+      "$XO_HANDBACK_TIMEOUT" bash "$XO_SCRIPT" answer --mission "$PARENT_ID" \
+      </dev/null >"$PARENT_DIR/xo/recheck.log" 2>&1 &
+    rchild=$!
+  else
+    nohup bash -c "$XO_HANDBACK_CAGE_SH" lcars-recheck-cage \
+      "$XO_HANDBACK_TIMEOUT" bash "$XO_SCRIPT" answer --mission "$PARENT_ID" \
+      </dev/null >"$PARENT_DIR/xo/recheck.log" 2>&1 &
+    rchild=$!
+  fi
+  disown "$rchild" 2>/dev/null || disown 2>/dev/null || true
+  return 0
+}
+
+# reraise_paused_gate — the THIRD door out of this drive, and until S222 the
+# only silent one (S222 BREAK B).
+#
+# THE INCIDENT, 2026-09-19. One logged bug parked at implement asking a
+# question. SEVEN were queued behind it. `pause_at` echoed three helpful lines
+# and the script exited 0 — into `xo/resolve.log`, a file nobody opens, because
+# Number One starts this drive DETACHED. No gate, no `lcars:awaiting-human`, no
+# ping, no hand-back. The remaining waves never ran, the queued children kept
+# their `queued` flag for good, and the parent card went on showing Number One
+# engaged with work in flight. Nothing shipped and nothing said so.
+#
+# THE CURE IS ITS OWN SIBLING. `reraise_stranded_gate` above already handles the
+# case where a child died mid-flight, through `reverify-blocked` — the one gate
+# the captain has agreed may legitimately come back to him, because Number One
+# cannot clear a fold that could not happen. A child that is ASKING him
+# something is that case exactly: the batch cannot go forward and unblocking it
+# is his. Same kind, same two state writes, same single ping, same hand-back.
+#
+# THE SENTENCE CARRIES THE NUMBER HE COULD NOT SEE. It names the log, quotes
+# what that log is asking, and says how many siblings are queued behind it —
+# which is the fact that made one stuck bug look like a quiet night.
+reraise_paused_gate() { # <paused-id> <n-queued-behind>
+  local bid="$1" nwait="${2:-0}" btitle bq ask waiting=""
+  btitle="$(json_str "$MISSIONS_DIR/$bid/state.json" title)"
+  bq="$(json_str "$MISSIONS_DIR/$bid/state.json" pendingQuestion)"
+  case "$nwait" in ''|*[!0-9]*) nwait=0 ;; esac
+  if [ "$nwait" -eq 1 ]; then
+    waiting=" 1 more log on this mission is queued behind it and has not started."
+  elif [ "$nwait" -gt 1 ]; then
+    waiting=" $nwait more logs on this mission are queued behind it and have not started."
+  fi
+  ask="One of the logged bugs on $PARENT_ID ($PARENT_TITLE) is waiting on YOU, so the rest of the batch cannot go forward. It is $bid (${btitle:-no title}), and what it needs is: ${bq:-it recorded no question}.$waiting Answer it in the inbox (\`lcars answer\`), then re-run \`lcars resolve-logs $PARENT_ID\` to take the batch the rest of the way. Nothing has been folded and nothing has been shipped."
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
+    echo '  "questions": ['
+    printf '    "%s"\n' "$(json_escape "$ask")"
+    echo '  ]'
+    echo '}'
+  } >"$PARENT_DIR/pending.json"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) command -v "$GH_BIN" >/dev/null 2>&1 \
+         && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
+  esac
+  # ONE ping, keyed to the PARENT — never one per bug.
+  LCARS_CFG="$CONFIG" "$NOTIFY_BIN" "$PARENT_ID" "awaiting-human" "$ask" >/dev/null 2>&1 || true
+  hand_back_to_number_one
 }
 
 # reraise_push_failure_gate — sibling of reraise_incomplete_gate for the S89
@@ -589,13 +808,14 @@ reraise_push_failure_gate() {
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
     echo '  "questions": ['
     printf '    "%s"\n' "$(json_escape "$ask")"
     echo '  ]'
     echo '}'
   } >"$PARENT_DIR/pending.json"
-  state_set_raw "$PARENT_STATE" awaitingHuman true
-  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
   case "$PARENT_ISSUE" in
     ''|null) : ;;
     *) command -v "$GH_BIN" >/dev/null 2>&1 \
@@ -616,13 +836,14 @@ reraise_no_branch_gate() {
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "kind": "reverify-blocked",'
     echo '  "questions": ['
     printf '    "%s"\n' "$(json_escape "$ask")"
     echo '  ]'
     echo '}'
   } >"$PARENT_DIR/pending.json"
-  state_set_raw "$PARENT_STATE" awaitingHuman true
-  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  lcars_state_set "$PARENT_STATE" awaitingHuman true
+  lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ask"
   case "$PARENT_ISSUE" in
     ''|null) : ;;
     *) command -v "$GH_BIN" >/dev/null 2>&1 \
@@ -898,7 +1119,29 @@ run_child_driver() { # id
   local id="$1"
   clear_queued "$id"
   if [ -n "$PARENT_ENGINE" ]; then
+    # $LCARS_WORKER_BIN_INTERNAL=1 SAYS WHO SET THE PIN (S207; approve.sh's same
+    # cure, 3055874). run.sh reads a bare $LCARS_WORKER_BIN as the CAPTAIN's own
+    # act and records `engineSource: env` — which overwrites the richer answer
+    # the mission already carries (`adopt-chosen` / `adopt-converted` /
+    # `mission`). This pin is not an operator act: it is LCARS re-asserting the
+    # PARENT mission's engine across a process boundary, so it must not claim to
+    # be the captain's.
+    #
+    # BOTH VARIABLES ARE EXPORTED TO THE CHILD AND STAY TOGETHER. `drive`
+    # re-execs `bash "$SELF" <stage>` once per stage and both travel that hop
+    # as ordinary environment; MEASURED in S207 fix round 1 against the real
+    # run.sh, not a stub. The pin and its marker cannot separate.
+    #
+    # WHAT THIS LINE ALONE DID NOT FIX (S207 fix round 1, D1). The marker
+    # arrived, but the CHILD recorded `engineSource: env` anyway — because a bug
+    # child filed by `lcars log` with no engine in scope has NO `workerBin` of
+    # its own, and run.sh's "an internal pin with nothing behind it" arm used to
+    # degrade the attribution to `env` (the captain's source) for LCARS's own
+    # act. That arm now records `internal`. Through `lcars approve` the pin
+    # always came off a mission that HAD a workerBin, so that arm was never
+    # reached and the defect only showed on this, the direct, path.
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$PARENT_ENGINE" \
+    LCARS_WORKER_BIN_INTERNAL=1 \
     LCARS_NOTIFY="$NOTIFY_BIN" \
       bash "$RUN_SCRIPT" drive --mission "$id" >/dev/null 2>&1 || true
   else
@@ -928,8 +1171,14 @@ pause_at() { # id
 }
 
 # A bug already parked at awaiting-human blocks the batch up front.
+#
+# S222 BREAK B, the TWIN. `pause_at` prints; it does not RAISE anything, and on
+# the detached path its print goes to a log file nobody opens. Every log in
+# `work` is queued behind this one and none of them has been driven, so that is
+# the count the captain needs.
 if [ -n "$paused_existing" ]; then
   pause_at "$paused_existing"
+  reraise_paused_gate "$paused_existing" "${#work[@]}"
   exit 0
 fi
 
@@ -1044,6 +1293,19 @@ fi
 
 if [ -n "$WAVE_PAUSED" ]; then
   pause_at "$WAVE_PAUSED"
+  # S222 BREAK B. HOW MANY ARE BEHIND IT, read off the record rather than
+  # arithmetic: `mark_queued` flags every scheduled log up front and
+  # `run_child_driver` clears its own flag the moment it starts, so a log still
+  # carrying `queued: true` is one that never started. The paused log itself
+  # cleared its flag when it began, and is skipped anyway.
+  nqueued=0
+  for qid in "${work[@]:-}"; do
+    [ -n "$qid" ] || continue
+    [ "$qid" = "$WAVE_PAUSED" ] && continue
+    [ "$(json_raw "$MISSIONS_DIR/$qid/state.json" queued)" = "true" ] \
+      && nqueued=$((nqueued + 1))
+  done
+  reraise_paused_gate "$WAVE_PAUSED" "$nqueued"
   exit 0
 fi
 # BUG-064: a child that did not reach its Verify gate (stuck mid-flight, NOT
@@ -1055,7 +1317,23 @@ fi
 STUCK_NOTE=""
 if [ -n "$WAVE_ERRORED" ]; then
   if [ "${#resolved[@]}" -eq 0 ]; then
-    die "driving $WAVE_ERRORED did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)') — resolve it manually with \`lcars run $WAVE_ERRORED\`, then re-run."
+    # S204 fix round 1 (D2): HAND IT BACK, do not die into a log file. This
+    # drive is usually DETACHED (Number One spawns it with its output going to
+    # `xo/resolve.log`), so an error printed here was read by nobody and the
+    # mission sat silently with its card still saying work was happening.
+    # `reraise_stranded_gate` raises the parent's existing `reverify-blocked`
+    # gate instead, which is the path that was already built to hand a stuck
+    # batch back to the captain.
+    nqueued=0
+    if [ -n "$WAVE_LINES" ]; then
+      nqueued="$(printf '%s\n' "$WAVE_LINES" | grep -c . | tr -d ' ')"
+      nqueued=$(( nqueued - 1 ))
+      [ "$nqueued" -lt 0 ] && nqueued=0
+    fi
+    reraise_stranded_gate "$WAVE_ERRORED" \
+      "$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)" "$nqueued"
+    lcars_state_refusal_die "lcars resolve-logs"
+    exit 1
   fi
   STUCK_NOTE="One logged bug did NOT reach its Verify gate and still needs attention: $WAVE_ERRORED (stage '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)'). Resolve it with \`lcars run $WAVE_ERRORED\`, then re-run \`lcars resolve-logs $PARENT_ID\` to fold it in."
 fi
@@ -1080,9 +1358,19 @@ ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your
 [ -n "$STUCK_NOTE" ] && ASK="$ASK $STUCK_NOTE"
 
 # pending.json on the PARENT (the answer inbox reads this).
+#
+# THE GATE RECORDS WHAT IT IS (S204). `"kind": "reverify"` is not decoration: it
+# is the ONLY thing `lcars xo answer` is allowed to route on. The alternative —
+# recognising this gate by the shape of the sentence above — is the infer-vs-
+# record defect this project has now paid for three times (S147's source parser,
+# S156's regex classifier, S188). The captain and every later round rewrite gate
+# prose freely; a matcher over that prose eventually meets a question that
+# contains its vocabulary and answers it with the wrong verb. So the PRODUCER
+# records the fact and the CONSUMER reads it, and the wording is free to change.
 {
   echo '{'
   printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+  echo '  "kind": "reverify",'
   echo '  "questions": ['
   printf '    "%s"\n' "$(json_escape "$ASK")"
   echo '  ]'
@@ -1090,8 +1378,8 @@ ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your
 } >"$PARENT_DIR/pending.json"
 
 # Overlay the awaiting-human gate on the parent's state.
-state_set_raw "$PARENT_STATE" awaitingHuman true
-state_set_str "$PARENT_STATE" pendingQuestion "$ASK"
+lcars_state_set "$PARENT_STATE" awaitingHuman true
+lcars_state_set_string "$PARENT_STATE" pendingQuestion "$ASK"
 
 # Best-effort board label: add lcars:awaiting-human to the parent issue.
 case "$PARENT_ISSUE" in
@@ -1112,9 +1400,30 @@ if [ -n "$STUCK_NOTE" ]; then
   echo "⚠ $STUCK_NOTE"
 fi
 echo
+# S207 fix round 1 (D2): the consolidated gate IS those two state writes. If the
+# writer refused them the gate does not exist, so this readout would be inviting
+# the captain to answer a card that is not there.
+lcars_state_refusal_die "lcars resolve-logs"
 echo "Raised ONE consolidated re-verify gate on $PARENT_ID and pinged you once."
 echo "The fixes ride this Mission's PR — there is NO per-bug PR. Re-inspect them, then:"
 echo "  lcars answer respond --mission $PARENT_ID --answer \"…\"   — accept (folds each logged bug to Done)"
 echo "  lcars feedback $PARENT_ID \"…\"                            — send the Mission back"
 echo "Open the inbox with \`lcars answer\` to act on the consolidated card."
+
+# --- AND NUMBER ONE IS TOLD (S222 BREAK A) ---------------------------------
+# THE HEADLINE DEFECT. The captain switches Number One on because he is stepping
+# out. It looks, it files the bugs, this drive fixes them and raises the gate
+# above — and then stopped dead. The single re-grade he was promised could never
+# fire by itself: the ONLY automatic road into it is `lcars xo answer` on a
+# `reverify` gate, and nothing was calling it. No `lcars run` is alive on the
+# parent at this moment (its own drive reached Verify, spawned the look detached
+# and halted), and THIS process is a detached one that exits on the next line.
+#
+# So it is said here, on exactly the seam the FAILURE path has used since S204 —
+# same function, same guards, same "only when the record says Number One is
+# engaged", so a captain running `lcars resolve-logs` by hand still never hires
+# his first officer as a side effect. The one difference is `detached`: a
+# re-check is minutes of build, browser and worker, and its output belongs in
+# `xo/recheck.log` rather than in this process's wait.
+hand_back_to_number_one detached
 exit 0

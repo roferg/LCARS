@@ -30,6 +30,22 @@ PR_NOTE=""
 # the sibling lcars-run skill dir; $LCARS_HOST_ADAPTER overrides the path so
 # tests can stub the whole adapter.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SELF_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
@@ -77,6 +93,22 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # --- locate the mission (mirrors run.sh) -----------------------------------
 locate_mission() {
   local id="$1" gitdir
@@ -94,10 +126,6 @@ set_stage() {
   sed "s/\(\"stage\"[[:space:]]*:[[:space:]]*\"\)[^\"]*\(\"\)/\1$newstage\2/" "$STATE" >"$tmp" \
     && mv "$tmp" "$STATE"
 }
-
-# drop a field's line if present (no-op otherwise) — clears the recorded PR so a
-# re-entry to Verify opens a fresh PR.
-state_del() { local tmp; tmp="$(mktemp)"; grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"; }
 
 # Close the Mission's open PR (S75): send-back returns the Mission to Align, so
 # the in-flight PR must not linger open. Best-effort — gh absent / a forge error
@@ -123,9 +151,9 @@ close_open_pr() {
   fi
   # Clear the recorded PR + review marker either way, so a re-entry to Verify
   # opens a FRESH PR rather than re-using the closed one.
-  state_del prUrl
-  state_del prNumber
-  state_del review
+  lcars_state_unset "$STATE" prUrl
+  lcars_state_unset "$STATE" prNumber
+  lcars_state_unset "$STATE" review
 }
 
 # --- gh relabel: best-effort, never blocks the local stage change ----------
@@ -166,6 +194,7 @@ locate_mission "$MISSION_ID"
 # S189: the light lock. BEFORE the feedback.md append — a refusal must leave
 # no trace on a mission that is not ours.
 owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
+xo_lock_or_die "$MISSION_DIR"
 
 # Record the stage we're bouncing back FROM so we can drop its label cleanly.
 PREV_STAGE="$(json_str "$STATE" stage)"
@@ -222,6 +251,11 @@ if [ "$TYPE" = "bug" ] && [ -n "$PARENT" ]; then
   set_stage "plan"
   gh_relabel "lcars:plan" "${PREV_STAGE:+lcars:$PREV_STAGE} lcars:awaiting-human"
 
+  # S207 fix round 1 (D2): the state writer now REFUSES a state.json it will
+  # not touch, and returns non-zero. Ask before announcing anything — a verb
+  # that prints success over a refused write is the `lcars pause` lie the
+  # captain ruled on.
+  lcars_state_refusal_die "lcars feedback"
   echo "FEEDBACK: logged bug re-staged to Plan with your correction folded into the PRD"
   echo "  Appended your note to feedback.md and folded it into prd.md."
   echo "  Stage:  plan (was ${PREV_STAGE:-unknown})"
@@ -250,6 +284,11 @@ close_open_pr
 set_stage "align"
 gh_relabel "lcars:align" "${PREV_STAGE:+lcars:$PREV_STAGE} lcars:awaiting-human"
 
+# S207 fix round 1 (D2): the state writer now REFUSES a state.json it will
+# not touch, and returns non-zero. Ask before announcing anything — a verb
+# that prints success over a refused write is the `lcars pause` lie the
+# captain ruled on.
+lcars_state_refusal_die "lcars feedback"
 echo "FEEDBACK: sent back to Align"
 echo "  Appended your note to feedback.md."
 echo "  Stage:  align (was ${PREV_STAGE:-unknown})"

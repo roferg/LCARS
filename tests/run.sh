@@ -26,7 +26,10 @@ fail=0
 
 for t in "$TESTS_DIR"/*.test.sh; do
   [ -f "$t" ] || continue
-  bash "$t" || fail=1
+  # stdin CLOSED, always: a suite that reads inherited stdin (the `qgrep`
+  # bare-`cat` class, S208) would otherwise block the whole gate forever.
+  # Target-directory resolution above is untouched (BUG-009).
+  bash "$t" </dev/null || fail=1
   echo
 done
 

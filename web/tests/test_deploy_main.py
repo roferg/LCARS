@@ -46,7 +46,7 @@ def _plant_main_launch(root, **fields):
         json.dump(fields, fh)
 
 
-def _deploy_stub(record_path, *, spawn_real=False, fail=False):
+def _deploy_stub(record_path, *, spawn_real=False, fail=False, die=False):
     """A stub for skills/lcars-launch/launch.sh in `--main` mode (S139).
 
     Records its argv/env, then writes `.git/lcars/main/launch.json` (cwd=repo_root)
@@ -60,7 +60,18 @@ def _deploy_stub(record_path, *, spawn_real=False, fail=False):
     """
     fd, path = tempfile.mkstemp(suffix=".sh")
     os.close(fd)
-    if fail:
+    if die:
+        # launch.sh's OWN refusal channel (`die()`: `lcars launch: <sentence>`
+        # on stderr, exit 1) — and, crucially, NO launch.json. The arg parser
+        # dies before anything is written, which is EXACTLY what the captain's
+        # `--config` hint did. Whatever record is on disk is somebody else's.
+        write_body = (
+            '  echo \'lcars launch: unknown option "--config" — usage: lcars '
+            'launch <mission> [hint] [--stop], or lcars launch --main [hint] '
+            '[--stop].\' >&2\n'
+            '  exit 1\n'
+        )
+    elif fail:
         write_body = (
             '  printf \'{"status":"failed","target":"","url":"",\' > "$lj"\n'
             '  printf \'"message":"could not determine how to start the main '
@@ -123,6 +134,11 @@ def _deploy_stub(record_path, *, spawn_real=False, fail=False):
         '#!/usr/bin/env bash\n'
         '{\n'
         '  printf "ARGV: %s\\n" "$*"\n'
+        # S215 — `"$*"` joins with spaces, which ERASES argument boundaries: a
+        # hint split into 20 words and a hint passed whole read identically
+        # there. One line per argv element is what tells them apart, and telling
+        # them apart is the whole defect.
+        '  for a in "$@"; do printf "ARG: [%s]\\n" "$a"; done\n'
         '  printf "ENV_WORKER_BIN: %s\\n" "${LCARS_WORKER_BIN:-}"\n'
         '} >> "' + record_path + '"\n'
         'stop=0\n'
@@ -203,6 +219,30 @@ class DeployBase(unittest.TestCase):
         with open(self.rec) as fh:
             return fh.read()
 
+    def _args(self):
+        """The argv the launch stub was handed, ONE ELEMENT PER ITEM.
+
+        `_record()`'s "ARGV:" line joins on spaces, which cannot distinguish a
+        sentence passed whole from the same sentence split into words — the
+        exact distinction S215 turns on. The stub also writes one `ARG: [x]`
+        line per element; this reads those, from the LAST dispatch only.
+        """
+        out = []
+        for line in self._record().splitlines():
+            if line.startswith("ARGV: "):
+                out = []          # a new dispatch begins
+            elif line.startswith("ARG: [") and line.endswith("]"):
+                out.append(line[len("ARG: ["):-1])
+        return out
+
+    def _post_allowing_error(self, path, obj=None, timeout=10):
+        """Like `_post`, but a 4xx/5xx comes back as (status, body) instead of
+        raising — a REFUSAL is a result here, not an accident."""
+        try:
+            return self._post(path, obj, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
     def _rebuild(self, **stub_kw):
         """Point the launch skill at a fresh stub and rebuild the server."""
         self.scripts["launch"] = _deploy_stub(self.rec, **stub_kw)
@@ -224,14 +264,19 @@ class DeployBase(unittest.TestCase):
 
 
 class DeployEndpointTest(DeployBase):
-    def test_deploy_dispatches_launch_main_with_hint_split(self):
+    def test_deploy_dispatches_launch_main_with_the_hint_whole(self):
+        """S215 — the hint is PROSE and travels as ONE argument.
+
+        It used to travel as `h.split()`, so "the game in web" became four argv
+        elements. That read the same in the joined record, and was the defect:
+        the moment a sentence contained a word like `--config`, the option
+        parser on the far side refused it.
+        """
         status, body = self._post("/api/deploy/main",
                                   {"hint": "the game in web"})
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
-        rec = self._record()
-        # --main + the hint words split exactly as launch()'s path splits them.
-        self.assertIn("ARGV: --main the game in web", rec)
+        self.assertEqual(self._args(), ["--main", "--", "the game in web"])
 
     def test_deploy_no_hint_dispatches_bare_main(self):
         status, body = self._post("/api/deploy/main", {})
@@ -359,6 +404,129 @@ class DeployEndpointTest(DeployBase):
         self.actions.deploy_main()
         self.assertEqual(len([c for c in calls if c[0] == "launch"]), 2)
 
+
+
+# The sentence the captain actually typed into ▸ Deploy Main. It is kept whole,
+# and kept HERE, because every claim below is about THIS string: it is ordinary
+# prose that happens to quote a command, which is the natural way to say "the
+# browser build, not Electron" — and the overlay's own placeholder invites prose.
+CAPTAIN_HINT = (
+    "run the plain BROWSER dev server for packages/editor using its "
+    "vite.config.ts (npx vite --config vite.config.ts) \u2014 not "
+    "electron-vite, no Electron"
+)
+
+
+class DeployHintIsProseTest(DeployBase):
+    """S215 half one — a hint is prose, not argv."""
+
+    def test_a_dashdash_word_inside_a_sentence_is_never_an_option(self):
+        status, body = self._post("/api/deploy/main", {"hint": CAPTAIN_HINT})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        args = self._args()
+        # THREE elements: the mode, the end-of-options marker, and his sentence.
+        # Not twenty-six, one of which the far side reads as `--config`.
+        self.assertEqual(args, ["--main", "--", CAPTAIN_HINT])
+        self.assertNotIn("--config", args)
+
+    def test_no_hint_still_dispatches_a_bare_main(self):
+        """CONTROL — nothing to carry, so no marker and no empty argument."""
+        self._post("/api/deploy/main", {})
+        self.assertEqual(self._args(), ["--main"])
+
+    def test_a_blank_hint_is_no_hint(self):
+        """CONTROL — whitespace only must not become an empty argv element."""
+        self._post("/api/deploy/main", {"hint": "   "})
+        self.assertEqual(self._args(), ["--main"])
+
+    def test_a_plain_hint_still_deploys_exactly_as_before(self):
+        """CONTROL — the sentence with no `--` word. This is the one that
+        worked, and it must keep working, byte for byte on the board."""
+        status, _ = self._post("/api/deploy/main",
+                               {"hint": "the plain browser dev server "
+                                        "for packages/editor"})
+        self.assertEqual(status, 200)
+        _, board = self._get("/api/board")
+        ml = board["meta"].get("mainLaunch")
+        self.assertEqual(ml["status"], "running")
+        self.assertEqual(ml["url"], "http://localhost:9940")
+
+
+class DeployFailureReachesTheCaptainTest(DeployBase):
+    """S215 half two — a stale record is not proof that THIS attempt worked.
+
+    `deploy_main` swallowed a non-zero exit whenever `.git/lcars/main/
+    launch.json` held ANY dict. A `status: stopped` record left by a stop
+    minutes earlier qualified, so a deploy that never started anything answered
+    `{"ok": true}` instantly and the board did not move. That is the infer-vs-
+    record family: success was INFERRED from a file that happened to exist,
+    rather than READ from what this attempt actually did.
+    """
+
+    def test_a_stale_stopped_record_cannot_certify_this_deploy(self):
+        _plant_main_launch(self.tmp, status="stopped", branch="main",
+                           sha="abc1234", target="main deploy", url="",
+                           message="the app has been stopped.")
+        with open(_main_launch_json(self.tmp), "rb") as fh:
+            before = fh.read()
+        self._rebuild(die=True)
+        status, body = self._post_allowing_error("/api/deploy/main",
+                                                 {"hint": CAPTAIN_HINT})
+        self.assertNotEqual(status, 200, "a deploy that did nothing said ok")
+        self.assertFalse(body.get("ok"))
+        # The stale record is untouched — nothing was deployed, and nothing
+        # pretended otherwise.
+        with open(_main_launch_json(self.tmp), "rb") as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_the_refusal_says_in_plain_english_what_did_not_happen(self):
+        _plant_main_launch(self.tmp, status="stopped",
+                           message="the app has been stopped.")
+        self._rebuild(die=True)
+        _, body = self._post_allowing_error("/api/deploy/main", {})
+        err = body.get("error") or ""
+        low = err.lower()
+        # It says the deploy did not happen…
+        self.assertIn("deploy", low)
+        # …it NAMES what went wrong, rather than going quiet…
+        self.assertIn("unknown option", low)
+        # …in the captain's vocabulary, not the harness's…
+        for word in ("skill '", "exited", "traceback", "subprocess", "argv",
+                     "stderr", "non-zero"):
+            self.assertNotIn(word, low, "harness vocabulary leaked: %r" % word)
+        # …and never in pricing words.
+        for word in ("free", "billed", "cost"):
+            self.assertNotIn(word, low, "pricing word leaked: %r" % word)
+        # …and it reads as sentences, not as a log line spliced onto one.
+        self.assertTrue(err.startswith("Main was not deployed"), err)
+        tail = err.split("changed.", 1)[1].strip()
+        self.assertTrue(tail[:1].isupper(), "the reason keeps a lower-case "
+                        "opening after a full stop: %r" % err)
+
+    def test_a_fresh_failed_record_is_still_reported_on_the_board(self):
+        """CONTROL, and the thing most easily broken by half two: a REAL failed
+        deploy writes its own record on THIS attempt. That record IS this
+        attempt's, stale neighbour or not, so it still rides the board at 200
+        rather than becoming a 502 (UX-33)."""
+        _plant_main_launch(self.tmp, status="stopped",
+                           message="the app has been stopped.")
+        self._rebuild(fail=True)
+        status, body = self._post_allowing_error("/api/deploy/main", {})
+        self.assertEqual(status, 200, body.get("error"))
+        _, board = self._get("/api/board")
+        ml = board["meta"].get("mainLaunch")
+        self.assertEqual(ml["status"], "failed")
+        self.assertTrue(ml["message"])
+
+    def test_a_deploy_that_never_ran_is_not_tracked_for_group_kill(self):
+        """A failure leaves no `@main` entry — we never adopt a pgid we did not
+        see start."""
+        _plant_main_launch(self.tmp, status="running", pgid=999999,
+                           message="stale")
+        self._rebuild(die=True)
+        self._post_allowing_error("/api/deploy/main", {})
+        self.assertNotIn("@main", self.actions._launches)
 
 class MainLaunchMetaTest(unittest.TestCase):
     """The additive meta.mainLaunch is ONLY present with a main/launch.json — an

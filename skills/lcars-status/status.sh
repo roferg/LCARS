@@ -149,9 +149,55 @@ if [ "$MODE" = "snapshot" ]; then
 # Each mission becomes one tab-separated record prefixed with a sort key
 # (created\tid) so we can sort newest-first with a plain `sort -r`, breaking
 # ties on id. Record fields: id, issue, stage, glyph, title.
+# S207 R4 — THE RECORD SEPARATOR IS NOT A TAB, and that is the whole of the
+# "TITLE header skew". These records were tab-separated and read back with
+# `IFS=$'\t' read -r …`; TAB IS IFS WHITESPACE, so bash COLLAPSES a run of them
+# and drops empty leading/trailing fields. A row with no status glyph therefore
+# lost that field entirely and every later field shifted left by one: the TITLE
+# was printed into the 4-wide glyph column, four columns off its own header, on
+# every ordinary (unpaused, ungated) mission — i.e. on almost every row LCARS
+# has ever printed. A non-whitespace separator has no such rule: empty fields
+# survive, and the split is positional. US (0x1f) is the ASCII unit separator,
+# is not legal unescaped inside a JSON string, and cannot appear in a title.
+RS=$'\037'
 PAUSE_GLYPH="⏸"
 ASK_GLYPH="❓"
 STANDBY_GLYPH="◇"
+FAILED_GLYPH="✖"
+
+# S218 fix round 1 (F2) — the Stage failure the drive RECORDED: the last
+# `error` event in events.jsonl not superseded by a later stage_start (a new
+# run), stage_done (a Stage finished) or gate (the run stopped on a question).
+# The SAME fact the board card reads (local_adapter._stage_failure). Prints
+# "<stage>\t<log>" (log may be empty), or nothing. Reads the event's TYPE and
+# fields — emit_event's own one-line shape — never the sentence's words.
+stage_failure() { # events.jsonl
+  [ -f "$1" ] || return 0
+  awk '
+    function field(k,   p, r) {
+      p = index($0, "\"" k "\":\"")
+      if (p == 0) return ""
+      r = substr($0, p + length(k) + 4)
+      sub(/".*/, "", r)
+      return r
+    }
+    {
+      t = field("type")
+      # (fix round 2, D2: only an error the drive MARKED — "stageFailure":1 —
+      # counts; unmarked pre-S214 history is never surfaced.)
+      if (t == "error" && index($0, "\"stageFailure\":1") > 0) { st = field("stage"); lg = field("log"); f = 1 }
+      else if (t == "stage_start" || t == "stage_done" || t == "gate") f = 0
+    }
+    END { if (f) printf "%s\t%s\n", st, lg }
+  ' "$1"
+}
+# A live driver holds <mission>/driver.lock/pid — a new run is under way, so
+# the last failure is not the news (mirrors local_adapter._driver_running).
+driver_live() { # mission-dir
+  local pid; pid="$(cat "$1/driver.lock/pid" 2>/dev/null)" || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null
+}
 
 rows=()
 questions=()  # "id\tissue\tquestion" for the awaiting-human footer
@@ -166,9 +212,11 @@ questions=()  # "id\tissue\tquestion" for the awaiting-human footer
 # for "what is wrong with my missions", so it reads it. Cheap: one file read per
 # mission, no gh call, no new file.
 refusals=()   # "id\tissue\tpart\twhy\tfix"
+failures=()   # "id\tissue\tstage\tlog" — S218: a Stage that stopped on a failure
 carried=()    # "id\tissue\tlabel\tfix" — parts a push CARRIED rather than rebuilt
 any_glyph=0   # did any rendered row carry a status glyph? gates the legend
 any_standby=0 # did any row carry the standby (parked / awaiting-alignment) glyph?
+any_failed=0  # did any row carry the failed glyph? (S218)
 for s in "${states[@]}"; do
   id="$(json_str "$s" id)"
   [ -n "$id" ] || id="$(basename "$(dirname "$s")")"
@@ -199,9 +247,13 @@ for s in "${states[@]}"; do
 
   # issue → "#42" or "-" when none has been opened yet (ASCII dash keeps the
   # column aligned — a multibyte em-dash would throw printf's width off)
+  # S207 R2 — `0` IS NOT AN ISSUE NUMBER. GitHub numbers issues from 1, so a
+  # `"githubIssue": 0` is the absence of one written down (a shell arithmetic
+  # default that reached disk). Rendered `#0` it read as a real issue and the
+  # footer offered it too — a link to nothing.
   case "$issue" in
-    ''|null) issue_disp="-" ;;
-    *)       issue_disp="#$issue" ;;
+    ''|null|0) issue_disp="-" ;;
+    *)         issue_disp="#$issue" ;;
   esac
 
   # status glyph: paused and/or awaiting-human (awaiting requires a question)
@@ -217,6 +269,17 @@ for s in "${states[@]}"; do
     glyph="${glyph:+$glyph}$STANDBY_GLYPH"
     stage="awaiting alignment"
     any_standby=1
+  fi
+  # S218 fix round 1 (F2): a Stage that FAILED. The STAGE cell stays the
+  # label's (stage from the label, S191) — the row wears ✖ and the footer
+  # below says which Stage failed and where its log is.
+  sfail=""
+  driver_live "$(dirname "$s")" || sfail="$(stage_failure "$(dirname "$s")/events.jsonl")"
+  if [ -n "$sfail" ]; then
+    IFS=$'\t' read -r fstage flog <<<"$sfail"
+    glyph="${glyph:+$glyph}$FAILED_GLYPH"
+    any_failed=1
+    failures+=("$id"$'\t'"$issue_disp"$'\t'"${fstage:-a stage}"$'\t'"${flog:-}")
   fi
   [ -n "$glyph" ] && any_glyph=1
 
@@ -240,11 +303,11 @@ for s in "${states[@]}"; do
     done <"$carried_file"
   fi
 
-  rows+=("$created"$'\t'"$id"$'\t'"$id"$'\t'"$issue_disp"$'\t'"$stage"$'\t'"$glyph"$'\t'"$title")
+  rows+=("$created$RS$id$RS$id$RS$issue_disp$RS$stage$RS$glyph$RS$title")
 done
 
-# Sort newest-first by the created\tid prefix, then drop that prefix.
-sorted="$(printf '%s\n' "${rows[@]}" | sort -r -t$'\t' -k1,2)"
+# Sort newest-first by the created+id prefix, then drop that prefix.
+sorted="$(printf '%s\n' "${rows[@]}" | sort -r -t"$RS" -k1,2)"
 
 # --- render the table -----------------------------------------------------
 RULE="───────────────────────────────────────────────────────────────"
@@ -262,10 +325,31 @@ echo "$RULE"
 # 18-char id simply pads further. The SORT above is unaffected: it keys on
 # created\tid, and everything up to NNN is still fixed-width, so `…-001-c10e`
 # still sorts before `…-002-c10e`.
-printf '%-27s%-7s%-19s%-4s%s\n' "ID" "ISSUE" "STAGE" "" "TITLE"
-while IFS=$'\t' read -r _created _sortid id issue stage glyph title; do
+#
+# S207 R1 — the ISSUE column is 9, not 7. `#123456` is SEVEN characters and the
+# field was seven wide, so a repo that reached six-digit issue numbers printed
+# `#123456implement` with no separating space at all. 9 restores the same
+# 2-space gutter a 5-digit issue had, and still fits a 7-digit `#1234567`.
+#
+# S207 R5 — THE GLYPH CELL IS PADDED BY CHARACTER COUNT, not by `%-4s`. printf
+# pads to a BYTE width, and each glyph here is a 3-byte UTF-8 character: one
+# glyph got 1 pad byte instead of 3, and TWO glyphs (⏸❓, a paused mission that
+# is also awaiting the captain) overflowed the field and printed `⏸❓Title` with
+# no space at all. Counting characters guarantees the separating space, and
+# leaves a glyphless row exactly 4 cells so it lines up with the TITLE header.
+# (A terminal that renders these glyphs double-width still shifts that row by
+# the extra cell — a cell LCARS cannot measure from bash; what it can promise,
+# and now does, is that the title is never glued to the glyph.)
+GLYPH_COL=4
+glyph_cell() { # glyph -> the glyph plus its padding, never fewer than one space
+  local g="${1:-}" pad=$((GLYPH_COL - ${#1}))
+  [ "$pad" -lt 1 ] && pad=1
+  printf '%s%*s' "$g" "$pad" ""
+}
+printf '%-27s%-9s%-19s%s%s\n' "ID" "ISSUE" "STAGE" "$(glyph_cell "")" "TITLE"
+while IFS="$RS" read -r _created _sortid id issue stage glyph title; do
   [ -n "$id" ] || continue
-  printf '%-27s%-7s%-19s%-4s%s\n' "$id" "$issue" "$stage" "$glyph" "$title"
+  printf '%-27s%-9s%-19s%s%s\n' "$id" "$issue" "$stage" "$(glyph_cell "$glyph")" "$title"
 done <<<"$sorted"
 echo "$RULE"
 # Only show the glyph legend when a row actually carries a glyph — otherwise a
@@ -275,7 +359,26 @@ echo "$RULE"
 if [ "$any_glyph" -eq 1 ]; then
   legend="Legend: $PAUSE_GLYPH paused    $ASK_GLYPH awaiting your input"
   [ "$any_standby" -eq 1 ] && legend="$legend    $STANDBY_GLYPH awaiting alignment"
+  [ "$any_failed" -eq 1 ] && legend="$legend    $FAILED_GLYPH stage failed"
   printf '%s\n' "$legend"
+fi
+
+# --- S218 fix round 1 (F2): Stages that stopped on a failure ---------------
+# One line per mission whose last run stopped on a Stage failure: which Stage,
+# the log that run wrote, and where the whole sentence is.
+if [ "${#failures[@]}" -gt 0 ]; then
+  echo
+  echo "Stopped on a failure:"
+  for fl in "${failures[@]}"; do
+    IFS=$'\t' read -r xid xissue xstage xlog <<<"$fl"
+    xname="$(printf '%s' "$xstage" | awk '{ n = split($0, w, "-"); o = ""; for (i = 1; i <= n; i++) o = o (i > 1 ? " " : "") toupper(substr(w[i], 1, 1)) substr(w[i], 2); print o }')"
+    if [ -n "$xlog" ]; then
+      printf '  %s (%s): %s failed — log: %s\n' "$xid" "$xissue" "$xname" "$xlog"
+    else
+      printf '  %s (%s): %s failed.\n' "$xid" "$xissue" "$xname"
+    fi
+    printf '      → the whole sentence: lcars status --once %s\n' "$xid"
+  done
 fi
 
 # --- awaiting-human footer ------------------------------------------------

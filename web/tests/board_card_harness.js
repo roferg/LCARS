@@ -97,6 +97,10 @@ function project(n) {
     tag: n.tag || "",
     cls: n._cls || "",
     text: n._text || "",
+    // S213 fix round 1, D4 — the TOOLTIP is content: it is where the score
+    // word explains itself, and where it told the captain his primary flow
+    // worked on a mission nothing could be tested on.
+    title: n.title || "",
     disabled: !!n.disabled,
     children: (n.children || []).map(project).filter(Boolean),
   };

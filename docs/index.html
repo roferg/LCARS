@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:679699df90984b6a933f1b27282ee1cd57069077d0943e436af2ad6a4fd685cf -->
-<!-- lcars-docs-src: vision.md sha256:e8c6380d926467e3f4630beb34f6c20bc334b5b2a20334faa1b6a889a4bd2907 -->
+<!-- lcars-docs-src: README.md sha256:7d3fcfbbb7e32334725db3d972f91c8fd526b01ac85e213af7adfd554a495ba8 -->
+<!-- lcars-docs-src: vision.md sha256:b416a28d8e03079cda87c191d6a0e8968a4827ffbb0ec1706895be3a189fdf46 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -56,6 +56,7 @@
       <a href="#quickstart"><div class="dot"></div>Quick start <span class="nav-badge">viewscreen</span></a>
       <a href="#zero"><div class="dot"></div>Starting from zero <span class="nav-badge">day zero</span></a>
       <a href="#holodeck"><div class="dot"></div>The holodeck <span class="nav-badge">design</span></a>
+      <a href="#numberone"><div class="dot"></div>Number One <span class="nav-badge">first officer</span></a>
       <a href="#cli"><div class="dot"></div>The CLI</a>
       <a href="#copilot"><div class="dot"></div>GitHub Copilot</a>
       <a href="#commands"><div class="dot"></div>Commands</a>
@@ -730,6 +731,78 @@ lcars-viewscreen --open   # launch the board and open it in your browser</pre>
       </div>
     </section>
 
+
+    <!-- ═══════════════════════════════════════════════════
+         NUMBER ONE
+         ═══════════════════════════════════════════════════ -->
+    <section id="numberone">
+      <h2>Number One — the AI first officer</h2>
+      <p>LCARS stops at a human gate and waits. <strong>Number One is the optional
+      AI first officer that works those gates for you</strong> when you'd rather
+      walk away — it holds a Mission on your behalf, reviews what got built, and
+      hands the conn back with a report. It is <strong>off by default</strong>.</p>
+
+      <pre>lcars xo on --engine copilot   # engage for this repo (bare `on` opens a picker)
+lcars xo                       # the status table — who has the conn, and what they did
+lcars xo report                # the First Officer's report: what changed since you last looked
+lcars xo off                   # stand down and hand the conn back
+lcars xo off &lt;mission&gt;         # opt ONE mission out, leave the rest engaged</pre>
+
+      <p>Your choice is written into <code>.git/lcars/config.json</code> as a
+      one-line <code>numberOne</code> block, so the engine that reviews your work
+      is a recorded fact rather than a default that drifted. With no
+      <code>--engine</code> and a terminal you get a picker naming the CLIs
+      actually installed on the machine; with no terminal it refuses out loud
+      rather than picking one in silence.</p>
+
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">it takes a park</div>
+          <div class="control-desc">When a Stage escalates, it reads that Mission's
+          record in a read-only copy and either answers through the ordinary
+          <code>lcars respond</code> — attributed <code>answeredBy: number-one</code>,
+          so the record always says who decided — or escalates with a note and a
+          recommendation and leaves the gate standing. It always escalates a scope
+          question, an answer it cannot cite, and anything malformed.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">it looks at what got built</div>
+          <div class="control-desc">At Verify it writes its checklist <em>before</em>
+          it opens a browser — the PRD's acceptance criteria, the plan's per-ticket
+          criteria, the drawing's place names — then launches the build, walks it
+          headless, takes screenshots, and scores the intent match, with appearance
+          judged on one rail and behaviour on another.</div>
+        </div>
+      </div>
+
+      <p>If the build doesn't come up, the score is <strong>LOW</strong> quoting the
+      launch message and no browser starts at all. Screens that need data to exist
+      can be seeded from a declared <code>verifySeed</code> command or a
+      <code>.lcars/verify-seed.sh</code> your project ships; <strong>with neither
+      declared nothing is invented</strong> — those rows read <em>couldn't
+      check</em>, never a fault in your build.</p>
+
+      <p><strong>While Number One is engaged, the write verbs refuse.</strong>
+      <code>approve</code>, <code>feedback</code>, <code>respond</code>,
+      <code>log</code>, <code>pause</code>, <code>resume</code>,
+      <code>resolve-logs</code> and the viewscreen's matching endpoints all answer
+      with one sentence, because Number One is already acting through those same
+      verbs on your behalf. Reading is never gated — <code>lcars status</code>,
+      <code>lcars buddy</code> and the board all work as normal.</p>
+
+      <div class="lcars-alert amber">
+        <div><strong>Advisory, not autonomous — and that's a measurement, not
+        modesty.</strong> On three identical looks at one build it published
+        <code>high</code> over a review that was only <strong>55–64%
+        checked</strong>, and in <strong>3 of 3</strong> runs two frames filed under
+        the names of screens it meant to reach were byte-identical to the opening
+        shot — it never navigated, and nothing checked that it had. Roughly half of
+        each review goes unchecked, with a nine-point swing run to run. It is a
+        genuinely useful second pair of eyes that names real blockers; it is not yet
+        a gatekeeper. <strong>Number One reviews and recommends; you still
+        ship.</strong></div>
+      </div>
+    </section>
 
     <!-- ═══════════════════════════════════════════════════
          THE CLI

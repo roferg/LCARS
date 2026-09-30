@@ -1,2 +1,0 @@
-{"status":"question","question":{"text":"Perfect — the foundation is a Vite + React + Vitest skeleton whose one thin slice is importing a CSV row and showing it, first Vitest test pinning that. Everything else moneyish grows into — full expense list, `total` summing, `categorise` (Dining/Other), multi-row CSV import — gets recorded and deferred to its own mission, not built here. Before I lock this: any other feature you want captured in the vision doc, or anything to fold in first?","closing":true},"prd":""}
-

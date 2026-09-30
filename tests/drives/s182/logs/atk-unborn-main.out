@@ -1,2 +1,0 @@
-  worker: claude (bin: detected) model=- (model: unset)
-lcars run: no parent commit — the repo has no HEAD to prove fail-on-parent against (commit something first).

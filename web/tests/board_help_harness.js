@@ -331,6 +331,15 @@ const topbar = mk("div", null, "frame-top topbar", frame);
 mk("div", null, "brand", topbar);
 mk("div", "repoMeta", "repo-meta", topbar);
 mk("div", "mainDeploy", "main-deploy", topbar);
+// S205: the ◈ Number One band toggle (S201), built here the same way —
+// static default text, matching index.html's own shipped markup, and in the
+// SAME POSITION (right after #mainDeploy, before ▸ Deploy Main) — because
+// this round's ORIENTATION_BRIEFING step (7 · Let Number One take the
+// gates) now names it, and the ref-walk tests resolve every named control
+// against THIS synthetic band, not the real index.html file.
+const xoBtn = mk("button", "xoBtn", "btn xo-toggle", topbar);
+xoBtn.textContent = "◈ Number One · OFF";
+xoBtn.hidden = true;
 const deployMainBtn = mk("button", "deployMainBtn", "btn go", topbar);
 deployMainBtn.textContent = "▸ Deploy Main";
 const fileBtn = mk("button", "fileBtn", "btn go", topbar);

@@ -108,7 +108,14 @@ JSON
   # parent
   mkdir -p "$mroot/parent-001"
   cat >"$mroot/parent-001/state.json" <<'JSON'
-{ "id": "parent-001", "type": "feature", "title": "Theme toggle", "stage": "verify", "branch": "lcars/parent-001", "githubIssue": 42 }
+{
+  "id": "parent-001",
+  "type": "feature",
+  "title": "Theme toggle",
+  "stage": "verify",
+  "branch": "lcars/parent-001",
+  "githubIssue": 42
+}
 JSON
   printf '# Mission: Theme toggle\nAdd a light/dark theme toggle.\n' >"$mroot/parent-001/prd.md"
   printf '# Validated Plan: Theme toggle\nUse a themeStore with toggleTheme().\n' >"$mroot/parent-001/validated-plan.md"
@@ -118,7 +125,18 @@ JSON
   # the logged bug child (as log.sh now writes it)
   mkdir -p "$mroot/bug-002"
   cat >"$mroot/bug-002/state.json" <<'JSON'
-{ "id": "bug-002", "type": "bug", "origin": "log", "title": "sun/moon icon missing when no game open", "stage": "align", "branch": "lcars/parent-001", "base": "main", "githubIssue": null, "parentMission": "parent-001", "parentIssue": 42 }
+{
+  "id": "bug-002",
+  "type": "bug",
+  "origin": "log",
+  "title": "sun/moon icon missing when no game open",
+  "stage": "align",
+  "branch": "lcars/parent-001",
+  "base": "main",
+  "githubIssue": null,
+  "parentMission": "parent-001",
+  "parentIssue": 42
+}
 JSON
   printf '# Mission: sun/moon icon missing when no game open\n\n**Type:** bug\nThe theme icon vanishes when no game is open.\n' >"$mroot/bug-002/prd.md"
   echo "$repo"
@@ -229,7 +247,13 @@ repo2="$(setup)"
 # a feature mission at align (no origin=log, type=feature)
 mkdir -p "$repo2/.git/lcars/missions/feat-003"
 cat >"$repo2/.git/lcars/missions/feat-003/state.json" <<'JSON'
-{ "id": "feat-003", "type": "feature", "title": "A feature", "stage": "align", "githubIssue": null }
+{
+  "id": "feat-003",
+  "type": "feature",
+  "title": "A feature",
+  "stage": "align",
+  "githubIssue": null
+}
 JSON
 printf '# Mission: A feature\n\n**Type:** feature\nBuild a feature.\n' >"$repo2/.git/lcars/missions/feat-003/prd.md"
 # QGEN_LINES empty ⇒ the question-gen worker emits 0 questions ⇒ gate skip ⇒ advance.
@@ -262,7 +286,13 @@ check "G. gate writes no pending.json for a bug" \
 # and a NON-bug with >MAX questions STILL escalates (gate not loosened generally)
 mkdir -p "$repo3/.git/lcars/missions/feat-004"
 cat >"$repo3/.git/lcars/missions/feat-004/state.json" <<'JSON'
-{ "id": "feat-004", "type": "feature", "title": "F", "stage": "align", "githubIssue": null }
+{
+  "id": "feat-004",
+  "type": "feature",
+  "title": "F",
+  "stage": "align",
+  "githubIssue": null
+}
 JSON
 printf '# Mission: F\n' >"$repo3/.git/lcars/missions/feat-004/prd.md"
 drive "$repo3" gate --mission feat-004 --questions "$qf"
@@ -289,7 +319,14 @@ IGN='checkout may be on an UNRELATED branch; IGNORE it and its history'
 # --- Research (question-gen): a feature mission with a branch -----------------
 mkdir -p "$mF/fa-010"
 cat >"$mF/fa-010/state.json" <<JSON
-{ "id": "fa-010", "type": "feature", "title": "Anchor feat", "stage": "align", "branch": "$BR", "githubIssue": null }
+{
+  "id": "fa-010",
+  "type": "feature",
+  "title": "Anchor feat",
+  "stage": "align",
+  "branch": "$BR",
+  "githubIssue": null
+}
 JSON
 printf '# Mission: Anchor feat\n\n**Type:** feature\nBuild it.\n' >"$mF/fa-010/prd.md"
 : >"$repoF/prompts.log"; : >"$repoF/roles.log"
@@ -304,7 +341,16 @@ check "F. research-questions prompt says to ignore the working-tree checkout" \
 # --- Validate: a logged bug with grounding.json (also asserts escalate note) --
 mkdir -p "$mF/va-011/research"
 cat >"$mF/va-011/state.json" <<JSON
-{ "id": "va-011", "type": "bug", "origin": "log", "title": "V", "stage": "validate", "branch": "$BR", "githubIssue": null, "parentMission": "parent-001" }
+{
+  "id": "va-011",
+  "type": "bug",
+  "origin": "log",
+  "title": "V",
+  "stage": "validate",
+  "branch": "$BR",
+  "githubIssue": null,
+  "parentMission": "parent-001"
+}
 JSON
 printf '# Mission: V\n\n**Type:** bug\nSymptom.\n' >"$mF/va-011/prd.md"
 cat >"$mF/va-011/research/grounding.json" <<'JSON'
@@ -325,7 +371,14 @@ check "F. validate escalate note routes through the scope.txt gate" \
 #     recorded on the first spawn (that is all we assert). -----------------------
 mkdir -p "$mF/pl-012"
 cat >"$mF/pl-012/state.json" <<JSON
-{ "id": "pl-012", "type": "feature", "title": "P", "stage": "plan", "branch": "$BR", "githubIssue": null }
+{
+  "id": "pl-012",
+  "type": "feature",
+  "title": "P",
+  "stage": "plan",
+  "branch": "$BR",
+  "githubIssue": null
+}
 JSON
 printf '# Mission: P\n' >"$mF/pl-012/prd.md"
 printf '# Validated Plan: P\n## Synthesis\nx\n## Decisions\n- y\n## Rationale\nz\n' >"$mF/pl-012/validated-plan.md"
@@ -341,7 +394,14 @@ check "F. plan prompt says to ignore the working-tree checkout" \
 # --- Plan Review: worker output stubbed absent → stage fails; prompt recorded. -
 mkdir -p "$mF/pr-013"
 cat >"$mF/pr-013/state.json" <<JSON
-{ "id": "pr-013", "type": "feature", "title": "R", "stage": "plan-review", "branch": "$BR", "githubIssue": null }
+{
+  "id": "pr-013",
+  "type": "feature",
+  "title": "R",
+  "stage": "plan-review",
+  "branch": "$BR",
+  "githubIssue": null
+}
 JSON
 cat >"$mF/pr-013/plan.json" <<'JSON'
 [ { "id": "t-001", "title": "t", "description": "d", "acceptanceCriteria": ["a"], "dependencies": [], "estimatedReadLoc": 10, "estimatedTestLoc": 10, "estimatedNewLoc": 10 } ]

@@ -234,6 +234,7 @@ cat >"$cfgU" <<'JSON'
   "contextFile": null,
   "testCommand": "custom-runner ${LCARS_TESTS_DIR:-.}",
   "comprehensionBudget": 1200,
+  "numberOne": {"enabled": false},
   "created": "2019-09-09T00:00:00Z"
 }
 JSON
@@ -294,6 +295,7 @@ cat >"$cfgUc" <<'JSON'
   "testCommand": null,
   "worktreeSetupCommand": "my-bespoke-provision --offline",
   "comprehensionBudget": 1200,
+  "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2018-01-01T00:00:00Z"
 }
@@ -345,6 +347,7 @@ cat >"$cfgS105" <<'JSON'
   "testCommand": "custom-runner ${LCARS_TESTS_DIR:-.}",
   "worktreeSetupCommand": "my-bespoke-provision",
   "comprehensionBudget": 1200,
+  "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2019-09-09T00:00:00Z"
 }
@@ -400,6 +403,7 @@ cat >"$cfgS105c" <<'JSON'
   "testCommand": null,
   "worktreeSetupCommand": null,
   "comprehensionBudget": 1200,
+  "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2018-01-01T00:00:00Z"
 }
@@ -447,6 +451,7 @@ cat >"$cfgS145" <<'JSON'
   "testCommand": "bundle exec rspec --my-flags spec/only",
   "worktreeSetupCommand": null,
   "comprehensionBudget": 1200,
+  "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2020-02-02T00:00:00Z"
 }
@@ -501,6 +506,7 @@ s148_repo() { # testCommand → repo dir with a pre-S148 config carrying it
   "testCommand": "$esc",
   "worktreeSetupCommand": null,
   "comprehensionBudget": 1200,
+  "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2020-02-02T00:00:00Z"
 }
@@ -547,6 +553,68 @@ check "S148 update: NEVER-CLOBBER — a hand-written lookalike is left byte-for-
   '[ "$S148_GOT_B" = "$S148_HAND" ]'
 check "S148 update: no repair reported for a hand-written command" \
   "! grep -qi 'testCommand migrated' '$repoS148b/out148.txt'"
+
+
+# ==========================================================================
+# S201 — `numberOne` SURVIVES `lcars update`.
+#
+# lcars_config_merge treats DESIRED_CONFIG as the canonical schema: a top-level
+# key that is NOT on the list is DELETED. That is the exact failure S196 paid
+# for with cloneId, and it would silently un-engage Number One on the next
+# update. It also preserves a raw value only when the value sits on ONE LINE —
+# so the block must be written as one line and must come back byte-identical.
+# ==========================================================================
+echo
+echo "S201: the numberOne block"
+
+repoXO="$(new_repo)"
+init_repo "$repoXO"
+CFGXO="$repoXO/.git/lcars/config.json"
+check "S201 init: seeds numberOne DISABLED, on one line" \
+  "[ \"\$(grep -c '\"numberOne\"' '$CFGXO')\" = '1' ] && grep -q '\"numberOne\": {\"enabled\": false}' '$CFGXO'"
+check "S201 init: config.json is valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$CFGXO'"
+
+# Now engage it by hand, exactly the bytes `lcars xo on --engine copilot` writes,
+# and prove `lcars update` gives them back UNCHANGED.
+XOLINE='  "numberOne": {"enabled": true, "engine": "copilot"},'
+python3 - "$CFGXO" "$XOLINE" <<'PY2'
+import re, sys
+path, line = sys.argv[1], sys.argv[2]
+src = open(path).read().splitlines(True)
+out = []
+for ln in src:
+    if '"numberOne"' in ln:
+        out.append(line + "\n")
+    else:
+        out.append(ln)
+open(path, "w").writelines(out)
+PY2
+BEFORE_XO="$(grep '"numberOne"' "$CFGXO")"
+export GH_LOG="$repoXO/gh.log"; : >"$GH_LOG"
+( cd "$repoXO" && LCARS_GH_BIN="$repoXO/gh" bash "$SCRIPT" >outxo.txt 2>&1 )
+AFTER_XO="$(grep '"numberOne"' "$CFGXO")"
+check "S201 update: the numberOne block survives (not deleted by the merge)" \
+  "grep -q '\"numberOne\"' '$CFGXO'"
+check "S201 update: …BYTE-IDENTICAL, on one line" \
+  "[ \"\$AFTER_XO\" = \"\$BEFORE_XO\" ] && [ \"\$(grep -c '\"numberOne\"' '$CFGXO')\" = '1' ]"
+check "S201 update: config.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$CFGXO'"
+
+# An OLD config with no numberOne key at all gets the disabled default backfilled.
+repoXOb="$(new_repo)"
+init_repo "$repoXOb"
+CFGXOb="$repoXOb/.git/lcars/config.json"
+grep -v '"numberOne"' "$CFGXOb" >"$CFGXOb.tmp" && mv "$CFGXOb.tmp" "$CFGXOb"
+export GH_LOG="$repoXOb/gh.log"; : >"$GH_LOG"
+( cd "$repoXOb" && LCARS_GH_BIN="$repoXOb/gh" bash "$SCRIPT" >outxob.txt 2>&1 )
+check "S201 update: backfills a MISSING numberOne as disabled, on one line" \
+  "grep -q '\"numberOne\": {\"enabled\": false}' '$CFGXOb'"
+check "S201 update: …and reports the added key" \
+  "grep -q 'numberOne' '$repoXOb/outxob.txt'"
+check "S201 update: config.json is valid JSON after the backfill" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$CFGXOb'"
+
 
 # ==========================================================================
 echo

@@ -1,7 +1,0 @@
-
-DevTools listening on ws://127.0.0.1:57762/devtools/browser/b8d2957b-a3b0-473e-bd6e-5126bee56425
-Trying to load the allocator multiple times. This is *not* supported.
-[49839:201196597:0905/205215.205342:ERROR:base/process/process_mac.cc:53] task_policy_set TASK_CATEGORY_POLICY: (os/kern) invalid argument (4)
-[49839:201196597:0905/205215.205385:ERROR:base/process/process_mac.cc:98] task_policy_set TASK_SUPPRESSION_POLICY: (os/kern) invalid argument (4)
-[49839:201196556:0905/205215.291501:ERROR:chrome/browser/web_applications/os_integration/os_integration_manager.cc:261] Can't perform OS integration while the browser is shutting down.
-[49839:201196556:0905/205215.300334:ERROR:chrome/browser/web_applications/externally_managed_app_manager.cc:680] https://drive.google.com/drive/installwebapp?usp=chrome_default from install source 1 failed to install with reason 21

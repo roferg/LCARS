@@ -39,6 +39,7 @@ import uuid
 import zlib
 
 from .local_adapter import LocalAdapter
+from .worker_guard import DAEMON_HINT as DAEMON_SHIM_HINT, editor_shim_refusal
 
 
 class ActionError(Exception):
@@ -137,6 +138,60 @@ def _adopt_refusal(exc):
     return out
 
 
+# S215 — `lcars launch`'s OWN refusal channel, the same shape adopt's is:
+# `die()` at skills/lcars-launch/launch.sh:55 prints `lcars launch: <sentence>`
+# and exits 1. Nothing here reads the SENTENCE to decide anything (S165) — the
+# banner is only where the script's prose STARTS.
+_LAUNCH_REFUSAL_BANNER = "lcars launch: "
+
+# `_run` stamps `skill 'launch' exited 1: ` on the front of everything it
+# raises. That sentence is written for whoever is reading the daemon. The
+# captain pressed a button called ▸ Deploy Main; he is owed a sentence about
+# that, not about a subprocess.
+_RUN_STAMP = re.compile(r"^skill '[^']*' exited -?\d+:\s*")
+
+
+def _deploy_failure(exc, what="Main was not deployed"):
+    """`exc` re-cast as a sentence about the CAPTAIN'S DEPLOY.
+
+    `what` names the thing that did not happen, because the same defect — and
+    so the same cure — lives on ▸ Launch, where what did not happen is his
+    mission's app starting, not Main deploying. ONE re-cast, two buttons: two
+    wordings of one refusal is how they drift apart.
+
+    THE DEFECT THIS SERVES. Deploy Main used to answer `{"ok": true}` to a
+    deploy that had started nothing, because a stale launch.json was read as
+    proof of success. Once that stops, the failure arrives here — and a failure
+    that arrives as `skill 'launch' exited 1: …` has only traded one silence
+    for a different one. So: say what did not happen, in his words, and then
+    hand over the reason the script itself gave, verbatim.
+
+    STATUS. A `die()` refusal is the script saying "you asked for something I
+    cannot do" — 409, exactly as `_adopt_refusal` (S191) rules. Anything else
+    really is a fault and keeps its 502, because a broken server answering 409
+    is the same lie pointing the other way.
+    """
+    raw = _RUN_STAMP.sub("", (getattr(exc, "message", "") or "").strip()).strip()
+    status = exc.status
+    at = raw.find(_LAUNCH_REFUSAL_BANNER)
+    if at >= 0 and getattr(exc, "skill_exit", None) == 1:
+        raw = raw[at + len(_LAUNCH_REFUSAL_BANNER):].strip()
+        status = 409
+    reason = " ".join(raw.split())
+    if len(reason) > 400:
+        reason = reason[:399].rstrip() + "\u2026"
+    msg = (what + " \u2014 nothing came online, and nothing on "
+           "the board changed.")
+    if reason:
+        # launch.sh's sentences open lower-case (they are written to follow its
+        # own `lcars launch: ` banner). Here one follows a full stop instead, so
+        # it gets its capital. Nothing else about it is touched.
+        msg += " " + reason[0].upper() + reason[1:]
+    out = ActionError(status, msg, getattr(exc, "data", None))
+    out.skill_exit = getattr(exc, "skill_exit", None)
+    return out
+
+
 # The env seam names the daemon resolves each skill path from (mirrors how
 # serve.sh env-injects). Used by the launcher/__main__ to build the script map.
 SCRIPT_ENV = {
@@ -178,6 +233,8 @@ SCRIPT_ENV = {
     # at the two ENDS of the pipeline; the daemon only DISPATCHES it, and every
     # refusal (wrong stage, missing envelope, no gh) stays the skill's own.
     "adopt": "LCARS_ADOPT_SCRIPT",
+    # S201: `lcars xo` — the repo toggle and the stand-down.
+    "xo": "LCARS_XO_SCRIPT",
 }
 
 
@@ -6566,6 +6623,11 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — cannot "
                 "drive the Align/Log worker")
+        # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
+        # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            raise ActionError(502, _refused)
         # S91 — pasted-image hand-off (the ONE shared seam carries images to the
         # conversational worker; the Align grill AND the Mission-Log split both
         # run through here). Per-engine mechanism, PROVEN by the S91 spike:
@@ -7467,6 +7529,10 @@ class Actions(LogFacts):
             return {"state": "done", "ok": False, "changes": [],
                     "why": "no worker engine is configured, so LCARS could not "
                            "read your project against the mockup"}
+        # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py).
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            return {"state": "done", "ok": False, "changes": [], "why": _refused}
         repo = sess.target_repo
         if not repo or not os.path.isdir(repo):
             return {"state": "done", "ok": False, "changes": [],
@@ -9528,6 +9594,11 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — the "
                 "holodeck has nothing to talk to")
+        # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
+        # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            raise ActionError(502, _refused)
         opening = not sess.started
         cwd = sess.program_dir if sess.mode == "design" else sess.target_repo
         # S169 (FL-014) — THE PASTED IMAGE, ON THIS TURN'S ARGV. The same
@@ -10356,6 +10427,10 @@ class Actions(LogFacts):
                 502, "the holodeck cannot run %s — it is not an executable on "
                 "this machine. Check the engine you picked, or the daemon's "
                 "$LCARS_WORKER_BIN." % bin_)
+        # S217 — refused BEFORE a sidecar or a room is built, like a missing bin.
+        _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if _refused:
+            raise ActionError(502, _refused)
         return bin_
 
     @staticmethod
@@ -10844,8 +10919,51 @@ class Actions(LogFacts):
             env_extra["LCARS_WORKER_MODEL"] = worker_model
         else:
             env_extra["LCARS_WORKER_MODEL"] = None
+        # S218 fix round 1 (F3) — a run this daemon can SEE will be refused is
+        # not started and then left to fail out of sight: the S217 editor-shim
+        # guard is answered HERE, synchronously, as ok:false with its own
+        # sentence. And because the POST's answer is gone once the verdict
+        # fades, the refusal is RECORDED the way the drive records any Stage
+        # failure — an `error` event against the Stage the drive would have
+        # run, written by run.sh's own event writer — so the card says it too.
+        self._refuse_unstartable_engine(
+            mid, env_extra.get("LCARS_WORKER_BIN") or self.worker_bin
+            or os.environ.get("LCARS_WORKER_BIN"))
         self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
+
+    # The Stage `run.sh drive` runs from each resting stage — its `case "$stage"`
+    # in cmd_drive (a freshly filed mission sits at `align` while RESEARCH runs).
+    # Only these spawn a worker; verify/done never reach the guard.
+    _DRIVE_ACTION = {"align": "research", "validate": "validate", "plan": "plan",
+                     "plan-review": "plan-review", "schedule": "schedule",
+                     "implement": "implement"}
+
+    def _refuse_unstartable_engine(self, mid, bin_):
+        """S218 F3: raise ActionError(502, <the guard's sentence>) when the
+        engine this start would hand the drive is VS Code's re-invoking shim,
+        after recording the refusal as the drive's own `error` event. A no-op
+        when the engine is unknown here (run.sh's own guard still stands), the
+        mission is gated, or its stage runs no worker."""
+        if not bin_:
+            return
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        stage = _read_json_key(sp, "stage") or "align"
+        action = self._DRIVE_ACTION.get(stage)
+        if action is None or _read_json_key(sp, "awaitingHuman") is True:
+            return
+        refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
+        if not refused:
+            return
+        try:
+            self._run("run", ["emit-event", "--mission", mid, "--type", "error",
+                              "--stage", action,
+                              "--detail", "%s failed: %s" % (action, refused),
+                              "--data", "stageFailure=1"])
+        except ActionError:
+            pass   # best-effort: the POST's own answer still says it
+        raise ActionError(502, refused)
 
     def _is_running(self, mid):
         """True iff a live driver lock is held for this mission (LocalAdapter)."""
@@ -10907,20 +11025,39 @@ class Actions(LogFacts):
             args = [mid]
             h = (hint or "").strip()
             if h:
-                args += h.split()
+                # S215 CURE ONE, the twin of deploy_main's — the hint is the
+                # captain's PROSE and travels as the ONE opaque value it is. It
+                # used to travel as `h.split()`, which made every word an
+                # argument: the moment his sentence quoted a command — "(npx
+                # vite --config vite.config.ts)", the natural way to say "the
+                # browser build, not Electron" — launch.sh's option parser met
+                # `--config` in argv and refused the whole launch. `--` marks
+                # the end of options, so nothing after it is read as one.
+                args += ["--", h]
             env_extra = {}
             engine = self._persisted_worker_bin(mid)
             if engine:
                 env_extra["LCARS_WORKER_BIN"] = engine
+            # What the record on disk looks like BEFORE we dispatch, so that
+            # afterwards we can tell a record THIS attempt wrote from one that
+            # was already lying there. See `_mission_launch_failed_here`.
+            before = self._mission_launch_record_state(mid)
             try:
                 self._run("launch", args, env_extra=env_extra)
-            except ActionError:
+            except ActionError as exc:
                 # A discovery/liveness failure exits non-zero AND writes a failed
-                # launch.json. If that readable record is present, swallow the exit
-                # and surface the message via the board; otherwise re-raise (a
-                # genuine dispatch error with no record for the FE to show).
-                if not isinstance(self._read_launch_json(mid), dict):
-                    raise
+                # launch.json ON THIS ATTEMPT; that record is the report, so
+                # swallow the exit and surface its message via the board (UX-33).
+                #
+                # S215 CURE TWO — but ONLY then. This used to swallow whenever
+                # `_read_launch_json(mid)` returned any dict at all, and a
+                # `status: stopped` record left by a stop minutes earlier is a
+                # dict. So a launch that refused at the argument parser, wrote
+                # nothing and started nothing answered `{"ok": true}` instantly,
+                # and the board did not move — the captain was told a thing had
+                # happened that had not.
+                if not self._mission_launch_failed_here(mid, before):
+                    raise _deploy_failure(exc, "The app was not launched")
             rec = self._read_launch_json(mid)
             if isinstance(rec, dict) and rec.get("status") == "running":
                 pgid = rec.get("pgid")
@@ -10974,6 +11111,39 @@ class Actions(LogFacts):
     # shutdown site; both drain the launch table.
     close = shutdown_launches
 
+    def _mission_launch_record_state(self, mid):
+        """An opaque snapshot of the mission's launch.json as it is RIGHT NOW —
+        its mtime AND its bytes — or None when there is no record.
+
+        The mission-scoped twin of `_main_launch_record_state`, and both for the
+        same reason: bytes alone would call a re-run that failed the same way
+        twice "unchanged"; an mtime alone leans on clock granularity. The pair
+        only has to answer one question, conservatively — did THIS attempt touch
+        the record? A "no" costs a louder failure than needed, which is the safe
+        direction to be wrong in."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                         "launch.json")
+        try:
+            st = os.stat(p)
+            with open(p, "rb") as fh:
+                return (st.st_mtime_ns, fh.read())
+        except OSError:
+            return None
+
+    def _mission_launch_failed_here(self, mid, before):
+        """True when the record on disk is THIS attempt's own report of failure.
+
+        `before` is the snapshot taken before dispatch. An absent or byte- and
+        mtime-identical record means the launch wrote nothing: whatever is there
+        is somebody else's news — a `stopped` left by an earlier stop says
+        nothing whatever about this launch — and the failure must reach the
+        captain rather than be swallowed."""
+        after = self._mission_launch_record_state(mid)
+        if after is None or after == before:
+            return False
+        rec = self._read_launch_json(mid)
+        return isinstance(rec, dict) and rec.get("status") == "failed"
+
     def _read_launch_json(self, mid):
         """The mission's launch.json as a dict, or None (absent/unreadable)."""
         p = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
@@ -11016,16 +11186,38 @@ class Actions(LogFacts):
             args = ["--main"]
             h = (hint or "").strip()
             if h:
-                args += h.split()
+                # S215 CURE ONE — the hint is the captain's PROSE, and it
+                # travels as the ONE opaque value it is. It used to travel as
+                # `h.split()`, which made every word an argument: the moment his
+                # sentence quoted a command — "(npx vite --config
+                # vite.config.ts)", the natural way to say "the browser build,
+                # not Electron", and the kind of sentence the overlay's own
+                # placeholder invites — launch.sh's option parser met `--config`
+                # in argv and refused the whole deploy. `--` marks the end of
+                # options, so nothing after it is ever read as one.
+                args += ["--", h]
+            # What the record on disk looks like BEFORE we dispatch, so that
+            # afterwards we can tell a record THIS attempt wrote from one that
+            # was already lying there. See `_main_deploy_failed_here`.
+            before = self._main_launch_record_state()
             try:
                 self._run("launch", args)
-            except ActionError:
+            except ActionError as exc:
                 # A discovery/liveness failure exits non-zero AND writes a failed
-                # main/launch.json. If that readable record is present, swallow
-                # the exit and surface the message via the board; otherwise
-                # re-raise (a genuine dispatch error with no record to show).
-                if not isinstance(self._read_main_launch_json(), dict):
-                    raise
+                # main/launch.json ON THIS ATTEMPT; that record is the report, so
+                # swallow the exit and surface its message via the board (UX-33).
+                #
+                # S215 CURE TWO — but ONLY then. This used to swallow whenever
+                # `_read_main_launch_json()` returned any dict at all, and a
+                # `status: stopped` record left by a stop minutes earlier is a
+                # dict. So a deploy that refused at the argument parser, wrote
+                # nothing and started nothing answered `{"ok": true}` instantly,
+                # and the board did not move — the captain was told a thing had
+                # happened that had not. Success was INFERRED from a file that
+                # happened to exist rather than READ from what this attempt did,
+                # which is the family this project keeps paying for.
+                if not self._main_deploy_failed_here(before):
+                    raise _deploy_failure(exc)
             rec = self._read_main_launch_json()
             if isinstance(rec, dict) and rec.get("status") == "running":
                 pgid = rec.get("pgid")
@@ -11064,6 +11256,37 @@ class Actions(LogFacts):
                 return json.load(fh)
         except (OSError, ValueError):
             return None
+
+    def _main_launch_record_state(self):
+        """An opaque snapshot of `.git/lcars/main/launch.json` as it is RIGHT
+        NOW — its mtime AND its bytes — or None when there is no record.
+
+        Both, deliberately. Bytes alone would call a re-run that failed the same
+        way twice "unchanged"; an mtime alone leans on clock granularity. The
+        pair only has to answer one question, and answer it conservatively:
+        did THIS attempt touch the record? A "no" costs a louder failure than
+        needed, which is the safe direction to be wrong in."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "main", "launch.json")
+        try:
+            st = os.stat(p)
+            with open(p, "rb") as fh:
+                return (st.st_mtime_ns, fh.read())
+        except OSError:
+            return None
+
+    def _main_deploy_failed_here(self, before):
+        """True when the record on disk is THIS attempt's own report of failure.
+
+        `before` is the snapshot taken before dispatch. An absent or byte- and
+        mtime-identical record means the deploy wrote nothing: whatever is there
+        is somebody else's news — a `stopped` left by an earlier stop says
+        nothing whatever about this deploy — and the failure must reach the
+        captain rather than be swallowed."""
+        after = self._main_launch_record_state()
+        if after is None or after == before:
+            return False
+        rec = self._read_main_launch_json()
+        return isinstance(rec, dict) and rec.get("status") == "failed"
 
     def pause(self, mid):
         """POST /api/mission/<id>/pause."""
@@ -13008,6 +13231,12 @@ class Actions(LogFacts):
         if not script:
             raise ActionError(500, "no script wired for action '%s'" % key)
         env = dict(os.environ)
+        # S218 — mark everything the daemon dispatches, so a worker-guard refusal
+        # downstream (run.sh / worker-adapter) gives the DAEMON's fix — PATH, then
+        # restart the viewscreen — instead of a `LCARS_WORKER_BIN=` prefix that
+        # the mission's persisted engine would override. Words only; engine
+        # precedence is untouched.
+        env["LCARS_VIEWSCREEN_CHILD"] = "1"
         if self.gh_bin:
             env["LCARS_GH_BIN"] = self.gh_bin
         if self.worker_bin and "LCARS_WORKER_BIN" not in (env_extra or {}):
@@ -13105,7 +13334,7 @@ class Actions(LogFacts):
             raise ActionError(404, "no such mission: %s" % mid)
 
     # ── S191: ADOPT A REMOTE MISSION ────────────────────────────────────────
-    def adopt(self, issue, engine=None):
+    def adopt(self, issue, engine=None, number_one=None):
         """Rebuild the mission on issue `issue` here — `lcars adopt <n>`.
 
         DISPATCH ONLY. Every rule about WHEN an adopt is allowed lives in
@@ -13169,6 +13398,15 @@ class Actions(LogFacts):
         eng = self._adopt_engine(engine)
         if eng:
             args += ["--engine", eng, "--engine-source", "chosen"]
+        # S201 — THE CAPTAIN'S ANSWER TO ADOPT'S VERIFY QUESTION, from a surface
+        # with no tty. `lcars adopt` at a terminal asks "engage Number One on
+        # this mission now?"; the daemon cannot be asked, so adopt.sh takes its
+        # documented non-interactive path and answers `no`. The board's picker
+        # asks instead, and the answer arrives here. ABSENT means the captain
+        # left the box alone, and an absent flag dispatches the exact argv this
+        # daemon has always dispatched.
+        if number_one is not None:
+            args += ["--number-one", "yes" if number_one else "no"]
         try:
             proc = self._run("adopt", args)
         except ActionError as exc:
@@ -13274,6 +13512,204 @@ class Actions(LogFacts):
         except Exception:
             # Script missing, un-runnable, or it hung past the bound. A forge we
             # cannot reach must never stand between the captain and his own work.
+            return None
+        if proc.returncode != 0:
+            return None
+        line = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return line or None
+
+    # ── S201: THE REPO TOGGLE AND THE STAND-DOWN ────────────────────────────
+    # How long the toggle waits for `xo on` to refuse before it lets the sweep
+    # run on in the background (S222). It is a REFUSAL window, not a work
+    # budget: `xo.sh` checks the engine and writes the config block before it
+    # sweeps anything, so every answer that is not "I am now sweeping" lands
+    # inside it with room to spare. Env-settable so a test need not sit through
+    # it.
+    _XO_ON_GRACE = 5.0
+
+    def _xo_on_grace(self):
+        try:
+            return max(0.2, float(os.environ.get("LCARS_XO_ON_GRACE",
+                                                 self._XO_ON_GRACE)))
+        except (TypeError, ValueError):
+            return self._XO_ON_GRACE
+
+    def xo_on(self, engine=None):
+        """`lcars xo on [--engine E]` — Number One takes the conn in this repo.
+
+        DISPATCH ONLY. Every rule about WHICH engines exist, whether the one
+        asked for is on this machine, what the config block looks like and how
+        it is written lives in `xo.sh` (ADR-002). Re-deciding any of it here
+        would be a second implementation of the same verdict — the S168 scar
+        this project already paid for once.
+
+        THE ENGINE IS ALWAYS SENT. The CLI REFUSES a non-tty `on` with no
+        `--engine` on purpose (the adopt precedent: picking an engine in
+        silence is the defect), and the daemon has no tty — so the board's
+        picker asks and the answer arrives here. A body with no engine is that
+        same refusal, raised at the door where the captain can see it, rather
+        than in a spawn log.
+
+        SPAWNED, THEN WAITED ON BRIEFLY (S222). This used to be `_run` —
+        blocking, with no timeout at all — and that was fine while `xo on` only
+        wrote a config block. Since S220 it ALSO sweeps every mission parked at
+        Verify with no score of Number One's, one at a time, each look caged at
+        45 minutes. Eight of those is one HTTP POST held open for six hours: the
+        captain's ONE action in the whole walk-away flow, and it looks hung.
+
+        Fire-and-forget alone would have cost the thing the blocking call was
+        buying. `xo.sh` REFUSES an engine that is not on this machine, and that
+        refusal reaches the board as a 502 it prints (`dispatchCard` →
+        `setVerdict`); through `_spawn` it would go to a log file while the
+        board said "ON". A silent failure behind a spinner is worse than the
+        hang we set out to cure.
+
+        So: spawn it detached with its output captured (the `_spawn` contract —
+        a real file, never a pipe, so it can never wedge the daemon), then wait
+        a few seconds. An `xo.sh` that has already exited answers now, exit code
+        and all. One that is still going is sweeping, which is the whole point,
+        and the board is told so. Nothing here re-decides anything `xo.sh` owns.
+        """
+        eng = self._adopt_engine(engine)
+        if not eng:
+            raise ActionError(
+                400, "which engine should Number One use? Pick one at the "
+                     "board's picker, or run `lcars xo on --engine <engine>`.")
+        args = ["on", "--engine", eng]
+        # WHERE THIS RUN'S OUTPUT STARTS. `_spawn` appends to the per-key log,
+        # so an earlier toggle's text is already in the file; the offset is what
+        # keeps a refusal message about THIS run from quoting the last one.
+        log_path = self._spawn_log_path("xo", args)
+        try:
+            start = os.path.getsize(log_path)
+        except OSError:
+            start = 0
+        proc = self._spawn("xo", args)
+        try:
+            rc = proc.wait(timeout=self._xo_on_grace())
+        except subprocess.TimeoutExpired:
+            # Still going — it is sweeping. NOT killed, not waited on further.
+            rc = None
+        out = ""
+        try:
+            with open(log_path, "rb") as fh:
+                fh.seek(start)
+                out = fh.read().decode("utf-8", "replace").strip()
+        except OSError:
+            pass
+        if rc not in (None, 0):
+            err = ActionError(
+                502, "skill 'xo' exited %d: %s" % (rc, out))
+            err.skill_exit = rc
+            raise err
+        return {"enabled": True, "engine": eng, "output": out,
+                "sweeping": rc is None}
+
+    def xo_off(self, mid=None):
+        """`lcars xo off [<mission>]` — hand the conn back.
+
+        With no mission: the repo goes OFF and every engaged mission is stood
+        down. With one: that mission alone, and it is validated against this
+        laptop first — `mid` is about to become a command-line argument, and a
+        mission that is not here is a 404 rather than a shell-out that fails.
+
+        NEVER LOCKED, by anything. Standing Number One down is how the captain
+        takes the conn back; refusing it because Number One holds the mission
+        would lock the door from the inside — the same reasoning `adopt` sits
+        outside `_OWNER_LOCKED_VERBS` on.
+        """
+        args = ["off"]
+        if mid is not None:
+            name = str(mid).strip()
+            if (not name or name.startswith("-") or "/" in name
+                    or name in (".", "..")):
+                raise ActionError(400, "xo off: %r is not a mission id" % (mid,))
+            if not os.path.isfile(os.path.join(self._missions_dir(), name,
+                                               "state.json")):
+                raise ActionError(404, "no such mission: %s" % name)
+            args.append(name)
+        proc = self._run("xo", args)
+        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return {"mission": mid, "output": out}
+
+    def xo_seen(self, entry=None, mission=None, entries=None):
+        """`POST /api/xo/seen` — the board's ✓ Seen, the SAME mark the CLI's
+        `lcars xo report --seen` writes (S205).
+
+        WITH AN `entry` KEY it is S213's finer mark: ONE entry dealt with,
+        `lcars xo report --seen-entry <key>`. Seen means "I have dealt with
+        this", never "this is gone" — neither verb removes anything, and the
+        entry stays in history for good.
+
+        DISPATCH ONLY (ADR-002): `xo-report.py` already owns the one file this
+        writes (`.git/lcars/xo-seen.json`) — this only shells the verb that
+        writes it. The daemon re-reads the fresh report straight off the
+        adapter afterward (server.py), so a POST answers with what actually
+        changed rather than this dispatch's own stdout.
+        """
+        key = str(entry or "").strip()
+        if key:
+            self._run("xo", ["report", "--all", "--seen-entry", key])
+            return {"seen": True, "entry": key}
+        # S223 fix round 1 (D5): ✓ Seen all N sends the N KEYS it named, not a
+        # mission id — the board's header button counts the rows on screen
+        # under the filter that is on, and those are the rows that clear. Same
+        # mark as one ✓ Seen, N times; still nothing removed.
+        keys = [str(k).strip() for k in (entries or [])
+                if isinstance(k, str) and str(k).strip()]
+        if keys:
+            args = ["report", "--all"]
+            for k in keys:
+                args += ["--seen-entry", k]
+            self._run("xo", args)
+            return {"seen": True, "entries": keys}
+        # S223: ✓ Seen all N — every entry of ONE mission still in the news,
+        # `lcars xo report --seen-mission <id>`. Same grain of meaning as one
+        # ✓ Seen, times N: dealt with, kept in history, nothing deleted.
+        mid = str(mission or "").strip()
+        if mid:
+            self._run("xo", ["report", "--all", "--seen-mission", mid])
+            return {"seen": True, "mission": mid}
+        self._run("xo", ["report", "--all", "--seen"])
+        return {"seen": True}
+
+    # ── S201: THE ENGAGED LOCK, SERVER-SIDE ─────────────────────────────────
+    def xo_lock_reason(self, mid):
+        """One plain line when Number One holds this mission, else None.
+
+        The sibling of `owner_lock_reason`, and it works the same way: IT
+        SHELLS, IT DOES NOT DECIDE. The verdict, the posture and the sentence
+        all come from `ownership.sh xo-lock-reason` — the same op the CLI verbs
+        consult through the sourced library — so there is exactly one
+        implementation of "is Number One engaged here?" (ADR-002).
+
+        WHAT IS PASSED IS THE MISSION DIRECTORY, not an issue number.
+        Engagement is a LOCAL fact recorded in the mission's own state.json;
+        the forge knows nothing about it. Handing over the resolved path also
+        keeps the shell-out free of any `git rev-parse` of its own, so the
+        answer cannot change with the daemon's working directory.
+
+        EVERY UNCERTAIN CASE ANSWERS None (allowed):
+          * no `ownership` script wired            → the pre-S201 daemon
+          * no mission directory on this laptop    → nothing to be engaged on
+          * an unreadable or keyless state.json    → nothing recorded
+          * the script missing, un-runnable, slow  → a guard must not refuse
+        A false lock is strictly worse than the thing the lock prevents.
+        """
+        script = self.scripts.get("ownership")
+        if not script:
+            return None
+        mission_dir = os.path.join(self._missions_dir(), mid)
+        if not os.path.isfile(os.path.join(mission_dir, "state.json")):
+            return None
+        try:
+            proc = subprocess.run(
+                ["bash", script, "xo-lock-reason", mission_dir],
+                cwd=self.repo_root, env=dict(os.environ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=20)
+        except Exception:
             return None
         if proc.returncode != 0:
             return None
@@ -13916,6 +14352,10 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         # S191 — `lcars adopt`, resolved like every other skill.
         "adopt": os.path.join(
             home, ".claude/skills/lcars-adopt/adopt.sh"),
+        # S201 — `lcars xo`, the ONE writer of the numberOne config block and
+        # of a mission's numberOne state. The daemon only dispatches it.
+        "xo": os.path.join(
+            home, ".claude/skills/lcars-xo/xo.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():

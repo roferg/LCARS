@@ -105,11 +105,16 @@ in whichever unit the active CLI uses:
 - **validate / plan / planReview** are each a single cold worker (≈1 request
   each, more if a round repeats — Plan Review can loop up to 3 rounds). Token
   volume scales with the plan size and the breadth of context each reads.
-- **implement** runs, per ticket, an adversarial **Test-Writer + Implementer**
-  pair, each able to retry up to the attempt cap (5). So requests ≈ ticket-count
-  × 2 pairs × attempts-actually-used. Estimate the **ticket-count band** from the
-  plan's likely vertical-slice decomposition, and the attempts from how
-  error-prone the code is. This is usually the dominant stage in BOTH units.
+- **implement** runs, per ticket, ONE **unified TDD worker** that writes the
+  tests and the production code together, whose work is then proven by
+  deterministic post-hoc gates — the fail-on-parent/pass-on-tip flip-flop, the
+  declared test-edits contract, and a quality floor. A gate rejection bounces the
+  ticket to a FRESH worker, up to 3 sessions, then parks it awaiting-human. So
+  requests ≈ ticket-count × sessions-actually-used (1 per ticket on the smooth
+  path, up to 3 on a ticket the gates keep rejecting). Estimate the
+  **ticket-count band** from the plan's likely vertical-slice decomposition, and
+  the sessions from how error-prone the code is. This is usually the dominant
+  stage in BOTH units.
 - **verify** is a single cheap check (≈1 request, modest tokens).
 
 Be honest about the range: `low` is the smooth path, `high` allows for fan-out,

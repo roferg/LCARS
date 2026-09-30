@@ -25,12 +25,20 @@ LCARS_TYPE_COLOR="4499FF"
 LCARS_STATUS_COLOR="FF3344"
 LCARS_REL_COLOR="9977FF"
 LCARS_ROLE_COLOR="00B894"
+# S203 — Number One. The first officer's own family, in the board's peach:
+# `--lcars-peach` is the one warm accent no card state had claimed, and a forge
+# label has no theme tokens to inherit, so the hex is written here once.
+LCARS_XO_COLOR="FF9966"
 
 LCARS_STAGE_LABELS="align research validate plan plan-review schedule implement verify done"
 LCARS_TYPE_LABELS="feature bug"
 LCARS_STATUS_LABELS="paused awaiting-human"
 LCARS_REL_LABELS="linked"
 LCARS_ROLE_LABELS="mission ticket"
+# THE SCORE IS A LABEL (captain ruling): one source per fact — the label is the
+# score, the comment is the report — so a REMOTE card reads the intent match off
+# the listing the board already fetched, with no second forge call (S191).
+LCARS_XO_LABELS="xo:high xo:medium xo:low xo:engaged"
 
 lcars_label_desc() {
   case "$1" in
@@ -50,6 +58,10 @@ lcars_label_desc() {
     lcars:linked)         echo "Relationship: linked to another mission" ;;
     lcars:mission)        echo "Role: a Mission's own command-and-control issue" ;;
     lcars:ticket)         echo "Role: an implementation sub-issue spun up by Schedule" ;;
+    lcars:xo:high)        echo "Number One: intent match HIGH — the point of the mission and every requirement beyond polish worked" ;;
+    lcars:xo:medium)      echo "Number One: intent match MEDIUM — the point of the mission works, with named known issues" ;;
+    lcars:xo:low)         echo "Number One: intent match LOW — the point of the mission didn't work or couldn't be checked" ;;
+    lcars:xo:engaged)     echo "Number One: engaged on this mission on the owner's behalf" ;;
     *)                    echo "LCARS label" ;;
   esac
 }
@@ -63,6 +75,7 @@ lcars_all_labels() {
   for n in $LCARS_STATUS_LABELS; do echo "lcars:$n|$LCARS_STATUS_COLOR"; done
   for n in $LCARS_REL_LABELS;    do echo "lcars:$n|$LCARS_REL_COLOR";    done
   for n in $LCARS_ROLE_LABELS;   do echo "lcars:$n|$LCARS_ROLE_COLOR";   done
+  for n in $LCARS_XO_LABELS;     do echo "lcars:$n|$LCARS_XO_COLOR";     done
 }
 
 # lcars_create_labels — create any MISSING canonical labels on the current repo.
@@ -1941,6 +1954,26 @@ lcars_json_escape() {
 }
 
 # ---------------------------------------------------------------------------
+# S207 — THE ONE state.json FIELD WRITER lives in lcars-state.sh
+# ---------------------------------------------------------------------------
+# `lcars_state_set` / `lcars_state_set_string` / `lcars_state_unset` (and the
+# one-line-object trio `lcars_json1_*`) are in a SEPARATE, self-contained file
+# beside this one, and this file pulls them in so anything that sources
+# lcars-common.sh has them.
+#
+# WHY A SEPARATE FILE. Eight scripts write state.json and every one of them
+# needs the writer, but three of them (pause, respond, feedback) source no
+# shared library at all, and run.sh deliberately does not source THIS one
+# eagerly — it is re-entered as a subprocess for every Stage and every ticket,
+# and it says so in its own words at drive_load_common ("sourcing a second
+# library into all of them to serve none of them is blast radius for nothing").
+# A 150-line file they can all source costs them nothing; a 4,000-line one
+# would have forced a choice between that cost and a ninth copy of the writer.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lcars-state.sh}"
+# shellcheck source=./lcars-state.sh
+[ -f "$LCARS_STATE_LIB" ] && . "$LCARS_STATE_LIB"
+
+# ---------------------------------------------------------------------------
 # S195 — WHICH WORKER CLIs THIS MACHINE ACTUALLY HAS
 # ---------------------------------------------------------------------------
 # THE ONE DETECTOR, and it is deliberately the one that already existed: `lcars
@@ -1963,7 +1996,43 @@ lcars_json_escape() {
 # The engines LCARS drives, in the order every surface offers them. Same pair
 # and same order as the daemon's `_HOLODECK_ENGINES` and the File console's
 # picker; this is the shell-side home of it.
+# ---------------------------------------------------------------------------
+# THE RUNNING LCARS VERSION — the stamp `lcarsVersion` carries.
+# ---------------------------------------------------------------------------
+# ONE implementation, here, because THREE skills have to answer it identically:
+# `lcars init` seeds the stamp, `lcars update` refreshes it, and (S207) `lcars
+# adopt` seeds it on the config it writes for a cold clone. init and update each
+# carried a byte-identical private copy; adopt would have been the third, and a
+# third copy of "which version am I" is how the stamp starts disagreeing with
+# itself.
+#
+# VERSION ships in the repo root (../.. from this file's own directory; -P
+# resolves the install symlink to the physical checkout, so the answer is the
+# CHECKOUT's version and not the symlink farm's). $LCARS_VERSION wins so a test
+# can pin it; $LCARS_REPO redirects the checkout root. This mirrors the
+# resolution in skills/lcars-version/version.sh.
+#
+# EMPTY IS A REAL ANSWER (no VERSION file): every caller then OMITS the key
+# rather than seeding a bogus stamp.
+lcars_running_version() {
+  if [ -n "${LCARS_VERSION:-}" ]; then printf '%s' "$LCARS_VERSION"; return; fi
+  local phys repo vf
+  phys="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  repo="${LCARS_REPO:-$(cd "$phys/../.." 2>/dev/null && pwd -P)}"
+  vf="$repo/VERSION"
+  [ -f "$vf" ] || return 0
+  sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}' "$vf"
+}
+
 LCARS_ENGINES="claude copilot"
+
+# S217 — the ONE worker-bin guard (lcars_worker_bin_guard: refuse a `copilot`
+# that resolves to VS Code's own re-invoking shim). It lives in its own small
+# file so worker-adapter.sh can source it without this whole library; sourcing
+# it here gives every skill that sources lcars-common.sh the same function.
+# shellcheck source=worker-guard.sh
+[ -f "$(dirname "${BASH_SOURCE[0]}")/worker-guard.sh" ] \
+  && . "$(dirname "${BASH_SOURCE[0]}")/worker-guard.sh"
 
 # lcars_engine_bin <engine> — the binary name/path to look for. Both are env
 # seams so a test can pin what this machine "has" without touching $PATH (and
@@ -2024,6 +2093,50 @@ lcars_default_engine() { # [config]
     *" claude "*) printf 'claude' ;;
     *)            printf '%s' "$(printf '%s\n' "$avail" | head -1)" ;;
   esac
+}
+
+# ===========================================================================
+# lcars_xo_default_engine [config.json] — which engine NUMBER ONE's pickers
+# open on. THE ONE PLACE THE ANSWER IS DECIDED, and it is deliberately not
+# `lcars_default_engine`:
+#
+#     the repo's pinned `numberOne.engine` (when it is installed)
+#       >  the first INSTALLED engine of LCARS_XO_ENGINE_PREFERENCE
+#       >  nothing at all (neither CLI here — an honest empty answer)
+#
+# WHY IT IS A SECOND FUNCTION. `lcars_default_engine` answers a different
+# question — which engine drives the captain's own mission, where the front
+# door's historical answer is claude and a repo full of missions depends on it.
+# Number One is the OTHER kind of drive: one LCARS starts on the captain's
+# behalf, often while he is not watching.
+#
+# WHY COPILOT LEADS THE PREFERENCE (fix round 1, D2). LCARS's standing rule is
+# that a live drive defaults to Copilot, and a bare Enter is exactly the answer
+# a captain gives without reading — so it must land on the conservative engine,
+# never on the metered one. The board's picker preselected copilot and this
+# answered claude, which meant the SAME question got two answers depending on
+# which door you came through. Both doors read this function now: the CLI
+# picker calls it directly (`skills/lcars-xo/xo.sh`), and the daemon spawns it
+# and publishes the answer as `meta.engineDefault` for the board's picker
+# (`web/lcars_serve/local_adapter.py`). Change the order here and both move.
+# ===========================================================================
+LCARS_XO_ENGINE_PREFERENCE="copilot claude"
+
+lcars_xo_default_engine() { # [config]
+  local cfg="${1:-}" pinned="" e
+  if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+    pinned="$(lcars_config_get_raw "$cfg" numberOne \
+      | sed -n 's/.*"engine"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  fi
+  # A PIN THAT IS NOT INSTALLED IS SKIPPED, never preselected: offering an
+  # engine the captain cannot run is worse than offering one he can.
+  if [ -n "$pinned" ] && lcars_engine_available "$pinned"; then
+    printf '%s' "$pinned"; return 0
+  fi
+  for e in $LCARS_XO_ENGINE_PREFERENCE; do
+    lcars_engine_available "$e" && { printf '%s' "$e"; return 0; }
+  done
+  return 0
 }
 
 # lcars_config_has_key — 0 if the config file has a top-level "key": present.
@@ -2344,15 +2457,34 @@ detect_worktree_setup_cmd() {
   # package's own, which nests its .bin), else an offline lockfile-frozen install.
   if [ -f "$TOPLEVEL/package.json" ]; then
     local install lock
+    # S207 — A LOCKFILE-FROZEN INSTALL NEEDS A LOCKFILE. `npm ci` does not fall
+    # back when `package-lock.json` is absent: it ERRORS ("can only install
+    # packages when your package.json and package-lock.json are in sync"), and
+    # the seeded command was reaching for it in EVERY JS repo. A live run logged
+    # four provisioning failures from exactly this, in a repo whose lockfile is
+    # gitignored. `pnpm install --frozen-lockfile` fails the same way, and the
+    # pnpm arm is taken by a bare `pnpm-workspace.yaml` too — so a workspace
+    # that has never been installed took an arm that could not succeed.
+    # The frozen form is kept wherever the lockfile is really there (it is the
+    # reproducible install, and the whole point of the arm); without one we seed
+    # the install that WORKS. yarn needs no guard: only `yarn.lock` takes its arm.
     if [ -f "$TOPLEVEL/pnpm-lock.yaml" ] || [ -f "$TOPLEVEL/pnpm-workspace.yaml" ]; then
-      install='pnpm install --frozen-lockfile --prefer-offline --silent'
       lock='pnpm-lock.yaml'
+      if [ -f "$TOPLEVEL/pnpm-lock.yaml" ]; then
+        install='pnpm install --frozen-lockfile --prefer-offline --silent'
+      else
+        install='pnpm install --prefer-offline --silent'
+      fi
     elif [ -f "$TOPLEVEL/yarn.lock" ]; then
       install='yarn install --immutable'
       lock='yarn.lock'
     else
-      install='npm ci'
       lock='package-lock.json'
+      if [ -f "$TOPLEVEL/package-lock.json" ]; then
+        install='npm ci'
+      else
+        install='npm install'
+      fi
     fi
     # THE LOCKFILE GUARD comes first: reusing the main checkout's node_modules is
     # only correct while this worktree wants the SAME dependencies. A ticket that
@@ -3547,6 +3679,60 @@ lcars_config_set_or_add_string() {
     fi
   done <"$config" >"$tmp"
   mv "$tmp" "$config"
+}
+
+# lcars_config_set_or_add_raw — the same primitive for a RAW (unquoted) JSON
+# value: an object, an array, a number, true/false/null. Overwrites the key's
+# line in place when it is present, or inserts it as the first key after the
+# opening brace when it is not. Every other line is preserved byte-for-byte.
+#
+# THE VALUE MUST BE ONE LINE, and that is not a style preference. The merge in
+# `lcars_config_merge` preserves an existing raw value by capturing the tail of
+# the line the key sits on — so a pretty-printed object would be truncated at
+# its first newline and the config would be left invalid the first time the
+# captain ran `lcars update`. Callers pass e.g.
+#   {"enabled": true, "engine": "copilot"}
+# Nothing verifies that for you; the suites do.
+lcars_config_set_or_add_raw() {
+  local config="$1" key="$2" value="$3"
+  [ -f "$config" ] || return 1
+  local tmp="$config.tmp.$$" line indent comma inserted=0
+  if lcars_config_has_key "$config" "$key"; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *"\"$key\""*:*)
+          comma=""; case "$line" in *,) comma="," ;; esac
+          indent="${line%%\"*}"
+          printf '%s"%s": %s%s\n' "$indent" "$key" "$value" "$comma"
+          ;;
+        *) printf '%s\n' "$line" ;;
+      esac
+    done <"$config" >"$tmp"
+    mv "$tmp" "$config"
+    return 0
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+    if [ "$inserted" -eq 0 ]; then
+      case "$line" in
+        '{'*) printf '  "%s": %s,\n' "$key" "$value"; inserted=1 ;;
+      esac
+    fi
+  done <"$config" >"$tmp"
+  mv "$tmp" "$config"
+}
+
+# lcars_config_get_raw — the RAW text of a top-level key's value: an object on
+# one line, a number, true/false/null. Empty when absent. The string reader
+# above cannot answer for an object, and a surface that showed `numberOne` by
+# re-deriving it from somewhere else would be inferring a fact its producer
+# already recorded.
+lcars_config_get_raw() {
+  local config="$1" key="$2" v
+  [ -f "$config" ] || return 0
+  v="$(sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(.*\)/\1/p" "$config" | head -1)"
+  v="${v%,}"
+  printf '%s' "$v" | sed 's/[[:space:]]*$//'
 }
 
 # === S176: THE PRD's REQUIRED FIELDS, IN EITHER SHAPE ======================

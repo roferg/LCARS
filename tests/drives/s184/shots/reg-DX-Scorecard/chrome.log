@@ -1,4 +1,0 @@
-
-DevTools listening on ws://127.0.0.1:61788/devtools/browser/86e68cd6-5453-4cde-96ea-90d460cfb8c0
-Trying to load the allocator multiple times. This is *not* supported.
-[97114:201330104:0905/210848.006799:ERROR:chrome/browser/web_applications/externally_managed_app_manager.cc:680] https://mail.google.com/mail/installwebapp?usp=chrome_default from install source 1 failed to install with reason 21

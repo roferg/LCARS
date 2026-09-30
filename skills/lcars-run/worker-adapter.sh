@@ -24,7 +24,11 @@
 #   spawn <cli> <role> <outdir> <prompt>
 #       Build argv via `argv`, inject <prompt> after the leading `-p`, then run the
 #       CLI one-shot capturing stdout→<outdir>/.worker.out and stderr→.worker.err,
-#       with trailing `|| true` semantics (never fails the caller). The env handed
+#       with trailing `|| true` semantics (never fails the caller) — but since
+#       S218 the worker's exit status is RECORDED in <outdir>/.worker.rc, the
+#       call in <outdir>/.worker.argv (prompt summarised as `<prompt N bytes>`,
+#       never its text), and the argv builder's own warnings in .worker.warn
+#       (also printed), so a caller can keep a failed attempt's record. The env handed
 #       to the worker is LCARS_WORK_OUT=<outdir> and LCARS_WORKER_ROLE — the latter
 #       defaults to <role> but is NOT overwritten if the caller already exported it
 #       (the context-pack case: toolset-role repo-read for argv, but the worker must
@@ -37,6 +41,10 @@
 #       launch         → Read,Grep,Glob,Write  (inspect to DISCOVER how to run an
 #                        app, then AUTHOR its one discovery artifact; NO shell —
 #                        S168 swapped the shell for a pen, see adapter_deny)
+#       number-one     → Read,Grep,Glob,Write  (session 202 — the first officer
+#                        READS the mission's whole record and AUTHORS exactly one
+#                        file, xo-answer.json, in its own scratch dir. Same shape
+#                        as `launch`, same reason: it reasons, `xo.sh` executes.)
 #       default        → Read              (explicit sentinel for the old `*` case)
 # An unknown <cli> or unknown <role> exits NON-ZERO with a message on stderr —
 # never a silent empty argv / silent inline run. The SAME is true of the DENY
@@ -50,6 +58,14 @@ set -uo pipefail
 
 die() { printf 'worker-adapter: %s\n' "$1" >&2; exit 1; }
 
+# S217 — THE ONE WORKER-BIN GUARD (skills/lcars-init/worker-guard.sh): every
+# cold worker is exec'd below, so this is where a `copilot` that resolves to VS
+# Code's own re-invoking shim is refused, before anything is spawned. Missing
+# guard = refuse to spawn, never spawn unguarded.
+LCARS_WORKER_GUARD_LIB="${LCARS_WORKER_GUARD_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/../lcars-init/worker-guard.sh}"
+# shellcheck source=../lcars-init/worker-guard.sh
+[ -f "$LCARS_WORKER_GUARD_LIB" ] && . "$LCARS_WORKER_GUARD_LIB"
+
 # Map a TOOLSET role → that cli's allowed-tools list. Unknown role → non-zero.
 # (This is the table that used to be worker_tools() in run.sh, now keyed by cli.)
 adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
@@ -61,6 +77,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read-web) printf 'Read,Grep,Glob,Write,WebSearch,WebFetch' ;;
         repo-write)    printf 'Read,Grep,Glob,Write,Edit,Bash' ;;
         launch)        printf 'Read,Grep,Glob,Write' ;;
+        number-one)    printf 'Read,Grep,Glob,Write' ;;
         default)       printf 'Read' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -79,6 +96,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read-web) printf 'view,grep,glob,create,web_fetch,web_search' ;;
         repo-write)    printf 'view,grep,glob,create,edit,bash' ;;
         launch)        printf 'view,grep,glob,create' ;;
+        number-one)    printf 'view,grep,glob,create' ;;
         default)       printf 'view' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -119,6 +137,16 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 #                  has no general-purpose execution channel at all. The checkout
 #                  is additionally CHECKED clean after the turn (launch.sh), so
 #                  "inspection only" is verified instead of trusted.
+#   number-one     S202. The `launch` posture with the NETWORK taken away as well.
+#                  Number One's whole job is to decide from THE RECORD — the PRD,
+#                  the ADRs, the plan, the answers already given — and the failure
+#                  mode the research warned about is a judge that reasons its way
+#                  past the record. A worker that can fetch is a worker that can
+#                  ground a verdict in something the mission never said, so it
+#                  gets no fetch. It keeps Write because xo-answer.json IS its
+#                  entire output, and it is denied Bash EXPLICITLY: on claude the
+#                  allow list only pre-approves, so this row is the only thing
+#                  that actually takes the shell away.
 #   default        the read-only sentinel: everything but Read/Grep/Glob is gone.
 #
 # An unknown cli or role exits NON-ZERO, exactly like adapter_tools — and a
@@ -133,6 +161,7 @@ adapter_deny() { # cli role → deny list (stdout); non-zero on unknown cli/role
         repo-read-web) printf 'Edit,Bash,NotebookEdit' ;;
         repo-write)    printf 'NotebookEdit' ;;
         launch)        printf 'Edit,Bash,NotebookEdit' ;;
+        number-one)    printf 'Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
         default)       printf 'Write,Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -143,7 +172,7 @@ adapter_deny() { # cli role → deny list (stdout); non-zero on unknown cli/role
       # and no flag is emitted. The role is still VALIDATED so an unknown role
       # exits non-zero from BOTH tables, never just one.
       case "$role" in
-        repo-read|repo-read-web|repo-write|launch|default) : ;;
+        repo-read|repo-read-web|repo-write|launch|number-one|default) : ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
       ;;
@@ -245,8 +274,30 @@ adapter_argv() { # cli role outdir
         '--add-dir' "$outdir"
       # READ grants for the ticket's out-of-worktree inputs (session 76). One
       # extra --add-dir per supplied dir; none supplied ⇒ exactly the old argv.
+      #
+      # S213 — `--add-dir` TAKES A DIRECTORY AND NOTHING ELSE. copilot 1.0.86
+      # validates this flag before the model runs and exits at argv-parse on any
+      # path that is not an existing directory ("Not a directory: …"). There is
+      # no degraded mode: the worker never starts, writes no artifact, and the
+      # Stage reports a downstream symptom ("produced no questions.txt after 3
+      # attempts") that names neither the flag nor the path. That cost a whole
+      # drive. (This flag WAS file-tolerant on copilot 1.0.60, which the argv
+      # comment above was verified against — a version-drift regression, and
+      # invisible on claude, which ignores input dirs entirely.)
+      #
+      # So the adapter — the one layer that knows a CLI's flag contract — never
+      # emits an argv the CLI cannot parse. A non-directory grant is DROPPED and
+      # SAID OUT LOUD on stderr, naming the path: the worker loses reach it was
+      # meant to have, and a silent loss of reach is the failure we are least
+      # able to see. The callers in run.sh grant directories, so on a healthy
+      # repo this never fires and the argv is byte-for-byte unchanged.
       local d
       for d in ${indirs[@]+"${indirs[@]}"}; do
+        if [ ! -d "$d" ]; then
+          printf 'worker-adapter: NOT granting %s to the %s worker — --add-dir takes a directory and this is not one. The worker will not be able to read it.\n' \
+            "$d" "$cli" >&2
+          continue
+        fi
         printf '%s\n' '--add-dir' "$d"
       done
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
@@ -265,7 +316,14 @@ adapter_spawn() { # cli role outdir prompt
   local bin="${LCARS_WORKER_BIN:-$cli}"
   # Read argv flags into an array.
   local flags=() line
-  while IFS= read -r line; do flags+=("$line"); done < <(adapter_argv "$cli" "$role" "$outdir")
+  # S218 — the argv builder's own warnings (e.g. "NOT granting <file> …") are
+  # KEPT in $outdir/.worker.warn as well as printed, so a caller that keeps a
+  # failed attempt's record keeps them too instead of losing them to a stream
+  # nobody captured.
+  mkdir -p "$outdir"
+  local warn="$outdir/.worker.warn"
+  while IFS= read -r line; do flags+=("$line"); done < <(adapter_argv "$cli" "$role" "$outdir" 2>"$warn")
+  if [ -s "$warn" ]; then cat "$warn" >&2; else rm -f "$warn"; fi
   # adapter_argv died (unknown cli/role) → no flags produced → refuse, non-zero.
   [ "${#flags[@]}" -gt 0 ] || die "no argv produced for cli '$cli' role '$role'"
   # The first flag MUST be the `-p` placeholder; inject the prompt right after it.
@@ -290,11 +348,48 @@ adapter_spawn() { # cli role outdir prompt
       [ "$seen_deny" -eq 1 ] || die "refusing to spawn a '$cli' worker whose argv carries no --disallowedTools — on claude \`--allowedTools\` only PRE-APPROVES and \`--dangerously-skip-permissions\` waives the rest, so the deny list is the only thing that actually takes a tool away"
       ;;
   esac
+  command -v lcars_worker_bin_guard >/dev/null 2>&1 \
+    || die "refusing to spawn: the worker guard ($LCARS_WORKER_GUARD_LIB) is missing, so nothing can check that '$bin' is not VS Code's copilot shim"
+  # bin IS ${LCARS_WORKER_BIN:-$cli}, so that variable wins here — unless LCARS
+  # set it itself (_INTERNAL=1), where a captain's prefix is overridden
+  # upstream; then only the PATH fix is offered (fix round 1, D2).
+  local guard_hint=""
+  [ "${LCARS_WORKER_BIN_INTERNAL:-}" != "1" ] && guard_hint=LCARS_WORKER_BIN
+  # S218 — started by the viewscreen: its persisted engine wins, so the fix is
+  # the daemon's PATH + a restart, never a variable (lcars_worker_bin_daemon_hint).
+  [ "${LCARS_VIEWSCREEN_CHILD:-}" = "1" ] && guard_hint="$(lcars_worker_bin_daemon_hint)"
+  # S231 — the guard may hand back a REAL CLI to run in the shim's place (a bare
+  # `copilot` that PATH-resolved to VS Code's shim, cured from a known absolute
+  # location). Adopt it; empty stdout means "use $bin unchanged". A refusal is
+  # rc≠0 with its sentence already on stderr.
+  local guard_eff
+  guard_eff="$(lcars_worker_bin_guard "$bin" "$guard_hint")" || exit 1
+  [ -n "$guard_eff" ] && bin="$guard_eff"
   local rest=("${flags[@]:1}")
-  mkdir -p "$outdir"
+  # S218 — RECORD WHAT RAN AND HOW IT ENDED. The exit status used to be thrown
+  # away here, so a worker that died at argv-parse (S214: copilot refusing a
+  # FILE as --add-dir, rc=1, 6/6) left nothing but "produced no questions.txt".
+  # .worker.argv is the call with the PROMPT SUMMARISED — never its text: the
+  # prompt carries the captain's PRD, and nothing else in this argv is a secret
+  # (flags, tool names, paths, a model id, a correlation id). .worker.rc is the
+  # worker's own status. The spawn itself still never fails its caller — each
+  # Stage decides what a failed attempt means.
+  {
+    printf '%q -p %s' "$bin" "<prompt $(printf '%s' "$prompt" | wc -c | tr -d ' ') bytes>"
+    local a; for a in ${rest[@]+"${rest[@]}"}; do
+      case "$a" in
+        ''|*[!A-Za-z0-9_./:=,@+%-]*) printf ' %q' "$a" ;;   # quote only what needs it
+        *) printf ' %s' "$a" ;;
+      esac
+    done
+    printf '\n'
+  } >"$outdir/.worker.argv"
+  local wrc=0
   LCARS_WORK_OUT="$outdir" LCARS_WORKER_ROLE="${LCARS_WORKER_ROLE:-$role}" \
     "$bin" -p "$prompt" "${rest[@]}" \
-    >"$outdir/.worker.out" 2>"$outdir/.worker.err" || true
+    >"$outdir/.worker.out" 2>"$outdir/.worker.err" || wrc=$?
+  printf '%s\n' "$wrc" >"$outdir/.worker.rc"
+  return 0
 }
 
 cmd="${1:-}"; shift || true

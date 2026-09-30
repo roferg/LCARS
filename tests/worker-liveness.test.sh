@@ -30,12 +30,13 @@ sed -n '/^_pgid_cpu_sum() {/,/^}/p'             "$RUN_SH" >>"$HG_LIB"
 sed -n '/^_file_size_mtime() {/,/^}/p'          "$RUN_SH" >>"$HG_LIB"
 sed -n '/^_liveness_output_bytes() {/,/^}/p'    "$RUN_SH" >>"$HG_LIB"
 sed -n '/^_liveness_write() {/,/^}/p'           "$RUN_SH" >>"$HG_LIB"
+sed -n '/^_wait_for_exit_or_poll() {/,/^}/p'    "$RUN_SH" >>"$HG_LIB"
 sed -n '/^run_worker_hang_guarded() {/,/^}/p'   "$RUN_SH" >>"$HG_LIB"
 # shellcheck source=/dev/null
 . "$HG_LIB"
 
 for fn in pid_alive _pgid_cpu_sum _file_size_mtime _liveness_output_bytes \
-          _liveness_write run_worker_hang_guarded; do
+          _liveness_write _wait_for_exit_or_poll run_worker_hang_guarded; do
   if ! type "$fn" >/dev/null 2>&1; then
     echo "FATAL: could not extract $fn from $RUN_SH" >&2
     exit 1

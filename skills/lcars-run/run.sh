@@ -49,6 +49,11 @@ GIT_BIN="${LCARS_GIT_BIN:-git}"
 WORKER_BIN=""
 WORKER_MODEL=""
 WORKER_BIN_SRC=""
+# S202 fix round 1 (D1) — set to 1 by the `spawn-number-one` entry ONLY, before
+# it resolves a worker. It is a shell global, not an env var, because the
+# resolver runs in this very process and a marker on the environment would leak
+# down into the worker (and back up into anything that re-execs run.sh).
+XO_ENGINE_PIN=0
 WORKER_MODEL_SRC=""
 WORKER_RESOLVED=0   # guard so the resolution log line prints ONCE per process.
 # The test runner the Implement red gate invokes to prove the Test Writer's
@@ -62,6 +67,32 @@ TEST_CMD_ENV="${LCARS_TEST_CMD:-}"
 SELF="${BASH_SOURCE[0]}"
 # The skill's own directory, and the per-Stage worker prompt templates under it.
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+#
+# S207 fix round 1 (D2) — A REFUSED WRITE STOPS THE DRIVER. The writer returns
+# non-zero when it refuses a state.json it will not touch (see lcars-state.sh).
+# Every AWAITING-HUMAN GATE in this file IS those two writes: `awaitingHuman`
+# and `pendingQuestion`. If they did not land there is no gate — the card is
+# not parked, the inbox has nothing to show, and driving on would run straight
+# past the question the captain was supposed to answer. So each gate asks
+# `lcars_state_refusal_die` immediately after writing, BEFORE the label, the
+# event, the notification and the "⏹ stopped … flagged the human" line. It is a
+# no-op on every healthy path.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SKILL_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 # ABSOLUTE from here on. `$0` is whatever the caller typed, which may be relative
 # to the caller's cwd — and a Stage that moves its cwd (S166: the front half now
 # runs inside the Mission's own worktree) would then re-invoke a path that no
@@ -69,6 +100,17 @@ SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 # every `bash "$SELF" …` site.
 SELF="$SKILL_DIR/$(basename "$SELF")"
 STAGES_DIR="$SKILL_DIR/stages"
+# Number One's prompt templates (S202). They live with the VERB that owns the
+# first officer (skills/lcars-xo), not with the pipeline's own stage prompts:
+# Number One is not a Stage, it is the captain's stand-in at one. $LCARS_XO_PROMPTS
+# lets a test point at a fixture template without a second copy of the real one.
+XO_PROMPTS_DIR="${LCARS_XO_PROMPTS:-$SKILL_DIR/../lcars-xo/prompts}"
+# Number One's VERB (S202). The driver calls `xo.sh answer` at a gate and reads
+# nothing from it but an exit status — 0 the gate is cleared, non-zero it stays
+# up. The driver decides NOTHING about the answer itself: that belongs to the one
+# script that owns the first officer, and a second opinion here would be a second
+# place the rules live.
+XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILL_DIR/../lcars-xo/xo.sh}"
 # The SINGLE source of truth for billing data (Claude $/MTok per tier; Copilot
 # premium-request multipliers + overage). NO prices/multipliers are hardcoded in
 # this script's cost logic — they all live in pricing.json. $LCARS_PRICING lets
@@ -463,22 +505,6 @@ ticket_hire_count() { # ticket-id
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   printf '%s' "$n"
 }
-state_del() { # key   — drop the field's line if present (no-op otherwise)
-  local tmp; tmp="$(mktemp)"
-  grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-state_set_str() { # key value   — add or replace a string field
-  state_del "$1"
-  local esc tmp; esc="$(json_escape "$2")"; tmp="$(mktemp)"
-  K="$1" V="$esc" awk 'NR==1{print; printf "  \"%s\": \"%s\",\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-state_set_raw() { # key token   — add or replace a bare field (true/false/number)
-  state_del "$1"
-  local tmp; tmp="$(mktemp)"
-  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
 
 # --- locate the mission ----------------------------------------------------
 # Resolves MISSION_DIR / STATE for the given id, mirroring file.sh's .git
@@ -532,7 +558,36 @@ context_paths() {
   CONTEXT_GITDIR="$gitdir"
   CONTEXT_REPO_ROOT="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
   [ -n "$CONTEXT_REPO_ROOT" ] || CONTEXT_REPO_ROOT="$PWD"
-  CONTEXT_PACK_PATH="$gitdir/lcars/context-pack.md"
+  CONTEXT_PACK_PATH="$(context_pack_home "$gitdir/lcars")/context-pack.md"
+}
+
+# THE PACK'S OWN DIRECTORY — and the ONE place a legacy pack is moved into it.
+#
+# S213. The pack used to live at the store root, `.git/lcars/context-pack.md`,
+# and the worker's read grant named that FILE. copilot 1.0.86 validates
+# `--add-dir` before the model runs and refuses anything that is not a directory
+# ("Not a directory: …"), so EVERY copilot worker died at argv-parse the instant
+# a pack existed — writing nothing, and surfacing as "produced no questions.txt
+# after 3 attempts". (It was file-tolerant on 1.0.60, which the old comment here
+# was verified against.) Granting the file's directory was not the cure either:
+# that directory was the STORE ROOT, holding every other mission's state — the
+# exact widening S168 narrowed away, and pinned by tests/worker-fence.test.sh.
+#
+# So the pack gets a directory of its own. The grant then names a directory, as
+# copilot requires, and stays as narrow as it ever was: one dir, one file, no
+# other mission inside it.
+#
+# WHY THIS MUTATES. Either caller can be the first to run in a given process —
+# the grant site (worker_input_dirs) runs before the resolver on a front-half
+# Stage — and a grant naming a directory that does not exist YET is refused by
+# copilot exactly as a file is. So the relocation happens here, idempotently, in
+# the one function both of them ask for the path.
+context_pack_home() { # <store-root> → prints the pack's directory
+  local store="$1" home="$1/context" legacy="$1/context-pack.md"
+  if [ -f "$legacy" ] && [ ! -f "$home/context-pack.md" ]; then
+    mkdir -p "$home" && mv "$legacy" "$home/context-pack.md"
+  fi
+  printf '%s\n' "$home"
 }
 
 # Generate the pack via ONE cold worker. Mirrors spawn_worker exactly: the
@@ -622,8 +677,21 @@ context_extra_block() {
   # AFTER the Stage exported its path grant, so a copilot worker would be given
   # the pack's path with no sandbox grant to read it. Only a source UNDER the
   # store needs one: a repo-root CONTEXT.md is already inside the worker's cwd.
+  #
+  # S213 — grant the DIRECTORY that holds it, never the file: copilot's
+  # `--add-dir` refuses a file at argv-parse and the worker never starts. The
+  # pack has a directory of its own (context_pack_home) precisely so this grant
+  # stays narrow. If that dirname ever resolves to the store root itself we say
+  # so and stop, rather than quietly handing a worker every mission's state.
+  local _store _sdir
+  _store="$(dirname "${LCARS_CFG:-}")"
   case "$src" in
-    "$(dirname "${LCARS_CFG:-}")"/*) grant_input_dir "$src" ;;
+    "$_store"/*)
+      _sdir="$(dirname "$src")"
+      [ "$_sdir" = "$_store" ] \
+        && die "refusing to grant the whole .git/lcars store to a worker just to reach '$src' — the context source must live in a directory of its own."
+      grant_input_dir "$_sdir"
+      ;;
   esac
   printf '
 ## Repo context (declarative repo facts — read for grounding)
@@ -2886,16 +2954,14 @@ leave_mission_worktree() {
 #                            the whole point of the grounding round is lost. It
 #                            is granted ONLY when state.json records a
 #                            parentMission — a plain Mission gets no such line.
-#   the context pack FILE    .git/lcars/context-pack.md, when it is the resolved
-#                            context source. Granted as the FILE, not its dir —
-#                            its dir IS the store root, which is the whole thing
-#                            we are narrowing away. copilot accepts a file here:
-#                            its `addDirectory` only refuses a path that does not
-#                            EXIST (`stat().isDirectory()?"directory":"file"` —
-#                            both truthy), and `isPathWithinRoot(f, f)` is true,
-#                            so the grant reaches that one file and nothing else.
-#                            A repo with a root CONTEXT.md needs no grant at all:
-#                            that file is inside the worker's own cwd.
+#   the pack's own DIR       .git/lcars/context/, when the generated pack is the
+#                            resolved context source. A DIRECTORY, because that
+#                            is the only thing copilot's `--add-dir` accepts (see
+#                            context_pack_home) — and a directory of the pack's
+#                            own, because the alternative dir was the store root,
+#                            which is every other mission's state. It holds one
+#                            file. A repo with a root CONTEXT.md needs no grant
+#                            at all: that file is inside the worker's own cwd.
 #
 # NOT granted, having been checked: `config.json` (nothing hands a worker its
 # path — the harness reads it and passes VALUES) and `test-landscape/` (written
@@ -2911,7 +2977,8 @@ worker_input_dirs() { # → one absolute path per line; empty when there is no m
     ''|null) : ;;
     *) [ -d "$store/missions/$parent" ] && printf '%s\n' "$store/missions/$parent" ;;
   esac
-  [ -f "$store/context-pack.md" ] && printf '%s\n' "$store/context-pack.md"
+  local pack_home; pack_home="$(context_pack_home "$store")"
+  [ -f "$pack_home/context-pack.md" ] && printf '%s\n' "$pack_home"
   return 0
 }
 
@@ -3212,8 +3279,9 @@ cmd_gate() {
     write_pending "$q" "research"
 
     local first; first="$(head -1 "$q")"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$first"
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "$first"
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     # In-flight stage label first (research), THEN the awaiting-human overlay.
     gh_relabel "lcars:research lcars:awaiting-human" "lcars:align"
     rm -f "$q"
@@ -3288,8 +3356,9 @@ cmd_save() {
     local cq_n cq_first
     cq_n="$(grep -cve '^[[:space:]]*$' "$claim_q")"
     cq_first="$(grep -ve '^[[:space:]]*$' "$claim_q" | head -1)"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$cq_first"
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "$cq_first"
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     # The durable record, deliberately OUTSIDE research/: it is not a finding, and
     # cmd_validate lists research/*.json to the Validator as findings.
     cp "$claim_q" "$MISSION_DIR/claim-check.txt"
@@ -3386,8 +3455,9 @@ cmd_validate_pause() {
   # board) prints, so surface the first question there; the full set lives in
   # pending.json.
   local first; first="$(grep -ve '^[[:space:]]*$' "$QFILE" | head -1)"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$first"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$first"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
 
   # In-flight stage label first (validate — already applied on entry, re-asserted
   # so the escalation is self-contained), THEN the awaiting-human overlay, so the
@@ -3448,8 +3518,8 @@ cmd_validate_advance() {
   # stale sentence it would treat as the captain's merge decision. Widening the
   # ledger's lifetime is therefore its own round, with its own gate on that
   # fallback — not a side effect of this one.
-  state_del awaitingHuman
-  state_del pendingQuestion
+  lcars_state_unset "$STATE" awaitingHuman
+  lcars_state_unset "$STATE" pendingQuestion
   rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
 
   set_stage "plan"
@@ -3518,7 +3588,7 @@ LCARS_AWK_CRIT="$(cat <<'LCARS_AWK_CRIT_EOF'
 # null, true, 0 and "\t" as content, so all four passed as anchors. The
 # validator refuses anything that is not a non-empty string, and it can only do
 # that if the parser tells it what the value WAS.
-function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
+function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
   n = length(t); inq = 0; esc = 0; cur = ""; k = 0; depth = 0; pend = ""
   for (i = 1; i <= n; i++) {
     ch = substr(t, i, 1)
@@ -3527,10 +3597,12 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, 
       else if (ch == "\\") { cur = cur ch; esc = 1 }
       else if (ch == "\"") {
         inq = 0
-        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = "" }
+        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = "" }
         else if (pend == "") { pend = cur }          # this string is a KEY
         else {                                        # …the VALUE of that key
           if (pend == "text") ctext[k] = cur
+          else if (pend == "serves") cserves[k] = cur
+          else if (pend == "direction") cdir[k] = cur
           else if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
             cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
             cval[k] = cur; ctype[k] = "s"
@@ -3543,7 +3615,7 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype,   i, n, ch, inq, esc, 
     }
     if (ch == "\"") { inq = 1; cur = "" }
     else if (ch == "{" && depth == 0) {
-      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""
+      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""
     }
     else if ((ch == "{" || ch == "[") && depth > 0) {
       # A NESTED object/array as a value ({"drawnAt": {"screen": "b"}} or []).
@@ -3764,6 +3836,24 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
       tickets++
       for (k=1; k<=9; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
       if (!acok) fail("ticket " tickets " (" id ") needs at least one acceptance criterion.")
+      # THE SERVES/DIRECTION DECLARATION (the ruling of 2026-09-25). A criterion
+      # that names a PRD requirement it relates to (via "serves") MUST also STATE
+      # which way round it is ("direction": delivers | removes) — so the contract
+      # reads the planner'"'"'s statement instead of guessing polarity from prose,
+      # which has been beaten before. A "serves" with no readable "direction" is
+      # refused BY NAME here, never defaulted: the missing direction is exactly
+      # the polarity nothing downstream is allowed to infer. Runs for EVERY
+      # ticket (a requirement link is not a visual concern), accumulated into ONE
+      # message like s174bad and emitted from END.
+      delete sdtext; delete sddecl; delete sdval; delete sdtype; delete sdserves; delete sddir
+      nsd = lcars_crit_entries(actext, sdtext, sddecl, sdval, sdtype, sdserves, sddir)
+      for (ci = 1; ci <= nsd; ci++) {
+        if (sdserves[ci] != "" && sddir[ci] != "delivers" && sddir[ci] != "removes") {
+          sdbad = sdbad "\n  ticket " tickets " (" id "), criterion " ci
+          if (sdtext[ci] != "") sdbad = sdbad " (\"" excerpt(sdtext[ci]) "\")"
+          sdbad = sdbad ": carries \"serves\" but no readable \"direction\" — add \"direction\": \"delivers\" (this criterion makes that requirement true) or \"direction\": \"removes\" (it deliberately takes that requirement away)."
+        }
+      }
       # --- S169: the tickets must carry the mockup ---------------------------
       # Only for a Mission that ACTUALLY carries one. The planner DECLARES;
       # we check the declaration is there, is a boolean, and — when it says this
@@ -3970,6 +4060,8 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
         : "\n  This drawing carries NO element ids, so nothing can check WHICH place an anchor names — \"drawnAt\" only has to be a non-empty string here, and it is on you to make it point somewhere real.\n")
       if (s174bad != "" && !failed)
         fail("this plan'"'"'s screen-changing tickets do not declare where their criteria come from. This Mission carries a mockup (" mock "), so on every ticket with \"changesScreenAppearance\": true, EVERY entry of \"acceptanceCriteria\" must be an object — {\"text\": \"…\", …} — carrying EXACTLY ONE of:\n    \"drawnAt\":   \"<the screen id / section / row of " mockname[1] " this criterion'"'"'s surface appears in>\"\n    \"notDrawn\":  \"<why this VISIBLE thing is not in the drawing>\"   (legitimate — and the captain sees every one at Verify)\n    \"notVisual\": true                                          (this criterion makes no visual claim at all)\n" s174bad "\n" vocab "  A plain string stays fine on a changesScreenAppearance:false ticket, and on every Mission without a mockup. Open the drawing, then declare each criterion once.")
+      if (sdbad != "" && !failed)
+        fail("this plan links a criterion to a requirement with \"serves\" but does not STATE which way round it is. Every acceptanceCriteria entry that carries \"serves\" MUST also carry \"direction\": \"delivers\" (the criterion makes that requirement true) or \"direction\": \"removes\" (it deliberately takes that requirement away) — nothing reads your prose to decide polarity, because that guess has been wrong before. Add the missing field on:" sdbad "\n  A criterion that links to no single requirement stays a plain string and declares neither.")
     }
   ' "$1"
 }
@@ -4439,7 +4531,7 @@ review_fail() {
   # Log the full verdict for this round so the planner (and the human, on
   # escalation) can see exactly what was objected to.
   cp "$VERDICT" "$MISSION_DIR/plan-review-$round.json"
-  state_set_raw planReviewRound "$round"
+  lcars_state_set "$STATE" planReviewRound "$round"
 
   if [ "$round" -ge "$MAX_REVIEW_ROUNDS" ]; then
     # Out of rounds — hand the unresolved issues to the human. The card stays in
@@ -4450,8 +4542,9 @@ review_fail() {
     write_pending "$obj" "plan-review"
 
     local first; first="$(head -1 "$obj")"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$first"
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "$first"
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     gh_relabel "lcars:awaiting-human" ""
 
     echo "PLAN-REVIEW: escalated — $round rounds without a clean plan"
@@ -7599,8 +7692,10 @@ worker_produced_nothing() { # outdir → 0 if the worker produced nothing at all
   [ -d "$outdir" ] || return 0   # no outdir at all ⇒ nothing was produced
   # Any REAL artifact (anything the worker wrote EXCEPT the hidden capture files)
   # means it produced something — regardless of stdout/stderr.
+  # (S218: the adapter's own records — .worker.rc/.argv/.warn — are captures
+  # too, never an artifact, so every hidden .worker.* file is excluded.)
   if [ -n "$(find "$outdir" -type f \
-              ! -name '.worker.out' ! -name '.worker.err' -print -quit 2>/dev/null)" ]; then
+              ! -name '.worker.*' -print -quit 2>/dev/null)" ]; then
     return 1
   fi
   # No real file: fall back to the captures. Any non-whitespace output means the
@@ -7737,8 +7832,9 @@ impl_park_env_cannot_test() { # ticket  reason-text
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "Ticket $t is blocked: the test runner cannot run where this ticket builds — needs a human (add a runner / fix provisioning / retarget)."
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "Ticket $t is blocked: the test runner cannot run where this ticket builds — needs a human (add a runner / fix provisioning / retarget)."
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   gh_relabel "lcars:awaiting-human" ""
   emit_event ticket_env_cannot_test implement \
     "ticket $t parked: the test environment cannot run any tests (no runner in the target package, or unprovisioned)" \
@@ -7777,8 +7873,9 @@ impl_park_ticket_blocked() { # subject  reason  summary  question  headline  det
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$question"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$question"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   gh_relabel "lcars:awaiting-human" ""
   # A stage-level park has no ticket, so it emits no `ticket=` field rather than
   # an empty one — the events log never names a ticket this wall did not inspect.
@@ -11233,8 +11330,9 @@ cmd_impl_save_result() {
     printf 'Ticket %s could not be made green (the worker iterated %s time(s)): %s\n' \
       "$TICKET" "$attempts" "$(json_str "$RESULT" summary)" >"$q"
     write_pending "$q" "implement"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "Ticket $TICKET failed — needs a human."
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "Ticket $TICKET failed — needs a human."
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     gh_relabel "lcars:awaiting-human" ""
     rm -f "$q"
 
@@ -11897,8 +11995,9 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$summary"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$summary"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
@@ -12107,8 +12206,8 @@ EOF
   # and advance the Mission to Verify, keeping stage and label in step.
   # S180: the answers.json deletion here is kept for the same reason as
   # validate-advance's — see the note there.
-  state_del awaitingHuman
-  state_del pendingQuestion
+  lcars_state_unset "$STATE" awaitingHuman
+  lcars_state_unset "$STATE" pendingQuestion
   rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
 
   set_stage "verify"
@@ -12657,7 +12756,7 @@ cmd_open_pr() {
   open_pr   # sets PR_URL, records prUrl/prNumber; dies on any precondition fail.
 
   # Record the in-review sub-state so the board shows "in review — PR open".
-  state_set_str review "open"
+  lcars_state_set_string "$STATE" review "open"
   emit_event pr_opened verify "PR opened — $PR_URL"
 
   echo "OPEN-PR: opened — $PR_URL"
@@ -12779,7 +12878,7 @@ This is a DECISION, not a new option to weigh. Resolve the conflict to implement
 EXACTLY that arrangement."
   fi
 
-  state_set_str reconcileStatus "resolving"
+  lcars_state_set_string "$STATE" reconcileStatus "resolving"
   emit_event reconcile_resolve verify "resolving textual conflict in place via a cold worker (keeping the merge)"
 
   local tries=0 odir
@@ -12875,7 +12974,7 @@ reconcile_resolve_record() { # attempt  short-reason  detail-block
 reconcile_author_and_dispatch() { # failure-summary  affected-block
   local summary="$1" affected="$2"
   RECONCILE_DESIGN_QUESTION=""
-  state_set_str reconcileStatus "healing"
+  lcars_state_set_string "$STATE" reconcileStatus "healing"
   emit_event reconcile_heal verify "authoring self-heal bug PRD(s) from the merge failure"
 
   # The mission's own engine (BUG-D): a copilot mission self-heals on copilot. Feed
@@ -13080,7 +13179,7 @@ The deterministic failure summary is at:
 # answer and RESETS the round budget, rather than reusing the generic answers.json.
 reconcile_escalate() { # diagnosis-text  [design]
   local diag="$1" kind="${2:-}"
-  state_set_str reconcileStatus "escalated"
+  lcars_state_set_string "$STATE" reconcileStatus "escalated"
   if [ "$kind" = "design" ]; then
     printf '%s\n' "$diag" >"$MISSION_DIR/reconcile-design-question.txt"
   fi
@@ -13089,8 +13188,9 @@ reconcile_escalate() { # diagnosis-text  [design]
     "$BASE" "$RECONCILE_MAX" "$diag" >"$qf"
   write_pending "$qf" "verify"
   local first; first="$(grep -ve '^[[:space:]]*$' "$qf" | head -1)"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$first"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$first"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
   emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — escalated to the human"
@@ -13132,7 +13232,7 @@ reconcile_retest_env_blocked() { # capture-dir-or-log-or-text → 0 if env-block
 # by the escalated-idempotency guard) and a DISTINCT event (reconcile_env_blocked).
 reconcile_retest_env_escalate() { # failed-ids  captured-output
   local ids="$1" cap_out="$2"
-  state_set_str reconcileStatus "env-blocked"
+  lcars_state_set_string "$STATE" reconcileStatus "env-blocked"
   local note="Reconcile with $BASE merged CLEANLY, but the re-test could not RUN — the reconcile merge worktree was not provisioned (no node_modules / the testCommand binary was not found), so the mission's ticket suite(s) errored at startup. This is NOT a code conflict. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`) so the retest environment matches the build, then re-run \`lcars approve\` / \`lcars run\`."
   local qf; qf="$(mktemp)"
   {
@@ -13142,9 +13242,10 @@ reconcile_retest_env_escalate() { # failed-ids  captured-output
     fi
   } >"$qf"
   write_pending "$qf" "verify"
-  state_set_str reconcileDiagnosis "$note"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "$note"
+  lcars_state_set_string "$STATE" reconcileDiagnosis "$note"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$note"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
   emit_event reconcile_env_blocked verify "reconcile merged $BASE cleanly but the retest could not run — the merge worktree was not provisioned; set worktreeSetupCommand (NOT a code conflict)"
@@ -13337,8 +13438,8 @@ reconcile_gate() {
   local round; round="$(json_raw "$STATE" reconcileRound)"
   case "$round" in ''|*[!0-9]*) round=0 ;; esac
   round=$((round + 1))
-  state_set_raw reconcileRound "$round"
-  state_set_str reconcileStatus "merging"
+  lcars_state_set "$STATE" reconcileRound "$round"
+  lcars_state_set_string "$STATE" reconcileStatus "merging"
   emit_event reconcile_start verify "base '$BASE' is $ahead commit(s) ahead — reconciling (round $round)" \
     "round=$round" "ahead=$ahead"
 
@@ -13372,7 +13473,7 @@ reconcile_gate() {
       # Roll the round back — this pass did nothing — so the round counter reflects
       # only real reconcile attempts, then escalate honestly (awaiting-human, no PR).
       round=$((round - 1))
-      if [ "$round" -le 0 ]; then state_del reconcileRound; else state_set_raw reconcileRound "$round"; fi
+      if [ "$round" -le 0 ]; then lcars_state_unset "$STATE" reconcileRound; else lcars_state_set "$STATE" reconcileRound "$round"; fi
       local rc_holder
       rc_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
         | awk -v b="branch refs/heads/$BRANCH" '
@@ -13444,7 +13545,7 @@ $(sed -n '/^<<<<<<< /,/^>>>>>>> /p' "$wt/$cf" 2>/dev/null | head -60)"
 $conflicted
 EOF
   else
-    state_set_str reconcileStatus "retesting"
+    lcars_state_set_string "$STATE" reconcileStatus "retesting"
     emit_event reconcile_retest verify "clean merge — re-testing $ordered against the merged state"
     if [ -n "$cmd" ] && [ -n "$ordered" ]; then
       local cap; cap="$(mktemp -d)"
@@ -13513,8 +13614,8 @@ ${base_log:-(no log available)}"
     # Clean (or conflict-free) AND green: the worktree committed the merge ON the
     # branch, so the live branch ref already advanced — just remove the worktree.
     reconcile_cleanup
-    state_del reconcileRound
-    state_del reconcileDiagnosis
+    lcars_state_unset "$STATE" reconcileRound
+    lcars_state_unset "$STATE" reconcileDiagnosis
 
     # BUG-067 — a self-heal that converges green AFTER a PR is open must NOT
     # auto-merge. The captain has not seen the reconciled tree; blindly running
@@ -13535,11 +13636,12 @@ ${base_log:-(no log available)}"
         [ -n "$total" ] && [ "$total" != 0 ] || total=1
         local short; short="$(printf '%s' "$merge_sha" | cut -c1-7)"
         local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove to merge."
-        state_set_str reconcileStatus "awaiting-reapprove"
-        state_set_str reconcileNote "$note"
-        state_set_str reconcileMergeSha "$merge_sha"
-        state_set_raw awaitingHuman true
-        state_set_str pendingQuestion "$note"
+        lcars_state_set_string "$STATE" reconcileStatus "awaiting-reapprove"
+        lcars_state_set_string "$STATE" reconcileNote "$note"
+        lcars_state_set_string "$STATE" reconcileMergeSha "$merge_sha"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$note"
+        lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
         local qf; qf="$(mktemp)"
         printf '%s\nReapprove to merge the reconciled branch, or send it back.\n' "$note" >"$qf"
         write_pending "$qf" "verify"
@@ -13551,7 +13653,7 @@ ${base_log:-(no log available)}"
         return 30 ;;
     esac
 
-    state_del reconcileStatus
+    lcars_state_unset "$STATE" reconcileStatus
     emit_event reconcile_green verify "merged $BASE and re-test is green — proceeding to open the PR"
     echo "RECONCILE: ok — merged $BASE; re-test green; proceeding"
     return 0
@@ -13569,7 +13671,7 @@ ${base_log:-(no log available)}"
   # up here frees $BRANCH so the heal succeeds. The later cleanup calls are now
   # redundant and have been removed.
   reconcile_cleanup
-  state_set_str reconcileDiagnosis "$failure_summary"
+  lcars_state_set_string "$STATE" reconcileDiagnosis "$failure_summary"
   local affected="Conflicted/affected: ${conflicted:-$RETEST_FAILED}"
 
   # BUG-045 — DETERMINISTIC post-heal design-question escalation (the PRIMARY fix).
@@ -13625,7 +13727,7 @@ ${base_log:-(no log available)}"
     return 20
   fi
 
-  state_set_str reconcileStatus "healing"
+  lcars_state_set_string "$STATE" reconcileStatus "healing"
   echo "RECONCILE: reconciling — merged $BASE; combined state not green; self-heal dispatched (round $round/$RECONCILE_MAX)"
   return 10
 }
@@ -13721,6 +13823,22 @@ detect_host_cli() {
 }
 
 # Resolve WORKER_BIN + WORKER_BIN_SRC by the precedence above.
+# lcars_prefer_real_worker_bin <bin> — the shim normaliser, sourced lazily the
+# same way require_worker sources the guard, and an IDENTITY when the rule file
+# is not there. It is never this function's place to decide the engine; it only
+# turns a name LCARS persisted into the path that name was meant to be.
+lcars_prefer_real_worker_bin() {
+  if ! command -v lcars_worker_bin_prefer_real >/dev/null 2>&1; then
+    # shellcheck source=../lcars-init/worker-guard.sh
+    [ -f "$SKILL_DIR/../lcars-init/worker-guard.sh" ] && . "$SKILL_DIR/../lcars-init/worker-guard.sh"
+  fi
+  if command -v lcars_worker_bin_prefer_real >/dev/null 2>&1; then
+    lcars_worker_bin_prefer_real "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 resolve_worker_bin() {
   # --- IS THIS $LCARS_WORKER_BIN AN OPERATOR ACT, OR LCARS'S OWN RE-PIN? -----
   # `lcars approve` exports $LCARS_WORKER_BIN before handing its reconcile leg to
@@ -13755,6 +13873,27 @@ resolve_worker_bin() {
   # A genuine, EXTERNAL $LCARS_WORKER_BIN carries no such marker and still
   # records `env` — over an adopt record included, because when the captain moves
   # a mission by hand the adopt record is no longer what happened.
+  #
+  # NUMBER ONE'S OWN ENGINE (S202 fix round 1, D1) — ABOVE the mission's pin,
+  # and only ever on the `spawn-number-one` path. The first officer's engine is
+  # `numberOne.engine`, a per-repo choice the captain makes with `lcars xo on
+  # --engine …`; the mission's `workerBin` is the engine the MISSION runs on.
+  # They are two different facts about two different things, and until this fix
+  # the second silently answered for the first — a repo pinned to claude spawned
+  # the copilot binary while the banner, state.json and the living comment all
+  # said claude.
+  #
+  # It does NOT take the `env` source and it never reaches
+  # record_engine_provenance (which returns early on the same flag), so the
+  # MISSION's engineSource/engineResolved/workerBin are untouched: Number One's
+  # engine is Number One's, not the mission's. Everywhere else XO_ENGINE_PIN is
+  # 0 and this block does not exist — `lcars approve`'s internal re-pin, and the
+  # captain's own $LCARS_WORKER_BIN, behave exactly as they did.
+  if [ "${XO_ENGINE_PIN:-0}" = "1" ] \
+     && [ -n "${LCARS_WORKER_BIN:-}" ] \
+     && [ "${LCARS_WORKER_BIN_INTERNAL:-}" = "1" ]; then
+    WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="number-one"; return 0
+  fi
   local internal_pin=""
   if [ -n "${LCARS_WORKER_BIN:-}" ]; then
     if [ "${LCARS_WORKER_BIN_INTERNAL:-}" = "1" ]; then
@@ -13788,17 +13927,43 @@ resolve_worker_bin() {
   local misbin=""
   [ -n "$statef" ] && [ -f "$statef" ] && misbin="$(json_str "$statef" workerBin)"
   if [ -n "$misbin" ]; then
-    WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
+    # S222 — A PERSISTED ENGINE IS A NAME *LCARS* WROTE, so it is normalised to
+    # the real CLI's absolute path before it is used. Missions filed before
+    # tonight all carry the bare `copilot`, and on a machine with the VS Code
+    # Copilot extension that name resolves to the fork-bomb shim, so the guard
+    # in require_worker refused them and the Stage died. The guard is right and
+    # is untouched; what is cured is the late-bound PATH lookup for a value
+    # LCARS chose itself. An operator's own $LCARS_WORKER_BIN is handled above
+    # and is deliberately NOT normalised — see worker-guard.sh.
+    WORKER_BIN="$(lcars_prefer_real_worker_bin "$misbin")"
+    WORKER_BIN_SRC="mission"; return 0
   fi
   # AN INTERNAL PIN WITH NOTHING BEHIND IT. approve only ever pins what it read
-  # off the mission, so reaching here means the mission's record has gone (or a
-  # future caller pins without one). THE ENGINE MUST NOT MOVE — an internal pin
-  # is still a pin, and letting it fall through to config.json or host detection
-  # would re-home the very mission the pin exists to hold. Only the ATTRIBUTION
-  # degrades, honestly, to `env`: something in the environment decided this and
-  # the mission itself no longer says why.
+  # off the mission, so reaching here used to mean the mission's record had gone
+  # — "or a future caller pins without one", said this comment, and S207's
+  # resolve-logs cure is exactly that caller. THE ENGINE MUST NOT MOVE: an
+  # internal pin is still a pin, and letting it fall through to config.json or
+  # host detection would re-home the very mission the pin exists to hold.
+  #
+  # S207 FIX ROUND 1 (D1) — AND THE ATTRIBUTION IS `internal`, NOT `env`.
+  # It degraded to `env` here, and `env` in this file means ONE specific thing:
+  # THE CAPTAIN set $LCARS_WORKER_BIN himself, a deliberate per-invocation
+  # operator act. An internal pin is the opposite — it is LCARS re-asserting an
+  # engine across a process boundary, with the marker right there saying so.
+  # Writing the operator's source for LCARS's own act is a false record, and a
+  # fresh tester measured it live: `lcars resolve-logs` run DIRECTLY pins the
+  # PARENT's engine onto each bug CHILD, and a child filed by `lcars log` with
+  # no engine in scope carries no `workerBin` of its own — so every child landed
+  # here and recorded `engineSource: env` for a pin the captain never typed.
+  # (Through `lcars approve` the pin always came OFF the mission, so a
+  # `workerBin` was always behind it and this arm was never reached — which is
+  # why the defect only showed on the direct path.)
+  #
+  # `internal` says the honest thing: LCARS pinned this, and the mission itself
+  # no longer records why. The RESOLVED BIN is unchanged in every case — this is
+  # the provenance field only.
   if [ -n "$internal_pin" ]; then
-    WORKER_BIN="$internal_pin"; WORKER_BIN_SRC="env"; return 0
+    WORKER_BIN="$internal_pin"; WORKER_BIN_SRC="internal"; return 0
   fi
   # The repo's AMBIENT default — still consulted, just no longer able to
   # overrule a mission that records an engine of its own (S196 A3).
@@ -13848,6 +14013,13 @@ stage_key_for_role() { # role → stage key (stdout; empty if none)
     plan-review)                                  printf 'planReview' ;;
     implement-tdd)                                printf 'implement' ;;
     context-pack)                                 printf 'infra' ;;
+    # S202 — Number One. A role with NO key here resolves NO model: the ladder in
+    # resolve_stage_model is skipped whole for an empty key, so the worker is
+    # handed the CLI's default. S194 measured what that costs on copilot (the
+    # default `create` tool cannot write the file, so the worker reports an
+    # artifact that never reached disk). This line is the whole reason the first
+    # officer runs on the Opus the captain pinned.
+    number-one)                                   printf 'numberOne' ;;
   esac
 }
 
@@ -13986,12 +14158,18 @@ stage_must_write() { # stage key → 0 when the worker's whole job is to write a
 #   implementation = implement, verify
 #   all            = every one of the above (whole-way override)
 # `infra` (context-pack) is never in any scope — it is never escalated.
+# `numberOne` (S202) is in `all` ONLY. The two named axes are the ESTIMATOR's
+# reading of the PIPELINE — how hard is the thinking, how hard is the building —
+# and the first officer is neither: it is the captain's stand-in at a gate. So a
+# scoped override leaves it on its own floor, and only the whole-way override
+# ("run everything on X") reaches it, because that one is a statement about the
+# repo rather than about a stage.
 stage_in_override_scope() { # key scope → 0 if in scope, 1 otherwise
   local key="$1" scope="$2"
   case "$scope" in
     all)
       case "$key" in
-        research|validate|plan|planReview|implement|verify) return 0 ;;
+        research|validate|plan|planReview|implement|verify|numberOne) return 0 ;;
       esac ;;
     reasoning)
       case "$key" in research|validate|plan|planReview) return 0 ;; esac ;;
@@ -14040,6 +14218,17 @@ resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   # (a) global env pin — wins for every stage, verbatim.
   if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
   local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  # (a1) S202 — the captain's own pin for HIS first officer. `numberOne.model` is
+  # written by `lcars xo on --model <m>` onto the SAME one-line config block as
+  # the engine, so the officer he chose and the model he chose are one record.
+  # It is a RAW flag (like `workerModel`), not a logical tier: the captain names
+  # a model, and a tier would silently re-map it. Only the env pin outranks it.
+  if [ "$key" = "numberOne" ]; then
+    local xo_model=""
+    [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+      && xo_model="$(json_scoped_str "$LCARS_CFG" "numberOne.model")"
+    if [ -n "$xo_model" ]; then printf '%s' "$xo_model"; return 0; fi
+  fi
   if [ "$key" != "infra" ] && [ -n "$key" ]; then
     # (a2) captain model override — only for stages within its scope.
     local ov; ov="$(active_model_override)"
@@ -14145,7 +14334,10 @@ resolve_worker() {
 # rounds for; this round's standing pre-flight rule is that the PRODUCER records.
 #
 #   engineResolved  the basename of the cli that actually ran
-#   engineSource    which rule won: env | mission | config | detected | default
+#   engineSource    which rule won: env | internal | mission | config | detected
+#                   | default  (`internal` = LCARS re-asserted an engine across a
+#                   process boundary and the mission records no pin of its own;
+#                   `env` is ALWAYS the captain's own $LCARS_WORKER_BIN)
 #
 # WHAT IT DOES NOT DO: it never touches `workerBin`. Recording the resolved bin
 # as the mission's pin would make a one-off `LCARS_WORKER_BIN=… lcars run`
@@ -14167,10 +14359,16 @@ resolve_worker() {
 # alone. Any other outcome overwrites, because then the adopt record is no longer
 # what happened.
 #
-# New keys go at the TOP of the object: state_set_str re-inserts after line 1
+# New keys go at the TOP of the object: lcars_state_set_string "$STATE" re-inserts after line 1
 # with a hard-coded trailing comma and breaks only when rewriting the LAST field.
 # `base` is last, and S189/S190/S191 all deliberately preserved that.
 record_engine_provenance() {
+  # NUMBER ONE'S SPIN RECORDS NOTHING HERE (S202 fix round 1, D1). These two
+  # keys answer "why does THIS MISSION run on this engine". A first officer
+  # reading the record on its own pinned engine is not an answer to that
+  # question, and writing it here would replace the captain's real answer
+  # (`adopt-chosen`, the mission's own pin) with a fact about his XO.
+  [ "${XO_ENGINE_PIN:-0}" = "1" ] && return 0
   local statef="${STATE:-}"
   [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
   [ -n "$statef" ] && [ -f "$statef" ] || return 0
@@ -14185,12 +14383,12 @@ record_engine_provenance() {
   if [ "$WORKER_BIN_SRC" = "mission" ] && [ "$had_bin" = "$bin" ]; then
     case "$had_src" in adopt-*) return 0 ;; esac
   fi
-  # state_set_str writes to $STATE; several callers resolve a mission by
+  # lcars_state_set_string "$STATE" writes to $STATE; several callers resolve a mission by
   # MISSION_DIR alone and never set it (`set -u` makes an unguarded read fatal).
   local KEEP_STATE="${STATE:-}"
   STATE="$statef"
-  state_set_str engineSource   "$WORKER_BIN_SRC"
-  state_set_str engineResolved "$bin"
+  lcars_state_set_string "$STATE" engineSource   "$WORKER_BIN_SRC"
+  lcars_state_set_string "$STATE" engineResolved "$bin"
   STATE="$KEEP_STATE"
 }
 
@@ -14566,6 +14764,54 @@ EOF
   die "$msg"
 }
 
+# --- S218: KEEP A FAILED ATTEMPT'S RECORD BEFORE ITS SCRATCH DIR GOES --------
+# A Stage's retry loop spawns each attempt into a `mktemp -d` scratch dir and
+# removes it when the attempt fails. That dir held the ONLY copy of the worker's
+# stderr and (since S218) the adapter's .worker.rc / .worker.argv / .worker.warn,
+# so S214's 6/6 Research deaths left nothing behind but one sentence. Call this
+# BEFORE the `rm -rf`: it appends ONE timestamped section per failed attempt to
+# $MISSION_DIR/<stage-subdir>/worker-failure.log (durable, never truncated) and
+# sets $WORKER_FAILURE_RC to that attempt's exit status ("" when none was
+# recorded — the hang guard stopped it, or the adapter refused before spawning).
+# The argv in the record is the adapter's REDACTED one: the prompt appears only
+# as `<prompt N bytes>`. Best-effort: a write failure never changes the Stage.
+WORKER_FAILURE_RC=""
+worker_failure_record() { # stage-subdir outdir attempt of worker-name missing-artifact
+  local sub="$1" od="$2" n="$3" of="$4" who="$5" missing="$6"
+  WORKER_FAILURE_RC=""   # (guarded: a hang-stopped attempt has no .worker.rc — D1)
+  [ -f "$od/.worker.rc" ] && WORKER_FAILURE_RC="$(tr -d '[:space:]' <"$od/.worker.rc" 2>/dev/null)"
+  [ -n "${MISSION_DIR:-}" ] && [ -d "${MISSION_DIR:-}" ] || return 0
+  mkdir -p "$MISSION_DIR/$sub" 2>/dev/null || return 0
+  {
+    printf '=== attempt %s of %s · %s · %s ===\n' "$n" "$of" "$who" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'missing: %s\n' "$missing"
+    if [ -n "$WORKER_FAILURE_RC" ]; then
+      printf 'exit status: %s\n' "$WORKER_FAILURE_RC"
+    else
+      printf 'exit status: none recorded (the hang guard stopped it, or it never started)\n'
+    fi
+    printf 'argv: '
+    if [ -s "$od/.worker.argv" ]; then cat "$od/.worker.argv"; else printf '(none recorded)\n'; fi
+    if [ -s "$od/.worker.warn" ]; then printf -- '--- adapter warnings ---\n'; cat "$od/.worker.warn"; fi
+    printf -- '--- stderr ---\n'
+    if [ -s "$od/.worker.err" ]; then cat "$od/.worker.err"; else printf '(empty)\n'; fi
+    printf -- '--- stdout (last 20 lines) ---\n'
+    if [ -s "$od/.worker.out" ]; then tail -20 "$od/.worker.out"; else printf '(empty)\n'; fi
+    printf '\n'
+  } >>"$MISSION_DIR/$sub/worker-failure.log" 2>/dev/null || true
+  return 0
+}
+
+# The clause a Stage's stop sentence carries after worker_failure_record: how
+# the LAST attempt ended and where every attempt's record is.
+worker_failure_clause() { # stage-subdir
+  local how
+  if [ -n "$WORKER_FAILURE_RC" ]; then how="the last attempt exited $WORKER_FAILURE_RC"
+  else how="the last attempt left no exit status (the hang guard stopped it, or it never started)"; fi
+  printf '%s; its error output for every attempt is in .git/lcars/missions/%s/%s/worker-failure.log' \
+    "$how" "$MISSION_ID" "$1"
+}
+
 # --- delegate one cold-worker invocation to the CLI adapter -----------------
 # The driver passes a role keyword + outdir + prompt; the adapter (selected by the
 # cli id = basename WORKER_BIN) knows the flags and tool names. The worker binary
@@ -14640,6 +14886,36 @@ require_worker() {
   # single chokepoint every worker-using Stage (and the context-pack path) hits,
   # so the self-explaining resolution line prints exactly once per process.
   resolve_worker
+  # S217 — refuse a `copilot` that resolves to VS Code's re-invoking shim HERE,
+  # before the Stage starts, so the one sentence is the Stage's own stop and
+  # not a worker that "produced nothing". The same rule guards the exec itself
+  # in worker-adapter.sh; this is where it is loudest.
+  if ! command -v lcars_worker_bin_guard >/dev/null 2>&1; then
+    # shellcheck source=../lcars-init/worker-guard.sh
+    [ -f "$SKILL_DIR/../lcars-init/worker-guard.sh" ] && . "$SKILL_DIR/../lcars-init/worker-guard.sh"
+  fi
+  if command -v lcars_worker_bin_guard >/dev/null 2>&1; then
+    # The variable is offered only where it WINS (fix round 1, D2): an external
+    # $LCARS_WORKER_BIN tops resolve_worker_bin, but LCARS's own re-pin
+    # (_INTERNAL=1: approve, Number One) overrides a captain's prefix.
+    local guard_msg guard_hint="" guard_eff guard_err
+    [ "${LCARS_WORKER_BIN_INTERNAL:-}" != "1" ] && guard_hint=LCARS_WORKER_BIN
+    # S218 — a run the viewscreen started is fed the mission's persisted engine,
+    # so a variable prefix cannot reach it: say the daemon's fix instead.
+    [ "${LCARS_VIEWSCREEN_CHILD:-}" = "1" ] && guard_hint="$(lcars_worker_bin_daemon_hint)"
+    # S231 — the guard may return a REAL CLI on stdout to run in the shim's
+    # place (a bare persisted `copilot` cured from a known absolute location).
+    # Adopt it; empty means unchanged. A refusal is rc≠0 with its sentence on
+    # stderr, which we surface through die exactly as before.
+    guard_err="$(mktemp)"
+    if guard_eff="$(lcars_worker_bin_guard "$WORKER_BIN" "$guard_hint" 2>"$guard_err")"; then
+      [ -s "$guard_err" ] && cat "$guard_err" >&2
+      [ -n "$guard_eff" ] && WORKER_BIN="$guard_eff"
+      rm -f "$guard_err"
+    else
+      guard_msg="$(cat "$guard_err")"; rm -f "$guard_err"; die "$guard_msg"
+    fi
+  fi
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
   [ -x "$WORKER_BIN" ] && return 0
   printf '  ⚠ NOT ISOLATED — no cold-worker binary on PATH (LCARS_WORKER_BIN=%s).\n' "$WORKER_BIN" >&2
@@ -14727,6 +15003,91 @@ exactly as specified above, in the scratch output directory, and nowhere else.$p
   # differs, and that goes through generate_context_pack, not here), so pre-export
   # LCARS_WORKER_ROLE=$role and pass $toolset as the adapter's toolset-role.
   LCARS_WORKER_ROLE="$role" worker_spawn "$toolset" "$outdir" "$prompt"
+}
+
+# === Number One's spawn (S202) =============================================
+# ONE wrapper around spawn_worker, so the first officer arrives at the cold-worker
+# chokepoint by exactly the same road every Stage does: role → stage key → model
+# → adapter argv → fence snapshot → usage capture. Nothing here is a second spawn
+# path; if it were, the S168 fence and the model floor would both have a hole
+# with Number One's name on it.
+#
+# THE DIVISION OF LABOUR (captain ruling, 2026-09-11). This function hires the
+# worker and hands it paper. It does NOT read the verdict, validate it, answer a
+# gate, or touch a mission's state — `xo.sh` does all of that, through the
+# ordinary verbs. The worker REASONS; the skill EXECUTES.
+#
+#   <mission>  the mission id (already located by the caller — MISSION_DIR is set)
+#   <mode>     which question it is being asked: `answer` today (S203 adds the
+#              Verify look). It names the prompt template, so an unknown mode is
+#              a LOUD failure rather than a worker with no instructions.
+#   <outdir>   its scratch dir. The ONLY place it may write, and where xo.sh
+#              reads xo-answer.json back from.
+#
+# The read-only INPUT copies are the caller's: it exports $LCARS_WORKER_INPUT_DIRS
+# (which the adapter turns into copilot `--add-dir` grants) and $LCARS_XO_INPUT_DIR
+# (which names the dir in the prompt). A missing input dir is not fatal here —
+# xo.sh gathers it and would have failed already — but it IS named, because a
+# worker told to read a directory that is not there answers "the PRD is silent",
+# and that is the one wrong answer this round must never manufacture.
+spawn_number_one() { # mission-id  mode  outdir
+  local id="$1" mode="$2" outdir="$3"
+  local template="$XO_PROMPTS_DIR/$mode.md"
+  [ -f "$template" ] || die "no Number One prompt template for mode '$mode' at $template — reinstall LCARS (./install.sh)."
+  mkdir -p "$outdir"
+  local indir="${LCARS_XO_INPUT_DIR:-}"
+  local inventory=""
+  if [ -n "$indir" ] && [ -d "$indir" ]; then
+    inventory="$(cd "$indir" && find . -type f | sed 's|^\./|  - |' | sort)"
+  fi
+  # THE OUTPUT FILE IS THE MODE'S, NOT THIS FUNCTION'S (S203). `answer` writes
+  # one file and only one. `evaluate` writes ONE OF TWO — a verdict, or a
+  # request to look further — and naming the wrong one here is how a worker
+  # that wanted another round silently produces nothing at all.
+  local outfiles
+  case "$mode" in
+    evaluate) outfiles="Write EXACTLY ONE of these two files:
+  - $outdir/xo-verdict.json   you have seen enough, and this is your verdict
+  - $outdir/xo-actions.json   you want to look further (at most 12 actions)" ;;
+    # S204 — the RE-CHECK after the logged fixes landed. One file, and it
+    # carries two things: `held` (did each filed gap's fix hold?) and the full
+    # ledger again, which the skill re-scores exactly as it scored the first
+    # look. There is no second round to ask for, so there is no actions file.
+    recheck)  outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
+    # S224 item 2 — THE PASS WITH NO LIST IN ITS HAND. One file, no rounds to
+    # ask for and no verdict to reach: it is not judging the build, it is
+    # handing the captain what nobody was looking for. Its input dir is the
+    # PICTURES ONLY (xo.sh builds it), which is the whole point — a reviewer
+    # holding a list finds what is on the list.
+    unlisted) outfiles="Write EXACTLY ONE file: $outdir/xo-unlisted.json" ;;
+    *)        outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
+  esac
+  # THE ROUND BUDGET, WHEN THERE IS ONE (S221). `xo.sh` exports its own
+  # $XO_MAX_ROUNDS as $LCARS_XO_MAX_ROUNDS before it spawns an `evaluate`
+  # worker, and this prints whatever that says. There is deliberately NO
+  # default here: a second default is a second place for the number to live,
+  # and the prompt that used to say "three rounds in total" outlived the cap
+  # it described. Unset (a hand-run spawn), the line simply does not appear.
+  local rounds_line=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_MAX_ROUNDS:-}" ]; then
+    rounds_line="
+Your round budget: ${LCARS_XO_MAX_ROUNDS} round(s) of looking, in total. Ask for
+more actions only while rounds remain; with none left you must write a verdict."
+  fi
+  local extra="## The mission
+Mission id: $id
+$rounds_line
+
+## Your input directory — the mission's RECORD, read-only
+$indir
+
+These are the files a human at this gate would have in front of him. They are
+COPIES; nothing you do can change the mission. Read them with your read tools.
+${inventory:-  (the input directory is empty — say so, and ESCALATE)}
+
+## Your output file
+$outfiles"
+  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" number-one "$outdir" "$extra"
 }
 
 # === Bounded fan-out (the ONE shared concurrency helper) ====================
@@ -14875,9 +15236,29 @@ cmd_research() {
     spawn_worker research-questions "$STAGES_DIR/research-questions.md" repo-read "$qdir" \
       "$rq_extra" "$( [ "$tries" -gt 1 ] && printf no-file )"
     [ -f "$qdir/questions.txt" ] && break
+    # S218 — keep this attempt's stderr / exit status / argv before its dir goes.
+    worker_failure_record research "$qdir" "$tries" "$MAX_WORKER_TRIES" question-generator questions.txt
     rm -rf "$qdir"; qdir=""
   done
-  [ -n "$qdir" ] || die "the question-generator worker produced no questions.txt after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+  [ -n "$qdir" ] || die "the question-generator worker produced no questions.txt after $MAX_WORKER_TRIES attempt(s) — $(worker_failure_clause research). Stage stopped, no advance."
+
+  # PRODUCT DECISIONS THE WORKER RECORDED AS IT WORKED (2026-09-25, "decide, but
+  # tell me it decided"). As the question-generator writes its questions it
+  # DECLARES each one's kind — a researchable fact, or a product decision that is
+  # the captain's to make. For every product decision it does NOT stop and does
+  # NOT dispatch a research agent (no researcher can answer "what should the
+  # product be"); it MAKES a reasonable call to keep the build moving and RECORDS
+  # that call — question, options, choice, why, where — in decisions.json at the
+  # moment it decides. Land it beside prd.md/research/ in the durable mission dir
+  # so the Verify report can NAME every call made on his behalf. It is written by
+  # the producer and read downstream as structured fields — never inferred from
+  # prose (RECORD, DO NOT INFER). Persist it BEFORE the count gate: a Mission
+  # whose only open points were product decisions has an EMPTY questions.txt and
+  # takes the GATE: skip path, but its decisions still belong on the record.
+  # Absent when the worker took none — the report omits the section then.
+  if [ -f "$qdir/decisions.json" ]; then
+    cp "$qdir/decisions.json" "$MISSION_DIR/decisions.json"
+  fi
 
   # STEP 2 — gate on the count (reuse the tested subcommand; it owns skip/escalate)
   local gate_out gate_rc=0
@@ -15027,9 +15408,11 @@ guess from the plan alone."
       return 0
     fi
     prior_no_file=no-file
+    # S218 — keep this attempt's stderr / exit status / argv before its dir goes.
+    worker_failure_record research "$odir" "$tries" "$MAX_WORKER_TRIES" grounding grounding.json
     rm -rf "$odir"
   done
-  die "the grounding worker produced no grounding.json after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+  die "the grounding worker produced no grounding.json after $MAX_WORKER_TRIES attempt(s) — $(worker_failure_clause research). Stage stopped, no advance."
 }
 
 # One research agent, retried until it yields a well-shaped response (or the cap).
@@ -16875,8 +17258,9 @@ $(cat "$tdir/flip-flop.json" 2>/dev/null)"
   LCARS_PENDING_TECHNICAL_DETAIL="${lastsig:-no gate signal captured}" \
     write_pending "$q" "implement"
   rm -f "$q"
-  state_set_raw awaitingHuman true
-  state_set_str pendingQuestion "Ticket $TICKET failed its proof gates after $sessions session(s) — needs a human."
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "Ticket $TICKET failed its proof gates after $sessions session(s) — needs a human."
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   gh_relabel "lcars:awaiting-human" ""
   emit_event ticket_flagged implement \
     "ticket $TICKET flagged after $sessions worker session(s) — last gate verdict: ${last_verdict:-unknown}" \
@@ -17499,8 +17883,9 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
     printf 'Ticket %s could not be recomposed on the current tip: after a same-file replay conflict its serial rebuild produced NO file changes, so the change it made in the concurrent build never landed. Its locked tests still require that code — the ticket needs a human.\n' \
       "$t" >"$q"
     write_pending "$q" "implement"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "Ticket $t could not be recomposed after a same-file replay conflict (empty rebuild) — needs a human."
+    lcars_state_set "$STATE" awaitingHuman true
+    lcars_state_set_string "$STATE" pendingQuestion "Ticket $t could not be recomposed after a same-file replay conflict (empty rebuild) — needs a human."
+    lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
     gh_relabel "lcars:awaiting-human" ""
     rm -f "$q"
     emit_event ticket_rebuild_empty implement \
@@ -17732,7 +18117,7 @@ drive_persist_base_freshness() { # mission-branch
   local line
   line="$(lcars_base_state_line "${1:-}")" || return 0
   [ -n "$line" ] || return 0
-  state_del baseFreshness
+  lcars_state_unset "$STATE" baseFreshness
   local tmp; tmp="$(mktemp)"
   LCARS_BF_LINE="$line" awk 'NR==1{print; print ENVIRON["LCARS_BF_LINE"]; next} {print}' \
     "$STATE" >"$tmp" && mv "$tmp" "$STATE"
@@ -17830,7 +18215,7 @@ drive_pr_merged() { # → 0 if merged, 1 otherwise
 drive_mark_done() {
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
-  state_set_str review "merged"
+  lcars_state_set_string "$STATE" review "merged"
   emit_event stage_done verify "PR merged — Mission shipped"
 }
 
@@ -17919,6 +18304,9 @@ drive_verify() { # accumulated-summary
       fi
       # Still open — in review. Halt, but do NOT re-ping (one ping at open time).
       emit_event gate verify "in review — PR open"
+      # S203 — …and if Number One has the conn and has not looked yet, it looks
+      # now, DETACHED, so this halt still returns the terminal immediately.
+      drive_number_one_verify || true
       mirror_comments || true
       drive_print_summary "$summary"
       drive_halt_in_review "$pr"
@@ -17945,13 +18333,17 @@ drive_verify() { # accumulated-summary
        printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
        if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
          notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
-         state_set_str verifyDegradedNotified "1"
+         lcars_state_set_string "$STATE" verifyDegradedNotified "1"
        fi
        return 0 ;;
   esac
 
   # PR opened — fire the ONE notification and halt "in review".
   emit_event gate verify "PR opened — review & merge"
+  # S203 — the first officer's look starts HERE, on the pass that opened the PR,
+  # and detached (see drive_number_one_verify): the notification and the halt
+  # below must not wait on a browser.
+  drive_number_one_verify || true
   mirror_comments || true
   drive_print_summary "$summary"
   printf 'verify       ✓  PR opened — %s\n' "$pr2"
@@ -18132,6 +18524,40 @@ _liveness_write() { # file stage startedAt lastOutputTs outputBytes state
   mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
+# WAIT OUT ONE POLL INTERVAL, OR THE WORKER'S EXIT — WHICHEVER COMES FIRST.
+#
+# THE DEFECT THIS EXISTS FOR (S224 fix round 2, measured). The hang guard's loop
+# slept the WHOLE poll interval (`sleep "$poll"`, 15s shipped) before it looked
+# at the worker again, so a worker that finished one moment after a tick was
+# STILL WAITED OUT for the rest of the interval. That is dead time every cold
+# worker spawn pays — every Research, Validate, Plan, Implement and Verify
+# worker in the harness. Measured on `lcars xo evaluate` with instant stub
+# workers: two spawns, 36.1s wall, of which 31.5s was this sleep running on
+# after both workers had already exited and written their files. It is what
+# broke B24c ("a hanging suite is killed at the bound, not waited out") when a
+# SECOND spawn — the criteria-free pass — was added to the look: the hung suite
+# was killed correctly at 2.1s in both cases; the look's clock was this.
+#
+# THE INTERVAL IS UNCHANGED for a worker that is still running: this returns
+# only when the full `secs` have elapsed by the WALL CLOCK, so the stagnation
+# arithmetic below (`stagnant + poll` once per interval) means exactly what it
+# meant before. What changed is that a DEAD worker stops the wait at once.
+#
+# Wall-clock-bounded rather than slice-counted on purpose: bash 3.2 has no
+# `wait -n`, and a system whose `sleep` refuses fractions would otherwise
+# silently lengthen the poll interval and with it the hang window.
+# Returns 0 when the interval elapsed or the worker is gone, 1 if `sleep`
+# itself failed (the caller breaks, exactly as it did on `sleep ... || break`).
+_wait_for_exit_or_poll() { # <pid> <secs>
+  local p="$1" secs="$2" end
+  end=$(( $(date +%s) + secs ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    sleep 0.5 2>/dev/null || sleep 1 2>/dev/null || return 1
+    pid_alive "$p" || return 0
+  done
+  return 0
+}
+
 # Run a cold-worker command HANG-GUARDED. Launches it as its OWN process-group
 # leader (perl POSIX::setsid + exec — REUSE the BUG-048 pattern in
 # run_with_watchdog), so the whole descendant tree can be group-killed. While it
@@ -18210,7 +18636,9 @@ run_worker_hang_guarded() { # outdir  cmd...
   fi
 
   while pid_alive "$cmd_pid"; do
-    sleep "$poll" 2>/dev/null || break
+    # ONE POLL INTERVAL, OR THE WORKER'S EXIT — whichever comes first. See
+    # _wait_for_exit_or_poll: the interval a LIVE worker gets is unchanged.
+    _wait_for_exit_or_poll "$cmd_pid" "$poll" || break
     pid_alive "$cmd_pid" || break
     local cpu sig
     cpu="$(_pgid_cpu_sum "$cmd_pid")"
@@ -18305,6 +18733,251 @@ release_driver_lock() {
   DRIVER_LOCK_DIR=""
 }
 
+# ===========================================================================
+# NUMBER ONE AT A GATE (S202) — the driver's half of the first officer.
+# ===========================================================================
+#
+# THE DRIVER DECIDES NOTHING. Everything below answers exactly two questions:
+# "is Number One engaged on this mission?" and "have I already shown it THIS
+# question?". If both say yes-and-no it calls `lcars xo answer`, and then obeys
+# the exit status — 0 the gate is cleared and the drive carries on, non-zero the
+# gate stays up and the drive halts exactly as it did before this session. What
+# the answer IS, whether the record settles it, and whether scope makes it the
+# captain's are xo.sh's to judge; a second copy of that judgement here is how two
+# first officers with different rules get into one tree.
+#
+# WHY THE CKSUM IS RECORDED AND NEVER INFERRED. A gate that Number One escalated
+# is still a gate: the next pass of this loop sees the same `awaitingHuman: true`
+# and the same pending.json, and without a memory it would hire another worker to
+# be told the same thing — every pass, for as long as the mission sits there. The
+# memory is the cksum of the pending.json it acted on, WRITTEN BEFORE the spawn
+# (a crash mid-spin must not buy a second spin either) and read back off the
+# mission's own state. It is recorded, not worked out afterwards from a journal
+# or a comment: the producer records, the surface displays.
+#
+# THE STATE WRITER IS NOW THE SHARED ONE. S202 wrote the three functions below
+# as a verbatim copy of xo.sh's, deliberately, and said so: "S207's aftercare
+# owns unifying the state writers repo-wide (41 call sites); making a 42nd shape
+# here to be different would be the opposite of helping it." S207 unified them —
+# the object edit is lcars_json1_set / lcars_json1_del and the file write is
+# lcars_state_set (lcars-state.sh), the same two xo.sh calls, so the two can no
+# longer disagree about the shape of this one line.
+
+# The mission's one-line numberOne object, or empty.
+# S223: the JSON-aware reader (lcars-state.sh) — never `{[^}]*}`, which stops at
+# the first `}` inside a headline and hands drive_xo_put a TRUNCATED object to
+# write back over state.json.
+drive_xo_block() {
+  [ -f "${STATE:-}" ] || return 0
+  lcars_state_xo_block "$STATE"
+}
+
+# drive_xo_field <key> → its recorded STRING value, or empty.
+drive_xo_field() {
+  lcars_json1_get "$(drive_xo_block)" "$1"
+}
+
+# drive_xo_put <key> <raw-json-value> — set one key on the block, order-stable,
+# creating the block when it is absent. Values are this file's own (a status
+# word, a cksum), never user text.
+drive_xo_put() {
+  lcars_state_set "$STATE" numberOne "$(lcars_json1_set "$(drive_xo_block)" "$1" "$2")"
+}
+
+# drive_xo_del <key> — the block without that key. The mirror image of
+# drive_xo_put, and the SAME function xo.sh's obj_del is: the two must never
+# disagree about the shape of this one line, and since S207 they cannot.
+# A block that has no such key is left exactly as it was.
+drive_xo_del() {
+  local obj; obj="$(drive_xo_block)"; [ -n "$obj" ] || return 0
+  case "$obj" in *"\"$1\""*) : ;; *) return 0 ;; esac
+  lcars_state_set "$STATE" numberOne "$(lcars_json1_del "$obj" "$1")"
+}
+
+# Is Number One ON for this REPO? The same one-line read `lcars xo` does — a
+# missing key, a malformed block and an unreadable config all answer "off",
+# because the safe reading of "I cannot tell" is that the captain has the conn.
+drive_xo_repo_on() {
+  local blk
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 1
+  blk="$(lcars_state_get_raw "$LCARS_CFG" numberOne)"
+  [ "$(lcars_json1_raw "$blk" enabled)" = true ] && return 0
+  return 1
+}
+
+drive_xo_repo_engine() {
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 0
+  lcars_json1_get "$(lcars_state_get_raw "$LCARS_CFG" numberOne)" engine
+}
+
+# === ENGAGE ON DRIVE =======================================================
+# Engaging is the DRIVER's act and only the driver's (S201's `lcars xo on` is a
+# repo switch; `lcars xo on <mission>` only clears an opt-out). One place, at the
+# top of a drive, so "Number One is engaged" can only ever become true where the
+# work actually starts — and so a mission the captain opted out of, or stood
+# down, stays his however many times he re-runs it.
+drive_engage_number_one() {
+  drive_xo_repo_on || return 0
+  case "$(drive_xo_block)" in *'"optOut"'*true*) return 0 ;; esac
+  local status; status="$(drive_xo_field status)"
+  [ "$status" = "engaged" ] && return 0     # already holding the conn — leave `since` alone
+  [ "$status" = "stood-down" ] && return 0  # the captain took it back; only `lcars xo on <id>` re-offers it
+  # ESCALATED IS NOT OVERWRITTEN WHILE THE GATE IS STILL UP (S202 fix round 1,
+  # D3). `escalated` is the one signal that says THIS ONE IS YOURS, and this
+  # line — which already knew about `engaged` and `stood-down` — used to write
+  # straight over it on the very next pass of an auto-advance or the daemon.
+  # Nothing was lost mechanically (the gate survives either way); what was lost
+  # was the red card, on the pass AFTER the one the captain was told about.
+  #
+  # It stays escalated exactly as long as the gate it handed back is up. Once
+  # the captain has ANSWERED that gate, re-engaging is the right act — "until
+  # the captain acts on it" is the rule, and holding `escalated` for ever would
+  # sit the first officer out of every remaining gate on the mission. The stale
+  # "this one is yours" note goes with the re-engage; `lastAction` stays, because
+  # it is the record of what Number One actually did.
+  #
+  # "THE GATE IT HANDED BACK" IS THE RECORDED ONE, not merely "a gate". The
+  # memory already exists: `lastPending` is the cksum of the pending.json Number
+  # One acted on, written before the spin. Same cksum ⇒ the captain is still
+  # looking at the question it escalated, and the card stays red. A DIFFERENT
+  # pending question is a DIFFERENT gate — the escalated one is behind us — and
+  # the conn comes back so the first officer can take it.
+  if [ "$status" = "escalated" ]; then
+    if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
+      local xo_pend="$MISSION_DIR/pending.json" xo_last
+      xo_last="$(drive_xo_field lastPending)"
+      # NO RECORDED CKSUM, or no pending.json to compare it against, is the
+      # UNCERTAIN case, and the safe reading of "I cannot tell" is that the
+      # captain still has this one. It is reachable: an escalation raised by
+      # `lcars xo answer --mission <id>` run by hand never went through the
+      # driver, so nothing stamped `lastPending` — and treating "no memory" as
+      # "a different gate" would put the downgrade straight back.
+      [ -n "$xo_last" ] && [ -f "$xo_pend" ] || return 0
+      [ "$(drive_pending_cksum "$xo_pend")" = "$xo_last" ] && return 0
+    fi
+    drive_xo_del note
+  fi
+  local engine; engine="$(drive_xo_repo_engine)"
+  drive_xo_put status '"engaged"'
+  [ -n "$engine" ] && drive_xo_put engine "\"$engine\""
+  drive_xo_put since "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  printf '◈ NUMBER ONE: engaged%s — it takes the gates on your behalf (`lcars xo off %s` to take them back).\n' \
+    "${engine:+ · $engine}" "$MISSION_ID"
+  return 0
+}
+
+# The cksum of the pending question this pass is looking at. `cksum` is in POSIX
+# and on every box LCARS runs on; the filename is stripped so the value depends
+# on the CONTENT of the gate and nothing else.
+drive_pending_cksum() { # <pending.json>
+  [ -f "$1" ] || return 0
+  cksum <"$1" 2>/dev/null | tr -s ' ' ' ' | cut -d' ' -f1,2 | tr ' ' '-'
+}
+
+# === THE GATE HOOK =========================================================
+# 0 → the gate was ANSWERED and cleared; the caller continues the loop.
+# 1 → not Number One's (not engaged / already seen / it escalated); halt as today.
+drive_number_one_gate() {
+  [ "${LCARS_XO_DRIVE:-1}" = "0" ] && return 1     # kill-switch, as every S202 seam has
+  [ -f "$XO_SCRIPT" ] || return 1
+  [ "$(drive_xo_field status)" = "engaged" ] || return 1
+  local pending="$MISSION_DIR/pending.json"
+  [ -f "$pending" ] || return 1
+  local sum last
+  sum="$(drive_pending_cksum "$pending")"
+  last="$(drive_xo_field lastPending)"
+  [ -n "$sum" ] && [ "$sum" = "$last" ] && return 1   # already shown this exact question
+  # RECORDED BEFORE THE SPAWN, on purpose — see the header.
+  [ -n "$sum" ] && drive_xo_put lastPending "\"$sum\""
+  local rc=0
+  bash "$XO_SCRIPT" answer --mission "$MISSION_ID" || rc=$?
+  return "$rc"
+}
+
+# === THE VERIFY HOOK (S203) ================================================
+# When a Mission reaches Verify with a PR open, Number One LOOKS: it launches the
+# build, walks it headless against the PRD and the drawing, and scores the intent
+# match. Two call sites in `drive_verify` — the pass that JUST opened the PR and
+# the pass that finds one already open — because a mission can reach "in review"
+# by either road and the look is owed on both.
+#
+# DETACHED, ALWAYS. `setsid`/`nohup` with the pid in `xo.pid`, because the look
+# takes minutes (a launch, a browser, up to three worker rounds) and the driver's
+# halt is what hands the captain his terminal back. A foreground spawn here would
+# park `lcars run` behind a browser — and the captain's ruling (2026-09-13) is
+# that Number One never takes his focus. A detached child, a headless Chrome and
+# a notification that does not raise a window are the three halves of that.
+#
+# IDEMPOTENT ON evaluatedAt, HERE AS WELL AS IN xo.sh. The verb refuses a second
+# look on its own, but a driver that spawned it anyway would start a browser and
+# a launch before the verb got as far as refusing; the guard has to be on the
+# side that decides to spend.
+#
+# AND NEVER A BUG CHILD. A logged bug's fix folds onto its PARENT's branch and it
+# has no PR of its own (Mission logs' Model A), so there is no build of its own to
+# look at — looking would score the parent's build a second time and label the
+# child with it. `drive_verify` short-circuits bug children before it ever gets
+# here; this says so a second time because the guard is cheap and the mistake is
+# not.
+#
+# ONE MORE PID FILE, NOT A LOCK. `xo.pid` is what `lcars xo off <id>` reads to
+# stand a look down mid-flight; a live pid in it also means a look is already
+# running, so the hook does not start a second.
+drive_number_one_verify() {
+  [ "${LCARS_XO_DRIVE:-1}" = "0" ] && return 1     # kill-switch, as every S202 seam has
+  [ -f "$XO_SCRIPT" ] || return 1
+  [ "$(drive_xo_field status)" = "engaged" ] || return 1
+  # A bug child has no build of its own — see the header.
+  local parent; parent="$(json_str "$STATE" parentMission)"
+  [ -n "$parent" ] && [ "$parent" != "null" ] && return 1
+  # ALREADY LOOKED — the one fact that makes a second look pure spend.
+  [ -n "$(drive_xo_field evaluatedAt)" ] && return 1
+  # …or looking right now. A recorded pid that is still alive is a look in
+  # flight; a stale one (the box rebooted, the look was killed) is not, and is
+  # simply overwritten by the child below.
+  local pidfile="$MISSION_DIR/xo.pid" live
+  if [ -f "$pidfile" ]; then
+    live="$(head -1 "$pidfile" 2>/dev/null | tr -dc '0-9')"
+    [ -n "$live" ] && kill -0 "$live" 2>/dev/null && return 1
+  fi
+  local log="$MISSION_DIR/xo/evaluate.log"
+  mkdir -p "$MISSION_DIR/xo"
+  # `setsid` where the box has it (Linux) puts the look in its OWN session, so
+  # nothing that happens to the captain's terminal reaches it. macOS has no
+  # setsid, and there `nohup` + `disown` is the honest best: the look survives
+  # the terminal closing and the driver exiting, and it is said plainly here
+  # rather than claimed as a full session detach it is not.
+  #
+  # WHAT IS NOT DONE, AND WHY. The obvious extra — `trap "" INT TERM` in a
+  # wrapper subshell — would detach it from a ^C on macOS too, and it would
+  # also make the look UNKILLABLE: bash cannot trap a signal it inherited as
+  # ignored, so `lcars xo off <id>`'s stand-down (xo.sh traps TERM/INT to stop
+  # Chrome and the launch) would stop working. A look the captain cannot stand
+  # down is worse than one a ^C can end.
+  #
+  # STDIN IS /dev/null on both paths: a detached child that inherits a terminal
+  # can stop the whole job on a read, which is the loudest possible way to take
+  # the captain's focus.
+  local child=""
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+      </dev/null >"$log" 2>&1 &
+    child=$!
+  else
+    nohup bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+      </dev/null >"$log" 2>&1 &
+    child=$!
+  fi
+  disown "$child" 2>/dev/null || disown 2>/dev/null || true
+  # The pid, for `lcars xo off <id>`. xo.sh REPLACES this with its own `$$` the
+  # moment it starts — that is the authoritative one, and this is what stands in
+  # for the fraction of a second before it does (and what says "a look is in
+  # flight" to the guard above).
+  printf '%s\n' "$child" >"$pidfile"
+  printf '◈ NUMBER ONE: looking at the build — it will score the intent match and report on the issue.\n'
+  return 0
+}
+
 cmd_drive() {
   locate_mission "$MISSION_ID"
   # A parked mission (prdPending) is NOT drivable — the driver never runs a
@@ -18348,6 +19021,12 @@ cmd_drive() {
 
   local mode="auto"; [ "$STEP" = 1 ] && mode="step"
   printf '%s  %s-advance\n%s\n' "$MISSION_ID" "$mode" "$SEP"
+
+  # S202 — ENGAGE NUMBER ONE, if the captain has it on for this repo and has not
+  # opted THIS mission out. Once, here, before anything is spawned: the gates
+  # below ask the mission's state whether it is engaged, and the state must have
+  # been told before the first of them is reached.
+  drive_engage_number_one
 
   # Version check (S129) — WARN mode ONLY. The drive loop is a headless,
   # walk-away path: it must NEVER prompt or block on the update ask. `warn` mode
@@ -18395,6 +19074,15 @@ cmd_drive() {
     # Halt conditions, checked BEFORE running anything. Each emits a `gate` event
     # to the Mission log (the halt block + notify hook below are unchanged).
     if [ "$awaiting" = "true" ]; then
+      # S202 — NUMBER ONE TAKES IT FIRST. Every gate in the pipeline lands on this
+      # line (the design comment further down says so), which is why the hook is
+      # here and not at each of the two dozen raisers. It answers or it does not;
+      # on rc 0 the gate is CLEARED and this is no longer a halt, so the loop goes
+      # round and the drive carries on with no second process anywhere — the
+      # answer went through `lcars respond` with its re-exec pinned off.
+      if drive_number_one_gate; then
+        continue
+      fi
       emit_event gate "$stage" "awaiting your answer"
       mirror_comments || true
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
@@ -18438,6 +19126,16 @@ cmd_drive() {
     # so a tail/scrollback shows the Stage starting in real time.
     emit_event stage_start "$action" "starting"
     printf '%-12s ▶  running…\n' "$action"
+    # S218 fix round 1 (F1) — the size of this Stage's failure log BEFORE it
+    # runs, so the error arm below can RECORD (not re-parse from prose) whether
+    # this run wrote to it.
+    local fail_log_rel=".git/lcars/missions/$MISSION_ID/$action/worker-failure.log"
+    local fail_log_size0
+    # (fix round 2, D1: guarded — a bare `<missing` redirect fails BEFORE its
+    # 2>/dev/null applies, printing "No such file" on every healthy drive.)
+    fail_log_size0=""
+    [ -f "$MISSION_DIR/$action/worker-failure.log" ] \
+      && fail_log_size0="$(wc -c <"$MISSION_DIR/$action/worker-failure.log" 2>/dev/null | tr -d ' ')"
 
     # BUG-020 watchdog: run the Stage subprocess under a bounded wall-clock guard
     # so a wedged stage (e.g. a leaked Implement heartbeat holding the pipe open)
@@ -18466,10 +19164,15 @@ cmd_drive() {
         local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run '$(drive_hint)' to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
         local wq; wq="$(mktemp)"; printf '%s\n' "$wdq" >"$wq"
         write_pending "$wq" "$stage"; rm -f "$wq"
-        state_set_raw awaitingHuman true
-        state_set_str pendingQuestion "$wdq"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$wdq"
+        lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
         gh_relabel "lcars:awaiting-human" ""
-        emit_event error "$stage" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
+        # The event's stage field is the stage that RAN, matching its own
+        # sentence (S214 fix round 1, D2). It used to be `$stage`, where the
+        # Mission sits, so a Research timeout banded itself ALIGN on the board
+        # while the sentence beside it said Research.
+        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human" stageFailure=1
         drive_print_summary "$summary"
         printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
@@ -18494,6 +19197,23 @@ cmd_drive() {
       # next pass — emitting one here too would double-log the gate.
       summary="${summary:+$summary
 }$line"
+      # S202 — THE `--step` ARM'S OWN HOOK. In auto mode the `continue` below
+      # carries this gate to the halt check at the top of the next pass and
+      # Number One takes it there, so nothing extra is needed. `--step` is
+      # different: the captain asked for ONE Stage, and that Stage has finished —
+      # it just finished by asking a question. So the first officer answers it
+      # here and the step ENDS, cleared, instead of the driver running a second
+      # Stage the captain did not ask for. Escalate (or not engaged) and this is
+      # a no-op: the `continue` falls through to the halt exactly as before, and
+      # the recorded cksum means the top-of-loop hook does not hire a second
+      # worker to be told the same thing.
+      if [ "$mode" = "step" ] && drive_number_one_gate; then
+        drive_print_summary "$summary"
+        printf '⏹ stepped one Stage — Number One answered the gate it raised; still at: %s\n' \
+          "$(json_str "$STATE" stage)"
+        printf 'Run `%s` to continue (or add `--step` for one more).\n' "$(drive_hint)"
+        return 0
+      fi
       continue
     fi
     if [ "$new_stage" != "$stage" ]; then
@@ -18519,13 +19239,53 @@ cmd_drive() {
     fi
 
     # Nothing advanced and no gate was raised → a hard Stage error. Carry the
-    # cause: the tail of the stage subprocess output ($out) — including any die
-    # reason — so the board event itself names WHY (BUG-051), not a bare "failed".
-    local err_tail; err_tail="$(printf '%s' "$out" | tr '\n' ' ')"
-    err_tail="${err_tail: -200}"
-    emit_event error "$stage" "$stage failed${err_tail:+: $err_tail}"
+    # cause: the stage subprocess's own reason for stopping, so the board event
+    # itself names WHY (BUG-051), not a bare "failed".
+    #
+    # NAME THE STAGE THAT RAN (S214 fix round 1, D2). `$stage` is where the
+    # Mission SITS; `$action` is what actually ran, and the two differ on every
+    # freshly filed Mission — it sits at `align` while RESEARCH runs. This arm
+    # used `$stage` for the event's own field AND for the word in the sentence,
+    # so a question-generator failure reached the captain as "align failed",
+    # banded ALIGN on a board where Research had never started.
+    #
+    # AND SAY THE WHOLE SENTENCE (S214 fix round 1, D2). The cause used to be
+    # the last 200 characters of everything the Stage printed. On any Mission
+    # that enters a worktree the tree banner is printed AHEAD of the reason, so
+    # the window opened inside the banner and the captain's line began
+    # mid-word, on a dangling quote: "…ars-20260918-001-fea3' @ fd4e952 …".
+    # A Stage that stops on purpose says why through `die`, which writes one
+    # line. READ THAT LINE, whole, and drop the `lcars run:` it wears — the
+    # captain is reading about his own build, not about a script.
+    local err_tail
+    err_tail="$(printf '%s\n' "$out" | sed -n 's/.*lcars run: //p' | tail -1)"
+    if [ -z "$err_tail" ]; then
+      # No stated reason — the Stage died without one (a crash, a signal, a
+      # `set -e`). Then the output IS all there is, and the tail of it is a
+      # guess at the interesting end. Keep the guess, but never publish a
+      # fragment that starts mid-word: cut forward to the next word boundary
+      # and mark the line as the offcut it is.
+      err_tail="$(printf '%s' "$out" | tr '\n' ' ')"
+      if [ "${#err_tail}" -gt 200 ]; then
+        err_tail="${err_tail: -200}"
+        case "$err_tail" in *' '*) err_tail="${err_tail#* }" ;; esac
+        err_tail="…$err_tail"
+      fi
+    fi
+    # S218 fix round 1 (F1/F2) — the failure log THIS run wrote rides the event
+    # as data, so the board card and `lcars status` read the path as a recorded
+    # fact rather than fishing it out of the sentence.
+    # (fix round 2, D2: every error event this drive writes carries
+    # stageFailure=1 — the RECORDED marker the card / detail / status read, so
+    # pre-S214 history, which lacks it, is never surfaced as a failure.)
+    local fail_log_size1="" fail_log_kv=("stageFailure=1")
+    [ -f "$MISSION_DIR/$action/worker-failure.log" ] \
+      && fail_log_size1="$(wc -c <"$MISSION_DIR/$action/worker-failure.log" 2>/dev/null | tr -d ' ')"
+    [ -n "$fail_log_size1" ] && [ "$fail_log_size1" != "${fail_log_size0:-}" ] \
+      && fail_log_kv+=("log=$fail_log_rel")
+    emit_event error "$action" "$action failed${err_tail:+: $err_tail}" "${fail_log_kv[@]}"
     drive_print_summary "$summary"
-    printf '⏹ stopped: %s failed\n' "$stage"
+    printf '⏹ stopped: %s failed\n' "$action"
     printf '%s\n' "$out"
     return "${rc:-1}"
   done
@@ -18535,7 +19295,8 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; SETUP=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; EV_DATA=(); MANIFESTS=""; POSARG=""; SURFACE=""
+XO_MODE=""; XO_OUTDIR=""    # S202 — Number One's spawn (see spawn-number-one)
 FINAL_ATTEMPT=0   # S178: plan-save --final-attempt (guard goes advisory)
 RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
@@ -18579,6 +19340,16 @@ while [ $# -gt 0 ]; do
     --stage=*)     EV_STAGE="${1#--stage=}"; shift ;;
     --detail)      EV_DETAIL="${2:-}"; shift 2 ;;
     --detail=*)    EV_DETAIL="${1#--detail=}"; shift ;;
+    # S218 fix round 2 — emit-event's optional key=value data pairs (repeatable),
+    # so the daemon's refused START records the same stageFailure marker.
+    --data)        EV_DATA+=("${2:-}"); shift 2 ;;
+    --data=*)      EV_DATA+=("${1#--data=}"); shift ;;
+    # S202 — Number One's spawn. --mode names its prompt template, --outdir its
+    # scratch dir (xo.sh owns both; it gathers the inputs and reads the verdict).
+    --mode)        XO_MODE="${2:-}"; shift 2 ;;
+    --mode=*)      XO_MODE="${1#--mode=}"; shift ;;
+    --outdir)      XO_OUTDIR="${2:-}"; shift 2 ;;
+    --outdir=*)    XO_OUTDIR="${1#--outdir=}"; shift ;;
     # A single bare positional (the stage key / role for resolve-stage-model /
     # spawn-stage). Only these subcommands consume it; others still reject extras.
     -*)            die "unknown argument: $1" ;;
@@ -18659,8 +19430,22 @@ case "$SUB" in
   # observable end-to-end. The spawn-path test surface.
   spawn-stage)         [ -n "$POSARG" ] || die "usage: run.sh spawn-stage [--mission <id>] <role>"
                        cmd_spawn_stage "$POSARG" ;;
+  # S202 — hire Number One for ONE question. `xo.sh` is the only caller: it has
+  # already gathered the read-only input copies and it reads xo-answer.json back.
+  # This entry exists so the first officer reaches the SAME cold-worker chokepoint
+  # every Stage uses (model ladder, S168 fence, usage capture) instead of growing
+  # a second spawn path of its own.
+  spawn-number-one)
+    [ -n "$MISSION_ID" ] || die "usage: run.sh spawn-number-one --mission <id> --mode <mode> --outdir <dir>"
+    [ -n "$XO_OUTDIR" ] || die "usage: run.sh spawn-number-one --mission <id> --mode <mode> --outdir <dir>"
+    locate_mission "$MISSION_ID"
+    # RAISED BEFORE THE RESOLVER RUNS — require_worker is what resolves the bin
+    # and records provenance, and both read this flag.
+    XO_ENGINE_PIN=1
+    require_worker
+    spawn_number_one "$MISSION_ID" "${XO_MODE:-answer}" "$XO_OUTDIR" ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
-  emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
+  emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ${EV_DATA[@]+"${EV_DATA[@]}"} ;;
   # ADR-004: mirror not-yet-posted surfaced events from events.jsonl onto the
   # Mission's issue as ordered comments, idempotently. The driver calls this at
   # each loop pass; it is also the standalone test/maintenance entry point.

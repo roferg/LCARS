@@ -1959,6 +1959,243 @@ check "H6. \`--help\` documents \`--engine-source\`" \
   "printf '%s' \"\$outH6\" | grep -q -- '--engine-source'"
 
 # ==========================================================================
+# BLOCK I (S201) — NUMBER ONE IS DISMISSED BY AN ADOPT, AND OFFERED AT VERIFY
+# ==========================================================================
+# TWO RULES, and they are deliberately separate:
+#
+#   THE DISMISSAL IS UNCONDITIONAL. Engagement is a fact about ONE laptop — a
+#   worker running there, a pid in that mission directory. A `numberOne` key
+#   carried across on the REFRESH path (the one that copies the existing
+#   state.json rather than rebuilding it) would badge a mission whose officer is
+#   not aboard, and LOCK its controls with a stand-down command that cannot
+#   reach the process it names. adopt deletes it, and SAYS it did.
+#
+#   THE OFFER IS THIS REPO'S OWN, and it is asked only where there is something
+#   to answer about: `numberOne.enabled` in THIS config and a mission at VERIFY.
+#   It ENGAGES NOTHING and it RECORDS NOTHING — because taking the conn is the
+#   driver's act at a gate and a second way in is the duplication this round
+#   exists to prevent. NO TTY IS `no`, the same posture the engine picker one
+#   section up takes.
+#
+#   AND `no` IS NOT A DURABLE OPT-OUT (fix round 1, D2 of the adopt half).
+#   Declining at the prompt means "not engaged NOW", which is already the
+#   state a mission is born in. Writing `numberOne: {optOut: true}` made every
+#   SILENT adopt — the scripted one, the board's, the one with no tty — opt
+#   that mission out of a later repo-wide `lcars xo on` for good, a durable
+#   answer to a question nobody was asked. The key stays ABSENT, exactly as a
+#   fresh adopt leaves it (the additive-key rule, S109): absent is the honest
+#   record of "nothing was decided here".
+echo
+echo "  ── I: Number One, dismissed and offered (S201) ──"
+
+xo_status_of() { # <state.json> → the recorded numberOne.status, or empty
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); x=d.get("numberOne")
+sys.stdout.write(x.get("status","") if isinstance(x,dict) else "")' "$1" 2>/dev/null
+}
+xo_optout_of() { # <state.json> → "True"/"" — the recorded per-mission opt-out
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); x=d.get("numberOne")
+sys.stdout.write(str(x.get("optOut")) if isinstance(x,dict) and x.get("optOut") else "")' "$1" 2>/dev/null
+}
+
+# --- I1: the REFRESH path deletes an engaged numberOne and reports it ------
+IFS="$TAB" read -r repoI1 originI1 <<<"$(new_repo)"
+seed_branch "$originI1" "lcars/$MID"
+# ASSIGNED to capt, so the dismissal line has an owner to NAME. (An unassigned
+# mission still reports the dismissal; it just has no handle to put in front of
+# it, and inventing one would be worse than the honest fallback.)
+ASSIGN_I1="$TMPROOT/assignI1.txt"; printf 'capt\n' >"$ASSIGN_I1"
+( cd "$repoI1" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I1" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >/dev/null 2>&1 )
+sI1="$(state_of "$repoI1" "$MID")"
+# …now Number One takes the conn HERE, the way `lcars xo` writes it: one line,
+# at the TOP of the object (the S189 rule the state writers all follow).
+python3 - "$sI1" <<'PYX'
+import sys
+p = sys.argv[1]
+lines = open(p).read().splitlines(True)
+lines.insert(1, '  "numberOne": {"status": "engaged", "engine": "copilot"},\n')
+open(p, "w").writelines(lines)
+PYX
+check "I1. the fixture really plants an engaged Number One" \
+  "[ \"\$(xo_status_of '$sI1')\" = 'engaged' ]"
+# …and the SAME mission is adopted again (the refresh path).
+rcI1=0
+( cd "$repoI1" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I1" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >outI1.txt 2>&1 ) || rcI1=$?
+check "I1. the refresh adopt exits 0" "[ '$rcI1' -eq 0 ]"
+check "I1. state.json PARSES after the dismissal" "json_ok '$sI1'"
+check "I1. the engaged Number One is GONE from the rebuilt state" \
+  "[ -z \"\$(xo_status_of '$sI1')\" ]"
+check "I1. …and there is no numberOne key at all" "! json_has '$sI1' numberOne"
+check "I1. the readout SAYS the Number One was dismissed" \
+  "grep -q \"Number One was dismissed by this adopt\" '$repoI1/outI1.txt'"
+check "I1. the dismissal names whose officer it was" \
+  "grep -q \"capt's Number One was dismissed\" '$repoI1/outI1.txt'"
+
+# --- I2: nothing is said when there was no Number One ----------------------
+IFS="$TAB" read -r repoI2 originI2 <<<"$(new_repo)"
+seed_branch "$originI2" "lcars/$MID"
+ASSIGN_I2="$TMPROOT/assignI2.txt"; : >"$ASSIGN_I2"
+( cd "$repoI2" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I2" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >outI2.txt 2>&1 )
+sI2="$(state_of "$repoI2" "$MID")"
+check "I2. a FRESH adopt records no numberOne key" "! json_has '$sI2' numberOne"
+check "I2. …and says nothing about a dismissal" \
+  "! grep -q 'Number One' '$repoI2/outI2.txt'"
+check "I2. …and asks nothing, because this repo has not enabled it" \
+  "! grep -qi 'Engage Number One' '$repoI2/outI2.txt'"
+
+# --- I3: the OFFER, at Verify, with the repo's toggle ON and no tty --------
+# NO TTY IS `no`, AND `no` WRITES NOTHING. A silent adopt must leave state.json
+# exactly as a fresh adopt leaves it — no `numberOne` key at all — because the
+# alternative (a recorded opt-out) is a durable answer given on the captain's
+# behalf by a script he never sat in front of.
+IFS="$TAB" read -r repoI3 originI3 <<<"$(new_repo)"
+seed_branch "$originI3" "lcars/$MID"
+mkdir -p "$repoI3/.git/lcars"
+printf '{\n  "model": "claude-sonnet",\n  "numberOne": {"enabled": true, "engine": "copilot"}\n}\n' \
+  >"$repoI3/.git/lcars/config.json"
+ASSIGN_I3="$TMPROOT/assignI3.txt"; : >"$ASSIGN_I3"
+( cd "$repoI3" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I3" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >outI3.txt 2>&1 </dev/null )
+sI3="$(state_of "$repoI3" "$MID")"
+check "I3. state.json PARSES after a declined offer" "json_ok '$sI3'"
+check "I3. no tty ⇒ NOT engaged, and NOTHING is recorded (the key is ABSENT)" \
+  "! json_has '$sI3' numberOne"
+check "I3. …not even an opt-out, which would outlive this adopt" \
+  "[ -z \"\$(xo_optout_of '$sI3')\" ]"
+check "I3. …and the readout still DISCLOSES it, with the way back" \
+  "grep -q 'lcars xo on' '$repoI3/outI3.txt'"
+
+# --- I3b: `--number-one no` is the same answer, written down the same way --
+# The explicit flag and the silent default must agree: both mean "not now",
+# and neither is a durable opt-out.
+IFS="$TAB" read -r repoI3b originI3b <<<"$(new_repo)"
+seed_branch "$originI3b" "lcars/$MID"
+mkdir -p "$repoI3b/.git/lcars"
+printf '{\n  "model": "claude-sonnet",\n  "numberOne": {"enabled": true, "engine": "copilot"}\n}\n' \
+  >"$repoI3b/.git/lcars/config.json"
+ASSIGN_I3B="$TMPROOT/assignI3b.txt"; : >"$ASSIGN_I3B"
+( cd "$repoI3b" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I3B" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 --number-one no \
+    >outI3b.txt 2>&1 </dev/null )
+sI3b="$(state_of "$repoI3b" "$MID")"
+check "I3b. \`--number-one no\` records no numberOne key either" \
+  "! json_has '$sI3b' numberOne"
+check "I3b. …and state.json PARSES" "json_ok '$sI3b'"
+
+# --- I4: the OFFER answered YES, at a tty ---------------------------------
+IFS="$TAB" read -r repoI4 originI4 <<<"$(new_repo)"
+seed_branch "$originI4" "lcars/$MID"
+mkdir -p "$repoI4/.git/lcars"
+printf '{\n  "model": "claude-sonnet",\n  "numberOne": {"enabled": true, "engine": "copilot"}\n}\n' \
+  >"$repoI4/.git/lcars/config.json"
+ASSIGN_I4="$TMPROOT/assignI4.txt"; : >"$ASSIGN_I4"
+( cd "$repoI4" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I4" LCARS_GH_USER=capt \
+    LCARS_ASSUME_TTY=1 LCARS_GH_BIN="$GH" \
+    bash "$SCRIPT" --issue 42 >outI4.txt 2>&1 <<<"y" )
+sI4="$(state_of "$repoI4" "$MID")"
+check "I4. the question is ASKED at a tty" \
+  "grep -qi 'Engage Number One on this mission now' '$repoI4/outI4.txt'"
+check "I4. …and the question NAMES NO PRICE" \
+  "! grep -Eqi 'free|billed|cost' '$repoI4/outI4.txt'"
+check "I4. yes leaves the mission IN SCOPE — no opt-out is recorded" \
+  "[ -z \"\$(xo_optout_of '$sI4')\" ]"
+check "I4. …and it ENGAGES nothing (the driver does that at a gate)" \
+  "[ -z \"\$(xo_status_of '$sI4')\" ]"
+check "I4. state.json PARSES" "json_ok '$sI4'"
+
+# --- I5: the flag answers for a caller with no tty (the board's checkbox) --
+IFS="$TAB" read -r repoI5 originI5 <<<"$(new_repo)"
+seed_branch "$originI5" "lcars/$MID"
+mkdir -p "$repoI5/.git/lcars"
+printf '{\n  "numberOne": {"enabled": true, "engine": "copilot"}\n}\n' \
+  >"$repoI5/.git/lcars/config.json"
+ASSIGN_I5="$TMPROOT/assignI5.txt"; : >"$ASSIGN_I5"
+( cd "$repoI5" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I5" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 --number-one yes \
+    >outI5.txt 2>&1 </dev/null )
+sI5="$(state_of "$repoI5" "$MID")"
+check "I5. \`--number-one yes\` keeps the mission in scope with no tty" \
+  "[ -z \"\$(xo_optout_of '$sI5')\" ]"
+check "I5. …and nothing was asked" \
+  "! grep -qi 'Engage Number One on this mission now' '$repoI5/outI5.txt'"
+IFS="$TAB" read -r repoI6 originI6 <<<"$(new_repo)"
+rcI6=0
+outI6="$( cd "$repoI6" && GH_FIX="$FIXV" GH_ASSIGN_STATE="$ASSIGN_I5" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 --number-one maybe 2>&1 )" || rcI6=$?
+check "I5. any other value is REFUSED, never guessed at" "[ '$rcI6' -ne 0 ]"
+check "I5. …and nothing was created" "[ ! -e \"\$(state_of '$repoI6' '$MID')\" ]"
+
+# --- I6: --help documents the flag ----------------------------------------
+outI7="$(bash "$SCRIPT" --help 2>&1)"
+check "I6. \`--help\` documents \`--number-one\`" \
+  "printf '%s' \"\$outI7\" | grep -q -- '--number-one'"
+
+# ==========================================================================
+echo
+echo "S207 item 3 — AN ADOPTED CLONE IS STAMPED, SO IT STOPS NAGGING"
+# ==========================================================================
+# adopt seeds config.json (S196 A4) through init's own detectors, but the one
+# key it did NOT seed was `lcarsVersion` — so `lcars version`'s REPO_PREDATES
+# verdict fired on a repo LCARS had itself configured minutes earlier, and every
+# verb printed "⚠ this repo predates LCARS versioning — run `lcars update`."
+# until the captain ran an update he did not need. The stamp logic is
+# update.sh's (`lcars_running_version`), reused, never re-derived: the running
+# clone's VERSION file, with LCARS_VERSION as the test seam.
+IFS="$TAB" read -r repoV1 originV1 <<<"$(new_repo)"
+rm -f "$repoV1/.git/lcars/config.json"          # the cold clone, as in F1
+FIXV1="$(new_fixture "$TMPROOT/fixV1")"
+mk_body "$FIXV1/issue-63.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-063" "lcars/lcars-20260909-063" main feature claude null 0)"
+printf 'Unstamped clone\n' >"$FIXV1/issue-63.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXV1/issue-63.labels"
+adopt_engine "$repoV1" "$FIXV1" 63 "$BOTH_PATH" LCARS_VERSION=2026.9.99 \
+  </dev/null >/dev/null 2>&1
+CFGV1="$repoV1/.git/lcars/config.json"
+check "V1. the seeded config carries a version stamp" "json_has '$CFGV1' lcarsVersion"
+check "V1. and it is the RUNNING version, not a guess" \
+  "[ \"\$(json_get '$CFGV1' lcarsVersion)\" = '2026.9.99' ]"
+check "V1. the config still PARSES" "json_ok '$CFGV1'"
+# The verdict the stamp exists to answer: version.sh reads config.json and must
+# no longer say the repo predates versioning.
+outV1="$(cd "$repoV1" && LCARS_VERSION=2026.9.99 bash "$REPO_ROOT/skills/lcars-version/version.sh" 2>&1)"
+check "V1. \`lcars version\` no longer says the repo PREDATES versioning" \
+  "! printf '%s' \"\$outV1\" | grep -qi 'predates'"
+check "V1. it reads the stamp as CURRENT" \
+  "printf '%s' \"\$outV1\" | grep -q 'verdict:.*current'"
+
+# THE REFRESH PATH: adopting the SAME issue again re-enters with a config that
+# already exists, and the stamp must survive it (the merge preserves a key it is
+# given; an absent key is DELETED, which is how cloneId was lost in S196).
+adopt_engine "$repoV1" "$FIXV1" 63 "$BOTH_PATH" LCARS_VERSION=2026.9.99 \
+  </dev/null >/dev/null 2>&1
+check "V2. a REFRESH adopt keeps the stamp" \
+  "[ \"\$(json_get '$CFGV1' lcarsVersion)\" = '2026.9.99' ]"
+check "V2. and the config still PARSES" "json_ok '$CFGV1'"
+
+# A repo that already had a config keeps ITS stamp — adopt does not restamp a
+# repo it did not configure (that would silence a TRUE "needs lcars update").
+IFS="$TAB" read -r repoV3 originV3 <<<"$(new_repo)"
+cat >"$repoV3/.git/lcars/config.json" <<'CFG'
+{
+  "model": "claude-sonnet",
+  "lcarsVersion": "2026.1.1"
+}
+CFG
+FIXV3="$(new_fixture "$TMPROOT/fixV3")"
+mk_body "$FIXV3/issue-64.body" "$PRD_TEXT" \
+  "$(envelope "lcars-20260909-064" "lcars/lcars-20260909-064" main feature claude null 0)"
+printf 'Older stamped clone\n' >"$FIXV3/issue-64.title"
+printf 'lcars:mission\nlcars:align\n' >"$FIXV3/issue-64.labels"
+adopt_engine "$repoV3" "$FIXV3" 64 "$BOTH_PATH" LCARS_VERSION=2026.9.99 \
+  </dev/null >/dev/null 2>&1
+check "V3. an EXISTING stamp is left alone (adopt is not an update)" \
+  "[ \"\$(json_get '$repoV3/.git/lcars/config.json' lcarsVersion)\" = '2026.1.1' ]"
+
+# ==========================================================================
 echo
 printf 'lcars adopt: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

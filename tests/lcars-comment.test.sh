@@ -41,7 +41,24 @@ trap 'rm -rf "$TMPROOT"' EXIT
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 MID="lcars-20260615-001"
 
@@ -789,6 +806,194 @@ check "T16. REGRESSION GUARD: the mirror counts 3 hires ACROSS a stage_start re-
   "printf '%s' \"\$IBODY18\" | qgrep -qE 't-001.*flagged after 3 worker sessions'"
 check "T16. …and 2 bounces, both counted wherever they sit in the stream" \
   "printf '%s' \"\$IBODY18\" | qgrep -q '2 bounces'"
+
+
+# --- T17 (S202): NUMBER ONE'S REPORT — one living comment, edited in place ---
+#
+# The first officer's record on the issue is ONE more key in the S65 model, not
+# a new mechanism: `number-one` in comments.json, CREATED the first time it has
+# anything to say and PATCHed for ever after. A comment per action is the defect
+# this block exists to catch — two answers must still be ONE comment.
+#
+# The ONE exception is an ESCALATION, and it is the same exception S65 already
+# makes: an edit does not notify on GitHub, so a gate that is now the captain's
+# gets a FRESH comment through cm_ping_gate. That is a ping, not a second report.
+r17="$(new_repo implement)"; make_gh_stub "$r17/gh"; gh_env "$r17"
+m17="$(mdir "$r17")"
+# Engage Number One on the mission, the way the driver does.
+awk 'NR==1{print; print "  \"numberOne\": {\"status\": \"engaged\", \"engine\": \"copilot\", \"since\": \"2026-09-12T10:00:00Z\", \"lastAction\": \"answered schedule 10:04\"},"; next} {print}' \
+  "$m17/state.json" >"$m17/state.tmp" && mv "$m17/state.tmp" "$m17/state.json"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m17/state.json" \
+  || { echo "T17 FIXTURE IS NOT VALID JSON"; exit 1; }
+cat >"$m17/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+EOF
+cat >"$m17/number-one.jsonl" <<'EOF'
+{"at": "2026-09-12T10:04:00Z", "action": "answered", "stage": "schedule", "answer": "No — the queue shows assigned work only.", "rationale": "PRD section 2 settles it.", "citation": {"file": "prd.md", "quote": "The queue shows assigned work only."}}
+EOF
+: >"$GH_OPS"
+rc17=0; run_mirror "$r17" 1100 || rc17=$?
+check "T17. the mirror still exits 0 with a Number One journal present" "[ '$rc17' -eq 0 ]"
+check "T17. a comment keyed 'number-one' was recorded in the map" \
+  "grep -q '\"number-one\"' '$m17/comments.json'"
+NOBODY17="$(stage_body "$m17" number-one)"
+check "T17. the report names the first officer" \
+  "printf '%s' \"\$NOBODY17\" | qgrep -qi 'Number One'"
+check "T17. …carries the RECORDED status" \
+  "printf '%s' \"\$NOBODY17\" | qgrep -qi 'engaged'"
+check "T17. …and the engine it is running on" \
+  "printf '%s' \"\$NOBODY17\" | qgrep -q 'copilot'"
+check "T17. …the last answer, verbatim" \
+  "printf '%s' \"\$NOBODY17\" | qgrep -q 'the queue shows assigned work only'"
+check "T17. …with the citation that grounded it (file and quote)" \
+  "printf '%s' \"\$NOBODY17\" | qgrep -q 'prd.md' && printf '%s' \"\$NOBODY17\" | qgrep -q 'The queue shows assigned work only'"
+check "T17. …and the journal folded into a <details> block" \
+  "printf '%s' \"\$NOBODY17\" | qgrep -q '<details>'"
+check "T17. the body is NOT the literal sentinel @-" \
+  "[ \"\$NOBODY17\" != '@-' ] && [ -n \"\$NOBODY17\" ]"
+check "T17. no pricing words in the report" \
+  "! printf '%s' \"\$NOBODY17\" | grep -Eqi 'free|billed|billing|pricing'"
+NO_CID17="$(sed -n 's/.*"number-one"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$m17/comments.json" | head -1)"
+
+# A SECOND action. THE WHOLE POINT: one more journal line is one more line in
+# the SAME comment — an EDIT, never a second comment.
+: >"$GH_OPS"
+cat >>"$m17/number-one.jsonl" <<'EOF'
+{"at": "2026-09-12T11:20:00Z", "action": "answered", "stage": "implement", "answer": "Yes — ship the queue read-only.", "rationale": "ADR-001 settles it.", "citation": {"file": "adr.md", "quote": "The queue is read-only."}}
+EOF
+run_mirror "$r17" 1200
+check "T17. a SECOND action posts NO new Number One comment (no CREATE for it)" \
+  "[ -n \"\$NO_CID17\" ] && [ \"\$(sed -n 's/.*\"number-one\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\\1/p' '$m17/comments.json' | head -1)\" = \"\$NO_CID17\" ]"
+check "T17. …it EDITED the one that was already there" \
+  "grep -q '^EDIT $NO_CID17\$' '$GH_OPS'"
+NOBODY17B="$(stage_body "$m17" number-one)"
+check "T17. …and the edited body carries BOTH actions" \
+  "printf '%s' \"\$NOBODY17B\" | qgrep -q 'assigned work only' && printf '%s' \"\$NOBODY17B\" | qgrep -q 'read-only'"
+check "T17. …with the NEWEST answer shown as the last one" \
+  "printf '%s' \"\$NOBODY17B\" | qgrep -q 'Yes — ship the queue read-only.'"
+
+# THE ESCALATION. The report is still edited in place, and a NEW comment pings
+# the captain — because an edit does not notify, and this gate is now his.
+: >"$GH_OPS"
+CREATED_BEFORE="$(ls "$GH_BODYDIR" | wc -l | tr -d ' ')"
+grep -v '"numberOne"' "$m17/state.json" >"$m17/state.tmp" && mv "$m17/state.tmp" "$m17/state.json"
+awk 'NR==1{print; print "  \"numberOne\": {\"status\": \"escalated\", \"engine\": \"copilot\", \"note\": \"the PRD is silent on email — leave it out and file it as a follow-up\"},"; next} {print}' \
+  "$m17/state.json" >"$m17/state.tmp" && mv "$m17/state.tmp" "$m17/state.json"
+cat >>"$m17/number-one.jsonl" <<'EOF'
+{"at": "2026-09-12T12:00:00Z", "action": "escalated", "stage": "implement", "reason": "escalated", "rationale": "The PRD is silent on email.", "recommendation": "Leave email out and file it as a follow-up."}
+EOF
+run_mirror "$r17" 1300
+NOBODY17C="$(stage_body "$m17" number-one)"
+check "T17. the escalation is STILL the same comment, edited" \
+  "[ -n \"\$NO_CID17\" ] && [ \"\$(sed -n 's/.*\"number-one\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\\1/p' '$m17/comments.json' | head -1)\" = \"\$NO_CID17\" ]"
+check "T17. …whose body now carries the escalation note the captain reads" \
+  "printf '%s' \"\$NOBODY17C\" | qgrep -q 'file it as a follow-up'"
+check "T17. …and a NEW comment was created to PING him (an edit does not notify)" \
+  "[ \"\$(ls '$GH_BODYDIR' | wc -l | tr -d ' ')\" -gt '$CREATED_BEFORE' ]"
+check "T17. …the ping names Number One so he knows who raised it" \
+  "grep -rl 'Number One' '$GH_BODYDIR' | grep -qv '/$NO_CID17\$'"
+
+# IDEMPOTENT. A re-render of the same escalation must NOT ping twice — the S65
+# gate-key rule, which this reuses rather than reimplements.
+: >"$GH_OPS"
+CREATED_NOW="$(ls "$GH_BODYDIR" | wc -l | tr -d ' ')"
+run_mirror "$r17" 1400
+check "T17. re-rendering the SAME escalation pings nothing a second time" \
+  "[ \"\$(ls '$GH_BODYDIR' | wc -l | tr -d ' ')\" = '$CREATED_NOW' ]"
+
+# A mission with NO first officer is byte-for-byte as it was: no key, no comment.
+r19="$(new_repo implement)"; make_gh_stub "$r19/gh"; gh_env "$r19"
+m19="$(mdir "$r19")"
+cat >"$m19/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+EOF
+run_mirror "$r19" 1100
+check "T17. a mission Number One never touched grows NO number-one comment" \
+  "! grep -q 'number-one' '$m19/comments.json'"
+
+# --- T18 (fix round 1, D2): ONE GATE, ONE NOTIFICATION ----------------------
+#
+# WHAT WENT WRONG LIVE. A scope park with Number One ON produced TWO comments a
+# second apart: the first officer's ping ("Number One handed this gate back to
+# you — <note>") AND the generic, contentless one the pipeline has always
+# posted. With `lcars xo off` the identical park produced ONE. S202's ping was
+# ADDITIONAL to the pre-existing gate ping instead of REPLACING it, so turning
+# the first officer on doubled the captain's notifications.
+#
+# THE CONTROL IS THE POINT. A "one comment" assertion that only ever runs with
+# Number One on cannot tell a cure from a mirror that stopped pinging at all, so
+# the same gate is driven BOTH ways and the OFF arm's text is asserted verbatim.
+#
+# PINGS ARE COUNTED, NOT COMMENTS. The first officer's living report is a
+# comment too, and it is not a notification — it is created once and edited for
+# ever after (T17). What must be exactly one is the 🔔 ping.
+pings() { grep -l '🔔 Awaiting your answer' "$GH_BODYDIR"/* 2>/dev/null | wc -l | tr -d ' '; }
+
+GATE_EV='{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"gate","detail":"awaiting your answer"}'
+
+# --- T18a. THE CONTROL: Number One OFF, byte-for-byte as it always was -------
+r18a="$(new_repo implement)"; make_gh_stub "$r18a/gh"; gh_env "$r18a"
+m18a="$(mdir "$r18a")"
+printf '%s\n' "$GATE_EV" >"$m18a/events.jsonl"
+run_mirror "$r18a" 1100
+check "T18a. CONTROL (xo off): the gate posts EXACTLY ONE ping" \
+  "[ \"\$(pings)\" = '1' ]"
+PING18A="$(grep -l '🔔 Awaiting your answer' "$GH_BODYDIR"/* 2>/dev/null | head -1)"
+check "T18a. …with the pre-existing heading, unchanged" \
+  "qgrep -q '^## 🔔 Awaiting your answer\$' <\"\$PING18A\""
+check "T18a. …the pre-existing detail line, unchanged" \
+  "qgrep -qx 'awaiting your answer' <\"\$PING18A\""
+check "T18a. …and the pre-existing reply line, unchanged" \
+  "qgrep -q 'Reply with .lcars respond $MID.' <\"\$PING18A\""
+check "T18a. …and it says nothing about a first officer" \
+  "! qgrep -q 'Number One' <\"\$PING18A\""
+
+# --- T18b. NUMBER ONE ESCALATED: still exactly one ping, and it is HIS -------
+r18b="$(new_repo implement)"; make_gh_stub "$r18b/gh"; gh_env "$r18b"
+m18b="$(mdir "$r18b")"
+awk 'NR==1{print; print "  \"numberOne\": {\"status\": \"escalated\", \"engine\": \"copilot\", \"note\": \"this gate is a scope decision, and scope is yours — leave email out\"},"; next} {print}' \
+  "$m18b/state.json" >"$m18b/state.tmp" && mv "$m18b/state.tmp" "$m18b/state.json"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$m18b/state.json" \
+  || { echo "T18b FIXTURE IS NOT VALID JSON"; exit 1; }
+printf '%s\n' "$GATE_EV" >"$m18b/events.jsonl"
+cat >"$m18b/number-one.jsonl" <<'EOF'
+{"at": "2026-09-12T12:00:00Z", "action": "escalated", "stage": "implement", "reason": "scope", "recommendation": "Leave email out and file it as a follow-up."}
+EOF
+run_mirror "$r18b" 1100
+check "T18b. Number One ON at the SAME gate still posts EXACTLY ONE ping" \
+  "[ \"\$(pings)\" = '1' ]"
+PING18B="$(grep -l '🔔 Awaiting your answer' "$GH_BODYDIR"/* 2>/dev/null | head -1)"
+check "T18b. …and the one that survived is the one that says WHY" \
+  "qgrep -q 'Number One handed this gate back to you' <\"\$PING18B\""
+check "T18b. …carrying the note, so the captain is not pinged with nothing" \
+  "qgrep -q 'scope is yours' <\"\$PING18B\""
+check "T18b. …the generic contentless ping did NOT also fire" \
+  "[ \"\$(grep -lx 'awaiting your answer' \"\$GH_BODYDIR\"/* 2>/dev/null | wc -l | tr -d ' ')\" = '0' ]"
+check "T18b. the living report is STILL there — a report is not a notification" \
+  "grep -q '\"number-one\"' '$m18b/comments.json'"
+check "T18b. …and the report is not the ping" \
+  "! qgrep -q '🔔' <\"\$(sed -n 's/.*\"number-one\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' '$m18b/comments.json' | head -1 | sed \"s|^|\$GH_BODYDIR/|\")\""
+# Idempotent: a re-render of the same escalated gate pings nothing more.
+run_mirror "$r18b" 1200
+check "T18b. re-rendering the same gate adds no further ping" \
+  "[ \"\$(pings)\" = '1' ]"
+
+# --- T18c. ENGAGED BUT NOT ESCALATED: the generic ping MUST still fire -------
+# The suppression is "Number One's ping carries this gate", not "Number One is
+# on". A first officer holding the conn at a gate it has NOT handed back must
+# not silence the notification the captain would otherwise have had.
+r18c="$(new_repo implement)"; make_gh_stub "$r18c/gh"; gh_env "$r18c"
+m18c="$(mdir "$r18c")"
+awk 'NR==1{print; print "  \"numberOne\": {\"status\": \"engaged\", \"engine\": \"copilot\"},"; next} {print}' \
+  "$m18c/state.json" >"$m18c/state.tmp" && mv "$m18c/state.tmp" "$m18c/state.json"
+printf '%s\n' "$GATE_EV" >"$m18c/events.jsonl"
+run_mirror "$r18c" 1100
+check "T18c. engaged-but-not-escalated still gets its ONE generic ping" \
+  "[ \"\$(pings)\" = '1' ]"
+PING18C="$(grep -l '🔔 Awaiting your answer' "$GH_BODYDIR"/* 2>/dev/null | head -1)"
+check "T18c. …and it is the pre-existing one, unchanged" \
+  "qgrep -qx 'awaiting your answer' <\"\$PING18C\""
 
 # ==========================================================================
 echo

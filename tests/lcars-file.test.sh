@@ -45,7 +45,24 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 # qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
 # first match and SIGPIPEs the producer, which under `set -o pipefail` fails the
 # pipeline. Buffer stdin, then grep the buffer (never `… | grep -q`).
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 # --- stubs ----------------------------------------------------------------
 # A stub for the lcars-run estimator driver (session 59). file.sh runs
@@ -670,8 +687,16 @@ prdWB="$repoWB/prd.md"; write_prd "$prdWB"
     bash "$SCRIPT" --prd "$prdWB" >outWB.txt 2>&1
 )
 MWB="$repoWB/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
+# THE PATTERN ACCEPTS A PATH (S222), and every `copilot` row below does too.
+# These rows assert WHICH ENGINE was persisted, not how many letters it took to
+# say it. A mission now records the real CLI's ABSOLUTE PATH whenever the bare
+# name would resolve to VS Code's fork-bomb shim — which it does on any machine
+# with the Copilot extension installed, so the literal string `"copilot"` made
+# the result depend on the developer's own PATH. `claude` rows are untouched:
+# nothing normalises claude. The rule itself, both directions, is proved in
+# tests/lcars-worker-guard.test.sh (the S222 block).
 check "12a. state.json persists workerBin=copilot" \
-  "[ -f '$MWB' ] && cat '$MWB' | qgrep -q '\"workerBin\": *\"copilot\"'"
+  "[ -f '$MWB' ] && cat '$MWB' | qgrep -q '\"workerBin\": *\"[^\"]*copilot\"'"
 check "12a. state.json is valid JSON (engine set)" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MWB'"
 
@@ -846,7 +871,7 @@ rcEN=0
 MEN="$repoEN/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14a. --prd --engine copilot exits clean" "[ '$rcEN' -eq 0 ]"
 check "14a. --prd --engine copilot persists workerBin=copilot" \
-  "[ -f '$MEN' ] && cat '$MEN' | qgrep -q '\"workerBin\": *\"copilot\"'"
+  "[ -f '$MEN' ] && cat '$MEN' | qgrep -q '\"workerBin\": *\"[^\"]*copilot\"'"
 check "14a. state.json is valid JSON (--engine set)" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MEN'"
 
@@ -861,7 +886,7 @@ prdEN2="$repoEN2/prd.md"; write_prd "$prdEN2"
 )
 MEN2="$repoEN2/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14b. --engine copilot beats LCARS_WORKER_BIN=claude" \
-  "[ -f '$MEN2' ] && cat '$MEN2' | qgrep -q '\"workerBin\": *\"copilot\"'"
+  "[ -f '$MEN2' ] && cat '$MEN2' | qgrep -q '\"workerBin\": *\"[^\"]*copilot\"'"
 
 # 14c. a bogus --engine is REJECTED on the --prd lane, nothing written.
 repoEN3="$(new_repo)"; make_gh_stub "$repoEN3/gh"
@@ -940,7 +965,7 @@ rcIN=0
 MIN="$repoIN/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14f. --initialization --prd --engine copilot exits clean" "[ '$rcIN' -eq 0 ]"
 check "14f. the FRONT DOOR's mission persists workerBin=copilot" \
-  "[ -f '$MIN' ] && cat '$MIN' | qgrep -q '\"workerBin\": *\"copilot\"'"
+  "[ -f '$MIN' ] && cat '$MIN' | qgrep -q '\"workerBin\": *\"[^\"]*copilot\"'"
 check "14f. …and is still stamped missionType=initialization" \
   "cat '$MIN' | qgrep -q '\"missionType\": *\"initialization\"'"
 check "14f. state.json is valid JSON (initialization + engine)" \
@@ -960,7 +985,7 @@ prdIN2="$repoIN2/prd.md"; write_prd "$prdIN2"
 )
 MIN2="$repoIN2/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
 check "14g. --engine beats the daemon-threaded LCARS_WORKER_BIN on this lane" \
-  "[ -f '$MIN2' ] && cat '$MIN2' | qgrep -q '\"workerBin\": *\"copilot\"'"
+  "[ -f '$MIN2' ] && cat '$MIN2' | qgrep -q '\"workerBin\": *\"[^\"]*copilot\"'"
 
 # 14h. a bogus engine dies on this lane too, before anything is written.
 repoIN3="$(gf_repo)"; make_gh_stub "$repoIN3/gh"
@@ -1580,7 +1605,7 @@ check "19n. the aligned envelope carries the PRD-derived type" \
   "grep -q '\"type\":\"bug\"' '$repoP/body2.txt'"
 check "19o. the aligned envelope carries the RE-RESOLVED engine, not the parked one" \
   "grep -q '\"engine\":\"copilot\"' '$repoP/body2.txt' \
-   && grep -q '\"workerBin\": *\"copilot\"' '$MP/state.json'"
+   && grep -q '\"workerBin\": *\"[^\"]*copilot\"' '$MP/state.json'"
 
 # ==========================================================================
 [ "$fail" -eq 0 ]

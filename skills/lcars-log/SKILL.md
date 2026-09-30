@@ -215,6 +215,15 @@ fast-tracked bug Mission immediately runnable.
   locally; `githubIssue` is recorded as `null` and the summary shows `(local)`.
 - **Mission ID** is `lcars-<UTC date>-NNN`, sequenced per day across *all*
   Missions (feature and bug). Override the date in tests with `LCARS_DATE`.
+- **A malformed bug PRD (missing `# Mission:` or `**Type:** bug`) refuses the
+  WHOLE batch, non-zero, and NEVER prints a false "N bug missions filed"
+  summary (S205 ruling, 2026-09-14).** Each bug is validated before it is ever
+  `mkdir`'d, inside `$(file_one_bug …)` — a command substitution, hence a
+  subshell — so a validation failure's own `exit 1` used to end only that
+  subshell; the loop never checked it, so it still appended an (empty) row and
+  printed a false green with an empty id and a bare `Run \`lcars run \`.` The
+  loop now checks each bug's own exit status and refuses to print any success
+  summary the moment one fails.
 - **Model** is read from `.git/lcars/config.json`, falling back to `LCARS_MODEL`
   then `claude-sonnet`. **`gh`/`git`** are stubbable via `LCARS_GH_BIN` /
   `LCARS_GIT_BIN`; the **estimator driver** via `LCARS_RUN_BIN`.

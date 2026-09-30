@@ -25,6 +25,22 @@ set -uo pipefail
 
 SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+# --- THE state.json field writer (S207) ------------------------------------
+# ONE family, in ONE place: lcars_state_set (a raw JSON token) /
+# lcars_state_set_string (plain text, escaped for you) / lcars_state_unset.
+# This file used to carry its own copy, as seven others did, and every copy
+# corrupted the object when the field it wrote or cleared was the object's LAST
+# one (S189 found it in adopt; S202 made it reachable through the gate clears).
+# A MISSING library is FATAL here rather than degraded: a fallback writer is
+# exactly how two ways of writing one field get back into the tree.
+LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SKILL_DIR/../lcars-init/lcars-state.sh}"
+[ -f "$LCARS_STATE_LIB" ] || {
+  echo "LCARS: the state writer library is missing at $LCARS_STATE_LIB — reinstall LCARS (./install.sh)." >&2
+  exit 1
+}
+# shellcheck source=../lcars-init/lcars-state.sh
+. "$LCARS_STATE_LIB"
+
 GH_BIN="${LCARS_GH_BIN:-gh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 RELABEL_NOTE=""
@@ -54,18 +70,6 @@ locate_mission() { # id
   STATE="$MISSION_DIR/state.json"
   [ -d "$MISSION_DIR" ] || die "no mission '$1' under .git/lcars/missions/ — check the id."
   [ -f "$STATE" ]       || die "mission '$1' has no state.json — its state is corrupt."
-}
-
-# --- state.json field editing (one-field-per-line; same as run.sh) ----------
-state_del() { # key — drop the field's line if present
-  local tmp; tmp="$(mktemp)"
-  grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
-}
-state_set_raw() { # key token — add or replace a bare field (true/false/number)
-  state_del "$1"
-  local tmp; tmp="$(mktemp)"
-  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
-    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
 }
 
 # --- emit an append-only event (same line shape + atomicity as run.sh) ------
@@ -146,18 +150,42 @@ owner_lock_or_die() { # <issue>
   return 0
 }
 
+# xo_lock_or_die <mission-dir> — refuse with ONE plain line, or return (S201).
+# THE SECOND REASON ON THE SAME SEAM. Number One acts on the captain's behalf
+# THROUGH these very verbs, so while it holds a mission a second hand on that
+# mission is a race with his own first officer. `lcars_xo_lock_reason` returns 0
+# (and echoes the line) ONLY when the mission's RECORDED state says
+# numberOne.status is `engaged`; no state, no key, stood-down and finished all
+# fall through to "proceed", exactly like the owner lock's posture, and
+# LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+xo_lock_or_die() { # <mission-dir>
+  local r
+  command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
+  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
+  [ -n "$r" ] && die "$r"
+  return 0
+}
+
 # === subcommand: pause ======================================================
 cmd_pause() {
   locate_mission "$MISSION_ID"
   # S196: the light lock, before a single field is touched. Pausing someone
   # else's mission is a write to their work.
   owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
+  xo_lock_or_die "$MISSION_DIR"
   local stage; stage="$(json_str "$STATE" stage)"; stage="${stage:-unknown}"
 
-  # Idempotent: state_set_raw replaces (deletes-then-adds) so a double-pause
+  # Idempotent: lcars_state_set "$STATE" replaces (deletes-then-adds) so a double-pause
   # leaves exactly ONE paused=true field. Only emit the event on the transition.
   local was; was="$(json_raw "$STATE" paused)"
-  state_set_raw paused true
+  lcars_state_set "$STATE" paused true
+  # S207 fix round 1 (D2) — THE WRITE IS THE PAUSE. A tester handed this verb a
+  # valid but COMPACT state.json: the writer refused (correctly, loudly, on
+  # stderr) and this function went on to print "PAUSE: paused …" and exit 0 for
+  # a mission that was still running. Ask the writer whether it actually wrote,
+  # BEFORE the label, the event and the success line — a refusal is a failure of
+  # the verb, not a cosmetic warning.
+  lcars_state_refusal_die "lcars pause"
   [ "$was" = "true" ] || emit_event paused "$stage" "captain paused the Mission at the $stage boundary"
 
   # Apply the existing lcars:paused label (adds; removes nothing). gh tolerates
@@ -179,12 +207,17 @@ cmd_resume() {
   # S196: resuming somebody else's parked mission starts a driver on their work
   # — the board 403s it, so the CLI refuses it, with the same sentence.
   owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
+  xo_lock_or_die "$MISSION_DIR"
   local stage; stage="$(json_str "$STATE" stage)"; stage="${stage:-unknown}"
 
-  # Clear the flag (idempotent — state_del is a no-op when absent) and drop the
+  # Clear the flag (idempotent — lcars_state_unset "$STATE" is a no-op when absent) and drop the
   # label (gh tolerates removing a label that isn't applied).
   local was; was="$(json_raw "$STATE" paused)"
-  state_del paused
+  lcars_state_unset "$STATE" paused
+  # The same rule the other way round (S207 fix round 1, D2): if the flag could
+  # not be cleared the mission is still paused, so never announce a resume — and
+  # never `exec` the driver into a mission that will stop again immediately.
+  lcars_state_refusal_die "lcars resume"
   [ "$was" = "true" ] && emit_event resumed "$stage" "captain resumed the Mission at the $stage stage"
   gh_label "--remove-label lcars:paused"
 

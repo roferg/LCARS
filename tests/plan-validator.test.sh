@@ -125,6 +125,21 @@ run_plan_save "$repo" "$pf"
   && ok "empty inline acceptanceCriteria rejected" \
   || bad "empty inline acceptanceCriteria rejected (rc=$RC: $OUT)"
 
+# --- case 4b: an OBJECT criterion carrying `serves` + `direction` advances ----
+# The planner records which PRD requirement a ticket criterion relates to AND
+# which way round it is (delivers | removes), so the contract can cross-check it
+# WITHOUT reading prose (see stages/plan.md, xo-criteria.py). The pair is
+# additive — it must not trip the validator on a Mission with no mockup. A
+# `serves` with no `direction` is refused (see the SERVES/DIRECTION cases below).
+repo="$(new_mission)"; pf="$repo/serves.json"
+ticket '    "acceptanceCriteria": [
+      {"text": "a live counter updates as items change", "serves": "a live counter shows the number of items", "direction": "delivers"}
+    ],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "an object criterion with serves + direction advances" \
+  || bad "an object criterion with serves + direction advances (rc=$RC: $OUT)"
+
 # ===========================================================================
 # S169 fix round 2 — THE TICKETS MUST CARRY THE MOCKUP
 #
@@ -1249,6 +1264,65 @@ V4="$(verify_out "$FX/bypass-buried-marker.json")"
 printf '%s' "$V4" | grep -qi 'not in your drawing' \
   && bad "C5. a buried NOT DRAWN: string must NOT reach the Verify list: $V4" \
   || ok "C5/D2. a buried \"NOT DRAWN:\" string reaches nothing — the list reads the FIELD"
+
+# --- SERVES/DIRECTION: the planner must STATE which way round (2026-09-25) -----
+# A criterion that links a requirement with "serves" MUST also carry a readable
+# "direction" (delivers | removes). A missing/unreadable direction is refused BY
+# NAME — never defaulted — because the direction is exactly the polarity nothing
+# downstream is allowed to guess. Each case pairs the refusal with a known-good
+# control so a check that cannot fail is caught.
+
+# (c) a "serves" with NO "direction" is refused, and the message names the field.
+repo="$(new_mission)"; pf="$repo/serves-nodir.json"
+ticket '    "acceptanceCriteria": [
+      {"text": "the counter is not shown", "serves": "prd-1"}
+    ],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "direction"; } \
+  && ok "(c) a serves without a direction is refused, naming \"direction\"" \
+  || bad "(c) a serves without a direction is refused (rc=$RC: $OUT)"
+
+# (c-control) the SAME criterion WITH "direction": "delivers" advances — proves
+# the refusal is about the missing field, not the presence of "serves".
+repo="$(new_mission)"; pf="$repo/serves-delivers.json"
+ticket '    "acceptanceCriteria": [
+      {"text": "a live counter is shown", "serves": "prd-1", "direction": "delivers"}
+    ],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "(c-control) a serves WITH direction:delivers advances" \
+  || bad "(c-control) a serves WITH direction:delivers advances (rc=$RC: $OUT)"
+
+# (c) an honest "direction": "removes" is a VALID declaration — the validator
+# only requires it be STATED; the contradiction consequence is the checker's job
+# at score time, not a plan-time refusal.
+repo="$(new_mission)"; pf="$repo/serves-removes.json"
+ticket '    "acceptanceCriteria": [
+      {"text": "the counter is not shown", "serves": "prd-1", "direction": "removes"}
+    ],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "(c) an honestly-declared direction:removes is accepted at plan time" \
+  || bad "(c) an honestly-declared direction:removes is accepted (rc=$RC: $OUT)"
+
+# (c) an UNREADABLE direction (not delivers|removes) is refused by name too.
+repo="$(new_mission)"; pf="$repo/serves-baddir.json"
+ticket '    "acceptanceCriteria": [
+      {"text": "the counter is not shown", "serves": "prd-1", "direction": "maybe"}
+    ],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "direction"; } \
+  && ok "(c) an unreadable direction value is refused, naming \"direction\"" \
+  || bad "(c) an unreadable direction value is refused (rc=$RC: $OUT)"
+
+# (c-control) a PLAIN-STRING criterion (no serves) needs no direction — the rule
+# is scoped to linked criteria only, and must not refuse an unlinked plan.
+repo="$(new_mission)"; pf="$repo/plain.json"
+ticket '    "acceptanceCriteria": ["the thing works"],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "(c-control) a plain-string (unlinked) criterion advances without a direction" \
+  || bad "(c-control) a plain-string criterion advances (rc=$RC: $OUT)"
 
 echo
 printf 'plan-validator: %d passed, %d failed\n' "$PASS" "$FAIL"

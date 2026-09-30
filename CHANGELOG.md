@@ -4,6 +4,41 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.7 — Number One, the first officer that reviews your build
+
+**You can hand a Mission to an AI first officer and walk away.** `lcars xo on`
+engages **Number One** for a repo — off by default, and the engine you pick is
+recorded rather than guessed. Engaged, it works the gates you would otherwise sit
+and wait for: when a Stage escalates it reads the Mission's record in a read-only
+copy and either answers through the ordinary `lcars respond` (attributed
+`answeredBy: number-one`, so the record always says who decided) or escalates with
+a recommendation and leaves the gate standing. It always escalates a scope
+question, an answer it cannot cite, and anything malformed.
+
+**And it looks at what got built.** At Verify it writes its checklist *before* it
+opens a browser — your acceptance criteria, the plan's per-ticket criteria, the
+drawing's place names — then launches the build, walks it headless, photographs
+it, and scores whether it matches what you asked for. Appearance is judged on one
+rail and behaviour on another. Screens that need data to exist can be seeded from
+a `verifySeed` command or a `.lcars/verify-seed.sh` your project ships; with
+neither declared nothing is invented — those rows read *couldn't check* rather
+than becoming a fault in your build. `lcars xo report` is the First Officer's
+report since you last looked, and `lcars xo off` hands the conn straight back.
+
+**Number One is advisory, not a gatekeeper — deliberately.** It reviews and
+recommends; you still ship. That is a measured position, not caution: on three
+identical looks it published `high` over a review only 55–64% checked, and it
+cannot yet always tell when it photographed the wrong screen. It is a useful
+second pair of eyes that names real blockers, and the docs now say exactly that
+(S201–S228).
+
+Also in this release: **the test rigs have left the product repo.** 3,913 tracked
+files and 109 MB of recorded run output are gone from the clone you pull — the rig
+scripts now live in `lcars-dev`, the shared equipment that shipped suites actually
+need lives in `tests/lib/`, and a closed-inventory gate refuses to let either back
+in. And Number One finally appears in `README.md`, `vision.md` and both `docs/`
+pages, which had never mentioned it.
+
 ## 2026.9.6 — lcars buddy improvements
 
 **`lcars buddy` now fixes LCARS the way a session does** — it briefs you first,

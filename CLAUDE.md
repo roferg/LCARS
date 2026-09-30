@@ -52,6 +52,16 @@ ignored — never put skills, tests, installers, or docs there.
    — is **`ship-it`'s merge gate**, not a session's or a fix's inner loop: it is
    slow, billable, and has hung whole sessions. Never run it (or the heavy
    `tests/lcars-run.test.sh`) to completion mid-session.
+   The **harness itself is now tested**: `bash tests/harness.test.sh` asserts
+   that suites TERMINATE from a pty with stdin genuinely open, and guards the
+   hang class that made a suite block on inherited stdin (S208). `tests/run.sh`
+   now invokes every suite with stdin closed. That removes one known cause of
+   the hangs — it does NOT yet make the full run trustworthy; nobody has
+   completed one, so "all suites green" is still an unverified claim (S209
+   measures it). Run a single suite the safe way — `bash tests/<name>.test.sh`
+   from a terminal is now fine; cage anything unattended with
+   `python3 tests/lib/cage.py <secs> …`, which reports ELAPSED and kills
+   the whole process group.
 5. **Commit.** The skill source, its test, and any doc updates are all tracked.
    Work happens on a branch cut from `main` — **`feat/<round>`** for a round or
    session, **`fix/<slug>`** for a fix — and **never on `main` itself**. End the

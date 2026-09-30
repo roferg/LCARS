@@ -27,7 +27,24 @@ set -uo pipefail
 # genuine match into a phantom assertion failure (timing/load-sensitive — it bit
 # the worker-prompt assertions only under the full back-to-back suite). Draining
 # first removes the race; exit status and output are otherwise identical to grep.
-qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+# qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
+# is what keeps a piped `grep -q` from SIGPIPE-ing a still-writing producer and
+# flipping a genuine match into a phantom failure under `set -o pipefail`. But
+# draining when a FILE was passed reads INHERITED stdin: from a terminal that
+# blocks forever, and with stdin closed it silently returns empty and the
+# assertion passes by accident. So count the non-option operands ("--" ends the
+# options; no call site uses -e/-f, which take an argument) and hand the file
+# form straight to grep. Output and exit status match grep in both shapes.
+qgrep() {
+  local _qg_a _qg_in _qg_n=0 _qg_opt=1
+  for _qg_a in "$@"; do
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" = "--" ]; then _qg_opt=0; continue; fi
+    if [ "$_qg_opt" = 1 ] && [ "$_qg_a" != "${_qg_a#-}" ] && [ "$_qg_a" != "-" ]; then continue; fi
+    _qg_n=$((_qg_n + 1))
+  done
+  if [ "$_qg_n" -ge 2 ]; then grep "$@"; return; fi
+  _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_INIT_SCRIPT:-$REPO_ROOT/skills/lcars-init/init.sh}"
@@ -226,10 +243,14 @@ export GH_EXISTING="$repo/existing"; : >"$GH_EXISTING"
 rc=0
 (
   cd "$repo"
-  LCARS_CLAUDE_BIN="$repo/definitely-not-claude" LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" >out.txt 2>&1
+  LCARS_CLAUDE_BIN="$repo/definitely-not-claude" \
+  LCARS_COPILOT_BIN="$repo/definitely-not-copilot" \
+  LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" >out.txt 2>&1
 ) || rc=$?
-check "4. exits non-zero when claude missing"   "[ '$rc' -ne 0 ]"
+check "4. exits non-zero when NO engine is installed"   "[ '$rc' -ne 0 ]"
 check "4. prints a clear error about claude"    "grep -qi 'claude' '$repo/out.txt' && grep -qi 'not found\\|not available\\|install' '$repo/out.txt'"
+check "4. and names copilot too (both engines are offered)" \
+  "grep -qi 'copilot' '$repo/out.txt'"
 
 # --- Behaviour 5: gh label create per label, skips existing ----------------
 repo="$(new_repo)"
@@ -1053,6 +1074,140 @@ check "S182: and gains no extra commit" \
   "[ \"\$( cd '$hb' && git rev-list --count HEAD )\" = '$HB_COUNT_BEFORE' ]"
 check "S182: and the seed line is NOT printed (nothing was seeded)" \
   "! qgrep -q 'seeded an empty initial commit' '$hb/out.txt'"
+
+# --- S207 item 1: the front door accepts a COPILOT-ONLY laptop -------------
+# Captain's ruling 2026-09-11: require AT LEAST ONE engine. With both installed
+# nothing changes (claude still wins, covered by every case above); with only
+# copilot, init succeeds, SAYS which engine it picked, and records it in the
+# config so every later surface opens on the engine this laptop can actually
+# run. `CLAUDE_VERSION` must never be read when claude is absent.
+make_copilot_stub() {
+  local p="$1"
+  cat >"$p" <<'EOF'
+#!/usr/bin/env bash
+echo "copilot/0.0.1-test"
+EOF
+  chmod +x "$p"
+}
+
+repoCo="$(new_repo)"
+make_copilot_stub "$repoCo/copilot"
+make_gh_stub "$repoCo/gh"
+export GH_LOG="$repoCo/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoCo/existing"; : >"$GH_EXISTING"
+rcCo=0
+(
+  cd "$repoCo"
+  LCARS_CLAUDE_BIN="$repoCo/definitely-not-claude" \
+  LCARS_COPILOT_BIN="$repoCo/copilot" \
+  LCARS_GH_BIN="$repoCo/gh" bash "$SCRIPT" >out.txt 2>&1
+) || rcCo=$?
+check "S207-1: init SUCCEEDS on a copilot-only laptop" "[ '$rcCo' -eq 0 ]"
+check "S207-1: it scaffolds .git/lcars/ there"         "[ -d '$repoCo/.git/lcars/missions' ]"
+check "S207-1: it SAYS claude was missing and copilot was used" \
+  "qgrep -q 'claude not found — using copilot' '$repoCo/out.txt'"
+check "S207-1: the verified line names copilot, not Claude" \
+  "qgrep -qi 'copilot CLI verified' '$repoCo/out.txt'"
+check "S207-1: and reports the copilot stub's version (the bin it actually ran)" \
+  "qgrep -q 'copilot/0.0.1-test' '$repoCo/out.txt'"
+check "S207-1: config RECORDS the engine it picked" \
+  "qgrep -q '\"workerBin\": *\"copilot\"' '$repoCo/.git/lcars/config.json'"
+check "S207-1: it never shelled out to a 'claude' that is not there" \
+  "! qgrep -qi 'definitely-not-claude' '$repoCo/out.txt'"
+
+# With BOTH installed nothing changes: claude wins, and the config is NOT
+# pinned (an unpinned repo keeps run.sh's historical default).
+repoBoth="$(new_repo)"
+make_claude_stub "$repoBoth/claude"
+make_copilot_stub "$repoBoth/copilot"
+make_gh_stub "$repoBoth/gh"
+export GH_LOG="$repoBoth/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoBoth/existing"; : >"$GH_EXISTING"
+(
+  cd "$repoBoth"
+  LCARS_CLAUDE_BIN="$repoBoth/claude" LCARS_COPILOT_BIN="$repoBoth/copilot" \
+  LCARS_GH_BIN="$repoBoth/gh" bash "$SCRIPT" >out.txt 2>&1
+)
+check "S207-1: with BOTH engines, claude is still the one verified" \
+  "qgrep -q 'Claude CLI verified' '$repoBoth/out.txt'"
+check "S207-1: with BOTH engines, no fallback note is printed" \
+  "! qgrep -q 'claude not found' '$repoBoth/out.txt'"
+check "S207-1: with BOTH engines, the config is left UNPINNED" \
+  "! qgrep -q 'workerBin' '$repoBoth/.git/lcars/config.json'"
+
+# A config that ALREADY pins an engine survives init (the merge drops every key
+# absent from the desired schema, so an unlisted workerBin was being WIPED).
+repoPin="$(new_repo)"
+make_claude_stub "$repoPin/claude"
+make_copilot_stub "$repoPin/copilot"
+make_gh_stub "$repoPin/gh"
+export GH_LOG="$repoPin/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoPin/existing"; : >"$GH_EXISTING"
+mkdir -p "$repoPin/.git/lcars"
+printf '{\n  "workerBin": "copilot",\n  "model": "claude-sonnet"\n}\n' >"$repoPin/.git/lcars/config.json"
+(
+  cd "$repoPin"
+  LCARS_CLAUDE_BIN="$repoPin/claude" LCARS_COPILOT_BIN="$repoPin/copilot" \
+  LCARS_GH_BIN="$repoPin/gh" bash "$SCRIPT" >out.txt 2>&1
+)
+check "S207-1: an existing workerBin pin SURVIVES init" \
+  "qgrep -q '\"workerBin\": *\"copilot\"' '$repoPin/.git/lcars/config.json'"
+check "S207-1: and init verifies the engine the repo is pinned to" \
+  "qgrep -qi 'copilot CLI verified' '$repoPin/out.txt'"
+
+# --- S207 item 4: the `npm ci` seed only with a lockfile -------------------
+# `npm ci` ERRORS without package-lock.json, and the seeded worktreeSetupCommand
+# used it unconditionally — 4 provisioning failures in one live run.
+repoJS="$(new_repo)"
+make_claude_stub "$repoJS/claude"; make_gh_stub "$repoJS/gh"
+export GH_LOG="$repoJS/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoJS/existing"; : >"$GH_EXISTING"
+printf '{"name":"x","scripts":{"test":"node --test"}}\n' >"$repoJS/package.json"
+( cd "$repoJS" && LCARS_CLAUDE_BIN="$repoJS/claude" LCARS_GH_BIN="$repoJS/gh" bash "$SCRIPT" >out.txt 2>&1 )
+WT_NOLOCK="$(sed -n 's/.*"worktreeSetupCommand": *"\(.*\)",*$/\1/p' "$repoJS/.git/lcars/config.json")"
+check "S207-4: a JS repo with NO lockfile is seeded a command (not empty)" \
+  "[ -n \"\$WT_NOLOCK\" ]"
+check "S207-4: and that command does NOT contain 'npm ci'" \
+  "! printf '%s' \"\$WT_NOLOCK\" | qgrep -q 'npm ci'"
+check "S207-4: it falls back to 'npm install'" \
+  "printf '%s' \"\$WT_NOLOCK\" | qgrep -q 'npm install'"
+
+repoJSL="$(new_repo)"
+make_claude_stub "$repoJSL/claude"; make_gh_stub "$repoJSL/gh"
+export GH_LOG="$repoJSL/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoJSL/existing"; : >"$GH_EXISTING"
+printf '{"name":"x","scripts":{"test":"node --test"}}\n' >"$repoJSL/package.json"
+printf '{"lockfileVersion":3}\n' >"$repoJSL/package-lock.json"
+( cd "$repoJSL" && LCARS_CLAUDE_BIN="$repoJSL/claude" LCARS_GH_BIN="$repoJSL/gh" bash "$SCRIPT" >out.txt 2>&1 )
+WT_LOCK="$(sed -n 's/.*"worktreeSetupCommand": *"\(.*\)",*$/\1/p' "$repoJSL/.git/lcars/config.json")"
+check "S207-4: WITH a package-lock.json the seed DOES use 'npm ci'" \
+  "printf '%s' \"\$WT_LOCK\" | qgrep -q 'npm ci'"
+
+# pnpm: --frozen-lockfile errors the same way when there is no pnpm-lock.yaml
+# (a pnpm-workspace.yaml alone takes that arm).
+repoPN="$(new_repo)"
+make_claude_stub "$repoPN/claude"; make_gh_stub "$repoPN/gh"
+export GH_LOG="$repoPN/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoPN/existing"; : >"$GH_EXISTING"
+printf '{"name":"x"}\n' >"$repoPN/package.json"
+printf 'packages:\n  - "pkg/*"\n' >"$repoPN/pnpm-workspace.yaml"
+( cd "$repoPN" && LCARS_CLAUDE_BIN="$repoPN/claude" LCARS_GH_BIN="$repoPN/gh" bash "$SCRIPT" >out.txt 2>&1 )
+WT_PN="$(sed -n 's/.*"worktreeSetupCommand": *"\(.*\)",*$/\1/p' "$repoPN/.git/lcars/config.json")"
+check "S207-4: a pnpm workspace with NO pnpm-lock.yaml drops --frozen-lockfile" \
+  "! printf '%s' \"\$WT_PN\" | qgrep -q 'frozen-lockfile'"
+check "S207-4: and still installs with pnpm" \
+  "printf '%s' \"\$WT_PN\" | qgrep -q 'pnpm install'"
+
+repoPNL="$(new_repo)"
+make_claude_stub "$repoPNL/claude"; make_gh_stub "$repoPNL/gh"
+export GH_LOG="$repoPNL/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoPNL/existing"; : >"$GH_EXISTING"
+printf '{"name":"x"}\n' >"$repoPNL/package.json"
+printf 'lockfileVersion: 9\n' >"$repoPNL/pnpm-lock.yaml"
+( cd "$repoPNL" && LCARS_CLAUDE_BIN="$repoPNL/claude" LCARS_GH_BIN="$repoPNL/gh" bash "$SCRIPT" >out.txt 2>&1 )
+WT_PNL="$(sed -n 's/.*"worktreeSetupCommand": *"\(.*\)",*$/\1/p' "$repoPNL/.git/lcars/config.json")"
+check "S207-4: WITH a pnpm-lock.yaml the seed KEEPS --frozen-lockfile" \
+  "printf '%s' \"\$WT_PNL\" | qgrep -q 'frozen-lockfile'"
 
 # ==========================================================================
 echo

@@ -1,0 +1,220 @@
+{
+  "mission": "lcars-20260917-006-fea3",
+  "builtBeforeLaunch": true,
+  "hasDrawing": false,
+  "placeNames": [],
+  "pictures": [
+    "attachment-01.png"
+  ],
+  "criteria": [
+    {
+      "id": "prd-1",
+      "text": "Two pure functions live in `packages/engine/src/renderer/utils.ts`:",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-2",
+      "text": "`healthFillRatio(current: number, max: number): number` returns the fraction of the bar that should be filled, clamped to the range `0..1`: `healthFillRatio(3, 10)` returns `0.3`, `healthFillRatio(10, 10)` returns `1`, `healthFillRatio(-5, 10)` returns `0`, `healthFillRatio(20, 10)` returns `1`. A `max` of `0` or less returns `0` rather than dividing by zero.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-3",
+      "text": "`healthBarColor(ratio: number): number` returns a Pixi colour number for the fill: **red** (`0xff3b30`) when the ratio is low (`ratio <= 0.35`), **green** (`0x34c759`) when healthy (`ratio > 0.6`), and an amber (`0xffcc00`) in between. Boundaries are exact: `healthBarColor(0)` and `healthBarColor(0.35)` are red; `healthBarColor(1)` and `healthBarColor(0.61)` are green.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-4",
+      "text": "Both are covered by unit tests in `packages/engine/src/renderer/utils.test.ts`, including: full HP, low HP, the clamp above `max` and below `0`, the `max <= 0` guard, and the red / amber / green colour boundaries.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-5",
+      "text": "The renderer (`packages/engine/src/renderer/index.ts`) gains an always-visible (in `devMode`) HP bar built from Pixi `Graphics` (a dark background \"track\" plus a coloured \"fill\" rectangle) grouped in a `Container`, positioned in the",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-6",
+      "text": "The engine (`packages/engine/src/index.ts`) stores a current/max health pair (defaulting to full health), exposes `setPlayerHealth(current: number, max: number): void` to set it, and calls `renderer.updateHealthBar(current, max)` every render frame (in `onRender`, guarded by `devMode`) so the bar reflects the stored health.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-7",
+      "text": "The example game (`example-game/game/index.ts`) calls `setPlayerHealth` once with a **low demo value** (e.g. `3` of `10`) so the bar is visibly partial and red on load, matching the mock-up.",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "prd-8",
+      "text": "The full engine package test suite passes (`cd packages/engine && npx vitest run`).",
+      "source": "prd",
+      "primary": true
+    },
+    {
+      "id": "t-001-ac1",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthFillRatio(3,10) === 0.3"
+    },
+    {
+      "id": "t-001-ac2",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthFillRatio(10,10) === 1"
+    },
+    {
+      "id": "t-001-ac3",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthFillRatio(-5,10) === 0"
+    },
+    {
+      "id": "t-001-ac4",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthFillRatio(20,10) === 1"
+    },
+    {
+      "id": "t-001-ac5",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthFillRatio(5,0) === 0 and healthFillRatio(5,-1) === 0"
+    },
+    {
+      "id": "t-001-ac6",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthBarColor(0) === 0xff3b30 and healthBarColor(0.35) === 0xff3b30"
+    },
+    {
+      "id": "t-001-ac7",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthBarColor(1) === 0x34c759 and healthBarColor(0.61) === 0x34c759"
+    },
+    {
+      "id": "t-001-ac8",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "healthBarColor(0.5) === 0xffcc00"
+    },
+    {
+      "id": "t-001-ac9",
+      "source": "plan",
+      "ticket": "t-001",
+      "primary": false,
+      "text": "DEV_HP_BAR_WIDTH, DEV_HP_BAR_HEIGHT, DEV_OVERLAY_MARGIN are exported from constants.ts with values 120, 10, 8"
+    },
+    {
+      "id": "t-002-ac1",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "In devMode the renderer adds an HP-bar Container with two Graphics children (track + fill) to the stage"
+    },
+    {
+      "id": "t-002-ac2",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "The HP-bar container's x equals app.screen.width - DEV_HP_BAR_WIDTH - DEV_OVERLAY_MARGIN and y equals DEV_OVERLAY_MARGIN"
+    },
+    {
+      "id": "t-002-ac3",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "updateHealthBar(current,max) draws the fill with width DEV_HP_BAR_WIDTH * healthFillRatio(current,max) starting at local x=0 (left edge) growing rightward"
+    },
+    {
+      "id": "t-002-ac4",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "The fill colour equals healthBarColor(healthFillRatio(current,max))"
+    },
+    {
+      "id": "t-002-ac5",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "When devMode is false, updateHealthBar is a no-op and no HP-bar object is added to the stage"
+    },
+    {
+      "id": "t-002-ac6",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "After resize(width,height) the HP-bar container repositions to the top-right using the updated app.screen.width"
+    },
+    {
+      "id": "t-002-ac7",
+      "source": "plan",
+      "ticket": "t-002",
+      "primary": false,
+      "text": "The existing dev overlay Text still renders at (8,8) and the F3 toggle behaviour is unchanged"
+    },
+    {
+      "id": "t-003-ac1",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "engine.setPlayerHealth(current, max) exists on the returned engine object and stores the pair"
+    },
+    {
+      "id": "t-003-ac2",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "Player health defaults to full (current === max) before setPlayerHealth is called"
+    },
+    {
+      "id": "t-003-ac3",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "onRender calls renderer.updateHealthBar with the stored current/max health inside the devMode guard each frame"
+    },
+    {
+      "id": "t-003-ac4",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "The ResizeObserver callback calls renderer.resize(w, h) (not app.renderer.resize directly) and then camera.setViewport with app.screen dimensions"
+    },
+    {
+      "id": "t-003-ac5",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "The Engine interface in types/engine.ts declares setPlayerHealth: (current: number, max: number) => void and PlayerSystem is unchanged"
+    },
+    {
+      "id": "t-003-ac6",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "example-game/game/index.ts calls engine.setPlayerHealth(3, 10) once"
+    },
+    {
+      "id": "t-003-ac7",
+      "source": "plan",
+      "ticket": "t-003",
+      "primary": false,
+      "text": "cd packages/engine && npx vitest run passes"
+    }
+  ]
+}

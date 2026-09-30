@@ -370,5 +370,124 @@ check "L3. copilot launch → view,grep,glob,create (view + author, no shell)" \
 check "L4. copilot launch tool list has NO bash and NO edit" \
   "[ -z \"\$(cop_tools launch | grep -oE 'bash|edit')\" ]"
 
+# ============================================================================
+# NUMBER ONE (session 202) — the first officer's READ-ONLY role, on both CLIs.
+#
+# Number One reads the mission's whole record (PRD, ADRs, plan, answers, events)
+# and writes exactly ONE artifact — xo-answer.json — into its scratch outdir. It
+# REASONS; `xo.sh` EXECUTES (captain ruling 2026-09-11), so the role must have no
+# execution channel at all: the `launch` role's posture, which S168 re-postured
+# from "a shell inside the captain's checkout" to "a pen and its own sheet of
+# paper". These checks are the fence, not a description of one:
+#
+#   • claude  Read,Grep,Glob,Write  + a deny list that names Bash explicitly.
+#             `--allowedTools` only PRE-APPROVES on claude and
+#             `--dangerously-skip-permissions` waives the rest, so the ONLY flag
+#             that takes Bash away is `--disallowedTools` — and adapter_spawn
+#             refuses a non-copilot argv that carries none.
+#   • copilot view,grep,glob,create — `--available-tools` IS a restriction there,
+#             so bash/edit are absent by not being named — plus `--add-dir` on
+#             the outdir (the answer channel) and one more per input dir (the
+#             read-only INPUT copies xo.sh gathers).
+# ============================================================================
+echo
+echo "worker-adapter — number-one role (session 202)"
+
+nd="$(mktemp -d "$TMPROOT/no.XXXX")"
+
+# --- claude arm -------------------------------------------------------------
+NO_CLAUDE="$(bash "$ADAPTER" argv claude number-one "$nd")"
+EXPECT_NO_CLAUDE='-p
+--allowedTools
+Read,Grep,Glob,Write
+--disallowedTools
+Edit,Bash,NotebookEdit,WebSearch,WebFetch
+--output-format
+text
+--dangerously-skip-permissions'
+check "N1. argv claude number-one → the exact 8 read+author lines, in order" \
+  "[ \"\$NO_CLAUDE\" = \"\$EXPECT_NO_CLAUDE\" ]"
+check "N2. claude number-one tool list has NO Bash and NO Edit" \
+  "[ -z \"\$(tool_line number-one | tr ',' '\n' | grep -xE 'Bash|Edit')\" ]"
+check "N3. claude number-one CARRIES --disallowedTools (adapter_spawn refuses an argv without it)" \
+  "printf '%s\n' \"\$NO_CLAUDE\" | grep -qx -- '--disallowedTools'"
+check "N4. …and that deny list NAMES Bash (the only flag on claude that actually refuses)" \
+  "bash \"\$ADAPTER\" deny claude number-one | tr ',' '\n' | grep -qx 'Bash'"
+check "N5. …and denies the network too (Number One reads the record, never the web)" \
+  "[ \"\$(bash \"\$ADAPTER\" deny claude number-one)\" = 'Edit,Bash,NotebookEdit,WebSearch,WebFetch' ]"
+
+# --- copilot arm ------------------------------------------------------------
+check "N6. copilot number-one → view,grep,glob,create (view + author its one file)" \
+  "[ \"\$(cop_tools number-one)\" = 'view,grep,glob,create' ]"
+check "N7. copilot number-one tool list has NO bash and NO edit" \
+  "[ -z \"\$(cop_tools number-one | tr ',' '\n' | grep -xE 'bash|edit')\" ]"
+NO_COP="$(bash "$ADAPTER" argv copilot number-one "$nd")"
+check "N8. copilot argv grants --add-dir on the OUTDIR (the answer channel)" \
+  "printf '%s\n' \"\$NO_COP\" | grep -A1 -x -- '--add-dir' | grep -qx -- \"\$nd\""
+check "N9. copilot argv carries NO --disallowedTools (no such flag on copilot)" \
+  "! printf '%s\n' \"\$NO_COP\" | grep -qx -- '--disallowedTools'"
+
+# The read-only INPUT dir xo.sh gathers gets its OWN --add-dir (copilot's path
+# sandbox is hard; without the grant Number One cannot read a single input file).
+noin="$(mktemp -d "$TMPROOT/noin.XXXX")"
+NO_COP_IN="$(LCARS_WORKER_INPUT_DIRS="$noin" bash "$ADAPTER" argv copilot number-one "$nd")"
+check "N10. copilot argv adds one --add-dir per LCARS_WORKER_INPUT_DIRS entry" \
+  "[ \"\$(printf '%s\n' \"\$NO_COP_IN\" | grep -cx -- '--add-dir')\" = '2' ] && printf '%s\n' \"\$NO_COP_IN\" | grep -qx -- \"\$noin\""
+check "N11. claude argv IGNORES input dirs (no per-path sandbox there) — unchanged" \
+  "[ \"\$(LCARS_WORKER_INPUT_DIRS=\"\$noin\" bash \"\$ADAPTER\" argv claude number-one \"\$nd\")\" = \"\$NO_CLAUDE\" ]"
+
+# --- the model flag ---------------------------------------------------------
+# The ADAPTER's contract is only "append --model when LCARS_WORKER_MODEL is set";
+# WHICH model a Number One worker gets is resolved in run.sh (see the numberOne
+# block in tests/stage-model.test.sh — the S194 write floor, the Opus pin).
+check "N12. copilot number-one appends --model <m> when LCARS_WORKER_MODEL is set" \
+  "[ \"\$(LCARS_WORKER_MODEL=claude-opus-4.8 bash \"\$ADAPTER\" argv copilot number-one \"\$nd\" | tail -2 | tr '\n' ' ')\" = '--model claude-opus-4.8 ' ]"
+check "N13. …and emits NO --model at all when it is empty" \
+  "! printf '%s\n' \"\$NO_COP\" | grep -qx -- '--model'"
+
+# --- spawn, through the S168 refusal ---------------------------------------
+# The fence is only real if a REAL spawn carries it. Drive adapter_spawn with a
+# recording stub and read the argv the CLI was actually handed.
+nostub="$nd/claude-stub"; make_claude_stub "$nostub"
+export CLAUDE_ARGV="$nd/no.argv" CLAUDE_ENV="$nd/no.env"
+LCARS_WORKER_BIN="$nostub" bash "$ADAPTER" spawn claude number-one "$nd" "DECIDE" >/dev/null 2>&1
+check "N14. a real claude number-one spawn reaches the CLI with --disallowedTools" \
+  "grep -qx -- '--disallowedTools' '$nd/no.argv'"
+check "N15. …and the deny list it was handed names Bash" \
+  "grep -qx 'Edit,Bash,NotebookEdit,WebSearch,WebFetch' '$nd/no.argv'"
+check "N16. …and the worker sees LCARS_WORKER_ROLE=number-one + its outdir" \
+  "grep -q 'role=number-one' '$nd/no.env' && grep -q \"out=\$nd\" '$nd/no.env'"
+
+
+# --- A1 (S213): `--add-dir` takes a DIRECTORY, and nothing else -------------
+# copilot 1.0.86 validates `--add-dir` BEFORE the model runs and refuses any
+# path that is not a directory ("Not a directory: …"). An argv carrying a FILE
+# there does not degrade — the worker never starts, writes nothing, and the
+# Stage reports a downstream symptom ("produced no questions.txt"). This was
+# measured live against 1.0.86-2; the older comment in the adapter recorded the
+# opposite, verified against 1.0.60. The adapter is the one layer that knows a
+# CLI's flag contract, so it is the layer that must never emit such an argv.
+printf '\n  -- A1. no copilot argv may hand --add-dir a non-directory --\n'
+adr="$(mktemp -d "$TMPROOT/a1.XXXX")"
+mkdir -p "$adr/out" "$adr/good"
+printf 'pack\n' >"$adr/pack.md"
+A1ERR="$adr/argv.err"
+A1OUT="$(LCARS_WORKER_INPUT_DIRS="$adr/good
+$adr/pack.md
+$adr/does-not-exist" bash "$ADAPTER" argv copilot repo-read "$adr/out" 2>"$A1ERR")"
+a1_add_dirs() { printf '%s\n' "$A1OUT" | awk 'p{print; p=0} $0=="--add-dir"{p=1}'; }
+check "A1a. every --add-dir value in a copilot argv is a DIRECTORY on disk" \
+  "a1_add_dirs | while IFS= read -r p; do [ -d \"\$p\" ] || exit 1; done"
+check "A1b. …the real directory grant still survives (the guard drops nothing else)" \
+  "a1_add_dirs | grep -qxF \"\$adr/good\""
+check "A1c. …and the scratch outdir is still granted" \
+  "a1_add_dirs | grep -qxF \"\$adr/out\""
+check "A1d. a dropped grant is SAID OUT LOUD, naming the path (never a silent loss of reach)" \
+  "grep -qF \"\$adr/pack.md\" \"\$A1ERR\" && grep -qF \"\$adr/does-not-exist\" \"\$A1ERR\""
+check "A1e. a grant list of real directories emits NO warning at all" \
+  "[ ! -s \"\$adr/clean.err\" ] || true; LCARS_WORKER_INPUT_DIRS=\"\$adr/good\" bash \"\$ADAPTER\" argv copilot repo-read \"\$adr/out\" 2>\"\$adr/clean.err\" >/dev/null; [ ! -s \"\$adr/clean.err\" ]"
+check "A1f. claude is untouched by the guard — it takes no --add-dir at all" \
+  "[ -z \"\$(LCARS_WORKER_INPUT_DIRS=\"\$adr/good\" bash \"\$ADAPTER\" argv claude repo-read \"\$adr/out\" 2>/dev/null | grep -x -- '--add-dir')\" ]"
+
 echo "worker-adapter: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

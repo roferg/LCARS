@@ -35,6 +35,46 @@ with their own eyes at the Verify stage. Mention the deferred judgment in the
 ticket's `description` (e.g. "visual unobtrusiveness is judged at Verify") so
 nothing silently disappears.
 
+**A ticket criterion may NOT quietly contradict the requirement it relates to.**
+A criterion that certifies the ABSENCE of what a PRD requirement asks FOR —
+"no counter is displayed", "the badge never appears" for a PRD that asks for the
+counter or the badge — must never be laundered in as if it were correct. If the
+PRD both asks for a thing and (elsewhere) says not to build it, that conflict is
+resolved at Align/Validate, not smuggled into a ticket criterion that blesses
+the omission. The mechanism that keeps this honest is the declaration below: you
+STATE which way round each criterion is, and a criterion that removes a stated
+requirement is caught downstream and drags the grade down — it does not pass.
+
+**State which requirement each criterion relates to, and which way round —
+`serves` + `direction`.** So the contract can cross-check a ticket criterion
+against the requirement it maps to WITHOUT anything reading your prose to guess
+whether you asked FOR a thing or for its absence (that guess has been wrong
+before), you RECORD both at planning time. When a criterion relates to a
+specific PRD acceptance criterion, write it as an OBJECT carrying:
+
+```json
+{"text": "<what the Implementer builds against>",
+ "serves": "<the PRD acceptance-criterion line this relates to, verbatim, or its prd-N id>",
+ "direction": "<delivers | removes>"}
+```
+
+- **`"direction": "delivers"`** — this criterion MAKES that requirement true.
+  This is the normal case: use it for every criterion that helps deliver the
+  requirement it names, whatever its wording (a styling detail, a "not red"
+  colour, an empty-state rule all still DELIVER the feature).
+- **`"direction": "removes"`** — this criterion DELIBERATELY makes the
+  requirement false — it certifies the requirement is gone. You should almost
+  never write this: a deliberate omission is resolved at Align/Validate, not
+  here. If you do, it is HONEST to declare it, and the harness will flag it and
+  lower the grade — declaring `delivers` on a criterion that actually removes
+  the requirement is the dishonest move this design exists to stop.
+
+`serves`/`direction` are additive: a criterion that maps to no single PRD line
+(pure plumbing, a test-hygiene rule) stays a plain string and declares neither.
+But a criterion that carries `serves` MUST carry a readable `direction` — the
+harness rejects a `serves` with no `direction`, naming the criterion, because a
+missing direction is exactly the polarity nothing is allowed to guess.
+
 ## Slicing: cohesion first, size second
 
 **Slice on behavioral seams, not on a line count.** The primary rule is
@@ -213,12 +253,14 @@ and WHAT its interface is; the Implementer reads the file itself for the rest.
 
 **Navigation only — never dictate the TEST's location or its import path.** A
 "Relevant files" entry describes the SOURCE file under test (its path + interface
-signatures) for navigation; it MUST NOT tell the Test Writer where to PUT its test
-(e.g. "append the test here", "place the test next to the source") nor how to
-IMPORT the code (e.g. "import `./foo.js`"). The Test Writer owns its dedicated test
-file, which the harness quarantines and runs from a separate dir — so a co-located
-`./<sibling>` import prescribed by the manifest would fail to load. List the source
-path and signatures; the Test Writer decides its own test file and import path.
+signatures) for navigation; it MUST NOT tell the implement worker where to PUT its
+test (e.g. "append the test here", "place the test next to the source") nor how to
+IMPORT the code (e.g. "import `./foo.js`"). The worker owns its test files and
+lands them in the repo at the repo's OWN test convention (co-located
+`foo.test.ts`, a `__tests__/` dir, a top-level `tests/` dir — whatever the repo
+already does); a location or import path prescribed by the manifest only fights
+that choice. List the source path and signatures; the worker decides where its
+tests live and how they import.
 
 A thin greenfield ticket with little existing code may have a near-empty
 "Relevant files" section — that is fine; still emit the file.

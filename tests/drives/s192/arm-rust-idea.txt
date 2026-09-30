@@ -1,5 +1,0 @@
-I want a small Rust command-line tool called `tally` that reads a CSV file and
-prints per-column summary statistics — count, min, max, mean — for the numeric
-columns, skipping anything it cannot parse. It should take the file path as an
-argument and print a clean aligned table. Rust, because I want a single static
-binary I can drop on a server.

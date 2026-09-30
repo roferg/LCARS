@@ -1305,6 +1305,14 @@ body.on-front-door #ownerFilter{display:none !important}
 .evt.s-gate .marker{background:var(--lcars-red)}
 .evt.s-verify .marker{background:var(--lcars-red)}
 .evt.s-done .marker{background:var(--lcars-teal)}
+/* S205 — Number One's own posts: the peach marker + "posted by" line reads at
+   a glance beside the ordinary lcars-bot entries it is interleaved with, IN
+   whichever stage band it happened (never a second feed, never a second
+   colour system — the SAME `--lcars-peach` token every other Number One
+   surface uses, ADR-007). Applied on top of the stage class above it (a
+   Number One post at Verify still says VERIFY in its `.when` line). */
+.evt.evt-number-one .marker{background:var(--lcars-peach)}
+.evt .ec .bot.bot-number-one{color:var(--lcars-peach)}
 /* S134 — proof-gate event accents (S133 unified implementer): the marker + the
    headline colour read the proof outcome at a glance. PROVEN/accept = teal,
    reject/inconclusive = red, contract amendment = amber, bounce = gold. */
@@ -1431,6 +1439,29 @@ body.on-front-door #ownerFilter{display:none !important}
   border:1px solid var(--lcars-border);cursor:pointer}
 .tabbar .tab.on{background:var(--lcars-amber);color:var(--lcars-text-on-color)}
 .tabpane{display:none;font-size:13px} .tabpane.on{display:block}
+/* S223 fix round 1 (D1), the other half: `.xo-pane{display:flex}` further down
+   this file has the SAME specificity as `.tabpane` and comes later, so the
+   Number One report was displayed whether or not its tab was on — clicking
+   Activity › put the feed UNDER a report that never left. A pane that is not
+   `.on` is not on screen, whatever a later block says about its layout. */
+.tabpane:not(.on){display:none}
+/* S205 — the ◈ Number One tab: peach when ON (its own accent, ADR-007), never
+   the amber every other tab uses ON, so it reads as a distinct crew member's
+   voice rather than one more section of the captain's own spec. */
+.tabbar .tab.tab-xo.on{background:var(--lcars-peach);color:var(--lcars-text-on-color)}
+/* S213 replaced the tab's "Intent match: MEDIUM / Engine: copilot" label
+   lines with a score BLOCK (the word, the engine, the counts) — its rule now
+   lives in this sheet's S213 section, and `.xo-score-label` /
+   `.xo-engine-line` went with the markup that wore them. */
+.xo-gap-row{margin-bottom:16px}
+.xo-gap-title{font-weight:700;margin-bottom:6px}
+.xo-shots{display:flex;flex-wrap:wrap;gap:10px}
+.xo-shot-cell{max-width:220px}
+.xo-thumb{max-width:220px;border-radius:6px;border:1px solid var(--lcars-border);display:block}
+.xo-thumb-broken{width:220px;height:120px;border:1px dashed var(--lcars-border);border-radius:6px;
+  display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--lcars-text-dim)}
+.xo-thumb-cap{font-size:11px;color:var(--lcars-text-dim);margin-top:4px}
+.xo-shots-note{font-size:11px;color:var(--lcars-text-dim);margin-top:14px}
 .crit{display:flex;gap:7px;align-items:center;margin:4px 0;font-size:12px}
 .adr{border-left:3px solid var(--lcars-violet,#9977ff);padding:6px 12px;margin-bottom:10px;
   background:rgba(153,119,255,.06);border-radius:0 6px 6px 0}
@@ -2747,6 +2778,197 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   font-family:var(--font-display);letter-spacing:.18em;text-transform:uppercase;
   font-size:13px;color:var(--lcars-teal,#2de3c7)}
 
+/* ═════════════════ S201 — NUMBER ONE, THE FIRST OFFICER ══════════════════
+   ADR-007: geometry only. The ONE colour named here is `--lcars-peach`, the
+   shared warm token docs/lcars.css defines (#ff9966) and no card state had
+   claimed — with the same `#ff9966` fallback every other peach declaration in
+   this sheet already carries. Nothing new is minted.
+
+   THE SENTENCE THE FILL SPEAKS is the board's own, said a fourth time about a
+   fourth thing — but it is said about the OWNER, not about the conn.
+
+   CAPTAIN'S RULING 2026-09-13, WHICH AMENDS THE APPROVED MOCK. The mock drew
+   the engaged pill SOLID peach; S201 built it solid, and the paint rig
+   (`tests/drives/s201/xo-paint.sh`) measured what that costs on the axis that
+   survives a projector and a red-green reader:
+
+     • solid-peach ENGAGED and solid-amber OWNER stand 8.16:1 and 8.64:1 off
+       the same card — i.e. 1.06:1 APART IN GREYSCALE. Two solid blocks on one
+       grey are ONE pill to anyone who cannot separate those two hues, which is
+       S196's B1 defect returning under a new name;
+     • and the engaged card's peach left edge reads 8.80:1 where a plain owned
+       card's amber edge reads 9.68:1, so "which card has the bright rail"
+       points at the WRONG card.
+
+   SO THE ENGAGED PILL IS HOLLOW WITH A PEACH RIM. THE REASON, which must
+   outlive this comment or the next reader re-solids it: FILL MUST DO THE WORK
+   THAT HUE CANNOT. Beside a solid amber owner pill the hollow rim is the one
+   difference that survives desaturation — exactly how the S190 owner lock
+   already separates its own states, and not a second language. The SLOW PULSE
+   and the ◈ glyph carry "engaged"; the rim carries peach. Do not re-solid it
+   to match the mock.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* THE CARD EDGE. The left rule is the card's state channel — amber by default,
+   teal while running, red-dashed when it shipped elsewhere — so Number One
+   takes it in peach while it holds the mission, and gives it straight back. */
+.card.xo-engaged{border-left-color:var(--lcars-peach,#ff9966)}
+
+/* CAPTAIN'S SECOND RULING, SAME DAY. Making ENGAGED hollow fixed the owner
+   collision and created a second one: FINISHED / ESCALATED / ANSWERED are
+   hollow peach pills too, so the two states were left differing by the WORD,
+   by font-weight, and by the pulse. THE PULSE CANNOT BE THE LOAD-BEARING CUE.
+   A pulse is motion, and motion is absent from a static screenshot of the
+   board and switched off entirely under `prefers-reduced-motion` — so the
+   strongest of the three cues vanishes exactly when someone is reading a
+   captured board or has asked for less movement.
+
+   SO ENGAGED CARRIES A HEAVIER RIM: 2px against the done family's 1px. A rim
+   weight is a difference in SHAPE, and shape survives all three things the
+   pulse does not — greyscale, a still frame, and reduced motion. The pulse
+   stays, demoted to a bonus. Do not equalise the rims to tidy them up;
+   `tests/drives/s201/xo-paint.js` measures the rim band in greyscale and goes
+   red the moment they match.
+
+   THE OUTER BOX IS HELD CONSTANT. The extra 1px of border is taken back out of
+   the padding, so an engaged pill and a finished pill occupy the identical box
+   and the pill row does not reflow when the conn comes back — the difference
+   on screen is rim weight and nothing else.
+
+   THE PILL. A peach RIM on the card's own ground — never a peach block (the
+   first ruling above) — plus a SLOW pulse while engaged (2.8s: a heartbeat,
+   not a blink — the card's own `card-running` rhythm, half a beat slower so
+   two pulsing things on one card do not strobe against each other). */
+.xo-block{margin:0 0 8px}
+.pills.xo-pills{margin:0 0 4px}
+.pill.xo{background:transparent;
+  border-color:var(--lcars-peach,#ff9966);
+  border-width:2px;padding:2px 9px;
+  color:var(--lcars-peach,#ff9966);font-weight:700;
+  animation:xopulse 2.8s ease-in-out infinite}
+/* Once the conn is back the RIM THINS to the house 1px, the WORD changes, and
+   the animation goes OFF, because a pill that still pulses is still claiming
+   to be working. The thin rim is the half of that sentence a screenshot keeps. */
+.pill.xo.done{background:transparent;color:var(--lcars-peach,#ff9966);
+  border-color:var(--lcars-peach,#ff9966);
+  border-width:1px;padding:3px 10px;
+  font-weight:400;animation:none}
+@keyframes xopulse{0%,100%{box-shadow:0 0 0 0 rgba(255,153,102,0)}
+  50%{box-shadow:0 0 0 4px rgba(255,153,102,.32)}}
+@media (prefers-reduced-motion:reduce){
+  .pill.xo{animation:none;box-shadow:0 0 0 1px rgba(255,153,102,.45)}}
+
+/* WHAT IT IS DOING NOW — one line, peach, sentence case (it is a report, not a
+   label, so it does not shout in display type like a pill). */
+.xo-line{color:var(--lcars-peach,#ff9966);font-size:11.5px;line-height:1.35;
+  letter-spacing:.02em;margin:0 0 2px}
+/* AND THE NOTE IT LEFT — mono, because it is a QUOTATION of something written
+   elsewhere (an escalation, a stand-down) and not this board's own words. */
+.xo-note{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;
+  line-height:1.4;color:var(--lcars-text-dim);
+  border-left:2px solid var(--lcars-peach,#ff9966);padding-left:7px;
+  margin:0 0 2px;white-space:pre-wrap;word-break:break-word}
+
+/* ── S203: THE INTENT-MATCH PILL ──────────────────────────────────────────
+   The verdict Number One reached about the built thing, beside the pill that
+   says who has the conn.
+
+   THREE TOKENS, NONE OF THEM NEW (ADR-007). Teal / amber / red are the board's
+   own three-level vocabulary, and the tints are the SAME rgba values `.pill.low`
+   / `.pill.med` / `.pill.high` already use, quoted rather than re-mixed — this
+   sheet adds no colour of its own.
+
+   BUT THE CLASSES ARE ITS OWN, AND DELIBERATELY. `.pill.high` is the RED one,
+   because it means high DIFFICULTY; a high intent match is the good news on the
+   card and wears the teal. Binding to those classes would have inverted the
+   meaning on the first reading, so the score has `s-high`/`s-medium`/`s-low` and
+   the two vocabularies never touch.
+
+   The word INTENT MATCH rides in the pill itself (board.js) for the same
+   reason — see there. */
+.pill.xo-score{background:transparent;font-weight:700}
+.pill.xo-score.s-high{background:rgba(0,204,170,.14);
+  border-color:var(--lcars-teal);color:var(--lcars-teal)}
+.pill.xo-score.s-medium{background:rgba(255,170,0,.16);
+  border-color:var(--lcars-amber);color:var(--lcars-amber)}
+.pill.xo-score.s-low{background:rgba(255,51,68,.16);
+  border-color:var(--lcars-red);color:var(--lcars-red)}
+/* THE REVIEW PILL CARRIES THE GRADE ALONE (captain, this session). The
+   two-axis pill (`◈ MEDIUM · Couldn't check the point of the mission · 40 of
+   79 checked`) and the verdict line under it are gone from the card — the
+   grade word is the whole message, the meaning is on the tooltip, and the
+   counts and the why live in the report. The `.xo-score` rules above draw it;
+   there is no longer an `.xo-axes-pill` variant, because the pill never wraps
+   a sentence onto a second line. */
+
+/* THE STAND-DOWN. Red-outline — `.btn.danger`'s existing idiom, untouched —
+   sat beside the controls it is handing back. */
+.card-ctrl .btn.xo-stand-down{margin-left:auto}
+
+/* THE BAND TOGGLE, on the yellow band. OFF is HOLLOW with BLACK ink (the band
+   is the light surface here, so black is the legible ink and the outline is
+   the "not engaged" half of the sentence); ON is the solid peach block. */
+.topbar .btn.xo-toggle{background:transparent;
+  color:var(--lcars-black,#030608);
+  border-color:var(--lcars-black,#030608)}
+.topbar .btn.xo-toggle:hover{border-color:var(--lcars-black,#030608)}
+.topbar .btn.xo-toggle.on{background:var(--lcars-peach,#ff9966);
+  color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach,#ff9966);font-weight:700}
+
+/* THE LEGEND'S TWO SWATCHES — THE SAME PAIR THE CARDS DRAW, at swatch size.
+   A legend that teaches a shape the board no longer paints is worse than no
+   legend, so whatever separates the two pills has to separate these two: both
+   hollow, engaged on the HEAVIER rim, finished on the thin one. If the pills'
+   rim weights ever change, change these with them. */
+.legend .xo-legend i.xo-sw{background:transparent;
+  border:2px solid var(--lcars-peach,#ff9966)}
+.legend .xo-legend i.xo-sw.done{background:transparent;
+  border:1px solid var(--lcars-peach,#ff9966)}
+
+/* THE PICKER. A plain `.modal` with a peach head; the rows are the board's own
+   option-row idiom (`.adopt-engine`), re-used rather than re-drawn. */
+.modal-head.xo{background:var(--lcars-peach,#ff9966);
+  color:var(--lcars-black,#030608)}
+.xo-q{font-size:12px;line-height:1.5;color:var(--lcars-text);margin:0 0 10px}
+.btn.xo-engine{display:block;width:100%;text-align:left;margin:0 0 6px;
+  text-transform:none;letter-spacing:.02em;font-size:12px;padding:8px 12px}
+.btn.xo-engine.chosen{background:var(--lcars-peach,#ff9966);
+  color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach,#ff9966);font-weight:700}
+
+/* S205 — the band's ON-state MENU (report / change engine / turn off) and
+   the First Officer's report modal. Same peach head + option-row idiom as
+   the picker above (re-used, never redrawn); nothing here is a new colour —
+   every rule is an existing --lcars-* token (ADR-007). */
+.btn.xo-menu-item{display:block;width:100%;text-align:left;margin:0 0 6px;
+  text-transform:none;letter-spacing:.02em;font-size:12px;padding:8px 12px}
+/* S221 — the same 14px step under the "Show" row as under the report's own
+   filter row (.xo-filters); it was 12px, a hair tighter than everything around
+   it. Measured, not asserted — see tests/drives/s221/run.sh. */
+.xo-report-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.xo-report-search{flex:1 1 220px;min-width:160px;padding:6px 10px;border-radius:8px;
+  background:var(--lcars-black);color:var(--lcars-text);
+  border:1px solid var(--lcars-border);font-size:12px}
+.xo-report-chips{display:flex;gap:6px;flex-wrap:wrap}
+.xo-chip{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.06em;
+  font-size:10px;cursor:pointer;padding:4px 10px;border-radius:10px;
+  color:var(--lcars-text-dim);background:transparent;border:1px solid var(--lcars-border)}
+.xo-chip.on{background:var(--lcars-peach);color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach);font-weight:700}
+.xo-report-since-head{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.1em;font-size:13px;color:var(--lcars-peach);margin:6px 0}
+.xo-report-since{margin-bottom:16px}
+.xo-report-entry{padding:6px 0;border-bottom:1px solid var(--lcars-border)}
+.xo-report-entry.is-new{border-left:2px solid var(--lcars-peach);padding-left:8px}
+.xo-report-when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
+.xo-report-text{font-size:13px;color:var(--lcars-text);margin-top:2px}
+.xo-report-mission{margin-bottom:8px;border:1px solid var(--lcars-border);
+  border-radius:8px;padding:6px 10px}
+.xo-report-mission summary{cursor:pointer;font-size:12px;color:var(--lcars-text-bright);
+  font-weight:700}
+.xo-report-mission[open] summary{margin-bottom:6px}
+
 /* ════════════════════════════════════════════════════════════════════════
    S197 — THE ADOPT ENGINE PICKER.
 
@@ -2811,3 +3033,770 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   background:transparent;
   color:var(--lcars-text);
   border-color:var(--lcars-border)}
+
+
+/* ════════════════════════════════════════════════════════════════════════
+   S213 — THE THREE SURFACES: a card that signals, a tab that tells, a report
+   that groups. Built from the mock-up the captain approved 2026-09-17.
+
+   ADR-007: no new colour values. Every rule here names an existing --lcars-*
+   token (peach for Number One's own voice, red for "this needs you", amber
+   for "there is a verdict to read", teal for "dealt with"), or the sheet's
+   own existing rgba() tint idiom (`.pill.xo-score` two hundred lines up uses
+   exactly these three).
+
+   THE THREE RANKS READ IN GREYSCALE, which is the captain's standing ruling
+   about every state on this board: a needs-you block differs from a verdict
+   block by a 3px SPINE and a border weight as well as by hue, a quiet one by
+   opacity, and the filter chips keep `.xo-chip.on`'s existing three signals
+   (solid fill, border colour, weight 700). ─────────────────────────────── */
+
+/* ── the CARD's signal ──────────────────────────────────────────────── */
+.xo-block.xo-signal{margin:0 0 8px}
+/* ONE LINE, AT ANY LENGTH (S213 fix round 1). A verdict of 2,673 characters
+   was planted on a card and the card drew all 2,673 of them: 91 wrapped lines,
+   1,752 px tall in a 200 px column, every other mission pushed off the screen.
+   Nothing here truncated at any length — no clamp, overflow visible, no
+   ellipsis — so "the card is a signal" held only while the sentence happened
+   to be short. It is now structural: one line, an ellipsis where it stops, and
+   `⊙ Read the full report →` underneath for the rest. Both spellings of the
+   clamp are here (the -webkit- prefixed property is the one every shipping
+   browser implements; `line-clamp` is the standard one) and `max-height` is
+   the floor under both, so a browser that honours neither still cannot draw a
+   transcript. */
+.xo-verdict-line{color:var(--lcars-text-bright);font-size:12px;line-height:1.45;
+  margin:2px 0 6px;display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:1;line-clamp:1;overflow:hidden;text-overflow:ellipsis;
+  max-height:1.45em;overflow-wrap:anywhere}
+.card-ctrl .btn.xo-read-report,.btn.xo-read-report{
+  background:var(--lcars-peach);color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach);font-weight:700;font-size:10px;
+  padding:4px 10px;margin:0 0 4px}
+.btn.xo-read-report:hover{filter:brightness(1.1)}
+
+/* ── the TAB: the verdict leads ─────────────────────────────────────── */
+.xo-score-block{margin-bottom:10px;display:flex;align-items:baseline;gap:8px;
+  flex-wrap:wrap}
+.xo-score-word{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:22px;font-weight:700;color:var(--lcars-amber)}
+.xo-score-word.s-high{color:var(--lcars-teal)}
+.xo-score-word.s-low{color:var(--lcars-red)}
+.xo-lede{font-size:14px;line-height:1.5;color:var(--lcars-text-bright);
+  border-left:3px solid var(--lcars-peach);padding-left:10px;margin:6px 0 12px}
+.xo-full{font-size:13px;line-height:1.65;color:var(--lcars-text);margin-bottom:14px}
+/* S220 fix round 3, F1: the summing-up's own caveat. It sits with the
+   paragraph it qualifies and must NOT read as muted metadata beside it —
+   a correction the eye slides over is a correction nobody gets (the amber
+   warning that rendered as grey detail cost a whole round). Bright text,
+   amber rule, same size as the paragraph above it. */
+.xo-full-caveat{font-size:13px;line-height:1.6;color:var(--lcars-text-bright);
+  border-left:3px solid var(--lcars-amber);padding-left:10px;margin:-6px 0 16px}
+/* S217 fix round 1, D1: which file was a picture, and what to do about it. */
+.xo-picture{border:1px solid var(--lcars-amber);border-radius:6px;
+  padding:8px 10px;margin:0 0 14px}
+.xo-picture-label{display:block;color:var(--lcars-amber);font-size:13px;
+  margin-bottom:4px}
+.xo-picture-body{font-size:13px;line-height:1.55;color:var(--lcars-text-bright);
+  overflow-wrap:anywhere}
+
+/* the per-criterion ledger. Three columns on a desktop, stacked on a phone —
+   a table that scrolls sideways is a table nobody reads on a phone. */
+.xo-crit{margin-bottom:16px;border-top:1px solid var(--lcars-border)}
+.xo-crit-head,.xo-crit-row{display:grid;grid-template-columns:1fr auto auto;
+  gap:10px;padding:7px 0;border-bottom:1px solid var(--lcars-border);
+  align-items:start}
+.xo-crit-head{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.08em;font-size:10px;color:var(--lcars-text-dim)}
+.xo-crit-text{font-size:12.5px;color:var(--lcars-text-bright);line-height:1.4}
+.xo-crit-note{font-size:11px;color:var(--lcars-text-dim);margin-top:2px;
+  line-height:1.4}
+.xo-crit-verdict{font-family:var(--font-mono);font-size:11px;white-space:nowrap}
+.xo-crit-how{font-family:var(--font-mono);font-size:11px;white-space:nowrap;
+  color:var(--lcars-text-dim)}
+.xo-crit-row.v-met .xo-crit-verdict{color:var(--lcars-teal)}
+.xo-crit-row.v-gap .xo-crit-verdict{color:var(--lcars-red)}
+.xo-crit-row.v-untested .xo-crit-verdict{color:var(--lcars-text-dim);font-style:italic}
+/* S216 — how much each one matters, and the reason written down for it. */
+.xo-crit-impact{font-size:11px;color:var(--lcars-peach);margin-top:3px;line-height:1.4}
+.xo-crit-impact.i-low{color:var(--lcars-text-dim)}
+.xo-crit-reason{font-size:11.5px;color:var(--lcars-text);margin-top:3px;line-height:1.45}
+.xo-crit-why-not{font-size:10px;white-space:normal;margin-top:2px}
+/* S216 — WHY THIS GRADE, first after the score; the alternative reading
+   beside it is visibly an aside (the .xo-also idiom), never a second grade. */
+.xo-why{border-left:3px solid var(--lcars-peach);padding-left:10px;margin:6px 0 10px}
+.xo-why-label,.xo-alt-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:10px;
+  color:var(--lcars-text-dim);margin-bottom:4px}
+.xo-why-body{font-size:13.5px;line-height:1.55;color:var(--lcars-text-bright)}
+.xo-alt{background:rgba(255,153,102,.07);border:1px solid var(--lcars-border);
+  border-radius:8px;padding:8px 12px;margin-bottom:12px}
+.xo-alt-line{font-size:12px;color:var(--lcars-text);line-height:1.5}
+.xo-impacts-note,.xo-impact-mismatch{font-size:12px;color:var(--lcars-text-dim);line-height:1.5;
+  margin:0 0 10px}
+
+/* …and LAST, the reassurance, visibly an aside and never the verdict. */
+.xo-also{background:rgba(255,153,102,.07);border:1px solid var(--lcars-border);
+  border-radius:8px;padding:10px 12px;margin-bottom:12px}
+.xo-also-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:10px;
+  color:var(--lcars-text-dim);margin-bottom:5px}
+.xo-also-line{font-size:12.5px;color:var(--lcars-text);line-height:1.5}
+.xo-also-why{font-size:11px;color:var(--lcars-text-dim);margin-top:5px}
+
+/* ── the REPORT, grouped by mission ─────────────────────────────────── */
+.xo-report-views{display:flex;gap:4px}
+.btn.xo-view{background:transparent;color:var(--lcars-text-dim);
+  border-color:var(--lcars-border);font-size:10px;padding:4px 10px}
+.btn.xo-view.on{background:var(--lcars-peach);color:var(--lcars-black,#030608);
+  border-color:var(--lcars-peach);font-weight:700}
+.xo-report-groups{margin-bottom:14px}
+
+.xo-mgrp{border:1px solid var(--lcars-border);border-left:3px solid var(--lcars-border);
+  border-radius:8px;margin-bottom:10px;overflow:hidden}
+/* THE SPINE is the rank, said in a way that survives greyscale: a needs-you
+   block's left edge is thicker as well as red. */
+.xo-mgrp.needs{border-left:5px solid var(--lcars-red)}
+.xo-mgrp.quiet{opacity:.55}
+.xo-mhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:7px 10px;background:rgba(255,153,102,.06)}
+.xo-mid{font-family:var(--font-mono);font-size:12px;color:var(--lcars-text-bright);
+  font-weight:700}
+.xo-mname{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.03em;font-size:13px;color:var(--lcars-text-bright);
+  flex:1 1 140px;min-width:0}
+.xo-mtag{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:9.5px;padding:2px 8px;border-radius:10px;
+  border:1px solid var(--lcars-text-dim);color:var(--lcars-text-dim);white-space:nowrap}
+.xo-mtag.need{color:var(--lcars-red);border-color:var(--lcars-red);font-weight:700}
+.xo-mtag.med{color:var(--lcars-amber);border-color:var(--lcars-amber)}
+.xo-mtag.ok{color:var(--lcars-teal);border-color:var(--lcars-teal)}
+.xo-mcount{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);
+  white-space:nowrap}
+.xo-mopen{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:9.5px;color:var(--lcars-peach);
+  text-decoration:none;border:1px solid var(--lcars-peach);border-radius:6px;
+  padding:3px 8px;white-space:nowrap}
+.xo-mopen:hover{background:var(--lcars-peach);color:var(--lcars-black,#030608)}
+
+.xo-entry{padding:8px 10px;border-top:1px solid var(--lcars-border)}
+.xo-entry.r-needs-you{border-left:3px solid var(--lcars-red)}
+.xo-entry.r-verdict{border-left:3px solid var(--lcars-amber)}
+.xo-entry-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+  margin-bottom:3px}
+.xo-entry-who{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:10px;color:var(--lcars-amber)}
+.xo-entry.r-needs-you .xo-entry-who{color:var(--lcars-red);font-weight:700}
+.xo-entry-when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
+.btn.xo-seen{margin-left:auto;background:transparent;color:var(--lcars-text-dim);
+  border-color:var(--lcars-border);font-size:9.5px;padding:3px 8px}
+.btn.xo-seen:hover{color:var(--lcars-teal);border-color:var(--lcars-teal)}
+.xo-entry-say{font-size:13px;line-height:1.5;color:var(--lcars-text-bright)}
+/* S223 fix round 2 (D1): the entry renders the recorded reasoning through the
+   SAME path as the mission report (xoReasoningInto), so it needs the report's
+   paragraph rhythm here too — those rules are scoped to `.xo-pane`, which this
+   modal is not. Everything inside INHERITS the entry's ink: the news keeps its
+   two text colours, and markdown never introduces a third. */
+.xo-entry-say .xo-why-body{font-size:13px;line-height:1.5;color:inherit}
+.xo-entry-say .xo-why-body p{margin:0 0 8px}
+.xo-entry-say .xo-why-body p:last-child{margin-bottom:0}
+.xo-entry-say .xo-why-body *{color:inherit}
+.xo-entry-say .xo-why-more > summary{color:inherit}
+.xo-fold{margin-top:6px;border-top:1px solid var(--lcars-border);padding-top:5px}
+.xo-fold summary{cursor:pointer;font-family:var(--font-mono);font-size:10px;
+  color:var(--lcars-text-dim);list-style:none}
+/* The fold carries the mock-up's own ⌄ in its text, so the browser's native
+   disclosure triangle beside it is the same thing said twice. Both spellings
+   of "hide it" are here: Safari/Chrome want the ::-webkit- pseudo, Firefox the
+   `list-style`. Found in the real browser — a node DOM renders no marker at
+   all and could never have shown it. */
+.xo-fold summary::-webkit-details-marker{display:none}
+.xo-fold summary::marker{content:""}
+.xo-step{font-family:var(--font-mono);font-size:10.5px;color:var(--lcars-text-dim);
+  padding:3px 0 0 12px}
+
+/* HISTORY KEEPS EVERYTHING, and the line that says so is not fine print. */
+.xo-hist-line{font-family:var(--font-mono);font-size:10.5px;
+  color:var(--lcars-text-dim);border:1px dashed var(--lcars-border);
+  border-radius:8px;padding:7px 10px;margin:4px 0 8px}
+
+/* A phone reads this too. The ledger's three columns stack rather than
+   scrolling sideways, and the mission header wraps instead of squeezing. */
+@media (max-width:560px){
+  .xo-crit-head{display:none}
+  .xo-crit-row{grid-template-columns:1fr;gap:3px}
+  .xo-crit-verdict,.xo-crit-how{white-space:normal}
+  .btn.xo-seen{margin-left:0}
+  /* …AND THE TAB BAR ABOVE IT WRAPS RATHER THAN SETTING THE WIDTH.
+     S213 fix round 1, D5: a row of four tabs that will not wrap has a
+     min-content width of its own, and a flex item is never allowed to shrink
+     below that — so the whole surface grows to fit the BAR, the overlay
+     centres the result, and the half that overflows to the LEFT cannot be
+     scrolled to at all. That is how a 390 px phone came to show a 605 px
+     report with the score word off the left edge. */
+  .tabbar{flex-wrap:wrap}
+}
+
+/* ── S213 fix round 1, D5: THE REPORT FITS THE PHONE IT IS READ ON ──────────
+   Measured at a true 390 CSS px viewport: the ◈ Number One report rendered
+   605 px wide, every verdict line cut off at BOTH edges and the MEDIUM score
+   itself scrolled off to the left, while "1 THING I COULD NOT CHECK" stayed
+   visible. A surface that hides its own verdict defeats C1 and C2.
+
+   THE MECHANISM, and it is the reason these three rules are structural rather
+   than cosmetic: `.overlay-stage` is a flex row and the panel inside it is a
+   flex item, so its automatic minimum size is its own MIN-CONTENT width. Any
+   one child that cannot get narrower — a tab bar that will not wrap, an
+   unbreakable path, a picture at its natural size — silently sets the width of
+   the whole surface, and `justify-content:center` then overflows it EQUALLY IN
+   BOTH DIRECTIONS. The left half of a centred overflow is unreachable: there
+   is no scroll that goes there. So the floor comes off, and the things that
+   can be wide are told to wrap, break or scroll INSIDE their own box. */
+.overlay-stage,.modal,.detail-grid,.tabs,.tabpane,.xo-pane{min-width:0}
+.det-head h3{overflow-wrap:anywhere;min-width:0}
+.xo-lede,.xo-full,.xo-crit-text,.xo-crit-note,.xo-also-line,.xo-also-why,
+.xo-entry-say,.xo-mname,.xo-crit-impact,.xo-crit-reason,.xo-why-body,
+.xo-alt-line{overflow-wrap:anywhere}
+/* A picture is evidence, not a ruler: it fits the column it is read in. */
+.xo-pane img,.xo-shot img,.tabpane img{max-width:100%;height:auto}
+
+/* ── S218 fix round 1 (F1): a Stage that FAILED, on the card where it sits,
+   in the detail header, and on its activity band. `.card .no.stage-failed`
+   out-specifies `.card .no` (two classes beat one) so it cannot lose the
+   source-order race S162's amber did. ── */
+.card .no.stage-failed{color:var(--lcars-red);text-transform:none;letter-spacing:.02em;
+  font-size:11px;margin-top:2px}
+.det-stage-failed{margin-bottom:14px;padding:10px 14px;
+  border-radius:var(--lcars-radius,14px);background:rgba(204,68,68,.14);
+  box-shadow:0 0 0 1px var(--lcars-red) inset}
+.det-stage-failed .sf-head{font-family:var(--font-display);font-size:13px;
+  letter-spacing:.1em;color:var(--lcars-red);margin-bottom:6px}
+.det-stage-failed .sf-sentence{color:var(--lcars-text-bright);line-height:1.5;
+  font-size:13px;white-space:pre-wrap;word-break:break-word}
+.det-stage-failed .sf-log{margin-top:6px;font-family:var(--font-mono,monospace);
+  font-size:12px;color:var(--lcars-text);word-break:break-all}
+.band-chip.chip-status.failed{color:var(--lcars-red);border-color:rgba(255,138,150,.5)}
+
+/* ══ S223 — THE NUMBER ONE READER ════════════════════════════════════════
+   Built to the mock the captain approved ("Love it."). Five notes, one block.
+
+   1 · THE REPORT FILLS THE WINDOW. `.detail-grid.xo-full` is the mission
+   window with the ◈ Number One (or Activity ›) tab showing: it glides out to
+   the screen's edges while the feed slides away to the left (`.xo-solo`).
+   Every change is a TRANSITION on width / height / padding / grid columns —
+   the text reflows wider at the same size; nothing here is ever scaled. */
+.overlay{transition:padding .5s cubic-bezier(.2,.8,.2,1)}
+.overlay.xo-full-host{padding:12px}
+.detail-grid{position:relative;
+  transition:max-width .5s cubic-bezier(.2,.8,.2,1),max-height .5s cubic-bezier(.2,.8,.2,1),
+    min-height .5s cubic-bezier(.2,.8,.2,1),border-radius .5s,box-shadow .5s}
+.detail-grid.xo-full{max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);
+  min-height:calc(100vh - 24px);border-radius:8px}
+.det-body{transition:grid-template-columns .5s cubic-bezier(.2,.8,.2,1)}
+.detail-grid.xo-full .det-body{grid-template-columns:minmax(0,1fr) minmax(0,1.6fr)}
+.detail-grid.xo-full.xo-solo .det-body{grid-template-columns:0fr minmax(0,1fr)}
+/* S223 fix round 1 (D1): on the Activity › tab the feed has MOVED into the
+   pane, so the body holds ONE child — and an only child lands in column one,
+   which `xo-solo` above has collapsed to 0fr. That is why the tab lit up on a
+   blank window. One column, full width, whenever the body is down to one. */
+.detail-grid.xo-full.xo-act .det-body,
+.detail-grid.xo-full.xo-solo.xo-act .det-body{grid-template-columns:minmax(0,1fr)}
+.detail-grid.xo-act .act-pane > .feed{max-height:none;border-right:0}
+.det-body > .feed{transition:opacity .3s,transform .5s cubic-bezier(.2,.8,.2,1),padding .5s}
+.detail-grid.xo-solo .det-body > .feed{opacity:0;transform:translateX(-30px);
+  padding-left:0;padding-right:0;border-right:0;overflow:hidden;pointer-events:none}
+/* the Activity › pane holds the one live feed node while it is being read */
+.act-pane > .feed{border-right:0;padding:0}
+.tabbar{flex-wrap:wrap}
+.tabbar .tab.tab-act{background:transparent;border:1px dashed var(--lcars-border-bright)}
+.tabbar .tab.tab-act.on{background:var(--lcars-amber);border-style:solid}
+/* ⤡ Side by side — in the title bar, just left of ✕ */
+.detail-side{position:absolute;top:12px;right:48px;background:transparent;
+  border:1px solid var(--lcars-peach);color:var(--lcars-peach);border-radius:12px;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.08em;
+  font-size:11px;padding:3px 10px;cursor:pointer;white-space:nowrap}
+.detail-side:hover{background:var(--lcars-peach);color:var(--lcars-text-on-color)}
+.detail-side:focus-visible{outline:2px solid var(--lcars-text-bright);outline-offset:2px}
+.detail-grid.xo-full .det-head{padding-right:200px}
+/* the LCARS sweep: a peach bar runs the top edge as the frame resizes */
+.detail-grid::before{content:"";position:absolute;left:0;top:0;height:4px;width:0;
+  z-index:3;pointer-events:none;opacity:0;border-radius:2px;
+  background:linear-gradient(90deg,transparent,var(--lcars-peach),var(--lcars-amber))}
+.detail-grid.xo-go::before{animation:xo-sweep .55s cubic-bezier(.2,.8,.2,1)}
+.detail-grid.xo-go{animation:xo-glow .7s ease-out}
+@keyframes xo-sweep{0%{width:0;opacity:1}80%{width:100%;opacity:1}100%{width:100%;opacity:0}}
+@keyframes xo-glow{0%{box-shadow:0 0 0 2px rgba(255,153,102,.55),0 0 28px rgba(255,153,102,.3)}
+  100%{box-shadow:0 0 0 0 rgba(255,153,102,0),0 0 0 rgba(255,153,102,0)}}
+/* reduced motion: the same switch, instantly */
+@media (prefers-reduced-motion: reduce){
+  .overlay,.detail-grid,.det-body,.det-body > .feed{transition:none !important}
+  .detail-grid.xo-go,.detail-grid.xo-go::before{animation:none !important}
+}
+@media (max-width:760px){
+  .detail-grid.xo-full .det-body{grid-template-columns:minmax(0,1fr)}
+  .detail-grid.xo-full.xo-solo .det-body{grid-template-columns:minmax(0,1fr)}
+  .detail-grid.xo-full.xo-act .det-body{grid-template-columns:minmax(0,1fr)}
+  .detail-grid.xo-solo .det-body > .feed{display:none}
+  .detail-grid.xo-full .det-head{padding-right:52px;padding-top:44px}
+  .detail-side{top:12px;right:44px}
+}
+
+/* INSIDE THE REPORT: TWO TEXT COLOURS ONLY — ink and muted. Colour lives in
+   the chips (outcome, importance, the grade) and in the rule beside "What I
+   saw"; never in a sentence. The muted token is local to the pane (ADR-007:
+   shared tokens are never forked) and reads at ~7.7:1 on the pane. */
+.xo-pane{--xo-ink:var(--lcars-text-bright);--xo-muted:#8ea2c0;color:var(--xo-ink);
+  display:flex;flex-direction:column;gap:14px}
+.xo-pane > *{margin-top:0;margin-bottom:0}
+.xo-pane .mock-cap,.xo-pane .xo-why-label,.xo-pane .xo-alt-label,.xo-pane .xo-also-label,
+.xo-pane .xo-picture-label,.xo-pane .xo-gap-title,.xo-pane .xo-why-body,.xo-pane .xo-full,
+.xo-pane .xo-picture-body,.xo-pane .xo-lede,.xo-pane .xo-item-title,.xo-pane .xo-beat-v{color:var(--xo-ink)}
+.xo-pane .xo-vsmall,.xo-pane .xo-alt-line,.xo-pane .xo-impacts-note,.xo-pane .xo-impact-mismatch,
+.xo-pane .xo-also-line,.xo-pane .xo-also-why,.xo-pane .xo-shots-note,.xo-pane .xo-thumb-cap,
+.xo-pane .xo-beat-k,.xo-pane .xo-matters,.xo-pane .xo-ev-none,.xo-pane .xo-ev-quote,
+.xo-pane .xo-thumb-broken,.xo-pane .xo-ev-kind,.xo-pane > p{color:var(--xo-muted)}
+.xo-pane .xo-full a,.xo-pane .xo-picture-body code,.xo-pane .xo-full code{color:inherit}
+.xo-pane .xo-picture{border-color:var(--lcars-amber)}
+.xo-pane .xo-why{border-left-color:var(--lcars-border-bright)}
+/* the verdict: THE NUMBERS IN A RAIL, THE WORDS IN A COLUMN (S224).
+   It was one flex row — grade box, four counts in a sentence, a caveat, the
+   engine — and it read, in the captain's words, "too smashed and too hard to
+   parse". A rail of a fixed narrow measure holds every number as a shape; the
+   rest of the width is words. The rail is a grid track, not a float, so the
+   two columns start at the same baseline however tall either grows. */
+.xo-verdict{display:grid;grid-template-columns:minmax(160px,205px) minmax(0,1fr);
+  gap:26px;align-items:start}
+/* AIR BETWEEN THE HEADER AND THE EVIDENCE (fix round 1, D1). The pane is a
+   flex column with a 14px gap, and `.xo-pane > *{margin-bottom:0}` zeroes
+   `.xo-score-block`'s own 10px — so the "Show me" box (a bordered box, last
+   in the header) ended 14px above the first item card (a bordered box, first
+   in the list), and the captain read two touching boxes as "no space". This is
+   a landmark break, not a paragraph break: the header has ended. Specificity
+   0,2,0 beats the `.xo-pane > *` reset outright, rather than winning a
+   source-order tie a later edit could silently reverse. */
+.xo-pane .xo-verdict{margin-bottom:22px}
+.xo-rail{border-right:1px solid var(--lcars-border);padding-right:20px;
+  min-width:0;display:flex;flex-direction:column;gap:6px}
+/* THE PHONE GETS ONE COLUMN. At 400px a 160px rail beside a text column is two
+   unreadable columns, so the rail stacks on top and its separator becomes the
+   rule under it. Measured in real Chrome at 400px, not asserted from this rule
+   existing — a rule that ties on specificity loses on source order. */
+@media (max-width:640px){
+  .xo-verdict{grid-template-columns:minmax(0,1fr);gap:16px}
+  .xo-rail{border-right:0;border-bottom:1px solid var(--lcars-border);
+    padding-right:0;padding-bottom:14px}
+}
+.xo-grade-chip{font-family:var(--font-display);font-weight:700;font-size:34px;line-height:1;
+  border:3px solid currentColor;border-radius:12px;padding:6px 16px;letter-spacing:.04em;
+  display:block;text-align:center}
+.xo-grade-chip.s-high{color:var(--lcars-teal)}
+.xo-grade-chip.s-medium{color:var(--lcars-amber)}
+.xo-grade-chip.s-low{color:var(--lcars-red)}
+.xo-grade-chip.s-unknown{color:var(--xo-muted)}
+/* S224 — the grade and the score it got on the RE-CHECK, in one column, the
+   second one under the first. It used to be the last child of `.xo-verdict`,
+   which on a wide screen put it against the far right margin, a window away
+   from the badge it qualifies; the captain read it as debris. Same words,
+   read where the thing it modifies is. */
+.xo-gradecol{display:flex;flex-direction:column;align-items:flex-start;gap:8px;
+  flex:0 0 auto;min-width:0}
+/* Measured in real Chrome at 1600px: at 11px this ran 186px against a 185px
+   content box and broke "was LOW" onto a second line. One step down fits. */
+.xo-gradecol .xo-score2{margin:0;white-space:normal;font-size:10px;
+  letter-spacing:0;padding:2px 6px}
+
+/* ── S224 — THE PROPORTION BAR ─────────────────────────────────────────────
+   ONE PALETTE, VALIDATED, NOT CHOSEN BY EYE. Run through the dataviz validator
+   against this board's own surface (#030608, dark): CVD separation ΔE 14.4
+   protan / 17.6 tritan, normal-vision floor 17.4, contrast ≥3:1 — all PASS.
+   The obvious green/red/grey FAILS: red against grey is ΔE 6.1 under
+   protanopia, so "didn't work" and "couldn't check" collapse for a red-blind
+   reader. These tokens are LOCAL to the pane (ADR-007: shared tokens are never
+   forked) because they mean one thing — an outcome on a Number One ledger.
+
+   The grey is deliberately the dull one: "I couldn't check" is the ABSENCE of
+   a verdict, not a state, and must not compete with the two real outcomes. */
+.xo-pane{--xo-worked:#2F74C0;--xo-didnt:#C06F1E;--xo-nocheck:#6E6878}
+.xo-bars{display:flex;flex-direction:column;gap:5px;margin-top:8px}
+.xo-barlab{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.07em;font-size:10.5px;color:var(--xo-muted);
+  font-variant-numeric:tabular-nums}
+.xo-barlab-sub{margin-top:5px}
+/* COLOUR IS NEVER THE ONLY CHANNEL, part 1: a 2px SURFACE gap between
+   segments, so the boundary survives even if two hues do not. */
+.xo-bar{display:flex;gap:2px;height:12px;margin:1px 0 2px}
+.xo-bar .xo-seg{display:block;border-radius:2px;min-width:3px;height:100%}
+/* …part 2: "didn't work" is HATCHED, so it reads in greyscale, in print, and
+   under forced-colors, where every one of these hues is thrown away. */
+.xo-seg-w,.xo-key.xo-seg-w{background:var(--xo-worked)}
+.xo-seg-c,.xo-key.xo-seg-c{background:var(--xo-nocheck)}
+.xo-seg-d,.xo-key.xo-seg-d{background:var(--xo-didnt);
+  background-image:repeating-linear-gradient(135deg,
+    rgba(255,255,255,.5) 0 2px, transparent 2px 4px)}
+/* THE FIRST LOOK, HELD BACK. Same scale, same order, less ink — so the eye
+   reads "then" and "now" rather than two competing claims. */
+.xo-bar-was{opacity:.55}
+/* …and part 3: EVERY COUNT IS WRITTEN OUT, one outcome per line. A legend that
+   only keys colour to a swatch is still a colour-only encoding. */
+.xo-legend{display:flex;flex-direction:column;gap:3px;margin-top:6px;
+  font-size:12px;color:var(--xo-muted);font-variant-numeric:tabular-nums}
+/* A GRID, NOT A FLEX ROW. Measured in real Chrome at 1600px: in a 205px rail
+   the flex row shrank the count below its own content and broke "22" across
+   two lines as "2 / 2". Four tracks — swatch, count, name, delta — so the only
+   thing allowed to wrap is the name, which is the only thing that reads when
+   it does. */
+.xo-legend-row{display:grid;grid-template-columns:9px auto minmax(0,1fr) auto;
+  column-gap:6px;align-items:baseline;line-height:1.35}
+.xo-pane .xo-key{width:9px;height:9px;border-radius:2px;align-self:center}
+.xo-pane .xo-legend-n{color:var(--xo-ink);font-weight:700;white-space:nowrap}
+.xo-legend-d{justify-self:end;white-space:nowrap;color:var(--xo-ink);
+  font-weight:600;font-size:11.5px}
+/* "no change" is a fact, not a movement — it must not read like one. */
+.xo-legend-d-none{color:var(--xo-muted);font-weight:400}
+
+/* ── S225 — THE RAIL IS THREE QUESTIONS ────────────────────────────────────
+   One block per group, in the scorer's order, each with its question, what it
+   answers, its shape and its counts. The blocks are separated by a RULE rather
+   than gap alone: at 205px three stacked blocks of small type run together,
+   and the reader has to be able to tell where one question ends.
+
+   THE FOURTH OUTCOME IS A SHAPE, NOT A FOURTH HUE. S224's three fills were run
+   through the dataviz validator against this surface and they are kept exactly
+   as they were; adding a fourth hue to a four-way split would have meant
+   re-validating all six pairs, and the pair that matters most is the one no
+   hue can carry: "I couldn't SEE it" (a doubt about the build) versus "I
+   couldn't SET it UP" (my own failure to reach the state). So the set-up
+   segment is HOLLOW — a thin outline over a near-transparent fill, in the
+   pane's own muted ink. Solid vs hatched vs hollow is a channel that survives
+   greyscale, forced-colors and every flavour of colour blindness by itself,
+   and it says the right thing on sight: nothing was filled in there, and the
+   empty box is mine. */
+/* NO NEW COLOUR IS MINTED HERE. `--xo-mine` is the pane's own muted ink under
+   a name that says what it MEANS on a bar — the shortfall is mine — and the
+   fill is that same ink at 16%, mixed rather than re-typed as a second hex.
+   (web/tests/test_adopt_engine_picker's raw-colour guard is the reason the
+   value is a var() and not a second hex literal — the guard reads the file
+   as text, so even a hex in a COMMENT trips it; `transparent` is the pre-color-mix
+   fallback, and the outline alone still reads as hollow.) */
+.xo-pane{--xo-mine:var(--xo-muted)}
+.xo-seg-u,.xo-key.xo-seg-u{background:transparent;
+  background:color-mix(in srgb, var(--xo-mine) 16%, transparent);
+  box-shadow:inset 0 0 0 1.5px var(--xo-mine)}
+.xo-groups{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+.xo-group{display:flex;flex-direction:column;gap:3px;min-width:0}
+.xo-group + .xo-group{border-top:1px solid var(--lcars-border);padding-top:10px}
+/* The question, in the captain's own words off the record. Full-contrast: it
+   is the heading of its block, not a caption under the numbers. */
+.xo-pane .xo-group-q{font-size:12.5px;line-height:1.3;color:var(--xo-ink);
+  font-weight:600}
+.xo-group-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;
+  font-variant-numeric:tabular-nums}
+.xo-group-grade{font-family:var(--font-display);font-weight:700;font-size:17px;
+  line-height:1.1;letter-spacing:.05em}
+/* The same three meanings as the headline chip, and deliberately the same
+   three tokens — a group grade that disagreed in colour with the badge above
+   it would be two claims about one word. */
+.xo-group-grade.s-high{color:var(--lcars-teal)}
+.xo-group-grade.s-medium{color:var(--lcars-amber)}
+.xo-group-grade.s-low{color:var(--lcars-red)}
+/* COVERAGE IS A COUNT, AND IT MAY NEVER LOOK LIKE A GRADE. This is the whole
+   point of the S225 split, so it is stated in the sheet as well as in the DOM:
+   ordinary ink, never the teal/amber/red the grade words own. A colour from
+   that set here would make "39 of 58 answered" read as a verdict on his build,
+   which is exactly the misreading the three-way split exists to end. */
+.xo-pane .xo-group-cov{font-family:var(--font-display);font-weight:700;
+  font-size:15px;line-height:1.15;letter-spacing:.03em;color:var(--xo-ink)}
+.xo-pane .xo-group-sub{font-size:11px;color:var(--xo-muted)}
+/* WHEN, SAID ONCE, ABOVE ALL THREE. */
+.xo-pane .xo-when-both{margin-bottom:2px;font-size:10px}
+/* The two looks share a scale, so their labels share a track — a 34px gutter
+   holds FIRST and NOW at this size and leaves the bar the rest. */
+.xo-bar-row{display:grid;grid-template-columns:34px minmax(0,1fr);
+  column-gap:7px;align-items:center}
+.xo-pane .xo-bar-when{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.05em;font-size:9.5px;color:var(--xo-muted);line-height:1}
+/* EVERY DRAWN COUNT IS WRITTEN OUT, part 3 of "colour is never the only
+   channel" — but as ONE WRAPPING LINE per group, not four legend rows. Three
+   groups times four rows is twelve rows in a column this narrow, and the third
+   question would never be on screen at the same time as the first. An outcome
+   with nothing in it on either look is not listed: no segment was drawn for
+   it, so there is no key to give, and "0 couldn't see it" is noise. */
+.xo-counts{display:flex;flex-wrap:wrap;gap:0 9px;margin-top:2px;
+  font-size:11px;color:var(--xo-muted);font-variant-numeric:tabular-nums}
+.xo-count{display:inline-flex;align-items:center;gap:4px;line-height:1.42;
+  white-space:nowrap}
+.xo-count .xo-key{width:8px;height:8px}
+.xo-pane .xo-count-n{color:var(--xo-ink);font-weight:700}
+.xo-pane .xo-count-d{color:var(--xo-ink);font-weight:600;font-size:10.5px}
+/* The scorer's one-line caveat. On the contract group it is the sentence that
+   says the number above is not a grade, which is why it is never optional and
+   never a tooltip — a phone has no hover. */
+.xo-pane .xo-group-aside{font-size:10px;line-height:1.35;margin-top:2px;
+  color:var(--xo-muted)}
+
+/* WHAT I COULDN'T CHECK — MINE, AND IT MUST NOT READ AS A FAULT IN HIS BUILD.
+   Keyed to the hollow segment's own ink, so the rail's empty boxes and this
+   block are visibly the same subject. It is a bordered aside, never the amber
+   of a warning or the red of a fault: nothing here is against him. */
+.xo-pane .xo-mine{border-left:3px solid var(--xo-mine);padding:2px 0 2px 12px;
+  display:flex;flex-direction:column;gap:6px}
+.xo-pane .xo-mine-label{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:11px;line-height:1.35;color:var(--xo-mine)}
+.xo-pane .xo-mine-note{font-size:12.5px;line-height:1.5;color:var(--xo-ink);
+  max-width:68ch}
+.xo-mine-counts{display:flex;flex-wrap:wrap;gap:2px 16px;font-size:12px;
+  color:var(--xo-muted);font-variant-numeric:tabular-nums}
+.xo-mine-more > summary{cursor:pointer;list-style:none;padding:1px 0;display:block}
+.xo-mine-more > summary::-webkit-details-marker{display:none}
+.xo-pane .xo-mine-sum{font-size:11.5px;color:var(--xo-muted)}
+/* The summary IS the .xo-mine-sum element, not its parent — a descendant
+   selector here matched nothing and the fold shipped with no marker at all
+   (measured in the first drive's screenshot). */
+.xo-mine-more > summary.xo-mine-sum::before{content:"⌄ "}
+.xo-mine-more[open] > summary.xo-mine-sum::before{content:"⌃ "}
+.xo-mine-more > summary:focus-visible{outline:2px solid var(--lcars-text-bright);
+  outline-offset:2px}
+.xo-mine-body{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.xo-mine-row{display:grid;grid-template-columns:9px minmax(0,1fr);column-gap:9px;
+  align-items:start}
+.xo-mine-row .xo-key{margin-top:4px;align-self:start}
+.xo-pane .xo-mine-name{font-size:12px;line-height:1.35;color:var(--xo-ink);
+  font-weight:600;display:block}
+.xo-pane .xo-mine-why{font-size:11.5px;line-height:1.45;color:var(--xo-muted);
+  max-width:68ch}
+
+.xo-pane .xo-measured-lede{font-size:12px;line-height:1.45;margin-top:9px;
+  color:var(--xo-muted)}
+.xo-pane .xo-looked{margin-top:2px;font-size:12px;color:var(--xo-muted)}
+
+/* S224 — HOW THE GRADE MOVED, which the old screen never said at all. The
+   filed/fixed pair is counted off the record and the sentence beside it is the
+   scorer's own `scoreMeaning`; nothing here is composed by reading prose. */
+/* THE BOXES HOLD THE BAND; THE PROSE HOLDS THE MEASURE (fix round 1, D2/D3).
+   This box used to be capped at 72ch as well, on the reasoning that a box is
+   as wide as its words. Measured on the captain's real board at 1690px, that
+   cap stopped ALL of the header's content at x≈795 while the item cards under
+   it ran to x≈1660 — a narrow left-hugging header sitting on top of full-width
+   content, which he read as a broken pane, not as a reading measure. His
+   ruling: the header occupies the same horizontal band as the cards below it
+   at every width. Fix round 2 took the cap off the sentences inside too — see
+   the note below the grade column. */
+.xo-changed{background:var(--lcars-card-alt,#101a33);
+  border:1px solid var(--lcars-border);border-radius:8px;padding:10px 13px}
+.xo-pane .xo-changed-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:10px;
+  color:var(--xo-muted);margin-bottom:5px}
+.xo-pane .xo-changed-line{font-size:13.5px;line-height:1.55;color:var(--xo-ink)}
+.xo-pane .xo-changed-line + .xo-changed-line{margin-top:6px}
+.xo-pane .xo-changed-why-body{color:var(--xo-muted)}
+
+/* S224 — "SHOW ME": the filter chips, last in the column and directly above
+   the evidence they filter, so the control sits with the thing it controls.
+   Uncapped (fix round 1, D2/D3): it is a control, not a paragraph, and it is
+   the LAST thing in the header — the one box whose right edge the eye reads
+   straight down onto the first item card. */
+.xo-showme{background:var(--lcars-card-alt,#101a33);
+  border:1px solid var(--lcars-border);border-radius:8px;padding:10px 12px}
+.xo-pane .xo-showme-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:10px;
+  color:var(--xo-muted);margin-bottom:7px}
+/* the row inside it carries its own 14px tail (S221); inside this box the box
+   provides the breathing room, so the tail would only double it. */
+.xo-showme .xo-filters{margin-bottom:0}
+.xo-showme .xo-filters-key{margin:8px 0 0}
+
+.xo-vtext{display:flex;flex-direction:column;gap:12px;min-width:0}
+.xo-pane .xo-lede{font-size:16px;font-weight:600;line-height:1.45;margin:0}
+.xo-vsmall{font-size:13px}
+.xo-why-body{font-size:14px;line-height:1.6}
+
+/* S224 fix round 2 — NO READING MEASURE IN THIS PANE. THE WIDTH IS USED.
+   Round 1 capped every prose block here at 68ch on the reasoning that ~200
+   characters a line is three times a readable measure. The captain read the
+   result on his own board and said it twice: "Show me should span completely",
+   "the previous image text should span as well" — the boxes spanned and the
+   sentences inside them stopped less than half way across, which is the same
+   dead space he complained about, moved one level in. He reads this screen
+   every day; the cap is gone, not widened. A 90ch or 100ch compromise would
+   be the same argument again at a different number.
+   The one thing still capped is nothing: every selector that carried
+   `max-width:68ch` here now inherits its container's width. */
+
+/* S224 — WHAT NEEDS HIM. The look's own `escalations` — "these are yours to
+   decide" — have been in report.md and in the terminal since S222 and were
+   never drawn on the board at all. Of everything on this page it is the one
+   part he has to act on, so it reads as a call, not as metadata: amber rule,
+   ink text, the same size as the sentence above it. (A correction the eye
+   slides over is a correction nobody gets — the amber warning that rendered
+   as grey detail cost this project a whole round.) */
+/* The amber RULE runs the band (fix round 1, D2/D3) — it is the landmark, and
+   a landmark that stops two thirds of the way across reads as debris. The
+   escalation sentences inside it are uncapped too (fix round 2), so the
+   landmark and its words end on the same edge. */
+.xo-needs{border-left:3px solid var(--lcars-amber);padding-left:10px}
+.xo-pane .xo-needs-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:10px;
+  color:var(--lcars-amber);margin-bottom:4px}
+.xo-pane .xo-needs-line{font-size:14px;line-height:1.55;color:var(--xo-ink);
+  overflow-wrap:anywhere}
+.xo-pane .xo-needs-line + .xo-needs-line{margin-top:6px}
+
+/* S224 — THE ONE FOLD. Everything that used to pile up as prose above the
+   evidence now lives behind this door, and the door says what is behind it.
+   Same caret/underline idiom as `.xo-why-more`, one size up because this one
+   is a top-level landmark rather than a tail. */
+.xo-more > summary{cursor:pointer;list-style:none;padding:2px 0;display:block}
+.xo-more > summary::-webkit-details-marker{display:none}
+.xo-pane .xo-more-say{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.06em;font-size:11.5px;color:var(--xo-ink);
+  text-decoration:underline;text-underline-offset:3px;
+  text-decoration-color:var(--lcars-peach)}
+.xo-more > summary .xo-more-say::before{content:"⌄ "}
+.xo-more[open] > summary .xo-more-say::before{content:"⌃ "}
+/* what is behind the door, on its own line so it can wrap without pushing
+   the door's own label off the window at phone width */
+.xo-pane .xo-more-parts{display:block;font-size:12px;line-height:1.45;
+  color:var(--xo-muted);margin-top:3px}
+.xo-more > summary:focus-visible{outline:2px solid var(--lcars-text-bright);outline-offset:2px}
+.xo-more-body{display:flex;flex-direction:column;gap:12px;margin-top:10px}
+.xo-more-body > *{margin-bottom:0}
+/* S224 — the one line that reconciles `All · 108` with the header's 101, said
+   under the chip row it explains rather than as a paragraph above the fold. */
+.xo-filters-key{font-size:12px;line-height:1.5;color:var(--xo-muted);
+  margin:-8px 0 14px}
+/* D3 — the rest of the reasoning, one tap away and never cut */
+.xo-why-more{margin-top:8px}
+/* INK, not peach: inside the report only chips carry colour (behaviour 3),
+   and a computed-style drive reads every visible text node in the pane. The
+   caret and the underline are what make it read as a control. */
+.xo-why-more > summary{cursor:pointer;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.06em;font-size:11px;
+  color:var(--xo-ink);text-decoration:underline;text-underline-offset:3px;
+  text-decoration-color:var(--lcars-peach);list-style:none}
+.xo-why-more > summary::-webkit-details-marker{display:none}
+.xo-why-more > summary::before{content:"⌄ "}
+.xo-why-more[open] > summary::before{content:"⌃ "}
+.xo-why-more > summary:focus-visible{outline:2px solid var(--lcars-text-bright);outline-offset:2px}
+.xo-why-more .xo-why-body{margin-top:8px}
+/* S224: flattened, the lead and the rest are two sibling bodies and the
+   lead's last paragraph has `margin-bottom:0` — so without this they ran
+   together into the wall this block exists to stop being. */
+.xo-pane .xo-why-body + .xo-why-body{margin-top:10px}
+.xo-pane .xo-why-body p{margin:0 0 10px}
+.xo-pane .xo-why-body p:last-child{margin-bottom:0}
+.xo-pane .xo-why-body strong,.xo-pane .xo-why-body b{color:inherit;font-weight:700}
+/* the filters (All / Didn't work / Couldn't check / Worked) */
+/* S221 — BREATHING ROOM UNDER THE FILTER ROW. Measured in real Chrome, the gap
+   between this row's bottom edge and the top of the first item beneath it was
+   ZERO: `All · 108 / Didn't work · 3 / …` sat flush against the heading it was
+   filtering, which is what the captain spotted in S220's walkthrough. 14px is
+   the same step `.xo-report-groups` puts under the First Officer's own row, so
+   the two filter rows in Number One's surfaces breathe alike.
+   Proven by geometry, not by this rule existing: tests/drives/s221/run.sh reads
+   the COMPUTED distance in a real browser, because a rule that ties on
+   specificity loses on source order and never reaches the screen. */
+.xo-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.xo-filter{background:transparent;border:1px solid var(--lcars-border);border-radius:16px;
+  padding:4px 12px;font-size:13px;color:var(--xo-muted);cursor:pointer;
+  font-family:inherit;font-variant-numeric:tabular-nums}
+.xo-filter.on{border-color:var(--xo-ink);color:var(--xo-ink)}
+.xo-filter:focus-visible{outline:2px solid var(--lcars-peach);outline-offset:2px}
+/* one requirement, one boxed block */
+.xo-items{display:flex;flex-direction:column;gap:12px}
+.xo-item{border:1px solid var(--lcars-border);border-radius:10px;overflow:hidden;
+  background:var(--lcars-card)}
+.xo-item-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;
+  background:var(--lcars-card-alt,#101a33)}
+.xo-item-title{flex:1 1 220px;font-weight:600;font-size:14.5px;line-height:1.4;
+  min-width:0;overflow-wrap:anywhere}
+.xo-item-body{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:16px;padding:14px}
+.xo-story{display:flex;flex-direction:column;gap:12px;min-width:0}
+.xo-beat{display:flex;flex-direction:column;gap:3px}
+.xo-beat-k{font-family:var(--font-mono,ui-monospace,monospace);font-size:10.5px;
+  letter-spacing:.08em;text-transform:uppercase}
+.xo-beat-v{font-size:14px;line-height:1.55;overflow-wrap:anywhere}
+.xo-beat.saw .xo-beat-v{border-left:3px solid var(--lcars-violet);padding-left:10px}
+.xo-beat.saw.o-met .xo-beat-v{border-left-color:var(--lcars-teal)}
+.xo-beat.saw.o-gap .xo-beat-v{border-left-color:var(--lcars-red)}
+.xo-matters{font-size:13px;line-height:1.5;margin:0;border-top:1px solid var(--lcars-border);
+  padding-top:10px}
+/* the chips — the ONLY coloured text in the report */
+.xo-chip2{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;
+  letter-spacing:.04em;padding:2px 8px;border-radius:10px;white-space:nowrap}
+.xo-ochip.o-met{background:rgba(0,204,170,.14);color:var(--lcars-teal)}
+.xo-ochip.o-gap{background:rgba(255,51,68,.16);color:var(--lcars-red)}
+.xo-ochip.o-untested{background:rgba(153,119,255,.18);color:#b9a4ff}
+/* S220 fix round 2 (D-C): a MEASUREMENT reads as its own thing — amber, the
+   board's "worth your attention, not a verdict" colour — so it can never be
+   mistaken for a scored gap. Two text colours still: the colour is in the
+   chip and in the rule down the block's side, never in a sentence. */
+.xo-ochip.o-measured{background:rgba(255,153,0,.16);color:var(--lcars-amber)}
+.xo-item.xo-obs{border-left:3px solid var(--lcars-amber)}
+.xo-obs-head{padding:6px 2px 0}
+.xo-obs-head-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.06em;font-size:11.5px;
+  color:var(--lcars-amber);margin-bottom:4px}
+.xo-obs-head-why{font-size:12.5px;line-height:1.5}
+.xo-pane .xo-obs-head-why,.xo-pane .xo-measured-lede{color:var(--xo-muted)}
+.xo-measured-lede{font-size:12.5px;line-height:1.5;margin-top:6px}
+.xo-ichip{background:var(--lcars-black);color:var(--xo-ink);border:1px solid var(--lcars-border)}
+.xo-score2.s-high{color:var(--lcars-teal)} .xo-score2.s-medium{color:var(--lcars-amber)}
+.xo-score2.s-low{color:var(--lcars-red)}
+.xo-score2{border:1px solid currentColor}
+/* the evidence: the real screenshot, tap to enlarge */
+.xo-ev{min-width:0}
+.xo-thumb-btn{display:flex;flex-direction:column;gap:6px;background:none;border:0;padding:0;
+  color:inherit;text-align:left;cursor:zoom-in;width:100%}
+.xo-thumb-btn .xo-thumb{width:100%;max-width:100%;height:auto;border:1px solid var(--lcars-border);
+  border-radius:6px;display:block}
+.xo-thumb-btn:focus-visible{outline:2px solid var(--lcars-peach);outline-offset:3px;border-radius:6px}
+.xo-pane .xo-thumb-cap{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px}
+.xo-ev-kind{font-size:12px}
+.xo-ev-none{font-size:13px;line-height:1.5;border:1px dashed var(--lcars-border);
+  border-radius:6px;padding:10px}
+.xo-ev-quote{font-family:var(--font-mono,ui-monospace,monospace);font-size:11px;
+  margin-top:6px;overflow-wrap:anywhere}
+.xo-lightbox{position:fixed;inset:0;z-index:300;background:rgba(3,6,8,.94);display:flex;
+  align-items:center;justify-content:center;padding:16px;cursor:zoom-out;overflow:auto}
+.xo-lightbox-img{max-width:100%;max-height:100%;border-radius:6px}
+@media (max-width:620px){ .xo-item-body{grid-template-columns:minmax(0,1fr)} }
+/* S223 fix round 3 (D2) — "tap to enlarge" has to MEAN it on a phone.
+   Fitted to a 390px window, a 2880px app screenshot enlarges from a 279px
+   thumbnail to 353px: a 1.27x "enlarge" nobody can read. On a narrow screen
+   the picture opens at its NATURAL resolution instead and the captain pans it
+   (and pinch-zooms — the viewport meta allows it). Escape and tap-out still
+   close it; the thumbnail layout is untouched. */
+@media (max-width:620px){
+  .xo-lightbox{align-items:flex-start;justify-content:flex-start;padding:8px;
+    overflow:auto;-webkit-overflow-scrolling:touch}
+  .xo-lightbox-img{max-width:none;max-height:none;width:auto;height:auto;flex:0 0 auto}
+}
+
+/* 4 · VIEWS vs FILTERS on the First Officer's report — two different KINDS of
+   control, and they look it. ARRANGE is a segmented switch: one peach-ringed
+   capsule, exactly one half filled. SHOW is filter chips: dashed and muted
+   when off; solid amber outline, amber text and a ✓ when on. */
+.xo-ctl-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.xo-ctl-k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:#8ea2c0}
+.xo-seg{display:inline-flex;gap:0;border:1px solid var(--lcars-peach);border-radius:16px;overflow:hidden}
+.xo-seg .xo-view{background:transparent;border:0;border-radius:0;margin:0;cursor:pointer;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.06em;
+  font-size:11px;padding:4px 12px;color:var(--lcars-peach)}
+.xo-seg .xo-view + .xo-view{border-left:1px solid var(--lcars-peach)}
+.xo-seg .xo-view.on{background:var(--lcars-peach);color:var(--lcars-black,#030608);font-weight:700}
+.xo-seg .xo-view:focus-visible,.xo-fchip:focus-visible{outline:2px solid var(--lcars-text-bright);outline-offset:2px}
+.xo-chip.xo-fchip{background:transparent;border:1px dashed #8ea2c0;color:#8ea2c0;
+  border-radius:16px;font-family:inherit;text-transform:none;letter-spacing:0;
+  font-size:12px;padding:4px 12px;font-weight:400}
+.xo-chip.xo-fchip.on{background:transparent;border:1px solid var(--lcars-amber);
+  color:var(--lcars-amber);font-weight:600}
+.xo-chip.xo-fchip.on::before{content:"✓ "}
+/* 5 · ✓ Seen all N sits on the mission header beside "open mission →" */
+.xo-mhead .btn.xo-seen-all{margin-left:auto;color:var(--lcars-text-bright);
+  border-color:var(--lcars-teal)}
+.xo-mhead .btn.xo-seen-all + .xo-mopen{margin-left:0}
+/* 3 · the locked "Standing down…" state */
+.btn.xo-standing-down,.btn.xo-toggle[aria-busy="true"]{cursor:progress;opacity:.85}
+/* markdown inside the report inherits its block's ink or muted — never the
+   board's third body colour */
+.xo-pane .xo-full *,.xo-pane .xo-why-body *,.xo-pane .xo-picture-body *{color:inherit}

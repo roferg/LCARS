@@ -1,7 +1,0 @@
-python3 -m unittest discover -v
-test_greet (test_greet.T.test_greet) ... ok
-
-----------------------------------------------------------------------
-Ran 1 test in 0.000s
-
-OK

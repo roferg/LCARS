@@ -227,6 +227,15 @@ class BandButtonTest(unittest.TestCase):
                           flags=re.S)
         stripped = re.sub(r"\n[ ]*<button[^>]*id=\"holodeckBtn\"[^>]*>[^<]*</button>",
                           "", stripped)
+        # …and S201's ◈ Number One toggle, with the comment block that documents
+        # it. Stripped by ID like every round before it: the BASELINE above is
+        # still never edited, so this test goes on asserting the one property
+        # worth keeping — that no round has MOVED or RE-WORDED a control that
+        # was already in the band.
+        stripped = re.sub(r"\n[ ]*<!-- S201: NUMBER ONE\..*?-->", "", stripped,
+                          flags=re.S)
+        stripped = re.sub(r"\n[ ]*<button[^>]*id=\"xoBtn\"[^>]*>[^<]*</button>",
+                          "", stripped)
         self.assertEqual(stripped, self.BAND_BEFORE_S141)
 
 
@@ -250,8 +259,12 @@ class BandRenderTest(HelpBase):
     def test_the_band_order_places_help_with_the_other_controls(self):
         out = self.run_board(board({}))
         ids = [n["id"] for n in out["band"] if n["id"]]
-        self.assertEqual(ids, ["repoMeta", "mainDeploy", "deployMainBtn",
-                               "fileBtn", "helpBtn", "conn"])
+        # S205: the harness's synthetic band now carries #xoBtn too (S201's
+        # control, added here in real index.html's own position — right after
+        # #mainDeploy, before ▸ Deploy Main — the moment this round's
+        # orientation step started naming it for the ref-walk tests).
+        self.assertEqual(ids, ["repoMeta", "mainDeploy", "xoBtn",
+                               "deployMainBtn", "fileBtn", "helpBtn", "conn"])
 
 
 # ══════════ 3. the COMMAND DECK is GENERATED from KEY_BINDINGS ══════════
@@ -1243,9 +1256,12 @@ class ViewOnlyOpenersMeasuredTest(HelpBase):
         live = sorted(k for k, dead in openers.items() if not dead)
         dead = sorted(k for k, d in openers.items() if d)
         self.assertEqual(live, ["▦ File Mission"])
+        # S205: ◈ Number One joins the dead bucket too — `renderXoBand` runs
+        # its control through the SAME `applyWriteState` every other opener
+        # gets, so a view-only board disables it exactly like the rest.
         self.assertEqual(dead, sorted(["▹ START ALIGNMENT", "▶ Start", "⏸ Pause",
                                        "▶ Resume", "Answer ▸", "✓ Review PR ▸",
-                                       "▸ Deploy Main"]))
+                                       "▸ Deploy Main", "◈ Number One"]))
 
     def test_the_line_names_every_control_that_really_still_opens(self):
         line, openers = self.measured()

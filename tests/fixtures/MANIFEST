@@ -1,0 +1,102 @@
+# tests/fixtures/MANIFEST — the CLOSED inventory of tracked test FIXTURES.
+#
+# WHY THIS FILE EXISTS. tests/no-rigs.test.sh was built on two different
+# ideas at once. Under tests/lib/ it was a CLOSED ALLOW-LIST — a path is
+# allowed only if a MANIFEST row declares it — and that half held against
+# every attack a fresh adversarial tester threw at it. Under tests/fixtures/
+# it was an OPEN DENY-LIST with exactly one refusal (mode 100755), and that
+# half fell to the first push: the tester copied 120 real rig files out of
+# lcars-dev/tests/drives/ into tests/fixtures/drives-archive/, stripped the
+# exec bits, `git add -f`, and the gate printed the clean-tree tally. A rig
+# script at mode 644 runs perfectly under `bash`, and the RECORDED .json and
+# .log artefacts that were the actual bulk of the original 109 MB are inert
+# data that an exec-bit rule can never reach.
+#
+# So tests/fixtures/ is now closed the same way tests/lib/ is: this file is
+# the allow-list, and any tracked path under tests/fixtures/ without a row
+# here is refused. A new fixture FAILS the build until someone adds a row.
+# That friction is the same feature it is next door — the inventory can only
+# grow deliberately, and "it's just data" stops being a way in.
+#
+# COLUMNS:  <git-index-mode> <path>
+#
+# The mode is checked, not just the path, so a symlink (120000) or an
+# executable (100755) planted at a declared path is still refused. Fixtures
+# are inert DATA by contract, so every row is 100644 and a 100755 anywhere
+# under tests/fixtures/ is refused outright as `executable-fixture` before
+# this list is even consulted.
+#
+# Paths may not contain spaces or newlines.
+
+100644 tests/fixtures/MANIFEST
+100644 tests/fixtures/claims/budget-research/1.json
+100644 tests/fixtures/claims/budget-research/2.json
+100644 tests/fixtures/claims/measured-research/15.json
+100644 tests/fixtures/claims/measured-research/3.json
+100644 tests/fixtures/claims/measured-research/6.json
+100644 tests/fixtures/claims/swept-research/1.json
+100644 tests/fixtures/claims/swept-research/2.json
+100644 tests/fixtures/claims/swept-research/3.json
+100644 tests/fixtures/claims/swept-research/4.json
+100644 tests/fixtures/decisions/budget-prd.md
+100644 tests/fixtures/decisions/measured-prd.md
+100644 tests/fixtures/decisions/no-questions-prd.md
+100644 tests/fixtures/lcars-state-writer-last.py
+100644 tests/fixtures/plan-mockup/bypass-buried-marker.json
+100644 tests/fixtures/plan-mockup/bypass-junk-anchor.json
+100644 tests/fixtures/plan-mockup/bypass-suffix.json
+100644 tests/fixtures/plan-mockup/capstone-0of44.json
+100644 tests/fixtures/plan-mockup/capstone-all-false.json
+100644 tests/fixtures/plan-mockup/capstone-corrected-174.json
+100644 tests/fixtures/plan-mockup/capstone-corrected.json
+100644 tests/fixtures/plan-mockup/capstone-declared-no-criterion.json
+100644 tests/fixtures/plan-mockup/mbr-approved-plan-declared.json
+100644 tests/fixtures/plan-mockup/mbr-approved-plan.json
+100644 tests/fixtures/plan-mockup/t-012-blank-anchor.json
+100644 tests/fixtures/plan-mockup/t-012-constant-anchor.json
+100644 tests/fixtures/plan-mockup/t-012-declared.json
+100644 tests/fixtures/plan-mockup/t-012-nothing-drawn.json
+100644 tests/fixtures/plan-mockup/t-012-notvisual-lie.json
+100644 tests/fixtures/plan-mockup/t-012-null-anchor.json
+100644 tests/fixtures/plan-mockup/t-012-two-declarations.json
+100644 tests/fixtures/plan-mockup/t-012-verbatim.json
+100644 tests/fixtures/replan/dropped-edge-plan.json
+100644 tests/fixtures/replan/live/.plan-reject-note
+100644 tests/fixtures/replan/live/README.md
+100644 tests/fixtures/replan/live/live-revision-1.json
+100644 tests/fixtures/replan/live/live-revision-2.json
+100644 tests/fixtures/replan/live/live-revision-3.json
+100644 tests/fixtures/replan/live/plan-review-1.json
+100644 tests/fixtures/replan/live/prd.md
+100644 tests/fixtures/replan/live/pre-review-plan.json
+100644 tests/fixtures/replan/live/validated-plan.md
+100644 tests/fixtures/replan/named-ticket-extra-edge.json
+100644 tests/fixtures/replan/over-corrected-plan.json
+100644 tests/fixtures/replan/patched-plan.json
+100644 tests/fixtures/replan/plan-review-1.json
+100644 tests/fixtures/replan/pre-review-plan.json
+100644 tests/fixtures/replan/renumbered-plan.json
+100644 tests/fixtures/replan/resized-plan.json
+100644 tests/fixtures/s175-live/turn-a-concept.md
+100644 tests/fixtures/s175-live/turn-b-concept.md
+100644 tests/fixtures/s175-live/turn-c-concept.md
+100644 tests/fixtures/s175-live/turn-d-concept.md
+100644 tests/fixtures/s188-issue-body/README.md
+100644 tests/fixtures/s188-issue-body/laneA-park.body
+100644 tests/fixtures/s188-issue-body/laneB-complete-edit.body
+100644 tests/fixtures/s188-issue-body/laneC-complete-create.body
+100644 tests/fixtures/s188-issue-body/laneD-prd-adr-est.body
+100644 tests/fixtures/s188-issue-body/laneD-prd-only.body
+100644 tests/fixtures/usage/claude-output-json.json
+100644 tests/fixtures/usage/claude-transcript.jsonl
+100644 tests/fixtures/usage/copilot-events-2.jsonl
+100644 tests/fixtures/usage/copilot-events.jsonl
+100644 tests/fixtures/xo-s216/claude-1-verdict.json
+100644 tests/fixtures/xo-s216/copilot-1-verdict.json
+100644 tests/fixtures/xo-s216/copilot-2-verdict.json
+100644 tests/fixtures/xo-s216/criteria-joined.json
+100644 tests/fixtures/xo-s216/criteria.json
+100644 tests/fixtures/xo-s216/impacts-look-A.json
+100644 tests/fixtures/xo-s216/look-A-verdict.json
+100644 tests/fixtures/xo-s216/look-B-verdict.json
+100644 tests/fixtures/xo-s216/tests-file-only.json

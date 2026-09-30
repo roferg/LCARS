@@ -21,6 +21,7 @@
 #   LCARS_RUN_SCRIPT      run.sh    (drive)      default: ../lcars-run/run.sh
 #   LCARS_ANSWER_SCRIPT   answer.sh (inbox)      default: ../lcars-answer/answer.sh
 #   LCARS_RESOLVE_SCRIPT  resolve.sh (resolver)  default: ./resolve.sh
+#   LCARS_XO_SCRIPT       xo.sh     (Number One)  default: ../lcars-xo/xo.sh
 #
 set -uo pipefail
 
@@ -31,6 +32,7 @@ RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 ANSWER_SCRIPT="${LCARS_ANSWER_SCRIPT:-$SKILL_DIR/../lcars-answer/answer.sh}"
 RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 PAUSE_SCRIPT="${LCARS_PAUSE_SCRIPT:-$SKILL_DIR/../lcars-pause/pause.sh}"
+XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILL_DIR/../lcars-xo/xo.sh}"
 
 die() { printf 'lcars: %s\n' "$1" >&2; exit 1; }
 
@@ -47,6 +49,14 @@ case "${1:-}" in
   resume)
     shift
     exec bash "$PAUSE_SCRIPT" resume "$@" ;;
+  # S201 — Number One. An EXPLICIT delegator, not smart-default routing: `lcars
+  # xo` with no further argument is a STATUS READ, and the router below would
+  # otherwise take the bare word as a mission selector and try to drive
+  # something. It also runs BEFORE the interactive version check, like its
+  # siblings, so a read stays a read.
+  xo)
+    shift
+    exec bash "$XO_SCRIPT" "$@" ;;
 esac
 
 # --- version check + ask-to-update (interactive; S129) ---------------------

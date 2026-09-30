@@ -1,8 +1,0 @@
-════════════════ lcars update --fix-tests @ mono
-  ▸ dispatching a discovery crew to survey the test systems…
-  ◇ NO TEST SYSTEMS FOUND — discovery confirms a greenfield repo.
-    The first mission here is an initialization mission — its engineering crew will establish them.
-    Start it with Establish Vision; normal missions unlock when it lands.
---- rc=0
---- gate AFTER: {"foundation":"unconfigured","foundationWhy":"a test framework in package.json","allowed":true,"message":null}
-SPAWNS=1 PROBES=0

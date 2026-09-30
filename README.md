@@ -36,6 +36,7 @@ web board — with the CLI available as the equivalent power path underneath.
 - [Quick start (the viewscreen)](#quick-start-the-viewscreen)
 - [Starting from zero](#starting-from-zero)
 - [The holodeck](#the-holodeck)
+- [Number One (the AI first officer)](#number-one-the-ai-first-officer)
 - [The CLI (the power path)](#the-cli-the-power-path)
 - [Running under GitHub Copilot](#running-under-github-copilot)
 - [The commands](#the-commands)
@@ -457,6 +458,62 @@ files, so it is unavailable here — open the board locally to run a program."*
 
 ---
 
+## Number One (the AI first officer)
+
+LCARS stops at a human gate and waits. **Number One is the optional AI first
+officer that works those gates for you** when you'd rather walk away — it holds
+a Mission on your behalf, reviews what got built, and hands the conn back with a
+report. It is **off by default**.
+
+```bash
+lcars xo on --engine copilot   # engage for this repo (bare `on` opens a picker)
+lcars xo                       # the status table — who has the conn, and what they did
+lcars xo report                # the First Officer's report: what changed since you last looked
+lcars xo off                   # stand down and hand the conn back
+lcars xo off <mission>         # opt ONE mission out, leave the rest engaged
+```
+
+Your choice is written into `.git/lcars/config.json` as a one-line `numberOne`
+block, so the engine that reviews your work is a recorded fact rather than a
+default that drifted. With no `--engine` and a terminal you get a picker naming
+the CLIs actually installed on the machine; with no terminal it refuses out loud
+rather than picking one in silence.
+
+**It takes a park.** When a Stage escalates, Number One reads that Mission's
+record in a read-only copy and either answers through the ordinary
+`lcars respond` — attributed `answeredBy: number-one`, so the record always says
+who decided — or escalates with a note and a recommendation and **leaves the gate
+standing**. It always escalates a scope question, an answer it cannot cite, and
+anything malformed.
+
+**It looks at what got built.** At Verify it writes its checklist *before* it
+opens a browser (the PRD's acceptance criteria, the plan's per-ticket criteria,
+the drawing's place names), then launches the build, walks it headless, takes
+screenshots, and scores the intent match — appearance judged on one rail,
+behaviour on another. If the build doesn't come up, the score is LOW quoting the
+launch message and no browser starts at all. Screens that need data to exist can
+be seeded from a declared `verifySeed` command or a `.lcars/verify-seed.sh` your
+project ships; **with neither declared nothing is invented** — those rows read
+*couldn't check*, never a fault in your build.
+
+**While Number One is engaged, the write verbs refuse.** `approve`, `feedback`,
+`respond`, `log`, `pause`, `resume`, `resolve-logs` and the viewscreen's matching
+endpoints all answer with one sentence, because Number One is already acting
+through those same verbs on your behalf. Reading is never gated — `lcars status`,
+`lcars buddy` and the board all work as normal.
+
+> **Advisory, not autonomous — and that's a measurement, not modesty.** On three
+> identical looks at one build it published `high` over a review that was only
+> **55–64% checked**, and in **3 of 3** runs two frames filed under the names of
+> screens it meant to reach were byte-identical to the opening shot — it never
+> navigated, and nothing checked that it had. Roughly half of each review goes
+> unchecked, with a nine-point swing run to run. It is a genuinely useful second
+> pair of eyes that names real blockers; it is not yet a gatekeeper. **Number One
+> reviews and recommends; you still ship.**
+
+---
+
+
 ## The CLI (the power path)
 
 Everything the viewscreen does, you can do from the terminal — same harness
@@ -587,6 +644,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; files a Mission per bug that enters at **Research in a grounding mode** — anchoring the free-form symptom to the parent's existing code so the fix modifies the real feature rather than a duplicate — then flows the full pipeline to Verify (only Align is skipped), and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, now **including** the Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
 | `lcars launch <mission> [hint]` | **Run the Mission's app so you can SEE it during Verify** (the board's ⚡ RUN/STOP does the same). Checks the branch into a disposable detached worktree, spawns a `launch`-role cold worker that *discovers* how to start the app (never starts it itself), then runs the command detached — the harness owns the process group, records `launch.json` for the CLI and the board, and `--stop` kills the group and prunes the worktree. The optional hint picks the target in a multi-app repo ("the example game"); each Mission gets its **own** instance, so two builds can run side by side. Your own checkout is never touched. |
+| `lcars xo` | **Number One, the AI first officer** — off by default. `lcars xo on --engine copilot` engages it for the repo (bare `on` opens a picker naming the CLIs actually installed; no terminal and it refuses rather than choosing in silence), recording the choice in `.git/lcars/config.json`. Engaged, it works a Mission's gates for you: it **takes a park** — answering through the ordinary `lcars respond`, attributed `answeredBy: number-one`, or escalating with a recommendation and leaving the gate standing — and it **looks at what got built** at Verify, writing its checklist before it opens a browser, then launching, walking headless, photographing and scoring the intent match. Bare `lcars xo` is the status table; `lcars xo report` is the First Officer's report since you last looked. `off` stands the repo down, `off <mission>` opts just one out. While engaged the write verbs refuse, because Number One is already acting through them. **Advisory, not autonomous** — see [Number One](#number-one-the-ai-first-officer). |
 
 ### Power verbs (still supported)
 

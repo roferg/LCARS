@@ -149,7 +149,8 @@ sub_issues() {
 # so a card never lands "in review" with no PR behind it. Sets PR_URL on success.
 #
 # Requires (in the caller's scope, in addition to the readers above):
-#   state_set_str()  add/replace a string field in state.json
+#   lcars_state_set_string()  the shared state.json writer (lcars-state.sh) —
+#                  the caller sources it; pr-lib never carried its own.
 # Reads BRANCH/BASE from the caller (set them, or this resolves from state).
 open_pr() {
   # Resolve branch/base if the caller did not.
@@ -211,10 +212,10 @@ open_pr() {
 
   # Record the PR so the lifecycle is idempotent and the board can show it.
   local PR_NUM; PR_NUM="${PR_URL##*/}"
-  state_set_str prUrl "$PR_URL"
+  lcars_state_set_string "$STATE" prUrl "$PR_URL"
   case "$PR_NUM" in
     ''|*[!0-9]*) : ;;
-    *) state_set_str prNumber "$PR_NUM" ;;
+    *) lcars_state_set_string "$STATE" prNumber "$PR_NUM" ;;
   esac
   return 0
 }

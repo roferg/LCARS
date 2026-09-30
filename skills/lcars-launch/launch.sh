@@ -120,22 +120,34 @@ MISSION=""
 HINT=""
 STOP=0
 MAIN=0
+# S215 — a hint is the captain's PROSE, and prose contains words like
+# `--config`. `--` is therefore a REAL end-of-options marker here: after it,
+# every remaining word is a positional whatever it starts with. It used to be
+# shifted and forgotten, so `lcars launch --main -- "--config vite.config.ts"`
+# still died at the `--*` arm below, refusing a sentence as an option.
+ENDOPTS=0
+# The positional slot rule, in one place so the marker path and the plain path
+# can never drift: in --main mode there is no mission slot, so every positional
+# is a hint word; otherwise the first one names the mission.
+add_positional() {
+  if [ "$MAIN" -eq 0 ] && [ -z "$MISSION" ]; then
+    MISSION="$1"
+  elif [ -z "$HINT" ]; then
+    HINT="$1"
+  else
+    HINT="$HINT $1"
+  fi
+}
 while [ $# -gt 0 ]; do
+  if [ "$ENDOPTS" -eq 1 ]; then
+    add_positional "$1"; shift; continue
+  fi
   case "$1" in
     --main) MAIN=1; shift ;;
     --stop) STOP=1; shift ;;
-    --) shift ;;
+    --) ENDOPTS=1; shift ;;
     --*) die "unknown option \"$1\" — usage: lcars launch <mission> [hint] [--stop], or lcars launch --main [hint] [--stop]." ;;
-    *)
-      # In --main mode there is no mission slot — every positional is a hint word.
-      if [ "$MAIN" -eq 0 ] && [ -z "$MISSION" ]; then
-        MISSION="$1"
-      elif [ -z "$HINT" ]; then
-        HINT="$1"
-      else
-        HINT="$HINT $1"
-      fi
-      shift ;;
+    *) add_positional "$1"; shift ;;
   esac
 done
 

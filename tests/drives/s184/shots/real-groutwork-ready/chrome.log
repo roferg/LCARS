@@ -1,5 +1,0 @@
-
-DevTools listening on ws://127.0.0.1:57793/devtools/browser/ee5bc1a6-250a-4a14-a198-9e94eff2b7e8
-Trying to load the allocator multiple times. This is *not* supported.
-[50113:201197541:0905/205218.298694:ERROR:chrome/browser/web_applications/os_integration/os_integration_manager.cc:261] Can't perform OS integration while the browser is shutting down.
-[50113:201197541:0905/205218.313575:ERROR:chrome/browser/web_applications/externally_managed_app_manager.cc:680] https://docs.google.com/document/installwebapp?usp=chrome_default from install source 1 failed to install with reason 21

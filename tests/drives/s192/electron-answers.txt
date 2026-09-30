@@ -1,6 +1,0 @@
-No, I do not want new features. I want tests under the code that is already there.
-Whatever you recommend, but it has to actually test the Electron side too, not just the React components in a fake browser.
-Yes, the main process code matters most to me — that is where the data actually gets written.
-Use whatever runner is standard for this stack. I trust your judgement.
-Go ahead and recommend it.
-Accept your recommendation and file it.

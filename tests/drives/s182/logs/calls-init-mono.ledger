@@ -1,3 +1,0 @@
-# invocation ledger: calls-init-mono
-# SPAWN = a paid worker hire; PROBE = a --version capability check
-PROBE	claude	--version
