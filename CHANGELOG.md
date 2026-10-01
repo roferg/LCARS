@@ -4,6 +4,51 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.9.8 — approve lands on its own
+
+**A bug you logged against a Mission no longer blocks the merge it belongs to.**
+Over the Canvas weekend `lcars approve` refused **three** merges that were fine:
+each was a Mission whose logged bug had legitimately changed one of the Mission's
+own tests *and declared that it had*, and each landed only because you hand-merged
+it. The allow-list only ever looked at the parent Mission's own tickets, and a
+logged bug is its own Mission, so its declaration was invisible. It is visible
+now — and an **undeclared** test change still blocks, in exactly the same words.
+A refused merge also stopped leaving a half-finished `reconcile.XXXXXX` folder
+holding the Mission's branch, which is what made the *next* attempt fail too
+(S231).
+
+Missions filed before this shipped still merge: a folded bug carrying none of the
+new bookkeeping is recognised from the fact that its commits are genuinely in the
+Mission's history, and LCARS **writes down** that it fell back to that reasoning
+rather than doing it quietly.
+
+**And approve stopped doing three things behind your back** (S232):
+
+- **It refuses to merge a Mission whose logged bugs are still unfinished**, naming
+  each one by title and the Stage it is stuck at, and telling you the one command
+  that clears it. Before, it merged first and warned afterwards — so the bugs'
+  fixes were left outside the pull request, and once a Mission is Done its bugs
+  can never be attached to it again. There is deliberately no `--force`. Blocked
+  at every door: `lcars approve`, `--reapprove`, and `lcars answer approve`.
+- **A test command you set by hand survives.** An initialization Mission used to
+  overwrite `testCommand` with whatever its worker declared — on the weekend that
+  replaced a working `python3 -m unittest …` with an uninstalled `pytest`. Now an
+  existing value is kept, the declared one is filed on the Mission as
+  `declaredTestCommand`, and approve prints which it kept, why, and the
+  `lcars update --test-command` line if you ever want to switch. Only an absent
+  value is filled.
+- **Answering a question no longer claims to resume a Mission that is already
+  running.** The driver records itself while it works, so `respond` and the
+  auto-advance both see it, tell you it is already going, and start nothing. A
+  crashed driver leaves a stale record, which counts as none, so it cannot wedge
+  a Mission.
+
+**If a Mission record on disk cannot be read, approve now stops rather than
+merging past it.** Because only a bug records its parent, an unreadable record
+cannot be attributed, so ambiguity refuses and names the exact file to repair.
+Two exemptions keep that from becoming a nuisance: a Mission that has already
+finished does not block, and an ordinary Mission is untouched.
+
 ## 2026.9.7 — Number One, the first officer that reviews your build
 
 **You can hand a Mission to an AI first officer and walk away.** `lcars xo on`
