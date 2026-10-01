@@ -1,6 +1,6 @@
 ---
 name: lcars-buddy
-description: Your LCARS ride-along buddy — a companion you keep with you in ANY repo while you use LCARS, useful from day one and at every point after. Run it anytime (it's read-only and safe) to get extra detail the normal surfaces don't show: where the LCARS source sits and its git state, whether the installed skills actually match that checkout, and a live snapshot of the current repo's Mission(s) — stage, status, and recent events. It rides shotgun while everything's going fine (situational awareness, "what's actually happening under the hood"), and escalates naturally into a live-debug partner the moment something's off — diagnosing and fixing the LCARS source under LCARS's own build contract (author in skills/, TDD, ./install.sh, fast scoped tests). Use when the captain runs `lcars buddy`, wants a closer look / more detail on what LCARS is doing, is keeping a buddy around while driving a Mission elsewhere, or hits something that needs debugging or fixing in LCARS from another repo.
+description: Your LCARS ride-along buddy — a companion you keep with you in ANY repo while you use LCARS, useful from day one and at every point after. Run it anytime (it's read-only and safe) to get extra detail the normal surfaces don't show: where the LCARS source sits and its git state, whether the installed skills actually match that checkout, and a live snapshot of the current repo's Mission(s) — stage, status, and recent events. It rides shotgun while everything's going fine (situational awareness, "what's actually happening under the hood"), and escalates naturally into a live-debug partner the moment something's off — diagnosing and fixing the LCARS source under LCARS's own build contract (author in skills/, TDD, ./install.sh, fast scoped tests). It also has an AUTOPILOT mode: say "run it for me <spec>" and it runs LCARS FOR you — one alignment round, then it files, drives, verifies and lands each milestone through LCARS's own verbs, keeping durable state in .git/lcars/autopilot.json and contacting you only for a product call, a scope change, a standing-rule conflict, or an LCARS bug with no workaround (see AUTOPILOT.md). Use when the captain runs `lcars buddy`, wants a closer look / more detail on what LCARS is doing, is keeping a buddy around while driving a Mission elsewhere, says "run it for me" / "drive this for me" / "autopilot" / "run while I sleep" / "continue" on an autopilot run, or hits something that needs debugging or fixing in LCARS from another repo.
 ---
 
 # lcars buddy
@@ -146,10 +146,63 @@ ledgered items — and add one line:
 
 > ship it with `ship-it` when you are ready.
 
+## 3. When you want it run FOR you — the autopilot
+
+The third thing buddy does is **run LCARS for the captain while he is away**.
+
+**Trigger phrases** (any of these, with or without a spec):
+
+> "run it for me", "run it for me &lt;spec&gt;", "drive this for me", "autopilot",
+> "take this and build it", "run while I sleep", "keep going and wake me if you
+> need me", "continue" (resuming an autopilot run)
+
+**What happens.** You become the orchestrator of his *build* (not of a fix):
+**ONE** round of 3–5 questions, then you file, drive, verify and land each
+milestone in scope, and he hears from you only for a product call, a scope
+change, a standing-rule conflict, or an LCARS bug with no workaround.
+
+**The full playbook is ONE file** — read it before you ask him anything:
+
+```
+~/.claude/skills/lcars-buddy/AUTOPILOT.md
+```
+
+The token-free driver that sequences it (and spends nothing) sits beside it:
+
+```bash
+bash ~/.claude/skills/lcars-buddy/autopilot.sh next      # the ONE next step
+bash ~/.claude/skills/lcars-buddy/autopilot.sh status    # the one screen
+bash ~/.claude/skills/lcars-buddy/autopilot.sh playbook  # action → AUTOPILOT.md heading
+```
+
+### The first 20 minutes
+
+1. Run § 1's collector and read the brief — where LCARS lives, whether the
+   install is in sync, what is already in this repo.
+2. **Repeat the ask back** in plain terms and get it confirmed before acting.
+3. Read the spec, then check what the harness can do (engine flags, the
+   holodeck, Number One) **before** asking, so no question is wasted.
+4. **One batch of 3–5 questions**, each with a recommended option: scope, live
+   targets, where it deploys, what to do if LCARS itself breaks — plus the
+   captain-only steps (tokens, secrets, SSO, renames) and the
+   pre-authorisations. AUTOPILOT.md §§ 1–2 has the exact list.
+5. `autopilot.sh init --spec … --scope …`, record every answer, then
+   `autopilot.sh heartbeat install`. **Durable state is
+   `.git/lcars/autopilot.json`, never the transcript** — after a context
+   compaction, re-read it first.
+
+Then loop on `autopilot.sh next` and follow the heading it names.
+
+**It never edits LCARS.** An LCARS bug is ledgered and worked around with
+another verb, or it becomes a question for the captain. If he wants LCARS
+*fixed*, that is § 2 above.
+
 ## What this skill is NOT
 
-It does **not** drive a Mission, file issues, or run a worker CLI. It is two
-things: the **read-only collector** of §1, and the **orchestrator of one fix** in
+It does **not** write product code and it never merges by hand. It is three
+things: the **read-only collector** of §1, the **orchestrator of one fix** in
 §2 — which spawns sub-agents and commits to a `fix/<slug>` branch, but never
-opens a PR and never merges. To run/board a Mission use `lcars` / `lcars run` /
-`lcars viewscreen`; to land a fix use `ship-it`.
+opens a PR and never merges — and the **autopilot** of §3, which drives the
+captain's build through LCARS's own verbs and stops at every gate LCARS refuses.
+To board a Mission by hand use `lcars` / `lcars run` / `lcars viewscreen`; to
+land a fix use `ship-it`.
