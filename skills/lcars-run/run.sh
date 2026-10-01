@@ -5615,7 +5615,21 @@ cmd_schedule() {
 COMMIT_NOTE=""
 
 # --- resolve a ticket's working dir under the mission -----------------------
-ticket_dir() { printf '%s/tickets/%s' "$MISSION_DIR" "$1"; }
+# S231: a FOLDED logged-bug child's ticket is addressed as
+# "<child-mission-id>:<ticket-id>". Its artifacts (result.json,
+# proof-tests.sha256, test-edits.json) live under the CHILD's mission dir, but
+# its suite must be re-tested by the parent's pre-merge retest — and through the
+# SAME shared helper (retest_ticket_suites), never a second code path: a
+# parallel retest that resolved paths its own way is precisely BUG-013. Teaching
+# this ONE resolver the qualified form is what lets the shared helper take a
+# child's ticket unchanged. A plain ticket id ("t-001") contains no ":", so the
+# existing form is byte-for-byte unaffected.
+ticket_dir() {
+  case "$1" in
+    *:*) printf '%s/%s/tickets/%s' "$(dirname "$MISSION_DIR")" "${1%%:*}" "${1##*:}" ;;
+    *)   printf '%s/tickets/%s' "$MISSION_DIR" "$1" ;;
+  esac
+}
 
 # --- the package a ticket's code lives in (S87, monorepo gate staging) -------
 # A monorepo gate cannot stage the quarantined suite at a DEPTH-1 dir under the
@@ -8879,16 +8893,145 @@ proof_tests_drift() { # ticketId  tree → drifted relpaths (newline)
   done <"$snap"
 }
 
+# --- S231: THE FOLDED LOGGED-BUG CHILDREN OF THIS MISSION -------------------
+# A bug filed with `lcars log --parent` is its OWN Mission, under its own
+# .git/lcars/missions/<child>/ dir, with its own tickets and its own
+# test-edits.json. When `resolve-logs` FOLDS its fix onto the parent branch, the
+# PARENT's PR is what carries that fix — so the child's declared test edits are
+# part of what this Mission is merging, and the pre-merge drift check must see
+# them. Before S231 it could not: the allow-list below globbed only the parent's
+# own tickets, so over the 2026-09-26 weekend three merges blocked on edits that
+# HAD been declared, each landing only by a hand-merge and each leaving a stale
+# reconcile worktree behind (LCARS-BUG-fold-test-drift.md).
+#
+# This does NOT loosen the contract. An UNDECLARED edit still blocks, in the same
+# words; a child that has not folded still gets no vote. All that changes is WHOSE
+# declarations are in scope, and the answer is: the parent's, plus those of the
+# children whose fixes are actually on the tip we are about to merge.
+#
+# THE LINKAGE IS READ FROM A RECORD, NOT INFERRED. fold_one_child writes
+# foldedInto / foldedAt / foldCommit at the moment it folds
+# (ORCHESTRATION.md § infer-vs-record). Ancestry is the GUARD on that record, not
+# its source: foldCommit must still be reachable from the branch tip, so a record
+# left behind by a fold whose commits were later reset off the branch authorises
+# nothing. That reset is not hypothetical — it is the 2026-07-28 incident
+# resolve-logs' child_fix_on_branch exists for.
+
+# The sha this mission's branch currently points at, or "" when unresolvable.
+mission_branch_tip() { # → sha (empty = unknown)
+  local b
+  [ -n "${STATE:-}" ] && [ -f "${STATE:-}" ] || return 0
+  b="$(json_str "$STATE" branch)"
+  [ -n "$b" ] || return 0
+  ( cd "${REPO_ROOT:-$PWD}" && "$GIT_BIN" rev-parse --verify --quiet "refs/heads/$b" ) 2>/dev/null
+}
+
+# Is any commit AUTHORED BY <child> reachable from <tip>? A cherry-pick preserves
+# the subject, so the "lcars(<id>)" prefix commit_ticket writes is the reliable
+# signal — the same one resolve-logs' child_fix_on_branch uses. NO pipe into a
+# short-circuiting reader: `set -o pipefail` + `grep -q` closing the pipe kills
+# git with SIGPIPE and hands 141 back as the answer (it inverted exactly this kind
+# of check once already).
+child_commits_reachable() { # child-id  tip → 0 reachable
+  local cid="$1" tip="$2" subs line
+  [ -n "$cid" ] && [ -n "$tip" ] || return 1
+  subs="$( cd "${REPO_ROOT:-$PWD}" && "$GIT_BIN" log --format=%s "$tip" 2>/dev/null )" || return 1
+  while IFS= read -r line; do
+    case "$line" in *"lcars($cid)"*) return 0 ;; esac
+  done <<CCR_EOF
+$subs
+CCR_EOF
+  return 1
+}
+
+# The logged-bug children whose fixes this mission's branch tip carries, one id
+# per line. Two ways in, and only two:
+#
+#   RECORDED (the normal path)  state.json foldedInto == this mission, and
+#                               foldCommit still an ancestor of the tip.
+#   INFERRED (ONE fallback)     no fold record at all, but ALL THREE of:
+#                               parentMission == this mission, stage == done, and
+#                               a commit of the child reachable from the tip.
+#                               This exists for ONE reason: the Missions already
+#                               filed before the record shipped must still merge.
+#                               It is EMITTED to the mission's events, so a reader
+#                               can tell which children were recorded and which
+#                               were guessed — an inference that hides itself is
+#                               how the next drift comes to look legitimate by
+#                               construction.
+#
+# ALL THREE conditions are load-bearing, and `stage == done` most of all. It is the
+# pre-S231 trace of a fold: fold_one_child is the ONE thing that moves a linked bug
+# to done without opening its own PR, so "linked + done" is what a folded weekend
+# child looks like. Without it a bug still sitting at `plan` — filed, declaring an
+# edit, nobody having accepted anything — would pre-authorise a change to a
+# parent-owned test merely because its worker had already pushed a commit. That is
+# a vote it has not earned, and it is the hole the negative case in
+# tests/approve-lands.test.sh (behaviour 4) exists to keep shut. Together with the
+# ancestry guard it also excludes the OTHER kind of done child, a post-merge bug
+# that shipped on its own branch and PR: its commits are not on this tip.
+mission_folded_children() { # → child mission ids (newline)
+  local root tip cs cid rec fc
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  root="$(dirname "$MISSION_DIR")"
+  [ -d "$root" ] || return 0
+  tip="$(mission_branch_tip)"
+  for cs in "$root"/*/state.json; do
+    [ -f "$cs" ] || continue
+    cid="$(basename "$(dirname "$cs")")"
+    [ "$cid" = "${MISSION_ID:-}" ] && continue
+    rec="$(json_str "$cs" foldedInto)"
+    if [ -n "$rec" ]; then
+      [ "$rec" = "${MISSION_ID:-}" ] || continue
+      fc="$(json_str "$cs" foldCommit)"
+      # With both a tip and a recorded sha, ancestry decides. With either missing
+      # there is no ancestry to check and the RECORD is the only fact in hand —
+      # honour it rather than silently dropping a fold that really happened.
+      if [ -n "$tip" ] && [ -n "$fc" ]; then
+        ( cd "${REPO_ROOT:-$PWD}" && "$GIT_BIN" merge-base --is-ancestor "$fc" "$tip" ) 2>/dev/null || continue
+      fi
+      printf '%s\n' "$cid"
+      continue
+    fi
+    # --- the ONE fallback, for children filed before the record existed -------
+    [ "$(json_str "$cs" parentMission)" = "${MISSION_ID:-}" ] || continue
+    [ "$(json_str "$cs" stage)" = "done" ] || continue
+    child_commits_reachable "$cid" "$tip" || continue
+    # Dedup DURABLY off events.jsonl, not a shell global: mission_declared_edit_paths
+    # is called once per drifted ticket and runs this inside a command substitution,
+    # so a process-local flag would not survive to the second call.
+    grep -q "\"fold_record_absent_inferred\".*\"child\":\"$cid\"" \
+         "$MISSION_DIR/events.jsonl" 2>/dev/null \
+      || emit_event fold_record_absent_inferred "$(json_str "$STATE" stage)" \
+           "logged bug $cid carries no fold record (foldedInto), but a commit of its own is an ancestor of this Mission's branch tip — treating it as FOLDED so its declared test edits count. This is an INFERENCE, not a record: it exists only so Missions filed before the fold record shipped (S231) still merge." \
+           "child=$cid" || :
+    printf '%s\n' "$cid"
+  done
+}
+
 # Union of every ticket's DECLARED test edits (test-edits.json {path} entries)
-# for this mission — the allow-list a later ticket's edit of an earlier ticket's
-# committed test must appear in. jq-free.
+# for this mission AND for every folded logged-bug child of it (S231) — the
+# allow-list a later ticket's edit of an earlier ticket's committed test must
+# appear in. jq-free. Output shape unchanged: sorted, unique, one relpath a line.
 mission_declared_edit_paths() { # → paths (newline)
-  local f
-  for f in "$MISSION_DIR"/tickets/*/test-edits.json; do
-    [ -f "$f" ] || continue
-    grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" \
-      | sed 's/.*:[[:space:]]*"//; s/"$//'
-  done 2>/dev/null | LC_ALL=C sort -u
+  local f cid root; root="$(dirname "${MISSION_DIR:-/nonexistent}")"
+  {
+    for f in "$MISSION_DIR"/tickets/*/test-edits.json; do
+      [ -f "$f" ] || continue
+      grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" \
+        | sed 's/.*:[[:space:]]*"//; s/"$//'
+    done
+    while IFS= read -r cid; do
+      [ -n "$cid" ] || continue
+      for f in "$root/$cid"/tickets/*/test-edits.json; do
+        [ -f "$f" ] || continue
+        grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" \
+          | sed 's/.*:[[:space:]]*"//; s/"$//'
+      done
+    done <<MDEP_EOF
+$(mission_folded_children)
+MDEP_EOF
+  } 2>/dev/null | LC_ALL=C sort -u
 }
 
 # 0 iff every drifted test of <ticket> under <tree> was DECLARED by some ticket's
@@ -12789,7 +12932,52 @@ reconcile_base_ref() { # BASE BRANCH (in caller scope)
   fi
 }
 
-# The ordered green tickets whose suites we re-test (waves order = plan order).
+# S231 — the FOLDED children's proven tickets, appended AFTER the parent's own.
+# A folded logged bug's fix rides the parent's PR, so a test that only the CHILD
+# owns (its own regression test) was never re-run by the pre-merge retest: the
+# ordered list came from the parent's waves.json alone. Each appended ticket is
+# named in the qualified "<child>:<ticket>" form ticket_dir understands, so the
+# SHARED retest_ticket_suites re-runs it exactly as it runs a parent ticket —
+# same worktree, same in-place paths, same drift check. No parallel path.
+#
+# DEDUPED BY RECORDED RELPATH. A child that ADAPTED a parent-owned test records
+# the same relpath the parent ticket already records; appending its ticket would
+# run that one suite twice for nothing (and on a real repo that is not free). A
+# child ticket joins the list only when it brings at least one recorded test the
+# list does not already cover — which is exactly the case the retest was blind to.
+# Args: the parent's already-ordered ticket ids. Echoes " <child>:<ticket>"…
+reconcile_folded_child_tickets() { # ordered-parent-ids… → appended ids
+  local covered="" id cid td tid h rel fresh out="" root
+  root="$(dirname "$MISSION_DIR")"
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    covered="$covered
+$(proof_snapshot_rels "$id")"
+  done
+  while IFS= read -r cid; do
+    [ -n "$cid" ] || continue
+    for td in "$root/$cid"/tickets/*; do
+      [ -d "$td" ] || continue
+      [ -s "$td/proof-tests.sha256" ] || continue
+      tid="$(basename "$td")"
+      fresh=0
+      while read -r h rel; do
+        [ -n "$rel" ] || continue
+        grep -Fxq "$rel" <<<"$covered" || fresh=1
+      done <"$td/proof-tests.sha256"
+      [ "$fresh" -eq 1 ] || continue
+      out="$out $cid:$tid"
+      covered="$covered
+$(awk '{ if (NF >= 2) print $2 }' "$td/proof-tests.sha256")"
+    done
+  done <<RFCT_EOF
+$(mission_folded_children)
+RFCT_EOF
+  printf '%s' "$out"
+}
+
+# The ordered green tickets whose suites we re-test (waves order = plan order),
+# followed by the folded logged-bug children's proven tickets (S231).
 reconcile_ordered_tickets() {
   local waves="$MISSION_DIR/waves.json" table w id ordered=""
   [ -f "$waves" ] || return 0
@@ -12799,6 +12987,7 @@ reconcile_ordered_tickets() {
   done <<EOF
 $table
 EOF
+  ordered="${ordered}$(reconcile_folded_child_tickets $ordered)"
   printf '%s' "$ordered"
 }
 
@@ -13504,7 +13693,37 @@ reconcile_gate() {
   local pre_merge; pre_merge="$( cd "$wt" && "$GIT_BIN" rev-parse HEAD 2>/dev/null )"
   # Clean up this gate's OWN worktree path on every exit (never a global prune).
   # On a RED outcome the caller resets the branch to $pre_merge BEFORE cleanup.
-  reconcile_cleanup() { "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"; }
+  # S231 — IDEMPOTENT, so an EXIT trap and an explicit call cannot double-clean.
+  # $RECONCILE_WT_LIVE is the latch: the first cleanup clears it and every later
+  # one is a no-op. That matters because the explicit calls below are load-bearing
+  # and must keep their exact effects — above all the S97 rc-20 env-escalate arm,
+  # which undoes the merge, cleans up, and returns 20 for a retest that went red
+  # because the runner could not START (an environment fault, not a merge
+  # conflict). It still cleans up exactly once and still returns 20.
+  RECONCILE_WT_LIVE="$wt"
+  reconcile_cleanup() {
+    [ -n "${RECONCILE_WT_LIVE:-}" ] || return 0
+    RECONCILE_WT_LIVE=""
+    "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  }
+  # S231 — NO EXIT PATH MAY LEAK THE WORKTREE. The pre-merge drift check `die`s
+  # from inside retest_ticket_suites — that refusal text is the S156/S157 contract
+  # and stays exactly as it is — and `die` exits the process without passing
+  # through any of the explicit reconcile_cleanup calls below. So each of the
+  # three 2026-09-26 weekend recurrences left a reconcile.XXXXXX worktree holding
+  # the mission branch with a half-done merge, and the next `worktree add` of that
+  # branch failed until someone removed it by hand
+  # (LCARS-BUG-fold-test-drift.md § Related side effects).
+  #
+  # A trap closes the whole CLASS rather than that one path — any future `die`
+  # between here and the explicit cleanups is covered too. It is safe to arm one
+  # here: reconcile_gate has exactly ONE caller, cmd_reconcile, whose process does
+  # nothing else and ends in `exit "$rc"` (both `lcars approve` and drive_verify
+  # reach it as `bash run.sh reconcile`, a separate process), so there is no other
+  # EXIT handler to clobber — no driver lock, no heartbeat reaper. And a trap that
+  # runs no `exit` of its own does not alter the process's status, so every rc arm
+  # below keeps its code.
+  trap 'reconcile_cleanup' EXIT
   reconcile_undo_merge() {
     [ -n "$pre_merge" ] || return 0
     ( cd "$wt" && "$GIT_BIN" merge --abort >/dev/null 2>&1; "$GIT_BIN" reset -q --hard "$pre_merge" >/dev/null 2>&1 ) || :
@@ -18695,6 +18914,59 @@ run_worker_hang_guarded() { # outdir  cmd...
   return $?
 }
 
+# === S232 — THE DRIVE RECORD (the lock's PUBLIC half) ======================
+# `driver.lock` above is PRIVATE to run.sh: a directory whose `mkdir` is the
+# atomic win, holding nothing but a pid, and read by nothing outside this file.
+# It cannot answer the question the other verbs need to ask — "is a drive already
+# running for this mission, and since when?" — which is why `lcars answer respond`
+# spent the Canvas weekend starting a SECOND driver on top of a live one
+# (evidence/lcars-feedback.jsonl #6): respond had no record to consult, so it
+# announced a resume and spawned.
+#
+# So the driver RECORDS ITSELF where anyone may read it: $MISSION_DIR/drive.pid,
+# pid and started-at, written the instant it owns the mission and removed on the
+# way out. The format and the staleness rule live ONCE, in lcars-common.sh
+# (lcars_drive_record_start / _clear / lcars_drive_live), because there are two
+# readers besides this producer and two spellings of one file is how a record
+# drifts. Nothing infers a live drive from `pgrep` — record, don't infer
+# (ORCHESTRATION.md § infer-vs-record).
+#
+# WRITTEN AND CLEARED ON THE LOCK'S OWN PATHS, on purpose: acquire_driver_lock is
+# the one place that knows we became the driver, and release_driver_lock already
+# runs from the `trap … EXIT INT TERM` armed right there — so a `die`, a
+# non-zero return and a SIGTERM all clear the record with no second trap to
+# collide with the reconcile gate's (S231) or the implement heartbeat's.
+#
+# The library is sourced in a SUBSHELL, the pattern every other reach from run.sh
+# into lcars-common.sh uses, so nothing it defines can reach the driver's own
+# helpers. `$$` is passed EXPLICITLY: inside a subshell bash's `$$` is still this
+# process's pid, but relying on that quietly is how the next reader gets it wrong.
+# Best-effort throughout — a driver must never fail to drive because it could not
+# write a note about itself.
+drive_record_lib() {
+  printf '%s' "${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+}
+
+drive_record_start() {
+  local lib; lib="$(drive_record_lib)"
+  [ -f "$lib" ] || return 0
+  # shellcheck source=../lcars-init/lcars-common.sh
+  ( . "$lib" >/dev/null 2>&1 \
+      && command -v lcars_drive_record_start >/dev/null 2>&1 \
+      && lcars_drive_record_start "$MISSION_DIR" "$$" ) >/dev/null 2>&1 || true
+  return 0
+}
+
+drive_record_clear() {
+  local lib; lib="$(drive_record_lib)"
+  [ -f "$lib" ] || return 0
+  # shellcheck source=../lcars-init/lcars-common.sh
+  ( . "$lib" >/dev/null 2>&1 \
+      && command -v lcars_drive_record_clear >/dev/null 2>&1 \
+      && lcars_drive_record_clear "$MISSION_DIR" "$$" ) >/dev/null 2>&1 || true
+  return 0
+}
+
 # Try to take the per-mission driver lock. Prints nothing; returns:
 #   0  → lock acquired (DRIVER_LOCK_DIR set, trap armed, our pid written)
 #   1  → a LIVE driver already holds it (caller must no-op exit 0)
@@ -18709,6 +18981,9 @@ acquire_driver_lock() {
       printf '%s' "$$" >"$pidf"
       DRIVER_LOCK_DIR="$lock"
       trap 'release_driver_lock' EXIT INT TERM
+      # S232 — and SAY SO where the other verbs can read it. After the trap is
+      # armed, so no window exists in which the record outlives its remover.
+      drive_record_start
       return 0
     fi
     # Lock dir exists — is its owner alive?
@@ -18730,6 +19005,11 @@ release_driver_lock() {
   if [ "$owner" = "$$" ]; then
     rm -rf "$DRIVER_LOCK_DIR" 2>/dev/null
   fi
+  # S232 — the public record goes with it, on EVERY exit path this trap covers
+  # (clean stop, non-zero return, `die`, INT, TERM). It only removes a record
+  # whose pid is OURS, so a driver that bailed on someone else's live lock never
+  # deletes the real owner's note.
+  drive_record_clear
   DRIVER_LOCK_DIR=""
 }
 

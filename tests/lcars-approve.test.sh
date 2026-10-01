@@ -740,7 +740,13 @@ check "nff. keeps awaitingHuman true (gate stays visible)" \
 BUG_OK="lcars-20260530-002"
 BUG_GONE="lcars-20260530-003"
 BUG_WIP="lcars-20260530-004"
+# $1 = "recorded" -> every child also carries S231's fold record (foldedInto),
+# which is what SATISFIES S232's pre-merge open-children gate. Without it approve
+# now REFUSES to merge at all (proved in FOLD-GATE below) and
+# fold_logged_children -- which keys on the child's STAGE, not on the record --
+# is never reached.
 new_repo_with_folded_children() {
+  local recorded="${1:-}"
   local repo; repo="$(mktemp -d "$TMPROOT/repofold.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
       && git commit -q --allow-empty -m init )
@@ -799,11 +805,54 @@ EOF
   "base": "lcars/$MID"
 }
 EOF
+    if [ "$recorded" = recorded ]; then
+      python3 - "$c/state.json" "$MID" <<'FOLDREC'
+import json,sys
+d=json.load(open(sys.argv[1]))
+d["foldedInto"]=sys.argv[2]; d["foldedAt"]="2026-05-30T11:30:00Z"
+json.dump(d, open(sys.argv[1],"w"), indent=2)
+FOLDREC
+    fi
   done
   echo "$repo"
 }
 
-repoFD="$(new_repo_with_folded_children)"; make_gh_stub "$repoFD/gh"
+# --- Behaviour FOLD-GATE (S232): an OPEN logged bug REFUSES the merge ---------
+#
+# THE WEEKEND DEFECT (evidence/lcars-feedback.jsonl #6). The block below proves
+# what approve does with children it has been ALLOWED to ship. This proves it is
+# not allowed to ship a parent whose bugs are still open in the first place: the
+# warning that used to be the only response ("their fixes are NOT in this PR")
+# arrived AFTER `gh pr merge` had landed, by which time nothing could carry those
+# fixes -- the parent was `done` and outside resolve-logs' reach. Same fixture,
+# WITHOUT the fold record: all three children are open, so approve refuses and
+# merges nothing. Note that BUG_GONE is exactly the case that makes this matter --
+# its fix is NOT on the branch at all.
+repoFG="$(new_repo_with_folded_children)"; make_gh_stub "$repoFG/gh"
+make_reconcile_stub "$repoFG/recon.sh" 0
+export GH_LOG="$repoFG/gh.log"; : >"$GH_LOG"
+export RECON_LOG="$repoFG/recon.log"; : >"$RECON_LOG"
+rcFG=0
+( cd "$repoFG" && LCARS_GH_BIN="$repoFG/gh" LCARS_RUN_SCRIPT="$repoFG/recon.sh" \
+    RECON_LOG="$repoFG/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rcFG=$?
+check "foldG. approve REFUSES a parent with open logged bugs" "[ '$rcFG' -ne 0 ]"
+check "foldG. and merges nothing" "! grep -q 'pr merge' '$repoFG/gh.log'"
+check "foldG. and never runs the reconcile pre-step" "[ ! -s '$repoFG/recon.log' ]"
+check "foldG. the parent stays at verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoFG")'"
+check "foldG. it names every open child" \
+  "cat '$repoFG/out.txt' '$repoFG/err.txt' | qgrep -q '$BUG_OK' \
+     && cat '$repoFG/out.txt' '$repoFG/err.txt' | qgrep -q '$BUG_GONE' \
+     && cat '$repoFG/out.txt' '$repoFG/err.txt' | qgrep -q '$BUG_WIP'"
+check "foldG. it names the one command that clears it" \
+  "cat '$repoFG/out.txt' '$repoFG/err.txt' | qgrep -q 'lcars resolve-logs $MID'"
+check "foldG. no child issue was closed on the refusal" \
+  "! grep -q 'issue close' '$repoFG/gh.log'"
+check "foldG. there is no --force escape hatch" \
+  "! grep -qE -- '[-][-]force[)=]' '$SCRIPT'"
+
+repoFD="$(new_repo_with_folded_children recorded)"; make_gh_stub "$repoFD/gh"
 make_reconcile_stub "$repoFD/recon.sh" 0
 export GH_LOG="$repoFD/gh.log"; : >"$GH_LOG"
 export RECON_LOG="$repoFD/recon.log"; : >"$RECON_LOG"
@@ -860,7 +909,7 @@ exit 0
 EOF
   chmod +x "$1"
 }
-repoFC="$(new_repo_with_folded_children)"; make_gh_stub_close_fail "$repoFC/gh"
+repoFC="$(new_repo_with_folded_children recorded)"; make_gh_stub_close_fail "$repoFC/gh"
 make_reconcile_stub "$repoFC/recon.sh" 0
 export GH_LOG="$repoFC/gh.log"; : >"$GH_LOG"
 export RECON_LOG="$repoFC/recon.log"; : >"$RECON_LOG"
