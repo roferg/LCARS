@@ -240,13 +240,25 @@ def flat(v):
     return (v or "").replace("\t", " ").replace("\n", " ")
 qs = [q for q in (d.get("questions") or {}).values()
       if isinstance(q, dict) and not q.get("answeredAt")]
+# ALONGSIDE, NOT INSTEAD OF. This used to be `if not qs:` - the hand-written
+# `.pending` was shown ONLY when the ledger had nothing open, so one ordinary
+# open question MASKED it: zero rows here, zero rows in `next`, and the count
+# read 1 while two were open. Those are exactly the questions that must reach
+# the captain (a product call, a scope change, a standing-rule conflict), and
+# it masked precisely when the autopilot was busiest.
+# DEDUPED ON (mission, what) - the same key the raise and adoption paths use -
+# because `.pending` is also the MIRROR of the oldest open question: once it has
+# been adopted, the adopted copy and the raw pending are ONE question and must
+# print once. The dedupe is over the OPEN set only, so a recurrence after the
+# captain answered is still its own question (the N1d cure).
+p = d.get("pending")
+if isinstance(p, dict) and p.get("what") and not any(
+        q.get("mission") == p.get("mission") and q.get("what") == p.get("what")
+        for q in qs):
+    p = dict(p)
+    p.setdefault("id", "pending")
+    qs.append(p)
 qs.sort(key=lambda q: (q.get("raisedAt") or 0, q.get("id") or ""))
-if not qs:
-    p = d.get("pending")
-    if isinstance(p, dict) and p.get("what"):
-        p = dict(p)
-        p.setdefault("id", "pending")
-        qs = [p]
 for q in qs:
     print("%s\t%s\t%s" % (q.get("id") or "?", q.get("mission") or "-",
                            flat(q.get("what"))))

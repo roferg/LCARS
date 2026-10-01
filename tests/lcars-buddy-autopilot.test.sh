@@ -1165,6 +1165,119 @@ ap "$R19B" land lcars-nomiss-1 >/dev/null 2>&1
 check "and it is NOT adopted twice" \
   "[ \"\$(jget '$AP19B' 'len(d[\"questions\"])')\" = 2 ]"
 
+# --- N1f: a hand-written `.pending` must be shown ALONGSIDE the ledger's -----
+# `open_questions` fell back to `.pending` only `if not qs` — i.e. ONLY when the
+# ledger had nothing open. So the moment ONE ordinary question was open, a
+# hand-written one (AUTOPILOT.md § 9 tells the model to write exactly that shape
+# for a product call, a scope change or a standing-rule conflict — the questions
+# that MOST need the captain) was MASKED: zero rows in `status`, zero rows in
+# `next`, and the header said "open questions for the captain: 1" while two were
+# open. It masked precisely when the autopilot was busiest. This display
+# behaviour was on the tester's list of things not covered by either suite, and
+# it then regressed silently under 311 green checks. These are the checks that
+# would have caught it.
+R19C="$(new_repo)"
+ap "$R19C" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP19C="$R19C/.git/lcars/autopilot.json"
+new_mission "$R19C" lcars-mask-1 verify
+new_mission "$R19C" lcars-maskbug-1 implement bug lcars-mask-1
+ap "$R19C" record 'missions.M0.id' lcars-mask-1 >/dev/null 2>&1
+# One ORDINARY question first: `land` refuses on the open bug child and raises
+# q1, which also makes `.pending` a mirror of it.
+ap "$R19C" land lcars-mask-1 >/dev/null 2>&1
+check "the ledger holds the one raised question" \
+  "[ \"\$(jget '$AP19C' 'len(d[\"questions\"])')\" = 1 ]"
+# Now the model hand-writes a SECOND question over the mirror.
+HANDM='{"mission":"lcars-mask-1","what":"HAND: ship the CLI without the page, or hold both?","why":"a product call","command":"-","rollback":"-","raisedAt":9}'
+ap "$R19C" record pending "$HANDM" >/dev/null 2>&1
+st19c="$(ap "$R19C" status 2>&1)"
+check "status LISTS the hand-written question even though another is open" \
+  "printf '%s' \"\$st19c\" | qgrep -q 'HAND: ship the CLI'"
+check "status still lists the LEDGER question beside it" \
+  "printf '%s' \"\$st19c\" | qgrep -q 'lcars-maskbug-1'"
+check "the count is the TRUE total (2 open), not 1" \
+  "printf '%s' \"\$st19c\" | qgrep -q 'open questions for the captain: 2'"
+check "the hand-written row keeps the [pending] id label" \
+  "printf '%s' \"\$st19c\" | qgrep -q '\[pending\] lcars-mask-1: HAND:'"
+# THE COUNT MUST MATCH THE ROWS IT PRINTS — the header said 1 and printed 1 row
+# while the file held 2 open questions, so neither number told the truth.
+nrows19c="$(printf '%s\n' "$st19c" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+check "the printed count equals the number of question rows" \
+  "[ \"$nrows19c\" = 2 ]"
+nx19c="$(ap "$R19C" next --all 2>&1)"
+check "next SURFACES the hand-written question while another is open" \
+  "printf '%s' \"\$nx19c\" | qgrep -q 'HAND: ship the CLI'"
+check "next still surfaces the ledger question too" \
+  "printf '%s' \"\$nx19c\" | qgrep -q 'lcars-maskbug-1'"
+# ADOPTED ONCE, LISTED ONCE. `land` carries the hand-written `.pending` into the
+# ledger and re-derives the mirror from it; the adopted copy and the raw
+# `.pending` are the SAME question and must appear exactly once. Deduped on
+# (mission, what), the key the rest of the file uses.
+ap "$R19C" land lcars-mask-1 >/dev/null 2>&1
+check "land adopted the hand-written question into the ledger" \
+  "[ \"\$(jget '$AP19C' 'len(d[\"questions\"])')\" = 2 ]"
+st19d="$(ap "$R19C" status 2>&1)"
+# Counted over the QUESTION ROWS only: `status` ends by printing `next`, whose
+# WHY line quotes the top question's text too, so a naive grep over the whole
+# screen reads 2 for one row.
+hand19d="$(printf '%s\n' "$st19d" | sed -n 's/^    \[[^]]*\] .*HAND: ship the CLI.*/x/p' | wc -l | tr -d ' ')"
+check "an ALREADY-ADOPTED pending is NOT listed twice" \
+  "[ \"$hand19d\" = 1 ]"
+check "and the count is still the true total (2)" \
+  "printf '%s' \"\$st19d\" | qgrep -q 'open questions for the captain: 2'"
+nrows19d="$(printf '%s\n' "$st19d" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+check "the count still equals the rows after adoption" \
+  "[ \"$nrows19d\" = 2 ]"
+
+# THE SEAM THIS OPENS. A `[pending]` row is now visible in a state where it
+# never appeared before, and `status` tells the captain to answer rows by the id
+# it printed. A visible row that cannot be answered by its own printed id would
+# be a new defect, so pin it: `answered pending` must close the hand-written one
+# and leave the ledger question open.
+R19F="$(new_repo)"
+ap "$R19F" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP19F="$R19F/.git/lcars/autopilot.json"
+new_mission "$R19F" lcars-seam-1 verify
+new_mission "$R19F" lcars-seambug-1 implement bug lcars-seam-1
+ap "$R19F" record 'missions.M0.id' lcars-seam-1 >/dev/null 2>&1
+ap "$R19F" land lcars-seam-1 >/dev/null 2>&1
+ap "$R19F" record pending \
+  '{"mission":"lcars-seam-1","what":"HAND: a standing-rule conflict","why":"h","command":"-","rollback":"-","raisedAt":9}' \
+  >/dev/null 2>&1
+ap "$R19F" answered pending "go ahead" >/dev/null 2>&1
+check "the [pending] row is answerable by the id status printed" \
+  "[ \"\$(jget '$AP19F' 'len([q for q in d[\"questions\"].values() if q.get(\"answeredAt\") and \"standing-rule\" in q[\"what\"]])')\" = 1 ]"
+check "answering it left the ledger question OPEN" \
+  "[ \"\$(jget '$AP19F' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\")])')\" = 1 ]"
+st19f="$(ap "$R19F" status 2>&1)"
+check "and the answered hand-written question is off the screen" \
+  "! printf '%s' \"\$st19f\" | qgrep -q 'standing-rule'"
+check "while the count drops back to 1" \
+  "printf '%s' \"\$st19f\" | qgrep -q 'open questions for the captain: 1'"
+
+# REGRESSION GUARD on the case that already worked: a hand-written `.pending`
+# with NOTHING else open is still the one question shown, with its [pending]
+# label, and `next` still points at it.
+R19E="$(new_repo)"
+ap "$R19E" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$R19E" lcars-solo-1 verify
+ap "$R19E" record 'missions.M0.id' lcars-solo-1 >/dev/null 2>&1
+ap "$R19E" record pending \
+  '{"mission":"lcars-solo-1","what":"HAND: the only question open","why":"h","command":"-","rollback":"-"}' \
+  >/dev/null 2>&1
+st19e="$(ap "$R19E" status 2>&1)"
+check "a lone hand-written question is still shown" \
+  "printf '%s' \"\$st19e\" | qgrep -q 'HAND: the only question open'"
+check "a lone hand-written question still counts as exactly 1" \
+  "printf '%s' \"\$st19e\" | qgrep -q 'open questions for the captain: 1'"
+check "a lone hand-written question still carries [pending]" \
+  "printf '%s' \"\$st19e\" | qgrep -q '\[pending\] lcars-solo-1:'"
+nx19e="$(ap "$R19E" next 2>&1)"
+check "next still points at a lone hand-written question" \
+  "printf '%s' \"\$nx19e\" | qgrep -q 'answer-pending'"
+check "and names it" \
+  "printf '%s' \"\$nx19e\" | qgrep -q 'HAND: the only question open'"
+
 # --- D3: one blocked milestone must not park every other milestone ---------
 # `build_plan` hit answer-pending and returned BEFORE it looked at any mission,
 # so with M0 blocked on a question and M1 sitting ready at its Verify gate,
