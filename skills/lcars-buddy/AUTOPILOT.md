@@ -334,6 +334,15 @@ remember by hand every time: re-assert the captain's `testCommand`, `xo off`
 every folded child (LCARS does not release them on fold), remove any stale
 `reconcile.XXXXXX` worktree, pull, and write the merge to the decisions ledger.
 
+**`approve` exiting 0 is not proof of a merge.** Its self-heal reconcile path
+reconciles `main` into the branch, re-tests it green and then waits for the
+captain's `--reapprove` — exit 0, nothing merged, the Mission still at `verify`.
+So `land` re-reads the Mission's own `state.json` and claims it landed only when
+the stage is really `done`. Otherwise it runs **no** hygiene, writes **no**
+`merged` ledger line, raises the pre-staged question naming the exact
+`--reapprove` command, and exits **10**. Reapprove is the captain's sign-off:
+the mode never gives it.
+
 **You never merge by hand.** Not with a better justification, not "just this
 once", not by another route when the permission classifier blocks the first one.
 When LCARS refuses a merge, `land` exits **10** and writes ONE pre-staged

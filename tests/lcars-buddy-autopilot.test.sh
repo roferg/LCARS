@@ -202,6 +202,17 @@ stub "$STUBS/respond.sh"      0
 stub "$STUBS/log.sh"          0
 stub "$STUBS/file.sh"         0
 stub "$STUBS/resolve-logs.sh" 0
+# APPROVE_MERGES — the stub body of an approve that GENUINELY merges. A real
+# merge is observable in the mission's OWN state.json (stage -> done), which is
+# what `land` must check: approve ALSO has an exit-0-did-NOT-merge outcome, and
+# gating on its exit code alone reported that one as a landing.
+APPROVE_MERGES='m=""
+while [ $# -gt 0 ]; do case "$1" in --mission) m="$2"; shift ;; esac; shift; done
+s="$LCARS_AUTOPILOT_CWD/.git/lcars/missions/$m/state.json"
+[ -f "$s" ] && python3 - "$s" <<PY
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["stage"]="done"; json.dump(d,open(p,"w"))
+PY'
 stub "$STUBS/notify.sh"       0
 # A crontab stub backed by one file, so `install` / `remove` are observable.
 CRONFILE="$TMPROOT/crontab.txt"
@@ -509,7 +520,8 @@ stub "$STUBS/approve.sh" 0 'python3 - "$LCARS_AP_CFG" <<PY
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d["testCommand"]="pytest -q"
 json.dump(d,open(p,"w"))
-PY'
+PY
+'"$APPROVE_MERGES"
 # A stale reconcile worktree holding the mission branch, left by a blocked merge.
 RECON="$R6/../reconcile.ABC123"
 git -C "$R6" worktree add -q --detach "$RECON" main 2>/dev/null
@@ -560,6 +572,86 @@ l8="$(ap "$R8" land lcars-parent-4 2>&1)"; rc8=$?
 check "land refuses while a driver is live" "[ $rc8 -ne 0 ]"
 check "that refusal never reached approve"  "! qgrep -q 'approve.sh' '$STUB_LOG'"
 kill -9 "$lp" 2>/dev/null || true
+
+# --- 5e: approve exit 0 that did NOT merge (the reconcile / awaiting-reapprove
+#         outcome) must NOT be reported as a landing --------------------------
+# `cmd_land`'s whole success test was approve's EXIT CODE. But approve has an
+# exit-0-did-not-merge path: its self-heal reconcile (approve.sh
+# reconcileStatus=awaiting-reapprove) reconciles main into the branch, re-tests
+# green, prints "Reapprove to merge. Mission stays at verify awaiting your
+# reapprove" and EXITS 0. The mode then printed `landed <mission>`, ran the full
+# post-merge hygiene, and wrote {"what":"merged"} to the decisions ledger —
+# while the stage stayed `verify` and main never moved. Silent, UNBOUNDED (land
+# reporting success means the drive-failure cap cannot see it), and it
+# FALSIFIES the captain's record of what shipped: four laps produced six false
+# "merged" entries and nothing merged.
+# The cure is to re-read the mission's OWN state.json: landed only when the
+# stage is actually `done`. The mode must NEVER pass --reapprove itself —
+# that sign-off is the captain's by design.
+R5E="$(new_repo)"
+ap "$R5E" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP5E="$R5E/.git/lcars/autopilot.json"
+new_mission "$R5E" lcars-reapp-1 verify
+new_mission "$R5E" lcars-reappbug-1 done bug lcars-reapp-1
+# approve's reconcile path, to the letter: exit 0, nothing merged, the stage
+# left at verify waiting for the captain's --reapprove.
+stub "$STUBS/approve.sh" 0 'echo "Reconciled main into the branch and re-tested green (1/1). Reapprove to merge. Mission stays at verify awaiting your reapprove"'
+: >"$STUB_LOG"
+DEC5E="$R5E/.git/lcars/decisions.jsonl"
+l5e="$(ap "$R5E" land lcars-reapp-1 2>&1)"; rc5e=$?
+check "approve exit 0 with the stage still at verify is NOT a landing" \
+  "[ $rc5e -ne 0 ]"
+check "it does not claim the mission landed" \
+  "! printf '%s' \"\$l5e\" | qgrep -q 'landed lcars-reapp-1'"
+check "NO 'merged' entry reaches the decisions ledger (the record stays true)" \
+  "[ ! -s '$DEC5E' ] || ! grep -q merged '$DEC5E'"
+check "the post-merge hygiene did NOT run (no folded child released)" \
+  "! qgrep -q 'xo.sh off' '$STUB_LOG'"
+check "it raises exactly ONE question for the captain" \
+  "[ \"\$(jget '$AP5E' 'len(d[\"questions\"])')\" = 1 ]"
+check "that question names the reapprove command he must run" \
+  "printf '%s' \"\$(jget '$AP5E' 'd[\"pending\"][\"command\"]')\" | qgrep -q -- '--reapprove'"
+check "the question says the merge did NOT happen" \
+  "printf '%s' \"\$(jget '$AP5E' 'd[\"pending\"][\"what\"]')\" | qgrep -qiE 'did not merge|not merged|no merge'"
+check "the question reports the stage the mission is actually at" \
+  "printf '%s' \"\$(jget '$AP5E' 'd[\"pending\"]')\" | qgrep -q 'verify'"
+check "it pings the captain (this is a real stop-and-ask)" \
+  "qgrep -q 'notify.sh lcars-reapp-1' '$STUB_LOG'"
+check "the mode NEVER passes --reapprove to approve itself" \
+  "! qgrep -q -- '--reapprove' '$STUB_LOG'"
+check "approve was still called exactly once (no retry loop)" \
+  "[ \"\$(grep -c 'approve.sh --mission lcars-reapp-1' '$STUB_LOG')\" = 1 ]"
+ap "$R5E" land lcars-reapp-1 >/dev/null 2>&1
+check "a repeat land re-raises nothing (the question stays one)" \
+  "[ \"\$(jget '$AP5E' 'len(d[\"questions\"])')\" = 1 ]"
+check "a repeat land does not re-ping (interrupt budget)" \
+  "[ \"\$(grep -c 'notify.sh lcars-reapp-1 ' '$STUB_LOG')\" = 1 ]"
+
+# --- 5f: a GENUINE merge still lands, with the FULL hygiene -----------------
+# The regression most at risk from 5e. approve exits 0 AND moves the mission to
+# `done`, exactly as a real merge does: everything 5b asserts must still happen.
+R5F="$(new_repo)"
+ap "$R5F" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP5F="$R5F/.git/lcars/autopilot.json"
+new_mission "$R5F" lcars-realmerge-1 verify
+new_mission "$R5F" lcars-realbug-1 done bug lcars-realmerge-1
+stub "$STUBS/approve.sh" 0 "$APPROVE_MERGES"
+: >"$STUB_LOG"
+l5f="$(ap "$R5F" land lcars-realmerge-1 2>&1)"; rc5f=$?
+check "a genuine merge (stage → done) still exits 0" "[ $rc5f -eq 0 ]"
+check "a genuine merge still reports it landed" \
+  "printf '%s' \"\$l5f\" | qgrep -q 'landed lcars-realmerge-1'"
+check "a genuine merge still releases every folded child" \
+  "qgrep -q 'xo.sh off lcars-realbug-1' '$STUB_LOG'"
+check "a genuine merge still pulls main" \
+  "printf '%s' \"\$l5f\" | qgrep -qi 'pull'"
+check "a genuine merge still records itself in the decisions ledger" \
+  "qgrep -q 'lcars-realmerge-1' '$R5F/.git/lcars/decisions.jsonl'"
+check "a genuine merge raises NO question" \
+  "[ \"\$(jget '$AP5F' 'len(d[\"questions\"])')\" = 0 ]"
+check "a genuine merge pings nobody (it is not a gate)" \
+  "! qgrep -q 'notify.sh lcars-realmerge-1' '$STUB_LOG'"
+stub "$STUBS/approve.sh" 0
 
 # ==========================================================================
 # 6. push-gated — the gate the orchestrator must never hand-roll
@@ -999,6 +1091,80 @@ check "a hand-written .pending is still carried into the ledger" \
 check "and the land question is recorded beside it" \
   "[ \"\$(jget '$AP18' 'len(d[\"questions\"])')\" = 2 ]"
 
+# --- N1d: the ADOPTION path must use the SAME dedupe key as the RAISE path ---
+# `write_pending` had TWO keys. The raise path dedupes on (mission, what) gated
+# on `not answeredAt` — correct. The ADOPTION path (carrying a hand-written
+# `.pending`, which AUTOPILOT.md § 9 still tells the model to write, into the
+# ledger) matched on `what` ALONE, across ANSWERED questions too. So: answer a
+# hand-written question, have the same problem recur, hand-write it again — and
+# it is silently dropped. Not in `status`, no notification, no `questions`
+# entry, while `.pending` still literally holds the sentence until the mirror
+# overwrites it. A question nobody will ever see.
+R19="$(new_repo)"
+ap "$R19" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP19="$R19/.git/lcars/autopilot.json"
+new_mission "$R19" lcars-adopt-1 verify
+new_mission "$R19" lcars-adoptbug-1 implement bug lcars-adopt-1
+ap "$R19" record 'missions.M0.id' lcars-adopt-1 >/dev/null 2>&1
+HANDQ='{"mission":"lcars-adopt-1","what":"the deploy host refused the key again","why":"h","command":"-","rollback":"-","raisedAt":1}'
+: >"$STUB_LOG"
+ap "$R19" record pending "$HANDQ" >/dev/null 2>&1
+ap "$R19" land lcars-adopt-1 >/dev/null 2>&1
+check "a hand-written question is adopted alongside the raised one" \
+  "[ \"\$(jget '$AP19' 'len(d[\"questions\"])')\" = 2 ]"
+check "the adopted question kept its text" \
+  "printf '%s' \"\$(jget '$AP19' 'd[\"questions\"]')\" | qgrep -q 'refused the key'"
+# A STILL-OPEN duplicate through the adoption path is still deduped.
+ap "$R19" record pending "$HANDQ" >/dev/null 2>&1
+ap "$R19" land lcars-adopt-1 >/dev/null 2>&1
+check "re-adopting a STILL-OPEN hand-written question adds nothing" \
+  "[ \"\$(jget '$AP19' 'len(d[\"questions\"])')\" = 2 ]"
+check "the still-open duplicate sends no second ping" \
+  "[ \"\$(grep -c 'notify.sh lcars-adopt-1 ' '$STUB_LOG')\" = 1 ]"
+# Now answer everything, and have the SAME problem recur.
+for q19 in $(jget "$AP19" '" ".join(sorted(d["questions"]))'); do
+  ap "$R19" answered "$q19" "cleared" >/dev/null 2>&1
+done
+check "every question is answered before the recurrence" \
+  "[ \"\$(jget '$AP19' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\")])')\" = 0 ]"
+ap "$R19" record pending "$HANDQ" >/dev/null 2>&1
+ap "$R19" land lcars-adopt-1 >/dev/null 2>&1
+check "a RECURRENCE through the adoption path raises a NEW question" \
+  "[ \"\$(jget '$AP19' 'len(d[\"questions\"])')\" = 4 ]"
+check "the recurrence is OPEN (it is not swallowed by the answered one)" \
+  "[ \"\$(jget '$AP19' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and \"refused the key\" in q[\"what\"]])')\" = 1 ]"
+check "the recurrence pings the captain (a real new event)" \
+  "[ \"\$(grep -c 'notify.sh lcars-adopt-1 ' '$STUB_LOG')\" = 2 ]"
+st19="$(ap "$R19" status 2>&1)"
+check "status SHOWS the recurrence (the bug made it invisible)" \
+  "printf '%s' \"\$st19\" | qgrep -q 'refused the key'"
+check "the answered original is still on the record with its answer" \
+  "[ \"\$(jget '$AP19' 'len([q for q in d[\"questions\"].values() if q.get(\"answeredAt\")])')\" = 2 ]"
+# The SAME text raised against a DIFFERENT mission must also survive adoption.
+ap "$R19" record pending \
+  '{"mission":"lcars-elsewhere-9","what":"the deploy host refused the key again","why":"h","command":"-","rollback":"-","raisedAt":2}' \
+  >/dev/null 2>&1
+ap "$R19" land lcars-adopt-1 >/dev/null 2>&1
+check "the same text on a DIFFERENT mission is adopted as its own question" \
+  "[ \"\$(jget '$AP19' 'len(d[\"questions\"])')\" = 5 ]"
+
+# A hand-written `.pending` with NO mission field must still behave sensibly:
+# adopted once, and not duplicated on the next raise.
+R19B="$(new_repo)"
+ap "$R19B" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP19B="$R19B/.git/lcars/autopilot.json"
+new_mission "$R19B" lcars-nomiss-1 verify
+new_mission "$R19B" lcars-nomissbug-1 implement bug lcars-nomiss-1
+ap "$R19B" record pending \
+  '{"what":"a hand-written question with no mission on it","why":"h","command":"-","rollback":"-"}' \
+  >/dev/null 2>&1
+ap "$R19B" land lcars-nomiss-1 >/dev/null 2>&1
+check "a mission-less hand-written question is adopted" \
+  "[ \"\$(jget '$AP19B' 'len(d[\"questions\"])')\" = 2 ]"
+ap "$R19B" land lcars-nomiss-1 >/dev/null 2>&1
+check "and it is NOT adopted twice" \
+  "[ \"\$(jget '$AP19B' 'len(d[\"questions\"])')\" = 2 ]"
+
 # --- D3: one blocked milestone must not park every other milestone ---------
 # `build_plan` hit answer-pending and returned BEFORE it looked at any mission,
 # so with M0 blocked on a question and M1 sitting ready at its Verify gate,
@@ -1028,6 +1194,45 @@ check "single \`next\` points at the runnable work too, not just the question" \
 st14="$(ap "$R14" status 2>&1)"
 check "status shows the question AND the other milestone's next step" \
   "printf '%s' \"\$st14\" | qgrep -q 'lcars-ready-1'"
+
+# ==========================================================================
+# 12. a CORRUPT autopilot.json fails CLOSED — it is never silently replaced
+# ==========================================================================
+echo "-- 12. corrupt autopilot.json --"
+# OBSERVED: `ap_set`'s read was `except: d = {}`, so a file that EXISTS but will
+# not parse read as "no file yet". One `record` against a mid-JSON truncation
+# reported SUCCESS and left questions=0, scope=None, spec=None — 8 questions,
+# every recorded answer and the whole alignment round gone, with no warning and
+# no backup, while `status` printed an empty shell and never complained. The
+# house precedent (S232's unreadable-record refusal) is to fail closed.
+R20="$(new_repo)"
+ap "$R20" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+ap "$R20" record 'liveTargets.host' 'example.com' >/dev/null 2>&1
+AP20="$R20/.git/lcars/autopilot.json"
+head -c 40 "$AP20" >"$AP20.cut" && mv "$AP20.cut" "$AP20"
+r20a="$(ap "$R20" record 'liveTargets.host' 'other.example' 2>&1)"; rc20a=$?
+check "record REFUSES a corrupt autopilot.json"  "[ $rc20a -ne 0 ]"
+check "the refusal NAMES the file it could not parse" \
+  "printf '%s' \"\$r20a\" | qgrep -q 'autopilot.json'"
+check "the corrupt file is NOT replaced with an empty record" \
+  "! python3 -c 'import json,sys;json.load(open(sys.argv[1]))' '$AP20' 2>/dev/null"
+r20b="$(ap "$R20" status 2>&1)"; rc20b=$?
+check "status REFUSES a corrupt autopilot.json too" "[ $rc20b -ne 0 ]"
+check "status's refusal names the file"          "printf '%s' \"\$r20b\" | qgrep -q 'autopilot.json'"
+check "status never prints an empty shell as if all were well" \
+  "! printf '%s' \"\$r20b\" | qgrep -q 'open questions for the captain: 0'"
+# An ABSENT file must still mean "no record yet" — that is how `init` works.
+R21="$(new_repo)"
+r21a="$(ap "$R21" status 2>&1)"; rc21a=$?
+check "an ABSENT autopilot.json is still 'run init first', not a parse error" \
+  "[ $rc21a -ne 0 ] && printf '%s' \"\$r21a\" | qgrep -q 'init'"
+r21b="$(ap "$R21" init --spec "$TMPROOT/spec.md" --scope M0 2>&1)"; rc21b=$?
+check "init on an absent file still initialises normally" \
+  "[ $rc21b -eq 0 ] && [ -f '$R21/.git/lcars/autopilot.json' ]"
+check "the fresh record is valid JSON" \
+  "python3 -c 'import json,sys;json.load(open(sys.argv[1]))' '$R21/.git/lcars/autopilot.json'"
+check "and record works on it (a clean file is never refused)" \
+  "ap '$R21' record 'liveTargets.host' 'example.com' >/dev/null 2>&1 && [ \"\$(jget '$R21/.git/lcars/autopilot.json' 'd[\"liveTargets\"][\"host\"]')\" = example.com ]"
 
 # ==========================================================================
 # 10. THE CONTRACT TEST — the INSTALLED prose carries the headings `next` names

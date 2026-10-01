@@ -281,8 +281,11 @@ import json, os, sys
 f, path, val = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     d = json.load(open(f))
-except Exception:
+except FileNotFoundError:
     d = {}
+except Exception:
+    sys.stderr.write("autopilot: %s exists but is NOT valid JSON - refusing to overwrite it\n" % f)
+    sys.exit(2)
 parts = path.split(".")
 cur = d
 for p in parts[:-1]:
@@ -310,6 +313,14 @@ PY
 
 require_state() {
   [ -f "$APJSON" ] || die "no autopilot.json in $LCARS_DIR — run \`autopilot.sh init --spec <path>\` first."
+  # FAIL CLOSED on a record that EXISTS but will not parse. `ap_set` read it as
+  # "no file yet" and wrote a fresh empty object over it: one `record` against a
+  # mid-JSON truncation reported SUCCESS and took 8 questions, every recorded
+  # answer and the whole alignment round with it, with no warning and no backup,
+  # while `status` printed an empty shell. An ABSENT file still means "no record
+  # yet" (that is how `init` works); an unreadable one stops everything.
+  "$PY" -c 'import json,sys; json.load(open(sys.argv[1]))' "$APJSON" 2>/dev/null \
+    || die "$APJSON exists but is NOT valid JSON — refusing to read or write it. Repair or restore that file; an empty record would silently replace the whole alignment round."
 }
 
 now() { date +%s; }
@@ -905,10 +916,20 @@ if not isinstance(qs, dict):
 # a question the model recorded by hand is never the one this write loses.
 # (No apostrophes in here: bash scans for the closing paren of $( ) WITHOUT
 # knowing about the heredoc, so a stray quote inside it breaks the parse.)
+# THE KEY HERE IS THE SAME ONE THE RAISE PATH BELOW USES: the pair
+# (mission, what), gated on not answeredAt. It used to match on `what` ALONE,
+# across ANSWERED questions too, so a hand-written question that RECURRED after
+# the captain answered it was dropped on the floor - absent from status, no
+# notification, no questions entry - and the same text on a DIFFERENT mission
+# went the same way. A question nobody will ever see is the worst outcome this
+# ledger has. A pending with no mission key reads as mission None on both
+# sides, so it dedupes against its own adopted copy and is still adopted once.
 p = d.get("pending")
 carried = False
 if isinstance(p, dict) and p.get("what") and not any(
-        isinstance(q, dict) and q.get("what") == p.get("what") for q in qs.values()):
+        isinstance(q, dict) and not q.get("answeredAt")
+        and q.get("mission") == p.get("mission")
+        and q.get("what") == p.get("what") for q in qs.values()):
     n = 1
     while ("q%d" % n) in qs:
         n += 1
@@ -1124,7 +1145,29 @@ cmd_land() {
     exit 10
   fi
 
-  say "  approve succeeded. Hygiene:"
+  # APPROVE EXIT 0 IS NOT PROOF OF A MERGE. approve has an exit-0-did-NOT-merge
+  # outcome: its self-heal reconcile (approve.sh reconcileStatus
+  # awaiting-reapprove) reconciles main into the branch, re-tests it green, and
+  # then WAITS for the captain -- "Reapprove to merge. Mission stays at verify
+  # awaiting your reapprove" -- and exits 0. Gating on the exit code alone
+  # printed `landed <m>`, ran the whole post-merge hygiene and wrote a
+  # {"what":"merged"} ledger line while main had not moved: silent, unbounded
+  # (a land that reports success is invisible to the drive-failure cap), and it
+  # FALSIFIES the record of what shipped. The mission's OWN state.json is the
+  # evidence, so read it back: landed only when the stage is really `done`.
+  # The mode never passes --reapprove itself. That sign-off is the captain's by
+  # design, so this is a real stop-and-ask and the question carries his command.
+  local st; st="$(mstate "$m" stage)"
+  if [ "$st" != "done" ]; then
+    write_pending "$m" \
+      "approve exited 0 but did NOT merge $m — it is still at stage '${st:-unknown}', not done." \
+      "LCARS reconciled main into the branch and re-tested it green, then stopped for your reapprove; reapprove is YOUR sign-off, so the mode will not give it and will not claim a merge that did not happen." \
+      "bash $APPROVE_SCRIPT --mission $m --reapprove   # then: autopilot.sh land $m" \
+      "nothing was merged and no post-merge hygiene ran, so there is nothing to undo."
+    exit 10
+  fi
+
+  say "  approve succeeded and $m is at stage done. Hygiene:"
 
   # H1. Re-assert the captain's test command. approve has promoted an
   # uninstalled runner over a recorded stdlib command before; the captain's
