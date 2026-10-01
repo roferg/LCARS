@@ -33,6 +33,13 @@ ANSWER_SCRIPT="${LCARS_ANSWER_SCRIPT:-$SKILL_DIR/../lcars-answer/answer.sh}"
 RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 PAUSE_SCRIPT="${LCARS_PAUSE_SCRIPT:-$SKILL_DIR/../lcars-pause/pause.sh}"
 XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILL_DIR/../lcars-xo/xo.sh}"
+# S232 — the shared library that owns the DRIVE RECORD ($MISSION_DIR/drive.pid).
+# `lcars` is the auto-advance router: both of its drive routes below would
+# otherwise start a SECOND driver on a mission that already has a live one, which
+# is what `lcars answer respond` did over the Canvas weekend. Same record, same
+# reader as respond.sh — one file, one format, one staleness rule. A missing
+# library degrades to exactly pre-S232 behaviour (drive), never to a refusal.
+LCARS_COMMON_LIB="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
 
 die() { printf 'lcars: %s\n' "$1" >&2; exit 1; }
 
@@ -68,6 +75,25 @@ VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
 
 
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
+
+# refuse_second_drive <mission-id> — if a drive is ALREADY running for that
+# mission, say so in the same words `lcars respond` uses and exit 0 WITHOUT
+# starting a second one. Otherwise return, and the caller drives as it always
+# did. Sourced in a subshell so nothing the library defines reaches this script.
+# NEVER `pgrep` — the driver writes the record; we read it (record, don't infer).
+refuse_second_drive() { # <mission-id>
+  local mid="$1" note=""
+  [ -n "$mid" ] && [ -n "${MISSIONS_DIR:-}" ] || return 0
+  [ -f "$LCARS_COMMON_LIB" ] || return 0
+  note="$( . "$LCARS_COMMON_LIB" >/dev/null 2>&1 \
+           && command -v lcars_drive_live_line >/dev/null 2>&1 \
+           && lcars_drive_live_line "$MISSIONS_DIR/$mid" "$mid" )" || note=""
+  [ -n "$note" ] || return 0
+  printf '%s — nothing to start.\n' "$note"
+  printf 'Watch it on the board, or `lcars pause %s` to halt it at the next boundary.\n' "$mid"
+  echo "ROUTE: drive-already-running $mid"
+  exit 0
+}
 
 # --- locate .git/lcars/missions --------------------------------------------
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" || GIT_DIR=""
@@ -115,6 +141,9 @@ if [ -n "$SELECTOR" ]; then
   out="$(bash "$RESOLVE" --scope active --id "$SELECTOR")"; rc=$?
   case "$rc" in
     0) mid="$out"
+       # S232 — one driver per mission. Consulted BEFORE anything is announced,
+       # so the captain is never told a run is starting that is really a no-op.
+       refuse_second_drive "$mid"
        st="$(json_str "$MISSIONS_DIR/$mid/state.json" stage)"
        printf 'Driving %s%s.\n' "$mid" "${st:+ from $st}"
        echo "ROUTE: drive $mid"
@@ -156,6 +185,9 @@ if [ "$drivable" -gt 0 ]; then
   out="$(bash "$RESOLVE" --scope active)"; rc=$?
   case "$rc" in
     0) mid="$out"
+       # S232 — one driver per mission. Consulted BEFORE anything is announced,
+       # so the captain is never told a run is starting that is really a no-op.
+       refuse_second_drive "$mid"
        st="$(json_str "$MISSIONS_DIR/$mid/state.json" stage)"
        printf 'Driving %s%s.\n' "$mid" "${st:+ from $st}"
        echo "ROUTE: drive $mid"

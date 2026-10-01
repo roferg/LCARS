@@ -4101,3 +4101,98 @@ S175_PY
   rm -f "$qf"
   return "$rc"
 }
+
+# ===========================================================================
+# S232 — THE DRIVE RECORD: one file, written by the driver, read by everyone
+# ===========================================================================
+#
+# THE WEEKEND DEFECT. `lcars answer respond` clears a gate and then hands back to
+# the driver (`run.sh drive --mission <id>`, respond.sh's S180 resume). Nothing
+# anywhere recorded that a drive was ALREADY running for that mission, so an
+# answer given while a driver was mid-flight started a SECOND driver on top of
+# the live one (evidence/lcars-feedback.jsonl #6). run.sh's own `driver.lock`
+# made the second one a clean no-op once it got as far as `cmd_drive`, but by
+# then respond had already told the captain it was resuming, and neither respond
+# nor `lcars` could say anything useful before spawning.
+#
+# RECORD, DON'T INFER (ORCHESTRATION.md § infer-vs-record; it cost S147, S156 and
+# S188 a round each). The producer — the driver itself — writes the fact down the
+# moment it is true: `$MISSION_DIR/drive.pid`, two lines, its pid and when it
+# started. `pgrep run.sh` was the rejected alternative: it reconstructs from a
+# command line that a wrapper, a worktree or a second repo can each make lie.
+#
+# The RECORD LIVES HERE, not in run.sh, because there are two consumers besides
+# the producer — `lcars respond` and the `lcars` auto-advance router — and two
+# readers of one file is exactly how the record's format drifts. One home.
+#
+# A STALE record reads as ABSENT. A driver killed with SIGKILL, or a machine that
+# lost power, leaves the file behind; a check that treated that as "live" would
+# wedge the mission for good. `lcars_drive_record_start` overwrites
+# unconditionally, so staleness never needs sweeping to self-heal.
+
+# The record's path for a mission dir. One place spells it.
+lcars_drive_record_path() { # <mission-dir>
+  printf '%s/drive.pid' "${1:-}"
+}
+
+# lcars_drive_record_start <mission-dir> [pid] [iso-stamp]
+# Write the record. Called by the driver the instant it owns the mission.
+# `$$` is deliberately the DEFAULT rather than the only source: run.sh reaches
+# this through a subshell `source`, where `$$` is still the parent shell's pid,
+# and the caller passing its pid explicitly keeps that from being a subtlety
+# anybody has to remember. Never fatal — a driver must not fail to drive because
+# it could not write a note about itself.
+lcars_drive_record_start() { # <mission-dir> [pid] [iso]
+  local d="${1:-}" p="${2:-$$}" t="${3:-}"
+  [ -n "$d" ] && [ -d "$d" ] || return 1
+  [ -n "$t" ] || t="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s\n%s\n' "$p" "$t" >"$(lcars_drive_record_path "$d")" 2>/dev/null || return 1
+  return 0
+}
+
+# lcars_drive_record_clear <mission-dir> [pid]
+# Remove the record IFF it is OURS — the same posture as release_driver_lock in
+# run.sh, and for the same reason: a process that found someone else's live
+# record must never delete it on its way out.
+lcars_drive_record_clear() { # <mission-dir> [pid]
+  local d="${1:-}" p="${2:-$$}" f own
+  [ -n "$d" ] || return 0
+  f="$(lcars_drive_record_path "$d")"
+  [ -f "$f" ] || return 0
+  own="$(sed -n 1p "$f" 2>/dev/null)"
+  [ "$own" = "$p" ] || return 0
+  rm -f "$f" 2>/dev/null || true
+  return 0
+}
+
+# lcars_drive_live <mission-dir>
+# THE ONE CHECK both consumers make. Prints "<pid>\t<started-at>" and returns 0
+# when a LIVE driver holds this mission; prints nothing and returns 1 when there
+# is no record, the record is unreadable, or its pid is gone (stale ⇒ absent).
+# Pure READ: it never deletes, so a caller can consult it without side effects.
+lcars_drive_live() { # <mission-dir>
+  local d="${1:-}" f p t
+  [ -n "$d" ] || return 1
+  f="$(lcars_drive_record_path "$d")"
+  [ -f "$f" ] || return 1
+  p="$(sed -n 1p "$f" 2>/dev/null)"
+  t="$(sed -n 2p "$f" 2>/dev/null)"
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$p" 2>/dev/null || return 1
+  printf '%s\t%s\n' "$p" "$t"
+  return 0
+}
+
+# lcars_drive_live_line <mission-dir> <mission-id>
+# The SENTENCE both consumers open with, so the captain reads the same words from
+# `lcars respond` and from bare `lcars`; each adds its own tail. Prints nothing
+# and returns 1 when no drive is live.
+lcars_drive_live_line() { # <mission-dir> <mission-id>
+  local rec pid at tab
+  tab="$(printf '\t')"
+  rec="$(lcars_drive_live "${1:-}")" || return 1
+  pid="${rec%%${tab}*}"; at="${rec#*${tab}}"
+  printf 'a drive is already running for %s (pid %s since %s)' \
+    "${2:-}" "$pid" "${at:-an unknown time}"
+  return 0
+}

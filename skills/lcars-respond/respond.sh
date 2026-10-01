@@ -63,6 +63,14 @@ RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SELF_DIR/../lcars-resolve-log
 # env-injection pattern as the resolve-logs delegate above, so a test can point a
 # stub at it and no drive is ever spawned in a suite.
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SELF_DIR/../lcars-run/run.sh}"
+# S232 — the shared library that owns the DRIVE RECORD ($MISSION_DIR/drive.pid:
+# its format, and the rule that a stale pid reads as absent). Sourced in a
+# SUBSHELL at the one place it is consulted, the pattern approve.sh and run.sh
+# both use for this library, so nothing it defines can reach this script's own
+# json_str / die / state writers. A MISSING library is not fatal here: the check
+# it powers is a courtesy, and losing it degrades to exactly pre-S232 behaviour
+# (resume), never to a refusal.
+LCARS_COMMON_LIB="${LCARS_COMMON_LIB:-$SELF_DIR/../lcars-init/lcars-common.sh}"
 
 # S180 — HOW MANY TIMES AN ANSWER MAY BUY A FRESH PLAN REVIEW BUDGET.
 #
@@ -609,6 +617,40 @@ $FOLD_REFUSAL"
   if [ "${LCARS_RESPOND_RESUME:-1}" = "0" ] || [ ! -f "$RUN_SCRIPT" ]; then
     echo "  Resume $stage with:"
     echo "    bash $RUN_SCRIPT drive --mission $MISSION_ID"
+    exit 0
+  fi
+  # === S232: A THIRD CASE OPTS OUT — A DRIVE IS ALREADY RUNNING ============
+  # The Canvas weekend's third approve-adjacent cost (evidence/lcars-feedback.jsonl
+  # #6): the captain answered a gate on a mission that already had a live driver,
+  # and this resume started a SECOND one. run.sh's `driver.lock` made the newcomer
+  # a no-op once it reached cmd_drive — but respond had already announced
+  # "Resuming …", so the captain was told a run had begun that never did, and two
+  # processes were in flight long enough to race the state the loser read.
+  #
+  # The driver RECORDS ITSELF now ($MISSION_DIR/drive.pid — pid + started-at,
+  # written under the driver lock and removed by its trap), and this reads that
+  # ONE record through lcars-common.sh, which `lcars`'s auto-advance also reads.
+  # NOTHING here infers a live drive from `pgrep`: record, don't infer
+  # (ORCHESTRATION.md § infer-vs-record). A STALE pid reads as ABSENT, so a driver
+  # killed with -9 can never wedge a mission's answers.
+  #
+  # THE ANSWER IS ALREADY RECORDED by the time we reach this line, and that is the
+  # whole reason saying-and-stopping is safe: the live driver re-reads state at the
+  # top of every pass, so it consumes the answer on its next one. exit 0, because
+  # respond exiting non-zero has exactly one meaning to every caller — "your answer
+  # was NOT recorded" — and it was.
+  #
+  # AFTER the LCARS_RESPOND_RESUME=0 arm on purpose: the viewscreen sets that flag
+  # and then spawns its own detached driver (BUG-028); that path is untouched.
+  local drive_live_note=""
+  if [ -f "$LCARS_COMMON_LIB" ]; then
+    drive_live_note="$( . "$LCARS_COMMON_LIB" >/dev/null 2>&1 \
+                        && command -v lcars_drive_live_line >/dev/null 2>&1 \
+                        && lcars_drive_live_line "$MISSION_DIR" "$MISSION_ID" )" \
+      || drive_live_note=""
+  fi
+  if [ -n "$drive_live_note" ]; then
+    echo "  $drive_live_note; your answer is recorded and it will pick it up."
     exit 0
   fi
   echo "  Resuming $stage now — it consumes your answer instead of re-asking."

@@ -18914,6 +18914,59 @@ run_worker_hang_guarded() { # outdir  cmd...
   return $?
 }
 
+# === S232 — THE DRIVE RECORD (the lock's PUBLIC half) ======================
+# `driver.lock` above is PRIVATE to run.sh: a directory whose `mkdir` is the
+# atomic win, holding nothing but a pid, and read by nothing outside this file.
+# It cannot answer the question the other verbs need to ask — "is a drive already
+# running for this mission, and since when?" — which is why `lcars answer respond`
+# spent the Canvas weekend starting a SECOND driver on top of a live one
+# (evidence/lcars-feedback.jsonl #6): respond had no record to consult, so it
+# announced a resume and spawned.
+#
+# So the driver RECORDS ITSELF where anyone may read it: $MISSION_DIR/drive.pid,
+# pid and started-at, written the instant it owns the mission and removed on the
+# way out. The format and the staleness rule live ONCE, in lcars-common.sh
+# (lcars_drive_record_start / _clear / lcars_drive_live), because there are two
+# readers besides this producer and two spellings of one file is how a record
+# drifts. Nothing infers a live drive from `pgrep` — record, don't infer
+# (ORCHESTRATION.md § infer-vs-record).
+#
+# WRITTEN AND CLEARED ON THE LOCK'S OWN PATHS, on purpose: acquire_driver_lock is
+# the one place that knows we became the driver, and release_driver_lock already
+# runs from the `trap … EXIT INT TERM` armed right there — so a `die`, a
+# non-zero return and a SIGTERM all clear the record with no second trap to
+# collide with the reconcile gate's (S231) or the implement heartbeat's.
+#
+# The library is sourced in a SUBSHELL, the pattern every other reach from run.sh
+# into lcars-common.sh uses, so nothing it defines can reach the driver's own
+# helpers. `$$` is passed EXPLICITLY: inside a subshell bash's `$$` is still this
+# process's pid, but relying on that quietly is how the next reader gets it wrong.
+# Best-effort throughout — a driver must never fail to drive because it could not
+# write a note about itself.
+drive_record_lib() {
+  printf '%s' "${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+}
+
+drive_record_start() {
+  local lib; lib="$(drive_record_lib)"
+  [ -f "$lib" ] || return 0
+  # shellcheck source=../lcars-init/lcars-common.sh
+  ( . "$lib" >/dev/null 2>&1 \
+      && command -v lcars_drive_record_start >/dev/null 2>&1 \
+      && lcars_drive_record_start "$MISSION_DIR" "$$" ) >/dev/null 2>&1 || true
+  return 0
+}
+
+drive_record_clear() {
+  local lib; lib="$(drive_record_lib)"
+  [ -f "$lib" ] || return 0
+  # shellcheck source=../lcars-init/lcars-common.sh
+  ( . "$lib" >/dev/null 2>&1 \
+      && command -v lcars_drive_record_clear >/dev/null 2>&1 \
+      && lcars_drive_record_clear "$MISSION_DIR" "$$" ) >/dev/null 2>&1 || true
+  return 0
+}
+
 # Try to take the per-mission driver lock. Prints nothing; returns:
 #   0  → lock acquired (DRIVER_LOCK_DIR set, trap armed, our pid written)
 #   1  → a LIVE driver already holds it (caller must no-op exit 0)
@@ -18928,6 +18981,9 @@ acquire_driver_lock() {
       printf '%s' "$$" >"$pidf"
       DRIVER_LOCK_DIR="$lock"
       trap 'release_driver_lock' EXIT INT TERM
+      # S232 — and SAY SO where the other verbs can read it. After the trap is
+      # armed, so no window exists in which the record outlives its remover.
+      drive_record_start
       return 0
     fi
     # Lock dir exists — is its owner alive?
@@ -18949,6 +19005,11 @@ release_driver_lock() {
   if [ "$owner" = "$$" ]; then
     rm -rf "$DRIVER_LOCK_DIR" 2>/dev/null
   fi
+  # S232 — the public record goes with it, on EVERY exit path this trap covers
+  # (clean stop, non-zero return, `die`, INT, TERM). It only removes a record
+  # whose pid is OURS, so a driver that bailed on someone else's live lock never
+  # deletes the real owner's note.
+  drive_record_clear
   DRIVER_LOCK_DIR=""
 }
 
