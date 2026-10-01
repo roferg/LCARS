@@ -224,6 +224,209 @@ Review loop-back), **revise** the plan to resolve every objection — re-slice
 oversized or horizontal tickets, fix dependency edges — rather than re-emitting
 the rejected shape.
 
+## Declare the seams and the entrypoints — `seams` / `entrypoints`
+
+Six live bugs shipped past a fully green test suite in one weekend, and every
+single one of them sat at the same kind of place: **a seam**. Two code paths
+touch the same piece of state — one writes it, one reads it — and the test suite
+only ever drove one side. The producer wrote one issue format and the consumer
+parsed another. An empty allow-list meant "show everything" to the reader and
+"nothing is allowed" to the writer. A publish workflow ran a module as a file.
+A runner's `gh` defaulted to github.com and crawled the wrong org. Each of those
+had tests. Each test stubbed the half it was not looking at, handed the other
+half a fixture somebody typed by hand, and went green.
+
+So every ticket DECLARES, as two arrays, what it is creating at those places.
+Nothing infers them from your prose and nothing scans a diff for them: you
+record them, and the reviewer audits them.
+
+```json
+"seams": [
+  { "producer": "<what WRITES the state>",
+    "consumer": "<what READS it>",
+    "roundTripTest": "<the test path that drives both halves for real>",
+    "roundTripProof": "<ONE SENTENCE: how that test drives BOTH REAL halves>" }
+],
+"entrypoints": [
+  { "kind": "workflow",
+    "path": "<the file CI runs>",
+    "realRunTest": "<the test path that runs it exactly as CI does>",
+    "realRunProof": "<ONE SENTENCE: how that test runs it the way CI runs it>" }
+]
+```
+
+### The proof sentence — `roundTripProof` / `realRunProof`
+
+A test PATH is a path. Nobody downstream — not the reviewer, not the next
+planner, not you in three tickets' time — can tell from `tests/test_list.py`
+whether that test drives two real halves or hands a hand-typed fixture to one of
+them. So the path is not the declaration; **the path plus one sentence is.**
+
+- `roundTripProof` — how that test builds the body with the REAL producer and
+  feeds it to the REAL consumer. Name both halves. Say what crosses between
+  them. *"It calls `write_request()`, reads the file back off disk, and passes
+  those bytes to `parse_request()`; there is no sample constant in the test."*
+- `realRunProof` — how that test runs the entrypoint the way CI runs it. *"It
+  reads the `run:` command out of the yml and executes that exact string from
+  the repo root with `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY_OWNER` and
+  `GITHUB_EVENT_PATH` set the way a runner sets them."*
+
+Write what the test ACTUALLY does. The reviewer reads this sentence and rejects
+the ticket when it describes a stub — a mocked producer, a patched consumer, a
+literal payload, an in-process import standing in for a command — and also when
+it is empty boilerplate that restates the rule instead of describing this test
+("it drives both halves for real" is not a proof, it is the heading). If you
+cannot write the sentence truthfully, the test you named is the wrong test:
+change the test, never the sentence.
+
+**Both keys are REQUIRED on every ticket.** A ticket with no seam and no new
+entrypoint writes an EMPTY array plus one sentence saying why:
+
+```json
+"seams": [],
+"seamsNote": "this ticket is a pure renderer; it writes no state another path reads.",
+"entrypoints": [],
+"entrypointsNote": "it adds no CLI command and no workflow."
+```
+
+An empty list is a CLAIM, not a blank. The reviewer checks that note against the
+brief, and "no seams" on a ticket whose own description names a writer and a
+reader is the fastest way to have your plan bounced.
+
+### THE ROUND-TRIP RULE — the one sentence to remember
+
+**Build the body with the real producer, feed it to the real consumer — no hand-written fixture between them.**
+
+That is what a `roundTripTest` is. The test calls the actual code that writes the
+state, takes WHAT IT ACTUALLY WROTE, and hands that to the actual code that reads
+it. Nobody types the payload. Nobody constructs "what the producer would have
+written". The moment a human-authored string sits between the two halves, the
+test is asserting that your idea of the format matches your idea of the format,
+and the two real halves can disagree forever underneath it.
+
+**A test that stubs the seam it claims to prove doesn't count as proof.** Not as
+a figure of speech — as the rule. If the `roundTripTest` you name mocks the
+producer, patches the consumer, or feeds either one a literal fixture, do not
+name it: it proves the opposite of what the ticket needs. Name the test that
+drives both halves, or re-slice the ticket until you can.
+
+### THE REAL-ENTRYPOINT RULE
+
+An `entrypoints` entry of kind `workflow` is a file CI runs, and its
+`realRunTest` must run it **the way CI runs it**, not the way it is convenient to
+run from a test:
+
+- the **same command**, byte for byte — if the workflow says
+  `python3 -m tools.hub`, the test runs `python3 -m tools.hub`, not
+  `python3 tools/hub.py` and not an in-process import. "The workflow ran a module
+  as a file" was one of the six.
+- the **same cwd** the workflow's step runs in.
+- the environment **GitHub Actions sets**, because a step that reads it and finds
+  nothing behaves differently on a runner than in your test:
+  `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY_OWNER`, `GITHUB_EVENT_PATH`.
+  Set them in the test to the values a real run would carry — including a real
+  event payload file at `GITHUB_EVENT_PATH` when the step reads one.
+
+An entry of kind `cli` is the same promise about a command a human or a script
+invokes: run the real argv, not the function behind it.
+
+### Worked example 1 — a seam (a producer and a consumer)
+
+A CLI writes a request file; a workflow's handler parses it. That is one seam,
+and it gets one round-trip test:
+
+```json
+{
+  "id": "t-003",
+  "title": "Write the promote request and parse it in the hub",
+  "acceptanceCriteria": ["a request written by the CLI is parsed by the hub"],
+  "seams": [
+    { "producer": "`widgets request promote` writes .widgets/request.json",
+      "consumer": "tools/hub.py parse_request() reads .widgets/request.json",
+      "roundTripTest": "tests/test_request_roundtrip.py",
+      "roundTripProof": "it runs the real `widgets request promote`, reads the file that command actually wrote, and passes those bytes to the real parse_request(); nothing in the test types a payload." }
+  ],
+  "entrypoints": [],
+  "entrypointsNote": "no new CI entrypoint; the hub already runs on the existing workflow."
+}
+```
+
+`tests/test_request_roundtrip.py` calls the CLI's writer, reads back the file it
+produced, and passes THAT to `parse_request()`. There is no `SAMPLE_REQUEST = {…}`
+constant in it anywhere. If there were, this is the ticket that would have
+shipped the producer/consumer format mismatch.
+
+### Worked example 2 — a workflow entrypoint
+
+A ticket that adds a publish workflow declares it, and names the test that runs
+it as CI does:
+
+```json
+{
+  "id": "t-007",
+  "title": "Publish the digest on a push to main",
+  "acceptanceCriteria": ["the publish step runs the hub module and exits 0"],
+  "seams": [],
+  "seamsNote": "the workflow reads no state this ticket also writes; the digest format is t-003's seam.",
+  "entrypoints": [
+    { "kind": "workflow",
+      "path": ".github/workflows/publish.yml",
+      "realRunTest": "tests/test_publish_workflow.py",
+      "realRunProof": "it parses the publish step's `run:` out of the yml and executes that exact command from the repo root with GITHUB_SERVER_URL, GITHUB_REPOSITORY_OWNER and GITHUB_EVENT_PATH set as a runner sets them." }
+  ]
+}
+```
+
+`tests/test_publish_workflow.py` reads the step's command out of
+`.github/workflows/publish.yml` and runs THAT command, from the workflow's cwd,
+with `GITHUB_SERVER_URL` / `GITHUB_REPOSITORY_OWNER` / `GITHUB_EVENT_PATH` set
+the way a runner sets them. A test that imports the handler and calls a function
+is not this test.
+
+### Worked example 3 — a workflow file you **do not own**
+
+A ticket often has to NAME a workflow file without owning it: to say another
+ticket owns it, or to forbid editing it. You declare that by **naming the file
+in `entrypointsNote`** — and that is accepted. It is your recorded disclaimer,
+and it is the ONLY right answer here:
+
+```json
+{
+  "id": "t-002",
+  "title": "Add the promote CLI",
+  "description": "Add the `promote` subcommand. Do NOT edit .github/workflows/publish.yml — t-004 owns that file.",
+  "seams": [],
+  "seamsNote": "pure CLI; it writes no state another path reads.",
+  "entrypoints": [],
+  "entrypointsNote": "this ticket adds no CI entrypoint, and it does not own .github/workflows/publish.yml — it names that file only to forbid editing it here."
+}
+```
+
+**Never invent an `entrypoints` entry for a file you do not own.** An entry is a
+promise that a test runs that file for real; writing one for a file you are
+forbidden to edit is a FALSE DECLARATION, and false declarations are the entire
+thing these keys exist to stop. Equally, never delete the "do not edit this
+file" sentence to get past the gate — that sentence is a real guardrail. Name
+the file in the note instead. A disclaimer is per FILE: naming `ci.yml` in the
+note says nothing about `publish.yml`, and a ticket may own one workflow (an
+entry) and disclaim another (the note) in the same ticket.
+
+The note is a RECORD, so the reviewer reads it: a disclaimer on a ticket whose
+PRD work plainly adds that workflow is an objection, and the right fix then is
+the entry, with its `realRunProof`.
+
+**The harness checks the mechanical half and will bounce your plan for it,**
+naming the ticket and what is missing: a ticket that names a
+`.github/workflows/*.yml` file anywhere EXCEPT `seamsNote`/`entrypointsNote`
+must either declare a `workflow` entrypoint for that file or name it in
+`entrypointsNote`; every seam must name a `roundTripTest` and a
+`roundTripProof`, every entrypoint a `realRunTest` and a `realRunProof`; every
+test path must be a real test path in this repo (under `tests/`, `test/`,
+`spec/`, `__tests__/`, or carrying the repo's own convention like
+`foo.test.ts` / `test_foo.py`). What it cannot check is whether the sentence you
+wrote is TRUE — whether the test you named really drives both halves. That is
+the reviewer's, and then the Implementer's.
+
 ## Per-ticket context manifest (one file per ticket)
 
 In ADDITION to `plan.json`, emit one **context manifest** per ticket so the
@@ -280,9 +483,10 @@ output directory. The harness reads ONLY the file you create, never your reply: 
 reply without the file counts as no output and FAILS the stage.
 
 `plan.json` must contain the whole list as a JSON array in this **canonical
-shape** — one field per line, with `acceptanceCriteria` and `dependencies` as
-inline single-line arrays, and `establishesSharedInfrastructure` as a bare
-boolean (`true`/`false`, never a string):
+shape** — one field per line, with `acceptanceCriteria`, `dependencies`,
+`seams` and `entrypoints` as inline single-line arrays, and
+`establishesSharedInfrastructure` as a bare boolean (`true`/`false`, never a
+string):
 
 ```json
 [
@@ -291,6 +495,9 @@ boolean (`true`/`false`, never a string):
     "title": "Add the data-theme attribute and dark token set",
     "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
     "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
+    "seams": [{"producer": "setTheme() writes data-theme on <html>", "consumer": "the token stylesheet reads [data-theme]", "roundTripTest": "src/theme.test.ts", "roundTripProof": "it calls the real setTheme(), then reads the computed token values back through the real stylesheet; no attribute is set by hand."}],
+    "entrypoints": [],
+    "entrypointsNote": "no CLI and no workflow are added by this slice.",
     "estimatedReadLoc": 200,
     "estimatedTestLoc": 80,
     "estimatedNewLoc": 120,

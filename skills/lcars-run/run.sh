@@ -4066,6 +4066,502 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
   ' "$1"
 }
 
+
+# plan_reject_note_write <plan-path> <reason-file>
+# Files a rejection REASON where cmd_plan's retry loop reads it: beside the plan
+# file the worker wrote, which on every harness path is the worker's own mktemp
+# scratch dir (the S178 channel — see the note at that loop).
+#
+# NEVER INSIDE A WORKING TREE, and that guard is not theoretical: `plan-save` is
+# also run by hand and by tests against a plan file that lives in the repo, and
+# the first cut of this dropped `.plan-reject-note` into tests/fixtures/ on every
+# rejected fixture. A harness that dirties the tree it is building is a harness
+# that will eventually commit its own scratch.
+plan_reject_note_write() { # plan-path reason-file
+  local d; d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 0
+  [ -n "$d" ] || return 0
+  # Inside ANY git working tree ⇒ do not write. Checking the CURRENT repo is not
+  # enough: `plan-save` is routinely pointed at a plan file in a DIFFERENT
+  # checkout (every plan fixture in this repo's own test suite is one), and that
+  # checkout is just as much somebody's tree. A cold worker's scratch dir is a
+  # mktemp dir and is in no repo at all, so the retry channel is unaffected; if
+  # it ever were in one, the worst case is the pre-S236 behaviour (no reason
+  # carried), never a dotfile in a tree.
+  if "$GIT_BIN" -C "$d" rev-parse --show-toplevel >/dev/null 2>&1; then
+    return 0
+  fi
+  cp "$2" "$d/.plan-reject-note" 2>/dev/null || :
+}
+
+# === S236: THE HOST CHECKLIST ===============================================
+#
+# THREE separate hardcoded-github.com bugs got past stubbed suites in ONE product
+# over the 26–29 Sep weekend: a URL built from a literal "github.com", a runner's
+# `gh` that defaulted to github.com and crawled the wrong org, and an auth check
+# that never named the host. The suites passed because nothing ever asserted
+# WHICH host a real call went to.
+#
+# "Non-default host" is KNOWABLE MECHANICALLY at plan time, from two places and
+# no guesses: the target repo's own origin (host-adapter.sh `gh_hostname`, which
+# returns EMPTY for github.com and the host for anything else, with
+# $LCARS_GH_HOST overriding), and the PRD's own text when it names one. When
+# either fires, the mission carries `hostChecklist: true` and the Plan prompt
+# carries the checklist; on plain github.com BOTH are absent and the prompt is
+# byte-identical to before this round.
+
+# mission_gh_host -> the GitHub host to pin, or EMPTY when github.com is right.
+# The adapter already exposes this as its `gh-host` op (it is the same function
+# every outbound call in the adapter resolves its --hostname from), so there is
+# exactly ONE definition of "which host" in the system and this reads it rather
+# than re-deriving it.
+mission_gh_host() {
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$HOST_ADAPTER" gh-host 2>/dev/null || :
+}
+
+# prd_named_host <prd.md> -> a non-default host the PRD NAMES, or EMPTY.
+# A PRD can describe work against an enterprise host in a repo whose own origin
+# is github.com (building the thing that talks to GHE), so the origin alone is
+# not the whole signal. Three literal forms, and github.com is deliberately NOT
+# one of them: `--hostname <h>`, a `github.<label>…` that is not github.com, and
+# GHE / "GitHub Enterprise" named as words. `ghe` is matched WORD-BOUNDED — it
+# sits inside "higher", "lighter" and "ghetto", and an unbounded match would put
+# the checklist on half the missions in the fleet.
+prd_named_host() { # prd.md
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S236_HOST_PY'
+import re, sys
+try:
+    txt = open(sys.argv[1], errors="replace").read()
+except Exception:
+    sys.exit(0)
+m = re.search(r"--hostname[\s=]+([A-Za-z0-9][A-Za-z0-9.-]*)", txt)
+if m and m.group(1).lower().rstrip(".") != "github.com":
+    sys.stdout.write(m.group(1).rstrip(".")); sys.exit(0)
+for m in re.finditer(r"\bgithub\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*", txt):
+    h = m.group(0).rstrip(".")
+    if h.lower() != "github.com":
+        sys.stdout.write(h); sys.exit(0)
+if re.search(r"\bGHE\b", txt) or re.search(r"\bgithub enterprise\b", txt, re.I):
+    sys.stdout.write("GHE")
+S236_HOST_PY
+}
+
+# mission_host_checklist_host -> the host this Mission must be pinned to, or
+# EMPTY when the checklist does not apply. ONE resolution, read by the Plan
+# prompt block, the Plan Review block and plan-save's state flag, so the three
+# cannot disagree about whether a mission is on a non-default host.
+mission_host_checklist_host() {
+  local h; h="$(mission_gh_host)"
+  if [ -n "$h" ]; then printf '%s' "$h"; return 0; fi
+  prd_named_host "$MISSION_DIR/prd.md"
+}
+
+# plan_host_checklist_block -> the Plan prompt's host checklist, or NOTHING AT
+# ALL on a plain github.com mission (so that prompt stays byte-identical).
+plan_host_checklist_block() {
+  local h; h="$(mission_host_checklist_host)"
+  [ -n "$h" ] || return 0
+  local named="$h" how
+  if [ "$h" = "GHE" ]; then
+    named="the GitHub Enterprise host this Mission names"
+    how="the PRD names GitHub Enterprise; the exact hostname comes from \`gh auth status\`"
+  else
+    how="resolved from this repo's origin, or named in the PRD"
+  fi
+  printf '
+
+## HOST CHECKLIST — this Mission is NOT on github.com
+
+This Mission'"'"'s GitHub host is **%s** (%s). Three separate hardcoded-github.com
+bugs shipped past green test suites in one product because every suite stubbed
+the call and nothing asserted WHICH host a real one went to. So every ticket
+that makes an outbound call to the forge carries all four of these, as
+acceptance criteria a test can check:
+
+1. **Every outbound URL is BUILT FROM the host** — read from the environment or
+   config (`GITHUB_SERVER_URL`, the configured host, `gh`'"'"'s own resolution),
+   never a literal `github.com` and never a literal `api.github.com` anywhere in
+   the source.
+2. **Every `gh` invocation the runner makes is PINNED with `--hostname %s`.**
+   A bare `gh` on a runner defaults to github.com and will happily query the
+   WRONG org and return a plausible, empty, wrong answer.
+3. **The auth check names the host: `gh auth status --hostname %s`.** An auth
+   check against the default host passes while the host the work runs against is
+   unauthenticated.
+4. **A test asserts the URL a real call goes to** — not that the function was
+   called, but the host in the URL the call would hit. Assert on the resolved
+   URL or the argv the process would run.
+
+A ticket whose criteria do not name the host is the ticket that will ship the
+fourth hardcoded-github.com bug. Name it.' "$named" "$how" "$h" "$h"
+}
+
+# plan_review_host_block -> the reviewer'"'"'s half of the same rule, or NOTHING on a
+# github.com mission. The reviewer is NOT handed the PRD (that independence is
+# the whole point of the stage), so if it is not told the host here it cannot
+# know there is one.
+plan_review_host_block() {
+  local h; h="$(mission_host_checklist_host)"
+  [ -n "$h" ] || return 0
+  printf '
+
+## This Mission is NOT on github.com — audit the host
+
+This Mission'"'"'s GitHub host is **%s**. Three hardcoded-github.com bugs shipped
+past green suites in one product, because a stubbed call asserts nothing about
+WHICH host a real one reaches.
+
+Check EVERY ticket that makes an outbound call to the forge: it must carry an
+acceptance criterion that NAMES the host — an URL built from the host rather
+than a literal `github.com`, a runner `gh` pinned with `--hostname %s`, an
+auth check that is `gh auth status --hostname %s`, and a test that asserts the
+URL a real call goes to. A ticket that makes an outbound call and names no host
+in any criterion is an OBJECTION: say which ticket, and which of the four it is
+missing.' "$h" "$h" "$h"
+}
+
+# === S236: SEAMS AND ENTRYPOINTS — the MECHANICAL half =======================
+#
+# WHY THIS EXISTS. Over the weekend of 26–29 Sep six live breaks got past green
+# test suites, and every one of them sat at a STUBBED SEAM: two code paths touch
+# the same state and the suite only ever drove ONE side. The producer wrote one
+# issue format and the consumer parsed another; an empty allow-list meant "show
+# everything"; a workflow ran a module as a file; the runner's `gh` defaulted to
+# github.com and crawled the wrong org. A plan could claim a test PROVED a
+# producer/consumer pair while the test stubbed one half and fed the other a
+# hand-written fixture — and every gate stayed green.
+#
+# RECORD, DO NOT INFER (standing ruling, S188). There is deliberately NO seam
+# DETECTOR here: nothing scans a diff for a writer and a reader and guesses that
+# they are a pair. That is inference, it has been rejected, and the project has
+# burned rounds on code that reads back text a human also writes. The Plan worker
+# DECLARES its seams and entrypoints (the prompt teaches the keys and the three
+# rules); Plan Review AUDITS them against the PRD; Verify RECORDS them. This
+# function checks only the part that is MECHANICAL — a literal path, a present
+# key, a test path the repo would classify as a test — and nothing that needs a
+# judgement about what a ticket IS.
+#
+# THE KEYS, per ticket, both ARRAYS:
+#   "seams":       [{"producer": "<what writes>", "consumer": "<what reads>",
+#                    "roundTripTest": "<test path>",
+#                    "roundTripProof": "<how that test drives BOTH real halves>"}]
+#   "entrypoints": [{"kind": "workflow"|"cli", "path": "<file>",
+#                    "realRunTest": "<test path>",
+#                    "realRunProof": "<how that test runs it as CI does>"}]
+# An EMPTY array is a declaration of "none" and must carry a one-sentence
+# "seamsNote" / "entrypointsNote" saying why. Making `seams: []` free was named
+# as a wrong answer: a silent empty list is the stubbed seam with extra steps.
+#
+# ADDITIVE, AND BACK-COMPAT IS LOAD-BEARING. A ticket that carries NEITHER key is
+# accepted exactly as before, because every plan already on disk and every
+# in-flight mission has neither, and renaming or hard-requiring a key would break
+# them all (and every other plan suite). The teeth come from the two places that
+# can see a plan with no keys at all — the Plan prompt, which teaches them, and
+# Plan Review, which is told that a PRD naming a writer and a reader with an
+# empty/absent `seams[]` is an objection. What IS mechanical:
+#
+#   1. ALL-OR-NOTHING ACROSS THE PLAN. If ANY ticket declares either key, EVERY
+#      ticket must declare both. Without this a worker silences the contract by
+#      declaring it on the eleven easy tickets and omitting it on the one with
+#      the seam, and the plan still reads as compliant.
+#   2. THE WORKFLOW RULE. A ticket that NAMES a `.github/workflows/<x>.yml`
+#      anywhere in its own JSON EXCEPT the two note fields (so: its
+#      `declaredEdits`, its description, its criteria) must either declare an
+#      `entrypoints` entry of kind `workflow` FOR THAT FILE, with a
+#      `realRunTest`, or DISCLAIM that file by naming it in `entrypointsNote`.
+#      This is the weekend's workflow break, and the trigger is a literal path
+#      match — not a guess about what the ticket does. S236 fix round 1 added
+#      both the note exclusion and the disclaimer: see the long note at rule 2
+#      in the body for the false positive that had no escape and why the
+#      disclaimer is the right hole to open.
+#   3. A SEAM NAMES ITS ROUND-TRIP TEST, an entrypoint names its real-run test,
+#      and every named test path is one the repo's OWN conventions classify as a
+#      test (see proof_is_test_path, whose rules this mirrors — a top-level
+#      `tests/`, a `__tests__/`, a `spec/`, or a co-located `foo.test.ts` /
+#      `test_foo.py`). A path that is not a test path, is absolute, or escapes
+#      the tree is refused.
+#   4. AN ENTRY RECORDS ITS CLAIM. A seam entry carries `roundTripProof` and an
+#      entrypoint entry carries `realRunProof` — one sentence saying HOW the
+#      named test drives both real halves / runs the entrypoint as CI does.
+#      Presence and non-blankness only; the sentence's CONTENT is Plan Review's
+#      to judge. Without it the reviewer had nothing to audit on a CONFORMING
+#      plan (see the note at PROOF_ASK).
+#
+# EVERY REJECTION IS ACTIONABLE, and that is a requirement, not a nicety: the
+# reason rides the S178 reject-note channel into the NEXT worker's prompt, so
+# "seams invalid" is a wrong answer. Each line NAMES the ticket, the file or the
+# entry, and the missing key. All problems are accumulated into ONE message (the
+# same reason s174bad accumulates: a plan is rewritten in one pass, and failing
+# on the first offending ticket with MAX_WORKER_TRIES at 3 is how a stage
+# DEADLOCKS).
+#
+# FAILS OPEN ON SHAPE. An unparseable plan.json exits 0 here: the canonical
+# shape is validate_plan_json's job and it has already run, and two validators
+# must not both fail a plan for the same reason.
+validate_plan_seams() { # plan.json
+  # A CHECK THAT BROKE IS NOT A PLAN THAT FAILED. The S178 guard learned this the
+  # expensive way (see its `*)` arm): an ascii stdout encoding made it raise on
+  # its own `⚠`, exit 1, and DISCARD a well-formed plan — the fail-open branch
+  # itself failing closed. No interpreter ⇒ UNCHECKED, and it says so out loud
+  # rather than refusing every plan on the machine.
+  local py="${LCARS_PYTHON_BIN:-python3}"
+  if ! command -v "$py" >/dev/null 2>&1; then
+    printf '  ⚠ SEAMS UNCHECKED — no python3 (%s) on this machine, so the seams/entrypoints contract could not be checked. The plan is passed through; nothing about its seams has been verified.\n' "$py" >&2
+    return 0
+  fi
+  local _src=0
+  "$py" - "$1" <<'S236_PY'
+import json, re, sys
+
+try:
+    with open(sys.argv[1]) as fh:
+        plan = json.load(fh)
+except Exception:
+    sys.exit(0)                      # shape is validate_plan_json's job
+if not isinstance(plan, list):
+    sys.exit(0)
+
+WF = re.compile(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml")
+
+# Mirrors run.sh's proof_is_test_path: the repo's own test conventions, as a
+# deliberate SUPERSET. A co-located `src/foo.test.ts` IS this repo's tests dir
+# when that is what the repo does — plan.md's manifest rules say so explicitly,
+# and refusing it would fight the convention the worker is told to follow.
+def is_test_path(p):
+    if not p or p.startswith("/") or p.startswith("~") or ":" in p:
+        return False
+    parts = [x for x in p.replace("\\", "/").split("/") if x]
+    if not parts or ".." in parts:
+        return False
+    if any(seg in ("tests", "test", "spec", "__tests__") for seg in parts[:-1]):
+        return True
+    b = parts[-1]
+    return bool(re.search(r"\.(test|spec)\.", b)
+                or re.match(r"^test_.+\.py$", b)
+                or re.search(r"_test\.py$", b)
+                or re.search(r"_test\.go$", b)
+                or re.search(r"_(test|spec)\.rb$", b)
+                or re.search(r"(Test|Tests)\.cs$", b))
+
+def txt(v):
+    return v.strip() if isinstance(v, str) else ""
+
+bad = []
+# Does this plan use the contract at all? One ticket declaring either key puts
+# the WHOLE plan under it (rule 1).
+declaring = any(isinstance(t, dict) and ("seams" in t or "entrypoints" in t)
+                for t in plan)
+
+SPEC = (("seams",       "seamsNote",       "roundTripTest", "roundTripProof"),
+        ("entrypoints", "entrypointsNote", "realRunTest",   "realRunProof"))
+
+# S236 fix round 1 — WHY THE PROOF FIELD EXISTS. `roundTripTest` carries a bare
+# test PATH; that is Plan's own contract and both live engines obeyed it. But
+# Plan Review was told to "read what each roundTripTest is described as", and on
+# a plan that FOLLOWS the contract there is nothing to read — so the advertised
+# gate ("reject a round-trip test whose description stubs either half") fired
+# only when a planner volunteered the sentence that convicted it. A bare path
+# plus silence was an automatic APPROVE, and the stub surfaced first at
+# Implement. The cure is RECORD, DO NOT INFER applied to the claim: the PRODUCER
+# writes one sentence saying HOW the test drives both real halves, and the
+# reviewer audits a field that is now always there. This function checks only
+# that it is PRESENT and NOT BLANK — whether the sentence describes a real test
+# or openly describes a stub is judgement, and judgement is the reviewer's.
+PROOF_ASK = {
+    "roundTripProof":
+        'one sentence saying HOW that test drives BOTH REAL halves — it calls '
+        'the real producer, takes what the producer ACTUALLY wrote, and hands '
+        'that to the real consumer, with no hand-written fixture, sample '
+        'constant or mocked half between them. A bare test path is a path: '
+        'nobody downstream can audit it.',
+    "realRunProof":
+        'one sentence saying HOW that test runs the entrypoint the way CI runs '
+        'it — the same command byte for byte, the same cwd, and the environment '
+        'Actions sets (GITHUB_SERVER_URL, GITHUB_REPOSITORY_OWNER, '
+        'GITHUB_EVENT_PATH). A test that imports the handler and calls a '
+        'function is not running the entrypoint.',
+}
+
+for n, t in enumerate(plan, 1):
+    if not isinstance(t, dict):
+        continue
+    tid = txt(t.get("id")) or ("ticket %d" % n)
+
+    for key, note, testkey, proofkey in SPEC:
+        if key not in t:
+            if declaring:
+                bad.append('%s is missing "%s". Other tickets in this plan '
+                           'declare it, so EVERY ticket must: list the %s this '
+                           'ticket creates, or write "%s": [] with a '
+                           'one-sentence "%s" saying why it has none.'
+                           % (tid, key, key, key, note))
+            continue
+        v = t.get(key)
+        if not isinstance(v, list):
+            bad.append('%s has a non-array "%s" — it must be a JSON array; use '
+                       '[] plus "%s" when there are none.' % (tid, key, note))
+            continue
+        if not v:
+            if not txt(t.get(note)):
+                bad.append('%s declares "%s": [] but carries no "%s" — an empty '
+                           'list is a CLAIM that this ticket has none, and it '
+                           'needs one sentence saying why.' % (tid, key, note))
+            continue
+        for i, e in enumerate(v, 1):
+            if not isinstance(e, dict):
+                bad.append('%s, %s entry %d is not an object — each entry is a '
+                           '{…} object.' % (tid, key, i))
+                continue
+            if key == "seams":
+                who = txt(e.get("producer")) or txt(e.get("consumer")) \
+                      or ("entry %d" % i)
+                for f in ("producer", "consumer"):
+                    if not txt(e.get(f)):
+                        bad.append('%s, seam %d ("%s") is missing "%s" — name '
+                                   'WHAT writes the state and WHAT reads it.'
+                                   % (tid, i, who, f))
+            else:
+                who = txt(e.get("path")) or ("entry %d" % i)
+                kind = txt(e.get("kind"))
+                if kind not in ("workflow", "cli"):
+                    bad.append('%s, entrypoint %d ("%s") has "kind": "%s" — it '
+                               'must be "workflow" or "cli".'
+                               % (tid, i, who, kind or "(absent)"))
+                if not txt(e.get("path")):
+                    bad.append('%s, entrypoint %d is missing "path" — name the '
+                               'file CI actually runs.' % (tid, i))
+            tp = txt(e.get(testkey))
+            if not tp:
+                bad.append('%s, %s %d ("%s") is missing "%s" — name the test '
+                           'file that drives it for real.'
+                           % (tid, key[:-1], i, who, testkey))
+            elif not is_test_path(tp):
+                bad.append('%s, %s %d ("%s") names "%s": "%s", which is not a '
+                           'test file in this repo — it must live under the '
+                           "repo's tests dir (tests/, test/, spec/, __tests__/) "
+                           'or carry its test convention (foo.test.ts, '
+                           'test_foo.py, foo_test.go), and it must be a '
+                           'repo-relative path.'
+                           % (tid, key[:-1], i, who, testkey, tp))
+            # rule 4 (S236 fix round 1): the entry RECORDS ITS CLAIM. Presence
+            # and non-blankness only — the sentence's CONTENT is the reviewer's.
+            if not txt(e.get(proofkey)):
+                bad.append('%s, %s %d ("%s") names "%s" but carries no "%s" — '
+                           '%s'
+                           % (tid, key[:-1], i, who, testkey, proofkey,
+                              PROOF_ASK[proofkey]))
+
+    # --- rule 2: the WORKFLOW RULE ------------------------------------------
+    #
+    # GATED ON `declaring`, exactly as rules 1/3/4 are (S236 fix round 3). This
+    # rule ran over EVERY plan, gated on nothing, and that made the round's own
+    # invariant false: an ordinary pre-S236 ticket whose `description` says "Add
+    # .github/workflows/publish.yml that runs the handler" — a sentence half the
+    # plans on disk contain — was REJECTED here while main ACCEPTED it. A plan
+    # that does not use the contract AT ALL must not be held to one part of it;
+    # the keys are ADDITIVE, and a ticket carrying NEITHER key is accepted
+    # exactly as before. A plan that DOES declare is held to this rule in full.
+    if not declaring:
+        continue
+    # A literal path match over the ticket's own JSON — minus the NOTE FIELDS.
+    #
+    # S236 fix round 1. This scanned the WHOLE ticket, `seamsNote` and
+    # `entrypointsNote` included, and the tester reproduced the consequence
+    # twice. The note fields are prose ABOUT AN ABSENCE: a pure-CLI ticket that
+    # said "do NOT edit .github/workflows/publish.yml — it belongs to t-004" was
+    # rejected, and naming the file inside `entrypointsNote` — the very field
+    # that exists to explain "no entrypoint here" — tripped the identical
+    # rejection, so NO WORDING satisfied the gate. The planner's only two ways
+    # out were to invent an entrypoints entry with a realRunTest for a file it
+    # is forbidden to edit (a FALSE DECLARATION, exactly what this round exists
+    # to kill) or to delete the guardrail sentence. A gate that forces a lie is
+    # worse than no gate.
+    #
+    # So the decision is made from STRUCTURE, never from sentiment. Nothing here
+    # reads "do not touch" or "belongs to" out of the prose — that is the
+    # inference trap that cost S147, S156 and S188 multiple rounds each. Two
+    # structural facts decide it, per file:
+    #   - the path appears in a field OTHER than the two notes  ⇒ it is in scope
+    #   - that path is COVERED by a `workflow` entrypoints entry, or DISCLAIMED
+    #     by being NAMED in `entrypointsNote`                   ⇒ accepted
+    # The disclaimer is per FILE, so a note naming ci.yml does not wave through
+    # publish.yml, and it is allowed alongside a non-empty `entrypoints` so a
+    # ticket can own one workflow and disclaim another in the same breath.
+    #
+    # THE HOLE THIS OPENS, named out loud: a planner that genuinely adds a
+    # workflow can now escape by writing a note instead of an entry. That is
+    # accepted deliberately — COMPLETENESS against the PRD is the reviewer's job
+    # (plan-review.md audits exactly this), and the note is a RECORDED, signed
+    # disclaimer a human can read, which is strictly better than the two
+    # alternatives above.
+    scan = dict((k, v) for k, v in t.items()
+                if k not in ("seamsNote", "entrypointsNote"))
+    named = sorted(set(WF.findall(json.dumps(scan))))
+    disclaimed = set()
+    for p in WF.findall(txt(t.get("entrypointsNote"))):
+        disclaimed.add(p[2:] if p.startswith("./") else p)
+    covered = {}
+    eps = t.get("entrypoints")
+    if isinstance(eps, list):
+        for e in eps:
+            if isinstance(e, dict) and txt(e.get("kind")) == "workflow":
+                p = txt(e.get("path"))
+                if p.startswith("./"):
+                    p = p[2:]
+                covered[p] = txt(e.get("realRunTest"))
+    for wf in named:
+        if wf in covered:
+            if not covered[wf]:
+                continue        # already reported by the entry loop above
+            continue
+        if wf in disclaimed:
+            continue            # named in "entrypointsNote" — a recorded disclaimer
+        bad.append('%s names the workflow file %s, and neither declares an '
+                   '"entrypoints" entry for it nor disclaims it. The whole '
+                   'ENTRY is absent, not one field of it. If this ticket OWNS '
+                   'that file, declare it: {"kind": "workflow", "path": "%s", '
+                   '"realRunTest": "<test path>", "realRunProof": "<how that '
+                   'test runs it as CI does>"} — a test that runs that '
+                   'workflow\'s command the way Actions runs it (same cwd, same '
+                   'command, the env Actions sets). If this ticket does NOT own '
+                   'that file — another ticket owns it, or you name it only to '
+                   'forbid editing it — then NAME IT IN "entrypointsNote" and '
+                   'that is accepted as your recorded disclaimer; do not invent '
+                   'an entry for a file you are not going to prove.'
+                   % (tid, wf, wf))
+
+if not bad:
+    sys.exit(0)
+
+head = ("lcars run: this plan's seams and entrypoints do not hold up. Every "
+        "ticket declares, as ARRAYS:\n"
+        '    "seams":       [{"producer": "<what writes>", "consumer": "<what reads>", "roundTripTest": "<test path>", "roundTripProof": "<how that test drives BOTH real halves>"}]\n'
+        '    "entrypoints": [{"kind": "workflow"|"cli", "path": "<file>", "realRunTest": "<test path>", "realRunProof": "<how that test runs it as CI does>"}]\n'
+        "  An EMPTY array is a claim that this ticket has none, and needs a "
+        'one-sentence "seamsNote" / "entrypointsNote" saying why. A round-trip '
+        "test builds the body with the REAL producer and feeds it to the REAL "
+        "consumer — no hand-written fixture between them; a real-run test runs "
+        "the entrypoint exactly as CI does. The *Proof fields are the sentence "
+        "saying HOW: a bare test path is a path, and nobody downstream can "
+        "audit a path. A workflow file you name but do NOT own is declared by "
+        'NAMING IT in "entrypointsNote" — never by inventing an entry for it. '
+        "Fix exactly these:\n")
+sys.stderr.write(head + "".join("  - %s\n" % b for b in bad))
+sys.exit(1)
+S236_PY
+  _src=$?
+  case "$_src" in
+    0) return 0 ;;
+    1) return 1 ;;                 # a real rejection, reason already on stderr
+    *)
+      # A python crash, a signal, a 127 that `command -v` could not see. The
+      # plan is UNCHECKED, not refused — and it never passes silently.
+      printf '  ⚠ SEAMS UNCHECKED — the seams/entrypoints check itself failed to run (exit %s). That is the CHECK breaking, not the plan: the plan is passed through and nothing about its seams has been verified.\n' "$_src" >&2
+      return 0 ;;
+  esac
+}
+
 # --- S178: the over-correction guard ---------------------------------------
 # Compares the plan the reviewer ACTUALLY REVIEWED against the revision that
 # answered it, and rejects edges that were ADDED on tickets no objection names.
@@ -4354,7 +4850,45 @@ cmd_plan_save() {
   # S169: the second argument is this Mission's HTML mockup basenames, or EMPTY.
   # Empty leaves the validator behaving exactly as it did before — which is the
   # case for every mission that did not come from the holodeck.
-  validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" || exit 1
+  #
+  # S236 — THE REJECTION REASON MUST REACH THE RETRYING WORKER. Until this round
+  # the ONLY thing that ever wrote `.plan-reject-note` was the S178
+  # over-correction guard: a VALIDATOR rejection printed to stderr and the next
+  # attempt was told nothing at all, so the Plan loop could burn its whole budget
+  # while the worker re-emitted the same plan. Both validators now tee their
+  # reason into the note beside the worker's own plan file — exactly where
+  # cmd_plan's retry loop already looks. The reason is still printed to stderr
+  # byte-for-byte, so nothing a human or a test reads off this path changes; the
+  # note is a COPY, filling a channel that was empty.
+  local _verr; _verr="$(mktemp)"
+  local _vrc=0
+  validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" \
+    2>"$_verr" || _vrc=$?
+  if [ "$_vrc" -eq 0 ]; then
+    # S236 — the seams/entrypoints contract. Runs AFTER the shape validator so a
+    # half-formed plan is never failed twice for the same thing, and so a
+    # missing-field message is never buried under a page of seam advice.
+    validate_plan_seams "$PLAN" 2>>"$_verr" || _vrc=$?
+  fi
+  # ALWAYS replay what the validators said. On a clean pass that is nothing; it
+  # is NOT always nothing, because validate_plan_seams reports an UNCHECKED
+  # check (no interpreter, a crash) while still passing the plan — and a warning
+  # that only prints on the failure path is a warning nobody ever reads.
+  [ -s "$_verr" ] && cat "$_verr" >&2
+  if [ "$_vrc" -ne 0 ]; then
+    plan_reject_note_write "$PLAN" "$_verr"
+    rm -f "$_verr"
+    exit 1
+  fi
+  rm -f "$_verr"
+
+  # S236 — the HOST CHECKLIST flag. A DURABLE record on the mission that this
+  # work is NOT on github.com, written the moment a plan lands so every later
+  # reader (Plan Review, the board, Verify) sees the same fact the Plan prompt
+  # was assembled from. Absent entirely on a github.com mission.
+  if [ -n "$(mission_host_checklist_host)" ]; then
+    lcars_state_set "$STATE" hostChecklist true || true
+  fi
 
   # S178 — the over-correction guard. It runs off the REVISION TOKEN
   # (plan-under-review.json, written by review_fail; see the long note there),
@@ -12770,6 +13304,157 @@ verify_unfenced_note() {
   printf '        place in the drawing. Treat the anchors as claims, not as checked facts.\n'
 }
 
+# === S236: THE SEAMS AND ENTRYPOINTS RECORD AT VERIFY ========================
+#
+# A RECORD, AND NOTHING MORE. The plan DECLARED, per ticket, every
+# producer/consumer pair it created and every CI entrypoint it added, each with
+# the test that was supposed to drive it for real. This prints that declaration
+# back beside ONE mechanical fact per named test — does a file at that path exist
+# at the tip (`git ls-files`) — so Number One and the captain can see the list
+# the build was supposed to produce.
+#
+# IT PASSES NO JUDGEMENT, deliberately. `exists: no` is not a verdict: the worker
+# may have landed the test at the repo's own convention under a different name,
+# and a file that exists may still stub the very seam it claims to prove. Reading
+# the record and SAYING what it means is S240's job (the rebuilt first officer
+# marks a criterion `untested (stubbed seam)` and runs the real entrypoint off
+# exactly these keys). This round DEFINES the record; the next one judges it. A
+# readout that guessed here would be the "record, don't infer" rule broken by the
+# function that exists to serve it.
+#
+# Prints NOTHING for a plan whose tickets declare neither key — which is every
+# plan written before this round — so their Verify readout is byte-identical.
+verify_seams_readout() { # plan.json
+  [ -f "$1" ] || return 0
+  # The tracked list goes through a FILE, not a pipe: the python body below is a
+  # heredoc, and a heredoc IS this process's stdin — piping `git ls-files` into
+  # it silently loses the pipe and every test reads back `exists: no`.
+  #
+  # S236 fix round 3 — enumerated FROM THE REPO ROOT, not from cwd. A bare
+  # `git ls-files` prints paths RELATIVE TO CWD, so run from any subdirectory the
+  # tracked set held no `tests/...` path and EVERY declared test read
+  # `exists: no` — the record's one mechanical fact inverted by where the captain
+  # happened to be standing. $REPO_ROOT is the toplevel locate_mission already
+  # resolved; this is the same `( cd "$REPO_ROOT" && ls-files )` the untracked
+  # sweeps use.
+  local _ls; _ls="$(mktemp)"
+  ( cd "${REPO_ROOT:-.}" && "$GIT_BIN" ls-files ) >"$_ls" 2>/dev/null || :
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$_ls" <<'S236_VERIFY_PY'
+import json, sys, textwrap
+
+try:
+    with open(sys.argv[2]) as fh:
+        tracked = set(ln.strip() for ln in fh if ln.strip())
+except Exception:
+    tracked = set()
+try:
+    with open(sys.argv[1]) as fh:
+        plan = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(plan, list):
+    sys.exit(0)
+
+def txt(v):
+    return " ".join(str(v).split()) if isinstance(v, str) else ""
+
+def clip(s, n=140):
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+def ex(p):
+    return "yes" if p in tracked else "no"
+
+# S236 fix round 2: the recorded proof sentence, printed under the test path it
+# qualifies. WRAPPED, never clipped — `clip()` deliberately does not touch this.
+# A bare path is the unauditable thing this round exists to replace, and cutting
+# the sentence that makes it auditable would hide exactly the reasoning the
+# record is for. It is still only a RECORD: nothing below grades what it says.
+PROOF_LABEL = "proof: "
+PROOF_INDENT = " " * 12
+PROOF_HANG = " " * (12 + len(PROOF_LABEL))
+
+def proof_lines(s):
+    if not s:
+        return []
+    return textwrap.wrap(s, width=84,
+                         initial_indent=PROOF_INDENT + PROOF_LABEL,
+                         subsequent_indent=PROOF_HANG,
+                         break_long_words=False, break_on_hyphens=False)
+
+any_proof = False
+rows = []
+for t in plan:
+    if not isinstance(t, dict):
+        continue
+    if "seams" not in t and "entrypoints" not in t:
+        continue
+    tid = txt(t.get("id")) or "?"
+    lines = []
+    seams = t.get("seams")
+    if isinstance(seams, list) and seams:
+        for e in seams:
+            if not isinstance(e, dict):
+                continue
+            lines.append("      seam: %s  →  %s"
+                         % (clip(txt(e.get("producer")) or "(no producer)"),
+                            clip(txt(e.get("consumer")) or "(no consumer)")))
+            rt = txt(e.get("roundTripTest"))
+            lines.append("          round-trip test: %s   (exists: %s)"
+                         % (rt or "(none named)", ex(rt) if rt else "no"))
+            pl = proof_lines(txt(e.get("roundTripProof")))
+            if pl:
+                any_proof = True
+                lines.extend(pl)
+    elif isinstance(seams, list):
+        note = txt(t.get("seamsNote"))
+        lines.append("      seams: none declared — %s"
+                     % (clip(note) if note else "(no seamsNote)"))
+    eps = t.get("entrypoints")
+    if isinstance(eps, list) and eps:
+        for e in eps:
+            if not isinstance(e, dict):
+                continue
+            lines.append("      entrypoint (%s): %s"
+                         % (txt(e.get("kind")) or "?",
+                            clip(txt(e.get("path")) or "(no path)")))
+            rr = txt(e.get("realRunTest"))
+            lines.append("          real-run test: %s   (exists: %s)"
+                         % (rr or "(none named)", ex(rr) if rr else "no"))
+            pl = proof_lines(txt(e.get("realRunProof")))
+            if pl:
+                any_proof = True
+                lines.extend(pl)
+    elif isinstance(eps, list):
+        note = txt(t.get("entrypointsNote"))
+        lines.append("      entrypoints: none declared — %s"
+                     % (clip(note) if note else "(no entrypointsNote)"))
+    if lines:
+        rows.append(("    %s" % tid, lines))
+
+if not rows:
+    sys.exit(0)
+
+out = ["  SEAMS AND ENTRYPOINTS the plan declared — a RECORD, not a verdict:"]
+for head, lines in rows:
+    out.append(head)
+    out.extend(lines)
+out.append("      NOTHING HERE IS GRADED. `exists` is one mechanical fact — is a file")
+out.append("      tracked at that path — and it is not a pass or a fail: a test may have")
+out.append("      landed under another name at this repo's own convention, and a test that")
+out.append("      EXISTS may still stub the very seam it claims to prove. Every one of the")
+out.append("      six live breaks this record exists for sat at a seam whose suite drove")
+out.append("      one side only. Read the two halves of each seam and ask whether a real")
+out.append("      producer fed a real consumer.")
+if any_proof:
+    out.append("      The sentence under each test is the one the PLANNER recorded for it,")
+    out.append("      copied here whole and checked by nobody: it says how that test was")
+    out.append("      meant to drive both real halves. Read it against the test and decide")
+    out.append("      for yourself.")
+sys.stdout.write("\n".join(out) + "\n")
+S236_VERIFY_PY
+  rm -f "$_ls"
+}
+
 cmd_verify_summary() {
   locate_mission "$MISSION_ID"
   require_stage verify
@@ -12819,6 +13504,12 @@ EOF
   verify_not_drawn_readout "$MISSION_DIR/plan.json"
   verify_decided_readout "$MISSION_DIR/plan.json"
   verify_unfenced_note
+
+  # S236: what the plan DECLARED at every seam and every CI entrypoint, with one
+  # mechanical fact per named test (does a file exist at that path at the tip).
+  # A RECORD — no judgement here; S240 reads it and decides. Absent entirely on
+  # a plan whose tickets declare neither key.
+  verify_seams_readout "$MISSION_DIR/plan.json"
 
   # S179: the mirror of the readout above — a combination the DESIGN said it did
   # not draw and that no ticket resolved. Absent entirely when the brief declared
@@ -16651,6 +17342,10 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # the drawing, and why the look is not deferred to Verify. EMPTY for a Mission
   # without a mockup, so every other Plan prompt is byte-identical.
   extra="$extra$(plan_mockup_contract_block)"
+  # S236 — the HOST CHECKLIST, when this Mission is not on github.com (its own
+  # origin says so, or its PRD names a host). NOTHING AT ALL on github.com, so
+  # every other Plan prompt is byte-identical.
+  extra="$extra$(plan_host_checklist_block)"
   # S175 — the questions the brief left open, and the contract for deciding one
   # OUT LOUD. Nothing at all when the brief left none, so a pre-S175 Mission's
   # Plan prompt is byte-identical.
@@ -16767,6 +17462,9 @@ acceptable — do not raise it."
   # is the captain's artifact, not the Mission's derived reasoning.
   extra="$extra$(attachments_extra_block)"
   extra="$extra$(plan_review_mockup_block)"
+  # S236 — the reviewer is never handed the PRD, so the host it must audit
+  # against reaches it HERE or nowhere. Empty on a github.com mission.
+  extra="$extra$(plan_review_host_block)"
   # S180 — THE CAPTAIN'S RULINGS, AND ONLY THOSE. The digest of prd.md's
   # DECLARED-RESOLVED open questions, plus the precedence rule that goes with
   # them. prd.md itself is STILL not an input and never becomes one: this is one

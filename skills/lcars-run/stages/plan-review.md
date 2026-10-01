@@ -82,6 +82,82 @@ Audit **every** ticket against the criteria below:
   A ticket with the field ABSENT is also an objection: say so and ask the
   planner to declare it, because the harness then has to guess from prose.
 
+## Audit the seams and the entrypoints — completeness, and whether the test is real
+
+Every ticket carries two declarations: `seams` (the producer/consumer pairs it
+creates, each with a `roundTripTest`) and `entrypoints` (the CI workflows or CLI
+commands it adds, each with a `realRunTest`). They exist because six live bugs
+shipped past a fully green suite in one weekend and every one sat at a seam the
+suite stubbed: the producer wrote one format, the consumer parsed another, and
+the test between them was a string somebody typed by hand.
+
+The harness already checked the mechanical half (a workflow file has an
+entrypoint; a seam names a test; the test paths are real test paths). **Your half
+is the two things it cannot check.**
+
+**1. COMPLETENESS.** Read each ticket's own description and acceptance criteria.
+Does it describe something that WRITES state, and something that READS it? Then
+it has a seam, and `seams[]` must name it. A ticket whose own text names a writer
+and a reader while carrying an **empty** `seams[]` — or no `seams` key at all —
+is an **objection**: say which ticket, name the writer and the reader you can see
+in its text, and ask for the pair plus its round-trip test. Judge the
+`seamsNote` on an empty list the same way: a note that says "no shared state" on
+a ticket that plainly writes a file another ticket parses is not a reason, it is
+a dodge. Do the same for `entrypoints` — a ticket that adds a command CI or a
+human runs and declares none is incomplete.
+
+This is an ORDINARY OBJECTION in the ordinary shape. Your verdict is still
+`passed: true` or `passed: false` with `issues[]`; there is no new verdict kind
+and no new field. An incomplete seam declaration makes `passed` false and goes in
+`issues` with the ticket id, exactly like a coupling or a size objection.
+
+**2. IS THE TEST REAL? READ THE PROOF SENTENCE.** `roundTripTest` and
+`realRunTest` carry bare PATHS — `tests/test_list.py` tells you nothing about
+whether that test drives two real halves, so the audit does NOT rest on the
+path. Every seam entry carries **`roundTripProof`** and every entrypoint entry
+carries **`realRunProof`**: one sentence, written by the planner, saying HOW the
+named test drives both real halves / runs the entrypoint the way CI does. The
+harness guarantees those fields are present and non-blank on every ticket.
+**Your job is to read them.**
+
+The rule the plan was written under is one sentence: *build the body with the
+real producer, feed it to the real consumer — no hand-written fixture between
+them.* **A test that stubs the seam it claims to prove doesn't count as proof.**
+So read each `roundTripProof` and object when it describes either half faked:
+
+- it mocks, patches, stubs or fakes the producer, and feeds the consumer a
+  literal payload / fixture / sample constant;
+- it mocks the consumer and only asserts the producer "was called";
+- it asserts the producer's output against a hand-written expected string, and
+  nothing ever runs the real consumer on it.
+
+Any of those is an objection on that ticket: name the half that is stubbed and
+ask for a test that drives both. Read each `realRunProof` the same way — a test
+that imports a workflow's handler and calls a function is NOT running the
+entrypoint; the real-run test runs the same command from the same cwd with the
+environment Actions sets.
+
+**An EMPTY PROOF is also an objection — boilerplate is not a declaration.** A
+sentence that restates the rule instead of describing THIS test is the dodge
+this field exists to close: "drives both halves for real", "a real round-trip
+test", "tests the seam end to end", or a bare repeat of the producer and
+consumer names with no account of what crosses between them. A real proof names
+both halves and says what passes between them. Boilerplate makes `passed` false,
+with the ticket id and the field named, exactly like any other objection.
+
+**3. A WORKFLOW DISCLAIMER IS A CLAIM TOO.** A ticket may name a
+`.github/workflows/*.yml` file it does not own by NAMING that file in
+`entrypointsNote`, and the harness accepts that as a recorded disclaimer rather
+than force the planner to invent an entry for a file it is forbidden to edit.
+That trade puts the completeness call on YOU: if the work that ticket owns
+plainly adds or changes that workflow, the disclaimer is wrong and what is
+needed is the entry, with its `realRunTest` and `realRunProof`. Name the ticket
+and the file.
+
+Where a ticket's own text does not tell you enough to decide, say so in the
+objection rather than approving it: an unreadable declaration is a declaration
+nobody can audit, and this is the stage that audits it.
+
 ## Output — file FIRST
 
 You MAY first read the tickets and your input artifacts (read tools are allowed),
