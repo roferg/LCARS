@@ -58,8 +58,12 @@ with its id (which `autopilot.sh status` prints) and the mirror moves on:
 
 ```bash
 autopilot.sh status                       # [q1] lcars-…: <the question>
+autopilot.sh ask "<what you need>" --mission <id> --why "<why>"   # raise one (§ 9)
 autopilot.sh answered q1 "yes, go ahead"  # records the answer BESIDE the question
 ```
+
+Raise every question with `ask` (§ 9) and never write `pending` yourself: it is
+derived, and the driver overwrites it on the next write.
 
 `answered` never deletes: the question stays on the record with his answer next
 to it, and it clears that mission's failed-drive counter (§ 5), because his
@@ -411,9 +415,32 @@ you do not ask for them.
 
 **A denial is a question with the evidence ready, never a retry by another
 route.** What is blocked, why it is safe, the one command that will run, the
-rollback. `autopilot.sh land` writes exactly that shape; write the same shape by
-hand for anything else, into `pending`, and it is carried into the `questions`
-ledger on the next write so it cannot be overwritten.
+rollback. `autopilot.sh land` writes exactly that shape for a refused merge.
+
+**For everything else, raise it with `autopilot.sh ask` — never by editing
+`autopilot.json`.** One question per call, in the same four fields:
+
+```bash
+autopilot.sh ask "Ship M1 as the CLI only, or hold it for the page?" \
+  --mission lcars-20260930-001 \
+  --why "a product call only you can make — the page needs a deploy token" \
+  --command "-" \
+  --rollback "nothing to undo — nothing was attempted."
+```
+
+It lands in the `questions` ledger **immediately**, with its own id, and pings
+him **once**. Asking the same thing again while it is open is a no-op and does
+not ping him twice; the same problem recurring *after* he answered is a real new
+question. `--mission <id>` is required, because a question blocks *that*
+milestone and no other — use `--mission -` for one that belongs to no milestone.
+`ask` exits 0: a question is not a milestone stop, so keep working.
+
+**`pending` is a read-only mirror of the oldest open question, derived on every
+write — it is never storage.** Do not write it, and never read a question out of
+it: `questions` is the record and `status` prints every id. A question an older
+run left in `pending` is still honoured: it is adopted the moment it is seen,
+exactly once, into `questions` under a real id. Use the verb and there is
+nothing to adopt.
 
 **Several questions can be open at once, and none of them parks the run.** Each
 is recorded separately and `status` prints them all with their ids. A question on

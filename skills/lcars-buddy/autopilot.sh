@@ -40,11 +40,12 @@
 #   autopilot.sh heartbeat install|remove|status
 #   autopilot.sh record <dotted.key> <value>
 #   autopilot.sh answered <question-id|mission> ["<his answer>"]
+#   autopilot.sh ask "<what>" --mission <m> [--why …] [--command …] [--rollback …]
 #   autopilot.sh playbook
 #
 # EXIT CODES that mean something:
 #   0   done
-#   10  a question for the CAPTAIN was written to autopilot.json.pending and the
+#   10  a question for the CAPTAIN was recorded in autopilot.json.questions and the
 #       milestone stopped. This is the ONLY response to a refused merge.
 #   11  the driver refused a mechanical pre-check (e.g. a live drive on the same
 #       mission). Not a captain question — fix it and retry.
@@ -99,6 +100,10 @@ Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside t
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
   answered <id> "<a>"  close ONE open question (ids come from \`status\`); never deletes it
+  ask "<what>" --mission <m> [--why <w>] [--command <c>] [--rollback <r>]
+                       raise a question YOURSELF (a product call, a scope change, a
+                       standing-rule conflict). It lands in .questions with a real id and
+                       pings him once. NEVER hand-edit .pending — it is a derived mirror.
 
   drive <mission>      run.sh drive --mission, backgrounded, waiter on the PROCESS
   stalled              what the crontab heartbeat calls; decides from recorded pids
@@ -121,7 +126,7 @@ THE VERBS THIS DRIVES (their real flags — do not guess, and do not re-implemen
   lcars-approve/approve.sh      --mission <id>
   lcars-xo/xo.sh                on | off <mission> | status | report
 
-EXIT CODES: 0 ok | 10 a question for the captain was written to .pending | 11 pre-check
+EXIT CODES: 0 ok | 10 a question for the captain was recorded in .questions | 11 pre-check
             refused (not a captain question) | 1 usage.
 USAGE
   exit 1
@@ -225,9 +230,13 @@ ap_keys() { jkeys "$APJSON" "$1"; }
 # destroyed on write — and `.pending` is a derived MIRROR of the oldest open
 # one, kept because the model-facing surface reads a single question.
 #
-# A hand-written `.pending` (AUTOPILOT.md § 9 tells the model to write that
-# shape for anything `land` does not cover) with no `questions` entry still
-# counts as one open question, so nothing the model records by hand is lost.
+# IT READS THE LEDGER AND NOTHING ELSE (S233). This function used to ALSO
+# synthesise a row out of `.pending` when the model had written a question there
+# by hand, which is what made that field storage in some code paths and a mirror
+# in others — see `ap_adopt_pending` for the five defects that ambiguity cost.
+# An orphan `.pending` is now ADOPTED into `questions` before any command can
+# read it, so there is nothing left here to cope with: every row has a real id
+# that `answered <id>` closes.
 open_questions() {
   [ -f "$APJSON" ] || return 0
   "$PY" - "$APJSON" <<'PY'
@@ -240,24 +249,6 @@ def flat(v):
     return (v or "").replace("\t", " ").replace("\n", " ")
 qs = [q for q in (d.get("questions") or {}).values()
       if isinstance(q, dict) and not q.get("answeredAt")]
-# ALONGSIDE, NOT INSTEAD OF. This used to be `if not qs:` - the hand-written
-# `.pending` was shown ONLY when the ledger had nothing open, so one ordinary
-# open question MASKED it: zero rows here, zero rows in `next`, and the count
-# read 1 while two were open. Those are exactly the questions that must reach
-# the captain (a product call, a scope change, a standing-rule conflict), and
-# it masked precisely when the autopilot was busiest.
-# DEDUPED ON (mission, what) - the same key the raise and adoption paths use -
-# because `.pending` is also the MIRROR of the oldest open question: once it has
-# been adopted, the adopted copy and the raw pending are ONE question and must
-# print once. The dedupe is over the OPEN set only, so a recurrence after the
-# captain answered is still its own question (the N1d cure).
-p = d.get("pending")
-if isinstance(p, dict) and p.get("what") and not any(
-        q.get("mission") == p.get("mission") and q.get("what") == p.get("what")
-        for q in qs):
-    p = dict(p)
-    p.setdefault("id", "pending")
-    qs.append(p)
 qs.sort(key=lambda q: (q.get("raisedAt") or 0, q.get("id") or ""))
 for q in qs:
     print("%s\t%s\t%s" % (q.get("id") or "?", q.get("mission") or "-",
@@ -323,6 +314,95 @@ PY
   return $rc
 }
 
+# ==========================================================================
+# ap_adopt_pending — the ONE place a hand-written `.pending` becomes a real
+# question, and it runs the MOMENT the record is read
+# ==========================================================================
+# ONE HOME, ENFORCED BY CONSTRUCTION. `.pending` used to be BOTH a derived
+# mirror (on the raise path) and the SOLE STORAGE for a question the model wrote
+# by hand — the old AUTOPILOT.md § 9 instructed exactly that — with nothing
+# declaring which. That single ambiguity produced FIVE separate defects over
+# five rounds of testing, each one a different function disagreeing about it:
+#   1. a second question deleted the first (the mirror was overwritten);
+#   2. duplicates piled up, each one pinging the captain;
+#   3. a recurrence was swallowed because the raise and adoption paths used two
+#      different dedupe keys;
+#   4. a hand-written question was MASKED whenever any other was open;
+#   5. answering ANY question DESTROYED an un-adopted hand-written one: the
+#      mirror was re-derived over it, `questions` never held it, and the mode
+#      told the captain "No questions are open for the captain now" and carried
+#      on without him.
+# Every one of those was a reader coping with the orphan slightly differently,
+# so a sixth careful reader was never the cure. A question is now RAISED with a
+# verb — `autopilot.sh ask`, or `write_pending` from inside the driver — and
+# lands in `questions` with a real id; `.pending` is ONLY ever the derived
+# mirror of the oldest open question. There is no code path left that reads a
+# question OUT of `.pending`.
+#
+# OLDER RUNS STILL PRODUCE ORPHANS, so the field is still HONOURED — but as a
+# one-way repair at the moment it is seen (`require_state`, i.e. before any
+# command looks at the record, and again at the top of `write_pending` for the
+# waiter, which has no `require_state`). Adoption is not deferred until
+# something else happens to be raised; that laziness was defect 4 and 5's
+# shared cause.
+#
+# IDEMPOTENT, AND IT NEVER RESURRECTS. The dedupe is the (mission, what) pair
+# over the OPEN set — byte-for-byte the key the raise path uses — so the mirror
+# of an open question matches its own ledger entry and adoption is a no-op,
+# while a problem that RECURS after the captain answered earns a genuinely new
+# question. Once a question is answered the mirror moves off it, so there is
+# nothing left on disk to re-adopt.
+#
+# IT DOES NOT NOTIFY. `write_pending` holds this script's ONE `notify` call
+# site. Adoption is a storage repair, not a new event; a ping here would re-push
+# a question the captain has already been shown, which § 9's interrupt budget
+# forbids.
+ap_adopt_pending() {
+  [ -f "$APJSON" ] || return 0
+  ap_lock
+  "$PY" - "$APJSON" "$(now)" <<'PY'
+import json, os, sys
+f, ts = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(f))
+except Exception:
+    # A corrupt record is NOT repaired here. `require_state` fails closed on it
+    # and names the file; silently rewriting it is what cost a whole alignment
+    # round once already.
+    sys.exit(0)
+p = d.get("pending")
+if not (isinstance(p, dict) and p.get("what")):
+    sys.exit(0)
+qs = d.get("questions")
+if not isinstance(qs, dict):
+    qs = {}
+if any(isinstance(q, dict) and not q.get("answeredAt")
+       and q.get("mission") == p.get("mission")
+       and q.get("what") == p.get("what") for q in qs.values()):
+    sys.exit(0)
+n = 1
+while ("q%d" % n) in qs:
+    n += 1
+q = dict(p)
+q["id"] = "q%d" % n
+q["handWritten"] = True
+if not q.get("raisedAt"):
+    q["raisedAt"] = int(ts)
+qs[q["id"]] = q
+d["questions"] = qs
+openq = [x for x in qs.values() if isinstance(x, dict) and not x.get("answeredAt")]
+openq.sort(key=lambda x: (x.get("raisedAt") or 0, x.get("id") or ""))
+d["pending"] = dict(openq[0]) if openq else {}
+tmp = f + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as fh:
+    json.dump(d, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, f)
+PY
+  ap_unlock
+  return 0
+}
+
 require_state() {
   [ -f "$APJSON" ] || die "no autopilot.json in $LCARS_DIR — run \`autopilot.sh init --spec <path>\` first."
   # FAIL CLOSED on a record that EXISTS but will not parse. `ap_set` read it as
@@ -333,6 +413,12 @@ require_state() {
   # yet" (that is how `init` works); an unreadable one stops everything.
   "$PY" -c 'import json,sys; json.load(open(sys.argv[1]))' "$APJSON" 2>/dev/null \
     || die "$APJSON exists but is NOT valid JSON — refusing to read or write it. Repair or restore that file; an empty record would silently replace the whole alignment round."
+  # ADOPT ON FIRST SIGHT. An orphan `.pending` left by an older run (or by the
+  # pre-S233 playbook) becomes a real ledger question HERE — before any command
+  # reads the record — which is precisely why nothing downstream has to cope
+  # with one. Deliberately AFTER the corrupt-state refusal above: a record this
+  # function would not read is a record adoption must not rewrite.
+  ap_adopt_pending
 }
 
 now() { date +%s; }
@@ -896,7 +982,7 @@ cmd_stalled() {
 # land — approve, then the hygiene that always follows
 # ==========================================================================
 # THE PRE-STAGED QUESTION. A merge LCARS refuses is NOT retried, worked around,
-# or finished by hand — it is written to autopilot.json.pending as four fields
+# or finished by hand — it is recorded in autopilot.json.questions as four fields
 # (what is blocked, why, the ONE command that would run, the rollback) and the
 # milestone stops with exit 10. The captain's "OK" then costs seconds, and the
 # permission classifier never sees a second route to a blocked outcome.
@@ -913,6 +999,12 @@ cmd_stalled() {
 # question is genuinely appended.
 write_pending() { # <mission> <what> <why> <command> <rollback>
   local qid
+  # ADOPT FIRST, THEN RAISE (S233). The carry used to live INSIDE the python
+  # below, which made this the second function with an opinion about what
+  # `.pending` is. It is now one call to the one adopter — and it is called here
+  # as well as in `require_state` because `_waiter` reaches this function
+  # without going through `require_state` at all.
+  ap_adopt_pending
   ap_lock
   qid="$("$PY" - "$APJSON" "$1" "$2" "$3" "$4" "$5" "$(now)" <<'PY'
 import json, os, sys
@@ -924,31 +1016,12 @@ except Exception:
 qs = d.get("questions")
 if not isinstance(qs, dict):
     qs = {}
-# Carry a hand-written `.pending` into the ledger before adding to it, so the
-# a question the model recorded by hand is never the one this write loses.
+# NO ADOPTION IN HERE ANY MORE (S233). `ap_adopt_pending`, called above, is the
+# only function that carries a hand-written `.pending` into the ledger. This
+# body now does exactly one thing: raise a question, or recognise that the same
+# one is already open. `.pending` below is WRITTEN, never read as storage.
 # (No apostrophes in here: bash scans for the closing paren of $( ) WITHOUT
 # knowing about the heredoc, so a stray quote inside it breaks the parse.)
-# THE KEY HERE IS THE SAME ONE THE RAISE PATH BELOW USES: the pair
-# (mission, what), gated on not answeredAt. It used to match on `what` ALONE,
-# across ANSWERED questions too, so a hand-written question that RECURRED after
-# the captain answered it was dropped on the floor - absent from status, no
-# notification, no questions entry - and the same text on a DIFFERENT mission
-# went the same way. A question nobody will ever see is the worst outcome this
-# ledger has. A pending with no mission key reads as mission None on both
-# sides, so it dedupes against its own adopted copy and is still adopted once.
-p = d.get("pending")
-carried = False
-if isinstance(p, dict) and p.get("what") and not any(
-        isinstance(q, dict) and not q.get("answeredAt")
-        and q.get("mission") == p.get("mission")
-        and q.get("what") == p.get("what") for q in qs.values()):
-    n = 1
-    while ("q%d" % n) in qs:
-        n += 1
-    p = dict(p)
-    p["id"] = "q%d" % n
-    qs[p["id"]] = p
-    carried = True
 # IDEMPOTENT. Raising a question that is ALREADY OPEN on the same
 # (mission, what) pair is the SAME problem, so it is a NO-OP: no new key, no
 # notification, and the open question keeps its ORIGINAL raisedAt. Without
@@ -967,16 +1040,9 @@ for k in sorted(qs):
         dup = q
         break
 if dup is not None:
-    if carried:
-        d["questions"] = qs
-        openq = [q for q in qs.values() if isinstance(q, dict) and not q.get("answeredAt")]
-        openq.sort(key=lambda q: (q.get("raisedAt") or 0, q.get("id") or ""))
-        d["pending"] = dict(openq[0]) if openq else {}
-        tmp = f + ".tmp.%d" % os.getpid()
-        with open(tmp, "w") as fh:
-            json.dump(d, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, f)
+    # NOTHING TO WRITE on a duplicate. The old body had to flush here because it
+    # might have carried a hand-written pending in the same pass; adoption is a
+    # separate, already-committed step now, so a no-op raise touches no bytes.
     sys.stdout.write("=" + (dup.get("id") or "?"))
     sys.exit(0)
 n = 1
@@ -1021,6 +1087,58 @@ PY
 }
 
 # ==========================================================================
+# ask — the ONE supported way for the MODEL to raise a question by hand
+# ==========================================================================
+# WHY A VERB AND NOT A FIELD. AUTOPILOT.md § 9 used to tell the model to write
+# its own question — a product call, a scope change, a standing-rule conflict
+# including a permission denial — straight into `autopilot.json.pending`. That
+# instruction is what made `.pending` load-bearing STORAGE on one path while it
+# stayed a derived MIRROR on another, and that one ambiguity cost five defects
+# (listed on `ap_adopt_pending`). `ask` gives the hand-raised question the SAME
+# home as every other: it lands in `questions` immediately, with a real id, and
+# `.pending` goes back to being only a mirror.
+#
+# IT ADDS NO LOGIC. It parses flags and calls `write_pending`, so it inherits
+# that function's (mission, what) dedupe over the OPEN set, its single `notify`
+# call site, and its printed `answered <id>` line verbatim — the same behaviour
+# `land`'s own refusal gets. A duplicate ask is a no-op and does NOT ping again;
+# the same question recurring AFTER he answered is a real new event and does.
+#
+# IT EXITS 0. `land`'s exit 10 means "this merge stopped"; a question is not a
+# milestone stop. § 9: one open question blocks ITS milestone and no other, so
+# `ask` returns and the mode keeps working — `next` names the runnable rest.
+cmd_ask() {
+  local what="" mission="" why="" cmdline="" rollback=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mission)    mission="${2:-}"; shift 2 ;;
+      --mission=*)  mission="${1#--mission=}"; shift ;;
+      --why)        why="${2:-}"; shift 2 ;;
+      --why=*)      why="${1#--why=}"; shift ;;
+      --command)    cmdline="${2:-}"; shift 2 ;;
+      --command=*)  cmdline="${1#--command=}"; shift ;;
+      --rollback)   rollback="${2:-}"; shift 2 ;;
+      --rollback=*) rollback="${1#--rollback=}"; shift ;;
+      -*)           die "ask: unknown argument: $1" ;;
+      *)            [ -z "$what" ] || die "ask: one question per call — quote the whole question as a single argument."
+                    what="$1"; shift ;;
+    esac
+  done
+  [ -n "$what" ] || die "ask: the question is required.
+  autopilot.sh ask \"<what you need from him>\" --mission <id> [--why <why it is safe/needed>] [--command <the ONE command that would run>] [--rollback <how to undo it>]"
+  # A QUESTION MUST NAME ITS MILESTONE, because `next` blocks only the milestone
+  # a question is filed against (§ 9). An unattributed question would either
+  # park nothing or park everything; `--mission -` says "no milestone" on
+  # purpose and is the only way to get that.
+  [ -n "$mission" ] || die "ask: --mission <id> is required so the question blocks only ITS milestone (use \`--mission -\` for a question that belongs to no milestone)."
+  require_state
+  [ -n "$why" ] || why="-"
+  [ -n "$cmdline" ] || cmdline="-"
+  [ -n "$rollback" ] || rollback="nothing to undo — nothing was attempted."
+  write_pending "$mission" "$what" "$why" "$cmdline" "$rollback"
+}
+
+# ==========================================================================
 # answered — the counterpart of write_pending, and the ONLY way a question is
 # closed. It never deletes: the question stays on the record with the answer
 # beside it, and the `.pending` mirror moves on to the next open one. A capped
@@ -1044,25 +1162,25 @@ qs = d.get("questions")
 if not isinstance(qs, dict):
     qs = {}
 hit = None
+# `pending` NAMES A QUESTION, it does not hold one (S233). The mirror is
+# re-derived on every write, so `answered pending` is a POINTER to the oldest
+# open question - the one the model-facing single-question surface shows. It
+# reads only the mirror id field: the question itself is always
+# already in the ledger, because an orphan was adopted before this ran.
+if want == "pending":
+    p = d.get("pending")
+    if isinstance(p, dict) and p.get("id"):
+        want = p["id"]
 if want in qs and isinstance(qs[want], dict) and not qs[want].get("answeredAt"):
     hit = qs[want]
+by_mission = False
 if hit is None:
     for k in sorted(qs):
         q = qs[k]
         if isinstance(q, dict) and not q.get("answeredAt") and q.get("mission") == want:
             hit = q
+            by_mission = True
             break
-if hit is None:
-    # A hand-written `.pending` with no ledger entry: carry it in, then answer
-    # it. The fact that it was asked survives either way.
-    p = d.get("pending")
-    if isinstance(p, dict) and p.get("what") and want in ("pending", p.get("id"), p.get("mission")):
-        n = 1
-        while ("q%d" % n) in qs:
-            n += 1
-        hit = dict(p)
-        hit["id"] = "q%d" % n
-        qs[hit["id"]] = hit
 if hit is None:
     sys.stderr.write("no OPEN question with id or mission '%s' — `autopilot.sh status` lists them" % want)
     sys.exit(1)
@@ -1084,6 +1202,15 @@ print("recorded the answer to %s (%s). %s" % (
     ("Still open: %s — %s" % (nxt, d["pending"].get("what"))) if nxt
     else "No questions are open for the captain now."))
 print(hit.get("mission") or "")
+# ANSWERING BY MISSION IS AMBIGUOUS WHEN TWO QUESTIONS SHARE ONE, so say so
+# rather than resolving it silently. It closes the OLDEST open question on that
+# mission - the long-standing behaviour - and names what is still open on it, by
+# id, so a second answer is one obvious command away. It may never close two,
+# and it may never drop one on the floor.
+same = [q for q in openq if hit.get("mission") and q.get("mission") == hit.get("mission")]
+if by_mission and same:
+    print("  NOTE: %s still has %d open question(s) — %s. Answering by MISSION closes the OLDEST one only; answer the rest by id." % (
+        hit.get("mission"), len(same), ", ".join(q.get("id") or "?" for q in same)))
 PY
 )"; rc=$?
   ap_unlock
@@ -1091,6 +1218,9 @@ PY
   local m; m="$(printf '%s' "$out" | sed -n '2p')"
   [ -z "$m" ] || ap_set "drivers.$m.failures" ""
   say "$(printf '%s' "$out" | sed -n '1p')"
+  # Line 2 is the mission (read above); anything after it is a note for the
+  # captain and is printed as-is.
+  printf '%s\n' "$out" | sed -n '3,$p'
 }
 
 # Stale reconcile worktrees. Every blocked reconcile left a reconcile.XXXXXX
@@ -1405,6 +1535,7 @@ case "$SUB" in
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
   answered)    cmd_answered "$@" ;;
+  ask)         cmd_ask "$@" ;;
   drive)       cmd_drive "$@" ;;
   _waiter)     cmd_waiter "$@" ;;
   stalled)     cmd_stalled "$@" ;;

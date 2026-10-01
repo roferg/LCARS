@@ -1197,8 +1197,15 @@ check "status still lists the LEDGER question beside it" \
   "printf '%s' \"\$st19c\" | qgrep -q 'lcars-maskbug-1'"
 check "the count is the TRUE total (2 open), not 1" \
   "printf '%s' \"\$st19c\" | qgrep -q 'open questions for the captain: 2'"
-check "the hand-written row keeps the [pending] id label" \
-  "printf '%s' \"\$st19c\" | qgrep -q '\[pending\] lcars-mask-1: HAND:'"
+# S233 CHANGED THIS ONE ON PURPOSE. It used to assert the row carried the
+# literal `[pending]` label — the visible SYMPTOM of `.pending` doubling as
+# STORAGE for a hand-written question. That is the ambiguity the design change
+# ends: the orphan is ADOPTED on first sight, so the row carries a REAL id —
+# which is also the id `status` tells him to answer by.
+check "the hand-written row is adopted on sight and carries a REAL id" \
+  "printf '%s' \"\$st19c\" | qgrep -qE '^    \[q[0-9]+\] lcars-mask-1: HAND:'"
+check "no row is labelled with the literal 'pending' id any more" \
+  "! printf '%s' \"\$st19c\" | qgrep -qF '[pending]'"
 # THE COUNT MUST MATCH THE ROWS IT PRINTS — the header said 1 and printed 1 row
 # while the file held 2 open questions, so neither number told the truth.
 nrows19c="$(printf '%s\n' "$st19c" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
@@ -1229,11 +1236,11 @@ nrows19d="$(printf '%s\n' "$st19d" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | 
 check "the count still equals the rows after adoption" \
   "[ \"$nrows19d\" = 2 ]"
 
-# THE SEAM THIS OPENS. A `[pending]` row is now visible in a state where it
-# never appeared before, and `status` tells the captain to answer rows by the id
-# it printed. A visible row that cannot be answered by its own printed id would
-# be a new defect, so pin it: `answered pending` must close the hand-written one
-# and leave the ledger question open.
+# THE SEAM THIS OPENS. A hand-written question is now visible in a state where
+# it never appeared before, and `status` tells the captain to answer rows by the
+# id it printed. A visible row that cannot be answered by its own printed id
+# would be a new defect, so pin it: the adopted row must close by the id on
+# screen and leave the ledger question open.
 R19F="$(new_repo)"
 ap "$R19F" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
 AP19F="$R19F/.git/lcars/autopilot.json"
@@ -1244,8 +1251,13 @@ ap "$R19F" land lcars-seam-1 >/dev/null 2>&1
 ap "$R19F" record pending \
   '{"mission":"lcars-seam-1","what":"HAND: a standing-rule conflict","why":"h","command":"-","rollback":"-","raisedAt":9}' \
   >/dev/null 2>&1
-ap "$R19F" answered pending "go ahead" >/dev/null 2>&1
-check "the [pending] row is answerable by the id status printed" \
+# S233: the row now prints a real id, and THAT is what closes it. (`answered
+# pending` still works, as the POINTER the mirror is — pinned separately below.)
+st19f0="$(ap "$R19F" status 2>&1)"
+check "the orphan is adopted and status prints its real id" \
+  "printf '%s' \"\$st19f0\" | qgrep -qE '^    \[q[0-9]+\] lcars-seam-1: HAND: a standing-rule'"
+ap "$R19F" answered q2 "go ahead" >/dev/null 2>&1
+check "the adopted row is answerable by the id status printed" \
   "[ \"\$(jget '$AP19F' 'len([q for q in d[\"questions\"].values() if q.get(\"answeredAt\") and \"standing-rule\" in q[\"what\"]])')\" = 1 ]"
 check "answering it left the ledger question OPEN" \
   "[ \"\$(jget '$AP19F' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\")])')\" = 1 ]"
@@ -1256,8 +1268,8 @@ check "while the count drops back to 1" \
   "printf '%s' \"\$st19f\" | qgrep -q 'open questions for the captain: 1'"
 
 # REGRESSION GUARD on the case that already worked: a hand-written `.pending`
-# with NOTHING else open is still the one question shown, with its [pending]
-# label, and `next` still points at it.
+# with NOTHING else open is still the one question shown — now under the real
+# id adoption gave it — and `next` still points at it.
 R19E="$(new_repo)"
 ap "$R19E" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
 new_mission "$R19E" lcars-solo-1 verify
@@ -1270,13 +1282,292 @@ check "a lone hand-written question is still shown" \
   "printf '%s' \"\$st19e\" | qgrep -q 'HAND: the only question open'"
 check "a lone hand-written question still counts as exactly 1" \
   "printf '%s' \"\$st19e\" | qgrep -q 'open questions for the captain: 1'"
-check "a lone hand-written question still carries [pending]" \
-  "printf '%s' \"\$st19e\" | qgrep -q '\[pending\] lcars-solo-1:'"
+check "a lone hand-written question carries the REAL id it was adopted under" \
+  "printf '%s' \"\$st19e\" | qgrep -qE '^    \[q[0-9]+\] lcars-solo-1:'"
 nx19e="$(ap "$R19E" next 2>&1)"
 check "next still points at a lone hand-written question" \
   "printf '%s' \"\$nx19e\" | qgrep -q 'answer-pending'"
 check "and names it" \
   "printf '%s' \"\$nx19e\" | qgrep -q 'HAND: the only question open'"
+
+# ==========================================================================
+# S233 — ONE HOME FOR A QUESTION: `ask` is the verb, `.pending` is a MIRROR
+# ==========================================================================
+# WHY THIS SECTION EXISTS. `.pending` was a DERIVED MIRROR in some code paths
+# and the SOLE STORAGE in others, and nothing declared which. That single
+# ambiguity produced FIVE separate defects over five rounds of testing, each one
+# a different function disagreeing about it:
+#   1. a second question deleted the first (the mirror was overwritten);
+#   2. duplicates piled up, each one pinging the captain;
+#   3. a recurrence was swallowed because two dedupe keys disagreed;
+#   4. a hand-written question was masked whenever any other was open;
+#   5. answering ANY question DESTROYED an un-adopted hand-written one — two
+#      rows on screen, `answered q3`, and the other was gone from `pending`,
+#      absent from `questions`, with the mode reporting "No questions are open
+#      for the captain now" and the run continuing without him.
+# 332 checks were green over all of that, because each tested the path its
+# author had in mind. So the cure is not a sixth reader that copes with an
+# orphan: the hand-written question gets its OWN VERB (`ask`) and lands in
+# `questions` immediately with a real id, and `.pending` becomes purely
+# derived. An orphan from an older run is adopted the MOMENT it is seen.
+#
+# A MEASUREMENT NOTE for everything below: `status` ends by printing `next`,
+# whose `WHY:` line quotes the top question's text, so a grep for the text reads
+# 2 for ONE row. Count QUESTION ROWS (`^    [id] `), never the text.
+echo "-- S233. ask: one home for a question --"
+
+# --- S233a: `ask` creates a durable question with an id ---------------------
+R20="$(new_repo)"
+ap "$R20" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP20="$R20/.git/lcars/autopilot.json"
+new_mission "$R20" lcars-ask-1 implement
+ap "$R20" record 'missions.M0.id' lcars-ask-1 >/dev/null 2>&1
+: >"$STUB_LOG"
+out20="$(ap "$R20" ask "ship the CLI without the page, or hold both?" \
+          --mission lcars-ask-1 --why "a product call only he can make" \
+          --command "-" --rollback "-" 2>&1)"; rc20=$?
+check "ask exits 0 (a question is not a milestone stop)" "[ $rc20 -eq 0 ]"
+check "ask lands the question in the LEDGER immediately" \
+  "[ \"\$(jget '$AP20' 'len(d[\"questions\"])')\" = 1 ]"
+check "ask gives it a REAL id, never the literal 'pending'" \
+  "[ \"\$(jget '$AP20' 'sorted(d[\"questions\"])')\" = '[\"q1\"]' ]"
+check "ask records the same field set write_pending does" \
+  "[ \"\$(jget '$AP20' 'sorted(k for k in d[\"questions\"][\"q1\"] if d[\"questions\"][\"q1\"][k])')\" = '[\"command\", \"id\", \"mission\", \"raisedAt\", \"rollback\", \"what\", \"why\"]' ]"
+check "ask prints the id his answer is recorded against" \
+  "printf '%s' \"\$out20\" | qgrep -q 'answered q1'"
+check "ask pings the captain EXACTLY once" \
+  "[ \"\$(grep -c 'notify.sh lcars-ask-1 ' '$STUB_LOG')\" = 1 ]"
+st20="$(ap "$R20" status 2>&1)"
+check "status lists the asked question under its id" \
+  "printf '%s' \"\$st20\" | qgrep -qE '^    \[q1\] lcars-ask-1: ship the CLI'"
+check "status counts it" \
+  "printf '%s' \"\$st20\" | qgrep -q 'open questions for the captain: 1'"
+nrows20="$(printf '%s\n' "$st20" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+check "status's count equals the rows it prints" "[ \"$nrows20\" = 1 ]"
+nx20="$(ap "$R20" next 2>&1)"
+check "next surfaces the asked question" \
+  "printf '%s' \"\$nx20\" | qgrep -q 'NEXT: answer-pending'"
+check "and quotes it with its id" \
+  "printf '%s' \"\$nx20\" | qgrep -q '\[q1\]: ship the CLI'"
+check "pending MIRRORS the asked question (same id) — it does not own it" \
+  "[ \"\$(jget '$AP20' 'd[\"pending\"][\"id\"]')\" = q1 ]"
+check "ask with no question text REFUSES" \
+  "! ap '$R20' ask --mission lcars-ask-1 >/dev/null 2>&1"
+check "ask with no --mission REFUSES (a question must block only ITS milestone)" \
+  "! ap '$R20' ask 'a question with nowhere to land' >/dev/null 2>&1"
+check "ask rejects an unknown flag rather than silently dropping it" \
+  "! ap '$R20' ask 'x' --mission lcars-ask-1 --urgent >/dev/null 2>&1"
+
+# --- S233b: `ask` dedupes EXACTLY as the raise path does --------------------
+: >"$STUB_LOG"
+ap "$R20" ask "ship the CLI without the page, or hold both?" \
+  --mission lcars-ask-1 --why "a product call only he can make" >/dev/null 2>&1
+check "ask DEDUPES on (mission, what) against the OPEN set" \
+  "[ \"\$(jget '$AP20' 'len(d[\"questions\"])')\" = 1 ]"
+check "the duplicate ask sends NO second ping (interrupt budget)" \
+  "[ \"\$(grep -c 'notify.sh lcars-ask-1 ' '$STUB_LOG')\" = 0 ]"
+a20d="$(ap "$R20" ask "ship the CLI without the page, or hold both?" --mission lcars-ask-1 2>&1)"
+check "the duplicate ask SAYS the question is already open" \
+  "printf '%s' \"\$a20d\" | qgrep -q 'ALREADY OPEN'"
+ap "$R20" ask "ship the CLI without the page, or hold both?" --mission lcars-ask-9 >/dev/null 2>&1
+check "the SAME text on a DIFFERENT mission is its own question" \
+  "[ \"\$(jget '$AP20' 'len(d[\"questions\"])')\" = 2 ]"
+ap "$R20" answered q1 "ship the CLI" >/dev/null 2>&1
+: >"$STUB_LOG"
+ap "$R20" ask "ship the CLI without the page, or hold both?" --mission lcars-ask-1 >/dev/null 2>&1
+check "a RECURRENCE after the answer raises a genuinely NEW question" \
+  "[ \"\$(jget '$AP20' 'len(d[\"questions\"])')\" = 3 ]"
+check "the recurrence is OPEN (the answered one does not swallow it)" \
+  "[ \"\$(jget '$AP20' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and q.get(\"mission\")==\"lcars-ask-1\"])')\" = 1 ]"
+check "and the recurrence pings him again (a real new event)" \
+  "[ \"\$(grep -c 'notify.sh lcars-ask-1 ' '$STUB_LOG')\" = 1 ]"
+
+# --- S233c: THE DEFECT THAT STOPPED THE SESSION ----------------------------
+# Two questions open — one RAISED by `land`, one from `ask`. Answering EITHER
+# one by its id must leave the OTHER alive, listed, and still reaching him.
+# Before the change, answering the raised one re-derived the mirror over the
+# hand-written one and it ceased to exist. Both orders are driven, because the
+# defect only showed in one of them.
+for order in raised-first asked-first; do
+  RD="$(new_repo)"
+  ap "$RD" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+  APD="$RD/.git/lcars/autopilot.json"
+  new_mission "$RD" lcars-two-1 verify
+  new_mission "$RD" lcars-twobug-1 implement bug lcars-two-1
+  ap "$RD" record 'missions.M0.id' lcars-two-1 >/dev/null 2>&1
+  ap "$RD" land lcars-two-1 >/dev/null 2>&1          # q1, raised by the refusal
+  ap "$RD" ask "HAND: ship M1 without the page, or hold both?" \
+    --mission lcars-two-1 --why "a product call" >/dev/null 2>&1   # q2
+  check "[$order] two questions are open to start with" \
+    "[ \"\$(jget '$APD' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\")])')\" = 2 ]"
+  if [ "$order" = raised-first ]; then
+    kill_id=q1; live_id=q2; live_txt='HAND: ship M1'
+  else
+    kill_id=q2; live_id=q1; live_txt='lcars-twobug-1'
+  fi
+  outd="$(ap "$RD" answered "$kill_id" "his answer" 2>&1)"
+  check "[$order] answering $kill_id leaves EXACTLY one question open" \
+    "[ \"\$(jget '$APD' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\")])')\" = 1 ]"
+  check "[$order] the survivor is $live_id, still in the ledger with its text" \
+    "[ -n \"\$(jget '$APD' \"d['questions']['$live_id'].get('what')\")\" ] && [ -z \"\$(jget '$APD' \"d['questions']['$live_id'].get('answeredAt')\")\" ]"
+  check "[$order] answered NAMES the one still open (never 'no questions are open')" \
+    "printf '%s' \"\$outd\" | qgrep -q 'Still open: $live_id'"
+  check "[$order] it does NOT claim the captain is clear" \
+    "! printf '%s' \"\$outd\" | qgrep -qi 'No questions are open'"
+  std="$(ap "$RD" status 2>&1)"
+  check "[$order] status still LISTS the survivor" \
+    "printf '%s' \"\$std\" | qgrep -qE '^    \[$live_id\] lcars-two-1: .*$live_txt'"
+  check "[$order] and still counts exactly 1" \
+    "printf '%s' \"\$std\" | qgrep -q 'open questions for the captain: 1'"
+  nrowsd="$(printf '%s\n' "$std" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+  check "[$order] the count equals the rows it prints" "[ \"$nrowsd\" = 1 ]"
+  nxd="$(ap "$RD" next 2>&1)"
+  check "[$order] next still routes him to the survivor (it reaches him)" \
+    "printf '%s' \"\$nxd\" | qgrep -q 'NEXT: answer-pending' && printf '%s' \"\$nxd\" | qgrep -q '\[$live_id\]'"
+  check "[$order] the mirror moved ONTO the survivor, it did not blank" \
+    "[ \"\$(jget '$APD' 'd[\"pending\"][\"id\"]')\" = $live_id ]"
+  # ...and the survivor still closes normally afterwards.
+  ap "$RD" answered "$live_id" "and his second answer" >/dev/null 2>&1
+  check "[$order] the survivor then closes and the mirror empties" \
+    "[ \"\$(jget '$APD' 'd[\"pending\"]')\" = '{}' ] && [ \"\$(jget '$APD' 'len([q for q in d[\"questions\"].values() if q.get(\"answeredAt\")])')\" = 2 ]"
+done
+
+# --- S233d: an orphan `.pending` from an OLDER run is adopted on FIRST SIGHT
+# Older runs and the pre-S233 playbook both produce them, so the field must
+# still be HONOURED — but as a one-way repair at the moment it is seen, not as
+# a question that lives there and waits for something else to be raised.
+R23="$(new_repo)"
+ap "$R23" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP23="$R23/.git/lcars/autopilot.json"
+new_mission "$R23" lcars-legacy-1 verify
+ap "$R23" record 'missions.M0.id' lcars-legacy-1 >/dev/null 2>&1
+ap "$R23" record pending \
+  '{"mission":"lcars-legacy-1","what":"LEGACY: the deploy host refused the key","why":"a standing-rule conflict","command":"-","rollback":"-","raisedAt":1}' \
+  >/dev/null 2>&1
+check "the orphan is on disk with NO ledger entry (the state older runs leave)" \
+  "[ \"\$(jget '$AP23' 'len(d[\"questions\"])')\" = 0 ]"
+st23="$(ap "$R23" status 2>&1)"
+check "it is ADOPTED on FIRST SIGHT, not lazily when something else is raised" \
+  "[ \"\$(jget '$AP23' 'len(d[\"questions\"])')\" = 1 ]"
+check "the adopted question KEEPS ITS TEXT verbatim" \
+  "[ \"\$(jget '$AP23' 'd[\"questions\"][\"q1\"][\"what\"]')\" = 'LEGACY: the deploy host refused the key' ]"
+check "and its why/command/rollback came across too" \
+  "[ \"\$(jget '$AP23' 'd[\"questions\"][\"q1\"][\"why\"]')\" = 'a standing-rule conflict' ]"
+check "it got a REAL id" "[ \"\$(jget '$AP23' 'sorted(d[\"questions\"])')\" = '[\"q1\"]' ]"
+check "status lists it under that real id" \
+  "printf '%s' \"\$st23\" | qgrep -qE '^    \[q1\] lcars-legacy-1: LEGACY:'"
+nrows23="$(printf '%s\n' "$st23" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+check "one row, counted once" \
+  "[ \"$nrows23\" = 1 ] && printf '%s' \"\$st23\" | qgrep -q 'open questions for the captain: 1'"
+ap "$R23" status >/dev/null 2>&1
+ap "$R23" next --all >/dev/null 2>&1
+ap "$R23" record lastForecast "anything" >/dev/null 2>&1
+check "adoption is IDEMPOTENT across repeated reads (never DUPLICATED)" \
+  "[ \"\$(jget '$AP23' 'len(d[\"questions\"])')\" = 1 ]"
+check "pending is now purely the MIRROR of the adopted copy" \
+  "[ \"\$(jget '$AP23' 'd[\"pending\"][\"id\"]')\" = q1 ]"
+ap "$R23" answered q1 "key rotated" >/dev/null 2>&1
+check "answering the adopted question empties the mirror" \
+  "[ \"\$(jget '$AP23' 'd[\"pending\"]')\" = '{}' ]"
+ap "$R23" status >/dev/null 2>&1
+ap "$R23" next >/dev/null 2>&1
+st23b="$(ap "$R23" status 2>&1)"
+check "an ANSWERED adopted question is NOT RESURRECTED by later reads" \
+  "[ \"\$(jget '$AP23' 'len(d[\"questions\"])')\" = 1 ]"
+check "and the screen reports him clear" \
+  "printf '%s' \"\$st23b\" | qgrep -q 'open questions for the captain: none'"
+check "the captain's answer survived the whole thing" \
+  "printf '%s' \"\$(jget '$AP23' 'd[\"questions\"][\"q1\"][\"answer\"]')\" | qgrep -q 'key rotated'"
+# `answered pending` keeps working as the POINTER the mirror is — it closes the
+# question the mirror names (the OLDEST open one), never a copy living there.
+R23B="$(new_repo)"
+ap "$R23B" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP23B="$R23B/.git/lcars/autopilot.json"
+new_mission "$R23B" lcars-ptr-1 implement
+ap "$R23B" ask "the oldest open one" --mission lcars-ptr-1 >/dev/null 2>&1
+ap "$R23B" ask "the newer one" --mission lcars-ptr-2 >/dev/null 2>&1
+ap "$R23B" answered pending "by the pointer" >/dev/null 2>&1
+check "answered pending closes the question the MIRROR NAMES (the oldest open)" \
+  "[ -n \"\$(jget '$AP23B' 'd[\"questions\"][\"q1\"].get(\"answeredAt\")')\" ] && [ -z \"\$(jget '$AP23B' 'd[\"questions\"][\"q2\"].get(\"answeredAt\")')\" ]"
+check "and it created no extra question doing it" \
+  "[ \"\$(jget '$AP23B' 'len(d[\"questions\"])')\" = 2 ]"
+
+# --- S233e: answering by MISSION when two questions share that mission ------
+# CHOSEN BEHAVIOUR: it closes the OLDEST open question on that mission — the
+# long-standing `answered <mission>` semantics — and SAYS SO, naming what is
+# still open on that same mission. It may never silently destroy one.
+R24="$(new_repo)"
+ap "$R24" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+AP24="$R24/.git/lcars/autopilot.json"
+new_mission "$R24" lcars-share-1 verify
+new_mission "$R24" lcars-sharebug-1 implement bug lcars-share-1
+ap "$R24" record 'missions.M0.id' lcars-share-1 >/dev/null 2>&1
+ap "$R24" land lcars-share-1 >/dev/null 2>&1                         # q1
+ap "$R24" ask "HAND: a second call on the same milestone" \
+  --mission lcars-share-1 --why "a scope change" >/dev/null 2>&1     # q2
+out24="$(ap "$R24" answered lcars-share-1 "the first answer" 2>&1)"
+check "answering by MISSION closes exactly ONE question" \
+  "[ \"\$(jget '$AP24' 'len([q for q in d[\"questions\"].values() if q.get(\"answeredAt\")])')\" = 1 ]"
+check "it closes the OLDEST open one (q1)" \
+  "[ -n \"\$(jget '$AP24' 'd[\"questions\"][\"q1\"].get(\"answeredAt\")')\" ]"
+check "the other is UNTOUCHED, not destroyed" \
+  "[ -z \"\$(jget '$AP24' 'd[\"questions\"][\"q2\"].get(\"answeredAt\")')\" ] && [ -n \"\$(jget '$AP24' 'd[\"questions\"][\"q2\"].get(\"what\")')\" ]"
+check "and it WARNS that the mission still has an open question, by id" \
+  "printf '%s' \"\$out24\" | qgrep -qE 'still has 1 open question.*q2|q2.*still open on lcars-share-1'"
+check "the warning says answering by mission closes the oldest only" \
+  "printf '%s' \"\$out24\" | qgrep -qi 'oldest'"
+st24="$(ap "$R24" status 2>&1)"
+nrows24="$(printf '%s\n' "$st24" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+check "status lists the survivor, count equal to rows" \
+  "[ \"$nrows24\" = 1 ] && printf '%s' \"\$st24\" | qgrep -q 'open questions for the captain: 1'"
+ap "$R24" answered lcars-share-1 "the second answer" >/dev/null 2>&1
+check "a second answer-by-mission closes the survivor too" \
+  "[ \"\$(jget '$AP24' 'len([q for q in d[\"questions\"].values() if not q.get(\"answeredAt\")])')\" = 0 ]"
+
+# --- S233f: status's count ALWAYS equals the rows it prints -----------------
+# Three questions over two missions, raised both ways.
+R25="$(new_repo)"
+ap "$R25" init --spec "$TMPROOT/spec.md" --scope M0,M1 >/dev/null 2>&1
+new_mission "$R25" lcars-cnt-1 verify
+new_mission "$R25" lcars-cntbug-1 implement bug lcars-cnt-1
+ap "$R25" record 'missions.M0.id' lcars-cnt-1 >/dev/null 2>&1
+ap "$R25" land lcars-cnt-1 >/dev/null 2>&1
+ap "$R25" ask "second question" --mission lcars-cnt-1 >/dev/null 2>&1
+ap "$R25" ask "third question" --mission lcars-cnt-2 >/dev/null 2>&1
+st25="$(ap "$R25" status 2>&1)"
+hdr25="$(printf '%s\n' "$st25" | sed -n 's/^  open questions for the captain: \([0-9]*\)$/\1/p')"
+nrows25="$(printf '%s\n' "$st25" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+check "the header count and the printed rows agree at 3" \
+  "[ \"$hdr25\" = 3 ] && [ \"$nrows25\" = 3 ]"
+ap "$R25" answered q2 "ok" >/dev/null 2>&1
+st25b="$(ap "$R25" status 2>&1)"
+hdr25b="$(printf '%s\n' "$st25b" | sed -n 's/^  open questions for the captain: \([0-9]*\)$/\1/p')"
+nrows25b="$(printf '%s\n' "$st25b" | sed -n 's/^    \[[^]]*\] .*/x/p' | wc -l | tr -d ' ')"
+check "they still agree after one is answered" \
+  "[ \"$hdr25b\" = 2 ] && [ \"$nrows25b\" = 2 ]"
+
+# --- S233g: NO code path may read a question OUT OF `.pending` --------------
+# The structural test of the cure. `open_questions` — the one function `status`,
+# `next` and `build_plan` all read from — must derive its rows from `questions`
+# alone; and `.pending` on disk must never hold a `what` that is not also a
+# live ledger entry.
+check "open_questions reads the ledger ONLY (no .pending fallback left in it)" \
+  "[ \"\$(sed -n '/^open_questions()/,/^}/p' '$SCRIPT' | grep -c 'pending')\" = 0 ]"
+MIRROR_PROBE="$TMPROOT/mirror-probe.py"
+cat >"$MIRROR_PROBE" <<'PY'
+import json, sys
+for f in sys.argv[1:]:
+    d = json.load(open(f))
+    p = d.get("pending") or {}
+    if not p.get("what"):
+        continue
+    q = (d.get("questions") or {}).get(p.get("id"))
+    if not (q and q.get("what") == p.get("what") and not q.get("answeredAt")):
+        sys.stderr.write("%s: .pending holds a question that is NOT a live ledger entry\n" % f)
+        sys.exit(1)
+PY
+check "every .pending holding a question MIRRORS a live ledger entry" \
+  "python3 '$MIRROR_PROBE' '$AP20' '$AP23' '$AP24' '$AP23B'"
 
 # --- D3: one blocked milestone must not park every other milestone ---------
 # `build_plan` hit answer-pending and returned BEFORE it looked at any mission,
@@ -1432,6 +1723,24 @@ check "AUTOPILOT.md says re-raising an OPEN question is a no-op" \
   "qgrep -qi 'raising the same question twice' '$APM'"
 check "AUTOPILOT.md says questions are a LEDGER, not one slot" \
   "qgrep -qiE 'ledger, not a slot|every question ever raised' '$APM'"
+# --- S233: the prose must instruct the VERB, never a hand-edit of `pending` --
+# The playbook telling the model to hand-write into `.pending` is what made that
+# field load-bearing storage, and that ambiguity cost five defects. § 9 now
+# names `autopilot.sh ask`, and declares `pending` derived and read-only.
+check "AUTOPILOT.md § 9 instructs the \`ask\` VERB" \
+  "qgrep -qF 'autopilot.sh ask' '$APM'"
+check "AUTOPILOT.md gives \`ask\` its --mission flag so it blocks one milestone" \
+  "qgrep -qE 'autopilot.sh ask .*--mission|--mission <' '$APM'"
+check "AUTOPILOT.md no longer tells the model to hand-write a question into pending" \
+  "! qgrep -qiE 'write the same shape by hand|by hand, into .pending|hand-write' '$APM'"
+check "AUTOPILOT.md declares \`pending\` a DERIVED, READ-ONLY mirror" \
+  "qgrep -qiE 'read-only.*mirror|mirror.*read-only|never storage' '$APM'"
+check "AUTOPILOT.md says an older run's hand-written pending is still honoured" \
+  "qgrep -qiE 'adopt(ed|s)? .*(the moment|on first sight|first time it is (seen|read))' '$APM'"
+# `usage` exits 1 by design and this suite runs with `pipefail`, so the exit
+# code has to be discarded or the pipeline reports the usage exit, not the grep.
+check "the driver documents the \`ask\` subcommand in its own usage" \
+  "{ ap '$R11' --help 2>&1 || true; } | qgrep -qE '^  ask '"
 check "AUTOPILOT.md states the three-failure drive cap" \
   "qgrep -qiE 'three failures in a row|failures in a row' '$APM'"
 check "AUTOPILOT.md states that a routine stage stop pings nobody" \
