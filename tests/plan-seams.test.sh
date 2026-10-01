@@ -27,14 +27,28 @@
 #   D. the PROMPT CONTRACT — plan.md, plan-review.md and implement-tdd.md each
 #      carry their rule paragraphs, asserted BY HEADING so a later edit cannot
 #      silently drop one (behavior 6).
+#   E. PLAN REVIEW'S OBJECTIONS reaching a human WHOLE, through the real
+#      `review-save` — the readout, pending.json and pendingQuestion (behavior 8).
 #
-# S236 FIX ROUND 1 added two behaviors inside A, both found by a live tester:
-#   1b/1c. THE WORKFLOW RULE'S ESCAPE HATCH. The rule fired on a literal path
-#      ANYWHERE in the ticket, note fields included, so a ticket that named a
-#      workflow only to FORBID editing it could not be worded to pass — its only
-#      ways out were a FALSE declaration or deleting the guardrail. A path in a
-#      note no longer triggers it, and naming the file in `entrypointsNote` is
-#      an accepted, recorded disclaimer. Decided from STRUCTURE, never sentiment.
+# THE CAPTAIN'S RULING OF 2026-10-01 — "we let the AI reviewer check it". The
+# WORKFLOW RULE is DELETED: there was a scan that read a ticket's prose for a
+# `.github/workflows/*.yml` path, inferred ownership of it, and demanded an
+# entrypoints entry or a by-name disclaimer. It produced three faults in one
+# session — it rejected a ticket that named a workflow only to FORBID editing
+# it, it rejected plans that do not use the contract at all, and it rejected the
+# round's own required proof sentence for naming the workflow it runs — and it
+# taught a live planner to delete workflow filenames out of its own guardrail
+# prose to get past it. Behaviors 0d–0i and 1k–1l pin the ruling: NAMING a
+# workflow file is not a claim. Behavior 1 pins the half that did NOT change —
+# every field of a declaration that IS made is still checked. Plan Review is the
+# only backstop now, and behavior 6 (6z8–6z10) pins that its prompt says so.
+#
+# BEHAVIOR 8 (section E) is the second cure of the same session: print_objections
+# field-split raw JSON on `"`, so every objection carrying an escaped quote was
+# cut at the first one — on the readout AND in the escalation question the
+# captain is asked. It reads the verdict with a JSON reader now.
+#
+# S236 FIX ROUND 1 added one more behavior inside A:
 #   7. THE PRODUCER RECORDS THE CLAIM. `roundTripTest` is a bare PATH, so on a
 #      CONFORMING plan the reviewer's "reject a stubbed round-trip test" gate had
 #      nothing to read and auto-approved. Every entry now carries a
@@ -149,39 +163,75 @@ run_plan_save "$(new_mission)" "$P"
 check "0c a LEGACY plan whose declaredEdits name a workflow file is ACCEPTED" \
   "[ '$RC' -eq 0 ]"
 
-# …and the rule must KEEP BITING on a plan that DOES use the contract. Same
-# description, same filename — but this ticket declares the keys, and neither
-# covers the file with an entry nor names it in entrypointsNote.
+# …and a plan that DOES use the contract is held to the DECLARATIONS it makes —
+# and to nothing it merely MENTIONS. Same description, same filename: the ticket
+# declares `entrypoints: []` with a note that never names the file, and that is
+# ACCEPTED. See the ruling block in run.sh's validate_plan_seams.
 P="$(mkplan_desc declaring-wf-desc "$WFDESC" '    "seams": [],
     "seamsNote": "this ticket writes no state another path reads.",
     "entrypoints": [],
     "entrypointsNote": "no new entrypoint.",')"
 run_plan_save "$(new_mission)" "$P"
-check "0d a DECLARING plan with the same workflow-naming description and no entry or disclaimer is STILL REJECTED" \
-  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -qF '.github/workflows/publish.yml'"
-check "0e …and that rejection still reaches the retrying worker on the reject-note channel" \
-  "printf '%s' \"\$NOTE\" | grep -qF '.github/workflows/publish.yml'"
+check "0d a DECLARING plan whose DESCRIPTION names a workflow file, with no entry and no disclaimer, is ACCEPTED" \
+  "[ '$RC' -eq 0 ]"
+check "0e …and nothing is written to the reject-note channel" "[ -z \"\$NOTE\" ]"
 
-# --- behavior 1: a workflow edit with no entrypoints entry is REJECTED -------
-# The weekend's break: the publish workflow ran a module as a file and nothing
-# ever ran the workflow the way CI runs it.
-P="$(mkplan wf-bare '    "seams": [],
-    "seamsNote": "this ticket writes no state another path reads.",
+# The same axis through declaredEdits — the field the old scan read as "owns it".
+P="$(mkplan declaring-wf-edits '    "seams": [],
+    "seamsNote": "none.",
     "entrypoints": [],
     "entrypointsNote": "no new entrypoint.",
     "declaredEdits": [".github/workflows/publish.yml", "src/hub.py"],')"
 run_plan_save "$(new_mission)" "$P"
-check "1a a ticket editing .github/workflows/*.yml with no entrypoint is REJECTED" \
-  "[ '$RC' -ne 0 ]"
-check "1b the reason names the TICKET" "printf '%s' \"\$OUT\" | grep -q 't-001'"
-check "1c the reason names the FILE" \
-  "printf '%s' \"\$OUT\" | grep -qF '.github/workflows/publish.yml'"
-check "1d the reason names the MISSING KEY (realRunTest)" \
-  "printf '%s' \"\$OUT\" | grep -qF 'realRunTest'"
-check "1e the reason reaches the retrying worker (the S178 reject-note channel)" \
-  "printf '%s' \"\$NOTE\" | grep -qF '.github/workflows/publish.yml'"
+check "0f a DECLARING plan whose declaredEdits name a workflow file is ACCEPTED" \
+  "[ '$RC' -eq 0 ]"
 
-# …and the SAME ticket with a real-run entrypoint declared is accepted.
+# FAULT 1 of the three the scan produced in one session: the guardrail sentence.
+# A pure-CLI ticket that names a workflow ONLY to forbid editing it was rejected,
+# and the note that exists to explain the absence could not be worded to pass.
+# The planner's only ways out were a FALSE declaration or DELETING the guardrail
+# — and a live planner was measured doing exactly that. It is accepted now, and
+# the note does NOT have to name the file to earn it.
+P="$(mkplan_desc declaring-wf-forbid \
+  'Add the promote subcommand. Do NOT touch .github/workflows/publish.yml - that file belongs to t-004 and editing it here would break the publish job.' \
+  '    "seams": [],
+    "seamsNote": "pure CLI; it writes no state another path reads.",
+    "entrypoints": [],
+    "entrypointsNote": "this ticket adds no CI entrypoint.",')"
+run_plan_save "$(new_mission)" "$P"
+check "0g a ticket that names a workflow ONLY to FORBID editing it is ACCEPTED without naming it in any note" \
+  "[ '$RC' -eq 0 ]"
+
+# FAULT 3: the round's OWN proof sentence. `realRunProof` is required to say how
+# the test runs the entrypoint as CI does, and the natural sentence NAMES the
+# workflow it runs — so the scan read the round's own required field as a claim
+# of ownership over a second file and rejected it. A proof sentence is prose.
+P="$(mkplan declaring-proof-names-wf '    "seams": [],
+    "seamsNote": "none.",
+    "entrypoints": [{"kind": "cli", "path": "bin/publish",
+                     "realRunTest": "tests/test_publish_cli.py",
+                     "realRunProof": "it runs bin/publish with the argv .github/workflows/publish.yml passes it, from the repo root, with the Actions env set."}],')"
+run_plan_save "$(new_mission)" "$P"
+check "0h a workflow filename inside a required realRunProof sentence does not reject the plan" \
+  "[ '$RC' -eq 0 ]"
+
+# …and the blanket statement of the ruling: NAMING workflow files is not a claim.
+P="$(mkplan_desc declaring-wf-many \
+  'Wire the hub. .github/workflows/ci.yml, .github/workflows/publish.yml and .github/workflows/release.yaml all call it; none of them is ours.' \
+  '    "seams": [],
+    "seamsNote": "none.",
+    "entrypoints": [],
+    "entrypointsNote": "no new entrypoint in this slice.",')"
+run_plan_save "$(new_mission)" "$P"
+check "0i a ticket naming THREE workflow files in prose, declaring none, is ACCEPTED" \
+  "[ '$RC' -eq 0 ]"
+
+# --- behavior 1: a DECLARATION THAT IS MADE IS STILL CHECKED, IN FULL --------
+# RULING OF 2026-10-01. The prose scan is gone; the declaration checks are NOT.
+# This is the half the captain is relying on, so every field of a declared
+# entrypoint is driven here.
+
+# The whole, correct declaration is accepted.
 P="$(mkplan wf-ok '    "seams": [],
     "seamsNote": "this ticket writes no state another path reads.",
     "entrypoints": [{"kind": "workflow", "path": ".github/workflows/publish.yml",
@@ -189,133 +239,84 @@ P="$(mkplan wf-ok '    "seams": [],
                      "realRunProof": "it reads the publish step command out of the yml and runs that exact command from the repo root with the Actions env set."}],
     "declaredEdits": [".github/workflows/publish.yml", "src/hub.py"],')"
 run_plan_save "$(new_mission)" "$P"
-check "1f …the same ticket WITH a workflow entrypoint + realRunTest is accepted" \
+check "1a a DECLARED workflow entrypoint with realRunTest + realRunProof is ACCEPTED" \
   "[ '$RC' -eq 0 ]"
 
-# An entrypoint for a DIFFERENT workflow does not cover this one.
-P="$(mkplan wf-wrong '    "seams": [],
-    "seamsNote": "none.",
-    "entrypoints": [{"kind": "workflow", "path": ".github/workflows/ci.yml",
-                     "realRunTest": "tests/test_ci.py"}],
-    "declaredEdits": [".github/workflows/publish.yml"],')"
-run_plan_save "$(new_mission)" "$P"
-check "1g an entrypoint for a DIFFERENT workflow does not cover this file" \
-  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -qF '.github/workflows/publish.yml'"
-
-# A workflow entrypoint with no realRunTest is rejected by name.
+# A declared entry with no realRunTest is rejected BY NAME.
 P="$(mkplan wf-nortt '    "seams": [],
     "seamsNote": "none.",
-    "entrypoints": [{"kind": "workflow", "path": ".github/workflows/publish.yml"}],
-    "declaredEdits": [".github/workflows/publish.yml"],')"
+    "entrypoints": [{"kind": "workflow", "path": ".github/workflows/publish.yml",
+                     "realRunProof": "it runs the publish step command from the repo root."}],')"
 run_plan_save "$(new_mission)" "$P"
-check "1h a workflow entrypoint with NO realRunTest is rejected, naming it" \
-  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -qF 'realRunTest'"
+check "1b a declared workflow entrypoint with NO realRunTest is REJECTED" "[ '$RC' -ne 0 ]"
+check "1c …naming the ticket, the key and the file" \
+  "printf '%s' \"\$OUT\" | grep -q 't-001' && printf '%s' \"\$OUT\" | grep -qF 'realRunTest' && printf '%s' \"\$OUT\" | grep -qF '.github/workflows/publish.yml'"
+check "1d …and it reaches the retrying worker on the S178 reject-note channel" \
+  "printf '%s' \"\$NOTE\" | grep -qF 'realRunTest'"
 
-# --- behavior 1b: the workflow rule has an ESCAPE HATCH, and it is STRUCTURAL
-# S236 fix round 1. The tester reproduced this twice: the rule fired on a
-# literal path ANYWHERE in the ticket's JSON, including the note fields that
-# exist to explain an ABSENCE. A pure-CLI ticket that named the workflow only to
-# FORBID editing it was rejected, and naming it inside `entrypointsNote` tripped
-# the identical rejection — so no wording satisfied the gate. The only two ways
-# out were (a) invent an entrypoints entry with a realRunTest for a file the
-# ticket is forbidden to edit — a FALSE DECLARATION, the exact thing this round
-# exists to kill — or (b) delete the "do not edit this file" guardrail. A gate
-# that forces a lie is worse than no gate.
-#
-# The cure is STRUCTURAL, never sentiment: the decision is made from WHICH FIELD
-# the path appears in, and from whether an entry or a by-name disclaimer is
-# present. Nothing reads "do not touch" or "belongs to" out of the prose (the
-# inference trap that cost S147, S156 and S188 multiple rounds each).
-
-# A pure-CLI ticket that names the workflow in its DESCRIPTION to forbid editing
-# it, with entrypoints: [] and a note NAMING that file, is ACCEPTED.
-cat > "$TMPROOT/disclaim.json" <<'JSON'
-[
-  {
-    "id": "t-002",
-    "title": "Add the promote CLI",
-    "description": "Add the promote subcommand. Do NOT touch .github/workflows/publish.yml - that file belongs to t-004 and editing it here would break the publish job.",
-    "acceptanceCriteria": ["promote exits 0"],
-    "seams": [],
-    "seamsNote": "pure CLI; it writes no state another path reads.",
-    "entrypoints": [],
-    "entrypointsNote": "This ticket adds no CI entrypoint; it only names .github/workflows/publish.yml to forbid editing it.",
-    "estimatedReadLoc": 1,
-    "estimatedTestLoc": 1,
-    "estimatedNewLoc": 1,
-    "dependencies": [],
-    "establishesSharedInfrastructure": false,
-    "rationale": "r"
-  }
-]
-JSON
-mkdir -p "$TMPROOT/discdir" && cp "$TMPROOT/disclaim.json" "$TMPROOT/discdir/plan.json"
-run_plan_save "$(new_mission)" "$TMPROOT/discdir/plan.json"
-check "1i a ticket that names a workflow only to FORBID editing it, with entrypoints:[] + a note NAMING the file, is ACCEPTED" \
-  "[ '$RC' -eq 0 ]"
-
-# The field designed to explain "no entrypoint here" must not be the trigger.
-P="$(mkplan wf-note-only '    "seams": [],
+# A declared entry with a BLANK realRunProof is rejected BY NAME.
+P="$(mkplan wf-blankproof '    "seams": [],
     "seamsNote": "none.",
-    "entrypoints": [],
-    "entrypointsNote": "no CI entrypoint here; .github/workflows/publish.yml is owned by t-004.",')"
+    "entrypoints": [{"kind": "workflow", "path": ".github/workflows/publish.yml",
+                     "realRunTest": "tests/test_publish_workflow.py",
+                     "realRunProof": "   "}],')"
 run_plan_save "$(new_mission)" "$P"
-check "1j a workflow path named ONLY in entrypointsNote is ACCEPTED" \
-  "[ '$RC' -eq 0 ]"
+check "1e a declared workflow entrypoint with a BLANK realRunProof is REJECTED, naming the key" \
+  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -qF 'realRunProof'"
 
-# A note field is prose ABOUT ABSENCE, for either key.
-P="$(mkplan wf-seamnote-only '    "seams": [],
-    "seamsNote": "no shared state; the digest .github/workflows/publish.yml publishes is t-003 state.",
-    "entrypoints": [],
-    "entrypointsNote": "none.",')"
-run_plan_save "$(new_mission)" "$P"
-check "1k a workflow path named ONLY in seamsNote does not trip the rule" \
-  "[ '$RC' -eq 0 ]"
-
-# The disclaimer is PER FILE. Naming a DIFFERENT workflow in the note does not
-# disclaim the one the description names: the hatch cannot be a blanket.
-P="$(mkplan wf-wrong-disclaim '    "seams": [],
+# A declared entry whose realRunTest is NOT a test path is rejected BY NAME.
+P="$(mkplan wf-testoutside '    "seams": [],
     "seamsNote": "none.",
-    "entrypoints": [],
-    "entrypointsNote": "no entrypoint; .github/workflows/ci.yml is not ours.",
-    "declaredEdits": [".github/workflows/publish.yml"],')"
+    "entrypoints": [{"kind": "workflow", "path": ".github/workflows/publish.yml",
+                     "realRunTest": "src/hub.py",
+                     "realRunProof": "it runs the publish step command from the repo root with the Actions env set."}],')"
 run_plan_save "$(new_mission)" "$P"
-check "1l a note naming a DIFFERENT workflow does not disclaim this one" \
-  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -qF '.github/workflows/publish.yml'"
+check "1f a declared workflow entrypoint whose realRunTest is OUTSIDE the tests dir is REJECTED" \
+  "[ '$RC' -ne 0 ]"
+check "1g …naming the key and the offending path" \
+  "printf '%s' \"\$OUT\" | grep -qF 'realRunTest' && printf '%s' \"\$OUT\" | grep -qF 'src/hub.py'"
 
-# A ticket may OWN one workflow and disclaim another in the same breath.
-P="$(mkplan wf-own-and-disclaim '    "seams": [],
+# kind and path are still checked on a declared entry.
+P="$(mkplan wf-badkind '    "seams": [],
+    "seamsNote": "none.",
+    "entrypoints": [{"kind": "script", "path": ".github/workflows/publish.yml",
+                     "realRunTest": "tests/test_publish_workflow.py",
+                     "realRunProof": "it runs the publish step command from the repo root."}],')"
+run_plan_save "$(new_mission)" "$P"
+check "1h a declared entrypoint with an unknown kind is REJECTED, naming kind" \
+  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -qF 'kind'"
+
+P="$(mkplan wf-nopath '    "seams": [],
+    "seamsNote": "none.",
+    "entrypoints": [{"kind": "workflow",
+                     "realRunTest": "tests/test_publish_workflow.py",
+                     "realRunProof": "it runs the publish step command from the repo root."}],')"
+run_plan_save "$(new_mission)" "$P"
+check "1i a declared entrypoint with NO path is REJECTED, naming path" \
+  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -qF 'path'"
+
+# A ticket may own one workflow (an entry) and merely mention another.
+P="$(mkplan wf-own-and-mention '    "seams": [],
     "seamsNote": "none.",
     "entrypoints": [{"kind": "workflow", "path": ".github/workflows/ci.yml",
                      "realRunTest": "tests/test_ci.py",
                      "realRunProof": "it reads the run step out of ci.yml and runs that exact command from the repo root with the Actions env set."}],
-    "entrypointsNote": "ci.yml is ours; .github/workflows/publish.yml is named only to forbid editing it.",
+    "entrypointsNote": "ci.yml is ours.",
     "declaredEdits": [".github/workflows/ci.yml", ".github/workflows/publish.yml"],')"
 run_plan_save "$(new_mission)" "$P"
-check "1m a ticket may declare one workflow and disclaim another by name" \
-  "[ '$RC' -eq 0 ]"
+check "1j a ticket may declare one workflow and merely mention another" "[ '$RC' -eq 0 ]"
 
-# --- behavior 1c: the rejection WORDING -------------------------------------
-# Two things were wrong with the old text: it asserted the ticket "touches" a CI
-# workflow when the ticket said the opposite, and "The missing key is
-# realRunTest" misnamed the gap — the whole ENTRY is absent, not one field.
-P="$(mkplan wf-wording '    "seams": [],
+# THE REMOVED RULE, asserted as an ABSENCE: no rejection anywhere may accuse a
+# ticket of naming a workflow file it did not declare. That sentence is what a
+# live planner learned to dodge by deleting its own guardrail prose.
+P="$(mkplan_desc declaring-wf-absence "$WFDESC" '    "seams": [],
     "seamsNote": "none.",
     "entrypoints": [],
-    "entrypointsNote": "no new entrypoint.",
-    "declaredEdits": [".github/workflows/publish.yml"],')"
+    "entrypointsNote": "no new entrypoint.",')"
 run_plan_save "$(new_mission)" "$P"
-check "1n the rejection does NOT assert the ticket TOUCHES a CI workflow" \
-  "[ '$RC' -ne 0 ] && ! printf '%s' \"\$OUT\" | grep -qi 'touches a ci workflow'"
-check "1o …and does NOT misname the gap as one missing key" \
-  "! printf '%s' \"\$OUT\" | grep -qi 'the missing key is'"
-check "1p …it names the missing entrypoints ENTRY as a whole" \
-  "printf '%s' \"\$OUT\" | grep -qi 'entry' && printf '%s' \"\$OUT\" | grep -qF 'entrypoints'"
-check "1q …and tells the planner the disclaimer hatch by field name" \
-  "printf '%s' \"\$OUT\" | grep -qF 'entrypointsNote'"
-check "1r …and the hatch reaches the retrying worker on the reject-note channel" \
-  "printf '%s' \"\$NOTE\" | grep -qF 'entrypointsNote'"
-
+check "1k no rejection accuses a ticket of merely NAMING a workflow file" \
+  "! printf '%s' \"\$OUT\" | grep -qi 'names the workflow file'"
+check "1l …and the plan is not bounced for it" "[ '$RC' -eq 0 ]"
 # --- behavior 2: a test path outside the tests dir is REJECTED --------------
 P="$(mkplan rtt-outside '    "seams": [{"producer": "cli writes request.json",
                "consumer": "the hub handler parses request.json",
@@ -999,6 +1000,15 @@ has "6z5 …and rejects an empty / boilerplate proof"    'boilerplate'    "$RB"
 check "6z6 …and no longer rests the audit on reading the roundTripTest PATH" \
   "! printf '%s' \"\$(nows \"\$RB\")\" | grep -qiF 'read what each \`roundTripTest\` is described as'"
 has "6z7 …a proof naming no real consumer is an objection" 'objection'   "$RB"
+# RULING OF 2026-10-01 — the prose scan is deleted, so the reviewer is the ONLY
+# backstop on a ticket that adds a CI workflow and declares no entrypoint. The
+# prompt must say that PLAINLY and must not lean on a mechanical pre-filter.
+has "6z8 the reviewer is told it is the ONLY check on an undeclared CI workflow" \
+    'the only check' "$RB"
+has "6z9 …and that is stated about a CI workflow specifically" \
+    'CI workflow' "$RB"
+check "6z10 …and the prompt no longer claims the harness checks that a workflow file has an entrypoint" \
+  "! printf '%s' \"\$(nows \"\$RB\")\" | grep -qiF 'a workflow file has an entrypoint'"
 
 # --- implement-tdd.md ------------------------------------------------------
 IB="$(blk "$STAGES/implement-tdd.md" "seams")"
@@ -1011,6 +1021,153 @@ has "6ee …and realRunTest"        'realRunTest'   "$IB"
 # the plan said it was, and a disagreement is said out loud, not quietly closed.
 has "6ff …the recorded roundTripProof binds the test it writes" 'roundTripProof' "$IB"
 has "6gg …and realRunProof"                                    'realRunProof'   "$IB"
+
+# ===========================================================================
+section "E. Plan Review's objections reach a human WHOLE (behavior 8)"
+# ===========================================================================
+# BUG: print_objections field-split raw JSON on `"` and printed field 8, so ANY
+# objection containing an escaped `\"` was cut at the first one. Observed live,
+# all three objections of a real verdict destroyed:
+#
+#     • t-002 — roundTripProof is boilerplate: \
+#     • t-003 — roundTripProof is boilerplate: \
+#     • t-004 — realRunProof is boilerplate: \
+#
+# It matters most for the objection class S236 introduced, because a boilerplate
+# objection MUST quote the sentence it objects to — and the same function feeds
+# `write_pending` / `pendingQuestion`, so the question the captain is asked at a
+# round-3 escalation was truncated too. The full text was always intact in the
+# verdict JSON; only every surface a human reads was broken.
+
+review_repo() { # [round] -> echoes repo dir, mission parked at plan-review
+  local repo; repo="$(mktemp -d "$TMPROOT/rev.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
+  local d="$repo/.git/lcars/missions/test-001"; mkdir -p "$d"
+  cat > "$repo/.git/lcars/config.json" <<'JSON'
+{ "model": "claude-sonnet", "projectName": "fixture", "contextFile": null }
+JSON
+  cat > "$d/state.json" <<JSON
+{
+  "id": "test-001",
+  "type": "feature",
+  "title": "t",
+  "stage": "plan-review",
+  "branch": "lcars/test-001",
+  "base": "main",
+  "githubIssue": null,
+  "planReviewRound": ${1:-0}
+}
+JSON
+  cp "$TMPROOT/stub-plan.json" "$d/plan.json"
+  echo "$repo"
+}
+run_review_save() { # repo verdict [extra-env …]
+  local repo="$1" verdict="$2"; shift 2
+  OUT="$( cd "$repo" && env LCARS_GH_BIN=true "$@" \
+      bash "$SCRIPT" review-save --mission test-001 --verdict "$verdict" 2>&1 )"
+  RC=$?
+}
+# A literal backslash, so the truncation checks below can name the character the
+# old awk render left behind without six layers of shell quoting.
+BS="$(printf '\\')"
+# Build a failing verdict from (ticketId, objection) pairs, through a real JSON
+# writer, so the escaping in the fixture is the escaping a real reviewer emits.
+# ONE ISSUE PER LINE — the CANONICAL verdict shape run.sh documents, and the
+# shape the live truncation was measured on (`$4`/`$8` landed on the ticket id
+# and the objection, and the objection died at its first escaped quote).
+# $PRETTY=1 writes the same verdict fully pretty-printed instead.
+mkverdict() { # outfile tid obj [tid obj …]
+  PRETTY="${PRETTY:-0}" "${LCARS_PYTHON_BIN:-python3}" - "$@" <<'VPY'
+import json, os, sys
+out, rest = sys.argv[1], sys.argv[2:]
+issues = [{"ticketId": rest[i], "objection": rest[i + 1]}
+          for i in range(0, len(rest), 2)]
+if os.environ.get("PRETTY") == "1":
+    json.dump({"passed": False, "issues": issues}, open(out, "w"), indent=2)
+else:
+    with open(out, "w") as fh:
+        fh.write('{ "passed": false, "issues": [\n')
+        fh.write(",\n".join("  " + json.dumps(i) for i in issues))
+        fh.write("\n] }\n")
+VPY
+}
+
+# THE OBJECTION THAT EXPOSED IT — a boilerplate objection quoting the sentence.
+QUOTED='roundTripProof is boilerplate: "drives both halves for real" restates the rule instead of describing THIS test; name the producer, the consumer and what crosses between them.'
+PLAIN='Horizontal slice - only the data layer; re-slice it so the ticket ships a behavior.'
+V="$TMPROOT/verdict-quoted.json"
+mkverdict "$V" t-002 "$QUOTED" t-003 "$PLAIN"
+R="$(review_repo 0)"
+run_review_save "$R" "$V"
+check "8a review-save on a failing verdict bounces the Mission back to Plan" \
+  "[ '$RC' -eq 0 ] && printf '%s' \"\$OUT\" | grep -qF 'Stage:  plan'"
+check "8b an objection containing an ESCAPED QUOTE is printed IN FULL" \
+  "printf '%s' \"\$OUT\" | grep -qF \"\$QUOTED\""
+check "8c …it is not cut at the first quote (the measured truncation)" \
+  "! printf '%s' \"\$OUT\" | grep -qF \"boilerplate: \$BS\""
+check "8d …and no backslash-escape leaks into the lines a human reads" \
+  "! printf '%s' \"\$OUT\" | grep -F '    • ' | grep -qF \"\$BS\""
+check "8e the PLAIN objection still prints exactly as before (the control)" \
+  "printf '%s' \"\$OUT\" | grep -qF \"    • t-003 — \$PLAIN\""
+check "8f …and the quoted one keeps the same <prefix><ticket> — <objection> shape" \
+  "printf '%s' \"\$OUT\" | grep -qF \"    • t-002 — roundTripProof is boilerplate:\""
+check "8g every objection is still ONE LINE (write_pending and head -1 depend on it)" \
+  "[ \"\$(printf '%s' \"\$OUT\" | grep -c '    • ')\" -eq 2 ]"
+
+# A LONG objection — the real shape of this class — comes out whole, not clipped.
+LONG='realRunProof is boilerplate: "runs it the way CI does" restates the rule; this entry names ".github/workflows/publish.yml" and tests/test_publish_workflow.py, so say which "run:" step the test reads, which command it executes, from which cwd, and which of GITHUB_SERVER_URL, GITHUB_REPOSITORY_OWNER and GITHUB_EVENT_PATH it sets, or name a different test.'
+V2="$TMPROOT/verdict-long.json"
+mkverdict "$V2" t-004 "$LONG"
+R2="$(review_repo 0)"
+run_review_save "$R2" "$V2"
+check "8h a LONG objection with several escaped quotes is printed IN FULL" \
+  "printf '%s' \"\$OUT\" | grep -qF \"\$LONG\""
+check "8i …with no truncation marker" \
+  "! printf '%s' \"\$OUT\" | grep -q '…' && ! printf '%s' \"\$OUT\" | grep -qF '...'"
+
+# THE ESCALATION QUESTION. The round-3 branch feeds the SAME function into
+# write_pending and pendingQuestion, so the question the captain is asked was
+# truncated at the first quote too.
+R3="$(review_repo 2)"
+run_review_save "$R3" "$V"
+MD3="$R3/.git/lcars/missions/test-001"
+check "8j the third failing round escalates to the human" \
+  "[ '$RC' -eq 0 ] && printf '%s' \"\$OUT\" | grep -qi 'escalated'"
+PQ="$("${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["pendingQuestion"])' "$MD3/state.json" 2>/dev/null)"
+check "8k the escalation's pendingQuestion carries the FULL objection text" \
+  "[ \"\$PQ\" = \"t-002 — \$QUOTED\" ]"
+PJ="$("${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys; d=json.load(open(sys.argv[1])); print("\n".join(d["questions"]))' "$MD3/pending.json" 2>/dev/null)"
+check "8l pending.json's first question carries it in full too" \
+  "printf '%s' \"\$PJ\" | grep -qF \"\$QUOTED\""
+check "8m …and pending.json holds ONE question per objection, not one per quote" \
+  "[ \"\$(printf '%s\n' \"\$PJ\" | grep -c .)\" -eq 2 ]"
+check "8n …and the escalation readout prints the full objection as well" \
+  "printf '%s' \"\$OUT\" | grep -qF \"\$QUOTED\""
+
+# THE SAME VERDICT, FULLY PRETTY-PRINTED. A reviewer that writes its verdict with
+# an indenting JSON writer puts every key on its own line, and the old field-split
+# then landed on different fields entirely — it printed the objection as the
+# TICKET and an empty objection after it. A JSON reader does not care.
+VP="$TMPROOT/verdict-pretty.json"
+PRETTY=1 mkverdict "$VP" t-002 "$QUOTED" t-003 "$PLAIN"
+R5="$(review_repo 0)"
+run_review_save "$R5" "$VP"
+check "8r a PRETTY-PRINTED verdict renders the full objection against its ticket" \
+  "[ '$RC' -eq 0 ] && printf '%s' \"\$OUT\" | grep -qF \"    • t-002 — \$QUOTED\""
+check "8s …and the plain one too" \
+  "printf '%s' \"\$OUT\" | grep -qF \"    • t-003 — \$PLAIN\""
+
+# FAIL OPEN. This renders a display on a REJECTION path: no interpreter must not
+# take down the Plan Review stage. Same stance as validate_plan_seams' UNCHECKED
+# branch — degrade to something readable, never die.
+R4="$(review_repo 0)"
+run_review_save "$R4" "$V" LCARS_PYTHON_BIN=/nonexistent/python3
+check "8o with NO interpreter the stage still completes and bounces to Plan" \
+  "[ '$RC' -eq 0 ] && printf '%s' \"\$OUT\" | grep -qF 'Stage:  plan'"
+check "8p …and still names each objecting ticket" \
+  "printf '%s' \"\$OUT\" | grep -q 't-002' && printf '%s' \"\$OUT\" | grep -q 't-003'"
+check "8q …degraded, it still carries the objection's own words" \
+  "printf '%s' \"\$OUT\" | grep -qF 'restates the rule'"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

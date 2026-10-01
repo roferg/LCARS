@@ -85,6 +85,37 @@ if [ -f "$LCARS_COMMON_LIB" ]; then
   # shellcheck source=../lcars-init/lcars-common.sh
   . "$LCARS_COMMON_LIB"
 fi
+# S237 — THE ANCHOR RULE, INTO THE PRD'S CONSTRAINTS, AT ALIGN.
+# When one of the staged attachments is a MOCKUP, the PRD on disk carries the
+# anchor rule with the drawing's ACTUAL element ids — the same list
+# `validate_plan_json` checks a `drawnAt` against, from the same ONE source file
+# the Plan prompt reads (lcars-run/stages/anchor-rule.md). No mockup ⇒ nothing
+# at all, so every other mission's prd.md is byte-identical.
+#
+# WHY THE PRD AND NOT ONLY THE PROMPT. Over the weekend of 26–29 Sep a Plan
+# Stage burned SIX attempts across TWO missions on this rule and then stopped
+# dead, with the harness' own anchor prose and places list ALREADY in the Plan
+# prompt. The cure that worked FIRST TIME was the captain pasting this line into
+# Constraints — the register the planner reads as requirements. So it goes in
+# both places, from one file. BEST-EFFORT by rule: a missing rule paragraph must
+# never be the thing that fails a filing (same contract as the estimator).
+_lcars_inject_anchor_rule() { # mission-dir  relpaths...
+  local md="$1"; shift
+  [ "$#" -gt 0 ] || return 0
+  command -v lcars_anchor_rule_line >/dev/null 2>&1 || return 0
+  local abs=() r
+  for r in "$@"; do abs+=("$md/$r"); done
+  local places; places="$(lcars_mockup_place_names "${abs[@]}")"
+  # A mockup with no ids still gets the rule (the unfenced form); a mission with
+  # no mockup at all gets nothing.
+  if [ -z "$places" ]; then
+    lcars_attach_has_mockup "${abs[@]}" || return 0
+  fi
+  local rule; rule="$(lcars_anchor_rule_line "$places" 2>/dev/null)" || return 0
+  [ -n "$rule" ] || return 0
+  lcars_prd_inject_constraint "$md/prd.md" "$rule"
+}
+
 # S196 — the mission-id minter and the clone fingerprint live in lcars-common.sh
 # (sourced best-effort above). Define the DEGRADED forms when the lib is absent:
 # the PRE-S196 id shape — no fingerprint — but with S196's tolerant sequence
@@ -730,6 +761,7 @@ do_complete() {
     # ONE rule, shared with the grill-first lane and with `lcars log` and the
     # cold-Stage prompt block — see lcars_attach_prd_section in lcars-common.sh.
     lcars_attach_prd_section "${ATTACH_RELS[@]}" >>"$MISSION_DIR/prd.md"
+    _lcars_inject_anchor_rule "$MISSION_DIR" "${ATTACH_RELS[@]}"
   fi
   # adr.md (complex mission) — persisted the same way grill-first does.
   [ -n "$ADR_SRC" ] && cat "$ADR_SRC" >"$MISSION_DIR/adr.md"
@@ -1151,6 +1183,7 @@ if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
     ATTACH_RELS+=("$arel")
   done
   lcars_attach_prd_section "${ATTACH_RELS[@]}" >>"$MISSION_DIR/prd.md"
+  _lcars_inject_anchor_rule "$MISSION_DIR" "${ATTACH_RELS[@]}"
 fi
 
 # --- write adr.md (complex Missions only) ---------------------------------

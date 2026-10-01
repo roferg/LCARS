@@ -386,9 +386,9 @@ is not this test.
 ### Worked example 3 — a workflow file you **do not own**
 
 A ticket often has to NAME a workflow file without owning it: to say another
-ticket owns it, or to forbid editing it. You declare that by **naming the file
-in `entrypointsNote`** — and that is accepted. It is your recorded disclaimer,
-and it is the ONLY right answer here:
+ticket owns it, or to forbid editing it. Say so plainly in the prose, and record
+it by **naming the file in `entrypointsNote`** — not because any gate asks, but
+because the reviewer reads that note and a written disclaimer is what it reads:
 
 ```json
 {
@@ -405,27 +405,32 @@ and it is the ONLY right answer here:
 **Never invent an `entrypoints` entry for a file you do not own.** An entry is a
 promise that a test runs that file for real; writing one for a file you are
 forbidden to edit is a FALSE DECLARATION, and false declarations are the entire
-thing these keys exist to stop. Equally, never delete the "do not edit this
-file" sentence to get past the gate — that sentence is a real guardrail. Name
-the file in the note instead. A disclaimer is per FILE: naming `ci.yml` in the
-note says nothing about `publish.yml`, and a ticket may own one workflow (an
-entry) and disclaim another (the note) in the same ticket.
+thing these keys exist to stop. Equally, **never delete a "do not edit this
+file" sentence** — that sentence is a real guardrail, nothing is scanning it,
+and a planner that erased one to satisfy a gate is why that gate no longer
+exists. A disclaimer is per FILE: naming `ci.yml` in the note says nothing about
+`publish.yml`, and a ticket may own one workflow (an entry) and disclaim another
+(the note) in the same ticket.
 
-The note is a RECORD, so the reviewer reads it: a disclaimer on a ticket whose
-PRD work plainly adds that workflow is an objection, and the right fix then is
-the entry, with its `realRunProof`.
+The note is a RECORD, so the reviewer reads it — and the reviewer is the ONLY
+check here: a disclaimer on a ticket whose own work plainly adds that workflow is
+an objection, and the right fix then is the entry, with its `realRunProof`.
 
-**The harness checks the mechanical half and will bounce your plan for it,**
-naming the ticket and what is missing: a ticket that names a
-`.github/workflows/*.yml` file anywhere EXCEPT `seamsNote`/`entrypointsNote`
-must either declare a `workflow` entrypoint for that file or name it in
-`entrypointsNote`; every seam must name a `roundTripTest` and a
-`roundTripProof`, every entrypoint a `realRunTest` and a `realRunProof`; every
-test path must be a real test path in this repo (under `tests/`, `test/`,
-`spec/`, `__tests__/`, or carrying the repo's own convention like
-`foo.test.ts` / `test_foo.py`). What it cannot check is whether the sentence you
-wrote is TRUE — whether the test you named really drives both halves. That is
-the reviewer's, and then the Implementer's.
+**The harness checks the DECLARATIONS YOU MAKE and will bounce your plan for
+them,** naming the ticket and what is missing: every seam must name a
+`roundTripTest` and a `roundTripProof`, every entrypoint a `kind`, a `path`, a
+`realRunTest` and a `realRunProof`; every test path must be a real test path in
+this repo (under `tests/`, `test/`, `spec/`, `__tests__/`, or carrying the
+repo's own convention like `foo.test.ts` / `test_foo.py`); and the keys are
+all-or-nothing across the plan, with an empty array owing its note.
+
+**Nothing scans your prose.** Naming a `.github/workflows/*.yml` file in a
+description, a criterion, a declared edit or a proof sentence does not trigger
+anything and never has to be worded around — so write the guardrail sentence,
+and never delete a filename to get a plan past a gate. What the harness cannot
+check is COMPLETENESS and TRUTH: whether a ticket that adds a workflow declared
+it, and whether the sentence you wrote about a test is true. The reviewer checks
+both, by reading the ticket — and it is the only thing that does.
 
 ## Per-ticket context manifest (one file per ticket)
 

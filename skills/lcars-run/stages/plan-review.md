@@ -91,9 +91,11 @@ shipped past a fully green suite in one weekend and every one sat at a seam the
 suite stubbed: the producer wrote one format, the consumer parsed another, and
 the test between them was a string somebody typed by hand.
 
-The harness already checked the mechanical half (a workflow file has an
-entrypoint; a seam names a test; the test paths are real test paths). **Your half
-is the two things it cannot check.**
+The harness checks the mechanical half of the declarations that ARE MADE — a
+declared seam names a `roundTripTest` and a `roundTripProof`, a declared
+entrypoint names a `kind`, a `path`, a `realRunTest` and a `realRunProof`, and
+every named test path is a real test path in this repo. **It checks nothing
+about what a ticket FAILED to declare.** Completeness is yours alone.
 
 **1. COMPLETENESS.** Read each ticket's own description and acceptance criteria.
 Does it describe something that WRITES state, and something that READS it? Then
@@ -145,14 +147,27 @@ consumer names with no account of what crosses between them. A real proof names
 both halves and says what passes between them. Boilerplate makes `passed` false,
 with the ticket id and the field named, exactly like any other objection.
 
-**3. A WORKFLOW DISCLAIMER IS A CLAIM TOO.** A ticket may name a
-`.github/workflows/*.yml` file it does not own by NAMING that file in
-`entrypointsNote`, and the harness accepts that as a recorded disclaimer rather
-than force the planner to invent an entry for a file it is forbidden to edit.
-That trade puts the completeness call on YOU: if the work that ticket owns
-plainly adds or changes that workflow, the disclaimer is wrong and what is
-needed is the entry, with its `realRunTest` and `realRunProof`. Name the ticket
-and the file.
+**3. A CI WORKFLOW: YOU ARE THE ONLY CHECK.** Read this twice, because nothing
+mechanical stands behind you here. A ticket that adds or changes a
+`.github/workflows/*.yml` file owes an `entrypoints` entry of
+`"kind": "workflow"` for that file, with its `realRunTest` and `realRunProof`.
+**The harness does not look for one.** It used to scan a ticket's prose for a
+workflow filename and demand an entry or a disclaimer; that guess was deleted on
+2026-10-01 because it rejected tickets that named a workflow only to FORBID
+editing it, rejected the proof sentences this stage asks for, and taught planners
+to delete workflow filenames out of their own guardrail prose to get past it. So
+**you are the only check that catches a ticket which adds a CI workflow and
+declares no entrypoint for it.**
+
+Read each ticket's description, acceptance criteria and declared edits yourself.
+If the work it owns plainly adds or changes a workflow file and its
+`entrypoints[]` is empty — or names a different file, or the ticket simply says
+in prose that the file is someone else's — that is an **objection**: name the
+ticket, name the workflow file, and ask for the entry with its `realRunTest` and
+`realRunProof`. A sentence deferring the file to another ticket is a CLAIM, not a
+reason: check whether some other ticket in this plan actually declares that file,
+and object when none does. Naming the file in `entrypointsNote` is a recorded
+disclaimer, nothing more — it buys no exemption from you.
 
 Where a ticket's own text does not tell you enough to decide, say so in the
 objection rather than approving it: an unreadable declaration is a declaration

@@ -303,6 +303,129 @@ lcars_attach_prd_section() {
 }
 
 # ---------------------------------------------------------------------------
+# THE ANCHOR RULE (S237) — ONE text, ONE anchor extractor
+# ---------------------------------------------------------------------------
+# WHAT WENT WRONG. Over the weekend of 26–29 Sep 2026 a Plan Stage burned SIX
+# failed attempts across TWO missions and then stopped dead, because the Plan
+# prompt told the worker `drawnAt` was "your own words; there is no list of
+# allowed anchors" while `validate_plan_json` REQUIRES a real element id from
+# the drawing. The cure that worked FIRST TIME, by hand, was the captain
+# pasting the rule verbatim WITH the actual anchor list into the PRD's
+# Constraints.
+#
+# So the harness pastes it now, at BOTH ends — Align writes it into prd.md,
+# Plan writes it into the assembled prompt — and the two ends read ONE file
+# (lcars-run/stages/anchor-rule.md). Two copies of a rule that must agree is
+# precisely the defect this cures one level up; do not add a second.
+#
+# The ANCHOR LIST is likewise single-sourced: lcars_mockup_place_names is the
+# one extractor, and run.sh's mission_mockup_place_names delegates to it, so
+# the list injected into the prompt is by construction the list the validator
+# checks against. There is no second source of anchors in the harness.
+
+# lcars_anchor_rule_file -> the path of the ONE rule-text source.
+lcars_anchor_rule_file() {
+  if [ -n "${LCARS_ANCHOR_RULE_FILE:-}" ]; then printf '%s' "$LCARS_ANCHOR_RULE_FILE"; return 0; fi
+  local d; d="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s' "$d/../lcars-run/stages/anchor-rule.md"
+}
+
+# lcars_anchor_rule_line [space-separated-anchors] -> the rule, one line.
+# With anchors: the ANCHORED form, @ANCHORS@ replaced by the comma-separated
+# list. Without: the UNFENCED form (a drawing with no ids to cite hands over no
+# list, because there is none to hand over). EMPTY and rc 1 when the source file
+# is unreadable — every caller treats that as "inject nothing", never as a stop:
+# a missing prompt paragraph must not be the thing that fails a filing.
+lcars_anchor_rule_line() {
+  local f; f="$(lcars_anchor_rule_file)" || return 1
+  [ -r "$f" ] || return 1
+  local want; want=anchored; [ -n "${1:-}" ] || want=unfenced
+  local line
+  line="$(awk -v want="$want" '
+    $0 == "<!-- lcars:anchor-rule:" want " -->" { grab=1; next }
+    grab && $0 == "<!-- lcars:anchor-rule:end -->" { exit }
+    grab && NF { print; exit }
+  ' "$f")"
+  [ -n "$line" ] || return 1
+  if [ "$want" = anchored ]; then
+    local list; list="$(printf '%s' "$1" | tr -s ' ' '\n' | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+    # No sed s///: an anchor id may legally contain `.` `:` `-`, and the list is
+    # built from the drawing, so keep it out of a regex replacement entirely.
+    printf '%s%s%s' "${line%%@ANCHORS@*}" "$list" "${line#*@ANCHORS@}"
+  else
+    printf '%s' "$line"
+  fi
+}
+
+# lcars_mockup_place_names <paths...> -> space-separated, sorted, deduped
+# element ids of every MOCKUP among these paths. EMPTY when there are none, or
+# when the drawings carry no ids at all.
+#
+# Both quote styles; an id must look like an id (no spaces, starts with a
+# letter) or it is markup noise, not a place a person can be pointed at.
+# grep -o, not sed: a line legitimately carries SEVERAL ids
+# (<section id="a"><div id="b">), and a greedy sed capture keeps only the LAST
+# one — which silently shrinks the vocabulary and rejects honest anchors.
+lcars_mockup_place_names() {
+  local f names=""
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    [ "$(lcars_attach_kind "$f")" = mockup ] || continue
+    names="$names
+$(grep -oE "[[:space:]]id=[\"'][^\"']*[\"']" "$f" \
+   | sed -E "s/.*id=[\"']//; s/[\"']\$//" \
+   | grep -E "^[A-Za-z][A-Za-z0-9_:.-]*$")"
+  done
+  printf '%s' "$(printf '%s' "$names" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+}
+
+# lcars_prd_inject_constraint <prd-path> <line> -> adds <line> as a bullet of
+# the PRD's Constraints section, ONCE. IDEMPOTENT on the line's own leading
+# token, so a PRD whose Constraints already carry the rule (the captain pasted
+# it, an autopilot injected it, or this ran before) never grows a second copy.
+# Returns 0 whether or not it wrote: a PRD that cannot be read is left alone.
+lcars_prd_inject_constraint() { # prd-path line
+  [ -f "$1" ] || return 0
+  [ -n "${2:-}" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" <<'INJECT_PY' || return 0
+import re, sys
+path, line = sys.argv[1], sys.argv[2]
+try:
+    text = open(path).read()
+except OSError:
+    sys.exit(0)
+# The idempotency KEY is the rule's own leading token, not the whole line: the
+# anchor list changes when the drawing does, and a PRD carrying yesterday's
+# list must not collect today's beside it.
+key = line.split("(")[0].strip().rstrip(":") or line.strip()
+lines = text.replace("\r\n", "\n").split("\n")
+if any(key in l for l in lines):
+    sys.exit(0)
+# Both PRD shapes the harness accepts (see _lcars_prd_read): the bold inline
+# label `**Constraints:**` and the heading `## Constraints`.
+BOLD = re.compile(r"^\s*\**\s*Constraints\s*:?\s*\**\s*$", re.I)
+INLINE = re.compile(r".*\*\*\s*Constraints\s*:\s*\*\*", re.I)
+HEAD = re.compile(r"^\s{0,3}#{1,6}\s*Constraints\s*:?\s*$", re.I)
+at = None
+for i, l in enumerate(lines):
+    if BOLD.match(l) or INLINE.match(l) or HEAD.match(l):
+        at = i
+        break
+if at is None:
+    # No Constraints section at all. Every lane that files a PRD gates on one
+    # existing, so this is the hand-run / future-shape path: add the section
+    # rather than silently dropping the rule.
+    while lines and not lines[-1].strip():
+        lines.pop()
+    lines += ["", "## Constraints", "", "- " + line, ""]
+else:
+    lines.insert(at + 1, "- " + line)
+open(path, "w").write("\n".join(lines))
+INJECT_PY
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # BASE FRESHNESS (S158)
 # ---------------------------------------------------------------------------
 # A Mission filed off a base branch that is behind origin makes every downstream
