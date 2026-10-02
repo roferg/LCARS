@@ -7349,6 +7349,70 @@ ensure_mission_branch() { # branch
 }
 
 # --- commit a green ticket's produced files to the mission branch -----------
+# === A WORKER REPORT IS A COMMIT MESSAGE, NOT A COMMIT SUBJECT ==============
+#
+# WHAT WAS MEASURED (live, 2026-10-01). Every ticket commit carried its whole
+# multi-paragraph worker report on LINE 1 — a 227-character subject on one
+# observed ticket — and an EMPTY body. `git log --oneline` and every GitHub
+# commit list were a wall of prose, one unreadable row per ticket.
+#
+# MECHANISM. cmd_implement hands this function `json_str "$RESULT" summary`, and
+# json_str decodes only \" and \\ — NEVER \n — so the report arrives as ONE
+# physical line with literal backslash-n in it. `git commit -m "<that>"` then
+# puts the lot in the subject, because git only splits a message at a BLANK
+# LINE and there was none.
+#
+# These two turn that report back into a message. commit_report_body decodes the
+# escapes to real newlines; commit_report_subject takes the first LINE of that,
+# clipped (on a word boundary) to a budget the caller sets from its own prefix
+# width. NOTHING IS LOST: the subject is a clip, and the body carries the report
+# entire, so the long tail moves OUT of the subject rather than away.
+COMMIT_SUBJECT_MAX=72
+
+commit_report_body() { # report → the report with real newlines
+  local s="$1" nl=$'\n'
+  s="${s//\\r\\n/$nl}"
+  s="${s//\\n/$nl}"
+  s="${s//\\r/$nl}"
+  s="${s//\\t/	}"
+  printf '%s' "$s"
+}
+
+commit_report_subject() { # budget  report → one short line
+  local budget="$1" s nl=$'\n'
+  s="$(commit_report_body "$2")"
+  s="${s%%$nl*}"                       # the FIRST line; the rest is the body
+  s="$(printf '%s' "$s" | tr '\t' ' ')"
+  while :; do case "$s" in *"  "*) s="${s//  / }" ;; *) break ;; esac; done
+  s="${s# }"; s="${s% }"
+  [ "$budget" -ge 16 ] 2>/dev/null || budget=16
+  if [ "${#s}" -gt "$budget" ]; then
+    s="${s:0:$((budget - 1))}"
+    case "$s" in *" "*) s="${s% *}" ;; esac
+    # BRACES ARE LOAD-BEARING: `"$s…"` makes bash read the ellipsis's first
+    # UTF-8 byte as part of the variable NAME (high bytes pass as identifier
+    # characters here), so it expanded an unset `s\xe2` and the subject came out
+    # as two stray bytes.
+    s="${s}…"
+  fi
+  printf '%s' "$s"
+}
+
+# The BODY that belongs under that subject: the report, minus a first line the
+# subject already quotes WHOLE (so `git show` does not say it twice) and minus
+# the blank line that followed it. When the subject had to be CLIPPED it keeps
+# the whole report, so no byte of the worker report is ever lost.
+commit_report_rest() { # subject  report → body (may be empty)
+  local subj="$1" nl=$'\n' body
+  body="$(commit_report_body "$2")"
+  case "$body" in
+    "$subj")      body="" ;;
+    "$subj$nl"*)  body="${body#"$subj$nl"}" ;;
+  esac
+  while :; do case "$body" in "$nl"*) body="${body#"$nl"}" ;; *) break ;; esac; done
+  printf '%s' "$body"
+}
+
 # The Test Writer / Implementer write real files into the working tree; for the
 # PR to have content those files must be committed to the Mission's branch (the
 # one `lcars file` recorded in state.json). On the first green ticket this also
@@ -7463,8 +7527,20 @@ commit_ticket() { # ticket  summary
     cleanup_runner_scratch "$before"
     return 0
   fi
-  "$GIT_BIN" commit -q -m "lcars($MISSION_ID) $1: $2" >/dev/null 2>&1 \
-    || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  # The report becomes a SHORT subject (keeping the `lcars(<id>) <ticket>:`
+  # prefix that child_commits_reachable and resolve-logs match on) plus the whole
+  # report as the BODY — a second `-m`, which git separates with a blank line.
+  local __ct_pfx="lcars($MISSION_ID) $1: "
+  local __ct_subj __ct_body
+  __ct_subj="$(commit_report_subject "$((COMMIT_SUBJECT_MAX - ${#__ct_pfx}))" "$2")"
+  __ct_body="$(commit_report_rest "$__ct_subj" "$2")"
+  if [ -n "$__ct_body" ]; then
+    "$GIT_BIN" commit -q -m "$__ct_pfx$__ct_subj" -m "$__ct_body" >/dev/null 2>&1 \
+      || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  else
+    "$GIT_BIN" commit -q -m "$__ct_pfx$__ct_subj" >/dev/null 2>&1 \
+      || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  fi
   # Worktree mode: stash the new commit OBJECT id so cmd_implement can cherry-pick
   # it onto the real mission branch in plan order. (Shared mission dir → visible
   # to the parent.) In the normal path this file is never written/read.

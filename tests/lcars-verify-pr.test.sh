@@ -386,6 +386,121 @@ check "7. closes the parent then each sub-issue, in order, deduped" \
 check "7. three --closes pairs (15 args)" "grep -q '^ARGC:15$' '$r7/host.log'"
 check "7. still no empty argv element" "! grep -q '^EMPTY_ARG$' '$r7/host.log'"
 
+# --- Behaviour 8: a WRAPPED paragraph survives the PR composer whole ---------
+# Observed live: every human-facing paragraph in the PR body stopped at its
+# first PHYSICAL source line. The machine-written halves (bullet lists, one-line
+# fields) were intact, which is why it went unseen.
+#
+# The cut points LOOKED like an 80-column budget (most clustered at 78-81), but
+# they are not: they are wherever the author's editor hard-wrapped. This fixture
+# pins THREE different cut lengths — the Goal wraps at ~70, ADR-001 at ~75, and
+# ADR-002 after a 14-character first line. A column-limit "fix" passes the first
+# two and fails the third, which is the whole point of having it here.
+new_repo_verify_wrapped() {
+  local repo; repo="$(new_repo_verify)"
+  local m="$repo/.git/lcars/missions/$MID"
+  cat >"$m/prd.md" <<'EOF'
+# Mission: Add dark mode
+**Goal:** Let users switch to a dark colour scheme so the app is readable
+at night, and have that choice remembered the next time they open it.
+**Acceptance Criteria:**
+- A toggle persists the choice
+- The system preference is honoured on first load
+EOF
+  cat >"$m/adr.md" <<'EOF'
+## ADR-001 — Theme storage
+**Decision:** Store the theme in localStorage rather than a cookie, because
+the server never needs to read it and a cookie would be sent on every
+request.
+**Consequences:** None worth noting.
+
+## ADR-002 — Toggle placement
+**Decision:** In the header.
+Next to the account menu, because that is where every other preference
+already lives.
+
+## ADR-003 — Token naming
+**Decision:** Use CSS custom properties.
+EOF
+  echo "$repo"
+}
+
+r8="$(new_repo_verify_wrapped)"; make_gh_stub "$r8/gh"; make_notify_stub "$r8/notify"
+: >"$r8/gh.log"; : >"$r8/notify.log"
+rc8=0; run_in "$r8" open-pr --mission "$MID" >"$r8/out.txt" 2>&1 || rc8=$?
+check "8. open-pr still exits 0 on a wrapped PRD/ADR" "[ '$rc8' -eq 0 ]"
+# The Goal: wrapped at ~70 columns. Everything after the wrap used to vanish.
+check "8. the Goal's FIRST source line is still there" \
+  "grep -q 'Let users switch to a dark colour scheme' '$r8/gh.log'"
+check "8. the Goal's CONTINUATION survives the wrap (~70-col cut point)" \
+  "grep -q 'remembered the next time they open it' '$r8/gh.log'"
+# ADR-001's decision: wrapped at ~75 columns, over THREE source lines.
+check "8. an ADR decision's second source line survives" \
+  "grep -q 'the server never needs to read it' '$r8/gh.log'"
+check "8. an ADR decision's third source line survives" \
+  "grep -q 'sent on every request' '$r8/gh.log'"
+# THE DISPROOF OF THE COLUMN THEORY: a 14-character first line, cut just the
+# same. A fix built on "it truncates at 80 columns" fails exactly here.
+check "8. a SHORT first line (14 chars) also keeps its continuation" \
+  "grep -q 'Next to the account menu' '$r8/gh.log'"
+check "8. ...all of it, to the last word" \
+  "grep -q 'every other preference already lives' '$r8/gh.log'"
+# A paragraph is JOINED, never left with a hard wrap inside the sentence.
+check "8. the joined paragraph reads as one sentence (no lost space/break)" \
+  "grep -q 'app is readable at night' '$r8/gh.log'"
+# The value stops where the next label starts — it must NOT swallow it.
+check "8. a value does not swallow the NEXT bold label" \
+  "! grep -q 'already lives. \\*\\*' '$r8/gh.log'"
+check "8. the Goal does not swallow the Acceptance Criteria label" \
+  "! grep -q 'open it. Acceptance Criteria' '$r8/gh.log'"
+# Regressions: the machine-written halves are byte-identical to today.
+check "8. a genuinely one-line ADR decision is unchanged" \
+  "grep -q 'Use CSS custom properties.' '$r8/gh.log'"
+check "8. every ADR is still listed as its own bullet" \
+  "grep -q 'ADR-001' '$r8/gh.log' && grep -q 'ADR-002' '$r8/gh.log' && grep -q 'ADR-003' '$r8/gh.log'"
+check "8. the acceptance-criteria bullets are still listed" \
+  "grep -q 'A toggle persists the choice' '$r8/gh.log' \
+     && grep -q 'The system preference is honoured on first load' '$r8/gh.log'"
+check "8. the section headings are unchanged" \
+  "grep -q 'User-facing summary' '$r8/gh.log' && grep -q 'Technical summary' '$r8/gh.log'"
+check "8. the ADR bullet layout is unchanged (title — decision)" \
+  "grep -q -- '- \*\*ADR-001 — Theme storage\*\* — Store the theme' '$r8/gh.log'"
+
+# A HEADING-FORM PRD (no bold labels) wraps its Goal too, and the composer did
+# not read it at ALL: its only heading-form path was `lcars_prd_field`, which
+# run.sh never sources at open-pr, and that reader takes "the first non-blank
+# line under it" anyway. md_scan reads both shapes, whole.
+new_repo_verify_headingform() {
+  local repo; repo="$(new_repo_verify)"
+  local m="$repo/.git/lcars/missions/$MID"
+  rm -f "$m/adr.md"
+  cat >"$m/prd.md" <<'EOF'
+Mission: Add dark mode
+
+## Goal
+
+Let users switch to a dark colour scheme so the app is readable
+at night, and have that choice remembered the next time they open it.
+
+## Acceptance Criteria
+
+- A toggle persists the choice
+EOF
+  echo "$repo"
+}
+r9="$(new_repo_verify_headingform)"; make_gh_stub "$r9/gh"; make_notify_stub "$r9/notify"
+: >"$r9/gh.log"; : >"$r9/notify.log"
+rc9=0; run_in "$r9" open-pr --mission "$MID" >"$r9/out.txt" 2>&1 || rc9=$?
+check "9. open-pr exits 0 on a heading-form PRD" "[ '$rc9' -eq 0 ]"
+check "9. the heading-form Goal's first line is there" \
+  "grep -q 'Let users switch to a dark colour scheme' '$r9/gh.log'"
+check "9. the heading-form Goal's CONTINUATION survives" \
+  "grep -q 'remembered the next time they open it' '$r9/gh.log'"
+check "9. the heading-form Goal stops before the next section" \
+  "! grep -q 'open it. Acceptance Criteria' '$r9/gh.log'"
+check "9. a heading-form PRD's criteria bullets still list" \
+  "grep -q 'A toggle persists the choice' '$r9/gh.log'"
+
 # ==========================================================================
 echo
 printf 'lcars verify-pr: %d passed, %d failed\n' "$pass" "$fail"
