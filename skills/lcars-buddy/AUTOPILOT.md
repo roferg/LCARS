@@ -291,40 +291,149 @@ because on the modelled run Number One filed **0 of 31** bugs and every one came
 from the live check. Its misses were all *reach* errors, never judgement: no
 screen to look at, nothing seeded, stubs that made the seam untestable.
 
-Always check from a detached worktree with a throwaway HOME, never the checked-out
-branch:
+### 6.1 Set it up with one command, then do the looking
 
 ```bash
-autopilot.sh worktree <mission-id>      # prints WORKTREE: … and HOME: …
+autopilot.sh live-check <mission-id> --type cli,web,workflow
 ```
 
-> **S234 — STUB.** The per-product-type live-check checklists (CLI, web page,
-> CI workflow), the evidence-first bug PRD template, and the merge policy are
-> **Session 234's** work and are not in this file yet. Until S234 lands, follow
-> `orchestrator-playbook.md` § 4–5 by hand: run the real CLI (including
-> `--help` and bad input), use two actors, make identities that usually coincide
-> differ, follow the data end to end, check the host of every outbound call,
-> screenshot in a real browser (400 px *iframe* for phone width), read the
-> deployed artifact rather than "deploy succeeded", and re-verify after every fix
-> round with different data.
+That prepares a **detached** worktree of the mission branch and a **throwaway
+HOME** (never the checked-out branch, and never your own HOME: a config you
+wrote earlier makes an unconfigurable product look configured), makes the
+evidence dir at `.git/lcars/missions/<id>/live-check/`, and prints the
+checklist(s) for the product types the milestone touches.
 
-When the live check finds something, send it back through LCARS's own verbs with
-an evidence-first PRD — the first acceptance criterion is literally
-`Observed live: <exact output>`:
+**The script owns the setup, the evidence paths and the record. The looking is
+yours.** The checklists live at `skills/lcars-run/live-check/{cli,web,workflow}.md`
+— that shared home, and not under the buddy, because the rebuilt Number One
+reads the same files. Every item is an action plus the evidence to capture plus
+what counts as a defect, and carries a fenced `run:`/`workflow:`/`read:`
+template beside the prose so a fenced worker with no shell can lift it.
+
+Pick **every** type the milestone touches. A CLI that writes a page published by
+a workflow is all three. The items that found the bugs, by name:
+
+- run `--help` and bad input; a subcommand missing from `--help` is a defect
+- **two actors**, two HOMEs
+- **make the identities that usually coincide differ** — owner ≠ login, draft
+  name ≠ title
+- **follow one record end to end**, through every real half (no hand-written
+  fixture between a producer and its consumer)
+- **check the host of every outbound call**, with a non-default host configured
+- real headless Chrome, and the **400 px iframe** recipe for phone width
+  (headless will not lay out below 500 px)
+- **read the deployed artifact**, not "deploy succeeded"
+- **re-verify after every fix round with different data**
+
+### 6.2 Every workflow the mission adds, run exactly as CI runs it
 
 ```bash
-bash ~/.claude/skills/lcars-log/log.sh --parent <mission> --prd <bug-prd.md>
+autopilot.sh workflow-run <mission-id> .github/workflows/<name>.yml
+```
+
+The job's steps, in order, each from its own `working-directory`, with the env
+Actions always sets (`GITHUB_SERVER_URL`, `GITHUB_REPOSITORY_OWNER`,
+`GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH`), and the **first failing step named**.
+This is the check a green suite cannot do: on the modelled run a workflow ran
+`python3 pkg/hub_requests.py`, which dies on a relative import, while
+`python3 -m pkg.hub_requests` works — and every test that imported the function
+passed. Do not rewrite a step's command into the form that works; fix the step.
+
+A `uses:` step is reported SKIPPED. That means **unproven**, not passed — prove
+it by reading what it published (the web/workflow checklist's artifact item).
+
+### 6.3 Record the verdict, then take the policy's one action
+
+```bash
+autopilot.sh live-check done <mission-id> --verdict pass|bugs
+autopilot.sh policy --mission <mission-id> --live-check pass|bugs \
+                    [--verdict high|medium|low] [--reason product|infrastructure] \
+                    [--evidence <path>]
+```
+
+There is no default verdict: an unrecorded live check would read later as one
+that passed. `policy` prints **ONE** action; `autopilot.sh policy --table`
+prints the whole table.
+
+---
+
+## 6a. The merge policy — one action per verdict pair
+
+| Number One | Live check | Action |
+|---|---|---|
+| any | **bugs** | **send-back** |
+| high | pass | **merge** |
+| medium | pass | **merge+follow-ups** — merge, and file the gaps it named as their own missions |
+| low, for a **product** reason | pass | **send-back** |
+| low, for **infrastructure** reasons only | pass | **override** — fix the cause, verify that one point live, record the override |
+
+**THE MERGE IS THE BUDDY'S CALL.** Number One *recommends*; the buddy decides.
+It scored every CLI or integration milestone `low` for reasons it could not
+reach, which is why a `bugs` live check sends back even a `high`, and why a
+`low` that is purely about infrastructure is an override rather than a stop. It
+may run its own one fix round (`xo file-logs` → `xo recheck`); you may run
+further rounds through `file-bug` beyond that one.
+
+**Every override is recorded, with its evidence path.** `policy` writes it to
+`.git/lcars/autopilot-overrides.jsonl` and **refuses** an override whose
+`--evidence` path does not exist on disk — an unevidenced override is a shrug,
+and this ledger is what the captain reads afterwards.
+
+### The send-back loop, in order
+
+```bash
+autopilot.sh file-bug --parent <mission> --prd <bug-prd.md>   # one PRD per bug
 bash ~/.claude/skills/lcars-resolve-logs/resolve-logs.sh --parent <mission>
+autopilot.sh live-check <mission> --type <types>              # DIFFERENT data this round
 bash ~/.claude/skills/lcars-respond/respond.sh answer --mission <mission> --answer "<the live evidence>"
+autopilot.sh land <mission>
 ```
 
-When it is clean, record that fact — `land` and `next` both read it:
+The bug PRD template is `bug-prd.md`, beside this file. AC #1 is mandatorily
+`Observed live: <the exact output>` with the real identifiers, and a bug at a
+producer/consumer seam needs a **round-trip** criterion using both real halves
+with no hand-written fixture between them. `file-bug` refuses a PRD without
+them, and refuses to report a filing it cannot see (a `log.sh` that exits 0
+without linking a child is a refusal, not a filing).
+
+**The one style exemplar is `bug-prd.md`'s own worked example** — match that,
+and nothing else. The PRDs in the weekend archive
+(`canvas-weekend-2026-09-26/evidence/filed-prds/`) predate the template and
+`file-bug` refuses them (no `Out of Scope`, no `**Seam:**`, an AC #1 worded
+`Observed (real code, no stubs on the contract):`), so a PRD matched to one of
+those cannot be filed. The validator is right; the archive is just older. The
+worked example is also deliberately about a FICTIONAL product: an example drawn
+from the thing you are checking hands you one of its faults for free.
+
+**Re-verify with DIFFERENT data.** Re-running the first pass's inputs proves
+only that one input was patched. Re-run the items that *passed*, too: a fix that
+breaks a neighbour is what that catches.
+
+**You do not paste the anchor rule or the seam constraint into the PRDs you file.**
+Both are **harness defaults** now — the Plan prompt carries the anchor rule from
+one source, and the validator enforces each ticket's declared producer/consumer
+seams (S236/S237, landed 2026-10-01). Pasting either into a PRD duplicates what
+the harness already does.
+
+When the live check is clean, record that fact — `land` and `next` both read it:
 
 ```bash
 autopilot.sh record missions.M0.verified true
 ```
 
+And keep the progress page current, because it is what the captain reads on his
+phone:
+
+```bash
+autopilot.sh report
+```
+
+It renders, per milestone, the stage, Number One's verdict, the live-check
+verdict, the screenshots and the bugs filed/fixed — only from what was written
+down, so nothing on it comes from a clock.
+
 ---
+
 
 ## 7. Land it — approve, then the hygiene that always follows
 

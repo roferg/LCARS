@@ -36,6 +36,13 @@
 #   autopilot.sh land <mission>
 #   autopilot.sh push-gated
 #   autopilot.sh worktree <mission>
+#   autopilot.sh live-check <mission> --type cli|web|workflow[,…]
+#   autopilot.sh live-check done <mission> --verdict pass|bugs
+#   autopilot.sh workflow-run <mission> <workflow.yml>
+#   autopilot.sh file-bug --parent <mission> --prd <bug-prd.md>
+#   autopilot.sh policy --verdict high|medium|low [--reason product|infrastructure]
+#                       --live-check pass|bugs [--mission <m>] [--evidence <path>]
+#   autopilot.sh report [--out <path>]
 #   autopilot.sh ledger feedback|overrides|decisions '<json>'
 #   autopilot.sh heartbeat install|remove|status
 #   autopilot.sh record <dotted.key> <value>
@@ -81,6 +88,7 @@ RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILLS_DIR/lcars-run/run.sh}"
 APPROVE_SCRIPT="${LCARS_APPROVE_SCRIPT:-$SKILLS_DIR/lcars-approve/approve.sh}"
 XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILLS_DIR/lcars-xo/xo.sh}"
 RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILLS_DIR/lcars-respond/respond.sh}"
+LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILLS_DIR/lcars-log/log.sh}"
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILLS_DIR/lcars-run/notify.sh}"
 
 die()  { printf 'lcars autopilot: %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -110,6 +118,22 @@ Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside t
   land <mission>       approve.sh --mission + hygiene; exit 10 = a question was written
   push-gated           run the recorded testCommand, push ONLY on exit 0
   worktree <mission>   git worktree add --detach + a throwaway HOME; prints both
+  live-check <mission> --type cli|web|workflow[,…]
+                       the detached worktree + throwaway HOME + the evidence dir, and the
+                       CHECKLIST(S) to follow. The MODEL does the looking.
+  live-check done <mission> --verdict pass|bugs
+                       record the outcome (there is no default — an unrecorded live
+                       check would read later as one that passed)
+  workflow-run <mission> <workflow.yml>
+                       run the job's steps EXACTLY as CI does — same cwd, same command,
+                       the env Actions sets — and name the first failing step
+  file-bug --parent <m> --prd <f>
+                       validate the evidence-first template (AC #1 = `Observed live:`),
+                       then file it through `lcars log`. Refuses a filing it cannot see.
+  policy --verdict <v> [--reason product|infrastructure] --live-check <pass|bugs>
+                       print the ONE action from the merge table; `--table` prints the
+                       whole table; an override is recorded WITH its evidence path
+  report [--out <p>]   render the progress page from the ledgers (nothing from a clock)
   ledger feedback|overrides|decisions '<json>'
   heartbeat install|remove|status
 
@@ -1400,23 +1424,12 @@ cmd_worktree() {
   local m="${1:?worktree: <mission> required}"
   require_state
   mexists "$m" || die "worktree: no mission $m in $MISSIONS"
-  local br; br="$(mstate "$m" branch)"
-  [ -n "$br" ] || die "worktree: mission $m has no branch in its state.json"
-  local base="${TMPDIR:-/tmp}"
-  local wt home
-  wt="$(mktemp -d "$base/lcars-ap-wt-XXXXXX")"   || die "worktree: could not make a worktree dir"
-  home="$(mktemp -d "$base/lcars-ap-home-XXXXXX")" || die "worktree: could not make a throwaway HOME"
-  if ! "$GIT_BIN" -C "$CWD" worktree add --detach "$wt" "$br" >/dev/null 2>&1; then
-    rm -rf "$wt"
-    rm -rf "$home"
-    die "worktree: git worktree add --detach failed for $br"
-  fi
-  mkdir -p "$home/.config"
-  say "WORKTREE: $wt"
-  say "HOME: $home"
-  say "  detached at $("$GIT_BIN" -C "$wt" rev-parse --short HEAD) ($br)"
-  say "  run live checks as:  HOME=$home sh -c 'cd $wt && …'"
-  say "  tear it down with:   $GIT_BIN -C $CWD worktree remove --force $wt"
+  local pair wt home br
+  pair="$(wt_prepare "$m")" || exit 1
+  wt="$(printf '%s' "$pair" | cut -f1)"
+  home="$(printf '%s' "$pair" | cut -f2)"
+  br="$(mstate "$m" branch)"
+  wt_say "$wt" "$home" "$br"
 }
 
 # ==========================================================================
@@ -1524,6 +1537,1010 @@ cmd_heartbeat() {
 }
 
 # ==========================================================================
+# S234 — LIVE VERIFICATION: the part that found every bug
+# ==========================================================================
+# Over 26–29 Sep 2026 Number One filed 0 of 31 bugs. All 31 came from a model
+# running the real thing by hand. Its 16 misses were every one a REACH error —
+# no screen, nothing seeded, a stub that made the seam untestable — never a
+# judgement error. So the split below is deliberate and permanent:
+#
+#   THE MODEL DOES THE LOOKING.  THE SCRIPT OWNS THE SETUP, THE EVIDENCE PATHS
+#   AND THE RECORD.
+#
+# `live-check` prepares a DETACHED worktree and a THROWAWAY HOME (checking from
+# the checked-out branch, or with the captain's own HOME, is how a whole round
+# got verified against the wrong tree and how an unconfigurable product looked
+# configured), makes the evidence dir under the mission's own state, prints the
+# checklist(s) for the product type, and records the verdict. It judges nothing.
+#
+# THE CHECKLISTS LIVE IN lcars-run/, NOT HERE, because the rebuilt Number One
+# reads the same files. One source, two readers: the buddy follows the prose,
+# the fenced worker lifts each item's `run:`/`workflow:`/`read:` template.
+LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILLS_DIR/lcars-run/live-check}"
+LIVE_CHECK_TYPES="cli web workflow"
+
+# label_for <mission-id> → the milestone label in scope that names it, or "".
+label_for() {
+  local ms
+  for ms in $(ap_keys scope); do
+    if [ "$(ap_j "missions.$ms.id")" = "$1" ]; then printf '%s' "$ms"; return 0; fi
+  done
+  return 1
+}
+
+# wt_prepare <mission> → "<worktree>\t<home>". Dies (in its own subshell) on
+# any failure, so EVERY caller must test the result.
+wt_prepare() {
+  local m="$1"
+  local br; br="$(mstate "$m" branch)"
+  [ -n "$br" ] || die "worktree: mission $m has no branch in its state.json"
+  local base="${TMPDIR:-/tmp}"
+  local wt home
+  wt="$(mktemp -d "$base/lcars-ap-wt-XXXXXX")"   || die "worktree: could not make a worktree dir"
+  home="$(mktemp -d "$base/lcars-ap-home-XXXXXX")" || die "worktree: could not make a throwaway HOME"
+  if ! "$GIT_BIN" -C "$CWD" worktree add --detach "$wt" "$br" >/dev/null 2>&1; then
+    rm -rf "$wt"
+    rm -rf "$home"
+    die "worktree: git worktree add --detach failed for $br"
+  fi
+  mkdir -p "$home/.config"
+  printf '%s\t%s\n' "$wt" "$home"
+}
+
+# wt_say <worktree> <home> <branch> — the four lines both callers print.
+wt_say() {
+  say "WORKTREE: $1"
+  say "HOME: $2"
+  say "  detached at $("$GIT_BIN" -C "$1" rev-parse --short HEAD) ($3)"
+  say "  run live checks as:  HOME=$2 sh -c 'cd $1 && …'"
+  say "  tear it down with:   $GIT_BIN -C $CWD worktree remove --force $1"
+}
+
+cmd_live_check() {
+  if [ "${1:-}" = "done" ]; then shift; cmd_live_check_done "$@"; return $?; fi
+  local m="${1:-}"
+  [ -n "$m" ] || die "live-check: <mission> --type cli|web|workflow[,…]   (or: live-check done <mission> --verdict pass|bugs)"
+  shift
+  local types=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --type)   types="${2:-}"; shift 2 ;;
+      --type=*) types="${1#--type=}"; shift ;;
+      *)        die "live-check: unknown argument '$1'" ;;
+    esac
+  done
+  require_state
+  mexists "$m" || die "live-check: no mission $m in $MISSIONS"
+  [ -n "$types" ] || die "live-check: --type is required — one or more of: $LIVE_CHECK_TYPES (comma-separated). Pick every type the milestone touches."
+  # VALIDATE EVERY TYPE BEFORE PREPARING ANYTHING. A half-prepared check with
+  # one checklist printed is worse than a refusal: somebody follows the half.
+  local t k known
+  for t in $(printf '%s' "$types" | tr ',' ' '); do
+    known=0
+    for k in $LIVE_CHECK_TYPES; do [ "$t" = "$k" ] && known=1; done
+    [ "$known" = 1 ] || die "live-check: '$t' is not a product type I have a checklist for — I know: $LIVE_CHECK_TYPES. Nothing was prepared and no checklist was printed."
+    [ -f "$LIVE_CHECK_DIR/$t.md" ] || die "live-check: no checklist at $LIVE_CHECK_DIR/$t.md — is LCARS installed?"
+  done
+
+  local evdir="$MISSIONS/$m/live-check"
+  mkdir -p "$evdir"
+  local pair wt home br
+  pair="$(wt_prepare "$m")" || exit 1
+  wt="$(printf '%s' "$pair" | cut -f1)"
+  home="$(printf '%s' "$pair" | cut -f2)"
+  br="$(mstate "$m" branch)"
+
+  local tlist; tlist="$(printf '%s' "$types" | tr ',' ' ')"
+  say "LIVE CHECK — $m"
+  say "  types:    $tlist"
+  wt_say "$wt" "$home" "$br"
+  say "EVIDENCE: $evdir"
+  say "  write each item's evidence to the NN-* name ITS OWN item gives (NN is the item number)."
+  say "  a screenshot is LOOKED AT, not merely produced."
+  say ""
+
+  # RECORD, DON'T INFER: what was prepared is written now, so `done` does not
+  # have to guess which types were checked or where the evidence went.
+  ap_set "liveChecks.$m.types"    "$("$PY" -c 'import json,sys; print(json.dumps(sys.argv[1].split()))' "$tlist")"
+  ap_set "liveChecks.$m.evidence" "$evdir"
+  ap_set "liveChecks.$m.worktree" "$wt"
+  ap_set "liveChecks.$m.home"     "$home"
+
+  for t in $tlist; do
+    say "===== CHECKLIST: $t ($LIVE_CHECK_DIR/$t.md) ====="
+    cat "$LIVE_CHECK_DIR/$t.md"
+    say ""
+  done
+  say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs"
+  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $SKILLS_DIR/lcars-buddy/bug-prd.md)"
+}
+
+cmd_live_check_done() {
+  local m="${1:-}"
+  [ -n "$m" ] || die "live-check done: <mission> --verdict pass|bugs"
+  shift
+  local verdict="" note=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --verdict)   verdict="${2:-}"; shift 2 ;;
+      --verdict=*) verdict="${1#--verdict=}"; shift ;;
+      --note)      note="${2:-}"; shift 2 ;;
+      --note=*)    note="${1#--note=}"; shift ;;
+      *)           die "live-check done: unknown argument '$1'" ;;
+    esac
+  done
+  require_state
+  mexists "$m" || die "live-check done: no mission $m in $MISSIONS"
+  case "$verdict" in
+    pass|bugs) ;;
+    "") die "live-check done: --verdict is required (pass | bugs). There is no default: an unrecorded live check would read later as one that passed." ;;
+    *)  die "live-check done: '$verdict' is not a verdict — use pass or bugs." ;;
+  esac
+  local evdir; evdir="$(ap_j "liveChecks.$m.evidence")"
+  [ -n "$evdir" ] || evdir="$MISSIONS/$m/live-check"
+  ap_set "liveChecks.$m.verdict" "$verdict"
+  ap_set "liveChecks.$m.at"      "$(now)"
+  ap_set "liveChecks.$m.evidence" "$evdir"
+  [ -n "$note" ] && ap_set "liveChecks.$m.note" "$note"
+  local label; label="$(label_for "$m" || true)"
+  [ -n "$label" ] && ap_set "missions.$label.liveCheck" "$verdict"
+  ledger_append decisions "$("$PY" - "$m" "$verdict" "$evdir" "$note" <<'PY'
+import json, sys
+print(json.dumps({"kind": "live-check", "mission": sys.argv[1],
+                  "verdict": sys.argv[2], "evidence": sys.argv[3],
+                  "note": sys.argv[4]}))
+PY
+)" || die "live-check done: the ledger refused the entry"
+  say "live check for $m recorded: $verdict"
+  say "  evidence: $evdir"
+  [ -n "$label" ] && say "  milestone $label updated"
+  if [ "$verdict" = bugs ]; then
+    say "  NEXT: file each one with \`$SELF file-bug --parent $m --prd <bug-prd.md>\`, then resolve-logs."
+  else
+    say "  NEXT: \`$SELF policy --mission $m --live-check pass\` for the merge call."
+  fi
+  return 0
+}
+
+# ==========================================================================
+# workflow-run — the REAL ENTRYPOINT check
+# ==========================================================================
+# On the modelled weekend three of six live breaks were visible ONLY to the real
+# runner, and one of them was a package module invoked as a FILE:
+# `python3 pkg/render.py` dies with "attempted relative import with no known
+# parent package" while `python3 -m pkg.render` works — and every test that
+# imports the function, or runs it as a module, passes.
+#
+# So this runs the job's steps the way CI runs them: the step's OWN command,
+# from the step's OWN cwd (`working-directory`), with the env Actions always
+# sets. It is a MINIMAL step runner on purpose — no `act`, no third-party
+# dependency to be wrong, and no "helpful" rewriting of a command into the form
+# that works. A runner that passes the module-as-a-file step is broken.
+cmd_workflow_run() {
+  local m="${1:-}" wf="${2:-}"
+  [ -n "$m" ] && [ -n "$wf" ] || die "workflow-run: <mission> <workflow.yml> [--job <name>] [--repository <owner/name>] [--server-url <url>] [--event <json>] [--root <dir>] [--evidence <name>]"
+  shift 2
+  local job="" repository="" server="" event="" root="" evname="02-workflow-run.txt"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --job)          job="${2:-}"; shift 2 ;;
+      --job=*)        job="${1#--job=}"; shift ;;
+      --repository)   repository="${2:-}"; shift 2 ;;
+      --repository=*) repository="${1#--repository=}"; shift ;;
+      --server-url)   server="${2:-}"; shift 2 ;;
+      --server-url=*) server="${1#--server-url=}"; shift ;;
+      --event)        event="${2:-}"; shift 2 ;;
+      --event=*)      event="${1#--event=}"; shift ;;
+      --root)         root="${2:-}"; shift 2 ;;
+      --root=*)       root="${1#--root=}"; shift ;;
+      --evidence)     evname="${2:-}"; shift 2 ;;
+      --evidence=*)   evname="${1#--evidence=}"; shift ;;
+      *)              die "workflow-run: unknown argument '$1'" ;;
+    esac
+  done
+  require_state
+  mexists "$m" || die "workflow-run: no mission $m in $MISSIONS"
+  [ -f "$wf" ] || die "workflow-run: no workflow file at $wf"
+  wf="$(cd "$(dirname "$wf")" && pwd)/$(basename "$wf")"
+  # The repo root is the one the workflow's own paths are relative to — the
+  # directory holding .github/, not whatever cwd the buddy happens to be in.
+  if [ -z "$root" ]; then
+    case "$wf" in
+      */.github/workflows/*) root="${wf%/.github/workflows/*}" ;;
+      *)                     root="$CWD" ;;
+    esac
+  fi
+  [ -d "$root" ] || die "workflow-run: no such root directory: $root"
+  if [ -z "$repository" ]; then
+    local url; url="$("$GIT_BIN" -C "$CWD" remote get-url origin 2>/dev/null || true)"
+    repository="$("$PY" - "${url:-}" <<'PY'
+import re, sys
+u = sys.argv[1].rstrip("/")
+u = re.sub(r'\.git$', '', u)
+parts = [p for p in re.split(r'[:/]', u) if p]
+print("/".join(parts[-2:]) if len(parts) >= 2 else "owner/repo")
+PY
+)"
+  fi
+  [ -n "$server" ] || server="https://github.com"
+  local evdir="$MISSIONS/$m/live-check"
+  mkdir -p "$evdir"
+  local out="$evdir/$evname"
+  local rc
+  wf_run_py "$wf" "$root" "$repository" "$server" "$job" "$event" "$evdir" 2>&1 | tee "$out"
+  rc=${PIPESTATUS[0]}
+  say ""
+  say "EVIDENCE: $out"
+  return "$rc"
+}
+
+# The step runner itself. Kept as one python program because a YAML subset
+# reader in bash 3.2 would be the least trustworthy part of this script.
+wf_run_py() {
+  "$PY" - "$@" <<'PY'
+import json, os, re, subprocess, sys
+
+wf_path, root, repository, server, job_sel, event_path, evdir = sys.argv[1:8]
+
+# ---- a MINIMAL YAML reader -------------------------------------------------
+# Deliberately not PyYAML (not a harness dependency) and deliberately not a
+# general parser: it reads the workflow subset — nested maps, sequences,
+# scalars and `|`/`>` block scalars — and nothing else.
+def strip_comment(line):
+    out = []
+    q = None
+    for ch in line:
+        if q:
+            out.append(ch)
+            if ch == q:
+                q = None
+            continue
+        if ch in "\"'":
+            q = ch; out.append(ch); continue
+        if ch == "#":
+            if out and out[-1] not in (" ", "\t"):
+                out.append(ch); continue
+            break
+        out.append(ch)
+    return "".join(out).rstrip()
+
+def scalar(s):
+    s = s.strip()
+    if not s:
+        return ""
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return s[1:-1]
+    if s == "true":  return True
+    if s == "false": return False
+    if s in ("null", "~"): return None
+    if re.match(r'^-?\d+$', s):
+        return int(s)
+    return s
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(" "))
+
+def block(lines, i, ind):
+    items = None
+    mapping = None
+    while i < len(lines):
+        raw = lines[i]
+        if not raw.strip():
+            i += 1; continue
+        cur = indent_of(raw)
+        if cur < ind:
+            break
+        if cur > ind:
+            i += 1; continue
+        body = raw.strip()
+        if body.startswith("- ") or body == "-":
+            if mapping is not None:
+                break
+            if items is None:
+                items = []
+            rest = body[2:] if body.startswith("- ") else ""
+            sub = cur + 2
+            if re.match(r'^[A-Za-z_][\w.\-]*\s*:', rest):
+                elem = [" " * sub + rest]
+                j = i + 1
+                while j < len(lines):
+                    r2 = lines[j]
+                    if not r2.strip():
+                        elem.append(r2); j += 1; continue
+                    if indent_of(r2) < sub:
+                        break
+                    elem.append(r2); j += 1
+                val, _ = block(elem, 0, sub)
+                items.append(val); i = j
+            else:
+                items.append(scalar(rest)); i += 1
+            continue
+        m = re.match(r'^([^:]+):\s*(.*)$', body)
+        if not m:
+            i += 1; continue
+        if items is not None:
+            break
+        if mapping is None:
+            mapping = {}
+        key = scalar(m.group(1))
+        val = m.group(2)
+        if val in ("|", "|-", "|+", ">", ">-", ">+"):
+            j = i + 1
+            buf = []
+            bind = None
+            while j < len(lines):
+                r2 = lines[j]
+                if not r2.strip():
+                    buf.append(""); j += 1; continue
+                if indent_of(r2) <= cur:
+                    break
+                if bind is None:
+                    bind = indent_of(r2)
+                buf.append(r2[bind:]); j += 1
+            while buf and not buf[-1].strip():
+                buf.pop()
+            if val.startswith(">"):
+                text = " ".join(x.strip() for x in buf if x.strip())
+            else:
+                text = "\n".join(buf)
+            if not val.endswith("-"):
+                text += "\n"
+            mapping[key] = text
+            i = j
+        elif not val.strip():
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and indent_of(lines[j]) > cur:
+                sub_val, i2 = block(lines, j, indent_of(lines[j]))
+                mapping[key] = sub_val; i = i2
+            elif j < len(lines) and indent_of(lines[j]) == cur and lines[j].strip().startswith("- "):
+                sub_val, i2 = block(lines, j, cur)
+                mapping[key] = sub_val; i = i2
+            else:
+                mapping[key] = None; i = j
+        else:
+            mapping[key] = scalar(val); i += 1
+    if items is not None:
+        return items, i
+    return (mapping if mapping is not None else {}), i
+
+lines = [strip_comment(l) for l in open(wf_path).read().splitlines()]
+doc, _ = block(lines, 0, 0)
+if not isinstance(doc, dict):
+    print("workflow-run: %s does not parse as a workflow" % wf_path)
+    sys.exit(2)
+jobs = doc.get("jobs") or {}
+if not isinstance(jobs, dict) or not jobs:
+    print("workflow-run: no jobs in %s" % wf_path)
+    sys.exit(2)
+job_name = job_sel or list(jobs.keys())[0]
+if job_name not in jobs:
+    print("workflow-run: no job %r in %s (jobs: %s)" % (job_name, wf_path, ", ".join(jobs)))
+    sys.exit(2)
+job = jobs[job_name] or {}
+steps = job.get("steps") or []
+if not isinstance(steps, list):
+    steps = []
+
+owner = repository.split("/")[0]
+name = repository.split("/")[-1]
+
+# The env Actions ALWAYS sets. GITHUB_EVENT_PATH must point at a file that
+# really exists: a step that reads it is the one that breaks on the runner.
+if not event_path:
+    event_path = os.path.join(evdir, "workflow-run-event.json")
+    with open(event_path, "w") as fh:
+        json.dump({"repository": {"full_name": repository, "name": name,
+                                  "owner": {"login": owner}},
+                   "sender": {"login": owner}}, fh, indent=2)
+        fh.write("\n")
+
+base = dict(os.environ)
+base.update({
+    "CI": "true",
+    "GITHUB_ACTIONS": "true",
+    "GITHUB_SERVER_URL": server,
+    "GITHUB_REPOSITORY": repository,
+    "GITHUB_REPOSITORY_OWNER": owner,
+    "GITHUB_EVENT_PATH": event_path,
+    "GITHUB_WORKSPACE": root,
+})
+def as_env(d):
+    out = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            out[str(k)] = "" if v is None else (str(v).lower() if isinstance(v, bool) else str(v))
+    return out
+base.update(as_env(doc.get("env")))
+base.update(as_env(job.get("env")))
+
+def default_wd(d):
+    try:
+        return (d.get("defaults") or {}).get("run", {}).get("working-directory")
+    except Exception:
+        return None
+job_wd = default_wd(job) or default_wd(doc) or "."
+
+print("WORKFLOW-RUN — %s" % wf_path)
+print("  job:        %s" % job_name)
+print("  root:       %s" % root)
+print("  repository: %s    server: %s" % (repository, server))
+print("  event:      %s" % event_path)
+print("  steps run exactly as CI runs them: the step's own command, the step's own cwd.")
+print("")
+
+ran = 0
+skipped = 0
+failed = None
+for n, step in enumerate(steps, start=1):
+    if not isinstance(step, dict):
+        continue
+    run = step.get("run")
+    uses = step.get("uses")
+    label = step.get("name") or uses or (str(run).strip().splitlines() or ["(unnamed)"])[0]
+    print("STEP %d: %s" % (n, label))
+    if uses and not run:
+        skipped += 1
+        print("  SKIP: `uses: %s` is a packaged action — workflow-run executes `run:` steps only." % uses)
+        print("        It is UNPROVEN, not passed. Prove it by reading what it published (workflow.md item 6).")
+        print("")
+        continue
+    if not run:
+        skipped += 1
+        print("  SKIP: the step has no `run:` command.")
+        print("")
+        continue
+    shell = step.get("shell") or "bash"
+    if shell not in ("bash", "sh"):
+        skipped += 1
+        print("  SKIP: shell `%s` — this runner executes bash/sh steps only. UNPROVEN, not passed." % shell)
+        print("")
+        continue
+    wd = step.get("working-directory") or job_wd
+    cwd = os.path.normpath(os.path.join(root, str(wd)))
+    env = dict(base)
+    env.update(as_env(step.get("env")))
+    print("  cwd: %s" % cwd)
+    for cl in str(run).rstrip("\n").splitlines():
+        print("  run: %s" % cl)
+    if not os.path.isdir(cwd):
+        failed = label
+        print("  EXIT: 1")
+        print("  the step's `working-directory` does not exist in a clean checkout: %s" % cwd)
+        print("")
+        break
+    argv = [shell, "--noprofile", "--norc", "-eo", "pipefail", "-c", str(run)] \
+        if shell == "bash" else [shell, "-e", "-c", str(run)]
+    proc = subprocess.Popen(argv, cwd=cwd, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    out = proc.communicate()[0]
+    try:
+        out = out.decode("utf-8", "replace")
+    except Exception:
+        out = str(out)
+    for ol in out.rstrip("\n").splitlines():
+        print("    %s" % ol)
+    ran += 1
+    print("  EXIT: %d" % proc.returncode)
+    print("")
+    if proc.returncode != 0:
+        failed = label
+        break
+
+if failed is not None:
+    print("FIRST FAILING STEP: %s" % failed)
+    print("  That is the command CI runs, from the cwd CI runs it in. Do NOT rewrite it")
+    print("  into a form that works — fix the step, or fix what it calls.")
+    sys.exit(12)
+
+print("ALL STEPS PASSED (%d run, %d skipped)" % (ran, skipped))
+PY
+}
+
+# ==========================================================================
+# file-bug — evidence first, or it is not filed
+# ==========================================================================
+# THE PRD STYLE THAT GOT FIXES THROUGH FIRST TIME — distilled from the weekend
+# archive (evidence/filed-prds/), which is where the style came from and NOT an
+# exemplar to copy: those PRDs predate this template and this validator refuses
+# them. The one exemplar is bug-prd.md's own worked example. The style: the
+# title states the broken behaviour as a sentence; the Goal states the
+# corrected invariant; AC #1 is literally `Observed live: …` with the exact
+# output and the real identifiers; and where the bug sits at a producer/consumer
+# seam there is a ROUND-TRIP criterion that uses both real halves with no
+# hand-written fixture between them. A PRD that describes the bug in prose
+# instead got re-filed.
+#
+# This verb VALIDATES the template and then calls `lcars log` — it re-implements
+# nothing about filing, linking or labelling. And it does not report a filing it
+# cannot see: a `log.sh` that exits 0 without linking a child is a refusal here,
+# because "approve exited 0" was once reported as a merge.
+cmd_file_bug() {
+  local parent=""
+  local n=0
+  local -a PRDS=()
+  local -a EXTRA=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --parent)   parent="${2:-}"; shift 2 ;;
+      --parent=*) parent="${1#--parent=}"; shift ;;
+      --prd)      PRDS[$n]="${2:-}"; n=$((n + 1)); shift 2 ;;
+      --prd=*)    PRDS[$n]="${1#--prd=}"; n=$((n + 1)); shift ;;
+      --attach|--attach=*|--model-override|--model-override=*)
+        case "$1" in
+          --attach|--model-override) EXTRA[${#EXTRA[@]}]="$1"; EXTRA[${#EXTRA[@]}]="${2:-}"; shift 2 ;;
+          *)                         EXTRA[${#EXTRA[@]}]="$1"; shift ;;
+        esac
+        ;;
+      *) die "file-bug: unknown argument '$1'" ;;
+    esac
+  done
+  require_state
+  [ -n "$parent" ] || die "file-bug: --parent <mission> is required — a logged bug is always a CHILD of the mission it was found in, and grounding needs the parent's code."
+  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $SKILLS_DIR/lcars-buddy/bug-prd.md."
+  mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
+  [ -x "$LOG_SCRIPT" ] || [ -f "$LOG_SCRIPT" ] || die "file-bug: no lcars log at $LOG_SCRIPT"
+
+  # VALIDATE EVERY PRD FIRST, so a bad second PRD does not leave a filed first.
+  local i p msg
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    p="${PRDS[$i]}"
+    [ -f "$p" ] || die "file-bug: no PRD at $p"
+    if ! msg="$(bug_prd_problems "$p")"; then
+      printf 'lcars autopilot: file-bug: %s is not an evidence-first bug PRD.\n' "$p" >&2
+      printf '%s\n' "$msg" >&2
+      printf 'Nothing was filed. The template is %s/lcars-buddy/bug-prd.md.\n' "$SKILLS_DIR" >&2
+      exit 1
+    fi
+    i=$((i + 1))
+  done
+
+  local before="$APDIR/file-bug.before.$$" after="$APDIR/file-bug.after.$$"
+  mkdir -p "$APDIR"
+  children_of "$parent" | sort >"$before"
+
+  local -a ARGS=()
+  ARGS[${#ARGS[@]}]="--parent"; ARGS[${#ARGS[@]}]="$parent"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    ARGS[${#ARGS[@]}]="--prd"; ARGS[${#ARGS[@]}]="${PRDS[$i]}"
+    i=$((i + 1))
+  done
+  if [ "${#EXTRA[@]}" -gt 0 ]; then
+    for p in "${EXTRA[@]}"; do ARGS[${#ARGS[@]}]="$p"; done
+  fi
+  local lrc=0
+  bash "$LOG_SCRIPT" "${ARGS[@]}" || lrc=$?
+  children_of "$parent" | sort >"$after"
+  local new; new="$(comm -13 "$before" "$after")"
+  rm -f "$before" "$after"
+  if [ "$lrc" -ne 0 ]; then
+    die "file-bug: \`lcars log\` exited $lrc — nothing is claimed as filed. Read its message above."
+  fi
+  if [ -z "$new" ]; then
+    die "file-bug: \`lcars log\` exited 0 but no linked bug Mission appeared under $parent — refusing to report a filing I cannot see. Check $MISSIONS and the log output above."
+  fi
+  local c
+  for c in $new; do
+    if [ "$(mstate "$c" parentMission)" != "$parent" ]; then
+      die "file-bug: the new Mission $c is not linked to $parent (parentMission is '$(mstate "$c" parentMission)') — refusing to report it as filed."
+    fi
+    say "FILED: $c  (parent $parent — linked; \`lcars log\` labels its issue lcars:linked)"
+    ledger_append decisions "$("$PY" - "$parent" "$c" <<'PY'
+import json, sys
+print(json.dumps({"kind": "bug-filed", "parent": sys.argv[1], "bug": sys.argv[2]}))
+PY
+)" >/dev/null || true
+  done
+  say ""
+  say "NEXT: resolve every logged bug in one batch, then re-run the live check with DIFFERENT data:"
+  say "  bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $parent"
+  say "  $SELF live-check $parent --type <types>      # different data this round"
+  return 0
+}
+
+# bug_prd_problems <prd> — prints the problems and returns 1, or returns 0.
+# A PRE-FLIGHT, not a second authority: `lcars file` is still the gate that
+# counts. Running it here means the model is told what is missing BEFORE a
+# filing starts, which is the difference between an edit and a re-file.
+bug_prd_problems() {
+  "$PY" - "$1" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+probs = []
+
+def section(label):
+    # BOTH shapes lcars file accepts: the bold inline label and the heading.
+    return re.search(r'(?:^|\n)[ \t]*(?:\*\*%s[^*\n]*:\*\*|#{1,6}[ \t]*%s\b)'
+                     % (re.escape(label), re.escape(label)), t, re.I)
+
+for label in ("Mission", "Type", "Goal", "Acceptance Criteria",
+              "Out of Scope", "Constraints"):
+    if not section(label):
+        probs.append("missing the '%s' section — `lcars file` requires it and would "
+                     "refuse the filing later." % label)
+
+ty = re.search(r'(?:^|\n)[ \t]*\*\*Type:?\*\*[ \t]*:?[ \t]*([^\n]+)', t, re.I)
+if ty and ty.group(1).strip().strip("`").lower() != "bug":
+    probs.append("Type is '%s' — a logged bug's Type is `bug`." % ty.group(1).strip())
+
+seam = re.search(r'(?:^|\n)[ \t]*\*\*Seam:?\*\*[ \t]*:?[ \t]*([^\n]+)', t, re.I)
+if not seam:
+    probs.append("no '**Seam:**' line. Declare the producer -> consumer pair this bug "
+                 "sits at, or `none`. Six of the modelled weekend's live breaks sat at "
+                 "a seam their tests stubbed, so this is not optional.")
+
+# AC #1 — the first bullet under Acceptance Criteria.
+acs = []
+m = re.search(r'(?:^|\n)[ \t]*(?:\*\*Acceptance Criteria:?\*\*|#{1,6}[ \t]*Acceptance Criteria\b)[^\n]*\n(.*?)(?=\n[ \t]*(?:\*\*[A-Z][^*\n]*:\*\*|#{1,6}[ \t]*[A-Z])|\Z)',
+              t, re.I | re.S)
+if m:
+    for line in m.group(1).splitlines():
+        s = line.strip()
+        if s.startswith(("- ", "* ", "+ ")) or re.match(r'^\d+\.\s', s):
+            acs.append(re.sub(r'^(?:[-*+]\s+|\d+\.\s+)', '', s))
+if not acs:
+    probs.append("the Acceptance Criteria section has no criteria in it.")
+else:
+    first = re.sub(r'^\*\*|^\*', '', acs[0]).strip()
+    if not re.match(r'observed live\s*:', first, re.I):
+        probs.append("AC #1 is not an `Observed live:` line. It reads %r. The FIRST "
+                     "criterion must be `Observed live: <the exact output you saw>` "
+                     "with the real identifiers (the command, the ids, the paths, the "
+                     "hosts) — that is the single thing that got fixes through first "
+                     "time, because the worker can reproduce it." % first[:70])
+    if seam and seam.group(1).strip().strip("`.").lower() not in ("none", "n/a", "na", "-"):
+        if not any(re.search(r'round[ -]?trip', a, re.I) for a in acs):
+            probs.append("a Seam is declared (%s) but no criterion asks for a ROUND-TRIP "
+                         "test. Require one that drives BOTH REAL HALVES with no "
+                         "hand-written fixture between them — a test that stubs the seam "
+                         "it claims to prove is not proof."
+                         % seam.group(1).strip()[:60])
+
+for p in probs:
+    print("  - %s" % p)
+sys.exit(1 if probs else 0)
+PY
+}
+
+# ==========================================================================
+# policy — ONE action from the two verdicts, and an override that is recorded
+# ==========================================================================
+# Playbook § 4, as a function instead of as prose, because applying it by hand
+# is how a milestone got merged on a verdict nobody wrote down:
+#
+#   live check BUGS          -> send-back          (whatever Number One said)
+#   pass + high              -> merge
+#   pass + medium            -> merge+follow-ups
+#   pass + low  (product)    -> send-back
+#   pass + low  (infra only) -> override           (recorded, WITH the evidence)
+#
+# Number One scored every CLI or integration milestone `low` for reasons it
+# could not reach, so the live check decided every merge. THE MERGE IS STILL THE
+# BUDDY'S CALL: this prints the recommendation and the commands; the buddy
+# decides, and every override is written down.
+POLICY_ACTIONS='merge merge+follow-ups send-back override'
+
+cmd_policy() {
+  local verdict="" reason="" live="" mission="" evidence="" note="" table=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --verdict)      verdict="${2:-}"; shift 2 ;;
+      --verdict=*)    verdict="${1#--verdict=}"; shift ;;
+      --reason)       reason="${2:-}"; shift 2 ;;
+      --reason=*)     reason="${1#--reason=}"; shift ;;
+      --live-check)   live="${2:-}"; shift 2 ;;
+      --live-check=*) live="${1#--live-check=}"; shift ;;
+      --mission)      mission="${2:-}"; shift 2 ;;
+      --mission=*)    mission="${1#--mission=}"; shift ;;
+      --evidence)     evidence="${2:-}"; shift 2 ;;
+      --evidence=*)   evidence="${1#--evidence=}"; shift ;;
+      --note)         note="${2:-}"; shift 2 ;;
+      --note=*)       note="${1#--note=}"; shift ;;
+      --table)        table=1; shift ;;
+      *)              die "policy: unknown argument '$1'" ;;
+    esac
+  done
+  if [ "$table" = 1 ]; then policy_table; return 0; fi
+  require_state
+  # The verdict can come from Number One's own file rather than a flag, so
+  # nobody has to retype what the verifier already wrote.
+  if [ -z "$verdict" ] && [ -n "$mission" ]; then
+    verdict="$(jfile "$MISSIONS/$mission/xo/verdict.json" score)"
+  fi
+  [ -n "$verdict" ] || die "policy: --verdict <high|medium|low> is required (or --mission <id>, to read Number One's own xo/verdict.json)."
+  case "$verdict" in high|medium|low) ;; *) die "policy: '$verdict' is not a Number One verdict — high, medium or low." ;; esac
+  case "$live" in
+    pass|bugs) ;;
+    "") die "policy: --live-check <pass|bugs> is required — it is half the table, and on the modelled weekend it decided every merge." ;;
+    *)  die "policy: '$live' is not a live-check verdict — pass or bugs." ;;
+  esac
+
+  local action why
+  if [ "$live" = bugs ]; then
+    action="send-back"
+    why="the live check found bugs — that decides it, whatever Number One scored ($verdict)."
+  else
+    case "$verdict" in
+      high)   action="merge";            why="Number One says high and the live check passed." ;;
+      medium) action="merge+follow-ups"; why="Number One says medium and the live check passed — merge, and file the gaps it named as follow-ups." ;;
+      low)
+        case "$reason" in
+          product)        action="send-back"; why="low for a PRODUCT reason — the work is not done, so it goes back." ;;
+          infrastructure) action="override";  why="low for INFRASTRUCTURE reasons only (nothing about the product) — fix the cause, verify that point live, and record the override." ;;
+          "") die "policy: a LOW verdict needs --reason product|infrastructure — the action depends entirely on it (product = send it back; infrastructure only = fix, verify live, record an override)." ;;
+          *)  die "policy: '$reason' is not a reason — product or infrastructure." ;;
+        esac
+        ;;
+    esac
+  fi
+
+  if [ "$action" = override ]; then
+    [ -n "$evidence" ] || die "policy: an override needs --evidence <path> — an override with no evidence on disk is a shrug, and this one is going in the permanent ledger."
+    local ev="$evidence"
+    case "$ev" in /*) ;; *) ev="$CWD/$evidence" ;; esac
+    [ -e "$ev" ] || die "policy: the --evidence path does not exist: $evidence. Write the live check that justifies the override first (that is the whole point of recording it)."
+  fi
+
+  say "ACTION: $action"
+  say "WHY: $why"
+  say "PLAYBOOK: $(policy_heading "$action")"
+  policy_then "$action" "${mission:-<mission>}"
+
+  if [ "$action" = override ]; then
+    ledger_append overrides "$("$PY" - "${mission:-}" "$verdict" "$reason" "$evidence" "$note" <<'PY'
+import json, sys
+print(json.dumps({"kind": "verdict-override", "mission": sys.argv[1],
+                  "verdict": sys.argv[2], "reason": sys.argv[3],
+                  "evidence": sys.argv[4], "note": sys.argv[5],
+                  "action": "merged over a low verdict"}))
+PY
+)" || die "policy: the overrides ledger refused the entry — the override is NOT recorded, so do not act on it."
+    say ""
+    say "RECORDED: the override is in $LCARS_DIR/autopilot-overrides.jsonl, with its evidence path."
+  fi
+  return 0
+}
+
+policy_heading() {
+  case "$1" in
+    merge|merge+follow-ups|override) printf '%s' "$PB_land" ;;
+    *)                               printf '%s' "$PB_verify_gate" ;;
+  esac
+}
+
+policy_then() { # <action> <mission>
+  local m="$2"
+  case "$1" in
+    merge)
+      say "THEN: $SELF land $m"
+      ;;
+    merge+follow-ups)
+      say "THEN: file each gap Number One named as its own mission, then land:"
+      say "  bash $SKILLS_DIR/lcars-file/file.sh --prd <follow-up.md>   # one per gap"
+      say "  $SELF land $m"
+      ;;
+    send-back)
+      say "THEN: send it back through LCARS's own verbs — never a second route to the same outcome:"
+      say "  $SELF file-bug --parent $m --prd <bug-prd.md>    # one PRD per bug, AC #1 = Observed live:"
+      say "  bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $m"
+      say "  $SELF live-check $m --type <types>               # re-verify with DIFFERENT data"
+      say "  bash $SKILLS_DIR/lcars-respond/respond.sh answer --mission $m --answer \"<the live evidence>\""
+      say "  $SELF land $m"
+      ;;
+    override)
+      say "THEN: fix the infrastructure cause, prove that one point live, then land:"
+      say "  $SELF live-check $m --type <types>               # the point you fixed, with DIFFERENT data"
+      say "  $SELF land $m"
+      ;;
+  esac
+}
+
+policy_table() {
+  say "THE MERGE POLICY — one action per (Number One verdict, live check)"
+  say ""
+  printf '  %-26s %-12s %s\n' 'NUMBER ONE' 'LIVE CHECK' 'ACTION'
+  printf '  %-26s %-12s %s\n' 'any'                      'bugs' 'send-back'
+  printf '  %-26s %-12s %s\n' 'high'                     'pass' 'merge'
+  printf '  %-26s %-12s %s\n' 'medium'                   'pass' 'merge+follow-ups'
+  printf '  %-26s %-12s %s\n' 'low (product reason)'     'pass' 'send-back'
+  printf '  %-26s %-12s %s\n' 'low (infrastructure only)' 'pass' 'override (recorded)'
+  say ""
+  say "  The live check decides: Number One scored every CLI or integration milestone"
+  say "  low for reasons it could not reach, so a \`bugs\` live check sends back a high."
+  say "  THE MERGE IS THE BUDDY'S CALL — this is the recommendation, and every"
+  say "  override lands in autopilot-overrides.jsonl with the evidence path."
+}
+
+# ==========================================================================
+# report — one page, from the records, with nothing from a clock
+# ==========================================================================
+# The captain reads this on his phone. It is rendered ONLY from what was
+# written down (autopilot.json, the mission state, the live-check evidence dir,
+# the overrides ledger), so a report that changes when nothing changed is
+# impossible and the page can be reviewed.
+cmd_report() {
+  local out=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --out)   out="${2:-}"; shift 2 ;;
+      --out=*) out="${1#--out=}"; shift ;;
+      *)       die "report: unknown argument '$1'" ;;
+    esac
+  done
+  require_state
+  [ -n "$out" ] || out="$APDIR/report.html"
+  mkdir -p "$(dirname "$out")"
+  "$PY" - "$APJSON" "$MISSIONS" "$LCARS_DIR/autopilot-overrides.jsonl" "$out" <<'PY'
+import json, os, sys
+
+apj, missions_dir, ovl, out = sys.argv[1:5]
+try:
+    d = json.load(open(apj))
+except Exception:
+    d = {}
+scope = d.get("scope") or []
+ms = d.get("missions") or {}
+
+def esc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+def started_str(v):
+    # `init` records startedAt as epoch SECONDS; a human-written one is already
+    # an ISO string. Render an int readably (UTC, so it is the same on any box)
+    # and pass a string through untouched: either way the same record renders
+    # the same bytes, which is what makes this page reviewable.
+    if v is None or v == "":
+        return "-"
+    if isinstance(v, int) or (isinstance(v, str) and v.isdigit()):
+        import time
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(v)))
+    return str(v)
+
+def state(mid, key, default=""):
+    try:
+        return json.load(open(os.path.join(missions_dir, mid, "state.json"))).get(key) or default
+    except Exception:
+        return default
+
+def verdict_of(mid):
+    try:
+        return (json.load(open(os.path.join(missions_dir, mid, "xo", "verdict.json")))
+                .get("score") or "").strip()
+    except Exception:
+        return ""
+
+def children(mid):
+    out = []
+    if not mid or not os.path.isdir(missions_dir):
+        return out
+    for name in sorted(os.listdir(missions_dir)):
+        try:
+            s = json.load(open(os.path.join(missions_dir, name, "state.json")))
+        except Exception:
+            continue
+        if s.get("type") == "bug" and s.get("parentMission") == mid:
+            out.append((name, s.get("title") or name, s.get("stage") or "?"))
+    return out
+
+def shots(mid):
+    if not mid:
+        return []
+    p = os.path.join(missions_dir, mid, "live-check")
+    if not os.path.isdir(p):
+        return []
+    return sorted(f for f in os.listdir(p)
+                  if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")))
+
+# A shot's href is relative to WHEREVER THIS REPORT IS WRITTEN, not to the
+# default report dir. The links used to be hardcoded `../missions/<id>/...`,
+# which resolves only from $APDIR: under any other `--out` every screenshot
+# link was dead, and a shot nobody can open is a shot nobody looked at, which
+# is the one thing the live check exists to produce.
+OUT_DIR = os.path.dirname(os.path.abspath(out))
+
+def shot_href(mid, f):
+    return os.path.relpath(
+        os.path.join(os.path.abspath(missions_dir), mid, "live-check", f),
+        OUT_DIR)
+
+rows, shot_items, bug_items = [], [], []
+for label in scope:
+    mid = (ms.get(label) or {}).get("id") or ""
+    stage = state(mid, "stage") if mid else ""
+    v = verdict_of(mid) if mid else ""
+    lc = (ms.get(label) or {}).get("liveCheck") or ""
+    kids = children(mid)
+    sh = shots(mid)
+    vcell = "<td>%s</td>" % esc(v) if v else '<td class="none">-</td>'
+    if lc:
+        lcell = '<td class="%s">%s</td>' % (esc(lc), esc(lc))
+    else:
+        lcell = '<td class="none">-</td>'
+    rows.append(
+        '<tr id="row-%s"><td>%s</td><td>%s</td><td>%s</td>%s%s<td>%d</td><td>%d</td><td>%d</td></tr>'
+        % (esc(label), esc(label), esc(mid or "(unfiled)"), esc(stage or "-"),
+           vcell, lcell, len(sh), len(kids),
+           sum(1 for k in kids if k[2] == "done")))
+    for f in sh:
+        shot_items.append('<li>%s <a href="%s">%s</a></li>'
+                          % (esc(label), esc(shot_href(mid, f)), esc(f)))
+    for cid, title, cstage in kids:
+        bug_items.append('<li>%s %s &mdash; %s &mdash; %s</li>'
+                         % (esc(label), esc(cid), esc(title), esc(cstage)))
+
+ov_items = []
+if os.path.exists(ovl):
+    for line in open(ovl):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        bits = [o.get("mission") or "(no mission)"]
+        vr = "/".join(x for x in (o.get("verdict"), o.get("reason")) if x)
+        if vr:
+            bits.append(vr.replace("/", " / "))
+        if o.get("note"):
+            bits.append(o["note"])
+        bits.append("evidence: %s" % (o.get("evidence") or "(none recorded)"))
+        ov_items.append("<li>%s</li>" % " &mdash; ".join(esc(b) for b in bits))
+
+def ul(uid, items):
+    body = "\n".join(items) if items else "<li>none yet</li>"
+    return '<ul id="%s">\n%s\n</ul>' % (uid, body)
+
+html = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autopilot progress</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+  table { border-collapse: collapse; width: 100%%; }
+  td, th { border-bottom: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  .pass { color: #0a7a2f; } .bugs { color: #c0392b; } .none { color: #888; }
+  ul { padding-left: 1.2rem; }
+  @media (max-width: 500px) { body { margin: .75rem; } }
+</style></head>
+<body>
+<h1 id="report-title">Autopilot progress</h1>
+<p id="report-meta">spec: %(spec)s &middot; started: %(started)s</p>
+<table id="report-milestones">
+<thead><tr><th>Milestone</th><th>Mission</th><th>Stage</th><th>Number One</th><th>Live check</th><th>Shots</th><th>Bugs filed</th><th>Bugs fixed</th></tr></thead>
+<tbody>
+%(rows)s
+</tbody>
+</table>
+<h2 id="shots-title">Screenshots</h2>
+%(shots)s
+<h2 id="bugs-title">Bugs filed</h2>
+%(bugs)s
+<h2 id="overrides-title">Overrides recorded</h2>
+%(overrides)s
+</body></html>
+""" % {
+    "spec": esc(d.get("spec") or "(no spec recorded)"),
+    "started": esc(started_str(d.get("startedAt"))),
+    "rows": "\n".join(rows) if rows else '<tr><td colspan="8">nothing in scope yet</td></tr>',
+    "shots": ul("shots", shot_items),
+    "bugs": ul("bugs", bug_items),
+    "overrides": ul("overrides", ov_items),
+}
+open(out, "w").write(html)
+print(out)
+PY
+  local rc=$?
+  [ "$rc" -eq 0 ] || die "report: the renderer failed"
+  say "  per milestone: the stage, Number One's verdict, the live-check verdict, the shots, the bugs."
+  say "  nothing on that page comes from a clock — re-render it and it is identical."
+  return 0
+}
+
+# ==========================================================================
 # dispatch
 # ==========================================================================
 SUB="${1:-}"
@@ -1542,6 +2559,11 @@ case "$SUB" in
   land)        cmd_land "$@" ;;
   push-gated)  cmd_push_gated "$@" ;;
   worktree)    cmd_worktree "$@" ;;
+  live-check)  cmd_live_check "$@" ;;
+  workflow-run) cmd_workflow_run "$@" ;;
+  file-bug)    cmd_file_bug "$@" ;;
+  policy)      cmd_policy "$@" ;;
+  report)      cmd_report "$@" ;;
   ledger)      cmd_ledger "$@" ;;
   heartbeat)   cmd_heartbeat "$@" ;;
   ''|-h|--help|help) usage ;;

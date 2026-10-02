@@ -175,15 +175,25 @@ stub() {
 }
 
 # ap — run the driver against a repo with all deps stubbed.
+#
+# TMPDIR IS PINNED INSIDE $TMPROOT. `worktree` (and `live-check`, which reuses
+# it) makes its detached worktree and throwaway HOME under ${TMPDIR:-/tmp}, so
+# with the real TMPDIR every run of this suite left a pair of directories
+# behind for ever — 151 of them on this box before the pin. Inside $TMPROOT
+# they are removed by `teardown` along with the repos that registered them,
+# which is the S208/S209 rule (a suite cleans up everything it starts) applied
+# to directories instead of processes. No `rm -rf` with a pattern is involved.
 ap() {
   local repo="$1"; shift
+  mkdir -p "$TMPROOT/tmp"
+  TMPDIR="$TMPROOT/tmp" \
   LCARS_AUTOPILOT_CWD="$repo" \
   STUB_LOG="$STUB_LOG" \
   LCARS_RUN_SCRIPT="$STUBS/run.sh" \
   LCARS_APPROVE_SCRIPT="$STUBS/approve.sh" \
   LCARS_XO_SCRIPT="$STUBS/xo.sh" \
   LCARS_RESPOND_SCRIPT="$STUBS/respond.sh" \
-  LCARS_LOG_SCRIPT="$STUBS/log.sh" \
+  LCARS_LOG_SCRIPT="${LOG_STUB:-$STUBS/log.sh}" \
   LCARS_FILE_SCRIPT="$STUBS/file.sh" \
   LCARS_RESOLVE_LOGS_SCRIPT="$STUBS/resolve-logs.sh" \
   LCARS_NOTIFY="$STUBS/notify.sh" \
@@ -1704,8 +1714,6 @@ check "AUTOPILOT.md carries the deadline re-forecast rule" \
   "qgrep -qiF 're-forecast' '$APM'"
 check "AUTOPILOT.md carries the copy-paste-safe secret instruction" \
   "qgrep -qF 'pbpaste | gh secret set' '$APM'"
-check "AUTOPILOT.md leaves live verification + merge policy as a MARKED S234 stub" \
-  "qgrep -qiE 'S234' '$APM'"
 check "AUTOPILOT.md forbids the hand-merge in writing" \
   "qgrep -qiE 'never (merge by hand|hand-merge)' '$APM'"
 check "AUTOPILOT.md tells the model to run \`autopilot.sh next\`" \
@@ -1749,6 +1757,652 @@ check "AUTOPILOT.md says one question does not park the other milestones" \
   "qgrep -qiE 'none of them parks the run|does not park' '$APM'"
 check "AUTOPILOT.md does not fork ORCHESTRATION.md's loop" \
   "! qgrep -qiF 'hard stop at three rounds' '$APM'"
+
+# ==========================================================================
+# S234.1 live-check — the setup, the checklists, the record
+# ==========================================================================
+# WHY THE SCRIPT OWNS ONLY THE SETUP. Number One filed 0 of the weekend's 31
+# bugs and every one came from a model LOOKING at a real surface. So the script
+# does not try to judge: it prepares the detached worktree + throwaway HOME,
+# makes the evidence dir, prints the checklist(s) for the product type, and
+# records the verdict. The looking stays with the model.
+echo "-- S234.1 live-check --"
+RLC="$(new_repo)"
+ap "$RLC" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RLC" lcars-20261001-001 verify
+ap "$RLC" record missions.M0.id lcars-20261001-001 >/dev/null 2>&1
+LCOUT="$(ap "$RLC" live-check lcars-20261001-001 --type cli 2>&1)"; lcrc=$?
+LCEV="$RLC/.git/lcars/missions/lcars-20261001-001/live-check"
+lc_wt="$(printf '%s\n' "$LCOUT" | sed -n 's/^WORKTREE: //p' | head -1)"
+lc_home="$(printf '%s\n' "$LCOUT" | sed -n 's/^HOME: //p' | head -1)"
+
+check "live-check exits 0"                    "[ $lcrc -eq 0 ]"
+check "live-check prints a WORKTREE path"     "[ -n '$lc_wt' ] && [ -d '$lc_wt' ]"
+check "the worktree is DETACHED (never the checked-out branch)" \
+  "[ \"\$(git -C '$lc_wt' symbolic-ref -q HEAD || echo detached)\" = detached ]"
+check "live-check prints a throwaway HOME"    "[ -n '$lc_home' ] && [ -d '$lc_home' ]"
+check "the HOME is NOT the captain's"         "[ '$lc_home' != \"\$HOME\" ]"
+check "live-check makes the evidence dir under the MISSION's state" "[ -d '$LCEV' ]"
+check "live-check prints the evidence dir to write to" \
+  "printf '%s' \"\$LCOUT\" | qgrep -qF '$LCEV'"
+check "live-check prints the cli checklist, not a summary of it" \
+  "printf '%s' \"\$LCOUT\" | qgrep -qF 'host of every outbound call'"
+check "it prints the checklist's fenced step templates too (Number One's half)" \
+  "printf '%s' \"\$LCOUT\" | qgrep -qF '\`\`\`run:'"
+check "it names the type it printed" \
+  "printf '%s' \"\$LCOUT\" | qgrep -qE 'CHECKLIST: cli'"
+check "it does NOT print the web or workflow checklist when only cli was asked for" \
+  "! printf '%s' \"\$LCOUT\" | qgrep -qE 'CHECKLIST: (web|workflow)'"
+check "it tells you how to record the outcome" \
+  "printf '%s' \"\$LCOUT\" | qgrep -qF 'live-check done'"
+
+LCOUT2="$(ap "$RLC" live-check lcars-20261001-001 --type cli,web,workflow 2>&1)"; lcrc2=$?
+check "--type takes a comma list and prints all three, in the order given" \
+  "[ $lcrc2 -eq 0 ] && [ \"\$(printf '%s\n' \"\$LCOUT2\" | sed -n 's/.*CHECKLIST: \([a-z]*\).*/\1/p' | tr '\n' ' ')\" = 'cli web workflow ' ]"
+check "the web checklist carries the 400 px iframe recipe" \
+  "printf '%s' \"\$LCOUT2\" | qgrep -qF '400px'"
+check "the workflow checklist names \`workflow-run\`" \
+  "printf '%s' \"\$LCOUT2\" | qgrep -qF 'workflow-run'"
+
+LCBAD="$(ap "$RLC" live-check lcars-20261001-001 --type api 2>&1)"; lcbrc=$?
+check "an UNKNOWN type is REFUSED"            "[ $lcbrc -ne 0 ]"
+check "the refusal names the types it does know" \
+  "printf '%s' \"\$LCBAD\" | qgrep -qF 'cli' && printf '%s' \"\$LCBAD\" | qgrep -qF 'workflow'"
+check "a refused type printed NO checklist (so nobody half-follows one)" \
+  "! printf '%s' \"\$LCBAD\" | qgrep -qE 'CHECKLIST:'"
+LCNOT="$(ap "$RLC" live-check lcars-20261001-001 2>&1)"; lcnrc=$?
+check "a MISSING --type is refused"           "[ $lcnrc -ne 0 ]"
+LCNOM="$(ap "$RLC" live-check lcars-20261001-999 --type cli 2>&1)"; lcnmrc=$?
+check "an unknown MISSION is refused"         "[ $lcnmrc -ne 0 ]"
+
+# the record
+LCDONE="$(ap "$RLC" live-check done lcars-20261001-001 --verdict bugs 2>&1)"; lcdrc=$?
+APLC="$RLC/.git/lcars/autopilot.json"
+check "live-check done exits 0"               "[ $lcdrc -eq 0 ]"
+check "the verdict is RECORDED in autopilot.json, not inferred later" \
+  "[ \"\$(jget '$APLC' 'd[\"liveChecks\"][\"lcars-20261001-001\"][\"verdict\"]')\" = bugs ]"
+check "the recorded verdict carries the TYPES that were checked" \
+  "printf '%s' \"\$(jget '$APLC' 'd[\"liveChecks\"][\"lcars-20261001-001\"][\"types\"]')\" | qgrep -qF 'cli'"
+check "the recorded verdict carries the evidence dir" \
+  "printf '%s' \"\$(jget '$APLC' 'd[\"liveChecks\"][\"lcars-20261001-001\"][\"evidence\"]')\" | qgrep -qF 'live-check'"
+check "the milestone's own row records it too (status reads that)" \
+  "[ \"\$(jget '$APLC' 'd[\"missions\"][\"M0\"][\"liveCheck\"]')\" = bugs ]"
+check "it also lands in the decisions LEDGER" \
+  "qgrep -q 'live-check' '$RLC/.git/lcars/decisions.jsonl'"
+LCDBAD="$(ap "$RLC" live-check done lcars-20261001-001 --verdict probably 2>&1)"; lcdbrc=$?
+check "a verdict that is neither pass nor bugs is REFUSED" "[ $lcdbrc -ne 0 ]"
+LCDNOV="$(ap "$RLC" live-check done lcars-20261001-001 2>&1)"; lcdnrc=$?
+check "\`done\` with no --verdict is REFUSED (no silent pass)" "[ $lcdnrc -ne 0 ]"
+LCDONE2="$(ap "$RLC" live-check done lcars-20261001-001 --verdict pass 2>&1)"
+check "a second done OVERWRITES the verdict (a re-verify round can clear it)" \
+  "[ \"\$(jget '$APLC' 'd[\"liveChecks\"][\"lcars-20261001-001\"][\"verdict\"]')\" = pass ]"
+git -C "$RLC" worktree remove --force "$lc_wt" 2>/dev/null || true
+
+# ==========================================================================
+# S234.2 workflow-run — the real entrypoint, exactly as CI runs it
+# ==========================================================================
+# THE WEEKEND'S BREAK #4: the workflow ran `python3 pkg/hub_requests.py`, which
+# dies with a relative-import ImportError, while `python3 -m pkg.hub_requests`
+# works. Every test that imported the function, or ran it as a module, passed.
+# Only running the step's OWN command, from the step's OWN cwd, with the env
+# Actions sets, fails — so that is what this runner does. A runner that
+# "helpfully" rewrites the command into the form that works is BROKEN.
+echo "-- S234.2 workflow-run --"
+RWF="$(new_repo)"
+ap "$RWF" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RWF" lcars-20261001-002 verify
+mkdir -p "$RWF/.github/workflows" "$RWF/pkg" "$RWF/sub"
+cat >"$RWF/pkg/__init__.py" <<'PY'
+PY
+cat >"$RWF/pkg/model.py" <<'PY'
+def host_of(rec): return rec.get("host", "github.com")
+PY
+cat >"$RWF/pkg/render.py" <<'PY'
+from .model import host_of
+def render(): print("rendered", host_of({}))
+if __name__ == "__main__":
+    render()
+PY
+cat >"$RWF/.github/workflows/publish.yml" <<'YML'
+name: publish
+on:
+  push:
+  schedule:
+    - cron: "0 * * * *"
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show the Actions env
+        run: |
+          echo "server=$GITHUB_SERVER_URL"
+          echo "owner=$GITHUB_REPOSITORY_OWNER"
+          echo "repo=$GITHUB_REPOSITORY"
+          echo "eventfile=$GITHUB_EVENT_PATH"
+          test -f "$GITHUB_EVENT_PATH" && echo "eventfile-exists=yes"
+      - name: In the subdirectory
+        working-directory: sub
+        run: pwd
+      - name: Render the page
+        run: python3 pkg/render.py
+      - name: Publish
+        run: echo PUBLISH-RAN
+YML
+WFOUT="$(ap "$RWF" workflow-run lcars-20261001-002 "$RWF/.github/workflows/publish.yml" \
+          --repository acme/relay 2>&1)"; wfrc=$?
+WFEV="$RWF/.git/lcars/missions/lcars-20261001-002/live-check/02-workflow-run.txt"
+
+check "workflow-run exits NON-ZERO when a step fails" "[ $wfrc -ne 0 ]"
+check "it names the FIRST FAILING STEP by its workflow step name" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qE 'FIRST FAILING STEP: Render the page'"
+check "the failing step's real error is shown (the ImportError, not a summary)" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qF 'attempted relative import'"
+check "steps run IN ORDER" \
+  "[ \"\$(printf '%s\n' \"\$WFOUT\" | sed -n 's/^STEP [0-9]*: //p' | tr '\n' '|')\" = 'actions/checkout@v4|Show the Actions env|In the subdirectory|Render the page|' ]"
+check "a step AFTER the failing one does NOT run (CI stops the job)" \
+  "! printf '%s' \"\$WFOUT\" | qgrep -qF 'PUBLISH-RAN'"
+check "a \`uses:\` step is SKIPPED, not failed" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qE 'SKIP.*actions/checkout'"
+check "GITHUB_SERVER_URL is set for the step" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qF 'server=https://github.com'"
+check "GITHUB_REPOSITORY_OWNER is set for the step" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qF 'owner=acme'"
+check "GITHUB_REPOSITORY is set for the step" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qF 'repo=acme/relay'"
+check "GITHUB_EVENT_PATH is set AND the file really exists" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qF 'eventfile-exists=yes'"
+check "\`working-directory\` is HONOURED (same cwd as CI, not the repo root)" \
+  "printf '%s' \"\$WFOUT\" | qgrep -qE '/sub$'"
+check "the transcript is saved as evidence under the mission" "[ -s '$WFEV' ]"
+check "the saved evidence carries the first-failing-step line too" \
+  "qgrep -qF 'FIRST FAILING STEP' '$WFEV'"
+check "a non-default --server-url reaches the steps" \
+  "{ ap '$RWF' workflow-run lcars-20261001-002 '$RWF/.github/workflows/publish.yml' --server-url https://github.example.com 2>&1 || true; } | qgrep -qF 'server=https://github.example.com'"
+
+# THE CONTROL: the same workflow with the step corrected to the module form.
+# Without this, "it failed" could mean the runner cannot run anything at all.
+cp "$RWF/.github/workflows/publish.yml" "$RWF/.github/workflows/fixed.yml"
+python3 - "$RWF/.github/workflows/fixed.yml" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("python3 pkg/render.py", "python3 -m pkg.render")
+open(p, "w").write(s)
+PY
+WFOK="$(ap "$RWF" workflow-run lcars-20261001-002 "$RWF/.github/workflows/fixed.yml" \
+         --repository acme/relay --evidence 02-workflow-run-fixed.txt 2>&1)"; wfokrc=$?
+check "CONTROL: the same workflow with \`python3 -m pkg.render\` PASSES" \
+  "[ $wfokrc -eq 0 ]"
+check "CONTROL: it names no failing step" \
+  "! printf '%s' \"\$WFOK\" | qgrep -qF 'FIRST FAILING STEP'"
+check "CONTROL: every step after the corrected one DOES run" \
+  "printf '%s' \"\$WFOK\" | qgrep -qF 'PUBLISH-RAN'"
+check "CONTROL: --evidence names the file it wrote" \
+  "[ -s '$RWF/.git/lcars/missions/lcars-20261001-002/live-check/02-workflow-run-fixed.txt' ]"
+check "the runner does NOT shell out to a third-party runner (no \`act\`)" \
+  "! qgrep -qE '(^|[^a-z])act (-|run|pull)' '$SCRIPT'"
+WFNOF="$(ap "$RWF" workflow-run lcars-20261001-002 "$RWF/.github/workflows/nope.yml" 2>&1)"; wfnrc=$?
+check "a missing workflow file is refused"    "[ $wfnrc -ne 0 ]"
+
+# THE REAL S234 FIXTURE PRODUCT IS THE TESTER'S LEG, NOT THIS SUITE'S.
+# The inline fixture above reproduces the planted defect exactly — a package
+# module invoked as a file, failing with the same ImportError on a step with the
+# same name — so the mechanics are proved here, portably, in any clone. Pointing
+# a committed suite at a rig in the author's lcars-dev checkout would both break
+# the `no-rigs` gate (which refuses a rig-path reference in tests/*.test.sh, on
+# purpose) and make this suite unrunnable for anyone else. The real fixture is
+# driven by the tester, from the rig's own directory.
+
+# ==========================================================================
+# S234.3 file-bug — evidence first, or it is not filed
+# ==========================================================================
+# The PRD style that got fixes through FIRST TIME quotes the live output in
+# AC #1 and, at a producer/consumer seam, demands a round-trip with no
+# hand-written fixture between the halves. A prose description of the bug is
+# what produced the re-filings.
+echo "-- S234.3 file-bug --"
+RFB="$(new_repo)"
+ap "$RFB" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RFB" lcars-20261001-010 verify
+# A log.sh stub that files for REAL the way log.sh does: a bug mission linked to
+# its parent. file-bug must verify the linkage it claims, not assume exit 0.
+LOGFILES='parent=""; prds=""
+while [ $# -gt 0 ]; do
+  case "$1" in --parent) parent="$2"; shift ;; --prd) prds="$prds $2"; shift ;; esac
+  shift
+done
+n=0
+for p in $prds; do
+  n=$((n+1))
+  d="$LCARS_AUTOPILOT_CWD/.git/lcars/missions/bug-00$n"
+  mkdir -p "$d"
+  cp "$p" "$d/prd.md"
+  cat >"$d/state.json" <<JSON
+{"id":"bug-00$n","stage":"align","type":"bug","title":"a filed bug",
+ "branch":"lcars/$parent","parentMission":"$parent","parentIssue":"1",
+ "labels":["lcars:align","lcars:bug","lcars:linked","lcars:mission"]}
+JSON
+done'
+stub "$STUBS/log-files.sh" 0 "$LOGFILES"
+
+PRD_BAD="$TMPROOT/bug-noevidence.md"
+cat >"$PRD_BAD" <<'MD'
+# Mission: the page shows the wrong host
+
+**Type:** bug
+**Seam:** none
+**Goal:** The page shows the host the CLI stored.
+**Acceptance Criteria:**
+- The renderer reads the same field the CLI writes.
+- A test covers it.
+**Out of Scope:**
+- Styling.
+**Constraints:**
+- Stdlib only.
+MD
+FBBAD="$( LOG_STUB="$STUBS/log-files.sh" ap "$RFB" file-bug --parent lcars-20261001-010 --prd "$PRD_BAD" 2>&1 )"; fbbrc=$?
+check "file-bug REFUSES a PRD whose AC #1 is not an \`Observed live:\` line" "[ $fbbrc -ne 0 ]"
+check "the refusal says what AC #1 must be" \
+  "printf '%s' \"\$FBBAD\" | qgrep -qF 'Observed live:'"
+check "the refused PRD filed NOTHING" "[ ! -d '$RFB/.git/lcars/missions/bug-001' ]"
+
+PRD_SEAM="$TMPROOT/bug-seam-noroundtrip.md"
+cat >"$PRD_SEAM" <<'MD'
+# Mission: the page always shows the default host
+
+**Type:** bug
+**Seam:** relay.py cmd_file (writes the record) -> pkg/model.py host_of (reads it)
+**Goal:** The host the CLI stores is the host the page renders.
+**Acceptance Criteria:**
+- Observed live: `RELAY_HOST=github.example.com python3 relay.py file "x"` stored `"origin": "github.example.com"`, and the rendered row shows `github.com`.
+- The reader and the writer agree on one field name.
+**Out of Scope:**
+- Styling.
+**Constraints:**
+- Stdlib only.
+MD
+FBSEAM="$( LOG_STUB="$STUBS/log-files.sh" ap "$RFB" file-bug --parent lcars-20261001-010 --prd "$PRD_SEAM" 2>&1 )"; fbsrc=$?
+check "a declared SEAM with no ROUND-TRIP criterion is REFUSED" "[ $fbsrc -ne 0 ]"
+check "the refusal asks for the round-trip with no hand-written fixture" \
+  "printf '%s' \"\$FBSEAM\" | qgrep -qi 'round-trip'"
+
+PRD_GOOD="$TMPROOT/bug-good.md"
+cat >"$PRD_GOOD" <<'MD'
+# Mission: every rendered row shows the default host, never the stored one
+
+**Type:** bug
+**Seam:** relay.py cmd_file (writes the record) -> pkg/model.py host_of (reads it)
+**Goal:** The host the CLI stores is the host the page renders, for every record.
+**Acceptance Criteria:**
+- Observed live: `RELAY_HOST=github.example.com python3 relay.py file "sandwich"` stored `"origin": "github.example.com"` in `requests/r-1759300000000.json`; `python3 -m pkg.render` then rendered `<td class="host">github.com</td>`. The writer writes `origin`; `host_of()` reads `host` with a `github.com` default, so the two halves never meet.
+- ONE shared field name, declared in `pkg/model.py` and used by both halves.
+- Round-trip test with NO hand-written fixture: the test files a record with the CLI's own `cmd_file`, renders it with the real `render()`, and asserts the rendered host is the one that was configured.
+**Out of Scope:**
+- The hardcoded `api.github.com` in `cmd_publish` (filed separately).
+**Constraints:**
+- Stdlib only; no network in tests.
+MD
+FBOK="$( LOG_STUB="$STUBS/log-files.sh" ap "$RFB" file-bug --parent lcars-20261001-010 --prd "$PRD_GOOD" 2>&1 )"; fbokrc=$?
+check "file-bug FILES a PRD that carries the live observation" "[ $fbokrc -eq 0 ]"
+check "it filed through log.sh --parent --prd (it re-implements nothing)" \
+  "qgrep -qE 'log-files.sh .*--parent lcars-20261001-010' '$STUB_LOG' && qgrep -qF -- '--prd' '$STUB_LOG'"
+check "the child bug mission exists" "[ -f '$RFB/.git/lcars/missions/bug-001/state.json' ]"
+check "it reports the child it filed, by id" \
+  "printf '%s' \"\$FBOK\" | qgrep -qF 'bug-001'"
+check "the child is LINKED — parentMission is the parent" \
+  "[ \"\$(jget '$RFB/.git/lcars/missions/bug-001/state.json' 'd[\"parentMission\"]')\" = lcars-20261001-010 ]"
+check "it confirms the lcars:linked label it depends on" \
+  "printf '%s' \"\$FBOK\" | qgrep -qF 'lcars:linked'"
+check "the filing lands in the decisions ledger with the parent" \
+  "qgrep -q 'bug-001' '$RFB/.git/lcars/decisions.jsonl'"
+# The guard that matters: a log.sh that exits 0 WITHOUT linking must not be
+# reported as a filing. "approve exited 0" was reported as a merge once already.
+stub "$STUBS/log-lies.sh" 0
+RFB2="$(new_repo)"
+ap "$RFB2" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RFB2" lcars-20261001-010 verify
+FBLIE="$( LOG_STUB="$STUBS/log-lies.sh" ap "$RFB2" file-bug --parent lcars-20261001-010 --prd "$PRD_GOOD" 2>&1 )"; fblrc=$?
+check "a log.sh that exits 0 but links NOTHING is NOT reported as a filing" \
+  "[ $fblrc -ne 0 ]"
+check "that refusal says no linked child appeared" \
+  "printf '%s' \"\$FBLIE\" | qgrep -qiE 'no linked bug|not linked'"
+FBNOPRD="$( LOG_STUB="$STUBS/log-files.sh" ap "$RFB" file-bug --parent lcars-20261001-010 2>&1 )"; fbnprc=$?
+check "file-bug with no --prd is refused"     "[ $fbnprc -ne 0 ]"
+FBNOPAR="$( LOG_STUB="$STUBS/log-files.sh" ap "$RFB" file-bug --prd "$PRD_GOOD" 2>&1 )"; fbnparc=$?
+check "file-bug with no --parent is refused (a bug is always a child)" "[ $fbnparc -ne 0 ]"
+FBMISS="$( LOG_STUB="$STUBS/log-files.sh" ap "$RFB" file-bug --parent lcars-20261001-010 --prd "$TMPROOT/nope.md" 2>&1 )"; fbmrc=$?
+check "a --prd path that does not exist is refused" "[ $fbmrc -ne 0 ]"
+PRD_NOSEC="$TMPROOT/bug-nosections.md"
+printf '# Mission: a thing\n\n**Type:** bug\n**Acceptance Criteria:**\n- Observed live: it broke.\n' >"$PRD_NOSEC"
+FBNOSEC="$( LOG_STUB="$STUBS/log-files.sh" ap "$RFB" file-bug --parent lcars-20261001-010 --prd "$PRD_NOSEC" 2>&1 )"; fbnsrc=$?
+check "a PRD missing the sections file.sh requires is refused HERE, not later" \
+  "[ $fbnsrc -ne 0 ]"
+check "the refusal names a missing section" \
+  "printf '%s' \"\$FBNOSEC\" | qgrep -qiE 'Out of Scope|Constraints|Goal'"
+
+# ==========================================================================
+# S234.4 policy — ONE action, and an override that is recorded with its evidence
+# ==========================================================================
+# Playbook § 4: high -> merge; medium -> merge + follow-ups; low for a PRODUCT
+# reason -> send it back; low for INFRASTRUCTURE only -> fix it, verify that
+# point live, and record an OVERRIDE. In practice Number One scored every CLI
+# or integration milestone low for reasons it could not reach, so the LIVE
+# CHECK decided every merge — which is why a live-check of `bugs` sends back
+# whatever Number One said.
+echo "-- S234.4 policy --"
+RPO="$(new_repo)"
+ap "$RPO" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RPO" lcars-20261001-020 verify
+# A real evidence file, because an override whose evidence path does not
+# exist is the `deploy succeeded` of overrides.
+LCEVOK="$TMPROOT/override-evidence.txt"
+printf 'ran the step by hand: python3 missing on the runner\n' >"$LCEVOK"
+polact() { # <args…> → the ACTION line's value
+  ap "$RPO" policy "$@" 2>&1 | sed -n 's/^ACTION: //p'
+}
+check "high + live-check pass -> merge" \
+  "[ \"\$(polact --verdict high --live-check pass)\" = merge ]"
+check "medium + live-check pass -> merge+follow-ups" \
+  "[ \"\$(polact --verdict medium --live-check pass)\" = 'merge+follow-ups' ]"
+check "low for a PRODUCT reason + live-check pass -> send-back" \
+  "[ \"\$(polact --verdict low --reason product --live-check pass)\" = 'send-back' ]"
+check "low for INFRASTRUCTURE only + live-check pass -> override" \
+  "[ \"\$(polact --verdict low --reason infrastructure --live-check pass --evidence '$LCEVOK')\" = override ]"
+check "live-check BUGS sends back even on a HIGH verdict (the live check decides)" \
+  "[ \"\$(polact --verdict high --live-check bugs)\" = 'send-back' ]"
+check "live-check BUGS sends back on medium too" \
+  "[ \"\$(polact --verdict medium --live-check bugs)\" = 'send-back' ]"
+POL1="$(ap "$RPO" policy --verdict high --live-check pass 2>&1)"
+check "policy prints EXACTLY ONE action line" \
+  "[ \"\$(printf '%s\n' \"\$POL1\" | grep -c '^ACTION: ')\" = 1 ]"
+check "policy cites the AUTOPILOT.md heading for the action" \
+  "printf '%s' \"\$POL1\" | qgrep -qF 'PLAYBOOK: ##'"
+check "policy prints the commands that carry the action out" \
+  "printf '%s' \"\$POL1\" | qgrep -qE '^THEN:'"
+POLSB="$(ap "$RPO" policy --verdict low --reason product --live-check bugs 2>&1)"
+check "the send-back action spells out file-bug -> resolve-logs -> re-verify -> respond" \
+  "printf '%s' \"\$POLSB\" | qgrep -qF 'file-bug' && printf '%s' \"\$POLSB\" | qgrep -qF 'resolve-logs' && printf '%s' \"\$POLSB\" | qgrep -qiF 'different data'"
+POLNOR="$(ap "$RPO" policy --verdict low --live-check pass 2>&1)"; polnrc=$?
+check "a LOW verdict with no --reason is REFUSED (the action depends on it)" \
+  "[ $polnrc -ne 0 ]"
+check "that refusal names both reasons" \
+  "printf '%s' \"\$POLNOR\" | qgrep -qF 'product' && printf '%s' \"\$POLNOR\" | qgrep -qF 'infrastructure'"
+# A FRESH repo for the ledger half: the table row above already recorded one
+# override, and "no override was recorded" must mean exactly that.
+RPO2="$(new_repo)"
+ap "$RPO2" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RPO2" lcars-20261001-020 verify
+OVL="$RPO2/.git/lcars/autopilot-overrides.jsonl"
+POLNOE="$(ap "$RPO2" policy --verdict low --reason infrastructure --live-check pass 2>&1)"; polnerc=$?
+check "an OVERRIDE with no --evidence is REFUSED (an unevidenced override is a shrug)" \
+  "[ $polnerc -ne 0 ]"
+check "the refusal names --evidence" \
+  "printf '%s' \"\$POLNOE\" | qgrep -qF -- '--evidence'"
+POLBADE="$(ap "$RPO2" policy --verdict low --reason infrastructure --live-check pass --evidence "$TMPROOT/not-there.txt" 2>&1)"; polberc=$?
+check "an --evidence path that does not EXIST is refused" "[ $polberc -ne 0 ]"
+check "no override was recorded for either refusal" "[ ! -f '$OVL' ]"
+POLOV="$(ap "$RPO2" policy --verdict low --reason infrastructure --live-check pass \
+           --mission lcars-20261001-020 --evidence "$LCEVOK" --note 'the runner had no python3' 2>&1)"; polovrc=$?
+check "the override is accepted"              "[ $polovrc -eq 0 ]"
+check "the override is RECORDED in autopilot-overrides.jsonl" "[ -s '$OVL' ]"
+check "the recorded override carries the EVIDENCE PATH" \
+  "qgrep -qF '$LCEVOK' '$OVL'"
+check "the recorded override carries the mission, the verdict and the reason" \
+  "qgrep -qF 'lcars-20261001-020' '$OVL' && qgrep -qF 'infrastructure' '$OVL' && qgrep -qF '\"verdict\": \"low\"' '$OVL'"
+check "the recorded override carries the note the buddy wrote" \
+  "qgrep -qF 'the runner had no python3' '$OVL'"
+check "a MERGE action records NO override" \
+  "ap '$RPO2' policy --verdict high --live-check pass >/dev/null 2>&1; [ \"\$(wc -l <'$OVL' | tr -d ' ')\" = 1 ]"
+POLBADV="$(ap "$RPO" policy --verdict excellent --live-check pass 2>&1)"; polbvrc=$?
+check "an unknown verdict is refused"         "[ $polbvrc -ne 0 ]"
+POLBADL="$(ap "$RPO" policy --verdict high --live-check maybe 2>&1)"; polblrc=$?
+check "an unknown live-check verdict is refused" "[ $polblrc -ne 0 ]"
+POLNOLC="$(ap "$RPO" policy --verdict high 2>&1)"; polnlrc=$?
+check "policy with NO --live-check is refused (it is half the table)" "[ $polnlrc -ne 0 ]"
+# The verdict can come from Number One's own file rather than the flag.
+mkdir -p "$RPO/.git/lcars/missions/lcars-20261001-020/xo"
+printf '{"score":"medium","summary":"s"}\n' >"$RPO/.git/lcars/missions/lcars-20261001-020/xo/verdict.json"
+check "with --mission and no --verdict it reads Number One's own xo/verdict.json" \
+  "[ \"\$(polact --mission lcars-20261001-020 --live-check pass)\" = 'merge+follow-ups' ]"
+check "policy prints the whole table so the buddy can see the row it took" \
+  "ap '$RPO' policy --table 2>&1 | qgrep -qF 'merge+follow-ups'"
+# AN UNESCAPED BACKTICK IN A `say` RAN AS A COMMAND. `policy --table` printed
+# "command not found: bugs" into the middle of the merge table and swallowed the
+# word it was explaining. Any `say "…\`x\`…"` has this hazard, so the sweep is
+# over the WHOLE driver's output, not just this line.
+check "no subcommand's output leaks a shell error (an unescaped backtick in a say)" \
+  "! ap '$RPO' policy --table 2>&1 | qgrep -qiE 'command not found|No such file or directory'"
+check "the table's explanation keeps the word it is explaining" \
+  "ap '$RPO' policy --table 2>&1 | qgrep -qF 'live check sends back a high'"
+check "no unescaped backtick inside any double-quoted \`say\` in the driver" \
+  "! qgrep -qE 'say \"[^\"]*[^\\\\]\`' '$SCRIPT'"
+
+# ==========================================================================
+# S234.5 report — one page, rendered from the ledgers, byte for byte
+# ==========================================================================
+# A GOLDEN FILE, and no publish from a test: the renderer's job is to turn the
+# RECORDS into the page, so the test fixes both. Nothing in the output comes
+# from a clock — a report that changes when nothing changed cannot be reviewed.
+echo "-- S234.5 report --"
+RRP="$(new_repo)"
+printf 'M0 the CLI\nM1 the page\n' >"$TMPROOT/spec-rpt.md"
+ap "$RRP" init --spec "$TMPROOT/spec-rpt.md" --scope M0,M1 >/dev/null 2>&1
+ap "$RRP" record startedAt 2026-10-01T09:00:00-07:00 >/dev/null 2>&1
+new_mission "$RRP" lcars-20261001-001 done
+new_mission "$RRP" lcars-20261001-002 verify
+new_mission "$RRP" bug-001 done bug lcars-20261001-001
+new_mission "$RRP" bug-002 done bug lcars-20261001-002
+new_mission "$RRP" bug-003 implement bug lcars-20261001-002
+ap "$RRP" record missions.M0.id lcars-20261001-001 >/dev/null 2>&1
+ap "$RRP" record missions.M1.id lcars-20261001-002 >/dev/null 2>&1
+mkdir -p "$RRP/.git/lcars/missions/lcars-20261001-001/xo" \
+         "$RRP/.git/lcars/missions/lcars-20261001-001/live-check" \
+         "$RRP/.git/lcars/missions/lcars-20261001-002/live-check"
+printf '{"score":"medium","summary":"s"}\n' >"$RRP/.git/lcars/missions/lcars-20261001-001/xo/verdict.json"
+: >"$RRP/.git/lcars/missions/lcars-20261001-001/live-check/02-desktop.png"
+: >"$RRP/.git/lcars/missions/lcars-20261001-001/live-check/03-phone.png"
+: >"$RRP/.git/lcars/missions/lcars-20261001-001/live-check/01-help.txt"
+: >"$RRP/.git/lcars/missions/lcars-20261001-002/live-check/02-desktop.png"
+ap "$RRP" record missions.M0.liveCheck pass >/dev/null 2>&1
+ap "$RRP" record missions.M1.liveCheck bugs >/dev/null 2>&1
+ap "$RRP" ledger overrides '{"mission":"lcars-20261001-002","verdict":"low","reason":"infrastructure","evidence":"live-check/09-override.txt","note":"the runner had no python3"}' >/dev/null 2>&1
+RPOUT="$(ap "$RRP" report 2>&1)"; rprc=$?
+RPHTML="$RRP/.git/lcars/autopilot/report.html"
+check "report exits 0"                        "[ $rprc -eq 0 ]"
+check "report prints the path it wrote"       "printf '%s' \"\$RPOUT\" | qgrep -qF '$RPHTML'"
+check "report writes the page inside .git/lcars (never the working tree)" "[ -s '$RPHTML' ]"
+GOLDEN="$TMPROOT/report.golden.html"
+cat >"$GOLDEN" <<GOLDENEOF
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autopilot progress</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { border-bottom: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  .pass { color: #0a7a2f; } .bugs { color: #c0392b; } .none { color: #888; }
+  ul { padding-left: 1.2rem; }
+  @media (max-width: 500px) { body { margin: .75rem; } }
+</style></head>
+<body>
+<h1 id="report-title">Autopilot progress</h1>
+<p id="report-meta">spec: $TMPROOT/spec-rpt.md &middot; started: 2026-10-01T09:00:00-07:00</p>
+<table id="report-milestones">
+<thead><tr><th>Milestone</th><th>Mission</th><th>Stage</th><th>Number One</th><th>Live check</th><th>Shots</th><th>Bugs filed</th><th>Bugs fixed</th></tr></thead>
+<tbody>
+<tr id="row-M0"><td>M0</td><td>lcars-20261001-001</td><td>done</td><td>medium</td><td class="pass">pass</td><td>2</td><td>1</td><td>1</td></tr>
+<tr id="row-M1"><td>M1</td><td>lcars-20261001-002</td><td>verify</td><td class="none">-</td><td class="bugs">bugs</td><td>1</td><td>2</td><td>1</td></tr>
+</tbody>
+</table>
+<h2 id="shots-title">Screenshots</h2>
+<ul id="shots">
+<li>M0 <a href="../missions/lcars-20261001-001/live-check/02-desktop.png">02-desktop.png</a></li>
+<li>M0 <a href="../missions/lcars-20261001-001/live-check/03-phone.png">03-phone.png</a></li>
+<li>M1 <a href="../missions/lcars-20261001-002/live-check/02-desktop.png">02-desktop.png</a></li>
+</ul>
+<h2 id="bugs-title">Bugs filed</h2>
+<ul id="bugs">
+<li>M0 bug-001 &mdash; mission bug-001 &mdash; done</li>
+<li>M1 bug-002 &mdash; mission bug-002 &mdash; done</li>
+<li>M1 bug-003 &mdash; mission bug-003 &mdash; implement</li>
+</ul>
+<h2 id="overrides-title">Overrides recorded</h2>
+<ul id="overrides">
+<li>lcars-20261001-002 &mdash; low / infrastructure &mdash; the runner had no python3 &mdash; evidence: live-check/09-override.txt</li>
+</ul>
+</body></html>
+GOLDENEOF
+if diff -u "$GOLDEN" "$RPHTML" >"$TMPROOT/report.diff" 2>&1; then
+  ok "report matches the golden file byte for byte"
+else
+  bad "report does not match the golden file"
+  head -40 "$TMPROOT/report.diff"
+fi
+check "the only timestamp on the page is the RECORDED startedAt (no clock)" \
+  "qgrep -qF '2026-10-01T09:00:00-07:00' '$RPHTML' && [ \"\$(grep -cE '[0-9]{2}:[0-9]{2}:[0-9]{2}' '$RPHTML')\" = 1 ]"
+RPOUT2="$(ap "$RRP" report --out "$TMPROOT/elsewhere.html" 2>&1)"
+check "--out renders somewhere else"          "[ -s '$TMPROOT/elsewhere.html' ]"
+ap "$RRP" report --out "$TMPROOT/elsewhere2.html" >/dev/null 2>&1
+check "a re-render to the SAME shape of path is byte-identical (nothing drifts)" \
+  "diff -q '$TMPROOT/elsewhere.html' '$TMPROOT/elsewhere2.html' >/dev/null"
+# S234 round 1, defect 5: the screenshot hrefs were written relative to the
+# DEFAULT report dir (.git/lcars/autopilot), so they resolved only from there
+# and every link was DEAD under any other --out. The captain opens whatever
+# path the report was written to; a link that 404s there is a shot nobody
+# looks at, which is the one thing the live check exists to produce.
+links_resolve() { python3 - "$1" <<'PY'
+import os, re, sys
+p = sys.argv[1]
+base = os.path.dirname(os.path.abspath(p))
+hrefs = re.findall(r'<a href="([^"]+)"', open(p).read())
+if not hrefs:
+    print("NO LINKS AT ALL — a vacuous pass")
+    sys.exit(1)
+dead = [h for h in hrefs if not os.path.exists(os.path.join(base, h))]
+for h in dead:
+    print("DEAD: %s (opened from %s)" % (h, base))
+sys.exit(1 if dead else 0)
+PY
+}
+check "the DEFAULT report's screenshot links resolve from the dir it was written to" \
+  "links_resolve '$RPHTML'"
+mkdir -p "$TMPROOT/report-elsewhere/deeper"
+ap "$RRP" report --out "$TMPROOT/report-elsewhere/deeper/report.html" >/dev/null 2>&1
+check "--out to another directory writes links that RESOLVE THERE (not relative to the default dir)" \
+  "links_resolve '$TMPROOT/report-elsewhere/deeper/report.html'"
+REMPTY="$(new_repo)"
+ap "$REMPTY" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+check "a report with nothing recorded yet still renders (no crash, no fake data)" \
+  "ap '$REMPTY' report >/dev/null 2>&1 && qgrep -qF 'none yet' '$REMPTY/.git/lcars/autopilot/report.html'"
+check "an epoch startedAt (what \`init\` records) renders readably, not as a raw integer" \
+  "qgrep -qE 'started: 20[0-9]{2}-[0-9]{2}-[0-9]{2}T' '$REMPTY/.git/lcars/autopilot/report.html'"
+check "report NEVER publishes an artifact from a test" \
+  "! qgrep -qiE 'claude\.ai/artifact|Artifact tool' '$SCRIPT'"
+
+# ==========================================================================
+# S234.6 the prose contracts — bug-prd.md and AUTOPILOT.md's two new sections
+# ==========================================================================
+echo "-- S234.6 prose contract (INSTALLED files) --"
+BPRD="$INSTALLED_DIR/bug-prd.md"
+check "bug-prd.md is installed at $BPRD"      "[ -f '$BPRD' ]"
+check "bug-prd.md carries every section file.sh requires" \
+  "( for sec in 'Mission title' 'Type' 'Goal' 'Acceptance Criteria' 'Out of Scope' 'Constraints'; do qgrep -qF \"\$sec\" '$BPRD' || exit 1; done )"
+check "bug-prd.md makes AC #1 \`Observed live:\` and says it is MANDATORY" \
+  "qgrep -qF 'Observed live:' '$BPRD' && qgrep -qiE 'mandator|must be|not optional' '$BPRD'"
+check "bug-prd.md demands the EXACT output and the identifiers" \
+  "qgrep -qiE 'exact (output|command)' '$BPRD' && qgrep -qiF 'identifier' '$BPRD'"
+check "bug-prd.md carries the declared Seam field the validator reads" \
+  "qgrep -qF '**Seam:**' '$BPRD'"
+check "bug-prd.md demands a ROUND-TRIP criterion at a producer/consumer seam" \
+  "qgrep -qi 'round-trip' '$BPRD' && qgrep -qiE 'no hand-written fixture|both real halves' '$BPRD'"
+check "bug-prd.md says the title states the BROKEN BEHAVIOUR as a sentence" \
+  "qgrep -qiE 'broken behaviour|broken behavior' '$BPRD'"
+check "bug-prd.md says Goal states the CORRECTED INVARIANT" \
+  "qgrep -qiE 'corrected invariant' '$BPRD'"
+check "bug-prd.md names \`autopilot.sh file-bug\` as how it is filed" \
+  "qgrep -qF 'file-bug' '$BPRD'"
+check "bug-prd.md carries a filled-in EXAMPLE, not just a skeleton" \
+  "qgrep -qiE 'example' '$BPRD'"
+
+# --- the exemplar contract (S234 round 1, defects 3 and 4) ----------------
+# D3: the round pointed testers at the weekend archive PRD
+# `canvas-weekend-2026-09-26/evidence/filed-prds/bug-020-1.md` and told them to
+# match it LINE FOR LINE. `file-bug` REFUSES that file on three counts — no
+# `Out of Scope`, no `**Seam:**`, and an AC #1 reading `Observed (real code, no
+# stubs on the contract):` instead of `Observed live:` — because it predates
+# this template. The validator is right; the POINTER was wrong, and a tester
+# who obeyed it produced a PRD that could not be filed. So the one exemplar is
+# bug-prd.md's OWN worked example, and this suite proves it by running the
+# round's own gate over it.
+# D4: that worked example WAS the fixture product's own seam fault, named down
+# to the two field names and the default value — anyone who read the template
+# before working the fixture got that fault free, and finding it then proved
+# nothing about the checklists.
+EXAMPLE_PRD="$TMPROOT/bug-prd-worked-example.md"
+python3 - "$BPRD" "$EXAMPLE_PRD" <<'PY' 2>/dev/null || :
+import re, sys
+try:
+    t = open(sys.argv[1]).read()
+except Exception:
+    t = ""
+m = re.search(r'#+[ \t]*A filled-in example.*?```markdown\n(.*?)\n```', t, re.S)
+open(sys.argv[2], "w").write(m.group(1) if m else "")
+PY
+check "bug-prd.md's worked example is extractable as a PRD of its own" \
+  "[ -s '$EXAMPLE_PRD' ]"
+RWE="$(new_repo)"
+ap "$RWE" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RWE" lcars-20261001-030 verify
+FBEX="$( LOG_STUB="$STUBS/log-files.sh" ap "$RWE" file-bug --parent lcars-20261001-030 --prd "$EXAMPLE_PRD" 2>&1 )"; fbexrc=$?
+if [ "$fbexrc" -ne 0 ]; then printf '%s\n' "$FBEX" | sed 's/^/    /' | head -12; fi
+check "the exemplar bug-prd.md points at is FILEABLE by \`file-bug\`'s own validator" \
+  "[ $fbexrc -eq 0 ]"
+check "bug-prd.md does NOT send the reader at the archive PRD the validator refuses" \
+  "! qgrep -qF 'bug-020-1' '$BPRD'"
+check "bug-prd.md says in one line WHY the weekend archive PRDs do not conform (they predate the template)" \
+  "qgrep -qiF 'filed-prds' '$BPRD' && qgrep -qiE 'predate|pre-date|older than this template' '$BPRD'"
+check "the worked example is NOT the fixture product's own seam fault (it hands the tester no answer)" \
+  "! qgrep -qE 'host_of|\"origin\"|pkg/model\.py|pkg/render\.py|relay\.py' '$EXAMPLE_PRD'"
+check "the worked example is still CONCRETE — a quoted command, a quoted output and real identifiers" \
+  "qgrep -qF 'Observed live:' '$EXAMPLE_PRD' && qgrep -qi 'round-trip' '$EXAMPLE_PRD' && qgrep -qF '**Seam:**' '$EXAMPLE_PRD'"
+check "AUTOPILOT.md names bug-prd.md's WORKED EXAMPLE as the one style exemplar" \
+  "qgrep -qiF 'worked example' '$APM'"
+check "AUTOPILOT.md does NOT point at the archive PRD the validator refuses" \
+  "! qgrep -qF 'bug-020-1' '$APM'"
+
+check "AUTOPILOT.md's live-verification section is no longer an S234 STUB" \
+  "! qgrep -qiE 'S234 — STUB|S234 - STUB' '$APM'"
+check "AUTOPILOT.md points at the shared checklists by path" \
+  "qgrep -qF 'lcars-run/live-check' '$APM'"
+check "AUTOPILOT.md names the live-check verb" \
+  "qgrep -qF 'autopilot.sh live-check' '$APM'"
+check "AUTOPILOT.md names the workflow-run verb for every workflow a mission adds" \
+  "qgrep -qF 'autopilot.sh workflow-run' '$APM'"
+check "AUTOPILOT.md names the file-bug verb and the template" \
+  "qgrep -qF 'autopilot.sh file-bug' '$APM' && qgrep -qF 'bug-prd.md' '$APM'"
+check "AUTOPILOT.md names the policy verb" \
+  "qgrep -qF 'autopilot.sh policy' '$APM'"
+check "AUTOPILOT.md names the report verb" \
+  "qgrep -qF 'autopilot.sh report' '$APM'"
+check "AUTOPILOT.md carries the whole merge table: all four actions" \
+  "( for a in 'merge' 'follow-ups' 'send-back' 'override'; do qgrep -qF \"\$a\" '$APM' || exit 1; done )"
+check "AUTOPILOT.md says a LOW for infrastructure only is fixed, verified live, and OVERRIDDEN" \
+  "qgrep -qiE 'infrastructure' '$APM' && qgrep -qF 'autopilot-overrides.jsonl' '$APM'"
+check "AUTOPILOT.md says THE MERGE IS THE BUDDY'S CALL — Number One recommends" \
+  "qgrep -qiE \"buddy's call|the buddy decides\" '$APM' && qgrep -qi 'recommend' '$APM'"
+check "AUTOPILOT.md says every override is recorded WITH its evidence path" \
+  "qgrep -qiE 'evidence path' '$APM'"
+check "AUTOPILOT.md keeps the send-back loop: file-bug -> resolve-logs -> re-verify with different data -> respond -> land" \
+  "qgrep -qF 'resolve-logs' '$APM' && qgrep -qiF 'different data' '$APM'"
+check "AUTOPILOT.md says the anchor rule and the seam constraint are HARNESS DEFAULTS now (S236/S237), not the mode's job" \
+  "qgrep -qiE 'harness default' '$APM' && qgrep -qE 'S236|S237' '$APM'"
+check "AUTOPILOT.md does NOT tell the mode to inject the anchor rule into every PRD (that would duplicate S236/S237)" \
+  "! qgrep -qiE 'inject the anchor rule|add the anchor rule' '$APM'"
+check "AUTOPILOT.md still forbids the hand-merge after the rewrite" \
+  "qgrep -qiE 'never (merge by hand|hand-merge)' '$APM'"
+check "AUTOPILOT.md still tells the model to run the live check from a DETACHED worktree" \
+  "qgrep -qiF 'detached' '$APM'"
 
 # ==========================================================================
 # ZERO SPEND — the PATH shim must never have been reached
