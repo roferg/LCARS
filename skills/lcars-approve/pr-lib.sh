@@ -37,12 +37,109 @@ pr_title() {
   printf '%s' "${t:-$MISSION_ID}"
 }
 
+# === A HUMAN PARAGRAPH IS NOT A PHYSICAL LINE ===============================
+#
+# WHAT WAS MEASURED (live, 2026-10-01). Every HUMAN-facing paragraph in the PR
+# body stopped at its first physical SOURCE line. A Goal written as three
+# hard-wrapped lines reached the captain as one; an ADR decision lost two
+# thirds of its reasoning. The machine-written halves — the acceptance-criteria
+# bullets, the wave manifest, the one-line fields — were intact, which is why
+# nobody noticed: the PR body LOOKED complete.
+#
+# WHY IT LOOKED LIKE A COLUMN LIMIT, AND IS NOT. Of eleven observed cut points,
+# eight sat at 78-81 characters, exactly like an 80-column budget. They are not.
+# They are wherever the AUTHOR hard-wrapped, and most authors wrap at 80 — the
+# three outliers (one cut at 14 characters, one at 28) are the disproof. The
+# cause was a LINE-BASED READ, three of them:
+#
+#   `sed -n 's/^\*\*Goal:\*\*…//p' | head -1`   prints only the line that BEARS
+#        the label, so a continuation line was never even a candidate.
+#   the ADR awk, `d=$0` on /^\*\*Decision:\*\*/  one awk record is one line.
+#   `_lcars_prd_read` (lcars-init/lcars-common.sh) returns the label line only,
+#        or, for a heading-form section, "the first non-blank line under it" —
+#        the heading-form fallback below used to come through it. It is STILL
+#        line-based (its other callers read single-line fields and pipe through
+#        `head -1`), but md_scan reads both PRD shapes, so the PR body no longer
+#        goes anywhere near it.
+#
+# A width-based fix would have looked right on the eight and stayed wrong on the
+# three. So this is the cure: ONE reader for every prose value this file shows
+# the captain, and a wrap is a display choice that the reader undoes.
+#
+# md_scan <markdown-file> → tab-separated records, one per line, each VALUE
+# already joined WHOLE:
+#
+#   H<TAB><heading>                  a `#`-marked heading, markers stripped
+#   V<TAB><label><TAB><value>        a `**Label:**` inline value
+#   S<TAB><heading><TAB><value>      the first paragraph under a bare heading
+#
+# A value runs from its own line through every CONTINUATION line and is joined
+# with single spaces. A blank line, a heading, a list item/blockquote, or
+# another `**Label:**` ends it — those start a new block, so they are the only
+# real boundaries. ONE VALUE IS ONE OUTPUT LINE, however long, so a caller that
+# pipes through `head -1` can no longer clip it.
+md_scan() { # markdown-file
+  [ -f "$1" ] || return 0
+  awk '
+    function trim(s) { gsub(/[ \t]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
+    function emit() {
+      if (mode != "") print mode "\t" lab "\t" trim(buf)
+      mode = ""; lab = ""; buf = ""
+    }
+    {
+      line = $0; sub(/\r$/, "", line)
+      # a blank line closes the value in flight, but NOT an open section
+      if (line ~ /^[ \t]*$/) { emit(); next }
+      # a heading: closes any value, and opens a section whose first paragraph
+      # is its value (the heading-form PRD shape)
+      if (line ~ /^[ \t]{0,3}#{1,6}[ \t]/) {
+        emit()
+        h = line; sub(/^[ \t]*#+[ \t]*/, "", h); sub(/[ \t]*:[ \t]*$/, "", h)
+        h = trim(h); sub(/^[*_`]+/, "", h); sub(/[*_`]+$/, "", h)
+        print "H\t" h
+        sect = h; next
+      }
+      # a bold inline label: **Label:** value…
+      if (line ~ /^[ \t]*\*\*[^*]*:[ \t]*\*\*/) {
+        emit()
+        lab = line
+        sub(/^[ \t]*\*\*[ \t]*/, "", lab); sub(/[ \t]*:[ \t]*\*\*.*$/, "", lab)
+        buf = line
+        sub(/^[ \t]*\*\*[^*]*:[ \t]*\*\*[ \t]*/, "", buf)
+        mode = "V"; sect = ""; next
+      }
+      # a list item or blockquote is its own block, never a continuation
+      if (line ~ /^[ \t]*([-*+>]|[0-9]+[.)])[ \t]/) { emit(); sect = ""; next }
+      # a continuation of the value in flight
+      if (mode != "") { buf = buf " " line; next }
+      # the first paragraph under a bare heading IS that heading section value
+      if (sect != "") { buf = line; lab = sect; mode = "S"; sect = ""; next }
+    }
+    END { emit() }
+  ' "$1"
+}
+
+# md_value <scan-output> <label> → the WHOLE value for that label, bold-inline
+# form preferred, heading-section form as the fallback. Case-insensitive on the
+# label, exactly as the shared PRD reader is.
+md_value() { # scan  label
+  printf '%s\n' "$1" | awk -F'\t' -v want="$2" '
+    BEGIN { want = tolower(want) }
+    $1 == "V" && tolower($2) == want { print $3; found = 1; exit }
+    $1 == "S" && tolower($2) == want && !s { s = $3 }
+    END { if (!found && s != "") print s }
+  '
+}
+
 # --- user-facing summary: PRD Goal + Acceptance Criteria --------------------
 user_summary() {
   local prd="$MISSION_DIR/prd.md"
   [ -f "$prd" ] || return 0
-  local goal crit
-  goal="$(sed -n 's/^\*\*Goal:\*\*[[:space:]]*//p' "$prd" | head -1)"
+  local goal crit scan
+  # The Goal is PROSE the captain wrote, so it is read as a paragraph (md_scan),
+  # never as the one source line that happens to carry the label.
+  scan="$(md_scan "$prd")"
+  goal="$(md_value "$scan" Goal)"
   crit="$(awk '
     /^\*\*Acceptance Criteria:\*\*/ { grab=1; next }
     grab && /^\*\*[^*]*:\*\*/       { grab=0 }
@@ -71,11 +168,13 @@ user_summary() {
 tech_summary() {
   local adr="$MISSION_DIR/adr.md" body=""
   if [ -f "$adr" ]; then
-    body="$(awk '
-      /^## ADR-/ { sub(/^##[[:space:]]*/,""); titles[++n]=$0; next }
-      /^\*\*Decision:\*\*/ {
-        d=$0; sub(/^\*\*Decision:\*\*[[:space:]]*/,"",d)
-        if (n>0 && decisions[n]=="") decisions[n]=d
+    # Each ADR decision is PROSE too, so it comes through md_scan whole — the
+    # old reader took `d=$0` on the /^\*\*Decision:\*\*/ line, and one awk record
+    # is one line, so a wrapped decision lost everything after its first wrap.
+    body="$(md_scan "$adr" | awk -F'\t' '
+      $1 == "H" && $2 ~ /^ADR-/        { titles[++n] = $2; next }
+      $1 == "V" && tolower($2) == "decision" {
+        if (n > 0 && decisions[n] == "") decisions[n] = $3
         next
       }
       END {
@@ -83,7 +182,7 @@ tech_summary() {
           if (decisions[i] != "") printf "- **%s** — %s\n", titles[i], decisions[i]
           else                    printf "- **%s**\n", titles[i]
       }
-    ' "$adr")"
+    ')"
   fi
   if [ -z "$body" ] && [ -n "${BRANCH:-}" ]; then
     local range="$BRANCH"

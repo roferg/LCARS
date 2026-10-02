@@ -137,5 +137,79 @@ check "3. its parent IS the wave base (unchanged shape)" \
 check "3. it carries exactly its own file" \
   "[ \"\$( cd '$repo3' && git diff --name-only '$base3' '$sha3' | tr '\n' ' ' )\" = 'only.txt ' ]"
 
+# --- 4. THE WORKER'S REPORT IS A COMMIT MESSAGE, NOT A COMMIT SUBJECT ------
+# Observed live: every ticket commit carried its worker's whole multi-paragraph
+# report on LINE 1, so `git log --oneline` (and any GitHub commit list) was one
+# unreadable 200+ character wall per ticket and the body was EMPTY.
+#
+# Mechanism: cmd_implement hands commit_ticket `json_str "$RESULT" summary`, and
+# json_str decodes only \" and \\ — never \n — so the report arrives as ONE
+# physical line with literal backslash-n in it, and commit_ticket passed that
+# whole string to a single `git commit -m`. Git puts a `-m` with no blank line
+# in it entirely in the subject.
+#
+# The contract: a SHORT subject that still carries the `lcars(<id>) <ticket>:`
+# prefix (child_commits_reachable / resolve-logs match on it), and the report
+# WHOLE in the body with real newlines.
+repo4="$(new_repo)"
+wt4="$(new_worktree "$repo4")"
+printf 'x\n' > "$wt4/a.txt"
+# Exactly the shape json_str hands over: one line, literal \n escapes.
+SUMM4='Added the dark token set and wired the toggle.\n\nThe toggle persists to localStorage and is read on boot, and the theme\nprovider moved above the router.\n\nTests: 4 added, all green.'
+session "$repo4" "$wt4" "$SUMM4"
+sha4="$(cat "$(TD "$repo4")/.commit-sha" 2>/dev/null)"
+subj4="$( cd "$repo4" && git log -1 --format=%s "$sha4" 2>/dev/null )"
+len4="${#subj4}"
+check "4. the ticket still commits" "[ -n '$sha4' ]"
+check "4. the subject is a SHORT line, not the whole report (<=72 chars, was 227)" \
+  "[ '$len4' -le 72 ]"
+check "4. the subject keeps the lcars(<id>) <ticket>: prefix" \
+  "printf '%s' \"\$( cd '$repo4' && git log -1 --format=%s '$sha4' )\" | grep -q 'lcars($MISSION) $TICKET:'"
+check "4. the subject opens with the report's first sentence" \
+  "printf '%s' \"\$( cd '$repo4' && git log -1 --format=%s '$sha4' )\" | grep -q 'Added the dark token set'"
+check "4. NO literal backslash-n survives into the subject" \
+  "! printf '%s' \"\$( cd '$repo4' && git log -1 --format=%s '$sha4' )\" | grep -q '\\\\n'"
+check "4. the report's LATER paragraphs land in the body (nothing lost)" \
+  "printf '%s' \"\$( cd '$repo4' && git log -1 --format=%b '$sha4' )\" | grep -q 'localStorage'"
+check "4. the body carries the closing paragraph too" \
+  "printf '%s' \"\$( cd '$repo4' && git log -1 --format=%b '$sha4' )\" | grep -q 'Tests: 4 added'"
+check "4. the body is REAL newlines, not backslash-n escapes" \
+  "! printf '%s' \"\$( cd '$repo4' && git log -1 --format=%b '$sha4' )\" | grep -q '\\\\n'"
+check "4. the body is genuinely multi-line" \
+  "[ \"\$( cd '$repo4' && git log -1 --format=%b '$sha4' | wc -l | tr -d ' ' )\" -gt 1 ]"
+check "4. git log --oneline prints ONE short line for the ticket" \
+  "[ \"\$( cd '$repo4' && git log --oneline -1 '$sha4' | awk '{ print (length(\$0) <= 90) }' )\" = 1 ]"
+
+# A report that is ONE long line with no paragraph break at all — the subject
+# must be CLIPPED, and then the whole report must still be in the body.
+repo4c="$(new_repo)"
+wt4c="$(new_worktree "$repo4c")"
+printf 'z\n' > "$wt4c/c.txt"
+session "$repo4c" "$wt4c" "Rewrote the theme provider so the router can read the theme on its very first render, which it could not do before because the provider mounted underneath it."
+sha4c="$(cat "$(TD "$repo4c")/.commit-sha" 2>/dev/null)"
+subj4c="$( cd "$repo4c" && git log -1 --format=%s "$sha4c" 2>/dev/null )"
+len4c="${#subj4c}"
+check "4. an unbroken 160-char report still gets a short subject" "[ '$len4c' -le 72 ]"
+check "4. the clipped subject says so (ellipsis)" \
+  "printf '%s' \"\$( cd '$repo4c' && git log -1 --format=%s '$sha4c' )\" | grep -q '…'"
+check "4. a CLIPPED subject keeps the whole report in the body (nothing lost)" \
+  "printf '%s' \"\$( cd '$repo4c' && git log -1 --format=%b '$sha4c' )\" | grep -q 'mounted underneath it'"
+
+# A report that ALREADY has real newlines (a test/alt caller) splits the same way.
+repo4b="$(new_repo)"
+wt4b="$(new_worktree "$repo4b")"
+printf 'y\n' > "$wt4b/b.txt"
+session "$repo4b" "$wt4b" "Short headline here
+and a continuation line that belongs in the body."
+sha4b="$(cat "$(TD "$repo4b")/.commit-sha" 2>/dev/null)"
+check "4. a real-newline report keeps its headline as the subject" \
+  "printf '%s' \"\$( cd '$repo4b' && git log -1 --format=%s '$sha4b' )\" | grep -q 'Short headline here'"
+check "4. ...and its continuation in the body" \
+  "printf '%s' \"\$( cd '$repo4b' && git log -1 --format=%b '$sha4b' )\" | grep -q 'belongs in the body'"
+check "4. the body does NOT repeat the subject line" \
+  "[ \"\$( cd '$repo4' && git log -1 --format=%b '$sha4' | head -1 )\" != \"\$( cd '$repo4' && git log -1 --format=%s '$sha4' | sed 's/^lcars([^)]*) $TICKET: //' )\" ]"
+check "4. a one-line summary does NOT get a duplicated body" \
+  "[ -z \"\$( cd '$repo3' && git log -1 --format=%b '$sha3' | tr -d '[:space:]' )\" ]"
+
 printf '\nreplay multi-session: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

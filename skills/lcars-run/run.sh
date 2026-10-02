@@ -912,7 +912,7 @@ mission_mockup_place_names() {
     printf '%s' "$LCARS_PLACE_NAMES_CACHE"; return 0
   fi
   LCARS_PLACE_NAMES_DONE=1
-  local d="$MISSION_DIR/attachments" f names=""
+  local d="$MISSION_DIR/attachments"
   [ -d "$d" ] || return 0
   if ! command -v lcars_attach_kind >/dev/null 2>&1; then
     local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
@@ -920,23 +920,15 @@ mission_mockup_place_names() {
     [ -f "$lib" ] && . "$lib"
   fi
   command -v lcars_attach_kind >/dev/null 2>&1 || return 0
-  for f in "$d"/*; do
-    [ -f "$f" ] || continue
-    [ "$(lcars_attach_kind "$f")" = mockup ] || continue
-    # Both quote styles; an id must look like an id (no spaces, starts with a
-    # letter) or it is markup noise, not a place a person can be pointed at.
-    # grep -o, not sed: a line legitimately carries SEVERAL ids
-    # (<section id="a"><div id="b">), and a greedy sed capture keeps only the
-    # LAST one — which silently shrinks the vocabulary and rejects honest
-    # anchors. Both quote styles. An id must look like an id (no spaces, starts
-    # with a letter) or it is markup noise, not a place a person can be pointed
-    # at.
-    names="$names
-$(grep -oE "[[:space:]]id=[\"'][^\"']*[\"']" "$f" \
-   | sed -E "s/.*id=[\"']//; s/[\"']\$//" \
-   | grep -E "^[A-Za-z][A-Za-z0-9_:.-]*$")"
-  done
-  LCARS_PLACE_NAMES_CACHE="$(printf '%s' "$names" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  # S237 — ONE EXTRACTOR, in lcars-common.sh (lcars_mockup_place_names), because
+  # `lcars file` now injects the SAME list into the PRD's Constraints at Align.
+  # The extraction logic (both quote styles, grep -o not sed so a line carrying
+  # several ids keeps all of them, id-shaped names only) moved there verbatim.
+  # A second extractor would mean the list the planner is handed and the list the
+  # validator checks could drift — which is the defect this round cures, one
+  # level up. The memoisation and the MISSION_DIR lookup stay here.
+  command -v lcars_mockup_place_names >/dev/null 2>&1 || return 0
+  LCARS_PLACE_NAMES_CACHE="$(lcars_mockup_place_names "$d"/*)"
   printf '%s' "$LCARS_PLACE_NAMES_CACHE"
 }
 
@@ -982,11 +974,38 @@ $(grep -oE "[[:space:]]id=[\"'][^\"']*[\"']" "$f" \
 # the opposite of a preference word, so the carve-out is named explicitly — eight
 # identical deferral sentences are what happens when a model's belief is left
 # standing and a rule is stacked on top of it.
+#
+# S237 — AND IT NO LONGER CONTRADICTS THE VALIDATOR. The `drawnAt` bullet used
+# to say, flatly, "Your own words; there is no list of allowed anchors and
+# nothing parses the file to check that it resolves." Both halves of that
+# sentence have been FALSE since 2026-08-25, when the membership rule landed:
+# `validate_plan_json` requires the anchor to cite an element id the drawing
+# really has. Over the weekend of 26–29 Sep a Plan Stage burned SIX attempts
+# across TWO missions against exactly that gap — the prompt said "your own
+# words", the validator said "a real id" — and stopped dead. The later "### The
+# anchor must name a place the drawing HAS" section was already there and did
+# NOT win the argument, because a flat contradiction earlier in the same prompt
+# is not resolved by a more specific rule further down; it just makes the
+# planner pick. So the sentence now states the rule the validator actually
+# enforces, and the weekend's verbatim PLAN RULE line — with the drawing's real
+# anchor list, read from the ONE source file — closes the block.
 plan_mockup_contract_block() {
   local names; names="$(mission_mockup_names)"
   [ -n "$names" ] || return 0
   # The FIRST mockup names the contract in prose; every mockup is listed.
   local first="${names%% *}"
+  # Asked BEFORE the first printf because the `drawnAt` bullet's own wording
+  # depends on it (memoised, so this costs nothing).
+  local places; places="$(mission_mockup_place_names)"
+  local freedom
+  if [ -n "$places" ]; then
+    freedom='It must CITE one of the element ids listed
+  below — the places this drawing actually has — and it may say anything you
+  like around that name; the harness checks the id is there.'
+  else
+    freedom='Your own words; this drawing carries no
+  element ids, so nothing parses the file to check that your anchor resolves.'
+  fi
   printf '
 
 ## This Mission carries a MOCKUP — the tickets must carry it too
@@ -1022,8 +1041,7 @@ declaration:
     ],
 
   **`"drawnAt": "<where>"`** — this criterion'"'"'s surface IS in the drawing, and
-  this is where: the screen id, the section, the row. Your own words; there is no
-  list of allowed anchors and nothing parses the file to check that it resolves.
+  this is where: the screen id, the section, the row. %s
   Write what a person would need in order to find it — "#screen-start, the
   next-up start-card" — not "the mockup".
 
@@ -1121,14 +1139,14 @@ is part of the work, and the work is judged where it is built.
     "rationale": "…"
 
 The mockups this Mission carries:
-%s' "$names" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
+%s' "$names" "$freedom" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
 
   # ROUND 3 — THE VOCABULARY, PUBLISHED. `drawnAt` must CITE a place the drawing
   # actually has, and the only fair way to demand that is to hand the planner the
   # list. Round 1 shipped a closed vocabulary that was undocumented and
   # unguessable and it was rightly hated; this one is stated up front and
-  # repeated in every rejection message.
-  local places; places="$(mission_mockup_place_names)"
+  # repeated in every rejection message. ($places is resolved at the top of the
+  # function now — the `drawnAt` bullet's own wording depends on it.)
   if [ -n "$places" ]; then
     printf '
 
@@ -1162,6 +1180,29 @@ invented one. That makes your anchor the ONLY record of where a surface lives.
 Write it as if the next person has to find that spot with your words alone, and
 expect the reviewer to hold you to it.'
   fi
+
+  # S237 — THE WEEKEND'"'"'S CURE, PASTED BY THE HARNESS INSTEAD OF BY THE CAPTAIN.
+  # Everything above is the harness'"'"' own prose and it was ALREADY here, places
+  # list included, when the Plan Stage burned six attempts across two missions on
+  # 26–29 Sep. What broke the loop first time was the captain pasting ONE terse
+  # imperative line, carrying the actual anchors, into the PRD'"'"'s Constraints —
+  # in the register the planner reads as REQUIREMENTS rather than as appendix.
+  # So the same line, from the same ONE source file `lcars file` writes from,
+  # closes the block. It is a RESTATEMENT of the rules above, deliberately: the
+  # measurement is that the restatement is what landed.
+  local rule
+  if ! command -v lcars_anchor_rule_line >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  rule="$(lcars_anchor_rule_line "$places" 2>/dev/null)" || rule=""
+  [ -n "$rule" ] && printf '
+
+### The rule, in one line
+
+%s' "$rule"
+  return 0
 }
 
 # plan_review_mockup_block -> the Plan Review prompt's mockup instruction, or
@@ -4066,6 +4107,777 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
   ' "$1"
 }
 
+
+# plan_reject_note_write <plan-path> <reason-file>
+# Files a rejection REASON where cmd_plan's retry loop reads it: beside the plan
+# file the worker wrote, which on every harness path is the worker's own mktemp
+# scratch dir (the S178 channel — see the note at that loop).
+#
+# NEVER INSIDE A WORKING TREE, and that guard is not theoretical: `plan-save` is
+# also run by hand and by tests against a plan file that lives in the repo, and
+# the first cut of this dropped `.plan-reject-note` into tests/fixtures/ on every
+# rejected fixture. A harness that dirties the tree it is building is a harness
+# that will eventually commit its own scratch.
+plan_reject_note_write() { # plan-path reason-file
+  local d; d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 0
+  [ -n "$d" ] || return 0
+  # Inside ANY git working tree ⇒ do not write. Checking the CURRENT repo is not
+  # enough: `plan-save` is routinely pointed at a plan file in a DIFFERENT
+  # checkout (every plan fixture in this repo's own test suite is one), and that
+  # checkout is just as much somebody's tree. A cold worker's scratch dir is a
+  # mktemp dir and is in no repo at all, so the retry channel is unaffected; if
+  # it ever were in one, the worst case is the pre-S236 behaviour (no reason
+  # carried), never a dotfile in a tree.
+  if "$GIT_BIN" -C "$d" rev-parse --show-toplevel >/dev/null 2>&1; then
+    return 0
+  fi
+  cp "$2" "$d/.plan-reject-note" 2>/dev/null || :
+}
+
+# === S237: AN ANCHOR FAILURE PATCHES, THEN PARKS — IT NEVER STOPS THE STAGE ===
+#
+# WHAT WENT WRONG (ground truth, 26–29 Sep 2026). A Plan Stage burned SIX failed
+# attempts across TWO missions on the `drawnAt` anchor rule and then DIED:
+# "the Plan worker produced a plan.json that failed validation after 3
+# attempt(s) — Stage stopped, no advance." A stage stop needs a human to notice
+# a dead terminal and hand-run the Stage again; Implement, by contrast, PARKS
+# awaiting-human after its bounces, which is a gate the board shows and
+# `lcars answer` clears. Two bounce paths, two different endings, for no reason.
+#
+# AND THE BOUNCE WAS WASTEFUL BEFORE IT WAS FATAL. One criterion of one ticket
+# names a place the drawing does not have, so the next worker re-plans the WHOLE
+# ticket set from the brief — a fresh dependency graph, fresh slices, fresh
+# everything — to fix one string. That is how a one-line miss consumed three
+# attempts: each retry was a new plan with new places to get the rule wrong.
+#
+# THREE RULES, and the third is the one that keeps this honest:
+#   1. ANCHOR-ONLY failures are PATCHED: the reject note names the failing
+#      tickets, lists the valid anchors, and tells the retry to fix those
+#      tickets and leave every other one alone.
+#   2. The retry is CHECKED against that instruction — a plan that rewrote a
+#      ticket it was told to leave alone is refused, so "patch mode" cannot
+#      quietly become "re-plan with a smaller prompt".
+#   3. NOTHING ELSE CHANGES. A non-anchor validation failure keeps today's
+#      behaviour byte for byte, stage stop included. The anchor RULES themselves
+#      are untouched (the >=1-drawnAt rule, the real-element-id rule, the
+#      exactly-one-declaration rule): this changes what happens AFTER a failure.
+#
+# THE CLASSIFIER IS NOT A CLASSIFIER. `validate_plan_json`'s `fail()` prints ONE
+# message and exits, so the reason file holds exactly one validator's output and
+# "is this the anchor failure?" is a literal match on that one message's own
+# opening clause — not a judgement about prose. If that clause ever changes, this
+# reads as "not an anchor failure" and every path falls back to today's
+# behaviour, which is the safe direction to fail in.
+LCARS_ANCHOR_FAIL_SIG='do not declare where their criteria come from'
+
+# anchor_failure_tickets <reason-file> -> the failing ticket ids, space
+# separated. EMPTY when this is not an ANCHOR-ONLY failure.
+#
+# FIX ROUND 1, DEFECT 2 — IT USED TO MATCH THE BLOCK, NOT THE FAILURE. The first
+# cut keyed on $LCARS_ANCHOR_FAIL_SIG alone and then took EVERY ticket heading
+# under it, so every fault the mockup-declaration block can raise — a criterion
+# with no "text", a criterion carrying TWO declarations, a non-string anchor —
+# was triaged as an anchor failure and PARKED. Measured on the live product: a
+# criterion with no "text" parked the Mission asking "ticket t-004 has a
+# criterion with no usable anchor; which of these anchors does it sit at …" when
+# the anchor was FINE and the criterion's text did not exist. THE QUESTION WAS
+# UNANSWERABLE, and the park→answer→re-plan cycle ended in a second park.
+#
+# So the match is on THE SPECIFIC FAILURE, and it is literal and mechanical:
+# the three `why` clauses validate_plan_json writes for an anchor that is
+# MISSING ("no declaration"), EMPTY ("is blank") or NOT A PLACE IN THE DRAWING
+# ("names no place in the drawing"). Nothing reads intent out of the validator's
+# prose, and an unrecognised fault clause is NOT an anchor failure.
+#
+# ANCHOR-ONLY MEANS ANCHOR-ONLY, PLAN-WIDE. If ANY fault anywhere in the reason
+# is something else, this returns empty and the whole plan takes the pre-S237
+# stage stop with its real reason — because a park asks about anchors and only
+# anchors, so parking on a mixed plan would leave the other fault unfixed
+# forever. Likewise a reason whose shape we did not recognise at all (no fault
+# clause matched): FALL THROUGH. That is the safe direction — a wrong stage stop
+# tells the captain the truth, while a wrong park asks him a question he cannot
+# answer.
+#
+# The ticket-level "NO acceptance criterion references the mockup with a
+# drawnAt anchor" is DELIBERATELY NOT an anchor failure: every criterion there
+# made a legal declaration, and the fault is the ticket's own claim that it
+# changes a screen. That is a re-judgement of the ticket, not a choice between
+# anchors, so it keeps the stage stop.
+anchor_failure_tickets() {
+  [ -f "${1:-}" ] || return 0
+  grep -qF "$LCARS_ANCHOR_FAIL_SIG" "$1" || return 0
+  awk '
+    # The validator'"'"'s own per-ticket heading: `  ticket 2 (t-002):`
+    /^[[:space:]]*ticket[[:space:]]+[0-9]+[[:space:]]+\(/ {
+      id=$0; sub(/^[^(]*\(/, "", id); sub(/\).*$/, "", id)
+      cur=id; next
+    }
+    # The ticket-level ">=1 drawnAt" rule — not an anchor choice (see above).
+    index($0, "NO acceptance criterion references the mockup") { other=1; next }
+    # A per-criterion fault line: `    criterion 1 — <why>`
+    cur != "" && /^[[:space:]]*criterion[[:space:]]+[0-9]+[[:space:]]/ {
+      if (index($0, "no declaration") \
+          || index($0, "is blank") \
+          || index($0, "names no place in the drawing")) {
+        if (!(cur in seen)) { seen[cur]=1; order[++n]=cur }
+      } else other=1
+      next
+    }
+    END {
+      if (other || n == 0) exit 0            # not anchor-only => stage stop
+      s=""
+      for (i=1; i<=n; i++) s = s (i>1 ? " " : "") order[i]
+      print s
+    }
+  ' "$1"
+}
+
+# anchor_patch_directive <ids> <anchors> [baseline-plan] -> the instruction
+# appended to an anchor-only reject note. It is the whole of "patch, don't
+# re-plan": the next worker is told WHICH tickets to touch, WHERE the plan it is
+# patching is, and that everything else is checked.
+#
+# FIX ROUND 1, DEFECT 3 — THE INSTRUCTION WAS UNSATISFIABLE. It told a COLD,
+# STATELESS worker to keep every other ticket byte-identical "to the plan you
+# were just handed back" and that THIS IS CHECKED — and the rejected plan
+# appeared NOWHERE in the assembled prompt: zero occurrences of its other
+# tickets' titles, zero occurrences of the baseline path, a fresh temp dir per
+# attempt. The patch check passed only when a worker happened to regenerate
+# identical tickets. That is luck, not design, and it is structurally the same
+# defect this round exists to cure — a prompt demanding what the worker cannot
+# do, with a validator enforcing it. So the retry is HANDED the plan: this names
+# the path, and anchor_patch_baseline_block puts its content in the note.
+anchor_patch_directive() { # "t-002 t-005"  "v-board v-person …"  [baseline]
+  printf '\n  PATCH THESE TICKETS, AND ONLY THESE: %s\n' "$1"
+  printf '  Keep every OTHER ticket byte-identical to the plan you were just handed\n'
+  printf '  back — same ids, same titles, same criteria, same dependencies. Do NOT\n'
+  printf '  re-plan the mission, re-slice it, or renumber anything. This is a\n'
+  printf '  one-string fix, not a new plan.\n'
+  printf '  THIS IS CHECKED: a retry that edits a ticket not listed above is\n'
+  printf '  refused for that reason alone, even if every anchor is correct.\n'
+  if [ -n "${3:-}" ] && [ -f "$3" ]; then
+    printf '  THE PLAN YOU ARE PATCHING IS ON DISK, AND IT IS REPRODUCED IN FULL IN\n'
+    printf '  THIS NOTE: %s\n' "$3"
+    printf '  Read it (either copy), then re-emit it whole with ONLY the listed\n'
+    printf '  ticket(s) corrected. You are not being asked to remember it.\n'
+  fi
+  if [ -n "${2:-}" ]; then
+    printf '  The anchors that WOULD be accepted (cite one, say what you like around\n'
+    printf '  it): %s\n' "$2"
+    printf '  If the surface genuinely is not in the drawing, that is a legitimate\n'
+    printf '  answer: use notDrawn: "<why>". If the criterion makes no visual claim\n'
+    printf '  at all, use notVisual: true.\n'
+  fi
+}
+
+# anchor_patch_baseline_block <baseline-plan> -> the plan the retry is being
+# asked to patch, INLINE. Appended to the reject NOTE only (never to the stderr
+# copy a human reads, which keeps its one-screen shape) — the note is the one
+# channel that reaches the next cold worker's prompt, and a worker handed the
+# path alone still depends on a read tool it may not reach into `.git/` with.
+# Both copies say the same thing, so neither is load-bearing on its own.
+anchor_patch_baseline_block() { # baseline-plan
+  [ -f "${1:-}" ] || return 0
+  printf '\n  ----- BEGIN THE PLAN YOU ARE PATCHING -----\n'
+  cat "$1"
+  printf '\n  ----- END THE PLAN YOU ARE PATCHING -----\n'
+}
+
+# anchor_patch_check <prior-plan> <new-plan> <allowed-ids> -> prints why the
+# retry went wider than it was told, exit 1. Exit 0 = the retry patched.
+#
+# COMPARED SEMANTICALLY, NOT BYTE FOR BYTE, and that is deliberate. The worker
+# is TOLD "byte-identical" because that is the instruction that produces the
+# right behaviour; what is CHECKED is whether the ticket's content changed,
+# because a re-indent or a key reorder is not an edit and refusing one would
+# manufacture exactly the deadlock this whole round exists to remove.
+anchor_patch_check() { # prior new "t-002 t-005"
+  [ -f "${1:-}" ] && [ -f "${2:-}" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "${3:-}" <<'PATCH_PY'
+import json, sys
+
+prior_p, new_p, allowed = sys.argv[1], sys.argv[2], sys.argv[3].split()
+
+def load(p):
+    try:
+        d = json.load(open(p))
+    except Exception:
+        return None
+    if not isinstance(d, list):
+        return None
+    out = {}
+    for t in d:
+        if isinstance(t, dict) and isinstance(t.get("id"), str):
+            out[t["id"]] = json.dumps(t, sort_keys=True, separators=(",", ":"))
+    return out
+
+prior, new = load(prior_p), load(new_p)
+# A plan either side could not be read as a ticket list is NOT this check's
+# business — the shape validator owns that, and it has already run.
+if prior is None or new is None:
+    sys.exit(0)
+
+changed, removed, added = [], [], []
+for tid, body in prior.items():
+    if tid in allowed:
+        continue
+    if tid not in new:
+        removed.append(tid)
+    elif new[tid] != body:
+        changed.append(tid)
+for tid in new:
+    if tid not in prior:
+        added.append(tid)
+
+if not (changed or removed or added):
+    sys.exit(0)
+
+parts = []
+if changed:
+    parts.append("rewrote " + ", ".join(sorted(changed)))
+if removed:
+    parts.append("deleted " + ", ".join(sorted(removed)))
+if added:
+    parts.append("added " + ", ".join(sorted(added)))
+sys.stdout.write(
+    "lcars run: this retry was asked to fix ONLY %s and to leave every other "
+    "ticket unchanged, and it did not: it %s.\n"
+    "  Those tickets were already reviewed and are not yours to touch on this "
+    "attempt. Re-emit the plan you were handed back, with ONLY the listed "
+    "ticket(s) corrected.\n"
+    % (", ".join(allowed) if allowed else "the named ticket(s)", "; ".join(parts))
+)
+sys.exit(1)
+PATCH_PY
+}
+
+# anchor_park_questions <reason-file> <ids> <anchors> -> one question per line,
+# naming the ticket and its criterion and LISTING the anchors. This is what the
+# board, `lcars answer` and the notification all show, so the anchors have to be
+# IN it: a park that says "pick an anchor" without saying which is the same
+# unanswerable prompt the planner was given.
+anchor_park_questions() { # reason-file "t-002" "v-board v-person …"
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "${3:-}" <<'Q_PY'
+import re, sys
+reason = open(sys.argv[1]).read() if sys.argv[1] else ""
+ids = sys.argv[2].split()
+anchors = sys.argv[3].strip()
+lines = reason.split("\n")
+# The validator prints, per offending ticket:
+#     ticket 2 (t-002):
+#       criterion 1 — "drawnAt": "…" names no place in the drawing …
+#           "the criterion's own text"
+# Take the first criterion excerpt under each ticket, which is the text a human
+# needs in order to answer at all.
+crit, cur = {}, None
+for ln in lines:
+    m = re.match(r"^\s*ticket\s+\d+\s+\(([^)]+)\):", ln)
+    if m:
+        cur = m.group(1)
+        continue
+    if cur and cur not in crit:
+        q = re.match(r'^\s{6,}"(.*)"\s*$', ln)
+        if q:
+            crit[cur] = q.group(1)
+out = []
+for tid in ids:
+    what = crit.get(tid)
+    desc = ' describes "%s"' % what if what else " has a criterion with no usable anchor"
+    tail = (
+        "which of these anchors does it sit at — %s — or is it notDrawn "
+        '("<why this visible thing is not in the drawing>") or notVisual (it '
+        "makes no visual claim at all)?" % anchors
+        if anchors else
+        "this drawing carries no element ids to cite, so say where in it this "
+        'surface lives, or whether it is notDrawn ("<why>") or notVisual.'
+    )
+    out.append("ticket %s%s; %s" % (tid, desc, tail))
+sys.stdout.write("\n".join(out) + "\n")
+Q_PY
+}
+
+# anchor_park_awaiting <reason-file> <ids> <anchors> — park this Mission at the
+# awaiting-human gate because the planner could not place a criterion in the
+# drawing, and three fresh workers did not change that.
+#
+# THE SHAPE IS NOT NEW. It is validate-pause's, verbatim: pending.json via
+# write_pending, awaitingHuman + pendingQuestion in state.json, the IN-FLIGHT
+# stage label first and the awaiting-human overlay second (so the card reads
+# "in Plan, awaiting me" rather than drifting back a column), and the gate
+# notification. The Mission STAYS at `plan`, which is what makes `lcars answer`
+# resume it: respond.sh records the answer and clears the gate without touching
+# the stage, and cmd_plan already hands answers.json to the next worker.
+#
+# No new verdict kind, no new label, no new state key — the whole change is that
+# this path exists at all where `die` used to be.
+anchor_park_awaiting() { # reason-file "t-002" "v-board …"
+  local qf; qf="$(mktemp)"
+  anchor_park_questions "$1" "$2" "$3" > "$qf" 2>/dev/null || :
+  # A question file that came out empty would write a gate nobody can answer.
+  [ -s "$qf" ] || printf 'the Plan worker could not place %s in the drawing; which anchor does it sit at (%s), or is it notDrawn/notVisual?\n' "$2" "$3" > "$qf"
+
+  anchor_patch_state_clear
+  write_pending "$qf" "plan"
+
+  local first; first="$(head -1 "$qf")"
+  lcars_state_set "$STATE" awaitingHuman true
+  lcars_state_set_string "$STATE" pendingQuestion "$first"
+  lcars_state_refusal_die "lcars run"   # S207 D2: no gate written => no gate
+  gh_relabel "lcars:plan lcars:awaiting-human" ""
+
+  echo "PLAN: parked — the anchors could not be placed after $MAX_WORKER_TRIES attempt(s)"
+  echo "  $MAX_WORKER_TRIES fresh Plan workers could not say where these criteria live in the drawing."
+  echo "  This is the one question only you can answer, so the Mission is waiting on you:"
+  while IFS= read -r q; do
+    [ -n "$q" ] && echo "    • $q"
+  done < "$qf"
+  echo "  Stage:  plan (awaiting-human)"
+  echo "  Answer with:  $(respond_hint)"
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  notify_gate awaiting-human "Plan needs an anchor — ${first:-answer it with: $(respond_hint)}"
+  rm -f "$qf"
+}
+
+# anchor_patch_state_clear — drop this Plan run's patch baseline. Called at the
+# top of every Plan run, and on every exit from plan-save that is not another
+# anchor bounce, so a baseline can never outlive the loop that wrote it.
+anchor_patch_state_clear() {
+  rm -f "$MISSION_DIR/.anchor-patch.json" "$MISSION_DIR/.anchor-patch-tickets" 2>/dev/null || :
+}
+
+# === S236: THE HOST CHECKLIST ===============================================
+#
+# THREE separate hardcoded-github.com bugs got past stubbed suites in ONE product
+# over the 26–29 Sep weekend: a URL built from a literal "github.com", a runner's
+# `gh` that defaulted to github.com and crawled the wrong org, and an auth check
+# that never named the host. The suites passed because nothing ever asserted
+# WHICH host a real call went to.
+#
+# "Non-default host" is KNOWABLE MECHANICALLY at plan time, from two places and
+# no guesses: the target repo's own origin (host-adapter.sh `gh_hostname`, which
+# returns EMPTY for github.com and the host for anything else, with
+# $LCARS_GH_HOST overriding), and the PRD's own text when it names one. When
+# either fires, the mission carries `hostChecklist: true` and the Plan prompt
+# carries the checklist; on plain github.com BOTH are absent and the prompt is
+# byte-identical to before this round.
+
+# mission_gh_host -> the GitHub host to pin, or EMPTY when github.com is right.
+# The adapter already exposes this as its `gh-host` op (it is the same function
+# every outbound call in the adapter resolves its --hostname from), so there is
+# exactly ONE definition of "which host" in the system and this reads it rather
+# than re-deriving it.
+mission_gh_host() {
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$HOST_ADAPTER" gh-host 2>/dev/null || :
+}
+
+# prd_named_host <prd.md> -> a non-default host the PRD NAMES, or EMPTY.
+# A PRD can describe work against an enterprise host in a repo whose own origin
+# is github.com (building the thing that talks to GHE), so the origin alone is
+# not the whole signal. Three literal forms, and github.com is deliberately NOT
+# one of them: `--hostname <h>`, a `github.<label>…` that is not github.com, and
+# GHE / "GitHub Enterprise" named as words. `ghe` is matched WORD-BOUNDED — it
+# sits inside "higher", "lighter" and "ghetto", and an unbounded match would put
+# the checklist on half the missions in the fleet.
+prd_named_host() { # prd.md
+  [ -f "$1" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'S236_HOST_PY'
+import re, sys
+try:
+    txt = open(sys.argv[1], errors="replace").read()
+except Exception:
+    sys.exit(0)
+m = re.search(r"--hostname[\s=]+([A-Za-z0-9][A-Za-z0-9.-]*)", txt)
+if m and m.group(1).lower().rstrip(".") != "github.com":
+    sys.stdout.write(m.group(1).rstrip(".")); sys.exit(0)
+for m in re.finditer(r"\bgithub\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*", txt):
+    h = m.group(0).rstrip(".")
+    if h.lower() != "github.com":
+        sys.stdout.write(h); sys.exit(0)
+if re.search(r"\bGHE\b", txt) or re.search(r"\bgithub enterprise\b", txt, re.I):
+    sys.stdout.write("GHE")
+S236_HOST_PY
+}
+
+# mission_host_checklist_host -> the host this Mission must be pinned to, or
+# EMPTY when the checklist does not apply. ONE resolution, read by the Plan
+# prompt block, the Plan Review block and plan-save's state flag, so the three
+# cannot disagree about whether a mission is on a non-default host.
+mission_host_checklist_host() {
+  local h; h="$(mission_gh_host)"
+  if [ -n "$h" ]; then printf '%s' "$h"; return 0; fi
+  prd_named_host "$MISSION_DIR/prd.md"
+}
+
+# plan_host_checklist_block -> the Plan prompt's host checklist, or NOTHING AT
+# ALL on a plain github.com mission (so that prompt stays byte-identical).
+plan_host_checklist_block() {
+  local h; h="$(mission_host_checklist_host)"
+  [ -n "$h" ] || return 0
+  local named="$h" how
+  if [ "$h" = "GHE" ]; then
+    named="the GitHub Enterprise host this Mission names"
+    how="the PRD names GitHub Enterprise; the exact hostname comes from \`gh auth status\`"
+  else
+    how="resolved from this repo's origin, or named in the PRD"
+  fi
+  printf '
+
+## HOST CHECKLIST — this Mission is NOT on github.com
+
+This Mission'"'"'s GitHub host is **%s** (%s). Three separate hardcoded-github.com
+bugs shipped past green test suites in one product because every suite stubbed
+the call and nothing asserted WHICH host a real one went to. So every ticket
+that makes an outbound call to the forge carries all four of these, as
+acceptance criteria a test can check:
+
+1. **Every outbound URL is BUILT FROM the host** — read from the environment or
+   config (`GITHUB_SERVER_URL`, the configured host, `gh`'"'"'s own resolution),
+   never a literal `github.com` and never a literal `api.github.com` anywhere in
+   the source.
+2. **Every `gh` invocation the runner makes is PINNED with `--hostname %s`.**
+   A bare `gh` on a runner defaults to github.com and will happily query the
+   WRONG org and return a plausible, empty, wrong answer.
+3. **The auth check names the host: `gh auth status --hostname %s`.** An auth
+   check against the default host passes while the host the work runs against is
+   unauthenticated.
+4. **A test asserts the URL a real call goes to** — not that the function was
+   called, but the host in the URL the call would hit. Assert on the resolved
+   URL or the argv the process would run.
+
+A ticket whose criteria do not name the host is the ticket that will ship the
+fourth hardcoded-github.com bug. Name it.' "$named" "$how" "$h" "$h"
+}
+
+# plan_review_host_block -> the reviewer'"'"'s half of the same rule, or NOTHING on a
+# github.com mission. The reviewer is NOT handed the PRD (that independence is
+# the whole point of the stage), so if it is not told the host here it cannot
+# know there is one.
+plan_review_host_block() {
+  local h; h="$(mission_host_checklist_host)"
+  [ -n "$h" ] || return 0
+  printf '
+
+## This Mission is NOT on github.com — audit the host
+
+This Mission'"'"'s GitHub host is **%s**. Three hardcoded-github.com bugs shipped
+past green suites in one product, because a stubbed call asserts nothing about
+WHICH host a real one reaches.
+
+Check EVERY ticket that makes an outbound call to the forge: it must carry an
+acceptance criterion that NAMES the host — an URL built from the host rather
+than a literal `github.com`, a runner `gh` pinned with `--hostname %s`, an
+auth check that is `gh auth status --hostname %s`, and a test that asserts the
+URL a real call goes to. A ticket that makes an outbound call and names no host
+in any criterion is an OBJECTION: say which ticket, and which of the four it is
+missing.' "$h" "$h" "$h"
+}
+
+# === S236: SEAMS AND ENTRYPOINTS — the MECHANICAL half =======================
+#
+# WHY THIS EXISTS. Over the weekend of 26–29 Sep six live breaks got past green
+# test suites, and every one of them sat at a STUBBED SEAM: two code paths touch
+# the same state and the suite only ever drove ONE side. The producer wrote one
+# issue format and the consumer parsed another; an empty allow-list meant "show
+# everything"; a workflow ran a module as a file; the runner's `gh` defaulted to
+# github.com and crawled the wrong org. A plan could claim a test PROVED a
+# producer/consumer pair while the test stubbed one half and fed the other a
+# hand-written fixture — and every gate stayed green.
+#
+# RECORD, DO NOT INFER (standing ruling, S188). There is deliberately NO seam
+# DETECTOR here: nothing scans a diff for a writer and a reader and guesses that
+# they are a pair. That is inference, it has been rejected, and the project has
+# burned rounds on code that reads back text a human also writes. The Plan worker
+# DECLARES its seams and entrypoints (the prompt teaches the keys and the three
+# rules); Plan Review AUDITS them against the PRD; Verify RECORDS them. This
+# function checks only the part that is MECHANICAL — a literal path, a present
+# key, a test path the repo would classify as a test — and nothing that needs a
+# judgement about what a ticket IS.
+#
+# THE KEYS, per ticket, both ARRAYS:
+#   "seams":       [{"producer": "<what writes>", "consumer": "<what reads>",
+#                    "roundTripTest": "<test path>",
+#                    "roundTripProof": "<how that test drives BOTH real halves>"}]
+#   "entrypoints": [{"kind": "workflow"|"cli", "path": "<file>",
+#                    "realRunTest": "<test path>",
+#                    "realRunProof": "<how that test runs it as CI does>"}]
+# An EMPTY array is a declaration of "none" and must carry a one-sentence
+# "seamsNote" / "entrypointsNote" saying why. Making `seams: []` free was named
+# as a wrong answer: a silent empty list is the stubbed seam with extra steps.
+#
+# ADDITIVE, AND BACK-COMPAT IS LOAD-BEARING. A ticket that carries NEITHER key is
+# accepted exactly as before, because every plan already on disk and every
+# in-flight mission has neither, and renaming or hard-requiring a key would break
+# them all (and every other plan suite). The teeth come from the two places that
+# can see a plan with no keys at all — the Plan prompt, which teaches them, and
+# Plan Review, which is told that a PRD naming a writer and a reader with an
+# empty/absent `seams[]` is an objection. What IS mechanical:
+#
+#   1. ALL-OR-NOTHING ACROSS THE PLAN. If ANY ticket declares either key, EVERY
+#      ticket must declare both. Without this a worker silences the contract by
+#      declaring it on the eleven easy tickets and omitting it on the one with
+#      the seam, and the plan still reads as compliant.
+#   2. REMOVED — the captain's ruling of 2026-10-01: "we let the AI reviewer
+#      check it". There WAS a WORKFLOW RULE here that scanned a ticket's prose
+#      for a `.github/workflows/<x>.yml` path and inferred ownership of it. It
+#      was a guess, it produced three faults in one session, and it taught a
+#      live planner to delete workflow filenames out of its own guardrail
+#      sentences to get past it. Plan Review audits this now, and is told it is
+#      the only thing that does. The full reason, the accepted cost and what
+#      replaced it are recorded at the removal site in the body — read that
+#      before re-adding anything that reads a filename out of prose. The rule
+#      numbers below are deliberately NOT renumbered: comments in the body
+#      cite "rule 4" by number.
+#   3. A SEAM NAMES ITS ROUND-TRIP TEST, an entrypoint names its real-run test,
+#      and every named test path is one the repo's OWN conventions classify as a
+#      test (see proof_is_test_path, whose rules this mirrors — a top-level
+#      `tests/`, a `__tests__/`, a `spec/`, or a co-located `foo.test.ts` /
+#      `test_foo.py`). A path that is not a test path, is absolute, or escapes
+#      the tree is refused.
+#   4. AN ENTRY RECORDS ITS CLAIM. A seam entry carries `roundTripProof` and an
+#      entrypoint entry carries `realRunProof` — one sentence saying HOW the
+#      named test drives both real halves / runs the entrypoint as CI does.
+#      Presence and non-blankness only; the sentence's CONTENT is Plan Review's
+#      to judge. Without it the reviewer had nothing to audit on a CONFORMING
+#      plan (see the note at PROOF_ASK).
+#
+# EVERY REJECTION IS ACTIONABLE, and that is a requirement, not a nicety: the
+# reason rides the S178 reject-note channel into the NEXT worker's prompt, so
+# "seams invalid" is a wrong answer. Each line NAMES the ticket, the file or the
+# entry, and the missing key. All problems are accumulated into ONE message (the
+# same reason s174bad accumulates: a plan is rewritten in one pass, and failing
+# on the first offending ticket with MAX_WORKER_TRIES at 3 is how a stage
+# DEADLOCKS).
+#
+# FAILS OPEN ON SHAPE. An unparseable plan.json exits 0 here: the canonical
+# shape is validate_plan_json's job and it has already run, and two validators
+# must not both fail a plan for the same reason.
+validate_plan_seams() { # plan.json
+  # A CHECK THAT BROKE IS NOT A PLAN THAT FAILED. The S178 guard learned this the
+  # expensive way (see its `*)` arm): an ascii stdout encoding made it raise on
+  # its own `⚠`, exit 1, and DISCARD a well-formed plan — the fail-open branch
+  # itself failing closed. No interpreter ⇒ UNCHECKED, and it says so out loud
+  # rather than refusing every plan on the machine.
+  local py="${LCARS_PYTHON_BIN:-python3}"
+  if ! command -v "$py" >/dev/null 2>&1; then
+    printf '  ⚠ SEAMS UNCHECKED — no python3 (%s) on this machine, so the seams/entrypoints contract could not be checked. The plan is passed through; nothing about its seams has been verified.\n' "$py" >&2
+    return 0
+  fi
+  local _src=0
+  "$py" - "$1" <<'S236_PY'
+import json, re, sys
+
+try:
+    with open(sys.argv[1]) as fh:
+        plan = json.load(fh)
+except Exception:
+    sys.exit(0)                      # shape is validate_plan_json's job
+if not isinstance(plan, list):
+    sys.exit(0)
+
+# Mirrors run.sh's proof_is_test_path: the repo's own test conventions, as a
+# deliberate SUPERSET. A co-located `src/foo.test.ts` IS this repo's tests dir
+# when that is what the repo does — plan.md's manifest rules say so explicitly,
+# and refusing it would fight the convention the worker is told to follow.
+def is_test_path(p):
+    if not p or p.startswith("/") or p.startswith("~") or ":" in p:
+        return False
+    parts = [x for x in p.replace("\\", "/").split("/") if x]
+    if not parts or ".." in parts:
+        return False
+    if any(seg in ("tests", "test", "spec", "__tests__") for seg in parts[:-1]):
+        return True
+    b = parts[-1]
+    return bool(re.search(r"\.(test|spec)\.", b)
+                or re.match(r"^test_.+\.py$", b)
+                or re.search(r"_test\.py$", b)
+                or re.search(r"_test\.go$", b)
+                or re.search(r"_(test|spec)\.rb$", b)
+                or re.search(r"(Test|Tests)\.cs$", b))
+
+def txt(v):
+    return v.strip() if isinstance(v, str) else ""
+
+bad = []
+# Does this plan use the contract at all? One ticket declaring either key puts
+# the WHOLE plan under it (rule 1).
+declaring = any(isinstance(t, dict) and ("seams" in t or "entrypoints" in t)
+                for t in plan)
+
+SPEC = (("seams",       "seamsNote",       "roundTripTest", "roundTripProof"),
+        ("entrypoints", "entrypointsNote", "realRunTest",   "realRunProof"))
+
+# S236 fix round 1 — WHY THE PROOF FIELD EXISTS. `roundTripTest` carries a bare
+# test PATH; that is Plan's own contract and both live engines obeyed it. But
+# Plan Review was told to "read what each roundTripTest is described as", and on
+# a plan that FOLLOWS the contract there is nothing to read — so the advertised
+# gate ("reject a round-trip test whose description stubs either half") fired
+# only when a planner volunteered the sentence that convicted it. A bare path
+# plus silence was an automatic APPROVE, and the stub surfaced first at
+# Implement. The cure is RECORD, DO NOT INFER applied to the claim: the PRODUCER
+# writes one sentence saying HOW the test drives both real halves, and the
+# reviewer audits a field that is now always there. This function checks only
+# that it is PRESENT and NOT BLANK — whether the sentence describes a real test
+# or openly describes a stub is judgement, and judgement is the reviewer's.
+PROOF_ASK = {
+    "roundTripProof":
+        'one sentence saying HOW that test drives BOTH REAL halves — it calls '
+        'the real producer, takes what the producer ACTUALLY wrote, and hands '
+        'that to the real consumer, with no hand-written fixture, sample '
+        'constant or mocked half between them. A bare test path is a path: '
+        'nobody downstream can audit it.',
+    "realRunProof":
+        'one sentence saying HOW that test runs the entrypoint the way CI runs '
+        'it — the same command byte for byte, the same cwd, and the environment '
+        'Actions sets (GITHUB_SERVER_URL, GITHUB_REPOSITORY_OWNER, '
+        'GITHUB_EVENT_PATH). A test that imports the handler and calls a '
+        'function is not running the entrypoint.',
+}
+
+for n, t in enumerate(plan, 1):
+    if not isinstance(t, dict):
+        continue
+    tid = txt(t.get("id")) or ("ticket %d" % n)
+
+    for key, note, testkey, proofkey in SPEC:
+        if key not in t:
+            if declaring:
+                bad.append('%s is missing "%s". Other tickets in this plan '
+                           'declare it, so EVERY ticket must: list the %s this '
+                           'ticket creates, or write "%s": [] with a '
+                           'one-sentence "%s" saying why it has none.'
+                           % (tid, key, key, key, note))
+            continue
+        v = t.get(key)
+        if not isinstance(v, list):
+            bad.append('%s has a non-array "%s" — it must be a JSON array; use '
+                       '[] plus "%s" when there are none.' % (tid, key, note))
+            continue
+        if not v:
+            if not txt(t.get(note)):
+                bad.append('%s declares "%s": [] but carries no "%s" — an empty '
+                           'list is a CLAIM that this ticket has none, and it '
+                           'needs one sentence saying why.' % (tid, key, note))
+            continue
+        for i, e in enumerate(v, 1):
+            if not isinstance(e, dict):
+                bad.append('%s, %s entry %d is not an object — each entry is a '
+                           '{…} object.' % (tid, key, i))
+                continue
+            if key == "seams":
+                who = txt(e.get("producer")) or txt(e.get("consumer")) \
+                      or ("entry %d" % i)
+                for f in ("producer", "consumer"):
+                    if not txt(e.get(f)):
+                        bad.append('%s, seam %d ("%s") is missing "%s" — name '
+                                   'WHAT writes the state and WHAT reads it.'
+                                   % (tid, i, who, f))
+            else:
+                who = txt(e.get("path")) or ("entry %d" % i)
+                kind = txt(e.get("kind"))
+                if kind not in ("workflow", "cli"):
+                    bad.append('%s, entrypoint %d ("%s") has "kind": "%s" — it '
+                               'must be "workflow" or "cli".'
+                               % (tid, i, who, kind or "(absent)"))
+                if not txt(e.get("path")):
+                    bad.append('%s, entrypoint %d is missing "path" — name the '
+                               'file CI actually runs.' % (tid, i))
+            tp = txt(e.get(testkey))
+            if not tp:
+                bad.append('%s, %s %d ("%s") is missing "%s" — name the test '
+                           'file that drives it for real.'
+                           % (tid, key[:-1], i, who, testkey))
+            elif not is_test_path(tp):
+                bad.append('%s, %s %d ("%s") names "%s": "%s", which is not a '
+                           'test file in this repo — it must live under the '
+                           "repo's tests dir (tests/, test/, spec/, __tests__/) "
+                           'or carry its test convention (foo.test.ts, '
+                           'test_foo.py, foo_test.go), and it must be a '
+                           'repo-relative path.'
+                           % (tid, key[:-1], i, who, testkey, tp))
+            # rule 4 (S236 fix round 1): the entry RECORDS ITS CLAIM. Presence
+            # and non-blankness only — the sentence's CONTENT is the reviewer's.
+            if not txt(e.get(proofkey)):
+                bad.append('%s, %s %d ("%s") names "%s" but carries no "%s" — '
+                           '%s'
+                           % (tid, key[:-1], i, who, testkey, proofkey,
+                              PROOF_ASK[proofkey]))
+
+    # --- THE PROSE SCAN IS DELETED — the captain's ruling of 2026-10-01 ------
+    #
+    # WHAT WAS HERE. "Rule 2, the WORKFLOW RULE": it scanned the ticket's own
+    # JSON text (every field except the two notes) for a
+    # `.github/workflows/*.yml` path, INFERRED from a literal path match that
+    # the ticket OWNED that file, and then demanded either a `workflow`
+    # entrypoints entry for it or a by-name disclaimer in `entrypointsNote`.
+    # With it go the per-file `disclaimed`/`covered` bookkeeping that existed
+    # only to serve it and its long "names the workflow file … and neither
+    # declares an entrypoints entry for it nor disclaims it" rejection.
+    #
+    # WHY IT WENT — the captain's words were "we let the AI reviewer check it".
+    # It was a GUESS about what a ticket IS, made from prose, and it produced
+    # THREE faults in one session:
+    #   1. it rejected a pure-CLI ticket whose description said "do NOT touch
+    #      this workflow — it belongs to another ticket";
+    #   2. it rejected plans that do not use the contract at all (a back-compat
+    #      regression against main, patched by gating it on `declaring`);
+    #   3. it rejected the round's OWN required proof sentence for naming the
+    #      workflow it runs — the exact sentence the Plan prompt asks for.
+    # And worse than any of those, IT CHANGED THE MODEL'S BEHAVIOUR. A live
+    # planner began deleting workflow filenames out of its own guardrail
+    # sentences to get past the gate; one note came back reading "the publish
+    # workflow is t-004's and is named nowhere here." A checker was eroding a
+    # safety note. Each previous fix made one more field agree with the guess
+    # instead of removing it — this is the removal.
+    #
+    # WHAT REPLACED IT. Plan Review's audit (stages/plan-review.md, "Audit the
+    # seams and the entrypoints"), which is told plainly that it is now the ONLY
+    # check on a ticket that adds a CI workflow and declares no entrypoint for
+    # it. That was driven live: the reviewer caught the case, named the file, and
+    # explained why a deferral did not cover it.
+    #
+    # THE ACCEPTED COST, stated before the ruling was given: a plan that adds a
+    # CI workflow and declares NOTHING is no longer caught mechanically. Plan
+    # Review is the only backstop. A rule removed without its reason gets
+    # re-added, so this comment stays.
+    #
+    # WHAT IS STILL CHECKED, immediately above: every declaration that IS made —
+    # a `kind` of workflow|cli, a non-blank `path`, a `realRunTest` that is a
+    # real test path, a non-blank `realRunProof`; and for seams a `producer`, a
+    # `consumer`, a `roundTripTest` under the tests dir and a non-blank
+    # `roundTripProof` — plus rule 1 (all-or-nothing across the plan) and the
+    # empty-list-needs-a-note rule. Only the GUESSING went.
+
+if not bad:
+    sys.exit(0)
+
+head = ("lcars run: this plan's seams and entrypoints do not hold up. Every "
+        "ticket declares, as ARRAYS:\n"
+        '    "seams":       [{"producer": "<what writes>", "consumer": "<what reads>", "roundTripTest": "<test path>", "roundTripProof": "<how that test drives BOTH real halves>"}]\n'
+        '    "entrypoints": [{"kind": "workflow"|"cli", "path": "<file>", "realRunTest": "<test path>", "realRunProof": "<how that test runs it as CI does>"}]\n'
+        "  An EMPTY array is a claim that this ticket has none, and needs a "
+        'one-sentence "seamsNote" / "entrypointsNote" saying why. A round-trip '
+        "test builds the body with the REAL producer and feeds it to the REAL "
+        "consumer — no hand-written fixture between them; a real-run test runs "
+        "the entrypoint exactly as CI does. The *Proof fields are the sentence "
+        "saying HOW: a bare test path is a path, and nobody downstream can "
+        "audit a path. "
+        "Fix exactly these:\n")
+sys.stderr.write(head + "".join("  - %s\n" % b for b in bad))
+sys.exit(1)
+S236_PY
+  _src=$?
+  case "$_src" in
+    0) return 0 ;;
+    1) return 1 ;;                 # a real rejection, reason already on stderr
+    *)
+      # A python crash, a signal, a 127 that `command -v` could not see. The
+      # plan is UNCHECKED, not refused — and it never passes silently.
+      printf '  ⚠ SEAMS UNCHECKED — the seams/entrypoints check itself failed to run (exit %s). That is the CHECK breaking, not the plan: the plan is passed through and nothing about its seams has been verified.\n' "$_src" >&2
+      return 0 ;;
+  esac
+}
+
 # --- S178: the over-correction guard ---------------------------------------
 # Compares the plan the reviewer ACTUALLY REVIEWED against the revision that
 # answered it, and rejects edges that were ADDED on tickets no objection names.
@@ -4354,7 +5166,113 @@ cmd_plan_save() {
   # S169: the second argument is this Mission's HTML mockup basenames, or EMPTY.
   # Empty leaves the validator behaving exactly as it did before — which is the
   # case for every mission that did not come from the holodeck.
-  validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" || exit 1
+  #
+  # S236 — THE REJECTION REASON MUST REACH THE RETRYING WORKER. Until this round
+  # the ONLY thing that ever wrote `.plan-reject-note` was the S178
+  # over-correction guard: a VALIDATOR rejection printed to stderr and the next
+  # attempt was told nothing at all, so the Plan loop could burn its whole budget
+  # while the worker re-emitted the same plan. Both validators now tee their
+  # reason into the note beside the worker's own plan file — exactly where
+  # cmd_plan's retry loop already looks. The reason is still printed to stderr
+  # byte-for-byte, so nothing a human or a test reads off this path changes; the
+  # note is a COPY, filling a channel that was empty.
+  local _verr; _verr="$(mktemp)"
+  local _vrc=0
+  validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" \
+    2>"$_verr" || _vrc=$?
+  if [ "$_vrc" -eq 0 ]; then
+    # S236 — the seams/entrypoints contract. Runs AFTER the shape validator so a
+    # half-formed plan is never failed twice for the same thing, and so a
+    # missing-field message is never buried under a page of seam advice.
+    validate_plan_seams "$PLAN" 2>>"$_verr" || _vrc=$?
+  fi
+  # ALWAYS replay what the validators said. On a clean pass that is nothing; it
+  # is NOT always nothing, because validate_plan_seams reports an UNCHECKED
+  # check (no interpreter, a crash) while still passing the plan — and a warning
+  # that only prints on the failure path is a warning nobody ever reads.
+  [ -s "$_verr" ] && cat "$_verr" >&2
+  if [ "$_vrc" -ne 0 ]; then
+    # S237 — IS THIS THE ANCHOR FAILURE? If so it PATCHES (and on the last
+    # attempt PARKS) instead of bouncing blind and then stopping the Stage.
+    # Everything else falls through to the pre-S237 path untouched.
+    local _abad; _abad="$(anchor_failure_tickets "$_verr")"
+    if [ -n "$_abad" ]; then
+      local _aplaces; _aplaces="$(mission_mockup_place_names)"
+      if [ "${FINAL_ATTEMPT:-0}" = "1" ]; then
+        # PARK, DON'T STOP. Exit 7 so cmd_plan's loop knows a GATE was written
+        # and must not `die` over it — the pre-S237 exit code 1 means "rejected,
+        # try again", and conflating the two is how a gate becomes a stage stop.
+        anchor_park_awaiting "$_verr" "$_abad" "$_aplaces"
+        rm -f "$_verr"
+        exit 7
+      fi
+      # Remember what the retry may touch. The BASELINE is written ONCE per Plan
+      # run (cmd_plan clears it on entry) and the allowed set is the UNION of
+      # every failing ticket seen, so a retry that quietly rewrites an untouched
+      # ticket can never become the baseline its successor is checked against.
+      if [ ! -f "$MISSION_DIR/.anchor-patch.json" ]; then
+        cp "$PLAN" "$MISSION_DIR/.anchor-patch.json" 2>/dev/null || :
+      fi
+      printf '%s\n' $_abad >> "$MISSION_DIR/.anchor-patch-tickets" 2>/dev/null || :
+      local _allow; _allow="$(awk 'NF && !seen[$0]++' "$MISSION_DIR/.anchor-patch-tickets" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+      # The DIRECTIVE goes to both channels; the baseline plan's CONTENT goes
+      # only into the note the next worker is handed, so the captain's terminal
+      # keeps its one-screen rejection (D3).
+      anchor_patch_directive "$_allow" "$_aplaces" "$MISSION_DIR/.anchor-patch.json" >&2
+      anchor_patch_directive "$_allow" "$_aplaces" "$MISSION_DIR/.anchor-patch.json" >> "$_verr"
+      anchor_patch_baseline_block "$MISSION_DIR/.anchor-patch.json" >> "$_verr"
+      plan_reject_note_write "$PLAN" "$_verr"
+      rm -f "$_verr"
+      exit 1
+    fi
+    # NOT an anchor failure ⇒ byte-for-byte the pre-S237 path, stage stop and
+    # all. A patch baseline from an earlier anchor bounce is dropped: the next
+    # worker is being asked for a whole plan again, so holding it to a patch it
+    # was never told about would deadlock the Stage.
+    anchor_patch_state_clear
+    plan_reject_note_write "$PLAN" "$_verr"
+    rm -f "$_verr"
+    exit 1
+  fi
+  rm -f "$_verr"
+
+  # S237 — THE RETRY WENT WIDER THAN IT WAS TOLD. Runs only when a previous
+  # attempt in THIS Plan run bounced on anchors, so a first plan and every
+  # non-mockup mission reach this line and do nothing. It runs AFTER the shape
+  # validators (a malformed plan is never failed twice for the same thing) and
+  # BEFORE the S178 over-correction guard, which keys off its own token and is
+  # untouched.
+  if [ -f "$MISSION_DIR/.anchor-patch.json" ]; then
+    local _allow2 _pcout _prc=0
+    _allow2="$(awk 'NF && !seen[$0]++' "$MISSION_DIR/.anchor-patch-tickets" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+    _pcout="$(anchor_patch_check "$MISSION_DIR/.anchor-patch.json" "$PLAN" "$_allow2")" || _prc=$?
+    if [ "$_prc" -ne 0 ]; then
+      local _pf; _pf="$(mktemp)"
+      printf '%s' "$_pcout" > "$_pf"
+      anchor_patch_directive "$_allow2" "$(mission_mockup_place_names)" \
+        "$MISSION_DIR/.anchor-patch.json" >> "$_pf"
+      cat "$_pf" >&2
+      # ORDER MATTERS: the baseline's content is appended AFTER the stderr copy,
+      # so the retry is handed the plan without a page of JSON landing in the
+      # captain's terminal (D3).
+      anchor_patch_baseline_block "$MISSION_DIR/.anchor-patch.json" >> "$_pf"
+      # The BASELINE IS NOT REPLACED here — the plan being refused is the wider
+      # rewrite, and adopting it as the baseline would launder the rewrite into
+      # the next attempt's "unchanged" set.
+      plan_reject_note_write "$PLAN" "$_pf"
+      rm -f "$_pf"
+      exit 1
+    fi
+    anchor_patch_state_clear
+  fi
+
+  # S236 — the HOST CHECKLIST flag. A DURABLE record on the mission that this
+  # work is NOT on github.com, written the moment a plan lands so every later
+  # reader (Plan Review, the board, Verify) sees the same fact the Plan prompt
+  # was assembled from. Absent entirely on a github.com mission.
+  if [ -n "$(mission_host_checklist_host)" ]; then
+    lcars_state_set "$STATE" hostChecklist true || true
+  fi
 
   # S178 — the over-correction guard. It runs off the REVISION TOKEN
   # (plan-under-review.json, written by review_fail; see the long note there),
@@ -4514,10 +5432,197 @@ review_pass() {
 }
 
 # --- print the verdict's objections, one bulleted "<ticket> — <objection>" --
-# Canonical one-issue-per-line shape means splitting on " lands the ticketId at
-# field 4 and the objection text at field 8 (same jq-free spirit as the rest).
+#
+# READ THE JSON WITH A JSON READER. This used to be
+#   awk -F'"' '/"objection"/ { printf "%s%s — %s\n", p, $4, $8 }'
+# — field-splitting raw JSON on `"` — so ANY objection containing an escaped
+# `\"` was CUT AT THE FIRST ONE. Measured live, all three objections of a real
+# verdict destroyed:
+#       • t-002 — roundTripProof is boilerplate: \
+#       • t-003 — roundTripProof is boilerplate: \
+#       • t-004 — realRunProof is boilerplate: \
+# and it bit hardest on the objection class that MUST quote the sentence it
+# objects to. The full text was always intact in the verdict JSON; every surface
+# a human reads was the broken part — including the ESCALATION QUESTION, because
+# review_fail feeds this same function into write_pending and pendingQuestion.
+#
+# ONE LINE PER OBJECTION, WHOLE, AND NEVER WRAPPED. The output shape is a
+# contract, not a display choice: write_pending turns each LINE into one
+# question, and review_fail takes `head -1` as pendingQuestion. Wrapping a long
+# objection would split one objection into several questions and truncate the
+# captain's at the first wrap. So whitespace inside an objection (a newline the
+# reviewer wrote) is COLLAPSED to single spaces and the sentence is printed
+# entire, however long. Clipping is the defect being cured; it is not reopened
+# at a column count.
+#
+# FAILS OPEN, same stance as validate_plan_seams' UNCHECKED branch: this renders
+# a display on a REJECTION path, so a missing or broken interpreter must not take
+# down the Plan Review stage. It degrades to an awk render that extracts the
+# objection by LOCATING the key rather than counting quote-delimited fields, and
+# unescapes `\"` / `\\` — readable, and not clipped on the canonical shape.
+#
+# THE HEREDOC LIVES IN ITS OWN FUNCTION, deliberately. bash 3.2 (what macOS
+# ships, and what runs this) mis-parses a here-document nested inside a command
+# substitution the moment the BODY contains a lone apostrophe: it hunts for a
+# closing quote to the end of the file and the whole script fails to parse. So
+# the reader is a separate function and the capture wraps the CALL, which is the
+# same shape validate_plan_seams uses.
+# === ONE JSON READER FOR EVERY HUMAN-FACING LIST ===========================
+#
+# THREE human-facing surfaces lost the captain's own text to a hand-rolled JSON
+# read in a SINGLE day: Plan Review's objections (cut at the first escaped
+# quote), the Verify readout's note clipping, and the driver's pending questions
+# — which rendered NOTHING AT ALL, because `grep -oE '"[^"]*"'` cannot span a
+# string containing \" and S237's park question carries them BY CONSTRUCTION (it
+# offers `notDrawn ("<why this visible thing is not in the drawing>")`). The
+# captain's unattended surface printed a heading, an empty list and a hint while
+# the question sat on disk. Same mistake three times: PARSING JSON WITH
+# grep/sed/awk AND BREAKING ON A QUOTE INSIDE A STRING.
+#
+# So there is ONE reader, and a fourth surface has something correct to reach
+# for. Do NOT hand-roll a fourth: add a `what` here instead.
+#
+#   objections <prefix>  every object in the doc carrying an "objection", as
+#                        "<prefix><ticketId> — <objection>"
+#   strings    <key>     the top-level list of strings at <key> (pending.json's
+#                        "questions"), one per line
+#
+# ONE ITEM IS ONE LINE, ALWAYS, AND NEVER WRAPPED OR CLIPPED. The output shape
+# is a contract, not a display choice: write_pending turns each LINE into one
+# question, review_fail takes `head -1` as pendingQuestion, and
+# drive_halt_awaiting reads this output in a `while read` loop. A newline inside
+# an item would become TWO items and truncate the captain's at the wrap, so a
+# newline COLLAPSES to a space and the item is printed entire, however long.
+#
+# FAILS OPEN BY CONTRACT: exit 1 when the document could not be read (a missing
+# interpreter is the CALLER's check, via `command -v`), so every caller degrades
+# to a readable approximation instead of dying. Both callers render on a
+# REJECTION or a PARK path, and a display path must never take down the Stage.
+#
+# THE HEREDOC LIVES IN ITS OWN FUNCTION, deliberately. bash 3.2 (what macOS
+# ships, and what runs this) mis-parses a here-document nested inside a command
+# substitution the moment the BODY contains a lone apostrophe: it hunts for a
+# closing quote to the end of the file and the whole script fails to parse. So
+# the reader is a separate function and every capture wraps the CALL, which is
+# the same shape validate_plan_seams uses.
+_lcars_json_lines() { # json-file  what(objections|strings)  arg
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "${3:-}" <<'JSONLINES_PY'
+import json, re, sys
+
+path, what = sys.argv[1], sys.argv[2]
+arg = sys.argv[3] if len(sys.argv) > 3 else ""
+
+try:
+    with open(path) as fh:
+        doc = json.load(fh)
+except Exception:
+    sys.exit(1)                       # unreadable -> let the degraded render try
+
+
+def flat(v):
+    # Used for the objections surface, which has always collapsed ALL runs of
+    # whitespace and trimmed the ends.
+    return re.sub(r"\s+", " ", "" if v is None else str(v)).strip()
+
+
+def oneline(v):
+    # Used for text the captain typed or the harness composed: ONLY newlines
+    # collapse, so every other byte of his question survives verbatim.
+    return re.sub(r"[\r\n]+", " ", "" if v is None else str(v)).strip()
+
+
+def walk(node, out):
+    """Every object carrying an "objection", wherever it sits in the verdict.
+
+    The canonical shape is {"issues": [{"ticketId": …, "objection": …}]}, and
+    that is what this finds first; walking is only so a reviewer that nests its
+    issues one level deeper still gets read instead of silently printing nothing.
+    """
+    if isinstance(node, dict):
+        if "objection" in node:
+            tid = node.get("ticketId", node.get("ticket", node.get("id", "")))
+            out.append((tid, node.get("objection")))
+            return
+        for v in node.values():
+            walk(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            walk(v, out)
+
+
+chunks = []
+
+if what == "objections":
+    found = []
+    walk(doc, found)
+    for tid, obj in found:
+        chunks.append("%s%s — %s\n" % (arg, flat(tid), flat(obj)))
+
+elif what == "strings":
+    items = doc.get(arg) if isinstance(doc, dict) else None
+    if not isinstance(items, list):
+        sys.exit(1)                   # not the shape we were asked for
+    for item in items:
+        if isinstance(item, str):
+            s = oneline(item)
+        elif isinstance(item, dict):
+            # A shape nobody writes today. Printing SOMETHING beats the silent
+            # loss this whole function exists to end.
+            s = oneline(item.get("question") or item.get("text")
+                        or json.dumps(item, ensure_ascii=False))
+        else:
+            s = oneline(json.dumps(item, ensure_ascii=False))
+        if s:
+            chunks.append(s + "\n")
+
+else:
+    sys.exit(1)
+
+# Write BYTES in utf-8 explicitly. The em dash (and the caller's "•" prefix) are
+# non-ascii, and an ascii stdout encoding is exactly how the S178 guard once
+# raised on its own "⚠", exited non-zero and discarded a well-formed plan.
+sys.stdout.buffer.write("".join(chunks).encode("utf-8"))
+JSONLINES_PY
+}
+
+# The objections surface, unchanged in behaviour: it reads the SHARED reader.
+_print_objections_json() { # verdict-file  prefix
+  _lcars_json_lines "$1" objections "$2"
+}
+
 print_objections() { # verdict-file  prefix
-  awk -F'"' -v p="$2" '/"objection"/ { printf "%s%s — %s\n", p, $4, $8 }' "$1"
+  local py="${LCARS_PYTHON_BIN:-python3}" out rc=1
+  if command -v "$py" >/dev/null 2>&1; then
+    out="$(_print_objections_json "$1" "$2")"
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    [ -n "$out" ] && printf '%s\n' "$out"
+    return 0
+  fi
+  # DEGRADED: no interpreter, or a verdict it could not read.
+  awk -v p="$2" '
+    /"objection"/ {
+      line = $0
+      ti = ""
+      if (match(line, /"ticketId"[[:space:]]*:[[:space:]]*"/)) {
+        rest = substr(line, RSTART + RLENGTH)
+        if (match(rest, /"/)) ti = substr(rest, 1, RSTART - 1)
+      } else if (match(line, /"ticketId"[[:space:]]*:[[:space:]]*[0-9]+/)) {
+        ti = substr(line, RSTART, RLENGTH)
+        sub(/.*:[[:space:]]*/, "", ti)
+      }
+      if (match(line, /"objection"[[:space:]]*:[[:space:]]*"/)) {
+        ob = substr(line, RSTART + RLENGTH)
+        # the value runs to the LAST quote on the line, so an escaped quote
+        # inside it is kept instead of ending it
+        n = 0
+        for (i = length(ob); i > 0; i--) { if (substr(ob, i, 1) == "\"") { n = i; break } }
+        if (n > 0) ob = substr(ob, 1, n - 1)
+        gsub(/\\"/, "\"", ob); gsub(/\\\\/, "\\", ob); gsub(/\\n/, " ", ob)
+        printf "%s%s \342\200\224 %s\n", p, ti, ob
+      }
+    }' "$1"
 }
 
 # --- fail: log this round, then loop back to Plan or escalate at round 3 -----
@@ -6244,6 +7349,70 @@ ensure_mission_branch() { # branch
 }
 
 # --- commit a green ticket's produced files to the mission branch -----------
+# === A WORKER REPORT IS A COMMIT MESSAGE, NOT A COMMIT SUBJECT ==============
+#
+# WHAT WAS MEASURED (live, 2026-10-01). Every ticket commit carried its whole
+# multi-paragraph worker report on LINE 1 — a 227-character subject on one
+# observed ticket — and an EMPTY body. `git log --oneline` and every GitHub
+# commit list were a wall of prose, one unreadable row per ticket.
+#
+# MECHANISM. cmd_implement hands this function `json_str "$RESULT" summary`, and
+# json_str decodes only \" and \\ — NEVER \n — so the report arrives as ONE
+# physical line with literal backslash-n in it. `git commit -m "<that>"` then
+# puts the lot in the subject, because git only splits a message at a BLANK
+# LINE and there was none.
+#
+# These two turn that report back into a message. commit_report_body decodes the
+# escapes to real newlines; commit_report_subject takes the first LINE of that,
+# clipped (on a word boundary) to a budget the caller sets from its own prefix
+# width. NOTHING IS LOST: the subject is a clip, and the body carries the report
+# entire, so the long tail moves OUT of the subject rather than away.
+COMMIT_SUBJECT_MAX=72
+
+commit_report_body() { # report → the report with real newlines
+  local s="$1" nl=$'\n'
+  s="${s//\\r\\n/$nl}"
+  s="${s//\\n/$nl}"
+  s="${s//\\r/$nl}"
+  s="${s//\\t/	}"
+  printf '%s' "$s"
+}
+
+commit_report_subject() { # budget  report → one short line
+  local budget="$1" s nl=$'\n'
+  s="$(commit_report_body "$2")"
+  s="${s%%$nl*}"                       # the FIRST line; the rest is the body
+  s="$(printf '%s' "$s" | tr '\t' ' ')"
+  while :; do case "$s" in *"  "*) s="${s//  / }" ;; *) break ;; esac; done
+  s="${s# }"; s="${s% }"
+  [ "$budget" -ge 16 ] 2>/dev/null || budget=16
+  if [ "${#s}" -gt "$budget" ]; then
+    s="${s:0:$((budget - 1))}"
+    case "$s" in *" "*) s="${s% *}" ;; esac
+    # BRACES ARE LOAD-BEARING: `"$s…"` makes bash read the ellipsis's first
+    # UTF-8 byte as part of the variable NAME (high bytes pass as identifier
+    # characters here), so it expanded an unset `s\xe2` and the subject came out
+    # as two stray bytes.
+    s="${s}…"
+  fi
+  printf '%s' "$s"
+}
+
+# The BODY that belongs under that subject: the report, minus a first line the
+# subject already quotes WHOLE (so `git show` does not say it twice) and minus
+# the blank line that followed it. When the subject had to be CLIPPED it keeps
+# the whole report, so no byte of the worker report is ever lost.
+commit_report_rest() { # subject  report → body (may be empty)
+  local subj="$1" nl=$'\n' body
+  body="$(commit_report_body "$2")"
+  case "$body" in
+    "$subj")      body="" ;;
+    "$subj$nl"*)  body="${body#"$subj$nl"}" ;;
+  esac
+  while :; do case "$body" in "$nl"*) body="${body#"$nl"}" ;; *) break ;; esac; done
+  printf '%s' "$body"
+}
+
 # The Test Writer / Implementer write real files into the working tree; for the
 # PR to have content those files must be committed to the Mission's branch (the
 # one `lcars file` recorded in state.json). On the first green ticket this also
@@ -6358,8 +7527,20 @@ commit_ticket() { # ticket  summary
     cleanup_runner_scratch "$before"
     return 0
   fi
-  "$GIT_BIN" commit -q -m "lcars($MISSION_ID) $1: $2" >/dev/null 2>&1 \
-    || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  # The report becomes a SHORT subject (keeping the `lcars(<id>) <ticket>:`
+  # prefix that child_commits_reachable and resolve-logs match on) plus the whole
+  # report as the BODY — a second `-m`, which git separates with a blank line.
+  local __ct_pfx="lcars($MISSION_ID) $1: "
+  local __ct_subj __ct_body
+  __ct_subj="$(commit_report_subject "$((COMMIT_SUBJECT_MAX - ${#__ct_pfx}))" "$2")"
+  __ct_body="$(commit_report_rest "$__ct_subj" "$2")"
+  if [ -n "$__ct_body" ]; then
+    "$GIT_BIN" commit -q -m "$__ct_pfx$__ct_subj" -m "$__ct_body" >/dev/null 2>&1 \
+      || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  else
+    "$GIT_BIN" commit -q -m "$__ct_pfx$__ct_subj" >/dev/null 2>&1 \
+      || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  fi
   # Worktree mode: stash the new commit OBJECT id so cmd_implement can cherry-pick
   # it onto the real mission branch in plan order. (Shared mission dir → visible
   # to the parent.) In the normal path this file is never written/read.
@@ -12770,6 +13951,157 @@ verify_unfenced_note() {
   printf '        place in the drawing. Treat the anchors as claims, not as checked facts.\n'
 }
 
+# === S236: THE SEAMS AND ENTRYPOINTS RECORD AT VERIFY ========================
+#
+# A RECORD, AND NOTHING MORE. The plan DECLARED, per ticket, every
+# producer/consumer pair it created and every CI entrypoint it added, each with
+# the test that was supposed to drive it for real. This prints that declaration
+# back beside ONE mechanical fact per named test — does a file at that path exist
+# at the tip (`git ls-files`) — so Number One and the captain can see the list
+# the build was supposed to produce.
+#
+# IT PASSES NO JUDGEMENT, deliberately. `exists: no` is not a verdict: the worker
+# may have landed the test at the repo's own convention under a different name,
+# and a file that exists may still stub the very seam it claims to prove. Reading
+# the record and SAYING what it means is S240's job (the rebuilt first officer
+# marks a criterion `untested (stubbed seam)` and runs the real entrypoint off
+# exactly these keys). This round DEFINES the record; the next one judges it. A
+# readout that guessed here would be the "record, don't infer" rule broken by the
+# function that exists to serve it.
+#
+# Prints NOTHING for a plan whose tickets declare neither key — which is every
+# plan written before this round — so their Verify readout is byte-identical.
+verify_seams_readout() { # plan.json
+  [ -f "$1" ] || return 0
+  # The tracked list goes through a FILE, not a pipe: the python body below is a
+  # heredoc, and a heredoc IS this process's stdin — piping `git ls-files` into
+  # it silently loses the pipe and every test reads back `exists: no`.
+  #
+  # S236 fix round 3 — enumerated FROM THE REPO ROOT, not from cwd. A bare
+  # `git ls-files` prints paths RELATIVE TO CWD, so run from any subdirectory the
+  # tracked set held no `tests/...` path and EVERY declared test read
+  # `exists: no` — the record's one mechanical fact inverted by where the captain
+  # happened to be standing. $REPO_ROOT is the toplevel locate_mission already
+  # resolved; this is the same `( cd "$REPO_ROOT" && ls-files )` the untracked
+  # sweeps use.
+  local _ls; _ls="$(mktemp)"
+  ( cd "${REPO_ROOT:-.}" && "$GIT_BIN" ls-files ) >"$_ls" 2>/dev/null || :
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$_ls" <<'S236_VERIFY_PY'
+import json, sys, textwrap
+
+try:
+    with open(sys.argv[2]) as fh:
+        tracked = set(ln.strip() for ln in fh if ln.strip())
+except Exception:
+    tracked = set()
+try:
+    with open(sys.argv[1]) as fh:
+        plan = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(plan, list):
+    sys.exit(0)
+
+def txt(v):
+    return " ".join(str(v).split()) if isinstance(v, str) else ""
+
+def clip(s, n=140):
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+def ex(p):
+    return "yes" if p in tracked else "no"
+
+# S236 fix round 2: the recorded proof sentence, printed under the test path it
+# qualifies. WRAPPED, never clipped — `clip()` deliberately does not touch this.
+# A bare path is the unauditable thing this round exists to replace, and cutting
+# the sentence that makes it auditable would hide exactly the reasoning the
+# record is for. It is still only a RECORD: nothing below grades what it says.
+PROOF_LABEL = "proof: "
+PROOF_INDENT = " " * 12
+PROOF_HANG = " " * (12 + len(PROOF_LABEL))
+
+def proof_lines(s):
+    if not s:
+        return []
+    return textwrap.wrap(s, width=84,
+                         initial_indent=PROOF_INDENT + PROOF_LABEL,
+                         subsequent_indent=PROOF_HANG,
+                         break_long_words=False, break_on_hyphens=False)
+
+any_proof = False
+rows = []
+for t in plan:
+    if not isinstance(t, dict):
+        continue
+    if "seams" not in t and "entrypoints" not in t:
+        continue
+    tid = txt(t.get("id")) or "?"
+    lines = []
+    seams = t.get("seams")
+    if isinstance(seams, list) and seams:
+        for e in seams:
+            if not isinstance(e, dict):
+                continue
+            lines.append("      seam: %s  →  %s"
+                         % (clip(txt(e.get("producer")) or "(no producer)"),
+                            clip(txt(e.get("consumer")) or "(no consumer)")))
+            rt = txt(e.get("roundTripTest"))
+            lines.append("          round-trip test: %s   (exists: %s)"
+                         % (rt or "(none named)", ex(rt) if rt else "no"))
+            pl = proof_lines(txt(e.get("roundTripProof")))
+            if pl:
+                any_proof = True
+                lines.extend(pl)
+    elif isinstance(seams, list):
+        note = txt(t.get("seamsNote"))
+        lines.append("      seams: none declared — %s"
+                     % (clip(note) if note else "(no seamsNote)"))
+    eps = t.get("entrypoints")
+    if isinstance(eps, list) and eps:
+        for e in eps:
+            if not isinstance(e, dict):
+                continue
+            lines.append("      entrypoint (%s): %s"
+                         % (txt(e.get("kind")) or "?",
+                            clip(txt(e.get("path")) or "(no path)")))
+            rr = txt(e.get("realRunTest"))
+            lines.append("          real-run test: %s   (exists: %s)"
+                         % (rr or "(none named)", ex(rr) if rr else "no"))
+            pl = proof_lines(txt(e.get("realRunProof")))
+            if pl:
+                any_proof = True
+                lines.extend(pl)
+    elif isinstance(eps, list):
+        note = txt(t.get("entrypointsNote"))
+        lines.append("      entrypoints: none declared — %s"
+                     % (clip(note) if note else "(no entrypointsNote)"))
+    if lines:
+        rows.append(("    %s" % tid, lines))
+
+if not rows:
+    sys.exit(0)
+
+out = ["  SEAMS AND ENTRYPOINTS the plan declared — a RECORD, not a verdict:"]
+for head, lines in rows:
+    out.append(head)
+    out.extend(lines)
+out.append("      NOTHING HERE IS GRADED. `exists` is one mechanical fact — is a file")
+out.append("      tracked at that path — and it is not a pass or a fail: a test may have")
+out.append("      landed under another name at this repo's own convention, and a test that")
+out.append("      EXISTS may still stub the very seam it claims to prove. Every one of the")
+out.append("      six live breaks this record exists for sat at a seam whose suite drove")
+out.append("      one side only. Read the two halves of each seam and ask whether a real")
+out.append("      producer fed a real consumer.")
+if any_proof:
+    out.append("      The sentence under each test is the one the PLANNER recorded for it,")
+    out.append("      copied here whole and checked by nobody: it says how that test was")
+    out.append("      meant to drive both real halves. Read it against the test and decide")
+    out.append("      for yourself.")
+sys.stdout.write("\n".join(out) + "\n")
+S236_VERIFY_PY
+  rm -f "$_ls"
+}
+
 cmd_verify_summary() {
   locate_mission "$MISSION_ID"
   require_stage verify
@@ -12819,6 +14151,12 @@ EOF
   verify_not_drawn_readout "$MISSION_DIR/plan.json"
   verify_decided_readout "$MISSION_DIR/plan.json"
   verify_unfenced_note
+
+  # S236: what the plan DECLARED at every seam and every CI entrypoint, with one
+  # mechanical fact per named test (does a file exist at that path at the tip).
+  # A RECORD — no judgement here; S240 reads it and decides. Absent entirely on
+  # a plan whose tickets declare neither key.
+  verify_seams_readout "$MISSION_DIR/plan.json"
 
   # S179: the mirror of the readout above — a combination the DESIGN said it did
   # not draw and that no ticket resolved. Absent entirely when the brief declared
@@ -16651,6 +17989,10 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # the drawing, and why the look is not deferred to Verify. EMPTY for a Mission
   # without a mockup, so every other Plan prompt is byte-identical.
   extra="$extra$(plan_mockup_contract_block)"
+  # S236 — the HOST CHECKLIST, when this Mission is not on github.com (its own
+  # origin says so, or its PRD names a host). NOTHING AT ALL on github.com, so
+  # every other Plan prompt is byte-identical.
+  extra="$extra$(plan_host_checklist_block)"
   # S175 — the questions the brief left open, and the contract for deciding one
   # OUT LOUD. Nothing at all when the brief left none, so a pre-S175 Mission's
   # Plan prompt is byte-identical.
@@ -16682,6 +18024,11 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
+  # S237 — a patch baseline belongs to ONE Plan run. Clearing it here is what
+  # keeps a stale one (a crashed run, a hand-run plan-save) from holding the
+  # first worker of the next run to a patch it was never told about.
+  anchor_patch_state_clear
+
   local tries=0 prior_no_file="" prior_reject=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
@@ -16705,6 +18052,13 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
         --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" $final_flag || rc=$?
       if [ "$rc" -eq 0 ]; then isolated_line plan 1; rm -rf "$odir"; exit 0; fi
+      # S237 — 7 means plan-save PARKED this Mission at an awaiting-human gate
+      # for an anchor it cannot resolve. That is a GATE, not a Stage failure:
+      # the card is labelled, the question is on disk, notify has fired and
+      # `lcars answer` resumes it. Falling through to the `die` below would
+      # print "Stage stopped, no advance" over a Mission that is in fact parked
+      # and waiting — the exact confusion this round exists to remove.
+      if [ "$rc" -eq 7 ]; then rm -rf "$odir"; exit 0; fi
       # S178: plan-save left its REASON for rejecting beside the plan file. Carry
       # it into the next attempt's prompt — a bounce whose reason never reaches
       # the retrying worker just burns the budget re-emitting the same plan.
@@ -16767,6 +18121,9 @@ acceptable — do not raise it."
   # is the captain's artifact, not the Mission's derived reasoning.
   extra="$extra$(attachments_extra_block)"
   extra="$extra$(plan_review_mockup_block)"
+  # S236 — the reviewer is never handed the PRD, so the host it must audit
+  # against reaches it HERE or nowhere. Empty on a github.com mission.
+  extra="$extra$(plan_review_host_block)"
   # S180 — THE CAPTAIN'S RULINGS, AND ONLY THOSE. The digest of prd.md's
   # DECLARED-RESOLVED open questions, plus the precedence rule that goes with
   # them. prd.md itself is STILL not an input and never becomes one: this is one
@@ -18161,11 +19518,58 @@ notify_gate() { # gate-type  one-line-decision-ready-summary
 }
 
 # --- print pending.json's questions, one bare string per line ----------------
-# The questions are the lone-quoted-string array items; key/value lines (which
-# carry a ": ") never match, so "stage" is skipped.
+#
+# THIS IS THE WALK-AWAY PROMISE. `lcars run` / the autopilot / night-watch is
+# the UNATTENDED surface: when a Stage parks, the question reaching the captain
+# HERE is the whole difference between a gate he can answer and a Stage that
+# looks dead. It read pending.json with
+#   grep -oE '^[[:space:]]*"[^"]*"[[:space:]]*,?[[:space:]]*$'
+# and `"[^"]*"` CANNOT span a string carrying an escaped quote — so S237's park
+# question, which offers `notDrawn ("<why …>")` BY CONSTRUCTION, matched nothing
+# and the driver printed a heading, an EMPTY list and a hint. Measured on the
+# real product: a question with no inner quotes rendered, S237's rendered zero
+# lines. `lcars respond list/show` showed it correctly all along — so the gate
+# was answerable only if he already knew to go looking.
+#
+# Read by the ONE shared JSON reader (see _lcars_json_lines). FAILS OPEN to an
+# awk render — the same one `lcars respond` uses, which locates the value and
+# strips the OUTER quotes instead of counting quote-delimited fields — because a
+# display path during a park must never take down the Stage over a missing
+# interpreter.
+#
+# ONE QUESTION IS ONE LINE. drive_halt_awaiting consumes this in a `while read`
+# loop, so a newline inside a question would become two questions and truncate
+# the captain's at the wrap. Newlines collapse to a space; NOTHING is clipped.
 drive_pending_questions() { # pending.json
-  grep -oE '^[[:space:]]*"[^"]*"[[:space:]]*,?[[:space:]]*$' "$1" 2>/dev/null \
-    | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*,?[[:space:]]*$//'
+  [ -f "${1:-}" ] || return 0
+  local py="${LCARS_PYTHON_BIN:-python3}" out rc=1
+  if command -v "$py" >/dev/null 2>&1; then
+    out="$(_lcars_json_lines "$1" strings questions)"
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    [ -n "$out" ] && printf '%s\n' "$out"
+    return 0
+  fi
+  _drive_pending_questions_awk "$1"
+}
+
+# DEGRADED: no interpreter, or a pending.json it could not read. Unescapes `\"`
+# / `\\` and flattens an escaped newline, so a question survives readable.
+_drive_pending_questions_awk() { # pending.json
+  awk '
+    /"questions"[[:space:]]*:[[:space:]]*\[/ { inq=1; next }
+    inq && /^[[:space:]]*\]/ { inq=0; next }
+    inq {
+      s=$0
+      sub(/^[[:space:]]*/, "", s); sub(/[[:space:]]*$/, "", s)
+      sub(/,$/, "", s)
+      sub(/^"/, "", s); sub(/"$/, "", s)
+      gsub(/\\n/, " ", s)
+      gsub(/\\"/, "\"", s); gsub(/\\\\/, "\\", s)
+      if (s != "") print s
+    }
+  ' "$1" 2>/dev/null
 }
 
 # --- one concise detail phrase per Stage, parsed from its output -------------

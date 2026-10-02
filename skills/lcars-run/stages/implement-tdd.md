@@ -102,6 +102,34 @@ when — and ONLY when — it is present. Without that invitation, NEVER emit
 `test-setup.json` or `setup/` files: an unsolicited setup is ignored, and the
 repo's own runner always comes first.
 
+## The ticket's seams and entrypoints are part of ITS TDD
+
+Your ticket may carry `seams` (producer/consumer pairs, each with a
+`roundTripTest`) and `entrypoints` (a workflow or CLI command, each with a
+`realRunTest`). Those named tests are not someone else's job and not a later
+ticket's: they are part of this ticket's TDD, you write them, and **both halves
+must be real.** A `roundTripTest` builds the body with the real producer and
+feeds it to the real consumer — no hand-written fixture, sample constant or
+mocked half between them; a `realRunTest` runs the entrypoint exactly as CI does
+(the same command, the same cwd, and the environment Actions sets:
+`GITHUB_SERVER_URL`, `GITHUB_REPOSITORY_OWNER`, `GITHUB_EVENT_PATH`). Six live
+bugs shipped past a fully green suite because the test at each seam stubbed the
+half it was not looking at, so a test that stubs the seam it claims to prove is
+worse than no test — it buys false confidence. Land them at the paths the ticket
+names where you can, declare them in `newTests` like any other test, and if a
+named path does not fit this repo's convention, write the test where the
+convention puts it and say so in your `summary`.
+
+Each entry also carries the planner's own sentence — `roundTripProof` on a seam,
+`realRunProof` on an entrypoint — saying HOW that test drives both real halves,
+or runs the entrypoint the way CI does. **That sentence is your spec for the
+test:** write the test it describes, not a cheaper one that goes green. If the
+sentence cannot be made true in this codebase — the two halves cannot be driven
+together, or the command cannot be run from a test — say so plainly in your
+`summary` and name what blocks it. Do NOT quietly write a stub that satisfies
+the path while contradicting the proof: a declared proof the delivered test does
+not match is the exact false-green this contract exists to stop.
+
 ## Keep the tree clean
 
 Make your production changes in the repository working tree (the harness commits

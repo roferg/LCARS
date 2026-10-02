@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:7d3fcfbbb7e32334725db3d972f91c8fd526b01ac85e213af7adfd554a495ba8 -->
-<!-- lcars-docs-src: vision.md sha256:b416a28d8e03079cda87c191d6a0e8968a4827ffbb0ec1706895be3a189fdf46 -->
+<!-- lcars-docs-src: README.md sha256:08caaec26efd1a901fb18e292182be92b4ae8df82bde425b4333a84a53d79879 -->
+<!-- lcars-docs-src: vision.md sha256:8c844c676bd7b9cbae978a14fdb75876ecd0285874aaea3908622b62685add34 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -57,6 +57,7 @@
       <a href="#zero"><div class="dot"></div>Starting from zero <span class="nav-badge">day zero</span></a>
       <a href="#holodeck"><div class="dot"></div>The holodeck <span class="nav-badge">design</span></a>
       <a href="#numberone"><div class="dot"></div>Number One <span class="nav-badge">first officer</span></a>
+      <a href="#autopilot"><div class="dot"></div>Autopilot <span class="nav-badge">the factory</span></a>
       <a href="#cli"><div class="dot"></div>The CLI</a>
       <a href="#copilot"><div class="dot"></div>GitHub Copilot</a>
       <a href="#commands"><div class="dot"></div>Commands</a>
@@ -156,6 +157,17 @@
           way to use it.</li>
         </ul>
       </div>
+
+      <p>And you can hand over the running of the <strong>factory</strong> itself.
+      <strong>Autopilot</strong> takes a goal, holds a single alignment round with
+      you to agree what to build, and then runs the loop — planning, implementing,
+      <em>using</em> what came out, fixing what it finds, landing it — coming back
+      only when it genuinely needs you, and leaving behind the evidence for
+      everything it decided. On the run that proved it, that was <strong>once</strong>,
+      across a whole night: it built a command-line tool, a page and a CI workflow,
+      found and fixed two bugs a fully green suite had passed, and landed the work.
+      (A human still takes the final merge.) See
+      <a href="#autopilot">Autopilot</a>.</p>
 
       <div class="diagram-wrap">
         <div class="diagram-label">The whole point</div>
@@ -305,6 +317,13 @@ flowchart LR
       — each a vertical slice owning <strong>one cohesive behavior</strong>, sized
       by total <strong>comprehension load</strong> (code-to-read + tests + new
       code) against a tunable budget, not a flat line count.</p>
+      <p>Every ticket also <strong>declares its seams and entrypoints</strong> —
+      two arrays, not prose: what writes a piece of state, what reads it, the test
+      that drives <strong>both real halves</strong>, and one sentence saying how; plus
+      each workflow or CLI file CI actually runs, the test that runs it the way CI
+      does, and the sentence for that. A ticket with neither writes an empty array
+      and a one-line note saying why. On a Mission whose host isn't github.com, every
+      ticket additionally carries a four-point <strong>host checklist</strong>.</p>
 
       <h3><span class="stage-num">5</span>Plan Review <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>A <em>fresh</em> reviewer with no planning context audits every ticket
@@ -312,6 +331,13 @@ flowchart LR
       force changing behavior another ticket's tests pin — the real meaning of
       "too big"), testability, and dependencies. Loops back to Plan until
       clean; escalates after 3 rounds.</p>
+      <p>It also audits the <strong>seams and entrypoints</strong>: the shape
+      mechanically, then the proof sentences by reading them — objecting when one
+      describes a <strong>stub</strong> (a mocked producer, a patched consumer, a
+      literal payload) or is boilerplate, and when an empty list is a dodge on a
+      ticket whose own text names a writer and a reader. Objections print
+      <strong>whole</strong> on every surface you read, including the escalation
+      question.</p>
 
       <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>Builds the dependency graph into sequential <strong>Waves</strong> and
@@ -805,6 +831,201 @@ lcars xo off &lt;mission&gt;         # opt ONE mission out, leave the rest engag
     </section>
 
     <!-- ═══════════════════════════════════════════════════
+         AUTOPILOT
+         ═══════════════════════════════════════════════════ -->
+    <section id="autopilot">
+      <h2>Autopilot — hand over the factory</h2>
+      <p>Number One works one mission's gates for you. <strong>Autopilot takes the
+      loop itself.</strong></p>
+
+      <div class="idea-quote">"It helps take on the loop — the factory — for you,
+      and further focuses your time on the most critical things, while handling the
+      rest with evidence and confidence."</div>
+
+      <p>A <strong>software factory</strong> is the shape this pipeline already has:
+      signals in — an idea, a bug, a ticket — triaged into planned changes, then
+      built, tested, reviewed and shipped by agents, and out the other end as a
+      merged pull request. LCARS <em>is</em> that factory. Autopilot is what lets you
+      hand the running of it over, because the repetitive middle — file a milestone,
+      drive it, wait on it, look at what came out, fix what's wrong, land it, start
+      the next one — has to happen and doesn't need you to do it.</p>
+
+      <p>You hand <code>lcars buddy</code> a goal, it holds <strong>one</strong>
+      alignment round with you to agree what to build, and then it runs the factory,
+      milestone after milestone, coming back only when it genuinely needs you.
+      <strong>What you keep is the part that actually needs you:</strong> deciding
+      what to build, and the final yes.</p>
+
+      <p><strong>The hard part of running a factory isn't making the change — it's
+      believing it.</strong> Producing a change is the cheap half now; the expensive
+      half is verifying one you didn't write, and that cost doesn't fall just because
+      the suite came back green. A loop you can't see into turns every output into
+      something you have to re-derive by hand — which is how an agent that's
+      nominally saving you time quietly hands the work back.</p>
+
+      <p><strong>So autopilot doesn't ask to be trusted. It produces the evidence
+      that makes trust unnecessary.</strong> It <em>uses</em> what it built, against a
+      checklist for that kind of product; records what it saw — transcripts,
+      screenshots — under the mission's own state; files what it finds with a
+      reproduction quoting the real output; re-proves a fix on deliberately
+      <em>different</em> data; writes down each decision it made alone with the
+      evidence that decision rests on; and says so plainly when a check found
+      nothing. The trail runs from what it did to the change it made, generated by the
+      loop as it went rather than reconstructed afterwards.</p>
+
+      <p>It's a mode of the buddy — the read-only ride-along that already knows where
+      LCARS lives and what this repo is doing — asked for in plain words, not a new
+      verb:</p>
+
+      <pre>lcars buddy
+buddy&gt; run it for me &lt;spec&gt;     # or "drive this for me" / "run while I sleep"</pre>
+
+      <h3>What one full run looked like</h3>
+
+      <p>Across one night, autopilot took a goal and built a working product — a
+      command-line tool, a page that renders its state, and a CI workflow that
+      republishes that page — driving each milestone through the pipeline and landing
+      the work. It <strong>needed its operator exactly once</strong>: the opening
+      alignment round. Two questions came up after that, and it <strong>resolved both
+      itself</strong> rather than spending him on them.</p>
+
+      <p>It also did the thing the gates can't. Using what it had built instead of
+      trusting a green suite, it <strong>found two real bugs the suite had
+      passed</strong> — a list command that broke its own "one per line" promise on a
+      value containing a line break, and a crash path that silently stored a blank
+      value — filed both with reproductions, fixed them through the ordinary verbs,
+      and re-proved them on deliberately <em>different</em> data. When a check was
+      genuinely clean it <strong>said so</strong>: the browser pass attacked the page
+      first and then reported nothing, rather than flattering it. And it used
+      judgement about what <em>not</em> to file, declining a finding that was real but
+      out of scope — while recording it anyway, because the failure mode there is
+      silence.</p>
+
+      <div class="lcars-alert amber">
+        <div>One step remains yours: on the final milestone, <strong>a human ran the
+        landing</strong>. So autopilot <strong>builds, checks and fixes a round on its
+        own and comes back when it needs you</strong> — it is not claimed to ship a
+        round end to end with nobody there.</div>
+      </div>
+
+      <h3>Using the thing, not just testing it</h3>
+
+      <p>This is where the evidence comes from, and it's the reason the loop can be
+      handed over at all.</p>
+
+      <p>A green suite is not evidence that the product works. Over one weekend of
+      driving LCARS to build a real product, <strong>31 bugs were found and all 31
+      came from someone using the thing by hand</strong> — Number One filed none of
+      them, and every one of its misses was a <strong>reach</strong> problem (no
+      screen to look at, nothing seeded, a stub that made the seam untestable), never
+      a judgement one.</p>
+
+      <p>So that step is an instrument now. At the Verify gate autopilot runs one
+      checklist per <strong>kind of thing the milestone is</strong> —
+      <code>cli</code>, <code>web</code>, <code>workflow</code>, and all three for a
+      CLI that writes a page published by a workflow. Every item is an
+      <strong>action + the evidence to capture + what counts as a defect</strong>;
+      none is "check that X works":</p>
+
+      <pre>autopilot.sh live-check &lt;mission&gt; --type cli,web,workflow    # setup + the checklists
+autopilot.sh workflow-run &lt;mission&gt; .github/workflows/x.yml  # a CI job, run as CI runs it
+autopilot.sh live-check done &lt;mission&gt; --verdict pass|bugs   # there is no default verdict
+autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE action that follows</pre>
+
+      <div class="mission-card">
+        <ul>
+          <li><strong>Setup is a detached worktree and a throwaway HOME</strong> —
+          never the checked-out branch, and never your own home, where a config you
+          wrote last week makes an unconfigurable product look configured. Evidence
+          lands under <code>.git/lcars/missions/&lt;id&gt;/live-check/</code>,
+          numbered per checklist item; a re-check after a fix round writes a
+          <strong>new</strong> file rather than overwriting the first
+          observation.</li>
+          <li><strong>The items are the ones that caught real bugs:</strong>
+          <code>--help</code> and bad input; two actors, two HOMEs; make the
+          identities that usually coincide differ; <strong>follow one record end to
+          end through both real halves</strong> with no hand-written fixture between
+          them; check the host of every outbound call; real headless Chrome plus a
+          phone-width recipe; <strong>read the deployed artifact</strong>, not
+          "deploy succeeded"; re-verify after every fix round <strong>with different
+          data</strong>.</li>
+          <li><strong>A workflow is run the way CI runs it</strong> — the job's steps
+          in order, each from its own <code>working-directory</code>, with the env
+          Actions always sets, and the first failing step named. This is the check a
+          green suite can't do: a workflow that ran a module as a file died on a
+          relative import while every test importing the same function passed. A
+          packaged <code>uses:</code> step reports <strong>SKIPPED — unproven, never
+          passed</strong>.</li>
+          <li><strong>The verdict is recorded, then the policy decides.</strong> An
+          unrecorded live check would read later as one that passed, so there's no
+          default. <code>policy</code> turns the pair (Number One's verdict + the
+          live check) into exactly one action: merge; merge <strong>and file the
+          gaps</strong> as their own missions; send back; or
+          <strong>override</strong>. A <code>bugs</code> live check sends back even a
+          <code>high</code> review; a <code>low</code> that's purely about
+          infrastructure it couldn't reach is an override, not a stop. Every override
+          is ledgered <strong>with its evidence path and refused when that path isn't
+          on disk</strong>.</li>
+          <li><strong>Bugs go back evidence-first.</strong> <code>file-bug</code>
+          refuses a bug PRD whose first acceptance criterion isn't a live observation
+          quoting the real output, wants a <strong>round-trip</strong> criterion for a
+          bug at a seam, and refuses to report a filing it can't actually see
+          afterwards.</li>
+        </ul>
+      </div>
+
+      <p><strong>Measured:</strong> a fresh tester drove all three checklists against
+      a real fixture product and found <strong>12</strong> faults —
+      <strong>11</strong> named verbatim by a defect bullet, and only 4 of the 12
+      planted deliberately. The 12th is the honest limit: a page visibly broken at
+      phone width, which all six of the web checklist's defect bullets answered "no"
+      to and only looking at the screenshot caught. The checklist gained a clause for
+      that shape, and a second tester confirmed it flips the same screen from
+      <em>pass</em> to <em>bugs</em> on fresh data.</p>
+
+      <h3>How it stays out of your way</h3>
+
+      <div class="mission-card">
+        <ul>
+          <li><strong>One question round, then it goes.</strong> 3–5 questions, each
+          with a recommended answer: scope and its milestones, what counts as a live
+          check, where it deploys, what to do if LCARS itself breaks, and the steps
+          only you can take (tokens, secrets, SSO, renames).</li>
+          <li><strong>State is on disk, never the transcript.</strong> Every answer
+          lands in <code>.git/lcars/autopilot.json</code>, so a context compaction
+          can't lose the brief. A corrupt record <strong>fails closed naming the
+          file</strong> instead of being silently replaced with an empty one.</li>
+          <li><strong>The driver costs nothing.</strong> <code>autopilot.sh</code> is
+          plain shell — it sequences file → drive → wait → verify gate → land over
+          LCARS's own verbs and answers <code>next</code> with the one next step plus
+          the playbook heading for it. It never reasons about your code; every token
+          the run spends is spent by the pipeline's own workers. A waiter watches the
+          driving <strong>process</strong>, not a clock, two milestones in flight is
+          the ceiling, and a crontab heartbeat keeps a long run alive.</li>
+          <li><strong>Four things reach you, and nothing else:</strong> a product
+          call only you can make, a scope change, a standing-rule conflict (every
+          permission denial, and a refused merge), and an LCARS bug with no
+          workaround. Live-check verdicts, bug round-trips and the merge call it
+          makes alone and <strong>records</strong>.</li>
+          <li><strong>One home for a question.</strong>
+          <code>autopilot.sh ask "&lt;what&gt;" --mission &lt;id&gt;</code> is the only
+          way one gets raised, and it always carries the same four fields: what's
+          blocked, why it's safe, the one command that will run, the rollback. It
+          gets its own id, pings you <strong>once</strong>, and doesn't park the run
+          — several can be open at once, each blocking only its own milestone. The
+          single <code>pending</code> line other code reads is now
+          <strong>derived</strong> from that ledger on every write rather than stored
+          beside it, so a hand-written question can't be masked by another open one
+          or destroyed when you answer a different one.</li>
+          <li><strong>It never edits LCARS.</strong> An LCARS bug is ledgered and
+          worked around with another verb, or it becomes one of your four
+          interrupts. Fixing LCARS is the buddy's <em>other</em> mode, and that one
+          briefs you and waits.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════
          THE CLI
          ═══════════════════════════════════════════════════ -->
     <section id="cli">
@@ -1052,6 +1273,17 @@ flowchart LR
           instance, so two builds can run side by side. Your own checkout is
           never touched.</div>
         </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars buddy</div>
+          <div class="control-desc"><strong>The ride-along companion</strong>, safe
+          to run any time — read-only by default: where the LCARS source sits and its
+          git state, whether the installed skills match that checkout, and a live
+          snapshot of this repo's Missions. It's also the way in to the two things
+          that drive LCARS <em>for</em> you: an orchestrated <strong>fix</strong> of
+          LCARS itself, and <strong>autopilot</strong> — <em>"run it for me
+          &lt;spec&gt;"</em> — which holds one alignment round and then runs the
+          factory. See <a href="#autopilot">Autopilot</a>.</div>
+        </div>
       </div>
 
       <figure class="screenshot">
@@ -1292,6 +1524,29 @@ lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
           can only be met by changing behavior another ticket's tests already
           pin — naming the seam to re-slice along; it loops until clean (or
           escalating after 3 rounds).</li>
+          <li><strong>Every ticket declares its seams and entrypoints.</strong> Two
+          arrays, not prose. <code>seams</code>: what <strong>writes</strong> a piece
+          of state, what <strong>reads</strong> it, the test that drives <strong>both
+          real halves</strong>, and one sentence saying how it does.
+          <code>entrypoints</code>: a workflow or CLI file CI actually runs, the test
+          that runs it the way CI runs it, and the sentence for that. Nothing is
+          inferred from prose or scanned out of a diff — the planner records them, a
+          mechanical validator checks only the mechanical parts (present, non-blank,
+          and a rejection that names the ticket and the file), and the reviewer reads
+          the sentences and <strong>rejects a proof that describes a stub</strong> — a
+          mocked producer, a patched consumer, a literal payload, an in-process import
+          standing in for a command — or boilerplate that just restates the rule. No
+          seam and no new entrypoint? An <strong>empty array plus a one-line note
+          saying why</strong>, because an empty list is a claim, not a blank. This
+          exists because <strong>six live bugs shipped past a fully green suite in one
+          weekend</strong> and every one sat at a seam the suite only ever drove one
+          side of. And a Mission whose host <strong>isn't github.com</strong> (resolved
+          from the repo's origin or named in the PRD) makes every ticket carry a
+          four-point <strong>host checklist</strong> — URLs built from the host, every
+          runner <code>gh</code> pinned to it, the auth check naming it, and a test
+          asserting the host a real call would hit — after three
+          hardcoded-<code>github.com</code> bugs shipped past stubbed suites in one
+          product.</li>
           <li><strong>Implement is one unified TDD worker, proven by the harness, not
           the prompt.</strong> Each ticket is built by a single cold worker that writes
           both tests and code and runs the suite freely — its work proven
@@ -1345,7 +1600,11 @@ lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
           disposable worktree, has a cold worker <em>discover</em> how to start the
           app, runs it detached with the harness owning the process group, and
           stops/prunes on demand. Per-Mission instances, plain-English failures,
-          and your own checkout is never touched.</li>
+          and your own checkout is never touched. The Verify readout also lists
+          <strong>every seam the plan declared</strong> — its round-trip test, whether
+          that test exists in the repo, and its proof sentence in full. It grades none
+          of it: it's there so you read the boundary the suite claims to cover, in the
+          planner's own words.</li>
         </ul>
       </div>
 
@@ -1766,12 +2025,30 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
             <div class="lcars-status active">Empty-output worker detection</div>
             <div class="lcars-status active">Reconcile env-parity</div>
           </div>
+          <div class="lcars-status-row">
+            <div class="lcars-status active">Seams + entrypoints declared · audited at Plan Review</div>
+            <div class="lcars-status active">Live checks per product type · CLI · web · workflow</div>
+            <div class="lcars-status active">Autopilot · lcars buddy runs the factory</div>
+          </div>
         </div>
       </div>
 
       <div class="scope-bar">
         <div class="scope-active">v1 · idea → merged PR · a shared board</div>
         <div class="scope-future">Next · the full multi-person build-out · production monitoring</div>
+      </div>
+
+      <div class="lcars-alert amber">
+        <div><strong>Autopilot, on one full run.</strong> It took a goal and built a
+        working product — a command-line tool, a page that renders its state, and a CI
+        workflow that republishes that page — needing its operator <strong>exactly
+        once</strong>, at the opening alignment round, across the whole night. It
+        raised two questions of its own afterwards and resolved both itself; it
+        <strong>found two real bugs a fully green suite had passed</strong> by using
+        what it built, filed them with reproductions, fixed them and re-proved them on
+        different data; and it reported a clean check as clean. One step remains the
+        operator's: on the final milestone a <strong>human ran the landing</strong>, so
+        an unattended end-to-end round is <strong>not</strong> claimed.</div>
       </div>
 
       <div class="future-banner">
