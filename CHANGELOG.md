@@ -4,6 +4,51 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.10.1 — hand the factory over
+
+**You can now hand the loop itself to the buddy, and get your attention back.**
+Give it a goal, agree what to build in one round, and it drives the rest —
+planning, implementing, checking, fixing, filing what it finds — coming back only
+when it genuinely needs you. The repetitive middle of the pipeline stops being
+yours to run; what you keep is deciding what to build, and the final yes.
+
+On the run that proved it, it built a working product from a goal — a command
+line, a page that renders its state, and a CI workflow that republishes that page
+— and merged every piece. It **needed you exactly once** across the whole night,
+the opening round where it agreed what to build, and it answered two later
+questions itself rather than spending you on them. One step is still yours: on
+the final milestone, a human ran the landing.
+
+**What makes handing it over reasonable is that it works with evidence.** At the
+end of each job it *uses* what it built — against a checklist for that kind of
+thing, whether a command line, a web page or a CI workflow — and records what it
+actually saw under that job's own state: transcripts, screenshots, the artifact
+it downloaded and read back. That is how it caught **two real bugs your fully
+green test suite had passed**: `list` breaking its own "one per line" promise
+when a request contained a line break, and filing a request crashing with a raw
+error while silently storing a blank source. Both were filed with reproductions,
+fixed through the ordinary verbs, and re-proved on deliberately different data.
+When its browser check found nothing, it said so rather than inventing a finding.
+
+**Tickets now declare their seams and their entrypoints.** Six live bugs once
+shipped past a green suite in a single weekend, and every one sat at a seam —
+two code paths touching the same state, with the suite only ever driving one
+side. So a ticket now records, as two arrays, what writes state another path
+reads, and which files CI really runs, each naming a test **and one sentence
+saying how that test drives both real halves, or runs the file the way CI runs
+it**. Nothing infers them from prose or scans a diff for them: the planner
+records them and the reviewer audits them, rejecting a sentence that describes a
+stub.
+
+**Smaller things you will notice.** A question has one home — `ask` is the verb
+and the pending list is derived from it, so a hand-written question can no longer
+be hidden by another open one. A plan whose final anchor check fails now **parks
+awaiting you**, naming the failing tickets and the valid anchors, instead of the
+stage dying underneath you. Commit subjects are readable again rather than
+carrying an entire report on line one. And a PR description no longer loses every
+wrapped paragraph after its first line — which had been quietly damaging the half
+written for humans while the machine-written half survived intact.
+
 ## 2026.9.8 — approve lands on its own
 
 **A bug you logged against a Mission no longer blocks the merge it belongs to.**
