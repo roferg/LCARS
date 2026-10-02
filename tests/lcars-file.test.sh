@@ -1724,5 +1724,60 @@ check "20e. …carrying file.sh's OWN refusal text, not a daemon paraphrase" \
 check "20e. …and the skill's exit code, so callers key off status not prose" \
   "printf '%s' \"\$SURFOUT\" | qgrep -q 'EXIT=7'"
 
+# --- 20f: A STATE WRITE THAT FAILED MUST NOT BE REPORTED AS A SUCCESS -------
+# S238 FIX ROUND 1, DEFECT 3. `_complete_reentry` ignored
+# `lcars_state_set_string`'s exit code: against a malformed state.json the
+# setter printed "⚠ … left untouched (field \"realignedAt\" NOT written)" and
+# returned 1, and the arm went on to print "Mission re-aligned" and exit 0 — so
+# the daemon answered ok=true with a prdPath for a re-alignment that was never
+# recorded. A success that half happened is the thing this project least
+# tolerates. The PRD really IS on disk by then, so the honest answer says both:
+# the PRD was written, the re-alignment was NOT recorded, and it fails.
+repoF="$(new_repo)"; make_gh_stub "$repoF/gh"
+export GH_LOG="$repoF/gh.log"; : >"$GH_LOG"
+unset GH_BODY
+prdF1="$repoF/prd-f1.md"; write_prd "$prdF1"; printf '\nf1-marker\n' >>"$prdF1"
+(
+  cd "$repoF"
+  LCARS_GH_BIN="$repoF/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdF1" >outF0.txt 2>&1
+)
+MIDF="$(cd "$repoF/.git/lcars/missions" && ls -d lcars-20260530-* | head -1)"
+MF="$repoF/.git/lcars/missions/$MIDF"
+printf -- '## 2026-10-02\n\nstill wrong.\n' >"$MF/feedback.md"
+prdF2="$repoF/prd-f2.md"; write_prd "$prdF2"; printf '\nf2-marker\n' >>"$prdF2"
+
+# POSITIVE CONTROL first, in the claim's own phrasing family: a SOUND
+# state.json re-enters, says "Mission re-aligned", and exits 0.
+rcF0=0
+(
+  cd "$repoF"
+  LCARS_GH_BIN="$repoF/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete "$MIDF" --prd "$prdF2" >outF1.txt 2>&1
+) || rcF0=$?
+check "20f. CONTROL — a sound state.json re-enters, exits 0, and says so" \
+  "[ '$rcF0' -eq 0 ] && qgrep -q 'Mission re-aligned' '$repoF/outF1.txt'"
+
+# Now break state.json so the shared writer REFUSES it, and re-grill again.
+cp "$MF/state.json" "$MF/state.json.good"
+printf '{ "id": "%s", "stage": "align", NOT JSON\n}\n' "$MIDF" >"$MF/state.json"
+prdF3="$repoF/prd-f3.md"; write_prd "$prdF3"; printf '\nf3-marker\n' >>"$prdF3"
+rcF=0
+(
+  cd "$repoF"
+  LCARS_GH_BIN="$repoF/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete "$MIDF" --prd "$prdF3" --reentry >outF2.txt 2>&1
+) || rcF=$?
+check "20f. a refused state write FAILS the arm (non-zero), it is not swallowed" \
+  "[ '$rcF' -ne 0 ]"
+check "20f. …and it never claims 'Mission re-aligned'" \
+  "! qgrep -q 'Mission re-aligned' '$repoF/outF2.txt'"
+check "20f. …it says the re-alignment was NOT recorded" \
+  "qgrep -q 'NOT recorded' '$repoF/outF2.txt'"
+check "20f. …and it still says where the PRD went, because that part IS true" \
+  "qgrep -qF '$MF/prd.md' '$repoF/outF2.txt' && qgrep -q 'f3-marker' '$MF/prd.md'"
+check "20f. …and realignedAt was genuinely not written" \
+  "! qgrep -q 'realignedAt' '$MF/state.json'"
+
 # ==========================================================================
 [ "$fail" -eq 0 ]

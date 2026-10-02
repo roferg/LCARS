@@ -120,10 +120,20 @@ lcars_worker_bin_real_dir() {
 # to web/lcars_serve/worker_guard.py's DAEMON_HINT (parity-tested). S218: a run
 # the viewscreen started ($LCARS_VIEWSCREEN_CHILD=1, set on everything the
 # daemon dispatches) is fed the mission's PERSISTED engine as $LCARS_WORKER_BIN,
-# so a captain's variable prefix cannot reach it — the only true fix there is
-# the daemon's PATH, which only a restart picks up. Words only: precedence is
-# untouched.
-lcars_worker_bin_daemon_hint() { printf 'restart the viewscreen'; }
+# so a captain's $LCARS_WORKER_BIN prefix cannot reach it — the daemon's PATH
+# only a restart picks up. Words only: precedence is untouched.
+#
+# S238 FIX ROUND 1 (D2) — IT NOW NAMES $LCARS_COPILOT_BIN TOO. Every daemon-side
+# refusal used to end "…ahead of it on PATH … then restart the viewscreen" and
+# NEVER mention the one variable S238 added for exactly this, so an operator who
+# hit it had no way to discover it. $LCARS_COPILOT_BIN does reach a
+# viewscreen-started run: the daemon replaces the picker's bare `copilot` with
+# the file that variable names (worker_guard.explicit_override) BEFORE it hands
+# the engine to run.sh. The restart stays as the last step because the daemon
+# reads the variable at start-up. Both halves are true; the sentence is still one
+# sentence. The composed shape — a variable name, then plain text — is handled by
+# lcars_worker_bin_guard below.
+lcars_worker_bin_daemon_hint() { printf 'LCARS_COPILOT_BIN restart the viewscreen'; }
 
 # lcars_worker_bin_prefer_real <bin> -> the engine LCARS should RECORD for
 # itself: <bin> unchanged, unless it resolves to the shim, in which case the
@@ -183,6 +193,9 @@ lcars_worker_bin_prefer_real() {
 #   <hint> = a variable name (e.g. LCARS_COPILOT_BIN) → "…, or, when you run
 #            this from a terminal, prefix the command with VAR=<dir>/copilot"
 #   <hint> = any other text (e.g. "restart the viewscreen") → "…, then <hint>"
+#   <hint> = a variable name THEN plain text (the daemon's own hint, S238 fix
+#            round 1 D2) → both, in that order: "…, or … prefix the command with
+#            VAR=<dir>/copilot, then <text>". Still ONE sentence.
 # Engine-resolution precedence is untouched: this only chooses WORDS.
 lcars_worker_bin_guard() {
   local bin="$1" hint="${2:-}" real dir lead tail="" fb
@@ -206,9 +219,12 @@ lcars_worker_bin_guard() {
     *)   lead="put $dir ahead of it on PATH so \`copilot\` finds the real CLI first" ;;
   esac
   if [ -n "$hint" ]; then
-    case "$hint" in
+    local hvar="${hint%% *}" hrest=""
+    case "$hint" in *' '*) hrest="${hint#* }" ;; esac
+    case "$hvar" in
       *[![:upper:][:digit:]_]*|[![:upper:]]*) tail=", then $hint" ;;
-      *) tail=", or, when you run this from a terminal, prefix the command with $hint=$dir/copilot" ;;
+      *) tail=", or, when you run this from a terminal, prefix the command with $hvar=$dir/copilot"
+         if [ -n "$hrest" ]; then tail="$tail, then $hrest"; fi ;;
     esac
   fi
   printf 'Refusing to start %s: it resolves to %s, which is VS Code'"'"'s own copilot shim, and with no real CLI behind it that shim prints an install prompt and exits 0 with no model output, so the turn looks like a success and is silently empty — %s%s.\n' \

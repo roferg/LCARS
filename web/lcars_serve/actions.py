@@ -40,7 +40,7 @@ import zlib
 
 from .local_adapter import LocalAdapter
 from .worker_guard import DAEMON_HINT as DAEMON_SHIM_HINT, editor_shim_refusal
-from .worker_guard import explicit_override
+from .worker_guard import explicit_override, shim_fallback
 
 
 class ActionError(Exception):
@@ -6670,6 +6670,12 @@ class Actions(LogFacts):
                 "drive the Align/Log worker")
         # S238 — an explicit override beats the picker's bare engine NAME.
         bin_ = self._engine_file(bin_)
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
         # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
@@ -7581,6 +7587,12 @@ class Actions(LogFacts):
         bin_, _ovr = explicit_override(bin_)
         if _ovr:
             return {"state": "done", "ok": False, "changes": [], "why": _ovr}
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
         if _refused:
@@ -9648,6 +9660,12 @@ class Actions(LogFacts):
                 "holodeck has nothing to talk to")
         # S238 — an explicit override beats a bare engine NAME.
         bin_ = self._engine_file(bin_)
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
         # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
@@ -10485,6 +10503,12 @@ class Actions(LogFacts):
                 502, "the holodeck cannot run %s — it is not an executable on "
                 "this machine. Check the engine you picked, or the daemon's "
                 "$LCARS_WORKER_BIN." % bin_)
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — refused BEFORE a sidecar or a room is built, like a missing bin.
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
         if _refused:
@@ -10984,9 +11008,32 @@ class Actions(LogFacts):
         # fades, the refusal is RECORDED the way the drive records any Stage
         # failure — an `error` event against the Stage the drive would have
         # run, written by run.sh's own event writer — so the card says it too.
-        self._refuse_unstartable_engine(
-            mid, env_extra.get("LCARS_WORKER_BIN") or self.worker_bin
-            or os.environ.get("LCARS_WORKER_BIN"))
+        #
+        # S238 FIX ROUND 1 (D1) — THE OVERRIDE REACHES *THIS* LANE TOO. The
+        # engine here is state.json's `workerBin`, which the picker persists as
+        # a BARE NAME, and this site never consulted $LCARS_COPILOT_BIN — so the
+        # captain who set it, pressed START and watched a red card was being
+        # judged on a binary LCARS was not going to run. It is applied to the
+        # engine the drive is actually HANDED, not merely to the one the refusal
+        # is worded from: a message that changed without changing what runs
+        # would be the same bug with better prose.
+        _bin = (env_extra.get("LCARS_WORKER_BIN") or self.worker_bin
+                or os.environ.get("LCARS_WORKER_BIN"))
+        if _bin:
+            _bin = self._engine_file(_bin)
+            # …and the S231 work-around, on the value HANDED OVER. run.sh's own
+            # guard would reach the same binary a moment later, so this changes
+            # no outcome — it makes the engine the card and the child report the
+            # file that is actually going to run, instead of a bare name that
+            # resolves to the shim in every environment nobody controls (S222's
+            # rule: a persisted engine is a path, not a name).
+            _bin, _swap = shim_fallback(_bin)
+            # Only where the daemon was ALREADY feeding the engine: injecting one
+            # where it was not would move run.sh's env above its own config, and
+            # this fix changes no precedence.
+            if env_extra.get("LCARS_WORKER_BIN"):
+                env_extra["LCARS_WORKER_BIN"] = _bin
+        self._refuse_unstartable_engine(mid, _bin)
         self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
 
@@ -11011,6 +11058,12 @@ class Actions(LogFacts):
         action = self._DRIVE_ACTION.get(stage)
         if action is None or _read_json_key(sp, "awaitingHuman") is True:
             return
+        # S238 FIX ROUND 1 (D1) — and the S231 work-around applies here as well:
+        # run.sh's own guard would have started the real CLI at a known absolute
+        # location rather than refuse, so refusing the spawn ON ITS BEHALF was
+        # the daemon disagreeing with the script it was about to run. One rule,
+        # one place (worker_guard.shim_fallback).
+        bin_, _swap = shim_fallback(bin_)
         refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
         if not refused:
             return

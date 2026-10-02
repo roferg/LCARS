@@ -714,7 +714,24 @@ _complete_reentry() {
   [ -n "$ADR_SRC" ] && cat "$ADR_SRC" >"$MISSION_DIR/adr.md"
 
   # --- record WHEN it was re-aligned (the stage is already `align`) ---------
-  lcars_state_set_string "$STATE" realignedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # S238 FIX ROUND 1 (D3) — A HALF-SUCCESS IS REPORTED AS A FAILURE. This arm
+  # used to IGNORE the writer's exit code: against a malformed state.json the
+  # shared writer printed "⚠ … left untouched (field \"realignedAt\" NOT
+  # written)" and returned 1, and the arm went on to print "Mission re-aligned"
+  # and exit 0 — so the daemon answered ok=true, with a prdPath, for a
+  # re-alignment that was never recorded.
+  #
+  # IT SAYS WHAT IS TRUE, NOT JUST "FAILED". By this point the PRD really IS on
+  # disk (and the PRD it replaced really IS kept), so the message names both
+  # halves: where the PRD went, and that the re-alignment was NOT recorded. The
+  # PRD is deliberately NOT rolled back — it is the thing the captain's answers
+  # produced, and deleting it to make the failure tidy would lose the one
+  # artifact that cost him anything.
+  if ! lcars_state_set_string "$STATE" realignedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
+    echo "  PRD written:     $MISSION_DIR/prd.md" >&2
+    [ -n "$KEPT" ] && echo "  Previous PRD:    $KEPT  (kept — nothing prior is deleted)" >&2
+    die "the re-grilled PRD was written, but the re-alignment was NOT recorded in ${STATE#$MISSION_DIR/} (${LCARS_STATE_REFUSED:-the state writer refused it}) — repair that file, then run \`lcars file --complete $ID --prd <path>\` again."
+  fi
 
   echo "  Mission re-aligned: $ID"
   echo "  PRD written:     $MISSION_DIR/prd.md"
