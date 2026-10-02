@@ -444,8 +444,9 @@ that show it are.
 
 Every line of your ledger now also carries **`checkedBy`** — `browser`, `cli`,
 `workflow` or `test` — naming the instrument that settled it, beside the
-`evidence` word that says what kind of thing it was. A `cli` or `workflow` row
-cites the transcript's filename exactly as a `picture` row cites its shot.
+`evidence` word that says what kind of thing it was. A `cli` or `workflow` row's
+evidence word is **`transcript`**, and it cites the transcript's filename in
+`shot` exactly as a `picture` row cites its shot.
 
 ### The honesty rules do not bend for the new instruments
 
@@ -567,7 +568,8 @@ more than the budget you were given.
     {"id": "prd-1", "text": "…",
      "impact": "high|medium|low", "impactWhy": "one sentence, written before you judged it",
      "status": "met|gap|untested",
-     "evidence": "picture|measurement|tests",
+     "evidence": "picture|transcript|measurement|tests",
+     "checkedBy": "browser|cli|workflow|test",
      "shot": "shot-02", "note": "what you actually saw, in his words",
      "action": "what you DID, one plain sentence starting with a verb",
      "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: ….",
@@ -589,6 +591,18 @@ more than the budget you were given.
 `expected` and `saw` are rendered into ONE sentence — "your drawing has
 *{expected}*; the build has *{saw}*" — so write each as a fragment that reads
 inside it, not as a whole sentence of its own.
+
+**`evidence` and `checkedBy` are two different facts, and both are yours to
+record.** `evidence` is what the thing behind the row IS — a `picture` for a
+screenshot, a **`transcript`** for a command, workflow or artifact the harness
+ran for you, a `measurement` for a measured box, `tests` for a line the suite
+printed. `checkedBy` is the INSTRUMENT that settled it: `browser`, `cli`,
+`workflow` or `test`. A row whose only evidence is `01-help.txt` is
+`"evidence": "transcript", "checkedBy": "cli"` and cites that filename in
+`shot`, exactly as a picture row cites its shot — never `picture`, which would
+tell the captain you looked at a screen you never saw. Write both on every row:
+nothing downstream guesses them from your prose, so a field you leave out is a
+fact the captain does not get.
 
 Every criterion in `criteria.json` must appear in `criteria`, with the same
 `id` — and ONLY those. An id that is not in `criteria.json` is not counted at

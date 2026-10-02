@@ -1034,10 +1034,18 @@ def cli_argv0(path):
     return ([interp, path] if interp else ["./" + path.lstrip("./")]) if path else []
 
 
-def subcommands(prd_text, crit_text, entry_path):
-    """The subcommands the RECORD names, read from its own backticked command
-    lines. Not prose: a backticked `notes add "<title>"` in the PRD's acceptance
-    criteria IS the captain writing the invocation down."""
+def subcommand_shapes(prd_text, crit_text, entry_path):
+    """The subcommands the RECORD names, each with WHETHER THE RECORD GIVES IT
+    A VALUE: [{"verb": "file", "takesValue": True}, …], in the order named.
+
+    Not prose: a backticked `notes add "<title>"` in the PRD's acceptance
+    criteria IS the captain writing the invocation down — and the fact that he
+    wrote an argument after `add` and none after `list` is part of what he wrote
+    down. That one bit is what tells a bad-input step which subcommand TAKES
+    input (S239 fix round 1, D2): feeding `""` to a verb that takes no argument
+    exits 0, which the readout then records as a failed `exitNonZero` and the
+    console prints as `FAILED … (cli)` about a command that works.
+    """
     stem = os.path.splitext(os.path.basename(entry_path or ""))[0]
     if not stem:
         return []
@@ -1052,9 +1060,21 @@ def subcommands(prd_text, crit_text, entry_path):
         cand = words[1]
         if not re.match(r"^[a-z][a-z0-9-]*$", cand):
             continue
-        if cand not in out:
-            out.append(cand)
+        takes = len(words) > 2
+        for row in out:
+            if row["verb"] == cand:
+                # One invocation naming a value is enough: `notes add` and
+                # `notes add "<title>"` are the same verb, and it takes one.
+                row["takesValue"] = row["takesValue"] or takes
+                break
+        else:
+            out.append({"verb": cand, "takesValue": takes})
     return out
+
+
+def subcommands(prd_text, crit_text, entry_path):
+    """Just the verbs the record names, in the order it names them."""
+    return [r["verb"] for r in subcommand_shapes(prd_text, crit_text, entry_path)]
 
 
 def reach_steps(contract, prd_text=""):
@@ -1126,13 +1146,27 @@ def reach_steps(contract, prd_text=""):
             skipped.append({"item": "cli#*", "why": "the plan recorded no `cli` "
                             "entrypoint path, so there is nothing to run"})
         else:
-            verbs = subcommands(prd_text, crit_text, cli_ep["path"])
+            shapes = subcommand_shapes(prd_text, crit_text, cli_ep["path"])
+            verbs = [r["verb"] for r in shapes]
             argv0 = cli_argv0(cli_ep["path"])
+            # WHICH VERB EACH ITEM WANTS, FROM THE ITEM'S OWN INTENT (S239 fix
+            # round 1, D2). Both `<subcommand>` (item 2, bad input) and
+            # `<the-main-verb>` (item 3, the happy path) used to be filled with
+            # verbs[0] — whichever subcommand the record happened to name first.
+            # A record that names its LISTING verb first then got `list ""` as
+            # its bad input (exit 0, recorded as a FAILED exitNonZero about a
+            # command that works) and `list <value>` as its happy path, which
+            # never filed anything for the list to show. Both items want the
+            # verb that TAKES the input; the read-back wants the one that does
+            # not. The record says which is which.
+            acting = next((r["verb"] for r in shapes if r["takesValue"]),
+                          verbs[0] if verbs else "")
+            reading = next((r["verb"] for r in shapes if not r["takesValue"]), "")
             subs = {"cli": None, "worktree": "<worktree>",
                     "throwaway-home": "<throwaway-home>"}
             if verbs:
-                subs["subcommand"] = verbs[0]
-                subs["the-main-verb"] = verbs[0]
+                subs["subcommand"] = acting
+                subs["the-main-verb"] = acting
                 subs["realistic-value"] = TYPED_TEXT
             for row in checklist_items("cli"):
                 if row["kind"] != "run":
@@ -1155,6 +1189,32 @@ def reach_steps(contract, prd_text=""):
                               "fromChecklist": row["item"],
                               "derivedFrom": "the cli live-check checklist",
                               "why": "a CLI criterion is reached by RUNNING the CLI"})
+                # THE HAPPY PATH IS DONE WHEN THE EFFECT IS READ BACK (S239 fix
+                # round 1, D2). Item 3 is "create, then list, then whatever the
+                # PRD says the user does next" — one `run` template can only
+                # carry the create, so the list that reads it back is its own
+                # step, right behind it, in the SAME worktree and the SAME
+                # throwaway HOME. Without it the happy path proved only that a
+                # command exited 0. The item is identified by its own template
+                # (the one that asks for a realistic value), never by a number.
+                if reading and "<realistic-value>" in (tpl.get("argv") or []):
+                    stem = os.path.splitext(row["evidence"])[0]
+                    steps.append({"do": "run", "argv": argv0 + [reading],
+                                  "cwd": tpl.get("cwd") or "<worktree>",
+                                  "env": tpl.get("env") or {"HOME": "<throwaway-home>"},
+                                  "expect": {
+                                      "exit": 0,
+                                      "listsWhatWasJustFiled": TYPED_TEXT,
+                                      "note": "the step before this one filed that "
+                                              "value; a happy path is not done "
+                                              "until the effect is read back"},
+                                  "for": claim("cli") or for_id or "",
+                                  "evidence": "%s-readback.txt" % stem,
+                                  "fromChecklist": row["item"],
+                                  "derivedFrom": "the cli live-check checklist, "
+                                                 "item 3's \"create, then list\"",
+                                  "why": "a success message is not the thing it "
+                                         "claims; the list is"})
 
     # ---- the WORKFLOW checklist -------------------------------------------
     wf_eps = [e for e in eps if e.get("kind") == "workflow" and e.get("path")]

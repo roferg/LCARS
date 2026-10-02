@@ -2650,6 +2650,19 @@ const FOCUS = (sel) => `(function () {
           // no action list can ever write outside --out.
           const safe = String(a.screenshot).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "") || nextName();
           await shoot(safe, a.selector ? String(a.selector) : null);
+        } else if (a.do === "run" || a.do === "workflow" || a.do === "read") {
+          /* S239 fix round 1 (D5) — A HARNESS STEP WAS NOT DROPPED, SO DO NOT
+           * SAY IT WAS. One actions file goes to two executors: the browser
+           * kinds come here, and `run` / `workflow` / `read` are run by
+           * xo-run.py in the detached worktree with its throwaway HOME. This
+           * loop used to fall through to the unknown-action fallback and
+           * journal "unknown action, skipped: {...}" for each of them, and set
+           * `incomplete`. THE WORKER READS THESE NOTES, so a step that really
+           * ran reached its next round labelled dropped. The browser still
+           * does nothing with it; it now says that honestly.
+           */
+          notes.push(a.do + ": handed to the harness, not the browser — it runs in "
+                     + "the detached worktree and leaves its own transcript");
         } else {
           notes.push("unknown action, skipped: " + JSON.stringify(a));
           incomplete = true;

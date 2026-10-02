@@ -130,12 +130,27 @@ import time
 VALID_SCORES = ("high", "medium", "low")
 VALID_STATUS = ("met", "gap", "untested")
 # WHERE A JUDGEMENT CAME FROM. The captain must never have to guess which of
-# these decided a line (S211): a picture of the running app, a box measured off
-# that page, or his project's own tests. `none` is the honest fourth — nothing
-# settled it.
-VALID_EVIDENCE = ("picture", "measurement", "tests")
-EVIDENCE_WORD = {"picture": "a picture", "measurement": "a measured box",
-                 "tests": "your tests", "none": "—"}
+# these decided a line (S211): a picture of the running app, the transcript of
+# something the harness RAN, a box measured off that page, or his project's own
+# tests. `none` is the honest last one — nothing settled it.
+#
+# `transcript` is S239 fix round 1 (D1). The reach steps put a command's exact
+# output on disk beside the shots, and on the first real look EVERY row read
+# `"evidence": "picture"` — including a gap whose only citation was
+# `01-help.txt`, a terminal transcript. There was no honest word for it, so the
+# look used the only one the schema offered and the table told the captain it had
+# looked at a screen.
+VALID_EVIDENCE = ("picture", "transcript", "measurement", "tests")
+EVIDENCE_WORD = {"picture": "a picture", "transcript": "a transcript",
+                 "measurement": "a measured box", "tests": "your tests",
+                 "none": "—"}
+
+# WHICH INSTRUMENT SETTLED THE ROW — recorded by the look, never worked out here
+# (S239 fix round 1, D1). Produced on every step readout (`xo-run.py`), taught by
+# the prompt, and now carried onto the ledger line the captain reads. An
+# unrecognised word is DROPPED exactly as `kind` is: a guessed instrument is the
+# very thing this cures.
+VALID_CHECKED_BY = ("browser", "cli", "workflow", "test")
 
 # THE FAILING RUN'S SENTENCE, AND THE ONE CASE THAT RESOLVES IT (fix round 2,
 # R2-2). Round 1 stopped this sentence guessing which of the two things a
@@ -1068,6 +1083,22 @@ def short_name(text, limit=60):
 def evidence_said(rows, has_drawing=False):
     pics = sum(1 for e in rows if e.get("evidence") in ("picture", "measurement"))
     tests = sum(1 for e in rows if e.get("evidence") == "tests")
+    # S239 fix round 1 (D1): a row settled by RUNNING the thing is backed by a
+    # transcript, not a photograph. Counted apart and said apart — folded in, it
+    # made this sentence claim the captain's reviewer had SEEN ON SCREEN what it
+    # had read in a terminal.
+    runs = sum(1 for e in rows if e.get("evidence") == "transcript")
+    if runs:
+        bits = []
+        if pics:
+            bits.append(("I saw %d on screen" if has_drawing
+                         else "I have a picture of %d") % pics)
+        bits.append("I ran %d and read the transcript" % runs)
+        if tests:
+            bits.append("your own tests show %d" % tests)
+        if len(bits) == 1:
+            return "I ran each one and read the transcript"
+        return ", ".join(bits[:-1]) + " and " + bits[-1]
     # W2: with a real drawing on the mission, "picture" reads as the drawing;
     # the screenshots are what was SEEN on screen.
     if pics and tests:
@@ -1908,6 +1939,18 @@ def main():
         judged_kind = str(c.get("kind") or "").strip().lower()
         if judged_kind in ("looks", "works"):
             entry["kind"] = judged_kind
+        # THE INSTRUMENT, CARRIED (S239 fix round 1, D1). `checkedBy` was
+        # produced on every step readout and taught by the prompt, and then LOST
+        # here: the row was rebuilt field by field and this one was never copied,
+        # so it stood on 0 of 15 lines of the file the captain actually reads
+        # while `evidence` said `picture` on 15 of 15. Read, never inferred —
+        # nothing in this rail may work out from a row's prose how it was
+        # checked. Kept on an `untested` row too: "I ran the CLI and it settled
+        # nothing" is a fact about the instrument, and `evidence: none` beside it
+        # already says the row proved nothing.
+        checked_by = str(c.get("checkedBy") or "").strip().lower()
+        if checked_by in VALID_CHECKED_BY:
+            entry["checkedBy"] = checked_by
         if status == "untested" and rated_status == "untested":
             why_not = str(c.get("couldNotCheck") or "").strip().lower()
             if why_not in COULD_NOT_CHECK:

@@ -747,6 +747,316 @@ assert n >= 8, n
 PYEOF'
 
 # ===========================================================================
+# 7. FIX ROUND 1 — the two material defects the fresh tester found
+# ===========================================================================
+# D2 (the worse one). THE DECLARED CLI STEPS RAN THE WRONG SUBCOMMAND. On the
+# tester's own fixture the instantiated steps were
+#   t-1-ac2 -> ['python3','relay.py','list','']     # the BAD-INPUT step
+#   t-1-ac3 -> ['python3','relay.py','list','…']    # the HAPPY PATH
+# `<subcommand>` and `<the-main-verb>` were both filled with verbs[0] — the
+# FIRST subcommand the record happens to name — so a record that names its
+# listing verb first fed the bad input to a command that does not take any.
+# `list ""` exits 0, the readout recorded {"key":"exitNonZero","passed":false},
+# and the captain's console printed `FAILED 02-bad-input.txt (cli)` ABOUT A
+# COMMAND THAT WORKS. A reviewer that filed 0 of 31 real bugs must not start
+# filing bugs that are not there. And the happy path never filed anything, so
+# "list" was checked against a store nothing had ever written to.
+#
+# D1. `checkedBy` NEVER REACHED THE VERDICT. It is produced on every step
+# readout, and the prompt's prose teaches it — but the verdict SCHEMA the worker
+# copies never named it and the scorer never carried it, so it was present on 0
+# of 15 rows while `evidence` read `picture` on 15 of 15, including a row whose
+# only shot was `01-help.txt` — a terminal transcript. Identically on BOTH
+# engines, which is what makes it a schema fault and not a model fault.
+echo ""
+echo "7. fix round 1 — the right subcommand, and checkedBy on the row"
+
+# --- D2: a record that names its LISTING verb FIRST (the tester's fixture) ---
+RLM="$TMPROOT/m-relay"; mkdir -p "$RLM"
+cat >"$RLM/prd.md" <<'MD'
+# Relay — a command line for requests
+
+PLAN RULE: CLI-only. This milestone adds no page and no screen.
+
+## Acceptance criteria
+- `relay.py list` prints every filed request in the order it was filed.
+- `relay.py file "<request text>"` files a request and prints the id it stored.
+- `relay.py --help` lists every subcommand the CLI dispatches.
+MD
+cat >"$RLM/plan.json" <<'JSON'
+{"tickets": [
+  {"id": "t1", "changesScreenAppearance": false,
+   "entrypoints": [{"kind": "cli", "path": "relay.py",
+                    "realRunTest": "tests/test_cli.py",
+                    "realRunProof": "it runs relay.py as a subprocess"}],
+   "seams": [], "seamsNote": "pure store",
+   "acceptanceCriteria": [
+     {"text": "relay file stores the request text it was given", "notVisual": true,
+      "kind": "works", "serves": "prd-2", "direction": "delivers"},
+     {"text": "relay list prints what was filed", "notVisual": true,
+      "kind": "works", "serves": "prd-1", "direction": "delivers"}]}
+]}
+JSON
+cat >"$RLM/state.json" <<'JSON'
+{"id": "m-relay", "title": "Relay", "stage": "verify", "branch": "feat/relay"}
+JSON
+"$PY" "$CRITERIA" "$RLM" "$TMPROOT/relay-criteria.json" >/dev/null 2>&1
+"$PY" "$JOURNEY" build --criteria "$TMPROOT/relay-criteria.json" \
+  --prd "$RLM/prd.md" --title "Relay" --out "$TMPROOT/relay-journey.json" \
+  >"$TMPROOT/relay-journey.out" 2>&1
+RJO="$TMPROOT/relay-journey.json"
+
+# The reader for every D2 claim, so the assertion reads as the claim does.
+cat >"$TMPROOT/fr1.py" <<'PYEOF'
+import json, sys
+what, path = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+rs = [s for s in (d.get("reachSteps") or []) if s.get("do") == "run"]
+
+
+def by_evidence(frag):
+    return [s for s in rs if frag in (s.get("evidence") or "")]
+
+
+if what == "bad-input-argv":
+    st = by_evidence("02-bad-input")
+    assert st, [s.get("evidence") for s in rs]
+    print(json.dumps(st[0]["argv"]))
+elif what == "happy-argv":
+    st = by_evidence("03-happy-path.")
+    assert st, [s.get("evidence") for s in rs]
+    print(json.dumps(st[0]["argv"]))
+elif what == "readback-argv":
+    st = [s for s in rs if "readback" in (s.get("evidence") or "")]
+    assert st, [s.get("evidence") for s in rs]
+    print(json.dumps(st[0]["argv"]))
+elif what == "order":
+    # The FILE must come before the LIST it is read back from.
+    ev = [s.get("evidence") or "" for s in rs]
+    a = [i for i, e in enumerate(ev) if e.startswith("03-happy-path.")]
+    b = [i for i, e in enumerate(ev) if "readback" in e]
+    assert a and b and a[0] < b[0], ev
+    print("ok")
+elif what == "every-step-for":
+    bad = [s for s in (d.get("reachSteps") or []) if not s.get("for")]
+    assert not bad, bad
+    print("ok")
+else:
+    raise SystemExit("unknown: %s" % what)
+PYEOF
+FR1="$TMPROOT/fr1.py"
+
+check "D2. the BAD-INPUT step runs the subcommand that TAKES the input" \
+  '[ "$("$PY" "$FR1" bad-input-argv "$RJO")" = "[\"python3\", \"relay.py\", \"file\", \"\"]" ]'
+check "D2. …and never the listing verb that takes none (the FAILED-about-a-working-command bug)" \
+  '! "$PY" "$FR1" bad-input-argv "$RJO" | grep -q "list"'
+check "D2. the HAPPY PATH performs the action — it files, with a real value" \
+  '[ "$("$PY" "$FR1" happy-argv "$RJO")" = "[\"python3\", \"relay.py\", \"file\", \"Number One typed this to see it carry\"]" ]'
+check "D2. …and a read-back step LISTS what it just filed" \
+  '[ "$("$PY" "$FR1" readback-argv "$RJO")" = "[\"python3\", \"relay.py\", \"list\"]" ]'
+check "D2. …in that order: file first, then the list that reads it back" \
+  '[ "$("$PY" "$FR1" order "$RJO")" = ok ]'
+check "D2. …so the happy path never lists twice" \
+  '[ "$("$PY" "$FR1" happy-argv "$RJO")" != "$("$PY" "$FR1" readback-argv "$RJO")" ]'
+check "D2. every reach step still says which criterion it is FOR" \
+  '[ "$("$PY" "$FR1" every-step-for "$RJO")" = ok ]'
+# POSITIVE CONTROL, in the claim's own phrasing family: a record that names its
+# ACTING verb first must still instantiate that same verb. The cure must not
+# merely reverse the order it picks.
+check "D2. positive control — a record naming its acting verb FIRST still uses it" \
+  '[ "$("$PY" "$FR1" bad-input-argv "$CJO")" = "[\"python3\", \"notes.py\", \"add\", \"\"]" ]'
+
+# D2, END TO END — the instantiated steps, EXECUTED against a real CLI. The
+# argv assertions above are the cure; this is the harm they remove. The old
+# steps printed `FAILED 02-bad-input.txt (cli)` about `relay.py list ""`, a
+# command that works, and shipped a transcript that looked like proof of a
+# defect. Nothing here is hand-written: the steps are the ones xo-journey.py
+# just built from the record.
+RPROD="$TMPROOT/relay-prod"; mkdir -p "$RPROD"
+git -C "$RPROD" init -q -b main
+cat >"$RPROD/relay.py" <<'PYEOF'
+import os, sys
+args = sys.argv[1:]
+store = os.path.join(os.environ.get("HOME", "."), ".relay", "store")
+if not args or args[0] in ("--help", "-h"):
+    print("usage: relay [file|list]")
+    sys.exit(0)
+if args[0] == "file":
+    if len(args) < 2 or not args[1].strip():
+        sys.stderr.write("relay: empty request text\n")
+        sys.exit(2)
+    os.makedirs(os.path.dirname(store), exist_ok=True)
+    with open(store, "a") as fh:
+        fh.write(args[1] + "\n")
+    print("filed r1")
+    sys.exit(0)
+if args[0] == "list":
+    try:
+        sys.stdout.write(open(store).read())
+    except IOError:
+        pass
+    sys.exit(0)
+sys.stderr.write("relay: no such subcommand %s\n" % args[0])
+sys.exit(2)
+PYEOF
+git -C "$RPROD" add -A >/dev/null 2>&1
+git -C "$RPROD" -c user.email=t@t -c user.name=t commit -qm init >/dev/null 2>&1
+git -C "$RPROD" branch -q feat/relay 2>/dev/null
+RSHOTS="$TMPROOT/shots/relay-1"
+"$PY" "$CAGE" 120 "$PY" "$XORUN" run \
+  --journey "$RJO" --repo "$RPROD" --branch feat/relay \
+  --out "$RSHOTS" --mission-dir "$RLM" >"$TMPROOT/relay-run.out" 2>&1
+check "D2 e2e. the instantiated steps TERMINATE and leave their transcripts" \
+  '! grep -q "TIMED OUT" "$TMPROOT/relay-run.out" &&
+   [ -s "$RSHOTS/02-bad-input.txt" ] && [ -s "$RSHOTS/03-happy-path.txt" ] &&
+   [ -s "$RSHOTS/03-happy-path-readback.txt" ]'
+check "D2 e2e. the bad-input step gets the NON-ZERO exit it expects — no false FAILED" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d[\"exit\"] not in (0, None), d
+assert d[\"met\"] is True, d
+" "$RSHOTS/02-bad-input.json"'
+check "D2 e2e. …and the console never reports FAILED about it" \
+  '! grep -q "FAILED 02-bad-input" "$TMPROOT/relay-run.out"'
+check "D2 e2e. the happy path really FILED something" \
+  'grep -q "filed" "$RSHOTS/03-happy-path.txt"'
+check "D2 e2e. and the read-back step shows what was filed carrying through" \
+  'grep -q "Number One typed this to see it carry" "$RSHOTS/03-happy-path-readback.txt"'
+# POSITIVE CONTROL for the same claim: this is a REAL read-back, not a step that
+# would print that line whatever happened. With nothing filed, the same list
+# command prints nothing of the sort.
+check "D2 e2e. positive control — the listing is empty when nothing was filed" \
+  'EMPTYHOME="$TMPROOT/empty-home"; mkdir -p "$EMPTYHOME";
+   ! HOME="$EMPTYHOME" "$PY" "$RPROD/relay.py" list | grep -q "Number One typed"'
+
+# --- D1: checkedBy, and an evidence word a transcript can honestly use -------
+cat >"$TMPROOT/schema.py" <<'PYEOF'
+# The ONE block the worker copies: the fenced JSON that carries `"score"` and
+# `"criteria"`. Prose elsewhere in the file is not what gets copied, which is
+# the whole point of this check.
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+blocks = [b for b in re.findall(r"```json\n(.*?)```", text, re.S)
+          if '"score"' in b and '"criteria"' in b]
+assert blocks, "no verdict schema block found at all"
+block = blocks[0]
+want = sys.argv[2]
+if want == "checkedBy":
+    assert "checkedBy" in block, block
+elif want == "transcript":
+    m = re.search(r'"evidence":\s*"([^"]+)"', block)
+    assert m, block
+    words = m.group(1).split("|")
+    assert "transcript" in words, words
+print("ok")
+PYEOF
+check "D1. the verdict SCHEMA the worker copies names checkedBy (not only the prose)" \
+  '[ "$("$PY" "$TMPROOT/schema.py" "$EVALUATE_MD" checkedBy)" = ok ]'
+check "D1. …and its evidence words include one a TRANSCRIPT can honestly claim" \
+  '[ "$("$PY" "$TMPROOT/schema.py" "$EVALUATE_MD" transcript)" = ok ]'
+
+SCOREPY="$REPO_ROOT/skills/lcars-xo/xo-score.py"
+SDIR="$TMPROOT/score"; mkdir -p "$SDIR"
+cat >"$SDIR/criteria.json" <<'CJ'
+{"hasDrawing": true, "placeNames": [], "criteria": [
+  {"id": "prd-1", "text": "the help lists every subcommand", "primary": true},
+  {"id": "prd-2", "text": "the board shows the list", "primary": false}
+]}
+CJ
+cat >"$SDIR/in.json" <<'IJ'
+{"score":"medium","summary":"Looked at the relay.","criteria":[
+ {"id":"prd-1","text":"the help lists every subcommand","status":"met",
+  "shot":"01-help.txt","evidence":"transcript","checkedBy":"cli",
+  "note":"the transcript lists all three subcommands",
+  "action":"Ran relay.py --help and read the transcript.",
+  "reason":"Impact high because it is the front door. I tried --help; I saw all three (evidence: 01-help.txt). Outcome: met."},
+ {"id":"prd-2","text":"the board shows the list","status":"met","shot":"shot-02",
+  "evidence":"picture","checkedBy":"browser","note":"saw the list",
+  "action":"Looked at the board.",
+  "reason":"Impact medium because it is the main screen. I tried looking; I saw the list (evidence: shot-02). Outcome: met."}],
+ "gaps":[],"alsoChecked":[],"escalations":[]}
+IJ
+"$PY" "$SCOREPY" "$SDIR/in.json" "$SDIR/criteria.json" "$SDIR/verdict.json" \
+  >"$SDIR/out.tsv" 2>"$SDIR/err.txt"
+cat >"$TMPROOT/row.py" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d.get("criteria") or []:
+    if e.get("id") == sys.argv[2]:
+        print(str(e.get(sys.argv[3], "<absent>")))
+        break
+else:
+    print("<no-such-row>")
+PYEOF
+ROW="$TMPROOT/row.py"
+check "D1. the verdict the captain reads carries checkedBy on the row" \
+  '[ "$("$PY" "$ROW" "$SDIR/verdict.json" prd-1 checkedBy)" = cli ]'
+check "D1. a transcript-backed row is NOT restamped as a picture" \
+  '[ "$("$PY" "$ROW" "$SDIR/verdict.json" prd-1 evidence)" = transcript ]'
+check "D1. …and it still stands as met, cited by its transcript filename" \
+  '[ "$("$PY" "$ROW" "$SDIR/verdict.json" prd-1 status)" = met ] &&
+   [ "$("$PY" "$ROW" "$SDIR/verdict.json" prd-1 shot)" = 01-help.txt ]'
+check "D1. positive control — a row that WAS a picture still reads picture, checked by browser" \
+  '[ "$("$PY" "$ROW" "$SDIR/verdict.json" prd-2 evidence)" = picture ] &&
+   [ "$("$PY" "$ROW" "$SDIR/verdict.json" prd-2 checkedBy)" = browser ]'
+check "D1. the report no longer says it SAW on screen what it read in a terminal" \
+  '! grep -q "I saw each one on screen" "$SDIR/out.tsv" &&
+   ! grep -q "I have a picture of each one" "$SDIR/out.tsv"'
+check "D1. …it says what it ran, and counts it apart from what it looked at" \
+  'grep -qi "read the transcript" "$SDIR/out.tsv"'
+# An instrument word nobody recognises is DROPPED, never defaulted — the same
+# rule `kind` already has. A guessed instrument is the fault this cures.
+cat >"$SDIR/in-bogus.json" <<'IJ'
+{"score":"medium","summary":"Looked.","criteria":[
+ {"id":"prd-1","text":"the help lists every subcommand","status":"met",
+  "shot":"01-help.txt","evidence":"transcript","checkedBy":"vibes","note":"ok",
+  "action":"Ran it."},
+ {"id":"prd-2","text":"the board shows the list","status":"met","shot":"shot-02",
+  "evidence":"picture","note":"saw it","action":"Looked."}],
+ "gaps":[],"alsoChecked":[],"escalations":[]}
+IJ
+"$PY" "$SCOREPY" "$SDIR/in-bogus.json" "$SDIR/criteria.json" "$SDIR/bogus.json" \
+  >"$SDIR/bogus.tsv" 2>&1
+check "D1. an unrecognised instrument word is dropped, not defaulted" \
+  '[ "$("$PY" "$ROW" "$SDIR/bogus.json" prd-1 checkedBy)" = "<absent>" ]'
+check "D1. …and a row that declared none carries none" \
+  '[ "$("$PY" "$ROW" "$SDIR/bogus.json" prd-2 checkedBy)" = "<absent>" ]'
+
+# --- D5: the browser driver must not journal a HARNESS step as dropped ------
+# `xo_reach_actions` runs every `run`/`workflow`/`read` the worker asked for —
+# and the same actions file goes to the driver, which journaled one
+# "unknown action, skipped: {...}" per step and set `incomplete`. The WORKER
+# READS THOSE NOTES, so a false "skipped" is misinformation in its input.
+DRIVE="$REPO_ROOT/skills/lcars-xo/xo-drive.js"
+check "D5. the driver says a harness step was HANDED OVER, not skipped" \
+  'grep -q "handed to the harness" "$DRIVE"'
+check "D5. …and does not call a harness step an unknown action it skipped" \
+  '"$PY" - "$DRIVE" <<'"'"'PYEOF'"'"'
+import sys
+Q = chr(34)
+src = open(sys.argv[1], encoding="utf-8").read()
+# The FALLBACK itself, not the comment above it that quotes what it used to say
+# about a harness step.
+i = src.index("notes.push(" + Q + "unknown action, skipped")
+# The branch that answers a harness kind must be REACHED FIRST: it sits above
+# the fallback that calls an action unknown. And what it journals must neither
+# claim the step was dropped nor mark the walk incomplete.
+head = src[:i]
+j = head.rfind("a.do === " + Q + "run" + Q)
+assert j >= 0, "the fallback is reached with no branch that recognises a harness kind"
+for kind in ("run", "workflow", "read"):
+    assert Q + kind + Q in head[j:], kind
+branch = head[j:]
+assert "handed to the harness" in branch, branch[:400]
+assert "incomplete = true" not in branch, branch[:400]
+print("ok")
+PYEOF'
+NODEBIN="${LCARS_NODE_BIN:-node}"
+check "D5. …and the driver is still valid JavaScript" \
+  'command -v "$NODEBIN" >/dev/null 2>&1 && "$NODEBIN" --check "$DRIVE" >/dev/null 2>&1'
+
+# ===========================================================================
 # ZERO SPEND
 # ===========================================================================
 echo ""
