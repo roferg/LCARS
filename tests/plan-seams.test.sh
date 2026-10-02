@@ -961,8 +961,17 @@ has "6n …GITHUB_REPOSITORY_OWNER"                   'GITHUB_REPOSITORY_OWNER' 
 has "6o …GITHUB_EVENT_PATH"                         'GITHUB_EVENT_PATH' "$PB"
 has "6p …same cwd"                                  'same cwd'      "$PB"
 has "6q …same command"                              'same command'  "$PB"
-check "6r plan.md carries TWO worked examples (a seam and a workflow)" \
-  "[ \"\$(printf '%s' \"\$PB\" | grep -ci 'worked example')\" -ge 2 ]"
+# S179 vs S236 — a DIRECT CONFLICT between two tracked documents, which is how
+# this file reached 4 worked examples and 8 json fences without either side
+# noticing. The S179 guard (wave-serialization 2i/2j/7j/7k) pins this file to ONE
+# worked example and TWO json fences, because three MEASURED live turns
+# transplanted a prompt's worked example verbatim onto an unrelated screen. This
+# check originally demanded TWO MORE copyable ones.
+# Resolved on the captain's ruling (BUG-108, option a): consolidate. Both cases
+# are still TAUGHT — in prose, with no copyable ticket for a worker to lift. Do
+# not restore a copyable example here; raising the count is how the guard dies.
+check "6r plan.md teaches BOTH cases in practice — a seam and a workflow entrypoint" \
+  "[ \"\$(printf '%s' \"\$PB\" | grep -c 'In practice')\" -ge 2 ]"
 has "6s …the workflow example names a .github/workflows file" \
     '.github/workflows/' "$PB"
 # S236 fix round 1 — the producer records the claim, and the workflow hatch.

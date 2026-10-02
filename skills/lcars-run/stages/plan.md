@@ -50,13 +50,10 @@ requirement is caught downstream and drags the grade down — it does not pass.
 against the requirement it maps to WITHOUT anything reading your prose to guess
 whether you asked FOR a thing or for its absence (that guess has been wrong
 before), you RECORD both at planning time. When a criterion relates to a
-specific PRD acceptance criterion, write it as an OBJECT carrying:
-
-```json
-{"text": "<what the Implementer builds against>",
- "serves": "<the PRD acceptance-criterion line this relates to, verbatim, or its prd-N id>",
- "direction": "<delivers | removes>"}
-```
+specific PRD acceptance criterion, write it as an OBJECT instead of a string,
+carrying exactly three keys: **`text`**, what the Implementer builds against;
+**`serves`**, the PRD acceptance-criterion line this relates to, verbatim, or
+its `prd-N` id; and **`direction`**, either `delivers` or `removes`.
 
 - **`"direction": "delivers"`** — this criterion MAKES that requirement true.
   This is the normal case: use it for every criterion that helps deliver the
@@ -240,20 +237,15 @@ So every ticket DECLARES, as two arrays, what it is creating at those places.
 Nothing infers them from your prose and nothing scans a diff for them: you
 record them, and the reviewer audits them.
 
-```json
-"seams": [
-  { "producer": "<what WRITES the state>",
-    "consumer": "<what READS it>",
-    "roundTripTest": "<the test path that drives both halves for real>",
-    "roundTripProof": "<ONE SENTENCE: how that test drives BOTH REAL halves>" }
-],
-"entrypoints": [
-  { "kind": "workflow",
-    "path": "<the file CI runs>",
-    "realRunTest": "<the test path that runs it exactly as CI does>",
-    "realRunProof": "<ONE SENTENCE: how that test runs it the way CI runs it>" }
-]
-```
+**`seams`** is an array; each entry carries four keys — **`producer`**, what
+WRITES the state; **`consumer`**, what READS it; **`roundTripTest`**, the test
+path that drives both halves for real; and **`roundTripProof`**, ONE SENTENCE
+saying how that test drives BOTH REAL halves.
+
+**`entrypoints`** is an array; each entry carries four keys — **`kind`**,
+`workflow` or `cli`; **`path`**, the file CI runs; **`realRunTest`**, the test
+path that runs it exactly as CI does; and **`realRunProof`**, ONE SENTENCE
+saying how that test runs it the way CI runs it.
 
 ### The proof sentence — `roundTripProof` / `realRunProof`
 
@@ -280,14 +272,10 @@ cannot write the sentence truthfully, the test you named is the wrong test:
 change the test, never the sentence.
 
 **Both keys are REQUIRED on every ticket.** A ticket with no seam and no new
-entrypoint writes an EMPTY array plus one sentence saying why:
-
-```json
-"seams": [],
-"seamsNote": "this ticket is a pure renderer; it writes no state another path reads.",
-"entrypoints": [],
-"entrypointsNote": "it adds no CLI command and no workflow."
-```
+entrypoint writes an EMPTY array plus one sentence saying why, in a sibling key
+named for it: `seams` empty alongside a **`seamsNote`** — *"this ticket is a pure
+renderer; it writes no state another path reads"* — and `entrypoints` empty
+alongside an **`entrypointsNote`** — *"it adds no CLI command and no workflow."*
 
 An empty list is a CLAIM, not a blank. The reviewer checks that note against the
 brief, and "no seams" on a ticket whose own description names a writer and a
@@ -330,52 +318,38 @@ run from a test:
 An entry of kind `cli` is the same promise about a command a human or a script
 invokes: run the real argv, not the function behind it.
 
-### Worked example 1 — a seam (a producer and a consumer)
+### In practice — a seam (a producer and a consumer)
 
 A CLI writes a request file; a workflow's handler parses it. That is one seam,
-and it gets one round-trip test:
+and it gets one round-trip test.
 
-```json
-{
-  "id": "t-003",
-  "title": "Write the promote request and parse it in the hub",
-  "acceptanceCriteria": ["a request written by the CLI is parsed by the hub"],
-  "seams": [
-    { "producer": "`widgets request promote` writes .widgets/request.json",
-      "consumer": "tools/hub.py parse_request() reads .widgets/request.json",
-      "roundTripTest": "tests/test_request_roundtrip.py",
-      "roundTripProof": "it runs the real `widgets request promote`, reads the file that command actually wrote, and passes those bytes to the real parse_request(); nothing in the test types a payload." }
-  ],
-  "entrypoints": [],
-  "entrypointsNote": "no new CI entrypoint; the hub already runs on the existing workflow."
-}
-```
+That ticket's `seams` holds a single entry: the **producer** is
+`` `widgets request promote` writes .widgets/request.json``, the **consumer** is
+`tools/hub.py parse_request() reads .widgets/request.json`, the
+**roundTripTest** is `tests/test_request_roundtrip.py`, and the
+**roundTripProof** reads *"it runs the real `widgets request promote`, reads the
+file that command actually wrote, and passes those bytes to the real
+parse_request(); nothing in the test types a payload."* Its `entrypoints` is
+empty, with an `entrypointsNote` of *"no new CI entrypoint; the hub already runs
+on the existing workflow."*
 
 `tests/test_request_roundtrip.py` calls the CLI's writer, reads back the file it
 produced, and passes THAT to `parse_request()`. There is no `SAMPLE_REQUEST = {…}`
 constant in it anywhere. If there were, this is the ticket that would have
 shipped the producer/consumer format mismatch.
 
-### Worked example 2 — a workflow entrypoint
+### In practice — a workflow entrypoint
 
 A ticket that adds a publish workflow declares it, and names the test that runs
-it as CI does:
+it as CI does.
 
-```json
-{
-  "id": "t-007",
-  "title": "Publish the digest on a push to main",
-  "acceptanceCriteria": ["the publish step runs the hub module and exits 0"],
-  "seams": [],
-  "seamsNote": "the workflow reads no state this ticket also writes; the digest format is t-003's seam.",
-  "entrypoints": [
-    { "kind": "workflow",
-      "path": ".github/workflows/publish.yml",
-      "realRunTest": "tests/test_publish_workflow.py",
-      "realRunProof": "it parses the publish step's `run:` out of the yml and executes that exact command from the repo root with GITHUB_SERVER_URL, GITHUB_REPOSITORY_OWNER and GITHUB_EVENT_PATH set as a runner sets them." }
-  ]
-}
-```
+That ticket's `entrypoints` holds one entry — **kind** `workflow`, **path**
+`.github/workflows/publish.yml`, **realRunTest** `tests/test_publish_workflow.py`,
+and a **realRunProof** of *"it parses the publish step's `run:` out of the yml and
+executes that exact command from the repo root with GITHUB_SERVER_URL,
+GITHUB_REPOSITORY_OWNER and GITHUB_EVENT_PATH set as a runner sets them."* Its
+`seams` is empty, with a `seamsNote` saying the workflow reads no state this
+ticket also writes, and that the digest format is the other ticket's seam.
 
 `tests/test_publish_workflow.py` reads the step's command out of
 `.github/workflows/publish.yml` and runs THAT command, from the workflow's cwd,
@@ -383,24 +357,19 @@ with `GITHUB_SERVER_URL` / `GITHUB_REPOSITORY_OWNER` / `GITHUB_EVENT_PATH` set
 the way a runner sets them. A test that imports the handler and calls a function
 is not this test.
 
-### Worked example 3 — a workflow file you **do not own**
+### In practice — a workflow file you **do not own**
 
 A ticket often has to NAME a workflow file without owning it: to say another
 ticket owns it, or to forbid editing it. Say so plainly in the prose, and record
 it by **naming the file in `entrypointsNote`** — not because any gate asks, but
-because the reviewer reads that note and a written disclaimer is what it reads:
+because the reviewer reads that note and a written disclaimer is what it reads.
 
-```json
-{
-  "id": "t-002",
-  "title": "Add the promote CLI",
-  "description": "Add the `promote` subcommand. Do NOT edit .github/workflows/publish.yml — t-004 owns that file.",
-  "seams": [],
-  "seamsNote": "pure CLI; it writes no state another path reads.",
-  "entrypoints": [],
-  "entrypointsNote": "this ticket adds no CI entrypoint, and it does not own .github/workflows/publish.yml — it names that file only to forbid editing it here."
-}
-```
+So a CLI-only ticket says in its own `description` *"Do NOT edit
+.github/workflows/publish.yml — t-004 owns that file"*, leaves `seams` empty with
+a `seamsNote` of *"pure CLI; it writes no state another path reads"*, and leaves
+`entrypoints` empty with an `entrypointsNote` of *"this ticket adds no CI
+entrypoint, and it does not own .github/workflows/publish.yml — it names that
+file only to forbid editing it here."*
 
 **Never invent an `entrypoints` entry for a file you do not own.** An entry is a
 promise that a test runs that file for real; writing one for a file you are
