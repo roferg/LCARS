@@ -40,6 +40,7 @@ import zlib
 
 from .local_adapter import LocalAdapter
 from .worker_guard import DAEMON_HINT as DAEMON_SHIM_HINT, editor_shim_refusal
+from .worker_guard import explicit_override
 
 
 class ActionError(Exception):
@@ -5896,6 +5897,13 @@ class Actions(LogFacts):
             # a clean filing, so that payload is unchanged.
             if sess.heal_attempts:
                 resp["healed"] = sess.heal_attempts
+            # S238 — WHERE THE PRD WENT, when file.sh said so. On the feedback
+            # RE-GRILL lane the closing turn used to carry no path at all, which
+            # was indistinguishable from the filing that saved nothing but a
+            # prd-draft.md. Absent on every other lane, so that payload is
+            # unchanged.
+            if turn.get("prdPath"):
+                resp["prdPath"] = turn["prdPath"]
             if turn.get("adr"):
                 resp["adr"] = turn["adr"]
             resp["board"] = board
@@ -6139,6 +6147,24 @@ class Actions(LogFacts):
                         pass
         return self._reader.board()
 
+    @staticmethod
+    def _saved_prd_path(proc):
+        """The `prd.md` path a `file.sh` dispatch reports it wrote, or "".
+
+        file.sh prints `  PRD written:     <abs path>` on the re-entry lane.
+        Read with ONE split on the label, because the path is the rest of the
+        line and may hold spaces (a repo under "Application Support" is not
+        hypothetical on this machine).
+        """
+        try:
+            out = (proc.stdout or b"").decode("utf-8", "replace")
+        except AttributeError:
+            return ""
+        for line in out.splitlines():
+            if "PRD written:" in line:
+                return line.split("PRD written:", 1)[1].strip()
+        return ""
+
     def _complete_from_align(self, mid, turn, engine=None, image_paths=None):
         """Park & Align (S137): COMPLETE a parked mission's alignment via
         `file.sh --complete <id> --prd <path>` (ADR-002 dispatch).
@@ -6168,6 +6194,16 @@ class Actions(LogFacts):
         # only copy died in daemon memory when the request unwound.
         draft_path = self._persist_align_draft(mid, prd + "\n")
         args = ["--complete", mid, "--prd", prd_path]
+        # S238 — SAY IT IS A RE-GRILL. A mission with a `feedback.md` beside it
+        # has been round the loop and come back through `lcars feedback`, so
+        # completing its alignment again overwrites prd.md instead of being
+        # refused as "already aligned". The VERDICT still belongs to file.sh —
+        # it ignores this flag for a mission that is genuinely parked — so this
+        # is a hint from the one place that knows which lane the captain is on,
+        # not a second copy of the decision.
+        if os.path.isfile(os.path.join(self._missions_dir(), mid,
+                                       "feedback.md")):
+            args.append("--reentry")
         if adr_path:
             args += ["--adr", adr_path]
         ov = (turn.get("modelOverride") or "").strip()
@@ -6181,12 +6217,21 @@ class Actions(LogFacts):
         if eng:
             env_extra["LCARS_WORKER_BIN"] = eng
         try:
-            self._run("file", args, env_extra=env_extra)
+            proc = self._run("file", args, env_extra=env_extra)
         except ActionError as exc:
             if draft_path and not exc.draft_path:
                 exc.draft_path = draft_path
             raise
         else:
+            # S238 — WHERE THE PRD LANDED, in file.sh's own words. The captain's
+            # closing turn used to end with no path at all, which on the re-grill
+            # lane was indistinguishable from the filing that silently saved
+            # nothing. Read off the dispatch's output rather than composed here,
+            # so the daemon reports the path file.sh actually wrote (ADR-002: it
+            # is still file.sh that writes it).
+            saved = self._saved_prd_path(proc)
+            if saved:
+                turn["prdPath"] = saved
             # The filing landed: `prd.md` is the real document now, so the draft
             # would only be a stale second copy of it.
             self._discard_align_draft(draft_path)
@@ -6623,6 +6668,8 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — cannot "
                 "drive the Align/Log worker")
+        # S238 — an explicit override beats the picker's bare engine NAME.
+        bin_ = self._engine_file(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
         # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
@@ -7529,6 +7576,11 @@ class Actions(LogFacts):
             return {"state": "done", "ok": False, "changes": [],
                     "why": "no worker engine is configured, so LCARS could not "
                            "read your project against the mockup"}
+        # S238 — an explicit override beats a bare engine NAME. This lane
+        # ANSWERS instead of raising, so the refusal rides the payload's `why`.
+        bin_, _ovr = explicit_override(bin_)
+        if _ovr:
+            return {"state": "done", "ok": False, "changes": [], "why": _ovr}
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
         if _refused:
@@ -9594,6 +9646,8 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — the "
                 "holodeck has nothing to talk to")
+        # S238 — an explicit override beats a bare engine NAME.
+        bin_ = self._engine_file(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
         # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
@@ -10422,6 +10476,10 @@ class Actions(LogFacts):
                 "choose one in the engine picker. To give every program on this "
                 "viewscreen the same engine without picking, restart it with "
                 "one: `LCARS_WORKER_BIN=copilot lcars viewscreen --open`.")
+        # S238 — an explicit override beats a bare engine NAME, and it is applied
+        # BEFORE the which() probe so the override's own file is what gets
+        # checked (and what gets recorded as the program's engine).
+        bin_ = self._engine_file(bin_)
         if not shutil.which(bin_):
             raise ActionError(
                 502, "the holodeck cannot run %s — it is not an executable on "
@@ -13327,6 +13385,28 @@ class Actions(LogFacts):
                     logf.close()
                 except OSError:
                     pass
+
+    def _engine_file(self, bin_):
+        """S238 — THE FILE AN EXPLICIT OVERRIDE NAMES, in place of a bare engine
+        name. Returns the bin to start; raises the override's own refusal.
+
+        THE DEFECT THIS CLOSES, MEASURED. Every spawn below resolves
+        `engine or self.worker_bin`, and the board ALWAYS posts a bare engine
+        NAME (board.js sends `{engine: "copilot"}`) — so the picker's word
+        outranked an operator's `LCARS_WORKER_BIN=/opt/homebrew/bin/copilot`
+        with no effect and no warning. He could not tell "my variable was
+        ignored" from "that binary is broken".
+
+        PRECEDENCE IS DELIBERATELY UNTOUCHED: the picker still chooses the
+        ENGINE, this chooses the FILE for a bare `copilot`. A bin named by path
+        is returned as given. The rule, and why it refuses instead of falling
+        back to PATH, lives in worker_guard.explicit_override — one place, same
+        as the shim rule it sits beside.
+        """
+        chosen, refused = explicit_override(bin_)
+        if refused:
+            raise ActionError(502, refused)
+        return chosen
 
     def _require_mission(self, mid):
         d = os.path.join(self._missions_dir(), mid)

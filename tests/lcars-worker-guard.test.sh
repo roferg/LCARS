@@ -505,6 +505,115 @@ check "S231(a-e2e). worker-adapter ran the REAL fallback CLI, not the shim" \
   "[ -f '$TMPROOT/absmark-ran' ]"
 check "S231(a-e2e). …and the shim was never executed" "[ ! -e '$SENTINEL' ]"
 
+# ==========================================================================
+# S238 (A2). THE REFUSAL NAMES THE FAILURE MODE THAT ACTUALLY HAPPENS
+#
+# MEASURED BY THE S238 GATING SPIKE, in the worst case anyone could build (no
+# real copilot anywhere on PATH; brew/npm/curl/wget all stubbed to refuse):
+# shim 0.0.394 does NOT loop. 0.1s, 1240 processes against a 1219 baseline, no
+# recursion — because copilotCLIShim.js strips its own `__dirname` out of the
+# child's PATH before it spawns bare `copilot`, so the child finds the REAL cli
+# or nothing. The old sentence's mechanism ("calls `copilot` back by name until
+# the machine runs out of processes") is therefore FALSE for this shim, and a
+# refusal that states a mechanism nobody can reproduce is a refusal the next
+# person disbelieves and disables.
+#
+# REFUSING IS STILL RIGHT, for the reason the spike DID find: with no real CLI
+# behind it the shim prints an install prompt and — under the daemon's
+# stdin=DEVNULL — exits 0 with no model output. A SILENT GARBAGE TURN, which is
+# worse than a crash because every caller reads it as success.
+echo "S238(A2). the refusal states the failure the spike measured, not the one it disproved"
+out="$(guard_sh copilot "$LINKBIN:$REALBIN:/usr/bin:/bin")"
+check "S238(A2). the disproved fork-bomb mechanism is GONE from the sentence" \
+  "! printf '%s' \"\$out\" | grep -F 'out of processes' >/dev/null"
+check "S238(A2). it says the shim EXITS 0" \
+  "printf '%s' \"\$out\" | grep -F 'exits 0' >/dev/null"
+check "S238(A2). …with no model output (the silent-success shape)" \
+  "printf '%s' \"\$out\" | grep -F 'no model output' >/dev/null"
+check "S238(A2). still ONE sentence" \
+  "[ \"\$(printf '%s\n' \"\$out\" | grep -vc '^rc=')\" = 1 ]"
+check "S238(A2). still names the path it resolved to" \
+  "printf '%s' \"\$out\" | grep -F 'github.copilot-chat/copilotCli/copilot' >/dev/null"
+check "S238(A2). still names the fix" \
+  "printf '%s' \"\$out\" | grep -F \"put $REALBIN ahead of it on PATH\" >/dev/null"
+check "S238(A2). BYTE-IDENTICAL in the daemon's copy" \
+  "[ \"\$(guard_sh copilot '$LINKBIN:$REALBIN:/usr/bin:/bin')\" = \"\$(guard_py copilot '$LINKBIN:$REALBIN:/usr/bin:/bin')\" ]"
+check "S238(A2). …and for the absolute-shim wording too" \
+  "[ \"\$(guard_sh '$SHIM' '$REALBIN:/usr/bin:/bin')\" = \"\$(guard_py '$SHIM' '$REALBIN:/usr/bin:/bin')\" ]"
+
+# ==========================================================================
+# S238 (A1). AN EXPLICIT OVERRIDE WINS OVER A BARE ENGINE NAME
+#
+# THE REAL DEFECT THE SPIKE FOUND. The board always sends a BARE engine NAME
+# ("copilot") in the POST body, and `_worker_turn` does `bin_ = engine or
+# self.worker_bin` — so the picker's bare name outranks an operator's
+# $LCARS_WORKER_BIN with NO effect and NO warning. An operator who points LCARS
+# at a known-good binary and watches it be ignored in silence has no way to tell
+# that from the binary being broken.
+#
+# The cure is engine-specific and ADDITIVE: when the resolved engine is a BARE
+# NAME (no "/"), $LCARS_COPILOT_BIN stands in for it. A bin someone named by
+# PATH is never rewritten (their path wins, and the shim guard still judges it),
+# and an override that does not exist / is not executable is REFUSED BY NAME
+# with the path quoted — never silently dropped back to PATH, which is the exact
+# silence this fixes.
+#
+# NOTHING HERE EXECUTES ANYTHING either: isfile + access(X_OK) only.
+echo "S238(A1). an explicit copilot override beats a bare engine name"
+over_py() { # <bin> [LCARS_COPILOT_BIN] -> "chosen<NL>refusal..." then rc=
+  local v="${2-}"
+  if [ "$#" -lt 2 ]; then
+    env -u LCARS_COPILOT_BIN "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
+from lcars_serve.worker_guard import explicit_override
+b, m = explicit_override(sys.argv[2])
+print("bin=%s" % b)
+print("refusal=%s" % (m or ""))' "$REPO_ROOT/web" "$1" 2>&1
+  else
+    LCARS_COPILOT_BIN="$v" "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
+from lcars_serve.worker_guard import explicit_override
+b, m = explicit_override(sys.argv[2])
+print("bin=%s" % b)
+print("refusal=%s" % (m or ""))' "$REPO_ROOT/web" "$1" 2>&1
+  fi
+}
+OVREAL="$TMPROOT/override-bin/copilot"
+mkdir -p "$(dirname "$OVREAL")"
+printf '#!/bin/sh\necho "copilot 1.0.91 (stub)"\nexit 0\n' >"$OVREAL"; chmod +x "$OVREAL"
+OVMISSING="$TMPROOT/override-bin/no-such-copilot"
+OVNOTEXEC="$TMPROOT/override-bin/copilot-not-exec"
+printf 'not a program\n' >"$OVNOTEXEC"; chmod 644 "$OVNOTEXEC"
+
+out="$(over_py copilot "$OVREAL")"
+check "S238(A1). a real override REPLACES the bare name" \
+  "printf '%s' \"\$out\" | grep -qF \"bin=$OVREAL\""
+check "S238(A1). …and is never refused" \
+  "printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py copilot "$OVMISSING")"
+check "S238(A1). an override that is not there is REFUSED (not silently dropped)" \
+  "printf '%s' \"\$out\" | grep -q 'refusal=Refusing to start'"
+check "S238(A1). …naming the variable BY NAME" \
+  "printf '%s' \"\$out\" | grep -qF 'LCARS_COPILOT_BIN'"
+check "S238(A1). …and QUOTING the path it was pointed at" \
+  "printf '%s' \"\$out\" | grep -qF \"\\\"$OVMISSING\\\"\""
+check "S238(A1). …in ONE sentence" \
+  "[ \"\$(printf '%s\n' \"\$out\" | grep -c '^refusal=.')\" = 1 ]"
+out="$(over_py copilot "$OVNOTEXEC")"
+check "S238(A1). a present but NON-EXECUTABLE override is refused too" \
+  "printf '%s' \"\$out\" | grep -q 'refusal=Refusing to start'"
+out="$(over_py "$REALBIN/copilot" "$OVREAL")"
+check "S238(A1). a bin someone named BY PATH wins — the override never rewrites it" \
+  "printf '%s' \"\$out\" | grep -qF \"bin=$REALBIN/copilot\" && printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py claude "$OVREAL")"
+check "S238(A1). it is ENGINE-SPECIFIC — a claude engine is untouched" \
+  "printf '%s' \"\$out\" | grep -qx 'bin=claude' && printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py copilot)"
+check "S238(A1). with the variable UNSET nothing changes (additive)" \
+  "printf '%s' \"\$out\" | grep -qx 'bin=copilot' && printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py copilot "")"
+check "S238(A1). set-but-EMPTY is 'no override', not a refusal" \
+  "printf '%s' \"\$out\" | grep -qx 'bin=copilot' && printf '%s' \"\$out\" | grep -qx 'refusal='"
+check "S238(A1). and nothing was executed to work any of that out" "[ ! -e '$SENTINEL' ]"
+
 echo
 printf 'lcars worker-guard: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

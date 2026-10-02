@@ -4,11 +4,24 @@
 #
 # THE HAZARD. VS Code ships its own `copilot` at
 #   ~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/copilotCli/copilot
-# — a /bin/sh launcher for copilotCLIShim.js, and that shim re-invokes `copilot`
-# BY NAME. With anything named `copilot` earlier on PATH the two call each other
-# until the machine cannot fork (2026-09-14: a night lost; 2026-09-18: back
-# again through a SYMLINK on a scratch PATH dir, after the first cure was one
-# file). A cure in one file is a cure in one file. So every place LCARS starts a
+# — a /bin/sh launcher for copilotCLIShim.js, which re-invokes `copilot` BY NAME.
+# It cost a night (2026-09-14) and came back through a SYMLINK on a scratch PATH
+# dir (2026-09-18) after the first cure was one file.
+#
+# WHAT THE HAZARD ACTUALLY IS, MEASURED (S238). The runaway-fork story this file
+# used to tell is NOT reproducible on shim 0.0.394: driven in the worst case
+# anyone could build — no real copilot anywhere on PATH, brew/npm/curl/wget all
+# stubbed to refuse — it returned in 0.1s with 1240 processes against a 1219
+# baseline and no recursion at all, because copilotCLIShim.js strips its own
+# `__dirname` out of the child's PATH before it spawns bare `copilot`. What it
+# DOES do with no real CLI behind it is print an install prompt and, under the
+# stdin=DEVNULL every LCARS spawn uses, exit 0 WITH NO MODEL OUTPUT. That is why
+# refusing is still right, and it is worse than the crash it replaced: a silent
+# garbage turn that every caller reads as success. The refusal sentence below
+# says THAT, because a refusal whose stated mechanism nobody can reproduce is a
+# refusal the next person disbelieves and switches off.
+#
+# A cure in one file is a cure in one file. So every place LCARS starts a
 # worker goes through this function — worker-adapter.sh's one exec, run.sh's
 # require_worker, init.sh's version probe — and the daemon carries the same rule
 # in web/lcars_serve/worker_guard.py, held to it by tests/lcars-worker-guard.test.sh.
@@ -198,7 +211,7 @@ lcars_worker_bin_guard() {
       *) tail=", or, when you run this from a terminal, prefix the command with $hint=$dir/copilot" ;;
     esac
   fi
-  printf 'Refusing to start %s: it resolves to %s, which is VS Code'"'"'s own copilot shim, and that shim calls `copilot` back by name until the machine runs out of processes — %s%s.\n' \
+  printf 'Refusing to start %s: it resolves to %s, which is VS Code'"'"'s own copilot shim, and with no real CLI behind it that shim prints an install prompt and exits 0 with no model output, so the turn looks like a success and is silently empty — %s%s.\n' \
     "$bin" "$real" "$lead" "$tail" >&2
   return 1
 }

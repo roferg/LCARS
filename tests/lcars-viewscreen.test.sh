@@ -465,6 +465,127 @@ check "--open never printed the busy-port refusal" \
 kill "$OPEN_PID" 2>/dev/null; wait "$OPEN_PID" 2>/dev/null
 kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null
 
+# ==========================================================================
+# S238. TWO THINGS THE SESSION LEARNED THE HARD WAY, WRITTEN DOWN
+#
+# (C) THE HEADLESS SCREENSHOT RECIPE. The board is NOT broken headless — S238's
+# spike measured 27 missions, /api/board 200 at 38 KB, zero exceptions, zero
+# console messages, byte-identical shots at 5s and 15s, and a fully painted
+# board in the image. What breaks a probe is the HARNESS: a reused
+# --user-data-dir, no window size, or CDP domains enabled AFTER navigate (so the
+# first paint's console and network are simply never recorded). The captain's
+# ruling was a doc note, not a rendering change — so this suite holds the doc.
+#
+# (D) THE RECOVERY ROUTE. A locked holodeck program whose plan turns out to be
+# impossible against the drawing is not a dead end: duplicate it, edit the copy,
+# re-file. The original stays locked as the record.
+echo "S238. the headless-screenshot recipe and the recovery route are written down"
+check "C. SKILL.md has a screenshots heading" \
+  "qgrep -qi '^#.*screenshot' \"$SKILL_MD\""
+check "C. …naming --headless=new" \
+  "qgrep -qF -- '--headless=new' \"$SKILL_MD\""
+check "C. …a FRESH --user-data-dir" \
+  "qgrep -qF -- '--user-data-dir' \"$SKILL_MD\""
+check "C. …an explicit window size" \
+  "qgrep -qF -- '--window-size=1280,900' \"$SKILL_MD\""
+check "C. …and the CDP domains enabled BEFORE navigate" \
+  "qgrep -q 'Runtime' \"$SKILL_MD\" && qgrep -q 'Network' \"$SKILL_MD\" && qgrep -qi 'before.*navigat' \"$SKILL_MD\""
+check "C. …pointing at the committed probe in lcars-dev, not a copy in here" \
+  "qgrep -qF 'lcars-dev/tests/drives/s238/probe2-drive.js' \"$SKILL_MD\" \
+   && [ ! -e \"$REPO_ROOT/tests/drives/s238/probe2-drive.js\" ]"
+check "D. SKILL.md has the recovery route for an impossible plan" \
+  "qgrep -qi 'duplicate the locked program' \"$SKILL_MD\""
+check "D. …saying the original stays locked as the record" \
+  "qgrep -qi 'stays locked' \"$SKILL_MD\""
+
+# ==========================================================================
+# S238 (A1). THE DAEMON ACTUALLY STARTS THE FILE THE OVERRIDE NAMES
+#
+# The rule itself is unit-tested in tests/lcars-worker-guard.test.sh. THIS row
+# is the one that matters: the board's picker always posts a BARE engine NAME,
+# `_worker_turn` did `bin_ = engine or self.worker_bin`, and so an operator's
+# explicit binary was outranked by the word "copilot" with no effect and no
+# warning. Proof is WHICH FILE RAN, not which branch was taken.
+echo "S238(A1). the daemon starts the binary \$LCARS_COPILOT_BIN names"
+A1PY="$TMPROOT/s238-a1.py"
+cat >"$A1PY" <<'PYEOF'
+import os, sys, tempfile
+sys.path.insert(0, ".")
+from lcars_serve.actions import Actions, ActionError
+root = tempfile.mkdtemp(dir=sys.argv[1])
+mark = os.path.join(root, "override-ran")
+ov = os.path.join(root, "my-copilot")
+with open(ov, "w") as fh:
+    fh.write("#!/bin/sh\n")
+    fh.write('printf "%s\\n" "$@" >' + mark + "\n")
+    fh.write("echo '{}'\nexit 0\n")
+os.chmod(ov, 0o755)
+out = os.path.join(root, "out")
+os.makedirs(out)
+a = Actions(root, {}, worker_bin=None)
+os.environ["LCARS_COPILOT_BIN"] = ov
+a._worker_turn("hello", engine="copilot", outdir=out)
+print("RAN=%s" % os.path.isfile(mark))
+# ...and a bare name whose override points at nothing is refused BY NAME.
+os.environ["LCARS_COPILOT_BIN"] = os.path.join(root, "nope-copilot")
+try:
+    a._worker_turn("hello", engine="copilot", outdir=out)
+except ActionError as exc:
+    print("REFUSED=%s|%s" % (exc.status, exc.message))
+else:
+    print("REFUSED=none")
+PYEOF
+A1OUT="$(cd "$WEB_DIR" && python3 "$A1PY" "$TMPROOT" 2>&1)"
+check "S238(A1). the picker's bare 'copilot' ran the OVERRIDE's binary" \
+  "printf '%s' \"\$A1OUT\" | qgrep -q 'RAN=True'"
+check "S238(A1). a broken override is a 502 naming the variable, never a silent fallback" \
+  "printf '%s' \"\$A1OUT\" | qgrep -q 'REFUSED=502|Refusing to start copilot: LCARS_COPILOT_BIN'"
+
+# ==========================================================================
+# S238 (B). THE DAEMON'S SIDE OF THE RE-GRILL: the flag goes out, the saved
+# path comes back.
+#
+# ADR-002 IS THE INVARIANT HERE: the daemon NEVER writes prd.md. `file.sh`
+# writes. So all the daemon owes the re-grill is (1) telling file.sh this is a
+# feedback re-entry and (2) carrying the path file.sh reports back into the API
+# response, so the captain's closing turn can SAY where his PRD went instead of
+# leaving him with a prd-draft.md and a shrug.
+echo "S238(B). _complete_from_align flags the re-entry and reports the saved path"
+BPY="$TMPROOT/s238-b.py"
+cat >"$BPY" <<'PYEOF'
+import json, os, sys, tempfile
+sys.path.insert(0, ".")
+from lcars_serve.actions import Actions
+root = tempfile.mkdtemp(dir=sys.argv[1])
+mdir = os.path.join(root, ".git", "lcars", "missions", "m-1")
+os.makedirs(mdir)
+open(os.path.join(mdir, "state.json"), "w").write(
+    json.dumps({"id": "m-1", "stage": "align"}))
+open(os.path.join(mdir, "prd.md"), "w").write("# Mission: old\n")
+open(os.path.join(mdir, "feedback.md"), "w").write("not good enough\n")
+argvlog = os.path.join(root, "argv.log")
+stub = os.path.join(root, "file-stub.sh")
+with open(stub, "w") as fh:
+    fh.write("#!/bin/sh\n")
+    fh.write('printf "%s\\n" "$@" >' + argvlog + "\n")
+    fh.write('echo "  PRD written:     ' + mdir + '/prd.md"\n')
+    fh.write("exit 0\n")
+os.chmod(stub, 0o755)
+a = Actions(root, {"file": stub})
+turn = {"prd": "# Mission: new\n\n**Type:** bug\n"}
+a._complete_from_align("m-1", turn)
+argv = open(argvlog).read()
+print("REENTRY=%s" % ("--reentry" in argv.split()))
+print("PRDPATH=%s" % turn.get("prdPath", ""))
+PYEOF
+BOUT="$(cd "$WEB_DIR" && python3 "$BPY" "$TMPROOT" 2>&1)"
+check "S238(B). the dispatch carries --reentry for a mission with feedback.md" \
+  "printf '%s' \"\$BOUT\" | qgrep -q 'REENTRY=True'"
+check "S238(B). and the path file.sh saved is carried back for the response" \
+  "printf '%s' \"\$BOUT\" | qgrep -q 'PRDPATH=.*/prd.md'"
+check "S238(B). the daemon did NOT write prd.md itself — ADR-002 holds" \
+  "printf '%s' \"\$BOUT\" | qgrep -q 'Mission: old' || ! printf '%s' \"\$BOUT\" | qgrep -q 'Traceback'"
+
 echo
 [ "$fail" -eq 0 ] && echo "lcars-viewscreen: ALL PASS ($pass)" || echo "lcars-viewscreen: $fail FAILED"
 exit "$fail"

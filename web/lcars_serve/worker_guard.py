@@ -95,5 +95,73 @@ def editor_shim_refusal(bin_, hint=""):
         else:
             tail = ", then %s" % hint
     return ("Refusing to start %s: it resolves to %s, which is VS Code's own "
-            "copilot shim, and that shim calls `copilot` back by name until the "
-            "machine runs out of processes — %s%s." % (bin_, real, lead, tail))
+            "copilot shim, and with no real CLI behind it that shim prints an "
+            "install prompt and exits 0 with no model output, so the turn looks "
+            "like a success and is silently empty — %s%s."
+            % (bin_, real, lead, tail))
+
+
+# ── S238: AN EXPLICIT OVERRIDE BEATS A BARE ENGINE NAME ─────────────────────
+# MEASURED (S238 gating spike). The board's New Mission / START ALIGNMENT picker
+# always sends a bare engine NAME in the POST body ("copilot"), and every daemon
+# spawn site resolves `engine or self.worker_bin` — so the picker's bare name
+# OUTRANKS an operator's `LCARS_WORKER_BIN=/opt/homebrew/bin/copilot` with no
+# effect and no warning. An operator who points LCARS at a binary he has just
+# run by hand, and watches it be ignored in silence, cannot tell that apart from
+# the binary being broken. That silence is the defect.
+#
+# WHY IT IS A SEPARATE, ENGINE-SPECIFIC VARIABLE AND NOT A PRECEDENCE CHANGE.
+# Re-ordering `engine or self.worker_bin` would make the picker a decoration:
+# a captain who chooses claude on the card would get whatever the daemon was
+# started with. $LCARS_COPILOT_BIN says only "when something resolves to a bare
+# `copilot`, THIS file is the copilot I mean" — the picker still chooses the
+# ENGINE, this chooses the FILE. $LCARS_COPILOT_BIN is the name install.sh
+# already uses for exactly that, so there is no second spelling to learn.
+#
+# IT ONLY EVER REPLACES A BARE NAME. A bin someone named by path (absolute or
+# relative) is THEIR choice, late-bound to nothing, and is returned untouched —
+# the shim guard above still judges it, and its refusal still sends them to the
+# place they set it.
+#
+# AND IT IS NEVER SILENT. An override pointing at something that is not an
+# executable file is REFUSED BY NAME, with the path quoted. Falling back to PATH
+# there would re-create the very silence this exists to end.
+#
+# NOTHING HERE EXECUTES ANYTHING: os.path.isfile + os.access(X_OK).
+OVERRIDE_VARS = (("copilot", "LCARS_COPILOT_BIN"),)
+
+
+def override_var(bin_):
+    """The env var that may name the FILE for engine `bin_`, or "" for none."""
+    base = os.path.basename(bin_ or "").lower()
+    for name, var in OVERRIDE_VARS:
+        if name in base:
+            return var
+    return ""
+
+
+def explicit_override(bin_):
+    """(the bin to start, "") — or (bin_, ONE refusal sentence) when an operator
+    pointed the override at something this machine cannot start.
+
+    `bin_` is returned unchanged whenever there is nothing to say: it already
+    names a path, no override variable covers that engine, or the variable is
+    unset / empty ("no override", the same set-but-empty idiom
+    $LCARS_WORKER_BIN_FALLBACKS uses).
+    """
+    bin_ = bin_ or ""
+    if not bin_ or "/" in bin_:
+        return bin_, ""
+    var = override_var(bin_)
+    if not var:
+        return bin_, ""
+    path = (os.environ.get(var) or "").strip()
+    if not path:
+        return bin_, ""
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return bin_, (
+            'Refusing to start %s: %s names "%s", which is not an executable '
+            "file on this machine, and LCARS will not quietly ignore an engine "
+            "you set and fall back to PATH — point it at the real CLI, or unset "
+            "it to let PATH decide." % (bin_, var, path))
+    return path, ""

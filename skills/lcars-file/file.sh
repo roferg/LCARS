@@ -639,6 +639,92 @@ do_park() {
 }
 
 # --------------------------------------------------------------------------
+# _complete_reentry — the FEEDBACK RE-ENTRY arm of --complete (S238).
+#
+# A mission that went out to Verify, came back through `lcars feedback`, and has
+# now been RE-GRILLED. It is not a first filing: it already has its issue, its
+# type, its title, its branch and its estimate, and the only thing the re-grill
+# produced that disk does not have is a new PRD. So this arm writes exactly that
+# and nothing else — it does not re-open or re-body the issue, and it does not
+# re-run the estimator. (Named gap, deliberately: those are the parked-mission
+# lane's job, and re-deciding them for a mission mid-pipeline would be a second
+# filing of a mission that is already filed.)
+#
+# ADR-002 IS THE REASON THIS IS HERE AND NOT IN THE DAEMON. The daemon NEVER
+# writes prd.md; file.sh writes. `_complete_from_align` holds a temp PRD and a
+# best-effort prd-draft.md and delegates the real write to this script — so the
+# cure for "the re-grill saved nothing" belongs on this side of that boundary.
+#
+# NOTHING PRIOR IS EVER DELETED — the same rule `lcars feedback` obeys with
+# feedback.md. The PRD being replaced is kept as `prd.<n>.md` beside it, n being
+# the lowest number not already taken, so a mission re-grilled three times keeps
+# prd.1.md, prd.2.md and prd.3.md and the history reads in order. feedback.md is
+# not touched at all: it is the captain's accumulating record, and this arm only
+# ever reads the fact that it exists.
+# --------------------------------------------------------------------------
+_complete_reentry() {
+  local ID="$1" MISSION_DIR="$2" STATE="$3"
+
+  # The SAME gates the parked lane runs, in the same order, BEFORE any write —
+  # a bad PRD must leave the previous prd.md exactly where it is.
+  local QATTACH=()
+  if [ -d "$MISSION_DIR/attachments" ]; then
+    shopt -s nullglob
+    local qa
+    for qa in "$MISSION_DIR/attachments"/attachment-*; do QATTACH+=("$qa"); done
+    shopt -u nullglob
+  fi
+  if [ "${#QATTACH[@]}" -gt 0 ]; then
+    _validate_prd "$PRD_SRC" "${QATTACH[@]}"
+  else
+    _validate_prd "$PRD_SRC"
+  fi
+  if [ -n "$ADR_SRC" ]; then
+    [ -f "$ADR_SRC" ] || die "ADR file not found: $ADR_SRC"
+    _validate_adr "$ADR_SRC"
+  fi
+  local TITLE TYPE
+  TITLE="$(lcars_prd_field "$PRD_SRC" 'Mission' | head -1)"
+  [ -n "$TITLE" ] || die_prd "could not read the Mission title from the PRD."
+  TYPE="$(lcars_prd_field "$PRD_SRC" 'Type' | head -1 | tr 'A-Z' 'a-z' | tr -cd 'a-z')"
+  case "$TYPE" in feature|bug) : ;; *) die_prd "PRD Type must be 'feature' or 'bug' (got: '${TYPE:-empty}')." ;; esac
+
+  # --- keep the PRD being replaced, then overwrite prd.md -------------------
+  local KEPT="" n=1
+  if [ -f "$MISSION_DIR/prd.md" ]; then
+    while [ -e "$MISSION_DIR/prd.$n.md" ]; do n=$((n + 1)); done
+    KEPT="$MISSION_DIR/prd.$n.md"
+    cp "$MISSION_DIR/prd.md" "$KEPT" \
+      || die "could not keep the previous PRD as $(basename "$KEPT") — nothing was overwritten."
+  fi
+  cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
+  local ATTACH_RELS=()
+  if [ -d "$MISSION_DIR/attachments" ]; then
+    shopt -s nullglob
+    local f
+    for f in "$MISSION_DIR/attachments"/attachment-*; do
+      ATTACH_RELS+=("attachments/$(basename "$f")")
+    done
+    shopt -u nullglob
+  fi
+  if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
+    lcars_attach_prd_section "${ATTACH_RELS[@]}" >>"$MISSION_DIR/prd.md"
+    _lcars_inject_anchor_rule "$MISSION_DIR" "${ATTACH_RELS[@]}"
+  fi
+  [ -n "$ADR_SRC" ] && cat "$ADR_SRC" >"$MISSION_DIR/adr.md"
+
+  # --- record WHEN it was re-aligned (the stage is already `align`) ---------
+  lcars_state_set_string "$STATE" realignedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  echo "  Mission re-aligned: $ID"
+  echo "  PRD written:     $MISSION_DIR/prd.md"
+  [ -n "$KEPT" ] && echo "  Previous PRD:    $KEPT  (kept — nothing prior is deleted)"
+  echo "  Stage:           align  (re-grilled PRD written — ready for Research)"
+  echo "  Next:            run \`lcars run $ID\` to continue"
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # do_complete — the grill-completion verb for a parked mission. Validates the
 # PRD (same gates), writes prd.md, derives type/title, clears prdPending, runs
 # the estimator, and updates the issue IN PLACE — landing byte-equivalent to a
@@ -674,10 +760,26 @@ do_complete() {
   [ -d "$MISSION_DIR" ] || die "no mission '$ID' under .git/lcars/missions/ — check the id (or park one with \`lcars file --park\`)."
   [ -f "$STATE" ]       || die "mission '$ID' has no state.json — its state is corrupt."
 
-  # Only a PARKED mission can be completed. A non-parked mission is already
-  # aligned — say so cleanly (the resume path's clean message).
+  # Only a PARKED mission can be completed — UNLESS this is a feedback
+  # RE-ENTRY (S238). `lcars feedback` bounces a verified mission back to
+  # `align` and appends the captain's note to feedback.md; re-grilling it on the
+  # board lands here with prdPending long cleared, so this guard refused it and
+  # ten answers of re-alignment produced NO prd.md — only the daemon's
+  # best-effort prd-draft.md, with the pipeline still reading the OLD PRD.
+  #
+  # A re-entry is recorded, never inferred from prose: `--reentry` says so
+  # outright, and the auto-detection reads two FACTS off disk — stage `align`
+  # and a feedback.md beside it. Those two together cannot be a first filing.
   local pend; pend="$(_fj_raw "$STATE" prdPending)"
-  [ "$pend" = "true" ] || die "mission '$ID' is already aligned — nothing to complete (run \`lcars run $ID\` to advance it)."
+  if [ "$pend" != "true" ]; then
+    local STAGE_NOW; STAGE_NOW="$(_fj_str "$STATE" stage)"
+    if [ "$REENTRY" = 1 ] \
+       || { [ "$STAGE_NOW" = "align" ] && [ -f "$MISSION_DIR/feedback.md" ]; }; then
+      _complete_reentry "$ID" "$MISSION_DIR" "$STATE"
+      return $?
+    fi
+    die "mission '$ID' is already aligned — nothing to complete (run \`lcars run $ID\` to advance it)."
+  fi
 
   # Validate the PRD (and ADR when given) BEFORE any write — a bad PRD leaves the
   # mission untouched: no prd.md, prdPending still true (nothing partial).
@@ -935,6 +1037,7 @@ ATTACHMENTS=()
 # filing lands. Absent both flags, this script is BYTE-IDENTICAL to grill-first.
 MODE=""            # "" (grill-first) | park | complete
 COMPLETE_ID=""     # the mission id for --complete
+REENTRY=0          # 1 = --complete is a feedback RE-ENTRY (S238)
 INITIALIZATION=0   # --initialization (S184: the Establish Vision mission)
 IDEA_SRC=""        # --idea <file> (verbatim idea capture)
 ENGINE=""          # --engine claude|copilot (parked mission's workerBin)
@@ -955,6 +1058,10 @@ while [ $# -gt 0 ]; do
     --initialization) INITIALIZATION=1; shift ;;
     --complete)   MODE="complete"; COMPLETE_ID="${2:-}"; shift 2 ;;
     --complete=*) MODE="complete"; COMPLETE_ID="${1#--complete=}"; shift ;;
+    # S238 — say outright that this --complete is a feedback RE-ENTRY. The arm
+    # also auto-detects it (stage `align` + a feedback.md), so this flag is for
+    # a caller that KNOWS and would rather not depend on the detection.
+    --reentry)    REENTRY=1; shift ;;
     --idea)   IDEA_SRC="${2:-}"; shift 2 ;;
     --idea=*) IDEA_SRC="${1#--idea=}"; shift ;;
     --engine)   ENGINE="${2:-}"; shift 2 ;;
