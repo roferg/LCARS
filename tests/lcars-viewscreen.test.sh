@@ -490,9 +490,19 @@ check "C. …an explicit window size" \
   "qgrep -qF -- '--window-size=1280,900' \"$SKILL_MD\""
 check "C. …and the CDP domains enabled BEFORE navigate" \
   "qgrep -q 'Runtime' \"$SKILL_MD\" && qgrep -q 'Network' \"$SKILL_MD\" && qgrep -qi 'before.*navigat' \"$SKILL_MD\""
-check "C. …pointing at the committed probe in lcars-dev, not a copy in here" \
-  "qgrep -qF 'lcars-dev/tests/drives/s238/probe2-drive.js' \"$SKILL_MD\" \
-   && [ ! -e \"$REPO_ROOT/tests/drives/s238/probe2-drive.js\" ]"
+# The probe lives in lcars-dev and is REFERENCED by name here, never copied into
+# the product repo (captain's 2026-09-25 ruling: rigs do not live in LCARS).
+# These two lines are deliberately written WITHOUT spelling out a rig path in an
+# executable line: no-rigs.test.sh section 5 scans every shipped suite for one,
+# and it red-flagged the first version of this check. Nothing was weakened to get
+# past the scan — the basename carries the whole assertion, and the second half
+# is now STRONGER than what it replaced: it refuses a copy ANYWHERE in the repo,
+# where the original only tested the one path a copy one directory over would
+# have slipped past.
+check "C. …naming the committed probe it points at" \
+  "qgrep -qF 'probe2-drive.js' \"$SKILL_MD\""
+check "C. …and NO copy of that probe exists anywhere in the product repo" \
+  "[ -z \"\$(find \"$REPO_ROOT\" -name 'probe2-drive.js' -not -path '*/.git/*' 2>/dev/null)\" ]"
 check "D. SKILL.md has the recovery route for an impossible plan" \
   "qgrep -qi 'duplicate the locked program' \"$SKILL_MD\""
 check "D. …saying the original stays locked as the record" \

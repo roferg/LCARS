@@ -35,10 +35,10 @@
 #   autopilot.sh stalled
 #   autopilot.sh land <mission>
 #   autopilot.sh push-gated
-#   autopilot.sh worktree <mission>
+#   autopilot.sh worktree <mission> | worktree --branch <branch>
 #   autopilot.sh live-check <mission> --type cli|web|workflow[,…]
 #   autopilot.sh live-check done <mission> --verdict pass|bugs
-#   autopilot.sh workflow-run <mission> <workflow.yml>
+#   autopilot.sh workflow-run <mission> <workflow.yml> [--evidence-dir <dir>]
 #   autopilot.sh file-bug --parent <mission> --prd <bug-prd.md>
 #   autopilot.sh policy --verdict high|medium|low [--reason product|infrastructure]
 #                       --live-check pass|bugs [--mission <m>] [--evidence <path>]
@@ -117,7 +117,9 @@ Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside t
   stalled              what the crontab heartbeat calls; decides from recorded pids
   land <mission>       approve.sh --mission + hygiene; exit 10 = a question was written
   push-gated           run the recorded testCommand, push ONLY on exit 0
-  worktree <mission>   git worktree add --detach + a throwaway HOME; prints both
+  worktree <mission> | worktree --branch <br>
+                       git worktree add --detach + a throwaway HOME; prints both.
+                       --branch needs no autopilot record (Number One passes it)
   live-check <mission> --type cli|web|workflow[,…]
                        the detached worktree + throwaway HOME + the evidence dir, and the
                        CHECKLIST(S) to follow. The MODEL does the looking.
@@ -1421,14 +1423,28 @@ cmd_push_gated() {
 # landing a green fix for an hour. And exploring a CLI needs a throwaway HOME:
 # a `draft --help` once created a junk draft on the real machine.
 cmd_worktree() {
-  local m="${1:?worktree: <mission> required}"
-  require_state
-  mexists "$m" || die "worktree: no mission $m in $MISSIONS"
-  local pair wt home br
-  pair="$(wt_prepare "$m")" || exit 1
+  # `worktree <mission>` resolves the branch from the autopilot record;
+  # `worktree --branch <br>` is handed it (S239 — see wt_prepare). With an
+  # explicit branch there is nothing to look up, so neither autopilot.json nor
+  # a mission is required: the branch IS the record for this call.
+  local m="" br=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --branch)   br="${2:-}"; shift 2 ;;
+      --branch=*) br="${1#--branch=}"; shift ;;
+      *)          m="$1"; shift ;;
+    esac
+  done
+  if [ -z "$br" ]; then
+    [ -n "$m" ] || die "worktree: <mission>, or --branch <branch>"
+    require_state
+    mexists "$m" || die "worktree: no mission $m in $MISSIONS"
+    br="$(mstate "$m" branch)"
+  fi
+  local pair wt home
+  pair="$(wt_prepare "${m:-$br}" "$br")" || exit 1
   wt="$(printf '%s' "$pair" | cut -f1)"
   home="$(printf '%s' "$pair" | cut -f2)"
-  br="$(mstate "$m" branch)"
   wt_say "$wt" "$home" "$br"
 }
 
@@ -1571,8 +1587,14 @@ label_for() {
 # wt_prepare <mission> → "<worktree>\t<home>". Dies (in its own subshell) on
 # any failure, so EVERY caller must test the result.
 wt_prepare() {
-  local m="$1"
-  local br; br="$(mstate "$m" branch)"
+  local m="$1" br="${2:-}"
+  # S239: THE BRANCH MAY BE NAMED OUTRIGHT. Number One's harness (xo-run.py)
+  # reuses THIS helper — one machinery, because a second "detach a worktree" is
+  # a second thing that can be subtly wrong and the buddy and the first officer
+  # must check the same tree. It holds the branch already (from the mission's
+  # own state.json, read by xo.sh) and has no autopilot.json, so it passes the
+  # branch rather than asking this script to look the mission up.
+  [ -n "$br" ] || br="$(mstate "$m" branch)"
   [ -n "$br" ] || die "worktree: mission $m has no branch in its state.json"
   local base="${TMPDIR:-/tmp}"
   local wt home
@@ -1721,6 +1743,7 @@ cmd_workflow_run() {
   [ -n "$m" ] && [ -n "$wf" ] || die "workflow-run: <mission> <workflow.yml> [--job <name>] [--repository <owner/name>] [--server-url <url>] [--event <json>] [--root <dir>] [--evidence <name>]"
   shift 2
   local job="" repository="" server="" event="" root="" evname="02-workflow-run.txt"
+  local evdirarg=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --job)          job="${2:-}"; shift 2 ;;
@@ -1735,11 +1758,20 @@ cmd_workflow_run() {
       --root=*)       root="${1#--root=}"; shift ;;
       --evidence)     evname="${2:-}"; shift 2 ;;
       --evidence=*)   evname="${1#--evidence=}"; shift ;;
+      --evidence-dir)   evdirarg="${2:-}"; shift 2 ;;
+      --evidence-dir=*) evdirarg="${1#--evidence-dir=}"; shift ;;
       *)              die "workflow-run: unknown argument '$1'" ;;
     esac
   done
-  require_state
-  mexists "$m" || die "workflow-run: no mission $m in $MISSIONS"
+  # S239: Number One's harness runs this very runner for a `workflow` step and
+  # writes its transcript BESIDE THE BROWSER SHOTS, under xo/shots/<look>/, so
+  # the First Officer's report serves it with no new surface anywhere. With the
+  # evidence directory named there is nothing to look up in the autopilot record
+  # — so a mission (and autopilot.json) is not required for that call.
+  if [ -z "$evdirarg" ]; then
+    require_state
+    mexists "$m" || die "workflow-run: no mission $m in $MISSIONS"
+  fi
   [ -f "$wf" ] || die "workflow-run: no workflow file at $wf"
   wf="$(cd "$(dirname "$wf")" && pwd)/$(basename "$wf")"
   # The repo root is the one the workflow's own paths are relative to — the
@@ -1763,7 +1795,7 @@ PY
 )"
   fi
   [ -n "$server" ] || server="https://github.com"
-  local evdir="$MISSIONS/$m/live-check"
+  local evdir="${evdirarg:-$MISSIONS/$m/live-check}"
   mkdir -p "$evdir"
   local out="$evdir/$evname"
   local rc

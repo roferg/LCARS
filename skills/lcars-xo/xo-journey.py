@@ -889,6 +889,18 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     for i, st in enumerate(steps):
         st["key"] = st.get("key") or ("j%d" % (i + 1))
 
+    # ── THE REACH BEYOND THE BROWSER (S239) ──────────────────────────────
+    # Built from the SAME record, aimed at the criteria whose `reachVia` says a
+    # browser was never going to reach them. Executed by xo-run.py, not by
+    # xo-drive.js, which is why it rides in its own list.
+    reach, reach_skipped = reach_steps(criteria, prd)
+    for i, st in enumerate(reach):
+        st["key"] = st.get("key") or ("r%d" % (i + 1))
+    reach_by_crit = {}
+    for st in reach:
+        if st.get("for"):
+            reach_by_crit.setdefault(st["for"], st)
+
     # ── THE COVERAGE: attempted N of M, and which step (or why none) ─────
     # Emitted as DATA for the report to render. Each person promise is paired
     # with the walk step that attempted it, or the honest reason it could not
@@ -896,11 +908,24 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     cov_rows = []
     for c in person:
         key, reason = link_criterion(c, steps, surf_ctrls, has_surface)
-        cov_rows.append({"id": str(c.get("id") or ""),
-                         "text": norm(c.get("text")),
-                         "attempted": bool(key),
-                         "step": key,
-                         "reason": reason})
+        row = {"id": str(c.get("id") or ""),
+               "text": norm(c.get("text")),
+               "attempted": bool(key),
+               "step": key,
+               "reason": reason}
+        # S239: a criterion a BROWSER could not reach may still have been
+        # reached — by running the CLI, the workflow, or by reading what the
+        # build produced. The reach step that claims it says so here, and
+        # `checkedBy` on the row records WHICH instrument it was.
+        rst = reach_by_crit.get(row["id"])
+        if rst is not None and not row["attempted"]:
+            row["attempted"] = True
+            row["step"] = rst["key"]
+            row["checkedBy"] = {"run": "cli", "workflow": "workflow",
+                                "read": "test"}.get(rst["do"], rst["do"])
+            row["reason"] = ("reached by %s, not by a browser: %s (%s)"
+                             % (row["checkedBy"], rst["why"], rst["fromChecklist"]))
+        cov_rows.append(row)
     coverage = {"group": "can a person do what it promises",
                 "attempted": sum(1 for r in cov_rows if r["attempted"]),
                 "total": len(cov_rows),
@@ -910,10 +935,273 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     for w in why_from:
         if w not in src:
             src.append(w)
-    return {"source": src or ["nothing in the record described a flow"],
-            "typedText": TYPED_TEXT, "entry": entry, "steps": steps,
-            "coverage": coverage}
+    for st in reach:
+        lbl = "the %s live-check checklist" % st["fromChecklist"].split("#")[0]
+        if lbl not in src:
+            src.append(lbl)
+    out = {"source": src or ["nothing in the record described a flow"],
+           "typedText": TYPED_TEXT, "entry": entry, "steps": steps,
+           "coverage": coverage}
+    # ADDITIVE KEYS, always present so a reader never has to guess whether a
+    # look predates S239: an empty list says "nothing beyond the browser".
+    out["reachSteps"] = reach
+    out["reachUninstantiated"] = reach_skipped
+    return out
 
+
+
+# ===========================================================================
+# S239 — THE WALK BEYOND THE BROWSER. Declared steps, HARNESS-executed.
+# ===========================================================================
+# THE MEASUREMENT. Canvas weekend, 34 runs: Number One filed 0 of 31 bugs. All
+# 16 of its recorded misses were REACH errors — "CLI argument handling and
+# env-var behaviour had no test and no screen, so nothing looked at them",
+# "nothing ran the workflow", "the tests stub the transport, so the URL a real
+# call goes to is never asserted". Its judgement was never the problem.
+#
+# THE FENCE THIS KEEPS. The worker role stays `repo-read`: it never gets a
+# shell. S168 ("read roles have no shell") and S222 ("a model left to walk
+# freely is a LOTTERY, and a lottery is not a proof") are both still law. So
+# reach arrives the SAME way the browser walk did: the step is DECLARED here,
+# from the record, and the HARNESS (`xo-run.py`) executes it.
+#
+# THREE NEW KINDS, and they live in their own list:
+#
+#   reachSteps  {"do": "run",      argv, cwd, env, expect, for, evidence}
+#               {"do": "workflow", file, job, expect, for, evidence}
+#               {"do": "read",     path, expect, for, evidence}
+#
+# WHY A SEPARATE LIST AND NOT `steps`. `steps` is the contract between this file
+# and `xo-drive.js`, which executes every entry in it inside headless Chrome. A
+# `run` step in there would be handed to a browser. The browser walk is
+# UNCHANGED, by ruling (*What we are NOT changing*), so the kinds the harness
+# executes ride beside it instead of inside it.
+#
+# THE TEMPLATES ARE NOT WRITTEN HERE. They are lifted from the live-check
+# checklists (`skills/lcars-run/live-check/<type>.md`) — the SAME files the buddy
+# follows in prose, which is why they must stay in lockstep (the README says so,
+# and `tests/live-check.test.sh` asserts it). One source, two readers. Forking
+# them here would give Number One a second, quietly different checklist.
+#
+# AN ITEM WHOSE PLACEHOLDERS THE RECORD CANNOT FILL IS NOT GUESSED. It is
+# recorded in `reachUninstantiated` with the reason — "ours to fix" (S225),
+# never a step built out of a `<placeholder>` nobody substituted.
+LIVE_CHECK_DIR = os.environ.get("LCARS_LIVE_CHECK_DIR") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "lcars-run", "live-check")
+
+# The interpreters a declared entrypoint PATH needs in front of it. Mechanical
+# and recorded: a `.py` path is run by python3 because that is how CI runs it,
+# not because anything read the file.
+INTERPRETERS = {".py": "python3", ".js": "node", ".rb": "ruby", ".sh": "bash"}
+
+_FENCE = re.compile(r"```(run|workflow|read):\n(.*?)```", re.S)
+
+
+def checklist_items(ptype, directory=None):
+    """The fenced templates of one checklist, in item order.
+
+    Each row: {"item": "cli#1", "n": "01", "kind": "run", "template": {...}}.
+    `n` comes from the template's OWN `evidence` name, because the README makes
+    that the item number ("an evidence file nobody can trace back to an item is
+    not evidence").
+    """
+    path = os.path.join(directory or LIVE_CHECK_DIR, "%s.md" % ptype)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except Exception:
+        return []
+    rows = []
+    for kind, body in _FENCE.findall(text):
+        try:
+            tpl = json.loads(body)
+        except Exception:
+            continue
+        ev = str(tpl.get("evidence") or "")
+        base = os.path.basename(ev)
+        m = re.match(r"(\d+)-", base)
+        n = m.group(1) if m else "%02d" % (len(rows) + 1)
+        rows.append({"item": "%s#%d" % (ptype, int(n)), "n": n, "kind": kind,
+                     "template": tpl, "evidence": base})
+    return rows
+
+
+def cli_argv0(path):
+    """The argv prefix that RUNS a declared entrypoint path."""
+    ext = os.path.splitext(path or "")[1].lower()
+    interp = INTERPRETERS.get(ext)
+    return ([interp, path] if interp else ["./" + path.lstrip("./")]) if path else []
+
+
+def subcommands(prd_text, crit_text, entry_path):
+    """The subcommands the RECORD names, read from its own backticked command
+    lines. Not prose: a backticked `notes add "<title>"` in the PRD's acceptance
+    criteria IS the captain writing the invocation down."""
+    stem = os.path.splitext(os.path.basename(entry_path or ""))[0]
+    if not stem:
+        return []
+    out = []
+    for span in re.findall(r"`([^`]{2,120})`", (prd_text or "") + "\n" + (crit_text or "")):
+        words = span.replace('"', " ").replace("'", " ").split()
+        if len(words) < 2:
+            continue
+        head = os.path.splitext(os.path.basename(words[0]))[0]
+        if head != stem:
+            continue
+        cand = words[1]
+        if not re.match(r"^[a-z][a-z0-9-]*$", cand):
+            continue
+        if cand not in out:
+            out.append(cand)
+    return out
+
+
+def reach_steps(contract, prd_text=""):
+    """(reachSteps, uninstantiated) — the harness-executed walk, from the record.
+
+    Everything here is RECORDED: the product types and each criterion's
+    `reachVia` come from criteria.json (S239, xo-criteria.py), the entrypoint
+    paths come from the plan's `entrypoints[]` (S236), and the step shapes come
+    from the live-check checklists. Nothing is inferred from prose except the
+    product's OWN backticked invocation lines, and that is read as the record it
+    is, not parsed for meaning.
+    """
+    contract = contract if isinstance(contract, dict) else {}
+    crit = [c for c in (contract.get("criteria") or []) if isinstance(c, dict)]
+    types = [t.get("type") for t in (contract.get("productTypes") or [])
+             if isinstance(t, dict)]
+    eps = [e for e in (contract.get("entrypoints") or []) if isinstance(e, dict)]
+    crit_text = " ".join(str(c.get("text") or "") for c in crit)
+
+    # WHO EACH STEP IS FOR. The criteria of that reach, primary first, handed
+    # out one per step. A step claims ONE criterion and never the group: over-
+    # claiming coverage is the dishonesty this whole arc exists to remove.
+    pools = {}
+    for reach in ("cli", "workflow", "browser", "test", "none"):
+        pool = [str(c.get("id")) for c in crit
+                if c.get("reachVia") == reach and c.get("primary")]
+        pool += [str(c.get("id")) for c in crit
+                 if c.get("reachVia") == reach and not c.get("primary")]
+        pools[reach] = pool
+    used = {k: 0 for k in pools}
+
+    def claim(reach):
+        pool = pools.get(reach) or []
+        if not pool:
+            return ""
+        i = used[reach] % len(pool)
+        used[reach] += 1
+        return pool[i]
+
+    steps, skipped = [], []
+
+    def place(value, subs):
+        """Substitute the placeholders the record CAN fill; report the rest."""
+        if isinstance(value, list):
+            out, missing = [], []
+            for v in value:
+                r, m = place(v, subs)
+                missing.extend(m)
+                if r is not None:
+                    out.append(r)
+            return out, missing
+        if not isinstance(value, str):
+            return value, []
+        if value == "":
+            return value, []
+        m = re.fullmatch(r"<(.+)>", value)
+        if not m:
+            return value, []
+        key = m.group(1)
+        for want, got in subs.items():
+            if key == want or key.startswith(want):
+                return got, []
+        return None, [key]
+
+    # ---- the CLI checklist -------------------------------------------------
+    cli_ep = next((e for e in eps if e.get("kind") == "cli" and e.get("path")), None)
+    if "cli" in types:
+        if not cli_ep:
+            skipped.append({"item": "cli#*", "why": "the plan recorded no `cli` "
+                            "entrypoint path, so there is nothing to run"})
+        else:
+            verbs = subcommands(prd_text, crit_text, cli_ep["path"])
+            argv0 = cli_argv0(cli_ep["path"])
+            subs = {"cli": None, "worktree": "<worktree>",
+                    "throwaway-home": "<throwaway-home>"}
+            if verbs:
+                subs["subcommand"] = verbs[0]
+                subs["the-main-verb"] = verbs[0]
+                subs["realistic-value"] = TYPED_TEXT
+            for row in checklist_items("cli"):
+                if row["kind"] != "run":
+                    continue
+                tpl = row["template"]
+                argv, missing = place(tpl.get("argv") or [], subs)
+                # `<cli>` is argv[0] and expands to the WHOLE run prefix.
+                argv = argv0 + [a for a in argv if a is not None]
+                if missing:
+                    skipped.append({"item": row["item"], "evidence": row["evidence"],
+                                    "why": "the record does not name: "
+                                           + ", ".join(sorted(set(missing)))})
+                    continue
+                for_id = claim("cli")
+                steps.append({"do": "run", "argv": argv,
+                              "cwd": tpl.get("cwd") or "<worktree>",
+                              "env": tpl.get("env") or {"HOME": "<throwaway-home>"},
+                              "expect": tpl.get("expect") or {},
+                              "for": for_id or "", "evidence": row["evidence"],
+                              "fromChecklist": row["item"],
+                              "derivedFrom": "the cli live-check checklist",
+                              "why": "a CLI criterion is reached by RUNNING the CLI"})
+
+    # ---- the WORKFLOW checklist -------------------------------------------
+    wf_eps = [e for e in eps if e.get("kind") == "workflow" and e.get("path")]
+    if "workflow" in types:
+        if not wf_eps:
+            skipped.append({"item": "workflow#*", "why": "the plan recorded no "
+                            "`workflow` entrypoint path, so there is nothing to run"})
+        wf_tpl = next((r for r in checklist_items("workflow") if r["kind"] == "workflow"),
+                      None)
+        read_tpl = next((r for r in checklist_items("workflow")
+                         if r["kind"] == "read" and r["n"] == "01"), None)
+        if read_tpl and wf_eps:
+            steps.append({"do": "read",
+                          "path": ".github/workflows",
+                          "expect": read_tpl["template"].get("expect") or {},
+                          "for": claim("workflow") or "",
+                          "evidence": read_tpl["evidence"],
+                          "fromChecklist": read_tpl["item"],
+                          "derivedFrom": "the workflow live-check checklist",
+                          "why": "the workflows the build actually ships"})
+        for ep in wf_eps:
+            if not wf_tpl:
+                break
+            steps.append({"do": "workflow", "file": ep["path"],
+                          "job": wf_tpl["template"].get("job") or "",
+                          "expect": wf_tpl["template"].get("expect") or {},
+                          "for": claim("workflow") or "",
+                          "evidence": wf_tpl["evidence"],
+                          "fromChecklist": wf_tpl["item"],
+                          "derivedFrom": "the plan's workflow entrypoint",
+                          "why": "nothing ran the workflow on the modelled "
+                                 "weekend, and three breaks were visible only "
+                                 "to the real runner"})
+
+    # ---- the WEB checklist's non-browser halves ---------------------------
+    # The browser items stay with xo-drive.js, UNCHANGED. What the web checklist
+    # adds here is the READ of what was produced — "a screenshot is looked at,
+    # not merely produced" has a sibling: an artifact is READ, not assumed.
+    if "web" in types:
+        for row in checklist_items("web"):
+            if row["kind"] != "read":
+                continue
+            skipped.append({"item": row["item"], "evidence": row["evidence"],
+                            "why": "the record does not name the rendered page "
+                                   "or deployed artifact to read"})
+
+    return steps[:STEP_CAP], skipped
 
 def journey_criteria(journey):
     """One requirement per step (part F): each step is its own row, so a step
@@ -1058,17 +1346,21 @@ def main(argv):
                 json.dump(contract, fh, indent=2)
                 fh.write("\n")
         n = len(j["steps"])
+        nreach = len(j.get("reachSteps") or [])
+        rsuffix = ("" if not nreach else
+                   " — and %d step(s) the harness runs outside a browser" % nreach)
         cov = j.get("coverage") or {}
         csuffix = ("" if not cov.get("total")
                    else " — attempted %d of %d a person can check"
                         % (cov.get("attempted", 0), cov.get("total", 0)))
         if not n:
-            print("nothing in the record described a flow to walk" + csuffix)
+            print("nothing in the record described a flow to walk"
+                  + csuffix + rsuffix)
         else:
-            print("%d step(s) to walk, from %s%s%s"
+            print("%d step(s) to walk, from %s%s%s%s"
                   % (n, "; ".join(j["source"]),
                      (" — %d of them its own requirement" % added) if added else "",
-                     csuffix))
+                     csuffix, rsuffix))
         return 0
 
     if cmd == "carry":

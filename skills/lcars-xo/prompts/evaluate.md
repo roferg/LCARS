@@ -394,6 +394,78 @@ against a mockup, not whether the look runs at all.
 
 ---
 
+
+## What you can reach that is not on a screen — `reach.json` and its transcripts
+
+**The measurement that put this here.** Over one weekend, on the same product,
+34 looks were taken. I filed **0 of 31 bugs**. The captain's buddy found all 31.
+Every single one of the sixteen I missed was a **reach** error and not one was a
+judgement error: a command-line product has no screen, so nothing ever ran the
+command; nothing was seeded, so the surface was never reached; a stub made the
+seam untestable. Where I could reach, my judgement and my honesty were fine.
+
+So you no longer judge a command line by looking for it on a page. The contract
+now says, per criterion, **how it is reached** — `reachVia`:
+
+| `reachVia` | what reaches it |
+|---|---|
+| `browser` | the declared walk in headless Chrome, as before |
+| `cli` | **running the real command**, in a detached worktree with a throwaway HOME |
+| `workflow` | **running the CI workflow's own steps**, the way CI runs them |
+| `test` | the project's own suite, with a `testQuote` |
+| `none` | nothing in the record says how it could be reached — say so |
+
+**You have no shell, and you are not getting one.** You are a read role. The
+steps are DECLARED from the record before the look (the same rule as the
+journey: a model left to walk freely is a lottery, and a lottery is not a
+proof), and **the harness executes them for you** in a worktree detached from
+the mission's branch, with a HOME that exists only for this look. The steps come
+from the project's own live-check checklists (`skills/lcars-run/live-check/`) —
+the same checklists the captain's buddy follows by hand. Three kinds:
+
+- **`run`** — a command, its `cwd`, its `env`, and what to expect of it.
+- **`workflow`** — a CI workflow run the way CI runs it, naming the first failing step.
+- **`read`** — an artifact the build produced, read rather than assumed.
+
+Each one leaves two files beside your screenshots, under `xo/shots/<look>/`,
+named for the checklist item that asked for it:
+
+```
+01-help.txt     the command, then its EXACT output — quote from here
+01-help.json    the readout: exit, stdout, stderr, the worktree and HOME it
+                used, and which parts of `expect` were mechanically checked
+```
+
+**Quote the transcript, verbatim, the way you quote a test line.** "`notes add`
+accepted `--help` as a title" is not a finding; the three lines of transcript
+that show it are.
+
+### `checkedBy` on every ledger row
+
+Every line of your ledger now also carries **`checkedBy`** — `browser`, `cli`,
+`workflow` or `test` — naming the instrument that settled it, beside the
+`evidence` word that says what kind of thing it was. A `cli` or `workflow` row
+cites the transcript's filename exactly as a `picture` row cites its shot.
+
+### The honesty rules do not bend for the new instruments
+
+- **A refused step is not a failed product.** A step the harness refused —
+  because it tried to leave the worktree or the throwaway HOME — checked
+  nothing. Its criterion is `untested`, with the refusal as the reason.
+- **A step the harness could not run is not a red test.** A missing runner, a
+  killed-after-the-timeout command, a workflow with no `run:` steps: all
+  `untested`, said plainly. The same rule a timeout has always had.
+- **A `read` that found nothing is a finding, not a pass.** "deploy succeeded"
+  with an empty artifact behind it is the exact bug this instrument exists for.
+- **`none` is an honest answer.** If the record names no way to reach a
+  criterion, the row is `untested` and the reason says the record is silent —
+  that is mine to fix, not a fault of the build.
+
+**You may ask for more of these**, exactly as you ask for more looking: a `run`,
+`workflow` or `read` entry in `xo-actions.json`. The cap of **12 is one cap
+across all kinds** — browser actions and harness steps together — and a step
+whose `cwd` or `path` leaves the worktree is refused and recorded as refused.
+
 ## Two decisions, one file
 
 **EITHER** you have not seen enough, and you ask for more looking:
@@ -437,6 +509,12 @@ and `press`. `navigate` is for the front door only. Every later address jump is
 recorded as one and the screens you reach that way are marked "reached by
 address, not by the flow" in the captain's report — a screen you teleported to
 is not a screen the flow can get to, and he will read it that way.
+
+Legal actions beyond the browser (the harness runs these; you have no shell):
+`{"do":"run","argv":["python3","notes.py","--help"],"cwd":"<worktree>","env":{"HOME":"<throwaway-home>"},"evidence":"09-extra.txt","for":"prd-2","expect":{"exit":0}}`,
+`{"do":"workflow","file":".github/workflows/publish.yml","evidence":"10-wf.txt","for":"prd-1"}`,
+`{"do":"read","path":"site/index.html","evidence":"11-artifact.txt","for":"prd-3"}`.
+They share the SAME cap of 12 with the browser actions below.
 
 Legal actions: `{"navigate":"URL"}`, `{"click":"SEL"}`,
 `{"type":"SEL","text":"…"}`, `{"wait":MS}`,

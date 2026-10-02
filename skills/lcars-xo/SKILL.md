@@ -125,6 +125,32 @@ The order is the contract:
    says in one plain sentence which screens it could not see for want of data,
    and those rows are `couldn't check` — never a fault in the build.
 
+   **2b-bis. THE REACH BEYOND THE BROWSER (S239).** The contract records
+   `productTypes` (`cli` / `web` / `workflow`, each with the SOURCE that said
+   so) and, per criterion, `reachVia` — `cli | browser | workflow | test |
+   none`. **A CLI criterion is reached by RUNNING the CLI, not by looking for it
+   on a page.** `xo-journey.py` then lifts the matching items out of the
+   live-check checklists (`skills/lcars-run/live-check/<type>.md` — the SAME
+   files the buddy follows in prose) into `journey.json.reachSteps`, of three
+   kinds: `run` (argv/cwd/env/expect/for), `workflow` (executed by
+   `autopilot.sh workflow-run`, the runner that names the first failing step)
+   and `read` (an artifact read rather than assumed). `xo-run.py` executes them
+   in a **worktree detached from the mission's branch with a throwaway HOME**
+   (`autopilot.sh worktree --branch` — ONE machinery, the buddy's own), caged per
+   step, writing a transcript + a `.json` readout per step beside the browser
+   shots under `xo/shots/<look>/` with the checklist's own `NN-` naming. Each
+   row records `checkedBy`. **The worker still has NO shell** (S168, S222): the
+   steps are declared from the record and the harness runs them. It may ask for
+   more in `xo-actions.json`, under the SAME cap of 12 across all kinds; a step
+   that tries to leave the worktree or the throwaway HOME is REFUSED and
+   journaled. An item whose placeholders the record cannot fill is listed in
+   `journey.json.reachUninstantiated` with the reason — ours to fix, never a
+   step built out of an unsubstituted `<placeholder>`.
+
+   Why: over one weekend, 34 looks on the same product, Number One filed **0 of
+   31 bugs** and all sixteen of its recorded misses were REACH errors, not
+   judgement errors.
+
    **2c. THE DECLARED JOURNEY (S220 part F).** `xo-journey.py` reads the flow
    out of the record — the drawing's screen order and each screen's own forward
    control, the PRD's steps ("the Preview button navigates to …", which is how a
@@ -612,6 +638,33 @@ Number One is engaged on this mission on your behalf — stand it down (lcars xo
 `lcars approve`, `lcars feedback`, `lcars respond answer`, `lcars log`,
 `lcars pause`, `lcars resume`, `lcars resolve-logs` — and the viewscreen's
 matching endpoints, with a 403 carrying the same bytes.
+
+**`lcars approve` asks a NARROWER question (S239, and it is the only verb that
+does).** The captain's ruling (feedback #39: he "turned it off to save 10–20 min
+per verify") is that a verdict which has FINISHED must never block a merge —
+only a look still in flight may. `numberOne.status` stays `engaged` until
+`xo_finish` replaces it, and a look that CRASHED never replaces it at all, so a
+mission could stay locked against its own captain for good. So approve also asks
+`lcars_xo_live_look`: is the pid in the mission's own `xo.pid` alive? **Alive →
+the sentence above, unchanged. Finished, crashed, or no pid → approve proceeds**
+and prints one line instead:
+
+```
+◈ Number One's verdict: <recommendation, else the grade>, <when>
+```
+
+Every OTHER verb in the list above is unchanged and still refuses on `engaged`
+alone. `lcars xo off` remains the way to stand the first officer down mid-look.
+
+**Looking again — `evaluate --again --because "<why>"` (S239).** `evaluate` is
+idempotent on `evaluatedAt`, and `recheck` needs FILED LOGS ("with no logs
+filed, there is no way to re-score" — feedback #5). Together that was a
+catch-22: a mission scored LOW only because no `testCommand` was recorded could
+never be looked at again once the captain recorded one. `--again` supersedes the
+finished verdict — journaling a `superseded` entry with the prior score, the
+prior recommendation, when it was taken and the captain's reason — and runs the
+whole look again. **It needs no filed logs**, and the reason is required: a
+second verdict with nothing saying why leaves two verdicts and no reason.
 
 `lcars run` and `lcars xo` are **exempt**: Number One's own actions go through
 them, so locking them would lock Number One out of itself. `start` is likewise

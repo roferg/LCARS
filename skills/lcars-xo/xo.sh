@@ -1658,6 +1658,27 @@ XO_TESTS_PY="${LCARS_XO_TESTS_PY:-$SKILL_DIR/xo-tests.py}"
 # and a short wait; past it the look says the tests could not be run and gets on
 # with itself rather than holding the captain's Verify gate open all night.
 XO_TEST_TIMEOUT="${LCARS_XO_TEST_TIMEOUT:-300}"
+# S239/S243 — THE BOUND THE REPO MEASURED, when it has measured one. S243 writes
+# `.git/lcars/suite-timing.json` from real runs of this project's own suite; a
+# repo whose suite honestly takes eleven minutes should not have its Verify read
+# "your tests were still running after 300s" forever. The env var remains the
+# answer when there is no measurement, and a file with no timing in it falls
+# back rather than to 0 — a zero timeout would report every suite as hung.
+xo_test_timeout() {
+  local f="$LCARS_DIR/suite-timing.json" n=""
+  if [ -f "$f" ]; then
+    n="$("$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+for k in ("testTimeout", "suiteSeconds", "seconds"):
+    v = d.get(k) if isinstance(d, dict) else None
+    if isinstance(v, (int, float)) and v > 0:
+        print(int(v)); break' "$f" 2>/dev/null)"
+  fi
+  printf '%s\n' "${n:-$XO_TEST_TIMEOUT}"
+}
 # How much of the output the worker is handed. The tail, because that is where
 # every runner in common use puts its summary and its failures — and the cut is
 # STATED in the record, because a line the worker cannot find is a line the
@@ -1966,6 +1987,69 @@ xo_build_journey() { # <mission-dir> <xodir>
   return 0
 }
 
+# ===========================================================================
+# S239 — THE WALK BEYOND THE BROWSER. Declared steps, HARNESS-executed.
+# ===========================================================================
+# The reason, measured: on the Canvas weekend (34 looks, same product) Number
+# One filed 0 of 31 bugs, and all sixteen of its recorded misses were REACH
+# errors — no screen for a CLI, nothing seeded, a stub that made the seam
+# untestable. Its judgement was never the problem.
+#
+# THIS RUNS WHETHER OR NOT THE LAUNCH WORKED, and on purpose. Four of the
+# weekend's misses were "the launched page doesn't match any mockup" / "nothing
+# serves site/" — a stale launch target meant the look reached NOTHING. A CLI
+# does not need a server to be up, so the reach is not held hostage to one.
+XO_RUN_PY="${LCARS_XO_RUN_PY:-$SKILL_DIR/xo-run.py}"
+
+xo_reach_count() { # <journey.json> → how many steps the harness would run
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(len([s for s in (d.get("reachSteps") or []) if isinstance(s, dict)]))
+except Exception:
+    print(0)' "$1" 2>/dev/null || printf '0\n'
+}
+
+xo_run_reach() { # <mission-dir> <xodir> <shots> [journey-file]
+  local dir="$1" xodir="$2" shots="$3" jfile="${4:-$xodir/journey.json}"
+  local n br said rc=0 top
+  [ -s "$jfile" ] || return 0
+  n="$(xo_reach_count "$jfile")"
+  [ "${n:-0}" -gt 0 ] || return 0
+  br="$(json_field "$dir/state.json" branch)"
+  if [ -z "$br" ]; then
+    # HONEST, NOT SILENT. Without a branch there is no tree to detach, and a
+    # step run against the CHECKED-OUT branch is the failure this refuses.
+    printf '◈ NUMBER ONE: %s declared step(s) I could not run — the mission records no branch to detach a worktree from.\n' "$n"
+    journal "$dir" reach-refused "$(printf '"why": %s, "steps": %s' \
+      "$(jstr "the mission records no branch")" "$n")"
+    return 0
+  fi
+  top="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+  [ -n "$top" ] || top="$PWD"
+  said="$("$XO_PY" "$XO_RUN_PY" run --journey "$jfile" --out "$shots" \
+        --repo "$top" --branch "$br" --mission-dir "$dir" 2>&1)" || rc=$?
+  [ -n "$said" ] && printf '%s\n' "$said"
+  journal "$dir" reached "$(printf '"steps": %s, "exit": %s, "branch": %s' \
+    "$n" "${rc:-0}" "$(jstr "$br")")"
+  return 0
+}
+
+# The worker's OWN requested steps, split from its browser actions and held to
+# the SAME cap of 12 across all kinds (S222's rule, unchanged). A request that
+# tries to leave the worktree is refused by xo-run.py and journaled there.
+xo_reach_actions() { # <mission-dir> <xodir> <shots> <xo-actions.json> <round>
+  local dir="$1" xodir="$2" shots="$3" acts="$4" round="$5" kept n
+  [ -s "$acts" ] || return 0
+  kept="$xodir/actions-kept-$round.json"
+  "$XO_PY" "$XO_RUN_PY" actions --actions "$acts" --out "$kept" \
+    --mission-dir "$dir" --cap "$XO_MAX_ACTIONS" >/dev/null 2>&1 || true
+  [ -s "$kept" ] || return 0
+  n="$(xo_reach_count "$kept")"
+  [ "${n:-0}" -gt 0 ] || return 0
+  xo_run_reach "$dir" "$xodir" "$shots" "$kept"
+}
+
 # WHAT THE WALK MEASURED, added to what the layout pass measured. Two readings
 # no picture-pair can take: a control holding an icon bigger than itself (true
 # with no drawing at all, and the only way to reach a button on a screen the
@@ -2058,7 +2142,7 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   # Backgrounded, a stand-down lands at once and xo_teardown kills this tree,
   # the test runner and its children included.
   "$XO_PY" "$XO_TESTS_PY" --out "$out" --cwd "$wt" \
-    --timeout "$XO_TEST_TIMEOUT" --cap "$XO_TEST_TAIL_CAP" \
+    --timeout "$(xo_test_timeout)" --cap "$XO_TEST_TAIL_CAP" \
     --command "$cmd" >/dev/null 2>&1 &
   XO_TESTS_PID=$!
   wait "$XO_TESTS_PID" 2>/dev/null || true
@@ -2289,15 +2373,30 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
 }
 
 cmd_evaluate() {
-  local target=""
+  local target="" again=0 because=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --mission)   target="${2:-}"; shift 2 || true ;;
       --mission=*) target="${1#--mission=}"; shift ;;
+      # S239 — THE RE-LOOK. Feedback #5: "with no logs filed, there is no way to
+      # re-score". A mission scored LOW only because no testCommand was recorded
+      # (miss #1) could never be looked at again once the blocker was cleared,
+      # because `cmd_recheck` needs FILED LOGS and `cmd_evaluate` is idempotent
+      # on evaluatedAt. That is the catch-22 this flag ends. It needs NO logs.
+      --again)     again=1; shift ;;
+      --because)   because="${2:-}"; shift 2 || true ;;
+      --because=*) because="${1#--because=}"; shift ;;
       -*)          die "unknown option: $1" ;;
       *)           target="$1"; shift ;;
     esac
   done
+  # A SUPERSESSION STATES ITS REASON. Making `--again` bypass the idempotence
+  # silently would leave two verdicts in the record with nothing saying which
+  # one is current or why — so the reason is required, and it is journaled.
+  if [ "$again" = 1 ] && [ -z "$because" ]; then
+    die "--again needs --because \"<why this verdict is being superseded>\" — a second look that does not say why leaves two verdicts and no reason."
+  fi
+  [ "$again" = 1 ] || [ -z "$because" ] || die "--because only means something with --again."
   [ -n "$target" ] || die "no mission — pass --mission <id>."
   local id dir st xodir shots look
   id="$(resolve_mission "$target")" || exit $?
@@ -2310,9 +2409,23 @@ cmd_evaluate() {
   # worker and a browser to reach the same verdict.
   local seen
   seen="$(obj_get "$(state_xo_block "$st")" evaluatedAt)"
-  if [ -n "$seen" ]; then
+  if [ -n "$seen" ] && [ "$again" != 1 ]; then
     printf '◈ NUMBER ONE: already looked at %s (%s) — nothing to do.\n' "$id" "$seen"
+    printf '  if the thing that blocked me has been cleared: lcars xo evaluate --mission %s --again --because "<what changed>"\n' "$id"
     return 0
+  fi
+  # THE SUPERSESSION IS A RECORD BEFORE IT IS A RE-RUN (S239). The prior score,
+  # when it was taken and the captain's reason go into the mission's own journal
+  # FIRST, so a re-look that then dies still leaves an auditable trail of why a
+  # finished verdict stopped being the current one.
+  if [ "$again" = 1 ] && [ -n "$seen" ]; then
+    local prior_score prior_rec
+    prior_score="$(obj_get "$(state_xo_block "$st")" score)"
+    prior_rec="$(obj_get "$(state_xo_block "$st")" recommendation)"
+    journal "$dir" superseded "$(printf '"priorScore": %s, "priorRecommendation": %s, "priorAt": %s, "because": %s' \
+      "$(jstr "$prior_score")" "$(jstr "$prior_rec")" "$(jstr "$seen")" "$(jstr "$because")")"
+    printf '◈ NUMBER ONE: looking again at %s — the verdict of %s (%s) is superseded: %s\n' \
+      "$id" "$seen" "${prior_score:-no grade}" "$because"
   fi
 
   # A BUG CHILD IS NEVER EVALUATED. Its parent's PR carries the fix (Mission
@@ -2376,6 +2489,12 @@ cmd_evaluate() {
   # Declared from the record before the build is up, so the walk cannot be
   # invented while looking.
   xo_build_journey "$dir" "$xodir"
+
+  # --- 1d. THE REACH BEYOND THE BROWSER (S239) -----------------------------
+  # Run BEFORE the launch, because a CLI and a workflow do not need a server up
+  # and four of the weekend's misses were looks that reached nothing because the
+  # launch target was stale.
+  xo_run_reach "$dir" "$xodir" "$shots"
 
   # --- 2. LAUNCH ------------------------------------------------------------
   # Through launch.sh, the verb a human uses, with no --open-ish path anywhere
@@ -2541,7 +2660,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
     # the meaning to the line the look has to quote.
     failed)          printf '◈ NUMBER ONE: your test run came back FAILED — a red test of yours, or a runner that never started.\n'
                      printf '  I am not counting that against the build on its own.\n' ;;
-    hung)            printf '◈ NUMBER ONE: your tests were still running after %ss, so I stopped them.\n' "$XO_TEST_TIMEOUT" ;;
+    hung)            printf '◈ NUMBER ONE: your tests were still running after %ss, so I stopped them.\n' "$(xo_test_timeout)" ;;
     no-test-command) printf '◈ NUMBER ONE: no test command for this repo — going on what I can see.\n' ;;
     *)               printf '◈ NUMBER ONE: could not run your tests — going on what I can see.\n' ;;
   esac
@@ -2622,6 +2741,9 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       wait "$XO_DRIVE_PID" || drc=$?
       XO_DRIVE_PID=""
       cp "$out/xo-actions.json" "$xodir/actions-$round.json" 2>/dev/null || true
+      # S239: the same round may have asked for a command, a workflow or an
+      # artifact read. Same cap, same worktree, same evidence directory.
+      xo_reach_actions "$dir" "$xodir" "$shots" "$out/xo-actions.json" "$round"
       # …and again after EVERY round that drove the build (S221): each round of
       # looking is another round of typing.
       xo_tree_restore "$dir"
@@ -3624,6 +3746,11 @@ case "${1:-status}" in
   status) shift; cmd_status ;;
   answer) shift; cmd_answer "$@" ;;
   evaluate) shift; cmd_evaluate "$@" ;;
+  test-timeout)
+    # NOT A CAPTAIN-FACING VERB. It prints the bound the look would use, so the
+    # resolution (a measured suite-timing.json, else the env var) is provable
+    # without running a suite.
+    shift; xo_test_timeout ;;
   file-logs) shift; cmd_file_logs "$@" ;;
   recheck)   shift; cmd_recheck "$@" ;;
   report)    shift; cmd_report "$@" ;;
