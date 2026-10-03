@@ -3014,6 +3014,46 @@ except Exception:
     pass' "$1" "$2" "$3" 2>/dev/null
 }
 
+# WHY `lcars log` DID NOT FINISH, IN WORDS (S240 fix round 2, D-A).
+#
+# This used to be `printf '%s' "$lout" | head -1` — the FIRST line of a chatty
+# run's combined output — inlined at BOTH the message and the journal `detail`.
+# MEASURED on the first live look: `lcars log` came back non-zero having printed
+# nothing on stdout (its per-bug stdout is swallowed by the `$(file_one_bug …)`
+# command substitution inside it), so `head -1` was the EMPTY STRING. The captain
+# was handed "Number One had 7 gaps to file but `lcars log` refused them — " —
+# a sentence ending on a dash with nothing after it — and the journal recorded
+# `"detail": ""`. Seven gaps unfiled and not one word of why.
+#
+# WHAT IS ACTUALLY WORTH CARRYING, in order:
+#   1. `log.sh` says why on STDERR, every line prefixed `lcars log: `. The LAST
+#      such line is the one that stopped the batch, and it carries how many bugs
+#      were filed BEFORE it — the one fact a re-run needs.
+#   2. Failing that, the first line that reads like an error at all.
+#   3. Failing that, the LAST non-empty line (never the first: a run that talks
+#      fails at the end).
+#   4. NO OUTPUT AT ALL is itself the finding, and it must be said: a status
+#      above 128 is a signal, which means the verb was KILLED and refused
+#      nothing — so some bugs may already be filed and a blind re-run doubles
+#      them. That is a completely different thing from a validation refusal and
+#      the captain cannot tell them apart from an empty dash.
+# This function never returns an empty string, so no sentence built from it can
+# end on a dangling dash.
+xo_log_refusal_why() { # <combined-output> <exit-status>
+  local out="$1" rc="$2" line=""
+  line="$(printf '%s\n' "$out" | grep '^lcars log: ' | tail -1)"
+  [ -n "$line" ] || line="$(printf '%s\n' "$out" \
+      | grep -iE 'error|refus|fatal|not found|missing|must |cannot|no such' | head -1)"
+  [ -n "$line" ] || line="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
+  if [ -n "$line" ]; then printf '%s' "$line"; return 0; fi
+  if [ "${rc:-0}" -gt 128 ] 2>/dev/null; then
+    printf 'it printed nothing and exit status %d means it was KILLED by signal %d — it refused nothing, so some of the bugs may already be filed and a blind re-run would file them twice.' \
+      "$rc" "$((rc - 128))"
+  else
+    printf 'it printed nothing and exited with status %s.' "${rc:-?}"
+  fi
+}
+
 # file_logs_for <mission-id> <mission-dir>
 #
 # Called by `lcars xo file-logs` and, directly, by the end of `evaluate` — one
@@ -3130,10 +3170,15 @@ file_logs_for() { # <id> <dir>
   )" || lrc=$?
 
   if [ "$lrc" -ne 0 ]; then
+    # THE REASON IS CARRIED, NOT DROPPED (S240 fix round 2, D-A). See
+    # `xo_log_refusal_why` above: one answer, used for BOTH the sentence the
+    # captain reads and the journal's `detail`, and never empty.
+    local lwhy
+    lwhy="$(xo_log_refusal_why "$lout" "$lrc")"
     escalate "$dir" verify \
-      "Number One had $n gaps to file but \`lcars log\` refused them — $(printf '%s' "$lout" | head -1)" \
-      "$(printf '"stage": "verify", "reason": "log-refused", "detail": %s' \
-           "$(jstr "$(printf '%s' "$lout" | head -1)")")"
+      "Number One had $n gaps to file but \`lcars log\` did not finish: $lwhy" \
+      "$(printf '"stage": "verify", "reason": "log-refused", "exit": %s, "detail": %s' \
+           "$lrc" "$(jstr "$lwhy")")"
   fi
 
   # --- the child ids, read off the verb's own summary ----------------------

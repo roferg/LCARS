@@ -282,6 +282,21 @@ def evidence_ref(shotsdir, row, finding, instrument):
                 break
     if not name:
         return ""
+    # THE NAME EXACTLY AS IT WAS GIVEN, FIRST (S240 fix round 2, D-B). A live
+    # worker records its shot WITH the extension already on it — `01-help.txt`,
+    # `02-workflow-run.txt` — so probing only `<name> + <ext>` looked for
+    # `01-help.txt.png` / `01-help.txt.json`, found neither, and returned "".
+    # MEASURED on the first live look: 6 of the 7 filed PRDs said "the evidence
+    # was not retained" while `01-help.txt`, `02-workflow-run.txt` and
+    # `08-publish.txt` were sitting in `shots/look-1/`. Round 1 stopped this
+    # citing a path that is not there; without this line it started claiming
+    # nothing had been kept.
+    pth = os.path.join(shotsdir, name)
+    if os.path.isfile(pth):
+        return pth
+    # AND THE EXTENSION PROBE STAYS, for a bare name (`shot-01`, `round1-01`) —
+    # which is what every drawing/part shot is called. Both halves; neither one
+    # traded for the other.
     exts = EVIDENCE_EXT.get(instrument) or (".png", ".txt")
     for ext in exts:
         pth = os.path.join(shotsdir, name + ext)

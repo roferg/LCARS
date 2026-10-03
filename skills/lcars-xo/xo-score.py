@@ -141,6 +141,23 @@ VALID_STATUS = ("met", "gap", "untested")
 # look used the only one the schema offered and the table told the captain it had
 # looked at a screen.
 VALID_EVIDENCE = ("picture", "transcript", "measurement", "tests")
+
+
+def shot_name_evidence(name):
+    """The evidence word a shot's own FILENAME implies (S240 fix round 2, D-C).
+
+    The reach steps keep a command's exact output in a `.txt` and its parsed
+    readings in a `.json` beside the pictures, and a live worker cites those by
+    their full name. So `02-workflow-run.txt` is a transcript and
+    `round1-01.json` is a measurement, while `shot-01`, `round1-01.png` and
+    anything else at all stay `picture` — the structural default is unchanged for
+    every genuine screenshot."""
+    low = str(name or "").strip().lower()
+    if low.endswith(".txt"):
+        return "transcript"
+    if low.endswith(".json"):
+        return "measurement"
+    return "picture"
 EVIDENCE_WORD = {"picture": "a picture", "transcript": "a transcript",
                  "measurement": "a measured box", "tests": "your tests",
                  "none": "—"}
@@ -902,11 +919,19 @@ def question_kind(row):
 # proven by a CLI transcript — the whole point of the reach steps — fell through
 # to "a picture alone" and the works-kind downgrade below rewrote it.
 #
-# MEASURED consequence: a high-impact works-question settled by a `cli` run with
-# its transcript on disk and no `action` string came out `untested` /
-# `works-needs-action` / `evidence: none`, which graded the look HIGH, reached
-# `merge-with-follow-ups`, carried ZERO blockers and filed nothing — defeating
-# S240's own named exemplar.
+# WHAT IT PROTECTS IS A PASS, NOT A FAULT — the round-1 wording here had this
+# backwards and a later reader would have been misled (corrected S240 fix round
+# 2). The downgrade below is gated on `e["status"] == "met"`, so the ONLY row it
+# can ever rewrite is one the look called MET. A `gap` row was never downgraded
+# by it and never could be: a transcript-proven FAULT reaches the report
+# untouched by this predicate.
+#
+# MEASURED consequence of the narrow predicate: a high-impact works-question the
+# look PASSED on a `cli` run, with its transcript on disk and no `action` string,
+# was rewritten to `untested` / `works-needs-action` / `evidence: none` — a
+# checked criterion turned into an unchecked one, which is what then moved the
+# headline off the evidence that existed. The widening restores the pass; it
+# grants nothing to a gap.
 #
 # THESE TWO TABLES ARE THE WIDENING, AND THEY ARE WHY IT IS NOT A REMOVAL. The
 # check exists to stop a row asserting a judgement with nothing behind it, so an
@@ -1912,7 +1937,35 @@ def main():
         # structural fact that it cited a shot — never from the wording.
         g_ev = str(g.get("evidence") or "").strip().lower()
         if g_ev not in VALID_EVIDENCE:
-            g_ev = "picture" if shots else ""
+            # THE SAME FACT, DECLARED ONCE, IS ENOUGH — the evidence WORD too
+            # (S240 fix round 2, D-C). The worker declares a finding in two
+            # places; on the first live look it put `evidence: "transcript"` and
+            # `checkedBy: "cli"`/`"workflow"` on the LEDGER ROW and left the GAP
+            # record's word off, and this line then stamped the gap — and the
+            # blocker built from it — `picture`. MEASURED: three gaps whose only
+            # evidence was `01-help.txt` / `02-workflow-run.txt` /
+            # `08-publish.txt` read "a picture" to the captain while the ledger
+            # row for the very same criterion correctly read "a transcript".
+            # So the row's own word is taken first, exactly as the test-citation
+            # fallback below takes the row's quote. Nothing is inferred from
+            # prose and no new claim is trusted: it is the producer's word about
+            # its own finding, read off its other declaration site.
+            row_ev = str((declared_rows.get(str(g.get("criterion") or "").strip())
+                          or {}).get("evidence") or "").strip().lower()
+            if row_ev in VALID_EVIDENCE:
+                g_ev = row_ev
+            elif shots:
+                # AND THE STRUCTURAL FALLBACK IS STILL STRUCTURAL — it just
+                # reads the whole name. A shot called `02-workflow-run.txt` is
+                # not a picture of anything; a shot called `shot-01` or
+                # `round1-01.png` is. Anything that is not a named text/data
+                # file stays `picture`, so a genuine screenshot gap is unchanged.
+                g_ev = shot_name_evidence(shots[0])
+            else:
+                # UNDECLARED AND UNCITED IS STILL NOTHING. An unrecognised word
+                # must not survive this branch (it would reach the report as
+                # itself), so it is cleared exactly as before.
+                g_ev = ""
         g_quote = str(g.get("testQuote") or "").strip()
         # A FAILING TEST IS A PICTURE (S211). The citation guard below exists so
         # a confident-sounding fault always has something behind it; for a
