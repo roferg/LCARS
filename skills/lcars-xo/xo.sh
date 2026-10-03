@@ -155,10 +155,50 @@ col() { # <string> <width> — the string padded to <width> display columns
 }
 
 # --- the repo's recorded numberOne block ------------------------------------
-cfg_block() { lcars_config_get_raw "$CONFIG" numberOne; }
+#
+# READ WHITESPACE-INSENSITIVELY, BECAUSE THE PRODUCT INVITES THE HAND EDIT
+# (S240 fix round 1, D1). `cfg_block` called `lcars_config_get_raw`, which is a
+# single-line `sed` taking THE REST OF THE LINE after the key. MEASURED, on a
+# config saying `{"enabled": true, "engine": "copilot", "filesBugs": false}`:
+#
+#   pretty-printed (what any editor writes)    ->  `{`
+#   one line       (what `lcars xo on` writes) ->  the object AND the next key
+#
+# So on a pretty-printed config `cfg_enabled` read OFF for a captain who had set
+# it ON, and `cfg_files_bugs` read FILES for a captain who had set no-file — two
+# switches silently ignored, in OPPOSITE directions. And the refusal message in
+# file_logs_for ("Turn it back on in .git/lcars/config.json") is the product
+# telling him to open that file in an editor, so the style that breaks both
+# switches is the style it asks him for.
+#
+# THE ROOT CAUSE IS `lcars_config_get_raw` (lcars-init/lcars-common.sh:3853) and
+# it is NOT changed here, deliberately: it is shared code with callers well
+# beyond Number One (lcars-common.sh:2251 among them), and its line-greed also
+# swallows the NEXT key on a one-line config, so a correct fix there is wider
+# than this round can prove. It is ledgered as the root cause.
+#
+# What changes is the READERS. They now use `lcars_state_get_raw` — the
+# JSON-AWARE top-level scanner S223 wrote for exactly this problem, documented
+# for state.json AND config.json — so BOTH styles return the real object.
+# `cfg_engine`/`cfg_model` keep reading it through `obj_get`, which answers
+# correctly on a multi-line object (measured).
+cfg_block() {
+  local raw
+  raw="$(lcars_state_get_raw "$CONFIG" numberOne)"
+  case "$raw" in '{'*'}') printf '%s' "$raw" ;; esac
+}
+# cfg_flag <key> — the RAW token recorded for `numberOne.<key>`, or empty. The
+# newlines are flattened first so a key and its value can be matched on one
+# line, and the character class excludes a quote ON PURPOSE: `"enabled": "true"`
+# is a STRING where this switch is a boolean, and it reads as ABSENT — which is
+# the documented default, not a guess at what was meant.
+cfg_flag() {
+  printf '%s' "$(cfg_block)" | tr '\n\t' '  ' \
+    | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([A-Za-z0-9.+-]*\).*/\1/p" | head -1
+}
+# ABSENT MEANS OFF — Number One is opt-in per repo (`lcars xo on`).
 cfg_enabled() {
-  case "$(cfg_block)" in *'"enabled"'*'true'*) return 0 ;; esac
-  return 1
+  [ "$(cfg_flag enabled)" = true ]
 }
 # ─── FILING IS A SWITCH, AND ITS DEFAULT IS ON (S240) ───────────────────────
 # `numberOne.filesBugs` in the repo's config. ABSENT MEANS TRUE: a repo that
@@ -166,8 +206,7 @@ cfg_enabled() {
 # explicit `false` turns it off, and when it is off the gaps are still on the
 # report — the captain loses the filing, never the finding.
 cfg_files_bugs() {
-  case "$(cfg_block)" in *'"filesBugs"'*false*) return 1 ;; esac
-  return 0
+  [ "$(cfg_flag filesBugs)" != false ]
 }
 cfg_engine() { obj_get "$(cfg_block)" engine; }
 cfg_model()  { obj_get "$(cfg_block)" model; }

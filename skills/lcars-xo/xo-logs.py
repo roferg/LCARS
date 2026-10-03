@@ -210,6 +210,12 @@ def bind_shots(shotsdir, shots, place):
 # and goes on the report, never on a bug.
 INSTRUMENTS = ("picture", "transcript", "measurement", "tests")
 
+# The same plain words xo-score.py prints for each one — said when the
+# instrument's output was NOT retained, so the sentence names what took the
+# reading instead of citing a file that is not there (S240 fix round 1, D3).
+EVIDENCE_WORD = {"picture": "a picture", "transcript": "a transcript",
+                 "measurement": "a measured box", "tests": "the project's own tests"}
+
 # The file a recorded instrument put on disk, by kind. A transcript is a `.txt`
 # beside the shots (xo-run.py writes it); a picture is the `.png`; a measurement
 # is the `.json` readout. Read in this order, and the first that EXISTS wins —
@@ -256,8 +262,18 @@ def evidence_ref(shotsdir, row, finding, instrument):
     row, finding = row or {}, finding or {}
     for k in ("evidencePath", "transcriptPath", "transcript"):
         v = clean(finding.get(k)) or clean(row.get(k))
-        if v:
+        if not v:
+            continue
+        # A RECORDED PATH IS STILL CHECKED (S240 fix round 1, D3). It is quoted
+        # only if it is there, as given or resolved against the look's own
+        # directory — a bug that sends a fix worker to a file that is not on the
+        # disk costs more than one that admits the evidence was not kept.
+        if os.path.exists(v):
             return v
+        pth = os.path.join(shotsdir, os.path.basename(v))
+        if os.path.exists(pth):
+            return pth
+        continue
     name = clean(finding.get("shot")) or clean(row.get("shot"))
     if not name:
         for sh in (finding.get("shots") or []):
@@ -271,7 +287,13 @@ def evidence_ref(shotsdir, row, finding, instrument):
         pth = os.path.join(shotsdir, name + ext)
         if os.path.exists(pth):
             return pth
-    return os.path.join(shotsdir, name + exts[0])
+    # NOTHING OF THAT NAME IS ON THE DISK, so nothing is cited. This line used to
+    # synthesise `<shotsdir>/<name><first-ext>` from the extension table and hand
+    # it back unchecked, and `xo.sh` guards only the ATTACHMENT
+    # (`[ -f "$s" ] && args+=(--attach "$s")`) — so AC #1 and AC #4 quoted an
+    # absolute path to nothing, inside the PARENT mission's `.git/lcars/`, which
+    # is untracked and sweepable and not the bug mission's own directory.
+    return ""
 
 
 def seam_of(row, finding, criteria, cid):
@@ -458,9 +480,20 @@ def main():
         ref = evidence_ref(shotsdir, row, g, instrument)
         seam = seam_of(row, g, cpath, cid)
         action = unstop(row.get("action")) or unstop(g.get("action"))
-        observed = unstop(row.get("note")) or unstop(g.get("saw"))
+        # ── WHAT WAS SEEN, AND WHICH CLAUSE IT BELONGS IN (S240 fix round 1, D3)
+        # `saw_phrase` is a NOUN PHRASE and is the only thing spliced into "the
+        # build gave …". `gaps[].saw` is written that way ("a hardcoded
+        # github.com") and so is a row's `sawInstead` ("it printed github.com,
+        # the hardcoded one"). The ledger row's `note` is a SENTENCE ("ran it and
+        # it did not do that") and used to be spliced in anyway, producing "the
+        # build gave ran it and it did not do that" — ungrammatical, and it threw
+        # away the one field that said what actually went wrong. The note is
+        # still said, as its own sentence, below.
+        saw_phrase = (unstop(row.get("sawInstead")) or unstop(g.get("sawInstead"))
+                      or unstop(g.get("saw")))
+        observed = (unstop(row.get("sawInstead")) or unstop(g.get("sawInstead"))
+                    or unstop(row.get("note")) or unstop(g.get("saw")))
         expected = unstop(g.get("expected")) or unstop(ctext) or "what the record says"
-        saw = unstop(g.get("saw")) or observed or "something else"
         quote = clean(g.get("testQuote")) or clean(row.get("testQuote"))
 
         # ── THE TITLE IS A SENTENCE ──────────────────────────────────────────
@@ -478,14 +511,33 @@ def main():
         if kind == "untested":
             ac1.append("Nothing could be run for this: %s."
                        % (observed or "the record names no way in"))
+        elif saw_phrase:
+            ac1.append("Expected %s; the build gave %s." % (expected, saw_phrase))
         else:
-            ac1.append("Expected %s; the build gave %s." % (expected, saw))
+            ac1.append("Expected %s; it did not." % expected)
         if quote:
             ac1.append('The project\'s own tests said: "%s".' % quote)
         if ref:
             ac1.append("Recorded in `%s` (%s)." % (ref, instrument))
-        elif observed and kind != "untested":
-            ac1.append("Recorded on the row as: %s." % observed)
+            # AND THE ROW'S OWN SENTENCE, WHEN IT IS NOT ALREADY THE OBSERVATION
+            # (S240 fix round 1, D3). The `note` is the one line that says what
+            # went wrong in the look's own words; citing the file instead of it
+            # threw it away.
+            if observed and observed != saw_phrase:
+                ac1.append("The row's own words: %s." % observed)
+        elif kind != "untested":
+            # NO PATH IS CITED, AND THAT IS SAID PLAINLY (S240 fix round 1, D3).
+            # `evidence_ref` returns a path only when the file is on the disk, so
+            # an empty `ref` with a named instrument means the output was taken
+            # and not retained. A fix worker is told that, and told what was
+            # observed, instead of being sent to a file that is not there.
+            if instrument != "none":
+                ac1.append("%s settled this and was not retained, so the "
+                           "record's own words are all there is%s"
+                           % (upfirst(EVIDENCE_WORD.get(instrument, "an instrument")),
+                              (": %s." % observed) if observed else "."))
+            elif observed:
+                ac1.append("Recorded on the row as: %s." % observed)
         ac1.append("The criterion is `%s`, written at %s." % (cid, where))
         acs = [" ".join(ac1)]
 
@@ -536,15 +588,24 @@ def main():
                        "thing under test."]
 
         tail = []
-        if shots:
+        # ONLY THE SHOTS THAT ARE ON THE DISK ARE DESCRIBED (S240 fix round 1,
+        # D3, the cheap half). `xo.sh` attaches a PNG only when the file exists
+        # (`[ -f "$s" ] && args+=(--attach "$s")`), so a swept shot left this
+        # block promising "each PNG has a `.json` readout beside it" about
+        # attachments the issue does not carry. The Out-of-Scope line still reads
+        # off `shots`, not this list: a shot NAME means there WAS a screen, so
+        # "do not make one" would be wrong just because the file was swept.
+        present = [sh for sh in shots
+                   if os.path.exists(os.path.join(shotsdir, sh + ".png"))]
+        if present:
             tail.append("Number One's shots of the running build: %s. Each PNG has a "
                         "`.json` readout beside it (url, visible text, the box and "
                         "computed colour of every element the drawing names) and a "
-                        "`.txt` caption." % ", ".join(shots))
-            lead = shot_selector(shotsdir, shots[0])
+                        "`.txt` caption." % ", ".join(present))
+            lead = shot_selector(shotsdir, present[0])
             if lead:
                 tail.append("`%s` is the close-up of `%s` — that is the one that "
-                            "shows this." % (shots[0], lead))
+                            "shows this." % (present[0], lead))
         if ctext:
             tail.append("The criterion this is judged against, in full:\n\n> %s" % ctext)
 

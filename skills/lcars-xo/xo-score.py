@@ -894,15 +894,60 @@ def question_kind(row):
     return "", ""
 
 
+# ─── WHAT COUNTS AS HAVING BEEN EXERCISED (S240 fix round 1, D2) ─────────────
+# `settled_by_picture_alone` predates S239, which made `transcript` a real
+# evidence word: the reach steps run a command and keep its exact output in a
+# `.txt` beside the shots. The predicate was written when a works-question could
+# only be exercised by a browser ACTION or by the project's own tests, so a row
+# proven by a CLI transcript — the whole point of the reach steps — fell through
+# to "a picture alone" and the works-kind downgrade below rewrote it.
+#
+# MEASURED consequence: a high-impact works-question settled by a `cli` run with
+# its transcript on disk and no `action` string came out `untested` /
+# `works-needs-action` / `evidence: none`, which graded the look HIGH, reached
+# `merge-with-follow-ups`, carried ZERO blockers and filed nothing — defeating
+# S240's own named exemplar.
+#
+# THESE TWO TABLES ARE THE WIDENING, AND THEY ARE WHY IT IS NOT A REMOVAL. The
+# check exists to stop a row asserting a judgement with nothing behind it, so an
+# evidence WORD is not enough on its own: the row must ALSO name the instrument
+# it was taken with (`checkedBy`) AND where the output was left. A row that says
+# `transcript` and nothing else is still demoted.
+EXERCISED_EVIDENCE = ("transcript", "measurement", "tests")
+EXERCISED_CHECKED_BY = ("cli", "workflow", "test")
+# The fields a producer uses to say WHERE the output it took is. Any one of them
+# is a location a fix worker could open; none of them is prose.
+EVIDENCE_LOCATION_FIELDS = ("evidencePath", "transcriptPath", "transcript",
+                            "shot", "where", "testQuote")
+
+
+def recorded_location(entry):
+    """True when the row names WHERE its instrument left what it saw."""
+    for k in EVIDENCE_LOCATION_FIELDS:
+        if str(entry.get(k) or "").strip():
+            return True
+    for sh in (entry.get("shots") or []):
+        if str(sh or "").strip():
+            return True
+    return False
+
+
 def settled_by_picture_alone(entry):
     """True when the ONLY thing behind a passing row is a screenshot — no test
-    line quoted, no action recorded. The same predicate the settledBy record
-    uses (a picture is the fallback once tests and action are ruled out), read
-    from producer-stamped fields, so the two can never disagree."""
+    line quoted, no action recorded, and no other instrument that was actually
+    RUN. The same predicate the settledBy record uses (a picture is the fallback
+    once tests and action are ruled out), read from producer-stamped fields, so
+    the two can never disagree."""
     ev = str(entry.get("evidence") or "").strip().lower()
     if ev == "tests" and str(entry.get("testQuote") or "").strip():
         return False
     if str(entry.get("action") or "").strip():
+        return False
+    # AN INSTRUMENT THAT WAS RUN, NAMED, AND LEFT ITS OUTPUT SOMEWHERE. All
+    # three, or the row falls through to the demotion exactly as before.
+    if ev in EXERCISED_EVIDENCE \
+            and str(entry.get("checkedBy") or "").strip().lower() in EXERCISED_CHECKED_BY \
+            and recorded_location(entry):
         return False
     return True
 
@@ -2121,6 +2166,15 @@ def main():
         checked_by = str(c.get("checkedBy") or "").strip().lower()
         if checked_by in VALID_CHECKED_BY:
             entry["checkedBy"] = checked_by
+        # WHAT WAS SEEN INSTEAD, CARRIED (S240 fix round 1, D3). `sawInstead` is
+        # the look's NOUN PHRASE for the thing it actually got ("it printed
+        # github.com, the hardcoded one"), and it was dropped by this rebuild —
+        # so `xo-logs.py` fell back to the row's `note`, a SENTENCE, and spliced
+        # it into "the build gave …". One line, read never inferred, and the
+        # `note` is still carried beside it.
+        saw_instead = " ".join(str(c.get("sawInstead") or "").split())
+        if saw_instead:
+            entry["sawInstead"] = saw_instead
         if status == "untested" and rated_status == "untested":
             why_not = str(c.get("couldNotCheck") or "").strip().lower()
             if why_not in COULD_NOT_CHECK:

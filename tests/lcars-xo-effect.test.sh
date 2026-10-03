@@ -493,6 +493,12 @@ printf '\n── 5b. filing is a switch, and OFF files nothing ──\n'
 GATE="$TMPROOT/gate.sh"
 {
   echo 'cfg_block() { printf "%s" "$BLOCK"; }'
+  # BOTH halves of the real reader. S240 fix round 1 (D1) split the key lookup
+  # out into `cfg_flag` so it is whitespace-insensitive and shared with
+  # `cfg_enabled`; lifting only `cfg_files_bugs` left `cfg_flag: command not
+  # found`, which made 5k and 5l pass on an empty string instead of on the
+  # product. A lift has to bring everything the lifted function calls.
+  awk '/^cfg_flag\(\) \{/,/^\}$/' "$REPO_ROOT/skills/lcars-xo/xo.sh"
   awk '/^cfg_files_bugs\(\) \{/,/^\}$/' "$REPO_ROOT/skills/lcars-xo/xo.sh"
 } >"$GATE"
 check "5i. the gate function was lifted out of xo.sh (non-empty)" \
