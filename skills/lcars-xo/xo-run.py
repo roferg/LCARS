@@ -439,6 +439,60 @@ def do_workflow(step, worktree, home, outdir, mission_dir):
 
 
 # ===========================================================================
+# WHAT WAS NEVER BUILT — recorded by xo-journey.py, DELIVERED here (S239 fix 3)
+# ===========================================================================
+# THE DEFECT THIS CLOSES, observed on a live look at ec9e4c6. The console said
+#
+#     ◈ 3 declared step(s) reached, 0 refused; the worktree and its HOME are gone.
+#
+# while `journey.reachUninstantiated` held TEN items on disk, each with a good
+# reason. That is not merely silence: `0 refused` is an explicit ALL-CLEAR on
+# exactly the question the refusal exists to raise. The word `refused` here has
+# always meant a step this file declined to EXECUTE (an escape attempt), so it
+# is QUALIFIED on the line below — "declined at execution" — rather than
+# redefined underneath the readout field and the journal entry that use it.
+#
+# AND IT MUST NOT CRY WOLF. `cli#4-8` and `web#4-6` are uninstantiated on EVERY
+# healthy mission; a raw "I could not build N items" would fire on every look
+# and be ignored inside a week (S212's scar). The split is READ OFF THE RECORD
+# — `oneLineFix`, set by xo-journey.py where the one missing fact is one the
+# captain can write in a single line — never re-derived from the prose here.
+def unbuilt(journey):
+    """(items a one-line record edit recovers, items the record cannot supply)."""
+    un = [u for u in ((journey or {}).get("reachUninstantiated") or [])
+          if isinstance(u, dict)]
+    return ([u for u in un if u.get("oneLineFix")],
+            [u for u in un if not u.get("oneLineFix")])
+
+
+BY_DESIGN = ("  (%d further checklist item(s) want a fact the record cannot "
+             "supply — a second actor, an owner-not-login pair, a non-default "
+             "host, an artifact nobody named. Those go unbuilt on every healthy "
+             "mission, by design; there is nothing to fix.)")
+
+
+def say_unbuilt(journey):
+    """The sentence xo-journey.py already wrote, said out loud."""
+    fix, rest = unbuilt(journey)
+    if fix:
+        # One reason covers several items, so it is said once with the items
+        # named beside it rather than repeated verbatim per item.
+        order, by = [], {}
+        for u in fix:
+            why = " ".join(str(u.get("why") or "").split())
+            if why not in by:
+                by[why] = []
+                order.append(why)
+            by[why].append(str(u.get("item") or "?"))
+        say("◈ %d checklist item(s) I could NOT BUILD from this record — one "
+            "line in it recovers them:" % len(fix))
+        for why in order:
+            say("  %s — %s" % (", ".join(by[why]), why))
+    if rest:
+        say(BY_DESIGN % len(rest))
+
+
+# ===========================================================================
 # run — the whole walk beyond the browser, in one caged pass
 # ===========================================================================
 def cmd_run(opt):
@@ -454,6 +508,7 @@ def cmd_run(opt):
     steps = [s for s in (journey.get("reachSteps") or []) if isinstance(s, dict)]
     if not steps:
         say("◈ nothing in the record declared a step beyond the browser.")
+        say_unbuilt(journey)
         return 0
     if not branch:
         sys.stderr.write("xo-run.py run: --branch is required — a step runs in a "
@@ -471,7 +526,12 @@ def cmd_run(opt):
     say("  worktree: %s" % worktree)
     say("  HOME:     %s (throwaway)" % home)
 
-    reached = refused = 0
+    # `declined` counts steps THIS FILE refused to execute — an escape attempt,
+    # a kind the harness does not run. It is NOT the count of items the record
+    # could not instantiate; those never became steps and are said separately,
+    # by say_unbuilt below. Calling both "refused" is the false line this fix
+    # removes.
+    reached = declined = 0
     try:
         for step in steps[:MAX_ACTIONS]:
             kind = str(step.get("do") or "")
@@ -479,7 +539,7 @@ def cmd_run(opt):
             why = refuse_reason(step, worktree, home)
             if why or kind not in REACH_KINDS:
                 why = why or "`%s` is not a step the harness executes" % kind
-                refused += 1
+                declined += 1
                 write_evidence(outdir, name,
                                "REFUSED: %s\n\nThe command was NOT run.\n" % why,
                                {"do": kind, "key": step.get("key") or "",
@@ -509,8 +569,9 @@ def cmd_run(opt):
                                   name, readout["checkedBy"]))
     finally:
         teardown(repo, worktree, home)
-    say("◈ %d declared step(s) reached, %d refused; the worktree and its HOME are gone."
-        % (reached, refused))
+    say("◈ %d declared step(s) reached, %d declined at execution; the worktree "
+        "and its HOME are gone." % (reached, declined))
+    say_unbuilt(journey)
     return 0
 
 

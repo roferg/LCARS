@@ -1148,7 +1148,8 @@ def reach_steps(contract, prd_text=""):
     if "cli" in types:
         if not cli_ep:
             skipped.append({"item": "cli#*", "why": "the plan recorded no `cli` "
-                            "entrypoint path, so there is nothing to run"})
+                            "entrypoint path, so there is nothing to run",
+                            "oneLineFix": False})
         else:
             shapes = subcommand_shapes(prd_text, crit_text, cli_ep["path"])
             verbs = [r["verb"] for r in shapes]
@@ -1218,8 +1219,21 @@ def reach_steps(contract, prd_text=""):
                         bits.append(silent)
                     if rest:
                         bits.append("the record does not name: " + ", ".join(rest))
+                    # WHICH REFUSALS ARE HIS TO FIX (S239 fix round 3). An
+                    # uninstantiated item is only worth raising when a ONE-LINE
+                    # edit to the record recovers it. `cli#4-8` and `web#4-6`
+                    # also want a second actor, an owner-not-login pair, a
+                    # non-default host, an artifact nobody named — facts a PRD
+                    # genuinely cannot supply, so they are uninstantiated on
+                    # EVERY healthy mission. Raising those as well would cry
+                    # wolf on every single look, which is exactly how S212's
+                    # guard got ignored. So the flag is set only when the ONLY
+                    # missing fact is the one the silent-record sentence names,
+                    # and the console/report alarm reads this field — it never
+                    # re-reads the prose above to work the class out.
                     skipped.append({"item": row["item"], "evidence": row["evidence"],
-                                    "why": " ".join(bits)})
+                                    "why": " ".join(bits),
+                                    "oneLineFix": bool(bits) and not rest})
                     continue
                 for_id = claim("cli")
                 steps.append({"do": "run", "argv": argv,
@@ -1262,7 +1276,8 @@ def reach_steps(contract, prd_text=""):
     if "workflow" in types:
         if not wf_eps:
             skipped.append({"item": "workflow#*", "why": "the plan recorded no "
-                            "`workflow` entrypoint path, so there is nothing to run"})
+                            "`workflow` entrypoint path, so there is nothing to run",
+                            "oneLineFix": False})
         wf_tpl = next((r for r in checklist_items("workflow") if r["kind"] == "workflow"),
                       None)
         read_tpl = next((r for r in checklist_items("workflow")
@@ -1300,7 +1315,8 @@ def reach_steps(contract, prd_text=""):
                 continue
             skipped.append({"item": row["item"], "evidence": row["evidence"],
                             "why": "the record does not name the rendered page "
-                                   "or deployed artifact to read"})
+                                   "or deployed artifact to read",
+                            "oneLineFix": False})
 
     return steps[:STEP_CAP], skipped
 

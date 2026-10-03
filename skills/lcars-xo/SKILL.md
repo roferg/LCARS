@@ -145,7 +145,14 @@ The order is the contract:
    that tries to leave the worktree or the throwaway HOME is REFUSED and
    journaled. An item whose placeholders the record cannot fill is listed in
    `journey.json.reachUninstantiated` with the reason — ours to fix, never a
-   step built out of an unsubstituted `<placeholder>`.
+   step built out of an unsubstituted `<placeholder>`. **And that reason is
+   DELIVERED, not merely filed**: the console names the items a *one line*
+   edit to the record recovers (`oneLineFix`) and `report.md` repeats them
+   under *What I could not check*. The items that want a fact a record cannot
+   supply — `cli#4-8`, `web#4-6`: a second actor, an owner-not-login pair, a
+   non-default host — stay a quiet count, because an alarm that fires on every
+   healthy mission is an alarm nobody reads (S212). The console's own count of
+   steps *declined at execution* is a different number and says so.
 
    Why: over one weekend, 34 looks on the same product, Number One filed **0 of
    31 bugs** and all sixteen of its recorded misses were REACH errors, not

@@ -2805,7 +2805,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
               "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
-              "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" 2>/dev/null)" || report=""
+              "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
+              "$xodir/journey.json" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   local escalations=""
   while IFS= read -r line; do
@@ -3563,7 +3564,8 @@ $shots"
     rep2="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
               "$xodir/second/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
-              "$xodir/pairs.json" "$rwalk" "$xodir/seed.json" "" "" "$dir/decisions.json" 2>/dev/null)" || rep2=""
+              "$xodir/pairs.json" "$rwalk" "$xodir/seed.json" "" "" "$dir/decisions.json" \
+              "$xodir/journey.json" 2>/dev/null)" || rep2=""
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"

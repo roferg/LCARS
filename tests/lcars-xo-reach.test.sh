@@ -1303,6 +1303,152 @@ check "R2. positive control — …and the bad input of a record that DID speak 
    grep -q "ran 02-bad-input" "$TMPROOT/relay-run.out"'
 
 # ===========================================================================
+# 9. FIX ROUND 3 — the refusal is RECORDED; it must also be DELIVERED
+# ===========================================================================
+# A live look at ec9e4c6 proved round 2's cure right and its DELIVERY missing.
+# On a bare record the console printed
+#
+#     ◈ 3 declared step(s) reached, 0 refused; the worktree and its HOME are gone.
+#
+# while `journey.reachUninstantiated` held TEN items on disk, each with a good
+# reason. "0 refused" is not merely silent — it is an explicit ALL-CLEAR on
+# exactly the question the refusal exists to raise. The word `refused` already
+# means something else here (a step `xo-run.py` declined to EXECUTE, e.g. an
+# escape attempt), so it is QUALIFIED rather than redefined underneath its
+# current users, and the uninstantiated items get a line of their own.
+#
+# AND IT MUST NOT CRY WOLF (S212's scar). `cli#4-8` and `web#4-6` are
+# uninstantiated on EVERY healthy mission — they need a second actor, an
+# owner-not-login pair, a non-default host, an artifact nobody named. A raw "I
+# could not build N items" would fire on every look and be ignored inside a
+# week. The two classes are told apart by what the record would have to say:
+# an item whose ONLY missing fact is "which subcommand takes the input" is
+# recovered by a ONE-LINE edit to the PRD (`oneLineFix: true`); an item that
+# also needs a fact the record cannot supply is by design, and stays quiet.
+echo ""
+echo "9. fix round 3 — the refusal reaches the captain, and only when it is his to fix"
+
+# The reader for every claim in this section, so an assertion reads as the claim.
+cat >"$TMPROOT/fr3.py" <<'R3EOF'
+import json, sys
+what, path = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+un = [u for u in (d.get("reachUninstantiated") or []) if isinstance(u, dict)]
+fix = [u for u in un if u.get("oneLineFix")]
+if what == "n-uninstantiated":
+    print(len(un))
+elif what == "n-one-line-fix":
+    print(len(fix))
+elif what == "one-line-fix-items":
+    print(" ".join(sorted(str(u.get("item") or "") for u in fix)))
+elif what == "key-on-every-item":
+    # The key is ALWAYS present, so a reader never has to guess whether a look
+    # predates this fix.
+    assert un, "fixture has no uninstantiated items to check"
+    assert all("oneLineFix" in u for u in un), un
+    print("ok")
+else:
+    raise SystemExit("unknown: %s" % what)
+R3EOF
+FR3="$TMPROOT/fr3.py"
+
+# --- the DATA: the two classes are told apart on the record, not by wording ---
+check "R3. the bare record's uninstantiated items carry oneLineFix, every one" \
+  '[ "$("$PY" "$FR3" key-on-every-item "$BJO")" = ok ]'
+check "R3. exactly the two items a one-line PRD edit recovers are marked" \
+  '[ "$("$PY" "$FR3" one-line-fix-items "$BJO")" = "cli#2 cli#3" ]'
+check "R3. the by-design items (second actor, owner pair, outbound host) are NOT" \
+  '[ "$("$PY" "$FR3" n-uninstantiated "$BJO")" -gt 2 ]'
+check "R3. POSITIVE CONTROL — a record that WRITES a value marks nothing actionable" \
+  '[ "$("$PY" "$FR3" n-one-line-fix "$RJO")" = 0 ] &&
+   [ "$("$PY" "$FR3" n-uninstantiated "$RJO")" -gt 0 ]'
+
+# --- 1. THE CONSOLE must not claim an all-clear it has not got ---------------
+check "R3. the console never says '0 refused' while items went unbuilt" \
+  '! grep -qE "0 refused" "$TMPROOT/beacon-run.out"'
+check "R3. …it names the count a one-line edit would recover" \
+  'grep -qE "2 (checklist )?item" "$TMPROOT/beacon-run.out"'
+check "R3. …and says it could not BUILD them (not that they failed)" \
+  'grep -qi "could not build" "$TMPROOT/beacon-run.out" &&
+   ! grep -q "FAILED" "$TMPROOT/beacon-run.out"'
+check "R3. …and the reason itself reaches the console, with the edit to make" \
+  'grep -qi "which subcommand" "$TMPROOT/beacon-run.out" &&
+   grep -q "beacon.py" "$TMPROOT/beacon-run.out"'
+check "R3. …and the items are named, so he knows which lines to write" \
+  'grep -q "cli#2" "$TMPROOT/beacon-run.out" &&
+   grep -q "cli#3" "$TMPROOT/beacon-run.out"'
+
+# POSITIVE CONTROL, in the claim's own phrasing family: the SAME console, on a
+# record that wrote a value. Five items are still uninstantiated BY DESIGN and
+# the alarm must not fire — that is the S212 scar this guard is built around.
+check "R3. POSITIVE CONTROL — a healthy record raises no could-not-build alarm" \
+  '! grep -qi "could not build" "$TMPROOT/relay-run.out"'
+check "R3. POSITIVE CONTROL — …and names none of cli#4-8 as his to fix" \
+  '! grep -qi "a one-line edit" "$TMPROOT/relay-run.out"'
+check "R3. POSITIVE CONTROL — a real failure STILL prints FAILED (unsilenced)" \
+  'grep -q "FAILED 02-workflow-run" "$TMPROOT/wf.out"'
+
+# --- 2. THE REPORT'S OWN "What I could not check" ----------------------------
+# The sentence exists on disk and nothing printed it. It belongs in the section
+# the captain already reads for exactly this, not in a new one.
+R3D="$TMPROOT/r3-report"; mkdir -p "$R3D"
+cat >"$R3D/criteria.json" <<'R3CJ'
+{"hasDrawing": false, "placeNames": [], "criteria": [
+  {"id": "prd-1", "text": "beacon file stores the request text", "primary": true}
+]}
+R3CJ
+cat >"$R3D/in.json" <<'R3IJ'
+{"score":"medium","summary":"Looked at the beacon.","criteria":[
+ {"id":"prd-1","text":"beacon file stores the request text","status":"met",
+  "shot":"01-help.txt","evidence":"transcript","checkedBy":"cli",
+  "note":"the transcript lists both subcommands",
+  "action":"Ran beacon.py --help and read the transcript.",
+  "reason":"Impact high because it is the front door. I tried --help; I saw both (evidence: 01-help.txt). Outcome: met."}],
+ "gaps":[],"alsoChecked":[],"escalations":[]}
+R3IJ
+"$PY" "$SCOREPY" "$R3D/in.json" "$R3D/criteria.json" "$R3D/verdict.json" \
+  "" "" "" "" "" "" "" "" "" "$BJO" >"$R3D/out.tsv" 2>"$R3D/err.txt"
+R3REP="$R3D/report.md"
+check "R3. the report has a What-I-could-not-check section at all" \
+  'grep -q "What I could not check" "$R3REP"'
+check "R3. …and the item a one-line PRD edit recovers is IN it, by name" \
+  '"$PY" -c "
+import sys
+t = open(sys.argv[1], encoding=\"utf-8\").read()
+sec = t.split(\"### What I could not check\", 1)[1].split(\"### \", 1)[0]
+assert \"cli#2\" in sec, sec
+assert \"which subcommand\" in sec, sec
+print(\"ok\")" "$R3REP"'
+check "R3. …and the edit to make reaches him there too" \
+  'grep -qi "and this item builds" "$R3REP"'
+check "R3. …and the by-design items are never dressed up as his to fix" \
+  '! grep -q "cli#7 —" "$R3REP"'
+
+# POSITIVE CONTROL for the report, same phrasing family: the healthy record.
+R3H="$TMPROOT/r3-report-healthy"; mkdir -p "$R3H"
+cp "$R3D/criteria.json" "$R3H/criteria.json"
+cp "$R3D/in.json" "$R3H/in.json"
+"$PY" "$SCOREPY" "$R3H/in.json" "$R3H/criteria.json" "$R3H/verdict.json" \
+  "" "" "" "" "" "" "" "" "" "$RJO" >"$R3H/out.tsv" 2>"$R3H/err.txt"
+check "R3. POSITIVE CONTROL — a healthy record's report raises no unbuilt alarm" \
+  '! grep -qi "one line in your record" "$R3H/report.md"'
+check "R3. POSITIVE CONTROL — …and names none of cli#4-8 as unbuilt-and-his" \
+  '! grep -qE "cli#[45678] —" "$R3H/report.md"'
+check "R3. POSITIVE CONTROL — the report still renders, score and all" \
+  '[ -s "$R3H/report.md" ] && grep -q "SCORE" "$R3H/out.tsv"'
+
+# --- 3. THE WORD `refused` KEEPS ITS OLD MEANING for its old users -----------
+# An escape attempt is still RECORDED as refused in the readout JSON (section 3b
+# above asserts that too) — this fix qualifies the CONSOLE COUNT, it does not
+# redefine the field underneath it.
+check "R3. the readout field refused still means declined-at-execution" \
+  '"$PY" -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get(\"refused\") is True, d
+print(\"ok\")" "$ESHOTS/01-escape.json"'
+
+# ===========================================================================
 # ZERO SPEND
 # ===========================================================================
 echo ""

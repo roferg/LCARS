@@ -1520,6 +1520,42 @@ def load_walk(path):
             "screens": doc.get("screens") or []}
 
 
+# S239 FIX ROUND 3 — THE REFUSAL WAS RECORDED AND NEVER DELIVERED.
+# `journey.reachUninstantiated` holds every live-check item the record could not
+# INSTANTIATE, each with a reason xo-journey.py already worded for the captain.
+# On a live look at ec9e4c6 ten of them sat on disk and nothing printed one.
+# They belong in the section he already reads for exactly this question —
+# "What I could not check" — not in a new one.
+#
+# TWO CLASSES, AND ONLY ONE IS HIS. `cli#4-8` and `web#4-6` want a second actor,
+# an owner-not-login pair, a non-default host, an artifact nobody named: facts a
+# record genuinely cannot supply, so they go unbuilt on EVERY healthy mission.
+# Raising those would cry wolf on every look, which is how S212's guard got
+# ignored. The split is READ OFF THE RECORD (`oneLineFix`, written by
+# xo-journey.py) and never re-derived from the prose here.
+def load_unbuilt(path):
+    """(items a one-line record edit recovers, items the record cannot supply)."""
+    doc = load_json_or_none(path)
+    if not isinstance(doc, dict):
+        return [], []
+    un = [u for u in (doc.get("reachUninstantiated") or []) if isinstance(u, dict)]
+    return ([u for u in un if u.get("oneLineFix")],
+            [u for u in un if not u.get("oneLineFix")])
+
+
+def unbuilt_lines(items):
+    """One bullet per REASON, with the items it covers named beside it, so a
+    sentence shared by two items is said once instead of twice."""
+    order, by = [], {}
+    for u in items:
+        why = " ".join(str(u.get("why") or "").split())
+        if why not in by:
+            by[why] = []
+            order.append(why)
+        by[why].append(str(u.get("item") or "?"))
+    return [(", ".join(by[why]), why) for why in order]
+
+
 def walk_sentence(walk):
     m = (walk or {}).get("moves") or {}
     return ("I moved through it with %d click(s), %d typing(s) and %d keypress(es)"
@@ -1615,6 +1651,9 @@ def main():
     # other is the scoring system's OWN assumed-impact call (impactAssumed).
     decisions_path = sys.argv[12] if len(sys.argv) > 12 else ""
     made_decisions = load_json_or_none(decisions_path)
+    # S239 fix round 3: the live-check items the record could not instantiate.
+    journey_path = sys.argv[13] if len(sys.argv) > 13 else ""
+    unbuilt_fix, unbuilt_design = load_unbuilt(journey_path)
     walk = load_walk(walk_path)
     seed = load_json_or_none(seed_path)
     pairs_by_part = load_pairs(pairs_path)
@@ -3195,12 +3234,28 @@ def main():
                   "counted it as the point of the mission, the careful reading. "
                   "*(%s)*\n" % (what, e["id"]))
         blind = [e for e in ledger if e["status"] == "untested"]
-        if blind:
+        if blind or unbuilt_fix:
             w("\n### What I could not check\n\n")
             for e in blind:
                 w("- %s — %s. *(%s)*\n" % (
                     clip(e["text"], 120) or "this one",
                     unstop(e["note"] or "I could not check this"), e["id"]))
+            # THE STEPS THAT WERE NEVER BUILT (S239 fix round 3). Not a failure
+            # and never reported as one: the record did not say the one thing
+            # the step needed, so nothing was guessed and nothing was run. The
+            # reason names the edit that recovers it.
+            if unbuilt_fix:
+                w("\n**%d of my live-check items I could not BUILD from your "
+                  "record at all — one line in your record recovers each of "
+                  "them:**\n\n" % len(unbuilt_fix))
+                for items, why in unbuilt_lines(unbuilt_fix):
+                    w("- **%s** — %s\n" % (items, why))
+            if unbuilt_design:
+                w("\n*%d further live-check item(s) want a fact your record "
+                  "cannot supply — a second actor, an owner-not-login pair, a "
+                  "non-default host, an artifact nobody named. Those go unbuilt "
+                  "on every healthy mission; there is nothing for you to fix "
+                  "there.*\n" % len(unbuilt_design))
         # S216 — THE REASONING, ITEM BY ITEM. Its own section, not a table
         # column: the table above stays exactly as machine-readable as it was.
         if ledger:
