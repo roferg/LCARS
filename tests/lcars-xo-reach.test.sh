@@ -1057,6 +1057,252 @@ check "D5. …and the driver is still valid JavaScript" \
   'command -v "$NODEBIN" >/dev/null 2>&1 && "$NODEBIN" --check "$DRIVE" >/dev/null 2>&1'
 
 # ===========================================================================
+# 8. FIX ROUND 2 — round 1's cure never fires on the record that bred the bug
+# ===========================================================================
+# A fresh tester re-ran a LIVE look at 443b626 and the journey STILL read
+#   t-1-ac2 -> ['python3','relay.py','list','']        # the bad-input step
+#   t-1-ac3 -> ['python3','relay.py','list','<value>'] # the happy path
+# and the console STILL printed `FAILED 02-bad-input.txt (cli)` about a command
+# that works. Round 1's rule reads WHETHER THE RECORD WROTE A VALUE INSIDE THE
+# BACKTICKS (`takes = len(words) > 2`). The live record writes `relay.py file`
+# and `relay.py list` BARE — prose for the behaviour, a bare invocation in the
+# backticks, which is the ordinary way a PRD is written. Every shape is then
+# takesValue:False, `acting` falls through to verbs[0], and that IS the pre-fix
+# behaviour verbatim.
+#
+# THE CURE IS NOT A CLEVERER GUESS. The infer-vs-record rule has cost this
+# project three sessions (S147, S156, S188), every one by reading back a human's
+# wording. When the record does not SAY which subcommand takes the input, the
+# step cannot be instantiated honestly, so it is NOT instantiated: it joins
+# `reachUninstantiated` with a reason naming exactly what the record failed to
+# say — the mechanism this session already uses for cli#4-8 and web#4-6. An
+# honest "I could not build this step" beats a FAILED about working software.
+#
+# And round 1 made a second defect of its own: `reading` did not exclude the
+# verb already chosen as `acting`, so a record naming its acting verb first with
+# no value resolved BOTH to the same verb and the new read-back step ran
+# `relay.py file` with no argument — exit 2 by design, a brand-new false FAILED
+# in a place the fix created.
+echo ""
+echo "8. fix round 2 — a silent record is REFUSED, never guessed"
+
+# --- the tester's exact fixture shape: BARE backticks, listing verb FIRST ----
+BCM="$TMPROOT/m-beacon"; mkdir -p "$BCM"
+cat >"$BCM/prd.md" <<'MD'
+# Beacon — a command line for requests
+
+PLAN RULE: CLI-only. This milestone adds no page and no screen.
+
+## Acceptance criteria
+- `beacon.py list` prints every filed request in the order it was filed.
+- `beacon.py file` files the request text the captain typed and prints its id.
+- `beacon.py --help` lists every subcommand the CLI dispatches.
+MD
+cat >"$BCM/plan.json" <<'JSON'
+{"tickets": [
+  {"id": "t1", "changesScreenAppearance": false,
+   "entrypoints": [{"kind": "cli", "path": "beacon.py",
+                    "realRunTest": "tests/test_cli.py",
+                    "realRunProof": "it runs beacon.py as a subprocess"}],
+   "seams": [], "seamsNote": "pure store",
+   "acceptanceCriteria": [
+     {"text": "beacon file stores the request text it was given", "notVisual": true,
+      "kind": "works", "serves": "prd-2", "direction": "delivers"},
+     {"text": "beacon list prints what was filed", "notVisual": true,
+      "kind": "works", "serves": "prd-1", "direction": "delivers"}]}
+]}
+JSON
+cat >"$BCM/state.json" <<'JSON'
+{"id": "m-beacon", "title": "Beacon", "stage": "verify", "branch": "feat/beacon"}
+JSON
+"$PY" "$CRITERIA" "$BCM" "$TMPROOT/beacon-criteria.json" >/dev/null 2>&1
+"$PY" "$JOURNEY" build --criteria "$TMPROOT/beacon-criteria.json" \
+  --prd "$BCM/prd.md" --title "Beacon" --out "$TMPROOT/beacon-journey.json" \
+  >"$TMPROOT/beacon-journey.out" 2>&1
+BJO="$TMPROOT/beacon-journey.json"
+
+# The same reader for every claim, so each assertion reads as the claim does.
+cat >"$TMPROOT/fr2.py" <<'PYEOF'
+import json, sys
+what, path = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+rs = [s for s in (d.get("reachSteps") or []) if isinstance(s, dict)]
+un = [u for u in (d.get("reachUninstantiated") or []) if isinstance(u, dict)]
+
+
+def ev(frag):
+    return [s for s in rs if frag in (s.get("evidence") or "")]
+
+
+if what == "evidence-names":
+    print(" ".join(s.get("evidence") or "" for s in rs))
+elif what == "argv":
+    st = ev(sys.argv[3])
+    print(json.dumps(st[0]["argv"]) if st else "<not-instantiated>")
+elif what == "why":
+    # The reason recorded for one checklist item.
+    for u in un:
+        if u.get("item") == sys.argv[3]:
+            print(u.get("why") or "")
+            break
+    else:
+        print("<no-entry>")
+elif what == "verbs-in-argv":
+    # Every word of every instantiated argv, so a claim can say a verb is absent.
+    print(" ".join(w for s in rs for w in (s.get("argv") or []) if isinstance(w, str)))
+elif what == "no-step-shares-an-argv-verb":
+    # No two run steps may be the SAME command — the round-1 read-back bug.
+    sigs = [tuple(s.get("argv") or []) for s in rs if s.get("do") == "run"]
+    assert len(sigs) == len(set(sigs)), sigs
+    print("ok")
+elif what == "readback-verb-vs-acting":
+    # The read-back must not run the verb the ACTING step ran: round 1 resolved
+    # both to the same verb and then ran it with no argument.
+    def verb(frag):
+        st = ev(frag)
+        return (st[0].get("argv") or [None, None, None])[2] if st else None
+    back, act = verb("readback"), verb("03-happy-path.")
+    print("collision" if (back is not None and back == act) else "distinct")
+else:
+    raise SystemExit("unknown: %s" % what)
+PYEOF
+FR2="$TMPROOT/fr2.py"
+
+# The REAL CLI both fixtures describe. `list ""` exits 0 BY DESIGN; `file ""`
+# exits 2. Nothing here is broken, which is what makes a FAILED about it a lie.
+BPROD="$TMPROOT/beacon-prod"; mkdir -p "$BPROD"
+git -C "$BPROD" init -q -b main
+cat >"$BPROD/beacon.py" <<'PYEOF'
+import os, sys
+args = sys.argv[1:]
+store = os.path.join(os.environ.get("HOME", "."), ".beacon", "store")
+if not args or args[0] in ("--help", "-h"):
+    print("usage: beacon [file|list]")
+    sys.exit(0)
+if args[0] == "file":
+    if len(args) < 2 or not args[1].strip():
+        sys.stderr.write("beacon: empty request text\n")
+        sys.exit(2)
+    os.makedirs(os.path.dirname(store), exist_ok=True)
+    with open(store, "a") as fh:
+        fh.write(args[1] + "\n")
+    print("filed r1")
+    sys.exit(0)
+if args[0] == "list":
+    try:
+        sys.stdout.write(open(store).read())
+    except IOError:
+        pass
+    sys.exit(0)
+sys.stderr.write("beacon: no such subcommand %s\n" % args[0])
+sys.exit(2)
+PYEOF
+git -C "$BPROD" add -A >/dev/null 2>&1
+git -C "$BPROD" -c user.email=t@t -c user.name=t commit -qm init >/dev/null 2>&1
+git -C "$BPROD" branch -q feat/beacon 2>/dev/null
+
+# 1. NO bad-input step is instantiated when the record never said which verb
+#    takes input. The live defect was that one existing and being wrong.
+check "R2. a record with BARE backticks instantiates NO bad-input step" \
+  '[ "$("$PY" "$FR2" argv "$BJO" 02-bad-input)" = "<not-instantiated>" ]'
+check "R2. …nor a happy path aimed at a verb nobody said takes a value" \
+  '[ "$("$PY" "$FR2" argv "$BJO" 03-happy-path)" = "<not-instantiated>" ]'
+check "R2. …and the listing verb never appears in any instantiated argv" \
+  '! "$PY" "$FR2" verbs-in-argv "$BJO" | tr " " "\n" | grep -qx "list"'
+check "R2. the item the record CAN fill is still instantiated — --help runs" \
+  '"$PY" "$FR2" verbs-in-argv "$BJO" | grep -q -- "--help"'
+
+# 2. The refusal is RECORDED, with a reason naming what the record failed to say.
+check "R2. the bad-input item is recorded in reachUninstantiated" \
+  '[ "$("$PY" "$FR2" why "$BJO" "cli#2")" != "<no-entry>" ]'
+check "R2. …and its reason names the fact the record never wrote" \
+  '"$PY" "$FR2" why "$BJO" "cli#2" | grep -qi "which subcommand" &&
+   "$PY" "$FR2" why "$BJO" "cli#2" | grep -qi "takes"'
+check "R2. …and tells the captain what to write so it instantiates" \
+  '"$PY" "$FR2" why "$BJO" "cli#2" | grep -q "beacon.py"'
+check "R2. the happy-path item is recorded too, not silently dropped" \
+  '[ "$("$PY" "$FR2" why "$BJO" "cli#3")" != "<no-entry>" ]'
+
+# 3. A record naming the ACTING verb FIRST, still with no value: round 1 resolved
+#    `acting` and `reading` to the SAME verb and built a read-back that ran
+#    `file` with no argument — exit 2, a false FAILED the fix itself created.
+BC2="$TMPROOT/m-beacon2"; mkdir -p "$BC2"
+cat >"$BC2/prd.md" <<'MD'
+# Beacon — a command line for requests
+
+PLAN RULE: CLI-only. This milestone adds no page and no screen.
+
+## Acceptance criteria
+- `beacon.py file` files the request text the captain typed and prints its id.
+- `beacon.py list` prints every filed request in the order it was filed.
+- `beacon.py --help` lists every subcommand the CLI dispatches.
+MD
+cp "$BCM/plan.json" "$BC2/plan.json"
+cp "$BCM/state.json" "$BC2/state.json"
+"$PY" "$CRITERIA" "$BC2" "$TMPROOT/beacon2-criteria.json" >/dev/null 2>&1
+"$PY" "$JOURNEY" build --criteria "$TMPROOT/beacon2-criteria.json" \
+  --prd "$BC2/prd.md" --title "Beacon" --out "$TMPROOT/beacon2-journey.json" \
+  >"$TMPROOT/beacon2-journey.out" 2>&1
+BJ2="$TMPROOT/beacon2-journey.json"
+check "R2. acting-verb-first with no value: no read-back step is built at all" \
+  '[ "$("$PY" "$FR2" argv "$BJ2" readback)" = "<not-instantiated>" ]'
+check "R2. …and no two instantiated steps are the SAME command" \
+  '[ "$("$PY" "$FR2" no-step-shares-an-argv-verb "$BJ2")" = ok ]'
+check "R2. …and the read-back verb is never the verb the acting step already ran" \
+  '[ "$("$PY" "$FR2" readback-verb-vs-acting "$BJ2")" = distinct ]'
+# THE HARM round 1's own fix created, end to end: that read-back ran
+# `beacon.py` with no argument, which exits 2 BY DESIGN, so the console printed
+# a FAILED in a place the fix itself invented.
+BSHOTS2="$TMPROOT/shots/beacon-2"
+"$PY" "$CAGE" 120 "$PY" "$XORUN" run \
+  --journey "$BJ2" --repo "$BPROD" --branch feat/beacon \
+  --out "$BSHOTS2" --mission-dir "$BC2" >"$TMPROOT/beacon2-run.out" 2>&1
+check "R2 e2e. acting-verb-first, no value: the console prints no FAILED either" \
+  '! grep -q "FAILED" "$TMPROOT/beacon2-run.out"'
+check "R2 e2e. …and no read-back transcript exists to be mistaken for proof" \
+  '! ls "$BSHOTS2" 2>/dev/null | grep -q readback'
+check "R2. …and that ordering is refused for the same recorded reason" \
+  '"$PY" "$FR2" why "$BJ2" "cli#2" | grep -qi "which subcommand"'
+
+# 2-bis. UNCHANGED FROM ROUND 1 when the record DOES write a value — in BOTH
+# orderings. These are the proof the cure never merely reverses the pick.
+check "R2. control — value written, listing verb first: bad input still goes to the acting verb" \
+  '[ "$("$PY" "$FR2" argv "$RJO" 02-bad-input)" = "[\"python3\", \"relay.py\", \"file\", \"\"]" ]'
+check "R2. control — …and its read-back still LISTS" \
+  '[ "$("$PY" "$FR2" argv "$RJO" readback)" = "[\"python3\", \"relay.py\", \"list\"]" ]'
+check "R2. control — value written, acting verb first: still the acting verb" \
+  '[ "$("$PY" "$FR2" argv "$CJO" 02-bad-input)" = "[\"python3\", \"notes.py\", \"add\", \"\"]" ]'
+check "R2. control — …and no two of those steps are the same command either" \
+  '[ "$("$PY" "$FR2" no-step-shares-an-argv-verb "$RJO")" = ok ] &&
+   [ "$("$PY" "$FR2" no-step-shares-an-argv-verb "$CJO")" = ok ]'
+
+# 4. END TO END — the console must not print FAILED about a step it never built.
+# The steps are the ones xo-journey.py just made from the silent record; the CLI
+# is real and correct (list "" exits 0 BY DESIGN, file "" exits 2).
+BSHOTS="$TMPROOT/shots/beacon-1"
+"$PY" "$CAGE" 120 "$PY" "$XORUN" run \
+  --journey "$BJO" --repo "$BPROD" --branch feat/beacon \
+  --out "$BSHOTS" --mission-dir "$BCM" >"$TMPROOT/beacon-run.out" 2>&1
+check "R2 e2e. the look TERMINATES and still reaches the item it could build" \
+  '! grep -q "TIMED OUT" "$TMPROOT/beacon-run.out" && [ -s "$BSHOTS/01-help.txt" ]'
+check "R2 e2e. the console prints NO FAILED at all — the CLI is correct" \
+  '! grep -q "FAILED" "$TMPROOT/beacon-run.out"'
+check "R2 e2e. …and in particular not about the bad-input item" \
+  '! grep -q "02-bad-input" "$TMPROOT/beacon-run.out"'
+check "R2 e2e. no transcript was written for a step that was never instantiated" \
+  '[ ! -e "$BSHOTS/02-bad-input.txt" ] && [ ! -e "$BSHOTS/03-happy-path.txt" ]'
+
+# 5. POSITIVE CONTROL, in the claim's own phrasing family: a GENUINELY failing
+# step must STILL report FAILED. Silencing real failures is the opposite error
+# and it is worse. `pkg/render.py` does `from . import helper` and the workflow
+# runs it as a file — a planted ImportError, run through the same console.
+check "R2. positive control — a real failure STILL prints FAILED on the console" \
+  'grep -q "FAILED 02-workflow-run" "$TMPROOT/wf.out"'
+check "R2. positive control — …and the bad input of a record that DID speak still runs" \
+  '[ -s "$RSHOTS/02-bad-input.txt" ] &&
+   grep -q "ran 02-bad-input" "$TMPROOT/relay-run.out"'
+
+# ===========================================================================
 # ZERO SPEND
 # ===========================================================================
 echo ""

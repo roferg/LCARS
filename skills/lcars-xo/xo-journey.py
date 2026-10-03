@@ -1045,6 +1045,10 @@ def subcommand_shapes(prd_text, crit_text, entry_path):
     input (S239 fix round 1, D2): feeding `""` to a verb that takes no argument
     exits 0, which the readout then records as a failed `exitNonZero` and the
     console prints as `FAILED … (cli)` about a command that works.
+
+    A record that writes every invocation BARE therefore returns every shape
+    `takesValue: False`, and that is the honest answer — it says the record did
+    not say. The caller must REFUSE the step, not guess (S239 fix round 2).
     """
     stem = os.path.splitext(os.path.basename(entry_path or ""))[0]
     if not stem:
@@ -1159,15 +1163,45 @@ def reach_steps(contract, prd_text=""):
             # never filed anything for the list to show. Both items want the
             # verb that TAKES the input; the read-back wants the one that does
             # not. The record says which is which.
-            acting = next((r["verb"] for r in shapes if r["takesValue"]),
-                          verbs[0] if verbs else "")
-            reading = next((r["verb"] for r in shapes if not r["takesValue"]), "")
+            #
+            # AND WHERE THE RECORD DOES NOT SAY IT, THE STEP IS NOT BUILT (S239
+            # fix round 2). Round 1 fell back to `verbs[0]` whenever no backtick
+            # wrote a value after its verb — which is the ORDINARY way a PRD is
+            # written (prose for the behaviour, a bare invocation in the
+            # backticks), so on the record that bred the bug the fallback WAS the
+            # pre-fix behaviour verbatim and the console went on printing
+            # `FAILED 02-bad-input.txt (cli)` about a command that works. There
+            # is no honest cleverer guess here: inferring a fact from the
+            # captain's wording has cost this project three whole sessions
+            # (S147, S156, S188). So a silent record instantiates NOTHING that
+            # needs the missing fact; the item joins `reachUninstantiated` with
+            # a reason naming what the record failed to say, exactly as cli#4-8
+            # and web#4-6 already do. An honest "I could not build this step"
+            # beats a FAILED about working software.
+            acting = next((r["verb"] for r in shapes if r["takesValue"]), "")
+            # The read-back must not be the verb the acting step already ran.
+            # Round 1 left that out, so a record naming its acting verb first
+            # with no value resolved BOTH to it and the read-back ran the acting
+            # verb with no argument — a false FAILED the fix itself created.
+            reading = next((r["verb"] for r in shapes
+                            if not r["takesValue"] and r["verb"] != acting), "")
             subs = {"cli": None, "worktree": "<worktree>",
                     "throwaway-home": "<throwaway-home>"}
             if verbs:
+                subs["realistic-value"] = TYPED_TEXT
+            if acting:
                 subs["subcommand"] = acting
                 subs["the-main-verb"] = acting
-                subs["realistic-value"] = TYPED_TEXT
+            # What the record would have to write for the refused items to
+            # instantiate. Named, so the gap is the captain's to close in one
+            # edit rather than a mystery.
+            silent = ("the record never says which subcommand TAKES the input: "
+                      "every backticked invocation of `%s` is written bare, with "
+                      "no value after the verb, so which one to feed cannot be "
+                      "read — only guessed. Write one of them with its argument "
+                      "(e.g. `%s <the-verb> \"<a value>\"`) and this item builds."
+                      % (os.path.basename(cli_ep["path"]),
+                         os.path.basename(cli_ep["path"])))
             for row in checklist_items("cli"):
                 if row["kind"] != "run":
                     continue
@@ -1176,9 +1210,16 @@ def reach_steps(contract, prd_text=""):
                 # `<cli>` is argv[0] and expands to the WHOLE run prefix.
                 argv = argv0 + [a for a in argv if a is not None]
                 if missing:
+                    names = sorted(set(missing))
+                    rest = [k for k in names
+                            if k not in ("subcommand", "the-main-verb")]
+                    bits = []
+                    if len(rest) < len(names):
+                        bits.append(silent)
+                    if rest:
+                        bits.append("the record does not name: " + ", ".join(rest))
                     skipped.append({"item": row["item"], "evidence": row["evidence"],
-                                    "why": "the record does not name: "
-                                           + ", ".join(sorted(set(missing)))})
+                                    "why": " ".join(bits)})
                     continue
                 for_id = claim("cli")
                 steps.append({"do": "run", "argv": argv,
