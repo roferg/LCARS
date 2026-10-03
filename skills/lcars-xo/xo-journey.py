@@ -639,7 +639,73 @@ def link_criterion(c, steps, surf_ctrls, has_surface=True):
     return None, cannot_reason(str(c.get("text") or ""), surf_ctrls, has_surface)
 
 
-def build(criteria, drawing, html_screens=None, title="", prd=""):
+# ─── THE REASON IS A RECORD, NOT A GUESS (S240) ──────────────────────────────
+#
+# THE MEASURED DEFECT, from the archive (S227, prd-7). `coverage.criteria[].reason`
+# was ALWAYS `cannot_reason()`'s canned sentence — "nothing on the drawing
+# corresponds to this" — and on that mission it CONTRADICTED the real cause, which
+# `number-one.jsonl` had recorded in the worker's own words. The captain read the
+# generic sentence; the diagnosis was on disk three files away.
+#
+# So the journal is READ. A criterion with a recorded cause carries that cause,
+# verbatim and attributed. A criterion with none carries the canned text AND SAYS
+# SO — `(no record of why: this is the harness's guess from the drawing, not a
+# diagnosis)` — because the whole fault was a guess that read like a finding.
+NO_RECORD = "no record of why this could not be set up, so this sentence is a guess, not a diagnosis"
+
+# The text fields a journal entry may carry its cause in, in order. RECORD, DO
+# NOT INFER: only an entry that NAMES this criterion counts, and only the fields
+# a producer writes a sentence into.
+RECORD_FIELDS = ("reason", "cause", "detail", "why", "note", "couldNotCheck")
+
+
+def load_records(path):
+    """{criterion-id: the recorded cause} off `number-one.jsonl`.
+
+    One line per journal entry. The LAST entry naming a criterion wins — a later
+    look's diagnosis supersedes an earlier one, which is the same rule every
+    other record in this harness follows. A malformed line is skipped, never
+    fatal: a journal that cannot be parsed must not stop a journey being built."""
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except Exception:
+        return out
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        if not isinstance(d, dict):
+            continue
+        ids = []
+        if str(d.get("criterion") or "").strip():
+            ids.append(str(d["criterion"]).strip())
+        for c in (d.get("criteria") or []) if isinstance(d.get("criteria"), list) else []:
+            if isinstance(c, str) and c.strip():
+                ids.append(c.strip())
+        if not ids:
+            continue
+        text = ""
+        for f in RECORD_FIELDS:
+            v = " ".join(str(d.get(f) or "").split())
+            if v:
+                text = v
+                break
+        if not text:
+            continue
+        for i in ids:
+            out[i] = text
+    return out
+
+
+def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
     crit = [c for c in (criteria or {}).get("criteria") or [] if isinstance(c, dict)]
     prd_text = low(" ".join(str(c.get("text") or "") for c in crit))
     scr = html_screens or (screens_of(drawing) if drawing else [])
@@ -906,13 +972,26 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     # with the walk step that attempted it, or the honest reason it could not
     # be turned into an attempt. This is the number the captain asked to SEE.
     cov_rows = []
+    records = records or {}
     for c in person:
         key, reason = link_criterion(c, steps, surf_ctrls, has_surface)
-        row = {"id": str(c.get("id") or ""),
+        cid = str(c.get("id") or "")
+        # THE RECORDED CAUSE WINS (S240). See NO_RECORD above: the canned
+        # sentence is a guess from the drawing and said so when it is used, and
+        # a real diagnosis in the journal is never papered over by it.
+        recorded = records.get(cid) if reason else None
+        if reason:
+            if recorded:
+                reason = "recorded: %s" % recorded
+            else:
+                reason = "%s (%s)" % (reason, NO_RECORD)
+        row = {"id": cid,
                "text": norm(c.get("text")),
                "attempted": bool(key),
                "step": key,
                "reason": reason}
+        if reason:
+            row["reasonFrom"] = "record" if recorded else "no-record"
         # S239: a criterion a BROWSER could not reach may still have been
         # reached — by running the CLI, the workflow, or by reading what the
         # build produced. The reach step that claims it says so here, and
@@ -1448,7 +1527,8 @@ def main(argv):
         drawing = load(opt("drawing"), None)
         html = opt("drawing-html")
         j = build(criteria, drawing, screens_from_html(html) if html else [],
-                  title=opt("title", ""), prd=prd_prose(opt("prd", "")))
+                  title=opt("title", ""), prd=prd_prose(opt("prd", "")),
+                  records=load_records(opt("records", "")))
         out = opt("out")
         if out:
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)

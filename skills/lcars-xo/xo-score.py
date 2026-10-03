@@ -637,6 +637,40 @@ def hidden_sentence(n):
 # reviewer would read it differently), `polishFlag` (small things piling up).
 VALID_IMPACT = ("high", "medium", "low")
 COULD_NOT_CHECK = ("unreachable", "unobservable")
+
+# ─── WHOSE FAULT A BLIND ROW IS — RECORDED, NEVER INFERRED (S240) ────────────
+#
+# `couldNotCheck` says WHAT stopped the check (`unreachable`, `unobservable`).
+# It has never said WHOSE it is, and the two answers lead opposite ways: a high
+# row nobody could reach because THE BUILD SHIPS NO WAY IN is the work not being
+# done (send it back, and file it); the same row unreachable because a runner is
+# not installed on this laptop is OUR problem (merge, and fix the rig). The
+# weekend's own policy table split `low` on exactly this word and a human
+# supplied it by hand every time.
+#
+# SO THE LOOK RECORDS IT, and an absent record is treated as INFRASTRUCTURE.
+# That is not a shrug, it is the honesty rule this file already won: "a blind row
+# is a failure of OURS reading as a doubt about HIS build" — so an unrecorded
+# cause may never become a send-back or a filed bug against the captain's work on
+# a guess. `causeRecorded` says out loud which of the two happened.
+CAUSE_CLASS = ("product", "infrastructure")
+
+# ─── THE HEADLINE IS AN ACTION, NOT AN ADJECTIVE (S240) ──────────────────────
+#
+# THE MEASURED DEFECT. `verdict.json` ended at `score: low|medium|high`, and the
+# weekend playbook's § 4 ("pass + high -> merge; pass + medium -> merge with
+# follow-ups; pass + low + product -> send back") was then applied BY HAND on
+# every single look. The grade is not the decision and never was: the archive has
+# a `high` standing on 83% coverage against a floor of 80, with the two numbers
+# that decided it absent from the report the captain read.
+#
+# So the policy becomes the reviewer's own, derived here off the SAME ledger the
+# grade came from, and sitting ABOVE it. The grade ladder (`derive_grade`) is not
+# touched — `score` still means exactly what it meant.
+RECOMMENDATIONS = ("merge", "merge-with-follow-ups", "send-back")
+RECOMMENDATION_WORD = {"merge": "MERGE",
+                       "merge-with-follow-ups": "MERGE WITH FOLLOW-UPS",
+                       "send-back": "SEND-BACK"}
 OUTCOME_WORD = {"met": "worked", "gap": "didn't", "untested": "couldn't check"}
 POLISH_PILE = 5
 
@@ -979,6 +1013,103 @@ def derive_grade(ledger):
     g["coverageFloorPct"] = HIGH_COVERAGE_PCT
     g["coveragePct"] = int(round(100 * checked / len(ledger))) if ledger else 0
     return g
+
+
+def derive_recommendation(ledger, grade, finding_by_id=None, name_of=None):
+    """THE ACTION, derived from the ledger + the grade + the coverage floor.
+
+    The weekend's merge policy, made the reviewer's own and written down:
+
+      * no gap, and the coverage floor met                     -> merge
+      * gaps only at medium/low impact, or the floor missed for
+        INFRASTRUCTURE reasons                                 -> merge-with-follow-ups
+      * any high-impact gap, or a high-impact criterion that
+        could not be reached for a PRODUCT reason              -> send-back
+
+    Pure: reads `status`, `impact` and the recorded `cause` off the ledger, and
+    `coveragePct`/`coverageFloorPct` off the grade. It NEVER reads the grade WORD
+    — a `low` that is low only because a runner would not start is not a send-back,
+    and that is the whole reason the two live apart.
+
+    Returns {recommendation, because[], blockers[], followUps[]}. `blockers` are
+    the rows that forced a send-back, each carrying the recorded evidence kind so
+    a surface never has to read it back out of prose; `filedAs` is stamped onto
+    them later, by whoever files them.
+    """
+    finding_by_id = finding_by_id or {}
+    name_of = name_of or (lambda cid: cid)
+    high_gaps, other_gaps, product_blind, infra_blind = [], [], [], []
+    for e in ledger:
+        st = str(e.get("status") or "")
+        imp = e.get("impact") if e.get("impact") in VALID_IMPACT else "high"
+        if st == "gap":
+            (high_gaps if imp == "high" else other_gaps).append(e)
+        elif st == "untested" and imp == "high":
+            # AN UNRECORDED CAUSE IS INFRASTRUCTURE. See CAUSE_CLASS.
+            if str(e.get("cause") or "") == "product":
+                product_blind.append(e)
+            else:
+                infra_blind.append(e)
+
+    floor = int(grade.get("coverageFloorPct") or HIGH_COVERAGE_PCT)
+    pct = int(grade.get("coveragePct") or 0)
+    floor_met = pct >= floor
+
+    def ev_of(e):
+        f = finding_by_id.get(e.get("id")) or {}
+        return str(f.get("evidence") or e.get("evidence") or "none")
+
+    def blocker(e, why):
+        b = {"criterion": e.get("id"), "evidence": ev_of(e),
+             "impact": "high", "why": why}
+        if e.get("checkedBy"):
+            b["checkedBy"] = e["checkedBy"]
+        return b
+
+    because, blockers, follow_ups = [], [], []
+    for e in high_gaps:
+        why = ("%s is the point of the mission and it did not work"
+               % name_of(e.get("id")))
+        because.append(why + " (%s)" % e.get("id"))
+        blockers.append(blocker(e, why))
+    for e in product_blind:
+        why = ("%s could not be reached at all, and the reason is the build: %s"
+               % (name_of(e.get("id")),
+                  unstop(" ".join(str(e.get("note") or "").split()))
+                  or "no way in was recorded"))
+        because.append(why + " (%s)" % e.get("id"))
+        blockers.append(blocker(e, why))
+    for e in other_gaps:
+        follow_ups.append("%s did not work, at %s impact (%s)"
+                          % (name_of(e.get("id")), e.get("impact") or "medium",
+                             e.get("id")))
+    for e in infra_blind:
+        follow_ups.append("%s could not be checked here, and the reason is our rig, "
+                          "not the build: %s (%s)"
+                          % (name_of(e.get("id")),
+                             unstop(" ".join(str(e.get("note") or "").split()))
+                             or "no cause was recorded, so it is read as ours",
+                             e.get("id")))
+    if not floor_met:
+        follow_ups.append("only %d%% of this rail was actually checked, against a "
+                          "floor of %d%% — close the gap in what we can reach"
+                          % (pct, floor))
+
+    if blockers:
+        rec = "send-back"
+    elif other_gaps or infra_blind or not floor_met:
+        rec = "merge-with-follow-ups"
+    else:
+        rec = "merge"
+
+    if rec == "merge":
+        because = ["nothing on your list is short of the mark, and %d%% of this rail "
+                   "was actually checked against a floor of %d%%" % (pct, floor)]
+    elif rec == "merge-with-follow-ups" and not because:
+        because = [follow_ups[0]] if follow_ups else [
+            "nothing here blocks a merge, but something is left over"]
+    return {"recommendation": rec, "because": because,
+            "blockers": blockers, "followUps": follow_ups}
 
 
 def _plain(text):
@@ -1994,6 +2125,18 @@ def main():
             why_not = str(c.get("couldNotCheck") or "").strip().lower()
             if why_not in COULD_NOT_CHECK:
                 entry["couldNotCheck"] = why_not
+        # WHOSE FAULT IT IS, RECORDED (S240). See CAUSE_CLASS: the look declares
+        # `product` or `infrastructure` beside `couldNotCheck`, and an absent or
+        # unrecognised word is left ABSENT rather than defaulted — the consumer
+        # then reads it as ours, says `causeRecorded: false`, and never files a
+        # bug against the build on a word nobody wrote.
+        if status == "untested":
+            cause = str(c.get("cause") or "").strip().lower()
+            if cause in CAUSE_CLASS:
+                entry["cause"] = cause
+                entry["causeRecorded"] = True
+            else:
+                entry["causeRecorded"] = False
         if harness_blind:
             entry["couldNotCheck"] = harness_blind
         if status == "gap":
@@ -2890,8 +3033,54 @@ def main():
                    "nothing" % hold)
         why_grade = "%s %s" % (hold, why_grade)
 
+    # ─── S240: THE ACTION, ABOVE THE GRADE ───────────────────────────────────
+    # Derived off the SAME ledger and the SAME coverage numbers the grade came
+    # from, by `derive_recommendation` — the weekend's § 4 policy, written down
+    # once instead of applied by hand on every look. The grade is unchanged and
+    # stays as `score`; this sits above it and is what a surface acts on.
+    finding_by_id = {str(g.get("criterion") or ""): g for g in gaps
+                     if str(g.get("criterion") or "")}
+    advice = derive_recommendation(ledger, grade, finding_by_id, named)
+    recommendation = advice["recommendation"]
+    rec_why = advice["because"][0] if advice["because"] else ""
+
+    # THE COVERAGE SENTENCE THE CAPTAIN NEVER GOT. `checked`, `total`,
+    # `coveragePct` and `coverageFloorPct` have been computed since S226 and
+    # written into `groups.person` — and never once rendered. The archive case is
+    # 83% against a floor of 80 deciding HIGH while the report said "2 I couldn't
+    # set up". Both numbers now go on line 2, with the RECORDED reason for every
+    # row that was not reached (never the canned one).
+    blind_rows = [e for e in by_group[GROUP_PERSON] if e["status"] == "untested"]
+    def blind_reason(e):
+        rec = unstop(" ".join(str(e.get("note") or "").split()))
+        if not rec:
+            rec = ("no cause was recorded, so it is read as ours"
+                   if not e.get("causeRecorded") else
+                   str(e.get("couldNotCheck") or "no reason recorded"))
+        return "%s (%s)" % (named(e["id"]), clip(rec, 110))
+    cover_bits = ["checked %d of %d (%d%%, floor %d%%)"
+                  % (grade.get("checked", 0), grade.get("total", 0),
+                     grade.get("coveragePct", 0), grade.get("coverageFloorPct", 0))]
+    if blind_rows:
+        cover_bits.append("%d unreachable — %s"
+                          % (len(blind_rows),
+                             "; ".join(blind_reason(e) for e in blind_rows[:4])))
+    cover_line = "; ".join(cover_bits)
+
     out = {
         "score": score,
+        # S240 — THE RECOMMENDATION, and the reasons behind it, as data. `score`
+        # above is still the grade and still means what it meant; this is the
+        # action. `blockers[].filedAs` is stamped on by whoever files the bug.
+        "recommendation": recommendation,
+        "because": advice["because"],
+        # The one sentence a surface shows beside the action — the SAME first
+        # line of `because`, frozen here so nobody has to index into an array
+        # (and so a shell can read it with one key).
+        "recommendationWhy": rec_why,
+        "blockers": advice["blockers"],
+        "followUps": advice["followUps"],
+        "coverageLine": cover_line,
         "workerScore": worker_score,
         "scoreDisagreed": score != worker_score,
         "derivation": why,
@@ -2997,7 +3186,17 @@ def main():
     with open(os.path.join(os.path.dirname(os.path.abspath(opath)), "report.md"),
               "w", encoding="utf-8") as fh:
         w = fh.write
-        w("**How close this is to what you asked for: %s** — %s\n\n" % (score.upper(), why))
+        # ─── LINE 1 IS THE ACTION; LINE 2 IS THE GRADE (S240) ────────────
+        # The captain read a bare adjective and mapped it to an action himself,
+        # every time. Line 1 is now the recommendation and the one sentence
+        # behind it; line 2 is the grade it sits on, WITH the coverage numbers
+        # that decided it. The two trailing spaces are a markdown hard break, so
+        # the two facts stay two lines in the living comment as well as on disk.
+        w("**Recommendation: %s** — %s  \n"
+          % (RECOMMENDATION_WORD.get(recommendation, recommendation.upper()),
+             rec_why or why))
+        w("**How close this is to what you asked for: %s** — %s. %s\n\n"
+          % (score.upper(), cover_line, why))
         # S216 — WHY THIS GRADE comes first after the score: the table walked
         # in words, then what the research reads beside it (never instead).
         w("**Why this grade.** %s\n\n" % why_grade)
@@ -3379,6 +3578,10 @@ def main():
             w("\n</details>\n")
 
     print("SCORE\t" + score)
+    # S240 — the action on the wire, so `xo.sh` mirrors what was DECIDED and
+    # never reads it back out of the report's prose.
+    print("RECOMMENDATION\t" + recommendation)
+    print("RECOMMENDATION_WHY\t" + (rec_why or why).replace("\n", " "))
     print("WORKER_SCORE\t" + worker_score)
     print("DISAGREED\t" + ("yes" if score != worker_score else "no"))
     print("WHY\t" + why)

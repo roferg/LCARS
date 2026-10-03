@@ -2290,10 +2290,27 @@ cmd_policy() {
     *)  die "policy: '$live' is not a live-check verdict — pass or bugs." ;;
   esac
 
+  # S240 — NUMBER ONE NOW RECOMMENDS AN ACTION, so on the `pass` branch that
+  # recommendation IS the answer and this table stops re-deriving it by hand
+  # (doing it by hand on every look is the defect S240 closed). It is read only
+  # when the live check passed: "the live check found bugs" still decides it,
+  # whatever Number One said, because the live check is the other instrument and
+  # Number One cannot see what it sees. THE FALLBACK STAYS — a verdict written
+  # before S240, or one naming no recommendation, goes through the table below
+  # exactly as it did.
+  local rec=""
+  if [ -n "$mission" ]; then
+    rec="$(jfile "$MISSIONS/$mission/xo/verdict.json" recommendation)"
+  fi
+
   local action why
   if [ "$live" = bugs ]; then
     action="send-back"
     why="the live check found bugs — that decides it, whatever Number One scored ($verdict)."
+  elif [ "$rec" = merge ] || [ "$rec" = merge-with-follow-ups ] || [ "$rec" = send-back ]; then
+    action="$(printf '%s' "$rec" | sed 's/merge-with-follow-ups/merge+follow-ups/')"
+    local recwhy; recwhy="$(jfile "$MISSIONS/$mission/xo/verdict.json" recommendationWhy)"
+    why="Number One recommended $rec off its own ledger${recwhy:+ — $recwhy}"
   else
     case "$verdict" in
       high)   action="merge";            why="Number One says high and the live check passed." ;;

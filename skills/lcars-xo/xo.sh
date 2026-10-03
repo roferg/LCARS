@@ -160,6 +160,15 @@ cfg_enabled() {
   case "$(cfg_block)" in *'"enabled"'*'true'*) return 0 ;; esac
   return 1
 }
+# ─── FILING IS A SWITCH, AND ITS DEFAULT IS ON (S240) ───────────────────────
+# `numberOne.filesBugs` in the repo's config. ABSENT MEANS TRUE: a repo that
+# predates this switch files its bugs, because that is what S240 is for. Only an
+# explicit `false` turns it off, and when it is off the gaps are still on the
+# report — the captain loses the filing, never the finding.
+cfg_files_bugs() {
+  case "$(cfg_block)" in *'"filesBugs"'*false*) return 1 ;; esac
+  return 0
+}
 cfg_engine() { obj_get "$(cfg_block)" engine; }
 cfg_model()  { obj_get "$(cfg_block)" model; }
 
@@ -1976,6 +1985,7 @@ xo_build_journey() { # <mission-dir> <xodir>
         ${draw:+--drawing "$xodir/drawing-parts.json"} \
         $([ -f "$dir/prd.md" ] && printf -- '--prd\n%s' "$dir/prd.md") \
         --title "$(json_field "$dir/state.json" title)" \
+        $([ -f "$dir/number-one.jsonl" ] && printf -- '--records\n%s' "$dir/number-one.jsonl") \
         --out "$xodir/journey.json" --criteria-out "$xodir/criteria.new.json" 2>/dev/null)" || said=""
   if [ -s "$xodir/criteria.new.json" ]; then
     mv "$xodir/criteria.new.json" "$xodir/criteria.json"
@@ -2317,9 +2327,9 @@ xo_mirror() { # <mission-id>
 # never a cut-down of the worker's prose: a truncation is this harness deciding
 # what Number One meant, which is exactly the fault S213 exists to kill.
 # Omitted (and any stale one deleted) when there is no derivation to record.
-xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<why-this-grade>]
+xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<why-this-grade>] [<recommendation>] [<rec-why>]
   local dir="$1" score="$2" status="$3" why="$4" headline="${5:-}" meaning="${6:-}" st obj id
-  local gradewhy="${7:-}"
+  local gradewhy="${7:-}" recommendation="${8:-}" recwhy="${9:-}"
   st="$dir/state.json"; id="$(basename "$dir")"
   obj="$(state_xo_block "$st")"
   obj="$(obj_set "$obj" status "$(jstr "$status")")"
@@ -2338,6 +2348,21 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
     obj="$(obj_set "$obj" meaning "$(jstr "$meaning")")"
   else
     obj="$(obj_del "$obj" meaning)"
+  fi
+  # S240 — THE ACTION, MIRRORED. `numberOne.recommendation` is what the board,
+  # the living comment and the autopilot's `policy` read; it is the word the
+  # SCORER decided, never re-derived from `score` by a surface (that hand-mapping
+  # is the defect S240 exists to remove).
+  if [ -n "$recommendation" ]; then
+    obj="$(obj_set "$obj" recommendation "$(jstr "$recommendation")")"
+    if [ -n "$recwhy" ]; then
+      obj="$(obj_set "$obj" recommendationWhy "$(jstr "$recwhy")")"
+    else
+      obj="$(obj_del "$obj" recommendationWhy)"
+    fi
+  else
+    obj="$(obj_del "$obj" recommendation)"
+    obj="$(obj_del "$obj" recommendationWhy)"
   fi
   obj="$(obj_set "$obj" evaluatedAt "$(jstr "$NOW")")"
   obj="$(obj_set "$obj" lastAction "$(jstr "looked $NOW_LOCAL")")"
@@ -2363,9 +2388,14 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
   # report leads with the table walked in words. Absent when there is none.
   local gradefield=""
   [ -n "$gradewhy" ] && gradefield="$(printf ', "whyThisGrade": %s' "$(jstr "$gradewhy")")"
+  # S240 — the recommendation rides the SAME journal entry as the grade, as an
+  # ADDITIVE key, so the First Officer's report shows it with no board.js change.
+  local recfield=""
+  [ -n "$recommendation" ] && recfield="$(printf ', "recommendation": %s, "recommendationWhy": %s' \
+    "$(jstr "$recommendation")" "$(jstr "$recwhy")")"
   journal "$dir" scored \
-    "$(printf '"score": %s, "why": %s, "status": %s%s' \
-         "$(jstr "$score")" "$(jstr "$why")" "$(jstr "$status")" "$gradefield")"
+    "$(printf '"score": %s, "why": %s, "status": %s%s%s' \
+         "$(jstr "$score")" "$(jstr "$why")" "$(jstr "$status")" "$gradefield" "$recfield")"
   xo_label_score "$st" "$score"
   xo_mirror "$id"
   printf '◈ NUMBER ONE: intent match %s — %s\n' "$(printf '%s' "$score" | tr '[:lower:]' '[:upper:]')" "$why"
@@ -2808,6 +2838,10 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
               "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
               "$xodir/journey.json" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
+  # S240 — THE ACTION, READ OFF THE WIRE. `xo-score.py` decided it beside the
+  # grade; nothing here re-derives it and nothing reads it back out of the
+  # report's prose.
+  local recommendation="" recwhy=""
   local escalations=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -2820,6 +2854,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
       WHY)          why="$val" ;;
       MEANING)      meaning="$val" ;;
       GRADE_WHY)    gradewhy="$val" ;;
+      RECOMMENDATION)     recommendation="$val" ;;
+      RECOMMENDATION_WHY) recwhy="$val" ;;
       SUMMARY)      summary="$val" ;;
       NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
       # WHAT THE LOOK PUT ASIDE FOR HIM (S222 fix round 1) — journaled like any
@@ -2860,7 +2896,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # leaves it ENGAGED — there are gaps, and S204 is the round that acts on them.
   local status=engaged
   [ "$score" = "high" ] && status=finished
-  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why" "$meaning" "$gradewhy"
+  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why" "$meaning" "$gradewhy" \
+    "$recommendation" "$recwhy"
   xo_rm_work "$work"; XO_WORK_DIR=""
 
   # --- 8. THE FIX ROUND (S204) ---------------------------------------------
@@ -2969,10 +3006,24 @@ file_logs_for() { # <id> <dir>
     return 0
   fi
 
+  # THE SWITCH (S240). Off means nothing is FILED; the gaps are still on the
+  # report and in the verdict, and the captain is told which switch did it.
+  if ! cfg_files_bugs; then
+    printf '◈ NUMBER ONE: filing is off for this repo (numberOne.filesBugs: false) — nothing filed.\n'
+    printf '  What I found is on the report either way. Turn it back on in .git/lcars/config.json.\n'
+    journal "$dir" filed-logs '"filed": 0, "detail": "filing is off (numberOne.filesBugs: false)"'
+    return 0
+  fi
+
   mkdir -p "$xodir/logs"
   local plan overflow=0 n=0
+  # THE SIXTH ARGUMENT IS THE RECORD OF WHAT IS ALREADY FILED (S240). A criterion
+  # already in `logs.json` is skipped and said out loud, so a second look can
+  # never file the same bug twice — and an already-filed bug does not eat one of
+  # the ten.
   plan="$("$XO_PY" "$SKILL_DIR/xo-logs.py" "$xodir/verdict.json" "$xodir/criteria.json" \
-            "$xodir/logs" "$shots" "$XO_LOG_CAP" 2>/dev/null)" || plan=""
+            "$xodir/logs" "$shots" "$XO_LOG_CAP" \
+            "$([ -s "$xodir/logs.json" ] && printf '%s' "$xodir/logs.json")" 2>/dev/null)" || plan=""
 
   # THE ARGUMENTS ARE BUILT AS AN ARRAY AND PASSED LITERALLY. Never assembled in
   # a string and expanded: a `VAR=value` word inside an expanded "$@" RUNS AS A
@@ -2986,6 +3037,13 @@ file_logs_for() { # <id> <dir>
     key="${line%%$XO_RS*}"
     case "$key" in
       OVERFLOW) overflow="${line#*$XO_RS}" ;;
+      # ALREADY FILED, SAID OUT LOUD (S240). Never silently dropped: a gap the
+      # captain can see on the report and cannot see a bug for would read as the
+      # first officer having quietly decided not to mention it.
+      ALREADY)
+        IFS="$XO_RS" read -r key crit title <<< "$line"
+        printf '  already filed: %s — %s\n' "$crit" "$title"
+        ;;
       GAP)
         # GAP <n> <prd> <shots-csv> <criterion> <title>
         # US, NOT TAB — <shots-csv> is EMPTY for a gap the project's own tests
