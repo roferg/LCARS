@@ -3217,14 +3217,19 @@ def main():
                     on = " ".join(str(o).split())
                     if on and on != picknorm and on not in alts:
                         alts.append(on)
-                why = unstop(" ".join(str(d.get("why") or "").split()))
+                # `dwhy`, NEVER `why`. That name holds the GRADE DERIVATION,
+                # frozen above into out["derivation"] and printed on the WHY
+                # wire line far below — which xo.sh reads into the board card's
+                # one line. A loop here that re-bound `why` put this decision's
+                # own reason on the card in place of the grade.
+                dwhy = unstop(" ".join(str(d.get("why") or "").split()))
                 where = " ".join(str(d.get("where") or "").split())
                 line = "- **%s** — I went with %s" % (q, pick)
                 if alts:
                     line += ", over " + ", ".join(alts)
                 line += "."
-                if why:
-                    line += " %s." % why
+                if dwhy:
+                    line += " %s." % dwhy
                 if where:
                     line += " You will see it in %s." % where
                 w(line + "\n")
@@ -3248,8 +3253,9 @@ def main():
                 w("\n**%d of my live-check items I could not BUILD from your "
                   "record at all — one line in your record recovers each of "
                   "them:**\n\n" % len(unbuilt_fix))
-                for items, why in unbuilt_lines(unbuilt_fix):
-                    w("- **%s** — %s\n" % (items, why))
+                # `wline`, NEVER `why` — same reason as the decisions loop above.
+                for items, wline in unbuilt_lines(unbuilt_fix):
+                    w("- **%s** — %s\n" % (items, wline))
             if unbuilt_design:
                 w("\n*%d further live-check item(s) want a fact your record "
                   "cannot supply — a second actor, an owner-not-login pair, a "
