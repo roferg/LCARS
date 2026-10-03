@@ -180,16 +180,72 @@ def prepare(repo, branch):
     return (wt, home), ""
 
 
+# WHAT A DYING LOOK MUST STILL CLEAN UP.
+# `teardown` used to run ONLY in a `finally`, which a signal does not honour.
+# Observed 2 Oct 2026: after killing a look, the target repo still had a
+# REGISTERED worktree in its .git/worktrees/, the worktree dir and throwaway
+# HOME survived on disk, and an orphan child was still running. So the state
+# teardown needs lives here, where a signal handler can reach it.
+_LIVE = {"repo": "", "worktree": "", "home": ""}
+# The process GROUP of every step child still in flight. A step child is given
+# its OWN group on purpose (`start_new_session=True`) so the timeout cage can
+# `killpg` it without killing the look itself — which also means a dying look
+# does NOT take it along, so the look kills these groups explicitly.
+_STEP_GROUPS = set()
+
+
+def _reap_step_children():
+    for pgid in list(_STEP_GROUPS):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except Exception:
+            pass
+        _STEP_GROUPS.discard(pgid)
+
+
 def teardown(repo, worktree, home):
-    """Remove what this run started — the line `wt_say` itself prints."""
-    if worktree:
-        subprocess.run([GIT, "-C", repo, "worktree", "remove", "--force", worktree],
-                       capture_output=True, text=True)
-        shutil.rmtree(worktree, ignore_errors=True)
-    if home:
-        shutil.rmtree(home, ignore_errors=True)
-    subprocess.run([GIT, "-C", repo, "worktree", "prune"],
-                   capture_output=True, text=True)
+    """Remove what this run started — the line `wt_say` itself prints.
+
+    IDEMPOTENT AND RE-RUNNABLE. It is called from the `finally` AND from a
+    signal handler, so it may run twice on the same paths; every step below is
+    already a no-op the second time (`--force`, `ignore_errors`, `prune`), and
+    nothing here raises.
+    """
+    _reap_step_children()
+    try:
+        if worktree:
+            subprocess.run([GIT, "-C", repo, "worktree", "remove", "--force",
+                            worktree], capture_output=True, text=True)
+            shutil.rmtree(worktree, ignore_errors=True)
+        if home:
+            shutil.rmtree(home, ignore_errors=True)
+        if repo:
+            subprocess.run([GIT, "-C", repo, "worktree", "prune"],
+                           capture_output=True, text=True)
+    except Exception:
+        pass
+    _LIVE.update({"repo": "", "worktree": "", "home": ""})
+
+
+def _teardown_on_signal(signum, _frame):
+    """SIGTERM/SIGINT/SIGHUP tear down, then exit — a `finally` cannot.
+
+    SIGKILL CANNOT BE CAUGHT, so a SIGKILLed look still leaks; `teardown` being
+    re-runnable is what lets the next look's `worktree prune` recover it.
+    """
+    teardown(_LIVE.get("repo") or "", _LIVE.get("worktree") or "",
+             _LIVE.get("home") or "")
+    os._exit(128 + int(signum))
+
+
+def arm_teardown(repo, worktree, home):
+    """Make the live worktree reachable from a signal handler, and install them."""
+    _LIVE.update({"repo": repo, "worktree": worktree, "home": home})
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(sig, _teardown_on_signal)
+        except Exception:
+            pass
 
 
 # ===========================================================================
@@ -205,12 +261,129 @@ def resolve(value, worktree, home):
     return value
 
 
+# --- THE ARGV FENCE --------------------------------------------------------
+# WHY THIS EXISTS. Until 2 Oct 2026 both gates below inspected "cwd", "env",
+# "file" and "path" and NEITHER EVER INSPECTED "argv". The harness refused the
+# declared DESTINATION while handing the COMMAND ITSELF to Popen unexamined, so
+# `["bash","-c",…]` got a real shell running as the captain, `["cat","<a path
+# outside>"]` read a sentinel outside both fences, and `["sh","-c","… > …"]`
+# wrote outside the sandbox. All three were KEPT by the worker-request gate too.
+# prompts/evaluate.md says in bold "You have no shell, and you are not getting
+# one." — this is the code that makes that sentence true.
+#
+# THIS IS A NARROWING, NOT AN ALLOW-LIST. An allow-list of permitted programs is
+# the stronger design and is NOT built here; the captain has not chosen it. What
+# is here refuses the two shapes that turn a declared step into a command line:
+# a shell (or an interpreter asked for inline code), and an absolute path.
+SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish")
+# `env` is refused outright: its whole job is to launder what comes next past a
+# check on argv[0] (`env bash -c …`), and a step already declares its env.
+LAUNDERERS = ("env",)
+# A `-c`/`-e` form makes any of these a shell in another coat.
+INTERPRETERS = ("python", "python2", "python3", "perl", "ruby", "node",
+                "nodejs", "php", "lua", "deno", "bun", "osascript")
+SHELL_FLAG_LETTERS = set("csi")      # sh -c, sh -s, sh -i all read a command
+INLINE_FLAG_LETTERS = set("ce")      # python -c, perl -e, node -e, ruby -e
+INLINE_LONG = ("--eval", "--command", "--eval-script")
+
+
+def _shell_refusal(argv):
+    """One sentence why this argv IS a shell (or a shell in a coat), or "".
+
+    Matched on the BASENAME of argv[0], so `/bin/bash` and `bash` are the same
+    thing. `bash run-tests.sh` is NOT refused — running a test script through
+    bash is a legitimate step, and the checklists generate it. `bash -c` is.
+    """
+    if not argv:
+        return "its argv is empty — a step names the program it runs"
+    prog = os.path.basename(str(argv[0]).strip())
+    args = [str(a) for a in argv[1:]]
+    flags, rest = [], []
+    for i, a in enumerate(args):
+        if a == "--":
+            rest.extend(args[i + 1:])
+            break
+        (flags if a.startswith("-") and a != "-" else rest).append(a)
+
+    def letters():
+        out = set()
+        for f in flags:
+            if f.startswith("--"):
+                if f.split("=")[0] in INLINE_LONG:
+                    out |= INLINE_FLAG_LETTERS
+            else:
+                out |= set(f[1:])
+        return out
+
+    if prog in LAUNDERERS:
+        return ("its argv runs through `%s`, which hides what would actually be "
+                "executed — a step names the program it runs, so the harness "
+                "refuses it rather than resolving it at run time" % prog)
+    if prog in SHELLS:
+        if letters() & SHELL_FLAG_LETTERS or not rest:
+            return ("its argv asks for a shell (`%s` %s) — a step has no shell, "
+                    "so the harness refuses the command instead of handing one a "
+                    "command line"
+                    % (prog, ("with %s" % " ".join(flags)) if flags
+                       else "with no script to run"))
+        return ""
+    if prog in INTERPRETERS:
+        if letters() & INLINE_FLAG_LETTERS or not rest:
+            return ("its argv runs `%s` on inline code (%s), which is a shell in "
+                    "another coat — a step runs a program inside the worktree, "
+                    "not a snippet the harness never sees"
+                    % (prog, " ".join(flags) if flags
+                       else "no script, so it would read one from stdin"))
+    return ""
+
+
+def argv_refusal(argv, worktree=None, home=None):
+    """The ONE sentence saying why this argv may not run, or "".
+
+    `worktree is None` judges the DECLARED form (a worker's request, before any
+    worktree exists); otherwise the marks are resolved and the real paths tested.
+    """
+    argv = list(argv or [])
+    why = _shell_refusal(argv)
+    if why:
+        return why
+    for raw in argv:
+        s = str(raw)
+        if WORKTREE_MARK in s or HOME_MARK in s:
+            # The honourable form: inside the sandbox once resolved, or refused.
+            if worktree is None:
+                if ".." in s.replace(WORKTREE_MARK, "").replace(
+                        HOME_MARK, "").split("/"):
+                    return ("its argv names %s, which walks up out of the "
+                            "worktree — a step addresses only what is inside "
+                            "the sandbox" % s)
+                continue
+            r = resolve(s, worktree, home)
+            if not (inside(worktree, r) or inside(home, r)):
+                return ("its argv names %s, which resolves to %s outside the "
+                        "detached worktree — a step addresses only what is "
+                        "inside the sandbox" % (s, r))
+            continue
+        if os.path.isabs(s):
+            return ("its argv names the absolute path %s — a step addresses "
+                    "only what is inside the sandbox, so an absolute path is "
+                    "refused wherever it appears in the command" % s)
+        if "/" in s and ".." in s.split("/"):
+            return ("its argv names %s, which walks up out of the worktree — a "
+                    "step addresses only what is inside the sandbox" % s)
+    return ""
+
+
 def refuse_reason(step, worktree, home):
     """The ONE sentence saying why this step may not run, or "".
 
     Both fences, checked on the RESOLVED paths and never on the declared text,
     because `<worktree>/../..` resolves out and reads as if it stayed in.
     """
+    if step.get("do") == "run":
+        why = argv_refusal(step.get("argv") or [], worktree, home)
+        if why:
+            return why
     cwd = resolve(step.get("cwd") or WORKTREE_MARK, worktree, home)
     if not inside(worktree, cwd):
         return ("its cwd %s is outside the detached worktree %s — a step never "
@@ -307,6 +480,14 @@ def run_cmd(argv, cwd, env, timeout):
                              stderr=subprocess.PIPE, start_new_session=True)
     except Exception as exc:
         return None, "", "xo-run: could not start %r: %s" % (argv[:1], exc), False
+    # REGISTERED so a dying look can reap it. Its own group survives the look's
+    # death by design (see `_STEP_GROUPS`), which is how an orphan was left.
+    pgid = None
+    try:
+        pgid = os.getpgid(p.pid)
+        _STEP_GROUPS.add(pgid)
+    except Exception:
+        pass
     try:
         out, err = p.communicate(timeout=timeout)
         return p.returncode, out.decode("utf-8", "replace"), \
@@ -323,6 +504,11 @@ def run_cmd(argv, cwd, env, timeout):
             pass
         return None, out.decode("utf-8", "replace"), \
             err.decode("utf-8", "replace"), True
+    finally:
+        # A finished child's group is forgotten, so a later teardown never
+        # signals a group the OS has since handed to somebody else.
+        if pgid is not None:
+            _STEP_GROUPS.discard(pgid)
 
 
 def write_evidence(outdir, name, transcript, readout):
@@ -522,6 +708,9 @@ def cmd_run(opt):
         journal(mission_dir, "reach-refused", {"why": why, "branch": branch})
         return 3
     worktree, home = pair
+    # BEFORE the first step: a `finally` does not run on a signal, and a look
+    # that was killed left a REGISTERED worktree in the captain's repo.
+    arm_teardown(repo, worktree, home)
     say("◈ %d declared step(s), in a detached worktree of %s" % (len(steps), branch))
     say("  worktree: %s" % worktree)
     say("  HOME:     %s (throwaway)" % home)
@@ -585,7 +774,15 @@ def declared_escape(step):
     the text: a cwd or path that is absolute, or that walks up out of the tree,
     is refused. `<worktree>` and a plain relative path are the only forms that
     can be honoured.
+
+    THE SAME ARGV FENCE AS THE JOURNEY GATE. A worker asked for `["bash","-c",…]`
+    and it was KEPT into reachSteps; a step is now refused whether it was
+    declared in the journey or requested by the worker.
     """
+    if str(step.get("do") or "") == "run":
+        why = argv_refusal(step.get("argv") or [])
+        if why:
+            return why
     for key in ("cwd", "path", "file"):
         v = step.get(key)
         if v is None:
