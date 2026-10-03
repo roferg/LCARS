@@ -139,16 +139,87 @@ def hash_id(text):
     return "#" + m.group(1) if m else ""
 
 
+# ─── ONE LADDER FROM A SHOT NAME TO A FILE ON DISK (S240 fix round 3) ───────
+# Round 2 cured `evidence_ref`, which probed `<shotsdir>/<name> + ".png"` against
+# a live shot name that ALREADY CARRIES ITS EXTENSION (`01-help.txt`) — looking
+# for `01-help.txt.png`, finding nothing, and reporting the evidence lost. The
+# SAME `+ ".png"` survived on the ATTACHMENTS path and the same `+ ".json"` in
+# `shot_selector`, so `xo.sh`'s `[ -f "$s" ] && args+=(--attach "$s")` attached
+# NOTHING: 5 shot paths across the live look's 7 filed tickets, 4 of them
+# `….txt.png` phantoms. It is ONE ladder now, read by all three call sites, so
+# the halves cannot drift apart again:
+#
+#   1. the name EXACTLY AS IT WAS GIVEN          `01-help.txt`
+#   2. then `<name><ext>`, the bare-name probe   `shot-01` -> `shot-01.png`
+#   3. then `<stem><ext>`, the SIDECAR           `01-help.txt` -> `01-help.json`
+#
+# Step 3 is the new rung and is purely additive: it can only fire where 1 and 2
+# already found nothing. It is what `shot_selector` needs, because that reader
+# does not want "any file of this name" — it wants the `.json` readout beside the
+# shot, which for `01-help.txt` is `01-help.json`.
+SHOT_EXT = (".png", ".txt", ".json")
+
+
+def shot_candidates(name, exts=SHOT_EXT):
+    """Every filename a recorded shot NAME could be on disk under, in order."""
+    name = clean(name)
+    if not name:
+        return []
+    stem, ext = os.path.splitext(name)
+    cands = [name] + [name + e for e in exts]
+    if ext:
+        cands += [stem + e for e in exts]
+    out = []
+    for c in cands:
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def shot_file(shotsdir, name, exts=SHOT_EXT):
+    """The FILE a recorded shot name is actually on disk as, or "". A path to
+    nothing is worse than no path: every caller here quotes or attaches what this
+    returns, so it is checked with `isfile` and never synthesised."""
+    for cand in shot_candidates(name, exts):
+        pth = os.path.join(shotsdir, cand)
+        if os.path.isfile(pth):
+            return pth
+    return ""
+
+
+def attach_path(shotsdir, name):
+    """The path `xo.sh` is handed for a recorded shot, for its `[ -f "$s" ]`
+    guard to accept or drop. The real file when there is one; otherwise the NAME
+    is still carried — a gap is worth filing with a name for its shot even when
+    the file has been swept, and `logs.json` recovers that name from this field
+    (basename, less `.png`) for `xo recheck` — but never with an extension glued
+    onto a name that already has one."""
+    real = shot_file(shotsdir, name)
+    if real:
+        return real
+    if os.path.splitext(clean(name))[1]:
+        return os.path.join(shotsdir, clean(name))
+    return os.path.join(shotsdir, clean(name) + ".png")
+
+
 def shot_selector(shotsdir, name):
     """The element this shot was CLIPPED to, or "" for a picture of the whole
     page. The driver writes it into the `.json` readout beside every PNG
     (`selector`, with `clip` set to the box it used), so this is read off the
     record of the shot and never guessed from its name."""
-    try:
-        with open(os.path.join(shotsdir, name + ".json"), encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except Exception:
-        return ""
+    # THE READOUT, NOT MERELY A FILE OF THAT NAME. `01-help.txt` exists and is a
+    # transcript; the record of that shot is `01-help.json`, so the ladder is
+    # walked for `.json` only and a non-readout rung is stepped over.
+    doc = None
+    for cand in shot_candidates(name, (".json",)):
+        if not cand.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(shotsdir, cand), encoding="utf-8") as fh:
+                doc = json.load(fh)
+            break
+        except Exception:
+            continue
     if not isinstance(doc, dict):
         return ""
     sel = clean(doc.get("selector"))
@@ -282,33 +353,23 @@ def evidence_ref(shotsdir, row, finding, instrument):
                 break
     if not name:
         return ""
-    # THE NAME EXACTLY AS IT WAS GIVEN, FIRST (S240 fix round 2, D-B). A live
-    # worker records its shot WITH the extension already on it — `01-help.txt`,
-    # `02-workflow-run.txt` — so probing only `<name> + <ext>` looked for
-    # `01-help.txt.png` / `01-help.txt.json`, found neither, and returned "".
-    # MEASURED on the first live look: 6 of the 7 filed PRDs said "the evidence
-    # was not retained" while `01-help.txt`, `02-workflow-run.txt` and
-    # `08-publish.txt` were sitting in `shots/look-1/`. Round 1 stopped this
-    # citing a path that is not there; without this line it started claiming
-    # nothing had been kept.
-    pth = os.path.join(shotsdir, name)
-    if os.path.isfile(pth):
-        return pth
-    # AND THE EXTENSION PROBE STAYS, for a bare name (`shot-01`, `round1-01`) —
-    # which is what every drawing/part shot is called. Both halves; neither one
-    # traded for the other.
-    exts = EVIDENCE_EXT.get(instrument) or (".png", ".txt")
-    for ext in exts:
-        pth = os.path.join(shotsdir, name + ext)
-        if os.path.exists(pth):
-            return pth
-    # NOTHING OF THAT NAME IS ON THE DISK, so nothing is cited. This line used to
-    # synthesise `<shotsdir>/<name><first-ext>` from the extension table and hand
-    # it back unchecked, and `xo.sh` guards only the ATTACHMENT
-    # (`[ -f "$s" ] && args+=(--attach "$s")`) — so AC #1 and AC #4 quoted an
-    # absolute path to nothing, inside the PARENT mission's `.git/lcars/`, which
-    # is untracked and sweepable and not the bug mission's own directory.
-    return ""
+    # THE NAME EXACTLY AS IT WAS GIVEN, FIRST (S240 fix round 2, D-B) — and then
+    # the extension probe, for a bare name (`shot-01`, `round1-01`), which is what
+    # every drawing/part shot is called. Both halves; neither one traded for the
+    # other. A live worker records its shot WITH the extension already on it
+    # (`01-help.txt`, `02-workflow-run.txt`), so probing only `<name> + <ext>`
+    # looked for `01-help.txt.png`, found nothing, and returned "" — MEASURED on
+    # the first live look as 6 of 7 filed PRDs saying "the evidence was not
+    # retained" while those files sat in `shots/look-1/`.
+    #
+    # The ladder now lives in `shot_file` (S240 fix round 3) because the SAME
+    # mistake was still live on the attachments path and in `shot_selector`; one
+    # resolver means a cure here cannot stop short there. Nothing of that name on
+    # the disk still cites NOTHING: `xo.sh` guards only the ATTACHMENT, so a
+    # synthesised path put a dead absolute path, inside the PARENT mission's
+    # untracked and sweepable `.git/lcars/`, into AC #1 and AC #4.
+    return shot_file(shotsdir, name,
+                     EVIDENCE_EXT.get(instrument) or (".png", ".txt"))
 
 
 def seam_of(row, finding, criteria, cid):
@@ -610,8 +671,10 @@ def main():
         # attachments the issue does not carry. The Out-of-Scope line still reads
         # off `shots`, not this list: a shot NAME means there WAS a screen, so
         # "do not make one" would be wrong just because the file was swept.
-        present = [sh for sh in shots
-                   if os.path.exists(os.path.join(shotsdir, sh + ".png"))]
+        # Resolved through the SHARED ladder (S240 fix round 3): `sh + ".png"`
+        # here was the same glue round 2 cured in `evidence_ref`, so a live
+        # `01-help.txt` read as swept and went undescribed.
+        present = [sh for sh in shots if shot_file(shotsdir, sh)]
         if present:
             tail.append("Number One's shots of the running build: %s. Each PNG has a "
                         "`.json` readout beside it (url, visible text, the box and "
@@ -629,7 +692,7 @@ def main():
                   out_of_scope=out_of_scope, constraints=constraints, tail=tail)
 
         print(RS.join(["GAP", str(n), path,
-                       ",".join(os.path.join(shotsdir, sh + ".png") for sh in shots),
+                       ",".join(attach_path(shotsdir, sh) for sh in shots),
                        cid, title]))
 
     if overflow:
