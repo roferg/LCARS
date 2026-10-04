@@ -559,12 +559,16 @@ mkdir -p "$TMPROOT/rep" "$TMPROOT/repnone"
 score "$L1" "$TMPROOT/rep/l1.json"
 REP="$TMPROOT/rep/report.md"
 check "the look-1 replay wrote its report beside its verdict" "[ -s '$REP' ]"
-check "the fixture really does exercise the case — exactly prd-9 could not be placed" \
+# EQUALITY, NOT PRESENCE. S243 widened the family the record can place from the
+# PRD rows to EVERY row nothing declares a place for, so this names the whole set
+# the look must mark — `prd-9` by inheritance, and the three ticket rows that
+# declare no place at all. Spraying the mark wider than this fails here too.
+check "the fixture really does exercise the case — exactly these four could not be placed" \
   "$PY -c \"
 import json,sys
 d=json.load(open('$TMPROOT/rep/l1.json'))
 np=sorted(x['criterion'] for x in ((d.get('landing') or {}).get('notPlaced') or []))
-sys.exit(0 if np==['prd-9'] else 1)\""
+sys.exit(0 if np==['prd-9','t-001-ac4','t-002-ac4','t-005-ac4'] else 1)\""
 check "prd-9 is still MET on the table — no status, grade or count is moved" \
   "$PY -c \"
 import json,sys
@@ -640,6 +644,281 @@ check "a look that records NO landings at all sprouts no row disclosures" \
 check "...and it still carries the single once-per-look disclosure it had before" \
   "grep -Fq 'not one picture' '$TMPROOT/repnone/report.md'"
 
+printf '\n\033[1m7f. THE SILENT SIXTH — a TICKET row nothing places says so too (S243)\033[0m\n'
+
+# WHY THIS SECTION EXISTS (measured over the six archived looks, before S243).
+# S242 taught the PRD rows to admit an unchecked picture, and left 16 rows across
+# the six runs — 3/3/2/2/4/2 — that cite a picture, have no declared place from
+# ANY recorded source, and said NOTHING: a flat `MET | a picture`. They are
+# TICKET criteria, so the `serves:` inheritance path never reaches them: in
+# look-1 they are `t-001-ac4`, `t-002-ac4` and `t-005-ac4`.
+#
+# NO PLACE IS INVENTED FOR THEM. Nothing in the record says which screen they
+# are about — and the planner wrote down WHY: `notDrawn` ("the mockup draws no
+# back control on the Dungeon panel") or `notVisual: true`. So the row says that,
+# in the planner's own recorded words, and keeps the verdict the eye gave it.
+
+# THE FIXTURE, CHECKED ON THE INPUT so this section cannot pass vacuously: each
+# of the three declares no `drawnAt` at all and carries the planner's recorded
+# reason instead.
+check "the fixture holds the family — three look-1 ticket rows declare no place at all" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$L1/criteria.json'))
+by={c['id']:c for c in d['criteria']}
+ok=all(not (by[i].get('drawnAt') or '').strip()
+       and (by[i].get('notDrawn') or by[i].get('notVisual'))
+       for i in ('t-001-ac4','t-002-ac4','t-005-ac4'))
+sys.exit(0 if ok else 1)\""
+check "...and each of them is still MET — no status is moved" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+by={c['id']:c for c in d['criteria']}
+sys.exit(0 if all(by[i]['status']=='met' for i in ('t-001-ac4','t-002-ac4','t-005-ac4')) else 1)\""
+check "...and no OTHER row moved either — the same grade and the same untested set" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+un=sorted(c['id'] for c in d['criteria'] if c['status']=='untested')
+want=['journey-j3','part-dungeon-title','part-encounter-status','part-gold-dungeon',
+      'part-torch-meter','prd-1','prd-2','prd-4','prd-5','prd-7','prd-8','t-001-ac5',
+      't-001-ac6','t-003-ac1','t-003-ac2','t-003-ac3','t-003-ac4','t-003-ac5','t-003-ac6',
+      't-004-ac4','t-004-ac5','t-004-ac6','t-004-ac7','t-005-ac1','t-005-ac2','t-005-ac3']
+g={k:v.get('grade') for k,v in d['groups'].items()}
+sys.exit(0 if un==want and d.get('score')=='low'
+         and g=={'person':'low','drawing':'medium','contract':None} else 1)\""
+check "...and each of their rows on the table SAYS its picture was not checked" \
+  "$PY -c \"
+import sys
+rows=[l for l in open('$REP')]
+def cell(i):
+    r=[l for l in rows if l.startswith('| '+i+' ')]
+    return r[0] if r else ''
+sys.exit(0 if all('$MARK' in cell(i) for i in ('t-001-ac4','t-002-ac4','t-005-ac4')) else 1)\""
+check "...and it says so using the rule the record already had, not a new word" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+by={c['id']:c for c in d['criteria']}
+rules=set(((by[i].get('landing') or {}).get('expected') or {}).get('rule')
+          for i in ('t-001-ac4','t-002-ac4','t-005-ac4','prd-9'))
+sys.exit(0 if rules=={'no declared place'} else 1)\""
+check "...and the reason is the planner's RECORDED fact — not drawn, or not visual" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+by={c['id']:c for c in d['criteria']}
+r1=((by['t-001-ac4'].get('landing') or {}).get('reason') or '')
+r5=((by['t-005-ac4'].get('landing') or {}).get('reason') or '')
+sys.exit(0 if 'not drawn' in r1 and 'all four .screen panels' in r1
+         and 'not visual' in r5 else 1)\""
+check "the rows that disclose are STILL exactly the ones the record could not place" \
+  "$PY -c \"
+import json,sys
+rows=[l for l in open('$REP') if l.startswith('| ')]
+marked=set(l.split('|')[1].strip().replace(' (PRD)','') for l in rows if '$MARK' in l)
+d=json.load(open('$TMPROOT/rep/l1.json'))
+rec=set(x['criterion'] for x in ((d.get('landing') or {}).get('notPlaced') or []))
+sys.exit(0 if len(rec)==4 and marked==rec else 1)\""
+
+# THE POSITIVE CONTROL — a row that DOES declare a place gains nothing. `t-001-ac1`
+# declares `#screen-roster` and its picture was taken there; `part-gold-roster`
+# declares the drawn part `gold-roster`. Neither may sprout a disclosure.
+check "a row that declares a place is untouched — t-001-ac1 and part-gold-roster stay clean" \
+  "$PY -c \"
+import sys
+want=('| t-001-ac1 ','| part-gold-roster ')
+rows=[l for l in open('$REP') if l.startswith(want)]
+sys.exit(0 if len(rows)==2 and not any('$MARK' in l for l in rows) else 1)\""
+
+# ...AND THAT CONTROL IS PROVED ABLE TO FAIL. One recorded field removed:
+# `t-001-ac1` loses the `drawnAt` that places it. Its verdict must not move — and
+# its row must now disclose. If the control above is vacuous, this row stays clean.
+TNP="$RIG/replay/ticket-unplaced-control"; rm -rf "$TNP"; cp -R "$L1" "$TNP"
+$PY -c "
+import json
+p='$TNP/criteria.json'
+d=json.load(open(p))
+for c in d['criteria']:
+    if c['id']=='t-001-ac1':
+        c.pop('drawnAt', None)
+json.dump(d,open(p,'w'),indent=1)
+"
+mkdir -p "$TMPROOT/reptnp"
+score "$TNP" "$TMPROOT/reptnp/tnp.json"
+check "with t-001-ac1's own place removed, its row DOES disclose (the control can fail)" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/reptnp/tnp.json'))
+r=[c for c in d['criteria'] if c['id']=='t-001-ac1'][0]
+rows=[l for l in open('$TMPROOT/reptnp/report.md') if l.startswith('| t-001-ac1 ')]
+sys.exit(0 if r['status']=='met' and rows and '$MARK' in rows[0] else 1)\""
+
+# A RECORDED FIELD IS NOT ALWAYS A SENTENCE. Every `journey-…` row in the archive
+# carries `notDrawn: true` — the FLAG, not the planner's prose — and 18 of them
+# sit across the six looks. Reading it as text crashed the whole scorer with
+# `'bool' object has no attribute 'split'`; the archived journey rows get their
+# place from their step, so nothing in the six runs took that path, and the first
+# look whose step could not say where it landed would have lost its report.
+$PY -c "
+import importlib.util, json
+s=importlib.util.spec_from_file_location('xos','$SCORE')
+m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+out={}
+for nm, row in (('flag', {'notDrawn': True}), ('nothing', {}),
+                ('notvisual', {'notVisual': True}), ('placed', {'drawnAt': 'gold-roster'})):
+    try:
+        out[nm] = m.no_declared_place(row)
+    except Exception as exc:
+        out[nm] = 'RAISED %s' % exc
+json.dump(out, open('$TMPROOT/ndp.json','w'))
+" >"$TMPROOT/ndp.log" 2>&1
+check "a notDrawn recorded as a FLAG, not prose, is read without crashing" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/ndp.json'))
+f=d.get('flag')
+sys.exit(0 if isinstance(f,dict) and f.get('rule')=='no declared place'
+         and 'not drawn' in (f.get('from') or '') and 'True' not in (f.get('from') or '') else 1)\""
+check "...and a row with nothing recorded at all still says it has no place" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/ndp.json'))
+n=d.get('nothing')
+sys.exit(0 if isinstance(n,dict) and n.get('rule')=='no declared place' else 1)\""
+check "...and a row that DOES declare a place is handed back nothing to say" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/ndp.json'))
+sys.exit(0 if d.get('placed') is None and isinstance(d.get('notvisual'),dict) else 1)\""
+
+# AND IT STILL READS NO PROSE. 7d's probe blanks the screen words out of the PRD
+# criteria; S243's family is the TICKET criteria, so the same probe is run over
+# EVERY criterion's text. A rail that read a criterion's English for a screen
+# name would move here; one that reads the planner's recorded fields does not.
+TW="$RIG/replay/ticket-prose-probe"; rm -rf "$TW"; cp -R "$L1" "$TW"
+$PY -c "
+import json
+p='$TW/criteria.json'
+d=json.load(open(p))
+words=('roster','inventory','battle','dungeon','map','screen','screens','panel','panels')
+for c in d['criteria']:
+    t=c.get('text') or ''
+    low=t.lower()
+    for w in words:
+        at=low.find(w)
+        while at >= 0:
+            t=t[:at]+'XXXX'+t[at+len(w):]
+            low=t.lower()
+            at=low.find(w)
+    c['text']=t
+json.dump(d,open(p,'w'),indent=1)
+"
+score "$TW" "$TMPROOT/tw.json"
+check "with every screen word stripped from EVERY criterion, no verdict and no rule moves" \
+  "$PY -c \"
+import json,sys
+def shape(p):
+    d=json.load(open(p))
+    return {c['id']:(c['status'],
+                     ((c.get('landing') or {}).get('expected') or {}).get('rule'),
+                     ((c.get('landing') or {}).get('expected') or {}).get('screen'),
+                     bool((c.get('landing') or {}).get('unplaced')))
+            for c in d['criteria']}
+a=shape('$TMPROOT/rep/l1.json'); b=shape('$TMPROOT/tw.json')
+sys.exit(0 if a==b and a else 1)\""
+check "...and the probe was not vacuous — every screen word really is gone" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TW/criteria.json'))
+txt=' '.join((c.get('text') or '') for c in d['criteria']).lower()
+sys.exit(0 if 'XXXX'.lower() in txt and 'roster' not in txt and 'inventory' not in txt else 1)\""
+
+printf '\n\033[1m7g. THE WARNING SURVIVES THE CELL — it is never cut mid-thought (S243)\033[0m\n'
+
+# WHAT WAS WRONG. The disclosure was rendered with the SAME 160-character budget
+# as the evidence sentence it follows, so on `prd-9` the captain read
+#   "… and its…"
+# — the one part of the cell he must not lose, stopped mid-sentence. The cure
+# gives the disclosure a budget of its own, sized to the sentences the record
+# actually writes, and leaves the evidence text alone. EQUALITY, not presence:
+# the recorded reason must appear in the row VERBATIM, whole.
+check "prd-9's recorded reason reaches the captain WHOLE, word for word" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-9'][0]
+reason=' '.join(((r.get('landing') or {}).get('reason') or '').split())
+rows=[l for l in open('$REP') if l.startswith('| prd-9 ')]
+sys.exit(0 if reason and rows and reason in rows[0] else 1)\""
+check "...and the same for the ticket rows nothing places" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+by={c['id']:c for c in d['criteria']}
+txt=open('$REP').read()
+bad=[i for i in ('t-001-ac4','t-002-ac4','t-005-ac4')
+     if ' '.join(((by[i].get('landing') or {}).get('reason') or '').split()) not in txt]
+sys.exit(0 if not bad else 1)\""
+check "...and no disclosing cell now ends mid-thought" \
+  "$PY -c \"
+import sys
+rows=[l for l in open('$REP') if l.startswith('| ') and '$MARK' in l]
+ends=[l.rstrip('\n').rsplit('|',2)[-2].strip() for l in rows]
+sys.exit(0 if ends and not any(e.endswith('…') for e in ends) else 1)\""
+check "...and the cell is still BOUNDED — it did not become unlimited" \
+  "$PY -c \"
+import sys
+rows=[l for l in open('$REP') if l.startswith('| ')]
+w=[len(l.rstrip('\n').rsplit('|',2)[-2]) for l in rows]
+sys.exit(0 if w and max(w)<=600 else 1)\""
+check "...and the planner's recorded notDrawn arrives in the quotes WHOLE" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$L1/criteria.json'))
+nd=' '.join([c for c in d['criteria'] if c['id']=='t-001-ac4'][0]['notDrawn'].split())
+rows=[l for l in open('$REP') if l.startswith('| t-001-ac4 ')]
+sys.exit(0 if len(nd)>90 and rows and nd in rows[0] else 1)\""
+check "...and the evidence sentence beside it was NOT removed to make room" \
+  "$PY -c \"
+import sys
+rows=[l for l in open('$REP') if l.startswith('| prd-9 ')]
+sys.exit(0 if rows and 'swapped the panel in place with no alert' in rows[0] else 1)\""
+
+printf '\n\033[1m7h. THE ONCE-PER-LOOK NOTE AGREES WITH ITS OWN COUNT (S243)\033[0m\n'
+
+# It read **2 picture(s) I could not place … its picture…** — a hard-coded `(s)`
+# and a singular possessive at a count of two. Read straight off the function
+# that writes it, at one and at four.
+$PY -c "
+import importlib.util
+s=importlib.util.spec_from_file_location('xos','$SCORE')
+m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+open('$TMPROOT/npn1.txt','w').write(m.not_placed_note(1))
+open('$TMPROOT/npn4.txt','w').write(m.not_placed_note(4))
+" >"$TMPROOT/npn.log" 2>&1
+check "the note is written by one function this test can read at any count" \
+  "[ -s '$TMPROOT/npn1.txt' ] && [ -s '$TMPROOT/npn4.txt' ]"
+check "at a count of one it is singular, and says '1 picture'" \
+  "$PY -c \"
+import sys
+n=open('$TMPROOT/npn1.txt').read()
+sys.exit(0 if '1 picture I could not place' in n and '(s)' not in n
+         and 'pictures' not in n else 1)\""
+check "at a count of four it is plural all the way through" \
+  "$PY -c \"
+import sys
+n=open('$TMPROOT/npn4.txt').read()
+sys.exit(0 if '4 pictures I could not place' in n and '(s)' not in n
+         and ' its picture' not in n and ' that criterion' not in n else 1)\""
+check "and the look-1 report carries the plural note it recorded for itself" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+n=' '.join(((d.get('landing') or {}).get('notPlacedNote') or '').split())
+sys.exit(0 if '4 pictures I could not place' in n and n in open('$REP').read() else 1)\""
+
 printf '\n\033[1m6. THE FORBIDDEN CURES ARE NOT IN THE DIFF\033[0m\n'
 
 DIFF="$TMPROOT/diff.txt"
@@ -649,6 +928,16 @@ check "nothing added computes an image hash or a similarity" \
   "! grep -Eiq 'md5|sha1|sha256|hashlib|createHash|similarity|pixelmatch|ssim' '$TMPROOT/added.txt'"
 check "nothing added retries a navigation" \
   "! grep -Eiq 'retr(y|ies|ying)' '$TMPROOT/added.txt'"
+# S243 — AND NOTHING ADDED READS PROSE. This file has paid three times (S147,
+# S156, S188) for a rail that found a screen name in a criterion's English. The
+# cure reads recorded FIELDS (`drawnAt`, `notDrawn`, `notVisual`, `serves`), so
+# no pattern match over text is added at all.
+check "nothing added matches a pattern against text" \
+  "! grep -Eq 're\\.(search|match|findall|sub|compile)' '$TMPROOT/added.txt'"
+# The patterns are written with a bracket so this check's OWN added line is not
+# what it matches — that self-hit is how a guard passes, or fails, vacuously.
+check "nothing added reads a shot's filename to decide where it should have been" \
+  "! grep -Eq 'base[n]ame|split[e]xt' '$TMPROOT/added.txt'"
 
 printf '\n  \033[1m%d pass, %d fail\033[0m\n' "$pass" "$fail"
 SPEND="$(wc -l <"$SPEND_LOG" | tr -d ' ')"

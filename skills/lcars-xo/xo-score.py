@@ -1103,14 +1103,22 @@ def served_landing(cid, servers):
     served_by = [str(c.get("id") or "") for c in rows if str(c.get("id") or "")]
     if not placed:
         if rows:
+            # THE SERVER LIST IS CLIPPED, so this sentence has a CEILING. It is
+            # rendered into one table cell (see `unplaced_mark`) and a PRD line
+            # decomposed into a dozen tickets would otherwise write a reason no
+            # cell could hold — which is how the captain came to read "and its…".
             why = ("not one of the ticket criteria that declare `serves: %s` (%s) declares a "
-                   "place of its own" % (key, ", ".join(served_by)))
+                   "place of its own" % (key, clip(", ".join(served_by), 60)))
         else:
             why = "nothing in the plan declares `serves: %s`" % key
+        # SHORTER BY EXACTLY ONE REDUNDANT CLAUSE (S243). This used to end "…and
+        # its picture cannot be shown to be of the right screen" — the same thing
+        # the mark it is rendered behind already says in the captain's own cell
+        # ("I did not check this picture is of the right screen"). Saying it twice
+        # is what pushed the sentence past the cell and cost him the end of it.
         return {"unplaced": True, "rule": LANDING_NO_DECLARED_PLACE,
                 "servedBy": served_by,
-                "from": ("%s — so the record does not place this criterion, and its picture "
-                         "cannot be shown to be of the right screen" % why)}
+                "from": "%s — so the record does not place this criterion" % why}
     screens = sorted({scr for _i, scr in placed})
     if len(screens) == 1:
         who = ", ".join(i for i, _s in placed)
@@ -1131,6 +1139,83 @@ def served_landing(cid, servers):
                      % (key, len(screens),
                         "; ".join("#%s from %s" % (scr, i)
                                   for i, scr in sorted(placed, key=lambda pr: pr[1]))))}
+
+
+def no_declared_place(row):
+    """"I could not check this" for a row the record places NOWHERE (S243).
+
+    THE PROBLEM THIS SOLVES (measured over the six archived looks). S242 taught
+    a PRD row to inherit a place along the recorded `serves:` link and to SAY SO
+    when nothing it links to declares one. It left 16 rows across those six runs
+    — 3/3/2/2/4/2 — that cite a picture, have no declared place from any recorded
+    source, and said NOTHING: a flat `MET | a picture`. They are TICKET criteria
+    (`t-001-ac4`, `t-002-ac4`, `t-005-ac4`, `t-004-ac5`, `t-003-ac6`), so the
+    inheritance path never reaches them — a ticket criterion is the thing that
+    DECLARES a place, it does not inherit one. The original sin at a sixth of its
+    old size, and still silent.
+
+    SAME RULE, SAME WORDS, ONE MORE FAMILY. There is no new vocabulary here: the
+    row carries `LANDING_NO_DECLARED_PLACE`, the rule S242 already wrote, so the
+    once-per-look note, `landing.notPlaced` and `unplaced_mark` all cover it with
+    no change of their own.
+
+    NO PLACE IS INVENTED. Nothing in the record says which screen these rows are
+    about, and "I could not check this" is the correct answer — a guess is not.
+    But the planner DID write down why there is none, and that is read, not
+    composed: `notVisual` (the criterion is not about anything on a screen) or
+    `notDrawn` (the sentence the planner wrote about what the mockup leaves out).
+    Not one word of the criterion's own English is read.
+
+    None — NOT a mark — for a row that DECLARES a place. A `drawnAt` is a place
+    declaration whether or not THIS rail can read a screen id out of it: every
+    `part-…` row in the archive declares its drawn part (`drawnAt: "gold-roster"`),
+    and 35 of them across the six looks would otherwise be sprayed with a warning
+    about a record that does place them. Comparing a picture against a part's
+    recorded box is a check this rail does not make; claiming the record is
+    silent about them would be a lie."""
+    row = row or {}
+    if str(row.get("drawnAt") or "").strip():
+        return None
+    if row.get("notVisual"):
+        why = "the plan records this criterion as not visual and declares no place for it"
+    else:
+        # A RECORDED FIELD IS NOT ALWAYS A SENTENCE. Every `journey-…` row in the
+        # archive carries `notDrawn: true` — the FLAG — and 18 of them sit across
+        # the six looks. Reading that as text crashed the scorer outright
+        # ("'bool' object has no attribute 'split'"); it is quoted only when the
+        # planner really wrote prose, and otherwise read as the flag it is.
+        nd = row.get("notDrawn")
+        # 130, because the longest `notDrawn` the archive records is 122 — so the
+        # planner's sentence arrives in the captain's quotes WHOLE, and the
+        # ceiling on this reason stays well inside `unplaced_mark`'s budget.
+        said = clip(nd, 130) if isinstance(nd, str) and nd.strip() else ""
+        if said:
+            why = ('the plan records that this was not drawn ("%s") and declares no place '
+                   'for it' % said)
+        elif nd:
+            why = "the plan records this criterion as not drawn and declares no place for it"
+        else:
+            why = "nothing the plan records declares a place for this criterion"
+    return {"unplaced": True, "rule": LANDING_NO_DECLARED_PLACE,
+            "from": "%s — so the record does not place this criterion" % why}
+
+
+def not_placed_note(n):
+    """The look's ONE sentence about the pictures it could not place — agreeing
+    with its own count (S243).
+
+    It read `2 picture(s) I could not place … its picture …`: a hard-coded `(s)`
+    and a singular possessive at a count of two, in a product that is otherwise
+    fastidious about its own English. One function, so the count and the grammar
+    cannot drift apart, and so a test can read it at any count."""
+    n = int(n or 0)
+    if n == 1:
+        return ("1 picture I could not place: nothing the plan records declares which "
+                "screen that criterion is about, so I could not check that its picture "
+                "is of the right one.")
+    return ("%d pictures I could not place: nothing the plan records declares which "
+            "screen those criteria are about, so I could not check that their pictures "
+            "are of the right ones." % n)
 
 
 def landing_intent(doc, shot, by_shot, row, cid="", servers=None):
@@ -1173,7 +1258,14 @@ def landing_intent(doc, shot, by_shot, row, cid="", servers=None):
     if servers is not None \
             and str((row or {}).get("source") or "").strip().lower() == "prd":
         return served_landing(cid, servers)
-    return None
+    # S243 — AND A ROW NOTHING PLACES AT ALL GETS THE SAME ANSWER, NOT SILENCE.
+    # Returning None here meant `landing_verdict` had nothing to compare, the row
+    # kept its verdict (right) and said nothing about it (wrong) — 16 rows across
+    # the six archived looks read as checked when no place for them was ever
+    # recorded. `no_declared_place` reads the planner's own recorded fields and
+    # returns None for a row that really does declare a place, so no settled row
+    # moves.
+    return no_declared_place(row)
 
 
 def landing_verdict(intent, landed):
@@ -1221,7 +1313,7 @@ def landing_verdict(intent, landed):
     return True, ""
 
 
-def unplaced_mark(landing, limit=160):
+def unplaced_mark(landing, limit=280):
     """The row's own disclosure for `report.md`, or "" when it was really checked.
 
     READ, NEVER RE-DERIVED — the rule this file has lost three rounds to (S147,
@@ -1242,6 +1334,17 @@ def unplaced_mark(landing, limit=160):
     expected = landing.get("expected")
     rule = " ".join(str((expected or {}).get("rule") or "").split()) \
         if isinstance(expected, dict) else ""
+    # ITS OWN BUDGET, NOT THE EVIDENCE SENTENCE'S (S243). This was clipped at the
+    # same 160 as the `note` it is appended to, and the recorded reason is longer
+    # than that, so the captain read the one part of the cell he must not lose
+    # stopped mid-sentence: "…so the record does not place this criterion, and
+    # its…". The budget is now sized to the sentences the record actually writes
+    # (both `no_declared_place` and `served_landing` have a ceiling of their own —
+    # the first by clipping the quoted `notDrawn` at 130, the longest the archive
+    # records being 122; the second by clipping its server list at 60), so the
+    # disclosure arrives whole.
+    # The cell stays BOUNDED — the evidence text keeps its own 160 and is not
+    # shortened to make room; the row's ceiling simply moved, it did not vanish.
     reason = clip(landing.get("reason") or "", limit) \
         or "and my record does not say why"
     # `clip` ends a trimmed reason with its own ellipsis, so a full stop added
@@ -3762,10 +3865,7 @@ def main():
         # when there is something to say.
         if landing_not_placed:
             out["landing"]["notPlaced"] = landing_not_placed
-            out["landing"]["notPlacedNote"] = (
-                "%d picture(s) I could not place: nothing the plan records declares which "
-                "screen the criterion is about, so I could not check that its picture is "
-                "of the right one." % len(landing_not_placed))
+            out["landing"]["notPlacedNote"] = not_placed_note(len(landing_not_placed))
     if impacts_note:
         out["impactsNote"] = impacts_note
     if mismatches:
@@ -3992,8 +4092,14 @@ def main():
         _not_placed_note = " ".join(
             str((out.get("landing") or {}).get("notPlacedNote") or "").split())
         if _not_placed_note:
-            w("**%s** Each of those rows says so for itself in the table below.\n\n"
-              % _not_placed_note)
+            # AND THE SENTENCE AFTER IT AGREES TOO (S243). The recorded note is
+            # now written to its own count; this follow-on was still "Each of
+            # those rows" at a count of one, in the same paragraph.
+            _np_n = len((out.get("landing") or {}).get("notPlaced") or [])
+            w("**%s** %s\n\n"
+              % (_not_placed_note,
+                 "That row says so for itself in the table below." if _np_n == 1
+                 else "Each of those rows says so for itself in the table below."))
         w("| What you asked for | | Verdict | How I know | What I saw |\n"
           "|---|---|---|---|---|\n")
         mark = {"met": "MET", "gap": "GAP", "untested": "UNTESTED"}
