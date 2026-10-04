@@ -26,6 +26,14 @@
 #      control is proved able to fail by inverting the recorded intent).
 #   5  a cited shot with NO readout at all reads `untested (no landing record)`.
 #   6  the diff computes no image hash and retries no navigation.
+#   7  a PRD criterion, which declares no place of its own, INHERITS the
+#      place of the ticket criteria that declare `serves: prd-N` — with the
+#      provenance recorded on the row; servers that disagree are undecidable,
+#      not a pick; servers that declare no place leave the row honestly blind.
+#   8  `report.md` — the file the captain actually audits — SAYS on the row
+#      itself when a picture could not be placed, in the recorded words, and
+#      says it once for the look; a row that really was checked is untouched,
+#      and a look with no landing records at all gains nothing.
 #
 # ZERO SPEND: a PATH shim fakes BOTH `claude` and `copilot`; the count is 0.
 #
@@ -298,6 +306,339 @@ import json,sys
 d=json.load(open('$TMPROOT/none.json'))
 l=d.get('landing') or {}
 sys.exit(0 if l.get('railOn') is False and 'not one picture' in (l.get('note') or '') else 1)\""
+
+printf '\n\033[1m7. A PRD ROW INHERITS THE DECLARED PLACE OF THE TICKET CRITERION THAT SERVES IT\033[0m\n'
+
+# WHY THIS SECTION EXISTS. S241 cured the ticket rows and the journey steps and
+# KNOWINGLY left the PRD rows blind: a PRD criterion carries no `drawnAt`, so
+# the rail never engaged on it. In `xo-look-1` that left `prd-2` ("gold is shown
+# on the roster, the dungeon map AND the inventory") settled `met` on `shot-01`,
+# a ROSTER picture — the captain's own grievance, on the very file he was angry
+# about — and `prd-4` ("the weapon … is the same weapon shown on the inventory")
+# settled on `shot-09`, the Roster again.
+#
+# RECORD, DO NOT INFER. The link was already written down: every ticket
+# criterion carries `serves: prd-N`, and the placed ones carry a `drawnAt` the
+# planner wrote FROM THE DRAWING. So a PRD row INHERITS the place of the ticket
+# criteria that declare they serve it. Nothing here reads a criterion's English
+# text for a screen name — the probe at the end of this section proves that by
+# stripping every screen word out of the prose and showing the ledger does not
+# move.
+
+L3="$(replay xo-look-3)"
+score "$L3" "$TMPROOT/l3.json"
+check "the look-3 replay scored" "[ -s '$TMPROOT/l3.json' ]"
+
+# --- the three rows the captain's complaint still lived in ------------------
+check "look-1 prd-4 — the Inventory claim settled on a ROSTER shot — is REFUSED" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-4'][0]
+sys.exit(0 if r['status']=='untested' else 1)\""
+check "...and the reason names where the shot REALLY landed and where it was meant to" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+n=([c for c in d['criteria'] if c['id']=='prd-4'][0].get('note') or '')
+sys.exit(0 if 'screen-roster' in n and 'screen-inventory' in n else 1)\""
+check "...and the reason names WHICH ticket criterion lent it that expectation" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-4'][0]
+n=(r.get('note') or '')
+exp=(r.get('landing') or {}).get('expected') or {}
+sys.exit(0 if 't-003-ac3' in n and 't-003-ac3' in (exp.get('inheritedFrom') or []) else 1)\""
+check "...and the row records the inheritance as its rule, not a guess" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+exp=([c for c in d['criteria'] if c['id']=='prd-4'][0].get('landing') or {}).get('expected') or {}
+sys.exit(0 if exp.get('rule')=='inherited from the ticket criterion that serves it' else 1)\""
+
+check "look-1 prd-2 — one picture for a claim about THREE places — is REFUSED" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-2'][0]
+sys.exit(0 if r['status']=='untested' else 1)\""
+check "...and it names the rule applied and every place its servers declared" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-2'][0]
+n=(r.get('note') or '')
+exp=(r.get('landing') or {}).get('expected') or {}
+ok = (exp.get('rule')=='several declared places, one picture'
+      and sorted(exp.get('places') or [])==['screen-dungeon','screen-inventory','screen-roster']
+      and 'screen-roster' in n and 'screen-inventory' in n and 'screen-dungeon' in n)
+sys.exit(0 if ok else 1)\""
+check "...and it never picks one of the disagreeing places and calls it the answer" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+exp=([c for c in d['criteria'] if c['id']=='prd-2'][0].get('landing') or {}).get('expected') or {}
+sys.exit(0 if not exp.get('screen') and exp.get('unplaced') is True else 1)\""
+check "look-1 prd-1 — four screens exist, evidenced by one screen — is REFUSED" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-1'][0]
+sys.exit(0 if r['status']=='untested' and 'screen-battle' in (r.get('note') or '') else 1)\""
+check "...and all three are my blind spot, never a fault in the build" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+mc=d.get('myChecking') or {}
+ids=[r['id'] for k in ('couldntSee','couldntSetUp') for r in (mc.get(k) or [])]
+g=[x['id'] for x in (d.get('gaps') or [])]
+sys.exit(0 if all(i in ids and i not in g for i in ('prd-1','prd-2','prd-4')) else 1)\""
+
+printf '\n\033[1m7b. DO NOT REFUSE GOOD EVIDENCE — the positive control\033[0m\n'
+
+# The SAME row, the SAME inherited expectation, a shot that really is of the
+# Inventory: `xo-look-3` cites `inventory`, and the record says it landed on
+# `screen-inventory`. It must stay met.
+check "look-3 prd-4 — the same claim on a real Inventory shot — STAYS met" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l3.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-4'][0]
+sys.exit(0 if r['status']=='met' and not (r.get('landing') or {}).get('mismatch') else 1)\""
+check "look-1 prd-3 and prd-6 — inherited the Battle, taken on the Battle — STAY met" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+by={c['id']:c for c in d['criteria']}
+sys.exit(0 if all(by[i]['status']=='met' and not (by[i].get('landing') or {}).get('mismatch')
+                  for i in ('prd-3','prd-6')) else 1)\""
+check "no ticket or appearance row is touched by the inheritance rail" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+bad=[c['id'] for c in d['criteria']
+     if not c['id'].startswith('prd-')
+     and ((c.get('landing') or {}).get('expected') or {}).get('inheritedFrom')]
+sys.exit(0 if not bad else 1)\""
+
+# THE CONTROL IS PROVED ABLE TO FAIL. One field changed, in the record the
+# inheritance reads: the serving ticket criterion's own `drawnAt` is repointed
+# at a screen prd-3's picture did NOT land on. If the control above is vacuous
+# this row stays met.
+SRV="$RIG/replay/served-control"; rm -rf "$SRV"; cp -R "$L1" "$SRV"
+$PY -c "
+import json
+p='$SRV/criteria.json'
+d=json.load(open(p))
+for c in d['criteria']:
+    if c['id']=='t-004-ac2':
+        c['drawnAt']='#screen-inventory, the place this control points at instead'
+json.dump(d,open(p,'w'),indent=1)
+"
+score "$SRV" "$TMPROOT/srv.json"
+check "with the SERVING criterion repointed, prd-3 FIRES (so the control was not vacuous)" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/srv.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-3'][0]
+sys.exit(0 if r['status']=='untested' and 'screen-inventory' in (r.get('note') or '') else 1)\""
+
+printf '\n\033[1m7c. HONESTLY BLIND — no declared place is said, never invented\033[0m\n'
+
+# `prd-9` is served by `t-005-ac4` alone, and that criterion declares no place.
+# There is nothing to inherit. The honest answer is to SAY SO on the row, not to
+# invent a place and not to let the picture read as checked.
+check "look-1 prd-9 — nothing serving it declares a place — says it has no declared place" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+l=([c for c in d['criteria'] if c['id']=='prd-9'][0].get('landing') or {})
+exp=l.get('expected') or {}
+sys.exit(0 if l.get('unplaced') is True and exp.get('rule')=='no declared place' else 1)\""
+check "...and it names the criterion it asked, so nobody has to guess" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+l=([c for c in d['criteria'] if c['id']=='prd-9'][0].get('landing') or {})
+sys.exit(0 if 't-005-ac4' in ((l.get('expected') or {}).get('servedBy') or []) else 1)\""
+check "...and it invents no place and claims no mismatch" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+l=([c for c in d['criteria'] if c['id']=='prd-9'][0].get('landing') or {})
+sys.exit(0 if not ((l.get('expected') or {}).get('screen')) and not l.get('mismatch') else 1)\""
+check "...and the look's own landing block lists what it could not place" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/l1.json'))
+l=d.get('landing') or {}
+np=[x['criterion'] for x in (l.get('notPlaced') or [])]
+sys.exit(0 if 'prd-9' in np and 'prd-4' not in np and (l.get('notPlacedNote') or '') else 1)\""
+
+# PRECEDENCE: a row's OWN declaration always wins over what it inherits. If a
+# PRD line ever does carry a `drawnAt` of its own, that is the more specific
+# record and the inheritance must not override it. Planted on prd-3, whose
+# inherited place (#screen-battle, from t-004-ac2) is exactly where its picture
+# WAS taken — so only a rail that prefers the row's own declaration refuses.
+OWN="$RIG/replay/own-wins"; rm -rf "$OWN"; cp -R "$L1" "$OWN"
+$PY -c "
+import json
+p='$OWN/criteria.json'
+d=json.load(open(p))
+for c in d['criteria']:
+    if c['id']=='prd-3':
+        c['drawnAt']='#screen-dungeon, planted on the PRD row itself'
+json.dump(d,open(p,'w'),indent=1)
+"
+score "$OWN" "$TMPROOT/own.json"
+check "a PRD row's OWN declared place beats what it would inherit" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/own.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-3'][0]
+exp=(r.get('landing') or {}).get('expected') or {}
+sys.exit(0 if r['status']=='untested' and exp.get('screen')=='screen-dungeon'
+         and not exp.get('inheritedFrom') else 1)\""
+
+printf '\n\033[1m7d. THE EXPECTATION IS READ OFF THE LINK, NOT OUT OF THE PROSE\033[0m\n'
+
+# The infer-vs-record error this file has paid for three times: a rail that
+# finds "the inventory screen" in a criterion's English and calls that its
+# intent breaks the moment a human rewords it. PROBE: strip every screen word
+# out of all nine PRD criteria's text and leave the `serves` links alone. A rail
+# that reads prose moves; one that reads the link does not.
+WORDS="$RIG/replay/prose-probe"; rm -rf "$WORDS"; cp -R "$L1" "$WORDS"
+$PY -c "
+import json,re
+p='$WORDS/criteria.json'
+d=json.load(open(p))
+for c in d['criteria']:
+    if str(c.get('source'))=='prd':
+        t=c.get('text') or ''
+        for w in ('roster','inventory','battle','dungeon','map','screen','screens'):
+            t=re.sub(w,'XXXX',t,flags=re.I)
+        c['text']=t
+json.dump(d,open(p,'w'),indent=1)
+"
+score "$WORDS" "$TMPROOT/words.json"
+check "with every screen word stripped from the PRD prose, the PRD VERDICTS do not move" \
+  "$PY -c \"
+import json,sys
+a=json.load(open('$TMPROOT/l1.json')); b=json.load(open('$TMPROOT/words.json'))
+fa={c['id']:(c['status'],((c.get('landing') or {}).get('expected') or {}).get('screen'))
+    for c in a['criteria'] if c['id'].startswith('prd-')}
+fb={c['id']:(c['status'],((c.get('landing') or {}).get('expected') or {}).get('screen'))
+    for c in b['criteria'] if c['id'].startswith('prd-')}
+sys.exit(0 if fa==fb and fa else 1)\""
+check "...and the probe was not vacuous — the prose really was rewritten" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$WORDS/criteria.json'))
+t=[c['text'] for c in d['criteria'] if c['id']=='prd-2'][0]
+sys.exit(0 if 'XXXX' in t and 'roster' not in t.lower() else 1)\""
+
+printf '\n\033[1m7e. THE RENDERED REPORT SAYS WHICH PICTURES IT NEVER CHECKED\033[0m\n'
+
+# WHY THIS SECTION EXISTS. Everything above proves the FACT is recorded —
+# `criteria[].landing.unplaced` on the row, `landing.notPlaced` on the look. The
+# captain audits this product by READING `report.md`, and that renderer did not
+# read the `landing` key at all, so `prd-9` reached him as
+#   | prd-9 (PRD) | … | MET | a picture | shot-walk-02-j2 — every transition I drove … |
+# a met row backed by a picture nobody ever checked was of the right screen.
+# That is the quieter half of the very defect this round exists to close: a row
+# that LOOKS verified and is not. The disclosure must be built from the RECORDED
+# `rule`/`reason` — never a sentence invented per row — and must leave a
+# genuinely-checked row alone.
+#
+# Its own output directory, because `xo-score.py` writes `report.md` beside the
+# verdict path it is given and every earlier `score` in this file shares
+# $TMPROOT — the last one to run would otherwise own the only report on disk.
+MARK='I did not check this picture is of the right screen'
+mkdir -p "$TMPROOT/rep" "$TMPROOT/repnone"
+score "$L1" "$TMPROOT/rep/l1.json"
+REP="$TMPROOT/rep/report.md"
+check "the look-1 replay wrote its report beside its verdict" "[ -s '$REP' ]"
+check "the fixture really does exercise the case — exactly prd-9 could not be placed" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+np=sorted(x['criterion'] for x in ((d.get('landing') or {}).get('notPlaced') or []))
+sys.exit(0 if np==['prd-9'] else 1)\""
+check "prd-9 is still MET on the table — no status, grade or count is moved" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-9'][0]
+rows=[l for l in open('$REP') if l.startswith('| prd-9 ')]
+sys.exit(0 if r['status']=='met' and rows and '| MET |' in rows[0] else 1)\""
+check "...and its own row on the table says its picture was NOT checked" \
+  "$PY -c \"
+import sys
+rows=[l for l in open('$REP') if l.startswith('| prd-9 ')]
+sys.exit(0 if rows and '$MARK' in rows[0] else 1)\""
+check "...and it says so in the RECORDED words — the rule, and the criterion it asked" \
+  "$PY -c \"
+import sys
+rows=[l for l in open('$REP') if l.startswith('| prd-9 ')]
+sys.exit(0 if rows and 'no declared place' in rows[0] and 't-005-ac4' in rows[0] else 1)\""
+check "the look says it once as well, in the words it recorded for itself" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/rep/l1.json'))
+n=' '.join(((d.get('landing') or {}).get('notPlacedNote') or '').split())
+sys.exit(0 if n and n in open('$REP').read() else 1)\""
+check "the rows that disclose are EXACTLY the ones the record could not place" \
+  "$PY -c \"
+import json,sys
+rows=[l for l in open('$REP') if l.startswith('| ')]
+marked=set(l.split('|')[1].strip().replace(' (PRD)','') for l in rows if '$MARK' in l)
+d=json.load(open('$TMPROOT/rep/l1.json'))
+rec=set(x['criterion'] for x in ((d.get('landing') or {}).get('notPlaced') or []))
+sys.exit(0 if rec and marked==rec else 1)\""
+
+# THE POSITIVE CONTROL. prd-3 and prd-6 inherited a place and their pictures
+# really were taken there (section 7b); their rows must gain no new noise.
+check "a genuinely-checked met row gains nothing — prd-3 and prd-6 stay clean" \
+  "$PY -c \"
+import sys
+want=('| prd-3 ','| prd-6 ')
+rows=[l for l in open('$REP') if l.startswith(want)]
+sys.exit(0 if len(rows)==2 and not any('$MARK' in l for l in rows) else 1)\""
+
+# ...AND THAT CONTROL IS PROVED ABLE TO FAIL. One field removed from the record
+# the inheritance reads: prd-3's only server loses its `drawnAt`, so prd-3 has
+# no declared place either. Its verdict must not move — and its row must now
+# disclose. If the control above is vacuous, this row stays clean.
+UNP="$RIG/replay/unplaced-control"; rm -rf "$UNP"; cp -R "$L1" "$UNP"
+$PY -c "
+import json
+p='$UNP/criteria.json'
+d=json.load(open(p))
+for c in d['criteria']:
+    if c['id']=='t-004-ac2':
+        c.pop('drawnAt', None)
+json.dump(d,open(p,'w'),indent=1)
+"
+mkdir -p "$TMPROOT/repunp"
+score "$UNP" "$TMPROOT/repunp/unp.json"
+check "with prd-3's only server unplaced, prd-3's row DOES disclose (the control can fail)" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/repunp/unp.json'))
+r=[c for c in d['criteria'] if c['id']=='prd-3'][0]
+rows=[l for l in open('$TMPROOT/repunp/report.md') if l.startswith('| prd-3 ')]
+sys.exit(0 if r['status']=='met' and rows and '$MARK' in rows[0] else 1)\""
+
+# REQUIREMENT 4 — an older look, or one driven by a stub, records no landings at
+# all. It must not sprout a warning per row; it keeps the ONE disclosure it has
+# always had. This is the same `records-nothing` rig as section 5, re-scored into
+# its own directory so its report survives to be read.
+score "$NONE" "$TMPROOT/repnone/none.json"
+check "a look that records NO landings at all sprouts no row disclosures" \
+  "! grep -Fq '$MARK' '$TMPROOT/repnone/report.md'"
+check "...and it still carries the single once-per-look disclosure it had before" \
+  "grep -Fq 'not one picture' '$TMPROOT/repnone/report.md'"
 
 printf '\n\033[1m6. THE FORBIDDEN CURES ARE NOT IN THE DIFF\033[0m\n'
 

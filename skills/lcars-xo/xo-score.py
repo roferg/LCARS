@@ -892,6 +892,20 @@ MY_CHECKING_NOTE = ("These are gaps in my checking, not a fault in your build. "
 # guess is exactly how `inv-full` came to be read as the Inventory.
 LANDING_NO_RECORD = "no landing record"
 SCREEN_IN_DRAWN_AT = re.compile(r"#(screen[-_][A-Za-z0-9_-]+)")
+# The three rules a PRD row can be placed by, named on the row itself so a
+# reader never has to guess where an expectation came from (S242).
+LANDING_INHERITED = "inherited from the ticket criterion that serves it"
+LANDING_SEVERAL_PLACES = "several declared places, one picture"
+LANDING_NO_DECLARED_PLACE = "no declared place"
+# S242 — AND SAY IT WHERE HE READS IT. The row above keeps the verdict the eye
+# gave it, which is right: a picture nobody could place is not evidence the
+# build is wrong. But until this line existed that was ALL the report said — the
+# captain read `| prd-9 (PRD) | … | MET | a picture | shot-walk-02-j2 — … |` with
+# no hint that the picture had never been checked against the screen it was
+# cited for. He audits this product by reading `report.md`, so a fact that lives
+# only in `verdict.json` does not reach him, and a row that LOOKS verified and
+# is not is the exact failure this round exists to close.
+LANDING_UNPLACED_MARK = "I did not check this picture is of the right screen"
 
 
 def landing_readout(shotsroot, name):
@@ -1028,11 +1042,104 @@ def drawn_at_landing(row):
                     "look: %s" % " ".join(txt.split())[:140]}
 
 
-def landing_intent(doc, shot, by_shot, row, cid=""):
+def serving_index(contract_list):
+    """prd id -> the ticket criteria that DECLARE they serve it.
+
+    Reads ONE recorded field: `serves`, which the planner writes on a ticket
+    criterion when it decomposes a PRD line. Not a word of prose is read, and
+    nothing is matched on an id's shape. A `serves` written as a list is read as
+    a list; anything else is skipped rather than guessed at."""
+    out = {}
+    for c in (contract_list or []):
+        if not isinstance(c, dict):
+            continue
+        got = c.get("serves")
+        many = [got] if isinstance(got, str) else (got if isinstance(got, list) else [])
+        for one in many:
+            key = str(one or "").strip()
+            if key:
+                out.setdefault(key, []).append(c)
+    return out
+
+
+def served_landing(cid, servers):
+    """Where a PRD criterion's picture was meant to be taken, INHERITED from the
+    ticket criteria that serve it — with the provenance recorded.
+
+    THE PROBLEM THIS SOLVES (measured on the archive, S242). A PRD criterion
+    carries no `drawnAt`: the planner draws places on the TICKET criteria it
+    decomposes a PRD line into. So S241's landing rail, which reads a row's own
+    declared place, never engaged on a single PRD row — and in `xo-look-1`
+    `prd-2` ("gold is shown on the roster, the dungeon map AND the inventory")
+    stayed `met` on a ROSTER screenshot, the captain's own grievance, on the
+    very file he was angry about.
+
+    RECORD, DO NOT INFER — the rule this file has lost sessions to (S147, S156,
+    S188, each beaten when a human reworded something). The link was ALREADY
+    WRITTEN DOWN: a ticket criterion carries `serves: prd-N`. So the place is
+    inherited along that declared link, and NOTHING here reads the criterion's
+    English text looking for a screen name.
+
+    Three outcomes, each naming its own rule so the row can say which applied:
+
+      * every serving criterion that declares a place declares the SAME one —
+        that is the expectation, and `inheritedFrom` names who lent it.
+      * they declare DIFFERENT places — UNDECIDABLE, and deliberately not a
+        pick. A PRD line served at three places is a claim ABOUT three places,
+        and one picture can show at most one of them, so no single landing
+        settles it either way. Choosing one of them would be the invention this
+        function exists to refuse; accepting any of them would have left `prd-2`
+        settled on that Roster picture, which is the defect itself.
+      * none of them declares a place (or nothing serves it at all) — honestly
+        blind. The row SAYS it has no declared place; it does not get one made
+        up for it, and its picture must not read as checked."""
+    key = str(cid or "").strip()
+    rows = (servers or {}).get(key) or []
+    placed = []
+    for c in rows:
+        got = drawn_at_landing(c)
+        if got and got.get("screen"):
+            placed.append((str(c.get("id") or ""), str(got["screen"])))
+    served_by = [str(c.get("id") or "") for c in rows if str(c.get("id") or "")]
+    if not placed:
+        if rows:
+            why = ("not one of the ticket criteria that declare `serves: %s` (%s) declares a "
+                   "place of its own" % (key, ", ".join(served_by)))
+        else:
+            why = "nothing in the plan declares `serves: %s`" % key
+        return {"unplaced": True, "rule": LANDING_NO_DECLARED_PLACE,
+                "servedBy": served_by,
+                "from": ("%s — so the record does not place this criterion, and its picture "
+                         "cannot be shown to be of the right screen" % why)}
+    screens = sorted({scr for _i, scr in placed})
+    if len(screens) == 1:
+        who = ", ".join(i for i, _s in placed)
+        return {"screen": screens[0], "textMustInclude": [],
+                "rule": LANDING_INHERITED,
+                "inheritedFrom": [i for i, _s in placed],
+                "servedBy": served_by,
+                "from": ("inherited from %s, which declare%s `serves: %s` and place%s it on "
+                         "#%s in the drawing" % (who, "" if len(placed) > 1 else "s", key,
+                                                 "" if len(placed) > 1 else "s", screens[0]))}
+    return {"unplaced": True, "rule": LANDING_SEVERAL_PLACES,
+            "places": screens,
+            "inheritedFrom": [i for i, _s in placed],
+            "servedBy": served_by,
+            "from": ("the ticket criteria serving %s declare %d different places (%s), and one "
+                     "picture can show at most one of them — so which place this picture ought "
+                     "to be of is undecidable from the record, and it settles nothing"
+                     % (key, len(screens),
+                        "; ".join("#%s from %s" % (scr, i)
+                                  for i, scr in sorted(placed, key=lambda pr: pr[1]))))}
+
+
+def landing_intent(doc, shot, by_shot, row, cid="", servers=None):
     """What THIS ROW's shot was meant to show, from the record that says.
 
-    Three recorded sources, never a filename: the readout the driver wrote, the
-    walk/journey step whose shot this is, and the criterion's own `drawnAt`.
+    Four recorded sources, never a filename: the readout the driver wrote, the
+    walk/journey step whose shot this is, the criterion's own `drawnAt`, and —
+    for a PRD row that declares no place of its own — the place inherited along
+    the `serves` link from the ticket criteria that serve it.
 
     WHOSE INTENT GOVERNS WHOSE ROW (measured on the archive, S241). A step's
     intent is the STEP's, and it governs only the step's own row (`journey-j3`
@@ -1054,7 +1161,19 @@ def landing_intent(doc, shot, by_shot, row, cid=""):
         it = st.get("expectLanding")
         if isinstance(it, dict) and not it.get("unstated"):
             return dict(it, step=st.get("key") or "")
-    return drawn_at_landing(row)
+    own = drawn_at_landing(row)
+    if own:
+        return own
+    # S242 — A PRD ROW INHERITS ALONG THE `serves` LINK. The row's OWN
+    # declaration always wins; only when it has none does the rail follow the
+    # link the planner wrote. Scoped by the contract's recorded `source` field
+    # (`prd`, written before the look, the same field the grouping reads), so a
+    # ticket or appearance row is untouched and the id's spelling is never
+    # parsed for a family.
+    if servers is not None \
+            and str((row or {}).get("source") or "").strip().lower() == "prd":
+        return served_landing(cid, servers)
+    return None
 
 
 def landing_verdict(intent, landed):
@@ -1067,6 +1186,13 @@ def landing_verdict(intent, landed):
     where = (landed.get("screen") or landed.get("title")
              or landed.get("url") or "somewhere the record does not name")
     said = str(intent.get("from") or "").strip()
+    # UNDECIDABLE IS NOT SETTLED (S242). The record places this criterion at
+    # several different places at once, so no single picture can show it — not
+    # even one taken at one of them. Accepting any of them is what left `prd-2`
+    # met on a Roster shot; picking one of them would be an invention. So the
+    # row is refused with the disagreement itself as the reason.
+    if str(intent.get("rule") or "") == LANDING_SEVERAL_PLACES:
+        return False, ("landed on %s, and %s" % (where, said))
     pat = str(intent.get("urlPattern") or "").strip()
     if pat:
         try:
@@ -1093,6 +1219,39 @@ def landing_verdict(intent, landed):
             return False, ("landed on %s, which shows none of %s — %s"
                            % (where, ", ".join('"%s"' % m for m in musts[:3]), said))
     return True, ""
+
+
+def unplaced_mark(landing, limit=160):
+    """The row's own disclosure for `report.md`, or "" when it was really checked.
+
+    READ, NEVER RE-DERIVED — the rule this file has lost three rounds to (S147,
+    S156, S188). Every word comes off the `landing` dict the scoring pass already
+    wrote for this row: `expected.rule`, which names WHY the record could not
+    place the picture, and `reason`, which spells that out. Nothing here re-opens
+    a readout, re-resolves a shot, re-reads the criterion's prose or infers a
+    place. A fact that was never recorded is SAID to be unrecorded rather than
+    filled in with a sentence of this function's own.
+
+    "" FOR A ROW THAT WAS CHECKED, deliberately and with no second condition.
+    The quietest way to ruin a disclosure is to spend it on rows that are fine;
+    a genuinely-placed row must read in the report exactly as it did before this
+    function existed, so the ONLY thing that produces a mark is the recorded
+    `unplaced` flag."""
+    if not isinstance(landing, dict) or not landing.get("unplaced"):
+        return ""
+    expected = landing.get("expected")
+    rule = " ".join(str((expected or {}).get("rule") or "").split()) \
+        if isinstance(expected, dict) else ""
+    reason = clip(landing.get("reason") or "", limit) \
+        or "and my record does not say why"
+    # `clip` ends a trimmed reason with its own ellipsis, so a full stop added
+    # on top of it reads as "…." — one stop, and only when the recorded text
+    # does not already carry one.
+    if reason[-1:] not in (".", "…", "!", "?"):
+        reason += "."
+    return "%s (%s) — %s" % (
+        LANDING_UNPLACED_MARK,
+        rule or "my record does not say which rule applied", reason)
 
 
 def landing_by_shot(walk, journey):
@@ -2126,6 +2285,9 @@ def main():
     landing_records = landing_records_exist(shots_root)
     landing_on = bool(shots_root and os.path.isdir(shots_root) and landing_records)
     landing_refusals, landing_not_reached = [], []
+    # S242: the rows whose picture the record cannot PLACE at all — kept apart
+    # from the refusals, because an unplaceable picture is not a wrong one.
+    landing_not_placed = []
     landing_note = ""
     if shots_root and os.path.isdir(shots_root) and not landing_records:
         # SAY IT ONCE, DO NOT SPEND IT THIRTY TIMES. See landing_records_exist.
@@ -2150,6 +2312,10 @@ def main():
     primary = set(str(c.get("id")) for c in contract_list
                   if isinstance(c, dict) and c.get("primary"))
     contract_by_id = {str(c.get("id")): c for c in contract_list if isinstance(c, dict)}
+    # S242: prd id -> the ticket criteria that declare `serves: prd-N`, built
+    # ONCE so a PRD row can inherit the place its servers declared. One pass
+    # over the contract that was written before the look; it reads no prose.
+    landing_servers = serving_index(contract_list)
 
     worker_score = str(doc.get("score") or "").strip().lower()
     if worker_score not in VALID_SCORES:
@@ -2435,7 +2601,8 @@ def main():
             _rpath, _rdoc = landing_readout(shots_root, shot)
             _landed = landed_of(_rdoc)
             _intent = landing_intent(_rdoc, shot, landing_steps,
-                                     contract_by_id.get(cid) or {}, cid)
+                                     contract_by_id.get(cid) or {}, cid,
+                                     landing_servers)
             _step = str((landing_steps.get(shot) or {}).get("key") or "")
             if _landed is None:
                 # NEVER INVENT A LANDING RECORD. An older look, or a swept
@@ -2468,6 +2635,21 @@ def main():
                     landing_refusals.append(cid)
                     landing_not_reached.append({"criterion": cid, "shot": shot,
                                                 "step": _step, "reason": _why})
+                elif isinstance(_intent, dict) and _intent.get("unplaced"):
+                    # "I COULD NOT CHECK THIS" IS A CORRECT ANSWER (S242). The
+                    # record does not place this criterion — nothing declaring
+                    # `serves` for it declares a place — so there is nothing to
+                    # compare its picture against. The row keeps the verdict the
+                    # eye gave it (a picture it could not place is not evidence
+                    # that the build is wrong), and it SAYS SO on the row rather
+                    # than letting the citation read as checked. No place is
+                    # invented and no mismatch is claimed.
+                    landing = {"unplaced": True, "shot": shot,
+                               "reason": str(_intent.get("from") or ""),
+                               "expected": _intent}
+                    landing_not_placed.append(
+                        {"criterion": cid, "shot": shot,
+                         "reason": str(_intent.get("from") or "")})
                 # A SHOT THAT LANDED WHERE IT WAS MEANT TO IS JUST EVIDENCE, and
                 # it says so by carrying nothing extra. Stamping `mismatch:
                 # false` on every settled row looked tidier and broke the
@@ -3563,7 +3745,7 @@ def main():
         out["landing"] = {"note": landing_note, "railOn": False,
                           "refused": [], "notReached": []}
         notes.append(landing_note)
-    if landing_refusals or landing_not_reached:
+    if landing_refusals or landing_not_reached or landing_not_placed:
         out["landing"] = {
             "note": ("A picture that was taken somewhere else is not evidence of the "
                      "screen it was cited for. These are gaps in my checking, not "
@@ -3572,6 +3754,18 @@ def main():
             "refused": landing_refusals,
             "notReached": landing_not_reached,
         }
+        # SAY WHAT I COULD NOT PLACE, rather than let the citation read as
+        # checked. These rows keep the verdict the eye gave them — an
+        # unplaceable picture is not evidence the build is wrong — but the
+        # record names them so nobody has to guess which citations were
+        # actually compared against anything. Additive: the key appears only
+        # when there is something to say.
+        if landing_not_placed:
+            out["landing"]["notPlaced"] = landing_not_placed
+            out["landing"]["notPlacedNote"] = (
+                "%d picture(s) I could not place: nothing the plan records declares which "
+                "screen the criterion is about, so I could not check that its picture is "
+                "of the right one." % len(landing_not_placed))
     if impacts_note:
         out["impactsNote"] = impacts_note
     if mismatches:
@@ -3788,6 +3982,18 @@ def main():
         # fifth says where each judgement came from.)
         # HOW I KNOW is S211's column: a picture, a measured box, or your own
         # tests. The captain must never have to guess which decided a line.
+        # SAID ONCE FOR THE WHOLE LOOK, TOO (S242). The sentence is the one the
+        # look recorded for itself in `landing.notPlacedNote` — read off the
+        # record above, not composed here, so the report and the verdict cannot
+        # drift into two different accounts of the same gap. It sits directly
+        # above the table because the table is where the rows it is about are;
+        # absent when there was nothing to say, so an older look with no landing
+        # records keeps the one disclosure it has always had and gains no other.
+        _not_placed_note = " ".join(
+            str((out.get("landing") or {}).get("notPlacedNote") or "").split())
+        if _not_placed_note:
+            w("**%s** Each of those rows says so for itself in the table below.\n\n"
+              % _not_placed_note)
         w("| What you asked for | | Verdict | How I know | What I saw |\n"
           "|---|---|---|---|---|\n")
         mark = {"met": "MET", "gap": "GAP", "untested": "UNTESTED"}
@@ -3804,6 +4010,16 @@ def main():
             if e.get("evidence") == "tests" and e.get("testQuote"):
                 what_i_saw = what_i_saw.rstrip() + (" " if what_i_saw.strip() else "") + \
                     'Your tests said: "%s"' % clip(e["testQuote"], 120)
+            # A PICTURE I COULD NOT PLACE DOES NOT GET TO READ AS CHECKED (S242).
+            # The verdict, the grade and the counts are untouched — this row is
+            # still whatever the eye rated it, and nothing here moves a number —
+            # but the cell that names its evidence now also names the limit of
+            # that evidence, in the words the record used. Empty string for every
+            # row that was genuinely checked, so no settled row changes at all.
+            _unplaced = unplaced_mark(e.get("landing"))
+            if _unplaced:
+                what_i_saw = what_i_saw.rstrip() + \
+                    (" " if what_i_saw.strip() else "") + _unplaced
             w("| %s | %s | %s | %s | %s |\n" % (
                 e["id"] + (" (PRD)" if e["primary"] else ""),
                 clip(e["text"], 120).replace("|", "\\|"),
