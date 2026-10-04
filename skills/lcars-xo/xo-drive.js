@@ -1946,7 +1946,8 @@ const FOCUS = (sel) => `(function () {
       const key = String(step.key || "j" + i);
       const rec = { key, name: String(step.name || key), do: String(step.do || "click"),
                     phase: step.phase || null,
-                    match: step.match || [], expect: step.expect || null };
+                    match: step.match || [], expect: step.expect || null,
+                    expectLanding: step.expectLanding || null };
       let before = null;
       try { before = await readout(); } catch (_) {}
       rec.urlBefore = (before && before.url) || currentUrl;
@@ -1974,7 +1975,7 @@ const FOCUS = (sel) => `(function () {
           rec.pressed = d.key; rec.holdMs = hold; rec.times = reps;
           try { pxBefore = await shoot(rec.shotBefore = PREFIX + "-walk-" +
                  String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-") +
-                 "-before", null); } catch (e) { rec.shotError = e.message; }
+                 "-before", null, step.expectLanding); } catch (e) { rec.shotError = e.message; }
           // WHEN THE KEYED WINDOW OPENED. The idle control below has to watch
           // this build for the SAME length of time with no key, or it is not
           // a control — a shorter look would under-measure the drift and a
@@ -2231,7 +2232,8 @@ const FOCUS = (sel) => `(function () {
       }
       rec.shot = PREFIX + "-walk-" + String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-");
       let pxAfter = null;
-      try { pxAfter = await shoot(rec.shot, null); } catch (e) { rec.shotError = e.message; }
+      try { pxAfter = await shoot(rec.shot, null, step.expectLanding); }
+      catch (e) { rec.shotError = e.message; }
       /* THE IDLE CONTROL — THE THIRD SHOT (S222 fix 1).
        *
        * S221 judged a press on a BEFORE and an AFTER, and on a build that
@@ -2371,7 +2373,37 @@ const FOCUS = (sel) => `(function () {
     }
   }
 
-  async function shoot(name, selector) {
+  /* WHERE THIS SHOT ACTUALLY LANDED (S241).
+   *
+   * THE MEASURED DEFECT: in the archived Kelmoor runs `shot-01.png`,
+   * `inv-full.png` and `after-battle-full.png` are the same file — all three the
+   * ROSTER screen — and the report cited two of them as the Inventory and the
+   * after-battle evidence. Nine identical files read as a reviewed feature.
+   *
+   * Nothing new is measured here. The readout already carried `page.url`,
+   * `page.title`, `page.textExcerpt` and a box for every declared place; this
+   * lifts the three facts a consumer needs into ONE named block beside the
+   * step's own `intent`, so the pair that was never comparable now sits in one
+   * file. IDENTICAL BYTES ARE THE SYMPTOM, NOT THE TEST — no picture is ever
+   * weighed against another picture, here or downstream.
+   *
+   * `screen` is what the PAGE EXPOSES, never what the step hoped for: exactly
+   * one declared `screen-…` place with a laid-out box is a page telling us which
+   * screen it is showing. Two of them laid out, or none, is not an answer, so
+   * the field is left null rather than filled with a guess. */
+  function landedFrom(page) {
+    const out = { url: String((page && page.url) || currentUrl || ""),
+                  title: String((page && page.title) || ""),
+                  textSample: String((page && page.textExcerpt) || "")
+                              .replace(/\s+/g, " ").trim().slice(0, 400) };
+    const places = (page && page.places) || {};
+    const on = Object.keys(places).filter((k) => /^screen[-_]/i.test(k)
+                                                 && places[k] && places[k].laidOut);
+    if (on.length === 1) out.screen = on[0];
+    return out;
+  }
+
+  async function shoot(name, selector, intent) {
     const page = await readout();
     let clip = null, clipNote = "";
     if (selector) {
@@ -2409,6 +2441,12 @@ const FOCUS = (sel) => `(function () {
       // the pixel width back into the CSS width it actually shows.
       deviceScaleFactor: scaleApplied,
       pixels, page,
+      // S241 — THE PAIR, IN ONE FILE. `intent` is the step's own recorded
+      // `expectLanding` (null when nothing asked for this shot in particular);
+      // `landed` is where the page actually was. A consumer compares the two —
+      // see xo-score.py's landing rail.
+      intent: (intent && typeof intent === "object") ? intent : null,
+      landed: landedFrom(page),
     }, null, 2) + "\n");
     // The caption is what the REPORT quotes. Screenshots do not travel between
     // laptops (ruling, ledgered) — this line does.
@@ -2649,7 +2687,14 @@ const FOCUS = (sel) => `(function () {
           // Names come from the worker. Keep them to a filename-safe alphabet so
           // no action list can ever write outside --out.
           const safe = String(a.screenshot).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "") || nextName();
-          await shoot(safe, a.selector ? String(a.selector) : null);
+          // AN ACTION MAY DECLARE ITS OWN LANDING (S241). Most do not, and a
+          // null intent is the honest record of that — it is never inferred
+          // from the shot's NAME, which is exactly how `inv-full` came to be
+          // read as the Inventory while showing the Roster.
+          await shoot(safe, a.selector ? String(a.selector) : null,
+                      (a.expect && typeof a.expect === "object") ? a.expect
+                      : (a.expectLanding && typeof a.expectLanding === "object")
+                        ? a.expectLanding : null);
         } else if (a.do === "run" || a.do === "workflow" || a.do === "read") {
           /* S239 fix round 1 (D5) — A HARNESS STEP WAS NOT DROPPED, SO DO NOT
            * SAY IT WAS. One actions file goes to two executors: the browser

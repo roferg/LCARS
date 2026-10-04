@@ -3429,6 +3429,11 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   xo_unlisted_pass "$id" "$shots" "$xodir/unlisted.json" "$xo_engine"
 
   # --- 5. THE SCORE IS RECOMPUTED FROM THE LEDGER --------------------------
+  # S241 — THE SHOTS ROOT, not this look's own directory. The eye cites a shot
+  # by bare name and may cite one an EARLIER look took, so the landing rail is
+  # handed the whole `shots/` tree and searches the newest look first. Handing
+  # it one look's folder would make every earlier look's picture read as "no
+  # landing record", which is a refusal the record does not support.
   local report
   # S216 fix round 1 (D5): importance is RECORDED in the mission's own
   # xo/impacts.json on the first look and reused by every later one.
@@ -3437,7 +3442,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
               "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
               "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
-              "$xodir/journey.json" 2>/dev/null)" || report=""
+              "$xodir/journey.json" "$xodir/shots" 2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   # S240 — THE ACTION, READ OFF THE WIRE. `xo-score.py` decided it beside the
   # grade; nothing here re-derives it and nothing reads it back out of the

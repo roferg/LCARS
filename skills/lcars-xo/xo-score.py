@@ -861,6 +861,267 @@ MY_CHECKING_NOTE = ("These are gaps in my checking, not a fault in your build. "
                     "They are mine to fix — nothing here is counted against you.")
 
 
+# ═══ THE LANDING RAIL (S241) ═════════════════════════════════════════════════
+#
+# "A SHOT THAT LANDED ELSEWHERE IS NOT EVIDENCE."
+#
+# THE MEASURED DEFECT, from the archive. In the Kelmoor runs `shot-01.png`,
+# `inv-full.png` and `after-battle-full.png` are THE SAME FILE, byte for byte,
+# and all three are the ROSTER screen. The
+# report cited two of them as the Inventory evidence and the after-battle
+# evidence, each captioned "full page of http://localhost:5174/". Nine identical
+# files read as a reviewed feature and every run published `high`.
+#
+# IDENTICAL BYTES ARE THE SYMPTOM, NOT THE TEST. Nothing here weighs one picture
+# against another, and nothing here walks the browser again to go and look a
+# second time — going back round until the address matches turns one bad shot
+# into a hang.
+# The producer's record was never missing: `xo-drive.js` writes the url, the
+# title, the visible text and a box for every declared place beside each PNG.
+# What was missing was WHERE THE STEP MEANT TO LAND, and a consumer to compare
+# the two. S241 stamps the intent (`expectLanding`, xo-journey.py) and writes
+# both halves into the readout (`intent` + `landed`, xo-drive.js); this rail is
+# the consumer.
+#
+# RECORD, DO NOT INFER — the rule this file has lost four sessions to. Every
+# field below is one producer's recorded field compared to another producer's
+# recorded field. The intent is read, in order, from (1) the readout the driver
+# wrote, (2) the walk/journey step whose shot this is, (3) the criterion's own
+# `drawnAt`, which the planner wrote FROM THE DRAWING before any look happened.
+# NOTHING reads the shot's FILENAME to decide where it should have been — that
+# guess is exactly how `inv-full` came to be read as the Inventory.
+LANDING_NO_RECORD = "no landing record"
+SCREEN_IN_DRAWN_AT = re.compile(r"#(screen[-_][A-Za-z0-9_-]+)")
+
+
+def landing_readout(shotsroot, name):
+    """The readout `.json` beside a recorded shot, and where it was found.
+
+    The look's shots live in one directory per look (`shots/look-3/…`), and the
+    eye cites a shot by bare name. The newest look is searched first, because
+    that is the look the citation came from. A path to nothing is worse than no
+    path, so this returns a doc only when a file really parsed."""
+    nm = str(name or "").strip()
+    if not nm or not shotsroot or not os.path.isdir(shotsroot):
+        return "", None
+    stem = os.path.splitext(nm)[0]
+    cands = [nm + ".json", stem + ".json"] if not nm.endswith(".json") else [nm]
+    # NEWEST LOOK FIRST, COUNTING LIKE A HUMAN. A plain reverse sort puts
+    # `look-9` ahead of `look-10`, which would hand back the older picture on
+    # the tenth look of a mission. The digits are compared as numbers.
+    def newest_first(d):
+        return tuple(int(t) if t.isdigit() else t
+                     for t in re.split(r"(\d+)", d))
+    dirs = [os.path.join(shotsroot, d) for d in
+            sorted((d for d in os.listdir(shotsroot)
+                    if os.path.isdir(os.path.join(shotsroot, d))),
+                   key=newest_first, reverse=True)]
+    for d in dirs + [shotsroot]:
+        for c in cands:
+            pth = os.path.join(d, c)
+            if not os.path.isfile(pth):
+                continue
+            try:
+                with open(pth, encoding="utf-8") as fh:
+                    doc = json.load(fh)
+            except Exception:
+                continue
+            if isinstance(doc, dict):
+                return pth, doc
+    return "", None
+
+
+def landing_records_exist(shotsroot):
+    """Does this look record landings AT ALL?
+
+    MEASURED, AND THE REASON THIS FUNCTION EXISTS. "A cited shot with no readout
+    is not evidence" is right for ONE shot in a look that records them — the
+    picture cannot be placed and the row is a hole. Applied to a whole run that
+    records NONE of them it is something else entirely: every row in the look
+    goes untested at once, which is not a measurement but an outage, and it
+    would silently rewrite the grade of every look taken before S241 and of
+    every run driven by a stub or a replacement `$LCARS_XO_DRIVER`. Turning the
+    rail on against the archive's own stub fixtures did exactly that: 13 rows
+    that had been settled on real pictures read "no landing record".
+
+    So the rail needs one readout to prove the run was recording, and says so in
+    a note when there is not one. Bounded: the look's own directory and one
+    level of look folders, first hit wins."""
+    if not shotsroot or not os.path.isdir(shotsroot):
+        return False
+    dirs = [shotsroot]
+    try:
+        dirs += [os.path.join(shotsroot, d) for d in sorted(os.listdir(shotsroot))
+                 if os.path.isdir(os.path.join(shotsroot, d))]
+    except OSError:
+        return False
+    for d in dirs:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for nm in names:
+            if not nm.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, nm), encoding="utf-8") as fh:
+                    doc = json.load(fh)
+            except Exception:
+                continue
+            # BOTH HALVES, OR IT PROVES NOTHING. A PER-SHOT readout names its
+            # own shot AND records the page it was taken on — that is what
+            # xo-drive.js writes beside every PNG. Measured: a stub driver in
+            # the suite writes `{"shot":"shot-01"}` with no page at all, plus a
+            # look-level `readout.json` with a page and no shot; counting either
+            # of those as proof turned the rail on over a run that records
+            # nothing and rewrote a settled ledger (lcars-xo.test.sh B23b).
+            if (isinstance(doc, dict) and str(doc.get("shot") or "").strip()
+                    and (isinstance(doc.get("landed"), dict)
+                         or isinstance(doc.get("page"), dict))):
+                return True
+    return False
+
+
+def landed_of(doc):
+    """Where a shot was taken, out of its own readout.
+
+    `landed` when the driver wrote one (S241 on). For a run from before that,
+    the SAME THREE FACTS are already in the readout's `page` block and are read
+    from there — that is reading the record, not inventing one. A readout that
+    carries neither is no landing record at all."""
+    if not isinstance(doc, dict):
+        return None
+    got = doc.get("landed")
+    if isinstance(got, dict) and (got.get("url") or got.get("title") or got.get("screen")):
+        return got
+    page = doc.get("page")
+    if not isinstance(page, dict):
+        return None
+    out = {"url": str(page.get("url") or ""), "title": str(page.get("title") or ""),
+           "textSample": " ".join(str(page.get("textExcerpt") or "").split())[:400],
+           "from": "the readout's own page block"}
+    places = page.get("places") if isinstance(page.get("places"), dict) else {}
+    on = [k for k, v in places.items()
+          if str(k).lower().startswith(("screen-", "screen_"))
+          and isinstance(v, dict) and v.get("laidOut")]
+    # ONE laid-out screen is the page telling us which screen it is showing.
+    # None, or several, is not an answer — and a guess here would refuse good
+    # evidence, which is worse than refusing none.
+    if len(on) == 1:
+        out["screen"] = on[0]
+    if not out["url"] and not out["title"] and not out.get("screen"):
+        return None
+    return out
+
+
+def drawn_at_landing(row):
+    """The landing a CRITERION declares, out of the `drawnAt` the planner wrote
+    from the drawing before the look. "…#button-open-inventory on #screen-roster
+    leading to #screen-inventory" lands on the LAST screen it names — where the
+    sentence ends is where the person ends up."""
+    txt = str((row or {}).get("drawnAt") or "")
+    ids = SCREEN_IN_DRAWN_AT.findall(txt)
+    if not ids:
+        return None
+    return {"screen": ids[-1], "textMustInclude": [],
+            "from": "the criterion's own drawnAt, written from the drawing before the "
+                    "look: %s" % " ".join(txt.split())[:140]}
+
+
+def landing_intent(doc, shot, by_shot, row, cid=""):
+    """What THIS ROW's shot was meant to show, from the record that says.
+
+    Three recorded sources, never a filename: the readout the driver wrote, the
+    walk/journey step whose shot this is, and the criterion's own `drawnAt`.
+
+    WHOSE INTENT GOVERNS WHOSE ROW (measured on the archive, S241). A step's
+    intent is the STEP's, and it governs only the step's own row (`journey-j3`
+    is step `j3`) — not every criterion that happened to cite the same picture.
+    Replaying the six archived looks the other way round, a single mis-derived
+    step (the drawing stacks the inventory after the battle, so the journey
+    decided "Attack" leads to the inventory) refused `prd-6` and `t-004-ac3` as
+    well — two rows whose own declared place, `#screen-battle`, is exactly where
+    their picture was taken. Refusing good evidence because a DIFFERENT row's
+    expectation was wrong is the same crime as crediting a shot that landed
+    elsewhere, in the other direction. So a criterion is judged against the place
+    IT declared, and nothing else."""
+    if isinstance(doc, dict) and isinstance(doc.get("intent"), dict):
+        it = doc["intent"]
+        if not it.get("unstated"):
+            return it
+    st = by_shot.get(str(shot or "").strip())
+    if isinstance(st, dict) and str(cid or "") == "journey-%s" % str(st.get("key") or ""):
+        it = st.get("expectLanding")
+        if isinstance(it, dict) and not it.get("unstated"):
+            return dict(it, step=st.get("key") or "")
+    return drawn_at_landing(row)
+
+
+def landing_verdict(intent, landed):
+    """(reached, reason). `reached` is False only when a RECORDED intent and a
+    RECORDED landing actually disagree; an intent with nothing to check, or a
+    landing the page never declared, settles nothing either way and the row is
+    left exactly as the eye rated it."""
+    if not isinstance(intent, dict) or not isinstance(landed, dict):
+        return True, ""
+    where = (landed.get("screen") or landed.get("title")
+             or landed.get("url") or "somewhere the record does not name")
+    said = str(intent.get("from") or "").strip()
+    pat = str(intent.get("urlPattern") or "").strip()
+    if pat:
+        try:
+            if not re.search(pat, str(landed.get("url") or "")):
+                return False, ("landed on %s, expected a page whose address matches %s — %s"
+                               % (str(landed.get("url") or where), pat, said))
+        except re.error:
+            pass
+    want = str(intent.get("screen") or "").strip()
+    got = str(landed.get("screen") or "").strip()
+    if want and got and want != got:
+        return False, ("landed on %s, expected %s — %s" % (got, want, said))
+    # THE WORDS, when the screens did not settle it. Most products do not label
+    # their screens with an id a page can expose, so `screen` is often known on
+    # one side only — and skipping the text check whenever an intent NAMED a
+    # screen would leave those products unchecked entirely. Any ONE of the
+    # drawn headings is enough, because a heading may be restyled; all of them
+    # missing from a page that showed words at all is the signal.
+    musts = [str(t) for t in (intent.get("textMustInclude") or []) if str(t).strip()]
+    if musts and not (want and got):
+        hay = (" ".join([str(landed.get("textSample") or ""),
+                         str(landed.get("title") or "")])).lower()
+        if hay.strip() and not any(m.lower() in hay for m in musts):
+            return False, ("landed on %s, which shows none of %s — %s"
+                           % (where, ", ".join('"%s"' % m for m in musts[:3]), said))
+    return True, ""
+
+
+def landing_by_shot(walk, journey):
+    """shot name -> the step that took it, with its recorded intent.
+
+    The WALK says which step took which shot (`shot`, `shotBefore`); the JOURNEY
+    says what that step expected. Joined on the step's own `key` — a recorded
+    id, never a filename."""
+    by_key = {}
+    for st in ((journey or {}).get("steps") or []):
+        if isinstance(st, dict) and st.get("key"):
+            by_key[str(st["key"])] = st
+    out = {}
+    for st in ((walk or {}).get("steps") or []):
+        if not isinstance(st, dict):
+            continue
+        key = str(st.get("key") or "")
+        want = st.get("expectLanding")
+        if not isinstance(want, dict):
+            want = (by_key.get(key) or {}).get("expectLanding")
+        if not isinstance(want, dict):
+            continue
+        for f in ("shot", "shotBefore"):
+            nm = str(st.get(f) or "").strip()
+            if nm:
+                out.setdefault(nm, {"key": key, "expectLanding": want})
+    return out
+
+
 def outcome_of(entry):
     """The four-way outcome of a finished ledger row. Reads only `status` and
     the recorded `couldNotCheck` word — never the prose of a note."""
@@ -1855,6 +2116,22 @@ def main():
     # S239 fix round 3: the live-check items the record could not instantiate.
     journey_path = sys.argv[13] if len(sys.argv) > 13 else ""
     unbuilt_fix, unbuilt_design = load_unbuilt(journey_path)
+    # S241: the look's SHOTS directory, so a cited shot's readout — the record
+    # of where that picture was actually taken — can be read back. Absent, the
+    # landing rail is OFF and every row stands exactly as the eye rated it: a
+    # missing directory is not evidence that a shot landed wrong.
+    shots_root = sys.argv[14] if len(sys.argv) > 14 else ""
+    journey_doc = load_json_or_none(journey_path)
+    landing_steps = landing_by_shot(load_json_or_none(walk_path), journey_doc)
+    landing_records = landing_records_exist(shots_root)
+    landing_on = bool(shots_root and os.path.isdir(shots_root) and landing_records)
+    landing_refusals, landing_not_reached = [], []
+    landing_note = ""
+    if shots_root and os.path.isdir(shots_root) and not landing_records:
+        # SAY IT ONCE, DO NOT SPEND IT THIRTY TIMES. See landing_records_exist.
+        landing_note = ("not one picture in this look carries a record of where it was "
+                        "taken, so I could not check that any of them is of the screen "
+                        "it was cited for")
     walk = load_walk(walk_path)
     seed = load_json_or_none(seed_path)
     pairs_by_part = load_pairs(pairs_path)
@@ -2146,6 +2423,59 @@ def main():
                         % OUTCOME_WORD[status])
                 status = "untested"
                 evidence = ""
+        # ── A SHOT THAT LANDED ELSEWHERE IS NOT EVIDENCE (S241) ───────────
+        # The pair the archive never had: what this shot was MEANT to show
+        # against where the page actually was. Both halves are read off records
+        # (see the landing rail above) — no image is compared, no filename is
+        # read, and nothing is retried. A row refused here is NOT a fault in the
+        # build: it is a hole in MY checking, so it goes to `untested` with the
+        # recorded reason and is listed under "what defeated my checks".
+        landing = None
+        if landing_on and shot and status in ("met", "gap"):
+            _rpath, _rdoc = landing_readout(shots_root, shot)
+            _landed = landed_of(_rdoc)
+            _intent = landing_intent(_rdoc, shot, landing_steps,
+                                     contract_by_id.get(cid) or {}, cid)
+            _step = str((landing_steps.get(shot) or {}).get("key") or "")
+            if _landed is None:
+                # NEVER INVENT A LANDING RECORD. An older look, or a swept
+                # directory, leaves nothing to compare — and the honest answer
+                # is that this picture cannot be placed, not that it is fine.
+                why = ("%s — the picture is cited but nothing beside it records "
+                       "where it was taken, so it cannot be shown to be of the "
+                       "right screen" % LANDING_NO_RECORD)
+                notes.append("criterion %s cites %s, and there is %s beside it; "
+                             "recorded as untested" % (cid, shot, LANDING_NO_RECORD))
+                note = why
+                landing = {"mismatch": True, "reason": why, "shot": shot,
+                           "expected": _intent or None, "landed": None}
+                status = "untested"
+                evidence = ""
+                landing_refusals.append(cid)
+                landing_not_reached.append({"criterion": cid, "shot": shot,
+                                            "step": _step, "reason": why})
+            else:
+                _ok, _why = landing_verdict(_intent, _landed)
+                if not _ok:
+                    notes.append("criterion %s was rated %s on %s, which %s; recorded as "
+                                 "untested — a shot that landed elsewhere is not evidence"
+                                 % (cid, status, shot, _why))
+                    note = _why
+                    landing = {"mismatch": True, "reason": _why, "shot": shot,
+                               "expected": _intent, "landed": _landed}
+                    status = "untested"
+                    evidence = ""
+                    landing_refusals.append(cid)
+                    landing_not_reached.append({"criterion": cid, "shot": shot,
+                                                "step": _step, "reason": _why})
+                # A SHOT THAT LANDED WHERE IT WAS MEANT TO IS JUST EVIDENCE, and
+                # it says so by carrying nothing extra. Stamping `mismatch:
+                # false` on every settled row looked tidier and broke the
+                # invariant the suite guards at B23b — that the SAME worker
+                # verdict through the SAME path yields a byte-identical ledger
+                # whether or not the driver happened to record anything. A key
+                # that appears only when the driver wrote readouts is not a
+                # judgement, it is a draught.
         # AN UNTESTED ROW SETTLED NOTHING, SO IT NAMES NO SOURCE (fix round 1,
         # D3). `evidence` was stamped from the structural fact that a shot was
         # cited, and only the met/gap downgrades above ever cleared it — so a
@@ -2174,6 +2504,11 @@ def main():
         }
         if shot:
             entry["shot"] = shot
+        # THE SHOT STAYS IN THE RECORD. A picture that landed elsewhere is still
+        # worth naming under *What I saw* — marked for what it is, so nobody
+        # reads it as the screen it was cited for.
+        if landing is not None:
+            entry["landing"] = landing
         if quote and entry["evidence"] == "tests":
             entry["testQuote"] = quote
         take_impact(entry, c)
@@ -3219,6 +3554,24 @@ def main():
     }
     if my_checking["total"]:
         out["myChecking"] = my_checking
+    # S241 — THE LANDING LEDGER, an ADDITIVE key. Which cited pictures were not
+    # of the screen they were cited for, and for each the step that took it and
+    # the RECORDED reason it did not get there. A step named here was attempted
+    # and did not reach: `reason` is the comparison that was actually made,
+    # never a canned sentence.
+    if landing_note:
+        out["landing"] = {"note": landing_note, "railOn": False,
+                          "refused": [], "notReached": []}
+        notes.append(landing_note)
+    if landing_refusals or landing_not_reached:
+        out["landing"] = {
+            "note": ("A picture that was taken somewhere else is not evidence of the "
+                     "screen it was cited for. These are gaps in my checking, not "
+                     "faults in your build."),
+            "railOn": landing_on,
+            "refused": landing_refusals,
+            "notReached": landing_not_reached,
+        }
     if impacts_note:
         out["impactsNote"] = impacts_note
     if mismatches:

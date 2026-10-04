@@ -289,6 +289,86 @@ def screens_from_html(path):
     return out
 
 
+# ─── WHERE A STEP MEANT TO LAND (S241) ───────────────────────────────────────
+#
+# THE MEASURED DEFECT. In the archived Kelmoor runs `shot-01.png`, `inv-full.png`
+# and `after-battle-full.png` are the SAME FILE — all three the ROSTER screen —
+# and the report cited two of them as the Inventory and the after-battle
+# evidence. Every run published `high`. The producer's record was never the
+# problem: `xo-drive.js` already writes the url, the title, the visible text and
+# every place's box beside each PNG. What no record carried was where the step
+# MEANT to land, so nothing downstream could notice that a shot landed somewhere
+# else.
+#
+# `expectLanding` is that missing half, stamped HERE, at the step's birth, from
+# the SAME source the step itself came from — and carrying that source in `from`
+# so a reader never has to guess. It is deliberately NOT the step's `expect`,
+# which is a sentence for the captain to read ("the dungeon screen"); this is the
+# machine-checkable pair beside it, and old journeys stay readable.
+#
+# IDENTICAL BYTES ARE THE SYMPTOM, NOT THE TEST. Nothing here (or in the
+# consumer) compares images: the check is intent against landing, both recorded.
+#
+# AND IT NEVER INVENTS ONE. A step the record cannot place — the PRD says "click
+# Preview" and never says what Preview shows — gets `unstated: True` and nothing
+# to check, which reads as "no intent was recorded" downstream. A guessed screen
+# would refuse good evidence, which is worse than refusing none.
+def landing_of(screen, source, url_pattern=""):
+    """The landing a DRAWN screen stands for: its id, and the headings a person
+    would see on it. `textMustInclude` is satisfied by ANY one of them, because
+    a drawn heading may be restyled; all of them missing is the signal."""
+    if not isinstance(screen, dict):
+        return {"screen": None, "textMustInclude": [], "from": source, "unstated": True}
+    texts = []
+    for h in (screen.get("headings") or []):
+        h = norm(h)
+        if h and h not in texts:
+            texts.append(h)
+    for q in (screen.get("parts") or []):
+        if str(q.get("tag") or "").lower() not in ("h1", "h2", "h3", "h4"):
+            continue
+        t = norm(q.get("text") or q.get("name"))
+        if t and t not in texts:
+            texts.append(t)
+    out = {"screen": screen.get("id") or (norm(screen.get("name")) or None),
+           "textMustInclude": texts[:4], "from": source}
+    if url_pattern:
+        out["urlPattern"] = url_pattern
+    if not out["screen"] and not out["textMustInclude"] and not url_pattern:
+        out["unstated"] = True
+    return out
+
+
+def unstated_landing(source):
+    """The honest answer when the record names a control but never says where it
+    leads. Nothing to check — and it SAYS that, rather than guessing a screen."""
+    return {"screen": None, "textMustInclude": [], "from": source, "unstated": True}
+
+
+ROUTE_PATH = re.compile(r"(?<![\w/])(/[a-z0-9][\w./-]*)")
+
+
+def route_pattern(text):
+    """A url path the requirement itself writes down, or "". The requirement is
+    the record; a path is never invented from a control's label."""
+    m = ROUTE_PATH.search(str(text or ""))
+    return re.escape(m.group(1)) if m else ""
+
+
+def screen_of_part(scr, part):
+    """Which drawn screen a part belongs to — read off the screen's own member
+    list, never worked out from the part's name."""
+    pid = str((part or {}).get("id") or "")
+    pname = low(norm((part or {}).get("name")))
+    for s_ in scr or []:
+        for q in s_.get("parts") or []:
+            if pid and str(q.get("id") or "") == pid:
+                return s_
+            if not pid and pname and low(norm(q.get("name"))) == pname:
+                return s_
+    return None
+
+
 def screens_of(drawing):
     """The drawing's screens, in the order it draws them, each with its parts.
 
@@ -736,6 +816,10 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
                 mk(walk_steps, {"do": "click", "match": [name],
                                 "name": 'from the %s screen, click "%s"' % (s_["name"], name),
                                 "expect": "the %s screen" % nxt["name"],
+                                "expectLanding": landing_of(
+                                    nxt, "the drawing draws %s straight after %s, and this "
+                                         "step clicks %s's own forward control"
+                                         % (nxt["id"], s_["id"], s_["id"])),
                                 "why": "the drawing draws %s before %s, and this is %s's own "
                                        "forward control" % (s_["id"], nxt["id"], s_["id"])})
                 why_from.append("the drawing's screen order")
@@ -753,6 +837,9 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
                                 "name": 'try "%s" with the field(s) still blank' % gname,
                                 "expect": "it refuses while the %s is blank"
                                           % (norm(fields[0].get("name"))[:40] or "field"),
+                                "expectLanding": landing_of(
+                                    s_, "the drawing's %s, the screen this gate is drawn on"
+                                        % s_["id"]),
                                 "why": "a gate that opens on an empty form is the fault a "
                                        "filled form can never show"})
                 why_from.append("the screen's own gate")
@@ -761,6 +848,9 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
                 mk(fills, {"do": "type", "match": [fname] if fname else [], "text": TYPED_TEXT,
                            "name": 'type into "%s"' % (fname[:40] or "the first empty field"),
                            "expect": "what I typed shows on this screen and the next",
+                           "expectLanding": landing_of(
+                               s_, "the drawing's %s, the screen this field is drawn on"
+                                   % s_["id"]),
                            "why": "it is a field a person fills, drawn on %s" % s_["id"]})
                 why_from.append("the fields the screens carry")
             if g and fields:
@@ -776,6 +866,9 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
                 mk(fill_all, {"do": "type-all", "match": [], "text": TYPED_TEXT,
                               "name": "fill every field this screen still wants",
                               "expect": "no empty field is left before the gate is tried",
+                              "expectLanding": landing_of(
+                                  s_, "the drawing's %s, the screen these fields are drawn on"
+                                      % s_["id"]),
                               "why": "the gate's filled phase says nothing while the form "
                                      "is still mostly empty"})
                 why_from.append("the fields the screens carry")
@@ -784,6 +877,9 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
                 mk(gate_filled, {"do": "gate", "phase": "filled", "match": [gname],
                                  "name": 'click "%s" now everything is filled' % gname,
                                  "expect": "it opens and the flow completes",
+                                 "expectLanding": unstated_landing(
+                                     "the drawing's %s carries this gate, but the drawing "
+                                     "does not draw where opening it lands" % s_["id"]),
                                  "why": "the end of the flow is part of the flow"})
 
     # THE PRD'S OWN STEPS — including screens the drawing never drew. This is
@@ -810,15 +906,26 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
             # PRD naming it a third time is the same control, not a new step.
             if GATE.search(name):
                 continue
+                pat = route_pattern(text)
             mk(routes, {"do": "click", "match": [name],
                         "name": 'click "%s", the way the PRD describes it' % name,
                         "expect": "the screen it says that leads to",
+                        "expectLanding": ({"screen": None, "urlPattern": pat,
+                                           "textMustInclude": [],
+                                           "from": "the requirement writes the route down: %s"
+                                                   % text[:120]}
+                                          if pat else unstated_landing(
+                                              "the requirement names this control but never "
+                                              "says what it leads to: %s" % text[:120])),
                         "why": "the record says so: %s" % text[:120]})
             why_from.append("the PRD's own steps")
             if re.search(r"\b(back|return)\b", text, re.I):
                 mk(routes, {"do": "click", "match": ["back", "return", "close"],
                             "name": "come back the way the record says you can",
                             "expect": "the screen I left",
+                            "expectLanding": unstated_landing(
+                                "the record says there is a way back, but not by name to "
+                                "which screen: %s" % text[:110]),
                             "why": "the record says there is a way back from there"})
 
     # ── THE KEYS THE RECORD NAMES (S221 fix 7) ──────────────────────────
@@ -860,6 +967,10 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
                             "name": 'try "%s" with the field(s) still blank' % gname,
                             "expect": "it refuses while the %s is blank"
                                       % (norm(surf_fields[0].get("name"))[:40] or "field"),
+                            "expectLanding": landing_of(
+                                screen_of_part(scr, g),
+                                'the screen the drawing draws "%s" on; a refusal leaves a '
+                                'person standing on it' % gname),
                             "why": "a person is promised this refuses on an empty form: %s"
                                    % norm(c.get("text"))[:110]})
             for f in surf_fields[:2]:
@@ -867,14 +978,25 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
                 mk(fills, {"do": "type", "match": [fname] if fname else [], "text": TYPED_TEXT,
                            "name": 'type into "%s"' % (fname[:40] or "the first empty field"),
                            "expect": "what I typed shows on this screen",
+                           "expectLanding": landing_of(
+                               screen_of_part(scr, f),
+                               'the screen the drawing draws the "%s" field on; typing does '
+                               'not leave it' % (fname[:40] or "first")),
                            "why": "the promise says a person fills this before the gate"})
             mk(fill_all, {"do": "type-all", "match": [], "text": TYPED_TEXT,
                           "name": "fill every field this screen still wants",
                           "expect": "no empty field is left before the gate is tried",
+                          "expectLanding": landing_of(
+                              screen_of_part(scr, surf_fields[0]),
+                              "the screen the drawing draws these fields on; filling them "
+                              "does not leave it"),
                           "why": "the gate's filled phase says nothing while the form is empty"})
         mk(gate_filled, {"do": "gate", "phase": "filled", "match": [gname],
                          "name": 'click "%s" now everything is filled' % gname,
                          "expect": "it opens and the promise holds",
+                         "expectLanding": unstated_landing(
+                             'the promise says "%s" locks once filled, but neither the '
+                             'drawing nor the promise says where opening it lands' % gname),
                          "why": "a person is promised this locks once filled: %s"
                                 % norm(c.get("text"))[:110]})
 
@@ -897,6 +1019,10 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
             mk(named_clicks, {"do": "click", "match": [nm], "bornOf": "named-click",
                               "name": 'click "%s", which a person is promised they can' % nm,
                               "expect": "the screen answers the control",
+                              "expectLanding": unstated_landing(
+                                  'the promise names "%s" as something a person can click, '
+                                  'but says nothing about where clicking it lands: %s'
+                                  % (nm, norm(c.get("text"))[:100])),
                               "why": "a person is promised this: %s" % norm(c.get("text"))[:120]})
 
     # ── NO DRAWING? DERIVE THE STEPS FROM THE REQUIREMENTS (Number One) ──
@@ -922,6 +1048,19 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
         st.setdefault("derivedFrom", "drawing")
     for st in routes + keys + req_steps:
         st.setdefault("derivedFrom", "requirement")
+    # A KEY LANDS WHERE IT WAS PRESSED when the drawing draws one screen; with
+    # several, the record does not say which, and saying so is the honest answer.
+    for st in keys:
+        st.setdefault("expectLanding",
+                      landing_of(scr[0], "the one screen the drawing draws, where this key "
+                                         "is pressed")
+                      if len(scr) == 1 else
+                      unstated_landing("a key the record names; nothing in the record says "
+                                       "which screen pressing it lands on"))
+    for st in req_steps:
+        st.setdefault("expectLanding",
+                      unstated_landing("the requirement's own words, with no drawing to say "
+                                       "which screen this lands on"))
 
     # THE WAY IN (measured, 2026-09-19). The drawing's first screen is not
     # necessarily the app's front door: on the real benchmark the front door is
@@ -951,6 +1090,13 @@ def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
     else:
         ordered = (keys + gate_blank + fills + routes + named_clicks
                    + req_steps + fill_all + gate_filled)
+    # THE NET. Every step carries an `expectLanding`, present or not placed —
+    # a reader never has to guess whether a journey predates S241, and a step
+    # no stamp above reached says in its own words that nothing placed it.
+    for st in ordered:
+        st.setdefault("expectLanding",
+                      unstated_landing("nothing in the record places this %s step"
+                                       % str(st.get("do") or "walk")))
     steps = ordered[:STEP_CAP]
     for i, st in enumerate(steps):
         st["key"] = st.get("key") or ("j%d" % (i + 1))
