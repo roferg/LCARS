@@ -62,5 +62,5 @@ python3 tests/lib/cage.py 420 bash tests/<name>.test.sh
 ```
 
 **It always exits 0.** Pass, fail and hang all come back as status 0 — the
-verdict is in the text it prints (`EXIT <n>`, `*** TIMED OUT -> HUNG ***`).
+verdict is in the text it prints (`EXIT <n>`, `*** TIMED OUT — exceeded the <d>s deadline ***`).
 Never key a decision on `$?` from a caged run; parse the output.

@@ -13652,12 +13652,18 @@ class Actions(LogFacts):
         return line or None
 
     # ── S201: THE REPO TOGGLE AND THE STAND-DOWN ────────────────────────────
-    # How long the toggle waits for `xo on` to refuse before it lets the sweep
-    # run on in the background (S222). It is a REFUSAL window, not a work
-    # budget: `xo.sh` checks the engine and writes the config block before it
-    # sweeps anything, so every answer that is not "I am now sweeping" lands
-    # inside it with room to spare. Env-settable so a test need not sit through
-    # it.
+    # How long the toggle waits for `xo on` to answer before it lets it run on
+    # in the background (S222). It is a REFUSAL window, not a work budget:
+    # `xo.sh` checks the engine and writes the config block before it does
+    # anything else, so every answer lands inside it with room to spare.
+    #
+    # SINCE S241 THE PLAIN TOGGLE ALWAYS ANSWERS INSIDE IT. `xo on` no longer
+    # sweeps by default — it names what is waiting and exits — so the normal
+    # board toggle now returns in a fraction of a second. The window is kept
+    # because the long path is still reachable (`--sweep`,
+    # $LCARS_XO_SWEEP_ON_START=1) and a toggle that could hang for six hours
+    # must not depend on nobody ever setting that. Env-settable so a test need
+    # not sit through it.
     _XO_ON_GRACE = 5.0
 
     def _xo_on_grace(self):
@@ -13685,10 +13691,17 @@ class Actions(LogFacts):
 
         SPAWNED, THEN WAITED ON BRIEFLY (S222). This used to be `_run` —
         blocking, with no timeout at all — and that was fine while `xo on` only
-        wrote a config block. Since S220 it ALSO sweeps every mission parked at
+        wrote a config block. S220 made it ALSO sweep every mission parked at
         Verify with no score of Number One's, one at a time, each look caged at
         45 minutes. Eight of those is one HTTP POST held open for six hours: the
         captain's ONE action in the whole walk-away flow, and it looks hung.
+
+        S241 TOOK THAT BACK OUT OF THE DEFAULT — `xo on` now announces the
+        backlog and starts nothing — so this call normally answers at once,
+        with the announcement in `output` and `sweeping` False. Nothing here
+        needed changing for that, and the spawn stays: the sweep is still one
+        flag away (`--sweep`), and the refusal window below is what carries a
+        bad-engine 502 to the board either way.
 
         Fire-and-forget alone would have cost the thing the blocking call was
         buying. `xo.sh` REFUSES an engine that is not on this machine, and that

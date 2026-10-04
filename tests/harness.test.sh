@@ -73,10 +73,13 @@ TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 # run_pty SECS CMD... -> stdout is the cage's report; the FIRST line is
-#   "ELAPSED <n>s EXIT <code>"  or  "ELAPSED <n>s *** TIMED OUT -> HUNG ...".
+#   "ELAPSED <n>s EXIT <code>"  or  "ELAPSED <n>s *** TIMED OUT — exceeded ...".
 run_pty() { local s="$1"; shift; python3 "$CAGE" "$s" python3 "$PTY" "$@" 2>&1; }
 elapsed() { sed -n '1s/^ELAPSED \([0-9.]*\)s.*/\1/p' <<<"$1"; }
-hung()    { grep -q 'TIMED OUT -> HUNG' <<<"$1"; }
+# The cage reports a TIMEOUT, which is all it can observe; these probes plant a
+# genuine block, so for THEM a timeout is a hang. The naming keeps that
+# interpretation here, in the test that earned it, and out of the instrument.
+timed_out() { grep -q 'TIMED OUT' <<<"$1"; }
 
 echo "harness (S208): every probe from a pty, stdin OPEN, caged by process group"
 echo
@@ -99,13 +102,13 @@ ctrl_out="$(run_pty "$CTRL_SECS" bash "$TMPROOT/planted-hang.test.sh")"
 ctrl_el="$(elapsed "$ctrl_out")"
 echo "  [control] planted hang, pty, stdin open: ELAPSED ${ctrl_el}s"
 check "1a. CONTROL: the planted hang IS caught by this detector" \
-  "hung \"\$ctrl_out\""
+  "timed_out \"\$ctrl_out\""
 # ...and the same planted suite with stdin CLOSED does NOT hang. That asymmetry
 # is the whole bug: a </dev/null run is blind to it.
 ctrl_dn="$(python3 "$CAGE" "$CTRL_SECS" bash "$TMPROOT/planted-hang.test.sh" 2>&1)"
 echo "  [control] planted hang, stdin CLOSED: $(sed -n 1p <<<"$ctrl_dn")"
 check "1b. CONTROL: stdin CLOSED hides the same hang (why </dev/null proves nothing)" \
-  "! hung \"\$ctrl_dn\""
+  "! timed_out \"\$ctrl_dn\""
 
 # --- 2. Real suites terminate from a pty with stdin OPEN -------------------
 # lcars-pause and lcars-buddy were MEASURED hanging from a pty before the cure
@@ -117,7 +120,7 @@ for s in lcars-pause lcars-buddy run-runner; do
   out="$(run_pty "$HANG_SECS" bash "$DIR/$s.test.sh")"
   el="$(elapsed "$out")"
   echo "  [probe] $s.test.sh from a pty, stdin open: ELAPSED ${el}s"
-  check "2. $s.test.sh TERMINATES from a pty with stdin open" "! hung \"\$out\""
+  check "2. $s.test.sh TERMINATES from a pty with stdin open" "! timed_out \"\$out\""
 done
 
 # --- 3. run.sh does not stall on a blocking suite --------------------------
@@ -133,7 +136,7 @@ run_out="$(run_pty "$HANG_SECS" bash "$DIR/run.sh" "$seed")"
 run_el="$(elapsed "$run_out")"
 echo "  [probe] run.sh over a seeded dir with a BLOCKING suite: ELAPSED ${run_el}s"
 check "3a. run.sh over a blocking suite TERMINATES (does not stall the gate)" \
-  "! hung \"\$run_out\""
+  "! timed_out \"\$run_out\""
 check "3b. run.sh still ran the other suite in that directory" \
   "grep -q 'trivial: 1 passed' <<<\"\$run_out\""
 check "3c. run.sh's \$1 target-directory resolution is unchanged (BUG-009)" \
@@ -213,6 +216,108 @@ check "5b. no suite carries one half of the cured pair without the other" \
   "[ -z \"\$pair_list\" ]"
 check "5c. the guard is not vacuous: the cured helper is present, and every definer is accounted for" \
   "[ \"\$n_cured\" -gt 0 ] && [ \$((n_cured + n_form)) -eq \"\$n_def\" ]"
+echo
+# ==========================================================================
+# PART 6 — THE CAGE'S OWN CONTRACT (S244).
+#
+# cage.py is the harness's ONLY safety device: every unattended suite is run
+# through it. Two defects in it are why "the full suite is the merge gate and
+# nobody has ever completed a run" stayed a mystery for a year.
+#
+# 6a THE CAGE DESTROYS THE EVIDENCE. It buffers the caged process's output in
+#    `communicate()` and prints it only on a CLEAN exit. On the timeout path it
+#    raises TimeoutExpired, the buffered bytes are dropped on the floor, and all
+#    the operator is handed is "TIMED OUT -> HUNG". So the one run that most
+#    needs a diagnosis is the one run that produces none — you cannot see WHICH
+#    assertion it stopped after, which is the only fact that tells a HANG from a
+#    merely SLOW suite. Three suites were recorded as hung on this evidence and
+#    all three were simply long.
+#
+# 6b THE CAGE ORPHANS ITS CHILD WHEN IT IS ITSELF KILLED. It spawns with
+#    start_new_session=True — deliberately, so the timeout path can killpg the
+#    whole tree — but that also puts the child in a session NOTHING ELSE KNOWS
+#    ABOUT. cage.py installs no signal handler, so if cage.py is killed before
+#    its own timeout fires, it dies without reaping, and the caged suite runs on
+#    for ever: ppid 1, its own process group, invisible to any group kill aimed
+#    at the launcher. 26 such strays were reaped by hand, the oldest 28 hours
+#    old. A cage that leaks the thing it was caging is not a cage.
+# ==========================================================================
+printf '\n  -- 6: the cage keeps the evidence, and does not leak its child --\n'
+
+# 6a. A command that TALKS and then hangs. Its words must survive the timeout.
+cat >"$TMPROOT/noisy-hang.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "MARKER-BEFORE-THE-HANG"
+while :; do sleep 0.2; done
+EOF
+noisy="$(python3 "$CAGE" 4 bash "$TMPROOT/noisy-hang.sh" 2>&1)"
+check "6a. a TIMED-OUT cage still prints what the caged process said before it stopped" \
+  "grep -q 'MARKER-BEFORE-THE-HANG' <<<\"\$noisy\""
+check "6a-control — the cage still reports the timeout itself" \
+  "grep -q 'TIMED OUT' <<<\"\$noisy\""
+
+# ---- 6c. THE CAGE MUST NOT STATE A CONCLUSION IT CANNOT SUPPORT ----------
+# The old line read "*** TIMED OUT -> HUNG (group killed) ***". It says HUNG; it
+# only knows TIMED OUT. From where the cage stands, "hung", "slow", "waiting on
+# a lock" and "legitimately long" are indistinguishable — it observed exactly one
+# fact: the child outlived the deadline. The inference cost real money: three
+# suites (lcars-xo-observe, 240.6s/182 passed; lcars-xo-render-gate, 441.7s/38
+# passed) were measured under a 150s cage, the cage ASSERTED "HUNG", the
+# orchestrator believed the instrument, and all shipping was recorded as blocked
+# on hangs that do not exist. A measuring instrument reports its measurement.
+check "6c. the timeout line does NOT assert HUNG — the cage cannot know that" \
+  "! grep -qi 'HUNG' <<<\"\$noisy\""
+# The reader's next move is "was it slow, or stuck?". The cage must say that it
+# cannot answer that, and point at the child's own output (preserved by 6a),
+# which is where the answer actually is.
+check "6c. …and it says the cage cannot tell SLOW from STUCK" \
+  "grep -qi 'slow' <<<\"\$noisy\" && grep -qi 'stuck\|hang' <<<\"\$noisy\""
+
+# ---- 6d. NAME THE DEADLINE, so a budget problem reads as a budget problem --
+# A 150s cage on a 441s suite is a bad budget, not a bad product — but only if
+# the line states the budget it exceeded. Two deadlines are probed so the check
+# cannot pass on a hardcoded constant.
+check "6d. the timeout line names the deadline it exceeded (4s)" \
+  "grep -q '4s deadline' <<<\"\$noisy\""
+noisy2="$(python3 "$CAGE" 2 bash "$TMPROOT/noisy-hang.sh" 2>&1)"
+check "6d-control — a DIFFERENT cage reports ITS own deadline, not 4s" \
+  "grep -q '2s deadline' <<<\"\$noisy2\" && ! grep -q '4s deadline' <<<\"\$noisy2\""
+
+# ---- 6e. the machine-readable contract is untouched ----------------------
+# Every consumer keys on a first line that starts "ELAPSED <n>s"; harness's own
+# elapsed() reads it with `sed -n 1s`. Honesty must not cost the contract.
+check "6e. the timeout line still starts with the parseable ELAPSED field" \
+  "[ -n \"\$(elapsed \"\$noisy\")\" ]"
+
+# 6b. Kill the CAGE, not the caged process, and see whether the child survives.
+# The child records its own pid on disk so the roll call is against a FILE, never
+# a live `ps | grep` (which matches its own command line and reports phantoms).
+cat >"$TMPROOT/pidfile-hang.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$1"
+while :; do sleep 0.2; done
+EOF
+victim_pidfile="$TMPROOT/caged.pid"
+rm -f "$victim_pidfile"
+python3 "$CAGE" 600 bash "$TMPROOT/pidfile-hang.sh" "$victim_pidfile" >/dev/null 2>&1 &
+cage_pid=$!
+# Wait for the child to announce itself, on disk.
+cw=0; while [ "$cw" -lt 60 ] && [ ! -s "$victim_pidfile" ]; do cw=$((cw + 1)); sleep 0.1; done
+caged_pid="$(cat "$victim_pidfile" 2>/dev/null || true)"
+check "6b-control — the caged child really did start (the probe is not vacuous)" \
+  "[ -n \"\$caged_pid\" ] && kill -0 \"\$caged_pid\" 2>/dev/null"
+# SIGTERM the cage itself. This is the catchable case — what an orchestrator,
+# a shell or a session teardown actually sends.
+kill -TERM "$cage_pid" 2>/dev/null || true
+wait "$cage_pid" 2>/dev/null || true
+# Give the reap a moment to land.
+rw=0; while [ "$rw" -lt 30 ] && kill -0 "$caged_pid" 2>/dev/null; do rw=$((rw + 1)); sleep 0.1; done
+survived=0; kill -0 "$caged_pid" 2>/dev/null && survived=1
+echo "  [orphan] cage pid $cage_pid TERMed; caged child $caged_pid survived=$survived"
+check "6b. a cage killed before its timeout REAPS its caged child instead of orphaning it" \
+  "[ \"\$survived\" -eq 0 ]"
+# Leave no orphan from this probe either, whichever way the assertion went.
+[ "$survived" -eq 1 ] && kill -KILL "$caged_pid" 2>/dev/null
 echo
 printf 'harness: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

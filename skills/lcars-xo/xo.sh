@@ -978,28 +978,40 @@ write_config_block() { # <enabled true|false> [engine] [model]
 }
 
 cmd_on() {
-  # DEFAULT 1 — THE SWEEP STILL RUNS, AND THAT IS DELIBERATE. See the note at
-  # the sweep call below for the whole reasoning, including why this is NOT
-  # flipped here.
-  local engine="" model="" target="" sweep=1
+  # DEFAULT 0 — SWITCHING NUMBER ONE ON STARTS NOTHING (S241, the captain's
+  # ruling). The catch-up is KEPT, in full, but it is now its own word. See the
+  # note at the sweep call below for the whole reasoning.
+  #
+  # EMPTY, NOT 0, so an explicit flag can be told apart from the default and
+  # outrank the environment: `--sweep` is the captain at the terminal,
+  # $LCARS_XO_SWEEP_ON_START is a machine's standing preference, and the person
+  # present wins.
+  local engine="" model="" target="" sweep=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --engine)   engine="${2:-}"; shift 2 || true ;;
       --engine=*) engine="${1#--engine=}"; shift ;;
       --model)    model="${2:-}";  shift 2 || true ;;
       --model=*)  model="${1#--model=}"; shift ;;
-      # SPENDING, ASKED FOR OR DECLINED (fix round 4, D1). See the note at the
-      # sweep call below for why the DEFAULT was not changed here.
+      # SPENDING, ASKED FOR OR DECLINED (S240 fix round 4, D1). Since S241
+      # `--sweep` is the OPT-IN that starts the catch-up, and `--no-sweep` is
+      # the default said out loud. Both still work, in both directions.
       --sweep)     sweep=1; shift ;;
       --no-sweep)  sweep=0; shift ;;
       -*)         die "unknown option: $1" ;;
       *)          target="$1"; shift ;;
     esac
   done
-  # The non-spending behaviour is one word or one variable away. Both
-  # directions are settable, so whichever way the captain rules, nobody has to
-  # edit code to get the other one.
-  [ "${LCARS_XO_SWEEP_ON_START:-1}" = "0" ] && sweep=0
+  # THE ESCAPE HATCH, both directions, no code edit either way: `lcars xo on
+  # --sweep` — or $LCARS_XO_SWEEP_ON_START=1 for an autopilot with no argv to
+  # change — restores the pre-S241 behaviour exactly: switch on AND work the
+  # backlog. A flag on the command line beats the variable.
+  if [ -z "$sweep" ]; then
+    case "${LCARS_XO_SWEEP_ON_START:-0}" in
+      1|true|yes|on) sweep=1 ;;
+      *)             sweep=0 ;;
+    esac
+  fi
 
   # `lcars xo on <mission>` — a per-mission act: PUT THE MISSION BACK IN SCOPE.
   # It does not engage anything by itself. Engaging is the driver's to do at a
@@ -1058,33 +1070,33 @@ cmd_on() {
   # captain saying "I have to step out"; a first officer who ignored the two
   # missions already parked at Verify would not be taking the conn at all.
   #
-  # ── THE MEASURED SURPRISE, AND WHY THE DEFAULT IS STILL "SWEEP" ───────────
-  # (S240 fix round 4, D1 — a DECISION LEFT TO THE CAPTAIN, not taken here.)
+  # ── THE MEASURED SURPRISE, AND WHY THE DEFAULT IS NOW "ANNOUNCE" ─────────
+  # (S240 fix round 4, D1 measured it; S241 is the captain's ruling on it.)
   #
   # `lcars xo on --engine copilot` reads, in every word of it, like changing a
-  # setting — and it swept every scoreless mission at Verify into a real look:
-  # launching builds, driving a browser, hiring workers, filing bugs. The
-  # captain's money spent as the side effect of a config change.
+  # setting — and it used to sweep every scoreless mission at Verify into a
+  # real look: launching builds, driving a browser, hiring workers, filing
+  # bugs. Five missions parked meant five reviews from one word, and the
+  # captain's money spent as the side effect of a config change. It was never
+  # secret — it announced itself first — but announcing real work is not the
+  # same as being asked to do it.
   #
-  # The obvious cure is to make starting the work its own word. It is written
-  # and it works (`--sweep` / `--no-sweep`, and $LCARS_XO_SWEEP_ON_START).
-  # THE DEFAULT IS NOT FLIPPED, because flipping it is not this round's to
-  # decide:
-  #   • `number-one-rebuild-dev.md` § "What we are NOT changing" names "the
-  #     `xo on/off` switches" explicitly;
-  #   • five committed behaviours in `tests/lcars-xo-journey.test.sh` (G-1,
-  #     G-2, G-5 and the cage checks) assert that `xo on --engine …` SWEEPS,
-  #     by name and by wording;
-  #   • `actions.py`'s `xo on` endpoint is BUILT around the sweep — its whole
-  #     spawn-then-wait-briefly design (S222) exists because `xo on` is long.
-  # Rewriting those on a sub-agent's own authority is the kind of quiet
-  # contract change this project has paid for before.
+  # HIS RULING: KEEP THE CATCH-UP, MAKE IT OPT-IN. So the default path is
+  # `xo_sweep_announce` — it names every mission waiting and the one command
+  # that starts them, for free, and returns. Nothing is launched, nothing is
+  # billed, and the verb exits in the time it takes to read some state files.
   #
-  # So the capability is here and reversible in one word, the surprise is
-  # written down where the next reader will find it, and the DEFAULT is the
-  # captain's to rule on. To flip it, change `sweep=1` above to `sweep=0` and
-  # the `:-1` in the variable to `:-0`; `tests/xo-concurrency.test.sh` has the
-  # assertions for both directions already.
+  # IT NEVER ASKS. There is no prompt here and there must never be one: this
+  # product's whole point is the unattended overnight run, and a verb that
+  # waited for a keystroke would hang it until morning. Announce and exit, or
+  # run because a flag said to. Those are the only two shapes.
+  #
+  # WHAT DID NOT CHANGE. The opt-in path is the SAME `xo_sweep_verify` as
+  # before — same cage per look, same one-at-a-time order, same stand-down
+  # check between missions. And the gate hook is untouched: a mission that
+  # ARRIVES at Verify later is still engaged by the driver, which is where that
+  # decision has always belonged. `xo on` picking up the backlog was only ever
+  # about missions already parked when the switch was thrown.
   if [ "$sweep" -eq 1 ]; then
     xo_sweep_verify
   else
@@ -1092,10 +1104,12 @@ cmd_on() {
   fi
 }
 
-# xo_sweep_announce — the FREE half of the sweep: name what is waiting and the
-# one command that starts it. No launch, no browser, no worker, no spend. It
-# shares `xo_sweepable` with the sweep itself, so the two can never disagree
-# about which missions are in scope.
+# xo_sweep_announce — THE DEFAULT PATH of `lcars xo on` since S241, and the
+# FREE half of the sweep: name what is waiting and the one command that starts
+# it. No launch, no browser, no worker, no spend, and NO PROMPT — it returns
+# instead of asking, so an unattended run can never block here. It shares
+# `xo_sweepable` with the sweep itself, so the two can never disagree about
+# which missions are in scope.
 xo_sweep_announce() {
   [ "${LCARS_XO_SWEEP:-1}" = "0" ] && return 0
   local id n=0 names=""

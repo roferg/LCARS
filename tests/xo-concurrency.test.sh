@@ -204,20 +204,14 @@ check "4. the second look is a clean claim, not a stale takeover" \
 # launching builds, driving a browser, hiring workers, filing bugs. That is the
 # captain's money spent as the side effect of a settings change.
 #
-# The cure is written and reversible in one word: `--no-sweep` (and
-# $LCARS_XO_SWEEP_ON_START=0) switch Number One on, name what is waiting for
-# free, and start nothing. The DEFAULT IS DELIBERATELY UNCHANGED, because
-# flipping it is not a sub-agent's to decide:
-#   • `number-one-rebuild-dev.md` § "What we are NOT changing" names "the
-#     `xo on/off` switches" explicitly;
-#   • seven committed behaviours in `tests/lcars-xo-journey.test.sh` (G-1, G-2,
-#     G-5, G-6, G-8, G-9, G-10) assert that `xo on --engine …` SWEEPS — MEASURED:
-#     gating it by default took that suite from 83/0 to 76/7;
-#   • `web/lcars_serve/actions.py`'s `xo on` endpoint is BUILT around the sweep
-#     (its spawn-then-wait-briefly design, S222, exists because `xo on` is long).
-# So BOTH directions are asserted here. To flip the default, change `sweep=1`
-# to `sweep=0` in cmd_on and the `:-1` to `:-0`; these checks then swap over
-# and the journey suite is what will tell you what else moved.
+# S241 — THE CAPTAIN'S RULING: keep the catch-up, make it opt-in. So the
+# DEFAULT is now the free announcement — switched on, told by name what is
+# waiting, nothing started — and `--sweep` (or $LCARS_XO_SWEEP_ON_START=1) is
+# the word that works through the backlog exactly as the default used to.
+# BOTH directions are still asserted here, because both are still supported:
+# 5a is the default (announce, spend nothing), 5b/5c the same thing asked for
+# explicitly, and 5d the opt-in that really runs it. The journey suite's G
+# section carries the full contract.
 sweep_rig() { # <repo> → sets SWEEPLOG, writes a sweepbin
   SWEEPLOG="$1/swept.log"; : >"$SWEEPLOG"
   cat >"$1/sweepbin" <<SB
@@ -227,15 +221,15 @@ SB
   chmod +x "$1/sweepbin"
 }
 
-# 5a. THE DEFAULT, UNCHANGED — it still picks up what is waiting.
+# 5a. THE DEFAULT — switched on, and it STARTS NOTHING (S241).
 repo5="$(new_repo)"; sweep_rig "$repo5"
 rc5=0
 ( cd "$repo5" && LCARS_XO_SWEEP_BIN="$repo5/sweepbin" \
     bash "$XO" on --engine claude >"$repo5/on.out" 2>&1 ) || rc5=$?
 check "5a. xo on --engine switches Number One on" \
   "[ '$rc5' -eq 0 ] && grep -q 'NUMBER ONE: ON' '$repo5/on.out'"
-check "5a. the default still sweeps — the S220 promise is untouched" \
-  "grep -q 'swept $MISSION' '$repo5/swept.log'"
+check "5a. the default starts NO look — the catch-up is opt-in now" \
+  "[ ! -s '$repo5/swept.log' ] && grep -q 'lcars xo on --sweep' '$repo5/on.out'"
 
 # 5b. `--no-sweep` — switched on, told what is waiting, nothing started.
 repo6="$(new_repo)"; sweep_rig "$repo6"
