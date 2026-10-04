@@ -42,8 +42,54 @@ NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 # `estimate` entry point exactly the way file.sh does at the end of Align. Default
 # matches how SKILL.md invokes the other run.sh subcommands; overridable so tests
 # can point it at the real run.sh with a stubbed cold worker. STRICTLY OPTIONAL:
-# the estimator NEVER blocks the log (see run_child_estimate below).
+# the estimator NEVER blocks the log — the one call site is inside
+# `file_one_bug` (search for `"$RUN_BIN" estimate`), best-effort with `|| true`.
+#
+# (THE NAME THAT WAS HERE WAS A LIE. This comment used to say "see
+# <some-function> below" and name a function that does not exist anywhere in
+# this file and never has. Every reader who followed it found nothing — which
+# is the whole cost of a comment that NAMES something instead of pointing at
+# the code. The dead name is deliberately not repeated here, so a grep for it
+# finds nothing, which is the truth.)
 RUN_BIN="${LCARS_RUN_BIN:-$HOME/.claude/skills/lcars-run/run.sh}"
+
+# === THE ESTIMATOR'S BATCH BUDGET (S240 R4, D2) =============================
+#
+# The estimator runs ONCE PER FILED BUG. MEASURED on this branch with a PATH
+# shim faking both `claude` and `copilot`, counting one line per invocation:
+#
+#   happy path    1 worker invocation per bug —  1 /  7 / 10 for 1 / 7 / 10 bugs
+#   FAILURE path  3 per bug (run.sh's own MAX_WORKER_TRIES retry loop) —
+#                 3 / 21 / 30 for 1 / 7 / 10 bugs, EVERY ONE carrying --model,
+#                 i.e. every one a real billed session.
+#
+# Number One now files up to TEN bugs from one look. A systemically broken
+# estimator — no engine on PATH, a bad pin, a rate limit, a quota — fails the
+# same way for every bug in the batch, so paying the full retry budget again
+# for each remaining one buys nothing and costs thirty sessions.
+#
+# So the BATCH carries a breaker: after this many estimator failures inside ONE
+# `lcars log` invocation, the rest of the batch skips the estimator and is told
+# so in one plain line. 0 turns the breaker off and restores the unbounded
+# legacy behaviour, so nothing is taken away permanently.
+#
+# THE INVARIANT IS UNCHANGED EITHER WAY: the estimator never blocks filing. A
+# skipped bug files with no estimate.json and every stage falls back to its
+# legacy model, exactly as a failed estimator already did.
+ESTIMATE_FAIL_BUDGET="${LCARS_LOG_ESTIMATE_FAILURES:-1}"
+# The tally lives in a FILE, not a variable: `file_one_bug` runs inside a
+# command substitution — a subshell — so a counter it increments dies with it.
+ESTIMATE_FAILS_FILE="$(mktemp -t lcars-log-est.XXXXXX)"
+trap 'rm -f "$ESTIMATE_FAILS_FILE"' EXIT
+printf '0\n' >"$ESTIMATE_FAILS_FILE"
+
+estimate_fails()      { head -1 "$ESTIMATE_FAILS_FILE" 2>/dev/null | tr -dc '0-9'; }
+estimate_note_fail()  { printf '%s\n' "$(( $(estimate_fails) + 1 ))" >"$ESTIMATE_FAILS_FILE"; }
+# 0 = off (unbounded, legacy). Otherwise: tripped once the tally reaches it.
+estimate_breaker_tripped() {
+  [ "$ESTIMATE_FAIL_BUDGET" -gt 0 ] 2>/dev/null || return 1
+  [ "$(estimate_fails)" -ge "$ESTIMATE_FAIL_BUDGET" ] 2>/dev/null
+}
 
 # The host-integration adapter — the ONE place that speaks to a forge. We reuse
 # the SAME adapter Schedule uses to NATIVELY nest sub-issues, so a logged bug
@@ -399,6 +445,53 @@ next_id() {
   lcars_mint_mission_id "$MISSIONS_DIR" "$DATE" "$(lcars_clone_fingerprint "$CONFIG")"
 }
 
+# --- what a file IS, for the "Which file is which" map (S240 fix round 5, D3) -
+#
+# MEASURED on every bug Number One filed:
+#
+#   - `attachments/attachment-01.html` — attachment-01
+#
+# The map's whole job is to translate a name the PRD uses into the file to open.
+# That row translates nothing: it is the file's own staged name with the
+# extension cut off. It happens because the INHERITED PARENT DRAWING already
+# carries the staged name on the parent and goes first in the set, so staging
+# does not rename it — while the shot beside it IS renamed, which is what
+# switches the map on.
+#
+# AND THE SILENCE COSTS SOMETHING. That file is the drawing the parent Mission
+# was built from, which is what the fix is still being judged against; a worker
+# handed the bug has no other way to learn that. So where the staged name is the
+# old name, the row says what the file is instead of repeating what it is called.
+#
+# The renamed files keep their existing translation EXACTLY — that is the row a
+# captain reading "shot-01" in the body actually needs.
+_attach_what() { # <staged rel> <original basename> <source path>
+  local rel="$1" orig="$2" src="$3"
+  if [ "$(basename "$rel")" != "$orig" ]; then
+    printf '%s' "${orig%.*}"
+    return 0
+  fi
+  # Staging did not rename it, so its name cannot be a translation. Say what it
+  # is — and only from what is KNOWN here: a file copied out of the parent
+  # Mission's own attachments, classified a mockup by the shared classifier, is
+  # that Mission's drawing.
+  if [ -n "${PARENT_ID:-}" ]; then
+    case "$src" in
+      "$MISSIONS_DIR/$PARENT_ID/attachments/"*)
+        if command -v lcars_attach_kind >/dev/null 2>&1 \
+           && [ "$(lcars_attach_kind "$src")" = mockup ]; then
+          printf 'the drawing Mission %s was built from — what this fix is still judged against' \
+            "$PARENT_ID"
+          return 0
+        fi
+        printf 'inherited from Mission %s' "$PARENT_ID"
+        return 0 ;;
+    esac
+  fi
+  printf 'attached as it was given, under its own name'
+  return 0
+}
+
 # --- file one bug; echoes "id<TAB>issue<TAB>title" for the summary ----------
 file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   local prd="$1"
@@ -481,7 +574,7 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
       [ "$dup" -eq 0 ] && attach_list+=("$cand")
     done
   fi
-  local attach_rels=() attach_names=()
+  local attach_rels=() attach_names=() attach_srcs_kept=()
   if [ "${#attach_list[@]}" -gt 0 ]; then
     mkdir -p "$mdir/attachments"
     local an=0 asrc aext arel
@@ -493,6 +586,7 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
       cp "$asrc" "$mdir/$arel"
       attach_rels+=("$arel")
       attach_names+=("$(basename "$asrc")")
+      attach_srcs_kept+=("$asrc")
     done
     lcars_attach_prd_section "${attach_rels[@]}" >>"$mdir/prd.md"
     # --- WHICH FILE IS WHICH (S204 fix round 1, D4) -------------------------
@@ -529,7 +623,9 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
         printf 'The files above were renamed as they were attached. Where the text of this Mission names a picture, this is the file to open:\n\n'
         ni=0
         while [ "$ni" -lt "${#attach_rels[@]}" ]; do
-          printf -- '- `%s` — %s\n' "${attach_rels[$ni]}" "${attach_names[$ni]%.*}"
+          printf -- '- `%s` — %s\n' "${attach_rels[$ni]}" \
+            "$(_attach_what "${attach_rels[$ni]}" "${attach_names[$ni]}" \
+                            "${attach_srcs_kept[$ni]}")"
           ni=$((ni + 1))
         done
       } >>"$mdir/prd.md"
@@ -684,8 +780,20 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   # the child's engine the same way the rest of the pipeline does (the threaded
   # $LCARS_WORKER_BIN). On failure it leaves NO estimate.json and the bug still
   # files — every stage then falls back to its legacy model, exactly as before.
-  if [ -f "$RUN_BIN" ]; then
-    bash "$RUN_BIN" estimate --mission "$id" >/dev/null 2>&1 || true
+  #
+  # THE ONE ESTIMATOR CALL SITE (the header above points here). Guarded by the
+  # batch breaker: see ESTIMATE_FAIL_BUDGET. Still best-effort on every path —
+  # a failure, a skip, or a missing run.sh all leave the bug filed.
+  if [ -f "$RUN_BIN" ] && ! estimate_breaker_tripped; then
+    if ! bash "$RUN_BIN" estimate --mission "$id" >/dev/null 2>&1 \
+       || [ ! -f "$mdir/estimate.json" ]; then
+      estimate_note_fail
+      if estimate_breaker_tripped; then
+        # ONE PLAIN LINE, ON STDERR so it cannot be mistaken for a filed row.
+        # It says what stopped and what it costs him, not a variable name.
+        printf '  ⚠ the estimator failed on this bug — skipping it for the rest of this batch (they file without a cost estimate and run on default models). Set LCARS_LOG_ESTIMATE_FAILURES=0 to keep trying.\n' >&2
+      fi
+    fi
   fi
 
   # US (0x1f), NOT A TAB (S211 fix round 1, D2). `$issue` is EMPTY whenever a

@@ -248,6 +248,104 @@ def shot_of_place(shotsdir, place, prefer_prefix=""):
     return found[0]
 
 
+def widen_shots(shotsdir, shots, row, finding, instrument):
+    """EVERY PLACE A SHOT WAS RECORDED, not just one (S240 fix round 4, D5).
+
+    MEASURED on a seven-gap case before anything was changed, counting only
+    attachments whose file is actually on disk (which is `xo.sh`'s own
+    `[ -f "$s" ]` rule):
+
+        gap 1  gaps[].shots (plural)            attach=shot-01.png
+        gap 2  gaps[].shots, two                attach=shot-02.png,shot-03.png
+        gap 3  gaps[].shot (SINGULAR)           attach=(NONE)
+        gap 4  only criteria[].shot on the ROW  attach=(NONE)
+        gap 5  evidencePath                     attach=(NONE)
+        gap 6  a transcript name                attach=(NONE)
+        gap 7  nothing recorded at all          attach=(NONE)
+        -> 2 of 7 arrived with an attachment.
+
+    So the attach list read ONE recorded field — `gaps[].shots` — while the
+    PROSE path (`instrument_of`, `evidence_ref`) already read four others. The
+    captain was told plainly that the cure WIDENS what attaches rather than
+    correcting a wrong path, and approved it on 2026-10-03: a bug he cannot see
+    is not actionable, and a less-relevant screenshot beats none.
+
+    So every recorded place is read, most specific first:
+      1. the element's own shot              (bind_shots, unchanged)
+      2. `gaps[].shots`                      (what already worked)
+      3. `gaps[].shot` / `criteria[].shot`   singular, on the gap or the row
+      4. whatever `evidence_ref` resolved    (evidencePath / transcript / …)
+      5. LAST RESORT: the look's lead picture, so no bug ships blind.
+
+    Nothing is reordered within what already worked, and nothing synthesised:
+    every name still goes through `shot_file`, so a path to nothing is never
+    carried as if it were evidence.
+    """
+    row, finding = row or {}, finding or {}
+    out = list(shots)
+
+    def add(name):
+        name = clean(name)
+        if name and name not in out:
+            out.append(name)
+
+    # 3 — the singular field, on the gap and on the ledger row.
+    add(finding.get("shot"))
+    add(row.get("shot"))
+    for sh in (row.get("shots") or []):
+        add(sh)
+
+    # 4 — whatever the prose already cites. It is a PATH, so it is carried as
+    # the basename the attach ladder can resolve back to that same file.
+    ref = evidence_ref(shotsdir, row, finding, instrument)
+    if ref:
+        add(os.path.basename(ref))
+
+    # Keep only names that are really on the disk; a name with no file behind
+    # it is still returned by `bind_shots` for the prose, but it must not be
+    # counted here as the thing that made this gap visible.
+    #
+    # DEDUPED BY FILE, NOT BY NAME. `shot-01` and `shot-01.png` are two names
+    # for one file, and `evidence_ref` hands back the second while the look
+    # cites the first — which attached the same picture to the same ticket
+    # twice on the first run of this cure.
+    real, seen_files = [], set()
+    for n in out:
+        f = shot_file(shotsdir, n)
+        if not f or f in seen_files:
+            continue
+        seen_files.add(f)
+        real.append(n)
+    if real:
+        return real
+
+    # 5 — LAST RESORT. Nothing recorded for this gap resolves to a file, so the
+    # bug would arrive with no picture at all. The look's lead picture is less
+    # relevant than a close-up and far better than nothing: it at least shows
+    # the captain the build the gap is about. It is marked as the fallback by
+    # being the ONLY thing here, and the PRD prose still says exactly what was
+    # and was not retained — this widens what ATTACHES, never what is claimed.
+    lead = lead_shot(shotsdir)
+    return [lead] if lead else out
+
+
+def lead_shot(shotsdir):
+    """The look's own first picture — the full page, by convention `shot-01`.
+
+    Read off the disk, never assumed: the first `.png` in name order whose
+    readout is not a close-up, falling back to the first `.png` at all."""
+    try:
+        pngs = sorted(fn for fn in os.listdir(shotsdir) if fn.endswith(".png"))
+    except Exception:
+        return ""
+    if not pngs:
+        return ""
+    for fn in pngs:
+        if not shot_selector(shotsdir, fn[:-4]):
+            return fn[:-4]
+    return pngs[0][:-4]
+
+
 def bind_shots(shotsdir, shots, place):
     """THE PICTURE THAT ACTUALLY SHOWS THE GAP GOES FIRST (fix round 2, D3).
 
@@ -554,6 +652,12 @@ def main():
         shots = bind_shots(shotsdir, shots, place)
         instrument = instrument_of(row, g) or "none"
         ref = evidence_ref(shotsdir, row, g, instrument)
+        # WHAT GETS ATTACHED IS WIDER THAN WHAT GETS DESCRIBED (fix round 4,
+        # D5). `shots` above is the look's own citation and keeps driving the
+        # prose — including the "there is no screen here" line, which must not
+        # change just because a fallback picture was attached. `attach` is the
+        # wider list, and is the ONLY thing handed to xo.sh's --attach.
+        attach = widen_shots(shotsdir, shots, row, g, instrument)
         seam = seam_of(row, g, cpath, cid)
         action = unstop(row.get("action")) or unstop(g.get("action"))
         # ── WHAT WAS SEEN, AND WHICH CLAUSE IT BELONGS IN (S240 fix round 1, D3)
@@ -691,9 +795,19 @@ def main():
         write_prd(path, title=title, seam=seam, goal=goal, acs=acs,
                   out_of_scope=out_of_scope, constraints=constraints, tail=tail)
 
+        # SEVEN FIELDS, AND FIELD 4 IS STILL THE RECORD (fix round 4, D5).
+        # Field 4 feeds `xo/logs.json` as this gap's `shots` — which is what
+        # `xo recheck` reads to know which picture to re-take, and what
+        # `tests/lcars-xo.test.sh` B12a2 asserts is EMPTY for a gap that stands
+        # on a quoted test line. The first cut of this widening wrote the wider
+        # list there and turned that `[]` into `["shot-01"]`: a FALLBACK
+        # PICTURE had rewritten the gap's recorded evidence. A record and an
+        # attachment are not the same fact, so they are not the same field.
+        # Field 7 is the ATTACH list, read only by `--attach`.
         print(RS.join(["GAP", str(n), path,
                        ",".join(attach_path(shotsdir, sh) for sh in shots),
-                       cid, title]))
+                       cid, title,
+                       ",".join(attach_path(shotsdir, sh) for sh in attach)]))
 
     if overflow:
         print("OVERFLOW" + RS + str(overflow))

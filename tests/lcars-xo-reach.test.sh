@@ -612,6 +612,40 @@ check "--again journals the supersession WITH the prior score and the reason" \
 check "--again needs NO filed logs (the catch-22 is gone)" \
   '[ ! -f "$MDIR/xo/logs.json" ]'
 
+# ───────────────────────────────────────────────────────────────────────────
+# 4a. A SUPERSESSION THAT IS REFUSED MUST NOT BE ANNOUNCED (S240 fix round 5, D2)
+# ───────────────────────────────────────────────────────────────────────────
+# MEASURED: `evaluate --again --because "<why>"` printed
+#   "the verdict of <ts> (low) is superseded: <reason>"
+# and THEN refused the re-look — on a logged bug child, whose parent carries the
+# build and which is never evaluated. The verdict was not in fact mutated; but a
+# captain reading that top line has been told his low verdict was just replaced
+# by a run that then did nothing. The supersession was also JOURNALED before the
+# refusal, so the record carried it too.
+#
+# THE RULE: refuse first. Nothing announces or records a supersession until the
+# re-look is actually going to happen.
+CHILD="$REPO/.git/lcars/missions/lcars-20261002-009-abcd"; mkdir -p "$CHILD/xo"
+cat >"$CHILD/state.json" <<'JSON'
+{"id": "lcars-20261002-009-abcd", "title": "A logged bug", "stage": "verify",
+ "branch": "feat/notes", "issue": 9, "parentMission": "lcars-20261002-001-abcd",
+ "numberOne": {"status": "finished", "evaluatedAt": "2026-10-01T10:00:00Z",
+               "score": "low", "recommendation": "send back"}}
+JSON
+: >"$CHILD/number-one.jsonl"
+REFUSED="$TMPROOT/refused.out"
+( cd "$REPO" && LCARS_GH_BIN="$TMPROOT/gh" LCARS_XO_DRIVE=1 \
+  "$PY" "$CAGE" 60 bash "$XO" evaluate --mission lcars-20261002-009-abcd \
+    --again --because "I want another look" ) >"$REFUSED" 2>&1
+check "4a. CONTROL — the re-look on a bug child is still refused, and says why" \
+  'grep -q "logged bug child" "$REFUSED"'
+check "4a. it does NOT announce a supersession it then refuses to carry out" \
+  '! grep -q "is superseded" "$REFUSED"'
+check "4a. ...and does NOT record one in the mission journal it refused" \
+  '! grep -q "superseded" "$CHILD/number-one.jsonl"'
+check "4a. ...and the prior verdict is untouched, as it always was" \
+  'grep -q "\"score\": \"low\"" "$CHILD/state.json" && grep -q "2026-10-01T10:00:00Z" "$CHILD/state.json"'
+
 # ===========================================================================
 # 4b. THE LOOK ITSELF REACHES — xo.sh calls the harness, not just the browser
 # ===========================================================================

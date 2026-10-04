@@ -297,7 +297,27 @@ Name one of them exactly." ;;
 #
 # The signal is best-effort and always TERM: a pid file can be stale, the
 # process can already be gone, and neither is a reason to refuse to hand the
-# conn back. Nothing is ever KILLed — a worker gets to finish its own cleanup.
+# conn back.
+#
+# ── AMENDED S240 fix round 5, BY THE ORCHESTRATOR — NOT YET THE CAPTAIN'S ─────
+# This block used to end "Nothing is ever KILLed — a worker gets to finish its
+# own cleanup." THAT IS NO LONGER TRUE of the resolve chain, and leaving the
+# sentence here would be a comment that contradicts its own code — the very
+# defect S238 cured (one rule in a shell copy and a Python copy, drifted to
+# OPPOSITE verdicts, with a test holding their wording identical while their
+# behaviour diverged).
+#
+# WHAT IS TRUE NOW: `xo_stop_tree` TERMs the driver alone first so its own trap
+# runs, then TERMs every owned group, and only then KILLs whatever is left —
+# after TERM has had two bounded chances, and only ever within the enumerated
+# resolve chain. `xo_kill_tree` (the LOOK's trap, far below) is still TERM-only
+# and that comment still holds.
+# WHY: a measured live incident. The TERM-only stop left a worker alive in its
+# own process group, printed "you have the conn", deleted its own pidfile, and
+# 25s later the survivor spawned a FRESH PAID assistant. A worker's right to
+# clean up cannot outrank the captain's right to stop spending his money.
+# THE CAPTAIN HAS NOT RULED ON THIS — he is asked in the morning readout, and
+# it is reversible by dropping the KILL escalation in `xo_stop_tree`.
 # ===========================================================================
 # ── a pid file that says WHO, not just which number (S213) ──────────────────
 #
@@ -319,17 +339,197 @@ xo_write_pidfile() { # <pid> <file>
   local pid="$1" file="$2" pgid started
   pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -dc '0-9')"
   started="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  # A BORROWED GROUP IS NOT AN IDENTITY (fix round 4, D3). MEASURED: with no
+  # `setsid` on this machine the detached chain inherited the LOOK's process
+  # group, and this writer copied that number down as if it were the chain's
+  # own. A reader handed it could kill the look, the viewscreen, or the
+  # captain's shell. So the group is recorded ONLY where the process genuinely
+  # LEADS it (pgid == pid); anything else is recorded as absent, and
+  # `xo_signal_pidfile` then reaches exactly the one process it can name.
+  [ -n "$pgid" ] && [ "$pgid" != "$pid" ] && pgid=""
   { printf '%s\n' "$pid"; printf '%s\n' "${pgid:-}"; printf '%s\n' "${started:-}"; } >"$file"
 }
 
-# Signal EXACTLY the process a pid file was written about — or refuse.
-#   0  the recorded process was signalled
+# ── A STOP THAT CROSSES A PROCESS GROUP, AND NEVER LIES (S240 fix round 5, D1)
+#
+# THE DEFECT, MEASURED LIVE. `lcars xo off <mission>` printed
+# "stood down on <mission> — you have the conn" and exited 0. In fact it had
+# killed the driver's group LEADER and nothing else. `ps -eo pid,ppid,pgid`
+# immediately after:
+#
+#   pid     ppid  pgid    what
+#   31634   1     30311   run.sh drive --mission …           ← orphaned to init
+#   36323   31634 30311   run.sh validate …
+#   36610   36610 36610   worker-adapter.sh spawn copilot …  ← OWN group
+#   36662   36610 36610   copilot -p …                       ← THE PAID ASSISTANT
+#
+# 25 seconds later the surviving driver had advanced a bug align→research→
+# validate→plan and started a FRESH paid assistant. And the stop had DELETED
+# `xo-resolve.pid`, so the product had no handle left to try again with; a human
+# killed the tree by hand.
+#
+# WHY A pgid CAN NEVER BE ENOUGH, and why the grouping is not the thing to fix:
+# `skills/lcars-run/run.sh` launches every worker as its own session/group
+# leader on purpose (`perl -e 'use POSIX qw(setsid); … exec @ARGV'`, at
+# run.sh:10000, :20068 and :20221). That is BUG-048's cure — nested workers that
+# reparent, and the forked test pools vitest/jest spawn, must not be able to
+# outlive a stop. So a worker is BY DESIGN in a different group from its driver,
+# and a stop has to ENUMERATE the tree rather than name one group.
+#
+# AND THE ORDER MATTERED. The old stop signalled the recorded GROUP, which took
+# the driver's leader out from under the chain, orphaned the rest to ppid 1, and
+# so the driver's own trap never ran and its worker was simply abandoned.
+#
+# THE THREE RULES THIS IMPLEMENTS:
+#   1. ENUMERATE BEFORE SIGNALLING. `xo-tree.py` closes the chain over
+#      parenthood AND the groups the chain leads, to a fixpoint, from the real
+#      process table. Taken BEFORE the first signal, because a signal orphans
+#      the survivors and after that no walk down from the recorded pid can find
+#      them — which is precisely how the live stop lost a worker.
+#   2. GENTLE FIRST, THEN ESCALATE. A plain TERM to the driver alone, so its own
+#      teardown gets to run; then TERM every group the chain owns; then KILL
+#      whatever is left. This is the one place in Number One that escalates to
+#      KILL, and it does so only after the gentle signal has been given its
+#      bound and the process is still there.
+#   3. CONFIRM BEFORE CLAIMING. The process table is re-read after signalling.
+#      Anything still there is NAMED and the stop reports failure. A stop that
+#      cannot confirm death must never say "you have the conn".
+#
+# $LCARS_XO_KILL_BIN exists so a test can swallow every signal while the rig
+# stays genuinely alive, and prove that rule 3 is a real check and not a
+# sentence. It defaults to the shell's own `kill`. THE LIVENESS CHECKS BELOW DO
+# NOT GO THROUGH IT — they use the builtin directly, so no stub can fake a
+# death.
+XO_KILL="${LCARS_XO_KILL_BIN:-kill}"
+XO_TREE_PY="$SKILL_DIR/xo-tree.py"
+# The pids a stop signalled and then found STILL RUNNING. Read by `stand_down`
+# and `cmd_off`; the empty string means the tree was confirmed gone.
+XO_STOP_SURVIVORS=""
+XO_STOP_SET=""
+
+xo_tree_set() { # <pid> [recorded-pgid] — "PID n" / "GROUP n" lines for the chain
+  local pid="${1:-}" pgid="${2:-}"
+  [ -n "$pid" ] || return 0
+  if [ -f "$XO_TREE_PY" ] && command -v "${XO_PY:-python3}" >/dev/null 2>&1; then
+    "${XO_PY:-python3}" "$XO_TREE_PY" closure "$pid" "${pgid:-0}" "$$" 2>/dev/null \
+      && return 0
+  fi
+  # NO WALKER. Then say only what is known for certain — the one process, and
+  # its group ONLY where the pidfile recorded one it genuinely leads. A stop
+  # that cannot enumerate must under-claim, never over-kill; the confirmation
+  # step then reports the survivors instead of inventing a success.
+  printf 'PID %s\n' "$pid"
+  [ -n "$pgid" ] && [ "$pgid" = "$pid" ] && printf 'GROUP %s\n' "$pgid"
+  return 0
+}
+
+# A zombie is gone for our purposes: it cannot run, and nothing in this process
+# will ever reap it. Counting one as alive is how a correct stop reports a
+# false failure.
+xo_pid_gone() { # <pid> — 0 when it is gone or defunct
+  local p="${1:-}" st
+  [ -n "$p" ] || return 0
+  kill -0 "$p" 2>/dev/null || return 0
+  st="$(ps -o state= -p "$p" 2>/dev/null | tr -d ' ')"
+  case "$st" in Z*) return 0 ;; esac
+  return 1
+}
+
+xo_stop_alive() { # — the pids in XO_STOP_SET still on the process table
+  local p out=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    xo_pid_gone "$p" || out="$out $p"
+  done <<EOF
+$(printf '%s\n' "$XO_STOP_SET" | sed -n 's/^PID //p' | sort -un)
+EOF
+  printf '%s' "${out# }"
+}
+
+# Union a fresh enumeration into the set. Called on every poll, so a worker the
+# dying driver starts WHILE we are stopping it still gets stopped — live, a
+# fresh paid assistant appeared 25 seconds after the stop.
+xo_stop_refresh() { # <pid> <pgid>
+  XO_STOP_SET="$(printf '%s\n%s\n' "$XO_STOP_SET" "$(xo_tree_set "$1" "$2")" \
+                   | sed '/^$/d' | sort -u)"
+}
+
+xo_stop_wait() { # <polls> <pid> <pgid> — 0 when the set is empty within the bound
+  local n="$1" i=0
+  while :; do
+    xo_stop_refresh "$2" "$3"
+    [ -z "$(xo_stop_alive)" ] && return 0
+    i=$((i + 1))
+    [ "$i" -ge "$n" ] && return 1
+    "${XO_PY:-python3}" -c 'import time; time.sleep(0.2)' 2>/dev/null || sleep 1
+  done
+}
+
+# Stop the WHOLE chain and confirm it. 0 confirmed gone, 3 survivors (named in
+# $XO_STOP_SURVIVORS), 1 nothing there to stop.
+xo_stop_tree() { # <pid> [recorded-pgid] [gentle-signal]
+  local pid="${1:-}" pgid="${2:-}" gentle="${3:-TERM}" round sig g p
+  XO_STOP_SURVIVORS=""; XO_STOP_SET=""
+  [ -n "$pid" ] || return 1
+  xo_stop_refresh "$pid" "$pgid"
+  # THE WALKER IS ALLOWED TO REFUSE, AND A REFUSAL IS NOT A DEATH. `xo-tree.py`
+  # returns NOTHING when the recorded pid is the asking process or one of its
+  # ancestors — a stop must never shoot the look, the shell or the viewscreen it
+  # is running inside. That is the right call and it is MEASURED (an asker inside
+  # the chain's own group gets an empty closure where a neutral asker gets four
+  # lines). But "I declined to touch it" and "it is already gone" are different
+  # facts, and reporting the first as the second is how a note ends up saying a
+  # live chain is "no longer running". So it is reported as rc 2 — alive, not
+  # signalled — which every caller already renders as "could not confirm".
+  if ! printf '%s\n' "$XO_STOP_SET" | grep -qx "PID $pid"; then
+    xo_pid_gone "$pid" && return 1
+    return 2
+  fi
+  [ -z "$(xo_stop_alive)" ] && return 1
+
+  # 1. THE DRIVER ALONE, GENTLY, so its own trap can tear its worker down.
+  "$XO_KILL" -"$gentle" "$pid" 2>/dev/null || true
+  xo_stop_wait 10 "$pid" "$pgid" && return 0
+
+  # 2. EVERY GROUP THE CHAIN OWNS — including the ones it does not lead — then
+  #    every loose pid besides. TERM, then KILL.
+  for round in 1 2; do
+    sig=TERM; [ "$round" -eq 2 ] && sig=KILL
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      "$XO_KILL" -"$sig" "-$g" 2>/dev/null || true
+    done <<EOF
+$(printf '%s\n' "$XO_STOP_SET" | sed -n 's/^GROUP //p' | sort -un)
+EOF
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      "$XO_KILL" -"$sig" "$p" 2>/dev/null || true
+    done <<EOF
+$(printf '%s\n' "$XO_STOP_SET" | sed -n 's/^PID //p' | sort -un)
+EOF
+    xo_stop_wait 15 "$pid" "$pgid" && return 0
+  done
+
+  # 3. STILL THERE. Say which, and fail.
+  XO_STOP_SURVIVORS="$(xo_stop_alive)"
+  [ -z "$XO_STOP_SURVIVORS" ] && return 0
+  printf '◈ NUMBER ONE: I signalled the chain and it is STILL RUNNING — pid(s) %s. Nothing was confirmed stopped.\n' \
+    "$XO_STOP_SURVIVORS" >&2
+  return 3
+}
+
+# Stop EXACTLY the chain a pid file was written about — or refuse.
+#   0  the recorded chain was stopped, AND confirmed gone from the process table
 #   1  there is nothing there any more (no pid, or it has already gone)
 #   2  the pid is alive but is NOT the process this file was written about, or
 #      the file never recorded who it was. WE DO NOT SIGNAL IT. A stop button
 #      that stops the wrong process is worse than one that admits it cannot.
+#   3  it was signalled and something is STILL ALIVE. The survivors are named in
+#      $XO_STOP_SURVIVORS. The caller must NOT claim a stop, and must NOT drop
+#      the pid file — that handle is the captain's only way to try again.
 xo_signal_pidfile() { # <file> [signal]
   local file="$1" sig="${2:-TERM}" pid pgid started now
+  XO_STOP_SURVIVORS=""
   pid="$(sed -n '1p' "$file" 2>/dev/null | tr -dc '0-9')"
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
@@ -339,14 +539,206 @@ xo_signal_pidfile() { # <file> [signal]
   now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
   [ -n "$now" ] || return 1
   [ "$now" = "$started" ] || return 2
-  # Its whole GROUP, but only where it genuinely leads one (pgid == pid, which
-  # is what `setsid` gives us). Where it does not, its group is somebody else's
-  # — the shell that started it, and everything else in that shell — so only the
-  # one process is signalled and its children are left to their own exits.
-  if [ -n "$pgid" ] && [ "$pgid" = "$pid" ]; then
-    kill -"$sig" "-$pgid" 2>/dev/null || true
+  xo_stop_tree "$pid" "$pgid" "$sig"
+  return $?
+}
+
+# ===========================================================================
+# ONE LOOK AT A TIME, ON ONE MISSION (S240 fix round 4, D1)
+# ===========================================================================
+#
+# THE DEFECT, MEASURED on a live mission 2026-10-02: two Number One looks ran
+# CONCURRENTLY on ONE mission and nothing refused, warned, or noticed. Both
+# wrote the same `xo/` directory. `number-one.jsonl` came out interleaved. And
+# the SECOND look overwrote `verdict.json` and `report.md` AFTER the first had
+# already filed its bugs — so the record the captain reads is not the record
+# the bugs were filed from. That is the worst thing a reviewer can do: hand him
+# a verdict and a set of tickets that disagree, with no sign that they do.
+#
+# WHY `xo.pid` DID NOT STOP IT. It is not a lock and never was. It is written
+# AFTER the decision to proceed, it is a plain overwrite (the second writer
+# simply replaces the first's number), and it was EMPTY throughout the measured
+# incident because each look removes it on its way out — so every reader asking
+# "is a look running" got "no" from a file one of two live looks had just
+# deleted. A record of what is happening cannot double as the permission to
+# make it happen.
+#
+# WHY `lcars_xo_lock_reason` DID NOT STOP IT EITHER. That lock reads the
+# mission's RECORDED `numberOne.status`, and it guards the captain's write
+# verbs (approve, respond, pause, log, feedback) against racing a look. It is
+# a STATE check, read-then-act, with a window between the two — and
+# `cmd_evaluate` never consulted it at all.
+#
+# SO THE CLAIM IS A DIRECTORY. `mkdir` is the one filesystem primitive that is
+# atomic and that FAILS when the thing already exists, on every filesystem
+# this runs on, with no dependency to install. Exactly one of any number of
+# concurrent `mkdir`s wins; every loser learns it lost from the syscall, not
+# from a file it read a moment earlier.
+#
+# A DEAD OWNER IS NOT AN OWNER. A look killed outright — a laptop asleep, a
+# SIGKILL, a crashed session — cannot run a trap, so its claim stays on disk
+# with nothing behind it. If that deadlocked the mission the cure would be
+# worse than the defect: the captain would be left running `rm -rf` inside
+# `.git/` to get his own mission back. So a claim records WHO holds it the same
+# way `xo_write_pidfile` does (pid + the instant it started, both read from the
+# OS while they were still known), and a claim whose owner is gone — or whose
+# pid has been recycled onto a different process — is RECLAIMED, out loud.
+XO_CLAIM_DIR=""
+
+# xo_claim_or_die <mission-dir> <what> — take the mission, or refuse in one line.
+xo_claim_or_die() { # <mission-dir> <what>
+  local dir="$1" what="${2:-a look}"
+  # A SEPARATE STATEMENT, ON PURPOSE. `local a="$1" b="$a/x"` expands every
+  # word before any assignment lands, so `$a` is still unset — which under
+  # `set -u` is not a wrong path but an outright crash.
+  local lock="$dir/xo.claim" owner=""
+  local held_pid held_started held_what held_when now tries=0
+  mkdir -p "$dir" 2>/dev/null || true
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    if mkdir "$lock" 2>/dev/null; then
+      # WE OWN IT. The identity goes in only after the atomic win, so a reader
+      # can never see a half-written owner file as a valid claim — an owner
+      # file that is not there yet reads as "unknown", which is handled below.
+      { printf '%s\n' "$$"
+        printf '%s\n' "$(ps -o lstart= -p "$$" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+        printf '%s\n' "$what"
+        printf '%s\n' "${NOW_LOCAL:-$(date '+%Y-%m-%d %H:%M')}"
+      } >"$lock/owner" 2>/dev/null || true
+      XO_CLAIM_DIR="$lock"
+      return 0
+    fi
+    # Somebody holds it. Is anybody actually there?
+    #
+    # THE OWNER FILE MAY NOT BE THERE YET, AND THAT IS NOT STALE. There is a
+    # real window between the winner's `mkdir` and its write of `owner`, and a
+    # loser that read the directory inside that window found no pid, took the
+    # stale branch, and DELETED THE WINNER'S CLAIM. MEASURED: one run in four
+    # of the two-process race refused with "clearing a stale claim" instead of
+    # "already looking at", which is the mutual exclusion failing open —
+    # exactly the defect this function exists to stop, one millisecond wide.
+    #
+    # So an empty owner is WAITED for, briefly, before it is believed. A claim
+    # whose owner never appears at all really is debris and still gets cleared
+    # on the next pass.
+    owner="$lock/owner"
+    local ow=0
+    while [ "$ow" -lt 30 ] && [ ! -s "$owner" ]; do
+      ow=$((ow + 1))
+      "${XO_PY:-python3}" -c 'import time; time.sleep(0.05)' 2>/dev/null || sleep 1
+    done
+    held_pid="$(sed -n '1p' "$owner" 2>/dev/null | tr -dc '0-9')"
+    held_started="$(sed -n '2p' "$owner" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+    held_what="$(sed -n '3p' "$owner" 2>/dev/null)"
+    held_when="$(sed -n '4p' "$owner" 2>/dev/null)"
+    if [ -n "$held_pid" ] && kill -0 "$held_pid" 2>/dev/null; then
+      now="$(ps -o lstart= -p "$held_pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+      if [ -z "$held_started" ] || [ "$held_started" = "$now" ]; then
+        # ALIVE AND GENUINELY THE SAME PROCESS. ONE PLAIN LINE, naming the look
+        # that has the mission and what to do about it. No second look starts.
+        die "Number One is already looking at $(basename "$dir") — ${held_what:-a look} started${held_when:+ $held_when} (pid $held_pid). I will not run a second look on the same mission; that is how one verdict ends up overwriting the other's. Wait for it, or stop it with \`lcars xo off $(basename "$dir")\`."
+      fi
+      # The pid is alive but is NOT who the claim was written about — it has
+      # been recycled. The claim is stale.
+    fi
+    # STALE. Nobody is there (or the pid belongs to something else now), so the
+    # mission is reclaimable. Said out loud, because a captain who sees a look
+    # start where he expected a refusal deserves to know why.
+    printf '◈ NUMBER ONE: clearing a stale claim on %s — its look (pid %s) is gone.\n' \
+      "$(basename "$dir")" "${held_pid:-unknown}" >&2
+    rm -rf "$lock" 2>/dev/null || true
+  done
+  die "could not take $(basename "$dir") — something keeps re-claiming it. Nothing was looked at."
+}
+
+# ── A DETACHED CHAIN IN A SESSION OF ITS OWN (S240 fix round 4, D3) ────────
+#
+# `file_logs_for` hands the logged bugs to `resolve-logs.sh` detached: it files
+# issues, cuts branches and runs a worker per stage per bug, unattended, for a
+# long time. `lcars xo off` must be able to stop ALL of that with one signal.
+#
+# THE CODE CLAIMED `setsid` GAVE IT ITS OWN PROCESS GROUP. MEASURED with
+# `ps -o pid,pgid,ppid` (never from the man page):
+#
+#   setsid on PATH: ABSENT          ← macOS ships none; the nohup fallback ran
+#   LOOK    pid=25669 pgid=25654
+#   DRIVER  pid=25680 pgid=25654    ← the LOOK's group, not its own
+#   WORKER  pid=25692 pgid=25654    ← same group again
+#   xo-resolve.pid:  pid=25680 pgid=25654
+#
+# Two measured consequences: a kill of the recorded group would have taken the
+# look down with it, and the guard that (correctly) refused to do that stopped
+# ONE process — "DRIVER gone / WORKER STILL ALIVE". One billed worker left
+# running with nothing watching it, and no second verb to stop it.
+#
+# So the session is made properly. `setsid(1)` where there is one; otherwise
+# `os.setsid()` through the shipped two-line `setsid.py` — the same syscall, on
+# every machine that has python3, and `execvp` keeps the pid so `$!` still
+# names the command after the new session exists. $LCARS_XO_SETSID=none forces
+# the bare fallback, which is how the no-session-maker case is proven.
+XO_SETSID_PY="$SKILL_DIR/setsid.py"
+
+# xo_spawn_detached <pidfile> <logfile> <cmd...> — start it detached, in its own
+# session where that is possible, record WHO it is, and echo its pid.
+# ONE implementation: `file_logs_for` and the `detach` test seam both call this,
+# so a proof about one is a proof about the other.
+xo_spawn_detached() { # <pidfile> <logfile> <cmd...>
+  local pidfile="$1" log="$2"; shift 2
+  local child="" mode="${LCARS_XO_SETSID:-auto}"
+  if [ "$mode" != "none" ] && command -v setsid >/dev/null 2>&1; then
+    setsid "$@" </dev/null >>"$log" 2>&1 &
+    child=$!
+  elif [ "$mode" != "none" ] && [ -f "$XO_SETSID_PY" ] \
+       && command -v "$XO_PY" >/dev/null 2>&1; then
+    "$XO_PY" "$XO_SETSID_PY" "$@" </dev/null >>"$log" 2>&1 &
+    child=$!
+  else
+    # NO WAY TO MAKE A SESSION. It still runs — a stop verb is never a reason
+    # not to do the work — and xo_write_pidfile records no group for it, so
+    # nothing can kill the wrong one.
+    nohup "$@" </dev/null >>"$log" 2>&1 &
+    child=$!
   fi
-  kill -"$sig" "$pid" 2>/dev/null || true
+  disown "$child" 2>/dev/null || disown 2>/dev/null || true
+  # WAIT FOR THE SESSION TO EXIST BEFORE WRITING IT DOWN. There is a real race
+  # here and it was MEASURED, not imagined: `&` returns the moment the fork
+  # happens, and `os.setsid()` runs a few milliseconds LATER inside the child —
+  # so reading `ps -o pgid=` immediately caught the child still in its parent's
+  # group, xo_write_pidfile's borrowed-group guard (correctly) recorded nothing,
+  # and the session the child DID go on to lead was never written down. The
+  # whole group kill then had nothing to aim at.
+  #
+  # So this waits, briefly and boundedly, for the child to actually lead a
+  # group. It stops the instant it does, the instant the child is gone, or
+  # after the bound — and on the fallback path (no session-maker at all) it
+  # simply spends the bound and records no group, which is the right answer.
+  if [ "$mode" != "none" ]; then
+    local w=0 cur=""
+    while [ "$w" -lt 40 ]; do
+      kill -0 "$child" 2>/dev/null || break
+      cur="$(ps -o pgid= -p "$child" 2>/dev/null | tr -dc '0-9')"
+      [ "$cur" = "$child" ] && break
+      w=$((w + 1))
+      "${XO_PY:-python3}" -c 'import time; time.sleep(0.05)' 2>/dev/null || sleep 1
+    done
+  fi
+  # WHO it is, not just which number — so a stop can never mistake a recycled
+  # pid for it. Both facts are read from `ps` at the same instant, so what is
+  # recorded is self-consistent.
+  xo_write_pidfile "$child" "$pidfile"
+  printf '%s' "$child"
+}
+
+# Give it back. ONLY if we are the recorded owner: a process that lost the race
+# must never delete the winner's claim on its way out.
+xo_release_claim() {
+  [ -n "$XO_CLAIM_DIR" ] || return 0
+  local held
+  held="$(sed -n '1p' "$XO_CLAIM_DIR/owner" 2>/dev/null | tr -dc '0-9')"
+  if [ -z "$held" ] || [ "$held" = "$$" ]; then
+    rm -rf "$XO_CLAIM_DIR" 2>/dev/null || true
+  fi
+  XO_CLAIM_DIR=""
   return 0
 }
 
@@ -398,23 +790,41 @@ stand_down() { # <mission-id> [--opt-out]
     nlogs="${nlogs:-0}"
   fi
 
-  if [ "$status" = "engaged" ] || [ "$live" -eq 1 ]; then
+  # A LIVE RESOLVE CHAIN IS ALSO A LIVE SPIN (fix round 5, D1). This branch was
+  # gated on the look's status and the look's pid alone, so once a FAILED stop
+  # had written `stood-down`, a second `lcars xo off` fell straight through to
+  # the opt-out path and signalled nothing at all — the captain's retry was a
+  # no-op over a tree that was still billing. The recorded resolve pid is the
+  # truth about whether a chain is running, so it is a reason to act.
+  if [ "$status" = "engaged" ] || [ "$live" -eq 1 ] || [ "$rlive" -eq 1 ]; then
     if [ -n "$pid" ]; then
       kill -TERM "$pid" 2>/dev/null || true
       rm -f "$dir/xo.pid"
     fi
-    # THE CHAIN STOPS TOO. Only ever the exact process the pid file was written
-    # about — see xo_signal_pidfile; a pid that is alive but is no longer that
-    # process is left strictly alone and said out loud below.
-    local rstopped=0 runsure=0
+    # THE CHAIN STOPS TOO — the WHOLE chain, across the process groups its
+    # workers deliberately lead (see xo_stop_tree), and only ever a chain the
+    # pid file was genuinely written about. A pid that is alive but is no longer
+    # that process is left strictly alone and said out loud below.
+    local rstopped=0 runsure=0 sfail=0 survivors=""
     if [ "$rlive" -eq 1 ]; then
       xo_signal_pidfile "$dir/xo-resolve.pid"
       case $? in
         0) rstopped=1; rm -f "$dir/xo-resolve.pid" ;;
         2) runsure=1 ;;
+        # SIGNALLED AND STILL RUNNING. The pid file STAYS — it is the captain's
+        # only handle on the tree, and a failed stop that erases its own handle
+        # was the worst part of the measured defect. Nothing claims a stand-down
+        # from here: not the status, not the note, not the CLI, not the exit
+        # status.
+        3) runsure=1; sfail=1; survivors="$XO_STOP_SURVIVORS"
+           XO_STOP_FAILED=$((XO_STOP_FAILED + 1))
+           XO_STOP_FAILED_PIDS="$XO_STOP_FAILED_PIDS $survivors"
+           XO_STOP_FAILED_ON="$XO_STOP_FAILED_ON $id" ;;
       esac
     fi
-    obj="$(obj_set "$obj" status "$(jstr stood-down)")"
+    if [ "$sfail" -eq 0 ]; then
+      obj="$(obj_set "$obj" status "$(jstr stood-down)")"
+    fi
     local sd_note="Number One stood down $NOW_LOCAL · you have the conn"
     if [ "$rlive" -eq 1 ] && [ "$nlogs" -gt 0 ]; then
       # THE NOTE SAYS WHAT IS STILL HAPPENING. A captain who stands his first
@@ -435,6 +845,14 @@ stand_down() { # <mission-id> [--opt-out]
         sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving are no longer running · you have the conn"
       fi
     fi
+    # AND THE LAST WORD BELONGS TO WHAT WAS OBSERVED (fix round 5, D1). Written
+    # after every other note so nothing downstream can overwrite it: no "stood
+    # down", no "you have the conn". A card that hands the captain the conn
+    # while a paid worker is still running is the same lie as the CLI line, on
+    # the surface he trusts more.
+    if [ "$sfail" -eq 1 ]; then
+      sd_note="Number One could NOT stop what it was driving — still running: ${survivors:-unknown} · nobody has the conn yet · run \`lcars xo off $id\` again"
+    fi
     obj="$(obj_set "$obj" note "$(jstr "$sd_note")")"
     obj="$(obj_set "$obj" since "$(jstr "$NOW")")"
     # THE GATE COMES BACK WITH THE CONN (fix round 1, D4). `lastPending` is the
@@ -444,16 +862,26 @@ stand_down() { # <mission-id> [--opt-out]
     # it would see its own memory of a question it never got to read. Clearing it
     # is what makes `lcars xo on <id>` able to pick the gate up again.
     obj="$(obj_del "$obj" lastPending)"
-    XO_STOOD_DOWN=$((XO_STOOD_DOWN + 1))
-    # EVERY ACTION IS JOURNALLED (SKILL.md), and aborting a spin is an action.
-    # Without this line the only trace of a mid-spin stand-down was the state
-    # note, so the living comment — which renders this journal — had no record
-    # that a spin had been stopped at all. Written only on the branch that
-    # actually stood something down: the file records what happened.
-    journal "$dir" stood-down \
-      "$(printf '"stage": %s, "detail": %s' \
-           "$(jstr "$(mission_stage "$st")")" \
-           "$(jstr "the captain took the conn back")")"
+    # THE COUNTER IS WHAT THE CLI SAYS OUT LOUD, so a stop that did not happen
+    # must not reach it (fix round 5, D1) — and the journal records what was
+    # OBSERVED, which on this branch is a stop that failed, not a stand-down.
+    if [ "$sfail" -eq 1 ]; then
+      journal "$dir" stop-failed \
+        "$(printf '"stage": %s, "detail": %s' \
+             "$(jstr "$(mission_stage "$st")")" \
+             "$(jstr "signalled the chain and it is still running: ${survivors:-unknown}")")"
+    else
+      XO_STOOD_DOWN=$((XO_STOOD_DOWN + 1))
+      # EVERY ACTION IS JOURNALLED (SKILL.md), and aborting a spin is an action.
+      # Without this line the only trace of a mid-spin stand-down was the state
+      # note, so the living comment — which renders this journal — had no record
+      # that a spin had been stopped at all. Written only on the branch that
+      # actually stood something down: the file records what happened.
+      journal "$dir" stood-down \
+        "$(printf '"stage": %s, "detail": %s' \
+             "$(jstr "$(mission_stage "$st")")" \
+             "$(jstr "the captain took the conn back")")"
+    fi
   fi
   [ "$optout" = "--opt-out" ] && obj="$(obj_set "$obj" optOut true)"
   [ -n "$obj" ] && state_set_xo "$st" "$obj"
@@ -533,6 +961,12 @@ pick_engine() {
 # THE VERBS
 # ===========================================================================
 XO_STOOD_DOWN=0
+# STOPS THAT DID NOT STOP (fix round 5, D1). Counted and NAMED, so the verb can
+# refuse to print a stand-down and can exit non-zero — the two things the
+# measured defect got wrong after it had already missed the paid worker.
+XO_STOP_FAILED=0
+XO_STOP_FAILED_PIDS=""
+XO_STOP_FAILED_ON=""
 
 write_config_block() { # <enabled true|false> [engine] [model]
   local enabled="$1" engine="${2:-}" model="${3:-}" obj
@@ -544,17 +978,28 @@ write_config_block() { # <enabled true|false> [engine] [model]
 }
 
 cmd_on() {
-  local engine="" model="" target=""
+  # DEFAULT 1 — THE SWEEP STILL RUNS, AND THAT IS DELIBERATE. See the note at
+  # the sweep call below for the whole reasoning, including why this is NOT
+  # flipped here.
+  local engine="" model="" target="" sweep=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --engine)   engine="${2:-}"; shift 2 || true ;;
       --engine=*) engine="${1#--engine=}"; shift ;;
       --model)    model="${2:-}";  shift 2 || true ;;
       --model=*)  model="${1#--model=}"; shift ;;
+      # SPENDING, ASKED FOR OR DECLINED (fix round 4, D1). See the note at the
+      # sweep call below for why the DEFAULT was not changed here.
+      --sweep)     sweep=1; shift ;;
+      --no-sweep)  sweep=0; shift ;;
       -*)         die "unknown option: $1" ;;
       *)          target="$1"; shift ;;
     esac
   done
+  # The non-spending behaviour is one word or one variable away. Both
+  # directions are settable, so whichever way the captain rules, nobody has to
+  # edit code to get the other one.
+  [ "${LCARS_XO_SWEEP_ON_START:-1}" = "0" ] && sweep=0
 
   # `lcars xo on <mission>` — a per-mission act: PUT THE MISSION BACK IN SCOPE.
   # It does not engage anything by itself. Engaging is the driver's to do at a
@@ -612,7 +1057,63 @@ cmd_on() {
   # AND IT PICKS UP WHAT IS ALREADY WAITING (part G). Switching it on is the
   # captain saying "I have to step out"; a first officer who ignored the two
   # missions already parked at Verify would not be taking the conn at all.
-  xo_sweep_verify
+  #
+  # ── THE MEASURED SURPRISE, AND WHY THE DEFAULT IS STILL "SWEEP" ───────────
+  # (S240 fix round 4, D1 — a DECISION LEFT TO THE CAPTAIN, not taken here.)
+  #
+  # `lcars xo on --engine copilot` reads, in every word of it, like changing a
+  # setting — and it swept every scoreless mission at Verify into a real look:
+  # launching builds, driving a browser, hiring workers, filing bugs. The
+  # captain's money spent as the side effect of a config change.
+  #
+  # The obvious cure is to make starting the work its own word. It is written
+  # and it works (`--sweep` / `--no-sweep`, and $LCARS_XO_SWEEP_ON_START).
+  # THE DEFAULT IS NOT FLIPPED, because flipping it is not this round's to
+  # decide:
+  #   • `number-one-rebuild-dev.md` § "What we are NOT changing" names "the
+  #     `xo on/off` switches" explicitly;
+  #   • five committed behaviours in `tests/lcars-xo-journey.test.sh` (G-1,
+  #     G-2, G-5 and the cage checks) assert that `xo on --engine …` SWEEPS,
+  #     by name and by wording;
+  #   • `actions.py`'s `xo on` endpoint is BUILT around the sweep — its whole
+  #     spawn-then-wait-briefly design (S222) exists because `xo on` is long.
+  # Rewriting those on a sub-agent's own authority is the kind of quiet
+  # contract change this project has paid for before.
+  #
+  # So the capability is here and reversible in one word, the surprise is
+  # written down where the next reader will find it, and the DEFAULT is the
+  # captain's to rule on. To flip it, change `sweep=1` above to `sweep=0` and
+  # the `:-1` in the variable to `:-0`; `tests/xo-concurrency.test.sh` has the
+  # assertions for both directions already.
+  if [ "$sweep" -eq 1 ]; then
+    xo_sweep_verify
+  else
+    xo_sweep_announce
+  fi
+}
+
+# xo_sweep_announce — the FREE half of the sweep: name what is waiting and the
+# one command that starts it. No launch, no browser, no worker, no spend. It
+# shares `xo_sweepable` with the sweep itself, so the two can never disagree
+# about which missions are in scope.
+xo_sweep_announce() {
+  [ "${LCARS_XO_SWEEP:-1}" = "0" ] && return 0
+  local id n=0 names=""
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    xo_sweepable "$id" || continue
+    n=$((n + 1))
+    names="${names:+$names, }$id"
+  done <<< "$(all_missions)"
+  [ "$n" -gt 0 ] || return 0
+  if [ "$n" -eq 1 ]; then
+    printf '  1 mission is waiting at Verify with no score of mine: %s.\n' "$names"
+  else
+    printf '  %d missions are waiting at Verify with no score of mine: %s.\n' "$n" "$names"
+  fi
+  printf '  Reviewing them launches each build and spends a worker, so it is its own word:\n'
+  printf '    lcars xo on --sweep\n'
+  return 0
 }
 
 # ===========================================================================
@@ -738,6 +1239,16 @@ cmd_off() {
     # mission's state.json, nothing stood down and nothing opted out — so say so
     # and exit non-zero rather than print either line.
     lcars_state_refusal_die "lcars xo off"
+    # THE FAILED STOP SPEAKS FIRST, AND NOTHING AFTER IT CLAIMS THE CONN
+    # (fix round 5, D1). The measured defect printed "stood down … you have the
+    # conn" and exited 0 over a live paid assistant, and had already deleted the
+    # handle that would have let the captain try again. All three are refused
+    # here: no stand-down line, the surviving pids named, non-zero exit — and
+    # `stand_down` keeps `xo-resolve.pid` on disk so the retry below is real.
+    if [ "$XO_STOP_FAILED" -gt 0 ]; then
+      xo_say_stop_failed "$id"
+      return 1
+    fi
     if [ "$XO_STOOD_DOWN" -gt 0 ]; then
       printf '◈ NUMBER ONE: stood down on %s — you have the conn.\n' "$id"
     else
@@ -760,6 +1271,28 @@ cmd_off() {
   if [ "$XO_STOOD_DOWN" -gt 0 ]; then
     printf '  %d engaged mission(s) stood down — you have the conn.\n' "$XO_STOOD_DOWN"
   fi
+  # Same rule repo-wide: the switch is off, but a tree that is still running is
+  # said out loud and the verb fails. "OFF" above is a fact about the config;
+  # it is not, and must not read as, a claim about what has stopped.
+  if [ "$XO_STOP_FAILED" -gt 0 ]; then
+    xo_say_stop_failed "$(printf '%s' "$XO_STOP_FAILED_ON" | sed 's/^ *//')"
+    return 1
+  fi
+  return 0
+}
+
+# ONE writer for the failed-stop sentence, so the single-mission and repo-wide
+# verbs cannot drift into saying different things about the same situation.
+xo_say_stop_failed() { # <mission(s)>
+  local who="${1:-}" pids
+  pids="$(printf '%s' "$XO_STOP_FAILED_PIDS" | tr ' ' '\n' | sed '/^$/d' \
+            | sort -un | tr '\n' ' ' | sed 's/ *$//')"
+  printf '◈ NUMBER ONE: I could NOT stop everything on %s. Still running: pid(s) %s.\n' \
+    "${who:-the mission}" "${pids:-unknown}" >&2
+  printf '  YOU DO NOT HAVE THE CONN — one of those is a worker that bills.\n' >&2
+  printf '  I kept the handle, so try again: `lcars xo off %s`. If it survives that too, `kill -9 %s`.\n' \
+    "${who%% *}" "${pids:-<those pids>}" >&2
+  return 0
 }
 
 # The status table. FOUR RECORDED COLUMNS — mission, stage, Number One's status,
@@ -1275,6 +1808,11 @@ xo_teardown() {
   xo_stop_launch
   [ -n "$XO_WORK_DIR" ] && xo_rm_work "$XO_WORK_DIR"
   XO_WORK_DIR=""
+  # AND THE MISSION GOES BACK. The claim is held for the WHOLE process, not
+  # just the looking part, because the measured defect was a second look
+  # overwriting the verdict AFTER the first had filed its bugs from it. It is
+  # released here, on the EXIT trap, so every way out of a look gives it back.
+  xo_release_claim
   return 0
 }
 
@@ -1378,6 +1916,10 @@ cmd_answer() {
   # its read-only input copy at all; the EXIT trap does now, on every path.
   trap xo_teardown EXIT
   trap on_stand_down TERM INT
+  # ONE AT A TIME, ON ONE MISSION (fix round 4, D1). Taken BEFORE the pidfile,
+  # because the pidfile is a RECORD of a look and this is the PERMISSION for
+  # one. The EXIT trap above gives it back on every path out.
+  xo_claim_or_die "$dir" "a look at the ${stage:-?} gate"
   printf '%s\n' "$$" >"$dir/xo.pid"
 
   printf '◈ NUMBER ONE: reading the record for %s (%s gate)…\n' "$id" "${stage:-?}"
@@ -2483,10 +3025,42 @@ cmd_evaluate() {
     printf '  if the thing that blocked me has been cleared: lcars xo evaluate --mission %s --again --because "<what changed>"\n' "$id"
     return 0
   fi
+  # ── EVERY REFUSAL COMES BEFORE THE SUPERSESSION (fix round 5, D2) ─────────
+  # MEASURED: `evaluate --again --because "<why>"` on a logged bug child printed
+  # "the verdict of <ts> (low) is superseded: <reason>" — and journaled it —
+  # and THEN refused the re-look. The verdict itself was never mutated, but the
+  # captain had just been told his verdict was replaced by a run that went on to
+  # do nothing, and the mission's own journal said the same. So the two refusals
+  # below are hoisted ABOVE the supersession: nothing announces or records a
+  # supersession until the re-look is genuinely going to happen.
+  #
+  # A BUG CHILD IS NEVER EVALUATED. Its parent's PR carries the fix (Mission
+  # logs' Model A); looking at a child would score the parent's build twice.
+  if grep -q '"parentMission"' "$st" 2>/dev/null; then
+    printf '◈ NUMBER ONE: %s is a logged bug child — its parent carries the build.\n' "$id"
+    return 0
+  fi
+
+  # ONE LOOK AT A TIME, ON ONE MISSION (fix round 4, D1). This is the verb the
+  # measured incident ran twice at once: it took no lock of any kind, and the
+  # second look overwrote the first's verdict.json and report.md after the
+  # first had already filed bugs from them.
+  #
+  # TAKEN BEFORE THE LOOK'S DIRECTORY IS TOUCHED, not after. A claim placed
+  # below the `mkdir`/`look.txt` lines would let the loser name a look and
+  # repoint `look.txt` at it before being refused — which is the same class of
+  # mess, one file smaller. The EXIT trap is armed FIRST, so a refusal here
+  # still tears down cleanly and gives nothing back that it does not own.
+  trap xo_teardown EXIT
+  trap on_stand_down TERM INT
+  xo_claim_or_die "$dir" "a Verify look"
+
   # THE SUPERSESSION IS A RECORD BEFORE IT IS A RE-RUN (S239). The prior score,
   # when it was taken and the captain's reason go into the mission's own journal
   # FIRST, so a re-look that then dies still leaves an auditable trail of why a
-  # finished verdict stopped being the current one.
+  # finished verdict stopped being the current one. It is written here — past
+  # every refusal, before the look's own directory exists — so the trail is only
+  # ever written about a look that is actually starting.
   if [ "$again" = 1 ] && [ -n "$seen" ]; then
     local prior_score prior_rec
     prior_score="$(obj_get "$(state_xo_block "$st")" score)"
@@ -2495,13 +3069,6 @@ cmd_evaluate() {
       "$(jstr "$prior_score")" "$(jstr "$prior_rec")" "$(jstr "$seen")" "$(jstr "$because")")"
     printf '◈ NUMBER ONE: looking again at %s — the verdict of %s (%s) is superseded: %s\n' \
       "$id" "$seen" "${prior_score:-no grade}" "$because"
-  fi
-
-  # A BUG CHILD IS NEVER EVALUATED. Its parent's PR carries the fix (Mission
-  # logs' Model A); looking at a child would score the parent's build twice.
-  if grep -q '"parentMission"' "$st" 2>/dev/null; then
-    printf '◈ NUMBER ONE: %s is a logged bug child — its parent carries the build.\n' "$id"
-    return 0
   fi
 
   # THIS LOOK'S OWN DIRECTORY (fix round 2, D1), and the pointer `file-logs`
@@ -2513,11 +3080,6 @@ cmd_evaluate() {
   XO_MISSION_DIR="$dir"
   XO_LAUNCH_ID="$id"
   XO_STOP_LOG="$xodir/launch.log"
-  # EVERY WAY OUT TEARS DOWN WHAT THIS RUN STARTED (fix round 1, D2) — the EXIT
-  # trap for a `die` or a normal return, the TERM/INT trap for the captain's
-  # stop button and for a parent that dies.
-  trap xo_teardown EXIT
-  trap on_stand_down TERM INT
   printf '%s\n' "$$" >"$dir/xo.pid"
 
   # NUMBER ONE IS ENGAGED FOR THE WHOLE SPIN (fix round 1, D1). Written BEFORE
@@ -3124,14 +3686,29 @@ file_logs_for() { # <id> <dir>
         printf '  already filed: %s — %s\n' "$crit" "$title"
         ;;
       GAP)
-        # GAP <n> <prd> <shots-csv> <criterion> <title>
+        # GAP <n> <prd> <shots-csv> <criterion> <title> <attach-csv>
         # US, NOT TAB — <shots-csv> is EMPTY for a gap the project's own tests
         # found, and a tab would eat it and shift the title into nothing.
-        IFS="$XO_RS" read -r key num prd shotcsv crit title <<< "$line"
+        #
+        # TWO LISTS, ON PURPOSE (fix round 4, D5). <shots-csv> is what the LOOK
+        # CITED and is what goes into `xo/logs.json` for `xo recheck` to
+        # re-take; <attach-csv> is the WIDER list of files to hang on the
+        # issue, which may include a fallback picture for a gap that cited
+        # none. Writing the wider list into the record turned a shotless gap's
+        # `"shots": []` into `["shot-01"]` — a fallback attachment rewriting
+        # the gap's own evidence. A record and an attachment are not one fact.
+        # An older xo-logs.py emitting six fields leaves <attach-csv> empty,
+        # and the `:-$shotcsv` below falls back to the old behaviour exactly.
+        IFS="$XO_RS" read -r key num prd shotcsv crit title attachcsv <<< "$line"
         [ -f "$prd" ] || continue
         n=$((n + 1))
         args+=(--prd "$prd")
-        for s in ${shotcsv//,/ }; do
+        # TWO EXPANSIONS, NOT ONE. Bash cannot do `:-` and `//,/ ` in the same
+        # parameter expansion, and `${attachcsv:-$shotcsv}` alone silently
+        # dropped the comma-to-space split — one argument of
+        # "a.png,b.png" that no `[ -f ]` would ever match.
+        local attachlist="${attachcsv:-$shotcsv}"
+        for s in ${attachlist//,/ }; do
           # A SHOT THAT IS NOT THERE IS NOT PASSED. `log.sh` validates every
           # attachment before it files ANYTHING, so one missing PNG would refuse
           # the whole filing — and a gap is worth filing with a name for its
@@ -3246,6 +3823,35 @@ file_logs_for() { # <id> <dir>
     i=$((i + 1))
   done
 
+  # --- THE SEND-BACK NAMES WHAT IT IS ABOUT (fix round 4, D4) --------------
+  # `xo-score.py` decides the send-back as DATA and writes `blockers[]` for it,
+  # with its own comment saying `filedAs` is "stamped onto them later, by
+  # whoever files them". Nothing ever stamped it — a grep for the name found
+  # two comments promising it and no writer. So the captain was handed a
+  # SEND-BACK naming no bug id and no command, three lines under a list of the
+  # very bug ids it was decided from.
+  #
+  # THE FILER RECORDS IT. This is the producer: it knows the criterion and the
+  # mission id it got for that criterion, so it writes the pair down once, on
+  # the row the decision was made from. No surface ever parses a bug id back
+  # out of finished prose.
+  if [ -f "$xodir/verdict.json" ] && [ -f "$SKILL_DIR/xo-filed.py" ]; then
+    local -a filedargs=()
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      [ -n "${kid[$i]:-}" ] && filedargs+=("${gap_crit[$i]:-}=${kid[$i]}")
+      i=$((i + 1))
+    done
+    local sendback=""
+    if [ "${#filedargs[@]}" -gt 0 ]; then
+      sendback="$("$XO_PY" "$SKILL_DIR/xo-filed.py" "$xodir/verdict.json" "$id" \
+                    "${filedargs[@]}" 2>/dev/null)" || sendback=""
+    fi
+    # Printed only when the verdict really says send-back — the helper returns
+    # nothing otherwise, so this is one line either way and never a guess.
+    [ -n "$sendback" ] && printf '  %s\n' "$sendback"
+  fi
+
   # --- hand them to LCARS's own driver, DETACHED ---------------------------
   # `resolve-logs` orders them, drives each to its Verify gate and raises ONE
   # consolidated re-verify ask on this parent. It takes a long time and it is
@@ -3258,19 +3864,16 @@ file_logs_for() { # <id> <dir>
   # the parent is this mission. It names ONLY this mission, so the child bug
   # missions this drive works — and the workers it spawns for them — are
   # exempted by nothing and locked exactly as they were.
-  if command -v setsid >/dev/null 2>&1; then
-    LCARS_XO_INTERNAL="$id" setsid bash "$XO_RESOLVE_SCRIPT" --parent "$id" \
-      </dev/null >"$xodir/resolve.log" 2>&1 &
-    rchild=$!
-  else
-    LCARS_XO_INTERNAL="$id" nohup bash "$XO_RESOLVE_SCRIPT" --parent "$id" \
-      </dev/null >"$xodir/resolve.log" 2>&1 &
-    rchild=$!
-  fi
-  disown "$rchild" 2>/dev/null || disown 2>/dev/null || true
-  # WHO it is, not just which number — so `lcars xo off` can stop this exact
-  # process later and can never mistake a recycled pid for it.
-  xo_write_pidfile "$rchild" "$dir/xo-resolve.pid"
+  #
+  # DETACHED THROUGH THE ONE HELPER (fix round 4, D3) — which makes the chain
+  # its own session so a single group kill reaches the driver AND the worker it
+  # spawns, and records WHO it is. See xo_spawn_detached for the measurement
+  # that made this necessary: `setsid` is absent on macOS, the nohup fallback
+  # left the chain in the LOOK's group, and the stop killed the driver while
+  # its worker went on running.
+  rchild="$(LCARS_XO_INTERNAL="$id" xo_spawn_detached \
+    "$dir/xo-resolve.pid" "$xodir/resolve.log" \
+    bash "$XO_RESOLVE_SCRIPT" --parent "$id")"
   printf '  LCARS is driving them now. I will re-check the build when they land.\n'
   return 0
 }
@@ -3938,6 +4541,61 @@ case "${1:-status}" in
     _uengine=""
     [ -n "${LCARS_WORKER_BIN:-}" ] || _uengine="$(xo_engine_for "$_ust")"
     xo_unlisted_pass "$_um" "$_ushots" "$_uout" "$_uengine" ;;
+  claim)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # Same reason `seed`, `unlisted` and `record-pid` exist: it drives
+    # `xo_claim_or_die` — the EXACT call `evaluate` and `answer` make — through
+    # the product's own code path, so the mutual exclusion can be proven by
+    # starting TWO REAL PROCESSES AT ONCE against one mission. A test that
+    # calls the function twice in sequence proves nothing about a race: the
+    # second call sees a finished first one.
+    #
+    # `--hold <secs>` keeps the claim for that long so the overlap is real.
+    # It prints CLAIMED when it wins; a loser never reaches this printf,
+    # because xo_claim_or_die dies.
+    shift
+    _cm=""; _ch=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --mission) _cm="${2:-}"; shift 2 || true ;;
+        --hold)    _ch="${2:-0}"; shift 2 || true ;;
+        *) shift ;;
+      esac
+    done
+    _cm="$(resolve_mission "$_cm")" || exit $?
+    trap xo_release_claim EXIT
+    xo_claim_or_die "$MISSIONS_DIR/$_cm" "a look"
+    printf 'CLAIMED %s by %s\n' "$_cm" "$$"
+    [ "$_ch" -gt 0 ] 2>/dev/null && sleep "$_ch"
+    exit 0 ;;
+  detach)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # It drives `xo_spawn_detached` — the EXACT spawn `file_logs_for` makes —
+    # so the process groups of a detached chain can be MEASURED through the
+    # product's own code path instead of a copy of it in a test.
+    shift
+    _dpf=""; _dlog="/dev/null"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --pidfile) _dpf="${2:-}"; shift 2 || true ;;
+        --log)     _dlog="${2:-/dev/null}"; shift 2 || true ;;
+        --)        shift; break ;;
+        *)         break ;;
+      esac
+    done
+    [ -n "$_dpf" ] || die "detach needs --pidfile <path>."
+    [ $# -gt 0 ]   || die "detach needs a command after --."
+    xo_spawn_detached "$_dpf" "$_dlog" "$@" >/dev/null
+    exit 0 ;;
+  signal-pidfile)
+    # NOT A CAPTAIN-FACING VERB. Same reason: it drives `xo_signal_pidfile`,
+    # the one `lcars xo off` calls, so what a stop actually reaches is provable.
+    # Exit status is the function's own: 0 signalled, 1 nothing there, 2 alive
+    # but not who the file was written about (and so NOT signalled).
+    shift
+    [ -n "${1:-}" ] || die "signal-pidfile needs a pid file."
+    xo_signal_pidfile "$1" "${2:-TERM}"
+    exit $? ;;
   record-pid)
     # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
     # It exists so a TEST can plant a pid file the way the product plants one,
