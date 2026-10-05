@@ -1164,6 +1164,13 @@ function xoEntryMatchesChip(entry, chipKey) {
 var XO_ACTION_LABELS = {
   criteria: "Read the drawing", launched: "Launched the build",
   looked: "Looked at the build", actions: "Drove the build",
+  // S246 — a look has no clock, so the board needs to say what is in flight.
+  // The entry carries its steps BOTH as a `did` list (for the CLI report, which
+  // renders one line each) and as a `detail` sentence, which is the field the
+  // generic entry renderer already shows. That is why no renderer changed here.
+  looking: "Looking now", noted: "Wrote itself a note",
+  "no-page": "No page to open — going on what it can reach",
+  "reach-tree": "Set up its own copy of the build to run things in",
   silent: "Nothing to report this round", scored: "Scored the build",
   "score-overruled": "Corrected its own score",
   "filed-logs": "Filed bugs for the gaps",

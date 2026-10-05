@@ -2378,6 +2378,12 @@ def main():
     # S239 fix round 3: the live-check items the record could not instantiate.
     journey_path = sys.argv[13] if len(sys.argv) > 13 else ""
     unbuilt_fix, unbuilt_design = load_unbuilt(journey_path)
+    # S246 — A REFUSAL FROM A MECHANISM THAT DID NOT RUN IS NOT A FINDING. With
+    # `LCARS_XO_TEMPLATER=0` nothing was instantiated from the record, so there is
+    # nothing it "could not build"; printing that list anyway would tell the
+    # captain his record is missing lines for steps nobody ever tried to make.
+    if str(os.environ.get("LCARS_XO_TEMPLATER", "")) == "0":
+        unbuilt_fix, unbuilt_design = [], []
     # S241: the look's SHOTS directory, so a cited shot's readout — the record
     # of where that picture was actually taken — can be read back. Absent, the
     # landing rail is OFF and every row stands exactly as the eye rated it: a
@@ -2406,6 +2412,22 @@ def main():
     doc = load(vpath, "verdict")
     if not isinstance(doc, dict):
         bad("the verdict is not a JSON object")
+
+    # S246 — WHAT THE LOOK ITSELF SAYS IT COULD NOT DO. Optional, and the only
+    # list under "What I could not check" that is not a blind ledger row: the
+    # worker's own `couldNot` entries, `{item, why}`. It replaces the templater's
+    # `reachUninstantiated` as the thing that fills that section, because a
+    # checklist item a TEMPLATE could not instantiate is a fact about the
+    # template, while an item the LOOK could not reach is a fact about the look.
+    could_not = []
+    for row in (doc.get("couldNot") or []):
+        if not isinstance(row, dict):
+            continue
+        item = " ".join(str(row.get("item") or "").split())
+        why = " ".join(str(row.get("why") or "").split())
+        if item or why:
+            could_not.append({"item": item or "something it did not name",
+                              "why": why or "it did not say why"})
 
     contract = load(cpath, "criteria list")
     contract_list = contract.get("criteria") if isinstance(contract, dict) else []
@@ -4220,12 +4242,19 @@ def main():
                   "counted it as the point of the mission, the careful reading. "
                   "*(%s)*\n" % (what, e["id"]))
         blind = [e for e in ledger if e["status"] == "untested"]
-        if blind or unbuilt_fix:
+        if blind or unbuilt_fix or could_not:
             w("\n### What I could not check\n\n")
             for e in blind:
                 w("- %s — %s. *(%s)*\n" % (
                     clip(e["text"], 120) or "this one",
                     unstop(e["note"] or "I could not check this"), e["id"]))
+            # S246 — IN THE LOOK'S OWN WORDS, beside the blind rows. These are
+            # not criteria and they are not failures: they are the things the eye
+            # went looking for and could not get to, which is exactly what the
+            # captain needs in order to decide whether to look himself.
+            for row in could_not:
+                w("- %s — %s. *(I could not get to this)*\n"
+                  % (clip(row["item"], 120), unstop(row["why"])))
             # THE STEPS THAT WERE NEVER BUILT (S239 fix round 3). Not a failure
             # and never reported as one: the record did not say the one thing
             # the step needed, so nothing was guessed and nothing was run. The

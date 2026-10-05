@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """xo-run.py — RUN the declared steps a browser was never going to reach (S239).
 
-    python3 xo-run.py run     --journey <journey.json> --out <shots-dir>
-                              --repo <repo> --branch <branch> --mission-dir <dir>
-    python3 xo-run.py actions --actions <xo-actions.json> --out <kept.json>
-                              --mission-dir <dir> [--cap 12]
+    python3 xo-run.py run      --journey <journey.json> --out <shots-dir>
+                               --repo <repo> --branch <branch> --mission-dir <dir>
+                               [--worktree <wt> --home <home>]
+    python3 xo-run.py actions  --actions <xo-actions.json> --out <kept.json>
+                               --mission-dir <dir> [--cap 12]
+    python3 xo-run.py prepare  --repo <repo> --branch <branch>
+    python3 xo-run.py teardown --repo <repo> --worktree <wt> --home <home>
+
+ONE TREE AND ONE HOME FOR THE WHOLE LOOK (S246). `prepare` mints them once,
+`run --worktree … --home …` reuses them for every round, and `teardown` removes
+them at the end of the look. Without that, every `run` minted its own and a
+worker could not file a record in round 1 and read it back in round 2 — which is
+most of what the captain's buddy does by hand. Given no `--worktree/--home`,
+`run` still mints and removes its own, for the callers that really are one
+process long (recheck, and the unit tests that drive this file head-on).
 
 WHY THIS FILE EXISTS — THE MEASUREMENT, NOT A HUNCH.
 On the Canvas weekend (26–29 Sep 2026), same product, 34 runs: Number One filed
@@ -100,6 +111,22 @@ CHECKED_BY = {"run": "cli", "workflow": "workflow", "read": "test"}
 
 WORKTREE_MARK = "<worktree>"
 HOME_MARK = "<throwaway-home>"
+# A SECOND ACTOR IS A SECOND HOME (S246). The cli checklist's item 4 — "two
+# actors, two HOMEs, two laptops" — was the one item a single HOME could never
+# instantiate, and the buddy does it by hand every time. A step may now declare
+# `<throwaway-home-2>` (or `-3`) and the harness MINTS it, beside the look's
+# first HOME and under the same parent, on first use.
+#
+# THE FENCE DID NOT MOVE FURTHER THAN THAT. An arbitrary HOME is still refused:
+# the allowed set is exactly the look's OWN marks, resolved to dirs this process
+# created. `/Users/somebody-else` is refused by `refuse_reason` as it always was,
+# and `declared_escape` refuses it at the request gate too.
+HOME_MARK_2 = "<throwaway-home-2>"
+HOME_MARK_3 = "<throwaway-home-3>"
+EXTRA_HOME_MARKS = (HOME_MARK_2, HOME_MARK_3)
+# mark → the directory minted for it, for THIS process. Populated on first use
+# by `mint_extra_home`, read by `resolve`, `refuse_reason` and `teardown`.
+_EXTRA_HOMES = {}
 
 
 def say(msg):
@@ -219,6 +246,17 @@ def teardown(repo, worktree, home):
             shutil.rmtree(worktree, ignore_errors=True)
         if home:
             shutil.rmtree(home, ignore_errors=True)
+        # AND THE SECOND LAPTOP (S246). Minted beside the first, so it goes with
+        # it — a throwaway HOME that outlives its look is exactly the leftover
+        # config that makes the NEXT look's product look configured. Also swept
+        # by sibling name, so a teardown that never saw the mint still finds it.
+        for mark in EXTRA_HOME_MARKS:
+            extra = _EXTRA_HOMES.get(mark)
+            if not extra and home:
+                extra = home.rstrip(os.sep) + (mark[len("<throwaway-home"):-1] or "")
+            if extra:
+                shutil.rmtree(extra, ignore_errors=True)
+            _EXTRA_HOMES.pop(mark, None)
         if repo:
             subprocess.run([GIT, "-C", repo, "worktree", "prune"],
                            capture_output=True, text=True)
@@ -238,6 +276,19 @@ def _teardown_on_signal(signum, _frame):
     os._exit(128 + int(signum))
 
 
+def _reap_and_exit(signum, _frame):
+    """A signal when the tree is the LOOK's, not this process's (S246).
+
+    The step children are still ours to kill — they are in their own groups by
+    design, so a dying look does not take them along — but the worktree and the
+    throwaway HOME belong to `xo.sh evaluate`, which tears them down in its own
+    TERM trap. Removing them here would pull the ground out from under the next
+    round of a look that is merely being interrupted.
+    """
+    _reap_step_children()
+    os._exit(128 + int(signum))
+
+
 def arm_teardown(repo, worktree, home):
     """Make the live worktree reachable from a signal handler, and install them."""
     _LIVE.update({"repo": repo, "worktree": worktree, "home": home})
@@ -251,9 +302,56 @@ def arm_teardown(repo, worktree, home):
 # ===========================================================================
 # RESOLVING AND REFUSING A STEP
 # ===========================================================================
+def mint_extra_home(mark, home):
+    """The dir for `<throwaway-home-2|3>`, minted on first use beside `home`.
+
+    BESIDE THE FIRST, NEVER SOMEWHERE ELSE: a sibling under the same parent, so
+    the look's teardown (which already knows that parent) takes it with it, and
+    so the readout's two HOME paths read as two laptops rather than two machines.
+    """
+    if mark in _EXTRA_HOMES:
+        return _EXTRA_HOMES[mark]
+    suffix = mark[len("<throwaway-home"):-1] or "-2"   # "-2" / "-3"
+    path = home.rstrip(os.sep) + suffix
+    try:
+        os.makedirs(path, exist_ok=True)
+        os.makedirs(os.path.join(path, "tmp"), exist_ok=True)
+    except Exception:
+        return ""
+    _EXTRA_HOMES[mark] = path
+    return path
+
+
+def ensure_extra_homes(step, home):
+    """Mint whatever extra-HOME marks this step names, before anything resolves.
+
+    Read off the step's own JSON text, so a mark in `env`, in `cwd` or inside an
+    `argv` element is all the same question: did this step ask for a second
+    laptop? Nothing is minted for a step that did not ask.
+    """
+    try:
+        blob = json.dumps(step)
+    except Exception:
+        return
+    for mark in EXTRA_HOME_MARKS:
+        if mark in blob:
+            mint_extra_home(mark, home)
+
+
+def allowed_homes(home):
+    """Every HOME a step of THIS look may run under — the look's own marks."""
+    return [h for h in ([home] + list(_EXTRA_HOMES.values())) if h]
+
+
 def resolve(value, worktree, home):
     if isinstance(value, str):
-        return value.replace(WORKTREE_MARK, worktree).replace(HOME_MARK, home)
+        out = value.replace(WORKTREE_MARK, worktree)
+        # The extra marks FIRST: they are distinct strings (`<throwaway-home-2>`
+        # does not contain `<throwaway-home>`), but resolving them first keeps
+        # the order of substitution from ever being load-bearing.
+        for mark, path in _EXTRA_HOMES.items():
+            out = out.replace(mark, path)
+        return out.replace(HOME_MARK, home)
     if isinstance(value, list):
         return [resolve(v, worktree, home) for v in value]
     if isinstance(value, dict):
@@ -347,19 +445,23 @@ def argv_refusal(argv, worktree=None, home=None):
     why = _shell_refusal(argv)
     if why:
         return why
+    marks = (WORKTREE_MARK, HOME_MARK) + EXTRA_HOME_MARKS
     for raw in argv:
         s = str(raw)
-        if WORKTREE_MARK in s or HOME_MARK in s:
+        if any(m in s for m in marks):
             # The honourable form: inside the sandbox once resolved, or refused.
             if worktree is None:
-                if ".." in s.replace(WORKTREE_MARK, "").replace(
-                        HOME_MARK, "").split("/"):
+                bare = s
+                for m in marks:
+                    bare = bare.replace(m, "")
+                if ".." in bare.split("/"):
                     return ("its argv names %s, which walks up out of the "
                             "worktree — a step addresses only what is inside "
                             "the sandbox" % s)
                 continue
             r = resolve(s, worktree, home)
-            if not (inside(worktree, r) or inside(home, r)):
+            if not (inside(worktree, r)
+                    or any(inside(h, r) for h in allowed_homes(home))):
                 return ("its argv names %s, which resolves to %s outside the "
                         "detached worktree — a step addresses only what is "
                         "inside the sandbox" % (s, r))
@@ -390,7 +492,12 @@ def refuse_reason(step, worktree, home):
                 "runs against the mission's checked-out branch" % (cwd, worktree))
     env = resolve(step.get("env") or {}, worktree, home)
     declared_home = str(env.get("HOME") or home)
-    if not inside(home, declared_home):
+    # ONE OF THE LOOK'S OWN MARKS, AND NOTHING ELSE (S246). The look's first
+    # HOME, or a `<throwaway-home-2|3>` this process minted beside it. A literal
+    # path — the captain's real HOME, somebody else's — is refused exactly as it
+    # has always been: that is the whole difference between a second laptop and a
+    # config written earlier that makes an unconfigurable product look configured.
+    if not any(inside(h, declared_home) for h in allowed_homes(home)):
         return ("its HOME %s is outside the throwaway HOME %s — a config written "
                 "earlier makes an unconfigurable product look configured"
                 % (declared_home, home))
@@ -534,7 +641,13 @@ def do_run(step, worktree, home, outdir):
     argv = [str(a) for a in resolve(step.get("argv") or [], worktree, home)]
     cwd = resolve(step.get("cwd") or WORKTREE_MARK, worktree, home)
     env = step_env(resolve(step.get("env") or {}, worktree, home), home)
-    env["HOME"] = home if not inside(home, env.get("HOME", "")) else env["HOME"]
+    # The declared HOME is kept only when it is one of the look's own marks
+    # (S246 — `refuse_reason` has already refused anything else); otherwise the
+    # look's first HOME stands in, so a step can never run as the captain.
+    if not any(inside(h, env.get("HOME", "")) for h in allowed_homes(home)):
+        env["HOME"] = home
+    env["TMPDIR"] = os.path.join(env["HOME"], "tmp")
+    os.makedirs(env["TMPDIR"], exist_ok=True)
     rc, out, err, hung = run_cmd(argv, cwd, env, STEP_TIMEOUT)
     met, checks = verdict(step.get("expect"), exit_code=rc, stdout=out,
                           stderr=err, worktree=worktree)
@@ -551,6 +664,15 @@ def do_run(step, worktree, home, outdir):
                "worktree": worktree, "home": env["HOME"],
                "exit": rc, "hung": hung, "stdout": out, "stderr": err,
                "expect": step.get("expect") or {}, "checks": checks, "met": met}
+    # THE SECOND LAPTOP IS ON THE RECORD (S246). Without this the captain reads
+    # two transcripts of "no records yet" and has no way to tell a second actor
+    # from a product that stores nothing at all.
+    for mark in EXTRA_HOME_MARKS:
+        path = _EXTRA_HOMES.get(mark)
+        if path and inside(path, env["HOME"]):
+            readout["home2"] = path
+            readout["homeMark"] = mark
+            break
     return transcript, readout
 
 
@@ -702,15 +824,35 @@ def cmd_run(opt):
                          "the checked-out tree\n")
         return 2
 
-    pair, why = prepare(repo, branch)
-    if pair is None:
-        say("◈ I could not reach past the browser: %s" % why)
-        journal(mission_dir, "reach-refused", {"why": why, "branch": branch})
-        return 3
-    worktree, home = pair
-    # BEFORE the first step: a `finally` does not run on a signal, and a look
-    # that was killed left a REGISTERED worktree in the captain's repo.
-    arm_teardown(repo, worktree, home)
+    # ONE TREE AND ONE HOME FOR THE WHOLE LOOK (S246). When the caller has
+    # already prepared them — `xo.sh evaluate` does, once, before the first
+    # round — they are handed in and this process neither mints nor removes
+    # them. That is what lets a worker file a record in round 1 and read it
+    # back in round 2: the state it wrote is still there.
+    #
+    # Minting its own is the FALLBACK, for the callers that are genuinely one
+    # process long (recheck, and every unit test that drives this file head-on).
+    worktree = opt("worktree") or ""
+    home = opt("home") or ""
+    owned = not (worktree and home and os.path.isdir(worktree))
+    if owned:
+        pair, why = prepare(repo, branch)
+        if pair is None:
+            say("◈ I could not reach past the browser: %s" % why)
+            journal(mission_dir, "reach-refused", {"why": why, "branch": branch})
+            return 3
+        worktree, home = pair
+        # BEFORE the first step: a `finally` does not run on a signal, and a look
+        # that was killed left a REGISTERED worktree in the captain's repo.
+        arm_teardown(repo, worktree, home)
+    else:
+        # The step children are still this process's to reap on a signal, even
+        # though the tree is not this process's to remove.
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            try:
+                signal.signal(sig, _reap_and_exit)
+            except Exception:
+                pass
     say("◈ %d declared step(s), in a detached worktree of %s" % (len(steps), branch))
     say("  worktree: %s" % worktree)
     say("  HOME:     %s (throwaway)" % home)
@@ -725,6 +867,10 @@ def cmd_run(opt):
         for step in steps[:MAX_ACTIONS]:
             kind = str(step.get("do") or "")
             name = os.path.basename(step.get("evidence") or ("%s.txt" % (step.get("key") or kind)))
+            # BEFORE THE FENCE READS IT: a step that asked for a second laptop
+            # gets one minted, so `refuse_reason` is judging a real directory
+            # rather than an unresolved mark it would have to refuse.
+            ensure_extra_homes(step, home)
             why = refuse_reason(step, worktree, home)
             if why or kind not in REACH_KINDS:
                 why = why or "`%s` is not a step the harness executes" % kind
@@ -757,10 +903,54 @@ def cmd_run(opt):
             say("  %s %s (%s)" % ("ran" if readout["met"] is not False else "FAILED",
                                   name, readout["checkedBy"]))
     finally:
-        teardown(repo, worktree, home)
-    say("◈ %d declared step(s) reached, %d declined at execution; the worktree "
-        "and its HOME are gone." % (reached, declined))
+        if owned:
+            teardown(repo, worktree, home)
+    if owned:
+        say("◈ %d declared step(s) reached, %d declined at execution; the worktree "
+            "and its HOME are gone." % (reached, declined))
+    else:
+        # THE TREE STAYS UP BETWEEN ROUNDS (S246), and the line says so, because
+        # "the worktree and its HOME are gone" was the sentence a reader used to
+        # conclude that nothing could carry from one round to the next.
+        say("◈ %d declared step(s) reached, %d declined at execution; the look's "
+            "worktree and HOME are still standing for the next round."
+            % (reached, declined))
     say_unbuilt(journey)
+    return 0
+
+
+# ===========================================================================
+# prepare / teardown — the LOOK's own tree and HOME, minted ONCE (S246)
+# ===========================================================================
+# WHY THESE ARE SUBCOMMANDS AND NOT A SECOND HELPER IN xo.sh. `prepare()` above
+# is the ONE road to `autopilot.sh worktree` and `teardown()` is the ONE road
+# back; a look that minted its tree with its own shell would be the second
+# implementation this file's header refuses. So `xo.sh evaluate` calls these.
+def cmd_prepare(opt):
+    repo = os.path.abspath(opt("repo") or ".")
+    branch = opt("branch") or ""
+    if not branch:
+        sys.stderr.write("xo-run.py prepare: --branch is required — a look runs "
+                         "in a DETACHED worktree of the mission's branch\n")
+        return 2
+    pair, why = prepare(repo, branch)
+    if pair is None:
+        sys.stderr.write("xo-run.py prepare: %s\n" % why)
+        return 3
+    worktree, home = pair
+    # The SAME two lines `autopilot.sh worktree` prints, so there is one shape to
+    # parse wherever a caller reads this back.
+    say("WORKTREE: %s" % worktree)
+    say("HOME: %s" % home)
+    return 0
+
+
+def cmd_teardown(opt):
+    repo = os.path.abspath(opt("repo") or ".")
+    worktree = opt("worktree") or ""
+    home = opt("home") or ""
+    teardown(repo, worktree, home)
+    say("◈ the look's worktree and its throwaway HOME(s) are gone.")
     return 0
 
 
@@ -798,7 +988,11 @@ def declared_escape(step):
     env = step.get("env") or {}
     if isinstance(env, dict) and env.get("HOME"):
         h = str(env["HOME"])
-        if h != HOME_MARK and not h.startswith(HOME_MARK):
+        # S246 — a SECOND actor is allowed, an arbitrary HOME is not. The marks
+        # are the only honourable form; `/Users/somebody-else` still never gets
+        # past this gate, which is the control the suite keeps beside this line.
+        if not any(h == m or h.startswith(m)
+                   for m in (HOME_MARK,) + EXTRA_HOME_MARKS):
             return "env HOME %s is not the throwaway HOME" % h
     return ""
 
@@ -865,7 +1059,12 @@ def main(argv):
         return cmd_run(opt)
     if cmd == "actions":
         return cmd_actions(opt)
-    sys.stderr.write("xo-run.py: unknown command: %s (want: run | actions)\n" % cmd)
+    if cmd == "prepare":
+        return cmd_prepare(opt)
+    if cmd == "teardown":
+        return cmd_teardown(opt)
+    sys.stderr.write("xo-run.py: unknown command: %s "
+                     "(want: run | actions | prepare | teardown)\n" % cmd)
     return 2
 
 

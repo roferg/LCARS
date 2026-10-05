@@ -16587,6 +16587,64 @@ exactly as specified above, in the scratch output directory, and nowhere else.$p
 # xo.sh gathers it and would have failed already — but it IS named, because a
 # worker told to read a directory that is not there answers "the PRD is silent",
 # and that is the one wrong answer this round must never manufacture.
+# The live-check checklists this milestone's own contract asks for, catted whole
+# with the one paragraph that turns them from a schema into advice. Prints
+# nothing when the checklists are not installed — a missing file must never be
+# why a look does not happen.
+LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILL_DIR/live-check}"
+
+number_one_checklists() { # <input-dir> — the whole checklists, as the buddy gets them
+  local indir="${1:-}" crit="" types="" kind f
+  [ -d "$LIVE_CHECK_DIR" ] || return 0
+  crit="$indir/criteria.json"
+  if [ -f "$crit" ]; then
+    types="$("${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+got = [str(t.get("type") or "") for t in (d.get("productTypes") or [])
+       if isinstance(t, dict)]
+print(" ".join(t for t in got if t in ("cli", "web", "workflow")))' "$crit" 2>/dev/null)"
+  fi
+  # No record of a type is not a record that there is nothing to check.
+  [ -n "$types" ] || types="cli web workflow"
+  printf '%s\n' "## The live-check checklists — ADVICE YOU FOLLOW, not a schema anybody fills
+
+These are the checklists the captain follows BY HAND, whole, exactly as he reads
+them. They are what to look for and what counts as a defect. They are NOT a form:
+every \`run:\` block in them is an EXAMPLE of the shape, with the values left out
+on purpose, because the values are yours.
+
+So: **invent the values a human would.** A second user is a second home. Make
+owner ≠ login and name ≠ title on purpose — on a dev box they coincide and that
+is where the bug hides. Pick a value you will recognise when you see it come back.
+Follow ONE record through every hop, and read the artifact, not the status.
+
+You decide when you have seen enough. Write your verdict when you have.
+"
+  for kind in $types; do
+    f="$LIVE_CHECK_DIR/$kind.md"
+    [ -f "$f" ] || continue
+    printf '%s\n' "### live-check/$kind.md — the whole thing"
+    printf '%s\n' '```markdown'
+    cat "$f"
+    printf '%s\n\n' '```'
+  done
+  # WHAT THE TEMPLATER DID, SAID ONLY WHEN IT RAN. With `LCARS_XO_TEMPLATER=0`
+  # nothing was instantiated from the record and nothing was refused, so a
+  # sentence pointing the worker at `journey.json`'s reach steps would be sending
+  # it to read a list that does not exist (and, worse, telling it that someone
+  # already did this work).
+  if [ "${LCARS_XO_TEMPLATER:-1}" != "0" ]; then
+    printf '%s\n' "LCARS has already instantiated what it could of these items from your record
+into \`journey.json\`'s reach steps and run them; \`journey.json\` also records the
+items it could not build. Read both, then ask for whatever is still missing.
+"
+  fi
+  return 0
+}
+
 spawn_number_one() { # mission-id  mode  outdir
   local id="$1" mode="$2" outdir="$3"
   local template="$XO_PROMPTS_DIR/$mode.md"
@@ -16631,9 +16689,32 @@ spawn_number_one() { # mission-id  mode  outdir
 Your round budget: ${LCARS_XO_MAX_ROUNDS} round(s) of looking, in total. Ask for
 more actions only while rounds remain; with none left you must write a verdict."
   fi
+  # === THE LIVE-CHECK CHECKLISTS, HANDED OVER WHOLE (S246) ==================
+  #
+  # WHY WHOLE, AND WHY HERE. These are the files the captain's buddy reads — the
+  # same ones, byte for byte — and the buddy found all 31 bugs on the weekend
+  # Number One found none. What it had that Number One did not was not a better
+  # model: it was the whole checklist, in front of it, with permission to INVENT
+  # the values a human would. LCARS used to lift fenced templates out of these
+  # files and fill the two or three placeholders a record can supply, which is how
+  # "two actors, two HOMEs" went unbuilt on every mission ever looked at.
+  #
+  # So the worker now gets the files. `cat`, in the prompt, for the product types
+  # this milestone's own contract recorded — never all three on a CLI-only
+  # milestone, because a page checklist on a product with no page is noise.
+  #
+  # READ OFF THE RECORD, NOT GUESSED: `productTypes` in criteria.json, written by
+  # xo-criteria.py from the plan's entrypoints[] and the PRD's own PLAN RULE line.
+  # With no types recorded, all three go over — an empty record is not evidence
+  # that there is nothing to check.
+  local checklists=""
+  if [ "$mode" = "evaluate" ]; then
+    checklists="$(number_one_checklists "$indir")"
+  fi
   local extra="## The mission
 Mission id: $id
 $rounds_line
+$checklists
 
 ## Your input directory — the mission's RECORD, read-only
 $indir

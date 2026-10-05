@@ -71,6 +71,18 @@ SH
 done
 export PATH="$SHIM:$PATH"
 
+# A WORKER BINARY THAT SPENDS NOTHING, pinned where a look now reaches the worker
+# rounds (S246). Until S246 a launch that failed ended the look on the spot, so no
+# `evaluate` in this file ever hired anybody. Now a look with no page SCORES WHAT
+# IT REACHED instead of discarding it — which is the whole point of that change —
+# so the `--again` row below legitimately gets as far as hiring. Unpinned, the
+# engine resolves `copilot` off $PATH and the shim records the call; pinned, this
+# suite stays about REACH rather than about the engine ladder. It writes neither
+# output file, so the round is silent and the look ends.
+NOOP_WORKER="$TMPROOT/noop-worker"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$NOOP_WORKER"
+chmod +x "$NOOP_WORKER"
+
 echo "lcars xo — REACH (S239): product types, declared run/workflow/read steps, re-look, approve"
 
 # ===========================================================================
@@ -602,6 +614,7 @@ check "--again with no --because is REFUSED (a supersession states its reason)" 
 AGAIN="$TMPROOT/again.out"
 ( cd "$REPO" && LCARS_GH_BIN="$TMPROOT/gh" LCARS_XO_DRIVE=1 \
   LCARS_XO_LAUNCH_SCRIPT=/nonexistent \
+  LCARS_WORKER_BIN="$NOOP_WORKER" LCARS_WORKER_CLI=copilot \
   "$PY" "$CAGE" 150 bash "$XO" evaluate --mission lcars-20261002-001-abcd \
     --again --because "the test runner is installed now" ) \
   >"$AGAIN" 2>&1

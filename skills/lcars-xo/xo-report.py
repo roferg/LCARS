@@ -422,8 +422,18 @@ def _fmt_entry(e, with_mission=True):
             break
     detail = (" — " + detail_bits[0]) if detail_bits else ""
     indent = "  " if with_mission else "    "
-    return "%s%s  %s%s%s" % (indent, e.get("at") or "?", who,
-                              e.get("action") or "?", detail)
+    line = "%s%s  %s%s%s" % (indent, e.get("at") or "?", who,
+                             e.get("action") or "?", detail)
+    # S246 — A `looking` ENTRY CARRIES A LIST, NOT A SENTENCE. One line per step
+    # the round asked for, in the worker's own order, so a look that runs for an
+    # hour reads as a story rather than as "Drove the build" repeated. The loop
+    # above can only pick a STRING, so a `did` list fell off the report entirely.
+    did = e.get("did")
+    if isinstance(did, list) and did:
+        for one in did:
+            if isinstance(one, str) and one.strip():
+                line += "\n%s    · %s" % (indent, one.strip())
+    return line
 
 
 def render_text(report, show_all):

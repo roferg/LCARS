@@ -1401,18 +1401,29 @@ check "B10d. it says so out loud too" \
   "printf '%s' \"\$outD\" | grep -q 'the ledger decides'"
 
 # --------------------------------------------------------------------------
-# B10e. THE ACTION ROUNDS — at most TWO, and round three is never spawned.
+# B10e. THE ACTION ROUNDS, WHEN A CEILING IS ASKED FOR — at most TWO, and round
+#       three is never spawned.
 #
 # THE CEILING CAME DOWN FROM THREE (captain's ruling, 2026-09-20). Measured over
 # five real-arm runs, the extra round bought nothing: 3 rounds → 4/5, 2 → 3/5,
-# 2 → 5/5, 1 → 5/5, 1 → 5/5. The worker already ends early against the cap; this
-# only lowers what it can never exceed. The env override is unchanged and is
-# proven below, because the benchmark rig raises it.
+# 2 → 5/5, 1 → 5/5, 1 → 5/5.
+#
+# AND THEN IT BECAME OPT-IN (captain's ruling, 2026-10-04; S246). *A look has no
+# clock.* With `$LCARS_XO_MAX_ROUNDS` unset there is NO ceiling: the loop runs
+# until the worker writes its verdict, because the captain's buddy — following
+# the same checklists by hand — ran for hours while Number One was cut off at
+# roughly five minutes and so could never seed in one round and read the effect
+# in the next. **That default is proven in `tests/lcars-xo-drives.test.sh` §3.**
+#
+# What this row still proves, unchanged, is the CEILING: asked for, it is obeyed
+# exactly as it was, and every sentence that quotes it still reads true. The
+# number is now named here rather than inherited, which is also how the rows
+# below stay honest about which cap was in force.
 # --------------------------------------------------------------------------
 repoE="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mE="$(plant_verify "$repoE" "lcars-20260913-005")"
 : >"$XO_WORKER_LOG"; : >"$XO_DRIVE_LOG"
-outE="$(XO_EV_ROUNDS=9 xo_evaluate "$repoE" "lcars-20260913-005")"
+outE="$(XO_EV_ROUNDS=9 LCARS_XO_MAX_ROUNDS=2 xo_evaluate "$repoE" "lcars-20260913-005")"
 check "B10e. exactly TWO workers were hired, never a third" \
   "[ \"\$(grep -c '^worker ' '$XO_WORKER_LOG')\" = '2' ]"
 check "B10e. no verdict in two rounds → LOW" "[ \"\$(xo_state '$mE' score)\" = 'low' ]"
@@ -2436,8 +2447,18 @@ PJ
 : >"$XO_LAUNCH_LOG"; : >"$XO_WORKER_LOG"; : >"$XO_RESPOND_CALLS"
 rcK2=0
 outK2="$(XO_RC_BODY='' XO_EV_BODY='' xo_answer_b12 "$repoK2" "lcars-20260913-402")" || rcK2=$?
+# NAMED BY MISSION, NOT BY AN EMPTY FILE (S246). This row asks one thing: did
+# THIS park relaunch? It used to ask it as "the shared launch log is empty",
+# which also answers a question it does not own — whether every earlier case in
+# this suite has fully quiesced. Measured here on 2026-10-04: at this point the
+# log held `launch lcars-20260913-401` + its `--stop`, and a `--stop` from
+# B10c's 104, all from earlier cases' teardowns landing after the `: >` above,
+# and NOT ONE line naming 402. So the behaviour was intact and the assertion was
+# reading someone else's work. It is now keyed on this mission's own id, which
+# still FAILS the moment this park relaunches — the positive control is the row
+# above it, where a real re-verify gate launches 401 by name.
 check "B12h. an ordinary Verify park that TALKS about logs does NOT route to recheck" \
-  "[ ! -s '$XO_LAUNCH_LOG' ]"
+  "! grep -q 'launch lcars-20260913-402' '$XO_LAUNCH_LOG'"
 check "B12h. …it took the intent-answer road instead (a worker was hired)" \
   "[ -s '$XO_WORKER_LOG' ]"
 

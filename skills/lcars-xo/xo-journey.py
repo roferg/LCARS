@@ -1316,6 +1316,24 @@ def reach_steps(contract, prd_text=""):
     product's OWN backticked invocation lines, and that is read as the record it
     is, not parsed for meaning.
     """
+    # ── THE TEMPLATER IS NOW SWITCHABLE (S246; it is DELETED in S247) ────────
+    #
+    # WHY. This function runs FIRST and fills the record with the steps it could
+    # instantiate — plus `reachUninstantiated`, every item it could NOT build —
+    # and the worker only ever gets to ADD to that. But the whole point of S246 is
+    # that the worker is handed the checklists WHOLE and chooses its own steps
+    # with values it invents, which is exactly the work this function does badly:
+    # it can fill `realistic-value` and `subcommand` and nothing else, so items
+    # 4–8 of the cli checklist (a second actor, an owner-not-login pair, a
+    # non-default host) go unbuilt on every single mission by construction.
+    #
+    # With `LCARS_XO_TEMPLATER=0` it instantiates NOTHING and refuses NOTHING:
+    # no steps, and no list of items it could not build, because a refusal from a
+    # mechanism that did not run is not a finding about the captain's record.
+    # S247 removes the mechanism; this switch is how the worker path carries the
+    # load first, which is the order a deletion has to happen in.
+    if str(os.environ.get("LCARS_XO_TEMPLATER", "")) == "0":
+        return [], []
     contract = contract if isinstance(contract, dict) else {}
     crit = [c for c in (contract.get("criteria") or []) if isinstance(c, dict)]
     types = [t.get("type") for t in (contract.get("productTypes") or [])
