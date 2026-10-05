@@ -14,6 +14,12 @@
 #   1. the unbuilt-items block   — `for items, why in unbuilt_lines(...)`
 #   2. the "Choices I made for you" loop over decisions.json — `why = ...d["why"]`
 #
+# S247 — LOOP 1 IS DELETED WITH THE TEMPLATER, AND ITS SEAT IS NOT EMPTY. The
+# block that now writes prose into "What I could not check" is the look's OWN
+# `couldNot` list (S246), rendered from `row["why"]`. That is the same hazard in
+# the same section, so case A is re-pointed at it rather than retired: the suite's
+# job is to pin the WIRE against whatever writes last into that section.
+#
 # Either one left the LAST sentence of a report section on the wire, so the board
 # card read "your record never named the command it runs" where it should have
 # read "Everything you asked for is in the build, and I saw each one on screen."
@@ -99,29 +105,20 @@ cat >"$TMPROOT/worker.json" <<'W'
 W
 
 # ─── FIXTURES ────────────────────────────────────────────────────────────────
-# A bare record whose live-check items CANNOT be built, each with a one-line fix
-# — the class round 3 taught the report to deliver.
-cat >"$TMPROOT/journey-unbuilt.json" <<'J'
-{"reachUninstantiated": [
-  {"item": "cli#1", "why": "your record never named the command it runs",
-   "oneLineFix": true},
-  {"item": "cli#2", "why": "your record never named the command it runs",
-   "oneLineFix": true},
-  {"item": "web#1", "why": "your record never named the page it opens",
-   "oneLineFix": true}
-]}
-J
+# A look that SAYS, in its own words, what it could not get to — the S246 list
+# that fills "What I could not check" beside the blind ledger rows, and the last
+# thing that writes prose into that section.
+"$PY" - "$TMPROOT/worker.json" "$TMPROOT/worker-couldnot.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["couldNot"] = [
+    {"item": "the second actor", "why": "your record never named the command it runs"},
+    {"item": "the owner/login pair", "why": "your record never named the command it runs"},
+    {"item": "the deployed page", "why": "your record never named the page it opens"}]
+json.dump(d, open(sys.argv[2], "w"), indent=1)
+P
 UNBUILT_1="your record never named the command it runs"
 UNBUILT_2="your record never named the page it opens"
-
-# POSITIVE CONTROL for the unbuilt path: a record with items the record genuinely
-# cannot supply (no oneLineFix) — so there are NO actionable unbuilt items and the
-# fixable block never renders.
-cat >"$TMPROOT/journey-clean.json" <<'J'
-{"reachUninstantiated": [
-  {"item": "cli#4", "why": "this one wants a second actor nobody named"}
-]}
-J
 
 cat >"$TMPROOT/decisions.json" <<'D'
 {"decisions": [
@@ -148,10 +145,10 @@ echo '{"decisions": []}' >"$TMPROOT/decisions-empty.json"
 # set so decisions lands at argv[12] and journey at argv[13] exactly as xo.sh
 # passes them. Args are passed LITERALLY, never through a word-splitting variable.
 run() {
-  local name="$1" decisions="$2" journey="$3"
+  local name="$1" decisions="$2" journey="$3" worker="${4:-$TMPROOT/worker.json}"
   mkdir -p "$TMPROOT/$name"
   "$PY" "$SCOREPY" \
-    "$TMPROOT/worker.json" \
+    "$worker" \
     "$TMPROOT/criteria.json" \
     "$TMPROOT/$name/verdict.json" \
     "" "" "" "" "" "" "" "" \
@@ -185,21 +182,21 @@ check "0. the baseline WHY is a non-trivial sentence (not vacuous)" \
 check "0. the baseline WHY IS the frozen grade derivation" \
   "[ \"\$PLAIN_WHY\" = \"\$PLAIN_DERIV\" ]"
 
-# ─── Case A: an unbuilt-items block is present ───────────────────────────────
-run unbuilt "" "$TMPROOT/journey-unbuilt.json"
+# ─── Case A: a could-not block is present ────────────────────────────────────
+run unbuilt "" "" "$TMPROOT/worker-couldnot.json"
 A_WHY="$(wire unbuilt WHY)"
 A_DERIV="$(field unbuilt derivation)"
 
 # The round-3 delivery, still delivered. These must be green BEFORE the fix too:
 # the cure may not cost the report a word.
-check "A. the report still raises the items it could not BUILD" \
-  "grep -q 'I could not BUILD from your record at all' '$TMPROOT/unbuilt/report.md'"
+check "A. the report still raises what the look could not get to" \
+  "grep -q 'I could not get to this' '$TMPROOT/unbuilt/report.md'"
 check "A. the report still carries the first refusal sentence" \
   "grep -qF '$UNBUILT_1' '$TMPROOT/unbuilt/report.md'"
 check "A. the report still carries the second refusal sentence" \
   "grep -qF '$UNBUILT_2' '$TMPROOT/unbuilt/report.md'"
-check "A. the report still names the items each refusal covers" \
-  "grep -qF 'cli#1, cli#2' '$TMPROOT/unbuilt/report.md'"
+check "A. the report still names the thing each refusal is about" \
+  "grep -qF 'the owner/login pair' '$TMPROOT/unbuilt/report.md'"
 
 # THE CONTRACT.
 check "A. WHY carries the grade derivation, not the refusal sentence" \
@@ -208,16 +205,15 @@ check "A. WHY does not carry the first refusal sentence" \
   "! printf '%s' \"\$A_WHY\" | grep -qF '$UNBUILT_1'"
 check "A. WHY does not carry the second refusal sentence" \
   "! printf '%s' \"\$A_WHY\" | grep -qF '$UNBUILT_2'"
-check "A. the unbuilt block did not move the wire line off the baseline grade" \
+check "A. the could-not block did not move the wire line off the baseline grade" \
   "[ \"\$A_WHY\" = \"\$PLAIN_WHY\" ]"
 
-# POSITIVE CONTROL: a record whose unbuilt items have no one-line fix renders no
-# fixable block — and its wire line is the grade derivation too. Two states, told
-# apart.
-run unbuilt_clean "" "$TMPROOT/journey-clean.json"
+# POSITIVE CONTROL: a look that says it could not get to anything renders no such
+# block — and its wire line is the grade derivation too. Two states, told apart.
+run unbuilt_clean "" ""
 B_WHY="$(wire unbuilt_clean WHY)"
-check "A(control). with no ACTIONABLE unbuilt items the block is absent" \
-  "! grep -q 'I could not BUILD from your record at all' '$TMPROOT/unbuilt_clean/report.md'"
+check "A(control). with nothing the look could not get to, the block is absent" \
+  "! grep -q 'I could not get to this' '$TMPROOT/unbuilt_clean/report.md'"
 check "A(control). and WHY is the grade derivation there as well" \
   "[ \"\$B_WHY\" = \"\$(field unbuilt_clean derivation)\" ]"
 check "A(control). the two states agree on the wire line (block changes nothing)" \
@@ -262,14 +258,14 @@ check "C(control). the two states agree on the wire line" \
   "[ \"\$D_WHY\" = \"\$C_WHY\" ]"
 
 # ─── Case E: BOTH blocks at once, the worst case ─────────────────────────────
-run both "$TMPROOT/decisions.json" "$TMPROOT/journey-unbuilt.json"
+run both "$TMPROOT/decisions.json" "" "$TMPROOT/worker-couldnot.json"
 E_WHY="$(wire both WHY)"
 check "E. with BOTH blocks present WHY is still the grade derivation" \
   "[ \"\$E_WHY\" = \"\$(field both derivation)\" ]"
 check "E. with BOTH blocks present WHY still equals the baseline grade" \
   "[ \"\$E_WHY\" = \"\$PLAIN_WHY\" ]"
 check "E. both blocks still rendered in the report" \
-  "grep -q 'I could not BUILD from your record at all' '$TMPROOT/both/report.md' && grep -q '### Choices I made for you' '$TMPROOT/both/report.md'"
+  "grep -q 'I could not get to this' '$TMPROOT/both/report.md' && grep -q '### Choices I made for you' '$TMPROOT/both/report.md'"
 
 # ─── THE CONTROL THAT WOULD HAVE CAUGHT THE ORIGINAL BUG ─────────────────────
 # The wire line must never TURN UP INSIDE any line either block emitted. This is
@@ -313,7 +309,7 @@ collides() { # <wire-value> ← block lines on stdin; 0 when the wire turns up i
   return 1
 }
 
-UNBUILT_BLOCK="$(block_lines both 'I could not BUILD from your record at all' '^### ')"
+UNBUILT_BLOCK="$(block_lines both '^### What I could not check' '^### ')"
 DECISION_BLOCK="$(block_lines both '^### Choices I made for you' '^### What I could not check')"
 
 check "control. the unbuilt block really was captured (non-empty)" \

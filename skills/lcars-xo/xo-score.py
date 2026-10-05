@@ -907,6 +907,74 @@ LANDING_NO_DECLARED_PLACE = "no declared place"
 # is not is the exact failure this round exists to close.
 LANDING_UNPLACED_MARK = "I did not check this picture is of the right screen"
 
+# S247 — AND A PART THAT *WAS* CHECKED SAYS SO, POSITIVELY.
+#
+# THE MEASUREMENT. 35 `part-…` rows across the six archived looks cite a picture
+# and read a flat `MET | a picture | shot-11 — …`. The landing rail returns None
+# for every one of them, and correctly: a `drawnAt` of `gold-roster` names a PART,
+# not a screen, so there is no screen to compare. But the proof was already in
+# the cited shot's OWN readout all along — `places[<part>].present`, `.laidOut`
+# and `.box`, written by xo-drive.js beside every PNG. On the archive that reads
+# 35/35 laid out with a real box; the same part against a shot of another screen
+# reads `laidOut: false, 0×0` (measured, s241/measure). So the row can state what
+# its picture proves instead of asserting a bare MET — and when the picture does
+# NOT show the part, that is a GAP in the captain's own words, with the readout
+# quoted rather than paraphrased.
+#
+# THE RULE READS THE READOUT, NEVER A FILENAME. `drawnPart` is the planner's own
+# recorded field (xo-parts.py), the measurement is the browser's, and nothing
+# here parses an id's spelling or a shot's name to decide which part a row is
+# about — that guess is exactly how `inv-full` came to be read as the Inventory.
+LANDING_PART_PLACED = "the picture shows %s, laid out at %d\u00d7%d"
+LANDING_PART_MISSING = "no measurement of this part"
+
+
+def part_measurement(doc, part):
+    """What a shot's own readout measured for ONE drawn part, or None.
+
+    `None` means the readout never measured it — which is not evidence that the
+    part is missing, and is said as "no measurement" rather than as a fault."""
+    if not isinstance(doc, dict) or not str(part or "").strip():
+        return None
+    page = doc.get("page") if isinstance(doc.get("page"), dict) else {}
+    places = page.get("places") if isinstance(page.get("places"), dict) else {}
+    got = places.get(str(part))
+    if not isinstance(got, dict):
+        return None
+    box = got.get("box") if isinstance(got.get("box"), dict) else {}
+    try:
+        w, h = int(box.get("w") or 0), int(box.get("h") or 0)
+    except (TypeError, ValueError):
+        w, h = 0, 0
+    return {"present": bool(got.get("present")), "laidOut": bool(got.get("laidOut")),
+            "w": w, "h": h}
+
+
+def part_landing(part, measured):
+    """The row's recorded landing for a drawn part — composed ONCE, here.
+
+    Three answers and no fourth: the picture shows it (a positive statement the
+    report prints as-is), the picture does not (a gap, with the readout's own
+    numbers quoted), or the readout never measured it (the S241 disclosure, in
+    the words that family already uses)."""
+    if measured is None:
+        return {"unplaced": True, "part": part,
+                "expected": {"rule": LANDING_PART_MISSING},
+                "reason": "%s — nothing beside the picture records a measurement of "
+                          "%s, so I could not check it against the drawing"
+                          % (LANDING_UNPLACED_MARK, part)}
+    if measured["present"] and measured["laidOut"] and measured["w"] and measured["h"]:
+        return {"partPlaced": True, "part": part,
+                "box": {"w": measured["w"], "h": measured["h"]},
+                "reason": LANDING_PART_PLACED % (part, measured["w"], measured["h"])}
+    return {"partPlaced": False, "part": part,
+            "box": {"w": measured["w"], "h": measured["h"]},
+            "reason": "the picture records %s as present: %s, laidOut: %s, %d\u00d7%d — "
+                      "so this picture does not show the part your drawing names"
+                      % (part, "true" if measured["present"] else "false",
+                         "true" if measured["laidOut"] else "false",
+                         measured["w"], measured["h"])}
+
 
 def landing_readout(shotsroot, name):
     """The readout `.json` beside a recorded shot, and where it was found.
@@ -1345,7 +1413,11 @@ def unplaced_mark(landing, limit=280):
     # disclosure arrives whole.
     # The cell stays BOUNDED — the evidence text keeps its own 160 and is not
     # shortened to make room; the row's ceiling simply moved, it did not vanish.
-    reason = clip(landing.get("reason") or "", limit) \
+    # `from` IS THE BARE RECORDED CLAUSE, and `reason` is this whole sentence
+    # written back onto the row (S247) so a consumer of the field alone learns
+    # what the cell says. Reading `reason` here would print the mark twice; `from`
+    # is what the producers record for exactly this reader.
+    reason = clip(landing.get("from") or landing.get("reason") or "", limit) \
         or "and my record does not say why"
     # `clip` ends a trimmed reason with its own ellipsis, so a full stop added
     # on top of it reads as "…." — one stop, and only when the recorded text
@@ -1355,6 +1427,18 @@ def unplaced_mark(landing, limit=280):
     return "%s (%s) — %s" % (
         LANDING_UNPLACED_MARK,
         rule or "my record does not say which rule applied", reason)
+
+
+def placed_mark(landing):
+    """The positive statement a drawn part's row prints, or "".
+
+    READ, NEVER RE-DERIVED, exactly as `unplaced_mark` is: the sentence was
+    composed once by `part_landing` in the scoring pass and recorded on the row.
+    "" for every row that is not a measured-and-present drawn part, so no other
+    row changes by a character."""
+    if not isinstance(landing, dict) or landing.get("partPlaced") is not True:
+        return ""
+    return " ".join(str(landing.get("reason") or "").split())
 
 
 def landing_by_shot(walk, journey):
@@ -2244,42 +2328,6 @@ def load_walk(path):
             "screens": doc.get("screens") or []}
 
 
-# S239 FIX ROUND 3 — THE REFUSAL WAS RECORDED AND NEVER DELIVERED.
-# `journey.reachUninstantiated` holds every live-check item the record could not
-# INSTANTIATE, each with a reason xo-journey.py already worded for the captain.
-# On a live look at ec9e4c6 ten of them sat on disk and nothing printed one.
-# They belong in the section he already reads for exactly this question —
-# "What I could not check" — not in a new one.
-#
-# TWO CLASSES, AND ONLY ONE IS HIS. `cli#4-8` and `web#4-6` want a second actor,
-# an owner-not-login pair, a non-default host, an artifact nobody named: facts a
-# record genuinely cannot supply, so they go unbuilt on EVERY healthy mission.
-# Raising those would cry wolf on every look, which is how S212's guard got
-# ignored. The split is READ OFF THE RECORD (`oneLineFix`, written by
-# xo-journey.py) and never re-derived from the prose here.
-def load_unbuilt(path):
-    """(items a one-line record edit recovers, items the record cannot supply)."""
-    doc = load_json_or_none(path)
-    if not isinstance(doc, dict):
-        return [], []
-    un = [u for u in (doc.get("reachUninstantiated") or []) if isinstance(u, dict)]
-    return ([u for u in un if u.get("oneLineFix")],
-            [u for u in un if not u.get("oneLineFix")])
-
-
-def unbuilt_lines(items):
-    """One bullet per REASON, with the items it covers named beside it, so a
-    sentence shared by two items is said once instead of twice."""
-    order, by = [], {}
-    for u in items:
-        why = " ".join(str(u.get("why") or "").split())
-        if why not in by:
-            by[why] = []
-            order.append(why)
-        by[why].append(str(u.get("item") or "?"))
-    return [(", ".join(by[why]), why) for why in order]
-
-
 def walk_sentence(walk):
     m = (walk or {}).get("moves") or {}
     return ("I moved through it with %d click(s), %d typing(s) and %d keypress(es)"
@@ -2375,15 +2423,12 @@ def main():
     # other is the scoring system's OWN assumed-impact call (impactAssumed).
     decisions_path = sys.argv[12] if len(sys.argv) > 12 else ""
     made_decisions = load_json_or_none(decisions_path)
-    # S239 fix round 3: the live-check items the record could not instantiate.
+    # The journey, for the landing rail's recorded intents (S241) and for the
+    # browser steps a row can be traced back to. NOTHING is read off it about
+    # live-check items any more: the worker is the one author of the step list
+    # (S247), so the only "I could not check this" that reaches the captain is a
+    # blind ledger row or the look's OWN `couldNot`.
     journey_path = sys.argv[13] if len(sys.argv) > 13 else ""
-    unbuilt_fix, unbuilt_design = load_unbuilt(journey_path)
-    # S246 — A REFUSAL FROM A MECHANISM THAT DID NOT RUN IS NOT A FINDING. With
-    # `LCARS_XO_TEMPLATER=0` nothing was instantiated from the record, so there is
-    # nothing it "could not build"; printing that list anyway would tell the
-    # captain his record is missing lines for steps nobody ever tried to make.
-    if str(os.environ.get("LCARS_XO_TEMPLATER", "")) == "0":
-        unbuilt_fix, unbuilt_design = [], []
     # S241: the look's SHOTS directory, so a cited shot's readout — the record
     # of where that picture was actually taken — can be read back. Absent, the
     # landing rail is OFF and every row stands exactly as the eye rated it: a
@@ -2415,10 +2460,10 @@ def main():
 
     # S246 — WHAT THE LOOK ITSELF SAYS IT COULD NOT DO. Optional, and the only
     # list under "What I could not check" that is not a blind ledger row: the
-    # worker's own `couldNot` entries, `{item, why}`. It replaces the templater's
-    # `reachUninstantiated` as the thing that fills that section, because a
-    # checklist item a TEMPLATE could not instantiate is a fact about the
-    # template, while an item the LOOK could not reach is a fact about the look.
+    # worker's own `couldNot` entries, `{item, why}`. Since S247 it is the ONLY
+    # thing that fills that section beside the blind rows, because a checklist
+    # item a template could not instantiate was a fact about the template, while
+    # an item the LOOK could not reach is a fact about the look.
     could_not = []
     for row in (doc.get("couldNot") or []):
         if not isinstance(row, dict):
@@ -2769,12 +2814,47 @@ def main():
                     # that the build is wrong), and it SAYS SO on the row rather
                     # than letting the citation read as checked. No place is
                     # invented and no mismatch is claimed.
+                    #
+                    # AND `reason` SAYS WHAT THE CELL SAYS (S247). It used to be
+                    # the bare `from` clause, while the rendered cell ALSO stated
+                    # that the picture went unverified — so a consumer reading
+                    # `landing.reason` alone (the board, a later pass, a human
+                    # with the JSON) never learned the one fact the disclosure
+                    # exists to carry. `from` keeps the bare clause for the
+                    # renderer; `reason` is the whole sentence.
                     landing = {"unplaced": True, "shot": shot,
-                               "reason": str(_intent.get("from") or ""),
+                               "from": str(_intent.get("from") or ""),
                                "expected": _intent}
+                    landing["reason"] = unplaced_mark(landing)
                     landing_not_placed.append(
                         {"criterion": cid, "shot": shot,
                          "reason": str(_intent.get("from") or "")})
+                else:
+                    # ── S247: A DRAWN PART IS CHECKED AGAINST ITS OWN PICTURE ──
+                    # The rail has nothing to say about a `drawnAt` that names a
+                    # PART rather than a screen, which is why 35 rows across the
+                    # archive read a flat MET. The readout beside the cited shot
+                    # measured that very part, so the row states what the picture
+                    # proves — or, when the picture does not show it, says that
+                    # instead, with the recorded numbers quoted.
+                    _part = str((contract_by_id.get(cid) or {}).get("drawnPart")
+                                or "").strip()
+                    if _part:
+                        landing = part_landing(_part,
+                                               part_measurement(_rdoc, _part))
+                        landing["shot"] = shot
+                        if landing.get("partPlaced") is False:
+                            notes.append(
+                                "criterion %s cites %s, and that picture's own "
+                                "readout does not show %s laid out; recorded as a "
+                                "gap" % (cid, shot, _part))
+                            note = landing["reason"]
+                            status = "gap"
+                        elif landing.get("unplaced"):
+                            landing_not_placed.append(
+                                {"criterion": cid, "shot": shot,
+                                 "reason": "nothing beside %s measures %s"
+                                           % (shot, _part)})
                 # A SHOT THAT LANDED WHERE IT WAS MEANT TO IS JUST EVIDENCE, and
                 # it says so by carrying nothing extra. Stamping `mismatch:
                 # false` on every settled row looked tidier and broke the
@@ -4144,10 +4224,40 @@ def main():
             # but the cell that names its evidence now also names the limit of
             # that evidence, in the words the record used. Empty string for every
             # row that was genuinely checked, so no settled row changes at all.
+            # AND A ROW WHOSE PICTURE *DOES* PROVE ITS PART SAYS SO (S247).
+            # The positive half of the same rule, in the sentence the scoring
+            # pass recorded: "the picture shows gold-roster, laid out at 117×33".
+            # It replaces a bare MET, which told the captain nothing about what
+            # was actually compared.
+            #
+            # ONE SEPARATOR FUNCTION FOR BOTH, AND IT IS NOT INSIDE
+            # `unplaced_mark` (S247). The old glue was `rstrip() + " "`, so a
+            # note that did not end in a stop ran straight into the disclosure —
+            # "…matched by id with no measurement fired I did not check this
+            # picture…" — on 2 of the 16 disclosure rows in the archive. The fix
+            # belongs where the two strings are JOINED, not inside the sentence
+            # being appended: `unplaced_mark` is also read on its own, by the
+            # verdict's `landing.reason`, where a leading dash would be wrong.
+            # AND A TRUNCATION ELLIPSIS IS NOT A FULL STOP (S247 fix round).
+            # `clip` ends a shortened note with … to say the sentence was CUT
+            # OFF, not that it ended — so counting it as a terminator put the
+            # appended clause straight onto a severed sentence, the very defect
+            # this function exists to stop: "…that's the post-win award, not
+            # a… the picture shows gold-dungeon". A severed head gets the dash
+            # like any other unterminated one, on both halves of the rule.
+            def _joined(before, after):
+                head = before.rstrip()
+                if not head:
+                    return after
+                sep = " " if head[-1:] in (".", "\u2014", ";", "!", "?") else " \u2014 "
+                return head + sep + after
+
             _unplaced = unplaced_mark(e.get("landing"))
             if _unplaced:
-                what_i_saw = what_i_saw.rstrip() + \
-                    (" " if what_i_saw.strip() else "") + _unplaced
+                what_i_saw = _joined(what_i_saw, _unplaced)
+            _placed = placed_mark(e.get("landing"))
+            if _placed:
+                what_i_saw = _joined(what_i_saw, _placed)
             w("| %s | %s | %s | %s | %s |\n" % (
                 e["id"] + (" (PRD)" if e["primary"] else ""),
                 clip(e["text"], 120).replace("|", "\\|"),
@@ -4242,7 +4352,7 @@ def main():
                   "counted it as the point of the mission, the careful reading. "
                   "*(%s)*\n" % (what, e["id"]))
         blind = [e for e in ledger if e["status"] == "untested"]
-        if blind or unbuilt_fix or could_not:
+        if blind or could_not:
             w("\n### What I could not check\n\n")
             for e in blind:
                 w("- %s — %s. *(%s)*\n" % (
@@ -4255,23 +4365,6 @@ def main():
             for row in could_not:
                 w("- %s — %s. *(I could not get to this)*\n"
                   % (clip(row["item"], 120), unstop(row["why"])))
-            # THE STEPS THAT WERE NEVER BUILT (S239 fix round 3). Not a failure
-            # and never reported as one: the record did not say the one thing
-            # the step needed, so nothing was guessed and nothing was run. The
-            # reason names the edit that recovers it.
-            if unbuilt_fix:
-                w("\n**%d of my live-check items I could not BUILD from your "
-                  "record at all — one line in your record recovers each of "
-                  "them:**\n\n" % len(unbuilt_fix))
-                # `wline`, NEVER `why` — same reason as the decisions loop above.
-                for items, wline in unbuilt_lines(unbuilt_fix):
-                    w("- **%s** — %s\n" % (items, wline))
-            if unbuilt_design:
-                w("\n*%d further live-check item(s) want a fact your record "
-                  "cannot supply — a second actor, an owner-not-login pair, a "
-                  "non-default host, an artifact nobody named. Those go unbuilt "
-                  "on every healthy mission; there is nothing for you to fix "
-                  "there.*\n" % len(unbuilt_design))
         # S216 — THE REASONING, ITEM BY ITEM. Its own section, not a table
         # column: the table above stays exactly as machine-readable as it was.
         if ledger:

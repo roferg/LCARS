@@ -131,30 +131,35 @@ The order is the contract:
    `productTypes` (`cli` / `web` / `workflow`, each with the SOURCE that said
    so) and, per criterion, `reachVia` — `cli | browser | workflow | test |
    none`. **A CLI criterion is reached by RUNNING the CLI, not by looking for it
-   on a page.** `xo-journey.py` then lifts the matching items out of the
-   live-check checklists (`skills/lcars-run/live-check/<type>.md` — the SAME
-   files the buddy follows in prose) into `journey.json.reachSteps`, of three
-   kinds: `run` (argv/cwd/env/expect/for), `workflow` (executed by
+   on a page.** The live-check checklists (`skills/lcars-run/live-check/<type>.md`
+   — the SAME files the buddy follows in prose) are handed to the worker WHOLE,
+   for the product types the contract recorded, as **advice the worker reads**:
+   every `run:` block in them is an EXAMPLE of a shape, with the values left out
+   on purpose, and the worker invents the values a human would. **There is ONE
+   author of the step list and it is the worker** (S247): nothing instantiates a
+   step from the record any more, so `journey.json.reachSteps` is the harness's
+   own log of what the worker ASKED FOR and was granted — never a list declared
+   before the look.
+
+   Three kinds: `run` (argv/cwd/env/expect/for), `workflow` (executed by
    `autopilot.sh workflow-run`, the runner that names the first failing step)
    and `read` (an artifact read rather than assumed). `xo-run.py` executes them
    in a **worktree detached from the mission's branch with a throwaway HOME**
-   (`autopilot.sh worktree --branch` — ONE machinery, the buddy's own), caged per
-   step, writing a transcript + a `.json` readout per step beside the browser
-   shots under `xo/shots/<look>/` with the checklist's own `NN-` naming. Each
-   row records `checkedBy`. **The worker still has NO shell** (S168, S222): the
-   steps are declared from the record and the harness runs them. It may ask for
-   more in `xo-actions.json`, under the SAME cap of 12 across all kinds; a step
-   that tries to leave the worktree or the throwaway HOME is REFUSED and
-   journaled. An item whose placeholders the record cannot fill is listed in
-   `journey.json.reachUninstantiated` with the reason — ours to fix, never a
-   step built out of an unsubstituted `<placeholder>`. **And that reason is
-   DELIVERED, not merely filed**: the console names the items a *one line*
-   edit to the record recovers (`oneLineFix`) and `report.md` repeats them
-   under *What I could not check*. The items that want a fact a record cannot
-   supply — `cli#4-8`, `web#4-6`: a second actor, an owner-not-login pair, a
-   non-default host — stay a quiet count, because an alarm that fires on every
-   healthy mission is an alarm nobody reads (S212). The console's own count of
-   steps *declined at execution* is a different number and says so.
+   (`autopilot.sh worktree --branch` — ONE machinery, the buddy's own), minted
+   ONCE for the whole look so a record filed in one round can be read back in the
+   next, caged per step, writing a transcript + a `.json` readout per step beside
+   the browser shots under `xo/shots/<look>/`. Each row records `checkedBy`.
+   **The worker still has NO shell** (S168, S222): it proposes, the harness
+   executes. Requests arrive in `xo-actions.json` under a cap of 12 across all
+   kinds; a step that tries to leave the worktree or the throwaway HOME is
+   REFUSED and journaled, and *declined at execution* is the ONLY refusal count
+   there is.
+
+   **`attempted N of M` is COUNTED AFTER THE LOOK** (`xo-journey.py coverage`),
+   off the readouts the steps wrote and the transcripts the ledger cites — a
+   criterion with neither stays `untested`, carrying the look's own `couldNot`
+   reason or *no step reached it*. It used to be computed before a single step
+   had run, which is why the archive records it never moving.
 
    Why: over one weekend, 34 looks on the same product, Number One filed **0 of
    31 bugs** and all sixteen of its recorded misses were REACH errors, not

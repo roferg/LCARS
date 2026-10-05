@@ -3439,7 +3439,33 @@ xo_reach_actions() { # <mission-dir> <xodir> <shots> <xo-actions.json> <round>
   [ -s "$kept" ] || return 0
   n="$(xo_reach_count "$kept")"
   [ "${n:-0}" -gt 0 ] || return 0
+  # THE HARNESS'S RECORD OF WHAT IT GRANTED (S247). `journey.json.reachSteps` is
+  # no longer authored from the record by anybody — the worker is the one author
+  # of the step list — so this is the one place it is written: the steps that were
+  # asked for and allowed, appended round by round. Coverage is then counted off
+  # the readouts those steps wrote, never off a list declared before the look.
+  "$XO_PY" "$XO_JOURNEY_PY" reach-record --journey "$xodir/journey.json" \
+    --steps "$kept" >/dev/null 2>&1 || true
   xo_run_reach "$dir" "$xodir" "$shots" "$kept"
+}
+
+# ── WHAT THIS LOOK ACTUALLY ATTEMPTED, COUNTED AFTER IT (S247) ──────────────
+#
+# THE DEFECT. `attempted N of M` — the one coverage number the captain asked to
+# SEE — was computed by `xo-journey.py build`, BEFORE a single step had run, from
+# the browser steps it had just declared. So it was a prediction, and the
+# weekend's ledger records what that cost: the figure never moved, whatever the
+# look reached. Recounted here, from the step readouts on disk and the
+# transcripts the ledger cites, it is a measurement.
+xo_recount_coverage() { # <mission-dir> <xodir> <shots>
+  local dir="$1" xodir="$2" shots="$3" said=""
+  [ -s "$xodir/journey.json" ] || return 0
+  said="$("$XO_PY" "$XO_JOURNEY_PY" coverage --journey "$xodir/journey.json" \
+          --shots "$shots" --verdict "$xodir/verdict.json" 2>/dev/null)" || said=""
+  [ -n "$said" ] || return 0
+  printf '◈ NUMBER ONE: %s.\n' "$said"
+  journal "$dir" coverage "$(printf '"detail": %s' "$(jstr "$said")")"
+  return 0
 }
 
 # WHAT THE WALK MEASURED, added to what the layout pass measured. Two readings
@@ -3938,16 +3964,21 @@ cmd_evaluate() {
   # invented while looking.
   xo_build_journey "$dir" "$xodir"
 
-  # --- 1d. THE REACH BEYOND THE BROWSER (S239) -----------------------------
-  # Run BEFORE the launch, because a CLI and a workflow do not need a server up
-  # and four of the weekend's misses were looks that reached nothing because the
-  # launch target was stale.
+  # --- 1d. THE TREE THE REACH RUNS IN (S239, S246, S247) -------------------
+  # MINTED BEFORE THE LAUNCH, because a CLI and a workflow do not need a server
+  # up and four of the weekend's misses were looks that reached nothing because
+  # the launch target was stale.
   #
-  # S246 — THE TREE IS MINTED ONCE, HERE, and lives until the look ends. Every
-  # round's steps run in that same tree under that same throwaway HOME, which is
-  # what lets the worker file a record and then read it back.
+  # S246 — IT IS MINTED ONCE, HERE, and lives until the look ends. Every round's
+  # steps run in that same tree under that same throwaway HOME, which is what
+  # lets the worker file a record and then read it back.
+  #
+  # S247 — AND NOTHING RUNS IN IT YET. There used to be an `xo_run_reach` on this
+  # line, executing the steps `xo-journey.py` had instantiated from the record.
+  # That instantiation is deleted: the worker is the one author of the step list,
+  # and its steps arrive through `xo_reach_actions` in the rounds below. Preparing
+  # the tree here is still right — the first round must find it standing.
   xo_reach_prepare "$dir"
-  xo_run_reach "$dir" "$xodir" "$shots"
 
   # --- 2. LAUNCH ------------------------------------------------------------
   # Through launch.sh, the verb a human uses, with no --open-ish path anywhere
@@ -4407,6 +4438,13 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
     printf '  Number One scored this %s; the ledger says %s, and the ledger decides.\n' \
       "$wscore" "$score"
   fi
+
+  # --- 6b. WHAT IT ACTUALLY ATTEMPTED (S247) --------------------------------
+  # After the ledger exists, because the count reads the transcripts the ledger
+  # cites as well as the readouts on disk. Nothing here moves a grade — it
+  # corrects the one coverage number the captain reads so it describes this look
+  # instead of predicting it.
+  xo_recount_coverage "$dir" "$xodir" "$shots"
 
   # --- 7. THE RECORD --------------------------------------------------------
   # A HIGH finishes the first officer's work on this Mission. Anything else

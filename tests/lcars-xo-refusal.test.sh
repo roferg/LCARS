@@ -453,8 +453,49 @@ check "4d. the auto resolve-logs launch is LEFT EXACTLY AS IT IS (captain's call
   "grep -q 'XO_RESOLVE_SCRIPT\" --parent' '$SCRIPT'"
 check "4e. lcars-common.sh is untouched" \
   "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-init/lcars-common.sh"
-check "4f. the argv fence file is untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-xo/xo-run.py"
+# S247 — THE FENCE, NOT THE FILE. This was `git diff --quiet` over the whole of
+# `xo-run.py`, which pinned every line in it, fence or not — and S247 legitimately
+# deletes 57 lines of templater DELIVERY from that same file (`unbuilt`,
+# `BY_DESIGN`, `say_unbuilt`: the "items I could not build" console block). A
+# whole-file guard cannot tell that apart from someone weakening the argv fence,
+# so it is narrowed to the fence ITSELF and made STRONGER: the refusal symbols are
+# compared, source for source, against the committed version. Any edit to any of
+# them fails this, and an edit anywhere else in the file does not.
+cat >"$TMPROOT/fence-src.py" <<'FENCEEOF'
+import ast, sys
+WANT = ("SHELLS", "LAUNDERERS", "INTERPRETERS", "SHELL_FLAG_LETTERS",
+        "INLINE_FLAG_LETTERS", "INLINE_LONG", "HOME_MARK", "EXTRA_HOME_MARKS",
+        "_shell_refusal", "argv_refusal", "declared_escape", "refuse_reason")
+src = open(sys.argv[1], encoding="utf-8").read()
+tree = ast.parse(src)
+out = []
+for node in tree.body:
+    name = None
+    if isinstance(node, (ast.FunctionDef,)):
+        name = node.name
+    elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
+            and isinstance(node.targets[0], ast.Name):
+        name = node.targets[0].id
+    if name in WANT:
+        out.append("### %s\n%s" % (name, ast.get_source_segment(src, node)))
+missing = [w for w in WANT if not any(o.startswith("### %s\n" % w) for o in out)]
+assert not missing, "the fence has lost symbols: %s" % missing
+print("\n".join(out))
+FENCEEOF
+( cd "$REPO_ROOT" && git show HEAD:skills/lcars-xo/xo-run.py ) \
+  >"$TMPROOT/xo-run-head.py" 2>/dev/null
+check "4f. fixture — the fence symbols are all still there to compare" \
+  "$PY '$TMPROOT/fence-src.py' '$REPO_ROOT/skills/lcars-xo/xo-run.py' >'$TMPROOT/fence-now.txt'"
+check "4f. the argv fence itself is untouched, symbol for symbol" \
+  "$PY '$TMPROOT/fence-src.py' '$TMPROOT/xo-run-head.py' >'$TMPROOT/fence-head.txt' && \
+   diff '$TMPROOT/fence-head.txt' '$TMPROOT/fence-now.txt'"
+check "4f. CONTROL — that comparison can FAIL (one word changed in a refusal)" \
+  "sed 's/is not a step the harness executes/is fine actually/' \
+     '$REPO_ROOT/skills/lcars-xo/xo-run.py' >'$TMPROOT/xo-run-weak.py' && \
+   sed 's/\\(if prog in SHELLS:\\)/\\1\\n        return \"\"/' \
+     '$TMPROOT/xo-run-weak.py' >'$TMPROOT/xo-run-weak2.py' && \
+   $PY '$TMPROOT/fence-src.py' '$TMPROOT/xo-run-weak2.py' >'$TMPROOT/fence-weak.txt' && \
+   ! diff -q '$TMPROOT/fence-now.txt' '$TMPROOT/fence-weak.txt' >/dev/null"
 check "4g. worker-adapter.sh and ownership.sh are untouched" \
   "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-run/worker-adapter.sh skills/lcars-run/ownership.sh"
 check "4h. no worker CLI was invoked anywhere in this suite" \

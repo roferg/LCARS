@@ -16631,17 +16631,13 @@ You decide when you have seen enough. Write your verdict when you have.
     cat "$f"
     printf '%s\n\n' '```'
   done
-  # WHAT THE TEMPLATER DID, SAID ONLY WHEN IT RAN. With `LCARS_XO_TEMPLATER=0`
-  # nothing was instantiated from the record and nothing was refused, so a
-  # sentence pointing the worker at `journey.json`'s reach steps would be sending
-  # it to read a list that does not exist (and, worse, telling it that someone
-  # already did this work).
-  if [ "${LCARS_XO_TEMPLATER:-1}" != "0" ]; then
-    printf '%s\n' "LCARS has already instantiated what it could of these items from your record
-into \`journey.json\`'s reach steps and run them; \`journey.json\` also records the
-items it could not build. Read both, then ask for whatever is still missing.
-"
-  fi
+  # AND NOBODY HAS DONE ANY OF IT FOR YOU (S247). A sentence used to sit here
+  # telling the worker that LCARS had instantiated what it could of these items
+  # from the record and run them, and that journey.json listed the rest — which is
+  # the one thing most likely to stop a reader doing the work itself. That
+  # mechanism is deleted; there is ONE author of the step list and it is the
+  # worker. The sentence is not reworded, it is gone, and the suite greps THIS
+  # FILE to prove it (lcars-xo-drives 7e).
   return 0
 }
 

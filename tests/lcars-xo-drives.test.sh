@@ -27,7 +27,7 @@
 #   6  THE `looking` ENTRY — every round journals what it is doing NOW, and the
 #      First Officer's report renders it with its `did` lines.
 #   7  THE PROMPT, BUDDY-SHAPED — the live-check checklists are handed to the
-#      worker WHOLE; templater text is absent when $LCARS_XO_TEMPLATER=0.
+#      worker WHOLE, and nothing claims a step was built from the record.
 #
 # THE FENCE THIS FILE GUARDS. The worker role stays repo-read with NO shell. It
 # DECLARES steps; the harness executes them. The second HOME widens the fence by
@@ -588,7 +588,7 @@ outD="$("$PY" "$CAGE" 900 bash -c '
     LCARS_LAUNCH_SCRIPT="$4" LCARS_XO_DRIVER="$5" LCARS_NODE_BIN=bash \
     LCARS_WORKER_BIN="$6" LCARS_WORKER_CLI=copilot \
     LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
-    LCARS_OWNER_ENFORCE=0 LCARS_XO_UNLISTED=0 LCARS_XO_TEMPLATER=0 \
+    LCARS_OWNER_ENFORCE=0 LCARS_XO_UNLISTED=0 \
     bash "$7" evaluate --mission lcars-20261004-304 2>&1' _ \
   "$repoD" "$XO_WORKER_LOG" "$SC_D" "$LAUNCH_STUB" "$DRIVE_STUB" "$EV_SHIM" "$XO" \
   "$XO_DRIVE_LOG" "$XO_LAUNCH_LOG")"
@@ -653,7 +653,7 @@ outE="$("$PY" "$CAGE" 600 bash -c '
     LCARS_LAUNCH_SCRIPT="$4" LCARS_XO_DRIVER="$5" LCARS_NODE_BIN=bash \
     LCARS_WORKER_BIN="$6" LCARS_WORKER_CLI=copilot \
     LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
-    LCARS_OWNER_ENFORCE=0 LCARS_XO_UNLISTED=0 LCARS_XO_TEMPLATER=0 \
+    LCARS_OWNER_ENFORCE=0 LCARS_XO_UNLISTED=0 \
     bash "$7" evaluate --mission lcars-20261004-305 2>&1' _ \
   "$repoE" "$XO_WORKER_LOG" "$SC_E" "$LAUNCH_STUB" "$DRIVE_STUB" "$EV_SHIM" "$XO" \
   "$XO_DRIVE_LOG" "$XO_LAUNCH_LOG")"
@@ -747,12 +747,15 @@ PL
 cp "$mP/xo/criteria.json" "$TMPROOT/p-in/criteria.json" 2>/dev/null || true
 cp "$mP/prd.md" "$TMPROOT/p-in/prd.md"
 
-dump_prompt() { # <templater-setting> <dump-file> [input-dir]
+# S247 — THE SWITCH IS GONE WITH THE MECHANISM. This helper took a
+# `$LCARS_XO_TEMPLATER` setting so S246 could prove the worker path carried the
+# load with the record-derived instantiation turned OFF. There is nothing to turn
+# off any more: the first argument is kept for the call shape and ignored.
+dump_prompt() { # <ignored> <dump-file> [input-dir]
   ( cd "$repoP" && XO_PROMPT_DUMP="$2" \
       LCARS_WORKER_ADAPTER="$ADAPTER" LCARS_WORKER_BIN="$EV_SHIM" \
       LCARS_WORKER_CLI=copilot LCARS_WORKER_HANG_SECS=0 \
       LCARS_XO_INPUT_DIR="${3:-$TMPROOT/p-in}" LCARS_GH_BIN=/usr/bin/true \
-      LCARS_XO_TEMPLATER="$1" \
       bash "$RUNSH" spawn-number-one --mission lcars-20261004-306 \
         --mode evaluate --outdir "$TMPROOT/p-out" >/dev/null 2>&1 )
 }
@@ -798,44 +801,41 @@ check "7d. the fence sentence SURVIVES the rewrite" \
   'tr "\n" " " <"$P_OFF" | tr -s " " | grep -q "You have no shell, and you are not getting one"'
 check "7d. …and so does the two-files contract" \
   'grep -q "xo-verdict.json" "$P_OFF" && grep -q "xo-actions.json" "$P_OFF"'
-check "7e. with the templater OFF, nothing claims steps were built from the record" \
+check "7e. nothing claims steps were built from the record" \
   '! grep -qi "reachUninstantiated" "$P_OFF" &&
    ! tr "\n" " " <"$P_OFF" | tr -s " " | grep -qi "already instantiated what it could"'
-P_ON="$TMPROOT/prompt-on.txt"
-dump_prompt 1 "$P_ON"
-check "7e. CONTROL — with the templater ON, that sentence IS there" \
-  'tr "\n" " " <"$P_ON" | tr -s " " | grep -qi "already instantiated what it could"'
-check "7e. …and the checklists are handed over in BOTH cases" \
-  'grep -qF "Two actors — two HOMEs, two laptops" "$P_ON"'
+# S247 — THE CONTROL IS NOW THE SOURCE, not a second prompt. There is no setting
+# that makes that sentence come back, so the thing to prove is that the sentence
+# is not in the prompt builder at all. Measured before the deletion: it was.
+check "7e. CONTROL — …and that sentence is gone from the prompt builder itself" \
+  '! grep -qi "already instantiated what it could" "$RUNSH"'
+check "7e. …and the checklists are still handed over whole" \
+  'grep -qF "Two actors — two HOMEs, two laptops" "$P_OFF"'
 
 # THE PROMPT FILE ITSELF GOT SHORTER. A prompt that grows is a named wrong answer.
 check "7f. evaluate.md is SHORTER than the 689 lines it was" \
   '[ "$(grep -c "" "$EVALUATE_MD")" -lt 689 ]'
 
-# AND THE TEMPLATER REALLY IS OFF when it is switched off.
+# AND NOTHING INSTANTIATES A STEP FROM THE RECORD, ON THE VERY RECORD THAT USED
+# TO PRODUCE SIX OF THEM (S247). This is the same fixture the switch was proved
+# with: a cli product type, a `relay.py` entrypoint and a cli criterion.
 cat >"$TMPROOT/t-criteria.json" <<'JSON'
 {"productTypes": [{"type": "cli", "source": "the plan's entrypoints[]"}],
  "entrypoints": [{"kind": "cli", "ticket": "t-1", "path": "relay.py"}],
  "criteria": [{"id": "prd-1", "text": "relay file stores a record",
                "reachVia": "cli", "primary": true, "notVisual": true}]}
 JSON
-check "7g. with \$LCARS_XO_TEMPLATER=0 the templater instantiates NOTHING" \
-  'LCARS_XO_TEMPLATER=0 "$PY" "$JOURNEY_PY" build --criteria "$TMPROOT/t-criteria.json" \
+check "7g. a cli record with an entrypoint instantiates NOTHING" \
+  '"$PY" "$JOURNEY_PY" build --criteria "$TMPROOT/t-criteria.json" \
      --prd "$mP/prd.md" --out "$TMPROOT/t-off.json" >/dev/null 2>&1;
    "$PY" -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-assert not (d.get(\"reachSteps\") or []), d.get(\"reachSteps\")
-assert not (d.get(\"reachUninstantiated\") or []), d.get(\"reachUninstantiated\")
+assert d.get(\"reachSteps\") == [], d.get(\"reachSteps\")
+assert \"reachUninstantiated\" not in d, sorted(d)
 " "$TMPROOT/t-off.json"'
-check "7g. CONTROL — with it ON (the default) it still instantiates steps" \
-  '"$PY" "$JOURNEY_PY" build --criteria "$TMPROOT/t-criteria.json" \
-     --prd "$mP/prd.md" --out "$TMPROOT/t-on.json" >/dev/null 2>&1;
-   "$PY" -c "
-import json,sys
-d=json.load(open(sys.argv[1]))
-assert (d.get(\"reachSteps\") or []), d
-" "$TMPROOT/t-on.json"'
+check "7g. CONTROL — and the ONE author of the list is named in the prompt" \
+  'tr "\n" " " <"$P_OFF" | tr -s " " | grep -qi "invent the values a human would"'
 
 # ===========================================================================
 # 8. THE WORKER'S OWN "what I could not check"

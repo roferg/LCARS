@@ -16,12 +16,21 @@ exist to remove the reach problem. They are not advice; they are the steps.
 | Reader | What it uses | How |
 |---|---|---|
 | **The buddy / autopilot** (`lcars buddy` → AUTOPILOT.md § 6) | the **prose** | a session with a shell: it runs the command, looks at the output, judges |
-| **Number One** (`lcars xo`, the rebuilt verifier) | the **fenced template** | a fenced worker with **no shell**: it lifts each item's `run:` / `workflow:` / `read:` block as a declared step and the harness executes it |
+| **Number One** (`lcars xo`, the rebuilt verifier) | **the whole file**, as **advice the worker reads** | a fenced worker with **no shell**: the checklists are catted into its prompt whole, it chooses its own steps and invents its own values, and the harness executes what it asks for (S246/S247 — LCARS no longer lifts the templates itself) |
 
 That is why every numbered item carries **both forms**, and why they must stay
 in **lockstep**: the prose's `**Evidence:**` path and the template's `evidence`
 key are asserted equal by `tests/live-check.test.sh`. If they drift, one of the
 two readers is quietly checking something else.
+
+**The template is an EXAMPLE, not a form anybody fills.** Until S247 LCARS lifted
+each `run:` block and substituted the two or three placeholders a record can
+supply — which is why *every* item needing a second actor, an owner-not-login
+pair or a non-default host (`cli#4-8`, `web#4-6`) went unbuilt on **every healthy
+mission**, and the captain read that refusal on every look. That mechanism is
+deleted. The whole file now goes to the worker as **advice the worker reads**,
+with the values deliberately left out, because the values are the reader's to
+invent — which is exactly what the buddy did when it found all 31.
 
 **The model does the looking. The script owns the setup, the evidence paths and
 the record.** No checklist item is "verify that X works" — each is an action
