@@ -856,7 +856,15 @@ OUTCOME_SAID = {OUTCOME_WORKED: "worked", OUTCOME_DIDNT: "didn't work",
 # is the captain's 2026-09-24 ruling: a works-question that got only a picture
 # was never exercised — a photo shows a Pause button is DRAWN, not that pausing
 # pauses — so the check was never set up, and it says so by name.
-SETUP_DEFEATED = ("unreachable", "no-change", "works-needs-action")
+# `needs-a-live-target` is S249's: the step that would have checked this row
+# names a host nobody consented to (or one with no credential behind it), so the
+# harness refused it and the check was never set up. It is OURS, always — a
+# missing allow-list entry is an infrastructure fact, never a statement about the
+# build — which is why `derive_recommendation` may not turn it into a send-back.
+SETUP_DEFEATED = ("unreachable", "no-change", "works-needs-action",
+                  "needs-a-live-target")
+NEEDS_LIVE = "needs-a-live-target"
+NEEDS_LIVE_SAID = "needs a live target"
 MY_CHECKING_NOTE = ("These are gaps in my checking, not a fault in your build. "
                     "They are mine to fix — nothing here is counted against you.")
 
@@ -1785,8 +1793,15 @@ def derive_recommendation(ledger, grade, finding_by_id=None, name_of=None):
         if st == "gap":
             (high_gaps if imp == "high" else other_gaps).append(e)
         elif st == "untested" and imp == "high":
+            # A MISSING LIVE TARGET IS ALWAYS OURS (S249). A row nobody could check
+            # because this repo's record consents to no live host is a hole in our
+            # rig, so it is a FOLLOW-UP (infrastructure) and never a blocker —
+            # whatever anything else stamped on it. Checked before the cause word,
+            # because that is the point: this reason is not up for interpretation.
+            if str(e.get("couldNotCheck") or "") == NEEDS_LIVE:
+                infra_blind.append(e)
             # AN UNRECORDED CAUSE IS INFRASTRUCTURE. See CAUSE_CLASS.
-            if str(e.get("cause") or "") == "product":
+            elif str(e.get("cause") or "") == "product":
                 product_blind.append(e)
             else:
                 infra_blind.append(e)
@@ -1855,7 +1870,16 @@ def derive_recommendation(ledger, grade, finding_by_id=None, name_of=None):
     # group — so the number the rule reads is the number the rule is about.
     checked_here = sum(1 for e in ledger
                        if str(e.get("status") or "") in ("met", "gap"))
-    nothing_checked = bool(ledger) and checked_here == 0
+    # AND THE ONE EXEMPTION FROM IT (S249). A rail whose rows ALL need a live
+    # target settled nothing — and the reason is that this repo's record consents
+    # to no live host. There is nothing in his build to send back; what is missing
+    # is an allow-list entry and a credential, which is a follow-up on US. So the
+    # floor applies only when something other than a missing live target is why
+    # nothing settled: one ordinary blind row anywhere and it fires as before.
+    live_blind_rows = sum(1 for e in ledger
+                          if str(e.get("couldNotCheck") or "") == NEEDS_LIVE)
+    nothing_checked = (bool(ledger) and checked_here == 0
+                       and checked_here + live_blind_rows < len(ledger))
 
     if blockers:
         rec = "send-back"
@@ -2533,6 +2557,25 @@ def main():
     # `xo-drive.js`'s per-shot `places` readout; no image is compared anywhere.
     # Absent (the usual case), this rail is OFF and every row stands as rated.
     wrong_screen_path = sys.argv[15] if len(sys.argv) > 15 else ""
+    # S249: `xo/live.json` — the harness's own record of what this look reached on
+    # a real host, and of every live step it REFUSED for want of consent. Two
+    # things are read off it and nothing is inferred: the criteria whose check
+    # never ran because nobody consented to the host (so the row reads
+    # `untested (needs a live target)` and asks for infrastructure instead of
+    # sending the build back), and the live effects the look declared it created
+    # (so the report can say what it touched and a teardown has a list). Absent —
+    # the usual case, and every look before this session — this rail is simply OFF.
+    live_path = sys.argv[16] if len(sys.argv) > 16 else ""
+    live_record = load_json_or_none(live_path)
+    if not isinstance(live_record, dict):
+        live_record = {}
+    live_refused_by_id = {}
+    for _r in (live_record.get("refused") or []):
+        if isinstance(_r, dict) and str(_r.get("criterion") or "").strip():
+            live_refused_by_id.setdefault(str(_r["criterion"]).strip(), _r)
+    live_effects = [e for e in (live_record.get("effects") or []) if isinstance(e, dict)]
+    live_consent = live_record.get("consent") \
+        if isinstance(live_record.get("consent"), dict) else {}
     wrong_screen = load_json_or_none(wrong_screen_path)
     if not (isinstance(wrong_screen, dict) and wrong_screen.get("wrongScreen")):
         wrong_screen = None
@@ -3412,6 +3455,48 @@ def main():
             e.pop("testQuote", None)
             works_on_look_alone.append({"id": e["id"], "text": e.get("text") or ""})
 
+    # ─── NEEDS A LIVE TARGET (S249) ──────────────────────────────────────────
+    #
+    # THE MEASURED DEFECT. Until S249 no credential ever reached a step, so a
+    # criterion about a REAL publish, a REAL workflow run or a REAL deployment
+    # could not be checked at all — and the look, having run the command against
+    # nothing, called it `met`. Five of the twenty-nine bugs the captain's buddy
+    # found on the weekend sat behind exactly that.
+    #
+    # So the harness now refuses a live step the record did not consent to, and
+    # RECORDS the refusal against the criterion it was for (`xo/live.json
+    # refused[]`, written by `xo-run.py`). Here that becomes the one thing the
+    # captain needs to read: the row is NOT met, it is `untested`, its reason is
+    # named, and the cause is OURS.
+    #
+    # A `gap` IS LEFT ALONE. A step that found a real defect found it; a missing
+    # credential does not unfind it. Only a row that was claimed or left blank is
+    # moved.
+    live_blind = []
+    for e in ledger:
+        r = live_refused_by_id.get(e["id"])
+        if not r or e["status"] == "gap":
+            continue
+        if e["status"] != "untested":
+            notes.append("%s was called %s, and the step that would have checked it "
+                         "never ran: %s" % (e["id"], e["status"], r.get("why") or NEEDS_LIVE_SAID))
+        e["status"] = "untested"
+        e["couldNotCheck"] = NEEDS_LIVE
+        # RECORDED, NOT INFERRED (CAUSE_CLASS). A hole we have not dug out of our
+        # own rig is never a doubt about his build, so this row may not become a
+        # send-back or a filed bug — see derive_recommendation.
+        e["cause"] = "infrastructure"
+        e["causeRecorded"] = True
+        e["evidence"] = "none"
+        e["note"] = ("I could not check this: it %s. %s" % (NEEDS_LIVE_SAID,
+                                                           r.get("why") or ""))
+        e["note"] = " ".join(e["note"].split())
+        e.pop("shot", None)
+        e.pop("testQuote", None)
+        live_blind.append({"id": e["id"], "text": e.get("text") or "",
+                           "why": r.get("why") or "", "host": r.get("host") or "",
+                           "owner": r.get("owner") or ""})
+
     # ─── S225: THE SOURCE IS READ AT LAST ────────────────────────────────────
     # Every guard above has finished; a row's status and its `couldNotCheck`
     # word are final, so this is the first line at which the four-way outcome
@@ -4085,6 +4170,15 @@ def main():
     }
     if my_checking["total"]:
         out["myChecking"] = my_checking
+    # ─── WHAT THIS LOOK TOUCHED LIVE (S249) — an ADDITIVE key ────────────────
+    # The consent it ran under, the effects it DECLARED it created on a real host,
+    # and the criteria whose check never ran for want of a live target. Written as
+    # DATA because the teardown that has to clean a real host up reads this, not
+    # the report's prose — and because a surface should never have to work out
+    # from a sentence that something exists on the internet now.
+    if live_effects or live_blind or live_consent.get("host"):
+        out["live"] = {"consent": live_consent, "effects": live_effects,
+                       "needsLiveTarget": live_blind}
     # S241 — THE LANDING LEDGER, an ADDITIVE key. Which cited pictures were not
     # of the screen they were cited for, and for each the step that took it and
     # the RECORDED reason it did not get there. A step named here was attempted
@@ -4415,10 +4509,17 @@ def main():
             _placed = placed_mark(e.get("landing"))
             if _placed:
                 what_i_saw = _joined(what_i_saw, _placed)
+            # THE VERDICT CELL NAMES THE ONE REASON THAT IS NOT ABOUT HIS BUILD
+            # (S249). "UNTESTED" on its own reads as a doubt; "UNTESTED (needs a
+            # live target)" reads as the fact it is — nobody consented to a real
+            # host, so the check never ran, and that is ours to fix.
+            _mark = mark[e["status"]]
+            if str(e.get("couldNotCheck") or "") == NEEDS_LIVE:
+                _mark = "%s (%s)" % (_mark, NEEDS_LIVE_SAID)
             w("| %s | %s | %s | %s | %s |\n" % (
                 e["id"] + (" (PRD)" if e["primary"] else ""),
                 clip(e["text"], 120).replace("|", "\\|"),
-                mark[e["status"]],
+                _mark,
                 EVIDENCE_WORD.get(e.get("evidence") or "none", "—"),
                 what_i_saw.replace("|", "\\|")))
         # ONE SENTENCE, BOTH HALVES OF THE MISMATCH. The captain asked to see
@@ -4610,6 +4711,44 @@ def main():
                 else:
                     w("- %s%s\n" % (st.get("name") or st.get("key"),
                                      "" if st.get("changed") else " — and nothing on the screen changed"))
+        # ─── WHAT I TOUCHED LIVE (S249) ─────────────────────────────────────
+        # A look that reached a real host made real things, and the captain is
+        # entitled to a list of them before he reads anything else about them.
+        # Printed off the harness's own ledger (`xo/live.json`) — every row is
+        # something a consented step DECLARED it might create, never something
+        # inferred from output — and the host it was made on is named, because
+        # "a branch called xo-probe" is not an address anybody can act on.
+        if live_effects:
+            w("\n### What I touched live\n\n")
+            w("These are on a real host, not in a throwaway worktree. I only "
+              "reached %s because the record consents to it%s.\n\n"
+              % (live_consent.get("host") or "that host",
+                 (" (%s)" % live_consent["source"]) if live_consent.get("source") else ""))
+            for eff in live_effects:
+                where = "/".join(x for x in (str(eff.get("host") or ""),
+                                             str(eff.get("owner") or ""),
+                                             str(eff.get("repo") or "")) if x)
+                w("- **%s** — %s%s\n"
+                  % (str(eff.get("kind") or "something"),
+                     str(eff.get("name") or "it did not name it"),
+                     (" *(on %s)*" % where) if where else ""))
+            w("\nNothing here is cleaned up by this report. The same list is on "
+              "disk in `xo/live.json`, which is what a teardown reads.\n")
+        # AND WHAT A MISSING LIVE TARGET COST (S249). Said apart from the blind
+        # rows above, because this one has a one-line fix that is OURS: name the
+        # host and the owner in `liveTargets`.
+        if live_blind:
+            w("\n### What I could not check for want of a live target\n\n")
+            w("%s\n\n" % MY_CHECKING_NOTE)
+            for row in live_blind:
+                w("- **%s** — %s *(%s)*\n"
+                  % (short_name(row.get("text") or row.get("id") or "?"),
+                     " ".join(str(row.get("why") or NEEDS_LIVE_SAID).split()),
+                     row.get("id")))
+            w("\nThe fix is a line in the record, not a change to your build: name "
+              "the host and the owner in `liveTargets` (`.git/lcars/autopilot.json`, "
+              "or `numberOne.liveTargets` in `.git/lcars/config.json`) and I will "
+              "reach it on the next look.\n")
         # WHAT I COULD NOT SEE FOR WANT OF DATA (S220 part E). One plain
         # sentence, and only when nothing was declared — a seed that ran is
         # not worth a paragraph, and a missing one is never the build's fault.

@@ -4124,6 +4124,34 @@ xo_reach_teardown() { # — idempotent; called at the look's end AND from the tr
   return 0
 }
 
+# WHAT THE RECORD CONSENTS TO, in the one line the prompt prints (S249).
+# "<host> (owners: a, b)", or nothing at all when no record names a live host —
+# and nothing is exactly what "no consent" looks like everywhere else too. Read
+# through `xo-run.py consent`, which is the file that will refuse the step, so
+# `liveTargets` has ONE reader. Never written, never defaulted.
+#
+# AND THE repos[] ALLOW-LIST COMES WITH IT (fix round 2). Making the allow-list
+# fail closed refuses a step that names no repo — so a line that printed only the
+# host and the owners left a prompt-following worker refused on EVERY live step in
+# a repo whose record narrows consent to named repos. `xo-run.py consent` already
+# prints a `REPOS:` line; this used to read past it. It is appended INSIDE the
+# same parenthetical, after a semicolon, and is ABSENT when the record names no
+# repos — the default shape, where there is nothing to say.
+xo_live_targets() {
+  local out host owners repos
+  out="$("$XO_PY" "$XO_RUN_PY" consent --repo "${XO_REACH_REPO:-$PWD}" \
+          --lcars-dir "$LCARS_DIR" 2>/dev/null)" || out=""
+  host="$(printf '%s\n' "$out" | sed -n 's/^HOST: //p' | head -1)"
+  [ -n "$host" ] || return 0
+  owners="$(printf '%s\n' "$out" | sed -n 's/^OWNERS: //p' | head -1)"
+  repos="$(printf '%s\n' "$out" | sed -n 's/^REPOS: //p' | head -1)"
+  if [ -n "$repos" ]; then
+    printf '%s (owners: %s; repos: %s)' "$host" "${owners:-none recorded}" "$repos"
+  else
+    printf '%s (owners: %s)' "$host" "${owners:-none recorded}"
+  fi
+}
+
 xo_run_reach() { # <mission-dir> <xodir> <shots> [journey-file]
   local dir="$1" xodir="$2" shots="$3" jfile="${4:-$xodir/journey.json}"
   local n br said rc=0 top
@@ -5082,6 +5110,19 @@ $shots"
       else
         unset LCARS_XO_MAX_ROUNDS
       fi
+      # WHAT THE RECORD CONSENTS TO, AND NOTHING THE WORKER SAYS (S249). The
+      # worker has to be TOLD which host and owner it may ask for a live step
+      # against, or it cannot ask for one at all. Read here from `xo-run.py
+      # consent` — the very file that will refuse the step — so there is exactly
+      # one reader of `liveTargets` and no second place for it to drift. This is
+      # a MESSAGE, never a permission: the decision is made in `xo-run.py` off
+      # the file on disk, so an env var set by hand buys nothing.
+      LCARS_XO_LIVE_TARGETS="$(xo_live_targets)"
+      if [ -n "$LCARS_XO_LIVE_TARGETS" ]; then
+        export LCARS_XO_LIVE_TARGETS
+      else
+        unset LCARS_XO_LIVE_TARGETS
+      fi
       exec bash "$XO_RUN_SCRIPT" spawn-number-one \
         --mission "$id" --mode evaluate --outdir "$out"
     ) >/dev/null 2>&1 &
@@ -5224,6 +5265,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
               "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
               "$xodir/journey.json" "$xodir/shots" "$xodir/wrong-screen.json" \
+              "$xodir/live.json" \
               2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   # S240 — THE ACTION, READ OFF THE WIRE. `xo-score.py` decided it beside the

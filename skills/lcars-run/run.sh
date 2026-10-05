@@ -16741,6 +16741,72 @@ declares, you will be asked ONCE for a different \`serve\` target, with the
 readout that proved it. Name a different one, or say so by declaring none."
   fi
 
+  # === WHAT IS CONSENTED TO BE TOUCHED FOR REAL (S249) =====================
+  #
+  # WHY THE WORKER IS TOLD AT ALL. Five of the twenty-nine bugs the captain's
+  # buddy found on the weekend needed a REAL publish against a REAL host — and a
+  # worker that does not know a live target exists cannot ask for one. So when the
+  # record names a host and an owner, the round says so, in the one place a fact
+  # about THIS round's inputs belongs (and not in `evaluate.md`, which is one line
+  # from the ceiling its own suite holds it to).
+  #
+  # AND WHY THIS LINE GRANTS NOTHING. The consent is READ FROM THE RECORD BY
+  # `xo-run.py`, off `.git/lcars/autopilot.json liveTargets` (else
+  # `numberOne.liveTargets` in `config.json`), at the moment it decides whether to
+  # run the step. `xo.sh` passes what it read here only so the prompt can say it.
+  # A step naming anything else is refused with "needs a live target: <h>/<o> is
+  # not in liveTargets", and the criterion then reads "needs a live target" —
+  # which is a job for us, not a send-back for him. Unset, the line does not
+  # appear and no step may reach anything.
+  #
+  # AND THE repos[] ALLOW-LIST IS PART OF THE TELLING (fix round 2). When the
+  # record narrows consent to named repos, a live step must name one — a step
+  # naming none is refused by `xo-run.py` exactly like one naming an unlisted
+  # repo. A worked example that showed only {host, owner} therefore made the
+  # prompt un-followable in such a repo: every live step a worker declared by the
+  # book was refused. So the field goes in the example, and the rule gets one
+  # plain sentence — BOTH only when the line `xo.sh` handed us names repos, which
+  # it writes as "; repos: a, b" inside the same parenthetical. With no repos
+  # recorded (the default shape, and what the autopilot writes) the round says
+  # nothing about them at all: a prompt is not the place to describe a constraint
+  # this repo does not have.
+  local live_line="" live_decl="" repo_rule=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_LIVE_TARGETS:-}" ]; then
+    live_decl="     \"live\": {\"host\": \"<the host above>\", \"owner\": \"<one of the owners above>\"},"
+    case "${LCARS_XO_LIVE_TARGETS}" in
+      *"repos: "*)
+        live_decl="     \"live\": {\"host\": \"<the host above>\", \"owner\": \"<one of the owners above>\",
+              \"repo\": \"<one of the repos above>\"},"
+        repo_rule="
+The record above lists the repos consented to, so a live step
+must name a \`repo\` from that list as well as the host and the owner — a step
+that names no repo is refused just as one naming an unlisted repo is.
+"
+        ;;
+    esac
+    live_line="
+## One real host IS consented: ${LCARS_XO_LIVE_TARGETS}
+Steps normally run in a throwaway worktree with no credentials, which is why a
+real publish, a real Actions run and a real deployment have never been checked.
+For **${LCARS_XO_LIVE_TARGETS} and nothing else**, a \`run\` step may ask to reach it:
+
+    {\"do\": \"run\", \"argv\": [\"…\"], \"cwd\": \"<worktree>\",
+${live_decl}
+     \"liveEffects\": [{\"kind\": \"branch\", \"name\": \"the-branch-I-may-push\"}]}
+${repo_rule}
+LCARS then — and only then — puts \`GH_HOST\`, a \`GH_TOKEN\` it looks up itself, and
+\`LCARS_XO_LIVE=1\` into that step's environment. You never see the token and you
+must not ask for one: a \`GH_TOKEN\` you declare in \`env\` is stripped, and a
+\`live:\` naming any other host or owner is refused and the thing it was checking
+is reported as \"needs a live target\".
+
+**Declare \`liveEffects\` on every live step** — one entry per thing that may
+exist afterwards (\`repo\`, \`branch\`, \`run\`, \`deployment\`, \`discussion\`). It is
+how what you created gets cleaned up, and an undeclared effect is one nobody
+knows to clean. Nothing is deleted on a real host on your word: archive, never
+delete."
+  fi
+
   # === THE LIVE-CHECK CHECKLISTS, HANDED OVER WHOLE (S246) ==================
   #
   # WHY WHOLE, AND WHY HERE. These are the files the captain's buddy reads — the
@@ -16768,6 +16834,7 @@ Mission id: $id
 $rounds_line
 $prelaunch_line
 $steps_line
+$live_line
 $checklists
 
 ## Your input directory — the mission's RECORD, read-only

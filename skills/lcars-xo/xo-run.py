@@ -8,6 +8,7 @@
                                --mission-dir <dir> [--cap 12]
     python3 xo-run.py prepare  --repo <repo> --branch <branch>
     python3 xo-run.py teardown --repo <repo> --worktree <wt> --home <home>
+    python3 xo-run.py consent  --repo <repo> [--mission-dir <dir>]
 
 ONE TREE AND ONE HOME FOR THE WHOLE LOOK (S246). `prepare` mints them once,
 `run --worktree … --home …` reuses them for every round, and `teardown` removes
@@ -75,11 +76,48 @@ so themselves: "`expect` is prose for a model, not a matcher — the judgement
 stays with the reader". A step with nothing mechanical to check records
 `met: null`, which reads as "ran, not judged", never as "passed".
 
+A STEP MAY REACH A REAL HOST, AND ONLY BY THE RECORD'S CONSENT (S249).
+Until this session `step_env` built PATH, LANG, HOME and TMPDIR and nothing else,
+so NO CREDENTIAL HAS EVER REACHED A STEP and a real publish was impossible — 5 of
+the 29 bugs the captain's buddy found on the weekend needed one. That fence was
+"no credentials" BY ACCIDENT and not by record. It is now a record: a `run` step
+may declare
+
+    "live": {"host": "<h>", "owner": "<o>"[, "repo": "<r>"]}
+
+and the harness grants it `GH_HOST`, a `GH_TOKEN` IT LOOKS UP ITSELF, and
+`LCARS_XO_LIVE=1` — but ONLY when the consent the captain wrote names that host
+and owner (`.git/lcars/autopilot.json liveTargets`, else `config.json
+numberOne.liveTargets`). Four rules make that a fence rather than a switch:
+
+  * CONSENT COMES FROM THE RECORD AND NOWHERE ELSE. Not from the environment,
+    not from the step, not from the worker. An empty record is NO consent.
+  * THE CREDENTIAL IS THE HARNESS'S. `gh auth token -h <host>` is run here; the
+    value is never written to disk, never journaled, and every artifact this
+    file writes is SCRUBBED of it (`scrub`), so a careless product that echoes
+    its own token still cannot leak one into a transcript.
+  * A WORKER-DECLARED CREDENTIAL IS STRIPPED (`CRED_ENV_KEYS`). A step cannot
+    smuggle a token in its `env`, and cannot point `gh` at another host.
+  * A REFUSAL NAMES THE MISSING CONSENT: "needs a live target: <h>/<o> is not in
+    liveTargets", recorded like any other refusal, so the criterion it was for
+    reads `untested (needs a live target)` and the report asks for infrastructure
+    rather than sending the captain's build back.
+
+EVERY LIVE EFFECT IS LEDGERED. `xo/live.json` accumulates the repos, branches,
+runs, deployments and discussions a consented step DECLARED it might create, so
+the report can say what it touched and a later teardown has a list to work from.
+
+THE REST OF THE FENCE DID NOT MOVE. The argv fence (`_shell_refusal`,
+`argv_refusal`, `refuse_reason`, `declared_escape`) is untouched, byte for byte:
+a consented step asking for a shell is still refused for being a shell.
+
 DEPENDENCIES ARE ENV-INJECTED (the lcars-init pattern) so tests can stub them:
     LCARS_AUTOPILOT_BIN    autopilot.sh          (default: ../lcars-buddy/)
     LCARS_GIT_BIN          git
+    LCARS_GH_BIN           gh                    (the credential lookup, S249)
     LCARS_XO_STEP_TIMEOUT  seconds per step      (default 120)
 """
+import fnmatch
 import json
 import os
 import re
@@ -94,6 +132,8 @@ SKILLS_DIR = os.path.dirname(SELF_DIR)
 AUTOPILOT = os.environ.get("LCARS_AUTOPILOT_BIN") or os.path.join(
     SKILLS_DIR, "lcars-buddy", "autopilot.sh")
 GIT = os.environ.get("LCARS_GIT_BIN") or "git"
+# The credential lookup, and the ONLY program that is ever asked for a token.
+GH = os.environ.get("LCARS_GH_BIN") or "gh"
 
 # PER-STEP, NOT PER-RUN. The whole look is already caged by XO_LOOK_TIMEOUT
 # (xo.sh); one hung command must not eat that whole budget, because the steps
@@ -128,6 +168,400 @@ EXTRA_HOME_MARKS = (HOME_MARK_2, HOME_MARK_3)
 # by `mint_extra_home`, read by `resolve`, `refuse_reason` and `teardown`.
 _EXTRA_HOMES = {}
 
+# ── CREDENTIALS FOR AN ALLOW-LISTED HOST, AND NOTHING ELSE (S249) ───────────
+#
+# The ONE sentence a refusal for want of consent begins with. It is a contract
+# string: `xo-score.py` turns the criterion the step was for into
+# `untested (needs a live target)` off `xo/live.json`, and the recommendation
+# treats it as OUR infrastructure rather than a fault in the build.
+NEEDS_LIVE = "needs a live target"
+# The kinds of live effect a worker may declare it might create. Not a fence —
+# the ledger records whatever it declares — but the five words the prompt, the
+# report and a later teardown all use for the same things.
+LIVE_EFFECT_KINDS = ("repo", "branch", "run", "deployment", "discussion")
+# ENV KEYS A STEP MAY NEVER DECLARE FOR ITSELF. Every one of them either IS a
+# credential or decides which credential `gh` picks up, so a worker that declared
+# one would be granting itself the reach this session put behind a record. They
+# are stripped from every step, live or not, and the readout says so.
+CRED_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN",
+                 "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_CONFIG_DIR")
+# Every secret this process has looked up, so nothing it writes can carry one.
+# Values only live here and in the env handed to a consented step's Popen.
+_SECRETS = set()
+# host → token, so one look asks `gh` once per host.
+_TOKEN_CACHE = {}
+
+
+def remember_secret(value):
+    """Register a value as unprintable. Short strings are ignored on purpose: a
+    two-character "token" would scrub half the transcript."""
+    v = str(value or "")
+    if len(v) >= 8:
+        _SECRETS.add(v)
+
+
+REDACTED = "<redacted>"
+# A CREDENTIAL'S OWN SHAPE. The known-secret pass below covers every token this
+# harness looked up; these marks cover one it never saw — a second credential the
+# product under review holds and prints for itself. A mark followed by a long run
+# of token characters is a credential whatever its value turns out to be.
+CRED_MARKS = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
+# How many token characters must follow a mark before it counts as one: short
+# enough that a real credential always clears it, long enough that the word
+# `ghp_` in a sentence of prose is left alone.
+CRED_MARK_RUN = 8
+
+
+def _token_char(ch):
+    """True for a character a GitHub credential is spelled with."""
+    return ch.isalnum() or ch == "_"
+
+
+def _spread_span(text, i, s):
+    """How many characters at text[i:] spell <s> with only whitespace between
+    them — and 0 when they do not.
+
+    THE LEAK THIS EXISTS TO CLOSE. The first cut of `scrub` compared exact
+    substrings, so the very thing its docstring names as the threat defeated it:
+    a verbose client echoes the request, the terminal FOLDS the line, and the
+    credential lands in the saved transcript in order with a newline through the
+    middle of it. A fold inserts whitespace and nothing else, so whitespace is
+    what this steps over. The span is CAPPED, because a token folded at twenty
+    columns is still a token while the same characters spelled one per line down
+    half a transcript are not.
+    """
+    n = len(text)
+    limit = i + 4 * len(s) + 8
+    j = i
+    for ch in s:
+        while j < n and j < limit and text[j].isspace():
+            j += 1
+        if j >= n or text[j] != ch:
+            return 0
+        j += 1
+    return j - i
+
+
+def _redact_spread(text, s):
+    """(text, count) with every spelling of the secret <s> — whole, or broken by
+    a fold — replaced by the redaction mark."""
+    if not s or len(s) < 8:
+        return text, 0
+    first = s[0]
+    n = len(text)
+    out = []
+    count = 0
+    i = 0
+    while i < n:
+        if text[i] == first:
+            w = _spread_span(text, i, s)
+            if w:
+                out.append(REDACTED)
+                i += w
+                count += 1
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out), count
+
+
+def _redact_shaped(text):
+    """(text, count) with anything SHAPED like a credential replaced, whatever
+    its value — the backstop for a token this process never looked up and so
+    could not have registered as a secret. The run is CONTIGUOUS on purpose: one
+    that stepped over a newline would swallow the `GITHUB_TOKEN=` on the line
+    below it, and over-redacting a credential's neighbours is its own kind of
+    lying about what the product printed."""
+    count = 0
+    for mark in CRED_MARKS:
+        n = len(text)
+        out = []
+        i = 0
+        while True:
+            k = text.find(mark, i)
+            if k < 0:
+                out.append(text[i:])
+                break
+            j = k + len(mark)
+            while j < n and _token_char(text[j]):
+                j += 1
+            # AT A BOUNDARY, OR IT IS NOT A CREDENTIAL. A mark can fall inside an
+            # ordinary word — `highs_checked` ends up carrying `ghs_` — and a
+            # redaction there would blank a word the product really printed.
+            at_edge = k == 0 or not _token_char(text[k - 1])
+            if at_edge and j - (k + len(mark)) >= CRED_MARK_RUN:
+                out.append(text[i:k])
+                out.append(REDACTED)
+                count += 1
+            else:
+                out.append(text[i:j])
+            i = j
+        text = "".join(out)
+    return text, count
+
+
+def scrub(text):
+    """(text with every known secret replaced by <redacted>, how many times).
+
+    THE LAST LINE OF DEFENCE, AND THE REASON IT IS NOT OPTIONAL. The product
+    under review is not ours: `relay publish` may print its own environment, a
+    stack trace may carry a header, a verbose client echoes the request. So every
+    artifact this file writes goes through here, and the readout says how many
+    redactions it made — "GH_TOKEN=<redacted>" is a RECORD that a credential was
+    there, which is what the captain needs to read, rather than a silence.
+
+    A SECRET IS MATCHED THROUGH A FOLD, NOT AS A SUBSTRING. `_spread_span` says
+    why: ordinary line wrapping used to be enough to carry a whole credential
+    into an artifact under `xo/`. The count is kept across both passes, because a
+    redaction nobody counted reads exactly like nothing having been there.
+    """
+    out = str(text if text is not None else "")
+    n = 0
+    # LONGEST FIRST, so a secret that contains a shorter one is redacted whole —
+    # and in a fixed order, because an artifact that depends on set ordering is
+    # one nobody can reproduce.
+    for s in sorted(_SECRETS, key=lambda v: (-len(v), v)):
+        out, k = _redact_spread(out, s)
+        n += k
+    out, k = _redact_shaped(out)
+    n += k
+    return out, n
+
+
+def scrub_json(doc):
+    """The same scrub, over a readout about to be written. Returns (doc, count)."""
+    if isinstance(doc, str):
+        return scrub(doc)
+    if isinstance(doc, list):
+        total = 0
+        out = []
+        for v in doc:
+            v2, n = scrub_json(v)
+            total += n
+            out.append(v2)
+        return out, total
+    if isinstance(doc, dict):
+        total = 0
+        out = {}
+        for k, v in doc.items():
+            v2, n = scrub_json(v)
+            total += n
+            out[k] = v2
+        return out, total
+    return doc, 0
+
+
+def lcars_dir(repo, mission_dir):
+    """Where `.git/lcars` is — from the mission dir when there is one.
+
+    A mission dir IS `<git-dir>/lcars/missions/<id>`, so walking up to the `lcars`
+    directory that holds `missions/` is exact and needs no git call. Without a
+    mission dir (a unit test driving this file head-on) the repo's own common git
+    dir answers it, the same way `xo.sh:82-87` does.
+    """
+    p = os.path.abspath(mission_dir) if mission_dir else ""
+    while p and p != os.path.dirname(p):
+        head, tail = os.path.split(p)
+        if tail == "lcars" and os.path.isdir(os.path.join(p, "missions")):
+            return p
+        p = head
+    gd = ""
+    try:
+        r = subprocess.run([GIT, "-C", repo, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            gd = (r.stdout or "").strip()
+    except Exception:
+        gd = ""
+    if gd:
+        if not os.path.isabs(gd):
+            gd = os.path.join(repo, gd)
+        return os.path.join(gd, "lcars")
+    return os.path.join(repo, ".git", "lcars")
+
+
+def load_consent(ldir):
+    """The CONSENT RECORD — {host, owners[], repos[], source}. Empty = none.
+
+    TWO PLACES, IN ONE ORDER, AND NEITHER OF THEM IS THE ENVIRONMENT.
+      1  `autopilot.json liveTargets` — what the captain answered at the
+         autopilot's alignment round (`autopilot.sh:606`, `AUTOPILOT.md:75,133`).
+         The buddy has read it since S232; this is the first time the first
+         officer does, which is the whole point of the session.
+      2  `config.json numberOne.liveTargets` — the same shape, for a repo with no
+         autopilot run behind it.
+    A record with no host, or with no owners, is NOT consent: an empty allow-list
+    allows nothing. `source` is carried so a readout can say which file said yes.
+    """
+    def shape(raw, source):
+        if not isinstance(raw, dict):
+            return None
+        host = str(raw.get("host") or "").strip()
+        owners = [str(o).strip() for o in (raw.get("owners") or []) if str(o).strip()]
+        repos = [str(r).strip() for r in (raw.get("repos") or []) if str(r).strip()]
+        if not host or not owners:
+            return None
+        return {"host": host, "owners": owners, "repos": repos, "source": source}
+
+    ap = load(os.path.join(ldir, "autopilot.json"), {})
+    if isinstance(ap, dict):
+        got = shape(ap.get("liveTargets"), "autopilot.json liveTargets")
+        if got:
+            return got
+    cfg = load(os.path.join(ldir, "config.json"), {})
+    if isinstance(cfg, dict):
+        n1 = cfg.get("numberOne")
+        if isinstance(n1, dict):
+            got = shape(n1.get("liveTargets"), "config.json numberOne.liveTargets")
+            if got:
+                return got
+    return {"host": "", "owners": [], "repos": [], "source": ""}
+
+
+def live_block(step):
+    """The step's declared live target, or None when it asked for nothing live."""
+    live = step.get("live")
+    if not isinstance(live, dict):
+        return None
+    out = {"host": str(live.get("host") or "").strip(),
+           "owner": str(live.get("owner") or "").strip(),
+           "repo": str(live.get("repo") or "").strip()}
+    if not (out["host"] or out["owner"] or out["repo"]):
+        return None
+    return out
+
+
+def live_refusal(live, consent):
+    """The ONE sentence saying why this step may not reach a live host, or "".
+
+    SEPARATE FROM `refuse_reason` ON PURPOSE. The argv fence judges the SHAPE of a
+    step and is pinned symbol-for-symbol by `tests/lcars-xo-refusal.test.sh`; this
+    judges a step against a RECORD the captain wrote. Two different questions, two
+    functions, and the fence this session did not widen stays exactly where it was.
+    """
+    if not live:
+        return ""
+    h, o, r = live["host"], live["owner"], live["repo"]
+    if not h or not o:
+        return ("%s: a live step names the host AND the owner it is for, and this "
+                "one names only %s" % (NEEDS_LIVE, h or o or "neither"))
+    named = "%s/%s" % (h, o)
+    ch = consent.get("host") or ""
+    owners = [str(x).lower() for x in (consent.get("owners") or [])]
+    if not ch or not owners:
+        return ("%s: %s is not in liveTargets — nothing in this repo's record "
+                "consents to a live host, so no credential was looked up"
+                % (NEEDS_LIVE, named))
+    if h.lower() != ch.lower() or o.lower() not in owners:
+        return ("%s: %s is not in liveTargets, which names %s/%s"
+                % (NEEDS_LIVE, named, ch, ",".join(consent.get("owners") or [])))
+    pats = consent.get("repos") or []
+    # SILENCE FAILS CLOSED. A record that narrows consent to named repos used to
+    # bind only an HONEST declaration: a step that named host and owner and no
+    # repo at all ran, and was handed the credential. The step list is written by
+    # a worker, not by the captain, so the careless shape is the one that matters.
+    if pats and not r:
+        return ("%s: %s names no repo, and liveTargets allows only the repos %s"
+                % (NEEDS_LIVE, named, ", ".join(pats)))
+    if r and pats and not any(fnmatch.fnmatch(r, p) for p in pats):
+        return ("%s: %s/%s is not in liveTargets, whose repos are %s"
+                % (NEEDS_LIVE, named, r, ", ".join(pats)))
+    return ""
+
+
+def live_token(host):
+    """The credential for <host>, looked up BY THE HARNESS. "" when there is none.
+
+    Run with this process's own environment, because `gh` authenticates from the
+    captain's real HOME — the same standing rule that keeps the look's Chrome on
+    the real one. The value is registered as a secret the moment it exists, so
+    everything this file writes from then on is scrubbed of it.
+    """
+    if host in _TOKEN_CACHE:
+        return _TOKEN_CACHE[host]
+    tok = ""
+    try:
+        p = subprocess.run([GH, "auth", "token", "-h", host],
+                           capture_output=True, text=True, timeout=STEP_TIMEOUT,
+                           env=dict(os.environ))
+        if p.returncode == 0:
+            lines = [ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip()]
+            tok = lines[0] if lines else ""
+    except Exception:
+        tok = ""
+    _TOKEN_CACHE[host] = tok
+    remember_secret(tok)
+    return tok
+
+
+def live_effects_of(step, live, consent):
+    """The live effects a step DECLARED it might create, normalised for the ledger.
+
+    The worker declares them; nothing is inferred from what a command did, because
+    a teardown that works off a guess is a teardown that deletes the wrong thing.
+    A bare string is accepted ("branch xo-probe") so a declaration is never thrown
+    away for its shape.
+    """
+    out = []
+    for raw in (step.get("liveEffects") or []):
+        kind = name = ""
+        if isinstance(raw, dict):
+            kind = str(raw.get("kind") or "").strip().lower()
+            name = str(raw.get("name") or raw.get("ref") or raw.get("id") or "").strip()
+        elif isinstance(raw, str):
+            bits = raw.strip().split(None, 1)
+            if bits and bits[0].lower() in LIVE_EFFECT_KINDS:
+                kind, name = bits[0].lower(), (bits[1].strip() if len(bits) > 1 else "")
+            else:
+                name = raw.strip()
+        if not (kind or name):
+            continue
+        out.append({"kind": kind or "other", "name": name,
+                    "host": live["host"], "owner": live["owner"],
+                    "repo": live["repo"], "step": str(step.get("key") or ""),
+                    "for": str(step.get("for") or ""),
+                    "consentedBy": consent.get("source") or "",
+                    "declared": True,
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    return out
+
+
+def live_path(mission_dir):
+    """`xo/live.json` — beside the look's shots, inside the mission's own dir."""
+    return os.path.join(mission_dir, "xo", "live.json") if mission_dir else ""
+
+
+def load_live(mission_dir):
+    path = live_path(mission_dir)
+    doc = load(path, None) if path else None
+    if not isinstance(doc, dict):
+        doc = {}
+    doc.setdefault("consent", {})
+    for key in ("effects", "refused"):
+        if not isinstance(doc.get(key), list):
+            doc[key] = []
+    return doc
+
+
+def save_live(mission_dir, doc):
+    """ACCUMULATED, NEVER REPLACED — a second round's effects do not erase the
+    first's, and S250's teardown reads the whole list. Scrubbed on the way out
+    like every other artifact."""
+    path = live_path(mission_dir)
+    if not path:
+        return ""
+    clean, _ = scrub_json(doc)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp.%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(clean, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except Exception:
+        return ""
+    return path
+
 
 def say(msg):
     sys.stdout.write(msg + "\n")
@@ -145,6 +579,9 @@ def journal(mission_dir, action, body):
     row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "action": action}
     row.update(body or {})
+    # SCRUBBED LIKE EVERY OTHER ARTIFACT (S249). The journal is the feed the
+    # report and the board read, so a credential must not reach it either.
+    row, _ = scrub_json(row)
     try:
         with open(os.path.join(mission_dir, "number-one.jsonl"), "a",
                   encoding="utf-8") as fh:
@@ -558,11 +995,19 @@ def verdict(expect, *, exit_code=None, stdout="", stderr="", content="",
     return (ok if mechanical else None), checks
 
 
-def step_env(declared, home):
+def step_env(declared, home, live_env=None, stripped=None):
     """The environment a step runs in — built, not inherited.
 
     The real HOME never reaches a step. PATH does, because `python3` lives on it
     and a step with no PATH proves only that PATH was missing.
+
+    AND A CREDENTIAL IS THE HARNESS'S TO ADD (S249). Every key in
+    `CRED_ENV_KEYS` is STRIPPED out of what the step declared — a worker cannot
+    hand itself a token, and cannot point `gh` at a host the record never named —
+    and `live_env` is applied LAST, so the only credential that can reach a step
+    is one this process looked up against a consented host. `stripped`, when a
+    list is passed in, collects the keys that were refused so the readout can say
+    what it took away.
     """
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
            "LANG": os.environ.get("LANG", "C.UTF-8"),
@@ -571,6 +1016,12 @@ def step_env(declared, home):
            "LCARS_XO_STEP": "1"}
     os.makedirs(env["TMPDIR"], exist_ok=True)
     for k, v in (declared or {}).items():
+        if str(k) in CRED_ENV_KEYS:
+            if stripped is not None and str(k) not in stripped:
+                stripped.append(str(k))
+            continue
+        env[str(k)] = str(v)
+    for k, v in (live_env or {}).items():
         env[str(k)] = str(v)
     return env
 
@@ -619,9 +1070,22 @@ def run_cmd(argv, cwd, env, timeout):
 
 
 def write_evidence(outdir, name, transcript, readout):
+    """Both artifacts for one step — and the ONE door every one of them goes
+    through, which is why the scrub (S249) lives here and not at each call site.
+    A credential the product itself printed is replaced by `<redacted>` in the
+    transcript AND in the readout, and the readout says how many times."""
     os.makedirs(outdir, exist_ok=True)
     base = os.path.basename(name or "99-step.txt")
     stem = os.path.splitext(base)[0]
+    transcript, n_txt = scrub(transcript)
+    clean, n_json = scrub_json(readout)
+    # IN PLACE, so the caller's own copy of the readout is the scrubbed one too —
+    # it journals off this dict, and a second cleaned copy is a second thing to
+    # remember to clean.
+    readout.clear()
+    readout.update(clean)
+    if n_txt or n_json:
+        readout["redactions"] = int(readout.get("redactions") or 0) + n_txt + n_json
     txt = os.path.join(outdir, stem + ".txt")
     with open(txt, "w", encoding="utf-8") as fh:
         fh.write(transcript)
@@ -637,10 +1101,12 @@ def write_evidence(outdir, name, transcript, readout):
 # ===========================================================================
 # THE THREE KINDS
 # ===========================================================================
-def do_run(step, worktree, home, outdir):
+def do_run(step, worktree, home, outdir, live=None, live_env=None, consent=None):
     argv = [str(a) for a in resolve(step.get("argv") or [], worktree, home)]
     cwd = resolve(step.get("cwd") or WORKTREE_MARK, worktree, home)
-    env = step_env(resolve(step.get("env") or {}, worktree, home), home)
+    stripped = []
+    env = step_env(resolve(step.get("env") or {}, worktree, home), home,
+                   live_env=live_env, stripped=stripped)
     # The declared HOME is kept only when it is one of the look's own marks
     # (S246 — `refuse_reason` has already refused anything else); otherwise the
     # look's first HOME stands in, so a step can never run as the captain.
@@ -654,9 +1120,23 @@ def do_run(step, worktree, home, outdir):
     if hung:
         # A TIMEOUT IS NOT A RED TEST (the honesty rule already won, S211).
         met = None
-    transcript = ("$ %s\n(cwd: %s)\n(HOME: %s)\n\n--- stdout ---\n%s\n"
+    # WHAT THE STEP RAN WITH, SAID OUT LOUD AND REDACTED (S249). The captain has
+    # to be able to tell "it published for real" from "it published to nothing",
+    # and the only honest way to show a credential was present is to show the NAME
+    # with the value replaced. `GH_TOKEN=<redacted>` is the record.
+    live_line = ""
+    if live_env:
+        live_line = "(live: %s)\n" % ", ".join(
+            "%s=%s" % (k, "<redacted>" if k in CRED_ENV_KEYS and k != "GH_HOST" else v)
+            for k, v in sorted(live_env.items()))
+    stripped_line = ""
+    if stripped:
+        stripped_line = ("(stripped from the step's own env, a credential is the "
+                         "harness's to add: %s)\n" % ", ".join(sorted(stripped)))
+    transcript = ("$ %s\n(cwd: %s)\n(HOME: %s)\n%s%s\n--- stdout ---\n%s\n"
                   "--- stderr ---\n%s\n--- exit: %s ---\n"
-                  % (" ".join(argv), cwd, env["HOME"], out, err,
+                  % (" ".join(argv), cwd, env["HOME"], live_line, stripped_line,
+                     out, err,
                      "killed after %ss" % STEP_TIMEOUT if hung else rc))
     readout = {"do": "run", "key": step.get("key") or "", "for": step.get("for") or "",
                "fromChecklist": step.get("fromChecklist") or "",
@@ -673,6 +1153,23 @@ def do_run(step, worktree, home, outdir):
             readout["home2"] = path
             readout["homeMark"] = mark
             break
+    # THE CREDENTIAL KEYS THIS STEP ASKED FOR AND DID NOT GET — on the record, so
+    # a worker reading its own readout learns the rule instead of guessing.
+    if stripped:
+        readout["strippedEnv"] = sorted(stripped)
+    # AND WHO SAID YES. The host, the owner, the file the consent was read from,
+    # and the credential as a NAME with no value — which is the whole shape of
+    # this session: the reach is on the record, the secret is not.
+    if live:
+        readout["live"] = {
+            "host": live["host"], "owner": live["owner"], "repo": live["repo"],
+            "consentedBy": (consent or {}).get("source") or "",
+            "credential": "GH_TOKEN=<redacted>" if (live_env or {}).get("GH_TOKEN")
+                          else "GH_TOKEN=<none looked up>",
+            "env": {k: ("<redacted>" if k in CRED_ENV_KEYS and k != "GH_HOST" else v)
+                    for k, v in (live_env or {}).items()},
+            "effects": live_effects_of(step, live, consent or {}),
+        }
     return transcript, readout
 
 
@@ -807,6 +1304,18 @@ def cmd_run(opt):
     # (S247): nothing instantiates steps from the record any more, so there is no
     # second class of "items I could not build" to be confused with it.
     reached = declined = 0
+    # THE CONSENT RECORD, READ ONCE, FROM DISK (S249). Not from the environment and
+    # not from the journey: the only thing that can say yes to a live host is the
+    # file the captain wrote. An empty record refuses every live step, by name.
+    ldir = lcars_dir(repo, mission_dir)
+    consent = load_consent(ldir)
+    live_doc = load_live(mission_dir)
+    live_doc["consent"] = {k: consent[k] for k in ("host", "owners", "repos", "source")}
+    live_doc["recordedIn"] = ldir
+    live_touched = False
+    if consent.get("host"):
+        say("  live:     %s, owners: %s (consented in %s)"
+            % (consent["host"], ", ".join(consent["owners"]), consent["source"]))
     try:
         for step in steps[:MAX_ACTIONS]:
             kind = str(step.get("do") or "")
@@ -816,6 +1325,35 @@ def cmd_run(opt):
             # rather than an unresolved mark it would have to refuse.
             ensure_extra_homes(step, home)
             why = refuse_reason(step, worktree, home)
+            # THE CONSENT GATE, AFTER THE ARGV FENCE AND NEVER INSTEAD OF IT. A
+            # step that asked for a shell is refused for being a shell whatever the
+            # record says; only a step the old fence already allows is asked
+            # whether anybody consented to the host it names.
+            live = live_block(step) if kind == "run" else None
+            live_env = None
+            if not why and live:
+                live_touched = True
+                why = live_refusal(live, consent)
+                if not why:
+                    tok = live_token(live["host"])
+                    if tok:
+                        live_env = {"GH_HOST": live["host"], "GH_TOKEN": tok,
+                                    "LCARS_XO_LIVE": "1"}
+                    else:
+                        # NOT A SILENT UNAUTHENTICATED RUN. A consented step with no
+                        # credential behind it would reach the host as nobody and
+                        # read as a product failure, which is the "green but wrong"
+                        # class this whole round exists to close.
+                        why = ("%s: I have no credential for %s — `gh auth token "
+                               "-h %s` returned nothing, so the step was not run"
+                               % (NEEDS_LIVE, live["host"], live["host"]))
+                if why:
+                    live_doc["refused"].append(
+                        {"criterion": str(step.get("for") or ""),
+                         "step": str(step.get("key") or ""),
+                         "host": live["host"], "owner": live["owner"],
+                         "repo": live["repo"], "why": why, "evidence": name,
+                         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             if why or kind not in REACH_KINDS:
                 why = why or "`%s` is not a step the harness executes" % kind
                 declined += 1
@@ -832,7 +1370,15 @@ def cmd_run(opt):
                 say("  REFUSED %s — %s" % (name, why))
                 continue
             if kind == "run":
-                transcript, readout = do_run(step, worktree, home, outdir)
+                transcript, readout = do_run(step, worktree, home, outdir,
+                                             live=live, live_env=live_env,
+                                             consent=consent)
+                # LEDGERED ONLY ONCE IT RAN. A refused step created nothing, so
+                # nothing it declared belongs on the list a teardown works from.
+                for eff in ((readout.get("live") or {}).get("effects") or []):
+                    eff = dict(eff)
+                    eff["evidence"] = name
+                    live_doc["effects"].append(eff)
             elif kind == "read":
                 transcript, readout = do_read(step, worktree, home, outdir)
             else:
@@ -847,6 +1393,14 @@ def cmd_run(opt):
             say("  %s %s (%s)" % ("ran" if readout["met"] is not False else "FAILED",
                                   name, readout["checkedBy"]))
     finally:
+        # THE LEDGER IS WRITTEN WHATEVER HAPPENED, before the tree goes away: a
+        # look that died after creating a branch on a real host is exactly the look
+        # whose list somebody needs.
+        if live_touched:
+            where = save_live(mission_dir, live_doc)
+            if where:
+                n = len(live_doc.get("effects") or [])
+                say("◈ %d live effect(s) on the record in %s" % (n, where))
         if owned:
             teardown(repo, worktree, home)
     if owned:
@@ -885,6 +1439,33 @@ def cmd_prepare(opt):
     # parse wherever a caller reads this back.
     say("WORKTREE: %s" % worktree)
     say("HOME: %s" % home)
+    return 0
+
+
+def cmd_consent(opt):
+    """What the RECORD consents to, printed for the prompt — one reader, not two.
+
+    `xo.sh` needs to tell the worker what is consented, and the one thing that must
+    never happen is a second place that decides it. So the shell asks THIS file,
+    which is the file that will refuse the step, and prints what it is handed:
+
+        HOST: github.com
+        OWNERS: roferg
+        SOURCE: autopilot.json liveTargets
+
+    Nothing at all when the record is empty, which is what "no consent" looks like
+    everywhere else in this file too.
+    """
+    repo = os.path.abspath(opt("repo") or ".")
+    ldir = opt("lcars-dir") or lcars_dir(repo, opt("mission-dir") or "")
+    c = load_consent(ldir)
+    if not c.get("host"):
+        return 0
+    say("HOST: %s" % c["host"])
+    say("OWNERS: %s" % ", ".join(c["owners"]))
+    if c.get("repos"):
+        say("REPOS: %s" % ", ".join(c["repos"]))
+    say("SOURCE: %s" % c["source"])
     return 0
 
 
@@ -1006,8 +1587,10 @@ def main(argv):
         return cmd_prepare(opt)
     if cmd == "teardown":
         return cmd_teardown(opt)
+    if cmd == "consent":
+        return cmd_consent(opt)
     sys.stderr.write("xo-run.py: unknown command: %s "
-                     "(want: run | actions | prepare | teardown)\n" % cmd)
+                     "(want: run | actions | prepare | teardown | consent)\n" % cmd)
     return 2
 
 
