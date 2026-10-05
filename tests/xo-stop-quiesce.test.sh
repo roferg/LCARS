@@ -621,7 +621,7 @@ check "7. ...and the parent is back in play" \
   "[ '$Q7' -eq 1 ] && ! grep -q '\"paused\": *true' '$MDIR7/state.json'"
 
 # ===========================================================================
-# 7b. THE REPO-WIDE SWITCH IS SYMMETRIC — OFF QUIESCES ALL, ON LIFTS ALL.
+# 7b. THE REPO-WIDE SWITCH IS SYMMETRIC — OFF MARKS ALL, ON LIFTS ALL.
 # ===========================================================================
 # `lcars xo off` with no mission stands DOWN every engaged mission, so it writes a
 # marker on each. If `lcars xo on` lifted none of them, "ON" would be a word with
@@ -629,18 +629,26 @@ check "7. ...and the parent is back in play" \
 # spawn, and the only way back would be `lcars xo on <id>` once per mission, which
 # nobody would know to do. This is the same shape as the defect S240 fix round 2
 # cured one fact ago, so it gets its own control.
+#
+# S254 — AND THE MARKER IS THE WHOLE OF IT REPO-WIDE. The flags are gone from
+# this path on the captain's ruling (2026-10-05): a stop he aimed at nothing must
+# not halt a Mission he never named. So the symmetry asserted here is the
+# marker's, and the absence of flags is asserted beside it — the two facts that
+# together make `xo on` complete. Case 11 owns the flags, on the targeted form.
 repo7b="$(new_repo 2)"
 MDIR7B="$repo7b/.git/lcars/missions/$MID"
 ( cd "$repo7b" && bash "$XO" off ) >"$TMPROOT/off7b.out" 2>&1 || true
 Q7B=0
 [ -f "$MDIR7B/xo-stop" ] \
-  && grep -q '"paused": *true' "$repo7b/.git/lcars/missions/$BUG1/state.json" && Q7B=1
-check "7b. CONTROL — the repo-wide OFF quiesced the mission and its children" \
+  && ! grep -q '"paused": *true' "$repo7b/.git/lcars/missions/$BUG1/state.json" && Q7B=1
+check "7b. CONTROL — the repo-wide OFF laid the marker and paused NO child" \
   "[ '$Q7B' -eq 1 ]"
+check "7b. ...and the marker records the child as left running, never as paused by us" \
+  "grep -q \"^child $BUG1 left-running\" '$MDIR7B/xo-stop'"
 ( cd "$repo7b" && bash "$XO" on --engine claude --no-sweep ) >"$TMPROOT/on7b.out" 2>&1 || true
 check "7b. the repo-wide ON lifts the marker, so work can start again" \
   "[ '$Q7B' -eq 1 ] && [ ! -f '$MDIR7B/xo-stop' ]"
-check "7b. ...and un-pauses the children it paused" \
+check "7b. ...and no child is left paused behind it" \
   "[ '$Q7B' -eq 1 ] && ! grep -q '\"paused\": *true' '$repo7b/.git/lcars/missions/$BUG1/state.json'"
 check "7b. ...and says ON" "grep -q 'NUMBER ONE: ON' '$TMPROOT/on7b.out'"
 
@@ -716,10 +724,15 @@ for p in $BY1 $BY2 $BY3; do kill -9 "$p" 2>/dev/null || true; done
 # three paused missions fails here. And a stop that paused NOTHING must not print
 # the line at all — that is the control, below, and it is what stops this
 # assertion being "the output contains a word we hard-coded".
+# S254 — AND IT IS THE TARGETED FORM THAT PAUSES. A repo-wide stop pauses
+# nothing (case 1 of tests/xo-off-scope.test.sh, and the control below), so the
+# sentence it must get right is the one it prints when the captain NAMED a
+# Mission: `lcars xo off <id>` pauses that Mission and its own logged children,
+# and says so with the count read back off the flags on disk.
 repo11="$(new_repo 3)"
 M11="$repo11/.git/lcars/missions"
-( cd "$repo11" && bash "$XO" off ) >"$TMPROOT/off11.out" 2>&1 || true
-echo "  --- the repo-wide stop ---"
+( cd "$repo11" && bash "$XO" off "$MID" ) >"$TMPROOT/off11.out" 2>&1 || true
+echo "  --- the targeted stop ---"
 sed 's/^/    /' "$TMPROOT/off11.out"
 P11="$(grep -l '"paused": *true' "$M11"/*/state.json 2>/dev/null | grep -c .)"
 P11="$(printf '%s' "$P11" | tr -dc '0-9')"
@@ -731,6 +744,19 @@ check "11. ...with the RIGHT COUNT, read back off the flags on disk" \
   "[ '$P11' -eq 4 ] && grep -q '4 missions' '$TMPROOT/off11.out'"
 check "11. ...and the command that lifts it, named" \
   "grep -q 'lcars xo on' '$TMPROOT/off11.out'"
+# S254 — THE REPO-WIDE FORM PAUSES NOTHING, AND SAYS NOTHING ABOUT PAUSING.
+# Same rig, same engaged mission and three children, the switch aimed at
+# nothing: `run.sh` must be free to advance every one of them afterwards.
+repo11d="$(new_repo 3)"
+( cd "$repo11d" && bash "$XO" off ) >"$TMPROOT/off11d.out" 2>&1 || true
+P11D="$(grep -l '"paused": *true' "$repo11d"/.git/lcars/missions/*/state.json 2>/dev/null | grep -c .)"
+P11D="$(printf '%s' "$P11D" | tr -dc '0-9')"
+check "11. a repo-wide stop pauses NOTHING the captain did not name" "[ '$P11D' -eq 0 ]"
+check "11. ...and so says nothing about pausing" \
+  "[ '$P11D' -eq 0 ] && ! grep -qi 'paused' '$TMPROOT/off11d.out'"
+check "11. ...while still standing the mission down and laying its marker" \
+  "grep -q 'stood down' '$TMPROOT/off11d.out' \
+   && [ -f '$repo11d/.git/lcars/missions/$MID/xo-stop' ]"
 # THE CONTROL THAT MAKES THE THREE ABOVE FIRE. Same verb, a repo where nothing is
 # engaged and nothing gets paused: the paused line must be ABSENT. If it printed
 # here, "it says paused" above would be a constant, not a measurement.
@@ -742,7 +768,7 @@ d["numberOne"] = {"status": "finished"}
 open(p, "w").write("{\n" + ",\n".join(
     '  %s: %s' % (json.dumps(k), json.dumps(v)) for k, v in d.items()) + "\n}\n")
 PY
-( cd "$repo11b" && bash "$XO" off ) >"$TMPROOT/off11b.out" 2>&1 || true
+( cd "$repo11b" && bash "$XO" off "$MID" ) >"$TMPROOT/off11b.out" 2>&1 || true
 P11B="$(grep -l '"paused": *true' "$repo11b"/.git/lcars/missions/*/state.json 2>/dev/null | grep -c .)"
 P11B="$(printf '%s' "$P11B" | tr -dc '0-9')"
 check "11. CONTROL — a stop with nothing engaged pauses nothing" "[ '$P11B' -eq 0 ]"
@@ -872,8 +898,11 @@ echo "  --- the stop with one malformed state.json ---"
 sed 's/^/    /' "$TMPROOT/off13.out"
 P13="$(grep -l '"paused": *true' "$M13"/*/state.json 2>/dev/null | grep -c .)"
 P13="$(printf '%s' "$P13" | tr -dc '0-9')"
-check "13. CONTROL — it DID write: the marker, the paused flags and the config switch" \
-  "[ -f '$M13/$MID/xo-stop' ] && [ '$P13' -ge 3 ] \
+# S254: a repo-wide stop writes the marker and the config switch and no `paused`
+# flag, so the control is those two — which is all this case ever needed: it is
+# about a refusal claiming it wrote NOTHING after it has written SOMETHING.
+check "13. CONTROL — it DID write: the marker and the config switch" \
+  "[ -f '$M13/$MID/xo-stop' ] && [ '$P13' -eq 0 ] \
      && grep -q '\"enabled\": *false' '$repo13/.git/lcars/config.json'"
 check "13. so it must NOT say nothing was written" \
   "! grep -q 'was NOT changed' '$TMPROOT/off13.out' \
@@ -883,7 +912,8 @@ check "13. it names the mission it could not RECORD the stop on" \
 check "13. ...and still exits non-zero, so nothing downstream reads it as clean" \
   "[ '$rc13' -ne 0 ]"
 check "13. ...and still says what it DID do" \
-  "grep -q 'NUMBER ONE: OFF' '$TMPROOT/off13.out' && grep -qi 'paused' '$TMPROOT/off13.out'"
+  "grep -q 'NUMBER ONE: OFF' '$TMPROOT/off13.out' \
+     && grep -qi 'stood down' '$TMPROOT/off13.out'"
 # THE CONTROL: the SAME repo shape with the file put back to one field per line.
 # No warning, exit 0 — so the assertions above are keyed on that one file.
 repo13b="$(new_repo 3)"

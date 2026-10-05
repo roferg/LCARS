@@ -1044,8 +1044,35 @@ xo_logs_children() { # <mission-dir> — one linked child mission id per line
     | sed 's/.*"\([^"]*\)"$/\1/' | sed '/^$/d' | sort -u
 }
 
-xo_quiesce() { # <mission-dir> <mission-id>
-  local dir="$1" id="$2"
+# ── MARKER ALWAYS; FLAGS ONLY FOR THE MISSION THE CAPTAIN NAMED (S254) ──────
+#
+# THE MEASURED DEFECT. Repo-wide `lcars xo off` — no Mission named, the captain
+# simply turning his first officer off — wrote `"paused": true` onto every
+# engaged Mission AND every Mission in those Missions' `xo/logs.json`: 5 of 5 in
+# a tester's fixture. `run.sh` halts on that flag at the stage boundary and again
+# before each spawn, so the switch stopped the captain's OWN `lcars run` on work
+# he never named. S245 made it ANNOUNCE this; the captain's ruling (2026-10-05)
+# is that announcing is not enough.
+#
+# THE TWO HALVES OF A QUIESCE ARE NOT THE SAME SCOPE.
+#   * THE MARKER is Number One's own refusal to start more of Number One's work —
+#     it is what makes `resolve-logs.sh` stop minting drivers and what `lcars
+#     resume` refuses over (S245 D3). Turning the switch off is exactly a request
+#     for that, repo-wide. It stays.
+#   * THE `paused` FLAG is a statement about THE MISSION, read by every stage
+#     driver the captain runs himself. That belongs to the Mission he pointed at,
+#     and to nothing else.
+# So `--marker-only` lays the marker and writes no flag. The caller decides:
+# `cmd_off` passes `--opt-out` for a named Mission and `--repo-wide` inside its
+# loop, which is where the two kinds of stop have always been told apart.
+#
+# AND THE MARKER STAYS TRUTHFUL, so `xo on` can be symmetric. It records
+# `left-running` for anything this stop did not pause — never `paused-by-us`,
+# which would make `lcars xo on` lift a pause the CAPTAIN had set for his own
+# reason. `xo_unquiesce` unsets only on `paused-by-us`, so `left-running` is
+# skipped by the code that was already there.
+xo_quiesce() { # <mission-dir> <mission-id> [--marker-only]
+  local dir="$1" id="$2" how="${3:-}"
   local st="$dir/state.json" tmp c cst was selfwas keep
   [ -d "$dir" ] || return 0
   selfwas="$(lcars_state_get_raw "$st" paused 2>/dev/null)"
@@ -1053,14 +1080,16 @@ xo_quiesce() { # <mission-dir> <mission-id>
   {
     printf 'stop %s\n' "$NOW"
     printf 'mission %s\n' "$id"
-    if [ "$selfwas" = "true" ]; then printf 'self already-paused\n'
+    if [ "$how" = "--marker-only" ]; then printf 'self left-running\n'
+    elif [ "$selfwas" = "true" ]; then printf 'self already-paused\n'
     else printf 'self paused-by-us\n'; fi
     while IFS= read -r c; do
       [ -n "$c" ] || continue
       cst="$MISSIONS_DIR/$c/state.json"
       [ -f "$cst" ] || continue
       was="$(lcars_state_get_raw "$cst" paused 2>/dev/null)"
-      if [ "$was" = "true" ]; then printf 'child %s already-paused\n' "$c"
+      if [ "$how" = "--marker-only" ]; then printf 'child %s left-running\n' "$c"
+      elif [ "$was" = "true" ]; then printf 'child %s already-paused\n' "$c"
       else printf 'child %s paused-by-us\n' "$c"; fi
     done <<EOF
 $(xo_logs_children "$dir")
@@ -1073,6 +1102,10 @@ EOF
   # the `mv` and nowhere else: a marker that could not be placed wrote nothing,
   # and on that path "nothing was written" is still the honest sentence.
   XO_QUIESCED=1
+  # NO FLAGS ON THE REPO-WIDE PATH. The marker above is down and the stop goes on
+  # to signal and sweep exactly as before; what it does not do is tell every
+  # stage driver in the repo to halt a Mission the captain never named.
+  [ "$how" = "--marker-only" ] && return 0
   # AND THEN THE FLAGS, so the readers that only know about `paused` stop too.
   if [ "$selfwas" != "true" ]; then
     lcars_state_set "$st" paused true 2>/dev/null || true
@@ -1130,8 +1163,14 @@ xo_unquiesce() { # <mission-dir>
   return 0
 }
 
-stand_down() { # <mission-id> [--opt-out]
-  local id="$1" optout="${2:-}" dir st obj status pid live=0
+# `scope` (S254) — WHICH KIND OF STOP THIS IS, told by the caller, because the
+# caller is the only one who knows. `--opt-out` is `lcars xo off <mission>`: the
+# captain pointed at this Mission, so it is quiesced in full. `--repo-wide` is
+# the loop inside `lcars xo off` with no target: the switch goes off and the
+# marker goes down, but no `paused` flag is written onto a Mission he never
+# named. See `xo_quiesce`.
+stand_down() { # <mission-id> [--opt-out|--repo-wide]
+  local id="$1" optout="${2:-}" scope="${2:-}" dir st obj status pid live=0
   # THE REFUSAL LATCH AS IT WAS BEFORE THIS MISSION (fix round 1, D4). Restored
   # at the bottom when this command has already written, so one Mission's
   # bookkeeping failure cannot make the whole verb claim it changed nothing.
@@ -1193,7 +1232,13 @@ stand_down() { # <mission-id> [--opt-out]
     #    work is the half of a stop that killing cannot do, and it has to be the
     #    first thing that happens or the resolver mints another driver while the
     #    sweep is running. See the block above `xo_stop_marker`.
-    xo_quiesce "$dir" "$id"
+    #    S254: and it pauses only the Mission the captain NAMED — `--repo-wide`
+    #    lays the marker and writes no `paused` flag.
+    if [ "$scope" = "--repo-wide" ]; then
+      xo_quiesce "$dir" "$id" --marker-only
+    else
+      xo_quiesce "$dir" "$id"
+    fi
     # ── THE CENSUS SCOPE for everything below: this mission by name, and by the
     #    directory every one of its own processes names on its command line. The
     #    recorded facts from BOTH pid files go in whether or not either pid is
@@ -1795,7 +1840,9 @@ cmd_off() {
   local m
   while IFS= read -r m; do
     [ -n "$m" ] || continue
-    stand_down "$m"
+    # S254: `--repo-wide` — stand it down, lay the marker, and write no `paused`
+    # flag onto a Mission the captain never named.
+    stand_down "$m" --repo-wide
   done <<< "$(all_missions)"
   lcars_state_refusal_die "lcars xo off"
   printf '◈ NUMBER ONE: OFF\n'

@@ -1096,6 +1096,68 @@ def landed_of(doc):
     return out
 
 
+# THE RAIL'S FIRST QUESTION — "WAS THIS A PICTURE AT ALL?" (S254).
+#
+# THE MEASURED DEFECT. A live look ran eight declared steps, proved four real
+# defects and filed five bug Missions. Its report then headlined
+# `checked 1 of 6 (17%)` and listed TEN "could not check" entries, every one of
+# them the sentence below — over `01-help.txt`, `02-empty.txt`, `04-list.txt`,
+# `07-publish.txt` and `08-workflow.txt`. Those are COMMAND-LINE AND WORKFLOW
+# TRANSCRIPTS. A transcript has no screen, so it can never carry a record of
+# which screen it was taken on, and demanding one of it refuses the evidence for
+# being the kind of evidence it is. The look's own `couldNot` was empty and its
+# own wire said it attempted 6 of 6.
+#
+# The control that isolates it: the SAME product over the SAME fixture with no
+# url records no landings, so the rail is OFF, and reads `checked 6 of 6`, all
+# fifteen rows kept. A look that could photograph the app threw its command-line
+# evidence away; a look that could photograph nothing kept it. Backwards.
+#
+# SO THE RAIL ASKS "WAS THIS A PICTURE?" BEFORE IT ASKS "DID IT LAND?" — and it
+# asks a RECORD, never a filename. This file has lost four sessions to the
+# infer-vs-record trap and a name guess is exactly how `inv-full` came to be read
+# as the Inventory. The two records, in order:
+#
+#   1. THE STEP'S OWN READOUT, written by the producer beside the evidence.
+#      `xo-run.py` writes `checkedBy` into every step readout — `01-help.json`
+#      carries `"checkedBy": "cli"`, `08-workflow.json` carries `"workflow"`,
+#      `06-page.json` carries `"test"` — and writes no `landed`/`page`, because
+#      there was no page. `xo-drive.js` does the opposite beside every PNG:
+#      `landed` + `page`, and no `checkedBy`. That is the producer stating which
+#      instrument took the evidence, and it is the authoritative answer.
+#   2. THE LOOK'S OWN `checkedBy` ON THE ROW, the same word the ledger already
+#      prints (S239). The fallback for a step that left no readout at all.
+#
+# AND THE DEFAULT IS THE RAIL. A row with neither record is treated exactly as
+# it was before this change — refused if its picture cannot be placed. That is
+# what keeps every archived look's grade where it was: the rail is narrowed only
+# where a producer positively recorded a non-camera instrument, never widened,
+# and never loosened for a real picture. S241 stands: a shot that landed
+# elsewhere is still not evidence, and a shot nobody placed is still not
+# evidence. Both are asserted in tests/lcars-xo-rail-pictures.test.sh.
+def camera_step(doc, row):
+    """(is_a_picture, provenance) for the evidence a row cites.
+
+    False only on a producer's POSITIVE record of a non-camera instrument —
+    `EXERCISED_CHECKED_BY`, the same three words the exercised rail reads. No
+    filename, no extension, no prose."""
+    if isinstance(doc, dict):
+        cb = str(doc.get("checkedBy") or "").strip().lower()
+        if cb in EXERCISED_CHECKED_BY:
+            return False, ("the step's own readout records `checkedBy: %s`, so what "
+                           "this cites is a transcript and not a picture of a screen"
+                           % cb)
+        if isinstance(doc.get("landed"), dict) or isinstance(doc.get("page"), dict):
+            # The driver recorded a page beside this evidence: it IS a picture,
+            # and the readout outranks anything the look said about it.
+            return True, "the shot's own readout records the page it was taken on"
+    cb = str((row or {}).get("checkedBy") or "").strip().lower()
+    if cb in EXERCISED_CHECKED_BY:
+        return False, ("the look recorded `checkedBy: %s` on this row, so what it "
+                       "cites is a transcript and not a picture of a screen" % cb)
+    return True, ""
+
+
 def drawn_at_landing(row):
     """The landing a CRITERION declares, out of the `drawnAt` the planner wrote
     from the drawing before the look. "…#button-open-inventory on #screen-roster
@@ -2766,9 +2828,22 @@ def main():
         # read, and nothing is retried. A row refused here is NOT a fault in the
         # build: it is a hole in MY checking, so it goes to `untested` with the
         # recorded reason and is listed under "what defeated my checks".
+        # S254 — AND THE FIRST QUESTION IS "WAS THIS A PICTURE?". A row whose
+        # evidence a producer recorded as a cli / workflow / test run is scored
+        # on that transcript and is never demoted for a missing landing record:
+        # the rule is about PICTURES, and those steps have no screen. See
+        # camera_step() for the two records this reads and why the default is
+        # the rail.
         landing = None
-        if landing_on and shot and status in ("met", "gap"):
-            _rpath, _rdoc = landing_readout(shots_root, shot)
+        _rail_here = bool(landing_on and shot and status in ("met", "gap"))
+        _rpath, _rdoc = landing_readout(shots_root, shot) if _rail_here else ("", None)
+        _is_pic, _pic_from = camera_step(_rdoc, c) if _rail_here else (True, "")
+        if _rail_here and not _is_pic:
+            notes.append("criterion %s cites %s, and %s — so I scored it on that "
+                         "transcript and did not ask it for a landing record"
+                         % (cid, shot, _pic_from))
+            landing = {"notAPicture": True, "shot": shot, "why": _pic_from}
+        elif _rail_here:
             _landed = landed_of(_rdoc)
             _intent = landing_intent(_rdoc, shot, landing_steps,
                                      contract_by_id.get(cid) or {}, cid,
