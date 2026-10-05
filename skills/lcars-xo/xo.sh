@@ -3036,6 +3036,18 @@ except Exception: print(0)' "$xodir/drawing-parts.json" 2>/dev/null)"
 
 xo_pair_parts() { # <mission-dir> <xodir> [baseline-matched] — pair the drawing with every screen seen
   local dir="$1" xodir="$2" baseline="${3:-}" f nbuild=0
+  # ── NO MEASUREMENT OVER A PAGE WE REFUSED TO PLACE (S248 fix round 1, D3) ──
+  # The tester read `side by side: 4 drawn part(s): 2 matched, 2 unreachable, 1
+  # with a measured difference` ON THE WRONG-SCREEN RUN — a measured comparison
+  # against the very page the grade had just refused to grade. If the look will
+  # not place the page, a side-by-side against it is the same claim in a second
+  # voice, so it stands down WITH the grade and says why. Keyed off the one
+  # record the grade reads, set only by the rail that wrote it.
+  if [ "${XO_WRONG_SCREEN_STANDS:-0}" = 1 ]; then
+    printf '  I will not measure your drawing against a page I could not place — the side-by-side stands down with the grade.\n'
+    journal "$dir" pairing-stood-down '"why": "the page could not be placed, so a measured comparison against it would be a statement about the wrong screen"'
+    return 0
+  fi
   [ -s "$xodir/drawing-parts.json" ] || return 0
   set --
   for f in "$xodir"/build-parts-*.json; do
@@ -3184,7 +3196,7 @@ xo_seed() { # <mission-dir> <xodir> <where-to-run> — load the declared sample 
   line="$(xo_seed_declared "${where:-$PWD}")"
   src="${line%%$'\t'*}"; cmd="${line#*$'\t'}"
   if [ -z "$line" ]; then
-    "$XO_PY" -c 'import json,sys; json.dump({"declared": False}, open(sys.argv[1], "w"), indent=2)' \
+    "$XO_PY" -c 'import json,sys; json.dump({"declared": False, "sources": []}, open(sys.argv[1], "w"), indent=2)' \
       "$xodir/seed.json" 2>/dev/null || true
     printf '◈ NUMBER ONE: no sample data is declared for this repo — screens that need data may be unseeable.\n'
     journal "$dir" seed '"declared": false'
@@ -3193,15 +3205,676 @@ xo_seed() { # <mission-dir> <xodir> <where-to-run> — load the declared sample 
   printf '◈ NUMBER ONE: loading the sample data — %s.\n' "$src"
   ( cd "$where" 2>/dev/null && xo_cage "$XO_SEED_TIMEOUT" bash -c "$cmd" ) \
     >"$xodir/seed.log" 2>&1 || rc=$?
+  # THE HOME IS A RECORD, NOT AN INFERENCE (S248 fix round 1, D4). `ranIn` said
+  # which WORKSPACE the command ran in and nothing said which HOME. That is the
+  # one fact that separates "the page was empty" from "the seed and the app were
+  # looking at two different stores", and only the thing that runs the command
+  # knows it — so it is written down here, at the moment it is known. This
+  # command inherits the captain's own HOME (the launched app's HOME too); the
+  # WORKER's steps do not, and `xo_seed_worker_record` records theirs.
   "$XO_PY" -c 'import json,sys
+row = {"by": "repo", "source": sys.argv[2], "command": sys.argv[3],
+       "exit": int(sys.argv[4]), "ranIn": sys.argv[5], "ran": True,
+       "home": sys.argv[6]}
 json.dump({"declared": True, "source": sys.argv[2], "command": sys.argv[3],
-           "exit": int(sys.argv[4]), "ranIn": sys.argv[5]},
+           "exit": int(sys.argv[4]), "ranIn": sys.argv[5], "sources": [row]},
           open(sys.argv[1], "w"), indent=2)' \
-    "$xodir/seed.json" "$src" "$cmd" "$rc" "$where" 2>/dev/null || true
+    "$xodir/seed.json" "$src" "$cmd" "$rc" "$where" "${HOME:-}" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     printf '  the seed came back rc=%s — see %s\n' "$rc" "$xodir/seed.log"
   fi
   journal "$dir" seed "$(printf '"declared": true, "exit": %s, "detail": %s' "$rc" "$(jstr "$src")")"
+  return 0
+}
+
+# ── SEED, THEN LOOK, IN THE TREE THE LAUNCH SERVES (S248) ───────────────────
+#
+# THE SPIKE, AND WHY IT POINTS THIS WAY. The session asked whether `launch.sh`
+# could be handed the look's existing detached worktree and HOME. IT CANNOT: it
+# has no `--worktree` and no `--home`, and its parser dies on any unknown flag
+# (launch.sh: "unknown option … usage: lcars launch <mission> [hint] [--stop]").
+# The launch contract is a declared invariant of this round, so teaching it a
+# flag is a STOP, not a judgement call — and the direction is therefore forced
+# the other way round: THE LOOK ADOPTS `launch.json.worktree`. The steps run in
+# the tree the launch already serves, and `launch.sh` is unchanged.
+#
+# THE DEFECT THAT MAKES THIS WORTH DOING (measured, weekend of 2026-10-03).
+# `xo_seed` ran in `launch.json.worktree`; the reach ran in `xo-run.py`'s OWN
+# tree, BEFORE it. So nothing seeded the tree the worker's steps ran in and
+# nothing the worker seeded ever reached the page. 7 of 29 missed bugs sat behind
+# "nothing seeded" or "the wrong thing launched".
+#
+# AND THE ORDER MATTERS AS MUCH AS THE TREE. A screen that only exists once there
+# is data in it cannot be photographed into existence afterwards, so the worker
+# gets a round BEFORE the launch, its steps run in the launched tree, and only
+# then does the walk happen. `verifySeed` still runs if declared, and `seed.json`
+# records BOTH sources.
+XO_REACH_ADOPTED=0
+XO_PRELAUNCH_ACTS=""
+# S248 fix round 1, D3 — the ONE record the evaluate rail sets when it decided it
+# could not place the page it was given. The grade already stands every browser
+# row down off `wrong-screen.json`; this is what makes the measured side-by-side
+# stand down WITH it instead of reporting a comparison against the wrong screen.
+# Set only by `cmd_evaluate`'s wrong-screen rail, so a re-check (which has no such
+# rail, and whose scorer is handed no wrong-screen record) is untouched by it.
+XO_WRONG_SCREEN_STANDS=0
+
+xo_reach_adopt() { # <mission-dir> <launch-worktree> — ONE tree for steps and launch
+  local dir="$1" wt="$2"
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  [ "$wt" != "$XO_REACH_WT" ] || return 0
+  # The tree `xo_reach_prepare` minted is now surplus — one look, one tree. It is
+  # handed back through the SAME teardown road (there is no second
+  # implementation), and its throwaway HOME is KEPT, because that is the HOME the
+  # steps run under and the one helper is the only thing that mints it.
+  if [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && [ "$XO_REACH_ADOPTED" = 0 ]; then
+    "$XO_PY" "$XO_RUN_PY" teardown --repo "${XO_REACH_REPO:-$PWD}" \
+      --worktree "$XO_REACH_WT" >/dev/null 2>&1 || true
+  fi
+  XO_REACH_WT="$wt"
+  XO_REACH_ADOPTED=1
+  if [ -z "$XO_REACH_HOME" ] || [ ! -d "$XO_REACH_HOME" ]; then
+    # No helper ran (no branch on the record, or it refused), and a step still
+    # needs a HOME that is not the captain's. A bare directory is all a HOME is;
+    # the WORKTREE is the thing only one helper may make, and that one came from
+    # the launch.
+    XO_REACH_HOME="$(mktemp -d)"
+  fi
+  [ -n "$XO_REACH_REPO" ] || XO_REACH_REPO="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+  journal "$dir" reach-tree "$(printf '"worktree": %s, "home": %s, "adopted": true, "from": "launch"' \
+    "$(jstr "$XO_REACH_WT")" "$(jstr "$XO_REACH_HOME")")"
+  return 0
+}
+
+# WHAT THE WORKER SEEDED, ON THE SEED RECORD (S248). The steps are the worker's
+# and they ran in the launched tree; both facts go next to the repo's own seed so
+# the report can say which data the page was showing and where it came from.
+xo_seed_worker_record() { # <xodir> <kept-actions.json> <tree> <round> [home]
+  [ -s "$2" ] || return 0
+  "$XO_PY" - "$1/seed.json" "$2" "$3" "$4" "${5:-}" <<'XO_SEEDPY'
+import json, sys
+
+seed, kept, tree, rnd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+home = sys.argv[5] if len(sys.argv) > 5 else ""
+try:
+    with open(seed) as fh:
+        doc = json.load(fh)
+except Exception:
+    doc = {}
+if not isinstance(doc, dict):
+    doc = {}
+try:
+    with open(kept) as fh:
+        k = json.load(fh)
+except Exception:
+    k = {}
+steps = [s for s in ((k.get("reachSteps") if isinstance(k, dict) else None) or [])
+         if isinstance(s, dict)]
+if not steps:
+    raise SystemExit(0)
+rows = doc.get("sources")
+if not isinstance(rows, list):
+    rows = []
+rows.append({"by": "worker", "round": int(rnd or 0), "ranIn": tree, "ran": True,
+             # S248 fix round 1, D4 — the HOME these steps ran under, written at
+             # the moment it is known. It is a THROWAWAY one while the launched
+             # app keeps the captain's real HOME, and that asymmetry is the whole
+             # reason the fact has to be on the record rather than worked out
+             # later from an empty-looking page.
+             "home": home,
+             "steps": [{"key": str(s.get("key") or ""), "do": str(s.get("do") or ""),
+                        "argv": s.get("argv") or s.get("path") or ""}
+                       for s in steps]})
+doc["sources"] = rows
+doc["declared"] = True
+if not str(doc.get("source") or "").strip():
+    doc["source"] = "the worker declared the steps that put data on the page"
+with open(seed, "w") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+XO_SEEDPY
+  return 0
+}
+
+# ── WHICH PAGE IS THE SURFACE UNDER REVIEW (S248) ───────────────────────────
+#
+# THE DEFECT. `launch.sh` discovers ONE command, and on the modelled weekend one
+# `make serve` served the FOUNDATION fixture for every later milestone — the
+# single root cause across the whole run. Nothing ever said the page matched no
+# mockup. So when the record declares more than one web surface, the worker NAMES
+# the one it is reviewing, and that name travels to `launch.sh` as the HINT the
+# verb already takes — never as a frozen command and never as a new flag.
+xo_serve_targets() { # <mission-dir> <xodir> — writes serve-targets.json, prints the count
+  "$XO_PY" - "$1" "$2/serve-targets.json" "$PWD" 2>/dev/null <<'XO_TARGPY' || printf '0\n'
+import json, os, sys
+
+mdir, out = sys.argv[1], sys.argv[2]
+root = sys.argv[3] if len(sys.argv) > 3 else "."
+WEB = ("web", "page", "site", "http", "url", "browser")
+# THE NAMES THAT SAY "THIS SERVES SOMETHING" — a list, compared, never a pattern
+# matched against text. This repo has paid three times (S147, S156, S188) for a
+# rail that read prose, and `lcars-xo-landing` guards the whole diff against it.
+SERVES = ("dev", "serve", "start", "preview", "site", "docs")
+targets = []
+
+
+def add(row):
+    for t in targets:
+        if t.get("path") == row.get("path") and t.get("from") == row.get("from"):
+            return
+    targets.append(row)
+
+
+try:
+    with open(os.path.join(mdir, "plan.json")) as fh:
+        plan = json.load(fh)
+except Exception:
+    plan = {}
+for ticket in ((plan.get("tickets") if isinstance(plan, dict) else None) or []):
+    if not isinstance(ticket, dict):
+        continue
+    for ep in (ticket.get("entrypoints") or []):
+        if not isinstance(ep, dict):
+            continue
+        kind = str(ep.get("kind") or "").strip().lower()
+        url = str(ep.get("urlPath") or ep.get("url") or "").strip()
+        if kind not in WEB and not url:
+            continue
+        add({"from": "the plan's entrypoints[]", "kind": kind or "web",
+             "path": str(ep.get("path") or ""), "urlPath": url,
+             "ticket": str(ticket.get("id") or "")})
+
+# THE REPO'S OWN SERVE TARGETS. Read, never guessed at: a script or a target
+# whose NAME says it serves something. Two of them is the ambiguity this exists
+# for; one is not an ambiguity at all.
+try:
+    with open(os.path.join(root, "package.json")) as fh:
+        pkg = json.load(fh)
+    for name in sorted((pkg.get("scripts") or {})):
+        if str(name).split(":")[0] in SERVES:
+            add({"from": "package.json scripts", "kind": "web",
+                 "path": "npm run %s" % name, "urlPath": ""})
+except Exception:
+    pass
+try:
+    with open(os.path.join(root, "Makefile")) as fh:
+        for line in fh:
+            if ":" not in line or line[:1] in (" ", "\t", "#", ""):
+                continue
+            target = line.split(":")[0].strip()
+            if target and target.split("-")[0] in SERVES + ("run",):
+                add({"from": "the Makefile", "kind": "web",
+                     "path": "make %s" % target, "urlPath": ""})
+except Exception:
+    pass
+
+os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+with open(out, "w") as fh:
+    json.dump({"targets": targets, "count": len(targets)}, fh, indent=2)
+    fh.write("\n")
+print(len(targets))
+XO_TARGPY
+}
+
+# A PAGE, AND A COMMAND LINE THAT COULD PUT DATA ON IT. Read off the contract the
+# look has already written, never guessed: `productTypes` says there is a screen
+# and `entrypoints[]` says there is a CLI. Both, or there is nothing to ask.
+xo_seedable() { # <criteria.json> → 1 | 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); raise SystemExit
+types = {str(t.get("type") or "") for t in (d.get("productTypes") or []) if isinstance(t, dict)}
+eps = {str(e.get("kind") or "") for e in (d.get("entrypoints") or []) if isinstance(e, dict)}
+print(1 if ("web" in types and "cli" in eps) else 0)' "$1" 2>/dev/null || printf '0\n'
+}
+
+xo_serve_write() { # <mission-dir> <xodir> <actions.json> <from>
+  local dir="$1" xodir="$2" acts="$3" from="$4"
+  "$XO_PY" - "$xodir/serve.json" "$acts" "$from" 2>/dev/null <<'XO_SERVEPY' || true
+import json, sys
+
+out, acts, src = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(acts) as fh:
+        d = json.load(fh)
+except Exception:
+    d = None
+serve = None
+if isinstance(d, dict):
+    if isinstance(d.get("serve"), dict):
+        serve = d["serve"]
+    else:
+        for a in (d.get("actions") or []):
+            if isinstance(a, dict) and str(a.get("do") or "") == "serve":
+                serve = a
+                break
+elif isinstance(d, list):
+    for a in d:
+        if isinstance(a, dict) and str(a.get("do") or "") == "serve":
+            serve = a
+            break
+argv = []
+if isinstance(serve, dict):
+    argv = [str(x) for x in (serve.get("argv") or []) if str(x).strip()]
+if not argv:
+    # NOT DECLARED IS A RECORD TOO. The launch then happens exactly as it always
+    # did, with no hint at all — a worker that named no page has not named a
+    # wrong one.
+    with open(out, "w") as fh:
+        json.dump({"declared": False, "from": src}, fh, indent=2)
+        fh.write("\n")
+    raise SystemExit(0)
+# THE LOOK'S DECLARED ENV, FOR THE LAUNCHED APP (S248). A product that keeps its
+# data under a directory named by an env var needs the SEED and the SERVER to
+# agree about it, or one tree is still two stores. Only plain names, and never
+# HOME or PATH: HOME is the standing rule (the launch's own discovery worker
+# authenticates from the captain's real HOME, exactly as the look's Chrome does),
+# and PATH would let a declaration choose which binaries the launch runs.
+env = {}
+declared_env = serve.get("env") if isinstance(serve.get("env"), dict) else {}
+for k, v in sorted(declared_env.items()):
+    name = str(k)
+    if name in ("HOME", "PATH", "TMPDIR", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"):
+        continue
+    if not name or not all(c.isalnum() or c == "_" for c in name) or name[0].isdigit():
+        continue
+    env[name] = str(v)
+with open(out, "w") as fh:
+    json.dump({"declared": True, "from": src, "argv": argv,
+               "cwd": str(serve.get("cwd") or "<worktree>"),
+               "urlPath": str(serve.get("urlPath") or serve.get("url") or ""),
+               "env": env},
+              fh, indent=2)
+    fh.write("\n")
+XO_SERVEPY
+  # NOT `json_field` — that reader returns STRING values only, and `declared` is a
+  # boolean, so it reads empty for a target that really was declared. The argv
+  # line is printed only for a declared target, so it IS the test.
+  if [ -n "$(xo_serve_command "$xodir/serve.json")" ]; then
+    journal "$dir" serve-declared "$(printf '"from": %s, "command": %s, "urlPath": %s' \
+      "$(jstr "$from")" "$(jstr "$(xo_serve_command "$xodir/serve.json")")" \
+      "$(jstr "$(json_field "$xodir/serve.json" urlPath)")")"
+  fi
+  return 0
+}
+
+xo_serve_env() { # <serve.json> → one KEY=value per line, for the launched app
+  [ -s "$1" ] || return 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+for k, v in sorted((d.get("env") or {}).items()):
+    if "\n" in str(v):
+        continue
+    print("%s=%s" % (k, v))' "$1" 2>/dev/null
+}
+
+xo_serve_command() { # <serve.json> → the argv, as one line
+  [ -s "$1" ] || return 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+if d.get("declared"):
+    print(" ".join(d.get("argv") or []))' "$1" 2>/dev/null
+}
+
+# THE HINT IS PROSE, because that is what `lcars launch <mission> [hint]` takes.
+# A hint is a suggestion the launch's own discovery reads; it is never a frozen
+# command, which is the whole difference between naming the page and overriding
+# the verb that knows how to start it.
+xo_serve_hint() { # <serve.json> → the hint line, or nothing
+  [ -s "$1" ] || return 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+if not d.get("declared"):
+    raise SystemExit
+argv = " ".join(d.get("argv") or [])
+if not argv:
+    raise SystemExit
+print("serve the surface under review with: %s (cwd %s, the page is at %s)"
+      % (argv, d.get("cwd") or "<worktree>", d.get("urlPath") or "/"))' "$1" 2>/dev/null
+}
+
+# ONE ROAD TO THE LAUNCH, HINT OR NO HINT (S248). `xo.sh` must be able to launch
+# twice in one look — once on what the record said, once on what the worker named
+# after the first page turned out to be the wrong screen — and the ONLY way that
+# stays honest is if both go through this one function and therefore through
+# `launch.sh`. There is no second launch path anywhere in this file.
+xo_do_launch() { # <mission-dir> <mission-id> <xodir> <engine>
+  local dir="$1" id="$2" xodir="$3" engine="$4" hint="" envline envfile
+  hint="$(xo_serve_hint "$xodir/serve.json")"
+  # THROUGH A FILE, not a heredoc inside the subshell below: bash 3.2 (the one
+  # macOS ships) mis-parses a here-document nested inside a command substitution,
+  # and the failure lands hundreds of lines from its cause.
+  envfile="$(mktemp)"
+  xo_serve_env "$xodir/serve.json" >"$envfile" 2>/dev/null || :
+  (
+    if [ -n "$engine" ]; then
+      export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    # launch.sh starts the app with the environment it was itself given
+    # (`sh -c "cd … && exec $CMD"`), so a declared variable reaches the app by
+    # being exported here. The names were fenced where serve.json was written —
+    # and HOME is NOT among them: the launch's own discovery worker authenticates
+    # from the captain's real HOME, the same standing rule that keeps the look's
+    # Chrome on the real one.
+    while IFS= read -r envline; do
+      [ -n "$envline" ] || continue
+      export "${envline?}"
+    done <"$envfile"
+    if [ -n "$hint" ]; then
+      # `--` is launch.sh's real end-of-options marker (S215), so a hint that
+      # contains a word starting with `-` is still prose and not an option.
+      exec bash "$XO_LAUNCH_SCRIPT" "$id" -- "$hint"
+    fi
+    exec bash "$XO_LAUNCH_SCRIPT" "$id"
+  ) >>"$xodir/launch.log" 2>&1 || true
+  rm -f "$envfile"
+  return 0
+}
+
+# ── THE ROUND BEFORE THE LAUNCH (S248) ──────────────────────────────────────
+#
+# WHAT IT IS FOR, IN ONE SENTENCE: steps taken before the launch are what the
+# page will be showing, and only the worker knows what this product needs typed
+# into it. So it is asked, once, before anything is served — and its steps then
+# run in the tree the launch serves, before the first picture.
+#
+# IT IS NOT ASKED WHEN THERE IS NOTHING TO ASK. Two triggers, both read off the
+# contract the look has already written: more than one web surface (which page?),
+# or a page plus a command line that could put data on it (what does it need?).
+# A milestone with neither spends nothing here.
+xo_prelaunch_round() { # <mission-dir> <xodir> <input-dir> <work> <engine>
+  local dir="$1" xodir="$2" input="$3" work="$4" engine="$5" n why="" out id
+  id="${dir##*/}"
+  n="$(xo_serve_targets "$dir" "$xodir")"
+  n="${n:-0}"
+  case "${LCARS_XO_PRELAUNCH:-}" in
+    0) journal "$dir" prelaunch '"asked": false, "why": "switched off"'
+       return 0 ;;
+    1) why="the look was asked to" ;;
+  esac
+  if [ -z "$why" ]; then
+    if [ "$n" -gt 1 ] 2>/dev/null; then
+      why="the record declares $n web surfaces, and only one of them is under review"
+    elif [ "$(xo_seedable "$xodir/criteria.json")" = 1 ]; then
+      why="this milestone has a page and a command line that could put data on it"
+    else
+      journal "$dir" prelaunch "$(printf '"asked": false, "surfaces": %s' "$n")"
+      return 0
+    fi
+  fi
+  out="$work/round-0"
+  mkdir -p "$out"
+  printf '◈ NUMBER ONE: before I launch anything — %s.\n' "$why"
+  printf '  Asking which page is under review, and what has to be on it.\n'
+  journal "$dir" prelaunch "$(printf '"asked": true, "surfaces": %s, "why": %s' \
+    "$n" "$(jstr "$why")")"
+  (
+    export LCARS_XO_INPUT_DIR="$input" LCARS_WORKER_INPUT_DIRS="$input"
+    export LCARS_XO_PRELAUNCH=1
+    if [ -n "$engine" ]; then
+      export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+      --mission "$id" --mode evaluate --outdir "$out"
+  ) >/dev/null 2>&1 &
+  XO_SPIN_PID=$!
+  wait "$XO_SPIN_PID" 2>/dev/null || true
+  XO_SPIN_PID=""
+  xo_keep_notes "$dir" "$xodir" "$out" 0
+  if [ -s "$out/xo-actions.json" ]; then
+    xo_serve_write "$dir" "$xodir" "$out/xo-actions.json" "the worker, before the launch"
+    XO_PRELAUNCH_ACTS="$out/xo-actions.json"
+    journal "$dir" looking "$(xo_looking_body "$out/xo-actions.json" 0)"
+  elif [ -s "$out/xo-verdict.json" ]; then
+    # A VERDICT WITH NO PICTURES IS NOT A VERDICT. Nothing has been served yet,
+    # so this round cannot have looked at the build; it is recorded and dropped
+    # rather than published as the look's answer.
+    journal "$dir" prelaunch-verdict-ignored '"why": "nothing had been launched yet, so there was nothing to judge"'
+  fi
+  return 0
+}
+
+# The worker's pre-launch steps, run in the tree the launch serves, BEFORE the
+# first picture. `verifySeed` has already run; both land on `seed.json`.
+xo_prelaunch_steps() { # <mission-dir> <xodir> <shots> <tree>
+  [ -n "$XO_PRELAUNCH_ACTS" ] && [ -s "$XO_PRELAUNCH_ACTS" ] || return 0
+  printf '◈ NUMBER ONE: running the steps that put data on the page, before I look at it…\n'
+  xo_reach_actions "$1" "$2" "$3" "$XO_PRELAUNCH_ACTS" 0
+  xo_seed_worker_record "$2" "$2/actions-kept-0.json" "$4" 0 "${XO_REACH_HOME:-}"
+  XO_PRELAUNCH_ACTS=""
+  return 0
+}
+
+# ── WAS ANYBODY TOLD WHETHER THE STEPS CHANGED THE PAGE (S248 fix round 1) ──
+#
+# D1, AS THE TESTER SAW IT. The set-up steps ran in exactly the right workspace
+# (`seed.json`: `by: "worker"`, `ranIn: <the launch tree>`) and the records they
+# filed survived into the next round — yet EVERY readout in the whole review had
+# the declared part absent. Pictures are taken at the TOP of a round and the
+# steps run at the END of one, so a round's own render landed after its camera
+# and the review ended. "Nothing checks whether the steps just run actually
+# changed the page, and nothing tells the reviewer."
+#
+# THE SHAPE CHOSEN: shoot again at the END of a round whose steps ran. It is the
+# direct cure for the measured cause (the ordering), it needs no second ask of
+# the worker, and the shot it takes lands in `$shots` — which is re-synced into
+# the worker's input directory every round, so the NEXT round sees the page the
+# steps produced rather than the one that preceded them.
+xo_shot_text() { # <shots-dir> <prefix> → what the first readout of that prefix read
+  "$XO_PY" - "$1" "$2" 2>/dev/null <<'XO_TXTPY' || true
+import glob, json, os, sys
+
+shots, prefix = sys.argv[1], sys.argv[2]
+for path in sorted(glob.glob(os.path.join(shots, prefix + "-*.json"))):
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except Exception:
+        continue
+    if not isinstance(doc, dict):
+        continue
+    page = doc.get("page") if isinstance(doc.get("page"), dict) else doc
+    print(" ".join(str(page.get("textExcerpt") or "").split()))
+    raise SystemExit(0)
+XO_TXTPY
+}
+
+# The end-of-round picture, taken ONLY when this round really ran steps. No
+# actions are passed, so it types nothing: it is a photograph of the page the
+# steps left behind, and the comparison against the page that preceded them is
+# what gets said out loud.
+xo_shot_after_steps() { # <mission-dir> <xodir> <shots> <round> <url> <before-prefix>
+  local dir="$1" xodir="$2" shots="$3" round="$4" url="$5" before="$6"
+  local kept="$2/actions-kept-$4.json" n drc=0 b="" a="" absent="" changed=false
+  [ -n "$url" ] || return 0
+  [ -s "$kept" ] || return 0
+  n="$(xo_reach_count "$kept")"
+  [ "${n:-0}" -gt 0 ] || return 0
+  b="$(xo_shot_text "$shots" "$before")"
+  printf '◈ NUMBER ONE: your %s step(s) have run — looking again, so this round sees the page they left.\n' "$n"
+  "$XO_NODE" "$XO_DRIVER" --url "$url" --out "$shots" \
+    --place-names "$xodir/criteria.json" --prefix "after$round" \
+    --parts-out "$xodir/build-parts-$round-after.json" \
+    >"$xodir/drive-$round-after.json" 2>"$xodir/drive-$round-after.err" &
+  XO_DRIVE_PID=$!
+  wait "$XO_DRIVE_PID" || drc=$?
+  XO_DRIVE_PID=""
+  a="$(xo_shot_text "$shots" "after$round")"
+  [ "$a" != "$b" ] && changed=true
+  absent="$(xo_places_absent "$shots" "after$round")"
+  if [ "$changed" = true ]; then
+    printf '  the page is not what it was before them.\n'
+  else
+    printf '  the page reads exactly as it did before them — nothing your steps did reached it.\n'
+  fi
+  journal "$dir" steps-effect "$(printf '"round": %s, "steps": %s, "changed": %s, "shots": %s, "driverExit": %s' \
+    "$round" "$n" "$changed" "$(jstr "after$round")" "$drc")"
+  xo_seed_empty_record "$xodir" "$absent" "after$round"
+  [ -n "$absent" ] && printf '  …and it still carries none of the parts your drawing declares (%s).\n' "$absent"
+  return 0
+}
+
+# ── A SEED THAT RAN ONTO A PAGE THAT STAYED EMPTY (S248 fix round 1, D4) ────
+#
+# THE TESTER'S WORDS: "a reader would conclude 'the page was empty', never 'the
+# reviewer and the app were looking at two different stores'."
+#
+# THE KNOWN, DELIBERATE LIMITATION BEHIND IT. The steps run under a throwaway
+# HOME; the launched app keeps the captain's real one, because the launch's own
+# discovery worker authenticates from it. A product that reads its data directory
+# from an ENV VAR can be bridged with the look's declared `serve.env`; one with a
+# path hardcoded under `$HOME` cannot, and its page reads an empty store.
+#
+# SO IT IS RECORDED, AT THE MOMENT IT IS KNOWN — both HOMEs and the parts that
+# were still missing, onto `seed.json`, where the seed's own record already is.
+# Nothing downstream infers it from a bare-looking page. An EMPTY `missing` list
+# clears the record, because a page that filled up later has no cause to name.
+xo_seed_empty_record() { # <xodir> <comma-missing> <shots-prefix>
+  [ -s "$1/seed.json" ] || return 0
+  "$XO_PY" - "$1/seed.json" "$2" "$3" "${XO_REACH_HOME:-}" "${HOME:-}" 2>/dev/null <<'XO_EMPTYPY' || true
+import json, sys
+
+path, missing, prefix = sys.argv[1], sys.argv[2], sys.argv[3]
+steps_home = sys.argv[4] if len(sys.argv) > 4 else ""
+app_home = sys.argv[5] if len(sys.argv) > 5 else ""
+try:
+    with open(path) as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(doc, dict):
+    raise SystemExit(0)
+parts = [p for p in missing.split(",") if p]
+ran = [s for s in (doc.get("sources") or [])
+       if isinstance(s, dict) and s.get("ran")]
+if not parts or not ran:
+    # Nothing to name — a page that carries the declared parts, or a look where
+    # no seed ever ran, has no two-stores story to tell.
+    if doc.pop("pageStillEmpty", None) is None:
+        raise SystemExit(0)
+else:
+    bridge = ("A product that reads its data directory from an environment "
+              "variable can be bridged with the look's declared `serve.env`; one "
+              "with a path hardcoded under `$HOME` cannot, and its page reads an "
+              "empty store.")
+    doc["pageStillEmpty"] = {
+        "missing": parts, "shots": prefix,
+        "home": steps_home, "appHome": app_home,
+        "note": ("The set-up steps ran and the page still carries none of the "
+                 "parts the drawing declares (%s). The steps ran under "
+                 "HOME=%s; the app that served the page kept HOME=%s. %s"
+                 % (", ".join(parts), steps_home or "<unrecorded>",
+                    app_home or "<unrecorded>", bridge)),
+    }
+with open(path, "w") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+XO_EMPTYPY
+  return 0
+}
+
+# ── THE WRONG SCREEN IS SAID, NOT JUDGED (S248) ─────────────────────────────
+#
+# THE SIGNAL ALREADY EXISTED. `xo-drive.js` records, per shot,
+# `places[sel].present` and `.laidOut` for every place the contract declares —
+# and nothing ever escalated on it. So on the modelled weekend a page that
+# matched no mockup was graded, repeatedly, and the report never said the page
+# was wrong. NO IMAGE IS COMPARED HERE: the readout IS the record.
+xo_places_absent() { # <shots-dir> <prefix> → the declared parts, when NONE is there
+  "$XO_PY" - "$1" "$2" 2>/dev/null <<'XO_WSPY' || true
+import glob, json, os, sys
+
+shots, prefix = sys.argv[1], sys.argv[2]
+for path in sorted(glob.glob(os.path.join(shots, prefix + "-*.json"))):
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except Exception:
+        continue
+    if not isinstance(doc, dict):
+        continue
+    page = doc.get("page") if isinstance(doc.get("page"), dict) else doc
+    places = page.get("places") if isinstance(page.get("places"), dict) else None
+    if not places:
+        # A readout with no declared place says nothing either way — the drawing
+        # named nothing to look for, so there is no wrong screen to find.
+        continue
+    here = [k for k, v in places.items()
+            if isinstance(v, dict) and (v.get("present") or v.get("laidOut"))]
+    if here:
+        raise SystemExit(0)
+    print(",".join(sorted(places)))
+    raise SystemExit(0)
+XO_WSPY
+}
+
+xo_ws_body() { # <url> <comma-parts> <tried> → a journal body
+  "$XO_PY" -c 'import json,sys
+parts = [p for p in sys.argv[2].split(",") if p]
+print("\"url\": %s, \"lookedFor\": %s, \"tried\": %s"
+      % (json.dumps(sys.argv[1]), json.dumps(parts), json.dumps(int(sys.argv[3]))))' \
+    "$1" "$2" "$3" 2>/dev/null
+}
+
+xo_ws_write() { # <xodir> <url> <comma-parts> — the record the scorer reads
+  "$XO_PY" -c 'import json,sys
+parts = [p for p in sys.argv[3].split(",") if p]
+reason = ("the wrong screen: the page at %s showed none of the parts the drawing "
+          "declares (%s), so nothing on it can settle this"
+          % (sys.argv[2], ", ".join(parts) or "any"))
+with open(sys.argv[1], "w") as fh:
+    json.dump({"wrongScreen": True, "url": sys.argv[2], "lookedFor": parts,
+               "reason": reason}, fh, indent=2)
+    fh.write("\n")' "$1/wrong-screen.json" "$2" "$3" 2>/dev/null || true
+}
+
+xo_put_file() { # <input-dir> <file> — one more read-only file on the worker's side
+  local into="$1" f="$2" name
+  [ -d "$into" ] && [ -s "$f" ] || return 0
+  name="${f##*/}"
+  chmod u+w "$into" 2>/dev/null || true
+  rm -f "$into/$name" 2>/dev/null || true
+  cp "$f" "$into/$name" 2>/dev/null || true
+  chmod a-w "$into/$name" 2>/dev/null || true
+  return 0
+}
+
+# ASK ONCE. A second ask would be a loop over a page nobody can place, and the
+# honest end of that loop is "I could not check these", not a third guess.
+xo_serve_reask() { # <mission-dir> <xodir> <input> <work> <engine> <url> <parts>
+  local dir="$1" xodir="$2" input="$3" work="$4" engine="$5" url="$6" parts="$7" out id
+  id="${dir##*/}"
+  out="$work/wrong-screen"
+  mkdir -p "$out"
+  xo_ws_write "$xodir" "$url" "$parts"
+  xo_put_file "$input" "$xodir/wrong-screen.json"
+  xo_put_file "$input" "$xodir/serve-targets.json"
+  (
+    export LCARS_XO_INPUT_DIR="$input" LCARS_WORKER_INPUT_DIRS="$input"
+    export LCARS_XO_PRELAUNCH=1 LCARS_XO_WRONG_SCREEN=1
+    if [ -n "$engine" ]; then
+      export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+      --mission "$id" --mode evaluate --outdir "$out"
+  ) >/dev/null 2>&1 &
+  XO_SPIN_PID=$!
+  wait "$XO_SPIN_PID" 2>/dev/null || true
+  XO_SPIN_PID=""
+  if [ -s "$out/xo-actions.json" ]; then
+    xo_serve_write "$dir" "$xodir" "$out/xo-actions.json" "the worker, after the wrong screen"
+  fi
   return 0
 }
 
@@ -3436,6 +4109,15 @@ xo_reach_prepare() { # <mission-dir> — mints the look's tree + HOME, once
 
 xo_reach_teardown() { # — idempotent; called at the look's end AND from the traps
   [ -n "$XO_REACH_WT" ] || { XO_REACH_HOME=""; XO_REACH_REPO=""; return 0; }
+  # AN ADOPTED TREE IS THE LAUNCH'S, NOT THE LOOK'S (S248). `launch.sh --stop`
+  # removes and prunes it; removing it from here as well would race the verb that
+  # owns it and leave the captain's repo with a half-pruned registration. Only
+  # the HOME this look minted goes.
+  if [ "$XO_REACH_ADOPTED" = 1 ]; then
+    [ -n "$XO_REACH_HOME" ] && rm -rf "$XO_REACH_HOME"
+    XO_REACH_WT=""; XO_REACH_HOME=""; XO_REACH_REPO=""; XO_REACH_ADOPTED=0
+    return 0
+  fi
   "$XO_PY" "$XO_RUN_PY" teardown --repo "${XO_REACH_REPO:-$PWD}" \
     --worktree "$XO_REACH_WT" --home "$XO_REACH_HOME" >/dev/null 2>&1 || true
   XO_REACH_WT=""; XO_REACH_HOME=""; XO_REACH_REPO=""
@@ -4027,6 +4709,22 @@ cmd_evaluate() {
   # the tree here is still right — the first round must find it standing.
   xo_reach_prepare "$dir"
 
+  # --- 1e. THE ROUND BEFORE THE LAUNCH (S248) ------------------------------
+  # The work directory and the worker's read-only copy of the record are built
+  # HERE rather than at step 4, because the pre-launch round needs both and a
+  # second `mktemp -d` would be a second work directory to tear down.
+  #
+  # NOTHING RUNS A STEP ON THIS LINE. The round only ASKS — which page is under
+  # review, and what has to be on it. Its steps run after the launch, in the tree
+  # the launch serves, which is the whole point of the session.
+  local work input round=1 verdict="" out=""
+  work="$(mktemp -d)"; input="$work/input"
+  XO_WORK_DIR="$work"
+  mkdir -p "$input"
+  gather_inputs "$dir" "$input"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+  xo_prelaunch_round "$dir" "$xodir" "$input" "$work" "$xo_engine"
+
   # --- 2. LAUNCH ------------------------------------------------------------
   # Through launch.sh, the verb a human uses, with no --open-ish path anywhere
   # near it. xo.sh NEVER writes inside the launch worktree: launch.sh's own
@@ -4041,14 +4739,16 @@ cmd_evaluate() {
   # $LCARS_WORKER_BIN_INTERNAL=1 is the S202/S207 marker: it says LCARS set this,
   # not the captain, so the MISSION's own provenance (`env` means he typed it)
   # is untouched. Exported inside a SUBSHELL that wraps nothing but the spawn.
+  #
+  # AND THE WORKER MAY HAVE NAMED THE PAGE (S248). When it did, that name rides
+  # as the HINT `lcars launch <mission> [hint]` has always taken — never a new
+  # flag (the launch contract is this round's declared invariant) and never a
+  # frozen command (the discovery still decides how to start it).
   printf '◈ NUMBER ONE: launching the build…\n'
-  (
-    if [ -n "$xo_engine" ]; then
-      export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
-    fi
-    exec bash "$XO_LAUNCH_SCRIPT" "$id"
-  ) >"$xodir/launch.log" 2>&1 || true
+  : >"$xodir/launch.log"
+  xo_do_launch "$dir" "$id" "$xodir" "$xo_engine"
   local lstatus lurl lmsg nopage=0 nolook_why=""
+  local lwork=""
   lstatus="$(json_field "$dir/launch.json" status)"
   lurl="$(json_field "$dir/launch.json" url)"
   lmsg="$(json_field "$dir/launch.json" message)"
@@ -4094,11 +4794,23 @@ cmd_evaluate() {
     journal "$dir" launched "$(printf '"url": %s' "$(jstr "$lurl")")"
   fi
 
+  # --- 2a. ONE TREE FOR THE STEPS AND THE LAUNCH (S248) --------------------
+  # The spike's answer, applied: the look ADOPTS `launch.json.worktree`, so the
+  # steps that seed the product run in the very tree the server is serving. The
+  # tree `xo_reach_prepare` minted is handed back; its throwaway HOME is kept.
+  lwork="$(json_field "$dir/launch.json" worktree)"
+  xo_reach_adopt "$dir" "$lwork"
+  # WITH NO PAGE there is nothing to seed FOR, but the worker's pre-launch steps
+  # are still steps it asked for and they still run — in the same one tree.
+  if [ "$nopage" = 1 ]; then
+    xo_prelaunch_steps "$dir" "$xodir" "$shots" "${lwork:-$PWD}"
+  fi
+
   # THE BROWSER INSTRUMENTS, AND THE NAMES THEY WRITE (S246). Declared out here
   # rather than inside the arm below, because a `local` inside a branch that is
   # not taken leaves the name unset and this script runs under `set -u` — and on
   # a CLI-only milestone that branch is NOT taken.
-  local lwork="" drc=0 why=""
+  local drc=0 why=""
   local obsfile="$xodir/observations.json" obsn=0 obsfound=0
 
   # From here on the app may be RUNNING and must be stopped on every path out.
@@ -4123,8 +4835,11 @@ cmd_evaluate() {
     # Before the first picture: a screen that only exists once there is data in
     # it cannot be photographed into existence afterwards. Declared seeds only —
     # see xo_seed — and run in the LAUNCHED worktree, never this checkout.
-    lwork="$(json_field "$dir/launch.json" worktree)"
     xo_seed "$dir" "$xodir" "${lwork:-$PWD}"
+    # AND THEN THE WORKER'S OWN SEEDS (S248), in that same tree, BEFORE the first
+    # picture — a screen that only exists once there is data in it cannot be
+    # photographed into existence afterwards. Both sources land on seed.json.
+    xo_prelaunch_steps "$dir" "$xodir" "$shots" "${lwork:-$PWD}"
     # AND THE TREE IS REMEMBERED, HERE (S221). After the seed — whose writes are
     # wanted — and before the first drive, which is the first thing that types.
     xo_tree_mark "$lwork" "$xodir/tree-mark"
@@ -4160,6 +4875,73 @@ cmd_evaluate() {
     journal "$dir" looked "$(printf '"round": 0, "shots": %s, "shotsDir": %s' \
       "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \
       "$(jstr "${shots#$dir/}")")"
+
+    # --- 3a-ii. THE RIGHT PAGE, OR NO GRADE OVER IT (S248) ------------------
+    # Read off the FIRST shot's own readout: if not one of the places the
+    # contract declares is `present` or `laidOut`, this is not a broken build —
+    # it is a different screen. Say so, ask ONCE for a different serve target,
+    # and if the second page is no better, the browser rows read `untested` with
+    # that reason. NEVER a grade over a page nobody can place.
+    local wsparts="" wshint="" wsprev=""
+    wsparts="$(xo_places_absent "$shots" "shot")"
+    if [ -n "$wsparts" ]; then
+      printf '◈ NUMBER ONE: the page at %s shows none of the parts your drawing declares (%s).\n' \
+        "$lurl" "$wsparts"
+      printf '  That reads as the WRONG SCREEN rather than a broken build, so I am asking for a different serve target — once.\n'
+      journal "$dir" wrong-screen "$(xo_ws_body "$lurl" "$wsparts" 1)"
+      wsprev="$(xo_serve_hint "$xodir/serve.json")"
+      xo_serve_reask "$dir" "$xodir" "$input" "$work" "$xo_engine" "$lurl" "$wsparts"
+      wshint="$(xo_serve_hint "$xodir/serve.json")"
+      if [ -n "$wshint" ] && [ "$wshint" != "$wsprev" ]; then
+        xo_stop_launch
+        XO_LAUNCH_STOPPED=0
+        xo_do_launch "$dir" "$id" "$xodir" "$xo_engine"
+        lstatus="$(json_field "$dir/launch.json" status)"
+        lurl="$(json_field "$dir/launch.json" url)"
+        lwork="$(json_field "$dir/launch.json" worktree)"
+        xo_reach_adopt "$dir" "$lwork"
+        if [ "$lstatus" = "running" ] && [ -n "$lurl" ]; then
+          journal "$dir" launched "$(printf '"url": %s, "secondTarget": true' "$(jstr "$lurl")")"
+          xo_tree_mark "$lwork" "$xodir/tree-mark"
+          drc=0
+          "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
+            --place-names "$xodir/criteria.json" --prefix "second" \
+            --parts-out "$xodir/build-parts-0b.json" \
+            --journey "$xodir/journey.json" --walk-out "$xodir/walk.json" \
+            >"$xodir/drive-0b.json" 2>"$xodir/drive-0b.err" &
+          XO_DRIVE_PID=$!
+          wait "$XO_DRIVE_PID" || drc=$?
+          XO_DRIVE_PID=""
+          xo_tree_restore "$dir"
+          journal "$dir" looked "$(printf '"round": 0, "secondTarget": true, "driverExit": %s' "$drc")"
+          wsparts="$(xo_places_absent "$shots" "second")"
+        else
+          printf '  the second target did not come up either.\n'
+        fi
+      fi
+      if [ -n "$wsparts" ]; then
+        xo_ws_write "$xodir" "$lurl" "$wsparts"
+        # S248 fix round 1, D3 — the grade stands down here, and so does every
+        # measured comparison against that page (see `xo_pair_parts`).
+        XO_WRONG_SCREEN_STANDS=1
+        journal "$dir" wrong-screen-stands "$(xo_ws_body "$lurl" "$wsparts" 2)"
+        printf '  still none of them. I will not grade a page I cannot place — every row that needed a picture reads untested.\n'
+      else
+        rm -f "$xodir/wrong-screen.json" 2>/dev/null || true
+        XO_WRONG_SCREEN_STANDS=0
+        journal "$dir" right-screen '"detail": "the second serve target showed the parts the drawing declares"'
+      fi
+    fi
+    # S248 fix round 1, D4 — THE MOMENT IT IS FIRST KNOWN. Everything that could
+    # seed the page has already run (the repo's `verifySeed` and the worker's
+    # pre-launch steps) and the first pictures are taken, so this is where "a
+    # declared seed ran and the page is still bare" becomes a fact. Read off the
+    # readout the camera actually produced — `second` when a second target was
+    # launched above, `shot` otherwise — and recorded on `seed.json`, never
+    # inferred later from a report.
+    local wslast="shot"
+    if [ -n "$wshint" ] && [ "$wshint" != "$wsprev" ]; then wslast="second"; fi
+    xo_seed_empty_record "$xodir" "$(xo_places_absent "$shots" "$wslast")" "$wslast"
 
     # --- 3b. THE OBSERVATIONS PASS — computed by the SKILL, from these same
     # boxes, before the worker ever looks (S210). Crowding, overlap, a
@@ -4247,11 +5029,9 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   fi
 
   # --- 4. THE WORKER ROUNDS ------------------------------------------------
-  local work input round=1 verdict="" out=""
-  work="$(mktemp -d)"; input="$work/input"
-  XO_WORK_DIR="$work"
-  mkdir -p "$input"
-  gather_inputs "$dir" "$input"
+  # The work directory, the input copy and `$round` are all built at step 1e now
+  # (S248) — the pre-launch round needs them, and a second `mktemp -d` here would
+  # be a second work directory for the teardown to miss.
   # THE WORKER IS HANDED ITS CONTRACT (fix round 1, D4). Number One escalated
   # this against itself: "criteria.json and xo/shots/ were not in the Number One
   # input directory. They were read from .git/lcars/… instead." Both copies were
@@ -4350,6 +5130,12 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
         XO_DRIVE_PID=""
       fi
       cp "$out/xo-actions.json" "$xodir/actions-$round.json" 2>/dev/null || true
+      # THE WALK'S WRITES GO BACK BEFORE THE STEPS RUN (S248). The steps now run
+      # in the LAUNCHED tree, so a restore taken after them would revert the very
+      # records the worker filed — the thing "one tree" exists to make possible.
+      # So: undo what the browser typed first, then run the steps, then re-mark,
+      # so the NEXT round's restore treats those records as part of the tree.
+      [ "$nopage" = 0 ] && xo_tree_restore "$dir"
       # S239: the same round may have asked for a command, a workflow or an
       # artifact read. Same cap, same worktree, same evidence directory.
       xo_reach_actions "$dir" "$xodir" "$shots" "$out/xo-actions.json" "$round"
@@ -4357,7 +5143,13 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       # looking is another round of typing. All of this reads a SCREEN, so with
       # no page it is skipped exactly as round 0's half was.
       if [ "$nopage" = 0 ]; then
-        xo_tree_restore "$dir"
+        xo_tree_mark "$lwork" "$xodir/tree-mark"
+        # S248 fix round 1, D1 — THE ROUND'S OWN STEPS GET PHOTOGRAPHED. The
+        # pictures above were taken at the TOP of this round, BEFORE the steps
+        # just run; without this the page a round's own render produced is never
+        # seen by anybody. Only fires when steps really ran, so a round that
+        # asked for none costs nothing and takes no extra picture.
+        xo_shot_after_steps "$dir" "$xodir" "$shots" "$round" "$lurl" "round$round"
         journal "$dir" looked "$(printf '"round": %s, "driverExit": %s' "$round" "$drc")"
         # THE SCREEN IT JUST WALKED TO IS A SCREEN THE LAYOUT PASS MUST SEE
         # (part D), and its parts are parts to pair with the drawing (part B).
@@ -4431,7 +5223,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
               "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
               "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
-              "$xodir/journey.json" "$xodir/shots" 2>/dev/null)" || report=""
+              "$xodir/journey.json" "$xodir/shots" "$xodir/wrong-screen.json" \
+              2>/dev/null)" || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   # S240 — THE ACTION, READ OFF THE WIRE. `xo-score.py` decided it beside the
   # grade; nothing here re-derives it and nothing reads it back out of the

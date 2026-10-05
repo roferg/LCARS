@@ -16685,6 +16685,62 @@ spawn_number_one() { # mission-id  mode  outdir
 Your round budget: ${LCARS_XO_MAX_ROUNDS} round(s) of looking, in total. Ask for
 more actions only while rounds remain; with none left you must write a verdict."
   fi
+  # === THE PICTURES TAKEN AFTER YOUR STEPS (S248 fix round 1, D1) ===========
+  #
+  # THE DEFECT. Pictures are taken at the TOP of a round and a round's set-up
+  # steps run at the END of one, so the page a round's own render produced was
+  # never photographed by anybody — the look set up data and then graded the page
+  # that preceded it. `xo.sh` now shoots AGAIN after a round whose steps ran, and
+  # this is the one sentence that tells the reviewer those shots exist and what
+  # they are of. HERE and not in `evaluate.md` for the same reason the pre-launch
+  # line is here: it is a fact about the inputs of a particular round, and the
+  # prompt file is one line from the ceiling its own suite holds it to.
+  #
+  # NOT on the pre-launch round, which has no pictures of any kind.
+  local steps_line=""
+  if [ "$mode" = "evaluate" ] && [ "${LCARS_XO_PRELAUNCH:-}" != 1 ]; then
+    steps_line="
+## The pictures taken AFTER your set-up steps
+Set-up steps you ask for run AFTER this round's pictures were taken. So once
+they have run, LCARS photographs the page AGAIN and files those shots as
+\`after<round>-…\`: that is the page YOUR OWN STEPS left behind, and the
+\`round<round>-…\` shots beside them are the page as it was before them. Cite the
+\`after…\` shot for anything your steps were meant to put on the screen — and if
+the two read the same, nothing your steps did reached the page, which is worth
+saying rather than grading the empty one."
+  fi
+  # === THE ROUND BEFORE ANYTHING IS SERVED (S248) ===========================
+  #
+  # `xo.sh` asks ONE round before it launches: which page is the surface under
+  # review, and what has to be on it. The worker cannot be shown a picture in
+  # that round because nothing is up yet, so the prompt says so HERE rather than
+  # letting `evaluate.md` describe a round that does not match the inputs. Set by
+  # xo.sh; unset on every other round, so a round with pictures never reads this.
+  local prelaunch_line=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_PRELAUNCH:-}" ]; then
+    prelaunch_line="
+## THIS ROUND IS BEFORE THE LAUNCH — there are no pictures yet
+Nothing has been served, so there is nothing to grade and you must NOT write a
+verdict this round. Write \`xo-actions.json\` and use it for exactly two things:
+
+  1. \`serve\` — WHICH PAGE IS UNDER REVIEW. When the record declares more than
+     one web surface (plan.json \`entrypoints[]\`, the drawing, or several serve
+     targets in the repo), name the one this milestone is about:
+       \"serve\": {\"argv\": [\"npm\", \"run\", \"dev\"], \"cwd\": \"<worktree>\",
+                  \"urlPath\": \"/the/page\"}
+     It is a HINT to the launch, not a command it must obey.
+  2. \`actions\` — THE STEPS THAT PUT DATA ON THAT PAGE. Steps you ask for now run
+     in the SAME worktree the app will be served from, BEFORE the first
+     screenshot — so a screen that only exists once there is data in it is the
+     one thing these steps can buy you. Use the product's own CLI; invent the
+     values a person would. Ask for nothing you do not need: an empty
+     \`actions\` list is a correct answer when the page needs no data.
+
+If the page you are reviewing turns out to show none of the parts the drawing
+declares, you will be asked ONCE for a different \`serve\` target, with the
+readout that proved it. Name a different one, or say so by declaring none."
+  fi
+
   # === THE LIVE-CHECK CHECKLISTS, HANDED OVER WHOLE (S246) ==================
   #
   # WHY WHOLE, AND WHY HERE. These are the files the captain's buddy reads — the
@@ -16710,6 +16766,8 @@ more actions only while rounds remain; with none left you must write a verdict."
   local extra="## The mission
 Mission id: $id
 $rounds_line
+$prelaunch_line
+$steps_line
 $checklists
 
 ## Your input directory — the mission's RECORD, read-only

@@ -1764,6 +1764,7 @@ def derive_recommendation(ledger, grade, finding_by_id=None, name_of=None):
         INFRASTRUCTURE reasons                                 -> merge-with-follow-ups
       * any high-impact gap, or a high-impact criterion that
         could not be reached for a PRODUCT reason              -> send-back
+      * NOT ONE row settled either way (S248 fix round 1)      -> send-back
 
     Pure: reads `status`, `impact` and the recorded `cause` off the ledger, and
     `coveragePct`/`coverageFloorPct` off the grade. It NEVER reads the grade WORD
@@ -1834,7 +1835,31 @@ def derive_recommendation(ledger, grade, finding_by_id=None, name_of=None):
                           "floor of %d%% — close the gap in what we can reach"
                           % (pct, floor))
 
+    # ── NOTHING CHECKED IS NEVER A MERGE (S248 fix round 1, D2) ─────────────
+    #
+    # THE DEFECT, VERBATIM FROM THE TESTER. Line 1: "**Recommendation: MERGE
+    # WITH FOLLOW-UPS**". Line 2: "checked 0 of 3 (0%) … I could not check
+    # anything on your list, so nothing here is vouched for." The first thing a
+    # reader saw said ship it.
+    #
+    # AND THE POLICY ABOVE IS NOT THE BUG. An `untested` high row with no
+    # recorded `cause` is OURS, so it is a follow-up and not a blocker — which is
+    # right for ONE row blind for a rig reason, and is the rule six archived
+    # reviews were graded under. S248's wrong-screen demotion puts EVERY row
+    # there at once, and a ledger with no gaps left then reads as mergeable.
+    #
+    # SO THIS IS A FLOOR, NOT A REWRITE: a run that settled not one of its own
+    # rows cannot recommend a merge of any kind, whatever the rest of the policy
+    # concludes. Counted off THIS ledger's own statuses (the same two words
+    # `derive_grade` counts) rather than off `grade`, which is scoped to one
+    # group — so the number the rule reads is the number the rule is about.
+    checked_here = sum(1 for e in ledger
+                       if str(e.get("status") or "") in ("met", "gap"))
+    nothing_checked = bool(ledger) and checked_here == 0
+
     if blockers:
+        rec = "send-back"
+    elif nothing_checked:
         rec = "send-back"
     elif other_gaps or infra_blind or not floor_met:
         rec = "merge-with-follow-ups"
@@ -1844,6 +1869,12 @@ def derive_recommendation(ledger, grade, finding_by_id=None, name_of=None):
     if rec == "merge":
         because = ["nothing on your list is short of the mark, and %d%% of this rail "
                    "was actually checked against a floor of %d%%" % (pct, floor)]
+    elif nothing_checked and not because:
+        # Said as what it is — a hole in OUR checking, not a verdict on his build.
+        because = ["I could not check a single one of the %d thing(s) on your list, "
+                   "so nothing here is vouched for either way and there is nothing "
+                   "to merge on — that is a hole in my checking, not a fault in your "
+                   "build" % len(ledger)]
     elif rec == "merge-with-follow-ups" and not because:
         because = [follow_ups[0]] if follow_ups else [
             "nothing here blocks a merge, but something is left over"]
@@ -2496,6 +2527,21 @@ def main():
     # landing rail is OFF and every row stands exactly as the eye rated it: a
     # missing directory is not evidence that a shot landed wrong.
     shots_root = sys.argv[14] if len(sys.argv) > 14 else ""
+    # S248: the look's own record that the page it was given was the WRONG SCREEN
+    # — not one of the places the contract declares was present or laid out on it,
+    # and the second serve target was no better. Written by `xo.sh` off
+    # `xo-drive.js`'s per-shot `places` readout; no image is compared anywhere.
+    # Absent (the usual case), this rail is OFF and every row stands as rated.
+    wrong_screen_path = sys.argv[15] if len(sys.argv) > 15 else ""
+    wrong_screen = load_json_or_none(wrong_screen_path)
+    if not (isinstance(wrong_screen, dict) and wrong_screen.get("wrongScreen")):
+        wrong_screen = None
+    wrong_screen_reason = ""
+    if wrong_screen:
+        wrong_screen_reason = str(wrong_screen.get("reason") or "").strip() or (
+            "the wrong screen: the page I was given showed none of the parts the "
+            "drawing declares")
+    wrong_screen_rows = []
     journey_doc = load_json_or_none(journey_path)
     landing_steps = landing_by_shot(load_json_or_none(walk_path), journey_doc)
     landing_records = landing_records_exist(shots_root)
@@ -2835,7 +2881,30 @@ def main():
         # camera_step() for the two records this reads and why the default is
         # the rail.
         landing = None
-        _rail_here = bool(landing_on and shot and status in ("met", "gap"))
+        # ── A GRADE OVER THE WRONG PAGE IS NOT A GRADE (S248) ──────────────
+        # Before the landing rail, because this is the coarser fault: the rail
+        # asks whether THIS picture was of the screen the row declared, and this
+        # asks whether the look was ever shown the product at all. A row settled
+        # on a picture of a page that carried none of the drawing's parts has not
+        # been checked — it is a hole in MY checking, so it goes to `untested`
+        # with the recorded reason, exactly as a mislanded shot does.
+        _ws_hit = False
+        if wrong_screen and shot and status in ("met", "gap"):
+            _wdoc = landing_readout(shots_root, shot)[1]
+            _wpic, _ = camera_step(_wdoc, c)
+            if _wpic:
+                _ws_hit = True
+                notes.append("criterion %s was rated %s on %s, and %s; recorded as "
+                             "untested — I will not grade a page I could not place"
+                             % (cid, status, shot, wrong_screen_reason))
+                note = wrong_screen_reason
+                landing = {"wrongScreen": True, "reason": wrong_screen_reason,
+                           "shot": shot, "url": str(wrong_screen.get("url") or ""),
+                           "lookedFor": wrong_screen.get("lookedFor") or []}
+                status = "untested"
+                evidence = ""
+                wrong_screen_rows.append(cid)
+        _rail_here = bool(landing_on and shot and status in ("met", "gap")) and not _ws_hit
         _rpath, _rdoc = landing_readout(shots_root, shot) if _rail_here else ("", None)
         _is_pic, _pic_from = camera_step(_rdoc, c) if _rail_here else (True, "")
         if _rail_here and not _is_pic:
@@ -4043,6 +4112,19 @@ def main():
         if landing_not_placed:
             out["landing"]["notPlaced"] = landing_not_placed
             out["landing"]["notPlacedNote"] = not_placed_note(len(landing_not_placed))
+    # S248 — THE WRONG SCREEN, SAID ONCE, AS DATA. Every row demoted above says
+    # it on itself; this is the one sentence for the look, so the captain reads
+    # "I was shown the wrong page" rather than inferring it from N untested rows.
+    if wrong_screen and wrong_screen_rows:
+        out["wrongScreen"] = {
+            "url": str(wrong_screen.get("url") or ""),
+            "lookedFor": wrong_screen.get("lookedFor") or [],
+            "criteria": wrong_screen_rows,
+            "note": ("%d row(s) could not be checked: %s. Nothing on that page "
+                     "settles them either way."
+                     % (len(wrong_screen_rows), wrong_screen_reason)),
+        }
+        notes.append(out["wrongScreen"]["note"])
     if impacts_note:
         out["impactsNote"] = impacts_note
     if mismatches:
@@ -4546,6 +4628,15 @@ def main():
                   "screens that only appear once there is data in them I could not "
                   "see: %s.** That is not a fault in your build — it is a gap in "
                   "what I was given.\n" % ", ".join(blind_screens[:5]))
+        # ── A SEED THAT RAN ONTO A PAGE THAT STAYED EMPTY (S248 fix round 1, D4)
+        # Printed out of the RECORD `xo.sh` wrote at the moment it knew it — both
+        # HOMEs and the parts still missing. Nothing here infers anything: without
+        # this paragraph the tester's reader concludes "the page was empty" and
+        # never "the reviewer and the app were looking at two different stores".
+        still = (seed or {}).get("pageStillEmpty") if isinstance(seed, dict) else None
+        if isinstance(still, dict) and str(still.get("note") or "").strip():
+            w("\n**The set-up steps ran and the page stayed bare, which may not be "
+              "the build's fault.** %s\n" % " ".join(str(still["note"]).split()))
         if out["alsoChecked"]:
             w("\n**I also looked at:** " + "; ".join(out["alsoChecked"]) + "\n")
         if out["escalations"]:

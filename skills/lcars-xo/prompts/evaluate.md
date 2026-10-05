@@ -459,6 +459,14 @@ transcript that show it are.
 one cap across all kinds — but a round is a breath, not a budget: ask for the next
 twelve, and the twelve after that, until you have seen enough.
 
+## The round before anything is served (S248)
+
+LCARS asks you ONE round BEFORE the launch when the record leaves it open, and that
+round's own prompt spells it out: name the page under review (`serve`), and ask for
+the steps that put data on it — they run in the worktree the app is served from,
+before the first shot. If the page shows none of the parts your drawing declares
+you are asked ONCE for a different target; a page nobody can place is never graded.
+
 ## Two decisions, one file
 
 **EITHER** you have not seen enough, and you ask for more looking:
