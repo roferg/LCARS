@@ -25,7 +25,29 @@
 # Zero spend: no worker CLI is ever invoked. Both engines are PATH shims that
 # record their argv, and the suite asserts the recorded count is ZERO.
 #
-# Usage: bash tests/lcars-xo.test.sh
+# ⚠ RUN THIS SUITE ALONE. IT IS NOT SAFE IN PARALLEL WITH ITSELF, AND THAT IS A
+#   PROPERTY OF THE PRODUCT, NOT A BUG IN THE SUITE (S245 fix round 1).
+#
+#   Since S245 the stop verb's census is WHOLE-MACHINE and keyed on the MISSION-ID
+#   STRING in a process's argv — deliberately, because that is the only thing that
+#   still identifies a Stage worker orphaned to ppid 1 once its recorded group
+#   leader is dead. Every repo this suite builds uses the same fixed ids
+#   (`lcars-20260913-401`…), so two concurrent runs each see the OTHER run's
+#   processes as members of their own census, correctly refuse to hand over the
+#   conn, and fail roughly 24 stand-down assertions between them.
+#
+#   MEASURED: 18 failures running alone; 39 / 42 / 39 under 3-way parallelism.
+#   If you are reading 40-odd failures here, check whether another copy of this
+#   file (or a CI matrix cell) is running — those extra ~24 are NOT stop
+#   regressions, and "re-run it alone" is the whole diagnosis.
+#
+#   The two real fixes — per-run unique mission ids, or narrowing the census from
+#   the mission-id string to the mission DIRECTORY — are LEDGERED for the captain,
+#   because changing proven census keying mid-session is exactly the restructure
+#   that has produced the next round's defect on this surface twice. Do not
+#   "fix" it by loosening the census.
+#
+# Usage: bash tests/lcars-xo.test.sh          # alone — see the warning above
 
 set -uo pipefail
 
@@ -296,7 +318,14 @@ m5="$(plant_mission "$repo5" "$MID" verify '{"status": "engaged", "engine": "cop
 SIGFILE="$TMPROOT/signalled.txt"
 bash -c 'trap "printf SIGNALLED > \"$1\"; exit 0" TERM; while :; do sleep 0.2; done' _ "$SIGFILE" &
 victim=$!
-printf '%s\n' "$victim" >"$m5/xo.pid"
+# PLANTED THROUGH THE PRODUCT'S OWN WRITER (S245). This was a bare
+# `printf '%s\n' "$pid" > xo.pid` — a format the product no longer writes.
+# `xo.pid` now records WHO as well as WHICH NUMBER, exactly as `xo-resolve.pid`
+# always has, so that `lcars xo off` can run it through the same VERIFIED stop
+# path instead of an unverified `kill -TERM` on a number it merely read. A test
+# that hand-rolls a format proves the old format the moment the format changes —
+# which is precisely what happened here.
+( cd "$repo5" && bash "$SCRIPT" record-pid "$victim" "$m5/xo.pid" )
 
 rc=0
 ( cd "$repo5" && bash "$SCRIPT" off "$MID" >out.txt 2>&1 ) || rc=$?
@@ -789,7 +818,7 @@ export XO_WORKER_SIG="$WORKDIR/sig.txt";   rm -f "$XO_WORKER_SIG"
 spin_pid=$!
 w=0; while [ "$w" -lt 100 ] && [ ! -s "$XO_WORKER_HOLD" ]; do sleep 0.1; w=$((w + 1)); done
 check "B9j. the worker is running, and xo.pid names a live process" \
-  "[ -s '$XO_WORKER_HOLD' ] && [ -f '$m8j/xo.pid' ] && kill -0 \"\$(cat '$m8j/xo.pid')\" 2>/dev/null"
+  "[ -s '$XO_WORKER_HOLD' ] && [ -f '$m8j/xo.pid' ] && kill -0 \"\$(head -1 '$m8j/xo.pid' | tr -dc 0-9)\" 2>/dev/null"
 ( cd "$repo8j" && bash "$SCRIPT" off lcars-20260911-010 >/dev/null 2>&1 )
 wait "$spin_pid" 2>/dev/null; spin_rc=$?
 w=0; while [ "$w" -lt 100 ] && [ ! -s "$XO_WORKER_SIG" ]; do sleep 0.1; w=$((w + 1)); done
@@ -896,8 +925,17 @@ check "B9l. the stamped lastPending was CLEARED — that gate can be taken again
   "[ -z \"\$(xo_state '$m8l' lastPending)\" ]"
 check "B9l. …the stand-down itself is still recorded" \
   "[ \"\$(xo_state '$m8l' status)\" = 'stood-down' ]"
-check "B9l. numberOne is still ONE line, at the top (the S189 rule)" \
-  "sed -n '2p' '$m8l/state.json' | grep -q '^[[:space:]]*\"numberOne\":' && [ \"\$(grep -c '\"numberOne\"' '$m8l/state.json')\" = '1' ]"
+# THE S207 WORDING, which B5 above already uses and this check was the stale copy
+# of. It used to require numberOne on LINE 2 — an artefact of a writer that moved
+# every key it touched to the top, not a rule about the file. S245's quiesce
+# writes `paused` on the mission before it signals anything, and a NEW top-level
+# key lands on line 2, so numberOne is simply one line further down. What the
+# line-2 check was standing in for is the S189 last-key rule, and that is what is
+# checked here: ONE occurrence, ONE line, NOT the last field, and it parses.
+check "B9l. numberOne is still ONE line (the S189 rule)" \
+  "grep -q '\"numberOne\": {.*}' '$m8l/state.json' && [ \"\$(grep -c '\"numberOne\"' '$m8l/state.json')\" = '1' ]"
+check "B9l. numberOne is NOT the last field (the S189 last-key rule)" \
+  "[ \"\$(grep -n '\"numberOne\":' '$m8l/state.json' | cut -d: -f1)\" -lt \"\$(( \$(grep -c '' '$m8l/state.json') - 1 ))\" ]"
 check "B9l. state.json is still valid JSON" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$m8l/state.json'"
 check "B9l. no pricing words in the journal" \
@@ -1555,7 +1593,7 @@ repoK1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mK1="$(plant_mission "$repoK1" "lcars-20260913-101" verify '{"engine": "copilot"}')"
 sleep 45 &
 livepid=$!
-printf '%s\n' "$livepid" >"$mK1/xo.pid"
+( cd "$repoK1" && bash "$SCRIPT" record-pid "$livepid" "$mK1/xo.pid" )   # the shipped format
 ( cd "$repoK1" && bash "$SCRIPT" off "lcars-20260913-101" >"$repoK1/off.txt" 2>&1 ) || true
 # Give the TERM a moment to land.
 for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$livepid" 2>/dev/null || break; sleep 0.2; done
@@ -2307,7 +2345,7 @@ plant_child "$repoS1" "lcars-20260913-301" 1 implement
 plant_child "$repoS1" "lcars-20260913-301" 2 implement
 XO_MARK="$FXDIR/xo-term.txt"; RS_MARK="$FXDIR/rs-term.txt"; : >"$XO_MARK"; : >"$RS_MARK"
 xo_pid="$(probe "$XO_MARK")"; rs_pid="$(probe "$RS_MARK")"
-printf '%s\n' "$xo_pid" >"$mS1/xo.pid"
+( cd "$repoS1" && bash "$SCRIPT" record-pid "$xo_pid" "$mS1/xo.pid" )
 # Planted through the PRODUCT'S OWN writer, so this proves the shipped format
 # and cannot drift from it.
 ( cd "$repoS1" && bash "$SCRIPT" record-pid "$rs_pid" "$mS1/xo-resolve.pid" )
@@ -2340,7 +2378,8 @@ repoS1b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mS1b="$(plant_verify "$repoS1b" "lcars-20260913-302")"
 plant_logs_json "$mS1b" 2
 printf '%s\n' "$rs2_pid" >"$mS1b/xo-resolve.pid"          # a BARE pid: no identity
-printf '%s\n' "$(probe "$FXDIR/xo2-term.txt")" >"$mS1b/xo.pid"
+XO2_PID="$(probe "$FXDIR/xo2-term.txt")"
+printf '%s\n' "$XO2_PID" >"$mS1b/xo.pid"   # ALSO bare, on purpose: the same control
 outS1b="$( cd "$repoS1b" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-302" 2>&1 )"
 sleep 0.5
 check "B12g. CONTROL — a pid file that does not say WHO is NOT signalled" \

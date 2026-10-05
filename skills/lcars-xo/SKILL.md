@@ -68,9 +68,11 @@ driver calls `xo.sh answer --mission <id>`. It:
    `numberOne.status` becomes `escalated` with a note carrying the summary and
    the recommendation. Exit **1** — the driver halts, as today.
 
-`xo.pid` holds this script's pid for the length of the spin, and a SIGTERM (what
-`lcars xo off <id>` sends) walks the whole process tree down so the worker dies
-with it. Every action is appended to `<mission>/number-one.jsonl`.
+`xo.pid` holds this script's pid — and, since S245, the group it leads and the
+instant it started, so a stop can tell it from a recycled pid — for the length of
+the spin. `lcars xo off <id>` runs it through the same verified, censused stop
+path `xo-resolve.pid` uses, so the worker dies with it and the handle is only
+removed once an empty census says so. Every action is appended to `<mission>/number-one.jsonl`.
 
 ### What is checked, and why
 
@@ -766,32 +768,96 @@ eventually meets a question that contains its vocabulary.
 
 ## Standing down
 
-`lcars xo off <mission>` **signals first, then records**: it TERMs the pid in
-the mission's `xo.pid` (best effort — a stale pid file is not a reason to refuse
-to hand the conn back, and nothing is ever KILLed, so a worker gets to finish
-its own cleanup), then writes `stood-down` plus the note
-`Number One stood down <time> · you have the conn`, and the lock lifts.
+`lcars xo off <mission>` does three things **in this order**, and the order is the
+whole design:
+
+**1. It quiesces — BEFORE it signals anything, AND IT SAYS SO.** It writes
+`<mission>/xo-stop` (atomically) and sets `paused` on the mission and on every
+linked child in `xo/logs.json`, then prints how many Missions that was and that
+`lcars xo on` lifts it — the flag outlives the command and `lcars run` halts on
+it, so a captain who was not told meets `⏸ paused at: …` days later with no idea
+which command did it. `lcars resume` **refuses** while the marker is down rather
+than clear the flag and report a success the driver will not honour. Three readers honour that marker: `resolve-logs.sh` before EVERY
+`run.sh drive` spawn and between bugs, `run.sh`'s driver immediately before it
+spawns a stage worker, and `run.sh`'s existing between-stages `paused` check.
+**Refusing to start new work is the half of a stop that killing cannot do.** The
+marker also RECORDS which children the stop paused and which were already paused
+for their own reason, so `lcars xo on <mission>` puts back exactly what the stop
+put on and leaves a child the captain paused himself alone.
+
+**2. It sweeps what already exists.** Both pid files go through the same verified
+path — `xo_signal_pidfile` → `xo_stop_tree` → `xo_stop_sweep` — which TERMs the
+driver alone first so its own teardown runs, then TERMs every process group the
+chain owns, then KILLs whatever is left. It is enumerated from a **CENSUS**, not
+from a walk down from a recorded pid: `xo-tree.py census` asks the whole machine
+who belongs to this mission by provenance (argv naming the mission or one of its
+own paths, including a stage orphaned to ppid 1 and an adapter leading a group of
+its own) UNION the pids and groups the pid files recorded, and holds every pid any
+census of this stop has named. A walk from a recorded pid reports nothing the
+moment that pid dies, which is how a stop once said "you have the conn" over two
+billable processes.
+
+**3. It believes only an empty census, twice.** The success line prints ONLY when
+two consecutive censuses, `$LCARS_XO_CENSUS_GAP` (default 2) seconds apart, both
+come back empty. Otherwise it names the surviving pids, keeps `xo.pid`,
+`xo-resolve.pid` AND the stop marker — those handles are the captain's only way to
+try again — journals `stop-failed`, exits non-zero, and prints no stand-down line
+at all. **A stop that cannot confirm death never claims it.**
+
+Only then does it record `stood-down` plus the note `Number One stood down
+<time> · you have the conn`, and the lock lifts.
+
+**A REFUSAL NEVER CLAIMS IT CHANGED NOTHING AFTER IT HAS CHANGED THINGS.**
+`lcars_state_refusal_die` ends with "Nothing was written and nothing else in this
+command took effect." — a true sentence for every verb that calls it immediately
+before its success line and after a single write. The quiesce broke that contract
+by writing FIRST, so one malformed `state.json` anywhere in the repo made this verb
+print it having already written the marker, paused four Missions and set
+`enabled: false`. The cure is structural, not a longer sentence: once the quiesce
+has written (`XO_QUIESCED`), a refused state write no longer leaves the latch set,
+so that sentence is **unreachable** on this path, and the Missions whose
+stand-down could not be RECORDED are named instead — the stop went through, the
+bookkeeping did not, those cards will keep reading `engaged` until the file is put
+back to one field per line, and the verb still exits non-zero. On the path where
+nothing HAS been written (a targeted stop on a Mission that is not engaged), the
+original sentence still prints, unchanged, because there it is true.
+
+**The note's logs clause is a fact about the logs, not about a pid file.** It used
+to require a resolve pid that was still the process its file was written about, so
+it vanished in exactly the case that should alarm the captain most — the chain's
+recorded leader already dead and nobody knowing what it left behind. Whether that
+pid file is still valid now decides only WHICH sentence is true (`stopped where
+they got to` / `could not confirm` / `are no longer running`), never whether he is
+told at all.
 
 Standing down is an **action**, so it appends its own `stood-down` line to
 `<mission>/number-one.jsonl` — the living comment's journal is otherwise the one
-surface with no record that a spin was aborted. It also **clears
-`lastPending`**: that cksum is stamped BEFORE the spin, so a worker killed
-mid-spin would otherwise leave Number One locked out of a gate it never actually
-read. The conn comes back, and so does the gate.
+surface with no record that a spin was aborted. A failed stop appends
+`stop-failed` instead. It also **clears `lastPending`**: that cksum is stamped
+BEFORE the spin, so a worker killed mid-spin would otherwise leave Number One
+locked out of a gate it never actually read. The conn comes back, and so does the
+gate.
 
-**It never stops the fixes.** `xo.pid` is Number One's own chain — its worker,
-its browser, its launch. `xo-resolve.pid` is the `lcars resolve-logs` driver
-working the logged bugs, and **those are LCARS's missions, not the first
-officer's**: each has its own issue, its own branch and its own worker. That pid
-is read and never signalled. When it is alive the stand-down note says so —
-`Number One stood down <time> · N log/logs still driving · the re-verify gate will
-wait for you` — because a captain taking the conn back mid-fix-round needs to
-know both that the fixes are still going and that the gate at the end of them is
-now his.
+**BOTH pids stop (S213 — this reversed the S204 rule).** `xo.pid` is Number One's
+own chain — its worker, its browser, its launch. `xo-resolve.pid` is the `lcars
+resolve-logs` driver working the logged bugs. S204 deliberately left the second
+running, reasoning that the logged bugs are ordinary Missions the captain never
+asked to stop. That reasoning is sound about the WORK and wrong about the BUTTON:
+what it produced was a stop button that did not stop, and the only way to halt a
+chain in flight was to find its pid and kill it by hand. So the chain stops. What
+it has already done is untouched — every child Mission keeps its issue, its branch
+and whatever stage it reached. When logs were being driven, the note says so
+(`the N logs it was driving stopped where they got to`), because a captain taking
+the conn back mid-fix-round needs to know both that the fixes have stopped and
+that the gate at the end of them is now his.
 
 A repo-level `lcars xo off` does that for every engaged mission and flips
 `enabled` to `false` — **keeping the recorded engine**, because the captain
 turned Number One off, he did not un-choose his engine.
+
+`xo.sh census <mission>` prints the census the success line is gated on, so
+"nothing of this mission is running" can be checked from OUTSIDE the product
+instead of taken on trust from a sentence the product printed about itself.
 
 ## Related
 

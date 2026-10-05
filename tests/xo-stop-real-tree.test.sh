@@ -397,14 +397,79 @@ check "7. ...and so does the shell that asked" "kill -0 $$ 2>/dev/null"
 kill -9 "$BYST" 2>/dev/null || true
 
 # ===========================================================================
+# 8. THE DEAD RECORDED LEADER (S245) — on THIS rig, with NO mission in scope.
+# ===========================================================================
+# The gate this suite shipped with polled a set it built by walking DOWN from the
+# recorded pid. That walk is sound until the stop works: kill the recorded root
+# and every later walk returns NOTHING, so the poll reads empty and the stop says
+# it is done. It did not FAIL — it passed VACUOUSLY, and that is how a live stop
+# reported AFTER_COUNT=0 over two billable processes.
+#
+# So the state is driven directly: the recorded leader is killed BY HAND, leaving
+# its group orphaned at ppid 1 with the adapter and the paid assistant alive under
+# it. The control is the walk itself — `xo-tree.py closure` from that dead pid must
+# report nothing — and then the product must stop the tree anyway and only then
+# say so.
+#
+# AND NOTHING IN THIS RIG NAMES A MISSION. Its argv is `bash /tmp/…/driver`, and
+# the leaf is a bare `copilot -p …`. So this is the case the provenance half of
+# the census CANNOT see, and it is here deliberately: the stop has to work from
+# the RECORDED pid file alone, through the one verb that takes nothing else.
+CL8="$TMPROOT/chain8.log"
+PF8="$TMPROOT/xo-resolve8.pid"
+UP8=1; bring_up "$CL8" "$PF8" || UP8=0
+D8="$(sed -n 1p "$PF8" 2>/dev/null | tr -dc '0-9')"
+G8="$(sed -n 2p "$PF8" 2>/dev/null | tr -dc '0-9')"
+S8="$(field "$CL8" STAGE 1)"
+A8="$(field "$CL8" ADAPTER 1)"
+W8="$(field "$CL8" ASSISTANT 1)"
+KILLME="$KILLME $D8 $S8 $A8 $W8"
+check "8. CONTROL — the rig is up, four levels, and the pidfile records the group" \
+  "[ '$UP8' -eq 1 ] && alive '$D8' && alive '$S8' && alive '$A8' && alive '$W8' && nonempty '$G8' '$D8' && [ '$G8' = '$D8' ]"
+
+kill -9 "$D8" 2>/dev/null || true
+k=0; while [ "$k" -lt 50 ] && alive "$D8"; do k=$((k + 1)); nap 0.1; done
+WALK8="$(python3 "$REPO_ROOT/skills/lcars-xo/xo-tree.py" closure "${D8:-0}" "${G8:-0}" "$$" 2>/dev/null \
+          | sed -n 's/^PID //p' | grep -c . | tr -d ' ')"
+WALK8="${WALK8:-0}"
+echo "  --- the recorded leader killed by hand: what is left, and what the walk sees ---"
+snap "$S8" "$A8" "$W8"
+printf '    closure rooted at the dead pid %s: %s pid(s)\n' "${D8:-?}" "$WALK8"
+check "8. CONTROL — the orphan, the adapter and the PAID ASSISTANT are still alive" \
+  "alive '$S8' && alive '$A8' && alive '$W8'"
+check "8. CONTROL — and the walk from the dead root reports NOTHING (the vacuous pass)" \
+  "[ '$WALK8' -eq 0 ]"
+check "8. CONTROL — but the orphaned group is still REACHABLE, which is the proof it is there" \
+  "nonempty '$G8' && kill -0 \"-\$G8\" 2>/dev/null"
+
+rc8=0
+bash "$XO" signal-pidfile "$PF8" >"$TMPROOT/stop8.out" 2>&1 || rc8=$?
+k=0
+while [ "$k" -lt 100 ] && { alive "$S8" || alive "$A8" || alive "$W8"; }; do
+  k=$((k + 1)); nap 0.1
+done
+echo "  --- after the stop ---"
+snap "$S8" "$A8" "$W8"
+sed 's/^/    /' "$TMPROOT/stop8.out"
+check "8. the stop reaches the orphaned group anyway — the stage is gone" \
+  "nonempty '$S8' && ! kill -0 '$S8' 2>/dev/null"
+check "8. ...the self-led adapter is gone" \
+  "nonempty '$A8' && ! kill -0 '$A8' 2>/dev/null"
+check "8. ...AND THE PAID ASSISTANT IS GONE, with its leader already dead" \
+  "nonempty '$W8' && ! kill -0 '$W8' 2>/dev/null"
+check "8. ...and it does not report 'nothing there' over a tree it had to stop (rc 0)" \
+  "[ '$rc8' -eq 0 ]"
+check "8. ...and this shell is untouched" "kill -0 $$ 2>/dev/null"
+
+# ===========================================================================
 # 6. NOTHING BILLED. The shim is the only engine the rig could have reached.
 # ===========================================================================
 SHIM_N="$(grep -c . "$SHIM_LOG" 2>/dev/null | tr -d ' ')"; SHIM_N="${SHIM_N:-0}"
 SHIM_MODEL="$(grep -c 'yes$' "$SHIM_LOG" 2>/dev/null | tr -d ' ')"; SHIM_MODEL="${SHIM_MODEL:-0}"
 printf '  shim invocations: %s (of which carried --model: %s) — real spend: 0\n' \
   "$SHIM_N" "$SHIM_MODEL"
-check "6. the shim was the assistant every time the rig came up (>= 3)" \
-  "[ '$SHIM_N' -ge 3 ]"
+check "6. the shim was the assistant every time the rig came up (>= 4)" \
+  "[ '$SHIM_N' -ge 4 ]"
 check "6. ...and every one of them carried --model, as a real worker would" \
   "[ '$SHIM_N' -eq '$SHIM_MODEL' ]"
 

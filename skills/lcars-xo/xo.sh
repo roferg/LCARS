@@ -405,7 +405,82 @@ XO_TREE_PY="$SKILL_DIR/xo-tree.py"
 # The pids a stop signalled and then found STILL RUNNING. Read by `stand_down`
 # and `cmd_off`; the empty string means the tree was confirmed gone.
 XO_STOP_SURVIVORS=""
-XO_STOP_SET=""
+
+# ── THE CENSUS, AND WHY THE WALK IT REPLACES COULD NOT BE PATCHED (S245) ────
+#
+# The gate this replaces polled a SET it built by walking DOWN from the recorded
+# pid, re-walking on every poll and unioning the result. That is sound right up
+# to the instant the stop works: the moment the recorded root dies, every
+# subsequent walk returns NOTHING, the set stops growing, the poll reports empty,
+# and the stop says "you have the conn".
+#
+# MEASURED, twice, live: a before/after walk rooted at the recorded pid reported
+# AFTER_COUNT=0 with two billable processes alive, while `kill -0 -<pgid>` proved
+# the orphaned group was reachable the whole time. It did not FAIL — it passed
+# VACUOUSLY. Two fix rounds and five patches went into making the walk reach
+# further; none of them could, because the thing being asked ("what can I still
+# see from the root?") is not the thing that matters ("what is still running?").
+#
+# SO THE QUESTION CHANGED. `xo-tree.py census` asks the WHOLE MACHINE who belongs
+# to this mission, by PROVENANCE — a live process whose argv names the mission or
+# one of its own paths, at ppid 1 or not, leading its own group or not — UNION the
+# recorded pids and groups from the pid files, and then the same fixpoint over
+# parenthood and owned groups that the old closure used, so the unnamed leaves
+# below a named process still come along. `xo_tree_set` (S240's closure) is kept
+# as the fallback for a box with no python: it reaches less, and a stop that
+# cannot enumerate must under-claim and then report survivors.
+#
+# WHICH FACTS ARE RECORDED AND WHICH ARE INFERRED — stated, because the next
+# reader needs to know which half to trust:
+#   • RECORDED: the pid and the group in `xo.pid` / `xo-resolve.pid`, written by
+#     `xo_write_pidfile` at the instant of the spawn. A recorded group is
+#     honoured EVEN WHEN ITS LEADER IS DEAD; that single fact is the dead-leader
+#     cure.
+#   • INFERRED: the argv match. It is the net for what nobody wrote down, and it
+#     is narrowed by a declared second condition (the argv must also name
+#     something LCARS launches) so the captain's own `grep <mission-id>` is never
+#     a census member.
+XO_CENSUS_MISSION=""
+XO_CENSUS_TAGS=""
+XO_CENSUS_SEEDS=""
+XO_CENSUS_OUT=""
+XO_CENSUS_SURVIVORS=""
+# ── WHAT A CENSUS HAS ALREADY SEEN, HELD FOR THE REST OF THE STOP ───────────
+# The provenance half finds NEW arrivals; this holds OLD members in view after
+# the thing that named them is gone. Both halves are needed and neither is
+# sufficient, and that is exactly the lesson of the two failed rounds:
+#
+#   • A pure walk (what was here before) loses the whole tree the instant the
+#     recorded root dies, and calls that success.
+#   • A pure census loses anything whose argv names neither the mission nor an
+#     LCARS executable — a worker launched through a wrapper, the rig in
+#     `tests/xo-stop-real-tree.test.sh`, a chain stopped through
+#     `signal-pidfile` with no mission in scope. MEASURED: four assertions in
+#     that suite went red for precisely this reason.
+#
+# So every pid and every group a census of THIS stop has named is remembered
+# until the stop ends, and re-checked for liveness on every later census. It is a
+# RECORDED fact — we saw that process, with that pid, belonging to this chain —
+# not an inference re-derived from output. It is reset per stop by
+# `xo_census_scope`, so one stop never inherits another's list.
+XO_CENSUS_HELD=""
+XO_CENSUS_HELD_GROUPS=""
+# Did this stop actually send a signal? The two-census gate exists to catch a
+# worker minted WHILE a stop is in flight; with no stop in flight there is
+# nothing to race, so the second census is only taken when something was
+# signalled. Nothing is ever CLAIMED on this counter — it only decides whether
+# the gate needs its second look.
+XO_STOP_SIGNALLED=0
+# THE GAP BETWEEN THE TWO CENSUSES. The live defect's survivor spawned a fresh
+# paid assistant 25 s after the stop said it was done; two seconds is the bound
+# inside which a worker minted by a dying driver has already appeared on the
+# process table. Overridable for the slow suites, never below what a fork costs.
+XO_CENSUS_GAP="${LCARS_XO_CENSUS_GAP:-2}"
+
+xo_nap() { # <seconds, may be fractional>
+  "${XO_PY:-python3}" -c 'import sys,time; time.sleep(float(sys.argv[1]))' "${1:-0.2}" \
+    2>/dev/null || sleep 1
+}
 
 xo_tree_set() { # <pid> [recorded-pgid] — "PID n" / "GROUP n" lines for the chain
   local pid="${1:-}" pgid="${2:-}"
@@ -435,83 +510,232 @@ xo_pid_gone() { # <pid> — 0 when it is gone or defunct
   return 1
 }
 
-xo_stop_alive() { # — the pids in XO_STOP_SET still on the process table
+xo_census_scope() { # <mission-id> [mission-dir] — what every census below is about
+  XO_CENSUS_MISSION="${1:-}"
+  XO_CENSUS_TAGS="${2:-}"
+  XO_CENSUS_SEEDS=""
+  XO_CENSUS_OUT=""
+  XO_CENSUS_SURVIVORS=""
+  XO_CENSUS_HELD=""
+  XO_CENSUS_HELD_GROUPS=""
+  return 0
+}
+
+xo_census_seed() { # <pid> [pgid] — a RECORDED fact, never a guessed one
+  local p g
+  p="$(printf '%s' "${1:-}" | tr -dc '0-9')"
+  g="$(printf '%s' "${2:-}" | tr -dc '0-9')"
+  [ -n "$p$g" ] || return 0
+  XO_CENSUS_SEEDS="$(printf '%s\n%s:%s\n' "$XO_CENSUS_SEEDS" "${p:-0}" "${g:-0}" \
+                      | sed '/^$/d' | sort -u)"
+  return 0
+}
+
+# Seed from a pid file — AND ONLY WHEN IT IS STILL WHO IT SAYS. A pid is a number
+# the OS hands out again, so a live pid whose start time no longer matches the
+# record is somebody else's process and is never seeded. A pid that is simply
+# GONE still contributes its recorded GROUP, because that group is the dead-leader
+# case and the walker checks for itself that the group's live members belong to
+# this mission before it claims one.
+xo_census_seed_file() { # <pidfile>
+  local f="${1:-}" pid pgid started now
+  [ -f "$f" ] || return 0
+  pid="$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')"
+  pgid="$(sed -n '2p' "$f" 2>/dev/null | tr -dc '0-9')"
+  started="$(sed -n '3p' "$f" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  [ -n "$pid" ] || return 0
+  if kill -0 "$pid" 2>/dev/null; then
+    now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+    if [ -n "$started" ] && [ "$now" = "$started" ]; then
+      xo_census_seed "$pid" "$pgid"
+      return 0
+    fi
+    # Alive but not who the file was written about: the pid is NOT seeded. The
+    # recorded group is not seeded either — a recycled pid tells us nothing
+    # about the group it now sits in.
+    return 0
+  fi
+  xo_census_seed "" "$pgid"
+  return 0
+}
+
+xo_census() { # — take a fresh census into $XO_CENSUS_OUT
+  local py="${XO_PY:-python3}" s out=""
+  XO_CENSUS_OUT=""
+  if [ -f "$XO_TREE_PY" ] && command -v "$py" >/dev/null 2>&1; then
+    set -- census
+    [ -n "$XO_CENSUS_MISSION" ] && set -- "$@" "$XO_CENSUS_MISSION"
+    set -- "$@" --asker "$$"
+    while IFS= read -r s; do
+      [ -n "$s" ] && set -- "$@" --tag "$s"
+    done <<EOF
+$XO_CENSUS_TAGS
+EOF
+    while IFS= read -r s; do
+      [ -n "$s" ] && set -- "$@" --seed "$s"
+    done <<EOF
+$XO_CENSUS_SEEDS
+EOF
+    XO_CENSUS_OUT="$("$py" "$XO_TREE_PY" "$@" 2>/dev/null)"
+    xo_census_hold
+    return 0
+  fi
+  # NO WALKER: the recorded seeds only, through S240's closure. Under-claim.
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    out="$out
+$(xo_tree_set "${s%%:*}" "${s##*:}")"
+  done <<EOF
+$XO_CENSUS_SEEDS
+EOF
+  XO_CENSUS_OUT="$(printf '%s\n' "$out" | sed '/^$/d' | sort -u)"
+  xo_census_hold
+  return 0
+}
+
+# Fold this census into the held set, then fold the held set back into this
+# census, so what follows sees the union of "still named" and "named earlier".
+xo_census_hold() {
+  XO_CENSUS_HELD="$(printf '%s\n%s\n' "$XO_CENSUS_HELD" \
+                      "$(printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^PID //p')" \
+                      | sed '/^$/d' | sort -un)"
+  XO_CENSUS_HELD_GROUPS="$(printf '%s\n%s\n' "$XO_CENSUS_HELD_GROUPS" \
+                      "$(printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^GROUP //p')" \
+                      | sed '/^$/d' | sort -un)"
+  XO_CENSUS_OUT="$(printf '%s\n%s\n%s\n' "$XO_CENSUS_OUT" \
+                      "$(printf '%s\n' "$XO_CENSUS_HELD" | sed '/^$/d; s/^/PID /')" \
+                      "$(printf '%s\n' "$XO_CENSUS_HELD_GROUPS" | sed '/^$/d; s/^/GROUP /')" \
+                      | sed '/^$/d' | sort -u)"
+  return 0
+}
+
+xo_census_pids()   { printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^PID //p' | sort -un; }
+xo_census_groups() { printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^GROUP //p' | sort -un; }
+
+xo_census_alive() { # — the census members still on the process table
   local p out=""
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     xo_pid_gone "$p" || out="$out $p"
   done <<EOF
-$(printf '%s\n' "$XO_STOP_SET" | sed -n 's/^PID //p' | sort -un)
+$(xo_census_pids)
 EOF
   printf '%s' "${out# }"
 }
 
-# Union a fresh enumeration into the set. Called on every poll, so a worker the
-# dying driver starts WHILE we are stopping it still gets stopped — live, a
-# fresh paid assistant appeared 25 seconds after the stop.
-xo_stop_refresh() { # <pid> <pgid>
-  XO_STOP_SET="$(printf '%s\n%s\n' "$XO_STOP_SET" "$(xo_tree_set "$1" "$2")" \
-                   | sed '/^$/d' | sort -u)"
-}
-
-xo_stop_wait() { # <polls> <pid> <pgid> — 0 when the set is empty within the bound
+xo_census_wait_empty() { # <polls> — 0 when a FRESH census comes back empty
   local n="$1" i=0
   while :; do
-    xo_stop_refresh "$2" "$3"
-    [ -z "$(xo_stop_alive)" ] && return 0
+    xo_census
+    [ -z "$(xo_census_alive)" ] && return 0
     i=$((i + 1))
     [ "$i" -ge "$n" ] && return 1
-    "${XO_PY:-python3}" -c 'import time; time.sleep(0.2)' 2>/dev/null || sleep 1
+    xo_nap 0.2
   done
 }
 
-# Stop the WHOLE chain and confirm it. 0 confirmed gone, 3 survivors (named in
-# $XO_STOP_SURVIVORS), 1 nothing there to stop.
-xo_stop_tree() { # <pid> [recorded-pgid] [gentle-signal]
-  local pid="${1:-}" pgid="${2:-}" gentle="${3:-TERM}" round sig g p
-  XO_STOP_SURVIVORS=""; XO_STOP_SET=""
-  [ -n "$pid" ] || return 1
-  xo_stop_refresh "$pid" "$pgid"
-  # THE WALKER IS ALLOWED TO REFUSE, AND A REFUSAL IS NOT A DEATH. `xo-tree.py`
-  # returns NOTHING when the recorded pid is the asking process or one of its
-  # ancestors — a stop must never shoot the look, the shell or the viewscreen it
-  # is running inside. That is the right call and it is MEASURED (an asker inside
-  # the chain's own group gets an empty closure where a neutral asker gets four
-  # lines). But "I declined to touch it" and "it is already gone" are different
-  # facts, and reporting the first as the second is how a note ends up saying a
-  # live chain is "no longer running". So it is reported as rc 2 — alive, not
-  # signalled — which every caller already renders as "could not confirm".
-  if ! printf '%s\n' "$XO_STOP_SET" | grep -qx "PID $pid"; then
-    xo_pid_gone "$pid" && return 1
-    return 2
+xo_sweep_once() { # <signal> — every group the chain owns, then every loose pid
+  local sig="$1" g p
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    "$XO_KILL" -"$sig" "-$g" 2>/dev/null || true
+  done <<EOF
+$(xo_census_groups)
+EOF
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    "$XO_KILL" -"$sig" "$p" 2>/dev/null || true
+  done <<EOF
+$(xo_census_pids)
+EOF
+  XO_STOP_SIGNALLED=$((XO_STOP_SIGNALLED + 1))
+  return 0
+}
+
+# SWEEP, THEN LET THE CALLER VERIFY. 0 the census came back empty within the
+# bound, 3 something is still there. A pid may be named to be TERMed ALONE first
+# so its own teardown gets to run before anything escalates.
+#
+# THE CENSUS IS RE-TAKEN BEFORE EVERY ROUND, which is the second half of the
+# cure: a worker the dying driver starts WHILE we are sweeping is in the next
+# census and is swept with the rest. Live, a fresh paid assistant appeared 25
+# seconds after the stop claimed to be finished.
+xo_stop_sweep() { # [gentle-pid] [gentle-signal]
+  local gp="${1:-}" gentle="${2:-TERM}" round sig
+  xo_census
+  [ -z "$(xo_census_alive)" ] && return 0
+  if [ -n "$gp" ] && ! xo_pid_gone "$gp"; then
+    "$XO_KILL" -"$gentle" "$gp" 2>/dev/null || true
+    XO_STOP_SIGNALLED=$((XO_STOP_SIGNALLED + 1))
+    xo_census_wait_empty 10 && return 0
   fi
-  [ -z "$(xo_stop_alive)" ] && return 1
-
-  # 1. THE DRIVER ALONE, GENTLY, so its own trap can tear its worker down.
-  "$XO_KILL" -"$gentle" "$pid" 2>/dev/null || true
-  xo_stop_wait 10 "$pid" "$pgid" && return 0
-
-  # 2. EVERY GROUP THE CHAIN OWNS — including the ones it does not lead — then
-  #    every loose pid besides. TERM, then KILL.
   for round in 1 2; do
     sig=TERM; [ "$round" -eq 2 ] && sig=KILL
-    while IFS= read -r g; do
-      [ -n "$g" ] || continue
-      "$XO_KILL" -"$sig" "-$g" 2>/dev/null || true
-    done <<EOF
-$(printf '%s\n' "$XO_STOP_SET" | sed -n 's/^GROUP //p' | sort -un)
-EOF
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      "$XO_KILL" -"$sig" "$p" 2>/dev/null || true
-    done <<EOF
-$(printf '%s\n' "$XO_STOP_SET" | sed -n 's/^PID //p' | sort -un)
-EOF
-    xo_stop_wait 15 "$pid" "$pgid" && return 0
+    xo_census
+    xo_sweep_once "$sig"
+    xo_census_wait_empty 15 && return 0
   done
+  return 3
+}
 
-  # 3. STILL THERE. Say which, and fail.
-  XO_STOP_SURVIVORS="$(xo_stop_alive)"
+# THE GATE THE SUCCESS LINE HANGS ON: two consecutive censuses, $XO_CENSUS_GAP
+# seconds apart, BOTH empty. One empty census proves only that the machine was
+# quiet at one instant — the measured defect was quiet at exactly such an instant
+# and billing again 25 seconds later. Survivors land in $XO_CENSUS_SURVIVORS.
+xo_census_verified_empty() {
+  XO_CENSUS_SURVIVORS=""
+  xo_census
+  XO_CENSUS_SURVIVORS="$(xo_census_alive)"
+  [ -n "$XO_CENSUS_SURVIVORS" ] && return 1
+  # Nothing was signalled, so no stop is in flight and nothing can be racing it.
+  [ "$XO_STOP_SIGNALLED" -eq 0 ] && return 0
+  xo_nap "$XO_CENSUS_GAP"
+  xo_census
+  XO_CENSUS_SURVIVORS="$(xo_census_alive)"
+  [ -n "$XO_CENSUS_SURVIVORS" ] && return 1
+  return 0
+}
+
+# Stop the WHOLE chain a recorded pid belongs to and confirm it. 0 confirmed
+# gone, 3 survivors (named in $XO_STOP_SURVIVORS), 1 nothing there to stop,
+# 2 alive but the walker declined to name it (the asker or an ancestor).
+xo_stop_tree() { # <pid> [recorded-pgid] [gentle-signal]
+  local pid="${1:-}" pgid="${2:-}" gentle="${3:-TERM}" rc=0
+  XO_STOP_SURVIVORS=""
+  [ -n "$pid" ] || return 1
+  xo_census_seed "$pid" "$pgid"
+  xo_census
+  # THE WALKER IS ALLOWED TO REFUSE, AND A REFUSAL IS NOT A DEATH. The census
+  # returns NOTHING for the recorded pid when it is the asking process or one of
+  # its ancestors — a stop must never shoot the look, the shell or the viewscreen
+  # it is running inside. That is the right call and it is MEASURED. But "I
+  # declined to touch it" and "it is already gone" are different facts, and
+  # reporting the first as the second is how a note ends up saying a live chain
+  # is "no longer running". So it is reported as rc 2 — alive, not signalled.
+  if ! printf '%s\n' "$XO_CENSUS_OUT" | grep -qx "PID $pid"; then
+    if xo_pid_gone "$pid"; then
+      # THE DEAD LEADER IS NOT AN EMPTY TREE (S245). This used to return
+      # "nothing there" on the strength of the recorded pid alone, which is
+      # exactly the vacuous pass: the leader was dead and its orphaned group was
+      # still billing. Only an EMPTY CENSUS means nothing there.
+      [ -z "$(xo_census_alive)" ] && return 1
+    else
+      return 2
+    fi
+  fi
+  xo_stop_confirm "$pid" "$gentle"
+  return $?
+}
+
+# SWEEP, AND THEN SAY ONLY WHAT WAS CONFIRMED. 0 the census is empty, 3 something
+# is still there and is NAMED. One writer, shared by both entry points, so a stop
+# driven from a pid file and a stop driven from a recorded pid cannot drift into
+# saying different things about the same process table.
+xo_stop_confirm() { # [gentle-pid] [gentle-signal]
+  local rc=0
+  xo_stop_sweep "${1:-}" "${2:-TERM}"; rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  XO_STOP_SURVIVORS="$(xo_census_alive)"
   [ -z "$XO_STOP_SURVIVORS" ] && return 0
   printf '◈ NUMBER ONE: I signalled the chain and it is STILL RUNNING — pid(s) %s. Nothing was confirmed stopped.\n' \
     "$XO_STOP_SURVIVORS" >&2
@@ -530,9 +754,28 @@ EOF
 xo_signal_pidfile() { # <file> [signal]
   local file="$1" sig="${2:-TERM}" pid pgid started now
   XO_STOP_SURVIVORS=""
+  # THE RECORD GOES INTO THE CENSUS WHATEVER THIS CALL DECIDES — including on
+  # every early return below. A dead recorded pid means this function has nothing
+  # to signal, and it used to mean the whole stop stopped looking; the group that
+  # pid was recorded LEADING is still a fact about this chain, and the final gate
+  # needs it.
+  xo_census_seed_file "$file"
   pid="$(sed -n '1p' "$file" 2>/dev/null | tr -dc '0-9')"
   [ -n "$pid" ] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    # A DEAD RECORDED PID IS NOT AN EMPTY TREE (S245). This line used to be
+    # `kill -0 "$pid" || return 1` — "nothing there", full stop — and that is the
+    # vacuous pass in its purest form: the recorded leader was dead and the group
+    # it had been recorded LEADING still held a stage orphaned to ppid 1, a
+    # self-led adapter, and the paid assistant. `kill -0 -<pgid>` proved the group
+    # was reachable the whole time. The record outlives the process that wrote it,
+    # so the census is taken BEFORE this call gives up, and only an empty census
+    # means nothing there.
+    xo_census
+    [ -z "$(xo_census_alive)" ] && return 1
+    xo_stop_confirm "" "$sig"
+    return $?
+  fi
   pgid="$(sed -n '2p' "$file" 2>/dev/null | tr -dc '0-9')"
   started="$(sed -n '3p' "$file" 2>/dev/null | sed 's/^ *//; s/ *$//')"
   [ -n "$started" ] || return 2
@@ -742,8 +985,157 @@ xo_release_claim() {
   return 0
 }
 
+# ===========================================================================
+# QUIESCE FIRST — REFUSE TO START NEW WORK BEFORE TRYING TO STOP THE OLD (S245)
+# ===========================================================================
+#
+# THE RACE, MEASURED LIVE. The only pre-spawn stop check in the whole system was
+# the mission's `paused` flag, read by the stage driver BETWEEN stages
+# (`run.sh:20746`). `resolve-logs.sh` spawns a `run.sh drive` per logged bug
+# (`:1198-1205`) and read NO flag at all. So a stop swept what existed while the
+# resolver kept minting fresh drivers behind it: 25 seconds after `lcars xo off`
+# said "you have the conn", a survivor had advanced a bug two stages and hired a
+# new paid assistant. Killing faster cannot win that race, and two fix rounds
+# spent trying. The spawner has to be told to stop FIRST.
+#
+# SO THERE IS A MARKER, AND IT IS WRITTEN BEFORE ANY SIGNAL. `$dir/xo-stop` — one
+# file, written atomically (temp + `mv`, so a reader never sees half of it) — plus
+# the mission's own `paused` flag and the `paused` flag of every linked child in
+# `xo/logs.json`. Three readers honour it: `resolve-logs.sh` before EVERY driver
+# spawn and between bugs, `run.sh`'s driver immediately before it spawns a stage
+# worker, and `run.sh`'s existing between-stages check (which `paused` already
+# covered). A stage already RUNNING is not interrupted here — that is the sweep's
+# job, below.
+#
+# THE MARKER IS A RECORD, NOT A FLAG. It names which children the stop paused and
+# which were ALREADY paused for their own reason, because `lcars xo on <id>` has
+# to put things back and "set them all to unpaused" would quietly un-pause work
+# the captain had stopped himself. The producer records; the consumer reads.
+xo_stop_marker() { # <mission-dir> — 0 when this mission is quiesced
+  [ -f "${1:-}/xo-stop" ]
+}
+
+# TWO FACTS THE QUIESCE HANDS BACK, because the captain was told NEITHER.
+#
+# XO_PAUSED (fix round 1, D1) — how many Missions this command actually paused.
+# Quiescing is the half of a stop that outlives the command: the processes are
+# gone, but `paused` is still on the mission and on every linked child, and
+# `lcars run` refuses to move for as long as it is. The word "paused" appeared
+# nowhere in the stop's output, so the captain met `⏸ paused at: …` days later
+# with no idea which command had done it or that `lcars xo on` lifts it. Counted
+# from the WRITES, never from a guess about how many children there were.
+#
+# XO_QUIESCED (fix round 1, D4) — whether this command has written ANYTHING yet.
+# `lcars_state_refusal_die` ends with "Nothing was written and nothing else in
+# this command took effect." That sentence is a shared contract and it was true of
+# every verb that calls it — each one calls it immediately before its success line
+# and after a single write. The quiesce broke it by writing FIRST, so one malformed
+# state.json anywhere in the repo made the stop print it after it had written the
+# marker, paused four Missions and set `enabled: false`. This flag is what makes
+# that sentence UNREACHABLE once the stop has written: see xo_say_unrecorded.
+XO_PAUSED=0
+XO_QUIESCED=0
+XO_UNRECORDED=""
+
+xo_logs_children() { # <mission-dir> — one linked child mission id per line
+  local lj="${1:-}/xo/logs.json"
+  [ -f "$lj" ] || return 0
+  grep -o '"mission"[[:space:]]*:[[:space:]]*"[^"]*"' "$lj" 2>/dev/null \
+    | sed 's/.*"\([^"]*\)"$/\1/' | sed '/^$/d' | sort -u
+}
+
+xo_quiesce() { # <mission-dir> <mission-id>
+  local dir="$1" id="$2"
+  local st="$dir/state.json" tmp c cst was selfwas keep
+  [ -d "$dir" ] || return 0
+  selfwas="$(lcars_state_get_raw "$st" paused 2>/dev/null)"
+  tmp="$dir/.xo-stop.$$"
+  {
+    printf 'stop %s\n' "$NOW"
+    printf 'mission %s\n' "$id"
+    if [ "$selfwas" = "true" ]; then printf 'self already-paused\n'
+    else printf 'self paused-by-us\n'; fi
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      cst="$MISSIONS_DIR/$c/state.json"
+      [ -f "$cst" ] || continue
+      was="$(lcars_state_get_raw "$cst" paused 2>/dev/null)"
+      if [ "$was" = "true" ]; then printf 'child %s already-paused\n' "$c"
+      else printf 'child %s paused-by-us\n' "$c"; fi
+    done <<EOF
+$(xo_logs_children "$dir")
+EOF
+  } >"$tmp" 2>/dev/null
+  # ATOMIC. A resolver reading this file between bugs must see all of it or none
+  # of it; a half-written marker is a stop that half-happened.
+  mv -f "$tmp" "$dir/xo-stop" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  # THE MARKER IS DOWN, SO THIS COMMAND HAS WRITTEN (fix round 1, D4). Set after
+  # the `mv` and nowhere else: a marker that could not be placed wrote nothing,
+  # and on that path "nothing was written" is still the honest sentence.
+  XO_QUIESCED=1
+  # AND THEN THE FLAGS, so the readers that only know about `paused` stop too.
+  if [ "$selfwas" != "true" ]; then
+    lcars_state_set "$st" paused true 2>/dev/null || true
+    [ "$(lcars_state_get_raw "$st" paused 2>/dev/null)" = "true" ] \
+      && XO_PAUSED=$((XO_PAUSED + 1))
+  fi
+  # A CHILD'S WRITE NEVER REFUSES THE STOP. `lcars_state_set` latches a refusal in
+  # $LCARS_STATE_REFUSED and every verb exits non-zero on it — correct for the
+  # mission the captain named, wrong for a LINKED child he did not: a bug child
+  # with a hand-edited state.json would make the stop button itself fail. The
+  # marker on disk already stops the resolver, so the flag is advisory here.
+  keep="${LCARS_STATE_REFUSED:-}"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    cst="$MISSIONS_DIR/$c/state.json"
+    [ -f "$cst" ] || continue
+    [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ] && continue
+    lcars_state_set "$cst" paused true 2>/dev/null || true
+    # COUNTED FROM THE FLAG ON DISK, not from the fact we asked (fix round 1, D1).
+    # A child whose state.json the writer refused is not paused, and a count that
+    # included it would be the stop over-claiming on the surface meant to stop it
+    # under-claiming.
+    [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ] \
+      && XO_PAUSED=$((XO_PAUSED + 1))
+  done <<EOF
+$(xo_logs_children "$dir")
+EOF
+  LCARS_STATE_REFUSED="$keep"
+  return 0
+}
+
+# PUT IT BACK — AND ONLY WHAT THE STOP ITSELF PUT ON. Read off the marker's own
+# record, so a child the captain had paused for his own reason before the stop
+# is still paused afterwards.
+xo_unquiesce() { # <mission-dir>
+  # NOT `local dir="$1" m="$dir/xo-stop"` — `local` brings every name into scope
+  # BEFORE it assigns, so the second expansion reads an unset local and `set -u`
+  # kills the verb. Measured here as "dir: unbound variable" on `lcars xo on`.
+  local dir="$1"
+  local m="$dir/xo-stop" line who how
+  [ -f "$m" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      "self paused-by-us")
+        lcars_state_unset "$dir/state.json" paused 2>/dev/null || true ;;
+      "child "*)
+        who="$(printf '%s' "$line" | awk '{print $2}')"
+        how="$(printf '%s' "$line" | awk '{print $3}')"
+        [ "$how" = "paused-by-us" ] || continue
+        [ -f "$MISSIONS_DIR/$who/state.json" ] || continue
+        lcars_state_unset "$MISSIONS_DIR/$who/state.json" paused 2>/dev/null || true ;;
+    esac
+  done <"$m"
+  rm -f "$m"
+  return 0
+}
+
 stand_down() { # <mission-id> [--opt-out]
   local id="$1" optout="${2:-}" dir st obj status pid live=0
+  # THE REFUSAL LATCH AS IT WAS BEFORE THIS MISSION (fix round 1, D4). Restored
+  # at the bottom when this command has already written, so one Mission's
+  # bookkeeping failure cannot make the whole verb claim it changed nothing.
+  local refuse0="${LCARS_STATE_REFUSED:-}"
   dir="$MISSIONS_DIR/$id"
   st="$dir/state.json"
   [ -f "$st" ] || die "mission '$id' has no state.json — its state is corrupt."
@@ -797,36 +1189,110 @@ stand_down() { # <mission-id> [--opt-out]
   # no-op over a tree that was still billing. The recorded resolve pid is the
   # truth about whether a chain is running, so it is a reason to act.
   if [ "$status" = "engaged" ] || [ "$live" -eq 1 ] || [ "$rlive" -eq 1 ]; then
+    # ── 0. QUIESCE FIRST, BEFORE A SINGLE SIGNAL (S245). Refusing to start new
+    #    work is the half of a stop that killing cannot do, and it has to be the
+    #    first thing that happens or the resolver mints another driver while the
+    #    sweep is running. See the block above `xo_stop_marker`.
+    xo_quiesce "$dir" "$id"
+    # ── THE CENSUS SCOPE for everything below: this mission by name, and by the
+    #    directory every one of its own processes names on its command line. The
+    #    recorded facts from BOTH pid files go in whether or not either pid is
+    #    still alive — a dead recorded leader still tells us which group was ours.
+    xo_census_scope "$id" "$dir"
+    XO_STOP_SIGNALLED=0
+    xo_census_seed_file "$dir/xo.pid"
+    xo_census_seed_file "$dir/xo-resolve.pid"
+
+    # `lkeep`/`rkeep`: a pid file whose stop was REFUSED (alive but not who the
+    # file was written about) or that still has survivors is KEPT, even when the
+    # census then comes back empty. Removing a handle to a process we never
+    # signalled would throw away the captain's only way to reach it, and it would
+    # also let the note claim a stop that did not happen.
+    local rstopped=0 runsure=0 sfail=0 survivors="" lkeep=0 rkeep=0
+    # ── 1. THE FIRST OFFICER'S OWN CHAIN, THROUGH THE VERIFIED PATH (S245).
+    #    This was `kill -TERM "$pid"; rm -f "$dir/xo.pid"`: one unverified signal
+    #    to one pid, and the captain's only handle on a live look deleted in the
+    #    same breath — the same two mistakes the resolve chain's stop had already
+    #    been cured of. It now goes through `xo_signal_pidfile`, which checks the
+    #    pid is still WHO the file was written about before it signals anything,
+    #    and the handle is released at the bottom of this function, only after an
+    #    empty census.
     if [ -n "$pid" ]; then
-      kill -TERM "$pid" 2>/dev/null || true
-      rm -f "$dir/xo.pid"
+      xo_signal_pidfile "$dir/xo.pid"
+      case $? in
+        # 0 stopped and confirmed, 1 it had already gone — either way there is
+        # nothing left of the look to answer for.
+        0|1) : ;;
+        # ALIVE BUT NOT WHO THIS FILE WAS WRITTEN ABOUT. It must NOT be signalled
+        # here, and its handle must not be dropped. The census sweep below reaches
+        # it by provenance if it really is this mission's.
+        2) lkeep=1 ;;
+        3) lkeep=1; sfail=1; survivors="$survivors $XO_STOP_SURVIVORS" ;;
+      esac
     fi
     # THE CHAIN STOPS TOO — the WHOLE chain, across the process groups its
     # workers deliberately lead (see xo_stop_tree), and only ever a chain the
     # pid file was genuinely written about. A pid that is alive but is no longer
     # that process is left strictly alone and said out loud below.
-    local rstopped=0 runsure=0 sfail=0 survivors=""
     if [ "$rlive" -eq 1 ]; then
       xo_signal_pidfile "$dir/xo-resolve.pid"
       case $? in
-        0) rstopped=1; rm -f "$dir/xo-resolve.pid" ;;
-        2) runsure=1 ;;
+        0) rstopped=1 ;;
+        2) runsure=1; rkeep=1 ;;
         # SIGNALLED AND STILL RUNNING. The pid file STAYS — it is the captain's
         # only handle on the tree, and a failed stop that erases its own handle
         # was the worst part of the measured defect. Nothing claims a stand-down
         # from here: not the status, not the note, not the CLI, not the exit
         # status.
-        3) runsure=1; sfail=1; survivors="$XO_STOP_SURVIVORS"
-           XO_STOP_FAILED=$((XO_STOP_FAILED + 1))
-           XO_STOP_FAILED_PIDS="$XO_STOP_FAILED_PIDS $survivors"
-           XO_STOP_FAILED_ON="$XO_STOP_FAILED_ON $id" ;;
+        3) runsure=1; rkeep=1; sfail=1; survivors="$survivors $XO_STOP_SURVIVORS" ;;
       esac
+    fi
+    # ── 2. THE WHOLE-MACHINE SWEEP, over the census rather than over a walk from
+    #    a recorded pid. This is what reaches a stage orphaned to ppid 1 whose
+    #    leader we have just killed, and a worker minted while we were sweeping.
+    xo_stop_sweep "" >/dev/null 2>&1 || true
+    # ── 3. AND THE GATE: two censuses, $XO_CENSUS_GAP apart, BOTH empty. Nothing
+    #    below claims a stand-down unless this passes. A stop that cannot confirm
+    #    death must never say "you have the conn" — it said exactly that over a
+    #    live paid assistant, twice.
+    if ! xo_census_verified_empty; then
+      sfail=1
+      survivors="$survivors $XO_CENSUS_SURVIVORS"
+    fi
+    survivors="$(printf '%s' "$survivors" | tr ' ' '\n' | sed '/^$/d' \
+                   | sort -un | tr '\n' ' ' | sed 's/ *$//')"
+    if [ "$sfail" -eq 1 ]; then
+      runsure=1
+      XO_STOP_FAILED=$((XO_STOP_FAILED + 1))
+      XO_STOP_FAILED_PIDS="$XO_STOP_FAILED_PIDS $survivors"
+      XO_STOP_FAILED_ON="$XO_STOP_FAILED_ON $id"
+    else
+      # THE HANDLES COME OFF HERE AND NOWHERE ELSE — after an empty census,
+      # twice. Until then they are the captain's only way to try again, and the
+      # marker is the only thing stopping work restarting behind him.
+      [ "$lkeep" -eq 0 ] && rm -f "$dir/xo.pid"
+      [ "$rkeep" -eq 0 ] && rm -f "$dir/xo-resolve.pid"
+      # AN EMPTY CENSUS IS NOT A LICENCE TO CLAIM WHAT WAS REFUSED. If the resolve
+      # pid file was not signalled because it no longer says who it was written
+      # about, the note still has to admit that — "the logs stopped where they got
+      # to" over a chain nobody touched is the same class of lie as the conn line
+      # over a live worker, one surface down.
+      [ "$rlive" -eq 1 ] && [ "$runsure" -eq 0 ] && rstopped=1
     fi
     if [ "$sfail" -eq 0 ]; then
       obj="$(obj_set "$obj" status "$(jstr stood-down)")"
     fi
     local sd_note="Number One stood down $NOW_LOCAL · you have the conn"
-    if [ "$rlive" -eq 1 ] && [ "$nlogs" -gt 0 ]; then
+    # ON THE LOGS, NOT ON A PID FILE (fix round 1, D-minor). This clause used to
+    # need `$rlive` — a resolve pid that is STILL the process its file was written
+    # about — so it vanished in exactly the case that should alarm the captain
+    # most: the chain's recorded leader already dead, nobody knowing what it left
+    # behind, and the card reading only "Number One stood down 20:25 · you have
+    # the conn", four fewer facts than an ordinary stop gives him. What stopped is
+    # a property of the logs on file; whether one pid file was still valid decides
+    # only WHICH of the three sentences below is the true one, and the dead-leader
+    # case lands on the third, which the empty census has just proved.
+    if [ "$nlogs" -gt 0 ]; then
       # THE NOTE SAYS WHAT IS STILL HAPPENING. A captain who stands his first
       # officer down mid-fix-round has two things he needs to know and cannot
       # see: the fixes are still going, and the gate at the end of them is now
@@ -834,15 +1300,21 @@ stand_down() { # <mission-id> [--opt-out]
       # SINGULAR OR PLURAL, PROPERLY (S204 fix round 1, D5). "1 logs still
       # driving" on the card is the kind of small wrongness that makes a
       # captain distrust the numbers beside it.
-      local lognoun="logs"; [ "$nlogs" -eq 1 ] && lognoun="log"
+      # AND THE VERB AGREES WITH THE NOUN (fix round 2). The noun was fixed and
+      # measured; the verbs beside it were not, so the card read "the 1 log it was
+      # driving ARE no longer running" and "it could not confirm the 1 log it was
+      # driving HAVE stopped". Same slip, same surface, same cost to his trust in
+      # the numbers next to it.
+      local lognoun="logs" logis="are" loghave="have"
+      if [ "$nlogs" -eq 1 ]; then lognoun="log"; logis="is"; loghave="has"; fi
       if [ "$rstopped" -eq 1 ]; then
         # WHAT HAPPENED TO HIM, in his words: the fixes have stopped where they
         # got to, and nothing they had already done was thrown away.
         sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving stopped where they got to · you have the conn"
       elif [ "$runsure" -eq 1 ]; then
-        sd_note="Number One stood down $NOW_LOCAL · it could not confirm the $nlogs $lognoun it was driving have stopped · you have the conn"
+        sd_note="Number One stood down $NOW_LOCAL · it could not confirm the $nlogs $lognoun it was driving $loghave stopped · you have the conn"
       else
-        sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving are no longer running · you have the conn"
+        sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving $logis no longer running · you have the conn"
       fi
     fi
     # AND THE LAST WORD BELONGS TO WHAT WAS OBSERVED (fix round 5, D1). Written
@@ -885,6 +1357,21 @@ stand_down() { # <mission-id> [--opt-out]
   fi
   [ "$optout" = "--opt-out" ] && obj="$(obj_set "$obj" optOut true)"
   [ -n "$obj" ] && state_set_xo "$st" "$obj"
+  # A BOOKKEEPING REFUSAL IS NOT "NOTHING HAPPENED" (fix round 1, D4). Once the
+  # quiesce has written the marker, "Nothing was written and nothing else in this
+  # command took effect." is simply false — and it printed over a stop that had
+  # paused four Missions and switched the engine off. The latch is UNSET here and
+  # the file is NAMED instead, so `lcars_state_refusal_die` below can only fire on
+  # the path where its sentence is still true: a refusal before the first write.
+  #
+  # IT IS NOT SWALLOWED. xo_say_unrecorded prints every entry and the verb still
+  # exits non-zero; the difference is that it describes what happened.
+  if [ "$XO_QUIESCED" -eq 1 ] && [ -n "${LCARS_STATE_REFUSED:-}" ] \
+     && [ "${LCARS_STATE_REFUSED:-}" != "$refuse0" ]; then
+    XO_UNRECORDED="$XO_UNRECORDED${XO_UNRECORDED:+
+}$id|$LCARS_STATE_REFUSED"
+    LCARS_STATE_REFUSED="$refuse0"
+  fi
   return 0
 }
 
@@ -1051,6 +1538,14 @@ cmd_on() {
       fi
       state_set_xo "$st" "$obj"
     fi
+    # AND THE QUIESCE COMES OFF (S245). `lcars xo off <id>` writes a stop marker
+    # and pauses the mission and its linked children BEFORE it signals anything,
+    # so that nothing can start behind the sweep. Leaving that marker on disk
+    # would make "back in scope" a sentence with nothing behind it: the resolver
+    # and the stage driver would both still refuse to spawn. `xo_unquiesce` reads
+    # the marker's OWN RECORD of what it paused, so a child paused for its own
+    # reason before the stop stays paused.
+    xo_unquiesce "$MISSIONS_DIR/$id"
     lcars_state_refusal_die "lcars xo on"
     printf '◈ NUMBER ONE: %s is back in scope — the opt-out is cleared.\n' "$id"
     cfg_enabled || printf '  Number One is OFF for this repo; run `lcars xo on` to engage it.\n'
@@ -1066,6 +1561,22 @@ cmd_on() {
   [ -n "$model" ] && printf '  model: %s\n' "$model"
   printf '  It takes the conn at a gate and hands it back with a report.\n'
   printf '  Stand it down any time with `lcars xo off`.\n'
+  # AND THE QUIESCE COMES OFF EVERYWHERE (S245). The repo-level `lcars xo off`
+  # stands DOWN every engaged mission, and each of those stand-downs writes a
+  # stop marker and pauses the mission and its linked children. If this verb
+  # lifted none of them, "ON" would be a word with nothing behind it: every stage
+  # driver and every resolver would still refuse to spawn, and the only way back
+  # would be `lcars xo on <id>` once per mission — which nobody would know to do.
+  #
+  # THIS IS THE SAME DEFECT S240 FIX ROUND 2 CURED ONE FACT AGO. `off` wrote TWO
+  # facts and `on` undid ONE, so the mission stayed locked out while the captain
+  # had been told in plain words it was back. `off` now writes THREE, so `on`
+  # undoes three. `xo_unquiesce` only ever reverses what the stop itself recorded.
+  local qm
+  while IFS= read -r qm; do
+    [ -n "$qm" ] || continue
+    xo_unquiesce "$MISSIONS_DIR/$qm"
+  done <<< "$(all_missions)"
   # AND IT PICKS UP WHAT IS ALREADY WAITING (part G). Switching it on is the
   # captain saying "I have to step out"; a first officer who ignored the two
   # missions already parked at Verify would not be taking the conn at all.
@@ -1261,13 +1772,19 @@ cmd_off() {
     # `stand_down` keeps `xo-resolve.pid` on disk so the retry below is real.
     if [ "$XO_STOP_FAILED" -gt 0 ]; then
       xo_say_stop_failed "$id"
+      xo_say_unrecorded || true
       return 1
     fi
     if [ "$XO_STOOD_DOWN" -gt 0 ]; then
       printf '◈ NUMBER ONE: stood down on %s — you have the conn.\n' "$id"
+      # THE PAUSE, SAID OUT LOUD HERE TOO (fix round 1, D1). A captain who typed a
+      # mission id is no less entitled to know that the stop paused it and its
+      # logged bugs than one who typed none.
+      xo_say_paused "$id"
     else
       printf '◈ NUMBER ONE: %s is opted out — it will not be engaged there.\n' "$id"
     fi
+    xo_say_unrecorded || return 1
     return 0
   fi
 
@@ -1285,14 +1802,66 @@ cmd_off() {
   if [ "$XO_STOOD_DOWN" -gt 0 ]; then
     printf '  %d engaged mission(s) stood down — you have the conn.\n' "$XO_STOOD_DOWN"
   fi
+  xo_say_paused
   # Same rule repo-wide: the switch is off, but a tree that is still running is
   # said out loud and the verb fails. "OFF" above is a fact about the config;
   # it is not, and must not read as, a claim about what has stopped.
   if [ "$XO_STOP_FAILED" -gt 0 ]; then
     xo_say_stop_failed "$(printf '%s' "$XO_STOP_FAILED_ON" | sed 's/^ *//')"
+    xo_say_unrecorded || true
     return 1
   fi
+  xo_say_unrecorded || return 1
   return 0
+}
+
+# ONE writer for the PAUSE the stop left behind (fix round 1, D1). The captain
+# reads `N engaged mission(s) stood down — you have the conn.` and takes from it
+# that the processes are gone, which is true. What it never said is that the stop
+# also PAUSED things: the mission it stood down and every bug logged under it in
+# `xo/logs.json`. That flag outlives the command — `lcars run` halts on it — so a
+# captain who was not told goes looking for `⏸ paused at: …` days later with no
+# idea which command put it there, or that one word lifts it.
+#
+# THE COUNT IS XO_PAUSED, read off the flags the quiesce actually wrote. A stop
+# that paused nothing prints nothing: the line is a measurement, not a reflex.
+xo_say_paused() { # [mission-id]
+  [ "${XO_PAUSED:-0}" -gt 0 ] || return 0
+  if [ "$XO_PAUSED" -eq 1 ]; then
+    printf '  ⏸ 1 mission is now paused'
+  else
+    printf '  ⏸ %d missions are now paused' "$XO_PAUSED"
+  fi
+  printf ' so nothing restarts behind you — `lcars xo on%s` lifts the pause.\n' \
+    "${1:+ $1}"
+  return 0
+}
+
+# ONE writer for WHAT THE STOP COULD NOT RECORD (fix round 1, D4). Reached only
+# when the quiesce had already written, so the alternative sentence —
+# `lcars_state_refusal_die`'s "Nothing was written and nothing else in this
+# command took effect." — would be a flat untruth about a command that had just
+# paused four Missions. This one says what actually happened, in that order: the
+# stop went through, the recording did not, here is the file, and here is what the
+# board will show until it is fixed. rc 1 when it had something to admit, so the
+# verb still exits non-zero exactly as it did before.
+xo_say_unrecorded() {
+  [ -n "${XO_UNRECORDED:-}" ] || return 0
+  local line who why
+  printf '  ⚠ The stop itself went through — the processes are stopped and the xo-stop\n' >&2
+  printf '    marker is down, so no new work starts. What I could not do is RECORD it:\n' >&2
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    who="${line%%|*}"; why="${line#*|}"
+    printf '      %s — %s\n' "$who" "$why" >&2
+  done <<EOF
+$XO_UNRECORDED
+EOF
+  printf '    Those cards will still read `engaged`. That state.json is not the\n' >&2
+  printf '    one-field-per-line object LCARS writes, so the writer left it exactly as it\n' >&2
+  printf '    was. Put it back to one field per line (`{` alone on the first line, `}`\n' >&2
+  printf '    alone on the last), then run this again.\n' >&2
+  return 1
 }
 
 # ONE writer for the failed-stop sentence, so the single-mission and repo-wide
@@ -1934,7 +2503,14 @@ cmd_answer() {
   # because the pidfile is a RECORD of a look and this is the PERMISSION for
   # one. The EXIT trap above gives it back on every path out.
   xo_claim_or_die "$dir" "a look at the ${stage:-?} gate"
-  printf '%s\n' "$$" >"$dir/xo.pid"
+  # WHO, NOT JUST WHICH NUMBER (S245). This was a bare `printf "$$"`, one line,
+  # which meant `lcars xo off` could not run the look's pid file through
+  # `xo_signal_pidfile` at all — that function refuses a file that does not
+  # record an identity, so the look got an unverified `kill -TERM` and had its
+  # handle deleted in the same breath. `xo_write_pidfile` keeps the bare pid on
+  # line 1, so every `head -1` reader is unaffected, and adds the group this
+  # process leads (only where it genuinely leads one) and the instant it started.
+  xo_write_pidfile "$$" "$dir/xo.pid"
 
   printf '◈ NUMBER ONE: reading the record for %s (%s gate)…\n' "$id" "${stage:-?}"
 
@@ -3094,7 +3670,14 @@ cmd_evaluate() {
   XO_MISSION_DIR="$dir"
   XO_LAUNCH_ID="$id"
   XO_STOP_LOG="$xodir/launch.log"
-  printf '%s\n' "$$" >"$dir/xo.pid"
+  # WHO, NOT JUST WHICH NUMBER (S245). This was a bare `printf "$$"`, one line,
+  # which meant `lcars xo off` could not run the look's pid file through
+  # `xo_signal_pidfile` at all — that function refuses a file that does not
+  # record an identity, so the look got an unverified `kill -TERM` and had its
+  # handle deleted in the same breath. `xo_write_pidfile` keeps the bare pid on
+  # line 1, so every `head -1` reader is unaffected, and adds the group this
+  # process leads (only where it genuinely leads one) and the instant it started.
+  xo_write_pidfile "$$" "$dir/xo.pid"
 
   # NUMBER ONE IS ENGAGED FOR THE WHOLE SPIN (fix round 1, D1). Written BEFORE
   # the contract is built and replaced by xo_finish at the end, so the status
@@ -4080,7 +4663,14 @@ cmd_recheck() {
   XO_STOP_LOG="$xodir/launch.log"
   trap xo_teardown EXIT
   trap on_stand_down TERM INT
-  printf '%s\n' "$$" >"$dir/xo.pid"
+  # WHO, NOT JUST WHICH NUMBER (S245). This was a bare `printf "$$"`, one line,
+  # which meant `lcars xo off` could not run the look's pid file through
+  # `xo_signal_pidfile` at all — that function refuses a file that does not
+  # record an identity, so the look got an unverified `kill -TERM` and had its
+  # handle deleted in the same breath. `xo_write_pidfile` keeps the bare pid on
+  # line 1, so every `head -1` reader is unaffected, and adds the group this
+  # process leads (only where it genuinely leads one) and the instant it started.
+  xo_write_pidfile "$$" "$dir/xo.pid"
 
   local rc_obj
   rc_obj="$(state_xo_block "$st")"
@@ -4615,6 +5205,21 @@ case "${1:-status}" in
     [ -n "${1:-}" ] || die "signal-pidfile needs a pid file."
     xo_signal_pidfile "$1" "${2:-TERM}"
     exit $? ;;
+  census)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # It prints the whole-machine census for one mission — the exact set
+    # `lcars xo off` gates its success line on. It exists so that "nothing of
+    # this mission is running" can be checked from OUTSIDE the product, by a
+    # tester or by the next reader of a failed stop, instead of being taken on
+    # trust from a sentence the product printed about itself.
+    shift
+    _cmid="$(resolve_mission "${1:-}")" || exit $?
+    xo_census_scope "$_cmid" "$MISSIONS_DIR/$_cmid"
+    xo_census_seed_file "$MISSIONS_DIR/$_cmid/xo.pid"
+    xo_census_seed_file "$MISSIONS_DIR/$_cmid/xo-resolve.pid"
+    xo_census
+    printf '%s\n' "$XO_CENSUS_OUT" | sed '/^$/d'
+    exit 0 ;;
   record-pid)
     # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
     # It exists so a TEST can plant a pid file the way the product plants one,

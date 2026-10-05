@@ -20806,6 +20806,27 @@ cmd_drive() {
          printf '⏹ stopped: Mission is at an unsupported stage "%s".\n' "$stage"; return 1 ;;
     esac
 
+    # ── THE STOP MARKER, READ IMMEDIATELY BEFORE THE SPAWN (S245) ───────────
+    # `paused` is checked at the top of this loop, which is the BETWEEN-STAGES
+    # boundary and the right place for the captain's own `lcars pause`. The window
+    # it cannot close is this one: everything between that check and this spawn.
+    # `lcars xo off` lands inside it — it writes `xo-stop` on the mission and on
+    # every linked child BEFORE it signals anything, precisely so that the next
+    # worker is never hired. Re-reading the flag and the marker here costs two
+    # stats and closes the window. A stage ALREADY RUNNING is not interrupted
+    # here; the stop's own sweep reaches that one.
+    local stop_dir stop_parent
+    stop_dir="$MISSION_DIR"
+    stop_parent="$(json_str "$STATE" parentMission)"
+    if [ -f "$stop_dir/xo-stop" ] \
+       || { [ -n "$stop_parent" ] && [ "$stop_parent" != "null" ] \
+            && [ -f "$(dirname "$MISSION_DIR")/$stop_parent/xo-stop" ]; } \
+       || [ "$(json_raw "$STATE" paused)" = "true" ]; then
+      emit_event paused "$stage" "Number One was stood down — no worker was started for $action"
+      mirror_comments || true
+      drive_print_summary "$summary"; drive_halt_paused "$stage"; return 0
+    fi
+
     # Live BEGIN: log + print before the (output-captured) stage subprocess runs,
     # so a tail/scrollback shows the Stage starting in real time.
     emit_event stage_start "$action" "starting"

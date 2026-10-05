@@ -1170,8 +1170,31 @@ fi
 # child_outcome, so the same runner is usable both synchronously and as a
 # background job for concurrent waves. It clears the child's queued flag first
 # (it is now starting its wave).
+# ── THE STOP MARKER, CHECKED BEFORE EVERY SINGLE SPAWN (S245) ──────────────
+#
+# THE RACE THIS CLOSES, MEASURED LIVE. `lcars xo off` swept the chain, printed
+# "you have the conn" and exited 0 — and 25 seconds later a survivor had advanced
+# a logged bug two stages and hired a fresh paid assistant. The sweep was not
+# slow and the kill was not weak: THIS LOOP kept minting new drivers behind it.
+# The only pre-spawn stop check in the whole system was the mission's `paused`
+# flag, read by the stage driver BETWEEN stages (run.sh:20746), and this script
+# read no flag at all.
+#
+# So `lcars xo off` now writes `$PARENT_DIR/xo-stop` BEFORE it signals anything,
+# and this is the reader. It is checked before EVERY `run.sh drive` — not once per
+# batch, not once per wave — because the captain can press stop at any instant and
+# the next bug can be due in the same instant. A bug already in flight is not
+# interrupted here; that is the sweep's job.
+#
+# `lcars xo on <parent>` removes the marker.
+parent_quiesced() { [ -f "$PARENT_DIR/xo-stop" ]; }
+
 run_child_driver() { # id
   local id="$1"
+  if parent_quiesced; then
+    echo "lcars resolve-logs: Number One was stood down — not starting $id."
+    return 0
+  fi
   clear_queued "$id"
   if [ -n "$PARENT_ENGINE" ]; then
     # $LCARS_WORKER_BIN_INTERNAL=1 SAYS WHO SET THE PIN (S207; approve.sh's same
@@ -1295,6 +1318,14 @@ run_one_wave() { # wave-id  ids...
   local paused_id="" errored_id=""
   # Launch in CONCURRENCY-sized chunks.
   while [ "${#ids[@]}" -gt 0 ]; do
+    # BETWEEN BUGS, the same question again (S245): the captain may have stood
+    # Number One down while the last chunk was running, and that has to stop the
+    # batch here rather than at the end of it.
+    if parent_quiesced; then
+      echo "lcars resolve-logs: Number One was stood down — stopping between bugs."
+      WAVE_QUIESCED=1
+      return 0
+    fi
     chunk=("${ids[@]:0:$CONCURRENCY}")
     ids=("${ids[@]:$CONCURRENCY}")
     if [ "${#chunk[@]}" -eq 1 ]; then
@@ -1322,7 +1353,7 @@ run_one_wave() { # wave-id  ids...
   return 0
 }
 
-WAVE_PAUSED=""; WAVE_ERRORED=""
+WAVE_PAUSED=""; WAVE_ERRORED=""; WAVE_QUIESCED=0
 if [ -n "$WAVE_LINES" ]; then
   cur_wave=""; wave_ids=()
   flush_wave() {
