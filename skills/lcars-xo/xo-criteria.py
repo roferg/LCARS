@@ -329,10 +329,27 @@ def reach_for(crit, types, eps_by_ticket, served_by):
             return "workflow", "notVisual, and this milestone's surface is a workflow"
         return "test", "notVisual, with no CLI, page or workflow recorded to run"
 
-    # 4. THE MILESTONE'S ONE SURFACE, when it has only one.
-    for kind, reach in (("web", "browser"), ("cli", "cli"), ("workflow", "workflow")):
-        if kind in kinds:
-            return reach, "the milestone's recorded surface is %s" % kind
+    # 4. THE MILESTONE'S ONE SURFACE — AND THE GUARD THAT THERE IS ONLY ONE.
+    #
+    # S251: the comment said "when it has only one" and NOTHING tested it. The
+    # loop tried `web` first, so on a THREE-surface milestone every row this rule
+    # reached came back `browser` — including three plain command-line ones — and
+    # `journey.json` then said "attempted 0 of 7" with `reasonFrom: "no-record"`,
+    # an admitted guess, which is the headline the captain reads.
+    #
+    # With more than one surface recorded, the record genuinely does not say
+    # which of them reaches THIS criterion, and the honest answer is the one
+    # below: `none`. Saying so costs a reach step; claiming `browser` for a CLI
+    # row costs the whole look, because a page that has nothing of the product on
+    # it settles nothing and reports as if it did.
+    if len(set(kinds)) == 1:
+        for kind, reach in (("web", "browser"), ("cli", "cli"), ("workflow", "workflow")):
+            if kind in kinds:
+                return reach, "the milestone's recorded surface is %s" % kind
+    if len(set(kinds)) > 1:
+        return "none", ("the milestone has more than one surface (%s) and nothing "
+                        "in the record says which of them reaches this"
+                        % ", ".join(sorted(set(kinds))))
     return "none", "nothing in the record says how this could be reached"
 
 def has_drawing(mission_dir):

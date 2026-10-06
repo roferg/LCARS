@@ -214,7 +214,7 @@ showing 0 px between them is exactly the picture that proves it.
 
 **You may NOT invent a criterion out of one.** An observation with no
 criterion behind it is not a finding for `gaps` — if you want to mention it
-anyway because it looks bad, put it in `alsoChecked`, in your own words. Never
+anyway because it looks bad, put it in `volunteered` (see below). Never
 `"kind": "contradiction"` against nothing the captain or his drawing asked for.
 
 They never move your score, and if the file is empty or missing, that means
@@ -582,7 +582,7 @@ that reaches the last round with no verdict is scored LOW.
   ],
   "couldNot": [{"item": "a second actor on a second HOME", "why": "…"}],
   "escalations": ["things that are the captain's, not yours"],
-  "alsoChecked": ["things you looked at that were fine and are not criteria"],
+  "alsoChecked": ["things you looked at that were FINE and are not criteria"], "volunteered": [{"title": "…", "expected": "…", "saw": "…", "shots": ["…"], "evidence": "…", "note": "…"}],
   "summary": "two or three sentences, written TO the captain about his build"
 }
 ```

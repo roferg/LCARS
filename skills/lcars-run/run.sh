@@ -16639,6 +16639,13 @@ owner ≠ login and name ≠ title on purpose — on a dev box they coincide and
 is where the bug hides. Pick a value you will recognise when you see it come back.
 Follow ONE record through every hop, and read the artifact, not the status.
 
+**Work the items in the order they are numbered, off the text above — not from
+memory.** Measured: a reviewer that reproduced this numbering from memory skipped
+items 4 and 5, and three of the faults planted that weekend were exactly those
+two items. If you do not do one of them, say which numbered item you did not do
+and why, in \`couldNot\`. Skipping one silently is the one thing that reads as
+having checked it.
+
 You decide when you have seen enough. Write your verdict when you have.
 "
   for kind in $types; do
@@ -16788,6 +16795,41 @@ they have run, LCARS photographs the page AGAIN and files those shots as
 the two read the same, nothing your steps did reached the page, which is worth
 saying rather than grading the empty one."
   fi
+  # === A FAULT NOBODY WROTE A REQUIREMENT FOR (S251) ========================
+  #
+  # WHAT WAS MEASURED. Six faults were planted, one per class, with the mission's
+  # requirements deliberately naming none of them. The look FOUND five and FILED
+  # three — and said, in its own words, why it withheld the other two: "No
+  # criterion covers the footer link, so I am not filing it", and "No criterion
+  # names --slug, so this is not a finding against the contract."
+  #
+  # It was right about the product and wrong about nothing else. There was no
+  # lane: `alsoChecked` is documented as things that were FINE, is rendered as
+  # one prose line, and `xo-logs.py` never read it; the `unlisted` pass routes to
+  # `escalations` and is handed only pictures. So this sentence exists to tell the
+  # worker the lane is there now — and HERE rather than in `evaluate.md`, which
+  # sits one line under the ceiling its own suite holds it to.
+  #
+  # The fence is said in the same breath as the permission, because the
+  # CONTRACT-FIRST rule is what makes the lane safe: criteria come from the
+  # record, and a volunteered find is information, never a verdict.
+  local volunteered_line=""
+  if [ "$mode" = "evaluate" ]; then
+    volunteered_line="
+## Something wrong that NOBODY ASKED FOR — \`volunteered\`
+If you find a real fault that no acceptance criterion covers, you do NOT have to
+throw it away and you do NOT have to invent a criterion for it. Put it in
+\`volunteered\`: a list of objects shaped like a gap — \`title\`, \`expected\`,
+\`saw\`, \`shots\`, \`evidence\`, \`note\` — and carry its evidence exactly as you
+would for a gap. LCARS FILES these as bugs, marked as nobody's ask and at a lower
+severity than a contract breach.
+
+What it is NOT: it is **never a send-back**, it never moves your score, and it
+never becomes a criterion. The contract comes from the captain's record; a fault
+outside it is information for him to act on or close. That is why you can say it
+without overstating it. \`alsoChecked\` stays what it has always been — things you
+looked at that were FINE."
+  fi
   # === THE ROUND BEFORE ANYTHING IS SERVED (S248) ===========================
   #
   # `xo.sh` asks ONE round before it launches: which page is the surface under
@@ -16924,6 +16966,7 @@ $rounds_line
 $prelaunch_line
 $steps_line
 $live_line
+$volunteered_line
 $checklists
 
 ## Your input directory — the mission's RECORD, read-only

@@ -819,6 +819,15 @@ const READ = (places, cap) => `(function () {
       className: (typeof el.className === "string" && el.className) ? el.className : null,
       inputType: el.tagName === "INPUT" ? (el.getAttribute("type") || "text") : null,
       ariaLabel: el.getAttribute("aria-label") || null,
+      // WHERE IT POINTS, AS THE PAGE WROTE IT (S251). The driver recorded
+      // location.href for the PAGE and used a[href] only as a click selector,
+      // so the string href appeared ZERO times across every shot readout,
+      // observation and reading of both looks — and "the page prints host A and
+      // links to host B" could not be settled by any picture. The ATTRIBUTE,
+      // not the el.href property: the property hides a relative link behind the
+      // current origin, and what the author wrote is the fact.
+      href: el.getAttribute("href") || null,
+      src: el.getAttribute("src") || null,
       text: ownText.replace(/[ \\t\\r\\n]+/g, " ").trim().slice(0, 80),
       box: b,
       color: s.color, background: s.backgroundColor,

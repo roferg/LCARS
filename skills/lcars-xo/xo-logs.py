@@ -30,6 +30,13 @@ filed against nothing. The rule now reads:
     a word nobody wrote (xo-score.py -> CAUSE_CLASS).
   * an `interpretation`, and a gap nothing instrumented, are still NOT filed —
     they go on the report, exactly as before.
+  * and, since S251, every entry of `volunteered[]` — a real fault the look saw
+    that NO criterion covers. Filed LAST, only into what the cap has left, with
+    `volunteered-<k>` for a criterion id because there is no criterion, and with
+    every sentence of its PRD saying so. It is fenced out of the grade by not
+    being read anywhere a grade is decided: `xo-score.py` and `xo-criteria.py`
+    never see the key, so the contract-first rule stands and a volunteered find
+    is information, never a send-back.
 
 NEVER TWICE FOR ONE CRITERION. The sixth argument is the look's own
 `xo/logs.json`; a criterion already in its `filed` list is skipped and said out
@@ -74,6 +81,17 @@ import re
 import sys
 
 CAP = 10
+
+# THE ID AN UNCONTRACTED FINDING IS FILED UNDER (S251). There is no criterion, so
+# there is no criterion id — this prefix IS the record that says so, and it is the
+# one thing `xo-filed.py` reads to keep a volunteered bug out of the send-back
+# sentence. Minted here, honoured there; the two are one contract and the comment
+# in each names the other.
+# It is NOT an extra field on the GAP record: `xo.sh` splits that record with
+# seven `read` names, and bash gives the LAST name everything that is left — so an
+# eighth field lands inside the attachment list and every attachment is lost. The
+# id IS the record. (Measured: adding the field cost B12a and three B18 checks.)
+VOL_ID_PREFIX = "volunteered-"
 
 # THE RECORD SEPARATOR. ASCII US (0x1f) — not a tab. See the module docstring:
 # a tab is IFS whitespace and silently eats an empty field.
@@ -689,6 +707,40 @@ def main():
     overflow = max(0, len(fresh) - cap)
     fresh = fresh[:cap]
 
+    # ── THE LANE FOR A FAULT NOBODY WROTE A REQUIREMENT FOR (S251) ───────────
+    #
+    # WHAT WAS MEASURED. Six faults were planted, one per class, with the
+    # mission's requirements deliberately naming none of them. The look FOUND
+    # five and FILED three; it withheld two on purpose and said why in its own
+    # words — "No criterion covers the footer link, so I am not filing it."
+    # It was right about the product: an uncontracted fault had two possible
+    # homes and NEITHER could produce a bug. `alsoChecked` is documented as
+    # "things you looked at that were fine", rendered as one semicolon-joined
+    # prose line, and never read here at all; the `unlisted` lane routes to
+    # `escalations` and is handed only pictures, so it is structurally blind to
+    # every command-line fault.
+    #
+    # `volunteered[]` is the one honest way through. It is FILED, beside
+    # `gaps[]`, with its evidence — and it is fenced on all three sides:
+    #
+    #   * it is read ONLY here. `xo-score.py` and `xo-criteria.py` never see the
+    #     key, so a volunteered find cannot touch the grade, the ledger, the
+    #     `blockers[]` the send-back is decided from, or the recommendation. The
+    #     CONTRACT-FIRST RULE stands: criteria come from the record, and a fault
+    #     outside the contract is information, not a verdict.
+    #   * it files AFTER every contracted gap and only into what the cap has
+    #     left, so it can never push a contract breach off the list or renumber
+    #     one. A contracted bug's PRD is byte-identical either way.
+    #   * every sentence of its PRD says what it is — nobody's ask, a lower
+    #     severity than a contract breach, and explicitly NOT the reason for any
+    #     grade. The captain must be able to tell the two apart at a glance.
+    vol = doc.get("volunteered") if isinstance(doc, dict) else None
+    vol = [v for v in vol if isinstance(v, dict)] if isinstance(vol, list) else []
+    vol = [v for v in vol if clean(v.get("title")) or clean(v.get("saw"))]
+    room = max(0, cap - len(fresh))
+    overflow += max(0, len(vol) - room)
+    vol = vol[:room]
+
     os.makedirs(outdir, exist_ok=True)
     for n, (cid, kind) in enumerate(fresh, 1):
         row = row_by_id.get(cid) or {}
@@ -863,6 +915,90 @@ def main():
         # PICTURE had rewritten the gap's recorded evidence. A record and an
         # attachment are not the same fact, so they are not the same field.
         # Field 7 is the ATTACH list, read only by `--attach`.
+        print(RS.join(["GAP", str(n), path,
+                       ",".join(attach_path(shotsdir, sh) for sh in shots),
+                       cid, title,
+                       ",".join(attach_path(shotsdir, sh) for sh in attach)]))
+
+    # ── AND THE VOLUNTEERED ONES, LAST AND PLAINLY LABELLED (S251) ───────────
+    # Same writer, same evidence ladder, same `GAP` record the shell already
+    # reads — a different lane is not a reason for a second output format. What
+    # differs is every sentence of the prose, and the criterion id, which is
+    # `volunteered-<k>` precisely BECAUSE there is no criterion.
+    for k_i, v in enumerate(vol, 1):
+        n = len(fresh) + k_i
+        cid = "%s%d" % (VOL_ID_PREFIX, k_i)
+        shots = [clean(sh) for sh in (v.get("shots") or []) if clean(sh)]
+        if not shots and clean(v.get("shot")):
+            shots = [clean(v.get("shot"))]
+        shots = bind_shots(shotsdir, shots, hash_id(
+            " ".join([str(v.get("title") or ""), str(v.get("saw") or "")])))
+        instrument = instrument_of(v, v) or "none"
+        ref = evidence_ref(shotsdir, v, v, instrument)
+        attach = widen_shots(shotsdir, shots, v, v, instrument)
+        what = unstop(v.get("title")) or unstop(v.get("saw")) or "something the record does not cover"
+        saw = unstop(v.get("saw"))
+        expected = unstop(v.get("expected"))
+        note = unstop(v.get("note"))
+        title = "Not asked for — %s" % what
+
+        ac1 = ["Observed live:"]
+        _where = where_observed(shotsdir, v, v)
+        if _where:
+            ac1.append(_where)
+        if unstop(v.get("action")):
+            ac1.append("%s." % unstop(v.get("action")))
+        if expected and saw:
+            ac1.append("A person would expect %s; the build gave %s." % (expected, saw))
+        elif saw:
+            ac1.append("What the build gave: %s." % saw)
+        if note:
+            ac1.append("The look's own words: %s." % note)
+        if ref:
+            ac1.append("Recorded in `%s` (%s)." % (ref, instrument))
+        ac1.append("NOBODY ASKED FOR THIS. No criterion in the record covers it, so "
+                   "it is a lower severity than a contract breach, and it did not "
+                   "change the grade or the recommendation on the look it came from.")
+        acs = [" ".join(ac1)]
+        acs.append("%s — fixed in the code that is already there, with a test that "
+                   "fails before the fix and passes after it." % upfirst(what))
+
+        goal = ("%s. The look volunteered this: it is information for you, not a "
+                "judgement against the milestone, and it was filed at a lower "
+                "severity than a contract breach for that reason. Nothing about it "
+                "moved the grade. Close it unfixed if you do not want it."
+                % upfirst(what))
+
+        out_of_scope = [
+            "Re-grading the milestone. No criterion covers this, so it changed "
+            "nothing about the verdict and fixing it changes nothing either.",
+            "Writing a criterion for it after the fact. If you want it in the "
+            "contract, that is yours to put in the record, not a fix worker's.",
+        ]
+        for other, _k in picked:
+            out_of_scope.append("`%s` — a criterion the record DOES name. Filed as "
+                                "its own bug; not this one." % other)
+        out_of_scope = out_of_scope[:4]
+
+        constraints = [PLAN_RULE,
+                       "Keep the project's existing stack, permission model and test "
+                       "conventions. No new dependency to fix one field.",
+                       "This one is OPTIONAL. Nobody wrote it down, so a decision not "
+                       "to do it is a legitimate answer and needs no justification."]
+
+        tail = []
+        present = [sh for sh in shots if shot_file(shotsdir, sh)]
+        if present:
+            tail.append("What Number One recorded while it was looking at something "
+                        "else: %s." % ", ".join(present))
+        tail.append("This came from the look's `volunteered` list — the lane for a "
+                    "fault it saw that no acceptance criterion asks about. It is "
+                    "filed so you can see it, at a lower severity, and it is "
+                    "deliberately fenced out of the score.")
+
+        path = os.path.join(outdir, "%d.md" % n)
+        write_prd(path, title=title, seam="none", goal=goal, acs=acs,
+                  out_of_scope=out_of_scope, constraints=constraints, tail=tail)
         print(RS.join(["GAP", str(n), path,
                        ",".join(attach_path(shotsdir, sh) for sh in shots),
                        cid, title,

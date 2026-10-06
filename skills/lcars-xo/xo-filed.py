@@ -44,6 +44,17 @@ def main():
         cid, mid = cid.strip(), mid.strip()
         if not mid:
             continue
+        # AN UNCONTRACTED FINDING IS NEVER A REASON TO SEND THE BUILD BACK (S251).
+        # `xo-logs.py` files a `volunteered[]` entry under `volunteered-<k>`
+        # BECAUSE there is no criterion for it (see VOL_ID_PREFIX there, which is
+        # the other half of this one contract). It is a real bug with real
+        # evidence and it is filed like any other — but the send-back sentence
+        # below names the bugs the VERDICT blocked on, and a fault nobody wrote
+        # down did not move the grade, the recommendation or `blockers[]`. Naming
+        # it here would make a volunteered find the verdict, which is exactly what
+        # the contract-first rule forbids. It stamps nothing and it is not counted.
+        if cid.startswith("volunteered-"):
+            continue
         if cid:
             filed[cid] = mid
         if mid not in order:
