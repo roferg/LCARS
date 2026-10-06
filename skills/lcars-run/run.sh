@@ -15644,6 +15644,24 @@ effective_tier_for_cli() { # cli logical-tier → the tier that really runs
 # THE REQUIREMENT, and it is narrow: A COLD WORKER WHOSE CONTRACT IS TO WRITE A
 # FILE MUST RUN ON A MODEL THAT HAS A WRITE TOOL.
 #
+# ⚠ S250 (fix round 1) — THIS FLOOR WAS RE-MEASURED LIVE AND IT STANDS. A round
+# briefly recorded a doubt here, on the theory that the tool NAMES on the flag were
+# wrong rather than the model. That theory was itself measured on copilot's DEFAULT
+# model instead of the one LCARS sends, and it is FALSE. Re-run on 2026-10-05
+# against /opt/homebrew/bin/copilot (self-reporting 1.0.92), BY ABSOLUTE PATH —
+# `command -v copilot` can be VS Code's shim, which re-invokes off $PATH — with a
+# counting fake first on $PATH that stayed at ZERO:
+#     view,grep,glob,create, NO --model  -> still NO FILE, still "no file-writing
+#                                           tool is available"
+#     the SAME list + --model claude-opus-4.8
+#                                        -> "Created withmodel.txt … I used the
+#                                           **create** tool"
+#     view,grep + a model                -> searched fine ("I used the grep tool")
+# COPILOT'S TOOL SET IS MODEL-DEPENDENT. `create` and `grep` both exist on a model
+# that offers them, so the mechanism is the MISSING MODEL — exactly how the
+# measurement below reads it. DO NOT REMOVE THIS FLOOR: adapter_argv sends
+# `--model` only when one is configured, and this is the thing that configures one.
+#
 # MEASURED on the real copilot binary, every other flag byte-identical to what
 # worker_spawn actually sends (`--available-tools view,grep,glob,create
 # --disable-builtin-mcps --allow-all-tools --no-ask-user`):
@@ -16655,24 +16673,85 @@ spawn_number_one() { # mission-id  mode  outdir
   # one file and only one. `evaluate` writes ONE OF TWO — a verdict, or a
   # request to look further — and naming the wrong one here is how a worker
   # that wanted another round silently produces nothing at all.
-  local outfiles
+  #
+  # $wantfiles NAMES THE SAME FILES, bare, for the verdict channel below — the
+  # ONE list, read twice, so the prose and the reader can never disagree about
+  # which files a mode may write.
+  local outfiles wantfiles
   case "$mode" in
-    evaluate) outfiles="Write EXACTLY ONE of these two files:
+    evaluate) wantfiles="xo-verdict.json xo-actions.json"
+              outfiles="Write EXACTLY ONE of these two files:
   - $outdir/xo-verdict.json   you have seen enough, and this is your verdict
   - $outdir/xo-actions.json   you want to look further (at most 12 actions)" ;;
     # S204 — the RE-CHECK after the logged fixes landed. One file, and it
     # carries two things: `held` (did each filed gap's fix hold?) and the full
     # ledger again, which the skill re-scores exactly as it scored the first
     # look. There is no second round to ask for, so there is no actions file.
-    recheck)  outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
+    recheck)  wantfiles="xo-recheck.json"
+              outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
     # S224 item 2 — THE PASS WITH NO LIST IN ITS HAND. One file, no rounds to
     # ask for and no verdict to reach: it is not judging the build, it is
     # handing the captain what nobody was looking for. Its input dir is the
     # PICTURES ONLY (xo.sh builds it), which is the whole point — a reviewer
     # holding a list finds what is on the list.
-    unlisted) outfiles="Write EXACTLY ONE file: $outdir/xo-unlisted.json" ;;
-    *)        outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
+    unlisted) wantfiles="xo-unlisted.json"
+              outfiles="Write EXACTLY ONE file: $outdir/xo-unlisted.json" ;;
+    *)        wantfiles="xo-answer.json"
+              outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
   esac
+  # === THE VERDICT CHANNEL — SAY THE FILE, AND WE WILL WRITE IT (S250) ======
+  #
+  # WHY. The first officer's whole output is ONE file, and that file was the only
+  # reason the role ever needed a write capability at all. On copilot a write tool
+  # is MODEL-DEPENDENT: the identical `--available-tools` list has `create` with
+  # `--model claude-opus-4.8` and no write tool whatsoever without one (measured —
+  # see `adapter_tools` in worker-adapter.sh, and S194's write-tool floor above,
+  # which is the thing that puts the model on the argv). A reviewer that needs NO
+  # write capability does not depend on that floor holding, which is strictly
+  # better than one that does. So for THIS ONE ROLE the write tool is RETIRED
+  # rather than relied on: the worker says its file, and the harness writes it.
+  #
+  # THIS IS NOT A BUG FIX, AND THERE WAS NO OUTAGE. `create` exists and works on
+  # the model LCARS sends; the other read roles keep it; a real Research Stage
+  # drives on copilot first try. Nothing here is a reason to touch them, or the
+  # floor.
+  #
+  # A RECORD, NOT AN INFERENCE (ORCHESTRATION.md; S147, S156, S188 each paid fix
+  # rounds for the other choice). Reading the first `{` out of a model's reply
+  # would guess twice — which brace-run is the answer, and WHICH FILE it is, on a
+  # mode that may write either a verdict or a request to look further. So the
+  # worker FRAMES its answer and NAMES the file on the opening line, and
+  # `number-one-channel.py` reads exactly that frame. The boundaries and the
+  # filename are both the worker's own statements.
+  #
+  # BOTH PATHS STAY. An engine that still has a write tool — and claude, which has
+  # `Write` — is untouched: its file is used byte for byte and its reply is never
+  # read. Which path a round came by is RECORDED in `xo-channel.json`, because
+  # "the fix works" and "the file is now ignored" are indistinguishable otherwise.
+  #
+  # HERE and not in `evaluate.md`, which sits one line under the ceiling its own
+  # suite holds it to — and because this is a fact about how THIS round's output
+  # gets back to us, which is exactly what this block is for.
+  local channel_line channel_first="${wantfiles%% *}"
+  channel_line="
+## IF YOU HAVE NO FILE-WRITING TOOL, SAY YOUR FILE INSTEAD
+Write the file above with your file-writing tool if you have one. This role is
+deliberately given no file-writing tool on some engines, and a turn spent hunting
+for one is a turn wasted. So if you cannot write the file — or your write fails —
+deliver the SAME content in your reply, framed between these two lines:
+
+===LCARS-XO-BEGIN $channel_first===
+{ … the complete content, exactly as it would have gone in the file … }
+===LCARS-XO-END===
+
+Name the file on that first line — for this round it must be one of
+${wantfiles// /, } — so the
+harness writes the one YOU chose and never has to guess which it is holding. Put
+nothing but that file's content between the two lines; say whatever else you like
+above or below them. Frame ONE file, once. A turn that ends with neither the file
+nor a framed block counts as no output, exactly as before."
+  # … and it goes in the prompt beside the output instructions, below.
+
   # THE ROUND BUDGET, WHEN THERE IS ONE (S221). `xo.sh` exports its own
   # $XO_MAX_ROUNDS as $LCARS_XO_MAX_ROUNDS before it spawns an `evaluate`
   # worker, and this prints whatever that says. There is deliberately NO
@@ -16845,8 +16924,36 @@ COPIES; nothing you do can change the mission. Read them with your read tools.
 ${inventory:-  (the input directory is empty — say so, and ESCALATE)}
 
 ## Your output file
-$outfiles"
-  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" number-one "$outdir" "$extra"
+$outfiles
+$channel_line"
+  local nrc=0
+  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" number-one "$outdir" "$extra" \
+    || nrc=$?
+  # THE FILE, EITHER WAY — and the record of which way it came. Never allowed to
+  # fail the spawn: the channel reports, it does not judge.
+  number_one_claim_output "$outdir" "$wantfiles" || true
+  return "$nrc"
+}
+
+# Resolve Number One's output file from whichever channel it arrived on, and
+# RECORD the channel in $outdir/xo-channel.json. The worker's own file wins and is
+# never touched; a framed block in its reply is written only when no file came.
+# See number-one-channel.py for why the frame is a record and a scrape would not
+# be. Always returns 0 — a reporting channel must never stop a look.
+NUMBER_ONE_CHANNEL_PY="${LCARS_NUMBER_ONE_CHANNEL_PY:-$SKILL_DIR/number-one-channel.py}"
+
+number_one_claim_output() { # <outdir> <space-separated declared filenames>
+  local outdir="$1" names="$2"
+  [ -n "$names" ] || return 0
+  if [ ! -f "$NUMBER_ONE_CHANNEL_PY" ]; then
+    printf '  ⚠ the verdict channel (%s) is missing — reinstall LCARS (./install.sh).\n' \
+      "$NUMBER_ONE_CHANNEL_PY" >&2
+    return 0
+  fi
+  # shellcheck disable=SC2086  # $names is a deliberate word list
+  "${LCARS_PYTHON_BIN:-python3}" "$NUMBER_ONE_CHANNEL_PY" \
+    "$outdir/.worker.out" "$outdir" $names 2>/dev/null || true
+  return 0
 }
 
 # === Bounded fan-out (the ONE shared concurrency helper) ====================

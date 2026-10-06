@@ -2617,12 +2617,25 @@ cmd_answer() {
   # harness targets (3.2, the one macOS ships) mis-parses a here-document nested
   # in a command substitution, and the failure is a syntax error hundreds of
   # lines away from the cause. Writing the script out first is the cheap cure.
+  # S250 — THE FILE MAY HAVE ARRIVED BY EITHER CHANNEL. `run.sh` has already
+  # resolved it (the worker's own file if it wrote one, otherwise the block it
+  # framed in its reply) and recorded which; this publishes that to the journal so
+  # the captain's report says it, and hands the reader the sentence to use when
+  # nothing came at all.
+  xo_journal_channel "$dir" "$out" 0
+  local chan_why=""
+  [ -s "$out/xo-channel.json" ] && chan_why="$(json_field "$out/xo-channel.json" why)"
   local verdict="$out/xo-answer.json" report reader="$work/read-verdict.py"
   cat >"$reader" <<'XO_PY'
 import json, os, re, sys
 
 path = os.environ.get("LCARS_XO_VERDICT", "")
 indir = os.environ.get("LCARS_XO_INPUT", "")
+# S250 — WHAT THE CHANNEL SAID, when there is no file to read. "no verdict file
+# was written" named the symptom and never the cause; the verdict channel knows
+# whether the worker said nothing at all, framed something that was not JSON, or
+# framed a file this round may not write, and that sentence belongs here.
+channel = os.environ.get("LCARS_XO_CHANNEL_WHY", "").strip()
 
 def bad(why):
     print("MALFORMED\t" + why)
@@ -2632,7 +2645,7 @@ try:
     with open(path) as fh:
         raw = fh.read()
 except Exception:
-    bad("no verdict file was written")
+    bad(channel or "no verdict file was written")
 
 # A worker that wraps its JSON in a fenced block has still answered; unwrap the
 # ONE outermost object rather than refuse over punctuation. Anything else is a
@@ -2717,6 +2730,7 @@ print("RATIONALE\t" + rationale)
 print("RECOMMENDATION\t" + recommendation)
 XO_PY
   report="$(LCARS_XO_VERDICT="$verdict" LCARS_XO_INPUT="$input" \
+            LCARS_XO_CHANNEL_WHY="$chan_why" \
             "${LCARS_PYTHON_BIN:-python3}" "$reader" 2>/dev/null)" || report=""
 
   local kind="" answer_text="" rationale="" recommendation="" why="" cite_file="" cite_quote=""
@@ -3632,6 +3646,7 @@ xo_prelaunch_round() { # <mission-dir> <xodir> <input-dir> <work> <engine>
   wait "$XO_SPIN_PID" 2>/dev/null || true
   XO_SPIN_PID=""
   xo_keep_notes "$dir" "$xodir" "$out" 0
+  xo_journal_channel "$dir" "$out" 0
   if [ -s "$out/xo-actions.json" ]; then
     xo_serve_write "$dir" "$xodir" "$out/xo-actions.json" "the worker, before the launch"
     XO_PRELAUNCH_ACTS="$out/xo-actions.json"
@@ -4019,6 +4034,37 @@ PY
 # a heading naming the round. APPENDS, never replaces: the whole value is the
 # accumulation, and a round-3 worker that could only read round 2 would lose the
 # thread exactly where it starts to matter.
+# WHICH CHANNEL THE WORKER'S FILE CAME BY (S250) — into the journal, so the
+# captain's own report says it and nobody has to read a scratch directory to find
+# out. `run.sh` wrote the record beside the file; this only publishes it.
+#
+# WHY IT IS WORTH A LINE ON HIS REPORT. A worker that was given no file-writing
+# tool and a worker whose file we have stopped reading look IDENTICAL from the
+# outside, and
+# the second is a silent, total failure of the look. One word — `stdout` or
+# `worker-file` — tells them apart at a glance. An unreachable channel (`none`)
+# carries the SENTENCE naming what was missing, which is the thing the old "no
+# verdict file was written" never said.
+xo_journal_channel() { # <mission-dir> <round-outdir> <round>
+  local dir="$1" out="$2" round="$3" f="$2/xo-channel.json" via file why
+  [ -s "$f" ] || return 0
+  via="$(json_field "$f" via)"
+  file="$(json_field "$f" file)"
+  why="$(json_field "$f" why)"
+  # `detail` is the line the report RENDERS; `via` and `file` are the fields a
+  # reader of the journal (or a later guard) reads. Both, because a sentence
+  # nobody can grep and a token nobody can read are each half a record.
+  local detail
+  case "$via" in
+    stdout)      detail="$file arrived in Number One's reply, framed, and LCARS wrote the file — this reviewer is given no file-writing tool" ;;
+    worker-file) detail="Number One wrote $file itself" ;;
+    *)           detail="${why:-nothing usable came back from Number One this round}" ;;
+  esac
+  journal "$dir" verdict-channel "$(printf '"round": %s, "via": %s, "file": %s, "detail": %s' \
+    "$round" "$(jstr "$via")" "$(jstr "$file")" "$(jstr "$detail")")"
+  return 0
+}
+
 xo_keep_notes() { # <mission-dir> <xodir> <round-outdir> <round>
   local dir="$1" xodir="$2" out="$3" round="$4"
   [ -s "$out/xo-notes.md" ] || return 0
@@ -5133,6 +5179,7 @@ $shots"
     # THE NOTEBOOK (S246) — kept on EVERY round, including the one that decided,
     # because the last round's reasoning is part of the record of the look.
     xo_keep_notes "$dir" "$xodir" "$out" "$round"
+    xo_journal_channel "$dir" "$out" "$round"
 
     if [ -s "$out/xo-verdict.json" ]; then
       verdict="$out/xo-verdict.json"
@@ -6103,6 +6150,8 @@ $shots"
   XO_SPIN_PID=$!
   wait "$XO_SPIN_PID" 2>/dev/null || true
   XO_SPIN_PID=""
+  # S250 — by which channel the re-check's one file arrived (see xo_journal_channel).
+  xo_journal_channel "$dir" "$out" 0
 
   xo_stop_launch
   rm -f "$dir/xo.pid"; trap - TERM INT

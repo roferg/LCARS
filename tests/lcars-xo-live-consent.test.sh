@@ -706,8 +706,13 @@ check "6h. the number-one role is still Read,Grep,Glob,Write on claude" \
   'grep -q "number-one)    printf .Read,Grep,Glob,Write." "$REPO_ROOT/skills/lcars-run/worker-adapter.sh"'
 check "6i. and Edit,Bash,NotebookEdit,WebSearch,WebFetch are still DENIED to it" \
   'grep -q "number-one)    printf .Edit,Bash,NotebookEdit,WebSearch,WebFetch." "$REPO_ROOT/skills/lcars-run/worker-adapter.sh"'
-check "6j. on copilot it is still view,grep,glob,create — no shell" \
-  'grep -q "number-one)    printf .view,grep,glob,create." "$REPO_ROOT/skills/lcars-run/worker-adapter.sh"'
+# S250 — `grep` is spelled `rg` now (both names resolve to the same search tool,
+# measured on copilot 1.0.92), and `create` is GONE from THIS role rather than
+# renamed: it needs no write tool, because it says its verdict in its reply and the
+# harness writes the file. `create` itself still works and the other read roles
+# keep it. What this check has always been for is unchanged — NO SHELL.
+check "6j. on copilot it is view,rg,glob — no shell, and no write tool either" \
+  'grep -q "number-one)    printf .view,rg,glob." "$REPO_ROOT/skills/lcars-run/worker-adapter.sh"'
 
 # ===========================================================================
 # 7. THE MUTATION — the consent gate is shown to be the thing that refuses

@@ -83,20 +83,75 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
       esac
       ;;
     copilot)
-      # Copilot's registered tool names (verified live against copilot v1.0.60).
+      # Copilot's registered tool names. MEASURED LIVE on 2026-10-05 against
+      # /opt/homebrew/bin/copilot, which self-reports 1.0.92 (it auto-updates in
+      # place, so the Caskroom path can still read 1.0.89 — trust `--version`).
+      #
+      # HOW TO MEASURE THIS WITHOUT FOOLING YOURSELF, because the first attempt
+      # at this comment did: on a dev machine `command -v copilot` can resolve to
+      # VS Code's shim, which re-invokes `copilot` BACK OFF $PATH. Measured — the
+      # shim landed in a fake that was first on $PATH. So call the real binary BY
+      # ABSOLUTE PATH, and keep a counting fake first on $PATH that must stay at
+      # zero. It stayed at zero for all four calls below.
+      #
+      # THE TOOL SET IS MODEL-DEPENDENT. That is the fact to carry forward, and it
+      # is what makes this easy to get wrong: the SAME `--available-tools` list
+      # resolves to a different surface depending on whether `--model` was sent.
+      # Every other flag byte-identical to what adapter_spawn actually sends:
+      #
+      #   view,grep,glob,create  with NO --model
+      #       → "Unable to create `nomodel.txt`: no file-writing tool is
+      #          available", and NO FILE on disk.
+      #   the same list  WITH --model claude-opus-4.8
+      #       → "Created `withmodel.txt` containing `OK`. I used the **create**
+      #          tool."
+      #   view,grep  WITH a model
+      #       → found the planted string: "I used the **grep** tool (ripgrep-based
+      #          content search)".
+      #   view,rg,glob,create  WITH a model
+      #       → searched AND wrote, first try.
+      #
+      # So `create` EXISTS and `grep` EXISTS — on a model that offers them. There
+      # is no missing tool here, and THERE WAS NO OUTAGE: separately, a tester drove
+      # a real Research Stage on copilot twice and it worked first try both times,
+      # writing its own artifacts.
+      #
+      # WHICH IS WHY S194's WRITE-TOOL FLOOR (run.sh) IS EXACTLY RIGHT, and the
+      # measurement it was built on ("no --model → NO FILE") stands. The mechanism
+      # is the MISSING MODEL, not a renamed tool. adapter_argv below sends
+      # `--model` only when one is configured, and the floor is what configures
+      # it: `run.sh resolve-stage-model numberOne` on copilot prints
+      # claude-opus-4.8. Do not read this comment as a reason to touch that floor.
+      #
+      # `rg` BELOW IS COSMETIC. It is the modern name for the search tool, and
+      # both names resolve to the same thing (measured above, each on its own
+      # call), so no role gains or loses a capability by the rename.
+      #
+      # NOT MEASURED HERE, so not claimed: the full set of names copilot registers,
+      # and how it behaves for any model other than claude-opus-4.8 and the
+      # default. If you need either, measure it the way described above.
+      #
+      # `number-one` ASKS FOR NO WRITE TOOL AT ALL (S250) — and that is a design
+      # choice, not a workaround. The role's whole output is one file, and a
+      # reviewer that needs no write capability does not depend on the floor
+      # holding at all. It says its verdict in its reply, between delimiters it is
+      # asked for by name, and the HARNESS writes the file (run.sh
+      # `number_one_claim_output` + number-one-channel.py). The other read roles
+      # keep `create`, and `create` works.
+      #
       # Role semantics mirror the claude column above:
-      #   read   → view (read a file) + grep,glob (search) + create (NEW files only)
+      #   read   → view (read a file) + rg,glob (search) + create (NEW files only)
       #   web    → + web_fetch, web_search
       #   write  → + edit (mutate existing files) + bash (shell)
       # NB: a read role gets `create` but NOT `edit`/`bash`, so it can write its
       # answer artifact yet cannot overwrite/edit existing repo files — the repo
       # tree stays protected in read roles, mirroring claude's read fence.
       case "$role" in
-        repo-read)     printf 'view,grep,glob,create' ;;
-        repo-read-web) printf 'view,grep,glob,create,web_fetch,web_search' ;;
-        repo-write)    printf 'view,grep,glob,create,edit,bash' ;;
-        launch)        printf 'view,grep,glob,create' ;;
-        number-one)    printf 'view,grep,glob,create' ;;
+        repo-read)     printf 'view,rg,glob,create' ;;
+        repo-read-web) printf 'view,rg,glob,create,web_fetch,web_search' ;;
+        repo-write)    printf 'view,rg,glob,create,edit,bash' ;;
+        launch)        printf 'view,rg,glob,create' ;;
+        number-one)    printf 'view,rg,glob' ;;
         default)       printf 'view' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -249,7 +304,10 @@ adapter_argv() { # cli role outdir
       [ -n "${LCARS_WORKER_SESSION_ID:-}" ] && printf '%s\n' '--session-id' "$LCARS_WORKER_SESSION_ID"
       ;;
     copilot)
-      # Copilot cold-worker call (verified live against copilot v1.0.60):
+      # Copilot cold-worker call (the FLAGS were verified live against copilot
+      # v1.0.60; every flag on this line still worked on 1.0.92 in the 2026-10-05
+      # measurements. The TOOL NAMES are a separate claim, dated in adapter_tools
+      # above, together with the model-dependence that makes them worth dating):
       #   -p                       prompt-position placeholder (spawn injects it)
       #   -s                       silent; stdout is debug-only, not parsed
       #   --available-tools <list> the fenced surface (separate token, like claude)
@@ -281,7 +339,7 @@ adapter_argv() { # cli role outdir
       # no degraded mode: the worker never starts, writes no artifact, and the
       # Stage reports a downstream symptom ("produced no questions.txt after 3
       # attempts") that names neither the flag nor the path. That cost a whole
-      # drive. (This flag WAS file-tolerant on copilot 1.0.60, which the argv
+      # drive. (This flag WAS file-tolerant on copilot v1.0.60, which the argv
       # comment above was verified against — a version-drift regression, and
       # invisible on claude, which ignores input dirs entirely.)
       #

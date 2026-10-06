@@ -144,10 +144,21 @@ chmod +x "$dS/bin/claude"
 LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS= bash "$UNFENCED" argv claude repo-read "$dS" >"$TMPROOT/unfenced.argv" 2>/dev/null
 check "1i. (setup) the mutated adapter really does emit an argv with NO deny list" \
   "[ -s \"\$TMPROOT/unfenced.argv\" ] && ! grep -qxF -- '--disallowedTools' \"\$TMPROOT/unfenced.argv\""
-LCARS_WORKER_BIN="$dS/bin/claude" bash "$UNFENCED" spawn claude repo-read "$dS/out" "p" >/dev/null 2>&1
+# 1j WAS A FALSE PASS (found in fix round 1 of S250) and this is the cure. The
+# mutated adapter sits in $TMPROOT, so its $LCARS_WORKER_GUARD_LIB resolved to a
+# path that does not exist and the spawn died at the LATER "worker guard is
+# missing" check — a different refusal entirely. With 1j asserting only `rc != 0`,
+# the deny-list fence could be deleted outright and 1j would still pass. So: the
+# copy is handed the REAL guard lib, and the refusal must NAME ITSELF in stderr.
+UNFENCED_ERR="$TMPROOT/unfenced.err"
+LCARS_WORKER_GUARD_LIB="$REPO_ROOT/skills/lcars-init/worker-guard.sh" \
+  LCARS_WORKER_BIN="$dS/bin/claude" \
+  bash "$UNFENCED" spawn claude repo-read "$dS/out" "p" >/dev/null 2>"$UNFENCED_ERR"
 rc_unfenced=$?
 check "1j. a claude spawn whose argv lacks --disallowedTools FAILS THE SPAWN" \
   "[ \"\$rc_unfenced\" != '0' ]"
+check "1j2. …and it is THAT fence that refuses it — the error names the missing deny list" \
+  "grep -q 'carries no --disallowedTools' \"\$UNFENCED_ERR\""
 check "1k. …and the CLI was never run (refused before spend, not after)" \
   "[ ! -f \"\$dS/ran.log\" ]"
 # copilot is exempt for a REASON: --available-tools IS a restriction there and the
@@ -194,8 +205,15 @@ $TMPROOT/mx/i2"; do
 }
 copilot_matrix "$PRE168"  repo-read repo-read-web repo-write default >"$TMPROOT/mx/pre.txt"
 copilot_matrix "$ADAPTER" repo-read repo-read-web repo-write default >"$TMPROOT/mx/post.txt"
-check "2b. copilot argv for repo-read/-web/-write/default is BYTE-IDENTICAL across the whole input-dirs matrix" \
-  "diff -q \"\$TMPROOT/mx/pre.txt\" \"\$TMPROOT/mx/post.txt\" >/dev/null"
+# S250 — THE FLAGS, NOT THE TOOL NAMES. This was a plain `diff -q` against main,
+# and S250 renames one copilot tool in EVERY role: the search tool's modern name
+# is `rg`. Both names resolve to the same ripgrep-based tool (measured live against
+# copilot 1.0.92), so no role gains or loses a capability by it. What section 2 is
+# for is unchanged and is what is checked: the FLAGS, their ORDER and the whole
+# input-dirs matrix are byte-identical to main, and the only lines that may differ
+# are tool lists.
+check "2b. copilot argv for repo-read/-web/-write/default: every flag and its order BYTE-IDENTICAL to main across the whole input-dirs matrix — only the tool NAMES moved" \
+  "[ -z \"\$(diff \"\$TMPROOT/mx/pre.txt\" \"\$TMPROOT/mx/post.txt\" | grep -E '^[<>]' | grep -vE '^[<>] view,(grep|rg),glob')\" ]"
 check "2c. (guard) the matrix fixture is not empty" \
   "[ \"\$(wc -l <\"\$TMPROOT/mx/pre.txt\" | tr -d ' ')\" -gt 100 ]"
 # The ONE intended copilot change: the launch role trades its shell for `create`,
@@ -203,9 +221,9 @@ check "2c. (guard) the matrix fixture is not empty" \
 copilot_matrix "$PRE168"  launch >"$TMPROOT/mx/pre-launch.txt"
 copilot_matrix "$ADAPTER" launch >"$TMPROOT/mx/post-launch.txt"
 check "2d. copilot launch is the ONE intended change: every differing line is the tool list" \
-  "[ -z \"\$(diff \"\$TMPROOT/mx/pre-launch.txt\" \"\$TMPROOT/mx/post-launch.txt\" | grep -E '^[<>]' | grep -vE 'view,grep,glob,(bash|create)')\" ]"
-check "2e. …and the new copilot launch list is exactly view,grep,glob,create" \
-  "[ \"\$(bash \"\$ADAPTER\" argv copilot launch \"\$TMPROOT/mx/o\" 2>/dev/null | sed -n '4p')\" = 'view,grep,glob,create' ]"
+  "[ -z \"\$(diff \"\$TMPROOT/mx/pre-launch.txt\" \"\$TMPROOT/mx/post-launch.txt\" | grep -E '^[<>]' | grep -vE 'view,(grep|rg),glob,(bash|create)')\" ]"
+check "2e. …and the copilot launch list is exactly view,rg,glob,create (S250: rg)" \
+  "[ \"\$(bash \"\$ADAPTER\" argv copilot launch \"\$TMPROOT/mx/o\" 2>/dev/null | sed -n '4p')\" = 'view,rg,glob,create' ]"
 bash "$ADAPTER" argv copilot repo-read "$TMPROOT/mx/o" >"$TMPROOT/cop.argv" 2>/dev/null
 check "2f. copilot argv still carries NO --disallowedTools (the CLI has no such flag)" \
   "[ -s \"\$TMPROOT/cop.argv\" ] && ! grep -qxF -- '--disallowedTools' \"\$TMPROOT/cop.argv\""

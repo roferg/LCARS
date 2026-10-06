@@ -874,8 +874,12 @@ check "B9k. copilot was granted --add-dir on that input dir" \
 # The snapshot is a copy of a READ-ONLY tree; leave it writable so the suite's
 # own `rm -rf "$TMPROOT"` on the way out does not trip over it.
 chmod -R u+w "$INSPECT/indir" 2>/dev/null || true
-check "B9k. the worker's tool list is the read+author one (no bash, no edit)" \
-  "grep -qx 'view,grep,glob,create' '$INSPECT/argv.txt'"
+# S250 — the READ one. The search tool is spelled `rg` (same tool as `grep`; both
+# names resolve), and this role no longer asks for a write tool at all: it frames
+# its verdict in its reply and the harness writes the file, so it does not depend
+# on one existing. No bash, no edit, and now no create either.
+check "B9k. the worker's tool list is the read-only one (no bash, no edit, no write)" \
+  "grep -qx 'view,rg,glob' '$INSPECT/argv.txt'"
 check "B9k. the mission's OWN prd.md is untouched" \
   "grep -q 'assigned work only' '$m8k/prd.md'"
 

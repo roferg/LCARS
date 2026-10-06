@@ -496,8 +496,61 @@ check "4f. CONTROL — that comparison can FAIL (one word changed in a refusal)"
      '$TMPROOT/xo-run-weak.py' >'$TMPROOT/xo-run-weak2.py' && \
    $PY '$TMPROOT/fence-src.py' '$TMPROOT/xo-run-weak2.py' >'$TMPROOT/fence-weak.txt' && \
    ! diff -q '$TMPROOT/fence-now.txt' '$TMPROOT/fence-weak.txt' >/dev/null"
-check "4g. worker-adapter.sh and ownership.sh are untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-run/worker-adapter.sh skills/lcars-run/ownership.sh"
+# S250 — THE FENCE, NOT THE FILE: the same narrowing 4f already got, for the same
+# reason and with the same care. This pinned the WHOLE of worker-adapter.sh, and
+# S250 touches two copilot TOOL NAMES in it — the search tool is spelled `rg` (same
+# tool as `grep`; both names resolve, measured on copilot 1.0.92), and the
+# `number-one` role drops `create` so it depends on no write tool at all, saying its
+# verdict in its reply instead. `create` still exists and still works; the other
+# read roles keep it. A whole-file pin cannot tell that apart from someone weakening the
+# fence, so what gets pinned is THE FENCE: every role's claude DENY list, list for
+# list, and the refusal that stops a claude spawn whose argv carries none. Those
+# are the lines that take a tool away; `adapter_tools` only pre-approves.
+# D2 (fix round 1) — THE SPAWN REFUSAL, DRIVEN, NOT GREPPED. 4g's first cut
+# asserted the refusal by looking for its ERROR STRING in the source
+# (`grep -q 'worker whose argv carries no --disallowedTools'`). That is prose, not
+# behaviour: with the whole refusal BLOCK deleted the string survives in the
+# comment above it, so the fence could be removed and this suite still read all
+# green. Measured — that is exactly what happened.
+#
+# So the refusal is DRIVEN. A copy of the real adapter is mutated so its claude
+# argv emits no `--disallowedTools`, and the spawn is asked for. Two things are
+# asserted, and the second is what makes it a fence rather than a failure: the
+# spawn is REFUSED *by that check, naming it*, and the CLI stub is NEVER RUN.
+#
+# The copy is given the real $LCARS_WORKER_GUARD_LIB. Without it a mutated adapter
+# in a temp dir dies at the LATER "worker guard is missing" check instead, which
+# fails the spawn for an unrelated reason and would pass just as happily with the
+# fence deleted (worker-fence.test.sh 1j, now cured the same way).
+UNF="$TMPROOT/unfenced"; mkdir -p "$UNF/bin"
+sed "s/'--allowedTools' \"\$tools\" '--disallowedTools' \"\$deny\" \\\\/'--allowedTools' \"\$tools\" \\\\/" \
+  "$REPO_ROOT/skills/lcars-run/worker-adapter.sh" >"$UNF/adapter.sh"
+printf '#!/usr/bin/env bash\nprintf RAN >>"%s/ran.log"\nexit 0\n' "$UNF" >"$UNF/bin/claude"
+chmod +x "$UNF/bin/claude"
+LCARS_WORKER_GUARD_LIB="$REPO_ROOT/skills/lcars-init/worker-guard.sh" \
+  LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS= \
+  bash "$UNF/adapter.sh" argv claude number-one "$UNF/o" >"$UNF/argv.txt" 2>/dev/null
+check "4g0. (setup) the mutated adapter really does emit a claude argv with NO deny list" \
+  "[ -s '$UNF/argv.txt' ] && ! grep -qxF -- '--disallowedTools' '$UNF/argv.txt'"
+DENY_ERR="$UNF/err.txt"
+if LCARS_WORKER_GUARD_LIB="$REPO_ROOT/skills/lcars-init/worker-guard.sh" \
+   LCARS_WORKER_BIN="$UNF/bin/claude" LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS= \
+   bash "$UNF/adapter.sh" spawn claude number-one "$UNF/out" "p" \
+     >/dev/null 2>"$DENY_ERR"; then DENY_REFUSED=SPAWNED; else DENY_REFUSED=REFUSED; fi
+# …and refused BY THE FENCE, named: any other non-zero exit would read as a pass.
+grep -q 'carries no --disallowedTools' "$DENY_ERR" || DENY_REFUSED="REFUSED-BUT-NOT-BY-THE-FENCE: $(head -1 "$DENY_ERR")"
+printf '    the unfenced claude spawn: %s\n' "$DENY_REFUSED"
+check "4g. ownership.sh is untouched; worker-adapter still DENIES list-for-list, and REFUSES an unfenced claude spawn before it spends" \
+  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-run/ownership.sh && \
+   [ \"\$(for r in repo-read repo-read-web repo-write launch number-one default; do \
+            bash '$REPO_ROOT/skills/lcars-run/worker-adapter.sh' deny claude \$r; echo; \
+          done)\" = 'Edit,Bash,NotebookEdit,WebSearch,WebFetch
+Edit,Bash,NotebookEdit
+NotebookEdit
+Edit,Bash,NotebookEdit
+Edit,Bash,NotebookEdit,WebSearch,WebFetch
+Write,Edit,Bash,NotebookEdit,WebSearch,WebFetch' ] && \
+   [ "$DENY_REFUSED" = REFUSED ] && [ ! -f "$UNF/ran.log" ]"
 check "4h. no worker CLI was invoked anywhere in this suite" \
   "[ ! -s '$SPEND_LOG' ]"
 

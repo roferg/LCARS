@@ -176,9 +176,19 @@ cop_tools() { # role
     | awk '/^--available-tools$/{getline; print; exit}'
 }
 
-# --- C1. repo-read fences to view,grep,glob,create (no bash/web) ---------------
-check "C1a. copilot repo-read → view,grep,glob,create" \
-  "[ \"\$(cop_tools repo-read)\" = 'view,grep,glob,create' ]"
+# --- C1. repo-read fences to view,rg,glob,create (no bash/web) -----------------
+# S250 — `grep` is spelled `rg` now. Both names resolve to the same ripgrep-based
+# search tool (measured live against copilot 1.0.92, each on its own call), so the
+# rename costs and buys nothing; these roles can search either way. `create` STAYS
+# and it WORKS — on the model LCARS sends. copilot's tool set is MODEL-DEPENDENT
+# (no `--model` means no write tool at all), which is exactly what S194's
+# write-tool floor in run.sh exists to guarantee. See `adapter_tools` for the
+# measurements. This suite states the table as it is.
+check "C1a. copilot repo-read → view,rg,glob,create" \
+  "[ \"\$(cop_tools repo-read)\" = 'view,rg,glob,create' ]"
+check "C1a2. copilot repo-read can SEARCH — `rg`, and no tool called `grep`" \
+  "[ -n \"\$(cop_tools repo-read | tr ',' '\n' | grep -x rg)\" ] && \
+   [ -z \"\$(cop_tools repo-read | tr ',' '\n' | grep -x grep)\" ]"
 check "C1b. copilot repo-read has NO bash in the tool list" \
   "[ -z \"\$(cop_tools repo-read | grep -o bash)\" ]"
 check "C1c. copilot repo-read has NO web_fetch/web_search in the tool list" \
@@ -186,9 +196,9 @@ check "C1c. copilot repo-read has NO web_fetch/web_search in the tool list" \
 
 # --- C2. per-role tool fences -------------------------------------------------
 check "C2a. copilot repo-read-web → +web_fetch,web_search" \
-  "[ \"\$(cop_tools repo-read-web)\" = 'view,grep,glob,create,web_fetch,web_search' ]"
+  "[ \"\$(cop_tools repo-read-web)\" = 'view,rg,glob,create,web_fetch,web_search' ]"
 check "C2b. copilot repo-write → +edit,bash" \
-  "[ \"\$(cop_tools repo-write)\" = 'view,grep,glob,create,edit,bash' ]"
+  "[ \"\$(cop_tools repo-write)\" = 'view,rg,glob,create,edit,bash' ]"
 check "C2c. copilot default → view" \
   "[ \"\$(cop_tools default)\" = 'view' ]"
 
@@ -229,7 +239,7 @@ A5="$(LCARS_WORKER_MODEL= bash "$ADAPTER" argv copilot repo-read "$d1")"
 EXPECT_5="-p
 -s
 --available-tools
-view,grep,glob,create
+view,rg,glob,create
 --allow-all-tools
 --no-ask-user
 --disable-builtin-mcps
@@ -254,7 +264,7 @@ EXPECT_C7='-p
 THE PROMPT BODY
 -s
 --available-tools
-view,grep,glob,create
+view,rg,glob,create
 --allow-all-tools
 --no-ask-user
 --disable-builtin-mcps
@@ -365,8 +375,8 @@ check "L1. claude launch → Read,Grep,Glob,Write (inspect + author, no shell)" 
   "[ \"\$(tool_line launch)\" = 'Read,Grep,Glob,Write' ]"
 check "L2. claude launch is DENIED the shell (and Edit) by --disallowedTools" \
   "[ \"\$(bash \"\$ADAPTER\" deny claude launch)\" = 'Edit,Bash,NotebookEdit' ]"
-check "L3. copilot launch → view,grep,glob,create (view + author, no shell)" \
-  "[ \"\$(cop_tools launch)\" = 'view,grep,glob,create' ]"
+check "L3. copilot launch → view,rg,glob,create (view + author, no shell)" \
+  "[ \"\$(cop_tools launch)\" = 'view,rg,glob,create' ]"
 check "L4. copilot launch tool list has NO bash and NO edit" \
   "[ -z \"\$(cop_tools launch | grep -oE 'bash|edit')\" ]"
 
@@ -385,10 +395,15 @@ check "L4. copilot launch tool list has NO bash and NO edit" \
 #             `--dangerously-skip-permissions` waives the rest, so the ONLY flag
 #             that takes Bash away is `--disallowedTools` — and adapter_spawn
 #             refuses a non-copilot argv that carries none.
-#   • copilot view,grep,glob,create — `--available-tools` IS a restriction there,
-#             so bash/edit are absent by not being named — plus `--add-dir` on
-#             the outdir (the answer channel) and one more per input dir (the
-#             read-only INPUT copies xo.sh gathers).
+#   • copilot view,rg,glob — `--available-tools` IS a restriction there, so
+#             bash/edit are absent by not being named — plus `--add-dir` on the
+#             outdir and one more per input dir (the read-only INPUT copies xo.sh
+#             gathers). S250: THIS ONE ROLE asks for no write tool at all. Not
+#             because `create` stopped working (it did not — the other read roles
+#             still use it), but because a reviewer whose only output is one file
+#             need not depend on a write tool existing at all. It says its verdict
+#             in its reply, framed between delimiters run.sh asks for by name, and
+#             the HARNESS writes the file (number-one-channel.py).
 # ============================================================================
 echo
 echo "worker-adapter — number-one role (session 202)"
@@ -417,8 +432,10 @@ check "N5. …and denies the network too (Number One reads the record, never the
   "[ \"\$(bash \"\$ADAPTER\" deny claude number-one)\" = 'Edit,Bash,NotebookEdit,WebSearch,WebFetch' ]"
 
 # --- copilot arm ------------------------------------------------------------
-check "N6. copilot number-one → view,grep,glob,create (view + author its one file)" \
-  "[ \"\$(cop_tools number-one)\" = 'view,grep,glob,create' ]"
+check "N6. copilot number-one → view,rg,glob (it READS; the harness writes)" \
+  "[ \"\$(cop_tools number-one)\" = 'view,rg,glob' ]"
+check "N6b. …and it asks for NO write tool at all — not even the `create` it could have" \
+  "[ -z \"\$(cop_tools number-one | tr ',' '\n' | grep -xE 'create|write|bash')\" ]"
 check "N7. copilot number-one tool list has NO bash and NO edit" \
   "[ -z \"\$(cop_tools number-one | tr ',' '\n' | grep -xE 'bash|edit')\" ]"
 NO_COP="$(bash "$ADAPTER" argv copilot number-one "$nd")"

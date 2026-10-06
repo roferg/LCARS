@@ -356,8 +356,8 @@ for eng in claude copilot; do
     check "2a3. claude launch argv carries the --disallowedTools flag itself" \
       "grep -qxF -- '--disallowedTools' \"$argvf\""
   else
-    check "2a. copilot launch argv fences to view,grep,glob,create" \
-      "grep -qxF 'view,grep,glob,create' \"$argvf\""
+    check "2a. copilot launch argv fences to view,rg,glob,create (S250: rg)" \
+      "grep -qxF 'view,rg,glob,create' \"$argvf\""
   fi
   # The checkout is GRANTED to the inspector now that it has no shell to reach it.
   check "2c. $eng launch argv grants the disposable checkout for reading" \

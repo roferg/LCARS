@@ -507,8 +507,8 @@ check "D8b. the COPILOT binary was the one that ran" \
   "printf '%s' \"\$ARGV10\" | grep -q '^=== copilot '"
 check "D8b. …and the CLAUDE binary was never invoked" \
   "! printf '%s' \"\$ARGV10\" | grep -q '^=== claude '"
-check "D8b. the argv is the COPILOT shape (--available-tools view,grep,glob,create)" \
-  "printf '%s' \"\$ARGV10\" | grep -q -- '--available-tools view,grep,glob,create'"
+check "D8b. the argv is the COPILOT shape (--available-tools view,rg,glob)" \
+  "printf '%s' \"\$ARGV10\" | grep -q -- '--available-tools view,rg,glob'"
 check "D8b. …and carries NONE of the claude shape (--disallowedTools)" \
   "! printf '%s' \"\$ARGV10\" | grep -q -- '--disallowedTools'"
 check "D8b. the MISSION's provenance is byte-identical after the spin" \
