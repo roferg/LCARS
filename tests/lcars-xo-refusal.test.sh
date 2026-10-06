@@ -554,6 +554,141 @@ Write,Edit,Bash,NotebookEdit,WebSearch,WebFetch' ] && \
 check "4h. no worker CLI was invoked anywhere in this suite" \
   "[ ! -s '$SPEND_LOG' ]"
 
+# ===========================================================================
+printf '\n── 5. S250 FIX ROUND 1 — D2 the refusals are visible; D3 "Observed live" says where ──\n'
+# ===========================================================================
+#
+# D2, MEASURED ON THE S250 DRIVE. Six rounds asked for 27 steps; 17 ran. The 10
+# refusals each carried an excellent plain-English reason, recorded ONLY in
+# `actions-kept-N.json`. The console counted survivors ("… 0 declined at
+# execution"); ROUND 3, whose every step was refused, printed NOTHING between
+# "round 3 — looking…" and "round 4 — looking…"; and `report.md` said the word
+# "refused" zero times while four of its twelve untested rows were untested
+# because of one. The captain must be able to tell "it got better at finding and
+# filing" from "it got better at saying it could not check".
+#
+# D3. All three filed bug PRDs opened AC #1 with `Observed live:` when
+# `xo/live.json` did not exist and no live step had run. The opener is mandatory
+# (`autopilot.sh file-bug` refuses a PRD without it) so it stays — and the clause
+# after it now says WHERE, off the step readout's own `live` stamp.
+
+XORUNPY="$REPO_ROOT/skills/lcars-xo/xo-run.py"
+XOJOURNEYPY="$REPO_ROOT/skills/lcars-xo/xo-journey.py"
+R5="$TMPROOT/r5"; mkdir -p "$R5"
+
+# Round 3 of the drive, in the shapes the harness actually refused: a shell, an
+# absolute path, and a second shell. Not one of the three survives.
+cat >"$R5/actions-3.json" <<'JSON'
+{"actions": [
+  {"do": "run", "argv": ["sh", "-c", "python3 -m relay render"], "cwd": "<worktree>",
+   "evidence": "20-corrupt.txt", "for": "prd-4"},
+  {"do": "run", "argv": ["python3", "-m", "relay", "render", "--out",
+                          "/no-such-dir-xo-98765/page.html"], "cwd": "<worktree>",
+   "evidence": "21-outside.txt", "for": "prd-4"},
+  {"do": "run", "argv": ["sh", "-c", "rm -rf requests"], "cwd": "<worktree>",
+   "evidence": "22-wipe.txt", "for": "prd-4"}
+]}
+JSON
+mkdir -p "$R5/m/xo"
+printf '{"source": ["the cli checklist"], "steps": [], "reachSteps": []}\n' >"$R5/m/xo/journey.json"
+"$PY" "$XORUNPY" actions --actions "$R5/actions-3.json" --out "$R5/m/xo/actions-kept-3.json" \
+  --mission-dir "$R5/m" --cap 12 >"$R5/actions.out" 2>&1
+check "5a. (rig) all three of round 3's steps really were refused" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if len(d.get(\"refused\") or [])==3 and not (d.get(\"reachSteps\") or []) else 1)" "$R5/m/xo/actions-kept-3.json"'
+
+"$PY" "$XOJOURNEYPY" reach-record --journey "$R5/m/xo/journey.json" \
+  --steps "$R5/m/xo/actions-kept-3.json" --round 3 >"$R5/record.out" 2>&1
+check "5b. a round whose EVERY step was refused still puts them on the journey record" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+r=d.get(\"refusedSteps\") or []
+sys.exit(0 if len(r)==3 and all(x.get(\"round\")==\"3\" and x.get(\"why\") for x in r) else 1)" "$R5/m/xo/journey.json"'
+check "5c. and reach-record SAYS how many it was refused" \
+  'grep -q "refused" "$R5/record.out"'
+
+score5() { # <out-dir> <journey.json or "">
+  mkdir -p "$1"
+  "$PY" "$SCOREPY" "$TMPROOT/worker.json" "$TMPROOT/criteria.json" \
+    "$1/verdict.json" "" "" "" "" "" "" "" "" "" "$2" "" "" "" \
+    >"$1/out.txt" 2>"$1/err.txt"
+}
+score5 "$R5/scored" "$R5/m/xo/journey.json"
+check "5d. the report has its own section for the steps it was not allowed to run" \
+  'grep -q "Steps I asked for and was not allowed to run" "$R5/scored/report.md"'
+check "5e. it counts them, and says the limit is MINE and not his build" \
+  '"$PY" -c "
+import sys
+s=open(sys.argv[1]).read().split(\"Steps I asked for and was not allowed to run\",1)[1][:900]
+sys.exit(0 if \"3 steps\" in s and \"gaps in my checking\" in s else 1)" "$R5/scored/report.md"'
+check "5f. and it gives the harness's own plain-English reason for each" \
+  '"$PY" -c "
+import sys
+s=open(sys.argv[1]).read().split(\"Steps I asked for and was not allowed to run\",1)[1][:1600]
+sys.exit(0 if \"a step has no shell\" in s and \"inside the sandbox\" in s else 1)" "$R5/scored/report.md"'
+check "5g. two refusals with the SAME reason are collapsed with a count, not repeated" \
+  '"$PY" -c "
+import sys
+s=open(sys.argv[1]).read().split(\"Steps I asked for and was not allowed to run\",1)[1][:1600]
+sys.exit(0 if \"**2 x \" in s and \"*(round 3, 3)*\" in s else 1)" "$R5/scored/report.md"'
+check "5h. CONTROL — a look that was refused NOTHING grows no such section" \
+  'score5 "$R5/clean" "" ; ! grep -q "Steps I asked for and was not allowed to run" "$R5/clean/report.md"'
+
+# ── THE CONSOLE HALF, run through xo.sh's OWN function, not a copy of it ─────
+awk '/^xo_say_refusals\(\)/,/^}$/' "$SCRIPT" >"$R5/say.sh"
+check "5i. (rig) the function was lifted out of xo.sh whole" \
+  'grep -q "xo_say_refusals()" "$R5/say.sh" && [ "$(tail -1 "$R5/say.sh")" = "}" ]'
+XO_PY="$PY" bash -c 'XO_PY="$1"; source "$2"; xo_say_refusals "$3" 3' \
+  _ "$PY" "$R5/say.sh" "$R5/m/xo/actions-kept-3.json" >"$R5/console.txt" 2>&1
+check "5j. the console says how many were refused BEFORE anything ran" \
+  'grep -q "round 3 asked for 3 step(s); 3 were refused before anything ran, 0 went ahead" "$R5/console.txt"'
+check "5k. and prints every reason, so round 3 is no longer silent" \
+  '[ "$(grep -c "REFUSED (run)" "$R5/console.txt")" = 3 ] && \
+   grep -q "a step has no shell" "$R5/console.txt"'
+printf '{"asked": 2, "cap": 12, "steps": [], "reachSteps": [{"do": "run"}, {"do": "read"}], "refused": [], "overflow": 0}\n' \
+  >"$R5/kept-clean.json"
+XO_PY="$PY" bash -c 'XO_PY="$1"; source "$2"; xo_say_refusals "$3" 4' \
+  _ "$PY" "$R5/say.sh" "$R5/kept-clean.json" >"$R5/console-clean.txt" 2>&1
+check "5l. CONTROL — a round with no refusals prints nothing at all" \
+  '[ ! -s "$R5/console-clean.txt" ]'
+check "5m. xo.sh records and says the refusals BEFORE the nothing-granted return" \
+  '"$PY" -c "
+import sys
+t=open(sys.argv[1]).read()
+body=t.split(\"xo_reach_actions() {\",1)[1].split(\"\n}\",1)[0]
+say=body.index(\"xo_say_refusals\")
+rec=body.index(\"reach-record --journey\")
+stop=body.index(\"xo_reach_count\")
+sys.exit(0 if say < rec < stop else 1)" "$SCRIPT"'
+
+# ── D3: THE OPENER KEEPS ITS WORD AND THE SENTENCE SAYS WHERE ───────────────
+S5="$TMPROOT/shots-live"; rm -rf "$S5"; mkdir -p "$S5"
+printf '$ relay publish\nImportError: attempted relative import\n' >"$S5/02-workflow-run.txt"
+printf 'PNG-ish bytes\n' >"$S5/shot-01.png"
+printf '{"do": "run", "key": "R1", "for": "prd-3", "checkedBy": "cli", "met": false}\n' \
+  >"$S5/02-workflow-run.json"
+plan_logs "$TMPROOT/out-local" "$S5" >/dev/null
+L_LOCAL="$(grep -l 'The criterion is .prd-3., written at' "$TMPROOT"/out-local/*.md 2>/dev/null | head -1)"
+check "5n. (rig) a PRD was written for the transcript-settled gap" '[ -n "$L_LOCAL" ]'
+check "5o. AC #1 still OPENS with the mandatory Observed live: line" \
+  'grep -q "^- Observed live:" "$L_LOCAL"'
+check "5p. and it now says the observation was LOCAL, not on a live host" \
+  'grep -q "^- Observed live: in the reviewer.s own detached worktree on one machine, NOT on a live host" "$L_LOCAL"'
+printf '{"do": "run", "key": "R1", "for": "prd-3", "checkedBy": "cli", "met": false,\n "live": {"host": "github.com", "owner": "roferg", "repo": "lcars-s235",\n          "consentedBy": "autopilot.json liveTargets"}}\n' \
+  >"$S5/02-workflow-run.json"
+plan_logs "$TMPROOT/out-live" "$S5" >/dev/null
+L_LIVE="$(grep -l 'The criterion is .prd-3., written at' "$TMPROOT"/out-live/*.md 2>/dev/null | head -1)"
+check "5q. CONTROL — a step that DID reach a real host says so, and names it" \
+  '[ -n "$L_LIVE" ] && \
+   grep -q "^- Observed live: on the real host github.com/roferg/lcars-s235 (consented in autopilot.json liveTargets)," "$L_LIVE"'
+check "5r. CONTROL — a gap whose evidence has no readout at all claims neither" \
+  'L_NONE="$(grep -l "The criterion is .prd-4., written at" "$TMPROOT"/out-live/*.md 2>/dev/null | head -1)" ; \
+   [ -n "$L_NONE" ] && grep -q "^- Observed live:" "$L_NONE" && \
+   ! grep -q "NOT on a live host" "$L_NONE" && ! grep -q "on the real host" "$L_NONE"'
+
 echo
 printf '=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

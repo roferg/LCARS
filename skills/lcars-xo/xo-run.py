@@ -146,6 +146,12 @@ MAX_ACTIONS = int(os.environ.get("LCARS_XO_MAX_ACTIONS") or 12)
 
 BROWSER_KINDS = ("click", "type", "gate", "press", "key", "goto", "scroll",
                  "shot", "screenshot", "wait", "hover", "select")
+# The two line prefixes `autopilot.sh workflow-run` prints, and the one place
+# this file names them. `  SKIP: ` is its notice that a step was NOT executed
+# (a packaged `uses:` action, a step with no `run:`, a shell it does not drive)
+# and that the step is UNPROVEN, not passed.
+WF_STEP = "STEP "
+WF_SKIP = "  SKIP: "
 REACH_KINDS = ("run", "workflow", "read")
 CHECKED_BY = {"run": "cli", "workflow": "workflow", "read": "test"}
 
@@ -1226,8 +1232,30 @@ def do_workflow(step, worktree, home, outdir, mission_dir):
     env["LCARS_AUTOPILOT_CWD"] = worktree
     rc, out, err, hung = run_cmd(argv, worktree, env, STEP_TIMEOUT)
     first = ""
+    # ── WHAT THE LOCAL RUNNER DID NOT RUN, WRITTEN DOWN (S250 fix round 1, D1)
+    #
+    # THE MEASURED DEFECT. `workflow-run` executes `run:` steps only; a packaged
+    # `uses:` action is printed as `SKIP: … It is UNPROVEN, not passed.` and the
+    # tail says `(1 run, 2 skipped)`. On the S250 live drive the SAME transcript
+    # settled two criteria about the same push: one row read UNTESTED because the
+    # look read that notice, and one read MET because it did not. The notice was
+    # therefore a fact nobody could enforce — it lived in prose only.
+    #
+    # So it is recorded here, as a FIELD, beside the exit code: the labels of the
+    # steps this run did not execute. `xo-score.py` reads it and refuses to let a
+    # local stand-in settle a row whose proof it skipped. Read the SAME way
+    # `firstFailingStep` has always been read — by the runner's own line prefixes,
+    # off its own output — not by interpreting anybody's English.
+    unproven, label = [], ""
     for line in (out or "").splitlines():
-        if line.startswith("FIRST FAILING STEP: "):
+        if line.startswith(WF_STEP) and ": " in line:
+            label = line.split(": ", 1)[1].strip()
+        elif line.startswith(WF_SKIP):
+            # EXACTLY the runner's own two-space notice. A step's OWN output is
+            # printed four spaces in, so a build that prints the word "SKIP:"
+            # itself can never be mistaken for a step the runner declined.
+            unproven.append(label or line[len(WF_SKIP):].strip())
+        elif line.startswith("FIRST FAILING STEP: "):
             first = line[len("FIRST FAILING STEP: "):].strip()
             break
     met = None if hung else (rc == 0)
@@ -1238,6 +1266,7 @@ def do_workflow(step, worktree, home, outdir, mission_dir):
                "checkedBy": CHECKED_BY["workflow"], "file": wf,
                "job": step.get("job") or "", "worktree": worktree, "home": home,
                "exit": rc, "hung": hung, "firstFailingStep": first,
+               "unproven": unproven, "skippedSteps": len(unproven),
                "stdout": out, "stderr": err,
                "expect": step.get("expect") or {}, "checks": [], "met": met}
     return transcript, readout
@@ -1312,7 +1341,20 @@ def cmd_run(opt):
     live_doc = load_live(mission_dir)
     live_doc["consent"] = {k: consent[k] for k in ("host", "owners", "repos", "source")}
     live_doc["recordedIn"] = ldir
-    live_touched = False
+    # ── AN EMPTY LIVE LEDGER IS STILL A LEDGER (S250 fix round 1, D4) ───────
+    #
+    # THE MEASURED DEFECT. `live_touched` only went True when a step DECLARED a
+    # `live:` block, so the S250 drive — which had the captain's written consent,
+    # printed it to the console every round, and then took zero live hops — wrote
+    # no `xo/live.json` at all. The report's "What I touched live" section
+    # therefore VANISHED instead of saying "nothing", and no teardown, and no
+    # reader, could tell "it reached nothing" from "nobody ever asked it to".
+    #
+    # So the ledger is opened by the CONSENT, which is a record the captain wrote,
+    # and not by the first step that happens to use it. Consent with no live step
+    # behind it is exactly the fact worth writing down.
+    live_touched = bool(consent.get("host"))
+    live_doc["liveSteps"] = int(live_doc.get("liveSteps") or 0)
     if consent.get("host"):
         say("  live:     %s, owners: %s (consented in %s)"
             % (consent["host"], ", ".join(consent["owners"]), consent["source"]))
@@ -1333,6 +1375,7 @@ def cmd_run(opt):
             live_env = None
             if not why and live:
                 live_touched = True
+                live_doc["liveSteps"] = int(live_doc.get("liveSteps") or 0) + 1
                 why = live_refusal(live, consent)
                 if not why:
                     tok = live_token(live["host"])
@@ -1400,7 +1443,15 @@ def cmd_run(opt):
             where = save_live(mission_dir, live_doc)
             if where:
                 n = len(live_doc.get("effects") or [])
-                say("◈ %d live effect(s) on the record in %s" % (n, where))
+                if n or live_doc.get("liveSteps"):
+                    say("◈ %d live effect(s) on the record in %s" % (n, where))
+                else:
+                    # SAID OUT LOUD, NOT LEFT BLANK (S250 D4). Consent was on the
+                    # record and not one step asked to use it — which is the thing
+                    # the console went quiet about for six rounds.
+                    say("◈ nothing was touched live: %s was consented and no step "
+                        "asked to reach it. The empty ledger is in %s."
+                        % (consent.get("host") or "a live host", where))
         if owned:
             teardown(repo, worktree, home)
     if owned:

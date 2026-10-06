@@ -16883,7 +16883,17 @@ is reported as \"needs a live target\".
 exist afterwards (\`repo\`, \`branch\`, \`run\`, \`deployment\`, \`discussion\`). It is
 how what you created gets cleaned up, and an undeclared effect is one nobody
 knows to clean. Nothing is deleted on a real host on your word: archive, never
-delete."
+delete.
+
+**A \`workflow\` step on this laptop is NOT a push.** \`workflow-run\` carries out the
+job's \`run:\` steps only, and it WRITES DOWN every packaged \`uses:\` step it skipped
+as UNPROVEN, not passed. So a criterion about the thing a skipped step does — an
+artifact uploaded, a page published and read back off the host, a deployment
+reached — CANNOT be settled from that transcript, however cleanly the run exited.
+LCARS reads the transcript's own record of what it skipped and turns such a
+\`met\` into \"needs the real run\". With the host above consented there are exactly
+two honest ways to settle one: take the hop with a \`live:\` step, or rate it
+\`untested\` and say in the note which step was never run."
   fi
 
   # === THE LIVE-CHECK CHECKLISTS, HANDED OVER WHOLE (S246) ==================

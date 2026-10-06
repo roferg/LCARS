@@ -117,6 +117,8 @@ Output on stdout, one TAB-separated record per line, for the shell to read:
   GRADE_WHY <why this grade, the table walked in words> | CORE <met|broken|unverified|>
   IMPACT_KEPT <id> <recorded> <this look's>  | IMPACT_MISMATCH <id> <id> <impact> <impact>
   TEST_DEMOTED <id> <rated> <quote>  — a test citation that settled nothing (T1)
+  STAND_IN_BLIND <id> <evidence> <steps>  — a `met` off a local workflow run that
+                                     recorded steps it never carried out (S250)
   SCORE_GROUP <group>  — which of the three the headline was read from (S225)
   GROUP <key> <kind> <grade|-> <total> <worked> <didnt> <couldntSee> <couldntSetUp>
   OPEN <n>  — rows still open ANYWHERE; the score word no longer implies zero
@@ -158,6 +160,12 @@ def shot_name_evidence(name):
     if low.endswith(".json"):
         return "measurement"
     return "picture"
+# The two line prefixes `autopilot.sh workflow-run` prints (xo-run.py names the
+# same two). `  SKIP: ` is its notice that a step was NOT executed and is
+# UNPROVEN, not passed; a step's OWN output is printed four spaces in, so a build
+# that prints the word itself is never mistaken for the runner's notice.
+WF_STEP = "STEP "
+WF_SKIP = "  SKIP: "
 EVIDENCE_WORD = {"picture": "a picture", "transcript": "a transcript",
                  "measurement": "a measured box", "tests": "your tests",
                  "none": "—"}
@@ -861,10 +869,17 @@ OUTCOME_SAID = {OUTCOME_WORKED: "worked", OUTCOME_DIDNT: "didn't work",
 # harness refused it and the check was never set up. It is OURS, always — a
 # missing allow-list entry is an infrastructure fact, never a statement about the
 # build — which is why `derive_recommendation` may not turn it into a send-back.
+# `needs-the-real-run` is S250's: the ONLY thing that settled this row was a
+# workflow run on this laptop, and that run WROTE DOWN that it did not execute
+# some of the workflow's steps. A stand-in that skipped the step cannot settle a
+# criterion about what that step does, so the check was never set up. Unlike
+# `needs-a-live-target` this one is NOT exempt from the coverage floor: the hop
+# was available, so a look that did not take it should feel the floor bite.
 SETUP_DEFEATED = ("unreachable", "no-change", "works-needs-action",
-                  "needs-a-live-target")
+                  "needs-a-live-target", "needs-the-real-run")
 NEEDS_LIVE = "needs-a-live-target"
 NEEDS_LIVE_SAID = "needs a live target"
+STAND_IN = "needs-the-real-run"
 MY_CHECKING_NOTE = ("These are gaps in my checking, not a fault in your build. "
                     "They are mine to fix — nothing here is counted against you.")
 
@@ -1019,6 +1034,40 @@ def landing_readout(shotsroot, name):
             if isinstance(doc, dict):
                 return pth, doc
     return "", None
+
+
+def workflow_unproven(readout):
+    """The workflow steps a LOCAL `workflow-run` recorded that it did NOT run.
+
+    THE RECORD, AND WHY IT IS A RECORD. `autopilot.sh workflow-run` executes a
+    job's `run:` steps and nothing else. Every step it declines it prints as its
+    own two-space notice — `  SKIP: … is a packaged action … It is UNPROVEN, not
+    passed.` — and `xo-run.py` now carries the labels of those steps onto the
+    step's readout as `unproven`, beside the exit code. Both are the RUNNER's own
+    output about its own behaviour, written at the moment it behaved that way.
+
+    NOTHING HERE READS A CRITERION'S ENGLISH. This file has lost four rounds to
+    code that re-read text a human also writes (S147, S156, S188, S212), and
+    "the page it publishes can be downloaded and read back" is exactly the prose
+    a heuristic would chase. The question asked instead is purely about the
+    INSTRUMENT: did the thing that settled this row run all of its own steps?
+
+    The readout's field is preferred; a readout written before that field existed
+    is read off the transcript the readout already kept, by the runner's own line
+    prefixes — the same way `firstFailingStep` has always been read."""
+    if not isinstance(readout, dict) or str(readout.get("do") or "") != "workflow":
+        return []
+    named = [" ".join(str(u).split()) for u in (readout.get("unproven") or [])
+             if str(u).strip()]
+    if named:
+        return named
+    out, label = [], ""
+    for line in str(readout.get("stdout") or "").splitlines():
+        if line.startswith(WF_STEP) and ": " in line:
+            label = line.split(": ", 1)[1].strip()
+        elif line.startswith(WF_SKIP):
+            out.append(label or line[len(WF_SKIP):].strip())
+    return out
 
 
 def landing_records_exist(shotsroot):
@@ -2586,6 +2635,16 @@ def main():
             "drawing declares")
     wrong_screen_rows = []
     journey_doc = load_json_or_none(journey_path)
+    # ── THE STEPS THE HARNESS REFUSED (S250 fix round 1, D2) ────────────────
+    # Written onto the journey by `xo-journey.py reach-record` as each round's
+    # steps are granted — kind, the harness's own plain-English reason, and the
+    # round. Read here so the captain's report can COUNT them and SAY them; they
+    # touch nothing else, and a look with none reads exactly as it always has.
+    refused_steps = []
+    if isinstance(journey_doc, dict):
+        for _r in (journey_doc.get("refusedSteps") or []):
+            if isinstance(_r, dict) and str(_r.get("why") or "").strip():
+                refused_steps.append(_r)
     landing_steps = landing_by_shot(load_json_or_none(walk_path), journey_doc)
     landing_records = landing_records_exist(shots_root)
     landing_on = bool(shots_root and os.path.isdir(shots_root) and landing_records)
@@ -3496,6 +3555,87 @@ def main():
         live_blind.append({"id": e["id"], "text": e.get("text") or "",
                            "why": r.get("why") or "", "host": r.get("host") or "",
                            "owner": r.get("owner") or ""})
+
+    # ─── A STAND-IN CANNOT SETTLE THE STEP IT SKIPPED (S250 fix round 1, D1) ─
+    #
+    # THE MEASURED FALSE GREEN. One report, one push, two rows:
+    #
+    #   prd-1      "Pushing the branch produces a successful publish run, AND THE
+    #              PAGE IT PUBLISHES CAN BE DOWNLOADED AND READ BACK"   → MET
+    #   t-001-ac1  "a push to the branch produces a successful publish run that
+    #              uploads the site artifact"                           → UNTESTED
+    #
+    # Nothing was pushed and nothing was downloaded. BOTH rows cite the same
+    # transcript — `07-workflow-run.txt`, a `workflow-run` on the reviewer's own
+    # laptop — and that transcript SAYS, in the runner's own words, that it
+    # skipped 2 of the job's 3 steps, including the upload, and that they are
+    # "UNPROVEN, not passed". One row read the notice. The other banked a pass
+    # off it, and the pass is what fed the headline grade.
+    #
+    # So the notice is enforced here. A row whose proof is a local workflow run
+    # that recorded skipped steps is NOT met: it is `untested`, the skipped steps
+    # are NAMED, and the only honest ways out are the two the captain named —
+    # report it untested with the reason, or actually take the hop.
+    #
+    # WHAT IT IS KEYED ON, AND WHY THAT IS A RECORD, NOT AN INFERENCE. Not the
+    # criterion's wording — see `workflow_unproven`. The key is the INSTRUMENT's
+    # own record of its own incompleteness: `unproven` on the step readout, which
+    # the runner wrote as it declined each step. A workflow whose every step is a
+    # `run:` step records NOTHING here and its rows stand exactly as rated — that
+    # is the control, and it is why this cannot turn a look into all-untested.
+    #
+    # A `gap` IS LEFT ALONE, for the same reason the live rail leaves one alone: a
+    # step that found a real fault found it, and an unrun sibling step does not
+    # unfind it.
+    stand_in_blind = []
+    for e in ledger:
+        if e["status"] != "met":
+            continue
+        # AND A ROW THE PROJECT'S OWN TESTS SETTLED IS LEFT ALONE. By the time
+        # this runs a `tests` row has already been through the over-claiming
+        # guard: it names a line and that line was found in the output the skill
+        # recorded. Its proof is the suite, not the transcript it also cites, so
+        # an unrun workflow step says nothing about it.
+        if str(e.get("evidence") or "") == "tests" \
+                and str(e.get("testQuote") or "").strip():
+            continue
+        _ro_path, _ro = landing_readout(shots_root, e.get("shot") or "")
+        skipped = workflow_unproven(_ro)
+        if not skipped:
+            continue
+        # AND ONLY A RUN THAT REPORTED SUCCESS. This rail is about ONE thing: a
+        # run that came back green while recording that it never carried out part
+        # of itself, and a row that banked that green. A workflow run that FAILED
+        # reported no success to bank — whatever a `met` on it means, the skipped
+        # step is not what made it wrong — so it is left to the rails that
+        # already own a failing run. `met` is the runner's own recorded verdict
+        # on its own exit status, not a reading of anything.
+        if _ro.get("met") is not True:
+            continue
+        named = ", ".join(skipped[:4])
+        e["status"] = "untested"
+        e["couldNotCheck"] = STAND_IN
+        # OURS, NOT HIS (CAUSE_CLASS). A step we did not run is never a doubt
+        # about his build, so this row may not become a send-back or a filed bug.
+        e["cause"] = "infrastructure"
+        e["causeRecorded"] = True
+        e["evidence"] = "none"
+        e["note"] = (
+            "I could not check this. The only thing that settled it was a "
+            "workflow run on this machine, and that run did not carry out %d of "
+            "the workflow's own steps (%s) — its own transcript records them "
+            "UNPROVEN, not passed. So nothing was really published and nothing "
+            "was read back off a real host, and a stand-in that skipped the step "
+            "cannot answer a question about what that step does. To settle this "
+            "I have to run it for real on the host."
+            % (len(skipped), named))
+        e.pop("testQuote", None)
+        notes.append("%s was called met off a local workflow run that skipped %d "
+                     "of its own steps (%s); a stand-in cannot settle it"
+                     % (e["id"], len(skipped), named))
+        stand_in_blind.append({"id": e["id"], "text": e.get("text") or "",
+                               "skipped": skipped,
+                               "evidence": str(e.get("shot") or "")})
 
     # ─── S225: THE SOURCE IS READ AT LAST ────────────────────────────────────
     # Every guard above has finished; a row's status and its `couldNotCheck`
@@ -4623,6 +4763,48 @@ def main():
             for row in could_not:
                 w("- %s — %s. *(I could not get to this)*\n"
                   % (clip(row["item"], 120), unstop(row["why"])))
+        # ─── AND WHAT I WAS NOT ALLOWED TO RUN (S250 fix round 1, D2) ────────
+        #
+        # THE MEASURED DEFECT. Over one drive the look asked for 27 steps and 17
+        # ran. The 10 refusals each carried a good plain-English reason, recorded
+        # in a file nobody reads; the console counted only survivors; and this
+        # report said the word "refused" ZERO times, while four of its twelve
+        # untested rows were untested because of one. The captain's standing
+        # instruction is that he must be able to tell "it got better at finding
+        # and filing" from "it got better at saying it could not check" — and a
+        # hedge whose cause is hidden is the worst case of exactly that.
+        #
+        # So the count and the reasons are HERE, where he reads. Identical reasons
+        # are collapsed with a count rather than repeated, because the same fence
+        # refusing the same shape eight times is one fact about the harness, not
+        # eight.
+        if refused_steps:
+            w("\n### Steps I asked for and was not allowed to run\n\n")
+            w("I asked for %d step%s that the harness refused before %s ran. "
+              "%s\n\n" % (len(refused_steps), "" if len(refused_steps) == 1 else "s",
+                           "it" if len(refused_steps) == 1 else "they",
+                           MY_CHECKING_NOTE))
+            seen = []
+            for row in refused_steps:
+                why = " ".join(str(row.get("why") or "").split())
+                for had in seen:
+                    if had["why"] == why:
+                        had["n"] += 1
+                        had["rounds"].append(str(row.get("round") or ""))
+                        break
+                else:
+                    seen.append({"why": why, "n": 1,
+                                 "kind": str(row.get("kind") or "step"),
+                                 "rounds": [str(row.get("round") or "")]})
+            for had in seen:
+                rounds = [r for r in had["rounds"] if r]
+                w("- **%d x `%s`**%s — %s\n"
+                  % (had["n"], had["kind"],
+                     (" *(round %s)*" % ", ".join(rounds)) if rounds else "",
+                     had["why"]))
+            w("\nWhen a row above says I could not check something, this list is "
+              "where to look for the reason: a step the harness would not run is a "
+              "limit of mine, not a fault in your build.\n")
         # S216 — THE REASONING, ITEM BY ITEM. Its own section, not a table
         # column: the table above stays exactly as machine-readable as it was.
         if ledger:
@@ -4718,12 +4900,34 @@ def main():
         # something a consented step DECLARED it might create, never something
         # inferred from output — and the host it was made on is named, because
         # "a branch called xo-probe" is not an address anybody can act on.
-        if live_effects:
+        #
+        # AND AN EMPTY LEDGER SAYS SO (S250 fix round 1, D4). The section used to
+        # be written only when there was something in it, so the one look that had
+        # the captain's consent and used it ZERO times produced no section at all.
+        # Strictly not a lie; but this is the one place a teardown reads to know
+        # what to archive, and "nothing here" and "I never thought about it" must
+        # not look the same. The rail is still OFF with no ledger on disk (every
+        # look before S249), so nothing older grows a section.
+        if live_effects or live_record:
             w("\n### What I touched live\n\n")
-            w("These are on a real host, not in a throwaway worktree. I only "
-              "reached %s because the record consents to it%s.\n\n"
-              % (live_consent.get("host") or "that host",
-                 (" (%s)" % live_consent["source"]) if live_consent.get("source") else ""))
+            if not live_effects:
+                w("**Nothing.** %s was consented%s and I did not reach it: %s. "
+                  "There is nothing on a real host to clean up, and the empty "
+                  "ledger is on disk in `xo/live.json` so a teardown can see that "
+                  "for itself rather than having to guess from a missing "
+                  "section.\n"
+                  % (live_consent.get("host") or "A live host",
+                     (" in %s" % live_consent["source"]) if live_consent.get("source") else "",
+                     ("%d step(s) asked to and were refused — see below"
+                      % len(live_record.get("refused") or []))
+                     if (live_record.get("refused") or [])
+                     else "not one step asked to"))
+            else:
+                w("These are on a real host, not in a throwaway worktree. I only "
+                  "reached %s because the record consents to it%s.\n\n"
+                  % (live_consent.get("host") or "that host",
+                     (" (%s)" % live_consent["source"])
+                     if live_consent.get("source") else ""))
             for eff in live_effects:
                 where = "/".join(x for x in (str(eff.get("host") or ""),
                                              str(eff.get("owner") or ""),
@@ -4732,8 +4936,9 @@ def main():
                   % (str(eff.get("kind") or "something"),
                      str(eff.get("name") or "it did not name it"),
                      (" *(on %s)*" % where) if where else ""))
-            w("\nNothing here is cleaned up by this report. The same list is on "
-              "disk in `xo/live.json`, which is what a teardown reads.\n")
+            if live_effects:
+                w("\nNothing here is cleaned up by this report. The same list is "
+                  "on disk in `xo/live.json`, which is what a teardown reads.\n")
         # AND WHAT A MISSING LIVE TARGET COST (S249). Said apart from the blind
         # rows above, because this one has a one-line fix that is OURS: name the
         # host and the owner in `liveTargets`.
@@ -4810,6 +5015,12 @@ def main():
         print("IMPACT_KEPT\t%s\t%s\t%s" % (cid, was, said_now))
     for cid, was, q in demoted:
         print("TEST_DEMOTED\t%s\t%s\t%s" % (cid, was, " ".join(q.split())))
+    # S250 D1 — a `met` taken off a local workflow run that recorded skipped
+    # steps, so the journal carries the moment a false green was refused.
+    for _sb in stand_in_blind:
+        print("STAND_IN_BLIND\t%s\t%s\t%s"
+              % (_sb["id"], _sb.get("evidence") or "-",
+                 ", ".join(_sb.get("skipped") or [])))
     for m in mismatches:
         print("IMPACT_MISMATCH\t%s\t%s\t%s\t%s" % tuple(m["ids"] + m["impacts"]))
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))

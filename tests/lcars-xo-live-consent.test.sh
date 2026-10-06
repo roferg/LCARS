@@ -1060,6 +1060,265 @@ check "11l. CONTROL — the rest of the prompt is there either way" \
 consent_autopilot "$HOST" "$OWNER"
 
 # ===========================================================================
+# 12. S250 FIX ROUND 1 — A LOCAL STAND-IN CANNOT SETTLE THE STEP IT SKIPPED,
+#     AND AN EMPTY LIVE LEDGER SAYS SO
+# ===========================================================================
+#
+# THE MEASURED FALSE GREEN (D1). On the first consented drive, one report settled
+# two criteria about the SAME push off the SAME local transcript:
+#
+#   prd-1      "…produces a successful publish run, AND THE PAGE IT PUBLISHES CAN
+#              BE DOWNLOADED AND READ BACK"                              → MET
+#   t-001-ac1  "…a successful publish run that uploads the site artifact" → UNTESTED
+#
+# Nothing was pushed and nothing was downloaded: `workflow-run` had executed the
+# job's steps ON THE REVIEWER'S LAPTOP and printed, in its own words, that it
+# skipped 2 of the 3 — including the upload — and that they were "UNPROVEN, not
+# passed". One row read that notice; the other banked a pass off it, and the pass
+# fed the headline grade.
+#
+# The record keyed on is the RUNNER'S OWN, not the criterion's English: `unproven`
+# on the step readout, written as the runner declined each step. The control is
+# the same shape with nothing skipped — it still reads MET.
+#
+# AND D4: consent on the record with ZERO live hops used to write no `xo/live.json`
+# at all, so the report's "What I touched live" section VANISHED rather than
+# saying "nothing" — the one place a teardown reads to know what to archive.
+echo ""
+echo "12. a local stand-in cannot settle the step it skipped; an empty live ledger says so"
+
+mkdir -p "$PROD/.github/workflows"
+cat >"$PROD/.github/workflows/publish.yml" <<'YML'
+name: publish
+on: push
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: render the page
+        run: python3 -c "print('rendered')"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: site
+YML
+cat >"$PROD/.github/workflows/fails.yml" <<'YML'
+name: fails
+on: push
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: render the page
+        run: python3 -c "import sys; sys.exit(3)"
+YML
+cat >"$PROD/.github/workflows/all-run.yml" <<'YML'
+name: all-run
+on: push
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: render the page
+        run: python3 -c "print('rendered')"
+      - name: say it is done
+        run: echo done
+YML
+git -C "$PROD" add -A >/dev/null 2>&1
+git -C "$PROD" -c user.email=t@t -c user.name=t commit -qm workflows >/dev/null 2>&1
+git -C "$PROD" branch -q -f feat/wf main 2>/dev/null
+
+MWF="$(mission m-standin)"
+cat >"$TMPROOT/j-wf.json" <<'JSON'
+{"steps": [], "reachSteps": [
+  {"do": "workflow", "key": "W1", "for": "prd-1", "fromChecklist": "workflow#1",
+   "file": ".github/workflows/publish.yml", "job": "publish",
+   "evidence": "07-workflow-run.txt",
+   "expect": {"everyRunStepExits": 0}},
+  {"do": "workflow", "key": "W2", "for": "prd-2", "fromChecklist": "workflow#2",
+   "file": ".github/workflows/all-run.yml", "job": "publish",
+   "evidence": "09-all-run.txt",
+   "expect": {"everyRunStepExits": 0}},
+  {"do": "workflow", "key": "W3", "for": "prd-4", "fromChecklist": "workflow#3",
+   "file": ".github/workflows/fails.yml", "job": "publish",
+   "evidence": "08-fails.txt",
+   "expect": {"everyRunStepExits": 0}},
+  {"do": "run", "key": "R1", "for": "prd-3", "fromChecklist": "cli#1",
+   "argv": ["python3", "relay.py", "--help"], "cwd": "<worktree>",
+   "evidence": "10-help.txt", "expect": {"exit": 0}}
+]}
+JSON
+"$PY" "$CAGE" 240 "$PY" "$XORUN" run --journey "$TMPROOT/j-wf.json" --repo "$PROD" \
+  --branch feat/wf --out "$MWF/xo/shots/look-1" --mission-dir "$MWF" \
+  >"$MWF/run.out" 2>&1
+
+WSH="$MWF/xo/shots/look-1"
+check "12a. (rig) the local workflow run really did skip the packaged actions" \
+  'grep -q "UNPROVEN, not passed" "$WSH/07-workflow-run.txt"'
+check "12b. the readout RECORDS which steps it did not run, by name" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+u=d.get(\"unproven\") or []
+sys.exit(0 if sorted(u)==[\"actions/checkout@v5\",\"actions/upload-artifact@v7\"] and d.get(\"skippedSteps\")==2 else 1)" "$WSH/07-workflow-run.json"'
+check "12c. CONTROL — a workflow whose every step is a run: step records NONE" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if (d.get(\"unproven\") or [])==[] and d.get(\"skippedSteps\")==0 else 1)" "$WSH/09-all-run.json"'
+check "12d. CONTROL — and that control workflow genuinely ran both its steps" \
+  'grep -q "ALL STEPS PASSED (2 run, 0 skipped)" "$WSH/09-all-run.txt"'
+
+# THE LEDGER THAT CLAIMS ALL THREE: prd-1 off the skipping run, prd-2 off the
+# complete run, prd-3 off an ordinary CLI transcript. Only prd-1 may move.
+cat >"$TMPROOT/criteria-standin.json" <<'C'
+{"mission": "m", "hasDrawing": false, "placeNames": [], "pictures": [],
+ "criteria": [
+  {"id": "prd-1", "text": "pushing the branch publishes a page that can be downloaded and read back", "source": "prd", "primary": true, "kind": "works"},
+  {"id": "prd-2", "text": "the workflow runs every step it declares", "source": "prd", "primary": true, "kind": "works"},
+  {"id": "prd-3", "text": "relay --help lists its subcommands", "source": "prd", "primary": true, "kind": "works"}
+ ]}
+C
+cat >"$TMPROOT/worker-standin.json" <<'W'
+{"score": "high", "summary": "The publish run worked and I read the page back.", "criteria": [
+ {"id": "prd-1", "impact": "high", "impactWhy": "publishing is the point", "status": "met",
+  "shot": "07-workflow-run.txt", "evidence": "transcript", "checkedBy": "workflow", "kind": "works",
+  "note": "the run exited 0 and the page was there", "action": "ran the publish workflow and read the page back",
+  "reason": "I tried running the workflow; I saw it exit 0. Outcome: met."},
+ {"id": "prd-2", "impact": "high", "impactWhy": "every step must run", "status": "met",
+  "shot": "09-all-run.txt", "evidence": "transcript", "checkedBy": "workflow", "kind": "works",
+  "note": "both steps ran", "action": "ran the all-run workflow",
+  "reason": "I tried running the workflow; I saw both steps run. Outcome: met."},
+ {"id": "prd-3", "impact": "high", "impactWhy": "the CLI must list its verbs", "status": "met",
+  "shot": "10-help.txt", "evidence": "transcript", "checkedBy": "cli", "kind": "works",
+  "note": "it listed them", "action": "ran relay.py --help",
+  "reason": "I tried running --help; I saw the list. Outcome: met."}
+], "gaps": []}
+W
+
+score_shots() { # <out-dir> <shots-root> <live.json or ""> <worker> <criteria>
+  mkdir -p "$1"
+  "$PY" "$CAGE" 240 "$PY" "$SCOREPY" "$4" "$5" \
+    "$1/verdict.json" "" "" "" "" "" "" "" "" "" "" "$2" "" "$3" \
+    >"$1/out.txt" 2>"$1/err.txt"
+}
+
+S12="$TMPROOT/score-standin"
+score_shots "$S12" "$MWF/xo/shots" "" \
+  "$TMPROOT/worker-standin.json" "$TMPROOT/criteria-standin.json"
+check "12e. the scored verdict exists" '[ -s "$S12/verdict.json" ]'
+check "12f. prd-1 is UNTESTED — a stand-in that skipped the step cannot settle it" \
+  'row "$S12" prd-1 "r.get(\"status\") == \"untested\""'
+check "12g. its recorded reason is needs-the-real-run" \
+  'row "$S12" prd-1 "r.get(\"couldNotCheck\") == \"needs-the-real-run\""'
+check "12h. the cause is OURS — a step we did not run is never his fault" \
+  'row "$S12" prd-1 "r.get(\"cause\") == \"infrastructure\" and r.get(\"causeRecorded\") is True"'
+check "12i. the row NAMES the steps the run did not carry out" \
+  'row "$S12" prd-1 "\"actions/upload-artifact@v7\" in (r.get(\"note\") or \"\") and \"UNPROVEN\" in (r.get(\"note\") or \"\")"'
+check "12j. CONTROL — prd-2, off a workflow run that skipped NOTHING, is still MET" \
+  'row "$S12" prd-2 "r.get(\"status\") == \"met\""'
+check "12k. CONTROL — prd-3, off an ordinary CLI transcript, is still MET" \
+  'row "$S12" prd-3 "r.get(\"status\") == \"met\""'
+check "12k2. (rig) the failing workflow run skipped a step AND came back red" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if d.get(\"met\") is False and (d.get(\"unproven\") or [])==[\"actions/checkout@v5\"] else 1)" "$WSH/08-fails.json"'
+"$PY" - "$TMPROOT/worker-standin.json" "$TMPROOT/worker-standin-red.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["criteria"].append({"id": "prd-4", "impact": "high", "impactWhy": "it must fail loudly",
+  "status": "met", "shot": "08-fails.txt", "evidence": "transcript",
+  "checkedBy": "workflow", "kind": "works", "note": "it stopped",
+  "action": "ran the failing workflow", "reason": "I tried it; I saw it stop. Outcome: met."})
+json.dump(d, open(sys.argv[2], "w"))
+P
+"$PY" - "$TMPROOT/criteria-standin.json" "$TMPROOT/criteria-standin-red.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["criteria"].append({"id": "prd-4", "text": "the workflow fails loudly when the render fails",
+                      "source": "prd", "primary": True, "kind": "works"})
+json.dump(d, open(sys.argv[2], "w"))
+P
+score_shots "$TMPROOT/score-standin-red" "$MWF/xo/shots" "" \
+  "$TMPROOT/worker-standin-red.json" "$TMPROOT/criteria-standin-red.json"
+check "12k3. CONTROL — a run that reported NO success is left to the other rails" \
+  'row "$TMPROOT/score-standin-red" prd-4 "r.get(\"status\") == \"met\""'
+check "12k4. CONTROL — …while the GREEN run that skipped a step still moves prd-1" \
+  'row "$TMPROOT/score-standin-red" prd-1 "r.get(\"status\") == \"untested\""'
+check "12l. the report says so where the captain reads, naming the skipped step" \
+  '"$PY" -c "
+import sys
+t=open(sys.argv[1]).read()
+s=t.split(\"What I could not check\",1)
+sys.exit(0 if len(s)>1 and \"actions/upload-artifact@v7\" in s[1] and \"UNPROVEN, not passed\" in s[1] else 1)" "$S12/report.md"'
+check "12m. and the headline no longer counts it as checked" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+c=[x for x in d.get(\"criteria\") or []]
+met=[x[\"id\"] for x in c if x.get(\"status\")==\"met\"]
+sys.exit(0 if sorted(met)==[\"prd-2\",\"prd-3\"] else 1)" "$S12/verdict.json"'
+check "12n. CONTROL — with NO shots directory the rail is off and prd-1 stands" \
+  'score_shots "$TMPROOT/score-standin-noshots" "" "" \
+     "$TMPROOT/worker-standin.json" "$TMPROOT/criteria-standin.json" ; \
+   row "$TMPROOT/score-standin-noshots" prd-1 "r.get(\"status\") == \"met\""'
+
+# CONTROL — A ROW THE PROJECT'S OWN TESTS SETTLED IS NOT TOUCHED. Its proof is a
+# named line found in the recorded suite output (the S211 over-claiming guard ran
+# long before this rail), so a workflow step nobody ran says nothing about it.
+cat >"$TMPROOT/tests-ran.json" <<'J'
+{"ran": true, "command": "python3 -m unittest", "cwd": "/p", "exitCode": 0,
+ "timedOut": false, "timeoutSeconds": 600, "durationSeconds": 3, "outputBytes": 90,
+ "truncated": false, "tailCapBytes": 4096, "outcome": "passed",
+ "outputTail": "test_publish_uploads_the_artifact (tests.test_publish) ... ok\nOK\n"}
+J
+"$PY" - "$TMPROOT/worker-standin.json" "$TMPROOT/worker-standin-tests.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for c in d["criteria"]:
+    if c["id"] == "prd-1":
+        c["evidence"] = "tests"
+        c["testQuote"] = "test_publish_uploads_the_artifact (tests.test_publish) ... ok"
+json.dump(d, open(sys.argv[2], "w"))
+P
+mkdir -p "$TMPROOT/score-standin-tests"
+"$PY" "$CAGE" 240 "$PY" "$SCOREPY" "$TMPROOT/worker-standin-tests.json" \
+  "$TMPROOT/criteria-standin.json" "$TMPROOT/score-standin-tests/verdict.json" \
+  "" "$TMPROOT/tests-ran.json" "" "" "" "" "" "" "" "" "$MWF/xo/shots" "" "" \
+  >"$TMPROOT/score-standin-tests/out.txt" 2>"$TMPROOT/score-standin-tests/err.txt"
+check "12u. CONTROL — a row the project's own tests settled stays MET" \
+  'row "$TMPROOT/score-standin-tests" prd-1 "r.get(\"status\") == \"met\" and r.get(\"evidence\") == \"tests\""'
+check "12v. CONTROL — …and that fixture's suite citation really was accepted" \
+  'row "$TMPROOT/score-standin-tests" prd-1 "\"test_publish_uploads_the_artifact\" in (r.get(\"testQuote\") or \"\")"'
+
+# ── D4: THE EMPTY LIVE LEDGER ────────────────────────────────────────────────
+check "12o. consent on the record and no live step still writes xo/live.json" \
+  '[ -s "$MWF/xo/live.json" ]'
+check "12p. the ledger records the consent it had, and no effects" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+c=d.get(\"consent\") or {}
+sys.exit(0 if c.get(\"host\")==\"'"$HOST"'\" and (d.get(\"effects\") or [])==[] and d.get(\"liveSteps\")==0 else 1)" "$MWF/xo/live.json"'
+check "12q. the console SAYS nothing was touched live, instead of going quiet" \
+  'grep -q "nothing was touched live" "$MWF/run.out"'
+S12L="$TMPROOT/score-emptyledger"
+score_shots "$S12L" "$MWF/xo/shots" "$MWF/xo/live.json" \
+  "$TMPROOT/worker-standin.json" "$TMPROOT/criteria-standin.json"
+check "12r. the report STILL has a What I touched live section" \
+  'grep -q "What I touched live" "$S12L/report.md"'
+check "12s. and it says Nothing, explicitly, with the host that was consented" \
+  '"$PY" -c "
+import sys
+t=open(sys.argv[1]).read()
+s=t.split(\"What I touched live\",1)[1][:700]
+sys.exit(0 if \"**Nothing.**\" in s and \"'"$HOST"'\" in s and \"not one step asked to\" in s else 1)" "$S12L/report.md"'
+check "12t. CONTROL — with no live ledger at all the section stays absent" \
+  '! grep -q "What I touched live" "$S12/report.md"'
+
+# ===========================================================================
 # ZERO SPEND
 # ===========================================================================
 echo ""

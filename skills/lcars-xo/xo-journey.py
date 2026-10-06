@@ -1520,13 +1520,42 @@ def main(argv):
         else:
             steps = asked.get("reachSteps") or []
         kept = record_granted_steps(j, [s_ for s_ in steps if isinstance(s_, dict)])
+        # ── AND WHAT WAS REFUSED, ON THE SAME RECORD (S250 fix round 1, D2) ──
+        #
+        # THE MEASURED DEFECT. Across six rounds the worker asked for 27 steps and
+        # 17 ran: 10 were refused, each with an excellent plain-English reason —
+        # and those reasons lived ONLY in `actions-kept-N.json`, which nobody
+        # reads. The console counted survivors ("0 declined at execution"), round
+        # 3 had all three of its steps refused and printed NOTHING at all, and
+        # `report.md` mentioned a refusal zero times while four of its untested
+        # rows were untested BECAUSE of one.
+        #
+        # The refusals already exist as records. This is where they join the one
+        # record the report already reads, so the captain can tell "it got better
+        # at finding faults" from "it got better at saying it could not check".
+        refused_in = (asked.get("refused") or []) if isinstance(asked, dict) else []
+        refused_in = [r for r in refused_in if isinstance(r, dict)]
+        if refused_in:
+            have = j.get("refusedSteps")
+            if not isinstance(have, list):
+                have = []
+            rnd = str(opt("round") or "").strip()
+            for r in refused_in:
+                row = {"kind": str(r.get("kind") or ""),
+                       "why": " ".join(str(r.get("why") or "").split())}
+                if rnd:
+                    row["round"] = rnd
+                have.append(row)
+            j["refusedSteps"] = have
         out = opt("out") or jpath
         if out:
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
             with open(out, "w", encoding="utf-8") as fh:
                 json.dump(j, fh, indent=2)
                 fh.write("\n")
-        print("%d step(s) the worker asked for are on the record" % len(kept))
+        print("%d step(s) the worker asked for are on the record%s"
+              % (len(kept),
+                 (", and %d it was refused" % len(refused_in)) if refused_in else ""))
         return 0
 
     if cmd == "carry":

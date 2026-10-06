@@ -421,6 +421,60 @@ def instrument_of(row, finding):
     return ""
 
 
+def where_observed(shotsdir, row, finding):
+    """WHERE the thing in AC #1 was actually seen — off the step's own readout.
+
+    THE MEASURED DEFECT (S250 fix round 1, D3). Every bug PRD opens its first
+    acceptance criterion with `Observed live:` — mandatory, and rightly so: the
+    exact output is the one part of a bug report that cannot be wrong, and
+    `autopilot.sh file-bug` refuses a PRD without it. But on the S250 drive all
+    three filed PRDs said `Observed live:` when `xo/live.json` did not exist and
+    not one step had reached a real host. The evidence was the reviewer's own
+    local transcript, and a fix worker reading that line would believe the
+    deployed artifact had been read back.
+
+    So the opener keeps its word and the sentence SAYS WHERE. The answer comes
+    from a RECORD: `xo-run.py` stamps `live: {host, owner, repo, consentedBy}` on
+    the readout of a step that actually reached a consented host, and stamps
+    nothing there on a step that ran in the look's own detached worktree. The
+    readout beside the cited evidence is read, and nothing is inferred from the
+    criterion's or the note's prose.
+
+    Returns the clause to follow the opener, or "" when there is no readout to
+    answer from — in which case the PRD says nothing it cannot support."""
+    name = clean(finding.get("shot")) or clean(row.get("shot"))
+    if not name:
+        for sh in (finding.get("shots") or []):
+            if clean(sh):
+                name = clean(sh)
+                break
+    if not name or not shotsdir or not os.path.isdir(shotsdir):
+        return ""
+    stem = name[:-4] if name.lower().endswith((".txt", ".png", ".jpg")) else name
+    doc = None
+    for cand in (name if name.lower().endswith(".json") else "", stem + ".json"):
+        if not cand:
+            continue
+        try:
+            with open(os.path.join(shotsdir, cand), encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except Exception:
+            doc = None
+        if isinstance(doc, dict):
+            break
+    if not isinstance(doc, dict):
+        return ""
+    live = doc.get("live") if isinstance(doc.get("live"), dict) else None
+    if live and clean(live.get("host")):
+        where = "/".join(x for x in (clean(live.get("host")), clean(live.get("owner")),
+                                     clean(live.get("repo"))) if x)
+        return ("on the real host %s%s," % (where,
+                (" (consented in %s)" % clean(live["consentedBy"]))
+                if clean(live.get("consentedBy")) else ""))
+    return ("in the reviewer's own detached worktree on one machine, NOT on a "
+            "live host —")
+
+
 def evidence_ref(shotsdir, row, finding, instrument):
     """The PATH of the thing that was observed, as a fix worker would open it.
 
@@ -686,6 +740,11 @@ def main():
 
         # ── AC #1, THE ONE PART THAT CANNOT BE WRONG ─────────────────────────
         ac1 = ["Observed live:"]
+        # AND WHERE IT WAS OBSERVED, OFF THE STEP'S OWN READOUT (S250 D3). The
+        # opener is the template's and stays; the clause after it is the fact.
+        _where = where_observed(shotsdir, row, g)
+        if _where:
+            ac1.append(_where)
         if action:
             ac1.append("%s." % action)
         if kind == "untested":

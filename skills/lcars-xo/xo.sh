@@ -4240,16 +4240,60 @@ xo_reach_actions() { # <mission-dir> <xodir> <shots> <xo-actions.json> <round>
   "$XO_PY" "$XO_RUN_PY" actions --actions "$acts" --out "$kept" \
     --mission-dir "$dir" --cap "$XO_MAX_ACTIONS" >/dev/null 2>&1 || true
   [ -s "$kept" ] || return 0
-  n="$(xo_reach_count "$kept")"
-  [ "${n:-0}" -gt 0 ] || return 0
+  # ── A REFUSED STEP IS SAID OUT LOUD, IN THE ROUND IT HAPPENED (S250 D2) ────
+  #
+  # THE MEASURED DEFECT. `xo-run.py actions` has always PRINTED its tally ("10
+  # asked, 9 kept (cap 12), 1 refused, 0 over the cap") and this call sent it to
+  # /dev/null. Over the S250 drive that hid 10 refusals, each with a good
+  # plain-English reason; and because the two guards below return early when
+  # nothing survived, ROUND 3 — all three of its steps refused — printed nothing
+  # at all between "round 3 — looking…" and "round 4 — looking…".
+  #
+  # So the tally and every reason are printed BEFORE either guard, and the
+  # refusals go on the journey record the report reads (reach-record, below) even
+  # when not one step survived to run. The captain must be able to tell "it got
+  # better at finding faults" from "it got better at saying it could not check".
+  xo_say_refusals "$kept" "$round"
   # THE HARNESS'S RECORD OF WHAT IT GRANTED (S247). `journey.json.reachSteps` is
   # no longer authored from the record by anybody — the worker is the one author
   # of the step list — so this is the one place it is written: the steps that were
   # asked for and allowed, appended round by round. Coverage is then counted off
   # the readouts those steps wrote, never off a list declared before the look.
+  # IT RUNS EVEN WITH NOTHING GRANTED, because a round whose every step was
+  # refused is exactly the round whose refusals have to reach the report.
   "$XO_PY" "$XO_JOURNEY_PY" reach-record --journey "$xodir/journey.json" \
-    --steps "$kept" >/dev/null 2>&1 || true
+    --steps "$kept" --round "$round" >/dev/null 2>&1 || true
+  n="$(xo_reach_count "$kept")"
+  [ "${n:-0}" -gt 0 ] || return 0
   xo_run_reach "$dir" "$xodir" "$shots" "$kept"
+}
+
+# The round's step tally and EVERY refusal reason, on the console, off the record
+# the harness just wrote. Printing nothing when nothing was refused is the
+# control: a clean round reads exactly as it always has.
+xo_say_refusals() { # <actions-kept.json> <round>
+  [ -s "$1" ] || return 0
+  "$XO_PY" - "$1" "$2" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(doc, dict):
+    sys.exit(0)
+refused = [r for r in (doc.get("refused") or []) if isinstance(r, dict)]
+if not refused:
+    sys.exit(0)
+asked = int(doc.get("asked") or 0)
+kept = len(doc.get("steps") or []) + len(doc.get("reachSteps") or [])
+print("\u25c8 NUMBER ONE: round %s asked for %d step(s); %d were refused before "
+      "anything ran, %d went ahead." % (sys.argv[2], asked, len(refused), kept))
+for r in refused:
+    print("    REFUSED (%s): %s" % (r.get("kind") or "step",
+                                    " ".join(str(r.get("why") or "it did not say why").split())))
+PYEOF
+  return 0
 }
 
 # ── WHAT THIS LOOK ACTUALLY ATTEMPTED, COUNTED AFTER IT (S247) ──────────────
