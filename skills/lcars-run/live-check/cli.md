@@ -259,3 +259,18 @@ along the chain in item 6.
   }
 }
 ```
+
+---
+
+### 9. Break a CLI rule with the near miss
+
+Verify each stated rule by **breaking it**, not only by satisfying it. Give an
+argument or flag that is almost valid but must be turned away, and record what
+happened either way.
+
+**Evidence:** `live-check/09-near-miss.txt` — the command, the nearly valid
+input, its exit code, stdout and stderr, and whether it was turned away.
+
+**DEFECT:** a refusal that never came is a fault; a refusal you never asked for
+is simply unchecked. Where the CLI has rules of its own, reach an ending those
+rules call a **LOSS** or a **REFUSAL**, not only the winning one.

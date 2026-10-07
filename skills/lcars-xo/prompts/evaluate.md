@@ -90,6 +90,15 @@ does NOT work — look at the shot that would disprove it, press the key that
 would break it. Judges in your seat are measured skewing positive about a
 build; the cure is to try to disprove "worked" first.
 
+**A rule you only ever SATISFIED is a rule you have not tested.** A stated rule
+is verified by BREAKING it. For every rule the contract states, ask for the NEAR
+MISS — the input that is almost right and must be refused — and record what
+happened either way: a refusal that never came is a gap, and one you never asked
+for is `untested`. If the thing in front of you has rules of its own, reach an
+ending those rules call a LOSS or a REFUSAL, not only the winning one. Breaking a
+rule is how you meet a fault nobody wrote a criterion for, too: `volunteered` is
+where that is WELCOME, nobody's ask, and it can never move your grade.
+
 **Do not reach for `untested` after one try.** Two materially different
 attempts first — a different route to the screen, a different key, the
 measured box instead of the picture. Then say which kind of couldn't-check it
@@ -394,7 +403,6 @@ against a mockup, not whether the look runs at all.
 
 ---
 
-
 ## What you can reach that is not on a screen — and you choose it
 
 **The measurement that put this here.** Over one weekend, same product, 34
@@ -458,14 +466,6 @@ transcript that show it are.
 `run`, `workflow` or `read` entry in `xo-actions.json`. **At most 12 per round** —
 one cap across all kinds — but a round is a breath, not a budget: ask for the next
 twelve, and the twelve after that, until you have seen enough.
-
-## The round before anything is served (S248)
-
-LCARS asks you ONE round BEFORE the launch when the record leaves it open, and that
-round's own prompt spells it out: name the page under review (`serve`), and ask for
-the steps that put data on it — they run in the worktree the app is served from,
-before the first shot. If the page shows none of the parts your drawing declares
-you are asked ONCE for a different target; a page nobody can place is never graded.
 
 ## Two decisions, one file
 

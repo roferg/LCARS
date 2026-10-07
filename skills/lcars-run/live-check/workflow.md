@@ -224,3 +224,18 @@ broke".
   }
 }
 ```
+
+---
+
+### 8. Break a workflow rule with the near miss
+
+Verify each stated rule by **breaking it**, not only by satisfying it. Send a
+trigger or input that almost matches but must not fire, and record what happened
+either way.
+
+**Evidence:** `live-check/08-near-miss.txt` — the trigger or input, why it nearly
+matched, and whether the workflow fired or was turned away.
+
+**DEFECT:** a refusal that never came is a fault; a refusal you never asked for
+is simply unchecked. Where the workflow has rules of its own, reach an ending
+those rules call a **LOSS** or a **REFUSAL**, not only the winning one.

@@ -229,3 +229,18 @@ incorrectly (or the reverse); a phone fix that broke desktop.
   }
 }
 ```
+
+---
+
+### 8. Break a page rule with the near miss
+
+Verify each stated rule by **breaking it**, not only by satisfying it. Feed a
+form or control input that is almost valid but must be turned away, and record
+what happened either way.
+
+**Evidence:** `live-check/08-near-miss.txt` — the form or control, the nearly
+valid input, its visible response, and whether it was turned away.
+
+**DEFECT:** a refusal that never came is a fault; a refusal you never asked for
+is simply unchecked. Where the page has rules of its own, reach an ending those
+rules call a **LOSS** or a **REFUSAL**, not only the winning one.
