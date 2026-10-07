@@ -537,8 +537,50 @@ check "6b. the root cause is ledgered where the readers are" \
    grep -q 'ROOT CAUSE IS' '$SCRIPT'"
 check "6c. lcars_config_get_raw itself is UNCHANGED (shared code, left alone)" \
   "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-init/lcars-common.sh"
-check "6d. the argv fence file is untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-xo/xo-run.py"
+# S257 — THE GUARD SAYS WHAT IT MEANS NOW. It was `git diff --quiet` on
+# xo-run.py, which asserted "S254 did not need to edit this file" and so broke
+# the moment a later session edited it for an unrelated reason — which S257
+# did: it widened the STEP-KIND READER (the verb is the action's key, not a
+# `do` field, so every browser action was being refused before it ran) and did
+# not go near the fence. The INTENT is the fence itself, so that is what is
+# checked, behaviourally, against the real file: a shell is still refused, an
+# absolute path outside the worktree is still refused, and a verb on neither
+# allow-list is still refused. This cannot rot and cannot pass vacuously.
+#
+# AND THE SAMPLE SENDS BOTH SPELLINGS OF THE VERB (S257 fix round 1). This guard
+# drove the real file and still missed a hole for a whole round, because every
+# dangerous step in its sample spelled its verb `do` — and the defect was that
+# the argv fence read `do` while the step-kind reader had been widened to read
+# the verb off the KEY. The guard was re-run under a mutation and did fail, which
+# proved the guard fires and proved NOTHING about whether the behaviour was
+# whole: a mutation control on an incomplete sample cannot. So the sample now
+# sends the key form of a shell request too — `{"run": "x", "argv": ["sh","-c",…]}`
+# and the same for `workflow` — and the hole cannot reopen under a green guard.
+check "6d. the argv fence still stands — a shell, an escape and an unknown verb are refused" \
+  "$PY - <<'FENCE'
+import json, os, subprocess, sys, tempfile
+d = tempfile.mkdtemp()
+acts = os.path.join(d, 'a.json')
+json.dump({'actions': [
+    {'do': 'run', 'argv': ['sh', '-c', 'echo hi'], 'cwd': '<worktree>'},
+    {'do': 'run', 'argv': ['python3', '-m', 'relay', '--out', '/etc/passwd'],
+     'cwd': '<worktree>'},
+    # THE KEY FORM OF THE SAME TWO REQUESTS — the verb as the step's key, which
+    # is the shape the action schema actually uses and the one this sample was
+    # missing.
+    {'run': 'x', 'argv': ['sh', '-c', 'echo hi'], 'cwd': '<worktree>'},
+    {'workflow': 'x', 'argv': ['bash', '-c', 'echo hi'], 'cwd': '<worktree>'},
+    {'frobnicate': 'x'},
+    {'click': '#submit'},
+]}, open(acts, 'w'))
+out = os.path.join(d, 'kept.json')
+subprocess.run([sys.executable, '$REPO_ROOT/skills/lcars-xo/xo-run.py', 'actions', '--actions', acts,
+                '--out', out, '--cap', '12'], capture_output=True)
+k = json.load(open(out))
+shells = [r for r in k['refused'] if 'asks for a shell' in (r.get('why') or '')]
+sys.exit(0 if len(k['refused']) == 5 and len(k['steps']) == 1
+              and not k['reachSteps'] and len(shells) == 3 else 1)
+FENCE"
 check "6e. worker-adapter.sh and ownership.sh are untouched" \
   "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-run/worker-adapter.sh skills/lcars-run/ownership.sh"
 check "6f. the works-kind downgrade is still IN the code (widened, not removed)" \

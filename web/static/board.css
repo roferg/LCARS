@@ -3708,6 +3708,12 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   background:var(--lcars-card-alt,#101a33)}
 .xo-item-title{flex:1 1 220px;font-weight:600;font-size:14.5px;line-height:1.4;
   min-width:0;overflow-wrap:anywhere}
+/* S257 — ONE FAULT, COUNTED ONCE. The row names every criterion id in its
+   group, so grouping stays presentation and nothing vanishes from his list.
+   Muted and in the item's own gutter: it is a note about the row, not a
+   second row. */
+.xo-item-also{font-size:12px;line-height:1.5;color:var(--xo-muted);
+  padding:0 14px 10px;background:var(--lcars-card-alt,#101a33)}
 .xo-item-body{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:16px;padding:14px}
 .xo-story{display:flex;flex-direction:column;gap:12px;min-width:0}
 .xo-beat{display:flex;flex-direction:column;gap:3px}

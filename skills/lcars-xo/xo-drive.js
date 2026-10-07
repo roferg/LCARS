@@ -2805,6 +2805,25 @@ const FOCUS = (sel) => `(function () {
                  typings: ((prior && prior.moves && prior.moves.typings) || 0) + walk.moves.typings,
                  keypresses: ((prior && prior.moves && prior.moves.keypresses) || 0) + walk.moves.keypresses,
                  addressJumps: ((prior && prior.moves && prior.moves.addressJumps) || 0) + walk.moves.addressJumps } };
+      /* WHERE THIS ROUND ENDED (S257 fault 3) — AND IT IS NOT STICKY.
+       *
+       * THE DEFECT THIS CLOSES, measured on the 2026-10-06 runelock drive:
+       * round 1 ran at `…/?seed=xo-one`, round 2 was handed `launch.json`'s url
+       * again (`http://localhost:57603`, no query), and `actions-2.json[0]` was
+       * a `type` rather than a re-navigate — so the permutation the look had
+       * deduced was typed against a FRESH RANDOM SECRET. `entry` could not
+       * carry it (it is sticky to the front door, on purpose) and `screens` is
+       * the set this round read, not the one it stopped on. So the ending gets
+       * a field of its own, overwritten every round, because the only ending
+       * worth re-entering at is the last one.
+       *
+       * Read off the last reading taken — `snapReadout` pushes the screen the
+       * look is standing on and runs once more after the actions — and from
+       * `currentUrl` when no reading could be taken at all. */
+      const ended = readoutPages.length
+        ? String(readoutPages[readoutPages.length - 1].url || "")
+        : String(currentUrl || "");
+      if (ended) out.endedAt = ended;
       /* S221 fix 6 — CARRIED, not dropped. This writer builds a NEW object
        * with an explicit field list, so anything set on `walk` that is not
        * named right here vanishes silently (which is exactly how it ate

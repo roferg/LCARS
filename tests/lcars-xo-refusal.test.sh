@@ -466,6 +466,11 @@ import ast, sys
 WANT = ("SHELLS", "LAUNDERERS", "INTERPRETERS", "SHELL_FLAG_LETTERS",
         "INLINE_FLAG_LETTERS", "INLINE_LONG", "HOME_MARK", "EXTRA_HOME_MARKS",
         "_shell_refusal", "argv_refusal", "declared_escape", "refuse_reason")
+# Symbols named after the file are still REQUIRED to exist (the fixture below
+# still fails if one is gone) but are left OUT of the printed comparison, for a
+# symbol the round deliberately changed. Its intent is then asserted
+# BEHAVIOURALLY instead — see 4f-do/key in the suite.
+SKIP = tuple(sys.argv[2:])
 src = open(sys.argv[1], encoding="utf-8").read()
 tree = ast.parse(src)
 out = []
@@ -480,15 +485,73 @@ for node in tree.body:
         out.append("### %s\n%s" % (name, ast.get_source_segment(src, node)))
 missing = [w for w in WANT if not any(o.startswith("### %s\n" % w) for o in out)]
 assert not missing, "the fence has lost symbols: %s" % missing
-print("\n".join(out))
+print("\n".join(o for o in out
+                if not any(o.startswith("### %s\n" % k) for k in SKIP)))
 FENCEEOF
 ( cd "$REPO_ROOT" && git show HEAD:skills/lcars-xo/xo-run.py ) \
   >"$TMPROOT/xo-run-head.py" 2>/dev/null
 check "4f. fixture — the fence symbols are all still there to compare" \
   "$PY '$TMPROOT/fence-src.py' '$REPO_ROOT/skills/lcars-xo/xo-run.py' >'$TMPROOT/fence-now.txt'"
+# S257 fix round 1 — SYMBOL FOR SYMBOL, EXCEPT THE ONE THIS ROUND STRENGTHENED.
+# This guard caught `declared_escape` changing, which is exactly its job; what it
+# cannot tell on its own is a weakening from a strengthening. The change is that
+# the argv fence is applied to the verb the gate RESOLVED instead of only to a
+# declared `do`, because the action schema spells the verb as the step's key —
+# `{"run": "x", "argv": ["sh","-c",…]}` walked straight past this fence and was
+# KEPT. So `declared_escape` is pinned BEHAVIOURALLY below (every shape it must
+# refuse, both spellings of the verb, driven against the real file) and the other
+# eleven symbols stay pinned source-for-source against the committed version.
+# Same precedent as the narrowing above, one level down: pin the INTENT where the
+# source legitimately moves, and never loosen what is still meant to be frozen.
 check "4f. the argv fence itself is untouched, symbol for symbol" \
-  "$PY '$TMPROOT/fence-src.py' '$TMPROOT/xo-run-head.py' >'$TMPROOT/fence-head.txt' && \
-   diff '$TMPROOT/fence-head.txt' '$TMPROOT/fence-now.txt'"
+  "$PY '$TMPROOT/fence-src.py' '$TMPROOT/xo-run-head.py' declared_escape >'$TMPROOT/fence-head.txt' && \
+   $PY '$TMPROOT/fence-src.py' '$REPO_ROOT/skills/lcars-xo/xo-run.py' declared_escape >'$TMPROOT/fence-now2.txt' && \
+   diff '$TMPROOT/fence-head.txt' '$TMPROOT/fence-now2.txt'"
+# THE REQUEST GATE, DRIVEN AGAINST THE REAL FILE. Not a grep: the function is
+# imported and asked. Every row is a shape a worker could request; the LAST one
+# is the control that stops this passing by refusing everything.
+cat >"$TMPROOT/gate-drive.py" <<'GATEEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("xr", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+W, H = "<worktree>", "<throwaway-home>"
+CASES = [
+    # (must be refused?, the step as a worker would declare it)
+    (1, {"do": "run", "argv": ["sh", "-c", "echo hi"], "cwd": W}),
+    (1, {"run": "x", "argv": ["sh", "-c", "echo hi"], "cwd": W}),
+    (1, {"workflow": "x", "argv": ["bash", "-c", "echo hi"], "cwd": W}),
+    (1, {"run": "x", "argv": ["env", "bash", "-c", "echo hi"], "cwd": W}),
+    (1, {"run": "x", "argv": ["python3", "-c", "print(1)"], "cwd": W}),
+    (1, {"run": "x", "argv": ["/bin/ls", "/etc"], "cwd": W}),
+    (1, {"run": "x", "argv": ["../../escape.sh"], "cwd": W}),
+    (1, {"do": "run", "argv": ["python3", "-m", "relay"], "cwd": "/etc"}),
+    (1, {"run": "x", "argv": ["python3", "-m", "relay"], "cwd": "../.."}),
+    (1, {"run": "x", "argv": ["python3", "-m", "relay"], "cwd": W,
+         "env": {"HOME": "/Users/somebody-else"}}),
+    (1, {"do": "run", "argv": [], "cwd": W}),
+    (0, {"do": "run", "argv": ["python3", "-m", "relay", "--help"], "cwd": W}),
+    (0, {"run": "x", "argv": ["python3", "-m", "relay", "--help"], "cwd": W}),
+    (0, {"run": "x", "argv": ["bash", "run-tests.sh"], "cwd": W,
+         "env": {"HOME": H}}),
+    (0, {"workflow": "x", "file": "ci.yml", "cwd": W}),
+    (0, {"read": "x", "path": "out.txt"}),
+]
+bad = []
+for want, step in CASES:
+    why = m.declared_escape(step)
+    if bool(why) != bool(want):
+        bad.append("%r -> %r" % (step, why))
+if bad:
+    print("\n".join(bad))
+    sys.exit(1)
+GATEEOF
+check "4f-gate. the REQUEST gate refuses every escape shape, in BOTH spellings of the verb" \
+  "$PY '$TMPROOT/gate-drive.py' '$REPO_ROOT/skills/lcars-xo/xo-run.py'"
+check "4f-gate. CONTROL — the pre-fix gate FAILS that table (the key form walked past it)" \
+  "sed 's/^    if kind == \"run\" or (kind in REACH_KINDS and step.get(\"argv\")):/    if str(step.get(\"do\") or \"\") == \"run\":/' \
+     '$REPO_ROOT/skills/lcars-xo/xo-run.py' >'$TMPROOT/xo-run-prefix.py' && \
+   ! diff -q '$TMPROOT/xo-run-prefix.py' '$REPO_ROOT/skills/lcars-xo/xo-run.py' >/dev/null && \
+   ! $PY '$TMPROOT/gate-drive.py' '$TMPROOT/xo-run-prefix.py' >/dev/null 2>&1"
 check "4f. CONTROL — that comparison can FAIL (one word changed in a refusal)" \
   "sed 's/is not a step the harness executes/is fine actually/' \
      '$REPO_ROOT/skills/lcars-xo/xo-run.py' >'$TMPROOT/xo-run-weak.py' && \

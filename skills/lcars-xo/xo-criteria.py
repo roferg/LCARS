@@ -503,6 +503,16 @@ def find_contradictions(criteria):
 
     contradictions = []
     marks = {}
+    # THE JOIN KEY WAS ALREADY COMPUTED AND THEN THROWN AWAY (S257 fault 1b).
+    # `direction: "delivers"` is the plan STATING that this ticket criterion is
+    # the same requirement as the PRD row it serves — the one record that says
+    # two ledger rows are one finding. It was resolved here and dropped by
+    # `if direction != "removes": continue`, so the report counted the pair
+    # twice, printed it twice, and `xo file-logs` filed TWO bugs for ONE fault
+    # (measured on all five 2026-10-06 looks). Nothing about the criteria SET
+    # changes: both rows stay, both are still coverage, and this only writes
+    # down the pairing that was already decided.
+    delivers = {}
     unlinked = 0
     malformed = []
     for c in criteria:
@@ -537,6 +547,7 @@ def find_contradictions(criteria):
             unlinked += 1
             continue
         if direction != "removes":
+            delivers[c["id"]] = str(target.get("id") or "")
             continue
         req = target
         marks[c["id"]] = req["id"]
@@ -548,7 +559,7 @@ def find_contradictions(criteria):
                           "REMOVES what requirement %s asks for" % req["id"]),
             "via": "declaration",
         })
-    return contradictions, marks, unlinked, malformed
+    return contradictions, marks, unlinked, malformed, delivers
 
 
 def main():
@@ -571,10 +582,14 @@ def main():
         except Exception:
             plan_doc = None
 
-    contradictions, marks, unlinked, malformed = find_contradictions(criteria)
+    contradictions, marks, unlinked, malformed, delivers = find_contradictions(criteria)
     for c in criteria:
         if isinstance(c, dict) and c.get("id") in marks:
             c["contradictsRequirement"] = marks[c["id"]]
+        # THE PAIRING, ON THE ROW (S257 fault 1b). Read by nothing that grades:
+        # it is the key the report and the filer group by, never a verdict.
+        if isinstance(c, dict) and delivers.get(c.get("id")):
+            c["deliversRequirement"] = delivers[c["id"]]
 
     # S239 — HOW EACH OF THESE IS REACHED, decided from the record before the
     # look. `served_by` lets a PRD requirement inherit the reach of the ticket

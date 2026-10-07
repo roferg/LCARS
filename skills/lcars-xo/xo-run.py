@@ -144,8 +144,8 @@ STEP_TIMEOUT = int(os.environ.get("LCARS_XO_STEP_TIMEOUT") or 120)
 # asked for twenty may never look like it got them, so the overflow is recorded.
 MAX_ACTIONS = int(os.environ.get("LCARS_XO_MAX_ACTIONS") or 12)
 
-BROWSER_KINDS = ("click", "type", "gate", "press", "key", "goto", "scroll",
-                 "shot", "screenshot", "wait", "hover", "select")
+BROWSER_KINDS = ("navigate", "click", "type", "gate", "press", "key", "goto",
+                 "scroll", "shot", "screenshot", "wait", "hover", "select")
 # The two line prefixes `autopilot.sh workflow-run` prints, and the one place
 # this file names them. `  SKIP: ` is its notice that a step was NOT executed
 # (a packaged `uses:` action, a step with no `run:`, a shell it does not drive)
@@ -154,6 +154,41 @@ WF_STEP = "STEP "
 WF_SKIP = "  SKIP: "
 REACH_KINDS = ("run", "workflow", "read")
 CHECKED_BY = {"run": "cli", "workflow": "workflow", "read": "test"}
+
+# THE VERB IS THE KEY, NOT A `do` FIELD (S257 fault 2).
+#
+# THE DEFECT THIS CLOSES, measured on the 2026-10-06 drive: `cmd_actions` read
+# the step kind out of `a["do"]`, and the action schema HAS NO `do` FIELD for a
+# browser step — the verb is the key. `{"click":"#submit"}`, `{"navigate":URL}`,
+# `{"type":"#guess","text":"1234"}`, `{"press":"Enter"}` is what
+# prompts/evaluate.md teaches and what xo-drive.js dispatches on (its `a.click`
+# / `a.navigate` / `a.press` chain). So `kind` came back "" for every real
+# browser action and EVERY ONE WAS REFUSED before anything ran — 12 then 14
+# refusals a round, `actions-kept-N.json` holding `refused: 12 x {"kind": ""}`,
+# while the same run's drive notes proved the worker had asked for real clicks.
+#
+# `do` is still honoured and still wins: `run` / `workflow` / `read` are
+# declared that way. NOTHING HERE WIDENS THE FENCE — a verb that is on neither
+# allow-list is still refused, `declared_escape` still vets every reach step,
+# and the refusal now NAMES the verb it refused instead of saying nothing.
+ACTION_KINDS = REACH_KINDS + BROWSER_KINDS
+
+
+def action_kind(a):
+    """(kind, what-to-call-it) for one action, READ off the record.
+
+    The declared `do` first; otherwise the first key that is a kind the harness
+    knows. The second value is for the refusal message — the keys the action
+    actually carried — so an unknown step is refused BY NAME.
+    """
+    declared = str(a.get("do") or "").strip()
+    if declared:
+        return declared, declared
+    for k in a.keys():
+        if str(k) in ACTION_KINDS:
+            return str(k), str(k)
+    named = ", ".join("`%s`" % k for k in a.keys())
+    return "", (named or "an action with no verb at all")
 
 WORKTREE_MARK = "<worktree>"
 HOME_MARK = "<throwaway-home>"
@@ -1532,7 +1567,7 @@ def cmd_teardown(opt):
 # ===========================================================================
 # actions — what the WORKER asked for, under the SAME cap
 # ===========================================================================
-def declared_escape(step):
+def declared_escape(step, kind=None):
     """Why a REQUESTED step may not be kept, judged on its DECLARED form.
 
     There is no worktree yet when a worker's round is read, so the check is on
@@ -1543,8 +1578,32 @@ def declared_escape(step):
     THE SAME ARGV FENCE AS THE JOURNEY GATE. A worker asked for `["bash","-c",…]`
     and it was KEPT into reachSteps; a step is now refused whether it was
     declared in the journey or requested by the worker.
+
+    THE FENCE JUDGES THE VERB THE GATE RESOLVED (S257 fix round 1). This line
+    read `step["do"] == "run"` while `action_kind` had just been widened to read
+    the verb off the step's KEY — the action schema is `{"click": "#sel"}`, not
+    `{"do": "click"}` — so a REACH verb written in key form reached this gate
+    with its kind resolved and then skipped the argv check entirely:
+
+        {"do":  "run", "argv": ["sh","-c","echo PWNED"]}  → refused
+        {"run": "x",   "argv": ["sh","-c","echo PWNED"]}  → KEPT
+
+    Nothing ever ran — `cmd_journey` refuses a key-form step outright — so it
+    was a FALSE RECORD, which is the fault class this session exists to close:
+    the ledger and the console said a shell request had been GRANTED, the
+    refusal stopped naming the shell, and the 12-action cap counted it as spent.
+    So the kind is whatever the gate resolved, `do` or key, and the argv fence
+    is applied to EVERY reach verb that carried an argv. Nothing about
+    `argv_refusal` or the refusal sentences moved: they were simply unreachable.
     """
-    if str(step.get("do") or "") == "run":
+    if kind is None:
+        kind, _named = action_kind(step)
+    kind = str(kind or "")
+    # `run` is always argv-judged (an empty argv is itself a refusal: a run step
+    # names the program it runs). `workflow` and `read` name a file, not a
+    # program, so they are judged only when they DID carry an argv — which is
+    # the shape the hole above was walked through.
+    if kind == "run" or (kind in REACH_KINDS and step.get("argv")):
         why = argv_refusal(step.get("argv") or [])
         if why:
             return why
@@ -1585,17 +1644,21 @@ def cmd_actions(opt):
     kept_browser, kept_reach, refused = [], [], []
     taken = 0
     for a in actions:
-        kind = str(a.get("do") or "")
+        kind, named = action_kind(a)
         if kind in REACH_KINDS:
-            why = declared_escape(a)
+            why = declared_escape(a, kind)
             if why:
                 refused.append({"kind": kind, "why": why})
                 journal(mission_dir, "action-refused", {"kind": kind, "why": why})
                 continue
         elif kind not in BROWSER_KINDS:
-            refused.append({"kind": kind, "why": "not a step kind the harness knows"})
+            # SAY WHAT WAS REFUSED. A refusal that names nothing is a refusal
+            # nobody can act on, and it is how a schema mismatch hid for a
+            # whole round of looks.
+            why = "%s is not a step kind the harness knows" % named
+            refused.append({"kind": kind, "verb": named, "why": why})
             journal(mission_dir, "action-refused",
-                    {"kind": kind, "why": "not a step kind the harness knows"})
+                    {"kind": kind, "verb": named, "why": why})
             continue
         if taken >= cap:
             # THE OVERFLOW IS RECORDED, never silently granted (S222's rule).

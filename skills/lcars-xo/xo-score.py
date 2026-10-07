@@ -381,7 +381,53 @@ def load_observations(path):
     # he was being given. A finding the score counts and the report hides is
     # the false green this whole session exists to kill. So both words are
     # read, and where each came from is kept.
-    kept = []
+    # ONE FINDING, COUNTED ONCE — THE OTHER HALF OF THE SAME CURE (S257 fault
+    # 1a). `xo-observe.py` now de-duplicates PER SCREEN as it writes, so a
+    # fresh look cannot record the same crowded pair seven times again. But the
+    # records already on the captain's machine were written by the old pass:
+    # the 2026-10-06 runelock record holds SEVEN byte-identical crowding
+    # findings, and this is the one place they are read on the way to his
+    # board. Carrying them through verbatim means his board keeps saying "I
+    # measured 7" about one fault on every look he already has. So the SAME
+    # rule is applied here — `xo-observe.py`'s own `obs_key`, loaded from
+    # beside this file so there is one key and not two — and nothing is
+    # decided here that the writer did not already decide.
+    #
+    # PER SCREEN, always: the same fault on two screens is two findings.
+    # If the key cannot be loaded the findings are carried through exactly as
+    # before — a de-dup is never a reason to lose a verdict.
+    #
+    # AND THE FALLBACK IS LOUD (S257 fix round 1). It used to be `_key = None`
+    # and nothing else, after which every finding was carried through verbatim
+    # — so a broken install SILENTLY restored the inflated board the captain
+    # complained about, and not one thing he reads would have said so. A
+    # fallback nobody can see is the same false-record class as the rest of this
+    # session. The behaviour does not change; what changes is that the one
+    # sentence saying de-duplication did not run is now written down, in the
+    # same `notes` this file already uses for everything it could not do — so it
+    # reaches `ledgerNotes`, the report's "How I put this together", and `NOTE`
+    # on the wire that `xo.sh` journals.
+    _key = None
+    _dedup_skipped = ""
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location(
+            "_xo_observe", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "xo-observe.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _key = _mod.obs_key
+    except Exception as _exc:
+        _key = None
+        _dedup_skipped = (
+            "I could not load the de-duplication key from xo-observe.py beside "
+            "me (%s: %s), so de-duplication DID NOT RUN on what I measured: the "
+            "findings below are listed exactly as they were recorded, and one "
+            "fault seen several times may be counted several times. No verdict "
+            "was dropped over it. This is an install problem, not a build "
+            "problem — xo-observe.py should sit next to xo-score.py."
+            % (type(_exc).__name__, _exc))
+    kept, seen_obs = [], set()
     for o in obs:
         if not isinstance(o, dict):
             continue
@@ -394,6 +440,11 @@ def load_observations(path):
         # the drawing or a step of the flow, not a loose thing noticed on a
         # page, and it is printed under its own heading.
         o["reportedUnder"] = "measured" if o.get("says") else "layout"
+        if _key is not None:
+            k = _key(o)
+            if k in seen_obs:
+                continue
+            seen_obs.add(k)
         kept.append(o)
     return {
         "observations": kept,
@@ -403,6 +454,9 @@ def load_observations(path):
         # that sentence has to reach HIM. A short list he believes is the whole
         # list is worse than a long one.
         "notes": [n for n in (doc.get("notes") or []) if isinstance(n, str) and n.strip()],
+        # EMPTY WHENEVER THE DE-DUP RAN, which is every whole install — so a
+        # normal look's record is byte-for-byte what it always was.
+        "dedupSkipped": _dedup_skipped,
         # S212 round 5: the ONE silence that is left. The look now only writes
         # something off as unseen when it POSITIVELY established that something
         # solid was over it, which makes this rare, legitimate — and cheap to
@@ -759,6 +813,160 @@ HIGH_COVERAGE_PCT = 80
 # quietly out of the grade altogether.
 GROUP_PERSON, GROUP_DRAWING, GROUP_CONTRACT = "person", "drawing", "contract"
 GROUP_ORDER = (GROUP_PERSON, GROUP_DRAWING, GROUP_CONTRACT)
+
+
+def _same_text(t):
+    """A criterion's text, normalised for WHITESPACE AND CASE ONLY. Nothing
+    else: no stemming, no stop-words, no scoring of how alike two texts are.
+    Two rows join on this only when they are literally the same sentence
+    written twice."""
+    return " ".join(str(t or "").split()).lower()
+
+
+def group_faults(ledger, contract_by_id):
+    """ONE FAULT, COUNTED ONCE (S257 fault 1).
+
+    THE DEFECT THIS CLOSES, measured on all five 2026-10-06 looks. Every
+    mission's contract is the PRD's requirements PLUS the plan's acceptance
+    criteria, and the plan's criteria are mostly THE SAME REQUIREMENTS RESTATED
+    — which is correct, and is why the criteria set is an invariant here: both
+    are real coverage. But when both halves of a pair came back `gap`, the
+    report printed TWO rows for ONE fault, the board's filter line said
+    "Didn't work 4" for two faults, and `xo file-logs` filed FOUR bugs, three
+    of them carrying `shots: []`. Six of those rows carried a note that
+    literally began *"Same finding as prd-N"*: the reviewer told the report it
+    was one fault and the report counted it twice anyway.
+
+    THIS IS PRESENTATION AND FILING, NOT DELETION. Every row stays in the
+    ledger, `counts{}` stays the ROW count so no grade can move, and every
+    contributing criterion id is written onto the row that represents the
+    group. Nothing here is a verdict.
+
+    THE KEY IS A RECORD, IN THIS ORDER, AND THERE IS NO FOURTH RULE:
+      1. the plan's own `delivers` declaration AS THE REVIEW RECORDED IT —
+         `serves` + `direction: "delivers"`, resolved here the same way
+         xo-criteria.py resolves it (a `prd-N` id, else the requirement's
+         verbatim text);
+      2. the same declaration pre-resolved into `deliversRequirement`, which
+         xo-criteria.py writes when a review is SET UP;
+      3. identical criterion text, whitespace and case normalised, as the
+         fallback for a pair nobody linked;
+      4. nothing. No score for how alike two texts look, no prose, no
+         filename — this file family has lost four sessions to inferring
+         where it should read a record.
+
+    WHY RULE 1 EXISTS AT ALL (S257 fix round 1). `deliversRequirement` is
+    written when a review is set up, so with rule 2 alone a review recorded
+    BEFORE this session grouped only pairs whose wording was word-for-word
+    identical: 6→5, 3→2, 6→4, 4→3, 6→4 across the captain's five 2026-10-06
+    looks, instead of 6→3, 3→2, 6→3, 4→2, 6→3. Every one of those five
+    `criteria.json` files ALREADY carries `serves` + `direction: "delivers"` on
+    four rows — only the pre-resolved field is absent. So the declaration is
+    read where it already is, and his existing boards cure without a fresh
+    review. Both rules read the SAME declaration; one is simply resolved
+    already. Nothing is re-derived from a PRD and no criterion changes.
+
+    Rows join only when they AGREE on status: two records of one requirement
+    that disagree about whether it worked is itself information, and collapsing
+    them would hide the disagreement rather than count it once.
+
+    Returns the groups as records; the stamps are written onto `ledger`.
+    """
+    by_id = {str(e.get("id")): e for e in ledger}
+    parent = {}
+
+    def status_of(cid):
+        e = by_id.get(cid)
+        return str((e or {}).get("status") or "")
+
+    # THE PRIMARY REQUIREMENTS A `serves` POINTER MAY NAME, by id and by their
+    # verbatim text — the same two handles `xo-criteria.py::_resolve_serves`
+    # uses, and nothing else. Reference RESOLUTION of a pointer the review
+    # wrote down, never a guess at which requirement a sentence is about.
+    primary_by_id, primary_by_text = {}, {}
+    for row in contract_by_id.values():
+        if not isinstance(row, dict) or not row.get("primary"):
+            continue
+        rid = str(row.get("id") or "")
+        if not rid:
+            continue
+        primary_by_id[rid] = rid
+        t = _same_text(row.get("text"))
+        if t:
+            primary_by_text.setdefault(t, rid)
+
+    def declared_delivers(row):
+        """The requirement id this contract row declares it DELIVERS, or ""."""
+        if not isinstance(row, dict):
+            return ""
+        # 1 — the declaration as the review recorded it.
+        if str(row.get("direction") or "").strip().lower() == "delivers":
+            s = str(row.get("serves") or "").strip()
+            if s:
+                got = primary_by_id.get(s) or primary_by_text.get(_same_text(s))
+                if got:
+                    return got
+        # 2 — the same declaration, pre-resolved when the review was set up.
+        return str(row.get("deliversRequirement") or "").strip()
+
+    # 1 and 2 — the declared link, however this review recorded it.
+    for e in ledger:
+        cid = str(e.get("id"))
+        row = contract_by_id.get(cid) or {}
+        target = declared_delivers(row)
+        if not target or target == cid or target not in by_id:
+            continue
+        if status_of(target) != status_of(cid):
+            continue
+        parent[cid] = target
+
+    # 3 — identical text, for a pair the plan never linked.
+    first_by_text = {}
+    for e in ledger:
+        cid = str(e.get("id"))
+        if cid in parent:
+            continue
+        key = (_same_text(e.get("text")), str(e.get("status") or ""))
+        if not key[0]:
+            continue
+        if key in first_by_text:
+            if first_by_text[key] != cid:
+                parent[cid] = first_by_text[key]
+        else:
+            first_by_text[key] = cid
+
+    def root_of(cid):
+        seen = set()
+        cur = cid
+        while cur in parent and cur not in seen:
+            seen.add(cur)
+            cur = parent[cur]
+        return cur
+
+    groups = {}
+    for e in ledger:
+        cid = str(e.get("id"))
+        groups.setdefault(root_of(cid), []).append(cid)
+
+    faults = []
+    for e in ledger:
+        cid = str(e.get("id"))
+        root = root_of(cid)
+        members = groups.get(root) or [cid]
+        if len(members) < 2:
+            # A row that is nobody's duplicate is stamped with NOTHING, so a
+            # verdict with no duplicate pair in it is byte-identical to the one
+            # this version of the file would have written before.
+            continue
+        e["faultId"] = root
+        if cid == root:
+            e["faultPrimary"] = True
+            e["faultWith"] = [m for m in members if m != root]
+            faults.append({"id": root, "status": str(e.get("status") or ""),
+                           "criteria": list(members)})
+        else:
+            e["faultOf"] = root
+    return faults
 SOURCE_GROUP = {"prd": GROUP_PERSON, "journey": GROUP_PERSON,
                 "drawing": GROUP_DRAWING, "plan": GROUP_CONTRACT}
 GROUP_QUESTION = {
@@ -2714,6 +2922,11 @@ def main():
 
     gaps_in = doc.get("gaps") if isinstance(doc.get("gaps"), list) else []
     notes = []
+    # THE FIRST THING THE NOTES SAY, WHEN IT HAPPENED AT ALL (S257 fix round 1):
+    # that the de-duplication of what was measured could not run. Empty — and so
+    # invisible — on every whole install; see `load_observations`.
+    if observations and observations.get("dedupSkipped"):
+        notes.append(observations["dedupSkipped"])
     # RECONCILING THE RECORDS OF ONE LOOK (S226, Number One). The reviewer keeps
     # several records of the same look — the walk, the probe/action pass, the
     # verdict. Where two of them disagree the difference is written down HERE,
@@ -3687,6 +3900,11 @@ def main():
             passing_on_look_alone.append({"id": e["id"],
                                           "text": e.get("text") or ""})
 
+    # ONE FAULT, COUNTED ONCE (S257). Stamped AFTER every rule that can move a
+    # row's status has run, and BEFORE the counts — which are deliberately
+    # still the ROW counts, so the grade and the recommendation cannot move.
+    faults = group_faults(ledger, contract_by_id)
+
     by_group = {k: [e for e in ledger if e["group"] == k] for k in GROUP_ORDER}
 
     met = sum(1 for e in ledger if e["status"] == "met")
@@ -4412,6 +4630,10 @@ def main():
         out["pictureNotDrawing"] = {"pictures": picture_names,
                                     "note": PICTURE_NOT_DRAWING,
                                     "fix": PICTURE_FIX}
+    # THE GROUPING, AS A RECORD (S257). Absent when there was no duplicate
+    # pair, so a verdict that had nothing to group is unchanged.
+    if faults:
+        out["faults"] = faults
     if observations and observations["observations"]:
         # CARRIED THROUGH, NOT RECOMPUTED. The observations were already final
         # when xo-observe.py wrote them; this file is the one place they get
@@ -4810,8 +5032,29 @@ def main():
         if ledger:
             w("\n### My reasoning, item by item\n\n")
             for e in ledger:
-                w("- %s *(%s)* — %s\n" % (clip(e["text"], 120) or e["id"], e["id"],
-                                          e["reason"]))
+                # ONE FAULT, SAID ONCE — AND EVERY ID STILL READABLE (S257).
+                # Both rows stay on this list, because both are coverage; the
+                # pairing is stated on them so the captain can see that two
+                # lines are one thing and not two.
+                pair = ""
+                if e.get("faultWith"):
+                    if e.get("status") == "gap":
+                        pair = (" *(the plan restates this as %s — one fault, "
+                                "counted once)*"
+                                % ", ".join("`%s`" % m for m in e["faultWith"]))
+                    else:
+                        pair = (" *(the plan restates this as %s — the same item, "
+                                "counted once)*"
+                                % ", ".join("`%s`" % m for m in e["faultWith"]))
+                elif e.get("faultOf"):
+                    if e.get("status") == "gap":
+                        pair = (" *(the same finding as `%s` — one fault, counted "
+                                "once)*" % e["faultOf"])
+                    else:
+                        pair = (" *(the same item as `%s`, counted once)*"
+                                % e["faultOf"])
+                w("- %s *(%s)* — %s%s\n" % (clip(e["text"], 120) or e["id"], e["id"],
+                                           e["reason"], pair))
         # OBSERVATIONS — THEIR OWN SECTION, NEVER THE SCORE (S210). These do not
         # come from the drawing or the PRD; they are things a person would just
         # SEE — two controls touching, a row out of line, text spilling past its

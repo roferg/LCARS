@@ -714,6 +714,53 @@ def steps_of(walk):
     return [x for x in s if isinstance(x, dict)] if isinstance(s, list) else []
 
 
+def actions_of(walk):
+    """The driver's own record of what it DID this round. `walk.steps` is the
+    DECLARED journey; `walk.actions` is what the action list asked for and the
+    browser carried out, pushed by xo-drive.js beside the `moves` counters."""
+    if not isinstance(walk, dict):
+        return []
+    a = walk.get("actions")
+    return [x for x in a if isinstance(x, dict)] if isinstance(a, list) else []
+
+
+def driver_clicks(walk):
+    """`walk.moves.clicks` — the driver's own count of the clicks it made."""
+    m = (walk or {}).get("moves") if isinstance(walk, dict) else None
+    try:
+        return int((m or {}).get("clicks") or 0)
+    except Exception:
+        return 0
+
+
+SEL_TESTID_KEYS = ("data-testid", "data-test-id")
+SEL_NOT_IN_A_BARE_ID = " \t#.[]>,:()*"
+
+
+def selector_handles(raw):
+    """(id, testid) a click selector NAMES, read off the selector's own syntax:
+    `#submit` names the id `submit`, `[data-testid="go"]` the testid `go`.
+    Anything else yields neither and is matched by name like any other record.
+
+    Plain string work on purpose. This file family has lost sessions to reading
+    meaning out of text, and the landing suite's own guard refuses any pattern
+    match added to this rail — a selector's syntax is a RECORD and is read as
+    one, exactly as far as it is unambiguous, and no further."""
+    s = str(raw or "").strip()
+    if s[:1] == "#":
+        name = s[1:]
+        if name and not any(c in name for c in SEL_NOT_IN_A_BARE_ID):
+            return name, ""
+        return "", ""
+    if s[:1] == "[" and s[-1:] == "]" and "=" in s:
+        key, _, val = s[1:-1].strip().partition("=")
+        key = key.strip().lower()
+        val = val.strip().strip('"').strip("'").strip()
+        if key in SEL_TESTID_KEYS and val:
+            return "", val
+    return "", ""
+
+
 def touched_controls(walk):
     """The controls the walk ACTUALLY clicked — the name it matched and the
     screen it was standing on when it clicked. A step counts only when it was a
@@ -738,7 +785,31 @@ def touched_controls(walk):
         if key in seen:
             continue
         seen.add(key)
-        out.append({"name": name, "display": str(raw), "screen": screen})
+        out.append({"name": name, "display": str(raw), "screen": screen,
+                    "id": "", "testid": ""})
+    # ── AND THE CLICKS THE DRIVER ITSELF RECORDED (S257 fault 2) ────────────
+    # THE DEFECT THIS CLOSES, measured on the 2026-10-06 runelock drive:
+    # `walk.json` held `moves.clicks: 9` and nine `{"click":"#submit"}` entries
+    # in `walk.actions`, and `criteria.json` said `touchedCheck.clicked: 0`,
+    # because this walked `walk.steps` — the DECLARED journey — and nothing in
+    # the harness ever read the other half of the same record. A control is a
+    # control however the look reached it, so both records feed one list,
+    # de-duplicated by (name, screen) exactly as before.
+    for a in actions_of(walk):
+        if "click" not in a:
+            continue
+        raw = a.get("click")
+        name = squash(raw)
+        cid, testid = selector_handles(raw)
+        if not name and not cid and not testid:
+            continue
+        screen = str(a.get("screen") or a.get("urlBefore") or "")
+        key = (name or cid or testid, screen)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "display": str(raw), "screen": screen,
+                    "id": cid, "testid": testid, "viaDriver": True})
     return out
 
 
@@ -765,15 +836,21 @@ def inventory(builds):
     return cands
 
 
-def find_touched(name, screen, candidates):
+def find_touched(name, screen, candidates, cid="", testid=""):
     """The inventory control that IS the one the walk clicked. By its name, or
-    one of its other names; the copy ON THE SCREEN IT WAS CLICKED and with a
-    laid-out box wins, for the same reason the pairing prefers a sized
-    candidate — a 0x0 copy on a hidden screen is not the one that was seen."""
+    one of its other names, or — when the record named it with a selector
+    rather than a label (S257) — by the id or testid that selector states; the
+    copy ON THE SCREEN IT WAS CLICKED and with a laid-out box wins, for the
+    same reason the pairing prefers a sized candidate — a 0x0 copy on a hidden
+    screen is not the one that was seen."""
     nm = squash(name)
 
     def is_it(c):
-        return squash(c.get("name")) == nm or nm in other_names(c)
+        if cid and str(c.get("id") or "").strip() == cid:
+            return True
+        if testid and str(c.get("testid") or "").strip() == testid:
+            return True
+        return bool(nm) and (squash(c.get("name")) == nm or nm in other_names(c))
     hits = [c for c in candidates if is_it(c)]
     if not hits:
         return None
@@ -849,7 +926,8 @@ def touched_report(walk, builds):
     rows, keys = [], set()
     examined = 0
     for ctl in clicked:
-        built = find_touched(ctl["name"], ctl["screen"], cands)
+        built = find_touched(ctl["name"], ctl["screen"], cands,
+                             str(ctl.get("id") or ""), str(ctl.get("testid") or ""))
         # Not in the inventory, or in it with no laid-out box, is COULDN'T-CHECK,
         # not a fault — there is nothing to look at, so no row is filed and it is
         # recorded as couldNotExamine (clicked - examined), never as fine.
@@ -880,11 +958,24 @@ def touched_report(walk, builds):
             "measurements": ms,
             "measuredDifference": True,
         })
+    # ── THE TWO RECORDS MUST AGREE (S257 fault 2) ──────────────────────────
+    # `driverClicks` is the driver's OWN counter (`walk.moves.clicks`), carried
+    # here so the two records of one run sit side by side and a later reader
+    # never has to go looking for the second one. `clicked` stays DISTINCT
+    # controls — nine clicks on one button is one control to measure — but it
+    # may never read 0 while the driver's own record says clicks happened: when
+    # we cannot name a single one of them, the honest count is the driver's,
+    # and they land in `couldNotExamine`, never in "examined and fine".
+    drive = driver_clicks(walk)
+    n_clicked = len(clicked)
+    if not clicked and drive:
+        n_clicked = drive
     tally = {
-        "clicked": len(clicked),
+        "clicked": n_clicked,
         "examined": examined,
         "faulted": len(rows),
-        "couldNotExamine": len(clicked) - examined,
+        "couldNotExamine": n_clicked - examined,
+        "driverClicks": drive,
     }
     return rows, tally
 
@@ -1000,9 +1091,15 @@ def main(argv):
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(contract, fh, indent=2)
             fh.write("\n")
-        print("%d control(s) clicked, %d examined, %d faulted, %d could not be examined "
+        # AND WHEN THE TWO RECORDS DISAGREE, THE CONSOLE SAYS SO (S257). A line
+        # reading "0 control(s) clicked" on a round whose driver recorded nine
+        # is the single sentence that hid this fault for a whole night of looks.
+        drove = ""
+        if tally.get("driverClicks") and tally["driverClicks"] != tally["clicked"]:
+            drove = " (the driver recorded %d click(s))" % tally["driverClicks"]
+        print("%d control(s) clicked%s, %d examined, %d faulted, %d could not be examined "
               "(%d requirement(s) added)"
-              % (tally["clicked"], tally["examined"], tally["faulted"],
+              % (tally["clicked"], drove, tally["examined"], tally["faulted"],
                  tally["couldNotExamine"], added))
         return 0
 

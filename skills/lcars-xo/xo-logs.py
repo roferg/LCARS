@@ -660,11 +660,42 @@ def main():
     # reads them in is the order the look produced them in.
     picked, seen = [], set()
 
+    # ── ONE BUG PER FAULT, NOT ONE PER ROW (S257 fault 1d) ──────────────────
+    #
+    # THE DEFECT THIS CLOSES, measured on the 2026-10-06 looks: runelock filed
+    # FOUR bugs for TWO faults, shiftboard six for three, pantry six for three
+    # — and the duplicates arrived with `shots: []`, so the fix worker got a
+    # second ticket for the same fault with no evidence on it. The de-dup here
+    # keyed on the CRITERION ID alone, and the PRD row and the plan row that
+    # restates it are two ids for one requirement.
+    #
+    # `xo-score.py` now stamps the pairing on the ledger (`faultOf` on the
+    # absorbed row, `faultWith` on the one that represents it), joined on the
+    # plan's own `serves`/`direction: delivers` declaration. This READS that
+    # stamp: a row that is part of a fault is filed under the requirement the
+    # fault belongs to, and the id it absorbed is NAMED in the bug so nothing
+    # is lost. An unstamped row behaves exactly as it did before.
+    fault_root = {}
+    fault_members = {}
+    for e in ledger:
+        cid = clean(e.get("id"))
+        if not cid:
+            continue
+        root = clean(e.get("faultOf")) or cid
+        fault_root[cid] = root
+        fault_members.setdefault(root, [])
+        if cid != root:
+            fault_members[root].append(cid)
+
     def take(cid, kind):
-        if not cid or cid in seen:
+        if not cid:
+            return
+        root = fault_root.get(cid, cid)
+        if cid in seen or root in seen:
             return
         seen.add(cid)
-        picked.append((cid, kind))
+        seen.add(root)
+        picked.append((root, kind))
 
     # PASS 1 — THE OLD RULE, UNCHANGED. Every recorded `contradiction`, in the
     # order the look listed them. No extra test is applied here on purpose: the
@@ -829,7 +860,17 @@ def main():
                               (": %s." % observed) if observed else "."))
             elif observed:
                 ac1.append("Recorded on the row as: %s." % observed)
-        ac1.append("The criterion is `%s`, written at %s." % (cid, where))
+        also = fault_members.get(cid) or []
+        if also:
+            # NOTHING VANISHES. The pair is one fault and one bug — and the
+            # restatement is named, so a fix worker can see both rows this
+            # ticket settles rather than wondering where the second one went.
+            ac1.append("The criterion is `%s`, written at %s, and your plan "
+                       "restates the same requirement as %s — one fault, one "
+                       "bug, both settled by this fix."
+                       % (cid, where, ", ".join("`%s`" % m for m in also)))
+        else:
+            ac1.append("The criterion is `%s`, written at %s." % (cid, where))
         acs = [" ".join(ac1)]
 
         # ── THE CORRECTED BEHAVIOUR, AS ONE SHARED RULE ──────────────────────

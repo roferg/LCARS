@@ -4529,6 +4529,25 @@ json_field() { # <file> <key> — a string value, or empty
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
 }
 
+# WHERE THE NEXT ROUND COMES BACK IN (S257 fault 3).
+#
+# THE DEFECT THIS CLOSES. Every round used to be handed `launch.json`'s url
+# again, and that url has never carried a query — so a look that seeded itself
+# with `?seed=xo-one`, deduced a permutation from round 1 and typed it in round
+# 2 was typing it against a FRESH RANDOM SECRET. Nothing recorded where a round
+# ended, so there was nothing to come back to.
+#
+# `xo-drive.js` now records the ending on the walk (`endedAt`, overwritten each
+# round). This READS that record and falls back to the launch url when there is
+# none — a mission that predates the field, or a round that never got a page,
+# behaves exactly as it did before.
+xo_round_entry() { # <walk.json> <fallback-url> -> the url the next round enters on
+  local walk="$1" fallback="$2" ended=""
+  ended="$(json_field "$walk" endedAt)"
+  [ -n "$ended" ] || ended="$fallback"
+  printf '%s\n' "$ended"
+}
+
 # The score LABEL swap. One source per fact (ruling): the LABEL is the score, the
 # COMMENT is the report — so a remote card reads the score off the listing it
 # already fetched, with no extra call. Best-effort like every relabel in LCARS:
@@ -5260,6 +5279,9 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
         XO_DRIVE_PID=$!
         wait "$XO_DRIVE_PID" || drc=$?
         XO_DRIVE_PID=""
+        # THE NEXT ROUND COMES BACK IN WHERE THIS ONE STOPPED (S257 fault 3),
+        # query and all — not at the bare launch url, which never had one.
+        lurl="$(xo_round_entry "$xodir/walk.json" "$lurl")"
       fi
       cp "$out/xo-actions.json" "$xodir/actions-$round.json" 2>/dev/null || true
       # THE WALK'S WRITES GO BACK BEFORE THE STEPS RUN (S248). The steps now run

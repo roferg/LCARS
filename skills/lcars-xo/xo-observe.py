@@ -1307,6 +1307,32 @@ def publish(o):
     return {k: v for k, v in o.items() if k not in INTERNAL}
 
 
+def obs_key(o):
+    """THE IDENTITY OF ONE FINDING, PER SCREEN (S257 fault 1a).
+
+    THE DEFECT THIS CLOSES, measured on the 2026-10-06 runelock drive: SEVEN
+    byte-identical crowding findings in one `observations.json`, six of them on
+    the same screen, and the captain's board reading "I measured 7" for ONE
+    fault. Two things were wrong with the only de-dup there was. It keyed on
+    `says` or `text` — and a PUBLISHED LAYOUT FINDING HAS NEITHER: `publish()`
+    strips `group,members,axis,place` and what is left says itself in
+    `message`. So the key fell through to a whole-dict dump, which is no key at
+    all. And it filtered the fresh batch against the OLD record only, never
+    against itself, while `all_obs` was extended once per reading and
+    `readouts.json` holds several readings of the same screen.
+
+    PER SCREEN IS THE INVARIANT, not an accident: the same fault on two screens
+    is two findings a person has to fix in two places, and
+    `tests/lcars-xo-journey.test.sh` pins it. `says` is tried first so every
+    finding that already had a working key keeps exactly the one it had."""
+    text = (str(o.get("says") or "").strip()
+            or str(o.get("text") or "").strip()
+            or str(o.get("message") or "").strip())
+    if not text:
+        text = json.dumps(o, sort_keys=True)
+    return (str(o.get("screen") or ""), " ".join(text.split()))
+
+
 def main(argv):
     if len(argv) < 3:
         sys.stderr.write("usage: xo-observe.py <readout.json> <out.json> "
@@ -1352,6 +1378,8 @@ def main(argv):
                      doc.get("page") if isinstance(doc, dict) else None)]
 
     all_obs, all_notes, all_screens = [], [], []
+    # NOT TWICE IN ONE PASS (S257 fault 1a). See obs_key().
+    seen_keys, dropped = set(), 0
     total_found = total_elements = total_unseen = 0
     for screen_at, page in readings:
       if True:
@@ -1388,7 +1416,13 @@ def main(argv):
             for o in obs:
                 o["screen"] = screen_at
 
-        all_obs.extend(obs)
+        for o in obs:
+            k = obs_key(o)
+            if k in seen_keys:
+                dropped += 1
+                continue
+            seen_keys.add(k)
+            all_obs.append(o)
         all_notes.extend(notes)
         total_found += found
         total_elements += len(elements)
@@ -1396,7 +1430,10 @@ def main(argv):
         if screen_at and screen_at not in all_screens:
             all_screens.append(screen_at)
 
-    obs, notes, found = all_obs, all_notes, total_found
+    # The same finding read twice is not two findings, so it is not counted as
+    # two either: the count the board reads and the record it reads come out of
+    # one de-duplication, never two.
+    obs, notes, found = all_obs, all_notes, max(0, total_found - dropped)
     elements = [None] * total_elements
     unseen = total_unseen
     screen = all_screens[0] if all_screens else screen
@@ -1419,14 +1456,19 @@ def main(argv):
         prev = load(outpath)
         if isinstance(prev, dict):
             old = [o for o in (prev.get("observations") or []) if isinstance(o, dict)]
-            keys = set((str(o.get("screen") or ""), str(o.get("says") or o.get("text") or
-                        json.dumps(o, sort_keys=True))) for o in old)
-            fresh = [o for o in out["observations"]
-                     if (str(o.get("screen") or ""),
-                         str(o.get("says") or o.get("text") or
-                             json.dumps(o, sort_keys=True))) not in keys]
+            keys = set(obs_key(o) for o in old)
+            fresh = []
+            for o in out["observations"]:
+                k = obs_key(o)
+                if k in keys:
+                    continue
+                # AGAINST ITSELF AS WELL AS AGAINST THE OLD RECORD (S257).
+                keys.add(k)
+                fresh.append(o)
+            stale = len(out["observations"]) - len(fresh)
             out["observations"] = old + fresh
-            out["foundCount"] = int(prev.get("foundCount") or len(old)) + found
+            out["foundCount"] = (int(prev.get("foundCount") or len(old))
+                                 + max(0, found - stale))
             out["elementCount"] = int(prev.get("elementCount") or 0) + len(elements)
             out["unseenCount"] = int(prev.get("unseenCount") or 0) + unseen
             out["notes"] = (prev.get("notes") or []) + out["notes"]

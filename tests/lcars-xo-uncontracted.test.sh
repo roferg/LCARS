@@ -194,8 +194,14 @@ assert d[\"blockers\"][0].get(\"filedAs\")==\"lcars-kid-1\", d[\"blockers\"]
 for v in d.get(\"volunteered\") or []:
     assert \"filedAs\" not in v, v
 " "$C1/v-both.json"'
-check "1o3. xo.sh is UNTOUCHED — the lane fence lives in the filer, not the shell" \
-  'git -C "$REPO_ROOT" diff --quiet -- skills/lcars-xo/xo.sh'
+# S257 — THE GUARD SAYS WHAT IT MEANS NOW. It was `git diff --quiet` on
+# xo.sh, which asserted "S251 did not need to edit this file" and so broke the
+# moment any LATER session edited xo.sh for an unrelated reason (S257 added the
+# per-round entry url there). The INTENT is the lane fence: the volunteered
+# lane is read in the FILER and nowhere else, and the shell must never learn
+# the word. That is what is checked, and it cannot rot.
+check "1o3. the lane fence lives in the filer, not the shell — xo.sh never names it" \
+  '! grep -q "volunteered" "$REPO_ROOT/skills/lcars-xo/xo.sh"'
 check "1p. CONTROL — the send-back sentence, given only the contract lane, names ONE bug" \
   'cp "$C1/verdict.json" "$C1/verdict-filed.json";
    out="$("$PY" "$REPO_ROOT/skills/lcars-xo/xo-filed.py" "$C1/verdict-filed.json" lcars-p \

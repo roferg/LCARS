@@ -745,9 +745,13 @@ check "G · a clicked control missing from the inventory counts as couldNotExami
    gq 'd[\"touchedCheck\"][\"clicked\"]==2 and d[\"touchedCheck\"][\"examined\"]==1 and d[\"touchedCheck\"][\"couldNotExamine\"]==1' '$T/misschk.json' | grep -q True"
 check "G · clicked always equals examined + couldNotExamine (honest arithmetic)" \
   "gq 'd[\"touchedCheck\"][\"clicked\"]==d[\"touchedCheck\"][\"examined\"]+d[\"touchedCheck\"][\"couldNotExamine\"]' '$T/misschk.json' | grep -q True"
+# S257 — `driverClicks` joined this tally: it is the driver's OWN click counter
+# (`walk.moves.clicks`), carried beside the distinct-control count so the two
+# records of one run sit side by side. An empty walk's driver count is 0, so the
+# zero tally is still a zero tally — there is now one more field in it.
 check "G · an empty walk records a zero tally (looked at nothing) and files nothing" \
   "$PY '$PARTS' touched --walk '$T/empty-walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/emptychk.json' >/dev/null 2>&1; \
-   gq 'd[\"touchedCheck\"]=={\"clicked\":0,\"examined\":0,\"faulted\":0,\"couldNotExamine\":0}' '$T/emptychk.json' | grep -q True"
+   gq 'd[\"touchedCheck\"]=={\"clicked\":0,\"examined\":0,\"faulted\":0,\"couldNotExamine\":0,\"driverClicks\":0}' '$T/emptychk.json' | grep -q True"
 check "G · the CLI line reports the effort (clicked/examined/faulted), not only rows added" \
   "$PY '$PARTS' touched --walk '$T/walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/g-line.json' 2>&1 | grep -qi 'clicked' && \
    $PY '$PARTS' touched --walk '$T/walk.json' --build '$T/build.json' --criteria '$T/criteria.json' --out '$T/g-line.json' 2>&1 | grep -qi 'examined'"
