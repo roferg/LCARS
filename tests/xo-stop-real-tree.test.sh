@@ -272,6 +272,10 @@ check "3. it names the survivors by pid, so the captain can act" \
   "nonempty '$W3' && grep -q '$W3' '$TMPROOT/stop3.out'"
 check "3. THE HANDLE IS NOT DROPPED — the pidfile survives a failed stop" \
   "[ -s '$PF3' ] && [ \"\$(sed -n 1p '$PF3' | tr -dc 0-9)\" = '$D3' ]"
+# The no-op signal control left the driver's anonymous `sleep 300` child alive:
+# killing only the four named rig processes cannot reap a fifth group member.
+# Use the kept handle through the real stop seam, which owns the whole tree.
+bash "$XO" signal-pidfile "$PF3" >/dev/null 2>&1 || true
 for p in $D3 $S3 $A3 $W3; do kill -9 "$p" 2>/dev/null || true; done
 
 # ===========================================================================
@@ -394,7 +398,11 @@ check "7. the recorded process itself is stopped (rc 0)" \
 check "7. THE BYSTANDER IN THAT GROUP LIVES — the look is not collateral" \
   "alive '$BYST'"
 check "7. ...and so does the shell that asked" "kill -0 $$ 2>/dev/null"
+# Both sleeps are this suite's direct children. Killing without waiting leaves
+# their exited processes for pid 1 to adopt when the suite itself returns.
+wait "$TPID" 2>/dev/null || true
 kill -9 "$BYST" 2>/dev/null || true
+wait "$BYST" 2>/dev/null || true
 
 # ===========================================================================
 # 8. THE DEAD RECORDED LEADER (S245) — on THIS rig, with NO mission in scope.

@@ -59,6 +59,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/skills/lcars-xo/xo.sh"
 SCOREPY="$REPO_ROOT/skills/lcars-xo/xo-score.py"
 LOGSPY="$REPO_ROOT/skills/lcars-xo/xo-logs.py"
+XORUN="${LCARS_XO_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-xo/xo-run.py}"
 PY="${LCARS_PYTHON_BIN:-python3}"
 
 pass=0
@@ -535,8 +536,9 @@ check "6a. no worker CLI was invoked anywhere in this suite" \
 check "6b. the root cause is ledgered where the readers are" \
   "grep -q 'lcars_config_get_raw' '$SCRIPT' && \
    grep -q 'ROOT CAUSE IS' '$SCRIPT'"
-check "6c. lcars_config_get_raw itself is UNCHANGED (shared code, left alone)" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-init/lcars-common.sh"
+# Deleted proxy 6c: `git diff --quiet` is vacuous on every committed run and
+# false-fails any later legitimate edit. The real config-reader behaviour is
+# driven above through status and file-logs.
 # S257 — THE GUARD SAYS WHAT IT MEANS NOW. It was `git diff --quiet` on
 # xo-run.py, which asserted "S254 did not need to edit this file" and so broke
 # the moment a later session edited it for an unrelated reason — which S257
@@ -574,15 +576,15 @@ json.dump({'actions': [
     {'click': '#submit'},
 ]}, open(acts, 'w'))
 out = os.path.join(d, 'kept.json')
-subprocess.run([sys.executable, '$REPO_ROOT/skills/lcars-xo/xo-run.py', 'actions', '--actions', acts,
+subprocess.run([sys.executable, '$XORUN', 'actions', '--actions', acts,
                 '--out', out, '--cap', '12'], capture_output=True)
 k = json.load(open(out))
 shells = [r for r in k['refused'] if 'asks for a shell' in (r.get('why') or '')]
 sys.exit(0 if len(k['refused']) == 5 and len(k['steps']) == 1
               and not k['reachSteps'] and len(shells) == 3 else 1)
 FENCE"
-check "6e. worker-adapter.sh and ownership.sh are untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-run/worker-adapter.sh skills/lcars-run/ownership.sh"
+# Deleted proxy 6e: neither worker-adapter nor ownership participates in this
+# suite's switch/scoring behaviour; their own suites guard their contracts.
 check "6f. the works-kind downgrade is still IN the code (widened, not removed)" \
   "grep -q 'works-needs-action' '$SCOREPY' && \
    grep -q 'EXERCISED_CHECKED_BY' '$SCOREPY'"

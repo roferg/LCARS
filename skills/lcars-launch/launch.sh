@@ -692,7 +692,7 @@ if [ -z "$WORKER_BIN" ] && [ -n "$STATE" ] && [ -f "$STATE" ]; then
   WORKER_BIN="$(json_str "$STATE" workerBin)"
 fi
 [ -n "$WORKER_BIN" ] || WORKER_BIN="claude"
-CLI="$(basename "$WORKER_BIN")"
+CLI="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
 
 mkdir -p "$OUTDIR"
 # NB: the `launching` record was already written at the TOP of this flow (before the

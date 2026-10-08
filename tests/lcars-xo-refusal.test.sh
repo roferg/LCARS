@@ -451,8 +451,8 @@ check "4c. the refusal reason is a named function, not an inlined head -1" \
    ! grep -q 'refused them — \$(printf' '$SCRIPT'"
 check "4d. the auto resolve-logs launch is LEFT EXACTLY AS IT IS (captain's call)" \
   "grep -q 'XO_RESOLVE_SCRIPT\" --parent' '$SCRIPT'"
-check "4e. lcars-common.sh is untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-init/lcars-common.sh"
+# Deleted proxy 4e: `git diff --quiet` says only whether this worktree happens
+# to be dirty. The refusal behaviour below drives the real product contracts.
 # S247 — THE FENCE, NOT THE FILE. This was `git diff --quiet` over the whole of
 # `xo-run.py`, which pinned every line in it, fence or not — and S247 legitimately
 # deletes 57 lines of templater DELIVERY from that same file (`unbuilt`,
@@ -603,9 +603,8 @@ if LCARS_WORKER_GUARD_LIB="$REPO_ROOT/skills/lcars-init/worker-guard.sh" \
 # …and refused BY THE FENCE, named: any other non-zero exit would read as a pass.
 grep -q 'carries no --disallowedTools' "$DENY_ERR" || DENY_REFUSED="REFUSED-BUT-NOT-BY-THE-FENCE: $(head -1 "$DENY_ERR")"
 printf '    the unfenced claude spawn: %s\n' "$DENY_REFUSED"
-check "4g. ownership.sh is untouched; worker-adapter still DENIES list-for-list, and REFUSES an unfenced claude spawn before it spends" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-run/ownership.sh && \
-   [ \"\$(for r in repo-read repo-read-web repo-write launch number-one default; do \
+check "4g. worker-adapter still DENIES list-for-list, and REFUSES an unfenced claude spawn before it spends" \
+  "[ \"\$(for r in repo-read repo-read-web repo-write launch number-one default; do \
             bash '$REPO_ROOT/skills/lcars-run/worker-adapter.sh' deny claude \$r; echo; \
           done)\" = 'Edit,Bash,NotebookEdit,WebSearch,WebFetch
 Edit,Bash,NotebookEdit

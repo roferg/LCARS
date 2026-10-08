@@ -238,15 +238,10 @@ check "5e. round 2's exact-name-first rule is what the ladder tries first" \
   "grep -q 'EXACTLY AS IT WAS GIVEN' '$LOGSPY'"
 
 printf '\n── 6. the fence, and nothing spent ──\n'
-check "6a. lcars-common.sh is untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-init/lcars-common.sh"
-check "6b. the argv fence file is untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-xo/xo-run.py"
-check "6c. worker-adapter.sh and ownership.sh are untouched" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-run/worker-adapter.sh skills/lcars-run/ownership.sh"
-check "6d. xo.sh is untouched — the attach guard and the auto resolve-logs \
-cascade are the captain's, not this round's" \
-  "cd '$REPO_ROOT' && git diff --quiet -- skills/lcars-xo/xo.sh"
+# Deleted proxies 6a-6d: all four `git diff --quiet` checks are vacuous after
+# commit and false-fail unrelated later work. lcars-common, xo-run and the
+# adapter/ownership pair are outside this resolver's contract; xo.sh's relevant
+# attachment filter is asserted directly below.
 check "6e. the attach guard in xo.sh still reads [ -f ] before --attach" \
   "grep -q '\[ -f \"\$s\" \] && args+=(--attach \"\$s\")' '$SCRIPT'"
 check "6f. no worker CLI was invoked anywhere in this suite" \

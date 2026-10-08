@@ -132,7 +132,14 @@ cat >"$seed/aa-trivial.test.sh" <<'EOF'
 set -uo pipefail
 echo "trivial: 1 passed, 0 failed"
 EOF
+cat >"$seed/bb-failing.test.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+echo "failing: deliberate exit 7"
+exit 7
+EOF
 run_out="$(run_pty "$HANG_SECS" bash "$DIR/run.sh" "$seed")"
+run_clean="$(tr -d '\r' <<<"$run_out")"
 run_el="$(elapsed "$run_out")"
 echo "  [probe] run.sh over a seeded dir with a BLOCKING suite: ELAPSED ${run_el}s"
 check "3a. run.sh over a blocking suite TERMINATES (does not stall the gate)" \
@@ -143,6 +150,15 @@ check "3c. run.sh's \$1 target-directory resolution is unchanged (BUG-009)" \
   "grep -q 'TESTS_DIR=\"\$1\"' '$DIR/run.sh'"
 check "3d. run.sh honours \$LCARS_TESTS_DIR (BUG-009)" \
   "grep -q 'TESTS_DIR=\"\$LCARS_TESTS_DIR\"' '$DIR/run.sh'"
+check "3e. run.sh names each suite before it starts" \
+  "grep -q '^SUITE aa-trivial.test.sh\$' <<<\"\$run_clean\" && grep -q '^SUITE bb-failing.test.sh\$' <<<\"\$run_clean\""
+check "3f. run.sh reports elapsed time and the real exit status for each suite" \
+  "grep -Eq '^RESULT aa-trivial.test.sh elapsed=[0-9]+s exit=0\$' <<<\"\$run_clean\" && grep -Eq '^RESULT bb-failing.test.sh elapsed=[0-9]+s exit=7\$' <<<\"\$run_clean\""
+check "3g. run.sh summarizes suites run, suites failed and total elapsed time" \
+  "grep -Eq '^SUITES run=3 failed=1 elapsed=[0-9]+s\$' <<<\"\$run_clean\""
+full_gate_names="$(for f in "$DIR"/*.test.sh; do basename "$f"; done)"
+check "3h. the full gate includes web-python.test.sh by name" \
+  "grep -qx 'web-python.test.sh' <<<\"\$full_gate_names\""
 
 # --- 4. The class cannot return in file #23 --------------------------------
 # A `cat` with no file operand and no `<` redirect reads INHERITED stdin. The
@@ -318,6 +334,112 @@ check "6b. a cage killed before its timeout REAPS its caged child instead of orp
   "[ \"\$survived\" -eq 0 ]"
 # Leave no orphan from this probe either, whichever way the assertion went.
 [ "$survived" -eq 1 ] && kill -KILL "$caged_pid" 2>/dev/null
+
+# ==========================================================================
+# PART 7 — A SUITE MUST REAP WHAT IT STARTS.
+#
+# This measures the thing itself: persistent processes newly adopted by pid 1
+# after a suite exits. A source scan cannot establish that. The one-second
+# settling window deliberately excludes the detached resolve-logs handoff,
+# which briefly reparents by design and then exits.
+# ==========================================================================
+printf '\n  -- 7: suites leave no persistent ppid-1 processes --\n'
+
+ppid1_snapshot() {
+  ps -eo pid=,ppid= | awk '$2 == 1 { print $1 }' | sort -n >"$1"
+}
+
+cat >"$TMPROOT/orphan-probe-wrapper.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$1"
+shift
+exec "$@"
+EOF
+chmod +x "$TMPROOT/orphan-probe-wrapper.sh"
+
+record_descendants() { # <root-pid> <output-file>
+  local root="$1" out="$2" table="$TMPROOT/descendants.ps"
+  local frontier="$root" seen=" $root " next parent child
+  ps -eo pid=,ppid= >"$table"
+  while [ -n "$frontier" ]; do
+    next=""
+    for parent in $frontier; do
+      for child in $(awk -v p="$parent" '$2 == p { print $1 }' "$table"); do
+        case "$seen" in *" $child "*) continue ;; esac
+        printf '%s\n' "$child" >>"$out"
+        seen="$seen$child "
+        next="$next $child"
+      done
+    done
+    frontier="$next"
+  done
+}
+
+orphan_probe() { # <label> <deadline> <command...>
+  local label="$1" deadline="$2"
+  local before="$TMPROOT/$label.before"
+  local first="$TMPROOT/$label.first" after="$TMPROOT/$label.after"
+  local report="$TMPROOT/$label.cage" new="$TMPROOT/$label.new"
+  local rootfile="$TMPROOT/$label.root" observed="$TMPROOT/$label.observed"
+  local cage_pid root
+  shift 2
+  : >"$observed"
+  ppid1_snapshot "$before"
+  python3 "$CAGE" "$deadline" bash "$TMPROOT/orphan-probe-wrapper.sh" "$rootfile" "$@" >"$report" 2>&1 &
+  cage_pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$rootfile" ]; do i=$((i + 1)); sleep 0.02; done
+  root="$(cat "$rootfile" 2>/dev/null || true)"
+  while kill -0 "$cage_pid" 2>/dev/null; do
+    [ -n "$root" ] && record_descendants "$root" "$observed"
+    sleep 0.05
+  done
+  wait "$cage_pid" 2>/dev/null || true
+  sleep 1
+  ppid1_snapshot "$first"
+  sleep 1
+  ppid1_snapshot "$after"
+  sort -nu "$observed" -o "$observed"
+  comm -13 "$before" "$first" | grep -Fxf "$after" | grep -Fxf "$observed" >"$new" || true
+  ORPHAN_NEW="$new"
+  ORPHAN_REPORT="$report"
+}
+
+# CONTROL: the detector must first prove that it catches a suite which really
+# abandons a child. The marker is in argv so the measured process is explicit,
+# and the exact detected pid is removed before any real-suite measurement.
+cat >"$TMPROOT/planted-orphan.test.sh" <<'EOF'
+#!/usr/bin/env bash
+while :; do sleep 1; done &
+sleep 1
+exit 0
+EOF
+orphan_probe planted-orphan 10 bash "$TMPROOT/planted-orphan.test.sh"
+planted_count="$(wc -l <"$ORPHAN_NEW" | tr -d ' ')"
+check "7a. CONTROL: the ppid-1 probe catches a deliberately leaking suite" \
+  "[ \"\$planted_count\" -ge 1 ] && ps -p \"\$(head -1 '$ORPHAN_NEW')\" -o args= | grep -q 'planted-orphan.test.sh'"
+while read -r p; do
+  [ -n "$p" ] && kill -KILL "$p" 2>/dev/null || true
+done <"$ORPHAN_NEW"
+
+# The default list is the measured leak surface. Override it only for a scoped
+# red/green mutation run; the checked-in default remains the whole known class.
+ORPHAN_SUITES="${LCARS_HARNESS_ORPHAN_SUITES:-lcars-xo lcars-status xo-stop-real-tree}"
+for s in $ORPHAN_SUITES; do
+  orphan_probe "$s" 600 bash "$DIR/$s.test.sh"
+  n="$(wc -l <"$ORPHAN_NEW" | tr -d ' ')"
+  echo "  [orphan] $s.test.sh: $n persistent new ppid-1 process(es); $(sed -n '1p' "$ORPHAN_REPORT")"
+  if [ "$n" -gt 0 ]; then
+    while read -r p; do
+      ps -p "$p" -o pid=,ppid=,args= 2>/dev/null | sed 's/^/    /'
+      kill -TERM "$p" 2>/dev/null || true
+      sleep 0.3
+      kill -KILL "$p" 2>/dev/null || true
+    done <"$ORPHAN_NEW"
+  fi
+  check "7b. $s.test.sh leaves ZERO persistent ppid-1 processes" "[ \"\$n\" -eq 0 ]"
+done
+
 echo
 printf 'harness: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

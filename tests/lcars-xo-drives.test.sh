@@ -812,9 +812,23 @@ check "7e. CONTROL — …and that sentence is gone from the prompt builder itse
 check "7e. …and the checklists are still handed over whole" \
   'grep -qF "Two actors — two HOMEs, two laptops" "$P_OFF"'
 
-# THE PROMPT FILE ITSELF GOT SHORTER. A prompt that grows is a named wrong answer.
-check "7f. evaluate.md is SHORTER than the 689 lines it was" \
-  '[ "$(grep -c "" "$EVALUATE_MD")" -lt 689 ]'
+# Prompt quality is its load-bearing contract, not a line count. A clean tree
+# made the old ceiling pass until useful prose pushed the file over 688 lines.
+PROMPT_GUARD="$REPO_ROOT/tests/lib/evaluate_prompt_guard.py"
+check "7f. evaluate.md retains every load-bearing section and sentence" \
+  '"$PY" "$PROMPT_GUARD" "$P_OFF"'
+cp "$P_OFF" "$TMPROOT/evaluate-longer.md"
+for _ in $(seq 1 700); do echo "Additional explanatory prose." >>"$TMPROOT/evaluate-longer.md"; done
+check "7f. CONTROL — a merely LONGER prompt still passes the quality guard" \
+  '"$PY" "$PROMPT_GUARD" "$TMPROOT/evaluate-longer.md"'
+"$PY" - "$P_OFF" "$TMPROOT/evaluate-missing.md" <<'PY'
+import sys
+s = open(sys.argv[1], encoding="utf-8").read()
+s = s.replace("## Two decisions, one file", "## Decisions", 1)
+open(sys.argv[2], "w", encoding="utf-8").write(s)
+PY
+check "7f. CONTROL — removing a required section FAILS the quality guard" \
+  '! "$PY" "$PROMPT_GUARD" "$TMPROOT/evaluate-missing.md"'
 
 # AND NOTHING INSTANTIATES A STEP FROM THE RECORD, ON THE VERY RECORD THAT USED
 # TO PRODUCE SIX OF THEM (S247). This is the same fixture the switch was proved

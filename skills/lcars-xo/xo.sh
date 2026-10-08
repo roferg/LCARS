@@ -3022,7 +3022,17 @@ xo_read_drawing() { # <mission-dir> <xodir>
   mkdir -p "$xodir/drawing" 2>/dev/null || true
   "$XO_NODE" "$XO_DRIVER" --url "file://$draw" --out "$xodir/drawing" \
     --parts-out "$xodir/drawing-parts.json" --prefix "drawn" \
-    >"$xodir/drawing.json" 2>"$xodir/drawing.err" || true
+    >"$xodir/drawing.json" 2>"$xodir/drawing.err" &
+  # S256 — THE STOP BUTTON MUST LAND DURING A DRAWING READ. This driver used to
+  # run in the FOREGROUND, and bash defers a trap until the foreground command
+  # returns: `lcars xo off` therefore did NOT stop a look that was reading the
+  # captain's drawing, and three B11c assertions (direct TERM ends the spin, the
+  # driver dies with it, the launch is stopped) were red for that reason. Backgrounding
+  # and waiting makes the shell interruptible; the pid is recorded so the stop path
+  # can reach this child.
+  XO_DRIVE_PID=$!
+  wait "$XO_DRIVE_PID" || true
+  XO_DRIVE_PID=""
   [ -s "$xodir/drawing-parts.json" ] || {
     journal "$dir" drawing-parts '"read": 0, "detail": "the drawing would not render"'
     return 0

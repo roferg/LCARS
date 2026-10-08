@@ -919,25 +919,35 @@ d=json.load(open('$TMPROOT/rep/l1.json'))
 n=' '.join(((d.get('landing') or {}).get('notPlacedNote') or '').split())
 sys.exit(0 if '4 pictures I could not place' in n and n in open('$REP').read() else 1)\""
 
-printf '\n\033[1m6. THE FORBIDDEN CURES ARE NOT IN THE DIFF\033[0m\n'
+printf '\n\033[1m6. THE FORBIDDEN CURES ARE NOT IN THE LANDING RAIL\033[0m\n'
 
-DIFF="$TMPROOT/diff.txt"
-( cd "$REPO_ROOT" && git diff -- skills/ tests/lcars-xo-landing.test.sh ) >"$DIFF" 2>/dev/null
-grep -n '^+' "$DIFF" | grep -vi 'landing.test.sh' >"$TMPROOT/added.txt" || true
-check "nothing added computes an image hash or a similarity" \
-  "! grep -Eiq 'md5|sha1|sha256|hashlib|createHash|similarity|pixelmatch|ssim' '$TMPROOT/added.txt'"
-check "nothing added retries a navigation" \
-  "! grep -Eiq 'retr(y|ies|ying)' '$TMPROOT/added.txt'"
-# S243 — AND NOTHING ADDED READS PROSE. This file has paid three times (S147,
-# S156, S188) for a rail that found a screen name in a criterion's English. The
-# cure reads recorded FIELDS (`drawnAt`, `notDrawn`, `notVisual`, `serves`), so
-# no pattern match over text is added at all.
-check "nothing added matches a pattern against text" \
-  "! grep -Eq 're\\.(search|match|findall|sub|compile)' '$TMPROOT/added.txt'"
-# The patterns are written with a bracket so this check's OWN added line is not
-# what it matches — that self-hit is how a guard passes, or fails, vacuously.
-check "nothing added reads a shot's filename to decide where it should have been" \
-  "! grep -Eq 'base[n]ame|split[e]xt' '$TMPROOT/added.txt'"
+# The old repo-wide dirty-tree grep was vacuous after commit and cried wolf on
+# healthy edits elsewhere. This guard owns exactly the landing rail's sources,
+# while controls prove both sides of that boundary even on a clean tree.
+FORBIDDEN_GUARD="$REPO_ROOT/tests/lib/landing_forbidden_cures.py"
+( cd "$REPO_ROOT" && git diff -- \
+    skills/lcars-xo/xo-journey.py \
+    skills/lcars-xo/xo-score.py \
+    skills/lcars-xo/xo-drive.js ) >"$TMPROOT/landing.diff" 2>/dev/null
+check "the landing rail's own diff contains no forbidden cure" \
+  "$PY '$FORBIDDEN_GUARD' '$TMPROOT/landing.diff'"
+cat >"$TMPROOT/outside.diff" <<'DIFF'
+diff --git a/skills/lcars-run/other.py b/skills/lcars-run/other.py
++++ b/skills/lcars-run/other.py
+@@
++name = os.path.basename(path)
+DIFF
+check "CONTROL — basename outside the governed files does NOT fire" \
+  "$PY '$FORBIDDEN_GUARD' '$TMPROOT/outside.diff'"
+cat >"$TMPROOT/inside.diff" <<'DIFF'
+diff --git a/skills/lcars-xo/xo-score.py b/skills/lcars-xo/xo-score.py
++++ b/skills/lcars-xo/xo-score.py
+@@
++digest = hashlib.sha256(pixels).hexdigest()
++screen = os.path.basename(shot).split('.')[0]
+DIFF
+check "CONTROL — image hashing or filename inference inside the rail DOES fire" \
+  "! $PY '$FORBIDDEN_GUARD' '$TMPROOT/inside.diff'"
 
 printf '\n  \033[1m%d pass, %d fail\033[0m\n' "$pass" "$fail"
 SPEND="$(wc -l <"$SPEND_LOG" | tr -d ' ')"

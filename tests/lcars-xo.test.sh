@@ -63,9 +63,16 @@ TMPROOT="$(mktemp -d)"
 # inline: an inline kill is skipped on every abnormal exit, which is how a suite
 # leaves background processes behind when it is interrupted.
 PROBE_PIDS=""
-xo_test_teardown() {
+stop_probes() {
   local p
   for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
+  # These are direct children, so wait both reaps them and prevents a recorded
+  # pid from being reused before teardown has finished with it.
+  for p in $PROBE_PIDS; do wait "$p" 2>/dev/null || true; done
+  PROBE_PIDS=""
+}
+xo_test_teardown() {
+  stop_probes
   rm -rf "$TMPROOT"
 }
 trap xo_test_teardown EXIT
@@ -1227,7 +1234,7 @@ xo_evaluate_with() { # <repo> <id> <driver> <worker-bin>
       bash "$SCRIPT" evaluate --mission "$id" 2>&1 )
 }
 
-# A verdict body over the three-criterion contract this fixture declares.
+# A verdict body over the four-criterion contract this fixture declares.
 # $1 prd-1 status  $2 prd-2 status  $3 t-1-ac1 status  $4 worker score  $5 gaps
 ev_verdict() {
   printf '{"score":"%s","summary":"Looked at the board.","criteria":[' "$4"
@@ -1235,7 +1242,8 @@ ev_verdict() {
   # two PRD items are the point of the mission, the ticket item is secondary.
   printf '{"id":"prd-1","text":"open tasks in one list","impact":"high","status":"%s","shot":"shot-01","note":"saw the list"},' "$1"
   printf '{"id":"prd-2","text":"add from the board","impact":"high","status":"%s","shot":"shot-01","note":"saw the button"},' "$2"
-  printf '{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"%s","shot":"shot-02","note":"under it"}' "$3"
+  printf '{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"%s","shot":"shot-02","note":"under it"},' "$3"
+  printf '{"id":"journey-j1","text":"open a task from the board","impact":"high","status":"met","shot":"shot-01","note":"opened it"}'
   printf '],"gaps":[%s],"alsoChecked":["the header"],"escalations":[]}' "$5"
 }
 GAP_PRIMARY='{"title":"no add control","expected":"a task can be added from the board (PRD §2)","saw":"no control anywhere on the page","shots":["shot-01"],"kind":"contradiction","criterion":"prd-2"}'
@@ -1290,7 +1298,8 @@ outB="$(XO_LAUNCH_FAIL=1 XO_EV_BODY="$(ev_verdict met met met high '')" \
 check "B10b. the score is LOW" "[ \"\$(xo_state '$mB' score)\" = 'low' ]"
 check "B10b. …and it says what happened, quoting the launch message" \
   "grep -q 'your build did not start' '$mB/xo/verdict.json' && grep -q 'no runnable target' '$mB/xo/verdict.json'"
-check "B10b. NO browser was started at all" "[ ! -s '$XO_DRIVE_LOG' ]"
+check "B10b. NO browser was started at all" \
+  "! grep 'lcars-20260913-002' '$XO_DRIVE_LOG' | grep -q -- '--url http'"
 check "B10b. …and no worker was hired either" "[ ! -s '$XO_WORKER_LOG' ]"
 
 # --------------------------------------------------------------------------
@@ -1322,7 +1331,7 @@ check "B10b2. …and that sentence reaches the card note he actually reads" \
 check "B10b2. …and it reaches his report too" \
   "[ -s '$mBU/xo/report.md' ] && grep -q 'your build started' '$mBU/xo/report.md'"
 check "B10b2. no browser was started — there was nothing to point one at" \
-  "[ ! -s '$XO_DRIVE_LOG' ]"
+  "! grep 'lcars-20260913-004' '$XO_DRIVE_LOG' | grep -q -- '--url http'"
 check "B10b2. CONTROL — a build that really did NOT start is still told plainly that it did not" \
   "grep -q 'your build did not start' '$mB/xo/verdict.json'"
 
@@ -1711,7 +1720,7 @@ evtmp4="$WORKDIR/evtmp-104"; mkdir -p "$evtmp4"
 ev4=$!
 for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
 drive4="$(cat "$XO_DRIVE_LOG.slowpid" 2>/dev/null)"
-xopid="$(cat "$mK4/xo.pid" 2>/dev/null | tr -dc '0-9')"
+xopid="$(head -1 "$mK4/xo.pid" 2>/dev/null | tr -dc '0-9')"
 [ -n "$xopid" ] && kill -TERM "$xopid" 2>/dev/null || true
 for _ in $(seq 1 40); do kill -0 "$ev4" 2>/dev/null || break; sleep 0.25; done
 ev4_alive=1; kill -0 "$ev4" 2>/dev/null || ev4_alive=0
@@ -2338,20 +2347,16 @@ check "B12f. no worker was hired" "[ ! -s '$XO_WORKER_LOG' ]"
 #       Number One's OWN pids and leaves the resolve-logs driver alone — those
 #       children are LCARS's missions, not the first officer's.
 # --------------------------------------------------------------------------
-PROBE_PIDS=""
-# EVERY STREAM CLOSED, ON PURPOSE. This helper is CALLED inside a command
-# substitution (`pid="$(probe …)"`), and a background child that inherits that
-# substitution's pipe holds it open for ever — the substitution then never
-# returns and the whole suite hangs. It hung this suite once, exactly here, and
-# the cage that caught it threw the output away with it. stdin is closed for the
-# same family of reason (an inherited terminal is a process that can block on a
-# read nobody is going to answer).
+# EVERY STREAM CLOSED, ON PURPOSE. The probe is started in this suite's shell,
+# never inside command substitution: command substitution made the background
+# process an orphan immediately, so no later wait could reap it. stdin is closed
+# for the same family of reason (an inherited terminal can block on a read).
 probe() { # <marker-file> — a process that records the TERM it is sent
   local mark="$1"
   ( trap 'printf TERM >>"'"$mark"'"; exit 0' TERM
     while :; do sleep 0.2; done ) </dev/null >/dev/null 2>&1 &
   PROBE_PIDS="$PROBE_PIDS $!"
-  printf '%s' "$!"
+  PROBE_PID=$!
 }
 repoS1="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mS1="$(plant_verify "$repoS1" "lcars-20260913-301")"
@@ -2359,7 +2364,8 @@ plant_logs_json "$mS1" 2
 plant_child "$repoS1" "lcars-20260913-301" 1 implement
 plant_child "$repoS1" "lcars-20260913-301" 2 implement
 XO_MARK="$FXDIR/xo-term.txt"; RS_MARK="$FXDIR/rs-term.txt"; : >"$XO_MARK"; : >"$RS_MARK"
-xo_pid="$(probe "$XO_MARK")"; rs_pid="$(probe "$RS_MARK")"
+probe "$XO_MARK"; xo_pid=$PROBE_PID
+probe "$RS_MARK"; rs_pid=$PROBE_PID
 ( cd "$repoS1" && bash "$SCRIPT" record-pid "$xo_pid" "$mS1/xo.pid" )
 # Planted through the PRODUCT'S OWN writer, so this proves the shipped format
 # and cannot drift from it.
@@ -2388,12 +2394,12 @@ check "B12g. …and it never claims they are still driving" \
 # the process on that number is left strictly alone. Pids get reused, and the
 # captain's own viewscreen is on this machine.
 RS2_MARK="$FXDIR/rs2-term.txt"; : >"$RS2_MARK"
-rs2_pid="$(probe "$RS2_MARK")"
+probe "$RS2_MARK"; rs2_pid=$PROBE_PID
 repoS1b="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 mS1b="$(plant_verify "$repoS1b" "lcars-20260913-302")"
 plant_logs_json "$mS1b" 2
 printf '%s\n' "$rs2_pid" >"$mS1b/xo-resolve.pid"          # a BARE pid: no identity
-XO2_PID="$(probe "$FXDIR/xo2-term.txt")"
+probe "$FXDIR/xo2-term.txt"; XO2_PID=$PROBE_PID
 printf '%s\n' "$XO2_PID" >"$mS1b/xo.pid"   # ALSO bare, on purpose: the same control
 outS1b="$( cd "$repoS1b" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-302" 2>&1 )"
 sleep 0.5
@@ -2401,7 +2407,7 @@ check "B12g. CONTROL — a pid file that does not say WHO is NOT signalled" \
   "[ ! -s '$RS2_MARK' ] && kill -0 '$rs2_pid' 2>/dev/null"
 check "B12g. CONTROL — …and the note ADMITS it could not confirm, instead of claiming a stop" \
   "xo_state '$mS1b' note | grep -q 'could not confirm'"
-for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
+stop_probes
 
 # --------------------------------------------------------------------------
 # B12h. THE ROUTING IS ON THE RECORDED MARKER, NOT ON THE QUESTION'S WORDS.
@@ -2627,12 +2633,12 @@ mP3="$(plant_verify "$repoP3" "lcars-20260913-603")"
 plant_logs_json "$mP3" 1
 plant_child "$repoP3" "lcars-20260913-603" 1 implement
 P3_MARK="$FXDIR/p3-term.txt"; : >"$P3_MARK"
-p3_pid="$(probe "$P3_MARK")"
+probe "$P3_MARK"; p3_pid=$PROBE_PID
 ( cd "$repoP3" && bash "$SCRIPT" record-pid "$p3_pid" "$mP3/xo-resolve.pid" )
 outP3="$( cd "$repoP3" && LCARS_OWNER_ENFORCE=0 bash "$SCRIPT" off "lcars-20260913-603" 2>&1 )"
 check "B14. ONE stopped log reads '1 log', never '1 logs'" \
   "xo_state '$mP3' note | grep -q 'the 1 log it was driving' && ! xo_state '$mP3' note | grep -q '1 logs'"
-for p in $PROBE_PIDS; do kill -TERM "$p" 2>/dev/null || true; done
+stop_probes
 
 # ==========================================================================
 # B15 (S204 fix round 1, D3). THE ESCALATION IS WRITTEN IN THE CAPTAIN'S WORDS.
@@ -2804,8 +2810,8 @@ check "B16. …and NOT ONE of the first look's" \
     LCARS_OWNER_ENFORCE=0 \
     bash "$SCRIPT" recheck --mission "lcars-20260914-701" >/dev/null 2>&1 ) || true
 
-check "B16. THE DEFECT — the third look is handed exactly ONE picture" \
-  "[ \"\$(grep -c '\.png\$' '$RC2_LOG')\" -eq 1 ]"
+check "B16. THE DEFECT — the third look is handed exactly ONE look picture" \
+  "[ \"\$(grep -c '^SAW \./shots/.*\.png\$' '$RC2_LOG')\" -eq 1 ]"
 check "B16. …its own" "grep -q '^SAW \./shots/recheck-01\.png\$' '$RC2_LOG'"
 check "B16. …and neither of the leftovers the look before it took" \
   "! grep -q 'recheck-02\.png\|recheck-03\.png' '$RC2_LOG'"
@@ -3625,7 +3631,7 @@ long25='Captain, this build is a code-only engine change - two pure coordinate f
 # in our checking and no longer moves the grade — while the unchecked row is
 # what keeps the C8 guard below honest ("that line says what it could not
 # check"). Neither rule changed; the ledger that exercises both did.
-verdict25="$(printf '{"score":"medium","summary":"%s","criteria":[{"id":"prd-1","text":"open tasks in one list","impact":"medium","status":"gap","shot":"shot-01","evidence":"picture","note":"the list shows only the first ten"},{"id":"prd-2","text":"add from the board","impact":"medium","status":"untested","note":"nothing on screen settles this"},{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"met","shot":"shot-02","evidence":"picture","note":"under it"}],"gaps":[]}' "$long25")"
+verdict25="$(printf '{"score":"medium","summary":"%s","criteria":[{"id":"prd-1","text":"open tasks in one list","impact":"medium","status":"gap","shot":"shot-01","evidence":"picture","note":"the list shows only the first ten"},{"id":"prd-2","text":"add from the board","impact":"medium","status":"untested","note":"nothing on screen settles this"},{"id":"t-1-ac1","text":"ADD under the list","impact":"medium","status":"met","shot":"shot-02","evidence":"picture","note":"under it"},{"id":"journey-j1","text":"open a task from the board","impact":"high","status":"met","shot":"shot-01","evidence":"picture","note":"opened it"}],"gaps":[]}' "$long25")"
 out25="$(XO_WORKER_LOG="$XO_WORKER_LOG" XO_EV_BODY="$verdict25" \
   LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_WORKER_BIN="$EV_SHIM" \
   xo_evaluate "$repo25" "lcars-20260917-401")"

@@ -23,15 +23,33 @@ else
 fi
 
 fail=0
+suites_run=0
+suites_failed=0
+run_started="$(date +%s)"
 
 for t in "$TESTS_DIR"/*.test.sh; do
   [ -f "$t" ] || continue
+  suite="$(basename "$t")"
+  suite_started="$(date +%s)"
+  printf 'SUITE %s\n' "$suite"
   # stdin CLOSED, always: a suite that reads inherited stdin (the `qgrep`
   # bare-`cat` class, S208) would otherwise block the whole gate forever.
   # Target-directory resolution above is untouched (BUG-009).
-  bash "$t" </dev/null || fail=1
+  bash "$t" </dev/null
+  suite_status=$?
+  suite_elapsed=$(( $(date +%s) - suite_started ))
+  suites_run=$((suites_run + 1))
+  if [ "$suite_status" -ne 0 ]; then
+    fail=1
+    suites_failed=$((suites_failed + 1))
+  fi
+  printf 'RESULT %s elapsed=%ss exit=%s\n' \
+    "$suite" "$suite_elapsed" "$suite_status"
   echo
 done
 
+run_elapsed=$(( $(date +%s) - run_started ))
+printf 'SUITES run=%s failed=%s elapsed=%ss\n' \
+  "$suites_run" "$suites_failed" "$run_elapsed"
 [ "$fail" -eq 0 ] && echo "ALL SUITES PASSED" || echo "SOME SUITES FAILED"
 exit "$fail"
