@@ -821,14 +821,25 @@ cp "$P_OFF" "$TMPROOT/evaluate-longer.md"
 for _ in $(seq 1 700); do echo "Additional explanatory prose." >>"$TMPROOT/evaluate-longer.md"; done
 check "7f. CONTROL — a merely LONGER prompt still passes the quality guard" \
   '"$PY" "$PROMPT_GUARD" "$TMPROOT/evaluate-longer.md"'
-"$PY" - "$P_OFF" "$TMPROOT/evaluate-missing.md" <<'PY'
+check "7f. CONTROL — removing EACH whole required section FAILS, naming it" \
+  '"$PY" - "$PROMPT_GUARD" "$P_OFF" "$TMPROOT/evaluate-missing.md" <<'"'"'PY'"'"'
+import re
+import subprocess
 import sys
-s = open(sys.argv[1], encoding="utf-8").read()
-s = s.replace("## Two decisions, one file", "## Decisions", 1)
-open(sys.argv[2], "w", encoding="utf-8").write(s)
-PY
-check "7f. CONTROL — removing a required section FAILS the quality guard" \
-  '! "$PY" "$PROMPT_GUARD" "$TMPROOT/evaluate-missing.md"'
+
+guard, source, target = sys.argv[1:]
+prompt = open(source, encoding="utf-8").read()
+headings = re.findall(r"^## .+$", prompt, re.MULTILINE)
+for heading in headings:
+    start = prompt.index(heading)
+    following = re.search(r"^## ", prompt[start + len(heading):], re.MULTILINE)
+    end = start + len(heading) + following.start() if following else len(prompt)
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write(prompt[:start] + prompt[end:])
+    result = subprocess.run([sys.executable, guard, target], capture_output=True, text=True)
+    print(f"whole-section control: {heading}: exit={result.returncode}")
+    assert result.returncode == 1 and heading in result.stderr, result.stderr
+PY'
 
 # AND NOTHING INSTANTIATES A STEP FROM THE RECORD, ON THE VERY RECORD THAT USED
 # TO PRODUCE SIX OF THEM (S247). This is the same fixture the switch was proved

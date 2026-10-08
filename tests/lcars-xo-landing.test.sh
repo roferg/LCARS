@@ -923,9 +923,9 @@ printf '\n\033[1m6. THE FORBIDDEN CURES ARE NOT IN THE LANDING RAIL\033[0m\n'
 
 # The old repo-wide dirty-tree grep was vacuous after commit and cried wolf on
 # healthy edits elsewhere. This guard owns exactly the landing rail's sources,
-# while controls prove both sides of that boundary even on a clean tree.
+# including staged work; controls prove both sides even on a clean tree.
 FORBIDDEN_GUARD="$REPO_ROOT/tests/lib/landing_forbidden_cures.py"
-( cd "$REPO_ROOT" && git diff -- \
+( cd "$REPO_ROOT" && git diff HEAD -- \
     skills/lcars-xo/xo-journey.py \
     skills/lcars-xo/xo-score.py \
     skills/lcars-xo/xo-drive.js ) >"$TMPROOT/landing.diff" 2>/dev/null

@@ -37,6 +37,7 @@ text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 ran = 0
 failed = 0
 skipped = 0
+expected = 0
 segments = re.split(r"(?=^ELAPSED )", text, flags=re.MULTILINE)
 for segment in segments:
     if not segment.startswith("ELAPSED "):
@@ -44,19 +45,23 @@ for segment in segments:
     runs = re.findall(r"^Ran (\d+) tests?", segment, re.MULTILINE)
     ran += sum(int(count) for count in runs)
     segment_failed = 0
-    summaries = re.findall(r"^FAILED \(([^)]*)\)$", segment, re.MULTILINE)
+    summaries = re.findall(r"^(?:FAILED|OK) \(([^)]*)\)$", segment, re.MULTILINE)
     for key in ("failures", "errors", "unexpected successes"):
         segment_failed += sum(
             int(match.group(1))
             for summary in summaries
-            if (match := re.search(rf"{key}=(\d+)", summary))
+            if (match := re.search(rf"(?:^|,\s*){key}=(\d+)", summary))
         )
-    for key in ("skipped", "expected failures"):
-        skipped += sum(
-            int(match.group(1))
-            for summary in summaries
-            if (match := re.search(rf"{key}=(\d+)", summary))
-        )
+    skipped += sum(
+        int(match.group(1))
+        for summary in summaries
+        if (match := re.search(r"(?:^|,\s*)skipped=(\d+)", summary))
+    )
+    expected += sum(
+        int(match.group(1))
+        for summary in summaries
+        if (match := re.search(r"(?:^|,\s*)expected failures=(\d+)", summary))
+    )
     exit_match = re.search(r"^ELAPSED [^\n]* EXIT (\d+)$", segment, re.MULTILINE)
     if "TIMED OUT" in segment or not exit_match:
         segment_failed = max(segment_failed, 1)
@@ -64,9 +69,10 @@ for segment in segments:
         segment_failed = 1
     failed += segment_failed
 
-print(max(0, ran - failed - skipped), failed)
+print(max(0, ran - failed - skipped - expected), failed, skipped, expected)
 PY
 )"
-read -r passed failed <<<"$counts"
-printf 'web python: %s passed, %s failed\n' "$passed" "$failed"
+read -r passed failed skipped expected <<<"$counts"
+printf 'web python: %s passed, %s failed, %s skipped, %s expected failures\n' \
+  "$passed" "$failed" "$skipped" "$expected"
 [ "$failed" -eq 0 ]

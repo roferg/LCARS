@@ -342,8 +342,16 @@ check "6b. a cage killed before its timeout REAPS its caged child instead of orp
 # after a suite exits. A source scan cannot establish that. The one-second
 # settling window deliberately excludes the detached resolve-logs handoff,
 # which briefly reparents by design and then exits.
+# Attribution is best-effort: sampled ancestry, an inherited marker, or a
+# cwd/argv tie to this probe's unique tempdir. Candidates with none of those
+# ties are printed and counted as unattributed, NOT blamed or killed. A child
+# can shed every tie; these snapshots also cannot see short-lived orphans or
+# processes that never reparent to pid 1. The D6 controls live in
+# tests/harness-orphans.test.sh.
 # ==========================================================================
-printf '\n  -- 7: suites leave no persistent ppid-1 processes --\n'
+printf '\n  -- 7: suites leave no attributed persistent ppid-1 processes --\n'
+
+command -v lsof >/dev/null || { echo "orphan probes require lsof" >&2; exit 1; }
 
 ppid1_snapshot() {
   ps -eo pid=,ppid= | awk '$2 == 1 { print $1 }' | sort -n >"$1"
@@ -351,6 +359,7 @@ ppid1_snapshot() {
 
 cat >"$TMPROOT/orphan-probe-wrapper.sh" <<'EOF'
 #!/usr/bin/env bash
+exec 9>"$1.marker"
 printf '%s\n' "$$" >"$1"
 shift
 exec "$@"
@@ -375,13 +384,25 @@ record_descendants() { # <root-pid> <output-file>
   done
 }
 
+suite_path_signal() { # <pid> <argv>
+  local pid="$1" argv="$2" suite_dir cwd
+  suite_dir="$(cd "$TMPROOT" && pwd -P)"
+  cwd="$(lsof -nP -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+  case "$cwd/" in "$suite_dir/"*) return 0 ;; esac
+  case "$argv " in
+    *"$TMPROOT/"*|*"$suite_dir/"*|*"$TMPROOT "*|*"$suite_dir "*) return 0 ;;
+  esac
+  return 1
+}
+
 orphan_probe() { # <label> <deadline> <command...>
   local label="$1" deadline="$2"
   local before="$TMPROOT/$label.before"
   local first="$TMPROOT/$label.first" after="$TMPROOT/$label.after"
   local report="$TMPROOT/$label.cage" new="$TMPROOT/$label.new"
   local rootfile="$TMPROOT/$label.root" observed="$TMPROOT/$label.observed"
-  local cage_pid root
+  local cage_pid root p argv candidates="$TMPROOT/$label.candidates"
+  local unattributed="$TMPROOT/$label.unattributed"
   shift 2
   : >"$observed"
   ppid1_snapshot "$before"
@@ -400,8 +421,27 @@ orphan_probe() { # <label> <deadline> <command...>
   sleep 1
   ppid1_snapshot "$after"
   sort -nu "$observed" -o "$observed"
-  comm -13 "$before" "$first" | grep -Fxf "$after" | grep -Fxf "$observed" >"$new" || true
+  comm -13 "$before" "$first" | grep -Fxf "$after" >"$candidates" || true
+  : >"$new"
+  : >"$unattributed"
+  while read -r p; do
+    argv="$(ps -p "$p" -o args= 2>/dev/null)" || argv="<exited or argv unavailable>"
+    [ -n "$argv" ] || argv="<empty argv>"
+    # A fast double-fork can lose both ancestry and the inherited descriptor.
+    # Its suite path is independent evidence; no evidence means unknown, not safe.
+    if grep -qxF "$p" "$observed" ||
+       lsof -nP -a -p "$p" "$rootfile.marker" >/dev/null 2>&1 ||
+       suite_path_signal "$p" "$argv"; then
+      printf '%s\n' "$p" >>"$new"
+    else
+      printf '%s\t%s\n' "$p" "$argv" >>"$unattributed"
+      printf '  [orphan] %s unattributed pid=%s argv=%s\n' "$label" "$p" "$argv"
+    fi
+  done <"$candidates"
+  printf '  [orphan] %s: attributed=%s unattributed=%s\n' "$label" \
+    "$(wc -l <"$new" | tr -d ' ')" "$(wc -l <"$unattributed" | tr -d ' ')"
   ORPHAN_NEW="$new"
+  ORPHAN_UNATTRIBUTED="$unattributed"
   ORPHAN_REPORT="$report"
 }
 
@@ -422,23 +462,44 @@ while read -r p; do
   [ -n "$p" ] && kill -KILL "$p" 2>/dev/null || true
 done <"$ORPHAN_NEW"
 
-# The default list is the measured leak surface. Override it only for a scoped
-# red/green mutation run; the checked-in default remains the whole known class.
-ORPHAN_SUITES="${LCARS_HARNESS_ORPHAN_SUITES:-lcars-xo lcars-status xo-stop-real-tree}"
-for s in $ORPHAN_SUITES; do
-  orphan_probe "$s" 600 bash "$DIR/$s.test.sh"
-  n="$(wc -l <"$ORPHAN_NEW" | tr -d ' ')"
-  echo "  [orphan] $s.test.sh: $n persistent new ppid-1 process(es); $(sed -n '1p' "$ORPHAN_REPORT")"
-  if [ "$n" -gt 0 ]; then
-    while read -r p; do
-      ps -p "$p" -o pid=,ppid=,args= 2>/dev/null | sed 's/^/    /'
-      kill -TERM "$p" 2>/dev/null || true
-      sleep 0.3
-      kill -KILL "$p" 2>/dev/null || true
-    done <"$ORPHAN_NEW"
-  fi
-  check "7b. $s.test.sh leaves ZERO persistent ppid-1 processes" "[ \"\$n\" -eq 0 ]"
-done
+cat >"$TMPROOT/fast-orphan.py" <<'PY'
+import os, sys
+if os.fork():
+    os._exit(0)
+os.setsid()
+if os.fork():
+    os._exit(0)
+with open(sys.argv[1], "w") as handle:
+    handle.write(str(os.getpid()) + "\n")
+fd = os.open("/dev/null", os.O_RDWR)
+for target in (0, 1, 2):
+    os.dup2(fd, target)
+os.execl("/bin/sleep", "s256-fast-orphan", "300")
+PY
+orphan_probe fast-orphan 10 python3 "$TMPROOT/fast-orphan.py" "$TMPROOT/fast.pid"
+fast_pid="$(cat "$TMPROOT/fast.pid")"
+echo "  [orphan] fast double-fork: $(wc -l <"$ORPHAN_NEW" | tr -d ' ') detected"
+check "7c. CONTROL: a fast double-fork is caught even if its parent link was never sampled" \
+  "grep -qx \"\$fast_pid\" '$ORPHAN_NEW' && [ \"\$(ps -p \"\$fast_pid\" -o ppid= | tr -d ' ')\" = 1 ]"
+kill -KILL "$fast_pid" 2>/dev/null || true
+
+# Measure the detector against a small fixture; the gate owns product suites.
+cat >"$TMPROOT/clean-orphan.test.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 300 &
+child=$!
+kill -TERM "$child"
+wait "$child" 2>/dev/null || true
+EOF
+orphan_probe clean-orphan 10 bash "$TMPROOT/clean-orphan.test.sh"
+n="$(wc -l <"$ORPHAN_NEW" | tr -d ' ')"
+echo "  [orphan] clean fixture: $n attributed persistent new ppid-1 process(es); $(sed -n '1p' "$ORPHAN_REPORT")"
+check "7b. the clean fixture leaves ZERO attributed persistent ppid-1 processes" \
+  "[ \"\$n\" -eq 0 ] && grep -Eq '^ELAPSED [0-9.]+s EXIT 0$' '$ORPHAN_REPORT'"
+while read -r p; do
+  ps -p "$p" -o pid=,ppid=,args= 2>/dev/null | sed 's/^/    /'
+  kill -KILL "$p" 2>/dev/null || true
+done <"$ORPHAN_NEW"
 
 echo
 printf 'harness: %d passed, %d failed\n' "$pass" "$fail"
