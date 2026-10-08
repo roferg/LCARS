@@ -528,6 +528,24 @@ After § 1, **exactly four things** reach him:
 
 1. A **product call** only he can make.
 2. A **scope change**.
+**A REFUSAL THAT NAMES ITS OWN CURE IS NOT A WALL (S260, 2026-10-08).** This
+rule forbids RETRYING BY ANOTHER ROUTE — it does not forbid doing the ONE thing
+the refusal explicitly told you to do. When LCARS refuses and names the
+sanctioned command that clears it (`xo off <mission>` before answering a
+mission Number One owns, `lcars update --test-command` for an unrecorded
+runner), RUN THAT COMMAND, record that you did and why, and carry on. Measured:
+a run stopped dead and waited on the captain for a documented one-line transfer
+the refusal itself had spelled out. Ask only when the cure is NOT named, or when
+running it would cross a `never`.
+
+**AND IF A MISSION CANNOT BE PROOF-GATED BECAUSE OF ITS OWN EARLIER ATTEMPTS,
+RETIRE AND RE-FILE IT — you already have that latitude.** A mission proves work
+by its tests failing on the parent and passing on the tip; once a failed attempt
+has COMMITTED its scaffold, the tests pass on the parent too and that mission
+can never go green again. That is a dead mission, not a question for the
+captain: archive it and re-file from a clean base (never delete), and say in
+your report that you did.
+
 3. A **standing-rule conflict** — including every permission denial, and the
    refused merge of § 7.
 4. An **LCARS bug with no verb-level workaround**.
