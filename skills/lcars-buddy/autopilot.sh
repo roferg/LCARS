@@ -98,7 +98,7 @@ say()  { printf '%s\n' "$1"; }
 # internals to find a verb's real flags, and long log greps. Both are answered
 # here, on purpose, so nobody has to go and read run.sh to drive a mission.
 usage() {
-  cat >&2 <<USAGE
+  cat >&2 <<'USAGE'
 Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside this script)
 
   init --spec <path|url> [--scope M0,M1] [--engine <e>] [--deadline <iso>] [--force]
@@ -107,7 +107,7 @@ Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside t
   next [--all]         the ONE next mechanical step, and the AUTOPILOT.md heading for it
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
-  answered <id> "<a>"  close ONE open question (ids come from \`status\`); never deletes it
+  answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
   ask "<what>" --mission <m> [--why <w>] [--command <c>] [--rollback <r>]
                        raise a question YOURSELF (a product call, a scope change, a
                        standing-rule conflict). It lands in .questions with a real id and
@@ -508,6 +508,7 @@ slots_in_use() {
 PB_align='## 1. The alignment round — one batch of questions, then walk away'
 PB_captain_step='## 2. Captain-only steps, collected up front'
 PB_foundation='## 3. Foundation — establish the vision, then re-check the test command'
+PB_holodeck='## 4. File a milestone through the front door'
 PB_file='## 4. File a milestone through the front door'
 PB_drive='## 5. Drive it — backgrounded, with a waiter that watches the process'
 PB_verify_gate='## 6. The Verify gate — Number One, then the live check'
@@ -521,6 +522,7 @@ playbook_heading() {
     align)          printf '%s' "$PB_align" ;;
     captain-step)   printf '%s' "$PB_captain_step" ;;
     foundation)     printf '%s' "$PB_foundation" ;;
+    holodeck)       printf '%s' "$PB_holodeck" ;;
     file)           printf '%s' "$PB_file" ;;
     drive)          printf '%s' "$PB_drive" ;;
     verify-gate)    printf '%s' "$PB_verify_gate" ;;
@@ -533,7 +535,7 @@ playbook_heading() {
 
 cmd_playbook() {
   local a
-  for a in align captain-step foundation file drive verify-gate land wait answer-pending done; do
+  for a in align captain-step foundation holodeck file drive verify-gate land wait answer-pending done; do
     printf '%s\t%s\n' "$a" "$(playbook_heading "$a")"
   done
 }
@@ -642,6 +644,7 @@ PY
   say "  autopilot.sh record liveTargets.host <host>"
   say "  autopilot.sh record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
   say "then follow $SKILLS_DIR/lcars-buddy/AUTOPILOT.md."
+  cmd_next
 }
 
 # ==========================================================================
@@ -703,10 +706,25 @@ PY
     printf 'captain-step\t-\t%s\n' "$cs"
   fi
 
-  if [ "$(ap_j "foundation.done")" != "true" ] && [ "$(ap_j "foundation.required")" = "true" ]; then
-    printf 'foundation\t-\t%s\n' "no test foundation yet — file the initialization mission"
+  local scope; scope="$(ap_keys scope)"
+  if [ -z "$scope" ]; then
+    printf 'align\t-\t%s\n' "no scope is set — pass --scope to init, or record it"
     return 0
   fi
+
+  local initialization="" d
+  for d in "$MISSIONS"/*; do
+    [ "$(jfile "$d/state.json" missionType)" = "initialization" ] || continue
+    [ "$(jfile "$d/state.json" stage)" = "done" ] && continue
+    initialization="$(basename "$d")"; break
+  done
+  local foundation
+  foundation="$(TOPLEVEL="$CWD"; . "$SKILLS_DIR/lcars-init/lcars-common.sh"
+    lcars_test_readiness "$CFG"; printf '%s' "$LCARS_TESTREADY_FOUNDATION")"
+  case "$foundation:$initialization" in greenfield:|untested:)
+    printf 'foundation\t-\t%s\n' "no test foundation yet — file the initialization mission"
+    return 0 ;;
+  esac
 
   local used; used="$(slots_in_use)"
   if [ "$used" -ge "$MAX_SLOTS" ]; then
@@ -714,11 +732,12 @@ PY
     return 0
   fi
 
-  local ms id stage verified any=0
-  for ms in $(ap_keys scope); do
-    id="$(ap_j "missions.$ms.id")"
+  local ms id stage any=0
+  for ms in ${initialization:-$scope}; do
+    id="$ms"
+    [ "$ms" = "$initialization" ] || id="$(ap_j "missions.$ms.id")"
     if [ -z "$id" ]; then
-      printf 'file\t%s\t%s\n' "$ms" "$ms is not filed yet"
+      printf 'file\t%s\t%s\n' "$ms" "$ms is not filed yet — if its own spec/brief has screens, holodeck first; otherwise file directly"
       any=1
       continue
     fi
@@ -734,13 +753,8 @@ PY
     case " $blocked " in
       *" $id "*) continue ;;
     esac
-    verified="$(ap_j "missions.$ms.verified")"
     if [ "$stage" = "verify" ]; then
-      if [ "$verified" = "true" ]; then
-        printf 'land\t%s\t%s\n' "$id" "$ms is verified — approve it and run the hygiene"
-      else
-        printf 'verify-gate\t%s\t%s\n' "$id" "$ms reached the Verify gate — read Number One, then run the live check"
-      fi
+      printf 'verify-gate\t%s\t%s\n' "$id" "$ms reached the Verify gate — read Number One, then run the live check"
       continue
     fi
     printf 'drive\t%s\t%s\n' "$id" "$ms is at $stage with no driver in flight"
@@ -766,6 +780,12 @@ cmd_next() {
   IFS="$(printf '\t')" read -r action arg why <<EOF
 $(printf '%s\n' "$plan" | head -1)
 EOF
+  if [ "$action" = "file" ]; then
+    say "IF $arg has screens (judge its own spec/brief):"
+    say "NEXT: holodeck $arg"
+    say "PLAYBOOK: $(playbook_heading holodeck)"
+    say "OTHERWISE:"
+  fi
   if [ "$arg" = "-" ]; then
     say "NEXT: $action"
   else
