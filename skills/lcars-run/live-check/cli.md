@@ -264,11 +264,28 @@ along the chain in item 6.
 
 ### 9. Break a CLI rule with the near miss
 
-Verify each stated rule by **breaking it**, not only by satisfying it. Give an
-argument or flag that is almost valid but must be turned away, and record what
-happened either way.
+Verify each stated rule by **breaking it**, not only by satisfying it. Do not
+leave "almost valid" to instinct — the near miss for a value the product has
+already accepted is a **REARRANGEMENT of that value**, and the arrangements that
+find faults are a short list. Work the table, and record what happened either
+way.
 
-**Evidence:** `live-check/09-near-miss.txt` — the command, the nearly valid
+**SIX NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Pick the rows
+that fit the rule in front of you — running all six blindly is not the ask.
+
+| the near miss | what it is FOR |
+| --- | --- |
+| **a known-correct value, REARRANGED** — the same characters with the case flipped, or with two letters swapped | a rule that compares one value against another. Satisfy it, then offer the accepted value back in a different arrangement. **START HERE:** a rule that only ever compared raw bytes passes every exact-match attempt you can make. |
+| **whitespace-only**, and a valid value with a space in front of it or behind it | a rule that requires a value at all. An argument of one space is not empty and it is not a name, and trimming is usually the step nobody wrote. |
+| **unicode look-alikes and combining forms** of a string the product accepted | a rule that matches text. A Cyrillic а, a full-width character, and an é written as `e` plus a combining accent all read the same to the person at the keyboard. |
+| **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a rule that counts or ranges. The maximum ITSELF is the value most often wrong by one and the value most often never tried. |
+| **a second value that NORMALISES onto one already accepted** — not the same string, the same meaning after trimming, case-folding or unicode normalisation | a rule that says a value must be unique, or must not already exist. Offering the identical string twice proves only that the identical-string comparison works. |
+| **the almost-right identifier** — a real name, id or path with one character changed | a rule that looks something up. A lookup that quietly invents the missing thing, or carries on with an empty value, instead of failing is only visible this way. |
+
+Say which rows you tried, with the exact argument you gave, and say which rows
+the rule in front of you made no sense for.
+
+**Evidence:** `live-check/09-near-miss-cli.txt` — the command, the nearly valid
 input, its exit code, stdout and stderr, and whether it was turned away.
 
 **DEFECT:** a refusal that never came is a fault; a refusal you never asked for

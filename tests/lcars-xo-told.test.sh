@@ -675,13 +675,32 @@ sys.exit(0 if (d.get('numberOne') or {}).get('retakenAt') else 1)\""
 retake_pass fresh
 check "4f3. CONTROL — an unlooked mission is not stamped, and looks on each pass" \
   '[ "$(grep -c . "$TMPROOT/stub-fresh.log" 2>/dev/null | tr -d " ")" = 2 ]'
-# THE BUDDY, AND PROOF GIT IS REALLY ANSWERING (S264 fix round 2, FIX 7). This
-# check was `[ -z "$(… git diff … lcars-buddy)" ]`, which is TRUE when git
-# fails, is missing, or is run outside a repo. The control is a path this round
-# really did change: if git is answering at all, `skills/lcars-xo` is dirty.
-check "4g. the buddy was NOT edited — and git really answered (control: lcars-xo IS dirty)" \
-  "[ -z \"\$(cd '$REPO_ROOT' && git diff --name-only HEAD -- skills/lcars-buddy 2>/dev/null)\" ] &&
-   [ -n \"\$(cd '$REPO_ROOT' && git diff --name-only HEAD -- skills/lcars-xo 2>/dev/null)\" ]"
+# THE BUDDY, AND PROOF GIT IS REALLY ANSWERING (S264 fix round 2, FIX 7;
+# control replaced S265 fix round 1). The check was once
+# `[ -z "$(… git diff … lcars-buddy)" ]`, which is TRUE when git fails, is
+# missing, or is run outside a repo — so it needed a control proving git spoke.
+# S264's control was "`skills/lcars-xo` is dirty", which was true only while
+# THAT session had uncommitted work there: on a clean tree, or any later
+# session that does not happen to edit `skills/lcars-xo`, 4g went red for no
+# reason, and a guard that fires on correct behaviour teaches you to ignore it.
+# The control is now a property of ANY clone of this repo rather than of one
+# session's working tree: git must SUCCEED (exit status checked, never
+# discarded) and must report a NON-EMPTY list of tracked files under
+# `skills/lcars-buddy`. That is true in every clone and false whenever git is
+# broken, absent, or run outside a repo — and it is positive evidence about
+# the very path the clean-half asserts on.
+buddy_clean_and_git_answered() {
+  local tracked buddy_diff
+  # (1) git answered: it exited 0 AND named the buddy's tracked files.
+  tracked="$(cd "$REPO_ROOT" && git ls-files -- skills/lcars-buddy)" || return 1
+  [ -n "$tracked" ] || return 1
+  # (2) the buddy is clean: the diff exited 0 (so silence is an answer, not a
+  #     swallowed failure) and was empty.
+  buddy_diff="$(cd "$REPO_ROOT" && git diff --name-only HEAD -- skills/lcars-buddy)" || return 1
+  [ -z "$buddy_diff" ]
+}
+check "4g. the buddy was NOT edited — and git really answered (control: git lists the buddy's tracked files)" \
+  'buddy_clean_and_git_answered'
 
 # ===========================================================================
 # 5. THE INVARIANT — the argv fence did not move, and the mutation fires

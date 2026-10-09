@@ -234,11 +234,28 @@ incorrectly (or the reverse); a phone fix that broke desktop.
 
 ### 8. Break a page rule with the near miss
 
-Verify each stated rule by **breaking it**, not only by satisfying it. Feed a
-form or control input that is almost valid but must be turned away, and record
-what happened either way.
+Verify each stated rule by **breaking it**, not only by satisfying it. Do not
+leave "almost valid" to instinct — the near miss for a value the page has
+already accepted is a **REARRANGEMENT of that value**, and the arrangements that
+find faults are a short list. Work the table, and record what happened either
+way.
 
-**Evidence:** `live-check/08-near-miss.txt` — the form or control, the nearly
+**SIX NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Pick the rows
+that fit the rule in front of you — running all six blindly is not the ask.
+
+| the near miss | what it is FOR |
+| --- | --- |
+| **a known-correct value, REARRANGED** — the same text typed back with the case flipped, or with two letters swapped | a field checked against what is already saved. Save it, then type the saved value back in a different arrangement and submit. **START HERE:** a check that only ever compared raw text accepts every exact-match attempt you can make. |
+| **whitespace-only**, and a valid value with a space in front of it or behind it | a field that must not be blank. A field holding one space looks filled and is not, and trimming is usually the step nobody wrote. |
+| **unicode look-alikes and combining forms** of a string the form accepted | a field matched as text. A Cyrillic а, a full-width character, and an é written as `e` plus a combining accent all read the same to the person at the keyboard. |
+| **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a quantity, a length, a date range, a page of results. The maximum ITSELF is the value most often wrong by one and the value most often never tried. Try the keyboard AND any stepper or slider. |
+| **a second entry that NORMALISES onto one already saved** — not the same string, the same meaning after trimming, case-folding or unicode normalisation | a field that says a value must be unique, or must not already exist. Submitting the identical string twice proves only that the identical-string comparison works. |
+| **the almost-right identifier** — a real name, id, slug or URL with one character changed | a lookup, a deep link, a route parameter. A page that quietly invents the missing thing, or renders empty, instead of showing a not-found is only visible this way. |
+
+Say which rows you tried, with the exact value you entered, and say which rows
+the rule in front of you made no sense for.
+
+**Evidence:** `live-check/08-near-miss-web.txt` — the form or control, the nearly
 valid input, its visible response, and whether it was turned away.
 
 **DEFECT:** a refusal that never came is a fault; a refusal you never asked for

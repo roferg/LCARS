@@ -350,8 +350,110 @@ check "7f. none of the forbidden words appears in the three added items" \
    [ "$("$PY" "$LIVE_CHECK_PY" "$P_WORK" forbidden)" = clean ]'
 
 echo ""
-echo "8. ZERO SPEND"
-check "8a. no faked engine CLI was ever invoked" '[ ! -s "$SPEND_LOG" ]'
+echo "8. S265 — THE NEAR MISS IS A CONCRETE TABLE, NOT AN ABSTRACTION"
+# WHY. S262's reviewer DID item 9. It gave a duplicate, an empty name, a
+# whitespace name and an invalid subcommand within minutes of having a shell —
+# so the prose route works. It then rated `t-001-ac4` ("with a name already
+# registered") MET, its own note saying it "broke the rule both ways", having
+# only ever offered the SAME string twice. `habit add "Exercise"` then
+# `habit add "exercise"` registers two habits, and the buddy filed it as #151.
+# Nothing in the machinery blocked that row: filing was open, the criterion
+# existed, the row was reachable. It simply did not think of the case variant.
+# So the cure is not a gate (that was the cut S259, measured at 0 declarations
+# out of 95) — it is to stop asking for "an input that is almost valid" and
+# hand over the list of near misses that actually catch bugs, each row saying
+# what it is FOR so the reviewer picks instead of running all six blindly.
+#
+# IT LIVES IN THE LIVE-CHECK FILES, which run.sh cats WHOLE into the prompt
+# (`number_one_checklists`), so `evaluate.md`'s 689-line ceiling — pinned by 6a
+# here, by lcars-xo-uncontracted and by lcars-xo-live-consent — is not touched
+# at all. 8i is the mutation: the same assertions against a checklist dir with
+# the table cut out, where they must go red.
+
+# A live-check dir with the concrete table STRIPPED, in all three mediums.
+LC_STRIPPED="$TMPROOT/live-check-stripped"
+mkdir -p "$LC_STRIPPED"
+cp "$REPO_ROOT/skills/lcars-run/live-check"/*.md "$LC_STRIPPED"/
+for f in cli web workflow; do
+  "$PY" - "$LC_STRIPPED/$f.md" <<'PYLC'
+import sys
+p = sys.argv[1]
+text = open(p, encoding="utf-8").read()
+MARKS = ("NEAR MISSES THAT CATCH BUGS", "| the near miss ", "| what it is FOR ")
+keep = [para for para in text.split("\n\n")
+        if not any(m in para for m in MARKS)]
+open(p, "w", encoding="utf-8").write("\n\n".join(keep))
+PYLC
+done
+
+prompt_lc() { # <out-prompt> <mode> <live-check-dir>
+  ( cd "$repo" && XO_PROMPT_DUMP="$1" LCARS_WORKER_ADAPTER="$DUMP" \
+      LCARS_WORKER_BIN="$WORKER" LCARS_WORKER_CLI=copilot \
+      LCARS_WORKER_HANG_SECS=0 LCARS_XO_INPUT_DIR="$IN" LCARS_GH_BIN=/usr/bin/true \
+      LCARS_LIVE_CHECK_DIR="$3" \
+      bash "$RUNSH" spawn-number-one --mission lcars-1 \
+        --mode "$2" --outdir "$TMPROOT/out-$$-$RANDOM" ) >/dev/null 2>&1
+}
+
+P_EV_LCS="$TMPROOT/prompt-evaluate-lcstripped.txt"
+prompt_lc "$P_EV_LCS" evaluate "$LC_STRIPPED"
+criteria_for web
+P_WEB_LCS="$TMPROOT/prompt-web-lcstripped.txt"
+prompt_lc "$P_WEB_LCS" evaluate "$LC_STRIPPED"
+criteria_for workflow
+P_WORK_LCS="$TMPROOT/prompt-workflow-lcstripped.txt"
+prompt_lc "$P_WORK_LCS" evaluate "$LC_STRIPPED"
+criteria_for cli
+
+check "8a. the assembled CLI prompt carries the concrete enumeration, named as a list of near misses that CATCH BUGS" \
+  'says "$P_EV" "near misses that catch bugs"'
+check "8b. THE HEADLINE ROW — a known-correct value, REARRANGED (the row that would have caught #151)" \
+  'says "$P_EV" "a known-correct value, REARRANGED" &&
+   says "$P_EV" "case flipped" && says "$P_EV" "two letters swapped"'
+check "8c. …and the word the captain asked for is the one used: a REARRANGEMENT of a value already accepted" \
+  'says "$P_EV" "rearrangement"'
+check "8d. all six rows are in the CLI prompt" \
+  'says "$P_EV" "a known-correct value, REARRANGED" &&
+   says "$P_EV" "whitespace-only" &&
+   says "$P_EV" "unicode look-alikes" &&
+   says "$P_EV" "the numeric edges" &&
+   says "$P_EV" "normalises onto one already accepted" &&
+   says "$P_EV" "the almost-right identifier"'
+check "8e. every row says what it is FOR — six rule shapes, one per row" \
+  '[ "$(occurs "$P_EV" "\| a rule that")" -ge 6 ]'
+check "8f. the reviewer is told to PICK the rows that fit the rule in front of it, not run all six" \
+  'says "$P_EV" "pick the rows that fit the rule in front of you" &&
+   says "$P_EV" "running all six blindly is not the ask"'
+check "8g. …and to say which rows it tried, with the exact input, and which made no sense" \
+  'says "$P_EV" "say which rows you tried"'
+check "8h. THE REARRANGEMENT ROW IS NAMED IN ALL THREE MEDIUMS, adapted not pasted" \
+  'says "$P_WEB" "REARRANGED" && says "$P_WORK" "REARRANGED" &&
+   says "$P_WEB" "near misses that catch bugs" &&
+   says "$P_WORK" "near misses that catch bugs" &&
+   says "$P_WEB" "already saved" && says "$P_WORK" "already recorded"'
+check "8i. CONTROL — the abstract-only ask is GONE from all three (no bare \"almost valid but must be turned away\")" \
+  '! says "$P_EV" "almost valid but must be turned away" &&
+   ! says "$P_WEB" "almost valid but must be turned away" &&
+   ! says "$P_WORK" "almost matches but must not fire"'
+check "8j. CONTROL — the mutation harness reached the same seam (all three prompts assembled)" \
+  '[ -s "$P_EV_LCS" ] && [ -s "$P_WEB_LCS" ] && [ -s "$P_WORK_LCS" ]'
+check "8k. MUTATION — cut the table out of the checklists and 8a/8b/8d/8e go red" \
+  '! says "$P_EV_LCS" "near misses that catch bugs" &&
+   ! says "$P_EV_LCS" "a known-correct value, REARRANGED" &&
+   ! says "$P_EV_LCS" "the almost-right identifier" &&
+   [ "$(occurs "$P_EV_LCS" "\| a rule that")" -eq 0 ] &&
+   ! says "$P_WEB_LCS" "REARRANGED" && ! says "$P_WORK_LCS" "REARRANGED"'
+check "8l. …and the mutation removed ONLY the table — item 9 itself still stands" \
+  'says "$P_EV_LCS" "Break a CLI rule with the near miss" &&
+   says "$P_EV_LCS" "a refusal that never came is a fault"'
+check "8m. THE CEILING IS UNTOUCHED — evaluate.md is still exactly 688 lines" \
+  '[ "$(grep -c "" "$PROMPTS/evaluate.md")" -eq 688 ]'
+check "8n. …and the table is NOT in evaluate.md or recheck.md at all" \
+  '! grep -qi "near misses that catch bugs" "$PROMPTS"/*.md'
+
+echo ""
+echo "9. ZERO SPEND"
+check "9a. no faked engine CLI was ever invoked" '[ ! -s "$SPEND_LOG" ]'
 
 echo ""
 printf 'lcars-xo-near-miss: %d passed, %d failed\n' "$pass" "$fail"
