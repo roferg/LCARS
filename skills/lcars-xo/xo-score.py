@@ -2765,6 +2765,90 @@ def summary_caveat(summary, measured):
                 u"picture.")
 
 
+# ─── WHAT IS CARRIED, AND THE SHAPE IT IS CARRIED IN (S263 fix round 2, D1) ──
+#
+# THE DEFECT THIS CLOSES, confirmed by hand before a line of it was written.
+# `{"title": "t", "saw": "s", "shots": 5}` and `shots: true` raised
+# `TypeError: 'int'/'bool' object is not iterable` out of `xo-logs.py`, which
+# exited 1 and wrote NOTHING — and `xo.sh` runs the filer as
+# `plan="$(… 2>/dev/null)" || plan=""`, so the traceback was discarded and the
+# empty result read as "nothing to file". The captain was told `nothing on <id>
+# contradicts what you wrote down — no logs filed.`, with a durable journal line
+# saying `"filed": 0, "detail": "no contradictions to file"`. A CRASH WAS
+# REPORTED AS A CLEAN BILL OF HEALTH, and the genuine contract breach in the
+# same verdict was lost with it. (The call site got its own cure; this is the
+# source.)
+#
+# THE GAPS LANE WAS ALREADY TREATED THIS WAY and this MIRRORS it, deliberately
+# rather than inventing a second convention: the gaps loop above drops a non-dict
+# entry, coerces `kind`, `evidence` and `testQuote` through `str()`, rebuilds
+# `shots` as a list of non-empty strings, and hands the CONSUMER a normalised
+# entry instead of the raw one. The only difference is that this lane is a
+# WHITELIST — the consumer reads a known set of fields, so an unknown field of
+# any shape cannot reach it at all and cannot become the next crash.
+#
+# IT DECIDES NOTHING. It is shape, not judgement: no entry is dropped for what it
+# SAYS, only for not being an object at all. Whether a find is CITED is
+# `xo-logs.py`'s question and is asked against the record on disk, which this
+# file cannot see.
+#
+# AND D6: THE OBVIOUS SHAPES ARE ACCEPTED rather than lost. A list on a singular
+# field (`{"transcript": ["01-help.txt"]}`) and a map on a plural one
+# (`{"shots": {"a": "01-help.txt"}}`) were both refused because the old reader
+# stringified the container and never tried the path inside it. An honest
+# citation should not be thrown away over the shape of its field.
+CARRIED_TEXT = ("title", "expected", "saw", "note", "action", "evidence",
+                "checkedBy", "impact", "impactWhy", "kind", "seam", "reason",
+                "testQuote")
+CARRIED_NAME = ("evidencePath", "transcriptPath", "transcript", "shot")
+
+
+def _carried_strings(v):
+    """Every non-empty string inside a value that may be a string, a list or a
+    map — and NOTHING for a number, a bool or a None. One recursion, so a list
+    of lists and a map of lists both flatten."""
+    out = []
+    if isinstance(v, str):
+        if v.strip():
+            out.append(v.strip())
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            out.extend(_carried_strings(x))
+    elif isinstance(v, dict):
+        for x in v.values():
+            out.extend(_carried_strings(x))
+    return out
+
+
+def carried_finds(rows):
+    """The uncontracted-find list, normalised to the shapes its one consumer
+    reads. See the block above: a whitelist, a coercion, and no judgement."""
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            # AND IT IS NOT DROPPED IN SILENCE EITHER (S263 fix round 3, FIX 3).
+            # `continue` here dropped a non-object entry with nothing printed,
+            # nothing journaled and nothing in `logs.json` — the same silence
+            # that let `{"saw": 3}` vanish. An entry with no words is carried, so
+            # the filer REFUSES it out loud by its own wordless arm instead of
+            # this file deciding on its own that the captain need not hear. It
+            # still carries no judgement and no text: there was none to carry.
+            out.append({"shots": []})
+            continue
+        e = {}
+        for k in CARRIED_TEXT:
+            got = _carried_strings(r.get(k))
+            if got:
+                e[k] = " ".join(got)
+        for k in CARRIED_NAME:
+            got = _carried_strings(r.get(k))
+            if got:
+                e[k] = got[0]
+        e["shots"] = _carried_strings(r.get("shots"))
+        out.append(e)
+    return out
+
+
 def main():
     if len(sys.argv) < 4:
         sys.stderr.write(
@@ -4602,6 +4686,35 @@ def main():
         "escalations": _own + walked_lines + unlisted_lines,
         "alsoChecked": [str(e) for e in (doc.get("alsoChecked") or []) if str(e).strip()],
         "summary": summary,
+        # ─── THE LANE THAT WAS SEVERED BY A HAND-WRITTEN DICT (S263) ─────────
+        #
+        # WHAT WAS MEASURED. S251 built a lane for a real fault NO criterion
+        # covers, and `xo-logs.py` has always read it correctly off the verdict —
+        # a `GAP` record, a complete bug PRD, and `xo-filed.py` already keeps it
+        # out of the send-back sentence. But `xo-logs.py` is handed the SCORED
+        # file, this dict is written out BY HAND key by key, and this key was
+        # never among them: no `out.update`, no `doc.items()` passthrough. The
+        # raw verdict that still had it was then deleted by `xo_rm_work`. So the
+        # data was not dropped on the floor, it was DESTROYED, and the lane could
+        # not fire even when the reviewer used it.
+        #
+        # THIS IS A COPY AND NOTHING ELSE. The key is carried, unread, to the one
+        # consumer that files it. Nothing above this line reads it and nothing
+        # below decides anything from it — the GRADE FENCE IS THE POINT, and it
+        # is unchanged: `derive_grade`, `derive_recommendation`, `blockers[]` and
+        # the coverage floor have never seen this key and still do not. The
+        # reviewer can FILE what no criterion covers and still cannot GRADE on
+        # it. (`tests/lcars-xo-volunteered.test.sh` 5a/5b/5e measure exactly
+        # that: with and without, the scored output differs in this ONE key.)
+        #
+        # AND IT IS SANITISED HERE, THE WAY THE GAPS LANE ALREADY IS (fix round
+        # 2, D1). The first cut carried the raw entries behind one
+        # `isinstance(v, dict)` filter, so `{"shots": 5}` reached the consumer
+        # and CRASHED it — and the crash was then reported to the captain as
+        # "nothing is wrong". `carried_finds` above is the mirror of the gaps
+        # loop's own treatment: a whitelist of the fields the consumer reads,
+        # each coerced to the shape it reads them in. It still DECIDES nothing.
+        "volunteered": carried_finds(doc.get("volunteered")),  # S263 PASS-THROUGH
     }
     if my_checking["total"]:
         out["myChecking"] = my_checking

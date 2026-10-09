@@ -33,10 +33,19 @@ filed against nothing. The rule now reads:
   * and, since S251, every entry of `volunteered[]` — a real fault the look saw
     that NO criterion covers. Filed LAST, only into what the cap has left, with
     `volunteered-<k>` for a criterion id because there is no criterion, and with
-    every sentence of its PRD saying so. It is fenced out of the grade by not
-    being read anywhere a grade is decided: `xo-score.py` and `xo-criteria.py`
-    never see the key, so the contract-first rule stands and a volunteered find
-    is information, never a send-back.
+    every sentence of its PRD saying so. Since S263 it must CITE a RECORD — a
+    regular, non-empty file inside the look's own shots directory, and nothing
+    else — or it is REFUSED out loud with what is missing (see `vol_record`):
+    the one class nobody wrote a criterion for is the one class where the record
+    is all there is.
+    It is fenced out of the grade by not being READ anywhere a grade is decided.
+    `xo-criteria.py` never sees the key at all — it is not a criterion — and
+    `xo-score.py` only COPIES it through to here (its one pass-through line,
+    S263), because this file is handed the SCORED verdict and the raw one is
+    deleted by `xo_rm_work`. `derive_grade`, `derive_recommendation`, the
+    coverage floor and `blockers[]` have never read it and still do not. So the
+    contract-first rule stands and a volunteered find is information, never a
+    send-back.
 
 NEVER TWICE FOR ONE CRITERION. The sixth argument is the look's own
 `xo/logs.json`; a criterion already in its `filed` list is skipped and said out
@@ -58,6 +67,7 @@ by ASCII US (0x1f), NOT by a tab:
     GAP <n> <prd-path> <shot-path,shot-path> <criterion> <title>
     ALREADY <criterion> <the bug mission it was filed as>
     OVERFLOW <how-many-were-not-filed>
+    REFUSED <what-it-said> <what-is-missing>
 
 WHY NOT A TAB (S211 fix round 1, D2). TAB IS IFS WHITESPACE, so `IFS=$'\t'
 read -r …` COLLAPSES a run of tabs: a record whose shots field is empty loses
@@ -439,6 +449,227 @@ def instrument_of(row, finding):
     return ""
 
 
+# ─── WHAT A VOLUNTEERED FIND MUST CITE (S263), AND WHY IT IS ONE QUESTION ────
+#
+# THIS GUARD HAS BEEN WRITTEN THREE TIMES AND THE FIRST TWO WERE BOTH BEATEN
+# THE SAME WAY: they asked a question NEAR the real one.
+#
+#   ROUND 0 asked "is the citation field non-empty?" — and `{"transcript": "it
+#   felt sluggish when I used it"}`, `{"evidencePath": "n/a"}` and
+#   `{"testQuote": "nothing, I did not run a test"}` each filed a complete bug
+#   against the captain's build. The price of an evidence-free opinion moved
+#   from zero words to ONE word.
+#
+#   ROUND 1 asked "does the value LOOK like a path, or LOOK like a machine
+#   line?" — two ladders, one of them a shape test over English. Measured:
+#   `/etc/passwd`, `/tmp`, `.`, `/`, a directory inside the shots dir and a
+#   ZERO-BYTE file all cited and filed, with `--attach /etc/passwd` in the real
+#   `file-logs` argv; while `error: unknown command "publish"`, `Segmentation
+#   fault` and `Traceback (most recent call last)` — honest machine output, which
+#   the ask explicitly invites — were all REFUSED, and `"I looked at config.yaml
+#   and it was wrong"` was accepted for its dot. It was BACKWARDS.
+#
+# `ORCHESTRATION.md` records that every session which went past three rounds was
+# cured by DELETING or RESTRUCTURING something, never by the next patch (S147,
+# four generations of a parser; S156, a regex classifier; S157, five versions of
+# a guard). So there is no generation three of the heuristic. The heuristic is
+# GONE — `vol_quote` and its four constants are deleted — and what is left is
+# ONE rung asking ONE question, about a RECORD and not about words:
+#
+#     is this a REGULAR, NON-EMPTY file INSIDE the look's own shots directory?
+#
+# Four properties, every one of them a row that filed a bug in round 1, and
+# every one checkable with `os.stat`. Nothing here reads prose, nothing here
+# judges shape, and there is nothing left for a sentence with a slash in it to
+# satisfy — which is the point: a reviewer satisfies this by SAVING THE FILE.
+#
+# WHY NOT `testQuote` ANY MORE (fix round 2, D3). A quoted line is not a file,
+# so it cannot be asked this question — and the CORRECT mechanism for a quoted
+# test line already exists somewhere else: `xo-score.py`'s `tests_settle` /
+# `tally_refusal` / `case_leaves` judge a quote against `tests.json`'s RECORDED
+# `outputTail` and `testCases`, which is a FACT and not a shape. That ladder
+# lives in the scorer, reads a file this program is never handed, and
+# reimplementing it here is the cloning the three dead rounds above were made of.
+# So the route is closed rather than faked: this lane's whole point is a RECORD,
+# and a file record is the thing the look already produces. The ask no longer
+# offers `testQuote` as a way in, and this sentence no longer promises one.
+VOL_CITATION_ASK = ("it cites no record of this look — a find outside the "
+                    "contract needs the same citation a gap needs, and the only "
+                    "thing that counts is a FILE YOU SAVED in this look's own "
+                    "shots directory, named in `shot`/`shots`/`transcript`/"
+                    "`transcriptPath`/`evidencePath`. It has to be really there, "
+                    "it has to be a file and not a directory, it must not be "
+                    "empty, and it must be inside the shots directory — a path "
+                    "to somewhere else on the machine is not a record of this "
+                    "look even when it exists. An `evidence` word on its own, a "
+                    "field filled with prose, and a name you never saved are all "
+                    "not citations.")
+
+# ─── AND THE TWO REASONS AN ENTRY IS DROPPED BEFORE ITS CITATION IS EVEN READ
+# (fix round 3, FIX 3). Both of these used to be silent list comprehensions
+# above the loop. They are refusals now, on the same `REFUSED` record, through
+# the same surfaces (`xo.sh` prints them, journals them and keeps them in
+# `xo/logs.json`) — a dropped find the captain never hears about is the exact
+# failure this whole session is about.
+VOL_WORDLESS = "(a find with no words on it)"
+VOL_WORDLESS_ASK = ("it says nothing a bug could be filed from — a find needs a "
+                    "`title` or a `saw` IN WORDS, and this one has neither. A "
+                    "number, a `true` and an empty field are not a sentence, so "
+                    "there was nothing to write down. Nothing was filed from it "
+                    "and nothing about it is proven clean: say it again in a "
+                    "sentence, with the file you saved beside it.")
+VOL_SHAPE_ASK = ("it is not a find at all — `volunteered` takes objects shaped "
+                 "like a gap (`title`, `expected`, `saw`, `shots`, …) and this "
+                 "entry is not an object, so nothing could be read off it. "
+                 "Nothing was filed from it and nothing about it is proven "
+                 "clean.")
+
+# The recorded fields that may NAME the file, most specific first. Exactly the
+# fields `evidence_ref` and `instrument_of` already read, so a reviewer who
+# cited a gap the usual way has cited this the usual way too.
+VOL_CITE_FIELDS = ("evidencePath", "transcriptPath", "transcript", "shot", "shots")
+# PLURAL FIRST, as the lane has always read them — `bind_shots` and the PRD's
+# tail both lead on `shots[0]`, so the order the look's own list gives is kept.
+VOL_SHOT_FIELDS = ("shots", "shot")
+
+
+def cite_names(v, fields=VOL_CITE_FIELDS):
+    """Every NAME a find offers, in field order, whatever shape it offered it in.
+
+    SHAPE IS NOT A JUDGEMENT (S263 fix round 2, D6). `clean()` stringifies a
+    container, so `{"transcript": ["01-help.txt"]}` became the string
+    `"['01-help.txt']"` and `{"shots": {"a": "01-help.txt"}}` became a dict's
+    repr — the path inside was never tried and an honest citation was lost to the
+    shape of its field. A number, a bool and a None yield NOTHING, which is also
+    what stops `{"shots": 5}` from reaching an iteration that raises."""
+    out = []
+
+    def add(x):
+        if isinstance(x, str):
+            n = clean(x)
+            if n and n not in out:
+                out.append(n)
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                add(y)
+        elif isinstance(x, dict):
+            for y in x.values():
+                add(y)
+
+    for k in fields:
+        add((v or {}).get(k))
+    return out
+
+
+def vol_record(shotsdir, v):
+    """THE RECORD that cites this volunteered find, as a path — or "".
+
+    ONE RUNG, four properties, all of them `os.stat`:
+
+      * INSIDE. The name is taken down to its basename and resolved against the
+        look's own directory, and the file it lands on is checked to be really
+        under that directory with `os.path.realpath` and a containment test —
+        not a string prefix, which a symlink or a `..` walks straight through.
+        `evidence_ref` rung 1 resolved the RAW value against the PROCESS CWD, so
+        `/etc/passwd` was a citation; rung 2 joined the directory without
+        normalising, so `..` escaped.
+      * A FILE. `shot_file` is the shared resolver and it already asks
+        `os.path.isfile`, so `/tmp`, `.`, `/` and a directory inside the shots
+        dir are all answered here rather than by a second ladder.
+      * NOT EMPTY. A zero-byte file is a record of nothing; it cited and filed.
+      * NAMED AS SAVED. `shot_file` walks the one extension ladder every other
+        caller in this file walks, so `01-help.txt` and a bare `shot-01` both
+        resolve exactly as they do for a contracted gap.
+
+    SCOPE, DELIBERATELY (fix round 2, D2). This confines the VOLUNTEERED lane
+    only. `evidence_ref` has five call sites and the other four are pre-existing
+    behaviour on the CONTRACTED lanes, where a criterion and the score step's own
+    instrument check already stand behind every row — changing those is a wider
+    blast radius than this cure, and the general weakness is ledgered for the
+    captain instead. This is not a clone of that ladder either: it CALLS
+    `shot_file`, the one resolver, and adds the three `stat` questions
+    `evidence_ref` never asked."""
+    if not shotsdir or not os.path.isdir(shotsdir):
+        return ""
+    root = os.path.realpath(shotsdir)
+    for name in cite_names(v):
+        for cand in vol_candidates(name):
+            pth = shot_file(shotsdir, cand)
+            if not pth:
+                continue
+            real = os.path.realpath(pth)
+            try:
+                if os.path.commonpath([root, real]) != root:
+                    continue
+                if os.path.getsize(real) <= 0:
+                    continue
+            except (OSError, ValueError):
+                continue
+            return pth
+    return ""
+
+
+def vol_candidates(name):
+    """THE NAMES TO TRY for one recorded citation, and why there are two.
+
+    "INSIDE YOUR SHOTS DIRECTORY" MEANS **UNDER** IT (fix round 3, FIX 2). Round
+    2 took every name down to its basename before resolving, so a record the
+    reviewer genuinely saved at `deep/a/b/x.txt` under its own shots directory
+    was looked for at `shots/x.txt`, found nothing, and the honest find was
+    REFUSED. A reviewer told to save a file in a directory will make
+    subdirectories in it; a guard that only reads the top of that directory
+    throws away exactly the finds it asked for.
+
+      1. THE PATH AS WRITTEN, so a record is found where it was actually put.
+      2. ITS BASENAME, which is how a reviewer that wrote the absolute path of
+         its own copy still lands on the record it saved here. This is round 2's
+         behaviour, kept.
+
+    TRYING BOTH IS SAFE BECAUSE CONTAINMENT, NOT THIS LIST, IS THE GUARANTEE.
+    Whatever either candidate lands on is still resolved with `os.path.realpath`
+    and checked `commonpath`-against the shots directory by the one caller — so
+    an absolute path (`os.path.join` lets it win), a `..` walk, a symlink
+    pointing out, and a sibling directory whose name merely starts the same way
+    (`shots-evil` beside `shots`) are all still refused, and are refused by the
+    SAME line that refused them before. Nothing here is a string prefix test."""
+    n = clean(name).rstrip("/\\")
+    out = []
+    for cand in (n, os.path.basename(n)):
+        if cand and cand not in (".", "..") and cand not in out:
+            out.append(cand)
+    return out
+
+
+def vol_shot_name(shotsdir, name):
+    """The name THIS LANE EMITS for a cited record — relative to the shots
+    directory when the record lives in a subdirectory of it, so `attach_path`
+    and `shot_file` land on the same file the guard accepted (fix round 3, FIX
+    2). A flat name is returned exactly as round 2 returned it, a basename, so
+    `bind_shots`, `shot_selector` and `logs.json`'s own name recovery all read
+    precisely what they read before; and a name that resolves to nothing is
+    still CARRIED as a basename, which is the pre-existing behaviour a
+    `recheck` depends on."""
+    base = os.path.basename(clean(name).rstrip("/\\"))
+    if not shotsdir or not os.path.isdir(shotsdir):
+        return base
+    root = os.path.realpath(shotsdir)
+    for cand in vol_candidates(name):
+        pth = shot_file(shotsdir, cand)
+        if not pth:
+            continue
+        real = os.path.realpath(pth)
+        try:
+            if os.path.commonpath([root, real]) != root:
+                continue
+            rel = os.path.relpath(real, root)
+        except (OSError, ValueError):
+            continue
+        if os.sep in rel:
+            return rel
+        return base
+    return base
+
+
 def where_observed(shotsdir, row, finding):
     """WHERE the thing in AC #1 was actually seen — off the step's own readout.
 
@@ -754,11 +985,13 @@ def main():
     # `volunteered[]` is the one honest way through. It is FILED, beside
     # `gaps[]`, with its evidence — and it is fenced on all three sides:
     #
-    #   * it is read ONLY here. `xo-score.py` and `xo-criteria.py` never see the
-    #     key, so a volunteered find cannot touch the grade, the ledger, the
-    #     `blockers[]` the send-back is decided from, or the recommendation. The
-    #     CONTRACT-FIRST RULE stands: criteria come from the record, and a fault
-    #     outside the contract is information, not a verdict.
+    #   * it is READ only here. `xo-criteria.py` never sees the key, and
+    #     `xo-score.py` only COPIES it through (S263 — this file is handed the
+    #     SCORED verdict and the raw one is deleted, so the lane was severed
+    #     until it did). So a volunteered find still cannot touch the grade, the
+    #     ledger, the `blockers[]` the send-back is decided from, or the
+    #     recommendation. The CONTRACT-FIRST RULE stands: criteria come from the
+    #     record, and a fault outside the contract is information, not a verdict.
     #   * it files AFTER every contracted gap and only into what the cap has
     #     left, so it can never push a contract breach off the list or renumber
     #     one. A contracted bug's PRD is byte-identical either way.
@@ -766,8 +999,51 @@ def main():
     #     severity than a contract breach, and explicitly NOT the reason for any
     #     grade. The captain must be able to tell the two apart at a glance.
     vol = doc.get("volunteered") if isinstance(doc, dict) else None
-    vol = [v for v in vol if isinstance(v, dict)] if isinstance(vol, list) else []
-    vol = [v for v in vol if clean(v.get("title")) or clean(v.get("saw"))]
+    vol = vol if isinstance(vol, list) else []
+    # ── AND IT MUST CITE SOMETHING, OR IT IS REFUSED BY NAME (S263) ──────────
+    # The gate above asks only "does it say anything at all", which let an
+    # unevidenced find through (see `vol_record` for the one rung that answers
+    # it, and for the two generations of heuristic that were deleted to get
+    # there). A refused find is SAID, with what is missing, and `xo.sh` keeps it
+    # in the mission journal and in `xo/logs.json`: a refusal nobody receives
+    # measures as nothing, and this is the lane where the captain is least able
+    # to tell an observation from an opinion. The contracted lane is untouched —
+    # it has a criterion and the score step's own instrument check behind it.
+    #
+    # AND THE RECORD IT CITED IS CARRIED WITH IT (fix round 2, D4). The first cut
+    # threw the answer away and let the PRD re-resolve the citation through a
+    # DIFFERENT ladder, and the two disagreed: a `testQuote`-cited find filed a
+    # bug with no `Recorded in` clause at all — six sections of boilerplate a fix
+    # worker could not open or grep. One question, one answer, and the answer IS
+    # what the bug cites.
+    #
+    # AND AN ENTRY THAT IS DROPPED SAYS SO — THERE IS NO SILENT ARM LEFT (fix
+    # round 3, FIX 3). Two filters used to stand above this loop: one dropped a
+    # non-dict entry, the other dropped a dict with no `title` and no `saw`. Both
+    # dropped it in SILENCE. MEASURED: `{"saw": 3, "shots": ["01-help.txt"]}` —
+    # a find whose only words are a non-string scalar — came out of the scorer's
+    # `carried_finds` with the number gone, hit the `title or saw` filter, and
+    # vanished with FILED=0 and REFUSED=0: nothing printed, nothing journaled,
+    # nothing in `logs.json`. Silence is this lane's documented failure mode and
+    # the whole reason the session exists, so the two filters are now ARMS of
+    # this loop and every one of them prints. (A `title`/`saw` that is a dict or
+    # a list is recovered by the scorer's `_carried_strings` and is not this
+    # case; this is the degenerate scalar, and the empty object.)
+    kept = []
+    for v in vol:
+        if not isinstance(v, dict):
+            print(RS.join(["REFUSED", VOL_WORDLESS, VOL_SHAPE_ASK]))
+            continue
+        said = clean(v.get("title")) or clean(v.get("saw"))
+        if not said:
+            print(RS.join(["REFUSED", VOL_WORDLESS, VOL_WORDLESS_ASK]))
+            continue
+        cite = vol_record(shotsdir, v)
+        if cite:
+            kept.append((v, cite))
+        else:
+            print(RS.join(["REFUSED", said or "(untitled)", VOL_CITATION_ASK]))
+    vol = kept
     room = max(0, cap - len(fresh))
     overflow += max(0, len(vol) - room)
     vol = vol[:room]
@@ -966,16 +1242,38 @@ def main():
     # reads — a different lane is not a reason for a second output format. What
     # differs is every sentence of the prose, and the criterion id, which is
     # `volunteered-<k>` precisely BECAUSE there is no criterion.
-    for k_i, v in enumerate(vol, 1):
+    for k_i, (v, cite) in enumerate(vol, 1):
         n = len(fresh) + k_i
         cid = "%s%d" % (VOL_ID_PREFIX, k_i)
-        shots = [clean(sh) for sh in (v.get("shots") or []) if clean(sh)]
-        if not shots and clean(v.get("shot")):
-            shots = [clean(v.get("shot"))]
+        # ── NOTHING OUTSIDE THE LOOK'S OWN DIRECTORY GETS PAST HERE ──────────
+        # (fix round 2, D2). The guard above confines what COUNTS as a citation;
+        # this confines what the bug SAYS and what is hung on the issue. Measured
+        # before the cure: `{"evidencePath": "/etc/passwd"}` filed a PRD reading
+        # ``Recorded in `/etc/passwd` (none).`` and a real `file-logs` argv
+        # carrying `--attach /etc/passwd`, which `log.sh` stages into the mission
+        # and onto the GitHub issue. So the name list is basenamed, and the three
+        # path fields — the ones `evidence_ref` resolves against the process CWD
+        # — are REPLACED on the copy this loop reads by the ONE record that
+        # passed the guard. `evidence_ref` is then asked nothing it can get
+        # wrong, and its four contracted call sites are untouched.
+        # …and a record saved UNDER the shots directory is cited where it was
+        # put (fix round 3, FIX 2). `vol_shot_name` returns a basename for a
+        # flat name, exactly as this line's `os.path.basename` did, and the
+        # containment-checked relative path for one in a subdirectory — so the
+        # attach list and the PRD's own "what was recorded" tail land on the
+        # SAME file the guard accepted instead of on a name that is not there.
+        shots = [vol_shot_name(shotsdir, x) for x in cite_names(v, VOL_SHOT_FIELDS)]
         shots = bind_shots(shotsdir, shots, hash_id(
             " ".join([str(v.get("title") or ""), str(v.get("saw") or "")])))
+        v = dict(v, shots=shots, shot=(shots[0] if shots else ""),
+                 evidencePath=cite, transcriptPath="", transcript="")
+        # AND `testQuote` IS NO LONGER AN INSTRUMENT HERE (fix round 2, D3). It
+        # is not a citation route on this lane, so it must not name the
+        # instrument the PRD then says the record was taken with.
+        v.pop("testQuote", None)
         instrument = instrument_of(v, v) or "none"
-        ref = evidence_ref(shotsdir, v, v, instrument)
+        # THE RECORD THE GUARD ACCEPTED, VERBATIM — never re-resolved.
+        ref = cite
         attach = widen_shots(shotsdir, shots, v, v, instrument)
         what = unstop(v.get("title")) or unstop(v.get("saw")) or "something the record does not cover"
         saw = unstop(v.get("saw"))

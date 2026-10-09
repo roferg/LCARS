@@ -255,22 +255,29 @@ check "4e. CONTROL — the recheck round still has its own job, unchanged" \
 
 echo ""
 echo "5. THE VOLUNTEERED LANE IS OFFERED — and still cannot move the grade"
-check "5a. the worker is told the lane is WELCOME, in the breath that tells it to break a rule" \
-  'says "$P_EV" "is welcome"'
+check "5a. the worker is told the lane is EXPECTED OUTPUT, in the breath that tells it to break a rule" \
+  'says "$P_EV" "where that one is EXPECTED output"'
 check "5b. MUTATION — that fails with the clause stripped, so it is not S251's block answering for it" \
-  '! says "$P_EV_S" "is welcome"'
+  '! says "$P_EV_S" "where that one is EXPECTED output"'
 check "5c. …said as a fault nobody wrote a criterion for" \
   'says "$P_EV" "a fault nobody wrote a criterion for"'
 check "5d. MUTATION — that fails with the clause stripped too" \
   '! says "$P_EV_S" "a fault nobody wrote a criterion for"'
-check "5e. …and in the same breath, that it can never move the grade" \
-  'says "$P_EV" "never move your grade"'
+check "5e. …and in the same breath, that it is still fenced out of the grade" \
+  'says "$P_EV" "fenced out of your grade"'
 check "5f. MUTATION — that fails with the clause stripped" \
-  '! says "$P_EV_S" "never move your grade"'
+  '! says "$P_EV_S" "fenced out of your grade"'
 check "5g. CONTROL — S251's own lane block is still there and still says what it said" \
   'says "$P_EV_S" "volunteered" && says "$P_EV_S" "never a send-back"'
-check "5h. THE FENCE HOLDS — the scorer has still never heard the word" \
-  '! grep -q "volunteered" "$SCORE_PY"'
+# S263 — SAME CURE, SAME REASON as lcars-xo-uncontracted 2a. The scorer now
+# CARRIES the key to the filer (it is handed the SCORED file, and the raw verdict
+# is deleted), so "never heard the word" is no longer the fence. The fence is
+# that nothing which DECIDES anything reads it: one executable line, and it is
+# the pass-through.
+check "5h. THE FENCE HOLDS — the scorer CARRIES the lane and still never READS it" \
+  'ex="$(grep -n "volunteered" "$SCORE_PY" | grep -v ":[[:space:]]*#")";
+   [ "$(printf "%s\n" "$ex" | grep -c .)" = "1" ] &&
+   printf "%s" "$ex" | grep -q "S263 PASS-THROUGH"'
 check "5i. …and neither has the shell that drives the look" \
   '! grep -q "volunteered" "$REPO_ROOT/skills/lcars-xo/xo.sh"'
 

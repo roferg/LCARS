@@ -5446,6 +5446,24 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # it one look's folder would make every earlier look's picture read as "no
   # landing record", which is a refusal the record does not support.
   local report
+  # A SCORER THAT DIED IS NOT A GRADE (S263 fix round 3, FIX 4). This line read
+  # `… 2>/dev/null)" || report=""`, which is the EXACT pattern S263 cured on the
+  # filer at `file_logs_for`: the exit status was thrown away with the traceback,
+  # so a scorer that crashed was indistinguishable from a scorer that said
+  # nothing. MEASURED: one malformed field in the verdict (`gaps[].shots: 5`)
+  # raises out of `xo-score.py`, which exits 1 — and the empty result then fell
+  # through to the "I could not read back my own verdict" arm below, which blames
+  # the VERDICT for a fault in OUR code and says nothing about a crash. Worse, a
+  # scorer that dies AFTER printing its wire lines leaves `$score` set while
+  # `$xodir/verdict.json` was never rewritten, so a mission with an earlier look
+  # would be finished and FILED against a STALE verdict.
+  #
+  # The status is kept and answered: a crash is reported as a crash, no partial
+  # wire is ever treated as a grade, and nothing is filed from it. NARROW ON
+  # PURPOSE — the `2>/dev/null` swallowing is pre-existing and is LEDGERED, and
+  # the crash in the gaps/criteria lane of `xo-score.py` is the captain's next
+  # session's first fix, not this round's.
+  local src=0
   # S216 fix round 1 (D5): importance is RECORDED in the mission's own
   # xo/impacts.json on the first look and reused by every later one.
   report="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
@@ -5455,7 +5473,11 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
               "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
               "$xodir/journey.json" "$xodir/shots" "$xodir/wrong-screen.json" \
               "$xodir/live.json" \
-              2>/dev/null)" || report=""
+              2>/dev/null)" || src=$?
+  # A PARTIAL WIRE IS NOT READ AT ALL. The substitution still hands back whatever
+  # was printed before the crash; discarding it here is what makes "no partial
+  # wire is ever treated as a grade" true of every field, not only `$score`.
+  [ "$src" -eq 0 ] || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
   # S240 — THE ACTION, READ OFF THE WIRE. `xo-score.py` decided it beside the
   # grade; nothing here re-derives it and nothing reads it back out of the
@@ -5488,11 +5510,30 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   done <<< "$report"
   xo_say_escalations "$escalations"
 
+  # --- 5b. AND A SCORER THAT FAILED IS SAID TO HAVE FAILED (S263 fix round 3) -
+  # A non-zero exit is answered here, before anything reads `$score`: a partial
+  # wire from a scorer that then died is NOT a grade, because the scored verdict
+  # it was supposed to write may never have been written and an earlier look's
+  # verdict.json would still be sitting there to be filed against.
+  local crashed=""
+  if [ "$src" -ne 0 ]; then
+    crashed="my own scorer failed (exit $src)"
+    printf '◈ NUMBER ONE: I could not score %s — %s.\n' "$id" "$crashed"
+    printf '  Nothing was graded and nothing was filed, and that is NOT a clean bill of\n'
+    printf '  health: your list has not been checked off. Look yourself.\n'
+    journal "$dir" score-failed \
+      "$(printf '"exit": %s, "detail": %s' "$src" \
+           "$(jstr "$crashed — nothing was graded, nothing was filed and nothing is proven clean")")"
+    score=""
+    why="$XO_MALFORMED — $crashed"
+  fi
+
   if [ -z "$score" ]; then
     # A verdict that cannot be read is not a verdict. It is a LOW that says so,
     # and it stays engaged — the captain looks himself.
     local mw="${why:-$XO_MALFORMED}"
     local unreadable="I could not read back my own verdict, so there is nothing here to go on — look yourself"
+    [ -z "$crashed" ] || unreadable="My own scorer failed, so nothing here was graded or filed — look yourself"
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
       "$(jstr "$mw")" "$(jstr "$unreadable")" "$(jstr "$mw")" >"$xodir/verdict.json"
     xo_finish "$dir" low engaged "$mw" "$mw" "$unreadable"
@@ -5687,17 +5728,42 @@ file_logs_for() { # <id> <dir>
   # already in `logs.json` is skipped and said out loud, so a second look can
   # never file the same bug twice — and an already-filed bug does not eat one of
   # the ten.
+  # A FILER THAT FAILED IS NOT "NOTHING TO FILE" (S263 fix round 2, D1). This
+  # line read `… 2>/dev/null)" || plan=""`, so a filer that died discarded its
+  # traceback AND its exit status, and the empty result fell through to the
+  # `n -eq 0` arm below — which told the captain `nothing on <id> contradicts
+  # what you wrote down — no logs filed.` and wrote a durable journal line
+  # saying `"filed": 0, "detail": "no contradictions to file"`. MEASURED: one
+  # malformed field in the verdict (`shots: 5`) crashed the filer, and THE CRASH
+  # WAS REPORTED AS A CLEAN BILL OF HEALTH — taking the genuine contract breach
+  # in the same verdict with it. The status is kept and answered.
+  #
+  # NARROW ON PURPOSE. The `2>/dev/null` swallowing is pre-existing and is
+  # LEDGERED, not fixed here; what changes is that a non-zero exit can no longer
+  # reach the all-clear sentence.
+  local prc=0
   plan="$("$XO_PY" "$SKILL_DIR/xo-logs.py" "$xodir/verdict.json" "$xodir/criteria.json" \
             "$xodir/logs" "$shots" "$XO_LOG_CAP" \
-            "$([ -s "$xodir/logs.json" ] && printf '%s' "$xodir/logs.json")" 2>/dev/null)" || plan=""
+            "$([ -s "$xodir/logs.json" ] && printf '%s' "$xodir/logs.json")" 2>/dev/null)" || prc=$?
+  if [ "$prc" -ne 0 ]; then
+    printf '◈ NUMBER ONE: I could not work out what to file on %s — the filer failed (exit %s).\n' \
+      "$id" "$prc"
+    printf '  Nothing was filed, and that is NOT a clean bill of health: anything the look\n'
+    printf '  found is still on the report, and it has not been checked against the record.\n'
+    journal "$dir" filed-logs \
+      "$(printf '"filed": 0, "exit": %s, "detail": %s' "$prc" \
+           "$(jstr "the filer failed (exit $prc) — nothing was filed and nothing is proven clean")")"
+    return 0
+  fi
 
   # THE ARGUMENTS ARE BUILT AS AN ARRAY AND PASSED LITERALLY. Never assembled in
   # a string and expanded: a `VAR=value` word inside an expanded "$@" RUNS AS A
   # COMMAND instead of setting anything, and this project has been bitten by
   # that twice, both times as a silent false green.
   local args=(--parent "$id")
-  local line key num prd shotcsv crit title s
+  local line key num prd shotcsv crit title s why what
   local -a gap_crit=() gap_title=() gap_shots=()
+  local -a refused_what=() refused_why=()
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="${line%%$XO_RS*}"
@@ -5709,6 +5775,31 @@ file_logs_for() { # <id> <dir>
       ALREADY)
         IFS="$XO_RS" read -r key crit title <<< "$line"
         printf '  already filed: %s — %s\n' "$crit" "$title"
+        ;;
+      # A FIND THE FILER WOULD NOT TAKE, SAID OUT LOUD (S263). The filer refuses
+      # an uncontracted find that cites no record, and a refusal nobody receives
+      # measures as nothing — this `case` has no default, so a record the shell
+      # does not name is dropped on the floor. Printed with the REASON, which is
+      # the filer's own sentence naming what was missing; never summarised here,
+      # because then there would be two copies of the rule free to drift.
+      REFUSED)
+        IFS="$XO_RS" read -r key what why <<< "$line"
+        printf '  not filed: "%s" — %s\n' "$what" "$why"
+        # AND IT REACHES A SURFACE THAT OUTLIVES THE TERMINAL (S263 fix round 2,
+        # D5). Printing it was all round 1 did, and the captain reads phone
+        # readouts from an unattended run hours later — so a refusal he cannot
+        # see later is a refusal that did not happen. It is kept twice: in
+        # `number-one.jsonl`, which `xo-report.py` already renders every entry
+        # of (so the report needs no change at all), and in `xo/logs.json`
+        # beside what WAS filed, which is the record the other surfaces read.
+        refused_what+=("$what"); refused_why+=("$why")
+        # THE `detail` NAMES WHICH FIND. `xo-report.py` renders the first
+        # STRING field it recognises, and `what` is not one of them — a line
+        # reading only "not filed — it cites no record…" tells the captain that
+        # something was thrown away and not WHAT, which is the half he needs.
+        journal "$dir" find-refused \
+          "$(printf '"what": %s, "detail": %s' "$(jstr "$what")" \
+               "$(jstr "not filed: \"$what\" — $why")")"
         ;;
       GAP)
         # GAP <n> <prd> <shots-csv> <criterion> <title> <attach-csv>
@@ -5746,8 +5837,21 @@ file_logs_for() { # <id> <dir>
   done <<< "$plan"
 
   if [ "$n" -eq 0 ]; then
-    printf '◈ NUMBER ONE: nothing on %s contradicts what you wrote down — no logs filed.\n' "$id"
-    journal "$dir" filed-logs '"filed": 0, "detail": "no contradictions to file"'
+    # AND "NOTHING TO FILE" IS NOT THE SAME AS "NOTHING WAS SEEN" (S263 fix
+    # round 2, D5). A look that offered a find outside the contract and had it
+    # refused for citing no record of itself HAS said something, and the
+    # all-clear sentence on its own would bury it.
+    if [ "${#refused_what[@]}" -gt 0 ]; then
+      printf '◈ NUMBER ONE: nothing on %s contradicts what you wrote down — no logs filed.\n' "$id"
+      printf '  %s find(s) outside the contract were thrown away for citing no record of the look.\n' \
+        "${#refused_what[@]}"
+      journal "$dir" filed-logs \
+        "$(printf '"filed": 0, "refused": %s, "detail": %s' "${#refused_what[@]}" \
+             "$(jstr "no contradictions to file; ${#refused_what[@]} uncited find(s) refused")")"
+    else
+      printf '◈ NUMBER ONE: nothing on %s contradicts what you wrote down — no logs filed.\n' "$id"
+      journal "$dir" filed-logs '"filed": 0, "detail": "no contradictions to file"'
+    fi
     return 0
   fi
 
@@ -5810,8 +5914,17 @@ file_logs_for() { # <id> <dir>
       "$(jstr "${gap_crit[$i]}")" "$(jstr "${gap_title[$i]}")" "$sj")"
     i=$((i + 1))
   done
-  printf '{"round": 1, "filedAt": %s, "overflow": %s, "filed": [%s]}\n' \
-    "$(jstr "$NOW")" "${overflow:-0}" "$items" >"$xodir/logs.json"
+  # AND WHAT WAS THROWN AWAY, BESIDE IT (S263 fix round 2, D5). Additive: every
+  # reader of this file keys off `filed`, and an absent or empty `refused` is
+  # exactly what it was before.
+  local rj="" ri=0
+  while [ "$ri" -lt "${#refused_what[@]}" ]; do
+    rj="${rj:+$rj, }$(printf '{"what": %s, "why": %s}' \
+      "$(jstr "${refused_what[$ri]}")" "$(jstr "${refused_why[$ri]}")")"
+    ri=$((ri + 1))
+  done
+  printf '{"round": 1, "filedAt": %s, "overflow": %s, "filed": [%s], "refused": [%s]}\n' \
+    "$(jstr "$NOW")" "${overflow:-0}" "$items" "$rj" >"$xodir/logs.json"
 
   # --- the record ----------------------------------------------------------
   local obj

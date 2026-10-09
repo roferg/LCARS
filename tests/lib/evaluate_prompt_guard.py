@@ -22,7 +22,15 @@ REQUIRED = (
     "## The rules that make this honest",
     "## The mission",
     "## The pictures taken AFTER your set-up steps",
-    "## Something wrong that NOBODY ASKED FOR — `volunteered`",
+    # S263 — THE HEADING CARRIES THE FRAME NOW. It read "## Something wrong that
+    # NOBODY ASKED FOR — `volunteered`" until 2026-10-09. S262 measured a reviewer
+    # that settled 54 of 65 rows itself and FILED NOTHING while the captain's
+    # buddy filed three, two of them with no criterion at all. Permission was not
+    # enough; the heading says it is EXPECTED OUTPUT, and that is load-bearing.
+    "## Something wrong that NOBODY ASKED FOR — `volunteered`, and it is EXPECTED OUTPUT",
+    # …and the second severed lane: `"cause"` was named NOWHERE in the assembled
+    # prompt, so `xo-logs.py`'s product-cause filing rule had never once fired.
+    '## WHOSE FAULT IT WAS WHEN YOU COULD NOT CHECK — `"cause"`, on every `untested` row',
     "## The live-check checklists — ADVICE YOU FOLLOW, not a schema anybody fills",
     "## Your input directory — the mission's RECORD, read-only",
     "## Your output file",

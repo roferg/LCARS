@@ -16819,22 +16819,159 @@ saying rather than grading the empty one."
   # The fence is said in the same breath as the permission, because the
   # CONTRACT-FIRST rule is what makes the lane safe: criteria come from the
   # record, and a volunteered find is information, never a verdict.
+  #
+  # === AND THE WORDS WERE THE OTHER HALF OF THE SEVERED LANE (S263) =========
+  #
+  # WHAT WAS MEASURED. S262: a reviewer with a real shell settled 54 of 65 rows
+  # by its own action, ran a real mutation test — and FILED NOTHING, while the
+  # captain's human buddy filed three on the same build. Two of those three had
+  # no criterion and `volunteered` was their only route. The lane was plumbed
+  # and the prompt made it sound optional: "you do NOT have to throw it away",
+  # then three separate sentences on what it can never do. A careful model reads
+  # permission plus a long list of what it is worth and correctly concludes the
+  # thing has no value.
+  #
+  # SO THE FRAME MOVES FROM PERMISSION TO EXPECTATION, and the fence stays in
+  # the same breath — it is what makes the lane safe, not a reason to stay
+  # quiet. The empty list is named as a CLAIM, which is the part that makes
+  # "I found none" cost something to say.
+  #
+  # AND THE WORDS AND THE BEHAVIOUR NOW AGREE (S263 fix round 2, D2/D3). Fix
+  # round 1 promised "a real file in the look's own shots directory" here while
+  # the guard accepted `/etc/passwd`, `/tmp`, `.`, `/` and a zero-byte file —
+  # and it offered `testQuote` as a second way in while its own shape test
+  # REFUSED `Segmentation fault` and `error: unknown command "publish"` and
+  # ACCEPTED "I looked at config.yaml and it was wrong". A door the reviewer
+  # cannot find and a door it cannot use are both just lost finds. There is ONE
+  # door now, it is the one the code enforces, and this paragraph describes it
+  # exactly: a regular, non-empty file inside the look's own shots directory.
+  #
+  # AND `"cause"` IS NAMED HERE FOR THE FIRST TIME (lane 2). `xo-score.py`
+  # stamps it and `xo-logs.py` files a high-impact blind row whose cause is
+  # `product` — but `"cause"` appeared NOWHERE in the 61,740-byte assembled
+  # prompt, so 11 of 11 blind rows last night carried none and the lane had
+  # never once fired. It is DECLARED, never inferred from the note's wording:
+  # inference over a reviewer's prose is the infer-vs-record failure that cost
+  # S147, S156 and S188 whole rounds each.
+  #
+  # BOTH GO HERE RATHER THAN IN `evaluate.md` for the reason the four paragraphs
+  # above this one went here: that file sits AT the ceiling its own three suites
+  # hold it under (`-lt 689`, and it is 688), so there is no room, and raising
+  # the ceiling is the captain's call and not this session's.
+  #
+  # === AND THE ASK NAMES THE DIRECTORY IT DEMANDS (S263 fix round 3, FIX 1) ===
+  #
+  # THE MEASURED DEFECT. Fix round 2's ask said to save the record in "your own
+  # shots directory" — and the only place that path was ever PRINTED was the
+  # camera paragraph below, which is gated on the WORKTREE (`$n1_wt`) as well as
+  # the camera and the directory. `xo.sh`'s `xo_hand_over_copy` exports
+  # `LCARS_XO_WORKTREE` only when the disposable copy actually minted, while the
+  # look exports `LCARS_XO_SHOTS_DIR` either way — so on any look whose copy
+  # failed to mint, the filer went on demanding a file inside a directory THE
+  # PROMPT NAMED NOWHERE. Measured at 1,106 lines with the path absent entirely:
+  # the ask was unsatisfiable on purpose, and every honest volunteered find was
+  # refused.
+  #
+  # SO THE ASK IS BUILT ON THE SAME FACT THE FILER IS. `xo-logs.py`'s `vol_record`
+  # answers against the shots directory it is handed, which is this variable —
+  # one fact, read once, by the words and by the enforcement. It is NOT borrowed
+  # from a paragraph with a different gate, which is how the two came apart.
+  #
+  # AND THE INVERSE IS HANDLED HONESTLY. With no shots directory there is nowhere
+  # to save a record, so the ask does not demand one: it says plainly that
+  # nothing in the list can be FILED here and asks for the find in words anyway,
+  # which is the truth of that configuration rather than a bar nobody can clear.
+  local vol_shots=""
+  if [ -n "${LCARS_XO_SHOTS_DIR:-}" ] && [ -d "${LCARS_XO_SHOTS_DIR:-}" ]; then
+    vol_shots="$LCARS_XO_SHOTS_DIR"
+  fi
+  local vol_cite=""
+  if [ -n "$vol_shots" ]; then
+    vol_cite="**It must be CITED or it is REFUSED, and there is exactly ONE thing that counts
+as a citation: a FILE YOU SAVED in your own shots directory, which on this look
+is**
+
+    $vol_shots
+
+A find outside the contract has no criterion behind it, so the record is all
+there is. **That directory already exists and it is YOURS TO WRITE RECORDS
+INTO** — your transcripts, the output you read, your pictures; a subdirectory of
+it is fine, because LCARS looks anywhere UNDER it. Name the file in \`shots\`,
+\`shot\`, \`transcript\`, \`transcriptPath\` or \`evidencePath\`, exactly as
+you saved it, and LCARS opens it. It has to be **a record that EXISTS**: a file,
+not a directory; not empty; really inside your shots directory. A path to a file
+**that is not there cites nothing**, and so does a path to somewhere else on the
+machine — \`/etc/passwd\` exists and is not a record of your look. **So save the
+evidence to a file BEFORE you name it**: a transcript of the command you ran,
+the output you read, the screenshot you took. That is the whole bar, and it is
+one you clear by writing the file.
+
+Nothing else is a way in. An \`evidence\` word on its own is not a citation. A
+field filled with prose is not a citation — \"it felt slow\", \"I looked at
+config.yaml and it was wrong\", \`n/a\` — and neither is a quoted line in
+\`testQuote\`, which LCARS cannot open and does not accept here: put the line in
+a file in the shots directory and cite the file. An uncited find is thrown away
+unfiled, by name, in front of the captain, and the look is the poorer for it."
+  else
+    vol_cite="**This look has NO shots directory, so there is nowhere to save a record of
+what you saw — and LCARS files a find outside the contract only against a saved
+record. Nothing in this list can be FILED on this look.** Say it anyway, in
+words: \`title\`, \`expected\`, \`saw\` and \`note\`, in full sentences. It
+reaches the captain BY NAME and he can act on it or close it. Do NOT invent a
+path to a file you did not save — a name LCARS cannot open cites nothing, and a
+find that leans on one is thrown away unfiled, by name, in front of him."
+  fi
+  # AND THE WRITE GRANT AGREES WITH THE ASK (FIX 1, secondary). The fence prose
+  # ended "write nothing there except your pictures", which CONTRADICTED the new
+  # ask to save a transcript in that same directory — two sentences of one prompt
+  # telling the reviewer opposite things about the same path. It is widened only
+  # where there IS a shots directory to widen it to, so a configuration with none
+  # invites no write at all (lcars-xo-selfrun 4k).
+  local vol_write=""
+  if [ -n "$vol_shots" ]; then
+    vol_write=" and the records you save in your shots directory"
+  fi
   local volunteered_line=""
   if [ "$mode" = "evaluate" ]; then
     volunteered_line="
-## Something wrong that NOBODY ASKED FOR — \`volunteered\`
-If you find a real fault that no acceptance criterion covers, you do NOT have to
-throw it away and you do NOT have to invent a criterion for it. Put it in
-\`volunteered\`: a list of objects shaped like a gap — \`title\`, \`expected\`,
-\`saw\`, \`shots\`, \`evidence\`, \`note\` — and carry its evidence exactly as you
-would for a gap. LCARS FILES these as bugs, marked as nobody's ask and at a lower
-severity than a contract breach.
+## Something wrong that NOBODY ASKED FOR — \`volunteered\`, and it is EXPECTED OUTPUT
+**A real fault outside the contract is part of your job, not a curiosity.** You
+are the only pair of eyes on this build before the captain's. A fault for which
+nobody wrote a criterion is still a fault in his product, and **leaving it unsaid
+is a MISS** — a look that sees one and says nothing has done worse than a look
+that found nothing. So you do NOT throw it away and you do NOT invent a criterion
+for it. Put it in \`volunteered\`: a list of objects shaped like a gap —
+\`title\`, \`expected\`, \`saw\`, \`shots\`, \`evidence\`, \`note\` — and carry its
+evidence exactly as you would for a gap. LCARS FILES these as bugs, marked as
+nobody's ask and at a lower severity than a contract breach.
 
-What it is NOT: it is **never a send-back**, it never moves your score, and it
-never becomes a criterion. The contract comes from the captain's record; a fault
-outside it is information for him to act on or close. That is why you can say it
-without overstating it. \`alsoChecked\` stays what it has always been — things you
-looked at that were FINE."
+An EMPTY \`volunteered\` list is a CLAIM: it says you went looking for faults
+outside the contract and there were none. Make it a true one.
+
+$vol_cite
+
+Why you can say it without overstating it: it is **never a send-back**, it never
+moves your score, and it never becomes a criterion. The contract comes from the
+captain's record; a fault outside it is information for him to act on or close.
+That fence is what makes the lane safe to use — it is NOT a reason to stay quiet.
+\`alsoChecked\` stays what it has always been — things you looked at that were
+FINE.
+
+## WHOSE FAULT IT WAS WHEN YOU COULD NOT CHECK — \`\"cause\"\`, on every \`untested\` row
+Every \`untested\` row takes a \`\"cause\"\` beside its \`couldNotCheck\`, and it is
+YOURS TO DECLARE. Nobody reads it out of your note's wording — if you do not
+write the word, nothing is recorded, whatever your prose says.
+
+  * \`\"cause\": \"product\"\` — **the build ships no way to do the thing.** There
+    is no command for it, no screen, no field. That is the work not being done:
+    it is a fault in his build and **LCARS FILES IT AS A BUG.**
+  * \`\"cause\": \"infrastructure\"\` — the rig failed you. No test runner, the app
+    would not start, data you were never given, a tool that was not there. That
+    is OURS to fix, and it is never filed against his build.
+
+**An \`untested\` row with no cause recorded is read as OURS and files nothing.**
+So a blank one hides a fault of the build from the one person who needs it.
+Declare a \`\"cause\"\` on every single \`untested\` row you write."
   fi
   # === THE ROUND BEFORE ANYTHING IS SERVED (S248) ===========================
   #
@@ -17150,7 +17287,8 @@ use when you want to choose the name yourself — and then you cite \`week\`.
     shots_note="
 **The shots directory above is the ONE place under \`.git/lcars/\` you are
 EXPECTED to write** — it is not on that list, it is where your camera puts your
-pictures, and writing it breaks nothing.
+pictures AND where you save the transcripts and outputs you cite, and writing it
+breaks nothing.
 "
   fi
   # THE WATCH LIST, RENDERED FROM `$WORKER_FENCE_WATCH` ITSELF (S261 fix round
@@ -17189,7 +17327,7 @@ is killed on the spot and the look is thrown away:
 $watch_list
 $shots_note
 Nothing else under \`.git/lcars/\` is audited — but it is the captain's record,
-not your workspace, so write nothing there except your pictures.
+not your workspace, so write nothing there except your pictures$vol_write.
 
 **Say what you actually ran.** Quote the command and its real output in your
 evidence, the way you would quote a test line. \"It works\" is not a finding;

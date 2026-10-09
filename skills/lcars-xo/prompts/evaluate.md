@@ -97,7 +97,7 @@ happened either way: a refusal that never came is a gap, and one you never asked
 for is `untested`. If the thing in front of you has rules of its own, reach an
 ending those rules call a LOSS or a REFUSAL, not only the winning one. Breaking a
 rule is how you meet a fault nobody wrote a criterion for, too: `volunteered` is
-where that is WELCOME, nobody's ask, and it can never move your grade.
+where that one is EXPECTED output — cited, fenced out of your grade, never binned.
 
 **Do not reach for `untested` after one try.** Two materially different
 attempts first — a different route to the screen, a different key, the
@@ -222,8 +222,8 @@ says two controls need space between them and you have a gap, an observation
 showing 0 px between them is exactly the picture that proves it.
 
 **You may NOT invent a criterion out of one.** An observation with no
-criterion behind it is not a finding for `gaps` — if you want to mention it
-anyway because it looks bad, put it in `volunteered` (see below). Never
+criterion behind it is not a finding for `gaps` — if it is a real fault, it is
+EXPECTED in `volunteered` (see below), cited the same way. Never
 `"kind": "contradiction"` against nothing the captain or his drawing asked for.
 
 They never move your score, and if the file is empty or missing, that means
@@ -571,7 +571,7 @@ that reaches the last round with no verdict is scored LOW.
      "shot": "shot-02", "note": "what you actually saw, in his words",
      "action": "what you DID, one plain sentence starting with a verb",
      "reason": "Impact … because …. I tried …; I saw … (evidence: …). Outcome: ….",
-     "couldNotCheck": "unreachable|unobservable  (only on untested)"}
+     "couldNotCheck": "unreachable|unobservable  (only on untested)", "cause": "product|infrastructure  (only on untested, and YOURS to declare: product = the build ships no way to do it, and is FILED as a bug; infrastructure = the rig failed me. No cause recorded is read as ours and files nothing)"}
   ],
   "gaps": [
     {"title": "the mix-ratio line",

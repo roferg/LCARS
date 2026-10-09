@@ -214,8 +214,94 @@ check "1p. CONTROL — the send-back sentence, given only the contract lane, nam
 echo ""
 echo "2. CURE 1's INVARIANT — the grade and the recommendation do not move"
 
-check "2a. xo-score.py never reads a volunteered lane" \
-  '! grep -q "volunteered" "$SCORE_PY"'
+# S263 — THE GUARD SAYS WHAT IT MEANS NOW. It was `! grep -q volunteered`, which
+# asserted "the scorer has never heard the word" — and S263's scope is that the
+# scorer must CARRY the key through to `xo-logs.py`, because it is handed the
+# SCORED file and the raw verdict is deleted. The INTENT is the GRADE FENCE, and
+# that is what is checked: exactly ONE executable line may name the key, and it
+# must be the pass-through. A reader inside `derive_grade`,
+# `derive_recommendation`, a rail or the coverage floor fires this. The
+# behavioural half — the grade is byte-identical with and without — is measured
+# in `tests/lcars-xo-volunteered.test.sh` 5a/5b.
+check "2a. xo-score.py CARRIES a volunteered lane and never READS one" \
+  'ex="$(grep -n "volunteered" "$SCORE_PY" | grep -v ":[[:space:]]*#")";
+   [ "$(printf "%s\n" "$ex" | grep -c .)" = "1" ] &&
+   printf "%s" "$ex" | grep -q "S263 PASS-THROUGH"'
+# AND THIS SUITE HOLDS THE FENCE ON ITS OWN (S263 fix round 1, D2). 2a above is
+# STRUCTURAL, and the behavioural half of the same fence lives in a different
+# file (`tests/lcars-xo-volunteered.test.sh` 5a/5b) — so running THIS suite alone
+# stopped guarding the grade fence at all the moment 2a was rewritten. The cheap
+# cure: score the same verdict with and without the lane, right here, and assert
+# the grade, the recommendation and the blockers the send-back is decided from
+# are unmoved. A reader anywhere in the scorer that touched any of them fires
+# this even if it is spelled in a way 2a's one-line rule allows.
+check "2a2. THE BEHAVIOUR — scoring with and without the lane moves no grade" \
+  '"$PY" "$SCORE_PY" "$C1/verdict.json" "$C1/criteria.json" "$C1/scored-both.json" \
+     >/dev/null 2>&1;
+   "$PY" "$SCORE_PY" "$C1/verdict-none.json" "$C1/criteria.json" "$C1/scored-none.json" \
+     >/dev/null 2>&1;
+   [ -s "$C1/scored-both.json" ] && [ -s "$C1/scored-none.json" ] &&
+   "$PY" -c "
+import json,sys
+a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+for k in (\"score\",\"recommendation\",\"recommendationWhy\",\"because\",
+          \"blockers\",\"followUps\",\"counts\",\"whyThisGrade\",\"scoreMeaning\",
+          \"coverageLine\",\"workerScore\",\"derivation\",\"escalations\"):
+    assert a.get(k)==b.get(k), (k, a.get(k), b.get(k))
+diff=sorted(k for k in set(a)|set(b) if a.get(k)!=b.get(k))
+assert diff==[\"volunteered\"], diff
+" "$C1/scored-both.json" "$C1/scored-none.json"'
+# ─── AND THE FENCE IS BLIND TO A DOWNWARD MOVE WITHOUT THIS (S263 fix round 2)
+#
+# MEASURED by the tester: C1's verdict already DERIVES `low`/`send-back`, so a
+# mutant that forced `low`/`send-back` unconditionally scored 51/51 GREEN here.
+# 2a2 compares the two runs to each other and both runs moved together, so the
+# comparison held while the grade was being hard-wired. A `high`/`merge` control
+# fixes that: the pair must come out `high`/`merge`, which a forced `low` cannot
+# do — and it is the expensive direction of the fence anyway, since a lane that
+# could grade would flip a CLEAN look.
+"$PY" - "$C1/verdict.json" "$C1/v-clean.json" "$C1/v-clean-vol.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for c in d["criteria"]:
+    c["status"] = "met"
+    c.pop("sawInstead", None)
+d["gaps"] = []
+d["blockers"] = []
+d["score"], d["recommendation"] = "high", "merge"
+d["because"] = "every criterion the captain wrote down is met"
+d["volunteered"] = []
+json.dump(d, open(sys.argv[2], "w"), indent=2)
+d["volunteered"] = [{"title": "the app deletes every record on start",
+                     "expected": "records to survive a restart",
+                     "saw": "the store was empty after a restart",
+                     "shots": ["07-footer.txt"], "evidence": "transcript",
+                     "checkedBy": "cli", "impact": "high",
+                     "note": "catastrophic, and no criterion covers it"}]
+json.dump(d, open(sys.argv[3], "w"), indent=2)
+PYEOF
+check "2a2b. THE CONTROL 2a2 WAS MISSING — a clean look grades high/merge, with the lane and without" \
+  '"$PY" "$SCORE_PY" "$C1/v-clean.json" "$C1/criteria.json" "$C1/s-clean.json" \
+     >/dev/null 2>&1;
+   "$PY" "$SCORE_PY" "$C1/v-clean-vol.json" "$C1/criteria.json" "$C1/s-clean-vol.json" \
+     >/dev/null 2>&1;
+   [ -s "$C1/s-clean.json" ] && [ -s "$C1/s-clean-vol.json" ] &&
+   "$PY" -c "
+import json,sys
+a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+assert a.get(\"score\")==b.get(\"score\")==\"high\", (a.get(\"score\"), b.get(\"score\"))
+assert a.get(\"recommendation\")==b.get(\"recommendation\")==\"merge\", \\
+    (a.get(\"recommendation\"), b.get(\"recommendation\"))
+diff=sorted(k for k in set(a)|set(b) if a.get(k)!=b.get(k))
+assert diff==[\"volunteered\"], diff
+" "$C1/s-clean.json" "$C1/s-clean-vol.json"'
+check "2a3. …and the lane never reaches the blockers the send-back is decided from" \
+  '"$PY" -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+for b in d.get(\"blockers\") or []:
+    assert not str(b.get(\"id\") or \"\").startswith(\"volunteered-\"), b
+" "$C1/scored-both.json"'
 check "2b. xo-criteria.py never reads it either — it is not a criterion" \
   '! grep -q "volunteered" "$CRITERIA_PY"'
 check "2c. and the filer leaves the verdict's own grade and recommendation alone" \
