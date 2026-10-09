@@ -28,7 +28,18 @@ REQUIRED = (
     "## Your output file",
     "## IF YOU HAVE NO FILE-WRITING TOOL, SAY YOUR FILE INSTEAD",
     "## Where to write your output — READ THIS, IT IS NOT OPTIONAL",
-    "You have no shell, and you are not getting one",
+    # S261 — THE CLAUSE THAT REPLACED THE REFUSAL. Until 2026-10-08 this entry
+    # read "You have no shell, and you are not getting one". The captain amended
+    # the S168 fence that day (19:33 MDT): the reviewer gets a real shell in a
+    # DISPOSABLE COPY, because three of the six failures measured against his
+    # buddy that morning were the fence and not the prompt. What has to survive
+    # is the INSTRUCTION TO GO AND LOOK — a prompt that merely stops refusing is
+    # the same form-filler with better manners.
+    "Go and look. Run it yourself",
+    "bad input",
+    # …and the DECLARED-step path is still taught beside it. That path's own
+    # fence (xo-run.py declared_escape / refuse_reason) is untouched.
+    "DECLARE a step and have the harness run it",
     "xo-actions.json",
     "xo-verdict.json",
     "Two actors — two HOMEs, two laptops",

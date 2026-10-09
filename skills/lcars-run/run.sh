@@ -15576,7 +15576,13 @@ stage_key_for_role() { # role → stage key (stdout; empty if none)
     # default `create` tool cannot write the file, so the worker reports an
     # artifact that never reached disk). This line is the whole reason the first
     # officer runs on the Opus the captain pinned.
-    number-one)                                   printf 'numberOne' ;;
+    # S261 — the look's TOOLSET role is `number-one-live` (the same posture with
+    # a shell, inside a disposable copy). Its ENV role is still `number-one`, so
+    # this table is never asked about the live name in practice — but a role with
+    # no key here resolves NO model, and a silently unmodelled first officer is
+    # exactly the failure S194 measured. So the name is mapped rather than left
+    # as a hole for a future caller to fall into.
+    number-one|number-one-live)                   printf 'numberOne' ;;
   esac
 }
 
@@ -16960,11 +16966,241 @@ two honest ways to settle one: take the hop with a \`live:\` step, or rate it
   if [ "$mode" = "evaluate" ]; then
     checklists="$(number_one_checklists "$indir")"
   fi
+
+  # === THE DISPOSABLE COPY — AND THE SHELL THAT COMES WITH IT (S261) ========
+  #
+  # WHY THIS EXISTS, MEASURED. On 2026-10-08 the reviewer was run beside the
+  # captain's buddy on three milestones of a real product: it found 0 real
+  # defects and filed 0, the buddy found 4 and filed 4, and it handed a HIGH to
+  # code that crashed on null records. THREE of its six recorded failures were
+  # the S168 fence — 10 of 13 drawn parts unreachable, a HOME store read fenced
+  # out, a shell action fenced out — and a fourth was that it could not run a
+  # thing and watch it. Not one was a prompt problem, and five previous rounds
+  # had revised the prompt.
+  #
+  # THE AMENDMENT, AND ITS LIMIT. The captain approved exactly one change
+  # (2026-10-08 19:33 MDT): the reviewer may have a real shell, and the
+  # protection that must still be true — IT CANNOT MODIFY THE THING IT IS
+  # REVIEWING — is carried by a DISPOSABLE COPY instead of by denying a shell.
+  #
+  # SO THE SHELL IS NEVER ISSUED WITHOUT THE COPY, and that is enforced here, at
+  # the one place that hires this worker, rather than trusted to a caller:
+  #   • `$LCARS_XO_WORKTREE` names a DIRECTORY that exists  → toolset
+  #     `number-one-live` (the S168 posture plus `Bash`/`bash`), and the worker's
+  #     cwd is INSIDE it.
+  #   • anything else — unset, empty, or a path that is not there → toolset
+  #     `number-one`, byte-for-byte the S168 posture. A promise of a copy buys
+  #     nothing; the directory has to be standing.
+  # The paper gates keep the old posture outright: `answer` and `recheck` judge
+  # off the record and have nothing to run, so they are never given the shell
+  # even if a worktree happens to be in the environment.
+  #
+  # WHO MINTS IT: nobody here. `xo.sh` mints ONE tree and ONE throwaway HOME per
+  # look through the buddy's single helper (`autopilot.sh worktree`, reached via
+  # `xo-run.py prepare`) and exports both. A second "detach a worktree" in this
+  # file would be a second thing that can be subtly wrong.
+  #
+  # AND THE WORKER'S OWN $HOME IS NOT TOUCHED — deliberately, and this is the
+  # trap. Chrome under a non-default HOME times out on CDP and the look silently
+  # scores EVERYTHING low; the engine's own credentials live in the real HOME
+  # too. So the throwaway HOME is a PATH THE WORKER IS TOLD, to put in front of
+  # the product's own commands (which is what the live-check checklists already
+  # teach), never this process's HOME.
+  local n1_toolset="number-one" n1_wt="" n1_home=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_WORKTREE:-}" ] \
+     && [ -d "${LCARS_XO_WORKTREE:-}" ]; then
+    n1_wt="$LCARS_XO_WORKTREE"
+    n1_toolset="number-one-live"
+    [ -n "${LCARS_XO_THROWAWAY_HOME:-}" ] && [ -d "${LCARS_XO_THROWAWAY_HOME:-}" ] \
+      && n1_home="$LCARS_XO_THROWAWAY_HOME"
+  fi
+  # THE HOME PARAGRAPH IS BUILT SEPARATELY, not inlined as a `${var:+…}`
+  # alternate: that expansion's text is re-parsed by the shell, and a paragraph
+  # with quotes and a `}` in it breaks the whole file at parse time.
+  local home_para=""
+  if [ -n "$n1_home" ]; then
+    # TWO FORMS, BECAUSE THERE ARE TWO RUNNERS (S261 fix round 2, F1).
+    # MEASURED: this paragraph printed the HOME absolutely and nothing else —
+    # the ONE line in 1515 that did, against the ten places that teach the
+    # `<throwaway-home>` mark. The live worker copied that absolute string into
+    # a declared step's `env.HOME`, which `declared_escape` refuses by design
+    # ("env HOME … is not the throwaway HOME"). ALL SIX of its declared steps
+    # were refused and they were the SEED steps, so the build it then launched
+    # had no data in it and every picture it cited is of an EMPTY app.
+    #
+    # The fix is on THIS side, not the fence's: the shell form genuinely needs
+    # the absolute directory (a shell does not resolve marks), and a declared
+    # step genuinely needs the mark (the harness resolves it, and an absolute
+    # path there is an escape it cannot tell from any other). So both are
+    # printed, each labelled with the runner it belongs to. `declared_escape`
+    # is untouched — see lcars-xo-selfrun 4d.
+    home_para="
+**Put this HOME in front of the product's own commands** — never your own.
+
+In YOUR OWN SHELL, spell the directory out:
+
+    HOME=$n1_home <the product's own command>
+
+In a step you DECLARE for the harness to run, write the MARK instead — the
+harness resolves it to that same directory, and a declared step whose
+\`env.HOME\` is an absolute path is REFUSED before it runs (\"env HOME … is not
+the throwaway HOME\"):
+
+    \"env\": {\"HOME\": \"<throwaway-home>\"}
+
+That is how you check a product that stores anything per-user, and how \"two
+actors, two HOMEs\" is done. A second actor is a second directory: make one
+beside it in your own shell, or declare \`<throwaway-home-2>\` and the harness
+mints it for you. **Your own HOME is the real one and must stay that way** — the
+browser instruments break under anything else — so set HOME on the COMMAND, not
+for yourself.
+"
+  fi
+  # === THE CAMERA — A PICTURE ONLY COUNTS IF SOMETHING RECORDED WHERE IT WAS
+  # TAKEN (S261 fix round 1) ==================================================
+  #
+  # THE MEASURED DEFECT. The first live look with a shell found, diagnosed and
+  # FILED six real faults in the Week screen — and its own `verdict.json` then
+  # re-scored all six `untested`, "no landing record — the picture is cited but
+  # nothing beside it records where it was taken". `counts.gap` came out 0 beside
+  # a six-entry `gaps[]`, the headline read MERGE WITH FOLLOW-UPS, and the grade
+  # moved UP (low → medium) against the night before, when the reviewer had no
+  # shell and honestly said it could not check. The reviewer's own words in that
+  # run were "Recommending LOW".
+  #
+  # THE HONESTY RULE IS NOT THE BUG. S241 ("a shot nobody placed is not
+  # evidence") is right and is untouched. The bug was on the PRODUCING side: the
+  # reviewer took `sc-week-desktop.png` and `sc-week-phone.png` with its own
+  # commands, in its own copy. They never reached the look's shots directory and
+  # nothing recorded the page they were of, so evidence that genuinely existed
+  # was discounted as absent.
+  #
+  # SO THE PRODUCER RECORDS IT, at the moment the shot is taken — the
+  # infer-vs-record rule, which `xo-score.py` has lost three rounds to (S147,
+  # S156, S188). `xo-drive.js` already writes the landing readout beside every
+  # PNG it takes; that is its design and nothing here changes it. The worker is
+  # handed THAT camera, by path, pointed at THIS look's shots directory, so a
+  # picture it takes itself is placed by exactly the record that places a picture
+  # the harness took.
+  #
+  # AND IT IS NEVER OFFERED ON A PROMISE, the same rule the copy itself is held
+  # to: the camera, node and the shots directory must all be THERE, and the
+  # paragraph is silent otherwise rather than naming a path that is not. Only
+  # the look (`xo.sh`'s round loop) exports these; the paper gates and the
+  # pre-launch asks have no shots directory and get no camera, correctly.
+  local n1_cam="" n1_shots="" n1_node=""
+  if [ -n "$n1_wt" ] && [ -n "${LCARS_XO_CAMERA:-}" ] && [ -f "${LCARS_XO_CAMERA:-}" ] \
+     && [ -n "${LCARS_XO_SHOTS_DIR:-}" ] && [ -d "${LCARS_XO_SHOTS_DIR:-}" ]; then
+    n1_cam="$LCARS_XO_CAMERA"
+    n1_shots="$LCARS_XO_SHOTS_DIR"
+    n1_node="${LCARS_XO_CAMERA_NODE:-node}"
+  fi
+  # D2 (S261 fix round 2) — "cite the picture by the name you gave it" was
+  # FALSE for the very form this paragraph spells out, and a row settled on an
+  # unfindable name is scored "I could not check this". MEASURED, by running the
+  # real camera at a real page and then loading this branch's own
+  # `landing_readout` over the result:
+  #
+  #   --prefix week                    → week-01.png / week-01.json
+  #                                      `week-01` PLACED, `week` NO RECORD
+  #   --actions [{"screenshot":"w"}]   → w.png / w.json
+  #                                      `w` PLACED, `w-01` NO RECORD
+  #
+  # Only the name ACTUALLY WRITTEN places (`landing_readout` looks for
+  # `<cited>.json` and nothing else). So both forms are now spelled out with
+  # the file each one really writes. See lcars-xo-selfrun 4l/4m/4o.
+  local camera_para="" shots_note=""
+  if [ -n "$n1_cam" ]; then
+    camera_para="
+### Your camera — and a picture taken any other way cannot be placed
+Take your pictures with the look's own camera, not with a screenshot command of
+your own:
+
+    $n1_node $n1_cam --url <the address you want a picture of> \\
+      --out $n1_shots --prefix <a short name>
+
+It writes the PNG **and, beside it, the record of the page it was taken on** —
+the address, the title, the words that were on the screen. That record is the
+only thing that lets a row you settle on a picture count at all. A picture you
+take any other way, or that lands anywhere but that directory, **cannot be
+placed, so every row citing it is scored \"I could not check this\" — however
+real what you saw was, and however right you are.**
+
+**Cite the file that was ACTUALLY WRITTEN — no other spelling places.** That
+command writes \`<a short name>-01.png\`, with \`<a short name>-01.json\` beside
+it, so the name you cite is \`<a short name>-01\`. Citing \`<a short name>\`
+finds nothing and the row is scored \"I could not check this\".
+
+Drive to the screen first when you need to: write a small JSON file of steps and
+pass it as \`--actions <that file>\`, e.g.
+\`[{\"navigate\":\"<url>\"},{\"click\":\"#some-button\"},{\"screenshot\":\"week\"}]\`.
+It is headless and takes no focus. A named \`screenshot\` step writes
+\`week.png\` and \`week.json\` under exactly that name, so that is the form to
+use when you want to choose the name yourself — and then you cite \`week\`.
+"
+    # D1 (S261 fix round 2) — THE PROHIBITION USED TO FORBID THE CAMERA'S ONLY
+    # LEGAL DESTINATION. `--out` above is under `.git/lcars/…/xo/shots/look-N`,
+    # and 34 lines later the same prompt threatened that a worker writing any of
+    # `.git/lcars/` is killed on the spot. A careful model reads the threat and
+    # declines — measured: the live worker never once used the camera. The
+    # threat was also INACCURATE: the audit watches ten named files and
+    # `xo/shots/**` is not one of them. This sentence is the exception, and it
+    # is printed ONLY when the camera really is plumbed, so a paper gate with no
+    # shots directory invites no write at all (lcars-xo-selfrun 4k).
+    shots_note="
+**The shots directory above is the ONE place under \`.git/lcars/\` you are
+EXPECTED to write** — it is not on that list, it is where your camera puts your
+pictures, and writing it breaks nothing.
+"
+  fi
+  # THE WATCH LIST, RENDERED FROM `$WORKER_FENCE_WATCH` ITSELF (S261 fix round
+  # 2, D1). The prose used to claim the whole of `.git/lcars/` was fatal to
+  # touch; the audit has only ever watched these ten files. A hand-written list
+  # here would be a second copy of the fence, free to drift the moment either
+  # moves — which is exactly the fault being cured. So the ONE list is printed,
+  # indented as a block. lcars-xo-selfrun 4h adds an eleventh file to a copy of
+  # this script and proves it reaches the prompt unaided.
+  local watch_list
+  watch_list="$(printf '%s\n' "$WORKER_FENCE_WATCH" | sed 's/^/    /')"
+  local shell_line=""
+  if [ -n "$n1_wt" ]; then
+    shell_line="
+## GO AND LOOK YOURSELF — you have a real shell, in a copy that is yours to break
+You are standing in a THROWAWAY COPY of the build under review: a worktree
+detached from the mission's branch, at
+
+    $n1_wt
+
+**You have a real shell here, and you are expected to use it.** Start the
+product. Run its command line. Try the input that should be refused. Read the
+file it claims to have written. Do the things the live-check checklists below
+describe, yourself, in the order they are numbered — do not ask anybody to do
+them for you.
+
+**It is detached and it is disposable: anything you break dies with the copy.**
+No branch moves, nothing you write there reaches the captain, and nobody will
+be upset by a mess. A command that fails is information; run the next one.
+$home_para$camera_para
+**Stay inside the copy, and never reach back into the captain's own checkout.**
+The mission's RECORD is what judges your verdict, and THESE are the files that
+are watched, byte for byte, across your turn — a worker that writes one of them
+is killed on the spot and the look is thrown away:
+
+$watch_list
+$shots_note
+Nothing else under \`.git/lcars/\` is audited — but it is the captain's record,
+not your workspace, so write nothing there except your pictures.
+
+**Say what you actually ran.** Quote the command and its real output in your
+evidence, the way you would quote a test line. \"It works\" is not a finding;
+the three lines of transcript that show it are."
+  fi
   local extra="## The mission
 Mission id: $id
 $rounds_line
 $prelaunch_line
 $steps_line
+$shell_line
 $live_line
 $volunteered_line
 $checklists
@@ -16980,8 +17216,26 @@ ${inventory:-  (the input directory is empty — say so, and ESCALATE)}
 $outfiles
 $channel_line"
   local nrc=0
-  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" number-one "$outdir" "$extra" \
+  # THE ENV ROLE STAYS `number-one`; ONLY THE TOOLSET MOVES. That split is what
+  # `spawn_worker`'s two role arguments are for (the context-pack precedent), and
+  # keeping the env role fixed is load-bearing: `stage_key_for_role` reads
+  # $LCARS_WORKER_ROLE, so the model floor, the usage-capture record and the
+  # stage key are byte-for-byte what they were, live copy or not.
+  #
+  # AND THE cwd IS THE CONTAINMENT. It is moved IN THIS SHELL and moved back
+  # after, NOT in a subshell — deliberately. `worker_spawn`'s post-turn fence
+  # audit calls `die` on a breach, and a subshell would downgrade that from "the
+  # Stage is stopped and nothing is repaired" to a non-zero return, after which
+  # `number_one_claim_output` below would happily claim the breaching worker's
+  # verdict. Every path handed to `spawn_worker`, and every path the audit reads
+  # ($MISSION_DIR is absolute by `locate_mission`), is absolute, so the move is
+  # invisible to all of them. A failure to move is FATAL rather than a quiet
+  # fall-back to the captain's own checkout with a shell in hand.
+  local n1_back="$PWD"
+  [ -n "$n1_wt" ] && { cd "$n1_wt" || die "could not enter the throwaway copy at $n1_wt — refusing to run the look in the real checkout with a shell."; }
+  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" "$n1_toolset" "$outdir" "$extra" \
     || nrc=$?
+  [ -n "$n1_wt" ] && cd "$n1_back"
   # THE FILE, EITHER WAY — and the record of which way it came. Never allowed to
   # fail the spawn: the channel reports, it does not judge.
   number_one_claim_output "$outdir" "$wantfiles" || true

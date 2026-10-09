@@ -115,7 +115,7 @@ versioning; an identity read from the machine rather than from the actor's HOME.
 {
   "argv": ["<cli>", "<the-main-verb>", "<the-same-value-actor-A-used>"],
   "cwd": "<worktree>",
-  "env": {"HOME": "<second-throwaway-home>"},
+  "env": {"HOME": "<throwaway-home-2>"},
   "evidence": "live-check/04-two-actors.txt",
   "expect": {
     "noCrossContamination": "actor B sees none of actor A's state",
@@ -250,7 +250,7 @@ along the chain in item 6.
 {
   "argv": ["<cli>", "<the-main-verb>", "<a-value-you-did-NOT-use-in-the-first-pass>"],
   "cwd": "<worktree>",
-  "env": {"HOME": "<a-fresh-throwaway-home>"},
+  "env": {"HOME": "<throwaway-home-3>"},
   "evidence": "live-check/08-reverify-cli-r2.txt",
   "expect": {
     "differentDataFromTheFirstPass": true,

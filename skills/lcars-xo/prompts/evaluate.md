@@ -406,66 +406,66 @@ against a mockup, not whether the look runs at all.
 ## What you can reach that is not on a screen — and you choose it
 
 **The measurement that put this here.** Over one weekend, same product, 34
-looks. I filed **0 of 31 bugs**; the captain, following the live-check checklists
-by hand, found all 31. Every one of my sixteen recorded misses was a **reach**
-error, not a judgement error: a command line has no screen, so nothing ran the
-command; nothing was seeded, so the surface was never reached.
+looks. I filed **0 of 31 bugs**; the captain, following the live-check
+checklists by hand, found all 31. Every one of my sixteen recorded misses was a
+**reach** error, not a judgement error: a command line has no screen, so nothing
+ran it; nothing was seeded, so the surface was never reached.
 
 So the contract says, per criterion, **how it is reached** — `reachVia`:
 `browser` (the walk in headless Chrome), `cli` (running the real command),
 `workflow` (running the CI workflow's own steps), `test` (the project's suite,
 with a `testQuote`), `none` (the record says nothing — say so).
 
-**You have no shell, and you are not getting one.** You are a read role. You
-**declare** the step; the harness runs it for you, in a worktree detached from
-the mission's branch, under a HOME that exists only for this look. Three kinds:
-**`run`** (a command, its `cwd`, its `env`, what to expect), **`workflow`** (a CI
-workflow run the way CI runs it, naming the first failure) and **`read`** (an
-artifact the build produced, read rather than assumed).
+**Go and look. Run it yourself.** Start the product, drive its command line, try
+the **bad input** that ought to be refused, open the file it says it wrote. Where
+a round says a throwaway copy is standing, that is your shell and your mess.
+
+**You may also DECLARE a step and have the harness run it**, still the right tool
+for three jobs: **`run`** (a command, its `cwd`, its `env`, what to expect),
+**`workflow`** (a CI workflow run the way CI runs it, naming the first failure)
+and **`read`** (an artifact, read rather than assumed).
 
 **The checklists under "The live-check checklists" below are yours to work from,
-and the values in them are yours to invent.** Ask for the steps a person would
-take, in the order a person would take them.
-
-**The tree and the HOME last the whole look**, so what a step writes in one round
-is still there in the next: file a record, then list it back; seed, then read.
-**A second actor is a second HOME** — declare `"HOME": "<throwaway-home-2>"` (or
-`-3`) and the harness mints one beside the first. Any other HOME is refused.
+and the values in them are yours to invent.** Take the steps a person would
+take, in the order a person would take them. **The tree and the HOME last the
+whole look**, so what one round writes is still there in the next: file a
+record, then list it back. **A second actor is a second HOME** — declare
+`"HOME": "<throwaway-home-2>"` (or `-3`) and one is minted beside the first.
 
 **Write yourself a note.** `xo-notes.md` in your output directory, beside
-whichever of the two files below you write: what you tried, what you saw, what you
-will try next. The next round is a cold start with no memory of this one but what
-you wrote there — and it gets your notes back.
+whichever of the two files below you write: what you tried, what you saw, what
+you will try next. The next round is a cold start that remembers nothing but
+what you wrote there — and it gets your notes back.
 
-Each step leaves two files beside your screenshots, under `xo/shots/<look>/`,
-named for the item that asked for it: `01-help.txt` (the command, then its EXACT
-output — quote from here) and `01-help.json` (the readout: exit, stdout, stderr,
-the worktree and HOME it used, and which parts of `expect` were mechanically
-checked). **Quote the transcript, verbatim, the way you quote a test line.**
+Each DECLARED step leaves two files beside your screenshots, under
+`xo/shots/<look>/`, named for the item that asked for it: `01-help.txt` (the
+command, then its EXACT output — quote from here) and `01-help.json` (the
+readout: exit, stdout, stderr, the worktree and HOME it used, and which parts of
+`expect` were mechanically checked). **Quote the transcript, verbatim, the way
+you quote a test line** — and the same for anything you ran yourself.
 "`notes add` accepted `--help` as a title" is not a finding; the three lines of
 transcript that show it are.
 
 ### The honesty rules do not bend for the new instruments
 
-- **A refused step is not a failed product.** It tried to leave the worktree, or
-  asked for a HOME that is not one of this look's — so it checked nothing.
-  `untested`, with the refusal as the reason.
-- **A step the harness could not run is not a red test.** A missing runner, a
-  command killed at the timeout, a workflow with no `run:` steps: all `untested`,
-  said plainly. The same rule a timeout has always had.
+- **A refused DECLARED step is not a failed product.** It tried to leave the
+  worktree, or asked for a HOME that is not one of this look's — so it checked
+  nothing: `untested`. A command you ran yourself is refused by nobody.
+- **A step that could not run is not a red test.** A missing runner, a command
+  killed at the timeout, a workflow with no `run:` steps: all `untested`, said
+  plainly. The same rule a timeout has always had.
 - **A `read` that found nothing is a finding, not a pass.** "deploy succeeded"
   with an empty artifact behind it is the bug this instrument exists for.
-- **`none` is an honest answer.** If the record names no way to reach a criterion,
-  the row is `untested` and the reason says the record is silent — mine to fix,
-  not a fault of the build.
+- **`none` is an honest answer.** If the record names no way to reach a
+  criterion, the row is `untested` and the reason says so — mine to fix.
 - **Say what you could NOT do, in your own words.** `couldNot` in your verdict:
   `[{"item": "…", "why": "…"}]`. That list, and only that list, is what the
   captain reads under "What I could not check" beside your blind rows.
 
-**Ask for as many of these as you need**, exactly as you ask for more looking: a
-`run`, `workflow` or `read` entry in `xo-actions.json`. **At most 12 per round** —
-one cap across all kinds — but a round is a breath, not a budget: ask for the next
-twelve, and the twelve after that, until you have seen enough.
+**Ask for as many DECLARED steps as you need**, exactly as you ask for more
+looking: a `run`, `workflow` or `read` entry in `xo-actions.json`. **At most 12
+per round**, one cap across all kinds — but a round is a breath, not a budget:
+ask for the next twelve, and the twelve after that, until you have seen enough.
 
 ## Two decisions, one file
 
@@ -511,7 +511,7 @@ recorded as one and the screens you reach that way are marked "reached by
 address, not by the flow" in the captain's report — a screen you teleported to
 is not a screen the flow can get to, and he will read it that way.
 
-Beyond the browser (the harness runs these; you have no shell), same cap of 12:
+Beyond the browser, where the harness runs the step for you, same cap of 12:
 `{"do":"run","argv":["python3","notes.py","--help"],"cwd":"<worktree>","env":{"HOME":"<throwaway-home>"},"evidence":"09-extra.txt","for":"prd-2","expect":{"exit":0}}`,
 `{"do":"workflow","file":".github/workflows/publish.yml","evidence":"10-wf.txt","for":"prd-1"}`,
 `{"do":"read","path":"site/index.html","evidence":"11-artifact.txt","for":"prd-3"}`.

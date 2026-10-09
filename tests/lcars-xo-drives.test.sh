@@ -797,8 +797,19 @@ check "7c. …that a second user is a second home" \
   'tr "\n" " " <"$P_OFF" | tr -s " " | grep -qi "a second user is a second home"'
 check "7c. …and that IT decides when it has seen enough" \
   'tr "\n" " " <"$P_OFF" | tr -s " " | grep -qi "you decide when you have seen enough"'
-check "7d. the fence sentence SURVIVES the rewrite" \
-  'tr "\n" " " <"$P_OFF" | tr -s " " | grep -q "You have no shell, and you are not getting one"'
+# S261 — THIS CHECK USED TO READ: the fence sentence ("You have no shell, and
+# you are not getting one") SURVIVES the rewrite. The captain amended that S168
+# clause on 2026-10-08 at 19:33 MDT, because three of the six failures measured
+# against his buddy that morning were the fence and not the prompt. The reviewer
+# now gets a real shell inside a DISPOSABLE COPY. What this row still guards is
+# the same thing it always guarded — that the rewrite did not drop the paragraph
+# this sentence lived in — so it now pins the clause that REPLACED it, and the
+# refusal is asserted ABSENT so the old wording cannot creep back.
+# `lcars-xo-eyes` owns the rest of the S261 contract.
+check "7d. the GO-AND-LOOK clause SURVIVES the rewrite (S261, in place of the fence sentence)" \
+  'tr "\n" " " <"$P_OFF" | tr -s " " | grep -q "Go and look. Run it yourself"'
+check "7d2. …and the retired refusal does not creep back" \
+  '! tr "\n" " " <"$P_OFF" | tr -s " " | grep -q "You have no shell, and you are not getting one"'
 check "7d. …and so does the two-files contract" \
   'grep -q "xo-verdict.json" "$P_OFF" && grep -q "xo-actions.json" "$P_OFF"'
 check "7e. nothing claims steps were built from the record" \

@@ -2010,9 +2010,11 @@ pending_field() { # <pending.json> <key>
 
 # --- the read-only INPUT dir -----------------------------------------------
 # COPIES, not the originals, and every one of them chmod a-w. Number One is
-# reading the record of a mission it must not be able to change; the worker role
-# has no shell and no Edit (worker-adapter.sh), and this is the second fence
-# behind that one. A copy also means a mid-flight Stage writing to the mission
+# reading the record of a mission it must not be able to change. S261: the
+# look's worker now HAS a shell (inside a disposable detached worktree), so this
+# read-only copy is no longer the SECOND fence behind a tool denial — it is one
+# of the primary ones, together with the post-turn mission-state audit in
+# `run.sh`. A copy also means a mid-flight Stage writing to the mission
 # cannot move the ground under a verdict half-formed.
 gather_inputs() { # <mission-dir> <input-dir>
   local dir="$1" into="$2" f
@@ -3305,6 +3307,11 @@ xo_reach_adopt() { # <mission-dir> <launch-worktree> — ONE tree for steps and 
     XO_REACH_HOME="$(mktemp -d)"
   fi
   [ -n "$XO_REACH_REPO" ] || XO_REACH_REPO="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+  # S261 — the ADOPTED tree is the one the reviewer stands in from here on. The
+  # hand-over is re-done rather than left pointing at the surplus tree that was
+  # just handed back, which would be a reviewer running in a directory that no
+  # longer exists.
+  xo_hand_over_copy
   journal "$dir" reach-tree "$(printf '"worktree": %s, "home": %s, "adopted": true, "from": "launch"' \
     "$(jstr "$XO_REACH_WT")" "$(jstr "$XO_REACH_HOME")")"
   return 0
@@ -4140,6 +4147,35 @@ XO_REACH_WT=""
 XO_REACH_HOME=""
 XO_REACH_REPO=""
 
+# ── AND IT IS WHAT THE WORKER STANDS IN, TOO (S261) ─────────────────────────
+#
+# The look already mints exactly one disposable copy; S261 hands THAT ONE to the
+# evaluate worker rather than minting a second. The reviewer runs with its cwd
+# inside it and with a real shell (`run.sh spawn_number_one` → toolset
+# `number-one-live`), because on 2026-10-08 three of its six recorded failures
+# were the fence and not its judgement. The copy is detached and disposable, so
+# anything it breaks dies with the copy — that, and the post-turn mission-state
+# audit, are the protection now, instead of denying a shell.
+#
+# ONE PLACE, TWO SETTERS. `xo_reach_prepare` mints the tree and `xo_reach_adopt`
+# swaps in the launch's, so both call this and nothing else writes the variables.
+# Every `spawn-number-one` subshell in this process inherits them.
+#
+# THE THROWAWAY HOME IS A PATH, NOT THIS PROCESS'S HOME, and that distinction is
+# load-bearing: Chrome under a non-default HOME times out on CDP and the look
+# silently scores everything LOW. It is handed over so the worker can type it in
+# front of the PRODUCT's commands; the worker's own HOME stays the real one.
+xo_hand_over_copy() { # — export the one copy to every worker spawn in this process
+  [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] || return 0
+  export LCARS_XO_WORKTREE="$XO_REACH_WT"
+  if [ -n "$XO_REACH_HOME" ] && [ -d "$XO_REACH_HOME" ]; then
+    export LCARS_XO_THROWAWAY_HOME="$XO_REACH_HOME"
+  else
+    unset LCARS_XO_THROWAWAY_HOME
+  fi
+  return 0
+}
+
 xo_reach_prepare() { # <mission-dir> — mints the look's tree + HOME, once
   local dir="$1" br top out
   [ -z "$XO_REACH_WT" ] || return 0
@@ -4152,6 +4188,7 @@ xo_reach_prepare() { # <mission-dir> — mints the look's tree + HOME, once
   XO_REACH_HOME="$(printf '%s\n' "$out" | sed -n 's/^HOME: //p' | head -1)"
   XO_REACH_REPO="$top"
   if [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ]; then
+    xo_hand_over_copy
     journal "$dir" reach-tree "$(printf '"worktree": %s, "home": %s, "branch": %s' \
       "$(jstr "$XO_REACH_WT")" "$(jstr "$XO_REACH_HOME")" "$(jstr "$br")")"
   else
@@ -4169,6 +4206,11 @@ xo_reach_teardown() { # — idempotent; called at the look's end AND from the tr
   # removes and prunes it; removing it from here as well would race the verb that
   # owns it and leave the captain's repo with a half-pruned registration. Only
   # the HOME this look minted goes.
+  # S261 — THE COPY IS GONE, SO THE HAND-OVER GOES WITH IT. A later spawn that
+  # inherited a path to a removed worktree would be handed a shell with nowhere
+  # safe to stand; `run.sh` checks the directory exists, but clearing it here is
+  # what makes the record true rather than merely survivable.
+  unset LCARS_XO_WORKTREE LCARS_XO_THROWAWAY_HOME
   if [ "$XO_REACH_ADOPTED" = 1 ]; then
     [ -n "$XO_REACH_HOME" ] && rm -rf "$XO_REACH_HOME"
     XO_REACH_WT=""; XO_REACH_HOME=""; XO_REACH_REPO=""; XO_REACH_ADOPTED=0
@@ -4243,12 +4285,24 @@ xo_run_reach() { # <mission-dir> <xodir> <shots> [journey-file]
 # The worker's OWN requested steps, split from its browser actions and held to
 # the SAME cap of 12 across all kinds (S222's rule, unchanged). A request that
 # tries to leave the worktree is refused by xo-run.py and journaled there.
+# AND THE LOOK'S OWN COPY IS A PLACE TO STAND (S261 fix round 1). The worker is
+# told that copy's absolute path and naturally names it as a step's `cwd`; the
+# declared-step gate judges text alone and refused it SIX TIMES on the first live
+# look — "cwd /private/tmp/.../lcars-ap-wt-6SnDQN is an absolute path outside the
+# worktree" — after which the report told the captain "I asked for 6 steps that
+# the harness refused before they ran." The tree was the look's own and nothing
+# was escaping anywhere; `refuse_reason`, which judges the same step once the
+# tree is real, has always accepted it. So the gate is handed the tree that is
+# actually standing. `xo-run.py` validates it is a real directory and widens
+# nothing else — no shell, no `-c`, no absolute path in an argv, no `..`.
 xo_reach_actions() { # <mission-dir> <xodir> <shots> <xo-actions.json> <round>
   local dir="$1" xodir="$2" shots="$3" acts="$4" round="$5" kept n
   [ -s "$acts" ] || return 0
   kept="$xodir/actions-kept-$round.json"
+  set --   # the look's own standing copy, when there is one (see above)
+  [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && set -- --worktree "$XO_REACH_WT"
   "$XO_PY" "$XO_RUN_PY" actions --actions "$acts" --out "$kept" \
-    --mission-dir "$dir" --cap "$XO_MAX_ACTIONS" >/dev/null 2>&1 || true
+    --mission-dir "$dir" --cap "$XO_MAX_ACTIONS" "$@" >/dev/null 2>&1 || true
   [ -s "$kept" ] || return 0
   # ── A REFUSED STEP IS SAID OUT LOUD, IN THE ROUND IT HAPPENED (S250 D2) ────
   #
@@ -5214,6 +5268,18 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
 $input/shots
 $input/drawing
 $shots"
+      # ── AND THE CAMERA THAT RECORDS WHERE A PICTURE WAS TAKEN (S261 fix 1) ──
+      # The look's worker now takes pictures itself. On the first live night it
+      # took them with its own commands, in its own copy: they never reached
+      # this directory and nothing recorded the page they were of, so the
+      # landing rail (S241) could not place them and six real, FILED faults
+      # were re-scored "no landing record". THE PRODUCER RECORDS IT — so the
+      # worker is handed `xo-drive.js`, which already writes that record beside
+      # every PNG, pointed at THIS look's shots directory. `run.sh` offers it
+      # only when all three are really on disk; nothing is promised.
+      export LCARS_XO_SHOTS_DIR="$shots"
+      export LCARS_XO_CAMERA="$XO_DRIVER"
+      export LCARS_XO_CAMERA_NODE="$XO_NODE"
       if [ -n "$xo_engine" ]; then
         export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
       fi

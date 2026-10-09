@@ -619,8 +619,17 @@ check "8a. THE BEHAVIOUR — copilot's number-one role has \`rg\`" \
   '[ -n "$NO" ] && printf ",%s," "$NO" | grep -qF ",rg,"'
 check "8b. …and not also \`grep\` — the older name for the SAME tool, so one, not both" \
   '! printf ",%s," "$NO" | grep -qF ",grep,"'
-check "8c. …and no shell: the worker never gets \`bash\`" \
+# S261 — THIS IS ABOUT THE PAPER-GATE ROLE, and stays true of it. The captain
+# amended the S168 clause on 2026-10-08 (19:33 MDT): the VERIFY LOOK runs as the
+# separate role `number-one-live`, which DOES get `bash`, contained by a
+# disposable detached worktree instead (`lcars-xo-eyes`). This file's subject —
+# the verdict CHANNEL — is unaffected either way: both roles still say their
+# verdict in the frame and the harness still writes the file.
+check "8c. …and no shell for the paper-gate role: \`number-one\` never gets \`bash\`" \
   '! printf ",%s," "$NO" | grep -qF ",bash,"'
+check "8c2. …while the LOOK's role does, and still carries no write tool" \
+  'printf ",%s," "$(tools copilot number-one-live)" | grep -qF ",bash," &&
+   ! printf ",%s," "$(tools copilot number-one-live)" | grep -qF ",create,"'
 check "8d. …nor \`edit\`" \
   '! printf ",%s," "$NO" | grep -qF ",edit,"'
 check "8e. …and no \`create\` either — with the frame, it needs no write tool" \
@@ -629,7 +638,7 @@ check "8f. …it can still SEE: view and glob are both there" \
   'printf ",%s," "$NO" | grep -qF ",view," && printf ",%s," "$NO" | grep -qF ",glob,"'
 
 # EVERY copilot ROLE loses `grep` for `rg` — a rename, nowhere half-applied.
-for r in repo-read repo-read-web repo-write launch number-one default; do
+for r in repo-read repo-read-web repo-write launch number-one number-one-live default; do
   t="$(tools copilot "$r")"
   check "8g. copilot/$r names no tool called \`grep\`" \
     '! printf ",%s," "$t" | grep -qF ",grep,"'

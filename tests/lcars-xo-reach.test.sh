@@ -757,8 +757,15 @@ echo ""
 echo "6. evaluate.md teaches the new step kinds and keeps the honesty rules"
 check "evaluate.md names the three harness-executed step kinds" \
   'grep -qi "run" "$EVALUATE_MD" && grep -q "workflow" "$EVALUATE_MD" && grep -qi "read" "$EVALUATE_MD"'
-check "it says the HARNESS runs them and the worker has no shell" \
-  'grep -qi "no shell" "$EVALUATE_MD"'
+# S261 — THIS ROW USED TO READ `grep -qi "no shell"`. The captain amended that
+# S168 clause on 2026-10-08 (19:33 MDT): the reviewer gets a real shell inside a
+# disposable copy, so the template no longer says it has none. What the row is
+# FOR is unchanged — the DECLARED-step path, where the harness executes for the
+# worker, must still be taught beside it, and `xo-run.py`'s own argv fence on
+# that path is untouched (see `lcars-xo-refusal`, and `lcars-xo-eyes` § 6).
+check "it says the HARNESS runs a DECLARED step for the worker" \
+  'tr "\n" " " <"$EVALUATE_MD" | tr -s " " |
+     grep -qi "DECLARE a step and have the harness run it"'
 check "it names the live-check checklist as where the steps come from" \
   'grep -qi "live-check" "$EVALUATE_MD"'
 check "it teaches checkedBy on every ledger row" \

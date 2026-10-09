@@ -57,8 +57,14 @@ driver calls `xo.sh answer --mission <id>`. It:
 2. hires **one cold worker** through `run.sh spawn-number-one`, so the first
    officer reaches the same chokepoint every Stage uses — role → stage key
    (`numberOne`) → the pinned model → the fenced argv → the S168 fence snapshot
-   → usage capture. The role is READ + author-one-file, **no shell, no
-   network**, on both engines (`worker-adapter.sh`);
+   → usage capture. At the PAPER GATES (`answer`, `recheck`) the role is READ +
+   author-one-file, **no shell, no network**, on both engines
+   (`worker-adapter.sh`). At the **Verify LOOK** it is `number-one-live` —
+   the same posture **plus a real shell**, issued only when a disposable
+   detached worktree is standing and with the worker's cwd inside it (S261,
+   captain's amendment to S168, 2026-10-08). **No network, either way.**
+   What stops the reviewer changing what it reviews is now the disposable copy
+   plus the post-turn mission-state audit, not the absence of a shell;
 3. reads back the worker's one file, `xo-answer.json`, and **checks it**;
 4. **ANSWER** → `respond.sh answer`, the ordinary verb, with
    `LCARS_ANSWERED_BY=number-one` (the ledger says who) and
@@ -309,9 +315,12 @@ The order is the contract:
    `testCommand` is the common case**: the file records that plainly and the
    look proceeds exactly as it always did.
 
-   **The skill runs it; the worker never does.** The fence (S168) is untouched
-   — the worker is handed `tests.json` through the same read-only door as the
-   shots and the observations, and has no shell.
+   **The skill runs the project's suite; the worker is handed the result.** The
+   worker gets `tests.json` through the same read-only door as the shots and the
+   observations. S261 note: the look's worker now HAS a shell inside its
+   disposable copy and may run whatever it likes there — what it must not do is
+   pass off its own ad-hoc run as the project's recorded suite, which is why
+   `tests.json` stays the one record this guard reads.
 
    **THE OVER-CLAIMING GUARD, which is the point of the session.** A
    `notVisual` criterion may be settled by the project's own tests and cited

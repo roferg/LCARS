@@ -44,7 +44,15 @@
 #       number-one     → Read,Grep,Glob,Write  (session 202 — the first officer
 #                        READS the mission's whole record and AUTHORS exactly one
 #                        file, xo-answer.json, in its own scratch dir. Same shape
-#                        as `launch`, same reason: it reasons, `xo.sh` executes.)
+#                        as `launch`, same reason: it reasons, `xo.sh` executes.
+#                        This is the PAPER-GATE posture and it is unchanged: the
+#                        modes that judge off the record alone — `answer`,
+#                        `recheck` — have no disposable copy to run anything in.)
+#       number-one-live → Read,Grep,Glob,Write,Bash  (S261 — the VERIFY LOOK.
+#                        The same posture PLUS a real shell. Issued by
+#                        run.sh's `spawn_number_one` ONLY when a disposable
+#                        detached worktree is actually standing, and the worker's
+#                        cwd is inside it; see that function and adapter_deny.)
 #       default        → Read              (explicit sentinel for the old `*` case)
 # An unknown <cli> or unknown <role> exits NON-ZERO with a message on stderr —
 # never a silent empty argv / silent inline run. The SAME is true of the DENY
@@ -78,6 +86,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-write)    printf 'Read,Grep,Glob,Write,Edit,Bash' ;;
         launch)        printf 'Read,Grep,Glob,Write' ;;
         number-one)    printf 'Read,Grep,Glob,Write' ;;
+        number-one-live) printf 'Read,Grep,Glob,Write,Bash' ;;
         default)       printf 'Read' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -131,6 +140,12 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
       # and how it behaves for any model other than claude-opus-4.8 and the
       # default. If you need either, measure it the way described above.
       #
+      # `number-one-live` IS THE SAME ROLE WITH A SHELL (S261). On copilot
+      # `--available-tools` IS the restriction, so adding `bash` is the whole
+      # grant and there is no deny list to amend. No write tool is added with
+      # it: the verdict still arrives through the frame, and a shell can write
+      # anyway, so `create` would buy nothing and widen the list for nothing.
+      #
       # `number-one` ASKS FOR NO WRITE TOOL AT ALL (S250) — and that is a design
       # choice, not a workaround. The role's whole output is one file, and a
       # reviewer that needs no write capability does not depend on the floor
@@ -152,6 +167,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-write)    printf 'view,rg,glob,create,edit,bash' ;;
         launch)        printf 'view,rg,glob,create' ;;
         number-one)    printf 'view,rg,glob' ;;
+        number-one-live) printf 'view,rg,glob,bash' ;;
         default)       printf 'view' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -202,6 +218,35 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 #                  entire output, and it is denied Bash EXPLICITLY: on claude the
 #                  allow list only pre-approves, so this row is the only thing
 #                  that actually takes the shell away.
+#   number-one-live ⚠ HONESTY NOTE, THE SAME ONE repo-write CARRIES. This row
+#                  KEEPS A SHELL, so it is NOT a fence: a role with `Bash` can
+#                  write, edit and run anything, and no tool list can hold it.
+#                  `WebSearch`/`WebFetch` stay denied for the S202 reason (a
+#                  reviewer that can fetch can ground a verdict in something the
+#                  mission never said) and that denial is real only in the sense
+#                  that the tool is refused — a shell with network is a shell
+#                  with network, and this row does not pretend otherwise.
+#                  `Edit`/`NotebookEdit` stay denied so the table has no silent
+#                  hole, not because they contain anything.
+#
+#                  WHERE ITS CONTAINMENT ACTUALLY IS, and it is real:
+#                    1. THE DISPOSABLE COPY. `spawn_number_one` runs this worker
+#                       with its cwd inside a DETACHED worktree minted by the
+#                       buddy's one helper (`autopilot.sh worktree`, via
+#                       `xo-run.py prepare`). Anything it breaks dies with the
+#                       copy, and the copy is detached, so nothing it commits
+#                       can reach a branch.
+#                    2. THE POST-TURN FENCE AUDIT (`worker_fence_check` in
+#                       run.sh) still covers this role — a worker that writes
+#                       judge-critical mission state is KILLED, never repaired.
+#                    3. THE ROLE IS NOT ISSUED WITHOUT (1). With no copy
+#                       standing, `spawn_number_one` hands the adapter plain
+#                       `number-one` and the S168 posture applies unchanged.
+#                  WHY THE SHELL IS HERE AT ALL (captain's approval, 2026-10-08
+#                  19:33 MDT): measured on 2026-10-08, the reviewer found 0 real
+#                  defects where the captain's buddy found 4, and three of its
+#                  six recorded failures were this fence — drawn parts it could
+#                  not reach, a HOME store read refused, a shell action refused.
 #   default        the read-only sentinel: everything but Read/Grep/Glob is gone.
 #
 # An unknown cli or role exits NON-ZERO, exactly like adapter_tools — and a
@@ -217,6 +262,7 @@ adapter_deny() { # cli role → deny list (stdout); non-zero on unknown cli/role
         repo-write)    printf 'NotebookEdit' ;;
         launch)        printf 'Edit,Bash,NotebookEdit' ;;
         number-one)    printf 'Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
+        number-one-live) printf 'Edit,NotebookEdit,WebSearch,WebFetch' ;;
         default)       printf 'Write,Edit,Bash,NotebookEdit,WebSearch,WebFetch' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -227,7 +273,7 @@ adapter_deny() { # cli role → deny list (stdout); non-zero on unknown cli/role
       # and no flag is emitted. The role is still VALIDATED so an unknown role
       # exits non-zero from BOTH tables, never just one.
       case "$role" in
-        repo-read|repo-read-web|repo-write|launch|number-one|default) : ;;
+        repo-read|repo-read-web|repo-write|launch|number-one|number-one-live|default) : ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
       ;;

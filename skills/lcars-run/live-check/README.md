@@ -16,7 +16,7 @@ exist to remove the reach problem. They are not advice; they are the steps.
 | Reader | What it uses | How |
 |---|---|---|
 | **The buddy / autopilot** (`lcars buddy` → AUTOPILOT.md § 6) | the **prose** | a session with a shell: it runs the command, looks at the output, judges |
-| **Number One** (`lcars xo`, the rebuilt verifier) | **the whole file**, as **advice the worker reads** | a fenced worker with **no shell**: the checklists are catted into its prompt whole, it chooses its own steps and invents its own values, and the harness executes what it asks for (S246/S247 — LCARS no longer lifts the templates itself) |
+| **Number One** (`lcars xo`, the rebuilt verifier) | **the whole file**, as **advice the worker reads** | the checklists are catted into its prompt whole, it chooses its own steps and invents its own values. Since **S261** it has a **real shell inside a disposable detached worktree** and does the items itself; it may still DECLARE a `run`/`workflow`/`read` step for the harness to execute (S246/S247 — LCARS no longer lifts the templates itself) |
 
 That is why every numbered item carries **both forms**, and why they must stay
 in **lockstep**: the prose's `**Evidence:**` path and the template's `evidence`

@@ -844,8 +844,14 @@ def resolve(value, worktree, home):
 # `["bash","-c",…]` got a real shell running as the captain, `["cat","<a path
 # outside>"]` read a sentinel outside both fences, and `["sh","-c","… > …"]`
 # wrote outside the sandbox. All three were KEPT by the worker-request gate too.
-# prompts/evaluate.md says in bold "You have no shell, and you are not getting
-# one." — this is the code that makes that sentence true.
+# prompts/evaluate.md used to say in bold "You have no shell, and you are not
+# getting one." — this is the code that made that sentence true FOR A DECLARED
+# STEP, and it still does. S261 (captain's amendment to S168, 2026-10-08) gave
+# the WORKER ITSELF a shell inside a disposable detached worktree, and expressly
+# did NOT open this fence: a step the worker DECLARES for the harness to execute
+# is still refused a shell, an inline-code interpreter and an absolute path.
+# The two paths coexist, and that is deliberate — the harness-executed path is
+# what records a transcript beside every screenshot.
 #
 # THIS IS A NARROWING, NOT AN ALLOW-LIST. An allow-list of permitted programs is
 # the stronger design and is NOT built here; the captain has not chosen it. What
@@ -1567,13 +1573,33 @@ def cmd_teardown(opt):
 # ===========================================================================
 # actions — what the WORKER asked for, under the SAME cap
 # ===========================================================================
-def declared_escape(step, kind=None):
+def declared_escape(step, kind=None, copy=""):
     """Why a REQUESTED step may not be kept, judged on its DECLARED form.
 
-    There is no worktree yet when a worker's round is read, so the check is on
-    the text: a cwd or path that is absolute, or that walks up out of the tree,
-    is refused. `<worktree>` and a plain relative path are the only forms that
-    can be honoured.
+    Without a `copy` there is no worktree yet when a worker's round is read, so
+    the check is on the text: a cwd or path that is absolute, or that walks up
+    out of the tree, is refused. `<worktree>` and a plain relative path are the
+    only forms that can be honoured.
+
+    `copy` IS THE LOOK'S OWN STANDING TREE, AND IT IS A PLACE TO STAND (S261 fix
+    round 1). MEASURED: on the first live look with a shell, SIX declared steps
+    were refused before they ran — `REFUSED (run): cwd
+    /private/tmp/.../lcars-ap-wt-6SnDQN is an absolute path outside the
+    worktree` — because the prompt tells the worker, by absolute path, the
+    disposable copy it is standing in, and it then quite reasonably named that
+    path as the step's `cwd`. The report said "I asked for 6 steps that the
+    harness refused before they ran." The tree was the look's own; nothing was
+    escaping anywhere. `refuse_reason` — the gate that judges the SAME step once
+    the tree is real — has always accepted it, so this gate was the only thing in
+    the way.
+
+    SO IT IS A PATH CHECK THAT LEARNED ONE PLACE, NOT AN OPENING OF THE ARGV
+    FENCE. The copy must be a DIRECTORY THAT EXISTS (a promised one grants
+    nothing, the same rule the shell itself is held to), and the only thing it
+    buys is: an absolute `cwd`/`path`/`file` that really resolves INSIDE it reads
+    as the `<worktree>` mark would. Everything else is byte-for-byte unchanged —
+    no shell, no interpreter with `-c`, no absolute path in the argv, no `..`,
+    and no absolute path anywhere but inside that one tree.
 
     THE SAME ARGV FENCE AS THE JOURNEY GATE. A worker asked for `["bash","-c",…]`
     and it was KEPT into reachSteps; a step is now refused whether it was
@@ -1616,6 +1642,11 @@ def declared_escape(step, kind=None):
             continue
         rest = v.replace(WORKTREE_MARK, "").lstrip("/")
         if os.path.isabs(v):
+            # The look's own copy, and nothing wider. `inside` resolves symlinks,
+            # so `<copy>/../..` spelled absolutely does not slip through here any
+            # more than it does at run time.
+            if copy and os.path.isdir(copy) and inside(copy, v):
+                continue
             return "%s %s is an absolute path outside the worktree" % (key, v)
         if ".." in rest.split("/"):
             return "%s %s walks up out of the worktree" % (key, v)
@@ -1636,6 +1667,15 @@ def cmd_actions(opt):
     out = opt("out")
     mission_dir = opt("mission-dir") or ""
     cap = int(opt("cap") or MAX_ACTIONS)
+    # THE LOOK'S OWN STANDING COPY, PASSED IN BY THE CALLER THAT MINTED IT
+    # (`xo.sh`'s `xo_reach_actions` hands over `$XO_REACH_WT`). Read from argv
+    # rather than the environment so the one caller that knows is the one that
+    # says, and validated as a real directory here so `declared_escape` is never
+    # handed a promise. Absent → the gate judges the declared text exactly as it
+    # always did.
+    copy = opt("worktree") or ""
+    if not (copy and os.path.isdir(copy)):
+        copy = ""
     if isinstance(actions, dict):
         actions = actions.get("actions")
     actions = [a for a in (actions or []) if isinstance(a, dict)]
@@ -1646,7 +1686,7 @@ def cmd_actions(opt):
     for a in actions:
         kind, named = action_kind(a)
         if kind in REACH_KINDS:
-            why = declared_escape(a, kind)
+            why = declared_escape(a, kind, copy)
             if why:
                 refused.append({"kind": kind, "why": why})
                 journal(mission_dir, "action-refused", {"kind": kind, "why": why})

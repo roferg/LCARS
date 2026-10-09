@@ -3240,16 +3240,93 @@ def main():
                 why = ("%s — the picture is cited but nothing beside it records "
                        "where it was taken, so it cannot be shown to be of the "
                        "right screen" % LANDING_NO_RECORD)
-                notes.append("criterion %s cites %s, and there is %s beside it; "
-                             "recorded as untested" % (cid, shot, LANDING_NO_RECORD))
-                note = why
-                landing = {"mismatch": True, "reason": why, "shot": shot,
-                           "expected": _intent or None, "landed": None}
-                status = "untested"
-                evidence = ""
-                landing_refusals.append(cid)
-                landing_not_reached.append({"criterion": cid, "shot": shot,
-                                            "step": _step, "reason": why})
+                # ── AND THE DISAGREEMENT IS NEVER RESOLVED IN THE BUILD'S
+                # FAVOUR (S261 fix round 1) ────────────────────────────────────
+                #
+                # THE MEASURED DEFECT, in one document. The first live look with
+                # a shell found, diagnosed and FILED six real Week-screen faults
+                # — `prd-5`, `prd-10`, `prd-11`, `t-003-ac2`, `t-003-ac3`,
+                # `t-003-ac5` — declaring every one of them a `contradiction` in
+                # its own `gaps[]`. This branch then took all six rows to
+                # `untested`, so `counts` came out `{met: 25, gap: 0,
+                # untested: 29, contradictions: 0}`: ZERO faults counted beside a
+                # SIX-ENTRY `gaps[]` IN THE SAME FILE. `report.md` opened
+                # "Recommendation: MERGE WITH FOLLOW-UPS … everything I could
+                # check worked … that is a gap in my checking, not a fault in
+                # your build", over six faults that were real, correctly
+                # diagnosed and already filed as bug Missions. The look's own
+                # words that run were "Recommending LOW", and the grade moved UP
+                # — low the night before, medium now.
+                #
+                # TWO RECORDS OF ONE LOOK DISAGREED, AND THE MORE GENEROUS ONE
+                # WON. That is precisely what `reconciled` exists to forbid (see
+                # its own comment above): where the look's records disagree the
+                # difference is WRITTEN DOWN, never settled silently in the
+                # build's favour. The rail's own words are that a row it refuses
+                # is "NOT a fault in the build: it is a hole in MY checking" —
+                # true of a `met`, and an untruth when said over a fault the look
+                # positively recorded, ran the steps for, and filed.
+                #
+                # SO THE ASYMMETRY THIS FILE ALREADY KEEPS APPLIES HERE TOO: weak
+                # evidence "can lower an outcome or raise a fault, never settle a
+                # criterion" (the measured-box rule, above). A missing landing
+                # record is weak evidence. It still may not settle a `met` — that
+                # is untouched, and is S241's whole measured case. It may not
+                # erase a declared fault either.
+                #
+                # NARROW, AND NOTHING IS INVENTED: only a `gap` the look ALSO
+                # declared as a contradiction in `gaps[]` — its own second
+                # declaration site, the same record the gap loop above falls back
+                # on — and only when the complaint is that NOTHING was recorded.
+                # A shot the record says LANDED SOMEWHERE ELSE is still refused,
+                # for a gap exactly as for a met (the branch below is untouched):
+                # that is a positive record of a wrong page, not an absence.
+                #
+                # AND THE ROW STILL SAYS SO. It keeps the verdict the eye gave it
+                # and discloses the weakness through the EXISTING
+                # `landing.unplaced` shape — the same shape S242 uses, which
+                # `unplaced_mark()` already renders into `report.md`. No
+                # vocabulary moved, no ladder moved, and no report code changed.
+                if status == "gap" and cid in contradicted:
+                    _exp = {"rule": LANDING_NO_RECORD,
+                            "unplaced": True,
+                            "intent": _intent or None}
+                    landing = {"unplaced": True, "shot": shot, "landed": None,
+                               "expected": _exp,
+                               "from": ("nothing beside %s records where it was "
+                                        "taken, so I cannot place the picture — "
+                                        "the fault itself stands on what I ran "
+                                        "and recorded, not on the picture" % shot)}
+                    landing["reason"] = unplaced_mark(landing)
+                    notes.append(
+                        "criterion %s cites %s and there is %s beside it, so I "
+                        "cannot place that picture — but I recorded this one as a "
+                        "fault in my own gaps, so I am keeping it a gap and saying "
+                        "the picture is unplaced, rather than calling a fault I "
+                        "found a hole in my checking"
+                        % (cid, shot, LANDING_NO_RECORD))
+                    reconciled.append({
+                        "id": cid,
+                        "kind": "declared-fault-kept-over-unplaced-picture",
+                        "shot": shot,
+                        "railSaid": LANDING_NO_RECORD,
+                        "lookDeclared": "contradiction",
+                    })
+                    landing_not_placed.append(
+                        {"criterion": cid, "shot": shot,
+                         "reason": "nothing beside %s records where it was taken"
+                                   % shot})
+                else:
+                    notes.append("criterion %s cites %s, and there is %s beside it; "
+                                 "recorded as untested" % (cid, shot, LANDING_NO_RECORD))
+                    note = why
+                    landing = {"mismatch": True, "reason": why, "shot": shot,
+                               "expected": _intent or None, "landed": None}
+                    status = "untested"
+                    evidence = ""
+                    landing_refusals.append(cid)
+                    landing_not_reached.append({"criterion": cid, "shot": shot,
+                                                "step": _step, "reason": why})
             else:
                 _ok, _why = landing_verdict(_intent, _landed)
                 if not _ok:

@@ -702,6 +702,15 @@ check "6g. and never from the environment" \
 # THE INVARIANT THE ROUND DECLARED: the worker never gets a shell, and WebFetch
 # is not how a credential gets used. Asserted on the adapter's own lines so a
 # later session cannot quietly trade this session's fence for a tool.
+#
+# S261 — THE FIRST HALF OF THAT SENTENCE NOW APPLIES TO THIS ROLE ONLY. The
+# captain amended the S168 clause on 2026-10-08 at 19:33 MDT: the VERIFY LOOK
+# runs as the separate role `number-one-live`, which does hold a shell, contained
+# by a disposable detached worktree (`lcars-xo-eyes`). `number-one` is now the
+# PAPER-GATE posture (`answer`, `recheck`) and the three rows below are
+# unchanged and still true of it. 6k is the part that matters to THIS file: the
+# credential half did not move — neither role may fetch, so a consented
+# credential still cannot be spent through the web.
 check "6h. the number-one role is still Read,Grep,Glob,Write on claude" \
   'grep -q "number-one)    printf .Read,Grep,Glob,Write." "$REPO_ROOT/skills/lcars-run/worker-adapter.sh"'
 check "6i. and Edit,Bash,NotebookEdit,WebSearch,WebFetch are still DENIED to it" \
@@ -713,6 +722,21 @@ check "6i. and Edit,Bash,NotebookEdit,WebSearch,WebFetch are still DENIED to it"
 # keep it. What this check has always been for is unchanged — NO SHELL.
 check "6j. on copilot it is view,rg,glob — no shell, and no write tool either" \
   'grep -q "number-one)    printf .view,rg,glob." "$REPO_ROOT/skills/lcars-run/worker-adapter.sh"'
+# S261 — AND THE CREDENTIAL HALF OF THE INVARIANT DID NOT MOVE. The look's role
+# gained a shell; it did NOT gain the network, on either engine. A consented
+# GH_TOKEN still cannot be spent through a fetch tool, which is what this file
+# exists to protect.
+N1_ADAPTER="$REPO_ROOT/skills/lcars-run/worker-adapter.sh"
+# The argv goes to a FILE first: `adapter_argv`'s last statement is a
+# conditional printf, so on claude it returns 1 with a perfect argv on stdout,
+# and this file runs under `pipefail`.
+bash "$N1_ADAPTER" argv claude number-one-live "$TMPROOT" >"$TMPROOT/n1live-claude.txt" 2>/dev/null
+bash "$N1_ADAPTER" argv copilot number-one-live "$TMPROOT" >"$TMPROOT/n1live-copilot.txt" 2>/dev/null
+check "6k. the LOOK's role has a shell but still NO fetch tool on either engine" \
+  '[ "$(bash "$N1_ADAPTER" deny claude number-one-live)" = "Edit,NotebookEdit,WebSearch,WebFetch" ] &&
+   grep -qxF "Read,Grep,Glob,Write,Bash" "$TMPROOT/n1live-claude.txt" &&
+   grep -qxF "view,rg,glob,bash" "$TMPROOT/n1live-copilot.txt" &&
+   ! grep -qE "web_fetch|web_search" "$TMPROOT/n1live-copilot.txt"'
 
 # ===========================================================================
 # 7. THE MUTATION — the consent gate is shown to be the thing that refuses

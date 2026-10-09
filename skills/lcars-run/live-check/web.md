@@ -220,7 +220,7 @@ incorrectly (or the reverse); a phone fix that broke desktop.
 {
   "argv": ["<headless-chrome>", "--headless", "--disable-gpu", "--window-size=1280,900", "--screenshot=<evidence-dir>/07-reverify-web-r2.png", "<page-url-or-file-url>"],
   "cwd": "<worktree>",
-  "env": {"HOME": "<a-fresh-throwaway-home>"},
+  "env": {"HOME": "<throwaway-home-3>"},
   "evidence": "live-check/07-reverify-web-r2.png",
   "expect": {
     "differentDataFromTheFirstPass": true,

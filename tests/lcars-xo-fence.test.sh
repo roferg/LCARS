@@ -12,8 +12,15 @@
 # step wrote into the target repo's checked-out working tree. Reachable from
 # the WORKER, not just a hand-crafted journey: the same shapes passed
 # `xo-run.py actions` and were KEPT into reachSteps. Meanwhile
-# prompts/evaluate.md tells the model in bold "You have no shell, and you are
+# prompts/evaluate.md told the model in bold "You have no shell, and you are
 # not getting one." — a sentence the harness did not make true.
+#
+# S261 NOTE, so nobody reads this file as still claiming it: that sentence is
+# GONE (captain's amendment, 2026-10-08 19:33 MDT). The reviewer now has a real
+# shell, inside a disposable detached worktree, and its containment is that copy
+# plus the post-turn mission-state audit — see `lcars-xo-eyes`. NOTHING BELOW
+# CHANGES: this file drives the DECLARED-step path's own argv fence, which the
+# amendment expressly did not open. A declared step still gets no shell.
 #
 # BREAK 2 — `teardown()` ran in a `finally`, which a signal does not honour.
 # Observed: after killing a look, the target repo still had a REGISTERED

@@ -219,17 +219,58 @@ printf '\n\033[1m3. A PICTURE IS STILL A PICTURE — S241 is not weakened\033[0m
 #   a) strip shot-02's readout -> the picture cannot be placed -> REFUSED.
 #   b) point shot-02's recorded landing at another screen -> REFUSED.
 # Neither row has a recorded non-camera instrument, so neither is excused.
+#
+# ── WHICH ROW LEG (a) ASKS, AND WHY IT MOVED (S261 fix round 1) ─────────────
+# Leg (a) used to ask `prd-4`. `prd-4` is a row the look rated a FAULT and ALSO
+# declared as a `contradiction` in its own `gaps[]`, and since S261 fix round 1
+# such a row KEEPS its gap when the only complaint is that nothing recorded the
+# landing — it discloses the unplaced picture instead of being re-scored "a hole
+# in my checking". (Measured: the first live look with a shell filed six real
+# Week-screen faults and its own verdict then reported `counts.gap = 0` beside a
+# six-entry `gaps[]`, headlined MERGE WITH FOLLOW-UPS, and graded UP from the
+# night before. See `xo-score.py`'s `_landed is None` branch.)
+#
+# S241'S INVARIANT IS UNCHANGED AND IS STILL ASSERTED HERE, on this same
+# fixture and this same mutilation — it is asked of `t-2-ac1`, one of the three
+# rows citing `shot-02` that the look rated MET. A picture that cannot be placed
+# still cannot SETTLE a criterion, which is what S241 measured and what leg (a)
+# exists for. What a missing landing record may no longer do is erase a fault the
+# look positively recorded, ran the steps for, and filed. Both halves are
+# asserted, so neither can drift.
 NR="$TMPROOT/live-noreadout"; mklive "$NR"
 rm -f "$NR/shots/look-1/shot-02.json"
 score "$NR" "$TMPROOT/out-nr"
-check "a REAL screenshot with NO landing record is STILL REFUSED" \
+check "a REAL screenshot with NO landing record STILL cannot settle a MET (S241)" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/out-nr/verdict.json'))
+by={c['id']:c for c in d['criteria']}
+r=by['t-2-ac1']
+print(r['status'],repr(r.get('note'))[:90])
+sys.exit(0 if r['status']=='untested' and 'no landing record' in (r.get('note') or '') else 1)\""
+check "…and so for every MET row citing that same unplaceable picture" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/out-nr/verdict.json'))
+by={c['id']:c for c in d['criteria']}
+got={i:by[i]['status'] for i in ('t-2-ac1','t-2-ac2','part-board-title')}
+print(got)
+sys.exit(0 if all(v=='untested' for v in got.values()) else 1)\""
+check "but a FAULT the look declared in its own gaps KEEPS its gap, and says the picture is unplaced" \
   "$PY -c \"
 import json,sys
 d=json.load(open('$TMPROOT/out-nr/verdict.json'))
 by={c['id']:c for c in d['criteria']}
 r=by['prd-4']
-print(r['status'],repr(r.get('note'))[:90])
-sys.exit(0 if r['status']=='untested' and 'no landing record' in (r.get('note') or '') else 1)\""
+print(r['status'], (r.get('landing') or {}).get('unplaced'))
+sys.exit(0 if r['status']=='gap' and (r.get('landing') or {}).get('unplaced') else 1)\""
+check "…and the count agrees with the array it counts (the defect that drove this)" \
+  "$PY -c \"
+import json,sys
+d=json.load(open('$TMPROOT/out-nr/verdict.json'))
+n=len([c for c in d['criteria'] if c['status']=='gap'])
+print('counts.gap',d['counts']['gap'],'rows',n,'gaps[]',len(d['gaps']))
+sys.exit(0 if d['counts']['gap']==n and n>0 else 1)\""
 check "and only the picture rows are refused — the transcript rows are untouched" \
   "$PY -c \"
 import json,sys

@@ -404,9 +404,14 @@ check "L4. copilot launch tool list has NO bash and NO edit" \
 #             need not depend on a write tool existing at all. It says its verdict
 #             in its reply, framed between delimiters run.sh asks for by name, and
 #             the HARNESS writes the file (number-one-channel.py).
+#
+# S261 — AND THERE IS NOW A SECOND ROLE BESIDE IT, so read "the worker never
+# gets a shell" above as being about THIS role only. `number-one-live` is the
+# same posture with a shell, for the Verify look, contained by a disposable
+# detached worktree rather than by the deny list; see N10–N13 below.
 # ============================================================================
 echo
-echo "worker-adapter — number-one role (session 202)"
+echo "worker-adapter — number-one role (session 202) + number-one-live (S261)"
 
 nd="$(mktemp -d "$TMPROOT/no.XXXX")"
 
@@ -443,6 +448,26 @@ check "N8. copilot argv grants --add-dir on the OUTDIR (the answer channel)" \
   "printf '%s\n' \"\$NO_COP\" | grep -A1 -x -- '--add-dir' | grep -qx -- \"\$nd\""
 check "N9. copilot argv carries NO --disallowedTools (no such flag on copilot)" \
   "! printf '%s\n' \"\$NO_COP\" | grep -qx -- '--disallowedTools'"
+
+# --- the SECOND number-one role (S261) --------------------------------------
+# EVERY ROW ABOVE IS ABOUT `number-one`, AND STAYS TRUE OF IT. That role is now
+# the PAPER-GATE posture — `answer` and `recheck`, which judge off the record and
+# have nothing to run. The captain amended the S168 clause on 2026-10-08 at
+# 19:33 MDT, after three of the six failures measured against his buddy that
+# morning turned out to be the fence rather than the prompt: the VERIFY LOOK gets
+# a real shell, under the separate role `number-one-live`, issued by
+# `run.sh spawn_number_one` only when a disposable detached worktree is standing,
+# with the worker's cwd inside it. The full contract is `lcars-xo-eyes`; these
+# four rows are the adapter's half, so the role cannot be added or removed here
+# without this file noticing.
+check "N10. argv claude number-one-live → the paper-gate list PLUS Bash" \
+  "[ \"\$(tool_line number-one-live)\" = 'Read,Grep,Glob,Write,Bash' ]"
+check "N11. …and its deny list no longer names Bash, so the grant is real" \
+  "[ \"\$(bash \"\$ADAPTER\" deny claude number-one-live)\" = 'Edit,NotebookEdit,WebSearch,WebFetch' ]"
+check "N12. …but the NETWORK is still denied (it judges the record, never the web)" \
+  "bash \"\$ADAPTER\" deny claude number-one-live | tr ',' '\n' | grep -qx 'WebFetch'"
+check "N13. copilot number-one-live → view,rg,glob,bash" \
+  "[ \"\$(cop_tools number-one-live)\" = 'view,rg,glob,bash' ]"
 
 # The read-only INPUT dir xo.sh gathers gets its OWN --add-dir (copilot's path
 # sandbox is hard; without the grant Number One cannot read a single input file).
