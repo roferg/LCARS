@@ -2003,6 +2003,11 @@ XO_RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.s
 XO_MALFORMED="Number One could not decide — malformed verdict"
 # S213 fix round 1, D4 — what a LOW means when the look never happened at all.
 XO_NOLOOK="I never got to look at your build, so nothing on your list is vouched for either way"
+# THE BATON FOR "THIS LOOK NEVER REACHED A VERDICT, AND IT WAS US" (S264 fix
+# round 1, FIX 4). Set by the arm that KNOWS, to the specific reason; read and
+# cleared by `xo_finish`, which is the one writer of `numberOne`. Empty means
+# nothing claims the look was blocked.
+XO_LOOK_BLOCKED=""
 
 pending_field() { # <pending.json> <key>
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
@@ -4347,15 +4352,46 @@ except Exception:
 if not isinstance(doc, dict):
     sys.exit(0)
 refused = [r for r in (doc.get("refused") or []) if isinstance(r, dict)]
-if not refused:
+# ── AND THE STEPS THERE WAS NO ROOM FOR (S264 fix round 2, FIX 5) ───────────
+# MEASURED by the fix-round-1 tester: a round of 14 asked / 12 kept / 2 dropped
+# printed ZERO bytes here, because this returned early on an empty `refused`.
+# A dropped step did not run either, so the captain hears about it — on its own
+# line, never called "refused", because nothing was wrong with its shape.
+dropped = [r for r in (doc.get("dropped") or []) if isinstance(r, dict)]
+if not refused and not dropped:
     sys.exit(0)
 asked = int(doc.get("asked") or 0)
 kept = len(doc.get("steps") or []) + len(doc.get("reachSteps") or [])
-print("\u25c8 NUMBER ONE: round %s asked for %d step(s); %d were refused before "
-      "anything ran, %d went ahead." % (sys.argv[2], asked, len(refused), kept))
+
+
+def label(r):
+    for field in ("key", "evidence"):
+        v = " ".join(str(r.get(field) or "").split())
+        if v:
+            return v
+    return "an unnamed step"
+
+
+# THE REFUSAL SENTENCE IS BYTE-FOR-BYTE WHAT IT WAS (a suite pins it), and the
+# drop gets a sentence of its own rather than a clause inside that one.
+if refused:
+    print("\u25c8 NUMBER ONE: round %s asked for %d step(s); %d were refused before "
+          "anything ran, %d went ahead." % (sys.argv[2], asked, len(refused), kept))
+else:
+    print("\u25c8 NUMBER ONE: round %s asked for %d step(s); %d went ahead."
+          % (sys.argv[2], asked, kept))
+if dropped:
+    print("\u25c8 NUMBER ONE: and %d step(s) were DROPPED FOR THE CAP in round %s — "
+          "not refused: the harness runs a fixed number of declared steps a round "
+          "and these came after the last one it had room for."
+          % (len(dropped), sys.argv[2]))
 for r in refused:
     print("    REFUSED (%s): %s" % (r.get("kind") or "step",
                                     " ".join(str(r.get("why") or "it did not say why").split())))
+for r in dropped:
+    print("    DROPPED FOR THE CAP, not refused (%s %s): %s"
+          % (r.get("kind") or "step", label(r),
+             " ".join(str(r.get("why") or "it came in past the cap").split())))
 PYEOF
   return 0
 }
@@ -4712,6 +4748,49 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
     obj="$(obj_del "$obj" recommendationWhy)"
   fi
   obj="$(obj_set "$obj" evaluatedAt "$(jstr "$NOW")")"
+  # ── A LOOK THAT NEVER HAPPENED, SAID SO ON THE RECORD (S264 change 4) ──────
+  #
+  # THE MEASURED DEFECT. `drive_number_one_verify` refuses a second evaluate
+  # once `evaluatedAt` is set — correctly, because a second look at a build
+  # already judged is pure spend. But a look that ended because the build would
+  # not start, the browser would not launch, or there was nothing to look at at
+  # all was stamped `evaluatedAt` just the same, so it could never be retaken.
+  # S262's foundation hit exactly this on a greenfield repo, and the weekend's
+  # "could not re-score after the fix" miss is the same shape.
+  #
+  # RECORDED HERE, BY THE CODE THAT KNOWS. `$XO_NOLOOK` is the ONE sentence that
+  # means "I never got to look at your build" and the two arms that set it are
+  # the infrastructure endings it covers (the browser would not start / nothing
+  # to look at, and the build did not start). So the fact is written down at the
+  # moment it is known, with the specific reason beside it — not re-derived later
+  # by a driver comparing sentences, which would be a second copy of this one
+  # free to drift (the infer-vs-record rule; S147, S156, S188).
+  #
+  # ── AND THE LOOKS OUR OWN CODE ENDED (S264 fix round 1, FIX 4) ─────────────
+  #
+  # MEASURED: a look that ends "my own scorer failed (exit N)" or "I could not
+  # read back my own verdict" stamped `evaluatedAt` and a LOW with NO
+  # `lookBlockedBy`, so the driver never retook it — even though that is purely
+  # OUR code failing, which is squarely the "the runner was missing" class this
+  # mark exists for. Those two sentences are the previous session's own honesty
+  # fix, so this is its natural partner.
+  #
+  # `$XO_LOOK_BLOCKED` is the BATON for that: an arm that knows the look never
+  # reached a verdict for a reason of ours sets it to the specific reason just
+  # before it finishes, and this one writer records it. It is consumed and
+  # cleared here, so it is a hand-over for ONE finish and can never leak into a
+  # later one. No sentence is pattern-matched out of prose to get this fact.
+  #
+  # A LOOK THAT REACHED A REAL VERDICT CLEARS IT, so the retake gate can never
+  # read a stale mark and spend a second look on a build that was really judged.
+  if [ -n "${XO_LOOK_BLOCKED:-}" ]; then
+    obj="$(obj_set "$obj" lookBlockedBy "$(jstr "$XO_LOOK_BLOCKED")")"
+  elif [ -n "$meaning" ] && [ "$meaning" = "$XO_NOLOOK" ]; then
+    obj="$(obj_set "$obj" lookBlockedBy "$(jstr "${headline:-$why}")")"
+  else
+    obj="$(obj_del "$obj" lookBlockedBy)"
+  fi
+  XO_LOOK_BLOCKED=""
   obj="$(obj_set "$obj" lastAction "$(jstr "looked $NOW_LOCAL")")"
   if [ "$status" = "engaged" ]; then
     obj="$(obj_set "$obj" note "$(jstr "$why")")"
@@ -5280,6 +5359,18 @@ $shots"
       export LCARS_XO_SHOTS_DIR="$shots"
       export LCARS_XO_CAMERA="$XO_DRIVER"
       export LCARS_XO_CAMERA_NODE="$XO_NODE"
+      # ── AND THE STEPS THE HARNESS WOULD NOT RUN (S264 change 1) ───────────
+      # MEASURED: over one milestone the worker asked for 36 steps, 34 were
+      # refused, and every one of the five assembled prompts was all but
+      # identical — "a step has no shell" appeared ZERO times in any of them.
+      # The refusals were on `journey.json.refusedSteps` the whole time, with
+      # their round and their reason, written by the harness at the moment it
+      # refused. These two lines are the delivery: the RECORD and WHICH ROUND
+      # this is, so `run.sh` can print the PREVIOUS round's refusals into the
+      # prompt. It assembles the section itself, from the artifact path alone —
+      # no prompt text lives here, and nothing is re-derived from a transcript.
+      export LCARS_XO_JOURNEY="$xodir/journey.json"
+      export LCARS_XO_ROUND="$round"
       if [ -n "$xo_engine" ]; then
         export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
       fi
@@ -5445,6 +5536,13 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # handed the whole `shots/` tree and searches the newest look first. Handing
   # it one look's folder would make every earlier look's picture read as "no
   # landing record", which is a refusal the record does not support.
+  #
+  # AND THIS LOOK'S OWN FOLDER RIDES BESIDE IT (S264 fix round 1, FIX 1), as the
+  # LAST argument, because the over-claiming guard needs the opposite scope: a
+  # transcript from a SUPERSEDED look must not settle a row taken after a fix —
+  # measured at 37 of 42 admitted files on the live record, the file-logs → fix
+  # → recheck sequence. Two consumers of two different scopes, so each is handed
+  # the one it needs rather than deriving it from the other.
   local report
   # A SCORER THAT DIED IS NOT A GRADE (S263 fix round 3, FIX 4). This line read
   # `… 2>/dev/null)" || report=""`, which is the EXACT pattern S263 cured on the
@@ -5472,7 +5570,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
               "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
               "$xodir/journey.json" "$xodir/shots" "$xodir/wrong-screen.json" \
-              "$xodir/live.json" \
+              "$xodir/live.json" "$shots" \
               2>/dev/null)" || src=$?
   # A PARTIAL WIRE IS NOT READ AT ALL. The substitution still hands back whatever
   # was printed before the crash; discarding it here is what makes "no partial
@@ -5534,6 +5632,12 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
     local mw="${why:-$XO_MALFORMED}"
     local unreadable="I could not read back my own verdict, so there is nothing here to go on — look yourself"
     [ -z "$crashed" ] || unreadable="My own scorer failed, so nothing here was graded or filed — look yourself"
+    # THIS LOOK NEVER REACHED A VERDICT, AND IT WAS US (S264 fix round 1, FIX 4).
+    # Both endings here are our own code failing — the scorer died, or what it
+    # wrote could not be read back — so the look is marked RETAKEABLE with the
+    # specific reason, by the arm that knows it, rather than leaving a LOW the
+    # driver can never clear. The gate itself still allows exactly one retake.
+    XO_LOOK_BLOCKED="${crashed:-I could not read back my own verdict}"
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
       "$(jstr "$mw")" "$(jstr "$unreadable")" "$(jstr "$mw")" >"$xodir/verdict.json"
     xo_finish "$dir" low engaged "$mw" "$mw" "$unreadable"
@@ -6457,7 +6561,24 @@ $shots"
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
               "$xodir/second/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
               "$xodir/pairs.json" "$rwalk" "$xodir/seed.json" "" "" "$dir/decisions.json" \
-              "$xodir/journey.json" 2>/dev/null)" || rep2=""
+              "$xodir/journey.json" "" "" "" "$shots" \
+              2>/dev/null)" || rep2=""
+    # ── AND THE RE-CHECK GETS THIS LOOK'S OWN DIRECTORY TOO (S264 fix round 2,
+    #    FIX 4) ───────────────────────────────────────────────────────────────
+    #
+    # MEASURED: this call stopped at 13 arguments while the first score passes
+    # 17, so `placed` was EMPTY here and a criterion the re-check settled on a
+    # transcript it had just recorded itself re-scored as "recorded as
+    # not-checked". That is the live defect's exact shape — a demotion and a
+    # coverage drop for doing the right thing — displaced to the second score.
+    # The short call site predates this session; the cure has to reach it.
+    #
+    # THE THREE EMPTY SLOTS ARE DELIBERATE. `shots_root` (14), `wrong-screen`
+    # (15) and `live` (16) were never passed here and turning any of them on
+    # would be a change to what the re-check SCORES, not a delivery of this
+    # cure. `$shots` is this re-check's own look directory (`shots/recheck-N`),
+    # resolved at the top of this function — the same scope the first score is
+    # handed, never the root of every look.
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"

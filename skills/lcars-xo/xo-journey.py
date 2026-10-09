@@ -1543,19 +1543,68 @@ def main(argv):
             for r in refused_in:
                 row = {"kind": str(r.get("kind") or ""),
                        "why": " ".join(str(r.get("why") or "").split())}
+                # S264 — WHICH STEP, AND WHAT IT ASKED FOR, carried through.
+                # `xo-run.py`'s `refusal_row` records the worker's own name for
+                # the step (`key`), the criterion it was for, and the command
+                # line it asked for; without them the record could say a shell
+                # was refused but never WHICH step the reviewer had called that,
+                # so the next round's prompt could not name it back. Copied,
+                # never re-derived.
+                # `evidence` rides with `key` (S264 fix round 1, FIX 2): the
+                # real worker labels its steps with it, and without it the
+                # record could say a shell was refused but the prompt could only
+                # call it "an unnamed run step" — measured four times on the one
+                # live look.
+                for field in ("key", "evidence", "for", "fromChecklist",
+                              "asked", "verb"):
+                    val = " ".join(str(r.get(field) or "").split())
+                    if val:
+                        row[field] = val
                 if rnd:
                     row["round"] = rnd
                 have.append(row)
             j["refusedSteps"] = have
+        # ── AND THE STEPS DROPPED AT THE CAP (S264 fix round 1, FIX 3) ───────
+        #
+        # DRIVEN LIVE: 14 asked, 12 kept, 2 dropped, `refusedSteps` 0 — the
+        # overflow was a count in `actions-kept-N.json` and reached no prompt
+        # and no report, so the reviewer could not tell a step it must RESHAPE
+        # from one it must simply ask for next round.
+        #
+        # A SEPARATE LIST, ON PURPOSE. A drop is not a refusal: the step's shape
+        # was fine and the harness simply had no room for it. Filing it under
+        # `refusedSteps` would make the report and the console say "refused"
+        # about a step nothing was wrong with — and would send the reviewer
+        # rewriting it. Same record, same round, different fact.
+        dropped_in = (asked.get("dropped") or []) if isinstance(asked, dict) else []
+        dropped_in = [r for r in dropped_in if isinstance(r, dict)]
+        if dropped_in:
+            have = j.get("droppedSteps")
+            if not isinstance(have, list):
+                have = []
+            rnd = str(opt("round") or "").strip()
+            for r in dropped_in:
+                row = {"kind": str(r.get("kind") or ""),
+                       "why": " ".join(str(r.get("why") or "").split())}
+                for field in ("key", "evidence", "for", "fromChecklist",
+                              "asked", "verb"):
+                    val = " ".join(str(r.get(field) or "").split())
+                    if val:
+                        row[field] = val
+                if rnd:
+                    row["round"] = rnd
+                have.append(row)
+            j["droppedSteps"] = have
         out = opt("out") or jpath
         if out:
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
             with open(out, "w", encoding="utf-8") as fh:
                 json.dump(j, fh, indent=2)
                 fh.write("\n")
-        print("%d step(s) the worker asked for are on the record%s"
+        print("%d step(s) the worker asked for are on the record%s%s"
               % (len(kept),
-                 (", and %d it was refused" % len(refused_in)) if refused_in else ""))
+                 (", and %d it was refused" % len(refused_in)) if refused_in else "",
+                 (", and %d dropped for the cap" % len(dropped_in)) if dropped_in else ""))
         return 0
 
     if cmd == "carry":

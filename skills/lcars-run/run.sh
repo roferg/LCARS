@@ -16672,6 +16672,144 @@ You decide when you have seen enough. Write your verdict when you have.
   return 0
 }
 
+# ── WHAT THE HARNESS REFUSED LAST ROUND (S264 change 1) ─────────────────────
+#
+# THE MEASURED DEFECT, and it is the whole of this session's first change. Over
+# one milestone's five rounds the reviewer asked for 36 declared steps and 34
+# were REFUSED — and every one of the five assembled prompts was pulled off disk
+# and diffed: round 1 is 61,740 bytes, rounds 2-5 are 61,845 each, and round 1
+# vs round 5 differ ONLY in the round number in two paths and the list of files
+# now present. Occurrences of "a step has no shell": 0. Of "declined": 0. Of
+# "previous round": 0. It asked for 12, 10 vanished, and round 2 handed it an
+# all-but-identical prompt; then 8 vanished, then 6, then 10. It changed shape
+# in round 5 only BY INFERENCE, the single signal being that its own evidence
+# directory was still nearly empty — after which all 22 criteria on that
+# milestone cited THE SAME transcript, and a reader could verify 1 claim in 11.
+#
+# READ FROM THE RECORD, NEVER RE-DERIVED. `journey.json.refusedSteps` is where
+# the harness has filed its refusals since S250: one row per refused step,
+# carrying the round it happened in and the one sentence saying why, written by
+# `xo-journey.py reach-record` at the moment of refusal and now (S264) carrying
+# the worker's OWN name for the step and the command line it asked for. Reading
+# a finished transcript back to work out a fact the producer could have recorded
+# is the infer-vs-record failure that cost S147, S156 and S188 whole rounds
+# each, so this reads that record and nothing else.
+#
+# PRINTS NOTHING WHEN NOTHING WAS REFUSED. A clean round's prompt is byte-for-
+# byte what it always was — that is the control, and the suite holds it.
+number_one_refusals() { # <journey.json> <this round> — the section, or nothing
+  local journey="${1:-}" round="${2:-}"
+  [ -n "$journey" ] && [ -f "$journey" ] || return 0
+  [ -n "$round" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$journey" "$round" <<'XO_REFUSEDPY' 2>/dev/null || true
+import json, sys
+
+path, this_round = sys.argv[1], str(sys.argv[2]).strip()
+try:
+    prev = int(this_round) - 1
+except Exception:
+    raise SystemExit(0)
+if prev < 0:
+    raise SystemExit(0)
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(doc, dict):
+    raise SystemExit(0)
+def for_round(field):
+    rows = [r for r in (doc.get(field) or []) if isinstance(r, dict)]
+    return [r for r in rows if str(r.get("round") or "").strip() == str(prev)]
+
+
+rows = for_round("refusedSteps")
+# A STEP DROPPED AT THE CAP IS ALSO A STEP THAT DID NOT RUN (S264 fix round 1,
+# FIX 3). Driven live: 14 asked, 12 kept, 2 dropped, and the drop reached no
+# prompt at all. It arrives on its OWN list because the reviewer must act
+# differently on it — a refusal needs a different SHAPE, a drop needs a shorter
+# LIST — and saying "refused" about a step nothing was wrong with would send it
+# rewriting a perfectly good one.
+capped = for_round("droppedSteps")
+if not rows and not capped:
+    raise SystemExit(0)
+
+
+def named(r):
+    """What the WORKER called this step (S264 fix round 1, FIX 2).
+
+    MEASURED on the one live look: this read "an unnamed run step" four times,
+    because the real worker labels its steps with `evidence`
+    (`seed-01-add-exercise.txt`) and only `key` was being carried. Both labels
+    come off the record as the worker wrote them; neither is reconstructed."""
+    kind = str(r.get("kind") or "step").strip() or "step"
+    for field in ("key", "evidence"):
+        label = str(r.get(field) or "").strip()
+        if label:
+            return "`%s`" % label, kind
+    return "an unnamed %s step" % kind, kind
+
+
+def says(r):
+    out = []
+    name, kind = named(r)
+    forwhat = str(r.get("for") or "").strip()
+    out.append("- **%s** (a `%s` step%s) **did not run.**"
+               % (name, kind, (", for %s" % forwhat) if forwhat else ""))
+    asked = str(r.get("asked") or "").strip()
+    if asked:
+        out.append("  - you asked for: `%s`" % asked)
+    return out
+
+
+out = []
+out.append("## WHAT THE HARNESS DID NOT RUN LAST ROUND — read this before you declare more steps")
+out.append("")
+if rows:
+    out.append("In round %d you declared %d step(s) that **the harness refused**. None of "
+               "them ran, so none of them wrote any evidence of your check — each left a "
+               "`REFUSED:` note under its own name in your evidence directory, and a "
+               "note settles nothing. This is not a comment on your judgement — it is "
+               "the SHAPE of the request the harness would not execute, and you are being "
+               "told so you can get the same check another way."
+               % (prev, len(rows)))
+    out.append("")
+    for r in rows:
+        out.extend(says(r))
+        out.append("  - refused because: %s"
+                   % " ".join(str(r.get("why") or "the harness did not say why").split()))
+    out.append("")
+    out.append("**So the criteria those steps were for are still unchecked.** Either ask "
+               "for the same thing in a shape the harness will run, or run it yourself in "
+               "your own shell in the copy below and save the output where you save your "
+               "other transcripts — and then cite that. Asking for the same shape again "
+               "spends a round and gets the same refusal.")
+    out.append("")
+if capped:
+    # "And N FURTHER steps" only reads right when a refusal group came first;
+    # a drop-only round leads with the round instead.
+    out.append("%s were **dropped for the cap** — not refused. There was nothing wrong "
+               "with their shape; the harness runs a fixed number of declared steps a "
+               "round and these came after the last one it had room for, in the order "
+               "you listed them."
+               % (("And %d further step(s) you declared in round %d" % (len(capped), prev))
+                  if rows else
+                  ("In round %d, %d step(s) you declared" % (prev, len(capped)))))
+    out.append("")
+    for r in capped:
+        out.extend(says(r))
+        out.append("  - dropped because: %s"
+                   % " ".join(str(r.get("why") or "it was past the cap").split()))
+    out.append("")
+    out.append("**So those criteria are unchecked too, and rewriting those steps would "
+               "waste the round.** Declare the ones that matter most FIRST, ask for fewer "
+               "of them, or run them yourself in your own shell in the copy below and save "
+               "the output where you save your other transcripts.")
+print("\n".join(out))
+XO_REFUSEDPY
+  return 0
+}
+
 spawn_number_one() { # mission-id  mode  outdir
   local id="$1" mode="$2" outdir="$3"
   local template="$XO_PROMPTS_DIR/$mode.md"
@@ -17315,6 +17453,45 @@ file it claims to have written. Do the things the live-check checklists below
 describe, yourself, in the order they are numbered — do not ask anybody to do
 them for you.
 
+**But a DECLARED STEP IS NOT A SHELL.** The shell above is yours. A step you
+ask the harness to run — anything in \`xo-actions.json\` — names ONE program and
+its arguments, and the harness executes that list directly, with no shell
+anywhere. It REFUSES the forms that smuggle a shell back in:
+\`[\"bash\", \"-c\", …]\`, \`[\"sh\", \"-c\", …]\`, \`[\"python3\", \"-c\", …]\`
+and \`env …\`. \`[\"pytest\", \"-v\"]\` and \`[\"bash\", \"run-tests.sh\"]\` are
+fine — running a script through bash is a normal step.
+
+**And here is the path rule, exactly as the harness applies it.** Inside the
+**argv** itself: no absolute path is accepted anywhere — write
+\`<worktree>/run-tests.sh\` and the harness resolves the mark to this copy for
+you — and no argument with a \`/\` in it may have a \`..\` component.
+
+For a step's **\`cwd\`** (and a \`read\` step's \`path\`, a \`workflow\` step's \`file\`) you
+may write EITHER the mark \`<worktree>\`, which is the shape to reach for, OR
+the copy's own absolute path printed above — that one is accepted because it
+really resolves inside the copy; any other absolute path is refused. And in a
+RELATIVE \`cwd\`/\`path\`/\`file\`, **any \`..\` component at all is refused,
+whether or not it leaves the copy** — \`sub/../sub\` is refused too, and the
+refusal sentence says \"walks up out of the worktree\" even when it does not.
+Write the path without the \`..\`. If you set \`HOME\`, it must be a throwaway
+mark — \`<throwaway-home>\`, or \`<throwaway-home-2>\` / \`<throwaway-home-3>\`
+for a second and third actor — and never a literal path.
+
+**A pipe, a redirect, a \`&&\` or a \`\$(…)\` is NOT refused — it is worse than
+refused.** Because there is no shell, each one is handed to your program as a
+literal word. \`[\"pytest\", \"-v\", \"|\", \"tee\", \"out.txt\"]\` runs pytest
+with four arguments, one of which is the character \`|\`, and \`out.txt\` is
+never written. \`[\"echo\", \"\$(whoami)\"]\` prints the nine characters
+\`\$(whoami)\`. The step then \"succeeds\" and writes a transcript of something
+you did not ask for, which is harder to notice than a refusal. **If you want a
+pipeline, a redirect or a substitution, run it in your own shell above and save
+the output where you save your other transcripts.**
+
+**A refused step runs nothing and writes no evidence of your check** — all it
+leaves in your evidence directory, under that step's own name, is a \`REFUSED:\`
+note that the command was NOT run. That note settles nothing, and the criterion
+the step was for stays unchecked.
+
 **It is detached and it is disposable: anything you break dies with the copy.**
 No branch moves, nothing you write there reaches the captain, and nobody will
 be upset by a mess. A command that fails is information; run the next one.
@@ -17333,11 +17510,20 @@ not your workspace, so write nothing there except your pictures$vol_write.
 evidence, the way you would quote a test line. \"It works\" is not a finding;
 the three lines of transcript that show it are."
   fi
+  # THE PREVIOUS ROUND'S REFUSALS (S264 change 1), off the record the harness
+  # already writes. `xo.sh` exports the journey path and which round this is;
+  # everything printed comes from `refusedSteps`. Empty on a clean round, and on
+  # round 0/1 (there is no previous round to report).
+  local refused_line=""
+  if [ "$mode" = "evaluate" ]; then
+    refused_line="$(number_one_refusals "${LCARS_XO_JOURNEY:-}" "${LCARS_XO_ROUND:-}")"
+  fi
   local extra="## The mission
 Mission id: $id
 $rounds_line
 $prelaunch_line
 $steps_line
+$refused_line
 $shell_line
 $live_line
 $volunteered_line
@@ -21369,7 +21555,32 @@ drive_number_one_verify() {
   local parent; parent="$(json_str "$STATE" parentMission)"
   [ -n "$parent" ] && [ "$parent" != "null" ] && return 1
   # ALREADY LOOKED — the one fact that makes a second look pure spend.
-  [ -n "$(drive_xo_field evaluatedAt)" ] && return 1
+  #
+  # …UNLESS THE LOOK NEVER HAPPENED (S264 change 4). `xo_finish` records
+  # `lookBlockedBy` when, and only when, the look ended for an INFRASTRUCTURE
+  # reason — its own `$XO_NOLOOK` meaning: the browser would not start, the
+  # build did not start, there was nothing to look at. That is not a verdict
+  # about the build, and refusing to take it again left S262's foundation stuck
+  # on a greenfield repo with a LOW it could never clear. A look that reached a
+  # REAL verdict carries no such mark and is still refused, exactly as before.
+  #
+  # ONE RETAKE, AND IT IS STAMPED BEFORE THE SPAWN. A build that still will not
+  # start would otherwise be retaken on every pass of the driver for ever, so
+  # `retakenAt` is written first — a crash between the stamp and the spawn costs
+  # the retake rather than looping. The captain's own
+  # `lcars xo evaluate --again --because "<what changed>"` stays his, however
+  # many times he wants it.
+  #
+  # AND IT IS THE EXISTING VERB. `evaluate --again --because` has existed since
+  # S239 and already supersedes a verdict with a stated reason; this hands it
+  # the reason off the record. Nothing here is a second recheck path.
+  local xo_retake="" xo_blocked
+  if [ -n "$(drive_xo_field evaluatedAt)" ]; then
+    xo_blocked="$(drive_xo_field lookBlockedBy)"
+    [ -n "$xo_blocked" ] || return 1
+    [ -z "$(drive_xo_field retakenAt)" ] || return 1
+    xo_retake="$xo_blocked"
+  fi
   # …or looking right now. A recorded pid that is still alive is a look in
   # flight; a stale one (the box rebooted, the look was killed) is not, and is
   # simply overwritten by the child below.
@@ -21397,12 +21608,46 @@ drive_number_one_verify() {
   # can stop the whole job on a read, which is the loudest possible way to take
   # the captain's focus.
   local child=""
+  # THE RETAKE'S ARGUMENTS, and nothing extra on an ordinary first look — the
+  # argv is identical to what it has always been when $xo_retake is empty.
+  # STAMPED BEFORE THE SPAWN (see the header): this is what makes one retake one.
+  set --
+  if [ -n "$xo_retake" ]; then
+    # ── THE STAMP IS CHECKED, NOT ASSUMED (S264 fix round 2, FIX 3) ─────────
+    #
+    # MEASURED by the fix-round-1 tester: a mission whose `state.json` makes
+    # `drive_xo_put` refuse to write (it warns "… is not the one-field-per-line
+    # object LCARS writes … field numberOne NOT written") gave THREE spawns
+    # across three driver passes, where a well-formed one gives one spawn and
+    # then refuses. The header already promised that "a crash between the stamp
+    # and the spawn costs the retake rather than looping" — a FAILED stamp did
+    # not, because nothing read its exit status. One retake is only one retake
+    # if the thing that makes it one actually landed.
+    #
+    # SO IT IS A GATE. The stamp must succeed AND be readable back off the
+    # record before anything is spawned; if it did not land, the look is left
+    # exactly as it was and the captain's own `evaluate --again --because` stays
+    # available. A look nobody can mark as retaken is not retaken.
+    if ! drive_xo_put retakenAt "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+       || [ -z "$(drive_xo_field retakenAt)" ]; then
+      printf '◈ NUMBER ONE: I could not record that I am retaking this look, so I am not retaking it — run `lcars xo evaluate --again --because "<what changed>"` yourself.\n'
+      return 1
+    fi
+    set -- --again --because "the look never happened: $xo_retake"
+    # THE SENTENCE SAYS WHAT HAPPENED (S264 fix round 2, FIX 7). "never got off
+    # the ground" is true of the two infrastructure endings, but this arm also
+    # fires when our own scorer died or its verdict could not be read back —
+    # there the look DID happen and it is our code that failed. One sentence
+    # covering both, and the specific reason is printed beside it either way.
+    printf '◈ NUMBER ONE: my last look never reached a usable verdict (%s) — taking it again.\n' \
+      "$xo_retake"
+  fi
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+    setsid bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" "$@" \
       </dev/null >"$log" 2>&1 &
     child=$!
   else
-    nohup bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+    nohup bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" "$@" \
       </dev/null >"$log" 2>&1 &
     child=$!
   fi
@@ -22520,6 +22765,16 @@ FSG_EOF
   executed-count-test)
     printf '%s\n' "$(proof_executed_count "$(cat)")"
     exit 0 ;;
+  # S264 test hook: the PURE retake gate. Drives the REAL
+  # `drive_number_one_verify` against a mission's recorded numberOne block, with
+  # $LCARS_XO_SCRIPT standing in for xo.sh, and prints its rc. Lets the suite
+  # prove that an infra-only look is retaken through `evaluate --again` and a
+  # real verdict is still refused, without launching a browser. Inert for every
+  # real subcommand.
+  number-one-verify-test)
+    locate_mission "$MISSION_ID"
+    __nv_rc=0; drive_number_one_verify || __nv_rc=$?
+    printf 'NVRC=%s\n' "$__nv_rc"; exit 0 ;;
   proof-quality-floor-test)
     locate_mission "$MISSION_ID"
     [ -n "$TICKET" ] || die "usage: run.sh proof-quality-floor-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"

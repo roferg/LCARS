@@ -123,6 +123,7 @@ Output on stdout, one TAB-separated record per line, for the shell to read:
   GROUP <key> <kind> <grade|-> <total> <worked> <didnt> <couldntSee> <couldntSetUp>
   OPEN <n>  — rows still open ANYWHERE; the score word no longer implies zero
 """
+import hashlib
 import json
 import os
 import re
@@ -630,13 +631,228 @@ def case_leaves(tests):
     return out
 
 
-def tests_settle(tests, quote):
+# ── THE TRANSCRIPTS THE REVIEWER PLACED ITSELF (S264 change 3) ──────────────
+#
+# THE MEASURED DEFECT. On one milestone the reviewer noticed `tests.json` had
+# `testCases: []` and an `outputTail` of seven dots, so it RAN THE SUITE ITSELF
+# verbosely and placed `10-suite-verbose.txt` holding seven fully-named cases.
+# `tests_settle` checked the quote only against `tests.json`'s recorded
+# `outputTail`: three rows were demoted, the reviewer's own notes were
+# overwritten by a machine sentence, coverage was pushed to 71% against an 80%
+# floor and the grade was held HIGH -> MEDIUM. It was punished for doing exactly
+# the right thing. `xo-tests.py` admits the gap in its own docstring: "what that
+# produces is its own evidence, not this recorded run, and the over-claiming
+# guard reads only this one."
+#
+# WHAT IS AND IS NOT OPENED. The named-case rule is UNCHANGED and is checked
+# first, on the quote alone: a bare tally, a file-level dot run and a glyph line
+# still settle nothing, placed transcript or not. All this does is widen the
+# HAYSTACK the named line must be found in, from "the output xo-tests.py
+# recorded" to "that, or a transcript on this look's record". Nothing is read
+# out of a model's prose, and a row still cannot be settled by a quote that
+# appears nowhere.
+#
+# A REFUSED STEP'S EVIDENCE IS NOT A TRANSCRIPT. `xo-run.py` writes
+# `REFUSED: <why>\n\nThe command was NOT run.` for a step it declined, into this
+# same directory. A refused step checked nothing (the honesty rule, S211), so
+# those files are skipped by their own first line — never by guessing from a name.
+#
+# ── AND TWO WAYS THE FIRST CUT OF THIS WAS TOO WIDE (S264 fix round 1, FIX 1) ─
+#
+# (a) IT READ EVERY LOOK'S EVIDENCE, NOT THIS LOOK'S. The caller handed over
+#     `$xodir/shots` — the ROOT of every look, which the landing rail genuinely
+#     needs (S241) — and this function walked it recursively. MEASURED on the
+#     live record: 42 files admitted, 37 of them from `look-1`, the SUPERSEDED
+#     look, and 5 from the current `look-2`. 88% of the test-evidence haystack
+#     was a previous look's leftovers, and the dangerous sequence is
+#     file-logs → fix → recheck, where a PRE-FIX transcript settles a POST-FIX
+#     row. `SKILL.md` records this exact class as having been fixed once before.
+#     So this function now takes THE LOOK'S OWN DIRECTORY and the caller passes
+#     it separately from the rail's root — two consumers, two paths, neither
+#     guessing which look is current.
+#
+# (b) IT ADMITTED TEXT THE REVIEWER MERELY TYPED. Any `.txt`/`.log`/`.out` whose
+#     first line was not `REFUSED: ` was admitted, with nothing asked about
+#     whether a RUN produced it. The prompt tells the reviewer to run things in
+#     its own shell and save the output into this very directory, the directory
+#     is 0755 and the worker has `bash` — so a one-line file with a named-case
+#     quote and no run behind it settled a row. A file the model wrote with its
+#     own shell IS model prose, just in a file instead of a JSON field.
+#
+# THE CURE IS THE PROVENANCE THE PRODUCER ALREADY RECORDS, not a heuristic over
+# the text. `xo-run.py`'s `write_evidence` is the ONE door every step artifact
+# goes through and it writes BOTH halves: `<stem>.txt` and a sibling
+# `<stem>.json` readout carrying the step's `do`, its `key`, its `met` and the
+# name of the transcript it just wrote. A reviewer-authored file has no such
+# readout. A per-PNG caption HAS a sibling `.json`, but it is `xo-drive.js`'s
+# SHOT readout (`shot`/`landed`/`pixels`) and names no `do` — and a page caption
+# is not test output, which is why 7 of the live look's 12 admitted files were
+# captions. So a file is judged by whether the harness RECORDED producing it,
+# never by what the file says: reading meaning out of a model's prose is the
+# infer-vs-record failure that burned S147, S156 and S188.
+PLACED_SUFFIXES = (".txt", ".log", ".out")
+PLACED_MAX_BYTES = 4 * 1024 * 1024
+REFUSED_MARK = "REFUSED: "
+
+
+# ── AND THE THREE WAYS ROUND IT THE FIX-ROUND-1 TESTER MEASURED (S264 fix
+#    round 2, FIX 6) ─────────────────────────────────────────────────────────
+#
+# The round-1 rule proved "the harness wrote A FILE AT THIS PATH". It never
+# proved "A TEST RUN PRODUCED THIS CONTENT", and three paths got in without
+# forging a single byte of JSON:
+#
+#   1. A DECLARED `read` STEP on a file the reviewer wrote with its own shell.
+#      Driven end to end: readout `do: "read"`, transcript = the file's own
+#      contents, sibling present, disclosed as the step's file. One sanctioned
+#      step and the reviewer's prose is inside the haystack.
+#   2. A `run` STEP WHOSE PROGRAM JUST ECHOES — `["cat","forged.txt"]`,
+#      `["printf", …]`, `["echo", …]`, `["head","-50", …]`, `["tee", …]` all
+#      pass the argv fence, because the fence is about shells, not about what a
+#      program does.
+#   3. CLOBBERING a legitimately recorded transcript's `.txt` and leaving its
+#      sibling readout untouched.
+#
+# THE CURE IS THREE MORE RECORD CHECKS, and not one of them reads the file's
+# text — judging the prose is the infer-vs-record failure that burned S147,
+# S156 and S188, and it is exactly what a "does this look like test output?"
+# heuristic would be:
+#
+#   • THE VERB MUST BE `run`, AND IT MUST HAVE AN ARGV. `do_read`'s readout
+#     carries `path` and no `argv`; `do_workflow`'s carries neither. Only
+#     `do_run` writes `argv`, and it writes the RESOLVED one. So (1) is closed
+#     at the record, and (2) is at least fully visible in it — the argv the
+#     captain can read is right there beside the transcript it produced.
+#   • THE BYTES MUST BE THE BYTES THE RUN PRODUCED. `write_evidence` now records
+#     `bytes` + `sha256` of the exact blob it wrote; a clobbered `.txt` no longer
+#     matches its own readout, so (3) is closed.
+#   • AND THE FILE MUST REALLY BE IN THIS LOOK'S DIRECTORY. A symlink out of it
+#     with a forged sibling beside the link was admitted; both halves are now
+#     resolved and required to land inside.
+#
+# WHAT IS DELIBERATELY *NOT* CHECKED: `met`. A run that FAILED still produced
+# real output, and a red transcript is evidence of the same quality as a green
+# one — demanding `met` would quietly re-introduce "believe the good news".
+def harness_wrote(path, root=""):
+    """Did the harness RECORD producing THESE BYTES, by RUNNING something? →
+    the readout, or None.
+
+    The record is the sibling `<stem>.json` `write_evidence` writes beside every
+    step transcript. Four things must line up, and every one of them is a field
+    the PRODUCER wrote:
+
+      `do` == "run"          a `read` step's readout is the reviewer's own file
+                             handed back to it, not a run (vector 1)
+      a non-empty `argv`     only `do_run` records one, and it records the
+                             resolved argv the captain can read
+      `evidence`             names this very file
+      `bytes` + `sha256`     match the file on disk now, so a clobbered
+                             transcript no longer rides its sibling (vector 3)
+
+    A shot readout from `xo-drive.js` has no `do` at all, so a per-PNG caption
+    is still not mistaken for output; a file the reviewer typed has no sibling.
+    `root`, when given, is this look's resolved directory: the readout and the
+    transcript must both really live inside it, so a symlink pointing out of the
+    look with a forged sibling beside the link is refused.
+    Nothing here reads the transcript's text."""
+    stem = os.path.splitext(path)[0]
+    sib = stem + ".json"
+    if root:
+        # BOTH SIDES RESOLVED. A caller may hand over an unnormalised path
+        # (`/a//b`), and comparing a realpath against that never matches.
+        root = os.path.realpath(root)
+        for p in (path, sib):
+            try:
+                rp = os.path.realpath(p)
+            except Exception:
+                return None
+            if rp != root and not rp.startswith(root + os.sep):
+                return None
+    try:
+        with open(sib, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    # THE VERB, AND IT IS THE ONE THAT RUNS A PROGRAM.
+    if str(doc.get("do") or "").strip() != "run":
+        return None
+    argv = doc.get("argv")
+    if not isinstance(argv, (list, tuple)) or not any(
+            str(a).strip() for a in argv):
+        return None
+    if str(doc.get("evidence") or "") != os.path.basename(path):
+        return None
+    # THE BYTES THE RUN PRODUCED, still the bytes on disk.
+    want_n, want_h = doc.get("bytes"), str(doc.get("sha256") or "").strip()
+    if not isinstance(want_n, int) or not want_h:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            blob = fh.read()
+    except Exception:
+        return None
+    if len(blob) != want_n or hashlib.sha256(blob).hexdigest() != want_h:
+        return None
+    return doc
+
+
+def placed_transcripts(look_dir):
+    """Every text transcript THIS LOOK's record shows the harness produced — the
+    step evidence it wrote, including the suite the reviewer asked it to run and
+    save, which lands in the same directory by design (the prompt says so).
+
+    `look_dir` is this look's OWN shots directory, never the root of every look:
+    see (a) above. `[{name, text}]`."""
+    out = []
+    if not look_dir or not os.path.isdir(look_dir):
+        return out
+    # THE LOOK'S REAL DIRECTORY, resolved once. Every admitted file and its
+    # readout must land inside it — a symlink out of the look with a forged
+    # sibling beside the link was admitted before this (S264 fix round 2).
+    root = os.path.realpath(look_dir)
+    for here, _dirs, files in os.walk(look_dir):
+        for name in sorted(files):
+            # EXACT CASE, on purpose. `.TXT` matched here while the sibling
+            # lookup was forgiving on a case-insensitive filesystem; the suffix
+            # the producer writes is lower case, and that is the only one read.
+            if not name.endswith(PLACED_SUFFIXES):
+                continue
+            path = os.path.join(here, name)
+            # THE RECORD FIRST, before the file is even opened for its text. A
+            # transcript no RUN is recorded as having produced is not evidence
+            # of anything.
+            if harness_wrote(path, root) is None:
+                continue
+            try:
+                if os.path.getsize(path) > PLACED_MAX_BYTES:
+                    continue
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except Exception:
+                continue
+            if text.startswith(REFUSED_MARK):
+                continue          # a refused step checked nothing
+            out.append({"name": name, "text": text})
+    return out
+
+
+def tests_settle(tests, quote, placed=None, settled_by=None):
     """CAN THE PROJECT'S OWN TESTS SETTLE THIS ONE? → (yes/no, why not).
 
     Every branch below is decided from a FACT xo-tests.py recorded at the moment
     it ran — the outcome it derived there, and the output it kept — never from
     the wording of anything a model wrote. The second half of the tuple is the
-    sentence the captain reads when the answer is no."""
+    sentence the captain reads when the answer is no.
+
+    `placed` (S264) is the transcripts THIS look's record shows the harness
+    produced, from `placed_transcripts` — including the suite the reviewer asked
+    it to run verbosely and save. They widen the HAYSTACK the cited line must be
+    found in; they do not relax the named-case rule above, which is decided from
+    the quote alone.
+    `settled_by`, when a list is passed, collects the name of the file that
+    settled it — the producer records which one, so no reader has to guess."""
     if not tests or not tests.get("ran"):
         why = "this repo has no test command set, so I have nothing from your tests to go on"
         if tests and tests.get("outcome") == "no-worktree":
@@ -662,7 +878,23 @@ def tests_settle(tests, quote):
         return False, NOT_NAMED
     cases = [norm_for_match(c) for c in (tests.get("testCases") or [])]
     hay = norm_for_match(tests.get("outputTail"))
-    if q not in hay and not any(c and (q in c or c in q) for c in cases):
+    found_in = ""
+    if q in hay or any(c and (q in c or c in q) for c in cases):
+        found_in = "the recorded run"
+    else:
+        # ITS OWN WORK COUNTS (S264). The named line is looked for in the
+        # transcripts on THIS look's record too — the suite the reviewer asked
+        # the harness to run verbosely and save, which is a run the harness
+        # recorded producing, and a named case in it is exactly as checkable as
+        # one in the recorded tail. `placed_transcripts` admits a file only on
+        # that record, so nothing a model merely typed can get in here.
+        for doc in (placed or []):
+            if not isinstance(doc, dict):
+                continue
+            if q and q in norm_for_match(doc.get("text")):
+                found_in = str(doc.get("name") or "a transcript you placed")
+                break
+    if not found_in:
         cut = ("  (I only kept the last %s bytes of it)" % tests.get("tailCapBytes")
                if tests.get("truncated") else "")
         return False, ("I could not find that line in your test output, so I am not "
@@ -670,6 +902,8 @@ def tests_settle(tests, quote):
     leaves = case_leaves(tests)
     if leaves and not any(leaf in q for leaf in leaves):
         return False, NOT_NAMED
+    if settled_by is not None:
+        settled_by.append(found_in)
     return True, ""
 
 
@@ -2907,6 +3141,17 @@ def main():
     # (so the report can say what it touched and a teardown has a list). Absent —
     # the usual case, and every look before this session — this rail is simply OFF.
     live_path = sys.argv[16] if len(sys.argv) > 16 else ""
+    # ── THIS LOOK'S OWN SHOTS DIRECTORY (S264 fix round 1, FIX 1) ───────────
+    # NOT `shots_root` above, and the difference is the whole of FIX 1. The rail
+    # is handed the ROOT on purpose — the eye cites a shot by bare name and may
+    # cite one an earlier look took (S241). The over-claiming guard must be
+    # handed THIS LOOK ONLY, or a superseded look's transcript settles a row
+    # taken after the fix: measured at 37 of 42 admitted files. Two consumers,
+    # two arguments, so neither has to guess which look is current. Absent →
+    # no placed transcript counts and every row stands on the recorded run
+    # alone, which is exactly the pre-S264 behaviour.
+    look_dir = sys.argv[17] if len(sys.argv) > 17 else ""
+    placed = placed_transcripts(look_dir)
     live_record = load_json_or_none(live_path)
     if not isinstance(live_record, dict):
         live_record = {}
@@ -2933,10 +3178,20 @@ def main():
     # round. Read here so the captain's report can COUNT them and SAY them; they
     # touch nothing else, and a look with none reads exactly as it always has.
     refused_steps = []
+    # ── AND THE STEPS DROPPED AT THE CAP (S264 fix round 2, FIX 5) ──────────
+    # MEASURED by the fix-round-1 tester: the gate printed "14 asked, 12 kept
+    # (cap 12), 0 refused, 2 over the cap" and `grep -c droppedSteps` on this
+    # file was 0 — the drop reached the reviewer's next prompt and never the
+    # captain. It is read here exactly as a refusal is, and kept on its own
+    # list, because a step with nothing wrong with its shape is not a refusal.
+    dropped_steps = []
     if isinstance(journey_doc, dict):
         for _r in (journey_doc.get("refusedSteps") or []):
             if isinstance(_r, dict) and str(_r.get("why") or "").strip():
                 refused_steps.append(_r)
+        for _r in (journey_doc.get("droppedSteps") or []):
+            if isinstance(_r, dict) and str(_r.get("why") or "").strip():
+                dropped_steps.append(_r)
     landing_steps = landing_by_shot(load_json_or_none(walk_path), journey_doc)
     landing_records = landing_records_exist(shots_root)
     landing_on = bool(shots_root and os.path.isdir(shots_root) and landing_records)
@@ -3093,7 +3348,14 @@ def main():
         # line the suite printed. That line is checked against the recorded
         # output exactly as a `met` is, so this is not a hole in the guard —
         # it is the same guard, over the other kind of evidence.
-        tests_back_it = g_ev == "tests" and tests_settle(tests, g_quote)[0]
+        # AND WHICH OUTPUT IT STOOD ON (S264 fix round 2, FIX 7). Both calls
+        # below collect into the SAME list, so whichever quote ended up backing
+        # this finding, the captain is told where the line was found — a
+        # contradiction kept alive on a transcript the reviewer placed itself is
+        # disclosed exactly as a criterion settled the same way already is.
+        g_settled_by = []
+        tests_back_it = g_ev == "tests" and tests_settle(tests, g_quote, placed,
+                                                         g_settled_by)[0]
         # THE FALLBACK, AND ONLY WHERE THE HOLE IS. It applies to a
         # contradiction that is about to be demoted for want of anything behind
         # it, and that cited no line of its own — a gap that DID cite one and
@@ -3104,7 +3366,7 @@ def main():
             row = declared_rows.get(str(g.get("criterion") or "").strip()) or {}
             r_quote = str(row.get("testQuote") or "").strip()
             if str(row.get("evidence") or "").strip().lower() == "tests" and r_quote \
-                    and tests_settle(tests, r_quote)[0]:
+                    and tests_settle(tests, r_quote, placed, g_settled_by)[0]:
                 tests_back_it = True
                 g_ev, g_quote = "tests", r_quote
                 notes.append("%r cited no line of its own, so I took the one your tests "
@@ -3117,6 +3379,15 @@ def main():
                          "to the calls-the-build-made list instead — a finding with no picture "
                          "is not evidence" % (str(g.get("title") or g.get("criterion") or "?")))
             kind = "interpretation"
+        # SAID OUT LOUD, THE SAME WAY A CRITERION IS. Measured by the fix-round-1
+        # tester: `placed` reached both calls above and NO note was emitted, so a
+        # criterion settled on a placed transcript was disclosed while a
+        # CONTRADICTION kept alive on the very same evidence was silent.
+        if tests_back_it and g_settled_by and g_settled_by[0] != "the recorded run":
+            notes.append("the %s I filed on %s stands on %s — the test output you "
+                         "ran and saved yourself, not the run I recorded"
+                         % (kind, str(g.get("criterion") or g.get("title") or "?"),
+                            g_settled_by[0]))
         gg = dict(g)
         gg["kind"] = kind
         # THE GUARD'S OWN ANSWER, carried out of the loop that made it and
@@ -3182,7 +3453,16 @@ def main():
                 # actually speaks to it, and only if that line is in the output
                 # the skill recorded. A green suite on its own proves nothing
                 # about a criterion the suite is silent on.
-                settled, why = tests_settle(tests, quote)
+                settled_by = []
+                settled, why = tests_settle(tests, quote, placed, settled_by)
+                if settled and settled_by and settled_by[0] != "the recorded run":
+                    # SAID OUT LOUD. The row stands on a transcript the reviewer
+                    # placed rather than on the run xo-tests.py recorded, and the
+                    # captain is told which — a row believed for a different
+                    # reason than usual says so.
+                    notes.append("%s stands on %s — the test output you ran and saved "
+                                 "yourself, not the run I recorded"
+                                 % (cid, settled_by[0]))
                 if not settled:
                     notes.append("%s was rated %s on your tests, but %s; recorded as "
                                  "not-checked" % (cid, status, why))
@@ -5217,6 +5497,36 @@ def main():
             w("\nWhen a row above says I could not check something, this list is "
               "where to look for the reason: a step the harness would not run is a "
               "limit of mine, not a fault in your build.\n")
+        # ─── AND WHAT THERE WAS NO ROOM FOR (S264 fix round 2, FIX 5) ────────
+        #
+        # A SEPARATE SECTION, ON PURPOSE. A dropped step's shape was fine — the
+        # harness simply runs a fixed number of declared steps a round and these
+        # came after the last one it had room for. Filing it above would tell the
+        # captain a step was "refused" when nothing was wrong with it. Same
+        # record, same round, different fact.
+        if dropped_steps:
+            w("\n### Steps I asked for that there was no room to run\n\n")
+            w("I asked for %d more step%s than the harness runs in one round, so "
+              "%s dropped before anything ran — not refused: there was nothing "
+              "wrong with %s shape. %s\n\n"
+              % (len(dropped_steps), "" if len(dropped_steps) == 1 else "s",
+                 "it was" if len(dropped_steps) == 1 else "they were",
+                 "its" if len(dropped_steps) == 1 else "their",
+                 MY_CHECKING_NOTE))
+            for row in dropped_steps:
+                label = ""
+                for field in ("key", "evidence"):
+                    label = " ".join(str(row.get(field) or "").split())
+                    if label:
+                        break
+                forwhat = " ".join(str(row.get("for") or "").split())
+                rnd = str(row.get("round") or "").strip()
+                w("- **%s** (a `%s` step%s)%s\n"
+                  % (label or "an unnamed step", str(row.get("kind") or "step"),
+                     (", for %s" % forwhat) if forwhat else "",
+                     (" *(round %s)*" % rnd) if rnd else ""))
+            w("\nSo whatever those steps were for is unchecked, and it is a limit "
+              "of the harness rather than anything about your build.\n")
         # S216 — THE REASONING, ITEM BY ITEM. Its own section, not a table
         # column: the table above stays exactly as machine-readable as it was.
         if ledger:

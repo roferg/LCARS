@@ -118,6 +118,7 @@ DEPENDENCIES ARE ENV-INJECTED (the lcars-init pattern) so tests can stub them:
     LCARS_XO_STEP_TIMEOUT  seconds per step      (default 120)
 """
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -1134,11 +1135,28 @@ def write_evidence(outdir, name, transcript, readout):
     if n_txt or n_json:
         readout["redactions"] = int(readout.get("redactions") or 0) + n_txt + n_json
     txt = os.path.join(outdir, stem + ".txt")
-    with open(txt, "w", encoding="utf-8") as fh:
-        fh.write(transcript)
+    blob = transcript.encode("utf-8")
+    with open(txt, "wb") as fh:
+        fh.write(blob)
     jsn = os.path.join(outdir, stem + ".json")
     readout["evidence"] = os.path.basename(txt)
     readout["readout"] = os.path.basename(jsn)
+    # ── AND WHAT WAS IN IT WHEN WE WROTE IT (S264 fix round 2, FIX 6) ────────
+    #
+    # MEASURED BY THE FIX-ROUND-1 TESTER: a transcript the harness really did
+    # record producing could be CLOBBERED afterwards — overwrite the `.txt`,
+    # leave the sibling readout untouched, and the over-claiming guard still
+    # read the readout as proof that a run produced this content. The readout
+    # proved "the harness wrote a file at this path", never "a run produced
+    # these bytes".
+    #
+    # So the producer records the bytes it wrote: their length and their digest,
+    # taken from the exact blob that just went to disk. A reader can then ask
+    # whether the file it is holding is the one the run produced. This is a
+    # RECORD CHECK, not a judgement about the text — nothing here reads what the
+    # transcript says, which is the infer-vs-record line (S147, S156, S188).
+    readout["bytes"] = len(blob)
+    readout["sha256"] = hashlib.sha256(blob).hexdigest()
     with open(jsn, "w", encoding="utf-8") as fh:
         json.dump(readout, fh, indent=2)
         fh.write("\n")
@@ -1662,6 +1680,85 @@ def declared_escape(step, kind=None, copy=""):
     return ""
 
 
+# ── A REFUSAL THE NEXT ROUND CAN ACT ON (S264 change 1) ─────────────────────
+#
+# THE MEASURED DEFECT. Over one milestone's five rounds the worker asked for 36
+# steps and 34 were refused — and all five assembled prompts were pulled off
+# disk and diffed: round 1 is 61,740 bytes, rounds 2-5 are 61,845 each, and
+# round 1 vs round 5 differ ONLY in the round number in two paths and the list
+# of files now present. "a step has no shell" appears 0 times. "declined": 0.
+# "previous round": 0. The reviewer changed shape in round 5 BY INFERENCE, the
+# single signal being that its own evidence directory was still nearly empty,
+# and all 22 criteria on that milestone ended up citing the SAME transcript.
+#
+# The refusals were always RECORDED — `{"kind": ..., "why": ...}` here, carried
+# onto `journey.json.refusedSteps` by `xo-journey.py reach-record`, printed by
+# `xo_say_refusals`. What the record could not say was WHICH STEP: the worker
+# names its steps (`key`) and says which criterion each is for (`for`), and
+# neither reached the record, so nothing downstream could tell the reviewer
+# "the step you called `suite-verbose` did not run". So the producer records
+# them, HERE, at the moment it refuses — never read back out of a finished
+# transcript, which is the infer-vs-record failure that cost S147, S156 and
+# S188 whole rounds each.
+#
+# THIS CHANGES WHAT IS REPORTED AND NOTHING ABOUT WHAT IS ALLOWED. The verdict
+# is `declared_escape`'s, unchanged and unconsulted here; `argv_refusal`,
+# `refuse_reason` and `_shell_refusal` are untouched.
+def refusal_row(step, kind, why):
+    """The record of ONE refused step: what was asked, in the worker's own
+    words for it, and the one sentence saying why it will not run."""
+    row = {"kind": str(kind or ""), "why": why}
+    # WHATEVER THE WORKER LABELLED IT WITH (S264 fix round 1, FIX 2). MEASURED
+    # on the one live look: the refusal section said "an unnamed run step" FOUR
+    # TIMES, because the real worker labels its steps with `evidence`
+    # (`seed-01-add-exercise.txt`) — the very field `cmd_run` derives each
+    # transcript's name from — and only `key` was carried. The headline promise
+    # ("the step you called `suite-verbose` did not run") could not be kept on
+    # the only live look there was. Both labels are copied verbatim off the step
+    # the worker wrote; nothing is reconstructed from a finished transcript.
+    for field in ("key", "evidence", "for", "fromChecklist"):
+        val = str((step or {}).get(field) or "").strip()
+        if val:
+            row[field] = val
+    # WHAT WAS ASKED FOR, as the worker wrote it — the command line for a `run`,
+    # the file for a `read`/`workflow`. One line, so a prompt can print it.
+    asked = ""
+    argv = (step or {}).get("argv")
+    if isinstance(argv, (list, tuple)) and argv:
+        asked = " ".join(str(a) for a in argv)
+    else:
+        for field in ("path", "file"):
+            if str((step or {}).get(field) or "").strip():
+                asked = str((step or {}).get(field)).strip()
+                break
+    if asked:
+        row["asked"] = " ".join(asked.split())
+    # SCRUBBED LIKE EVERY OTHER ARTIFACT (S249): this row is printed into the
+    # next round's prompt and journaled, so a credential must not ride it.
+    row, _ = scrub_json(row)
+    return row
+
+
+# ── A STEP DROPPED AT THE CAP IS A STEP THAT DID NOT RUN (S264 fix round 1,
+#    FIX 3) ─────────────────────────────────────────────────────────────────
+#
+# MEASURED, DRIVEN LIVE: 14 asked, 12 kept, 2 SILENTLY DROPPED, `refusedSteps`
+# = 0. The overflow was recorded as a COUNT in `doc["overflow"]` and nothing
+# else, so it reached no prompt and no report: the reviewer could not tell a
+# step it must RESHAPE from a step it must simply ask for next round.
+#
+# So the drop is recorded the same way a refusal is — one row per step, with the
+# worker's own label on it — and kept in its OWN list, because a drop and a
+# refusal are different facts the reviewer must act differently on. Nothing here
+# grants anything: the cap is exactly where it was.
+def cap_row(step, kind, cap):
+    """The record of ONE step dropped for the cap — not refused on its shape."""
+    return refusal_row(step, kind,
+                       "the harness runs at most %d step(s) a round and this one "
+                       "came after the %dth, so it was DROPPED for the cap — "
+                       "nothing about its shape was refused" % (cap, cap))
+
+
 def cmd_actions(opt):
     actions = load(opt("actions"), None)
     out = opt("out")
@@ -1682,32 +1779,38 @@ def cmd_actions(opt):
     asked = len(actions)
 
     kept_browser, kept_reach, refused = [], [], []
+    dropped = []
     taken = 0
     for a in actions:
         kind, named = action_kind(a)
         if kind in REACH_KINDS:
             why = declared_escape(a, kind, copy)
             if why:
-                refused.append({"kind": kind, "why": why})
-                journal(mission_dir, "action-refused", {"kind": kind, "why": why})
+                refused.append(refusal_row(a, kind, why))
+                journal(mission_dir, "action-refused", refusal_row(a, kind, why))
                 continue
         elif kind not in BROWSER_KINDS:
             # SAY WHAT WAS REFUSED. A refusal that names nothing is a refusal
             # nobody can act on, and it is how a schema mismatch hid for a
             # whole round of looks.
             why = "%s is not a step kind the harness knows" % named
-            refused.append({"kind": kind, "verb": named, "why": why})
-            journal(mission_dir, "action-refused",
-                    {"kind": kind, "verb": named, "why": why})
+            row = refusal_row(a, kind, why)
+            row["verb"] = named
+            refused.append(row)
+            journal(mission_dir, "action-refused", dict(row))
             continue
         if taken >= cap:
-            # THE OVERFLOW IS RECORDED, never silently granted (S222's rule).
+            # THE OVERFLOW IS RECORDED, never silently granted (S222's rule) —
+            # and since S264 it is recorded as ROWS and not only as a count, so
+            # it can reach the reviewer the way a refusal now does.
+            dropped.append(cap_row(a, kind, cap))
+            journal(mission_dir, "action-dropped", dict(dropped[-1]))
             continue
         taken += 1
         (kept_reach if kind in REACH_KINDS else kept_browser).append(a)
 
     doc = {"asked": asked, "cap": cap, "steps": kept_browser,
-           "reachSteps": kept_reach, "refused": refused,
+           "reachSteps": kept_reach, "refused": refused, "dropped": dropped,
            "overflow": max(0, asked - len(refused) - taken)}
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
