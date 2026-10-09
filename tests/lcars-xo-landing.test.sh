@@ -50,11 +50,18 @@ NODE="${LCARS_NODE_BIN:-node}"
 CAGE="$REPO_ROOT/tests/lib/cage.py"
 export JOURNEY_PY="$JOURNEY"
 ARCHIVE="$HOME/Projects/lcars-mission-archive/groutwork/.git/lcars/missions/lcars-20260926-001-72bf"
-RIG="/Users/roganferguson/Projects/lcars-dev/tests/drives/s241"
 
 pass=0; fail=0
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
+# PURE SCRATCH, and it must be. Everything under here is written by THIS
+# file — `$RIG/fixture` from the heredocs below, every `$RIG/replay/*` from
+# a `cp -R` out of $ARCHIVE — so nothing is read out of it and there is no
+# reason for a shipped suite to scribble into the author's own rig checkout.
+# It used to point at `lcars-dev/tests/drives/s241`, which made this suite
+# write into a rig directory and put an author-machine absolute path in a
+# clonable repo (no-rigs section 5).
+RIG="$TMPROOT/rig"
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }

@@ -6,6 +6,7 @@
  *                    [--actions FILE] [--place-names FILE]
  *                    [--chrome PATH] [--timeout MS] [--max-actions N]
  *                    [--devtools-port N] [--element-cap N]
+ *                    [--window-size W,H]
  *
  * It opens the app Number One is judging, walks it, and leaves behind EVIDENCE:
  * one PNG per shot, and beside every PNG a `.json` readout of what the page
@@ -59,6 +60,8 @@
  *   {"press":"ArrowRight","hold":250}  HOLD it down 250ms, then let go
  *   {"press":"w","selector":"#board","times":5,"modifiers":["Shift"]}
  *   {"wait":800}                       wait ms (capped)
+ *   {"viewport":{"width":400}}         lay the page out at 400 CSS px wide
+ *   {"viewport":{"width":400,"height":900}}  …and that tall
  *   {"screenshot":"name"}              full-page shot called `name`
  *   {"screenshot":"name","selector":"#x"}   clipped to that element
  * At most --max-actions (default 12) entries: a look is a look, not a session.
@@ -86,6 +89,37 @@ const TIMEOUT = parseInt(arg("timeout", "30000"), 10) || 30000;
 const MAX_ACTIONS = parseInt(arg("max-actions", "12"), 10) || 12;
 const ATTACH_PORT = arg("devtools-port", "");
 const PREFIX = arg("prefix", "shot");
+/* ── THE WINDOW SIZE IS A DIAL, NOT A CONSTANT (S266) ───────────────────────
+ * `--window-size W,H` (or `WxH`), DEFAULTING TO THE 1440x900 that was hard-
+ * coded here before, so every existing caller — xo.sh passes no such flag
+ * anywhere — gets byte-identical argv and nothing moves for them.
+ *
+ * AND IT IS NOT THE PHONE MECHANISM. Headless Chrome will not lay out below
+ * about 500 px of WINDOW: ask it for 400 and you get a 500 px layout and a
+ * phone bug that never appears. The flag sets the window the browser launches
+ * with; the `{"viewport":…}` ACTION sets the layout, through
+ * `Emulation.setDeviceMetricsOverride`, which is a different mechanism and
+ * does go below that floor. A test that asserted this flag and called the
+ * result "phone width" would be certifying a 500-pixel-wide picture.
+ *
+ * A size this cannot parse falls back to the default rather than to nothing: a
+ * typo must not hand Chrome a malformed flag, and it must not silently produce
+ * a window of some other shape either. */
+function winSize(spec) {
+  const m = String(spec || "").match(/^\s*(\d{2,5})\s*[,x]\s*(\d{2,5})\s*$/);
+  if (!m) return { w: 1440, h: 900 };
+  return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
+}
+/* `arg()` reads `--flag VALUE`; a size is also naturally written the way Chrome
+ * itself writes it, `--window-size=1440,900`, and a caller who types that must
+ * not be silently handed the default. Both forms, one place, nothing else in
+ * the file changed. */
+function winSizeArg() {
+  const joined = process.argv.find((t) => String(t).startsWith("--window-size="));
+  return joined ? String(joined).slice("--window-size=".length)
+                : arg("window-size", "");
+}
+const WINDOW = winSize(winSizeArg());
 /* ── THE PARTS PASS (S220 part B) ───────────────────────────────────────────
  * `--parts-out <file>` asks for the page's PARTS — see the PARTS reader below
  * — written to that file, with a 2x crop of each one beside the ordinary
@@ -353,7 +387,10 @@ function findChrome() {
 }
 function chromeArgv(port, userDataDir) {
   // HEADLESS IS NOT CONDITIONAL. See the header. Nothing in this function reads
-  // the environment, so nothing in the environment can raise a window.
+  // the environment, so nothing in the environment can raise a window. The one
+  // thing a CALLER may now set is the window's SIZE (`--window-size`, parsed by
+  // `winSize` above, 1440x900 when nothing asked) — a number, never a mode, and
+  // there is still no argument and no variable that makes this browser headed.
   return [
     "--headless=new",
     "--remote-debugging-port=" + port,
@@ -364,7 +401,7 @@ function chromeArgv(port, userDataDir) {
     "--disable-extensions",
     "--disable-gpu",
     "--hide-scrollbars",
-    "--window-size=1440,900",
+    "--window-size=" + WINDOW.w + "," + WINDOW.h,
     "about:blank",
   ];
 }
@@ -1499,9 +1536,13 @@ const FOCUS = (sel) => `(function () {
   /* The device scale factor, set ONCE for the whole look so every shot — the
    * full-page ones and the clipped ones alike — comes back at the same real
    * resolution. width/height 0 means "override nothing but the scale": the
-   * page still lays out at the 1440x900 window chromeArgv asked for, so a
-   * selector's box is the same CSS box it always was, and only the raster
-   * behind it gets denser. A browser too old to know the command is not a
+   * page still lays out at the window chromeArgv asked for (1440x900 unless a
+   * caller passed --window-size), so a selector's box is the same CSS box it
+   * always was, and only the raster behind it gets denser. A `{"viewport":…}`
+   * action later in the look is the ONE thing that replaces those zeroes with
+   * a real width — see its branch in the action loop; it keeps this same scale
+   * so the pictures before and after it stay comparable. A browser too old to
+   * know the command is not a
    * reason to abandon the look, so a failure here is recorded and the shots
    * are taken at whatever it does give. */
   let scaleApplied = SCALE;
@@ -2692,6 +2733,68 @@ const FOCUS = (sel) => `(function () {
           }
         } else if (a.wait !== undefined) {
           await sleep(Math.min(parseInt(a.wait, 10) || 0, 10000));
+        } else if (a.viewport) {
+          /* ── A PHONE IS A WIDTH, NOT A SECOND BROWSER (S266) ──────────────
+           *
+           * THE DEFECT THIS CLOSES. Number One's own embedded live-check
+           * checklist carries "Phone width — the 400 px iframe recipe" as item
+           * 3 and pastes it verbatim into the reviewer's prompt, and until this
+           * branch existed there was no way for the reviewer to carry it out:
+           * the window size was hard-coded, there was no `viewport` verb, and
+           * the one `setDeviceMetricsOverride` in the file deliberately CLEARED
+           * the width/height override. S262's buddy found the bug that blindness
+           * hides — a week grid that needs horizontal scrolling at 400 px with
+           * today's column scrolled off-screen — and the reviewer could not have
+           * caught it, for want of a camera and not of judgement.
+           *
+           * WHY THE OVERRIDE AND NOT A RELAUNCH. Headless Chrome will not lay
+           * out below ~500 px of WINDOW, so `--window-size=400,900` yields a
+           * 500 px layout and a phone bug that never appears; the emulation
+           * override is a different mechanism and does go below that floor.
+           * Relaunching the browser per width would also cost the look its
+           * whole state — one look is meant to be able to see the same screen
+           * at two widths, so the override is applied in place.
+           *
+           * AND THE SHOT STILL LANDS ITS READOUT, which is the whole point:
+           * `shoot()` is untouched, so a picture taken after this step carries
+           * the same `{url, title, textSample}` beside it as any other and a
+           * row citing it places instead of being scored "I could not check
+           * this". A phone-width PNG with no readout buys nothing.
+           *
+           * The SCALE is carried through unchanged (`scaleApplied`), so the
+           * pictures either side of this step are still comparable rasters. */
+          const vspec = (typeof a.viewport === "object" && a.viewport)
+            ? a.viewport : { width: a.viewport };
+          const rawW = parseInt(vspec.width, 10);
+          const rawH = parseInt(vspec.height, 10);
+          if (!(rawW > 0)) {
+            notes.push("viewport: `" + JSON.stringify(a.viewport) + "` names no width " +
+                       "I can lay a page out at; the viewport was not changed");
+            incomplete = true;
+          } else {
+            const vw = Math.min(4096, Math.max(1, rawW));
+            const vh = Math.min(4096, Math.max(1, rawH > 0 ? rawH : WINDOW.h));
+            const metrics = { width: vw, height: vh,
+                              deviceScaleFactor: scaleApplied, mobile: false };
+            try {
+              // ONE LINE, ON PURPOSE: this is the call the whole capability
+              // rests on, and a mutation test removes exactly this line and
+              // asserts the rendered width stops moving.
+              await send("Emulation.setDeviceMetricsOverride", metrics, S); // VIEWPORT-OVERRIDE
+              walk.actions.push({ viewport: { width: vw, height: vh } });
+              notes.push("from here on the page is laid out at " + vw + "x" + vh +
+                         " CSS px — the width a phone gives it, not the window the " +
+                         "browser launched with");
+              // The relayout, and the resize handlers a responsive build hangs
+              // off it, need a tick before anything is read or photographed.
+              await sleep(400);
+            } catch (e) {
+              notes.push("this browser would not lay the page out at " + vw + "x" + vh +
+                         " CSS px (" + e.message + "); the pictures after this are at " +
+                         "whatever width it kept");
+              incomplete = true;
+            }
+          }
         } else if (a.screenshot) {
           // Names come from the worker. Keep them to a filename-safe alphabet so
           // no action list can ever write outside --out.

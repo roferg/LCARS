@@ -1595,16 +1595,60 @@ def main(argv):
                     row["round"] = rnd
                 have.append(row)
             j["droppedSteps"] = have
+        # ── AND THE STEPS KEPT WITH NO PAGE TO RUN THEM ON (S266 fix round 2,
+        #    FIX 1) ────────────────────────────────────────────────────────────
+        #
+        # MEASURED on one real review: `lcars launch` died on a port collision,
+        # `xo.sh` set `nopage=1`, and the reviewer's ELEVEN declared browser
+        # steps were recorded `asked: 11, refused: [], dropped: [], overflow:
+        # 0`. Kept — and not one executed. Neither of the two lists above could
+        # carry that, so the next round's prompt said nothing and the reviewer
+        # was never told its build had not come up.
+        #
+        # A THIRD LIST, for the same reason `droppedSteps` is not `refusedSteps`:
+        # the reviewer must act differently on it. A refusal needs a different
+        # SHAPE, a drop needs a shorter LIST, and this needs the reviewer to stop
+        # asking for a screen altogether — nothing it declares through a browser
+        # can run while there is no page. Copied verbatim from `xo-run.py`'s own
+        # `unrun` rows, written at the moment each step was kept.
+        unrun_in = (asked.get("unrun") or []) if isinstance(asked, dict) else []
+        unrun_in = [r for r in unrun_in if isinstance(r, dict)]
+        if unrun_in:
+            have = j.get("unrunSteps")
+            if not isinstance(have, list):
+                have = []
+            rnd = str(opt("round") or "").strip()
+            for r in unrun_in:
+                row = {"kind": str(r.get("kind") or ""),
+                       "why": " ".join(str(r.get("why") or "").split())}
+                for field in ("key", "evidence", "for", "fromChecklist",
+                              "asked", "verb"):
+                    val = " ".join(str(r.get(field) or "").split())
+                    if val:
+                        row[field] = val
+                if rnd:
+                    row["round"] = rnd
+                have.append(row)
+            j["unrunSteps"] = have
+        # THE REASON ITSELF, ONCE, on the record the next round's prompt reads —
+        # so the prompt can say WHY nothing ran without re-deriving it from an
+        # empty shots directory.
+        nopage_why = " ".join(str((asked.get("noPage") or "")
+                                  if isinstance(asked, dict) else "").split())
+        if nopage_why:
+            j["noPage"] = nopage_why
         out = opt("out") or jpath
         if out:
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
             with open(out, "w", encoding="utf-8") as fh:
                 json.dump(j, fh, indent=2)
                 fh.write("\n")
-        print("%d step(s) the worker asked for are on the record%s%s"
+        print("%d step(s) the worker asked for are on the record%s%s%s"
               % (len(kept),
                  (", and %d it was refused" % len(refused_in)) if refused_in else "",
-                 (", and %d dropped for the cap" % len(dropped_in)) if dropped_in else ""))
+                 (", and %d dropped for the cap" % len(dropped_in)) if dropped_in else "",
+                 (", and %d kept but never run (no page)" % len(unrun_in))
+                 if unrun_in else ""))
         return 0
 
     if cmd == "carry":

@@ -43,7 +43,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCORE="$REPO_ROOT/skills/lcars-xo/xo-score.py"
 PY="${LCARS_PYTHON_BIN:-python3}"
 CAGE="$REPO_ROOT/tests/lib/cage.py"
-DEV="${LCARS_DEV_ROOT:-/Users/roganferguson/Projects/lcars-dev}"
+DEV="${LCARS_DEV_ROOT:-$HOME/Projects/lcars-dev}"
 # The exact failing live look, preserved whole: the mission's own artifacts and
 # its own shots directory, readouts and all.
 LIVE="$DEV/tests/drives/s247/target/.git/lcars/missions/lcars-20261005-s247-relay/xo"

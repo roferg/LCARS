@@ -4152,6 +4152,13 @@ XO_REACH_WT=""
 XO_REACH_HOME=""
 XO_REACH_REPO=""
 
+# ── WHY THERE IS NO PAGE THIS LOOK, SAID ONCE (S266 fix round 2, FIX 1) ─────
+# Set by `cmd_evaluate`'s no-page arm the moment the launch answer is read, and
+# handed to `xo-run.py actions` so every browser step it keeps is RECORDED as
+# kept-and-never-run. Empty on every healthy look, which is the control: the
+# classifier is then invoked with byte-identical argv.
+XO_NOPAGE_WHY=""
+
 # ── AND IT IS WHAT THE WORKER STANDS IN, TOO (S261) ─────────────────────────
 #
 # The look already mints exactly one disposable copy; S261 hands THAT ONE to the
@@ -4306,6 +4313,12 @@ xo_reach_actions() { # <mission-dir> <xodir> <shots> <xo-actions.json> <round>
   kept="$xodir/actions-kept-$round.json"
   set --   # the look's own standing copy, when there is one (see above)
   [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && set -- --worktree "$XO_REACH_WT"
+  # AND WHETHER THERE IS A PAGE AT ALL (S266 fix round 2, FIX 1). With no page
+  # the browser legs of the round are skipped, so every browser step the
+  # classifier keeps below is kept-and-never-run — a THIRD fact, recorded by the
+  # producer at the moment it is decided and carried into the next round's
+  # prompt. Empty on a healthy look, so the argv is unchanged there.
+  [ -n "$XO_NOPAGE_WHY" ] && set -- "$@" --no-page "$XO_NOPAGE_WHY"
   "$XO_PY" "$XO_RUN_PY" actions --actions "$acts" --out "$kept" \
     --mission-dir "$dir" --cap "$XO_MAX_ACTIONS" "$@" >/dev/null 2>&1 || true
   [ -s "$kept" ] || return 0
@@ -5065,6 +5078,11 @@ cmd_evaluate() {
     else
       nolook_why="your build did not start — ${lmsg:-nothing came up (status ${lstatus:-unknown})}"
     fi
+    # THE PRODUCER WRITES IT DOWN HERE (S266 fix round 2, FIX 1): the one place
+    # that knows there is no page, at the moment it knows. Everything downstream
+    # — the kept-but-never-run step rows, the next round's prompt — reads this
+    # and never re-derives it from an empty shots directory.
+    XO_NOPAGE_WHY="$nolook_why"
     printf '◈ NUMBER ONE: %s\n' "$nolook_why"
     printf '  I will go on what I could reach instead — the commands, the workflow and your tests.\n'
     journal "$dir" no-page "$(printf '"why": %s, "launchStatus": %s' \
@@ -5371,6 +5389,17 @@ $shots"
       # no prompt text lives here, and nothing is re-derived from a transcript.
       export LCARS_XO_JOURNEY="$xodir/journey.json"
       export LCARS_XO_ROUND="$round"
+      # ── AND WHY THERE IS NO PAGE, WHEN THERE IS NONE (S266 fix round 2) ───
+      # The REASON only. Whether the prompt may claim the reviewer is looking at
+      # photographs is decided in `run.sh` off the pictures themselves, so this
+      # var can never make a picture-less prompt assert pictures — it only lets
+      # the honest paragraph say what happened to the captain's build. Unset on
+      # every healthy look, which is the control.
+      if [ -n "$XO_NOPAGE_WHY" ]; then
+        export LCARS_XO_NOPAGE="$XO_NOPAGE_WHY"
+      else
+        unset LCARS_XO_NOPAGE
+      fi
       if [ -n "$xo_engine" ]; then
         export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
       fi

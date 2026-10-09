@@ -660,7 +660,10 @@ check "…and are RECORDED on the journey as what the harness granted" \
 import sys
 t=open(sys.argv[1]).read()
 i=t.index(\"xo_reach_actions() {\")
-assert \"reach-record\" in t[i:i+1400], t[i:i+1400]
+# The window is a PROXIMITY probe, not a byte budget: it only has to hold the
+# body of xo_reach_actions. Widened from 1400 when S266 fix round 2 added the
+# --no-page hand-off to that same body (measured: 1669).
+assert \"reach-record\" in t[i:i+2600], t[i:i+2600]
 " "$XO"'
 check "the reach journals what it reached, so the report can read it" \
   'grep -q "journal \"\$dir\" reached" "$XO"'
@@ -1055,7 +1058,18 @@ assert \"steps\" in d and \"coverage\" in d, sorted(d)
 echo ""
 echo "S247-2. a record still carrying reachUninstantiated renders neither sentence"
 
-MEASURE_SRC="/Users/roganferguson/Projects/lcars-dev/tests/drives/s241/measure"
+# THE SIX ARCHIVED LOOKS. 38 MB of real recorded run output, which is exactly
+# what the rigs ruling (captain, 2026-09-25) keeps OUT of this repo, so it
+# lives in the sibling lcars-dev checkout and is reached through the
+# `$LCARS_DEV_ROOT` seam `lcars-xo-rail-pictures` already uses. It is a
+# DECLARED, OPTIONAL, off-repo dependency — never an author-machine absolute
+# path hard-coded into a clonable suite (no-rigs section 5).
+DEV="${LCARS_DEV_ROOT:-$HOME/Projects/lcars-dev}"
+MEASURE_SRC="$DEV/tests/drives/s241/measure"
+if [ ! -d "$MEASURE_SRC" ]; then
+  printf '  the six archived looks are not on this machine: %s\n' "$MEASURE_SRC"
+  printf '  set LCARS_DEV_ROOT to the lcars-dev checkout that holds them.\n'
+fi
 MEASURE="$TMPROOT/measure"
 cp -R "$MEASURE_SRC" "$MEASURE"
 

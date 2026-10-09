@@ -145,8 +145,16 @@ STEP_TIMEOUT = int(os.environ.get("LCARS_XO_STEP_TIMEOUT") or 120)
 # asked for twenty may never look like it got them, so the overflow is recorded.
 MAX_ACTIONS = int(os.environ.get("LCARS_XO_MAX_ACTIONS") or 12)
 
+# `viewport` (S266) IS A BROWSER VERB AND NOTHING MORE. The reviewer's own
+# embedded checklist tells it to look at phone width; `{"viewport": {"width":
+# 400}}` is how it asks, and xo-drive.js applies it with
+# `Emulation.setDeviceMetricsOverride` in the browser it already has open. It
+# reaches nothing, runs nothing and names no path, so the argv fence
+# (`declared_escape` / `refuse_reason`) is not involved and is unchanged: a verb
+# on neither allow-list is still refused BY NAME, as the `teleport` case proves.
 BROWSER_KINDS = ("navigate", "click", "type", "gate", "press", "key", "goto",
-                 "scroll", "shot", "screenshot", "wait", "hover", "select")
+                 "scroll", "shot", "screenshot", "wait", "hover", "select",
+                 "viewport")
 # The two line prefixes `autopilot.sh workflow-run` prints, and the one place
 # this file names them. `  SKIP: ` is its notice that a step was NOT executed
 # (a packaged `uses:` action, a step with no `run:`, a shell it does not drive)
@@ -1759,6 +1767,40 @@ def cap_row(step, kind, cap):
                        "nothing about its shape was refused" % (cap, cap))
 
 
+# ── A STEP THAT WAS KEPT AND THEN NEVER RAN (S266 fix round 2, FIX 1) ───────
+#
+# THE MEASURED DEFECT, on one real review. `lcars launch` died —
+# "Could not start the server on port 8765: [Errno 48] Address already in use"
+# — so `xo.sh` set `nopage=1` and skipped every browser leg of the look. The
+# reviewer's 11 declared browser steps were recorded `asked: 11, refused: [],
+# dropped: [], overflow: 0`: KEPT, and not one of them executed. Nothing was
+# refused and nothing was dropped, so the two sections that now reach the next
+# round's prompt could not fire, and rounds 2 and 3 still opened by telling the
+# reviewer it was looking at pictures. It graded phone-width rows `met` off unit
+# tests and recommended MERGE.
+#
+# This is a THIRD fact, and it needs a third list. A refusal says "reshape the
+# request"; a drop says "ask for fewer"; this says "the build never came up —
+# nothing you ask for through a browser can run at all this round". Calling it
+# a refusal would send the reviewer rewriting a step that was perfectly good.
+#
+# RECORDED WHERE THE PRODUCER KNOWS IT. `xo.sh` knows the launch failed before
+# a single step is classified, and it says so with `--no-page "<why>"`; the row
+# is written at the moment the step is kept. Nothing downstream re-derives
+# "there were no pictures" from an empty evidence directory — that infer-vs-
+# record shortcut is what cost S147, S156 and S188 whole fix rounds each.
+#
+# NOTHING HERE GRANTS OR WITHHOLDS ANYTHING. The step is still kept, still
+# counted against the cap, and `steps` still lists it: the harness really did
+# keep it. The only new thing on disk is the record that it did not run.
+def unrun_row(step, kind, why):
+    """The record of ONE kept browser step that could not run for want of a page."""
+    return refusal_row(step, kind,
+                       "the build never came up in a browser for this look, so this "
+                       "step was KEPT and then never executed and wrote no evidence "
+                       "- nothing about its shape was refused (%s)" % why)
+
+
 def cmd_actions(opt):
     actions = load(opt("actions"), None)
     out = opt("out")
@@ -1778,8 +1820,15 @@ def cmd_actions(opt):
     actions = [a for a in (actions or []) if isinstance(a, dict)]
     asked = len(actions)
 
+    # THE LAUNCH'S OWN ANSWER, PASSED IN BY THE CALLER THAT KNOWS IT (S266 fix
+    # round 2). Non-empty means `xo.sh` has already decided there is no page
+    # this look, so every browser step it keeps below is a step that will not
+    # run. Read from argv, never the environment, so the one caller that knows
+    # is the one that says.
+    nopage_why = " ".join(str(opt("no-page") or "").split())
+
     kept_browser, kept_reach, refused = [], [], []
-    dropped = []
+    dropped, unrun = [], []
     taken = 0
     for a in actions:
         kind, named = action_kind(a)
@@ -1808,10 +1857,20 @@ def cmd_actions(opt):
             continue
         taken += 1
         (kept_reach if kind in REACH_KINDS else kept_browser).append(a)
+        # KEPT, AND — with no page — NEVER GOING TO RUN. Recorded here, beside
+        # the decision, and only for the BROWSER steps: a `run`/`read`/
+        # `workflow` step reaches a command line and still executes with no
+        # page, which is exactly why `xo.sh` keeps calling this on that path.
+        if nopage_why and kind in BROWSER_KINDS and kind not in REACH_KINDS:
+            unrun.append(unrun_row(a, kind, nopage_why))
+            journal(mission_dir, "action-unrun", dict(unrun[-1]))
 
     doc = {"asked": asked, "cap": cap, "steps": kept_browser,
            "reachSteps": kept_reach, "refused": refused, "dropped": dropped,
+           "unrun": unrun,
            "overflow": max(0, asked - len(refused) - taken)}
+    if nopage_why:
+        doc["noPage"] = nopage_why
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8") as fh:
@@ -1819,8 +1878,9 @@ def cmd_actions(opt):
             fh.write("\n")
     journal(mission_dir, "actions-capped",
             {"asked": asked, "cap": cap, "kept": taken, "refused": len(refused)})
-    say("%d asked, %d kept (cap %d), %d refused, %d over the cap"
-        % (asked, taken, cap, len(refused), doc["overflow"]))
+    say("%d asked, %d kept (cap %d), %d refused, %d over the cap%s"
+        % (asked, taken, cap, len(refused), doc["overflow"],
+           (", %d kept but NOT RUN (no page)" % len(unrun)) if unrun else ""))
     return 0
 
 

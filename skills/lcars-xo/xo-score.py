@@ -1319,6 +1319,13 @@ OUTCOME_SAID = {OUTCOME_WORKED: "worked", OUTCOME_DIDNT: "didn't work",
 # was available, so a look that did not take it should feel the floor bite.
 SETUP_DEFEATED = ("unreachable", "no-change", "works-needs-action",
                   "needs-a-live-target", "needs-the-real-run")
+# S266 fix round 2, FIX 2 — the mirror of `works-needs-action`: a row the eye
+# itself stamped a LOOKS-question (a picture settles it) that was rated met with
+# no picture cited at all. It is deliberately NOT in SETUP_DEFEATED: the look got
+# to the point of looking and simply had nothing to look at, so the honest
+# outcome is `couldnt-see` and not `couldnt-set-up`. See the downgrade beside
+# `works-needs-action` for exactly where the line is drawn.
+LOOKS_NEEDS_PICTURE = "needs-a-picture"
 NEEDS_LIVE = "needs-a-live-target"
 NEEDS_LIVE_SAID = "needs a live target"
 STAND_IN = "needs-the-real-run"
@@ -4122,6 +4129,9 @@ def main():
     # already `untested` when outcome_of reads it, and the grade (which reads
     # only worked/didn't-work) can never bank a works-question nobody exercised.
     works_on_look_alone = []
+    # S266 fix round 2, FIX 2 — the looks-questions that passed with no
+    # photograph behind them. Named as data, never recomputed downstream.
+    looks_with_no_picture = []
     split = {"looks": 0, "works": 0, "worksExercised": 0, "worksPictureOnly": 0,
              "unstamped": 0}
     for e in ledger:
@@ -4167,6 +4177,55 @@ def main():
                          "needs a press, not a photo.")
             e.pop("testQuote", None)
             works_on_look_alone.append({"id": e["id"], "text": e.get("text") or ""})
+        # ── THE SIBLING DOWNGRADE: A LOOKS-QUESTION WITH NO PICTURE AT ALL
+        #    (S266 fix round 2, FIX 2) ──────────────────────────────────────────
+        #
+        # THE MEASURED DEFECT, on one real review. The launch died on a port
+        # collision, so the browser half of the look was skipped and NOT ONE
+        # photograph was taken. The reviewer still graded its phone-width rows
+        # `met`, on the project's unit tests, and one of those rows said so in
+        # its own note: "I could not take a rendered 400px screenshot … so the
+        # pixel-level wrap/overflow is settled by the suite, not a photo." It
+        # said it could not check, and then said it was fine. The look returned
+        # HIGH / MERGE / "checked 15 of 15 (100%)", and the tester then rendered
+        # the same page at a measured 400 px and FALSIFIED one of those rows —
+        # 715 CSS px of document in a 400 px viewport, three day-columns
+        # including today entirely past the edge.
+        #
+        # THE RULE, AND IT IS DELIBERATELY THE NARROW ONE. `kind == "looks"` is
+        # the eye's OWN produce-time stamp, and it means exactly one thing: "a
+        # picture settles this" (see question_kind). A row carrying that stamp,
+        # rated MET, that cites no picture at any width has been settled by
+        # something its own producer declared could not settle it. That is a
+        # hole in MY checking, so it goes to `untested` with the reason named.
+        #
+        # WHERE THE LINE IS DRAWN, precisely:
+        #   • NO PICTURE AT ALL — not "no picture at the right width". A row
+        #     citing a picture is left to the landing rail above, which already
+        #     asks whether that picture was of the right screen. Demanding a
+        #     width of a row that HAS a photograph would demote every desktop
+        #     citation in the file, which is the blanket rule this must not be.
+        #   • `looks` ONLY. A `works` row, a `notVisual` row and an UNSTAMPED
+        #     row are all untouched — nobody promised them a photograph, and a
+        #     unit test settles them legitimately.
+        #   • `met` ONLY. A `gap` found without a photograph is still a fault
+        #     found (the same ruling as the works downgrade and S261 fix 1): a
+        #     missing camera does not unfind it.
+        # Nothing here reads a criterion's PROSE, and nothing re-derives "there
+        # were no pictures" from an empty directory: the stamp and the citation
+        # are both producer fields on the row.
+        if kind == "looks" and e["status"] == "met" \
+                and not str(e.get("shot") or "").strip():
+            e["status"] = "untested"
+            e["couldNotCheck"] = LOOKS_NEEDS_PICTURE
+            e["evidence"] = "none"
+            e["note"] = ("This asks what the screen LOOKS LIKE, and I have no "
+                         "picture of it — at this width or any other. I stamped "
+                         "it a looks-question myself, which says a photograph is "
+                         "what settles it, so the project's tests do not: I could "
+                         "not check it.")
+            e.pop("testQuote", None)
+            looks_with_no_picture.append({"id": e["id"], "text": e.get("text") or ""})
 
     # ─── NEEDS A LIVE TARGET (S249) ──────────────────────────────────────────
     #
@@ -5090,6 +5149,8 @@ def main():
     out["questionSplit"] = split
     if works_on_look_alone:
         out["worksOnLookAlone"] = works_on_look_alone
+    if looks_with_no_picture:
+        out["looksWithNoPicture"] = looks_with_no_picture
     # STRUCTURED AS WELL AS SAID (S224 item 2). The escalation line is the
     # captain's sentence; this is the same facts as data, so a surface never
     # has to read meaning back out of that prose — the mistake S147, S156, S188

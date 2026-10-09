@@ -22,6 +22,9 @@ checked the claim.
 | `cage.py` | exercised | `harness`, `lcars-buddy`, `lcars-xo-observe`, `lcars-xo-press`, `lcars-xo-phone`, `lcars-xo-evidence`, `lcars-xo-render-gate` |
 | `drive-rig.sh` | exercised | `establish-vision`, `foundation-gate` (was `tests/drives/s182/rig.sh`) |
 | `real-worker.sh` | exercised | `real-worker-resolution` |
+| `evaluate_prompt_guard.py` | exercised | `lcars-xo-drives`, `lcars-xo-eyes` — the load-bearing headings of the Number One evaluate prompt |
+| `home_marks_guard.py` | exercised | `lcars-xo-selfrun` — every `"HOME": "…"` in every live-check checklist is a mark the fence takes |
+| `landing_forbidden_cures.py` | exercised | `lcars-xo-landing` — the landing-rail cures a diff may not use |
 | `phone-mkfixture.py` | exercised | `lcars-xo-phone` (was `tests/drives/s213/phone/mkfixture.py`) |
 | `ptyrun.py` | exercised | `harness` |
 | `stdin_guard.py` | exercised | `harness` (reached as `"$DIR/lib/stdin_guard.py"`, not by full path) |

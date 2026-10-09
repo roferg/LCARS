@@ -105,6 +105,9 @@ STAGES_DIR="$SKILL_DIR/stages"
 # Number One is not a Stage, it is the captain's stand-in at one. $LCARS_XO_PROMPTS
 # lets a test point at a fixture template without a second copy of the real one.
 XO_PROMPTS_DIR="${LCARS_XO_PROMPTS:-$SKILL_DIR/../lcars-xo/prompts}"
+# The temp copy of the evaluate template a picture-less look is handed, held
+# only for the length of one spawn (see spawn_number_one).
+XO_NOPIC_TPL=""
 # Number One's VERB (S202). The driver calls `xo.sh answer` at a gate and reads
 # nothing from it but an exit status — 0 the gate is cleared, non-zero it stays
 # up. The driver decides NOTHING about the answer itself: that belongs to the one
@@ -16731,7 +16734,18 @@ rows = for_round("refusedSteps")
 # LIST — and saying "refused" about a step nothing was wrong with would send it
 # rewriting a perfectly good one.
 capped = for_round("droppedSteps")
-if not rows and not capped:
+# ── AND THE THIRD CATEGORY: KEPT, AND NEVER RUN (S266 fix round 2, FIX 1) ───
+# MEASURED on one real review. `lcars launch` died on a port collision, the look
+# ran with `nopage=1`, and the reviewer's ELEVEN declared browser steps were
+# recorded `asked: 11, refused: [], dropped: [], overflow: 0` — kept, and not
+# one executed. Nothing was refused and nothing was dropped, so NEITHER section
+# above could fire and the reviewer was never told its build had not come up.
+# `journey.json.unrunSteps` is `xo-run.py`'s own row per kept-but-never-run
+# step, written at the moment it was kept; `noPage` is the one sentence saying
+# why. Both are read, neither is re-derived.
+unrun = for_round("unrunSteps")
+nopage_why = " ".join(str(doc.get("noPage") or "").split())
+if not rows and not capped and not unrun:
     raise SystemExit(0)
 
 
@@ -16765,6 +16779,31 @@ def says(r):
 out = []
 out.append("## WHAT THE HARNESS DID NOT RUN LAST ROUND — read this before you declare more steps")
 out.append("")
+# THE BUILD NOT COMING UP LEADS, because it changes what is worth asking for at
+# all: no browser step of yours can run, and there are no photographs to cite.
+if unrun:
+    out.append("**THE BUILD DID NOT COME UP IN A BROWSER, SO THERE ARE NO PICTURES.** "
+               "%sIn round %d you declared %d step(s) that the harness KEPT — nothing "
+               "was wrong with them and nothing was refused — and then **did not run**, "
+               "because there was no page to run them against. They wrote no evidence, "
+               "and no screenshot of the running product exists for this look at any "
+               "width."
+               % (("The harness recorded why: %s. " % nopage_why) if nopage_why else "",
+                  prev, len(unrun)))
+    out.append("")
+    for r in unrun:
+        out.extend(says(r))
+        out.append("  - did not run because: %s"
+                   % " ".join(str(r.get("why") or "there was no page to run it on").split()))
+    out.append("")
+    out.append("**So every criterion that can only be settled by LOOKING at this build "
+               "is unchecked, and declaring the same steps again will not run them "
+               "either.** Do not say you looked at a screen, and do not grade a "
+               "criterion about what the page LOOKS LIKE — at phone width or any other "
+               "width — on the project's unit tests: say `untested` and name this as "
+               "the reason. Spend this round on what CAN be reached with no page: a "
+               "command line, a workflow run, the project's own test output.")
+    out.append("")
 if rows:
     out.append("In round %d you declared %d step(s) that **the harness refused**. None of "
                "them ran, so none of them wrote any evidence of your check — each left a "
@@ -16819,6 +16858,67 @@ spawn_number_one() { # mission-id  mode  outdir
   local inventory=""
   if [ -n "$indir" ] && [ -d "$indir" ]; then
     inventory="$(cd "$indir" && find . -type f | sed 's|^\./|  - |' | sort)"
+  fi
+  # ── A PROMPT MAY NOT ASSERT PHOTOGRAPHS IT DOES NOT HAVE (S266 fix round 2,
+  #    FIX 1) ────────────────────────────────────────────────────────────────
+  #
+  # THE MEASURED DEFECT. `evaluate.md` opens "The build is RUNNING, in a browser
+  # LCARS drove for you, and you are looking at the pictures it took." On one
+  # real review `lcars launch` died on a port collision, the whole browser half
+  # of the look was skipped, and ROUNDS 2 AND 3 STILL OPENED WITH THAT SENTENCE
+  # — over an evidence directory with no PNG in it. The reviewer then graded
+  # phone-width rows `met` off unit tests and recommended MERGE.
+  #
+  # KEYED ON THE PICTURES THEMSELVES, which is the very claim being made: zero
+  # `.png` in the directory the worker is handed. One reader of one fact, so it
+  # cannot drift from the launch flag — and it also catches a page that came up
+  # and produced no shots. `$LCARS_XO_NOPAGE` only supplies the REASON when
+  # `xo.sh` recorded one; it is never the condition.
+  #
+  # `prompts/evaluate.md` IS NOT EDITED. It sits one line under the ceiling three
+  # suites hold it to, and it is the right text for the overwhelmingly common
+  # case. The substitution is made on a COPY in this round's output directory,
+  # so the shipped template stays byte-for-byte what it was and a healthy look
+  # is handed the same file it always was.
+  if [ "$mode" = "evaluate" ] && [ -n "$indir" ] && [ -d "$indir" ] \
+     && [ -z "$(find "$indir" -type f -name '*.png' -print -quit 2>/dev/null)" ]; then
+    # NOT IN `$outdir`. That directory is the WORKER's, and `worker_produced_
+    # nothing` reads "any real file in it" as "the worker did something" — a
+    # harness-written file there would make a worker that wrote nothing at all
+    # look like one that tried (measured by reading that function, S266 fix
+    # round 2). So the copy goes to a temp file and is removed after the spawn.
+    local nopic_tpl
+    nopic_tpl="$(mktemp -t lcars-xo-nopic 2>/dev/null || printf '')"
+    if [ -n "$nopic_tpl" ] && "${LCARS_PYTHON_BIN:-python3}" - "$template" "$nopic_tpl" \
+         "${LCARS_XO_NOPAGE:-}" <<'XO_NOPICPY'
+import io, sys
+
+src, dst, why = sys.argv[1], sys.argv[2], " ".join(sys.argv[3].split())
+text = io.open(src, encoding="utf-8").read()
+# The claim, verbatim as `evaluate.md` writes it across two lines. Matched as
+# ONE exact string: if the template is ever reworded this fails LOUDLY (rc 1)
+# rather than silently shipping the old promise.
+CLAIM = ("The build is RUNNING, in a browser LCARS drove\n"
+         "for you, and you are looking at the pictures it took.")
+if CLAIM not in text:
+    raise SystemExit(1)
+HONEST = ("**The build did NOT come up in a browser for this look, so THERE ARE\n"
+          "NO PICTURES** — nothing in your input directory is a photograph of the\n"
+          "running product, at phone width or any other width, and no step of yours\n"
+          "that needed a screen ran.%s\n"
+          "You have NOT looked at this build, and you must not write as though you\n"
+          "had: a criterion whose claim is about what the page LOOKS LIKE is\n"
+          "`untested` here, and the project's unit tests do not settle it."
+          % ((" The harness recorded why: %s." % why) if why else ""))
+io.open(dst, "w", encoding="utf-8").write(text.replace(CLAIM, HONEST, 1))
+XO_NOPICPY
+    then
+      template="$nopic_tpl"
+      XO_NOPIC_TPL="$nopic_tpl"
+    else
+      [ -n "$nopic_tpl" ] && rm -f "$nopic_tpl"
+      printf '  ⚠ there are no pictures for this look and the prompt template no longer carries the sentence that claims there are — it may now be making that claim unchecked.\n' >&2
+    fi
   fi
   # THE OUTPUT FILE IS THE MODE'S, NOT THIS FUNCTION'S (S203). `answer` writes
   # one file and only one. `evaluate` writes ONE OF TWO — a verdict, or a
@@ -17560,6 +17660,9 @@ $channel_line"
   LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" "$n1_toolset" "$outdir" "$extra" \
     || nrc=$?
   [ -n "$n1_wt" ] && cd "$n1_back"
+  # The rewritten no-pictures template was a temp file for the length of the
+  # spawn and nothing reads it afterwards (S266 fix round 2).
+  [ -n "${XO_NOPIC_TPL:-}" ] && { rm -f "$XO_NOPIC_TPL"; XO_NOPIC_TPL=""; }
   # THE FILE, EITHER WAY — and the record of which way it came. Never allowed to
   # fail the spawn: the channel reports, it does not judge.
   number_one_claim_output "$outdir" "$wantfiles" || true
