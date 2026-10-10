@@ -111,6 +111,12 @@ what happens when both write in the same moment. So treat the overlapping write
 as its own check: launch several writes together, without waiting for the first
 to return, and then read what was stored instead of the exit codes, which will
 all be zero. The shape is the last row of item 9.
+**And skipping that second check needs a FACT, not a judgement about how
+likely it is**: the one honest ground is that nothing here writes to shared
+storage at all. "The risk is low", "it is single-user", "it is only a local
+CLI" are the conditions under which writes are lost, not conditions under
+which they are safe. It costs a handful of calls launched in the background
+and a count.
 
 **Evidence:** `live-check/04-two-actors.txt` — both transcripts, labelled
 `ACTOR A (HOME=…)` and `ACTOR B (HOME=…)`, the interaction at the end, and the
@@ -131,7 +137,7 @@ that reported success — a write lost with nobody told.
   "expect": {
     "noCrossContamination": "actor B sees none of actor A's state",
     "collisionHandled": "refused or versioned, never a silent overwrite",
-    "inSequenceIsNotAtTheSameInstant": "A then B is one check; both writing in the same moment is another — launch several writes together, without waiting for the first to return, then read the stored result, not the exit codes"
+    "inSequenceIsNotAtTheSameInstant": "A then B is one check; both writing in the same moment is another — launch several writes together, without waiting for the first to return, then read the stored result, not the exit codes; skipping it needs the FACT that nothing here writes to shared storage, never a judgement that the risk is low"
   }
 }
 ```
@@ -294,7 +300,7 @@ front of you — running all seven blindly is not the ask.
 | **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a rule that counts or ranges. The maximum ITSELF is the value most often wrong by one and the value most often never tried. |
 | **a second value that NORMALISES onto one already accepted** — not the same string, the same meaning after trimming, case-folding or unicode normalisation | a rule that says a value must be unique, or must not already exist. Offering the identical string twice proves only that the identical-string comparison works. |
 | **the almost-right identifier** — a real name, id or path with one character changed | a rule that looks something up. A lookup that quietly invents the missing thing, or carries on with an empty value, instead of failing is only visible this way. |
-| **two writers at once** — start the second before the first has finished, instead of running them one after the other from two homes | any rule about something being stored, counted, kept unique, or shared. A product that reads a whole file, changes it and writes it back keeps only the last writer's work, and **the giveaway is that nothing fails**: every caller is told it succeeded. Afterwards ignore the exit codes — they will all be zero — and compare the stored result against the number of calls that claimed success. |
+| **two writers at once** — start the second before the first has finished, instead of running them one after the other from two homes | any rule about something being stored, counted, kept unique, or shared. A product that reads a whole file, changes it and writes it back keeps only the last writer's work, and **the giveaway is that nothing fails**: every caller is told it succeeded. Afterwards ignore the exit codes — they will all be zero — and compare the stored result against the number of calls that claimed success. **Skipping this row needs a FACT about the product, not an estimate of how likely it is.** The one honest ground for passing it over is that nothing here writes to shared storage at all — a thing that is checkably true or false. "The risk is low", "it is single-user", "it is only a local CLI" are NOT grounds: a single-user tool that reads one file, changes it and writes it back is the exact description of the thing that loses writes, so that reasoning recites the fault's own preconditions as the reason not to look for it. And the check is cheap — a handful of calls launched in the background and a count, not an investigation. |
 
 Say which rows you tried, with the exact argument you gave, and say which rows
 the rule in front of you made no sense for.

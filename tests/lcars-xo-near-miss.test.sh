@@ -636,6 +636,176 @@ check "10v. …and the mutation removed ONLY the new shape — the six rows and 
    says "$P_WORK_NC" "near misses that catch bugs"'
 
 echo ""
+echo "11. S270 — A RISK OPINION IS NOT A REASON TO SKIP"
+# WHY, measured. S268 put the seventh row — "two writers at once" — into the
+# prompt, and the very next run of the look READ IT, NAMED IT, AND DECLINED IT:
+# "two writers at the SAME INSTANT (live-check item 4 second half / item 9 last
+# row) — I verified two actors in sequence on separate HOMEs but did not fire
+# concurrent simultaneous writes; for a single-user local CLI that reads-
+# modifies-writes one file the risk is low, but I did not exercise the overlap,
+# so I am recording it as not done." Its transcript agrees: 17 bash calls, not
+# one `&`, `wait`, loop or `xargs -P`. Strictly sequential.
+#
+# So the row bought DISCLOSURE, not detection — and the ground it gave was a
+# RISK JUDGEMENT, not an inability. That is the one variable this session
+# changes. Note the irony it walked into: "a single-user CLI that reads-
+# modifies-writes one file" is not a reason the overlap is safe, it is the
+# exact description of the thing that loses writes. It recited the fault's own
+# preconditions as grounds for skipping the check for it.
+#
+# THE CHANGE IS PROSE, NOT A GATE. A gate keyed on a voluntary declaration was
+# already measured dead (0 declarations in 95) and is out of scope. The row now
+# says that skipping it needs a FACT about the product — "nothing here writes
+# to shared storage at all", checkably true or false — names the low-risk /
+# single-user / local-CLI reasoning as NOT a reason, and says the check is
+# cheap. Adapted per medium.
+#
+# 11k is the standard S268 set: the revert is proved BYTE-IDENTICAL to
+# `git show HEAD:` before anything is measured against it, so the mutation is a
+# true revert and not an approximation.
+
+# A live-check dir with ONLY this session's text taken back out. The spans are
+# exact and contiguous, so removing them must reproduce HEAD byte for byte.
+LC_NORISK="$TMPROOT/live-check-norisk"
+mkdir -p "$LC_NORISK"
+cp "$REPO_ROOT/skills/lcars-run/live-check"/*.md "$LC_NORISK"/
+"$PY" - "$LC_NORISK" <<'PYRK'
+import os, sys
+
+d = sys.argv[1]
+
+ADD_CLI = ' **Skipping this row needs a FACT about the product, not an estimate of how likely it is.** The one honest ground for passing it over is that nothing here writes to shared storage at all — a thing that is checkably true or false. "The risk is low", "it is single-user", "it is only a local CLI" are NOT grounds: a single-user tool that reads one file, changes it and writes it back is the exact description of the thing that loses writes, so that reasoning recites the fault\'s own preconditions as the reason not to look for it. And the check is cheap — a handful of calls launched in the background and a count, not an investigation.'
+
+ADD_WEB = ' **Skipping this row needs a FACT about the product, not an estimate of how likely it is.** The one honest ground for passing it over is that nothing behind this page writes to shared storage at all — a thing that is checkably true or false. "The risk is low", "only one person uses it", "it is just a form" are NOT grounds: a server that reads one record, changes it and writes it back for one person at a time is the exact description of the thing that loses writes, so that reasoning recites the fault\'s own preconditions as the reason not to look for it. And the check is cheap — two submissions fired without waiting, then a count, not an investigation.'
+
+ADD_WORK = ' **Skipping this row needs a FACT about the product, not an estimate of how likely it is.** The one honest ground for passing it over is that nothing in this workflow writes to shared storage at all — no cache, no artifact name, no state file, no branch — a thing that is checkably true or false. "The risk is low", "it only ever runs on its own", "it is just a nightly job" are NOT grounds: a step that reads one file, changes it and writes it back is the exact description of the thing that loses writes, so that reasoning recites the fault\'s own preconditions as the reason not to look for it. And the check is cheap — two runs started without waiting, then a count, not an investigation.'
+
+ADD_ITEM4 = ('\n**And skipping that second check needs a FACT, not a judgement about how\n'
+             'likely it is**: the one honest ground is that nothing here writes to shared\n'
+             'storage at all. "The risk is low", "it is single-user", "it is only a local\n'
+             'CLI" are the conditions under which writes are lost, not conditions under\n'
+             'which they are safe. It costs a handful of calls launched in the background\n'
+             'and a count.')
+
+ADD_KEY = "; skipping it needs the FACT that nothing here writes to shared storage, never a judgement that the risk is low"
+
+PLAN = {"cli.md": (ADD_CLI, ADD_ITEM4, ADD_KEY),
+        "web.md": (ADD_WEB,),
+        "workflow.md": (ADD_WORK,)}
+
+for fname, spans in PLAN.items():
+    p = os.path.join(d, fname)
+    text = open(p, encoding="utf-8").read()
+    for span in spans:
+        assert text.count(span) == 1, (fname, text.count(span))
+        text = text.replace(span, "")
+    open(p, "w", encoding="utf-8").write(text)
+PYRK
+
+# THE REVERT IS PROVED BEFORE IT IS USED: byte for byte against HEAD.
+revert_is_head() {
+  local f
+  for f in cli web workflow; do
+    git -C "$REPO_ROOT" show "HEAD:skills/lcars-run/live-check/$f.md" \
+      >"$TMPROOT/head-$f.md" 2>/dev/null || return 1
+    cmp -s "$TMPROOT/head-$f.md" "$LC_NORISK/$f.md" || return 1
+  done
+  return 0
+}
+
+P_EV_RK="$TMPROOT/prompt-evaluate-norisk.txt"
+prompt_lc "$P_EV_RK" evaluate "$LC_NORISK"
+criteria_for web
+P_WEB_RK="$TMPROOT/prompt-web-norisk.txt"
+prompt_lc "$P_WEB_RK" evaluate "$LC_NORISK"
+criteria_for workflow
+P_WORK_RK="$TMPROOT/prompt-workflow-norisk.txt"
+prompt_lc "$P_WORK_RK" evaluate "$LC_NORISK"
+criteria_for cli
+
+# -- 1. a risk estimate is not a reason to skip ------------------------------
+check "11a. the CLI prompt says skipping the row needs a FACT about the product, not an estimate" \
+  'says "$P_EV" "skipping this row needs a FACT about the product, not an estimate of how likely it is"'
+check "11b. …and names the low-risk / single-user / local-CLI reasoning as NOT grounds" \
+  'says "$P_EV" "\"the risk is low\", \"it is single-user\", \"it is only a local CLI\" are NOT grounds"'
+check "11c. …and states the irony: that reasoning recites the fault.s own preconditions" \
+  'says "$P_EV" "is the exact description of the thing that loses writes" &&
+   says "$P_EV" "recites the fault.s own preconditions as the reason not to look for it"'
+
+# -- 2. the factual ground that WOULD justify skipping -----------------------
+check "11d. the prompt states the one honest ground, and that it is checkable" \
+  'says "$P_EV" "the one honest ground for passing it over is that nothing here writes to shared storage at all" &&
+   says "$P_EV" "a thing that is checkably true or false"'
+
+# -- 3. and that the check is cheap ------------------------------------------
+check "11e. the prompt says the check is cheap — calls and a count, not an investigation" \
+  'says "$P_EV" "the check is cheap" &&
+   says "$P_EV" "a handful of calls launched in the background and a count, not an investigation"'
+
+# -- 4. item 4's matching half carries the same correction -------------------
+check "11f. item 4.s second half needs a FACT too, and says those are the losing conditions" \
+  'says "$P_EV" "skipping that second check needs a FACT, not a judgement about how likely it is" &&
+   says "$P_EV" "are the conditions under which writes are lost, not conditions under which they are safe"'
+check "11g. …and the FENCED reader is told the same, in lockstep" \
+  'says "$P_EV" "skipping it needs the FACT that nothing here writes to shared storage, never a judgement that the risk is low"'
+
+# -- 5. adapted per medium, not pasted ---------------------------------------
+check "11h. WEB — the same correction in the page.s own terms, reaching its assembled prompt" \
+  'says "$P_WEB" "nothing behind this page writes to shared storage at all" &&
+   says "$P_WEB" "\"only one person uses it\", \"it is just a form\" are NOT grounds" &&
+   says "$P_WEB" "two submissions fired without waiting, then a count, not an investigation" &&
+   ! says "$P_WEB" "it is only a local CLI"'
+check "11i. WORKFLOW — the same correction in the run.s own terms, reaching its assembled prompt" \
+  'says "$P_WORK" "nothing in this workflow writes to shared storage at all" &&
+   says "$P_WORK" "no cache, no artifact name, no state file, no branch" &&
+   says "$P_WORK" "two runs started without waiting, then a count, not an investigation" &&
+   ! says "$P_WORK" "it is only a local CLI"'
+
+# -- 6. CONTROL — the row kept everything it already said --------------------
+check "11j. CONTROL — the seventh row still says what it is FOR, the giveaway, and what to compare" \
+  'says "$P_EV" "two writers at once" &&
+   says "$P_EV" "any rule about something being stored, counted, kept unique, or shared" &&
+   says "$P_EV" "the giveaway is that nothing fails" &&
+   says "$P_EV" "every caller is told it succeeded" &&
+   says "$P_EV" "compare the stored result against the number of calls that claimed success"'
+check "11k. CONTROL — the other six rows and the table head are untouched" \
+  'says "$P_EV" "a known-correct value, REARRANGED" &&
+   says "$P_EV" "whitespace-only" && says "$P_EV" "unicode look-alikes" &&
+   says "$P_EV" "the numeric edges" &&
+   says "$P_EV" "normalises onto one already accepted" &&
+   says "$P_EV" "the almost-right identifier" &&
+   says "$P_EV" "six rearrange a value" &&
+   says "$P_EV" "the last rearranges the timing" &&
+   [ "$(occurs "$P_EV" "\| a rule that")" -ge 6 ]'
+check "11l. CONTROL — evaluate.md paid for none of this: still exactly 688 lines and clean of it" \
+  '[ "$(grep -c "" "$PROMPTS/evaluate.md")" -eq 688 ] &&
+   ! grep -qi "needs a FACT about the product" "$PROMPTS"/*.md'
+check "11m. CONTROL — the revert is BYTE-IDENTICAL to git show HEAD: in all three mediums" \
+  'revert_is_head'
+check "11n. CONTROL — the reverted dir reached the same seam (all three assembled)" \
+  '[ -s "$P_EV_RK" ] && [ -s "$P_WEB_RK" ] && [ -s "$P_WORK_RK" ]'
+
+# -- 7. MUTATION — revert this session only, and 11a-11i go red --------------
+check "11o. MUTATION — 11a-11e go red: the CLI row is back to allowing a risk opinion" \
+  '! says "$P_EV_RK" "needs a FACT about the product" &&
+   ! says "$P_EV_RK" "are NOT grounds" &&
+   ! says "$P_EV_RK" "nothing here writes to shared storage at all" &&
+   ! says "$P_EV_RK" "the check is cheap"'
+check "11p. MUTATION — 11f/11g go red: item 4 and its fenced key lose the correction too" \
+  '! says "$P_EV_RK" "skipping that second check needs a FACT" &&
+   ! says "$P_EV_RK" "never a judgement that the risk is low"'
+check "11q. MUTATION — 11h/11i go red in the other two mediums" \
+  '! says "$P_WEB_RK" "nothing behind this page writes to shared storage" &&
+   ! says "$P_WORK_RK" "nothing in this workflow writes to shared storage"'
+check "11r. …and the revert removed ONLY this session.s text — the seventh row still stands whole" \
+  'says "$P_EV_RK" "two writers at once" &&
+   says "$P_EV_RK" "the giveaway is that nothing fails" &&
+   says "$P_EV_RK" "compare the stored result against the number of calls that claimed success" &&
+   says "$P_EV_RK" "two actors in sequence is a different check from two actors at the same instant" &&
+   says "$P_WEB_RK" "two requests in flight at once" &&
+   says "$P_WORK_RK" "two runs overlapping"'
+
+echo ""
 echo "9. ZERO SPEND"
 check "9a. no faked engine CLI was ever invoked" '[ ! -s "$SPEND_LOG" ]'
 
