@@ -423,7 +423,7 @@ check "8e. every row says what it is FOR — six rule shapes, one per row" \
   '[ "$(occurs "$P_EV" "\| a rule that")" -ge 6 ]'
 check "8f. the reviewer is told to PICK the rows that fit the rule in front of it, not run all six" \
   'says "$P_EV" "pick the rows that fit the rule in front of you" &&
-   says "$P_EV" "running all six blindly is not the ask"'
+   says "$P_EV" "running all seven blindly is not the ask"'
 check "8g. …and to say which rows it tried, with the exact input, and which made no sense" \
   'says "$P_EV" "say which rows you tried"'
 check "8h. THE REARRANGEMENT ROW IS NAMED IN ALL THREE MEDIUMS, adapted not pasted" \
@@ -450,6 +450,190 @@ check "8m. THE CEILING IS UNTOUCHED — evaluate.md is still exactly 688 lines" 
   '[ "$(grep -c "" "$PROMPTS/evaluate.md")" -eq 688 ]'
 check "8n. …and the table is NOT in evaluate.md or recheck.md at all" \
   '! grep -qi "near misses that catch bugs" "$PROMPTS"/*.md'
+
+echo ""
+echo "10. S268 — TWO WRITERS AT ONCE"
+# WHY. Tonight's full re-measurement ran the look on BOTH engines against a real
+# build, and both independently missed the same real defect: eight `add` calls
+# fired together left ONE record, seven writes lost, every call exiting 0 in
+# silence. The human stand-in found it. Neither engine did.
+#
+# The gap is in what the reviewer is TOLD, not in the engine. Every one of the
+# six near-miss rows is a SINGLE-VALUE shape — a value rearranged, whitespace, a
+# look-alike, a numeric edge, a normalising second value, an almost-right
+# identifier. Not one of them involves two things happening at the same instant.
+# cli.md item 4 ("Two actors — two HOMEs, two laptops") is the item that SOUNDS
+# like it covers this, and it is two actors IN SEQUENCE — which is exactly what
+# both engines did: two homes, one after the other, never two writers at once.
+#
+# So the shape goes where the table lives, because the table is the mechanism
+# that is PROVEN to be used (on this run the reviewer's own evidence file was
+# headed "ROW 1 — a known-correct value, REARRANGED", on both engines), adapted
+# per medium — two processes, two requests, two runs — and item 4 is made to
+# admit out loud that in sequence is not the same check as at the same instant.
+#
+# EVERY CHECK HERE IS ON THE ASSEMBLED PROMPT, and 10m-10p are the mutation: a
+# live-check dir with ONLY the new shape cut out, through the same real seam,
+# where 10a-10l must go red. Not a source grep — a behaviour on a real prompt.
+
+# A live-check dir with ONLY the new shape removed: the table row in all three
+# mediums, and cli item 4's at-the-same-instant paragraph. Everything else —
+# the six rows, the table head, item 4's own body — stays.
+LC_NOCONC="$TMPROOT/live-check-noconc"
+mkdir -p "$LC_NOCONC"
+cp "$REPO_ROOT/skills/lcars-run/live-check"/*.md "$LC_NOCONC"/
+for f in cli web workflow; do
+  "$PY" - "$LC_NOCONC/$f.md" <<'PYNC'
+import sys
+
+# A REVERT, not an approximation: every string S268 added to the checklists is
+# named here and taken back out, so 10a-10m are measured against the file as it
+# stood when BOTH engines missed the overlapping write. Table rows and the
+# fenced expect key go line by line; the rest are exact spans.
+ROWS = ("two writers at once", "two requests in flight at once",
+        "two runs overlapping")
+LINES = ("inSequenceIsNotAtTheSameInstant",)
+PARA = "IN SEQUENCE is a different check"
+SPANS = (
+    ("\nSeparately, for the writes launched together: fewer records stored than calls\nthat reported success — a write lost with nobody told.", ""),
+    (", the interaction at the end, and the\nwrites you launched together with what was stored afterwards.", ", and the interaction at the end."),
+)
+
+p = sys.argv[1]
+text = open(p, encoding="utf-8").read()
+
+kept = []
+for para in text.split("\n\n"):
+    if PARA in para:
+        continue
+    lines = []
+    for line in para.split("\n"):
+        low = line.lower()
+        if line.lstrip().startswith("|") and any(r in low for r in ROWS):
+            continue
+        if any(m in line for m in LINES):
+            if lines and lines[-1].rstrip().endswith(","):
+                lines[-1] = lines[-1].rstrip()[:-1]
+            continue
+        lines.append(line)
+    kept.append("\n".join(lines))
+text = "\n\n".join(kept)
+
+for span, back in SPANS:
+    text = text.replace(span, back)
+# the head sentence, back to six
+HEAD_NEW = ("SEVEN NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Six rearrange\n"
+            "a value; the last rearranges the timing. Pick the rows that fit the rule in\n"
+            "front of you — running all seven blindly is not the ask.")
+HEAD_OLD = ("SIX NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Pick the rows\n"
+            "that fit the rule in front of you — running all six blindly is not the ask.")
+assert HEAD_NEW in text, p
+text = text.replace(HEAD_NEW, HEAD_OLD)
+open(p, "w", encoding="utf-8").write(text)
+PYNC
+done
+
+P_EV_NC="$TMPROOT/prompt-evaluate-noconc.txt"
+prompt_lc "$P_EV_NC" evaluate "$LC_NOCONC"
+criteria_for web
+P_WEB_NC="$TMPROOT/prompt-web-noconc.txt"
+prompt_lc "$P_WEB_NC" evaluate "$LC_NOCONC"
+criteria_for workflow
+P_WORK_NC="$TMPROOT/prompt-workflow-noconc.txt"
+prompt_lc "$P_WORK_NC" evaluate "$LC_NOCONC"
+criteria_for cli
+
+# -- 1. the shape is NAMED in the assembled prompt, with what it is FOR -------
+check "10a. the CLI prompt names the shape: two writers at once" \
+  'says "$P_EV" "two writers at once"'
+check "10b. …and says it is AT ONCE, not one after the other" \
+  'says "$P_EV" "start the second before the first has finished" &&
+   says "$P_EV" "one after the other"'
+check "10c. …and says what it is FOR, in the table.s own voice" \
+  'says "$P_EV" "any rule about something being stored, counted, kept unique, or shared"'
+check "10c2. …and the table head accounts for the seventh row, saying what makes it different" \
+  'says "$P_EV" "six rearrange a value" && says "$P_EV" "the last rearranges the timing" &&
+   says "$P_WEB" "the last rearranges the timing" &&
+   says "$P_WORK" "the last rearranges the timing"'
+check "10d. …and names the mechanism: read, change, write back, last writer wins" \
+  'says "$P_EV" "reads a whole file, changes it and writes it back" &&
+   says "$P_EV" "only the last writer.s work"'
+check "10e. …and THE GIVEAWAY: nothing fails, every caller is told it succeeded" \
+  'says "$P_EV" "the giveaway is that nothing fails" &&
+   says "$P_EV" "every caller is told it succeeded"'
+
+# -- 2. what to inspect afterwards: the store, NOT the exit codes -------------
+check "10f. the prompt says to IGNORE the exit codes, naming that they will all be zero" \
+  'says "$P_EV" "ignore the exit codes" && says "$P_EV" "all be zero"'
+check "10g. …and to compare the STORED RESULT against the calls that claimed success" \
+  'says "$P_EV" "compare the stored result against the number of calls that claimed success"'
+
+# -- 3. item 4 no longer reads as if it covered this -------------------------
+check "10h. item 4 says IN SEQUENCE is a different check from AT THE SAME INSTANT" \
+  'says "$P_EV" "two actors in sequence is a different check from two actors at the same instant"'
+check "10i. …and admits that item 4 as written is only the first of the two" \
+  'says "$P_EV" "as written, is only the first one"'
+check "10j. …and names the overlapping write as its own check, with what to read" \
+  'says "$P_EV" "treat the overlapping write as its own check" &&
+   says "$P_EV" "without waiting for the first to return" &&
+   says "$P_EV" "read what was stored instead of the exit codes"'
+check "10k. …and the FENCED reader is told the same thing, in lockstep" \
+  'says "$P_EV" "inSequenceIsNotAtTheSameInstant"'
+
+# -- 4. adapted per medium, not pasted three times ---------------------------
+check "10l. WEB — two requests in flight, judged on what is saved vs what was accepted" \
+  'says "$P_WEB" "two requests in flight at once" &&
+   says "$P_WEB" "fire the second before the first has come back" &&
+   says "$P_WEB" "the giveaway is that nothing fails" &&
+   says "$P_WEB" "compare what is saved against the number of submissions that reported success" &&
+   ! says "$P_WEB" "two writers at once"'
+check "10m. WORKFLOW — two runs overlapping, judged on what was recorded vs runs that went green" \
+  'says "$P_WORK" "two runs overlapping" &&
+   says "$P_WORK" "start the second while the first is still going" &&
+   says "$P_WORK" "the giveaway is that nothing fails" &&
+   says "$P_WORK" "compare what was recorded against the number of runs that finished green" &&
+   ! says "$P_WORK" "two writers at once"'
+
+# -- 5. CONTROL — nothing else moved ----------------------------------------
+check "10n. CONTROL — all six original rows are still there, unchanged, in the CLI prompt" \
+  'says "$P_EV" "a known-correct value, REARRANGED" &&
+   says "$P_EV" "whitespace-only" &&
+   says "$P_EV" "unicode look-alikes" &&
+   says "$P_EV" "the numeric edges" &&
+   says "$P_EV" "normalises onto one already accepted" &&
+   says "$P_EV" "the almost-right identifier" &&
+   [ "$(occurs "$P_EV" "\| a rule that")" -ge 6 ]'
+check "10o. CONTROL — item 4 still is what it was: its heading and its own DEFECTs" \
+  'says "$P_EV" "Two actors — two HOMEs, two laptops" &&
+   says "$P_EV" "actor B sees none of actor A.s state"'
+check "10p. CONTROL — evaluate.md paid for none of this: still exactly 688 lines" \
+  '[ "$(grep -c "" "$PROMPTS/evaluate.md")" -eq 688 ] &&
+   ! grep -qi "two writers at once" "$PROMPTS"/*.md'
+check "10q. CONTROL — the surgical mutation reached the same seam (all three assembled)" \
+  '[ -s "$P_EV_NC" ] && [ -s "$P_WEB_NC" ] && [ -s "$P_WORK_NC" ]'
+
+# -- 6. MUTATION — cut ONLY the new shape and every check above goes red -----
+check "10r. MUTATION — 10a-10e go red: the shape is gone from the CLI prompt" \
+  '! says "$P_EV_NC" "two writers at once" &&
+   ! says "$P_EV_NC" "start the second before the first has finished" &&
+   ! says "$P_EV_NC" "any rule about something being stored, counted, kept unique, or shared" &&
+   ! says "$P_EV_NC" "the giveaway is that nothing fails"'
+check "10s. MUTATION — 10f/10g go red: nothing left says what to inspect afterwards" \
+  '! says "$P_EV_NC" "ignore the exit codes" &&
+   ! says "$P_EV_NC" "compare the stored result against the number of calls that claimed success"'
+check "10t. MUTATION — 10h-10k go red: item 4 is back to sounding like it covers it" \
+  '! says "$P_EV_NC" "two actors in sequence is a different check from two actors at the same instant" &&
+   ! says "$P_EV_NC" "treat the overlapping write as its own check" &&
+   ! says "$P_EV_NC" "inSequenceIsNotAtTheSameInstant"'
+check "10u. MUTATION — 10l/10m go red in the other two mediums too" \
+  '! says "$P_WEB_NC" "two requests in flight at once" &&
+   ! says "$P_WORK_NC" "two runs overlapping"'
+check "10v. …and the mutation removed ONLY the new shape — the six rows and item 4 still stand" \
+  'says "$P_EV_NC" "a known-correct value, REARRANGED" &&
+   says "$P_EV_NC" "the almost-right identifier" &&
+   says "$P_EV_NC" "Two actors — two HOMEs, two laptops" &&
+   says "$P_WEB_NC" "near misses that catch bugs" &&
+   says "$P_WORK_NC" "near misses that catch bugs"'
 
 echo ""
 echo "9. ZERO SPEND"

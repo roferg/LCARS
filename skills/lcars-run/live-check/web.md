@@ -276,8 +276,9 @@ already accepted is a **REARRANGEMENT of that value**, and the arrangements that
 find faults are a short list. Work the table, and record what happened either
 way.
 
-**SIX NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Pick the rows
-that fit the rule in front of you — running all six blindly is not the ask.
+**SEVEN NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Six rearrange
+a value; the last rearranges the timing. Pick the rows that fit the rule in
+front of you — running all seven blindly is not the ask.
 
 | the near miss | what it is FOR |
 | --- | --- |
@@ -287,6 +288,7 @@ that fit the rule in front of you — running all six blindly is not the ask.
 | **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a quantity, a length, a date range, a page of results. The maximum ITSELF is the value most often wrong by one and the value most often never tried. Try the keyboard AND any stepper or slider. |
 | **a second entry that NORMALISES onto one already saved** — not the same string, the same meaning after trimming, case-folding or unicode normalisation | a field that says a value must be unique, or must not already exist. Submitting the identical string twice proves only that the identical-string comparison works. |
 | **the almost-right identifier** — a real name, id, slug or URL with one character changed | a lookup, a deep link, a route parameter. A page that quietly invents the missing thing, or renders empty, instead of showing a not-found is only visible this way. |
+| **two requests in flight at once** — fire the second before the first has come back, instead of submitting one and then the other | any rule about something being saved, counted, kept unique, or shared between sessions. A server that reads a whole record, changes it and writes it back keeps only the last request's work, and **the giveaway is that nothing fails**: every response is a success and the page looks right. Afterwards ignore the responses and compare what is saved against the number of submissions that reported success. |
 
 Say which rows you tried, with the exact value you entered, and say which rows
 the rule in front of you made no sense for.

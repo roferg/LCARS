@@ -104,12 +104,23 @@ Repeat the happy path as a **second** actor with its own throwaway `HOME`, then
 have the two interact: the same name from both, a replace/overwrite from one
 while the other holds an older version, a read by one of what the other wrote.
 
+**Two actors IN SEQUENCE is a different check from two actors AT THE SAME
+INSTANT, and this item, as written, is only the first one.** Running the happy
+path as A and then as B shows whether they share state; it shows nothing about
+what happens when both write in the same moment. So treat the overlapping write
+as its own check: launch several writes together, without waiting for the first
+to return, and then read what was stored instead of the exit codes, which will
+all be zero. The shape is the last row of item 9.
+
 **Evidence:** `live-check/04-two-actors.txt` — both transcripts, labelled
-`ACTOR A (HOME=…)` and `ACTOR B (HOME=…)`, and the interaction at the end.
+`ACTOR A (HOME=…)` and `ACTOR B (HOME=…)`, the interaction at the end, and the
+writes you launched together with what was stored afterwards.
 
 **DEFECT:** either actor seeing the other's state through a shared cache or a
 hardcoded path; a collision that silently overwrites instead of refusing or
 versioning; an identity read from the machine rather than from the actor's HOME.
+Separately, for the writes launched together: fewer records stored than calls
+that reported success — a write lost with nobody told.
 
 ```run:
 {
@@ -119,7 +130,8 @@ versioning; an identity read from the machine rather than from the actor's HOME.
   "evidence": "live-check/04-two-actors.txt",
   "expect": {
     "noCrossContamination": "actor B sees none of actor A's state",
-    "collisionHandled": "refused or versioned, never a silent overwrite"
+    "collisionHandled": "refused or versioned, never a silent overwrite",
+    "inSequenceIsNotAtTheSameInstant": "A then B is one check; both writing in the same moment is another — launch several writes together, without waiting for the first to return, then read the stored result, not the exit codes"
   }
 }
 ```
@@ -270,8 +282,9 @@ already accepted is a **REARRANGEMENT of that value**, and the arrangements that
 find faults are a short list. Work the table, and record what happened either
 way.
 
-**SIX NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Pick the rows
-that fit the rule in front of you — running all six blindly is not the ask.
+**SEVEN NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Six rearrange
+a value; the last rearranges the timing. Pick the rows that fit the rule in
+front of you — running all seven blindly is not the ask.
 
 | the near miss | what it is FOR |
 | --- | --- |
@@ -281,6 +294,7 @@ that fit the rule in front of you — running all six blindly is not the ask.
 | **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a rule that counts or ranges. The maximum ITSELF is the value most often wrong by one and the value most often never tried. |
 | **a second value that NORMALISES onto one already accepted** — not the same string, the same meaning after trimming, case-folding or unicode normalisation | a rule that says a value must be unique, or must not already exist. Offering the identical string twice proves only that the identical-string comparison works. |
 | **the almost-right identifier** — a real name, id or path with one character changed | a rule that looks something up. A lookup that quietly invents the missing thing, or carries on with an empty value, instead of failing is only visible this way. |
+| **two writers at once** — start the second before the first has finished, instead of running them one after the other from two homes | any rule about something being stored, counted, kept unique, or shared. A product that reads a whole file, changes it and writes it back keeps only the last writer's work, and **the giveaway is that nothing fails**: every caller is told it succeeded. Afterwards ignore the exit codes — they will all be zero — and compare the stored result against the number of calls that claimed success. |
 
 Say which rows you tried, with the exact argument you gave, and say which rows
 the rule in front of you made no sense for.

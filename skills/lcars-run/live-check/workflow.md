@@ -235,8 +235,9 @@ already accepted is a **REARRANGEMENT of that input**, and the arrangements that
 find faults are a short list. Work the table, and record what happened either
 way.
 
-**SIX NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Pick the rows
-that fit the rule in front of you — running all six blindly is not the ask.
+**SEVEN NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Six rearrange
+a value; the last rearranges the timing. Pick the rows that fit the rule in
+front of you — running all seven blindly is not the ask.
 
 | the near miss | what it is FOR |
 | --- | --- |
@@ -246,6 +247,7 @@ that fit the rule in front of you — running all six blindly is not the ask.
 | **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a count, a retry budget, a matrix size, a timeout, a page of API results. The maximum ITSELF is the value most often wrong by one and the value most often never tried. |
 | **a second run that NORMALISES onto one already recorded** — not the same string, the same meaning after trimming or case-folding | a concurrency key, a cache key, an artifact name, an idempotence rule. Firing the identical value twice proves only that the identical-string comparison works. |
 | **the almost-right identifier** — a real ref, path, secret name or job id with one character changed | a lookup inside the workflow. A step that quietly carries on with an empty value instead of failing the run is only visible this way. |
+| **two runs overlapping** — start the second while the first is still going, instead of letting one finish before the next begins | any rule about something being recorded, counted, kept unique, or shared between runs: an artifact name, a cache, a state file, a branch both runs push to. A step that reads a whole file, changes it and writes it back keeps only the last run's work, and **the giveaway is that nothing fails**: both runs go green. Afterwards ignore the job conclusions and compare what was recorded against the number of runs that finished green. |
 
 Say which rows you tried, with the exact input you sent, and say which rows the
 rule in front of you made no sense for.
