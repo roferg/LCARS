@@ -401,6 +401,71 @@ lcars_xo_status() { # <mission-dir | mission-id>
   lcars_json1_get "$obj" status
 }
 
+
+
+# ===========================================================================
+# lcars_xo_live_look <mission-dir | mission-id> — IS A LOOK ALIVE RIGHT NOW?
+# ===========================================================================
+# S239, and the ONE deliberate exception this round calls out. `lcars_xo_status`
+# answers "is Number One engaged", which is what every write verb has asked since
+# S201 and which this file does NOT change. But `approve` asks a narrower
+# question, by the captain's ruling (feedback #39: he "turned it off to save
+# 10–20 min per verify"): a verdict that has FINISHED is not a second hand on the
+# mission — it is a line to read on the way past. `numberOne.status` stays
+# `engaged` until `xo_finish` replaces it, and a look that CRASHED never replaces
+# it at all, so a mission could stay locked against its own captain forever.
+#
+# So this reads the one fact that says a look is still happening: the pid
+# `cmd_evaluate` writes to the mission's own `xo.pid`, tested with `kill -0`.
+#
+# rc 0  ⇒  a look is ALIVE (the lock should fire)
+# rc 1  ⇒  no pid, an unreadable one, a non-numeric one, or a STALE pid from a
+#          crash. The look is over. EVERY UNCERTAIN CASE PROCEEDS — the posture
+#          of this whole file, because a false lock shuts the captain out of his
+#          own work, which is strictly worse than the thing the lock prevents.
+#
+# `lcars xo off` is untouched and remains the way to stand the first officer
+# down while a look IS alive.
+lcars_xo_live_look() { # <mission-dir | mission-id>
+  local st mdir pid
+  st="$(_xo_mission_state "${1:-}")" || return 1
+  mdir="$(dirname "$st")"
+  [ -f "$mdir/xo.pid" ] || return 1
+  pid="$(head -n1 "$mdir/xo.pid" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  return 0
+}
+
+# ===========================================================================
+# lcars_xo_verdict_line <mission-dir | mission-id> — ONE LINE, NOT A REFUSAL.
+# ===========================================================================
+# S239. When the lock above lets a verb proceed past a FINISHED look, the
+# captain should still be told what his first officer concluded — he is about to
+# merge the thing it looked at. So the write verbs print this one line and carry
+# on. It is a READ of the record (`numberOne.recommendation`, else `score`, and
+# `evaluatedAt`) and it judges nothing; a mission that was never looked at, or
+# whose look has not finished, prints nothing and the verb says nothing extra.
+#
+# rc 0 + a line  ⇒  there is a finished verdict and this is it
+# rc 1 + silence ⇒  nothing to say
+lcars_xo_verdict_line() { # <mission-dir | mission-id>
+  local st obj at rec score what
+  st="$(_xo_mission_state "${1:-}")" || return 1
+  declare -F lcars_state_xo_block >/dev/null \
+    || . "$_LCARS_OWN_DIR/../lcars-init/lcars-state.sh"
+  obj="$(lcars_state_xo_block "$st")"
+  [ -n "$obj" ] || return 1
+  at="$(lcars_json1_get "$obj" evaluatedAt)"
+  [ -n "$at" ] || return 1
+  rec="$(lcars_json1_get "$obj" recommendation)"
+  score="$(lcars_json1_get "$obj" score)"
+  what="${rec:-$score}"
+  [ -n "$what" ] || what="no grade recorded"
+  printf "Number One's verdict: %s, %s" "$what" "$at"
+  return 0
+}
+
 lcars_xo_lock_reason() { # <mission-dir | mission-id>
   [ "${LCARS_XO_ENFORCE:-1}" = "0" ] && return 1
   local m="${1:-}" id status

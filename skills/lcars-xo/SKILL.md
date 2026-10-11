@@ -57,8 +57,14 @@ driver calls `xo.sh answer --mission <id>`. It:
 2. hires **one cold worker** through `run.sh spawn-number-one`, so the first
    officer reaches the same chokepoint every Stage uses — role → stage key
    (`numberOne`) → the pinned model → the fenced argv → the S168 fence snapshot
-   → usage capture. The role is READ + author-one-file, **no shell, no
-   network**, on both engines (`worker-adapter.sh`);
+   → usage capture. At the PAPER GATES (`answer`, `recheck`) the role is READ +
+   author-one-file, **no shell, no network**, on both engines
+   (`worker-adapter.sh`). At the **Verify LOOK** it is `number-one-live` —
+   the same posture **plus a real shell**, issued only when a disposable
+   detached worktree is standing and with the worker's cwd inside it (S261,
+   captain's amendment to S168, 2026-10-08). **No network, either way.**
+   What stops the reviewer changing what it reviews is now the disposable copy
+   plus the post-turn mission-state audit, not the absence of a shell;
 3. reads back the worker's one file, `xo-answer.json`, and **checks it**;
 4. **ANSWER** → `respond.sh answer`, the ordinary verb, with
    `LCARS_ANSWERED_BY=number-one` (the ledger says who) and
@@ -68,9 +74,11 @@ driver calls `xo.sh answer --mission <id>`. It:
    `numberOne.status` becomes `escalated` with a note carrying the summary and
    the recommendation. Exit **1** — the driver halts, as today.
 
-`xo.pid` holds this script's pid for the length of the spin, and a SIGTERM (what
-`lcars xo off <id>` sends) walks the whole process tree down so the worker dies
-with it. Every action is appended to `<mission>/number-one.jsonl`.
+`xo.pid` holds this script's pid — and, since S245, the group it leads and the
+instant it started, so a stop can tell it from a recycled pid — for the length of
+the spin. `lcars xo off <id>` runs it through the same verified, censused stop
+path `xo-resolve.pid` uses, so the worker dies with it and the handle is only
+removed once an empty census says so. Every action is appended to `<mission>/number-one.jsonl`.
 
 ### What is checked, and why
 
@@ -124,6 +132,44 @@ The order is the contract:
    `xo/seed.json`. **With neither declared nothing is invented**: the report
    says in one plain sentence which screens it could not see for want of data,
    and those rows are `couldn't check` — never a fault in the build.
+
+   **2b-bis. THE REACH BEYOND THE BROWSER (S239).** The contract records
+   `productTypes` (`cli` / `web` / `workflow`, each with the SOURCE that said
+   so) and, per criterion, `reachVia` — `cli | browser | workflow | test |
+   none`. **A CLI criterion is reached by RUNNING the CLI, not by looking for it
+   on a page.** The live-check checklists (`skills/lcars-run/live-check/<type>.md`
+   — the SAME files the buddy follows in prose) are handed to the worker WHOLE,
+   for the product types the contract recorded, as **advice the worker reads**:
+   every `run:` block in them is an EXAMPLE of a shape, with the values left out
+   on purpose, and the worker invents the values a human would. **There is ONE
+   author of the step list and it is the worker** (S247): nothing instantiates a
+   step from the record any more, so `journey.json.reachSteps` is the harness's
+   own log of what the worker ASKED FOR and was granted — never a list declared
+   before the look.
+
+   Three kinds: `run` (argv/cwd/env/expect/for), `workflow` (executed by
+   `autopilot.sh workflow-run`, the runner that names the first failing step)
+   and `read` (an artifact read rather than assumed). `xo-run.py` executes them
+   in a **worktree detached from the mission's branch with a throwaway HOME**
+   (`autopilot.sh worktree --branch` — ONE machinery, the buddy's own), minted
+   ONCE for the whole look so a record filed in one round can be read back in the
+   next, caged per step, writing a transcript + a `.json` readout per step beside
+   the browser shots under `xo/shots/<look>/`. Each row records `checkedBy`.
+   **The worker still has NO shell** (S168, S222): it proposes, the harness
+   executes. Requests arrive in `xo-actions.json` under a cap of 12 across all
+   kinds; a step that tries to leave the worktree or the throwaway HOME is
+   REFUSED and journaled, and *declined at execution* is the ONLY refusal count
+   there is.
+
+   **`attempted N of M` is COUNTED AFTER THE LOOK** (`xo-journey.py coverage`),
+   off the readouts the steps wrote and the transcripts the ledger cites — a
+   criterion with neither stays `untested`, carrying the look's own `couldNot`
+   reason or *no step reached it*. It used to be computed before a single step
+   had run, which is why the archive records it never moving.
+
+   Why: over one weekend, 34 looks on the same product, Number One filed **0 of
+   31 bugs** and all sixteen of its recorded misses were REACH errors, not
+   judgement errors.
 
    **2c. THE DECLARED JOURNEY (S220 part F).** `xo-journey.py` reads the flow
    out of the record — the drawing's screen order and each screen's own forward
@@ -269,9 +315,12 @@ The order is the contract:
    `testCommand` is the common case**: the file records that plainly and the
    look proceeds exactly as it always did.
 
-   **The skill runs it; the worker never does.** The fence (S168) is untouched
-   — the worker is handed `tests.json` through the same read-only door as the
-   shots and the observations, and has no shell.
+   **The skill runs the project's suite; the worker is handed the result.** The
+   worker gets `tests.json` through the same read-only door as the shots and the
+   observations. S261 note: the look's worker now HAS a shell inside its
+   disposable copy and may run whatever it likes there — what it must not do is
+   pass off its own ad-hoc run as the project's recorded suite, which is why
+   `tests.json` stays the one record this guard reads.
 
    **THE OVER-CLAIMING GUARD, which is the point of the session.** A
    `notVisual` criterion may be settled by the project's own tests and cited
@@ -613,6 +662,33 @@ Number One is engaged on this mission on your behalf — stand it down (lcars xo
 `lcars pause`, `lcars resume`, `lcars resolve-logs` — and the viewscreen's
 matching endpoints, with a 403 carrying the same bytes.
 
+**`lcars approve` asks a NARROWER question (S239, and it is the only verb that
+does).** The captain's ruling (feedback #39: he "turned it off to save 10–20 min
+per verify") is that a verdict which has FINISHED must never block a merge —
+only a look still in flight may. `numberOne.status` stays `engaged` until
+`xo_finish` replaces it, and a look that CRASHED never replaces it at all, so a
+mission could stay locked against its own captain for good. So approve also asks
+`lcars_xo_live_look`: is the pid in the mission's own `xo.pid` alive? **Alive →
+the sentence above, unchanged. Finished, crashed, or no pid → approve proceeds**
+and prints one line instead:
+
+```
+◈ Number One's verdict: <recommendation, else the grade>, <when>
+```
+
+Every OTHER verb in the list above is unchanged and still refuses on `engaged`
+alone. `lcars xo off` remains the way to stand the first officer down mid-look.
+
+**Looking again — `evaluate --again --because "<why>"` (S239).** `evaluate` is
+idempotent on `evaluatedAt`, and `recheck` needs FILED LOGS ("with no logs
+filed, there is no way to re-score" — feedback #5). Together that was a
+catch-22: a mission scored LOW only because no `testCommand` was recorded could
+never be looked at again once the captain recorded one. `--again` supersedes the
+finished verdict — journaling a `superseded` entry with the prior score, the
+prior recommendation, when it was taken and the captain's reason — and runs the
+whole look again. **It needs no filed logs**, and the reason is required: a
+second verdict with nothing saying why leaves two verdicts and no reason.
+
 `lcars run` and `lcars xo` are **exempt**: Number One's own actions go through
 them, so locking them would lock Number One out of itself. `start` is likewise
 absent from the daemon's set — an engaged mission is already being driven.
@@ -706,32 +782,96 @@ eventually meets a question that contains its vocabulary.
 
 ## Standing down
 
-`lcars xo off <mission>` **signals first, then records**: it TERMs the pid in
-the mission's `xo.pid` (best effort — a stale pid file is not a reason to refuse
-to hand the conn back, and nothing is ever KILLed, so a worker gets to finish
-its own cleanup), then writes `stood-down` plus the note
-`Number One stood down <time> · you have the conn`, and the lock lifts.
+`lcars xo off <mission>` does three things **in this order**, and the order is the
+whole design:
+
+**1. It quiesces — BEFORE it signals anything, AND IT SAYS SO.** It writes
+`<mission>/xo-stop` (atomically) and sets `paused` on the mission and on every
+linked child in `xo/logs.json`, then prints how many Missions that was and that
+`lcars xo on` lifts it — the flag outlives the command and `lcars run` halts on
+it, so a captain who was not told meets `⏸ paused at: …` days later with no idea
+which command did it. `lcars resume` **refuses** while the marker is down rather
+than clear the flag and report a success the driver will not honour. Three readers honour that marker: `resolve-logs.sh` before EVERY
+`run.sh drive` spawn and between bugs, `run.sh`'s driver immediately before it
+spawns a stage worker, and `run.sh`'s existing between-stages `paused` check.
+**Refusing to start new work is the half of a stop that killing cannot do.** The
+marker also RECORDS which children the stop paused and which were already paused
+for their own reason, so `lcars xo on <mission>` puts back exactly what the stop
+put on and leaves a child the captain paused himself alone.
+
+**2. It sweeps what already exists.** Both pid files go through the same verified
+path — `xo_signal_pidfile` → `xo_stop_tree` → `xo_stop_sweep` — which TERMs the
+driver alone first so its own teardown runs, then TERMs every process group the
+chain owns, then KILLs whatever is left. It is enumerated from a **CENSUS**, not
+from a walk down from a recorded pid: `xo-tree.py census` asks the whole machine
+who belongs to this mission by provenance (argv naming the mission or one of its
+own paths, including a stage orphaned to ppid 1 and an adapter leading a group of
+its own) UNION the pids and groups the pid files recorded, and holds every pid any
+census of this stop has named. A walk from a recorded pid reports nothing the
+moment that pid dies, which is how a stop once said "you have the conn" over two
+billable processes.
+
+**3. It believes only an empty census, twice.** The success line prints ONLY when
+two consecutive censuses, `$LCARS_XO_CENSUS_GAP` (default 2) seconds apart, both
+come back empty. Otherwise it names the surviving pids, keeps `xo.pid`,
+`xo-resolve.pid` AND the stop marker — those handles are the captain's only way to
+try again — journals `stop-failed`, exits non-zero, and prints no stand-down line
+at all. **A stop that cannot confirm death never claims it.**
+
+Only then does it record `stood-down` plus the note `Number One stood down
+<time> · you have the conn`, and the lock lifts.
+
+**A REFUSAL NEVER CLAIMS IT CHANGED NOTHING AFTER IT HAS CHANGED THINGS.**
+`lcars_state_refusal_die` ends with "Nothing was written and nothing else in this
+command took effect." — a true sentence for every verb that calls it immediately
+before its success line and after a single write. The quiesce broke that contract
+by writing FIRST, so one malformed `state.json` anywhere in the repo made this verb
+print it having already written the marker, paused four Missions and set
+`enabled: false`. The cure is structural, not a longer sentence: once the quiesce
+has written (`XO_QUIESCED`), a refused state write no longer leaves the latch set,
+so that sentence is **unreachable** on this path, and the Missions whose
+stand-down could not be RECORDED are named instead — the stop went through, the
+bookkeeping did not, those cards will keep reading `engaged` until the file is put
+back to one field per line, and the verb still exits non-zero. On the path where
+nothing HAS been written (a targeted stop on a Mission that is not engaged), the
+original sentence still prints, unchanged, because there it is true.
+
+**The note's logs clause is a fact about the logs, not about a pid file.** It used
+to require a resolve pid that was still the process its file was written about, so
+it vanished in exactly the case that should alarm the captain most — the chain's
+recorded leader already dead and nobody knowing what it left behind. Whether that
+pid file is still valid now decides only WHICH sentence is true (`stopped where
+they got to` / `could not confirm` / `are no longer running`), never whether he is
+told at all.
 
 Standing down is an **action**, so it appends its own `stood-down` line to
 `<mission>/number-one.jsonl` — the living comment's journal is otherwise the one
-surface with no record that a spin was aborted. It also **clears
-`lastPending`**: that cksum is stamped BEFORE the spin, so a worker killed
-mid-spin would otherwise leave Number One locked out of a gate it never actually
-read. The conn comes back, and so does the gate.
+surface with no record that a spin was aborted. A failed stop appends
+`stop-failed` instead. It also **clears `lastPending`**: that cksum is stamped
+BEFORE the spin, so a worker killed mid-spin would otherwise leave Number One
+locked out of a gate it never actually read. The conn comes back, and so does the
+gate.
 
-**It never stops the fixes.** `xo.pid` is Number One's own chain — its worker,
-its browser, its launch. `xo-resolve.pid` is the `lcars resolve-logs` driver
-working the logged bugs, and **those are LCARS's missions, not the first
-officer's**: each has its own issue, its own branch and its own worker. That pid
-is read and never signalled. When it is alive the stand-down note says so —
-`Number One stood down <time> · N log/logs still driving · the re-verify gate will
-wait for you` — because a captain taking the conn back mid-fix-round needs to
-know both that the fixes are still going and that the gate at the end of them is
-now his.
+**BOTH pids stop (S213 — this reversed the S204 rule).** `xo.pid` is Number One's
+own chain — its worker, its browser, its launch. `xo-resolve.pid` is the `lcars
+resolve-logs` driver working the logged bugs. S204 deliberately left the second
+running, reasoning that the logged bugs are ordinary Missions the captain never
+asked to stop. That reasoning is sound about the WORK and wrong about the BUTTON:
+what it produced was a stop button that did not stop, and the only way to halt a
+chain in flight was to find its pid and kill it by hand. So the chain stops. What
+it has already done is untouched — every child Mission keeps its issue, its branch
+and whatever stage it reached. When logs were being driven, the note says so
+(`the N logs it was driving stopped where they got to`), because a captain taking
+the conn back mid-fix-round needs to know both that the fixes have stopped and
+that the gate at the end of them is now his.
 
 A repo-level `lcars xo off` does that for every engaged mission and flips
 `enabled` to `false` — **keeping the recorded engine**, because the captain
 turned Number One off, he did not un-choose his engine.
+
+`xo.sh census <mission>` prints the census the success line is gated on, so
+"nothing of this mission is running" can be checked from OUTSIDE the product
+instead of taken on trust from a sentence the product printed about itself.
 
 ## Related
 

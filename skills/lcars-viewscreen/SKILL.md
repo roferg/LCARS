@@ -254,6 +254,43 @@ not in this clone**, as read-only **REMOTE** cards, so a laptop with no
   no `gh`) is **409** too, carrying `lcars adopt`'s own words; a genuine crash
   still answers 502.
 
+## Screenshots of the board (headless)
+
+**The board renders fine headless.** Measured in S238 against a real 27-mission
+tree: `/api/board` answered 200 with 38 KB of JSON, the page logged zero
+exceptions and zero console messages, `#status` cleared to "24 active missions",
+and the shots taken at 5s and at 15s were byte-identical — a fully painted LCARS
+board. So a blank or half-drawn screenshot is a fault in the **probe**, not in
+the board. Four things make the difference, and all four are harness-side:
+
+- **`--headless=new`** — the old headless had no compositor for the board's CSS.
+- **a FRESH `--user-data-dir`** (a new temp dir per run, never reused). A
+  carried-over profile is the single most common cause of a hung or empty load.
+- **`--window-size=1280,900`** — with no explicit size the viewport can come up
+  too small for the Kanban columns to lay out at all.
+- **enable the CDP domains `Runtime`, `Log`, `Page` and `Network`**
+  — all four enabled **before navigating**, never after. Enabled after the
+  navigate, the first paint's console messages,
+  exceptions and requests are simply never recorded — so a probe reports "no
+  errors" about a page it was not yet listening to. This is the one that turns a
+  real failure into a silent one.
+
+A working probe is committed in **lcars-dev** at
+`lcars-dev/tests/drives/s238/probe2-drive.js` — drive it from there rather than
+copying it into this repo (rigging lives in lcars-dev, per the orchestration
+contract).
+
+## When a holodeck plan is impossible against the drawing
+
+A filed holodeck program is **locked** — it is the record of what was agreed, and
+nothing edits it in place. So when the plan turns out to be impossible against
+the drawing (the mockup says something the app cannot be made to do, or the basis
+it was derived from was wrong), the route out is not to unlock it:
+**duplicate the locked program, edit the duplicate, and re-file that.**
+The original stays locked
+as the record of what was decided and why it could not be built, and the
+duplicate carries the work forward.
+
 ## Options (all via flag or env)
 
 - `--host` / `LCARS_SERVE_HOST` (default `127.0.0.1`)

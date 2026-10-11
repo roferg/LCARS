@@ -95,11 +95,30 @@ owner_lock_or_die() { # <issue>
 # numberOne.status is `engaged`; no state, no key, stood-down and finished all
 # fall through to "proceed", exactly like the owner lock's posture, and
 # LCARS_XO_ENFORCE=0 bypasses it. The remedy is `lcars xo off <id>`.
+# S239 — THE ONE CALLED-OUT EXCEPTION OF THIS ROUND. The lock now fires only
+# while a look is ALIVE (ownership.sh explains why). A FINISHED verdict is not a
+# refusal any more: it is one line printed on the way past, because the captain
+# is about to merge the very thing Number One looked at, and because making him
+# run `lcars xo off <id>` before every approve cost him 10–20 minutes a Verify
+# (feedback #39) and taught him to switch his first officer off.
 xo_lock_or_die() { # <mission-dir>
-  local r
+  local r v
   command -v lcars_xo_lock_reason >/dev/null 2>&1 || return 0
-  r="$(lcars_xo_lock_reason "${1:-}")" || return 0
-  [ -n "$r" ] && die "$r"
+  if r="$(lcars_xo_lock_reason "${1:-}")"; then
+    # THE NARROWING IS HERE AND ONLY HERE. The shared lock still answers "is
+    # Number One engaged" for every other write verb, exactly as S201 wrote it
+    # and as `tests/ownership.test.sh` asserts, sentence for sentence. `approve`
+    # alone asks the narrower question, because it is the verb the ruling was
+    # about: a LIVE look is a race, a FINISHED one is a line to read.
+    if ! command -v lcars_xo_live_look >/dev/null 2>&1 \
+       || lcars_xo_live_look "${1:-}"; then
+      [ -n "$r" ] && die "$r"
+    fi
+  fi
+  if command -v lcars_xo_verdict_line >/dev/null 2>&1; then
+    v="$(lcars_xo_verdict_line "${1:-}" 2>/dev/null)" && [ -n "$v" ] \
+      && printf '◈ %s\n' "$v"
+  fi
   return 0
 }
 

@@ -210,8 +210,13 @@ check "D2. worker-adapter under LCARS's own re-pin (_INTERNAL=1): PATH fix only,
 # tops resolve_worker_bin; an _INTERNAL pin does not).
 check "D2. run.sh require_worker passes the LCARS_WORKER_BIN hint only when not an internal pin" \
   "awk '/^require_worker\\(\\)/{on=1} on&&/lcars_worker_bin_guard \\\"\\\$WORKER_BIN\\\"/{print; exit}' '$REPO_ROOT/skills/lcars-run/run.sh' | grep -F 'hint' >/dev/null && grep -nE 'LCARS_WORKER_BIN_INTERNAL:-.*!= *\"?1|!= *\"1\".*LCARS_WORKER_BIN_INTERNAL' '$REPO_ROOT/skills/lcars-run/run.sh' | grep -F hint >/dev/null"
-# daemon: the picker's engine outranks $LCARS_WORKER_BIN, so no variable — the
-# PATH fix is the daemon's PATH, which means restarting the viewscreen.
+# daemon: the picker's engine outranks $LCARS_WORKER_BIN, so THAT variable is
+# never offered — the PATH fix is the daemon's PATH, which means restarting the
+# viewscreen. S238 FIX ROUND 1 (D2): the hint now ALSO names $LCARS_COPILOT_BIN,
+# which does win at a daemon call site (the daemon swaps the picker's bare
+# `copilot` for the file that variable names before anything spawns). Until then
+# every daemon refusal sent the operator to reorder PATH and never mentioned the
+# one variable that cures it, which he had no other way to discover.
 dviol="$("$PY" - "$REPO_ROOT/web/lcars_serve/actions.py" "$REPO_ROOT/web" <<'PYEOF'
 import ast, sys
 src = open(sys.argv[1], encoding="utf-8").read()
@@ -226,14 +231,14 @@ for n in ast.walk(ast.parse(src)):
             bad.append(str(n.lineno))
 sys.path.insert(0, sys.argv[2])
 from lcars_serve.worker_guard import DAEMON_HINT
-if DAEMON_HINT != "restart the viewscreen":
+if DAEMON_HINT != "LCARS_COPILOT_BIN restart the viewscreen":
     bad.append("DAEMON_HINT=%r" % DAEMON_HINT)
 if "from .worker_guard import DAEMON_HINT as DAEMON_SHIM_HINT" not in src:
     bad.append("DAEMON_SHIM_HINT is not worker_guard.DAEMON_HINT")
 print(" ".join(bad))
 PYEOF
 )"
-check "D2. every daemon refusal ends 'then restart the viewscreen' and names no variable ${dviol:+(lines: $dviol)}" "[ -z \"\$dviol\" ]"
+check "D2. every daemon refusal ends 'then restart the viewscreen' and offers only LCARS_COPILOT_BIN ${dviol:+(lines: $dviol)}" "[ -z \"\$dviol\" ]"
 
 # S218 — A RUN THE VIEWSCREEN STARTED. The daemon feeds the mission's persisted
 # engine (often bare "copilot") to run.sh as $LCARS_WORKER_BIN, so a captain's
@@ -504,6 +509,259 @@ OUTE="$TMPROOT/out231-e2e"
 check "S231(a-e2e). worker-adapter ran the REAL fallback CLI, not the shim" \
   "[ -f '$TMPROOT/absmark-ran' ]"
 check "S231(a-e2e). …and the shim was never executed" "[ ! -e '$SENTINEL' ]"
+
+# ==========================================================================
+# S238 (A2). THE REFUSAL NAMES THE FAILURE MODE THAT ACTUALLY HAPPENS
+#
+# MEASURED BY THE S238 GATING SPIKE, in the worst case anyone could build (no
+# real copilot anywhere on PATH; brew/npm/curl/wget all stubbed to refuse):
+# shim 0.0.394 does NOT loop. 0.1s, 1240 processes against a 1219 baseline, no
+# recursion — because copilotCLIShim.js strips its own `__dirname` out of the
+# child's PATH before it spawns bare `copilot`, so the child finds the REAL cli
+# or nothing. The old sentence's mechanism ("calls `copilot` back by name until
+# the machine runs out of processes") is therefore FALSE for this shim, and a
+# refusal that states a mechanism nobody can reproduce is a refusal the next
+# person disbelieves and disables.
+#
+# REFUSING IS STILL RIGHT, for the reason the spike DID find: with no real CLI
+# behind it the shim prints an install prompt and — under the daemon's
+# stdin=DEVNULL — exits 0 with no model output. A SILENT GARBAGE TURN, which is
+# worse than a crash because every caller reads it as success.
+echo "S238(A2). the refusal states the failure the spike measured, not the one it disproved"
+out="$(guard_sh copilot "$LINKBIN:$REALBIN:/usr/bin:/bin")"
+check "S238(A2). the disproved fork-bomb mechanism is GONE from the sentence" \
+  "! printf '%s' \"\$out\" | grep -F 'out of processes' >/dev/null"
+check "S238(A2). it says the shim EXITS 0" \
+  "printf '%s' \"\$out\" | grep -F 'exits 0' >/dev/null"
+check "S238(A2). …with no model output (the silent-success shape)" \
+  "printf '%s' \"\$out\" | grep -F 'no model output' >/dev/null"
+check "S238(A2). still ONE sentence" \
+  "[ \"\$(printf '%s\n' \"\$out\" | grep -vc '^rc=')\" = 1 ]"
+check "S238(A2). still names the path it resolved to" \
+  "printf '%s' \"\$out\" | grep -F 'github.copilot-chat/copilotCli/copilot' >/dev/null"
+check "S238(A2). still names the fix" \
+  "printf '%s' \"\$out\" | grep -F \"put $REALBIN ahead of it on PATH\" >/dev/null"
+check "S238(A2). BYTE-IDENTICAL in the daemon's copy" \
+  "[ \"\$(guard_sh copilot '$LINKBIN:$REALBIN:/usr/bin:/bin')\" = \"\$(guard_py copilot '$LINKBIN:$REALBIN:/usr/bin:/bin')\" ]"
+check "S238(A2). …and for the absolute-shim wording too" \
+  "[ \"\$(guard_sh '$SHIM' '$REALBIN:/usr/bin:/bin')\" = \"\$(guard_py '$SHIM' '$REALBIN:/usr/bin:/bin')\" ]"
+
+# ==========================================================================
+# S238 (A1). AN EXPLICIT OVERRIDE WINS OVER A BARE ENGINE NAME
+#
+# THE REAL DEFECT THE SPIKE FOUND. The board always sends a BARE engine NAME
+# ("copilot") in the POST body, and `_worker_turn` does `bin_ = engine or
+# self.worker_bin` — so the picker's bare name outranks an operator's
+# $LCARS_WORKER_BIN with NO effect and NO warning. An operator who points LCARS
+# at a known-good binary and watches it be ignored in silence has no way to tell
+# that from the binary being broken.
+#
+# The cure is engine-specific and ADDITIVE: when the resolved engine is a BARE
+# NAME (no "/"), $LCARS_COPILOT_BIN stands in for it. A bin someone named by
+# PATH is never rewritten (their path wins, and the shim guard still judges it),
+# and an override that does not exist / is not executable is REFUSED BY NAME
+# with the path quoted — never silently dropped back to PATH, which is the exact
+# silence this fixes.
+#
+# NOTHING HERE EXECUTES ANYTHING either: isfile + access(X_OK) only.
+echo "S238(A1). an explicit copilot override beats a bare engine name"
+over_py() { # <bin> [LCARS_COPILOT_BIN] -> "chosen<NL>refusal..." then rc=
+  local v="${2-}"
+  if [ "$#" -lt 2 ]; then
+    env -u LCARS_COPILOT_BIN "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
+from lcars_serve.worker_guard import explicit_override
+b, m = explicit_override(sys.argv[2])
+print("bin=%s" % b)
+print("refusal=%s" % (m or ""))' "$REPO_ROOT/web" "$1" 2>&1
+  else
+    LCARS_COPILOT_BIN="$v" "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
+from lcars_serve.worker_guard import explicit_override
+b, m = explicit_override(sys.argv[2])
+print("bin=%s" % b)
+print("refusal=%s" % (m or ""))' "$REPO_ROOT/web" "$1" 2>&1
+  fi
+}
+OVREAL="$TMPROOT/override-bin/copilot"
+mkdir -p "$(dirname "$OVREAL")"
+printf '#!/bin/sh\necho "copilot 1.0.91 (stub)"\nexit 0\n' >"$OVREAL"; chmod +x "$OVREAL"
+OVMISSING="$TMPROOT/override-bin/no-such-copilot"
+OVNOTEXEC="$TMPROOT/override-bin/copilot-not-exec"
+printf 'not a program\n' >"$OVNOTEXEC"; chmod 644 "$OVNOTEXEC"
+
+out="$(over_py copilot "$OVREAL")"
+check "S238(A1). a real override REPLACES the bare name" \
+  "printf '%s' \"\$out\" | grep -qF \"bin=$OVREAL\""
+check "S238(A1). …and is never refused" \
+  "printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py copilot "$OVMISSING")"
+check "S238(A1). an override that is not there is REFUSED (not silently dropped)" \
+  "printf '%s' \"\$out\" | grep -q 'refusal=Refusing to start'"
+check "S238(A1). …naming the variable BY NAME" \
+  "printf '%s' \"\$out\" | grep -qF 'LCARS_COPILOT_BIN'"
+check "S238(A1). …and QUOTING the path it was pointed at" \
+  "printf '%s' \"\$out\" | grep -qF \"\\\"$OVMISSING\\\"\""
+check "S238(A1). …in ONE sentence" \
+  "[ \"\$(printf '%s\n' \"\$out\" | grep -c '^refusal=.')\" = 1 ]"
+out="$(over_py copilot "$OVNOTEXEC")"
+check "S238(A1). a present but NON-EXECUTABLE override is refused too" \
+  "printf '%s' \"\$out\" | grep -q 'refusal=Refusing to start'"
+out="$(over_py "$REALBIN/copilot" "$OVREAL")"
+check "S238(A1). a bin someone named BY PATH wins — the override never rewrites it" \
+  "printf '%s' \"\$out\" | grep -qF \"bin=$REALBIN/copilot\" && printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py claude "$OVREAL")"
+check "S238(A1). it is ENGINE-SPECIFIC — a claude engine is untouched" \
+  "printf '%s' \"\$out\" | grep -qx 'bin=claude' && printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py copilot)"
+check "S238(A1). with the variable UNSET nothing changes (additive)" \
+  "printf '%s' \"\$out\" | grep -qx 'bin=copilot' && printf '%s' \"\$out\" | grep -qx 'refusal='"
+out="$(over_py copilot "")"
+check "S238(A1). set-but-EMPTY is 'no override', not a refusal" \
+  "printf '%s' \"\$out\" | grep -qx 'bin=copilot' && printf '%s' \"\$out\" | grep -qx 'refusal='"
+check "S238(A1). and nothing was executed to work any of that out" "[ ! -e '$SENTINEL' ]"
+
+# ==========================================================================
+# S238 FIX ROUND 1, DEFECT 1. THE TWO COPIES OF THE ONE RULE HAD DIVERGED IN
+# BEHAVIOUR WHILE THE PARITY TEST HELD THE SENTENCE BYTE-IDENTICAL.
+#
+# MEASURED (S238 fix round 1, by the orchestrator, in the IDENTICAL shim-first
+# PATH): bash returned rc 0 and printed /opt/homebrew/bin/copilot — the S231
+# fallback, auto-repairing with zero configuration. Python REFUSED, with the
+# PATH lecture, because it had no fallback at all: its FALLBACK_DIR only ever
+# worded the refusal. So the daemon refused to spawn `run.sh` in exactly the
+# case where run.sh itself would have shrugged and used the real CLI — a red
+# failed card with `stageFailure=1` on the lane the captain actually uses
+# (POST /api/mission/<id>/start), while POST /api/align/start worked.
+#
+# The parity loop above compares the SENTENCE. These rows compare the
+# BEHAVIOUR — rc, the bin chosen on stdout, and the note on stderr — which is
+# the gap the divergence shipped through.
+echo "S238(FR1-D1). the daemon's copy has the bash copy's S231 fallback (BEHAVIOUR parity)"
+
+PGOUT="$TMPROOT/g-fr1-py.out"; PGERR="$TMPROOT/g-fr1-py.err"
+# run_guard_py <bin> <PATH> <fallbacks> [hint] -> echoes rc; the bash guard's
+# three outputs, from the daemon's copy: stdout = the bin to start when it was
+# substituted (empty otherwise), stderr = the one note/refusal sentence.
+run_guard_py() {
+  PATH="$2" LCARS_WORKER_BIN_FALLBACKS="$3" \
+    "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
+from lcars_serve.worker_guard import editor_shim_refusal, shim_fallback
+chosen, note = shim_fallback(sys.argv[2])
+if note:
+    sys.stdout.write(chosen); sys.stderr.write(note + "\n"); raise SystemExit(0)
+m = editor_shim_refusal(sys.argv[2], sys.argv[3])
+if m:
+    sys.stderr.write(m + "\n"); raise SystemExit(1)
+raise SystemExit(0)' "$REPO_ROOT/web" "$1" "${4:-}" >"$PGOUT" 2>"$PGERR"
+  echo "$?"
+}
+
+# --- unit: the daemon's fallback resolver, the twin of lcars_worker_bin_fallback
+fb_py() { PATH="/usr/bin:/bin" LCARS_WORKER_BIN_FALLBACKS="$1" \
+  "$PY" -c 'import sys; sys.path.insert(0, sys.argv[1])
+from lcars_serve.worker_guard import fallback_bin
+sys.stdout.write(fallback_bin())' "$REPO_ROOT/web"; }
+check "S238(FR1-D1). py fallback returns the first real (non-shim) absolute CLI" \
+  "[ \"\$(fb_py \"$SHIM $ABSREAL\")\" = '$ABSREAL' ]"
+check "S238(FR1-D1). py fallback SKIPS a location that is itself the shim" \
+  "[ \"\$(fb_py \"$SHIM\")\" = '' ]"
+check "S238(FR1-D1). py fallback with no locations set returns nothing" \
+  "[ \"\$(fb_py '')\" = '' ]"
+check "S238(FR1-D1). py fallback agrees with bash on all three" \
+  "[ \"\$(fb_py \"$SHIM $ABSREAL\")\" = \"\$(fb \"$SHIM $ABSREAL\")\" ] && [ \"\$(fb_py \"$SHIM\")\" = \"\$(fb \"$SHIM\")\" ]"
+
+# --- THE DEFECT ROW (a): shim first on PATH AND a real CLI present ------------
+rcpy="$(run_guard_py copilot "$LINKBIN:/usr/bin:/bin" "$ABSREAL")"
+check "S238(FR1-D1a). CURE — the daemon's copy ALLOWS it (rc 0), it does not refuse" \
+  "[ '$rcpy' = 0 ]"
+check "S238(FR1-D1a). CURE — it chose the real absolute CLI for the caller to start" \
+  "[ \"\$(cat '$PGOUT')\" = '$ABSREAL' ]"
+check "S238(FR1-D1a). CURE — and said so in ONE plain sentence naming that binary" \
+  "grep -qF '$ABSREAL' '$PGERR' && [ \"\$(grep -c . '$PGERR')\" = 1 ]"
+check "S238(FR1-D1a). CURE — nothing was executed to work that out" "[ ! -e '$SENTINEL' ]"
+
+# --- CONTROL (b): no real CLI anywhere → the protection is INTACT ------------
+rcpy="$(run_guard_py copilot "$LINKBIN:/usr/bin:/bin" "")"
+check "S238(FR1-D1b). PROTECTION — with no real CLI anywhere the daemon STILL REFUSES" \
+  "[ '$rcpy' = 1 ] && grep -qF 'Refusing to start' '$PGERR'"
+check "S238(FR1-D1b). PROTECTION — and it swapped in nothing (stdout empty)" \
+  "[ -z \"\$(cat '$PGOUT')\" ]"
+rcpy="$(run_guard_py copilot "$LINKBIN:/usr/bin:/bin" "$SHIM")"
+check "S238(FR1-D1b). PROTECTION — a fallback location that IS a shim is no fallback" \
+  "[ '$rcpy' = 1 ]"
+
+# --- CONTROL (c): a real CLI already first on PATH → UNCHANGED ---------------
+rcpy="$(run_guard_py copilot "$REALBIN:/usr/bin:/bin" "$ABSREAL")"
+check "S238(FR1-D1c). UNCHANGED — a real CLI first on PATH is allowed, silently" \
+  "[ '$rcpy' = 0 ] && [ -z \"\$(cat '$PGOUT')\" ] && [ ! -s '$PGERR' ]"
+
+# --- CONTROL (req4): an ABSOLUTE shim is never rescued, here either ----------
+rcpy="$(run_guard_py "$SHIM" "$REALBIN:/usr/bin:/bin" "$ABSREAL")"
+check "S238(FR1-D1req4). an ABSOLUTE shim path still REFUSES even with a fallback" \
+  "[ '$rcpy' = 1 ] && [ -z \"\$(cat '$PGOUT')\" ]"
+
+# --- THE PARITY THAT WAS MISSING: rc + stdout + stderr, not just the sentence -
+# Each row is run through BOTH copies in the same PATH and the same fallback
+# list, and all THREE outputs are compared. Row (a) is the one that was red.
+beh_sh() { local rc; rc="$(run_guard "$1" "$2" "$3")"
+  printf 'rc=%s|out=%s|err=%s' "$rc" "$(cat "$GOUT")" "$(cat "$GERR")"; }
+beh_py() { local rc; rc="$(run_guard_py "$1" "$2" "$3")"
+  printf 'rc=%s|out=%s|err=%s' "$rc" "$(cat "$PGOUT")" "$(cat "$PGERR")"; }
+check "S238(FR1-D1). BEHAVIOUR parity (a) shim-first PATH + a real fallback" \
+  "[ \"\$(beh_sh copilot '$LINKBIN:/usr/bin:/bin' '$ABSREAL')\" = \"\$(beh_py copilot '$LINKBIN:/usr/bin:/bin' '$ABSREAL')\" ]"
+check "S238(FR1-D1). BEHAVIOUR parity (b) shim-first PATH + NO fallback" \
+  "[ \"\$(beh_sh copilot '$LINKBIN:/usr/bin:/bin' '')\" = \"\$(beh_py copilot '$LINKBIN:/usr/bin:/bin' '')\" ]"
+check "S238(FR1-D1). BEHAVIOUR parity (c) real CLI first on PATH" \
+  "[ \"\$(beh_sh copilot '$REALBIN:/usr/bin:/bin' '$ABSREAL')\" = \"\$(beh_py copilot '$REALBIN:/usr/bin:/bin' '$ABSREAL')\" ]"
+check "S238(FR1-D1). BEHAVIOUR parity (req4) an absolute shim + a real fallback" \
+  "[ \"\$(beh_sh '$SHIM' '$REALBIN:/usr/bin:/bin' '$ABSREAL')\" = \"\$(beh_py '$SHIM' '$REALBIN:/usr/bin:/bin' '$ABSREAL')\" ]"
+check "S238(FR1-D1). BEHAVIOUR parity — a fallback location that is itself a shim" \
+  "[ \"\$(beh_sh copilot '$LINKBIN:/usr/bin:/bin' '$SHIM')\" = \"\$(beh_py copilot '$LINKBIN:/usr/bin:/bin' '$SHIM')\" ]"
+# POSITIVE CONTROL for the comparison itself: a row whose two sides MUST differ
+# would be caught. (a) above is allow-with-substitution; (b) is a refusal — if
+# the comparator were blind, these two would compare equal.
+check "S238(FR1-D1). CONTROL — the comparator can tell an allow from a refusal" \
+  "[ \"\$(beh_py copilot '$LINKBIN:/usr/bin:/bin' '$ABSREAL')\" != \"\$(beh_py copilot '$LINKBIN:/usr/bin:/bin' '')\" ]"
+check "S238(FR1-D1). and no shim fixture was executed by any of it" "[ ! -e '$SENTINEL' ]"
+
+# ==========================================================================
+# S238 FIX ROUND 1, DEFECT 2. THE REFUSAL NEVER NAMED THE CURE THIS ROUND BUILT.
+#
+# Every daemon-side refusal ended "…put /opt/homebrew/bin ahead of it on PATH …
+# then restart the viewscreen" and NEVER mentioned $LCARS_COPILOT_BIN — the one
+# variable S238 added for exactly this, and the one an operator cannot discover
+# from the message. Words only: the guard's hint mechanism already knows how to
+# name a variable, so the daemon's hint now names one AND keeps the restart.
+echo "S238(FR1-D2). the daemon's refusal names LCARS_COPILOT_BIN, the cure that exists"
+DHINT_SH="$(bash -c '. "$1"; lcars_worker_bin_daemon_hint' _ "$GUARD")"
+check "S238(FR1-D2). the daemon hint names the variable" \
+  "printf '%s' \"\$DHINT_SH\" | grep -qF 'LCARS_COPILOT_BIN'"
+check "S238(FR1-D2). …and still ends with the restart (the daemon's PATH needs one)" \
+  "printf '%s' \"\$DHINT_SH\" | grep -qF 'restart the viewscreen'"
+out="$(guard_sh copilot "$LINKBIN:$REALBIN:/usr/bin:/bin" "$DHINT_SH")"
+check "S238(FR1-D2). the sentence offers LCARS_COPILOT_BIN pointed at the real CLI" \
+  "printf '%s' \"\$out\" | grep -qF \"LCARS_COPILOT_BIN=$REALBIN/copilot\""
+check "S238(FR1-D2). …and still ends 'then restart the viewscreen.'" \
+  "printf '%s' \"\$out\" | grep -qF 'then restart the viewscreen.'"
+check "S238(FR1-D2). …in ONE sentence (one line, one full stop at the end)" \
+  "[ \"\$(printf '%s\n' \"\$out\" | grep -vc '^rc=')\" = 1 ]"
+check "S238(FR1-D2). …byte-identical in the daemon's own copy" \
+  "[ \"\$(guard_sh copilot '$LINKBIN:$REALBIN:/usr/bin:/bin' \"\$DHINT_SH\")\" = \"\$(guard_py copilot '$LINKBIN:$REALBIN:/usr/bin:/bin' \"\$DHINT_SH\")\" ]"
+# CONTROLS — the two original hint shapes are untouched.
+out="$(guard_sh copilot "$LINKBIN:$REALBIN:/usr/bin:/bin" 'restart the viewscreen')"
+check "S238(FR1-D2). CONTROL — a plain hint alone is still just ', then <hint>'" \
+  "printf '%s' \"\$out\" | grep -qF 'then restart the viewscreen.' && ! printf '%s' \"\$out\" | grep -qF 'LCARS_COPILOT_BIN'"
+out="$(guard_sh copilot "$LINKBIN:$REALBIN:/usr/bin:/bin" LCARS_COPILOT_BIN)"
+check "S238(FR1-D2). CONTROL — a variable hint alone still names only the variable" \
+  "printf '%s' \"\$out\" | grep -qF \"LCARS_COPILOT_BIN=$REALBIN/copilot\" && ! printf '%s' \"\$out\" | grep -qF ', then '"
+for p in "$LINKBIN:$REALBIN:/usr/bin:/bin" "$LINKBIN:/usr/bin:/bin"; do
+  check "S238(FR1-D2) parity. composed hint, PATH=${p//$TMPROOT/…}" \
+    "[ \"\$(guard_sh copilot '$p' \"\$DHINT_SH\")\" = \"\$(guard_py copilot '$p' \"\$DHINT_SH\")\" ]"
+done
+check "S238(FR1-D2) parity. composed hint on an ABSOLUTE shim path" \
+  "[ \"\$(guard_sh '$SHIM' '$REALBIN:/usr/bin:/bin' \"\$DHINT_SH\")\" = \"\$(guard_py '$SHIM' '$REALBIN:/usr/bin:/bin' \"\$DHINT_SH\")\" ]"
+out="$(guard_sh "$SHIM" "$REALBIN:/usr/bin:/bin" "$DHINT_SH")"
+check "S238(FR1-D2). an ABSOLUTE shim gets the variable AND the restart too" \
+  "printf '%s' \"\$out\" | grep -F \"LCARS_COPILOT_BIN=$REALBIN/copilot, then restart the viewscreen.\" >/dev/null"
 
 echo
 printf 'lcars worker-guard: %d passed, %d failed\n' "$pass" "$fail"

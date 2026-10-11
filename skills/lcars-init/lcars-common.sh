@@ -2825,9 +2825,101 @@ _dtc_js() {
     echo 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'; return 0
 }
 
+# python (S2xx) — the arm claims a RUNNER, never a MARKER. `pyproject.toml` /
+# `pytest.ini` / `tox.ini` says "this is a python repo"; it does NOT say that
+# pytest is the runner. pytest is a THIRD-PARTY package, absent on any machine
+# with a bare interpreter (`which pytest` → not found, measured on this build
+# machine), so claiming it from the marker alone recorded a runner that cannot
+# launch — and a real measured run then logged "the runner still cannot launch"
+# in the same breath as declaring the test system ESTABLISHED.
+#
+# That is the dotnet arm's regression one arm over (see its comment above):
+# CLAIMING ON THE MERE PRESENCE OF A MARKER. The cure is the dotnet arm's cure:
+#   • pytest EVIDENCE (its own config file/table, a conftest.py, or pytest
+#     DECLARED in a manifest) → `pytest`, unchanged, scope and all.
+#   • NO pytest evidence but python TEST FILES by unittest's own discovery
+#     convention → `python3 -m unittest discover`: the STANDARD-LIBRARY runner,
+#     zero install, shipped with the very interpreter the marker implies — and
+#     what the reviewer itself recommended on the measured stdlib repo.
+#   • NEITHER → return 1 and FALL THROUGH, so the generic Makefile /
+#     tests/run.sh arms still get their turn (a `pyproject.toml` beside a
+#     Makefile `test:` target seeded `pytest` and took `make test` away — the
+#     same regression the dotnet comment records). An empty answer is an honest
+#     answer; inventing a runner to fill the slot is the defect, not the cure.
+#
+# DETERMINISTIC BY CHOICE — there is deliberately NO `command -v pytest` probe.
+# Detection feeds config.json, the board's verdict and every gate worktree, so
+# the same repo must seed the same runner on the captain's laptop, in a worker's
+# worktree and in CI; a probe would make the seed depend on whichever venv
+# happened to be active at init time. A DECLARED-but-uninstalled pytest stays
+# `pytest` for the same reason: the repo's declaration is the evidence, and
+# "can it launch here" is a different question, already asked once — honestly,
+# and as `broken` rather than as a rewritten runner — by the first-token check
+# in lcars_test_readiness_status. `python3 -m unittest` needs no probe either:
+# the runner ships with the interpreter.
+#
+# LEDGERED (recorded, not fixed): the unittest leg looks for test files at the
+# top level and in the DIRECT children of `tests/` / `test/` only. A suite nested
+# deeper (`tests/unit/test_x.py`) therefore claims nothing rather than seeding a
+# `discover` that would collect zero tests — unclaimed, not mis-claimed.
+#
+# KEEP IN STEP with `_DETECT_MARKER_FILES`/`_DETECT_MARKER_GLOBS` in
+# web/lcars_serve/local_adapter.py — the board's memo must see every file this
+# arm reads, or CLI and board drift apart (the S146 D2 contract).
+
+# Any mention of pytest in a file the repo uses to DECLARE its tooling. Anchored
+# on both sides so `pytest-cov` / `pytest_asyncio` still count (they are pytest
+# plugins) while a word that merely ENDS in pytest cannot match.
+_DTC_PY_PYTEST_RE='(^|[^A-Za-z0-9_])(pytest|py\.test)'
+
+_dtc_py_pytest_evidence() {   # 0 when this repo declares pytest as its runner
+  local f
+  [ -f "$TOPLEVEL/pytest.ini" ]  && return 0   # pytest's own config file
+  [ -f "$TOPLEVEL/conftest.py" ] && return 0   # pytest's own fixture file
+  for f in pyproject.toml setup.cfg setup.py tox.ini Pipfile; do
+    [ -f "$TOPLEVEL/$f" ] || continue
+    grep -Eq "$_DTC_PY_PYTEST_RE" "$TOPLEVEL/$f" 2>/dev/null && return 0
+  done
+  for f in "$TOPLEVEL"/requirements*.txt; do   # nullglob-safe (bash-3.2)
+    [ -e "$f" ] || continue
+    grep -Eq "$_DTC_PY_PYTEST_RE" "$f" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# Prints "<start-dir>|<pattern-or-empty>" for a unittest-discoverable layout, or
+# returns 1. The PATTERN matters: `discover`'s default is `test*.py`, so a repo
+# whose files are all `*_test.py` needs `-p` or it collects nothing (measured).
+_dtc_py_unittest_layout() {
+  local d f
+  for d in tests test .; do
+    [ "$d" = "." ] || [ -d "$TOPLEVEL/$d" ] || continue
+    for f in "$TOPLEVEL/$d"/test*.py; do
+      [ -e "$f" ] && { printf '%s|' "$d"; return 0; }
+    done
+    for f in "$TOPLEVEL/$d"/*_test.py; do
+      [ -e "$f" ] && { printf '%s|*_test.py' "$d"; return 0; }
+    done
+  done
+  return 1
+}
+
 _dtc_python() {
+  # The MARKER GATE is unchanged — the same three files decide whether this arm
+  # is asked at all. Only what it does once asked has changed.
   [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ] || return 1
-  echo 'pytest "${LCARS_TESTS_DIR:-.}"'
+  if _dtc_py_pytest_evidence; then
+    echo 'pytest "${LCARS_TESTS_DIR:-.}"'
+    return 0
+  fi
+  local layout dir pat
+  layout="$(_dtc_py_unittest_layout)" || return 1
+  dir="${layout%%|*}"; pat="${layout#*|}"
+  if [ -n "$pat" ]; then
+    echo "python3 -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\" -p \"$pat\""
+  else
+    echo "python3 -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\""
+  fi
 }
 
 _dtc_rust() { [ -f "$TOPLEVEL/Cargo.toml" ] || return 1; echo "cargo test"; }

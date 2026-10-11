@@ -940,10 +940,25 @@ check "E-5 the report says, in one plain sentence, which screens it could not se
    grep -qi 'the automation bar' '$TMPROOT/report.md'"
 
 # ===========================================================================
-# G. THE SWEEP. Switching Number One ON picks up what is already at Verify.
+# G. THE CATCH-UP. Switching Number One ON NAMES what is already parked at
+#    Verify; `--sweep` is the word that works through it.
 # ===========================================================================
+#
+# WHAT MOVED, AND WHY (S241, the captain's ruling). G used to assert that
+# `xo on --engine …` SWEPT. It did, and it said so first — but a verb that
+# reads like a setting was starting real, billable work from one word: five
+# missions parked meant five builds launched, five browsers driven, five
+# workers hired. His ruling was "keep the catch-up, make it opt-in", so the
+# DEFAULT is now the free announcement and `--sweep` runs the backlog.
+#
+# NONE OF THESE SEVEN WERE DELETED. Each still proves a real contract, now
+# stated as two halves: the default starts NOTHING and says what is waiting,
+# and the opt-in behaves exactly as the default used to — same choice of
+# missions, same order, same cage, same stand-down between rounds. The opt-in
+# half is deliberately the CONTROL: break `--sweep` and G-1, G-5 and G-7..G-10
+# all go red.
 echo
-echo "G. xo on sweeps the unscored missions waiting at Verify"
+echo "G. xo on names what is waiting at Verify; --sweep works through it"
 
 SWEEPLOG="$TMPROOT/swept.txt"
 cat >"$TMPROOT/sweepbin" <<EOF
@@ -957,13 +972,22 @@ plant "$g1" lcars-unscored verify >/dev/null
 plant "$g1" lcars-scored   verify '{"status": "engaged", "score": "medium"}' >/dev/null
 plant "$g1" lcars-building implement >/dev/null
 : >"$SWEEPLOG"
+# THE DEFAULT — switch on with no flags at all.
 ( cd "$g1" && LCARS_XO_SWEEP_BIN="$TMPROOT/sweepbin" LCARS_COPILOT_BIN=/usr/bin/true \
     bash "$SCRIPT" on --engine copilot ) >"$TMPROOT/on1.out" 2>&1
-check "G-1 only the mission with NO score on record is swept" \
-  "[ \"\$(cat '$SWEEPLOG')\" = 'lcars-unscored' ]"
-check "G-2 it says what it picked up, in plain words" \
-  "grep -q \"I'm reviewing 1 mission that was waiting at Verify\" '$TMPROOT/on1.out' && \
-   grep -q 'lcars-unscored' '$TMPROOT/on1.out'"
+default_swept="$(cat "$SWEEPLOG")"
+# THE OPT-IN, same repo — and this half is the control for the whole section.
+: >"$SWEEPLOG"
+( cd "$g1" && LCARS_XO_SWEEP_BIN="$TMPROOT/sweepbin" LCARS_COPILOT_BIN=/usr/bin/true \
+    bash "$SCRIPT" on --engine copilot --sweep ) >"$TMPROOT/on1b.out" 2>&1
+check "G-1 switching on alone starts NOTHING; --sweep takes only the mission with no score on record" \
+  "[ -z '$default_swept' ] && [ \"\$(cat '$SWEEPLOG')\" = 'lcars-unscored' ]"
+check "G-2 it NAMES what is waiting and the one word that starts it — and only then claims to be reviewing" \
+  "grep -q '1 mission is waiting at Verify with no score of mine' '$TMPROOT/on1.out' && \
+   grep -q 'lcars-unscored' '$TMPROOT/on1.out' && \
+   grep -q 'lcars xo on --sweep' '$TMPROOT/on1.out' && \
+   ! grep -q \"I'm reviewing\" '$TMPROOT/on1.out' && \
+   grep -q \"I'm reviewing 1 mission that was waiting at Verify\" '$TMPROOT/on1b.out'"
 
 # A verdict on disk is a score on record too — the other two places.
 g2="$(new_repo)"
@@ -974,11 +998,16 @@ plant "$g2" lcars-optedout verify '{"optOut": true}' >/dev/null
 ( cd "$g2" && LCARS_XO_SWEEP_BIN="$TMPROOT/sweepbin" LCARS_COPILOT_BIN=/usr/bin/true \
     bash "$SCRIPT" on --engine copilot ) >"$TMPROOT/on2.out" 2>&1
 check "G-3 a look already on disk counts as a score; an opted-out mission is left alone" \
-  "[ ! -s '$SWEEPLOG' ] && ! grep -q \"I'm reviewing\" '$TMPROOT/on2.out'"
+  "[ ! -s '$SWEEPLOG' ] && ! grep -q \"I'm reviewing\" '$TMPROOT/on2.out' && \
+   ! grep -q 'waiting at Verify' '$TMPROOT/on2.out'"
 
 # A mission stamped by ANOTHER laptop is not ours to review.
 g3="$(new_repo)"
 m="$(plant "$g3" lcars-remote verify)"
+# A LOCAL one beside it, so this check has a positive half: the sweep must take
+# ours and leave theirs. Without it, "nothing was swept" would also be true of
+# a sweep that was simply broken.
+plant "$g3" lcars-ours verify >/dev/null
 "$PY" - "$m/state.json" <<'PY'
 import json, sys
 p = sys.argv[1]
@@ -989,9 +1018,12 @@ out["cloneId"] = "zzzzzzzz"
 json.dump(out, open(p, "w"), indent=1)
 PY
 : >"$SWEEPLOG"
+# WITH `--sweep`, deliberately: under the default NOTHING is swept, so this
+# would pass for free and prove nothing about the clone filter.
 ( cd "$g3" && LCARS_XO_SWEEP_BIN="$TMPROOT/sweepbin" LCARS_COPILOT_BIN=/usr/bin/true \
-    bash "$SCRIPT" on --engine copilot ) >"$TMPROOT/on3.out" 2>&1
-check "G-4 another laptop's mission is not swept" "[ ! -s '$SWEEPLOG' ]"
+    bash "$SCRIPT" on --engine copilot --sweep ) >"$TMPROOT/on3.out" 2>&1
+check "G-4 another laptop's mission is not swept, even when the sweep is asked for" \
+  "[ \"\$(cat '$SWEEPLOG')\" = 'lcars-ours' ]"
 
 # STANDING DOWN STOPS THE CHAIN — between missions, never mid-round.
 g4="$(new_repo)"
@@ -1013,10 +1045,10 @@ EOF
 chmod +x "$TMPROOT/standdownbin"
 : >"$SWEEPLOG"
 ( cd "$g4" && LCARS_XO_SWEEP_BIN="$TMPROOT/standdownbin" LCARS_COPILOT_BIN=/usr/bin/true \
-    bash "$SCRIPT" on --engine copilot ) >"$TMPROOT/on4.out" 2>&1
-check "G-5 standing down mid-round stops the chain AFTER that mission, not before it" \
+    bash "$SCRIPT" on --engine copilot --sweep ) >"$TMPROOT/on4.out" 2>&1
+check "G-5 on the opt-in path, standing down mid-round stops the chain AFTER that mission, not before it" \
   "[ \"\$(grep -c . '$SWEEPLOG')\" = '1' ] && grep -qi 'stood down' '$TMPROOT/on4.out'"
-check "G-6 the sweep is journaled on each mission it takes" \
+check "G-6 the opt-in sweep is journaled on each mission it takes" \
   "grep -q 'swept' '$g1/.git/lcars/missions/lcars-unscored/journal.jsonl' 2>/dev/null || \
    grep -rq 'swept' '$g1/.git/lcars/missions/lcars-unscored/' 2>/dev/null"
 
@@ -1042,10 +1074,12 @@ chmod +x "$TMPROOT/hangbin"
 started="$(date +%s)"
 ( cd "$g5" && LCARS_XO_SWEEP_BIN="$TMPROOT/hangbin" LCARS_XO_LOOK_TIMEOUT=2 \
     LCARS_COPILOT_BIN=/usr/bin/true \
-    bash "$SCRIPT" on --engine copilot ) >"$TMPROOT/on5.out" 2>&1
+    bash "$SCRIPT" on --engine copilot --sweep ) >"$TMPROOT/on5.out" 2>&1
 elapsed=$(( $(date +%s) - started ))
+# `-gt 1` is half the point: with no sweep at all this would be instant and
+# the cage would be proven by nothing. The look must really have been started.
 check "G-7 a sweep look that outstays the cage is stopped, not waited on" \
-  "[ '$elapsed' -lt 20 ]"
+  "[ '$elapsed' -lt 20 ] && [ '$elapsed' -gt 1 ]"
 check "G-8 …and it says so LOUDLY, naming the mission and the limit" \
   "grep -qi 'lcars-slow' '$TMPROOT/on5.out' && \
    grep -qi 'still looking after' '$TMPROOT/on5.out'"

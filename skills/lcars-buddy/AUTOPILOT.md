@@ -137,6 +137,9 @@ autopilot.sh heartbeat install
 **This is the whole interrupt budget for the setup.** A second question round
 is a defect in how you ran this step, not a fact about the spec.
 
+An empty scope is unfinished alignment: set it with `init --scope` or
+`autopilot.sh record scope '["M0","M1"]'` before building or claiming completion.
+
 ---
 
 ## 2. Captain-only steps, collected up front
@@ -185,18 +188,18 @@ lie in the ledger and deleting the step loses the ask; neither is the answer.
 ## 3. Foundation — establish the vision, then re-check the test command
 
 A repo with no test foundation refuses a normal mission. The foundation is its
-own initialization mission, and LCARS already has the verb for it:
+own initialization mission; autopilot `init` and every `next` check the repo with
+the same readiness signal as `lcars init`, so no `foundation.required` or
+`foundation.done` flag is needed. LCARS already has the verb for it:
 
 ```bash
 bash ~/.claude/skills/lcars-init/establish-vision.sh --file \
      --stack "<the stack>" --slice "<a thin end-to-end slice>" --engine copilot
 ```
 
-Do **not** write your own scaffold. Mark it done when it lands:
-
-```bash
-autopilot.sh record foundation.done true
-```
+Do **not** write your own scaffold. Drive the initialization mission, do its
+Verify gate and land it before filing the first product milestone; `next`
+finds it by LCARS's existing `missionType: initialization`, not an autopilot flag.
 
 **Immediately after it is approved, check `testCommand`.** `approve` has
 promoted an uninstalled runner over a captain-set stdlib command before. `land`
@@ -216,16 +219,24 @@ owning its own line as a heading (`## Goal`). (A complex mission filed with
 `--adr` needs each ADR to carry **Context**, **Decision**, **Alternatives
 considered** and **Consequences** too.)
 
+For each unfiled milestone, `next` prints mutually exclusive branches: judge
+**its own spec/brief**. If it **has screens**, take `holodeck` before filing;
+otherwise go straight to `file`. This is model judgement, not a recorded flag.
+
+**Holodeck means the real surface**: open a named Program with
+`holodeck_start`, author there through `holodeck_say`, read the concept's open
+questions, `derive`, then hand it to a Mission through Align and record its id.
+`holodeck_end` closes the worker; its own rooms and Programs survive in the
+sidecar. A hand-authored `mockup.html` attached at CLI filing is an
+**attachment-only** path: it never passes through the surface, so the Holodeck
+stays empty. **State which path you took.**
+
 File through the real verb, with a real PRD on disk:
 
 ```bash
 bash ~/.claude/skills/lcars-file/file.sh --prd <path/to/prd.md> --engine copilot
 autopilot.sh record missions.M0.id <the-mission-id-it-prints>
 ```
-
-Use the holodeck first when the milestone **has screens** (design → `say` the
-brief → read the concept's open questions → `derive` → align), and the CLI front
-door otherwise.
 
 **The brief pattern that worked** (200–400 words): the product context and
 what is already built; the exact experience in numbered steps; files and paths;
@@ -286,10 +297,11 @@ the *other* slot (§ 8) — not for watching.
 ## 6. The Verify gate — Number One, then the live check
 
 When a mission reaches `verify`, read Number One's verdict
-(`xo.sh report`, `xo/verdict.json`) — and then **do the live check yourself**,
-because on the modelled run Number One filed **0 of 31** bugs and every one came
-from the live check. Its misses were all *reach* errors, never judgement: no
-screen to look at, nothing seeded, stubs that made the seam untestable.
+(`xo.sh report`, `xo/verdict.json`) — then **do the live check yourself every
+time, regardless of its verdict. This is your standing job, never a fallback.**
+On the modelled run Number One filed **0 of 31** bugs and every one came from
+the live check. Its misses were all *reach* errors, never judgement: no screen
+to look at, nothing seeded, stubs that made the seam untestable.
 
 ### 6.1 Set it up with one command, then do the looking
 
@@ -415,11 +427,14 @@ one source, and the validator enforces each ticket's declared producer/consumer
 seams (S236/S237, landed 2026-10-01). Pasting either into a PRD duplicates what
 the harness already does.
 
-When the live check is clean, record that fact — `land` and `next` both read it:
+When the live check is clean, record that fact for the status readout:
 
 ```bash
 autopilot.sh record missions.M0.verified true
 ```
+
+Take the policy's action directly (`land` for a merge); `next` always returns
+the Verify gate while the mission is at `verify`, even with this flag set.
 
 And keep the progress page current, because it is what the captain reads on his
 phone:
@@ -513,6 +528,24 @@ After § 1, **exactly four things** reach him:
 
 1. A **product call** only he can make.
 2. A **scope change**.
+**A REFUSAL THAT NAMES ITS OWN CURE IS NOT A WALL (S260, 2026-10-08).** This
+rule forbids RETRYING BY ANOTHER ROUTE — it does not forbid doing the ONE thing
+the refusal explicitly told you to do. When LCARS refuses and names the
+sanctioned command that clears it (`xo off <mission>` before answering a
+mission Number One owns, `lcars update --test-command` for an unrecorded
+runner), RUN THAT COMMAND, record that you did and why, and carry on. Measured:
+a run stopped dead and waited on the captain for a documented one-line transfer
+the refusal itself had spelled out. Ask only when the cure is NOT named, or when
+running it would cross a `never`.
+
+**AND IF A MISSION CANNOT BE PROOF-GATED BECAUSE OF ITS OWN EARLIER ATTEMPTS,
+RETIRE AND RE-FILE IT — you already have that latitude.** A mission proves work
+by its tests failing on the parent and passing on the tip; once a failed attempt
+has COMMITTED its scaffold, the tests pass on the parent too and that mission
+can never go green again. That is a dead mission, not a question for the
+captain: archive it and re-file from a clean base (never delete), and say in
+your report that you did.
+
 3. A **standing-rule conflict** — including every permission denial, and the
    refused merge of § 7.
 4. An **LCARS bug with no verb-level workaround**.
@@ -612,7 +645,7 @@ loop:
   autopilot.sh next                          # the ONE next step + its heading here
     file       → file.sh --prd --engine      → record missions.<M>.id
     drive      → autopilot.sh drive <id>     (backgrounded; waiter on the process)
-    verify-gate→ xo report + the live check   → record missions.<M>.verified
+    verify-gate→ xo report + your live check → policy → land or the send-back loop
     land       → autopilot.sh land <id>      (approve + hygiene; exit 10 = ask)
     wait       → two at a time is the ceiling
   autopilot.sh status                        # the one screen, any time

@@ -907,6 +907,234 @@ else
   bad "H6. the zero-install early return changed (rc=$RRC ran: $(tr '\n' ';' < "$RMARK") events=$(rrefusals))"
 fi
 
+echo "== I. THE PYTHON ARM CLAIMS A RUNNER, NOT A MARKER =="
+
+# S2xx (2026-10-11, MEASURED). A real run drove LCARS against a bare
+# standard-library python project. `_dtc_python` claimed `pytest` on the MERE
+# PRESENCE of `pyproject.toml`, so the factory recorded `pytest` as the runner
+# and logged "the runner still cannot launch" in the same breath as declaring
+# the test system ESTABLISHED — because pytest is a THIRD-PARTY package and is
+# simply not installed on a machine with a bare interpreter (`which pytest` →
+# not found, measured on this build machine).
+#
+# This is the dotnet arm's regression, one arm over: CLAIMING ON A MARKER. The
+# cure is the dotnet arm's cure — claim only on POSITIVE EVIDENCE of a runner,
+# fall through when there is none, and never invent one to fill the slot.
+#
+# EVERY LEG BELOW IS BEHAVIOUR: the real `detect_test_cmd` (the entry point, not
+# the helper) driven against real temporary repositories on disk, and — on the
+# standard-library legs — the emitted command is then ACTUALLY RUN in that repo,
+# through `bash -c`, exactly as every gate runs it. A command that cannot launch
+# cannot pass these.
+dtc() { # repo → detect_test_cmd's answer for it
+  ( bash -c '. "'"$COMMON"'" >/dev/null 2>&1; TOPLEVEL="'"$1"'"; detect_test_cmd' )
+}
+pyrepo() { # name → a python repo with the given pyproject body on stdin
+  local d; d="$(mktemp -d "$TMPROOT/dtcpy-$1.XXXX")"
+  ( cd "$d" && git init -q && git config user.email t@t && git config user.name t )
+  cat > "$d/pyproject.toml"
+  printf '%s' "$d"
+}
+py_unittest_file() { # dir → a real, passing stdlib test file
+  printf 'import unittest\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(1 + 1, 2)\n' > "$1"
+}
+# Runs the DETECTED command in the repo, the way a gate would, and reports
+# whether it ran tests. Arguments stay LITERAL — never a variable the shell
+# would not word-split.
+runs_tests() { # repo cmd → 0 when the runner launched AND collected >0 tests
+  local out
+  out="$( cd "$1" && bash -c "$2" 2>&1 )" || return 1
+  printf '%s' "$out" | grep -Eq '^Ran [1-9][0-9]* test' || return 1
+  printf '%s' "$out" | grep -q '^OK' || return 1
+  return 0
+}
+
+PYTEST_WANT='pytest "${LCARS_TESTS_DIR:-.}"'
+
+# I1. THE CONTROL — a repo that genuinely uses pytest STILL GETS PYTEST. Four
+#     shapes of real pytest evidence, so the cure cannot be "delete the arm".
+d="$(pyrepo cfgtable <<'TOML'
+[project]
+name = "app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+TOML
+)"
+mkdir -p "$d/tests"; py_unittest_file "$d/tests/test_add.py"
+got="$(dtc "$d")"
+[ "$got" = "$PYTEST_WANT" ] \
+  && ok "I1a. CONTROL: a [tool.pytest.ini_options] table still seeds pytest" \
+  || bad "I1a. CONTROL BROKEN: a real pytest repo got '$got'"
+
+d="$(pyrepo declared <<'TOML'
+[project]
+name = "app"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+TOML
+)"
+mkdir -p "$d/tests"; py_unittest_file "$d/tests/test_add.py"
+got="$(dtc "$d")"
+[ "$got" = "$PYTEST_WANT" ] \
+  && ok "I1b. CONTROL: pytest DECLARED as a dependency still seeds pytest" \
+  || bad "I1b. CONTROL BROKEN: a declared-pytest repo got '$got'"
+
+d="$(pyrepo ini <<'TOML'
+[project]
+name = "app"
+TOML
+)"
+printf '[pytest]\n' > "$d/pytest.ini"
+got="$(dtc "$d")"
+[ "$got" = "$PYTEST_WANT" ] \
+  && ok "I1c. CONTROL: pytest.ini — pytest's own config file — still seeds pytest" \
+  || bad "I1c. CONTROL BROKEN: a pytest.ini repo got '$got'"
+
+d="$(pyrepo conftest <<'TOML'
+[project]
+name = "app"
+TOML
+)"
+printf 'import pytest\n' > "$d/conftest.py"
+got="$(dtc "$d")"
+[ "$got" = "$PYTEST_WANT" ] \
+  && ok "I1d. CONTROL: a conftest.py still seeds pytest" \
+  || bad "I1d. CONTROL BROKEN: a conftest.py repo got '$got'"
+
+# I1e. …and a DECLARED-but-UNINSTALLED pytest is still pytest. The repo's own
+#      choice is the evidence; "is it installed here" is a different question,
+#      answered honestly (and separately) by lcars_test_readiness_status.
+if ! command -v pytest >/dev/null 2>&1; then
+  ok "I1e. (this machine has NO pytest, and I1a-d still seeded it — the rule is the REPO's declaration, not the machine's state)"
+else
+  skip "I1e. pytest IS installed here, so I1a-d cannot prove the rule is machine-independent"
+fi
+
+# I2. THE DEFECT — a STANDARD-LIBRARY project must not be handed pytest, and
+#     what it IS handed has to actually run. Both halves, measured.
+d="$(pyrepo stdlib <<'TOML'
+[project]
+name = "app"
+requires-python = ">=3.9"
+TOML
+)"
+mkdir -p "$d/tests" "$d/src"
+printf 'def add(a):\n    return a + 1\n' > "$d/src/app.py"
+py_unittest_file "$d/tests/test_add.py"
+got="$(dtc "$d")"
+if printf '%s' "$got" | grep -q 'pytest'; then
+  bad "I2a. a standard-library project was handed pytest anyway: '$got'"
+else
+  ok "I2a. a standard-library project is NOT handed pytest"
+fi
+if printf '%s' "$got" | grep -q 'unittest discover'; then
+  ok "I2b. …it is handed the standard library's own runner"
+else
+  bad "I2b. …but it was not handed the stdlib runner either (got '$got')"
+fi
+if [ -n "$got" ] && command -v python3 >/dev/null 2>&1; then
+  if runs_tests "$d" "$got"; then
+    ok "I2c. …and that command REALLY RUNS and collects the repo's tests (not asserted — executed)"
+  else
+    bad "I2c. the seeded command did not run the repo's tests: $( cd "$d" && bash -c "$got" 2>&1 | tail -2 | tr '\n' ' ' )"
+  fi
+elif [ -z "$got" ]; then
+  bad "I2c. nothing was seeded for a repo that HAS runnable tests"
+else
+  skip "I2c. no python3 on this machine — the stdlib run cannot be executed"
+fi
+# …and the SAME command still runs when LCARS scopes it, which is what every
+# gate does. The scope is passed LITERALLY, never through an unquoted variable.
+if command -v python3 >/dev/null 2>&1 && printf '%s' "$got" | grep -q 'unittest discover'; then
+  if ( cd "$d" && LCARS_TESTS_DIR=tests bash -c "$got" 2>&1 | grep -q '^OK' ); then
+    ok "I2d. …and it honours an explicit \$LCARS_TESTS_DIR scope"
+  else
+    bad "I2d. the stdlib command breaks when LCARS scopes it"
+  fi
+fi
+
+# I2e. The other stdlib layout: test files at the TOP LEVEL, no tests/ dir. A
+#      command scoped to `tests` would collect nothing here, so the default
+#      scope must follow the evidence.
+d="$(pyrepo stdlibtop <<'TOML'
+[project]
+name = "app"
+TOML
+)"
+py_unittest_file "$d/test_app.py"
+got="$(dtc "$d")"
+if printf '%s' "$got" | grep -q 'pytest'; then
+  bad "I2e. a top-level stdlib layout was handed pytest: '$got'"
+elif command -v python3 >/dev/null 2>&1; then
+  if runs_tests "$d" "$got"; then
+    ok "I2e. a top-level stdlib layout gets a command that really runs its tests"
+  else
+    bad "I2e. the top-level stdlib command collected nothing (got '$got')"
+  fi
+else
+  skip "I2e. no python3 on this machine"
+fi
+
+# I3. NO BASIS TO CLAIM → the arm FALLS THROUGH, exactly as the dotnet arm does
+#     with no test project. A marker is not a runner, and inventing one to fill
+#     the slot is the defect, not the cure.
+d="$(pyrepo makefile <<'TOML'
+[project]
+name = "app"
+TOML
+)"
+printf 'test:\n\t@echo ran\n' > "$d/Makefile"
+got="$(dtc "$d")"
+[ "$got" = "make test" ] \
+  && ok "I3a. a pyproject with NO test evidence no longer steals the Makefile's \`make test\`" \
+  || bad "I3a. the python arm took an existing arm's answer away (got '$got')"
+
+d="$(pyrepo nothing <<'TOML'
+[project]
+name = "app"
+TOML
+)"
+got="$(dtc "$d")"
+[ -z "$got" ] \
+  && ok "I3b. …and with nothing to claim at all it claims NOTHING (no invented runner)" \
+  || bad "I3b. a bare pyproject still invented a runner: '$got'"
+
+# I3c. tox.ini / pytest.ini were markers too, and the same rule applies: a
+#      tox.ini NAMING pytest is evidence; one that does not is not.
+d="$(mktemp -d "$TMPROOT/dtcpy-tox.XXXX")"
+printf '[tox]\nenvlist = py311\n\n[testenv]\ndeps = pytest\ncommands = pytest\n' > "$d/tox.ini"
+got="$(dtc "$d")"
+[ "$got" = "$PYTEST_WANT" ] \
+  && ok "I3c. a tox.ini whose testenv runs pytest still seeds pytest" \
+  || bad "I3c. a pytest-running tox.ini lost its seed (got '$got')"
+
+# I4. THE READINESS SURFACE, end to end: the stdlib repo's verdict now rests on
+#     a runner that resolves, instead of on one that cannot launch.
+d="$(pyrepo verdict <<'TOML'
+[project]
+name = "app"
+TOML
+)"
+mkdir -p "$d/tests"; py_unittest_file "$d/tests/test_add.py"
+v="$( bash -c '. "'"$COMMON"'" >/dev/null 2>&1
+      TOPLEVEL="'"$d"'"
+      lcars_test_readiness_status "'"$d"'/.git/lcars/config.json" >/dev/null 2>&1
+      printf "%s\t%s\n" "$LCARS_TESTREADY_STATUS" "$LCARS_TESTREADY_SUGGESTION"' )"
+vst="${v%%	*}"; vsg="${v#*	}"
+if [ "$vst" = missing ] && printf '%s' "$vsg" | grep -q 'unittest discover'; then
+  ok "I4a. readiness suggests the stdlib runner for the measured repo shape"
+else
+  bad "I4a. readiness still suggests '$vsg' (status $vst)"
+fi
+first="${vsg%% *}"
+if [ -n "$first" ] && command -v "$first" >/dev/null 2>&1; then
+  ok "I4b. …and the first token of that suggestion RESOLVES on this machine (the old one did not)"
+else
+  bad "I4b. the suggested runner's first token ('$first') does not resolve"
+fi
+
 # ===========================================================================
 # G. ZERO SPEND
 # ===========================================================================

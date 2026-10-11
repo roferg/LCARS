@@ -1164,6 +1164,13 @@ function xoEntryMatchesChip(entry, chipKey) {
 var XO_ACTION_LABELS = {
   criteria: "Read the drawing", launched: "Launched the build",
   looked: "Looked at the build", actions: "Drove the build",
+  // S246 — a look has no clock, so the board needs to say what is in flight.
+  // The entry carries its steps BOTH as a `did` list (for the CLI report, which
+  // renders one line each) and as a `detail` sentence, which is the field the
+  // generic entry renderer already shows. That is why no renderer changed here.
+  looking: "Looking now", noted: "Wrote itself a note",
+  "no-page": "No page to open — going on what it can reach",
+  "reach-tree": "Set up its own copy of the build to run things in",
   silent: "Nothing to report this round", scored: "Scored the build",
   "score-overruled": "Corrected its own score",
   "filed-logs": "Filed bugs for the gaps",
@@ -10728,6 +10735,15 @@ function xoItemBlock(mi, report, c) {
   head.appendChild(el("span", "xo-item-title",
     String((c && c.text) || (c && c.id) || "")));
   item.appendChild(head);
+  /* AND EVERY ID THAT IS THIS ONE FAULT (S257). Grouping is presentation, so
+     nothing may vanish: the row the plan restated is named right here, in the
+     captain's own list, rather than being silently dropped from it. */
+  var alsoIs = (c && c.faultWith && c.faultWith.length) ? c.faultWith : null;
+  if (alsoIs) {
+    item.appendChild(el("div", "xo-item-also",
+      "One fault, counted once — your plan restates this as "
+      + alsoIs.join(", ") + "."));
+  }
 
   var body = el("div", "xo-item-body");
   var story = el("div", "xo-story");
@@ -10914,6 +10930,30 @@ function xoObsBlock(mi, report, o) {
 function xoItemsSection(mi, report, criteria, observations, barHost) {
   var wrap = el("div", "xo-items-wrap");
   var rows = criteria.map(function (c, i) { return { c: c, i: i, st: xoRowStatus(c) }; });
+  /* ONE FAULT, COUNTED ONCE (S257 fault 1c).
+
+     THE DEFECT THIS CLOSES. The contract is the PRD's requirements PLUS the
+     plan's acceptance criteria, and the plan mostly RESTATES the PRD — so when
+     both halves of a pair came back `gap` this list drew two rows for one
+     fault and the filter line said "Didn't work · 4" about two faults. The
+     captain's board was overstating what was wrong with his own build.
+
+     The grouping is a RECORD, not a guess: `xo-score.py` stamps `faultId` on
+     every row of a group and `faultPrimary` on the one that represents it,
+     joined on the plan's own `serves`/`direction: delivers` declaration (or,
+     for an unlinked pair, identical criterion text). Nothing here infers
+     anything. Rows with no stamp are untouched, so a verdict with no duplicate
+     in it draws exactly what it drew before.
+
+     NOTHING IS DELETED. The row that is drawn names every criterion id in its
+     group (see xoItemBlock), so coverage stays readable — and the counts are
+     still "the rows' own, counted where they are drawn", which is now the
+     count of FAULTS because the duplicates are no longer drawn twice. */
+  rows = rows.filter(function (r) {
+    var fid = (r.c && r.c.faultId) ? String(r.c.faultId) : "";
+    if (!fid) return true;
+    return !!(r.c && r.c.faultPrimary);
+  });
   // The bucket the record put each one in decides which comes first: what was
   // measured against HIS drawing and HIS flow, then what was merely noticed.
   // (The recorded array happens to hold the loose layout findings first.)
@@ -11018,6 +11058,22 @@ function xoItemsSection(mi, report, criteria, observations, barHost) {
     }
     key += " Measurements never change your grade.";
     barTo.appendChild(el("div", "xo-filters-key", key));
+  }
+  /* AND WHY THESE COUNTS ARE SMALLER THAN THE BARS ABOVE (S257). The coverage
+     bars count every row, because coverage of your PRD and coverage of your
+     plan are two real questions. This list counts FAULTS. When the plan
+     restates a requirement the two numbers differ by exactly that, and the
+     difference is said here rather than left to read as a contradiction —
+     which is the whole fault this session exists to stop. */
+  var restated = 0;
+  rows.forEach(function (r) {
+    if (r.c && r.c.faultWith && r.c.faultWith.length) restated += r.c.faultWith.length;
+  });
+  if (restated) {
+    barTo.appendChild(el("div", "xo-filters-key",
+      "Your plan restates " + restated + " of the things you asked for. "
+      + "Each pair is ONE fault here, counted once, with both ids on the row. "
+      + "The coverage bars above count every row, so they read higher."));
   }
   wrap.appendChild(list);
   return wrap;

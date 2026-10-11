@@ -73,10 +73,13 @@ TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 # run_pty SECS CMD... -> stdout is the cage's report; the FIRST line is
-#   "ELAPSED <n>s EXIT <code>"  or  "ELAPSED <n>s *** TIMED OUT -> HUNG ...".
+#   "ELAPSED <n>s EXIT <code>"  or  "ELAPSED <n>s *** TIMED OUT — exceeded ...".
 run_pty() { local s="$1"; shift; python3 "$CAGE" "$s" python3 "$PTY" "$@" 2>&1; }
 elapsed() { sed -n '1s/^ELAPSED \([0-9.]*\)s.*/\1/p' <<<"$1"; }
-hung()    { grep -q 'TIMED OUT -> HUNG' <<<"$1"; }
+# The cage reports a TIMEOUT, which is all it can observe; these probes plant a
+# genuine block, so for THEM a timeout is a hang. The naming keeps that
+# interpretation here, in the test that earned it, and out of the instrument.
+timed_out() { grep -q 'TIMED OUT' <<<"$1"; }
 
 echo "harness (S208): every probe from a pty, stdin OPEN, caged by process group"
 echo
@@ -99,13 +102,13 @@ ctrl_out="$(run_pty "$CTRL_SECS" bash "$TMPROOT/planted-hang.test.sh")"
 ctrl_el="$(elapsed "$ctrl_out")"
 echo "  [control] planted hang, pty, stdin open: ELAPSED ${ctrl_el}s"
 check "1a. CONTROL: the planted hang IS caught by this detector" \
-  "hung \"\$ctrl_out\""
+  "timed_out \"\$ctrl_out\""
 # ...and the same planted suite with stdin CLOSED does NOT hang. That asymmetry
 # is the whole bug: a </dev/null run is blind to it.
 ctrl_dn="$(python3 "$CAGE" "$CTRL_SECS" bash "$TMPROOT/planted-hang.test.sh" 2>&1)"
 echo "  [control] planted hang, stdin CLOSED: $(sed -n 1p <<<"$ctrl_dn")"
 check "1b. CONTROL: stdin CLOSED hides the same hang (why </dev/null proves nothing)" \
-  "! hung \"\$ctrl_dn\""
+  "! timed_out \"\$ctrl_dn\""
 
 # --- 2. Real suites terminate from a pty with stdin OPEN -------------------
 # lcars-pause and lcars-buddy were MEASURED hanging from a pty before the cure
@@ -117,7 +120,7 @@ for s in lcars-pause lcars-buddy run-runner; do
   out="$(run_pty "$HANG_SECS" bash "$DIR/$s.test.sh")"
   el="$(elapsed "$out")"
   echo "  [probe] $s.test.sh from a pty, stdin open: ELAPSED ${el}s"
-  check "2. $s.test.sh TERMINATES from a pty with stdin open" "! hung \"\$out\""
+  check "2. $s.test.sh TERMINATES from a pty with stdin open" "! timed_out \"\$out\""
 done
 
 # --- 3. run.sh does not stall on a blocking suite --------------------------
@@ -129,17 +132,33 @@ cat >"$seed/aa-trivial.test.sh" <<'EOF'
 set -uo pipefail
 echo "trivial: 1 passed, 0 failed"
 EOF
+cat >"$seed/bb-failing.test.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+echo "failing: deliberate exit 7"
+exit 7
+EOF
 run_out="$(run_pty "$HANG_SECS" bash "$DIR/run.sh" "$seed")"
+run_clean="$(tr -d '\r' <<<"$run_out")"
 run_el="$(elapsed "$run_out")"
 echo "  [probe] run.sh over a seeded dir with a BLOCKING suite: ELAPSED ${run_el}s"
 check "3a. run.sh over a blocking suite TERMINATES (does not stall the gate)" \
-  "! hung \"\$run_out\""
+  "! timed_out \"\$run_out\""
 check "3b. run.sh still ran the other suite in that directory" \
   "grep -q 'trivial: 1 passed' <<<\"\$run_out\""
 check "3c. run.sh's \$1 target-directory resolution is unchanged (BUG-009)" \
   "grep -q 'TESTS_DIR=\"\$1\"' '$DIR/run.sh'"
 check "3d. run.sh honours \$LCARS_TESTS_DIR (BUG-009)" \
   "grep -q 'TESTS_DIR=\"\$LCARS_TESTS_DIR\"' '$DIR/run.sh'"
+check "3e. run.sh names each suite before it starts" \
+  "grep -q '^SUITE aa-trivial.test.sh\$' <<<\"\$run_clean\" && grep -q '^SUITE bb-failing.test.sh\$' <<<\"\$run_clean\""
+check "3f. run.sh reports elapsed time and the real exit status for each suite" \
+  "grep -Eq '^RESULT aa-trivial.test.sh elapsed=[0-9]+s exit=0\$' <<<\"\$run_clean\" && grep -Eq '^RESULT bb-failing.test.sh elapsed=[0-9]+s exit=7\$' <<<\"\$run_clean\""
+check "3g. run.sh summarizes suites run, suites failed and total elapsed time" \
+  "grep -Eq '^SUITES run=3 failed=1 elapsed=[0-9]+s\$' <<<\"\$run_clean\""
+full_gate_names="$(for f in "$DIR"/*.test.sh; do basename "$f"; done)"
+check "3h. the full gate includes web-python.test.sh by name" \
+  "grep -qx 'web-python.test.sh' <<<\"\$full_gate_names\""
 
 # --- 4. The class cannot return in file #23 --------------------------------
 # A `cat` with no file operand and no `<` redirect reads INHERITED stdin. The
@@ -213,6 +232,275 @@ check "5b. no suite carries one half of the cured pair without the other" \
   "[ -z \"\$pair_list\" ]"
 check "5c. the guard is not vacuous: the cured helper is present, and every definer is accounted for" \
   "[ \"\$n_cured\" -gt 0 ] && [ \$((n_cured + n_form)) -eq \"\$n_def\" ]"
+echo
+# ==========================================================================
+# PART 6 — THE CAGE'S OWN CONTRACT (S244).
+#
+# cage.py is the harness's ONLY safety device: every unattended suite is run
+# through it. Two defects in it are why "the full suite is the merge gate and
+# nobody has ever completed a run" stayed a mystery for a year.
+#
+# 6a THE CAGE DESTROYS THE EVIDENCE. It buffers the caged process's output in
+#    `communicate()` and prints it only on a CLEAN exit. On the timeout path it
+#    raises TimeoutExpired, the buffered bytes are dropped on the floor, and all
+#    the operator is handed is "TIMED OUT -> HUNG". So the one run that most
+#    needs a diagnosis is the one run that produces none — you cannot see WHICH
+#    assertion it stopped after, which is the only fact that tells a HANG from a
+#    merely SLOW suite. Three suites were recorded as hung on this evidence and
+#    all three were simply long.
+#
+# 6b THE CAGE ORPHANS ITS CHILD WHEN IT IS ITSELF KILLED. It spawns with
+#    start_new_session=True — deliberately, so the timeout path can killpg the
+#    whole tree — but that also puts the child in a session NOTHING ELSE KNOWS
+#    ABOUT. cage.py installs no signal handler, so if cage.py is killed before
+#    its own timeout fires, it dies without reaping, and the caged suite runs on
+#    for ever: ppid 1, its own process group, invisible to any group kill aimed
+#    at the launcher. 26 such strays were reaped by hand, the oldest 28 hours
+#    old. A cage that leaks the thing it was caging is not a cage.
+# ==========================================================================
+printf '\n  -- 6: the cage keeps the evidence, and does not leak its child --\n'
+
+# 6a. A command that TALKS and then hangs. Its words must survive the timeout.
+cat >"$TMPROOT/noisy-hang.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "MARKER-BEFORE-THE-HANG"
+while :; do sleep 0.2; done
+EOF
+noisy="$(python3 "$CAGE" 4 bash "$TMPROOT/noisy-hang.sh" 2>&1)"
+check "6a. a TIMED-OUT cage still prints what the caged process said before it stopped" \
+  "grep -q 'MARKER-BEFORE-THE-HANG' <<<\"\$noisy\""
+check "6a-control — the cage still reports the timeout itself" \
+  "grep -q 'TIMED OUT' <<<\"\$noisy\""
+
+# ---- 6c. THE CAGE MUST NOT STATE A CONCLUSION IT CANNOT SUPPORT ----------
+# The old line read "*** TIMED OUT -> HUNG (group killed) ***". It says HUNG; it
+# only knows TIMED OUT. From where the cage stands, "hung", "slow", "waiting on
+# a lock" and "legitimately long" are indistinguishable — it observed exactly one
+# fact: the child outlived the deadline. The inference cost real money: three
+# suites (lcars-xo-observe, 240.6s/182 passed; lcars-xo-render-gate, 441.7s/38
+# passed) were measured under a 150s cage, the cage ASSERTED "HUNG", the
+# orchestrator believed the instrument, and all shipping was recorded as blocked
+# on hangs that do not exist. A measuring instrument reports its measurement.
+check "6c. the timeout line does NOT assert HUNG — the cage cannot know that" \
+  "! grep -qi 'HUNG' <<<\"\$noisy\""
+# The reader's next move is "was it slow, or stuck?". The cage must say that it
+# cannot answer that, and point at the child's own output (preserved by 6a),
+# which is where the answer actually is.
+check "6c. …and it says the cage cannot tell SLOW from STUCK" \
+  "grep -qi 'slow' <<<\"\$noisy\" && grep -qi 'stuck\|hang' <<<\"\$noisy\""
+
+# ---- 6d. NAME THE DEADLINE, so a budget problem reads as a budget problem --
+# A 150s cage on a 441s suite is a bad budget, not a bad product — but only if
+# the line states the budget it exceeded. Two deadlines are probed so the check
+# cannot pass on a hardcoded constant.
+check "6d. the timeout line names the deadline it exceeded (4s)" \
+  "grep -q '4s deadline' <<<\"\$noisy\""
+noisy2="$(python3 "$CAGE" 2 bash "$TMPROOT/noisy-hang.sh" 2>&1)"
+check "6d-control — a DIFFERENT cage reports ITS own deadline, not 4s" \
+  "grep -q '2s deadline' <<<\"\$noisy2\" && ! grep -q '4s deadline' <<<\"\$noisy2\""
+
+# ---- 6e. the machine-readable contract is untouched ----------------------
+# Every consumer keys on a first line that starts "ELAPSED <n>s"; harness's own
+# elapsed() reads it with `sed -n 1s`. Honesty must not cost the contract.
+check "6e. the timeout line still starts with the parseable ELAPSED field" \
+  "[ -n \"\$(elapsed \"\$noisy\")\" ]"
+
+# 6b. Kill the CAGE, not the caged process, and see whether the child survives.
+# The child records its own pid on disk so the roll call is against a FILE, never
+# a live `ps | grep` (which matches its own command line and reports phantoms).
+cat >"$TMPROOT/pidfile-hang.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$1"
+while :; do sleep 0.2; done
+EOF
+victim_pidfile="$TMPROOT/caged.pid"
+rm -f "$victim_pidfile"
+python3 "$CAGE" 600 bash "$TMPROOT/pidfile-hang.sh" "$victim_pidfile" >/dev/null 2>&1 &
+cage_pid=$!
+# Wait for the child to announce itself, on disk.
+cw=0; while [ "$cw" -lt 60 ] && [ ! -s "$victim_pidfile" ]; do cw=$((cw + 1)); sleep 0.1; done
+caged_pid="$(cat "$victim_pidfile" 2>/dev/null || true)"
+check "6b-control — the caged child really did start (the probe is not vacuous)" \
+  "[ -n \"\$caged_pid\" ] && kill -0 \"\$caged_pid\" 2>/dev/null"
+# SIGTERM the cage itself. This is the catchable case — what an orchestrator,
+# a shell or a session teardown actually sends.
+kill -TERM "$cage_pid" 2>/dev/null || true
+wait "$cage_pid" 2>/dev/null || true
+# Give the reap a moment to land.
+rw=0; while [ "$rw" -lt 30 ] && kill -0 "$caged_pid" 2>/dev/null; do rw=$((rw + 1)); sleep 0.1; done
+survived=0; kill -0 "$caged_pid" 2>/dev/null && survived=1
+echo "  [orphan] cage pid $cage_pid TERMed; caged child $caged_pid survived=$survived"
+check "6b. a cage killed before its timeout REAPS its caged child instead of orphaning it" \
+  "[ \"\$survived\" -eq 0 ]"
+# Leave no orphan from this probe either, whichever way the assertion went.
+[ "$survived" -eq 1 ] && kill -KILL "$caged_pid" 2>/dev/null
+
+# ==========================================================================
+# PART 7 — A SUITE MUST REAP WHAT IT STARTS.
+#
+# This measures the thing itself: persistent processes newly adopted by pid 1
+# after a suite exits. A source scan cannot establish that. The one-second
+# settling window deliberately excludes the detached resolve-logs handoff,
+# which briefly reparents by design and then exits.
+# Attribution is best-effort: sampled ancestry, an inherited marker, or a
+# cwd/argv tie to this probe's unique tempdir. Candidates with none of those
+# ties are printed and counted as unattributed, NOT blamed or killed. A child
+# can shed every tie; these snapshots also cannot see short-lived orphans or
+# processes that never reparent to pid 1. The D6 controls live in
+# tests/harness-orphans.test.sh.
+# ==========================================================================
+printf '\n  -- 7: suites leave no attributed persistent ppid-1 processes --\n'
+
+command -v lsof >/dev/null || { echo "orphan probes require lsof" >&2; exit 1; }
+
+ppid1_snapshot() {
+  ps -eo pid=,ppid= | awk '$2 == 1 { print $1 }' | sort -n >"$1"
+}
+
+cat >"$TMPROOT/orphan-probe-wrapper.sh" <<'EOF'
+#!/usr/bin/env bash
+exec 9>"$1.marker"
+printf '%s\n' "$$" >"$1"
+shift
+exec "$@"
+EOF
+chmod +x "$TMPROOT/orphan-probe-wrapper.sh"
+
+record_descendants() { # <root-pid> <output-file>
+  local root="$1" out="$2" table="$TMPROOT/descendants.ps"
+  local frontier="$root" seen=" $root " next parent child
+  ps -eo pid=,ppid= >"$table"
+  while [ -n "$frontier" ]; do
+    next=""
+    for parent in $frontier; do
+      for child in $(awk -v p="$parent" '$2 == p { print $1 }' "$table"); do
+        case "$seen" in *" $child "*) continue ;; esac
+        printf '%s\n' "$child" >>"$out"
+        seen="$seen$child "
+        next="$next $child"
+      done
+    done
+    frontier="$next"
+  done
+}
+
+suite_path_signal() { # <pid> <argv>
+  local pid="$1" argv="$2" suite_dir cwd
+  suite_dir="$(cd "$TMPROOT" && pwd -P)"
+  cwd="$(lsof -nP -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+  case "$cwd/" in "$suite_dir/"*) return 0 ;; esac
+  case "$argv " in
+    *"$TMPROOT/"*|*"$suite_dir/"*|*"$TMPROOT "*|*"$suite_dir "*) return 0 ;;
+  esac
+  return 1
+}
+
+orphan_probe() { # <label> <deadline> <command...>
+  local label="$1" deadline="$2"
+  local before="$TMPROOT/$label.before"
+  local first="$TMPROOT/$label.first" after="$TMPROOT/$label.after"
+  local report="$TMPROOT/$label.cage" new="$TMPROOT/$label.new"
+  local rootfile="$TMPROOT/$label.root" observed="$TMPROOT/$label.observed"
+  local cage_pid root p argv candidates="$TMPROOT/$label.candidates"
+  local unattributed="$TMPROOT/$label.unattributed"
+  shift 2
+  : >"$observed"
+  ppid1_snapshot "$before"
+  python3 "$CAGE" "$deadline" bash "$TMPROOT/orphan-probe-wrapper.sh" "$rootfile" "$@" >"$report" 2>&1 &
+  cage_pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$rootfile" ]; do i=$((i + 1)); sleep 0.02; done
+  root="$(cat "$rootfile" 2>/dev/null || true)"
+  while kill -0 "$cage_pid" 2>/dev/null; do
+    [ -n "$root" ] && record_descendants "$root" "$observed"
+    sleep 0.05
+  done
+  wait "$cage_pid" 2>/dev/null || true
+  sleep 1
+  ppid1_snapshot "$first"
+  sleep 1
+  ppid1_snapshot "$after"
+  sort -nu "$observed" -o "$observed"
+  comm -13 "$before" "$first" | grep -Fxf "$after" >"$candidates" || true
+  : >"$new"
+  : >"$unattributed"
+  while read -r p; do
+    argv="$(ps -p "$p" -o args= 2>/dev/null)" || argv="<exited or argv unavailable>"
+    [ -n "$argv" ] || argv="<empty argv>"
+    # A fast double-fork can lose both ancestry and the inherited descriptor.
+    # Its suite path is independent evidence; no evidence means unknown, not safe.
+    if grep -qxF "$p" "$observed" ||
+       lsof -nP -a -p "$p" "$rootfile.marker" >/dev/null 2>&1 ||
+       suite_path_signal "$p" "$argv"; then
+      printf '%s\n' "$p" >>"$new"
+    else
+      printf '%s\t%s\n' "$p" "$argv" >>"$unattributed"
+      printf '  [orphan] %s unattributed pid=%s argv=%s\n' "$label" "$p" "$argv"
+    fi
+  done <"$candidates"
+  printf '  [orphan] %s: attributed=%s unattributed=%s\n' "$label" \
+    "$(wc -l <"$new" | tr -d ' ')" "$(wc -l <"$unattributed" | tr -d ' ')"
+  ORPHAN_NEW="$new"
+  ORPHAN_UNATTRIBUTED="$unattributed"
+  ORPHAN_REPORT="$report"
+}
+
+# CONTROL: the detector must first prove that it catches a suite which really
+# abandons a child. The marker is in argv so the measured process is explicit,
+# and the exact detected pid is removed before any real-suite measurement.
+cat >"$TMPROOT/planted-orphan.test.sh" <<'EOF'
+#!/usr/bin/env bash
+while :; do sleep 1; done &
+sleep 1
+exit 0
+EOF
+orphan_probe planted-orphan 10 bash "$TMPROOT/planted-orphan.test.sh"
+planted_count="$(wc -l <"$ORPHAN_NEW" | tr -d ' ')"
+check "7a. CONTROL: the ppid-1 probe catches a deliberately leaking suite" \
+  "[ \"\$planted_count\" -ge 1 ] && ps -p \"\$(head -1 '$ORPHAN_NEW')\" -o args= | grep -q 'planted-orphan.test.sh'"
+while read -r p; do
+  [ -n "$p" ] && kill -KILL "$p" 2>/dev/null || true
+done <"$ORPHAN_NEW"
+
+cat >"$TMPROOT/fast-orphan.py" <<'PY'
+import os, sys
+if os.fork():
+    os._exit(0)
+os.setsid()
+if os.fork():
+    os._exit(0)
+with open(sys.argv[1], "w") as handle:
+    handle.write(str(os.getpid()) + "\n")
+fd = os.open("/dev/null", os.O_RDWR)
+for target in (0, 1, 2):
+    os.dup2(fd, target)
+os.execl("/bin/sleep", "s256-fast-orphan", "300")
+PY
+orphan_probe fast-orphan 10 python3 "$TMPROOT/fast-orphan.py" "$TMPROOT/fast.pid"
+fast_pid="$(cat "$TMPROOT/fast.pid")"
+echo "  [orphan] fast double-fork: $(wc -l <"$ORPHAN_NEW" | tr -d ' ') detected"
+check "7c. CONTROL: a fast double-fork is caught even if its parent link was never sampled" \
+  "grep -qx \"\$fast_pid\" '$ORPHAN_NEW' && [ \"\$(ps -p \"\$fast_pid\" -o ppid= | tr -d ' ')\" = 1 ]"
+kill -KILL "$fast_pid" 2>/dev/null || true
+
+# Measure the detector against a small fixture; the gate owns product suites.
+cat >"$TMPROOT/clean-orphan.test.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 300 &
+child=$!
+kill -TERM "$child"
+wait "$child" 2>/dev/null || true
+EOF
+orphan_probe clean-orphan 10 bash "$TMPROOT/clean-orphan.test.sh"
+n="$(wc -l <"$ORPHAN_NEW" | tr -d ' ')"
+echo "  [orphan] clean fixture: $n attributed persistent new ppid-1 process(es); $(sed -n '1p' "$ORPHAN_REPORT")"
+check "7b. the clean fixture leaves ZERO attributed persistent ppid-1 processes" \
+  "[ \"\$n\" -eq 0 ] && grep -Eq '^ELAPSED [0-9.]+s EXIT 0$' '$ORPHAN_REPORT'"
+while read -r p; do
+  ps -p "$p" -o pid=,ppid=,args= 2>/dev/null | sed 's/^/    /'
+  kill -KILL "$p" 2>/dev/null || true
+done <"$ORPHAN_NEW"
+
 echo
 printf 'harness: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

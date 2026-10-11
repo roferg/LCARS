@@ -692,7 +692,7 @@ if [ -z "$WORKER_BIN" ] && [ -n "$STATE" ] && [ -f "$STATE" ]; then
   WORKER_BIN="$(json_str "$STATE" workerBin)"
 fi
 [ -n "$WORKER_BIN" ] || WORKER_BIN="claude"
-CLI="$(basename "$WORKER_BIN")"
+CLI="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
 
 mkdir -p "$OUTDIR"
 # NB: the `launching` record was already written at the TOP of this flow (before the
@@ -958,6 +958,11 @@ listen_ports_of_group() { # pgid -> ascending unique ports, one per line (may be
 url_port() { # url -> its explicit port, or empty
   local rest="$1" hostport port
   case "$rest" in *://*) rest="${rest#*://}" ;; esac
+  # A QUERY OR FRAGMENT IS NOT PART OF THE HOST (S257 fault 3). On a url with no
+  # path (`http://h:5173?a=b`) the whole remainder used to be read as the
+  # hostport, so the port came back EMPTY and a port swap discarded the query.
+  rest="${rest%%#*}"
+  rest="${rest%%\?*}"
   hostport="${rest%%/*}"
   case "$hostport" in
     \[*\]:*) port="${hostport##*]:}" ;;   # [::1]:5173
@@ -969,11 +974,22 @@ url_port() { # url -> its explicit port, or empty
   printf '%s\n' "$port"
 }
 
-url_with_port() { # url port -> the same url with that port (scheme/host/path kept)
-  local u="$1" p="$2" scheme rest hostport path host
+url_with_port() { # url port -> the same url with that port (scheme/host/path/query kept)
+  local u="$1" p="$2" scheme rest hostport path host tail=""
   case "$u" in
     *://*) scheme="${u%%://*}"; rest="${u#*://}" ;;
     *)     scheme="http";       rest="$u" ;;
+  esac
+  # THE QUERY AND FRAGMENT BELONG TO THE PATH SIDE, NOT THE HOST SIDE (S257).
+  # `http://h:5173?a=b` has no path, so the `*)` arm took `h:5173?a=b` as the
+  # hostport and `?a=b` was discarded — which is one of the two places a look's
+  # own seed went missing between rounds. Fragment first, then query, so they
+  # are put back in url order.
+  case "$rest" in
+    *\#*) tail="#${rest#*\#}"; rest="${rest%%\#*}" ;;
+  esac
+  case "$rest" in
+    *\?*) tail="?${rest#*\?}$tail"; rest="${rest%%\?*}" ;;
   esac
   case "$rest" in
     */*) hostport="${rest%%/*}"; path="/${rest#*/}" ;;
@@ -984,7 +1000,7 @@ url_with_port() { # url port -> the same url with that port (scheme/host/path ke
     *)      host="${hostport%%:*}" ;;
   esac
   [ -n "$host" ] || host="localhost"
-  printf '%s://%s:%s%s\n' "$scheme" "$host" "$p" "$path"
+  printf '%s://%s:%s%s%s\n' "$scheme" "$host" "$p" "$path" "$tail"
 }
 
 : > "$LOG"

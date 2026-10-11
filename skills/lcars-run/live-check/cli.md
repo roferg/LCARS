@@ -104,22 +104,40 @@ Repeat the happy path as a **second** actor with its own throwaway `HOME`, then
 have the two interact: the same name from both, a replace/overwrite from one
 while the other holds an older version, a read by one of what the other wrote.
 
+**Two actors IN SEQUENCE is a different check from two actors AT THE SAME
+INSTANT, and this item, as written, is only the first one.** Running the happy
+path as A and then as B shows whether they share state; it shows nothing about
+what happens when both write in the same moment. So treat the overlapping write
+as its own check: launch several writes together, without waiting for the first
+to return, and then read what was stored instead of the exit codes, which will
+all be zero. The shape is the last row of item 9.
+**And skipping that second check needs a FACT, not a judgement about how
+likely it is**: the one honest ground is that nothing here writes to shared
+storage at all. "The risk is low", "it is single-user", "it is only a local
+CLI" are the conditions under which writes are lost, not conditions under
+which they are safe. It costs a handful of calls launched in the background
+and a count.
+
 **Evidence:** `live-check/04-two-actors.txt` — both transcripts, labelled
-`ACTOR A (HOME=…)` and `ACTOR B (HOME=…)`, and the interaction at the end.
+`ACTOR A (HOME=…)` and `ACTOR B (HOME=…)`, the interaction at the end, and the
+writes you launched together with what was stored afterwards.
 
 **DEFECT:** either actor seeing the other's state through a shared cache or a
 hardcoded path; a collision that silently overwrites instead of refusing or
 versioning; an identity read from the machine rather than from the actor's HOME.
+Separately, for the writes launched together: fewer records stored than calls
+that reported success — a write lost with nobody told.
 
 ```run:
 {
   "argv": ["<cli>", "<the-main-verb>", "<the-same-value-actor-A-used>"],
   "cwd": "<worktree>",
-  "env": {"HOME": "<second-throwaway-home>"},
+  "env": {"HOME": "<throwaway-home-2>"},
   "evidence": "live-check/04-two-actors.txt",
   "expect": {
     "noCrossContamination": "actor B sees none of actor A's state",
-    "collisionHandled": "refused or versioned, never a silent overwrite"
+    "collisionHandled": "refused or versioned, never a silent overwrite",
+    "inSequenceIsNotAtTheSameInstant": "A then B is one check; both writing in the same moment is another — launch several writes together, without waiting for the first to return, then read the stored result, not the exit codes; skipping it needs the FACT that nothing here writes to shared storage, never a judgement that the risk is low"
   }
 }
 ```
@@ -250,7 +268,7 @@ along the chain in item 6.
 {
   "argv": ["<cli>", "<the-main-verb>", "<a-value-you-did-NOT-use-in-the-first-pass>"],
   "cwd": "<worktree>",
-  "env": {"HOME": "<a-fresh-throwaway-home>"},
+  "env": {"HOME": "<throwaway-home-3>"},
   "evidence": "live-check/08-reverify-cli-r2.txt",
   "expect": {
     "differentDataFromTheFirstPass": true,
@@ -259,3 +277,37 @@ along the chain in item 6.
   }
 }
 ```
+
+---
+
+### 9. Break a CLI rule with the near miss
+
+Verify each stated rule by **breaking it**, not only by satisfying it. Do not
+leave "almost valid" to instinct — the near miss for a value the product has
+already accepted is a **REARRANGEMENT of that value**, and the arrangements that
+find faults are a short list. Work the table, and record what happened either
+way.
+
+**SEVEN NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Six rearrange
+a value; the last rearranges the timing. Pick the rows that fit the rule in
+front of you — running all seven blindly is not the ask.
+
+| the near miss | what it is FOR |
+| --- | --- |
+| **a known-correct value, REARRANGED** — the same characters with the case flipped, or with two letters swapped | a rule that compares one value against another. Satisfy it, then offer the accepted value back in a different arrangement. **START HERE:** a rule that only ever compared raw bytes passes every exact-match attempt you can make. |
+| **whitespace-only**, and a valid value with a space in front of it or behind it | a rule that requires a value at all. An argument of one space is not empty and it is not a name, and trimming is usually the step nobody wrote. |
+| **unicode look-alikes and combining forms** of a string the product accepted | a rule that matches text. A Cyrillic а, a full-width character, and an é written as `e` plus a combining accent all read the same to the person at the keyboard. |
+| **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a rule that counts or ranges. The maximum ITSELF is the value most often wrong by one and the value most often never tried. |
+| **a second value that NORMALISES onto one already accepted** — not the same string, the same meaning after trimming, case-folding or unicode normalisation | a rule that says a value must be unique, or must not already exist. Offering the identical string twice proves only that the identical-string comparison works. |
+| **the almost-right identifier** — a real name, id or path with one character changed | a rule that looks something up. A lookup that quietly invents the missing thing, or carries on with an empty value, instead of failing is only visible this way. |
+| **two writers at once** — start the second before the first has finished, instead of running them one after the other from two homes | any rule about something being stored, counted, kept unique, or shared. A product that reads a whole file, changes it and writes it back keeps only the last writer's work, and **the giveaway is that nothing fails**: every caller is told it succeeded. Afterwards ignore the exit codes — they will all be zero — and compare the stored result against the number of calls that claimed success. **Skipping this row needs a FACT about the product, not an estimate of how likely it is.** The one honest ground for passing it over is that nothing here writes to shared storage at all — a thing that is checkably true or false. "The risk is low", "it is single-user", "it is only a local CLI" are NOT grounds: a single-user tool that reads one file, changes it and writes it back is the exact description of the thing that loses writes, so that reasoning recites the fault's own preconditions as the reason not to look for it. And the check is cheap — a handful of calls launched in the background and a count, not an investigation. |
+
+Say which rows you tried, with the exact argument you gave, and say which rows
+the rule in front of you made no sense for.
+
+**Evidence:** `live-check/09-near-miss-cli.txt` — the command, the nearly valid
+input, its exit code, stdout and stderr, and whether it was turned away.
+
+**DEFECT:** a refusal that never came is a fault; a refusal you never asked for
+is simply unchecked. Where the CLI has rules of its own, reach an ending those
+rules call a **LOSS** or a **REFUSAL**, not only the winning one.

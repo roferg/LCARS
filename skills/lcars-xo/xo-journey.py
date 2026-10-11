@@ -32,6 +32,10 @@ Usage:
   xo-journey.py build --criteria <criteria.json> [--drawing <drawing-parts.json>]
                       [--drawing-html <the drawing itself>] [--prd <prd.md>]
                       --out <journey.json> [--criteria-out <criteria.json>]
+  xo-journey.py coverage --journey <journey.json> --shots <shots-dir>
+                      --verdict <verdict.json> [--out <journey.json>]
+  xo-journey.py reach-record --journey <journey.json> --steps <actions-kept.json>
+                      [--out <journey.json>]
   xo-journey.py carry --walk <walk.json> --out <observations-fragment.json>
 """
 
@@ -287,6 +291,86 @@ def screens_from_html(path):
         out.append({"id": sid, "name": norm((m.group(1) or m.group(2)) if m else sid),
                     "headings": [h for h in heads if h], "parts": parts})
     return out
+
+
+# ─── WHERE A STEP MEANT TO LAND (S241) ───────────────────────────────────────
+#
+# THE MEASURED DEFECT. In the archived Kelmoor runs `shot-01.png`, `inv-full.png`
+# and `after-battle-full.png` are the SAME FILE — all three the ROSTER screen —
+# and the report cited two of them as the Inventory and the after-battle
+# evidence. Every run published `high`. The producer's record was never the
+# problem: `xo-drive.js` already writes the url, the title, the visible text and
+# every place's box beside each PNG. What no record carried was where the step
+# MEANT to land, so nothing downstream could notice that a shot landed somewhere
+# else.
+#
+# `expectLanding` is that missing half, stamped HERE, at the step's birth, from
+# the SAME source the step itself came from — and carrying that source in `from`
+# so a reader never has to guess. It is deliberately NOT the step's `expect`,
+# which is a sentence for the captain to read ("the dungeon screen"); this is the
+# machine-checkable pair beside it, and old journeys stay readable.
+#
+# IDENTICAL BYTES ARE THE SYMPTOM, NOT THE TEST. Nothing here (or in the
+# consumer) compares images: the check is intent against landing, both recorded.
+#
+# AND IT NEVER INVENTS ONE. A step the record cannot place — the PRD says "click
+# Preview" and never says what Preview shows — gets `unstated: True` and nothing
+# to check, which reads as "no intent was recorded" downstream. A guessed screen
+# would refuse good evidence, which is worse than refusing none.
+def landing_of(screen, source, url_pattern=""):
+    """The landing a DRAWN screen stands for: its id, and the headings a person
+    would see on it. `textMustInclude` is satisfied by ANY one of them, because
+    a drawn heading may be restyled; all of them missing is the signal."""
+    if not isinstance(screen, dict):
+        return {"screen": None, "textMustInclude": [], "from": source, "unstated": True}
+    texts = []
+    for h in (screen.get("headings") or []):
+        h = norm(h)
+        if h and h not in texts:
+            texts.append(h)
+    for q in (screen.get("parts") or []):
+        if str(q.get("tag") or "").lower() not in ("h1", "h2", "h3", "h4"):
+            continue
+        t = norm(q.get("text") or q.get("name"))
+        if t and t not in texts:
+            texts.append(t)
+    out = {"screen": screen.get("id") or (norm(screen.get("name")) or None),
+           "textMustInclude": texts[:4], "from": source}
+    if url_pattern:
+        out["urlPattern"] = url_pattern
+    if not out["screen"] and not out["textMustInclude"] and not url_pattern:
+        out["unstated"] = True
+    return out
+
+
+def unstated_landing(source):
+    """The honest answer when the record names a control but never says where it
+    leads. Nothing to check — and it SAYS that, rather than guessing a screen."""
+    return {"screen": None, "textMustInclude": [], "from": source, "unstated": True}
+
+
+ROUTE_PATH = re.compile(r"(?<![\w/])(/[a-z0-9][\w./-]*)")
+
+
+def route_pattern(text):
+    """A url path the requirement itself writes down, or "". The requirement is
+    the record; a path is never invented from a control's label."""
+    m = ROUTE_PATH.search(str(text or ""))
+    return re.escape(m.group(1)) if m else ""
+
+
+def screen_of_part(scr, part):
+    """Which drawn screen a part belongs to — read off the screen's own member
+    list, never worked out from the part's name."""
+    pid = str((part or {}).get("id") or "")
+    pname = low(norm((part or {}).get("name")))
+    for s_ in scr or []:
+        for q in s_.get("parts") or []:
+            if pid and str(q.get("id") or "") == pid:
+                return s_
+            if not pid and pname and low(norm(q.get("name"))) == pname:
+                return s_
+    return None
 
 
 def screens_of(drawing):
@@ -639,7 +723,73 @@ def link_criterion(c, steps, surf_ctrls, has_surface=True):
     return None, cannot_reason(str(c.get("text") or ""), surf_ctrls, has_surface)
 
 
-def build(criteria, drawing, html_screens=None, title="", prd=""):
+# ─── THE REASON IS A RECORD, NOT A GUESS (S240) ──────────────────────────────
+#
+# THE MEASURED DEFECT, from the archive (S227, prd-7). `coverage.criteria[].reason`
+# was ALWAYS `cannot_reason()`'s canned sentence — "nothing on the drawing
+# corresponds to this" — and on that mission it CONTRADICTED the real cause, which
+# `number-one.jsonl` had recorded in the worker's own words. The captain read the
+# generic sentence; the diagnosis was on disk three files away.
+#
+# So the journal is READ. A criterion with a recorded cause carries that cause,
+# verbatim and attributed. A criterion with none carries the canned text AND SAYS
+# SO — `(no record of why: this is the harness's guess from the drawing, not a
+# diagnosis)` — because the whole fault was a guess that read like a finding.
+NO_RECORD = "no record of why this could not be set up, so this sentence is a guess, not a diagnosis"
+
+# The text fields a journal entry may carry its cause in, in order. RECORD, DO
+# NOT INFER: only an entry that NAMES this criterion counts, and only the fields
+# a producer writes a sentence into.
+RECORD_FIELDS = ("reason", "cause", "detail", "why", "note", "couldNotCheck")
+
+
+def load_records(path):
+    """{criterion-id: the recorded cause} off `number-one.jsonl`.
+
+    One line per journal entry. The LAST entry naming a criterion wins — a later
+    look's diagnosis supersedes an earlier one, which is the same rule every
+    other record in this harness follows. A malformed line is skipped, never
+    fatal: a journal that cannot be parsed must not stop a journey being built."""
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except Exception:
+        return out
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        if not isinstance(d, dict):
+            continue
+        ids = []
+        if str(d.get("criterion") or "").strip():
+            ids.append(str(d["criterion"]).strip())
+        for c in (d.get("criteria") or []) if isinstance(d.get("criteria"), list) else []:
+            if isinstance(c, str) and c.strip():
+                ids.append(c.strip())
+        if not ids:
+            continue
+        text = ""
+        for f in RECORD_FIELDS:
+            v = " ".join(str(d.get(f) or "").split())
+            if v:
+                text = v
+                break
+        if not text:
+            continue
+        for i in ids:
+            out[i] = text
+    return out
+
+
+def build(criteria, drawing, html_screens=None, title="", prd="", records=None):
     crit = [c for c in (criteria or {}).get("criteria") or [] if isinstance(c, dict)]
     prd_text = low(" ".join(str(c.get("text") or "") for c in crit))
     scr = html_screens or (screens_of(drawing) if drawing else [])
@@ -670,6 +820,10 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                 mk(walk_steps, {"do": "click", "match": [name],
                                 "name": 'from the %s screen, click "%s"' % (s_["name"], name),
                                 "expect": "the %s screen" % nxt["name"],
+                                "expectLanding": landing_of(
+                                    nxt, "the drawing draws %s straight after %s, and this "
+                                         "step clicks %s's own forward control"
+                                         % (nxt["id"], s_["id"], s_["id"])),
                                 "why": "the drawing draws %s before %s, and this is %s's own "
                                        "forward control" % (s_["id"], nxt["id"], s_["id"])})
                 why_from.append("the drawing's screen order")
@@ -687,6 +841,9 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                                 "name": 'try "%s" with the field(s) still blank' % gname,
                                 "expect": "it refuses while the %s is blank"
                                           % (norm(fields[0].get("name"))[:40] or "field"),
+                                "expectLanding": landing_of(
+                                    s_, "the drawing's %s, the screen this gate is drawn on"
+                                        % s_["id"]),
                                 "why": "a gate that opens on an empty form is the fault a "
                                        "filled form can never show"})
                 why_from.append("the screen's own gate")
@@ -695,6 +852,9 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                 mk(fills, {"do": "type", "match": [fname] if fname else [], "text": TYPED_TEXT,
                            "name": 'type into "%s"' % (fname[:40] or "the first empty field"),
                            "expect": "what I typed shows on this screen and the next",
+                           "expectLanding": landing_of(
+                               s_, "the drawing's %s, the screen this field is drawn on"
+                                   % s_["id"]),
                            "why": "it is a field a person fills, drawn on %s" % s_["id"]})
                 why_from.append("the fields the screens carry")
             if g and fields:
@@ -710,6 +870,9 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                 mk(fill_all, {"do": "type-all", "match": [], "text": TYPED_TEXT,
                               "name": "fill every field this screen still wants",
                               "expect": "no empty field is left before the gate is tried",
+                              "expectLanding": landing_of(
+                                  s_, "the drawing's %s, the screen these fields are drawn on"
+                                      % s_["id"]),
                               "why": "the gate's filled phase says nothing while the form "
                                      "is still mostly empty"})
                 why_from.append("the fields the screens carry")
@@ -718,6 +881,9 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                 mk(gate_filled, {"do": "gate", "phase": "filled", "match": [gname],
                                  "name": 'click "%s" now everything is filled' % gname,
                                  "expect": "it opens and the flow completes",
+                                 "expectLanding": unstated_landing(
+                                     "the drawing's %s carries this gate, but the drawing "
+                                     "does not draw where opening it lands" % s_["id"]),
                                  "why": "the end of the flow is part of the flow"})
 
     # THE PRD'S OWN STEPS — including screens the drawing never drew. This is
@@ -744,15 +910,26 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
             # PRD naming it a third time is the same control, not a new step.
             if GATE.search(name):
                 continue
+                pat = route_pattern(text)
             mk(routes, {"do": "click", "match": [name],
                         "name": 'click "%s", the way the PRD describes it' % name,
                         "expect": "the screen it says that leads to",
+                        "expectLanding": ({"screen": None, "urlPattern": pat,
+                                           "textMustInclude": [],
+                                           "from": "the requirement writes the route down: %s"
+                                                   % text[:120]}
+                                          if pat else unstated_landing(
+                                              "the requirement names this control but never "
+                                              "says what it leads to: %s" % text[:120])),
                         "why": "the record says so: %s" % text[:120]})
             why_from.append("the PRD's own steps")
             if re.search(r"\b(back|return)\b", text, re.I):
                 mk(routes, {"do": "click", "match": ["back", "return", "close"],
                             "name": "come back the way the record says you can",
                             "expect": "the screen I left",
+                            "expectLanding": unstated_landing(
+                                "the record says there is a way back, but not by name to "
+                                "which screen: %s" % text[:110]),
                             "why": "the record says there is a way back from there"})
 
     # ── THE KEYS THE RECORD NAMES (S221 fix 7) ──────────────────────────
@@ -794,6 +971,10 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                             "name": 'try "%s" with the field(s) still blank' % gname,
                             "expect": "it refuses while the %s is blank"
                                       % (norm(surf_fields[0].get("name"))[:40] or "field"),
+                            "expectLanding": landing_of(
+                                screen_of_part(scr, g),
+                                'the screen the drawing draws "%s" on; a refusal leaves a '
+                                'person standing on it' % gname),
                             "why": "a person is promised this refuses on an empty form: %s"
                                    % norm(c.get("text"))[:110]})
             for f in surf_fields[:2]:
@@ -801,14 +982,25 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
                 mk(fills, {"do": "type", "match": [fname] if fname else [], "text": TYPED_TEXT,
                            "name": 'type into "%s"' % (fname[:40] or "the first empty field"),
                            "expect": "what I typed shows on this screen",
+                           "expectLanding": landing_of(
+                               screen_of_part(scr, f),
+                               'the screen the drawing draws the "%s" field on; typing does '
+                               'not leave it' % (fname[:40] or "first")),
                            "why": "the promise says a person fills this before the gate"})
             mk(fill_all, {"do": "type-all", "match": [], "text": TYPED_TEXT,
                           "name": "fill every field this screen still wants",
                           "expect": "no empty field is left before the gate is tried",
+                          "expectLanding": landing_of(
+                              screen_of_part(scr, surf_fields[0]),
+                              "the screen the drawing draws these fields on; filling them "
+                              "does not leave it"),
                           "why": "the gate's filled phase says nothing while the form is empty"})
         mk(gate_filled, {"do": "gate", "phase": "filled", "match": [gname],
                          "name": 'click "%s" now everything is filled' % gname,
                          "expect": "it opens and the promise holds",
+                         "expectLanding": unstated_landing(
+                             'the promise says "%s" locks once filled, but neither the '
+                             'drawing nor the promise says where opening it lands' % gname),
                          "why": "a person is promised this locks once filled: %s"
                                 % norm(c.get("text"))[:110]})
 
@@ -831,6 +1023,10 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
             mk(named_clicks, {"do": "click", "match": [nm], "bornOf": "named-click",
                               "name": 'click "%s", which a person is promised they can' % nm,
                               "expect": "the screen answers the control",
+                              "expectLanding": unstated_landing(
+                                  'the promise names "%s" as something a person can click, '
+                                  'but says nothing about where clicking it lands: %s'
+                                  % (nm, norm(c.get("text"))[:100])),
                               "why": "a person is promised this: %s" % norm(c.get("text"))[:120]})
 
     # ── NO DRAWING? DERIVE THE STEPS FROM THE REQUIREMENTS (Number One) ──
@@ -856,6 +1052,19 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
         st.setdefault("derivedFrom", "drawing")
     for st in routes + keys + req_steps:
         st.setdefault("derivedFrom", "requirement")
+    # A KEY LANDS WHERE IT WAS PRESSED when the drawing draws one screen; with
+    # several, the record does not say which, and saying so is the honest answer.
+    for st in keys:
+        st.setdefault("expectLanding",
+                      landing_of(scr[0], "the one screen the drawing draws, where this key "
+                                         "is pressed")
+                      if len(scr) == 1 else
+                      unstated_landing("a key the record names; nothing in the record says "
+                                       "which screen pressing it lands on"))
+    for st in req_steps:
+        st.setdefault("expectLanding",
+                      unstated_landing("the requirement's own words, with no drawing to say "
+                                       "which screen this lands on"))
 
     # THE WAY IN (measured, 2026-09-19). The drawing's first screen is not
     # necessarily the app's front door: on the real benchmark the front door is
@@ -885,6 +1094,13 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     else:
         ordered = (keys + gate_blank + fills + routes + named_clicks
                    + req_steps + fill_all + gate_filled)
+    # THE NET. Every step carries an `expectLanding`, present or not placed —
+    # a reader never has to guess whether a journey predates S241, and a step
+    # no stamp above reached says in its own words that nothing placed it.
+    for st in ordered:
+        st.setdefault("expectLanding",
+                      unstated_landing("nothing in the record places this %s step"
+                                       % str(st.get("do") or "walk")))
     steps = ordered[:STEP_CAP]
     for i, st in enumerate(steps):
         st["key"] = st.get("key") or ("j%d" % (i + 1))
@@ -894,13 +1110,27 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     # with the walk step that attempted it, or the honest reason it could not
     # be turned into an attempt. This is the number the captain asked to SEE.
     cov_rows = []
+    records = records or {}
     for c in person:
         key, reason = link_criterion(c, steps, surf_ctrls, has_surface)
-        cov_rows.append({"id": str(c.get("id") or ""),
-                         "text": norm(c.get("text")),
-                         "attempted": bool(key),
-                         "step": key,
-                         "reason": reason})
+        cid = str(c.get("id") or "")
+        # THE RECORDED CAUSE WINS (S240). See NO_RECORD above: the canned
+        # sentence is a guess from the drawing and said so when it is used, and
+        # a real diagnosis in the journal is never papered over by it.
+        recorded = records.get(cid) if reason else None
+        if reason:
+            if recorded:
+                reason = "recorded: %s" % recorded
+            else:
+                reason = "%s (%s)" % (reason, NO_RECORD)
+        row = {"id": cid,
+               "text": norm(c.get("text")),
+               "attempted": bool(key),
+               "step": key,
+               "reason": reason}
+        if reason:
+            row["reasonFrom"] = "record" if recorded else "no-record"
+        cov_rows.append(row)
     coverage = {"group": "can a person do what it promises",
                 "attempted": sum(1 for r in cov_rows if r["attempted"]),
                 "total": len(cov_rows),
@@ -910,9 +1140,191 @@ def build(criteria, drawing, html_screens=None, title="", prd=""):
     for w in why_from:
         if w not in src:
             src.append(w)
-    return {"source": src or ["nothing in the record described a flow"],
-            "typedText": TYPED_TEXT, "entry": entry, "steps": steps,
-            "coverage": coverage}
+    out = {"source": src or ["nothing in the record described a flow"],
+           "typedText": TYPED_TEXT, "entry": entry, "steps": steps,
+           "coverage": coverage}
+    # ALWAYS PRESENT, ALWAYS EMPTY HERE (S247). `reachSteps` is no longer
+    # authored from the record — the WORKER is the one author of the step list,
+    # and the harness writes what it asked for onto this key with
+    # `xo-journey.py reach-record` as the steps are granted. An empty list says
+    # "nothing beyond the browser has been asked for yet", never "the record
+    # could not think of anything".
+    out["reachSteps"] = []
+    return out
+
+
+
+# ===========================================================================
+# S247 — COVERAGE IS COUNTED FROM THE RECORD OF STEPS THAT ACTUALLY RAN
+# ===========================================================================
+# THE MEASUREMENT. `attempted N of M` is the number the captain asked to SEE,
+# and until now `build()` computed it BEFORE a single step had run — from the
+# browser steps it had just declared and from the templater's guesses. So it was
+# a prediction wearing a measurement's clothes, and the weekend's ledger records
+# the consequence: it never moved. A look that reached a criterion by running the
+# CLI, and a look that reached nothing at all, printed the same figure.
+#
+# TWO RECORDED SOURCES, AND NOTHING ELSE IS READ.
+#   1  the step readouts the harness wrote (`xo-run.py write_evidence`): each
+#      names the criterion it was `for`, and says whether it was `refused`. A
+#      refused step checked nothing, so it counts for nothing (S239's own rule).
+#   2  the ledger rows of the verdict: a row that CITES a transcript was settled
+#      by something that ran, so its criterion was attempted even when the step
+#      that produced the transcript named no criterion of its own.
+#
+# A CRITERION NOBODY REACHED STAYS UNTESTED, IN THE LOOK'S OWN WORDS. The
+# worker's `couldNot` entries (S246) are the honest reason where it gave one;
+# where it did not, the row says "no step reached it" and does not dress a
+# silence up as a diagnosis.
+TRANSCRIPT_EXTS = (".txt",)
+
+
+def steps_that_ran(shots_root):
+    """{criterion id: {"step", "checkedBy", "evidence"}} off the readouts on disk.
+
+    One directory, one level of look folders — the same bounded walk the landing
+    rail uses. A readout with no `for` reached no criterion it can be credited
+    with, and a readout marked `refused` ran nothing at all."""
+    out = {}
+    if not shots_root or not os.path.isdir(shots_root):
+        return out
+    dirs = [shots_root]
+    try:
+        dirs += [os.path.join(shots_root, d) for d in sorted(os.listdir(shots_root))
+                 if os.path.isdir(os.path.join(shots_root, d))]
+    except OSError:
+        return out
+    for d in dirs:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for nm in names:
+            if not nm.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, nm), encoding="utf-8") as fh:
+                    doc = json.load(fh)
+            except Exception:
+                continue
+            if not isinstance(doc, dict) or doc.get("refused"):
+                continue
+            cid = str(doc.get("for") or "").strip()
+            if not cid or cid in out:
+                continue
+            # THE READOUT'S OWN NAME, WHOLE. Nothing here takes a filename
+            # apart: the landing rail has paid three sessions for code that read
+            # meaning out of a shot's name, and the file that records a step is
+            # named by the harness that wrote it.
+            out[cid] = {"step": str(doc.get("key") or "").strip(),
+                        "checkedBy": str(doc.get("checkedBy") or "").strip(),
+                        "evidence": nm}
+    return out
+
+
+def transcripts_cited(verdict):
+    """{criterion id: the transcript its ledger row cites}.
+
+    `shot` is the citation field for every row, picture or transcript; the
+    EXTENSION is what says which it is, and that is the producer's own filename,
+    not a guess about content."""
+    out = {}
+    for e in ((verdict or {}).get("criteria") or []):
+        if not isinstance(e, dict):
+            continue
+        cite = str(e.get("shot") or "").strip()
+        if cite.lower().endswith(TRANSCRIPT_EXTS):
+            out.setdefault(str(e.get("id") or "").strip(), cite)
+    out.pop("", None)
+    return out
+
+
+def could_not_reasons(verdict):
+    """{what the look names: why it could not get to it} — the worker's own."""
+    out = {}
+    for row in ((verdict or {}).get("couldNot") or []):
+        if not isinstance(row, dict):
+            continue
+        item = " ".join(str(row.get("item") or "").split())
+        why = " ".join(str(row.get("why") or "").split())
+        if item and why:
+            out[item] = why
+    return out
+
+
+def recount_coverage(journey, shots_root="", verdict=None):
+    """The journey's `coverage`, recomputed from what RAN. Returns the coverage."""
+    cov = (journey or {}).get("coverage")
+    if not isinstance(cov, dict):
+        return {}
+    ran = steps_that_ran(shots_root)
+    cited = transcripts_cited(verdict)
+    excuses = could_not_reasons(verdict)
+    rows = []
+    for row in (cov.get("criteria") or []):
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        cid = str(row.get("id") or "")
+        # THE BROWSER WALK'S OWN ANSWER IS NEVER TAKEN AWAY. `build()` paired each
+        # promise with the walk step that attempts it, and the browser walk is
+        # UNCHANGED by this round (the ruling). So a row already recorded as
+        # attempted stays attempted; what this recount does is ADD the two sources
+        # that were never counted — which is why the number could only ever be too
+        # low, and why it is allowed to move only upwards here.
+        got = ran.get(cid)
+        if got:
+            row["attempted"] = True
+            row["step"] = got["step"] or row.get("step")
+            if got["checkedBy"]:
+                row["checkedBy"] = got["checkedBy"]
+            row["reason"] = ("reached by %s: the harness ran the step this "
+                             "criterion was declared for, and %s is its transcript"
+                             % (got["checkedBy"] or "a step the worker asked for",
+                                got["evidence"]))
+        elif cid in cited:
+            row["attempted"] = True
+            row["reason"] = ("reached outside a browser: its ledger row is "
+                             "settled by %s" % cited[cid])
+        if row.get("attempted"):
+            row.pop("status", None)
+            if got or cid in cited:
+                row.pop("reasonFrom", None)
+        else:
+            row["status"] = "untested"
+            row["step"] = None
+            said = excuses.get(cid) or excuses.get(str(row.get("text") or ""))
+            if said:
+                row["reason"] = said
+                row["reasonFrom"] = "the look itself"
+            else:
+                row["reason"] = "no step reached it"
+                row["reasonFrom"] = "no step"
+        rows.append(row)
+    cov = dict(cov)
+    cov["criteria"] = rows
+    cov["attempted"] = sum(1 for r in rows if r.get("attempted"))
+    cov["total"] = len(rows)
+    cov["countedFrom"] = "the steps that ran and the transcripts the ledger cites"
+    return cov
+
+
+def record_granted_steps(journey, steps):
+    """The harness's record of what the WORKER asked for, appended in order.
+
+    `reachSteps` carries no authored step any more (S247): it is a log, and a
+    step appears on it because a worker asked for it and the harness granted it.
+    Appended, never replaced, so a second round's requests do not erase the
+    first's."""
+    have = (journey or {}).get("reachSteps")
+    have = [s for s in (have or []) if isinstance(s, dict)]
+    for st in (steps or []):
+        if isinstance(st, dict):
+            have.append(st)
+    for i, st in enumerate(have):
+        st["key"] = st.get("key") or ("w%d" % (i + 1))
+    journey["reachSteps"] = have
+    return have
 
 
 def journey_criteria(journey):
@@ -1043,7 +1455,8 @@ def main(argv):
         drawing = load(opt("drawing"), None)
         html = opt("drawing-html")
         j = build(criteria, drawing, screens_from_html(html) if html else [],
-                  title=opt("title", ""), prd=prd_prose(opt("prd", "")))
+                  title=opt("title", ""), prd=prd_prose(opt("prd", "")),
+                  records=load_records(opt("records", "")))
         out = opt("out")
         if out:
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
@@ -1058,17 +1471,184 @@ def main(argv):
                 json.dump(contract, fh, indent=2)
                 fh.write("\n")
         n = len(j["steps"])
+        nreach = len(j.get("reachSteps") or [])
+        rsuffix = ("" if not nreach else
+                   " — and %d step(s) the harness runs outside a browser" % nreach)
         cov = j.get("coverage") or {}
         csuffix = ("" if not cov.get("total")
                    else " — attempted %d of %d a person can check"
                         % (cov.get("attempted", 0), cov.get("total", 0)))
         if not n:
-            print("nothing in the record described a flow to walk" + csuffix)
+            print("nothing in the record described a flow to walk"
+                  + csuffix + rsuffix)
         else:
-            print("%d step(s) to walk, from %s%s%s"
+            print("%d step(s) to walk, from %s%s%s%s"
                   % (n, "; ".join(j["source"]),
                      (" — %d of them its own requirement" % added) if added else "",
-                     csuffix))
+                     csuffix, rsuffix))
+        return 0
+
+    if cmd == "coverage":
+        # AFTER THE LOOK, over the record of what ran. Rewrites the journey's own
+        # `coverage` in place and prints the one line the captain reads, so the
+        # figure on the board is the measurement and not the prediction.
+        jpath = opt("journey")
+        j = load(jpath, {}) or {}
+        cov = recount_coverage(j, opt("shots", ""), load(opt("verdict"), {}) or {})
+        if cov:
+            j["coverage"] = cov
+        out = opt("out") or jpath
+        if out and j:
+            os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump(j, fh, indent=2)
+                fh.write("\n")
+        if not cov.get("total"):
+            print("nothing in the record promises something a person can check")
+            return 0
+        print("attempted %d of %d a person can check"
+              % (cov.get("attempted", 0), cov.get("total", 0)))
+        return 0
+
+    if cmd == "reach-record":
+        # THE HARNESS'S OWN LOG of what the worker asked for and was granted.
+        jpath = opt("journey")
+        j = load(jpath, {}) or {}
+        asked = load(opt("steps"), {}) or {}
+        if isinstance(asked, list):
+            steps = asked
+        else:
+            steps = asked.get("reachSteps") or []
+        kept = record_granted_steps(j, [s_ for s_ in steps if isinstance(s_, dict)])
+        # ── AND WHAT WAS REFUSED, ON THE SAME RECORD (S250 fix round 1, D2) ──
+        #
+        # THE MEASURED DEFECT. Across six rounds the worker asked for 27 steps and
+        # 17 ran: 10 were refused, each with an excellent plain-English reason —
+        # and those reasons lived ONLY in `actions-kept-N.json`, which nobody
+        # reads. The console counted survivors ("0 declined at execution"), round
+        # 3 had all three of its steps refused and printed NOTHING at all, and
+        # `report.md` mentioned a refusal zero times while four of its untested
+        # rows were untested BECAUSE of one.
+        #
+        # The refusals already exist as records. This is where they join the one
+        # record the report already reads, so the captain can tell "it got better
+        # at finding faults" from "it got better at saying it could not check".
+        refused_in = (asked.get("refused") or []) if isinstance(asked, dict) else []
+        refused_in = [r for r in refused_in if isinstance(r, dict)]
+        if refused_in:
+            have = j.get("refusedSteps")
+            if not isinstance(have, list):
+                have = []
+            rnd = str(opt("round") or "").strip()
+            for r in refused_in:
+                row = {"kind": str(r.get("kind") or ""),
+                       "why": " ".join(str(r.get("why") or "").split())}
+                # S264 — WHICH STEP, AND WHAT IT ASKED FOR, carried through.
+                # `xo-run.py`'s `refusal_row` records the worker's own name for
+                # the step (`key`), the criterion it was for, and the command
+                # line it asked for; without them the record could say a shell
+                # was refused but never WHICH step the reviewer had called that,
+                # so the next round's prompt could not name it back. Copied,
+                # never re-derived.
+                # `evidence` rides with `key` (S264 fix round 1, FIX 2): the
+                # real worker labels its steps with it, and without it the
+                # record could say a shell was refused but the prompt could only
+                # call it "an unnamed run step" — measured four times on the one
+                # live look.
+                for field in ("key", "evidence", "for", "fromChecklist",
+                              "asked", "verb"):
+                    val = " ".join(str(r.get(field) or "").split())
+                    if val:
+                        row[field] = val
+                if rnd:
+                    row["round"] = rnd
+                have.append(row)
+            j["refusedSteps"] = have
+        # ── AND THE STEPS DROPPED AT THE CAP (S264 fix round 1, FIX 3) ───────
+        #
+        # DRIVEN LIVE: 14 asked, 12 kept, 2 dropped, `refusedSteps` 0 — the
+        # overflow was a count in `actions-kept-N.json` and reached no prompt
+        # and no report, so the reviewer could not tell a step it must RESHAPE
+        # from one it must simply ask for next round.
+        #
+        # A SEPARATE LIST, ON PURPOSE. A drop is not a refusal: the step's shape
+        # was fine and the harness simply had no room for it. Filing it under
+        # `refusedSteps` would make the report and the console say "refused"
+        # about a step nothing was wrong with — and would send the reviewer
+        # rewriting it. Same record, same round, different fact.
+        dropped_in = (asked.get("dropped") or []) if isinstance(asked, dict) else []
+        dropped_in = [r for r in dropped_in if isinstance(r, dict)]
+        if dropped_in:
+            have = j.get("droppedSteps")
+            if not isinstance(have, list):
+                have = []
+            rnd = str(opt("round") or "").strip()
+            for r in dropped_in:
+                row = {"kind": str(r.get("kind") or ""),
+                       "why": " ".join(str(r.get("why") or "").split())}
+                for field in ("key", "evidence", "for", "fromChecklist",
+                              "asked", "verb"):
+                    val = " ".join(str(r.get(field) or "").split())
+                    if val:
+                        row[field] = val
+                if rnd:
+                    row["round"] = rnd
+                have.append(row)
+            j["droppedSteps"] = have
+        # ── AND THE STEPS KEPT WITH NO PAGE TO RUN THEM ON (S266 fix round 2,
+        #    FIX 1) ────────────────────────────────────────────────────────────
+        #
+        # MEASURED on one real review: `lcars launch` died on a port collision,
+        # `xo.sh` set `nopage=1`, and the reviewer's ELEVEN declared browser
+        # steps were recorded `asked: 11, refused: [], dropped: [], overflow:
+        # 0`. Kept — and not one executed. Neither of the two lists above could
+        # carry that, so the next round's prompt said nothing and the reviewer
+        # was never told its build had not come up.
+        #
+        # A THIRD LIST, for the same reason `droppedSteps` is not `refusedSteps`:
+        # the reviewer must act differently on it. A refusal needs a different
+        # SHAPE, a drop needs a shorter LIST, and this needs the reviewer to stop
+        # asking for a screen altogether — nothing it declares through a browser
+        # can run while there is no page. Copied verbatim from `xo-run.py`'s own
+        # `unrun` rows, written at the moment each step was kept.
+        unrun_in = (asked.get("unrun") or []) if isinstance(asked, dict) else []
+        unrun_in = [r for r in unrun_in if isinstance(r, dict)]
+        if unrun_in:
+            have = j.get("unrunSteps")
+            if not isinstance(have, list):
+                have = []
+            rnd = str(opt("round") or "").strip()
+            for r in unrun_in:
+                row = {"kind": str(r.get("kind") or ""),
+                       "why": " ".join(str(r.get("why") or "").split())}
+                for field in ("key", "evidence", "for", "fromChecklist",
+                              "asked", "verb"):
+                    val = " ".join(str(r.get(field) or "").split())
+                    if val:
+                        row[field] = val
+                if rnd:
+                    row["round"] = rnd
+                have.append(row)
+            j["unrunSteps"] = have
+        # THE REASON ITSELF, ONCE, on the record the next round's prompt reads —
+        # so the prompt can say WHY nothing ran without re-deriving it from an
+        # empty shots directory.
+        nopage_why = " ".join(str((asked.get("noPage") or "")
+                                  if isinstance(asked, dict) else "").split())
+        if nopage_why:
+            j["noPage"] = nopage_why
+        out = opt("out") or jpath
+        if out:
+            os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump(j, fh, indent=2)
+                fh.write("\n")
+        print("%d step(s) the worker asked for are on the record%s%s%s"
+              % (len(kept),
+                 (", and %d it was refused" % len(refused_in)) if refused_in else "",
+                 (", and %d dropped for the cap" % len(dropped_in)) if dropped_in else "",
+                 (", and %d kept but never run (no page)" % len(unrun_in))
+                 if unrun_in else ""))
         return 0
 
     if cmd == "carry":

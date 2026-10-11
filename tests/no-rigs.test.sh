@@ -770,11 +770,36 @@ else
   bad "4b. CONTROL: the fixtures manifest does not declare itself"
 fi
 
-# --- section 5: no shipped suite still reaches into tests/drives -----------
-# Comments are fine (provenance breadcrumbs). An executable reference is not:
-# it would be a dangling dependency the moment someone clones.
-echo
-echo "-- section 5: no shipped suite EXECUTES anything under tests/drives --"
+# --- section 5: no shipped suite reaches a rig except through the seam -----
+# Comments are fine (provenance breadcrumbs). An executable reference into the
+# PRODUCT REPO's own `tests/drives` is not: the directory is git-ignored and
+# section 1 refuses it if it ever becomes tracked, so such a reference is a
+# dependency on a path that cannot ship — dangling the moment someone clones.
+#
+# THE ONE THING THAT IS NOT THAT, and the reason this section is two rows and
+# not one. Two suites replay REAL RECORDED LOOKS — 38 MB of them for
+# `lcars-xo-reach`, a whole preserved mission for `lcars-xo-rail-pictures`.
+# That material is exactly what the ruling moved OUT of here, so it lives in
+# the sibling `lcars-dev` checkout, and the suites reach it through the
+# `${LCARS_DEV_ROOT}` seam. That is a DECLARED, OPTIONAL, off-repo dependency:
+# unset the variable or clone without the sibling and the reference resolves
+# nowhere, which the suite reports — it does not reach into a path this repo is
+# forbidden to carry. Refusing it would only push real coverage off a cliff
+# (249 measured rows across the two suites) to satisfy a word match.
+#
+# So the two refusals this section actually holds are:
+#   5a  EVERY drives reference is reached through that seam, or it is refused.
+#       The predicate is positive, so it needs no list of bad spellings: a
+#       bare relative `tests/drives/…`, a `$REPO_ROOT/…/drives`, a
+#       `"$DIR"/drives` and an author-machine `/Users/<somebody>/…/drives`
+#       are all refused by the same row, because none of them is the seam.
+#       Both offenders this round created were the last of those; both are now
+#       behind the seam, and a control below plants each shape and watches
+#       this row refuse it.
+#   5b  The off-repo inventory is CLOSED, like the two manifests: only the
+#       suites named in DEV_ANCHORED_SUITES below may carry one, so a third
+#       cannot appear without somebody adding a row here.
+#
 # EXEMPT BY NAME, never by pattern — a pattern wide enough to hide these
 # would hide the next real offender too:
 #   * this file, which necessarily says "tests/drives" on nearly every line;
@@ -782,37 +807,89 @@ echo "-- section 5: no shipped suite EXECUTES anything under tests/drives --"
 #     never tracked and is not on disk. Its 5a row has failed for that reason
 #     since before this move and is deliberately left exactly as it was.
 #
-# It takes a ROOT so the control below can plant its decoy in the throwaway
+# It takes a ROOT so the controls below can plant their decoys in the throwaway
 # repo. It used to write the decoy into $REPO_ROOT/tests/ and rely on an EXIT
 # trap to remove it — fine for a normal exit, SIGINT or SIGTERM, but a
 # SIGKILL left an un-ignored `.test.sh` in the product repo that `git add -A`
 # would commit and tests/run.sh would then execute. The exemptions are
 # matched on FILENAME, so they work in either root.
-scan_suites() { # root -> non-comment references to tests/drives in its suites
+echo
+echo "-- section 5: every drives reference is behind the declared off-repo seam --"
+DEV_ANCHORED_SUITES='lcars-xo-rail-pictures lcars-xo-reach'
+scan_suites() { # root -> every non-comment drives reference in its suites
   grep -n 'tests/drives\|"\$DIR"/drives\|/drives/' "${1:-$REPO_ROOT}"/tests/*.test.sh 2>/dev/null \
     | grep -v ':[0-9]*:[[:space:]]*#' \
     | grep -v '/no-rigs\.test\.sh:' \
     | grep -v '/claim-check\.test\.sh:'
 }
-live="$(scan_suites "$REPO_ROOT" | grep -c . || true)"
+# Reached through the declared off-repo seam: `$DEV/…` or `${LCARS_DEV_ROOT…`.
+dev_anchored()  { scan_suites "${1:-$REPO_ROOT}" | grep '\$DEV/\|\${LCARS_DEV_ROOT'; }
+# Everything else — which includes every spelling that points at this repo.
+repo_anchored() { scan_suites "${1:-$REPO_ROOT}" | grep -v '\$DEV/\|\${LCARS_DEV_ROOT'; }
+
+live="$(repo_anchored "$REPO_ROOT" | grep -c . || true)"
 if [ "$live" -eq 0 ]; then
-  ok "5. no non-comment tests/drives reference left in tests/*.test.sh (this file + claim-check's REPRO exempted by name)"
+  ok "5a. every drives reference goes through the declared off-repo seam (this file + claim-check's REPRO exempted by name)"
 else
-  bad "5. $live non-comment tests/drives reference(s) remain in tests/*.test.sh"
-  scan_suites "$REPO_ROOT" | sed 's/^/       /'
+  bad "5a. $live drives reference(s) are not behind \$LCARS_DEV_ROOT — a repo path or a hard-coded home"
+  repo_anchored "$REPO_ROOT" | sed 's/^/       /'
 fi
-# CONTROL for section 5: the scan must actually see an executable reference
-# when one exists, or "0 remaining" means nothing. Plant one in a throwaway
-# suite file — inside the CONTROL repo, never inside the repo being guarded —
-# and require the very same grep to find it there.
+
+# 5b — the off-repo inventory is CLOSED. Only the declared suites may carry one.
+devn="$(dev_anchored "$REPO_ROOT" | grep -c . || true)"
+undeclared=""
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  base="$(basename "${line%%:*}")"; base="${base%.test.sh}"
+  case " $DEV_ANCHORED_SUITES " in
+    *" $base "*) ;;
+    *) undeclared="$undeclared $base" ;;
+  esac
+done <<EOF
+$(dev_anchored "$REPO_ROOT")
+EOF
+if [ -z "$undeclared" ]; then
+  ok "5b. all $devn declared off-repo reference(s) sit in the declared suites ($DEV_ANCHORED_SUITES)"
+else
+  bad "5b. undeclared suite(s) carry an off-repo rig reference:$undeclared — add a row to DEV_ANCHORED_SUITES or drop the reference"
+fi
+
+# CONTROL for 5a: the scan must actually see a repo-anchored reference when one
+# exists, or "0 remaining" means nothing. Plant one in a throwaway suite file —
+# inside the CONTROL repo, never inside the repo being guarded — and require
+# the very same predicate to refuse it there.
 printf '#!/usr/bin/env bash\nCAGE="$REPO_ROOT/tests/drives/s197/cage.py"\n' > "$DECOY"
-decoyn="$(scan_suites "$CTL" | grep -c 'zz-no-rigs-control-decoy' || true)"
-rm -f "$DECOY"
+decoyn="$(repo_anchored "$CTL" | grep -c 'zz-no-rigs-control-decoy' || true)"
 if [ "$decoyn" -ge 1 ]; then
-  ok "5. CONTROL: the scan DOES catch a planted executable reference (proved red, then removed)"
+  ok "5a. CONTROL: the predicate DOES refuse a planted repo-anchored reference (proved red, then removed)"
 else
-  bad "5. CONTROL: the scan missed a planted executable reference — its 0 above proves nothing"
+  bad "5a. CONTROL: the predicate missed a planted repo-anchored reference — its 0 above proves nothing"
 fi
+# …and that same decoy must NOT be waved through as an off-repo one.
+if [ "$(dev_anchored "$CTL" | grep -c 'zz-no-rigs-control-decoy' || true)" -eq 0 ]; then
+  ok "5a. CONTROL: …and the off-repo seam does not launder it"
+else
+  bad "5a. CONTROL: the off-repo seam laundered a repo-anchored reference — 5a has a hole"
+fi
+# CONTROL for 5a, SECOND SHAPE: the exact shape this round's two offenders had
+# — an author-machine absolute path straight to the rig, no seam. It is not
+# repo-relative, so a gate that only looked for `$REPO_ROOT` would wave it
+# through; the positive predicate must refuse it.
+printf '#!/usr/bin/env bash\nM="/Users/nobody/Projects/lcars-dev/tests/drives/s241/measure"\n' > "$DECOY"
+homen="$(repo_anchored "$CTL" | grep -c 'zz-no-rigs-control-decoy' || true)"
+if [ "$homen" -ge 1 ]; then
+  ok "5a. CONTROL: a hard-coded author-machine rig path is refused too, not just a repo-relative one"
+else
+  bad "5a. CONTROL: a hard-coded author-machine rig path walked past 5a — its 0 above proves nothing"
+fi
+# CONTROL for 5b: an off-repo reference in an UNDECLARED suite must be named.
+printf '#!/usr/bin/env bash\nDEV="${LCARS_DEV_ROOT:-$HOME/x}"\nM="$DEV/tests/drives/s241/measure"\n' > "$DECOY"
+if [ "$(dev_anchored "$CTL" | grep -c 'zz-no-rigs-control-decoy' || true)" -ge 1 ]; then
+  ok "5b. CONTROL: an off-repo reference in an undeclared suite IS seen by the inventory scan"
+else
+  bad "5b. CONTROL: the inventory scan cannot see an off-repo reference at all"
+fi
+rm -f "$DECOY"
 # …and the decoy was never written into the guarded repo, not even briefly.
 if [ -e "$REPO_ROOT/tests/zz-no-rigs-control-decoy.test.sh" ]; then
   bad "5. CONTROL: the decoy is in the PRODUCT repo — this gate must not write into what it guards"

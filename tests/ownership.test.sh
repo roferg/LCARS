@@ -982,13 +982,34 @@ xo_refusal() { # <outfile> -> the refusal line, the `lcars <verb>: ` prefix stri
 }
 
 # --- approve ---------------------------------------------------------------
+# S239 — THE ONE NARROWING, AND IT IS APPROVE'S ALONE. The captain's ruling
+# (feedback #39: he "turned it off to save 10–20 min per verify") is that a
+# FINISHED verdict must not block a merge — only a look still in flight may. So
+# approve asks `lcars_xo_live_look`, not just `lcars_xo_status`, and the engaged
+# mission below needs a LIVE `xo.pid` for the refusal to be the right answer.
+# Every other verb in this section is UNCHANGED and still refuses on `engaged`
+# alone; that is why they are checked exactly as they were.
 repoX1="$(engaged_repo verify)"
+# A LOOK THAT IS ACTUALLY RUNNING: this very shell's pid, so `kill -0` is true.
+printf '%s\n' "$$" >"$repoX1/.git/lcars/missions/$MID/xo.pid"
 rcX=0
 ( cd "$repoX1" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
     bash "$APPROVE_SCRIPT" --mission "$MID" >out.txt 2>&1 ) || rcX=$?
-check "E1. \`lcars approve\` REFUSES an engaged mission" "[ '$rcX' -ne 0 ]"
+check "E1. \`lcars approve\` REFUSES a mission with a look IN FLIGHT" "[ '$rcX' -ne 0 ]"
 check "E1. …with EXACTLY the library's sentence" \
   "[ \"\$(xo_refusal '$repoX1/out.txt')\" = \"\$XO_SENTENCE\" ]"
+
+# THE CONTROL FOR THE NARROWING, in the same phrasing family: the SAME engaged
+# mission with NO live look must no longer produce that sentence. A crashed look
+# left `status: engaged` behind for good, and the captain was locked out of his
+# own merge until he ran `lcars xo off` — which is what taught him to switch his
+# first officer off entirely.
+repoX1b="$(engaged_repo verify)"
+rm -f "$repoX1b/.git/lcars/missions/$MID/xo.pid"
+( cd "$repoX1b" && LCARS_GH_BIN="$GH" LCARS_GH_USER=capt \
+    bash "$APPROVE_SCRIPT" --mission "$MID" >out.txt 2>&1 ) || true
+check "E1b. a FINISHED look does NOT give approve the refusal sentence" \
+  "[ -z \"\$(xo_refusal '$repoX1b/out.txt')\" ]"
 
 # --- feedback --------------------------------------------------------------
 repoX2="$(engaged_repo verify)"

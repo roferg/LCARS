@@ -224,3 +224,37 @@ broke".
   }
 }
 ```
+
+---
+
+### 8. Break a workflow rule with the near miss
+
+Verify each stated rule by **breaking it**, not only by satisfying it. Do not
+leave "almost matches" to instinct — the near miss for an input the workflow has
+already accepted is a **REARRANGEMENT of that input**, and the arrangements that
+find faults are a short list. Work the table, and record what happened either
+way.
+
+**SEVEN NEAR MISSES THAT CATCH BUGS, and what each one is FOR.** Six rearrange
+a value; the last rearranges the timing. Pick the rows that fit the rule in
+front of you — running all seven blindly is not the ask.
+
+| the near miss | what it is FOR |
+| --- | --- |
+| **a known-correct input, REARRANGED** — the same value with the case flipped, or with two letters swapped | a trigger filter, a branch or path match, a label, event or environment name compared in an `if:`. Make it fire, then send the accepted value back in a different arrangement. **START HERE:** a condition that only ever compared raw strings matches every exact attempt you can make. |
+| **whitespace-only**, and a valid input with a space in front of it or behind it | an input the workflow requires. An input of one space is not empty and is not a value, and trimming is usually the step nobody wrote. |
+| **unicode look-alikes and combining forms** of a string the workflow matched | any string comparison in a condition or expression. A Cyrillic а, a full-width character, and an é written as `e` plus a combining accent all read the same in a log. |
+| **the numeric edges** — zero, a negative, one past the stated maximum, and the stated maximum itself | a count, a retry budget, a matrix size, a timeout, a page of API results. The maximum ITSELF is the value most often wrong by one and the value most often never tried. |
+| **a second run that NORMALISES onto one already recorded** — not the same string, the same meaning after trimming or case-folding | a concurrency key, a cache key, an artifact name, an idempotence rule. Firing the identical value twice proves only that the identical-string comparison works. |
+| **the almost-right identifier** — a real ref, path, secret name or job id with one character changed | a lookup inside the workflow. A step that quietly carries on with an empty value instead of failing the run is only visible this way. |
+| **two runs overlapping** — start the second while the first is still going, instead of letting one finish before the next begins | any rule about something being recorded, counted, kept unique, or shared between runs: an artifact name, a cache, a state file, a branch both runs push to. A step that reads a whole file, changes it and writes it back keeps only the last run's work, and **the giveaway is that nothing fails**: both runs go green. Afterwards ignore the job conclusions and compare what was recorded against the number of runs that finished green. **Skipping this row needs a FACT about the product, not an estimate of how likely it is.** The one honest ground for passing it over is that nothing in this workflow writes to shared storage at all — no cache, no artifact name, no state file, no branch — a thing that is checkably true or false. "The risk is low", "it only ever runs on its own", "it is just a nightly job" are NOT grounds: a step that reads one file, changes it and writes it back is the exact description of the thing that loses writes, so that reasoning recites the fault's own preconditions as the reason not to look for it. And the check is cheap — two runs started without waiting, then a count, not an investigation. |
+
+Say which rows you tried, with the exact input you sent, and say which rows the
+rule in front of you made no sense for.
+
+**Evidence:** `live-check/08-near-miss-workflow.txt` — the trigger or input, why it nearly
+matched, and whether the workflow fired or was turned away.
+
+**DEFECT:** a refusal that never came is a fault; a refusal you never asked for
+is simply unchecked. Where the workflow has rules of its own, reach an ending
+those rules call a **LOSS** or a **REFUSAL**, not only the winning one.

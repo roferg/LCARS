@@ -1038,6 +1038,52 @@ check "25d. no prd.md attachments section (unchanged)" \
 check "25d. no state.json attachments key (unchanged)" \
   "! grep -q 'attachments' '$B34/state.json'"
 
+# ───────────────────────────────────────────────────────────────────────────
+# 25g. A ROW THAT NAMES A FILE AFTER ITSELF (S240 fix round 5, D3)
+# ───────────────────────────────────────────────────────────────────────────
+# MEASURED on every bug Number One filed: the "Which file is which" map carried
+#
+#   - `attachments/attachment-01.html` — attachment-01
+#
+# The map exists to translate a name the PRD uses into the file to open. That
+# row translates nothing — it is the file's own staged name, with the extension
+# removed. It happens because the INHERITED PARENT DRAWING is already called
+# `attachment-01.html` on the parent and goes first in the set, so it keeps its
+# name while the captain's screenshot beside it is renamed and turns the map on.
+#
+# And the thing the row is silent about is the one thing worth saying: that file
+# is the DRAWING the parent Mission was built from, which is what the fix is
+# still being judged against. A worker handed this bug has no other way to know.
+repoD3="$(new_repo_with_parent)"
+make_gh_stub "$repoD3/gh"
+export GH_LOG="$repoD3/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+parent_with_attachments "$repoD3" attachment-01.html
+shotD3="$repoD3/shot-01.png"; printf 'LOOK-SHOT' >"$shotD3"
+bugD3="$repoD3/b.md"; write_bug_prd "$bugD3" "Accent border missing" "See shot-01."
+rcD3=0
+(
+  cd "$repoD3"
+  LCARS_XO_INTERNAL=lcars-20260530-001 \
+  LCARS_GH_BIN="$repoD3/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$shotD3" --prd "$bugD3" \
+    >outD3.txt 2>&1
+) || rcD3=$?
+BD3="$repoD3/.git/lcars/missions/lcars-20260530-002-c10e"
+check "25g. CONTROL — the filing succeeded and the map is switched on" \
+  "[ '$rcD3' -eq 0 ] && grep -q 'Which file is which' '$BD3/prd.md'"
+check "25g. CONTROL — the renamed shot still gets its real translation row" \
+  "grep -q 'attachments/attachment-02.png\` — shot-01' '$BD3/prd.md'"
+# The pattern is deliberately the whole TAIL of the row. Written as
+# `attachment-01\` — attachment-01` it never matched the real line
+# (`…/attachment-01.html\` — attachment-01`), so this check PASSED VACUOUSLY on
+# the broken code — watched and corrected, rather than believed.
+check "25g. NO row's description is just a staged file name" \
+  "! grep -qE '\` — attachment-[0-9]+\$' '$BD3/prd.md'"
+check "25g. the inherited drawing's row says what the file IS" \
+  "grep -q 'attachments/attachment-01.html\` — .*drawing' '$BD3/prd.md'"
+check "25g. ...and names the Mission it was drawn for, so it can be checked" \
+  "grep -q 'attachments/attachment-01.html\` — .*lcars-20260530-001' '$BD3/prd.md'"
+
 # 25e. THE MEASURED CASE. Several bugs filed in ONE invocation against the
 # mockup-born parent: EVERY child carries the drawing. Nine of nine read
 # `attachments: None` before this round.
@@ -1473,8 +1519,28 @@ check "29. the body now JOINS the two names — shot-01 ⇒ attachment-02.png" \
   "grep -q 'Which file is which' '$B44/prd.md' && grep -q 'attachments/attachment-02.png.*shot-01' '$B44/prd.md'"
 check "29. the ISSUE BODY carries it too (it is prd.md that is posted)" \
   "grep -q 'Which file is which' '$GH_LOG.body' 2>/dev/null || grep -q 'Which file is which' '$B44/prd.md'"
-check "29. the inherited drawing is named by both its names as well" \
-  "grep -q 'attachments/attachment-01.html.*attachment-01' '$B44/prd.md'"
+# REWRITTEN BY THE ORCHESTRATOR, NOT BY THE CAPTAIN (S240 fix round 5, D3).
+# THE CAPTAIN HAS NOT RULED ON THIS AND IS BEING ASKED IN THE MORNING READOUT.
+# This assertion was COMMITTED at c092bc8:1476 (an earlier session wrote it
+# deliberately) — it is NOT leftover uncommitted work, as the implementing
+# agent wrongly reported. So this is a CONTRACT CHANGE, reversible by
+# restoring the single `check "29. the inherited drawing is named by both its
+# names as well"` line and reverting D3. The reason it was changed: a fresh
+# tester, independently and with no knowledge of this test, reported the row
+# it pinned (`attachments/attachment-01.html — attachment-01`) as a defect
+# because it "names a file after itself" and "tells the reader nothing".
+# This assertion used
+# to demand the inherited drawing be "named by both its names", which the
+# renamer satisfied with `attachments/attachment-01.html — attachment-01` —
+# the file's own staged name, repeated. Staging never renamed that file (it
+# arrives already carrying the staged name from the parent), so it HAS no second
+# name to join, and the row translated nothing. The intent survives — the
+# drawing must still appear in the map — but the row has to say what the file
+# IS. See 25g.
+check "29. the inherited drawing is IN the map" \
+  "grep -q 'attachments/attachment-01.html' '$B44/prd.md'"
+check "29. ...and its row says what the file is, not what it is called" \
+  "grep -q 'attachments/attachment-01.html\` — .*drawing' '$B44/prd.md' && ! grep -qE '\` — attachment-[0-9]+\$' '$B44/prd.md'"
 
 # 29b. NOTHING IS ADDED WHEN NOTHING WAS RENAMED. A bug whose attachments
 # already carry their staged names gets no section and no noise.
@@ -1558,6 +1624,146 @@ check "30b. refuses (non-zero) when any bug in the batch is malformed" \
   "[ '$rc48' -ne 0 ]"
 check "30b. never prints a false 'filed and linked' summary for the batch" \
   "! grep -q 'filed and linked' '$repo48/out48.txt' '$repo48/out48.err'"
+
+# --- Behaviour 31: THE ESTIMATOR FAN-OUT IS BOUNDED PER BATCH (S240 R4, D2) --
+#
+# log.sh runs the dynamic estimator once per filed bug, with its output
+# discarded (`>/dev/null 2>&1 || true`). MEASURED on this branch, with a PATH
+# shim faking BOTH `claude` and `copilot` and counting one line per invocation:
+#
+#   happy path   1 worker invocation per bug — 1 / 7 / 10 for 1 / 7 / 10 bugs
+#   FAILURE path 3 per bug (run.sh's MAX_WORKER_TRIES retry loop) —
+#                3 / 21 / 30 for 1 / 7 / 10 bugs, EVERY ONE carrying --model
+#
+# S240 widens Number One's filing to TEN bugs, so one look turns a systemically
+# broken estimator (no engine, a bad pin, a rate limit) into THIRTY billed
+# worker sessions that all fail the same way, for nothing. An estimator failure
+# is almost never bug-specific; paying the full retry budget again for every
+# remaining bug in the batch buys no information.
+#
+# So the batch carries a BREAKER: once the estimator has failed
+# $LCARS_LOG_ESTIMATE_FAILURES times (default 1) inside ONE `lcars log`
+# invocation, the remaining bugs skip it and are told so in one plain line.
+# The happy path is untouched — 1 per bug, exactly as measured.
+#
+# AND THE INVARIANT HOLDS EITHER WAY: the estimator NEVER blocks filing. Every
+# bug still files, with or without an estimate.json, breaker or no breaker.
+
+# A counting PATH shim faking BOTH CLIs — never an env var alone, because the
+# engine arrives from three places (request body, $LCARS_WORKER_BIN, a
+# persisted state.json workerBin) with a different winner per path.
+# One line per invocation into $2: argv holds a multi-KB prompt with embedded
+# newlines, so counting LINES OF ARGV counts prompt lines, not invocations.
+make_counting_shim_dir() { # <dir> <countfile>
+  mkdir -p "$1"
+  local n
+  for n in claude copilot; do
+    cat >"$1/$n" <<EOF
+#!/usr/bin/env bash
+printf 'x\n' >>"$2"
+if [ "\${STUB_ESTIMATE:-}" != "NONE" ] && [ -n "\${LCARS_WORK_OUT:-}" ] && [ -d "\${LCARS_WORK_OUT:-}" ]; then
+  printf '%s\n' "\${STUB_ESTIMATE:-}" >"\$LCARS_WORK_OUT/estimate.json"
+fi
+exit 0
+EOF
+    chmod +x "$1/$n"
+  done
+}
+
+shim_count() { awk 'END{print NR+0}' "$1" 2>/dev/null || echo 0; }
+
+# 31a. THE BREAKER. Three bugs, an estimator that produces nothing.
+repo49="$(new_repo_with_parent)"; make_gh_stub "$repo49/gh"
+printf '# Context\nTest repo.\n' >"$repo49/CONTEXT.md"
+export GH_LOG="$repo49/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+C49="$repo49/shim.count"; : >"$C49"
+make_counting_shim_dir "$repo49/shimbin" "$C49"
+for b in 1 2 3; do write_bug_prd "$repo49/b$b.md" "Breaker bug $b" "Bug number $b."; done
+rc49=0
+(
+  cd "$repo49"
+  env -u CLAUDECODE -u LCARS_WORKER_BIN CLAUDECODE=1 \
+    PATH="$repo49/shimbin:$PATH" \
+    LCARS_GH_BIN="$repo49/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$RUN_BIN_REAL" STUB_ESTIMATE="NONE" \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$repo49/b1.md" --prd "$repo49/b2.md" --prd "$repo49/b3.md" \
+      >out49.txt 2>&1
+) || rc49=$?
+N49="$(shim_count "$C49")"
+check "31a. three bugs still file when the estimator produces nothing" \
+  "[ '$rc49' -eq 0 ] && [ \"\$(ls -d '$repo49/.git/lcars/missions/lcars-20260530-'*-c10e | grep -c .)\" -eq 3 ]"
+# THE NUMBER. Unbounded is 9 (3 bugs x MAX_WORKER_TRIES). Bounded is the retry
+# budget ONCE — 3 — because the first bug's failure trips the breaker.
+check "31a. a failing estimator costs the batch ONE retry budget, not one per bug (saw $N49)" \
+  "[ '$N49' -le 3 ]"
+check "31a. and it did spend SOMETHING — the estimator was really tried (saw $N49)" \
+  "[ '$N49' -ge 1 ]"
+check "31a. says in one plain line that the estimator was skipped for the rest" \
+  "grep -qi 'estimator' '$repo49/out49.txt' && grep -qi 'skip' '$repo49/out49.txt'"
+check "31a. no estimate.json anywhere (the estimator genuinely produced nothing)" \
+  "[ \"\$(ls '$repo49'/.git/lcars/missions/*/estimate.json 2>/dev/null | grep -c .)\" -eq 0 ]"
+
+# 31b. THE HAPPY PATH IS UNTOUCHED — exactly one invocation per bug, and every
+# bug carries its estimate. The breaker must never fire on success.
+repo50="$(new_repo_with_parent)"; make_gh_stub "$repo50/gh"
+printf '# Context\nTest repo.\n' >"$repo50/CONTEXT.md"
+export GH_LOG="$repo50/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+C50="$repo50/shim.count"; : >"$C50"
+make_counting_shim_dir "$repo50/shimbin" "$C50"
+for b in 1 2 3; do write_bug_prd "$repo50/b$b.md" "Happy bug $b" "Bug number $b."; done
+rc50=0
+(
+  cd "$repo50"
+  env -u CLAUDECODE -u LCARS_WORKER_BIN CLAUDECODE=1 \
+    PATH="$repo50/shimbin:$PATH" \
+    LCARS_GH_BIN="$repo50/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$RUN_BIN_REAL" STUB_ESTIMATE="$EST_TRIVIAL" \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$repo50/b1.md" --prd "$repo50/b2.md" --prd "$repo50/b3.md" \
+      >out50.txt 2>&1
+) || rc50=$?
+N50="$(shim_count "$C50")"
+check "31b. happy path: three bugs file" "[ '$rc50' -eq 0 ]"
+check "31b. happy path spends exactly one worker per bug (saw $N50)" "[ '$N50' -eq 3 ]"
+check "31b. happy path: every bug carries an estimate.json" \
+  "[ \"\$(ls '$repo50'/.git/lcars/missions/*/estimate.json 2>/dev/null | grep -c .)\" -eq 3 ]"
+check "31b. happy path never prints the skipped-estimator line" \
+  "! grep -qi 'skipping the estimator' '$repo50/out50.txt'"
+
+# 31c. THE BREAKER IS REVERSIBLE. LCARS_LOG_ESTIMATE_FAILURES=0 turns it off and
+# restores the unbounded legacy behaviour, so nothing is permanently taken away.
+repo51="$(new_repo_with_parent)"; make_gh_stub "$repo51/gh"
+printf '# Context\nTest repo.\n' >"$repo51/CONTEXT.md"
+export GH_LOG="$repo51/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+C51="$repo51/shim.count"; : >"$C51"
+make_counting_shim_dir "$repo51/shimbin" "$C51"
+for b in 1 2; do write_bug_prd "$repo51/b$b.md" "Unbounded bug $b" "Bug number $b."; done
+rc51=0
+(
+  cd "$repo51"
+  env -u CLAUDECODE -u LCARS_WORKER_BIN CLAUDECODE=1 \
+    PATH="$repo51/shimbin:$PATH" \
+    LCARS_GH_BIN="$repo51/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$RUN_BIN_REAL" STUB_ESTIMATE="NONE" \
+    LCARS_LOG_ESTIMATE_FAILURES=0 \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$repo51/b1.md" --prd "$repo51/b2.md" >out51.txt 2>&1
+) || rc51=$?
+N51="$(shim_count "$C51")"
+check "31c. breaker off restores the unbounded legacy fan-out (saw $N51, want 6)" \
+  "[ '$N51' -eq 6 ]"
+check "31c. and both bugs still file with the breaker off" \
+  "[ '$rc51' -eq 0 ] && [ \"\$(ls -d '$repo51/.git/lcars/missions/lcars-20260530-'*-c10e | grep -c .)\" -eq 2 ]"
+
+# 31d. THE STALE COMMENT. log.sh's header pointed every reader at
+# `run_child_estimate below` — a function that DOES NOT EXIST anywhere in the
+# file. A comment that sends a reader to a function that is not there is itself
+# a defect; it must name the real call site.
+check "31d. log.sh no longer cites a non-existent run_child_estimate" \
+  "! grep -q 'run_child_estimate' '$REPO_ROOT/skills/lcars-log/log.sh'"
+check "31d. ...and the header points at the real estimator call site instead" \
+  "grep -q 'file_one_bug' \"\$(printf '%s' '$REPO_ROOT/skills/lcars-log/log.sh')\" && sed -n '1,60p' '$REPO_ROOT/skills/lcars-log/log.sh' | grep -q 'file_one_bug'"
 
 # ==========================================================================
 echo

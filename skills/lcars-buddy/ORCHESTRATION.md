@@ -359,7 +359,7 @@ reported.
 
 **Never key a decision on the cage's own `$?`.** It exits 0 whether the probe
 passed, failed or was killed; the verdict is in the text it prints (`EXIT <n>`,
-`*** TIMED OUT -> HUNG ***`, `ELAPSED`). Parse the output, not the status.
+`*** TIMED OUT — exceeded the <d>s deadline ***`, `ELAPSED`). Parse the output, not the status.
 
 ### Two mechanisms hang a suite, not one
 

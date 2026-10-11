@@ -15,6 +15,9 @@
 #   resume <id>   clear the paused flag, remove lcars:paused, and re-enter the
 #                 driver from the recorded stage. Idempotent — resuming a Mission
 #                 that is not paused is a clean no-op that still drives.
+#                 REFUSES while Number One's `xo-stop` marker is on the Mission
+#                 (or on its parent): that stop blocks the driver too, so a
+#                 cleared flag would not move it. `lcars xo on` is the way back.
 #
 # Dependencies are taken via env so tests can stub them:
 #   LCARS_GH_BIN     the gh binary                 (default: gh)
@@ -166,6 +169,48 @@ xo_lock_or_die() { # <mission-dir>
   return 0
 }
 
+# --- NUMBER ONE'S STOP IS NOT THIS VERB'S TO LIFT (S245 fix round 1, D3) ----
+# `lcars xo off` quiesces a Mission before it signals anything: it writes
+# `<mission>/xo-stop` AND sets `paused`. run.sh halts on EITHER of them — the
+# flag between Stages, and the marker immediately before it spawns a Stage
+# worker (run.sh:20821), plus the PARENT's marker for a bug child (:20823).
+#
+# `resume` only ever knew about `paused`. So it cleared the flag, dropped the
+# label, printed "Cleared the paused flag … re-entering the driver" and handed
+# the captain a Mission that could not take a single step, because only
+# `lcars xo on` removes the marker. That is the same class of lie as a stop that
+# says "you have the conn" over a live worker, one surface along: a familiar verb
+# reporting success over a state it did not actually change.
+#
+# IT REFUSES — IT DOES NOT DELETE THE MARKER. Two reasons, and both of them are
+# about not trading one lie for another:
+#
+#   * THE MARKER IS A RECORD, not a flag. It names which linked children the stop
+#     paused and which were ALREADY paused for the captain's own reason, and
+#     `lcars xo on` puts back only the first kind. A `resume` that removed the
+#     file would destroy that record, and the next `xo on` would silently
+#     un-pause work the captain had stopped himself.
+#   * IT IS NUMBER ONE'S SWITCH, not this Mission's. The marker exists because
+#     the captain switched his first officer off; `numberOne.enabled` is still
+#     false. Re-opening the spawn path from a verb that never mentions Number One
+#     would be `resume` quietly undoing a different command's decision.
+#
+# So the only two outcomes left are "the Mission genuinely moves" and "here is the
+# exact command that lifts it" — and the check sits BEFORE the first write, so the
+# refusal is true when it says nothing was changed.
+#
+# xo_stop_holder — echo the mission id whose `xo-stop` halts this Mission, rc 1
+# when nothing does. The same two places run.sh looks, in the same order.
+xo_stop_holder() {
+  local parent parent_dir
+  [ -f "$MISSION_DIR/xo-stop" ] && { printf '%s' "$MISSION_ID"; return 0; }
+  parent="$(json_str "$STATE" parentMission)"
+  case "$parent" in ''|null) return 1 ;; esac
+  parent_dir="$(dirname "$MISSION_DIR")/$parent"
+  [ -f "$parent_dir/xo-stop" ] || return 1
+  printf '%s' "$parent"
+}
+
 # === subcommand: pause ======================================================
 cmd_pause() {
   locate_mission "$MISSION_ID"
@@ -208,6 +253,16 @@ cmd_resume() {
   # — the board 403s it, so the CLI refuses it, with the same sentence.
   owner_lock_or_die "$(json_raw "$STATE" githubIssue)"
   xo_lock_or_die "$MISSION_DIR"
+  # BEFORE THE FIRST WRITE (S245 fix round 1, D3) — see xo_stop_holder above.
+  # Clearing `paused` here would not move a Mission that Number One has quiesced,
+  # so this verb either un-blocks it for real or says plainly what does.
+  local xo_holder
+  if xo_holder="$(xo_stop_holder)"; then
+    if [ "$xo_holder" = "$MISSION_ID" ]; then
+      die "Number One is stood down on this Mission, and that stop is still in force — \`lcars xo off\` left .git/lcars/missions/$MISSION_ID/xo-stop on disk and the driver will not start a worker while it is there. Clearing the paused flag on its own would not move it, so nothing was changed. Lift the stop with \`lcars xo on $MISSION_ID\` — that un-pauses it too."
+    fi
+    die "Number One is stood down on this Mission's parent $xo_holder, and that stop is still in force — .git/lcars/missions/$xo_holder/xo-stop halts every bug logged under it, this one included. Clearing the paused flag on its own would not move it, so nothing was changed. Lift the stop with \`lcars xo on $xo_holder\` — that un-pauses the children it paused."
+  fi
   local stage; stage="$(json_str "$STATE" stage)"; stage="${stage:-unknown}"
 
   # Clear the flag (idempotent — lcars_state_unset "$STATE" is a no-op when absent) and drop the

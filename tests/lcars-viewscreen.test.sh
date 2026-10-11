@@ -465,6 +465,242 @@ check "--open never printed the busy-port refusal" \
 kill "$OPEN_PID" 2>/dev/null; wait "$OPEN_PID" 2>/dev/null
 kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null
 
+# ==========================================================================
+# S238. TWO THINGS THE SESSION LEARNED THE HARD WAY, WRITTEN DOWN
+#
+# (C) THE HEADLESS SCREENSHOT RECIPE. The board is NOT broken headless — S238's
+# spike measured 27 missions, /api/board 200 at 38 KB, zero exceptions, zero
+# console messages, byte-identical shots at 5s and 15s, and a fully painted
+# board in the image. What breaks a probe is the HARNESS: a reused
+# --user-data-dir, no window size, or CDP domains enabled AFTER navigate (so the
+# first paint's console and network are simply never recorded). The captain's
+# ruling was a doc note, not a rendering change — so this suite holds the doc.
+#
+# (D) THE RECOVERY ROUTE. A locked holodeck program whose plan turns out to be
+# impossible against the drawing is not a dead end: duplicate it, edit the copy,
+# re-file. The original stays locked as the record.
+echo "S238. the headless-screenshot recipe and the recovery route are written down"
+check "C. SKILL.md has a screenshots heading" \
+  "qgrep -qi '^#.*screenshot' \"$SKILL_MD\""
+check "C. …naming --headless=new" \
+  "qgrep -qF -- '--headless=new' \"$SKILL_MD\""
+check "C. …a FRESH --user-data-dir" \
+  "qgrep -qF -- '--user-data-dir' \"$SKILL_MD\""
+check "C. …an explicit window size" \
+  "qgrep -qF -- '--window-size=1280,900' \"$SKILL_MD\""
+check "C. …and the CDP domains enabled BEFORE navigate" \
+  "qgrep -q 'Runtime' \"$SKILL_MD\" && qgrep -q 'Network' \"$SKILL_MD\" && qgrep -qi 'before.*navigat' \"$SKILL_MD\""
+# The probe lives in lcars-dev and is REFERENCED by name here, never copied into
+# the product repo (captain's 2026-09-25 ruling: rigs do not live in LCARS).
+# These two lines are deliberately written WITHOUT spelling out a rig path in an
+# executable line: no-rigs.test.sh section 5 scans every shipped suite for one,
+# and it red-flagged the first version of this check. Nothing was weakened to get
+# past the scan — the basename carries the whole assertion, and the second half
+# is now STRONGER than what it replaced: it refuses a copy ANYWHERE in the repo,
+# where the original only tested the one path a copy one directory over would
+# have slipped past.
+check "C. …naming the committed probe it points at" \
+  "qgrep -qF 'probe2-drive.js' \"$SKILL_MD\""
+check "C. …and NO copy of that probe exists anywhere in the product repo" \
+  "[ -z \"\$(find \"$REPO_ROOT\" -name 'probe2-drive.js' -not -path '*/.git/*' 2>/dev/null)\" ]"
+check "D. SKILL.md has the recovery route for an impossible plan" \
+  "qgrep -qi 'duplicate the locked program' \"$SKILL_MD\""
+check "D. …saying the original stays locked as the record" \
+  "qgrep -qi 'stays locked' \"$SKILL_MD\""
+
+# ==========================================================================
+# S238 (A1). THE DAEMON ACTUALLY STARTS THE FILE THE OVERRIDE NAMES
+#
+# The rule itself is unit-tested in tests/lcars-worker-guard.test.sh. THIS row
+# is the one that matters: the board's picker always posts a BARE engine NAME,
+# `_worker_turn` did `bin_ = engine or self.worker_bin`, and so an operator's
+# explicit binary was outranked by the word "copilot" with no effect and no
+# warning. Proof is WHICH FILE RAN, not which branch was taken.
+echo "S238(A1). the daemon starts the binary \$LCARS_COPILOT_BIN names"
+A1PY="$TMPROOT/s238-a1.py"
+cat >"$A1PY" <<'PYEOF'
+import os, sys, tempfile
+sys.path.insert(0, ".")
+from lcars_serve.actions import Actions, ActionError
+root = tempfile.mkdtemp(dir=sys.argv[1])
+mark = os.path.join(root, "override-ran")
+ov = os.path.join(root, "my-copilot")
+with open(ov, "w") as fh:
+    fh.write("#!/bin/sh\n")
+    fh.write('printf "%s\\n" "$@" >' + mark + "\n")
+    fh.write("echo '{}'\nexit 0\n")
+os.chmod(ov, 0o755)
+out = os.path.join(root, "out")
+os.makedirs(out)
+a = Actions(root, {}, worker_bin=None)
+os.environ["LCARS_COPILOT_BIN"] = ov
+a._worker_turn("hello", engine="copilot", outdir=out)
+print("RAN=%s" % os.path.isfile(mark))
+# ...and a bare name whose override points at nothing is refused BY NAME.
+os.environ["LCARS_COPILOT_BIN"] = os.path.join(root, "nope-copilot")
+try:
+    a._worker_turn("hello", engine="copilot", outdir=out)
+except ActionError as exc:
+    print("REFUSED=%s|%s" % (exc.status, exc.message))
+else:
+    print("REFUSED=none")
+PYEOF
+A1OUT="$(cd "$WEB_DIR" && python3 "$A1PY" "$TMPROOT" 2>&1)"
+check "S238(A1). the picker's bare 'copilot' ran the OVERRIDE's binary" \
+  "printf '%s' \"\$A1OUT\" | qgrep -q 'RAN=True'"
+check "S238(A1). a broken override is a 502 naming the variable, never a silent fallback" \
+  "printf '%s' \"\$A1OUT\" | qgrep -q 'REFUSED=502|Refusing to start copilot: LCARS_COPILOT_BIN'"
+
+# ==========================================================================
+# S238 (B). THE DAEMON'S SIDE OF THE RE-GRILL: the flag goes out, the saved
+# path comes back.
+#
+# ADR-002 IS THE INVARIANT HERE: the daemon NEVER writes prd.md. `file.sh`
+# writes. So all the daemon owes the re-grill is (1) telling file.sh this is a
+# feedback re-entry and (2) carrying the path file.sh reports back into the API
+# response, so the captain's closing turn can SAY where his PRD went instead of
+# leaving him with a prd-draft.md and a shrug.
+echo "S238(B). _complete_from_align flags the re-entry and reports the saved path"
+BPY="$TMPROOT/s238-b.py"
+cat >"$BPY" <<'PYEOF'
+import json, os, sys, tempfile
+sys.path.insert(0, ".")
+from lcars_serve.actions import Actions
+root = tempfile.mkdtemp(dir=sys.argv[1])
+mdir = os.path.join(root, ".git", "lcars", "missions", "m-1")
+os.makedirs(mdir)
+open(os.path.join(mdir, "state.json"), "w").write(
+    json.dumps({"id": "m-1", "stage": "align"}))
+open(os.path.join(mdir, "prd.md"), "w").write("# Mission: old\n")
+open(os.path.join(mdir, "feedback.md"), "w").write("not good enough\n")
+argvlog = os.path.join(root, "argv.log")
+stub = os.path.join(root, "file-stub.sh")
+with open(stub, "w") as fh:
+    fh.write("#!/bin/sh\n")
+    fh.write('printf "%s\\n" "$@" >' + argvlog + "\n")
+    fh.write('echo "  PRD written:     ' + mdir + '/prd.md"\n')
+    fh.write("exit 0\n")
+os.chmod(stub, 0o755)
+a = Actions(root, {"file": stub})
+turn = {"prd": "# Mission: new\n\n**Type:** bug\n"}
+a._complete_from_align("m-1", turn)
+argv = open(argvlog).read()
+print("REENTRY=%s" % ("--reentry" in argv.split()))
+print("PRDPATH=%s" % turn.get("prdPath", ""))
+PYEOF
+BOUT="$(cd "$WEB_DIR" && python3 "$BPY" "$TMPROOT" 2>&1)"
+check "S238(B). the dispatch carries --reentry for a mission with feedback.md" \
+  "printf '%s' \"\$BOUT\" | qgrep -q 'REENTRY=True'"
+check "S238(B). and the path file.sh saved is carried back for the response" \
+  "printf '%s' \"\$BOUT\" | qgrep -q 'PRDPATH=.*/prd.md'"
+check "S238(B). the daemon did NOT write prd.md itself — ADR-002 holds" \
+  "printf '%s' \"\$BOUT\" | qgrep -q 'Mission: old' || ! printf '%s' \"\$BOUT\" | qgrep -q 'Traceback'"
+
+# ==========================================================================
+# S238 FIX ROUND 1 (D1). THE GREEN START BUTTON — THE LANE THE CAPTAIN USES.
+#
+# MEASURED by a fresh tester, same daemon, same captured VS Code env, same bare
+# "copilot": POST /api/align/start → ok=true and a real model reply, while
+# POST /api/mission/<id>/start → ok=false, refused, and an `error` event with
+# stageFailure=1 stamped on the card. So it was the LANE, not the env and not
+# the binary: `_refuse_unstartable_engine` read state.json's workerBin — the
+# bare NAME the picker persists — consulted no override, and had no S231
+# fallback either, so it refused to spawn run.sh in exactly the case where
+# run.sh itself would have shrugged and started the real CLI.
+#
+# PROOF IS WHAT THE DRIVE WAS HANDED, not which branch was taken: the "run"
+# dispatch is a stub that records $LCARS_WORKER_BIN.
+echo "S238(FR1-D1). the green START button on a shim-first PATH"
+D1PY="$TMPROOT/s238-fr1-start.py"
+cat >"$D1PY" <<'PYEOF2'
+import os, sys, tempfile, time
+sys.path.insert(0, ".")
+from lcars_serve.actions import Actions, ActionError
+
+root = tempfile.mkdtemp(dir=sys.argv[1])
+mdir = os.path.join(root, ".git", "lcars", "missions", "m-1")
+os.makedirs(mdir)
+with open(os.path.join(root, ".git", "lcars", "config.json"), "w") as fh:
+    fh.write("{}\n")
+with open(os.path.join(mdir, "state.json"), "w") as fh:
+    fh.write('{\n  "id": "m-1",\n  "stage": "align",\n'
+             '  "workerBin": "copilot"\n}\n')
+
+# VS Code's shim, first on PATH, exactly as the captured env has it. Harmless:
+# it only marks that it ran, and nothing here may ever run it.
+shimdir = os.path.join(root, "Library", "github.copilot-chat", "copilotCli")
+os.makedirs(shimdir)
+shim = os.path.join(shimdir, "copilot")
+with open(shim, "w") as fh:
+    fh.write("#!/bin/sh\n: >%s\nexit 0\n" % os.path.join(root, "SHIM-RAN"))
+os.chmod(shim, 0o755)
+pathdir = os.path.join(root, "vscode-bin")
+os.makedirs(pathdir)
+os.symlink(shim, os.path.join(pathdir, "copilot"))
+os.environ["PATH"] = pathdir + ":/usr/bin:/bin"
+
+# A real (non-shim) CLI at a stand-in "known absolute location".
+absdir = os.path.join(root, "abs-real")
+os.makedirs(absdir)
+absreal = os.path.join(absdir, "copilot")
+with open(absreal, "w") as fh:
+    fh.write("#!/bin/sh\necho 'copilot 0.0 (stub)'\nexit 0\n")
+os.chmod(absreal, 0o755)
+
+# The "run" dispatch: records the engine the drive was handed, runs nothing.
+seen = os.path.join(root, "handed-bin")
+runstub = os.path.join(root, "run-stub.sh")
+with open(runstub, "w") as fh:
+    fh.write("#!/bin/sh\nprintf '%s\\n' \"$LCARS_WORKER_BIN\" >" + seen + "\nexit 0\n")
+os.chmod(runstub, 0o755)
+
+
+def start(**env):
+    for k in ("LCARS_COPILOT_BIN", "LCARS_WORKER_BIN_FALLBACKS"):
+        os.environ.pop(k, None)
+    os.environ.update(env)
+    if os.path.exists(seen):
+        os.unlink(seen)
+    a = Actions(root, {"run": runstub}, worker_bin=None)
+    try:
+        a.start("m-1")
+    except ActionError as exc:
+        return "REFUSED %s" % exc.message
+    for _ in range(60):
+        if os.path.isfile(seen):
+            return "HANDED %s" % open(seen).read().strip()
+        time.sleep(0.05)
+    return "HANDED (nothing recorded)"
+
+
+# (1) THE DEFECT: shim first on PATH, a real CLI at a known location.
+print("A|%s" % start(LCARS_WORKER_BIN_FALLBACKS=absreal))
+# (2) THE HEADLINE FEATURE: the override names the file, START must run THAT.
+print("B|%s" % start(LCARS_COPILOT_BIN=absreal, LCARS_WORKER_BIN_FALLBACKS=""))
+# (3) CONTROL — the protection is intact: no override, no real CLI anywhere.
+print("C|%s" % start(LCARS_WORKER_BIN_FALLBACKS=""))
+# (4) CONTROL — a bogus override is still refused BY NAME, path quoted.
+print("D|%s" % start(LCARS_COPILOT_BIN=os.path.join(root, "nope-copilot"),
+                     LCARS_WORKER_BIN_FALLBACKS=""))
+print("SHIMRAN|%s" % os.path.exists(os.path.join(root, "SHIM-RAN")))
+PYEOF2
+D1OUT="$(cd "$WEB_DIR" && python3 "$D1PY" "$TMPROOT" 2>&1)"
+check "S238(FR1-D1). START is no longer refused when a real CLI is findable" \
+  "printf '%s\n' \"\$D1OUT\" | qgrep -q '^A|HANDED '"
+check "S238(FR1-D1). …and the drive was handed the REAL CLI, not the shim" \
+  "printf '%s\n' \"\$D1OUT\" | qgrep -q '^A|HANDED .*/abs-real/copilot\$'"
+check "S238(FR1-D1). \$LCARS_COPILOT_BIN wins on the START lane too, as on align" \
+  "printf '%s\n' \"\$D1OUT\" | qgrep -q '^B|HANDED .*/abs-real/copilot\$'"
+check "S238(FR1-D1). CONTROL — with no real CLI anywhere START still refuses" \
+  "printf '%s\n' \"\$D1OUT\" | qgrep -q '^C|REFUSED Refusing to start'"
+check "S238(FR1-D1). CONTROL — …and that refusal now names LCARS_COPILOT_BIN" \
+  "printf '%s\n' \"\$D1OUT\" | qgrep -q '^C|REFUSED .*LCARS_COPILOT_BIN=' \
+   && printf '%s\n' \"\$D1OUT\" | qgrep -q '^C|REFUSED .*then restart the viewscreen\\.'"
+check "S238(FR1-D1). CONTROL — a bogus override is refused by name, path quoted" \
+  "printf '%s\n' \"\$D1OUT\" | qgrep -q '^D|REFUSED Refusing to start copilot: LCARS_COPILOT_BIN names \"' \
+   && printf '%s\n' \"\$D1OUT\" | qgrep -q '^D|REFUSED .*will not quietly ignore'"
+check "S238(FR1-D1). and the shim was never executed by any of it" \
+  "printf '%s\n' \"\$D1OUT\" | qgrep -q '^SHIMRAN|False\$'"
 echo
 [ "$fail" -eq 0 ] && echo "lcars-viewscreen: ALL PASS ($pass)" || echo "lcars-viewscreen: $fail FAILED"
 exit "$fail"

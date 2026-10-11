@@ -80,6 +80,13 @@ read out of the `.json` beside a shot can pull a fix DOWN — show it still wron
 fault, it may **never** satisfy the criterion. Where only a measurement speaks,
 the fix stays open and you say so.
 
+**A rule's fix is held only when the rule now REFUSES.** If the gap you filed was
+about a rule — something the build was meant to turn away and did not — a picture
+of the right input working is not the fix holding. Nothing settles it but the NEAR
+MISS turned away: evidence of the almost right input being refused, or of an
+ending those rules call a LOSS. With none of that in front of you the fix stays
+open, and you say which half of it you could not see.
+
 Say what settled each one, by name — the shot, or the test line you quoted. A
 verdict with no evidence of any kind behind it will be read as "not held",
 because a claim nobody can check is not evidence.

@@ -168,6 +168,190 @@ def plan_criteria(doc):
     return out
 
 
+
+# ===========================================================================
+# S239 — PRODUCT TYPES AND `reachVia`: HOW THIS CRITERION IS REACHED AT ALL.
+# ===========================================================================
+# THE MEASUREMENT THAT PUT THIS HERE. Canvas weekend, 26-29 Sep 2026, same
+# product, 34 runs: Number One filed 0 of 31 bugs; the captain's buddy found all
+# 31. Every one of the 16 recorded misses
+# (lcars-dev/canvas-weekend-2026-09-26/evidence/number-one-misses.jsonl) is a
+# REACH error, never a judgement error — "CLI argument handling and env-var
+# behaviour had no test and no screen, so nothing looked at them". Its judgement
+# and its honesty were fine wherever it could reach.
+#
+# So the contract now also records, before anything is looked at:
+#
+#   productTypes  — what kinds of surface this milestone HAS, each with the
+#                   SOURCE that said so. A list of {"type", "source"}.
+#   reachVia      — per criterion: cli | browser | workflow | test | none.
+#                   A CLI criterion is reached by RUNNING THE CLI, not by
+#                   looking for it on a page.
+#
+# RECORD, DO NOT INFER — the standing rule of this file, and the reason three
+# earlier generations of prose-reading were deleted. Nothing below reads English
+# to decide a type or a reach. Every source is a RECORDED declaration:
+#
+#   * the plan's `entrypoints[]` (S236) — `kind` is `cli` or `workflow` and the
+#     planner wrote it;
+#   * the PRD's own `PLAN RULE: CLI-only` line — a declared constraint LCARS
+#     itself writes into the PRD, matched as the literal marker it is;
+#   * each ticket's `changesScreenAppearance` — a declared boolean. `false` on
+#     EVERY ticket is evidence AGAINST a web surface; it is deliberately NOT
+#     read as evidence FOR a CLI (a workflow-only milestone changes no screen
+#     either), which is why it only ever WITHHOLDS `web`;
+#   * the mission's holodeck drawing, and `meta.mainLaunch` in state.json — the
+#     launch contract's own record that there is a page to open.
+#
+# An EMPTY productTypes is an honest answer, not a bug: it says the record never
+# declared a surface, every criterion then reads `reachVia` `test` or `none`, and
+# the browser walk goes on exactly as it did before. Nothing here is subtracted
+# from an older mission; `reachVia` and `productTypes` are ADDITIVE keys.
+REACH_KINDS = ("cli", "browser", "workflow", "test", "none")
+CLI_ONLY_MARKER = re.compile(r"PLAN\s+RULE\s*:\s*CLI-only", re.I)
+
+
+def _tickets(doc):
+    """The ticket list, in the three shapes plan_criteria already accepts."""
+    if isinstance(doc, dict):
+        for key in ("tickets", "plan", "items"):
+            if isinstance(doc.get(key), list):
+                return [t for t in doc[key] if isinstance(t, dict)]
+    elif isinstance(doc, list):
+        return [t for t in doc if isinstance(t, dict)]
+    return []
+
+
+def entrypoints(plan_doc):
+    """The plan's declared entrypoints, flattened, each remembering its ticket.
+
+    S236's record: every entry carries `kind` (`workflow` or `cli`), `path`,
+    `realRunTest` and `realRunProof`. Carried through UNTOUCHED — this is the
+    record S239 runs and S240 audits, so nothing is normalised away.
+    """
+    out = []
+    for t in _tickets(plan_doc):
+        tid = str(t.get("id") or t.get("ticket") or "t")
+        eps = t.get("entrypoints")
+        if not isinstance(eps, list):
+            continue
+        for ep in eps:
+            if not isinstance(ep, dict):
+                continue
+            kind = str(ep.get("kind") or "").strip().lower()
+            if kind not in ("cli", "workflow"):
+                continue
+            row = {"kind": kind, "ticket": tid, "path": str(ep.get("path") or "").strip()}
+            for k in ("realRunTest", "realRunProof"):
+                if ep.get(k):
+                    row[k] = str(ep[k]).strip()
+            out.append(row)
+    return out
+
+
+def product_types(mission_dir, plan_doc, prd_text, has_draw):
+    """[{"type": ..., "source": ...}] — every type with the record that said so."""
+    found = []
+
+    def add(kind, source):
+        for row in found:
+            if row["type"] == kind:
+                if source not in row["source"]:
+                    row["source"] = row["source"] + "; " + source
+                return
+        found.append({"type": kind, "source": source})
+
+    for ep in entrypoints(plan_doc):
+        add(ep["kind"], "the plan's entrypoints[]: kind=%s path=%s (ticket %s)"
+            % (ep["kind"], ep["path"] or "(unnamed)", ep["ticket"]))
+
+    if CLI_ONLY_MARKER.search(prd_text or ""):
+        add("cli", "the PRD's own `PLAN RULE: CLI-only` line")
+
+    # WEB IS WITHHELD, NOT GUESSED. `changesScreenAppearance: false` declared on
+    # every ticket is the planner saying this milestone touches no screen; a
+    # drawing or a recorded launch target is it saying there IS one.
+    tickets = _tickets(plan_doc)
+    stamped = [t for t in tickets if isinstance(t.get("changesScreenAppearance"), bool)]
+    no_screen = bool(stamped) and all(
+        t.get("changesScreenAppearance") is False for t in stamped)
+    screen_ticket = next((t for t in stamped
+                          if t.get("changesScreenAppearance") is True), None)
+    if screen_ticket is not None:
+        add("web", "ticket %s declares changesScreenAppearance: true"
+            % (screen_ticket.get("id") or screen_ticket.get("ticket") or "?"))
+    if has_draw and not no_screen:
+        add("web", "the mission was handed a holodeck drawing")
+    main_launch = ""
+    try:
+        st = json.loads(read(os.path.join(mission_dir, "state.json")) or "{}")
+        meta = st.get("meta") if isinstance(st.get("meta"), dict) else {}
+        main_launch = str((meta or {}).get("mainLaunch") or st.get("mainLaunch") or "").strip()
+    except Exception:
+        main_launch = ""
+    if main_launch and not no_screen:
+        add("web", "state.json records a launch target: %s" % main_launch)
+    return found
+
+
+def reach_for(crit, types, eps_by_ticket, served_by):
+    """(reachVia, whyThatReach) for ONE criterion. Declarations win, in order.
+
+    THE ONE RULE THIS ENFORCES: a reach the record does not support is never
+    invented. With no `web` type recorded, nothing is ever `browser` — which is
+    exactly the miss this session exists for (three missions running, a CLI
+    product judged through a browser that had nothing of it to show).
+    """
+    kinds = [t["type"] for t in types]
+
+    # 1. THE PLANNER MAY SAY IT OUTRIGHT.
+    declared = str(crit.get("reachVia") or "").strip().lower()
+    if declared in REACH_KINDS:
+        return declared, "the planner declared reachVia: %s" % declared
+
+    # 2. THE TICKET'S OWN ENTRYPOINTS. A criterion on a ticket that declares a
+    #    workflow entrypoint is reached by RUNNING that workflow.
+    tickets = [crit.get("ticket")] if crit.get("ticket") else []
+    tickets += [t for t in served_by.get(str(crit.get("id") or ""), []) if t]
+    for tid in tickets:
+        for ep in eps_by_ticket.get(tid, []):
+            return ep["kind"], ("ticket %s declares a %s entrypoint (%s)"
+                                % (tid, ep["kind"], ep["path"] or "unnamed"))
+
+    # 3. THE PROVENANCE STAMP THE PLANNER ALREADY WRITES.
+    if crit.get("drawnAt") or crit.get("kind") == "looks" or crit.get("notDrawn"):
+        if "web" in kinds:
+            return "browser", "it is a looks-question and this milestone has a page"
+    if crit.get("notVisual") is True:
+        if "cli" in kinds:
+            return "cli", "notVisual, and this milestone's surface is a CLI"
+        if "workflow" in kinds:
+            return "workflow", "notVisual, and this milestone's surface is a workflow"
+        return "test", "notVisual, with no CLI, page or workflow recorded to run"
+
+    # 4. THE MILESTONE'S ONE SURFACE — AND THE GUARD THAT THERE IS ONLY ONE.
+    #
+    # S251: the comment said "when it has only one" and NOTHING tested it. The
+    # loop tried `web` first, so on a THREE-surface milestone every row this rule
+    # reached came back `browser` — including three plain command-line ones — and
+    # `journey.json` then said "attempted 0 of 7" with `reasonFrom: "no-record"`,
+    # an admitted guess, which is the headline the captain reads.
+    #
+    # With more than one surface recorded, the record genuinely does not say
+    # which of them reaches THIS criterion, and the honest answer is the one
+    # below: `none`. Saying so costs a reach step; claiming `browser` for a CLI
+    # row costs the whole look, because a page that has nothing of the product on
+    # it settles nothing and reports as if it did.
+    if len(set(kinds)) == 1:
+        for kind, reach in (("web", "browser"), ("cli", "cli"), ("workflow", "workflow")):
+            if kind in kinds:
+                return reach, "the milestone's recorded surface is %s" % kind
+    if len(set(kinds)) > 1:
+        return "none", ("the milestone has more than one surface (%s) and nothing "
+                        "in the record says which of them reaches this"
+                        % ", ".join(sorted(set(kinds))))
+    return "none", "nothing in the record says how this could be reached"
+
 def has_drawing(mission_dir):
     """Whether this mission was ever handed a holodeck drawing at all — S210.
 
@@ -319,6 +503,16 @@ def find_contradictions(criteria):
 
     contradictions = []
     marks = {}
+    # THE JOIN KEY WAS ALREADY COMPUTED AND THEN THROWN AWAY (S257 fault 1b).
+    # `direction: "delivers"` is the plan STATING that this ticket criterion is
+    # the same requirement as the PRD row it serves — the one record that says
+    # two ledger rows are one finding. It was resolved here and dropped by
+    # `if direction != "removes": continue`, so the report counted the pair
+    # twice, printed it twice, and `xo file-logs` filed TWO bugs for ONE fault
+    # (measured on all five 2026-10-06 looks). Nothing about the criteria SET
+    # changes: both rows stay, both are still coverage, and this only writes
+    # down the pairing that was already decided.
+    delivers = {}
     unlinked = 0
     malformed = []
     for c in criteria:
@@ -353,6 +547,7 @@ def find_contradictions(criteria):
             unlinked += 1
             continue
         if direction != "removes":
+            delivers[c["id"]] = str(target.get("id") or "")
             continue
         req = target
         marks[c["id"]] = req["id"]
@@ -364,7 +559,7 @@ def find_contradictions(criteria):
                           "REMOVES what requirement %s asks for" % req["id"]),
             "via": "declaration",
         })
-    return contradictions, marks, unlinked, malformed
+    return contradictions, marks, unlinked, malformed, delivers
 
 
 def main():
@@ -379,21 +574,58 @@ def main():
                          "primary": True})
 
     plan_path = os.path.join(mdir, "plan.json")
+    plan_doc = None
     if os.path.exists(plan_path):
         try:
-            criteria.extend(plan_criteria(json.loads(read(plan_path))))
+            plan_doc = json.loads(read(plan_path))
+            criteria.extend(plan_criteria(plan_doc))
         except Exception:
-            pass
+            plan_doc = None
 
-    contradictions, marks, unlinked, malformed = find_contradictions(criteria)
+    contradictions, marks, unlinked, malformed, delivers = find_contradictions(criteria)
     for c in criteria:
         if isinstance(c, dict) and c.get("id") in marks:
             c["contradictsRequirement"] = marks[c["id"]]
+        # THE PAIRING, ON THE ROW (S257 fault 1b). Read by nothing that grades:
+        # it is the key the report and the filer group by, never a verdict.
+        if isinstance(c, dict) and delivers.get(c.get("id")):
+            c["deliversRequirement"] = delivers[c["id"]]
+
+    # S239 — HOW EACH OF THESE IS REACHED, decided from the record before the
+    # look. `served_by` lets a PRD requirement inherit the reach of the ticket
+    # that declared it `delivers`: the PRD says WHAT, the ticket says WHERE.
+    prd_text = read(os.path.join(mdir, "prd.md"))
+    has_draw = has_drawing(mdir)
+    ptypes = product_types(mdir, plan_doc, prd_text, has_draw)
+    eps = entrypoints(plan_doc)
+    eps_by_ticket = {}
+    for ep in eps:
+        eps_by_ticket.setdefault(ep["ticket"], []).append(ep)
+    by_id = {str(c.get("id")): c for c in criteria if isinstance(c, dict)}
+    by_norm = {}
+    for c in criteria:
+        if isinstance(c, dict) and c.get("text"):
+            by_norm.setdefault(_norm(c["text"]), c)
+    served_by = {}
+    for c in criteria:
+        if not isinstance(c, dict) or not c.get("serves") or not c.get("ticket"):
+            continue
+        target = _resolve_serves(c["serves"], by_id, by_norm)
+        if target:
+            served_by.setdefault(str(target.get("id") or ""), []).append(c["ticket"])
+    for c in criteria:
+        if not isinstance(c, dict):
+            continue
+        reach, why = reach_for(c, ptypes, eps_by_ticket, served_by)
+        c["reachVia"] = reach
+        c["reachViaFrom"] = why
 
     doc = {
         "mission": os.path.basename(os.path.abspath(mdir)),
         "builtBeforeLaunch": True,
-        "hasDrawing": has_drawing(mdir),
+        "productTypes": ptypes,
+        "entrypoints": eps,
+        "hasDrawing": has_draw,
         "placeNames": place_names(mdir),
         "pictures": pictures(mdir),
         "criteria": criteria,
@@ -405,10 +637,13 @@ def main():
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
-    print("%d criteria (%d primary), %d place names, %d contradiction%s, "
+    print("%d criteria (%d primary), reached via %s, %d place names, "
+          "%d contradiction%s, "
           "%d ticket criteri%s carried no link (not checked), "
           "%d malformed declaration%s" % (
         len(criteria), sum(1 for c in criteria if c.get("primary")),
+        ("/".join(sorted({c.get("reachVia") or "?" for c in criteria}))
+         or "nothing the record names"),
         len(doc["placeNames"]), len(contradictions),
         "" if len(contradictions) == 1 else "s",
         unlinked, "on" if unlinked == 1 else "a",

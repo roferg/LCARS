@@ -364,8 +364,15 @@ echo "-- 4. README --"
 R="$LCDIR/README.md"
 check "README names BOTH readers (the autopilot/buddy and Number One)" \
   "has '$R' 'buddy|autopilot' && has '$R' 'number one'"
-check "README says Number One has NO shell and lifts the templates" \
-  "has '$R' 'no shell'"
+# S261 — THIS ROW USED TO READ: "README says Number One has NO shell". The
+# captain amended that S168 clause on 2026-10-08 (19:33 MDT); the reviewer now
+# has a real shell inside a disposable detached worktree. What the row is FOR is
+# unchanged — the README must say HOW Number One works these items, so that
+# whoever edits a checklist knows who is going to follow it.
+check "README says Number One has a shell in a disposable copy, and may also declare a step" \
+  "has '$R' 'real shell inside a disposable' && has '$R' 'declare'"
+check "README no longer claims it has no shell" \
+  "! has '$R' 'no shell'"
 check "README documents all three template kinds" \
   "( for k in 'run:' 'workflow:' 'read:'; do grep -qF \"\$k\" '$R' || exit 1; done )"
 check "README documents the evidence dir under the mission" \

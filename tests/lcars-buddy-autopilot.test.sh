@@ -304,6 +304,128 @@ check "--force overwrites"                 "[ $rc1c -eq 0 ] && [ \"\$(jget '$AP1
 # 2. status / next name the right next step, in order, and cap at two slots
 # ==========================================================================
 echo "-- 2. status / next --"
+# S260: foundation readiness comes from the repo on EVERY next, not a flag.
+RF="$(new_repo)"
+printf '{}\n' >"$RF/.git/lcars/config.json"
+nxfinit="$(ap "$RF" init --spec "$TMPROOT/spec.md" --scope M1 2>&1)"
+check "S260 foundation: init immediately names the world's foundation step" \
+  "printf '%s' \"\$nxfinit\" | qgrep -q '^NEXT: foundation$'"
+nxf="$(ap "$RF" next --all 2>&1)"
+check "S260 foundation: greenfield needs no manually recorded flag" \
+  "printf '%s' \"\$nxf\" | qgrep -q '^NEXT: foundation$' && ! printf '%s' \"\$nxf\" | qgrep -q 'file M1'"
+ap "$RF" record foundation.required true >/dev/null 2>&1
+printf '{"testCommand":"bash tests/run.sh"}\n' >"$RF/.git/lcars/config.json"
+nxfcommand="$(ap "$RF" next 2>&1)"
+check "S260 foundation: a newly configured command overrides the stale required flag" \
+  "printf '%s' \"\$nxfcommand\" | qgrep -q '^NEXT: file M1$'"
+printf '{}\n' >"$RF/.git/lcars/config.json"
+printf 'test:\n\tpython3 -m unittest discover\n' >"$RF/Makefile"
+nxfdetected="$(ap "$RF" next 2>&1)"
+check "S260 foundation: detected test infrastructure needs no recorded command" \
+  "printf '%s' \"\$nxfdetected\" | qgrep -q '^NEXT: file M1$'"
+rm "$RF/Makefile"
+printf 'print("product")\n' >"$RF/product.py"
+ap "$RF" record foundation.done true >/dev/null 2>&1
+nxfuntested="$(ap "$RF" next 2>&1)"
+check "S260 foundation: removing the test system is noticed despite a stale done flag" \
+  "printf '%s' \"\$nxfuntested\" | qgrep -q '^NEXT: foundation$'"
+
+# S260: a scope of nothing is setup to finish, not a completed product.
+RE="$(new_repo)"
+ap "$RE" init --spec "$TMPROOT/spec.md" >/dev/null 2>&1
+nxempty="$(ap "$RE" next --all 2>&1)"
+check "S260 scope: empty next names alignment and how to set scope, never done" \
+  "printf '%s' \"\$nxempty\" | qgrep -q '^NEXT: align$' && printf '%s' \"\$nxempty\" | qgrep -q 'no scope is set.*--scope.*init.*record' && ! printf '%s' \"\$nxempty\" | qgrep -q 'done'"
+stempty="$(ap "$RE" status 2>&1)"
+check "S260 scope: status gives the same empty-scope instruction, never done" \
+  "printf '%s' \"\$stempty\" | qgrep -q 'no scope is set.*--scope' && ! printf '%s' \"\$stempty\" | qgrep -q 'NEXT: done'"
+
+# S260: the existing initialization Mission owns the slot until it lands.
+RI="$(new_repo)"
+printf '{}\n' >"$RI/.git/lcars/config.json"
+ap "$RI" init --spec "$TMPROOT/spec.md" --scope M1 >/dev/null 2>&1
+new_mission "$RI" lcars-foundation align
+python3 - "$RI/.git/lcars/missions/lcars-foundation/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["missionType"] = "initialization"
+json.dump(d, open(p, "w"))
+PY
+nxinit="$(ap "$RI" next --all 2>&1)"
+check "S260 initialization: a filed foundation is driven before any product filing" \
+  "printf '%s' \"\$nxinit\" | qgrep -q '^NEXT: drive lcars-foundation$' && ! printf '%s' \"\$nxinit\" | qgrep -q 'file M1'"
+ap "$RI" record drivers.lcars-foundation.pid "$$" >/dev/null 2>&1
+nxinitlive="$(ap "$RI" next --all 2>&1)"
+check "S260 initialization: wait for its live driver instead of offering a product" \
+  "printf '%s' \"\$nxinitlive\" | qgrep -q '^NEXT: wait$' && ! printf '%s' \"\$nxinitlive\" | qgrep -q 'file M1'"
+ap "$RI" record drivers.lcars-foundation.pid '' >/dev/null 2>&1
+python3 - "$RI/.git/lcars/missions/lcars-foundation/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["stage"] = "verify"
+json.dump(d, open(p, "w"))
+PY
+printf '{"testCommand":"bash tests/run.sh"}\n' >"$RI/.git/lcars/config.json"
+nxinitverify="$(ap "$RI" next --all 2>&1)"
+check "S260 initialization: Verify precedes the product even when its runner now exists" \
+  "printf '%s' \"\$nxinitverify\" | qgrep -q '^NEXT: verify-gate lcars-foundation$' && printf '%s' \"\$nxinitverify\" | qgrep -q '^PLAYBOOK: ## 6\.' && ! printf '%s' \"\$nxinitverify\" | qgrep -q 'file M1'"
+python3 - "$RI/.git/lcars/missions/lcars-foundation/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["stage"] = "done"
+json.dump(d, open(p, "w"))
+PY
+nxinitdone="$(ap "$RI" next 2>&1)"
+check "S260 initialization: only after it lands is the product offered" \
+  "printf '%s' \"\$nxinitdone\" | qgrep -q '^NEXT: file M1$'"
+
+# S260: neither a stale verified flag nor Number One can skip our own check.
+RV="$(new_repo)"
+ap "$RV" init --spec "$TMPROOT/spec.md" --scope M1 >/dev/null 2>&1
+new_mission "$RV" lcars-own-check verify
+ap "$RV" record missions.M1.id lcars-own-check >/dev/null 2>&1
+ap "$RV" record missions.M1.verified true >/dev/null 2>&1
+mkdir -p "$RV/.git/lcars/missions/lcars-own-check/xo"
+for verdict in high medium low absent; do
+  if [ "$verdict" = absent ]; then
+    rm "$RV/.git/lcars/missions/lcars-own-check/xo/verdict.json"
+  else
+    printf '{"score":"%s","recommendation":"merge","reason":"infrastructure"}\n' "$verdict" \
+      >"$RV/.git/lcars/missions/lcars-own-check/xo/verdict.json"
+  fi
+  nxown="$(ap "$RV" next 2>&1)"
+  nxownagain="$(ap "$RV" next 2>&1)"
+  check "S260 Verify: $verdict review still routes to our live check on every next" \
+    "printf '%s' \"\$nxown\" | qgrep -q '^NEXT: verify-gate lcars-own-check$' && printf '%s' \"\$nxown\" | qgrep -q '^PLAYBOOK: ## 6\.' && [ \"\$nxown\" = \"\$nxownagain\" ]"
+done
+check "S260 Verify: repo playbook makes the buddy's check a standing job, never a fallback" \
+  "qgrep -qF 'This is your standing job, never a fallback.' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md'"
+
+usage260="$(ap "$RE" 2>&1)"; usagerc260=$?
+check "S260 usage: no arguments print help with exit 1 and no shell errors" \
+  "[ $usagerc260 -eq 1 ] && printf '%s' \"\$usage260\" | qgrep -q '^Usage: autopilot.sh' && ! printf '%s' \"\$usage260\" | qgrep -q 'command not found'"
+check "S260 usage: backticked examples are printed literally, not executed" \
+  "printf '%s' \"\$usage260\" | qgrep -qF 'AC #1 = \`Observed live:\`' && printf '%s' \"\$usage260\" | qgrep -qF 'through \`lcars log\`' && printf '%s' \"\$usage260\" | qgrep -qF '\`--table\` prints'"
+
+# S260: screen intent is judged from the milestone's brief, not another flag.
+RH="$(new_repo)"
+printf 'M0: CLI export, no screens.\nM1: Dashboard with screens.\n' >"$TMPROOT/screens-spec.md"
+ap "$RH" init --spec "$TMPROOT/screens-spec.md" --scope M1 >/dev/null 2>&1
+nxscreen="$(ap "$RH" next --all 2>&1)"
+check "S260 holodeck: the screens branch reaches the surface before filing" \
+  "printf '%s' \"\$nxscreen\" | qgrep -qF 'IF M1 has screens (judge its own spec/brief):' && printf '%s' \"\$nxscreen\" | qgrep -q '^NEXT: holodeck M1$' && [ \"\$(printf '%s\n' \"\$nxscreen\" | grep -n '^NEXT: holodeck' | cut -d: -f1)\" -lt \"\$(printf '%s\n' \"\$nxscreen\" | grep -n '^NEXT: file' | cut -d: -f1)\" ]"
+check "S260 holodeck: its next step cites the existing front-door heading" \
+  "printf '%s' \"\$nxscreen\" | qgrep -A1 '^NEXT: holodeck M1$' | qgrep -qF 'PLAYBOOK: ## 4. File a milestone through the front door'"
+ap "$RH" record scope '["M0"]' >/dev/null 2>&1
+nxnoscreen="$(ap "$RH" next 2>&1)"
+check "S260 holodeck: the no-screens branch goes directly to file" \
+  "printf '%s' \"\$nxnoscreen\" | sed -n '/^OTHERWISE:/,\$p' | qgrep -q '^NEXT: file M0$' && ! printf '%s' \"\$nxnoscreen\" | sed -n '/^OTHERWISE:/,\$p' | qgrep -q '^NEXT: holodeck'"
+check "S260 holodeck: repo prose distinguishes the real surface from an attachment" \
+  "qgrep -qF 'holodeck_start' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'holodeck_say' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'holodeck_end' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'mockup.html' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'State which path you took.' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md'"
+
 R2="$(new_repo)"
 ap "$R2" init --spec "$TMPROOT/spec.md" --scope M0,M1 >/dev/null 2>&1
 AP2="$R2/.git/lcars/autopilot.json"
@@ -327,11 +449,11 @@ nx2all="$(ap "$R2" next --all 2>&1)"
 check "next --all orders verify-gate BEFORE file M1" \
   "[ \"\$(printf '%s\n' \"\$nx2all\" | grep -n 'verify-gate' | head -1 | cut -d: -f1)\" -lt \"\$(printf '%s\n' \"\$nx2all\" | grep -n 'file M1' | head -1 | cut -d: -f1)\" ]"
 
-# Once M0 is verified, `land` is the next step (not a re-verify).
+# Even a previously verified M0 still goes through the standing Verify gate.
 ap "$R2" record 'missions.M0.verified' true >/dev/null 2>&1
 nx2b="$(ap "$R2" next 2>&1)"
-check "a verified mission's next step is land" \
-  "printf '%s' \"\$nx2b\" | qgrep -q 'NEXT: land lcars-20260930-001'"
+check "a previously verified mission's next step remains verify-gate" \
+  "printf '%s' \"\$nx2b\" | qgrep -q 'NEXT: verify-gate lcars-20260930-001'"
 
 # Two live drivers → the two-slot cap means WAIT, never a third file/drive.
 sleep_pid_a=""; sleep_pid_b=""
@@ -1600,7 +1722,7 @@ check "the blocked milestone's question is still surfaced" \
 check "the PLAN is NOT a one-item list while a question is open" \
   "[ \"\$(printf '%s\n' \"\$nx14\" | grep -c '^  [0-9]*\. ')\" -ge 2 ]"
 check "the OTHER milestone's runnable work is still offered" \
-  "printf '%s' \"\$nx14\" | qgrep -q 'land lcars-ready-1'"
+  "printf '%s' \"\$nx14\" | qgrep -q 'verify-gate lcars-ready-1'"
 check "the blocked milestone itself is NOT offered as runnable work" \
   "! printf '%s' \"\$nx14\" | qgrep -q 'verify-gate lcars-blocked-1'"
 check "single \`next\` points at the runnable work too, not just the question" \

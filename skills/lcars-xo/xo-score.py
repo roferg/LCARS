@@ -117,10 +117,13 @@ Output on stdout, one TAB-separated record per line, for the shell to read:
   GRADE_WHY <why this grade, the table walked in words> | CORE <met|broken|unverified|>
   IMPACT_KEPT <id> <recorded> <this look's>  | IMPACT_MISMATCH <id> <id> <impact> <impact>
   TEST_DEMOTED <id> <rated> <quote>  — a test citation that settled nothing (T1)
+  STAND_IN_BLIND <id> <evidence> <steps>  — a `met` off a local workflow run that
+                                     recorded steps it never carried out (S250)
   SCORE_GROUP <group>  — which of the three the headline was read from (S225)
   GROUP <key> <kind> <grade|-> <total> <worked> <didnt> <couldntSee> <couldntSetUp>
   OPEN <n>  — rows still open ANYWHERE; the score word no longer implies zero
 """
+import hashlib
 import json
 import os
 import re
@@ -130,12 +133,50 @@ import time
 VALID_SCORES = ("high", "medium", "low")
 VALID_STATUS = ("met", "gap", "untested")
 # WHERE A JUDGEMENT CAME FROM. The captain must never have to guess which of
-# these decided a line (S211): a picture of the running app, a box measured off
-# that page, or his project's own tests. `none` is the honest fourth — nothing
-# settled it.
-VALID_EVIDENCE = ("picture", "measurement", "tests")
-EVIDENCE_WORD = {"picture": "a picture", "measurement": "a measured box",
-                 "tests": "your tests", "none": "—"}
+# these decided a line (S211): a picture of the running app, the transcript of
+# something the harness RAN, a box measured off that page, or his project's own
+# tests. `none` is the honest last one — nothing settled it.
+#
+# `transcript` is S239 fix round 1 (D1). The reach steps put a command's exact
+# output on disk beside the shots, and on the first real look EVERY row read
+# `"evidence": "picture"` — including a gap whose only citation was
+# `01-help.txt`, a terminal transcript. There was no honest word for it, so the
+# look used the only one the schema offered and the table told the captain it had
+# looked at a screen.
+VALID_EVIDENCE = ("picture", "transcript", "measurement", "tests")
+
+
+def shot_name_evidence(name):
+    """The evidence word a shot's own FILENAME implies (S240 fix round 2, D-C).
+
+    The reach steps keep a command's exact output in a `.txt` and its parsed
+    readings in a `.json` beside the pictures, and a live worker cites those by
+    their full name. So `02-workflow-run.txt` is a transcript and
+    `round1-01.json` is a measurement, while `shot-01`, `round1-01.png` and
+    anything else at all stay `picture` — the structural default is unchanged for
+    every genuine screenshot."""
+    low = str(name or "").strip().lower()
+    if low.endswith(".txt"):
+        return "transcript"
+    if low.endswith(".json"):
+        return "measurement"
+    return "picture"
+# The two line prefixes `autopilot.sh workflow-run` prints (xo-run.py names the
+# same two). `  SKIP: ` is its notice that a step was NOT executed and is
+# UNPROVEN, not passed; a step's OWN output is printed four spaces in, so a build
+# that prints the word itself is never mistaken for the runner's notice.
+WF_STEP = "STEP "
+WF_SKIP = "  SKIP: "
+EVIDENCE_WORD = {"picture": "a picture", "transcript": "a transcript",
+                 "measurement": "a measured box", "tests": "your tests",
+                 "none": "—"}
+
+# WHICH INSTRUMENT SETTLED THE ROW — recorded by the look, never worked out here
+# (S239 fix round 1, D1). Produced on every step readout (`xo-run.py`), taught by
+# the prompt, and now carried onto the ledger line the captain reads. An
+# unrecognised word is DROPPED exactly as `kind` is: a guessed instrument is the
+# very thing this cures.
+VALID_CHECKED_BY = ("browser", "cli", "workflow", "test")
 
 # THE FAILING RUN'S SENTENCE, AND THE ONE CASE THAT RESOLVES IT (fix round 2,
 # R2-2). Round 1 stopped this sentence guessing which of the two things a
@@ -277,6 +318,11 @@ def cite(g):
         # shot" of it would read as a missing picture rather than as a
         # different kind of evidence.
         bits = ["your tests"]
+    elif g.get("shotsRefused"):
+        # S272 fix round 1, D2: "no shot" would be a false statement about this
+        # one — a picture WAS named and the harness could not read the citation.
+        # The producer stamped the fact on the finding; this only says it.
+        bits = ["a picture was named, and I could not read the citation"]
     else:
         bits = ["see " + ", ".join(g["shots"])] if g.get("shots") else ["no shot"]
     cid = str(g.get("criterion") or "").strip()
@@ -341,7 +387,53 @@ def load_observations(path):
     # he was being given. A finding the score counts and the report hides is
     # the false green this whole session exists to kill. So both words are
     # read, and where each came from is kept.
-    kept = []
+    # ONE FINDING, COUNTED ONCE — THE OTHER HALF OF THE SAME CURE (S257 fault
+    # 1a). `xo-observe.py` now de-duplicates PER SCREEN as it writes, so a
+    # fresh look cannot record the same crowded pair seven times again. But the
+    # records already on the captain's machine were written by the old pass:
+    # the 2026-10-06 runelock record holds SEVEN byte-identical crowding
+    # findings, and this is the one place they are read on the way to his
+    # board. Carrying them through verbatim means his board keeps saying "I
+    # measured 7" about one fault on every look he already has. So the SAME
+    # rule is applied here — `xo-observe.py`'s own `obs_key`, loaded from
+    # beside this file so there is one key and not two — and nothing is
+    # decided here that the writer did not already decide.
+    #
+    # PER SCREEN, always: the same fault on two screens is two findings.
+    # If the key cannot be loaded the findings are carried through exactly as
+    # before — a de-dup is never a reason to lose a verdict.
+    #
+    # AND THE FALLBACK IS LOUD (S257 fix round 1). It used to be `_key = None`
+    # and nothing else, after which every finding was carried through verbatim
+    # — so a broken install SILENTLY restored the inflated board the captain
+    # complained about, and not one thing he reads would have said so. A
+    # fallback nobody can see is the same false-record class as the rest of this
+    # session. The behaviour does not change; what changes is that the one
+    # sentence saying de-duplication did not run is now written down, in the
+    # same `notes` this file already uses for everything it could not do — so it
+    # reaches `ledgerNotes`, the report's "How I put this together", and `NOTE`
+    # on the wire that `xo.sh` journals.
+    _key = None
+    _dedup_skipped = ""
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location(
+            "_xo_observe", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "xo-observe.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _key = _mod.obs_key
+    except Exception as _exc:
+        _key = None
+        _dedup_skipped = (
+            "I could not load the de-duplication key from xo-observe.py beside "
+            "me (%s: %s), so de-duplication DID NOT RUN on what I measured: the "
+            "findings below are listed exactly as they were recorded, and one "
+            "fault seen several times may be counted several times. No verdict "
+            "was dropped over it. This is an install problem, not a build "
+            "problem — xo-observe.py should sit next to xo-score.py."
+            % (type(_exc).__name__, _exc))
+    kept, seen_obs = [], set()
     for o in obs:
         if not isinstance(o, dict):
             continue
@@ -354,6 +446,11 @@ def load_observations(path):
         # the drawing or a step of the flow, not a loose thing noticed on a
         # page, and it is printed under its own heading.
         o["reportedUnder"] = "measured" if o.get("says") else "layout"
+        if _key is not None:
+            k = _key(o)
+            if k in seen_obs:
+                continue
+            seen_obs.add(k)
         kept.append(o)
     return {
         "observations": kept,
@@ -363,6 +460,9 @@ def load_observations(path):
         # that sentence has to reach HIM. A short list he believes is the whole
         # list is worse than a long one.
         "notes": [n for n in (doc.get("notes") or []) if isinstance(n, str) and n.strip()],
+        # EMPTY WHENEVER THE DE-DUP RAN, which is every whole install — so a
+        # normal look's record is byte-for-byte what it always was.
+        "dedupSkipped": _dedup_skipped,
         # S212 round 5: the ONE silence that is left. The look now only writes
         # something off as unseen when it POSITIVELY established that something
         # solid was over it, which makes this rare, legitimate — and cheap to
@@ -536,13 +636,228 @@ def case_leaves(tests):
     return out
 
 
-def tests_settle(tests, quote):
+# ── THE TRANSCRIPTS THE REVIEWER PLACED ITSELF (S264 change 3) ──────────────
+#
+# THE MEASURED DEFECT. On one milestone the reviewer noticed `tests.json` had
+# `testCases: []` and an `outputTail` of seven dots, so it RAN THE SUITE ITSELF
+# verbosely and placed `10-suite-verbose.txt` holding seven fully-named cases.
+# `tests_settle` checked the quote only against `tests.json`'s recorded
+# `outputTail`: three rows were demoted, the reviewer's own notes were
+# overwritten by a machine sentence, coverage was pushed to 71% against an 80%
+# floor and the grade was held HIGH -> MEDIUM. It was punished for doing exactly
+# the right thing. `xo-tests.py` admits the gap in its own docstring: "what that
+# produces is its own evidence, not this recorded run, and the over-claiming
+# guard reads only this one."
+#
+# WHAT IS AND IS NOT OPENED. The named-case rule is UNCHANGED and is checked
+# first, on the quote alone: a bare tally, a file-level dot run and a glyph line
+# still settle nothing, placed transcript or not. All this does is widen the
+# HAYSTACK the named line must be found in, from "the output xo-tests.py
+# recorded" to "that, or a transcript on this look's record". Nothing is read
+# out of a model's prose, and a row still cannot be settled by a quote that
+# appears nowhere.
+#
+# A REFUSED STEP'S EVIDENCE IS NOT A TRANSCRIPT. `xo-run.py` writes
+# `REFUSED: <why>\n\nThe command was NOT run.` for a step it declined, into this
+# same directory. A refused step checked nothing (the honesty rule, S211), so
+# those files are skipped by their own first line — never by guessing from a name.
+#
+# ── AND TWO WAYS THE FIRST CUT OF THIS WAS TOO WIDE (S264 fix round 1, FIX 1) ─
+#
+# (a) IT READ EVERY LOOK'S EVIDENCE, NOT THIS LOOK'S. The caller handed over
+#     `$xodir/shots` — the ROOT of every look, which the landing rail genuinely
+#     needs (S241) — and this function walked it recursively. MEASURED on the
+#     live record: 42 files admitted, 37 of them from `look-1`, the SUPERSEDED
+#     look, and 5 from the current `look-2`. 88% of the test-evidence haystack
+#     was a previous look's leftovers, and the dangerous sequence is
+#     file-logs → fix → recheck, where a PRE-FIX transcript settles a POST-FIX
+#     row. `SKILL.md` records this exact class as having been fixed once before.
+#     So this function now takes THE LOOK'S OWN DIRECTORY and the caller passes
+#     it separately from the rail's root — two consumers, two paths, neither
+#     guessing which look is current.
+#
+# (b) IT ADMITTED TEXT THE REVIEWER MERELY TYPED. Any `.txt`/`.log`/`.out` whose
+#     first line was not `REFUSED: ` was admitted, with nothing asked about
+#     whether a RUN produced it. The prompt tells the reviewer to run things in
+#     its own shell and save the output into this very directory, the directory
+#     is 0755 and the worker has `bash` — so a one-line file with a named-case
+#     quote and no run behind it settled a row. A file the model wrote with its
+#     own shell IS model prose, just in a file instead of a JSON field.
+#
+# THE CURE IS THE PROVENANCE THE PRODUCER ALREADY RECORDS, not a heuristic over
+# the text. `xo-run.py`'s `write_evidence` is the ONE door every step artifact
+# goes through and it writes BOTH halves: `<stem>.txt` and a sibling
+# `<stem>.json` readout carrying the step's `do`, its `key`, its `met` and the
+# name of the transcript it just wrote. A reviewer-authored file has no such
+# readout. A per-PNG caption HAS a sibling `.json`, but it is `xo-drive.js`'s
+# SHOT readout (`shot`/`landed`/`pixels`) and names no `do` — and a page caption
+# is not test output, which is why 7 of the live look's 12 admitted files were
+# captions. So a file is judged by whether the harness RECORDED producing it,
+# never by what the file says: reading meaning out of a model's prose is the
+# infer-vs-record failure that burned S147, S156 and S188.
+PLACED_SUFFIXES = (".txt", ".log", ".out")
+PLACED_MAX_BYTES = 4 * 1024 * 1024
+REFUSED_MARK = "REFUSED: "
+
+
+# ── AND THE THREE WAYS ROUND IT THE FIX-ROUND-1 TESTER MEASURED (S264 fix
+#    round 2, FIX 6) ─────────────────────────────────────────────────────────
+#
+# The round-1 rule proved "the harness wrote A FILE AT THIS PATH". It never
+# proved "A TEST RUN PRODUCED THIS CONTENT", and three paths got in without
+# forging a single byte of JSON:
+#
+#   1. A DECLARED `read` STEP on a file the reviewer wrote with its own shell.
+#      Driven end to end: readout `do: "read"`, transcript = the file's own
+#      contents, sibling present, disclosed as the step's file. One sanctioned
+#      step and the reviewer's prose is inside the haystack.
+#   2. A `run` STEP WHOSE PROGRAM JUST ECHOES — `["cat","forged.txt"]`,
+#      `["printf", …]`, `["echo", …]`, `["head","-50", …]`, `["tee", …]` all
+#      pass the argv fence, because the fence is about shells, not about what a
+#      program does.
+#   3. CLOBBERING a legitimately recorded transcript's `.txt` and leaving its
+#      sibling readout untouched.
+#
+# THE CURE IS THREE MORE RECORD CHECKS, and not one of them reads the file's
+# text — judging the prose is the infer-vs-record failure that burned S147,
+# S156 and S188, and it is exactly what a "does this look like test output?"
+# heuristic would be:
+#
+#   • THE VERB MUST BE `run`, AND IT MUST HAVE AN ARGV. `do_read`'s readout
+#     carries `path` and no `argv`; `do_workflow`'s carries neither. Only
+#     `do_run` writes `argv`, and it writes the RESOLVED one. So (1) is closed
+#     at the record, and (2) is at least fully visible in it — the argv the
+#     captain can read is right there beside the transcript it produced.
+#   • THE BYTES MUST BE THE BYTES THE RUN PRODUCED. `write_evidence` now records
+#     `bytes` + `sha256` of the exact blob it wrote; a clobbered `.txt` no longer
+#     matches its own readout, so (3) is closed.
+#   • AND THE FILE MUST REALLY BE IN THIS LOOK'S DIRECTORY. A symlink out of it
+#     with a forged sibling beside the link was admitted; both halves are now
+#     resolved and required to land inside.
+#
+# WHAT IS DELIBERATELY *NOT* CHECKED: `met`. A run that FAILED still produced
+# real output, and a red transcript is evidence of the same quality as a green
+# one — demanding `met` would quietly re-introduce "believe the good news".
+def harness_wrote(path, root=""):
+    """Did the harness RECORD producing THESE BYTES, by RUNNING something? →
+    the readout, or None.
+
+    The record is the sibling `<stem>.json` `write_evidence` writes beside every
+    step transcript. Four things must line up, and every one of them is a field
+    the PRODUCER wrote:
+
+      `do` == "run"          a `read` step's readout is the reviewer's own file
+                             handed back to it, not a run (vector 1)
+      a non-empty `argv`     only `do_run` records one, and it records the
+                             resolved argv the captain can read
+      `evidence`             names this very file
+      `bytes` + `sha256`     match the file on disk now, so a clobbered
+                             transcript no longer rides its sibling (vector 3)
+
+    A shot readout from `xo-drive.js` has no `do` at all, so a per-PNG caption
+    is still not mistaken for output; a file the reviewer typed has no sibling.
+    `root`, when given, is this look's resolved directory: the readout and the
+    transcript must both really live inside it, so a symlink pointing out of the
+    look with a forged sibling beside the link is refused.
+    Nothing here reads the transcript's text."""
+    stem = os.path.splitext(path)[0]
+    sib = stem + ".json"
+    if root:
+        # BOTH SIDES RESOLVED. A caller may hand over an unnormalised path
+        # (`/a//b`), and comparing a realpath against that never matches.
+        root = os.path.realpath(root)
+        for p in (path, sib):
+            try:
+                rp = os.path.realpath(p)
+            except Exception:
+                return None
+            if rp != root and not rp.startswith(root + os.sep):
+                return None
+    try:
+        with open(sib, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    # THE VERB, AND IT IS THE ONE THAT RUNS A PROGRAM.
+    if str(doc.get("do") or "").strip() != "run":
+        return None
+    argv = doc.get("argv")
+    if not isinstance(argv, (list, tuple)) or not any(
+            str(a).strip() for a in argv):
+        return None
+    if str(doc.get("evidence") or "") != os.path.basename(path):
+        return None
+    # THE BYTES THE RUN PRODUCED, still the bytes on disk.
+    want_n, want_h = doc.get("bytes"), str(doc.get("sha256") or "").strip()
+    if not isinstance(want_n, int) or not want_h:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            blob = fh.read()
+    except Exception:
+        return None
+    if len(blob) != want_n or hashlib.sha256(blob).hexdigest() != want_h:
+        return None
+    return doc
+
+
+def placed_transcripts(look_dir):
+    """Every text transcript THIS LOOK's record shows the harness produced — the
+    step evidence it wrote, including the suite the reviewer asked it to run and
+    save, which lands in the same directory by design (the prompt says so).
+
+    `look_dir` is this look's OWN shots directory, never the root of every look:
+    see (a) above. `[{name, text}]`."""
+    out = []
+    if not look_dir or not os.path.isdir(look_dir):
+        return out
+    # THE LOOK'S REAL DIRECTORY, resolved once. Every admitted file and its
+    # readout must land inside it — a symlink out of the look with a forged
+    # sibling beside the link was admitted before this (S264 fix round 2).
+    root = os.path.realpath(look_dir)
+    for here, _dirs, files in os.walk(look_dir):
+        for name in sorted(files):
+            # EXACT CASE, on purpose. `.TXT` matched here while the sibling
+            # lookup was forgiving on a case-insensitive filesystem; the suffix
+            # the producer writes is lower case, and that is the only one read.
+            if not name.endswith(PLACED_SUFFIXES):
+                continue
+            path = os.path.join(here, name)
+            # THE RECORD FIRST, before the file is even opened for its text. A
+            # transcript no RUN is recorded as having produced is not evidence
+            # of anything.
+            if harness_wrote(path, root) is None:
+                continue
+            try:
+                if os.path.getsize(path) > PLACED_MAX_BYTES:
+                    continue
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except Exception:
+                continue
+            if text.startswith(REFUSED_MARK):
+                continue          # a refused step checked nothing
+            out.append({"name": name, "text": text})
+    return out
+
+
+def tests_settle(tests, quote, placed=None, settled_by=None):
     """CAN THE PROJECT'S OWN TESTS SETTLE THIS ONE? → (yes/no, why not).
 
     Every branch below is decided from a FACT xo-tests.py recorded at the moment
     it ran — the outcome it derived there, and the output it kept — never from
     the wording of anything a model wrote. The second half of the tuple is the
-    sentence the captain reads when the answer is no."""
+    sentence the captain reads when the answer is no.
+
+    `placed` (S264) is the transcripts THIS look's record shows the harness
+    produced, from `placed_transcripts` — including the suite the reviewer asked
+    it to run verbosely and save. They widen the HAYSTACK the cited line must be
+    found in; they do not relax the named-case rule above, which is decided from
+    the quote alone.
+    `settled_by`, when a list is passed, collects the name of the file that
+    settled it — the producer records which one, so no reader has to guess."""
     if not tests or not tests.get("ran"):
         why = "this repo has no test command set, so I have nothing from your tests to go on"
         if tests and tests.get("outcome") == "no-worktree":
@@ -568,7 +883,23 @@ def tests_settle(tests, quote):
         return False, NOT_NAMED
     cases = [norm_for_match(c) for c in (tests.get("testCases") or [])]
     hay = norm_for_match(tests.get("outputTail"))
-    if q not in hay and not any(c and (q in c or c in q) for c in cases):
+    found_in = ""
+    if q in hay or any(c and (q in c or c in q) for c in cases):
+        found_in = "the recorded run"
+    else:
+        # ITS OWN WORK COUNTS (S264). The named line is looked for in the
+        # transcripts on THIS look's record too — the suite the reviewer asked
+        # the harness to run verbosely and save, which is a run the harness
+        # recorded producing, and a named case in it is exactly as checkable as
+        # one in the recorded tail. `placed_transcripts` admits a file only on
+        # that record, so nothing a model merely typed can get in here.
+        for doc in (placed or []):
+            if not isinstance(doc, dict):
+                continue
+            if q and q in norm_for_match(doc.get("text")):
+                found_in = str(doc.get("name") or "a transcript you placed")
+                break
+    if not found_in:
         cut = ("  (I only kept the last %s bytes of it)" % tests.get("tailCapBytes")
                if tests.get("truncated") else "")
         return False, ("I could not find that line in your test output, so I am not "
@@ -576,6 +907,8 @@ def tests_settle(tests, quote):
     leaves = case_leaves(tests)
     if leaves and not any(leaf in q for leaf in leaves):
         return False, NOT_NAMED
+    if settled_by is not None:
+        settled_by.append(found_in)
     return True, ""
 
 
@@ -622,6 +955,40 @@ def hidden_sentence(n):
 # reviewer would read it differently), `polishFlag` (small things piling up).
 VALID_IMPACT = ("high", "medium", "low")
 COULD_NOT_CHECK = ("unreachable", "unobservable")
+
+# ─── WHOSE FAULT A BLIND ROW IS — RECORDED, NEVER INFERRED (S240) ────────────
+#
+# `couldNotCheck` says WHAT stopped the check (`unreachable`, `unobservable`).
+# It has never said WHOSE it is, and the two answers lead opposite ways: a high
+# row nobody could reach because THE BUILD SHIPS NO WAY IN is the work not being
+# done (send it back, and file it); the same row unreachable because a runner is
+# not installed on this laptop is OUR problem (merge, and fix the rig). The
+# weekend's own policy table split `low` on exactly this word and a human
+# supplied it by hand every time.
+#
+# SO THE LOOK RECORDS IT, and an absent record is treated as INFRASTRUCTURE.
+# That is not a shrug, it is the honesty rule this file already won: "a blind row
+# is a failure of OURS reading as a doubt about HIS build" — so an unrecorded
+# cause may never become a send-back or a filed bug against the captain's work on
+# a guess. `causeRecorded` says out loud which of the two happened.
+CAUSE_CLASS = ("product", "infrastructure")
+
+# ─── THE HEADLINE IS AN ACTION, NOT AN ADJECTIVE (S240) ──────────────────────
+#
+# THE MEASURED DEFECT. `verdict.json` ended at `score: low|medium|high`, and the
+# weekend playbook's § 4 ("pass + high -> merge; pass + medium -> merge with
+# follow-ups; pass + low + product -> send back") was then applied BY HAND on
+# every single look. The grade is not the decision and never was: the archive has
+# a `high` standing on 83% coverage against a floor of 80, with the two numbers
+# that decided it absent from the report the captain read.
+#
+# So the policy becomes the reviewer's own, derived here off the SAME ledger the
+# grade came from, and sitting ABOVE it. The grade ladder (`derive_grade`) is not
+# touched — `score` still means exactly what it meant.
+RECOMMENDATIONS = ("merge", "merge-with-follow-ups", "send-back")
+RECOMMENDATION_WORD = {"merge": "MERGE",
+                       "merge-with-follow-ups": "MERGE WITH FOLLOW-UPS",
+                       "send-back": "SEND-BACK"}
 OUTCOME_WORD = {"met": "worked", "gap": "didn't", "untested": "couldn't check"}
 POLISH_PILE = 5
 
@@ -685,6 +1052,160 @@ HIGH_COVERAGE_PCT = 80
 # quietly out of the grade altogether.
 GROUP_PERSON, GROUP_DRAWING, GROUP_CONTRACT = "person", "drawing", "contract"
 GROUP_ORDER = (GROUP_PERSON, GROUP_DRAWING, GROUP_CONTRACT)
+
+
+def _same_text(t):
+    """A criterion's text, normalised for WHITESPACE AND CASE ONLY. Nothing
+    else: no stemming, no stop-words, no scoring of how alike two texts are.
+    Two rows join on this only when they are literally the same sentence
+    written twice."""
+    return " ".join(str(t or "").split()).lower()
+
+
+def group_faults(ledger, contract_by_id):
+    """ONE FAULT, COUNTED ONCE (S257 fault 1).
+
+    THE DEFECT THIS CLOSES, measured on all five 2026-10-06 looks. Every
+    mission's contract is the PRD's requirements PLUS the plan's acceptance
+    criteria, and the plan's criteria are mostly THE SAME REQUIREMENTS RESTATED
+    — which is correct, and is why the criteria set is an invariant here: both
+    are real coverage. But when both halves of a pair came back `gap`, the
+    report printed TWO rows for ONE fault, the board's filter line said
+    "Didn't work 4" for two faults, and `xo file-logs` filed FOUR bugs, three
+    of them carrying `shots: []`. Six of those rows carried a note that
+    literally began *"Same finding as prd-N"*: the reviewer told the report it
+    was one fault and the report counted it twice anyway.
+
+    THIS IS PRESENTATION AND FILING, NOT DELETION. Every row stays in the
+    ledger, `counts{}` stays the ROW count so no grade can move, and every
+    contributing criterion id is written onto the row that represents the
+    group. Nothing here is a verdict.
+
+    THE KEY IS A RECORD, IN THIS ORDER, AND THERE IS NO FOURTH RULE:
+      1. the plan's own `delivers` declaration AS THE REVIEW RECORDED IT —
+         `serves` + `direction: "delivers"`, resolved here the same way
+         xo-criteria.py resolves it (a `prd-N` id, else the requirement's
+         verbatim text);
+      2. the same declaration pre-resolved into `deliversRequirement`, which
+         xo-criteria.py writes when a review is SET UP;
+      3. identical criterion text, whitespace and case normalised, as the
+         fallback for a pair nobody linked;
+      4. nothing. No score for how alike two texts look, no prose, no
+         filename — this file family has lost four sessions to inferring
+         where it should read a record.
+
+    WHY RULE 1 EXISTS AT ALL (S257 fix round 1). `deliversRequirement` is
+    written when a review is set up, so with rule 2 alone a review recorded
+    BEFORE this session grouped only pairs whose wording was word-for-word
+    identical: 6→5, 3→2, 6→4, 4→3, 6→4 across the captain's five 2026-10-06
+    looks, instead of 6→3, 3→2, 6→3, 4→2, 6→3. Every one of those five
+    `criteria.json` files ALREADY carries `serves` + `direction: "delivers"` on
+    four rows — only the pre-resolved field is absent. So the declaration is
+    read where it already is, and his existing boards cure without a fresh
+    review. Both rules read the SAME declaration; one is simply resolved
+    already. Nothing is re-derived from a PRD and no criterion changes.
+
+    Rows join only when they AGREE on status: two records of one requirement
+    that disagree about whether it worked is itself information, and collapsing
+    them would hide the disagreement rather than count it once.
+
+    Returns the groups as records; the stamps are written onto `ledger`.
+    """
+    by_id = {str(e.get("id")): e for e in ledger}
+    parent = {}
+
+    def status_of(cid):
+        e = by_id.get(cid)
+        return str((e or {}).get("status") or "")
+
+    # THE PRIMARY REQUIREMENTS A `serves` POINTER MAY NAME, by id and by their
+    # verbatim text — the same two handles `xo-criteria.py::_resolve_serves`
+    # uses, and nothing else. Reference RESOLUTION of a pointer the review
+    # wrote down, never a guess at which requirement a sentence is about.
+    primary_by_id, primary_by_text = {}, {}
+    for row in contract_by_id.values():
+        if not isinstance(row, dict) or not row.get("primary"):
+            continue
+        rid = str(row.get("id") or "")
+        if not rid:
+            continue
+        primary_by_id[rid] = rid
+        t = _same_text(row.get("text"))
+        if t:
+            primary_by_text.setdefault(t, rid)
+
+    def declared_delivers(row):
+        """The requirement id this contract row declares it DELIVERS, or ""."""
+        if not isinstance(row, dict):
+            return ""
+        # 1 — the declaration as the review recorded it.
+        if str(row.get("direction") or "").strip().lower() == "delivers":
+            s = str(row.get("serves") or "").strip()
+            if s:
+                got = primary_by_id.get(s) or primary_by_text.get(_same_text(s))
+                if got:
+                    return got
+        # 2 — the same declaration, pre-resolved when the review was set up.
+        return str(row.get("deliversRequirement") or "").strip()
+
+    # 1 and 2 — the declared link, however this review recorded it.
+    for e in ledger:
+        cid = str(e.get("id"))
+        row = contract_by_id.get(cid) or {}
+        target = declared_delivers(row)
+        if not target or target == cid or target not in by_id:
+            continue
+        if status_of(target) != status_of(cid):
+            continue
+        parent[cid] = target
+
+    # 3 — identical text, for a pair the plan never linked.
+    first_by_text = {}
+    for e in ledger:
+        cid = str(e.get("id"))
+        if cid in parent:
+            continue
+        key = (_same_text(e.get("text")), str(e.get("status") or ""))
+        if not key[0]:
+            continue
+        if key in first_by_text:
+            if first_by_text[key] != cid:
+                parent[cid] = first_by_text[key]
+        else:
+            first_by_text[key] = cid
+
+    def root_of(cid):
+        seen = set()
+        cur = cid
+        while cur in parent and cur not in seen:
+            seen.add(cur)
+            cur = parent[cur]
+        return cur
+
+    groups = {}
+    for e in ledger:
+        cid = str(e.get("id"))
+        groups.setdefault(root_of(cid), []).append(cid)
+
+    faults = []
+    for e in ledger:
+        cid = str(e.get("id"))
+        root = root_of(cid)
+        members = groups.get(root) or [cid]
+        if len(members) < 2:
+            # A row that is nobody's duplicate is stamped with NOTHING, so a
+            # verdict with no duplicate pair in it is byte-identical to the one
+            # this version of the file would have written before.
+            continue
+        e["faultId"] = root
+        if cid == root:
+            e["faultPrimary"] = True
+            e["faultWith"] = [m for m in members if m != root]
+            faults.append({"id": root, "status": str(e.get("status") or ""),
+                           "criteria": list(members)})
+        else:
+            e["faultOf"] = root
+    return faults
 SOURCE_GROUP = {"prd": GROUP_PERSON, "journey": GROUP_PERSON,
                 "drawing": GROUP_DRAWING, "plan": GROUP_CONTRACT}
 GROUP_QUESTION = {
@@ -790,9 +1311,734 @@ OUTCOME_SAID = {OUTCOME_WORKED: "worked", OUTCOME_DIDNT: "didn't work",
 # is the captain's 2026-09-24 ruling: a works-question that got only a picture
 # was never exercised — a photo shows a Pause button is DRAWN, not that pausing
 # pauses — so the check was never set up, and it says so by name.
-SETUP_DEFEATED = ("unreachable", "no-change", "works-needs-action")
+# `needs-a-live-target` is S249's: the step that would have checked this row
+# names a host nobody consented to (or one with no credential behind it), so the
+# harness refused it and the check was never set up. It is OURS, always — a
+# missing allow-list entry is an infrastructure fact, never a statement about the
+# build — which is why `derive_recommendation` may not turn it into a send-back.
+# `needs-the-real-run` is S250's: the ONLY thing that settled this row was a
+# workflow run on this laptop, and that run WROTE DOWN that it did not execute
+# some of the workflow's steps. A stand-in that skipped the step cannot settle a
+# criterion about what that step does, so the check was never set up. Unlike
+# `needs-a-live-target` this one is NOT exempt from the coverage floor: the hop
+# was available, so a look that did not take it should feel the floor bite.
+SETUP_DEFEATED = ("unreachable", "no-change", "works-needs-action",
+                  "needs-a-live-target", "needs-the-real-run")
+# S266 fix round 2, FIX 2 — the mirror of `works-needs-action`: a row the eye
+# itself stamped a LOOKS-question (a picture settles it) that was rated met with
+# no picture cited at all. It is deliberately NOT in SETUP_DEFEATED: the look got
+# to the point of looking and simply had nothing to look at, so the honest
+# outcome is `couldnt-see` and not `couldnt-set-up`. See the downgrade beside
+# `works-needs-action` for exactly where the line is drawn.
+LOOKS_NEEDS_PICTURE = "needs-a-picture"
+NEEDS_LIVE = "needs-a-live-target"
+NEEDS_LIVE_SAID = "needs a live target"
+STAND_IN = "needs-the-real-run"
 MY_CHECKING_NOTE = ("These are gaps in my checking, not a fault in your build. "
                     "They are mine to fix — nothing here is counted against you.")
+
+
+# ═══ THE LANDING RAIL (S241) ═════════════════════════════════════════════════
+#
+# "A SHOT THAT LANDED ELSEWHERE IS NOT EVIDENCE."
+#
+# THE MEASURED DEFECT, from the archive. In the Kelmoor runs `shot-01.png`,
+# `inv-full.png` and `after-battle-full.png` are THE SAME FILE, byte for byte,
+# and all three are the ROSTER screen. The
+# report cited two of them as the Inventory evidence and the after-battle
+# evidence, each captioned "full page of http://localhost:5174/". Nine identical
+# files read as a reviewed feature and every run published `high`.
+#
+# IDENTICAL BYTES ARE THE SYMPTOM, NOT THE TEST. Nothing here weighs one picture
+# against another, and nothing here walks the browser again to go and look a
+# second time — going back round until the address matches turns one bad shot
+# into a hang.
+# The producer's record was never missing: `xo-drive.js` writes the url, the
+# title, the visible text and a box for every declared place beside each PNG.
+# What was missing was WHERE THE STEP MEANT TO LAND, and a consumer to compare
+# the two. S241 stamps the intent (`expectLanding`, xo-journey.py) and writes
+# both halves into the readout (`intent` + `landed`, xo-drive.js); this rail is
+# the consumer.
+#
+# RECORD, DO NOT INFER — the rule this file has lost four sessions to. Every
+# field below is one producer's recorded field compared to another producer's
+# recorded field. The intent is read, in order, from (1) the readout the driver
+# wrote, (2) the walk/journey step whose shot this is, (3) the criterion's own
+# `drawnAt`, which the planner wrote FROM THE DRAWING before any look happened.
+# NOTHING reads the shot's FILENAME to decide where it should have been — that
+# guess is exactly how `inv-full` came to be read as the Inventory.
+LANDING_NO_RECORD = "no landing record"
+SCREEN_IN_DRAWN_AT = re.compile(r"#(screen[-_][A-Za-z0-9_-]+)")
+# The three rules a PRD row can be placed by, named on the row itself so a
+# reader never has to guess where an expectation came from (S242).
+LANDING_INHERITED = "inherited from the ticket criterion that serves it"
+LANDING_SEVERAL_PLACES = "several declared places, one picture"
+LANDING_NO_DECLARED_PLACE = "no declared place"
+# S242 — AND SAY IT WHERE HE READS IT. The row above keeps the verdict the eye
+# gave it, which is right: a picture nobody could place is not evidence the
+# build is wrong. But until this line existed that was ALL the report said — the
+# captain read `| prd-9 (PRD) | … | MET | a picture | shot-walk-02-j2 — … |` with
+# no hint that the picture had never been checked against the screen it was
+# cited for. He audits this product by reading `report.md`, so a fact that lives
+# only in `verdict.json` does not reach him, and a row that LOOKS verified and
+# is not is the exact failure this round exists to close.
+LANDING_UNPLACED_MARK = "I did not check this picture is of the right screen"
+
+# S247 — AND A PART THAT *WAS* CHECKED SAYS SO, POSITIVELY.
+#
+# THE MEASUREMENT. 35 `part-…` rows across the six archived looks cite a picture
+# and read a flat `MET | a picture | shot-11 — …`. The landing rail returns None
+# for every one of them, and correctly: a `drawnAt` of `gold-roster` names a PART,
+# not a screen, so there is no screen to compare. But the proof was already in
+# the cited shot's OWN readout all along — `places[<part>].present`, `.laidOut`
+# and `.box`, written by xo-drive.js beside every PNG. On the archive that reads
+# 35/35 laid out with a real box; the same part against a shot of another screen
+# reads `laidOut: false, 0×0` (measured, s241/measure). So the row can state what
+# its picture proves instead of asserting a bare MET — and when the picture does
+# NOT show the part, that is a GAP in the captain's own words, with the readout
+# quoted rather than paraphrased.
+#
+# THE RULE READS THE READOUT, NEVER A FILENAME. `drawnPart` is the planner's own
+# recorded field (xo-parts.py), the measurement is the browser's, and nothing
+# here parses an id's spelling or a shot's name to decide which part a row is
+# about — that guess is exactly how `inv-full` came to be read as the Inventory.
+LANDING_PART_PLACED = "the picture shows %s, laid out at %d\u00d7%d"
+LANDING_PART_MISSING = "no measurement of this part"
+
+
+def part_measurement(doc, part):
+    """What a shot's own readout measured for ONE drawn part, or None.
+
+    `None` means the readout never measured it — which is not evidence that the
+    part is missing, and is said as "no measurement" rather than as a fault."""
+    if not isinstance(doc, dict) or not str(part or "").strip():
+        return None
+    page = doc.get("page") if isinstance(doc.get("page"), dict) else {}
+    places = page.get("places") if isinstance(page.get("places"), dict) else {}
+    got = places.get(str(part))
+    if not isinstance(got, dict):
+        return None
+    box = got.get("box") if isinstance(got.get("box"), dict) else {}
+    try:
+        w, h = int(box.get("w") or 0), int(box.get("h") or 0)
+    except (TypeError, ValueError):
+        w, h = 0, 0
+    return {"present": bool(got.get("present")), "laidOut": bool(got.get("laidOut")),
+            "w": w, "h": h}
+
+
+def part_landing(part, measured):
+    """The row's recorded landing for a drawn part — composed ONCE, here.
+
+    Three answers and no fourth: the picture shows it (a positive statement the
+    report prints as-is), the picture does not (a gap, with the readout's own
+    numbers quoted), or the readout never measured it (the S241 disclosure, in
+    the words that family already uses)."""
+    if measured is None:
+        return {"unplaced": True, "part": part,
+                "expected": {"rule": LANDING_PART_MISSING},
+                "reason": "%s — nothing beside the picture records a measurement of "
+                          "%s, so I could not check it against the drawing"
+                          % (LANDING_UNPLACED_MARK, part)}
+    if measured["present"] and measured["laidOut"] and measured["w"] and measured["h"]:
+        return {"partPlaced": True, "part": part,
+                "box": {"w": measured["w"], "h": measured["h"]},
+                "reason": LANDING_PART_PLACED % (part, measured["w"], measured["h"])}
+    return {"partPlaced": False, "part": part,
+            "box": {"w": measured["w"], "h": measured["h"]},
+            "reason": "the picture records %s as present: %s, laidOut: %s, %d\u00d7%d — "
+                      "so this picture does not show the part your drawing names"
+                      % (part, "true" if measured["present"] else "false",
+                         "true" if measured["laidOut"] else "false",
+                         measured["w"], measured["h"])}
+
+
+def landing_readout(shotsroot, name):
+    """The readout `.json` beside a recorded shot, and where it was found.
+
+    The look's shots live in one directory per look (`shots/look-3/…`), and the
+    eye cites a shot by bare name. The newest look is searched first, because
+    that is the look the citation came from. A path to nothing is worse than no
+    path, so this returns a doc only when a file really parsed."""
+    nm = str(name or "").strip()
+    if not nm or not shotsroot or not os.path.isdir(shotsroot):
+        return "", None
+    stem = os.path.splitext(nm)[0]
+    cands = [nm + ".json", stem + ".json"] if not nm.endswith(".json") else [nm]
+    # NEWEST LOOK FIRST, COUNTING LIKE A HUMAN. A plain reverse sort puts
+    # `look-9` ahead of `look-10`, which would hand back the older picture on
+    # the tenth look of a mission. The digits are compared as numbers.
+    def newest_first(d):
+        return tuple(int(t) if t.isdigit() else t
+                     for t in re.split(r"(\d+)", d))
+    dirs = [os.path.join(shotsroot, d) for d in
+            sorted((d for d in os.listdir(shotsroot)
+                    if os.path.isdir(os.path.join(shotsroot, d))),
+                   key=newest_first, reverse=True)]
+    for d in dirs + [shotsroot]:
+        for c in cands:
+            pth = os.path.join(d, c)
+            if not os.path.isfile(pth):
+                continue
+            try:
+                with open(pth, encoding="utf-8") as fh:
+                    doc = json.load(fh)
+            except Exception:
+                continue
+            if isinstance(doc, dict):
+                return pth, doc
+    return "", None
+
+
+def workflow_unproven(readout):
+    """The workflow steps a LOCAL `workflow-run` recorded that it did NOT run.
+
+    THE RECORD, AND WHY IT IS A RECORD. `autopilot.sh workflow-run` executes a
+    job's `run:` steps and nothing else. Every step it declines it prints as its
+    own two-space notice — `  SKIP: … is a packaged action … It is UNPROVEN, not
+    passed.` — and `xo-run.py` now carries the labels of those steps onto the
+    step's readout as `unproven`, beside the exit code. Both are the RUNNER's own
+    output about its own behaviour, written at the moment it behaved that way.
+
+    NOTHING HERE READS A CRITERION'S ENGLISH. This file has lost four rounds to
+    code that re-read text a human also writes (S147, S156, S188, S212), and
+    "the page it publishes can be downloaded and read back" is exactly the prose
+    a heuristic would chase. The question asked instead is purely about the
+    INSTRUMENT: did the thing that settled this row run all of its own steps?
+
+    The readout's field is preferred; a readout written before that field existed
+    is read off the transcript the readout already kept, by the runner's own line
+    prefixes — the same way `firstFailingStep` has always been read."""
+    if not isinstance(readout, dict) or str(readout.get("do") or "") != "workflow":
+        return []
+    named = [" ".join(str(u).split()) for u in (readout.get("unproven") or [])
+             if str(u).strip()]
+    if named:
+        return named
+    out, label = [], ""
+    for line in str(readout.get("stdout") or "").splitlines():
+        if line.startswith(WF_STEP) and ": " in line:
+            label = line.split(": ", 1)[1].strip()
+        elif line.startswith(WF_SKIP):
+            out.append(label or line[len(WF_SKIP):].strip())
+    return out
+
+
+def landing_records_exist(shotsroot):
+    """Does this look record landings AT ALL?
+
+    MEASURED, AND THE REASON THIS FUNCTION EXISTS. "A cited shot with no readout
+    is not evidence" is right for ONE shot in a look that records them — the
+    picture cannot be placed and the row is a hole. Applied to a whole run that
+    records NONE of them it is something else entirely: every row in the look
+    goes untested at once, which is not a measurement but an outage, and it
+    would silently rewrite the grade of every look taken before S241 and of
+    every run driven by a stub or a replacement `$LCARS_XO_DRIVER`. Turning the
+    rail on against the archive's own stub fixtures did exactly that: 13 rows
+    that had been settled on real pictures read "no landing record".
+
+    So the rail needs one readout to prove the run was recording, and says so in
+    a note when there is not one. Bounded: the look's own directory and one
+    level of look folders, first hit wins."""
+    if not shotsroot or not os.path.isdir(shotsroot):
+        return False
+    dirs = [shotsroot]
+    try:
+        dirs += [os.path.join(shotsroot, d) for d in sorted(os.listdir(shotsroot))
+                 if os.path.isdir(os.path.join(shotsroot, d))]
+    except OSError:
+        return False
+    for d in dirs:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for nm in names:
+            if not nm.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, nm), encoding="utf-8") as fh:
+                    doc = json.load(fh)
+            except Exception:
+                continue
+            # BOTH HALVES, OR IT PROVES NOTHING. A PER-SHOT readout names its
+            # own shot AND records the page it was taken on — that is what
+            # xo-drive.js writes beside every PNG. Measured: a stub driver in
+            # the suite writes `{"shot":"shot-01"}` with no page at all, plus a
+            # look-level `readout.json` with a page and no shot; counting either
+            # of those as proof turned the rail on over a run that records
+            # nothing and rewrote a settled ledger (lcars-xo.test.sh B23b).
+            if (isinstance(doc, dict) and str(doc.get("shot") or "").strip()
+                    and (isinstance(doc.get("landed"), dict)
+                         or isinstance(doc.get("page"), dict))):
+                return True
+    return False
+
+
+def landed_of(doc):
+    """Where a shot was taken, out of its own readout.
+
+    `landed` when the driver wrote one (S241 on). For a run from before that,
+    the SAME THREE FACTS are already in the readout's `page` block and are read
+    from there — that is reading the record, not inventing one. A readout that
+    carries neither is no landing record at all."""
+    if not isinstance(doc, dict):
+        return None
+    got = doc.get("landed")
+    if isinstance(got, dict) and (got.get("url") or got.get("title") or got.get("screen")):
+        return got
+    page = doc.get("page")
+    if not isinstance(page, dict):
+        return None
+    out = {"url": str(page.get("url") or ""), "title": str(page.get("title") or ""),
+           "textSample": " ".join(str(page.get("textExcerpt") or "").split())[:400],
+           "from": "the readout's own page block"}
+    places = page.get("places") if isinstance(page.get("places"), dict) else {}
+    on = [k for k, v in places.items()
+          if str(k).lower().startswith(("screen-", "screen_"))
+          and isinstance(v, dict) and v.get("laidOut")]
+    # ONE laid-out screen is the page telling us which screen it is showing.
+    # None, or several, is not an answer — and a guess here would refuse good
+    # evidence, which is worse than refusing none.
+    if len(on) == 1:
+        out["screen"] = on[0]
+    if not out["url"] and not out["title"] and not out.get("screen"):
+        return None
+    return out
+
+
+# THE RAIL'S FIRST QUESTION — "WAS THIS A PICTURE AT ALL?" (S254).
+#
+# THE MEASURED DEFECT. A live look ran eight declared steps, proved four real
+# defects and filed five bug Missions. Its report then headlined
+# `checked 1 of 6 (17%)` and listed TEN "could not check" entries, every one of
+# them the sentence below — over `01-help.txt`, `02-empty.txt`, `04-list.txt`,
+# `07-publish.txt` and `08-workflow.txt`. Those are COMMAND-LINE AND WORKFLOW
+# TRANSCRIPTS. A transcript has no screen, so it can never carry a record of
+# which screen it was taken on, and demanding one of it refuses the evidence for
+# being the kind of evidence it is. The look's own `couldNot` was empty and its
+# own wire said it attempted 6 of 6.
+#
+# The control that isolates it: the SAME product over the SAME fixture with no
+# url records no landings, so the rail is OFF, and reads `checked 6 of 6`, all
+# fifteen rows kept. A look that could photograph the app threw its command-line
+# evidence away; a look that could photograph nothing kept it. Backwards.
+#
+# SO THE RAIL ASKS "WAS THIS A PICTURE?" BEFORE IT ASKS "DID IT LAND?" — and it
+# asks a RECORD, never a filename. This file has lost four sessions to the
+# infer-vs-record trap and a name guess is exactly how `inv-full` came to be read
+# as the Inventory. The two records, in order:
+#
+#   1. THE STEP'S OWN READOUT, written by the producer beside the evidence.
+#      `xo-run.py` writes `checkedBy` into every step readout — `01-help.json`
+#      carries `"checkedBy": "cli"`, `08-workflow.json` carries `"workflow"`,
+#      `06-page.json` carries `"test"` — and writes no `landed`/`page`, because
+#      there was no page. `xo-drive.js` does the opposite beside every PNG:
+#      `landed` + `page`, and no `checkedBy`. That is the producer stating which
+#      instrument took the evidence, and it is the authoritative answer.
+#   2. THE LOOK'S OWN `checkedBy` ON THE ROW, the same word the ledger already
+#      prints (S239). The fallback for a step that left no readout at all.
+#
+# AND THE DEFAULT IS THE RAIL. A row with neither record is treated exactly as
+# it was before this change — refused if its picture cannot be placed. That is
+# what keeps every archived look's grade where it was: the rail is narrowed only
+# where a producer positively recorded a non-camera instrument, never widened,
+# and never loosened for a real picture. S241 stands: a shot that landed
+# elsewhere is still not evidence, and a shot nobody placed is still not
+# evidence. Both are asserted in tests/lcars-xo-rail-pictures.test.sh.
+def camera_step(doc, row):
+    """(is_a_picture, provenance) for the evidence a row cites.
+
+    False only on a producer's POSITIVE record of a non-camera instrument —
+    `EXERCISED_CHECKED_BY`, the same three words the exercised rail reads. No
+    filename, no extension, no prose."""
+    if isinstance(doc, dict):
+        cb = str(doc.get("checkedBy") or "").strip().lower()
+        if cb in EXERCISED_CHECKED_BY:
+            return False, ("the step's own readout records `checkedBy: %s`, so what "
+                           "this cites is a transcript and not a picture of a screen"
+                           % cb)
+        if isinstance(doc.get("landed"), dict) or isinstance(doc.get("page"), dict):
+            # The driver recorded a page beside this evidence: it IS a picture,
+            # and the readout outranks anything the look said about it.
+            return True, "the shot's own readout records the page it was taken on"
+    cb = str((row or {}).get("checkedBy") or "").strip().lower()
+    if cb in EXERCISED_CHECKED_BY:
+        return False, ("the look recorded `checkedBy: %s` on this row, so what it "
+                       "cites is a transcript and not a picture of a screen" % cb)
+    return True, ""
+
+
+def drawn_at_landing(row):
+    """The landing a CRITERION declares, out of the `drawnAt` the planner wrote
+    from the drawing before the look. "…#button-open-inventory on #screen-roster
+    leading to #screen-inventory" lands on the LAST screen it names — where the
+    sentence ends is where the person ends up."""
+    txt = str((row or {}).get("drawnAt") or "")
+    ids = SCREEN_IN_DRAWN_AT.findall(txt)
+    if not ids:
+        return None
+    return {"screen": ids[-1], "textMustInclude": [],
+            "from": "the criterion's own drawnAt, written from the drawing before the "
+                    "look: %s" % " ".join(txt.split())[:140]}
+
+
+def serving_index(contract_list):
+    """prd id -> the ticket criteria that DECLARE they serve it.
+
+    Reads ONE recorded field: `serves`, which the planner writes on a ticket
+    criterion when it decomposes a PRD line. Not a word of prose is read, and
+    nothing is matched on an id's shape. A `serves` written as a list is read as
+    a list; anything else is skipped rather than guessed at."""
+    out = {}
+    for c in (contract_list or []):
+        if not isinstance(c, dict):
+            continue
+        got = c.get("serves")
+        many = [got] if isinstance(got, str) else (got if isinstance(got, list) else [])
+        for one in many:
+            key = str(one or "").strip()
+            if key:
+                out.setdefault(key, []).append(c)
+    return out
+
+
+def served_landing(cid, servers):
+    """Where a PRD criterion's picture was meant to be taken, INHERITED from the
+    ticket criteria that serve it — with the provenance recorded.
+
+    THE PROBLEM THIS SOLVES (measured on the archive, S242). A PRD criterion
+    carries no `drawnAt`: the planner draws places on the TICKET criteria it
+    decomposes a PRD line into. So S241's landing rail, which reads a row's own
+    declared place, never engaged on a single PRD row — and in `xo-look-1`
+    `prd-2` ("gold is shown on the roster, the dungeon map AND the inventory")
+    stayed `met` on a ROSTER screenshot, the captain's own grievance, on the
+    very file he was angry about.
+
+    RECORD, DO NOT INFER — the rule this file has lost sessions to (S147, S156,
+    S188, each beaten when a human reworded something). The link was ALREADY
+    WRITTEN DOWN: a ticket criterion carries `serves: prd-N`. So the place is
+    inherited along that declared link, and NOTHING here reads the criterion's
+    English text looking for a screen name.
+
+    Three outcomes, each naming its own rule so the row can say which applied:
+
+      * every serving criterion that declares a place declares the SAME one —
+        that is the expectation, and `inheritedFrom` names who lent it.
+      * they declare DIFFERENT places — UNDECIDABLE, and deliberately not a
+        pick. A PRD line served at three places is a claim ABOUT three places,
+        and one picture can show at most one of them, so no single landing
+        settles it either way. Choosing one of them would be the invention this
+        function exists to refuse; accepting any of them would have left `prd-2`
+        settled on that Roster picture, which is the defect itself.
+      * none of them declares a place (or nothing serves it at all) — honestly
+        blind. The row SAYS it has no declared place; it does not get one made
+        up for it, and its picture must not read as checked."""
+    key = str(cid or "").strip()
+    rows = (servers or {}).get(key) or []
+    placed = []
+    for c in rows:
+        got = drawn_at_landing(c)
+        if got and got.get("screen"):
+            placed.append((str(c.get("id") or ""), str(got["screen"])))
+    served_by = [str(c.get("id") or "") for c in rows if str(c.get("id") or "")]
+    if not placed:
+        if rows:
+            # THE SERVER LIST IS CLIPPED, so this sentence has a CEILING. It is
+            # rendered into one table cell (see `unplaced_mark`) and a PRD line
+            # decomposed into a dozen tickets would otherwise write a reason no
+            # cell could hold — which is how the captain came to read "and its…".
+            why = ("not one of the ticket criteria that declare `serves: %s` (%s) declares a "
+                   "place of its own" % (key, clip(", ".join(served_by), 60)))
+        else:
+            why = "nothing in the plan declares `serves: %s`" % key
+        # SHORTER BY EXACTLY ONE REDUNDANT CLAUSE (S243). This used to end "…and
+        # its picture cannot be shown to be of the right screen" — the same thing
+        # the mark it is rendered behind already says in the captain's own cell
+        # ("I did not check this picture is of the right screen"). Saying it twice
+        # is what pushed the sentence past the cell and cost him the end of it.
+        return {"unplaced": True, "rule": LANDING_NO_DECLARED_PLACE,
+                "servedBy": served_by,
+                "from": "%s — so the record does not place this criterion" % why}
+    screens = sorted({scr for _i, scr in placed})
+    if len(screens) == 1:
+        who = ", ".join(i for i, _s in placed)
+        return {"screen": screens[0], "textMustInclude": [],
+                "rule": LANDING_INHERITED,
+                "inheritedFrom": [i for i, _s in placed],
+                "servedBy": served_by,
+                "from": ("inherited from %s, which declare%s `serves: %s` and place%s it on "
+                         "#%s in the drawing" % (who, "" if len(placed) > 1 else "s", key,
+                                                 "" if len(placed) > 1 else "s", screens[0]))}
+    return {"unplaced": True, "rule": LANDING_SEVERAL_PLACES,
+            "places": screens,
+            "inheritedFrom": [i for i, _s in placed],
+            "servedBy": served_by,
+            "from": ("the ticket criteria serving %s declare %d different places (%s), and one "
+                     "picture can show at most one of them — so which place this picture ought "
+                     "to be of is undecidable from the record, and it settles nothing"
+                     % (key, len(screens),
+                        "; ".join("#%s from %s" % (scr, i)
+                                  for i, scr in sorted(placed, key=lambda pr: pr[1]))))}
+
+
+def no_declared_place(row):
+    """"I could not check this" for a row the record places NOWHERE (S243).
+
+    THE PROBLEM THIS SOLVES (measured over the six archived looks). S242 taught
+    a PRD row to inherit a place along the recorded `serves:` link and to SAY SO
+    when nothing it links to declares one. It left 16 rows across those six runs
+    — 3/3/2/2/4/2 — that cite a picture, have no declared place from any recorded
+    source, and said NOTHING: a flat `MET | a picture`. They are TICKET criteria
+    (`t-001-ac4`, `t-002-ac4`, `t-005-ac4`, `t-004-ac5`, `t-003-ac6`), so the
+    inheritance path never reaches them — a ticket criterion is the thing that
+    DECLARES a place, it does not inherit one. The original sin at a sixth of its
+    old size, and still silent.
+
+    SAME RULE, SAME WORDS, ONE MORE FAMILY. There is no new vocabulary here: the
+    row carries `LANDING_NO_DECLARED_PLACE`, the rule S242 already wrote, so the
+    once-per-look note, `landing.notPlaced` and `unplaced_mark` all cover it with
+    no change of their own.
+
+    NO PLACE IS INVENTED. Nothing in the record says which screen these rows are
+    about, and "I could not check this" is the correct answer — a guess is not.
+    But the planner DID write down why there is none, and that is read, not
+    composed: `notVisual` (the criterion is not about anything on a screen) or
+    `notDrawn` (the sentence the planner wrote about what the mockup leaves out).
+    Not one word of the criterion's own English is read.
+
+    None — NOT a mark — for a row that DECLARES a place. A `drawnAt` is a place
+    declaration whether or not THIS rail can read a screen id out of it: every
+    `part-…` row in the archive declares its drawn part (`drawnAt: "gold-roster"`),
+    and 35 of them across the six looks would otherwise be sprayed with a warning
+    about a record that does place them. Comparing a picture against a part's
+    recorded box is a check this rail does not make; claiming the record is
+    silent about them would be a lie."""
+    row = row or {}
+    if str(row.get("drawnAt") or "").strip():
+        return None
+    if row.get("notVisual"):
+        why = "the plan records this criterion as not visual and declares no place for it"
+    else:
+        # A RECORDED FIELD IS NOT ALWAYS A SENTENCE. Every `journey-…` row in the
+        # archive carries `notDrawn: true` — the FLAG — and 18 of them sit across
+        # the six looks. Reading that as text crashed the scorer outright
+        # ("'bool' object has no attribute 'split'"); it is quoted only when the
+        # planner really wrote prose, and otherwise read as the flag it is.
+        nd = row.get("notDrawn")
+        # 130, because the longest `notDrawn` the archive records is 122 — so the
+        # planner's sentence arrives in the captain's quotes WHOLE, and the
+        # ceiling on this reason stays well inside `unplaced_mark`'s budget.
+        said = clip(nd, 130) if isinstance(nd, str) and nd.strip() else ""
+        if said:
+            why = ('the plan records that this was not drawn ("%s") and declares no place '
+                   'for it' % said)
+        elif nd:
+            why = "the plan records this criterion as not drawn and declares no place for it"
+        else:
+            why = "nothing the plan records declares a place for this criterion"
+    return {"unplaced": True, "rule": LANDING_NO_DECLARED_PLACE,
+            "from": "%s — so the record does not place this criterion" % why}
+
+
+def not_placed_note(n):
+    """The look's ONE sentence about the pictures it could not place — agreeing
+    with its own count (S243).
+
+    It read `2 picture(s) I could not place … its picture …`: a hard-coded `(s)`
+    and a singular possessive at a count of two, in a product that is otherwise
+    fastidious about its own English. One function, so the count and the grammar
+    cannot drift apart, and so a test can read it at any count."""
+    n = int(n or 0)
+    if n == 1:
+        return ("1 picture I could not place: nothing the plan records declares which "
+                "screen that criterion is about, so I could not check that its picture "
+                "is of the right one.")
+    return ("%d pictures I could not place: nothing the plan records declares which "
+            "screen those criteria are about, so I could not check that their pictures "
+            "are of the right ones." % n)
+
+
+def landing_intent(doc, shot, by_shot, row, cid="", servers=None):
+    """What THIS ROW's shot was meant to show, from the record that says.
+
+    Four recorded sources, never a filename: the readout the driver wrote, the
+    walk/journey step whose shot this is, the criterion's own `drawnAt`, and —
+    for a PRD row that declares no place of its own — the place inherited along
+    the `serves` link from the ticket criteria that serve it.
+
+    WHOSE INTENT GOVERNS WHOSE ROW (measured on the archive, S241). A step's
+    intent is the STEP's, and it governs only the step's own row (`journey-j3`
+    is step `j3`) — not every criterion that happened to cite the same picture.
+    Replaying the six archived looks the other way round, a single mis-derived
+    step (the drawing stacks the inventory after the battle, so the journey
+    decided "Attack" leads to the inventory) refused `prd-6` and `t-004-ac3` as
+    well — two rows whose own declared place, `#screen-battle`, is exactly where
+    their picture was taken. Refusing good evidence because a DIFFERENT row's
+    expectation was wrong is the same crime as crediting a shot that landed
+    elsewhere, in the other direction. So a criterion is judged against the place
+    IT declared, and nothing else."""
+    if isinstance(doc, dict) and isinstance(doc.get("intent"), dict):
+        it = doc["intent"]
+        if not it.get("unstated"):
+            return it
+    st = by_shot.get(str(shot or "").strip())
+    if isinstance(st, dict) and str(cid or "") == "journey-%s" % str(st.get("key") or ""):
+        it = st.get("expectLanding")
+        if isinstance(it, dict) and not it.get("unstated"):
+            return dict(it, step=st.get("key") or "")
+    own = drawn_at_landing(row)
+    if own:
+        return own
+    # S242 — A PRD ROW INHERITS ALONG THE `serves` LINK. The row's OWN
+    # declaration always wins; only when it has none does the rail follow the
+    # link the planner wrote. Scoped by the contract's recorded `source` field
+    # (`prd`, written before the look, the same field the grouping reads), so a
+    # ticket or appearance row is untouched and the id's spelling is never
+    # parsed for a family.
+    if servers is not None \
+            and str((row or {}).get("source") or "").strip().lower() == "prd":
+        return served_landing(cid, servers)
+    # S243 — AND A ROW NOTHING PLACES AT ALL GETS THE SAME ANSWER, NOT SILENCE.
+    # Returning None here meant `landing_verdict` had nothing to compare, the row
+    # kept its verdict (right) and said nothing about it (wrong) — 16 rows across
+    # the six archived looks read as checked when no place for them was ever
+    # recorded. `no_declared_place` reads the planner's own recorded fields and
+    # returns None for a row that really does declare a place, so no settled row
+    # moves.
+    return no_declared_place(row)
+
+
+def landing_verdict(intent, landed):
+    """(reached, reason). `reached` is False only when a RECORDED intent and a
+    RECORDED landing actually disagree; an intent with nothing to check, or a
+    landing the page never declared, settles nothing either way and the row is
+    left exactly as the eye rated it."""
+    if not isinstance(intent, dict) or not isinstance(landed, dict):
+        return True, ""
+    where = (landed.get("screen") or landed.get("title")
+             or landed.get("url") or "somewhere the record does not name")
+    said = str(intent.get("from") or "").strip()
+    # UNDECIDABLE IS NOT SETTLED (S242). The record places this criterion at
+    # several different places at once, so no single picture can show it — not
+    # even one taken at one of them. Accepting any of them is what left `prd-2`
+    # met on a Roster shot; picking one of them would be an invention. So the
+    # row is refused with the disagreement itself as the reason.
+    if str(intent.get("rule") or "") == LANDING_SEVERAL_PLACES:
+        return False, ("landed on %s, and %s" % (where, said))
+    pat = str(intent.get("urlPattern") or "").strip()
+    if pat:
+        try:
+            if not re.search(pat, str(landed.get("url") or "")):
+                return False, ("landed on %s, expected a page whose address matches %s — %s"
+                               % (str(landed.get("url") or where), pat, said))
+        except re.error:
+            pass
+    want = str(intent.get("screen") or "").strip()
+    got = str(landed.get("screen") or "").strip()
+    if want and got and want != got:
+        return False, ("landed on %s, expected %s — %s" % (got, want, said))
+    # THE WORDS, when the screens did not settle it. Most products do not label
+    # their screens with an id a page can expose, so `screen` is often known on
+    # one side only — and skipping the text check whenever an intent NAMED a
+    # screen would leave those products unchecked entirely. Any ONE of the
+    # drawn headings is enough, because a heading may be restyled; all of them
+    # missing from a page that showed words at all is the signal.
+    musts = [str(t) for t in (intent.get("textMustInclude") or []) if str(t).strip()]
+    if musts and not (want and got):
+        hay = (" ".join([str(landed.get("textSample") or ""),
+                         str(landed.get("title") or "")])).lower()
+        if hay.strip() and not any(m.lower() in hay for m in musts):
+            return False, ("landed on %s, which shows none of %s — %s"
+                           % (where, ", ".join('"%s"' % m for m in musts[:3]), said))
+    return True, ""
+
+
+def unplaced_mark(landing, limit=280):
+    """The row's own disclosure for `report.md`, or "" when it was really checked.
+
+    READ, NEVER RE-DERIVED — the rule this file has lost three rounds to (S147,
+    S156, S188). Every word comes off the `landing` dict the scoring pass already
+    wrote for this row: `expected.rule`, which names WHY the record could not
+    place the picture, and `reason`, which spells that out. Nothing here re-opens
+    a readout, re-resolves a shot, re-reads the criterion's prose or infers a
+    place. A fact that was never recorded is SAID to be unrecorded rather than
+    filled in with a sentence of this function's own.
+
+    "" FOR A ROW THAT WAS CHECKED, deliberately and with no second condition.
+    The quietest way to ruin a disclosure is to spend it on rows that are fine;
+    a genuinely-placed row must read in the report exactly as it did before this
+    function existed, so the ONLY thing that produces a mark is the recorded
+    `unplaced` flag."""
+    if not isinstance(landing, dict) or not landing.get("unplaced"):
+        return ""
+    expected = landing.get("expected")
+    rule = " ".join(str((expected or {}).get("rule") or "").split()) \
+        if isinstance(expected, dict) else ""
+    # ITS OWN BUDGET, NOT THE EVIDENCE SENTENCE'S (S243). This was clipped at the
+    # same 160 as the `note` it is appended to, and the recorded reason is longer
+    # than that, so the captain read the one part of the cell he must not lose
+    # stopped mid-sentence: "…so the record does not place this criterion, and
+    # its…". The budget is now sized to the sentences the record actually writes
+    # (both `no_declared_place` and `served_landing` have a ceiling of their own —
+    # the first by clipping the quoted `notDrawn` at 130, the longest the archive
+    # records being 122; the second by clipping its server list at 60), so the
+    # disclosure arrives whole.
+    # The cell stays BOUNDED — the evidence text keeps its own 160 and is not
+    # shortened to make room; the row's ceiling simply moved, it did not vanish.
+    # `from` IS THE BARE RECORDED CLAUSE, and `reason` is this whole sentence
+    # written back onto the row (S247) so a consumer of the field alone learns
+    # what the cell says. Reading `reason` here would print the mark twice; `from`
+    # is what the producers record for exactly this reader.
+    reason = clip(landing.get("from") or landing.get("reason") or "", limit) \
+        or "and my record does not say why"
+    # `clip` ends a trimmed reason with its own ellipsis, so a full stop added
+    # on top of it reads as "…." — one stop, and only when the recorded text
+    # does not already carry one.
+    if reason[-1:] not in (".", "…", "!", "?"):
+        reason += "."
+    return "%s (%s) — %s" % (
+        LANDING_UNPLACED_MARK,
+        rule or "my record does not say which rule applied", reason)
+
+
+def placed_mark(landing):
+    """The positive statement a drawn part's row prints, or "".
+
+    READ, NEVER RE-DERIVED, exactly as `unplaced_mark` is: the sentence was
+    composed once by `part_landing` in the scoring pass and recorded on the row.
+    "" for every row that is not a measured-and-present drawn part, so no other
+    row changes by a character."""
+    if not isinstance(landing, dict) or landing.get("partPlaced") is not True:
+        return ""
+    return " ".join(str(landing.get("reason") or "").split())
+
+
+def landing_by_shot(walk, journey):
+    """shot name -> the step that took it, with its recorded intent.
+
+    The WALK says which step took which shot (`shot`, `shotBefore`); the JOURNEY
+    says what that step expected. Joined on the step's own `key` — a recorded
+    id, never a filename."""
+    by_key = {}
+    for st in ((journey or {}).get("steps") or []):
+        if isinstance(st, dict) and st.get("key"):
+            by_key[str(st["key"])] = st
+    out = {}
+    for st in ((walk or {}).get("steps") or []):
+        if not isinstance(st, dict):
+            continue
+        key = str(st.get("key") or "")
+        want = st.get("expectLanding")
+        if not isinstance(want, dict):
+            want = (by_key.get(key) or {}).get("expectLanding")
+        if not isinstance(want, dict):
+            continue
+        for f in ("shot", "shotBefore"):
+            nm = str(st.get(f) or "").strip()
+            if nm:
+                out.setdefault(nm, {"key": key, "expectLanding": want})
+    return out
 
 
 def outcome_of(entry):
@@ -845,15 +2091,68 @@ def question_kind(row):
     return "", ""
 
 
+# ─── WHAT COUNTS AS HAVING BEEN EXERCISED (S240 fix round 1, D2) ─────────────
+# `settled_by_picture_alone` predates S239, which made `transcript` a real
+# evidence word: the reach steps run a command and keep its exact output in a
+# `.txt` beside the shots. The predicate was written when a works-question could
+# only be exercised by a browser ACTION or by the project's own tests, so a row
+# proven by a CLI transcript — the whole point of the reach steps — fell through
+# to "a picture alone" and the works-kind downgrade below rewrote it.
+#
+# WHAT IT PROTECTS IS A PASS, NOT A FAULT — the round-1 wording here had this
+# backwards and a later reader would have been misled (corrected S240 fix round
+# 2). The downgrade below is gated on `e["status"] == "met"`, so the ONLY row it
+# can ever rewrite is one the look called MET. A `gap` row was never downgraded
+# by it and never could be: a transcript-proven FAULT reaches the report
+# untouched by this predicate.
+#
+# MEASURED consequence of the narrow predicate: a high-impact works-question the
+# look PASSED on a `cli` run, with its transcript on disk and no `action` string,
+# was rewritten to `untested` / `works-needs-action` / `evidence: none` — a
+# checked criterion turned into an unchecked one, which is what then moved the
+# headline off the evidence that existed. The widening restores the pass; it
+# grants nothing to a gap.
+#
+# THESE TWO TABLES ARE THE WIDENING, AND THEY ARE WHY IT IS NOT A REMOVAL. The
+# check exists to stop a row asserting a judgement with nothing behind it, so an
+# evidence WORD is not enough on its own: the row must ALSO name the instrument
+# it was taken with (`checkedBy`) AND where the output was left. A row that says
+# `transcript` and nothing else is still demoted.
+EXERCISED_EVIDENCE = ("transcript", "measurement", "tests")
+EXERCISED_CHECKED_BY = ("cli", "workflow", "test")
+# The fields a producer uses to say WHERE the output it took is. Any one of them
+# is a location a fix worker could open; none of them is prose.
+EVIDENCE_LOCATION_FIELDS = ("evidencePath", "transcriptPath", "transcript",
+                            "shot", "where", "testQuote")
+
+
+def recorded_location(entry):
+    """True when the row names WHERE its instrument left what it saw."""
+    for k in EVIDENCE_LOCATION_FIELDS:
+        if str(entry.get(k) or "").strip():
+            return True
+    for sh in (entry.get("shots") or []):
+        if str(sh or "").strip():
+            return True
+    return False
+
+
 def settled_by_picture_alone(entry):
     """True when the ONLY thing behind a passing row is a screenshot — no test
-    line quoted, no action recorded. The same predicate the settledBy record
-    uses (a picture is the fallback once tests and action are ruled out), read
-    from producer-stamped fields, so the two can never disagree."""
+    line quoted, no action recorded, and no other instrument that was actually
+    RUN. The same predicate the settledBy record uses (a picture is the fallback
+    once tests and action are ruled out), read from producer-stamped fields, so
+    the two can never disagree."""
     ev = str(entry.get("evidence") or "").strip().lower()
     if ev == "tests" and str(entry.get("testQuote") or "").strip():
         return False
     if str(entry.get("action") or "").strip():
+        return False
+    # AN INSTRUMENT THAT WAS RUN, NAMED, AND LEFT ITS OUTPUT SOMEWHERE. All
+    # three, or the row falls through to the demotion exactly as before.
+    if ev in EXERCISED_EVIDENCE \
+            and str(entry.get("checkedBy") or "").strip().lower() in EXERCISED_CHECKED_BY \
+            and recorded_location(entry):
         return False
     return True
 
@@ -966,6 +2265,150 @@ def derive_grade(ledger):
     return g
 
 
+def derive_recommendation(ledger, grade, finding_by_id=None, name_of=None):
+    """THE ACTION, derived from the ledger + the grade + the coverage floor.
+
+    The weekend's merge policy, made the reviewer's own and written down:
+
+      * no gap, and the coverage floor met                     -> merge
+      * gaps only at medium/low impact, or the floor missed for
+        INFRASTRUCTURE reasons                                 -> merge-with-follow-ups
+      * any high-impact gap, or a high-impact criterion that
+        could not be reached for a PRODUCT reason              -> send-back
+      * NOT ONE row settled either way (S248 fix round 1)      -> send-back
+
+    Pure: reads `status`, `impact` and the recorded `cause` off the ledger, and
+    `coveragePct`/`coverageFloorPct` off the grade. It NEVER reads the grade WORD
+    — a `low` that is low only because a runner would not start is not a send-back,
+    and that is the whole reason the two live apart.
+
+    Returns {recommendation, because[], blockers[], followUps[]}. `blockers` are
+    the rows that forced a send-back, each carrying the recorded evidence kind so
+    a surface never has to read it back out of prose; `filedAs` is stamped onto
+    them later, by whoever files them.
+    """
+    finding_by_id = finding_by_id or {}
+    name_of = name_of or (lambda cid: cid)
+    high_gaps, other_gaps, product_blind, infra_blind = [], [], [], []
+    for e in ledger:
+        st = str(e.get("status") or "")
+        imp = e.get("impact") if e.get("impact") in VALID_IMPACT else "high"
+        if st == "gap":
+            (high_gaps if imp == "high" else other_gaps).append(e)
+        elif st == "untested" and imp == "high":
+            # A MISSING LIVE TARGET IS ALWAYS OURS (S249). A row nobody could check
+            # because this repo's record consents to no live host is a hole in our
+            # rig, so it is a FOLLOW-UP (infrastructure) and never a blocker —
+            # whatever anything else stamped on it. Checked before the cause word,
+            # because that is the point: this reason is not up for interpretation.
+            if str(e.get("couldNotCheck") or "") == NEEDS_LIVE:
+                infra_blind.append(e)
+            # AN UNRECORDED CAUSE IS INFRASTRUCTURE. See CAUSE_CLASS.
+            elif str(e.get("cause") or "") == "product":
+                product_blind.append(e)
+            else:
+                infra_blind.append(e)
+
+    floor = int(grade.get("coverageFloorPct") or HIGH_COVERAGE_PCT)
+    pct = int(grade.get("coveragePct") or 0)
+    floor_met = pct >= floor
+
+    def ev_of(e):
+        f = finding_by_id.get(e.get("id")) or {}
+        return str(f.get("evidence") or e.get("evidence") or "none")
+
+    def blocker(e, why):
+        b = {"criterion": e.get("id"), "evidence": ev_of(e),
+             "impact": "high", "why": why}
+        if e.get("checkedBy"):
+            b["checkedBy"] = e["checkedBy"]
+        return b
+
+    because, blockers, follow_ups = [], [], []
+    for e in high_gaps:
+        why = ("%s is the point of the mission and it did not work"
+               % name_of(e.get("id")))
+        because.append(why + " (%s)" % e.get("id"))
+        blockers.append(blocker(e, why))
+    for e in product_blind:
+        why = ("%s could not be reached at all, and the reason is the build: %s"
+               % (name_of(e.get("id")),
+                  unstop(" ".join(str(e.get("note") or "").split()))
+                  or "no way in was recorded"))
+        because.append(why + " (%s)" % e.get("id"))
+        blockers.append(blocker(e, why))
+    for e in other_gaps:
+        follow_ups.append("%s did not work, at %s impact (%s)"
+                          % (name_of(e.get("id")), e.get("impact") or "medium",
+                             e.get("id")))
+    for e in infra_blind:
+        follow_ups.append("%s could not be checked here, and the reason is our rig, "
+                          "not the build: %s (%s)"
+                          % (name_of(e.get("id")),
+                             unstop(" ".join(str(e.get("note") or "").split()))
+                             or "no cause was recorded, so it is read as ours",
+                             e.get("id")))
+    if not floor_met:
+        follow_ups.append("only %d%% of this rail was actually checked, against a "
+                          "floor of %d%% — close the gap in what we can reach"
+                          % (pct, floor))
+
+    # ── NOTHING CHECKED IS NEVER A MERGE (S248 fix round 1, D2) ─────────────
+    #
+    # THE DEFECT, VERBATIM FROM THE TESTER. Line 1: "**Recommendation: MERGE
+    # WITH FOLLOW-UPS**". Line 2: "checked 0 of 3 (0%) … I could not check
+    # anything on your list, so nothing here is vouched for." The first thing a
+    # reader saw said ship it.
+    #
+    # AND THE POLICY ABOVE IS NOT THE BUG. An `untested` high row with no
+    # recorded `cause` is OURS, so it is a follow-up and not a blocker — which is
+    # right for ONE row blind for a rig reason, and is the rule six archived
+    # reviews were graded under. S248's wrong-screen demotion puts EVERY row
+    # there at once, and a ledger with no gaps left then reads as mergeable.
+    #
+    # SO THIS IS A FLOOR, NOT A REWRITE: a run that settled not one of its own
+    # rows cannot recommend a merge of any kind, whatever the rest of the policy
+    # concludes. Counted off THIS ledger's own statuses (the same two words
+    # `derive_grade` counts) rather than off `grade`, which is scoped to one
+    # group — so the number the rule reads is the number the rule is about.
+    checked_here = sum(1 for e in ledger
+                       if str(e.get("status") or "") in ("met", "gap"))
+    # AND THE ONE EXEMPTION FROM IT (S249). A rail whose rows ALL need a live
+    # target settled nothing — and the reason is that this repo's record consents
+    # to no live host. There is nothing in his build to send back; what is missing
+    # is an allow-list entry and a credential, which is a follow-up on US. So the
+    # floor applies only when something other than a missing live target is why
+    # nothing settled: one ordinary blind row anywhere and it fires as before.
+    live_blind_rows = sum(1 for e in ledger
+                          if str(e.get("couldNotCheck") or "") == NEEDS_LIVE)
+    nothing_checked = (bool(ledger) and checked_here == 0
+                       and checked_here + live_blind_rows < len(ledger))
+
+    if blockers:
+        rec = "send-back"
+    elif nothing_checked:
+        rec = "send-back"
+    elif other_gaps or infra_blind or not floor_met:
+        rec = "merge-with-follow-ups"
+    else:
+        rec = "merge"
+
+    if rec == "merge":
+        because = ["nothing on your list is short of the mark, and %d%% of this rail "
+                   "was actually checked against a floor of %d%%" % (pct, floor)]
+    elif nothing_checked and not because:
+        # Said as what it is — a hole in OUR checking, not a verdict on his build.
+        because = ["I could not check a single one of the %d thing(s) on your list, "
+                   "so nothing here is vouched for either way and there is nothing "
+                   "to merge on — that is a hole in my checking, not a fault in your "
+                   "build" % len(ledger)]
+    elif rec == "merge-with-follow-ups" and not because:
+        because = [follow_ups[0]] if follow_ups else [
+            "nothing here blocks a merge, but something is left over"]
+    return {"recommendation": rec, "because": because,
+            "blockers": blockers, "followUps": follow_ups}
+
+
 def _plain(text):
     return " ".join(re.sub(r"[^\w\s]", " ", str(text or "").lower()).split())
 
@@ -1068,6 +2511,22 @@ def short_name(text, limit=60):
 def evidence_said(rows, has_drawing=False):
     pics = sum(1 for e in rows if e.get("evidence") in ("picture", "measurement"))
     tests = sum(1 for e in rows if e.get("evidence") == "tests")
+    # S239 fix round 1 (D1): a row settled by RUNNING the thing is backed by a
+    # transcript, not a photograph. Counted apart and said apart — folded in, it
+    # made this sentence claim the captain's reviewer had SEEN ON SCREEN what it
+    # had read in a terminal.
+    runs = sum(1 for e in rows if e.get("evidence") == "transcript")
+    if runs:
+        bits = []
+        if pics:
+            bits.append(("I saw %d on screen" if has_drawing
+                         else "I have a picture of %d") % pics)
+        bits.append("I ran %d and read the transcript" % runs)
+        if tests:
+            bits.append("your own tests show %d" % tests)
+        if len(bits) == 1:
+            return "I ran each one and read the transcript"
+        return ", ".join(bits[:-1]) + " and " + bits[-1]
     # W2: with a real drawing on the mission, "picture" reads as the drawing;
     # the screenshots are what was SEEN on screen.
     if pics and tests:
@@ -1312,8 +2771,39 @@ def merge_unlisted(path, notes):
     # every citation is checked against it; when it recorded none there is
     # nothing to check against and the guard stands down rather than inventing
     # a verdict of its own.
-    inventory = set(str(s).strip() for s in (doc.get("shots") or [])
-                    if str(s).strip())
+    # AND A SCALAR IS NOT AN INVENTORY EITHER (S272). This line iterated the raw
+    # value exactly as the gaps loop did, and measured the same way: an unlisted
+    # record carrying `"shots": 5` raised `TypeError: 'int' object is not
+    # iterable` out of here and the scorer wrote nothing at all. Cured with the
+    # SAME normaliser as its sibling rather than a second convention — a cure
+    # shipped to one call site while an identical sibling stays raw is a known
+    # failure in this repo's ledger. An unreadable inventory lands as the empty
+    # set, which is the branch below that already stands the guard down, so a
+    # malformed record now loses the CHECK and keeps the finding instead of
+    # losing the whole verdict.
+    # AND A GUARD THAT STANDS DOWN SAYS SO (S272 fix round 1, D4). This file's
+    # own stated rule, six lines up, is that a drop happens "loudly, in the
+    # notes, never in silence" — and a DISABLED guard is the silent case.
+    # MEASURED: an unlisted record with two findings, one citing a real
+    # `01-help.png` and one citing an invented `99-never-taken.png`, drops the
+    # invention against an honest inventory; with `"shots": 5` the inventory is
+    # empty, BOTH are kept, and `ledgerNotes` was empty — so a finding naming a
+    # picture nobody took reached his "yours to decide" escalations with nothing
+    # saying the check had been skipped. Recorded here, where the inventory is
+    # built, and said below beside the drop note.
+    #
+    # `[]`, `""`, `{}` or no key at all is NOT this case: that is a producer
+    # that recorded no inventory, it stood the guard down before this session
+    # too, and it is deliberate.
+    _raw_inv = doc.get("shots")
+    inventory = set(_carried_strings(_raw_inv))  # S272 UNLISTED SHOTS
+    # THE SAME LEAF RULE, AT BOTH CALL SITES (S272 fix round 2, D-B). A cure
+    # applied to one site while its identical sibling stays raw is a named
+    # failure in this repo's ledger. Over-flagging HERE only ever added an
+    # honest "I could not check", so it was harmless — the rule is made
+    # identical anyway, because the next reader must find one convention and
+    # not two.
+    inv_refused = bool(not inventory and _unreadable_citation(_raw_inv))
     rows, lines, dropped = [], [], 0
     for f in findings:
         if not isinstance(f, dict):
@@ -1345,6 +2835,14 @@ def merge_unlisted(path, notes):
             "walk took, so I left %s out rather than pass on something I cannot "
             "show you" % (dropped, "" if dropped == 1 else "s",
                           "it" if dropped == 1 else "them"))
+    if inv_refused and rows:
+        notes.append(
+            "the unlisted pass recorded a list of the pictures it was given, and "
+            "that list was not in a shape I could read — so I could NOT check "
+            "whether the %d thing%s it raised name pictures the walk really took, "
+            "and I have passed %s on unchecked. One of them may name a picture "
+            "nobody ever took" % (len(rows), "" if len(rows) == 1 else "s",
+                                  "it" if len(rows) == 1 else "them"))
     return rows, lines
 
 
@@ -1552,6 +3050,138 @@ def summary_caveat(summary, measured):
                 u"picture.")
 
 
+# ─── WHAT IS CARRIED, AND THE SHAPE IT IS CARRIED IN (S263 fix round 2, D1) ──
+#
+# THE DEFECT THIS CLOSES, confirmed by hand before a line of it was written.
+# `{"title": "t", "saw": "s", "shots": 5}` and `shots: true` raised
+# `TypeError: 'int'/'bool' object is not iterable` out of `xo-logs.py`, which
+# exited 1 and wrote NOTHING — and `xo.sh` runs the filer as
+# `plan="$(… 2>/dev/null)" || plan=""`, so the traceback was discarded and the
+# empty result read as "nothing to file". The captain was told `nothing on <id>
+# contradicts what you wrote down — no logs filed.`, with a durable journal line
+# saying `"filed": 0, "detail": "no contradictions to file"`. A CRASH WAS
+# REPORTED AS A CLEAN BILL OF HEALTH, and the genuine contract breach in the
+# same verdict was lost with it. (The call site got its own cure; this is the
+# source.)
+#
+# THE GAPS LANE IS TREATED THIS WAY TOO, deliberately rather than by inventing a
+# second convention: the gaps loop above drops a non-dict entry, coerces `kind`,
+# `evidence` and `testQuote` through `str()`, normalises `shots` through
+# `_carried_strings` BELOW, and hands the CONSUMER a normalised entry instead of
+# the raw one. The only difference is that this lane is a WHITELIST — the
+# consumer reads a known set of fields, so an unknown field of any shape cannot
+# reach it at all and cannot become the next crash.
+#
+# IT WAS NOT ALWAYS TRUE, AND THE CLAIM THAT IT WAS COST A ROUND (S272). What
+# this paragraph said when S263 wrote it was "THE GAPS LANE WAS ALREADY TREATED
+# THIS WAY" — and it was not. The gaps loop dropped its non-dict entries and
+# coerced its `kind`, but its `shots` line ITERATED THE RAW VALUE and `{"shots":
+# 5}` crashed the whole scorer, writing no file at all. Two lanes, one of them
+# only believed to be cured. Both now call `_carried_strings`; so does the
+# unlisted pass's citation inventory in `merge_unlisted`, which had the same
+# line and the same crash.
+# ONE READER OF A PLURAL `shots` IS DELIBERATELY LEFT RAW: `recorded_location`.
+# MEASURED, not reasoned — with the function instrumented and genuinely reached,
+# a verdict row carrying `"shots": 5` arrived there as `shots=None`. Its only
+# caller hands it a LEDGER entry, and a ledger entry is the hand-built whitelist
+# below `entry = {` in `main()`, which copies `shot` (singular) and never the
+# plural field at all. There is nothing there to cure.
+#
+# IT DECIDES NOTHING. It is shape, not judgement: no entry is dropped for what it
+# SAYS, only for not being an object at all. Whether a find is CITED is
+# `xo-logs.py`'s question and is asked against the record on disk, which this
+# file cannot see.
+#
+# AND D6: THE OBVIOUS SHAPES ARE ACCEPTED rather than lost. A list on a singular
+# field (`{"transcript": ["01-help.txt"]}`) and a map on a plural one
+# (`{"shots": {"a": "01-help.txt"}}`) were both refused because the old reader
+# stringified the container and never tried the path inside it. An honest
+# citation should not be thrown away over the shape of its field.
+CARRIED_TEXT = ("title", "expected", "saw", "note", "action", "evidence",
+                "checkedBy", "impact", "impactWhy", "kind", "seam", "reason",
+                "testQuote")
+CARRIED_NAME = ("evidencePath", "transcriptPath", "transcript", "shot")
+
+
+def _carried_strings(v):
+    """Every non-empty string inside a value that may be a string, a list or a
+    map — and NOTHING for a number, a bool or a None. One recursion, so a list
+    of lists and a map of lists both flatten."""
+    out = []
+    if isinstance(v, str):
+        if v.strip():
+            out.append(v.strip())
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            out.extend(_carried_strings(x))
+    elif isinstance(v, dict):
+        for x in v.values():
+            out.extend(_carried_strings(x))
+    return out
+
+
+# AND "I COULD NOT READ IT" IS A DIFFERENT FACT FROM "THERE WAS NOTHING THERE"
+# (S272 fix round 2, D-B). Round 1 asked `_raw not in (None, "", [], (), {})`,
+# which excludes five TOP-LEVEL literals and nothing else — so `[""]`,
+# `["  "]`, `[None]`, `[[]]`, `[{}]`, `{"a": ""}` and `{"a": []}` all counted
+# as REFUSED CITATIONS, and the captain was told a picture had been NAMED when
+# the look named nothing at all. That is the very misdescribing-note class the
+# round-1 cure was written to close, committed one line further on.
+#
+# So the question is asked of the LEAVES, not of the container: was there a
+# leaf that could never have been a path? A number, a bool or any other
+# non-string scalar IS a malformed citation and is still flagged — which is a
+# deliberate change from the parent's `x or []`, where `shots: false` and
+# `shots: 0` read as an honest "I cited nothing". A producer that writes a
+# scalar there DID declare something and we could not read it, so flagging it
+# is the honest reading; it is called out as a behaviour change on a
+# pre-existing path rather than slipped in. A structure that merely bottoms out
+# in empty strings, empty lists or empty maps declared nothing, and stays
+# honest-empty exactly as it always was.
+def _unreadable_citation(v):
+    """True when a value holds at least one LEAF that could never be a path — a
+    number, a bool, or any non-string scalar. `None`, empty strings, empty
+    lists and empty maps are an honest "I cited nothing", not a refusal. The
+    traversal matches `_carried_strings` above, leaf for leaf, so the two
+    always agree about where the leaves are."""
+    if v is None or isinstance(v, str):
+        return False
+    if isinstance(v, (list, tuple)):
+        return any(_unreadable_citation(x) for x in v)
+    if isinstance(v, dict):
+        return any(_unreadable_citation(x) for x in v.values())
+    return True
+
+
+def carried_finds(rows):
+    """The uncontracted-find list, normalised to the shapes its one consumer
+    reads. See the block above: a whitelist, a coercion, and no judgement."""
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            # AND IT IS NOT DROPPED IN SILENCE EITHER (S263 fix round 3, FIX 3).
+            # `continue` here dropped a non-object entry with nothing printed,
+            # nothing journaled and nothing in `logs.json` — the same silence
+            # that let `{"saw": 3}` vanish. An entry with no words is carried, so
+            # the filer REFUSES it out loud by its own wordless arm instead of
+            # this file deciding on its own that the captain need not hear. It
+            # still carries no judgement and no text: there was none to carry.
+            out.append({"shots": []})
+            continue
+        e = {}
+        for k in CARRIED_TEXT:
+            got = _carried_strings(r.get(k))
+            if got:
+                e[k] = " ".join(got)
+        for k in CARRIED_NAME:
+            got = _carried_strings(r.get(k))
+            if got:
+                e[k] = got[0]
+        e["shots"] = _carried_strings(r.get("shots"))
+        out.append(e)
+    return out
+
+
 def main():
     if len(sys.argv) < 4:
         sys.stderr.write(
@@ -1584,6 +3214,123 @@ def main():
     # other is the scoring system's OWN assumed-impact call (impactAssumed).
     decisions_path = sys.argv[12] if len(sys.argv) > 12 else ""
     made_decisions = load_json_or_none(decisions_path)
+    # The journey, for the landing rail's recorded intents (S241) and for the
+    # browser steps a row can be traced back to. NOTHING is read off it about
+    # live-check items any more: the worker is the one author of the step list
+    # (S247), so the only "I could not check this" that reaches the captain is a
+    # blind ledger row or the look's OWN `couldNot`.
+    journey_path = sys.argv[13] if len(sys.argv) > 13 else ""
+    # S241: the look's SHOTS directory, so a cited shot's readout — the record
+    # of where that picture was actually taken — can be read back. Absent, the
+    # landing rail is OFF and every row stands exactly as the eye rated it: a
+    # missing directory is not evidence that a shot landed wrong.
+    shots_root = sys.argv[14] if len(sys.argv) > 14 else ""
+    # S248: the look's own record that the page it was given was the WRONG SCREEN
+    # — not one of the places the contract declares was present or laid out on it,
+    # and the second serve target was no better. Written by `xo.sh` off
+    # `xo-drive.js`'s per-shot `places` readout; no image is compared anywhere.
+    # Absent (the usual case), this rail is OFF and every row stands as rated.
+    wrong_screen_path = sys.argv[15] if len(sys.argv) > 15 else ""
+    # S249: `xo/live.json` — the harness's own record of what this look reached on
+    # a real host, and of every live step it REFUSED for want of consent. Two
+    # things are read off it and nothing is inferred: the criteria whose check
+    # never ran because nobody consented to the host (so the row reads
+    # `untested (needs a live target)` and asks for infrastructure instead of
+    # sending the build back), and the live effects the look declared it created
+    # (so the report can say what it touched and a teardown has a list). Absent —
+    # the usual case, and every look before this session — this rail is simply OFF.
+    live_path = sys.argv[16] if len(sys.argv) > 16 else ""
+    # ── THIS LOOK'S OWN SHOTS DIRECTORY (S264 fix round 1, FIX 1) ───────────
+    # NOT `shots_root` above, and the difference is the whole of FIX 1. The rail
+    # is handed the ROOT on purpose — the eye cites a shot by bare name and may
+    # cite one an earlier look took (S241). The over-claiming guard must be
+    # handed THIS LOOK ONLY, or a superseded look's transcript settles a row
+    # taken after the fix: measured at 37 of 42 admitted files. Two consumers,
+    # two arguments, so neither has to guess which look is current. Absent →
+    # no placed transcript counts and every row stands on the recorded run
+    # alone, which is exactly the pre-S264 behaviour.
+    look_dir = sys.argv[17] if len(sys.argv) > 17 else ""
+    placed = placed_transcripts(look_dir)
+    live_record = load_json_or_none(live_path)
+    if not isinstance(live_record, dict):
+        live_record = {}
+    live_refused_by_id = {}
+    for _r in (live_record.get("refused") or []):
+        if isinstance(_r, dict) and str(_r.get("criterion") or "").strip():
+            live_refused_by_id.setdefault(str(_r["criterion"]).strip(), _r)
+    live_effects = [e for e in (live_record.get("effects") or []) if isinstance(e, dict)]
+    live_consent = live_record.get("consent") \
+        if isinstance(live_record.get("consent"), dict) else {}
+    wrong_screen = load_json_or_none(wrong_screen_path)
+    if not (isinstance(wrong_screen, dict) and wrong_screen.get("wrongScreen")):
+        wrong_screen = None
+    wrong_screen_reason = ""
+    if wrong_screen:
+        wrong_screen_reason = str(wrong_screen.get("reason") or "").strip() or (
+            "the wrong screen: the page I was given showed none of the parts the "
+            "drawing declares")
+    wrong_screen_rows = []
+    journey_doc = load_json_or_none(journey_path)
+    # ── THE STEPS THE HARNESS REFUSED (S250 fix round 1, D2) ────────────────
+    # Written onto the journey by `xo-journey.py reach-record` as each round's
+    # steps are granted — kind, the harness's own plain-English reason, and the
+    # round. Read here so the captain's report can COUNT them and SAY them; they
+    # touch nothing else, and a look with none reads exactly as it always has.
+    refused_steps = []
+    # ── AND THE STEPS DROPPED AT THE CAP (S264 fix round 2, FIX 5) ──────────
+    # MEASURED by the fix-round-1 tester: the gate printed "14 asked, 12 kept
+    # (cap 12), 0 refused, 2 over the cap" and `grep -c droppedSteps` on this
+    # file was 0 — the drop reached the reviewer's next prompt and never the
+    # captain. It is read here exactly as a refusal is, and kept on its own
+    # list, because a step with nothing wrong with its shape is not a refusal.
+    dropped_steps = []
+    # ── AND THE STEPS KEPT WITH NO PAGE TO RUN THEM ON (S272) ───────────────
+    # The THIRD list `xo-journey.py` already writes, and the only one of the
+    # three this file never read. MEASURED: on one real review `lcars launch`
+    # died on a taken port, the reviewer's ELEVEN declared browser steps were
+    # recorded `asked: 11, refused: [], dropped: [], overflow: 0` — kept, and
+    # not one executed — and `xo-score.py` mentioned `unrunSteps` ZERO times. So
+    # the captain's own report read "0 refused, 0 dropped" over a look that had
+    # run nothing. Read here exactly as a refusal and a drop are, and kept on its
+    # own list for the same reason they are kept apart from each other: a step
+    # nothing was wrong with, that there WAS room for, and that still never ran,
+    # is a third fact.
+    unrun_steps = []
+    if isinstance(journey_doc, dict):
+        for _r in (journey_doc.get("refusedSteps") or []):
+            if isinstance(_r, dict) and str(_r.get("why") or "").strip():
+                refused_steps.append(_r)
+        for _r in (journey_doc.get("droppedSteps") or []):
+            if isinstance(_r, dict) and str(_r.get("why") or "").strip():
+                dropped_steps.append(_r)
+        # AND THE SCALAR CASE WAS A NEW CRASH, NOT AN INHERITED ONE (S272 fix
+        # round 3, FIX 1). `x or []` iterates the raw value, so MEASURED on this
+        # branch through the real scorer: `{"unrunSteps": 5}` raised `TypeError:
+        # 'int' object is not iterable`, rc=1, and the scorer wrote NEITHER
+        # `verdict.json` NOR `report.md` — while the PARENT scored the same file
+        # and wrote both. That is the crash-and-write-nothing class this session
+        # was convened to close, introduced BY this session's own new read. The
+        # guard is the shape `main()` already uses on the gaps list below
+        # (`doc.get("gaps") if isinstance(..., list) else []`) rather than a new
+        # convention. The two siblings above crash identically and do so ON THE
+        # PARENT — inherited, ledgered for the captain, and deliberately not
+        # widened into here.
+        for _r in (journey_doc.get("unrunSteps") if isinstance(journey_doc.get("unrunSteps"), list) else []):  # S272 UNRUN LIST
+            if isinstance(_r, dict) and str(_r.get("why") or "").strip():
+                unrun_steps.append(_r)
+    landing_steps = landing_by_shot(load_json_or_none(walk_path), journey_doc)
+    landing_records = landing_records_exist(shots_root)
+    landing_on = bool(shots_root and os.path.isdir(shots_root) and landing_records)
+    landing_refusals, landing_not_reached = [], []
+    # S242: the rows whose picture the record cannot PLACE at all — kept apart
+    # from the refusals, because an unplaceable picture is not a wrong one.
+    landing_not_placed = []
+    landing_note = ""
+    if shots_root and os.path.isdir(shots_root) and not landing_records:
+        # SAY IT ONCE, DO NOT SPEND IT THIRTY TIMES. See landing_records_exist.
+        landing_note = ("not one picture in this look carries a record of where it was "
+                        "taken, so I could not check that any of them is of the screen "
+                        "it was cited for")
     walk = load_walk(walk_path)
     seed = load_json_or_none(seed_path)
     pairs_by_part = load_pairs(pairs_path)
@@ -1594,6 +3341,22 @@ def main():
     if not isinstance(doc, dict):
         bad("the verdict is not a JSON object")
 
+    # S246 — WHAT THE LOOK ITSELF SAYS IT COULD NOT DO. Optional, and the only
+    # list under "What I could not check" that is not a blind ledger row: the
+    # worker's own `couldNot` entries, `{item, why}`. Since S247 it is the ONLY
+    # thing that fills that section beside the blind rows, because a checklist
+    # item a template could not instantiate was a fact about the template, while
+    # an item the LOOK could not reach is a fact about the look.
+    could_not = []
+    for row in (doc.get("couldNot") or []):
+        if not isinstance(row, dict):
+            continue
+        item = " ".join(str(row.get("item") or "").split())
+        why = " ".join(str(row.get("why") or "").split())
+        if item or why:
+            could_not.append({"item": item or "something it did not name",
+                              "why": why or "it did not say why"})
+
     contract = load(cpath, "criteria list")
     contract_list = contract.get("criteria") if isinstance(contract, dict) else []
     if not isinstance(contract_list, list):
@@ -1602,6 +3365,10 @@ def main():
     primary = set(str(c.get("id")) for c in contract_list
                   if isinstance(c, dict) and c.get("primary"))
     contract_by_id = {str(c.get("id")): c for c in contract_list if isinstance(c, dict)}
+    # S242: prd id -> the ticket criteria that declare `serves: prd-N`, built
+    # ONCE so a PRD row can inherit the place its servers declared. One pass
+    # over the contract that was written before the look; it reads no prose.
+    landing_servers = serving_index(contract_list)
 
     worker_score = str(doc.get("score") or "").strip().lower()
     if worker_score not in VALID_SCORES:
@@ -1620,6 +3387,11 @@ def main():
 
     gaps_in = doc.get("gaps") if isinstance(doc.get("gaps"), list) else []
     notes = []
+    # THE FIRST THING THE NOTES SAY, WHEN IT HAPPENED AT ALL (S257 fix round 1):
+    # that the de-duplication of what was measured could not run. Empty — and so
+    # invisible — on every whole install; see `load_observations`.
+    if observations and observations.get("dedupSkipped"):
+        notes.append(observations["dedupSkipped"])
     # RECONCILING THE RECORDS OF ONE LOOK (S226, Number One). The reviewer keeps
     # several records of the same look — the walk, the probe/action pass, the
     # verdict. Where two of them disagree the difference is written down HERE,
@@ -1660,13 +3432,107 @@ def main():
         kind = str(g.get("kind") or "").strip().lower()
         if kind not in ("contradiction", "interpretation"):
             bad("a gap names no kind (want contradiction|interpretation)")
-        shots = [str(s) for s in g.get("shots") or [] if str(s).strip()]
+        # THE RAW VALUE WAS ITERATED (S272). MEASURED on this branch, through
+        # the real scorer: `{"shots": 5}` raised `TypeError: 'int' object is not
+        # iterable` and `{"shots": true}` the same for a bool — and the scorer
+        # then wrote NO file at all, which is the identical silence S263 closed
+        # on the volunteered lane. `{"shots": {"a": "01-help.png"}}` did not
+        # crash; it quietly yielded the dict's KEY (`['a']`) and the captain's
+        # report cited a shot called `a`. `_carried_strings` is the one
+        # normaliser this file already has for exactly this (see its block
+        # above): it takes a string, a list or a map, returns nothing at all for
+        # a number, a bool or a None, and for D6 reads the path INSIDE an
+        # obvious container instead of stringifying the container.
+        _raw_shots = g.get("shots")
+        shots = _carried_strings(_raw_shots)  # S272 GAP SHOTS
+        # AND THE PRODUCER RECORDS WHAT IT THREW AWAY (S272 fix round 1, D2).
+        # The cure above turned a crash into a SILENT omission: a gap that cited
+        # a picture and a gap that cited nothing came out byte-identical, both
+        # `shots: []`, and nothing anywhere said a declared citation had been
+        # refused. The knock-on was the real harm and it was measured — with the
+        # gap's own `evidence` word absent (the realistic single-declaration
+        # case), refusing the citation removes the structural fallback that
+        # inferred evidence from "it cited a shot", the finding is demoted
+        # `contradiction` → `interpretation`, and a GENUINE FAULT is then read
+        # back to the captain under "I am reading these as yours, not as faults".
+        #
+        # So the fact is WRITTEN DOWN HERE, where it happens, and never worked
+        # out later by reading the finished entry — the infer-vs-record shortcut
+        # that cost S147, S156 and S188 a round each (see the block above).
+        #
+        # THE DEMOTION STANDS, AND IS MADE LOUD INSTEAD. Keeping the row a
+        # `contradiction` would promote a confident fault whose evidence the
+        # harness cannot even name, which is the one thing this guard exists to
+        # refuse. What was wrong was not the demotion; it was that the captain
+        # was told the row was HIS CALL. So the refusal is carried on the entry
+        # and said out loud in the report (see `cite` and the interpretation
+        # section), and the note below stops misdescribing it.
+        #
+        # "" / [] / {} / absent is NOT a refusal — that is an honest "I cited
+        # nothing", and it behaved this way before this session.
+        shots_refused = bool(not shots and _unreadable_citation(_raw_shots))
+        # AND A **PARTLY** UNREADABLE LIST IS A DROP TOO (S272 fix round 3,
+        # FIX 7). The flag above is gated on `not shots`, so a list that lost
+        # SOME of its leaves was invisible. MEASURED on this branch, through the
+        # real scorer: `shots: ["03-x.png", 7]` came out `shots: ["03-x.png"]`
+        # with no `shotsRefused`, no note, nothing on the wire, and a report
+        # BYTE-IDENTICAL to the parent's — the `7` was thrown away in silence.
+        # This file's own repeated rule, stated above `UNLISTED_LEAD`, is that a
+        # drop happens "loudly, in the notes, never in silence", and this is a
+        # site THIS session created.
+        #
+        # ITS OWN FLAG, not a widening of `shots_refused`. `cite()` answers a
+        # `shotsRefused` row with "a picture was named, and I could not read the
+        # citation" — a false sentence about a row that kept a readable path the
+        # captain CAN open — and the demotion wording keys off the same flag. So
+        # the partial case keeps every one of those behaviours exactly as it is
+        # and adds one note and one wire field: the finding stands on what could
+        # be read, and the captain is told something beside it could not.
+        shots_refused_partial = bool(shots and _unreadable_citation(_raw_shots))
+        # AND "DEMOTED" IS A SECOND FACT, RECORDED SEPARATELY (S272 fix round
+        # 2, D-A). `shots_refused` is true of ANY gap whose citation could not
+        # be read — INCLUDING one the look itself filed as an `interpretation`,
+        # which nothing demoted. Round 1 keyed the report's wording off this
+        # flag alone, so that gap was told the look "filed this as a MISMATCH IN
+        # YOUR BUILD" when the look had filed it as the captain's own call from
+        # the start. A look that filed an interpretation must never be told it
+        # filed a mismatch. So the demotion is recorded WHERE IT HAPPENS, in the
+        # branch below, and every sentence about a demotion keys off that.
+        shots_refused_demoted = False
         # WHERE THIS FINDING CAME FROM, RECORDED ON THE FINDING (S211). Declared
         # by the look that made it; when it declared nothing, taken from the
         # structural fact that it cited a shot — never from the wording.
         g_ev = str(g.get("evidence") or "").strip().lower()
         if g_ev not in VALID_EVIDENCE:
-            g_ev = "picture" if shots else ""
+            # THE SAME FACT, DECLARED ONCE, IS ENOUGH — the evidence WORD too
+            # (S240 fix round 2, D-C). The worker declares a finding in two
+            # places; on the first live look it put `evidence: "transcript"` and
+            # `checkedBy: "cli"`/`"workflow"` on the LEDGER ROW and left the GAP
+            # record's word off, and this line then stamped the gap — and the
+            # blocker built from it — `picture`. MEASURED: three gaps whose only
+            # evidence was `01-help.txt` / `02-workflow-run.txt` /
+            # `08-publish.txt` read "a picture" to the captain while the ledger
+            # row for the very same criterion correctly read "a transcript".
+            # So the row's own word is taken first, exactly as the test-citation
+            # fallback below takes the row's quote. Nothing is inferred from
+            # prose and no new claim is trusted: it is the producer's word about
+            # its own finding, read off its other declaration site.
+            row_ev = str((declared_rows.get(str(g.get("criterion") or "").strip())
+                          or {}).get("evidence") or "").strip().lower()
+            if row_ev in VALID_EVIDENCE:
+                g_ev = row_ev
+            elif shots:
+                # AND THE STRUCTURAL FALLBACK IS STILL STRUCTURAL — it just
+                # reads the whole name. A shot called `02-workflow-run.txt` is
+                # not a picture of anything; a shot called `shot-01` or
+                # `round1-01.png` is. Anything that is not a named text/data
+                # file stays `picture`, so a genuine screenshot gap is unchanged.
+                g_ev = shot_name_evidence(shots[0])
+            else:
+                # UNDECLARED AND UNCITED IS STILL NOTHING. An unrecognised word
+                # must not survive this branch (it would reach the report as
+                # itself), so it is cleared exactly as before.
+                g_ev = ""
         g_quote = str(g.get("testQuote") or "").strip()
         # A FAILING TEST IS A PICTURE (S211). The citation guard below exists so
         # a confident-sounding fault always has something behind it; for a
@@ -1674,7 +3540,14 @@ def main():
         # line the suite printed. That line is checked against the recorded
         # output exactly as a `met` is, so this is not a hole in the guard —
         # it is the same guard, over the other kind of evidence.
-        tests_back_it = g_ev == "tests" and tests_settle(tests, g_quote)[0]
+        # AND WHICH OUTPUT IT STOOD ON (S264 fix round 2, FIX 7). Both calls
+        # below collect into the SAME list, so whichever quote ended up backing
+        # this finding, the captain is told where the line was found — a
+        # contradiction kept alive on a transcript the reviewer placed itself is
+        # disclosed exactly as a criterion settled the same way already is.
+        g_settled_by = []
+        tests_back_it = g_ev == "tests" and tests_settle(tests, g_quote, placed,
+                                                         g_settled_by)[0]
         # THE FALLBACK, AND ONLY WHERE THE HOLE IS. It applies to a
         # contradiction that is about to be demoted for want of anything behind
         # it, and that cited no line of its own — a gap that DID cite one and
@@ -1685,7 +3558,7 @@ def main():
             row = declared_rows.get(str(g.get("criterion") or "").strip()) or {}
             r_quote = str(row.get("testQuote") or "").strip()
             if str(row.get("evidence") or "").strip().lower() == "tests" and r_quote \
-                    and tests_settle(tests, r_quote)[0]:
+                    and tests_settle(tests, r_quote, placed, g_settled_by)[0]:
                 tests_back_it = True
                 g_ev, g_quote = "tests", r_quote
                 notes.append("%r cited no line of its own, so I took the one your tests "
@@ -1694,10 +3567,61 @@ def main():
                              % (str(g.get("title") or g.get("criterion") or "?"),
                                 str(g.get("criterion") or "?")))
         if kind == "contradiction" and not shots and not tests_back_it:
-            notes.append("I called %r a mismatch but had no picture of it, so I have moved it "
-                         "to the calls-the-build-made list instead — a finding with no picture "
-                         "is not evidence" % (str(g.get("title") or g.get("criterion") or "?")))
+            if shots_refused:
+                # A NOTE THAT MISDESCRIBES IS WORSE THAN NO NOTE (S272 fix
+                # round 1, D2). The sentence below reads "I called it a mismatch
+                # but had no picture of it" — and here the look DID cite one;
+                # the harness refused the value it was given. Said correctly,
+                # and said as MY limit rather than as his design call.
+                notes.append("%r named a picture, but the citation it gave me was not "
+                             "a path I could read, so I have nothing to show you and "
+                             "have moved it to the calls-the-build-made list. THAT MOVE "
+                             "IS MY LIMIT, NOT YOUR DESIGN CALL — the look filed this as "
+                             "a mismatch in your build"
+                             % (str(g.get("title") or g.get("criterion") or "?")))
+                # THE DEMOTION, RECORDED IN THE BRANCH THAT DID IT (D-A).
+                shots_refused_demoted = True
+            else:
+                notes.append("I called %r a mismatch but had no picture of it, so I have moved it "
+                             "to the calls-the-build-made list instead — a finding with no picture "
+                             "is not evidence" % (str(g.get("title") or g.get("criterion") or "?")))
             kind = "interpretation"
+        # AND THE REFUSAL IS SAID ON THE PATHS THAT KEPT THE ROW TOO (S272 fix
+        # round 2, D-C). The branch above was the ONLY place the refusal was
+        # ever said, and it runs only when the row is demoted. MEASURED: a
+        # contradiction the project's own tests back keeps its kind, `cite()`
+        # answers "your tests", and the refusal reached `verdict.json` as
+        # `shotsRefused` while the report AND the wire said nothing — the
+        # recorded-but-unsaid case this file keeps closing. The same silence
+        # covered a gap the look itself filed as an interpretation. One note,
+        # worded so it is true of both: it claims nothing about WHY the row
+        # survived, only that the citation is unreadable and the finding stands
+        # where the look put it. Brief on purpose — a note, not a section.
+        elif shots_refused:
+            notes.append("%r named a picture and the citation it gave me was not a path "
+                         "I could read, so there is nothing for you to open — the "
+                         "finding itself is unchanged and stays where the look filed it"
+                         % (str(g.get("title") or g.get("criterion") or "?")))
+        # AND THE PARTIAL LOSS IS SAID OUT LOUD (S272 fix round 3, FIX 7). It
+        # claims nothing about the finding, which did not move and was not
+        # weakened: it names what survived and says that something else in the
+        # same field did not. Brief on purpose — a note, not a section.
+        elif shots_refused_partial:
+            notes.append("%r cited %d picture%s I could read (%s) and something else in "
+                         "the same field that was not a path I could read, so the "
+                         "finding stands on what I could open and the rest is dropped"
+                         % (str(g.get("title") or g.get("criterion") or "?"),
+                            len(shots), "" if len(shots) == 1 else "s",
+                            clip(", ".join(shots), 120)))
+        # SAID OUT LOUD, THE SAME WAY A CRITERION IS. Measured by the fix-round-1
+        # tester: `placed` reached both calls above and NO note was emitted, so a
+        # criterion settled on a placed transcript was disclosed while a
+        # CONTRADICTION kept alive on the very same evidence was silent.
+        if tests_back_it and g_settled_by and g_settled_by[0] != "the recorded run":
+            notes.append("the %s I filed on %s stands on %s — the test output you "
+                         "ran and saved yourself, not the run I recorded"
+                         % (kind, str(g.get("criterion") or g.get("title") or "?"),
+                            g_settled_by[0]))
         gg = dict(g)
         gg["kind"] = kind
         # THE GUARD'S OWN ANSWER, carried out of the loop that made it and
@@ -1705,6 +3629,23 @@ def main():
         # contradiction that has a picture can carry an unchecked quote too).
         gg["_testsBacked"] = bool(tests_back_it)
         gg["shots"] = shots
+        # RECORDED ON THE FINDING, where it was decided (S272 fix round 1, D2).
+        # Written ONLY when it happened, so a verdict with no refused citation
+        # is byte-identical to the one this session shipped.
+        if shots_refused:
+            gg["shotsRefused"] = True
+        # AND THE PARTIAL LOSS REACHES THE WIRE TOO (S272 fix round 3, FIX 7).
+        # Written only when it happened, so every other verdict stays
+        # byte-identical. Kept apart from `shotsRefused` on purpose: this row
+        # still has a path the captain can open, and no reader may be made to
+        # guess which of the two happened.
+        if shots_refused_partial:
+            gg["shotsRefusedPartial"] = True
+        # AND SEPARATELY, WHETHER THAT REFUSAL MOVED THE ROW (D-A). Written
+        # only where the demotion happened, so no reader has to guess it back
+        # out of a kind that two different producers can have set.
+        if shots_refused_demoted:
+            gg["shotsRefusedDemoted"] = True
         gg["evidence"] = g_ev or "none"
         if g_quote:
             gg["testQuote"] = g_quote
@@ -1763,7 +3704,16 @@ def main():
                 # actually speaks to it, and only if that line is in the output
                 # the skill recorded. A green suite on its own proves nothing
                 # about a criterion the suite is silent on.
-                settled, why = tests_settle(tests, quote)
+                settled_by = []
+                settled, why = tests_settle(tests, quote, placed, settled_by)
+                if settled and settled_by and settled_by[0] != "the recorded run":
+                    # SAID OUT LOUD. The row stands on a transcript the reviewer
+                    # placed rather than on the run xo-tests.py recorded, and the
+                    # captain is told which — a row believed for a different
+                    # reason than usual says so.
+                    notes.append("%s stands on %s — the test output you ran and saved "
+                                 "yourself, not the run I recorded"
+                                 % (cid, settled_by[0]))
                 if not settled:
                     notes.append("%s was rated %s on your tests, but %s; recorded as "
                                  "not-checked" % (cid, status, why))
@@ -1847,6 +3797,223 @@ def main():
                         % OUTCOME_WORD[status])
                 status = "untested"
                 evidence = ""
+        # ── A SHOT THAT LANDED ELSEWHERE IS NOT EVIDENCE (S241) ───────────
+        # The pair the archive never had: what this shot was MEANT to show
+        # against where the page actually was. Both halves are read off records
+        # (see the landing rail above) — no image is compared, no filename is
+        # read, and nothing is retried. A row refused here is NOT a fault in the
+        # build: it is a hole in MY checking, so it goes to `untested` with the
+        # recorded reason and is listed under "what defeated my checks".
+        # S254 — AND THE FIRST QUESTION IS "WAS THIS A PICTURE?". A row whose
+        # evidence a producer recorded as a cli / workflow / test run is scored
+        # on that transcript and is never demoted for a missing landing record:
+        # the rule is about PICTURES, and those steps have no screen. See
+        # camera_step() for the two records this reads and why the default is
+        # the rail.
+        landing = None
+        # ── A GRADE OVER THE WRONG PAGE IS NOT A GRADE (S248) ──────────────
+        # Before the landing rail, because this is the coarser fault: the rail
+        # asks whether THIS picture was of the screen the row declared, and this
+        # asks whether the look was ever shown the product at all. A row settled
+        # on a picture of a page that carried none of the drawing's parts has not
+        # been checked — it is a hole in MY checking, so it goes to `untested`
+        # with the recorded reason, exactly as a mislanded shot does.
+        _ws_hit = False
+        if wrong_screen and shot and status in ("met", "gap"):
+            _wdoc = landing_readout(shots_root, shot)[1]
+            _wpic, _ = camera_step(_wdoc, c)
+            if _wpic:
+                _ws_hit = True
+                notes.append("criterion %s was rated %s on %s, and %s; recorded as "
+                             "untested — I will not grade a page I could not place"
+                             % (cid, status, shot, wrong_screen_reason))
+                note = wrong_screen_reason
+                landing = {"wrongScreen": True, "reason": wrong_screen_reason,
+                           "shot": shot, "url": str(wrong_screen.get("url") or ""),
+                           "lookedFor": wrong_screen.get("lookedFor") or []}
+                status = "untested"
+                evidence = ""
+                wrong_screen_rows.append(cid)
+        _rail_here = bool(landing_on and shot and status in ("met", "gap")) and not _ws_hit
+        _rpath, _rdoc = landing_readout(shots_root, shot) if _rail_here else ("", None)
+        _is_pic, _pic_from = camera_step(_rdoc, c) if _rail_here else (True, "")
+        if _rail_here and not _is_pic:
+            notes.append("criterion %s cites %s, and %s — so I scored it on that "
+                         "transcript and did not ask it for a landing record"
+                         % (cid, shot, _pic_from))
+            landing = {"notAPicture": True, "shot": shot, "why": _pic_from}
+        elif _rail_here:
+            _landed = landed_of(_rdoc)
+            _intent = landing_intent(_rdoc, shot, landing_steps,
+                                     contract_by_id.get(cid) or {}, cid,
+                                     landing_servers)
+            _step = str((landing_steps.get(shot) or {}).get("key") or "")
+            if _landed is None:
+                # NEVER INVENT A LANDING RECORD. An older look, or a swept
+                # directory, leaves nothing to compare — and the honest answer
+                # is that this picture cannot be placed, not that it is fine.
+                why = ("%s — the picture is cited but nothing beside it records "
+                       "where it was taken, so it cannot be shown to be of the "
+                       "right screen" % LANDING_NO_RECORD)
+                # ── AND THE DISAGREEMENT IS NEVER RESOLVED IN THE BUILD'S
+                # FAVOUR (S261 fix round 1) ────────────────────────────────────
+                #
+                # THE MEASURED DEFECT, in one document. The first live look with
+                # a shell found, diagnosed and FILED six real Week-screen faults
+                # — `prd-5`, `prd-10`, `prd-11`, `t-003-ac2`, `t-003-ac3`,
+                # `t-003-ac5` — declaring every one of them a `contradiction` in
+                # its own `gaps[]`. This branch then took all six rows to
+                # `untested`, so `counts` came out `{met: 25, gap: 0,
+                # untested: 29, contradictions: 0}`: ZERO faults counted beside a
+                # SIX-ENTRY `gaps[]` IN THE SAME FILE. `report.md` opened
+                # "Recommendation: MERGE WITH FOLLOW-UPS … everything I could
+                # check worked … that is a gap in my checking, not a fault in
+                # your build", over six faults that were real, correctly
+                # diagnosed and already filed as bug Missions. The look's own
+                # words that run were "Recommending LOW", and the grade moved UP
+                # — low the night before, medium now.
+                #
+                # TWO RECORDS OF ONE LOOK DISAGREED, AND THE MORE GENEROUS ONE
+                # WON. That is precisely what `reconciled` exists to forbid (see
+                # its own comment above): where the look's records disagree the
+                # difference is WRITTEN DOWN, never settled silently in the
+                # build's favour. The rail's own words are that a row it refuses
+                # is "NOT a fault in the build: it is a hole in MY checking" —
+                # true of a `met`, and an untruth when said over a fault the look
+                # positively recorded, ran the steps for, and filed.
+                #
+                # SO THE ASYMMETRY THIS FILE ALREADY KEEPS APPLIES HERE TOO: weak
+                # evidence "can lower an outcome or raise a fault, never settle a
+                # criterion" (the measured-box rule, above). A missing landing
+                # record is weak evidence. It still may not settle a `met` — that
+                # is untouched, and is S241's whole measured case. It may not
+                # erase a declared fault either.
+                #
+                # NARROW, AND NOTHING IS INVENTED: only a `gap` the look ALSO
+                # declared as a contradiction in `gaps[]` — its own second
+                # declaration site, the same record the gap loop above falls back
+                # on — and only when the complaint is that NOTHING was recorded.
+                # A shot the record says LANDED SOMEWHERE ELSE is still refused,
+                # for a gap exactly as for a met (the branch below is untouched):
+                # that is a positive record of a wrong page, not an absence.
+                #
+                # AND THE ROW STILL SAYS SO. It keeps the verdict the eye gave it
+                # and discloses the weakness through the EXISTING
+                # `landing.unplaced` shape — the same shape S242 uses, which
+                # `unplaced_mark()` already renders into `report.md`. No
+                # vocabulary moved, no ladder moved, and no report code changed.
+                if status == "gap" and cid in contradicted:
+                    _exp = {"rule": LANDING_NO_RECORD,
+                            "unplaced": True,
+                            "intent": _intent or None}
+                    landing = {"unplaced": True, "shot": shot, "landed": None,
+                               "expected": _exp,
+                               "from": ("nothing beside %s records where it was "
+                                        "taken, so I cannot place the picture — "
+                                        "the fault itself stands on what I ran "
+                                        "and recorded, not on the picture" % shot)}
+                    landing["reason"] = unplaced_mark(landing)
+                    notes.append(
+                        "criterion %s cites %s and there is %s beside it, so I "
+                        "cannot place that picture — but I recorded this one as a "
+                        "fault in my own gaps, so I am keeping it a gap and saying "
+                        "the picture is unplaced, rather than calling a fault I "
+                        "found a hole in my checking"
+                        % (cid, shot, LANDING_NO_RECORD))
+                    reconciled.append({
+                        "id": cid,
+                        "kind": "declared-fault-kept-over-unplaced-picture",
+                        "shot": shot,
+                        "railSaid": LANDING_NO_RECORD,
+                        "lookDeclared": "contradiction",
+                    })
+                    landing_not_placed.append(
+                        {"criterion": cid, "shot": shot,
+                         "reason": "nothing beside %s records where it was taken"
+                                   % shot})
+                else:
+                    notes.append("criterion %s cites %s, and there is %s beside it; "
+                                 "recorded as untested" % (cid, shot, LANDING_NO_RECORD))
+                    note = why
+                    landing = {"mismatch": True, "reason": why, "shot": shot,
+                               "expected": _intent or None, "landed": None}
+                    status = "untested"
+                    evidence = ""
+                    landing_refusals.append(cid)
+                    landing_not_reached.append({"criterion": cid, "shot": shot,
+                                                "step": _step, "reason": why})
+            else:
+                _ok, _why = landing_verdict(_intent, _landed)
+                if not _ok:
+                    notes.append("criterion %s was rated %s on %s, which %s; recorded as "
+                                 "untested — a shot that landed elsewhere is not evidence"
+                                 % (cid, status, shot, _why))
+                    note = _why
+                    landing = {"mismatch": True, "reason": _why, "shot": shot,
+                               "expected": _intent, "landed": _landed}
+                    status = "untested"
+                    evidence = ""
+                    landing_refusals.append(cid)
+                    landing_not_reached.append({"criterion": cid, "shot": shot,
+                                                "step": _step, "reason": _why})
+                elif isinstance(_intent, dict) and _intent.get("unplaced"):
+                    # "I COULD NOT CHECK THIS" IS A CORRECT ANSWER (S242). The
+                    # record does not place this criterion — nothing declaring
+                    # `serves` for it declares a place — so there is nothing to
+                    # compare its picture against. The row keeps the verdict the
+                    # eye gave it (a picture it could not place is not evidence
+                    # that the build is wrong), and it SAYS SO on the row rather
+                    # than letting the citation read as checked. No place is
+                    # invented and no mismatch is claimed.
+                    #
+                    # AND `reason` SAYS WHAT THE CELL SAYS (S247). It used to be
+                    # the bare `from` clause, while the rendered cell ALSO stated
+                    # that the picture went unverified — so a consumer reading
+                    # `landing.reason` alone (the board, a later pass, a human
+                    # with the JSON) never learned the one fact the disclosure
+                    # exists to carry. `from` keeps the bare clause for the
+                    # renderer; `reason` is the whole sentence.
+                    landing = {"unplaced": True, "shot": shot,
+                               "from": str(_intent.get("from") or ""),
+                               "expected": _intent}
+                    landing["reason"] = unplaced_mark(landing)
+                    landing_not_placed.append(
+                        {"criterion": cid, "shot": shot,
+                         "reason": str(_intent.get("from") or "")})
+                else:
+                    # ── S247: A DRAWN PART IS CHECKED AGAINST ITS OWN PICTURE ──
+                    # The rail has nothing to say about a `drawnAt` that names a
+                    # PART rather than a screen, which is why 35 rows across the
+                    # archive read a flat MET. The readout beside the cited shot
+                    # measured that very part, so the row states what the picture
+                    # proves — or, when the picture does not show it, says that
+                    # instead, with the recorded numbers quoted.
+                    _part = str((contract_by_id.get(cid) or {}).get("drawnPart")
+                                or "").strip()
+                    if _part:
+                        landing = part_landing(_part,
+                                               part_measurement(_rdoc, _part))
+                        landing["shot"] = shot
+                        if landing.get("partPlaced") is False:
+                            notes.append(
+                                "criterion %s cites %s, and that picture's own "
+                                "readout does not show %s laid out; recorded as a "
+                                "gap" % (cid, shot, _part))
+                            note = landing["reason"]
+                            status = "gap"
+                        elif landing.get("unplaced"):
+                            landing_not_placed.append(
+                                {"criterion": cid, "shot": shot,
+                                 "reason": "nothing beside %s measures %s"
+                                           % (shot, _part)})
+                # A SHOT THAT LANDED WHERE IT WAS MEANT TO IS JUST EVIDENCE, and
+                # it says so by carrying nothing extra. Stamping `mismatch:
+                # false` on every settled row looked tidier and broke the
+                # invariant the suite guards at B23b — that the SAME worker
+                # verdict through the SAME path yields a byte-identical ledger
+                # whether or not the driver happened to record anything. A key
+                # that appears only when the driver wrote readouts is not a
+                # judgement, it is a draught.
         # AN UNTESTED ROW SETTLED NOTHING, SO IT NAMES NO SOURCE (fix round 1,
         # D3). `evidence` was stamped from the structural fact that a shot was
         # cited, and only the met/gap downgrades above ever cleared it — so a
@@ -1875,6 +4042,11 @@ def main():
         }
         if shot:
             entry["shot"] = shot
+        # THE SHOT STAYS IN THE RECORD. A picture that landed elsewhere is still
+        # worth naming under *What I saw* — marked for what it is, so nobody
+        # reads it as the screen it was cited for.
+        if landing is not None:
+            entry["landing"] = landing
         if quote and entry["evidence"] == "tests":
             entry["testQuote"] = quote
         take_impact(entry, c)
@@ -1908,10 +4080,43 @@ def main():
         judged_kind = str(c.get("kind") or "").strip().lower()
         if judged_kind in ("looks", "works"):
             entry["kind"] = judged_kind
+        # THE INSTRUMENT, CARRIED (S239 fix round 1, D1). `checkedBy` was
+        # produced on every step readout and taught by the prompt, and then LOST
+        # here: the row was rebuilt field by field and this one was never copied,
+        # so it stood on 0 of 15 lines of the file the captain actually reads
+        # while `evidence` said `picture` on 15 of 15. Read, never inferred —
+        # nothing in this rail may work out from a row's prose how it was
+        # checked. Kept on an `untested` row too: "I ran the CLI and it settled
+        # nothing" is a fact about the instrument, and `evidence: none` beside it
+        # already says the row proved nothing.
+        checked_by = str(c.get("checkedBy") or "").strip().lower()
+        if checked_by in VALID_CHECKED_BY:
+            entry["checkedBy"] = checked_by
+        # WHAT WAS SEEN INSTEAD, CARRIED (S240 fix round 1, D3). `sawInstead` is
+        # the look's NOUN PHRASE for the thing it actually got ("it printed
+        # github.com, the hardcoded one"), and it was dropped by this rebuild —
+        # so `xo-logs.py` fell back to the row's `note`, a SENTENCE, and spliced
+        # it into "the build gave …". One line, read never inferred, and the
+        # `note` is still carried beside it.
+        saw_instead = " ".join(str(c.get("sawInstead") or "").split())
+        if saw_instead:
+            entry["sawInstead"] = saw_instead
         if status == "untested" and rated_status == "untested":
             why_not = str(c.get("couldNotCheck") or "").strip().lower()
             if why_not in COULD_NOT_CHECK:
                 entry["couldNotCheck"] = why_not
+        # WHOSE FAULT IT IS, RECORDED (S240). See CAUSE_CLASS: the look declares
+        # `product` or `infrastructure` beside `couldNotCheck`, and an absent or
+        # unrecognised word is left ABSENT rather than defaulted — the consumer
+        # then reads it as ours, says `causeRecorded: false`, and never files a
+        # bug against the build on a word nobody wrote.
+        if status == "untested":
+            cause = str(c.get("cause") or "").strip().lower()
+            if cause in CAUSE_CLASS:
+                entry["cause"] = cause
+                entry["causeRecorded"] = True
+            else:
+                entry["causeRecorded"] = False
         if harness_blind:
             entry["couldNotCheck"] = harness_blind
         if status == "gap":
@@ -2168,6 +4373,9 @@ def main():
     # already `untested` when outcome_of reads it, and the grade (which reads
     # only worked/didn't-work) can never bank a works-question nobody exercised.
     works_on_look_alone = []
+    # S266 fix round 2, FIX 2 — the looks-questions that passed with no
+    # photograph behind them. Named as data, never recomputed downstream.
+    looks_with_no_picture = []
     split = {"looks": 0, "works": 0, "worksExercised": 0, "worksPictureOnly": 0,
              "unstamped": 0}
     for e in ledger:
@@ -2213,6 +4421,178 @@ def main():
                          "needs a press, not a photo.")
             e.pop("testQuote", None)
             works_on_look_alone.append({"id": e["id"], "text": e.get("text") or ""})
+        # ── THE SIBLING DOWNGRADE: A LOOKS-QUESTION WITH NO PICTURE AT ALL
+        #    (S266 fix round 2, FIX 2) ──────────────────────────────────────────
+        #
+        # THE MEASURED DEFECT, on one real review. The launch died on a port
+        # collision, so the browser half of the look was skipped and NOT ONE
+        # photograph was taken. The reviewer still graded its phone-width rows
+        # `met`, on the project's unit tests, and one of those rows said so in
+        # its own note: "I could not take a rendered 400px screenshot … so the
+        # pixel-level wrap/overflow is settled by the suite, not a photo." It
+        # said it could not check, and then said it was fine. The look returned
+        # HIGH / MERGE / "checked 15 of 15 (100%)", and the tester then rendered
+        # the same page at a measured 400 px and FALSIFIED one of those rows —
+        # 715 CSS px of document in a 400 px viewport, three day-columns
+        # including today entirely past the edge.
+        #
+        # THE RULE, AND IT IS DELIBERATELY THE NARROW ONE. `kind == "looks"` is
+        # the eye's OWN produce-time stamp, and it means exactly one thing: "a
+        # picture settles this" (see question_kind). A row carrying that stamp,
+        # rated MET, that cites no picture at any width has been settled by
+        # something its own producer declared could not settle it. That is a
+        # hole in MY checking, so it goes to `untested` with the reason named.
+        #
+        # WHERE THE LINE IS DRAWN, precisely:
+        #   • NO PICTURE AT ALL — not "no picture at the right width". A row
+        #     citing a picture is left to the landing rail above, which already
+        #     asks whether that picture was of the right screen. Demanding a
+        #     width of a row that HAS a photograph would demote every desktop
+        #     citation in the file, which is the blanket rule this must not be.
+        #   • `looks` ONLY. A `works` row, a `notVisual` row and an UNSTAMPED
+        #     row are all untouched — nobody promised them a photograph, and a
+        #     unit test settles them legitimately.
+        #   • `met` ONLY. A `gap` found without a photograph is still a fault
+        #     found (the same ruling as the works downgrade and S261 fix 1): a
+        #     missing camera does not unfind it.
+        # Nothing here reads a criterion's PROSE, and nothing re-derives "there
+        # were no pictures" from an empty directory: the stamp and the citation
+        # are both producer fields on the row.
+        if kind == "looks" and e["status"] == "met" \
+                and not str(e.get("shot") or "").strip():
+            e["status"] = "untested"
+            e["couldNotCheck"] = LOOKS_NEEDS_PICTURE
+            e["evidence"] = "none"
+            e["note"] = ("This asks what the screen LOOKS LIKE, and I have no "
+                         "picture of it — at this width or any other. I stamped "
+                         "it a looks-question myself, which says a photograph is "
+                         "what settles it, so the project's tests do not: I could "
+                         "not check it.")
+            e.pop("testQuote", None)
+            looks_with_no_picture.append({"id": e["id"], "text": e.get("text") or ""})
+
+    # ─── NEEDS A LIVE TARGET (S249) ──────────────────────────────────────────
+    #
+    # THE MEASURED DEFECT. Until S249 no credential ever reached a step, so a
+    # criterion about a REAL publish, a REAL workflow run or a REAL deployment
+    # could not be checked at all — and the look, having run the command against
+    # nothing, called it `met`. Five of the twenty-nine bugs the captain's buddy
+    # found on the weekend sat behind exactly that.
+    #
+    # So the harness now refuses a live step the record did not consent to, and
+    # RECORDS the refusal against the criterion it was for (`xo/live.json
+    # refused[]`, written by `xo-run.py`). Here that becomes the one thing the
+    # captain needs to read: the row is NOT met, it is `untested`, its reason is
+    # named, and the cause is OURS.
+    #
+    # A `gap` IS LEFT ALONE. A step that found a real defect found it; a missing
+    # credential does not unfind it. Only a row that was claimed or left blank is
+    # moved.
+    live_blind = []
+    for e in ledger:
+        r = live_refused_by_id.get(e["id"])
+        if not r or e["status"] == "gap":
+            continue
+        if e["status"] != "untested":
+            notes.append("%s was called %s, and the step that would have checked it "
+                         "never ran: %s" % (e["id"], e["status"], r.get("why") or NEEDS_LIVE_SAID))
+        e["status"] = "untested"
+        e["couldNotCheck"] = NEEDS_LIVE
+        # RECORDED, NOT INFERRED (CAUSE_CLASS). A hole we have not dug out of our
+        # own rig is never a doubt about his build, so this row may not become a
+        # send-back or a filed bug — see derive_recommendation.
+        e["cause"] = "infrastructure"
+        e["causeRecorded"] = True
+        e["evidence"] = "none"
+        e["note"] = ("I could not check this: it %s. %s" % (NEEDS_LIVE_SAID,
+                                                           r.get("why") or ""))
+        e["note"] = " ".join(e["note"].split())
+        e.pop("shot", None)
+        e.pop("testQuote", None)
+        live_blind.append({"id": e["id"], "text": e.get("text") or "",
+                           "why": r.get("why") or "", "host": r.get("host") or "",
+                           "owner": r.get("owner") or ""})
+
+    # ─── A STAND-IN CANNOT SETTLE THE STEP IT SKIPPED (S250 fix round 1, D1) ─
+    #
+    # THE MEASURED FALSE GREEN. One report, one push, two rows:
+    #
+    #   prd-1      "Pushing the branch produces a successful publish run, AND THE
+    #              PAGE IT PUBLISHES CAN BE DOWNLOADED AND READ BACK"   → MET
+    #   t-001-ac1  "a push to the branch produces a successful publish run that
+    #              uploads the site artifact"                           → UNTESTED
+    #
+    # Nothing was pushed and nothing was downloaded. BOTH rows cite the same
+    # transcript — `07-workflow-run.txt`, a `workflow-run` on the reviewer's own
+    # laptop — and that transcript SAYS, in the runner's own words, that it
+    # skipped 2 of the job's 3 steps, including the upload, and that they are
+    # "UNPROVEN, not passed". One row read the notice. The other banked a pass
+    # off it, and the pass is what fed the headline grade.
+    #
+    # So the notice is enforced here. A row whose proof is a local workflow run
+    # that recorded skipped steps is NOT met: it is `untested`, the skipped steps
+    # are NAMED, and the only honest ways out are the two the captain named —
+    # report it untested with the reason, or actually take the hop.
+    #
+    # WHAT IT IS KEYED ON, AND WHY THAT IS A RECORD, NOT AN INFERENCE. Not the
+    # criterion's wording — see `workflow_unproven`. The key is the INSTRUMENT's
+    # own record of its own incompleteness: `unproven` on the step readout, which
+    # the runner wrote as it declined each step. A workflow whose every step is a
+    # `run:` step records NOTHING here and its rows stand exactly as rated — that
+    # is the control, and it is why this cannot turn a look into all-untested.
+    #
+    # A `gap` IS LEFT ALONE, for the same reason the live rail leaves one alone: a
+    # step that found a real fault found it, and an unrun sibling step does not
+    # unfind it.
+    stand_in_blind = []
+    for e in ledger:
+        if e["status"] != "met":
+            continue
+        # AND A ROW THE PROJECT'S OWN TESTS SETTLED IS LEFT ALONE. By the time
+        # this runs a `tests` row has already been through the over-claiming
+        # guard: it names a line and that line was found in the output the skill
+        # recorded. Its proof is the suite, not the transcript it also cites, so
+        # an unrun workflow step says nothing about it.
+        if str(e.get("evidence") or "") == "tests" \
+                and str(e.get("testQuote") or "").strip():
+            continue
+        _ro_path, _ro = landing_readout(shots_root, e.get("shot") or "")
+        skipped = workflow_unproven(_ro)
+        if not skipped:
+            continue
+        # AND ONLY A RUN THAT REPORTED SUCCESS. This rail is about ONE thing: a
+        # run that came back green while recording that it never carried out part
+        # of itself, and a row that banked that green. A workflow run that FAILED
+        # reported no success to bank — whatever a `met` on it means, the skipped
+        # step is not what made it wrong — so it is left to the rails that
+        # already own a failing run. `met` is the runner's own recorded verdict
+        # on its own exit status, not a reading of anything.
+        if _ro.get("met") is not True:
+            continue
+        named = ", ".join(skipped[:4])
+        e["status"] = "untested"
+        e["couldNotCheck"] = STAND_IN
+        # OURS, NOT HIS (CAUSE_CLASS). A step we did not run is never a doubt
+        # about his build, so this row may not become a send-back or a filed bug.
+        e["cause"] = "infrastructure"
+        e["causeRecorded"] = True
+        e["evidence"] = "none"
+        e["note"] = (
+            "I could not check this. The only thing that settled it was a "
+            "workflow run on this machine, and that run did not carry out %d of "
+            "the workflow's own steps (%s) — its own transcript records them "
+            "UNPROVEN, not passed. So nothing was really published and nothing "
+            "was read back off a real host, and a stand-in that skipped the step "
+            "cannot answer a question about what that step does. To settle this "
+            "I have to run it for real on the host."
+            % (len(skipped), named))
+        e.pop("testQuote", None)
+        notes.append("%s was called met off a local workflow run that skipped %d "
+                     "of its own steps (%s); a stand-in cannot settle it"
+                     % (e["id"], len(skipped), named))
+        stand_in_blind.append({"id": e["id"], "text": e.get("text") or "",
+                               "skipped": skipped,
+                               "evidence": str(e.get("shot") or "")})
 
     # ─── S225: THE SOURCE IS READ AT LAST ────────────────────────────────────
     # Every guard above has finished; a row's status and its `couldNotCheck`
@@ -2263,6 +4643,11 @@ def main():
             e["settledBy"] = {"record": "picture", "lookedOnly": True, "did": did}
             passing_on_look_alone.append({"id": e["id"],
                                           "text": e.get("text") or ""})
+
+    # ONE FAULT, COUNTED ONCE (S257). Stamped AFTER every rule that can move a
+    # row's status has run, and BEFORE the counts — which are deliberately
+    # still the ROW counts, so the grade and the recommendation cannot move.
+    faults = group_faults(ledger, contract_by_id)
 
     by_group = {k: [e for e in ledger if e["group"] == k] for k in GROUP_ORDER}
 
@@ -2808,8 +5193,54 @@ def main():
                    "nothing" % hold)
         why_grade = "%s %s" % (hold, why_grade)
 
+    # ─── S240: THE ACTION, ABOVE THE GRADE ───────────────────────────────────
+    # Derived off the SAME ledger and the SAME coverage numbers the grade came
+    # from, by `derive_recommendation` — the weekend's § 4 policy, written down
+    # once instead of applied by hand on every look. The grade is unchanged and
+    # stays as `score`; this sits above it and is what a surface acts on.
+    finding_by_id = {str(g.get("criterion") or ""): g for g in gaps
+                     if str(g.get("criterion") or "")}
+    advice = derive_recommendation(ledger, grade, finding_by_id, named)
+    recommendation = advice["recommendation"]
+    rec_why = advice["because"][0] if advice["because"] else ""
+
+    # THE COVERAGE SENTENCE THE CAPTAIN NEVER GOT. `checked`, `total`,
+    # `coveragePct` and `coverageFloorPct` have been computed since S226 and
+    # written into `groups.person` — and never once rendered. The archive case is
+    # 83% against a floor of 80 deciding HIGH while the report said "2 I couldn't
+    # set up". Both numbers now go on line 2, with the RECORDED reason for every
+    # row that was not reached (never the canned one).
+    blind_rows = [e for e in by_group[GROUP_PERSON] if e["status"] == "untested"]
+    def blind_reason(e):
+        rec = unstop(" ".join(str(e.get("note") or "").split()))
+        if not rec:
+            rec = ("no cause was recorded, so it is read as ours"
+                   if not e.get("causeRecorded") else
+                   str(e.get("couldNotCheck") or "no reason recorded"))
+        return "%s (%s)" % (named(e["id"]), clip(rec, 110))
+    cover_bits = ["checked %d of %d (%d%%, floor %d%%)"
+                  % (grade.get("checked", 0), grade.get("total", 0),
+                     grade.get("coveragePct", 0), grade.get("coverageFloorPct", 0))]
+    if blind_rows:
+        cover_bits.append("%d unreachable — %s"
+                          % (len(blind_rows),
+                             "; ".join(blind_reason(e) for e in blind_rows[:4])))
+    cover_line = "; ".join(cover_bits)
+
     out = {
         "score": score,
+        # S240 — THE RECOMMENDATION, and the reasons behind it, as data. `score`
+        # above is still the grade and still means what it meant; this is the
+        # action. `blockers[].filedAs` is stamped on by whoever files the bug.
+        "recommendation": recommendation,
+        "because": advice["because"],
+        # The one sentence a surface shows beside the action — the SAME first
+        # line of `because`, frozen here so nobody has to index into an array
+        # (and so a shell can read it with one key).
+        "recommendationWhy": rec_why,
+        "blockers": advice["blockers"],
+        "followUps": advice["followUps"],
+        "coverageLine": cover_line,
         "workerScore": worker_score,
         "scoreDisagreed": score != worker_score,
         "derivation": why,
@@ -2838,9 +5269,87 @@ def main():
         "escalations": _own + walked_lines + unlisted_lines,
         "alsoChecked": [str(e) for e in (doc.get("alsoChecked") or []) if str(e).strip()],
         "summary": summary,
+        # ─── THE LANE THAT WAS SEVERED BY A HAND-WRITTEN DICT (S263) ─────────
+        #
+        # WHAT WAS MEASURED. S251 built a lane for a real fault NO criterion
+        # covers, and `xo-logs.py` has always read it correctly off the verdict —
+        # a `GAP` record, a complete bug PRD, and `xo-filed.py` already keeps it
+        # out of the send-back sentence. But `xo-logs.py` is handed the SCORED
+        # file, this dict is written out BY HAND key by key, and this key was
+        # never among them: no `out.update`, no `doc.items()` passthrough. The
+        # raw verdict that still had it was then deleted by `xo_rm_work`. So the
+        # data was not dropped on the floor, it was DESTROYED, and the lane could
+        # not fire even when the reviewer used it.
+        #
+        # THIS IS A COPY AND NOTHING ELSE. The key is carried, unread, to the one
+        # consumer that files it. Nothing above this line reads it and nothing
+        # below decides anything from it — the GRADE FENCE IS THE POINT, and it
+        # is unchanged: `derive_grade`, `derive_recommendation`, `blockers[]` and
+        # the coverage floor have never seen this key and still do not. The
+        # reviewer can FILE what no criterion covers and still cannot GRADE on
+        # it. (`tests/lcars-xo-volunteered.test.sh` 5a/5b/5e measure exactly
+        # that: with and without, the scored output differs in this ONE key.)
+        #
+        # AND IT IS SANITISED HERE, THE WAY THE GAPS LANE ALREADY IS (fix round
+        # 2, D1). The first cut carried the raw entries behind one
+        # `isinstance(v, dict)` filter, so `{"shots": 5}` reached the consumer
+        # and CRASHED it — and the crash was then reported to the captain as
+        # "nothing is wrong". `carried_finds` above is the mirror of the gaps
+        # loop's own treatment: a whitelist of the fields the consumer reads,
+        # each coerced to the shape it reads them in. It still DECIDES nothing.
+        "volunteered": carried_finds(doc.get("volunteered")),  # S263 PASS-THROUGH
     }
     if my_checking["total"]:
         out["myChecking"] = my_checking
+    # ─── WHAT THIS LOOK TOUCHED LIVE (S249) — an ADDITIVE key ────────────────
+    # The consent it ran under, the effects it DECLARED it created on a real host,
+    # and the criteria whose check never ran for want of a live target. Written as
+    # DATA because the teardown that has to clean a real host up reads this, not
+    # the report's prose — and because a surface should never have to work out
+    # from a sentence that something exists on the internet now.
+    if live_effects or live_blind or live_consent.get("host"):
+        out["live"] = {"consent": live_consent, "effects": live_effects,
+                       "needsLiveTarget": live_blind}
+    # S241 — THE LANDING LEDGER, an ADDITIVE key. Which cited pictures were not
+    # of the screen they were cited for, and for each the step that took it and
+    # the RECORDED reason it did not get there. A step named here was attempted
+    # and did not reach: `reason` is the comparison that was actually made,
+    # never a canned sentence.
+    if landing_note:
+        out["landing"] = {"note": landing_note, "railOn": False,
+                          "refused": [], "notReached": []}
+        notes.append(landing_note)
+    if landing_refusals or landing_not_reached or landing_not_placed:
+        out["landing"] = {
+            "note": ("A picture that was taken somewhere else is not evidence of the "
+                     "screen it was cited for. These are gaps in my checking, not "
+                     "faults in your build."),
+            "railOn": landing_on,
+            "refused": landing_refusals,
+            "notReached": landing_not_reached,
+        }
+        # SAY WHAT I COULD NOT PLACE, rather than let the citation read as
+        # checked. These rows keep the verdict the eye gave them — an
+        # unplaceable picture is not evidence the build is wrong — but the
+        # record names them so nobody has to guess which citations were
+        # actually compared against anything. Additive: the key appears only
+        # when there is something to say.
+        if landing_not_placed:
+            out["landing"]["notPlaced"] = landing_not_placed
+            out["landing"]["notPlacedNote"] = not_placed_note(len(landing_not_placed))
+    # S248 — THE WRONG SCREEN, SAID ONCE, AS DATA. Every row demoted above says
+    # it on itself; this is the one sentence for the look, so the captain reads
+    # "I was shown the wrong page" rather than inferring it from N untested rows.
+    if wrong_screen and wrong_screen_rows:
+        out["wrongScreen"] = {
+            "url": str(wrong_screen.get("url") or ""),
+            "lookedFor": wrong_screen.get("lookedFor") or [],
+            "criteria": wrong_screen_rows,
+            "note": ("%d row(s) could not be checked: %s. Nothing on that page "
+                     "settles them either way."
+                     % (len(wrong_screen_rows), wrong_screen_reason)),
+        }
+        notes.append(out["wrongScreen"]["note"])
     if impacts_note:
         out["impactsNote"] = impacts_note
     if mismatches:
@@ -2884,6 +5393,8 @@ def main():
     out["questionSplit"] = split
     if works_on_look_alone:
         out["worksOnLookAlone"] = works_on_look_alone
+    if looks_with_no_picture:
+        out["looksWithNoPicture"] = looks_with_no_picture
     # STRUCTURED AS WELL AS SAID (S224 item 2). The escalation line is the
     # captain's sentence; this is the same facts as data, so a surface never
     # has to read meaning back out of that prose — the mistake S147, S156, S188
@@ -2894,6 +5405,10 @@ def main():
         out["pictureNotDrawing"] = {"pictures": picture_names,
                                     "note": PICTURE_NOT_DRAWING,
                                     "fix": PICTURE_FIX}
+    # THE GROUPING, AS A RECORD (S257). Absent when there was no duplicate
+    # pair, so a verdict that had nothing to group is unchanged.
+    if faults:
+        out["faults"] = faults
     if observations and observations["observations"]:
         # CARRIED THROUGH, NOT RECOMPUTED. The observations were already final
         # when xo-observe.py wrote them; this file is the one place they get
@@ -2915,7 +5430,17 @@ def main():
     with open(os.path.join(os.path.dirname(os.path.abspath(opath)), "report.md"),
               "w", encoding="utf-8") as fh:
         w = fh.write
-        w("**How close this is to what you asked for: %s** — %s\n\n" % (score.upper(), why))
+        # ─── LINE 1 IS THE ACTION; LINE 2 IS THE GRADE (S240) ────────────
+        # The captain read a bare adjective and mapped it to an action himself,
+        # every time. Line 1 is now the recommendation and the one sentence
+        # behind it; line 2 is the grade it sits on, WITH the coverage numbers
+        # that decided it. The two trailing spaces are a markdown hard break, so
+        # the two facts stay two lines in the living comment as well as on disk.
+        w("**Recommendation: %s** — %s  \n"
+          % (RECOMMENDATION_WORD.get(recommendation, recommendation.upper()),
+             rec_why or why))
+        w("**How close this is to what you asked for: %s** — %s. %s\n\n"
+          % (score.upper(), cover_line, why))
         # S216 — WHY THIS GRADE comes first after the score: the table walked
         # in words, then what the research reads beside it (never instead).
         w("**Why this grade.** %s\n\n" % why_grade)
@@ -3047,6 +5572,24 @@ def main():
         # fifth says where each judgement came from.)
         # HOW I KNOW is S211's column: a picture, a measured box, or your own
         # tests. The captain must never have to guess which decided a line.
+        # SAID ONCE FOR THE WHOLE LOOK, TOO (S242). The sentence is the one the
+        # look recorded for itself in `landing.notPlacedNote` — read off the
+        # record above, not composed here, so the report and the verdict cannot
+        # drift into two different accounts of the same gap. It sits directly
+        # above the table because the table is where the rows it is about are;
+        # absent when there was nothing to say, so an older look with no landing
+        # records keeps the one disclosure it has always had and gains no other.
+        _not_placed_note = " ".join(
+            str((out.get("landing") or {}).get("notPlacedNote") or "").split())
+        if _not_placed_note:
+            # AND THE SENTENCE AFTER IT AGREES TOO (S243). The recorded note is
+            # now written to its own count; this follow-on was still "Each of
+            # those rows" at a count of one, in the same paragraph.
+            _np_n = len((out.get("landing") or {}).get("notPlaced") or [])
+            w("**%s** %s\n\n"
+              % (_not_placed_note,
+                 "That row says so for itself in the table below." if _np_n == 1
+                 else "Each of those rows says so for itself in the table below."))
         w("| What you asked for | | Verdict | How I know | What I saw |\n"
           "|---|---|---|---|---|\n")
         mark = {"met": "MET", "gap": "GAP", "untested": "UNTESTED"}
@@ -3063,10 +5606,57 @@ def main():
             if e.get("evidence") == "tests" and e.get("testQuote"):
                 what_i_saw = what_i_saw.rstrip() + (" " if what_i_saw.strip() else "") + \
                     'Your tests said: "%s"' % clip(e["testQuote"], 120)
+            # A PICTURE I COULD NOT PLACE DOES NOT GET TO READ AS CHECKED (S242).
+            # The verdict, the grade and the counts are untouched — this row is
+            # still whatever the eye rated it, and nothing here moves a number —
+            # but the cell that names its evidence now also names the limit of
+            # that evidence, in the words the record used. Empty string for every
+            # row that was genuinely checked, so no settled row changes at all.
+            # AND A ROW WHOSE PICTURE *DOES* PROVE ITS PART SAYS SO (S247).
+            # The positive half of the same rule, in the sentence the scoring
+            # pass recorded: "the picture shows gold-roster, laid out at 117×33".
+            # It replaces a bare MET, which told the captain nothing about what
+            # was actually compared.
+            #
+            # ONE SEPARATOR FUNCTION FOR BOTH, AND IT IS NOT INSIDE
+            # `unplaced_mark` (S247). The old glue was `rstrip() + " "`, so a
+            # note that did not end in a stop ran straight into the disclosure —
+            # "…matched by id with no measurement fired I did not check this
+            # picture…" — on 2 of the 16 disclosure rows in the archive. The fix
+            # belongs where the two strings are JOINED, not inside the sentence
+            # being appended: `unplaced_mark` is also read on its own, by the
+            # verdict's `landing.reason`, where a leading dash would be wrong.
+            # AND A TRUNCATION ELLIPSIS IS NOT A FULL STOP (S247 fix round).
+            # `clip` ends a shortened note with … to say the sentence was CUT
+            # OFF, not that it ended — so counting it as a terminator put the
+            # appended clause straight onto a severed sentence, the very defect
+            # this function exists to stop: "…that's the post-win award, not
+            # a… the picture shows gold-dungeon". A severed head gets the dash
+            # like any other unterminated one, on both halves of the rule.
+            def _joined(before, after):
+                head = before.rstrip()
+                if not head:
+                    return after
+                sep = " " if head[-1:] in (".", "\u2014", ";", "!", "?") else " \u2014 "
+                return head + sep + after
+
+            _unplaced = unplaced_mark(e.get("landing"))
+            if _unplaced:
+                what_i_saw = _joined(what_i_saw, _unplaced)
+            _placed = placed_mark(e.get("landing"))
+            if _placed:
+                what_i_saw = _joined(what_i_saw, _placed)
+            # THE VERDICT CELL NAMES THE ONE REASON THAT IS NOT ABOUT HIS BUILD
+            # (S249). "UNTESTED" on its own reads as a doubt; "UNTESTED (needs a
+            # live target)" reads as the fact it is — nobody consented to a real
+            # host, so the check never ran, and that is ours to fix.
+            _mark = mark[e["status"]]
+            if str(e.get("couldNotCheck") or "") == NEEDS_LIVE:
+                _mark = "%s (%s)" % (_mark, NEEDS_LIVE_SAID)
             w("| %s | %s | %s | %s | %s |\n" % (
                 e["id"] + (" (PRD)" if e["primary"] else ""),
                 clip(e["text"], 120).replace("|", "\\|"),
-                mark[e["status"]],
+                _mark,
                 EVIDENCE_WORD.get(e.get("evidence") or "none", "—"),
                 what_i_saw.replace("|", "\\|")))
         # ONE SENTENCE, BOTH HALVES OF THE MISMATCH. The captain asked to see
@@ -3095,8 +5685,50 @@ def main():
         interp = [g for g in gaps if g["kind"] == "interpretation"]
         if interp:
             w("\n### Calls the build made that your drawing does not cover\n\n")
-            w("I am reading these as yours, not as faults.\n\n")
+            # AND THE HEADING IS NOT TRUE OF EVERY ROW UNDER IT (S272 fix round
+            # 1, D2). A finding the look filed as a MISMATCH, which lost that
+            # standing to a citation the harness could not read, lands on this
+            # list too — and telling the captain that one is "his call"
+            # presents a genuine fault as his own design decision. The producer
+            # records the demotion on the finding (see the gaps loop); this
+            # says it where he reads it.
+            #
+            # DEMOTED, NOT MERELY REFUSED (S272 fix round 2, D-A). This read
+            # `shotsRefused`, which is set for ANY unreadable citation — so a
+            # gap the LOOK filed as an `interpretation` was told the look "filed
+            # this as a MISMATCH IN YOUR BUILD", a thing the look never said.
+            # Only `shotsRefusedDemoted` means a mismatch was moved here, and
+            # only those rows are the exceptions the heading announces. A
+            # look-declared interpretation with an unreadable citation keeps the
+            # ordinary "this is your call" bullet, which is true of it, and
+            # `cite()` still tells him a picture was named and could not be read.
+            _refused_cites = [g for g in interp if g.get("shotsRefusedDemoted")]
+            w("I am reading these as yours, not as faults%s.\n\n"
+              % (" — except the %s marked below, which I could not read the "
+                 "evidence for"
+                 % ("one" if len(_refused_cites) == 1 else len(_refused_cites))
+                 if _refused_cites else ""))
             for g in interp:
+                if g.get("shotsRefusedDemoted"):
+                    # AND IT CLAIMS ONLY WHAT IS THERE (S272 fix round 3, FIX
+                    # 9). This said the look "named a picture for it" — the
+                    # most confident sentence in the file, standing on the least
+                    # evidence: at `shots: 0` the look named nothing
+                    # recognisable as a picture at all. The RULING STANDS that a
+                    # scalar is an unreadable citation and not an honest "I
+                    # cited nothing" (see `_unreadable_citation`); what was
+                    # wrong was describing it as a picture. It also said the
+                    # same thing twice — "named a picture … and I could not read
+                    # the citation it gave me". One clause now, and it describes
+                    # the field rather than its contents.
+                    w("- **%s** — the build has %s. The look filed this as a "
+                      "MISMATCH IN YOUR BUILD and put something in the picture "
+                      "field that I could not read — so I have "
+                      "nothing to show you and it is on this list for that "
+                      "reason alone. **That is my limit, not your call.** "
+                      "*(%s)*\n" % (
+                          g.get("title", "?"), unstop(g.get("saw", "?")), cite(g)))
+                    continue
                 w("- **%s** — the build has %s; your drawing does not say, so I am "
                   "treating it as your call. *(%s)*\n" % (
                       g.get("title", "?"), unstop(g.get("saw", "?")), cite(g)))
@@ -3135,14 +5767,19 @@ def main():
                     on = " ".join(str(o).split())
                     if on and on != picknorm and on not in alts:
                         alts.append(on)
-                why = unstop(" ".join(str(d.get("why") or "").split()))
+                # `dwhy`, NEVER `why`. That name holds the GRADE DERIVATION,
+                # frozen above into out["derivation"] and printed on the WHY
+                # wire line far below — which xo.sh reads into the board card's
+                # one line. A loop here that re-bound `why` put this decision's
+                # own reason on the card in place of the grade.
+                dwhy = unstop(" ".join(str(d.get("why") or "").split()))
                 where = " ".join(str(d.get("where") or "").split())
                 line = "- **%s** — I went with %s" % (q, pick)
                 if alts:
                     line += ", over " + ", ".join(alts)
                 line += "."
-                if why:
-                    line += " %s." % why
+                if dwhy:
+                    line += " %s." % dwhy
                 if where:
                     line += " You will see it in %s." % where
                 w(line + "\n")
@@ -3152,19 +5789,352 @@ def main():
                   "counted it as the point of the mission, the careful reading. "
                   "*(%s)*\n" % (what, e["id"]))
         blind = [e for e in ledger if e["status"] == "untested"]
-        if blind:
+        if blind or could_not:
             w("\n### What I could not check\n\n")
             for e in blind:
                 w("- %s — %s. *(%s)*\n" % (
                     clip(e["text"], 120) or "this one",
                     unstop(e["note"] or "I could not check this"), e["id"]))
+            # S246 — IN THE LOOK'S OWN WORDS, beside the blind rows. These are
+            # not criteria and they are not failures: they are the things the eye
+            # went looking for and could not get to, which is exactly what the
+            # captain needs in order to decide whether to look himself.
+            for row in could_not:
+                w("- %s — %s. *(I could not get to this)*\n"
+                  % (clip(row["item"], 120), unstop(row["why"])))
+        # ─── AND WHAT I WAS NOT ALLOWED TO RUN (S250 fix round 1, D2) ────────
+        #
+        # THE MEASURED DEFECT. Over one drive the look asked for 27 steps and 17
+        # ran. The 10 refusals each carried a good plain-English reason, recorded
+        # in a file nobody reads; the console counted only survivors; and this
+        # report said the word "refused" ZERO times, while four of its twelve
+        # untested rows were untested because of one. The captain's standing
+        # instruction is that he must be able to tell "it got better at finding
+        # and filing" from "it got better at saying it could not check" — and a
+        # hedge whose cause is hidden is the worst case of exactly that.
+        #
+        # So the count and the reasons are HERE, where he reads. Identical reasons
+        # are collapsed with a count rather than repeated, because the same fence
+        # refusing the same shape eight times is one fact about the harness, not
+        # eight.
+        if refused_steps:
+            w("\n### Steps I asked for and was not allowed to run\n\n")
+            w("I asked for %d step%s that the harness refused before %s ran. "
+              "%s\n\n" % (len(refused_steps), "" if len(refused_steps) == 1 else "s",
+                           "it" if len(refused_steps) == 1 else "they",
+                           MY_CHECKING_NOTE))
+            seen = []
+            for row in refused_steps:
+                why = " ".join(str(row.get("why") or "").split())
+                for had in seen:
+                    if had["why"] == why:
+                        had["n"] += 1
+                        had["rounds"].append(str(row.get("round") or ""))
+                        break
+                else:
+                    seen.append({"why": why, "n": 1,
+                                 "kind": str(row.get("kind") or "step"),
+                                 "rounds": [str(row.get("round") or "")]})
+            for had in seen:
+                rounds = [r for r in had["rounds"] if r]
+                w("- **%d x `%s`**%s — %s\n"
+                  % (had["n"], had["kind"],
+                     (" *(round %s)*" % ", ".join(rounds)) if rounds else "",
+                     had["why"]))
+            w("\nWhen a row above says I could not check something, this list is "
+              "where to look for the reason: a step the harness would not run is a "
+              "limit of mine, not a fault in your build.\n")
+        # ─── AND WHAT THERE WAS NO ROOM FOR (S264 fix round 2, FIX 5) ────────
+        #
+        # A SEPARATE SECTION, ON PURPOSE. A dropped step's shape was fine — the
+        # harness simply runs a fixed number of declared steps a round and these
+        # came after the last one it had room for. Filing it above would tell the
+        # captain a step was "refused" when nothing was wrong with it. Same
+        # record, same round, different fact.
+        if dropped_steps:
+            w("\n### Steps I asked for that there was no room to run\n\n")
+            w("I asked for %d more step%s than the harness runs in one round, so "
+              "%s dropped before anything ran — not refused: there was nothing "
+              "wrong with %s shape. %s\n\n"
+              % (len(dropped_steps), "" if len(dropped_steps) == 1 else "s",
+                 "it was" if len(dropped_steps) == 1 else "they were",
+                 "its" if len(dropped_steps) == 1 else "their",
+                 MY_CHECKING_NOTE))
+            for row in dropped_steps:
+                label = ""
+                for field in ("key", "evidence"):
+                    label = " ".join(str(row.get(field) or "").split())
+                    if label:
+                        break
+                forwhat = " ".join(str(row.get("for") or "").split())
+                rnd = str(row.get("round") or "").strip()
+                w("- **%s** (a `%s` step%s)%s\n"
+                  % (label or "an unnamed step", str(row.get("kind") or "step"),
+                     (", for %s" % forwhat) if forwhat else "",
+                     (" *(round %s)*" % rnd) if rnd else ""))
+            w("\nSo whatever those steps were for is unchecked, and it is a limit "
+              "of the harness rather than anything about your build.\n")
+        # ─── AND WHAT NEVER RAN BECAUSE THERE WAS NO PAGE (S272) ─────────────
+        # S272 RENDER BEGIN unrun
+        #
+        # ADDITIVE, AND NON-ZERO ONLY (captain's explicit call). The list is
+        # already on the journey and already reaches the REVIEWER's next prompt;
+        # this is the same fact said to the CAPTAIN, where he reads. It touches
+        # no grading, no grade, no verdict and no threshold — it renders a list
+        # somebody else built. A healthy review must not grow a permanent noise
+        # row, so a look with nothing on this list reads exactly as it always
+        # has.
+        #
+        # ITS OWN SECTION, for the same reason the two above are two: a refusal
+        # needs a different SHAPE, a drop needs a shorter LIST, and this needs
+        # neither — the step was fine and there was room for it; there was simply
+        # no screen to run it against. Reasons are collapsed with a count,
+        # because one dead launch refusing thirty steps is one fact about the
+        # run, not thirty.
+        if unrun_steps:
+            w("\n### Steps that were fine, and never ran anyway\n\n")
+            # AND WORDS, NOT NUMERALS, AT N=1 (S272 fix round 2, D-E). He
+            # reads this on a phone; "I asked for 1 step" is not a sentence a
+            # person writes. The bullet labels below stay numeric on purpose —
+            # those are counts in a tabular line, not prose.
+            # AND NO CLAIM ABOUT WHOSE FAULT IT WAS (S272 fix round 3, FIX 3).
+            # This line closed on `MY_CHECKING_NOTE` — "These are gaps in my
+            # checking, NOT A FAULT IN YOUR BUILD" — and the whole reason this
+            # section exists is a launch that died because THE BUILD TOOK A
+            # PORT. This session's companion change is a bullet in
+            # `implement-tdd.md` telling builders not to take that port, so the
+            # sentence asserted the opposite of the session's own premise, two
+            # lines above the harness's own words naming the port. The scorer
+            # cannot separate rig from build here, so it claims neither: the
+            # clause is DROPPED, not reworded into a subtler version of itself.
+            # (The constant is shared and pre-existing — its three other call
+            # sites are untouched; using it HERE was this session's choice.)
+            w("I asked for %s step%s that the harness kept and then never ran — "
+              "not refused, and not dropped for want of room: there was no page "
+              "to run %s against.\n\n"
+              % ("one" if len(unrun_steps) == 1 else len(unrun_steps),
+                 "" if len(unrun_steps) == 1 else "s",
+                 "it" if len(unrun_steps) == 1 else "them"))
+            # EVERY NAME HERE IS PRIVATE, BECAUSE THIS IS INSIDE `main()`
+            # (S272 fix round 1, D3). Python scoping is per-FUNCTION, not
+            # per-block, and `main()` holds the GRADE'S REASON in a plain `why`
+            # bound ~1000 lines above and printed as `WHY` on the wire ~400
+            # lines below — which `xo.sh` reads and hands to `xo_finish` as the
+            # board's headline. A loop variable called `why` in here OVERWROTE
+            # it. MEASURED: a journey of nothing but unrun steps turned the
+            # board's headline from "the point of the mission does not work —
+            # file stores no title" into this section's harness sentence, and
+            # `RECOMMENDATION_WHY` is printed as `(rec_why or why)`, so it was
+            # exposed to the same clobber. Same lesson as the `dwhy` note above.
+            #
+            # AND THE CLASS IS **NOT** CLOSED — THE DISCIPLINE BELOW IS APPLIED
+            # IN THIS BLOCK ONLY (S272 fix round 2, FIX 4). Round 1 wrote "the
+            # same `_`-prefix discipline, as the `dwhy` note above", which reads
+            # as "the class is handled". It is not. The `refusedSteps` section
+            # ~105 lines above still binds the BARE name `why` at line 5828, in
+            # this same `main()` scope, and the grade's `why` is printed on the
+            # wire at line 6324 — an IDENTICAL clobber that is LIVE TODAY.
+            # (THE ARITHMETIC IN A COMMENT IS A CLAIM ABOUT CODE, and this one
+            # was wrong: fix round 2 wrote "~250 lines below" for a gap of ~490.
+            # Correcting exactly that class of false comment was this session's
+            # headline fix, so both numbers are now the lines themselves,
+            # measured at the moment this was written.)
+            # It reproduces byte-for-byte on the parent commit, so it is
+            # inherited and not damage from this round, and it is deliberately
+            # LEDGERED for the captain rather than fixed here: widening a
+            # three-change fix round into a mini-round is the documented S163
+            # failure. The undo, when he calls it, is to rename that loop's
+            # `why`/`seen`/`had`/`rounds` to `_r`-prefixed names, exactly the
+            # shape used below. Until he does, one refused step still turns the
+            # board headline into the harness's own sentence.
+            #
+            # AND A GROUP OF MIXED KINDS MAY NOT WEAR ONE OF THEM (D1). Rows
+            # are still collapsed on their REASON — one dead launch refusing
+            # thirty steps is one fact about the run, not thirty — but
+            # `unrun_row` builds the IDENTICAL sentence for every step, so
+            # every group is one group, and labelling it with the first row's
+            # kind said "11 x `navigate`" over 3 shots, 2 clicks, a navigate, a
+            # type, a viewport, a wait, a press and a hover. That is a false
+            # sentence in the captain's own report. So the kinds are COUNTED and
+            # NAMED; a group that really is one kind still reads exactly as it
+            # did, because there the old line was true.
+            # THE HARNESS'S OWN WORDS, SAID ONCE (S272 fix round 3, FIX 6).
+            # `xo-run.py`'s `unrun_row` ends every reason with the launch
+            # failure in brackets — `(lcars launch found nothing listening on
+            # the port the app chose after 60s)` — and the paragraph below
+            # prints that same sentence AGAIN, three lines later, under "The
+            # harness's own words for why there was no page". He reads this on a
+            # phone. So when the paragraph below is going to say it, the
+            # bracketed copy is taken off the bullet; when there is no `noPage`
+            # on the journey, nothing is stripped and the bullet keeps the only
+            # copy there is. The fact is never lost — only the second telling.
+            _unopage = (" ".join(str(journey_doc.get("noPage")).split())
+                        if isinstance(journey_doc, dict)
+                        and str(journey_doc.get("noPage") or "").strip() else "")
+            _useen = []
+            for _urow in unrun_steps:
+                _uwhy = " ".join(str(_urow.get("why") or "").split())
+                if _unopage and _uwhy.endswith("(%s)" % _unopage):
+                    _ustripped = _uwhy[:-(len(_unopage) + 2)].strip().rstrip("-–—,;: ").strip()
+                    # …BUT NEVER DOWN TO NOTHING. A reason that was ONLY
+                    # the bracketed copy keeps it: an empty bullet is a
+                    # worse report than a repeated sentence.
+                    _uwhy = _ustripped or _uwhy
+                _ukind = str(_urow.get("kind") or "step")
+                for _uhad in _useen:
+                    if _uhad["why"] == _uwhy:
+                        _uhad["n"] += 1
+                        _uhad["kinds"][_ukind] = _uhad["kinds"].get(_ukind, 0) + 1
+                        _uhad["rounds"].append(str(_urow.get("round") or ""))
+                        break
+                else:
+                    _useen.append({"why": _uwhy, "n": 1,
+                                   "kinds": {_ukind: 1},
+                                   "rounds": [str(_urow.get("round") or "")]})
+            for _uhad in _useen:
+                _urounds = [r for r in _uhad["rounds"] if r]
+                # ROUNDS IN ROUND ORDER, NOT ALPHABETICAL (S272 fix round 3,
+                # FIX 8). `sorted(set(...))` sorts STRINGS, so a look that ran
+                # eleven rounds read `*(round 1, 10, 11, 2, 3)*`. `evaluate.md`
+                # tells the look "there is no round clock", so round 10 is
+                # reachable. Numerals sort as numbers and keep their place
+                # ahead of anything else; a round label that is not a number at
+                # all (a producer is free to write one) sorts after them by its
+                # own text rather than crashing the scorer.
+                _uwhen = ((" *(round %s)*"
+                           % ", ".join(sorted(set(_urounds),
+                                              key=lambda r: ((0, int(r), "")
+                                                             if r.isdigit()
+                                                             else (1, 0, r)))))
+                          if _urounds else "")
+                _ukinds = sorted(_uhad["kinds"].items(),
+                                 key=lambda kv: (-kv[1], kv[0]))
+                # A PLURAL LABEL MAY NOT WEAR A SINGULAR REASON (S272 fix round
+                # 3, FIX 5). `unrun_row` writes one PER-STEP sentence — "so
+                # THIS STEP was KEPT and then never executed" — and fix round 1
+                # made the label plural without touching it, so the captain read
+                # `- **11 steps** … so this step was KEPT`. Every row in a group
+                # shares the reason by construction (it IS the grouping key), so
+                # the reason is distributed over the group instead of being
+                # rewritten: the harness's own words are never edited here.
+                _ureason = (_uhad["why"] if _uhad["n"] == 1
+                            else "each one: %s" % _uhad["why"])
+                if len(_ukinds) == 1:
+                    w("- **%d x `%s`**%s — %s\n"
+                      % (_uhad["n"], _ukinds[0][0], _uwhen, _ureason))
+                else:
+                    w("- **%d steps**%s — %s\n"
+                      % (_uhad["n"], _uwhen, _ureason))
+                    w("  Those %d were: %s.\n"
+                      % (_uhad["n"],
+                         ", ".join("`%s` x%d" % (k, c) for k, c in _ukinds)))
+            if isinstance(journey_doc, dict) and \
+                    str(journey_doc.get("noPage") or "").strip():
+                w("\nThe harness's own words for why there was no page: %s\n"
+                  % " ".join(str(journey_doc.get("noPage")).split()))
+            # AND IT AGREES WITH ITSELF AT N=1 (S272 fix round 1, D5). The rest
+            # of this paragraph pluralises; this sentence did not, so a single
+            # unrun step closed on "every one of those steps".
+            # AND THE SENTENCE THAT OVERREACHED IS GONE (S272 fix round 3,
+            # FIX 2). It read "A look that could not reach your build at all has
+            # not seen it, whatever else this report says about the parts it
+            # could read." TWO THINGS WERE WRONG WITH IT. (1) The same report
+            # says, ABOVE, "Everything you asked for is in the build, and I saw
+            # each one on screen" over a picture-backed `MET` row — a verdict
+            # with one MET row and a non-empty `unrunSteps` is reachable — so
+            # this told him to discount a row he had just been shown a photo of.
+            # (2) It is false about REACH: `xo-run.py`'s own comment says a
+            # `run`/`read`/`workflow` step "reaches a command line and still
+            # executes with no page", and only BROWSER steps are ever put on
+            # this list. The scorer knows "N browser steps did not run". It does
+            # not know "the look reached nothing". DELETED, not reworded — a
+            # subtler version of an unsupportable claim is the same defect. What
+            # is left is the measured fact, and the counts, kinds and the
+            # harness's own words above it are untouched.
+            w("\nSo %s unchecked.\n"
+              % ("that step is" if len(unrun_steps) == 1
+                 else "every one of those steps is"))
+        # S272 RENDER END unrun
+        # ─── AND THE LOOKS-QUESTIONS THAT PASSED WITH NO PHOTOGRAPH (S272) ───
+        # S272 RENDER BEGIN looks
+        #
+        # SAME RULE, SAME REASON. `looksWithNoPicture` is recorded further down
+        # as data and was mentioned NOWHERE in this report — so a row the look
+        # itself stamped "a photograph is what settles this", and then settled on
+        # the project's tests instead, was demoted in silence. The demotion is
+        # not new and is untouched; this says it out loud and names the rows, so
+        # the captain can decide whether to look himself. Non-zero only.
+        if looks_with_no_picture:
+            w("\n### What I called a looks-question and then passed with no picture\n\n")
+            # ONE DIRECTION, AND AN ACTION (S272 fix round 1, D5). This said
+            # "the checks BELOW" and then, two sentences later, "the unchecked
+            # list ABOVE" — of the same rows, which are in the table above. And
+            # it told him a fact with nothing to DO about it: the block's own
+            # reason for existing is "so the captain can decide whether to look
+            # himself", and the prose never said that. The unrun section above
+            # is the model — it names the harness's own reason and leaves him
+            # somewhere to go.
+            _n = len(looks_with_no_picture)
+            # WORDS, NOT NUMERALS, AT N=1 (S272 fix round 2, D-E). "1 of the
+            # checks on your list asks…" is not a sentence; this is the first
+            # line of a section he reads on a phone.
+            # AND THE SENTENCE COUNTS WHAT IT IS COUNTING (S272 fix round 3,
+            # FIX 4). It read "%s of the checks on your list ASK what the screen
+            # LOOKS LIKE", which is a claim about how many looks-questions there
+            # ARE — and `_n` is the number that came out with NO PICTURE. The
+            # same report prints "**How I checked, by the kind of question.** 3
+            # were a looks-question" off `split["looks"]`, so the two numbers
+            # contradicted each other; reproduced at a 5-vs-3 case. The
+            # restrictive clause ("that ask") scopes the count to the subset it
+            # really measures, and no claim about the total is made at all.
+            w("%s of the checks on your list that ask what the screen LOOKS "
+              "LIKE — I stamped %s that way myself — had no photograph at any "
+              "width. %s already marked unchecked on the list above, and "
+              "%s named again here because a picture is the only thing that "
+              "settles this kind of question.\n\n"
+              % ("One" if _n == 1 else _n,
+                 "it" if _n == 1 else "them",
+                 "It is" if _n == 1 else "They are",
+                 "it is" if _n == 1 else "they are"))
+            for _lrow in looks_with_no_picture:
+                w("- %s *(%s)*\n" % (clip(str(_lrow.get("text") or ""), 120)
+                                     or "this one", str(_lrow.get("id") or "?")))
+            w("\nWhat to do: open the build and look at %s yourself, or send "
+              "this back and ask me to take the picture. Until somebody looks, "
+              "treat %s as unchecked rather than as working — whatever settled "
+              "%s for me, it was not a photograph of the screen.\n"
+              % ("that row" if _n == 1 else "those %d rows" % _n,
+                 "it" if _n == 1 else "them",
+                 "it" if _n == 1 else "them"))
+        # S272 RENDER END looks
         # S216 — THE REASONING, ITEM BY ITEM. Its own section, not a table
         # column: the table above stays exactly as machine-readable as it was.
         if ledger:
             w("\n### My reasoning, item by item\n\n")
             for e in ledger:
-                w("- %s *(%s)* — %s\n" % (clip(e["text"], 120) or e["id"], e["id"],
-                                          e["reason"]))
+                # ONE FAULT, SAID ONCE — AND EVERY ID STILL READABLE (S257).
+                # Both rows stay on this list, because both are coverage; the
+                # pairing is stated on them so the captain can see that two
+                # lines are one thing and not two.
+                pair = ""
+                if e.get("faultWith"):
+                    if e.get("status") == "gap":
+                        pair = (" *(the plan restates this as %s — one fault, "
+                                "counted once)*"
+                                % ", ".join("`%s`" % m for m in e["faultWith"]))
+                    else:
+                        pair = (" *(the plan restates this as %s — the same item, "
+                                "counted once)*"
+                                % ", ".join("`%s`" % m for m in e["faultWith"]))
+                elif e.get("faultOf"):
+                    if e.get("status") == "gap":
+                        pair = (" *(the same finding as `%s` — one fault, counted "
+                                "once)*" % e["faultOf"])
+                    else:
+                        pair = (" *(the same item as `%s`, counted once)*"
+                                % e["faultOf"])
+                w("- %s *(%s)* — %s%s\n" % (clip(e["text"], 120) or e["id"], e["id"],
+                                           e["reason"], pair))
         # OBSERVATIONS — THEIR OWN SECTION, NEVER THE SCORE (S210). These do not
         # come from the drawing or the PRD; they are things a person would just
         # SEE — two controls touching, a row out of line, text spilling past its
@@ -3246,6 +6216,67 @@ def main():
                 else:
                     w("- %s%s\n" % (st.get("name") or st.get("key"),
                                      "" if st.get("changed") else " — and nothing on the screen changed"))
+        # ─── WHAT I TOUCHED LIVE (S249) ─────────────────────────────────────
+        # A look that reached a real host made real things, and the captain is
+        # entitled to a list of them before he reads anything else about them.
+        # Printed off the harness's own ledger (`xo/live.json`) — every row is
+        # something a consented step DECLARED it might create, never something
+        # inferred from output — and the host it was made on is named, because
+        # "a branch called xo-probe" is not an address anybody can act on.
+        #
+        # AND AN EMPTY LEDGER SAYS SO (S250 fix round 1, D4). The section used to
+        # be written only when there was something in it, so the one look that had
+        # the captain's consent and used it ZERO times produced no section at all.
+        # Strictly not a lie; but this is the one place a teardown reads to know
+        # what to archive, and "nothing here" and "I never thought about it" must
+        # not look the same. The rail is still OFF with no ledger on disk (every
+        # look before S249), so nothing older grows a section.
+        if live_effects or live_record:
+            w("\n### What I touched live\n\n")
+            if not live_effects:
+                w("**Nothing.** %s was consented%s and I did not reach it: %s. "
+                  "There is nothing on a real host to clean up, and the empty "
+                  "ledger is on disk in `xo/live.json` so a teardown can see that "
+                  "for itself rather than having to guess from a missing "
+                  "section.\n"
+                  % (live_consent.get("host") or "A live host",
+                     (" in %s" % live_consent["source"]) if live_consent.get("source") else "",
+                     ("%d step(s) asked to and were refused — see below"
+                      % len(live_record.get("refused") or []))
+                     if (live_record.get("refused") or [])
+                     else "not one step asked to"))
+            else:
+                w("These are on a real host, not in a throwaway worktree. I only "
+                  "reached %s because the record consents to it%s.\n\n"
+                  % (live_consent.get("host") or "that host",
+                     (" (%s)" % live_consent["source"])
+                     if live_consent.get("source") else ""))
+            for eff in live_effects:
+                where = "/".join(x for x in (str(eff.get("host") or ""),
+                                             str(eff.get("owner") or ""),
+                                             str(eff.get("repo") or "")) if x)
+                w("- **%s** — %s%s\n"
+                  % (str(eff.get("kind") or "something"),
+                     str(eff.get("name") or "it did not name it"),
+                     (" *(on %s)*" % where) if where else ""))
+            if live_effects:
+                w("\nNothing here is cleaned up by this report. The same list is "
+                  "on disk in `xo/live.json`, which is what a teardown reads.\n")
+        # AND WHAT A MISSING LIVE TARGET COST (S249). Said apart from the blind
+        # rows above, because this one has a one-line fix that is OURS: name the
+        # host and the owner in `liveTargets`.
+        if live_blind:
+            w("\n### What I could not check for want of a live target\n\n")
+            w("%s\n\n" % MY_CHECKING_NOTE)
+            for row in live_blind:
+                w("- **%s** — %s *(%s)*\n"
+                  % (short_name(row.get("text") or row.get("id") or "?"),
+                     " ".join(str(row.get("why") or NEEDS_LIVE_SAID).split()),
+                     row.get("id")))
+            w("\nThe fix is a line in the record, not a change to your build: name "
+              "the host and the owner in `liveTargets` (`.git/lcars/autopilot.json`, "
+              "or `numberOne.liveTargets` in `.git/lcars/config.json`) and I will "
+              "reach it on the next look.\n")
         # WHAT I COULD NOT SEE FOR WANT OF DATA (S220 part E). One plain
         # sentence, and only when nothing was declared — a seed that ran is
         # not worth a paragraph, and a missing one is never the build's fault.
@@ -3264,6 +6295,15 @@ def main():
                   "screens that only appear once there is data in them I could not "
                   "see: %s.** That is not a fault in your build — it is a gap in "
                   "what I was given.\n" % ", ".join(blind_screens[:5]))
+        # ── A SEED THAT RAN ONTO A PAGE THAT STAYED EMPTY (S248 fix round 1, D4)
+        # Printed out of the RECORD `xo.sh` wrote at the moment it knew it — both
+        # HOMEs and the parts still missing. Nothing here infers anything: without
+        # this paragraph the tester's reader concludes "the page was empty" and
+        # never "the reviewer and the app were looking at two different stores".
+        still = (seed or {}).get("pageStillEmpty") if isinstance(seed, dict) else None
+        if isinstance(still, dict) and str(still.get("note") or "").strip():
+            w("\n**The set-up steps ran and the page stayed bare, which may not be "
+              "the build's fault.** %s\n" % " ".join(str(still["note"]).split()))
         if out["alsoChecked"]:
             w("\n**I also looked at:** " + "; ".join(out["alsoChecked"]) + "\n")
         if out["escalations"]:
@@ -3275,6 +6315,10 @@ def main():
             w("\n</details>\n")
 
     print("SCORE\t" + score)
+    # S240 — the action on the wire, so `xo.sh` mirrors what was DECIDED and
+    # never reads it back out of the report's prose.
+    print("RECOMMENDATION\t" + recommendation)
+    print("RECOMMENDATION_WHY\t" + (rec_why or why).replace("\n", " "))
     print("WORKER_SCORE\t" + worker_score)
     print("DISAGREED\t" + ("yes" if score != worker_score else "no"))
     print("WHY\t" + why)
@@ -3294,6 +6338,12 @@ def main():
         print("IMPACT_KEPT\t%s\t%s\t%s" % (cid, was, said_now))
     for cid, was, q in demoted:
         print("TEST_DEMOTED\t%s\t%s\t%s" % (cid, was, " ".join(q.split())))
+    # S250 D1 — a `met` taken off a local workflow run that recorded skipped
+    # steps, so the journal carries the moment a false green was refused.
+    for _sb in stand_in_blind:
+        print("STAND_IN_BLIND\t%s\t%s\t%s"
+              % (_sb["id"], _sb.get("evidence") or "-",
+                 ", ".join(_sb.get("skipped") or [])))
     for m in mismatches:
         print("IMPACT_MISMATCH\t%s\t%s\t%s\t%s" % tuple(m["ids"] + m["impacts"]))
     print("COUNTS\t%d\t%d\t%d\t%d" % (met, gap, untested, len(contradicted)))

@@ -4,6 +4,46 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.10.2 — the stand-in gets its reach back
+
+**Your buddy can now do what you'd do, instead of stopping to ask you to do it.**
+When LCARS refuses something and its own message names the fix, the buddy runs
+that fix, writes down that it did and why, and carries on — it only comes to you
+when the cure isn't named or would cross one of its nevers. And its step chooser
+now reads the repository instead of only its own notes, which is what was making
+a permanent feature feel less capable than prompting the buddy by hand: the
+playbook already knew what to do, the chooser was walking straight past it. Six
+branches that were unreachable or simply wrong are now reachable, each one
+measured before it was fixed.
+
+It showed up live this round. Left to run unattended, the buddy agreed the scope
+itself, took the authority it had been given — and then used that authority to
+*refuse* a merge, on evidence, because the build could silently lose data. "Being
+blocked is uncomfortable, not a reason." That is the stand-in role doing the job
+you keep it for.
+
+**And Number One stopped lying about what it saw.** A malformed screenshot
+reference used to crash the review, write no file at all, and have that silence
+reach you as a clean bill of health. Worse, it was *inventing* citations — a
+filename split into one citation per letter, a lookup table cited by its key, an
+empty entry cited as a file called "None" — and filing each as a genuine fault
+against your build. Both are gone. Your report now also admits the steps it kept
+and never ran, and the checks it passed without ever taking a photograph, and
+only says so when the count isn't zero.
+
+**The factory builds small projects again.** Four setup gates were turning away
+work that was correct: a project with nothing to install had no way to say so, a
+gate rejected the files its own test run creates, a brand-new file was read as
+modifying something that doesn't exist, and the test-runner detector guessed from
+a config file's presence rather than evidence. A plain standard-library project
+now goes end to end — planned, built, fixed, reviewed, with passing tests.
+
+Measured this round: asked to review a build nobody had briefed it on, Number One
+found a concurrent-write bug by *running* the attack — twenty simultaneous writes,
+all reporting success, five surviving. Its findings also proved perfectly
+repeatable across two reviews of identical code, while its final verdict did not,
+so judgement is the next thing to work on rather than observation.
+
 ## 2026.10.1 — hand the factory over
 
 **You can now hand the loop itself to the buddy, and get your attention back.**

@@ -1608,4 +1608,176 @@ check "19o. the aligned envelope carries the RE-RESOLVED engine, not the parked 
    && grep -q '\"workerBin\": *\"[^\"]*copilot\"' '$MP/state.json'"
 
 # ==========================================================================
+# 20. RE-GRILLING A FEEDBACK-RE-ENTERED MISSION MUST SAVE prd.md (S238)
+#
+# MEASURED: `lcars feedback` bounces a verified mission back to `align` and
+# appends the captain's note to feedback.md. Re-grilling it on the board ends at
+# `_complete_from_align`, which dispatches `file.sh --complete` — and that
+# refused with "already aligned", because prdPending is long cleared. The only
+# thing left on disk was the daemon's best-effort `prd-draft.md`, so ten answers
+# of re-alignment produced NO prd.md and the pipeline re-ran the OLD one.
+#
+# ADR-002 is untouched: file.sh still writes prd.md. What is added is the
+# RE-ENTRY arm — stage `align` WITH a feedback.md is a re-grill, not a
+# first filing — and it keeps every prior PRD as `prd.<n>.md`, the same
+# "nothing prior is ever deleted" rule `lcars feedback` itself obeys.
+echo "20. the feedback re-entry arm of --complete"
+
+repoR="$(new_repo)"; make_gh_stub "$repoR/gh"
+export GH_LOG="$repoR/gh.log"; : >"$GH_LOG"
+unset GH_BODY
+prdR1="$repoR/prd-v1.md"; write_prd "$prdR1"; printf '\nv1-marker\n' >>"$prdR1"
+(
+  cd "$repoR"
+  LCARS_GH_BIN="$repoR/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdR1" >outR0.txt 2>&1
+)
+MIDR="$(cd "$repoR/.git/lcars/missions" && ls -d lcars-20260530-* | head -1)"
+MR="$repoR/.git/lcars/missions/$MIDR"
+check "20a. a grill-first mission is aligned with prd.md v1" \
+  "[ -n '$MIDR' ] && qgrep -q 'v1-marker' '$MR/prd.md'"
+
+# --- 20b: THE REGRESSION GUARD. No feedback.md → today's refusal, unchanged.
+prdR2="$repoR/prd-v2.md"; write_prd "$prdR2"; printf '\nv2-marker\n' >>"$prdR2"
+rcR=0
+(
+  cd "$repoR"
+  LCARS_GH_BIN="$repoR/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete "$MIDR" --prd "$prdR2" >outR1.txt 2>&1
+) || rcR=$?
+check "20b. REGRESSION — an aligned mission with NO feedback still refuses" \
+  "[ '$rcR' -ne 0 ]"
+check "20b. REGRESSION — …with the same 'already aligned' sentence" \
+  "qgrep -q 'already aligned' '$repoR/outR1.txt'"
+check "20b. REGRESSION — …and prd.md is untouched (still v1)" \
+  "qgrep -q 'v1-marker' '$MR/prd.md' && ! qgrep -q 'v2-marker' '$MR/prd.md'"
+check "20b. REGRESSION — …and no history file was invented" "[ ! -e '$MR/prd.1.md' ]"
+
+# --- 20c: the re-entry. Stage `align` WITH feedback.md → it saves. ----------
+printf -- '## 2026-10-02\n\nThe /about fix missed the trailing-slash case.\n' \
+  >"$MR/feedback.md"
+FBSUM_BEFORE="$(cksum <"$MR/feedback.md")"
+rcR2=0
+(
+  cd "$repoR"
+  LCARS_GH_BIN="$repoR/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete "$MIDR" --prd "$prdR2" >outR2.txt 2>&1
+) || rcR2=$?
+check "20c. re-entry exits 0" "[ '$rcR2' -eq 0 ]"
+check "20c. prd.md is OVERWRITTEN with the re-grilled PRD" \
+  "qgrep -q 'v2-marker' '$MR/prd.md'"
+check "20c. the previous PRD is kept as prd.1.md — nothing prior is deleted" \
+  "[ -f '$MR/prd.1.md' ] && qgrep -q 'v1-marker' '$MR/prd.1.md'"
+check "20c. feedback.md is untouched" \
+  "[ \"\$(cksum <'$MR/feedback.md')\" = '$FBSUM_BEFORE' ]"
+check "20c. state.json records realignedAt" \
+  "qgrep -q '\"realignedAt\"' '$MR/state.json'"
+check "20c. the mission is still at align" \
+  "qgrep -q '\"stage\": \"align\"' '$MR/state.json'"
+check "20c. …and the saved PRD path is printed, so the daemon can carry it back" \
+  "qgrep -qF '$MR/prd.md' '$repoR/outR2.txt'"
+check "20c. state.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MR/state.json'"
+
+# --- 20d: a SECOND re-entry stacks the history, it never overwrites it ------
+prdR3="$repoR/prd-v3.md"; write_prd "$prdR3"; printf '\nv3-marker\n' >>"$prdR3"
+(
+  cd "$repoR"
+  LCARS_GH_BIN="$repoR/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete "$MIDR" --prd "$prdR3" >outR3.txt 2>&1
+)
+check "20d. a second re-grill writes prd.md v3" "qgrep -q 'v3-marker' '$MR/prd.md'"
+check "20d. …keeps v2 as prd.2.md" "qgrep -q 'v2-marker' '$MR/prd.2.md'"
+check "20d. …and prd.1.md still holds v1 (NOTHING prior is ever deleted)" \
+  "qgrep -q 'v1-marker' '$MR/prd.1.md'"
+
+# --- 20e: the daemon SURFACES a refusal for any OTHER reason ----------------
+# No silent "already aligned": `_run` raises with the skill's exit code AND its
+# output, so whatever file.sh said reaches the API response text.
+SURFPY="$TMPROOT/s238-surface.py"
+cat >"$SURFPY" <<'PYEOF'
+import sys, os
+sys.path.insert(0, ".")
+from lcars_serve.actions import Actions, ActionError
+repo = sys.argv[1]
+stub = os.path.join(repo, "refusing-file.sh")
+with open(stub, "w") as fh:
+    fh.write("#!/bin/sh\n")
+    fh.write("echo \"mission 'x' has no state.json - its state is corrupt.\"\n")
+    fh.write("exit 7\n")
+os.chmod(stub, 0o755)
+a = Actions(repo, {"file": stub})
+try:
+    a._run("file", ["--complete", "x", "--prd", "/tmp/nope"])
+except ActionError as exc:
+    print("STATUS=%s" % exc.status)
+    print("EXIT=%s" % getattr(exc, "skill_exit", ""))
+    print("MESSAGE=%s" % exc.message)
+else:
+    print("NO-RAISE")
+PYEOF
+SURFOUT="$(cd "$REPO_ROOT/web" && python3 "$SURFPY" "$repoR" 2>&1)"
+check "20e. a file.sh refusal reaches the API response as a 502" \
+  "printf '%s' \"\$SURFOUT\" | qgrep -q 'STATUS=502'"
+check "20e. …carrying file.sh's OWN refusal text, not a daemon paraphrase" \
+  "printf '%s' \"\$SURFOUT\" | qgrep -q 'its state is corrupt'"
+check "20e. …and the skill's exit code, so callers key off status not prose" \
+  "printf '%s' \"\$SURFOUT\" | qgrep -q 'EXIT=7'"
+
+# --- 20f: A STATE WRITE THAT FAILED MUST NOT BE REPORTED AS A SUCCESS -------
+# S238 FIX ROUND 1, DEFECT 3. `_complete_reentry` ignored
+# `lcars_state_set_string`'s exit code: against a malformed state.json the
+# setter printed "⚠ … left untouched (field \"realignedAt\" NOT written)" and
+# returned 1, and the arm went on to print "Mission re-aligned" and exit 0 — so
+# the daemon answered ok=true with a prdPath for a re-alignment that was never
+# recorded. A success that half happened is the thing this project least
+# tolerates. The PRD really IS on disk by then, so the honest answer says both:
+# the PRD was written, the re-alignment was NOT recorded, and it fails.
+repoF="$(new_repo)"; make_gh_stub "$repoF/gh"
+export GH_LOG="$repoF/gh.log"; : >"$GH_LOG"
+unset GH_BODY
+prdF1="$repoF/prd-f1.md"; write_prd "$prdF1"; printf '\nf1-marker\n' >>"$prdF1"
+(
+  cd "$repoF"
+  LCARS_GH_BIN="$repoF/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdF1" >outF0.txt 2>&1
+)
+MIDF="$(cd "$repoF/.git/lcars/missions" && ls -d lcars-20260530-* | head -1)"
+MF="$repoF/.git/lcars/missions/$MIDF"
+printf -- '## 2026-10-02\n\nstill wrong.\n' >"$MF/feedback.md"
+prdF2="$repoF/prd-f2.md"; write_prd "$prdF2"; printf '\nf2-marker\n' >>"$prdF2"
+
+# POSITIVE CONTROL first, in the claim's own phrasing family: a SOUND
+# state.json re-enters, says "Mission re-aligned", and exits 0.
+rcF0=0
+(
+  cd "$repoF"
+  LCARS_GH_BIN="$repoF/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete "$MIDF" --prd "$prdF2" >outF1.txt 2>&1
+) || rcF0=$?
+check "20f. CONTROL — a sound state.json re-enters, exits 0, and says so" \
+  "[ '$rcF0' -eq 0 ] && qgrep -q 'Mission re-aligned' '$repoF/outF1.txt'"
+
+# Now break state.json so the shared writer REFUSES it, and re-grill again.
+cp "$MF/state.json" "$MF/state.json.good"
+printf '{ "id": "%s", "stage": "align", NOT JSON\n}\n' "$MIDF" >"$MF/state.json"
+prdF3="$repoF/prd-f3.md"; write_prd "$prdF3"; printf '\nf3-marker\n' >>"$prdF3"
+rcF=0
+(
+  cd "$repoF"
+  LCARS_GH_BIN="$repoF/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --complete "$MIDF" --prd "$prdF3" --reentry >outF2.txt 2>&1
+) || rcF=$?
+check "20f. a refused state write FAILS the arm (non-zero), it is not swallowed" \
+  "[ '$rcF' -ne 0 ]"
+check "20f. …and it never claims 'Mission re-aligned'" \
+  "! qgrep -q 'Mission re-aligned' '$repoF/outF2.txt'"
+check "20f. …it says the re-alignment was NOT recorded" \
+  "qgrep -q 'NOT recorded' '$repoF/outF2.txt'"
+check "20f. …and it still says where the PRD went, because that part IS true" \
+  "qgrep -qF '$MF/prd.md' '$repoF/outF2.txt' && qgrep -q 'f3-marker' '$MF/prd.md'"
+check "20f. …and realignedAt was genuinely not written" \
+  "! qgrep -q 'realignedAt' '$MF/state.json'"
+
+# ==========================================================================
 [ "$fail" -eq 0 ]

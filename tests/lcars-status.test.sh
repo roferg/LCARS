@@ -584,10 +584,10 @@ mk_cadence_repo() {
 # Fast interval=1 over ~3s → several frames (initial + re-renders).
 repoWIc1="$(mk_cadence_repo)"
 LOGc1="$repoWIc1/watch.log"
-( cd "$repoWIc1" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
-    bash "$SCRIPT" --watch lcars-20260606-002 --interval 1 </dev/null >"$LOGc1" 2>&1 &
-  echo $! >"$repoWIc1/watch.pid" )
-wpidc1="$(cat "$repoWIc1/watch.pid")"
+( cd "$repoWIc1" && exec env LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+    bash "$SCRIPT" --watch lcars-20260606-002 --interval 1 ) </dev/null >"$LOGc1" 2>&1 &
+wpidc1=$!
+printf '%s\n' "$wpidc1" >"$repoWIc1/watch.pid"
 sleep 3
 kill -TERM "$wpidc1" 2>/dev/null; wait "$wpidc1" 2>/dev/null; kill -KILL "$wpidc1" 2>/dev/null || true
 framesc1="$(grep -c 'watching lcars-20260606-002' "$LOGc1" 2>/dev/null || echo 0)"
@@ -598,10 +598,10 @@ check "WI. interval=1 re-renders multiple frames over ~3s (cadence honoured)" \
 # yet), proving the interval throttles the visible cadence.
 repoWIc2="$(mk_cadence_repo)"
 LOGc2="$repoWIc2/watch.log"
-( cd "$repoWIc2" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
-    bash "$SCRIPT" --watch lcars-20260606-002 --interval 30 </dev/null >"$LOGc2" 2>&1 &
-  echo $! >"$repoWIc2/watch.pid" )
-wpidc2="$(cat "$repoWIc2/watch.pid")"
+( cd "$repoWIc2" && exec env LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+    bash "$SCRIPT" --watch lcars-20260606-002 --interval 30 ) </dev/null >"$LOGc2" 2>&1 &
+wpidc2=$!
+printf '%s\n' "$wpidc2" >"$repoWIc2/watch.pid"
 sleep 3
 kill -TERM "$wpidc2" 2>/dev/null; wait "$wpidc2" 2>/dev/null; kill -KILL "$wpidc2" 2>/dev/null || true
 framesc2="$(grep -c 'watching lcars-20260606-002' "$LOGc2" 2>/dev/null || echo 0)"
@@ -691,12 +691,10 @@ WATCHLOG9="$repoW9/watch.log"
 # Pin the fast 1s tick (the default is now 60s — a 2s window would otherwise
 # only ever show the initial frame). This still exercises the per-second
 # poll/sleep path; the interval only governs WHEN a frame re-renders.
-(
-  cd "$repoW9" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_INTERVAL=1 \
-    bash "$SCRIPT" --watch lcars-20260601-009 </dev/null >"$WATCHLOG9" 2>&1 &
-  echo $! >"$repoW9/watch.pid"
-)
-wpid9="$(cat "$repoW9/watch.pid")"
+( cd "$repoW9" && exec env LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_INTERVAL=1 \
+    bash "$SCRIPT" --watch lcars-20260601-009 ) </dev/null >"$WATCHLOG9" 2>&1 &
+wpid9=$!
+printf '%s\n' "$wpid9" >"$repoW9/watch.pid"
 sleep 1
 # waves.json appears mid-watch, listing 4 tickets across 1 wave.
 write_waves "$repoW9" "lcars-20260601-009" \
@@ -744,12 +742,10 @@ WATCHLOG="$repoW10/watch.log"
 # Pin the fast 1s tick: the no-busy-spin assertion below counts frames over a 2s
 # window and expects ~1 frame/sec. The new 60s default would show only the
 # initial frame; interval=1 reproduces the original cadence this regression pins.
-(
-  cd "$repoW10" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_INTERVAL=1 \
-    bash "$SCRIPT" --watch lcars-20260601-010 </dev/null >"$WATCHLOG" 2>&1 &
-  echo $! >"$repoW10/watch.pid"
-)
-wpid="$(cat "$repoW10/watch.pid")"
+( cd "$repoW10" && exec env LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_INTERVAL=1 \
+    bash "$SCRIPT" --watch lcars-20260601-010 ) </dev/null >"$WATCHLOG" 2>&1 &
+wpid=$!
+printf '%s\n' "$wpid" >"$repoW10/watch.pid"
 sleep 2
 # Count the per-frame header lines: one per render. A 1s throttle over ~2s gives
 # a handful (≤6, generous for scheduling jitter); a busy-spin gives thousands.

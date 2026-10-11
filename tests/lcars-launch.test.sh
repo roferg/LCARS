@@ -356,8 +356,8 @@ for eng in claude copilot; do
     check "2a3. claude launch argv carries the --disallowedTools flag itself" \
       "grep -qxF -- '--disallowedTools' \"$argvf\""
   else
-    check "2a. copilot launch argv fences to view,grep,glob,create" \
-      "grep -qxF 'view,grep,glob,create' \"$argvf\""
+    check "2a. copilot launch argv fences to view,rg,glob,create (S250: rg)" \
+      "grep -qxF 'view,rg,glob,create' \"$argvf\""
   fi
   # The checkout is GRANTED to the inspector now that it has no shell to reach it.
   check "2c. $eng launch argv grants the disposable checkout for reading" \
@@ -1545,6 +1545,30 @@ check "32e. a hint that OPENS with a --word is prose after the marker too" \
   "! grep -q 'unknown option' \"$E32e\""
 check "32f. …and that hint reaches the inspector intact" \
   "grep -qF -- '--config vite.config.ts, the browser build' \"$A32\""
+
+# =====================================================================
+# 33. THE DECLARED CLI SELECTS THE ADAPTER, NOT THE STAND-IN'S BASENAME.
+#     Tests and wrappers may supply a correctly behaving worker executable under
+#     any filename. LCARS_WORKER_CLI names its protocol; without that declaration
+#     the same filename remains unknown and must still be refused.
+# =====================================================================
+R33="$(make_repo m33)"
+S33="$TMPROOT/arbitrary-worker-name"
+A33="$TMPROOT/argv33"
+make_rec_worker "$S33" "$A33"
+OUT33="$( cd "$R33" && LCARS_WORKER_BIN="$S33" LCARS_WORKER_CLI=claude \
+  bash "$LAUNCH_SH" m33 2>&1 )"; RC33=$?
+check "33a. an arbitrary worker filename is accepted with its CLI declared" \
+  "[ -s \"$A33\" ] && ! printf '%s' \"\$OUT33\" | grep -q 'unknown worker cli'"
+
+R33b="$(make_repo m33b)"
+A33b="$TMPROOT/argv33b"
+rm -f "$A33b"
+make_rec_worker "$S33" "$A33b"
+OUT33b="$( cd "$R33b" && LCARS_WORKER_BIN="$S33" \
+  bash "$LAUNCH_SH" m33b 2>&1 )"; RC33b=$?
+check "33b. the same arbitrary filename is refused when its CLI is undeclared" \
+  "[ \"$RC33b\" -ne 0 ] && [ ! -s \"$A33b\" ] && printf '%s' \"\$OUT33b\" | grep -q 'unknown worker cli'"
 
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

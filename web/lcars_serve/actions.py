@@ -40,6 +40,7 @@ import zlib
 
 from .local_adapter import LocalAdapter
 from .worker_guard import DAEMON_HINT as DAEMON_SHIM_HINT, editor_shim_refusal
+from .worker_guard import explicit_override, shim_fallback
 
 
 class ActionError(Exception):
@@ -5896,6 +5897,13 @@ class Actions(LogFacts):
             # a clean filing, so that payload is unchanged.
             if sess.heal_attempts:
                 resp["healed"] = sess.heal_attempts
+            # S238 — WHERE THE PRD WENT, when file.sh said so. On the feedback
+            # RE-GRILL lane the closing turn used to carry no path at all, which
+            # was indistinguishable from the filing that saved nothing but a
+            # prd-draft.md. Absent on every other lane, so that payload is
+            # unchanged.
+            if turn.get("prdPath"):
+                resp["prdPath"] = turn["prdPath"]
             if turn.get("adr"):
                 resp["adr"] = turn["adr"]
             resp["board"] = board
@@ -6139,6 +6147,24 @@ class Actions(LogFacts):
                         pass
         return self._reader.board()
 
+    @staticmethod
+    def _saved_prd_path(proc):
+        """The `prd.md` path a `file.sh` dispatch reports it wrote, or "".
+
+        file.sh prints `  PRD written:     <abs path>` on the re-entry lane.
+        Read with ONE split on the label, because the path is the rest of the
+        line and may hold spaces (a repo under "Application Support" is not
+        hypothetical on this machine).
+        """
+        try:
+            out = (proc.stdout or b"").decode("utf-8", "replace")
+        except AttributeError:
+            return ""
+        for line in out.splitlines():
+            if "PRD written:" in line:
+                return line.split("PRD written:", 1)[1].strip()
+        return ""
+
     def _complete_from_align(self, mid, turn, engine=None, image_paths=None):
         """Park & Align (S137): COMPLETE a parked mission's alignment via
         `file.sh --complete <id> --prd <path>` (ADR-002 dispatch).
@@ -6168,6 +6194,16 @@ class Actions(LogFacts):
         # only copy died in daemon memory when the request unwound.
         draft_path = self._persist_align_draft(mid, prd + "\n")
         args = ["--complete", mid, "--prd", prd_path]
+        # S238 — SAY IT IS A RE-GRILL. A mission with a `feedback.md` beside it
+        # has been round the loop and come back through `lcars feedback`, so
+        # completing its alignment again overwrites prd.md instead of being
+        # refused as "already aligned". The VERDICT still belongs to file.sh —
+        # it ignores this flag for a mission that is genuinely parked — so this
+        # is a hint from the one place that knows which lane the captain is on,
+        # not a second copy of the decision.
+        if os.path.isfile(os.path.join(self._missions_dir(), mid,
+                                       "feedback.md")):
+            args.append("--reentry")
         if adr_path:
             args += ["--adr", adr_path]
         ov = (turn.get("modelOverride") or "").strip()
@@ -6181,12 +6217,21 @@ class Actions(LogFacts):
         if eng:
             env_extra["LCARS_WORKER_BIN"] = eng
         try:
-            self._run("file", args, env_extra=env_extra)
+            proc = self._run("file", args, env_extra=env_extra)
         except ActionError as exc:
             if draft_path and not exc.draft_path:
                 exc.draft_path = draft_path
             raise
         else:
+            # S238 — WHERE THE PRD LANDED, in file.sh's own words. The captain's
+            # closing turn used to end with no path at all, which on the re-grill
+            # lane was indistinguishable from the filing that silently saved
+            # nothing. Read off the dispatch's output rather than composed here,
+            # so the daemon reports the path file.sh actually wrote (ADR-002: it
+            # is still file.sh that writes it).
+            saved = self._saved_prd_path(proc)
+            if saved:
+                turn["prdPath"] = saved
             # The filing landed: `prd.md` is the real document now, so the draft
             # would only be a stale second copy of it.
             self._discard_align_draft(draft_path)
@@ -6623,6 +6668,14 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — cannot "
                 "drive the Align/Log worker")
+        # S238 — an explicit override beats the picker's bare engine NAME.
+        bin_ = self._engine_file(bin_)
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
         # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
@@ -7529,6 +7582,17 @@ class Actions(LogFacts):
             return {"state": "done", "ok": False, "changes": [],
                     "why": "no worker engine is configured, so LCARS could not "
                            "read your project against the mockup"}
+        # S238 — an explicit override beats a bare engine NAME. This lane
+        # ANSWERS instead of raising, so the refusal rides the payload's `why`.
+        bin_, _ovr = explicit_override(bin_)
+        if _ovr:
+            return {"state": "done", "ok": False, "changes": [], "why": _ovr}
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
         if _refused:
@@ -9594,6 +9658,14 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — the "
                 "holodeck has nothing to talk to")
+        # S238 — an explicit override beats a bare engine NAME.
+        bin_ = self._engine_file(bin_)
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — never spawn VS Code's re-invoking copilot shim (worker_guard.py,
         # the daemon's copy of the one rule in skills/lcars-init/worker-guard.sh).
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
@@ -10422,11 +10494,21 @@ class Actions(LogFacts):
                 "choose one in the engine picker. To give every program on this "
                 "viewscreen the same engine without picking, restart it with "
                 "one: `LCARS_WORKER_BIN=copilot lcars viewscreen --open`.")
+        # S238 — an explicit override beats a bare engine NAME, and it is applied
+        # BEFORE the which() probe so the override's own file is what gets
+        # checked (and what gets recorded as the program's engine).
+        bin_ = self._engine_file(bin_)
         if not shutil.which(bin_):
             raise ActionError(
                 502, "the holodeck cannot run %s — it is not an executable on "
                 "this machine. Check the engine you picked, or the daemon's "
                 "$LCARS_WORKER_BIN." % bin_)
+        # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
+        # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
+        # a known absolute location is not refused by the bash rule — it starts
+        # the real one. The daemon's copy had no fallback at all, so it refused
+        # what run.sh would have run. Same rule, one place: worker_guard.
+        bin_, _swap = shim_fallback(bin_)
         # S217 — refused BEFORE a sidecar or a room is built, like a missing bin.
         _refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
         if _refused:
@@ -10926,9 +11008,32 @@ class Actions(LogFacts):
         # fades, the refusal is RECORDED the way the drive records any Stage
         # failure — an `error` event against the Stage the drive would have
         # run, written by run.sh's own event writer — so the card says it too.
-        self._refuse_unstartable_engine(
-            mid, env_extra.get("LCARS_WORKER_BIN") or self.worker_bin
-            or os.environ.get("LCARS_WORKER_BIN"))
+        #
+        # S238 FIX ROUND 1 (D1) — THE OVERRIDE REACHES *THIS* LANE TOO. The
+        # engine here is state.json's `workerBin`, which the picker persists as
+        # a BARE NAME, and this site never consulted $LCARS_COPILOT_BIN — so the
+        # captain who set it, pressed START and watched a red card was being
+        # judged on a binary LCARS was not going to run. It is applied to the
+        # engine the drive is actually HANDED, not merely to the one the refusal
+        # is worded from: a message that changed without changing what runs
+        # would be the same bug with better prose.
+        _bin = (env_extra.get("LCARS_WORKER_BIN") or self.worker_bin
+                or os.environ.get("LCARS_WORKER_BIN"))
+        if _bin:
+            _bin = self._engine_file(_bin)
+            # …and the S231 work-around, on the value HANDED OVER. run.sh's own
+            # guard would reach the same binary a moment later, so this changes
+            # no outcome — it makes the engine the card and the child report the
+            # file that is actually going to run, instead of a bare name that
+            # resolves to the shim in every environment nobody controls (S222's
+            # rule: a persisted engine is a path, not a name).
+            _bin, _swap = shim_fallback(_bin)
+            # Only where the daemon was ALREADY feeding the engine: injecting one
+            # where it was not would move run.sh's env above its own config, and
+            # this fix changes no precedence.
+            if env_extra.get("LCARS_WORKER_BIN"):
+                env_extra["LCARS_WORKER_BIN"] = _bin
+        self._refuse_unstartable_engine(mid, _bin)
         self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
 
@@ -10953,6 +11058,12 @@ class Actions(LogFacts):
         action = self._DRIVE_ACTION.get(stage)
         if action is None or _read_json_key(sp, "awaitingHuman") is True:
             return
+        # S238 FIX ROUND 1 (D1) — and the S231 work-around applies here as well:
+        # run.sh's own guard would have started the real CLI at a known absolute
+        # location rather than refuse, so refusing the spawn ON ITS BEHALF was
+        # the daemon disagreeing with the script it was about to run. One rule,
+        # one place (worker_guard.shim_fallback).
+        bin_, _swap = shim_fallback(bin_)
         refused = editor_shim_refusal(bin_, DAEMON_SHIM_HINT)
         if not refused:
             return
@@ -13328,6 +13439,28 @@ class Actions(LogFacts):
                 except OSError:
                     pass
 
+    def _engine_file(self, bin_):
+        """S238 — THE FILE AN EXPLICIT OVERRIDE NAMES, in place of a bare engine
+        name. Returns the bin to start; raises the override's own refusal.
+
+        THE DEFECT THIS CLOSES, MEASURED. Every spawn below resolves
+        `engine or self.worker_bin`, and the board ALWAYS posts a bare engine
+        NAME (board.js sends `{engine: "copilot"}`) — so the picker's word
+        outranked an operator's `LCARS_WORKER_BIN=/opt/homebrew/bin/copilot`
+        with no effect and no warning. He could not tell "my variable was
+        ignored" from "that binary is broken".
+
+        PRECEDENCE IS DELIBERATELY UNTOUCHED: the picker still chooses the
+        ENGINE, this chooses the FILE for a bare `copilot`. A bin named by path
+        is returned as given. The rule, and why it refuses instead of falling
+        back to PATH, lives in worker_guard.explicit_override — one place, same
+        as the shim rule it sits beside.
+        """
+        chosen, refused = explicit_override(bin_)
+        if refused:
+            raise ActionError(502, refused)
+        return chosen
+
     def _require_mission(self, mid):
         d = os.path.join(self._missions_dir(), mid)
         if not (mid and os.path.isfile(os.path.join(d, "state.json"))):
@@ -13519,12 +13652,18 @@ class Actions(LogFacts):
         return line or None
 
     # ── S201: THE REPO TOGGLE AND THE STAND-DOWN ────────────────────────────
-    # How long the toggle waits for `xo on` to refuse before it lets the sweep
-    # run on in the background (S222). It is a REFUSAL window, not a work
-    # budget: `xo.sh` checks the engine and writes the config block before it
-    # sweeps anything, so every answer that is not "I am now sweeping" lands
-    # inside it with room to spare. Env-settable so a test need not sit through
-    # it.
+    # How long the toggle waits for `xo on` to answer before it lets it run on
+    # in the background (S222). It is a REFUSAL window, not a work budget:
+    # `xo.sh` checks the engine and writes the config block before it does
+    # anything else, so every answer lands inside it with room to spare.
+    #
+    # SINCE S241 THE PLAIN TOGGLE ALWAYS ANSWERS INSIDE IT. `xo on` no longer
+    # sweeps by default — it names what is waiting and exits — so the normal
+    # board toggle now returns in a fraction of a second. The window is kept
+    # because the long path is still reachable (`--sweep`,
+    # $LCARS_XO_SWEEP_ON_START=1) and a toggle that could hang for six hours
+    # must not depend on nobody ever setting that. Env-settable so a test need
+    # not sit through it.
     _XO_ON_GRACE = 5.0
 
     def _xo_on_grace(self):
@@ -13552,10 +13691,17 @@ class Actions(LogFacts):
 
         SPAWNED, THEN WAITED ON BRIEFLY (S222). This used to be `_run` —
         blocking, with no timeout at all — and that was fine while `xo on` only
-        wrote a config block. Since S220 it ALSO sweeps every mission parked at
+        wrote a config block. S220 made it ALSO sweep every mission parked at
         Verify with no score of Number One's, one at a time, each look caged at
         45 minutes. Eight of those is one HTTP POST held open for six hours: the
         captain's ONE action in the whole walk-away flow, and it looks hung.
+
+        S241 TOOK THAT BACK OUT OF THE DEFAULT — `xo on` now announces the
+        backlog and starts nothing — so this call normally answers at once,
+        with the announcement in `output` and `sweeping` False. Nothing here
+        needed changing for that, and the spawn stays: the sweep is still one
+        flag away (`--sweep`), and the refusal window below is what carries a
+        bad-engine 502 to the board either way.
 
         Fire-and-forget alone would have cost the thing the blocking call was
         buying. `xo.sh` REFUSES an engine that is not on this machine, and that

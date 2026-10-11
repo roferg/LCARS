@@ -62,6 +62,21 @@ new_js_repo() { # → echoes repo dir; parent commit = package.json + src/calc.j
   echo "$repo"
 }
 
+# A bare STANDARD-LIBRARY python repo, shaped exactly like the one measured on
+# 2026-10-11: no .gitignore, so everything `python3` drops while RUNNING the
+# tests shows up as an untracked path in the diff.
+new_py_repo() { # → echoes repo dir; parent commit = src/calc.py + tests/test_calc.py
+  local repo; repo="$(mktemp -d "$TMPROOT/py.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  mkdir -p "$repo/src" "$repo/tests"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/src/calc.py"
+  printf 'from src.calc import add\n\n\ndef test_add():\n    assert add(2, 2) == 4\n' \
+    > "$repo/tests/test_calc.py"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+
 head_sha() { ( cd "$1" && git rev-parse HEAD ); }
 
 commit_all() { ( cd "$1" && git add -A && git commit -qm tip ); }
@@ -602,6 +617,48 @@ if [ "$DERC" = 0 ] && grep -q 'src/dead.test.js' "$(TD "$repo")/test-edits.json"
   ok "G4. DECLARED deletion passes and is recorded in test-edits.json"
 else
   bad "G4. declared deletion should pass + record (DERC=$DERC: $OUT)"
+fi
+
+# G repo C (2026-10-11, MEASURED): the declared-edits gate rejected
+# `tests/__pycache__/*.pyc` as an UNDECLARED TEST EDIT and burned one of the
+# ticket's three attempts. Those files are written by RUNNING THE TESTS — the
+# gate's own mandatory step — so the gate failed the work for doing exactly
+# what the gate told it to do. The .NET arm already excludes `obj/` and `bin/`
+# build droppings from the test-path set for precisely this reason; python's
+# bytecode caches are the same class of file.
+repo="$(new_py_repo)"
+P="$(head_sha "$repo")"
+printf 'def test_mul():\n    assert 2 * 3 == 6\n' > "$repo/tests/test_mul.py"
+mkdir -p "$repo/tests/__pycache__" "$repo/tests/sub/__pycache__" \
+         "$repo/tests/.pytest_cache/v/cache"
+printf 'bytecode\n' > "$repo/tests/__pycache__/test_mul.cpython-313.pyc"
+printf 'bytecode\n' > "$repo/tests/sub/__pycache__/helper.cpython-313.pyc"
+printf 'optimised\n' > "$repo/tests/__pycache__/test_mul.cpython-313.opt-1.pyo"
+printf '[]\n' > "$repo/tests/.pytest_cache/v/cache/lastfailed"
+write_result "$(TD "$repo")" '["tests/test_mul.py"]' '[]' expected
+de_guard "$repo" "$P"
+if [ "$DERC" = 0 ]; then
+  ok "G5a. __pycache__/*.pyc/*.pyo/.pytest_cache droppings are NOT undeclared test edits"
+else
+  bad "G5a. the gate still rejects files its own mandatory step creates (DERC=$DERC: $OUT)"
+fi
+# CONTROL — this exclusion must not make the gate accept everything. An
+# UNDECLARED edit of a real, committed python test SOURCE file is still refused.
+printf '\n\ndef test_also():\n    assert add(1, 1) == 2\n' >> "$repo/tests/test_calc.py"
+de_guard "$repo" "$P"
+if [ "$DERC" = 1 ] && printf '%s' "$OUT" | grep -q 'tests/test_calc.py'; then
+  ok "G5b. CONTROL: an UNDECLARED edit of a real python test file is STILL refused, named"
+else
+  bad "G5b. CONTROL BROKEN: the gate accepts an undeclared test-source edit (DERC=$DERC: $OUT)"
+fi
+# CONTROL — and a NEW .py test under tests/ is still a declared-edits subject,
+# so the exclusion did not swallow the whole python test convention.
+write_result "$(TD "$repo")" '[]' '[]' expected
+de_guard "$repo" "$P"
+if [ "$DERC" = 1 ] && printf '%s' "$OUT" | grep -q 'tests/test_mul.py'; then
+  ok "G5c. CONTROL: a NEW tests/*.py file is still test-classified and must be declared"
+else
+  bad "G5c. CONTROL BROKEN: tests/*.py stopped being test-classified (DERC=$DERC: $OUT)"
 fi
 
 # ==========================================================================

@@ -11,8 +11,12 @@ both engines — correct, and useless.
 
 The answer was already in the repo's own config: `testCommand`, the suite the
 captain already trusts. **The SKILL runs it and hands the worker the result as
-evidence.** The worker still reasons and still has no shell — "the worker
-reasons, the skill executes" (captain's ruling 2026-09-11) is untouched.
+evidence.** "The worker reasons, the skill executes" (captain's ruling
+2026-09-11) is untouched for THIS record: the suite is run here and its result
+is handed over. S261 gave the look's worker a real shell inside a disposable
+copy, so it can run the suite itself too — but what that produces is its own
+evidence, not this recorded run, and the over-claiming guard reads only this
+one.
 
 WHAT THIS FILE RECORDS, AND WHAT IT DERIVES. Everything at the top of the
 output is a FACT this process knew at the moment it ran: the command as it was

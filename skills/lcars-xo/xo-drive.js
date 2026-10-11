@@ -6,6 +6,7 @@
  *                    [--actions FILE] [--place-names FILE]
  *                    [--chrome PATH] [--timeout MS] [--max-actions N]
  *                    [--devtools-port N] [--element-cap N]
+ *                    [--window-size W,H]
  *
  * It opens the app Number One is judging, walks it, and leaves behind EVIDENCE:
  * one PNG per shot, and beside every PNG a `.json` readout of what the page
@@ -59,6 +60,8 @@
  *   {"press":"ArrowRight","hold":250}  HOLD it down 250ms, then let go
  *   {"press":"w","selector":"#board","times":5,"modifiers":["Shift"]}
  *   {"wait":800}                       wait ms (capped)
+ *   {"viewport":{"width":400}}         lay the page out at 400 CSS px wide
+ *   {"viewport":{"width":400,"height":900}}  …and that tall
  *   {"screenshot":"name"}              full-page shot called `name`
  *   {"screenshot":"name","selector":"#x"}   clipped to that element
  * At most --max-actions (default 12) entries: a look is a look, not a session.
@@ -86,6 +89,37 @@ const TIMEOUT = parseInt(arg("timeout", "30000"), 10) || 30000;
 const MAX_ACTIONS = parseInt(arg("max-actions", "12"), 10) || 12;
 const ATTACH_PORT = arg("devtools-port", "");
 const PREFIX = arg("prefix", "shot");
+/* ── THE WINDOW SIZE IS A DIAL, NOT A CONSTANT (S266) ───────────────────────
+ * `--window-size W,H` (or `WxH`), DEFAULTING TO THE 1440x900 that was hard-
+ * coded here before, so every existing caller — xo.sh passes no such flag
+ * anywhere — gets byte-identical argv and nothing moves for them.
+ *
+ * AND IT IS NOT THE PHONE MECHANISM. Headless Chrome will not lay out below
+ * about 500 px of WINDOW: ask it for 400 and you get a 500 px layout and a
+ * phone bug that never appears. The flag sets the window the browser launches
+ * with; the `{"viewport":…}` ACTION sets the layout, through
+ * `Emulation.setDeviceMetricsOverride`, which is a different mechanism and
+ * does go below that floor. A test that asserted this flag and called the
+ * result "phone width" would be certifying a 500-pixel-wide picture.
+ *
+ * A size this cannot parse falls back to the default rather than to nothing: a
+ * typo must not hand Chrome a malformed flag, and it must not silently produce
+ * a window of some other shape either. */
+function winSize(spec) {
+  const m = String(spec || "").match(/^\s*(\d{2,5})\s*[,x]\s*(\d{2,5})\s*$/);
+  if (!m) return { w: 1440, h: 900 };
+  return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
+}
+/* `arg()` reads `--flag VALUE`; a size is also naturally written the way Chrome
+ * itself writes it, `--window-size=1440,900`, and a caller who types that must
+ * not be silently handed the default. Both forms, one place, nothing else in
+ * the file changed. */
+function winSizeArg() {
+  const joined = process.argv.find((t) => String(t).startsWith("--window-size="));
+  return joined ? String(joined).slice("--window-size=".length)
+                : arg("window-size", "");
+}
+const WINDOW = winSize(winSizeArg());
 /* ── THE PARTS PASS (S220 part B) ───────────────────────────────────────────
  * `--parts-out <file>` asks for the page's PARTS — see the PARTS reader below
  * — written to that file, with a 2x crop of each one beside the ordinary
@@ -353,7 +387,10 @@ function findChrome() {
 }
 function chromeArgv(port, userDataDir) {
   // HEADLESS IS NOT CONDITIONAL. See the header. Nothing in this function reads
-  // the environment, so nothing in the environment can raise a window.
+  // the environment, so nothing in the environment can raise a window. The one
+  // thing a CALLER may now set is the window's SIZE (`--window-size`, parsed by
+  // `winSize` above, 1440x900 when nothing asked) — a number, never a mode, and
+  // there is still no argument and no variable that makes this browser headed.
   return [
     "--headless=new",
     "--remote-debugging-port=" + port,
@@ -364,7 +401,7 @@ function chromeArgv(port, userDataDir) {
     "--disable-extensions",
     "--disable-gpu",
     "--hide-scrollbars",
-    "--window-size=1440,900",
+    "--window-size=" + WINDOW.w + "," + WINDOW.h,
     "about:blank",
   ];
 }
@@ -819,6 +856,15 @@ const READ = (places, cap) => `(function () {
       className: (typeof el.className === "string" && el.className) ? el.className : null,
       inputType: el.tagName === "INPUT" ? (el.getAttribute("type") || "text") : null,
       ariaLabel: el.getAttribute("aria-label") || null,
+      // WHERE IT POINTS, AS THE PAGE WROTE IT (S251). The driver recorded
+      // location.href for the PAGE and used a[href] only as a click selector,
+      // so the string href appeared ZERO times across every shot readout,
+      // observation and reading of both looks — and "the page prints host A and
+      // links to host B" could not be settled by any picture. The ATTRIBUTE,
+      // not the el.href property: the property hides a relative link behind the
+      // current origin, and what the author wrote is the fact.
+      href: el.getAttribute("href") || null,
+      src: el.getAttribute("src") || null,
       text: ownText.replace(/[ \\t\\r\\n]+/g, " ").trim().slice(0, 80),
       box: b,
       color: s.color, background: s.backgroundColor,
@@ -1490,9 +1536,13 @@ const FOCUS = (sel) => `(function () {
   /* The device scale factor, set ONCE for the whole look so every shot — the
    * full-page ones and the clipped ones alike — comes back at the same real
    * resolution. width/height 0 means "override nothing but the scale": the
-   * page still lays out at the 1440x900 window chromeArgv asked for, so a
-   * selector's box is the same CSS box it always was, and only the raster
-   * behind it gets denser. A browser too old to know the command is not a
+   * page still lays out at the window chromeArgv asked for (1440x900 unless a
+   * caller passed --window-size), so a selector's box is the same CSS box it
+   * always was, and only the raster behind it gets denser. A `{"viewport":…}`
+   * action later in the look is the ONE thing that replaces those zeroes with
+   * a real width — see its branch in the action loop; it keeps this same scale
+   * so the pictures before and after it stay comparable. A browser too old to
+   * know the command is not a
    * reason to abandon the look, so a failure here is recorded and the shots
    * are taken at whatever it does give. */
   let scaleApplied = SCALE;
@@ -1946,7 +1996,8 @@ const FOCUS = (sel) => `(function () {
       const key = String(step.key || "j" + i);
       const rec = { key, name: String(step.name || key), do: String(step.do || "click"),
                     phase: step.phase || null,
-                    match: step.match || [], expect: step.expect || null };
+                    match: step.match || [], expect: step.expect || null,
+                    expectLanding: step.expectLanding || null };
       let before = null;
       try { before = await readout(); } catch (_) {}
       rec.urlBefore = (before && before.url) || currentUrl;
@@ -1974,7 +2025,7 @@ const FOCUS = (sel) => `(function () {
           rec.pressed = d.key; rec.holdMs = hold; rec.times = reps;
           try { pxBefore = await shoot(rec.shotBefore = PREFIX + "-walk-" +
                  String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-") +
-                 "-before", null); } catch (e) { rec.shotError = e.message; }
+                 "-before", null, step.expectLanding); } catch (e) { rec.shotError = e.message; }
           // WHEN THE KEYED WINDOW OPENED. The idle control below has to watch
           // this build for the SAME length of time with no key, or it is not
           // a control — a shorter look would under-measure the drift and a
@@ -2231,7 +2282,8 @@ const FOCUS = (sel) => `(function () {
       }
       rec.shot = PREFIX + "-walk-" + String(i).padStart(2, "0") + "-" + key.replace(/[^A-Za-z0-9._-]+/g, "-");
       let pxAfter = null;
-      try { pxAfter = await shoot(rec.shot, null); } catch (e) { rec.shotError = e.message; }
+      try { pxAfter = await shoot(rec.shot, null, step.expectLanding); }
+      catch (e) { rec.shotError = e.message; }
       /* THE IDLE CONTROL — THE THIRD SHOT (S222 fix 1).
        *
        * S221 judged a press on a BEFORE and an AFTER, and on a build that
@@ -2371,7 +2423,37 @@ const FOCUS = (sel) => `(function () {
     }
   }
 
-  async function shoot(name, selector) {
+  /* WHERE THIS SHOT ACTUALLY LANDED (S241).
+   *
+   * THE MEASURED DEFECT: in the archived Kelmoor runs `shot-01.png`,
+   * `inv-full.png` and `after-battle-full.png` are the same file — all three the
+   * ROSTER screen — and the report cited two of them as the Inventory and the
+   * after-battle evidence. Nine identical files read as a reviewed feature.
+   *
+   * Nothing new is measured here. The readout already carried `page.url`,
+   * `page.title`, `page.textExcerpt` and a box for every declared place; this
+   * lifts the three facts a consumer needs into ONE named block beside the
+   * step's own `intent`, so the pair that was never comparable now sits in one
+   * file. IDENTICAL BYTES ARE THE SYMPTOM, NOT THE TEST — no picture is ever
+   * weighed against another picture, here or downstream.
+   *
+   * `screen` is what the PAGE EXPOSES, never what the step hoped for: exactly
+   * one declared `screen-…` place with a laid-out box is a page telling us which
+   * screen it is showing. Two of them laid out, or none, is not an answer, so
+   * the field is left null rather than filled with a guess. */
+  function landedFrom(page) {
+    const out = { url: String((page && page.url) || currentUrl || ""),
+                  title: String((page && page.title) || ""),
+                  textSample: String((page && page.textExcerpt) || "")
+                              .replace(/\s+/g, " ").trim().slice(0, 400) };
+    const places = (page && page.places) || {};
+    const on = Object.keys(places).filter((k) => /^screen[-_]/i.test(k)
+                                                 && places[k] && places[k].laidOut);
+    if (on.length === 1) out.screen = on[0];
+    return out;
+  }
+
+  async function shoot(name, selector, intent) {
     const page = await readout();
     let clip = null, clipNote = "";
     if (selector) {
@@ -2409,6 +2491,12 @@ const FOCUS = (sel) => `(function () {
       // the pixel width back into the CSS width it actually shows.
       deviceScaleFactor: scaleApplied,
       pixels, page,
+      // S241 — THE PAIR, IN ONE FILE. `intent` is the step's own recorded
+      // `expectLanding` (null when nothing asked for this shot in particular);
+      // `landed` is where the page actually was. A consumer compares the two —
+      // see xo-score.py's landing rail.
+      intent: (intent && typeof intent === "object") ? intent : null,
+      landed: landedFrom(page),
     }, null, 2) + "\n");
     // The caption is what the REPORT quotes. Screenshots do not travel between
     // laptops (ruling, ledgered) — this line does.
@@ -2645,11 +2733,93 @@ const FOCUS = (sel) => `(function () {
           }
         } else if (a.wait !== undefined) {
           await sleep(Math.min(parseInt(a.wait, 10) || 0, 10000));
+        } else if (a.viewport) {
+          /* ── A PHONE IS A WIDTH, NOT A SECOND BROWSER (S266) ──────────────
+           *
+           * THE DEFECT THIS CLOSES. Number One's own embedded live-check
+           * checklist carries "Phone width — the 400 px iframe recipe" as item
+           * 3 and pastes it verbatim into the reviewer's prompt, and until this
+           * branch existed there was no way for the reviewer to carry it out:
+           * the window size was hard-coded, there was no `viewport` verb, and
+           * the one `setDeviceMetricsOverride` in the file deliberately CLEARED
+           * the width/height override. S262's buddy found the bug that blindness
+           * hides — a week grid that needs horizontal scrolling at 400 px with
+           * today's column scrolled off-screen — and the reviewer could not have
+           * caught it, for want of a camera and not of judgement.
+           *
+           * WHY THE OVERRIDE AND NOT A RELAUNCH. Headless Chrome will not lay
+           * out below ~500 px of WINDOW, so `--window-size=400,900` yields a
+           * 500 px layout and a phone bug that never appears; the emulation
+           * override is a different mechanism and does go below that floor.
+           * Relaunching the browser per width would also cost the look its
+           * whole state — one look is meant to be able to see the same screen
+           * at two widths, so the override is applied in place.
+           *
+           * AND THE SHOT STILL LANDS ITS READOUT, which is the whole point:
+           * `shoot()` is untouched, so a picture taken after this step carries
+           * the same `{url, title, textSample}` beside it as any other and a
+           * row citing it places instead of being scored "I could not check
+           * this". A phone-width PNG with no readout buys nothing.
+           *
+           * The SCALE is carried through unchanged (`scaleApplied`), so the
+           * pictures either side of this step are still comparable rasters. */
+          const vspec = (typeof a.viewport === "object" && a.viewport)
+            ? a.viewport : { width: a.viewport };
+          const rawW = parseInt(vspec.width, 10);
+          const rawH = parseInt(vspec.height, 10);
+          if (!(rawW > 0)) {
+            notes.push("viewport: `" + JSON.stringify(a.viewport) + "` names no width " +
+                       "I can lay a page out at; the viewport was not changed");
+            incomplete = true;
+          } else {
+            const vw = Math.min(4096, Math.max(1, rawW));
+            const vh = Math.min(4096, Math.max(1, rawH > 0 ? rawH : WINDOW.h));
+            const metrics = { width: vw, height: vh,
+                              deviceScaleFactor: scaleApplied, mobile: false };
+            try {
+              // ONE LINE, ON PURPOSE: this is the call the whole capability
+              // rests on, and a mutation test removes exactly this line and
+              // asserts the rendered width stops moving.
+              await send("Emulation.setDeviceMetricsOverride", metrics, S); // VIEWPORT-OVERRIDE
+              walk.actions.push({ viewport: { width: vw, height: vh } });
+              notes.push("from here on the page is laid out at " + vw + "x" + vh +
+                         " CSS px — the width a phone gives it, not the window the " +
+                         "browser launched with");
+              // The relayout, and the resize handlers a responsive build hangs
+              // off it, need a tick before anything is read or photographed.
+              await sleep(400);
+            } catch (e) {
+              notes.push("this browser would not lay the page out at " + vw + "x" + vh +
+                         " CSS px (" + e.message + "); the pictures after this are at " +
+                         "whatever width it kept");
+              incomplete = true;
+            }
+          }
         } else if (a.screenshot) {
           // Names come from the worker. Keep them to a filename-safe alphabet so
           // no action list can ever write outside --out.
           const safe = String(a.screenshot).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "") || nextName();
-          await shoot(safe, a.selector ? String(a.selector) : null);
+          // AN ACTION MAY DECLARE ITS OWN LANDING (S241). Most do not, and a
+          // null intent is the honest record of that — it is never inferred
+          // from the shot's NAME, which is exactly how `inv-full` came to be
+          // read as the Inventory while showing the Roster.
+          await shoot(safe, a.selector ? String(a.selector) : null,
+                      (a.expect && typeof a.expect === "object") ? a.expect
+                      : (a.expectLanding && typeof a.expectLanding === "object")
+                        ? a.expectLanding : null);
+        } else if (a.do === "run" || a.do === "workflow" || a.do === "read") {
+          /* S239 fix round 1 (D5) — A HARNESS STEP WAS NOT DROPPED, SO DO NOT
+           * SAY IT WAS. One actions file goes to two executors: the browser
+           * kinds come here, and `run` / `workflow` / `read` are run by
+           * xo-run.py in the detached worktree with its throwaway HOME. This
+           * loop used to fall through to the unknown-action fallback and
+           * journal "unknown action, skipped: {...}" for each of them, and set
+           * `incomplete`. THE WORKER READS THESE NOTES, so a step that really
+           * ran reached its next round labelled dropped. The browser still
+           * does nothing with it; it now says that honestly.
+           */
+          notes.push(a.do + ": handed to the harness, not the browser — it runs in "
+                     + "the detached worktree and leaves its own transcript");
         } else {
           notes.push("unknown action, skipped: " + JSON.stringify(a));
           incomplete = true;
@@ -2738,6 +2908,25 @@ const FOCUS = (sel) => `(function () {
                  typings: ((prior && prior.moves && prior.moves.typings) || 0) + walk.moves.typings,
                  keypresses: ((prior && prior.moves && prior.moves.keypresses) || 0) + walk.moves.keypresses,
                  addressJumps: ((prior && prior.moves && prior.moves.addressJumps) || 0) + walk.moves.addressJumps } };
+      /* WHERE THIS ROUND ENDED (S257 fault 3) — AND IT IS NOT STICKY.
+       *
+       * THE DEFECT THIS CLOSES, measured on the 2026-10-06 runelock drive:
+       * round 1 ran at `…/?seed=xo-one`, round 2 was handed `launch.json`'s url
+       * again (`http://localhost:57603`, no query), and `actions-2.json[0]` was
+       * a `type` rather than a re-navigate — so the permutation the look had
+       * deduced was typed against a FRESH RANDOM SECRET. `entry` could not
+       * carry it (it is sticky to the front door, on purpose) and `screens` is
+       * the set this round read, not the one it stopped on. So the ending gets
+       * a field of its own, overwritten every round, because the only ending
+       * worth re-entering at is the last one.
+       *
+       * Read off the last reading taken — `snapReadout` pushes the screen the
+       * look is standing on and runs once more after the actions — and from
+       * `currentUrl` when no reading could be taken at all. */
+      const ended = readoutPages.length
+        ? String(readoutPages[readoutPages.length - 1].url || "")
+        : String(currentUrl || "");
+      if (ended) out.endedAt = ended;
       /* S221 fix 6 — CARRIED, not dropped. This writer builds a NEW object
        * with an explicit field list, so anything set on `walk` that is not
        * named right here vanishes silently (which is exactly how it ate

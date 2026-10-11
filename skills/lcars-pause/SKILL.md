@@ -57,6 +57,16 @@ bash ~/.claude/skills/lcars-pause/pause.sh resume <id>
   `run.sh drive`), so the Mission picks up exactly where it stopped.
 - **Idempotent.** Resuming a Mission that is not paused is a clean no-op that
   still drives.
+- **REFUSES while Number One's stop is still in force.** `lcars xo off` halts a
+  Mission two ways: the `paused` flag *and* an `xo-stop` marker on disk, and the
+  driver honours **either**. `resume` can only clear the first, so on a Mission
+  whose own directory (or whose **parent** Mission's directory, for a logged bug)
+  holds `xo-stop`, it refuses **before it writes anything** and tells the captain
+  to run `lcars xo on <id>`. It does **not** delete the marker: that file is
+  Number One's record of which children the stop paused, `lcars xo on` puts back
+  only those, and re-opening the spawn path from this verb would undo a different
+  command's decision in silence. The only two outcomes are "the Mission really
+  moves" and "here is the command that lifts it".
 
 ## How the flag is honoured (no mid-step kill)
 
@@ -77,12 +87,16 @@ A paused Mission shows in `lcars status` with the ⏸ paused glyph — driven by
 - **Unknown mission id** → dies without touching anything.
 - **`gh` missing / edit fails / local-only mission** → the local flag change
   still happens; you get a note to adjust the label by hand.
+- **`resume` on a Mission Number One has quiesced** → refuses, exits non-zero,
+  changes nothing, names `lcars xo on`. Never reports a resume it cannot deliver.
 
 ## Report
 
 After `pause`, tell the captain the Mission will stop at the next safe boundary
 and resumes with `lcars resume <id>`. After `resume`, tell them the flag is
-cleared and the Mission is driving again from its recorded stage.
+cleared and the Mission is driving again from its recorded stage. If `resume`
+refused because Number One's stop is still down, say that plainly and hand him
+`lcars xo on <id>` — never describe it as paused-and-cleared.
 
 ## Implementation
 

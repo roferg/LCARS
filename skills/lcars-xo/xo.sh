@@ -155,10 +155,58 @@ col() { # <string> <width> — the string padded to <width> display columns
 }
 
 # --- the repo's recorded numberOne block ------------------------------------
-cfg_block() { lcars_config_get_raw "$CONFIG" numberOne; }
+#
+# READ WHITESPACE-INSENSITIVELY, BECAUSE THE PRODUCT INVITES THE HAND EDIT
+# (S240 fix round 1, D1). `cfg_block` called `lcars_config_get_raw`, which is a
+# single-line `sed` taking THE REST OF THE LINE after the key. MEASURED, on a
+# config saying `{"enabled": true, "engine": "copilot", "filesBugs": false}`:
+#
+#   pretty-printed (what any editor writes)    ->  `{`
+#   one line       (what `lcars xo on` writes) ->  the object AND the next key
+#
+# So on a pretty-printed config `cfg_enabled` read OFF for a captain who had set
+# it ON, and `cfg_files_bugs` read FILES for a captain who had set no-file — two
+# switches silently ignored, in OPPOSITE directions. And the refusal message in
+# file_logs_for ("Turn it back on in .git/lcars/config.json") is the product
+# telling him to open that file in an editor, so the style that breaks both
+# switches is the style it asks him for.
+#
+# THE ROOT CAUSE IS `lcars_config_get_raw` (lcars-init/lcars-common.sh:3853) and
+# it is NOT changed here, deliberately: it is shared code with callers well
+# beyond Number One (lcars-common.sh:2251 among them), and its line-greed also
+# swallows the NEXT key on a one-line config, so a correct fix there is wider
+# than this round can prove. It is ledgered as the root cause.
+#
+# What changes is the READERS. They now use `lcars_state_get_raw` — the
+# JSON-AWARE top-level scanner S223 wrote for exactly this problem, documented
+# for state.json AND config.json — so BOTH styles return the real object.
+# `cfg_engine`/`cfg_model` keep reading it through `obj_get`, which answers
+# correctly on a multi-line object (measured).
+cfg_block() {
+  local raw
+  raw="$(lcars_state_get_raw "$CONFIG" numberOne)"
+  case "$raw" in '{'*'}') printf '%s' "$raw" ;; esac
+}
+# cfg_flag <key> — the RAW token recorded for `numberOne.<key>`, or empty. The
+# newlines are flattened first so a key and its value can be matched on one
+# line, and the character class excludes a quote ON PURPOSE: `"enabled": "true"`
+# is a STRING where this switch is a boolean, and it reads as ABSENT — which is
+# the documented default, not a guess at what was meant.
+cfg_flag() {
+  printf '%s' "$(cfg_block)" | tr '\n\t' '  ' \
+    | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([A-Za-z0-9.+-]*\).*/\1/p" | head -1
+}
+# ABSENT MEANS OFF — Number One is opt-in per repo (`lcars xo on`).
 cfg_enabled() {
-  case "$(cfg_block)" in *'"enabled"'*'true'*) return 0 ;; esac
-  return 1
+  [ "$(cfg_flag enabled)" = true ]
+}
+# ─── FILING IS A SWITCH, AND ITS DEFAULT IS ON (S240) ───────────────────────
+# `numberOne.filesBugs` in the repo's config. ABSENT MEANS TRUE: a repo that
+# predates this switch files its bugs, because that is what S240 is for. Only an
+# explicit `false` turns it off, and when it is off the gaps are still on the
+# report — the captain loses the filing, never the finding.
+cfg_files_bugs() {
+  [ "$(cfg_flag filesBugs)" != false ]
 }
 cfg_engine() { obj_get "$(cfg_block)" engine; }
 cfg_model()  { obj_get "$(cfg_block)" model; }
@@ -249,7 +297,27 @@ Name one of them exactly." ;;
 #
 # The signal is best-effort and always TERM: a pid file can be stale, the
 # process can already be gone, and neither is a reason to refuse to hand the
-# conn back. Nothing is ever KILLed — a worker gets to finish its own cleanup.
+# conn back.
+#
+# ── AMENDED S240 fix round 5, BY THE ORCHESTRATOR — NOT YET THE CAPTAIN'S ─────
+# This block used to end "Nothing is ever KILLed — a worker gets to finish its
+# own cleanup." THAT IS NO LONGER TRUE of the resolve chain, and leaving the
+# sentence here would be a comment that contradicts its own code — the very
+# defect S238 cured (one rule in a shell copy and a Python copy, drifted to
+# OPPOSITE verdicts, with a test holding their wording identical while their
+# behaviour diverged).
+#
+# WHAT IS TRUE NOW: `xo_stop_tree` TERMs the driver alone first so its own trap
+# runs, then TERMs every owned group, and only then KILLs whatever is left —
+# after TERM has had two bounded chances, and only ever within the enumerated
+# resolve chain. `xo_kill_tree` (the LOOK's trap, far below) is still TERM-only
+# and that comment still holds.
+# WHY: a measured live incident. The TERM-only stop left a worker alive in its
+# own process group, printed "you have the conn", deleted its own pidfile, and
+# 25s later the survivor spawned a FRESH PAID assistant. A worker's right to
+# clean up cannot outrank the captain's right to stop spending his money.
+# THE CAPTAIN HAS NOT RULED ON THIS — he is asked in the morning readout, and
+# it is reversible by dropping the KILL escalation in `xo_stop_tree`.
 # ===========================================================================
 # ── a pid file that says WHO, not just which number (S213) ──────────────────
 #
@@ -271,39 +339,842 @@ xo_write_pidfile() { # <pid> <file>
   local pid="$1" file="$2" pgid started
   pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -dc '0-9')"
   started="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  # A BORROWED GROUP IS NOT AN IDENTITY (fix round 4, D3). MEASURED: with no
+  # `setsid` on this machine the detached chain inherited the LOOK's process
+  # group, and this writer copied that number down as if it were the chain's
+  # own. A reader handed it could kill the look, the viewscreen, or the
+  # captain's shell. So the group is recorded ONLY where the process genuinely
+  # LEADS it (pgid == pid); anything else is recorded as absent, and
+  # `xo_signal_pidfile` then reaches exactly the one process it can name.
+  [ -n "$pgid" ] && [ "$pgid" != "$pid" ] && pgid=""
   { printf '%s\n' "$pid"; printf '%s\n' "${pgid:-}"; printf '%s\n' "${started:-}"; } >"$file"
 }
 
-# Signal EXACTLY the process a pid file was written about — or refuse.
-#   0  the recorded process was signalled
+# ── A STOP THAT CROSSES A PROCESS GROUP, AND NEVER LIES (S240 fix round 5, D1)
+#
+# THE DEFECT, MEASURED LIVE. `lcars xo off <mission>` printed
+# "stood down on <mission> — you have the conn" and exited 0. In fact it had
+# killed the driver's group LEADER and nothing else. `ps -eo pid,ppid,pgid`
+# immediately after:
+#
+#   pid     ppid  pgid    what
+#   31634   1     30311   run.sh drive --mission …           ← orphaned to init
+#   36323   31634 30311   run.sh validate …
+#   36610   36610 36610   worker-adapter.sh spawn copilot …  ← OWN group
+#   36662   36610 36610   copilot -p …                       ← THE PAID ASSISTANT
+#
+# 25 seconds later the surviving driver had advanced a bug align→research→
+# validate→plan and started a FRESH paid assistant. And the stop had DELETED
+# `xo-resolve.pid`, so the product had no handle left to try again with; a human
+# killed the tree by hand.
+#
+# WHY A pgid CAN NEVER BE ENOUGH, and why the grouping is not the thing to fix:
+# `skills/lcars-run/run.sh` launches every worker as its own session/group
+# leader on purpose (`perl -e 'use POSIX qw(setsid); … exec @ARGV'`, at
+# run.sh:10000, :20068 and :20221). That is BUG-048's cure — nested workers that
+# reparent, and the forked test pools vitest/jest spawn, must not be able to
+# outlive a stop. So a worker is BY DESIGN in a different group from its driver,
+# and a stop has to ENUMERATE the tree rather than name one group.
+#
+# AND THE ORDER MATTERED. The old stop signalled the recorded GROUP, which took
+# the driver's leader out from under the chain, orphaned the rest to ppid 1, and
+# so the driver's own trap never ran and its worker was simply abandoned.
+#
+# THE THREE RULES THIS IMPLEMENTS:
+#   1. ENUMERATE BEFORE SIGNALLING. `xo-tree.py` closes the chain over
+#      parenthood AND the groups the chain leads, to a fixpoint, from the real
+#      process table. Taken BEFORE the first signal, because a signal orphans
+#      the survivors and after that no walk down from the recorded pid can find
+#      them — which is precisely how the live stop lost a worker.
+#   2. GENTLE FIRST, THEN ESCALATE. A plain TERM to the driver alone, so its own
+#      teardown gets to run; then TERM every group the chain owns; then KILL
+#      whatever is left. This is the one place in Number One that escalates to
+#      KILL, and it does so only after the gentle signal has been given its
+#      bound and the process is still there.
+#   3. CONFIRM BEFORE CLAIMING. The process table is re-read after signalling.
+#      Anything still there is NAMED and the stop reports failure. A stop that
+#      cannot confirm death must never say "you have the conn".
+#
+# $LCARS_XO_KILL_BIN exists so a test can swallow every signal while the rig
+# stays genuinely alive, and prove that rule 3 is a real check and not a
+# sentence. It defaults to the shell's own `kill`. THE LIVENESS CHECKS BELOW DO
+# NOT GO THROUGH IT — they use the builtin directly, so no stub can fake a
+# death.
+XO_KILL="${LCARS_XO_KILL_BIN:-kill}"
+XO_TREE_PY="$SKILL_DIR/xo-tree.py"
+# The pids a stop signalled and then found STILL RUNNING. Read by `stand_down`
+# and `cmd_off`; the empty string means the tree was confirmed gone.
+XO_STOP_SURVIVORS=""
+
+# ── THE CENSUS, AND WHY THE WALK IT REPLACES COULD NOT BE PATCHED (S245) ────
+#
+# The gate this replaces polled a SET it built by walking DOWN from the recorded
+# pid, re-walking on every poll and unioning the result. That is sound right up
+# to the instant the stop works: the moment the recorded root dies, every
+# subsequent walk returns NOTHING, the set stops growing, the poll reports empty,
+# and the stop says "you have the conn".
+#
+# MEASURED, twice, live: a before/after walk rooted at the recorded pid reported
+# AFTER_COUNT=0 with two billable processes alive, while `kill -0 -<pgid>` proved
+# the orphaned group was reachable the whole time. It did not FAIL — it passed
+# VACUOUSLY. Two fix rounds and five patches went into making the walk reach
+# further; none of them could, because the thing being asked ("what can I still
+# see from the root?") is not the thing that matters ("what is still running?").
+#
+# SO THE QUESTION CHANGED. `xo-tree.py census` asks the WHOLE MACHINE who belongs
+# to this mission, by PROVENANCE — a live process whose argv names the mission or
+# one of its own paths, at ppid 1 or not, leading its own group or not — UNION the
+# recorded pids and groups from the pid files, and then the same fixpoint over
+# parenthood and owned groups that the old closure used, so the unnamed leaves
+# below a named process still come along. `xo_tree_set` (S240's closure) is kept
+# as the fallback for a box with no python: it reaches less, and a stop that
+# cannot enumerate must under-claim and then report survivors.
+#
+# WHICH FACTS ARE RECORDED AND WHICH ARE INFERRED — stated, because the next
+# reader needs to know which half to trust:
+#   • RECORDED: the pid and the group in `xo.pid` / `xo-resolve.pid`, written by
+#     `xo_write_pidfile` at the instant of the spawn. A recorded group is
+#     honoured EVEN WHEN ITS LEADER IS DEAD; that single fact is the dead-leader
+#     cure.
+#   • INFERRED: the argv match. It is the net for what nobody wrote down, and it
+#     is narrowed by a declared second condition (the argv must also name
+#     something LCARS launches) so the captain's own `grep <mission-id>` is never
+#     a census member.
+XO_CENSUS_MISSION=""
+XO_CENSUS_TAGS=""
+XO_CENSUS_SEEDS=""
+XO_CENSUS_OUT=""
+XO_CENSUS_SURVIVORS=""
+# ── WHAT A CENSUS HAS ALREADY SEEN, HELD FOR THE REST OF THE STOP ───────────
+# The provenance half finds NEW arrivals; this holds OLD members in view after
+# the thing that named them is gone. Both halves are needed and neither is
+# sufficient, and that is exactly the lesson of the two failed rounds:
+#
+#   • A pure walk (what was here before) loses the whole tree the instant the
+#     recorded root dies, and calls that success.
+#   • A pure census loses anything whose argv names neither the mission nor an
+#     LCARS executable — a worker launched through a wrapper, the rig in
+#     `tests/xo-stop-real-tree.test.sh`, a chain stopped through
+#     `signal-pidfile` with no mission in scope. MEASURED: four assertions in
+#     that suite went red for precisely this reason.
+#
+# So every pid and every group a census of THIS stop has named is remembered
+# until the stop ends, and re-checked for liveness on every later census. It is a
+# RECORDED fact — we saw that process, with that pid, belonging to this chain —
+# not an inference re-derived from output. It is reset per stop by
+# `xo_census_scope`, so one stop never inherits another's list.
+XO_CENSUS_HELD=""
+XO_CENSUS_HELD_GROUPS=""
+# Did this stop actually send a signal? The two-census gate exists to catch a
+# worker minted WHILE a stop is in flight; with no stop in flight there is
+# nothing to race, so the second census is only taken when something was
+# signalled. Nothing is ever CLAIMED on this counter — it only decides whether
+# the gate needs its second look.
+XO_STOP_SIGNALLED=0
+# THE GAP BETWEEN THE TWO CENSUSES. The live defect's survivor spawned a fresh
+# paid assistant 25 s after the stop said it was done; two seconds is the bound
+# inside which a worker minted by a dying driver has already appeared on the
+# process table. Overridable for the slow suites, never below what a fork costs.
+XO_CENSUS_GAP="${LCARS_XO_CENSUS_GAP:-2}"
+
+xo_nap() { # <seconds, may be fractional>
+  "${XO_PY:-python3}" -c 'import sys,time; time.sleep(float(sys.argv[1]))' "${1:-0.2}" \
+    2>/dev/null || sleep 1
+}
+
+xo_tree_set() { # <pid> [recorded-pgid] — "PID n" / "GROUP n" lines for the chain
+  local pid="${1:-}" pgid="${2:-}"
+  [ -n "$pid" ] || return 0
+  if [ -f "$XO_TREE_PY" ] && command -v "${XO_PY:-python3}" >/dev/null 2>&1; then
+    "${XO_PY:-python3}" "$XO_TREE_PY" closure "$pid" "${pgid:-0}" "$$" 2>/dev/null \
+      && return 0
+  fi
+  # NO WALKER. Then say only what is known for certain — the one process, and
+  # its group ONLY where the pidfile recorded one it genuinely leads. A stop
+  # that cannot enumerate must under-claim, never over-kill; the confirmation
+  # step then reports the survivors instead of inventing a success.
+  printf 'PID %s\n' "$pid"
+  [ -n "$pgid" ] && [ "$pgid" = "$pid" ] && printf 'GROUP %s\n' "$pgid"
+  return 0
+}
+
+# A zombie is gone for our purposes: it cannot run, and nothing in this process
+# will ever reap it. Counting one as alive is how a correct stop reports a
+# false failure.
+xo_pid_gone() { # <pid> — 0 when it is gone or defunct
+  local p="${1:-}" st
+  [ -n "$p" ] || return 0
+  kill -0 "$p" 2>/dev/null || return 0
+  st="$(ps -o state= -p "$p" 2>/dev/null | tr -d ' ')"
+  case "$st" in Z*) return 0 ;; esac
+  return 1
+}
+
+xo_census_scope() { # <mission-id> [mission-dir] — what every census below is about
+  XO_CENSUS_MISSION="${1:-}"
+  XO_CENSUS_TAGS="${2:-}"
+  XO_CENSUS_SEEDS=""
+  XO_CENSUS_OUT=""
+  XO_CENSUS_SURVIVORS=""
+  XO_CENSUS_HELD=""
+  XO_CENSUS_HELD_GROUPS=""
+  return 0
+}
+
+xo_census_seed() { # <pid> [pgid] — a RECORDED fact, never a guessed one
+  local p g
+  p="$(printf '%s' "${1:-}" | tr -dc '0-9')"
+  g="$(printf '%s' "${2:-}" | tr -dc '0-9')"
+  [ -n "$p$g" ] || return 0
+  XO_CENSUS_SEEDS="$(printf '%s\n%s:%s\n' "$XO_CENSUS_SEEDS" "${p:-0}" "${g:-0}" \
+                      | sed '/^$/d' | sort -u)"
+  return 0
+}
+
+# Seed from a pid file — AND ONLY WHEN IT IS STILL WHO IT SAYS. A pid is a number
+# the OS hands out again, so a live pid whose start time no longer matches the
+# record is somebody else's process and is never seeded. A pid that is simply
+# GONE still contributes its recorded GROUP, because that group is the dead-leader
+# case and the walker checks for itself that the group's live members belong to
+# this mission before it claims one.
+xo_census_seed_file() { # <pidfile>
+  local f="${1:-}" pid pgid started now
+  [ -f "$f" ] || return 0
+  pid="$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')"
+  pgid="$(sed -n '2p' "$f" 2>/dev/null | tr -dc '0-9')"
+  started="$(sed -n '3p' "$f" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  [ -n "$pid" ] || return 0
+  if kill -0 "$pid" 2>/dev/null; then
+    now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+    if [ -n "$started" ] && [ "$now" = "$started" ]; then
+      xo_census_seed "$pid" "$pgid"
+      return 0
+    fi
+    # Alive but not who the file was written about: the pid is NOT seeded. The
+    # recorded group is not seeded either — a recycled pid tells us nothing
+    # about the group it now sits in.
+    return 0
+  fi
+  xo_census_seed "" "$pgid"
+  return 0
+}
+
+xo_census() { # — take a fresh census into $XO_CENSUS_OUT
+  local py="${XO_PY:-python3}" s out=""
+  XO_CENSUS_OUT=""
+  if [ -f "$XO_TREE_PY" ] && command -v "$py" >/dev/null 2>&1; then
+    set -- census
+    [ -n "$XO_CENSUS_MISSION" ] && set -- "$@" "$XO_CENSUS_MISSION"
+    set -- "$@" --asker "$$"
+    while IFS= read -r s; do
+      [ -n "$s" ] && set -- "$@" --tag "$s"
+    done <<EOF
+$XO_CENSUS_TAGS
+EOF
+    while IFS= read -r s; do
+      [ -n "$s" ] && set -- "$@" --seed "$s"
+    done <<EOF
+$XO_CENSUS_SEEDS
+EOF
+    XO_CENSUS_OUT="$("$py" "$XO_TREE_PY" "$@" 2>/dev/null)"
+    xo_census_hold
+    return 0
+  fi
+  # NO WALKER: the recorded seeds only, through S240's closure. Under-claim.
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    out="$out
+$(xo_tree_set "${s%%:*}" "${s##*:}")"
+  done <<EOF
+$XO_CENSUS_SEEDS
+EOF
+  XO_CENSUS_OUT="$(printf '%s\n' "$out" | sed '/^$/d' | sort -u)"
+  xo_census_hold
+  return 0
+}
+
+# Fold this census into the held set, then fold the held set back into this
+# census, so what follows sees the union of "still named" and "named earlier".
+xo_census_hold() {
+  XO_CENSUS_HELD="$(printf '%s\n%s\n' "$XO_CENSUS_HELD" \
+                      "$(printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^PID //p')" \
+                      | sed '/^$/d' | sort -un)"
+  XO_CENSUS_HELD_GROUPS="$(printf '%s\n%s\n' "$XO_CENSUS_HELD_GROUPS" \
+                      "$(printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^GROUP //p')" \
+                      | sed '/^$/d' | sort -un)"
+  XO_CENSUS_OUT="$(printf '%s\n%s\n%s\n' "$XO_CENSUS_OUT" \
+                      "$(printf '%s\n' "$XO_CENSUS_HELD" | sed '/^$/d; s/^/PID /')" \
+                      "$(printf '%s\n' "$XO_CENSUS_HELD_GROUPS" | sed '/^$/d; s/^/GROUP /')" \
+                      | sed '/^$/d' | sort -u)"
+  return 0
+}
+
+xo_census_pids()   { printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^PID //p' | sort -un; }
+xo_census_groups() { printf '%s\n' "$XO_CENSUS_OUT" | sed -n 's/^GROUP //p' | sort -un; }
+
+xo_census_alive() { # — the census members still on the process table
+  local p out=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    xo_pid_gone "$p" || out="$out $p"
+  done <<EOF
+$(xo_census_pids)
+EOF
+  printf '%s' "${out# }"
+}
+
+xo_census_wait_empty() { # <polls> — 0 when a FRESH census comes back empty
+  local n="$1" i=0
+  while :; do
+    xo_census
+    [ -z "$(xo_census_alive)" ] && return 0
+    i=$((i + 1))
+    [ "$i" -ge "$n" ] && return 1
+    xo_nap 0.2
+  done
+}
+
+xo_sweep_once() { # <signal> — every group the chain owns, then every loose pid
+  local sig="$1" g p
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    "$XO_KILL" -"$sig" "-$g" 2>/dev/null || true
+  done <<EOF
+$(xo_census_groups)
+EOF
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    "$XO_KILL" -"$sig" "$p" 2>/dev/null || true
+  done <<EOF
+$(xo_census_pids)
+EOF
+  XO_STOP_SIGNALLED=$((XO_STOP_SIGNALLED + 1))
+  return 0
+}
+
+# SWEEP, THEN LET THE CALLER VERIFY. 0 the census came back empty within the
+# bound, 3 something is still there. A pid may be named to be TERMed ALONE first
+# so its own teardown gets to run before anything escalates.
+#
+# THE CENSUS IS RE-TAKEN BEFORE EVERY ROUND, which is the second half of the
+# cure: a worker the dying driver starts WHILE we are sweeping is in the next
+# census and is swept with the rest. Live, a fresh paid assistant appeared 25
+# seconds after the stop claimed to be finished.
+xo_stop_sweep() { # [gentle-pid] [gentle-signal]
+  local gp="${1:-}" gentle="${2:-TERM}" round sig
+  xo_census
+  [ -z "$(xo_census_alive)" ] && return 0
+  if [ -n "$gp" ] && ! xo_pid_gone "$gp"; then
+    "$XO_KILL" -"$gentle" "$gp" 2>/dev/null || true
+    XO_STOP_SIGNALLED=$((XO_STOP_SIGNALLED + 1))
+    xo_census_wait_empty 10 && return 0
+  fi
+  for round in 1 2; do
+    sig=TERM; [ "$round" -eq 2 ] && sig=KILL
+    xo_census
+    xo_sweep_once "$sig"
+    xo_census_wait_empty 15 && return 0
+  done
+  return 3
+}
+
+# THE GATE THE SUCCESS LINE HANGS ON: two consecutive censuses, $XO_CENSUS_GAP
+# seconds apart, BOTH empty. One empty census proves only that the machine was
+# quiet at one instant — the measured defect was quiet at exactly such an instant
+# and billing again 25 seconds later. Survivors land in $XO_CENSUS_SURVIVORS.
+xo_census_verified_empty() {
+  XO_CENSUS_SURVIVORS=""
+  xo_census
+  XO_CENSUS_SURVIVORS="$(xo_census_alive)"
+  [ -n "$XO_CENSUS_SURVIVORS" ] && return 1
+  # Nothing was signalled, so no stop is in flight and nothing can be racing it.
+  [ "$XO_STOP_SIGNALLED" -eq 0 ] && return 0
+  xo_nap "$XO_CENSUS_GAP"
+  xo_census
+  XO_CENSUS_SURVIVORS="$(xo_census_alive)"
+  [ -n "$XO_CENSUS_SURVIVORS" ] && return 1
+  return 0
+}
+
+# Stop the WHOLE chain a recorded pid belongs to and confirm it. 0 confirmed
+# gone, 3 survivors (named in $XO_STOP_SURVIVORS), 1 nothing there to stop,
+# 2 alive but the walker declined to name it (the asker or an ancestor).
+xo_stop_tree() { # <pid> [recorded-pgid] [gentle-signal]
+  local pid="${1:-}" pgid="${2:-}" gentle="${3:-TERM}" rc=0
+  XO_STOP_SURVIVORS=""
+  [ -n "$pid" ] || return 1
+  xo_census_seed "$pid" "$pgid"
+  xo_census
+  # THE WALKER IS ALLOWED TO REFUSE, AND A REFUSAL IS NOT A DEATH. The census
+  # returns NOTHING for the recorded pid when it is the asking process or one of
+  # its ancestors — a stop must never shoot the look, the shell or the viewscreen
+  # it is running inside. That is the right call and it is MEASURED. But "I
+  # declined to touch it" and "it is already gone" are different facts, and
+  # reporting the first as the second is how a note ends up saying a live chain
+  # is "no longer running". So it is reported as rc 2 — alive, not signalled.
+  if ! printf '%s\n' "$XO_CENSUS_OUT" | grep -qx "PID $pid"; then
+    if xo_pid_gone "$pid"; then
+      # THE DEAD LEADER IS NOT AN EMPTY TREE (S245). This used to return
+      # "nothing there" on the strength of the recorded pid alone, which is
+      # exactly the vacuous pass: the leader was dead and its orphaned group was
+      # still billing. Only an EMPTY CENSUS means nothing there.
+      [ -z "$(xo_census_alive)" ] && return 1
+    else
+      return 2
+    fi
+  fi
+  xo_stop_confirm "$pid" "$gentle"
+  return $?
+}
+
+# SWEEP, AND THEN SAY ONLY WHAT WAS CONFIRMED. 0 the census is empty, 3 something
+# is still there and is NAMED. One writer, shared by both entry points, so a stop
+# driven from a pid file and a stop driven from a recorded pid cannot drift into
+# saying different things about the same process table.
+xo_stop_confirm() { # [gentle-pid] [gentle-signal]
+  local rc=0
+  xo_stop_sweep "${1:-}" "${2:-TERM}"; rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  XO_STOP_SURVIVORS="$(xo_census_alive)"
+  [ -z "$XO_STOP_SURVIVORS" ] && return 0
+  printf '◈ NUMBER ONE: I signalled the chain and it is STILL RUNNING — pid(s) %s. Nothing was confirmed stopped.\n' \
+    "$XO_STOP_SURVIVORS" >&2
+  return 3
+}
+
+# Stop EXACTLY the chain a pid file was written about — or refuse.
+#   0  the recorded chain was stopped, AND confirmed gone from the process table
 #   1  there is nothing there any more (no pid, or it has already gone)
 #   2  the pid is alive but is NOT the process this file was written about, or
 #      the file never recorded who it was. WE DO NOT SIGNAL IT. A stop button
 #      that stops the wrong process is worse than one that admits it cannot.
+#   3  it was signalled and something is STILL ALIVE. The survivors are named in
+#      $XO_STOP_SURVIVORS. The caller must NOT claim a stop, and must NOT drop
+#      the pid file — that handle is the captain's only way to try again.
 xo_signal_pidfile() { # <file> [signal]
   local file="$1" sig="${2:-TERM}" pid pgid started now
+  XO_STOP_SURVIVORS=""
+  # THE RECORD GOES INTO THE CENSUS WHATEVER THIS CALL DECIDES — including on
+  # every early return below. A dead recorded pid means this function has nothing
+  # to signal, and it used to mean the whole stop stopped looking; the group that
+  # pid was recorded LEADING is still a fact about this chain, and the final gate
+  # needs it.
+  xo_census_seed_file "$file"
   pid="$(sed -n '1p' "$file" 2>/dev/null | tr -dc '0-9')"
   [ -n "$pid" ] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    # A DEAD RECORDED PID IS NOT AN EMPTY TREE (S245). This line used to be
+    # `kill -0 "$pid" || return 1` — "nothing there", full stop — and that is the
+    # vacuous pass in its purest form: the recorded leader was dead and the group
+    # it had been recorded LEADING still held a stage orphaned to ppid 1, a
+    # self-led adapter, and the paid assistant. `kill -0 -<pgid>` proved the group
+    # was reachable the whole time. The record outlives the process that wrote it,
+    # so the census is taken BEFORE this call gives up, and only an empty census
+    # means nothing there.
+    xo_census
+    [ -z "$(xo_census_alive)" ] && return 1
+    xo_stop_confirm "" "$sig"
+    return $?
+  fi
   pgid="$(sed -n '2p' "$file" 2>/dev/null | tr -dc '0-9')"
   started="$(sed -n '3p' "$file" 2>/dev/null | sed 's/^ *//; s/ *$//')"
   [ -n "$started" ] || return 2
   now="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
   [ -n "$now" ] || return 1
   [ "$now" = "$started" ] || return 2
-  # Its whole GROUP, but only where it genuinely leads one (pgid == pid, which
-  # is what `setsid` gives us). Where it does not, its group is somebody else's
-  # — the shell that started it, and everything else in that shell — so only the
-  # one process is signalled and its children are left to their own exits.
-  if [ -n "$pgid" ] && [ "$pgid" = "$pid" ]; then
-    kill -"$sig" "-$pgid" 2>/dev/null || true
+  xo_stop_tree "$pid" "$pgid" "$sig"
+  return $?
+}
+
+# ===========================================================================
+# ONE LOOK AT A TIME, ON ONE MISSION (S240 fix round 4, D1)
+# ===========================================================================
+#
+# THE DEFECT, MEASURED on a live mission 2026-10-02: two Number One looks ran
+# CONCURRENTLY on ONE mission and nothing refused, warned, or noticed. Both
+# wrote the same `xo/` directory. `number-one.jsonl` came out interleaved. And
+# the SECOND look overwrote `verdict.json` and `report.md` AFTER the first had
+# already filed its bugs — so the record the captain reads is not the record
+# the bugs were filed from. That is the worst thing a reviewer can do: hand him
+# a verdict and a set of tickets that disagree, with no sign that they do.
+#
+# WHY `xo.pid` DID NOT STOP IT. It is not a lock and never was. It is written
+# AFTER the decision to proceed, it is a plain overwrite (the second writer
+# simply replaces the first's number), and it was EMPTY throughout the measured
+# incident because each look removes it on its way out — so every reader asking
+# "is a look running" got "no" from a file one of two live looks had just
+# deleted. A record of what is happening cannot double as the permission to
+# make it happen.
+#
+# WHY `lcars_xo_lock_reason` DID NOT STOP IT EITHER. That lock reads the
+# mission's RECORDED `numberOne.status`, and it guards the captain's write
+# verbs (approve, respond, pause, log, feedback) against racing a look. It is
+# a STATE check, read-then-act, with a window between the two — and
+# `cmd_evaluate` never consulted it at all.
+#
+# SO THE CLAIM IS A DIRECTORY. `mkdir` is the one filesystem primitive that is
+# atomic and that FAILS when the thing already exists, on every filesystem
+# this runs on, with no dependency to install. Exactly one of any number of
+# concurrent `mkdir`s wins; every loser learns it lost from the syscall, not
+# from a file it read a moment earlier.
+#
+# A DEAD OWNER IS NOT AN OWNER. A look killed outright — a laptop asleep, a
+# SIGKILL, a crashed session — cannot run a trap, so its claim stays on disk
+# with nothing behind it. If that deadlocked the mission the cure would be
+# worse than the defect: the captain would be left running `rm -rf` inside
+# `.git/` to get his own mission back. So a claim records WHO holds it the same
+# way `xo_write_pidfile` does (pid + the instant it started, both read from the
+# OS while they were still known), and a claim whose owner is gone — or whose
+# pid has been recycled onto a different process — is RECLAIMED, out loud.
+XO_CLAIM_DIR=""
+
+# xo_claim_or_die <mission-dir> <what> — take the mission, or refuse in one line.
+xo_claim_or_die() { # <mission-dir> <what>
+  local dir="$1" what="${2:-a look}"
+  # A SEPARATE STATEMENT, ON PURPOSE. `local a="$1" b="$a/x"` expands every
+  # word before any assignment lands, so `$a` is still unset — which under
+  # `set -u` is not a wrong path but an outright crash.
+  local lock="$dir/xo.claim" owner=""
+  local held_pid held_started held_what held_when now tries=0
+  mkdir -p "$dir" 2>/dev/null || true
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    if mkdir "$lock" 2>/dev/null; then
+      # WE OWN IT. The identity goes in only after the atomic win, so a reader
+      # can never see a half-written owner file as a valid claim — an owner
+      # file that is not there yet reads as "unknown", which is handled below.
+      { printf '%s\n' "$$"
+        printf '%s\n' "$(ps -o lstart= -p "$$" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+        printf '%s\n' "$what"
+        printf '%s\n' "${NOW_LOCAL:-$(date '+%Y-%m-%d %H:%M')}"
+      } >"$lock/owner" 2>/dev/null || true
+      XO_CLAIM_DIR="$lock"
+      return 0
+    fi
+    # Somebody holds it. Is anybody actually there?
+    #
+    # THE OWNER FILE MAY NOT BE THERE YET, AND THAT IS NOT STALE. There is a
+    # real window between the winner's `mkdir` and its write of `owner`, and a
+    # loser that read the directory inside that window found no pid, took the
+    # stale branch, and DELETED THE WINNER'S CLAIM. MEASURED: one run in four
+    # of the two-process race refused with "clearing a stale claim" instead of
+    # "already looking at", which is the mutual exclusion failing open —
+    # exactly the defect this function exists to stop, one millisecond wide.
+    #
+    # So an empty owner is WAITED for, briefly, before it is believed. A claim
+    # whose owner never appears at all really is debris and still gets cleared
+    # on the next pass.
+    owner="$lock/owner"
+    local ow=0
+    while [ "$ow" -lt 30 ] && [ ! -s "$owner" ]; do
+      ow=$((ow + 1))
+      "${XO_PY:-python3}" -c 'import time; time.sleep(0.05)' 2>/dev/null || sleep 1
+    done
+    held_pid="$(sed -n '1p' "$owner" 2>/dev/null | tr -dc '0-9')"
+    held_started="$(sed -n '2p' "$owner" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+    held_what="$(sed -n '3p' "$owner" 2>/dev/null)"
+    held_when="$(sed -n '4p' "$owner" 2>/dev/null)"
+    if [ -n "$held_pid" ] && kill -0 "$held_pid" 2>/dev/null; then
+      now="$(ps -o lstart= -p "$held_pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+      if [ -z "$held_started" ] || [ "$held_started" = "$now" ]; then
+        # ALIVE AND GENUINELY THE SAME PROCESS. ONE PLAIN LINE, naming the look
+        # that has the mission and what to do about it. No second look starts.
+        die "Number One is already looking at $(basename "$dir") — ${held_what:-a look} started${held_when:+ $held_when} (pid $held_pid). I will not run a second look on the same mission; that is how one verdict ends up overwriting the other's. Wait for it, or stop it with \`lcars xo off $(basename "$dir")\`."
+      fi
+      # The pid is alive but is NOT who the claim was written about — it has
+      # been recycled. The claim is stale.
+    fi
+    # STALE. Nobody is there (or the pid belongs to something else now), so the
+    # mission is reclaimable. Said out loud, because a captain who sees a look
+    # start where he expected a refusal deserves to know why.
+    printf '◈ NUMBER ONE: clearing a stale claim on %s — its look (pid %s) is gone.\n' \
+      "$(basename "$dir")" "${held_pid:-unknown}" >&2
+    rm -rf "$lock" 2>/dev/null || true
+  done
+  die "could not take $(basename "$dir") — something keeps re-claiming it. Nothing was looked at."
+}
+
+# ── A DETACHED CHAIN IN A SESSION OF ITS OWN (S240 fix round 4, D3) ────────
+#
+# `file_logs_for` hands the logged bugs to `resolve-logs.sh` detached: it files
+# issues, cuts branches and runs a worker per stage per bug, unattended, for a
+# long time. `lcars xo off` must be able to stop ALL of that with one signal.
+#
+# THE CODE CLAIMED `setsid` GAVE IT ITS OWN PROCESS GROUP. MEASURED with
+# `ps -o pid,pgid,ppid` (never from the man page):
+#
+#   setsid on PATH: ABSENT          ← macOS ships none; the nohup fallback ran
+#   LOOK    pid=25669 pgid=25654
+#   DRIVER  pid=25680 pgid=25654    ← the LOOK's group, not its own
+#   WORKER  pid=25692 pgid=25654    ← same group again
+#   xo-resolve.pid:  pid=25680 pgid=25654
+#
+# Two measured consequences: a kill of the recorded group would have taken the
+# look down with it, and the guard that (correctly) refused to do that stopped
+# ONE process — "DRIVER gone / WORKER STILL ALIVE". One billed worker left
+# running with nothing watching it, and no second verb to stop it.
+#
+# So the session is made properly. `setsid(1)` where there is one; otherwise
+# `os.setsid()` through the shipped two-line `setsid.py` — the same syscall, on
+# every machine that has python3, and `execvp` keeps the pid so `$!` still
+# names the command after the new session exists. $LCARS_XO_SETSID=none forces
+# the bare fallback, which is how the no-session-maker case is proven.
+XO_SETSID_PY="$SKILL_DIR/setsid.py"
+
+# xo_spawn_detached <pidfile> <logfile> <cmd...> — start it detached, in its own
+# session where that is possible, record WHO it is, and echo its pid.
+# ONE implementation: `file_logs_for` and the `detach` test seam both call this,
+# so a proof about one is a proof about the other.
+xo_spawn_detached() { # <pidfile> <logfile> <cmd...>
+  local pidfile="$1" log="$2"; shift 2
+  local child="" mode="${LCARS_XO_SETSID:-auto}"
+  if [ "$mode" != "none" ] && command -v setsid >/dev/null 2>&1; then
+    setsid "$@" </dev/null >>"$log" 2>&1 &
+    child=$!
+  elif [ "$mode" != "none" ] && [ -f "$XO_SETSID_PY" ] \
+       && command -v "$XO_PY" >/dev/null 2>&1; then
+    "$XO_PY" "$XO_SETSID_PY" "$@" </dev/null >>"$log" 2>&1 &
+    child=$!
+  else
+    # NO WAY TO MAKE A SESSION. It still runs — a stop verb is never a reason
+    # not to do the work — and xo_write_pidfile records no group for it, so
+    # nothing can kill the wrong one.
+    nohup "$@" </dev/null >>"$log" 2>&1 &
+    child=$!
   fi
-  kill -"$sig" "$pid" 2>/dev/null || true
+  disown "$child" 2>/dev/null || disown 2>/dev/null || true
+  # WAIT FOR THE SESSION TO EXIST BEFORE WRITING IT DOWN. There is a real race
+  # here and it was MEASURED, not imagined: `&` returns the moment the fork
+  # happens, and `os.setsid()` runs a few milliseconds LATER inside the child —
+  # so reading `ps -o pgid=` immediately caught the child still in its parent's
+  # group, xo_write_pidfile's borrowed-group guard (correctly) recorded nothing,
+  # and the session the child DID go on to lead was never written down. The
+  # whole group kill then had nothing to aim at.
+  #
+  # So this waits, briefly and boundedly, for the child to actually lead a
+  # group. It stops the instant it does, the instant the child is gone, or
+  # after the bound — and on the fallback path (no session-maker at all) it
+  # simply spends the bound and records no group, which is the right answer.
+  if [ "$mode" != "none" ]; then
+    local w=0 cur=""
+    while [ "$w" -lt 40 ]; do
+      kill -0 "$child" 2>/dev/null || break
+      cur="$(ps -o pgid= -p "$child" 2>/dev/null | tr -dc '0-9')"
+      [ "$cur" = "$child" ] && break
+      w=$((w + 1))
+      "${XO_PY:-python3}" -c 'import time; time.sleep(0.05)' 2>/dev/null || sleep 1
+    done
+  fi
+  # WHO it is, not just which number — so a stop can never mistake a recycled
+  # pid for it. Both facts are read from `ps` at the same instant, so what is
+  # recorded is self-consistent.
+  xo_write_pidfile "$child" "$pidfile"
+  printf '%s' "$child"
+}
+
+# Give it back. ONLY if we are the recorded owner: a process that lost the race
+# must never delete the winner's claim on its way out.
+xo_release_claim() {
+  [ -n "$XO_CLAIM_DIR" ] || return 0
+  local held
+  held="$(sed -n '1p' "$XO_CLAIM_DIR/owner" 2>/dev/null | tr -dc '0-9')"
+  if [ -z "$held" ] || [ "$held" = "$$" ]; then
+    rm -rf "$XO_CLAIM_DIR" 2>/dev/null || true
+  fi
+  XO_CLAIM_DIR=""
   return 0
 }
 
-stand_down() { # <mission-id> [--opt-out]
-  local id="$1" optout="${2:-}" dir st obj status pid live=0
+# ===========================================================================
+# QUIESCE FIRST — REFUSE TO START NEW WORK BEFORE TRYING TO STOP THE OLD (S245)
+# ===========================================================================
+#
+# THE RACE, MEASURED LIVE. The only pre-spawn stop check in the whole system was
+# the mission's `paused` flag, read by the stage driver BETWEEN stages
+# (`run.sh:20746`). `resolve-logs.sh` spawns a `run.sh drive` per logged bug
+# (`:1198-1205`) and read NO flag at all. So a stop swept what existed while the
+# resolver kept minting fresh drivers behind it: 25 seconds after `lcars xo off`
+# said "you have the conn", a survivor had advanced a bug two stages and hired a
+# new paid assistant. Killing faster cannot win that race, and two fix rounds
+# spent trying. The spawner has to be told to stop FIRST.
+#
+# SO THERE IS A MARKER, AND IT IS WRITTEN BEFORE ANY SIGNAL. `$dir/xo-stop` — one
+# file, written atomically (temp + `mv`, so a reader never sees half of it) — plus
+# the mission's own `paused` flag and the `paused` flag of every linked child in
+# `xo/logs.json`. Three readers honour it: `resolve-logs.sh` before EVERY driver
+# spawn and between bugs, `run.sh`'s driver immediately before it spawns a stage
+# worker, and `run.sh`'s existing between-stages check (which `paused` already
+# covered). A stage already RUNNING is not interrupted here — that is the sweep's
+# job, below.
+#
+# THE MARKER IS A RECORD, NOT A FLAG. It names which children the stop paused and
+# which were ALREADY paused for their own reason, because `lcars xo on <id>` has
+# to put things back and "set them all to unpaused" would quietly un-pause work
+# the captain had stopped himself. The producer records; the consumer reads.
+xo_stop_marker() { # <mission-dir> — 0 when this mission is quiesced
+  [ -f "${1:-}/xo-stop" ]
+}
+
+# TWO FACTS THE QUIESCE HANDS BACK, because the captain was told NEITHER.
+#
+# XO_PAUSED (fix round 1, D1) — how many Missions this command actually paused.
+# Quiescing is the half of a stop that outlives the command: the processes are
+# gone, but `paused` is still on the mission and on every linked child, and
+# `lcars run` refuses to move for as long as it is. The word "paused" appeared
+# nowhere in the stop's output, so the captain met `⏸ paused at: …` days later
+# with no idea which command had done it or that `lcars xo on` lifts it. Counted
+# from the WRITES, never from a guess about how many children there were.
+#
+# XO_QUIESCED (fix round 1, D4) — whether this command has written ANYTHING yet.
+# `lcars_state_refusal_die` ends with "Nothing was written and nothing else in
+# this command took effect." That sentence is a shared contract and it was true of
+# every verb that calls it — each one calls it immediately before its success line
+# and after a single write. The quiesce broke it by writing FIRST, so one malformed
+# state.json anywhere in the repo made the stop print it after it had written the
+# marker, paused four Missions and set `enabled: false`. This flag is what makes
+# that sentence UNREACHABLE once the stop has written: see xo_say_unrecorded.
+XO_PAUSED=0
+XO_QUIESCED=0
+XO_UNRECORDED=""
+
+xo_logs_children() { # <mission-dir> — one linked child mission id per line
+  local lj="${1:-}/xo/logs.json"
+  [ -f "$lj" ] || return 0
+  grep -o '"mission"[[:space:]]*:[[:space:]]*"[^"]*"' "$lj" 2>/dev/null \
+    | sed 's/.*"\([^"]*\)"$/\1/' | sed '/^$/d' | sort -u
+}
+
+# ── MARKER ALWAYS; FLAGS ONLY FOR THE MISSION THE CAPTAIN NAMED (S254) ──────
+#
+# THE MEASURED DEFECT. Repo-wide `lcars xo off` — no Mission named, the captain
+# simply turning his first officer off — wrote `"paused": true` onto every
+# engaged Mission AND every Mission in those Missions' `xo/logs.json`: 5 of 5 in
+# a tester's fixture. `run.sh` halts on that flag at the stage boundary and again
+# before each spawn, so the switch stopped the captain's OWN `lcars run` on work
+# he never named. S245 made it ANNOUNCE this; the captain's ruling (2026-10-05)
+# is that announcing is not enough.
+#
+# THE TWO HALVES OF A QUIESCE ARE NOT THE SAME SCOPE.
+#   * THE MARKER is Number One's own refusal to start more of Number One's work —
+#     it is what makes `resolve-logs.sh` stop minting drivers and what `lcars
+#     resume` refuses over (S245 D3). Turning the switch off is exactly a request
+#     for that, repo-wide. It stays.
+#   * THE `paused` FLAG is a statement about THE MISSION, read by every stage
+#     driver the captain runs himself. That belongs to the Mission he pointed at,
+#     and to nothing else.
+# So `--marker-only` lays the marker and writes no flag. The caller decides:
+# `cmd_off` passes `--opt-out` for a named Mission and `--repo-wide` inside its
+# loop, which is where the two kinds of stop have always been told apart.
+#
+# AND THE MARKER STAYS TRUTHFUL, so `xo on` can be symmetric. It records
+# `left-running` for anything this stop did not pause — never `paused-by-us`,
+# which would make `lcars xo on` lift a pause the CAPTAIN had set for his own
+# reason. `xo_unquiesce` unsets only on `paused-by-us`, so `left-running` is
+# skipped by the code that was already there.
+xo_quiesce() { # <mission-dir> <mission-id> [--marker-only]
+  local dir="$1" id="$2" how="${3:-}"
+  local st="$dir/state.json" tmp c cst was selfwas keep
+  [ -d "$dir" ] || return 0
+  selfwas="$(lcars_state_get_raw "$st" paused 2>/dev/null)"
+  tmp="$dir/.xo-stop.$$"
+  {
+    printf 'stop %s\n' "$NOW"
+    printf 'mission %s\n' "$id"
+    if [ "$how" = "--marker-only" ]; then printf 'self left-running\n'
+    elif [ "$selfwas" = "true" ]; then printf 'self already-paused\n'
+    else printf 'self paused-by-us\n'; fi
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      cst="$MISSIONS_DIR/$c/state.json"
+      [ -f "$cst" ] || continue
+      was="$(lcars_state_get_raw "$cst" paused 2>/dev/null)"
+      if [ "$how" = "--marker-only" ]; then printf 'child %s left-running\n' "$c"
+      elif [ "$was" = "true" ]; then printf 'child %s already-paused\n' "$c"
+      else printf 'child %s paused-by-us\n' "$c"; fi
+    done <<EOF
+$(xo_logs_children "$dir")
+EOF
+  } >"$tmp" 2>/dev/null
+  # ATOMIC. A resolver reading this file between bugs must see all of it or none
+  # of it; a half-written marker is a stop that half-happened.
+  mv -f "$tmp" "$dir/xo-stop" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  # THE MARKER IS DOWN, SO THIS COMMAND HAS WRITTEN (fix round 1, D4). Set after
+  # the `mv` and nowhere else: a marker that could not be placed wrote nothing,
+  # and on that path "nothing was written" is still the honest sentence.
+  XO_QUIESCED=1
+  # NO FLAGS ON THE REPO-WIDE PATH. The marker above is down and the stop goes on
+  # to signal and sweep exactly as before; what it does not do is tell every
+  # stage driver in the repo to halt a Mission the captain never named.
+  [ "$how" = "--marker-only" ] && return 0
+  # AND THEN THE FLAGS, so the readers that only know about `paused` stop too.
+  if [ "$selfwas" != "true" ]; then
+    lcars_state_set "$st" paused true 2>/dev/null || true
+    [ "$(lcars_state_get_raw "$st" paused 2>/dev/null)" = "true" ] \
+      && XO_PAUSED=$((XO_PAUSED + 1))
+  fi
+  # A CHILD'S WRITE NEVER REFUSES THE STOP. `lcars_state_set` latches a refusal in
+  # $LCARS_STATE_REFUSED and every verb exits non-zero on it — correct for the
+  # mission the captain named, wrong for a LINKED child he did not: a bug child
+  # with a hand-edited state.json would make the stop button itself fail. The
+  # marker on disk already stops the resolver, so the flag is advisory here.
+  keep="${LCARS_STATE_REFUSED:-}"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    cst="$MISSIONS_DIR/$c/state.json"
+    [ -f "$cst" ] || continue
+    [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ] && continue
+    lcars_state_set "$cst" paused true 2>/dev/null || true
+    # COUNTED FROM THE FLAG ON DISK, not from the fact we asked (fix round 1, D1).
+    # A child whose state.json the writer refused is not paused, and a count that
+    # included it would be the stop over-claiming on the surface meant to stop it
+    # under-claiming.
+    [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ] \
+      && XO_PAUSED=$((XO_PAUSED + 1))
+  done <<EOF
+$(xo_logs_children "$dir")
+EOF
+  LCARS_STATE_REFUSED="$keep"
+  return 0
+}
+
+# PUT IT BACK — AND ONLY WHAT THE STOP ITSELF PUT ON. Read off the marker's own
+# record, so a child the captain had paused for his own reason before the stop
+# is still paused afterwards.
+xo_unquiesce() { # <mission-dir>
+  # NOT `local dir="$1" m="$dir/xo-stop"` — `local` brings every name into scope
+  # BEFORE it assigns, so the second expansion reads an unset local and `set -u`
+  # kills the verb. Measured here as "dir: unbound variable" on `lcars xo on`.
+  local dir="$1"
+  local m="$dir/xo-stop" line who how
+  [ -f "$m" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      "self paused-by-us")
+        lcars_state_unset "$dir/state.json" paused 2>/dev/null || true ;;
+      "child "*)
+        who="$(printf '%s' "$line" | awk '{print $2}')"
+        how="$(printf '%s' "$line" | awk '{print $3}')"
+        [ "$how" = "paused-by-us" ] || continue
+        [ -f "$MISSIONS_DIR/$who/state.json" ] || continue
+        lcars_state_unset "$MISSIONS_DIR/$who/state.json" paused 2>/dev/null || true ;;
+    esac
+  done <"$m"
+  rm -f "$m"
+  return 0
+}
+
+# `scope` (S254) — WHICH KIND OF STOP THIS IS, told by the caller, because the
+# caller is the only one who knows. `--opt-out` is `lcars xo off <mission>`: the
+# captain pointed at this Mission, so it is quiesced in full. `--repo-wide` is
+# the loop inside `lcars xo off` with no target: the switch goes off and the
+# marker goes down, but no `paused` flag is written onto a Mission he never
+# named. See `xo_quiesce`.
+stand_down() { # <mission-id> [--opt-out|--repo-wide]
+  local id="$1" optout="${2:-}" scope="${2:-}" dir st obj status pid live=0
+  # THE REFUSAL LATCH AS IT WAS BEFORE THIS MISSION (fix round 1, D4). Restored
+  # at the bottom when this command has already written, so one Mission's
+  # bookkeeping failure cannot make the whole verb claim it changed nothing.
+  local refuse0="${LCARS_STATE_REFUSED:-}"
   dir="$MISSIONS_DIR/$id"
   st="$dir/state.json"
   [ -f "$st" ] || die "mission '$id' has no state.json — its state is corrupt."
@@ -350,25 +1221,123 @@ stand_down() { # <mission-id> [--opt-out]
     nlogs="${nlogs:-0}"
   fi
 
-  if [ "$status" = "engaged" ] || [ "$live" -eq 1 ]; then
-    if [ -n "$pid" ]; then
-      kill -TERM "$pid" 2>/dev/null || true
-      rm -f "$dir/xo.pid"
+  # A LIVE RESOLVE CHAIN IS ALSO A LIVE SPIN (fix round 5, D1). This branch was
+  # gated on the look's status and the look's pid alone, so once a FAILED stop
+  # had written `stood-down`, a second `lcars xo off` fell straight through to
+  # the opt-out path and signalled nothing at all — the captain's retry was a
+  # no-op over a tree that was still billing. The recorded resolve pid is the
+  # truth about whether a chain is running, so it is a reason to act.
+  if [ "$status" = "engaged" ] || [ "$live" -eq 1 ] || [ "$rlive" -eq 1 ]; then
+    # ── 0. QUIESCE FIRST, BEFORE A SINGLE SIGNAL (S245). Refusing to start new
+    #    work is the half of a stop that killing cannot do, and it has to be the
+    #    first thing that happens or the resolver mints another driver while the
+    #    sweep is running. See the block above `xo_stop_marker`.
+    #    S254: and it pauses only the Mission the captain NAMED — `--repo-wide`
+    #    lays the marker and writes no `paused` flag.
+    if [ "$scope" = "--repo-wide" ]; then
+      xo_quiesce "$dir" "$id" --marker-only
+    else
+      xo_quiesce "$dir" "$id"
     fi
-    # THE CHAIN STOPS TOO. Only ever the exact process the pid file was written
-    # about — see xo_signal_pidfile; a pid that is alive but is no longer that
-    # process is left strictly alone and said out loud below.
-    local rstopped=0 runsure=0
+    # ── THE CENSUS SCOPE for everything below: this mission by name, and by the
+    #    directory every one of its own processes names on its command line. The
+    #    recorded facts from BOTH pid files go in whether or not either pid is
+    #    still alive — a dead recorded leader still tells us which group was ours.
+    xo_census_scope "$id" "$dir"
+    XO_STOP_SIGNALLED=0
+    xo_census_seed_file "$dir/xo.pid"
+    xo_census_seed_file "$dir/xo-resolve.pid"
+
+    # `lkeep`/`rkeep`: a pid file whose stop was REFUSED (alive but not who the
+    # file was written about) or that still has survivors is KEPT, even when the
+    # census then comes back empty. Removing a handle to a process we never
+    # signalled would throw away the captain's only way to reach it, and it would
+    # also let the note claim a stop that did not happen.
+    local rstopped=0 runsure=0 sfail=0 survivors="" lkeep=0 rkeep=0
+    # ── 1. THE FIRST OFFICER'S OWN CHAIN, THROUGH THE VERIFIED PATH (S245).
+    #    This was `kill -TERM "$pid"; rm -f "$dir/xo.pid"`: one unverified signal
+    #    to one pid, and the captain's only handle on a live look deleted in the
+    #    same breath — the same two mistakes the resolve chain's stop had already
+    #    been cured of. It now goes through `xo_signal_pidfile`, which checks the
+    #    pid is still WHO the file was written about before it signals anything,
+    #    and the handle is released at the bottom of this function, only after an
+    #    empty census.
+    if [ -n "$pid" ]; then
+      xo_signal_pidfile "$dir/xo.pid"
+      case $? in
+        # 0 stopped and confirmed, 1 it had already gone — either way there is
+        # nothing left of the look to answer for.
+        0|1) : ;;
+        # ALIVE BUT NOT WHO THIS FILE WAS WRITTEN ABOUT. It must NOT be signalled
+        # here, and its handle must not be dropped. The census sweep below reaches
+        # it by provenance if it really is this mission's.
+        2) lkeep=1 ;;
+        3) lkeep=1; sfail=1; survivors="$survivors $XO_STOP_SURVIVORS" ;;
+      esac
+    fi
+    # THE CHAIN STOPS TOO — the WHOLE chain, across the process groups its
+    # workers deliberately lead (see xo_stop_tree), and only ever a chain the
+    # pid file was genuinely written about. A pid that is alive but is no longer
+    # that process is left strictly alone and said out loud below.
     if [ "$rlive" -eq 1 ]; then
       xo_signal_pidfile "$dir/xo-resolve.pid"
       case $? in
-        0) rstopped=1; rm -f "$dir/xo-resolve.pid" ;;
-        2) runsure=1 ;;
+        0) rstopped=1 ;;
+        2) runsure=1; rkeep=1 ;;
+        # SIGNALLED AND STILL RUNNING. The pid file STAYS — it is the captain's
+        # only handle on the tree, and a failed stop that erases its own handle
+        # was the worst part of the measured defect. Nothing claims a stand-down
+        # from here: not the status, not the note, not the CLI, not the exit
+        # status.
+        3) runsure=1; rkeep=1; sfail=1; survivors="$survivors $XO_STOP_SURVIVORS" ;;
       esac
     fi
-    obj="$(obj_set "$obj" status "$(jstr stood-down)")"
+    # ── 2. THE WHOLE-MACHINE SWEEP, over the census rather than over a walk from
+    #    a recorded pid. This is what reaches a stage orphaned to ppid 1 whose
+    #    leader we have just killed, and a worker minted while we were sweeping.
+    xo_stop_sweep "" >/dev/null 2>&1 || true
+    # ── 3. AND THE GATE: two censuses, $XO_CENSUS_GAP apart, BOTH empty. Nothing
+    #    below claims a stand-down unless this passes. A stop that cannot confirm
+    #    death must never say "you have the conn" — it said exactly that over a
+    #    live paid assistant, twice.
+    if ! xo_census_verified_empty; then
+      sfail=1
+      survivors="$survivors $XO_CENSUS_SURVIVORS"
+    fi
+    survivors="$(printf '%s' "$survivors" | tr ' ' '\n' | sed '/^$/d' \
+                   | sort -un | tr '\n' ' ' | sed 's/ *$//')"
+    if [ "$sfail" -eq 1 ]; then
+      runsure=1
+      XO_STOP_FAILED=$((XO_STOP_FAILED + 1))
+      XO_STOP_FAILED_PIDS="$XO_STOP_FAILED_PIDS $survivors"
+      XO_STOP_FAILED_ON="$XO_STOP_FAILED_ON $id"
+    else
+      # THE HANDLES COME OFF HERE AND NOWHERE ELSE — after an empty census,
+      # twice. Until then they are the captain's only way to try again, and the
+      # marker is the only thing stopping work restarting behind him.
+      [ "$lkeep" -eq 0 ] && rm -f "$dir/xo.pid"
+      [ "$rkeep" -eq 0 ] && rm -f "$dir/xo-resolve.pid"
+      # AN EMPTY CENSUS IS NOT A LICENCE TO CLAIM WHAT WAS REFUSED. If the resolve
+      # pid file was not signalled because it no longer says who it was written
+      # about, the note still has to admit that — "the logs stopped where they got
+      # to" over a chain nobody touched is the same class of lie as the conn line
+      # over a live worker, one surface down.
+      [ "$rlive" -eq 1 ] && [ "$runsure" -eq 0 ] && rstopped=1
+    fi
+    if [ "$sfail" -eq 0 ]; then
+      obj="$(obj_set "$obj" status "$(jstr stood-down)")"
+    fi
     local sd_note="Number One stood down $NOW_LOCAL · you have the conn"
-    if [ "$rlive" -eq 1 ] && [ "$nlogs" -gt 0 ]; then
+    # ON THE LOGS, NOT ON A PID FILE (fix round 1, D-minor). This clause used to
+    # need `$rlive` — a resolve pid that is STILL the process its file was written
+    # about — so it vanished in exactly the case that should alarm the captain
+    # most: the chain's recorded leader already dead, nobody knowing what it left
+    # behind, and the card reading only "Number One stood down 20:25 · you have
+    # the conn", four fewer facts than an ordinary stop gives him. What stopped is
+    # a property of the logs on file; whether one pid file was still valid decides
+    # only WHICH of the three sentences below is the true one, and the dead-leader
+    # case lands on the third, which the empty census has just proved.
+    if [ "$nlogs" -gt 0 ]; then
       # THE NOTE SAYS WHAT IS STILL HAPPENING. A captain who stands his first
       # officer down mid-fix-round has two things he needs to know and cannot
       # see: the fixes are still going, and the gate at the end of them is now
@@ -376,16 +1345,30 @@ stand_down() { # <mission-id> [--opt-out]
       # SINGULAR OR PLURAL, PROPERLY (S204 fix round 1, D5). "1 logs still
       # driving" on the card is the kind of small wrongness that makes a
       # captain distrust the numbers beside it.
-      local lognoun="logs"; [ "$nlogs" -eq 1 ] && lognoun="log"
+      # AND THE VERB AGREES WITH THE NOUN (fix round 2). The noun was fixed and
+      # measured; the verbs beside it were not, so the card read "the 1 log it was
+      # driving ARE no longer running" and "it could not confirm the 1 log it was
+      # driving HAVE stopped". Same slip, same surface, same cost to his trust in
+      # the numbers next to it.
+      local lognoun="logs" logis="are" loghave="have"
+      if [ "$nlogs" -eq 1 ]; then lognoun="log"; logis="is"; loghave="has"; fi
       if [ "$rstopped" -eq 1 ]; then
         # WHAT HAPPENED TO HIM, in his words: the fixes have stopped where they
         # got to, and nothing they had already done was thrown away.
         sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving stopped where they got to · you have the conn"
       elif [ "$runsure" -eq 1 ]; then
-        sd_note="Number One stood down $NOW_LOCAL · it could not confirm the $nlogs $lognoun it was driving have stopped · you have the conn"
+        sd_note="Number One stood down $NOW_LOCAL · it could not confirm the $nlogs $lognoun it was driving $loghave stopped · you have the conn"
       else
-        sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving are no longer running · you have the conn"
+        sd_note="Number One stood down $NOW_LOCAL · the $nlogs $lognoun it was driving $logis no longer running · you have the conn"
       fi
+    fi
+    # AND THE LAST WORD BELONGS TO WHAT WAS OBSERVED (fix round 5, D1). Written
+    # after every other note so nothing downstream can overwrite it: no "stood
+    # down", no "you have the conn". A card that hands the captain the conn
+    # while a paid worker is still running is the same lie as the CLI line, on
+    # the surface he trusts more.
+    if [ "$sfail" -eq 1 ]; then
+      sd_note="Number One could NOT stop what it was driving — still running: ${survivors:-unknown} · nobody has the conn yet · run \`lcars xo off $id\` again"
     fi
     obj="$(obj_set "$obj" note "$(jstr "$sd_note")")"
     obj="$(obj_set "$obj" since "$(jstr "$NOW")")"
@@ -396,19 +1379,44 @@ stand_down() { # <mission-id> [--opt-out]
     # it would see its own memory of a question it never got to read. Clearing it
     # is what makes `lcars xo on <id>` able to pick the gate up again.
     obj="$(obj_del "$obj" lastPending)"
-    XO_STOOD_DOWN=$((XO_STOOD_DOWN + 1))
-    # EVERY ACTION IS JOURNALLED (SKILL.md), and aborting a spin is an action.
-    # Without this line the only trace of a mid-spin stand-down was the state
-    # note, so the living comment — which renders this journal — had no record
-    # that a spin had been stopped at all. Written only on the branch that
-    # actually stood something down: the file records what happened.
-    journal "$dir" stood-down \
-      "$(printf '"stage": %s, "detail": %s' \
-           "$(jstr "$(mission_stage "$st")")" \
-           "$(jstr "the captain took the conn back")")"
+    # THE COUNTER IS WHAT THE CLI SAYS OUT LOUD, so a stop that did not happen
+    # must not reach it (fix round 5, D1) — and the journal records what was
+    # OBSERVED, which on this branch is a stop that failed, not a stand-down.
+    if [ "$sfail" -eq 1 ]; then
+      journal "$dir" stop-failed \
+        "$(printf '"stage": %s, "detail": %s' \
+             "$(jstr "$(mission_stage "$st")")" \
+             "$(jstr "signalled the chain and it is still running: ${survivors:-unknown}")")"
+    else
+      XO_STOOD_DOWN=$((XO_STOOD_DOWN + 1))
+      # EVERY ACTION IS JOURNALLED (SKILL.md), and aborting a spin is an action.
+      # Without this line the only trace of a mid-spin stand-down was the state
+      # note, so the living comment — which renders this journal — had no record
+      # that a spin had been stopped at all. Written only on the branch that
+      # actually stood something down: the file records what happened.
+      journal "$dir" stood-down \
+        "$(printf '"stage": %s, "detail": %s' \
+             "$(jstr "$(mission_stage "$st")")" \
+             "$(jstr "the captain took the conn back")")"
+    fi
   fi
   [ "$optout" = "--opt-out" ] && obj="$(obj_set "$obj" optOut true)"
   [ -n "$obj" ] && state_set_xo "$st" "$obj"
+  # A BOOKKEEPING REFUSAL IS NOT "NOTHING HAPPENED" (fix round 1, D4). Once the
+  # quiesce has written the marker, "Nothing was written and nothing else in this
+  # command took effect." is simply false — and it printed over a stop that had
+  # paused four Missions and switched the engine off. The latch is UNSET here and
+  # the file is NAMED instead, so `lcars_state_refusal_die` below can only fire on
+  # the path where its sentence is still true: a refusal before the first write.
+  #
+  # IT IS NOT SWALLOWED. xo_say_unrecorded prints every entry and the verb still
+  # exits non-zero; the difference is that it describes what happened.
+  if [ "$XO_QUIESCED" -eq 1 ] && [ -n "${LCARS_STATE_REFUSED:-}" ] \
+     && [ "${LCARS_STATE_REFUSED:-}" != "$refuse0" ]; then
+    XO_UNRECORDED="$XO_UNRECORDED${XO_UNRECORDED:+
+}$id|$LCARS_STATE_REFUSED"
+    LCARS_STATE_REFUSED="$refuse0"
+  fi
   return 0
 }
 
@@ -485,6 +1493,12 @@ pick_engine() {
 # THE VERBS
 # ===========================================================================
 XO_STOOD_DOWN=0
+# STOPS THAT DID NOT STOP (fix round 5, D1). Counted and NAMED, so the verb can
+# refuse to print a stand-down and can exit non-zero — the two things the
+# measured defect got wrong after it had already missed the paid worker.
+XO_STOP_FAILED=0
+XO_STOP_FAILED_PIDS=""
+XO_STOP_FAILED_ON=""
 
 write_config_block() { # <enabled true|false> [engine] [model]
   local enabled="$1" engine="${2:-}" model="${3:-}" obj
@@ -496,17 +1510,40 @@ write_config_block() { # <enabled true|false> [engine] [model]
 }
 
 cmd_on() {
-  local engine="" model="" target=""
+  # DEFAULT 0 — SWITCHING NUMBER ONE ON STARTS NOTHING (S241, the captain's
+  # ruling). The catch-up is KEPT, in full, but it is now its own word. See the
+  # note at the sweep call below for the whole reasoning.
+  #
+  # EMPTY, NOT 0, so an explicit flag can be told apart from the default and
+  # outrank the environment: `--sweep` is the captain at the terminal,
+  # $LCARS_XO_SWEEP_ON_START is a machine's standing preference, and the person
+  # present wins.
+  local engine="" model="" target="" sweep=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --engine)   engine="${2:-}"; shift 2 || true ;;
       --engine=*) engine="${1#--engine=}"; shift ;;
       --model)    model="${2:-}";  shift 2 || true ;;
       --model=*)  model="${1#--model=}"; shift ;;
+      # SPENDING, ASKED FOR OR DECLINED (S240 fix round 4, D1). Since S241
+      # `--sweep` is the OPT-IN that starts the catch-up, and `--no-sweep` is
+      # the default said out loud. Both still work, in both directions.
+      --sweep)     sweep=1; shift ;;
+      --no-sweep)  sweep=0; shift ;;
       -*)         die "unknown option: $1" ;;
       *)          target="$1"; shift ;;
     esac
   done
+  # THE ESCAPE HATCH, both directions, no code edit either way: `lcars xo on
+  # --sweep` — or $LCARS_XO_SWEEP_ON_START=1 for an autopilot with no argv to
+  # change — restores the pre-S241 behaviour exactly: switch on AND work the
+  # backlog. A flag on the command line beats the variable.
+  if [ -z "$sweep" ]; then
+    case "${LCARS_XO_SWEEP_ON_START:-0}" in
+      1|true|yes|on) sweep=1 ;;
+      *)             sweep=0 ;;
+    esac
+  fi
 
   # `lcars xo on <mission>` — a per-mission act: PUT THE MISSION BACK IN SCOPE.
   # It does not engage anything by itself. Engaging is the driver's to do at a
@@ -546,6 +1583,14 @@ cmd_on() {
       fi
       state_set_xo "$st" "$obj"
     fi
+    # AND THE QUIESCE COMES OFF (S245). `lcars xo off <id>` writes a stop marker
+    # and pauses the mission and its linked children BEFORE it signals anything,
+    # so that nothing can start behind the sweep. Leaving that marker on disk
+    # would make "back in scope" a sentence with nothing behind it: the resolver
+    # and the stage driver would both still refuse to spawn. `xo_unquiesce` reads
+    # the marker's OWN RECORD of what it paused, so a child paused for its own
+    # reason before the stop stays paused.
+    xo_unquiesce "$MISSIONS_DIR/$id"
     lcars_state_refusal_die "lcars xo on"
     printf '◈ NUMBER ONE: %s is back in scope — the opt-out is cleared.\n' "$id"
     cfg_enabled || printf '  Number One is OFF for this repo; run `lcars xo on` to engage it.\n'
@@ -561,10 +1606,84 @@ cmd_on() {
   [ -n "$model" ] && printf '  model: %s\n' "$model"
   printf '  It takes the conn at a gate and hands it back with a report.\n'
   printf '  Stand it down any time with `lcars xo off`.\n'
+  # AND THE QUIESCE COMES OFF EVERYWHERE (S245). The repo-level `lcars xo off`
+  # stands DOWN every engaged mission, and each of those stand-downs writes a
+  # stop marker and pauses the mission and its linked children. If this verb
+  # lifted none of them, "ON" would be a word with nothing behind it: every stage
+  # driver and every resolver would still refuse to spawn, and the only way back
+  # would be `lcars xo on <id>` once per mission — which nobody would know to do.
+  #
+  # THIS IS THE SAME DEFECT S240 FIX ROUND 2 CURED ONE FACT AGO. `off` wrote TWO
+  # facts and `on` undid ONE, so the mission stayed locked out while the captain
+  # had been told in plain words it was back. `off` now writes THREE, so `on`
+  # undoes three. `xo_unquiesce` only ever reverses what the stop itself recorded.
+  local qm
+  while IFS= read -r qm; do
+    [ -n "$qm" ] || continue
+    xo_unquiesce "$MISSIONS_DIR/$qm"
+  done <<< "$(all_missions)"
   # AND IT PICKS UP WHAT IS ALREADY WAITING (part G). Switching it on is the
   # captain saying "I have to step out"; a first officer who ignored the two
   # missions already parked at Verify would not be taking the conn at all.
-  xo_sweep_verify
+  #
+  # ── THE MEASURED SURPRISE, AND WHY THE DEFAULT IS NOW "ANNOUNCE" ─────────
+  # (S240 fix round 4, D1 measured it; S241 is the captain's ruling on it.)
+  #
+  # `lcars xo on --engine copilot` reads, in every word of it, like changing a
+  # setting — and it used to sweep every scoreless mission at Verify into a
+  # real look: launching builds, driving a browser, hiring workers, filing
+  # bugs. Five missions parked meant five reviews from one word, and the
+  # captain's money spent as the side effect of a config change. It was never
+  # secret — it announced itself first — but announcing real work is not the
+  # same as being asked to do it.
+  #
+  # HIS RULING: KEEP THE CATCH-UP, MAKE IT OPT-IN. So the default path is
+  # `xo_sweep_announce` — it names every mission waiting and the one command
+  # that starts them, for free, and returns. Nothing is launched, nothing is
+  # billed, and the verb exits in the time it takes to read some state files.
+  #
+  # IT NEVER ASKS. There is no prompt here and there must never be one: this
+  # product's whole point is the unattended overnight run, and a verb that
+  # waited for a keystroke would hang it until morning. Announce and exit, or
+  # run because a flag said to. Those are the only two shapes.
+  #
+  # WHAT DID NOT CHANGE. The opt-in path is the SAME `xo_sweep_verify` as
+  # before — same cage per look, same one-at-a-time order, same stand-down
+  # check between missions. And the gate hook is untouched: a mission that
+  # ARRIVES at Verify later is still engaged by the driver, which is where that
+  # decision has always belonged. `xo on` picking up the backlog was only ever
+  # about missions already parked when the switch was thrown.
+  if [ "$sweep" -eq 1 ]; then
+    xo_sweep_verify
+  else
+    xo_sweep_announce
+  fi
+}
+
+# xo_sweep_announce — THE DEFAULT PATH of `lcars xo on` since S241, and the
+# FREE half of the sweep: name what is waiting and the one command that starts
+# it. No launch, no browser, no worker, no spend, and NO PROMPT — it returns
+# instead of asking, so an unattended run can never block here. It shares
+# `xo_sweepable` with the sweep itself, so the two can never disagree about
+# which missions are in scope.
+xo_sweep_announce() {
+  [ "${LCARS_XO_SWEEP:-1}" = "0" ] && return 0
+  local id n=0 names=""
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    xo_sweepable "$id" || continue
+    n=$((n + 1))
+    names="${names:+$names, }$id"
+  done <<< "$(all_missions)"
+  [ "$n" -gt 0 ] || return 0
+  if [ "$n" -eq 1 ]; then
+    printf '  1 mission is waiting at Verify with no score of mine: %s.\n' "$names"
+  else
+    printf '  %d missions are waiting at Verify with no score of mine: %s.\n' "$n" "$names"
+  fi
+  printf '  Reviewing them launches each build and spends a worker, so it is its own word:\n'
+  printf '    lcars xo on --sweep\n'
+  return 0
 }
 
 # ===========================================================================
@@ -690,11 +1809,27 @@ cmd_off() {
     # mission's state.json, nothing stood down and nothing opted out — so say so
     # and exit non-zero rather than print either line.
     lcars_state_refusal_die "lcars xo off"
+    # THE FAILED STOP SPEAKS FIRST, AND NOTHING AFTER IT CLAIMS THE CONN
+    # (fix round 5, D1). The measured defect printed "stood down … you have the
+    # conn" and exited 0 over a live paid assistant, and had already deleted the
+    # handle that would have let the captain try again. All three are refused
+    # here: no stand-down line, the surviving pids named, non-zero exit — and
+    # `stand_down` keeps `xo-resolve.pid` on disk so the retry below is real.
+    if [ "$XO_STOP_FAILED" -gt 0 ]; then
+      xo_say_stop_failed "$id"
+      xo_say_unrecorded || true
+      return 1
+    fi
     if [ "$XO_STOOD_DOWN" -gt 0 ]; then
       printf '◈ NUMBER ONE: stood down on %s — you have the conn.\n' "$id"
+      # THE PAUSE, SAID OUT LOUD HERE TOO (fix round 1, D1). A captain who typed a
+      # mission id is no less entitled to know that the stop paused it and its
+      # logged bugs than one who typed none.
+      xo_say_paused "$id"
     else
       printf '◈ NUMBER ONE: %s is opted out — it will not be engaged there.\n' "$id"
     fi
+    xo_say_unrecorded || return 1
     return 0
   fi
 
@@ -705,13 +1840,89 @@ cmd_off() {
   local m
   while IFS= read -r m; do
     [ -n "$m" ] || continue
-    stand_down "$m"
+    # S254: `--repo-wide` — stand it down, lay the marker, and write no `paused`
+    # flag onto a Mission the captain never named.
+    stand_down "$m" --repo-wide
   done <<< "$(all_missions)"
   lcars_state_refusal_die "lcars xo off"
   printf '◈ NUMBER ONE: OFF\n'
   if [ "$XO_STOOD_DOWN" -gt 0 ]; then
     printf '  %d engaged mission(s) stood down — you have the conn.\n' "$XO_STOOD_DOWN"
   fi
+  xo_say_paused
+  # Same rule repo-wide: the switch is off, but a tree that is still running is
+  # said out loud and the verb fails. "OFF" above is a fact about the config;
+  # it is not, and must not read as, a claim about what has stopped.
+  if [ "$XO_STOP_FAILED" -gt 0 ]; then
+    xo_say_stop_failed "$(printf '%s' "$XO_STOP_FAILED_ON" | sed 's/^ *//')"
+    xo_say_unrecorded || true
+    return 1
+  fi
+  xo_say_unrecorded || return 1
+  return 0
+}
+
+# ONE writer for the PAUSE the stop left behind (fix round 1, D1). The captain
+# reads `N engaged mission(s) stood down — you have the conn.` and takes from it
+# that the processes are gone, which is true. What it never said is that the stop
+# also PAUSED things: the mission it stood down and every bug logged under it in
+# `xo/logs.json`. That flag outlives the command — `lcars run` halts on it — so a
+# captain who was not told goes looking for `⏸ paused at: …` days later with no
+# idea which command put it there, or that one word lifts it.
+#
+# THE COUNT IS XO_PAUSED, read off the flags the quiesce actually wrote. A stop
+# that paused nothing prints nothing: the line is a measurement, not a reflex.
+xo_say_paused() { # [mission-id]
+  [ "${XO_PAUSED:-0}" -gt 0 ] || return 0
+  if [ "$XO_PAUSED" -eq 1 ]; then
+    printf '  ⏸ 1 mission is now paused'
+  else
+    printf '  ⏸ %d missions are now paused' "$XO_PAUSED"
+  fi
+  printf ' so nothing restarts behind you — `lcars xo on%s` lifts the pause.\n' \
+    "${1:+ $1}"
+  return 0
+}
+
+# ONE writer for WHAT THE STOP COULD NOT RECORD (fix round 1, D4). Reached only
+# when the quiesce had already written, so the alternative sentence —
+# `lcars_state_refusal_die`'s "Nothing was written and nothing else in this
+# command took effect." — would be a flat untruth about a command that had just
+# paused four Missions. This one says what actually happened, in that order: the
+# stop went through, the recording did not, here is the file, and here is what the
+# board will show until it is fixed. rc 1 when it had something to admit, so the
+# verb still exits non-zero exactly as it did before.
+xo_say_unrecorded() {
+  [ -n "${XO_UNRECORDED:-}" ] || return 0
+  local line who why
+  printf '  ⚠ The stop itself went through — the processes are stopped and the xo-stop\n' >&2
+  printf '    marker is down, so no new work starts. What I could not do is RECORD it:\n' >&2
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    who="${line%%|*}"; why="${line#*|}"
+    printf '      %s — %s\n' "$who" "$why" >&2
+  done <<EOF
+$XO_UNRECORDED
+EOF
+  printf '    Those cards will still read `engaged`. That state.json is not the\n' >&2
+  printf '    one-field-per-line object LCARS writes, so the writer left it exactly as it\n' >&2
+  printf '    was. Put it back to one field per line (`{` alone on the first line, `}`\n' >&2
+  printf '    alone on the last), then run this again.\n' >&2
+  return 1
+}
+
+# ONE writer for the failed-stop sentence, so the single-mission and repo-wide
+# verbs cannot drift into saying different things about the same situation.
+xo_say_stop_failed() { # <mission(s)>
+  local who="${1:-}" pids
+  pids="$(printf '%s' "$XO_STOP_FAILED_PIDS" | tr ' ' '\n' | sed '/^$/d' \
+            | sort -un | tr '\n' ' ' | sed 's/ *$//')"
+  printf '◈ NUMBER ONE: I could NOT stop everything on %s. Still running: pid(s) %s.\n' \
+    "${who:-the mission}" "${pids:-unknown}" >&2
+  printf '  YOU DO NOT HAVE THE CONN — one of those is a worker that bills.\n' >&2
+  printf '  I kept the handle, so try again: `lcars xo off %s`. If it survives that too, `kill -9 %s`.\n' \
+    "${who%% *}" "${pids:-<those pids>}" >&2
+  return 0
 }
 
 # The status table. FOUR RECORDED COLUMNS — mission, stage, Number One's status,
@@ -792,6 +2003,11 @@ XO_RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.s
 XO_MALFORMED="Number One could not decide — malformed verdict"
 # S213 fix round 1, D4 — what a LOW means when the look never happened at all.
 XO_NOLOOK="I never got to look at your build, so nothing on your list is vouched for either way"
+# THE BATON FOR "THIS LOOK NEVER REACHED A VERDICT, AND IT WAS US" (S264 fix
+# round 1, FIX 4). Set by the arm that KNOWS, to the specific reason; read and
+# cleared by `xo_finish`, which is the one writer of `numberOne`. Empty means
+# nothing claims the look was blocked.
+XO_LOOK_BLOCKED=""
 
 pending_field() { # <pending.json> <key>
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
@@ -799,9 +2015,11 @@ pending_field() { # <pending.json> <key>
 
 # --- the read-only INPUT dir -----------------------------------------------
 # COPIES, not the originals, and every one of them chmod a-w. Number One is
-# reading the record of a mission it must not be able to change; the worker role
-# has no shell and no Edit (worker-adapter.sh), and this is the second fence
-# behind that one. A copy also means a mid-flight Stage writing to the mission
+# reading the record of a mission it must not be able to change. S261: the
+# look's worker now HAS a shell (inside a disposable detached worktree), so this
+# read-only copy is no longer the SECOND fence behind a tool denial — it is one
+# of the primary ones, together with the post-turn mission-state audit in
+# `run.sh`. A copy also means a mid-flight Stage writing to the mission
 # cannot move the ground under a verdict half-formed.
 gather_inputs() { # <mission-dir> <input-dir>
   local dir="$1" into="$2" f
@@ -900,6 +2118,16 @@ xo_put_inputs() { # <input-dir> <criteria.json> <shots-dir> [observations.json] 
     rm -f "$into/journey.json" 2>/dev/null || true
     cp "$xodir_of/journey.json" "$into/journey.json" 2>/dev/null || true
     chmod a-w "$into/journey.json" 2>/dev/null || true
+  fi
+  # THE NOTEBOOK COMES BACK (S246). The worker's OWN notes from the earlier
+  # rounds of this same look, through the same read-only door as everything else
+  # — it may read what it wrote and it may never edit it. A round-1 worker finds
+  # no notes.md at all, which is correct: there is nothing to remember yet, and a
+  # file full of nothing is an invitation to invent a history.
+  if [ -s "$xodir_of/notes.md" ]; then
+    rm -f "$into/notes.md" 2>/dev/null || true
+    cp "$xodir_of/notes.md" "$into/notes.md" 2>/dev/null || true
+    chmod a-w "$into/notes.md" 2>/dev/null || true
   fi
   if [ -s "$xodir_of/pairs.json" ]; then
     rm -f "$into/pairs.json" 2>/dev/null || true
@@ -1225,8 +2453,18 @@ xo_teardown() {
   [ -n "$XO_TESTS_PID" ] && xo_kill_tree "$XO_TESTS_PID"
   XO_DRIVE_PID=""; XO_SPIN_PID=""; XO_TESTS_PID=""
   xo_stop_launch
+  # S246 — THE LOOK'S REACH TREE GOES TOO, on every path out including a signal.
+  # It now outlives a single `xo-run.py` call by design, so this is the only
+  # place that can be relied on to remove it; a killed look used to leave a
+  # REGISTERED worktree in the captain's repo and a throwaway HOME on disk.
+  xo_reach_teardown
   [ -n "$XO_WORK_DIR" ] && xo_rm_work "$XO_WORK_DIR"
   XO_WORK_DIR=""
+  # AND THE MISSION GOES BACK. The claim is held for the WHOLE process, not
+  # just the looking part, because the measured defect was a second look
+  # overwriting the verdict AFTER the first had filed its bugs from it. It is
+  # released here, on the EXIT trap, so every way out of a look gives it back.
+  xo_release_claim
   return 0
 }
 
@@ -1330,7 +2568,18 @@ cmd_answer() {
   # its read-only input copy at all; the EXIT trap does now, on every path.
   trap xo_teardown EXIT
   trap on_stand_down TERM INT
-  printf '%s\n' "$$" >"$dir/xo.pid"
+  # ONE AT A TIME, ON ONE MISSION (fix round 4, D1). Taken BEFORE the pidfile,
+  # because the pidfile is a RECORD of a look and this is the PERMISSION for
+  # one. The EXIT trap above gives it back on every path out.
+  xo_claim_or_die "$dir" "a look at the ${stage:-?} gate"
+  # WHO, NOT JUST WHICH NUMBER (S245). This was a bare `printf "$$"`, one line,
+  # which meant `lcars xo off` could not run the look's pid file through
+  # `xo_signal_pidfile` at all — that function refuses a file that does not
+  # record an identity, so the look got an unverified `kill -TERM` and had its
+  # handle deleted in the same breath. `xo_write_pidfile` keeps the bare pid on
+  # line 1, so every `head -1` reader is unaffected, and adds the group this
+  # process leads (only where it genuinely leads one) and the instant it started.
+  xo_write_pidfile "$$" "$dir/xo.pid"
 
   printf '◈ NUMBER ONE: reading the record for %s (%s gate)…\n' "$id" "${stage:-?}"
 
@@ -1375,12 +2624,25 @@ cmd_answer() {
   # harness targets (3.2, the one macOS ships) mis-parses a here-document nested
   # in a command substitution, and the failure is a syntax error hundreds of
   # lines away from the cause. Writing the script out first is the cheap cure.
+  # S250 — THE FILE MAY HAVE ARRIVED BY EITHER CHANNEL. `run.sh` has already
+  # resolved it (the worker's own file if it wrote one, otherwise the block it
+  # framed in its reply) and recorded which; this publishes that to the journal so
+  # the captain's report says it, and hands the reader the sentence to use when
+  # nothing came at all.
+  xo_journal_channel "$dir" "$out" 0
+  local chan_why=""
+  [ -s "$out/xo-channel.json" ] && chan_why="$(json_field "$out/xo-channel.json" why)"
   local verdict="$out/xo-answer.json" report reader="$work/read-verdict.py"
   cat >"$reader" <<'XO_PY'
 import json, os, re, sys
 
 path = os.environ.get("LCARS_XO_VERDICT", "")
 indir = os.environ.get("LCARS_XO_INPUT", "")
+# S250 — WHAT THE CHANNEL SAID, when there is no file to read. "no verdict file
+# was written" named the symptom and never the cause; the verdict channel knows
+# whether the worker said nothing at all, framed something that was not JSON, or
+# framed a file this round may not write, and that sentence belongs here.
+channel = os.environ.get("LCARS_XO_CHANNEL_WHY", "").strip()
 
 def bad(why):
     print("MALFORMED\t" + why)
@@ -1390,7 +2652,7 @@ try:
     with open(path) as fh:
         raw = fh.read()
 except Exception:
-    bad("no verdict file was written")
+    bad(channel or "no verdict file was written")
 
 # A worker that wraps its JSON in a fenced block has still answered; unwrap the
 # ONE outermost object rather than refuse over punctuation. Anything else is a
@@ -1475,6 +2737,7 @@ print("RATIONALE\t" + rationale)
 print("RECOMMENDATION\t" + recommendation)
 XO_PY
   report="$(LCARS_XO_VERDICT="$verdict" LCARS_XO_INPUT="$input" \
+            LCARS_XO_CHANNEL_WHY="$chan_why" \
             "${LCARS_PYTHON_BIN:-python3}" "$reader" 2>/dev/null)" || report=""
 
   local kind="" answer_text="" rationale="" recommendation="" why="" cite_file="" cite_quote=""
@@ -1640,7 +2903,22 @@ XO_PY="${LCARS_PYTHON_BIN:-python3}"
 # in its prompt all read this one variable — the prompt's copy through
 # $LCARS_XO_MAX_ROUNDS, which the round loop exports for the spawn. A second
 # hard-coded 3 in prose is exactly how the two drift apart.
-XO_MAX_ROUNDS="${LCARS_XO_MAX_ROUNDS:-2}"
+# S246 — AND THE CEILING IS NOW OPT-IN, BECAUSE A LOOK HAS NO CLOCK (captain,
+# 2026-10-04). The buddy, following the same checklists by hand, ran for HOURS.
+# Number One was cut off at two rounds — roughly five minutes — so it could never
+# seed in one round and read the effect in the next, which is most of what the
+# buddy's day consists of. UNSET now means NO CEILING: the loop runs until the
+# worker writes its verdict, and the bounds that remain are the per-step cage,
+# the captain's `lcars xo off`, and the look timeout. SET still means a ceiling,
+# and every sentence below that quotes it still reads true — the benchmark rig
+# and the fix-round drives set it, and this variable is still the ONE place the
+# number lives.
+#
+# A BIGGER CAP WOULD HAVE BEEN THE WRONG ANSWER. The old number was not too
+# small; a number was the wrong instrument. What ends a look is the worker
+# deciding it has seen enough, and a round that asks for neither actions nor a
+# verdict ends it too — another round with identical inputs buys the same silence.
+XO_MAX_ROUNDS="${LCARS_XO_MAX_ROUNDS:-}"
 # THE RECORD SEPARATOR FOR EVERY PLAN THIS SCRIPT READS BACK (fix round 1, D2).
 # ASCII US (0x1f), never a tab. TAB IS IFS WHITESPACE, so `IFS=$'\t' read -r …`
 # COLLAPSES a run of them: a record with an EMPTY field loses it and every later
@@ -1658,6 +2936,27 @@ XO_TESTS_PY="${LCARS_XO_TESTS_PY:-$SKILL_DIR/xo-tests.py}"
 # and a short wait; past it the look says the tests could not be run and gets on
 # with itself rather than holding the captain's Verify gate open all night.
 XO_TEST_TIMEOUT="${LCARS_XO_TEST_TIMEOUT:-300}"
+# S239/S243 — THE BOUND THE REPO MEASURED, when it has measured one. S243 writes
+# `.git/lcars/suite-timing.json` from real runs of this project's own suite; a
+# repo whose suite honestly takes eleven minutes should not have its Verify read
+# "your tests were still running after 300s" forever. The env var remains the
+# answer when there is no measurement, and a file with no timing in it falls
+# back rather than to 0 — a zero timeout would report every suite as hung.
+xo_test_timeout() {
+  local f="$LCARS_DIR/suite-timing.json" n=""
+  if [ -f "$f" ]; then
+    n="$("$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+for k in ("testTimeout", "suiteSeconds", "seconds"):
+    v = d.get(k) if isinstance(d, dict) else None
+    if isinstance(v, (int, float)) and v > 0:
+        print(int(v)); break' "$f" 2>/dev/null)"
+  fi
+  printf '%s\n' "${n:-$XO_TEST_TIMEOUT}"
+}
 # How much of the output the worker is handed. The tail, because that is where
 # every runner in common use puts its summary and its failures — and the cut is
 # STATED in the record, because a line the worker cannot find is a line the
@@ -1730,7 +3029,17 @@ xo_read_drawing() { # <mission-dir> <xodir>
   mkdir -p "$xodir/drawing" 2>/dev/null || true
   "$XO_NODE" "$XO_DRIVER" --url "file://$draw" --out "$xodir/drawing" \
     --parts-out "$xodir/drawing-parts.json" --prefix "drawn" \
-    >"$xodir/drawing.json" 2>"$xodir/drawing.err" || true
+    >"$xodir/drawing.json" 2>"$xodir/drawing.err" &
+  # S256 — THE STOP BUTTON MUST LAND DURING A DRAWING READ. This driver used to
+  # run in the FOREGROUND, and bash defers a trap until the foreground command
+  # returns: `lcars xo off` therefore did NOT stop a look that was reading the
+  # captain's drawing, and three B11c assertions (direct TERM ends the spin, the
+  # driver dies with it, the launch is stopped) were red for that reason. Backgrounding
+  # and waiting makes the shell interruptible; the pid is recorded so the stop path
+  # can reach this child.
+  XO_DRIVE_PID=$!
+  wait "$XO_DRIVE_PID" || true
+  XO_DRIVE_PID=""
   [ -s "$xodir/drawing-parts.json" ] || {
     journal "$dir" drawing-parts '"read": 0, "detail": "the drawing would not render"'
     return 0
@@ -1758,6 +3067,18 @@ except Exception: print(0)' "$xodir/drawing-parts.json" 2>/dev/null)"
 
 xo_pair_parts() { # <mission-dir> <xodir> [baseline-matched] — pair the drawing with every screen seen
   local dir="$1" xodir="$2" baseline="${3:-}" f nbuild=0
+  # ── NO MEASUREMENT OVER A PAGE WE REFUSED TO PLACE (S248 fix round 1, D3) ──
+  # The tester read `side by side: 4 drawn part(s): 2 matched, 2 unreachable, 1
+  # with a measured difference` ON THE WRONG-SCREEN RUN — a measured comparison
+  # against the very page the grade had just refused to grade. If the look will
+  # not place the page, a side-by-side against it is the same claim in a second
+  # voice, so it stands down WITH the grade and says why. Keyed off the one
+  # record the grade reads, set only by the rail that wrote it.
+  if [ "${XO_WRONG_SCREEN_STANDS:-0}" = 1 ]; then
+    printf '  I will not measure your drawing against a page I could not place — the side-by-side stands down with the grade.\n'
+    journal "$dir" pairing-stood-down '"why": "the page could not be placed, so a measured comparison against it would be a statement about the wrong screen"'
+    return 0
+  fi
   [ -s "$xodir/drawing-parts.json" ] || return 0
   set --
   for f in "$xodir"/build-parts-*.json; do
@@ -1906,7 +3227,7 @@ xo_seed() { # <mission-dir> <xodir> <where-to-run> — load the declared sample 
   line="$(xo_seed_declared "${where:-$PWD}")"
   src="${line%%$'\t'*}"; cmd="${line#*$'\t'}"
   if [ -z "$line" ]; then
-    "$XO_PY" -c 'import json,sys; json.dump({"declared": False}, open(sys.argv[1], "w"), indent=2)' \
+    "$XO_PY" -c 'import json,sys; json.dump({"declared": False, "sources": []}, open(sys.argv[1], "w"), indent=2)' \
       "$xodir/seed.json" 2>/dev/null || true
     printf '◈ NUMBER ONE: no sample data is declared for this repo — screens that need data may be unseeable.\n'
     journal "$dir" seed '"declared": false'
@@ -1915,15 +3236,682 @@ xo_seed() { # <mission-dir> <xodir> <where-to-run> — load the declared sample 
   printf '◈ NUMBER ONE: loading the sample data — %s.\n' "$src"
   ( cd "$where" 2>/dev/null && xo_cage "$XO_SEED_TIMEOUT" bash -c "$cmd" ) \
     >"$xodir/seed.log" 2>&1 || rc=$?
+  # THE HOME IS A RECORD, NOT AN INFERENCE (S248 fix round 1, D4). `ranIn` said
+  # which WORKSPACE the command ran in and nothing said which HOME. That is the
+  # one fact that separates "the page was empty" from "the seed and the app were
+  # looking at two different stores", and only the thing that runs the command
+  # knows it — so it is written down here, at the moment it is known. This
+  # command inherits the captain's own HOME (the launched app's HOME too); the
+  # WORKER's steps do not, and `xo_seed_worker_record` records theirs.
   "$XO_PY" -c 'import json,sys
+row = {"by": "repo", "source": sys.argv[2], "command": sys.argv[3],
+       "exit": int(sys.argv[4]), "ranIn": sys.argv[5], "ran": True,
+       "home": sys.argv[6]}
 json.dump({"declared": True, "source": sys.argv[2], "command": sys.argv[3],
-           "exit": int(sys.argv[4]), "ranIn": sys.argv[5]},
+           "exit": int(sys.argv[4]), "ranIn": sys.argv[5], "sources": [row]},
           open(sys.argv[1], "w"), indent=2)' \
-    "$xodir/seed.json" "$src" "$cmd" "$rc" "$where" 2>/dev/null || true
+    "$xodir/seed.json" "$src" "$cmd" "$rc" "$where" "${HOME:-}" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     printf '  the seed came back rc=%s — see %s\n' "$rc" "$xodir/seed.log"
   fi
   journal "$dir" seed "$(printf '"declared": true, "exit": %s, "detail": %s' "$rc" "$(jstr "$src")")"
+  return 0
+}
+
+# ── SEED, THEN LOOK, IN THE TREE THE LAUNCH SERVES (S248) ───────────────────
+#
+# THE SPIKE, AND WHY IT POINTS THIS WAY. The session asked whether `launch.sh`
+# could be handed the look's existing detached worktree and HOME. IT CANNOT: it
+# has no `--worktree` and no `--home`, and its parser dies on any unknown flag
+# (launch.sh: "unknown option … usage: lcars launch <mission> [hint] [--stop]").
+# The launch contract is a declared invariant of this round, so teaching it a
+# flag is a STOP, not a judgement call — and the direction is therefore forced
+# the other way round: THE LOOK ADOPTS `launch.json.worktree`. The steps run in
+# the tree the launch already serves, and `launch.sh` is unchanged.
+#
+# THE DEFECT THAT MAKES THIS WORTH DOING (measured, weekend of 2026-10-03).
+# `xo_seed` ran in `launch.json.worktree`; the reach ran in `xo-run.py`'s OWN
+# tree, BEFORE it. So nothing seeded the tree the worker's steps ran in and
+# nothing the worker seeded ever reached the page. 7 of 29 missed bugs sat behind
+# "nothing seeded" or "the wrong thing launched".
+#
+# AND THE ORDER MATTERS AS MUCH AS THE TREE. A screen that only exists once there
+# is data in it cannot be photographed into existence afterwards, so the worker
+# gets a round BEFORE the launch, its steps run in the launched tree, and only
+# then does the walk happen. `verifySeed` still runs if declared, and `seed.json`
+# records BOTH sources.
+XO_REACH_ADOPTED=0
+XO_PRELAUNCH_ACTS=""
+# S248 fix round 1, D3 — the ONE record the evaluate rail sets when it decided it
+# could not place the page it was given. The grade already stands every browser
+# row down off `wrong-screen.json`; this is what makes the measured side-by-side
+# stand down WITH it instead of reporting a comparison against the wrong screen.
+# Set only by `cmd_evaluate`'s wrong-screen rail, so a re-check (which has no such
+# rail, and whose scorer is handed no wrong-screen record) is untouched by it.
+XO_WRONG_SCREEN_STANDS=0
+
+xo_reach_adopt() { # <mission-dir> <launch-worktree> — ONE tree for steps and launch
+  local dir="$1" wt="$2"
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  [ "$wt" != "$XO_REACH_WT" ] || return 0
+  # The tree `xo_reach_prepare` minted is now surplus — one look, one tree. It is
+  # handed back through the SAME teardown road (there is no second
+  # implementation), and its throwaway HOME is KEPT, because that is the HOME the
+  # steps run under and the one helper is the only thing that mints it.
+  if [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && [ "$XO_REACH_ADOPTED" = 0 ]; then
+    "$XO_PY" "$XO_RUN_PY" teardown --repo "${XO_REACH_REPO:-$PWD}" \
+      --worktree "$XO_REACH_WT" >/dev/null 2>&1 || true
+  fi
+  XO_REACH_WT="$wt"
+  XO_REACH_ADOPTED=1
+  if [ -z "$XO_REACH_HOME" ] || [ ! -d "$XO_REACH_HOME" ]; then
+    # No helper ran (no branch on the record, or it refused), and a step still
+    # needs a HOME that is not the captain's. A bare directory is all a HOME is;
+    # the WORKTREE is the thing only one helper may make, and that one came from
+    # the launch.
+    XO_REACH_HOME="$(mktemp -d)"
+  fi
+  [ -n "$XO_REACH_REPO" ] || XO_REACH_REPO="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+  # S261 — the ADOPTED tree is the one the reviewer stands in from here on. The
+  # hand-over is re-done rather than left pointing at the surplus tree that was
+  # just handed back, which would be a reviewer running in a directory that no
+  # longer exists.
+  xo_hand_over_copy
+  journal "$dir" reach-tree "$(printf '"worktree": %s, "home": %s, "adopted": true, "from": "launch"' \
+    "$(jstr "$XO_REACH_WT")" "$(jstr "$XO_REACH_HOME")")"
+  return 0
+}
+
+# WHAT THE WORKER SEEDED, ON THE SEED RECORD (S248). The steps are the worker's
+# and they ran in the launched tree; both facts go next to the repo's own seed so
+# the report can say which data the page was showing and where it came from.
+xo_seed_worker_record() { # <xodir> <kept-actions.json> <tree> <round> [home]
+  [ -s "$2" ] || return 0
+  "$XO_PY" - "$1/seed.json" "$2" "$3" "$4" "${5:-}" <<'XO_SEEDPY'
+import json, sys
+
+seed, kept, tree, rnd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+home = sys.argv[5] if len(sys.argv) > 5 else ""
+try:
+    with open(seed) as fh:
+        doc = json.load(fh)
+except Exception:
+    doc = {}
+if not isinstance(doc, dict):
+    doc = {}
+try:
+    with open(kept) as fh:
+        k = json.load(fh)
+except Exception:
+    k = {}
+steps = [s for s in ((k.get("reachSteps") if isinstance(k, dict) else None) or [])
+         if isinstance(s, dict)]
+if not steps:
+    raise SystemExit(0)
+rows = doc.get("sources")
+if not isinstance(rows, list):
+    rows = []
+rows.append({"by": "worker", "round": int(rnd or 0), "ranIn": tree, "ran": True,
+             # S248 fix round 1, D4 — the HOME these steps ran under, written at
+             # the moment it is known. It is a THROWAWAY one while the launched
+             # app keeps the captain's real HOME, and that asymmetry is the whole
+             # reason the fact has to be on the record rather than worked out
+             # later from an empty-looking page.
+             "home": home,
+             "steps": [{"key": str(s.get("key") or ""), "do": str(s.get("do") or ""),
+                        "argv": s.get("argv") or s.get("path") or ""}
+                       for s in steps]})
+doc["sources"] = rows
+doc["declared"] = True
+if not str(doc.get("source") or "").strip():
+    doc["source"] = "the worker declared the steps that put data on the page"
+with open(seed, "w") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+XO_SEEDPY
+  return 0
+}
+
+# ── WHICH PAGE IS THE SURFACE UNDER REVIEW (S248) ───────────────────────────
+#
+# THE DEFECT. `launch.sh` discovers ONE command, and on the modelled weekend one
+# `make serve` served the FOUNDATION fixture for every later milestone — the
+# single root cause across the whole run. Nothing ever said the page matched no
+# mockup. So when the record declares more than one web surface, the worker NAMES
+# the one it is reviewing, and that name travels to `launch.sh` as the HINT the
+# verb already takes — never as a frozen command and never as a new flag.
+xo_serve_targets() { # <mission-dir> <xodir> — writes serve-targets.json, prints the count
+  "$XO_PY" - "$1" "$2/serve-targets.json" "$PWD" 2>/dev/null <<'XO_TARGPY' || printf '0\n'
+import json, os, sys
+
+mdir, out = sys.argv[1], sys.argv[2]
+root = sys.argv[3] if len(sys.argv) > 3 else "."
+WEB = ("web", "page", "site", "http", "url", "browser")
+# THE NAMES THAT SAY "THIS SERVES SOMETHING" — a list, compared, never a pattern
+# matched against text. This repo has paid three times (S147, S156, S188) for a
+# rail that read prose, and `lcars-xo-landing` guards the whole diff against it.
+SERVES = ("dev", "serve", "start", "preview", "site", "docs")
+targets = []
+
+
+def add(row):
+    for t in targets:
+        if t.get("path") == row.get("path") and t.get("from") == row.get("from"):
+            return
+    targets.append(row)
+
+
+try:
+    with open(os.path.join(mdir, "plan.json")) as fh:
+        plan = json.load(fh)
+except Exception:
+    plan = {}
+for ticket in ((plan.get("tickets") if isinstance(plan, dict) else None) or []):
+    if not isinstance(ticket, dict):
+        continue
+    for ep in (ticket.get("entrypoints") or []):
+        if not isinstance(ep, dict):
+            continue
+        kind = str(ep.get("kind") or "").strip().lower()
+        url = str(ep.get("urlPath") or ep.get("url") or "").strip()
+        if kind not in WEB and not url:
+            continue
+        add({"from": "the plan's entrypoints[]", "kind": kind or "web",
+             "path": str(ep.get("path") or ""), "urlPath": url,
+             "ticket": str(ticket.get("id") or "")})
+
+# THE REPO'S OWN SERVE TARGETS. Read, never guessed at: a script or a target
+# whose NAME says it serves something. Two of them is the ambiguity this exists
+# for; one is not an ambiguity at all.
+try:
+    with open(os.path.join(root, "package.json")) as fh:
+        pkg = json.load(fh)
+    for name in sorted((pkg.get("scripts") or {})):
+        if str(name).split(":")[0] in SERVES:
+            add({"from": "package.json scripts", "kind": "web",
+                 "path": "npm run %s" % name, "urlPath": ""})
+except Exception:
+    pass
+try:
+    with open(os.path.join(root, "Makefile")) as fh:
+        for line in fh:
+            if ":" not in line or line[:1] in (" ", "\t", "#", ""):
+                continue
+            target = line.split(":")[0].strip()
+            if target and target.split("-")[0] in SERVES + ("run",):
+                add({"from": "the Makefile", "kind": "web",
+                     "path": "make %s" % target, "urlPath": ""})
+except Exception:
+    pass
+
+os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+with open(out, "w") as fh:
+    json.dump({"targets": targets, "count": len(targets)}, fh, indent=2)
+    fh.write("\n")
+print(len(targets))
+XO_TARGPY
+}
+
+# A PAGE, AND A COMMAND LINE THAT COULD PUT DATA ON IT. Read off the contract the
+# look has already written, never guessed: `productTypes` says there is a screen
+# and `entrypoints[]` says there is a CLI. Both, or there is nothing to ask.
+xo_seedable() { # <criteria.json> → 1 | 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); raise SystemExit
+types = {str(t.get("type") or "") for t in (d.get("productTypes") or []) if isinstance(t, dict)}
+eps = {str(e.get("kind") or "") for e in (d.get("entrypoints") or []) if isinstance(e, dict)}
+print(1 if ("web" in types and "cli" in eps) else 0)' "$1" 2>/dev/null || printf '0\n'
+}
+
+xo_serve_write() { # <mission-dir> <xodir> <actions.json> <from>
+  local dir="$1" xodir="$2" acts="$3" from="$4"
+  "$XO_PY" - "$xodir/serve.json" "$acts" "$from" 2>/dev/null <<'XO_SERVEPY' || true
+import json, sys
+
+out, acts, src = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(acts) as fh:
+        d = json.load(fh)
+except Exception:
+    d = None
+serve = None
+if isinstance(d, dict):
+    if isinstance(d.get("serve"), dict):
+        serve = d["serve"]
+    else:
+        for a in (d.get("actions") or []):
+            if isinstance(a, dict) and str(a.get("do") or "") == "serve":
+                serve = a
+                break
+elif isinstance(d, list):
+    for a in d:
+        if isinstance(a, dict) and str(a.get("do") or "") == "serve":
+            serve = a
+            break
+argv = []
+if isinstance(serve, dict):
+    argv = [str(x) for x in (serve.get("argv") or []) if str(x).strip()]
+if not argv:
+    # NOT DECLARED IS A RECORD TOO. The launch then happens exactly as it always
+    # did, with no hint at all — a worker that named no page has not named a
+    # wrong one.
+    with open(out, "w") as fh:
+        json.dump({"declared": False, "from": src}, fh, indent=2)
+        fh.write("\n")
+    raise SystemExit(0)
+# THE LOOK'S DECLARED ENV, FOR THE LAUNCHED APP (S248). A product that keeps its
+# data under a directory named by an env var needs the SEED and the SERVER to
+# agree about it, or one tree is still two stores. Only plain names, and never
+# HOME or PATH: HOME is the standing rule (the launch's own discovery worker
+# authenticates from the captain's real HOME, exactly as the look's Chrome does),
+# and PATH would let a declaration choose which binaries the launch runs.
+env = {}
+declared_env = serve.get("env") if isinstance(serve.get("env"), dict) else {}
+for k, v in sorted(declared_env.items()):
+    name = str(k)
+    if name in ("HOME", "PATH", "TMPDIR", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"):
+        continue
+    if not name or not all(c.isalnum() or c == "_" for c in name) or name[0].isdigit():
+        continue
+    env[name] = str(v)
+with open(out, "w") as fh:
+    json.dump({"declared": True, "from": src, "argv": argv,
+               "cwd": str(serve.get("cwd") or "<worktree>"),
+               "urlPath": str(serve.get("urlPath") or serve.get("url") or ""),
+               "env": env},
+              fh, indent=2)
+    fh.write("\n")
+XO_SERVEPY
+  # NOT `json_field` — that reader returns STRING values only, and `declared` is a
+  # boolean, so it reads empty for a target that really was declared. The argv
+  # line is printed only for a declared target, so it IS the test.
+  if [ -n "$(xo_serve_command "$xodir/serve.json")" ]; then
+    journal "$dir" serve-declared "$(printf '"from": %s, "command": %s, "urlPath": %s' \
+      "$(jstr "$from")" "$(jstr "$(xo_serve_command "$xodir/serve.json")")" \
+      "$(jstr "$(json_field "$xodir/serve.json" urlPath)")")"
+  fi
+  return 0
+}
+
+xo_serve_env() { # <serve.json> → one KEY=value per line, for the launched app
+  [ -s "$1" ] || return 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+for k, v in sorted((d.get("env") or {}).items()):
+    if "\n" in str(v):
+        continue
+    print("%s=%s" % (k, v))' "$1" 2>/dev/null
+}
+
+xo_serve_command() { # <serve.json> → the argv, as one line
+  [ -s "$1" ] || return 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+if d.get("declared"):
+    print(" ".join(d.get("argv") or []))' "$1" 2>/dev/null
+}
+
+# THE HINT IS PROSE, because that is what `lcars launch <mission> [hint]` takes.
+# A hint is a suggestion the launch's own discovery reads; it is never a frozen
+# command, which is the whole difference between naming the page and overriding
+# the verb that knows how to start it.
+xo_serve_hint() { # <serve.json> → the hint line, or nothing
+  [ -s "$1" ] || return 0
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+if not d.get("declared"):
+    raise SystemExit
+argv = " ".join(d.get("argv") or [])
+if not argv:
+    raise SystemExit
+print("serve the surface under review with: %s (cwd %s, the page is at %s)"
+      % (argv, d.get("cwd") or "<worktree>", d.get("urlPath") or "/"))' "$1" 2>/dev/null
+}
+
+# ONE ROAD TO THE LAUNCH, HINT OR NO HINT (S248). `xo.sh` must be able to launch
+# twice in one look — once on what the record said, once on what the worker named
+# after the first page turned out to be the wrong screen — and the ONLY way that
+# stays honest is if both go through this one function and therefore through
+# `launch.sh`. There is no second launch path anywhere in this file.
+xo_do_launch() { # <mission-dir> <mission-id> <xodir> <engine>
+  local dir="$1" id="$2" xodir="$3" engine="$4" hint="" envline envfile
+  hint="$(xo_serve_hint "$xodir/serve.json")"
+  # THROUGH A FILE, not a heredoc inside the subshell below: bash 3.2 (the one
+  # macOS ships) mis-parses a here-document nested inside a command substitution,
+  # and the failure lands hundreds of lines from its cause.
+  envfile="$(mktemp)"
+  xo_serve_env "$xodir/serve.json" >"$envfile" 2>/dev/null || :
+  (
+    if [ -n "$engine" ]; then
+      export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    # launch.sh starts the app with the environment it was itself given
+    # (`sh -c "cd … && exec $CMD"`), so a declared variable reaches the app by
+    # being exported here. The names were fenced where serve.json was written —
+    # and HOME is NOT among them: the launch's own discovery worker authenticates
+    # from the captain's real HOME, the same standing rule that keeps the look's
+    # Chrome on the real one.
+    while IFS= read -r envline; do
+      [ -n "$envline" ] || continue
+      export "${envline?}"
+    done <"$envfile"
+    if [ -n "$hint" ]; then
+      # `--` is launch.sh's real end-of-options marker (S215), so a hint that
+      # contains a word starting with `-` is still prose and not an option.
+      exec bash "$XO_LAUNCH_SCRIPT" "$id" -- "$hint"
+    fi
+    exec bash "$XO_LAUNCH_SCRIPT" "$id"
+  ) >>"$xodir/launch.log" 2>&1 || true
+  rm -f "$envfile"
+  return 0
+}
+
+# ── THE ROUND BEFORE THE LAUNCH (S248) ──────────────────────────────────────
+#
+# WHAT IT IS FOR, IN ONE SENTENCE: steps taken before the launch are what the
+# page will be showing, and only the worker knows what this product needs typed
+# into it. So it is asked, once, before anything is served — and its steps then
+# run in the tree the launch serves, before the first picture.
+#
+# IT IS NOT ASKED WHEN THERE IS NOTHING TO ASK. Two triggers, both read off the
+# contract the look has already written: more than one web surface (which page?),
+# or a page plus a command line that could put data on it (what does it need?).
+# A milestone with neither spends nothing here.
+xo_prelaunch_round() { # <mission-dir> <xodir> <input-dir> <work> <engine>
+  local dir="$1" xodir="$2" input="$3" work="$4" engine="$5" n why="" out id
+  id="${dir##*/}"
+  n="$(xo_serve_targets "$dir" "$xodir")"
+  n="${n:-0}"
+  case "${LCARS_XO_PRELAUNCH:-}" in
+    0) journal "$dir" prelaunch '"asked": false, "why": "switched off"'
+       return 0 ;;
+    1) why="the look was asked to" ;;
+  esac
+  if [ -z "$why" ]; then
+    if [ "$n" -gt 1 ] 2>/dev/null; then
+      why="the record declares $n web surfaces, and only one of them is under review"
+    elif [ "$(xo_seedable "$xodir/criteria.json")" = 1 ]; then
+      why="this milestone has a page and a command line that could put data on it"
+    else
+      journal "$dir" prelaunch "$(printf '"asked": false, "surfaces": %s' "$n")"
+      return 0
+    fi
+  fi
+  out="$work/round-0"
+  mkdir -p "$out"
+  printf '◈ NUMBER ONE: before I launch anything — %s.\n' "$why"
+  printf '  Asking which page is under review, and what has to be on it.\n'
+  journal "$dir" prelaunch "$(printf '"asked": true, "surfaces": %s, "why": %s' \
+    "$n" "$(jstr "$why")")"
+  (
+    export LCARS_XO_INPUT_DIR="$input" LCARS_WORKER_INPUT_DIRS="$input"
+    export LCARS_XO_PRELAUNCH=1
+    if [ -n "$engine" ]; then
+      export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+      --mission "$id" --mode evaluate --outdir "$out"
+  ) >/dev/null 2>&1 &
+  XO_SPIN_PID=$!
+  wait "$XO_SPIN_PID" 2>/dev/null || true
+  XO_SPIN_PID=""
+  xo_keep_notes "$dir" "$xodir" "$out" 0
+  xo_journal_channel "$dir" "$out" 0
+  if [ -s "$out/xo-actions.json" ]; then
+    xo_serve_write "$dir" "$xodir" "$out/xo-actions.json" "the worker, before the launch"
+    XO_PRELAUNCH_ACTS="$out/xo-actions.json"
+    journal "$dir" looking "$(xo_looking_body "$out/xo-actions.json" 0)"
+  elif [ -s "$out/xo-verdict.json" ]; then
+    # A VERDICT WITH NO PICTURES IS NOT A VERDICT. Nothing has been served yet,
+    # so this round cannot have looked at the build; it is recorded and dropped
+    # rather than published as the look's answer.
+    journal "$dir" prelaunch-verdict-ignored '"why": "nothing had been launched yet, so there was nothing to judge"'
+  fi
+  return 0
+}
+
+# The worker's pre-launch steps, run in the tree the launch serves, BEFORE the
+# first picture. `verifySeed` has already run; both land on `seed.json`.
+xo_prelaunch_steps() { # <mission-dir> <xodir> <shots> <tree>
+  [ -n "$XO_PRELAUNCH_ACTS" ] && [ -s "$XO_PRELAUNCH_ACTS" ] || return 0
+  printf '◈ NUMBER ONE: running the steps that put data on the page, before I look at it…\n'
+  xo_reach_actions "$1" "$2" "$3" "$XO_PRELAUNCH_ACTS" 0
+  xo_seed_worker_record "$2" "$2/actions-kept-0.json" "$4" 0 "${XO_REACH_HOME:-}"
+  XO_PRELAUNCH_ACTS=""
+  return 0
+}
+
+# ── WAS ANYBODY TOLD WHETHER THE STEPS CHANGED THE PAGE (S248 fix round 1) ──
+#
+# D1, AS THE TESTER SAW IT. The set-up steps ran in exactly the right workspace
+# (`seed.json`: `by: "worker"`, `ranIn: <the launch tree>`) and the records they
+# filed survived into the next round — yet EVERY readout in the whole review had
+# the declared part absent. Pictures are taken at the TOP of a round and the
+# steps run at the END of one, so a round's own render landed after its camera
+# and the review ended. "Nothing checks whether the steps just run actually
+# changed the page, and nothing tells the reviewer."
+#
+# THE SHAPE CHOSEN: shoot again at the END of a round whose steps ran. It is the
+# direct cure for the measured cause (the ordering), it needs no second ask of
+# the worker, and the shot it takes lands in `$shots` — which is re-synced into
+# the worker's input directory every round, so the NEXT round sees the page the
+# steps produced rather than the one that preceded them.
+xo_shot_text() { # <shots-dir> <prefix> → what the first readout of that prefix read
+  "$XO_PY" - "$1" "$2" 2>/dev/null <<'XO_TXTPY' || true
+import glob, json, os, sys
+
+shots, prefix = sys.argv[1], sys.argv[2]
+for path in sorted(glob.glob(os.path.join(shots, prefix + "-*.json"))):
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except Exception:
+        continue
+    if not isinstance(doc, dict):
+        continue
+    page = doc.get("page") if isinstance(doc.get("page"), dict) else doc
+    print(" ".join(str(page.get("textExcerpt") or "").split()))
+    raise SystemExit(0)
+XO_TXTPY
+}
+
+# The end-of-round picture, taken ONLY when this round really ran steps. No
+# actions are passed, so it types nothing: it is a photograph of the page the
+# steps left behind, and the comparison against the page that preceded them is
+# what gets said out loud.
+xo_shot_after_steps() { # <mission-dir> <xodir> <shots> <round> <url> <before-prefix>
+  local dir="$1" xodir="$2" shots="$3" round="$4" url="$5" before="$6"
+  local kept="$2/actions-kept-$4.json" n drc=0 b="" a="" absent="" changed=false
+  [ -n "$url" ] || return 0
+  [ -s "$kept" ] || return 0
+  n="$(xo_reach_count "$kept")"
+  [ "${n:-0}" -gt 0 ] || return 0
+  b="$(xo_shot_text "$shots" "$before")"
+  printf '◈ NUMBER ONE: your %s step(s) have run — looking again, so this round sees the page they left.\n' "$n"
+  "$XO_NODE" "$XO_DRIVER" --url "$url" --out "$shots" \
+    --place-names "$xodir/criteria.json" --prefix "after$round" \
+    --parts-out "$xodir/build-parts-$round-after.json" \
+    >"$xodir/drive-$round-after.json" 2>"$xodir/drive-$round-after.err" &
+  XO_DRIVE_PID=$!
+  wait "$XO_DRIVE_PID" || drc=$?
+  XO_DRIVE_PID=""
+  a="$(xo_shot_text "$shots" "after$round")"
+  [ "$a" != "$b" ] && changed=true
+  absent="$(xo_places_absent "$shots" "after$round")"
+  if [ "$changed" = true ]; then
+    printf '  the page is not what it was before them.\n'
+  else
+    printf '  the page reads exactly as it did before them — nothing your steps did reached it.\n'
+  fi
+  journal "$dir" steps-effect "$(printf '"round": %s, "steps": %s, "changed": %s, "shots": %s, "driverExit": %s' \
+    "$round" "$n" "$changed" "$(jstr "after$round")" "$drc")"
+  xo_seed_empty_record "$xodir" "$absent" "after$round"
+  [ -n "$absent" ] && printf '  …and it still carries none of the parts your drawing declares (%s).\n' "$absent"
+  return 0
+}
+
+# ── A SEED THAT RAN ONTO A PAGE THAT STAYED EMPTY (S248 fix round 1, D4) ────
+#
+# THE TESTER'S WORDS: "a reader would conclude 'the page was empty', never 'the
+# reviewer and the app were looking at two different stores'."
+#
+# THE KNOWN, DELIBERATE LIMITATION BEHIND IT. The steps run under a throwaway
+# HOME; the launched app keeps the captain's real one, because the launch's own
+# discovery worker authenticates from it. A product that reads its data directory
+# from an ENV VAR can be bridged with the look's declared `serve.env`; one with a
+# path hardcoded under `$HOME` cannot, and its page reads an empty store.
+#
+# SO IT IS RECORDED, AT THE MOMENT IT IS KNOWN — both HOMEs and the parts that
+# were still missing, onto `seed.json`, where the seed's own record already is.
+# Nothing downstream infers it from a bare-looking page. An EMPTY `missing` list
+# clears the record, because a page that filled up later has no cause to name.
+xo_seed_empty_record() { # <xodir> <comma-missing> <shots-prefix>
+  [ -s "$1/seed.json" ] || return 0
+  "$XO_PY" - "$1/seed.json" "$2" "$3" "${XO_REACH_HOME:-}" "${HOME:-}" 2>/dev/null <<'XO_EMPTYPY' || true
+import json, sys
+
+path, missing, prefix = sys.argv[1], sys.argv[2], sys.argv[3]
+steps_home = sys.argv[4] if len(sys.argv) > 4 else ""
+app_home = sys.argv[5] if len(sys.argv) > 5 else ""
+try:
+    with open(path) as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(doc, dict):
+    raise SystemExit(0)
+parts = [p for p in missing.split(",") if p]
+ran = [s for s in (doc.get("sources") or [])
+       if isinstance(s, dict) and s.get("ran")]
+if not parts or not ran:
+    # Nothing to name — a page that carries the declared parts, or a look where
+    # no seed ever ran, has no two-stores story to tell.
+    if doc.pop("pageStillEmpty", None) is None:
+        raise SystemExit(0)
+else:
+    bridge = ("A product that reads its data directory from an environment "
+              "variable can be bridged with the look's declared `serve.env`; one "
+              "with a path hardcoded under `$HOME` cannot, and its page reads an "
+              "empty store.")
+    doc["pageStillEmpty"] = {
+        "missing": parts, "shots": prefix,
+        "home": steps_home, "appHome": app_home,
+        "note": ("The set-up steps ran and the page still carries none of the "
+                 "parts the drawing declares (%s). The steps ran under "
+                 "HOME=%s; the app that served the page kept HOME=%s. %s"
+                 % (", ".join(parts), steps_home or "<unrecorded>",
+                    app_home or "<unrecorded>", bridge)),
+    }
+with open(path, "w") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+XO_EMPTYPY
+  return 0
+}
+
+# ── THE WRONG SCREEN IS SAID, NOT JUDGED (S248) ─────────────────────────────
+#
+# THE SIGNAL ALREADY EXISTED. `xo-drive.js` records, per shot,
+# `places[sel].present` and `.laidOut` for every place the contract declares —
+# and nothing ever escalated on it. So on the modelled weekend a page that
+# matched no mockup was graded, repeatedly, and the report never said the page
+# was wrong. NO IMAGE IS COMPARED HERE: the readout IS the record.
+xo_places_absent() { # <shots-dir> <prefix> → the declared parts, when NONE is there
+  "$XO_PY" - "$1" "$2" 2>/dev/null <<'XO_WSPY' || true
+import glob, json, os, sys
+
+shots, prefix = sys.argv[1], sys.argv[2]
+for path in sorted(glob.glob(os.path.join(shots, prefix + "-*.json"))):
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except Exception:
+        continue
+    if not isinstance(doc, dict):
+        continue
+    page = doc.get("page") if isinstance(doc.get("page"), dict) else doc
+    places = page.get("places") if isinstance(page.get("places"), dict) else None
+    if not places:
+        # A readout with no declared place says nothing either way — the drawing
+        # named nothing to look for, so there is no wrong screen to find.
+        continue
+    here = [k for k, v in places.items()
+            if isinstance(v, dict) and (v.get("present") or v.get("laidOut"))]
+    if here:
+        raise SystemExit(0)
+    print(",".join(sorted(places)))
+    raise SystemExit(0)
+XO_WSPY
+}
+
+xo_ws_body() { # <url> <comma-parts> <tried> → a journal body
+  "$XO_PY" -c 'import json,sys
+parts = [p for p in sys.argv[2].split(",") if p]
+print("\"url\": %s, \"lookedFor\": %s, \"tried\": %s"
+      % (json.dumps(sys.argv[1]), json.dumps(parts), json.dumps(int(sys.argv[3]))))' \
+    "$1" "$2" "$3" 2>/dev/null
+}
+
+xo_ws_write() { # <xodir> <url> <comma-parts> — the record the scorer reads
+  "$XO_PY" -c 'import json,sys
+parts = [p for p in sys.argv[3].split(",") if p]
+reason = ("the wrong screen: the page at %s showed none of the parts the drawing "
+          "declares (%s), so nothing on it can settle this"
+          % (sys.argv[2], ", ".join(parts) or "any"))
+with open(sys.argv[1], "w") as fh:
+    json.dump({"wrongScreen": True, "url": sys.argv[2], "lookedFor": parts,
+               "reason": reason}, fh, indent=2)
+    fh.write("\n")' "$1/wrong-screen.json" "$2" "$3" 2>/dev/null || true
+}
+
+xo_put_file() { # <input-dir> <file> — one more read-only file on the worker's side
+  local into="$1" f="$2" name
+  [ -d "$into" ] && [ -s "$f" ] || return 0
+  name="${f##*/}"
+  chmod u+w "$into" 2>/dev/null || true
+  rm -f "$into/$name" 2>/dev/null || true
+  cp "$f" "$into/$name" 2>/dev/null || true
+  chmod a-w "$into/$name" 2>/dev/null || true
+  return 0
+}
+
+# ASK ONCE. A second ask would be a loop over a page nobody can place, and the
+# honest end of that loop is "I could not check these", not a third guess.
+xo_serve_reask() { # <mission-dir> <xodir> <input> <work> <engine> <url> <parts>
+  local dir="$1" xodir="$2" input="$3" work="$4" engine="$5" url="$6" parts="$7" out id
+  id="${dir##*/}"
+  out="$work/wrong-screen"
+  mkdir -p "$out"
+  xo_ws_write "$xodir" "$url" "$parts"
+  xo_put_file "$input" "$xodir/wrong-screen.json"
+  xo_put_file "$input" "$xodir/serve-targets.json"
+  (
+    export LCARS_XO_INPUT_DIR="$input" LCARS_WORKER_INPUT_DIRS="$input"
+    export LCARS_XO_PRELAUNCH=1 LCARS_XO_WRONG_SCREEN=1
+    if [ -n "$engine" ]; then
+      export LCARS_WORKER_BIN="$engine" LCARS_WORKER_BIN_INTERNAL=1
+    fi
+    exec bash "$XO_RUN_SCRIPT" spawn-number-one \
+      --mission "$id" --mode evaluate --outdir "$out"
+  ) >/dev/null 2>&1 &
+  XO_SPIN_PID=$!
+  wait "$XO_SPIN_PID" 2>/dev/null || true
+  XO_SPIN_PID=""
+  if [ -s "$out/xo-actions.json" ]; then
+    xo_serve_write "$dir" "$xodir" "$out/xo-actions.json" "the worker, after the wrong screen"
+  fi
   return 0
 }
 
@@ -1955,6 +3943,7 @@ xo_build_journey() { # <mission-dir> <xodir>
         ${draw:+--drawing "$xodir/drawing-parts.json"} \
         $([ -f "$dir/prd.md" ] && printf -- '--prd\n%s' "$dir/prd.md") \
         --title "$(json_field "$dir/state.json" title)" \
+        $([ -f "$dir/number-one.jsonl" ] && printf -- '--records\n%s' "$dir/number-one.jsonl") \
         --out "$xodir/journey.json" --criteria-out "$xodir/criteria.new.json" 2>/dev/null)" || said=""
   if [ -s "$xodir/criteria.new.json" ]; then
     mv "$xodir/criteria.new.json" "$xodir/criteria.json"
@@ -1963,6 +3952,479 @@ xo_build_journey() { # <mission-dir> <xodir>
   fi
   printf '◈ NUMBER ONE: the journey I will walk — %s.\n' "${said:-nothing in the record described a flow}"
   journal "$dir" journey "$(printf '"detail": %s' "$(jstr "${said:-}")")"
+  return 0
+}
+
+# ===========================================================================
+# S239 — THE WALK BEYOND THE BROWSER. Declared steps, HARNESS-executed.
+# ===========================================================================
+# The reason, measured: on the Canvas weekend (34 looks, same product) Number
+# One filed 0 of 31 bugs, and all sixteen of its recorded misses were REACH
+# errors — no screen for a CLI, nothing seeded, a stub that made the seam
+# untestable. Its judgement was never the problem.
+#
+# THIS RUNS WHETHER OR NOT THE LAUNCH WORKED, and on purpose. Four of the
+# weekend's misses were "the launched page doesn't match any mockup" / "nothing
+# serves site/" — a stale launch target meant the look reached NOTHING. A CLI
+# does not need a server to be up, so the reach is not held hostage to one.
+XO_RUN_PY="${LCARS_XO_RUN_PY:-$SKILL_DIR/xo-run.py}"
+
+# HOW MUCH THIS LOOK REACHED, counted from the evidence and not from a tally
+# anybody kept (S246). Every reach step writes `NN-name.txt` + `NN-name.json`
+# into the look's own shots dir; a browser shot writes a `.png` instead. So the
+# `.txt` files ARE the transcripts, and a look with no page can ask "did I reach
+# anything at all?" by looking at what is actually on disk.
+xo_reach_transcripts() { # <shots-dir> → how many transcripts this look holds
+  local shots="${1:-}" n=0
+  [ -n "$shots" ] && [ -d "$shots" ] || { printf '0\n'; return 0; }
+  n="$(ls "$shots"/*.txt 2>/dev/null | grep -c . | tr -d ' ')"
+  printf '%s\n' "${n:-0}"
+}
+
+# ── WHAT IT IS DOING NOW, IN ONE LINE PER STEP (S246) ───────────────────────
+#
+# A look used to be two rounds — roughly five minutes — so a board that said
+# "Drove the build" once was close enough. With no clock a look can run for an
+# hour, and the captain's complaint about a long-running stage has always been
+# the same: *I'm so lost what it's talking about.* So each round journals what it
+# ASKED FOR, before the steps run, as plain lines a person reads: `ran python3
+# relay.py file "nonce-7"`, `clicked #add-button`, `read site/index.html`.
+#
+# PRINTED FROM THE WORKER'S OWN REQUEST, never re-derived from what came back: a
+# line describing a step that never ran is worse than no line, and the board's
+# whole job here is to show work IN FLIGHT.
+xo_looking_body() { # <xo-actions.json> <round> → the journal body for `looking`
+  "$XO_PY" - "$1" "$2" <<'PY' 2>/dev/null || printf '"round": %s, "asked": 0, "did": []' "$2"
+import json, sys
+
+path, rnd = sys.argv[1], sys.argv[2]
+try:
+    doc = json.load(open(path))
+except Exception:
+    doc = []
+acts = doc if isinstance(doc, list) else (doc.get("actions") or [])
+acts = [a for a in acts if isinstance(a, dict)]
+
+
+def one(a):
+    kind = str(a.get("do") or "")
+    if kind == "run":
+        argv = [str(x) for x in (a.get("argv") or [])]
+        where = (a.get("env") or {}).get("HOME") or ""
+        extra = ""
+        if isinstance(where, str) and where.endswith(("-2>", "-3>")):
+            extra = " (as a second actor, on its own HOME)"
+        return "ran %s%s" % (" ".join(argv) or "(no command)", extra)
+    if kind == "workflow":
+        return "ran the workflow %s" % (a.get("file") or "(unnamed)")
+    if kind == "read":
+        return "read %s" % (a.get("path") or "(unnamed)")
+    # The browser half keeps its own vocabulary; the shapes are flat keys, not
+    # a `do`, which is why this reads the keys rather than switching on a kind.
+    for key, verb in (("click", "clicked"), ("type", "typed into"),
+                      ("press", "pressed"), ("screenshot", "photographed"),
+                      ("navigate", "went to"), ("wait", "waited"),
+                      ("select", "chose in"), ("hover", "hovered over")):
+        if key in a:
+            val = a[key]
+            if key == "type" and a.get("text") is not None:
+                return 'typed "%s" into %s' % (a["text"], val)
+            return "%s %s" % (verb, val)
+    return "asked for %s" % (kind or "something the harness does not name")
+
+
+did = [one(a) for a in acts]
+# BOTH SHAPES, ON PURPOSE. `did` is the list the CLI report renders one line at a
+# time; `detail` is the one sentence the board's existing entry renderer already
+# shows, which is why no renderer had to change to put this on his screen.
+sys.stdout.write('"round": %s, "asked": %d, "did": %s, "detail": %s'
+                 % (int(rnd), len(acts), json.dumps(did),
+                    json.dumps("; ".join(did) or "nothing")))
+PY
+}
+
+# ── THE NOTEBOOK (S246) ─────────────────────────────────────────────────────
+#
+# The buddy keeps a memory file. Number One's rounds are COLD SPAWNS — a fresh
+# model each time, with no memory of the last one but the artifacts in its input
+# dir — so without a notebook a worker that spent round 1 learning something has
+# no way to tell round 2. It re-reads the same transcripts and asks for the same
+# things.
+#
+# So the worker MAY write `$out/xo-notes.md` ("what I tried, what I saw, what I
+# will try next"), and this APPENDS it to the mission's own `xo/notes.md`, under
+# a heading naming the round. APPENDS, never replaces: the whole value is the
+# accumulation, and a round-3 worker that could only read round 2 would lose the
+# thread exactly where it starts to matter.
+# WHICH CHANNEL THE WORKER'S FILE CAME BY (S250) — into the journal, so the
+# captain's own report says it and nobody has to read a scratch directory to find
+# out. `run.sh` wrote the record beside the file; this only publishes it.
+#
+# WHY IT IS WORTH A LINE ON HIS REPORT. A worker that was given no file-writing
+# tool and a worker whose file we have stopped reading look IDENTICAL from the
+# outside, and
+# the second is a silent, total failure of the look. One word — `stdout` or
+# `worker-file` — tells them apart at a glance. An unreachable channel (`none`)
+# carries the SENTENCE naming what was missing, which is the thing the old "no
+# verdict file was written" never said.
+xo_journal_channel() { # <mission-dir> <round-outdir> <round>
+  local dir="$1" out="$2" round="$3" f="$2/xo-channel.json" via file why
+  [ -s "$f" ] || return 0
+  via="$(json_field "$f" via)"
+  file="$(json_field "$f" file)"
+  why="$(json_field "$f" why)"
+  # `detail` is the line the report RENDERS; `via` and `file` are the fields a
+  # reader of the journal (or a later guard) reads. Both, because a sentence
+  # nobody can grep and a token nobody can read are each half a record.
+  local detail
+  case "$via" in
+    stdout)      detail="$file arrived in Number One's reply, framed, and LCARS wrote the file — this reviewer is given no file-writing tool" ;;
+    worker-file) detail="Number One wrote $file itself" ;;
+    *)           detail="${why:-nothing usable came back from Number One this round}" ;;
+  esac
+  journal "$dir" verdict-channel "$(printf '"round": %s, "via": %s, "file": %s, "detail": %s' \
+    "$round" "$(jstr "$via")" "$(jstr "$file")" "$(jstr "$detail")")"
+  return 0
+}
+
+xo_keep_notes() { # <mission-dir> <xodir> <round-outdir> <round>
+  local dir="$1" xodir="$2" out="$3" round="$4"
+  [ -s "$out/xo-notes.md" ] || return 0
+  mkdir -p "$xodir" 2>/dev/null || true
+  {
+    printf '\n## Round %s — what I tried, what I saw, what I will try next\n\n' "$round"
+    cat "$out/xo-notes.md"
+    printf '\n'
+  } >>"$xodir/notes.md" 2>/dev/null || true
+  journal "$dir" noted "$(printf '"round": %s, "lines": %s' "$round" \
+    "$(grep -c '' "$out/xo-notes.md" 2>/dev/null | tr -d ' ')")"
+  return 0
+}
+
+# IS THERE ANYTHING HERE A BROWSER WAS NEVER GOING TO REACH? (S246)
+#
+# Read off the contract, never guessed: `productTypes` (written by xo-criteria.py
+# from the plan's own `entrypoints[]` and the PRD's `PLAN RULE: CLI-only` line)
+# and each criterion's recorded `reachVia`. It answers ONE question — may this
+# look still hire a worker when there is no page? — and the honest answer is yes
+# whenever the record says this milestone HAS a command line or a workflow, even
+# before a single step has been declared. The worker is the thing that declares
+# them now, so asking "are there steps yet?" would end every CLI-only look before
+# the model got to choose anything, which is the exact miss this round exists for.
+xo_reach_surface() { # <criteria.json> → 1 if a non-browser surface is recorded
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); raise SystemExit
+types = {str(t.get("type") or "") for t in (d.get("productTypes") or [])
+         if isinstance(t, dict)}
+reaches = {str(c.get("reachVia") or "") for c in (d.get("criteria") or [])
+           if isinstance(c, dict)}
+print(1 if (types & {"cli", "workflow"}) or (reaches & {"cli", "workflow"}) else 0)' \
+    "$1" 2>/dev/null || printf '0\n'
+}
+
+xo_reach_count() { # <journey.json> → how many steps the harness would run
+  "$XO_PY" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(len([s for s in (d.get("reachSteps") or []) if isinstance(s, dict)]))
+except Exception:
+    print(0)' "$1" 2>/dev/null || printf '0\n'
+}
+
+# ── ONE TREE AND ONE THROWAWAY HOME, FOR THE WHOLE LOOK (S246) ──────────────
+#
+# THE DEFECT. `xo-run.py` minted a fresh detached worktree and a fresh throwaway
+# HOME per PROCESS, and the look called it once per round. So a worker that filed
+# a record in round 1 and listed it in round 2 read an empty store, every time —
+# and "follow one record end to end", the item that catches a producer writing
+# `origin` while the consumer reads `host`, was unreachable by construction.
+#
+# THE CURE. The look prepares the pair ONCE, here, through the same ONE helper
+# (`autopilot.sh worktree`, reached via `xo-run.py prepare` so there is still no
+# second implementation), and hands it to every `xo-run.py run` of the look. The
+# pair is removed at the end of the look AND from the TERM trap, because a
+# `finally` does not run on a signal and a killed look used to leave a REGISTERED
+# worktree in the captain's own repo.
+XO_REACH_WT=""
+XO_REACH_HOME=""
+XO_REACH_REPO=""
+
+# ── WHY THERE IS NO PAGE THIS LOOK, SAID ONCE (S266 fix round 2, FIX 1) ─────
+# Set by `cmd_evaluate`'s no-page arm the moment the launch answer is read, and
+# handed to `xo-run.py actions` so every browser step it keeps is RECORDED as
+# kept-and-never-run. Empty on every healthy look, which is the control: the
+# classifier is then invoked with byte-identical argv.
+XO_NOPAGE_WHY=""
+
+# ── AND IT IS WHAT THE WORKER STANDS IN, TOO (S261) ─────────────────────────
+#
+# The look already mints exactly one disposable copy; S261 hands THAT ONE to the
+# evaluate worker rather than minting a second. The reviewer runs with its cwd
+# inside it and with a real shell (`run.sh spawn_number_one` → toolset
+# `number-one-live`), because on 2026-10-08 three of its six recorded failures
+# were the fence and not its judgement. The copy is detached and disposable, so
+# anything it breaks dies with the copy — that, and the post-turn mission-state
+# audit, are the protection now, instead of denying a shell.
+#
+# ONE PLACE, TWO SETTERS. `xo_reach_prepare` mints the tree and `xo_reach_adopt`
+# swaps in the launch's, so both call this and nothing else writes the variables.
+# Every `spawn-number-one` subshell in this process inherits them.
+#
+# THE THROWAWAY HOME IS A PATH, NOT THIS PROCESS'S HOME, and that distinction is
+# load-bearing: Chrome under a non-default HOME times out on CDP and the look
+# silently scores everything LOW. It is handed over so the worker can type it in
+# front of the PRODUCT's commands; the worker's own HOME stays the real one.
+xo_hand_over_copy() { # — export the one copy to every worker spawn in this process
+  [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] || return 0
+  export LCARS_XO_WORKTREE="$XO_REACH_WT"
+  if [ -n "$XO_REACH_HOME" ] && [ -d "$XO_REACH_HOME" ]; then
+    export LCARS_XO_THROWAWAY_HOME="$XO_REACH_HOME"
+  else
+    unset LCARS_XO_THROWAWAY_HOME
+  fi
+  return 0
+}
+
+xo_reach_prepare() { # <mission-dir> — mints the look's tree + HOME, once
+  local dir="$1" br top out
+  [ -z "$XO_REACH_WT" ] || return 0
+  br="$(json_field "$dir/state.json" branch)"
+  [ -n "$br" ] || return 0
+  top="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+  [ -n "$top" ] || top="$PWD"
+  out="$("$XO_PY" "$XO_RUN_PY" prepare --repo "$top" --branch "$br" 2>&1)" || out=""
+  XO_REACH_WT="$(printf '%s\n' "$out" | sed -n 's/^WORKTREE: //p' | head -1)"
+  XO_REACH_HOME="$(printf '%s\n' "$out" | sed -n 's/^HOME: //p' | head -1)"
+  XO_REACH_REPO="$top"
+  if [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ]; then
+    xo_hand_over_copy
+    journal "$dir" reach-tree "$(printf '"worktree": %s, "home": %s, "branch": %s' \
+      "$(jstr "$XO_REACH_WT")" "$(jstr "$XO_REACH_HOME")" "$(jstr "$br")")"
+  else
+    # HONEST, NOT SILENT — and not fatal: `xo-run.py run` falls back to minting
+    # its own per call, which is the pre-S246 behaviour, so a look whose helper
+    # refused still reaches what a single-round step can reach.
+    XO_REACH_WT=""; XO_REACH_HOME=""; XO_REACH_REPO=""
+  fi
+  return 0
+}
+
+xo_reach_teardown() { # — idempotent; called at the look's end AND from the traps
+  [ -n "$XO_REACH_WT" ] || { XO_REACH_HOME=""; XO_REACH_REPO=""; return 0; }
+  # AN ADOPTED TREE IS THE LAUNCH'S, NOT THE LOOK'S (S248). `launch.sh --stop`
+  # removes and prunes it; removing it from here as well would race the verb that
+  # owns it and leave the captain's repo with a half-pruned registration. Only
+  # the HOME this look minted goes.
+  # S261 — THE COPY IS GONE, SO THE HAND-OVER GOES WITH IT. A later spawn that
+  # inherited a path to a removed worktree would be handed a shell with nowhere
+  # safe to stand; `run.sh` checks the directory exists, but clearing it here is
+  # what makes the record true rather than merely survivable.
+  unset LCARS_XO_WORKTREE LCARS_XO_THROWAWAY_HOME
+  if [ "$XO_REACH_ADOPTED" = 1 ]; then
+    [ -n "$XO_REACH_HOME" ] && rm -rf "$XO_REACH_HOME"
+    XO_REACH_WT=""; XO_REACH_HOME=""; XO_REACH_REPO=""; XO_REACH_ADOPTED=0
+    return 0
+  fi
+  "$XO_PY" "$XO_RUN_PY" teardown --repo "${XO_REACH_REPO:-$PWD}" \
+    --worktree "$XO_REACH_WT" --home "$XO_REACH_HOME" >/dev/null 2>&1 || true
+  XO_REACH_WT=""; XO_REACH_HOME=""; XO_REACH_REPO=""
+  return 0
+}
+
+# WHAT THE RECORD CONSENTS TO, in the one line the prompt prints (S249).
+# "<host> (owners: a, b)", or nothing at all when no record names a live host —
+# and nothing is exactly what "no consent" looks like everywhere else too. Read
+# through `xo-run.py consent`, which is the file that will refuse the step, so
+# `liveTargets` has ONE reader. Never written, never defaulted.
+#
+# AND THE repos[] ALLOW-LIST COMES WITH IT (fix round 2). Making the allow-list
+# fail closed refuses a step that names no repo — so a line that printed only the
+# host and the owners left a prompt-following worker refused on EVERY live step in
+# a repo whose record narrows consent to named repos. `xo-run.py consent` already
+# prints a `REPOS:` line; this used to read past it. It is appended INSIDE the
+# same parenthetical, after a semicolon, and is ABSENT when the record names no
+# repos — the default shape, where there is nothing to say.
+xo_live_targets() {
+  local out host owners repos
+  out="$("$XO_PY" "$XO_RUN_PY" consent --repo "${XO_REACH_REPO:-$PWD}" \
+          --lcars-dir "$LCARS_DIR" 2>/dev/null)" || out=""
+  host="$(printf '%s\n' "$out" | sed -n 's/^HOST: //p' | head -1)"
+  [ -n "$host" ] || return 0
+  owners="$(printf '%s\n' "$out" | sed -n 's/^OWNERS: //p' | head -1)"
+  repos="$(printf '%s\n' "$out" | sed -n 's/^REPOS: //p' | head -1)"
+  if [ -n "$repos" ]; then
+    printf '%s (owners: %s; repos: %s)' "$host" "${owners:-none recorded}" "$repos"
+  else
+    printf '%s (owners: %s)' "$host" "${owners:-none recorded}"
+  fi
+}
+
+xo_run_reach() { # <mission-dir> <xodir> <shots> [journey-file]
+  local dir="$1" xodir="$2" shots="$3" jfile="${4:-$xodir/journey.json}"
+  local n br said rc=0 top
+  [ -s "$jfile" ] || return 0
+  n="$(xo_reach_count "$jfile")"
+  [ "${n:-0}" -gt 0 ] || return 0
+  br="$(json_field "$dir/state.json" branch)"
+  if [ -z "$br" ]; then
+    # HONEST, NOT SILENT. Without a branch there is no tree to detach, and a
+    # step run against the CHECKED-OUT branch is the failure this refuses.
+    printf '◈ NUMBER ONE: %s declared step(s) I could not run — the mission records no branch to detach a worktree from.\n' "$n"
+    journal "$dir" reach-refused "$(printf '"why": %s, "steps": %s' \
+      "$(jstr "the mission records no branch")" "$n")"
+    return 0
+  fi
+  top="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+  [ -n "$top" ] || top="$PWD"
+  set --
+  # THE LOOK'S OWN TREE, when the look prepared one (S246). Without these two the
+  # call mints and removes a tree of its own, which is what made every round a
+  # fresh machine.
+  if [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ]; then
+    set -- --worktree "$XO_REACH_WT" --home "$XO_REACH_HOME"
+  fi
+  said="$("$XO_PY" "$XO_RUN_PY" run --journey "$jfile" --out "$shots" \
+        --repo "$top" --branch "$br" --mission-dir "$dir" "$@" 2>&1)" || rc=$?
+  [ -n "$said" ] && printf '%s\n' "$said"
+  journal "$dir" reached "$(printf '"steps": %s, "exit": %s, "branch": %s' \
+    "$n" "${rc:-0}" "$(jstr "$br")")"
+  return 0
+}
+
+# The worker's OWN requested steps, split from its browser actions and held to
+# the SAME cap of 12 across all kinds (S222's rule, unchanged). A request that
+# tries to leave the worktree is refused by xo-run.py and journaled there.
+# AND THE LOOK'S OWN COPY IS A PLACE TO STAND (S261 fix round 1). The worker is
+# told that copy's absolute path and naturally names it as a step's `cwd`; the
+# declared-step gate judges text alone and refused it SIX TIMES on the first live
+# look — "cwd /private/tmp/.../lcars-ap-wt-6SnDQN is an absolute path outside the
+# worktree" — after which the report told the captain "I asked for 6 steps that
+# the harness refused before they ran." The tree was the look's own and nothing
+# was escaping anywhere; `refuse_reason`, which judges the same step once the
+# tree is real, has always accepted it. So the gate is handed the tree that is
+# actually standing. `xo-run.py` validates it is a real directory and widens
+# nothing else — no shell, no `-c`, no absolute path in an argv, no `..`.
+xo_reach_actions() { # <mission-dir> <xodir> <shots> <xo-actions.json> <round>
+  local dir="$1" xodir="$2" shots="$3" acts="$4" round="$5" kept n
+  [ -s "$acts" ] || return 0
+  kept="$xodir/actions-kept-$round.json"
+  set --   # the look's own standing copy, when there is one (see above)
+  [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && set -- --worktree "$XO_REACH_WT"
+  # AND WHETHER THERE IS A PAGE AT ALL (S266 fix round 2, FIX 1). With no page
+  # the browser legs of the round are skipped, so every browser step the
+  # classifier keeps below is kept-and-never-run — a THIRD fact, recorded by the
+  # producer at the moment it is decided and carried into the next round's
+  # prompt. Empty on a healthy look, so the argv is unchanged there.
+  [ -n "$XO_NOPAGE_WHY" ] && set -- "$@" --no-page "$XO_NOPAGE_WHY"
+  "$XO_PY" "$XO_RUN_PY" actions --actions "$acts" --out "$kept" \
+    --mission-dir "$dir" --cap "$XO_MAX_ACTIONS" "$@" >/dev/null 2>&1 || true
+  [ -s "$kept" ] || return 0
+  # ── A REFUSED STEP IS SAID OUT LOUD, IN THE ROUND IT HAPPENED (S250 D2) ────
+  #
+  # THE MEASURED DEFECT. `xo-run.py actions` has always PRINTED its tally ("10
+  # asked, 9 kept (cap 12), 1 refused, 0 over the cap") and this call sent it to
+  # /dev/null. Over the S250 drive that hid 10 refusals, each with a good
+  # plain-English reason; and because the two guards below return early when
+  # nothing survived, ROUND 3 — all three of its steps refused — printed nothing
+  # at all between "round 3 — looking…" and "round 4 — looking…".
+  #
+  # So the tally and every reason are printed BEFORE either guard, and the
+  # refusals go on the journey record the report reads (reach-record, below) even
+  # when not one step survived to run. The captain must be able to tell "it got
+  # better at finding faults" from "it got better at saying it could not check".
+  xo_say_refusals "$kept" "$round"
+  # THE HARNESS'S RECORD OF WHAT IT GRANTED (S247). `journey.json.reachSteps` is
+  # no longer authored from the record by anybody — the worker is the one author
+  # of the step list — so this is the one place it is written: the steps that were
+  # asked for and allowed, appended round by round. Coverage is then counted off
+  # the readouts those steps wrote, never off a list declared before the look.
+  # IT RUNS EVEN WITH NOTHING GRANTED, because a round whose every step was
+  # refused is exactly the round whose refusals have to reach the report.
+  "$XO_PY" "$XO_JOURNEY_PY" reach-record --journey "$xodir/journey.json" \
+    --steps "$kept" --round "$round" >/dev/null 2>&1 || true
+  n="$(xo_reach_count "$kept")"
+  [ "${n:-0}" -gt 0 ] || return 0
+  xo_run_reach "$dir" "$xodir" "$shots" "$kept"
+}
+
+# The round's step tally and EVERY refusal reason, on the console, off the record
+# the harness just wrote. Printing nothing when nothing was refused is the
+# control: a clean round reads exactly as it always has.
+xo_say_refusals() { # <actions-kept.json> <round>
+  [ -s "$1" ] || return 0
+  "$XO_PY" - "$1" "$2" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(doc, dict):
+    sys.exit(0)
+refused = [r for r in (doc.get("refused") or []) if isinstance(r, dict)]
+# ── AND THE STEPS THERE WAS NO ROOM FOR (S264 fix round 2, FIX 5) ───────────
+# MEASURED by the fix-round-1 tester: a round of 14 asked / 12 kept / 2 dropped
+# printed ZERO bytes here, because this returned early on an empty `refused`.
+# A dropped step did not run either, so the captain hears about it — on its own
+# line, never called "refused", because nothing was wrong with its shape.
+dropped = [r for r in (doc.get("dropped") or []) if isinstance(r, dict)]
+if not refused and not dropped:
+    sys.exit(0)
+asked = int(doc.get("asked") or 0)
+kept = len(doc.get("steps") or []) + len(doc.get("reachSteps") or [])
+
+
+def label(r):
+    for field in ("key", "evidence"):
+        v = " ".join(str(r.get(field) or "").split())
+        if v:
+            return v
+    return "an unnamed step"
+
+
+# THE REFUSAL SENTENCE IS BYTE-FOR-BYTE WHAT IT WAS (a suite pins it), and the
+# drop gets a sentence of its own rather than a clause inside that one.
+if refused:
+    print("\u25c8 NUMBER ONE: round %s asked for %d step(s); %d were refused before "
+          "anything ran, %d went ahead." % (sys.argv[2], asked, len(refused), kept))
+else:
+    print("\u25c8 NUMBER ONE: round %s asked for %d step(s); %d went ahead."
+          % (sys.argv[2], asked, kept))
+if dropped:
+    print("\u25c8 NUMBER ONE: and %d step(s) were DROPPED FOR THE CAP in round %s — "
+          "not refused: the harness runs a fixed number of declared steps a round "
+          "and these came after the last one it had room for."
+          % (len(dropped), sys.argv[2]))
+for r in refused:
+    print("    REFUSED (%s): %s" % (r.get("kind") or "step",
+                                    " ".join(str(r.get("why") or "it did not say why").split())))
+for r in dropped:
+    print("    DROPPED FOR THE CAP, not refused (%s %s): %s"
+          % (r.get("kind") or "step", label(r),
+             " ".join(str(r.get("why") or "it came in past the cap").split())))
+PYEOF
+  return 0
+}
+
+# ── WHAT THIS LOOK ACTUALLY ATTEMPTED, COUNTED AFTER IT (S247) ──────────────
+#
+# THE DEFECT. `attempted N of M` — the one coverage number the captain asked to
+# SEE — was computed by `xo-journey.py build`, BEFORE a single step had run, from
+# the browser steps it had just declared. So it was a prediction, and the
+# weekend's ledger records what that cost: the figure never moved, whatever the
+# look reached. Recounted here, from the step readouts on disk and the
+# transcripts the ledger cites, it is a measurement.
+xo_recount_coverage() { # <mission-dir> <xodir> <shots>
+  local dir="$1" xodir="$2" shots="$3" said=""
+  [ -s "$xodir/journey.json" ] || return 0
+  said="$("$XO_PY" "$XO_JOURNEY_PY" coverage --journey "$xodir/journey.json" \
+          --shots "$shots" --verdict "$xodir/verdict.json" 2>/dev/null)" || said=""
+  [ -n "$said" ] || return 0
+  printf '◈ NUMBER ONE: %s.\n' "$said"
+  journal "$dir" coverage "$(printf '"detail": %s' "$(jstr "$said")")"
   return 0
 }
 
@@ -2051,6 +4513,15 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   local launch="$1" out="$2" cmd="" wt=""
   cmd="$(lcars_config_get "$CONFIG" testCommand 2>/dev/null)" || cmd=""
   wt="$(json_field "$launch" worktree)"
+  # NO LAUNCHED WORKTREE IS NOT "NO TESTS" (S246). A CLI-only milestone has no
+  # page, so no launch worktree — but the LOOK already has a detached copy of the
+  # mission's branch (the reach tree), and that is the right place to run the
+  # captain's suite: the mission's code, not his checked-out tree, and never his
+  # working directory. With neither, the run degrades to "could not run your
+  # tests" exactly as it always has.
+  if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+    [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && wt="$XO_REACH_WT"
+  fi
   # BACKGROUNDED AND WAITED ON, exactly as the driver is (S204 fix round 1, D2).
   # A foreground child holds the trap's first opportunity to run until it
   # finishes, and this one may legitimately take the whole five minutes — five
@@ -2058,7 +4529,7 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   # Backgrounded, a stand-down lands at once and xo_teardown kills this tree,
   # the test runner and its children included.
   "$XO_PY" "$XO_TESTS_PY" --out "$out" --cwd "$wt" \
-    --timeout "$XO_TEST_TIMEOUT" --cap "$XO_TEST_TAIL_CAP" \
+    --timeout "$(xo_test_timeout)" --cap "$XO_TEST_TAIL_CAP" \
     --command "$cmd" >/dev/null 2>&1 &
   XO_TESTS_PID=$!
   wait "$XO_TESTS_PID" 2>/dev/null || true
@@ -2171,6 +4642,25 @@ json_field() { # <file> <key> — a string value, or empty
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
 }
 
+# WHERE THE NEXT ROUND COMES BACK IN (S257 fault 3).
+#
+# THE DEFECT THIS CLOSES. Every round used to be handed `launch.json`'s url
+# again, and that url has never carried a query — so a look that seeded itself
+# with `?seed=xo-one`, deduced a permutation from round 1 and typed it in round
+# 2 was typing it against a FRESH RANDOM SECRET. Nothing recorded where a round
+# ended, so there was nothing to come back to.
+#
+# `xo-drive.js` now records the ending on the walk (`endedAt`, overwritten each
+# round). This READS that record and falls back to the launch url when there is
+# none — a mission that predates the field, or a round that never got a page,
+# behaves exactly as it did before.
+xo_round_entry() { # <walk.json> <fallback-url> -> the url the next round enters on
+  local walk="$1" fallback="$2" ended=""
+  ended="$(json_field "$walk" endedAt)"
+  [ -n "$ended" ] || ended="$fallback"
+  printf '%s\n' "$ended"
+}
+
 # The score LABEL swap. One source per fact (ruling): the LABEL is the score, the
 # COMMENT is the report — so a remote card reads the score off the listing it
 # already fetched, with no extra call. Best-effort like every relabel in LCARS:
@@ -2233,9 +4723,9 @@ xo_mirror() { # <mission-id>
 # never a cut-down of the worker's prose: a truncation is this harness deciding
 # what Number One meant, which is exactly the fault S213 exists to kill.
 # Omitted (and any stale one deleted) when there is no derivation to record.
-xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<why-this-grade>]
+xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<why-this-grade>] [<recommendation>] [<rec-why>]
   local dir="$1" score="$2" status="$3" why="$4" headline="${5:-}" meaning="${6:-}" st obj id
-  local gradewhy="${7:-}"
+  local gradewhy="${7:-}" recommendation="${8:-}" recwhy="${9:-}"
   st="$dir/state.json"; id="$(basename "$dir")"
   obj="$(state_xo_block "$st")"
   obj="$(obj_set "$obj" status "$(jstr "$status")")"
@@ -2255,7 +4745,65 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
   else
     obj="$(obj_del "$obj" meaning)"
   fi
+  # S240 — THE ACTION, MIRRORED. `numberOne.recommendation` is what the board,
+  # the living comment and the autopilot's `policy` read; it is the word the
+  # SCORER decided, never re-derived from `score` by a surface (that hand-mapping
+  # is the defect S240 exists to remove).
+  if [ -n "$recommendation" ]; then
+    obj="$(obj_set "$obj" recommendation "$(jstr "$recommendation")")"
+    if [ -n "$recwhy" ]; then
+      obj="$(obj_set "$obj" recommendationWhy "$(jstr "$recwhy")")"
+    else
+      obj="$(obj_del "$obj" recommendationWhy)"
+    fi
+  else
+    obj="$(obj_del "$obj" recommendation)"
+    obj="$(obj_del "$obj" recommendationWhy)"
+  fi
   obj="$(obj_set "$obj" evaluatedAt "$(jstr "$NOW")")"
+  # ── A LOOK THAT NEVER HAPPENED, SAID SO ON THE RECORD (S264 change 4) ──────
+  #
+  # THE MEASURED DEFECT. `drive_number_one_verify` refuses a second evaluate
+  # once `evaluatedAt` is set — correctly, because a second look at a build
+  # already judged is pure spend. But a look that ended because the build would
+  # not start, the browser would not launch, or there was nothing to look at at
+  # all was stamped `evaluatedAt` just the same, so it could never be retaken.
+  # S262's foundation hit exactly this on a greenfield repo, and the weekend's
+  # "could not re-score after the fix" miss is the same shape.
+  #
+  # RECORDED HERE, BY THE CODE THAT KNOWS. `$XO_NOLOOK` is the ONE sentence that
+  # means "I never got to look at your build" and the two arms that set it are
+  # the infrastructure endings it covers (the browser would not start / nothing
+  # to look at, and the build did not start). So the fact is written down at the
+  # moment it is known, with the specific reason beside it — not re-derived later
+  # by a driver comparing sentences, which would be a second copy of this one
+  # free to drift (the infer-vs-record rule; S147, S156, S188).
+  #
+  # ── AND THE LOOKS OUR OWN CODE ENDED (S264 fix round 1, FIX 4) ─────────────
+  #
+  # MEASURED: a look that ends "my own scorer failed (exit N)" or "I could not
+  # read back my own verdict" stamped `evaluatedAt` and a LOW with NO
+  # `lookBlockedBy`, so the driver never retook it — even though that is purely
+  # OUR code failing, which is squarely the "the runner was missing" class this
+  # mark exists for. Those two sentences are the previous session's own honesty
+  # fix, so this is its natural partner.
+  #
+  # `$XO_LOOK_BLOCKED` is the BATON for that: an arm that knows the look never
+  # reached a verdict for a reason of ours sets it to the specific reason just
+  # before it finishes, and this one writer records it. It is consumed and
+  # cleared here, so it is a hand-over for ONE finish and can never leak into a
+  # later one. No sentence is pattern-matched out of prose to get this fact.
+  #
+  # A LOOK THAT REACHED A REAL VERDICT CLEARS IT, so the retake gate can never
+  # read a stale mark and spend a second look on a build that was really judged.
+  if [ -n "${XO_LOOK_BLOCKED:-}" ]; then
+    obj="$(obj_set "$obj" lookBlockedBy "$(jstr "$XO_LOOK_BLOCKED")")"
+  elif [ -n "$meaning" ] && [ "$meaning" = "$XO_NOLOOK" ]; then
+    obj="$(obj_set "$obj" lookBlockedBy "$(jstr "${headline:-$why}")")"
+  else
+    obj="$(obj_del "$obj" lookBlockedBy)"
+  fi
+  XO_LOOK_BLOCKED=""
   obj="$(obj_set "$obj" lastAction "$(jstr "looked $NOW_LOCAL")")"
   if [ "$status" = "engaged" ]; then
     obj="$(obj_set "$obj" note "$(jstr "$why")")"
@@ -2279,9 +4827,14 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
   # report leads with the table walked in words. Absent when there is none.
   local gradefield=""
   [ -n "$gradewhy" ] && gradefield="$(printf ', "whyThisGrade": %s' "$(jstr "$gradewhy")")"
+  # S240 — the recommendation rides the SAME journal entry as the grade, as an
+  # ADDITIVE key, so the First Officer's report shows it with no board.js change.
+  local recfield=""
+  [ -n "$recommendation" ] && recfield="$(printf ', "recommendation": %s, "recommendationWhy": %s' \
+    "$(jstr "$recommendation")" "$(jstr "$recwhy")")"
   journal "$dir" scored \
-    "$(printf '"score": %s, "why": %s, "status": %s%s' \
-         "$(jstr "$score")" "$(jstr "$why")" "$(jstr "$status")" "$gradefield")"
+    "$(printf '"score": %s, "why": %s, "status": %s%s%s' \
+         "$(jstr "$score")" "$(jstr "$why")" "$(jstr "$status")" "$gradefield" "$recfield")"
   xo_label_score "$st" "$score"
   xo_mirror "$id"
   printf '◈ NUMBER ONE: intent match %s — %s\n' "$(printf '%s' "$score" | tr '[:lower:]' '[:upper:]')" "$why"
@@ -2289,15 +4842,30 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
 }
 
 cmd_evaluate() {
-  local target=""
+  local target="" again=0 because=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --mission)   target="${2:-}"; shift 2 || true ;;
       --mission=*) target="${1#--mission=}"; shift ;;
+      # S239 — THE RE-LOOK. Feedback #5: "with no logs filed, there is no way to
+      # re-score". A mission scored LOW only because no testCommand was recorded
+      # (miss #1) could never be looked at again once the blocker was cleared,
+      # because `cmd_recheck` needs FILED LOGS and `cmd_evaluate` is idempotent
+      # on evaluatedAt. That is the catch-22 this flag ends. It needs NO logs.
+      --again)     again=1; shift ;;
+      --because)   because="${2:-}"; shift 2 || true ;;
+      --because=*) because="${1#--because=}"; shift ;;
       -*)          die "unknown option: $1" ;;
       *)           target="$1"; shift ;;
     esac
   done
+  # A SUPERSESSION STATES ITS REASON. Making `--again` bypass the idempotence
+  # silently would leave two verdicts in the record with nothing saying which
+  # one is current or why — so the reason is required, and it is journaled.
+  if [ "$again" = 1 ] && [ -z "$because" ]; then
+    die "--again needs --because \"<why this verdict is being superseded>\" — a second look that does not say why leaves two verdicts and no reason."
+  fi
+  [ "$again" = 1 ] || [ -z "$because" ] || die "--because only means something with --again."
   [ -n "$target" ] || die "no mission — pass --mission <id>."
   local id dir st xodir shots look
   id="$(resolve_mission "$target")" || exit $?
@@ -2310,16 +4878,55 @@ cmd_evaluate() {
   # worker and a browser to reach the same verdict.
   local seen
   seen="$(obj_get "$(state_xo_block "$st")" evaluatedAt)"
-  if [ -n "$seen" ]; then
+  if [ -n "$seen" ] && [ "$again" != 1 ]; then
     printf '◈ NUMBER ONE: already looked at %s (%s) — nothing to do.\n' "$id" "$seen"
+    printf '  if the thing that blocked me has been cleared: lcars xo evaluate --mission %s --again --because "<what changed>"\n' "$id"
     return 0
   fi
-
+  # ── EVERY REFUSAL COMES BEFORE THE SUPERSESSION (fix round 5, D2) ─────────
+  # MEASURED: `evaluate --again --because "<why>"` on a logged bug child printed
+  # "the verdict of <ts> (low) is superseded: <reason>" — and journaled it —
+  # and THEN refused the re-look. The verdict itself was never mutated, but the
+  # captain had just been told his verdict was replaced by a run that went on to
+  # do nothing, and the mission's own journal said the same. So the two refusals
+  # below are hoisted ABOVE the supersession: nothing announces or records a
+  # supersession until the re-look is genuinely going to happen.
+  #
   # A BUG CHILD IS NEVER EVALUATED. Its parent's PR carries the fix (Mission
   # logs' Model A); looking at a child would score the parent's build twice.
   if grep -q '"parentMission"' "$st" 2>/dev/null; then
     printf '◈ NUMBER ONE: %s is a logged bug child — its parent carries the build.\n' "$id"
     return 0
+  fi
+
+  # ONE LOOK AT A TIME, ON ONE MISSION (fix round 4, D1). This is the verb the
+  # measured incident ran twice at once: it took no lock of any kind, and the
+  # second look overwrote the first's verdict.json and report.md after the
+  # first had already filed bugs from them.
+  #
+  # TAKEN BEFORE THE LOOK'S DIRECTORY IS TOUCHED, not after. A claim placed
+  # below the `mkdir`/`look.txt` lines would let the loser name a look and
+  # repoint `look.txt` at it before being refused — which is the same class of
+  # mess, one file smaller. The EXIT trap is armed FIRST, so a refusal here
+  # still tears down cleanly and gives nothing back that it does not own.
+  trap xo_teardown EXIT
+  trap on_stand_down TERM INT
+  xo_claim_or_die "$dir" "a Verify look"
+
+  # THE SUPERSESSION IS A RECORD BEFORE IT IS A RE-RUN (S239). The prior score,
+  # when it was taken and the captain's reason go into the mission's own journal
+  # FIRST, so a re-look that then dies still leaves an auditable trail of why a
+  # finished verdict stopped being the current one. It is written here — past
+  # every refusal, before the look's own directory exists — so the trail is only
+  # ever written about a look that is actually starting.
+  if [ "$again" = 1 ] && [ -n "$seen" ]; then
+    local prior_score prior_rec
+    prior_score="$(obj_get "$(state_xo_block "$st")" score)"
+    prior_rec="$(obj_get "$(state_xo_block "$st")" recommendation)"
+    journal "$dir" superseded "$(printf '"priorScore": %s, "priorRecommendation": %s, "priorAt": %s, "because": %s' \
+      "$(jstr "$prior_score")" "$(jstr "$prior_rec")" "$(jstr "$seen")" "$(jstr "$because")")"
+    printf '◈ NUMBER ONE: looking again at %s — the verdict of %s (%s) is superseded: %s\n' \
+      "$id" "$seen" "${prior_score:-no grade}" "$because"
   fi
 
   # THIS LOOK'S OWN DIRECTORY (fix round 2, D1), and the pointer `file-logs`
@@ -2331,12 +4938,14 @@ cmd_evaluate() {
   XO_MISSION_DIR="$dir"
   XO_LAUNCH_ID="$id"
   XO_STOP_LOG="$xodir/launch.log"
-  # EVERY WAY OUT TEARS DOWN WHAT THIS RUN STARTED (fix round 1, D2) — the EXIT
-  # trap for a `die` or a normal return, the TERM/INT trap for the captain's
-  # stop button and for a parent that dies.
-  trap xo_teardown EXIT
-  trap on_stand_down TERM INT
-  printf '%s\n' "$$" >"$dir/xo.pid"
+  # WHO, NOT JUST WHICH NUMBER (S245). This was a bare `printf "$$"`, one line,
+  # which meant `lcars xo off` could not run the look's pid file through
+  # `xo_signal_pidfile` at all — that function refuses a file that does not
+  # record an identity, so the look got an unverified `kill -TERM` and had its
+  # handle deleted in the same breath. `xo_write_pidfile` keeps the bare pid on
+  # line 1, so every `head -1` reader is unaffected, and adds the group this
+  # process leads (only where it genuinely leads one) and the instant it started.
+  xo_write_pidfile "$$" "$dir/xo.pid"
 
   # NUMBER ONE IS ENGAGED FOR THE WHOLE SPIN (fix round 1, D1). Written BEFORE
   # the contract is built and replaced by xo_finish at the end, so the status
@@ -2377,6 +4986,38 @@ cmd_evaluate() {
   # invented while looking.
   xo_build_journey "$dir" "$xodir"
 
+  # --- 1d. THE TREE THE REACH RUNS IN (S239, S246, S247) -------------------
+  # MINTED BEFORE THE LAUNCH, because a CLI and a workflow do not need a server
+  # up and four of the weekend's misses were looks that reached nothing because
+  # the launch target was stale.
+  #
+  # S246 — IT IS MINTED ONCE, HERE, and lives until the look ends. Every round's
+  # steps run in that same tree under that same throwaway HOME, which is what
+  # lets the worker file a record and then read it back.
+  #
+  # S247 — AND NOTHING RUNS IN IT YET. There used to be an `xo_run_reach` on this
+  # line, executing the steps `xo-journey.py` had instantiated from the record.
+  # That instantiation is deleted: the worker is the one author of the step list,
+  # and its steps arrive through `xo_reach_actions` in the rounds below. Preparing
+  # the tree here is still right — the first round must find it standing.
+  xo_reach_prepare "$dir"
+
+  # --- 1e. THE ROUND BEFORE THE LAUNCH (S248) ------------------------------
+  # The work directory and the worker's read-only copy of the record are built
+  # HERE rather than at step 4, because the pre-launch round needs both and a
+  # second `mktemp -d` would be a second work directory to tear down.
+  #
+  # NOTHING RUNS A STEP ON THIS LINE. The round only ASKS — which page is under
+  # review, and what has to be on it. Its steps run after the launch, in the tree
+  # the launch serves, which is the whole point of the session.
+  local work input round=1 verdict="" out=""
+  work="$(mktemp -d)"; input="$work/input"
+  XO_WORK_DIR="$work"
+  mkdir -p "$input"
+  gather_inputs "$dir" "$input"
+  xo_put_inputs "$input" "$xodir/criteria.json" "$shots"
+  xo_prelaunch_round "$dir" "$xodir" "$input" "$work" "$xo_engine"
+
   # --- 2. LAUNCH ------------------------------------------------------------
   # Through launch.sh, the verb a human uses, with no --open-ish path anywhere
   # near it. xo.sh NEVER writes inside the launch worktree: launch.sh's own
@@ -2391,139 +5032,253 @@ cmd_evaluate() {
   # $LCARS_WORKER_BIN_INTERNAL=1 is the S202/S207 marker: it says LCARS set this,
   # not the captain, so the MISSION's own provenance (`env` means he typed it)
   # is untouched. Exported inside a SUBSHELL that wraps nothing but the spawn.
+  #
+  # AND THE WORKER MAY HAVE NAMED THE PAGE (S248). When it did, that name rides
+  # as the HINT `lcars launch <mission> [hint]` has always taken — never a new
+  # flag (the launch contract is this round's declared invariant) and never a
+  # frozen command (the discovery still decides how to start it).
   printf '◈ NUMBER ONE: launching the build…\n'
-  (
-    if [ -n "$xo_engine" ]; then
-      export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
-    fi
-    exec bash "$XO_LAUNCH_SCRIPT" "$id"
-  ) >"$xodir/launch.log" 2>&1 || true
-  local lstatus lurl lmsg
+  : >"$xodir/launch.log"
+  xo_do_launch "$dir" "$id" "$xodir" "$xo_engine"
+  local lstatus lurl lmsg nopage=0 nolook_why=""
+  local lwork=""
   lstatus="$(json_field "$dir/launch.json" status)"
   lurl="$(json_field "$dir/launch.json" url)"
   lmsg="$(json_field "$dir/launch.json" message)"
   if [ "$lstatus" != "running" ] || [ -z "$lurl" ]; then
-    # NO BROWSER AT ALL. There is nothing to point one at, and a verdict from a
-    # blank tab is worse than no verdict.
+    # NO BROWSER AT ALL — AND THAT IS NOT THE END OF THE LOOK (S246).
     #
-    # TWO DIFFERENT THINGS, AND THEY MUST NOT SHARE A SENTENCE (S213). This arm
-    # fires on two quite separate situations, and it used to glue its own
-    # failure prefix onto whatever `launch.json` said — so a desktop build that
-    # started perfectly well but serves no web address produced, verbatim, on
-    # the captain's own board card:
+    # THE DEFECT THIS REPLACES. This arm used to overwrite `verdict.json` with
+    # `score: low, criteria: [], gaps: []` and finish. Every reach transcript
+    # already sitting under `xo/shots/<look>/` — the CLI run, the workflow run,
+    # the artifact read, all taken BEFORE the launch on purpose — was thrown
+    # away unread. On the modelled weekend every CLI-only milestone scored low
+    # exactly this way, on a build whose command line worked fine.
+    #
+    # SO WHAT IS SKIPPED IS THE BROWSER INSTRUMENTS, AND ONLY THOSE: there is no
+    # page, so there is no walk, no shot, no layout pass, no drawing pair. The
+    # worker rounds, the scorer and the recommendation all still run, over the
+    # transcripts and the project’s own tests.
+    #
+    # TWO DIFFERENT THINGS, AND THEY MUST NOT SHARE A SENTENCE (S213). It used to
+    # glue its own failure prefix onto whatever `launch.json` said — so a desktop
+    # build that started perfectly well but serves no web address produced,
+    # verbatim, on the captain's own board card:
     #
     #     could not launch: the app is running.
     #
     # which contradicts itself in six words and tells him nothing he can act on.
-    # So the two cases say what actually happened to HIS build:
+    # So the two cases still say what actually happened to HIS build:
     #   • it is running, but at no address a browser can open — a desktop app,
     #     say. Nothing failed; there was simply nothing to look at.
     #   • it never came up at all.
-    local why
+    nopage=1
     if [ "$lstatus" = "running" ]; then
-      why="your build started, but not at a web address I can open — so there was nothing for me to look at"
+      nolook_why="your build started, but not at a web address I can open — so there was nothing for me to look at"
     else
-      why="your build did not start — ${lmsg:-nothing came up (status ${lstatus:-unknown})}"
+      nolook_why="your build did not start — ${lmsg:-nothing came up (status ${lstatus:-unknown})}"
     fi
-    printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
-      "$(jstr "$why")" "$(jstr "$XO_NOLOOK")" "$(jstr "$why")" >"$xodir/verdict.json"
-    rm -f "$dir/xo.pid"; trap - TERM INT
-    xo_finish "$dir" low engaged "$why" "$why" "$XO_NOLOOK"
-    return 0
+    # THE PRODUCER WRITES IT DOWN HERE (S266 fix round 2, FIX 1): the one place
+    # that knows there is no page, at the moment it knows. Everything downstream
+    # — the kept-but-never-run step rows, the next round's prompt — reads this
+    # and never re-derives it from an empty shots directory.
+    XO_NOPAGE_WHY="$nolook_why"
+    printf '◈ NUMBER ONE: %s\n' "$nolook_why"
+    printf '  I will go on what I could reach instead — the commands, the workflow and your tests.\n'
+    journal "$dir" no-page "$(printf '"why": %s, "launchStatus": %s' \
+      "$(jstr "$nolook_why")" "$(jstr "${lstatus:-unknown}")")"
+  else
+    printf '  the build is up at %s\n' "$lurl"
+    journal "$dir" launched "$(printf '"url": %s' "$(jstr "$lurl")")"
   fi
-  printf '  the build is up at %s\n' "$lurl"
-  journal "$dir" launched "$(printf '"url": %s' "$(jstr "$lurl")")"
 
-  # --- 2b. THE SAMPLE DATA (S220 part E) ------------------------------------
-  # Before the first picture: a screen that only exists once there is data in
-  # it cannot be photographed into existence afterwards. Declared seeds only —
-  # see xo_seed — and run in the LAUNCHED worktree, never this checkout.
-  local lwork=""
+  # --- 2a. ONE TREE FOR THE STEPS AND THE LAUNCH (S248) --------------------
+  # The spike's answer, applied: the look ADOPTS `launch.json.worktree`, so the
+  # steps that seed the product run in the very tree the server is serving. The
+  # tree `xo_reach_prepare` minted is handed back; its throwaway HOME is kept.
   lwork="$(json_field "$dir/launch.json" worktree)"
-  xo_seed "$dir" "$xodir" "${lwork:-$PWD}"
-  # AND THE TREE IS REMEMBERED, HERE (S221). After the seed — whose writes are
-  # wanted — and before the first drive, which is the first thing that types.
-  xo_tree_mark "$lwork" "$xodir/tree-mark"
+  xo_reach_adopt "$dir" "$lwork"
+  # WITH NO PAGE there is nothing to seed FOR, but the worker's pre-launch steps
+  # are still steps it asked for and they still run — in the same one tree.
+  if [ "$nopage" = 1 ]; then
+    xo_prelaunch_steps "$dir" "$xodir" "$shots" "${lwork:-$PWD}"
+  fi
 
-  # From here on the app is RUNNING and must be stopped on every path out. The
-  # stopper is the FILE-LEVEL xo_stop_launch (fix round 1, D2) — the same one the
-  # EXIT and TERM traps call — so an abnormal exit stops the app exactly as an
-  # orderly one does. It used to be a function nested here, reachable only from
-  # the paths that remembered to call it.
+  # THE BROWSER INSTRUMENTS, AND THE NAMES THEY WRITE (S246). Declared out here
+  # rather than inside the arm below, because a `local` inside a branch that is
+  # not taken leaves the name unset and this script runs under `set -u` — and on
+  # a CLI-only milestone that branch is NOT taken.
+  local drc=0 why=""
+  local obsfile="$xodir/observations.json" obsn=0 obsfound=0
+
+  # From here on the app may be RUNNING and must be stopped on every path out.
+  # The stopper is the FILE-LEVEL xo_stop_launch (S204 fix round 1, D2) — the same
+  # one the EXIT and TERM traps call — so an abnormal exit stops the app exactly
+  # as an orderly one does.
+  #
+  # ARMED OUTSIDE THE no-page ARM (S246). A desktop build that started at no web
+  # address is RUNNING and is now looked at anyway, so the look must still be able
+  # to stop it; inside the arm below, that flag would never be reached on exactly
+  # the path that newly needs it.
   XO_LAUNCH_STOPPED=0
 
-  # --- 3. ROUND 0 — the standard look --------------------------------------
-  # BACKGROUNDED AND WAITED ON (fix round 1, D2). A foreground child holds the
-  # trap's first opportunity to run until it finishes, so a TERM arriving during
-  # the look — which is where most of the wall clock goes — did nothing until the
-  # browser was already done. Backgrounded, the stand-down lands immediately and
-  # the trap kills the driver's whole tree, Chrome included.
-  local drc=0
-  "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
-    --place-names "$xodir/criteria.json" --prefix "shot" \
-    --parts-out "$xodir/build-parts-0.json" \
-    --journey "$xodir/journey.json" --walk-out "$xodir/walk.json" \
-    >"$xodir/drive-0.json" 2>"$xodir/drive-0.err" &
-  XO_DRIVE_PID=$!
-  wait "$XO_DRIVE_PID" || drc=$?
-  XO_DRIVE_PID=""
-  if [ "$drc" -eq 77 ]; then
-    local why="could not look: the browser could not be started ($(head -1 "$xodir/drive-0.err" 2>/dev/null))"
-    xo_stop_launch
-    rm -f "$dir/xo.pid"; trap - TERM INT
-    printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
-      "$(jstr "$why")" "$(jstr "$XO_NOLOOK")" "$(jstr "$why")" >"$xodir/verdict.json"
-    xo_finish "$dir" low engaged "$why" "$why" "$XO_NOLOOK"
-    return 0
-  fi
-  # WHAT THE WALK TYPED, PUT BACK (S221). Before the project's own suite runs —
-  # the whole point is that it must not read the insight Number One typed.
-  xo_tree_restore "$dir"
-  # THE DIRECTORY IS PART OF THE RECORD (fix round 2, D1): a verdict is only as
-  # good as the pictures behind it, so which pictures those were is written down.
-  journal "$dir" looked "$(printf '"round": 0, "shots": %s, "shotsDir": %s' \
-    "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \
-    "$(jstr "${shots#$dir/}")")"
+  # EVERYTHING FROM HERE TO THE PROJECT'S OWN TESTS NEEDS A PAGE (S246). A seed
+  # runs in the launched worktree; a walk, a shot, the layout pass, the drawing
+  # pairs and the moment-by-moment readings are all readings OF a screen. With no
+  # address to open there is no screen, so these are skipped — and nothing else
+  # is. The reach transcripts are already on disk, the tests still run below, and
+  # the worker rounds and the scorer run over both.
+  if [ "$nopage" = 0 ]; then
+    # --- 2b. THE SAMPLE DATA (S220 part E) ------------------------------------
+    # Before the first picture: a screen that only exists once there is data in
+    # it cannot be photographed into existence afterwards. Declared seeds only —
+    # see xo_seed — and run in the LAUNCHED worktree, never this checkout.
+    xo_seed "$dir" "$xodir" "${lwork:-$PWD}"
+    # AND THEN THE WORKER'S OWN SEEDS (S248), in that same tree, BEFORE the first
+    # picture — a screen that only exists once there is data in it cannot be
+    # photographed into existence afterwards. Both sources land on seed.json.
+    xo_prelaunch_steps "$dir" "$xodir" "$shots" "${lwork:-$PWD}"
+    # AND THE TREE IS REMEMBERED, HERE (S221). After the seed — whose writes are
+    # wanted — and before the first drive, which is the first thing that types.
+    xo_tree_mark "$lwork" "$xodir/tree-mark"
 
-  # --- 3b. THE OBSERVATIONS PASS — computed by the SKILL, from these same
-  # boxes, before the worker ever looks (S210). Crowding, overlap, a
-  # misaligned row, clipped text: things no drawing states, so nothing has
-  # ever asked the model to notice them. It journals even when it found
-  # nothing — a clean page is a fact worth recording too.
-  local obsfile="$xodir/observations.json" obsn=0
-  xo_observe "$shots" "$obsfile"
-  local obsfound=0
-  [ -s "$obsfile" ] && obsn="$("$XO_PY" -c 'import json,sys
+    # --- 3. ROUND 0 — the standard look --------------------------------------
+    # BACKGROUNDED AND WAITED ON (fix round 1, D2). A foreground child holds the
+    # trap's first opportunity to run until it finishes, so a TERM arriving during
+    # the look — which is where most of the wall clock goes — did nothing until the
+    # browser was already done. Backgrounded, the stand-down lands immediately and
+    # the trap kills the driver's whole tree, Chrome included.
+    "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
+      --place-names "$xodir/criteria.json" --prefix "shot" \
+      --parts-out "$xodir/build-parts-0.json" \
+      --journey "$xodir/journey.json" --walk-out "$xodir/walk.json" \
+      >"$xodir/drive-0.json" 2>"$xodir/drive-0.err" &
+    XO_DRIVE_PID=$!
+    wait "$XO_DRIVE_PID" || drc=$?
+    XO_DRIVE_PID=""
+    if [ "$drc" -eq 77 ]; then
+      why="could not look: the browser could not be started ($(head -1 "$xodir/drive-0.err" 2>/dev/null))"
+      xo_stop_launch
+      rm -f "$dir/xo.pid"; trap - TERM INT
+      printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+        "$(jstr "$why")" "$(jstr "$XO_NOLOOK")" "$(jstr "$why")" >"$xodir/verdict.json"
+      xo_finish "$dir" low engaged "$why" "$why" "$XO_NOLOOK"
+      return 0
+    fi
+    # WHAT THE WALK TYPED, PUT BACK (S221). Before the project's own suite runs —
+    # the whole point is that it must not read the insight Number One typed.
+    xo_tree_restore "$dir"
+    # THE DIRECTORY IS PART OF THE RECORD (fix round 2, D1): a verdict is only as
+    # good as the pictures behind it, so which pictures those were is written down.
+    journal "$dir" looked "$(printf '"round": 0, "shots": %s, "shotsDir": %s' \
+      "$(ls "$shots"/*.png 2>/dev/null | grep -c . | tr -d ' ')" \
+      "$(jstr "${shots#$dir/}")")"
+
+    # --- 3a-ii. THE RIGHT PAGE, OR NO GRADE OVER IT (S248) ------------------
+    # Read off the FIRST shot's own readout: if not one of the places the
+    # contract declares is `present` or `laidOut`, this is not a broken build —
+    # it is a different screen. Say so, ask ONCE for a different serve target,
+    # and if the second page is no better, the browser rows read `untested` with
+    # that reason. NEVER a grade over a page nobody can place.
+    local wsparts="" wshint="" wsprev=""
+    wsparts="$(xo_places_absent "$shots" "shot")"
+    if [ -n "$wsparts" ]; then
+      printf '◈ NUMBER ONE: the page at %s shows none of the parts your drawing declares (%s).\n' \
+        "$lurl" "$wsparts"
+      printf '  That reads as the WRONG SCREEN rather than a broken build, so I am asking for a different serve target — once.\n'
+      journal "$dir" wrong-screen "$(xo_ws_body "$lurl" "$wsparts" 1)"
+      wsprev="$(xo_serve_hint "$xodir/serve.json")"
+      xo_serve_reask "$dir" "$xodir" "$input" "$work" "$xo_engine" "$lurl" "$wsparts"
+      wshint="$(xo_serve_hint "$xodir/serve.json")"
+      if [ -n "$wshint" ] && [ "$wshint" != "$wsprev" ]; then
+        xo_stop_launch
+        XO_LAUNCH_STOPPED=0
+        xo_do_launch "$dir" "$id" "$xodir" "$xo_engine"
+        lstatus="$(json_field "$dir/launch.json" status)"
+        lurl="$(json_field "$dir/launch.json" url)"
+        lwork="$(json_field "$dir/launch.json" worktree)"
+        xo_reach_adopt "$dir" "$lwork"
+        if [ "$lstatus" = "running" ] && [ -n "$lurl" ]; then
+          journal "$dir" launched "$(printf '"url": %s, "secondTarget": true' "$(jstr "$lurl")")"
+          xo_tree_mark "$lwork" "$xodir/tree-mark"
+          drc=0
+          "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
+            --place-names "$xodir/criteria.json" --prefix "second" \
+            --parts-out "$xodir/build-parts-0b.json" \
+            --journey "$xodir/journey.json" --walk-out "$xodir/walk.json" \
+            >"$xodir/drive-0b.json" 2>"$xodir/drive-0b.err" &
+          XO_DRIVE_PID=$!
+          wait "$XO_DRIVE_PID" || drc=$?
+          XO_DRIVE_PID=""
+          xo_tree_restore "$dir"
+          journal "$dir" looked "$(printf '"round": 0, "secondTarget": true, "driverExit": %s' "$drc")"
+          wsparts="$(xo_places_absent "$shots" "second")"
+        else
+          printf '  the second target did not come up either.\n'
+        fi
+      fi
+      if [ -n "$wsparts" ]; then
+        xo_ws_write "$xodir" "$lurl" "$wsparts"
+        # S248 fix round 1, D3 — the grade stands down here, and so does every
+        # measured comparison against that page (see `xo_pair_parts`).
+        XO_WRONG_SCREEN_STANDS=1
+        journal "$dir" wrong-screen-stands "$(xo_ws_body "$lurl" "$wsparts" 2)"
+        printf '  still none of them. I will not grade a page I cannot place — every row that needed a picture reads untested.\n'
+      else
+        rm -f "$xodir/wrong-screen.json" 2>/dev/null || true
+        XO_WRONG_SCREEN_STANDS=0
+        journal "$dir" right-screen '"detail": "the second serve target showed the parts the drawing declares"'
+      fi
+    fi
+    # S248 fix round 1, D4 — THE MOMENT IT IS FIRST KNOWN. Everything that could
+    # seed the page has already run (the repo's `verifySeed` and the worker's
+    # pre-launch steps) and the first pictures are taken, so this is where "a
+    # declared seed ran and the page is still bare" becomes a fact. Read off the
+    # readout the camera actually produced — `second` when a second target was
+    # launched above, `shot` otherwise — and recorded on `seed.json`, never
+    # inferred later from a report.
+    local wslast="shot"
+    if [ -n "$wshint" ] && [ "$wshint" != "$wsprev" ]; then wslast="second"; fi
+    xo_seed_empty_record "$xodir" "$(xo_places_absent "$shots" "$wslast")" "$wslast"
+
+    # --- 3b. THE OBSERVATIONS PASS — computed by the SKILL, from these same
+    # boxes, before the worker ever looks (S210). Crowding, overlap, a
+    # misaligned row, clipped text: things no drawing states, so nothing has
+    # ever asked the model to notice them. It journals even when it found
+    # nothing — a clean page is a fact worth recording too.
+    xo_observe "$shots" "$obsfile"
+    [ -s "$obsfile" ] && obsn="$("$XO_PY" -c 'import json,sys
 try: print(len(json.load(open(sys.argv[1])).get("observations") or []))
 except Exception: print(0)' "$obsfile" 2>/dev/null)"
-  # WHAT IT FOUND, beside what it PRINTED. Past a handful the pass keeps only
-  # the worst few (S212), and a record that logged the short list as the whole
-  # story would make a busy page look like a quiet one for ever after.
-  [ -s "$obsfile" ] && obsfound="$("$XO_PY" -c 'import json,sys
+    # WHAT IT FOUND, beside what it PRINTED. Past a handful the pass keeps only
+    # the worst few (S212), and a record that logged the short list as the whole
+    # story would make a busy page look like a quiet one for ever after.
+    [ -s "$obsfile" ] && obsfound="$("$XO_PY" -c 'import json,sys
 try:
   d = json.load(open(sys.argv[1]))
   print(d.get("foundCount", len(d.get("observations") or [])))
 except Exception: print(0)' "$obsfile" 2>/dev/null)"
-  obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
-  journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
+    obsn="${obsn:-0}"; obsfound="${obsfound:-0}"
+    journal "$dir" observed "$(printf '"count": %s, "found": %s' "${obsn:-0}" "${obsfound:-0}")"
 
-  # --- 3b-ii. SIDE BY SIDE (S220 part B) — the drawing's parts against what
-  # round 0 actually built, with the two measurements beside each pair.
-  xo_pair_parts "$dir" "$xodir"
-  xo_touch_criteria "$dir" "$xodir"
-  xo_measure_walk "$dir" "$xodir" "$obsfile"
+    # --- 3b-ii. SIDE BY SIDE (S220 part B) — the drawing's parts against what
+    # round 0 actually built, with the two measurements beside each pair.
+    xo_pair_parts "$dir" "$xodir"
+    xo_touch_criteria "$dir" "$xodir"
+    xo_measure_walk "$dir" "$xodir" "$obsfile"
 
-  # --- 3b-iii. THE SAME PLACE, READ AT EVERY MOMENT (S224 fix round 3) ------
-  # A walk is a sequence of pictures, and a criterion about something that is
-  # on screen the whole way through therefore has several moments it could be
-  # judged at. Measured on the captain's own build: a row was graded on a late
-  # picture while the walk's own record showed that strip of the page reading
-  # differently at its first three moments. This writes those moments down, from
-  # the driver's record and nothing else. It judges NONE of them — a value that
-  # changes is usually a value doing its job — it only makes sure the eye is
-  # looking at all of them instead of one.
-  "$XO_PY" "$SKILL_DIR/xo-readings.py" "$xodir/walk.json" "$xodir/readings.json" \
-    >/dev/null 2>&1 || true
+    # --- 3b-iii. THE SAME PLACE, READ AT EVERY MOMENT (S224 fix round 3) ------
+    # A walk is a sequence of pictures, and a criterion about something that is
+    # on screen the whole way through therefore has several moments it could be
+    # judged at. Measured on the captain's own build: a row was graded on a late
+    # picture while the walk's own record showed that strip of the page reading
+    # differently at its first three moments. This writes those moments down, from
+    # the driver's record and nothing else. It judges NONE of them — a value that
+    # changes is usually a value doing its job — it only makes sure the eye is
+    # looking at all of them instead of one.
+    "$XO_PY" "$SKILL_DIR/xo-readings.py" "$xodir/walk.json" "$xodir/readings.json" \
+      >/dev/null 2>&1 || true
+  fi
 
   # --- 3c. THE PROJECT'S OWN TESTS (S211) — run by the SKILL, between the
   # capture and the worker round. A screenshot cannot answer "batches survive a
@@ -2541,18 +5296,40 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
     # the meaning to the line the look has to quote.
     failed)          printf '◈ NUMBER ONE: your test run came back FAILED — a red test of yours, or a runner that never started.\n'
                      printf '  I am not counting that against the build on its own.\n' ;;
-    hung)            printf '◈ NUMBER ONE: your tests were still running after %ss, so I stopped them.\n' "$XO_TEST_TIMEOUT" ;;
+    hung)            printf '◈ NUMBER ONE: your tests were still running after %ss, so I stopped them.\n' "$(xo_test_timeout)" ;;
     no-test-command) printf '◈ NUMBER ONE: no test command for this repo — going on what I can see.\n' ;;
     *)               printf '◈ NUMBER ONE: could not run your tests — going on what I can see.\n' ;;
   esac
   journal "$dir" tested "$(printf '"outcome": %s' "$(jstr "${test_outcome:-unknown}")")"
 
+  # --- 3d. "NOTHING TO LOOK AT" IS NOW A NARROW CLAIM (S246) ---------------
+  #
+  # It is said only when it is TRUE: no page, AND nothing reached beyond the
+  # browser, AND the project's own tests said nothing either. That is the honest
+  # version of the sentence this arm used to print over three CLI transcripts and
+  # a green suite. With any of those three in hand the look goes on, hires its
+  # worker and scores what it has — which is the whole of this session.
+  if [ "$nopage" = 1 ]; then
+    local nreach=0 reachable=0 usable_tests=""
+    nreach="$(xo_reach_transcripts "$shots")"
+    reachable="$(xo_reach_surface "$xodir/criteria.json")"
+    case "${test_outcome:-}" in passed|failed) usable_tests=1 ;; *) usable_tests="" ;; esac
+    if [ "${nreach:-0}" -eq 0 ] && [ -z "$usable_tests" ] && [ "${reachable:-0}" -eq 0 ]; then
+      printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
+        "$(jstr "$nolook_why")" "$(jstr "$XO_NOLOOK")" "$(jstr "$nolook_why")" >"$xodir/verdict.json"
+      xo_stop_launch
+      rm -f "$dir/xo.pid"; trap - TERM INT
+      xo_finish "$dir" low engaged "$nolook_why" "$nolook_why" "$XO_NOLOOK"
+      return 0
+    fi
+    printf '  %s transcript(s) so far, and a command line to run — I will go on looking.\n' \
+      "${nreach:-0}"
+  fi
+
   # --- 4. THE WORKER ROUNDS ------------------------------------------------
-  local work input round=1 verdict="" out=""
-  work="$(mktemp -d)"; input="$work/input"
-  XO_WORK_DIR="$work"
-  mkdir -p "$input"
-  gather_inputs "$dir" "$input"
+  # The work directory, the input copy and `$round` are all built at step 1e now
+  # (S248) — the pre-launch round needs them, and a second `mktemp -d` here would
+  # be a second work directory for the teardown to miss.
   # THE WORKER IS HANDED ITS CONTRACT (fix round 1, D4). Number One escalated
   # this against itself: "criteria.json and xo/shots/ were not in the Number One
   # input directory. They were read from .git/lcars/… instead." Both copies were
@@ -2564,11 +5341,21 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # each) come too, and are re-synced every round because every round takes more.
   xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile" "$testsfile"
 
-  while [ "$round" -le "$XO_MAX_ROUNDS" ]; do
+  # A LOOK HAS NO CLOCK (S246, captain's ruling 2026-10-04). With no ceiling
+  # asked for, the loop runs until the WORKER writes its verdict — or until a
+  # round asks for nothing at all, which ends it too, because another round with
+  # identical inputs buys the same silence again. With a ceiling asked for, the
+  # old `-le` test is exactly what runs and every sentence that quotes the cap
+  # still reads true.
+  while [ -z "$XO_MAX_ROUNDS" ] || [ "$round" -le "$XO_MAX_ROUNDS" ]; do
     out="$work/round-$round"
     mkdir -p "$out"
     xo_put_inputs "$input" "$xodir/criteria.json" "$shots" "$obsfile" "$testsfile"
-    printf '◈ NUMBER ONE: round %s of %s — looking…\n' "$round" "$XO_MAX_ROUNDS"
+    if [ -n "$XO_MAX_ROUNDS" ]; then
+      printf '◈ NUMBER ONE: round %s of %s — looking…\n' "$round" "$XO_MAX_ROUNDS"
+    else
+      printf '◈ NUMBER ONE: round %s — looking…\n' "$round"
+    fi
     (
       export LCARS_XO_INPUT_DIR="$input"
       # The SHOTS are granted as a second input dir: on copilot the adapter turns
@@ -2578,6 +5365,41 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
 $input/shots
 $input/drawing
 $shots"
+      # ── AND THE CAMERA THAT RECORDS WHERE A PICTURE WAS TAKEN (S261 fix 1) ──
+      # The look's worker now takes pictures itself. On the first live night it
+      # took them with its own commands, in its own copy: they never reached
+      # this directory and nothing recorded the page they were of, so the
+      # landing rail (S241) could not place them and six real, FILED faults
+      # were re-scored "no landing record". THE PRODUCER RECORDS IT — so the
+      # worker is handed `xo-drive.js`, which already writes that record beside
+      # every PNG, pointed at THIS look's shots directory. `run.sh` offers it
+      # only when all three are really on disk; nothing is promised.
+      export LCARS_XO_SHOTS_DIR="$shots"
+      export LCARS_XO_CAMERA="$XO_DRIVER"
+      export LCARS_XO_CAMERA_NODE="$XO_NODE"
+      # ── AND THE STEPS THE HARNESS WOULD NOT RUN (S264 change 1) ───────────
+      # MEASURED: over one milestone the worker asked for 36 steps, 34 were
+      # refused, and every one of the five assembled prompts was all but
+      # identical — "a step has no shell" appeared ZERO times in any of them.
+      # The refusals were on `journey.json.refusedSteps` the whole time, with
+      # their round and their reason, written by the harness at the moment it
+      # refused. These two lines are the delivery: the RECORD and WHICH ROUND
+      # this is, so `run.sh` can print the PREVIOUS round's refusals into the
+      # prompt. It assembles the section itself, from the artifact path alone —
+      # no prompt text lives here, and nothing is re-derived from a transcript.
+      export LCARS_XO_JOURNEY="$xodir/journey.json"
+      export LCARS_XO_ROUND="$round"
+      # ── AND WHY THERE IS NO PAGE, WHEN THERE IS NONE (S266 fix round 2) ───
+      # The REASON only. Whether the prompt may claim the reviewer is looking at
+      # photographs is decided in `run.sh` off the pictures themselves, so this
+      # var can never make a picture-less prompt assert pictures — it only lets
+      # the honest paragraph say what happened to the captain's build. Unset on
+      # every healthy look, which is the control.
+      if [ -n "$XO_NOPAGE_WHY" ]; then
+        export LCARS_XO_NOPAGE="$XO_NOPAGE_WHY"
+      else
+        unset LCARS_XO_NOPAGE
+      fi
       if [ -n "$xo_engine" ]; then
         export LCARS_WORKER_BIN="$xo_engine" LCARS_WORKER_BIN_INTERNAL=1
       fi
@@ -2585,13 +5407,38 @@ $shots"
       # prompt. `evaluate.md` used to say "three rounds in total"; the day the
       # ceiling came down that sentence became a lie the model would have
       # planned against. run.sh prints whatever this says.
-      export LCARS_XO_MAX_ROUNDS="$XO_MAX_ROUNDS"
+      # Unset when there is no ceiling: `run.sh` prints the budget sentence only
+      # when this says a number, so an unbounded look is never told to plan
+      # against a cap that does not exist.
+      if [ -n "$XO_MAX_ROUNDS" ]; then
+        export LCARS_XO_MAX_ROUNDS="$XO_MAX_ROUNDS"
+      else
+        unset LCARS_XO_MAX_ROUNDS
+      fi
+      # WHAT THE RECORD CONSENTS TO, AND NOTHING THE WORKER SAYS (S249). The
+      # worker has to be TOLD which host and owner it may ask for a live step
+      # against, or it cannot ask for one at all. Read here from `xo-run.py
+      # consent` — the very file that will refuse the step — so there is exactly
+      # one reader of `liveTargets` and no second place for it to drift. This is
+      # a MESSAGE, never a permission: the decision is made in `xo-run.py` off
+      # the file on disk, so an env var set by hand buys nothing.
+      LCARS_XO_LIVE_TARGETS="$(xo_live_targets)"
+      if [ -n "$LCARS_XO_LIVE_TARGETS" ]; then
+        export LCARS_XO_LIVE_TARGETS
+      else
+        unset LCARS_XO_LIVE_TARGETS
+      fi
       exec bash "$XO_RUN_SCRIPT" spawn-number-one \
         --mission "$id" --mode evaluate --outdir "$out"
     ) >/dev/null 2>&1 &
     XO_SPIN_PID=$!
     wait "$XO_SPIN_PID" 2>/dev/null || true
     XO_SPIN_PID=""
+
+    # THE NOTEBOOK (S246) — kept on EVERY round, including the one that decided,
+    # because the last round's reasoning is part of the record of the look.
+    xo_keep_notes "$dir" "$xodir" "$out" "$round"
+    xo_journal_channel "$dir" "$out" "$round"
 
     if [ -s "$out/xo-verdict.json" ]; then
       verdict="$out/xo-verdict.json"
@@ -2611,40 +5458,72 @@ except Exception: print(0)' "$out/xo-actions.json" 2>/dev/null)"
       nacts="${nacts:-0}"
       journal "$dir" actions \
         "$(printf '"round": %s, "asked": %s, "cap": %s' "$round" "$nacts" "$XO_MAX_ACTIONS")"
+      # WHAT IT IS DOING RIGHT NOW (S246). A look with no clock may run for an
+      # hour, so the captain's board needs a line per round saying what this
+      # round actually asked for — one plain line per step, in the worker's own
+      # chosen order. It is journaled BEFORE the steps run, on purpose: the whole
+      # point is that the board shows what is in flight, not what finished.
+      journal "$dir" looking "$(xo_looking_body "$out/xo-actions.json" "$round")"
       drc=0
-      "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
-        --actions "$out/xo-actions.json" --place-names "$xodir/criteria.json" \
-        --max-actions "$XO_MAX_ACTIONS" --prefix "round$round" \
-        --parts-out "$xodir/build-parts-$round.json" \
-        --walk-out "$xodir/walk.json" \
-        >"$xodir/drive-$round.json" 2>"$xodir/drive-$round.err" &
-      XO_DRIVE_PID=$!
-      wait "$XO_DRIVE_PID" || drc=$?
-      XO_DRIVE_PID=""
+      if [ "$nopage" = 0 ]; then
+        "$XO_NODE" "$XO_DRIVER" --url "$lurl" --out "$shots" \
+          --actions "$out/xo-actions.json" --place-names "$xodir/criteria.json" \
+          --max-actions "$XO_MAX_ACTIONS" --prefix "round$round" \
+          --parts-out "$xodir/build-parts-$round.json" \
+          --walk-out "$xodir/walk.json" \
+          >"$xodir/drive-$round.json" 2>"$xodir/drive-$round.err" &
+        XO_DRIVE_PID=$!
+        wait "$XO_DRIVE_PID" || drc=$?
+        XO_DRIVE_PID=""
+        # THE NEXT ROUND COMES BACK IN WHERE THIS ONE STOPPED (S257 fault 3),
+        # query and all — not at the bare launch url, which never had one.
+        lurl="$(xo_round_entry "$xodir/walk.json" "$lurl")"
+      fi
       cp "$out/xo-actions.json" "$xodir/actions-$round.json" 2>/dev/null || true
+      # THE WALK'S WRITES GO BACK BEFORE THE STEPS RUN (S248). The steps now run
+      # in the LAUNCHED tree, so a restore taken after them would revert the very
+      # records the worker filed — the thing "one tree" exists to make possible.
+      # So: undo what the browser typed first, then run the steps, then re-mark,
+      # so the NEXT round's restore treats those records as part of the tree.
+      [ "$nopage" = 0 ] && xo_tree_restore "$dir"
+      # S239: the same round may have asked for a command, a workflow or an
+      # artifact read. Same cap, same worktree, same evidence directory.
+      xo_reach_actions "$dir" "$xodir" "$shots" "$out/xo-actions.json" "$round"
       # …and again after EVERY round that drove the build (S221): each round of
-      # looking is another round of typing.
-      xo_tree_restore "$dir"
-      journal "$dir" looked "$(printf '"round": %s, "driverExit": %s' "$round" "$drc")"
-      # THE SCREEN IT JUST WALKED TO IS A SCREEN THE LAYOUT PASS MUST SEE
-      # (part D), and its parts are parts to pair with the drawing (part B).
-      # Both run after EVERY round now, not only round 0.
-      xo_observe "$shots" "$obsfile" --merge
-      xo_pair_parts "$dir" "$xodir"
-      xo_touch_criteria "$dir" "$xodir"
-      xo_measure_walk "$dir" "$xodir" "$obsfile"
-      obsfound="$("$XO_PY" -c 'import json,sys
+      # looking is another round of typing. All of this reads a SCREEN, so with
+      # no page it is skipped exactly as round 0's half was.
+      if [ "$nopage" = 0 ]; then
+        xo_tree_mark "$lwork" "$xodir/tree-mark"
+        # S248 fix round 1, D1 — THE ROUND'S OWN STEPS GET PHOTOGRAPHED. The
+        # pictures above were taken at the TOP of this round, BEFORE the steps
+        # just run; without this the page a round's own render produced is never
+        # seen by anybody. Only fires when steps really ran, so a round that
+        # asked for none costs nothing and takes no extra picture.
+        xo_shot_after_steps "$dir" "$xodir" "$shots" "$round" "$lurl" "round$round"
+        journal "$dir" looked "$(printf '"round": %s, "driverExit": %s' "$round" "$drc")"
+        # THE SCREEN IT JUST WALKED TO IS A SCREEN THE LAYOUT PASS MUST SEE
+        # (part D), and its parts are parts to pair with the drawing (part B).
+        # Both run after EVERY round now, not only round 0.
+        xo_observe "$shots" "$obsfile" --merge
+        xo_pair_parts "$dir" "$xodir"
+        xo_touch_criteria "$dir" "$xodir"
+        xo_measure_walk "$dir" "$xodir" "$obsfile"
+        obsfound="$("$XO_PY" -c 'import json,sys
 try:
   d = json.load(open(sys.argv[1]))
   print(d.get("foundCount", len(d.get("observations") or [])))
 except Exception: print(0)' "$obsfile" 2>/dev/null)"
-      journal "$dir" observed "$(printf '"round": %s, "found": %s' "$round" "${obsfound:-0}")"
+        journal "$dir" observed "$(printf '"round": %s, "found": %s' "$round" "${obsfound:-0}")"
+      fi
       round=$((round + 1))
       continue
     fi
     # Neither file. Nothing to act on and nothing to re-look at — another round
-    # with identical inputs would only buy the same silence again.
+    # with identical inputs would only buy the same silence again. With a ceiling
+    # in force the old behaviour stands (spend the remaining rounds, then say so);
+    # with NO ceiling this is what ends the loop, because nothing else would.
     journal "$dir" silent "$(printf '"round": %s' "$round")"
+    [ -n "$XO_MAX_ROUNDS" ] || break
     round=$((round + 1))
   done
 
@@ -2655,10 +5534,15 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   shotlist="$(ls "$shots"/*.png 2>/dev/null | sed 's|.*/||; s|\.png$||' | tr '\n' ' ' | sed 's/ $//')"
 
   if [ -z "$verdict" ]; then
-    # EVERY ROUND SPENT, NO VERDICT. A judge that will not decide is not a
-    # pass. The sentence quotes $XO_MAX_ROUNDS rather than a number of its own,
-    # so lowering the ceiling can never leave the captain reading "three".
-    local why="Number One could not reach a verdict in $XO_MAX_ROUNDS rounds"
+    # NO VERDICT. A judge that will not decide is not a pass. The sentence quotes
+    # $XO_MAX_ROUNDS rather than a number of its own, so lowering the ceiling can
+    # never leave the captain reading "three" — and with NO ceiling it names the
+    # rounds that actually happened, because there was no cap to run out of.
+    if [ -n "$XO_MAX_ROUNDS" ]; then
+      why="Number One could not reach a verdict in $XO_MAX_ROUNDS rounds"
+    else
+      why="Number One stopped looking after $((round - 1)) round(s) without reaching a verdict"
+    fi
     local nodecide="I looked but never reached a verdict, so nothing on your list is vouched for either way"
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "sawShots": %s,\n  "summary": %s\n}\n' \
       "$(jstr "$why")" "$(jstr "$nodecide")" "$(jstr "$shotlist")" \
@@ -2676,15 +5560,56 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   xo_unlisted_pass "$id" "$shots" "$xodir/unlisted.json" "$xo_engine"
 
   # --- 5. THE SCORE IS RECOMPUTED FROM THE LEDGER --------------------------
+  # S241 — THE SHOTS ROOT, not this look's own directory. The eye cites a shot
+  # by bare name and may cite one an EARLIER look took, so the landing rail is
+  # handed the whole `shots/` tree and searches the newest look first. Handing
+  # it one look's folder would make every earlier look's picture read as "no
+  # landing record", which is a refusal the record does not support.
+  #
+  # AND THIS LOOK'S OWN FOLDER RIDES BESIDE IT (S264 fix round 1, FIX 1), as the
+  # LAST argument, because the over-claiming guard needs the opposite scope: a
+  # transcript from a SUPERSEDED look must not settle a row taken after a fix —
+  # measured at 37 of 42 admitted files on the live record, the file-logs → fix
+  # → recheck sequence. Two consumers of two different scopes, so each is handed
+  # the one it needs rather than deriving it from the other.
   local report
+  # A SCORER THAT DIED IS NOT A GRADE (S263 fix round 3, FIX 4). This line read
+  # `… 2>/dev/null)" || report=""`, which is the EXACT pattern S263 cured on the
+  # filer at `file_logs_for`: the exit status was thrown away with the traceback,
+  # so a scorer that crashed was indistinguishable from a scorer that said
+  # nothing. MEASURED: one malformed field in the verdict (`gaps[].shots: 5`)
+  # raises out of `xo-score.py`, which exits 1 — and the empty result then fell
+  # through to the "I could not read back my own verdict" arm below, which blames
+  # the VERDICT for a fault in OUR code and says nothing about a crash. Worse, a
+  # scorer that dies AFTER printing its wire lines leaves `$score` set while
+  # `$xodir/verdict.json` was never rewritten, so a mission with an earlier look
+  # would be finished and FILED against a STALE verdict.
+  #
+  # The status is kept and answered: a crash is reported as a crash, no partial
+  # wire is ever treated as a grade, and nothing is filed from it. NARROW ON
+  # PURPOSE — the `2>/dev/null` swallowing is pre-existing and is LEDGERED, and
+  # the crash in the gaps/criteria lane of `xo-score.py` is the captain's next
+  # session's first fix, not this round's.
+  local src=0
   # S216 fix round 1 (D5): importance is RECORDED in the mission's own
   # xo/impacts.json on the first look and reused by every later one.
   report="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$verdict" "$xodir/criteria.json" \
               "$xodir/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
               "$xodir/pairs.json" "$xodir/walk.json" "$xodir/seed.json" \
-              "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" 2>/dev/null)" || report=""
+              "$xodir/unlisted.json" "$xodir/readings.json" "$dir/decisions.json" \
+              "$xodir/journey.json" "$xodir/shots" "$xodir/wrong-screen.json" \
+              "$xodir/live.json" "$shots" \
+              2>/dev/null)" || src=$?
+  # A PARTIAL WIRE IS NOT READ AT ALL. The substitution still hands back whatever
+  # was printed before the crash; discarding it here is what makes "no partial
+  # wire is ever treated as a grade" true of every field, not only `$score`.
+  [ "$src" -eq 0 ] || report=""
   local score="" wscore="" disagreed="" why="" summary="" meaning="" gradewhy="" line key val
+  # S240 — THE ACTION, READ OFF THE WIRE. `xo-score.py` decided it beside the
+  # grade; nothing here re-derives it and nothing reads it back out of the
+  # report's prose.
+  local recommendation="" recwhy=""
   local escalations=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -2697,6 +5622,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
       WHY)          why="$val" ;;
       MEANING)      meaning="$val" ;;
       GRADE_WHY)    gradewhy="$val" ;;
+      RECOMMENDATION)     recommendation="$val" ;;
+      RECOMMENDATION_WHY) recwhy="$val" ;;
       SUMMARY)      summary="$val" ;;
       NOTE)         journal "$dir" ledger-note "$(printf '"detail": %s' "$(jstr "$val")")" ;;
       # WHAT THE LOOK PUT ASIDE FOR HIM (S222 fix round 1) — journaled like any
@@ -2710,11 +5637,36 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   done <<< "$report"
   xo_say_escalations "$escalations"
 
+  # --- 5b. AND A SCORER THAT FAILED IS SAID TO HAVE FAILED (S263 fix round 3) -
+  # A non-zero exit is answered here, before anything reads `$score`: a partial
+  # wire from a scorer that then died is NOT a grade, because the scored verdict
+  # it was supposed to write may never have been written and an earlier look's
+  # verdict.json would still be sitting there to be filed against.
+  local crashed=""
+  if [ "$src" -ne 0 ]; then
+    crashed="my own scorer failed (exit $src)"
+    printf '◈ NUMBER ONE: I could not score %s — %s.\n' "$id" "$crashed"
+    printf '  Nothing was graded and nothing was filed, and that is NOT a clean bill of\n'
+    printf '  health: your list has not been checked off. Look yourself.\n'
+    journal "$dir" score-failed \
+      "$(printf '"exit": %s, "detail": %s' "$src" \
+           "$(jstr "$crashed — nothing was graded, nothing was filed and nothing is proven clean")")"
+    score=""
+    why="$XO_MALFORMED — $crashed"
+  fi
+
   if [ -z "$score" ]; then
     # A verdict that cannot be read is not a verdict. It is a LOW that says so,
     # and it stays engaged — the captain looks himself.
     local mw="${why:-$XO_MALFORMED}"
     local unreadable="I could not read back my own verdict, so there is nothing here to go on — look yourself"
+    [ -z "$crashed" ] || unreadable="My own scorer failed, so nothing here was graded or filed — look yourself"
+    # THIS LOOK NEVER REACHED A VERDICT, AND IT WAS US (S264 fix round 1, FIX 4).
+    # Both endings here are our own code failing — the scorer died, or what it
+    # wrote could not be read back — so the look is marked RETAKEABLE with the
+    # specific reason, by the arm that knows it, rather than leaving a LOW the
+    # driver can never clear. The gate itself still allows exactly one retake.
+    XO_LOOK_BLOCKED="${crashed:-I could not read back my own verdict}"
     printf '{\n  "score": "low",\n  "derivation": %s,\n  "scoreMeaning": %s,\n  "criteria": [],\n  "gaps": [],\n  "summary": %s\n}\n' \
       "$(jstr "$mw")" "$(jstr "$unreadable")" "$(jstr "$mw")" >"$xodir/verdict.json"
     xo_finish "$dir" low engaged "$mw" "$mw" "$unreadable"
@@ -2732,12 +5684,20 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
       "$wscore" "$score"
   fi
 
+  # --- 6b. WHAT IT ACTUALLY ATTEMPTED (S247) --------------------------------
+  # After the ledger exists, because the count reads the transcripts the ledger
+  # cites as well as the readouts on disk. Nothing here moves a grade — it
+  # corrects the one coverage number the captain reads so it describes this look
+  # instead of predicting it.
+  xo_recount_coverage "$dir" "$xodir" "$shots"
+
   # --- 7. THE RECORD --------------------------------------------------------
   # A HIGH finishes the first officer's work on this Mission. Anything else
   # leaves it ENGAGED — there are gaps, and S204 is the round that acts on them.
   local status=engaged
   [ "$score" = "high" ] && status=finished
-  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why" "$meaning" "$gradewhy"
+  xo_finish "$dir" "$score" "$status" "${summary:-$why}" "$why" "$meaning" "$gradewhy" \
+    "$recommendation" "$recwhy"
   xo_rm_work "$work"; XO_WORK_DIR=""
 
   # --- 8. THE FIX ROUND (S204) ---------------------------------------------
@@ -2815,6 +5775,46 @@ except Exception:
     pass' "$1" "$2" "$3" 2>/dev/null
 }
 
+# WHY `lcars log` DID NOT FINISH, IN WORDS (S240 fix round 2, D-A).
+#
+# This used to be `printf '%s' "$lout" | head -1` — the FIRST line of a chatty
+# run's combined output — inlined at BOTH the message and the journal `detail`.
+# MEASURED on the first live look: `lcars log` came back non-zero having printed
+# nothing on stdout (its per-bug stdout is swallowed by the `$(file_one_bug …)`
+# command substitution inside it), so `head -1` was the EMPTY STRING. The captain
+# was handed "Number One had 7 gaps to file but `lcars log` refused them — " —
+# a sentence ending on a dash with nothing after it — and the journal recorded
+# `"detail": ""`. Seven gaps unfiled and not one word of why.
+#
+# WHAT IS ACTUALLY WORTH CARRYING, in order:
+#   1. `log.sh` says why on STDERR, every line prefixed `lcars log: `. The LAST
+#      such line is the one that stopped the batch, and it carries how many bugs
+#      were filed BEFORE it — the one fact a re-run needs.
+#   2. Failing that, the first line that reads like an error at all.
+#   3. Failing that, the LAST non-empty line (never the first: a run that talks
+#      fails at the end).
+#   4. NO OUTPUT AT ALL is itself the finding, and it must be said: a status
+#      above 128 is a signal, which means the verb was KILLED and refused
+#      nothing — so some bugs may already be filed and a blind re-run doubles
+#      them. That is a completely different thing from a validation refusal and
+#      the captain cannot tell them apart from an empty dash.
+# This function never returns an empty string, so no sentence built from it can
+# end on a dangling dash.
+xo_log_refusal_why() { # <combined-output> <exit-status>
+  local out="$1" rc="$2" line=""
+  line="$(printf '%s\n' "$out" | grep '^lcars log: ' | tail -1)"
+  [ -n "$line" ] || line="$(printf '%s\n' "$out" \
+      | grep -iE 'error|refus|fatal|not found|missing|must |cannot|no such' | head -1)"
+  [ -n "$line" ] || line="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
+  if [ -n "$line" ]; then printf '%s' "$line"; return 0; fi
+  if [ "${rc:-0}" -gt 128 ] 2>/dev/null; then
+    printf 'it printed nothing and exit status %d means it was KILLED by signal %d — it refused nothing, so some of the bugs may already be filed and a blind re-run would file them twice.' \
+      "$rc" "$((rc - 128))"
+  else
+    printf 'it printed nothing and exited with status %s.' "${rc:-?}"
+  fi
+}
+
 # file_logs_for <mission-id> <mission-dir>
 #
 # Called by `lcars xo file-logs` and, directly, by the end of `evaluate` — one
@@ -2846,32 +5846,118 @@ file_logs_for() { # <id> <dir>
     return 0
   fi
 
+  # THE SWITCH (S240). Off means nothing is FILED; the gaps are still on the
+  # report and in the verdict, and the captain is told which switch did it.
+  if ! cfg_files_bugs; then
+    printf '◈ NUMBER ONE: filing is off for this repo (numberOne.filesBugs: false) — nothing filed.\n'
+    printf '  What I found is on the report either way. Turn it back on in .git/lcars/config.json.\n'
+    journal "$dir" filed-logs '"filed": 0, "detail": "filing is off (numberOne.filesBugs: false)"'
+    return 0
+  fi
+
   mkdir -p "$xodir/logs"
   local plan overflow=0 n=0
+  # THE SIXTH ARGUMENT IS THE RECORD OF WHAT IS ALREADY FILED (S240). A criterion
+  # already in `logs.json` is skipped and said out loud, so a second look can
+  # never file the same bug twice — and an already-filed bug does not eat one of
+  # the ten.
+  # A FILER THAT FAILED IS NOT "NOTHING TO FILE" (S263 fix round 2, D1). This
+  # line read `… 2>/dev/null)" || plan=""`, so a filer that died discarded its
+  # traceback AND its exit status, and the empty result fell through to the
+  # `n -eq 0` arm below — which told the captain `nothing on <id> contradicts
+  # what you wrote down — no logs filed.` and wrote a durable journal line
+  # saying `"filed": 0, "detail": "no contradictions to file"`. MEASURED: one
+  # malformed field in the verdict (`shots: 5`) crashed the filer, and THE CRASH
+  # WAS REPORTED AS A CLEAN BILL OF HEALTH — taking the genuine contract breach
+  # in the same verdict with it. The status is kept and answered.
+  #
+  # NARROW ON PURPOSE. The `2>/dev/null` swallowing is pre-existing and is
+  # LEDGERED, not fixed here; what changes is that a non-zero exit can no longer
+  # reach the all-clear sentence.
+  local prc=0
   plan="$("$XO_PY" "$SKILL_DIR/xo-logs.py" "$xodir/verdict.json" "$xodir/criteria.json" \
-            "$xodir/logs" "$shots" "$XO_LOG_CAP" 2>/dev/null)" || plan=""
+            "$xodir/logs" "$shots" "$XO_LOG_CAP" \
+            "$([ -s "$xodir/logs.json" ] && printf '%s' "$xodir/logs.json")" 2>/dev/null)" || prc=$?
+  if [ "$prc" -ne 0 ]; then
+    printf '◈ NUMBER ONE: I could not work out what to file on %s — the filer failed (exit %s).\n' \
+      "$id" "$prc"
+    printf '  Nothing was filed, and that is NOT a clean bill of health: anything the look\n'
+    printf '  found is still on the report, and it has not been checked against the record.\n'
+    journal "$dir" filed-logs \
+      "$(printf '"filed": 0, "exit": %s, "detail": %s' "$prc" \
+           "$(jstr "the filer failed (exit $prc) — nothing was filed and nothing is proven clean")")"
+    return 0
+  fi
 
   # THE ARGUMENTS ARE BUILT AS AN ARRAY AND PASSED LITERALLY. Never assembled in
   # a string and expanded: a `VAR=value` word inside an expanded "$@" RUNS AS A
   # COMMAND instead of setting anything, and this project has been bitten by
   # that twice, both times as a silent false green.
   local args=(--parent "$id")
-  local line key num prd shotcsv crit title s
+  local line key num prd shotcsv crit title s why what
   local -a gap_crit=() gap_title=() gap_shots=()
+  local -a refused_what=() refused_why=()
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="${line%%$XO_RS*}"
     case "$key" in
       OVERFLOW) overflow="${line#*$XO_RS}" ;;
+      # ALREADY FILED, SAID OUT LOUD (S240). Never silently dropped: a gap the
+      # captain can see on the report and cannot see a bug for would read as the
+      # first officer having quietly decided not to mention it.
+      ALREADY)
+        IFS="$XO_RS" read -r key crit title <<< "$line"
+        printf '  already filed: %s — %s\n' "$crit" "$title"
+        ;;
+      # A FIND THE FILER WOULD NOT TAKE, SAID OUT LOUD (S263). The filer refuses
+      # an uncontracted find that cites no record, and a refusal nobody receives
+      # measures as nothing — this `case` has no default, so a record the shell
+      # does not name is dropped on the floor. Printed with the REASON, which is
+      # the filer's own sentence naming what was missing; never summarised here,
+      # because then there would be two copies of the rule free to drift.
+      REFUSED)
+        IFS="$XO_RS" read -r key what why <<< "$line"
+        printf '  not filed: "%s" — %s\n' "$what" "$why"
+        # AND IT REACHES A SURFACE THAT OUTLIVES THE TERMINAL (S263 fix round 2,
+        # D5). Printing it was all round 1 did, and the captain reads phone
+        # readouts from an unattended run hours later — so a refusal he cannot
+        # see later is a refusal that did not happen. It is kept twice: in
+        # `number-one.jsonl`, which `xo-report.py` already renders every entry
+        # of (so the report needs no change at all), and in `xo/logs.json`
+        # beside what WAS filed, which is the record the other surfaces read.
+        refused_what+=("$what"); refused_why+=("$why")
+        # THE `detail` NAMES WHICH FIND. `xo-report.py` renders the first
+        # STRING field it recognises, and `what` is not one of them — a line
+        # reading only "not filed — it cites no record…" tells the captain that
+        # something was thrown away and not WHAT, which is the half he needs.
+        journal "$dir" find-refused \
+          "$(printf '"what": %s, "detail": %s' "$(jstr "$what")" \
+               "$(jstr "not filed: \"$what\" — $why")")"
+        ;;
       GAP)
-        # GAP <n> <prd> <shots-csv> <criterion> <title>
+        # GAP <n> <prd> <shots-csv> <criterion> <title> <attach-csv>
         # US, NOT TAB — <shots-csv> is EMPTY for a gap the project's own tests
         # found, and a tab would eat it and shift the title into nothing.
-        IFS="$XO_RS" read -r key num prd shotcsv crit title <<< "$line"
+        #
+        # TWO LISTS, ON PURPOSE (fix round 4, D5). <shots-csv> is what the LOOK
+        # CITED and is what goes into `xo/logs.json` for `xo recheck` to
+        # re-take; <attach-csv> is the WIDER list of files to hang on the
+        # issue, which may include a fallback picture for a gap that cited
+        # none. Writing the wider list into the record turned a shotless gap's
+        # `"shots": []` into `["shot-01"]` — a fallback attachment rewriting
+        # the gap's own evidence. A record and an attachment are not one fact.
+        # An older xo-logs.py emitting six fields leaves <attach-csv> empty,
+        # and the `:-$shotcsv` below falls back to the old behaviour exactly.
+        IFS="$XO_RS" read -r key num prd shotcsv crit title attachcsv <<< "$line"
         [ -f "$prd" ] || continue
         n=$((n + 1))
         args+=(--prd "$prd")
-        for s in ${shotcsv//,/ }; do
+        # TWO EXPANSIONS, NOT ONE. Bash cannot do `:-` and `//,/ ` in the same
+        # parameter expansion, and `${attachcsv:-$shotcsv}` alone silently
+        # dropped the comma-to-space split — one argument of
+        # "a.png,b.png" that no `[ -f ]` would ever match.
+        local attachlist="${attachcsv:-$shotcsv}"
+        for s in ${attachlist//,/ }; do
           # A SHOT THAT IS NOT THERE IS NOT PASSED. `log.sh` validates every
           # attachment before it files ANYTHING, so one missing PNG would refuse
           # the whole filing — and a gap is worth filing with a name for its
@@ -2884,8 +5970,21 @@ file_logs_for() { # <id> <dir>
   done <<< "$plan"
 
   if [ "$n" -eq 0 ]; then
-    printf '◈ NUMBER ONE: nothing on %s contradicts what you wrote down — no logs filed.\n' "$id"
-    journal "$dir" filed-logs '"filed": 0, "detail": "no contradictions to file"'
+    # AND "NOTHING TO FILE" IS NOT THE SAME AS "NOTHING WAS SEEN" (S263 fix
+    # round 2, D5). A look that offered a find outside the contract and had it
+    # refused for citing no record of itself HAS said something, and the
+    # all-clear sentence on its own would bury it.
+    if [ "${#refused_what[@]}" -gt 0 ]; then
+      printf '◈ NUMBER ONE: nothing on %s contradicts what you wrote down — no logs filed.\n' "$id"
+      printf '  %s find(s) outside the contract were thrown away for citing no record of the look.\n' \
+        "${#refused_what[@]}"
+      journal "$dir" filed-logs \
+        "$(printf '"filed": 0, "refused": %s, "detail": %s' "${#refused_what[@]}" \
+             "$(jstr "no contradictions to file; ${#refused_what[@]} uncited find(s) refused")")"
+    else
+      printf '◈ NUMBER ONE: nothing on %s contradicts what you wrote down — no logs filed.\n' "$id"
+      journal "$dir" filed-logs '"filed": 0, "detail": "no contradictions to file"'
+    fi
     return 0
   fi
 
@@ -2910,10 +6009,15 @@ file_logs_for() { # <id> <dir>
   )" || lrc=$?
 
   if [ "$lrc" -ne 0 ]; then
+    # THE REASON IS CARRIED, NOT DROPPED (S240 fix round 2, D-A). See
+    # `xo_log_refusal_why` above: one answer, used for BOTH the sentence the
+    # captain reads and the journal's `detail`, and never empty.
+    local lwhy
+    lwhy="$(xo_log_refusal_why "$lout" "$lrc")"
     escalate "$dir" verify \
-      "Number One had $n gaps to file but \`lcars log\` refused them — $(printf '%s' "$lout" | head -1)" \
-      "$(printf '"stage": "verify", "reason": "log-refused", "detail": %s' \
-           "$(jstr "$(printf '%s' "$lout" | head -1)")")"
+      "Number One had $n gaps to file but \`lcars log\` did not finish: $lwhy" \
+      "$(printf '"stage": "verify", "reason": "log-refused", "exit": %s, "detail": %s' \
+           "$lrc" "$(jstr "$lwhy")")"
   fi
 
   # --- the child ids, read off the verb's own summary ----------------------
@@ -2943,8 +6047,17 @@ file_logs_for() { # <id> <dir>
       "$(jstr "${gap_crit[$i]}")" "$(jstr "${gap_title[$i]}")" "$sj")"
     i=$((i + 1))
   done
-  printf '{"round": 1, "filedAt": %s, "overflow": %s, "filed": [%s]}\n' \
-    "$(jstr "$NOW")" "${overflow:-0}" "$items" >"$xodir/logs.json"
+  # AND WHAT WAS THROWN AWAY, BESIDE IT (S263 fix round 2, D5). Additive: every
+  # reader of this file keys off `filed`, and an absent or empty `refused` is
+  # exactly what it was before.
+  local rj="" ri=0
+  while [ "$ri" -lt "${#refused_what[@]}" ]; do
+    rj="${rj:+$rj, }$(printf '{"what": %s, "why": %s}' \
+      "$(jstr "${refused_what[$ri]}")" "$(jstr "${refused_why[$ri]}")")"
+    ri=$((ri + 1))
+  done
+  printf '{"round": 1, "filedAt": %s, "overflow": %s, "filed": [%s], "refused": [%s]}\n' \
+    "$(jstr "$NOW")" "${overflow:-0}" "$items" "$rj" >"$xodir/logs.json"
 
   # --- the record ----------------------------------------------------------
   local obj
@@ -2981,6 +6094,35 @@ file_logs_for() { # <id> <dir>
     i=$((i + 1))
   done
 
+  # --- THE SEND-BACK NAMES WHAT IT IS ABOUT (fix round 4, D4) --------------
+  # `xo-score.py` decides the send-back as DATA and writes `blockers[]` for it,
+  # with its own comment saying `filedAs` is "stamped onto them later, by
+  # whoever files them". Nothing ever stamped it — a grep for the name found
+  # two comments promising it and no writer. So the captain was handed a
+  # SEND-BACK naming no bug id and no command, three lines under a list of the
+  # very bug ids it was decided from.
+  #
+  # THE FILER RECORDS IT. This is the producer: it knows the criterion and the
+  # mission id it got for that criterion, so it writes the pair down once, on
+  # the row the decision was made from. No surface ever parses a bug id back
+  # out of finished prose.
+  if [ -f "$xodir/verdict.json" ] && [ -f "$SKILL_DIR/xo-filed.py" ]; then
+    local -a filedargs=()
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      [ -n "${kid[$i]:-}" ] && filedargs+=("${gap_crit[$i]:-}=${kid[$i]}")
+      i=$((i + 1))
+    done
+    local sendback=""
+    if [ "${#filedargs[@]}" -gt 0 ]; then
+      sendback="$("$XO_PY" "$SKILL_DIR/xo-filed.py" "$xodir/verdict.json" "$id" \
+                    "${filedargs[@]}" 2>/dev/null)" || sendback=""
+    fi
+    # Printed only when the verdict really says send-back — the helper returns
+    # nothing otherwise, so this is one line either way and never a guess.
+    [ -n "$sendback" ] && printf '  %s\n' "$sendback"
+  fi
+
   # --- hand them to LCARS's own driver, DETACHED ---------------------------
   # `resolve-logs` orders them, drives each to its Verify gate and raises ONE
   # consolidated re-verify ask on this parent. It takes a long time and it is
@@ -2993,19 +6135,16 @@ file_logs_for() { # <id> <dir>
   # the parent is this mission. It names ONLY this mission, so the child bug
   # missions this drive works — and the workers it spawns for them — are
   # exempted by nothing and locked exactly as they were.
-  if command -v setsid >/dev/null 2>&1; then
-    LCARS_XO_INTERNAL="$id" setsid bash "$XO_RESOLVE_SCRIPT" --parent "$id" \
-      </dev/null >"$xodir/resolve.log" 2>&1 &
-    rchild=$!
-  else
-    LCARS_XO_INTERNAL="$id" nohup bash "$XO_RESOLVE_SCRIPT" --parent "$id" \
-      </dev/null >"$xodir/resolve.log" 2>&1 &
-    rchild=$!
-  fi
-  disown "$rchild" 2>/dev/null || disown 2>/dev/null || true
-  # WHO it is, not just which number — so `lcars xo off` can stop this exact
-  # process later and can never mistake a recycled pid for it.
-  xo_write_pidfile "$rchild" "$dir/xo-resolve.pid"
+  #
+  # DETACHED THROUGH THE ONE HELPER (fix round 4, D3) — which makes the chain
+  # its own session so a single group kill reaches the driver AND the worker it
+  # spawns, and records WHO it is. See xo_spawn_detached for the measurement
+  # that made this necessary: `setsid` is absent on macOS, the nohup fallback
+  # left the chain in the LOOK's group, and the stop killed the driver while
+  # its worker went on running.
+  rchild="$(LCARS_XO_INTERNAL="$id" xo_spawn_detached \
+    "$dir/xo-resolve.pid" "$xodir/resolve.log" \
+    bash "$XO_RESOLVE_SCRIPT" --parent "$id")"
   printf '  LCARS is driving them now. I will re-check the build when they land.\n'
   return 0
 }
@@ -3193,7 +6332,14 @@ cmd_recheck() {
   XO_STOP_LOG="$xodir/launch.log"
   trap xo_teardown EXIT
   trap on_stand_down TERM INT
-  printf '%s\n' "$$" >"$dir/xo.pid"
+  # WHO, NOT JUST WHICH NUMBER (S245). This was a bare `printf "$$"`, one line,
+  # which meant `lcars xo off` could not run the look's pid file through
+  # `xo_signal_pidfile` at all — that function refuses a file that does not
+  # record an identity, so the look got an unverified `kill -TERM` and had its
+  # handle deleted in the same breath. `xo_write_pidfile` keeps the bare pid on
+  # line 1, so every `head -1` reader is unaffected, and adds the group this
+  # process leads (only where it genuinely leads one) and the instant it started.
+  xo_write_pidfile "$$" "$dir/xo.pid"
 
   local rc_obj
   rc_obj="$(state_xo_block "$st")"
@@ -3392,6 +6538,8 @@ $shots"
   XO_SPIN_PID=$!
   wait "$XO_SPIN_PID" 2>/dev/null || true
   XO_SPIN_PID=""
+  # S250 — by which channel the re-check's one file arrived (see xo_journal_channel).
+  xo_journal_channel "$dir" "$out" 0
 
   xo_stop_launch
   rm -f "$dir/xo.pid"; trap - TERM INT
@@ -3441,7 +6589,25 @@ $shots"
     rep2="$(LCARS_XO_ENGINE="${xo_engine:-$(xo_engine_for "$st")}" \
             "$XO_PY" "$SKILL_DIR/xo-score.py" "$out/xo-recheck.json" "$xodir/criteria.json" \
               "$xodir/second/verdict.json" "$obsfile" "$testsfile" "$xodir/impacts.json" \
-              "$xodir/pairs.json" "$rwalk" "$xodir/seed.json" "" "" "$dir/decisions.json" 2>/dev/null)" || rep2=""
+              "$xodir/pairs.json" "$rwalk" "$xodir/seed.json" "" "" "$dir/decisions.json" \
+              "$xodir/journey.json" "" "" "" "$shots" \
+              2>/dev/null)" || rep2=""
+    # ── AND THE RE-CHECK GETS THIS LOOK'S OWN DIRECTORY TOO (S264 fix round 2,
+    #    FIX 4) ───────────────────────────────────────────────────────────────
+    #
+    # MEASURED: this call stopped at 13 arguments while the first score passes
+    # 17, so `placed` was EMPTY here and a criterion the re-check settled on a
+    # transcript it had just recorded itself re-scored as "recorded as
+    # not-checked". That is the live defect's exact shape — a demotion and a
+    # coverage drop for doing the right thing — displaced to the second score.
+    # The short call site predates this session; the cure has to reach it.
+    #
+    # THE THREE EMPTY SLOTS ARE DELIBERATE. `shots_root` (14), `wrong-screen`
+    # (15) and `live` (16) were never passed here and turning any of them on
+    # would be a change to what the re-check SCORES, not a delivery of this
+    # cure. `$shots` is this re-check's own look directory (`shots/recheck-N`),
+    # resolved at the top of this function — the same scope the first score is
+    # handed, never the root of every look.
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       key="${line%%$'\t'*}"; val="${line#*$'\t'}"
@@ -3624,6 +6790,11 @@ case "${1:-status}" in
   status) shift; cmd_status ;;
   answer) shift; cmd_answer "$@" ;;
   evaluate) shift; cmd_evaluate "$@" ;;
+  test-timeout)
+    # NOT A CAPTAIN-FACING VERB. It prints the bound the look would use, so the
+    # resolution (a measured suite-timing.json, else the env var) is provable
+    # without running a suite.
+    shift; xo_test_timeout ;;
   file-logs) shift; cmd_file_logs "$@" ;;
   recheck)   shift; cmd_recheck "$@" ;;
   report)    shift; cmd_report "$@" ;;
@@ -3667,6 +6838,76 @@ case "${1:-status}" in
     _uengine=""
     [ -n "${LCARS_WORKER_BIN:-}" ] || _uengine="$(xo_engine_for "$_ust")"
     xo_unlisted_pass "$_um" "$_ushots" "$_uout" "$_uengine" ;;
+  claim)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # Same reason `seed`, `unlisted` and `record-pid` exist: it drives
+    # `xo_claim_or_die` — the EXACT call `evaluate` and `answer` make — through
+    # the product's own code path, so the mutual exclusion can be proven by
+    # starting TWO REAL PROCESSES AT ONCE against one mission. A test that
+    # calls the function twice in sequence proves nothing about a race: the
+    # second call sees a finished first one.
+    #
+    # `--hold <secs>` keeps the claim for that long so the overlap is real.
+    # It prints CLAIMED when it wins; a loser never reaches this printf,
+    # because xo_claim_or_die dies.
+    shift
+    _cm=""; _ch=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --mission) _cm="${2:-}"; shift 2 || true ;;
+        --hold)    _ch="${2:-0}"; shift 2 || true ;;
+        *) shift ;;
+      esac
+    done
+    _cm="$(resolve_mission "$_cm")" || exit $?
+    trap xo_release_claim EXIT
+    xo_claim_or_die "$MISSIONS_DIR/$_cm" "a look"
+    printf 'CLAIMED %s by %s\n' "$_cm" "$$"
+    [ "$_ch" -gt 0 ] 2>/dev/null && sleep "$_ch"
+    exit 0 ;;
+  detach)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # It drives `xo_spawn_detached` — the EXACT spawn `file_logs_for` makes —
+    # so the process groups of a detached chain can be MEASURED through the
+    # product's own code path instead of a copy of it in a test.
+    shift
+    _dpf=""; _dlog="/dev/null"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --pidfile) _dpf="${2:-}"; shift 2 || true ;;
+        --log)     _dlog="${2:-/dev/null}"; shift 2 || true ;;
+        --)        shift; break ;;
+        *)         break ;;
+      esac
+    done
+    [ -n "$_dpf" ] || die "detach needs --pidfile <path>."
+    [ $# -gt 0 ]   || die "detach needs a command after --."
+    xo_spawn_detached "$_dpf" "$_dlog" "$@" >/dev/null
+    exit 0 ;;
+  signal-pidfile)
+    # NOT A CAPTAIN-FACING VERB. Same reason: it drives `xo_signal_pidfile`,
+    # the one `lcars xo off` calls, so what a stop actually reaches is provable.
+    # Exit status is the function's own: 0 signalled, 1 nothing there, 2 alive
+    # but not who the file was written about (and so NOT signalled).
+    shift
+    [ -n "${1:-}" ] || die "signal-pidfile needs a pid file."
+    xo_signal_pidfile "$1" "${2:-TERM}"
+    exit $? ;;
+  census)
+    # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
+    # It prints the whole-machine census for one mission — the exact set
+    # `lcars xo off` gates its success line on. It exists so that "nothing of
+    # this mission is running" can be checked from OUTSIDE the product, by a
+    # tester or by the next reader of a failed stop, instead of being taken on
+    # trust from a sentence the product printed about itself.
+    shift
+    _cmid="$(resolve_mission "${1:-}")" || exit $?
+    xo_census_scope "$_cmid" "$MISSIONS_DIR/$_cmid"
+    xo_census_seed_file "$MISSIONS_DIR/$_cmid/xo.pid"
+    xo_census_seed_file "$MISSIONS_DIR/$_cmid/xo-resolve.pid"
+    xo_census
+    printf '%s\n' "$XO_CENSUS_OUT" | sed '/^$/d'
+    exit 0 ;;
   record-pid)
     # NOT A CAPTAIN-FACING VERB, and deliberately absent from the usage block.
     # It exists so a TEST can plant a pid file the way the product plants one,

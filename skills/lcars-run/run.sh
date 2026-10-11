@@ -105,6 +105,9 @@ STAGES_DIR="$SKILL_DIR/stages"
 # Number One is not a Stage, it is the captain's stand-in at one. $LCARS_XO_PROMPTS
 # lets a test point at a fixture template without a second copy of the real one.
 XO_PROMPTS_DIR="${LCARS_XO_PROMPTS:-$SKILL_DIR/../lcars-xo/prompts}"
+# The temp copy of the evaluate template a picture-less look is handed, held
+# only for the length of one spawn (see spawn_number_one).
+XO_NOPIC_TPL=""
 # Number One's VERB (S202). The driver calls `xo.sh answer` at a gate and reads
 # nothing from it but an exit status — 0 the gate is cleared, non-zero it stays
 # up. The driver decides NOTHING about the answer itself: that belongs to the one
@@ -9710,10 +9713,37 @@ setup_cmd_has_metachar() { # command → 0 iff it carries a shell metacharacter
   return 1
 }
 
+# ADD-ONLY ASKS THE PARENT COMMIT, NOT THE WORKING TREE (MEASURED 2026-10-11).
+# The scaffold worker CREATED `pyproject.toml` in-tree and its declaration of
+# the same file was refused — "already exists … may only ADD files, never
+# modify" — on a repo whose parent commit held exactly one file, SPEC.md. The
+# file was unambiguously new. The check was `[ -e "$dest/$rel" ]`: a WORKING
+# TREE probe, run AFTER the worker has written its work into that very tree, so
+# anything the worker itself just created reads as pre-existing.
+#
+# "Already exists" is a question about the state the ticket started from, which
+# is the PARENT COMMIT — and the declared setup is applied BEFORE
+# `commit_ticket`, so this worktree's HEAD *is* that parent commit and nothing
+# the worker wrote is committed yet.
+#
+# WHAT THE RULE STILL REFUSES, unchanged: any declaration that would RESHAPE a
+# file the repo really has (a root manifest, an existing runner config, a
+# .gitignore) — those are in the parent commit and are refused exactly as
+# before. What it no longer refuses is the worker's own brand-new file.
+#
+# An UNBORN HEAD (no commits at all) answers "nothing exists", which is true.
+setup_path_in_parent() { # repo-relative path → 0 iff it exists in the parent commit
+  local rel="$1" root="${REPO_ROOT:-$PWD}"
+  [ -n "$rel" ] || return 1
+  "${GIT_BIN:-git}" -C "$root" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
+  "${GIT_BIN:-git}" -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null
+}
+
 # S194 — undo an APPLIED-then-REFUSED declaration. Only ever handed paths
-# ADD-only has already proven were absent, so this can never delete the repo's
-# own files; empty parent dirs the copy created are pruned with `rmdir`, which
-# refuses a non-empty directory.
+# ADD-only has already proven were absent FROM THE PARENT COMMIT, so removing
+# them restores the tree to the parent's state for those paths exactly and this
+# can never delete a file the repo itself carries; empty parent dirs the copy
+# created are pruned with `rmdir`, which refuses a non-empty directory.
 setup_rollback_copied() { # newline-separated absolute paths
   local __c
   [ -n "$1" ] || return 0
@@ -9791,8 +9821,9 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
         *"/../"*)   SETUP_NOTE="path traversal in setup file '$rel'"; return 1 ;;
         *"/src/"*)  SETUP_NOTE="setup file '$rel' targets src/ — declared setup may only add TEST infrastructure, never source"; return 1 ;;
       esac
-      if [ -e "$dest/$rel" ]; then
-        SETUP_NOTE="setup file '$rel' already exists in the package — declared setup may only ADD files, never modify or loosen existing config"
+      # The parent commit, never the working tree — see setup_path_in_parent.
+      if setup_path_in_parent "${pkg:+$pkg/}$rel"; then
+        SETUP_NOTE="setup file '$rel' already exists in the package at the parent commit — declared setup may only ADD files, never modify or loosen existing config"
         return 1
       fi
     done < <(find "$sdir" -type f 2>/dev/null)
@@ -10295,6 +10326,23 @@ proof_is_test_path() { # relpath → 0 if test-classified
   case "$p" in
     *.cs)
       case "$p" in obj/*|*/obj/*|bin/*|*/bin/*) return 1 ;; esac ;;
+  esac
+  # python (MEASURED 2026-10-11): running the tests — the declared-edits gate's
+  # OWN mandatory step — makes the interpreter write bytecode caches next to the
+  # tests it imported, i.e. `tests/__pycache__/test_x.cpython-313.pyc` under a
+  # `tests/` path the rules below classify as an authored test. On a repo with no
+  # .gitignore those land in the diff as untracked files and the gate rejected
+  # the ticket for "undeclared test edits" — failing the work for doing exactly
+  # what the gate required. Identical in kind and mechanism to the dotnet arm
+  # above (obj/ + bin/ build output), and checked FIRST for the same reason.
+  # The shapes are gated on the dropping's OWN name/dir, so this can never
+  # reclassify an authored file in any stack: `.pyc`/`.pyo` are compiled output
+  # no one writes by hand, and `__pycache__`/`.pytest_cache` are tool-owned
+  # directories.
+  case "$p" in
+    *.pyc|*.pyo)                       return 1 ;;
+    __pycache__/*|*/__pycache__/*)     return 1 ;;
+    .pytest_cache/*|*/.pytest_cache/*) return 1 ;;
   esac
   case "$p" in
     */__tests__/*|__tests__/*)          return 0 ;;
@@ -15576,7 +15624,13 @@ stage_key_for_role() { # role → stage key (stdout; empty if none)
     # default `create` tool cannot write the file, so the worker reports an
     # artifact that never reached disk). This line is the whole reason the first
     # officer runs on the Opus the captain pinned.
-    number-one)                                   printf 'numberOne' ;;
+    # S261 — the look's TOOLSET role is `number-one-live` (the same posture with
+    # a shell, inside a disposable copy). Its ENV role is still `number-one`, so
+    # this table is never asked about the live name in practice — but a role with
+    # no key here resolves NO model, and a silently unmodelled first officer is
+    # exactly the failure S194 measured. So the name is mapped rather than left
+    # as a hole for a future caller to fall into.
+    number-one|number-one-live)                   printf 'numberOne' ;;
   esac
 }
 
@@ -15643,6 +15697,24 @@ effective_tier_for_cli() { # cli logical-tier → the tier that really runs
 # === S194: THE WRITE-TOOL FLOOR =============================================
 # THE REQUIREMENT, and it is narrow: A COLD WORKER WHOSE CONTRACT IS TO WRITE A
 # FILE MUST RUN ON A MODEL THAT HAS A WRITE TOOL.
+#
+# ⚠ S250 (fix round 1) — THIS FLOOR WAS RE-MEASURED LIVE AND IT STANDS. A round
+# briefly recorded a doubt here, on the theory that the tool NAMES on the flag were
+# wrong rather than the model. That theory was itself measured on copilot's DEFAULT
+# model instead of the one LCARS sends, and it is FALSE. Re-run on 2026-10-05
+# against /opt/homebrew/bin/copilot (self-reporting 1.0.92), BY ABSOLUTE PATH —
+# `command -v copilot` can be VS Code's shim, which re-invokes off $PATH — with a
+# counting fake first on $PATH that stayed at ZERO:
+#     view,grep,glob,create, NO --model  -> still NO FILE, still "no file-writing
+#                                           tool is available"
+#     the SAME list + --model claude-opus-4.8
+#                                        -> "Created withmodel.txt … I used the
+#                                           **create** tool"
+#     view,grep + a model                -> searched fine ("I used the grep tool")
+# COPILOT'S TOOL SET IS MODEL-DEPENDENT. `create` and `grep` both exist on a model
+# that offers them, so the mechanism is the MISSING MODEL — exactly how the
+# measurement below reads it. DO NOT REMOVE THIS FLOOR: adapter_argv sends
+# `--model` only when one is configured, and this is the thing that configures one.
 #
 # MEASURED on the real copilot binary, every other flag byte-identical to what
 # worker_spawn actually sends (`--available-tools view,grep,glob,create
@@ -16587,6 +16659,241 @@ exactly as specified above, in the scratch output directory, and nowhere else.$p
 # xo.sh gathers it and would have failed already — but it IS named, because a
 # worker told to read a directory that is not there answers "the PRD is silent",
 # and that is the one wrong answer this round must never manufacture.
+# The live-check checklists this milestone's own contract asks for, catted whole
+# with the one paragraph that turns them from a schema into advice. Prints
+# nothing when the checklists are not installed — a missing file must never be
+# why a look does not happen.
+LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILL_DIR/live-check}"
+
+number_one_checklists() { # <input-dir> — the whole checklists, as the buddy gets them
+  local indir="${1:-}" crit="" types="" kind f
+  [ -d "$LIVE_CHECK_DIR" ] || return 0
+  crit="$indir/criteria.json"
+  if [ -f "$crit" ]; then
+    types="$("${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+got = [str(t.get("type") or "") for t in (d.get("productTypes") or [])
+       if isinstance(t, dict)]
+print(" ".join(t for t in got if t in ("cli", "web", "workflow")))' "$crit" 2>/dev/null)"
+  fi
+  # No record of a type is not a record that there is nothing to check.
+  [ -n "$types" ] || types="cli web workflow"
+  printf '%s\n' "## The live-check checklists — ADVICE YOU FOLLOW, not a schema anybody fills
+
+These are the checklists the captain follows BY HAND, whole, exactly as he reads
+them. They are what to look for and what counts as a defect. They are NOT a form:
+every \`run:\` block in them is an EXAMPLE of the shape, with the values left out
+on purpose, because the values are yours.
+
+So: **invent the values a human would.** A second user is a second home. Make
+owner ≠ login and name ≠ title on purpose — on a dev box they coincide and that
+is where the bug hides. Pick a value you will recognise when you see it come back.
+Follow ONE record through every hop, and read the artifact, not the status.
+
+**Work the items in the order they are numbered, off the text above — not from
+memory.** Measured: a reviewer that reproduced this numbering from memory skipped
+items 4 and 5, and three of the faults planted that weekend were exactly those
+two items. If you do not do one of them, say which numbered item you did not do
+and why, in \`couldNot\`. Skipping one silently is the one thing that reads as
+having checked it.
+
+You decide when you have seen enough. Write your verdict when you have.
+"
+  for kind in $types; do
+    f="$LIVE_CHECK_DIR/$kind.md"
+    [ -f "$f" ] || continue
+    printf '%s\n' "### live-check/$kind.md — the whole thing"
+    printf '%s\n' '```markdown'
+    cat "$f"
+    printf '%s\n\n' '```'
+  done
+  # AND NOBODY HAS DONE ANY OF IT FOR YOU (S247). A sentence used to sit here
+  # telling the worker that LCARS had instantiated what it could of these items
+  # from the record and run them, and that journey.json listed the rest — which is
+  # the one thing most likely to stop a reader doing the work itself. That
+  # mechanism is deleted; there is ONE author of the step list and it is the
+  # worker. The sentence is not reworded, it is gone, and the suite greps THIS
+  # FILE to prove it (lcars-xo-drives 7e).
+  return 0
+}
+
+# ── WHAT THE HARNESS REFUSED LAST ROUND (S264 change 1) ─────────────────────
+#
+# THE MEASURED DEFECT, and it is the whole of this session's first change. Over
+# one milestone's five rounds the reviewer asked for 36 declared steps and 34
+# were REFUSED — and every one of the five assembled prompts was pulled off disk
+# and diffed: round 1 is 61,740 bytes, rounds 2-5 are 61,845 each, and round 1
+# vs round 5 differ ONLY in the round number in two paths and the list of files
+# now present. Occurrences of "a step has no shell": 0. Of "declined": 0. Of
+# "previous round": 0. It asked for 12, 10 vanished, and round 2 handed it an
+# all-but-identical prompt; then 8 vanished, then 6, then 10. It changed shape
+# in round 5 only BY INFERENCE, the single signal being that its own evidence
+# directory was still nearly empty — after which all 22 criteria on that
+# milestone cited THE SAME transcript, and a reader could verify 1 claim in 11.
+#
+# READ FROM THE RECORD, NEVER RE-DERIVED. `journey.json.refusedSteps` is where
+# the harness has filed its refusals since S250: one row per refused step,
+# carrying the round it happened in and the one sentence saying why, written by
+# `xo-journey.py reach-record` at the moment of refusal and now (S264) carrying
+# the worker's OWN name for the step and the command line it asked for. Reading
+# a finished transcript back to work out a fact the producer could have recorded
+# is the infer-vs-record failure that cost S147, S156 and S188 whole rounds
+# each, so this reads that record and nothing else.
+#
+# PRINTS NOTHING WHEN NOTHING WAS REFUSED. A clean round's prompt is byte-for-
+# byte what it always was — that is the control, and the suite holds it.
+number_one_refusals() { # <journey.json> <this round> — the section, or nothing
+  local journey="${1:-}" round="${2:-}"
+  [ -n "$journey" ] && [ -f "$journey" ] || return 0
+  [ -n "$round" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$journey" "$round" <<'XO_REFUSEDPY' 2>/dev/null || true
+import json, sys
+
+path, this_round = sys.argv[1], str(sys.argv[2]).strip()
+try:
+    prev = int(this_round) - 1
+except Exception:
+    raise SystemExit(0)
+if prev < 0:
+    raise SystemExit(0)
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(doc, dict):
+    raise SystemExit(0)
+def for_round(field):
+    rows = [r for r in (doc.get(field) or []) if isinstance(r, dict)]
+    return [r for r in rows if str(r.get("round") or "").strip() == str(prev)]
+
+
+rows = for_round("refusedSteps")
+# A STEP DROPPED AT THE CAP IS ALSO A STEP THAT DID NOT RUN (S264 fix round 1,
+# FIX 3). Driven live: 14 asked, 12 kept, 2 dropped, and the drop reached no
+# prompt at all. It arrives on its OWN list because the reviewer must act
+# differently on it — a refusal needs a different SHAPE, a drop needs a shorter
+# LIST — and saying "refused" about a step nothing was wrong with would send it
+# rewriting a perfectly good one.
+capped = for_round("droppedSteps")
+# ── AND THE THIRD CATEGORY: KEPT, AND NEVER RUN (S266 fix round 2, FIX 1) ───
+# MEASURED on one real review. `lcars launch` died on a port collision, the look
+# ran with `nopage=1`, and the reviewer's ELEVEN declared browser steps were
+# recorded `asked: 11, refused: [], dropped: [], overflow: 0` — kept, and not
+# one executed. Nothing was refused and nothing was dropped, so NEITHER section
+# above could fire and the reviewer was never told its build had not come up.
+# `journey.json.unrunSteps` is `xo-run.py`'s own row per kept-but-never-run
+# step, written at the moment it was kept; `noPage` is the one sentence saying
+# why. Both are read, neither is re-derived.
+unrun = for_round("unrunSteps")
+nopage_why = " ".join(str(doc.get("noPage") or "").split())
+if not rows and not capped and not unrun:
+    raise SystemExit(0)
+
+
+def named(r):
+    """What the WORKER called this step (S264 fix round 1, FIX 2).
+
+    MEASURED on the one live look: this read "an unnamed run step" four times,
+    because the real worker labels its steps with `evidence`
+    (`seed-01-add-exercise.txt`) and only `key` was being carried. Both labels
+    come off the record as the worker wrote them; neither is reconstructed."""
+    kind = str(r.get("kind") or "step").strip() or "step"
+    for field in ("key", "evidence"):
+        label = str(r.get(field) or "").strip()
+        if label:
+            return "`%s`" % label, kind
+    return "an unnamed %s step" % kind, kind
+
+
+def says(r):
+    out = []
+    name, kind = named(r)
+    forwhat = str(r.get("for") or "").strip()
+    out.append("- **%s** (a `%s` step%s) **did not run.**"
+               % (name, kind, (", for %s" % forwhat) if forwhat else ""))
+    asked = str(r.get("asked") or "").strip()
+    if asked:
+        out.append("  - you asked for: `%s`" % asked)
+    return out
+
+
+out = []
+out.append("## WHAT THE HARNESS DID NOT RUN LAST ROUND — read this before you declare more steps")
+out.append("")
+# THE BUILD NOT COMING UP LEADS, because it changes what is worth asking for at
+# all: no browser step of yours can run, and there are no photographs to cite.
+if unrun:
+    out.append("**THE BUILD DID NOT COME UP IN A BROWSER, SO THERE ARE NO PICTURES.** "
+               "%sIn round %d you declared %d step(s) that the harness KEPT — nothing "
+               "was wrong with them and nothing was refused — and then **did not run**, "
+               "because there was no page to run them against. They wrote no evidence, "
+               "and no screenshot of the running product exists for this look at any "
+               "width."
+               % (("The harness recorded why: %s. " % nopage_why) if nopage_why else "",
+                  prev, len(unrun)))
+    out.append("")
+    for r in unrun:
+        out.extend(says(r))
+        out.append("  - did not run because: %s"
+                   % " ".join(str(r.get("why") or "there was no page to run it on").split()))
+    out.append("")
+    out.append("**So every criterion that can only be settled by LOOKING at this build "
+               "is unchecked, and declaring the same steps again will not run them "
+               "either.** Do not say you looked at a screen, and do not grade a "
+               "criterion about what the page LOOKS LIKE — at phone width or any other "
+               "width — on the project's unit tests: say `untested` and name this as "
+               "the reason. Spend this round on what CAN be reached with no page: a "
+               "command line, a workflow run, the project's own test output.")
+    out.append("")
+if rows:
+    out.append("In round %d you declared %d step(s) that **the harness refused**. None of "
+               "them ran, so none of them wrote any evidence of your check — each left a "
+               "`REFUSED:` note under its own name in your evidence directory, and a "
+               "note settles nothing. This is not a comment on your judgement — it is "
+               "the SHAPE of the request the harness would not execute, and you are being "
+               "told so you can get the same check another way."
+               % (prev, len(rows)))
+    out.append("")
+    for r in rows:
+        out.extend(says(r))
+        out.append("  - refused because: %s"
+                   % " ".join(str(r.get("why") or "the harness did not say why").split()))
+    out.append("")
+    out.append("**So the criteria those steps were for are still unchecked.** Either ask "
+               "for the same thing in a shape the harness will run, or run it yourself in "
+               "your own shell in the copy below and save the output where you save your "
+               "other transcripts — and then cite that. Asking for the same shape again "
+               "spends a round and gets the same refusal.")
+    out.append("")
+if capped:
+    # "And N FURTHER steps" only reads right when a refusal group came first;
+    # a drop-only round leads with the round instead.
+    out.append("%s were **dropped for the cap** — not refused. There was nothing wrong "
+               "with their shape; the harness runs a fixed number of declared steps a "
+               "round and these came after the last one it had room for, in the order "
+               "you listed them."
+               % (("And %d further step(s) you declared in round %d" % (len(capped), prev))
+                  if rows else
+                  ("In round %d, %d step(s) you declared" % (prev, len(capped)))))
+    out.append("")
+    for r in capped:
+        out.extend(says(r))
+        out.append("  - dropped because: %s"
+                   % " ".join(str(r.get("why") or "it was past the cap").split()))
+    out.append("")
+    out.append("**So those criteria are unchecked too, and rewriting those steps would "
+               "waste the round.** Declare the ones that matter most FIRST, ask for fewer "
+               "of them, or run them yourself in your own shell in the copy below and save "
+               "the output where you save your other transcripts.")
+print("\n".join(out))
+XO_REFUSEDPY
+  return 0
+}
+
 spawn_number_one() { # mission-id  mode  outdir
   local id="$1" mode="$2" outdir="$3"
   local template="$XO_PROMPTS_DIR/$mode.md"
@@ -16597,28 +16904,150 @@ spawn_number_one() { # mission-id  mode  outdir
   if [ -n "$indir" ] && [ -d "$indir" ]; then
     inventory="$(cd "$indir" && find . -type f | sed 's|^\./|  - |' | sort)"
   fi
+  # ── A PROMPT MAY NOT ASSERT PHOTOGRAPHS IT DOES NOT HAVE (S266 fix round 2,
+  #    FIX 1) ────────────────────────────────────────────────────────────────
+  #
+  # THE MEASURED DEFECT. `evaluate.md` opens "The build is RUNNING, in a browser
+  # LCARS drove for you, and you are looking at the pictures it took." On one
+  # real review `lcars launch` died on a port collision, the whole browser half
+  # of the look was skipped, and ROUNDS 2 AND 3 STILL OPENED WITH THAT SENTENCE
+  # — over an evidence directory with no PNG in it. The reviewer then graded
+  # phone-width rows `met` off unit tests and recommended MERGE.
+  #
+  # KEYED ON THE PICTURES THEMSELVES, which is the very claim being made: zero
+  # `.png` in the directory the worker is handed. One reader of one fact, so it
+  # cannot drift from the launch flag — and it also catches a page that came up
+  # and produced no shots. `$LCARS_XO_NOPAGE` only supplies the REASON when
+  # `xo.sh` recorded one; it is never the condition.
+  #
+  # `prompts/evaluate.md` IS NOT EDITED. It sits one line under the ceiling three
+  # suites hold it to, and it is the right text for the overwhelmingly common
+  # case. The substitution is made on a COPY in this round's output directory,
+  # so the shipped template stays byte-for-byte what it was and a healthy look
+  # is handed the same file it always was.
+  if [ "$mode" = "evaluate" ] && [ -n "$indir" ] && [ -d "$indir" ] \
+     && [ -z "$(find "$indir" -type f -name '*.png' -print -quit 2>/dev/null)" ]; then
+    # NOT IN `$outdir`. That directory is the WORKER's, and `worker_produced_
+    # nothing` reads "any real file in it" as "the worker did something" — a
+    # harness-written file there would make a worker that wrote nothing at all
+    # look like one that tried (measured by reading that function, S266 fix
+    # round 2). So the copy goes to a temp file and is removed after the spawn.
+    local nopic_tpl
+    nopic_tpl="$(mktemp -t lcars-xo-nopic 2>/dev/null || printf '')"
+    if [ -n "$nopic_tpl" ] && "${LCARS_PYTHON_BIN:-python3}" - "$template" "$nopic_tpl" \
+         "${LCARS_XO_NOPAGE:-}" <<'XO_NOPICPY'
+import io, sys
+
+src, dst, why = sys.argv[1], sys.argv[2], " ".join(sys.argv[3].split())
+text = io.open(src, encoding="utf-8").read()
+# The claim, verbatim as `evaluate.md` writes it across two lines. Matched as
+# ONE exact string: if the template is ever reworded this fails LOUDLY (rc 1)
+# rather than silently shipping the old promise.
+CLAIM = ("The build is RUNNING, in a browser LCARS drove\n"
+         "for you, and you are looking at the pictures it took.")
+if CLAIM not in text:
+    raise SystemExit(1)
+HONEST = ("**The build did NOT come up in a browser for this look, so THERE ARE\n"
+          "NO PICTURES** — nothing in your input directory is a photograph of the\n"
+          "running product, at phone width or any other width, and no step of yours\n"
+          "that needed a screen ran.%s\n"
+          "You have NOT looked at this build, and you must not write as though you\n"
+          "had: a criterion whose claim is about what the page LOOKS LIKE is\n"
+          "`untested` here, and the project's unit tests do not settle it."
+          % ((" The harness recorded why: %s." % why) if why else ""))
+io.open(dst, "w", encoding="utf-8").write(text.replace(CLAIM, HONEST, 1))
+XO_NOPICPY
+    then
+      template="$nopic_tpl"
+      XO_NOPIC_TPL="$nopic_tpl"
+    else
+      [ -n "$nopic_tpl" ] && rm -f "$nopic_tpl"
+      printf '  ⚠ there are no pictures for this look and the prompt template no longer carries the sentence that claims there are — it may now be making that claim unchecked.\n' >&2
+    fi
+  fi
   # THE OUTPUT FILE IS THE MODE'S, NOT THIS FUNCTION'S (S203). `answer` writes
   # one file and only one. `evaluate` writes ONE OF TWO — a verdict, or a
   # request to look further — and naming the wrong one here is how a worker
   # that wanted another round silently produces nothing at all.
-  local outfiles
+  #
+  # $wantfiles NAMES THE SAME FILES, bare, for the verdict channel below — the
+  # ONE list, read twice, so the prose and the reader can never disagree about
+  # which files a mode may write.
+  local outfiles wantfiles
   case "$mode" in
-    evaluate) outfiles="Write EXACTLY ONE of these two files:
+    evaluate) wantfiles="xo-verdict.json xo-actions.json"
+              outfiles="Write EXACTLY ONE of these two files:
   - $outdir/xo-verdict.json   you have seen enough, and this is your verdict
   - $outdir/xo-actions.json   you want to look further (at most 12 actions)" ;;
     # S204 — the RE-CHECK after the logged fixes landed. One file, and it
     # carries two things: `held` (did each filed gap's fix hold?) and the full
     # ledger again, which the skill re-scores exactly as it scored the first
     # look. There is no second round to ask for, so there is no actions file.
-    recheck)  outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
+    recheck)  wantfiles="xo-recheck.json"
+              outfiles="Write EXACTLY ONE file: $outdir/xo-recheck.json" ;;
     # S224 item 2 — THE PASS WITH NO LIST IN ITS HAND. One file, no rounds to
     # ask for and no verdict to reach: it is not judging the build, it is
     # handing the captain what nobody was looking for. Its input dir is the
     # PICTURES ONLY (xo.sh builds it), which is the whole point — a reviewer
     # holding a list finds what is on the list.
-    unlisted) outfiles="Write EXACTLY ONE file: $outdir/xo-unlisted.json" ;;
-    *)        outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
+    unlisted) wantfiles="xo-unlisted.json"
+              outfiles="Write EXACTLY ONE file: $outdir/xo-unlisted.json" ;;
+    *)        wantfiles="xo-answer.json"
+              outfiles="Write EXACTLY ONE file: $outdir/xo-answer.json" ;;
   esac
+  # === THE VERDICT CHANNEL — SAY THE FILE, AND WE WILL WRITE IT (S250) ======
+  #
+  # WHY. The first officer's whole output is ONE file, and that file was the only
+  # reason the role ever needed a write capability at all. On copilot a write tool
+  # is MODEL-DEPENDENT: the identical `--available-tools` list has `create` with
+  # `--model claude-opus-4.8` and no write tool whatsoever without one (measured —
+  # see `adapter_tools` in worker-adapter.sh, and S194's write-tool floor above,
+  # which is the thing that puts the model on the argv). A reviewer that needs NO
+  # write capability does not depend on that floor holding, which is strictly
+  # better than one that does. So for THIS ONE ROLE the write tool is RETIRED
+  # rather than relied on: the worker says its file, and the harness writes it.
+  #
+  # THIS IS NOT A BUG FIX, AND THERE WAS NO OUTAGE. `create` exists and works on
+  # the model LCARS sends; the other read roles keep it; a real Research Stage
+  # drives on copilot first try. Nothing here is a reason to touch them, or the
+  # floor.
+  #
+  # A RECORD, NOT AN INFERENCE (ORCHESTRATION.md; S147, S156, S188 each paid fix
+  # rounds for the other choice). Reading the first `{` out of a model's reply
+  # would guess twice — which brace-run is the answer, and WHICH FILE it is, on a
+  # mode that may write either a verdict or a request to look further. So the
+  # worker FRAMES its answer and NAMES the file on the opening line, and
+  # `number-one-channel.py` reads exactly that frame. The boundaries and the
+  # filename are both the worker's own statements.
+  #
+  # BOTH PATHS STAY. An engine that still has a write tool — and claude, which has
+  # `Write` — is untouched: its file is used byte for byte and its reply is never
+  # read. Which path a round came by is RECORDED in `xo-channel.json`, because
+  # "the fix works" and "the file is now ignored" are indistinguishable otherwise.
+  #
+  # HERE and not in `evaluate.md`, which sits one line under the ceiling its own
+  # suite holds it to — and because this is a fact about how THIS round's output
+  # gets back to us, which is exactly what this block is for.
+  local channel_line channel_first="${wantfiles%% *}"
+  channel_line="
+## IF YOU HAVE NO FILE-WRITING TOOL, SAY YOUR FILE INSTEAD
+Write the file above with your file-writing tool if you have one. This role is
+deliberately given no file-writing tool on some engines, and a turn spent hunting
+for one is a turn wasted. So if you cannot write the file — or your write fails —
+deliver the SAME content in your reply, framed between these two lines:
+
+===LCARS-XO-BEGIN $channel_first===
+{ … the complete content, exactly as it would have gone in the file … }
+===LCARS-XO-END===
+
+Name the file on that first line — for this round it must be one of
+${wantfiles// /, } — so the
+harness writes the one YOU chose and never has to guess which it is holding. Put
+nothing but that file's content between the two lines; say whatever else you like
+above or below them. Frame ONE file, once. A turn that ends with neither the file
+nor a framed block counts as no output, exactly as before."
+  # … and it goes in the prompt beside the output instructions, below.
+
   # THE ROUND BUDGET, WHEN THERE IS ONE (S221). `xo.sh` exports its own
   # $XO_MAX_ROUNDS as $LCARS_XO_MAX_ROUNDS before it spawns an `evaluate`
   # worker, and this prints whatever that says. There is deliberately NO
@@ -16631,9 +17060,619 @@ spawn_number_one() { # mission-id  mode  outdir
 Your round budget: ${LCARS_XO_MAX_ROUNDS} round(s) of looking, in total. Ask for
 more actions only while rounds remain; with none left you must write a verdict."
   fi
+  # === THE PICTURES TAKEN AFTER YOUR STEPS (S248 fix round 1, D1) ===========
+  #
+  # THE DEFECT. Pictures are taken at the TOP of a round and a round's set-up
+  # steps run at the END of one, so the page a round's own render produced was
+  # never photographed by anybody — the look set up data and then graded the page
+  # that preceded it. `xo.sh` now shoots AGAIN after a round whose steps ran, and
+  # this is the one sentence that tells the reviewer those shots exist and what
+  # they are of. HERE and not in `evaluate.md` for the same reason the pre-launch
+  # line is here: it is a fact about the inputs of a particular round, and the
+  # prompt file is one line from the ceiling its own suite holds it to.
+  #
+  # NOT on the pre-launch round, which has no pictures of any kind.
+  local steps_line=""
+  if [ "$mode" = "evaluate" ] && [ "${LCARS_XO_PRELAUNCH:-}" != 1 ]; then
+    steps_line="
+## The pictures taken AFTER your set-up steps
+Set-up steps you ask for run AFTER this round's pictures were taken. So once
+they have run, LCARS photographs the page AGAIN and files those shots as
+\`after<round>-…\`: that is the page YOUR OWN STEPS left behind, and the
+\`round<round>-…\` shots beside them are the page as it was before them. Cite the
+\`after…\` shot for anything your steps were meant to put on the screen — and if
+the two read the same, nothing your steps did reached the page, which is worth
+saying rather than grading the empty one."
+  fi
+  # === A FAULT NOBODY WROTE A REQUIREMENT FOR (S251) ========================
+  #
+  # WHAT WAS MEASURED. Six faults were planted, one per class, with the mission's
+  # requirements deliberately naming none of them. The look FOUND five and FILED
+  # three — and said, in its own words, why it withheld the other two: "No
+  # criterion covers the footer link, so I am not filing it", and "No criterion
+  # names --slug, so this is not a finding against the contract."
+  #
+  # It was right about the product and wrong about nothing else. There was no
+  # lane: `alsoChecked` is documented as things that were FINE, is rendered as
+  # one prose line, and `xo-logs.py` never read it; the `unlisted` pass routes to
+  # `escalations` and is handed only pictures. So this sentence exists to tell the
+  # worker the lane is there now — and HERE rather than in `evaluate.md`, which
+  # sits one line under the ceiling its own suite holds it to.
+  #
+  # The fence is said in the same breath as the permission, because the
+  # CONTRACT-FIRST rule is what makes the lane safe: criteria come from the
+  # record, and a volunteered find is information, never a verdict.
+  #
+  # === AND THE WORDS WERE THE OTHER HALF OF THE SEVERED LANE (S263) =========
+  #
+  # WHAT WAS MEASURED. S262: a reviewer with a real shell settled 54 of 65 rows
+  # by its own action, ran a real mutation test — and FILED NOTHING, while the
+  # captain's human buddy filed three on the same build. Two of those three had
+  # no criterion and `volunteered` was their only route. The lane was plumbed
+  # and the prompt made it sound optional: "you do NOT have to throw it away",
+  # then three separate sentences on what it can never do. A careful model reads
+  # permission plus a long list of what it is worth and correctly concludes the
+  # thing has no value.
+  #
+  # SO THE FRAME MOVES FROM PERMISSION TO EXPECTATION, and the fence stays in
+  # the same breath — it is what makes the lane safe, not a reason to stay
+  # quiet. The empty list is named as a CLAIM, which is the part that makes
+  # "I found none" cost something to say.
+  #
+  # AND THE WORDS AND THE BEHAVIOUR NOW AGREE (S263 fix round 2, D2/D3). Fix
+  # round 1 promised "a real file in the look's own shots directory" here while
+  # the guard accepted `/etc/passwd`, `/tmp`, `.`, `/` and a zero-byte file —
+  # and it offered `testQuote` as a second way in while its own shape test
+  # REFUSED `Segmentation fault` and `error: unknown command "publish"` and
+  # ACCEPTED "I looked at config.yaml and it was wrong". A door the reviewer
+  # cannot find and a door it cannot use are both just lost finds. There is ONE
+  # door now, it is the one the code enforces, and this paragraph describes it
+  # exactly: a regular, non-empty file inside the look's own shots directory.
+  #
+  # AND `"cause"` IS NAMED HERE FOR THE FIRST TIME (lane 2). `xo-score.py`
+  # stamps it and `xo-logs.py` files a high-impact blind row whose cause is
+  # `product` — but `"cause"` appeared NOWHERE in the 61,740-byte assembled
+  # prompt, so 11 of 11 blind rows last night carried none and the lane had
+  # never once fired. It is DECLARED, never inferred from the note's wording:
+  # inference over a reviewer's prose is the infer-vs-record failure that cost
+  # S147, S156 and S188 whole rounds each.
+  #
+  # BOTH GO HERE RATHER THAN IN `evaluate.md` for the reason the four paragraphs
+  # above this one went here: that file sits AT the ceiling its own three suites
+  # hold it under (`-lt 689`, and it is 688), so there is no room, and raising
+  # the ceiling is the captain's call and not this session's.
+  #
+  # === AND THE ASK NAMES THE DIRECTORY IT DEMANDS (S263 fix round 3, FIX 1) ===
+  #
+  # THE MEASURED DEFECT. Fix round 2's ask said to save the record in "your own
+  # shots directory" — and the only place that path was ever PRINTED was the
+  # camera paragraph below, which is gated on the WORKTREE (`$n1_wt`) as well as
+  # the camera and the directory. `xo.sh`'s `xo_hand_over_copy` exports
+  # `LCARS_XO_WORKTREE` only when the disposable copy actually minted, while the
+  # look exports `LCARS_XO_SHOTS_DIR` either way — so on any look whose copy
+  # failed to mint, the filer went on demanding a file inside a directory THE
+  # PROMPT NAMED NOWHERE. Measured at 1,106 lines with the path absent entirely:
+  # the ask was unsatisfiable on purpose, and every honest volunteered find was
+  # refused.
+  #
+  # SO THE ASK IS BUILT ON THE SAME FACT THE FILER IS. `xo-logs.py`'s `vol_record`
+  # answers against the shots directory it is handed, which is this variable —
+  # one fact, read once, by the words and by the enforcement. It is NOT borrowed
+  # from a paragraph with a different gate, which is how the two came apart.
+  #
+  # AND THE INVERSE IS HANDLED HONESTLY. With no shots directory there is nowhere
+  # to save a record, so the ask does not demand one: it says plainly that
+  # nothing in the list can be FILED here and asks for the find in words anyway,
+  # which is the truth of that configuration rather than a bar nobody can clear.
+  local vol_shots=""
+  if [ -n "${LCARS_XO_SHOTS_DIR:-}" ] && [ -d "${LCARS_XO_SHOTS_DIR:-}" ]; then
+    vol_shots="$LCARS_XO_SHOTS_DIR"
+  fi
+  local vol_cite=""
+  if [ -n "$vol_shots" ]; then
+    vol_cite="**It must be CITED or it is REFUSED, and there is exactly ONE thing that counts
+as a citation: a FILE YOU SAVED in your own shots directory, which on this look
+is**
+
+    $vol_shots
+
+A find outside the contract has no criterion behind it, so the record is all
+there is. **That directory already exists and it is YOURS TO WRITE RECORDS
+INTO** — your transcripts, the output you read, your pictures; a subdirectory of
+it is fine, because LCARS looks anywhere UNDER it. Name the file in \`shots\`,
+\`shot\`, \`transcript\`, \`transcriptPath\` or \`evidencePath\`, exactly as
+you saved it, and LCARS opens it. It has to be **a record that EXISTS**: a file,
+not a directory; not empty; really inside your shots directory. A path to a file
+**that is not there cites nothing**, and so does a path to somewhere else on the
+machine — \`/etc/passwd\` exists and is not a record of your look. **So save the
+evidence to a file BEFORE you name it**: a transcript of the command you ran,
+the output you read, the screenshot you took. That is the whole bar, and it is
+one you clear by writing the file.
+
+Nothing else is a way in. An \`evidence\` word on its own is not a citation. A
+field filled with prose is not a citation — \"it felt slow\", \"I looked at
+config.yaml and it was wrong\", \`n/a\` — and neither is a quoted line in
+\`testQuote\`, which LCARS cannot open and does not accept here: put the line in
+a file in the shots directory and cite the file. An uncited find is thrown away
+unfiled, by name, in front of the captain, and the look is the poorer for it."
+  else
+    vol_cite="**This look has NO shots directory, so there is nowhere to save a record of
+what you saw — and LCARS files a find outside the contract only against a saved
+record. Nothing in this list can be FILED on this look.** Say it anyway, in
+words: \`title\`, \`expected\`, \`saw\` and \`note\`, in full sentences. It
+reaches the captain BY NAME and he can act on it or close it. Do NOT invent a
+path to a file you did not save — a name LCARS cannot open cites nothing, and a
+find that leans on one is thrown away unfiled, by name, in front of him."
+  fi
+  # AND THE WRITE GRANT AGREES WITH THE ASK (FIX 1, secondary). The fence prose
+  # ended "write nothing there except your pictures", which CONTRADICTED the new
+  # ask to save a transcript in that same directory — two sentences of one prompt
+  # telling the reviewer opposite things about the same path. It is widened only
+  # where there IS a shots directory to widen it to, so a configuration with none
+  # invites no write at all (lcars-xo-selfrun 4k).
+  local vol_write=""
+  if [ -n "$vol_shots" ]; then
+    vol_write=" and the records you save in your shots directory"
+  fi
+  local volunteered_line=""
+  if [ "$mode" = "evaluate" ]; then
+    volunteered_line="
+## Something wrong that NOBODY ASKED FOR — \`volunteered\`, and it is EXPECTED OUTPUT
+**A real fault outside the contract is part of your job, not a curiosity.** You
+are the only pair of eyes on this build before the captain's. A fault for which
+nobody wrote a criterion is still a fault in his product, and **leaving it unsaid
+is a MISS** — a look that sees one and says nothing has done worse than a look
+that found nothing. So you do NOT throw it away and you do NOT invent a criterion
+for it. Put it in \`volunteered\`: a list of objects shaped like a gap —
+\`title\`, \`expected\`, \`saw\`, \`shots\`, \`evidence\`, \`note\` — and carry its
+evidence exactly as you would for a gap. LCARS FILES these as bugs, marked as
+nobody's ask and at a lower severity than a contract breach.
+
+An EMPTY \`volunteered\` list is a CLAIM: it says you went looking for faults
+outside the contract and there were none. Make it a true one.
+
+$vol_cite
+
+Why you can say it without overstating it: it is **never a send-back**, it never
+moves your score, and it never becomes a criterion. The contract comes from the
+captain's record; a fault outside it is information for him to act on or close.
+That fence is what makes the lane safe to use — it is NOT a reason to stay quiet.
+\`alsoChecked\` stays what it has always been — things you looked at that were
+FINE.
+
+## WHOSE FAULT IT WAS WHEN YOU COULD NOT CHECK — \`\"cause\"\`, on every \`untested\` row
+Every \`untested\` row takes a \`\"cause\"\` beside its \`couldNotCheck\`, and it is
+YOURS TO DECLARE. Nobody reads it out of your note's wording — if you do not
+write the word, nothing is recorded, whatever your prose says.
+
+  * \`\"cause\": \"product\"\` — **the build ships no way to do the thing.** There
+    is no command for it, no screen, no field. That is the work not being done:
+    it is a fault in his build and **LCARS FILES IT AS A BUG.**
+  * \`\"cause\": \"infrastructure\"\` — the rig failed you. No test runner, the app
+    would not start, data you were never given, a tool that was not there. That
+    is OURS to fix, and it is never filed against his build.
+
+**An \`untested\` row with no cause recorded is read as OURS and files nothing.**
+So a blank one hides a fault of the build from the one person who needs it.
+Declare a \`\"cause\"\` on every single \`untested\` row you write."
+  fi
+  # === THE ROUND BEFORE ANYTHING IS SERVED (S248) ===========================
+  #
+  # `xo.sh` asks ONE round before it launches: which page is the surface under
+  # review, and what has to be on it. The worker cannot be shown a picture in
+  # that round because nothing is up yet, so the prompt says so HERE rather than
+  # letting `evaluate.md` describe a round that does not match the inputs. Set by
+  # xo.sh; unset on every other round, so a round with pictures never reads this.
+  local prelaunch_line=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_PRELAUNCH:-}" ]; then
+    prelaunch_line="
+## THIS ROUND IS BEFORE THE LAUNCH — there are no pictures yet
+Nothing has been served, so there is nothing to grade and you must NOT write a
+verdict this round. Write \`xo-actions.json\` and use it for exactly two things:
+
+  1. \`serve\` — WHICH PAGE IS UNDER REVIEW. When the record declares more than
+     one web surface (plan.json \`entrypoints[]\`, the drawing, or several serve
+     targets in the repo), name the one this milestone is about:
+       \"serve\": {\"argv\": [\"npm\", \"run\", \"dev\"], \"cwd\": \"<worktree>\",
+                  \"urlPath\": \"/the/page\"}
+     It is a HINT to the launch, not a command it must obey.
+  2. \`actions\` — THE STEPS THAT PUT DATA ON THAT PAGE. Steps you ask for now run
+     in the SAME worktree the app will be served from, BEFORE the first
+     screenshot — so a screen that only exists once there is data in it is the
+     one thing these steps can buy you. Use the product's own CLI; invent the
+     values a person would. Ask for nothing you do not need: an empty
+     \`actions\` list is a correct answer when the page needs no data.
+
+If the page you are reviewing turns out to show none of the parts the drawing
+declares, you will be asked ONCE for a different \`serve\` target, with the
+readout that proved it. Name a different one, or say so by declaring none."
+  fi
+
+  # === WHAT IS CONSENTED TO BE TOUCHED FOR REAL (S249) =====================
+  #
+  # WHY THE WORKER IS TOLD AT ALL. Five of the twenty-nine bugs the captain's
+  # buddy found on the weekend needed a REAL publish against a REAL host — and a
+  # worker that does not know a live target exists cannot ask for one. So when the
+  # record names a host and an owner, the round says so, in the one place a fact
+  # about THIS round's inputs belongs (and not in `evaluate.md`, which is one line
+  # from the ceiling its own suite holds it to).
+  #
+  # AND WHY THIS LINE GRANTS NOTHING. The consent is READ FROM THE RECORD BY
+  # `xo-run.py`, off `.git/lcars/autopilot.json liveTargets` (else
+  # `numberOne.liveTargets` in `config.json`), at the moment it decides whether to
+  # run the step. `xo.sh` passes what it read here only so the prompt can say it.
+  # A step naming anything else is refused with "needs a live target: <h>/<o> is
+  # not in liveTargets", and the criterion then reads "needs a live target" —
+  # which is a job for us, not a send-back for him. Unset, the line does not
+  # appear and no step may reach anything.
+  #
+  # AND THE repos[] ALLOW-LIST IS PART OF THE TELLING (fix round 2). When the
+  # record narrows consent to named repos, a live step must name one — a step
+  # naming none is refused by `xo-run.py` exactly like one naming an unlisted
+  # repo. A worked example that showed only {host, owner} therefore made the
+  # prompt un-followable in such a repo: every live step a worker declared by the
+  # book was refused. So the field goes in the example, and the rule gets one
+  # plain sentence — BOTH only when the line `xo.sh` handed us names repos, which
+  # it writes as "; repos: a, b" inside the same parenthetical. With no repos
+  # recorded (the default shape, and what the autopilot writes) the round says
+  # nothing about them at all: a prompt is not the place to describe a constraint
+  # this repo does not have.
+  local live_line="" live_decl="" repo_rule=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_LIVE_TARGETS:-}" ]; then
+    live_decl="     \"live\": {\"host\": \"<the host above>\", \"owner\": \"<one of the owners above>\"},"
+    case "${LCARS_XO_LIVE_TARGETS}" in
+      *"repos: "*)
+        live_decl="     \"live\": {\"host\": \"<the host above>\", \"owner\": \"<one of the owners above>\",
+              \"repo\": \"<one of the repos above>\"},"
+        repo_rule="
+The record above lists the repos consented to, so a live step
+must name a \`repo\` from that list as well as the host and the owner — a step
+that names no repo is refused just as one naming an unlisted repo is.
+"
+        ;;
+    esac
+    live_line="
+## One real host IS consented: ${LCARS_XO_LIVE_TARGETS}
+Steps normally run in a throwaway worktree with no credentials, which is why a
+real publish, a real Actions run and a real deployment have never been checked.
+For **${LCARS_XO_LIVE_TARGETS} and nothing else**, a \`run\` step may ask to reach it:
+
+    {\"do\": \"run\", \"argv\": [\"…\"], \"cwd\": \"<worktree>\",
+${live_decl}
+     \"liveEffects\": [{\"kind\": \"branch\", \"name\": \"the-branch-I-may-push\"}]}
+${repo_rule}
+LCARS then — and only then — puts \`GH_HOST\`, a \`GH_TOKEN\` it looks up itself, and
+\`LCARS_XO_LIVE=1\` into that step's environment. You never see the token and you
+must not ask for one: a \`GH_TOKEN\` you declare in \`env\` is stripped, and a
+\`live:\` naming any other host or owner is refused and the thing it was checking
+is reported as \"needs a live target\".
+
+**Declare \`liveEffects\` on every live step** — one entry per thing that may
+exist afterwards (\`repo\`, \`branch\`, \`run\`, \`deployment\`, \`discussion\`). It is
+how what you created gets cleaned up, and an undeclared effect is one nobody
+knows to clean. Nothing is deleted on a real host on your word: archive, never
+delete.
+
+**A \`workflow\` step on this laptop is NOT a push.** \`workflow-run\` carries out the
+job's \`run:\` steps only, and it WRITES DOWN every packaged \`uses:\` step it skipped
+as UNPROVEN, not passed. So a criterion about the thing a skipped step does — an
+artifact uploaded, a page published and read back off the host, a deployment
+reached — CANNOT be settled from that transcript, however cleanly the run exited.
+LCARS reads the transcript's own record of what it skipped and turns such a
+\`met\` into \"needs the real run\". With the host above consented there are exactly
+two honest ways to settle one: take the hop with a \`live:\` step, or rate it
+\`untested\` and say in the note which step was never run."
+  fi
+
+  # === THE LIVE-CHECK CHECKLISTS, HANDED OVER WHOLE (S246) ==================
+  #
+  # WHY WHOLE, AND WHY HERE. These are the files the captain's buddy reads — the
+  # same ones, byte for byte — and the buddy found all 31 bugs on the weekend
+  # Number One found none. What it had that Number One did not was not a better
+  # model: it was the whole checklist, in front of it, with permission to INVENT
+  # the values a human would. LCARS used to lift fenced templates out of these
+  # files and fill the two or three placeholders a record can supply, which is how
+  # "two actors, two HOMEs" went unbuilt on every mission ever looked at.
+  #
+  # So the worker now gets the files. `cat`, in the prompt, for the product types
+  # this milestone's own contract recorded — never all three on a CLI-only
+  # milestone, because a page checklist on a product with no page is noise.
+  #
+  # READ OFF THE RECORD, NOT GUESSED: `productTypes` in criteria.json, written by
+  # xo-criteria.py from the plan's entrypoints[] and the PRD's own PLAN RULE line.
+  # With no types recorded, all three go over — an empty record is not evidence
+  # that there is nothing to check.
+  local checklists=""
+  if [ "$mode" = "evaluate" ]; then
+    checklists="$(number_one_checklists "$indir")"
+  fi
+
+  # === THE DISPOSABLE COPY — AND THE SHELL THAT COMES WITH IT (S261) ========
+  #
+  # WHY THIS EXISTS, MEASURED. On 2026-10-08 the reviewer was run beside the
+  # captain's buddy on three milestones of a real product: it found 0 real
+  # defects and filed 0, the buddy found 4 and filed 4, and it handed a HIGH to
+  # code that crashed on null records. THREE of its six recorded failures were
+  # the S168 fence — 10 of 13 drawn parts unreachable, a HOME store read fenced
+  # out, a shell action fenced out — and a fourth was that it could not run a
+  # thing and watch it. Not one was a prompt problem, and five previous rounds
+  # had revised the prompt.
+  #
+  # THE AMENDMENT, AND ITS LIMIT. The captain approved exactly one change
+  # (2026-10-08 19:33 MDT): the reviewer may have a real shell, and the
+  # protection that must still be true — IT CANNOT MODIFY THE THING IT IS
+  # REVIEWING — is carried by a DISPOSABLE COPY instead of by denying a shell.
+  #
+  # SO THE SHELL IS NEVER ISSUED WITHOUT THE COPY, and that is enforced here, at
+  # the one place that hires this worker, rather than trusted to a caller:
+  #   • `$LCARS_XO_WORKTREE` names a DIRECTORY that exists  → toolset
+  #     `number-one-live` (the S168 posture plus `Bash`/`bash`), and the worker's
+  #     cwd is INSIDE it.
+  #   • anything else — unset, empty, or a path that is not there → toolset
+  #     `number-one`, byte-for-byte the S168 posture. A promise of a copy buys
+  #     nothing; the directory has to be standing.
+  # The paper gates keep the old posture outright: `answer` and `recheck` judge
+  # off the record and have nothing to run, so they are never given the shell
+  # even if a worktree happens to be in the environment.
+  #
+  # WHO MINTS IT: nobody here. `xo.sh` mints ONE tree and ONE throwaway HOME per
+  # look through the buddy's single helper (`autopilot.sh worktree`, reached via
+  # `xo-run.py prepare`) and exports both. A second "detach a worktree" in this
+  # file would be a second thing that can be subtly wrong.
+  #
+  # AND THE WORKER'S OWN $HOME IS NOT TOUCHED — deliberately, and this is the
+  # trap. Chrome under a non-default HOME times out on CDP and the look silently
+  # scores EVERYTHING low; the engine's own credentials live in the real HOME
+  # too. So the throwaway HOME is a PATH THE WORKER IS TOLD, to put in front of
+  # the product's own commands (which is what the live-check checklists already
+  # teach), never this process's HOME.
+  local n1_toolset="number-one" n1_wt="" n1_home=""
+  if [ "$mode" = "evaluate" ] && [ -n "${LCARS_XO_WORKTREE:-}" ] \
+     && [ -d "${LCARS_XO_WORKTREE:-}" ]; then
+    n1_wt="$LCARS_XO_WORKTREE"
+    n1_toolset="number-one-live"
+    [ -n "${LCARS_XO_THROWAWAY_HOME:-}" ] && [ -d "${LCARS_XO_THROWAWAY_HOME:-}" ] \
+      && n1_home="$LCARS_XO_THROWAWAY_HOME"
+  fi
+  # THE HOME PARAGRAPH IS BUILT SEPARATELY, not inlined as a `${var:+…}`
+  # alternate: that expansion's text is re-parsed by the shell, and a paragraph
+  # with quotes and a `}` in it breaks the whole file at parse time.
+  local home_para=""
+  if [ -n "$n1_home" ]; then
+    # TWO FORMS, BECAUSE THERE ARE TWO RUNNERS (S261 fix round 2, F1).
+    # MEASURED: this paragraph printed the HOME absolutely and nothing else —
+    # the ONE line in 1515 that did, against the ten places that teach the
+    # `<throwaway-home>` mark. The live worker copied that absolute string into
+    # a declared step's `env.HOME`, which `declared_escape` refuses by design
+    # ("env HOME … is not the throwaway HOME"). ALL SIX of its declared steps
+    # were refused and they were the SEED steps, so the build it then launched
+    # had no data in it and every picture it cited is of an EMPTY app.
+    #
+    # The fix is on THIS side, not the fence's: the shell form genuinely needs
+    # the absolute directory (a shell does not resolve marks), and a declared
+    # step genuinely needs the mark (the harness resolves it, and an absolute
+    # path there is an escape it cannot tell from any other). So both are
+    # printed, each labelled with the runner it belongs to. `declared_escape`
+    # is untouched — see lcars-xo-selfrun 4d.
+    home_para="
+**Put this HOME in front of the product's own commands** — never your own.
+
+In YOUR OWN SHELL, spell the directory out:
+
+    HOME=$n1_home <the product's own command>
+
+In a step you DECLARE for the harness to run, write the MARK instead — the
+harness resolves it to that same directory, and a declared step whose
+\`env.HOME\` is an absolute path is REFUSED before it runs (\"env HOME … is not
+the throwaway HOME\"):
+
+    \"env\": {\"HOME\": \"<throwaway-home>\"}
+
+That is how you check a product that stores anything per-user, and how \"two
+actors, two HOMEs\" is done. A second actor is a second directory: make one
+beside it in your own shell, or declare \`<throwaway-home-2>\` and the harness
+mints it for you. **Your own HOME is the real one and must stay that way** — the
+browser instruments break under anything else — so set HOME on the COMMAND, not
+for yourself.
+"
+  fi
+  # === THE CAMERA — A PICTURE ONLY COUNTS IF SOMETHING RECORDED WHERE IT WAS
+  # TAKEN (S261 fix round 1) ==================================================
+  #
+  # THE MEASURED DEFECT. The first live look with a shell found, diagnosed and
+  # FILED six real faults in the Week screen — and its own `verdict.json` then
+  # re-scored all six `untested`, "no landing record — the picture is cited but
+  # nothing beside it records where it was taken". `counts.gap` came out 0 beside
+  # a six-entry `gaps[]`, the headline read MERGE WITH FOLLOW-UPS, and the grade
+  # moved UP (low → medium) against the night before, when the reviewer had no
+  # shell and honestly said it could not check. The reviewer's own words in that
+  # run were "Recommending LOW".
+  #
+  # THE HONESTY RULE IS NOT THE BUG. S241 ("a shot nobody placed is not
+  # evidence") is right and is untouched. The bug was on the PRODUCING side: the
+  # reviewer took `sc-week-desktop.png` and `sc-week-phone.png` with its own
+  # commands, in its own copy. They never reached the look's shots directory and
+  # nothing recorded the page they were of, so evidence that genuinely existed
+  # was discounted as absent.
+  #
+  # SO THE PRODUCER RECORDS IT, at the moment the shot is taken — the
+  # infer-vs-record rule, which `xo-score.py` has lost three rounds to (S147,
+  # S156, S188). `xo-drive.js` already writes the landing readout beside every
+  # PNG it takes; that is its design and nothing here changes it. The worker is
+  # handed THAT camera, by path, pointed at THIS look's shots directory, so a
+  # picture it takes itself is placed by exactly the record that places a picture
+  # the harness took.
+  #
+  # AND IT IS NEVER OFFERED ON A PROMISE, the same rule the copy itself is held
+  # to: the camera, node and the shots directory must all be THERE, and the
+  # paragraph is silent otherwise rather than naming a path that is not. Only
+  # the look (`xo.sh`'s round loop) exports these; the paper gates and the
+  # pre-launch asks have no shots directory and get no camera, correctly.
+  local n1_cam="" n1_shots="" n1_node=""
+  if [ -n "$n1_wt" ] && [ -n "${LCARS_XO_CAMERA:-}" ] && [ -f "${LCARS_XO_CAMERA:-}" ] \
+     && [ -n "${LCARS_XO_SHOTS_DIR:-}" ] && [ -d "${LCARS_XO_SHOTS_DIR:-}" ]; then
+    n1_cam="$LCARS_XO_CAMERA"
+    n1_shots="$LCARS_XO_SHOTS_DIR"
+    n1_node="${LCARS_XO_CAMERA_NODE:-node}"
+  fi
+  # D2 (S261 fix round 2) — "cite the picture by the name you gave it" was
+  # FALSE for the very form this paragraph spells out, and a row settled on an
+  # unfindable name is scored "I could not check this". MEASURED, by running the
+  # real camera at a real page and then loading this branch's own
+  # `landing_readout` over the result:
+  #
+  #   --prefix week                    → week-01.png / week-01.json
+  #                                      `week-01` PLACED, `week` NO RECORD
+  #   --actions [{"screenshot":"w"}]   → w.png / w.json
+  #                                      `w` PLACED, `w-01` NO RECORD
+  #
+  # Only the name ACTUALLY WRITTEN places (`landing_readout` looks for
+  # `<cited>.json` and nothing else). So both forms are now spelled out with
+  # the file each one really writes. See lcars-xo-selfrun 4l/4m/4o.
+  local camera_para="" shots_note=""
+  if [ -n "$n1_cam" ]; then
+    camera_para="
+### Your camera — and a picture taken any other way cannot be placed
+Take your pictures with the look's own camera, not with a screenshot command of
+your own:
+
+    $n1_node $n1_cam --url <the address you want a picture of> \\
+      --out $n1_shots --prefix <a short name>
+
+It writes the PNG **and, beside it, the record of the page it was taken on** —
+the address, the title, the words that were on the screen. That record is the
+only thing that lets a row you settle on a picture count at all. A picture you
+take any other way, or that lands anywhere but that directory, **cannot be
+placed, so every row citing it is scored \"I could not check this\" — however
+real what you saw was, and however right you are.**
+
+**Cite the file that was ACTUALLY WRITTEN — no other spelling places.** That
+command writes \`<a short name>-01.png\`, with \`<a short name>-01.json\` beside
+it, so the name you cite is \`<a short name>-01\`. Citing \`<a short name>\`
+finds nothing and the row is scored \"I could not check this\".
+
+Drive to the screen first when you need to: write a small JSON file of steps and
+pass it as \`--actions <that file>\`, e.g.
+\`[{\"navigate\":\"<url>\"},{\"click\":\"#some-button\"},{\"screenshot\":\"week\"}]\`.
+It is headless and takes no focus. A named \`screenshot\` step writes
+\`week.png\` and \`week.json\` under exactly that name, so that is the form to
+use when you want to choose the name yourself — and then you cite \`week\`.
+"
+    # D1 (S261 fix round 2) — THE PROHIBITION USED TO FORBID THE CAMERA'S ONLY
+    # LEGAL DESTINATION. `--out` above is under `.git/lcars/…/xo/shots/look-N`,
+    # and 34 lines later the same prompt threatened that a worker writing any of
+    # `.git/lcars/` is killed on the spot. A careful model reads the threat and
+    # declines — measured: the live worker never once used the camera. The
+    # threat was also INACCURATE: the audit watches ten named files and
+    # `xo/shots/**` is not one of them. This sentence is the exception, and it
+    # is printed ONLY when the camera really is plumbed, so a paper gate with no
+    # shots directory invites no write at all (lcars-xo-selfrun 4k).
+    shots_note="
+**The shots directory above is the ONE place under \`.git/lcars/\` you are
+EXPECTED to write** — it is not on that list, it is where your camera puts your
+pictures AND where you save the transcripts and outputs you cite, and writing it
+breaks nothing.
+"
+  fi
+  # THE WATCH LIST, RENDERED FROM `$WORKER_FENCE_WATCH` ITSELF (S261 fix round
+  # 2, D1). The prose used to claim the whole of `.git/lcars/` was fatal to
+  # touch; the audit has only ever watched these ten files. A hand-written list
+  # here would be a second copy of the fence, free to drift the moment either
+  # moves — which is exactly the fault being cured. So the ONE list is printed,
+  # indented as a block. lcars-xo-selfrun 4h adds an eleventh file to a copy of
+  # this script and proves it reaches the prompt unaided.
+  local watch_list
+  watch_list="$(printf '%s\n' "$WORKER_FENCE_WATCH" | sed 's/^/    /')"
+  local shell_line=""
+  if [ -n "$n1_wt" ]; then
+    shell_line="
+## GO AND LOOK YOURSELF — you have a real shell, in a copy that is yours to break
+You are standing in a THROWAWAY COPY of the build under review: a worktree
+detached from the mission's branch, at
+
+    $n1_wt
+
+**You have a real shell here, and you are expected to use it.** Start the
+product. Run its command line. Try the input that should be refused. Read the
+file it claims to have written. Do the things the live-check checklists below
+describe, yourself, in the order they are numbered — do not ask anybody to do
+them for you.
+
+**But a DECLARED STEP IS NOT A SHELL.** The shell above is yours. A step you
+ask the harness to run — anything in \`xo-actions.json\` — names ONE program and
+its arguments, and the harness executes that list directly, with no shell
+anywhere. It REFUSES the forms that smuggle a shell back in:
+\`[\"bash\", \"-c\", …]\`, \`[\"sh\", \"-c\", …]\`, \`[\"python3\", \"-c\", …]\`
+and \`env …\`. \`[\"pytest\", \"-v\"]\` and \`[\"bash\", \"run-tests.sh\"]\` are
+fine — running a script through bash is a normal step.
+
+**And here is the path rule, exactly as the harness applies it.** Inside the
+**argv** itself: no absolute path is accepted anywhere — write
+\`<worktree>/run-tests.sh\` and the harness resolves the mark to this copy for
+you — and no argument with a \`/\` in it may have a \`..\` component.
+
+For a step's **\`cwd\`** (and a \`read\` step's \`path\`, a \`workflow\` step's \`file\`) you
+may write EITHER the mark \`<worktree>\`, which is the shape to reach for, OR
+the copy's own absolute path printed above — that one is accepted because it
+really resolves inside the copy; any other absolute path is refused. And in a
+RELATIVE \`cwd\`/\`path\`/\`file\`, **any \`..\` component at all is refused,
+whether or not it leaves the copy** — \`sub/../sub\` is refused too, and the
+refusal sentence says \"walks up out of the worktree\" even when it does not.
+Write the path without the \`..\`. If you set \`HOME\`, it must be a throwaway
+mark — \`<throwaway-home>\`, or \`<throwaway-home-2>\` / \`<throwaway-home-3>\`
+for a second and third actor — and never a literal path.
+
+**A pipe, a redirect, a \`&&\` or a \`\$(…)\` is NOT refused — it is worse than
+refused.** Because there is no shell, each one is handed to your program as a
+literal word. \`[\"pytest\", \"-v\", \"|\", \"tee\", \"out.txt\"]\` runs pytest
+with four arguments, one of which is the character \`|\`, and \`out.txt\` is
+never written. \`[\"echo\", \"\$(whoami)\"]\` prints the nine characters
+\`\$(whoami)\`. The step then \"succeeds\" and writes a transcript of something
+you did not ask for, which is harder to notice than a refusal. **If you want a
+pipeline, a redirect or a substitution, run it in your own shell above and save
+the output where you save your other transcripts.**
+
+**A refused step runs nothing and writes no evidence of your check** — all it
+leaves in your evidence directory, under that step's own name, is a \`REFUSED:\`
+note that the command was NOT run. That note settles nothing, and the criterion
+the step was for stays unchecked.
+
+**It is detached and it is disposable: anything you break dies with the copy.**
+No branch moves, nothing you write there reaches the captain, and nobody will
+be upset by a mess. A command that fails is information; run the next one.
+$home_para$camera_para
+**Stay inside the copy, and never reach back into the captain's own checkout.**
+The mission's RECORD is what judges your verdict, and THESE are the files that
+are watched, byte for byte, across your turn — a worker that writes one of them
+is killed on the spot and the look is thrown away:
+
+$watch_list
+$shots_note
+Nothing else under \`.git/lcars/\` is audited — but it is the captain's record,
+not your workspace, so write nothing there except your pictures$vol_write.
+
+**Say what you actually ran.** Quote the command and its real output in your
+evidence, the way you would quote a test line. \"It works\" is not a finding;
+the three lines of transcript that show it are."
+  fi
+  # THE PREVIOUS ROUND'S REFUSALS (S264 change 1), off the record the harness
+  # already writes. `xo.sh` exports the journey path and which round this is;
+  # everything printed comes from `refusedSteps`. Empty on a clean round, and on
+  # round 0/1 (there is no previous round to report).
+  local refused_line=""
+  if [ "$mode" = "evaluate" ]; then
+    refused_line="$(number_one_refusals "${LCARS_XO_JOURNEY:-}" "${LCARS_XO_ROUND:-}")"
+  fi
   local extra="## The mission
 Mission id: $id
 $rounds_line
+$prelaunch_line
+$steps_line
+$refused_line
+$shell_line
+$live_line
+$volunteered_line
+$checklists
 
 ## Your input directory — the mission's RECORD, read-only
 $indir
@@ -16643,8 +17682,57 @@ COPIES; nothing you do can change the mission. Read them with your read tools.
 ${inventory:-  (the input directory is empty — say so, and ESCALATE)}
 
 ## Your output file
-$outfiles"
-  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" number-one "$outdir" "$extra"
+$outfiles
+$channel_line"
+  local nrc=0
+  # THE ENV ROLE STAYS `number-one`; ONLY THE TOOLSET MOVES. That split is what
+  # `spawn_worker`'s two role arguments are for (the context-pack precedent), and
+  # keeping the env role fixed is load-bearing: `stage_key_for_role` reads
+  # $LCARS_WORKER_ROLE, so the model floor, the usage-capture record and the
+  # stage key are byte-for-byte what they were, live copy or not.
+  #
+  # AND THE cwd IS THE CONTAINMENT. It is moved IN THIS SHELL and moved back
+  # after, NOT in a subshell — deliberately. `worker_spawn`'s post-turn fence
+  # audit calls `die` on a breach, and a subshell would downgrade that from "the
+  # Stage is stopped and nothing is repaired" to a non-zero return, after which
+  # `number_one_claim_output` below would happily claim the breaching worker's
+  # verdict. Every path handed to `spawn_worker`, and every path the audit reads
+  # ($MISSION_DIR is absolute by `locate_mission`), is absolute, so the move is
+  # invisible to all of them. A failure to move is FATAL rather than a quiet
+  # fall-back to the captain's own checkout with a shell in hand.
+  local n1_back="$PWD"
+  [ -n "$n1_wt" ] && { cd "$n1_wt" || die "could not enter the throwaway copy at $n1_wt — refusing to run the look in the real checkout with a shell."; }
+  LCARS_WORKER_ROLE=number-one spawn_worker number-one "$template" "$n1_toolset" "$outdir" "$extra" \
+    || nrc=$?
+  [ -n "$n1_wt" ] && cd "$n1_back"
+  # The rewritten no-pictures template was a temp file for the length of the
+  # spawn and nothing reads it afterwards (S266 fix round 2).
+  [ -n "${XO_NOPIC_TPL:-}" ] && { rm -f "$XO_NOPIC_TPL"; XO_NOPIC_TPL=""; }
+  # THE FILE, EITHER WAY — and the record of which way it came. Never allowed to
+  # fail the spawn: the channel reports, it does not judge.
+  number_one_claim_output "$outdir" "$wantfiles" || true
+  return "$nrc"
+}
+
+# Resolve Number One's output file from whichever channel it arrived on, and
+# RECORD the channel in $outdir/xo-channel.json. The worker's own file wins and is
+# never touched; a framed block in its reply is written only when no file came.
+# See number-one-channel.py for why the frame is a record and a scrape would not
+# be. Always returns 0 — a reporting channel must never stop a look.
+NUMBER_ONE_CHANNEL_PY="${LCARS_NUMBER_ONE_CHANNEL_PY:-$SKILL_DIR/number-one-channel.py}"
+
+number_one_claim_output() { # <outdir> <space-separated declared filenames>
+  local outdir="$1" names="$2"
+  [ -n "$names" ] || return 0
+  if [ ! -f "$NUMBER_ONE_CHANNEL_PY" ]; then
+    printf '  ⚠ the verdict channel (%s) is missing — reinstall LCARS (./install.sh).\n' \
+      "$NUMBER_ONE_CHANNEL_PY" >&2
+    return 0
+  fi
+  # shellcheck disable=SC2086  # $names is a deliberate word list
+  "${LCARS_PYTHON_BIN:-python3}" "$NUMBER_ONE_CHANNEL_PY" \
+    "$outdir/.worker.out" "$outdir" $names 2>/dev/null || true
+  return 0
 }
 
 # === Bounded fan-out (the ONE shared concurrency helper) ====================
@@ -18582,9 +19670,15 @@ it.
   {\"package\": <the directory the setup addresses — for this repo that is the
       REPO ROOT, named as the empty string>,
    \"gap\": <one line stating what is missing>,
-   \"installCommand\": <a plain package-manager invocation and nothing else, run
-      by the harness at the repo root. ONE command: no \`&&\`, no pipes, no
-      redirection, no substitution — a metacharacter anywhere in it is refused>}
+   \"installCommand\": <MAY BE EMPTY (\"\"), and EMPTY IS THE CORRECT ANSWER
+      whenever the runner you picked needs NO install step. A standard-library
+      runner installs nothing — python3 -m unittest, go test, cargo test — so
+      there is no package manager to invoke and the honest value is \"\". Say
+      that by leaving the field empty; NEVER invent a command to fill the slot.
+      When an install IS genuinely needed: a plain package-manager invocation
+      and nothing else, run by the harness at the repo root. ONE command: no
+      \`&&\`, no pipes, no redirection, no substitution — a metacharacter
+      anywhere in it is refused>}
 - Pick the runner this repo's own language and layout point at, at a version
   that actually exists, and give it a way to be invoked that LCARS's detector
   can find at the root afterwards.
@@ -20615,7 +21709,32 @@ drive_number_one_verify() {
   local parent; parent="$(json_str "$STATE" parentMission)"
   [ -n "$parent" ] && [ "$parent" != "null" ] && return 1
   # ALREADY LOOKED — the one fact that makes a second look pure spend.
-  [ -n "$(drive_xo_field evaluatedAt)" ] && return 1
+  #
+  # …UNLESS THE LOOK NEVER HAPPENED (S264 change 4). `xo_finish` records
+  # `lookBlockedBy` when, and only when, the look ended for an INFRASTRUCTURE
+  # reason — its own `$XO_NOLOOK` meaning: the browser would not start, the
+  # build did not start, there was nothing to look at. That is not a verdict
+  # about the build, and refusing to take it again left S262's foundation stuck
+  # on a greenfield repo with a LOW it could never clear. A look that reached a
+  # REAL verdict carries no such mark and is still refused, exactly as before.
+  #
+  # ONE RETAKE, AND IT IS STAMPED BEFORE THE SPAWN. A build that still will not
+  # start would otherwise be retaken on every pass of the driver for ever, so
+  # `retakenAt` is written first — a crash between the stamp and the spawn costs
+  # the retake rather than looping. The captain's own
+  # `lcars xo evaluate --again --because "<what changed>"` stays his, however
+  # many times he wants it.
+  #
+  # AND IT IS THE EXISTING VERB. `evaluate --again --because` has existed since
+  # S239 and already supersedes a verdict with a stated reason; this hands it
+  # the reason off the record. Nothing here is a second recheck path.
+  local xo_retake="" xo_blocked
+  if [ -n "$(drive_xo_field evaluatedAt)" ]; then
+    xo_blocked="$(drive_xo_field lookBlockedBy)"
+    [ -n "$xo_blocked" ] || return 1
+    [ -z "$(drive_xo_field retakenAt)" ] || return 1
+    xo_retake="$xo_blocked"
+  fi
   # …or looking right now. A recorded pid that is still alive is a look in
   # flight; a stale one (the box rebooted, the look was killed) is not, and is
   # simply overwritten by the child below.
@@ -20643,12 +21762,46 @@ drive_number_one_verify() {
   # can stop the whole job on a read, which is the loudest possible way to take
   # the captain's focus.
   local child=""
+  # THE RETAKE'S ARGUMENTS, and nothing extra on an ordinary first look — the
+  # argv is identical to what it has always been when $xo_retake is empty.
+  # STAMPED BEFORE THE SPAWN (see the header): this is what makes one retake one.
+  set --
+  if [ -n "$xo_retake" ]; then
+    # ── THE STAMP IS CHECKED, NOT ASSUMED (S264 fix round 2, FIX 3) ─────────
+    #
+    # MEASURED by the fix-round-1 tester: a mission whose `state.json` makes
+    # `drive_xo_put` refuse to write (it warns "… is not the one-field-per-line
+    # object LCARS writes … field numberOne NOT written") gave THREE spawns
+    # across three driver passes, where a well-formed one gives one spawn and
+    # then refuses. The header already promised that "a crash between the stamp
+    # and the spawn costs the retake rather than looping" — a FAILED stamp did
+    # not, because nothing read its exit status. One retake is only one retake
+    # if the thing that makes it one actually landed.
+    #
+    # SO IT IS A GATE. The stamp must succeed AND be readable back off the
+    # record before anything is spawned; if it did not land, the look is left
+    # exactly as it was and the captain's own `evaluate --again --because` stays
+    # available. A look nobody can mark as retaken is not retaken.
+    if ! drive_xo_put retakenAt "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+       || [ -z "$(drive_xo_field retakenAt)" ]; then
+      printf '◈ NUMBER ONE: I could not record that I am retaking this look, so I am not retaking it — run `lcars xo evaluate --again --because "<what changed>"` yourself.\n'
+      return 1
+    fi
+    set -- --again --because "the look never happened: $xo_retake"
+    # THE SENTENCE SAYS WHAT HAPPENED (S264 fix round 2, FIX 7). "never got off
+    # the ground" is true of the two infrastructure endings, but this arm also
+    # fires when our own scorer died or its verdict could not be read back —
+    # there the look DID happen and it is our code that failed. One sentence
+    # covering both, and the specific reason is printed beside it either way.
+    printf '◈ NUMBER ONE: my last look never reached a usable verdict (%s) — taking it again.\n' \
+      "$xo_retake"
+  fi
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+    setsid bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" "$@" \
       </dev/null >"$log" 2>&1 &
     child=$!
   else
-    nohup bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" \
+    nohup bash "$XO_SCRIPT" evaluate --mission "$MISSION_ID" "$@" \
       </dev/null >"$log" 2>&1 &
     child=$!
   fi
@@ -20805,6 +21958,27 @@ cmd_drive() {
       *) drive_print_summary "$summary"
          printf '⏹ stopped: Mission is at an unsupported stage "%s".\n' "$stage"; return 1 ;;
     esac
+
+    # ── THE STOP MARKER, READ IMMEDIATELY BEFORE THE SPAWN (S245) ───────────
+    # `paused` is checked at the top of this loop, which is the BETWEEN-STAGES
+    # boundary and the right place for the captain's own `lcars pause`. The window
+    # it cannot close is this one: everything between that check and this spawn.
+    # `lcars xo off` lands inside it — it writes `xo-stop` on the mission and on
+    # every linked child BEFORE it signals anything, precisely so that the next
+    # worker is never hired. Re-reading the flag and the marker here costs two
+    # stats and closes the window. A stage ALREADY RUNNING is not interrupted
+    # here; the stop's own sweep reaches that one.
+    local stop_dir stop_parent
+    stop_dir="$MISSION_DIR"
+    stop_parent="$(json_str "$STATE" parentMission)"
+    if [ -f "$stop_dir/xo-stop" ] \
+       || { [ -n "$stop_parent" ] && [ "$stop_parent" != "null" ] \
+            && [ -f "$(dirname "$MISSION_DIR")/$stop_parent/xo-stop" ]; } \
+       || [ "$(json_raw "$STATE" paused)" = "true" ]; then
+      emit_event paused "$stage" "Number One was stood down — no worker was started for $action"
+      mirror_comments || true
+      drive_print_summary "$summary"; drive_halt_paused "$stage"; return 0
+    fi
 
     # Live BEGIN: log + print before the (output-captured) stage subprocess runs,
     # so a tail/scrollback shows the Stage starting in real time.
@@ -21745,6 +22919,16 @@ FSG_EOF
   executed-count-test)
     printf '%s\n' "$(proof_executed_count "$(cat)")"
     exit 0 ;;
+  # S264 test hook: the PURE retake gate. Drives the REAL
+  # `drive_number_one_verify` against a mission's recorded numberOne block, with
+  # $LCARS_XO_SCRIPT standing in for xo.sh, and prints its rc. Lets the suite
+  # prove that an infra-only look is retaken through `evaluate --again` and a
+  # real verdict is still refused, without launching a browser. Inert for every
+  # real subcommand.
+  number-one-verify-test)
+    locate_mission "$MISSION_ID"
+    __nv_rc=0; drive_number_one_verify || __nv_rc=$?
+    printf 'NVRC=%s\n' "$__nv_rc"; exit 0 ;;
   proof-quality-floor-test)
     locate_mission "$MISSION_ID"
     [ -n "$TICKET" ] || die "usage: run.sh proof-quality-floor-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"

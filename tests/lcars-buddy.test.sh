@@ -311,7 +311,7 @@ check "8b. the rule points at a cage that is actually committed" \
 # a probe that exits comes back with its exit code — both reporting ELAPSED.
 cagehang="$TMPROOT/cage-hang.txt"
 python3 "$CAGE" 2 bash -c 'sleep 60' >"$cagehang" 2>&1
-check "8b. the committed cage KILLS a blocked probe and reports it hung" \
+check "8b. the committed cage KILLS a blocked probe and reports the timeout" \
   "qgrep -qi 'timed out' '$cagehang' && qgrep -q 'ELAPSED' '$cagehang'"
 cagefast="$TMPROOT/cage-fast.txt"
 python3 "$CAGE" 5 bash -c 'echo alive; exit 64' >"$cagefast" 2>&1
