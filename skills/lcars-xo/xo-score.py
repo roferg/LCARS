@@ -318,6 +318,11 @@ def cite(g):
         # shot" of it would read as a missing picture rather than as a
         # different kind of evidence.
         bits = ["your tests"]
+    elif g.get("shotsRefused"):
+        # S272 fix round 1, D2: "no shot" would be a false statement about this
+        # one — a picture WAS named and the harness could not read the citation.
+        # The producer stamped the fact on the finding; this only says it.
+        bits = ["a picture was named, and I could not read the citation"]
     else:
         bits = ["see " + ", ".join(g["shots"])] if g.get("shots") else ["no shot"]
     cid = str(g.get("criterion") or "").strip()
@@ -2766,8 +2771,39 @@ def merge_unlisted(path, notes):
     # every citation is checked against it; when it recorded none there is
     # nothing to check against and the guard stands down rather than inventing
     # a verdict of its own.
-    inventory = set(str(s).strip() for s in (doc.get("shots") or [])
-                    if str(s).strip())
+    # AND A SCALAR IS NOT AN INVENTORY EITHER (S272). This line iterated the raw
+    # value exactly as the gaps loop did, and measured the same way: an unlisted
+    # record carrying `"shots": 5` raised `TypeError: 'int' object is not
+    # iterable` out of here and the scorer wrote nothing at all. Cured with the
+    # SAME normaliser as its sibling rather than a second convention — a cure
+    # shipped to one call site while an identical sibling stays raw is a known
+    # failure in this repo's ledger. An unreadable inventory lands as the empty
+    # set, which is the branch below that already stands the guard down, so a
+    # malformed record now loses the CHECK and keeps the finding instead of
+    # losing the whole verdict.
+    # AND A GUARD THAT STANDS DOWN SAYS SO (S272 fix round 1, D4). This file's
+    # own stated rule, six lines up, is that a drop happens "loudly, in the
+    # notes, never in silence" — and a DISABLED guard is the silent case.
+    # MEASURED: an unlisted record with two findings, one citing a real
+    # `01-help.png` and one citing an invented `99-never-taken.png`, drops the
+    # invention against an honest inventory; with `"shots": 5` the inventory is
+    # empty, BOTH are kept, and `ledgerNotes` was empty — so a finding naming a
+    # picture nobody took reached his "yours to decide" escalations with nothing
+    # saying the check had been skipped. Recorded here, where the inventory is
+    # built, and said below beside the drop note.
+    #
+    # `[]`, `""`, `{}` or no key at all is NOT this case: that is a producer
+    # that recorded no inventory, it stood the guard down before this session
+    # too, and it is deliberate.
+    _raw_inv = doc.get("shots")
+    inventory = set(_carried_strings(_raw_inv))  # S272 UNLISTED SHOTS
+    # THE SAME LEAF RULE, AT BOTH CALL SITES (S272 fix round 2, D-B). A cure
+    # applied to one site while its identical sibling stays raw is a named
+    # failure in this repo's ledger. Over-flagging HERE only ever added an
+    # honest "I could not check", so it was harmless — the rule is made
+    # identical anyway, because the next reader must find one convention and
+    # not two.
+    inv_refused = bool(not inventory and _unreadable_citation(_raw_inv))
     rows, lines, dropped = [], [], 0
     for f in findings:
         if not isinstance(f, dict):
@@ -2799,6 +2835,14 @@ def merge_unlisted(path, notes):
             "walk took, so I left %s out rather than pass on something I cannot "
             "show you" % (dropped, "" if dropped == 1 else "s",
                           "it" if dropped == 1 else "them"))
+    if inv_refused and rows:
+        notes.append(
+            "the unlisted pass recorded a list of the pictures it was given, and "
+            "that list was not in a shape I could read — so I could NOT check "
+            "whether the %d thing%s it raised name pictures the walk really took, "
+            "and I have passed %s on unchecked. One of them may name a picture "
+            "nobody ever took" % (len(rows), "" if len(rows) == 1 else "s",
+                                  "it" if len(rows) == 1 else "them"))
     return rows, lines
 
 
@@ -3020,13 +3064,28 @@ def summary_caveat(summary, measured):
 # same verdict was lost with it. (The call site got its own cure; this is the
 # source.)
 #
-# THE GAPS LANE WAS ALREADY TREATED THIS WAY and this MIRRORS it, deliberately
-# rather than inventing a second convention: the gaps loop above drops a non-dict
-# entry, coerces `kind`, `evidence` and `testQuote` through `str()`, rebuilds
-# `shots` as a list of non-empty strings, and hands the CONSUMER a normalised
-# entry instead of the raw one. The only difference is that this lane is a
-# WHITELIST — the consumer reads a known set of fields, so an unknown field of
-# any shape cannot reach it at all and cannot become the next crash.
+# THE GAPS LANE IS TREATED THIS WAY TOO, deliberately rather than by inventing a
+# second convention: the gaps loop above drops a non-dict entry, coerces `kind`,
+# `evidence` and `testQuote` through `str()`, normalises `shots` through
+# `_carried_strings` BELOW, and hands the CONSUMER a normalised entry instead of
+# the raw one. The only difference is that this lane is a WHITELIST — the
+# consumer reads a known set of fields, so an unknown field of any shape cannot
+# reach it at all and cannot become the next crash.
+#
+# IT WAS NOT ALWAYS TRUE, AND THE CLAIM THAT IT WAS COST A ROUND (S272). What
+# this paragraph said when S263 wrote it was "THE GAPS LANE WAS ALREADY TREATED
+# THIS WAY" — and it was not. The gaps loop dropped its non-dict entries and
+# coerced its `kind`, but its `shots` line ITERATED THE RAW VALUE and `{"shots":
+# 5}` crashed the whole scorer, writing no file at all. Two lanes, one of them
+# only believed to be cured. Both now call `_carried_strings`; so does the
+# unlisted pass's citation inventory in `merge_unlisted`, which had the same
+# line and the same crash.
+# ONE READER OF A PLURAL `shots` IS DELIBERATELY LEFT RAW: `recorded_location`.
+# MEASURED, not reasoned — with the function instrumented and genuinely reached,
+# a verdict row carrying `"shots": 5` arrived there as `shots=None`. Its only
+# caller hands it a LEDGER entry, and a ledger entry is the hand-built whitelist
+# below `entry = {` in `main()`, which copies `shot` (singular) and never the
+# plural field at all. There is nothing there to cure.
 #
 # IT DECIDES NOTHING. It is shape, not judgement: no entry is dropped for what it
 # SAYS, only for not being an object at all. Whether a find is CITED is
@@ -3059,6 +3118,39 @@ def _carried_strings(v):
         for x in v.values():
             out.extend(_carried_strings(x))
     return out
+
+
+# AND "I COULD NOT READ IT" IS A DIFFERENT FACT FROM "THERE WAS NOTHING THERE"
+# (S272 fix round 2, D-B). Round 1 asked `_raw not in (None, "", [], (), {})`,
+# which excludes five TOP-LEVEL literals and nothing else — so `[""]`,
+# `["  "]`, `[None]`, `[[]]`, `[{}]`, `{"a": ""}` and `{"a": []}` all counted
+# as REFUSED CITATIONS, and the captain was told a picture had been NAMED when
+# the look named nothing at all. That is the very misdescribing-note class the
+# round-1 cure was written to close, committed one line further on.
+#
+# So the question is asked of the LEAVES, not of the container: was there a
+# leaf that could never have been a path? A number, a bool or any other
+# non-string scalar IS a malformed citation and is still flagged — which is a
+# deliberate change from the parent's `x or []`, where `shots: false` and
+# `shots: 0` read as an honest "I cited nothing". A producer that writes a
+# scalar there DID declare something and we could not read it, so flagging it
+# is the honest reading; it is called out as a behaviour change on a
+# pre-existing path rather than slipped in. A structure that merely bottoms out
+# in empty strings, empty lists or empty maps declared nothing, and stays
+# honest-empty exactly as it always was.
+def _unreadable_citation(v):
+    """True when a value holds at least one LEAF that could never be a path — a
+    number, a bool, or any non-string scalar. `None`, empty strings, empty
+    lists and empty maps are an honest "I cited nothing", not a refusal. The
+    traversal matches `_carried_strings` above, leaf for leaf, so the two
+    always agree about where the leaves are."""
+    if v is None or isinstance(v, str):
+        return False
+    if isinstance(v, (list, tuple)):
+        return any(_unreadable_citation(x) for x in v)
+    if isinstance(v, dict):
+        return any(_unreadable_citation(x) for x in v.values())
+    return True
 
 
 def carried_finds(rows):
@@ -3192,6 +3284,18 @@ def main():
     # captain. It is read here exactly as a refusal is, and kept on its own
     # list, because a step with nothing wrong with its shape is not a refusal.
     dropped_steps = []
+    # ── AND THE STEPS KEPT WITH NO PAGE TO RUN THEM ON (S272) ───────────────
+    # The THIRD list `xo-journey.py` already writes, and the only one of the
+    # three this file never read. MEASURED: on one real review `lcars launch`
+    # died on a taken port, the reviewer's ELEVEN declared browser steps were
+    # recorded `asked: 11, refused: [], dropped: [], overflow: 0` — kept, and
+    # not one executed — and `xo-score.py` mentioned `unrunSteps` ZERO times. So
+    # the captain's own report read "0 refused, 0 dropped" over a look that had
+    # run nothing. Read here exactly as a refusal and a drop are, and kept on its
+    # own list for the same reason they are kept apart from each other: a step
+    # nothing was wrong with, that there WAS room for, and that still never ran,
+    # is a third fact.
+    unrun_steps = []
     if isinstance(journey_doc, dict):
         for _r in (journey_doc.get("refusedSteps") or []):
             if isinstance(_r, dict) and str(_r.get("why") or "").strip():
@@ -3199,6 +3303,21 @@ def main():
         for _r in (journey_doc.get("droppedSteps") or []):
             if isinstance(_r, dict) and str(_r.get("why") or "").strip():
                 dropped_steps.append(_r)
+        # AND THE SCALAR CASE WAS A NEW CRASH, NOT AN INHERITED ONE (S272 fix
+        # round 3, FIX 1). `x or []` iterates the raw value, so MEASURED on this
+        # branch through the real scorer: `{"unrunSteps": 5}` raised `TypeError:
+        # 'int' object is not iterable`, rc=1, and the scorer wrote NEITHER
+        # `verdict.json` NOR `report.md` — while the PARENT scored the same file
+        # and wrote both. That is the crash-and-write-nothing class this session
+        # was convened to close, introduced BY this session's own new read. The
+        # guard is the shape `main()` already uses on the gaps list below
+        # (`doc.get("gaps") if isinstance(..., list) else []`) rather than a new
+        # convention. The two siblings above crash identically and do so ON THE
+        # PARENT — inherited, ledgered for the captain, and deliberately not
+        # widened into here.
+        for _r in (journey_doc.get("unrunSteps") if isinstance(journey_doc.get("unrunSteps"), list) else []):  # S272 UNRUN LIST
+            if isinstance(_r, dict) and str(_r.get("why") or "").strip():
+                unrun_steps.append(_r)
     landing_steps = landing_by_shot(load_json_or_none(walk_path), journey_doc)
     landing_records = landing_records_exist(shots_root)
     landing_on = bool(shots_root and os.path.isdir(shots_root) and landing_records)
@@ -3313,7 +3432,73 @@ def main():
         kind = str(g.get("kind") or "").strip().lower()
         if kind not in ("contradiction", "interpretation"):
             bad("a gap names no kind (want contradiction|interpretation)")
-        shots = [str(s) for s in g.get("shots") or [] if str(s).strip()]
+        # THE RAW VALUE WAS ITERATED (S272). MEASURED on this branch, through
+        # the real scorer: `{"shots": 5}` raised `TypeError: 'int' object is not
+        # iterable` and `{"shots": true}` the same for a bool — and the scorer
+        # then wrote NO file at all, which is the identical silence S263 closed
+        # on the volunteered lane. `{"shots": {"a": "01-help.png"}}` did not
+        # crash; it quietly yielded the dict's KEY (`['a']`) and the captain's
+        # report cited a shot called `a`. `_carried_strings` is the one
+        # normaliser this file already has for exactly this (see its block
+        # above): it takes a string, a list or a map, returns nothing at all for
+        # a number, a bool or a None, and for D6 reads the path INSIDE an
+        # obvious container instead of stringifying the container.
+        _raw_shots = g.get("shots")
+        shots = _carried_strings(_raw_shots)  # S272 GAP SHOTS
+        # AND THE PRODUCER RECORDS WHAT IT THREW AWAY (S272 fix round 1, D2).
+        # The cure above turned a crash into a SILENT omission: a gap that cited
+        # a picture and a gap that cited nothing came out byte-identical, both
+        # `shots: []`, and nothing anywhere said a declared citation had been
+        # refused. The knock-on was the real harm and it was measured — with the
+        # gap's own `evidence` word absent (the realistic single-declaration
+        # case), refusing the citation removes the structural fallback that
+        # inferred evidence from "it cited a shot", the finding is demoted
+        # `contradiction` → `interpretation`, and a GENUINE FAULT is then read
+        # back to the captain under "I am reading these as yours, not as faults".
+        #
+        # So the fact is WRITTEN DOWN HERE, where it happens, and never worked
+        # out later by reading the finished entry — the infer-vs-record shortcut
+        # that cost S147, S156 and S188 a round each (see the block above).
+        #
+        # THE DEMOTION STANDS, AND IS MADE LOUD INSTEAD. Keeping the row a
+        # `contradiction` would promote a confident fault whose evidence the
+        # harness cannot even name, which is the one thing this guard exists to
+        # refuse. What was wrong was not the demotion; it was that the captain
+        # was told the row was HIS CALL. So the refusal is carried on the entry
+        # and said out loud in the report (see `cite` and the interpretation
+        # section), and the note below stops misdescribing it.
+        #
+        # "" / [] / {} / absent is NOT a refusal — that is an honest "I cited
+        # nothing", and it behaved this way before this session.
+        shots_refused = bool(not shots and _unreadable_citation(_raw_shots))
+        # AND A **PARTLY** UNREADABLE LIST IS A DROP TOO (S272 fix round 3,
+        # FIX 7). The flag above is gated on `not shots`, so a list that lost
+        # SOME of its leaves was invisible. MEASURED on this branch, through the
+        # real scorer: `shots: ["03-x.png", 7]` came out `shots: ["03-x.png"]`
+        # with no `shotsRefused`, no note, nothing on the wire, and a report
+        # BYTE-IDENTICAL to the parent's — the `7` was thrown away in silence.
+        # This file's own repeated rule, stated above `UNLISTED_LEAD`, is that a
+        # drop happens "loudly, in the notes, never in silence", and this is a
+        # site THIS session created.
+        #
+        # ITS OWN FLAG, not a widening of `shots_refused`. `cite()` answers a
+        # `shotsRefused` row with "a picture was named, and I could not read the
+        # citation" — a false sentence about a row that kept a readable path the
+        # captain CAN open — and the demotion wording keys off the same flag. So
+        # the partial case keeps every one of those behaviours exactly as it is
+        # and adds one note and one wire field: the finding stands on what could
+        # be read, and the captain is told something beside it could not.
+        shots_refused_partial = bool(shots and _unreadable_citation(_raw_shots))
+        # AND "DEMOTED" IS A SECOND FACT, RECORDED SEPARATELY (S272 fix round
+        # 2, D-A). `shots_refused` is true of ANY gap whose citation could not
+        # be read — INCLUDING one the look itself filed as an `interpretation`,
+        # which nothing demoted. Round 1 keyed the report's wording off this
+        # flag alone, so that gap was told the look "filed this as a MISMATCH IN
+        # YOUR BUILD" when the look had filed it as the captain's own call from
+        # the start. A look that filed an interpretation must never be told it
+        # filed a mismatch. So the demotion is recorded WHERE IT HAPPENS, in the
+        # branch below, and every sentence about a demotion keys off that.
+        shots_refused_demoted = False
         # WHERE THIS FINDING CAME FROM, RECORDED ON THE FINDING (S211). Declared
         # by the look that made it; when it declared nothing, taken from the
         # structural fact that it cited a shot — never from the wording.
@@ -3382,10 +3567,52 @@ def main():
                              % (str(g.get("title") or g.get("criterion") or "?"),
                                 str(g.get("criterion") or "?")))
         if kind == "contradiction" and not shots and not tests_back_it:
-            notes.append("I called %r a mismatch but had no picture of it, so I have moved it "
-                         "to the calls-the-build-made list instead — a finding with no picture "
-                         "is not evidence" % (str(g.get("title") or g.get("criterion") or "?")))
+            if shots_refused:
+                # A NOTE THAT MISDESCRIBES IS WORSE THAN NO NOTE (S272 fix
+                # round 1, D2). The sentence below reads "I called it a mismatch
+                # but had no picture of it" — and here the look DID cite one;
+                # the harness refused the value it was given. Said correctly,
+                # and said as MY limit rather than as his design call.
+                notes.append("%r named a picture, but the citation it gave me was not "
+                             "a path I could read, so I have nothing to show you and "
+                             "have moved it to the calls-the-build-made list. THAT MOVE "
+                             "IS MY LIMIT, NOT YOUR DESIGN CALL — the look filed this as "
+                             "a mismatch in your build"
+                             % (str(g.get("title") or g.get("criterion") or "?")))
+                # THE DEMOTION, RECORDED IN THE BRANCH THAT DID IT (D-A).
+                shots_refused_demoted = True
+            else:
+                notes.append("I called %r a mismatch but had no picture of it, so I have moved it "
+                             "to the calls-the-build-made list instead — a finding with no picture "
+                             "is not evidence" % (str(g.get("title") or g.get("criterion") or "?")))
             kind = "interpretation"
+        # AND THE REFUSAL IS SAID ON THE PATHS THAT KEPT THE ROW TOO (S272 fix
+        # round 2, D-C). The branch above was the ONLY place the refusal was
+        # ever said, and it runs only when the row is demoted. MEASURED: a
+        # contradiction the project's own tests back keeps its kind, `cite()`
+        # answers "your tests", and the refusal reached `verdict.json` as
+        # `shotsRefused` while the report AND the wire said nothing — the
+        # recorded-but-unsaid case this file keeps closing. The same silence
+        # covered a gap the look itself filed as an interpretation. One note,
+        # worded so it is true of both: it claims nothing about WHY the row
+        # survived, only that the citation is unreadable and the finding stands
+        # where the look put it. Brief on purpose — a note, not a section.
+        elif shots_refused:
+            notes.append("%r named a picture and the citation it gave me was not a path "
+                         "I could read, so there is nothing for you to open — the "
+                         "finding itself is unchanged and stays where the look filed it"
+                         % (str(g.get("title") or g.get("criterion") or "?")))
+        # AND THE PARTIAL LOSS IS SAID OUT LOUD (S272 fix round 3, FIX 7). It
+        # claims nothing about the finding, which did not move and was not
+        # weakened: it names what survived and says that something else in the
+        # same field did not. Brief on purpose — a note, not a section.
+        elif shots_refused_partial:
+            notes.append("%r cited %d picture%s I could read (%s) and something else in "
+                         "the same field that was not a path I could read, so the "
+                         "finding stands on what I could open and the rest is dropped"
+                         % (str(g.get("title") or g.get("criterion") or "?"),
+                            len(shots), "" if len(shots) == 1 else "s",
+                            clip(", ".join(shots), 120)))
         # SAID OUT LOUD, THE SAME WAY A CRITERION IS. Measured by the fix-round-1
         # tester: `placed` reached both calls above and NO note was emitted, so a
         # criterion settled on a placed transcript was disclosed while a
@@ -3402,6 +3629,23 @@ def main():
         # contradiction that has a picture can carry an unchecked quote too).
         gg["_testsBacked"] = bool(tests_back_it)
         gg["shots"] = shots
+        # RECORDED ON THE FINDING, where it was decided (S272 fix round 1, D2).
+        # Written ONLY when it happened, so a verdict with no refused citation
+        # is byte-identical to the one this session shipped.
+        if shots_refused:
+            gg["shotsRefused"] = True
+        # AND THE PARTIAL LOSS REACHES THE WIRE TOO (S272 fix round 3, FIX 7).
+        # Written only when it happened, so every other verdict stays
+        # byte-identical. Kept apart from `shotsRefused` on purpose: this row
+        # still has a path the captain can open, and no reader may be made to
+        # guess which of the two happened.
+        if shots_refused_partial:
+            gg["shotsRefusedPartial"] = True
+        # AND SEPARATELY, WHETHER THAT REFUSAL MOVED THE ROW (D-A). Written
+        # only where the demotion happened, so no reader has to guess it back
+        # out of a kind that two different producers can have set.
+        if shots_refused_demoted:
+            gg["shotsRefusedDemoted"] = True
         gg["evidence"] = g_ev or "none"
         if g_quote:
             gg["testQuote"] = g_quote
@@ -5441,8 +5685,50 @@ def main():
         interp = [g for g in gaps if g["kind"] == "interpretation"]
         if interp:
             w("\n### Calls the build made that your drawing does not cover\n\n")
-            w("I am reading these as yours, not as faults.\n\n")
+            # AND THE HEADING IS NOT TRUE OF EVERY ROW UNDER IT (S272 fix round
+            # 1, D2). A finding the look filed as a MISMATCH, which lost that
+            # standing to a citation the harness could not read, lands on this
+            # list too — and telling the captain that one is "his call"
+            # presents a genuine fault as his own design decision. The producer
+            # records the demotion on the finding (see the gaps loop); this
+            # says it where he reads it.
+            #
+            # DEMOTED, NOT MERELY REFUSED (S272 fix round 2, D-A). This read
+            # `shotsRefused`, which is set for ANY unreadable citation — so a
+            # gap the LOOK filed as an `interpretation` was told the look "filed
+            # this as a MISMATCH IN YOUR BUILD", a thing the look never said.
+            # Only `shotsRefusedDemoted` means a mismatch was moved here, and
+            # only those rows are the exceptions the heading announces. A
+            # look-declared interpretation with an unreadable citation keeps the
+            # ordinary "this is your call" bullet, which is true of it, and
+            # `cite()` still tells him a picture was named and could not be read.
+            _refused_cites = [g for g in interp if g.get("shotsRefusedDemoted")]
+            w("I am reading these as yours, not as faults%s.\n\n"
+              % (" — except the %s marked below, which I could not read the "
+                 "evidence for"
+                 % ("one" if len(_refused_cites) == 1 else len(_refused_cites))
+                 if _refused_cites else ""))
             for g in interp:
+                if g.get("shotsRefusedDemoted"):
+                    # AND IT CLAIMS ONLY WHAT IS THERE (S272 fix round 3, FIX
+                    # 9). This said the look "named a picture for it" — the
+                    # most confident sentence in the file, standing on the least
+                    # evidence: at `shots: 0` the look named nothing
+                    # recognisable as a picture at all. The RULING STANDS that a
+                    # scalar is an unreadable citation and not an honest "I
+                    # cited nothing" (see `_unreadable_citation`); what was
+                    # wrong was describing it as a picture. It also said the
+                    # same thing twice — "named a picture … and I could not read
+                    # the citation it gave me". One clause now, and it describes
+                    # the field rather than its contents.
+                    w("- **%s** — the build has %s. The look filed this as a "
+                      "MISMATCH IN YOUR BUILD and put something in the picture "
+                      "field that I could not read — so I have "
+                      "nothing to show you and it is on this list for that "
+                      "reason alone. **That is my limit, not your call.** "
+                      "*(%s)*\n" % (
+                          g.get("title", "?"), unstop(g.get("saw", "?")), cite(g)))
+                    continue
                 w("- **%s** — the build has %s; your drawing does not say, so I am "
                   "treating it as your call. *(%s)*\n" % (
                       g.get("title", "?"), unstop(g.get("saw", "?")), cite(g)))
@@ -5588,6 +5874,239 @@ def main():
                      (" *(round %s)*" % rnd) if rnd else ""))
             w("\nSo whatever those steps were for is unchecked, and it is a limit "
               "of the harness rather than anything about your build.\n")
+        # ─── AND WHAT NEVER RAN BECAUSE THERE WAS NO PAGE (S272) ─────────────
+        # S272 RENDER BEGIN unrun
+        #
+        # ADDITIVE, AND NON-ZERO ONLY (captain's explicit call). The list is
+        # already on the journey and already reaches the REVIEWER's next prompt;
+        # this is the same fact said to the CAPTAIN, where he reads. It touches
+        # no grading, no grade, no verdict and no threshold — it renders a list
+        # somebody else built. A healthy review must not grow a permanent noise
+        # row, so a look with nothing on this list reads exactly as it always
+        # has.
+        #
+        # ITS OWN SECTION, for the same reason the two above are two: a refusal
+        # needs a different SHAPE, a drop needs a shorter LIST, and this needs
+        # neither — the step was fine and there was room for it; there was simply
+        # no screen to run it against. Reasons are collapsed with a count,
+        # because one dead launch refusing thirty steps is one fact about the
+        # run, not thirty.
+        if unrun_steps:
+            w("\n### Steps that were fine, and never ran anyway\n\n")
+            # AND WORDS, NOT NUMERALS, AT N=1 (S272 fix round 2, D-E). He
+            # reads this on a phone; "I asked for 1 step" is not a sentence a
+            # person writes. The bullet labels below stay numeric on purpose —
+            # those are counts in a tabular line, not prose.
+            # AND NO CLAIM ABOUT WHOSE FAULT IT WAS (S272 fix round 3, FIX 3).
+            # This line closed on `MY_CHECKING_NOTE` — "These are gaps in my
+            # checking, NOT A FAULT IN YOUR BUILD" — and the whole reason this
+            # section exists is a launch that died because THE BUILD TOOK A
+            # PORT. This session's companion change is a bullet in
+            # `implement-tdd.md` telling builders not to take that port, so the
+            # sentence asserted the opposite of the session's own premise, two
+            # lines above the harness's own words naming the port. The scorer
+            # cannot separate rig from build here, so it claims neither: the
+            # clause is DROPPED, not reworded into a subtler version of itself.
+            # (The constant is shared and pre-existing — its three other call
+            # sites are untouched; using it HERE was this session's choice.)
+            w("I asked for %s step%s that the harness kept and then never ran — "
+              "not refused, and not dropped for want of room: there was no page "
+              "to run %s against.\n\n"
+              % ("one" if len(unrun_steps) == 1 else len(unrun_steps),
+                 "" if len(unrun_steps) == 1 else "s",
+                 "it" if len(unrun_steps) == 1 else "them"))
+            # EVERY NAME HERE IS PRIVATE, BECAUSE THIS IS INSIDE `main()`
+            # (S272 fix round 1, D3). Python scoping is per-FUNCTION, not
+            # per-block, and `main()` holds the GRADE'S REASON in a plain `why`
+            # bound ~1000 lines above and printed as `WHY` on the wire ~400
+            # lines below — which `xo.sh` reads and hands to `xo_finish` as the
+            # board's headline. A loop variable called `why` in here OVERWROTE
+            # it. MEASURED: a journey of nothing but unrun steps turned the
+            # board's headline from "the point of the mission does not work —
+            # file stores no title" into this section's harness sentence, and
+            # `RECOMMENDATION_WHY` is printed as `(rec_why or why)`, so it was
+            # exposed to the same clobber. Same lesson as the `dwhy` note above.
+            #
+            # AND THE CLASS IS **NOT** CLOSED — THE DISCIPLINE BELOW IS APPLIED
+            # IN THIS BLOCK ONLY (S272 fix round 2, FIX 4). Round 1 wrote "the
+            # same `_`-prefix discipline, as the `dwhy` note above", which reads
+            # as "the class is handled". It is not. The `refusedSteps` section
+            # ~105 lines above still binds the BARE name `why` at line 5828, in
+            # this same `main()` scope, and the grade's `why` is printed on the
+            # wire at line 6324 — an IDENTICAL clobber that is LIVE TODAY.
+            # (THE ARITHMETIC IN A COMMENT IS A CLAIM ABOUT CODE, and this one
+            # was wrong: fix round 2 wrote "~250 lines below" for a gap of ~490.
+            # Correcting exactly that class of false comment was this session's
+            # headline fix, so both numbers are now the lines themselves,
+            # measured at the moment this was written.)
+            # It reproduces byte-for-byte on the parent commit, so it is
+            # inherited and not damage from this round, and it is deliberately
+            # LEDGERED for the captain rather than fixed here: widening a
+            # three-change fix round into a mini-round is the documented S163
+            # failure. The undo, when he calls it, is to rename that loop's
+            # `why`/`seen`/`had`/`rounds` to `_r`-prefixed names, exactly the
+            # shape used below. Until he does, one refused step still turns the
+            # board headline into the harness's own sentence.
+            #
+            # AND A GROUP OF MIXED KINDS MAY NOT WEAR ONE OF THEM (D1). Rows
+            # are still collapsed on their REASON — one dead launch refusing
+            # thirty steps is one fact about the run, not thirty — but
+            # `unrun_row` builds the IDENTICAL sentence for every step, so
+            # every group is one group, and labelling it with the first row's
+            # kind said "11 x `navigate`" over 3 shots, 2 clicks, a navigate, a
+            # type, a viewport, a wait, a press and a hover. That is a false
+            # sentence in the captain's own report. So the kinds are COUNTED and
+            # NAMED; a group that really is one kind still reads exactly as it
+            # did, because there the old line was true.
+            # THE HARNESS'S OWN WORDS, SAID ONCE (S272 fix round 3, FIX 6).
+            # `xo-run.py`'s `unrun_row` ends every reason with the launch
+            # failure in brackets — `(lcars launch found nothing listening on
+            # the port the app chose after 60s)` — and the paragraph below
+            # prints that same sentence AGAIN, three lines later, under "The
+            # harness's own words for why there was no page". He reads this on a
+            # phone. So when the paragraph below is going to say it, the
+            # bracketed copy is taken off the bullet; when there is no `noPage`
+            # on the journey, nothing is stripped and the bullet keeps the only
+            # copy there is. The fact is never lost — only the second telling.
+            _unopage = (" ".join(str(journey_doc.get("noPage")).split())
+                        if isinstance(journey_doc, dict)
+                        and str(journey_doc.get("noPage") or "").strip() else "")
+            _useen = []
+            for _urow in unrun_steps:
+                _uwhy = " ".join(str(_urow.get("why") or "").split())
+                if _unopage and _uwhy.endswith("(%s)" % _unopage):
+                    _ustripped = _uwhy[:-(len(_unopage) + 2)].strip().rstrip("-–—,;: ").strip()
+                    # …BUT NEVER DOWN TO NOTHING. A reason that was ONLY
+                    # the bracketed copy keeps it: an empty bullet is a
+                    # worse report than a repeated sentence.
+                    _uwhy = _ustripped or _uwhy
+                _ukind = str(_urow.get("kind") or "step")
+                for _uhad in _useen:
+                    if _uhad["why"] == _uwhy:
+                        _uhad["n"] += 1
+                        _uhad["kinds"][_ukind] = _uhad["kinds"].get(_ukind, 0) + 1
+                        _uhad["rounds"].append(str(_urow.get("round") or ""))
+                        break
+                else:
+                    _useen.append({"why": _uwhy, "n": 1,
+                                   "kinds": {_ukind: 1},
+                                   "rounds": [str(_urow.get("round") or "")]})
+            for _uhad in _useen:
+                _urounds = [r for r in _uhad["rounds"] if r]
+                # ROUNDS IN ROUND ORDER, NOT ALPHABETICAL (S272 fix round 3,
+                # FIX 8). `sorted(set(...))` sorts STRINGS, so a look that ran
+                # eleven rounds read `*(round 1, 10, 11, 2, 3)*`. `evaluate.md`
+                # tells the look "there is no round clock", so round 10 is
+                # reachable. Numerals sort as numbers and keep their place
+                # ahead of anything else; a round label that is not a number at
+                # all (a producer is free to write one) sorts after them by its
+                # own text rather than crashing the scorer.
+                _uwhen = ((" *(round %s)*"
+                           % ", ".join(sorted(set(_urounds),
+                                              key=lambda r: ((0, int(r), "")
+                                                             if r.isdigit()
+                                                             else (1, 0, r)))))
+                          if _urounds else "")
+                _ukinds = sorted(_uhad["kinds"].items(),
+                                 key=lambda kv: (-kv[1], kv[0]))
+                # A PLURAL LABEL MAY NOT WEAR A SINGULAR REASON (S272 fix round
+                # 3, FIX 5). `unrun_row` writes one PER-STEP sentence — "so
+                # THIS STEP was KEPT and then never executed" — and fix round 1
+                # made the label plural without touching it, so the captain read
+                # `- **11 steps** … so this step was KEPT`. Every row in a group
+                # shares the reason by construction (it IS the grouping key), so
+                # the reason is distributed over the group instead of being
+                # rewritten: the harness's own words are never edited here.
+                _ureason = (_uhad["why"] if _uhad["n"] == 1
+                            else "each one: %s" % _uhad["why"])
+                if len(_ukinds) == 1:
+                    w("- **%d x `%s`**%s — %s\n"
+                      % (_uhad["n"], _ukinds[0][0], _uwhen, _ureason))
+                else:
+                    w("- **%d steps**%s — %s\n"
+                      % (_uhad["n"], _uwhen, _ureason))
+                    w("  Those %d were: %s.\n"
+                      % (_uhad["n"],
+                         ", ".join("`%s` x%d" % (k, c) for k, c in _ukinds)))
+            if isinstance(journey_doc, dict) and \
+                    str(journey_doc.get("noPage") or "").strip():
+                w("\nThe harness's own words for why there was no page: %s\n"
+                  % " ".join(str(journey_doc.get("noPage")).split()))
+            # AND IT AGREES WITH ITSELF AT N=1 (S272 fix round 1, D5). The rest
+            # of this paragraph pluralises; this sentence did not, so a single
+            # unrun step closed on "every one of those steps".
+            # AND THE SENTENCE THAT OVERREACHED IS GONE (S272 fix round 3,
+            # FIX 2). It read "A look that could not reach your build at all has
+            # not seen it, whatever else this report says about the parts it
+            # could read." TWO THINGS WERE WRONG WITH IT. (1) The same report
+            # says, ABOVE, "Everything you asked for is in the build, and I saw
+            # each one on screen" over a picture-backed `MET` row — a verdict
+            # with one MET row and a non-empty `unrunSteps` is reachable — so
+            # this told him to discount a row he had just been shown a photo of.
+            # (2) It is false about REACH: `xo-run.py`'s own comment says a
+            # `run`/`read`/`workflow` step "reaches a command line and still
+            # executes with no page", and only BROWSER steps are ever put on
+            # this list. The scorer knows "N browser steps did not run". It does
+            # not know "the look reached nothing". DELETED, not reworded — a
+            # subtler version of an unsupportable claim is the same defect. What
+            # is left is the measured fact, and the counts, kinds and the
+            # harness's own words above it are untouched.
+            w("\nSo %s unchecked.\n"
+              % ("that step is" if len(unrun_steps) == 1
+                 else "every one of those steps is"))
+        # S272 RENDER END unrun
+        # ─── AND THE LOOKS-QUESTIONS THAT PASSED WITH NO PHOTOGRAPH (S272) ───
+        # S272 RENDER BEGIN looks
+        #
+        # SAME RULE, SAME REASON. `looksWithNoPicture` is recorded further down
+        # as data and was mentioned NOWHERE in this report — so a row the look
+        # itself stamped "a photograph is what settles this", and then settled on
+        # the project's tests instead, was demoted in silence. The demotion is
+        # not new and is untouched; this says it out loud and names the rows, so
+        # the captain can decide whether to look himself. Non-zero only.
+        if looks_with_no_picture:
+            w("\n### What I called a looks-question and then passed with no picture\n\n")
+            # ONE DIRECTION, AND AN ACTION (S272 fix round 1, D5). This said
+            # "the checks BELOW" and then, two sentences later, "the unchecked
+            # list ABOVE" — of the same rows, which are in the table above. And
+            # it told him a fact with nothing to DO about it: the block's own
+            # reason for existing is "so the captain can decide whether to look
+            # himself", and the prose never said that. The unrun section above
+            # is the model — it names the harness's own reason and leaves him
+            # somewhere to go.
+            _n = len(looks_with_no_picture)
+            # WORDS, NOT NUMERALS, AT N=1 (S272 fix round 2, D-E). "1 of the
+            # checks on your list asks…" is not a sentence; this is the first
+            # line of a section he reads on a phone.
+            # AND THE SENTENCE COUNTS WHAT IT IS COUNTING (S272 fix round 3,
+            # FIX 4). It read "%s of the checks on your list ASK what the screen
+            # LOOKS LIKE", which is a claim about how many looks-questions there
+            # ARE — and `_n` is the number that came out with NO PICTURE. The
+            # same report prints "**How I checked, by the kind of question.** 3
+            # were a looks-question" off `split["looks"]`, so the two numbers
+            # contradicted each other; reproduced at a 5-vs-3 case. The
+            # restrictive clause ("that ask") scopes the count to the subset it
+            # really measures, and no claim about the total is made at all.
+            w("%s of the checks on your list that ask what the screen LOOKS "
+              "LIKE — I stamped %s that way myself — had no photograph at any "
+              "width. %s already marked unchecked on the list above, and "
+              "%s named again here because a picture is the only thing that "
+              "settles this kind of question.\n\n"
+              % ("One" if _n == 1 else _n,
+                 "it" if _n == 1 else "them",
+                 "It is" if _n == 1 else "They are",
+                 "it is" if _n == 1 else "they are"))
+            for _lrow in looks_with_no_picture:
+                w("- %s *(%s)*\n" % (clip(str(_lrow.get("text") or ""), 120)
+                                     or "this one", str(_lrow.get("id") or "?")))
+            w("\nWhat to do: open the build and look at %s yourself, or send "
+              "this back and ask me to take the picture. Until somebody looks, "
+              "treat %s as unchecked rather than as working — whatever settled "
+              "%s for me, it was not a photograph of the screen.\n"
+              % ("that row" if _n == 1 else "those %d rows" % _n,
+                 "it" if _n == 1 else "them",
+                 "it" if _n == 1 else "them"))
+        # S272 RENDER END looks
         # S216 — THE REASONING, ITEM BY ITEM. Its own section, not a table
         # column: the table above stays exactly as machine-readable as it was.
         if ledger:

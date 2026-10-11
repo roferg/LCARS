@@ -141,6 +141,11 @@ not leave throwaway runner scripts or scratch in the repo:
 - If you genuinely must drop a helper *in the tree*, name it `.lcars-run-<x>`
   (a runner) or `.lcars-<x>` (other scratch) — the harness owns that prefix and
   keeps it out of the PR; any other name WILL be committed.
+- **Port `8765` is reserved — never make it your app's default or bind it.** It
+  is LCARS's own board port and is normally already in use on this machine, so a
+  build that takes it fails to start, nobody ever sees a screen of your work,
+  and it is reviewed on unit tests alone. Pick anything else (`3000`, `5173`,
+  `8080`), and prefer a port the app reads from its own config or `$PORT`.
 
 ## Output
 
