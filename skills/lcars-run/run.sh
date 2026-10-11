@@ -9713,10 +9713,37 @@ setup_cmd_has_metachar() { # command → 0 iff it carries a shell metacharacter
   return 1
 }
 
+# ADD-ONLY ASKS THE PARENT COMMIT, NOT THE WORKING TREE (MEASURED 2026-10-11).
+# The scaffold worker CREATED `pyproject.toml` in-tree and its declaration of
+# the same file was refused — "already exists … may only ADD files, never
+# modify" — on a repo whose parent commit held exactly one file, SPEC.md. The
+# file was unambiguously new. The check was `[ -e "$dest/$rel" ]`: a WORKING
+# TREE probe, run AFTER the worker has written its work into that very tree, so
+# anything the worker itself just created reads as pre-existing.
+#
+# "Already exists" is a question about the state the ticket started from, which
+# is the PARENT COMMIT — and the declared setup is applied BEFORE
+# `commit_ticket`, so this worktree's HEAD *is* that parent commit and nothing
+# the worker wrote is committed yet.
+#
+# WHAT THE RULE STILL REFUSES, unchanged: any declaration that would RESHAPE a
+# file the repo really has (a root manifest, an existing runner config, a
+# .gitignore) — those are in the parent commit and are refused exactly as
+# before. What it no longer refuses is the worker's own brand-new file.
+#
+# An UNBORN HEAD (no commits at all) answers "nothing exists", which is true.
+setup_path_in_parent() { # repo-relative path → 0 iff it exists in the parent commit
+  local rel="$1" root="${REPO_ROOT:-$PWD}"
+  [ -n "$rel" ] || return 1
+  "${GIT_BIN:-git}" -C "$root" rev-parse --verify -q HEAD >/dev/null 2>&1 || return 1
+  "${GIT_BIN:-git}" -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null
+}
+
 # S194 — undo an APPLIED-then-REFUSED declaration. Only ever handed paths
-# ADD-only has already proven were absent, so this can never delete the repo's
-# own files; empty parent dirs the copy created are pruned with `rmdir`, which
-# refuses a non-empty directory.
+# ADD-only has already proven were absent FROM THE PARENT COMMIT, so removing
+# them restores the tree to the parent's state for those paths exactly and this
+# can never delete a file the repo itself carries; empty parent dirs the copy
+# created are pruned with `rmdir`, which refuses a non-empty directory.
 setup_rollback_copied() { # newline-separated absolute paths
   local __c
   [ -n "$1" ] || return 0
@@ -9794,8 +9821,9 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
         *"/../"*)   SETUP_NOTE="path traversal in setup file '$rel'"; return 1 ;;
         *"/src/"*)  SETUP_NOTE="setup file '$rel' targets src/ — declared setup may only add TEST infrastructure, never source"; return 1 ;;
       esac
-      if [ -e "$dest/$rel" ]; then
-        SETUP_NOTE="setup file '$rel' already exists in the package — declared setup may only ADD files, never modify or loosen existing config"
+      # The parent commit, never the working tree — see setup_path_in_parent.
+      if setup_path_in_parent "${pkg:+$pkg/}$rel"; then
+        SETUP_NOTE="setup file '$rel' already exists in the package at the parent commit — declared setup may only ADD files, never modify or loosen existing config"
         return 1
       fi
     done < <(find "$sdir" -type f 2>/dev/null)
@@ -10298,6 +10326,23 @@ proof_is_test_path() { # relpath → 0 if test-classified
   case "$p" in
     *.cs)
       case "$p" in obj/*|*/obj/*|bin/*|*/bin/*) return 1 ;; esac ;;
+  esac
+  # python (MEASURED 2026-10-11): running the tests — the declared-edits gate's
+  # OWN mandatory step — makes the interpreter write bytecode caches next to the
+  # tests it imported, i.e. `tests/__pycache__/test_x.cpython-313.pyc` under a
+  # `tests/` path the rules below classify as an authored test. On a repo with no
+  # .gitignore those land in the diff as untracked files and the gate rejected
+  # the ticket for "undeclared test edits" — failing the work for doing exactly
+  # what the gate required. Identical in kind and mechanism to the dotnet arm
+  # above (obj/ + bin/ build output), and checked FIRST for the same reason.
+  # The shapes are gated on the dropping's OWN name/dir, so this can never
+  # reclassify an authored file in any stack: `.pyc`/`.pyo` are compiled output
+  # no one writes by hand, and `__pycache__`/`.pytest_cache` are tool-owned
+  # directories.
+  case "$p" in
+    *.pyc|*.pyo)                       return 1 ;;
+    __pycache__/*|*/__pycache__/*)     return 1 ;;
+    .pytest_cache/*|*/.pytest_cache/*) return 1 ;;
   esac
   case "$p" in
     */__tests__/*|__tests__/*)          return 0 ;;
@@ -19625,9 +19670,15 @@ it.
   {\"package\": <the directory the setup addresses — for this repo that is the
       REPO ROOT, named as the empty string>,
    \"gap\": <one line stating what is missing>,
-   \"installCommand\": <a plain package-manager invocation and nothing else, run
-      by the harness at the repo root. ONE command: no \`&&\`, no pipes, no
-      redirection, no substitution — a metacharacter anywhere in it is refused>}
+   \"installCommand\": <MAY BE EMPTY (\"\"), and EMPTY IS THE CORRECT ANSWER
+      whenever the runner you picked needs NO install step. A standard-library
+      runner installs nothing — python3 -m unittest, go test, cargo test — so
+      there is no package manager to invoke and the honest value is \"\". Say
+      that by leaving the field empty; NEVER invent a command to fill the slot.
+      When an install IS genuinely needed: a plain package-manager invocation
+      and nothing else, run by the harness at the repo root. ONE command: no
+      \`&&\`, no pipes, no redirection, no substitution — a metacharacter
+      anywhere in it is refused>}
 - Pick the runner this repo's own language and layout point at, at a version
   that actually exists, and give it a way to be invoked that LCARS's detector
   can find at the root afterwards.

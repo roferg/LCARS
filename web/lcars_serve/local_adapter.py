@@ -45,8 +45,13 @@ _DETECT_MARKER_FILES = (
     # js (detect_stack: package.json; detect_test_cmd: pnpm-workspace.yaml;
     # detect_workspace_runner: pnpm-lock.yaml)
     "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml",
-    # python
+    # python — the marker files, plus every file the python seed arm now READS
+    # to decide WHICH runner it claims (pytest's own config/fixture files and
+    # the manifests that can declare pytest). The arm stopped claiming `pytest`
+    # from the marker alone, so the board's verdict moves with this evidence or
+    # it goes stale against the CLI's.
     "pyproject.toml", "setup.py", "pytest.ini", "tox.ini",
+    "setup.cfg", "conftest.py", "Pipfile",
     # rust / go
     "Cargo.toml", "go.mod",
     # jvm
@@ -57,7 +62,18 @@ _DETECT_MARKER_FILES = (
     "Makefile", os.path.join("tests", "run.sh"),
 )
 # S147: `.slnx` is .NET 10's default solution format — a marker like `.sln`.
-_DETECT_MARKER_GLOBS = ("*.gemspec", "*.csproj", "*.sln", "*.slnx")
+# The python globs mirror the seed arm's unittest leg: a declared pytest in any
+# requirements file, and the test files `python3 -m unittest discover` would
+# collect — at the top level and in the DIRECT children of tests/ / test/, which
+# is exactly the bound the shell arm uses (a deeper suite is unclaimed there, so
+# it is untracked here).
+_DETECT_MARKER_GLOBS = (
+    "*.gemspec", "*.csproj", "*.sln", "*.slnx",
+    "requirements*.txt",
+    "test*.py", "*_test.py",
+    os.path.join("tests", "test*.py"), os.path.join("tests", "*_test.py"),
+    os.path.join("test", "test*.py"), os.path.join("test", "*_test.py"),
+)
 # S147: detect_stack's dotnet marker probe is bounded-RECURSIVE (see
 # detect_dotnet_markers / DOTNET_MARKER_MAXDEPTH in lcars-common.sh), because
 # `dotnet new xunit -o MyApp.Tests` puts the only project one directory down

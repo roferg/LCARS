@@ -216,7 +216,13 @@ S="$(TOPLEVEL="$R" detect_stack)"; CMD="$(TOPLEVEL="$R" detect_test_cmd)"
 { [ "$S" = js ] && [ "$CMD" = 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}' ]; } \
   && ok "1k. js + a vendored NON-test csproj stays js and keeps its seed" \
   || bad "1k. N2 REGRESSION: js repo became [$S] with cmd [$CMD]"
-R="$TMPROOT/vendor-py"; mkdir -p "$R"; : >"$R/pyproject.toml"; mk_vendor "$R/tools" x
+# The python fixture declares pytest, because the python arm now claims a RUNNER
+# and not a marker (an EMPTY pyproject.toml is not evidence of one — see
+# tests/stack-arms.test.sh section I). What this leg locks is unchanged: a
+# VENDORED non-test csproj must move neither the stack nor the seed.
+R="$TMPROOT/vendor-py"; mkdir -p "$R"
+printf '[project]\nname = "app"\n\n[tool.pytest.ini_options]\n' >"$R/pyproject.toml"
+mk_vendor "$R/tools" x
 S="$(TOPLEVEL="$R" detect_stack)"; CMD="$(TOPLEVEL="$R" detect_test_cmd)"
 { [ "$S" = python ] && [ "$CMD" = 'pytest "${LCARS_TESTS_DIR:-.}"' ]; } \
   && ok "1k'. python + tools/x.csproj stays python and keeps its seed" \
@@ -275,9 +281,17 @@ R="$TMPROOT/drift-js"; mkdir -p "$R"
 printf '{ "scripts": { "test": "jest" } }\n' >"$R/package.json"
 [ "$(TOPLEVEL="$R" detect_test_cmd)" = 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}' ] \
   && ok "2a. js seed unchanged" || bad "2a. js seed DRIFTED"
-R="$TMPROOT/drift-py"; mkdir -p "$R"; : >"$R/pyproject.toml"
+R="$TMPROOT/drift-py"; mkdir -p "$R"
+printf '[project]\nname = "app"\n\n[tool.pytest.ini_options]\n' >"$R/pyproject.toml"
 [ "$(TOPLEVEL="$R" detect_test_cmd)" = 'pytest "${LCARS_TESTS_DIR:-.}"' ] \
   && ok "2b. python seed unchanged" || bad "2b. python seed DRIFTED"
+# …and the marker-only shape this fixture USED to be: a pyproject that declares
+# no runner at all no longer seeds an uninstallable `pytest` (the rule itself,
+# with both halves of its control, lives in tests/stack-arms.test.sh section I).
+R="$TMPROOT/drift-py-bare"; mkdir -p "$R"; : >"$R/pyproject.toml"
+[ -z "$(TOPLEVEL="$R" detect_test_cmd)" ] \
+  && ok "2b'. …and a pyproject with NO runner evidence claims nothing" \
+  || bad "2b'. a bare pyproject still invented a runner: [$(TOPLEVEL="$R" detect_test_cmd)]"
 R="$TMPROOT/drift-rs"; mkdir -p "$R"; : >"$R/Cargo.toml"
 [ "$(TOPLEVEL="$R" detect_test_cmd)" = 'cargo test' ] \
   && ok "2c. rust seed unchanged" || bad "2c. rust seed DRIFTED"

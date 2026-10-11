@@ -376,6 +376,71 @@ else
   bad "D3. src/ declaration accepted on the scaffold arm (rc=$ASRC note=$ASNOTE)"
 fi
 
+# D8 (2026-10-11, MEASURED on a bare STANDARD-LIBRARY PYTHON repo). The worker
+# was asked for `installCommand` as "a plain package-manager invocation and
+# nothing else" and never told the field could be EMPTY — but a stdlib stack has
+# NO package manager to invoke, so there was no permitted way to say "none".
+# The VALIDATOR has always accepted empty (the allowlist check is skipped when
+# the field is blank). These two legs PIN that escape hatch open from the
+# product side, so a later tightening cannot quietly close the door the
+# instruction (J7) now sends workers through.
+repo="$(setup_repo)"
+mkdir -p "$TMPROOT/sd-stdlib"
+printf 'test:\n\tpython3 -m unittest discover -s tests\n' > "$TMPROOT/sd-stdlib/Makefile"
+printf '{ "package": "", "gap": "no runner at all", "installCommand": "" }\n' \
+  > "$TMPROOT/mf-empty-install.json"
+apply_setup "$repo" "$TMPROOT/mf-empty-install.json" "$TMPROOT/sd-stdlib" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" = 0 ]; then
+  ok "D8a. an EMPTY installCommand is ACCEPTED — a stdlib stack installs nothing"
+else
+  bad "D8a. empty installCommand refused, so a no-dependency repo cannot be scaffolded (rc=$ASRC note=$ASNOTE)"
+fi
+# CONTROL — accepting empty must not mean accepting anything: a NON-EMPTY
+# command that is not a package-manager invocation is still refused.
+repo="$(setup_repo)"
+printf '{ "package": "", "gap": "g", "installCommand": "wget http://example.invalid/x.sh" }\n' \
+  > "$TMPROOT/mf-bogus-install.json"
+apply_setup "$repo" "$TMPROOT/mf-bogus-install.json" "$TMPROOT/sd-stdlib" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" != 0 ] && printf '%s' "$ASNOTE" | grep -q 'not a plain package-manager invocation'; then
+  ok "D8b. CONTROL: a bogus NON-EMPTY installCommand is still refused by the allowlist"
+else
+  bad "D8b. CONTROL BROKEN: a non-package-manager install was accepted (rc=$ASRC note=$ASNOTE)"
+fi
+
+# D9 (2026-10-11, MEASURED). The worker CREATED `pyproject.toml` and ADD-only
+# refused it — "already exists … may only ADD files, never modify" — on a
+# fixture whose parent commit contained exactly one file. The question "does
+# this already exist?" was being asked of the WORKING TREE, which by then holds
+# everything the worker itself just wrote, so a file the worker created read as
+# pre-existing. It is a question about the PARENT COMMIT.
+repo="$(setup_repo)"
+printf '[build-system]\nrequires = ["setuptools"]\n' > "$repo/pyproject.toml"   # the WORKER wrote this
+mkdir -p "$TMPROOT/sd-pyproject"
+printf '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n' > "$TMPROOT/sd-pyproject/pyproject.toml"
+printf '{ "package": "", "gap": "no runner", "installCommand": "" }\n' > "$TMPROOT/mf-pyproject.json"
+apply_setup "$repo" "$TMPROOT/mf-pyproject.json" "$TMPROOT/sd-pyproject" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" = 0 ]; then
+  ok "D9a. a file ABSENT from the parent commit is an ADD, even when the worker already wrote it in-tree"
+else
+  bad "D9a. the worker's own new file still reads as pre-existing (rc=$ASRC note=$ASNOTE)"
+fi
+# CONTROL — the loosening must not let a declaration RESHAPE a file the repo
+# really has. CONTEXT.md IS in the parent commit of every fixture here.
+repo="$(setup_repo)"
+mkdir -p "$TMPROOT/sd-hijack"
+printf 'HIJACKED\n' > "$TMPROOT/sd-hijack/CONTEXT.md"
+apply_setup "$repo" "$TMPROOT/mf-pyproject.json" "$TMPROOT/sd-hijack" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" != 0 ] && printf '%s' "$ASNOTE" | grep -q 'already exists'; then
+  ok "D9b. CONTROL: a file that IS in the parent commit is still refused as a MODIFY"
+else
+  bad "D9b. CONTROL BROKEN: a declared setup overwrote a committed file (rc=$ASRC note=$ASNOTE)"
+fi
+if ! grep -q HIJACKED "$repo/CONTEXT.md"; then
+  ok "D9c. CONTROL: …and the committed file on disk is UNTOUCHED"
+else
+  bad "D9c. CONTROL BROKEN: the repo's CONTEXT.md was overwritten"
+fi
+
 # D4. A WORKSPACE ROOT is refused — LCARS will not manufacture a root test
 # system for a workspace it does not understand (its packages' pre-existing
 # tests would be collected as credit for work this mission never did).
@@ -1090,6 +1155,55 @@ if [ -f "$j6repo/package.json" ]; then
   ok "J6b. …and its declared setup landed at the repo root"
 else
   bad "J6b. the healing setup was not applied"
+fi
+
+# --- J7. THE SLOT THE WORKER WAS NEVER ALLOWED TO LEAVE BLANK --------------
+# MEASURED 2026-10-11 on a bare STANDARD-LIBRARY PYTHON repo: LCARS correctly
+# decided its first job was to stand up a test system, and burned all three of
+# its attempts failing to. One of the three misfires is this slot. The
+# invitation demanded `installCommand` be "a plain package-manager invocation
+# and nothing else" and said nothing about the field being allowed to be EMPTY
+# — but a stdlib stack has NOTHING to install and no package manager to invoke,
+# so the worker had no permitted way to answer "none" and kept stuffing
+# something into the slot. The validator has ALWAYS accepted empty (D8a), so
+# the escape hatch existed and the instruction forbade using it.
+#
+# Asserted on the ACTUAL prompt the harness assembles and hands the worker, and
+# scoped to the installCommand field's own description — a sentence about
+# emptiness somewhere else in the prompt is not the worker being told what this
+# field accepts.
+GF_PROMPT_LOG="$TMPROOT/gf-j7.log"; : > "$GF_PROMPT_LOG"
+j7repo="$(gf_repo)"
+gf_ticket "$j7repo" none 1
+gf_icmd_slot() { gf_prompt 1 | sed -n '/"installCommand"/,/^- Pick the runner/p'; }
+# The slot is WRAPPED PROSE, so every phrase assertion below reads it with the
+# line breaks flattened — a rewrap must not be able to pass or fail a check
+# about what the worker was told. (J7d caught exactly that on the first cure.)
+gf_icmd_flat() { gf_icmd_slot | tr '\n' ' ' | tr -s ' '; }
+if [ -n "$(gf_icmd_slot)" ]; then
+  ok "J7a. the assembled prompt carries an installCommand field description at all"
+else
+  bad "J7a. no installCommand slot found in the assembled prompt: $(gf_prompt 1 | tail -5)"
+fi
+if gf_icmd_flat | grep -q 'MAY BE EMPTY'; then
+  ok "J7b. the slot TELLS the worker the field may be EMPTY"
+else
+  bad "J7b. the worker is still asked for a value that cannot exist on a no-dependency stack: $(gf_icmd_flat | head -c 400)"
+fi
+if gf_icmd_flat | grep -q 'standard-library'; then
+  ok "J7c. …and names EMPTY as the CORRECT answer for a standard-library stack"
+else
+  bad "J7c. the slot never says empty is the right answer when nothing needs installing"
+fi
+# CONTROL — this loosening must not cost the constraints that keep the slot
+# safe. An install is handed to `bash -c`, so the one-command/no-metacharacter
+# rules are the whole defence for the NON-empty case.
+if gf_icmd_flat | grep -q 'ONE command' \
+   && gf_icmd_flat | grep -q 'metacharacter anywhere in it is refused' \
+   && gf_icmd_flat | grep -q 'plain package-manager invocation'; then
+  ok "J7d. CONTROL: the one-command / no-metacharacter constraints still stand"
+else
+  bad "J7d. CONTROL BROKEN: the slot lost its one-command/metacharacter rules: $(gf_icmd_flat | head -c 400)"
 fi
 
 # ===========================================================================
