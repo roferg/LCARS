@@ -191,9 +191,27 @@ class GhHostMetaTest(unittest.TestCase):
         self.assertEqual(meta.get("ghHost"), "forge.example.com")
 
     # -- the regression that matters most -----------------------------------
-    def test_github_com_carries_no_new_key_at_all(self):
+    def test_github_com_carries_no_ghHost_key(self):
+        """On the default host this feature is INVISIBLE: `ghHost` is ABSENT —
+        never "github.com", never "". Every other user is on github.com.
+
+        NARROWED 2026-10-12, and NOT rebaselined. This read
+        `assertEqual(list(meta.keys()), ["repo", "adapter", "mode"])`, which
+        was a convenient way to say "no ghHost" back when `meta` had exactly
+        those three keys. S274/S275 then legitimately added four UNRELATED
+        ones — `enginesHere`, `engineDefault`, `workerEngine`, `engineSource`
+        (which engines this laptop has, and which one the daemon runs on) —
+        and the exact-list form went red for a reason that has nothing to do
+        with the gh-host feature. It was red for four sessions.
+
+        DO NOT "restore" the exact list. Re-writing it to the new seven keys
+        would turn this test green while no longer forbidding a stray
+        `ghHost` at all — it would be pinning meta's CENSUS rather than this
+        feature's SILENCE — and the next unrelated key would break it again.
+        meta's census is the whole-payload goldens' job, two tests below.
+        """
         meta = self._board("https://github.com/acme/widget.git")["meta"]
-        self.assertEqual(list(meta.keys()), ["repo", "adapter", "mode"])
+        self.assertNotIn("ghHost", meta)
 
     def test_github_com_payload_is_byte_identical_to_before_the_change(self):
         got = serialise(self._board("https://github.com/acme/widget.git"))
@@ -296,6 +314,90 @@ class ShellIsTheOneImplementationTest(unittest.TestCase):
             want = shell.stdout.decode().strip()
             got = LocalAdapter(root).board()["meta"].get("ghHost", "")
             self.assertEqual(got, want, "disagreed about %r" % origin)
+
+
+# ==========================================================================
+# S278 — THE DONE COLUMN'S LINKS ARE ON THE SAME HOST.
+#
+# The remote overlay now draws a read-only Done card per CLOSED `lcars:done`
+# mission issue, and each one carries the URL of its issue. The captain works in
+# `github.ghe.com` repos — this is the exact class of bug S168 was opened for,
+# on a surface that did not exist when S168 was written, so it is pinned HERE,
+# beside the thing it must agree with, rather than in a new file.
+#
+# The URL is built by the DAEMON for this card (the board's other two links are
+# built in board.js from `meta.ghHost`), because there is no local detail for a
+# remote done card and so nothing on the page to build it from on click.
+# ==========================================================================
+from lcars_serve.remote import RemoteMissions  # noqa: E402
+
+
+def _gh_stub(dirpath, rows):
+    """A `gh` stand-in that cats one `gh issue list --json …` payload."""
+    payload = os.path.join(dirpath, "rows.json")
+    with open(payload, "w") as fh:
+        json.dump(rows, fh)
+    path = os.path.join(dirpath, "gh-stub.sh")
+    with open(path, "w") as fh:
+        fh.write('#!/usr/bin/env bash\ncat "%s"\n' % payload)
+    os.chmod(path, 0o755)
+    return path
+
+
+def _done_row(number, closed_at):
+    return {"number": number, "title": "a shipped mission", "state": "CLOSED",
+            "labels": [{"name": "lcars:mission"}, {"name": "lcars:done"},
+                       {"name": "lcars:feature"}],
+            "body": "shipped.", "updatedAt": closed_at,
+            "closedAt": closed_at, "assignees": [],
+            "subIssuesSummary": {"completed": 0, "total": 0}}
+
+
+class DoneCardIssueUrlTest(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._n = 0
+
+    def _done_card(self, origin):
+        self._n += 1
+        root = build_repo(os.path.join(self.tmp, "r%d" % self._n), origin)
+        # A fresh clone: the repo the overlay is riding on has no missions.
+        md = os.path.join(root, ".git", "lcars", "missions")
+        for name in os.listdir(md):
+            import shutil as _sh
+            _sh.rmtree(os.path.join(md, name), ignore_errors=True)
+        gh = _gh_stub(os.path.join(self.tmp, "r%d" % self._n),
+                      [_done_row(31, "2026-09-20T09:00:00Z")])
+        b = LocalAdapter(root, remote=RemoteMissions(repo_root=root,
+                                                     gh_bin=gh)).board()
+        done = b["columns"]["done"]
+        self.assertEqual(1, len(done), "no done card was drawn")
+        return done[0], b["meta"]
+
+    def test_the_enterprise_host_reaches_the_done_card(self):
+        card, meta = self._done_card("https://github.ghe.com/github/pagesai.git")
+        self.assertEqual("github.ghe.com", meta.get("ghHost"))
+        self.assertEqual("https://github.ghe.com/github/pagesai/issues/31",
+                         card["url"])
+
+    def test_the_scp_enterprise_remote_reaches_it_too(self):
+        card, _ = self._done_card("git@github.ghe.com:github/pagesai.git")
+        self.assertEqual("https://github.ghe.com/github/pagesai/issues/31",
+                         card["url"])
+
+    def test_github_com_is_the_fallback_and_is_not_guessed_at(self):
+        card, meta = self._done_card("https://github.com/acme/widget.git")
+        self.assertNotIn("ghHost", meta)
+        self.assertEqual("https://github.com/acme/widget/issues/31",
+                         card["url"])
+
+    def test_a_repo_with_no_origin_carries_no_url_rather_than_a_wrong_one(self):
+        # `meta.repo` degrades to the DIRECTORY BASENAME with no origin, and
+        # "https://github.com/<dirname>/issues/31" is a link to nowhere. Absent,
+        # never wrong: the card still draws, it just does not pretend to link.
+        card, _ = self._done_card(None)
+        self.assertNotIn("url", card)
 
 
 if __name__ == "__main__":
