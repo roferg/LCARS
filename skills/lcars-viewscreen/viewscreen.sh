@@ -136,7 +136,11 @@ done
 # absent/unauthed/no-remote, launch anyway with no derived repo.
 if [ "$ADAPTER" = "github" ] && [ -z "${LCARS_SERVE_GH_REPO:-}" ]; then
   have_explicit_repo=0
-  for a in "${EXTRA_ARGS[@]}"; do
+  # Same bash-3.2 hazard the comments at 117 and 183 name: "${arr[@]}" on an
+  # EMPTY array trips `set -u`, and with no CLI args EXTRA_ARGS IS empty — so
+  # `lcars viewscreen` (no args) with serveAdapter=github in config died here.
+  # Keep the `:-` form (as below); the body ignores the empty element it yields.
+  for a in "${EXTRA_ARGS[@]:-}"; do
     [ "$a" = "--gh-repo" ] && { have_explicit_repo=1; break; }
   done
   if [ "$have_explicit_repo" -eq 0 ]; then
