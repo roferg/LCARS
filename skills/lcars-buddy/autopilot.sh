@@ -67,6 +67,8 @@
 #   LCARS_LOG_SCRIPT LCARS_FILE_SCRIPT LCARS_RESOLVE_LOGS_SCRIPT
 #   LCARS_ESTABLISH_VISION_BIN                         (sibling skills)
 #   LCARS_NOTIFY          the walk-away ping           (lcars-run/notify.sh)
+#   LCARS_SELF_CMD        the name this driver calls itself in its own output
+#                         (default: derived from $0, else `lcars-autopilot`)
 #
 # BASH 3.2 ONLY. macOS ships 3.2.57 and this runs on the captain's laptop, so
 # nothing from bash 4 may appear here: no associative arrays, no line-slurping
@@ -79,6 +81,39 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
 SKILLS_DIR="$(cd "$SELF_DIR/.." && pwd)"
+
+# ==========================================================================
+# THE NAME THIS DRIVER CALLS ITSELF IN ITS OWN OUTPUT (S277)
+# ==========================================================================
+# WHY THIS EXISTS. Every message below that tells a human or a model to run
+# something used to spell it `autopilot.sh <verb>` — the FILE's name, which is
+# not a command anywhere. `init` ended with "record the answers with
+# `autopilot.sh record liveTargets.host <host>`" and a real Copilot turn told to
+# follow it ran exactly that, took exit 127, stopped, and recorded nothing — on
+# the very first step after `init`. `--help`'s usage header had the same bug, so
+# the driver misnamed itself to everyone on both CLIs. The prose fix (AUTOPILOT.md
+# naming `lcars-autopilot`) does not reach these: they are produced at runtime,
+# with no note anywhere near them.
+#
+# WHY DERIVED, NOT HARD-CODED. A literal would drift the moment the launcher is
+# renamed. So the name is taken from how this process was actually invoked, and
+# only falls back to the on-PATH name install.sh generates.
+#
+# MEASURED CAVEAT — the derivation cannot see the launcher's name today.
+# install.sh's generated wrapper is `exec bash "<abs>/autopilot.sh" "$@"`, which
+# REPLACES $0 with the script's own path, so `basename "$0"` is `autopilot.sh`
+# (the wrong name) and never `lcars-autopilot`. That is exactly the case the
+# fallback below is for, and it is why the effective value is the PATH command.
+# $LCARS_SELF_CMD is the seam: a future front door (or a test) can declare the
+# name it was invoked as, and every message follows it with no string edits.
+SELF_CMD="${LCARS_SELF_CMD:-}"
+if [ -z "$SELF_CMD" ]; then
+  SELF_CMD="$(basename -- "${0:-}" 2>/dev/null)"
+  case "$SELF_CMD" in
+    # the raw script, a shell, or nothing to go on -> the command install.sh makes
+    *.sh|''|-*|bash|sh|dash|zsh|ksh) SELF_CMD="lcars-autopilot" ;;
+  esac
+fi
 
 GIT_BIN="${LCARS_GIT_BIN:-git}"
 PY="${LCARS_PYTHON_BIN:-python3}"
@@ -98,8 +133,12 @@ say()  { printf '%s\n' "$1"; }
 # internals to find a verb's real flags, and long log greps. Both are answered
 # here, on purpose, so nobody has to go and read run.sh to drive a mission.
 usage() {
+  # The header is printed SEPARATELY from the quoted heredoc below so the driver
+  # can name itself as the reader must type it ($SELF_CMD). The heredoc stays
+  # single-quoted on purpose: its body is full of backticks and `$`-looking
+  # examples that must print literally, and a suite check proves that.
+  printf 'Usage: %s <subcommand> [args]   (playbook: AUTOPILOT.md — print it with `lcars-buddy docs autopilot`)\n' "$SELF_CMD" >&2
   cat >&2 <<'USAGE'
-Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside this script)
 
   init --spec <path|url> [--scope M0,M1] [--engine <e>] [--deadline <iso>] [--force]
                        write .git/lcars/autopilot.json (refuses to overwrite without --force)
@@ -138,11 +177,19 @@ Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside t
   report [--out <p>]   render the progress page from the ledgers (nothing from a clock)
   ledger feedback|overrides|decisions '<json>'
   heartbeat install|remove|status
+  exec <skill>/<script> [args]
+                       run a sibling skill's script from THIS clone (resolved beside
+                       this driver, so it works under either CLI's install mount)
 
 THE TWO CAPS THIS DRIVER ENFORCES: two parallel missions, and three failed
 drives of the same mission (then it asks the captain instead of retrying).
-
-THE VERBS THIS DRIVES (their real flags — do not guess, and do not re-implement):
+USAGE
+  # Printed separately so the prefix follows $SELF_CMD: NONE of the tokens below
+  # is runnable on its own -- each is an `exec` argument. The header said nothing
+  # about that, so a model copying a line took exit 127 (S277).
+  printf '\nTHE VERBS THIS DRIVES (run any of them with `%s exec <skill>/<script>` — their real flags\n' "$SELF_CMD" >&2
+  printf '                       — do not guess, and do not re-implement):\n' >&2
+  cat >&2 <<'USAGE'
   lcars-file/file.sh            --prd <path> --engine <e> [--idea <path>] [--park]
   lcars-init/establish-vision.sh --file --stack <s> --slice <s> --engine <e>
   lcars-run/run.sh              drive --mission <id> [--step]   (env: LCARS_GATE_TIMEOUT)
@@ -430,7 +477,7 @@ PY
 }
 
 require_state() {
-  [ -f "$APJSON" ] || die "no autopilot.json in $LCARS_DIR — run \`autopilot.sh init --spec <path>\` first."
+  [ -f "$APJSON" ] || die "no autopilot.json in $LCARS_DIR — run \`$SELF_CMD init --spec <path>\` first."
   # FAIL CLOSED on a record that EXISTS but will not parse. `ap_set` read it as
   # "no file yet" and wrote a fresh empty object over it: one `record` against a
   # mid-JSON truncation reported SUCCESS and took 8 questions, every recorded
@@ -563,7 +610,7 @@ cmd_init() {
 
   if [ -f "$APJSON" ] && [ "$force" != 1 ]; then
     die "autopilot.json already exists at $APJSON — a run is already configured.
-  Pass --force to overwrite it, or edit one key with \`autopilot.sh record <key> <value>\`.
+  Pass --force to overwrite it, or edit one key with \`$SELF_CMD record <key> <value>\`.
   (Refusing by default because overwriting it would discard the captain's recorded answers.)" 1
   fi
 
@@ -641,8 +688,8 @@ PY
   cat "$APJSON"
   say ""
   say "Next: answer the alignment round, then record the answers with"
-  say "  autopilot.sh record liveTargets.host <host>"
-  say "  autopilot.sh record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
+  say "  $SELF_CMD record liveTargets.host <host>"
+  say "  $SELF_CMD record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
   say "then follow $SKILLS_DIR/lcars-buddy/AUTOPILOT.md."
   cmd_next
 }
@@ -872,7 +919,7 @@ cmd_status() {
     done <<EOF
 $qs
 EOF
-    say "    answer one with: autopilot.sh answered <id> \"<what he said>\""
+    say "    answer one with: $SELF_CMD answered <id> \"<what he said>\""
   else
     say "  open questions for the captain: none"
   fi
@@ -928,7 +975,7 @@ cmd_drive() {
   local prior; prior="$(ap_j "drivers.$m.failures")"
   case "$prior" in ''|*[!0-9]*) prior=0 ;; esac
   if [ "$prior" -ge "$MAX_DRIVE_FAILURES" ]; then
-    die "drive: $m has already failed $prior drives in a row and the cap is $MAX_DRIVE_FAILURES — the captain has the question (\`autopilot.sh status\`). Clear it with \`autopilot.sh answered <id>\` or \`autopilot.sh record drivers.$m.failures ''\` once the cause is fixed." 11
+    die "drive: $m has already failed $prior drives in a row and the cap is $MAX_DRIVE_FAILURES — the captain has the question (\`$SELF_CMD status\`). Clear it with \`$SELF_CMD answered <id>\` or \`$SELF_CMD record drivers.$m.failures ''\` once the cause is fixed." 11
   fi
   local used; used="$(slots_in_use)"
   if [ "$used" -ge "$MAX_SLOTS" ]; then
@@ -947,7 +994,7 @@ cmd_drive() {
   say "driving $m in the background (owner pid $wpid)"
   say "  log: $log"
   say "  the waiter blocks on the process and records the exit in autopilot.json;"
-  say "  ask \`autopilot.sh next\` / \`autopilot.sh stalled\` rather than reading the log."
+  say "  ask \`$SELF_CMD next\` / \`$SELF_CMD stalled\` rather than reading the log."
 }
 
 # _waiter <mission> <log> — internal. Starts the real driver as its own child.
@@ -981,7 +1028,7 @@ cmd_waiter() {
         "$m has failed $fails drives in a row (last exit $rc) and the autopilot has stopped retrying it." \
         "Repeating a failure that never changes is an LCARS bug with no verb-level workaround — one of the four things that may reach you. A fourth attempt would spin until morning and achieve nothing." \
         "LCARS_GATE_TIMEOUT=$gt bash $RUN_SCRIPT drive --mission $m   # in the FOREGROUND; its last log is $log" \
-        "nothing was merged and nothing to undo. Once the cause is fixed, \`autopilot.sh answered <id>\` clears the counter and the mode resumes."
+        "nothing was merged and nothing to undo. Once the cause is fixed, \`$SELF_CMD answered <id>\` clears the counter and the mode resumes."
     fi
   fi
   ap_set "drivers.$m.driverPid" ""
@@ -1018,8 +1065,8 @@ cmd_stalled() {
       "$m" "${stage:-unknown}" "$(ap_j "drivers.$m.exitCode")"
   done
   if [ "$n" -gt 0 ]; then
-    printf '%s stalled mission(s). Run `autopilot.sh next` for the step, then `autopilot.sh record drivers.<id>.pickedUpAt %s`.\n' \
-      "$n" "$(now)"
+    printf '%s stalled mission(s). Run `%s next` for the step, then `%s record drivers.<id>.pickedUpAt %s`.\n' \
+      "$n" "$SELF_CMD" "$SELF_CMD" "$(now)"
   fi
   return 0
 }
@@ -1117,7 +1164,7 @@ PY
       say ""
       say "ALREADY OPEN [${qid#=}] — same mission, same question. Not re-raised, not re-notified."
       say "  what:     $2"
-      say "  record his answer with: autopilot.sh answered ${qid#=} \"<what he said>\""
+      say "  record his answer with: $SELF_CMD answered ${qid#=} \"<what he said>\""
       return 0
       ;;
   esac
@@ -1129,7 +1176,7 @@ PY
   say "  why:      $3"
   say "  command:  $4"
   say "  rollback: $5"
-  say "  record his answer with: autopilot.sh answered $qid \"<what he said>\""
+  say "  record his answer with: $SELF_CMD answered $qid \"<what he said>\""
 }
 
 # ==========================================================================
@@ -1171,7 +1218,7 @@ cmd_ask() {
     esac
   done
   [ -n "$what" ] || die "ask: the question is required.
-  autopilot.sh ask \"<what you need from him>\" --mission <id> [--why <why it is safe/needed>] [--command <the ONE command that would run>] [--rollback <how to undo it>]"
+  $SELF_CMD ask \"<what you need from him>\" --mission <id> [--why <why it is safe/needed>] [--command <the ONE command that would run>] [--rollback <how to undo it>]"
   # A QUESTION MUST NAME ITS MILESTONE, because `next` blocks only the milestone
   # a question is filed against (§ 9). An unattributed question would either
   # park nothing or park everything; `--mission -` says "no milestone" on
@@ -1196,9 +1243,12 @@ cmd_answered() {
   require_state
   local out rc
   ap_lock
-  out="$("$PY" - "$APJSON" "$1" "${2-}" "$(now)" 2>&1 <<'PY'
+  out="$(LCARS_SELF_CMD="$SELF_CMD" "$PY" - "$APJSON" "$1" "${2-}" "$(now)" 2>&1 <<'PY'
 import json, os, sys
 f, want, answer, ts = sys.argv[1:5]
+# The name the caller must TYPE, handed in by the shell (S277). A literal here
+# would print `autopilot.sh status`, which is not a command on any PATH.
+selfcmd = os.environ.get("LCARS_SELF_CMD") or "lcars-autopilot"
 try:
     d = json.load(open(f))
 except Exception:
@@ -1228,7 +1278,7 @@ if hit is None:
             by_mission = True
             break
 if hit is None:
-    sys.stderr.write("no OPEN question with id or mission '%s' — `autopilot.sh status` lists them" % want)
+    sys.stderr.write("no OPEN question with id or mission '%s' — `%s status` lists them" % (want, selfcmd))
     sys.exit(1)
 hit["answeredAt"] = int(ts)
 if answer:
@@ -1307,7 +1357,7 @@ cmd_land() {
     write_pending "$m" \
       "$m cannot be landed: its logged bug Mission(s) $open are still open." \
       "Approving a parent with bugs in flight ships a known-broken merge — LCARS refuses it, and so does the mode." \
-      "bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $m   # then re-verify, then: autopilot.sh land $m" \
+      "bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $m   # then re-verify, then: $SELF_CMD land $m" \
       "nothing to undo — no approve was attempted."
     exit 10
   fi
@@ -1350,7 +1400,7 @@ cmd_land() {
     write_pending "$m" \
       "approve exited 0 but did NOT merge $m — it is still at stage '${st:-unknown}', not done." \
       "LCARS reconciled main into the branch and re-tested it green, then stopped for your reapprove; reapprove is YOUR sign-off, so the mode will not give it and will not claim a merge that did not happen." \
-      "bash $APPROVE_SCRIPT --mission $m --reapprove   # then: autopilot.sh land $m" \
+      "bash $APPROVE_SCRIPT --mission $m --reapprove   # then: $SELF_CMD land $m" \
       "nothing was merged and no post-merge hygiene ran, so there is nothing to undo."
     exit 10
   fi
@@ -1540,7 +1590,7 @@ cmd_heartbeat() {
         || die "heartbeat: crontab refused the new table"
       say "heartbeat installed (one crontab line, minute 17):"
       hb_line | sed 's/^/  /'
-      say "  it calls \`autopilot.sh stalled\` and acts only when a pipeline ended with nobody picking it up."
+      say "  it calls \`$SELF_CMD stalled\` and acts only when a pipeline ended with nobody picking it up."
       ;;
     remove)
       # WRITING AN EMPTY TABLE IS A SUCCESS. `{ [ -n "$rest" ] && printf …; }`
@@ -2610,6 +2660,45 @@ PY
 }
 
 # ==========================================================================
+# exec — run a SIBLING skill's script, resolved from THIS clone (S277)
+# ==========================================================================
+# WHY THIS EXISTS. AUTOPILOT.md names four scripts that belong to other skills
+# (lcars-init/establish-vision.sh, lcars-file/file.sh,
+# lcars-resolve-logs/resolve-logs.sh, lcars-respond/respond.sh). It used to name
+# them as `bash ~/.claude/skills/<skill>/<script>`, which is Claude Code's
+# install mount: on a Copilot-only machine that path does not exist, and the
+# S277 spike watched a real model run such a line, take exit 127 and STOP.
+#
+# Those four are not `lcars` verbs — `lcars file` runs an Align CONVERSATION and
+# `lcars.sh` has no `file`/`respond`/`establish-vision` route at all — so routing
+# them through an `lcars` launcher would have meant adding dispatch to another
+# skill's front door and still not reaching `file.sh --prd`. Instead the driver
+# the playbook already uses on every line exposes them, resolved relative to its
+# OWN physical location ($SKILLS_DIR), which is correct under either mount:
+#
+#   lcars-autopilot exec lcars-file/file.sh --prd <path> --engine copilot
+#   lcars-autopilot exec lcars-file file.sh  --prd <path> --engine copilot
+#
+# It adds NO stage logic: it resolves a path and hands over with `exec`.
+cmd_exec() {
+  local spec="${1:-}" script=""
+  [ -n "$spec" ] || die "exec: name a skill script, e.g. \`exec lcars-file/file.sh --prd <path>\`"
+  shift
+  case "$spec" in
+    */*) script="$spec" ;;
+    *)   # two-argument form: <skill> <script>
+         [ -n "${1:-}" ] || die "exec: $spec — name the script too, e.g. \`exec $spec <script>.sh\`"
+         script="$spec/$1"; shift ;;
+  esac
+  case "$script" in
+    *..*|/*) die "exec: refusing an out-of-tree path: $script" ;;
+  esac
+  local target="$SKILLS_DIR/$script"
+  [ -f "$target" ] || die "exec: no such script in this LCARS clone: $target"
+  exec bash "$target" "$@"
+}
+
+# ==========================================================================
 # dispatch
 # ==========================================================================
 SUB="${1:-}"
@@ -2635,6 +2724,7 @@ case "$SUB" in
   report)      cmd_report "$@" ;;
   ledger)      cmd_ledger "$@" ;;
   heartbeat)   cmd_heartbeat "$@" ;;
+  exec)        cmd_exec "$@" ;;
   ''|-h|--help|help) usage ;;
   *)           printf 'lcars autopilot: unknown subcommand %s\n' "$SUB" >&2; usage ;;
 esac

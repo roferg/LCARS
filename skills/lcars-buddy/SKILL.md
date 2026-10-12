@@ -31,8 +31,9 @@ that's useful from the very first mission and stays useful as things evolve:
   fresh tester, and land the cure under LCARS's own contract — the same loop a
   session runs (§ 2).
 
-It works from anywhere because the skill is installed globally (symlinked into
-`~/.claude/skills/` by `install.sh`).
+It works from anywhere because `install.sh` installs it globally into the install symlink farm your CLI uses (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot), and puts the `lcars-buddy` and `lcars-autopilot` commands on your PATH.
+
+The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the autopilot run from either CLI.
 
 ## When to use
 
@@ -59,20 +60,27 @@ AUTOPILOT.md).
 ## 1. Run the diagnostic collector and show it verbatim
 
 ```bash
-bash ~/.claude/skills/lcars-buddy/buddy.sh
+lcars-buddy
 ```
 
 If LCARS lives somewhere non-standard (auto-resolve through the install symlink
 should normally find it), pass it explicitly:
 
 ```bash
-LCARS_REPO=~/Projects/LCARS bash ~/.claude/skills/lcars-buddy/buddy.sh
+LCARS_REPO=~/Projects/LCARS lcars-buddy
 ```
+
+`install.sh` puts `lcars-buddy` in `~/.local/bin`, which is **not** on the PATH
+by default on macOS — if the shell answers `command not found`, either add that
+directory to PATH (`install.sh` prints the line) or run the script by its
+absolute path in the LCARS checkout: `bash <lcars>/skills/lcars-buddy/buddy.sh`.
 
 The brief reports, in order:
 - **LCARS REPO** — where the source lives + its branch / HEAD / dirty state / recent
   commits. This is the code you can read and (when needed) fix.
-- **INSTALL SYNC** — whether the installed skills point at *that* checkout. Worth a
+- **INSTALL SYNC** — whether the installed skills point at *that* checkout, asked
+  of BOTH farms (Claude Code's per-skill links and Copilot's plugin link); a farm
+  whose CLI is not installed reads "nothing to check". Worth a
   glance every time: if it says **STALE**, you've been editing one clone while a
   different one runs — surface it and offer to run `./install.sh`. (Even when all
   is well, this is the answer to "am I looking at the right code?")
@@ -92,8 +100,9 @@ A fix to LCARS is run the **same way a session is run**: you become the
 **orchestrator**, and you write **no production code yourself**. The rules are in
 ONE file, shared with `run-session` and `night-watch` so the three cannot drift:
 
-```
-~/.claude/skills/lcars-buddy/ORCHESTRATION.md
+```bash
+lcars-buddy docs orchestration          # prints ORCHESTRATION.md — the rules file
+lcars-buddy docs --path orchestration   # just its path, to open it yourself
 ```
 
 **Read it now, before anything else.** It is the source; everything below is the
@@ -101,7 +110,7 @@ buddy-shaped wrapper around it. Where the two appear to disagree, that file wins
 
 `$REPO` below is the **LCARS REPO** the brief reported — the checkout the install
 symlinks actually point at. That is where the fix lands, always: never a second
-clone, never `~/.claude`.
+clone, never an install farm.
 
 ### a. BRIEF FIRST, then wait for the go
 
@@ -154,7 +163,7 @@ with the regression guard → **hard stop at three rounds** → teardown → com
 readout. Buddy-specific instructions for the sub-agents:
 
 - **Implementor:** author only under `$REPO/skills/` and `$REPO/tests/` (never
-  `~/.claude`); failing `tests/<name>.test.sh` case FIRST; verify with the **fast
+  an install farm); failing `tests/<name>.test.sh` case FIRST; verify with the **fast
   scoped** `bash tests/<name>.test.sh` only — **not** `tests/lcars-run.test.sh`,
   **not** the full `tests/run.sh`; then `./install.sh` in `$REPO` so the fix is
   the code that actually runs.
@@ -196,16 +205,16 @@ change, a standing-rule conflict, or an LCARS bug with no workaround.
 
 **The full playbook is ONE file** — read it before you ask him anything:
 
-```
-~/.claude/skills/lcars-buddy/AUTOPILOT.md
+```bash
+lcars-buddy docs autopilot              # prints AUTOPILOT.md — the full playbook
 ```
 
 The token-free driver that sequences it (and spends nothing) sits beside it:
 
 ```bash
-bash ~/.claude/skills/lcars-buddy/autopilot.sh next      # the ONE next step
-bash ~/.claude/skills/lcars-buddy/autopilot.sh status    # the one screen
-bash ~/.claude/skills/lcars-buddy/autopilot.sh playbook  # action → AUTOPILOT.md heading
+lcars-autopilot next      # the ONE next step
+lcars-autopilot status    # the one screen
+lcars-autopilot playbook  # action → AUTOPILOT.md heading
 ```
 
 ### The first 20 minutes
@@ -219,12 +228,12 @@ bash ~/.claude/skills/lcars-buddy/autopilot.sh playbook  # action → AUTOPILOT.
    targets, where it deploys, what to do if LCARS itself breaks — plus the
    captain-only steps (tokens, secrets, SSO, renames) and the
    pre-authorisations. AUTOPILOT.md §§ 1–2 has the exact list.
-5. `autopilot.sh init --spec … --scope …`, record every answer, then
-   `autopilot.sh heartbeat install`. **Durable state is
+5. `lcars-autopilot init --spec … --scope …`, record every answer, then
+   `lcars-autopilot heartbeat install`. **Durable state is
    `.git/lcars/autopilot.json`, never the transcript** — after a context
    compaction, re-read it first.
 
-Then loop on `autopilot.sh next` and follow the heading it names.
+Then loop on `lcars-autopilot next` and follow the heading it names.
 
 **It never edits LCARS.** An LCARS bug is ledgered and worked around with
 another verb, or it becomes a question for the captain. If he wants LCARS

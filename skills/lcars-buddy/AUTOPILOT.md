@@ -12,7 +12,7 @@ worked on that run or is a guard against something that cost him attention.
 **One principle: you steer and verify; you never build.** Your tokens go to
 reading the spec, one alignment round, briefs, answering grills, judging live
 checks, writing bug PRDs and the merge call. Everything sequenceable is
-`autopilot.sh`, which spends nothing.
+`lcars-autopilot`, which spends nothing.
 
 > This is **not** a fix loop. The autopilot never edits the LCARS source. If it
 > hits an LCARS bug it works around it with another verb and ledgers it, or it
@@ -23,8 +23,17 @@ checks, writing bug PRDs and the merge call. Everything sequenceable is
 Ask the driver what to do next, then read that section:
 
 ```bash
-bash ~/.claude/skills/lcars-buddy/autopilot.sh next
+lcars-autopilot next
 ```
+
+`install.sh` generates that command for both CLIs, and **every command in this
+file is written out in full** — there is no shorthand to expand, because a
+reader who jumps straight to § 9 never sees the top of the file.
+
+**If it says "command not found"**, `install.sh`'s launcher dir (`~/.local/bin`)
+is missing from your PATH; `install.sh` prints the line to add. Until you add
+it, `bash <your-lcars-clone>/skills/lcars-buddy/autopilot.sh` is the same
+driver and takes exactly the arguments shown below.
 
 It prints one action and the **exact heading in this file** that covers it:
 
@@ -34,7 +43,7 @@ WHY: M0 reached the Verify gate — read Number One, then run the live check
 PLAYBOOK: ## 6. The Verify gate — Number One, then the live check
 ```
 
-`autopilot.sh playbook` prints the whole action→heading table, and the test
+`lcars-autopilot playbook` prints the whole action→heading table, and the test
 suite asserts every heading in it exists here — so this file and the script
 cannot drift apart.
 
@@ -54,12 +63,12 @@ is a no-op.** A question already *open* on the same (mission, question) pair is
 not re-recorded and does not ping him again, so re-running a blocked step is
 safe; two *different* questions on one mission stay two questions, and a
 problem that recurs **after** he answered it raises a real new one. Close one
-with its id (which `autopilot.sh status` prints) and the mirror moves on:
+with its id (which `lcars-autopilot status` prints) and the mirror moves on:
 
 ```bash
-autopilot.sh status                       # [q1] lcars-…: <the question>
-autopilot.sh ask "<what you need>" --mission <id> --why "<why>"   # raise one (§ 9)
-autopilot.sh answered q1 "yes, go ahead"  # records the answer BESIDE the question
+lcars-autopilot status                          # [q1] lcars-…: <the question>
+lcars-autopilot ask "<what you need>" --mission <id> --why "<why>"   # raise one (§ 9)
+lcars-autopilot answered q1 "yes, go ahead"     # records the answer BESIDE the question
 ```
 
 Raise every question with `ask` (§ 9) and never write `pending` yourself: it is
@@ -72,15 +81,15 @@ answer is what unblocks it.
 Write with the driver, not by hand:
 
 ```bash
-autopilot.sh record liveTargets.host github.ghe.com
-autopilot.sh record missions.M0.id lcars-20260930-001
-autopilot.sh record missions.M0.verified true
-autopilot.sh record preauthorised.liveTestWrites true
+lcars-autopilot record liveTargets.host github.ghe.com
+lcars-autopilot record missions.M0.id lcars-20260930-001
+lcars-autopilot record missions.M0.verified true
+lcars-autopilot record preauthorised.liveTestWrites true
 ```
 
 **The memory rule.** Your context *will* compact on a run this long. After any
 compaction — or at the start of any session where the captain says "continue" —
-your **first** action is to re-read `autopilot.json` and run `autopilot.sh
+your **first** action is to re-read `autopilot.json` and run `lcars-autopilot
 status`. Do not re-ask anything that is already recorded there. State that
 lived only in the transcript is state that is gone.
 
@@ -94,9 +103,9 @@ clean:
 | `.git/lcars/decisions.jsonl` | product calls, scope changes, merges |
 
 ```bash
-autopilot.sh ledger feedback  '{"kind":"lcars-bug","detail":"fold drift blocked a merge"}'
-autopilot.sh ledger overrides '{"mission":"lcars-…","verdict":"low","reason":"infra only","evidence":"…"}'
-autopilot.sh ledger decisions '{"what":"added M6","who":"captain"}'
+lcars-autopilot ledger feedback  '{"kind":"lcars-bug","detail":"fold drift blocked a merge"}'
+lcars-autopilot ledger overrides '{"mission":"lcars-…","verdict":"low","reason":"infra only","evidence":"…"}'
+lcars-autopilot ledger decisions '{"what":"added M6","who":"captain"}'
 ```
 
 ---
@@ -118,7 +127,7 @@ captain can answer in a word:
 2. **Live targets** — the host and the owners you may create or touch things
    under.
 3. **Where it deploys**, and what "live" means for this product. Record it —
-   there is a key for it: `autopilot.sh record deploy '{"where":"…","liveMeans":"…"}'`.
+   there is a key for it: `lcars-autopilot record deploy '{"where":"…","liveMeans":"…"}'`.
 4. **What to do if LCARS itself breaks** — the default is *stop and report*.
 5. **The pre-authorisations** (§ 9): may you do a manual merge if `approve` hits
    a known LCARS bug and the merged suite is green? May live checks write to the
@@ -127,18 +136,18 @@ captain can answer in a word:
 Then write it all down and start:
 
 ```bash
-autopilot.sh init --spec <path-or-url> --scope M0,M1,M2 --engine copilot \
+lcars-autopilot init --spec <path-or-url> --scope M0,M1,M2 --engine copilot \
                   --deadline 2026-10-01T07:00:00-07:00
-autopilot.sh record latitude.allowed '[ … ]'     # his words, not the defaults
-autopilot.sh record liveTargets '{"host":"…","owners":["…"]}'
-autopilot.sh heartbeat install
+lcars-autopilot record latitude.allowed '[ … ]'     # his words, not the defaults
+lcars-autopilot record liveTargets '{"host":"…","owners":["…"]}'
+lcars-autopilot heartbeat install
 ```
 
 **This is the whole interrupt budget for the setup.** A second question round
 is a defect in how you ran this step, not a fact about the spec.
 
 An empty scope is unfinished alignment: set it with `init --scope` or
-`autopilot.sh record scope '["M0","M1"]'` before building or claiming completion.
+`lcars-autopilot record scope '["M0","M1"]'` before building or claiming completion.
 
 ---
 
@@ -150,7 +159,7 @@ SSO at 1pm — both on the critical path, both avoidable. **Enumerate them in th
 alignment round**, with a *needed by* time, and record them:
 
 ```bash
-autopilot.sh record captainOnlySteps '[
+lcars-autopilot record captainOnlySteps '[
   {"what":"HUB_TOKEN secret on the product repo",
    "instructions":"! pbpaste | gh secret set HUB_TOKEN -R <host>/<owner>/<repo> --app actions",
    "neededBy":"before M2 drives","done":false}
@@ -165,14 +174,14 @@ rotate it.)
 
 **Verify each one the moment he says it is done** — list the secret names, check
 the first workflow run gets past checkout — then
-`autopilot.sh record captainOnlySteps '[…"done":true…]'`, and say plainly what
+`lcars-autopilot record captainOnlySteps '[…"done":true…]'`, and say plainly what
 is still missing.
 
 **If he DECLINES one, record the decline — never `done: true`, never delete it.**
 A declined step is an outcome, with a third state of its own:
 
 ```bash
-autopilot.sh record captainOnlySteps '[
+lcars-autopilot record captainOnlySteps '[
   {"what":"a Pages deploy token", "instructions":"…", "neededBy":"before M2",
    "done":false, "declined":true,
    "declinedReason":"no deploy token, no Pages tonight"}
@@ -193,7 +202,7 @@ the same readiness signal as `lcars init`, so no `foundation.required` or
 `foundation.done` flag is needed. LCARS already has the verb for it:
 
 ```bash
-bash ~/.claude/skills/lcars-init/establish-vision.sh --file \
+lcars-autopilot exec lcars-init/establish-vision.sh --file \
      --stack "<the stack>" --slice "<a thin end-to-end slice>" --engine copilot
 ```
 
@@ -234,8 +243,8 @@ stays empty. **State which path you took.**
 File through the real verb, with a real PRD on disk:
 
 ```bash
-bash ~/.claude/skills/lcars-file/file.sh --prd <path/to/prd.md> --engine copilot
-autopilot.sh record missions.M0.id <the-mission-id-it-prints>
+lcars-autopilot exec lcars-file/file.sh --prd <path/to/prd.md> --engine copilot
+lcars-autopilot record missions.M0.id <the-mission-id-it-prints>
 ```
 
 **The brief pattern that worked** (200–400 words): the product context and
@@ -264,7 +273,7 @@ halves the grill.
 ## 5. Drive it — backgrounded, with a waiter that watches the process
 
 ```bash
-autopilot.sh drive <mission-id>
+lcars-autopilot drive <mission-id>
 ```
 
 That calls `run.sh drive --mission <id>` with the recorded `gateTimeout`, in the
@@ -275,17 +284,17 @@ stages yourself** — the driver owns the order.
 simply blocks on it, so it cannot overrun and cannot cut LCARS off. On the
 modelled run a hand-rolled `alarm` wrapper killed an `approve` mid-retest and
 left a reconcile worktree holding the branch. Never wrap an LCARS verb in a
-timeout, and never poll a log in a sleep loop: ask `autopilot.sh next`.
+timeout, and never poll a log in a sleep loop: ask `lcars-autopilot next`.
 
 **A failing drive is counted and capped.** The waiter records the exit against
 `drivers.<id>.failures`; **three failures in a row and the mode stops retrying**
 and writes you a question instead (§ 9) — repeating a failure that never changes
 is an LCARS bug with no verb-level workaround, not something to sit on until
 morning. A clean drive clears the counter, so one flake costs nothing.
-`autopilot.sh answered <id>` clears it too, once the cause is fixed.
+`lcars-autopilot answered <id>` clears it too, once the cause is fixed.
 
 **A routine stage stop pings nobody.** The waiter records the exit and
-`autopilot.sh next` has the next step; the captain hears about a drive only when
+`lcars-autopilot next` has the next step; the captain hears about a drive only when
 it has hit the cap. Spending his interrupt budget (§ 9) on "a stage stopped" is
 the inversion of what he asked for.
 
@@ -297,7 +306,7 @@ the *other* slot (§ 8) — not for watching.
 ## 6. The Verify gate — Number One, then the live check
 
 When a mission reaches `verify`, read Number One's verdict
-(`xo.sh report`, `xo/verdict.json`) — then **do the live check yourself every
+(`lcars-autopilot exec lcars-xo/xo.sh report`, `xo/verdict.json`) — then **do the live check yourself every
 time, regardless of its verdict. This is your standing job, never a fallback.**
 On the modelled run Number One filed **0 of 31** bugs and every one came from
 the live check. Its misses were all *reach* errors, never judgement: no screen
@@ -306,7 +315,7 @@ to look at, nothing seeded, stubs that made the seam untestable.
 ### 6.1 Set it up with one command, then do the looking
 
 ```bash
-autopilot.sh live-check <mission-id> --type cli,web,workflow
+lcars-autopilot live-check <mission-id> --type cli,web,workflow
 ```
 
 That prepares a **detached** worktree of the mission branch and a **throwaway
@@ -340,7 +349,7 @@ a workflow is all three. The items that found the bugs, by name:
 ### 6.2 Every workflow the mission adds, run exactly as CI runs it
 
 ```bash
-autopilot.sh workflow-run <mission-id> .github/workflows/<name>.yml
+lcars-autopilot workflow-run <mission-id> .github/workflows/<name>.yml
 ```
 
 The job's steps, in order, each from its own `working-directory`, with the env
@@ -357,14 +366,14 @@ it by reading what it published (the web/workflow checklist's artifact item).
 ### 6.3 Record the verdict, then take the policy's one action
 
 ```bash
-autopilot.sh live-check done <mission-id> --verdict pass|bugs
-autopilot.sh policy --mission <mission-id> --live-check pass|bugs \
+lcars-autopilot live-check done <mission-id> --verdict pass|bugs
+lcars-autopilot policy --mission <mission-id> --live-check pass|bugs \
                     [--verdict high|medium|low] [--reason product|infrastructure] \
                     [--evidence <path>]
 ```
 
 There is no default verdict: an unrecorded live check would read later as one
-that passed. `policy` prints **ONE** action; `autopilot.sh policy --table`
+that passed. `policy` prints **ONE** action; `lcars-autopilot policy --table`
 prints the whole table.
 
 ---
@@ -394,11 +403,11 @@ and this ledger is what the captain reads afterwards.
 ### The send-back loop, in order
 
 ```bash
-autopilot.sh file-bug --parent <mission> --prd <bug-prd.md>   # one PRD per bug
-bash ~/.claude/skills/lcars-resolve-logs/resolve-logs.sh --parent <mission>
-autopilot.sh live-check <mission> --type <types>              # DIFFERENT data this round
-bash ~/.claude/skills/lcars-respond/respond.sh answer --mission <mission> --answer "<the live evidence>"
-autopilot.sh land <mission>
+lcars-autopilot file-bug --parent <mission> --prd <bug-prd.md>   # one PRD per bug
+lcars-autopilot exec lcars-resolve-logs/resolve-logs.sh --parent <mission>
+lcars-autopilot live-check <mission> --type <types>              # DIFFERENT data this round
+lcars-autopilot exec lcars-respond/respond.sh answer --mission <mission> --answer "<the live evidence>"
+lcars-autopilot land <mission>
 ```
 
 The bug PRD template is `bug-prd.md`, beside this file. AC #1 is mandatorily
@@ -430,7 +439,7 @@ the harness already does.
 When the live check is clean, record that fact for the status readout:
 
 ```bash
-autopilot.sh record missions.M0.verified true
+lcars-autopilot record missions.M0.verified true
 ```
 
 Take the policy's action directly (`land` for a merge); `next` always returns
@@ -440,7 +449,7 @@ And keep the progress page current, because it is what the captain reads on his
 phone:
 
 ```bash
-autopilot.sh report
+lcars-autopilot report
 ```
 
 It renders, per milestone, the stage, Number One's verdict, the live-check
@@ -453,7 +462,7 @@ down, so nothing on it comes from a clock.
 ## 7. Land it — approve, then the hygiene that always follows
 
 ```bash
-autopilot.sh land <mission-id>
+lcars-autopilot land <mission-id>
 ```
 
 It pre-checks (no live driver, no open logged children), calls the real
@@ -486,7 +495,7 @@ raised — you pre-stage it with the suite already run on the merged state so hi
 Pushing is also not yours to hand-roll:
 
 ```bash
-autopilot.sh push-gated
+lcars-autopilot push-gated
 ```
 
 It runs the recorded suite and pushes **only on exit 0**. A hand-rolled version
@@ -498,18 +507,18 @@ of this gate once matched the word `FAILED` as success and pushed a red `main`.
 
 **Two missions at a time is the ceiling**, and only when their write sets do not
 overlap. Two was measured safe on a 10-core Mac; three drove load average to 170
-and killed workers. `autopilot.sh next` enforces it and tells you to wait;
-`autopilot.sh status` shows the slots in use.
+and killed workers. `lcars-autopilot next` enforces it and tells you to wait;
+`lcars-autopilot status` shows the slots in use.
 
 **The heartbeat is `crontab`.** One line, minute 17:
 
 ```bash
-autopilot.sh heartbeat install    # … remove / status
+lcars-autopilot heartbeat install    # … remove / status
 ```
 
-It calls `autopilot.sh stalled`, which reports a mission whose driver ended with
+It calls `lcars-autopilot stalled`, which reports a mission whose driver ended with
 nobody picking it up — decided from the **recorded pid**, not by grepping a log.
-Act on it, then `autopilot.sh record drivers.<id>.pickedUpAt <ts>`.
+Act on it, then `lcars-autopilot record drivers.<id>.pickedUpAt <ts>`.
 
 Why a crontab line and not the host harness's own cron tool: LCARS ships to
 people who are not inside Claude Code, so a harness-only tool cannot be this
@@ -557,13 +566,13 @@ you do not ask for them.
 
 **A denial is a question with the evidence ready, never a retry by another
 route.** What is blocked, why it is safe, the one command that will run, the
-rollback. `autopilot.sh land` writes exactly that shape for a refused merge.
+rollback. `lcars-autopilot land` writes exactly that shape for a refused merge.
 
-**For everything else, raise it with `autopilot.sh ask` — never by editing
+**For everything else, raise it with `lcars-autopilot ask` — never by editing
 `autopilot.json`.** One question per call, in the same four fields:
 
 ```bash
-autopilot.sh ask "Ship M1 as the CLI only, or hold it for the page?" \
+lcars-autopilot ask "Ship M1 as the CLI only, or hold it for the page?" \
   --mission lcars-20260930-001 \
   --why "a product call only you can make — the page needs a deploy token" \
   --command "-" \
@@ -586,9 +595,9 @@ nothing to adopt.
 
 **Several questions can be open at once, and none of them parks the run.** Each
 is recorded separately and `status` prints them all with their ids. A question on
-one milestone blocks *that* milestone only: `autopilot.sh next` still names the
+one milestone blocks *that* milestone only: `lcars-autopilot next` still names the
 runnable work on the others, and with two slots that is the point. Ask them in
-one message when you can, close each with `autopilot.sh answered <id> "<what he
+one message when you can, close each with `lcars-autopilot answered <id> "<what he
 said>"`, and keep working while you wait.
 
 **The communication rules**, which he taught during the modelled run:
@@ -611,14 +620,14 @@ push the new forecast to him as soon as it crosses his target, with the options
 slip was reported late.
 
 ```bash
-autopilot.sh record lastForecast "M0–M2 by 06:10; M3 at risk (plan round 2)"
+lcars-autopilot record lastForecast "M0–M2 by 06:10; M3 at risk (plan round 2)"
 ```
 
 ---
 
 ## 10. Wrap-up — lead with the time the captain got back
 
-When everything in scope is merged and verified, `autopilot.sh next` says
+When everything in scope is merged and verified, `lcars-autopilot next` says
 `done`. The final message **leads with what he got back**: hours away, questions
 asked, milestones shipped. Then:
 
@@ -629,7 +638,7 @@ asked, milestones shipped. Then:
   work-arounds you used — these are somebody's next fix session;
 - what the proof was blind to;
 - worker spend (Copilot is free — say so) alongside your own host-model tokens;
-- `autopilot.sh heartbeat remove`, and any worktrees or throwaway HOMEs torn
+- `lcars-autopilot heartbeat remove`, and any worktrees or throwaway HOMEs torn
   down.
 
 ---
@@ -637,18 +646,18 @@ asked, milestones shipped. Then:
 ## The shape of the whole thing, in one block
 
 ```
-lcars buddy                                  # read the brief
-buddy> run it for me <spec>                  # ONE question round
-  autopilot.sh init --spec … --scope …       # record every answer
-  autopilot.sh heartbeat install
+lcars buddy                                     # read the brief
+buddy> run it for me <spec>                     # ONE question round
+  lcars-autopilot init --spec … --scope …       # record every answer
+  lcars-autopilot heartbeat install
 loop:
-  autopilot.sh next                          # the ONE next step + its heading here
-    file       → file.sh --prd --engine      → record missions.<M>.id
-    drive      → autopilot.sh drive <id>     (backgrounded; waiter on the process)
-    verify-gate→ xo report + your live check → policy → land or the send-back loop
-    land       → autopilot.sh land <id>      (approve + hygiene; exit 10 = ask)
+  lcars-autopilot next                          # the ONE next step + its heading here
+    file       → lcars-autopilot exec lcars-file/file.sh --prd --engine  → record missions.<M>.id
+    drive      → lcars-autopilot drive <id>        (backgrounded; waiter on the process)
+    verify-gate→ xo report + your live check    → policy → land or the send-back loop
+    land       → lcars-autopilot land <id>         (approve + hygiene; exit 10 = ask)
     wait       → two at a time is the ceiling
-  autopilot.sh status                        # the one screen, any time
+  lcars-autopilot status                        # the one screen, any time
 done:
-  autopilot.sh heartbeat remove; wrap up (§ 10)
+  lcars-autopilot heartbeat remove; wrap up (§ 10)
 ```

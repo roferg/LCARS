@@ -405,8 +405,9 @@ check "S260 Verify: repo playbook makes the buddy's check a standing job, never 
   "qgrep -qF 'This is your standing job, never a fallback.' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md'"
 
 usage260="$(ap "$RE" 2>&1)"; usagerc260=$?
+# S277: command-name literal ONLY. AUTOPILOT.md now names the on-PATH `lcars-autopilot <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `autopilot.sh`.
 check "S260 usage: no arguments print help with exit 1 and no shell errors" \
-  "[ $usagerc260 -eq 1 ] && printf '%s' \"\$usage260\" | qgrep -q '^Usage: autopilot.sh' && ! printf '%s' \"\$usage260\" | qgrep -q 'command not found'"
+  "[ $usagerc260 -eq 1 ] && printf '%s' \"\$usage260\" | qgrep -q '^Usage: lcars-autopilot' && ! printf '%s' \"\$usage260\" | qgrep -q 'command not found'"
 check "S260 usage: backticked examples are printed literally, not executed" \
   "printf '%s' \"\$usage260\" | qgrep -qF 'AC #1 = \`Observed live:\`' && printf '%s' \"\$usage260\" | qgrep -qF 'through \`lcars log\`' && printf '%s' \"\$usage260\" | qgrep -qF '\`--table\` prints'"
 
@@ -1838,8 +1839,9 @@ check "AUTOPILOT.md carries the copy-paste-safe secret instruction" \
   "qgrep -qF 'pbpaste | gh secret set' '$APM'"
 check "AUTOPILOT.md forbids the hand-merge in writing" \
   "qgrep -qiE 'never (merge by hand|hand-merge)' '$APM'"
+# S277: command-name literal ONLY. AUTOPILOT.md now names the on-PATH `lcars-autopilot <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `autopilot.sh`.
 check "AUTOPILOT.md tells the model to run \`autopilot.sh next\`" \
-  "qgrep -qF 'autopilot.sh next' '$APM'"
+  "qgrep -qF 'lcars-autopilot next' '$APM'"
 # --- the prose for the fix-round cures, so script and playbook cannot drift --
 check "AUTOPILOT.md names ALL SIX sections file.sh requires" \
   "for sec in 'Mission title' 'Type' 'Goal' 'Acceptance Criteria' 'Out of Scope' 'Constraints'; do qgrep -qF \"\$sec\" '$APM' || exit 1; done"
@@ -1848,7 +1850,7 @@ check "AUTOPILOT.md gives alignment question 3 a key to record its answer in" \
 check "AUTOPILOT.md documents the DECLINED captain-only step state" \
   "qgrep -qF '\"declined\":true' '$APM' && qgrep -qiF 'never \`done: true\`' '$APM'"
 check "AUTOPILOT.md documents \`autopilot.sh answered\` as how a question closes" \
-  "qgrep -qF 'autopilot.sh answered' '$APM'"
+  "qgrep -qF 'lcars-autopilot answered' '$APM'"
 check "AUTOPILOT.md says re-raising an OPEN question is a no-op" \
   "qgrep -qi 'raising the same question twice' '$APM'"
 check "AUTOPILOT.md says questions are a LEDGER, not one slot" \
@@ -1858,7 +1860,7 @@ check "AUTOPILOT.md says questions are a LEDGER, not one slot" \
 # field load-bearing storage, and that ambiguity cost five defects. § 9 now
 # names `autopilot.sh ask`, and declares `pending` derived and read-only.
 check "AUTOPILOT.md § 9 instructs the \`ask\` VERB" \
-  "qgrep -qF 'autopilot.sh ask' '$APM'"
+  "qgrep -qF 'lcars-autopilot ask' '$APM'"
 check "AUTOPILOT.md gives \`ask\` its --mission flag so it blocks one milestone" \
   "qgrep -qE 'autopilot.sh ask .*--mission|--mission <' '$APM'"
 check "AUTOPILOT.md no longer tells the model to hand-write a question into pending" \
@@ -2497,16 +2499,17 @@ check "AUTOPILOT.md's live-verification section is no longer an S234 STUB" \
   "! qgrep -qiE 'S234 — STUB|S234 - STUB' '$APM'"
 check "AUTOPILOT.md points at the shared checklists by path" \
   "qgrep -qF 'lcars-run/live-check' '$APM'"
+# S277: command-name literal ONLY. AUTOPILOT.md now names the on-PATH `lcars-autopilot <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `autopilot.sh`.
 check "AUTOPILOT.md names the live-check verb" \
-  "qgrep -qF 'autopilot.sh live-check' '$APM'"
+  "qgrep -qF 'lcars-autopilot live-check' '$APM'"
 check "AUTOPILOT.md names the workflow-run verb for every workflow a mission adds" \
-  "qgrep -qF 'autopilot.sh workflow-run' '$APM'"
+  "qgrep -qF 'lcars-autopilot workflow-run' '$APM'"
 check "AUTOPILOT.md names the file-bug verb and the template" \
-  "qgrep -qF 'autopilot.sh file-bug' '$APM' && qgrep -qF 'bug-prd.md' '$APM'"
+  "qgrep -qF 'lcars-autopilot file-bug' '$APM' && qgrep -qF 'bug-prd.md' '$APM'"
 check "AUTOPILOT.md names the policy verb" \
-  "qgrep -qF 'autopilot.sh policy' '$APM'"
+  "qgrep -qF 'lcars-autopilot policy' '$APM'"
 check "AUTOPILOT.md names the report verb" \
-  "qgrep -qF 'autopilot.sh report' '$APM'"
+  "qgrep -qF 'lcars-autopilot report' '$APM'"
 check "AUTOPILOT.md carries the whole merge table: all four actions" \
   "( for a in 'merge' 'follow-ups' 'send-back' 'override'; do qgrep -qF \"\$a\" '$APM' || exit 1; done )"
 check "AUTOPILOT.md says a LOW for infrastructure only is fixed, verified live, and OVERRIDDEN" \

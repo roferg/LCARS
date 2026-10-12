@@ -153,8 +153,8 @@ install_launcher() {
   cat >"$dest" <<EOF
 #!/usr/bin/env bash
 $marker
-# Resolves to the single viewscreen implementation in this LCARS clone, by
-# absolute path, so it works from any shell and a \`git pull\` needs no re-install.
+# Resolves to this LCARS clone's own script, by absolute path, so it works from
+# any shell on either CLI and a \`git pull\` needs no re-install.
 exec bash "$script_abs" "\$@"
 EOF
   chmod +x "$dest"
@@ -170,13 +170,34 @@ install_launcher "lcars-serve"      "skills/lcars-viewscreen/serve.sh"
 # makes it reachable from any shell:
 #   LCARS_WORKTREE_SETUP_CMD='pnpm install --no-frozen-lockfile' lcars-launch <id>
 install_launcher "lcars-launch"     "skills/lcars-launch/launch.sh"
+# S277: the buddy's documents name a COMMAND and the model runs it verbatim.
+# They used to name `bash ~/.claude/skills/lcars-buddy/<script>`, which is
+# Claude Code's install location — a Copilot-only machine has no `~/.claude`,
+# and a real Copilot turn given that prose took exit 127, reported it, and
+# stopped rather than finding the plugin mount it had loaded the skill from.
+# These two launchers are the CLI-neutral front door the prose now names.
+install_launcher "lcars-buddy"      "skills/lcars-buddy/buddy.sh"
+install_launcher "lcars-autopilot"  "skills/lcars-buddy/autopilot.sh"
 
 # PATH hint: only when BIN_DEST is not already a :-segment of $PATH.
 case ":$PATH:" in
   *":$BIN_DEST:"*) : ;;  # already on PATH — say nothing
   *)
-    echo "  ⓘ $BIN_DEST is not on your PATH. Add it so \`lcars-viewscreen\` is found:"
-    echo "      export PATH=\"$BIN_DEST:\$PATH\"   # add to your ~/.zshrc or ~/.bashrc"
+    # LOUD, not a footnote. $BIN_DEST (~/.local/bin) is NOT on PATH by default on
+    # macOS, so an install can finish "successfully" and still leave every
+    # launcher the buddy's prose names — `lcars-buddy`, `lcars-autopilot`,
+    # `lcars-viewscreen` — answering "command not found". install.sh does not and
+    # must not edit anyone's shell profile, so the only cure is this message
+    # being impossible to miss, plus the absolute-path fallback below.
+    echo "  ────────────────────────────────────────────────────────────────"
+    echo "  ⚠  ACTION NEEDED: $BIN_DEST is NOT on your PATH."
+    echo "     Until you add it, \`lcars-buddy\`, \`lcars-autopilot\` and"
+    echo "     \`lcars-viewscreen\` will say \"command not found\"."
+    echo "     Add this line to your ~/.zshrc (or ~/.bashrc), then open a new shell:"
+    echo "         export PATH=\"$BIN_DEST:\$PATH\""
+    echo "     Fallback, works right now with no PATH change:"
+    echo "         bash $REPO_ROOT/skills/lcars-buddy/buddy.sh"
+    echo "  ────────────────────────────────────────────────────────────────"
     ;;
 esac
 

@@ -112,6 +112,22 @@ check "2b. lcars-launch launcher exists and is executable in the bin dest" \
 check "2b. lcars-launch launcher execs the repo's launch.sh by absolute path" \
   "qgrep -q -- '$REPO_ROOT/skills/lcars-launch/launch.sh' < '$e1/bin/lcars-launch'"
 
+# S277: the buddy's three documents tell the MODEL to run a script by name, and
+# they used to name `bash ~/.claude/skills/lcars-buddy/<script>`. That path is
+# Claude Code's install location; a Copilot-only machine has no `~/.claude` at
+# all. The S277 spike watched a real Copilot turn obey that prose literally,
+# take exit 127, report the error and STOP — it never fell back to the
+# `~/.copilot` plugin mount it had just loaded the skill from. So the prose now
+# names on-PATH commands, and the commands have to exist.
+check "2c. lcars-buddy launcher exists and is executable in the bin dest" \
+  "[ -f '$e1/bin/lcars-buddy' ] && [ -x '$e1/bin/lcars-buddy' ]"
+check "2c. lcars-buddy launcher execs the repo's buddy.sh by absolute path" \
+  "qgrep -q -- '$REPO_ROOT/skills/lcars-buddy/buddy.sh' < '$e1/bin/lcars-buddy'"
+check "2d. lcars-autopilot launcher exists and is executable in the bin dest" \
+  "[ -f '$e1/bin/lcars-autopilot' ] && [ -x '$e1/bin/lcars-autopilot' ]"
+check "2d. lcars-autopilot launcher execs the repo's autopilot.sh by absolute path" \
+  "qgrep -q -- '$REPO_ROOT/skills/lcars-buddy/autopilot.sh' < '$e1/bin/lcars-autopilot'"
+
 # ==========================================================================
 # Behaviour 3: running the launcher resolves WEB_DIR correctly — it reaches the
 # repo's web/ dir, NOT a broken ../../bin/../web. Prove with a stubbed python
@@ -164,6 +180,8 @@ check "4. re-install creates NO .bak churn for our own launcher" \
   "[ '$baks' -eq 0 ]"
 check "4. re-install: lcars-viewscreen still execs the repo viewscreen.sh" \
   "qgrep -q -- '$REPO_ROOT/skills/lcars-viewscreen/viewscreen.sh' < '$e1/bin/lcars-viewscreen'"
+check "4. re-install: the two S277 buddy launchers are idempotent too" \
+  "[ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-buddy' | wc -l | tr -d ' ')\" -eq 1 ] && [ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-autopilot' | wc -l | tr -d ' ')\" -eq 1 ] && [ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-buddy.bak.*' -o -maxdepth 1 -name 'lcars-autopilot.bak.*' | wc -l | tr -d ' ')\" -eq 0 ]"
 check "4. re-install: exactly one lcars-viewscreen + one lcars-serve in bin" \
   "[ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-viewscreen' | wc -l | tr -d ' ')\" -eq 1 ] && [ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-serve' | wc -l | tr -d ' ')\" -eq 1 ]"
 
@@ -317,6 +335,39 @@ check "10. the header warns that setting only ONE does not isolate the install" 
   "grep -qi 'does NOT isolate' '$INSTALL'"
 check "10. the header documents LCARS_INSTALL_PREFIX as the one-variable cure" \
   "grep -q 'LCARS_INSTALL_PREFIX' '$INSTALL'"
+
+# ==========================================================================
+# Behaviour 11 (S277): the launcher is a PASS-THROUGH, not a second
+# implementation. `lcars-autopilot <verb>` must be byte-identical to
+# `bash skills/lcars-buddy/autopilot.sh <verb>` — same stdout, same stderr,
+# same exit code — because AUTOPILOT.md's headings are locked to the script's
+# own output and a wrapper that reformatted anything would break that contract
+# silently on the CLI that has no `~/.claude`.
+# ==========================================================================
+AP_REPO="$TMPROOT/ap-target"
+mkdir -p "$AP_REPO"
+( cd "$AP_REPO" && git init -q 2>/dev/null )
+AP_SRC="$REPO_ROOT/skills/lcars-buddy/autopilot.sh"
+
+# 11a. no autopilot.json yet — the refusal must match, exit code included.
+direct_a="$(LCARS_AUTOPILOT_CWD="$AP_REPO" bash "$AP_SRC" next 2>&1)"; drc_a=$?
+launch_a="$(LCARS_AUTOPILOT_CWD="$AP_REPO" "$e1/bin/lcars-autopilot" next 2>&1)"; lrc_a=$?
+check "11a. lcars-autopilot next (no autopilot.json) is byte-identical to the script" \
+  "[ \"\$direct_a\" = \"\$launch_a\" ] && [ $drc_a -eq $lrc_a ]"
+
+# 11b. an initialised repo — the §-heading line `next` prints must come through
+# the launcher unchanged (this is the line the model acts on).
+printf 'a spec\n' >"$AP_REPO/spec.md"
+LCARS_AUTOPILOT_CWD="$AP_REPO" bash "$AP_SRC" init --spec "$AP_REPO/spec.md" --scope M0 >/dev/null 2>&1
+direct_b="$(LCARS_AUTOPILOT_CWD="$AP_REPO" bash "$AP_SRC" next 2>&1)"; drc_b=$?
+launch_b="$(LCARS_AUTOPILOT_CWD="$AP_REPO" "$e1/bin/lcars-autopilot" next 2>&1)"; lrc_b=$?
+check "11b. lcars-autopilot next prints the PLAYBOOK heading, byte-identical" \
+  "[ \"\$direct_b\" = \"\$launch_b\" ] && [ $drc_b -eq $lrc_b ] && printf '%s' \"\$launch_b\" | qgrep -q '^PLAYBOOK: ## '"
+
+# 11c. and `lcars-buddy` is the brief, not a stub: run it through the launcher
+# against a fixture checkout and confirm it is buddy.sh's own first line.
+check "11c. lcars-buddy launcher prints buddy.sh's own brief header" \
+  "LCARS_REPO='$REPO_ROOT' LCARS_BUDDY_CWD='$AP_REPO' LCARS_SKILLS_DEST='$e1/claude-skills' '$e1/bin/lcars-buddy' 2>&1 | qgrep -q 'LCARS BUDDY — ride along'"
 
 # ==========================================================================
 echo
