@@ -390,6 +390,51 @@ for engine in claude copilot; do
     "grep -qi 'bespoke runner' '$repoF3/outF3.txt'"
 done
 
+# 4c-S274. NO env pin, NO config pin → THE ENGINE THAT IS INSTALLED, never the
+# literal `claude`. This rung read `[ -n "$wb" ] || wb="claude"`, so on a
+# copilot-only laptop `lcars update --fix-tests` spawned a claude that is not
+# there and reported "the crew found nothing". It reads the shared detector now
+# (lcars_default_engine, already sourced by update.sh) — the same answer `lcars
+# init`, run.sh and launch.sh give. Engines faked through the LCARS_*_BIN seams,
+# never $PATH, so this measures the fixture and not the tester's laptop.
+repoF3c="$(new_repo)"
+write_config "$repoF3c" 'null'
+printf '#!/usr/bin/env bash\necho 3 passed\nexit 0\n' >"$repoF3c/mytests.sh"
+chmod +x "$repoF3c/mytests.sh"
+argvF3c="$repoF3c/worker-argv.txt"
+wkF3c="$(make_worker_stub copilot "$argvF3c")"
+NOCLI_S274="$TMPROOT/definitely-not-installed"
+propF3c="$repoF3c/proposal.json"
+printf '{\n  "testCommand": "bash mytests.sh",\n  "rationale": "repo ships a bespoke runner script",\n  "status": "ready"\n}\n' >"$propF3c"
+rcF3c=0
+( cd "$repoF3c" && env -u LCARS_WORKER_BIN STUB_PROPOSAL_FILE="$propF3c" \
+    LCARS_CLAUDE_BIN="$NOCLI_S274" LCARS_COPILOT_BIN="$wkF3c" \
+    bash "$UPDATE" --fix-tests >outF3c.txt 2>&1 ) || rcF3c=$?
+check "4c-S274. copilot-only laptop, no pins: the COPILOT CLI was spawned" \
+  "[ -s '$argvF3c' ]"
+check "4c-S274. …and the discovery succeeded (proposal set + ONLINE)" \
+  "grep -q '\"testCommand\": \"bash mytests.sh\"' '$repoF3c/.git/lcars/config.json' && grep -q 'TEST SYSTEMS ONLINE' '$repoF3c/outF3c.txt'"
+check "4c-S274. …and the argv is the COPILOT adapter's, not claude's" \
+  "grep -qx -- '--available-tools' '$argvF3c' && ! grep -qx -- '--allowedTools' '$argvF3c'"
+
+# NEITHER CLI: one sentence naming both, no spawn, non-zero.
+# A repo that HAS a test system with a BROKEN command (4d's shape), so the
+# discovery crew's own message is the one the captain reads — the greenfield
+# arm above deliberately prints its own bootstrap copy instead.
+repoF3n="$(new_repo)"
+write_config "$repoF3n" '"no-such-runner-xyz-274 test"'
+rcF3n=0
+( cd "$repoF3n" && env -u LCARS_WORKER_BIN \
+    LCARS_CLAUDE_BIN="$NOCLI_S274" LCARS_COPILOT_BIN="$NOCLI_S274" \
+    bash "$UPDATE" --fix-tests >outF3n.txt 2>&1 ) || rcF3n=$?
+check "4c-S274. with NEITHER CLI, --fix-tests exits non-zero" "[ '$rcF3n' -ne 0 ]"
+check "4c-S274. …and names Claude Code AND the GitHub Copilot CLI" \
+  "grep -qi 'claude code' '$repoF3n/outF3n.txt' && grep -qi 'copilot cli' '$repoF3n/outF3n.txt'"
+check "4c-S274. …and names both install URLs" \
+  "grep -q 'claude.com/claude-code' '$repoF3n/outF3n.txt' && grep -q 'github.com/features/copilot/cli' '$repoF3n/outF3n.txt'"
+check "4c-S274. …and says it looked for BOTH binaries" \
+  "[ \"\$(grep -o \"'$NOCLI_S274'\" '$repoF3n/outF3n.txt' | wc -l | tr -d ' ')\" = 2 ]"
+
 # 4d. worker garbage (status failed) on a repo that HAS infra (broken command)
 #     ⇒ config untouched + repair voice + non-zero.
 repoF4="$(new_repo)"

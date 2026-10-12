@@ -14227,7 +14227,7 @@ EOF
     local act_c; act_c="$(usage_actual_compact "$usage_f")"
     if [ -n "$act_c" ]; then
       local cli; cli="$(json_scoped_str "$est_f" "cost.cli")"
-      [ -n "$cli" ] || cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+      [ -n "$cli" ] || cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
       echo "  Cost: EST $(render_cost_compact "$est_f" "$cli") → ACTUAL $act_c"
     fi
   fi
@@ -15444,6 +15444,49 @@ lcars_prefer_real_worker_bin() {
   fi
 }
 
+# --- S274: WHICH ENGINE IS ACTUALLY ON THIS MACHINE ------------------------
+# ONE answer to that question, and it is not this file's. `lcars init`, the File
+# console's engine picker, `lcars xo`, `lcars adopt` and the viewscreen's board
+# all read the shared detector in skills/lcars-init/lcars-common.sh
+# (`lcars_available_engines` / `lcars_default_engine` / `lcars_engine_bin`), and
+# the last rung of this resolver now reads the same one. Re-implementing
+# `command -v claude` here would be the S168 scar again: two answers to one
+# question, and a Stage refusing an engine `lcars init` had already accepted.
+#
+# IN A SUBSHELL, DELIBERATELY. lcars-common.sh is a large library and this file
+# has its own `json_str`, `die` and friends; sourcing it into this process could
+# silently redefine one of them. A subshell makes the read a pure question with
+# no possible side effect, and it is asked at most once per process.
+_lcars_common_lib() {
+  printf '%s' "${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+}
+# The engine a laptop with no env/config/marker should run: the repo's own pin
+# when it is installed > the single installed engine > claude when claude is
+# among them > EMPTY when neither CLI is here. Empty is the honest answer, and
+# require_worker is what turns it into the Stage's loud stop.
+installed_engine() { # [config] → engine name (may be EMPTY)
+  local lib; lib="$(_lcars_common_lib)"
+  [ -f "$lib" ] || return 0
+  ( . "$lib" >/dev/null 2>&1 || exit 0; lcars_default_engine "${1:-}" )
+}
+# The BINARY an engine name means — `$LCARS_COPILOT_BIN`/`$LCARS_CLAUDE_BIN`
+# when the operator pointed those at a real CLI, else the bare name. Identity
+# when the library is missing, so a broken install degrades to today's names.
+installed_engine_bin() { # engine → bin
+  local lib; lib="$(_lcars_common_lib)"
+  [ -f "$lib" ] || { printf '%s' "${1:-}"; return 0; }
+  ( . "$lib" >/dev/null 2>&1 || { printf '%s' "${1:-}"; exit 0; }
+    lcars_engine_bin "${1:-}" || printf '%s' "${1:-}" )
+}
+# The ONE sentence that says what LCARS looked for. Reused by the resolver's
+# log line and by require_worker's refusal, so they can never disagree — and it
+# names BOTH engines, because either one cures the situation (init.sh:72's
+# wording, which has said this since S207).
+no_engine_sentence() {
+  printf "LCARS drives missions with Claude Code (looked for '%s') or the GitHub Copilot CLI (looked for '%s'), and neither is on this machine" \
+    "$(installed_engine_bin claude)" "$(installed_engine_bin copilot)"
+}
+
 resolve_worker_bin() {
   # --- IS THIS $LCARS_WORKER_BIN AN OPERATOR ACT, OR LCARS'S OWN RE-PIN? -----
   # `lcars approve` exports $LCARS_WORKER_BIN before handing its reconcile leg to
@@ -15581,9 +15624,25 @@ resolve_worker_bin() {
   if [ -n "$detected" ]; then
     WORKER_BIN="$detected"; WORKER_BIN_SRC="detected"; return 0
   fi
-  # No env, no config, no host marker — never guess the CLI.
-  printf 'lcars run: no host-CLI marker — defaulting to claude\n' >&2
-  WORKER_BIN="claude"; WORKER_BIN_SRC="default"
+  # No env, no config, no host marker — ASK WHAT IS INSTALLED, never guess.
+  #
+  # S274. This rung used to be the literal `claude`, announced as "no host-CLI
+  # marker — defaulting to claude" and recorded as the `default` source. On a
+  # laptop that has only the GitHub Copilot CLI that is a guess which cannot
+  # run: require_worker then stopped the Stage naming an engine the captain
+  # never had, while a working CLI sat on his PATH and `lcars init` had already
+  # set the repo up on it (S207). The answer now comes from the shared detector,
+  # so it can only ever name an engine that is HERE.
+  local found; found="$(installed_engine "${LCARS_CFG:-}")"
+  if [ -n "$found" ]; then
+    WORKER_BIN="$(installed_engine_bin "$found")"
+    WORKER_BIN_SRC="detected"; return 0
+  fi
+  # NEITHER CLI IS HERE. The resolver does not die — it is also a read surface
+  # (`run.sh resolve-worker`, the board's provenance) — it reports `none` and
+  # says what it looked for. require_worker owns the loud stop.
+  printf 'lcars run: no worker CLI found — %s.\n' "$(no_engine_sentence)" >&2
+  WORKER_BIN=""; WORKER_BIN_SRC="none"
 }
 
 # Resolve WORKER_MODEL + WORKER_MODEL_SRC by the precedence above. Unset model
@@ -15846,7 +15905,7 @@ resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   local key="$1"
   # (a) global env pin — wins for every stage, verbatim.
   if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   # (a1) S202 — the captain's own pin for HIS first officer. `numberOne.model` is
   # written by `lcars xo on --model <m>` onto the SAME one-line config block as
   # the engine, so the officer he chose and the model he chose are one record.
@@ -16547,8 +16606,17 @@ require_worker() {
   fi
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
   [ -x "$WORKER_BIN" ] && return 0
+  # S274 — TWO DIFFERENT SITUATIONS, TWO DIFFERENT SENTENCES. A laptop with
+  # NEITHER CLI cannot be cured by a variable, so telling the captain to set one
+  # (and offering `claude` as the single example) sends him to install the one
+  # engine he may have deliberately not got. Name BOTH, with both install URLs,
+  # and let him pick.
+  if [ -z "$WORKER_BIN" ] || [ "${WORKER_BIN_SRC:-}" = "none" ]; then
+    printf '  ⚠ NOT ISOLATED — no LCARS-capable CLI on this machine.\n' >&2
+    die "refusing to run this Stage inline — no worker CLI found. $(no_engine_sentence). Install either one and re-run: https://claude.com/claude-code or https://github.com/features/copilot/cli."
+  fi
   printf '  ⚠ NOT ISOLATED — no cold-worker binary on PATH (LCARS_WORKER_BIN=%s).\n' "$WORKER_BIN" >&2
-  die "refusing to run this Stage inline — set \$LCARS_WORKER_BIN to your CLI (e.g. \`claude\`) so the Stage runs in a cold worker."
+  die "refusing to run this Stage inline — \"$WORKER_BIN\" is not a CLI on this machine. Set \$LCARS_WORKER_BIN to one you have (\`claude\` or \`copilot\`) so the Stage runs in a cold worker."
 }
 
 # --- the marker proving a Stage ran in a cold worker ------------------------
@@ -18301,7 +18369,7 @@ estimate_validate_and_write() { # src-json
   # from the worker. We write the file once WITHOUT cost, compute against it, then
   # write the final file with the computed cost block embedded.
   local devs; devs="$(estimate_extract_deviations "$src")"
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local out="$MISSION_DIR/estimate.json"
   _estimate_emit() { # cost-block-or-empty
     local cost="$1"
@@ -18416,7 +18484,7 @@ cmd_estimate() {
   local cfg_tier=""
   [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfg_tier="$(json_str "$LCARS_CFG" estimatorModel)"
   [ -n "$cfg_tier" ] && est_tier="$cfg_tier"
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local est_model; est_model="$(alias_for_tier "$cli" "$est_tier")"
 
   local extra="## Read these artifacts (your inputs)
@@ -18690,7 +18758,7 @@ cmd_cost() {
     [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
   fi
   resolve_worker_bin
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local est="$MISSION_DIR/estimate.json"
   [ -f "$est" ] || die "no estimate.json for mission ${MISSION_ID:-?}."
   local block; block="$(cost_compute "$est" "$cli")"
@@ -18994,7 +19062,7 @@ cmd_render_estimate() { # --surface in $SURFACE
     [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
   fi
   resolve_worker_bin
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local est="$MISSION_DIR/estimate.json"
   [ -f "$est" ] || exit 1   # absent ⇒ no output, non-zero (file.sh degradation)
   # COMPUTE the cost fresh from cost_compute (never trust a possibly-stale `cost`

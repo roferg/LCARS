@@ -1570,5 +1570,82 @@ OUT33b="$( cd "$R33b" && LCARS_WORKER_BIN="$S33" \
 check "33b. the same arbitrary filename is refused when its CLI is undeclared" \
   "[ \"$RC33b\" -ne 0 ] && [ ! -s \"$A33b\" ] && printf '%s' \"\$OUT33b\" | grep -q 'unknown worker cli'"
 
+# =====================================================================
+# 34. S274 — THE ENGINE IS THE ONE THAT IS INSTALLED, never the literal `claude`.
+# =====================================================================
+# THE DEFECT. The fallback chain ended `[ -n "$WORKER_BIN" ] || WORKER_BIN="claude"`.
+# The --main deploy has NO state.json, so on a laptop with only the GitHub
+# Copilot CLI `lcars launch --main` spawned a `claude` that is not there and the
+# launch died — with `lcars init` having already set the repo up on copilot.
+# The last rung is now the shared detector (`lcars_default_engine`,
+# skills/lcars-init/lcars-common.sh), the same answer init, the board, `lcars
+# xo` and run.sh give.
+#
+# The engines are faked through the LCARS_*_BIN seams (never $PATH), so these
+# measure the fixture and not the tester's laptop, and no real CLI is ever run.
+R34="$(make_repo m34)"
+printf '{"mainBranch":"trunk"}\n' > "$R34/.git/lcars/config.json"
+S34="$(rec_stub copilot)"; A34="$TMPROOT/argv34"; make_rec_worker "$S34" "$A34"
+NOCLI34="$TMPROOT/definitely-not-installed"
+OUT34="$( cd "$R34" && env -u LCARS_WORKER_BIN -u LCARS_WORKER_CLI \
+  LCARS_CLAUDE_BIN="$NOCLI34" LCARS_COPILOT_BIN="$S34" \
+  bash "$LAUNCH_SH" --main 2>&1 )"; RC34=$?
+check "34a. --main with NO \$LCARS_WORKER_BIN and no state.json still spawns an inspector" \
+  "[ -s \"$A34\" ]"
+check "34b. …and it is the COPILOT adapter's argv (--available-tools), not claude's" \
+  "grep -qx -- '--available-tools' \"$A34\""
+check "34c. …and never claude's (--allowedTools)" \
+  "! grep -qx -- '--allowedTools' \"$A34\""
+check "34d. …and the copilot write floor still applies to it" \
+  "[ \"\$(argv_model \"$A34\")\" = 'claude-opus-4.8' ]"
+check "34e. …and it never complained about a claude that is not there" \
+  "! printf '%s' \"\$OUT34\" | grep -q 'definitely-not-installed'"
+
+# NEITHER CLI: one sentence, non-zero, BOTH engines named — and no spawn.
+R34n="$(make_repo m34n)"
+printf '{"mainBranch":"trunk"}\n' > "$R34n/.git/lcars/config.json"
+A34n="$TMPROOT/argv34n"; rm -f "$A34n"
+OUT34n="$( cd "$R34n" && env -u LCARS_WORKER_BIN -u LCARS_WORKER_CLI \
+  LCARS_CLAUDE_BIN="$NOCLI34" LCARS_COPILOT_BIN="$NOCLI34" \
+  bash "$LAUNCH_SH" --main 2>&1 )"; RC34n=$?
+check "34f. with NEITHER CLI, \`lcars launch --main\` exits non-zero" \
+  "[ \"$RC34n\" -ne 0 ]"
+check "34g. …and names Claude Code" \
+  "printf '%s' \"\$OUT34n\" | grep -qi 'claude code'"
+check "34h. …and names the GitHub Copilot CLI" \
+  "printf '%s' \"\$OUT34n\" | grep -qi 'copilot cli'"
+check "34i. …and says it looked for both binaries" \
+  "[ \"\$(printf '%s' \"\$OUT34n\" | grep -o \"'$NOCLI34'\" | wc -l | tr -d ' ')\" = 2 ]"
+check "34j. …in ONE sentence, not a stack trace" \
+  "[ \"\$(printf '%s\n' \"\$OUT34n\" | grep -c 'lcars launch:')\" = 1 ]"
+check "34k. …and it never spawned anything" "[ ! -s \"$A34n\" ]"
+
+# S274 fix round 2 — AND THE BOARD IS NEVER TOLD A LIE ABOUT IT.
+# THE DEFECT a fresh tester found: the refusal above lands ~75 lines AFTER the
+# early `{"status":"launching", …}` record is committed (that record exists so an
+# observer during the slow spin-up can't outrun the launch and re-click RUN). On
+# the no-engine path nothing ever revised it, so a `lcars launch --main` that
+# started NOTHING left `status: "launching"` on disk forever and the board's top
+# band showed a permanent ◐ DEPLOYING… pill — still there 20s later. The engine
+# resolution is deliberately NOT moved earlier (that is a restructure of the
+# worktree/provision block); instead the refusal now commits a `failed` record
+# carrying the refusal sentence ITSELF, so the band shows the real reason and the
+# ▸ Deploy Main retry comes back.
+LJ34n="$R34n/.git/lcars/main/launch.json"
+check "34l. …and the refusal still leaves a launch record for the board to read" \
+  "[ -s \"$LJ34n\" ]"
+check "34m. …whose status is failed, NEVER a stranded \"launching\" (no permanent ◐ DEPLOYING… pill)" \
+  "[ \"\$(json_field \"$LJ34n\" status)\" = 'failed' ]"
+check "34n. …and whose message is the refusal itself, naming Claude Code" \
+  "printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -qi 'claude code'"
+check "34o. …and the GitHub Copilot CLI" \
+  "printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -qi 'copilot cli'"
+check "34p. …and both install URLs, so the band says what to do" \
+  "printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -q 'claude.com/claude-code' && printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -q 'github.com/features/copilot/cli'"
+check "34q. …on ONE line — a raw newline inside \"message\" would truncate it for every reader" \
+  "[ \"\$(grep -c '\"message\"' \"$LJ34n\" | tr -d ' ')\" = 1 ] && grep -q '^ *\"message\": \".*\"\$' \"$LJ34n\""
+check "34r. …and the record is a whole object, not a half-write" \
+  "head -1 \"$LJ34n\" | grep -qx '{' && tail -1 \"$LJ34n\" | grep -qx '}'"
+
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -25,7 +25,7 @@ import sys
 import threading
 import webbrowser
 
-from .local_adapter import LocalAdapter
+from .local_adapter import LocalAdapter, default_worker_engine
 from .github_adapter import GitHubAdapter
 from .remote import RemoteMissions
 from .server import make_server, PortInUseError
@@ -185,9 +185,25 @@ def main(argv=None):
 
     actions = None
     if writes_active:
+        # S274 — THE ENGINE THIS DAEMON RUNS WORKERS ON.
+        #
+        # This used to be `os.environ.get("LCARS_WORKER_BIN")` and nothing else,
+        # so an ordinary start (the variable unset — which is every start) left
+        # the viewscreen with NO engine: the Align grill answered 502 "no worker
+        # engine configured ($LCARS_WORKER_BIN)" and both holodeck doors did the
+        # same, on a laptop where `lcars init` had already found a CLI and
+        # written `workerBin` into this repo's config.json. The daemon never
+        # read it.
+        #
+        # `default_worker_engine` keeps $LCARS_WORKER_BIN on top and then asks
+        # the SHARED bash detector (skills/lcars-init/lcars-common.sh) — the
+        # same one `lcars init`, the engine pickers and run.sh read. None is a
+        # real answer (neither CLI here); the daemon still STARTS, the board
+        # still serves, and each write endpoint explains itself in one sentence.
+        worker_engine, _engine_source = default_worker_engine(args.repo_root)
         actions = build_actions(
             repo_root=args.repo_root,
-            worker_bin=os.environ.get("LCARS_WORKER_BIN"),
+            worker_bin=worker_engine,
             gh_bin=args.gh_bin)
 
     # S130: the version-banner provider. Adapter-neutral — it shows on BOTH the

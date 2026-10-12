@@ -918,11 +918,26 @@ class TheDefaultEngineHasOneSource(unittest.TestCase):
                          "an engine CLI was executed to answer a question "
                          "about whether it is installed")
 
-    def test_a_repo_with_no_numberOne_block_gains_no_key(self):
+    def test_a_repo_with_no_numberOne_block_gains_no_numberOne_key(self):
+        """S274 CHANGED THIS ONE ASSERTION, deliberately.
+
+        Until S274 `engineDefault` and `enginesHere` lived inside
+        `if xo is not None`, so the ONLY repos that could say which engines
+        this laptop has were the ones that had already run `lcars xo`. But
+        "which CLIs are installed here" is a fact about the LAPTOP, not about a
+        repo's first officer, and every surface that needs an engine needs it —
+        the Align grill, the holodeck's New Program dialog, Adopt, and the
+        banner a laptop with no CLI at all shows. They are published on EVERY
+        board now.
+
+        What this test still guards is the thing it was written for: a repo
+        that has never run `lcars xo` gains NO `numberOne` key, so the board
+        shows no toggle rather than a toggle that says the wrong thing."""
         write_config(self.tmp, {"model": "claude-sonnet"})
         meta = LocalAdapter(self.tmp).board()["meta"]
-        self.assertNotIn("engineDefault", meta)
         self.assertNotIn("numberOne", meta)
+        # …and the laptop's engines ARE there, numberOne block or not (S274).
+        self.assertIn("enginesHere", meta)
 
 
 if __name__ == "__main__":

@@ -215,6 +215,8 @@ class LocalAdapter(object):
         self._engines_reader = engines_reader
         self._engines_memo = None     # (monotonic-deadline, [engines])
         self._engine_default_memo = None   # (deadline, engine) — S201/D2
+        # S274 — (deadline, (engine, source)) for the DAEMON's worker engine.
+        self._worker_engine_memo = None
         self._establish_vision_script = establish_vision_script
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
         # S160: the shared base-freshness reporter
@@ -548,29 +550,60 @@ class LocalAdapter(object):
         xo = self._number_one_config()
         if xo is not None:
             meta["numberOne"] = xo
-            # …and the other half of the picker's question: WHICH engines this
-            # laptop actually has. The SAME detector `lcars xo` uses at a
-            # terminal (S195's `lcars_available_engines`, reached here through
-            # the offer the remote overlay already builds), so the board never
-            # guesses at an install. Absent when the detector cannot answer,
-            # which leaves the picker offering both rows unlabelled rather than
-            # claiming an engine is missing.
-            here = self._engines_here()
-            if here:
-                meta["enginesHere"] = here
-            # …and WHICH ROW THE PICKER OPENS ON. Not a second opinion: this is
-            # `lcars_xo_default_engine`'s answer, the same function the CLI
-            # picker preselects with, spawned the way `enginesHere` already is.
-            # FIX ROUND 1, D2: the board opened on copilot and the terminal on
-            # claude, so a bare Enter engaged a different officer depending on
-            # which door the captain came through. One function answers both
-            # now, and the front end RENDERS this rather than deriving one.
-            # Absent when nothing is installed — an unanswered question, never
-            # a guessed answer.
-            default = self._engine_default()
-            if default:
-                meta["engineDefault"] = default
+        # WHICH ENGINES THIS LAPTOP ACTUALLY HAS — ON EVERY BOARD (S274).
+        #
+        # The SAME detector `lcars xo` uses at a terminal (S195's
+        # `lcars_available_engines`), so the board never guesses at an install.
+        #
+        # S274 MOVED THESE OUT FROM UNDER `if xo is not None`. They were part of
+        # the Number One picker's question, so the only repos that could say
+        # which engines were installed were the ones that had already run
+        # `lcars xo` — and "which CLIs are here" is a fact about the LAPTOP, not
+        # about a repo's first officer. Every surface that needs an engine needs
+        # it: the Align grill, the holodeck's New Program dialog, Adopt, and the
+        # one banner a laptop with NO CLI shows.
+        #
+        # `enginesHere` is ALWAYS A LIST, and `[]` is an ANSWER — "I asked, and
+        # there are none" — which is a different fact from the key being absent
+        # (the front end reads absence as "I could not ask" and offers both rows
+        # unlabelled). `engineDefault` is `lcars_xo_default_engine`'s answer,
+        # the row the picker OPENS ON, the same function the CLI picker
+        # preselects with (S201 fix round 1, D2: one function, two front doors).
+        #
+        # A `None` here reads as JSON null to the caller and lands as an ABSENT
+        # key on the wire — `board.assemble` drops None-valued meta — which is
+        # this shape's long-standing way of saying "no answer" and is exactly
+        # how the picker's fallback already reads it. So "nothing is installed"
+        # is never rendered as a guessed engine.
+        meta["enginesHere"] = self._engines_here()
+        meta["engineDefault"] = self._engine_default() or None
+        # …and WHERE THE DAEMON'S OWN WORKER ENGINE CAME FROM. A different
+        # question from `engineDefault` (which is the PICKER's row): this is the
+        # engine `python -m lcars_serve` will run an Align grill or a holodeck
+        # turn on when nobody picks one, and the provenance that explains it —
+        # env | config | detected | none. Published so a board can say "copilot,
+        # from this repo's config" instead of leaving the captain to guess why.
+        engine, source = self._worker_engine()
+        meta["workerEngine"] = engine or None
+        meta["engineSource"] = source
         return meta
+
+    def _worker_engine(self):
+        """(engine, source) for this repo — memoized on the engines TTL.
+
+        Never raises into a board build: an unanswerable question is
+        (None, "none"), the same honest empty the detector itself gives.
+        """
+        now = time.time()
+        memo = self._worker_engine_memo
+        if memo is not None and memo[0] > now:
+            return memo[1]
+        try:
+            answer = default_worker_engine(self.repo_root)
+        except Exception:
+            answer = (None, "none")
+        self._worker_engine_memo = (now + self._ENGINES_TTL, answer)
+        return answer
 
     # ── S201: the repo-level toggle, and what this laptop can run ───────────
     def _number_one_config(self):
@@ -1364,18 +1397,13 @@ class LocalAdapter(object):
 
     def _resolve_common_lib(self):
         """lcars-common.sh: env -> in-repo -> installed. Mirrors
-        `_resolve_establish_vision_script`, so one override points both."""
-        env = os.environ.get("LCARS_COMMON_LIB")
-        if env:
-            return env
-        here = os.path.dirname(os.path.abspath(__file__))
-        in_repo = os.path.normpath(os.path.join(
-            here, "..", "..", "skills", "lcars-init", "lcars-common.sh"))
-        if os.path.isfile(in_repo):
-            return in_repo
-        installed = os.path.join(os.path.expanduser("~"), ".claude", "skills",
-                                 "lcars-init", "lcars-common.sh")
-        return installed if os.path.isfile(installed) else ""
+        `_resolve_establish_vision_script`, so one override points both.
+
+        S274 — the body moved to the module level (`resolve_common_lib`) so the
+        daemon's own engine resolution can read the SAME library without an
+        adapter instance. The method stays as the adapter's door to it.
+        """
+        return resolve_common_lib()
 
     def _resolve_establish_vision_script(self):
         """establish-vision.sh: injected → env → in-repo → installed. Mirrors
@@ -3321,3 +3349,93 @@ def _criteria_from_prd(path):
                 if text:
                     rows.append({"text": text, "done": done})
     return rows or None
+
+
+# ===========================================================================
+# S274 — THE DAEMON'S DEFAULT ENGINE, AND WHERE IT CAME FROM
+#
+# `python -m lcars_serve` used to read `os.environ.get("LCARS_WORKER_BIN")` and
+# nothing else, so an ordinary start (the variable unset) left the viewscreen
+# with NO engine: the Align grill answered 502 "no worker engine configured
+# ($LCARS_WORKER_BIN)" and both holodeck doors did the same — on a laptop where
+# `lcars init` had already found a CLI and written `workerBin` into
+# `.git/lcars/config.json`. The daemon never read it.
+#
+# IT SHELLS THE SHARED BASH LIBRARY, and that is the whole point. `lcars init`,
+# the File console's engine picker, `lcars xo`, `lcars adopt`, run.sh's resolver
+# and launch.sh all answer "which engines are on this machine" with
+# skills/lcars-init/lcars-common.sh. Re-implementing `command -v claude` in
+# Python would be the S168 scar again — two answers to one question, and a board
+# offering an engine the skills would then refuse.
+#
+# THE ANSWER IS THE ENGINE NAME, not a path: `Actions._engine_file` turns a bare
+# `copilot` into $LCARS_COPILOT_BIN (S238's explicit-override rule), which is
+# the one place that mapping lives.
+# ===========================================================================
+def resolve_common_lib():
+    """lcars-common.sh: $LCARS_COMMON_LIB -> in-repo -> installed -> ""."""
+    env = os.environ.get("LCARS_COMMON_LIB")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    in_repo = os.path.normpath(os.path.join(
+        here, "..", "..", "skills", "lcars-init", "lcars-common.sh"))
+    if os.path.isfile(in_repo):
+        return in_repo
+    installed = os.path.join(os.path.expanduser("~"), ".claude", "skills",
+                             "lcars-init", "lcars-common.sh")
+    return installed if os.path.isfile(installed) else ""
+
+
+# The one script the resolution runs. It asks lcars_default_engine for the
+# ENGINE and then decides only the PROVENANCE: the repo pinned it, or it was
+# merely the one installed. The precedence itself is never re-decided here.
+_ENGINE_PROBE = (
+    '. "$1" >/dev/null 2>&1 || exit 0\n'
+    'eng="$(lcars_default_engine "$2")"\n'
+    '[ -n "$eng" ] || exit 0\n'
+    'cfg=""\n'
+    '[ -f "$2" ] && cfg="$(lcars_config_get "$2" workerBin)"\n'
+    'if [ -n "$cfg" ] && [ "$cfg" = "$eng" ]; then src=config; else src=detected; fi\n'
+    'printf "%s\\n%s\\n" "$eng" "$src"\n'
+)
+
+
+def default_worker_engine(repo_root, env=None):
+    """(engine, source) — the engine this daemon runs workers on, and why.
+
+    `source` is exactly one of:
+      env       the operator's own $LCARS_WORKER_BIN (a per-invocation act)
+      config    this repo's `workerBin`, and that engine IS installed here
+      detected  the engine the shared detector found on this machine
+      none      neither CLI is here (or the library could not be asked)
+
+    `engine` is None exactly when `source` is "none". That is an HONEST empty
+    answer, not a degradation to paper over: the daemon still starts, the board
+    still serves, and the write endpoints explain themselves in one sentence
+    (actions.no_engine_refusal) instead of naming a variable that cannot cure a
+    laptop with no CLI on it.
+    """
+    env = os.environ if env is None else env
+    pinned = (env.get("LCARS_WORKER_BIN") or "").strip()
+    if pinned:
+        return pinned, "env"
+    lib = resolve_common_lib()
+    if not lib:
+        return None, "none"
+    config = os.path.join(repo_root, ".git", "lcars", "config.json")
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", _ENGINE_PROBE, "bash", lib, config],
+            cwd=repo_root if os.path.isdir(repo_root) else None,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=10)
+    except Exception:
+        return None, "none"
+    lines = [ln.strip() for ln
+             in (proc.stdout or b"").decode("utf-8", "replace").splitlines()
+             if ln.strip()]
+    if len(lines) < 2 or not lines[0]:
+        return None, "none"
+    src = lines[1] if lines[1] in ("config", "detected") else "detected"
+    return lines[0], src

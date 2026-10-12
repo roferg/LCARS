@@ -5244,6 +5244,10 @@ class Actions(LogFacts):
         # and a restart loses the warm worker session, never the program.
         self._holodeck = {}
         self._holodeck_lock = threading.Lock()
+        # S274 — (engine-or-None,) once per Actions: "does this MACHINE have a
+        # CLI at all". A one-tuple so a memoized None is distinguishable from
+        # "not asked yet". Read only on a no-engine error path.
+        self._engine_here_memo = None
         # The hand-off DERIVATION's results, keyed by a fingerprint of the
         # files it read plus the repo it read them against — NEVER the session
         # id (S170: a restarted daemon mints a new one for the same room, and a
@@ -6665,11 +6669,22 @@ class Actions(LogFacts):
         """
         bin_ = engine or self.worker_bin
         if not bin_:
-            raise ActionError(
-                502, "no worker engine configured ($LCARS_WORKER_BIN) — cannot "
-                "drive the Align/Log worker")
+            raise self._no_engine_error("the Align grill has no engine to "
+                                        "run on")
         # S238 — an explicit override beats the picker's bare engine NAME.
         bin_ = self._engine_file(bin_)
+        # S274 FIX ROUND 1 — THE BRANCH THE UI ACTUALLY TAKES. The refusal above
+        # is only reached when NOTHING was named, and board.js's picker always
+        # posts an explicit `engine` — so on a laptop without the picked CLI
+        # this method walked into subprocess below and handed the captain
+        # `worker engine failed to start: [Errno 2] No such file or directory:
+        # 'claude'`. Same pre-spawn probe the holodeck has had since S238, same
+        # sentence, applied BEFORE the shim work-around for the same reason it
+        # is there: `shim_fallback` only ever fires on a bin that RESOLVES, so a
+        # bin that resolves to nothing is refused here either way.
+        if not shutil.which(bin_):
+            raise ActionError(
+                502, engine_not_executable(bin_, "the Align grill"))
         # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
         # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
         # a known absolute location is not refused by the bash rule — it starts
@@ -6735,8 +6750,15 @@ class Actions(LogFacts):
                 cmd, cwd=self.repo_root, env=env,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT)
-        except OSError as exc:
-            raise ActionError(502, "worker engine failed to start: %s" % exc)
+        except OSError:
+            # S274 fix round 1 — THE BACKSTOP, AND NEVER A RAW EXCEPTION AGAIN.
+            # The probe above catches the ordinary "that CLI is not here", so
+            # reaching this is a rarer spawn failure (a file that is there but
+            # not executable, a bad interpreter line, an exhausted process
+            # table). Whatever it is, `%s` of an OSError is not a sentence a
+            # human can act on, so it says what was looked for instead.
+            raise ActionError(
+                502, engine_not_executable(bin_, "the Align grill"))
         finally:
             if own_outdir:
                 try:
@@ -9655,9 +9677,8 @@ class Actions(LogFacts):
         """
         bin_ = sess.engine or self.worker_bin
         if not bin_:
-            raise ActionError(
-                502, "no worker engine configured ($LCARS_WORKER_BIN) — the "
-                "holodeck has nothing to talk to")
+            raise self._no_engine_error("the holodeck has nothing to "
+                                        "talk to")
         # S238 — an explicit override beats a bare engine NAME.
         bin_ = self._engine_file(bin_)
         # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
@@ -10482,27 +10503,41 @@ class Actions(LogFacts):
                 # made this name the daemon restart, because the New Program
                 # dialog had one field — a name — and no engine control at all.
                 # S127 gave it an engine picker, so "stop it and restart the
-                # viewscreen" became the WRONG first instruction: it sends the
-                # captain to kill his board for something a control in front of
-                # him now does. The picker leads; the daemon-wide default is
-                # kept second, because it is still how a program gets an engine
-                # without anyone picking one (a reopened program, for instance,
-                # has no dialog to pick in).
-                502, "the holodeck has no engine to run this on — nothing was "
-                "picked for it and this viewscreen has no default engine "
-                "($LCARS_WORKER_BIN is unset). Open it from ⬡ New Program and "
-                "choose one in the engine picker. To give every program on this "
-                "viewscreen the same engine without picking, restart it with "
-                "one: `LCARS_WORKER_BIN=copilot lcars viewscreen --open`.")
+                # viewscreen" became the WRONG first instruction.
+                #
+                # S274 — AND NEITHER IS THE PICKER, NOW. The dialog's picker
+                # offers only engines `meta.enginesHere` says are installed, and
+                # since S274 the daemon resolves its default from that same
+                # detector — so reaching here means there is nothing to pick and
+                # nothing to inherit. "Choose one in the engine picker" would be
+                # an instruction the captain cannot follow, and
+                # `LCARS_WORKER_BIN=copilot` would point him at a CLI he has not
+                # got. One sentence, the same one every other door uses.
+                502, no_engine_refusal("the holodeck has no engine to run this "
+                                       "on and nothing was picked for it")
+                if not self._engine_here() else
+                # AN ENGINE IS HERE — so the picker leads, exactly as S127 and
+                # fix round 1 settled it, and the daemon-wide default is kept
+                # second because it is still how a program gets an engine
+                # without anyone picking one (a reopened program has no dialog
+                # to pick in).
+                "the holodeck has no engine to run this on — nothing was "
+                "picked for it and this viewscreen has no default engine. Open "
+                "it from \u2b21 New Program and choose one in the engine "
+                "picker. To give every program on this viewscreen the same "
+                "engine without picking, restart it with one: "
+                "`LCARS_WORKER_BIN=%s lcars viewscreen --open`."
+                % self._engine_here())
         # S238 — an explicit override beats a bare engine NAME, and it is applied
         # BEFORE the which() probe so the override's own file is what gets
         # checked (and what gets recorded as the program's engine).
         bin_ = self._engine_file(bin_)
         if not shutil.which(bin_):
+            # S274 fix round 1 — the sentence moved to one module-level helper
+            # (engine_not_executable) so the Align door says the same thing.
+            # The TEXT is unchanged: `what` supplies "the holodeck".
             raise ActionError(
-                502, "the holodeck cannot run %s — it is not an executable on "
-                "this machine. Check the engine you picked, or the daemon's "
-                "$LCARS_WORKER_BIN." % bin_)
+                502, engine_not_executable(bin_, "the holodeck"))
         # S238 FIX ROUND 1 (D1) — THE S231 WORK-AROUND, ON THIS SIDE TOO. A bare
         # `copilot` that PATH-resolves to VS Code's shim while a real CLI sits at
         # a known absolute location is not refused by the bash rule — it starts
@@ -13439,6 +13474,45 @@ class Actions(LogFacts):
                 except OSError:
                     pass
 
+    def _engine_here(self):
+        """S274 — the engine this MACHINE has, or None. Memoized; error path.
+
+        Asked only when a door has nothing to run on, to tell two very
+        different situations apart:
+
+          • an engine IS installed and this daemon simply has no default (a
+            directly-wired Actions, or an operator who cleared the variable) —
+            then $LCARS_WORKER_BIN, and the New Program picker, ARE the fix and
+            the message says so (S127's rule);
+          • NEITHER CLI is here — then no variable and no picker can cure it,
+            and the message says what was looked for instead (S274).
+
+        It reads the SAME shared detector every other surface reads
+        (local_adapter.default_worker_engine → skills/lcars-init/lcars-common.sh);
+        `command -v` is never re-implemented here.
+        """
+        if self._engine_here_memo is not None:
+            return self._engine_here_memo[0]
+        engine = None
+        try:
+            from .local_adapter import default_worker_engine
+            engine, _src = default_worker_engine(self.repo_root)
+        except Exception:
+            engine = None
+        self._engine_here_memo = (engine,)
+        return engine
+
+    def _no_engine_error(self, what):
+        """The 502 for "nothing to run this on", honest about WHY."""
+        here = self._engine_here()
+        if here:
+            return ActionError(
+                502, "%s — this viewscreen has no default engine, though %s is "
+                "installed on this machine. Restart it with one: "
+                "`LCARS_WORKER_BIN=%s lcars viewscreen --open`."
+                % (what, here, here))
+        return ActionError(502, no_engine_refusal(what))
+
     def _engine_file(self, bin_):
         """S238 — THE FILE AN EXPLICIT OVERRIDE NAMES, in place of a bare engine
         name. Returns the bin to start; raises the override's own refusal.
@@ -14456,6 +14530,60 @@ def _read_json_key(path, key):
     except (OSError, ValueError):
         return None
     return obj.get(key) if isinstance(obj, dict) else None
+
+
+# ===========================================================================
+# S274 — THE ONE REFUSAL FOR "THERE IS NO CLI ON THIS MACHINE"
+#
+# Three write doors used to answer this situation, and all three said something
+# different — two of them naming an environment variable:
+#   • the Align/Log worker: "no worker engine configured ($LCARS_WORKER_BIN)"
+#   • the holodeck turn:    "no worker engine configured ($LCARS_WORKER_BIN)"
+#   • a new program:        "…restart it with one: `LCARS_WORKER_BIN=copilot …`"
+#
+# Since S274 the daemon RESOLVES its engine from the shared detector, so an
+# empty `worker_bin` no longer means "you forgot to set a variable" — it means
+# this laptop has neither CLI, and no variable can cure that. So the sentence
+# says what was looked for and how to get either one, and names BOTH engines
+# because either cures it (init.sh:72's wording, unchanged since S207).
+#
+# It does NOT probe the filesystem. Whether an engine is installed is answered
+# in ONE place (skills/lcars-init/lcars-common.sh, reached through
+# local_adapter.default_worker_engine); this is only how the answer is said.
+# ===========================================================================
+def no_engine_refusal(what=""):
+    """One sentence: what LCARS looked for, and how to get either engine."""
+    lead = what.strip() or "this needs an engine to run on"
+    return (
+        "%s, and there is no LCARS-capable CLI on this machine — LCARS drives "
+        "missions with Claude Code (looked for `claude`) or the GitHub Copilot "
+        "CLI (looked for `copilot`), and neither answered. Install either one "
+        "and restart the viewscreen: https://claude.com/claude-code or "
+        "https://github.com/features/copilot/cli." % lead)
+
+
+# S274 FIX ROUND 1 — THE OTHER HALF OF THE SAME SENTENCE: an engine WAS named,
+# and it is not on this machine.
+#
+# MEASURED. Round 0 made the "nothing was named" branch honest, but board.js's
+# picker ALWAYS posts an explicit engine, so the Align door never reached that
+# branch — it walked into subprocess and answered a human with
+# `worker engine failed to start: [Errno 2] No such file or directory:
+# 'claude'`. The holodeck had had the pre-spawn check and the plain sentence
+# since S238; this is that one literal, lifted to one place so the two doors
+# cannot drift (the holodeck's wording is UNCHANGED, byte for byte — `what` is
+# the only thing that varies).
+#
+# Like no_engine_refusal above it does NOT probe anything; it is only how the
+# answer is said. And like it, it names BOTH binaries, because a captain
+# reading "cannot run claude" needs to know copilot would also have been
+# accepted.
+def engine_not_executable(bin_, what="LCARS"):
+    """One sentence: the engine named is not here, and what LCARS looks for."""
+    return ("%s cannot run %s — it is not an executable on this machine. "
+            "Check the engine you picked; LCARS looked for `claude` "
+            "(Claude Code) and `copilot` (the GitHub Copilot CLI)."
+            % (what, bin_))
 
 
 def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):

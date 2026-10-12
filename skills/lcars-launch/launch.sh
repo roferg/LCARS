@@ -36,7 +36,8 @@
 #
 # Dependencies via env so tests can stub them:
 #   LCARS_GIT_BIN         the git binary               (default: git)
-#   LCARS_WORKER_BIN      the cold-worker CLI          (default: state workerBin → claude)
+#   LCARS_WORKER_BIN      the cold-worker CLI          (default: state workerBin
+#                         → config workerBin → the engine INSTALLED here)
 #   LCARS_WORKER_ADAPTER  the worker-adapter path      (default: ../lcars-run/worker-adapter.sh)
 #   LCARS_LAUNCH_SETTLE   liveness poll WINDOW seconds  (default: 4, may be fractional)
 #   LCARS_LAUNCH_ROOT     deploy-checkout root         (default: <repo-parent>/.lcars-launch/<repo>)
@@ -684,14 +685,77 @@ fi
 provision_worktree "$WT" || :
 
 # --- resolve the engine + spawn the launch-role discovery worker ----------
+# S274 — WHICH ENGINE IS ACTUALLY ON THIS MACHINE. ONE answer to that question,
+# and it is not this file's: `lcars init`, the File console's engine picker,
+# `lcars xo`, the board and run.sh's resolver all read the shared detector in
+# skills/lcars-init/lcars-common.sh (`lcars_default_engine` / `lcars_engine_bin`),
+# and so does this. Read IN A SUBSHELL deliberately — that library is large and
+# this script has its own `json_str` / `die`, so sourcing it into this process
+# could silently redefine one of them; a subshell makes it a pure question.
+_launch_common_lib() {
+  printf '%s' "${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+}
+launch_installed_engine() { # [config] → engine name (may be EMPTY)
+  local lib; lib="$(_launch_common_lib)"
+  [ -f "$lib" ] || return 0
+  ( . "$lib" >/dev/null 2>&1 || exit 0; lcars_default_engine "${1:-}" )
+}
+launch_engine_bin() { # engine → the binary that name means (identity fallback)
+  local lib; lib="$(_launch_common_lib)"
+  [ -f "$lib" ] || { printf '%s' "${1:-}"; return 0; }
+  ( . "$lib" >/dev/null 2>&1 || { printf '%s' "${1:-}"; exit 0; }
+    lcars_engine_bin "${1:-}" || printf '%s' "${1:-}" )
+}
+
 WORKER_BIN="${LCARS_WORKER_BIN:-}"
 # The main deploy has NO state.json, so only consult it when it exists (reading an
-# empty $STATE path with the jq-free sed reader would stall). Fallback chain is
-# otherwise unchanged: env → state workerBin → claude.
+# empty $STATE path with the jq-free sed reader would stall).
 if [ -z "$WORKER_BIN" ] && [ -n "$STATE" ] && [ -f "$STATE" ]; then
   WORKER_BIN="$(json_str "$STATE" workerBin)"
 fi
-[ -n "$WORKER_BIN" ] || WORKER_BIN="claude"
+# The repo's AMBIENT default, below the mission's own pin and above detection —
+# the same rung run.sh's resolver reads config.json at.
+if [ -z "$WORKER_BIN" ] && [ -f "$LCARS_CFG" ]; then
+  WORKER_BIN="$(json_str "$LCARS_CFG" workerBin)"
+fi
+# THE LAST RUNG IS WHAT IS INSTALLED, never the literal `claude`. Until S274 this
+# read `[ -n "$WORKER_BIN" ] || WORKER_BIN="claude"`, so `lcars launch --main`
+# (which has no state.json to pin anything) spawned a claude that is not there on
+# every copilot-only laptop — a repo `lcars init` had already set up on copilot.
+if [ -z "$WORKER_BIN" ]; then
+  _eng="$(launch_installed_engine "$LCARS_CFG")"
+  [ -n "$_eng" ] && WORKER_BIN="$(launch_engine_bin "$_eng")"
+fi
+# NEITHER CLI IS HERE. One sentence naming BOTH engines, because either one
+# cures it (init.sh:72's wording, unchanged since S207) — never an instruction
+# to install the one engine this captain may deliberately not have.
+if [ -z "$WORKER_BIN" ]; then
+  NO_ENGINE_MSG="no worker CLI found — LCARS drives missions with Claude Code (looked for '$(launch_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(launch_engine_bin copilot)'), and neither is on this machine. Install either one and re-run: https://claude.com/claude-code or https://github.com/features/copilot/cli."
+  # …AND REVISE THE RECORD BEFORE DYING (S274 fix round 2). This refusal lands
+  # ~75 lines AFTER the early `{"status":"launching", …}` write at the top of the
+  # flow, and that write is deliberately early (it is what stops an observer
+  # outrunning the slow spin-up and re-clicking RUN). So a refusal that only
+  # `die`s leaves "launching" on disk FOREVER for a launch that started nothing,
+  # and the board's top band faithfully renders a permanent ◐ DEPLOYING… pill —
+  # a visible lie, still there minutes later. Commit a `failed` record carrying
+  # THIS REFUSAL SENTENCE as the message (the band shows ml.message verbatim),
+  # so the captain reads the real reason and gets the ▸ Deploy Main retry back.
+  # Written here rather than by resolving the engine earlier, because moving the
+  # resolution above the worktree/provision block is a restructure. Inline (not
+  # write_failed) only because that helper is defined further down this file;
+  # it goes through commit_launch_json, the one sanctioned writer, and collapses
+  # newlines exactly as write_failed does — json_esc does not escape them, so a
+  # raw newline in "message" would truncate the record for every reader.
+  {
+    printf '{\n'
+    printf '  "status": "failed",\n'
+    printf '  "target": "",\n'
+    printf '  "message": "%s"\n' \
+      "$(json_esc "$(printf '%s' "$NO_ENGINE_MSG" | tr '\n' ' ')")"
+    printf '}\n'
+  } | commit_launch_json
+  die "$NO_ENGINE_MSG"
+fi
 CLI="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
 
 mkdir -p "$OUTDIR"

@@ -3247,6 +3247,11 @@ var ENGINE_SOURCE_WORDS = {
   "internal":        "LCARS re-pin",
   "detected":        "host CLI",
   "default":         "default",
+  // S274 — the resolver's honest empty answer: neither CLI is on this machine.
+  // It replaced the old `default` rung (the literal `claude`), which could name
+  // an engine the captain had never installed. `default` stays mapped for the
+  // cards that recorded it before this session.
+  "none":            "no CLI here",
   "adopt-kept":      "mission pin · kept at adopt",
   "adopt-converted": "converted at adopt",
   "adopt-chosen":    "chosen at adopt"

@@ -1209,6 +1209,51 @@ WT_PNL="$(sed -n 's/.*"worktreeSetupCommand": *"\(.*\)",*$/\1/p' "$repoPNL/.git/
 check "S207-4: WITH a pnpm-lock.yaml the seed KEEPS --frozen-lockfile" \
   "printf '%s' \"\$WT_PNL\" | qgrep -q 'frozen-lockfile'"
 
+# --- S274 item 6: `lcars_default_engine` NEVER falls to the literal ---------
+# The S274 brief was written believing this function's last step was "claude,
+# the historical default", so that a laptop with NEITHER CLI would be told to
+# run one that is not there. It does not: an empty available-set returns EMPTY,
+# and `claude` is preferred ONLY when claude is genuinely among the installed
+# engines. init.sh:70-72 depends on that empty answer (it is the ONE fatal
+# case), and so, from this session on, do launch.sh and run.sh. This block
+# PINS the behaviour so nobody "fixes" it into a default again.
+ENGDIR="$(mktemp -d "$TMPROOT/engines.XXXX")"
+make_claude_stub "$ENGDIR/claude"
+make_copilot_stub "$ENGDIR/copilot"
+# the probe is `command -v`, so a path that does not exist is "not installed".
+ENG_NONE="$ENGDIR/not-installed"
+eng_default() { # claude-bin copilot-bin [config] → the chosen engine (may be empty)
+  ( LCARS_CLAUDE_BIN="$1" LCARS_COPILOT_BIN="$2" \
+      bash -c '. "$0"; lcars_default_engine "${1:-}"' \
+      "$REPO_ROOT/skills/lcars-init/lcars-common.sh" "${3:-}" )
+}
+eng_list() { # claude-bin copilot-bin → the installed engines, newline-joined
+  ( LCARS_CLAUDE_BIN="$1" LCARS_COPILOT_BIN="$2" \
+      bash -c '. "$0"; lcars_available_engines' \
+      "$REPO_ROOT/skills/lcars-init/lcars-common.sh" )
+}
+check "S274-6: NEITHER engine installed ⇒ lcars_default_engine answers EMPTY" \
+  "[ -z \"\$(eng_default '$ENG_NONE' '$ENG_NONE')\" ]"
+check "S274-6: …and it never names claude when claude is not there" \
+  "! printf '%s' \"\$(eng_default '$ENG_NONE' '$ENG_NONE')\" | qgrep -q claude"
+check "S274-6: …and lcars_available_engines is empty too" \
+  "[ -z \"\$(eng_list '$ENG_NONE' '$ENG_NONE')\" ]"
+check "S274-6: copilot-only ⇒ copilot (the single installed engine)" \
+  "[ \"\$(eng_default '$ENG_NONE' '$ENGDIR/copilot')\" = copilot ]"
+check "S274-6: claude-only ⇒ claude" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENG_NONE')\" = claude ]"
+check "S274-6: BOTH installed ⇒ claude, the historical front-door default" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENGDIR/copilot')\" = claude ]"
+# A config pin for an engine that is NOT installed is skipped, never preselected.
+ENGCFG="$ENGDIR/pin-copilot.json"
+printf '{\n  "workerBin": "copilot"\n}\n' >"$ENGCFG"
+check "S274-6: a config pin WINS when that engine is installed" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENGDIR/copilot' '$ENGCFG')\" = copilot ]"
+check "S274-6: a config pin for an ABSENT engine is skipped, not obeyed" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENG_NONE' '$ENGCFG')\" = claude ]"
+check "S274-6: a config pin cannot conjure an engine out of an empty laptop" \
+  "[ -z \"\$(eng_default '$ENG_NONE' '$ENG_NONE' '$ENGCFG')\" ]"
+
 # ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"

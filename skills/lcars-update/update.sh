@@ -266,7 +266,8 @@ set_test_command() {
 
 # run_discovery — spawn ONE read-only test-discovery worker (the lcars-launch
 # discovery pattern: the worker INSPECTS and proposes; this skill executes).
-# Engine: $LCARS_WORKER_BIN → config workerBin → claude. Toolset role `launch`
+# Engine: $LCARS_WORKER_BIN → config workerBin → the engine INSTALLED here
+# (lcars_default_engine; S274). Toolset role `launch`
 # (Read/Grep/Glob/Bash — NO Write/Edit, the read fence) via the worker-adapter;
 # the worker writes its {testCommand, rationale, status, message} proposal to
 # $LCARS_DISCOVERY_JSON and nothing else. Sets DISC_CMD / DISC_RATIONALE /
@@ -277,7 +278,22 @@ run_discovery() {
   DISC_CMD=""; DISC_RATIONALE=""; DISC_MSG=""
   local wb="${LCARS_WORKER_BIN:-}"
   [ -n "$wb" ] || wb="$(lcars_config_get "$CONFIG" workerBin)"
-  [ -n "$wb" ] || wb="claude"
+  # S274 — THE LAST RUNG IS WHAT IS INSTALLED, never the literal `claude`. This
+  # read `[ -n "$wb" ] || wb="claude"`, so on a copilot-only laptop with no
+  # config pin `lcars update --fix-tests` spawned a claude that is not there and
+  # the discovery produced nothing. lcars-common.sh is already sourced at the
+  # top of this file, so the shared detector — the same one `lcars init`, the
+  # engine pickers, run.sh and launch.sh read — is right here.
+  if [ -z "$wb" ]; then
+    local _eng; _eng="$(lcars_default_engine "$CONFIG")"
+    [ -n "$_eng" ] && wb="$(lcars_engine_bin "$_eng")"
+  fi
+  # NEITHER CLI IS HERE: say so in one sentence naming both, rather than
+  # spawning a binary that is not there and reporting "the crew found nothing".
+  if [ -z "$wb" ]; then
+    DISC_MSG="no worker CLI found — LCARS drives missions with Claude Code (looked for '$(lcars_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(lcars_engine_bin copilot)'), and neither is on this machine. Install either one and re-run: https://claude.com/claude-code or https://github.com/features/copilot/cli."
+    return 1
+  fi
   local cli; cli="$(basename "$wb")"
   local outdir="$LCARS_DIR/.fixtests-work"
   mkdir -p "$outdir"
