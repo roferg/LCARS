@@ -36,6 +36,12 @@ var writesActive = null;
 // viewscreen reloads board.js, resets this to false, and the banner returns.
 var versionBannerDismissed = false;
 
+// S275 — the same session-only dismissal for the "no LCARS-capable CLI on this
+// machine" band. In-memory for the same reason: installing a CLI is a thing he
+// does and then comes back, and a persisted dismissal would hide the one line
+// that explains why nothing works on the laptop he has not fixed yet.
+var engineBannerDismissed = false;
+
 // UX-14: the repo the board is attached to (board.meta.repo), captured on every
 // render so the detail modal's "View on GitHub" link can build the issue URL
 // even when the per-mission payload doesn't echo the repo. May stay null.
@@ -988,6 +994,42 @@ function xoEngineHere(meta, engine) {
   return xoEnginesHere(meta).indexOf(String(engine)) >= 0;
 }
 
+/* ── S275 FIX ROUND 1: `[]` IS AN ANSWER, ABSENT IS A SILENCE ─────────────
+   `xoEnginesHere` NORMALISES both to `[]`, which destroys the only fact that
+   tells them apart — and every `.length` test downstream then reads "nothing
+   installed" as "nobody asked". That is the defect a fresh tester hit on a
+   laptop with NEITHER CLI: `xoEnginesHere(meta).length && !xoEngineHere(...)`
+   is `0 && …` for every engine, so nothing was marked unavailable, ◈ Copilot
+   sat preselected and ◈ Engage POSTed `{"engine":"copilot"}` to a machine with
+   no copilot on it.
+
+   So the distinction gets ONE home, and it reads the RAW field before any
+   normalisation. `engineListAnswer` (the File/holodeck picker's own helper) is
+   already the single raw-shape test in this file — list → the list, anything
+   else → null — so these two delegate to it rather than re-testing the shape a
+   second time and disagreeing with it later.
+
+     absent  → `enginesAnswered` false. NOTHING CHANGES on any surface: an
+               older daemon, the GitHub adapter or a detector that could not
+               run has told us nothing, and "I could not ask" is not "it is
+               not here".
+     `[]`    → `noEngineHere` true. The detector ANSWERED, and the answer is
+               none: every engine locks and every control that needs one
+               refuses, out loud.
+
+   Both take the RAW value, not a `meta`, because the two surfaces that ask
+   carry it under different keys (`meta.enginesHere` for the board,
+   `fd.engines` for the front door) and a predicate bound to one key could not
+   serve the other. */
+function enginesAnswered(raw) {
+  return engineListAnswer(raw) !== null;
+}
+
+function noEngineHere(raw) {
+  var list = engineListAnswer(raw);
+  return !!list && list.length === 0;
+}
+
 function xoEngineRowLabel(meta, engine, chosen) {
   var here = xoEnginesHere(meta);
   var mark = chosen ? "◆ " : "◈ ";
@@ -1026,9 +1068,24 @@ function openXoPicker(meta) {
     "Number One takes the gates that are yours — a stage parked for an "
     + "answer, and the look at Verify — and hands the conn back with a "
     + "report. It never writes code and it never merges."));
+  /* S275 FIX ROUND 1 — the daemon's answer, and whether there IS one. `dead`
+     used to be `xoEnginesHere(meta).length && !xoEngineHere(meta, engine)`,
+     which on a laptop with NEITHER CLI is `0 && …` for every engine: nothing
+     locked, Copilot preselected, ◈ Engage live, and one press POSTed an engine
+     that was not on the machine. `answered` is the fact that `.length` could
+     not carry — see `enginesAnswered` above. */
+  var answered = enginesAnswered(meta && meta.enginesHere);
+  var noEngine = noEngineHere(meta && meta.enginesHere);
   var rows = [];
   function paint() {
     for (var i = 0; i < rows.length; i++) {
+      /* THE LOCKED ROW IS SKIPPED, NOT REPAINTED. This loop rewrites
+         `className` wholesale, so it used to drop the `locked` class
+         `markLocked` had just written — and paint() runs once right after the
+         rows are built, so the lock was wiped before the picker was ever on
+         screen, let alone on the next click. `engineOptions` already guards
+         this with a `continue`; that is the shape, so it is the shape here. */
+      if (rows[i].dead) continue;
       var on = rows[i].engine === chosen;
       rows[i].node.className = "btn xo-engine" + (on ? " chosen" : "");
       rows[i].node.textContent = xoEngineRowLabel(meta, rows[i].engine, on);
@@ -1036,8 +1093,13 @@ function openXoPicker(meta) {
     }
   }
   XO_ENGINES.forEach(function (engine) {
-    var dead = xoEnginesHere(meta).length && !xoEngineHere(meta, engine);
-    var o = btn(xoEngineRowLabel(meta, engine, false), "xo-engine",
+    var dead = answered && !xoEngineHere(meta, engine);
+    /* A dead row's label is built ONCE, here, and never repainted — so it is
+       built the way `engineOptions` builds its own: no leading `◈`, because
+       `markLocked` prepends `⊘` and "⊘ ◈ Claude" is two state glyphs on one
+       control. A live row keeps `xoEngineRowLabel`, which paint() owns. */
+    var o = btn(dead ? engineLabel(engine) + " — not installed"
+                     : xoEngineRowLabel(meta, engine, false), "xo-engine",
                 function () { if (!dead) { chosen = engine; paint(); } });
     o.setAttribute("data-engine", engine);
     o.setAttribute("role", "radio");
@@ -1046,15 +1108,28 @@ function openXoPicker(meta) {
       o.title = engineLabel(engine) + " is not installed on this machine";
       markLocked(o);
     }
-    rows.push({ engine: engine, node: o });
+    rows.push({ engine: engine, node: o, dead: dead });
     m.body.appendChild(o);
   });
   paint();
+  /* NOT A SILENT GREY-OUT (the File console's rule, applied here): when the
+     detector has answered "nothing", the picker says so in its own prose
+     before the captain reaches for a button that cannot work. */
+  if (noEngine) m.body.appendChild(el("div", "xo-q", ENGINE_NONE_NOTE));
   m.foot.appendChild(btn("Cancel", "", closeOverlay));
-  m.foot.appendChild(applyWriteState(btn("◈ Engage", "go", function () {
+  var engage = applyWriteState(btn("◈ Engage", "go", function () {
+    /* THE REFUSAL IS IN THE HANDLER TOO, not only on the attribute. A disabled
+       button is a DOM promise; this is the one that holds if anything ever
+       reaches the handler another way. */
+    if (noEngine) return;
     closeOverlay();
     dispatchCard("/api/xo/on", { engine: chosen });
-  })));
+  }));
+  if (noEngine) {
+    engage.disabled = true;
+    engage.title = ENGINE_NONE_NOTE;
+  }
+  m.foot.appendChild(engage);
   showOverlay(m.wrap);
 }
 
@@ -4309,6 +4384,9 @@ function render(board) {
   renderXoLegend(board.meta);
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
+  /* S275: the "no engine on this machine" band, on EVERY render so it clears
+     as well as appears. */
+  renderEngineBanner(board.meta);
   renderRemoteNote(board.meta && board.meta.remote);
   renderTestReadiness(board.meta && board.meta.testReadiness);
   /* S183: the FOUNDATION LOCK. On EVERY render, so it lifts as well as locks —
@@ -4569,6 +4647,62 @@ function renderVersionBanner(version) {
   right.appendChild(x);
   band.appendChild(right);
 
+  host.appendChild(band);
+}
+
+/* ── S275: NO LCARS-CAPABLE CLI ON THIS MACHINE ───────────────────────────
+   S274 made this state REACHABLE with the daemon up — the viewscreen starts,
+   the board paints, and until now nothing on it said why every control that
+   needs an engine refuses. One band, said once, in the words the captain
+   approved; the consoles say the rest themselves (`ENGINE_NONE_NOTE`).
+
+   `meta.enginesHere` must be an EMPTY LIST, not absent: `[]` is the detector
+   answering "there is nothing here", while absent is "I could not ask" (an
+   older daemon, the GitHub adapter, a detector that could not run) and must
+   never be reported to the captain as a missing install.
+
+   NO NEW STYLE AND NO NEW COLOUR (ADR-007): this is the version banner's own
+   `.version-banner` host and its own `.vb-band` / `.vb-msg` / `.vb-right` /
+   `.vb-x` furniture, so the board grows one more band of a kind it already
+   has rather than a second banner idiom. Painted on EVERY render, so it
+   clears as well as appears — install a CLI and the next SSE tick takes it
+   down with nothing to reload. */
+var ENGINE_BANNER_TEXT =
+  "No LCARS-capable CLI is installed on this machine — install Claude Code "
+  + "or the GitHub Copilot CLI to file, grill or run anything. You can still "
+  + "watch.";
+
+function renderEngineBanner(meta) {
+  var host = document.getElementById("engineBanner");
+  if (!host) return;
+  // REBUILT, never appended to: render() runs on every SSE tick, and a host
+  // that is only added to stacks one band per tick.
+  host.innerHTML = "";
+  if (engineBannerDismissed) { host.hidden = true; return; }
+  var here = meta && meta.enginesHere;
+  if (Object.prototype.toString.call(here) !== "[object Array]"
+      || here.length) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  // `vb-sentence` is typography only (the band's own amber, pip, pill and ✕
+  // are untouched) — this is the one message in this host that is a whole
+  // sentence rather than a three-word headline.
+  var band = el("div", "vb-band vb-sentence");
+  band.appendChild(el("span", "vb-pip", ""));
+  band.appendChild(el("span", "vb-msg", ENGINE_BANNER_TEXT));
+  var right = el("div", "vb-right");
+  var x = btn("✕", "vb-x", function () {
+    engineBannerDismissed = true;
+    host.hidden = true;
+    host.innerHTML = "";
+  });
+  x.title = "Dismiss until the viewscreen is refreshed or relaunched";
+  x.setAttribute("aria-label",
+                 "Dismiss the missing-CLI banner for this session");
+  right.appendChild(x);
+  band.appendChild(right);
   host.appendChild(band);
 }
 
@@ -4937,10 +5071,42 @@ function frontDoorEngine(fd) {
   return list.length ? String(list[0]) : "";
 }
 
+/* ── S275 FIX ROUND 1: THE DAY-ONE DOOR ON A MACHINE WITH NO CLI ──────────
+   ▸ ESTABLISH VISION was enabled, untitled, asked no engine question, and
+   POSTed `/api/align/start {"idea":…,"vision":true}` on a laptop with neither
+   CLI installed — the same absent-versus-empty collapse as the ◈ Number One
+   picker, one surface along: `frontDoorEngines` normalises absent and `[]` to
+   the same `[]`, and `if (!list.length) return` then reads BOTH as "nothing to
+   offer".
+
+   IT ASKS `meta.enginesHere`, NOT `fd.engines`, and that is deliberate. The
+   daemon builds the front-door block with `blk.get("engines") or []`
+   (local_adapter.py :1305), so `fd.engines` is `[]` BOTH when nothing is
+   installed AND when the helper predates S195 — the distinction is already
+   gone by the time the door sees it. `meta.enginesHere` is the field whose
+   contract keeps it (local_adapter.py :566-578: always a list, `[]` is an
+   answer; absent only from an older daemon or the GitHub adapter), and it is
+   the same fact the File console's picker reads. A board that tells us nothing
+   behaves EXACTLY as it did before this round — which is what
+   `test_no_engine_installed_offers_nothing_and_posts_nothing` pins. */
+function frontDoorNoEngine() {
+  var meta = LAST_BOARD && LAST_BOARD.meta;
+  return noEngineHere(meta && meta.enginesHere);
+}
+
 /* Paint the control into `host`, or nothing at all. Returns nothing — the
    choice lives in `frontDoorState.engine`, never in the DOM. */
 function renderFrontDoorEngine(host, fd) {
   var list = frontDoorEngines(fd);
+  /* NOTHING TO PICK BECAUSE THERE IS NOTHING HERE — which is a different
+     screen from "nothing to pick because nobody asked". Said in the door's own
+     `fd-engine` furniture, so there is no new style and no new colour. */
+  if (frontDoorNoEngine()) {
+    var none = el("div", "fd-engine");
+    none.appendChild(el("div", "fd-engine-one", ENGINE_NONE_NOTE));
+    host.appendChild(none);
+    return;
+  }
   if (!list.length) return;                       // rule 1: nothing to offer
   var chosen = frontDoorEngine(fd);
   frontDoorState.engine = chosen;
@@ -5094,8 +5260,17 @@ function renderFrontDoor(fd) {
                 frontDoorState.screen === "grill" ? "▸ Continue" : copy.primary);
     go.type = "button";
     go.addEventListener("click", function () {
+      /* S275 — the refusal in the handler as well as on the attribute: this
+         button's whole job is to spawn a grill worker on a CLI, and there is
+         none. The sentence above says why; `title` says it on the control the
+         captain is pointing at. */
+      if (frontDoorNoEngine()) return;
       frontDoorSubmit(box ? (box.value || "") : "");
     });
+    if (frontDoorNoEngine()) {
+      go.disabled = true;
+      go.title = ENGINE_NONE_NOTE;
+    }
     actions.appendChild(go);
     var ghost = el("button", "btn ghost", copy.ghost);
     ghost.type = "button";
@@ -6862,6 +7037,138 @@ function attachImagePaster(textarea, onError, store) {
   };
 }
 
+/* ════════════════ S275: THE ⬡ ENGINE PICKER, ONE IMPLEMENTATION ══════════
+   THE DEFECT, in the captain's own words: install only Copilot and the ▦ File
+   Mission console still offers you Claude, PRESELECTED. Pick nothing, press
+   the button, and you file a mission pinned to a CLI that is not on your
+   machine — `file.sh` persists it and `run.sh` dies at `require_worker` a
+   stage later. ⬡ New Program had the same picker and the same hole.
+
+   Three pickers already answered this correctly before this session: ◈ Number
+   One (`openXoPicker`), the remote Adopt picker (`openAdoptPicker`) and the
+   front door (`renderFrontDoorEngine`). This is THEIR treatment, extracted,
+   so the fourth and fifth cannot drift from the first three and a sixth
+   cannot be written without it:
+
+     `⬡ Claude`                     an engine this machine HAS, offerable.
+     `⊘ Claude — not installed`     one it does not: `disabled`, `.locked`
+                                    (hollow + dashed), titled with the SAME
+                                    sentence `openXoPicker` writes, and still
+                                    DRAWN rather than hidden — "claude is not
+                                    here" is the fact that explains the choice
+                                    he is being offered. Hiding it would turn
+                                    an explanation into a mystery.
+
+   NO NEW COLOUR (ADR-007): the one stylesheet rule this needs hands a
+   `.choice .opt` the `.btn.locked` blue the sheet already defines.
+
+   THREE STATES OF `engines`, NOT TWO, and collapsing the middle one is what
+   costs money:
+     null/undefined  nobody asked — an older daemon, the GitHub adapter, a
+                     detector that could not run. Every option is offered and
+                     the caller's own default stands: "I could not ask" is not
+                     "it is not here" (`xoEnginesHere`'s own ruling).
+     []              asked, and there is nothing here. Every option locks and
+                     the caller disables its submit and says so.
+     a list          offer what is on it, lock what is not.
+
+   KEYBOARD. :1038-1050's rows are real `<button disabled>`, which a browser
+   skips natively. These are `span`s, so the guarantee is built: a locked
+   option gets no `keyActivable` wiring and no click listener at all, so there
+   is no handler for Enter, Space or a mouse to reach. */
+var PICKER_ENGINES = ["claude", "copilot"];
+
+/* The sentence a console shows instead of greying a control out in silence.
+   Same words as the board band, in the second person, because here he is
+   looking straight at the control he cannot use. */
+var ENGINE_NONE_NOTE =
+  "No LCARS-capable CLI is installed on this machine, so nothing can drive "
+  + "this — install Claude Code or the GitHub Copilot CLI and this console "
+  + "unlocks itself.";
+
+/* The detector's answer as a list of strings, or null for "nobody asked". */
+function engineListAnswer(engines) {
+  return Object.prototype.toString.call(engines) === "[object Array]"
+    ? engines.map(String) : null;
+}
+
+function engineHereIn(list, engine) {
+  return !list || list.indexOf(String(engine)) >= 0;
+}
+
+/* The option to OPEN on: the caller's declared preference when this machine
+   has it (the daemon's `engineDefault` for the File console, the daemon's own
+   engine for the holodeck), else the first engine that IS here. With nothing
+   installed the preference is returned UNCHANGED rather than "" — the picker
+   is locked and the value is moot, but a submit that somehow fired must not
+   post an empty engine. */
+function engineDefaultFor(list, deflt) {
+  var want = String(deflt || "");
+  if (want && engineHereIn(list, want)) return want;
+  if (list) {
+    for (var i = 0; i < PICKER_ENGINES.length; i++) {
+      if (list.indexOf(PICKER_ENGINES[i]) >= 0) return PICKER_ENGINES[i];
+    }
+  }
+  return want;
+}
+
+/* Paint the picker into `host`. The choice lives in `ref.engine`, NEVER in the
+   DOM, and is set here — so a submit reads one place whether the captain
+   clicked or took the default, which is exactly what the old console got wrong
+   (its default was a literal and its clicks were a second code path).
+
+   Returns {nodes, live}: `live` is false when this machine has no engine at
+   all, and it is what the caller's submit gates on. */
+function engineOptions(host, ref, opts) {
+  opts = opts || {};
+  var list = engineListAnswer(opts.engines);
+  ref.engine = engineDefaultFor(list, opts.deflt);
+  var nodes = [];
+  var live = false;
+  function paint() {
+    for (var i = 0; i < nodes.length; i++) {
+      // THE LOCKED ROW IS SKIPPED, not repainted. openXoPicker's paint()
+      // rewrites className for every row including its dead one, which drops
+      // the `locked` class markLocked just wrote; openAdoptPicker's `continue`
+      // is the shape that holds, so it is the shape copied here.
+      if (nodes[i]._dead) continue;
+      var on = nodes[i]._engine === ref.engine;
+      if (on) nodes[i].classList.add("sel");
+      else nodes[i].classList.remove("sel");
+      nodes[i].setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+  PICKER_ENGINES.forEach(function (engine) {
+    var dead = !engineHereIn(list, engine);
+    var o = el("span", "opt", dead
+      ? engineLabel(engine) + " — not installed"
+      : "⬡ " + engineLabel(engine));
+    o.setAttribute("data-engine", engine);
+    o._engine = engine;
+    o._dead = dead;
+    if (dead) {
+      o.disabled = true;
+      o.title = engineLabel(engine) + " is not installed on this machine";
+      // The house lock treatment, not a second one: `⊘`, hollow, dashed — the
+      // same thing every other unusable control on this board wears.
+      markLocked(o);
+    } else {
+      live = true;
+      keyActivable(o);
+      o.addEventListener("click", function () {
+        ref.engine = engine;
+        paint();
+        if (typeof opts.onPick === "function") opts.onPick(engine);
+      });
+    }
+    nodes.push(o);
+    host.appendChild(o);
+  });
+  paint();
+  return { nodes: nodes, live: live };
+}
+
 /* ════════════════ SCREEN: FILE A MISSION (#file) ════════════════ */
 function openFile() {
   /* S183 — the FOUNDATION LOCK, said rather than implied. `paintFoundationLock`
@@ -6912,27 +7219,26 @@ function openFile() {
   var engineWrap = el("div", "field");
   engineWrap.appendChild(label("Engine — which CLI drives this mission?"));
   var choice = el("div", "choice");
+  /* S275 — THE ENGINES THIS MACHINE ACTUALLY HAS. This block used to be
+     `var chosen = { engine: "claude" }` and two hardcoded `⬡` spans with
+     Claude preselected, which is how a copilot-only laptop filed a mission
+     pinned to a CLI it did not have. The daemon's own detector answer
+     (`meta.enginesHere`) and its own preselection (`meta.engineDefault`) —
+     the same two facts the ◈ Number One picker reads — decide it now, through
+     the one shared helper. `"claude"` survives as the fallback for a board the
+     daemon told NOTHING, where the console is byte-identical to before. */
+  var fileMeta = LAST_BOARD && LAST_BOARD.meta;
   var chosen = { engine: "claude" };
-  // S140 fix: the picker is keyboard-operable (Tab to it, Enter/Space selects).
-  // Attribute + keydown only — the click path and what it does are untouched.
-  var optClaude = keyActivable(el("span", "opt", "⬡ Claude"));
-  var optCopilot = keyActivable(el("span", "opt", "⬡ Copilot"));
-  function pick(engine, node) {
-    chosen.engine = engine;
-    [optClaude, optCopilot].forEach(function (o) {
-      o.classList.remove("sel");
-      o.setAttribute("aria-pressed", "false");
-    });
-    node.classList.add("sel");
-    node.setAttribute("aria-pressed", "true");
-  }
-  optClaude.classList.add("sel");
-  optClaude.setAttribute("aria-pressed", "true");
-  optCopilot.setAttribute("aria-pressed", "false");
-  optClaude.addEventListener("click", function () { pick("claude", optClaude); });
-  optCopilot.addEventListener("click", function () { pick("copilot", optCopilot); });
-  choice.appendChild(optClaude); choice.appendChild(optCopilot);
+  var filePicker = engineOptions(choice, chosen, {
+    engines: fileMeta && fileMeta.enginesHere,
+    deflt: (fileMeta && fileMeta.engineDefault) || "claude",
+  });
   engineWrap.appendChild(choice);
+  // NOT A SILENT GREY-OUT. A console whose buttons are dead says why, in the
+  // console, next to the control it is about.
+  if (!filePicker.live) {
+    engineWrap.appendChild(el("div", "engine-none", ENGINE_NONE_NOTE));
+  }
   m.body.appendChild(engineWrap);
 
   var err = el("div", "errline"); err.hidden = true;
@@ -6984,6 +7290,16 @@ function openFile() {
       showErr(err, msg);
     });
   }));
+  /* S275 — BOTH SUBMITS NEED AN ENGINE, so with none installed both are
+     locked: parking persists the engine into the mission (file.sh:385-396) and
+     aligning spawns a worker on it immediately. The sentence above says why
+     once; neither button pretends it could act. */
+  if (!filePicker.live) {
+    park.disabled = true;
+    park.title = ENGINE_NONE_NOTE;
+    go.disabled = true;
+    go.title = ENGINE_NONE_NOTE;
+  }
   // Footer order (primary rightmost, per the modal convention):
   // [Cancel] [File & Begin Alignment (secondary)] [◇ File to Backlog ▸ (primary)].
   m.foot.appendChild(go);
@@ -16605,7 +16921,7 @@ function openNewProgram() {
     var lead = picked.val === "grounding" ? "One cheap pass"
              : picked.val === "screenshot" ? "One cheap pass over your screenshot"
              : "Nothing is read from your project";
-    var parts = [lead, holoEngineTier(chosenEngine.val)];
+    var parts = [lead, holoEngineTier(chosenEngine.engine)];
     if (picked.val === "grounding") parts.push("read-only");
     return parts.join(" · ");
   }
@@ -16696,33 +17012,33 @@ function openNewProgram() {
   var f3 = el("div", "field");
   f3.appendChild(label("Engine — which CLI runs this program?"));
   var echoice = el("div", "choice");
-  var chosenEngine = { val: holoDefaultEngine() };
-  var optClaude = keyActivable(el("span", "opt", "⬡ Claude"));
-  var optCopilot = keyActivable(el("span", "opt", "⬡ Copilot"));
-  function pickEngine(engine, node) {
-    chosenEngine.val = engine;
-    [optClaude, optCopilot].forEach(function (o) {
-      o.classList.remove("sel");
-      o.setAttribute("aria-pressed", "false");
-    });
-    node.classList.add("sel");
-    node.setAttribute("aria-pressed", "true");
-    paintFoot();
-  }
-  optClaude.addEventListener("click", function () {
-    pickEngine("claude", optClaude);
+  /* S275 — …AND ONLY THE ENGINES THIS MACHINE HAS. This picker was copied from
+     the File console's and it inherited its hole with it: two hardcoded spans
+     and a default from `holoDefaultEngine()`, which falls to copilot on an
+     unconfigured daemon — so a claude-only laptop opened the dialog on an
+     engine it did not have and the start died in the daemon.
+
+     `holoDefaultEngine()` is UNCHANGED and is still the preference (the S127
+     money default, and a configured daemon still opens on its own engine); it
+     only loses when this machine does not have what it asks for. The
+     installed list is the board payload's, read where the Adopt picker reads
+     it — no second detector in this file. */
+  var holoMeta = LAST_BOARD && LAST_BOARD.meta;
+  var chosenEngine = { engine: holoDefaultEngine() };
+  var holoPicker = engineOptions(echoice, chosenEngine, {
+    engines: holoMeta && holoMeta.enginesHere,
+    deflt: holoDefaultEngine(),
+    // the footer sentence names the tier the PICKED engine really runs at, so
+    // it is rebuilt on every pick (FL-001) — the one thing this picker does
+    // that the File console's does not.
+    onPick: function () { paintFoot(); },
   });
-  optCopilot.addEventListener("click", function () {
-    pickEngine("copilot", optCopilot);
-  });
-  echoice.appendChild(optClaude); echoice.appendChild(optCopilot);
   f3.appendChild(echoice);
+  if (!holoPicker.live) {
+    f3.appendChild(el("div", "engine-none", ENGINE_NONE_NOTE));
+  }
   m.body.appendChild(f3);
-  // the INITIAL selection goes through the same one function every later click
-  // does — no second block setting `sel` and aria-pressed by hand, which is
-  // where a picker's default and its clicks drift apart.
-  pickEngine(chosenEngine.val,
-             chosenEngine.val === "copilot" ? optCopilot : optClaude);
+  paintFoot();
 
   m.body.appendChild(err);
 
@@ -16752,7 +17068,8 @@ function openNewProgram() {
     err.hidden = true;
     busy.hidden = false;
     postWrite("/api/holodeck/start",
-      { program: nm, mode: picked.val, engine: holoEngineBin(chosenEngine.val) },
+      { program: nm, mode: picked.val,
+        engine: holoEngineBin(chosenEngine.engine) },
       function (state) {
         closeOverlay();
         HOLO.activeId = state.sessionId;
@@ -16789,6 +17106,14 @@ function openNewProgram() {
   // daemon's own `_holodeck_model` (published per engine), never a copy of it
   // here: this line was once the hardcoded "One cheap pass · sonnet tier ·
   // read-only", which is false on copilot AND false on a Blank deck.
+  /* S275 — and the control itself, when this machine has no CLI at all. The
+     daemon can only answer that press with a 502 (`_resolve_holodeck_engine`
+     has nothing to resolve), and a press that can only fail is not an offer.
+     The sentence above the footer says why, once. */
+  if (!holoPicker.live) {
+    go.disabled = true;
+    go.title = ENGINE_NONE_NOTE;
+  }
   m.foot.appendChild(footHint);
   m.foot.appendChild(el("span", "grow"));
   m.foot.appendChild(btn("Cancel", null, closeOverlay));

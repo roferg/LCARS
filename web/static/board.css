@@ -193,6 +193,16 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .version-banner .vb-band.vb-updating{background:var(--lcars-blue,#4499ff);color:#03131f}
 .version-banner .vb-band.vb-updating .vb-btn{background:rgba(0,0,0,.55);color:#eaf4ff}
 .version-banner .vb-band.vb-done{background:var(--lcars-teal,#00ccaa);color:#03131f}
+/* S275 — THE SAME BAND, READ AS A SENTENCE. The no-CLI band is the one message
+   in this host that is a whole sentence rather than a headline
+   ("No LCARS-capable CLI is installed on this machine — install Claude Code or
+   the GitHub Copilot CLI…"), and the band's display-font uppercase + .12em
+   tracking is built for three or four words. This is TYPOGRAPHY ONLY — no
+   colour, no new token, no second banner idiom: the band keeps the version
+   banner's amber, its pip, its pill and its ✕. */
+.version-banner .vb-band.vb-sentence{text-transform:none;letter-spacing:.015em}
+.version-banner .vb-band.vb-sentence .vb-msg{font-family:var(--font-body);
+  font-size:13.5px;font-weight:600;line-height:1.45}
 .version-banner .vb-pip{width:12px;height:12px;border-radius:50%;
   background:currentColor;flex:0 0 auto;animation:vb-blink 1.2s steps(2) infinite}
 @keyframes vb-blink{50%{opacity:.25}}
@@ -1226,6 +1236,34 @@ body.on-front-door #ownerFilter{display:none !important}
 /* S67 dedupe: when the option label text already contains "(recommended)" the
    text is the indicator, so suppress the REC pill (the .rec highlight stays). */
 .choice .opt.rec.no-pill::after{display:none}
+
+/* S275 — AN ENGINE THIS MACHINE DOES NOT HAVE. `.btn.locked` (up in the .btn
+   family) already says this for every button on the board: hollow, dashed, and
+   NOT dimmed. A `.choice .opt` is a span, so the same sentence is said here —
+   with the SAME declarations and the SAME token, never a second treatment.
+
+   NO NEW TOKEN (ADR-007): --lcars-blue is the one `.btn.locked` reads, with
+   the sheet's own existing fallback.
+
+   NOTHING DIMS IT, for the reason S190's D2 cost a round: an `opacity` makes a
+   compositing group and out-specifies `.btn.locked{opacity:1}`. The state is
+   carried by fill and edge, which is legible with the colour removed.
+
+   No `.sel` collision to out-specify: `engineOptions`' paint() skips a locked
+   option, so the amber fill can never land on one. */
+.choice .opt.locked{
+  background:transparent;
+  color:var(--lcars-blue,#4499ff);
+  border-color:var(--lcars-blue,#4499ff);
+  border-style:dashed;
+  cursor:default}
+.choice .opt.locked:hover{
+  color:var(--lcars-blue,#4499ff);
+  border-color:var(--lcars-blue,#4499ff)}
+/* …and the sentence a console shows instead of greying its submit out in
+   silence. The board's existing dim-note voice; no new colour. */
+.field .engine-none{margin-top:7px;font-size:12px;line-height:1.45;
+  color:var(--lcars-text-dim)}
 
 /* ── two-pane (align console — rendered-to-fidelity) ──
    UX-3: a balanced, squarer column ratio (≈ mock 1.3fr : 1fr) in a landscape

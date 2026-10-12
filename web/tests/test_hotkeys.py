@@ -835,10 +835,32 @@ class FileConsoleKeyboardTest(HotkeyBase):
         spec["openFile"] = True
         return self.run_board(board({}), **spec)
 
-    def test_the_engine_picker_renders_both_options(self):
+    # S275 REPLACED THIS PIN (captain's decision, 2026-10-11). It used to read
+    #     assertEqual([o["text"] …], ["⬡ Claude", "⬡ Copilot"])
+    # unconditionally, which pinned the console's hardcoded pair as the
+    # contract — and that pair WAS the defect: on a machine with only Copilot
+    # the console offered `⬡ Claude`, preselected, and filed a mission pinned
+    # to a CLI that was not there. The new contract is that THE INSTALLED SET
+    # DRIVES THE LABELS. The old pair survives as the "nobody asked" case,
+    # which is the one state where it is still the truth.
+    def test_the_engine_picker_renders_both_options_when_nobody_asked(self):
+        """`meta.enginesHere` ABSENT — an older daemon, the GitHub adapter, a
+        detector that could not run. Byte-identical to the pre-S275 console."""
         out = self.open_console()
         self.assertEqual([o["text"] for o in out["fileConsole"]["opts"]],
                          ["⬡ Claude", "⬡ Copilot"])
+
+    def test_the_installed_set_drives_the_labels(self):
+        """…and when the daemon DID answer, the engine that is not here is
+        drawn as the house lock instead of as an offer. The full treatment is
+        pinned in tests/test_engine_pickers.py."""
+        out = self.run_board(
+            board({}, meta={"repo": "acme/repo", "adapter": "local",
+                            "mode": "read-write", "enginesHere": ["copilot"],
+                            "engineDefault": "copilot"}),
+            openFile=True)
+        self.assertEqual([o["text"] for o in out["fileConsole"]["opts"]],
+                         ["⊘ Claude — not installed", "⬡ Copilot"])
 
     def test_the_engine_options_are_in_the_tab_order(self):
         for o in self.open_console()["fileConsole"]["opts"]:
