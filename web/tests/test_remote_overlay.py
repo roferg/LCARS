@@ -67,7 +67,7 @@ REMOTE_LINE = ("driven from another machine — adopt at Align/Verify to act her
 # the fake forge
 # --------------------------------------------------------------------------
 def issue(number, stage="implement", title=None, labels=(), assignee=None,
-          body=None, sub=None, state="OPEN"):
+          body=None, sub=None, state="OPEN", closed_at=None):
     """One `gh issue list --json …` row, in the shape real gh 2.96 emits.
 
     `sub` is the `subIssuesSummary` block — {completed,total} — which is how the
@@ -87,6 +87,12 @@ def issue(number, stage="implement", title=None, labels=(), assignee=None,
                              else {"completed": 0, "total": 0,
                                    "percentCompleted": 0}),
     }
+    # S278 — the field the Done column orders by. gh emits it on every CLOSED
+    # issue (verified read-only against github/pagesai, 2026-10-11: present on
+    # all 51 done rows) and as `null` on an open one, which is exactly how a row
+    # built without it reads here.
+    if closed_at is not None:
+        row["closedAt"] = closed_at
     return row
 
 
@@ -1713,12 +1719,29 @@ class TheLocalCardLearnsThatItShipped(unittest.TestCase):
         self.assertNotIn("shippedElsewhere", c)
 
     def test_the_shipped_issue_draws_NO_second_card(self):
-        """Rule 1 is untouched: the local mission still wins, and the widened
-        listing must not start drawing remote cards for closed issues."""
+        """S278 REPLACES HALF OF THIS PIN, by the captain's decision of
+        2026-10-11. What it pinned was "a closed issue never draws a card",
+        which was two claims wearing one assertion:
+
+          * RULE 1, which is untouched and still pinned below: issue #101 IS the
+            local mission, so it draws exactly ONE card — the local one. A
+            shipped issue the captain holds locally never doubles.
+          * "…and no closed issue draws a card AT ALL", which is the thing that
+            left a fresh clone's Done column empty for 51 shipped missions.
+            Issue #202 is NOT local, is CLOSED, and carries `lcars:done`: it is
+            now drawn, read-only, from the forge.
+
+        A CLOSED issue with no `lcars:done` is still not drawn — that half of
+        the old pin is kept, in its own test below."""
         b = self._board([issue(101, stage="done", state="CLOSED"),
-                         issue(202, stage="done", state="CLOSED")])
+                         issue(202, stage="done", state="CLOSED",
+                               closed_at="2026-09-10T10:00:00Z")])
         ids = [c["id"] for col in b["columns"].values() for c in col]
-        self.assertEqual(["m-local"], ids)
+        self.assertEqual(["m-local", "202"], ids,
+                         "local must win for #101, and #202 must reach Done")
+        done = b["columns"]["done"]
+        self.assertEqual([202], [c["issue"] for c in done])
+        self.assertIs(True, done[0]["readOnly"])
 
     def test_an_OPEN_remote_mission_still_draws_its_card(self):
         b = self._board([issue(202, stage="implement", state="OPEN")])
@@ -2051,3 +2074,542 @@ class TheGateBuysNoForgeRoundTrip(_ShippedBase):
         for _ in range(12):
             self.post("/api/mission/m-shipped/verify", {"decision": "approve"})
         self.assertEqual(1, len(calls(self.record)))
+
+
+# ==========================================================================
+# S278 — DONE MISSIONS REACH A NEW LAPTOP.
+#
+# THE GAP. The Done column is filled from LOCAL state only (board.assemble
+# routes by `stage`; local_adapter._mission_dirs returns [] when
+# `.git/lcars/missions` does not exist, which is EVERY fresh clone). So the
+# laptop that clones a repo with 51 shipped missions sees an empty Done column
+# and no evidence the factory ever shipped anything.
+#
+# The listing this module already takes was ALREADY asking for them —
+# `--state all --label lcars:mission` — and then threw every closed row away
+# one line later. This is that half of the window, spent.
+#
+# THE ONE DISTINCTION THAT MATTERS. `lcars:done` is applied by `lcars approve`
+# at the ship and nowhere else, so a CLOSED issue carrying it SHIPPED, and a
+# CLOSED issue without it was ABANDONED. Measured read-only on github/pagesai
+# (2026-10-11): 54 mission issues, all closed, 51 with the label and 3 without.
+# Those 3 are not history to be proud of and they are not drawn.
+# ==========================================================================
+def fresh_clone(tmp):
+    """A clone with NO `.git/lcars/missions` at all — the condition every
+    single one of these tests is about, and the one the local board has no
+    answer for. `.git/lcars/` carries a config and nothing else, exactly as
+    `~/Projects/pagesai` does today (it holds only `cache/`)."""
+    os.makedirs(os.path.join(tmp, ".git", "lcars"), exist_ok=True)
+    with open(os.path.join(tmp, ".git", "lcars", "config.json"), "w") as fh:
+        fh.write('{"projectName": "repo", "testCommand": "true"}\n')
+    return tmp
+
+
+def done_row(number, closed_at, title=None, labels=(), body=None):
+    """One SHIPPED mission as the forge reports it: closed, `lcars:done`, and
+    carrying the `closedAt` stamp gh emits for every closed issue."""
+    return issue(number, stage="done", state="CLOSED", closed_at=closed_at,
+                 title=title, labels=labels, body=body)
+
+
+class TheDoneColumnIsFilledFromTheForge(unittest.TestCase):
+    """Behaviour 1-4: the fresh clone's Done column, built from the listing
+    the overlay was already paying for."""
+
+    def setUp(self):
+        self.tmp = fresh_clone(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+
+    def _board(self, rows, **kw):
+        return LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, rows, self.record, **kw)).board()
+
+    # -- behaviour 1 -------------------------------------------------------
+    def test_two_shipped_missions_draw_two_read_only_done_cards(self):
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z", title="first"),
+                         done_row(31, "2026-09-20T09:00:00Z", title="second")])
+        done = b["columns"]["done"]
+        self.assertEqual(2, len(done), "the fresh clone's Done column is empty")
+        for c in done:
+            self.assertIs(True, c["remote"])
+            self.assertIs(True, c["readOnly"])
+            self.assertEqual("done", c["stage"])
+
+    def test_the_newest_ship_is_first(self):
+        """Newest-first, by the date the mission actually SHIPPED — not by
+        issue number, which is the order it was FILED in."""
+        b = self._board([done_row(99, "2026-01-02T09:00:00Z"),
+                         done_row(14, "2026-09-20T09:00:00Z"),
+                         done_row(31, "2026-05-05T09:00:00Z")])
+        self.assertEqual([14, 31, 99],
+                         [c["issue"] for c in b["columns"]["done"]])
+
+    def test_each_card_carries_title_type_and_closed_date(self):
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z", title="dark mode"),
+                         done_row(15, "2026-08-01T09:00:00Z", title="a crash",
+                                  labels=("lcars:bug",))])
+        by = {c["issue"]: c for c in b["columns"]["done"]}
+        self.assertEqual("dark mode", by[14]["title"])
+        self.assertEqual("feature", by[14]["type"])
+        self.assertEqual("2026-09-01T09:00:00Z", by[14]["closedAt"])
+        self.assertEqual("a crash", by[15]["title"])
+        self.assertEqual("bug", by[15]["type"])
+
+    def test_each_card_links_to_its_issue_on_the_configured_host(self):
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z")])
+        self.assertEqual("https://github.com/acme/repo/issues/14",
+                         b["columns"]["done"][0]["url"])
+
+    def test_the_active_mission_list_is_empty(self):
+        """`board.missions` backs the footer's "N active missions". A shipped
+        mission is not active and must not inflate it."""
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z"),
+                         done_row(31, "2026-09-20T09:00:00Z")])
+        self.assertEqual([], b["missions"])
+
+    def test_the_card_carries_the_envelope_mission_id_when_there_is_one(self):
+        env = ('<!-- lcars:handoff v1 {"id":"lcars-20260901-003",'
+               '"branch":"lcars/x","base":"main","type":"feature",'
+               '"engine":"claude","parentIssue":null,"attachments":0} -->')
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z",
+                                  body="shipped.\n\n" + env)])
+        self.assertEqual("lcars-20260901-003", b["columns"]["done"][0]["id"])
+
+    def test_a_body_with_no_envelope_falls_back_to_the_issue_number(self):
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z")])
+        self.assertEqual("14", b["columns"]["done"][0]["id"])
+
+    def test_the_estimate_pills_the_body_carries_still_ride(self):
+        body = ("## Estimate\n\n"
+                "| Cost | Reasoning | Implementation |\n"
+                "|---|---|---|\n"
+                "| $0.40-$0.90 | medium | high |\n")
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z", body=body)])
+        self.assertTrue(b["columns"]["done"][0]["pills"]["cost"])
+
+    # -- behaviour 2: the half of the old pin that is KEPT -----------------
+    def test_a_closed_issue_with_no_done_label_is_NOT_drawn(self):
+        """It was ABANDONED, not shipped. There are three of them in
+        github/pagesai and the Done column must not claim them."""
+        b = self._board([issue(77, stage="implement", state="CLOSED",
+                               closed_at="2026-09-01T09:00:00Z")])
+        self.assertEqual([], b["columns"]["done"])
+        self.assertEqual([], b["columns"]["implement"])
+        self.assertEqual([], b["missions"])
+
+    def test_an_open_mission_still_draws_its_ordinary_remote_card(self):
+        b = self._board([issue(202, stage="implement", state="OPEN"),
+                         done_row(14, "2026-09-01T09:00:00Z")])
+        self.assertEqual([202], [c["issue"] for c in b["columns"]["implement"]])
+        self.assertEqual([14], [c["issue"] for c in b["columns"]["done"]])
+
+    def test_a_row_with_no_closedAt_still_draws_last_rather_than_vanishing(self):
+        """A forge is not a promise: a gh too old to emit `closedAt`, or a row
+        that lost it, must cost the card its PLACE in the order and never the
+        card itself."""
+        b = self._board([done_row(14, None), done_row(31, "2026-09-20T09:00:00Z")])
+        self.assertEqual([31, 14], [c["issue"] for c in b["columns"]["done"]])
+
+    # -- behaviour 5: the cap ---------------------------------------------
+    def test_a_full_listing_says_the_column_is_truncated(self):
+        rows = [done_row(n, "2026-09-%02dT09:00:00Z" % ((n % 28) + 1))
+                for n in range(1, 201)]
+        self.assertEqual(200, len(rows))
+        self.assertIs(True, self._board(rows)["meta"]["doneTruncated"])
+
+    def test_one_row_short_of_the_cap_says_nothing_at_all(self):
+        rows = [done_row(n, "2026-09-%02dT09:00:00Z" % ((n % 28) + 1))
+                for n in range(1, 200)]
+        self.assertEqual(199, len(rows))
+        self.assertNotIn("doneTruncated", self._board(rows)["meta"])
+
+    def test_an_empty_listing_says_nothing_at_all(self):
+        self.assertNotIn("doneTruncated", self._board([])["meta"])
+
+    # -- the overlay's own guarantees, on the new path ---------------------
+    def test_gh_absent_draws_no_done_cards_and_adds_no_key(self):
+        missing = os.path.join(self.tmp, "definitely-not-gh")
+        b = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=RemoteMissions(repo_root=self.tmp, gh_bin=missing)).board()
+        self.assertEqual([], b["columns"]["done"])
+        self.assertNotIn("remote", b["meta"])
+        self.assertNotIn("doneTruncated", b["meta"])
+
+    def test_an_unreachable_forge_draws_no_done_cards(self):
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z")], fail=True)
+        self.assertEqual([], b["columns"]["done"])
+
+    def test_the_done_column_costs_no_extra_forge_round_trip(self):
+        clock = Clock()
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [done_row(14, "2026-09-01T09:00:00Z")],
+                          self.record, clock=clock, ttl=30.0))
+        for _ in range(25):
+            b = adapter.board()
+        self.assertEqual(1, len(calls(self.record)),
+                         "the Done column bought a second listing")
+        self.assertEqual(1, len(b["columns"]["done"]))
+
+    def test_a_done_card_opens_no_detail(self):
+        """There is no `/api/mission/<id>` for it — the card opens the ISSUE.
+        A detail that answered here would be a window onto artifacts this
+        laptop has never had."""
+        adapter = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, [done_row(14, "2026-09-01T09:00:00Z")],
+                          self.record))
+        self.assertIsNone(adapter.mission("14"))
+
+    def test_a_done_card_is_never_adoptable(self):
+        b = self._board([done_row(14, "2026-09-01T09:00:00Z")])
+        c = b["columns"]["done"][0]
+        self.assertFalse(c["adoptable"])
+        self.assertNotIn("enginesHere", c)
+
+
+class ALocalDoneMissionStillWins(unittest.TestCase):
+    """Behaviour 4 + behaviour 3: the dedupe key is the ISSUE NUMBER and
+    nothing else (rule 1), and it is the same key the verdict path uses."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.record = os.path.join(self.tmp, "rec.txt")
+
+    def _board(self, rows):
+        return LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
+            remote=remote(self.tmp, rows, self.record)).board()
+
+    def test_a_locally_done_mission_draws_exactly_one_card(self):
+        fx.plant_simple(self.tmp, "m-done", stage="done", issue=101)
+        b = self._board([done_row(101, "2026-09-01T09:00:00Z")])
+        self.assertEqual(["m-done"], [c["id"] for c in b["columns"]["done"]])
+
+    def test_the_local_card_is_the_one_that_survives(self):
+        fx.plant_simple(self.tmp, "m-done", stage="done", issue=101,
+                        title="the local title")
+        b = self._board([done_row(101, "2026-09-01T09:00:00Z",
+                                  title="the forge title")])
+        c = b["columns"]["done"][0]
+        self.assertEqual("the local title", c["title"])
+        self.assertNotIn("readOnly", c)
+
+    def test_local_done_cards_come_before_remote_ones(self):
+        """They are THIS laptop's — the captain's own work reads first."""
+        fx.plant_simple(self.tmp, "m-mine", stage="done", issue=101)
+        b = self._board([done_row(500, "2026-09-30T09:00:00Z")])
+        self.assertEqual(["m-mine", "500"],
+                         [c["id"] for c in b["columns"]["done"]])
+
+    def test_an_OPEN_done_labelled_issue_is_still_only_a_verdict(self):
+        """Behaviour 3. `lcars approve` relabels before the merge closes the
+        issue, so there is a window where the issue is OPEN and `lcars:done`.
+        The LOCAL card learns it shipped; no second card appears."""
+        local_verify(self.tmp)
+        b = self._board([issue(101, stage="done", state="OPEN")])
+        cards = [c for col in b["columns"].values() for c in col]
+        self.assertEqual(["m-local"], [c["id"] for c in cards])
+        self.assertEqual("shipped", cards[0]["shippedElsewhere"]["state"])
+        self.assertEqual([], b["columns"]["done"],
+                         "an open issue drew a Done card")
+
+
+# --------------------------------------------------------------------------
+# S278 — THE FRONT-END HALF. The Done column as render() actually builds it.
+#
+# These drive the SHIPPING board.js through `render(board)` — never a builder
+# called by hand — because the two things being asserted only exist inside that
+# loop: the card the Done column paints, and the "+ more on GitHub" row that is
+# appended after the last card in it.
+#
+# WHAT THEY CANNOT SEE, said plainly: there is no CSS and no browser here, so
+# "no live control on this card" and "the click reaches the issue" are proven,
+# and "the Done column LOOKS right" is not. That is the tester's, in real
+# Chrome, against the real daemon.
+# --------------------------------------------------------------------------
+GHLINKS_HARNESS = os.path.join(HERE, "board_ghlinks_harness.js")
+
+DONE_REMOTE = {
+    "id": "31", "issue": 31, "title": "Dark mode", "type": "feature",
+    "stage": "done", "awaiting": False, "paused": False, "running": False,
+    "dispatched": False, "queued": False, "linked": False, "tickets": [],
+    "pills": {}, "progress": {}, "remote": True, "readOnly": True,
+    "adoptable": False, "closedAt": "2026-09-20T09:00:00Z",
+    "url": "https://github.ghe.com/github/pagesai/issues/31",
+}
+DONE_LOCAL = {
+    "id": "m-mine", "issue": 12, "title": "A mission I shipped here",
+    "type": "feature", "stage": "done", "awaiting": False, "paused": False,
+    "running": False, "dispatched": False, "queued": False, "linked": False,
+    "tickets": [], "pills": {}, "progress": {},
+}
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class TheDoneColumnAsRenderBuildsIt(unittest.TestCase):
+
+    def _render(self, done_cards, meta=None, click=None, open_detail=None):
+        m = {"repo": "github/pagesai", "adapter": "local",
+             "mode": "read-write", "ghHost": "github.ghe.com"}
+        m.update(meta or {})
+        spec = {
+            "mission": DONE_REMOTE,
+            "board": {"stages": ["done"], "columns": {"done": done_cards},
+                      "missions": [], "meta": m},
+        }
+        if click:
+            spec["clickCard"] = click
+        if open_detail:
+            spec["openDetail"] = open_detail
+        fd, p = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        self.addCleanup(os.unlink, p)
+        with open(p, "w") as fh:
+            json.dump(spec, fh)
+        out = subprocess.run([NODE, GHLINKS_HARNESS, p, "board"],
+                             capture_output=True, text=True, check=True)
+        data = json.loads(out.stdout)
+        self.assertFalse(data["bootErrors"], data["bootErrors"])
+        return data
+
+    @staticmethod
+    def _walk(node, out=None):
+        out = [] if out is None else out
+        if not node:
+            return out
+        out.append(node)
+        for kid in node.get("children", []):
+            TheDoneColumnAsRenderBuildsIt._walk(kid, out)
+        return out
+
+    def _nodes(self, data):
+        return self._walk(data["tree"])
+
+    def _card(self, data, mid):
+        for n in self._nodes(data):
+            if (n.get("attrs") or {}).get("data-mid") == mid:
+                return n
+        return None
+
+    # -- behaviour 6 -------------------------------------------------------
+    def test_a_remote_done_card_renders_no_controls_at_all(self):
+        card = self._card(self._render([DONE_REMOTE]), "31")
+        self.assertIsNotNone(card, "render() drew no card for the done mission")
+        btns = [n for n in self._walk(card)
+                if (n.get("tag") or "").lower() == "button"]
+        self.assertEqual([], btns,
+                         "a control on a mission that shipped elsewhere: "
+                         + repr([b.get("text") for b in btns]))
+
+    def test_CONTROL_this_harness_can_see_a_button_when_there_is_one(self):
+        """The negative control the "no controls" test above is worthless
+        without. A remote card at VERIFY offers exactly one live affordance —
+        Adopt — and if the projection could not see that, "no buttons on a done
+        card" would be a fact about the harness and not about the product."""
+        live = dict(DONE_REMOTE, id="77", issue=77, stage="verify",
+                    readOnly=False, adoptable=True, closedAt=None)
+        card = self._card(self._render([live]), "77")
+        btns = [n for n in self._walk(card)
+                if (n.get("tag") or "").lower() == "button"]
+        self.assertTrue(btns, "the harness cannot see buttons at all")
+        self.assertTrue(any("Adopt" in (b.get("text") or "") for b in btns),
+                        repr([b.get("text") for b in btns]))
+
+    def test_no_RUN_approve_or_feedback_label_appears_on_it(self):
+        card = self._card(self._render([DONE_REMOTE]), "31")
+        joined = " ".join(n.get("text") or "" for n in self._walk(card)).upper()
+        for banned in ("RUN", "APPROVE", "FEEDBACK", "START", "ADOPT",
+                       "REVIEW PR"):
+            self.assertNotIn(banned, joined, banned)
+
+    # -- behaviour 4 of the brief: the shipped line ------------------------
+    def test_it_says_when_it_shipped(self):
+        card = self._card(self._render([DONE_REMOTE]), "31")
+        line = [n.get("text") or "" for n in self._walk(card)
+                if (n.get("text") or "").startswith("⧗")]
+        self.assertTrue(line, "no ⧗ shipped line on the card")
+        self.assertIn("2026-09-20", line[0])
+
+    def test_the_click_opens_the_issue_in_a_new_tab(self):
+        data = self._render([DONE_REMOTE], click="31")
+        self.assertEqual(
+            [{"url": "https://github.ghe.com/github/pagesai/issues/31",
+              "target": "_blank", "features": "noopener"}],
+            data["opened"])
+
+    def test_the_KEYBOARD_opens_the_issue_too(self):
+        """The command deck's Enter resolves a `data-mid` and calls openDetail
+        directly — it never reaches the card's click handler. A cure that lived
+        in cardNode would have left Enter opening onto "no such mission"."""
+        data = self._render([DONE_REMOTE], open_detail="31")
+        self.assertEqual(
+            ["https://github.ghe.com/github/pagesai/issues/31"],
+            [o["url"] for o in data["opened"]])
+
+    def test_a_done_card_with_no_resolvable_link_opens_nothing(self):
+        """The daemon omits `url` when the repo identity did not resolve
+        (absent, never wrong). Doing nothing beats navigating to a 404."""
+        card = dict(DONE_REMOTE)
+        del card["url"]
+        data = self._render([card], click="31", open_detail="31")
+        self.assertEqual([], data["opened"])
+
+    def test_a_LOCAL_done_card_still_opens_its_detail_and_not_a_tab(self):
+        """The negative control. A local done mission HAS a detail, and the
+        cure must not have taken it away."""
+        data = self._render([DONE_LOCAL], click="m-mine")
+        self.assertEqual([], data["opened"])
+
+    # -- behaviour 5: the "+ more" row -------------------------------------
+    def test_a_truncated_column_offers_the_rest_on_github(self):
+        data = self._render([DONE_REMOTE], meta={"doneTruncated": True})
+        texts = [n.get("text") or "" for n in self._nodes(data)]
+        self.assertTrue(any("more on GitHub" in t for t in texts),
+                        "nothing told the captain the column is capped")
+        hrefs = [h["href"] for h in data["hrefs"]]
+        self.assertIn(
+            "https://github.ghe.com/github/pagesai/issues?q="
+            "is%3Aclosed+label%3Alcars%3Adone+label%3Alcars%3Amission",
+            hrefs)
+
+    def test_an_untruncated_column_offers_nothing(self):
+        data = self._render([DONE_REMOTE])
+        texts = [n.get("text") or "" for n in self._nodes(data)]
+        self.assertFalse([t for t in texts if "more on GitHub" in t])
+
+    def _done_head_count(self, data):
+        for n in self._nodes(data):
+            if "col-head" not in (n.get("cls") or ""):
+                continue
+            kids = n.get("children") or []
+            if not any((k.get("text") or "") == "Done" for k in kids):
+                continue
+            for k in kids:
+                if "ct" in (k.get("cls") or "").split():
+                    return k.get("text")
+        return None
+
+    def test_the_more_row_is_not_counted_as_a_card(self):
+        """The column head counts CARDS. A navigation row is not one."""
+        self.assertEqual("1", self._done_head_count(
+            self._render([DONE_REMOTE], meta={"doneTruncated": True})))
+        self.assertEqual("1", self._done_head_count(
+            self._render([DONE_REMOTE])))
+
+
+# --------------------------------------------------------------------------
+# S278 FIX ROUND 1 — THE TWO THINGS A BOARD WITH CARDS AND NO ACTIVE WORK GOT
+# WRONG.
+#
+# Both were S278's own, and both are the same shape: filling the Done column
+# from the forge made "cards on the board" and "missions still in flight" two
+# different numbers for the first time, and two surfaces were still asking the
+# second question while answering the first.
+#
+#   D1  The first-run banner — "NO MISSIONS ON THE BOARD / File the first one"
+#       — keyed off the ACTIVE list, which is legitimately 0 on a fresh clone of
+#       a repo that has shipped everything it ever filed. It printed directly
+#       above a Done column headed 51 and full of cards.
+#
+#   D2  A read-only Done card drew `⊙ READ THE FULL REPORT →` whenever the
+#       mission carried a Number One verdict. There is no local detail for such
+#       a card (openDetail sends it to the issue instead), so the control was a
+#       prominent promise the card cannot keep — plus a Tab stop.
+#
+# Each has a NEGATIVE CONTROL beside it, because "the banner is hidden" and "the
+# button is gone" are both satisfied by a harness that can see neither.
+# --------------------------------------------------------------------------
+DONE_REMOTE_SCORED = dict(
+    DONE_REMOTE, id="41", issue=41, title="A mission Number One graded",
+    url="https://github.ghe.com/github/pagesai/issues/41",
+    numberOne={"status": "finished", "score": "low",
+               "meaning": "the primary flow was never exercised"},
+)
+
+
+
+class _DoneBoardHelpers:
+    """The four helpers both fix-round classes below need, BORROWED from
+    `TheDoneColumnAsRenderBuildsIt` rather than inherited: subclassing a
+    TestCase re-collects every one of its twelve tests under each new name, so
+    the suite's own count would stop meaning anything."""
+    _render = TheDoneColumnAsRenderBuildsIt._render
+    _walk = staticmethod(TheDoneColumnAsRenderBuildsIt._walk)
+    _nodes = TheDoneColumnAsRenderBuildsIt._nodes
+    _card = TheDoneColumnAsRenderBuildsIt._card
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class TheFirstRunBannerAsksWhetherTheBoardIsEmpty(
+        _DoneBoardHelpers, unittest.TestCase):
+    """D1. The question is "does this board have any cards, in any column?" —
+    NOT "is there any active work?". Those were the same question until S278
+    gave a clone a Done column it had never driven."""
+
+    def test_the_banner_is_HIDDEN_when_a_column_has_cards_and_none_are_active(
+            self):
+        data = self._render([DONE_REMOTE, DONE_REMOTE_SCORED])
+        self.assertEqual(
+            True, data["emptyState"]["hidden"],
+            "the board told the captain to file his first mission directly "
+            "above " + str(len(data["emptyState"]["text"])) + " chars of "
+            "banner over two drawn cards: "
+            + repr(data["emptyState"]["text"]))
+
+    def test_CONTROL_a_board_with_no_cards_ANYWHERE_still_teaches_itself(self):
+        """Without this, "the banner is hidden" is a fact about the harness."""
+        data = self._render([])
+        self.assertEqual(False, data["emptyState"]["hidden"],
+                         "a genuinely cold board stopped teaching itself")
+        self.assertIn("NO MISSIONS ON THE BOARD", data["emptyState"]["text"])
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class ARemoteDoneCardPromisesNoReportItCannotOpen(
+        _DoneBoardHelpers, unittest.TestCase):
+    """D2. The VERDICT stays — it is a fact the forge's labels carry and it is
+    worth a glance. The ROUTE TO A REPORT goes, because there is no report at
+    the end of it: `openDetail` sends a remote done card to its GitHub issue."""
+
+    def test_it_renders_no_read_the_full_report_button(self):
+        card = self._card(self._render([DONE_REMOTE_SCORED]), "41")
+        self.assertIsNotNone(card, "render() drew no card for the done mission")
+        btns = [n for n in self._walk(card)
+                if (n.get("tag") or "").lower() == "button"]
+        self.assertEqual([], btns,
+                         "a control on a read-only done card: "
+                         + repr([b.get("text") for b in btns]))
+
+    def test_it_carries_no_data_act_control_of_any_kind(self):
+        """The generic form of the claim. `data-act` is the product's own
+        machine-readable name for "this node is a control", so a future branch
+        that adds another one to a done card fails here too."""
+        card = self._card(self._render([DONE_REMOTE_SCORED]), "41")
+        acts = [(n.get("attrs") or {}).get("data-act")
+                for n in self._walk(card)
+                if (n.get("attrs") or {}).get("data-act")]
+        self.assertEqual([], acts, repr(acts))
+
+    def test_the_VERDICT_is_still_on_the_card(self):
+        """Suppressing the button must not suppress the grade. (a), not (b)."""
+        card = self._card(self._render([DONE_REMOTE_SCORED]), "41")
+        texts = [n.get("text") or "" for n in self._walk(card)]
+        self.assertTrue(any("NUMBER ONE" in t and "LOW" in t for t in texts),
+                        "the grade went with the button: " + repr(texts))
+
+    def test_CONTROL_a_LOCAL_done_card_KEEPS_its_report_button(self):
+        """The negative control, and the scope of the cure. A mission this
+        laptop drove HAS a Number One report on disk, and the button opens it.
+        If this went red the cure would have reached past the remote cards."""
+        local = dict(DONE_LOCAL, numberOne=DONE_REMOTE_SCORED["numberOne"])
+        card = self._card(self._render([local]), "m-mine")
+        labels = [n.get("text") or "" for n in self._walk(card)
+                  if (n.get("tag") or "").lower() == "button"]
+        self.assertTrue(any("Read the full report" in t for t in labels),
+                        "the harness cannot see the button at all: "
+                        + repr(labels))

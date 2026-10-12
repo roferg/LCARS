@@ -350,8 +350,17 @@ class LocalAdapter(object):
         if self._remote is None:
             return
         try:
+            # S278 — THE FORGE IDENTITY THIS BOARD IS ATTACHED TO, handed down.
+            # `meta` is already built by the time the overlay runs, so these are
+            # the same two values board.js builds its own issue links from
+            # (`meta.ghHost` / `meta.repo`) — one resolution of "which forge,
+            # which repo" per board, shared by both link builders. The overlay
+            # never re-derives them: `gh_host()` shells host-adapter.sh (ADR-002)
+            # and is memoized for the daemon's life, and a second subprocess per
+            # board build is precisely what S152 forbade.
             cards, meta = self._remote.cards(
-                [c.get("issue") for c in local_cards])
+                [c.get("issue") for c in local_cards],
+                host=b["meta"].get("ghHost"), repo=b["meta"].get("repo"))
         except Exception:
             return
         # None ⇒ the overlay is OFF (no gh, or opted out) ⇒ NO `remote` key at
@@ -359,6 +368,15 @@ class LocalAdapter(object):
         # byte-identical to the one it served before this round.
         if meta is None:
             return
+        # S278 — "the forge has more history than it would show us" is a fact
+        # about THE BOARD, not about the overlay's health, so it is promoted to
+        # the board's own meta (where the Done column's render loop reads it)
+        # rather than left inside the `remote` status block. POPPED, so that
+        # block stays exactly the two keys it has always carried and every
+        # payload baseline that pins it is untouched. ABSENT when the listing
+        # fit, which is every repo but the very largest.
+        if meta.pop("doneTruncated", False):
+            b["meta"]["doneTruncated"] = True
         b["meta"]["remote"] = meta
         for c in cards:
             stage = board.normalise_stage(c.get("stage"))
@@ -366,6 +384,10 @@ class LocalAdapter(object):
             self._offer_engines(c)
             b["columns"][stage].append(c)
             if stage != "done":
+                # …and a SHIPPED mission is not an active one. `missions` backs
+                # the footer's "N active missions", and the Done column must not
+                # inflate it — the same rule `board.assemble` applies to a local
+                # done card, applied here for the same reason.
                 b["missions"].append(c)
 
     def _offer_engines(self, card):

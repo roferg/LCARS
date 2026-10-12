@@ -741,6 +741,23 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    watching it is the entire reason it is on the board. Only the controls, which
    are the part that cannot be used, are quieted. */
 .card.remote{border-left-color:var(--lcars-violet,#9977ff)}
+/* S278 — a mission read back off GitHub, in the Done column of a clone that
+   never drove it. It is THE SAME remote card: the same violet edge, the same
+   framed-diamond pill, no new palette and no new token (ADR-007). Two
+   additions, both shape rather than hue:
+     * the whole card is a link, so it takes the pointer a link takes;
+     * the date it shipped reads as the quiet meta line the actuals it does not
+       have would have occupied — `.tk-more`'s idiom, already in the house. */
+.card.remote.remote-done{cursor:pointer}
+.card .no.shipped-on{color:var(--lcars-text-dim);text-transform:none;
+  letter-spacing:.04em;margin-top:2px}
+/* THE COLUMN HAS MORE ON THE FORGE. One quiet row after the last card, in the
+   same voice as the collapsed ticket affordance (`.tk-more`) and for the same
+   reason: it points somewhere else rather than claiming to be a thing itself. */
+.col-more{display:block;font-family:var(--font-mono);font-size:9.5px;
+  letter-spacing:.06em;color:var(--lcars-text-dim);font-style:italic;
+  text-decoration:none;padding:6px 2px 2px}
+.col-more:hover{color:var(--lcars-text-bright);text-decoration:underline}
 /* THE DIM IS GONE, AND SO ARE THE CONTROLS IT DIMMED (S196 B2/B3).
    `.card.remote .card-ctrl button[disabled]{opacity:.7}` used to live here. Two
    separate reasons it had to go, and both are worth writing down:

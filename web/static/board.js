@@ -750,15 +750,38 @@ function xoNode(m) {
       var scoredNote = xoNote(m);
       if (scoredNote) wrap.appendChild(scoredNote);
     }
-    var read = btn("⊙ Read the full report →", "xo-read-report", function () {
-      openDetail(m.id, "xo");
-    });
-    read.title = "Open this mission on its ◈ Number One tab";
-    // NOT swept by applyXoLock: reading the report is the one thing an engaged
-    // mission must never stop the captain doing (it is how he finds out what
-    // Number One did on his behalf), and it writes nothing.
-    read.setAttribute("data-act", "xo-report");
-    wrap.appendChild(read);
+    /* S278 FIX ROUND 1 (D2) — EXCEPT ON A CARD THAT HAS NO REPORT TO OPEN.
+
+       THE GRADE STAYS, THE ROUTE GOES. A remote done card is a closed
+       `lcars:done` issue read back on a laptop that never drove the mission.
+       Its `◈ NUMBER ONE · LOW` comes off the issue's own `lcars:xo:*` label, so
+       the VERDICT is a real fact the forge is authoritative about and worth a
+       glance in a Done column. The 150-word report it grades is not: that lives
+       in the `.git/lcars` of whichever laptop ran it, and this product does not
+       sync local artifacts to the issue (standing ruling, 2026-09-04).
+
+       SO THE BUTTON WAS A PROMISE THE CARD CANNOT KEEP. `openDetail` already
+       short-circuits a remote done card to its GitHub issue — correctly, there
+       being no local detail — which meant `⊙ READ THE FULL REPORT →` opened
+       GitHub. Found by the tester on the real board: 11 of 51 cards, large,
+       orange, enabled, each taking its own Tab stop, none of them reading a
+       report.
+
+       NOT a suppression of the whole block, and not of the pill: dropping the
+       grade as well would take away information the card really does hold. A
+       done card now ends with exactly one affordance, the whole-card click, and
+       that is what `test_it_carries_no_data_act_control_of_any_kind` pins. */
+    if (!isRemoteDone(m)) {
+      var read = btn("⊙ Read the full report →", "xo-read-report", function () {
+        openDetail(m.id, "xo");
+      });
+      read.title = "Open this mission on its ◈ Number One tab";
+      // NOT swept by applyXoLock: reading the report is the one thing an engaged
+      // mission must never stop the captain doing (it is how he finds out what
+      // Number One did on his behalf), and it writes nothing.
+      read.setAttribute("data-act", "xo-report");
+      wrap.appendChild(read);
+    }
     if (xoEngaged(m)) wrap.title = xoLockLine(m);
     return wrap;
   }
@@ -1714,6 +1737,38 @@ var REMOTE_LINE =
 
 function isRemote(m) { return !!(m && m.remote === true); }
 
+/* S278 — A MISSION THIS REPO SHIPPED, read off GitHub rather than off disk.
+
+   A fresh clone has no `.git/lcars` at all, so its Done column was empty for
+   every mission the repo had ever shipped — 51 of them in the captain's own
+   work repo. The daemon now draws one read-only card per CLOSED `lcars:done`
+   mission issue, and `card.readOnly === true` is the whole contract.
+
+   IT IS A DIFFERENT STATE FROM `remote`, and the difference is what is OFFERED.
+   A live remote card is driven on ANOTHER MACHINE and can be taken over, so it
+   is read-only here and offers Adopt. This one is OVER: there is no driver to
+   take over, no local detail to open (the daemon answers no
+   `/api/mission/<id>` for it — deliberately, since the artifacts were never
+   synced), and nothing to adopt. So it offers exactly one thing, which is the
+   issue itself. */
+function isRemoteDone(m) {
+  return isRemote(m) && m.readOnly === true && normStage(m.stage) === "done";
+}
+
+/* The card `id` names IF it is a remote done one, else null. Resolved off
+   LAST_BOARD — the payload this page was last rendered from — because the id is
+   all `openDetail` is given, and a lookup is the only thing that can tell a
+   mission with a detail from one without. Null for every id on every board
+   before this round, so nothing else about openDetail moves. */
+function remoteDoneCard(id) {
+  if (id == null || !LAST_BOARD) return null;
+  var all = boardCards(LAST_BOARD);
+  for (var i = 0; i < all.length; i++) {
+    if (String(all[i].id) === String(id) && isRemoteDone(all[i])) return all[i];
+  }
+  return null;
+}
+
 /* Disable every write control under `host` on a REMOTE mission.
 
    A SUBTREE SWEEP, for the same reason S190's applyOwnerLock is one: cardControls
@@ -1763,8 +1818,15 @@ function applyRemoteLock(host, m) {
    product's own console-glyph family (the set test_help_console pins) and is used
    nowhere else, so it reads as its own state rather than borrowing another's. First in the row on purpose: WHERE this mission is being driven
    outranks what it will cost. */
-function remotePill() {
-  return el("span", "pill remote", "◈ REMOTE · DRIVEN ELSEWHERE");
+function remotePill(m) {
+  /* S278: …and a mission that has already SHIPPED is not being driven
+     anywhere. Same pill, same class, same framed diamond — no new visual
+     language for what is still the same fact ("this one is not yours to
+     drive") — with the half of the sentence that would have been a lie
+     replaced by where it actually is. */
+  return el("span", "pill remote",
+            isRemoteDone(m) ? "◈ REMOTE · ON GITHUB"
+                            : "◈ REMOTE · DRIVEN ELSEWHERE");
 }
 
 /* ADOPT — take command of a remote mission on THIS laptop.
@@ -2356,6 +2418,21 @@ function ghIssueUrl(repo, issue) {
   var host = (typeof boardGhHost === "string" && GH_HOST_RE.test(boardGhHost))
     ? boardGhHost : "github.com";
   return "https://" + host + "/" + repo + "/issues/" + issue;
+}
+
+/* S278 — …and the ONE place it builds a SEARCH. Same host resolution, same
+   pinned scheme, for the "+ more on GitHub" row the Done column draws when the
+   daemon's listing hit its 200-row cap (remote.py `_LIMIT`).
+
+   The query is GitHub's own issue search and it is the same question the daemon
+   asked, written out for a human: closed mission issues carrying `lcars:done`.
+   So the row is not an apology for a limit — it hands over the exact listing the
+   board could not finish, on the forge, where there is no cap. */
+function ghDoneSearchUrl(repo) {
+  var host = (typeof boardGhHost === "string" && GH_HOST_RE.test(boardGhHost))
+    ? boardGhHost : "github.com";
+  return "https://" + host + "/" + repo + "/issues?q="
+    + "is%3Aclosed+label%3Alcars%3Adone+label%3Alcars%3Amission";
 }
 
 /* UX-28: a board-wide index of mission-id → its GitHub issue number, captured on
@@ -3490,6 +3567,12 @@ function cardNode(m) {
   // the stylesheet gives the card its cool "somewhere else" chrome; the controls
   // are disabled by remoteControls below, never by CSS.
   if (isRemote(m)) card.className += " remote";
+  // S278: …and this remote one is FINISHED — a mission read back off a closed
+  // `lcars:done` issue, in the Done column of a clone that never drove it. A
+  // marker class only, and it buys exactly one thing from the stylesheet: the
+  // pointer, because the whole card is a link to the issue (openDetail). No new
+  // palette and no new token — it keeps the remote card's violet edge.
+  if (isRemoteDone(m)) card.className += " remote-done";
   // …and this LOCAL one is finished on the forge — merged, or closed, from
   // another machine. A marker class only: the stylesheet draws the card's edge
   // DASHED (shape, not hue, so it survives a desaturated screenshot); the
@@ -3569,7 +3652,7 @@ function cardNode(m) {
   var pills = el("div", "pills");
   // S191: WHERE is this being driven — first in the row, because a card you
   // cannot act on has to say so before it says anything else.
-  if (isRemote(m)) pills.appendChild(remotePill());
+  if (isRemote(m)) pills.appendChild(remotePill(m));
   // …and FIRST for the same reason: a card whose mission has already ended has
   // to say so before it says what it was going to cost.
   var sv = shippedVerdict(m);
@@ -3644,6 +3727,25 @@ function cardNode(m) {
   var bfp = baseFreshnessPill(m.baseFreshness);
   if (bfp) pills.appendChild(bfp);
   card.appendChild(pills);
+
+  /* S278 — WHEN IT SHIPPED, on a mission read back off GitHub.
+
+     A local done card carries its ACTUAL spend (`pills.actual`, written by the
+     costing pass into this laptop's `.git/lcars`). A card drawn from a closed
+     issue has no actuals and never will — the usage record lives in the
+     `.git/` of whichever laptop drove it, and this product's standing ruling
+     (2026-09-04) is that mid-pipeline and local artifacts are not synced to the
+     issue. So the line the actuals would have occupied carries the one fact the
+     forge IS authoritative about: the date the merge closed the issue.
+
+     The DATE, not a timestamp: this is history, and "2026-09-20" is what a
+     captain scanning a Done column is reading for. Absent entirely when the row
+     carried no `closedAt` (a gh too old to emit it), because a shipped card with
+     no date is still worth drawing and an invented one is not. */
+  if (isRemoteDone(m) && typeof m.closedAt === "string" && m.closedAt) {
+    card.appendChild(el("div", "no shipped-on",
+      "⧗ shipped " + m.closedAt.slice(0, 10)));
+  }
 
   // UX-21/UX-22: a high-contrast status label for paused/pausing. It carries the
   // .pause-status class so the .paused dim overlay can EXCLUDE it (stays bright).
@@ -3762,6 +3864,12 @@ function cardNode(m) {
   card.appendChild(xoControls(remoteControls(
     applyShippedLock(applyOwnerLock(applyXoLock(cardControls(m), m), m), m), m), m));
 
+  /* THE WHOLE CARD IS CLICK-TO-OPEN (UX-12), and it stays ONE door: `openDetail`
+     decides what a mission opens onto, for the mouse and for the keyboard both.
+     S278 adds a mission that opens onto its ISSUE instead of a detail pane, and
+     the decision lives THERE rather than here — see openDetail. A branch here
+     would have left the keyboard deck's Enter (which calls openDetail with a
+     `data-mid` and never touches this handler) opening onto "no such mission". */
   card.addEventListener("click", function () { openDetail(m.id); });
   return card;
 }
@@ -4340,6 +4448,24 @@ function render(board) {
     col.appendChild(head);
     var body = el("div", "col-body");
     cards.forEach(function (m) { body.appendChild(cardNode(m)); });
+    /* S278 — THE HISTORY DOES NOT FIT, AND THE BOARD SAYS SO.
+       The overlay takes ONE `gh issue list` per cycle capped at 200 rows
+       (remote.py `_LIMIT`, and that cap is S152's whole budget), so a repo with
+       more shipped missions than that has a Done column that is quietly
+       incomplete — and quietly incomplete history is worse than none. One row,
+       AFTER the last card, handing over the same query on the forge.
+
+       It is a ROW AND NOT A CARD, deliberately: the column head counts cards,
+       and a head that counted this would be the board overstating its own
+       history in the one place a captain checks a number. */
+    if (key === "done" && board.meta && board.meta.doneTruncated && detailRepo) {
+      var more = el("a", "col-more", "+ more on GitHub");
+      more.href = ghDoneSearchUrl(detailRepo);
+      more.target = "_blank"; more.rel = "noopener";
+      more.title = "this repo has shipped more missions than the board lists — "
+        + "see them all on GitHub";
+      body.appendChild(more);
+    }
     col.appendChild(body);
     root.appendChild(col);
   });
@@ -4375,7 +4501,27 @@ function render(board) {
   } else {
     setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));
   }
-  renderEmptyState(n); // S141: a cold board teaches itself (the ? mention).
+  /* S141: a cold board teaches itself (the ? mention).
+
+     S278 FIX ROUND 1 (D1) — AND IT IS ASKED ABOUT THE CARDS, NOT ABOUT `n`.
+     `n` is `board.missions.length`, the ACTIVE list, and `assemble()` /
+     `local_adapter` both keep done OUT of it on purpose (it backs the footer's
+     "N active missions"). That made the two questions identical right up to
+     S278, which filled the Done column from the forge: a fresh clone of a repo
+     that has shipped everything it ever filed now has 51 cards and 0 active
+     missions, and the banner printed "NO MISSIONS ON THE BOARD / File the first
+     one" directly above them.
+
+     `allCards` is boardCards(board) — every card in every column — so the
+     condition now asks THE QUESTION THE BANNER ASKS: *does this board have any
+     cards at all, anywhere?* Deliberately NOT "…or any done cards": `done` is
+     merely the first column that could be non-empty while `missions` is empty,
+     and a per-column special case is one the next column forgets.
+
+     UNFILTERED, like `n` was. A chip that hides every card has not emptied the
+     board, and "file your first mission" is the wrong thing to say to a captain
+     who filtered his own cards away. */
+  renderEmptyState(allCards.length);
   renderMeta(board.meta);
   // S201: the band toggle and its two legend entries, on EVERY render so they
   // CLEAR as well as appear — a repo toggled off elsewhere must not leave its
@@ -6795,15 +6941,20 @@ function openHelp() {
   return true;
 }
 
-/* First-run discoverability. A board holding zero Missions says what to do and
-   names the ? console; the moment a Mission lands the host hides again and the
+/* First-run discoverability. A board holding zero CARDS says what to do and
+   names the ? console; the moment a card lands the host hides again and the
    board is byte-identical to before this round. No pulse, no nag, no dismissal
-   state to remember. */
-function renderEmptyState(count) {
+   state to remember.
+
+   `cardCount` is EVERY card in EVERY column (the caller passes boardCards'
+   length), and the name says so: it used to be handed the active-mission count,
+   which stopped being the same number the moment S278 gave a clone a Done
+   column it had never driven. See the call site for the measurement. */
+function renderEmptyState(cardCount) {
   var host = document.getElementById("boardEmpty");
   if (!host) return;
   host.innerHTML = "";
-  if (count > 0) { host.hidden = true; return; }
+  if (cardCount > 0) { host.hidden = true; return; }
   host.hidden = false;
   host.appendChild(el("div", "be-title", "NO MISSIONS ON THE BOARD"));
   host.appendChild(el("div", "be-body",
@@ -9536,6 +9687,33 @@ function renderLogPreview(host, state, parentLabel, authored) {
 
 /* ════════════════ SCREEN: MISSION DETAIL (#detail) — two-pane ════════════════ */
 function openDetail(id, tab) {
+  /* S278 — A MISSION THIS CLONE NEVER DROVE OPENS ONTO ITS ISSUE.
+
+     There is no `/api/mission/<id>` for a remote done card and there is not
+     going to be one: a finished mission's research findings, plan.json, wave
+     logs and usage record live in whichever laptop's `.git/lcars` drove it, and
+     this product's boundary ruling (2026-09-04) is that those are never synced
+     to the issue. So a detail pane here would be a window onto nothing, and
+     letting the fetch run would make every card in a fresh clone's Done column
+     open onto "no such mission" — a board that shows you something and then
+     denies it exists.
+
+     DECIDED HERE, which is the ONE door every surface uses: the card's own
+     click, the keyboard deck's Enter (which resolves a `data-mid` and calls
+     straight into this), and the detail's own cross-links. A branch inside
+     cardNode would have covered the mouse and left the keyboard broken.
+
+     A GUARD ON THE URL, and `noopener` on a window this page does not own: a
+     card whose repo identity did not resolve (the daemon then sends no `url` —
+     absent, never wrong) does NOTHING rather than navigating somewhere
+     invented. */
+  var rd = remoteDoneCard(id);
+  if (rd) {
+    if (typeof rd.url === "string" && /^https:\/\//.test(rd.url)) {
+      window.open(rd.url, "_blank", "noopener");
+    }
+    return;
+  }
   // S163 fix round 6 (D2): the other door a captain opens onto a mission. Same
   // rule as openLog — reading a card is starting something else, and the last
   // action's verdict must stop speaking over it.

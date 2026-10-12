@@ -17,6 +17,11 @@
  * argv[3]: mode —
  *   "detail"  render(board) → renderDetail(mission) → every anchor href.
  *   "logbug"  render(board) → logBugBadge(mission) → the badge's href.
+ *   "board"   render(board) → the WHOLE #board subtree, projected (S278). The
+ *             Done column's cards are built by render() and by nothing else,
+ *             and the "+ more on GitHub" row only exists inside that loop, so
+ *             neither can be reached by calling a builder directly. `tree` is
+ *             the projection; `hrefs` is the same board's anchors.
  *
  * Both modes go through render(board) and NEVER call renderMeta directly: the
  * board's forge identity has to be captured by the render the product actually
@@ -25,7 +30,8 @@
  * badge had no repo to build a URL from and rendered as a plain <span>. A
  * harness that primed the globals itself would never have seen that.
  *
- * Output (stdout): JSON { hrefs: [...], badgeHref, badgeTag, bootErrors }
+ * Output (stdout): JSON { hrefs: [...], badgeHref, badgeTag, tree,
+ *   emptyState, opened, bootErrors }
  */
 const fs = require("fs");
 const path = require("path");
@@ -43,13 +49,31 @@ function stubEl(tag) {
       toggle() { return false; },
       contains(c) { return !!this._s[c]; },
     },
-    addEventListener() {}, removeEventListener() {},
+    _handlers: {},
+    addEventListener(ev, fn) {
+      (node._handlers[ev] = node._handlers[ev] || []).push(fn);
+    },
+    removeEventListener() {},
     appendChild(c) { node.children.push(c); return c; },
     insertBefore(c) { node.children.push(c); return c; },
-    removeChild() {}, setAttribute() {}, removeAttribute() {},
+    removeChild(c) {
+      const i = node.children.indexOf(c);
+      if (i >= 0) node.children.splice(i, 1);
+      return c;
+    },
+    /* S278: attributes are RECORDED, not dropped. `data-mid` is the handle the
+       keyboard deck and this harness both resolve a card by, and a no-op
+       setAttribute made the card that was built unidentifiable. */
+    attrs: {},
+    setAttribute(k, v) { node.attrs[String(k)] = String(v); },
+    removeAttribute(k) { delete node.attrs[String(k)]; },
     replaceChildren() { node.children = []; },
     querySelector() { return null; }, querySelectorAll() { return []; },
-    getAttribute() { return null; }, closest() { return null; },
+    getAttribute(k) {
+      return Object.prototype.hasOwnProperty.call(node.attrs, k)
+        ? node.attrs[k] : null;
+    },
+    closest() { return null; },
     contains() { return false; },
     focus() {}, blur() {}, click() {}, remove() {},
     children: [], _text: "", title: "", hidden: false, disabled: false,
@@ -149,10 +173,36 @@ function find(n, pred) {
   return null;
 }
 
+/* S278 — the projection the Done-column tests read. Tag, class, text, href and
+   `disabled` are exactly the five things "is there a live control on this card?"
+   and "does this row link where it says" are asked of; nothing else is emitted,
+   so the projection cannot quietly become the assertion. */
+function project(n) {
+  if (!n || typeof n !== "object") return null;
+  return {
+    tag: n.tag || "", cls: n._cls || "", text: n._text || "",
+    href: n.href || "", title: n.title || "",
+    disabled: !!n.disabled, attrs: n.attrs || null,
+    clicks: ((n._handlers && n._handlers.click) || []).length,
+    children: (n.children || []).map(project).filter(Boolean),
+  };
+}
+
+/* THE CAPTAIN CLICKS A DONE CARD. There is no local detail for it, so the click
+   has to reach the issue — and `window.open` is the only thing that can say so.
+   Recorded rather than stubbed away: a handler that exists proves nothing about
+   where it goes. */
+const OPENED = [];
+sandbox.open = function (url, target, feats) {
+  OPENED.push({ url: String(url || ""), target: String(target || ""),
+                features: String(feats || "") });
+  return null;
+};
+
 const spec = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const mode = process.argv[3] || "detail";
-const out = { hrefs: [], badgeHref: null, badgeTag: null,
-              bootErrors: bootErrors };
+const out = { hrefs: [], badgeHref: null, badgeTag: null, tree: null,
+              opened: OPENED, bootErrors: bootErrors };
 
 try {
   // ONE render of the real board — the same call the daemon's payload arrives
@@ -161,6 +211,46 @@ try {
   if (mode === "detail") {
     sandbox.renderDetail(spec.mission);
     out.hrefs = hrefs(captured.node);
+  } else if (mode === "board") {
+    out.tree = project(byId.board);
+    out.hrefs = hrefs(byId.board);
+    /* S278 fix round 1 (D1) — THE FIRST-RUN BANNER, as render() left it. The
+       banner and the cards are painted by the SAME render(), and the defect was
+       that they disagreed: 51 cards drawn and the banner still claiming the
+       board was empty. Only a projection taken from the same pass can catch
+       that, so it is read off the memoized #boardEmpty node render() wrote
+       into, never from a second call to renderEmptyState(). */
+    out.emptyState = byId.boardEmpty
+      ? { hidden: !!byId.boardEmpty.hidden,
+          text: (function collect(n) {
+            if (!n || typeof n !== "object") return "";
+            var t = n._text || "";
+            (n.children || []).forEach(function (c) { t += " " + collect(c); });
+            return t;
+          })(byId.boardEmpty).trim() }
+      : null;
+    // …and then CLICK what the spec named, through the node's own handler, with
+    // the event object board.js expects. `clickCard` is a card's `data-mid`.
+    if (spec.clickCard) {
+      const want = String(spec.clickCard);
+      (function walk(n) {
+        if (!n || typeof n !== "object") return;
+        if (/(^| )card( |$)/.test(n._cls || "")
+            && (n.attrs || {})["data-mid"] === want) {
+          (n._handlers.click || []).forEach(function (fn) {
+            fn.call(n, { stopPropagation() {}, preventDefault() {} });
+          });
+        }
+        (n.children || []).forEach(walk);
+      })(byId.board);
+    }
+    /* …and the KEYBOARD's door. The command deck's Enter resolves a card's
+       `data-mid` and calls openDetail DIRECTLY — it never touches the card's own
+       click handler — so "the click opens the issue" and "Enter opens the issue"
+       are two different claims, and this makes the second one checkable. */
+    if (spec.openDetail && typeof sandbox.openDetail === "function") {
+      sandbox.openDetail(String(spec.openDetail));
+    }
   } else if (mode === "logbug") {
     // The badge as RENDER BUILT IT, dug out of the board root — never a second
     // call to logBugBadge(). Calling it again would run it with the globals

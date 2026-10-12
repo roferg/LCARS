@@ -69,6 +69,7 @@ stdlib only.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -101,8 +102,14 @@ FETCH_TIMEOUT = 25
 # on the parent, for free. Counting them by listing the children instead would
 # mean a second call AND a way to attribute each child to its parent, which the
 # ticket bodies do not carry (see the ledger note in the session report).
+# S278 — …and `closedAt`, the ONE field the Done column needs that nothing here
+# used to ask for. It is the date the mission SHIPPED (the merge closes the issue
+# via the PR body's `Closes #n`), which is the order a history reads in; the
+# issue NUMBER is the order it was FILED in, and those are different orders.
+# Verified read-only against github/pagesai on 2026-10-11: gh emits it on all 51
+# closed `lcars:done` rows. Still ONE call per cycle — a field, not a request.
 _JSON_FIELDS = ("number,title,state,labels,body,updatedAt,assignees,"
-                "subIssuesSummary")
+                "subIssuesSummary,closedAt")
 
 # The forge's window. WIDENED FROM `open` TO `all`, and the reason is the whole
 # of this session:
@@ -128,6 +135,9 @@ _JSON_FIELDS = ("number,title,state,labels,body,updatedAt,assignees,"
 # The degrade is silence, never a wrong claim.
 _STATE = "all"
 _LIMIT = "200"
+# …and the same number as an int, so "did the listing HIT the cap?" is a
+# comparison and not a second literal that can drift from the first.
+_LIMIT_N = int(_LIMIT)
 
 _MISSION_LABEL = "lcars:mission"
 
@@ -276,9 +286,17 @@ class RemoteMissions(object):
         return [r for r in data if isinstance(r, dict)], "ok"
 
     # -- the overlay ----------------------------------------------------------
-    def cards(self, local_issues=()):
+    def cards(self, local_issues=(), host=None, repo=None):
         """(remote cards, meta block) for a board whose LOCAL cards hold
         `local_issues`.
+
+        `host`/`repo` are the board's own `meta.ghHost` / `meta.repo` — the
+        forge identity the LOCAL adapter has already resolved (ADR-002: the
+        daemon shells `host-adapter.sh gh-host`; nothing here re-derives it).
+        They are passed in rather than looked up because this module's whole
+        posture is that it owns exactly one seam, `gh issue list`, and a second
+        subprocess per board build is the thing S152 forbade. Absent ⇒ a done
+        card simply carries no `url`; see `issue_url`.
 
         The meta block is None when the overlay is OFF — and None means the
         caller adds NO `remote` key at all. ABSENT, never null: the rule every
@@ -296,24 +314,62 @@ class RemoteMissions(object):
             if n is not None:
                 held.add(n)
         cards = []
+        done = []
         for row in rows:
             n = _as_issue(row.get("number"))
             if n is None or n in held:
                 # LOCAL WINS. An adopted mission is a local mission and its issue
-                # must never draw a second card.
+                # must never draw a second card. ONE dedupe key — the ISSUE
+                # NUMBER — shared with `verdicts()` below, and applied BEFORE
+                # anything is built rather than as a later pass that could be
+                # reached with the wrong list.
                 continue
             if _is_closed(row):
-                # THE WIDER WINDOW IS FOR VERDICTS, NOT FOR CARDS. `--state all`
-                # was taken so a LOCAL card can learn that its issue closed; it
-                # must not also start drawing remote cards for every mission this
-                # repo ever shipped. The overlay's card set is exactly what it
-                # was — the open issues — and that is pinned by test.
+                # S278 — THE OTHER HALF OF THE WIDER WINDOW, FINALLY SPENT.
+                #
+                # `--state all` was taken (S197) so a LOCAL card could learn that
+                # its issue had closed, and every closed row was thrown away one
+                # line later with the note "THE WIDER WINDOW IS FOR VERDICTS, NOT
+                # FOR CARDS". That was right about one thing and wrong about
+                # another: a mid-pipeline mission's artifacts are genuinely not
+                # on the forge, but a FINISHED one has nothing left to carry. The
+                # cost of the old line was that a fresh clone of a repo with 51
+                # shipped missions showed an empty Done column — no evidence the
+                # factory had ever shipped anything at all.
+                #
+                # THE LABEL IS THE WHOLE DISTINCTION (rule 2). `lcars approve`
+                # applies `lcars:done` at the ship and nowhere else, so:
+                #   closed + lcars:done  → it SHIPPED. Draw it, read-only.
+                #   closed, no label     → it was ABANDONED (or closed by hand).
+                #                          Not drawn. There are three of them in
+                #                          github/pagesai and the Done column is
+                #                          not the place to list them.
+                if _DONE_LABEL not in _labels(row):
+                    continue
+                card = self._done_card(row, rows, host, repo)
+                if card is not None:
+                    done.append(card)
                 continue
             card = self._card(row, rows)
             if card is not None:
                 cards.append(card)
         cards.sort(key=lambda c: c.get("issue") or 0, reverse=True)
-        return cards, {"status": "ok", "count": len(cards)}
+        # DONE IS ORDERED BY WHEN IT SHIPPED, not by what it was numbered. A
+        # missing `closedAt` sorts LAST ("" < any stamp) rather than dropping the
+        # card: a forge is not a promise, and an unreadable date costs the card
+        # its place in the order, never its existence. The issue number breaks
+        # ties so the order is total and a repaint cannot reshuffle equals.
+        done.sort(key=lambda c: (c.get("closedAt") or "", c.get("issue") or 0),
+                  reverse=True)
+        meta = {"status": "ok", "count": len(cards) + len(done)}
+        if len(rows) >= _LIMIT_N:
+            # THE CAP WAS REACHED, SO THE HISTORY IS INCOMPLETE — and a history
+            # that is quietly incomplete is worse than no history. The caller
+            # promotes this to `meta.doneTruncated` and the board draws one row
+            # saying so. ABSENT when the listing fit, which is every repo but the
+            # very largest.
+            meta["doneTruncated"] = True
+        return cards + done, meta
 
     def mission(self, mid):
         """The DETAIL payload for a remote card, or None.
@@ -330,8 +386,21 @@ class RemoteMissions(object):
         for row in rows:
             if str(row.get("number")) == str(mid):
                 if _is_closed(row):
-                    # No card is drawn for it (see cards()), so no detail opens
-                    # onto it either. One window, both surfaces.
+                    # S278 — STILL NONE, FOR A BETTER REASON THAN BEFORE.
+                    #
+                    # This used to read "no card is drawn for it (see cards()),
+                    # so no detail opens onto it either", and half of that is no
+                    # longer true: a closed `lcars:done` issue DOES draw a Done
+                    # card now. What has not changed is that there is nothing to
+                    # put in a detail pane for it. A finished mission's research
+                    # findings, plan.json, wave logs and usage record live in
+                    # whichever laptop's `.git/lcars` drove it and are not synced
+                    # to the issue (the captain's boundary ruling, 2026-09-04),
+                    # so a detail here would be a window onto nothing.
+                    #
+                    # THE CARD DOES NOT NEED ONE. It is click-through to the
+                    # ISSUE (board.js `isRemoteDone`), where the whole record —
+                    # the PRD, the estimate, the merged PR — actually is.
                     return None
                 card = self._card(row, rows)
                 if card is None:
@@ -393,6 +462,54 @@ class RemoteMissions(object):
             card.pop("numberOne", None)
         return card
 
+
+    def _done_card(self, row, rows, host, repo):
+        """One CLOSED, `lcars:done` issue → one read-only Done card.
+
+        IT IS THE SAME CARD, PLUS A DATE AND MINUS EVERY AFFORDANCE. The mapping
+        is `card_from_issue`'s, exactly as the live remote cards use (ADR-003 —
+        one implementation of "an issue as a card"), so the Done column paints
+        the generic card the rest of the board paints: title, type, the Estimate
+        pills the body carries, the engine watermark. What it adds is the one
+        fact that makes it history rather than news — WHEN it shipped — and what
+        it takes away is everything that implies there is something left to do.
+
+        `readOnly` IS NOT `remote`. A live remote card is read-only *here* and
+        offers Adopt, because the mission is running on another machine and could
+        be taken over. This one offers nothing, ever: there is no local detail to
+        open (see `mission()`), no stage to advance, and no artifacts to rebuild.
+        The front end keys the no-controls, click-through-to-the-issue treatment
+        off `readOnly`, so it is a hard True rather than a truthy-ish value.
+        """
+        card = self._card(row, rows)
+        if card is None:
+            return None
+        # `_card` derives this from the STAGE LABEL (rule 2), and a `lcars:done`
+        # issue already reads as `done` there — asserted, not assumed, because
+        # the column a card lands in is decided by this string.
+        card["stage"] = "done"
+        card["readOnly"] = True
+        # NOTHING TO TAKE OVER. `_card` set this from the stage label and `done`
+        # is not in ADOPTABLE_STAGES, so it is already False; it is pinned here
+        # because a future stage added to that tuple must not reach this card.
+        card["adoptable"] = False
+        at = row.get("closedAt")
+        if isinstance(at, str) and at.strip():
+            card["closedAt"] = at.strip()
+        url = issue_url(host, repo, card.get("issue"))
+        if url:
+            card["url"] = url
+        # THE MISSION'S OWN ID, when the body records one. A done card is the
+        # only remote card whose id is never POSTed anywhere (there is no adopt
+        # and no detail), so it is free to be the id the mission actually had on
+        # the laptop that shipped it — which is what the captain's own notes,
+        # branches and `lcars status` output call it. The ISSUE NUMBER remains
+        # the dedupe key and `issue` still carries it; this changes the label,
+        # never the identity. Read with the SAME parser `_envelope_engine` uses.
+        mid = _envelope_field(row.get("body"), "id")
+        if mid:
+            card["id"] = mid
+        return card
 
     # -- the verdict on a LOCAL mission --------------------------------------
     def verdicts(self, local_issues=()):
@@ -480,14 +597,20 @@ _ENVELOPE_MARK = "<!-- lcars:handoff "
 _ENVELOPE_END = " -->"
 
 
-def _envelope_engine(body):
-    """The `engine` the handoff envelope names, or None. Never raises.
+def _envelope(body):
+    """The handoff envelope on `body` as a dict, or None. Never raises.
+
+    S278 lifted this out of `_envelope_engine` unchanged, because a SECOND
+    envelope reader is exactly the drift this file's own header warns about (the
+    zero-collect phrase list, which lives in two places and has since disagreed
+    with itself). The LAST envelope on the body wins — a PRD may legitimately
+    quote one, and `adopt.sh` resolves it the same way — so the board and the
+    CLI can never read two different envelopes off one issue.
 
     A FORGE IS NOT A PROMISE (this module's standing posture): a truncated
-    envelope, a body that is not a string, JSON that does not parse, or an
-    `engine` that is null all answer None — and None means the card carries no
-    `engine` key at all, which the picker reads as "the mission pinned
-    nothing". An unreadable envelope must never invent an engine.
+    envelope, a body that is not a string, or JSON that does not parse all
+    answer None, and every caller treats None exactly as it treats a body that
+    carries no envelope at all.
     """
     if not isinstance(body, str) or _ENVELOPE_MARK not in body:
         return None
@@ -503,17 +626,82 @@ def _envelope_engine(body):
         env = json.loads(blob[at:])
     except Exception:
         return None
+    return env if isinstance(env, dict) else None
+
+
+def _envelope_field(body, key):
+    """One STRING field off the envelope, validated, or None.
+
+    The validation is `_envelope_engine`'s and it is deliberately the same for
+    every key: these values become directory names, command-line arguments and
+    URL path segments in other parts of this product, and "it is only a label
+    here" is how a value that was never checked arrives somewhere it matters. A
+    bare identifier (alphanumerics plus `-_.`), or nothing.
+    """
+    env = _envelope(body)
     if not isinstance(env, dict):
         return None
-    eng = env.get("engine")
-    if not isinstance(eng, str):
+    val = env.get(key)
+    if not isinstance(val, str):
         return None
-    eng = eng.strip()
-    # Defensive, and for the same reason actions.adopt validates it again: this
-    # value is one hop from becoming a command-line argument.
-    if not eng or not all(ch.isalnum() or ch in "-_." for ch in eng):
+    val = val.strip()
+    if not val or not all(ch.isalnum() or ch in "-_." for ch in val):
         return None
-    return eng
+    return val
+
+
+def _envelope_engine(body):
+    """The `engine` the handoff envelope names, or None. Never raises.
+
+    A FORGE IS NOT A PROMISE (this module's standing posture): a truncated
+    envelope, a body that is not a string, JSON that does not parse, or an
+    `engine` that is null all answer None — and None means the card carries no
+    `engine` key at all, which the picker reads as "the mission pinned
+    nothing". An unreadable envelope must never invent an engine.
+    """
+    return _envelope_field(body, "engine")
+
+
+# A DNS hostname and nothing else — no scheme, no path, no port, no space. The
+# same expression `board.js` guards `meta.ghHost` with (GH_HOST_RE) and the same
+# one `local_adapter` validates the shell's answer against, for the same reason:
+# this value is spliced into a URL the captain CLICKS, and a guard that exists
+# only upstream is not a guard here.
+_HOST_RE = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$")
+# `owner/name`, each segment a GitHub-legal repository path segment. A repo with
+# NO origin degrades to the working-tree DIRECTORY BASENAME (local_adapter's
+# `_repo_identity`, step 3), which would build a link to a github.com repository
+# that does not exist — so this refuses anything that is not two segments.
+_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def issue_url(host, repo, number):
+    """`https://<host>/<owner>/<name>/issues/<n>`, or None.
+
+    THE ONE PLACE THE DAEMON BUILDS AN ISSUE URL, and the mirror of board.js's
+    `ghIssueUrl` — same scheme pinned in the code rather than carried over the
+    wire, same bare-hostname contract, same github.com fallback for an absent
+    host (`gh_hostname` returns EMPTY on github.com by design, so "no host" and
+    "github.com" are one case).
+
+    ABSENT, NEVER WRONG. A repo identity that is not `owner/name`, a host that
+    is not a hostname, or a number that is not a number all answer None, and the
+    caller then omits the key — a Done card with no link still tells the captain
+    his repo shipped 51 missions, which a card linking to a 404 does not.
+    """
+    if not isinstance(repo, str) or not _REPO_RE.match(repo.strip()):
+        return None
+    n = _as_issue(number)
+    if n is None:
+        return None
+    h = host.strip() if isinstance(host, str) else ""
+    if h and not _HOST_RE.match(h):
+        # Refused, never spliced. Falling back to github.com here would be a
+        # wrong link; and this cannot reach the scheme, which is pinned above.
+        h = ""
+    return "https://%s/%s/issues/%d" % (h or "github.com", repo.strip(), n)
 
 
 def _labels(row):

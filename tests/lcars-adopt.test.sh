@@ -587,6 +587,36 @@ check "6. NOTHING is left on disk after a mid-pipeline refusal" \
 check "6. a refused adopt never claims the mission" \
   "[ ! -s '$TMPROOT/assignM.txt' ]"
 
+# --- Behaviour 6b (S278): a FINISHED mission is not "mid-pipeline" ----------
+# `lcars approve` relabels the issue `lcars:done`, so a shipped mission's issue
+# carries a stage label the boundary check ACCEPTS as a stage and then refuses
+# with the mid-pipeline sentence — which is wrong twice over: nothing about a
+# merged mission is mid-pipeline, and "wait for it to reach Verify" is advice
+# about a mission that reached Verify, shipped and closed weeks ago. It also
+# hid the one thing the captain actually wants to hear: the board now shows it,
+# read-only, in Done, from GitHub.
+IFS="$TAB" read -r repoDN originDN <<<"$(new_repo)"
+FIXDN="$(new_fixture "$TMPROOT/fixDN")"
+mk_body "$FIXDN/issue-42.body" "$PRD_TEXT" "$(envelope "$MID" "lcars/$MID" main feature claude null 0)"
+printf 'Add dark mode\n' >"$FIXDN/issue-42.title"
+printf 'lcars:mission\nlcars:done\n' >"$FIXDN/issue-42.labels"
+rcDN=0
+( cd "$repoDN" && GH_FIX="$FIXDN" GH_ASSIGN_STATE="$TMPROOT/assignDN.txt" LCARS_GH_USER=capt \
+    LCARS_GH_BIN="$GH" bash "$SCRIPT" --issue 42 >out.txt 2>&1 ) || rcDN=$?
+check "6b. adopt of a FINISHED mission REFUSES (non-zero)" "[ '$rcDN' -ne 0 ]"
+check "6b. the refusal says the mission is FINISHED" \
+  "grep -qi 'finished' '$repoDN/out.txt'"
+check "6b. and NEVER calls it mid-pipeline" \
+  "! grep -qi 'mid-pipeline' '$repoDN/out.txt'"
+check "6b. it points at the Done column, which is where it actually is" \
+  "grep -qi 'done' '$repoDN/out.txt'"
+check "6b. NOTHING is left on disk" \
+  "[ -z \"\$(ls -A '$repoDN/.git/lcars/missions')\" ]"
+check "6b. a refused adopt never claims the mission" \
+  "[ ! -s '$TMPROOT/assignDN.txt' ]"
+check "6b. and it still says nothing was created" \
+  "grep -qi 'nothing was created' '$repoDN/out.txt'"
+
 # --- Behaviour 7: idempotent — a SECOND adopt refreshes, never duplicates ---
 IFS="$TAB" read -r repoI originI <<<"$(new_repo)"
 FIXI="$(new_fixture "$TMPROOT/fixI")"
